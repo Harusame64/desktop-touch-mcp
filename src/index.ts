@@ -10,6 +10,7 @@ import { registerWorkspaceTools } from "./tools/workspace.js";
 import { registerPinTools } from "./tools/pin.js";
 import { registerMacroTools } from "./tools/macro.js";
 import { registerScrollCaptureTools } from "./tools/scroll-capture.js";
+import { registerBrowserTools } from "./tools/browser.js";
 import { startTray, stopTray } from "./utils/tray.js";
 import { checkFailsafe, FailsafeError } from "./utils/failsafe.js";
 
@@ -65,6 +66,30 @@ const server = new McpServer(
       "  fullContent=true (default): PW_RENDERFULLCONTENT — works for Chrome/Electron/WinUI3.",
       "  fullContent=false: legacy flag — use if call hangs on games or video players.",
       "",
+      "## Browser automation via CDP (Chrome/Edge)",
+      "browser_connect(port?)          — Connect to Chrome/Edge; lists open tabs. Default port 9222.",
+      "browser_find_element(selector)  — CSS selector → exact screen coords (no SS scaling needed).",
+      "browser_click_element(selector) — find + click in one step.",
+      "browser_eval(expression)        — run JS in the page; returns result.",
+      "browser_get_dom(selector?)      — get outerHTML of element or body.",
+      "browser_navigate(url)           — CDP Page.navigate; no address bar interaction needed.",
+      "browser_disconnect(port?)       — close cached CDP WebSocket sessions.",
+      "",
+      "## CDP setup",
+      "Launch: chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\\tmp\\cdp",
+      "Edge:   msedge.exe --remote-debugging-port=9222 --user-data-dir=C:\\tmp\\cdp",
+      "",
+      "## Virtual desktops (Windows 11)",
+      "get_windows() shows isOnCurrentDesktop per window.",
+      "Switch desktops: keyboard_press('ctrl+win+left') / keyboard_press('ctrl+win+right').",
+      "New desktop: keyboard_press('ctrl+win+d')  |  Close: keyboard_press('ctrl+win+f4').",
+      "",
+      "## Browser UI shortcuts (more reliable than finding UI elements)",
+      "Navigate:    browser_navigate(url)  — or: keyboard_press('ctrl+l') → keyboard_type(url) → keyboard_press('enter').",
+      "Back/Fwd:   keyboard_press('alt+left') / keyboard_press('alt+right').",
+      "New tab:    keyboard_press('ctrl+t').",
+      "DevTools:   keyboard_press('f12').",
+      "",
       "## Batching with run_macro",
       "Group sequential operations into a single run_macro call to eliminate API round-trips.",
       "Max 50 steps. Use sleep pseudo-command for waits (max 10000ms).",
@@ -100,6 +125,7 @@ registerWorkspaceTools(server);
 registerPinTools(server);
 registerMacroTools(server);
 registerScrollCaptureTools(server);
+registerBrowserTools(server);
 
 // ─── Failsafe background monitor (backup for long-running operations) ─────────
 // Primary check: per-tool call via the wrapper above.

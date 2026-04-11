@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>desktop-touch CDP Test Page</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: sans-serif; background: #f5f5f5; }
+    .container { position: relative; width: 800px; min-height: 600px; background: white; padding: 20px; }
+    #btn-submit {
+      position: absolute;
+      left: 100px; top: 200px;
+      width: 120px; height: 40px;
+      background: #4caf50; color: white;
+      border: none; border-radius: 4px;
+      cursor: pointer; font-size: 14px;
+    }
+    #btn-submit:hover { background: #43a047; }
+    #input-name {
+      position: absolute;
+      left: 100px; top: 300px;
+      width: 200px; height: 32px;
+      border: 1px solid #ccc; border-radius: 4px;
+      padding: 0 8px; font-size: 14px;
+    }
+    #link-next {
+      position: absolute;
+      left: 100px; top: 380px;
+      font-size: 16px;
+    }
+    #text-result {
+      position: absolute;
+      left: 100px; top: 260px;
+      font-size: 14px; color: #333;
+    }
+    #btn-hidden { display: none; }
+    #section-scroll {
+      position: absolute;
+      left: 100px; top: 1000px;
+      width: 200px; height: 50px;
+      background: #e3f2fd;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1 id="page-title" style="padding-top:20px;">CDP Test Page</h1>
+
+    <button id="btn-submit">Submit</button>
+
+    <div id="text-result"></div>
+
+    <input id="input-name" type="text" placeholder="Enter name...">
+
+    <a id="link-next" href="#next">Next Page</a>
+
+    <!-- Hidden element for testing -->
+    <button id="btn-hidden">Hidden Button</button>
+
+    <!-- Below-fold element for scroll testing -->
+    <div id="section-scroll">Below the fold</div>
+  </div>
+
+  <script>
+    // Track click events for test verification
+    window._clickLog = [];
+
+    document.getElementById('btn-submit').addEventListener('click', function() {
+      window._clickLog.push({ id: 'btn-submit', time: Date.now() });
+      document.getElementById('text-result').textContent = 'Clicked at ' + Date.now();
+    });
+
+    document.getElementById('input-name').addEventListener('input', function(e) {
+      window._clickLog.push({ id: 'input-name', value: e.target.value, time: Date.now() });
+    });
+  </script>
+</body>
+</html>

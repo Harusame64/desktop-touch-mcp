@@ -284,6 +284,20 @@ export function getWindowTitleW(hwnd: unknown): string {
   return buf.slice(0, len * 2).toString("utf16le");
 }
 
+/**
+ * Get the current bounding rectangle of a window by its HWND.
+ * Returns null if the window no longer exists or the call fails.
+ */
+export function getWindowRectByHwnd(hwnd: unknown): { x: number; y: number; width: number; height: number } | null {
+  try {
+    const rect = { left: 0, top: 0, right: 0, bottom: 0 };
+    if (!GetWindowRect(hwnd, rect)) return null;
+    return { x: rect.left, y: rect.top, width: rect.right - rect.left, height: rect.bottom - rect.top };
+  } catch {
+    return null;
+  }
+}
+
 /** Restore a minimized window and bring it to the foreground.
  *  Returns the actual window rect after restoration. */
 export function restoreAndFocusWindow(hwnd: unknown): { x: number; y: number; width: number; height: number } {
