@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getActiveWindow } from "../engine/nutjs.js";
 import { getWindowTitleW, enumWindowsInZOrder, restoreAndFocusWindow } from "../engine/win32.js";
 import { getVirtualDesktopStatus } from "../engine/uia-bridge.js";
+import { updateWindowCache } from "../engine/window-cache.js";
 import type { ToolResult } from "./_types.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -24,6 +25,7 @@ export const focusWindowSchema = {
 export const getWindowsHandler = async (): Promise<ToolResult> => {
   try {
     const wins = enumWindowsInZOrder();
+    updateWindowCache(wins);
     const hwndStrings = wins.map((w) => String(w.hwnd));
     const vdStatus = await getVirtualDesktopStatus(hwndStrings);
 
@@ -70,6 +72,7 @@ export const focusWindowHandler = async ({ title }: { title: string }): Promise<
   try {
     // Use enumWindowsInZOrder (Win32-based) so minimized windows are also included.
     const windows = enumWindowsInZOrder();
+    updateWindowCache(windows);
     const query = title.toLowerCase();
 
     for (const win of windows) {
