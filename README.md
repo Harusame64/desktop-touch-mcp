@@ -60,6 +60,8 @@ Add to `~/.claude.json` under `mcpServers`:
 }
 ```
 
+> **Note:** Replace `D:/path/to/desktop-touch-mcp` with the actual path where you cloned this repository.
+
 **No system prompt needed.** The command reference is automatically injected into Claude via the MCP `initialize` response's `instructions` field.
 
 ---
