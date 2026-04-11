@@ -2,13 +2,17 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { getWindows, getActiveWindow, mouse } from "../engine/nutjs.js";
+import fs from "node:fs";
+import { mouse } from "../engine/nutjs.js";
 import { isExecutableAllowlisted } from "../utils/launch-config.js";
-import { enumMonitors, getVirtualScreen, getWindowTitleW } from "../engine/win32.js";
+import { enumMonitors, getVirtualScreen, enumWindowsInZOrder, type WindowZInfo } from "../engine/win32.js";
 import { captureScreen } from "../engine/image.js";
 import { clearLayers } from "../engine/layer-buffer.js";
 import { getUiElements, extractActionableElements } from "../engine/uia-bridge.js";
 import type { ToolResult } from "./_types.js";
+
+/** Chromium-based browser windows — UIA traversal is prohibitively slow on these */
+const CHROMIUM_TITLE_RE = /- (?:Google Chrome|Microsoft Edge|Brave|Opera|Vivaldi|Arc|Chromium)$/;
 
 interface WindowSnapshot {
   title: string;
@@ -26,32 +30,27 @@ interface WindowSnapshot {
 }
 
 async function buildWindowSnapshot(
-  win: Awaited<ReturnType<typeof getWindows>>[number],
-  activeTitle: string,
+  wz: WindowZInfo,
   thumbnailMaxDim: number,
   includeUiSummary: boolean
 ): Promise<WindowSnapshot | null> {
   try {
-    const nutTitle = await win.title;
-    if (!nutTitle) return null;
-
-    const reg = await win.region;
-    const region = { x: reg.left, y: reg.top, width: reg.width, height: reg.height };
-    const hwnd = (win as unknown as { windowHandle: unknown }).windowHandle;
-    const title = hwnd ? (getWindowTitleW(hwnd) || nutTitle) : nutTitle;
+    const { title, region } = wz;
 
     let thumbnail: string | null = null;
     let thumbnailSize: { width: number; height: number } | null = null;
-    if (region.width >= 100 && region.height >= 50) {
-      try {
-        const captured = await captureScreen(region, thumbnailMaxDim);
-        thumbnail = captured.base64;
-        thumbnailSize = { width: captured.width, height: captured.height };
-      } catch { /* screen grab can fail for some windows */ }
-    }
+    try {
+      const captured = await captureScreen(region, thumbnailMaxDim);
+      thumbnail = captured.base64;
+      thumbnailSize = { width: captured.width, height: captured.height };
+    } catch { /* screen grab can fail for some windows */ }
 
     let uiSummary: WindowSnapshot["uiSummary"] = null;
-    if (includeUiSummary) {
+    // Skip UIA for Chromium-based browsers — their accessibility trees are
+    // extremely large and PowerShell UIA traversal routinely hits the 2s timeout,
+    // adding up to 10s of latency when multiple Chrome windows are open.
+    // Use screenshot(detail='text', windowTitle=...) for Chrome interaction instead.
+    if (includeUiSummary && !CHROMIUM_TITLE_RE.test(title)) {
       try {
         const uia = await getUiElements(title, 3, 60, 2000);
         const extracted = extractActionableElements(uia);
@@ -69,7 +68,7 @@ async function buildWindowSnapshot(
       } catch { /* UIA not available for all windows */ }
     }
 
-    return { title, region, isActive: title === activeTitle, thumbnail, thumbnailSize, uiSummary };
+    return { title, region, isActive: wz.isActive, thumbnail, thumbnailSize, uiSummary };
   } catch {
     return null;
   }
@@ -139,6 +138,103 @@ function validateLaunchCommand(command: string, args: string[]): void {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Well-known browser path resolution
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Map of bare executable names to candidate full paths (checked in order). */
+const WELL_KNOWN_PATHS: Record<string, string[]> = {
+  "chrome.exe": [
+    path.join(process.env["PROGRAMFILES"] ?? "C:\\Program Files", "Google\\Chrome\\Application\\chrome.exe"),
+    path.join(process.env["PROGRAMFILES(X86)"] ?? "C:\\Program Files (x86)", "Google\\Chrome\\Application\\chrome.exe"),
+    path.join(process.env["LOCALAPPDATA"] ?? "", "Google\\Chrome\\Application\\chrome.exe"),
+  ],
+  "msedge.exe": [
+    path.join(process.env["PROGRAMFILES"] ?? "C:\\Program Files", "Microsoft\\Edge\\Application\\msedge.exe"),
+    path.join(process.env["PROGRAMFILES(X86)"] ?? "C:\\Program Files (x86)", "Microsoft\\Edge\\Application\\msedge.exe"),
+  ],
+  "brave.exe": [
+    path.join(process.env["PROGRAMFILES"] ?? "C:\\Program Files", "BraveSoftware\\Brave-Browser\\Application\\brave.exe"),
+    path.join(process.env["LOCALAPPDATA"] ?? "", "BraveSoftware\\Brave-Browser\\Application\\brave.exe"),
+  ],
+  "code.exe": [
+    path.join(process.env["LOCALAPPDATA"] ?? "", "Programs\\Microsoft VS Code\\Code.exe"),
+    path.join(process.env["PROGRAMFILES"] ?? "C:\\Program Files", "Microsoft VS Code\\Code.exe"),
+  ],
+};
+
+/**
+ * If `command` is a bare executable name (no path separator) and matches a
+ * well-known browser/tool, return the first existing full path.
+ * Otherwise return the original command unchanged.
+ */
+function resolveWellKnownPath(command: string): { resolved: string; wasResolved: boolean } {
+  // Only resolve bare names — if user supplied a full path, trust it
+  if (command.includes("\\") || command.includes("/")) {
+    return { resolved: command, wasResolved: false };
+  }
+  const key = command.toLowerCase();
+  const candidates = WELL_KNOWN_PATHS[key];
+  if (!candidates) return { resolved: command, wasResolved: false };
+
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) {
+        return { resolved: candidate, wasResolved: true };
+      }
+    } catch { /* ignore */ }
+  }
+  return { resolved: command, wasResolved: false };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Spawn with reliable error detection
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Spawn a detached process and wait until we know it has started successfully
+ * or failed. Uses a Promise that resolves on first `spawn` event (success)
+ * or rejects on `error` event (ENOENT, EACCES, etc.).
+ *
+ * This is strictly better than the setTimeout(50ms) pattern because:
+ * - The `spawn` event fires synchronously when the OS succeeds — no race.
+ * - The `error` event fires on the next tick for ENOENT — caught deterministically.
+ * - No arbitrary delay that could be too short or too long.
+ */
+function spawnDetached(
+  command: string,
+  args: string[],
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const child = spawn(command, args, { detached: true, stdio: "ignore" });
+
+    const cleanup = () => {
+      child.removeAllListeners("error");
+      child.removeAllListeners("spawn");
+    };
+
+    child.on("spawn", () => {
+      cleanup();
+      child.unref();
+      resolve();
+    });
+
+    child.on("error", (err: NodeJS.ErrnoException) => {
+      cleanup();
+      // Build a helpful error message based on the error code
+      let hint = "";
+      if (err.code === "ENOENT") {
+        hint = `Command "${command}" not found. Provide the full path (e.g. "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe").`;
+      } else if (err.code === "EACCES" || err.code === "EPERM") {
+        hint = `Permission denied for "${command}". Check that the file is executable and not blocked by policy.`;
+      } else {
+        hint = `spawn failed for "${command}": ${err.message}`;
+      }
+      reject(new Error(hint));
+    });
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Handlers
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -150,35 +246,38 @@ export const workspaceSnapshotHandler = async ({
     // Reset layer buffer — workspace_snapshot acts as an I-frame baseline
     clearLayers();
 
-    const [windows, activeWin, monitors, cursorPos] = await Promise.all([
-      getWindows(),
-      getActiveWindow().catch(() => null),
+    // enumWindowsInZOrder() is a single synchronous Win32 EnumWindows sweep that
+    // collects title, region, z-order, active state in one pass — far faster than
+    // nut-js getWindows() which requires a separate async call per window property.
+    const [monitors, cursorPos] = await Promise.all([
       Promise.resolve(enumMonitors()),
       mouse.getPosition().catch(() => ({ x: 0, y: 0 })),
     ]);
 
-    const activeHwnd = activeWin ? (activeWin as unknown as { windowHandle: unknown }).windowHandle : null;
-    const activeTitle = activeHwnd
-      ? getWindowTitleW(activeHwnd)
-      : (activeWin ? await activeWin.title.catch(() => "") : "");
-    const virtualScreen = getVirtualScreen();
+    const allWindows = enumWindowsInZOrder();
+    // Compute virtualScreen from already-fetched monitors to avoid a second EnumDisplayMonitors sweep
+    const mons = monitors.map(m => m.bounds);
+    const virtualScreen = mons.length === 0
+      ? getVirtualScreen()
+      : {
+          x: Math.min(...mons.map(b => b.x)),
+          y: Math.min(...mons.map(b => b.y)),
+          width: Math.max(...mons.map(b => b.x + b.width)) - Math.min(...mons.map(b => b.x)),
+          height: Math.max(...mons.map(b => b.y + b.height)) - Math.min(...mons.map(b => b.y)),
+        };
 
     const CONCURRENCY = 4;
     const MAX_WINDOWS = 20;
-    const usableWindows: typeof windows = [];
-    for (const win of windows) {
-      if (usableWindows.length >= MAX_WINDOWS) break;
-      try {
-        const reg = await win.region;
-        if (reg.width >= 100 && reg.height >= 50) usableWindows.push(win);
-      } catch { /* skip */ }
-    }
+    const usableWindows = allWindows
+      .filter(w => !w.isMinimized && w.region.width >= 100 && w.region.height >= 50)
+      .slice(0, MAX_WINDOWS);
+    const activeTitle = allWindows.find(w => w.isActive)?.title ?? "";
 
     const snapshots: WindowSnapshot[] = [];
     for (let i = 0; i < usableWindows.length; i += CONCURRENCY) {
       const batch = usableWindows.slice(i, i + CONCURRENCY);
       const results = await Promise.all(
-        batch.map((win) => buildWindowSnapshot(win, activeTitle, thumbnailMaxDimension, includeUiSummary))
+        batch.map((wz) => buildWindowSnapshot(wz, thumbnailMaxDimension, includeUiSummary))
       );
       for (const snap of results) {
         if (snap) snapshots.push(snap);
@@ -219,45 +318,78 @@ export const workspaceLaunchHandler = async ({
   command, args, waitMs,
 }: { command: string; args: string[]; waitMs: number }): Promise<ToolResult> => {
   try {
-    // Snapshot window titles before launch to detect new windows by diff
-    const beforeWindows = await getWindows();
-    const beforeTitles = new Set<string>();
-    for (const win of beforeWindows) {
-      try {
-        const wh = (win as unknown as { windowHandle: unknown }).windowHandle;
-        const t = wh ? getWindowTitleW(wh) : await win.title;
-        if (t) beforeTitles.add(t);
-      } catch { /* skip */ }
-    }
-
+    // ── 1. Security validation (unchanged) ──────────────────────────────
     validateLaunchCommand(command, args);
-    spawn(command, args, { detached: true, stdio: "ignore" }).unref();
 
-    if (waitMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, waitMs));
-    }
+    // ── 2. Resolve well-known paths (chrome.exe → full path) ────────────
+    const { resolved, wasResolved } = resolveWellKnownPath(command);
+    // If we resolved to a full path, re-validate with that path
+    // (validateLaunchCommand checks basename, so the resolved path is safe)
+    const actualCommand = resolved;
 
-    const afterWindows = await getWindows();
+    // ── 3. Pre-launch window snapshot ───────────────────────────────────
+    const beforeWindows = enumWindowsInZOrder();
+    const beforeTitles = new Set(beforeWindows.map(w => w.title));
+    const beforeHwnds = new Set(beforeWindows.map(w => w.hwnd));
+
+    // ── 4. Spawn with deterministic error handling ──────────────────────
+    // spawnDetached uses the 'spawn' and 'error' events (not setTimeout)
+    // to reliably detect ENOENT/EACCES before proceeding.
+    await spawnDetached(actualCommand, args);
+
+    // ── 5. Poll for new window (instead of single sleep + check) ────────
+    // Polling is better than a single waitMs sleep because:
+    // - If the window appears in 200ms, we return in ~200ms not 2000ms.
+    // - For Chrome single-instance, the title change may happen at any time.
+    // - For slow apps, we keep checking up to the full waitMs budget.
     let foundTitle = "";
     let foundRegion: { x: number; y: number; width: number; height: number } | null = null;
 
-    for (const win of afterWindows) {
-      try {
-        const wh = (win as unknown as { windowHandle: unknown }).windowHandle;
-        const t = wh ? getWindowTitleW(wh) : await win.title;
-        if (!t || beforeTitles.has(t)) continue;
-        const reg = await win.region;
-        if (reg.width < 50 || reg.height < 50) continue;
-        foundTitle = t;
-        foundRegion = { x: reg.left, y: reg.top, width: reg.width, height: reg.height };
-        break;
-      } catch { /* skip */ }
+    if (waitMs > 0) {
+      const POLL_INTERVAL = 200;
+      const deadline = Date.now() + waitMs;
+
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
+
+        try {
+          const afterWindows = enumWindowsInZOrder();
+          for (const w of afterWindows) {
+            if (!w.title) continue;
+            if (w.isMinimized || w.region.width < 50 || w.region.height < 50) continue;
+            const isNewWindow = !beforeHwnds.has(w.hwnd);
+            const isTitleChange = beforeHwnds.has(w.hwnd) && !beforeTitles.has(w.title);
+            if (!isNewWindow && !isTitleChange) continue;
+            foundTitle = w.title;
+            foundRegion = w.region;
+            break;
+          }
+          if (foundTitle) break; // Window found — stop polling early
+        } catch {
+          // enumWindowsInZOrder FFI failure — non-fatal, retry on next poll
+        }
+      }
+    }
+
+    const result: Record<string, unknown> = {
+      launched: actualCommand,
+      args,
+      foundWindow: foundTitle || null,
+      region: foundRegion,
+    };
+    if (wasResolved) {
+      result.note = `Resolved "${command}" → "${actualCommand}"`;
+    }
+    if (!foundTitle && waitMs > 0) {
+      result.hint =
+        "No new window detected. The app may reuse an existing window (e.g. Chrome single-instance), " +
+        "or it may need more time. Use workspace_snapshot to check current windows.";
     }
 
     return {
       content: [{
         type: "text",
-        text: JSON.stringify({ launched: command, args, foundWindow: foundTitle || null, region: foundRegion }),
+        text: JSON.stringify(result),
       }],
     };
   } catch (err) {
