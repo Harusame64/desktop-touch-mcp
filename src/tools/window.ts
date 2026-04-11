@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { getWindows, getActiveWindow } from "../engine/nutjs.js";
-import { getWindowTitleW, enumWindowsInZOrder } from "../engine/win32.js";
+import { getActiveWindow } from "../engine/nutjs.js";
+import { getWindowTitleW, enumWindowsInZOrder, restoreAndFocusWindow } from "../engine/win32.js";
 import { getVirtualDesktopStatus } from "../engine/uia-bridge.js";
 import type { ToolResult } from "./_types.js";
 
@@ -68,30 +68,27 @@ export const getActiveWindowHandler = async (): Promise<ToolResult> => {
 
 export const focusWindowHandler = async ({ title }: { title: string }): Promise<ToolResult> => {
   try {
-    const windows = await getWindows();
+    // Use enumWindowsInZOrder (Win32-based) so minimized windows are also included.
+    const windows = enumWindowsInZOrder();
     const query = title.toLowerCase();
 
     for (const win of windows) {
-      try {
-        const hwnd = (win as unknown as { windowHandle: unknown }).windowHandle;
-        const winTitle = hwnd ? getWindowTitleW(hwnd) : await win.title;
-        if (!winTitle.toLowerCase().includes(query)) continue;
-        const reg = await win.region;
-        if (reg.width < 50 || reg.height < 50) continue;
-        await win.focus();
-        return {
-          content: [{
-            type: "text" as const,
-            text: JSON.stringify({
-              ok: true,
-              focused: winTitle,
-              region: { x: reg.left, y: reg.top, width: reg.width, height: reg.height },
-            }),
-          }],
-        };
-      } catch {
-        // Skip
-      }
+      if (!win.title.toLowerCase().includes(query)) continue;
+
+      // SW_RESTORE is a no-op for non-minimized windows, so this is safe to call unconditionally.
+      // Returns the actual rect after restoration (important for previously-minimized windows).
+      const region = restoreAndFocusWindow(win.hwnd);
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            ok: true,
+            focused: win.title,
+            region,
+          }),
+        }],
+      };
     }
 
     return {

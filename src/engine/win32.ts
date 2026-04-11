@@ -58,6 +58,8 @@ const IsWindowVisible = user32.func("bool __stdcall IsWindowVisible(void *hWnd)"
 const IsIconic = user32.func("bool __stdcall IsIconic(void *hWnd)");
 const IsZoomed = user32.func("bool __stdcall IsZoomed(void *hWnd)");
 const GetForegroundWindow = user32.func("intptr __stdcall GetForegroundWindow()");
+const ShowWindow = user32.func("bool __stdcall ShowWindow(void *hWnd, int nCmdShow)");
+const SetForegroundWindow = user32.func("bool __stdcall SetForegroundWindow(void *hWnd)");
 const EnumWindowsProto = koffi.proto(
   "bool __stdcall EnumWindowsProc(intptr hwnd, intptr lParam)"
 );
@@ -234,15 +236,20 @@ export function enumWindowsInZOrder(): WindowZInfo[] {
         if (!GetWindowRect(hwnd, rect)) return true;
         const width = rect.right - rect.left;
         const height = rect.bottom - rect.top;
-        if (width < 50 || height < 50) return true;
 
+        // Check minimized state BEFORE the size filter: minimized windows have a
+        // "parking" rect (~160x31px) that would otherwise fail the < 50px check.
         const isMinimized = !!IsIconic(hwnd);
+        if (!isMinimized && (width < 50 || height < 50)) return true;
+
         const isMaximized = !isMinimized && !!IsZoomed(hwnd);
 
         results.push({
           hwnd,
           title,
-          region: { x: rect.left, y: rect.top, width, height },
+          region: isMinimized
+            ? { x: 0, y: 0, width: 0, height: 0 }
+            : { x: rect.left, y: rect.top, width, height },
           zOrder: zOrder++,
           isMinimized,
           isMaximized,
@@ -275,6 +282,17 @@ export function getWindowTitleW(hwnd: unknown): string {
   const len = GetWindowTextW(hwnd, buf, MAX) as number;
   if (len <= 0) return "";
   return buf.slice(0, len * 2).toString("utf16le");
+}
+
+/** Restore a minimized window and bring it to the foreground.
+ *  Returns the actual window rect after restoration. */
+export function restoreAndFocusWindow(hwnd: unknown): { x: number; y: number; width: number; height: number } {
+  const SW_RESTORE = 9;
+  ShowWindow(hwnd, SW_RESTORE);
+  SetForegroundWindow(hwnd);
+  const rect = { left: 0, top: 0, right: 0, bottom: 0 };
+  GetWindowRect(hwnd, rect);
+  return { x: rect.left, y: rect.top, width: rect.right - rect.left, height: rect.bottom - rect.top };
 }
 
 /** Make a window always-on-top (HWND_TOPMOST). */
