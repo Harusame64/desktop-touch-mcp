@@ -16,9 +16,11 @@ desktop-touch-mcp (Node.js / TypeScript)
     │   ├── win32.ts        — Win32 API (koffi): ウィンドウ列挙・DPI・PrintWindow・SetWindowPos
     │   ├── uia-bridge.ts   — Windows UI Automation (PowerShell経由): 要素ツリー・クリック・値設定
     │   ├── image.ts        — 画像エンコード (sharp): PNG / WebP 1:1 / クロップ
-    │   └── layer-buffer.ts — ウィンドウレイヤーバッファ: フレーム差分検出 (MPEG P-frame方式)
-    └── Layer 2: 25 MCP ツール
-        screenshot(5) + window(3) + mouse(5) + keyboard(2) + ui_elements(4) + workspace(2) + pin(2) + macro(1) + scroll_capture(1)
+    │   ├── layer-buffer.ts — ウィンドウレイヤーバッファ: フレーム差分検出 (MPEG P-frame方式)
+    │   ├── cdp-bridge.ts   — Chrome DevTools Protocol: WebSocket セッション・DOM座標変換
+    │   └── window-cache.ts — ウィンドウ位置キャッシュ: ホーミング補正用 (dx,dy 差分計算)
+    └── Layer 2: 32 MCP ツール
+        screenshot(4) + window(3) + mouse(5) + keyboard(2) + ui_elements(4) + browser_cdp(7) + workspace(2) + pin(2) + macro(1) + scroll_capture(1)
 ```
 
 ---
@@ -108,14 +110,33 @@ focus_window(title="メモ帳")
 
 ### 🖱️ マウス操作
 
+全マウスツールは `speed` に加え `homing` / `windowTitle` / `elementName` / `elementId` パラメータを持つ。
+
 #### `mouse_move`
 カーソル移動。
 
 #### `mouse_click`
 クリック (`left` / `right` / `middle`)。`doubleClick=true` でダブルクリック。
 
+**ホーミング補正（トラクションコントロール）:**  
+スクリーンショット取得→クリック実行の間にウィンドウが移動・裏に隠れる問題を自動補正。
+
+| Tier | トリガー | レイテンシ | 効果 |
+|------|---------|-----------|------|
+| 1 | 常時（cache あれば） | <1ms | GetWindowRect で差分計算 → (dx,dy) 補正 |
+| 2 | `windowTitle` 指定 | ~100ms | 裏に隠れたウィンドウを `restoreAndFocusWindow` |
+| 3 | `elementName/Id` + `windowTitle` + リサイズ検出 | 1-3s | UIA `getElementBounds` で最新座標を再クエリ |
+
+```
+mouse_click(x, y, windowTitle="メモ帳")           # Tier 1 + 2
+mouse_click(x, y, homing=false)                   # 補正 OFF
+```
+
+キャッシュは `screenshot` / `get_windows` / `focus_window` / `workspace_snapshot` で自動更新。  
+60 秒 TTL で HWND 再利用による誤補正を防止。
+
 #### `mouse_drag`
-ドラッグ (startX,startY) → (endX,endY)。
+ドラッグ (startX,startY) → (endX,endY)。ホーミング補正適用時は終点にも同じ delta を適用。
 
 #### `scroll`
 スクロール。`direction`: `up` / `down` / `left` / `right`。`amount` はステップ数。
@@ -212,6 +233,48 @@ set_element_value(windowTitle="メモ帳", name="テキスト エディター", 
 
 ---
 
+### 🌐 ブラウザ CDP (Chrome/Edge)
+
+Chrome/Edge を `--remote-debugging-port=9222` で起動することで利用可能。
+
+```bash
+chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\tmp\cdp
+```
+
+#### `browser_connect`
+CDP に接続してタブ一覧を返す。返却される `tabId` を他の browser_* ツールに渡して対象タブを指定できる。
+
+#### `browser_find_element`
+CSS セレクター → 物理ピクセル座標。  
+座標変換式: `physX = (screenX + chromeW/2 + rect.left) * dpr`  
+ブラウザ UI（タブストリップ + アドレスバー）の高さと `devicePixelRatio` を考慮済み。  
+`inViewport` は要素中心点ベースの判定（エッジが 1px はみ出しても false にならない）。
+
+#### `browser_click_element`
+`getElementScreenCoords` + `ensureBrowserFocused` + nut-js click を1ステップで実行。  
+`inViewport=false` の場合は scrollIntoView を促すメッセージを返して終了。
+
+#### `browser_eval`
+`Runtime.evaluate` (CDP) で JS 式を評価。`awaitPromise=true` で async 対応。  
+エラー時は `exceptionDetails` を解析して `JS exception in tab: ...` をスロー。
+
+#### `browser_get_dom`
+要素または `document.body` の outerHTML を返す。`maxLength` で切り詰め。  
+要素不在は structured error `{"__cdpError":"..."}` で区別。
+
+#### `browser_navigate`
+`Page.navigate` (CDP) で URL 遷移。`http://` / `https://` のみ許可 (javascript: / file: は拒否)。
+
+#### `browser_disconnect`
+ポートに紐づく全 WebSocket セッションをクローズ。HWND close 前に呼ぶことを推奨。
+
+**セッション管理:**  
+`sessions: Map<"port:tabId", CdpSession>` でキャッシュ。  
+`connecting: Map` でコンカレントな同一タブへの接続をデデュープ。  
+エラー・クローズ時は `_closed=true` にセットして新規コマンドをブロック。
+
+---
+
 ### 📜 マクロ・スクロール
 
 #### `run_macro`
@@ -269,6 +332,10 @@ screenshot(diffMode=true)
 | レイヤーバッファ TTL | 90秒で自動クリア |
 | focus_window フィルタ | width < 50 または height < 50 の補助窓はスキップ |
 | UIA 要素検索 | 再帰 `FindAll(Children)` — `FindAll(Descendants)` は WinUI3 で一部漏れ |
+| CDP コマンドタイムアウト | 15s (CMD_TIMEOUT_MS) — WebSocket 接続は 5s (CONNECT_TIMEOUT_MS) |
+| CDP fetch タイムアウト | `AbortSignal.timeout(5s)` — /json エンドポイントが応答しない場合 |
+| window-cache TTL | 60秒 — HWND 再利用による誤補正を防ぐため古いエントリを無視 |
+| ホーミング Tier 3 閾値 | delta > 200px または sizeChanged=true のときのみ UIA 再クエリ発動 |
 
 ---
 
