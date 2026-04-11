@@ -46,6 +46,7 @@ const server = new McpServer(
       "",
       "## Mouse & keyboard",
       "mouse_move / mouse_click / mouse_drag / scroll — standard pointer ops.",
+      "  speed param: 0=instant teleport, N=px/sec animation, omit=default (DESKTOP_TOUCH_MOUSE_SPEED env, default 1500).",
       "keyboard_type(text, use_clipboard=false) — type text. Set use_clipboard=true under Japanese IME.",
       "keyboard_press(keys) — key combos ('ctrl+c', 'alt+f4', 'enter', etc.).",
       "",

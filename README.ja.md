@@ -85,8 +85,8 @@ npm run build
 ### マウス操作 (5)
 | ツール | 概要 |
 |---|---|
-| `mouse_move` / `mouse_click` / `mouse_drag` | 移動・クリック・ドラッグ |
-| `scroll` | 上下左右スクロール |
+| `mouse_move` / `mouse_click` / `mouse_drag` | 移動・クリック・ドラッグ。すべて `speed` パラメータで速度指定可 |
+| `scroll` | 上下左右スクロール。`speed` でカーソル移動速度を指定可 |
 | `get_cursor_position` | 現在カーソル座標 |
 
 ### キーボード操作 (2)
@@ -159,6 +159,37 @@ screenshot(diffMode=true)               → 変化した窓だけ確認（~160 t
 ### PowerShell インジェクション対策
 
 UIA ブリッジの `-like` パターンには `escapeLike()` でワイルドカード文字 (`*`, `?`, `[`, `]`) をエスケープ済み。
+
+---
+
+## マウス移動速度
+
+`mouse_move` / `mouse_click` / `mouse_drag` / `scroll` は全て `speed` パラメータ（省略可）を受け付けます。
+
+| 値 | 動作 |
+|---|---|
+| 省略 | 設定済みのデフォルト速度を使用（下記参照） |
+| `0` | 瞬間移動（`setPosition()` — アニメーションなし） |
+| `1〜N` | N px/秒 でアニメーション移動 |
+
+**デフォルト速度は 1500 px/秒**。環境変数 `DESKTOP_TOUCH_MOUSE_SPEED` で永続的に変更できます。
+
+```json
+{
+  "mcpServers": {
+    "desktop-touch": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["D:/path/to/desktop-touch-mcp/dist/index.js"],
+      "env": {
+        "DESKTOP_TOUCH_MOUSE_SPEED": "3000"
+      }
+    }
+  }
+}
+```
+
+主な目安: `0` = テレポート、`1500` = デフォルト（ゆっくり）、`3000` = 速い、`5000` = 超速。
 
 ---
 
