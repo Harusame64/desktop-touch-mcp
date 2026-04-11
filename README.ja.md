@@ -5,7 +5,7 @@
 > **「Claude CLI にスクショを毎回コピーしていたあなたへ。」**
 
 Claude がデスクトップを直接見て、直接操作する。  
-マウス・キーボード・スクリーンショット・Windows UI Automation を統合した 25 のツールを提供する MCP サーバーです。
+マウス・キーボード・スクリーンショット・Windows UI Automation・ブラウザ CDP を統合した 32 のツールを提供する MCP サーバーです。
 
 > *ウィンドウキャプチャに MPEG P フレーム方式の差分処理を適用。初回フレーム以降は変化したウィンドウのみを送信するため、一般的な自動化ループでトークン使用量を約 60〜80% 削減できます。*
 
@@ -65,9 +65,9 @@ npm run build
 
 ---
 
-## ツール一覧 (25 ツール)
+## ツール一覧 (32 ツール)
 
-### スクリーンショット系 (5)
+### スクリーンショット系 (4)
 | ツール | 概要 |
 |---|---|
 | `screenshot` | メインキャプチャ。`detail` / `dotByDot` / `diffMode` 対応 |
@@ -85,8 +85,8 @@ npm run build
 ### マウス操作 (5)
 | ツール | 概要 |
 |---|---|
-| `mouse_move` / `mouse_click` / `mouse_drag` | 移動・クリック・ドラッグ。すべて `speed` パラメータで速度指定可 |
-| `scroll` | 上下左右スクロール。`speed` でカーソル移動速度を指定可 |
+| `mouse_move` / `mouse_click` / `mouse_drag` | 移動・クリック・ドラッグ。`speed` / `homing` パラメータ対応 |
+| `scroll` | 上下左右スクロール。`speed` / `homing` パラメータ対応 |
 | `get_cursor_position` | 現在カーソル座標 |
 
 ### キーボード操作 (2)
@@ -103,6 +103,17 @@ npm run build
 | `set_element_value` | テキストフィールドに直接値をセット |
 | `scope_element` | 要素を高解像度ズームキャプチャ + 子ツリー |
 
+### ブラウザ CDP (7)
+| ツール | 概要 |
+|---|---|
+| `browser_connect` | Chrome/Edge に CDP 接続してタブ一覧取得 |
+| `browser_find_element` | CSS セレクター → 物理ピクセル座標 |
+| `browser_click_element` | DOM 要素を検索してクリック（1ステップ） |
+| `browser_eval` | ブラウザタブで JS 式を評価して結果を返す |
+| `browser_get_dom` | 要素または body の outerHTML 取得 |
+| `browser_navigate` | CDP 経由で URL 遷移（アドレスバー操作不要） |
+| `browser_disconnect` | CDP WebSocket セッションをクリーンアップ |
+
 ### ワークスペース (2)
 | ツール | 概要 |
 |---|---|
@@ -114,6 +125,62 @@ npm run build
 |---|---|
 | `pin_window` / `unpin_window` | 最前面固定 / 解除 |
 | `run_macro` | 最大 50 ステップを順次実行 |
+
+---
+
+## ブラウザ CDP 自動化
+
+Chrome/Edge をリモートデバッグポート付きで起動するだけで、DOM 要素をピクセル精度でクリックできます。
+
+```bash
+# Chrome を CDP モードで起動
+chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\tmp\cdp
+```
+
+```
+browser_connect()                        → タブ一覧 + tabId 取得
+browser_find_element("#submit")          → CSS セレクター → 物理ピクセル座標
+browser_click_element("#submit")         → 検索 + クリックを 1 ステップで
+browser_eval("document.title")           → JS 評価して結果を返す
+browser_get_dom("#main", maxLength=5000) → outerHTML を取得（文字数制限付き）
+browser_navigate("https://example.com") → CDP 経由でページ遷移
+browser_disconnect()                     → WebSocket セッションをクリーンアップ
+```
+
+`browser_find_element` が返す座標はブラウザUI（タブストリップ + アドレスバー）の高さと `devicePixelRatio` を考慮済みなので、`mouse_click` にそのまま渡せます。
+
+**Web 操作の推奨フロー:**
+```
+browser_connect() → browser_get_dom() → browser_find_element(selector) → browser_click_element(selector)
+```
+
+---
+
+## マウスホーミング補正（トラクションコントロール）
+
+Claude が `screenshot(detail='text')` で座標を取得してから `mouse_click` を呼ぶまでの数秒間に、ウィンドウが移動・裏に隠れることがある「福笑い問題」を MCP サーバー側で自動補正します。
+
+| Tier | 有効化方法 | レイテンシ | 効果 |
+|------|-----------|-----------|------|
+| 1 | 常時（cache あれば） | <1ms | ウィンドウ移動を (dx, dy) 補正 |
+| 2 | `windowTitle` ヒントを指定 | ~100ms | 裏に隠れたウィンドウを自動前面化 |
+| 3 | `elementName`/`elementId` + `windowTitle` | 1–3s | リサイズ時に UIA で最新座標を再クエリ |
+
+```
+# Tier 1 のみ（自動）
+mouse_click(x=500, y=300)
+
+# Tier 1 + 2: 裏に隠れていても前面化してクリック
+mouse_click(x=500, y=300, windowTitle="メモ帳")
+
+# Tier 1 + 2 + 3: リサイズ時も UIA で再クエリ
+mouse_click(x=500, y=300, windowTitle="メモ帳", elementName="保存")
+
+# トラクションコントロール OFF — 補正なし
+mouse_click(x=500, y=300, homing=false)
+```
+
+`homing` パラメータは `mouse_click` / `mouse_move` / `mouse_drag` / `scroll` 全てで使えます。キャッシュは `screenshot()` / `get_windows()` / `focus_window()` / `workspace_snapshot()` 呼び出し時に自動更新されます。
 
 ---
 
@@ -199,7 +266,7 @@ UIA ブリッジの `-like` パターンには `escapeLike()` でワイルドカ
 |---|---|---|
 | ゲーム・動画プレイヤーの背面キャプチャが黒またはハング | DirectX フルスクリーン等は `PW_RENDERFULLCONTENT (flag=2)` でもキャプチャ不可な場合がある | `screenshot_background(fullContent=false)` で旧フラグに切り替え、それでも黒なら前面キャプチャ (`screenshot`) を使用 |
 | UIA 呼び出しのオーバーヘッド | PowerShell 経由のため 1 回約 300ms。`workspace_snapshot` 内は 2s タイムアウトに短縮 | 操作前に `workspace_snapshot` で一括取得し、以降は `diffMode` で差分確認 |
-| Chrome / WinUI3 の UIA 要素が空 | Chromium は UIA を限定的にしか公開しない | `screenshot(detail="image")` で視覚確認後、座標クリックで操作 |
+| Chrome / WinUI3 の UIA 要素が空 | Chromium は UIA を限定的にしか公開しない | `browser_connect` + `browser_find_element` で DOM ベースのクリックを使用。視覚確認のみなら `screenshot(detail="image")` |
 | レイヤーバッファの TTL | 90 秒操作なしでバッファが自動クリア → 次回 `diffMode` が I-frame になる | 長い待機後は `workspace_snapshot` で明示的にリセット |
 
 ---

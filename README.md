@@ -66,7 +66,7 @@ Add to `~/.claude.json` under `mcpServers`:
 
 ---
 
-## Tools (25 total)
+## Tools (32 total)
 
 ### Screenshot (4)
 | Tool | Description |
@@ -86,8 +86,8 @@ Add to `~/.claude.json` under `mcpServers`:
 ### Mouse (5)
 | Tool | Description |
 |---|---|
-| `mouse_move` / `mouse_click` / `mouse_drag` | Move, click, drag. All accept optional `speed` parameter |
-| `scroll` | Scroll in any direction. Accepts optional `speed` parameter for cursor movement |
+| `mouse_move` / `mouse_click` / `mouse_drag` | Move, click, drag. Accept `speed` and `homing` parameters |
+| `scroll` | Scroll in any direction. Accepts `speed` and `homing` parameters |
 | `get_cursor_position` | Current cursor coordinates |
 
 ### Keyboard (2)
@@ -104,6 +104,17 @@ Add to `~/.claude.json` under `mcpServers`:
 | `set_element_value` | Write directly to a text field |
 | `scope_element` | High-res zoom crop of an element + its child tree |
 
+### Browser CDP (7)
+| Tool | Description |
+|---|---|
+| `browser_connect` | Connect to Chrome/Edge via CDP; lists open tabs |
+| `browser_find_element` | CSS selector → exact physical screen coords |
+| `browser_click_element` | Find DOM element + click in one step |
+| `browser_eval` | Evaluate JS expression in the browser tab |
+| `browser_get_dom` | Get outerHTML of element or `document.body` |
+| `browser_navigate` | Navigate via CDP `Page.navigate` (no address bar needed) |
+| `browser_disconnect` | Close cached CDP WebSocket sessions |
+
 ### Workspace (2)
 | Tool | Description |
 |---|---|
@@ -115,6 +126,62 @@ Add to `~/.claude.json` under `mcpServers`:
 |---|---|
 | `pin_window` / `unpin_window` | Always-on-top toggle |
 | `run_macro` | Execute up to 50 steps sequentially in one MCP call |
+
+---
+
+## Browser CDP automation
+
+For web automation, connect Chrome or Edge with the remote debugging port enabled — no Selenium or Playwright needed.
+
+```bash
+# Launch Chrome in CDP mode
+chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\tmp\cdp
+```
+
+```
+browser_connect()                       → list open tabs + get tabIds
+browser_find_element("#submit")         → CSS selector → physical screen coords
+browser_click_element("#submit")        → find + click in one step (auto-focuses browser)
+browser_eval("document.title")          → evaluate JS, returns result
+browser_get_dom("#main", maxLength=5000)→ outerHTML, truncated to maxLength chars
+browser_navigate("https://example.com") → navigate via CDP (no address bar interaction)
+browser_disconnect()                    → clean up WebSocket sessions
+```
+
+Coordinates returned by `browser_find_element` account for the browser chrome (tab strip + address bar height) and `devicePixelRatio`, so they can be passed directly to `mouse_click` without any scaling.
+
+**Recommended web workflow:**
+```
+browser_connect() → browser_get_dom() → browser_find_element(selector) → browser_click_element(selector)
+```
+
+---
+
+## Mouse homing correction
+
+When Claude calls `screenshot(detail='text')` to read coordinates and then `mouse_click` seconds later, the target window may have moved. The homing system corrects this automatically.
+
+| Tier | How to enable | Latency | What it does |
+|------|--------------|---------|--------------|
+| 1 | Always-on (if cache exists) | <1ms | Applies (dx, dy) offset when window moved |
+| 2 | Pass `windowTitle` hint | ~100ms | Auto-focuses window if it went behind another |
+| 3 | Pass `elementName`/`elementId` + `windowTitle` | 1–3s | UIA re-query for fresh coords on resize |
+
+```
+# Tier 1 only (automatic)
+mouse_click(x=500, y=300)
+
+# Tier 1 + 2: also bring window to front if hidden
+mouse_click(x=500, y=300, windowTitle="メモ帳")
+
+# Tier 1 + 2 + 3: also re-query UIA if window resized
+mouse_click(x=500, y=300, windowTitle="メモ帳", elementName="保存")
+
+# Traction control OFF — no correction
+mouse_click(x=500, y=300, homing=false)
+```
+
+The `homing` parameter is available on `mouse_click`, `mouse_move`, `mouse_drag`, and `scroll`. The cache is updated automatically on every `screenshot()`, `get_windows()`, `focus_window()`, and `workspace_snapshot()` call.
 
 ---
 
@@ -221,7 +288,7 @@ Common values: `0` = teleport, `1500` = default gentle, `3000` = fast, `5000` = 
 |---|---|---|
 | Games / video players may return black or hang in background capture | DirectX fullscreen apps may not work even with `PW_RENDERFULLCONTENT` | Retry with `screenshot_background(fullContent=false)`; if still black, use foreground `screenshot` |
 | UIA call overhead | ~300ms per call via PowerShell; `workspace_snapshot` uses a 2s timeout internally | Batch with `workspace_snapshot` upfront, then use `diffMode` for incremental checks |
-| Chrome / WinUI3 UIA elements are empty | Chromium exposes only limited UIA | Use `screenshot(detail="image")` for visual inspection, then click by coordinates |
+| Chrome / WinUI3 UIA elements are empty | Chromium exposes only limited UIA | Use `browser_connect` + `browser_find_element` for precise DOM-based clicking; fall back to `screenshot(detail="image")` for visual inspection |
 | Layer buffer TTL | Buffer auto-clears after 90s of inactivity → next `diffMode` becomes an I-frame | After long waits, call `workspace_snapshot` to explicitly reset the buffer |
 
 ---
