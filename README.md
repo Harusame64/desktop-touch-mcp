@@ -38,7 +38,7 @@ An MCP server that gives Claude eyes and hands on Windows — 25 tools covering 
 ## Installation
 
 ```bash
-git clone https://github.com/yourname/desktop-touch-mcp.git
+git clone https://github.com/Harusame64/desktop-touch-mcp.git
 cd desktop-touch-mcp
 npm install
 npm run build
