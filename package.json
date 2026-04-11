@@ -1,7 +1,10 @@
 {
   "name": "desktop-touch-mcp",
   "version": "0.1.0",
-  "description": "MCP server for desktop automation: screenshot, mouse, keyboard, window management",
+  "description": "MCP server for Windows desktop automation — screenshot, mouse, keyboard & UI Automation with token-efficient P-frame diffing for LLM agents",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
