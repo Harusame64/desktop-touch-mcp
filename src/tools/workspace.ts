@@ -9,6 +9,7 @@ import { enumMonitors, getVirtualScreen, enumWindowsInZOrder, type WindowZInfo }
 import { captureScreen } from "../engine/image.js";
 import { clearLayers } from "../engine/layer-buffer.js";
 import { getUiElements, extractActionableElements } from "../engine/uia-bridge.js";
+import { updateWindowCache } from "../engine/window-cache.js";
 import type { ToolResult } from "./_types.js";
 
 /** Chromium-based browser windows — UIA traversal is prohibitively slow on these */
@@ -255,6 +256,7 @@ export const workspaceSnapshotHandler = async ({
     ]);
 
     const allWindows = enumWindowsInZOrder();
+    updateWindowCache(allWindows);
     // Compute virtualScreen from already-fetched monitors to avoid a second EnumDisplayMonitors sweep
     const mons = monitors.map(m => m.bounds);
     const virtualScreen = mons.length === 0

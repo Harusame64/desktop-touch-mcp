@@ -6,6 +6,7 @@ import type { WindowInfo } from "../engine/layer-buffer.js";
 import { getWindows } from "../engine/nutjs.js";
 import { enumMonitors, getVirtualScreen, getWindowTitleW, enumWindowsInZOrder } from "../engine/win32.js";
 import { getUiElements, extractActionableElements } from "../engine/uia-bridge.js";
+import { updateWindowCache } from "../engine/window-cache.js";
 import type { ToolResult } from "./_types.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -166,6 +167,7 @@ export const screenshotHandler = async ({
     // ── diffMode: layer-based differential capture ───────────────────────────
     if (diffMode) {
       const windowInfos = await buildWindowInfoList();
+      updateWindowCache(enumWindowsInZOrder());
       const isFirstFrame = !hasBuffer();
       const diffs = isFirstFrame
         ? await captureAllLayers(windowInfos, webpQuality)
@@ -208,6 +210,7 @@ export const screenshotHandler = async ({
     // ── detail=meta: window positions only, no image ─────────────────────────
     if (detail === "meta") {
       const wins = enumWindowsInZOrder();
+      updateWindowCache(wins);
       const metaList = wins
         .filter((w) => w.region.width >= 50 && w.region.height >= 50)
         .map((w) => ({
@@ -233,15 +236,18 @@ export const screenshotHandler = async ({
     // ── detail=text: UIA element tree as JSON ────────────────────────────────
     if (detail === "text") {
       if (windowTitle) {
+        updateWindowCache(enumWindowsInZOrder());
         const uiaText = await buildUiaText(windowTitle);
         return { content: [{ type: "text" as const, text: uiaText }] };
       }
       // All visible windows
-      const wins = enumWindowsInZOrder()
+      const wins = enumWindowsInZOrder();
+      updateWindowCache(wins);
+      const filteredWins = wins
         .filter((w) => w.region.width >= 100 && w.region.height >= 50)
         .slice(0, 10);
       const results = await Promise.all(
-        wins.map(async (w) => {
+        filteredWins.map(async (w) => {
           try { return JSON.parse(await buildUiaText(w.title)); } catch { return { window: w.title, elements: [] }; }
         })
       );
