@@ -70,7 +70,7 @@ export const runMacroSchema = {
           `Tool name to call. One of: ${Object.keys(TOOL_REGISTRY).join(", ")}, or the special pseudo-command "sleep".`
         ),
         params: z
-          .record(z.unknown())
+          .record(z.string(), z.unknown())
           .default({})
           .describe("Parameters for the tool (same as calling it directly). Omit for tools with no params."),
       })
