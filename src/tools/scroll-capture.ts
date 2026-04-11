@@ -24,14 +24,14 @@ export const scrollCaptureSchema = {
       "Scroll direction: 'down' (vertical, uses Page Down key) or 'right' (horizontal, uses mouse scroll). Default 'down'."
     ),
   maxScrolls: z
-    .number()
+    .coerce.number()
     .int()
     .min(1)
     .max(30)
     .default(10)
     .describe("Maximum scroll iterations before stopping (default 10, max 30)"),
   scrollDelayMs: z
-    .number()
+    .coerce.number()
     .int()
     .min(100)
     .max(3000)
@@ -40,7 +40,7 @@ export const scrollCaptureSchema = {
       "Milliseconds to wait after each scroll for rendering to settle (default 400). Increase for slow/animated pages."
     ),
   maxWidth: z
-    .number()
+    .coerce.number()
     .int()
     .positive()
     .default(1280)

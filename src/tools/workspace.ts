@@ -80,14 +80,14 @@ async function buildWindowSnapshot(
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const workspaceSnapshotSchema = {
-  thumbnailMaxDimension: z.number().int().positive().default(400).describe("Max size of per-window thumbnail images (default 400px)"),
+  thumbnailMaxDimension: z.coerce.number().int().positive().default(400).describe("Max size of per-window thumbnail images (default 400px)"),
   includeUiSummary: z.boolean().default(true).describe("Whether to include UI element summaries for each window"),
 };
 
 export const workspaceLaunchSchema = {
   command: z.string().max(260).describe("Executable name or full path (e.g. 'notepad.exe', 'calc.exe'). Shell interpreters (cmd.exe, powershell.exe, etc.) are blocked."),
   args: z.array(z.string().max(1000)).max(20).default([]).describe("Command-line arguments (max 20). Shell metacharacters (; & | ` $() ${}) are not allowed."),
-  waitMs: z.number().int().min(0).max(30000).default(2000).describe("Milliseconds to wait for the window to appear (default 2000)"),
+  waitMs: z.coerce.number().int().min(0).max(30000).default(2000).describe("Milliseconds to wait for the window to appear (default 2000)"),
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

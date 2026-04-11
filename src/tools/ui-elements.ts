@@ -10,8 +10,8 @@ import type { ToolResult } from "./_types.js";
 
 export const getUiElementsSchema = {
   windowTitle: z.string().max(200).describe("Partial window title to find the target window"),
-  maxDepth: z.number().int().min(1).max(8).default(3).describe("Maximum depth of the element tree to traverse (default 3)"),
-  maxElements: z.number().int().min(1).max(200).default(50).describe("Maximum number of elements to return (default 50)"),
+  maxDepth: z.coerce.number().int().min(1).max(8).default(3).describe("Maximum depth of the element tree to traverse (default 3)"),
+  maxElements: z.coerce.number().int().min(1).max(200).default(50).describe("Maximum number of elements to return (default 50)"),
 };
 
 export const clickElementSchema = {
@@ -33,9 +33,9 @@ export const scopeElementSchema = {
   name: z.string().max(200).optional().describe("Element name/label (partial match, case-insensitive)"),
   automationId: z.string().max(200).optional().describe("Exact AutomationId of the element"),
   controlType: z.string().max(100).optional().describe("Control type filter, e.g. 'Edit', 'Button', 'List'"),
-  maxDepth: z.number().int().min(1).max(6).default(2).describe("Child element tree depth (default 2)"),
-  maxElements: z.number().int().min(1).max(100).default(30).describe("Max child elements (default 30)"),
-  padding: z.number().int().min(0).max(100).default(10).describe("Padding in pixels around the element in the screenshot (default 10)"),
+  maxDepth: z.coerce.number().int().min(1).max(6).default(2).describe("Child element tree depth (default 2)"),
+  maxElements: z.coerce.number().int().min(1).max(100).default(30).describe("Max child elements (default 30)"),
+  padding: z.coerce.number().int().min(0).max(100).default(10).describe("Padding in pixels around the element in the screenshot (default 10)"),
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

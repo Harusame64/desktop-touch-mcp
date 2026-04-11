@@ -16,29 +16,29 @@ function toButton(b: string): Button {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const mouseMoveSchema = {
-  x: z.number().describe("X coordinate in virtual screen pixels"),
-  y: z.number().describe("Y coordinate in virtual screen pixels"),
+  x: z.coerce.number().describe("X coordinate in virtual screen pixels"),
+  y: z.coerce.number().describe("Y coordinate in virtual screen pixels"),
 };
 
 export const mouseClickSchema = {
-  x: z.number().describe("X coordinate"),
-  y: z.number().describe("Y coordinate"),
+  x: z.coerce.number().describe("X coordinate"),
+  y: z.coerce.number().describe("Y coordinate"),
   button: z.enum(["left", "right", "middle"]).default("left").describe("Mouse button to click"),
   doubleClick: z.boolean().default(false).describe("Whether to double-click"),
 };
 
 export const mouseDragSchema = {
-  startX: z.number(),
-  startY: z.number(),
-  endX: z.number(),
-  endY: z.number(),
+  startX: z.coerce.number(),
+  startY: z.coerce.number(),
+  endX: z.coerce.number(),
+  endY: z.coerce.number(),
 };
 
 export const scrollSchema = {
   direction: z.enum(["up", "down", "left", "right"]).describe("Scroll direction"),
-  amount: z.number().int().positive().default(3).describe("Number of scroll steps (default 3)"),
-  x: z.number().optional().describe("X coordinate to scroll at (moves cursor there first)"),
-  y: z.number().optional().describe("Y coordinate to scroll at"),
+  amount: z.coerce.number().int().positive().default(3).describe("Number of scroll steps (default 3)"),
+  x: z.coerce.number().optional().describe("X coordinate to scroll at (moves cursor there first)"),
+  y: z.coerce.number().optional().describe("Y coordinate to scroll at"),
 };
 
 export const getCursorPositionSchema = {};

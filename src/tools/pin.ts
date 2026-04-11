@@ -20,7 +20,7 @@ function findWindowHwnd(titleQuery: string): { hwnd: unknown; title: string } | 
 export const pinWindowSchema = {
   title: z.string().describe("Partial window title to search for (case-insensitive)"),
   duration_ms: z
-    .number()
+    .coerce.number()
     .int()
     .min(0)
     .max(60000)

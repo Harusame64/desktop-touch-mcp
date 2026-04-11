@@ -18,22 +18,22 @@ export const screenshotSchema = {
     .optional()
     .describe("Capture only the window whose title contains this string. Prefer over full-screen when target window is known."),
   displayId: z
-    .number()
+    .coerce.number()
     .int()
     .min(0)
     .optional()
     .describe("Capture a specific monitor (0 = primary). Use get_screen_info to list displays."),
   region: z
     .object({
-      x: z.number().describe("Left edge in virtual screen coordinates"),
-      y: z.number().describe("Top edge in virtual screen coordinates"),
-      width: z.number().positive(),
-      height: z.number().positive(),
+      x: z.coerce.number().describe("Left edge in virtual screen coordinates"),
+      y: z.coerce.number().describe("Top edge in virtual screen coordinates"),
+      width: z.coerce.number().positive(),
+      height: z.coerce.number().positive(),
     })
     .optional()
     .describe("Capture only this region (virtual screen coordinates)."),
   maxDimension: z
-    .number()
+    .coerce.number()
     .int()
     .positive()
     .default(768)
@@ -47,7 +47,7 @@ export const screenshotSchema = {
       "screen position: screen_x = origin_x + image_x."
     ),
   webpQuality: z
-    .number()
+    .coerce.number()
     .int()
     .min(1)
     .max(100)
@@ -77,7 +77,7 @@ export const screenshotBgSchema = {
     .string()
     .describe("Title (partial match) of the window to capture"),
   maxDimension: z
-    .number()
+    .coerce.number()
     .int()
     .positive()
     .default(768)
@@ -87,7 +87,7 @@ export const screenshotBgSchema = {
     .default(false)
     .describe("1:1 pixel mode — no scaling, WebP compression. Image pixel coords = screen coords."),
   webpQuality: z
-    .number()
+    .coerce.number()
     .int()
     .min(1)
     .max(100)
