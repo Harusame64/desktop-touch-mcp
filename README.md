@@ -86,8 +86,8 @@ Add to `~/.claude.json` under `mcpServers`:
 ### Mouse (5)
 | Tool | Description |
 |---|---|
-| `mouse_move` / `mouse_click` / `mouse_drag` | Move, click, drag |
-| `scroll` | Scroll in any direction |
+| `mouse_move` / `mouse_click` / `mouse_drag` | Move, click, drag. All accept optional `speed` parameter |
+| `scroll` | Scroll in any direction. Accepts optional `speed` parameter for cursor movement |
 | `get_cursor_position` | Current cursor coordinates |
 
 ### Keyboard (2)
@@ -181,6 +181,37 @@ Shell interpreters are blocked by default. To allow specific executables, create
 ```
 
 Changes take effect immediately — no restart needed.
+
+---
+
+## Mouse movement speed
+
+All mouse tools (`mouse_move`, `mouse_click`, `mouse_drag`, `scroll`) accept an optional `speed` parameter:
+
+| Value | Behavior |
+|---|---|
+| Omitted | Uses the configured default (see below) |
+| `0` | Instant teleport — `setPosition()`, no animation |
+| `1–N` | Animated movement at N px/sec |
+
+**Default speed** is 1500 px/sec. Change it permanently via the `DESKTOP_TOUCH_MOUSE_SPEED` environment variable:
+
+```json
+{
+  "mcpServers": {
+    "desktop-touch": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["D:/path/to/desktop-touch-mcp/dist/index.js"],
+      "env": {
+        "DESKTOP_TOUCH_MOUSE_SPEED": "3000"
+      }
+    }
+  }
+}
+```
+
+Common values: `0` = teleport, `1500` = default gentle, `3000` = fast, `5000` = very fast.
 
 ---
 
