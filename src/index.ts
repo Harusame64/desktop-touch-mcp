@@ -11,6 +11,7 @@ import { registerPinTools } from "./tools/pin.js";
 import { registerMacroTools } from "./tools/macro.js";
 import { registerScrollCaptureTools } from "./tools/scroll-capture.js";
 import { registerBrowserTools } from "./tools/browser.js";
+import { registerDockTools } from "./tools/dock.js";
 import { startTray, stopTray } from "./utils/tray.js";
 import { checkFailsafe, FailsafeError } from "./utils/failsafe.js";
 
@@ -27,15 +28,36 @@ const server = new McpServer(
       "- For pixel-perfect coords: screenshot(dotByDot=true, windowTitle=X) → 1:1 WebP.",
       "- detail='image' is BLOCKED server-side unless confirmImage=true is passed. Only use when",
       "  visual inspection is genuinely required (e.g. text mode returned 0 actionable elements).",
-      "- detail='text' auto-fires Windows OCR when actionable[]=[] (ocrFallback='auto', default).",
+      "- detail='text' auto-fires Windows OCR when actionable[]=[] OR hints.uiaSparse=true (ocrFallback='auto', default).",
       "  OCR items have source='ocr'. Disable with ocrFallback='never'. Force with ocrFallback='always'.",
       "- hints.winui3=true means WinUI3 app detected. hints.uiaSparse=true means UIA returned <5 elements.",
       "  hints.ocrFallbackFired=true means OCR was used to supplement UIA results.",
+      "  hints.chromiumGuard=true means UIA was skipped for Chromium (direct OCR path).",
+      "",
+      "## Chrome / AWS console — data-reduction (use these to cut token cost 50-70%)",
+      "- browser_* tools (CDP) are the FIRST choice when Chrome is the target — use over screenshot(dotByDot).",
+      "- When CDP is unavailable, use this combo for minimal payload:",
+      "    screenshot(dotByDot=true, dotByDotMaxDimension=1280, grayscale=true, windowTitle='Chrome',",
+      "               region={x:0, y:120, width:1920, height:900})",
+      "  Explanation: dotByDotMaxDimension caps to 1280px longest edge; grayscale cuts ~50%; region excludes browser chrome.",
+      "  Adjust region.y to match your Chrome toolbar height (typically 80-130px).",
+      "- detail='text' on Chromium skips UIA automatically (chromiumGuard) and goes straight to OCR — no 8s timeout.",
+      "- When dotByDotMaxDimension is set, response includes: scale: N | screen_x = origin_x + image_x / scale",
+      "  IMPORTANT: always use the scale formula for coord math, or clicks will land in the wrong position.",
       "",
       "## Coordinate rules",
-      "- detail='text'  → actionable[].clickAt is already a screen coordinate. Pass directly to mouse_click.",
-      "- dotByDot=true  → screen_x = origin_x + image_x  (origin printed in response text)",
-      "- Default PNG    → screen_x = window.x + image_x * (window.width / image.width)",
+      "- detail='text'       → actionable[].clickAt is already a screen coordinate. Pass directly to mouse_click.",
+      "- dotByDot (1:1):     → screen_x = origin_x + image_x  (origin printed in response text)",
+      "- dotByDot + scale:   → screen_x = origin_x + image_x / scale  (scale printed in response)",
+      "- Default PNG (scaled)→ screen_x = window.x + image_x * (window.width / image.width)",
+      "",
+      "### PREFERRED: let mouse_click do the coord conversion",
+      "- For dotByDot captures, copy origin/scale from screenshot response into mouse_click.",
+      "  mouse_click(x=imageX, y=imageY, origin={x:ORIG_X, y:ORIG_Y}, scale=SCALE, windowTitle='...')",
+      "- Server computes: screen = origin + (x,y) / (scale ?? 1). Eliminates manual math → eliminates off-by-one",
+      "  and scale-factor bugs that cause clicks to land outside the target window.",
+      "- If you ever see the cursor drift outside the app after a dotByDot screenshot, you likely did the math",
+      "  manually and got it wrong — use the origin/scale params instead.",
       "",
       "## Standard automation loop",
       "workspace_snapshot() → screenshot(detail='text', windowTitle=X) → mouse_click(clickAt) / keyboard_type → screenshot(diffMode=true)",
@@ -49,6 +71,10 @@ const server = new McpServer(
       "focus_window(title=X) — bring window to foreground.",
       "pin_window / unpin_window — always-on-top toggle.",
       "workspace_launch(command='calc.exe') — launch app, returns foundWindow with title/region.",
+      "dock_window(title, corner='bottom-right', width=480, height=360, pin=true) — snap a window to a screen",
+      "  corner and optionally pin it on top. Use to keep Claude CLI visible while operating other apps:",
+      "    dock_window({ title: 'Claude Code', corner: 'bottom-right' })",
+      "  Then unpin_window({ title: 'Claude Code' }) to release. Minimized windows are restored first.",
       "",
       "## Mouse & keyboard",
       "mouse_move / mouse_click / mouse_drag / scroll — standard pointer ops.",
@@ -147,6 +173,7 @@ registerPinTools(server);
 registerMacroTools(server);
 registerScrollCaptureTools(server);
 registerBrowserTools(server);
+registerDockTools(server);
 
 // ─── Failsafe background monitor (backup for long-running operations) ─────────
 // Primary check: per-tool call via the wrapper above.

@@ -109,8 +109,9 @@ const SetWindowPos = user32.func(
 );
 const HWND_TOPMOST = -1;
 const HWND_NOTOPMOST = -2;
-const SWP_NOMOVE = 0x0002;
 const SWP_NOSIZE = 0x0001;
+const SWP_NOMOVE = 0x0002;
+const SWP_NOZORDER = 0x0004;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DPI awareness initialization (PROCESS_PER_MONITOR_DPI_AWARE = 2)
@@ -317,6 +318,21 @@ export function setWindowTopmost(hwnd: unknown): boolean {
 /** Remove always-on-top from a window (HWND_NOTOPMOST). */
 export function clearWindowTopmost(hwnd: unknown): boolean {
   return !!SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+}
+
+/**
+ * Move and resize a window in a single SetWindowPos call, without changing Z-order.
+ * x/y/width/height are in virtual screen coordinates (Per-Monitor DPI aware).
+ * Returns true on success.
+ */
+export function setWindowBounds(
+  hwnd: unknown,
+  x: number,
+  y: number,
+  width: number,
+  height: number
+): boolean {
+  return !!SetWindowPos(hwnd, 0, x, y, width, height, SWP_NOZORDER);
 }
 
 /**
