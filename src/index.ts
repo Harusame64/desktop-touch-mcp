@@ -11,6 +11,7 @@ import { registerPinTools } from "./tools/pin.js";
 import { registerMacroTools } from "./tools/macro.js";
 import { registerScrollCaptureTools } from "./tools/scroll-capture.js";
 import { registerBrowserTools } from "./tools/browser.js";
+import { registerDockTools, autoDockFromEnv } from "./tools/dock.js";
 import { startTray, stopTray } from "./utils/tray.js";
 import { checkFailsafe, FailsafeError } from "./utils/failsafe.js";
 
@@ -20,17 +21,43 @@ const server = new McpServer(
     instructions: [
       "# desktop-touch-mcp — Command Reference",
       "",
-      "## Data retrieval priority (minimize token usage)",
-      "1. workspace_snapshot()                      — Start of session or full orientation needed.",
-      "2. screenshot(detail='text', windowTitle=X)  — UI interaction: returns actionable[] with clickAt coords. No image.",
-      "3. screenshot(diffMode=true)                 — Post-action check: only changed windows sent (~160 tok).",
-      "4. screenshot(dotByDot=true, windowTitle=X)  — When pixel-perfect coords are needed (1:1 WebP).",
-      "5. screenshot(detail='image')                — Visual check only. Heaviest option; avoid unless necessary.",
+      "## Screenshot rules (mandatory)",
+      "- DEFAULT detail is 'meta' (window positions only). Call screenshot() with no args for cheap orientation.",
+      "- For UI interaction: screenshot(detail='text', windowTitle=X) → returns actionable[] with clickAt coords. No image.",
+      "- After any action: screenshot(diffMode=true) → only changed windows sent (~160 tok).",
+      "- For pixel-perfect coords: screenshot(dotByDot=true, windowTitle=X) → 1:1 WebP.",
+      "- detail='image' is BLOCKED server-side unless confirmImage=true is passed. Only use when",
+      "  visual inspection is genuinely required (e.g. text mode returned 0 actionable elements).",
+      "- detail='text' auto-fires Windows OCR when actionable[]=[] OR hints.uiaSparse=true (ocrFallback='auto', default).",
+      "  OCR items have source='ocr'. Disable with ocrFallback='never'. Force with ocrFallback='always'.",
+      "- hints.winui3=true means WinUI3 app detected. hints.uiaSparse=true means UIA returned <5 elements.",
+      "  hints.ocrFallbackFired=true means OCR was used to supplement UIA results.",
+      "  hints.chromiumGuard=true means UIA was skipped for Chromium (direct OCR path).",
+      "",
+      "## Chrome / AWS console — data-reduction (use these to cut token cost 50-70%)",
+      "- browser_* tools (CDP) are the FIRST choice when Chrome is the target — use over screenshot(dotByDot).",
+      "- When CDP is unavailable, use this combo for minimal payload:",
+      "    screenshot(dotByDot=true, dotByDotMaxDimension=1280, grayscale=true, windowTitle='Chrome',",
+      "               region={x:0, y:120, width:1920, height:900})",
+      "  Explanation: dotByDotMaxDimension caps to 1280px longest edge; grayscale cuts ~50%; region excludes browser chrome.",
+      "  Adjust region.y to match your Chrome toolbar height (typically 80-130px).",
+      "- detail='text' on Chromium skips UIA automatically (chromiumGuard) and goes straight to OCR — no 8s timeout.",
+      "- When dotByDotMaxDimension is set, response includes: scale: N | screen_x = origin_x + image_x / scale",
+      "  IMPORTANT: always use the scale formula for coord math, or clicks will land in the wrong position.",
       "",
       "## Coordinate rules",
-      "- detail='text'  → actionable[].clickAt is already a screen coordinate. Pass directly to mouse_click.",
-      "- dotByDot=true  → screen_x = origin_x + image_x  (origin printed in response text)",
-      "- Default PNG    → screen_x = window.x + image_x * (window.width / image.width)",
+      "- detail='text'       → actionable[].clickAt is already a screen coordinate. Pass directly to mouse_click.",
+      "- dotByDot (1:1):     → screen_x = origin_x + image_x  (origin printed in response text)",
+      "- dotByDot + scale:   → screen_x = origin_x + image_x / scale  (scale printed in response)",
+      "- Default PNG (scaled)→ screen_x = window.x + image_x * (window.width / image.width)",
+      "",
+      "### PREFERRED: let mouse_click do the coord conversion",
+      "- For dotByDot captures, copy origin/scale from screenshot response into mouse_click.",
+      "  mouse_click(x=imageX, y=imageY, origin={x:ORIG_X, y:ORIG_Y}, scale=SCALE, windowTitle='...')",
+      "- Server computes: screen = origin + (x,y) / (scale ?? 1). Eliminates manual math → eliminates off-by-one",
+      "  and scale-factor bugs that cause clicks to land outside the target window.",
+      "- If you ever see the cursor drift outside the app after a dotByDot screenshot, you likely did the math",
+      "  manually and got it wrong — use the origin/scale params instead.",
       "",
       "## Standard automation loop",
       "workspace_snapshot() → screenshot(detail='text', windowTitle=X) → mouse_click(clickAt) / keyboard_type → screenshot(diffMode=true)",
@@ -44,6 +71,21 @@ const server = new McpServer(
       "focus_window(title=X) — bring window to foreground.",
       "pin_window / unpin_window — always-on-top toggle.",
       "workspace_launch(command='calc.exe') — launch app, returns foundWindow with title/region.",
+      "dock_window(title, corner='bottom-right', width=480, height=360, pin=true) — snap a window to a screen",
+      "  corner and optionally pin it on top. Use to keep Claude CLI visible while operating other apps:",
+      "    dock_window({ title: 'Claude Code', corner: 'bottom-right' })",
+      "  Then unpin_window({ title: 'Claude Code' }) to release. Minimized windows are restored first.",
+      "  Auto-dock on MCP startup — set env vars in your MCP client config to skip the manual call:",
+      "    DESKTOP_TOUCH_DOCK_TITLE='@parent'      (auto-detect: walks up the process tree to find",
+      "                                             the terminal window hosting Claude Code. Recommended.)",
+      "    DESKTOP_TOUCH_DOCK_TITLE='Claude Code'  (alternative: title substring match)",
+      "    (unset = feature off)",
+      "    DESKTOP_TOUCH_DOCK_CORNER=bottom-right  (default bottom-right)",
+      "    DESKTOP_TOUCH_DOCK_WIDTH=480 or '25%'   (px or ratio of work area)",
+      "    DESKTOP_TOUCH_DOCK_HEIGHT=360 or '25%'",
+      "    DESKTOP_TOUCH_DOCK_PIN=true             (default true)",
+      "    DESKTOP_TOUCH_DOCK_MONITOR=0            (optional; default primary)",
+      "    DESKTOP_TOUCH_DOCK_SCALE_DPI=true       (opt-in: multiply px values by dpi/96)",
       "",
       "## Mouse & keyboard",
       "mouse_move / mouse_click / mouse_drag / scroll — standard pointer ops.",
@@ -57,11 +99,27 @@ const server = new McpServer(
       "keyboard_type(text, use_clipboard=false) — type text. Set use_clipboard=true under Japanese IME.",
       "keyboard_press(keys) — key combos ('ctrl+c', 'alt+f4', 'enter', etc.).",
       "",
+      "### Input routing — CRITICAL when dock_window is pinned",
+      "keyboard_type / keyboard_press send keystrokes to the CURRENTLY FOCUSED window,",
+      "not to any specific app. When Claude CLI (or any other window) is pinned always-on-top",
+      "via dock_window, it often steals focus before your keystrokes land — they end up",
+      "typed into the CLI instead of the target app.",
+      "  ALWAYS call focus_window(title='...') BEFORE keyboard_press/keyboard_type when",
+      "  targeting a specific app. Verify with screenshot(detail='meta') — the target window",
+      "  should have isActive=true.",
+      "  Safe pattern: focus_window(X) → keyboard_press/keyboard_type → screenshot(diffMode=true)",
+      "",
       "## UI Automation (UIA)",
       "get_ui_elements(windowTitle=X) — full UIA element tree for a window.",
       "click_element(windowTitle=X, name=N) — click button/control by name (no coordinates needed).",
       "set_element_value(windowTitle=X, name=N, value=V) — write to text field directly.",
       "scope_element(windowTitle=X, name=N) — high-res crop of element + child tree.",
+      "",
+      "## OCR fallback (WinUI3 / custom-drawn UIs)",
+      "screenshot_ocr(windowTitle, language?, region?) — Windows.Media.Ocr: word-level text + clickAt coords.",
+      "  Use when UIA returns 0 actionable (e.g. Paint brush strip, custom WinUI3 controls).",
+      "  language: BCP-47 tag (default 'ja'). First call ~1s due to WinRT cold-start.",
+      "  Requires matching Windows OCR language pack installed in Windows Settings.",
       "",
       "## Utilities",
       "get_screen_info() — monitor layout, DPI, cursor position.",
@@ -73,6 +131,8 @@ const server = new McpServer(
       "  fullContent=false: legacy flag — use if call hangs on games or video players.",
       "",
       "## Browser automation via CDP (Chrome/Edge)",
+      "browser_launch(browser?, url?)  — Launch debug-mode Chrome/Edge/Brave + wait for CDP. Idempotent if already running.",
+      "browser_get_interactive(scope?) — List all links/buttons/inputs with selector+text. Use BEFORE clicking to avoid selector trial-and-error.",
       "browser_connect(port?)          — Connect to Chrome/Edge; lists open tabs. Default port 9222.",
       "browser_find_element(selector)  — CSS selector → exact screen coords (no SS scaling needed).",
       "browser_click_element(selector) — find + click in one step.",
@@ -82,8 +142,10 @@ const server = new McpServer(
       "browser_disconnect(port?)       — close cached CDP WebSocket sessions.",
       "",
       "## CDP setup",
-      "Launch: chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\\tmp\\cdp",
-      "Edge:   msedge.exe --remote-debugging-port=9222 --user-data-dir=C:\\tmp\\cdp",
+      "browser_launch()                       — Auto-launch Chrome/Edge/Brave in debug mode; idempotent.",
+      "browser_launch(browser='edge')         — Force a specific browser.",
+      "browser_launch(url='https://...')      — Launch and navigate in one step.",
+      "Manual (fallback): chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\\tmp\\cdp",
       "",
       "## Virtual desktops (Windows 11)",
       "get_windows() shows isOnCurrentDesktop per window.",
@@ -132,6 +194,7 @@ registerPinTools(server);
 registerMacroTools(server);
 registerScrollCaptureTools(server);
 registerBrowserTools(server);
+registerDockTools(server);
 
 // ─── Failsafe background monitor (backup for long-running operations) ─────────
 // Primary check: per-tool call via the wrapper above.
@@ -168,3 +231,9 @@ const transport = new StdioServerTransport();
 await server.connect(transport);
 
 console.error("[desktop-touch] MCP server running (stdio)");
+
+// Auto-dock CLI window if DESKTOP_TOUCH_DOCK_TITLE is set (opt-in).
+// Detached so a missing window or poll timeout doesn't delay server readiness.
+void autoDockFromEnv().catch((err) => {
+  console.error("[desktop-touch] auto-dock error:", err);
+});

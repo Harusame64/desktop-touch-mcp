@@ -86,27 +86,74 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// MAE threshold for overlap detection (per channel, 0–255).
+// Allows ~3% pixel difference to tolerate subpixel rendering, ads, lazy-load jitter.
+const MAE_THRESHOLD = 8;
+
+// MAE threshold for identical-frame detection (stricter — page-end check).
+const FRAMES_IDENTICAL_MAE = 4;
+
+// Strip dimensions for overlap detection.
+// Defined once here to avoid silent drift between findNewRows and the handler.
+const OVERLAP_STRIP_ROWS = 16;
+const OVERLAP_STRIP_COLS = 10;
+
+// Reference strip position within prevFrame (as a fraction of the axis length).
+// Must be high enough that the strip survives a ~90% Page Down scroll:
+//   expectedRow = STRIP_ANCHOR − 0.9 = 0.05  (5% from top of currFrame)
+// With searchWindow=±10%, the effective window is [0, 0.15] — giving ample room
+// even if Chrome scrolls slightly more than 90%.
+const STRIP_ANCHOR = 0.95;
+
 /**
- * Check if two frames are identical by comparing a strip in the middle.
- * Using the middle avoids fixed headers/footers.
+ * Compute mean absolute error per byte between two equal-length buffers.
+ * Returns a value in [0, 255].
+ */
+function computeMAE(a: Buffer, b: Buffer): number {
+  const len = Math.min(a.length, b.length);
+  if (len === 0) return 0;
+  let sum = 0;
+  for (let i = 0; i < len; i++) {
+    sum += Math.abs(a[i]! - b[i]!);
+  }
+  return sum / len;
+}
+
+/**
+ * Check if two frames are "identical" (page-end detection).
+ *
+ * Compares strips at TWO positions (40% and 70%) using MAE — both must be within
+ * FRAMES_IDENTICAL_MAE. Dual-point comparison prevents false positives from
+ * repeating-pattern UIs (e.g. review lists where one band happens to match the
+ * next scroll position by coincidence). 70% typically shows footer / "related
+ * products", which differs structurally from the mid-page content at 40%.
+ *
+ * Offsets are clamped so the strip never reads past the frame boundary.
  */
 function framesIdentical(a: RawFrame, b: RawFrame, direction: "down" | "right"): boolean {
   if (a.width !== b.width || a.height !== b.height || a.channels !== b.channels) return false;
   const { width, height, channels } = a;
 
   if (direction === "down") {
-    // Compare 20 horizontal rows at ~40% height
     const rowBytes = width * channels;
-    const startRow = Math.floor(height * 0.4);
-    const startOffset = startRow * rowBytes;
-    const endOffset = startOffset + 20 * rowBytes;
-    return Buffer.compare(a.data.subarray(startOffset, endOffset), b.data.subarray(startOffset, endOffset)) === 0;
+    const ROWS = 20;
+    for (const frac of [0.4, 0.7]) {
+      const startRow = Math.min(Math.floor(height * frac), height - ROWS);
+      const off = startRow * rowBytes;
+      if (computeMAE(a.data.subarray(off, off + ROWS * rowBytes), b.data.subarray(off, off + ROWS * rowBytes)) > FRAMES_IDENTICAL_MAE) {
+        return false;
+      }
+    }
+    return true;
   } else {
-    // Compare 10 vertical columns at ~40% width
-    const startCol = Math.floor(width * 0.4);
-    const sa = extractVerticalStrip(a.data, width, height, channels, startCol, 10);
-    const sb = extractVerticalStrip(b.data, width, height, channels, startCol, 10);
-    return Buffer.compare(sa, sb) === 0;
+    const COLS = 10;
+    for (const frac of [0.4, 0.7]) {
+      const col = Math.min(Math.floor(width * frac), width - COLS);
+      const sa = extractVerticalStrip(a.data, width, height, channels, col, COLS);
+      const sb = extractVerticalStrip(b.data, width, height, channels, col, COLS);
+      if (computeMAE(sa, sb) > FRAMES_IDENTICAL_MAE) return false;
+    }
+    return true;
   }
 }
 
@@ -131,61 +178,104 @@ function extractVerticalStrip(
   return strip;
 }
 
+interface OverlapResult {
+  count: number;      // new rows (vertical) or columns (horizontal) to append
+  estimated: boolean; // true = MAE threshold not met, fell back to ~90% estimate
+}
+
 /**
  * Detect vertical overlap between consecutive frames.
- * Takes a reference strip near the bottom of prevFrame (92%), searches the full height of currFrame.
- * Returns the number of NEW rows to append from the bottom of currFrame, or null on failure.
  *
- * Why 92%: Page Down scrolls ~90% of the viewport. Content near the bottom of prevFrame
- * is the only region guaranteed to still be visible near the top of currFrame.
- * Searching 80% (old value) placed the strip in content that scrolls off-screen entirely.
+ * Strategy (D + A hybrid):
+ *   1. Take a OVERLAP_STRIP_ROWS-row reference strip at STRIP_ANCHOR (95%) of prevFrame.
+ *      At ~90% scroll this lands at ≈5% from the top of currFrame, giving a ±10%
+ *      search window that fits cleanly in [0, 0.15h] without excessive clipping.
+ *   2. Search only within expectedRow ± 10% instead of the full frame height.
+ *      This avoids false matches on fixed headers/footers and cuts CPU work.
+ *   3. Pick the row with the lowest MAE. Accept if MAE ≤ MAE_THRESHOLD (≈3% difference).
+ *   4. If no row meets the threshold, fall back to expectedScroll (~90% of height).
+ *      estimated=true tells the caller to log a warning.
  *
  * Math: strip at row S in prevFrame == strip at row M in currFrame
- *   → scroll amount = S - M  (rows of new content = bottom S-M rows of currFrame)
+ *   → scroll amount = S − M  (new rows = bottom `scrollAmount` rows of currFrame)
+ *
+ * Returns null only when even the fallback is unusable (degenerate frame dimensions).
  */
-function findNewRows(prevFrame: RawFrame, currFrame: RawFrame): number | null {
+function findNewRows(prevFrame: RawFrame, currFrame: RawFrame): OverlapResult | null {
   const { width, height, channels } = prevFrame;
   if (currFrame.width !== width || currFrame.height !== height) return null;
 
   const rowBytes = width * channels;
-  const STRIP_ROWS = 30;                          // 30 rows: large enough to avoid false positives
-  const stripStart = Math.floor(height * 0.92);   // near bottom of prevFrame
-  const stripOffset = stripStart * rowBytes;
-  const strip = prevFrame.data.subarray(stripOffset, stripOffset + STRIP_ROWS * rowBytes);
+  const stripStart = Math.floor(height * STRIP_ANCHOR);
+  const strip = prevFrame.data.subarray(stripStart * rowBytes, (stripStart + OVERLAP_STRIP_ROWS) * rowBytes);
 
-  const searchEnd = height - STRIP_ROWS;          // search the entire currFrame
-  for (let row = 0; row <= searchEnd; row++) {
-    const offset = row * rowBytes;
-    const candidate = currFrame.data.subarray(offset, offset + STRIP_ROWS * rowBytes);
-    if (Buffer.compare(strip, candidate) === 0) {
-      const scrollAmount = stripStart - row;
-      return scrollAmount > 0 ? scrollAmount : null;
+  const expectedScroll = Math.round(height * 0.9);
+  const expectedRow    = stripStart - expectedScroll;   // ≈ 5% from top
+  const searchWindow   = Math.round(height * 0.10);
+
+  const searchStart = Math.max(0, expectedRow - searchWindow);
+  const searchEnd   = Math.min(height - OVERLAP_STRIP_ROWS, expectedRow + searchWindow);
+
+  let bestRow = -1;
+  let bestMAE = Infinity;
+
+  for (let row = searchStart; row <= searchEnd; row++) {
+    const candidate = currFrame.data.subarray(row * rowBytes, (row + OVERLAP_STRIP_ROWS) * rowBytes);
+    const mae = computeMAE(strip, candidate);
+    if (mae < bestMAE) {
+      bestMAE = mae;
+      bestRow = row;
     }
   }
+
+  if (bestMAE <= MAE_THRESHOLD) {
+    const scrollAmount = stripStart - bestRow;
+    if (scrollAmount > 0) return { count: scrollAmount, estimated: false };
+  }
+
+  // Fallback: MAE threshold not met — use estimated scroll amount.
+  if (expectedScroll > 0) return { count: expectedScroll, estimated: true };
   return null;
 }
 
 /**
  * Detect horizontal overlap between consecutive frames.
- * Takes a reference strip at 80% of prevFrame's width, searches in the left 60% of currFrame.
- * Returns the number of NEW columns to append from the right of currFrame, or null on failure.
+ * Mirror of findNewRows for the horizontal axis.
+ * Strip is a vertical slice (height × OVERLAP_STRIP_COLS) at STRIP_ANCHOR of prevFrame's width.
+ * Searches expectedCol ± 10% in currFrame. Returns OverlapResult or null.
  */
-function findNewColumns(prevFrame: RawFrame, currFrame: RawFrame): number | null {
+function findNewColumns(prevFrame: RawFrame, currFrame: RawFrame): OverlapResult | null {
   const { width, height, channels } = prevFrame;
   if (currFrame.width !== width || currFrame.height !== height) return null;
 
-  const STRIP_COLS = 10;
-  const stripStart = Math.floor(width * 0.80);
-  const prevStrip = extractVerticalStrip(prevFrame.data, width, height, channels, stripStart, STRIP_COLS);
+  const stripStart = Math.floor(width * STRIP_ANCHOR);
+  const prevStrip  = extractVerticalStrip(prevFrame.data, width, height, channels, stripStart, OVERLAP_STRIP_COLS);
 
-  const searchEnd = Math.floor(width * 0.60) - STRIP_COLS;
-  for (let col = 0; col <= searchEnd; col++) {
-    const currStrip = extractVerticalStrip(currFrame.data, width, height, channels, col, STRIP_COLS);
-    if (Buffer.compare(prevStrip, currStrip) === 0) {
-      const scrollAmount = stripStart - col;
-      return scrollAmount > 0 ? scrollAmount : null;
+  const expectedScroll = Math.round(width * 0.9);
+  const expectedCol    = stripStart - expectedScroll;   // ≈ 5% from left
+  const searchWindow   = Math.round(width * 0.10);
+
+  const searchStart = Math.max(0, expectedCol - searchWindow);
+  const searchEnd   = Math.min(width - OVERLAP_STRIP_COLS, expectedCol + searchWindow);
+
+  let bestCol = -1;
+  let bestMAE = Infinity;
+
+  for (let col = searchStart; col <= searchEnd; col++) {
+    const currStrip = extractVerticalStrip(currFrame.data, width, height, channels, col, OVERLAP_STRIP_COLS);
+    const mae = computeMAE(prevStrip, currStrip);
+    if (mae < bestMAE) {
+      bestMAE = mae;
+      bestCol = col;
     }
   }
+
+  if (bestMAE <= MAE_THRESHOLD) {
+    const scrollAmount = stripStart - bestCol;
+    if (scrollAmount > 0) return { count: scrollAmount, estimated: false };
+  }
+
+  if (expectedScroll > 0) return { count: expectedScroll, estimated: true };
   return null;
 }
 
@@ -292,16 +382,28 @@ export const scrollCaptureHandler = async ({
     // ── Phase B: Capture loop ──────────────────────────────────────────────
     const frames: RawFrame[] = [];
     const warnings: string[] = [];
+    let identicalStreak = 0; // consecutive identical-frame count; break only at 2
 
     for (let i = 0; i <= maxScrolls; i++) {
       const frame = await captureRawRegion(targetRegion);
 
-      // Check if we've reached the end (identical to previous frame)
+      // Page-end detection: require 2 consecutive identical frames to avoid
+      // false positives from repeating-pattern UIs (e.g. review sections).
       if (frames.length > 0 && framesIdentical(frames[frames.length - 1]!, frame, direction)) {
-        break;
+        identicalStreak++;
+        if (identicalStreak >= 2) {
+          // Remove the streak=1 frame that was tentatively pushed last iteration —
+          // it's near-duplicate content and would cause stitch artifacts if kept.
+          frames.pop();
+          break;
+        }
+        // 1st hit: push tentatively so next comparison uses the latest snapshot.
+        // Will be popped above if streak=2 is confirmed.
+        frames.push(frame);
+      } else {
+        identicalStreak = 0;
+        frames.push(frame);
       }
-
-      frames.push(frame);
 
       if (i < maxScrolls) {
         if (direction === "down") {
@@ -327,6 +429,13 @@ export const scrollCaptureHandler = async ({
     let stitchedWidth: number;
     let stitchedHeight: number;
 
+    // Track overlap-detection outcomes without alarming the caller.
+    // Exact MAE match is best-effort; estimated fallback is a normal code path
+    // for dynamic pages (sticky headers, lazy-loaded images, repeating patterns).
+    let exactMatchCount = 0;
+    let estimatedCount = 0;
+    let failedCount = 0;
+
     if (direction === "down") {
       const parts: { data: Buffer; rowOffset: number; numRows: number }[] = [
         { data: firstFrame.data, rowOffset: 0, numRows: height },
@@ -334,15 +443,19 @@ export const scrollCaptureHandler = async ({
       let totalHeight = height;
 
       for (let i = 1; i < frames.length; i++) {
-        const newRows = findNewRows(frames[i - 1]!, frames[i]!);
-        if (newRows === null) {
+        const result = findNewRows(frames[i - 1]!, frames[i]!);
+
+        if (result === null) {
+          failedCount++;
           warnings.push(`Frame ${i}: overlap detection failed, appended in full`);
           parts.push({ data: frames[i]!.data, rowOffset: 0, numRows: height });
           totalHeight += height;
         } else {
-          const skipRows = height - newRows;
-          parts.push({ data: frames[i]!.data, rowOffset: skipRows, numRows: newRows });
-          totalHeight += newRows;
+          if (result.estimated) estimatedCount++;
+          else exactMatchCount++;
+          const skipRows = height - result.count;
+          parts.push({ data: frames[i]!.data, rowOffset: skipRows, numRows: result.count });
+          totalHeight += result.count;
         }
       }
 
@@ -354,14 +467,17 @@ export const scrollCaptureHandler = async ({
       let totalWidth = width;
 
       for (let i = 1; i < frames.length; i++) {
-        const newCols = findNewColumns(frames[i - 1]!, frames[i]!);
-        if (newCols === null) {
+        const result = findNewColumns(frames[i - 1]!, frames[i]!);
+        if (result === null) {
+          failedCount++;
           warnings.push(`Frame ${i}: horizontal overlap detection failed, appended in full`);
           colRanges.push({ start: 0, count: width });
           totalWidth += width;
         } else {
-          colRanges.push({ start: width - newCols, count: newCols });
-          totalWidth += newCols;
+          if (result.estimated) estimatedCount++;
+          else exactMatchCount++;
+          colRanges.push({ start: width - result.count, count: result.count });
+          totalWidth += result.count;
         }
       }
 
@@ -388,13 +504,26 @@ export const scrollCaptureHandler = async ({
     const outH = pngMeta.height ?? stitchedHeight;
 
     const truncated = frames.length > maxScrolls;
+    const stitchTotal = exactMatchCount + estimatedCount + failedCount;
+    const overlapMode =
+      failedCount > 0 ? "mixed-with-failures" :
+      exactMatchCount === 0 && estimatedCount > 0 ? "estimated" :
+      estimatedCount === 0 ? "exact" :
+      "mixed";
     const summary = {
       ok: true,
       frames: frames.length,
       stitchedSize: `${outW}x${outH}`,
       direction,
+      overlapMode,
+      overlapStats: {
+        exact: exactMatchCount,
+        estimated: estimatedCount,
+        failed: failedCount,
+        total: stitchTotal,
+      },
       ...(truncated ? { warning: "maxScrolls reached, image may be truncated" } : {}),
-      ...(warnings.length > 0 ? { overlapWarnings: warnings } : {}),
+      ...(failedCount > 0 ? { overlapWarnings: warnings.filter(w => w.includes("failed")) } : {}),
     };
 
     return {

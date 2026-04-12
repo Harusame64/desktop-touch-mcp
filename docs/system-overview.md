@@ -19,8 +19,8 @@ desktop-touch-mcp (Node.js / TypeScript)
     │   ├── layer-buffer.ts — ウィンドウレイヤーバッファ: フレーム差分検出 (MPEG P-frame方式)
     │   ├── cdp-bridge.ts   — Chrome DevTools Protocol: WebSocket セッション・DOM座標変換
     │   └── window-cache.ts — ウィンドウ位置キャッシュ: ホーミング補正用 (dx,dy 差分計算)
-    └── Layer 2: 32 MCP ツール
-        screenshot(4) + window(3) + mouse(5) + keyboard(2) + ui_elements(4) + browser_cdp(7) + workspace(2) + pin(2) + macro(1) + scroll_capture(1)
+    └── Layer 2: 34 MCP ツール
+        screenshot(5) + window(4) + mouse(5) + keyboard(2) + ui_elements(4) + browser_cdp(7) + workspace(2) + pin(2) + macro(1) + scroll_capture(1) + dock(1)
 ```
 
 ---
@@ -36,12 +36,15 @@ desktop-touch-mcp (Node.js / TypeScript)
 |---|---|
 | `windowTitle` | ウィンドウを名前で絞り込み |
 | `displayId` | モニター指定 |
-| `region` | 画面上の矩形領域 |
+| `region` | 画面上の矩形領域（`windowTitle` 併用時はウィンドウ内相対座標 = ブラウザクロム除外に便利） |
 | `maxDimension` | スケーリング上限 (デフォルト768px, PNG モード) |
 | `dotByDot` | **1:1ピクセルモード** — WebP, 座標変換不要 |
+| `dotByDotMaxDimension` | **dotByDot 時の最大辺 cap** — 指定すると response に `scale` が入り `screen_x = origin_x + image_x / scale` で逆算 |
+| `grayscale` | グレースケール化で画像サイズ ~50% 削減（テキスト主体のキャプチャ向け） |
 | `webpQuality` | WebP 品質 1-100 (デフォルト60) |
 | `diffMode` | **レイヤー差分モード** — 変化したウィンドウのみ返す |
 | `detail` | `"image"` / `"text"` / `"meta"` |
+| `ocrFallback` | `"auto"`（既定: UIA sparse/空・Chromium 時に OCR）/ `"always"` / `"never"` |
 
 **`detail` の選択指針:**
 
@@ -106,6 +109,24 @@ focus_window(title="メモ帳")
 ウィンドウを常に最前面に固定 / 解除。
 - `duration_ms` で自動解除タイマー指定可
 
+#### `dock_window`
+任意のウィンドウを画面コーナーに小さく配置しつつ常時最前面化。Claude CLI を操作中も視界に残したい用途。
+```
+dock_window({title:'Claude Code', corner:'bottom-right', width:480, height:360, pin:true})
+```
+パラメータ: `corner`（top-left / top-right / bottom-left / bottom-right）, `width` / `height`, `pin`, `monitorId`, `margin`。最小化・最大化されたウィンドウは自動的に復元されてからドック。
+
+**環境変数による MCP 起動時自動ドック:**
+
+| 環境変数 | 説明 |
+|---|---|
+| `DESKTOP_TOUCH_DOCK_TITLE` | 必須（無効化したい時は未設定）。`"@parent"` 指定で MCP プロセスの親ツリーを walk してターミナルウィンドウを自動検出（タイトル依存無し、推奨） |
+| `DESKTOP_TOUCH_DOCK_CORNER` | 既定 `bottom-right` |
+| `DESKTOP_TOUCH_DOCK_WIDTH` / `HEIGHT` | `"480"`（px）または `"25%"`（workArea 比率）。4K/8K 自動追従 |
+| `DESKTOP_TOUCH_DOCK_PIN` | 既定 `true` |
+| `DESKTOP_TOUCH_DOCK_MONITOR` | モニター id（既定プライマリ） |
+| `DESKTOP_TOUCH_DOCK_SCALE_DPI` | `true` で px 値を dpi/96 倍（opt-in） |
+
 ---
 
 ### 🖱️ マウス操作
@@ -161,6 +182,10 @@ keyboard_press(keys="ctrl+c")
 keyboard_press(keys="alt+f4")
 keyboard_press(keys="ctrl+shift+s")
 ```
+
+> **⚠️ 入力ルーティング注意（dock_window pin 時）**
+> `keyboard_type` / `keyboard_press` は**現在フォーカスがあるウィンドウ**にキー入力を送る。`dock_window(pin=true)` で Claude CLI が常時最前面化されていると、キー入力が CLI に奪われて目的アプリに届かない。
+> **必ず `focus_window(title=...)` を呼んでから**キー操作し、`screenshot(detail='meta')` で `isActive=true` を確認すること。推奨パターン：`focus_window → keyboard_press/type → screenshot(diffMode=true)`。
 
 ---
 
