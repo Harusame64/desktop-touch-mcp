@@ -8,6 +8,7 @@ import {
   clearWindowTopmost,
   restoreAndFocusWindow,
   getWindowRectByHwnd,
+  findAncestorWindow,
 } from "../engine/win32.js";
 import type { WindowZInfo, MonitorInfo } from "../engine/win32.js";
 import type { ToolResult } from "./_types.js";
@@ -117,6 +118,76 @@ export const dockWindowSchema = {
 // Handler
 // ─────────────────────────────────────────────────────────────────────────────
 
+interface DockResult {
+  ok: boolean;
+  error?: string;
+  title?: string;
+  corner?: Corner;
+  monitorId?: number;
+  requested?: { x: number; y: number; width: number; height: number };
+  actual?: { x: number; y: number; width: number; height: number };
+  pinned?: boolean;
+  hint?: string;
+}
+
+/**
+ * Low-level dock: position + resize + pin a window given its HWND and title.
+ * Shared by the MCP tool handler (which finds the HWND via title) and the
+ * auto-dock flow (which may resolve the HWND via process-tree walk for @parent).
+ */
+function dockKnownWindow(
+  win: { hwnd: unknown; title: string; isMinimized: boolean; isMaximized: boolean },
+  opts: { corner: Corner; width: number; height: number; pin: boolean; monitorId?: number; margin: number }
+): DockResult {
+  const { corner, width, height, pin, monitorId, margin } = opts;
+
+  // Restore minimized/maximized windows first — SetWindowPos is unreliable otherwise.
+  if (win.isMinimized || win.isMaximized) {
+    restoreAndFocusWindow(win.hwnd);
+  }
+
+  const monitors = enumMonitors();
+  const mon = pickMonitor(monitors, monitorId);
+  if (!mon) return { ok: false, error: "No monitors detected" };
+
+  const wa = mon.workArea;
+  const maxW = Math.max(100, wa.width - margin * 2);
+  const maxH = Math.max(100, wa.height - margin * 2);
+  const finalW = Math.min(width, maxW);
+  const finalH = Math.min(height, maxH);
+
+  const { x, y } = computeCornerPosition(wa, corner, finalW, finalH, margin);
+
+  const moved = setWindowBounds(win.hwnd, x, y, finalW, finalH);
+  if (!moved) {
+    return {
+      ok: false,
+      title: win.title,
+      error: "SetWindowPos failed — window may belong to an elevated process, or Windows denied the request",
+    };
+  }
+
+  let pinned = false;
+  if (pin) pinned = setWindowTopmost(win.hwnd);
+  else clearWindowTopmost(win.hwnd);
+
+  const actual = getWindowRectByHwnd(win.hwnd) ?? { x, y, width: finalW, height: finalH };
+  const pinNote = pin && !pinned ? " (pin requested but failed)" : "";
+
+  return {
+    ok: true,
+    title: win.title,
+    corner,
+    monitorId: mon.id,
+    requested: { x, y, width: finalW, height: finalH },
+    actual,
+    pinned,
+    hint: pinned
+      ? "Window pinned always-on-top. Call unpin_window to release."
+      : `Window positioned (not pinned)${pinNote}.`,
+  };
+}
+
 export const dockWindowHandler = async ({
   title,
   corner,
@@ -135,7 +206,6 @@ export const dockWindowHandler = async ({
   margin: number;
 }): Promise<ToolResult> => {
   try {
-    // 1. Find the target window
     const win = findWindow(title);
     if (!win) {
       return {
@@ -145,82 +215,9 @@ export const dockWindowHandler = async ({
         }],
       };
     }
-
-    // 2. Restore if minimized OR maximized.
-    //    SetWindowPos on minimized windows only updates the "restore rect" without
-    //    actually moving them. On maximized windows, many apps (Chrome, Electron,
-    //    Explorer) silently ignore the resize and stay maximized. SW_RESTORE handles
-    //    both states.
-    if (win.isMinimized || win.isMaximized) {
-      restoreAndFocusWindow(win.hwnd);
-    }
-
-    // 3. Pick the target monitor and clamp sizes to its work area
-    const monitors = enumMonitors();
-    const mon = pickMonitor(monitors, monitorId);
-    if (!mon) {
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({ ok: false, error: "No monitors detected" }),
-        }],
-      };
-    }
-
-    const wa = mon.workArea;
-    // Clamp the requested size to fit within the work area (minus two margins).
-    // The 100px floor guarantees a usable minimum even on tiny monitors / huge margins.
-    const maxW = Math.max(100, wa.width - margin * 2);
-    const maxH = Math.max(100, wa.height - margin * 2);
-    const finalW = Math.min(width, maxW);
-    const finalH = Math.min(height, maxH);
-
-    // 4. Compute corner-anchored position
-    const { x, y } = computeCornerPosition(wa, corner, finalW, finalH, margin);
-
-    // 5. Move and resize
-    const moved = setWindowBounds(win.hwnd, x, y, finalW, finalH);
-    if (!moved) {
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            ok: false,
-            error: "SetWindowPos failed — window may belong to an elevated process, or Windows denied the request",
-            title: win.title,
-          }),
-        }],
-      };
-    }
-
-    // 6. Toggle always-on-top per `pin` — capture actual result so we don't lie about the state
-    let pinned = false;
-    if (pin) {
-      pinned = setWindowTopmost(win.hwnd);
-    } else {
-      clearWindowTopmost(win.hwnd);
-    }
-
-    // 7. Read back the actual rect for confirmation (may differ slightly on high-DPI)
-    const actual = getWindowRectByHwnd(win.hwnd) ?? { x, y, width: finalW, height: finalH };
-
-    const pinNote = pin && !pinned ? " (pin requested but failed)" : "";
+    const result = dockKnownWindow(win, { corner, width, height, pin, monitorId, margin });
     return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          ok: true,
-          title: win.title,
-          corner,
-          monitorId: mon.id,
-          requested: { x, y, width: finalW, height: finalH },
-          actual,
-          pinned,
-          hint: pinned
-            ? "Window pinned always-on-top. Call unpin_window to release."
-            : `Window positioned (not pinned)${pinNote}.`,
-        }, null, 2),
-      }],
+      content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
     };
   } catch (err) {
     return { content: [{ type: "text" as const, text: `dock_window failed: ${String(err)}` }] };
@@ -279,7 +276,10 @@ export function parseBoolEnv(s: string | undefined, fallback: boolean): boolean 
  * Auto-dock a window based on environment variables. No-op if DESKTOP_TOUCH_DOCK_TITLE is unset.
  *
  * Env vars (all optional except DOCK_TITLE which acts as the on/off switch):
- *   DESKTOP_TOUCH_DOCK_TITLE     — partial title match (required to enable)
+ *   DESKTOP_TOUCH_DOCK_TITLE     — partial title match, OR "@parent" to auto-detect
+ *                                  the terminal window hosting this MCP server via the
+ *                                  process-tree walk. "@parent" is more robust because
+ *                                  it survives project / branch / title changes.
  *   DESKTOP_TOUCH_DOCK_CORNER    — top-left | top-right | bottom-left | bottom-right (default bottom-right)
  *   DESKTOP_TOUCH_DOCK_WIDTH     — px ("480") or ratio ("25%") of work area (default 480)
  *   DESKTOP_TOUCH_DOCK_HEIGHT    — px ("360") or ratio ("25%") of work area (default 360)
@@ -306,18 +306,42 @@ export async function autoDockFromEnv(): Promise<void> {
     ? parseInt(monitorIdRaw, 10)
     : undefined;
 
-  // Poll for the target window (it may not exist yet when the MCP server starts)
+  // Resolve which window to dock. "@parent" = walk up the process tree from this
+  // MCP server to find the terminal window hosting Claude Code. Anything else = title match.
+  const useParent = title.trim() === "@parent";
+
+  let win: WindowZInfo | { hwnd: bigint; title: string; region: { x: number; y: number; width: number; height: number }; isMinimized: boolean; isMaximized: boolean } | null = null;
   const pollInterval = 200;
   const deadline = Date.now() + timeoutMs;
-  let win: WindowZInfo | null = null;
-  while (Date.now() < deadline) {
-    win = findWindow(title);
-    if (win) break;
-    await new Promise((r) => setTimeout(r, pollInterval));
-  }
-  if (!win) {
-    console.error(`[desktop-touch] auto-dock: window "${title}" not found within ${timeoutMs}ms — skipping`);
-    return;
+
+  if (useParent) {
+    // findAncestorWindow returns immediately; our parent terminal is almost
+    // always already visible when the MCP server starts, but retry briefly
+    // in case of race conditions on cold start.
+    while (Date.now() < deadline) {
+      const found = findAncestorWindow(process.pid);
+      if (found) {
+        win = { ...found, isMinimized: false, isMaximized: false };
+        break;
+      }
+      await new Promise((r) => setTimeout(r, pollInterval));
+    }
+    if (!win) {
+      console.error(
+        `[desktop-touch] auto-dock: no ancestor window found for pid ${process.pid} within ${timeoutMs}ms — skipping`
+      );
+      return;
+    }
+  } else {
+    while (Date.now() < deadline) {
+      win = findWindow(title);
+      if (win) break;
+      await new Promise((r) => setTimeout(r, pollInterval));
+    }
+    if (!win) {
+      console.error(`[desktop-touch] auto-dock: window "${title}" not found within ${timeoutMs}ms — skipping`);
+      return;
+    }
   }
 
   // Resolve dimensions against the chosen monitor's workArea + DPI
@@ -336,8 +360,9 @@ export async function autoDockFromEnv(): Promise<void> {
   })();
 
   try {
-    const res = await dockWindowHandler({
-      title,
+    // Call the low-level dock directly — we already have the exact HWND from
+    // findWindow() / findAncestorWindow() above, so there's no need to re-resolve by title.
+    const result = dockKnownWindow(win, {
       corner,
       width,
       height,
@@ -345,15 +370,15 @@ export async function autoDockFromEnv(): Promise<void> {
       monitorId: mon.id,
       margin,
     });
-    // dockWindowHandler returns JSON text; log a short summary
-    const payload = JSON.parse((res.content[0] as { text: string }).text);
-    if (payload.ok) {
+    if (result.ok) {
+      const mode = useParent ? "@parent" : `title="${title}"`;
       console.error(
-        `[desktop-touch] auto-dock: "${payload.title}" → ${corner} ${payload.actual.width}x${payload.actual.height} ` +
-        `on monitor ${mon.id} (dpi ${mon.dpi}, scaleDpi=${scaleDpi}, pinned=${payload.pinned})`
+        `[desktop-touch] auto-dock: ${mode} → "${result.title}" @ ${corner} ` +
+        `${result.actual?.width}x${result.actual?.height} on monitor ${mon.id} ` +
+        `(dpi ${mon.dpi}, scaleDpi=${scaleDpi}, pinned=${result.pinned})`
       );
     } else {
-      console.error(`[desktop-touch] auto-dock failed: ${payload.error}`);
+      console.error(`[desktop-touch] auto-dock failed: ${result.error}`);
     }
   } catch (err) {
     console.error("[desktop-touch] auto-dock threw:", err);

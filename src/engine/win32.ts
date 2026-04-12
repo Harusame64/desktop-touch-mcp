@@ -7,6 +7,7 @@ import koffi from "koffi";
 const user32 = koffi.load("user32.dll");
 const gdi32 = koffi.load("gdi32.dll");
 const shcore = koffi.load("shcore.dll");
+const kernel32 = koffi.load("kernel32.dll");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Structs
@@ -24,6 +25,20 @@ const MONITORINFO = koffi.struct("MONITORINFO", {
   rcMonitor: RECT,
   rcWork: RECT,
   dwFlags: "uint32",
+});
+
+/** PROCESSENTRY32W — Toolhelp32 snapshot entry for process enumeration. */
+const PROCESSENTRY32W = koffi.struct("PROCESSENTRY32W", {
+  dwSize: "uint32",
+  cntUsage: "uint32",
+  th32ProcessID: "uint32",
+  th32DefaultHeapID: "uintptr", // ULONG_PTR: 8 bytes on x64, 4 on x86
+  th32ModuleID: "uint32",
+  cntThreads: "uint32",
+  th32ParentProcessID: "uint32",
+  pcPriClassBase: "int32",
+  dwFlags: "uint32",
+  szExeFile: koffi.array("uint16", 260), // WCHAR[MAX_PATH]
 });
 
 const BITMAPINFOHEADER = koffi.struct("BITMAPINFOHEADER", {
@@ -101,6 +116,26 @@ const GetDpiForMonitor = shcore.func(
 const SetProcessDpiAwareness = shcore.func(
   "int __stdcall SetProcessDpiAwareness(int value)"
 );
+
+// Window → PID mapping
+const GetWindowThreadProcessId = user32.func(
+  "uint32 __stdcall GetWindowThreadProcessId(void *hWnd, _Out_ uint32 *lpdwProcessId)"
+);
+
+// Process tree traversal (Toolhelp32 snapshot)
+const CreateToolhelp32Snapshot = kernel32.func(
+  "void* __stdcall CreateToolhelp32Snapshot(uint32 dwFlags, uint32 th32ProcessID)"
+);
+const Process32FirstW = kernel32.func(
+  "bool __stdcall Process32FirstW(void *hSnapshot, _Inout_ PROCESSENTRY32W *lppe)"
+);
+const Process32NextW = kernel32.func(
+  "bool __stdcall Process32NextW(void *hSnapshot, _Inout_ PROCESSENTRY32W *lppe)"
+);
+const CloseHandle = kernel32.func("bool __stdcall CloseHandle(void *hObject)");
+
+const TH32CS_SNAPPROCESS = 0x00000002;
+const INVALID_HANDLE_VALUE_BIG = 0xffffffffffffffffn; // -1 as u64 for comparison
 
 // Window Z-order / always-on-top
 // hWndInsertAfter is intptr (not void*) so negative sentinel values -1/-2 pass correctly
@@ -318,6 +353,94 @@ export function setWindowTopmost(hwnd: unknown): boolean {
 /** Remove always-on-top from a window (HWND_NOTOPMOST). */
 export function clearWindowTopmost(hwnd: unknown): boolean {
   return !!SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+}
+
+/**
+ * Get the PID of the process that owns a window.
+ * Returns 0 on failure.
+ */
+export function getWindowProcessId(hwnd: unknown): number {
+  const pidOut = [0];
+  GetWindowThreadProcessId(hwnd, pidOut);
+  return pidOut[0] >>> 0; // coerce to unsigned
+}
+
+/**
+ * Build a Map of pid → parentPid by snapshotting all processes via Toolhelp32.
+ * Returns an empty map on failure.
+ */
+export function buildProcessParentMap(): Map<number, number> {
+  const map = new Map<number, number>();
+  const snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) as bigint;
+  // INVALID_HANDLE_VALUE is -1 (0xFFFFFFFFFFFFFFFF on x64); koffi returns it as bigint
+  if (snap === INVALID_HANDLE_VALUE_BIG || snap === 0n) return map;
+  try {
+    const entry = {
+      dwSize: koffi.sizeof(PROCESSENTRY32W),
+      cntUsage: 0,
+      th32ProcessID: 0,
+      th32DefaultHeapID: 0n,
+      th32ModuleID: 0,
+      cntThreads: 0,
+      th32ParentProcessID: 0,
+      pcPriClassBase: 0,
+      dwFlags: 0,
+      szExeFile: new Array<number>(260).fill(0),
+    };
+    if (Process32FirstW(snap, entry)) {
+      do {
+        map.set(entry.th32ProcessID >>> 0, entry.th32ParentProcessID >>> 0);
+      } while (Process32NextW(snap, entry));
+    }
+  } finally {
+    CloseHandle(snap);
+  }
+  return map;
+}
+
+/**
+ * Walk up the process tree from startPid and return the first ancestor PID
+ * (including startPid itself) that owns a visible, non-minimized, reasonably-sized
+ * top-level window. Returns null if no such ancestor exists.
+ *
+ * Use case: the MCP server runs as a child of the Claude Code CLI, which runs
+ * under a terminal emulator. The CLI node process has no window, but the terminal
+ * does — this finds the terminal's HWND without relying on title matching.
+ */
+export function findAncestorWindow(startPid: number): {
+  hwnd: bigint;
+  pid: number;
+  title: string;
+  region: { x: number; y: number; width: number; height: number };
+} | null {
+  const parentMap = buildProcessParentMap();
+  // Gather visible top-level windows grouped by owning PID
+  const windowsByPid = new Map<number, WindowZInfo[]>();
+  for (const w of enumWindowsInZOrder()) {
+    if (w.isMinimized) continue;
+    if (w.region.width < 100 || w.region.height < 50) continue;
+    const pid = getWindowProcessId(w.hwnd);
+    if (pid === 0) continue;
+    const arr = windowsByPid.get(pid) ?? [];
+    arr.push(w);
+    windowsByPid.set(pid, arr);
+  }
+
+  // Walk up the tree (cap at 20 levels to avoid cycles on pathological setups)
+  let pid = startPid >>> 0;
+  for (let depth = 0; depth < 20 && pid !== 0; depth++) {
+    const wins = windowsByPid.get(pid);
+    if (wins && wins.length > 0) {
+      // Prefer the topmost (smallest zOrder) — closest to foreground
+      wins.sort((a, b) => a.zOrder - b.zOrder);
+      const pick = wins[0];
+      return { hwnd: pick.hwnd, pid, title: pick.title, region: pick.region };
+    }
+    const next = parentMap.get(pid);
+    if (next === undefined || next === pid) return null;
+    pid = next;
+  }
+  return null;
 }
 
 /**
