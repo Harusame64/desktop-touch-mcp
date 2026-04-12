@@ -8,6 +8,9 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { spawn, type ChildProcess } from "child_process";
 import { setTimeout as sleep } from "timers/promises";
+import { writeFileSync, unlinkSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { dockWindowHandler } from "../../src/tools/dock.js";
 import {
   enumWindowsInZOrder,
@@ -16,19 +19,23 @@ import {
   clearWindowTopmost,
 } from "../../src/engine/win32.js";
 
-const NOTEPAD_TITLE_FRAGMENT = "メモ帳"; // Works on ja-JP Windows; fallback below
-const NOTEPAD_TITLE_FRAGMENT_EN = "Notepad";
+// Use a unique filename so the spawned Notepad window has a title no other
+// Notepad instance can collide with. Otherwise the partial-title findWindow()
+// lookup may match a user-opened "タイトルなし - メモ帳" and the dock will
+// operate on the wrong window.
+const UNIQUE_TAG = `dock-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const TEMP_FILE = join(tmpdir(), `${UNIQUE_TAG}.txt`);
 
 let notepad: ChildProcess | null = null;
 let hwnd: unknown = null;
 let resolvedTitle = "";
 
-function findNotepad(): { hwnd: unknown; title: string } | null {
+function findNotepadByTag(): { hwnd: unknown; title: string } | null {
   for (const w of enumWindowsInZOrder()) {
-    if (
-      w.title.includes(NOTEPAD_TITLE_FRAGMENT) ||
-      w.title.includes(NOTEPAD_TITLE_FRAGMENT_EN)
-    ) {
+    // Title must contain both the unique tag AND "メモ帳"/"Notepad" to be sure
+    // it's our spawned instance (not Explorer, not another notepad, etc.).
+    if (!w.title.includes(UNIQUE_TAG)) continue;
+    if (w.title.includes("メモ帳") || w.title.includes("Notepad")) {
       return { hwnd: w.hwnd, title: w.title };
     }
   }
@@ -36,11 +43,11 @@ function findNotepad(): { hwnd: unknown; title: string } | null {
 }
 
 beforeAll(async () => {
-  notepad = spawn("notepad.exe", [], { detached: true, stdio: "ignore" });
-  // Poll for the window to appear (Notepad can take ~500ms on cold start)
+  writeFileSync(TEMP_FILE, "", "utf8");
+  notepad = spawn("notepad.exe", [TEMP_FILE], { detached: true, stdio: "ignore" });
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
-    const found = findNotepad();
+    const found = findNotepadByTag();
     if (found) {
       hwnd = found.hwnd;
       resolvedTitle = found.title;
@@ -48,17 +55,17 @@ beforeAll(async () => {
     }
     await sleep(100);
   }
-  throw new Error("Notepad window did not appear within 5s");
+  throw new Error(`Notepad window with tag "${UNIQUE_TAG}" did not appear within 5s`);
 }, 10_000);
 
 afterAll(() => {
-  // Release always-on-top before killing
   if (hwnd) {
     try { clearWindowTopmost(hwnd); } catch { /* ignore */ }
   }
   if (notepad && !notepad.killed) {
     try { notepad.kill(); } catch { /* ignore */ }
   }
+  try { unlinkSync(TEMP_FILE); } catch { /* ignore */ }
 });
 
 // Tolerance for actual-vs-requested window rect comparison.
