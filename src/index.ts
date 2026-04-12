@@ -11,7 +11,7 @@ import { registerPinTools } from "./tools/pin.js";
 import { registerMacroTools } from "./tools/macro.js";
 import { registerScrollCaptureTools } from "./tools/scroll-capture.js";
 import { registerBrowserTools } from "./tools/browser.js";
-import { registerDockTools } from "./tools/dock.js";
+import { registerDockTools, autoDockFromEnv } from "./tools/dock.js";
 import { startTray, stopTray } from "./utils/tray.js";
 import { checkFailsafe, FailsafeError } from "./utils/failsafe.js";
 
@@ -75,6 +75,14 @@ const server = new McpServer(
       "  corner and optionally pin it on top. Use to keep Claude CLI visible while operating other apps:",
       "    dock_window({ title: 'Claude Code', corner: 'bottom-right' })",
       "  Then unpin_window({ title: 'Claude Code' }) to release. Minimized windows are restored first.",
+      "  Auto-dock on MCP startup — set env vars in your MCP client config to skip the manual call:",
+      "    DESKTOP_TOUCH_DOCK_TITLE='Claude Code'  (required; unset = feature off)",
+      "    DESKTOP_TOUCH_DOCK_CORNER=bottom-right  (default bottom-right)",
+      "    DESKTOP_TOUCH_DOCK_WIDTH=480 or '25%'   (px or ratio of work area)",
+      "    DESKTOP_TOUCH_DOCK_HEIGHT=360 or '25%'",
+      "    DESKTOP_TOUCH_DOCK_PIN=true             (default true)",
+      "    DESKTOP_TOUCH_DOCK_MONITOR=0            (optional; default primary)",
+      "    DESKTOP_TOUCH_DOCK_SCALE_DPI=true       (opt-in: multiply px values by dpi/96)",
       "",
       "## Mouse & keyboard",
       "mouse_move / mouse_click / mouse_drag / scroll — standard pointer ops.",
@@ -210,3 +218,9 @@ const transport = new StdioServerTransport();
 await server.connect(transport);
 
 console.error("[desktop-touch] MCP server running (stdio)");
+
+// Auto-dock CLI window if DESKTOP_TOUCH_DOCK_TITLE is set (opt-in).
+// Detached so a missing window or poll timeout doesn't delay server readiness.
+void autoDockFromEnv().catch((err) => {
+  console.error("[desktop-touch] auto-dock error:", err);
+});
