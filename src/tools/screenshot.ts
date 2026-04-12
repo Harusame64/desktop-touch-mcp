@@ -64,12 +64,22 @@ export const screenshotSchema = {
     ),
   detail: z
     .enum(["meta", "text", "image"])
-    .default("image")
+    .optional()
     .describe(
-      "Response detail level:\n" +
-      "  'image' — actual screenshot pixels (default, use when visual check needed)\n" +
+      "Response detail level (omit to let the server pick a smart default):\n" +
+      "  omitted — auto: 'image' when dotByDot/region/displayId is specified, else 'meta'\n" +
+      "  'meta'  — window title + screen region only (~20 tok/window, cheapest)\n" +
       "  'text'  — UIA element tree as JSON with text values (~100-300 tok/window, no image)\n" +
-      "  'meta'  — window title + screen region only (~20 tok/window, cheapest)"
+      "  'image' — actual screenshot pixels. BLOCKED unless confirmImage=true is also passed."
+    ),
+  confirmImage: z
+    .boolean()
+    .default(false)
+    .describe(
+      "Must be true to receive image pixels when detail='image'. " +
+      "Without this flag, detail='image' is blocked and a guidance message is returned instead. " +
+      "Prefer detail='text' / diffMode=true / dotByDot=true first — " +
+      "only set confirmImage=true when visual inspection is genuinely required."
     ),
 };
 
@@ -153,6 +163,7 @@ export const screenshotHandler = async ({
   webpQuality,
   diffMode,
   detail,
+  confirmImage,
 }: {
   windowTitle?: string;
   displayId?: number;
@@ -161,9 +172,40 @@ export const screenshotHandler = async ({
   dotByDot: boolean;
   webpQuality: number;
   diffMode: boolean;
-  detail: "meta" | "text" | "image";
+  detail: "meta" | "text" | "image" | undefined;
+  confirmImage: boolean;
 }): Promise<ToolResult> => {
+  // Compute effective detail: explicit value wins; otherwise infer from context.
+  // dotByDot / region / displayId imply the caller wants pixels, so default to 'image'.
+  const effectiveDetail: "meta" | "text" | "image" = detail ?? (
+    dotByDot || region !== undefined || displayId !== undefined ? "image" : "meta"
+  );
+
   try {
+    // ── Guard: block bare detail='image' unless explicitly confirmed ─────────
+    // Only fires when 'image' was explicitly requested (detail==='image'), not when inferred
+    // from dotByDot/region/displayId context — those are intentional spatial captures.
+    const guardDisabled = process.env.DESKTOP_TOUCH_DISABLE_IMAGE_GUARD === "1";
+    if (detail === "image" && !diffMode && !dotByDot && !confirmImage && !guardDisabled) {
+      return {
+        isError: true,
+        content: [{
+          type: "text" as const,
+          text: [
+            "[screenshot-guard] detail='image' was blocked to prevent accidental heavy image payloads.",
+            "",
+            "Prefer these lighter alternatives (in order):",
+            "  1. screenshot(detail='text', windowTitle=X)  — UIA actionable[] with clickAt coords",
+            "  2. screenshot(diffMode=true)                 — only changed windows as image",
+            "  3. screenshot(dotByDot=true, windowTitle=X)  — 1:1 WebP for pixel-perfect coords",
+            "",
+            "If an image truly is required, re-call with confirmImage=true (and prefer windowTitle).",
+            "To disable this guard globally, set DESKTOP_TOUCH_DISABLE_IMAGE_GUARD=1 in the environment.",
+          ].join("\n"),
+        }],
+      };
+    }
+
     // ── diffMode: layer-based differential capture ───────────────────────────
     if (diffMode) {
       const windowInfos = await buildWindowInfoList();
@@ -208,7 +250,7 @@ export const screenshotHandler = async ({
     }
 
     // ── detail=meta: window positions only, no image ─────────────────────────
-    if (detail === "meta") {
+    if (effectiveDetail === "meta") {
       const wins = enumWindowsInZOrder();
       updateWindowCache(wins);
       const metaList = wins
@@ -234,7 +276,7 @@ export const screenshotHandler = async ({
     }
 
     // ── detail=text: UIA element tree as JSON ────────────────────────────────
-    if (detail === "text") {
+    if (effectiveDetail === "text") {
       if (windowTitle) {
         updateWindowCache(enumWindowsInZOrder());
         const uiaText = await buildUiaText(windowTitle);
@@ -421,9 +463,9 @@ export function registerScreenshotTools(server: McpServer): void {
       "Take a screenshot of the desktop, a specific window, display, or region.",
       "",
       "MODES (set detail or dotByDot):",
-      "  detail='image' (default) — PNG/WebP pixels. Use windowTitle to minimize data.",
+      "  detail='meta'  — window titles + positions only. Cheapest (~20 tok/window). [DEFAULT]",
       "  detail='text'  — UIA element tree as JSON with screen coords. No image. ~100-300 tokens.",
-      "  detail='meta'  — window titles + positions only. Cheapest (~20 tok/window).",
+      "  detail='image' — PNG/WebP pixels. BLOCKED unless confirmImage=true is also passed.",
       "  dotByDot=true  — 1:1 pixel WebP. Image pixel = screen coord (+ origin offset for windows).",
       "  diffMode=true  — Layer diff: only changed windows sent. First call = full, subsequent = diff.",
       "",
