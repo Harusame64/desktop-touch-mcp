@@ -10,7 +10,7 @@ import { updateWindowCache } from "../engine/window-cache.js";
 import type { ToolResult } from "./_types.js";
 
 /** Chromium-based browser windows — UIA traversal is prohibitively slow on these */
-const CHROMIUM_TITLE_RE = /- (?:Google Chrome|Microsoft Edge|Brave|Opera|Vivaldi|Arc|Chromium)$/;
+export const CHROMIUM_TITLE_RE = /- (?:Google Chrome|Microsoft Edge|Brave|Opera|Vivaldi|Arc|Chromium)$/;
 
 interface WindowSnapshot {
   title: string;

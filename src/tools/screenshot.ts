@@ -9,6 +9,7 @@ import { getUiElements, extractActionableElements, WINUI3_CLASS_RE } from "../en
 import type { UiElementsResult } from "../engine/uia-bridge.js";
 import { recognizeWindow, ocrWordsToActionable, runOcr, mergeNearbyWords } from "../engine/ocr-bridge.js";
 import { updateWindowCache } from "../engine/window-cache.js";
+import { CHROMIUM_TITLE_RE } from "./workspace.js";
 import type { ToolResult } from "./_types.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -28,13 +29,18 @@ export const screenshotSchema = {
     .describe("Capture a specific monitor (0 = primary). Use get_screen_info to list displays."),
   region: z
     .object({
-      x: z.coerce.number().describe("Left edge in virtual screen coordinates"),
-      y: z.coerce.number().describe("Top edge in virtual screen coordinates"),
+      x: z.coerce.number().describe("Left edge. Without windowTitle: virtual screen coordinates. With windowTitle: window-local coordinates (0 = window left edge)."),
+      y: z.coerce.number().describe("Top edge. Without windowTitle: virtual screen coordinates. With windowTitle: window-local coordinates (0 = window top edge)."),
       width: z.coerce.number().positive(),
       height: z.coerce.number().positive(),
     })
     .optional()
-    .describe("Capture only this region (virtual screen coordinates)."),
+    .describe(
+      "Capture only this sub-region. " +
+      "Without windowTitle: virtual screen coordinates. " +
+      "With windowTitle: window-local coordinates — useful to exclude browser chrome (tabs/address bar). " +
+      "Example: windowTitle='Chrome', region={x:0, y:120, width:1920, height:900} skips the 120px browser chrome."
+    ),
   maxDimension: z
     .coerce.number()
     .int()
@@ -45,9 +51,27 @@ export const screenshotSchema = {
     .boolean()
     .default(false)
     .describe(
-      "1:1 pixel mode — no scaling, WebP compression. Image pixel coords = screen coords. " +
-      "Use for precise mouse clicking. Window captures include 'origin: (x,y)' so you can compute " +
-      "screen position: screen_x = origin_x + image_x."
+      "1:1 pixel mode — no scaling, WebP compression. " +
+      "Window captures include 'origin: (x,y)' so you can compute screen position: screen_x = origin_x + image_x. " +
+      "When dotByDotMaxDimension is also set, scale factor is included: screen_x = origin_x + image_x / scale."
+    ),
+  dotByDotMaxDimension: z
+    .coerce.number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      "Cap the longest edge (pixels) when dotByDot=true. Reduces payload while preserving coordinate math. " +
+      "Example: 1280 on a 1920×1080 screen → scale≈0.667. " +
+      "Response includes scale factor: screen_x = origin_x + image_x / scale. " +
+      "Recommended for Chrome: dotByDot=true, dotByDotMaxDimension=1280, grayscale=true."
+    ),
+  grayscale: z
+    .boolean()
+    .default(false)
+    .describe(
+      "Convert to grayscale before encoding. Reduces file size ~50% for text-heavy content (e.g. AWS console, code editors). " +
+      "Avoid when color is meaningful (charts, status indicators)."
     ),
   webpQuality: z
     .coerce.number()
@@ -88,7 +112,7 @@ export const screenshotSchema = {
     .default("auto")
     .describe(
       "OCR fallback behaviour when detail='text'. " +
-      "'auto' (default): fire Windows OCR if UIA returns 0 actionable elements. " +
+      "'auto' (default): fire Windows OCR if UIA returns 0 actionable elements OR hints.uiaSparse=true (UIA returned <5 elements, typical for Chrome). " +
       "'always': always augment actionable[] with OCR words. " +
       "'never': disable OCR entirely."
     ),
@@ -116,6 +140,19 @@ export const screenshotBgSchema = {
   windowTitle: z
     .string()
     .describe("Title (partial match) of the window to capture"),
+  region: z
+    .object({
+      x: z.coerce.number().describe("Left edge in window-local coordinates (0 = window left)"),
+      y: z.coerce.number().describe("Top edge in window-local coordinates (0 = window top)"),
+      width: z.coerce.number().positive(),
+      height: z.coerce.number().positive(),
+    })
+    .optional()
+    .describe(
+      "Capture only this sub-region of the window (window-local image coordinates). " +
+      "Coordinates are in image pixels, not screen pixels (may differ on high-DPI). " +
+      "Useful to exclude browser chrome (tabs/address bar): e.g. {x:0, y:120, width:1920, height:900}."
+    ),
   maxDimension: z
     .coerce.number()
     .int()
@@ -125,7 +162,23 @@ export const screenshotBgSchema = {
   dotByDot: z
     .boolean()
     .default(false)
-    .describe("1:1 pixel mode — no scaling, WebP compression. Image pixel coords = screen coords."),
+    .describe(
+      "1:1 pixel mode — no scaling, WebP compression. " +
+      "When region is also specified, origin reflects the window + region offset for coordinate math."
+    ),
+  dotByDotMaxDimension: z
+    .coerce.number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      "Cap the longest edge (pixels) when dotByDot=true. " +
+      "Response includes scale factor: screen_x = origin_x + image_x / scale."
+    ),
+  grayscale: z
+    .boolean()
+    .default(false)
+    .describe("Convert to grayscale. Reduces file size ~50% for text-heavy content."),
   webpQuality: z
     .coerce.number()
     .int()
@@ -188,6 +241,30 @@ async function buildWindowInfoList(): Promise<WindowInfo[]> {
     }));
 }
 
+/** Format origin text for dotByDot captures including optional scale factor. */
+function formatOriginText(
+  originX: number,
+  originY: number,
+  imgWidth: number,
+  imgHeight: number,
+  scale: number | undefined
+): string {
+  if (scale !== undefined) {
+    const s = scale.toFixed(4);
+    return (
+      `Screenshot (dot-by-dot, scaled): ${imgWidth}x${imgHeight}px | ` +
+      `origin: (${originX}, ${originY}) | scale: ${s}\n` +
+      `  To click image pixel (ix, iy): mouse_click(x=ix, y=iy, origin={x:${originX}, y:${originY}}, scale=${s}) — server converts.\n` +
+      `  Manual math: screen_x = ${originX} + image_x / ${s}, screen_y = ${originY} + image_y / ${s}`
+    );
+  }
+  return (
+    `Screenshot (dot-by-dot): ${imgWidth}x${imgHeight}px | origin: (${originX}, ${originY})\n` +
+    `  To click image pixel (ix, iy): mouse_click(x=ix, y=iy, origin={x:${originX}, y:${originY}}) — server converts.\n` +
+    `  Manual math: screen_x = ${originX} + image_x, screen_y = ${originY} + image_y`
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Handlers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -198,6 +275,8 @@ export const screenshotHandler = async ({
   region,
   maxDimension,
   dotByDot,
+  dotByDotMaxDimension,
+  grayscale,
   webpQuality,
   diffMode,
   detail,
@@ -210,6 +289,8 @@ export const screenshotHandler = async ({
   region?: { x: number; y: number; width: number; height: number };
   maxDimension: number;
   dotByDot: boolean;
+  dotByDotMaxDimension?: number;
+  grayscale: boolean;
   webpQuality: number;
   diffMode: boolean;
   detail: "meta" | "text" | "image" | undefined;
@@ -321,23 +402,43 @@ export const screenshotHandler = async ({
     if (effectiveDetail === "text") {
       if (windowTitle) {
         updateWindowCache(enumWindowsInZOrder());
-        const { result, raw } = await buildUiaData(windowTitle);
+        const isChromium = CHROMIUM_TITLE_RE.test(windowTitle);
+
+        let result: ReturnType<typeof extractActionableElements>;
+        let raw: UiElementsResult | null;
+
+        if (isChromium) {
+          // Skip UIA entirely for Chromium — it's slow and returns almost nothing useful.
+          // Go directly to OCR fallback below.
+          result = { window: windowTitle, actionable: [], texts: [] };
+          raw = null;
+        } else {
+          ({ result, raw } = await buildUiaData(windowTitle));
+        }
 
         // Compute hints from raw UIA output
-        // uiaSparse only set when UIA actually ran (raw !== null); errors produce uiaError instead
         const winui3 = WINUI3_CLASS_RE.test(raw?.windowClassName ?? "");
         const uiaSparse = raw !== null && raw.elementCount < 5;
         const hints: {
           winui3: boolean;
           uiaSparse: boolean;
           uiaError?: boolean;
+          chromiumGuard?: boolean;
           ocrFallbackFired?: boolean;
-        } = { winui3, uiaSparse, ...(raw === null ? { uiaError: true } : {}) };
+        } = {
+          winui3,
+          uiaSparse,
+          ...(raw === null ? { uiaError: true } : {}),
+          ...(isChromium ? { chromiumGuard: true } : {}),
+        };
 
-        // OCR fallback — fires when UIA has no actionable elements, or always when requested
+        // OCR fallback — fires when:
+        //   - always requested, OR
+        //   - auto + UIA has no actionable elements, OR
+        //   - auto + UIA is sparse (< 5 elements, typical for Chrome)
         const shouldOcr =
           ocrFallback === "always" ||
-          (ocrFallback === "auto" && result.actionable.length === 0);
+          (ocrFallback === "auto" && (result.actionable.length === 0 || uiaSparse || isChromium));
         if (shouldOcr) {
           try {
             const { words, origin } = await recognizeWindow(windowTitle, ocrLanguage);
@@ -375,12 +476,12 @@ export const screenshotHandler = async ({
 
     // ── detail=image (default): actual screenshot pixels ─────────────────────
     const captureOpts = dotByDot
-      ? { format: "webp" as const, webpQuality }
-      : { maxDimension };
+      ? { format: "webp" as const, webpQuality, grayscale, dotByDotMaxDimension }
+      : { maxDimension, grayscale };
 
     if (windowTitle) {
       const windows = await getWindows();
-      let targetRegion: { x: number; y: number; width: number; height: number } | undefined;
+      let windowRegion: { x: number; y: number; width: number; height: number } | undefined;
       let originX = 0, originY = 0;
 
       for (const win of windows) {
@@ -388,21 +489,51 @@ export const screenshotHandler = async ({
         const title = hwnd ? getWindowTitleW(hwnd) : await win.title;
         if (title.toLowerCase().includes(windowTitle.toLowerCase())) {
           const reg = await win.region;
-          targetRegion = { x: reg.left, y: reg.top, width: reg.width, height: reg.height };
+          windowRegion = { x: reg.left, y: reg.top, width: reg.width, height: reg.height };
           originX = reg.left;
           originY = reg.top;
           break;
         }
       }
 
-      if (!targetRegion) {
+      if (!windowRegion) {
         return { content: [{ type: "text" as const, text: `Window not found: "${windowTitle}"` }] };
       }
-      const result = await captureScreen(targetRegion, captureOpts);
 
-      const dimensionText = dotByDot
-        ? `Screenshot (dot-by-dot): ${result.width}x${result.height}px | origin: (${originX}, ${originY}) | screen_x = ${originX} + image_x`
-        : `Screenshot captured: ${result.width}x${result.height}px`;
+      // Sub-crop: treat region as window-local screen coordinates.
+      // Clamp to window bounds and compute absolute capture region.
+      let captureRegion: { x: number; y: number; width: number; height: number };
+      if (region) {
+        const clampedX = Math.max(0, Math.min(region.x, windowRegion.width - 1));
+        const clampedY = Math.max(0, Math.min(region.y, windowRegion.height - 1));
+        const clampedW = Math.min(region.width, windowRegion.width - clampedX);
+        const clampedH = Math.min(region.height, windowRegion.height - clampedY);
+        captureRegion = {
+          x: windowRegion.x + clampedX,
+          y: windowRegion.y + clampedY,
+          width: clampedW,
+          height: clampedH,
+        };
+        originX = captureRegion.x;
+        originY = captureRegion.y;
+        if (clampedW !== region.width || clampedH !== region.height) {
+          // Region was clamped — note this in the response below
+        }
+      } else {
+        captureRegion = windowRegion;
+      }
+
+      const result = await captureScreen(captureRegion, captureOpts);
+
+      let dimensionText: string;
+      if (dotByDot) {
+        dimensionText = formatOriginText(originX, originY, result.width, result.height, result.scale);
+      } else {
+        const scaleNote = (region && (region.width !== captureRegion.width || region.height !== captureRegion.height))
+          ? ` [region clamped to window bounds]`
+          : "";
+        dimensionText = `Screenshot captured: ${result.width}x${result.height}px${scaleNote}`;
+      }
 
       return {
         content: [
@@ -423,7 +554,7 @@ export const screenshotHandler = async ({
       }
       const result = await captureDisplay(mon.bounds, captureOpts);
       const dimensionText = dotByDot
-        ? `Screenshot (dot-by-dot): ${result.width}x${result.height}px | origin: (${mon.bounds.x}, ${mon.bounds.y})`
+        ? formatOriginText(mon.bounds.x, mon.bounds.y, result.width, result.height, result.scale)
         : `Screenshot captured: ${result.width}x${result.height}px`;
       return {
         content: [
@@ -433,12 +564,17 @@ export const screenshotHandler = async ({
       };
     } else {
       const result = await captureScreen(region, captureOpts);
-      const originText = dotByDot && region
-        ? ` | origin: (${region.x}, ${region.y})`
-        : "";
-      const dimensionText = dotByDot
-        ? `Screenshot (dot-by-dot): ${result.width}x${result.height}px${originText}`
-        : `Screenshot captured: ${result.width}x${result.height}px`;
+      let dimensionText: string;
+      if (dotByDot && region) {
+        dimensionText = formatOriginText(region.x, region.y, result.width, result.height, result.scale);
+      } else if (dotByDot) {
+        dimensionText = `Screenshot (dot-by-dot): ${result.width}x${result.height}px`;
+        if (result.scale !== undefined) {
+          dimensionText += ` | scale: ${result.scale.toFixed(4)} (full screen, no origin offset)`;
+        }
+      } else {
+        dimensionText = `Screenshot captured: ${result.width}x${result.height}px`;
+      }
       return {
         content: [
           { type: "image" as const, data: result.base64, mimeType: result.mimeType },
@@ -453,14 +589,20 @@ export const screenshotHandler = async ({
 
 export const screenshotBgHandler = async ({
   windowTitle,
+  region,
   maxDimension,
   dotByDot,
+  dotByDotMaxDimension,
+  grayscale,
   webpQuality,
   fullContent,
 }: {
   windowTitle: string;
+  region?: { x: number; y: number; width: number; height: number };
   maxDimension: number;
   dotByDot: boolean;
+  dotByDotMaxDimension?: number;
+  grayscale: boolean;
   webpQuality: number;
   fullContent: boolean;
 }): Promise<ToolResult> => {
@@ -468,6 +610,7 @@ export const screenshotBgHandler = async ({
     const windows = await getWindows();
     let hwnd: unknown = null;
     let foundTitle = "";
+    let windowScreenRegion: { x: number; y: number; width: number; height: number } | null = null;
 
     for (const win of windows) {
       const h = (win as unknown as { windowHandle: unknown }).windowHandle;
@@ -475,6 +618,8 @@ export const screenshotBgHandler = async ({
       if (title.toLowerCase().includes(windowTitle.toLowerCase())) {
         hwnd = h;
         foundTitle = title;
+        const reg = await win.region;
+        windowScreenRegion = { x: reg.left, y: reg.top, width: reg.width, height: reg.height };
         break;
       }
     }
@@ -483,16 +628,46 @@ export const screenshotBgHandler = async ({
       return { content: [{ type: "text" as const, text: `Window not found: "${windowTitle}"` }] };
     }
 
+    // Build capture options with optional sub-crop (image-local coordinates).
+    // For screenshot_background, region is in image pixel space (PrintWindow output).
+    let crop: { x: number; y: number; width: number; height: number } | undefined;
+    if (region) {
+      crop = {
+        x: Math.max(0, region.x),
+        y: Math.max(0, region.y),
+        width: region.width,
+        height: region.height,
+      };
+    }
+
     const captureOpts = dotByDot
-      ? { format: "webp" as const, webpQuality }
-      : { maxDimension };
+      ? { format: "webp" as const, webpQuality, grayscale, dotByDotMaxDimension, crop }
+      : { maxDimension, grayscale, crop };
+
     // PW_RENDERFULLCONTENT=2 for GPU windows; legacy flag=0 when fullContent=false
     const pwFlags = fullContent ? 2 : 0;
 
     const result = await captureWindowBackground(hwnd, captureOpts, pwFlags);
-    const dimensionText = dotByDot
-      ? `Background capture (dot-by-dot) of "${foundTitle}": ${result.width}x${result.height}px`
-      : `Background capture of "${foundTitle}": ${result.width}x${result.height}px`;
+
+    let dimensionText: string;
+    if (dotByDot && windowScreenRegion) {
+      // Compute screen-space origin: window position + region offset (approximate, ignores DPI scale)
+      const regionOffsetX = region ? region.x : 0;
+      const regionOffsetY = region ? region.y : 0;
+      const originX = windowScreenRegion.x + regionOffsetX;
+      const originY = windowScreenRegion.y + regionOffsetY;
+      dimensionText = formatOriginText(originX, originY, result.width, result.height, result.scale);
+      if (region) {
+        dimensionText += ` [sub-crop applied: (${region.x},${region.y}) ${region.width}x${region.height} image-local]`;
+      }
+    } else if (dotByDot) {
+      dimensionText = `Background capture (dot-by-dot) of "${foundTitle}": ${result.width}x${result.height}px`;
+      if (result.scale !== undefined) {
+        dimensionText += ` | scale: ${result.scale.toFixed(4)} | screen_x = window.x + image_x / ${result.scale.toFixed(4)}`;
+      }
+    } else {
+      dimensionText = `Background capture of "${foundTitle}": ${result.width}x${result.height}px`;
+    }
 
     return {
       content: [
@@ -628,9 +803,17 @@ export function registerScreenshotTools(server: McpServer): void {
       "  dotByDot=true  — 1:1 pixel WebP. Image pixel = screen coord (+ origin offset for windows).",
       "  diffMode=true  — Layer diff: only changed windows sent. First call = full, subsequent = diff.",
       "",
+      "DATA REDUCTION (Chrome/AWS console):",
+      "  grayscale=true              — ~50% smaller. Use for text-heavy UIs, avoid for charts/colors.",
+      "  dotByDotMaxDimension=1280   — cap longest edge; response includes scale for coord math.",
+      "  windowTitle + region        — sub-crop to exclude browser chrome (tabs/address bar).",
+      "  Recommended Chrome combo: dotByDot=true, dotByDotMaxDimension=1280, grayscale=true,",
+      "    windowTitle='Chrome', region={x:0, y:120, width:1920, height:900}",
+      "",
       "COORDINATE TIPS:",
       "  Default (scaled): screen_x = window.x + image_x * (window.width / image.width)",
-      "  dotByDot/diffMode: screen_x = origin_x + image_x (no scale math needed)",
+      "  dotByDot (1:1):   screen_x = origin_x + image_x",
+      "  dotByDot + scale: screen_x = origin_x + image_x / scale  (scale printed in response)",
       "",
       "To minimize data, prefer in order: windowTitle > region > displayId > (no args).",
       "maxDimension defaults to 768. Increase to 1280 for fine text (ignored when dotByDot=true).",
@@ -648,6 +831,9 @@ export function registerScreenshotTools(server: McpServer): void {
       "Set fullContent=false for legacy mode (faster, but GPU windows may appear black).",
       "Note: some game/DX12 windows may cause a 1-3s delay with fullContent=true — use fullContent=false in that case.",
       "Add dotByDot=true for 1:1 pixel WebP output.",
+      "Add grayscale=true to reduce size ~50% for text-heavy content.",
+      "Add dotByDotMaxDimension=1280 to cap resolution; response includes scale for coord math.",
+      "Add region to sub-crop (window-local image coordinates) — useful to exclude browser chrome.",
     ].join(" "),
     screenshotBgSchema,
     screenshotBgHandler
