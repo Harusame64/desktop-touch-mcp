@@ -429,6 +429,13 @@ export const scrollCaptureHandler = async ({
     let stitchedWidth: number;
     let stitchedHeight: number;
 
+    // Track overlap-detection outcomes without alarming the caller.
+    // Exact MAE match is best-effort; estimated fallback is a normal code path
+    // for dynamic pages (sticky headers, lazy-loaded images, repeating patterns).
+    let exactMatchCount = 0;
+    let estimatedCount = 0;
+    let failedCount = 0;
+
     if (direction === "down") {
       const parts: { data: Buffer; rowOffset: number; numRows: number }[] = [
         { data: firstFrame.data, rowOffset: 0, numRows: height },
@@ -439,13 +446,13 @@ export const scrollCaptureHandler = async ({
         const result = findNewRows(frames[i - 1]!, frames[i]!);
 
         if (result === null) {
+          failedCount++;
           warnings.push(`Frame ${i}: overlap detection failed, appended in full`);
           parts.push({ data: frames[i]!.data, rowOffset: 0, numRows: height });
           totalHeight += height;
         } else {
-          if (result.estimated) {
-            warnings.push(`Frame ${i}: overlap estimated (MAE threshold not met, used ~90% fallback)`);
-          }
+          if (result.estimated) estimatedCount++;
+          else exactMatchCount++;
           const skipRows = height - result.count;
           parts.push({ data: frames[i]!.data, rowOffset: skipRows, numRows: result.count });
           totalHeight += result.count;
@@ -462,13 +469,13 @@ export const scrollCaptureHandler = async ({
       for (let i = 1; i < frames.length; i++) {
         const result = findNewColumns(frames[i - 1]!, frames[i]!);
         if (result === null) {
+          failedCount++;
           warnings.push(`Frame ${i}: horizontal overlap detection failed, appended in full`);
           colRanges.push({ start: 0, count: width });
           totalWidth += width;
         } else {
-          if (result.estimated) {
-            warnings.push(`Frame ${i}: horizontal overlap estimated (MAE threshold not met, used ~90% fallback)`);
-          }
+          if (result.estimated) estimatedCount++;
+          else exactMatchCount++;
           colRanges.push({ start: width - result.count, count: result.count });
           totalWidth += result.count;
         }
@@ -497,13 +504,26 @@ export const scrollCaptureHandler = async ({
     const outH = pngMeta.height ?? stitchedHeight;
 
     const truncated = frames.length > maxScrolls;
+    const stitchTotal = exactMatchCount + estimatedCount + failedCount;
+    const overlapMode =
+      failedCount > 0 ? "mixed-with-failures" :
+      exactMatchCount === 0 && estimatedCount > 0 ? "estimated" :
+      estimatedCount === 0 ? "exact" :
+      "mixed";
     const summary = {
       ok: true,
       frames: frames.length,
       stitchedSize: `${outW}x${outH}`,
       direction,
+      overlapMode,
+      overlapStats: {
+        exact: exactMatchCount,
+        estimated: estimatedCount,
+        failed: failedCount,
+        total: stitchTotal,
+      },
       ...(truncated ? { warning: "maxScrolls reached, image may be truncated" } : {}),
-      ...(warnings.length > 0 ? { overlapWarnings: warnings } : {}),
+      ...(failedCount > 0 ? { overlapWarnings: warnings.filter(w => w.includes("failed")) } : {}),
     };
 
     return {

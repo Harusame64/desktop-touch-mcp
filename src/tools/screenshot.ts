@@ -401,8 +401,17 @@ export const screenshotHandler = async ({
     // ── detail=text: UIA element tree as JSON ────────────────────────────────
     if (effectiveDetail === "text") {
       if (windowTitle) {
-        updateWindowCache(enumWindowsInZOrder());
-        const isChromium = CHROMIUM_TITLE_RE.test(windowTitle);
+        const wins = enumWindowsInZOrder();
+        updateWindowCache(wins);
+
+        // Resolve the full window title from the partial match, then test the
+        // Chromium regex against the resolved title — not the user-supplied
+        // substring (which typically won't contain the "- Google Chrome" suffix).
+        const resolvedWin = wins.find((w) =>
+          w.title.toLowerCase().includes(windowTitle.toLowerCase())
+        );
+        const resolvedTitle = resolvedWin?.title ?? windowTitle;
+        const isChromium = CHROMIUM_TITLE_RE.test(resolvedTitle);
 
         let result: ReturnType<typeof extractActionableElements>;
         let raw: UiElementsResult | null;
