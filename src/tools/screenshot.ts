@@ -5,7 +5,9 @@ import { captureAndDiff, captureAllLayers, hasBuffer, clearLayers } from "../eng
 import type { WindowInfo } from "../engine/layer-buffer.js";
 import { getWindows } from "../engine/nutjs.js";
 import { enumMonitors, getVirtualScreen, getWindowTitleW, enumWindowsInZOrder } from "../engine/win32.js";
-import { getUiElements, extractActionableElements } from "../engine/uia-bridge.js";
+import { getUiElements, extractActionableElements, WINUI3_CLASS_RE } from "../engine/uia-bridge.js";
+import type { UiElementsResult } from "../engine/uia-bridge.js";
+import { recognizeWindow, ocrWordsToActionable, runOcr, mergeNearbyWords } from "../engine/ocr-bridge.js";
 import { updateWindowCache } from "../engine/window-cache.js";
 import type { ToolResult } from "./_types.js";
 
@@ -81,6 +83,33 @@ export const screenshotSchema = {
       "Prefer detail='text' / diffMode=true / dotByDot=true first — " +
       "only set confirmImage=true when visual inspection is genuinely required."
     ),
+  ocrFallback: z
+    .enum(["auto", "always", "never"])
+    .default("auto")
+    .describe(
+      "OCR fallback behaviour when detail='text'. " +
+      "'auto' (default): fire Windows OCR if UIA returns 0 actionable elements. " +
+      "'always': always augment actionable[] with OCR words. " +
+      "'never': disable OCR entirely."
+    ),
+  ocrLanguage: z
+    .string()
+    .default("ja")
+    .describe("BCP-47 language tag for the OCR engine (e.g. 'ja', 'en-US'). Only used when detail='text'."),
+};
+
+export const screenshotOcrSchema = {
+  windowTitle: z.string().describe("Title (partial match) of the window to OCR"),
+  language: z.string().default("ja").describe("BCP-47 language tag (e.g. 'ja', 'en-US')"),
+  region: z
+    .object({
+      x: z.coerce.number(),
+      y: z.coerce.number(),
+      width: z.coerce.number().positive(),
+      height: z.coerce.number().positive(),
+    })
+    .optional()
+    .describe("Optional sub-region in window-local coordinates"),
 };
 
 export const screenshotBgSchema = {
@@ -121,19 +150,28 @@ export const getScreenInfoSchema = {};
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Build action-oriented UIA representation for a window.
- * Returns actionable elements (buttons, inputs, menus) with pre-computed
- * clickAt coordinates — the LLM can use these directly for mouse_click
- * without any coordinate math.
+ * Build action-oriented UIA data for a window.
+ * Returns the structured result and the raw UIA output (needed for hints).
  */
-async function buildUiaText(title: string): Promise<string> {
+async function buildUiaData(title: string): Promise<{
+  result: ReturnType<typeof extractActionableElements>;
+  raw: UiElementsResult | null;
+}> {
   try {
-    const raw = await getUiElements(title, 4, 100, 5000);
-    const result = extractActionableElements(raw);
-    return JSON.stringify(result, null, 2);
+    const raw = await getUiElements(title, 6, 120, 8000);
+    return { result: extractActionableElements(raw), raw };
   } catch {
-    return JSON.stringify({ window: title, actionable: [], texts: [], error: "UIA unavailable" });
+    return {
+      result: { window: title, actionable: [], texts: [] },
+      raw: null,
+    };
   }
+}
+
+/** @deprecated Use buildUiaData for full detail=text handling */
+async function buildUiaText(title: string): Promise<string> {
+  const { result } = await buildUiaData(title);
+  return JSON.stringify(result, null, 2);
 }
 
 /** Convert enumWindowsInZOrder result to WindowInfo array for layer-buffer. */
@@ -164,6 +202,8 @@ export const screenshotHandler = async ({
   diffMode,
   detail,
   confirmImage,
+  ocrFallback,
+  ocrLanguage,
 }: {
   windowTitle?: string;
   displayId?: number;
@@ -174,6 +214,8 @@ export const screenshotHandler = async ({
   diffMode: boolean;
   detail: "meta" | "text" | "image" | undefined;
   confirmImage: boolean;
+  ocrFallback: "auto" | "always" | "never";
+  ocrLanguage: string;
 }): Promise<ToolResult> => {
   // Compute effective detail: explicit value wins; otherwise infer from context.
   // dotByDot / region / displayId imply the caller wants pixels, so default to 'image'.
@@ -279,10 +321,43 @@ export const screenshotHandler = async ({
     if (effectiveDetail === "text") {
       if (windowTitle) {
         updateWindowCache(enumWindowsInZOrder());
-        const uiaText = await buildUiaText(windowTitle);
-        return { content: [{ type: "text" as const, text: uiaText }] };
+        const { result, raw } = await buildUiaData(windowTitle);
+
+        // Compute hints from raw UIA output
+        // uiaSparse only set when UIA actually ran (raw !== null); errors produce uiaError instead
+        const winui3 = WINUI3_CLASS_RE.test(raw?.windowClassName ?? "");
+        const uiaSparse = raw !== null && raw.elementCount < 5;
+        const hints: {
+          winui3: boolean;
+          uiaSparse: boolean;
+          uiaError?: boolean;
+          ocrFallbackFired?: boolean;
+        } = { winui3, uiaSparse, ...(raw === null ? { uiaError: true } : {}) };
+
+        // OCR fallback — fires when UIA has no actionable elements, or always when requested
+        const shouldOcr =
+          ocrFallback === "always" ||
+          (ocrFallback === "auto" && result.actionable.length === 0);
+        if (shouldOcr) {
+          try {
+            const { words, origin } = await recognizeWindow(windowTitle, ocrLanguage);
+            const ocrItems = ocrWordsToActionable(words, origin);
+            result.actionable.push(...ocrItems);
+            // Re-sort after merge to maintain top→bottom, left→right ordering
+            result.actionable.sort((a, b) =>
+              a.region.y !== b.region.y ? a.region.y - b.region.y : a.region.x - b.region.x
+            );
+            hints.ocrFallbackFired = true;
+          } catch {
+            // OCR unavailable (language pack missing, WinRT error) — silently skip
+          }
+        }
+
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({ ...result, hints }, null, 2) }],
+        };
       }
-      // All visible windows
+      // All visible windows — OCR skipped to avoid N-window explosion
       const wins = enumWindowsInZOrder();
       updateWindowCache(wins);
       const filteredWins = wins
@@ -430,6 +505,90 @@ export const screenshotBgHandler = async ({
   }
 };
 
+export const screenshotOcrHandler = async ({
+  windowTitle,
+  language,
+  region: subRegion,
+}: {
+  windowTitle: string;
+  language: string;
+  region?: { x: number; y: number; width: number; height: number };
+}): Promise<ToolResult> => {
+  try {
+    const wins = enumWindowsInZOrder();
+    const win = wins.find((w) => w.title.toLowerCase().includes(windowTitle.toLowerCase()));
+    if (!win) {
+      return { content: [{ type: "text" as const, text: `Window not found: "${windowTitle}"` }] };
+    }
+
+    const origin = { x: win.region.x, y: win.region.y };
+    const maxDim = 1280;
+
+    // Use PrintWindow (PW_RENDERFULLCONTENT) so the window is captured correctly
+    // even when covered by other windows (e.g. Claude Code on top of Paint).
+    // For sub-region: still use PrintWindow for the full window, then crop in
+    // scale math by adjusting the origin and using only the sub-region slice.
+    const captured = await captureWindowBackground(win.hwnd, maxDim);
+    const scaleX = win.region.width / captured.width;
+    const scaleY = win.region.height / captured.height;
+
+    // If a sub-region was requested, restrict which words survive later
+    const subRegionFilter = subRegion
+      ? {
+          x: win.region.x + subRegion.x,
+          y: win.region.y + subRegion.y,
+          right: win.region.x + subRegion.x + subRegion.width,
+          bottom: win.region.y + subRegion.y + subRegion.height,
+        }
+      : null;
+
+    const rawWords = await runOcr(captured.base64, language);
+
+    // Scale image-local bboxes → screen coords, then merge adjacent characters
+    const scaledWords = rawWords.map((w) => ({
+      text: w.text,
+      bbox: {
+        x: Math.round(origin.x + w.bbox.x * scaleX),
+        y: Math.round(origin.y + w.bbox.y * scaleY),
+        width: Math.max(1, Math.round(w.bbox.width * scaleX)),
+        height: Math.max(1, Math.round(w.bbox.height * scaleY)),
+      },
+    }));
+    const merged = mergeNearbyWords(scaledWords);
+
+    // Apply sub-region filter if requested
+    const filtered = subRegionFilter
+      ? merged.filter((w) => {
+          const cx = w.bbox.x + w.bbox.width / 2;
+          const cy = w.bbox.y + w.bbox.height / 2;
+          return cx >= subRegionFilter.x && cx <= subRegionFilter.right
+              && cy >= subRegionFilter.y && cy <= subRegionFilter.bottom;
+        })
+      : merged;
+
+    const words = filtered.map((w) => ({
+      text: w.text,
+      clickAt: {
+        x: Math.round(w.bbox.x + w.bbox.width / 2),
+        y: Math.round(w.bbox.y + w.bbox.height / 2),
+      },
+    }));
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify(
+          { windowTitle: win.title, origin, words, wordCount: words.length },
+          null,
+          2
+        ),
+      }],
+    };
+  } catch (err) {
+    return { content: [{ type: "text" as const, text: `screenshot_ocr failed: ${String(err)}` }] };
+  }
+};
+
 export const getScreenInfoHandler = async (): Promise<ToolResult> => {
   try {
     const monitors = enumMonitors();
@@ -492,6 +651,19 @@ export function registerScreenshotTools(server: McpServer): void {
     ].join(" "),
     screenshotBgSchema,
     screenshotBgHandler
+  );
+
+  server.tool(
+    "screenshot_ocr",
+    [
+      "Run Windows OCR (Windows.Media.Ocr) on a window and return word-level text with screen coordinates.",
+      "Use when UIA returns no actionable elements (e.g. WinUI3 apps like Paint, custom-drawn UIs).",
+      "Returns words[] with clickAt coords — pass directly to mouse_click.",
+      "language: BCP-47 tag (default 'ja'). First call may be ~1s due to WinRT cold-start.",
+      "Requires the matching Windows OCR language pack to be installed.",
+    ].join("\n"),
+    screenshotOcrSchema,
+    screenshotOcrHandler
   );
 
   server.tool(

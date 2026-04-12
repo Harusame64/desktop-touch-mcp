@@ -50,44 +50,106 @@ function makeGetElementsScript(
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 
-$root = [System.Windows.Automation.AutomationElement]::RootElement
-$ctProp = [System.Windows.Automation.AutomationElement]::ControlTypeProperty
-$trueC  = [System.Windows.Automation.Condition]::TrueCondition
-$desc   = [System.Windows.Automation.TreeScope]::Descendants
+$root  = [System.Windows.Automation.AutomationElement]::RootElement
+$trueC = [System.Windows.Automation.Condition]::TrueCondition
 
-# Find window by partial title
+# Find window by partial title (live query — before cache scope)
 $target = $null
 $allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
 foreach ($w in $allWins) {
     if ($w.Current.Name -like '*${safeTitle}*') { $target = $w; break }
 }
 if (-not $target) { Write-Output '{"error":"Window not found"}'; exit }
+$winTitle     = $target.Current.Name
+$winClassName = $target.Current.ClassName
 
-$results = [System.Collections.Generic.List[object]]::new()
-$count = 0
+# Capture window bounding rect for the caller
+$winRect = $null
+try {
+    $wr = $target.Current.BoundingRectangle
+    if (-not $wr.IsEmpty -and -not [double]::IsInfinity($wr.X)) {
+        $winRect = @{ x=[int]$wr.X; y=[int]$wr.Y; width=[int]$wr.Width; height=[int]$wr.Height }
+    }
+} catch {}
 
-function Collect($el, $depth) {
-    if ($depth -gt ${maxDepth} -or $script:count -ge ${maxElements}) { return }
-    $c = $el.Current
-    $r = $c.BoundingRectangle
+$cvWalker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+$results  = [System.Collections.Generic.List[object]]::new()
+$count    = 0
+$sw       = [System.Diagnostics.Stopwatch]::StartNew()
+
+$stack = [System.Collections.Generic.Stack[object]]::new()
+$first = $cvWalker.GetFirstChild($target)
+if ($null -ne $first) { $stack.Push(@{ el=$first; depth=0 }) }
+
+# Patterns we care about (subset of all UIA patterns)
+$wantedPats = [System.Collections.Generic.HashSet[string]]::new()
+$wantedPats.Add('InvokePattern') > $null; $wantedPats.Add('ValuePattern') > $null
+$wantedPats.Add('ExpandCollapsePattern') > $null; $wantedPats.Add('SelectionItemPattern') > $null
+$wantedPats.Add('TogglePattern') > $null; $wantedPats.Add('ScrollPattern') > $null
+
+while ($stack.Count -gt 0 -and $count -lt ${maxElements} -and $sw.ElapsedMilliseconds -lt 8000) {
+    $item  = $stack.Pop()
+    $el    = $item.el
+    $depth = $item.depth
+
+    # Push next sibling first so it waits until children are exhausted (correct DFS pre-order)
+    try {
+        $next = $cvWalker.GetNextSibling($el)
+        if ($null -ne $next) { $stack.Push(@{ el=$next; depth=$depth }) }
+    } catch {}
+
+    # Skip offscreen elements — prune subtree (children will also be offscreen)
+    $offscreen = $false
+    try { $offscreen = $el.Current.IsOffscreen } catch {}
+    if ($offscreen) { continue }
+
+    # Extract properties via live Current.* access
+    $r    = $null
+    try { $r = $el.Current.BoundingRectangle } catch {}
     $rect = $null
-    if (-not $r.IsEmpty -and -not [double]::IsInfinity($r.X)) {
+    if ($null -ne $r -and -not $r.IsEmpty -and -not ([double]::IsInfinity($r.X) -or [double]::IsInfinity($r.Y) -or [double]::IsInfinity($r.Width) -or [double]::IsInfinity($r.Height)) -and -not [double]::IsNaN($r.X) -and $r.Width -gt 0 -and $r.Height -gt 0) {
         $rect = @{ x=[int]$r.X; y=[int]$r.Y; width=[int]$r.Width; height=[int]$r.Height }
     }
-    $pats = @($el.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName -replace 'Identifiers\\.Pattern','' })
-    $script:results.Add(@{
-        name=$c.Name; controlType=($c.ControlType.ProgrammaticName -replace 'ControlType\\.','')
-        automationId=$c.AutomationId; isEnabled=$c.IsEnabled
-        boundingRect=$rect; patterns=$pats; depth=$depth
+
+    # One RPC for all patterns instead of six exception-path probes
+    $pats = [System.Collections.Generic.List[string]]::new()
+    try {
+        foreach ($p in $el.GetSupportedPatterns()) {
+            $pn = $p.ProgrammaticName -replace 'Identifiers\.Pattern', ''
+            if ($wantedPats.Contains($pn)) { $pats.Add($pn) }
+        }
+    } catch {}
+
+    $ctName = ''
+    try { $ctName = $el.Current.ControlType.ProgrammaticName -replace 'ControlType\.', '' } catch {}
+
+    $elName = ''; try { $elName = $el.Current.Name } catch {}
+    $elAid  = ''; try { $elAid  = $el.Current.AutomationId } catch {}
+    $elCls  = ''; try { $elCls  = $el.Current.ClassName } catch {}
+    $elEna  = $false; try { $elEna = $el.Current.IsEnabled } catch {}
+
+    $results.Add(@{
+        name         = $elName
+        controlType  = $ctName
+        automationId = $elAid
+        className    = $elCls
+        isEnabled    = $elEna
+        boundingRect = $rect
+        patterns     = [string[]]($pats.ToArray())
+        depth        = $depth
     })
-    $script:count++
-    $kids = $el.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
-    foreach ($k in $kids) { Collect $k ($depth+1) }
+    $count++
+
+    # Push first child after sibling so child is popped next (depth-first)
+    if ($depth -lt ${maxDepth}) {
+        try {
+            $child = $cvWalker.GetFirstChild($el)
+            if ($null -ne $child) { $stack.Push(@{ el=$child; depth=($depth+1) }) }
+        } catch {}
+    }
 }
 
-Collect $target 0
-$output = @{ windowTitle=$target.Current.Name; elementCount=$results.Count; elements=$results.ToArray() }
-$output | ConvertTo-Json -Depth 6 -Compress
+@{ windowTitle=$winTitle; windowClassName=$winClassName; windowRect=$winRect; elementCount=$results.Count; elements=$results.ToArray() } | ConvertTo-Json -Depth 6 -Compress
 `;
 }
 
@@ -193,6 +255,7 @@ export interface UiElement {
   name: string;
   controlType: string;
   automationId: string;
+  className?: string;
   isEnabled: boolean;
   boundingRect: { x: number; y: number; width: number; height: number } | null;
   patterns: string[];
@@ -201,6 +264,10 @@ export interface UiElement {
 
 export interface UiElementsResult {
   windowTitle: string;
+  /** ClassName of the root window element — used for WinUI3 detection. */
+  windowClassName?: string;
+  /** Bounding rectangle of the root window in screen coordinates. */
+  windowRect?: { x: number; y: number; width: number; height: number } | null;
   elementCount: number;
   elements: UiElement[];
 }
@@ -242,6 +309,8 @@ export interface ActionableElement {
   id?: string;
   /** False if the element is disabled (grayed out). */
   enabled?: boolean;
+  /** Origin of this element's data: 'uia' = UI Automation, 'ocr' = Windows OCR. */
+  source?: "uia" | "ocr";
 }
 
 export interface TextContent {
@@ -252,12 +321,17 @@ export interface TextContent {
 
 export interface ActionableResult {
   window: string;
+  /** ClassName of the root window element (from UIA). */
+  windowClassName?: string;
   windowRegion?: { x: number; y: number; width: number; height: number };
   /** Interactive elements sorted by screen position (top→bottom, left→right). */
   actionable: ActionableElement[];
   /** Static text labels extracted from Text/Pane elements. */
   texts: TextContent[];
 }
+
+/** ClassName regex for WinUI3 / Windows App SDK windows. */
+export const WINUI3_CLASS_RE = /^(WinUIDesktop|Microsoft\.UI\.|ApplicationFrameWindow)/i;
 
 /** Derive the primary action from a list of UIA pattern names. */
 function deriveAction(patterns: string[], controlType: string): ElementAction | null {
@@ -298,7 +372,11 @@ export function extractActionableElements(result: UiElementsResult): ActionableR
       continue;
     }
 
-    const action = deriveAction(el.patterns, el.controlType);
+    // PS 5.1 ConvertTo-Json bug: single-element arrays may serialize as scalars
+    const patterns = Array.isArray(el.patterns)
+      ? el.patterns
+      : el.patterns ? [el.patterns as unknown as string] : [];
+    const action = deriveAction(patterns, el.controlType);
     if (!action) continue;
 
     const label = el.name || el.automationId || el.controlType;
@@ -310,6 +388,7 @@ export function extractActionableElements(result: UiElementsResult): ActionableR
       type: el.controlType,
       clickAt,
       region: { x: r.x, y: r.y, width: r.width, height: r.height },
+      source: "uia",
     };
 
     if (el.automationId) item.id = el.automationId;
@@ -323,12 +402,14 @@ export function extractActionableElements(result: UiElementsResult): ActionableR
     a.region.y !== b.region.y ? a.region.y - b.region.y : a.region.x - b.region.x
   );
 
-  // Find window root region (depth=0 Window element)
-  const windowEl = result.elements.find((e) => e.controlType === "Window");
-  const windowRegion = windowEl?.boundingRect ?? undefined;
+  // Use windowRect from PS output (preferred), fall back to searching elements
+  const windowRegion = result.windowRect
+    ?? result.elements.find((e) => e.controlType === "Window")?.boundingRect
+    ?? undefined;
 
   return {
     window: result.windowTitle,
+    windowClassName: result.windowClassName,
     windowRegion: windowRegion ?? undefined,
     actionable,
     texts,
