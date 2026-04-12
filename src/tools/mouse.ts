@@ -168,8 +168,33 @@ export const mouseMoveSchema = {
 };
 
 export const mouseClickSchema = {
-  x: z.coerce.number().describe("X coordinate"),
-  y: z.coerce.number().describe("Y coordinate"),
+  x: z.coerce.number().describe(
+    "X coordinate. Screen-absolute by default. When 'origin' is provided, treated as image-local " +
+    "(pixel position within the screenshot)."
+  ),
+  y: z.coerce.number().describe(
+    "Y coordinate. Screen-absolute by default. When 'origin' is provided, treated as image-local."
+  ),
+  origin: z
+    .object({
+      x: z.coerce.number().describe("Screen x of image top-left (copy from screenshot response)"),
+      y: z.coerce.number().describe("Screen y of image top-left (copy from screenshot response)"),
+    })
+    .optional()
+    .describe(
+      "When set, (x,y) are image-local coords from a screenshot. Server converts to screen coords: " +
+      "screen_x = origin.x + x / (scale ?? 1), screen_y = origin.y + y / (scale ?? 1). " +
+      "Copy origin values directly from the screenshot response text. " +
+      "This eliminates manual coord math and prevents out-of-window clicks."
+    ),
+  scale: z
+    .coerce.number()
+    .positive()
+    .optional()
+    .describe(
+      "Scale factor from screenshot response (only when dotByDotMaxDimension caused a resize). " +
+      "Omit if the screenshot was 1:1. Only used when 'origin' is also provided."
+    ),
   button: z.enum(["left", "right", "middle"]).default("left").describe("Mouse button to click"),
   doubleClick: z.boolean().default(false).describe("Whether to double-click"),
   speed: speedParam,
@@ -227,16 +252,36 @@ export const mouseMoveHandler = async ({
 };
 
 export const mouseClickHandler = async ({
-  x, y, button, doubleClick, speed, homing, windowTitle, elementName, elementId,
+  x, y, origin, scale, button, doubleClick, speed, homing, windowTitle, elementName, elementId,
 }: {
-  x: number; y: number; button: "left" | "right" | "middle"; doubleClick: boolean;
+  x: number; y: number;
+  origin?: { x: number; y: number };
+  scale?: number;
+  button: "left" | "right" | "middle"; doubleClick: boolean;
   speed?: number; homing: boolean; windowTitle?: string; elementName?: string; elementId?: string;
 }): Promise<ToolResult> => {
   try {
-    let tx = x, ty = y;
+    // Image-local → screen conversion (before homing).
+    // When origin is given, (x,y) are image-local; convert using scale factor.
+    let screenX = x, screenY = y;
+    const conversionNotes: string[] = [];
+    if (origin !== undefined) {
+      const s = scale ?? 1;
+      if (s <= 0) {
+        return { content: [{ type: "text" as const, text: `mouse_click failed: scale must be positive (got ${s})` }] };
+      }
+      screenX = Math.round(origin.x + x / s);
+      screenY = Math.round(origin.y + y / s);
+      const scalePart = scale !== undefined ? ` / ${scale}` : "";
+      conversionNotes.push(
+        `image (${x}, ${y}) + origin (${origin.x}, ${origin.y})${scalePart} → screen (${screenX}, ${screenY})`
+      );
+    }
+
+    let tx = screenX, ty = screenY;
     const notes: string[] = [];
     if (homing) {
-      const result = await applyHoming(x, y, windowTitle, elementName, elementId);
+      const result = await applyHoming(screenX, screenY, windowTitle, elementName, elementId);
       tx = result.x; ty = result.y;
       notes.push(...result.notes);
     }
@@ -248,8 +293,9 @@ export const mouseClickHandler = async ({
       await mouse.click(btn);
     }
     const action = doubleClick ? "Double-clicked" : "Clicked";
+    const convStr = conversionNotes.length ? ` [${conversionNotes.join("; ")}]` : "";
     const homingStr = !homing ? " [homing: off]" : notes.length ? ` [homing: ${notes.join(", ")}]` : "";
-    return { content: [{ type: "text" as const, text: `${action} ${button} at (${tx}, ${ty})${homingStr}` }] };
+    return { content: [{ type: "text" as const, text: `${action} ${button} at (${tx}, ${ty})${convStr}${homingStr}` }] };
   } catch (err) {
     return { content: [{ type: "text" as const, text: `mouse_click failed: ${String(err)}` }] };
   }
@@ -353,6 +399,16 @@ export function registerMouseTools(server: McpServer): void {
     "mouse_click",
     [
       "Click the mouse at the specified coordinates.",
+      "",
+      "COORDINATE MODES:",
+      "  1. Screen-absolute (default): x,y are virtual screen pixels.",
+      "  2. Image-local: pass origin (and scale when present) from the screenshot response.",
+      "     Server converts: screen = origin + (x,y) / (scale ?? 1). No manual math needed.",
+      "     Example: after screenshot(dotByDot, dotByDotMaxDimension=1280, windowTitle='Chrome'),",
+      "              the response prints 'origin: (0, 120) | scale: 0.6667'. To click image pixel (640, 300):",
+      "              mouse_click(x=640, y=300, origin={x:0, y:120}, scale=0.6667, windowTitle='Chrome').",
+      "     This path is preferred — it eliminates a whole class of off-by-one/scale bugs.",
+      "",
       "Pass windowTitle (and optionally elementName/elementId) as hints to enable homing correction:",
       "  - Tier 1: auto-corrects (dx,dy) if the window moved since the last screenshot (<1ms overhead)",
       "  - Tier 2: auto-focuses the window if it went behind another (~100ms overhead)",

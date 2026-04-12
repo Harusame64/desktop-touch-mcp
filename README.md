@@ -15,8 +15,11 @@ An MCP server that gives Claude eyes and hands on Windows — 25 tools covering 
 - **LLM-native design** — Built around how LLMs think, not how humans click. `run_macro` batches multiple operations into a single API call; `diffMode` sends only the windows that changed since the last frame. Minimal tokens, minimal round-trips.
 - **Full CJK support** — Uses Win32 `GetWindowTextW` for window titles, avoiding nut-js garbling. IME bypass input supported for Japanese/Chinese/Korean environments.
 - **3-tier token reduction** — `detail="image"` (~443 tok) / `detail="text"` (~100–300 tok) / `diffMode=true` (~160 tok). Send pixels only when you actually need to see them.
-- **1:1 coordinate mode** — `dotByDot=true` captures at native resolution (WebP). Image pixel = screen coordinate — no scale math needed.
+- **1:1 coordinate mode** — `dotByDot=true` captures at native resolution (WebP). Image pixel = screen coordinate — no scale math needed. With `origin`+`scale` passed to `mouse_click`, the server converts coords for you — eliminating off-by-one / scale bugs.
+- **Chrome / AWS data reduction** — `grayscale=true` (~50% size), `dotByDotMaxDimension=1280` (auto-scaled with coord preservation), `windowTitle + region` sub-crop (exclude browser chrome). Targeted at heavy dotByDot captures. Typical token reduction: 50–70%.
+- **Chromium smart fallback** — `detail="text"` on Chrome/Edge/Brave auto-skips UIA (prohibitively slow there) and runs Windows OCR. `hints.chromiumGuard` + `hints.ocrFallbackFired` flag the path taken.
 - **UIA element extraction** — `detail="text"` returns button names and `clickAt` coords as JSON. Claude can click the right element without ever looking at a screenshot.
+- **Auto-dock CLI** — `dock_window` snaps any window to a screen corner with always-on-top. Set `DESKTOP_TOUCH_DOCK_TITLE='@parent'` to auto-dock the terminal hosting Claude on MCP startup — the process-tree walker finds the right window regardless of title.
 - **Emergency stop (Failsafe)** — Move the mouse to the **top-left corner (within 10px of 0,0)** to immediately terminate the MCP server.
 
 ---
@@ -66,22 +69,24 @@ Add to `~/.claude.json` under `mcpServers`:
 
 ---
 
-## Tools (32 total)
+## Tools (34 total)
 
-### Screenshot (4)
+### Screenshot (5)
 | Tool | Description |
 |---|---|
-| `screenshot` | Main capture. Supports `detail`, `dotByDot`, `diffMode` |
+| `screenshot` | Main capture. Supports `detail`, `dotByDot`, `dotByDotMaxDimension`, `grayscale`, `region` sub-crop, `diffMode` |
 | `screenshot_background` | Capture a background window without focusing it (PrintWindow API) |
+| `screenshot_ocr` | Windows.Media.Ocr on a window; returns word-level text + screen clickAt coords |
 | `get_screen_info` | Monitor layout, DPI, cursor position |
-| `scroll_capture` | Full-page stitch by scrolling |
+| `scroll_capture` | Full-page stitch by scrolling (MAE overlap detection + 10% fallback) |
 
-### Window management (3)
+### Window management (4)
 | Tool | Description |
 |---|---|
 | `get_windows` | List all windows in Z-order |
 | `get_active_window` | Info about the focused window |
 | `focus_window` | Bring a window to foreground by partial title match |
+| `dock_window` | Snap a window to a screen corner at a small size + always-on-top (for keeping CLI visible) |
 
 ### Mouse (5)
 | Tool | Description |
@@ -157,6 +162,44 @@ browser_connect() → browser_get_dom() → browser_find_element(selector) → b
 
 ---
 
+## Auto-dock CLI on startup
+
+Keep Claude CLI visible while operating other apps full-screen. Set env vars in your MCP config and the docked window auto-snaps into place every MCP startup.
+
+```json
+{
+  "mcpServers": {
+    "desktop-touch": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["D:/path/to/desktop-touch-mcp/dist/index.js"],
+      "env": {
+        "DESKTOP_TOUCH_DOCK_TITLE": "@parent",
+        "DESKTOP_TOUCH_DOCK_CORNER": "bottom-right",
+        "DESKTOP_TOUCH_DOCK_WIDTH": "480",
+        "DESKTOP_TOUCH_DOCK_HEIGHT": "360",
+        "DESKTOP_TOUCH_DOCK_PIN": "true"
+      }
+    }
+  }
+}
+```
+
+| Env var | Default | Notes |
+|---|---|---|
+| `DESKTOP_TOUCH_DOCK_TITLE` | *(unset = off)* | `@parent` walks the MCP process tree to find the hosting terminal — immune to title / branch / project changes. Or use a literal substring. |
+| `DESKTOP_TOUCH_DOCK_CORNER` | `bottom-right` | `top-left` / `top-right` / `bottom-left` / `bottom-right` |
+| `DESKTOP_TOUCH_DOCK_WIDTH` / `HEIGHT` | `480` / `360` | px (`"480"`) or ratio of work area (`"25%"`) — 4K/8K auto-adapts |
+| `DESKTOP_TOUCH_DOCK_PIN` | `true` | Always-on-top toggle |
+| `DESKTOP_TOUCH_DOCK_MONITOR` | primary | Monitor id from `get_screen_info` |
+| `DESKTOP_TOUCH_DOCK_SCALE_DPI` | `false` | If true, multiply px values by `dpi / 96` (opt-in per-monitor scaling) |
+| `DESKTOP_TOUCH_DOCK_MARGIN` | `8` | Screen-edge padding (px) |
+| `DESKTOP_TOUCH_DOCK_TIMEOUT_MS` | `5000` | Max wait for the target window to appear |
+
+> **Input routing gotcha:** when a pinned window is active (e.g. Claude CLI), `keyboard_type` / `keyboard_press` send keys to it, **not** the app you wanted to type into. Always call `focus_window(title=...)` before keyboard operations, then verify `isActive=true` via `screenshot(detail='meta')`.
+
+---
+
 ## Mouse homing correction
 
 When Claude calls `screenshot(detail='text')` to read coordinates and then `mouse_click` seconds later, the target window may have moved. The homing system corrects this automatically.
@@ -183,16 +226,43 @@ mouse_click(x=500, y=300, homing=false)
 
 The `homing` parameter is available on `mouse_click`, `mouse_move`, `mouse_drag`, and `scroll`. The cache is updated automatically on every `screenshot()`, `get_windows()`, `focus_window()`, and `workspace_snapshot()` call.
 
+### `mouse_click` image-local coords (origin + scale)
+
+When you take a `dotByDot` screenshot with `dotByDotMaxDimension`, the response prints the `origin` and `scale` values. Instead of computing screen coords manually, copy them into `mouse_click`:
+
+```
+# Screenshot response:
+#   origin: (0, 120) | scale: 0.6667
+#   To click image pixel (ix, iy): mouse_click(x=ix, y=iy, origin={x:0, y:120}, scale=0.6667)
+
+mouse_click(x=640, y=300, origin={x:0, y:120}, scale=0.6667, windowTitle="Chrome")
+# Server converts: screen = (0 + 640/0.6667, 120 + 300/0.6667) = (960, 570)
+```
+
+This eliminates a whole class of off-by-one and scale bugs. Without origin/scale, `x`/`y` remain absolute screen pixels (unchanged behavior).
+
 ---
 
 ## `screenshot` key parameters
 
 ```
-detail="image"   — PNG/WebP pixels (default)
-detail="text"    — UIA element JSON + clickAt coords (no image, ~100–300 tok)
-detail="meta"    — Title + region only (cheapest, ~20 tok/window)
-dotByDot=true    — 1:1 WebP; image_px + origin = screen_px
-diffMode=true    — I-frame first call, P-frame (changed windows only) after (~160 tok)
+detail="image"          — PNG/WebP pixels (default)
+detail="text"           — UIA element JSON + clickAt coords (no image, ~100–300 tok)
+detail="meta"           — Title + region only (cheapest, ~20 tok/window)
+dotByDot=true           — 1:1 WebP; image_px + origin = screen_px
+dotByDotMaxDimension=N  — cap longest edge (response includes scale for coord math)
+grayscale=true          — ~50% smaller for text-heavy captures (code/AWS console)
+region={x,y,w,h}        — with windowTitle: window-local coords (exclude browser chrome)
+                          without: virtual screen coords
+diffMode=true           — I-frame first call, P-frame (changed windows only) after (~160 tok)
+ocrFallback="auto"      — detail='text' auto-fires Windows OCR on uiaSparse or empty
+```
+
+**Recommended Chrome combo** (50–70% data reduction):
+```
+screenshot(windowTitle="Chrome",
+           dotByDot=true, dotByDotMaxDimension=1280, grayscale=true,
+           region={x:0, y:120, width:1920, height:900})  # skip browser chrome
 ```
 
 **Recommended workflow:**
@@ -288,8 +358,11 @@ Common values: `0` = teleport, `1500` = default gentle, `3000` = fast, `5000` = 
 |---|---|---|
 | Games / video players may return black or hang in background capture | DirectX fullscreen apps may not work even with `PW_RENDERFULLCONTENT` | Retry with `screenshot_background(fullContent=false)`; if still black, use foreground `screenshot` |
 | UIA call overhead | ~300ms per call via PowerShell; `workspace_snapshot` uses a 2s timeout internally | Batch with `workspace_snapshot` upfront, then use `diffMode` for incremental checks |
-| Chrome / WinUI3 UIA elements are empty | Chromium exposes only limited UIA | Use `browser_connect` + `browser_find_element` for precise DOM-based clicking; fall back to `screenshot(detail="image")` for visual inspection |
+| Chrome / WinUI3 UIA elements are empty | Chromium exposes only limited UIA | `screenshot(detail='text')` auto-detects Chromium and falls back to Windows OCR (`hints.chromiumGuard=true`). For richer DOM access use `browser_connect` + `browser_find_element` |
+| Chromium title-regex misses when sites rewrite `document.title` | Guard relies on the ` - Google Chrome` suffix being present; some sites push it off the end of a long title | Title is treated as plain Chrome (UIA runs). OCR path is still reachable via `ocrFallback='always'` or when UIA returns `<5` elements (`uiaSparse`) |
+| `browser_*` CDP tools need Chrome launched with `--remote-debugging-port` | If Chrome is already running on the default profile without the flag, `browser_launch` / `browser_connect` fail. The CDP E2E suite (`tests/e2e/browser-cdp.test.ts`) will also fail in that state | Close Chrome first, then `browser_launch` will relaunch it in debug mode, or start Chrome manually with `--remote-debugging-port=9222 --user-data-dir=C:\tmp\cdp` |
 | Layer buffer TTL | Buffer auto-clears after 90s of inactivity → next `diffMode` becomes an I-frame | After long waits, call `workspace_snapshot` to explicitly reset the buffer |
+| `keyboard_type` / `keyboard_press` follow focus | When `dock_window(pin=true)` keeps another window on top (e.g. Claude CLI), keystrokes may be absorbed by that window | Call `focus_window(title=...)` first and verify `isActive=true` via `screenshot(detail='meta')` before sending keys |
 
 ---
 

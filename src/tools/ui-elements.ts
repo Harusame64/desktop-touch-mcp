@@ -10,8 +10,8 @@ import type { ToolResult } from "./_types.js";
 
 export const getUiElementsSchema = {
   windowTitle: z.string().max(200).describe("Partial window title to find the target window"),
-  maxDepth: z.coerce.number().int().min(1).max(8).default(3).describe("Maximum depth of the element tree to traverse (default 3)"),
-  maxElements: z.coerce.number().int().min(1).max(200).default(50).describe("Maximum number of elements to return (default 50)"),
+  maxDepth: z.coerce.number().int().min(1).max(8).default(4).describe("Maximum depth of the element tree to traverse (default 4)"),
+  maxElements: z.coerce.number().int().min(1).max(200).default(80).describe("Maximum number of elements to return (default 80)"),
 };
 
 export const clickElementSchema = {
