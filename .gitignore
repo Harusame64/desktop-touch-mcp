@@ -9,3 +9,11 @@ docs/*-plan.md
 docs/*-plan-*.md
 docs/test-*.md
 docs/e2e-*.md
+
+# Claude Code session data (auto-memory, local settings) — never distribute
+.claude/
+
+# Native tool build artifacts (only the compiled .exe in bin/ is shipped)
+bin/*.pdb
+tools/win-ocr/bin/
+tools/win-ocr/obj/
