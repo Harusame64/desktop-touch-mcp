@@ -10,15 +10,15 @@
 | **0.1** Output envelope types (`ok`/`fail` helpers) | ✅ Done | `84205e6` |
 | **1.1** Constructive errors (`_errors.ts`, `failWith`) | ✅ Done + verified | `84205e6` `02c1e4a` |
 | **0.2** `pollUntil` consolidation (`src/engine/poll.ts`) | ✅ Done | — |
-| 1.2 Cache / identity transparency | ⬜ Not started | — |
-| 1.3 `wait_until` tool | ⬜ Not started | — |
-| 2.1 Post-state narration (always ON) | ⬜ Not started | — |
-| 2.2 why/state hints extension | ⬜ Not started | — |
-| 2.3 OCR confidence exposure | ⬜ Not started | — |
-| 3.1 Context retrieval tools | ⬜ Not started | — |
+| 1.2 Cache / identity transparency (incl. hints propagation to set_element_value / scope_element) | ✅ Done | `f79f6e7` `c147234` |
+| 1.3 `wait_until` tool (window/element/focus/value/ready + X-1 terminal_output_contains + X-2 element_matches) | ✅ Done | `f79f6e7` `c147234` |
+| 2.1 Post-state narration (always ON) | ✅ Done | `f79f6e7` `c147234` |
+| 2.2 why/state hints extension (incl. click_element disabled pre-check) | ✅ Done | `f79f6e7` `c147234` |
+| 2.3 OCR confidence exposure (placeholder heuristic — real `OcrLine.Confidence` via win-ocr.exe pending) | ✅ Done | `f79f6e7` `c147234` |
+| 3.1 Context retrieval tools (get_context / get_history / get_document_state) | ✅ Done | `f79f6e7` `c147234` |
 | 3.2 Rich narration (opt-in) | ⬜ Not started — defer until usage data justifies UIA-diff cost | — |
-| 3.3 UIA confidence synthesis | ⬜ Not started | — |
-| 3.4 Async event subscribe | ⬜ Not started | — |
+| 3.3 UIA confidence synthesis | ✅ Done | `f79f6e7` |
+| 3.4 Async event subscribe (events_subscribe / poll / unsubscribe + pid memoization) | ✅ Done | `f79f6e7` `c147234` |
 
 ---
 
