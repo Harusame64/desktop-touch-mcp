@@ -2,6 +2,8 @@
 
 [日本語](README.ja.md)
 
+[![Glama](https://glama.ai/mcp/servers/Harusame64/desktop-touch-mcp/badge)](https://glama.ai/mcp/servers/Harusame64/desktop-touch-mcp)
+
 > **Stop pasting screenshots. Let Claude see and control your desktop directly.**
 
 An MCP server that gives Claude eyes and hands on Windows — 25 tools covering screenshots, mouse, keyboard, and Windows UI Automation, designed from the ground up for LLM efficiency.
