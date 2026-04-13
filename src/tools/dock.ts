@@ -11,7 +11,9 @@ import {
   findAncestorWindow,
 } from "../engine/win32.js";
 import type { WindowZInfo, MonitorInfo } from "../engine/win32.js";
+import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
+import { failWith } from "./_errors.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -208,19 +210,12 @@ export const dockWindowHandler = async ({
   try {
     const win = findWindow(title);
     if (!win) {
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({ ok: false, error: `No window found matching: "${title}"` }),
-        }],
-      };
+      return failWith(`No window found matching: "${title}"`, "dock_window", { title });
     }
     const result = dockKnownWindow(win, { corner, width, height, pin, monitorId, margin });
-    return {
-      content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
-    };
+    return ok(result, true);
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `dock_window failed: ${String(err)}` }] };
+    return failWith(err, "dock_window");
   }
 };
 

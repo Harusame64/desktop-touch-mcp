@@ -7,7 +7,9 @@ import { captureScreen } from "../engine/image.js";
 import { clearLayers } from "../engine/layer-buffer.js";
 import { getUiElements, extractActionableElements, WINUI3_CLASS_RE } from "../engine/uia-bridge.js";
 import { updateWindowCache } from "../engine/window-cache.js";
+import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
+import { failWith } from "./_errors.js";
 
 /** Chromium-based browser windows — UIA traversal is prohibitively slow on these */
 export const CHROMIUM_TITLE_RE = /- (?:Google Chrome|Microsoft Edge|Brave|Opera|Vivaldi|Arc|Chromium)$/;
@@ -166,7 +168,7 @@ export const workspaceSnapshotHandler = async ({
 
     return { content };
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `workspace_snapshot failed: ${String(err)}` }] };
+    return failWith(err, "workspace_snapshot");
   }
 };
 
@@ -242,14 +244,9 @@ export const workspaceLaunchHandler = async ({
         "or it may need more time. Use workspace_snapshot to check current windows.";
     }
 
-    return {
-      content: [{
-        type: "text",
-        text: JSON.stringify(result),
-      }],
-    };
+    return ok(result);
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `workspace_launch failed: ${String(err)}` }] };
+    return failWith(err, "workspace_launch");
   }
 };
 

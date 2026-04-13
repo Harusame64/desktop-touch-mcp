@@ -3,7 +3,9 @@ import { z } from "zod";
 import { mouse, Button, Point, straightTo, DEFAULT_MOUSE_SPEED } from "../engine/nutjs.js";
 import { enumWindowsInZOrder, restoreAndFocusWindow } from "../engine/win32.js";
 import { updateWindowCache } from "../engine/window-cache.js";
+import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
+import { failWith } from "./_errors.js";
 import {
   listTabs,
   evaluateInTab,
@@ -241,9 +243,7 @@ export const browserConnectHandler = async ({
       ],
     };
   } catch (err) {
-    return {
-      content: [{ type: "text" as const, text: `browser_connect failed: ${String(err)}` }],
-    };
+    return failWith(err, "browser_connect");
   }
 };
 
@@ -284,9 +284,7 @@ export const browserFindElementHandler = async ({
       ],
     };
   } catch (err) {
-    return {
-      content: [{ type: "text" as const, text: `browser_find_element failed: ${String(err)}` }],
-    };
+    return failWith(err, "browser_find_element");
   }
 };
 
@@ -342,9 +340,7 @@ export const browserClickElementHandler = async ({
       ],
     };
   } catch (err) {
-    return {
-      content: [{ type: "text" as const, text: `browser_click_element failed: ${String(err)}` }],
-    };
+    return failWith(err, "browser_click_element");
   }
 };
 
@@ -369,9 +365,7 @@ export const browserEvalHandler = async ({
       content: [{ type: "text" as const, text }],
     };
   } catch (err) {
-    return {
-      content: [{ type: "text" as const, text: `browser_eval failed: ${String(err)}` }],
-    };
+    return failWith(err, "browser_eval");
   }
 };
 
@@ -397,9 +391,7 @@ export const browserGetDomHandler = async ({
       content: [{ type: "text" as const, text: html }],
     };
   } catch (err) {
-    return {
-      content: [{ type: "text" as const, text: `browser_get_dom failed: ${String(err)}` }],
-    };
+    return failWith(err, "browser_get_dom");
   }
 };
 
@@ -423,9 +415,7 @@ export const browserNavigateHandler = async ({
       ],
     };
   } catch (err) {
-    return {
-      content: [{ type: "text" as const, text: `browser_navigate failed: ${String(err)}` }],
-    };
+    return failWith(err, "browser_navigate");
   }
 };
 
@@ -567,9 +557,7 @@ export const browserGetInteractiveHandler = async ({
       }],
     };
   } catch (err) {
-    return {
-      content: [{ type: "text" as const, text: `browser_get_interactive failed: ${String(err)}` }],
-    };
+    return failWith(err, "browser_get_interactive");
   }
 };
 
@@ -703,9 +691,7 @@ export const browserLaunchHandler = async ({
       }],
     };
   } catch (err) {
-    return {
-      content: [{ type: "text" as const, text: `browser_launch failed: ${String(err)}` }],
-    };
+    return failWith(err, "browser_launch");
   }
 };
 
@@ -725,9 +711,7 @@ export const browserDisconnectHandler = async ({
       ],
     };
   } catch (err) {
-    return {
-      content: [{ type: "text" as const, text: `browser_disconnect failed: ${String(err)}` }],
-    };
+    return failWith(err, "browser_disconnect");
   }
 };
 

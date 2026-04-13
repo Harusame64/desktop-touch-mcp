@@ -9,7 +9,9 @@ import {
   computeWindowDelta,
 } from "../engine/window-cache.js";
 import { getElementBounds } from "../engine/uia-bridge.js";
+import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
+import { failWith } from "./_errors.js";
 
 /**
  * Move cursor to (x, y) at the given speed.
@@ -245,9 +247,9 @@ export const mouseMoveHandler = async ({
     }
     await moveTo(tx, ty, speed);
     const homingStr = !homing ? " [homing: off]" : notes.length ? ` [homing: ${notes.join(", ")}]` : "";
-    return { content: [{ type: "text" as const, text: `Mouse moved to (${tx}, ${ty})${homingStr}` }] };
+    return ok({ ok: true, movedTo: { x: tx, y: ty }, homing: homingStr || undefined });
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `mouse_move failed: ${String(err)}` }] };
+    return failWith(err, "mouse_move");
   }
 };
 
@@ -268,7 +270,7 @@ export const mouseClickHandler = async ({
     if (origin !== undefined) {
       const s = scale ?? 1;
       if (s <= 0) {
-        return { content: [{ type: "text" as const, text: `mouse_click failed: scale must be positive (got ${s})` }] };
+        return failWith(`scale must be positive (got ${s})`, "mouse_click");
       }
       screenX = Math.round(origin.x + x / s);
       screenY = Math.round(origin.y + y / s);
@@ -292,12 +294,14 @@ export const mouseClickHandler = async ({
     } else {
       await mouse.click(btn);
     }
-    const action = doubleClick ? "Double-clicked" : "Clicked";
-    const convStr = conversionNotes.length ? ` [${conversionNotes.join("; ")}]` : "";
-    const homingStr = !homing ? " [homing: off]" : notes.length ? ` [homing: ${notes.join(", ")}]` : "";
-    return { content: [{ type: "text" as const, text: `${action} ${button} at (${tx}, ${ty})${convStr}${homingStr}` }] };
+    const action = doubleClick ? "doubleClick" : "click";
+    return ok({
+      ok: true, action, button, at: { x: tx, y: ty },
+      ...(conversionNotes.length && { conversion: conversionNotes.join("; ") }),
+      ...(notes.length && { homing: notes.join(", ") }),
+    });
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `mouse_click failed: ${String(err)}` }] };
+    return failWith(err, "mouse_click");
   }
 };
 
@@ -336,12 +340,13 @@ export const mouseDragHandler = async ({
         mouse.config.mouseSpeed = prev;
       }
     }
-    const homingStr = !homing ? " [homing: off]" : notes.length ? ` [homing: ${notes.join(", ")}]` : "";
-    return {
-      content: [{ type: "text" as const, text: `Dragged from (${tsx}, ${tsy}) to (${tex}, ${tey})${homingStr}` }],
-    };
+    return ok({
+      ok: true, action: "drag",
+      from: { x: tsx, y: tsy }, to: { x: tex, y: tey },
+      ...(notes.length && { homing: notes.join(", ") }),
+    });
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `mouse_drag failed: ${String(err)}` }] };
+    return failWith(err, "mouse_drag");
   }
 };
 
@@ -374,18 +379,18 @@ export const scrollHandler = async ({
         break;
     }
     const homingStr = !homing ? " [homing: off]" : notes.length ? ` [homing: ${notes.join(", ")}]` : "";
-    return { content: [{ type: "text" as const, text: `Scrolled ${direction} by ${amount} steps${homingStr}` }] };
+    return ok({ ok: true, scrolled: direction, steps: amount, ...(notes.length && { homing: notes.join(", ") }) });
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `scroll failed: ${String(err)}` }] };
+    return failWith(err, "scroll");
   }
 };
 
 export const getCursorPositionHandler = async (): Promise<ToolResult> => {
   try {
     const pos = await mouse.getPosition();
-    return { content: [{ type: "text" as const, text: JSON.stringify({ x: pos.x, y: pos.y }) }] };
+    return ok({ x: pos.x, y: pos.y });
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `get_cursor_position failed: ${String(err)}` }] };
+    return failWith(err, "get_cursor_position");
   }
 };
 

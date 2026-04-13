@@ -2,7 +2,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { getUiElements, clickElement, setElementValue, getElementBounds, getElementChildren } from "../engine/uia-bridge.js";
 import { captureScreen } from "../engine/image.js";
+import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
+import { failWith } from "./_errors.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -47,9 +49,9 @@ export const getUiElementsHandler = async ({
 }: { windowTitle: string; maxDepth: number; maxElements: number }): Promise<ToolResult> => {
   try {
     const result = await getUiElements(windowTitle, maxDepth, maxElements);
-    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    return ok(result, true);
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `get_ui_elements failed: ${String(err)}` }] };
+    return failWith(err, "get_ui_elements", { windowTitle });
   }
 };
 
@@ -58,12 +60,12 @@ export const clickElementHandler = async ({
 }: { windowTitle: string; name?: string; automationId?: string; controlType?: string }): Promise<ToolResult> => {
   try {
     if (!name && !automationId) {
-      return { content: [{ type: "text" as const, text: "Provide at least one of: name, automationId" }] };
+      return failWith("Provide at least one of: name, automationId", "click_element");
     }
     const result = await clickElement(windowTitle, name, automationId, controlType);
-    return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+    return ok(result);
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `click_element failed: ${String(err)}` }] };
+    return failWith(err, "click_element", { windowTitle, name, automationId });
   }
 };
 
@@ -72,12 +74,12 @@ export const setElementValueHandler = async ({
 }: { windowTitle: string; value: string; name?: string; automationId?: string }): Promise<ToolResult> => {
   try {
     if (!name && !automationId) {
-      return { content: [{ type: "text" as const, text: "Provide at least one of: name, automationId" }] };
+      return failWith("Provide at least one of: name, automationId", "set_element_value");
     }
     const result = await setElementValue(windowTitle, value, name, automationId);
-    return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+    return ok(result);
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `set_element_value failed: ${String(err)}` }] };
+    return failWith(err, "set_element_value", { windowTitle, name, automationId });
   }
 };
 
@@ -94,12 +96,12 @@ export const scopeElementHandler = async ({
 }): Promise<ToolResult> => {
   try {
     if (!name && !automationId && !controlType) {
-      return { content: [{ type: "text" as const, text: "Provide at least one of: name, automationId, controlType" }] };
+      return failWith("Provide at least one of: name, automationId, controlType", "scope_element");
     }
 
     const bounds = await getElementBounds(windowTitle, name, automationId, controlType);
     if (!bounds) {
-      return { content: [{ type: "text" as const, text: JSON.stringify({ error: "Element not found" }) }] };
+      return failWith("Element not found", "scope_element", { windowTitle, name, automationId, controlType });
     }
 
     const content: ToolResult["content"] = [];
@@ -134,7 +136,7 @@ export const scopeElementHandler = async ({
     content.push({ type: "text" as const, text: JSON.stringify({ element: bounds, children }, null, 2) });
     return { content };
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `scope_element failed: ${String(err)}` }] };
+    return failWith(err, "scope_element", { windowTitle, name, automationId });
   }
 };
 

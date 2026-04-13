@@ -10,7 +10,9 @@ import type { UiElementsResult } from "../engine/uia-bridge.js";
 import { recognizeWindow, ocrWordsToActionable, runOcr, mergeNearbyWords } from "../engine/ocr-bridge.js";
 import { updateWindowCache } from "../engine/window-cache.js";
 import { CHROMIUM_TITLE_RE } from "./workspace.js";
+import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
+import { failWith } from "./_errors.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas (plain objects — used by server.tool() and the macro registry)
@@ -506,7 +508,7 @@ export const screenshotHandler = async ({
       }
 
       if (!windowRegion) {
-        return { content: [{ type: "text" as const, text: `Window not found: "${windowTitle}"` }] };
+        return failWith(`Window not found: "${windowTitle}"`, "screenshot", { windowTitle });
       }
 
       // Sub-crop: treat region as window-local screen coordinates.
@@ -592,7 +594,7 @@ export const screenshotHandler = async ({
       };
     }
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `Screenshot failed: ${String(err)}` }] };
+    return failWith(err, "screenshot");
   }
 };
 
@@ -634,7 +636,7 @@ export const screenshotBgHandler = async ({
     }
 
     if (!hwnd) {
-      return { content: [{ type: "text" as const, text: `Window not found: "${windowTitle}"` }] };
+      return failWith(`Window not found: "${windowTitle}"`, "screenshot_background", { windowTitle });
     }
 
     // Build capture options with optional sub-crop (image-local coordinates).
@@ -685,7 +687,7 @@ export const screenshotBgHandler = async ({
       ],
     };
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `Background screenshot failed: ${String(err)}` }] };
+    return failWith(err, "screenshot_background");
   }
 };
 
@@ -702,7 +704,7 @@ export const screenshotOcrHandler = async ({
     const wins = enumWindowsInZOrder();
     const win = wins.find((w) => w.title.toLowerCase().includes(windowTitle.toLowerCase()));
     if (!win) {
-      return { content: [{ type: "text" as const, text: `Window not found: "${windowTitle}"` }] };
+      return failWith(`Window not found: "${windowTitle}"`, "screenshot_ocr", { windowTitle });
     }
 
     const origin = { x: win.region.x, y: win.region.y };
@@ -769,7 +771,7 @@ export const screenshotOcrHandler = async ({
       }],
     };
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `screenshot_ocr failed: ${String(err)}` }] };
+    return failWith(err, "screenshot_ocr");
   }
 };
 
@@ -789,9 +791,9 @@ export const getScreenInfoHandler = async (): Promise<ToolResult> => {
       })),
       displayCount: monitors.length,
     };
-    return { content: [{ type: "text" as const, text: JSON.stringify(info, null, 2) }] };
+    return ok(info, true);
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `get_screen_info failed: ${String(err)}` }] };
+    return failWith(err, "get_screen_info");
   }
 };
 

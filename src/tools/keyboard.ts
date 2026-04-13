@@ -5,7 +5,9 @@ import { promisify } from "node:util";
 import { keyboard } from "../engine/nutjs.js";
 import { parseKeys } from "../utils/key-map.js";
 import { assertKeyComboSafe } from "../utils/key-safety.js";
+import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
+import { failWith } from "./_errors.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -99,12 +101,12 @@ export const keyboardTypeHandler = async ({
   try {
     if (use_clipboard) {
       await typeViaClipboard(text);
-      return { content: [{ type: "text" as const, text: `Typed ${text.length} character(s) via clipboard (IME bypassed)` }] };
+      return ok({ ok: true, typed: text.length, method: "clipboard" });
     }
     await keyboard.type(text);
-    return { content: [{ type: "text" as const, text: `Typed ${text.length} character(s)` }] };
+    return ok({ ok: true, typed: text.length, method: "keystroke" });
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `keyboard_type failed: ${String(err)}` }] };
+    return failWith(err, "keyboard_type");
   }
 };
 
@@ -114,9 +116,9 @@ export const keyboardPressHandler = async ({ keys }: { keys: string }): Promise<
     const keyList = parseKeys(keys);
     await keyboard.pressKey(...keyList);
     await keyboard.releaseKey(...keyList);
-    return { content: [{ type: "text" as const, text: `Pressed: ${keys}` }] };
+    return ok({ ok: true, pressed: keys });
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `keyboard_press failed: ${String(err)}` }] };
+    return failWith(err, "keyboard_press");
   }
 };
 

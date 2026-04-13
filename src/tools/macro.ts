@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { ok } from "./_types.js";
 import type { ToolHandler, ToolResult } from "./_types.js";
 import { checkFailsafe } from "../utils/failsafe.js";
 import { assertKeyComboSafe } from "../utils/key-safety.js";
