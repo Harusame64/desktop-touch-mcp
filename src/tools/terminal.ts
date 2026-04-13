@@ -242,6 +242,7 @@ export const terminalSendHandler = async ({
     // would need WS_EX_TOPMOST inspection — left as a future enhancement.
     const warnings: string[] = [];
 
+    let foregrounded = !focusFirst; // when not requested, treat as success
     if (focusFirst) {
       // Windows SetForegroundWindow is racy under load — retry until the target
       // really is in the foreground (or give up after 5 tries).
@@ -250,7 +251,13 @@ export const terminalSendHandler = async ({
         restoreAndFocusWindow(win.hwnd);
         await new Promise<void>((r) => setTimeout(r, 100));
         const fg = enumWindowsInZOrder().find((w) => w.isActive);
-        if (fg && String(fg.hwnd) === targetHwnd) break;
+        if (fg && String(fg.hwnd) === targetHwnd) { foregrounded = true; break; }
+      }
+      if (!foregrounded) {
+        // Windows foreground-stealing protection refused the focus shift.
+        // Surface this as a warning so callers (LLM / tests) can detect that
+        // subsequent keystrokes may have landed on the wrong window.
+        warnings.push("ForegroundNotTransferred: Windows refused SetForegroundWindow; keystrokes may have missed the target. Retry after focus_window or click on the terminal.");
       }
     }
 

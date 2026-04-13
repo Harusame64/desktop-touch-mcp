@@ -204,4 +204,27 @@ describe("browser_search — scope / pagination / visibility", () => {
       expect(r.results[i - 1].confidence).toBeGreaterThanOrEqual(r.results[i].confidence);
     }
   });
+
+  it("cross-axis re-search does not inherit stale matchScore from previous call (Bug 2 regression)", async () => {
+    // Run by:'role' first to mark every <button> with score 0.85 / matchedBy='roleImplicit'.
+    // If WeakMap-based state leaked into a DOM expando, the next by:'text' call would
+    // see a stale 0.85 sitting on the button and produce wrong confidence/matchedBy.
+    const role1 = await search({ by: "role", pattern: "button" });
+    expect(role1.ok !== false).toBe(true);
+    expect(role1.results.every((r: { matchedBy: string }) => /role/.test(r.matchedBy))).toBe(true);
+
+    // Now search by text for "Submit Form" (a button-text content).
+    const text1 = await search({ by: "text", pattern: "Submit Form" });
+    expect(text1.ok !== false, JSON.stringify(text1)).toBe(true);
+    // matchedBy must reflect THIS call's axis, not the previous role search.
+    expect(text1.results[0].matchedBy).toBe("text");
+    // confidence should be 1.0 (exact text), not 0.85 (stale role score).
+    expect(text1.results[0].confidence).toBe(1.0);
+
+    // And run by:'role' a third time — score must still be the role-axis value,
+    // not a stale 1.0 from the text call.
+    const role2 = await search({ by: "role", pattern: "button" });
+    expect(role2.ok !== false).toBe(true);
+    expect(role2.results.every((r: { confidence: number }) => r.confidence <= 0.85)).toBe(true);
+  });
 });

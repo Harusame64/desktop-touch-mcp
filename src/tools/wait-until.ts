@@ -26,8 +26,10 @@ export type BrowserSearchHook = (params: {
 let terminalReadHook: TerminalReadHook | null = null;
 let browserSearchHook: BrowserSearchHook | null = null;
 
-export function setTerminalReadHook(fn: TerminalReadHook): void { terminalReadHook = fn; }
-export function setBrowserSearchHook(fn: BrowserSearchHook): void { browserSearchHook = fn; }
+/** Register the terminal_read backing for `wait_until(terminal_output_contains)`. Pass null to clear. */
+export function setTerminalReadHook(fn: TerminalReadHook | null): void { terminalReadHook = fn; }
+/** Register the browser_search backing for `wait_until(element_matches)`. Pass null to clear. */
+export function setBrowserSearchHook(fn: BrowserSearchHook | null): void { browserSearchHook = fn; }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schema

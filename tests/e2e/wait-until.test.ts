@@ -164,7 +164,7 @@ describe("wait_until(focus_changes)", () => {
 describe("wait_until(terminal_output_contains)", () => {
   it("returns an error when the terminal_read hook is not registered", async () => {
     // Ensure hook is the null stub (afterEach reset)
-    setTerminalReadHook(null as unknown as TerminalReadHook); // force missing
+    setTerminalReadHook(null);
     const r = parsePayload(await waitUntilHandler({
       condition: "terminal_output_contains",
       target: { windowTitle: "anything", pattern: "hi" },
@@ -211,7 +211,7 @@ describe("wait_until(terminal_output_contains)", () => {
 
 describe("wait_until(element_matches)", () => {
   it("returns an error when the browser_search hook is not registered", async () => {
-    setBrowserSearchHook(null as unknown as BrowserSearchHook);
+    setBrowserSearchHook(null);
     const r = parsePayload(await waitUntilHandler({
       condition: "element_matches",
       target: { by: "text", pattern: "anything" },
@@ -242,5 +242,33 @@ describe("wait_until(element_matches)", () => {
     }));
     expect(r.ok).toBe(false);
     expect(r.code).toBe("WaitTimeout");
+  });
+});
+
+describe("hook setter null re-clear contract", () => {
+  it("setTerminalReadHook(null) restores the unregistered state (terminal_output_contains fails fast)", async () => {
+    // First install a working hook
+    setTerminalReadHook(async () => ({ text: "hello", marker: "x" }));
+    // Then explicitly clear it
+    setTerminalReadHook(null);
+    const r = parsePayload(await waitUntilHandler({
+      condition: "terminal_output_contains",
+      target: { windowTitle: "any", pattern: "hello" },
+      timeoutMs: 500, intervalMs: 200,
+    }));
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/hook not registered|not registered/i);
+  });
+
+  it("setBrowserSearchHook(null) restores the unregistered state (element_matches fails fast)", async () => {
+    setBrowserSearchHook(async () => [{ text: "x", selector: "x" }]);
+    setBrowserSearchHook(null);
+    const r = parsePayload(await waitUntilHandler({
+      condition: "element_matches",
+      target: { by: "text", pattern: "x" },
+      timeoutMs: 500, intervalMs: 200,
+    }));
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/hook not registered|not registered/i);
   });
 });

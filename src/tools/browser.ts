@@ -804,16 +804,27 @@ export const browserSearchHandler = async ({
   // Sample the clock every 1024 iterations — cheap but keeps latency bounded.
   function overBudget(i) { return (i & 0x3FF) === 0 && nowFn() > deadline; }
 
+  // IIFE-local match-state stores. WeakMap is essential: DOM elements persist
+  // across Runtime.evaluate calls, so any expando we set (e.g. el.__matchScore)
+  // would leak into the next search and contaminate scores / matchedBy / dedupe.
+  // WeakMap is GC'd at IIFE end so each call starts clean.
+  const matchScore = new WeakMap();
+  const matchedByMap = new WeakMap();
+  const pushed = new Set();
+  function record(el, score, by) {
+    const prev = matchScore.get(el) || 0;
+    if (score > prev) { matchScore.set(el, score); matchedByMap.set(el, by); }
+    if (!pushed.has(el)) { candidates.push(el); pushed.add(el); }
+  }
+
   const all = root.querySelectorAll('*');
   let candidates = [];
 
   if (by === 'selector') {
-    candidates = Array.from(root.querySelectorAll(pat));
-    for (let i = 0; i < candidates.length; i++) {
-      if (overBudget(i)) { aborted = true; candidates.length = i; break; }
-      const el = candidates[i];
-      el.__matchScore = 1.0;
-      el.__matchedBy = 'selector';
+    const selectorMatches = Array.from(root.querySelectorAll(pat));
+    for (let i = 0; i < selectorMatches.length; i++) {
+      if (overBudget(i)) { aborted = true; break; }
+      record(selectorMatches[i], 1.0, 'selector');
     }
   } else if (by === 'text') {
     const needle = cs ? pat : pat.toLowerCase();
@@ -827,8 +838,8 @@ export const browserSearchHandler = async ({
         .join('').trim();
       if (!direct) continue;
       const hay = cs ? direct : direct.toLowerCase();
-      if (hay === needle) { el.__matchScore = 1.0; el.__matchedBy = 'text'; candidates.push(el); }
-      else if (hay.includes(needle)) { el.__matchScore = 0.8; el.__matchedBy = 'text'; candidates.push(el); }
+      if (hay === needle) record(el, 1.0, 'text');
+      else if (hay.includes(needle)) record(el, 0.8, 'text');
     }
   } else if (by === 'regex') {
     let re;
@@ -839,30 +850,21 @@ export const browserSearchHandler = async ({
       if (overBudget(i++)) { aborted = true; break; }
       const direct = Array.from(el.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent || '').join('').trim();
       if (!direct) continue;
-      if (re.test(direct)) { el.__matchScore = 0.9; el.__matchedBy = 'regex'; candidates.push(el); }
+      if (re.test(direct)) record(el, 0.9, 'regex');
     }
   } else if (by === 'role') {
     const needle = cs ? pat : pat.toLowerCase();
-    // IIFE-local Set avoids leaking __pushed expando across evaluateInTab calls —
-    // expandos on DOM elements persist between Runtime.evaluate invocations and
-    // would cause false "already pushed" skips on the second+ search.
-    const pushed = new Set();
-    function pushRole(el, score, matchedBy) {
-      const prev = el.__matchScore || 0;
-      if (score > prev) { el.__matchScore = score; el.__matchedBy = matchedBy; }
-      if (!pushed.has(el)) { candidates.push(el); pushed.add(el); }
-    }
     let i = 0;
     for (const el of all) {
       if (overBudget(i++)) { aborted = true; break; }
       const role = el.getAttribute('role') || '';
       const cmp = cs ? role : role.toLowerCase();
-      if (cmp === needle) pushRole(el, 0.75, 'role');
+      if (cmp === needle) record(el, 0.75, 'role');
     }
     // Implicit roles — score slightly higher because they're guaranteed by tag.
-    if (!aborted && needle === 'button')  for (const el of root.querySelectorAll('button')) pushRole(el, 0.85, 'roleImplicit');
-    if (!aborted && needle === 'link')    for (const el of root.querySelectorAll('a[href]')) pushRole(el, 0.85, 'roleImplicit');
-    if (!aborted && needle === 'heading') for (const el of root.querySelectorAll('h1,h2,h3,h4,h5,h6')) pushRole(el, 0.85, 'roleImplicit');
+    if (!aborted && needle === 'button')  for (const el of root.querySelectorAll('button')) record(el, 0.85, 'roleImplicit');
+    if (!aborted && needle === 'link')    for (const el of root.querySelectorAll('a[href]')) record(el, 0.85, 'roleImplicit');
+    if (!aborted && needle === 'heading') for (const el of root.querySelectorAll('h1,h2,h3,h4,h5,h6')) record(el, 0.85, 'roleImplicit');
   } else if (by === 'ariaLabel') {
     const needle = cs ? pat : pat.toLowerCase();
     let i = 0;
@@ -871,14 +873,12 @@ export const browserSearchHandler = async ({
       const aria = el.getAttribute('aria-label') || '';
       if (!aria) continue;
       const cmp = cs ? aria : aria.toLowerCase();
-      if (cmp === needle) { el.__matchScore = 0.95; el.__matchedBy = 'ariaLabel'; candidates.push(el); }
-      else if (cmp.includes(needle)) { el.__matchScore = 0.7; el.__matchedBy = 'ariaLabel'; candidates.push(el); }
+      if (cmp === needle) record(el, 0.95, 'ariaLabel');
+      else if (cmp.includes(needle)) record(el, 0.7, 'ariaLabel');
     }
   }
 
-  // De-duplicate (an element can match through multiple paths in role/text)
-  const seen = new Set();
-  candidates = candidates.filter(el => { if (seen.has(el)) return false; seen.add(el); return true; });
+  // candidates already de-duplicated via the pushed Set in record()
 
   if (aborted && candidates.length === 0) {
     return { __error: "Timeout", message: "Scan budget exceeded with no matches; narrow scope or maxResults." };
@@ -896,8 +896,8 @@ export const browserSearchHandler = async ({
 
   // Score and sort by confidence desc
   filtered.sort((a, b) => {
-    const sa = score(a.el.__matchScore, a.visible);
-    const sb = score(b.el.__matchScore, b.visible);
+    const sa = score(matchScore.get(a.el) || 0, a.visible);
+    const sb = score(matchScore.get(b.el) || 0, b.visible);
     return sb - sa;
   });
 
@@ -910,8 +910,8 @@ export const browserSearchHandler = async ({
     selector: bestSelector(el),
     role: el.getAttribute('role') || undefined,
     ariaLabel: el.getAttribute('aria-label') || undefined,
-    matchedBy: el.__matchedBy,
-    confidence: score(el.__matchScore, visible),
+    matchedBy: matchedByMap.get(el),
+    confidence: score(matchScore.get(el) || 0, visible),
     inViewport: inVp,
     rect: { x: Math.round(rect.left), y: Math.round(rect.top), w: Math.round(rect.width), h: Math.round(rect.height) },
   }));
