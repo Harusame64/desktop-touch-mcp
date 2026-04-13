@@ -1,82 +1,82 @@
-# LLMにとって「目と手」になるデスクトップ自動化MCPの理想
+# Ideals for a Desktop Automation MCP as "Eyes and Hands" for LLMs
 
-> 2026-04-13 — Claude Sonnet 4.6 との対話から生まれたメモ
-
----
-
-## 核心思想：「座標」ではなく「意味」で世界を記述する
-
-LLMが操作に迷う根本原因は**「今自分が何をしているかわからない状態（福笑い状態）**」にある。
-目隠しして顔のパーツを置くように、座標だけを頼りにクリックしている状態。
-これを解消するには、操作の前後で「意味」が言語化されることが必要。
+> 2026-04-13 — Notes born from a conversation with Claude Sonnet 4.6
 
 ---
 
-## 1. 操作の前後で「状態が言語化」されること
+## Core Idea: Describe the World in "Meaning", Not "Coordinates"
 
-**Before（福笑い）**
+The root cause of LLM confusion during automation is the **"fukuwarai state" — acting without understanding the context of its own actions**.
+Like placing facial features on a blindfolded face, clicking based solely on coordinates.
+To resolve this, what happens before and after each operation must be expressed in semantic terms.
+
+---
+
+## 1. State Is Made Explicit Before and After Each Operation
+
+**Before (fukuwarai)**
 ```
 Clicked at (1182, 141)
 ```
 
-**After（理想）**
+**After (ideal)**
 ```
 Clicked "New issue" button (GitHub Issues toolbar)
 → Page navigated to: /issues/new
 → "Title" input is now focused
 ```
 
-アクションの結果として「世界がどう変わったか」が言葉で返ってくる。
-確認のスクリーンショットを撮らなくても次の行動を決められる。
+"How the world changed" is returned in words as the result of an action.
+The LLM can decide its next move without needing a confirmation screenshot.
 
 ---
 
-## 2. 「なぜそうなったか」が伝わること
+## 2. "Why It Happened" Is Communicated
 
-現在の `hints` の思想をもっと広げる。
+Extend the existing `hints` philosophy further.
 
 ```json
 {
   "result": "ok",
-  "element": "乗算",
+  "element": "Multiply",
   "why": "matched automationId='multiplyButton'",
   "state": "invoked",
   "windowReady": true
 }
 ```
 
-`state` の候補：`invoked` / `disabled` / `toggled` / `not_found`
+`state` candidates: `invoked` / `disabled` / `toggled` / `not_found`
 
-- `disabled` なのに押した
-- `loading` 中なのに次の操作をした
+- Pressed while `disabled`
+- Triggered the next operation while still `loading`
 
-こうした「空振り」を事前に検知・報告できる。
+Such "misfires" can be detected and reported in advance.
 
 ---
 
-## 3. 「今どこにいるか」の軽量な文脈取得
+## 3. Lightweight Context to Know "Where Am I Now"
 
-フルスクリーンショットなしで現在地を把握できるモード。
+A mode to understand current position without a full screenshot.
 
 ```json
 {
-  "focusedWindow": "電卓",
-  "focusedElement": "表示エリア (value: '29,232')",
+  "focusedWindow": "Calculator",
+  "focusedElement": "Display area (value: '29,232')",
   "cursorNear": "equalButton",
   "pageState": "ready"
 }
 ```
 
-`pageState` の候補：`ready` / `loading` / `dialog` / `error`
+`pageState` candidates: `ready` / `loading` / `dialog` / `error`
 
-`screenshot(detail='meta')` より少し豊かで、`detail='text'` より全然安い。
-**「私は今どこにいるか」** が一発でわかる。
+Richer than `screenshot(detail='meta')`, far cheaper than `detail='text'`.
+**"Where am I right now"** answered in a single call.
 
 ---
 
-## 4. 信頼度つきの認識結果
+## 4. Recognition Results with Confidence Scores
 
-OCRやUIAの結果に「どれだけ信用していいか」が付く。
+OCR and UIA results come with "how much to trust them."
 
 ```json
 {
@@ -91,7 +91,7 @@ OCRやUIAの結果に「どれだけ信用していいか」が付く。
 }
 ```
 
-低信頼（例：0.5未満）の要素には自動でフォールバック戦略を提示する。
+For low-confidence results (e.g., below 0.5), a fallback strategy is automatically suggested.
 
 ```
 confidence=0.23: OCR uncertain. Suggest: dotByDot screenshot of region or browser_eval()
@@ -99,67 +99,67 @@ confidence=0.23: OCR uncertain. Suggest: dotByDot screenshot of region or browse
 
 ---
 
-## 5. 操作の「意味のまとまり」で考える
+## 5. Think in "Meaningful Units" of Operation
 
-個別ツールの羅列ではなく、意図ベースの操作単位があると嬉しい。
+Rather than a list of individual tools, intent-based operation units would be ideal.
 
 ```
 navigate_to(window="Chrome", url="...")
 fill_form(window="X", fields={title: "...", body: "..."})
-wait_until(window="電卓", condition="value_changed")
+wait_until(window="Calculator", condition="value_changed")
 ```
 
-`wait_until` は特に重要。ポーリングのための無駄なスクリーンショットを撮らなくて済む。
+`wait_until` is especially important. It eliminates redundant screenshots taken just to poll for a state change.
 
 ---
 
-## 6. 「失敗の説明」が建設的なこと
+## 6. "Failure Explanations" Are Constructive
 
-**今**
+**Now**
 ```
 click_element failed: SyntaxError at position 40
 ```
 
-**理想**
+**Ideal**
 ```
-click_element failed: element "テキスト エディター" found but
+click_element failed: element "Text Editor" found but
   InvokePattern not supported on Document type.
   → Try: mouse_click(clickAt) or set_element_value() instead
 ```
 
-失敗したとき「じゃあ次にどうすればいいか」のヒントがある。
-LLMは失敗から学べるが、学ぶための情報が必要。
+When something fails, hints tell the LLM "what to try next."
+LLMs can learn from failure — but they need the information to do so.
 
 ---
 
-## 7. 「環境の文脈」を一度覚えてくれること
+## 7. "Environment Context" Is Cached Once
 
-セッション内でウィンドウの構造を学習・キャッシュする。P-frameのUIA版。
+Learns and caches window structure within the session. Only deltas are returned after the initial snapshot — the UIA equivalent of a P-frame in video codecs.
 
 ```
-# 1回目：UIA全取得（重い）
-get_ui_elements(windowTitle="電卓")
+# First call: full UIA fetch (expensive)
+get_ui_elements(windowTitle="Calculator")
 
-# 2回目以降：差分だけ
-get_ui_elements(windowTitle="電卓", cached=true)
+# Subsequent calls: deltas only
+get_ui_elements(windowTitle="Calculator", cached=true)
 → "Using cached layout (3s ago). Changed: display value '0' → '29,232'"
 ```
 
 ---
 
-## まとめ
+## Summary
 
-| 今 | 理想 |
+| Now | Ideal |
 |---|---|
-| 座標で操作 | 名前・意味で操作 |
-| 結果だけ返る | 結果＋理由＋次の手が返る |
-| 失敗は例外メッセージ | 失敗は提案つき |
-| 毎回フル取得 | 差分・キャッシュ活用 |
-| OCRは全部フラット | 信頼度つき |
-| 「今どこ」はスクショ | 軽量な文脈API |
+| Operate by coordinates | Operate by name / meaning |
+| Only result returned | Result + reason + next step returned |
+| Failure is an exception message | Failure includes suggestions |
+| Full fetch every time | Delta / cache utilized |
+| OCR output is flat | With confidence scores |
+| "Where am I" requires screenshot | Lightweight context API |
 
 ---
 
-## 一言でいうと
+## In One Line
 
-> LLMが「考えながら操作できる」ツールではなく、**「操作しながら考えられる」ツール**。
+> Not a tool where the LLM "operates while thinking," but a tool where the LLM can **"think while operating."**
