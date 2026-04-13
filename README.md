@@ -2,7 +2,7 @@
 
 [日本語](README.ja.md)
 
-[![Glama](https://glama.ai/mcp/servers/Harusame64/desktop-touch-mcp/badge)](https://glama.ai/mcp/servers/Harusame64/desktop-touch-mcp)
+[Glama Link](https://glama.ai/mcp/servers/Harusame64/desktop-touch-mcp)
 
 > **Stop pasting screenshots. Let Claude see and control your desktop directly.**
 
