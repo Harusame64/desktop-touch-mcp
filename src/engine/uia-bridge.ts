@@ -667,29 +667,64 @@ foreach ($w in $allWins) {
 }
 if (-not $target) { Write-Output '{"ok":false,"error":"Window not found"}'; exit }
 
-# Find the first descendant that supports TextPattern (usually the terminal control itself)
-$found = $null
+# Collect ALL descendants with TextPattern, score by control-type preference
+# (Document/Custom/Edit favored — these host the real terminal buffer) and
+# fall back to the largest GetText payload. A naive "first match" picks the
+# tab-title label in Windows Terminal and returns one line.
+$candidates = [System.Collections.Generic.List[object]]::new()
 $all = $target.FindAll($desc, $trueC)
 foreach ($el in $all) {
     try {
         $tp = $el.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
-        if ($tp -ne $null) { $found = $tp; break }
+        if ($null -ne $tp) {
+            $ctName = ''
+            try { $ctName = $el.Current.ControlType.ProgrammaticName -replace 'ControlType\.','' } catch {}
+            $candidates.Add(@{ tp=$tp; controlType=$ctName })
+        }
     } catch {}
 }
+# Also consider the root window itself
+try {
+    $rootTp = $target.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
+    if ($null -ne $rootTp) { $candidates.Add(@{ tp=$rootTp; controlType='Window' }) }
+} catch {}
 
-# Sometimes the root window itself implements TextPattern
-if ($found -eq $null) {
-    try {
-        $found = $target.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
-    } catch {}
+if ($candidates.Count -eq 0) { Write-Output '{"ok":false,"error":"TextPattern not available"}'; exit }
+
+function ControlTypeScore($ct) {
+    switch -Regex ($ct) {
+        '^(Document|Edit)$' { return 3 }
+        '^Custom$'          { return 2 }
+        '^(Pane|Group)$'    { return 1 }
+        default             { return 0 }
+    }
 }
 
-if ($found -eq $null) { Write-Output '{"ok":false,"error":"TextPattern not available"}'; exit }
+$best = $null
+$bestScore = -1
+$bestLen = -1
+$bestText = ''
+foreach ($c in $candidates) {
+    $txt = ''
+    try { $txt = $c.tp.DocumentRange.GetText(-1) } catch { continue }
+    if ($null -eq $txt) { $txt = '' }
+    $score = ControlTypeScore $c.controlType
+    # Prefer higher ControlType score; tie-break by longer text.
+    if ($score -gt $bestScore -or ($score -eq $bestScore -and $txt.Length -gt $bestLen)) {
+        $bestScore = $score
+        $bestLen   = $txt.Length
+        $bestText  = $txt
+        $best      = $c
+    }
+    # Short-circuit: Document/Edit (score=3) with non-empty text is the best
+    # we can hope for; skip GetText() on remaining candidates to save time.
+    if ($bestScore -eq 3 -and $bestLen -gt 0) { break }
+}
+
+if ($null -eq $best) { Write-Output '{"ok":false,"error":"TextPattern not available"}'; exit }
 
 try {
-    $range = $found.DocumentRange
-    $text  = $range.GetText(-1)
-    $payload = @{ ok=$true; text=$text } | ConvertTo-Json -Compress
+    $payload = @{ ok=$true; text=$bestText; controlType=$best.controlType } | ConvertTo-Json -Compress
     Write-Output $payload
 } catch {
     Write-Output ('{"ok":false,"error":"' + ($_.Exception.Message -replace '"','\\"') + '"}')
