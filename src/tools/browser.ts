@@ -6,6 +6,7 @@ import { updateWindowCache } from "../engine/window-cache.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
+import { pollUntil } from "../engine/poll.js";
 import {
   listTabs,
   evaluateInTab,
@@ -653,19 +654,19 @@ export const browserLaunchHandler = async ({
     // Give the browser a moment before the first probe — the spawn event fires as
     // soon as the OS hands off the process, long before Chrome initializes CDP.
     await new Promise<void>((r) => setTimeout(r, 200));
-    const deadline = Date.now() + waitMs;
-    let tabs: CdpTab[] | null = null;
     let lastErr: unknown = null;
-    while (Date.now() < deadline) {
-      try {
-        tabs = await listTabs(port);
-        break;
-      } catch (e) {
-        lastErr = e;
-        await new Promise<void>((r) => setTimeout(r, 200));
-      }
-    }
-    if (!tabs) {
+    const pollResult = await pollUntil(
+      async () => {
+        try {
+          return await listTabs(port);
+        } catch (e) {
+          lastErr = e;
+          return null;
+        }
+      },
+      { intervalMs: 200, timeoutMs: waitMs }
+    );
+    if (!pollResult.ok) {
       return {
         content: [{
           type: "text" as const,
@@ -677,6 +678,7 @@ export const browserLaunchHandler = async ({
         }],
       };
     }
+    const tabs = pollResult.value;
 
     const pageTabs = tabs.filter((t) => t.type === "page");
     return {

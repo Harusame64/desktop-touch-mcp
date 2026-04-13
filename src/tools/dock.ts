@@ -14,6 +14,7 @@ import type { WindowZInfo, MonitorInfo } from "../engine/win32.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
+import { pollUntil } from "../engine/poll.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -306,37 +307,35 @@ export async function autoDockFromEnv(): Promise<void> {
   const useParent = title.trim() === "@parent";
 
   let win: WindowZInfo | { hwnd: bigint; title: string; region: { x: number; y: number; width: number; height: number }; isMinimized: boolean; isMaximized: boolean } | null = null;
-  const pollInterval = 200;
-  const deadline = Date.now() + timeoutMs;
 
   if (useParent) {
     // findAncestorWindow returns immediately; our parent terminal is almost
     // always already visible when the MCP server starts, but retry briefly
     // in case of race conditions on cold start.
-    while (Date.now() < deadline) {
-      const found = findAncestorWindow(process.pid);
-      if (found) {
-        win = { ...found, isMinimized: false, isMaximized: false };
-        break;
-      }
-      await new Promise((r) => setTimeout(r, pollInterval));
-    }
-    if (!win) {
+    const r = await pollUntil(
+      async () => {
+        const found = findAncestorWindow(process.pid);
+        return found ? { ...found, isMinimized: false as const, isMaximized: false as const } : null;
+      },
+      { intervalMs: 200, timeoutMs }
+    );
+    if (!r.ok) {
       console.error(
         `[desktop-touch] auto-dock: no ancestor window found for pid ${process.pid} within ${timeoutMs}ms — skipping`
       );
       return;
     }
+    win = r.value;
   } else {
-    while (Date.now() < deadline) {
-      win = findWindow(title);
-      if (win) break;
-      await new Promise((r) => setTimeout(r, pollInterval));
-    }
-    if (!win) {
+    const r = await pollUntil(
+      async () => findWindow(title),
+      { intervalMs: 200, timeoutMs }
+    );
+    if (!r.ok) {
       console.error(`[desktop-touch] auto-dock: window "${title}" not found within ${timeoutMs}ms — skipping`);
       return;
     }
+    win = r.value;
   }
 
   // Resolve dimensions against the chosen monitor's workArea + DPI
