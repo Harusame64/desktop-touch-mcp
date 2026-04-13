@@ -61,11 +61,34 @@ export interface CacheStateHints {
 }
 
 // Per-target-key (lowercase title substring) → last identity observed.
+// Bounded: Map preserves insertion order, so oldest entry is evicted on overflow.
 const lastByKey = new Map<string, TargetIdentity>();
 // Per-hwnd → last identity observed (for HWND-keyed checks).
 const lastByHwnd = new Map<string, TargetIdentity>();
 
+const IDENTITY_MAX = 256;          // cap per map to avoid unbounded growth
+const IDENTITY_TTL_MS = 30 * 60_000; // 30 minutes
+
 let lastInvalidation: { reason: InvalidationReason; previousTarget?: { pid: number; processName: string } } | null = null;
+
+/** Bounded-size + TTL upsert. Evicts oldest entry when over IDENTITY_MAX, and drops stale ones. */
+function boundedSet<K>(map: Map<K, TargetIdentity>, key: K, value: TargetIdentity): void {
+  // Move-to-end semantics: delete-then-set keeps Map insertion order = MRU.
+  if (map.has(key)) map.delete(key);
+  map.set(key, value);
+  if (map.size > IDENTITY_MAX) {
+    const oldestKey = map.keys().next().value;
+    if (oldestKey !== undefined) map.delete(oldestKey);
+  }
+  // Cheap TTL sweep — probe a handful of early (oldest) entries.
+  const now = Date.now();
+  let swept = 0;
+  for (const [k, v] of map) {
+    if (swept++ >= 4) break;
+    if (now - v.lastSeenMs > IDENTITY_TTL_MS) map.delete(k);
+    else break; // early entries are oldest; once one is fresh the rest are too
+  }
+}
 
 /**
  * Record an observation of a target. Returns invalidation info if the new
@@ -125,8 +148,8 @@ export function observeTarget(
     previousTarget = { pid: prevByKey.pid, processName: prevByKey.processName };
   }
 
-  lastByKey.set(key, ident);
-  lastByHwnd.set(hwndStr, ident);
+  boundedSet(lastByKey, key, ident);
+  boundedSet(lastByHwnd, hwndStr, ident);
 
   if (invalidatedBy) {
     lastInvalidation = { reason: invalidatedBy, previousTarget };

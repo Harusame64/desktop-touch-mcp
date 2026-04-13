@@ -9,12 +9,12 @@
  * call events_poll at the start of each turn.
  */
 
-import { enumWindowsInZOrder } from "./win32.js";
+import { enumWindowsInZOrder, getWindowProcessId, getProcessIdentityByPid } from "./win32.js";
 
 export type WindowEvent =
-  | { type: "window_appeared"; windowTitle: string; hwnd: string; tsMs: number }
-  | { type: "window_disappeared"; windowTitle: string; hwnd: string; tsMs: number }
-  | { type: "foreground_changed"; from: string | null; to: string; toHwnd: string; tsMs: number };
+  | { type: "window_appeared"; windowTitle: string; hwnd: string; processName: string; tsMs: number }
+  | { type: "window_disappeared"; windowTitle: string; hwnd: string; processName: string; tsMs: number }
+  | { type: "foreground_changed"; from: string | null; to: string; toHwnd: string; processName: string; tsMs: number };
 
 export interface Subscription {
   id: string;
@@ -24,7 +24,7 @@ export interface Subscription {
 }
 
 const subscriptions = new Map<string, Subscription>();
-let lastSnapshot: { hwnd: string; title: string; isActive: boolean }[] = [];
+let lastSnapshot: { hwnd: string; title: string; isActive: boolean; processName: string }[] = [];
 let timer: NodeJS.Timeout | null = null;
 let prevForeground: string | null = null;
 
@@ -32,10 +32,41 @@ const POLL_MS = 500;
 const BUFFER_MAX = 200;
 let nextId = 1;
 
+// pid → processName memo. Process name is stable for a given pid (Windows doesn't
+// reuse pids immediately), so we cache aggressively and rely on event-bus stop
+// (maybeStop) to clear. Bounded to prevent unbounded growth in long sessions.
+const pidNameCache = new Map<number, { name: string; tsMs: number }>();
+const PID_NAME_TTL_MS = 30_000;
+const PID_NAME_MAX = 200;
+
+function resolveProcessNameCached(pid: number): string {
+  if (pid === 0) return "";
+  const now = Date.now();
+  const cached = pidNameCache.get(pid);
+  if (cached && now - cached.tsMs < PID_NAME_TTL_MS) return cached.name;
+  let name = "";
+  try { name = getProcessIdentityByPid(pid).processName; } catch { /* best-effort */ }
+  if (pidNameCache.has(pid)) pidNameCache.delete(pid);
+  pidNameCache.set(pid, { name, tsMs: now });
+  if (pidNameCache.size > PID_NAME_MAX) {
+    const oldest = pidNameCache.keys().next().value;
+    if (oldest !== undefined) pidNameCache.delete(oldest);
+  }
+  return name;
+}
+
+function enrichWindow(w: { hwnd: bigint; title: string; isActive: boolean }) {
+  let processName = "";
+  try {
+    processName = resolveProcessNameCached(getWindowProcessId(w.hwnd));
+  } catch { /* best-effort */ }
+  return { hwnd: String(w.hwnd), title: w.title, isActive: w.isActive, processName };
+}
+
 function tick(): void {
   let wins;
   try { wins = enumWindowsInZOrder(); } catch { return; }
-  const cur = wins.map((w) => ({ hwnd: String(w.hwnd), title: w.title, isActive: w.isActive }));
+  const cur = wins.map(enrichWindow);
   const prevByHwnd = new Map(lastSnapshot.map((w) => [w.hwnd, w]));
   const curByHwnd = new Map(cur.map((w) => [w.hwnd, w]));
 
@@ -45,13 +76,13 @@ function tick(): void {
   // Appeared
   for (const w of cur) {
     if (!prevByHwnd.has(w.hwnd)) {
-      events.push({ type: "window_appeared", windowTitle: w.title, hwnd: w.hwnd, tsMs: now });
+      events.push({ type: "window_appeared", windowTitle: w.title, hwnd: w.hwnd, processName: w.processName, tsMs: now });
     }
   }
-  // Disappeared
+  // Disappeared — processName comes from the prior snapshot (process may be gone now).
   for (const w of lastSnapshot) {
     if (!curByHwnd.has(w.hwnd)) {
-      events.push({ type: "window_disappeared", windowTitle: w.title, hwnd: w.hwnd, tsMs: now });
+      events.push({ type: "window_disappeared", windowTitle: w.title, hwnd: w.hwnd, processName: w.processName, tsMs: now });
     }
   }
   // Foreground change
@@ -64,6 +95,7 @@ function tick(): void {
       from: prev?.title ?? null,
       to: fg!.title,
       toHwnd: fg!.hwnd,
+      processName: fg!.processName,
       tsMs: now,
     });
     prevForeground = fgHwnd;
@@ -86,7 +118,7 @@ function tick(): void {
 function ensureRunning(): void {
   if (timer) return;
   // Initialize baseline
-  try { lastSnapshot = enumWindowsInZOrder().map((w) => ({ hwnd: String(w.hwnd), title: w.title, isActive: w.isActive })); }
+  try { lastSnapshot = enumWindowsInZOrder().map(enrichWindow); }
   catch { lastSnapshot = []; }
   prevForeground = lastSnapshot.find((w) => w.isActive)?.hwnd ?? null;
   timer = setInterval(tick, POLL_MS);

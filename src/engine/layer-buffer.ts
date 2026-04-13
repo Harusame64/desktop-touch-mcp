@@ -296,10 +296,28 @@ export async function captureAllLayers(
 // UIA cache is independent of WindowLayer so it works without diffMode baseline.
 const uiaCache = new Map<bigint, { uiaText: string; timestamp: number }>();
 const UIA_CACHE_TTL_MS = 90_000;
+const UIA_CACHE_MAX = 64;
+
+function sweepUiaCache(): void {
+  const now = Date.now();
+  // Evict expired first.
+  for (const [k, v] of uiaCache) {
+    if (now - v.timestamp > UIA_CACHE_TTL_MS) uiaCache.delete(k);
+  }
+  // Cap by size (oldest-first eviction — Map keeps insertion order).
+  while (uiaCache.size > UIA_CACHE_MAX) {
+    const firstKey = uiaCache.keys().next().value;
+    if (firstKey === undefined) break;
+    uiaCache.delete(firstKey);
+  }
+}
 
 /** Update the UIA text cache for a specific window. */
 export function updateUiaCache(hwnd: bigint, uiaText: string): void {
+  // MRU ordering: delete-then-set so freshly-updated entries move to the end.
+  if (uiaCache.has(hwnd)) uiaCache.delete(hwnd);
   uiaCache.set(hwnd, { uiaText, timestamp: Date.now() });
+  sweepUiaCache();
   // Also keep WindowLayer in sync if a baseline exists.
   const layer = layers.get(hwnd);
   if (layer) {

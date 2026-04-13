@@ -797,20 +797,29 @@ export const browserSearchHandler = async ({
 
   // Bound the scan — pages can have 10k+ nodes and CDP timeout is 15s.
   const SCAN_BUDGET_MS = 3000;
-  const startTs = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  const nowFn = (typeof performance !== 'undefined' ? () => performance.now() : () => Date.now());
+  const startTs = nowFn();
+  const deadline = startTs + SCAN_BUDGET_MS;
+  let aborted = false;
+  // Sample the clock every 1024 iterations — cheap but keeps latency bounded.
+  function overBudget(i) { return (i & 0x3FF) === 0 && nowFn() > deadline; }
 
   const all = root.querySelectorAll('*');
   let candidates = [];
 
   if (by === 'selector') {
     candidates = Array.from(root.querySelectorAll(pat));
-    for (const el of candidates) {
+    for (let i = 0; i < candidates.length; i++) {
+      if (overBudget(i)) { aborted = true; candidates.length = i; break; }
+      const el = candidates[i];
       el.__matchScore = 1.0;
       el.__matchedBy = 'selector';
     }
   } else if (by === 'text') {
     const needle = cs ? pat : pat.toLowerCase();
+    let i = 0;
     for (const el of all) {
+      if (overBudget(i++)) { aborted = true; break; }
       // Direct child text only (avoid double-counting parent matches via descendants)
       const direct = Array.from(el.childNodes)
         .filter(n => n.nodeType === 3)
@@ -825,7 +834,9 @@ export const browserSearchHandler = async ({
     let re;
     try { re = new RegExp(pat, (cs ? '' : 'i') + 'u'); }
     catch (e) { return { __error: "InvalidRegex", message: String(e) }; }
+    let i = 0;
     for (const el of all) {
+      if (overBudget(i++)) { aborted = true; break; }
       const direct = Array.from(el.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent || '').join('').trim();
       if (!direct) continue;
       if (re.test(direct)) { el.__matchScore = 0.9; el.__matchedBy = 'regex'; candidates.push(el); }
@@ -837,18 +848,22 @@ export const browserSearchHandler = async ({
       if (score > prev) { el.__matchScore = score; el.__matchedBy = matchedBy; }
       if (!el.__pushed) { candidates.push(el); el.__pushed = true; }
     }
+    let i = 0;
     for (const el of all) {
+      if (overBudget(i++)) { aborted = true; break; }
       const role = el.getAttribute('role') || '';
       const cmp = cs ? role : role.toLowerCase();
       if (cmp === needle) pushRole(el, 0.75, 'role');
     }
     // Implicit roles — score slightly higher because they're guaranteed by tag.
-    if (needle === 'button')  for (const el of root.querySelectorAll('button')) pushRole(el, 0.85, 'roleImplicit');
-    if (needle === 'link')    for (const el of root.querySelectorAll('a[href]')) pushRole(el, 0.85, 'roleImplicit');
-    if (needle === 'heading') for (const el of root.querySelectorAll('h1,h2,h3,h4,h5,h6')) pushRole(el, 0.85, 'roleImplicit');
+    if (!aborted && needle === 'button')  for (const el of root.querySelectorAll('button')) pushRole(el, 0.85, 'roleImplicit');
+    if (!aborted && needle === 'link')    for (const el of root.querySelectorAll('a[href]')) pushRole(el, 0.85, 'roleImplicit');
+    if (!aborted && needle === 'heading') for (const el of root.querySelectorAll('h1,h2,h3,h4,h5,h6')) pushRole(el, 0.85, 'roleImplicit');
   } else if (by === 'ariaLabel') {
     const needle = cs ? pat : pat.toLowerCase();
+    let i = 0;
     for (const el of all) {
+      if (overBudget(i++)) { aborted = true; break; }
       const aria = el.getAttribute('aria-label') || '';
       if (!aria) continue;
       const cmp = cs ? aria : aria.toLowerCase();
@@ -861,10 +876,7 @@ export const browserSearchHandler = async ({
   const seen = new Set();
   candidates = candidates.filter(el => { if (seen.has(el)) return false; seen.add(el); return true; });
 
-  // Time budget check — if we already exceeded the budget, return what we have
-  // tagged so the caller can retry with narrower scope.
-  const overBudget = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - startTs > SCAN_BUDGET_MS;
-  if (overBudget && candidates.length === 0) {
+  if (aborted && candidates.length === 0) {
     return { __error: "Timeout", message: "Scan budget exceeded with no matches; narrow scope or maxResults." };
   }
 

@@ -257,12 +257,16 @@ export const waitUntilHandler = async ({ condition, target, timeoutMs, intervalM
           return failWith("target.windowTitle and target.elementName are required for element_appears", "wait_until");
         }
         probe = probeElementAppears(target.windowTitle, target.elementName);
+        // UIA probe spawns PS (~300ms each) — clamp interval to 500ms to avoid
+        // saturating PowerShell startup cost with rapid polls.
+        interval = Math.max(intervalMs, 500);
         break;
       case "value_changes":
         if (!target.windowTitle || !target.elementName) {
           return failWith("target.windowTitle and target.elementName are required for value_changes", "wait_until");
         }
         probe = probeValueChanges(target.windowTitle, target.elementName);
+        interval = Math.max(intervalMs, 500);
         break;
       case "ready_state":
         probe = probeReadyState(target.windowTitle);

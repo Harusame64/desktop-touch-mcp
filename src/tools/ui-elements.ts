@@ -91,11 +91,15 @@ export const setElementValueHandler = async ({
     if (!name && !automationId) {
       return failArgs("Provide at least one of: name, automationId", "set_element_value", { windowTitle });
     }
+    const hintsBlock = buildHintsForTitle(windowTitle);
     const result = await setElementValue(windowTitle, value, name, automationId);
     if (!result.ok) {
       return failWith(result.error ?? "Unknown error", "set_element_value", { windowTitle, name, automationId });
     }
-    return ok(result);
+    const enriched = hintsBlock
+      ? { ...result, hints: { target: hintsBlock.target, caches: hintsBlock.caches } }
+      : result;
+    return ok(enriched);
   } catch (err) {
     return failWith(err, "set_element_value", { windowTitle, name, automationId });
   }
@@ -117,6 +121,7 @@ export const scopeElementHandler = async ({
       return failArgs("Provide at least one of: name, automationId, controlType", "scope_element", { windowTitle });
     }
 
+    const hintsBlock = buildHintsForTitle(windowTitle);
     const bounds = await getElementBounds(windowTitle, name, automationId, controlType);
     if (!bounds) {
       return failWith("Element not found", "scope_element", { windowTitle, name, automationId, controlType });
@@ -151,7 +156,10 @@ export const scopeElementHandler = async ({
       // UIA may fail; return element info without children
     }
 
-    content.push({ type: "text" as const, text: JSON.stringify({ element: bounds, children }, null, 2) });
+    const payload = hintsBlock
+      ? { element: bounds, children, hints: { target: hintsBlock.target, caches: hintsBlock.caches } }
+      : { element: bounds, children };
+    content.push({ type: "text" as const, text: JSON.stringify(payload, null, 2) });
     return { content };
   } catch (err) {
     return failWith(err, "scope_element", { windowTitle, name, automationId });
