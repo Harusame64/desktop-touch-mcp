@@ -14,6 +14,7 @@ import {
   navigateTo,
   getDomHtml,
   disconnectAll,
+  getTabContext,
   type CdpTab,
 } from "../engine/cdp-bridge.js";
 import { resolveWellKnownPath, spawnDetached } from "../utils/launch.js";
@@ -88,6 +89,14 @@ export const browserNavigateSchema = {
   url: z.string().describe("URL to navigate to"),
   tabId: tabIdParam,
   port: portParam,
+  waitForLoad: z.boolean().default(true).describe(
+    "When true (default), wait for document.readyState === 'complete' before returning. " +
+    "Use waitForLoad:false for the legacy behavior (return immediately after Page.navigate)."
+  ),
+  loadTimeoutMs: z.coerce.number().int().min(500).max(30000).default(15000).describe(
+    "Max milliseconds to wait for page load when waitForLoad=true (default 15000). " +
+    "On timeout, returns ok:true with readyState set to current state and hints.warnings=['NavigateTimeout']."
+  ),
 };
 
 export const browserDisconnectSchema = {
@@ -241,11 +250,31 @@ export const browserConnectHandler = async ({
   try {
     const tabs = await listTabs(port);
     const pageTabs = tabs.filter((t) => t.type === "page");
+
+    // Parallel hasFocus() evaluation to find the active tab
+    const focusResults = await Promise.allSettled(
+      pageTabs.map((t) =>
+        evaluateInTab("document.hasFocus()", t.id, port)
+          .then((v) => ({ id: t.id, active: !!v }))
+          .catch(() => ({ id: t.id, active: false }))
+      )
+    );
+    const focusMap = new Map<string, boolean>();
+    for (const r of focusResults) {
+      if (r.status === "fulfilled") {
+        focusMap.set(r.value.id, r.value.active);
+      }
+    }
+
     const summary = pageTabs.map((t) => ({
       id: t.id,
       title: t.title,
       url: t.url,
+      active: focusMap.get(t.id) ?? false,
     }));
+
+    const activeTab = summary.find((t) => t.active)?.id ?? null;
+
     return {
       content: [
         {
@@ -253,7 +282,7 @@ export const browserConnectHandler = async ({
           text: [
             `Connected to Chrome/Edge CDP at port ${port}.`,
             `${pageTabs.length} page tab(s) found:`,
-            JSON.stringify(summary, null, 2),
+            JSON.stringify({ port, active: activeTab, tabs: summary }, null, 2),
             "",
             "Pass a tab's id to other browser_* tools to target it, or omit to use the first tab.",
           ].join("\n"),
@@ -280,6 +309,7 @@ export const browserFindElementHandler = async ({
       tabId ?? null,
       port
     );
+    const tabCtx = await getTabContext(tabId ?? null, port);
     return {
       content: [
         {
@@ -297,6 +327,9 @@ export const browserFindElementHandler = async ({
             !coords.inViewport
               ? "Warning: element is outside the visible viewport. Scroll into view before clicking."
               : "Element is visible. Pass clickAt coords to mouse_click.",
+            "",
+            `activeTab: ${JSON.stringify({ id: tabCtx.id, title: tabCtx.title, url: tabCtx.url })}`,
+            `readyState: "${tabCtx.readyState}"`,
           ].join("\n"),
         },
       ],
@@ -349,11 +382,17 @@ export const browserClickElementHandler = async ({
       }
     }
     await mouse.click(Button.LEFT);
+    const tabCtx = await getTabContext(tabId ?? null, port);
     return {
       content: [
         {
           type: "text" as const,
-          text: `Clicked "${selector}" at screen (${coords.x}, ${coords.y})`,
+          text: [
+            `Clicked "${selector}" at screen (${coords.x}, ${coords.y})`,
+            "",
+            `activeTab: ${JSON.stringify({ id: tabCtx.id, title: tabCtx.title, url: tabCtx.url })}`,
+            `readyState: "${tabCtx.readyState}"`,
+          ].join("\n"),
         },
       ],
     };
@@ -373,6 +412,7 @@ export const browserEvalHandler = async ({
 }): Promise<ToolResult> => {
   try {
     const result = await evaluateInTab(expression, tabId ?? null, port);
+    const tabCtx = await getTabContext(tabId ?? null, port);
     const text =
       result === null || result === undefined
         ? "(null)"
@@ -380,7 +420,15 @@ export const browserEvalHandler = async ({
           ? result
           : JSON.stringify(result, null, 2);
     return {
-      content: [{ type: "text" as const, text }],
+      content: [{
+        type: "text" as const,
+        text: [
+          text,
+          "",
+          `activeTab: ${JSON.stringify({ id: tabCtx.id, title: tabCtx.title, url: tabCtx.url })}`,
+          `readyState: "${tabCtx.readyState}"`,
+        ].join("\n"),
+      }],
     };
   } catch (err) {
     return failWith(err, "browser_eval");
@@ -405,8 +453,17 @@ export const browserGetDomHandler = async ({
       port,
       maxLength
     );
+    const tabCtx = await getTabContext(tabId ?? null, port);
     return {
-      content: [{ type: "text" as const, text: html }],
+      content: [{
+        type: "text" as const,
+        text: [
+          html,
+          "",
+          `activeTab: ${JSON.stringify({ id: tabCtx.id, title: tabCtx.title, url: tabCtx.url })}`,
+          `readyState: "${tabCtx.readyState}"`,
+        ].join("\n"),
+      }],
     };
   } catch (err) {
     return failWith(err, "browser_get_dom");
@@ -417,21 +474,80 @@ export const browserNavigateHandler = async ({
   url,
   tabId,
   port,
+  waitForLoad,
+  loadTimeoutMs,
 }: {
   url: string;
   tabId?: string;
   port: number;
+  waitForLoad: boolean;
+  loadTimeoutMs: number;
 }): Promise<ToolResult> => {
   try {
-    await navigateTo(url, tabId ?? null, port);
-    return {
-      content: [
-        {
+    const startedAt = Date.now();
+    const navResult = await navigateTo(url, tabId ?? null, port);
+
+    // Surface CDP navigation errors (DNS failure etc.)
+    if (navResult.errorText) {
+      return fail({
+        ok: false,
+        code: "NavigateFailed",
+        error: `browser_navigate failed: ${navResult.errorText}`,
+        suggest: [
+          "Check the URL is correct and reachable",
+          "Verify network connectivity",
+        ],
+        context: { url, errorText: navResult.errorText },
+      });
+    }
+
+    if (!waitForLoad) {
+      return {
+        content: [{
           type: "text" as const,
           text: `Navigating to: ${url}\nWait a moment, then use browser_eval("document.readyState") to check if the page has loaded.`,
-        },
-      ],
-    };
+        }],
+      };
+    }
+
+    // Wait for document.readyState === "complete"
+    await new Promise<void>((r) => setTimeout(r, 200));
+    const poll = await pollUntil(
+      async () => {
+        try {
+          const state = await evaluateInTab("document.readyState", tabId ?? null, port);
+          return state === "complete" ? true : null;
+        } catch {
+          return null;
+        }
+      },
+      { intervalMs: 150, timeoutMs: loadTimeoutMs }
+    );
+
+    const tabCtx = await getTabContext(tabId ?? null, port);
+    const elapsedMs = Date.now() - startedAt;
+
+    if (!poll.ok) {
+      // Timeout — not a failure, LLM can continue
+      return ok({
+        ok: true,
+        url: tabCtx.url || url,
+        title: tabCtx.title,
+        readyState: tabCtx.readyState,
+        elapsedMs,
+        waited: true,
+        hints: { warnings: ["NavigateTimeout"] },
+      });
+    }
+
+    return ok({
+      ok: true,
+      url: tabCtx.url || url,
+      title: tabCtx.title,
+      readyState: tabCtx.readyState,
+      elapsedMs,
+      waited: true,
+    });
   } catch (err) {
     return failWith(err, "browser_navigate");
   }
@@ -565,12 +681,16 @@ export const browserGetInteractiveHandler = async ({
 
     const result = await evaluateInTab(expression, tabId ?? null, port);
     const items = Array.isArray(result) ? result : [];
+    const tabCtx = await getTabContext(tabId ?? null, port);
     return {
       content: [{
         type: "text" as const,
         text: [
           `Found ${items.length} interactive element(s)${scope ? ` within "${scope}"` : ""}:`,
           JSON.stringify(items, null, 2),
+          "",
+          `activeTab: ${JSON.stringify({ id: tabCtx.id, title: tabCtx.title, url: tabCtx.url })}`,
+          `readyState: "${tabCtx.readyState}"`,
         ].join("\n"),
       }],
     };
@@ -955,7 +1075,8 @@ export const browserSearchHandler = async ({
         context: { by, pattern, scope, visibleOnly, inViewportOnly },
       });
     }
-    return ok(payload);
+    const tabCtx = await getTabContext(tabId ?? null, port);
+    return ok({ ...payload, activeTab: { id: tabCtx.id, title: tabCtx.title, url: tabCtx.url }, readyState: tabCtx.readyState });
   } catch (err) {
     return failWith(err, "browser_search", { by, pattern, scope });
   }

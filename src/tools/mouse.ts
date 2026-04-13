@@ -13,6 +13,7 @@ import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
 import { withPostState } from "./_post.js";
+import { detectFocusLoss } from "./_focus.js";
 
 /**
  * Move cursor to (x, y) at the given speed.
@@ -71,6 +72,7 @@ async function applyHoming(
   windowTitle?: string,
   elementName?: string,
   elementId?: string,
+  force?: boolean,
 ): Promise<HomingResult> {
   const notes: string[] = [];
 
@@ -84,7 +86,10 @@ async function applyHoming(
         w.title.toLowerCase().includes(windowTitle.toLowerCase())
       );
       if (target) {
-        restoreAndFocusWindow(target.hwnd);
+        const rf = restoreAndFocusWindow(target.hwnd, { force: !!force });
+        if (force && rf.forceFocusOk === false) {
+          notes.push(`ForceFocusRefused`);
+        }
         await new Promise<void>((r) => setTimeout(r, 100));
         // Refresh cache again after restore: window may have moved/unminimized
         updateWindowCache(enumWindowsInZOrder());
@@ -170,6 +175,24 @@ export const mouseMoveSchema = {
   windowTitle: windowTitleParam,
 };
 
+const forceFocusParam = z.boolean().optional().describe(
+  "When true, bypass Windows foreground-stealing protection via AttachThreadInput " +
+  "before focusing the target window. Required when a pinned window (e.g. Claude CLI) " +
+  "keeps stealing focus. Default: follows env DESKTOP_TOUCH_FORCE_FOCUS (default false). " +
+  "Set DESKTOP_TOUCH_FORCE_FOCUS=1 to make true the global default."
+);
+
+const trackFocusParam = z.boolean().default(true).describe(
+  "When true (default), detect if focus was stolen from the target window after the action. " +
+  "Reports focusLost:{afterMs,expected,stolenBy,stolenByProcessName} in the response. " +
+  "Set false to skip the settle wait and focus check."
+);
+
+const settleMsParam = z.coerce.number().int().min(0).max(2000).default(300).describe(
+  "Milliseconds to wait after the action before checking foreground window (default 300). " +
+  "Only used when trackFocus=true."
+);
+
 export const mouseClickSchema = {
   x: z.coerce.number().describe(
     "X coordinate. Screen-absolute by default. When 'origin' is provided, treated as image-local " +
@@ -205,6 +228,9 @@ export const mouseClickSchema = {
   windowTitle: windowTitleParam,
   elementName: elementNameParam,
   elementId: elementIdParam,
+  forceFocus: forceFocusParam,
+  trackFocus: trackFocusParam,
+  settleMs: settleMsParam,
 };
 
 export const mouseDragSchema = {
@@ -256,13 +282,16 @@ export const mouseMoveHandler = async ({
 
 export const mouseClickHandler = async ({
   x, y, origin, scale, button, doubleClick, speed, homing, windowTitle, elementName, elementId,
+  forceFocus: forceFocusArg, trackFocus, settleMs,
 }: {
   x: number; y: number;
   origin?: { x: number; y: number };
   scale?: number;
   button: "left" | "right" | "middle"; doubleClick: boolean;
   speed?: number; homing: boolean; windowTitle?: string; elementName?: string; elementId?: string;
+  forceFocus?: boolean; trackFocus: boolean; settleMs: number;
 }): Promise<ToolResult> => {
+  const force = forceFocusArg ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
   try {
     // Image-local → screen conversion (before homing).
     // When origin is given, (x,y) are image-local; convert using scale factor.
@@ -284,7 +313,7 @@ export const mouseClickHandler = async ({
     let tx = screenX, ty = screenY;
     const notes: string[] = [];
     if (homing) {
-      const result = await applyHoming(screenX, screenY, windowTitle, elementName, elementId);
+      const result = await applyHoming(screenX, screenY, windowTitle, elementName, elementId, force);
       tx = result.x; ty = result.y;
       notes.push(...result.notes);
     }
@@ -296,10 +325,34 @@ export const mouseClickHandler = async ({
       await mouse.click(btn);
     }
     const action = doubleClick ? "doubleClick" : "click";
+
+    // Detect focus loss after the click
+    let focusLost = undefined;
+    const warnings: string[] = [];
+
+    // Promote ForceFocusRefused from homing notes to warnings
+    const idx = notes.indexOf("ForceFocusRefused");
+    if (idx >= 0) {
+      warnings.push("ForceFocusRefused");
+      notes.splice(idx, 1);
+    }
+    const filteredNotes = notes;
+
+    if (trackFocus) {
+      const fl = await detectFocusLoss({
+        target: windowTitle,
+        homingNotes: filteredNotes,
+        settleMs,
+      });
+      if (fl) focusLost = fl;
+    }
+
     return ok({
       ok: true, action, button, at: { x: tx, y: ty },
       ...(conversionNotes.length && { conversion: conversionNotes.join("; ") }),
-      ...(notes.length && { homing: notes.join(", ") }),
+      ...(filteredNotes.length && { homing: filteredNotes.join(", ") }),
+      ...(focusLost && { focusLost }),
+      ...(warnings.length > 0 && { hints: { warnings } }),
     });
   } catch (err) {
     return failWith(err, "mouse_click");

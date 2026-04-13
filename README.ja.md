@@ -262,6 +262,49 @@ UIA ブリッジの `-like` パターンには `escapeLike()` でワイルドカ
 
 ---
 
+## Force-Focus (AttachThreadInput)
+
+Windows のフォアグラウンド保護機能により、ピン固定された Claude CLI などが前面にある状態では `SetForegroundWindow` が拒否されることがあります。その結果、後続のキー入力やクリックが意図しないウィンドウに送られるサイレント障害が発生します。
+
+`mouse_click`、`keyboard_type`、`keyboard_press`、`terminal_send` はいずれも `forceFocus` パラメータを受け付けており、`AttachThreadInput` を使ってこの保護を迂回できます。
+
+```json
+{
+  "name": "mouse_click",
+  "arguments": {
+    "x": 500,
+    "y": 300,
+    "windowTitle": "Google Chrome",
+    "forceFocus": true
+  }
+}
+```
+
+強制フォーカスが拒否された場合、応答に `hints.warnings: ["ForceFocusRefused"]` が含まれます。
+
+**環境変数でグローバルデフォルトを設定する:**
+
+```json
+{
+  "mcpServers": {
+    "desktop-touch": {
+      "env": {
+        "DESKTOP_TOUCH_FORCE_FOCUS": "1"
+      }
+    }
+  }
+}
+```
+
+`DESKTOP_TOUCH_FORCE_FOCUS=1` を設定すると、4 つのツールすべてで `forceFocus: true` がデフォルトになります。
+
+**既知のトレードオフ:**
+
+- `AttachThreadInput` が有効な約 10ms の間、2 スレッド間でキー状態とマウスキャプチャが共有されます。高速なマクロ連打では稀にレース状態が発生する可能性があります。
+- ユーザーが別のアプリを手動操作している間は `forceFocus` を無効にするか、環境変数の設定を解除してください。予期しないフォーカス移動を防ぐためです。
+
+---
+
 ## 既知の制限
 
 | 制限 | 詳細 | 回避策 |

@@ -158,6 +158,17 @@ const QueryFullProcessImageNameW = kernel32.func(
 const SetWindowPos = user32.func(
   "bool __stdcall SetWindowPos(void *hWnd, intptr hWndInsertAfter, int X, int Y, int cx, int cy, uint32 uFlags)"
 );
+
+// BringWindowToTop — secondary foreground hint
+const BringWindowToTop = user32.func("bool __stdcall BringWindowToTop(void *hWnd)");
+
+// AttachThreadInput — bypass foreground-stealing protection
+const AttachThreadInput = user32.func(
+  "bool __stdcall AttachThreadInput(uint32 idAttach, uint32 idAttachTo, bool fAttach)"
+);
+
+// GetCurrentThreadId — from kernel32.dll
+const GetCurrentThreadId = kernel32.func("uint32 __stdcall GetCurrentThreadId()");
 const HWND_TOPMOST = -1;
 const HWND_NOTOPMOST = -2;
 const SWP_NOSIZE = 0x0001;
@@ -351,14 +362,82 @@ export function getWindowRectByHwnd(hwnd: unknown): { x: number; y: number; widt
 }
 
 /** Restore a minimized window and bring it to the foreground.
- *  Returns the actual window rect after restoration. */
-export function restoreAndFocusWindow(hwnd: unknown): { x: number; y: number; width: number; height: number } {
+ *  Returns the actual window rect after restoration, plus force-focus result when opts.force=true.
+ *  @param force When true, use AttachThreadInput to bypass Windows foreground-stealing protection. */
+export function restoreAndFocusWindow(
+  hwnd: unknown,
+  opts?: { force?: boolean }
+): { x: number; y: number; width: number; height: number; forceFocusOk?: boolean } {
   const SW_RESTORE = 9;
   ShowWindow(hwnd, SW_RESTORE);
-  SetForegroundWindow(hwnd);
+  let forceFocusOk: boolean | undefined;
+  if (opts?.force) {
+    const fr = forceSetForegroundWindow(hwnd);
+    forceFocusOk = fr.ok;
+  } else {
+    SetForegroundWindow(hwnd);
+  }
   const rect = { left: 0, top: 0, right: 0, bottom: 0 };
   GetWindowRect(hwnd, rect);
-  return { x: rect.left, y: rect.top, width: rect.right - rect.left, height: rect.bottom - rect.top };
+  return { x: rect.left, y: rect.top, width: rect.right - rect.left, height: rect.bottom - rect.top, ...(forceFocusOk !== undefined && { forceFocusOk }) };
+}
+
+/**
+ * Force the given window to the foreground using AttachThreadInput.
+ * This bypasses Windows foreground-stealing protection.
+ *
+ * Returns:
+ *   ok: true  — window is now in the foreground
+ *   ok: false — SetForegroundWindow was called but refused
+ *   attached: whether AttachThreadInput succeeded
+ */
+export function forceSetForegroundWindow(hwnd: unknown): {
+  ok: boolean;
+  attached: boolean;
+  fg_before: bigint;
+  fg_after: bigint;
+} {
+  const fg_before = GetForegroundWindow() as bigint;
+  const hwndBig = hwnd as bigint;
+
+  // If already in foreground, nothing to do
+  if (String(fg_before) === String(hwndBig)) {
+    return { ok: true, attached: false, fg_before, fg_after: fg_before };
+  }
+
+  // Use getWindowProcessId helper to avoid passing bigint directly to koffi (type safety)
+  const fgThread = (GetWindowThreadProcessId(fg_before as unknown as bigint, null) as number) >>> 0;
+  const myThread = (GetCurrentThreadId() as number) >>> 0;
+
+  let attached = false;
+  if (fgThread !== 0 && fgThread !== myThread) {
+    try {
+      attached = !!(AttachThreadInput(myThread, fgThread, true) as boolean);
+    } catch {
+      // If AttachThreadInput is unavailable or fails, fall through to legacy path
+      attached = false;
+    }
+  }
+
+  try {
+    // SetForegroundWindow + BringWindowToTop always, regardless of attach success.
+    // BringWindowToTop is a secondary hint that helps even without AttachThreadInput.
+    SetForegroundWindow(hwnd);
+    BringWindowToTop(hwnd);
+  } finally {
+    // Detach only if we successfully attached
+    if (attached) {
+      try {
+        AttachThreadInput(myThread, fgThread, false);
+      } catch {
+        // detach is best-effort
+      }
+    }
+  }
+
+  const fg_after = GetForegroundWindow() as bigint;
+  const ok = String(fg_after) === String(hwndBig);
+  return { ok, attached, fg_before, fg_after };
 }
 
 /** Make a window always-on-top (HWND_TOPMOST). */

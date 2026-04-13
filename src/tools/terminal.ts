@@ -11,6 +11,7 @@ import {
   getWindowProcessId,
   type WindowZInfo,
 } from "../engine/win32.js";
+import { detectFocusLoss } from "./_focus.js";
 import { getTextViaTextPattern } from "../engine/uia-bridge.js";
 import { recognizeWindow, ocrWordsToLines } from "../engine/ocr-bridge.js";
 import { stripAnsi, tailLines } from "../engine/ansi.js";
@@ -46,6 +47,16 @@ export const terminalSendSchema = {
   restoreFocus: z.boolean().default(true).describe("Restore the previously-focused window after sending (default true)."),
   preferClipboard: z.boolean().default(true).describe("Use clipboard paste (typeViaClipboard) — IME/long-text safe (default true)."),
   pasteKey: z.enum(["auto", "ctrl+v", "ctrl+shift+v"]).default("auto").describe("Paste key combo. 'auto' picks ctrl+shift+v for WSL/bash/mintty/wezterm/alacritty, ctrl+v elsewhere. Only used when preferClipboard=true."),
+  forceFocus: z.boolean().optional().describe(
+    "When true, bypass Windows foreground-stealing protection via AttachThreadInput " +
+    "before focusing the terminal window. Default: follows env DESKTOP_TOUCH_FORCE_FOCUS (default false)."
+  ),
+  trackFocus: z.boolean().default(true).describe(
+    "When true (default), detect if focus was stolen after sending. Reports focusLost in the response."
+  ),
+  settleMs: z.coerce.number().int().min(0).max(2000).default(300).describe(
+    "Milliseconds to wait after sending before checking foreground window (default 300)."
+  ),
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -216,6 +227,7 @@ export const terminalReadHandler = async ({
 
 export const terminalSendHandler = async ({
   windowTitle, input, pressEnter, focusFirst, restoreFocus, preferClipboard, pasteKey,
+  forceFocus: forceFocusArg, trackFocus, settleMs,
 }: {
   windowTitle: string;
   input: string;
@@ -224,7 +236,11 @@ export const terminalSendHandler = async ({
   restoreFocus: boolean;
   preferClipboard: boolean;
   pasteKey: "auto" | "ctrl+v" | "ctrl+shift+v";
+  forceFocus?: boolean;
+  trackFocus: boolean;
+  settleMs: number;
 }): Promise<ToolResult> => {
+  const force = forceFocusArg ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
   const startedAt = Date.now();
   try {
     const win = findTerminalWindow(windowTitle);
@@ -237,27 +253,41 @@ export const terminalSendHandler = async ({
     const prevFg = allBefore.find((w) => w.isActive);
     const prevFgHwnd = prevFg?.hwnd ?? null;
 
-    // 2-G removed: the previous "foreground was X" warning fired on nearly every
-    // call and trained the LLM to ignore warnings. Real pinned-window detection
-    // would need WS_EX_TOPMOST inspection — left as a future enhancement.
     const warnings: string[] = [];
+    const homingNotes: string[] = [];
 
     let foregrounded = !focusFirst; // when not requested, treat as success
     if (focusFirst) {
       // Windows SetForegroundWindow is racy under load — retry until the target
       // really is in the foreground (or give up after 5 tries).
       const targetHwnd = String(win.hwnd);
-      for (let attempt = 0; attempt < 5; attempt++) {
-        restoreAndFocusWindow(win.hwnd);
+      if (force) {
+        // AttachThreadInput path: single attempt is usually sufficient
+        restoreAndFocusWindow(win.hwnd, { force: true });
+        // Small settle
         await new Promise<void>((r) => setTimeout(r, 100));
         const fg = enumWindowsInZOrder().find((w) => w.isActive);
-        if (fg && String(fg.hwnd) === targetHwnd) { foregrounded = true; break; }
-      }
-      if (!foregrounded) {
-        // Windows foreground-stealing protection refused the focus shift.
-        // Surface this as a warning so callers (LLM / tests) can detect that
-        // subsequent keystrokes may have landed on the wrong window.
-        warnings.push("ForegroundNotTransferred: Windows refused SetForegroundWindow; keystrokes may have missed the target. Retry after focus_window or click on the terminal.");
+        if (fg && String(fg.hwnd) === targetHwnd) {
+          foregrounded = true;
+          homingNotes.push(`brought "${win.title}" to front`);
+        } else {
+          warnings.push("ForceFocusRefused");
+        }
+      } else {
+        for (let attempt = 0; attempt < 5; attempt++) {
+          restoreAndFocusWindow(win.hwnd);
+          await new Promise<void>((r) => setTimeout(r, 100));
+          const fg = enumWindowsInZOrder().find((w) => w.isActive);
+          if (fg && String(fg.hwnd) === targetHwnd) { foregrounded = true; break; }
+        }
+        if (!foregrounded) {
+          // Windows foreground-stealing protection refused the focus shift.
+          // Surface this as a warning so callers (LLM / tests) can detect that
+          // subsequent keystrokes may have landed on the wrong window.
+          warnings.push("ForegroundNotTransferred: Windows refused SetForegroundWindow; keystrokes may have missed the target. Retry after focus_window or click on the terminal.");
+        } else {
+          homingNotes.push(`brought "${win.title}" to front`);
+        }
       }
     }
 
@@ -288,6 +318,17 @@ export const terminalSendHandler = async ({
       } catch { /* best-effort */ }
     }
 
+    // Detect focus loss after sending (separate from ForegroundNotTransferred)
+    let focusLost = undefined;
+    if (trackFocus && !focusRestored) {
+      const fl = await detectFocusLoss({
+        target: windowTitle,
+        homingNotes,
+        settleMs,
+      });
+      if (fl) focusLost = fl;
+    }
+
     const ident = observeTarget(windowTitle, win.hwnd, win.title);
 
     return ok({
@@ -295,6 +336,7 @@ export const terminalSendHandler = async ({
       sent: input,
       pressedEnter: pressEnter,
       focusRestored,
+      ...(focusLost && { focusLost }),
       post: {
         focusedWindow: focusRestored ? prevFg?.title ?? null : win.title,
         focusedElement: null,
