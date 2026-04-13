@@ -3,6 +3,23 @@
 > 2026-04-13 — Implementation plan born from a conversation with Claude Sonnet 4.6
 > Related: [`anti-fukuwarai-ideals.md`](./anti-fukuwarai-ideals.md) (verbalized ideals)
 
+## Progress
+
+| Phase | Status | Commit |
+|---|---|---|
+| **0.1** Output envelope types (`ok`/`fail` helpers) | ✅ Done | `84205e6` |
+| **1.1** Constructive errors (`_errors.ts`, `failWith`) | ✅ Done | `84205e6` |
+| 0.2 `pollUntil` consolidation | ⬜ Not started | — |
+| 1.2 Cache / identity transparency | ⬜ Not started | — |
+| 1.3 `wait_until` tool | ⬜ Not started | — |
+| 2.1 Post-state narration (always ON) | ⬜ Not started | — |
+| 2.2 why/state hints extension | ⬜ Not started | — |
+| 2.3 OCR confidence exposure | ⬜ Not started | — |
+| 3.1 Context retrieval tools | ⬜ Not started | — |
+| 3.2 Rich narration (opt-in) | ⬜ Not started | — |
+| 3.3 UIA confidence synthesis | ⬜ Not started | — |
+| 3.4 Async event subscribe | ⬜ Not started | — |
+
 ---
 
 ## Context
