@@ -8,6 +8,7 @@ import { assertKeyComboSafe } from "../utils/key-safety.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
+import { withPostState } from "./_post.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -15,7 +16,7 @@ const execFileAsync = promisify(execFile);
  * Set the Windows clipboard via PowerShell, using Base64 to handle any Unicode text.
  * Then paste with Ctrl+V to bypass IME conversion.
  */
-async function typeViaClipboard(text: string): Promise<void> {
+export async function typeViaClipboard(text: string, pasteCombo: "ctrl+v" | "ctrl+shift+v" = "ctrl+v"): Promise<void> {
   // Save current clipboard (best-effort — non-text content will be lost)
   let savedClipboard: string | null = null;
   try {
@@ -39,9 +40,9 @@ async function typeViaClipboard(text: string): Promise<void> {
     timeout: 5000,
   });
 
-  const ctrlV = parseKeys("ctrl+v");
-  await keyboard.pressKey(...ctrlV);
-  await keyboard.releaseKey(...ctrlV);
+  const combo = parseKeys(pasteCombo);
+  await keyboard.pressKey(...combo);
+  await keyboard.releaseKey(...combo);
 
   // Brief delay to let the paste complete before restoring clipboard
   await new Promise((resolve) => setTimeout(resolve, 120));
@@ -131,7 +132,7 @@ export function registerKeyboardTools(server: McpServer): void {
     "keyboard_type",
     "Type a string of text using the keyboard. The text is sent to whatever window is currently focused.",
     keyboardTypeSchema,
-    keyboardTypeHandler
+    withPostState("keyboard_type", keyboardTypeHandler)
   );
 
   server.tool(
@@ -144,6 +145,6 @@ export function registerKeyboardTools(server: McpServer): void {
       "up, down, left, right, escape, f1-f12.",
     ].join(" "),
     keyboardPressSchema,
-    keyboardPressHandler
+    withPostState("keyboard_press", keyboardPressHandler)
   );
 }

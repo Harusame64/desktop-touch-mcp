@@ -293,8 +293,14 @@ export async function captureAllLayers(
   return captureAndDiff(currentWindows, webpQuality);
 }
 
+// UIA cache is independent of WindowLayer so it works without diffMode baseline.
+const uiaCache = new Map<bigint, { uiaText: string; timestamp: number }>();
+const UIA_CACHE_TTL_MS = 90_000;
+
 /** Update the UIA text cache for a specific window. */
 export function updateUiaCache(hwnd: bigint, uiaText: string): void {
+  uiaCache.set(hwnd, { uiaText, timestamp: Date.now() });
+  // Also keep WindowLayer in sync if a baseline exists.
   const layer = layers.get(hwnd);
   if (layer) {
     layer.uiaText = uiaText;
@@ -302,12 +308,34 @@ export function updateUiaCache(hwnd: bigint, uiaText: string): void {
   }
 }
 
-/** Get cached UIA text for a window, or null if not cached. */
+/** Get cached UIA text for a window, or null if not cached / expired. */
 export function getCachedUia(hwnd: bigint): string | null {
-  return layers.get(hwnd)?.uiaText ?? null;
+  const entry = uiaCache.get(hwnd);
+  if (!entry) return null;
+  if (Date.now() - entry.timestamp > UIA_CACHE_TTL_MS) {
+    uiaCache.delete(hwnd);
+    return null;
+  }
+  return entry.uiaText;
 }
+
+/** UIA cache TTL — exported so identity-tracker can compute expiresInMs. */
+export const UIA_CACHE_TTL_EXPORTED_MS = UIA_CACHE_TTL_MS;
 
 /** Check if layer buffer has any entries (i.e., I-frame has been taken). */
 export function hasBuffer(): boolean {
   return layers.size > 0;
+}
+
+/** TTL constant (ms) — exported so callers can compute expires-in. */
+export const LAYER_TTL_EXPORTED_MS = LAYER_TTL_MS;
+
+/** Get the timestamp of the buffered baseline for a window, or null if none. */
+export function getBaselineTimestamp(hwnd: bigint): number | null {
+  return layers.get(hwnd)?.timestamp ?? null;
+}
+
+/** Get the UIA-cache timestamp for a window, or null if no cached UIA. */
+export function getUiaCacheTimestamp(hwnd: bigint): number | null {
+  return uiaCache.get(hwnd)?.timestamp ?? null;
 }

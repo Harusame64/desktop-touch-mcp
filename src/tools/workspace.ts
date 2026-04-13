@@ -5,6 +5,7 @@ import { validateLaunchCommand, resolveWellKnownPath, spawnDetached } from "../u
 import { enumMonitors, getVirtualScreen, enumWindowsInZOrder, type WindowZInfo } from "../engine/win32.js";
 import { captureScreen } from "../engine/image.js";
 import { clearLayers } from "../engine/layer-buffer.js";
+import { noteInvalidation } from "../engine/identity-tracker.js";
 import { getUiElements, extractActionableElements, WINUI3_CLASS_RE } from "../engine/uia-bridge.js";
 import { updateWindowCache } from "../engine/window-cache.js";
 import { ok } from "./_types.js";
@@ -103,6 +104,7 @@ export const workspaceSnapshotHandler = async ({
   try {
     // Reset layer buffer — workspace_snapshot acts as an I-frame baseline
     clearLayers();
+    noteInvalidation("workspace_snapshot");
 
     // enumWindowsInZOrder() is a single synchronous Win32 EnumWindows sweep that
     // collects title, region, z-order, active state in one pass — far faster than

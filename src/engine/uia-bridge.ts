@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { getCachedUia, updateUiaCache } from "./layer-buffer.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -192,6 +193,14 @@ foreach ($el in $all) {
 }
 if (-not $found) { Write-Output '{"ok":false,"error":"Element not found"}'; exit }
 
+# Phase 2.2 — pre-detect disabled clicks so the LLM gets ElementDisabled + suggest
+# rather than a silent success that did nothing visible.
+try {
+    if (-not $found.Current.IsEnabled) {
+        Write-Output '{"ok":false,"error":"Element is disabled"}'; exit
+    }
+} catch {}
+
 try {
     $ip = $found.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
     $ip.Invoke()
@@ -276,12 +285,31 @@ export async function getUiElements(
   windowTitle: string,
   maxDepth = 3,
   maxElements = 50,
-  timeoutMs = 10000
-): Promise<UiElementsResult> {
+  timeoutMs = 10000,
+  options?: { cached?: boolean; hwnd?: bigint }
+): Promise<UiElementsResult & { _cacheHit?: boolean }> {
+  // Cache hit path — only when caller provides hwnd + cached:true
+  if (options?.cached && options.hwnd !== undefined) {
+    const cached = getCachedUia(options.hwnd);
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached) as UiElementsResult;
+        return { ...parsed, _cacheHit: true };
+      } catch {
+        // fall through to live fetch
+      }
+    }
+  }
+
   const script = makeGetElementsScript(windowTitle, maxDepth, maxElements);
   const output = await runPS(script, timeoutMs);
   const result = JSON.parse(output);
   if (result.error) throw new Error(result.error);
+
+  // Update cache if we know the hwnd
+  if (options?.hwnd !== undefined) {
+    try { updateUiaCache(options.hwnd, output); } catch { /* ignore */ }
+  }
   return result as UiElementsResult;
 }
 
@@ -311,6 +339,12 @@ export interface ActionableElement {
   enabled?: boolean;
   /** Origin of this element's data: 'uia' = UI Automation, 'ocr' = Windows OCR. */
   source?: "uia" | "ocr";
+  /** Phase 2.2 — semantic state: enabled / disabled / toggled / readonly. */
+  state?: "enabled" | "disabled" | "toggled" | "readonly";
+  /** Phase 2.3 / 3.3 — match-confidence on a unified 0-1 scale. */
+  confidence?: number;
+  /** Optional next-step hint for low-confidence items. */
+  suggest?: string;
 }
 
 export interface TextContent {
@@ -382,6 +416,19 @@ export function extractActionableElements(result: UiElementsResult): ActionableR
     const label = el.name || el.automationId || el.controlType;
     if (!label) continue;
 
+    // Phase 3.3 — synthetic UIA confidence:
+    //   automationId present  → 1.0
+    //   Name (full)           → 0.95
+    //   Name (substring/short)→ 0.7
+    //   ControlType-only label→ 0.5
+    let confidence = 0.5;
+    if (el.automationId) confidence = 1.0;
+    else if (el.name && el.name.length > 1 && el.name === label) confidence = 0.95;
+    else if (el.name && label === el.name) confidence = 0.7;
+
+    // Phase 2.2 — semantic state.
+    const state: ActionableElement["state"] = el.isEnabled ? "enabled" : "disabled";
+
     const item: ActionableElement = {
       action,
       name: label,
@@ -389,6 +436,8 @@ export function extractActionableElements(result: UiElementsResult): ActionableR
       clickAt,
       region: { x: r.x, y: r.y, width: r.width, height: r.height },
       source: "uia",
+      state,
+      confidence,
     };
 
     if (el.automationId) item.id = el.automationId;
@@ -591,6 +640,69 @@ export async function getElementChildren(
   const result = JSON.parse(output);
   if (result.error) throw new Error(result.error);
   return (result.elements ?? []) as UiElement[];
+}
+
+/**
+ * Extract terminal text content via UIA TextPattern.
+ * Works for Windows Terminal / conhost / PowerShell ISE windows that
+ * implement TextPattern (most modern terminal hosts do).
+ *
+ * Returns the full visible buffer text, or null if TextPattern is unavailable.
+ */
+export async function getTextViaTextPattern(windowTitle: string, timeoutMs = 6000): Promise<string | null> {
+  const safeTitle = escapeLike(windowTitle);
+  const script = `
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+
+$root = [System.Windows.Automation.AutomationElement]::RootElement
+$trueC = [System.Windows.Automation.Condition]::TrueCondition
+$desc  = [System.Windows.Automation.TreeScope]::Descendants
+
+$target = $null
+$allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
+foreach ($w in $allWins) {
+    if ($w.Current.Name -like '*${safeTitle}*') { $target = $w; break }
+}
+if (-not $target) { Write-Output '{"ok":false,"error":"Window not found"}'; exit }
+
+# Find the first descendant that supports TextPattern (usually the terminal control itself)
+$found = $null
+$all = $target.FindAll($desc, $trueC)
+foreach ($el in $all) {
+    try {
+        $tp = $el.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
+        if ($tp -ne $null) { $found = $tp; break }
+    } catch {}
+}
+
+# Sometimes the root window itself implements TextPattern
+if ($found -eq $null) {
+    try {
+        $found = $target.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
+    } catch {}
+}
+
+if ($found -eq $null) { Write-Output '{"ok":false,"error":"TextPattern not available"}'; exit }
+
+try {
+    $range = $found.DocumentRange
+    $text  = $range.GetText(-1)
+    $payload = @{ ok=$true; text=$text } | ConvertTo-Json -Compress
+    Write-Output $payload
+} catch {
+    Write-Output ('{"ok":false,"error":"' + ($_.Exception.Message -replace '"','\\"') + '"}')
+}
+`;
+  try {
+    const out = await runPS(script, timeoutMs);
+    const parsed = JSON.parse(out) as { ok: boolean; text?: string; error?: string };
+    if (!parsed.ok) return null;
+    return parsed.text ?? "";
+  } catch {
+    return null;
+  }
 }
 
 /**

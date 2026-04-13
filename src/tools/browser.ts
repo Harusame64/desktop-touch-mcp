@@ -18,6 +18,9 @@ import {
 } from "../engine/cdp-bridge.js";
 import { resolveWellKnownPath, spawnDetached } from "../utils/launch.js";
 import { getCdpPort } from "../utils/desktop-config.js";
+import { fail } from "./_types.js";
+import { setBrowserSearchHook } from "./wait-until.js";
+import { withPostState } from "./_post.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -118,6 +121,20 @@ export const browserLaunchSchema = {
     .max(30_000)
     .default(10_000)
     .describe("Max milliseconds to wait for the CDP endpoint to become ready (default 10000)."),
+};
+
+export const browserSearchSchema = {
+  by: z.enum(["text", "regex", "role", "ariaLabel", "selector"])
+    .describe("Search axis: text/regex/role/ariaLabel/selector"),
+  pattern: z.string().min(1).describe("Pattern to match against the chosen axis."),
+  scope: z.string().optional().describe("CSS selector to limit the search scope."),
+  maxResults: z.coerce.number().int().min(1).max(200).default(50).describe("Max results returned (default 50)."),
+  offset: z.coerce.number().int().min(0).default(0).describe("Offset into the result set (default 0)."),
+  visibleOnly: z.boolean().default(true).describe("Only visible elements (default true). Set false to include hidden ones with confidence penalty."),
+  inViewportOnly: z.boolean().default(false).describe("Only currently-in-viewport elements (default false)."),
+  caseSensitive: z.boolean().default(false).describe("Case-sensitive matching for text/regex (default false)."),
+  tabId: tabIdParam,
+  port: portParam,
 };
 
 export const browserGetInteractiveSchema = {
@@ -697,6 +714,237 @@ export const browserLaunchHandler = async ({
   }
 };
 
+export const browserSearchHandler = async ({
+  by, pattern, scope, maxResults, offset, visibleOnly, inViewportOnly, caseSensitive, tabId, port,
+}: {
+  by: "text" | "regex" | "role" | "ariaLabel" | "selector";
+  pattern: string;
+  scope?: string;
+  maxResults: number;
+  offset: number;
+  visibleOnly: boolean;
+  inViewportOnly: boolean;
+  caseSensitive: boolean;
+  tabId?: string;
+  port: number;
+}): Promise<ToolResult> => {
+  try {
+    const expression = `
+(function() {
+  const root = ${scope ? `document.querySelector(${JSON.stringify(scope)})` : "document"};
+  if (!root) return { __error: "ScopeNotFound" };
+
+  const by = ${JSON.stringify(by)};
+  const pat = ${JSON.stringify(pattern)};
+  const cs  = ${JSON.stringify(caseSensitive)};
+  const visibleOnly = ${JSON.stringify(visibleOnly)};
+  const viewportOnly = ${JSON.stringify(inViewportOnly)};
+  const maxN = ${JSON.stringify(maxResults + offset)};
+  const offN = ${JSON.stringify(offset)};
+
+  function isVisible(el) {
+    const s = window.getComputedStyle(el);
+    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }
+  function inViewportRect(rect) {
+    return rect.top < window.innerHeight && rect.bottom > 0 &&
+           rect.left < window.innerWidth && rect.right > 0;
+  }
+  function bestSelector(el) {
+    if (el.id) return '#' + CSS.escape(el.id);
+    const name = el.getAttribute('name');
+    if (name) return el.tagName.toLowerCase() + '[name=' + JSON.stringify(name) + ']';
+    const aria = el.getAttribute('aria-label');
+    if (aria && aria.length < 80)
+      return el.tagName.toLowerCase() + '[aria-label=' + JSON.stringify(aria) + ']';
+    for (const attr of ['data-testid', 'data-asin']) {
+      const v = el.getAttribute(attr);
+      if (v && v.length < 60) return el.tagName.toLowerCase() + '[' + attr + '=' + JSON.stringify(v) + ']';
+    }
+    let node = el; let path = '';
+    for (let depth = 0; depth < 2 && node.parentElement; depth++) {
+      const p = node.parentElement;
+      const idx = Array.from(p.children).indexOf(node) + 1;
+      const seg = node.tagName.toLowerCase() + ':nth-child(' + idx + ')';
+      path = path ? seg + ' > ' + path : seg;
+      if (p.id) { path = '#' + CSS.escape(p.id) + ' > ' + path; break; }
+      node = p;
+    }
+    return path || el.tagName.toLowerCase();
+  }
+  function classify(el) {
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'a') return 'link';
+    if (tag === 'button' || el.getAttribute('role') === 'button') return 'button';
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') return 'input';
+    if (/^h[1-6]$/.test(tag)) return 'heading';
+    if (tag === 'p' || tag === 'span' || tag === 'div') return 'text';
+    return 'other';
+  }
+  function elText(el) {
+    const t = (el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 80);
+    if (!t && el.tagName === 'INPUT')
+      return (el.placeholder || el.value || el.getAttribute('aria-label') || '').slice(0, 80);
+    return t;
+  }
+  function score(matched, visible) {
+    let s = matched;
+    if (!visible) s = Math.max(0, s - 0.3);
+    return Math.round(s * 100) / 100;
+  }
+
+  // Bound the scan — pages can have 10k+ nodes and CDP timeout is 15s.
+  const SCAN_BUDGET_MS = 3000;
+  const startTs = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
+  const all = root.querySelectorAll('*');
+  let candidates = [];
+
+  if (by === 'selector') {
+    candidates = Array.from(root.querySelectorAll(pat));
+    for (const el of candidates) {
+      el.__matchScore = 1.0;
+      el.__matchedBy = 'selector';
+    }
+  } else if (by === 'text') {
+    const needle = cs ? pat : pat.toLowerCase();
+    for (const el of all) {
+      // Direct child text only (avoid double-counting parent matches via descendants)
+      const direct = Array.from(el.childNodes)
+        .filter(n => n.nodeType === 3)
+        .map(n => n.textContent || '')
+        .join('').trim();
+      if (!direct) continue;
+      const hay = cs ? direct : direct.toLowerCase();
+      if (hay === needle) { el.__matchScore = 1.0; el.__matchedBy = 'text'; candidates.push(el); }
+      else if (hay.includes(needle)) { el.__matchScore = 0.8; el.__matchedBy = 'text'; candidates.push(el); }
+    }
+  } else if (by === 'regex') {
+    let re;
+    try { re = new RegExp(pat, (cs ? '' : 'i') + 'u'); }
+    catch (e) { return { __error: "InvalidRegex", message: String(e) }; }
+    for (const el of all) {
+      const direct = Array.from(el.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent || '').join('').trim();
+      if (!direct) continue;
+      if (re.test(direct)) { el.__matchScore = 0.9; el.__matchedBy = 'regex'; candidates.push(el); }
+    }
+  } else if (by === 'role') {
+    const needle = cs ? pat : pat.toLowerCase();
+    function pushRole(el, score, matchedBy) {
+      const prev = el.__matchScore || 0;
+      if (score > prev) { el.__matchScore = score; el.__matchedBy = matchedBy; }
+      if (!el.__pushed) { candidates.push(el); el.__pushed = true; }
+    }
+    for (const el of all) {
+      const role = el.getAttribute('role') || '';
+      const cmp = cs ? role : role.toLowerCase();
+      if (cmp === needle) pushRole(el, 0.75, 'role');
+    }
+    // Implicit roles — score slightly higher because they're guaranteed by tag.
+    if (needle === 'button')  for (const el of root.querySelectorAll('button')) pushRole(el, 0.85, 'roleImplicit');
+    if (needle === 'link')    for (const el of root.querySelectorAll('a[href]')) pushRole(el, 0.85, 'roleImplicit');
+    if (needle === 'heading') for (const el of root.querySelectorAll('h1,h2,h3,h4,h5,h6')) pushRole(el, 0.85, 'roleImplicit');
+  } else if (by === 'ariaLabel') {
+    const needle = cs ? pat : pat.toLowerCase();
+    for (const el of all) {
+      const aria = el.getAttribute('aria-label') || '';
+      if (!aria) continue;
+      const cmp = cs ? aria : aria.toLowerCase();
+      if (cmp === needle) { el.__matchScore = 0.95; el.__matchedBy = 'ariaLabel'; candidates.push(el); }
+      else if (cmp.includes(needle)) { el.__matchScore = 0.7; el.__matchedBy = 'ariaLabel'; candidates.push(el); }
+    }
+  }
+
+  // De-duplicate (an element can match through multiple paths in role/text)
+  const seen = new Set();
+  candidates = candidates.filter(el => { if (seen.has(el)) return false; seen.add(el); return true; });
+
+  // Time budget check — if we already exceeded the budget, return what we have
+  // tagged so the caller can retry with narrower scope.
+  const overBudget = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - startTs > SCAN_BUDGET_MS;
+  if (overBudget && candidates.length === 0) {
+    return { __error: "Timeout", message: "Scan budget exceeded with no matches; narrow scope or maxResults." };
+  }
+
+  const filtered = [];
+  for (const el of candidates) {
+    const visible = isVisible(el);
+    if (visibleOnly && !visible) continue;
+    const rect = el.getBoundingClientRect();
+    const inVp = inViewportRect(rect);
+    if (viewportOnly && !inVp) continue;
+    filtered.push({ el, visible, rect, inVp });
+  }
+
+  // Score and sort by confidence desc
+  filtered.sort((a, b) => {
+    const sa = score(a.el.__matchScore, a.visible);
+    const sb = score(b.el.__matchScore, b.visible);
+    return sb - sa;
+  });
+
+  const total = filtered.length;
+  const sliced = filtered.slice(offN, offN + (maxN - offN));
+
+  const results = sliced.map(({ el, visible, rect, inVp }) => ({
+    type: classify(el),
+    text: elText(el),
+    selector: bestSelector(el),
+    role: el.getAttribute('role') || undefined,
+    ariaLabel: el.getAttribute('aria-label') || undefined,
+    matchedBy: el.__matchedBy,
+    confidence: score(el.__matchScore, visible),
+    inViewport: inVp,
+    rect: { x: Math.round(rect.left), y: Math.round(rect.top), w: Math.round(rect.width), h: Math.round(rect.height) },
+  }));
+
+  return { total, returned: results.length, truncated: total > offN + results.length, results };
+})()
+`;
+    const result = await evaluateInTab(expression, tabId ?? null, port);
+    if (result && typeof result === "object" && "__error" in (result as object)) {
+      const r = result as { __error: string; message?: string };
+      const code = r.__error === "ScopeNotFound" ? "ScopeNotFound"
+                : r.__error === "InvalidRegex" ? "BrowserSearchNoResults"
+                : r.__error === "Timeout" ? "BrowserSearchTimeout"
+                : "ToolError";
+      const suggest = code === "ScopeNotFound"
+        ? ["Verify the scope CSS selector matches at least one element", "Omit scope to search the full document"]
+        : code === "BrowserSearchTimeout"
+        ? ["Reduce maxResults", "Narrow scope via CSS selector", "Try by:'selector' if you know the element"]
+        : ["Verify your regex syntax", "Try a literal pattern with by:'text'"];
+      return fail({
+        ok: false, code,
+        error: `browser_search: ${r.__error}${r.message ? " — " + r.message : ""}`,
+        suggest,
+        context: { by, pattern, scope },
+      });
+    }
+    const payload = result as {
+      total: number; returned: number; truncated: boolean;
+      results: Array<{ confidence: number; selector: string; text: string }>;
+    };
+    if (payload.total === 0) {
+      return fail({
+        ok: false,
+        code: "BrowserSearchNoResults",
+        error: `browser_search(${by}, ${JSON.stringify(pattern)}) returned 0 results`,
+        suggest: [
+          "Try a different 'by' axis",
+          "Remove scope or set visibleOnly:false",
+          "Toggle caseSensitive:false",
+        ],
+        context: { by, pattern, scope, visibleOnly, inViewportOnly },
+      });
+    }
+    return ok(payload);
+  } catch (err) {
+    return failWith(err, "browser_search", { by, pattern, scope });
+  }
+};
+
 export const browserDisconnectHandler = async ({
   port,
 }: {
@@ -722,6 +970,34 @@ export const browserDisconnectHandler = async ({
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function registerBrowserTools(server: McpServer): void {
+  // Wire wait_until(element_matches) — resolve top result for callers that just need selector + text.
+  setBrowserSearchHook(async ({ port, tabId, by, pattern, scope }) => {
+    try {
+      const result = await browserSearchHandler({
+        by, pattern, scope, maxResults: 5, offset: 0,
+        visibleOnly: true, inViewportOnly: false, caseSensitive: false,
+        tabId, port: port ?? _defaultPort,
+      });
+      const text = result.content[0]?.type === "text" ? result.content[0].text : "{}";
+      const parsed = JSON.parse(text) as { results?: Array<{ selector: string; text: string }> };
+      return parsed.results ?? [];
+    } catch {
+      return [];
+    }
+  });
+
+  server.tool(
+    "browser_search",
+    [
+      "Grep-like element search. Pick the best match by confidence rank.",
+      "by: 'text' (literal substring), 'regex', 'role', 'ariaLabel', 'selector' (CSS).",
+      "Returns results[] sorted by confidence desc — pass results[0].selector to browser_click_element.",
+      "Pagination: offset/maxResults. Visibility: visibleOnly/inViewportOnly. Case: caseSensitive.",
+    ].join("\n"),
+    browserSearchSchema,
+    browserSearchHandler
+  );
+
   server.tool(
     "browser_get_interactive",
     [
@@ -775,7 +1051,7 @@ export function registerBrowserTools(server: McpServer): void {
       "Fails if the element is outside the visible viewport — scroll into view first.",
     ].join("\n"),
     browserClickElementSchema,
-    browserClickElementHandler
+    withPostState("browser_click_element", browserClickElementHandler)
   );
 
   server.tool(
@@ -786,7 +1062,7 @@ export function registerBrowserTools(server: McpServer): void {
       "Example: browser_eval(\"document.title\") → page title string.",
     ].join("\n"),
     browserEvalSchema,
-    browserEvalHandler
+    withPostState("browser_eval", browserEvalHandler)
   );
 
   server.tool(
@@ -807,7 +1083,7 @@ export function registerBrowserTools(server: McpServer): void {
       "After calling, wait and check document.readyState via browser_eval.",
     ].join("\n"),
     browserNavigateSchema,
-    browserNavigateHandler
+    withPostState("browser_navigate", browserNavigateHandler)
   );
 
   server.tool(

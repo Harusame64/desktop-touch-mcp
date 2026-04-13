@@ -12,6 +12,10 @@ import { registerMacroTools } from "./tools/macro.js";
 import { registerScrollCaptureTools } from "./tools/scroll-capture.js";
 import { registerBrowserTools } from "./tools/browser.js";
 import { registerDockTools, autoDockFromEnv } from "./tools/dock.js";
+import { registerWaitUntilTool } from "./tools/wait-until.js";
+import { registerContextTools } from "./tools/context.js";
+import { registerTerminalTools } from "./tools/terminal.js";
+import { registerEventTools } from "./tools/events.js";
 import { startTray, stopTray } from "./utils/tray.js";
 import { checkFailsafe, FailsafeError } from "./utils/failsafe.js";
 
@@ -162,6 +166,55 @@ const server = new McpServer(
       "Group sequential operations into a single run_macro call to eliminate API round-trips.",
       "Max 50 steps. Use sleep pseudo-command for waits (max 10000ms).",
       "",
+      "## Wait — server-side polling (replaces screenshot loops)",
+      "wait_until(condition, target, timeoutMs?, intervalMs?) — server polls until a condition is true.",
+      "Conditions: window_appears | window_disappears | focus_changes | element_appears |",
+      "            value_changes | ready_state | terminal_output_contains | element_matches.",
+      "Returns elapsedMs + observed; on timeout returns code:'WaitTimeout' with suggest[].",
+      "",
+      "## Lightweight context (no screenshot needed)",
+      "get_context()       — focusedWindow, cursorPos, hasModal, pageState (cheap, ~80 tok).",
+      "get_history(n=5)    — last N action posts (tool, args digest, post-state, tsMs).",
+      "get_document_state(port?, tabId?) — Chrome url/title/readyState/selection/scroll via CDP.",
+      "",
+      "## Action post-state (always-on narration)",
+      "Action tools (click_element, set_element_value, keyboard_type/press, mouse_click/drag,",
+      " browser_click_element/navigate/eval, terminal_send) include `post` in the response:",
+      "  { focusedWindow, focusedElement, windowChanged, elapsedMs }",
+      "Use this to skip confirmation screenshots after actions.",
+      "",
+      "## Identity tracking — detect process restarts",
+      "screenshot(detail='text', windowTitle=…) responses include hints.target {hwnd,pid,processName,",
+      " processStartTimeMs,titleResolved} and hints.caches {diffBaseline,uiaCache,windowLayout}.",
+      "If hints.target.pid changes between calls → the app was restarted. Prior history is invalid.",
+      "If hints.caches.diffBaseline.invalidatedBy === 'process_restarted' / 'hwnd_reused' → re-orient.",
+      "",
+      "## Terminal — read & write external terminal windows",
+      "terminal_read(windowTitle, lines?, sinceMarker?, stripAnsi?, source?) — UIA TextPattern with OCR fallback.",
+      "  Pass marker from previous response in sinceMarker for diff-only output.",
+      "  hints.terminalMarker.invalidatedBy='process_restarted' on shell restart.",
+      "terminal_send(windowTitle, input, pressEnter=true, focusFirst=true, restoreFocus=true) — focus + type + restore.",
+      "screenshot(detail='text') on terminal hosts auto-uses TextPattern (hints.terminalGuard=true).",
+      "Composite: macro [terminal_send → wait_until(terminal_output_contains) → terminal_read(sinceMarker)].",
+      "",
+      "## Browser search — grep DOM with confidence ranking",
+      "browser_search(by, pattern, scope?, maxResults=50, offset=0, visibleOnly=true, inViewportOnly=false, caseSensitive=false)",
+      "  by: 'text' | 'regex' | 'role' | 'ariaLabel' | 'selector'.",
+      "  Returns results[] sorted by confidence desc — pass results[0].selector to browser_click_element.",
+      "  Failure codes: BrowserSearchNoResults / BrowserSearchTimeout / ScopeNotFound (each with suggest[]).",
+      "",
+      "## Inter-turn events (window appearance / focus changes)",
+      "events_subscribe(types) → subscriptionId.",
+      "events_poll(subscriptionId, sinceMs?) → drains buffered events.",
+      "events_unsubscribe(subscriptionId).",
+      "Use at the start of a turn to detect what changed since the previous turn.",
+      "",
+      "## Confidence — comparable across UIA and OCR (0..1)",
+      "actionable[].confidence is on the same scale for source:'uia' and source:'ocr'.",
+      "  UIA: automationId=1.0 / Name exact=0.95 / substring=0.7 / class-only=0.5.",
+      "  OCR: word=0.7 / single char=0.55 / control char=0.45 / replacement char=0.2 (suggests dotByDot retry).",
+      "Sort actionable by confidence desc to pick the most reliable candidate.",
+      "",
       "## Emergency stop (Failsafe)",
       "Move mouse to the top-left corner of the screen (within 10px of 0,0) to immediately terminate the MCP server.",
     ].join("\n"),
@@ -195,6 +248,10 @@ registerMacroTools(server);
 registerScrollCaptureTools(server);
 registerBrowserTools(server);
 registerDockTools(server);
+registerWaitUntilTool(server);
+registerContextTools(server);
+registerTerminalTools(server);
+registerEventTools(server);
 
 // ─── Failsafe background monitor (backup for long-running operations) ─────────
 // Primary check: per-tool call via the wrapper above.

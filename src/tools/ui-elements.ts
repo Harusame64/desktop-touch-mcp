@@ -5,6 +5,8 @@ import { captureScreen } from "../engine/image.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith, failArgs } from "./_errors.js";
+import { withPostState } from "./_post.js";
+import { buildHintsForTitle } from "../engine/identity-tracker.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -48,8 +50,14 @@ export const getUiElementsHandler = async ({
   windowTitle, maxDepth, maxElements,
 }: { windowTitle: string; maxDepth: number; maxElements: number }): Promise<ToolResult> => {
   try {
-    const result = await getUiElements(windowTitle, maxDepth, maxElements);
-    return ok(result, true);
+    const hintsBlock = buildHintsForTitle(windowTitle);
+    const result = await getUiElements(windowTitle, maxDepth, maxElements, 10000, {
+      hwnd: hintsBlock?.hwnd, cached: false,
+    });
+    const enriched = hintsBlock
+      ? { ...result, hints: { target: hintsBlock.target, caches: hintsBlock.caches } }
+      : result;
+    return ok(enriched, true);
   } catch (err) {
     return failWith(err, "get_ui_elements", { windowTitle });
   }
@@ -62,11 +70,15 @@ export const clickElementHandler = async ({
     if (!name && !automationId) {
       return failArgs("Provide at least one of: name, automationId", "click_element", { windowTitle });
     }
+    const hintsBlock = buildHintsForTitle(windowTitle);
     const result = await clickElement(windowTitle, name, automationId, controlType);
     if (!result.ok) {
       return failWith(result.error ?? "Unknown error", "click_element", { windowTitle, name, automationId });
     }
-    return ok(result);
+    const enriched = hintsBlock
+      ? { ...result, hints: { target: hintsBlock.target, caches: hintsBlock.caches } }
+      : result;
+    return ok(enriched);
   } catch (err) {
     return failWith(err, "click_element", { windowTitle, name, automationId });
   }
@@ -173,7 +185,7 @@ export function registerUiElementTools(server: McpServer): void {
       "Ideal for buttons, menu items, and links.",
     ].join(" "),
     clickElementSchema,
-    clickElementHandler
+    withPostState("click_element", clickElementHandler)
   );
 
   server.tool(
@@ -183,7 +195,7 @@ export function registerUiElementTools(server: McpServer): void {
       "More reliable than keyboard_type for programmatic input into form fields.",
     ].join(" "),
     setElementValueSchema,
-    setElementValueHandler
+    withPostState("set_element_value", setElementValueHandler)
   );
 
   server.tool(

@@ -16,7 +16,7 @@
 | 2.2 why/state hints extension | ⬜ Not started | — |
 | 2.3 OCR confidence exposure | ⬜ Not started | — |
 | 3.1 Context retrieval tools | ⬜ Not started | — |
-| 3.2 Rich narration (opt-in) | ⬜ Not started | — |
+| 3.2 Rich narration (opt-in) | ⬜ Not started — defer until usage data justifies UIA-diff cost | — |
 | 3.3 UIA confidence synthesis | ⬜ Not started | — |
 | 3.4 Async event subscribe | ⬜ Not started | — |
 
@@ -105,6 +105,11 @@ pollUntil<T>(
   - `ElementNotFound` → `["Call get_ui_elements for candidate names", "Use screenshot(detail='text') for actionable[]"]`
   - `InvokePatternNotSupported` → `["Use mouse_click with clickAt coords", "Use set_element_value for text inputs"]`
   - `UiaTimeout` → `["Retry with cached=true", "Try screenshot(detail='image') for visual fallback"]`
+  - `TerminalWindowNotFound` → `["Call get_windows", "Try partial title match", "Filter by processName pwsh/cmd/bash"]` *(from `terminal-integration-plan.md`)*
+  - `TerminalTextPatternUnavailable` → `["Retry with source:'ocr'", "Or source:'auto' to auto-fallback"]` *(from `terminal-integration-plan.md`)*
+  - `TerminalMarkerStale` → `["Omit sinceMarker for full text", "Check hints.terminalMarker.invalidatedBy"]` *(from `terminal-integration-plan.md`)*
+  - `BrowserSearchNoResults` → `["Try different 'by' axis", "Remove scope", "Set visibleOnly:false"]` *(from `cdp-search-plan.md`)*
+  - `BrowserSearchTimeout` → `["Reduce maxResults", "Narrow scope via CSS selector"]` *(from `cdp-search-plan.md`)*
 - Replace all handler catch blocks with `failWith(err)` → auto-normalizes to ToolError
 - Integrate with the failsafe wrapper at `src/index.ts:175-185`
 
@@ -177,7 +182,9 @@ Add to `src/index.ts:21-167`:
 **Shape**:
 ```ts
 wait_until({
-  condition: "window_appears" | "window_disappears" | "focus_changes" | "value_changes" | "element_appears" | "ready_state",
+  condition: "window_appears" | "window_disappears" | "focus_changes" | "value_changes" | "element_appears" | "ready_state"
+           | "terminal_output_contains"   // from terminal-integration-plan.md (X-1)
+           | "element_matches",            // from cdp-search-plan.md (X-2) — browser_search by/pattern semantics
   target: { windowTitle?: string; elementName?: string; elementSelector?: string },
   timeoutMs?: number,  // default 5000, max 30000
   intervalMs?: number  // default 200
@@ -520,6 +527,7 @@ post: {
 - `browser_click_element`, `browser_navigate`, `browser_eval` (`src/tools/browser.ts`)
 
 Excluded: `mouse_move` / `scroll` / `get_cursor_position` (non-state-transitioning).
+Also excluded (observation-only, added by sibling plans): `terminal_read` (from `terminal-integration-plan.md`), `browser_search` (from `cdp-search-plan.md`). `terminal_send` is action-ON (post attached).
 **Implementation note**: Fetch focused element lightly — `getActiveWindow` + single UIA focused element fetch (no descendant enumeration).
 
 ### 2.2 why / state Hints Extension (Ideal 2)

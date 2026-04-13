@@ -39,6 +39,41 @@ const SUGGESTS: Record<string, string[]> = {
     "Verify Chrome was launched with --remote-debugging-port",
     "Use browser_launch to open a new debugging-enabled Chrome instance",
   ],
+  TerminalWindowNotFound: [
+    "Call get_windows to see available titles",
+    "Try a partial title match (e.g. 'PowerShell' or 'pwsh')",
+    "Filter by processName: pwsh / powershell / cmd / bash / WindowsTerminal",
+  ],
+  TerminalTextPatternUnavailable: [
+    "Retry with source:'ocr' to use Windows OCR",
+    "Or source:'auto' to auto-fallback when TextPattern is missing",
+    "Some terminal apps (e.g. WSL inside vt100) do not implement TextPattern",
+  ],
+  TerminalMarkerStale: [
+    "Omit sinceMarker to fetch full text",
+    "Check hints.terminalMarker.invalidatedBy — pid_changed/process_restarted means a new shell instance",
+    "After process_restarted, treat prior history as invalid",
+  ],
+  BrowserSearchNoResults: [
+    "Try a different 'by' axis (text → ariaLabel, regex → role)",
+    "Remove the scope parameter to search the full document",
+    "Set visibleOnly:false to include hidden / off-viewport elements",
+    "Toggle caseSensitive:false for text and regex",
+  ],
+  BrowserSearchTimeout: [
+    "Reduce maxResults",
+    "Narrow the scope via a CSS selector",
+    "Try by:'selector' for a specific element if you know it",
+  ],
+  ScopeNotFound: [
+    "Verify the scope CSS selector matches at least one element",
+    "Omit the scope parameter to search the full document",
+  ],
+  WaitTimeout: [
+    "Increase timeoutMs",
+    "Verify the target window/element appears as expected",
+    "Check intermediate state with screenshot(detail='meta') or get_context()",
+  ],
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -65,6 +100,21 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   if (m.includes("browser") && (m.includes("not connected") || m.includes("econnrefused"))) {
     return { code: "BrowserNotConnected", suggest: SUGGESTS.BrowserNotConnected };
+  }
+  if (m.includes("terminal window not found") || m.includes("terminal not found")) {
+    return { code: "TerminalWindowNotFound", suggest: SUGGESTS.TerminalWindowNotFound };
+  }
+  if (m.includes("textpattern") || m.includes("text pattern")) {
+    return { code: "TerminalTextPatternUnavailable", suggest: SUGGESTS.TerminalTextPatternUnavailable };
+  }
+  if (m.includes("marker stale") || m.includes("sincemarker")) {
+    return { code: "TerminalMarkerStale", suggest: SUGGESTS.TerminalMarkerStale };
+  }
+  if (m.includes("scope not found") || m.includes("scopenotfound")) {
+    return { code: "ScopeNotFound", suggest: SUGGESTS.ScopeNotFound };
+  }
+  if (m.includes("wait timeout") || m.includes("waittimeout")) {
+    return { code: "WaitTimeout", suggest: SUGGESTS.WaitTimeout };
   }
 
   return { code: "ToolError", suggest: [] };

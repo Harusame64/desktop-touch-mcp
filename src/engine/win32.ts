@@ -137,6 +137,22 @@ const CloseHandle = kernel32.func("bool __stdcall CloseHandle(void *hObject)");
 const TH32CS_SNAPPROCESS = 0x00000002;
 const INVALID_HANDLE_VALUE_BIG = 0xffffffffffffffffn; // -1 as u64 for comparison
 
+// Process identity (pid + creation time + image name) for cache invalidation
+const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+const FILETIME = koffi.struct("FILETIME", {
+  dwLowDateTime: "uint32",
+  dwHighDateTime: "uint32",
+});
+const OpenProcess = kernel32.func(
+  "void* __stdcall OpenProcess(uint32 dwDesiredAccess, bool bInheritHandle, uint32 dwProcessId)"
+);
+const GetProcessTimes = kernel32.func(
+  "bool __stdcall GetProcessTimes(void *hProcess, _Out_ FILETIME *creation, _Out_ FILETIME *exit, _Out_ FILETIME *kernel, _Out_ FILETIME *user)"
+);
+const QueryFullProcessImageNameW = kernel32.func(
+  "bool __stdcall QueryFullProcessImageNameW(void *hProcess, uint32 dwFlags, _Out_ uint16 *lpExeName, _Inout_ uint32 *lpdwSize)"
+);
+
 // Window Z-order / always-on-top
 // hWndInsertAfter is intptr (not void*) so negative sentinel values -1/-2 pass correctly
 const SetWindowPos = user32.func(
@@ -363,6 +379,74 @@ export function getWindowProcessId(hwnd: unknown): number {
   const pidOut = [0];
   GetWindowThreadProcessId(hwnd, pidOut);
   return pidOut[0] >>> 0; // coerce to unsigned
+}
+
+/** Identity record that survives across HWND reuse / process restart. */
+export interface ProcessIdentity {
+  pid: number;
+  processName: string;            // e.g. "powershell" (no .exe)
+  /** Process creation time in ms since Windows epoch (1601). 0 on failure. */
+  processStartTimeMs: number;
+}
+
+/**
+ * Convert a Windows FILETIME (100-ns intervals since 1601) to ms.
+ * Returns 0 if both halves are zero.
+ */
+function fileTimeToMs(low: number, high: number): number {
+  if (low === 0 && high === 0) return 0;
+  // BigInt to avoid precision loss; result is ms since Windows epoch (we don't need Unix conversion — only equality matters).
+  const ticks = (BigInt(high >>> 0) << 32n) | BigInt(low >>> 0);
+  return Number(ticks / 10000n);
+}
+
+/**
+ * Resolve a PID into {pid, processName, processStartTimeMs}.
+ * Used to detect "same window title but different process" (HWND reuse / app restart).
+ * On failure returns identity with empty processName / startTime=0 (still usable for equality of pid).
+ */
+export function getProcessIdentityByPid(pid: number): ProcessIdentity {
+  const out: ProcessIdentity = { pid: pid >>> 0, processName: "", processStartTimeMs: 0 };
+  if (pid === 0) return out;
+  let h: bigint = 0n;
+  try {
+    h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid >>> 0) as bigint;
+    if (!h || h === 0n) return out;
+
+    // Image name
+    const nameBuf = Buffer.alloc(520); // 260 wchars
+    const sizeArr = [260];
+    if (QueryFullProcessImageNameW(h, 0, nameBuf, sizeArr)) {
+      const wlen = sizeArr[0] >>> 0;
+      if (wlen > 0) {
+        const path = nameBuf.slice(0, wlen * 2).toString("utf16le");
+        const base = path.split(/[\\/]/).pop() ?? "";
+        out.processName = base.replace(/\.exe$/i, "");
+      }
+    }
+
+    // Creation time
+    const cre = { dwLowDateTime: 0, dwHighDateTime: 0 };
+    const ext = { dwLowDateTime: 0, dwHighDateTime: 0 };
+    const krn = { dwLowDateTime: 0, dwHighDateTime: 0 };
+    const usr = { dwLowDateTime: 0, dwHighDateTime: 0 };
+    if (GetProcessTimes(h, cre, ext, krn, usr)) {
+      out.processStartTimeMs = fileTimeToMs(cre.dwLowDateTime, cre.dwHighDateTime);
+    }
+  } catch {
+    // swallow; partial identity is still useful
+  } finally {
+    if (h && h !== 0n) {
+      try { CloseHandle(h); } catch { /* noop */ }
+    }
+  }
+  return out;
+}
+
+/** Convenience: identity for the process that owns a window. */
+export function getWindowIdentity(hwnd: unknown): ProcessIdentity {
+  const pid = getWindowProcessId(hwnd);
+  return getProcessIdentityByPid(pid);
 }
 
 /**

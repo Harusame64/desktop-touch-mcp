@@ -13,6 +13,17 @@ import { CHROMIUM_TITLE_RE } from "./workspace.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
+import {
+  observeTarget,
+  buildCacheStateHints,
+  toTargetHints,
+  takeLastInvalidation,
+} from "../engine/identity-tracker.js";
+import { getTextViaTextPattern } from "../engine/uia-bridge.js";
+import { stripAnsi, tailLines } from "../engine/ansi.js";
+import { getProcessIdentityByPid, getWindowProcessId } from "../engine/win32.js";
+
+const TERMINAL_PROCESS_RE = /^(WindowsTerminal|conhost|pwsh|powershell|cmd|bash|wsl|alacritty|wezterm|mintty)(\.exe)?$/i;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas (plain objects — used by server.tool() and the macro registry)
@@ -208,17 +219,20 @@ export const getScreenInfoSchema = {};
  * Build action-oriented UIA data for a window.
  * Returns the structured result and the raw UIA output (needed for hints).
  */
-async function buildUiaData(title: string): Promise<{
+async function buildUiaData(title: string, hwnd?: bigint, cached?: boolean): Promise<{
   result: ReturnType<typeof extractActionableElements>;
   raw: UiElementsResult | null;
+  cacheHit: boolean;
 }> {
   try {
-    const raw = await getUiElements(title, 6, 120, 8000);
-    return { result: extractActionableElements(raw), raw };
+    const raw = await getUiElements(title, 6, 120, 8000, { hwnd, cached });
+    const cacheHit = !!(raw as { _cacheHit?: boolean })._cacheHit;
+    return { result: extractActionableElements(raw), raw, cacheHit };
   } catch {
     return {
       result: { window: title, actionable: [], texts: [] },
       raw: null,
+      cacheHit: false,
     };
   }
 }
@@ -227,6 +241,15 @@ async function buildUiaData(title: string): Promise<{
 async function buildUiaText(title: string): Promise<string> {
   const { result } = await buildUiaData(title);
   return JSON.stringify(result, null, 2);
+}
+
+/** Resolve a partial window title to its bigint HWND via EnumWindows. */
+function resolveHwndForTitle(partialTitle: string): { hwnd: bigint; resolved: string } | null {
+  const wins = enumWindowsInZOrder();
+  const q = partialTitle.toLowerCase();
+  const found = wins.find((w) => w.title.toLowerCase().includes(q));
+  if (!found) return null;
+  return { hwnd: found.hwnd, resolved: found.title };
 }
 
 /** Convert enumWindowsInZOrder result to WindowInfo array for layer-buffer. */
@@ -413,10 +436,61 @@ export const screenshotHandler = async ({
           w.title.toLowerCase().includes(windowTitle.toLowerCase())
         );
         const resolvedTitle = resolvedWin?.title ?? windowTitle;
+        const targetHwnd = resolvedWin?.hwnd ?? null;
         const isChromium = CHROMIUM_TITLE_RE.test(resolvedTitle);
+
+        // terminalGuard — for terminal hosts, UIA actionable is meaningless; use TextPattern.
+        let isTerminal = false;
+        if (targetHwnd !== null) {
+          try {
+            const pid = getWindowProcessId(targetHwnd);
+            const procName = getProcessIdentityByPid(pid).processName;
+            isTerminal = TERMINAL_PROCESS_RE.test(procName);
+          } catch { /* ignore */ }
+        }
+        if (isTerminal) {
+          const obs = observeTarget(windowTitle, targetHwnd!, resolvedTitle);
+          const identityHints = toTargetHints(obs.identity);
+          const invalidation = obs.invalidatedBy
+            ? { reason: obs.invalidatedBy, previousTarget: obs.previousTarget }
+            : takeLastInvalidation();
+          const raw = (await getTextViaTextPattern(resolvedTitle).catch(() => null)) ?? "";
+          const cleaned = stripAnsi(raw);
+          const text = tailLines(cleaned, 80);
+          const cacheStateHints = buildCacheStateHints(targetHwnd, invalidation);
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                window: resolvedTitle,
+                actionable: [],
+                textContent: text,
+                hints: {
+                  terminalGuard: true,
+                  target: identityHints,
+                  ...(Object.keys(cacheStateHints).length > 0 ? { caches: cacheStateHints } : {}),
+                },
+              }, null, 2),
+            }],
+          };
+        }
+
+        // Identity tracking — fires invalidation if pid/startTime changed.
+        let identityHints: ReturnType<typeof toTargetHints> | null = null;
+        let invalidation: ReturnType<typeof takeLastInvalidation> = null;
+        if (targetHwnd !== null) {
+          const obs = observeTarget(windowTitle, targetHwnd, resolvedTitle);
+          identityHints = toTargetHints(obs.identity);
+          if (obs.invalidatedBy) {
+            invalidation = { reason: obs.invalidatedBy, previousTarget: obs.previousTarget };
+          } else {
+            invalidation = takeLastInvalidation();
+          }
+        }
 
         let result: ReturnType<typeof extractActionableElements>;
         let raw: UiElementsResult | null;
+        let cacheHit = false;
 
         if (isChromium) {
           // Skip UIA entirely for Chromium — it's slow and returns almost nothing useful.
@@ -424,23 +498,31 @@ export const screenshotHandler = async ({
           result = { window: windowTitle, actionable: [], texts: [] };
           raw = null;
         } else {
-          ({ result, raw } = await buildUiaData(windowTitle));
+          // Try cache first — large UI trees benefit from skipping PowerShell startup
+          ({ result, raw, cacheHit } = await buildUiaData(windowTitle, targetHwnd ?? undefined, true));
         }
 
         // Compute hints from raw UIA output
         const winui3 = WINUI3_CLASS_RE.test(raw?.windowClassName ?? "");
         const uiaSparse = raw !== null && raw.elementCount < 5;
+        const cacheStateHints = buildCacheStateHints(targetHwnd, invalidation);
         const hints: {
           winui3: boolean;
           uiaSparse: boolean;
           uiaError?: boolean;
           chromiumGuard?: boolean;
           ocrFallbackFired?: boolean;
+          uiaCached?: boolean;
+          target?: ReturnType<typeof toTargetHints>;
+          caches?: ReturnType<typeof buildCacheStateHints>;
         } = {
           winui3,
           uiaSparse,
           ...(raw === null ? { uiaError: true } : {}),
           ...(isChromium ? { chromiumGuard: true } : {}),
+          ...(cacheHit ? { uiaCached: true } : {}),
+          ...(identityHints ? { target: identityHints } : {}),
+          ...(Object.keys(cacheStateHints).length > 0 ? { caches: cacheStateHints } : {}),
         };
 
         // OCR fallback — fires when:

@@ -12,6 +12,7 @@ import { getElementBounds } from "../engine/uia-bridge.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
+import { withPostState } from "./_post.js";
 
 /**
  * Move cursor to (x, y) at the given speed.
@@ -409,21 +410,12 @@ export function registerMouseTools(server: McpServer): void {
       "  1. Screen-absolute (default): x,y are virtual screen pixels.",
       "  2. Image-local: pass origin (and scale when present) from the screenshot response.",
       "     Server converts: screen = origin + (x,y) / (scale ?? 1). No manual math needed.",
-      "     Example: after screenshot(dotByDot, dotByDotMaxDimension=1280, windowTitle='Chrome'),",
-      "              the response prints 'origin: (0, 120) | scale: 0.6667'. To click image pixel (640, 300):",
-      "              mouse_click(x=640, y=300, origin={x:0, y:120}, scale=0.6667, windowTitle='Chrome').",
-      "     This path is preferred — it eliminates a whole class of off-by-one/scale bugs.",
-      "",
-      "Pass windowTitle (and optionally elementName/elementId) as hints to enable homing correction:",
-      "  - Tier 1: auto-corrects (dx,dy) if the window moved since the last screenshot (<1ms overhead)",
-      "  - Tier 2: auto-focuses the window if it went behind another (~100ms overhead)",
-      "  - Tier 3: re-queries UIA for fresh coords if the window resized (1-3s, only when elementName/Id given)",
-      "Set homing=false to disable all correction (like traction control OFF).",
     ].join("\n"),
     mouseClickSchema,
-    mouseClickHandler
+    withPostState("mouse_click", mouseClickHandler)
   );
-  server.tool("mouse_drag", "Click and drag from one position to another (left button hold).", mouseDragSchema, mouseDragHandler);
+  server.tool("mouse_drag", "Click and drag from one position to another (left button hold).", mouseDragSchema, withPostState("mouse_drag", mouseDragHandler));
   server.tool("scroll", "Scroll at the current position or at specified coordinates.", scrollSchema, scrollHandler);
   server.tool("get_cursor_position", "Get the current mouse cursor position in virtual screen coordinates.", getCursorPositionSchema, getCursorPositionHandler);
 }
+

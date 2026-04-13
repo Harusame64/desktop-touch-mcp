@@ -21,6 +21,16 @@ import { workspaceSnapshotHandler, workspaceSnapshotSchema, workspaceLaunchHandl
 import { pinWindowHandler, pinWindowSchema, unpinWindowHandler, unpinWindowSchema } from "./pin.js";
 // Scroll capture
 import { scrollCaptureHandler, scrollCaptureSchema } from "./scroll-capture.js";
+// Wait until
+import { waitUntilHandler, waitUntilSchema } from "./wait-until.js";
+// Context
+import { getContextHandler, getContextSchema, getHistoryHandler, getHistorySchema, getDocumentStateHandler, getDocumentStateSchema } from "./context.js";
+// Terminal
+import { terminalReadHandler, terminalReadSchema, terminalSendHandler, terminalSendSchema } from "./terminal.js";
+// Browser search
+import { browserSearchHandler, browserSearchSchema } from "./browser.js";
+// Events
+import { eventsSubscribeHandler, eventsSubscribeSchema, eventsPollHandler, eventsPollSchema, eventsUnsubscribeHandler, eventsUnsubscribeSchema } from "./events.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tool registry
@@ -56,6 +66,16 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   pin_window:             { schema: z.object(pinWindowSchema),            handler: pinWindowHandler },
   unpin_window:           { schema: z.object(unpinWindowSchema),          handler: unpinWindowHandler },
   scroll_capture:         { schema: z.object(scrollCaptureSchema),        handler: scrollCaptureHandler },
+  wait_until:             { schema: z.object(waitUntilSchema),             handler: waitUntilHandler },
+  get_context:            { schema: z.object(getContextSchema),            handler: getContextHandler },
+  get_history:            { schema: z.object(getHistorySchema),            handler: getHistoryHandler },
+  get_document_state:     { schema: z.object(getDocumentStateSchema),      handler: getDocumentStateHandler },
+  terminal_read:          { schema: z.object(terminalReadSchema),          handler: terminalReadHandler },
+  terminal_send:          { schema: z.object(terminalSendSchema),          handler: terminalSendHandler },
+  browser_search:         { schema: z.object(browserSearchSchema),         handler: browserSearchHandler },
+  events_subscribe:       { schema: z.object(eventsSubscribeSchema),       handler: eventsSubscribeHandler },
+  events_poll:            { schema: z.object(eventsPollSchema),            handler: eventsPollHandler },
+  events_unsubscribe:     { schema: z.object(eventsUnsubscribeSchema),     handler: eventsUnsubscribeHandler },
   // run_macro is intentionally excluded → prevents recursion
 };
 
