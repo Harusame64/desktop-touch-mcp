@@ -8,7 +8,7 @@
 | Phase | Status | Commit |
 |---|---|---|
 | **0.1** Output envelope types (`ok`/`fail` helpers) | ✅ Done | `84205e6` |
-| **1.1** Constructive errors (`_errors.ts`, `failWith`) | ✅ Done | `84205e6` |
+| **1.1** Constructive errors (`_errors.ts`, `failWith`) | ✅ Done + verified | `84205e6` `02c1e4a` |
 | 0.2 `pollUntil` consolidation | ⬜ Not started | — |
 | 1.2 Cache / identity transparency | ⬜ Not started | — |
 | 1.3 `wait_until` tool | ⬜ Not started | — |
