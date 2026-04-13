@@ -63,6 +63,9 @@ export const clickElementHandler = async ({
       return failArgs("Provide at least one of: name, automationId", "click_element", { windowTitle });
     }
     const result = await clickElement(windowTitle, name, automationId, controlType);
+    if (!result.ok) {
+      return failWith(result.error ?? "Unknown error", "click_element", { windowTitle, name, automationId });
+    }
     return ok(result);
   } catch (err) {
     return failWith(err, "click_element", { windowTitle, name, automationId });
@@ -77,6 +80,9 @@ export const setElementValueHandler = async ({
       return failArgs("Provide at least one of: name, automationId", "set_element_value", { windowTitle });
     }
     const result = await setElementValue(windowTitle, value, name, automationId);
+    if (!result.ok) {
+      return failWith(result.error ?? "Unknown error", "set_element_value", { windowTitle, name, automationId });
+    }
     return ok(result);
   } catch (err) {
     return failWith(err, "set_element_value", { windowTitle, name, automationId });
