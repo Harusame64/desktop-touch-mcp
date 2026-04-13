@@ -5,6 +5,10 @@ import { fail, type ToolFailure, type ToolResult } from "./_types.js";
 // ─────────────────────────────────────────────────────────────────────────────
 
 const SUGGESTS: Record<string, string[]> = {
+  InvalidArgs: [
+    "Check the required parameters for this tool",
+    "At least one of name or automationId must be provided",
+  ],
   WindowNotFound: [
     "Run get_windows to see available titles",
     "Try a shorter partial title match (e.g. first word only)",
@@ -56,7 +60,7 @@ function classify(message: string): { code: string; suggest: string[] } {
   if (m.includes("timeout") || m.includes("timed out")) {
     return { code: "UiaTimeout", suggest: SUGGESTS.UiaTimeout };
   }
-  if (m.includes("disabled")) {
+  if (m.includes("element is disabled") || m.includes("is disabled") || m === "disabled") {
     return { code: "ElementDisabled", suggest: SUGGESTS.ElementDisabled };
   }
   if (m.includes("browser") && (m.includes("not connected") || m.includes("econnrefused"))) {
@@ -91,5 +95,25 @@ export function failWith(
     ...(context && { context }),
   };
 
+  return fail(failure);
+}
+
+/**
+ * Return a structured ToolFailure for invalid / missing input arguments.
+ * Use this instead of failWith() for validation errors so they get the
+ * dedicated InvalidArgs code rather than the generic ToolError fallback.
+ */
+export function failArgs(
+  message: string,
+  toolName: string,
+  context?: Record<string, unknown>
+): ToolResult {
+  const failure: ToolFailure = {
+    ok: false,
+    code: "InvalidArgs",
+    error: `${toolName}: ${message}`,
+    suggest: SUGGESTS.InvalidArgs,
+    ...(context && { context }),
+  };
   return fail(failure);
 }

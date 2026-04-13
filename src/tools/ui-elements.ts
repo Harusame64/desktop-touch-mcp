@@ -4,7 +4,7 @@ import { getUiElements, clickElement, setElementValue, getElementBounds, getElem
 import { captureScreen } from "../engine/image.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
-import { failWith } from "./_errors.js";
+import { failWith, failArgs } from "./_errors.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -60,7 +60,7 @@ export const clickElementHandler = async ({
 }: { windowTitle: string; name?: string; automationId?: string; controlType?: string }): Promise<ToolResult> => {
   try {
     if (!name && !automationId) {
-      return failWith("Provide at least one of: name, automationId", "click_element");
+      return failArgs("Provide at least one of: name, automationId", "click_element", { windowTitle });
     }
     const result = await clickElement(windowTitle, name, automationId, controlType);
     return ok(result);
@@ -74,7 +74,7 @@ export const setElementValueHandler = async ({
 }: { windowTitle: string; value: string; name?: string; automationId?: string }): Promise<ToolResult> => {
   try {
     if (!name && !automationId) {
-      return failWith("Provide at least one of: name, automationId", "set_element_value");
+      return failArgs("Provide at least one of: name, automationId", "set_element_value", { windowTitle });
     }
     const result = await setElementValue(windowTitle, value, name, automationId);
     return ok(result);
@@ -96,7 +96,7 @@ export const scopeElementHandler = async ({
 }): Promise<ToolResult> => {
   try {
     if (!name && !automationId && !controlType) {
-      return failWith("Provide at least one of: name, automationId, controlType", "scope_element");
+      return failArgs("Provide at least one of: name, automationId, controlType", "scope_element", { windowTitle });
     }
 
     const bounds = await getElementBounds(windowTitle, name, automationId, controlType);
