@@ -843,10 +843,14 @@ export const browserSearchHandler = async ({
     }
   } else if (by === 'role') {
     const needle = cs ? pat : pat.toLowerCase();
+    // IIFE-local Set avoids leaking __pushed expando across evaluateInTab calls —
+    // expandos on DOM elements persist between Runtime.evaluate invocations and
+    // would cause false "already pushed" skips on the second+ search.
+    const pushed = new Set();
     function pushRole(el, score, matchedBy) {
       const prev = el.__matchScore || 0;
       if (score > prev) { el.__matchScore = score; el.__matchedBy = matchedBy; }
-      if (!el.__pushed) { candidates.push(el); el.__pushed = true; }
+      if (!pushed.has(el)) { candidates.push(el); pushed.add(el); }
     }
     let i = 0;
     for (const el of all) {

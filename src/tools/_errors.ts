@@ -83,24 +83,8 @@ const SUGGESTS: Record<string, string[]> = {
 function classify(message: string): { code: string; suggest: string[] } {
   const m = message.toLowerCase();
 
-  if (m.includes("window not found") || m.includes("no window")) {
-    return { code: "WindowNotFound", suggest: SUGGESTS.WindowNotFound };
-  }
-  if (m.includes("element not found") || m.includes("no element")) {
-    return { code: "ElementNotFound", suggest: SUGGESTS.ElementNotFound };
-  }
-  if (m.includes("invokepattern") || m.includes("invoke pattern")) {
-    return { code: "InvokePatternNotSupported", suggest: SUGGESTS.InvokePatternNotSupported };
-  }
-  if (m.includes("timeout") || m.includes("timed out")) {
-    return { code: "UiaTimeout", suggest: SUGGESTS.UiaTimeout };
-  }
-  if (m.includes("element is disabled") || m.includes("is disabled") || m === "disabled") {
-    return { code: "ElementDisabled", suggest: SUGGESTS.ElementDisabled };
-  }
-  if (m.includes("browser") && (m.includes("not connected") || m.includes("econnrefused"))) {
-    return { code: "BrowserNotConnected", suggest: SUGGESTS.BrowserNotConnected };
-  }
+  // Order matters: check more-specific patterns first, then fall back to general ones.
+  // "Terminal window not found" must match BEFORE "window not found" (substring).
   if (m.includes("terminal window not found") || m.includes("terminal not found")) {
     return { code: "TerminalWindowNotFound", suggest: SUGGESTS.TerminalWindowNotFound };
   }
@@ -115,6 +99,24 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   if (m.includes("wait timeout") || m.includes("waittimeout")) {
     return { code: "WaitTimeout", suggest: SUGGESTS.WaitTimeout };
+  }
+  if (m.includes("browser") && (m.includes("not connected") || m.includes("econnrefused"))) {
+    return { code: "BrowserNotConnected", suggest: SUGGESTS.BrowserNotConnected };
+  }
+  if (m.includes("element is disabled") || m.includes("is disabled") || m === "disabled") {
+    return { code: "ElementDisabled", suggest: SUGGESTS.ElementDisabled };
+  }
+  if (m.includes("invokepattern") || m.includes("invoke pattern")) {
+    return { code: "InvokePatternNotSupported", suggest: SUGGESTS.InvokePatternNotSupported };
+  }
+  if (m.includes("window not found") || m.includes("no window")) {
+    return { code: "WindowNotFound", suggest: SUGGESTS.WindowNotFound };
+  }
+  if (m.includes("element not found") || m.includes("no element")) {
+    return { code: "ElementNotFound", suggest: SUGGESTS.ElementNotFound };
+  }
+  if (m.includes("timeout") || m.includes("timed out")) {
+    return { code: "UiaTimeout", suggest: SUGGESTS.UiaTimeout };
   }
 
   return { code: "ToolError", suggest: [] };

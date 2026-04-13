@@ -243,9 +243,15 @@ export const terminalSendHandler = async ({
     const warnings: string[] = [];
 
     if (focusFirst) {
-      restoreAndFocusWindow(win.hwnd);
-      // Brief settle to let the focus actually transfer.
-      await new Promise<void>((r) => setTimeout(r, 80));
+      // Windows SetForegroundWindow is racy under load — retry until the target
+      // really is in the foreground (or give up after 5 tries).
+      const targetHwnd = String(win.hwnd);
+      for (let attempt = 0; attempt < 5; attempt++) {
+        restoreAndFocusWindow(win.hwnd);
+        await new Promise<void>((r) => setTimeout(r, 100));
+        const fg = enumWindowsInZOrder().find((w) => w.isActive);
+        if (fg && String(fg.hwnd) === targetHwnd) break;
+      }
     }
 
     if (preferClipboard) {
