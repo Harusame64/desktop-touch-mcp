@@ -2,6 +2,8 @@
 
 [English](README.md)
 
+[![Glama](https://glama.ai/mcp/servers/Harusame64/desktop-touch-mcp/badge)](https://glama.ai/mcp/servers/Harusame64/desktop-touch-mcp)
+
 > **「Claude CLI にスクショを毎回コピーしていたあなたへ。」**
 
 Claude がデスクトップを直接見て、直接操作する。  
