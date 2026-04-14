@@ -72,7 +72,10 @@ Add to `~/.claude.json` under `mcpServers`:
 
 ---
 
-## Tools (34 total)
+## Tools (46 total)
+
+> 📖 **Full command reference**: [`docs/system-overview.md`](docs/system-overview.md) — every tool's parameters, response shape, coordinate math, layer-buffer strategy, and engineering notes in one place.
+
 
 ### Screenshot (5)
 | Tool | Description |
