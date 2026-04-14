@@ -82,7 +82,6 @@ describe("H1-chain: workspace_launch + wait_until + focus_window happy path", ()
     const tempFile = join(tmpdir(), `${tag}.txt`);
     writeFileSync(tempFile, "", "utf8");
 
-    let proc: ReturnType<typeof spawn> | null = null;
     try {
       const result = await workspaceLaunchHandler({
         command: "notepad.exe",
@@ -90,7 +89,13 @@ describe("H1-chain: workspace_launch + wait_until + focus_window happy path", ()
         waitMs: 5000,
       });
       const p = parsePayload(result);
-      proc = spawn("taskkill", ["/F", "/FI", `WINDOWTITLE eq ${tag}*`, "/T"], { stdio: "ignore" });
+      // Wait for taskkill to fully reap the spawned Notepad before next test launches
+      // its own; otherwise the OS can be slow to spawn new notepad.exe instances.
+      await new Promise<void>((resolve) => {
+        const killer = spawn("taskkill", ["/F", "/FI", `WINDOWTITLE eq ${tag}*`, "/T"], { stdio: "ignore" });
+        killer.on("exit", () => resolve());
+        killer.on("error", () => resolve());
+      });
 
       // workspace_launch returns { launched, args, foundWindow, region } — no ok field
       expect(p.launched).toBeTruthy();
@@ -118,7 +123,7 @@ describe("H1-chain: workspace_launch + wait_until + focus_window happy path", ()
 
     // window_appears should succeed (Notepad is already open)
     expect(p.ok).toBe(true);
-  }, 10_000);
+  }, 30_000);
 
   it("focus_window succeeds after wait_until confirms window is present", async ({ skip }) => {
     if (!np) { skip("Notepad not launched in previous test"); return; }

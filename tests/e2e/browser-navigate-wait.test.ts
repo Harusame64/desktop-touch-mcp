@@ -92,9 +92,13 @@ describe("browser_navigate waitForLoad", () => {
       port: TEST_PORT,
     });
     const text = (result.content[0] as { text: string }).text;
-    // waitForLoad=false returns a plain text message, not JSON
-    expect(text).toContain("Navigating to");
-    expect(text).not.toMatch(/"readyState"/);
+    const payload = JSON.parse(text);
+    expect(payload.ok).toBe(true);
+    expect(payload.waited).toBe(false);
+    expect(payload.url).toBe(TEST_HTTP_URL);
+    expect(typeof payload.hint).toBe("string");
+    // waitForLoad=false must NOT include readyState (we didn't wait)
+    expect(payload.readyState).toBeUndefined();
   }, 10_000);
 
   it("returns readyState='complete' and title/url/elapsedMs when waitForLoad=true", async () => {

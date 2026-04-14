@@ -38,7 +38,7 @@ export async function launchNotepad(): Promise<NpInstance> {
   writeFileSync(tempFile, "", "utf8");
   const proc = spawn("notepad.exe", [tempFile], { detached: true, stdio: "ignore" });
 
-  const deadline = Date.now() + 5000;
+  const deadline = Date.now() + 20_000;
   let found: { hwnd: bigint; title: string } | null = null;
   while (Date.now() < deadline) {
     found = findNotepadByTag(tag);
@@ -48,7 +48,7 @@ export async function launchNotepad(): Promise<NpInstance> {
   if (!found) {
     try { proc.kill(); } catch { /* ignore */ }
     try { unlinkSync(tempFile); } catch { /* ignore */ }
-    throw new Error(`Notepad window with tag "${tag}" did not appear within 5s`);
+    throw new Error(`Notepad window with tag "${tag}" did not appear within 20s`);
   }
 
   const captured = found;

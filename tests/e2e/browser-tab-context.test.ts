@@ -28,11 +28,26 @@ let chrome: ChromeInstance;
 
 beforeAll(async () => {
   chrome = await launchChrome(TEST_PORT, true, FIXTURE_URL);
+  // Wait until the fixture page itself is fully loaded — not just any tab.
+  // Headless Chrome can briefly expose an about:blank tab before navigating
+  // to the file:// fixture, and resolveTab(null) returns the first matching
+  // page tab regardless of URL.
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
     try {
-      const state = await evaluateInTab("document.readyState", null, TEST_PORT);
-      if (state === "complete") return;
+      const probe = await evaluateInTab(
+        "JSON.stringify([document.title, document.readyState, location.href])",
+        null,
+        TEST_PORT
+      );
+      const [title, state, href] = JSON.parse(probe as string) as [string, string, string];
+      if (
+        state === "complete" &&
+        title === "desktop-touch CDP Test Page" &&
+        href.includes("test-page.html")
+      ) {
+        return;
+      }
     } catch { /* not ready */ }
     await sleep(300);
   }
@@ -86,28 +101,36 @@ describe("browser_eval — activeTab/readyState annotation", () => {
 describe("browser_find_element — activeTab/readyState annotation", () => {
   it("appends activeTab and readyState on success", async () => {
     const result = await browserFindElementHandler({
-      selector: "body",
+      selector: "#btn-submit",
       port: TEST_PORT,
     });
     const text = (result.content[0] as { text: string }).text;
     const ctx = extractTabContext(text);
-    expect(ctx).not.toBeNull();
-    expect(ctx!.activeTab).toHaveProperty("id");
-    expect(["loading", "interactive", "complete"]).toContain(ctx!.readyState);
+    if (ctx === null) {
+      throw new Error(
+        `extractTabContext returned null. Raw handler output:\n--- BEGIN ---\n${text}\n--- END ---`
+      );
+    }
+    expect(ctx.activeTab).toHaveProperty("id");
+    expect(["loading", "interactive", "complete"]).toContain(ctx.readyState);
   });
 });
 
 describe("browser_get_dom — activeTab/readyState annotation", () => {
   it("appends activeTab and readyState on success", async () => {
     const result = await browserGetDomHandler({
-      selector: "body",
+      selector: "#btn-submit",
       maxLength: 500,
       port: TEST_PORT,
     });
     const text = (result.content[0] as { text: string }).text;
     const ctx = extractTabContext(text);
-    expect(ctx).not.toBeNull();
-    expect(["loading", "interactive", "complete"]).toContain(ctx!.readyState);
+    if (ctx === null) {
+      throw new Error(
+        `extractTabContext returned null. Raw handler output:\n--- BEGIN ---\n${text}\n--- END ---`
+      );
+    }
+    expect(["loading", "interactive", "complete"]).toContain(ctx.readyState);
   });
 });
 
