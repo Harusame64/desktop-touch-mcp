@@ -44,8 +44,9 @@ Claude がデスクトップを直接見て、直接操作する。
 git clone https://github.com/Harusame64/desktop-touch-mcp.git
 cd desktop-touch-mcp
 npm install
-npm run build
 ```
+
+`npm install` 実行時に `prepare` スクリプトが TypeScript を `dist/` にコンパイルします。別途 `npm run build` は不要です。
 
 ### Claude CLI への登録
 

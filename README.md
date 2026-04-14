@@ -46,8 +46,9 @@ An MCP server that gives Claude eyes and hands on Windows — 25 tools covering 
 git clone https://github.com/Harusame64/desktop-touch-mcp.git
 cd desktop-touch-mcp
 npm install
-npm run build
 ```
+
+`npm install` runs the `prepare` script, which compiles TypeScript to `dist/`. No separate build step is required.
 
 ### Register with Claude CLI
 
