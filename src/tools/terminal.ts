@@ -82,9 +82,31 @@ function findTerminalWindow(partialTitle: string): WindowZInfo | null {
   return null;
 }
 
+/**
+ * Normalise terminal text before hashing for marker computation.
+ *
+ * Windows Terminal's UIA TextPattern introduces three sources of churn that
+ * would otherwise cause sinceMarker to miss on every new line:
+ *   1. CRLF vs LF — TextPattern can return either depending on terminal state.
+ *   2. Trailing-space padding — each row is padded to terminal column width;
+ *      the current cursor row may gain or lose that padding between reads.
+ *   3. Trailing blank lines — the last row(s) after the prompt may or may not
+ *      carry a trailing newline depending on whether output followed.
+ *
+ * Normalising these away before hashing makes the marker stable across reads
+ * that differ only in rendering artefacts.
+ */
+function normalizeForMarker(text: string): string {
+  return text
+    .replace(/\r\n/g, "\n")     // CRLF → LF
+    .replace(/[ \t]+$/gm, "")   // strip trailing whitespace from every line
+    .replace(/\n+$/, "");       // strip trailing blank lines
+}
+
 function makeMarker(text: string): string {
   // Take the last 256 chars (or full text if shorter) and hash.
-  const slice = text.slice(-256);
+  const norm = normalizeForMarker(text);
+  const slice = norm.slice(-256);
   return createHash("sha256").update(slice).digest("hex").slice(0, 16);
 }
 
@@ -92,21 +114,46 @@ function applySinceMarker(text: string, marker: string): { text: string; matched
   // Search for any tail window whose hash matches `marker`. Walk from the tail
   // backward — a recent terminal will hit within a few chars. Capped at 32k
   // candidate window endings to bound cost.
+  // NOTE: both makeMarker and this function normalise text before hashing so
+  // that Windows Terminal padding/CRLF churn does not cause spurious misses.
+  const norm = normalizeForMarker(text);
   const WINDOW = 256;
-  // Short-text path: if the whole text < WINDOW, makeMarker hashed text.slice(-256) which is text itself.
-  if (text.length < WINDOW) {
-    if (createHash("sha256").update(text).digest("hex").slice(0, 16) === marker) {
-      return { text: "", matched: true };
+
+  /** Return the normalised tail starting just after normEnd.
+   *  Stripping a leading newline avoids returning a blank first line when
+   *  the match ends exactly at a line boundary. */
+  function tailFromNormEnd(normEnd: number): string {
+    return norm.slice(normEnd).replace(/^\n/, "");
+  }
+
+  // ── Sliding-window path (norm ≥ 256 chars) ────────────────────────────────
+  // makeMarker hashed norm.slice(-256), so look for any 256-char window match.
+  // Note: maxScan caps the lookback at 32k bytes. If the terminal has scrolled
+  // more than ~32k chars since the marker was taken, this will miss silently
+  // (returning matched:false and falling through to full-text return).
+  if (norm.length >= WINDOW) {
+    const maxScan = Math.min(norm.length, WINDOW + 32_000);
+    for (let end = norm.length; end >= norm.length - maxScan && end >= WINDOW; end--) {
+      const slice = norm.slice(end - WINDOW, end);
+      if (createHash("sha256").update(slice).digest("hex").slice(0, 16) === marker) {
+        return { text: tailFromNormEnd(end), matched: true };
+      }
     }
+    // Marker not found within the 32k scan range — fall through to return full text.
     return { text, matched: false };
   }
-  const maxScan = Math.min(text.length, WINDOW + 32_000);
-  for (let end = text.length; end >= text.length - maxScan && end >= WINDOW; end--) {
-    const slice = text.slice(end - WINDOW, end);
-    if (createHash("sha256").update(slice).digest("hex").slice(0, 16) === marker) {
-      return { text: text.slice(end), matched: true };
+
+  // ── Prefix-scan path (norm < 256 chars, so previous norm was also < 256) ──
+  // makeMarker hashed the entire previous normalised text. Find the prefix
+  // of the current norm whose hash matches, i.e. where the old snapshot ends.
+  // Scan from longest (current full text = unchanged) down to empty string.
+  // At most WINDOW=256 iterations, so O(N) total hashing work.
+  for (let end = norm.length; end >= 0; end--) {
+    if (createHash("sha256").update(norm.slice(0, end)).digest("hex").slice(0, 16) === marker) {
+      return { text: tailFromNormEnd(end), matched: true };
     }
   }
+
   return { text, matched: false };
 }
 
