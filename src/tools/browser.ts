@@ -22,6 +22,8 @@ import { getCdpPort } from "../utils/desktop-config.js";
 import { fail } from "./_types.js";
 import { setBrowserSearchHook } from "./wait-until.js";
 import { withPostState } from "./_post.js";
+import { narrateParam } from "./_narration.js";
+import type { RichBlock } from "../engine/uia-diff.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -59,6 +61,7 @@ export const browserFindElementSchema = {
 
 export const browserClickElementSchema = {
   selector: selectorParam,
+  narrate: narrateParam,
   tabId: tabIdParam,
   port: portParam,
 };
@@ -87,6 +90,7 @@ export const browserGetDomSchema = {
 
 export const browserNavigateSchema = {
   url: z.string().describe("URL to navigate to"),
+  narrate: narrateParam,
   tabId: tabIdParam,
   port: portParam,
   waitForLoad: z.boolean().default(true).describe(
@@ -341,30 +345,38 @@ export const browserFindElementHandler = async ({
 
 export const browserClickElementHandler = async ({
   selector,
+  narrate,
   tabId,
   port,
 }: {
   selector: string;
+  narrate?: string;
   tabId?: string;
   port: number;
 }): Promise<ToolResult> => {
   try {
+    // CDP snapshot before click (for narrate:"rich")
+    let beforeUrl: string | null = null;
+    if (narrate === "rich") {
+      try {
+        const ctx = await getTabContext(tabId ?? null, port);
+        beforeUrl = ctx.url ?? null;
+      } catch { /* ignore */ }
+    }
+
     const coords = await getElementScreenCoords(
       selector,
       tabId ?? null,
       port
     );
     if (!coords.inViewport) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text:
-              `browser_click_element: element "${selector}" is outside the visible viewport. ` +
-              `Scroll it into view first: browser_eval("document.querySelector(${JSON.stringify(selector)}).scrollIntoView()")`,
-          },
-        ],
-      };
+      return fail({
+        ok: false,
+        code: "ElementNotInViewport",
+        error: `browser_click_element: element "${selector}" is outside the visible viewport.`,
+        suggest: [`Scroll it into view first: browser_eval("document.querySelector(${JSON.stringify(selector)}).scrollIntoView()")`],
+        context: { selector },
+      });
     }
     // Ensure browser window is focused so click events reach the page
     await ensureBrowserFocused(port);
@@ -383,19 +395,36 @@ export const browserClickElementHandler = async ({
     }
     await mouse.click(Button.LEFT);
     const tabCtx = await getTabContext(tabId ?? null, port);
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: [
-            `Clicked "${selector}" at screen (${coords.x}, ${coords.y})`,
-            "",
-            `activeTab: ${JSON.stringify({ id: tabCtx.id, title: tabCtx.title, url: tabCtx.url })}`,
-            `readyState: "${tabCtx.readyState}"`,
-          ].join("\n"),
-        },
-      ],
-    };
+
+    // Build rich block for CDP diff
+    let richBlock: RichBlock | undefined;
+    if (narrate === "rich" && beforeUrl !== null) {
+      await new Promise<void>((r) => setTimeout(r, 150));
+      try {
+        const afterCtx = await getTabContext(tabId ?? null, port);
+        const afterUrl = afterCtx.url ?? null;
+        richBlock = {
+          appeared: [],
+          disappeared: [],
+          valueDeltas: [],
+          diffSource: "cdp",
+          ...(beforeUrl !== afterUrl && afterUrl
+            ? { navigation: { fromUrl: beforeUrl, toUrl: afterUrl } }
+            : {}),
+        };
+      } catch {
+        richBlock = { appeared: [], disappeared: [], valueDeltas: [], diffSource: "none", diffDegraded: "timeout" };
+      }
+    }
+
+    return ok({
+      ok: true,
+      clicked: selector,
+      at: { x: coords.x, y: coords.y },
+      activeTab: { id: tabCtx.id, title: tabCtx.title, url: tabCtx.url },
+      readyState: tabCtx.readyState,
+      ...(richBlock ? { _richForPost: richBlock } : {}),
+    });
   } catch (err) {
     return failWith(err, "browser_click_element");
   }
@@ -472,12 +501,14 @@ export const browserGetDomHandler = async ({
 
 export const browserNavigateHandler = async ({
   url,
+  narrate,
   tabId,
   port,
   waitForLoad,
   loadTimeoutMs,
 }: {
   url: string;
+  narrate?: string;
   tabId?: string;
   port: number;
   waitForLoad: boolean;
@@ -485,6 +516,14 @@ export const browserNavigateHandler = async ({
 }): Promise<ToolResult> => {
   try {
     const startedAt = Date.now();
+    // Capture beforeUrl for rich narration
+    let beforeUrl: string | null = null;
+    if (narrate === "rich") {
+      try {
+        const ctx = await getTabContext(tabId ?? null, port);
+        beforeUrl = ctx.url ?? null;
+      } catch { /* ignore */ }
+    }
     const navResult = await navigateTo(url, tabId ?? null, port);
 
     // Surface CDP navigation errors (DNS failure etc.)
@@ -502,12 +541,12 @@ export const browserNavigateHandler = async ({
     }
 
     if (!waitForLoad) {
-      return {
-        content: [{
-          type: "text" as const,
-          text: `Navigating to: ${url}\nWait a moment, then use browser_eval("document.readyState") to check if the page has loaded.`,
-        }],
-      };
+      return ok({
+        ok: true,
+        url,
+        waited: false,
+        hint: `Wait a moment, then use browser_eval("document.readyState") to check if the page has loaded.`,
+      });
     }
 
     // Wait for document.readyState === "complete"
@@ -540,6 +579,17 @@ export const browserNavigateHandler = async ({
       });
     }
 
+    // Build rich navigation block
+    const richBlock: RichBlock | undefined = narrate === "rich" ? {
+      appeared: [],
+      disappeared: [],
+      valueDeltas: [],
+      diffSource: "cdp",
+      ...(beforeUrl && beforeUrl !== (tabCtx.url || url)
+        ? { navigation: { fromUrl: beforeUrl, toUrl: tabCtx.url || url } }
+        : {}),
+    } : undefined;
+
     return ok({
       ok: true,
       url: tabCtx.url || url,
@@ -547,6 +597,7 @@ export const browserNavigateHandler = async ({
       readyState: tabCtx.readyState,
       elapsedMs,
       waited: true,
+      ...(richBlock ? { _richForPost: richBlock } : {}),
     });
   } catch (err) {
     return failWith(err, "browser_navigate");

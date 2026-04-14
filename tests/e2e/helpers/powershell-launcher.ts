@@ -6,9 +6,16 @@
  *
  * `banner` is echoed after setting the title so terminal_read tests have
  * something to assert on.
+ *
+ * Kill strategy: the PowerShell script writes its own $PID to a temp file.
+ * kill() reads that PID and kills by process ID — avoids matching
+ * WindowsTerminal.exe via WINDOWTITLE on Windows 11 (which would close all tabs).
  */
 
 import { spawn, type ChildProcess } from "child_process";
+import { readFileSync, unlinkSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { enumWindowsInZOrder, clearWindowTopmost } from "../../../src/engine/win32.js";
 import { sleep } from "./wait.js";
 
@@ -32,10 +39,17 @@ export async function launchPowerShell(opts?: { banner?: string; exe?: string })
   const banner = opts?.banner ?? "";
   const exe = opts?.exe ?? "powershell.exe";
 
-  // Set title first, then echo banner. -NoExit keeps the window alive.
-  // PowerShell treats single-quotes as literal delimiters — escape embedded ' by doubling.
+  // Temp file the PS script writes its own PID into — lets kill() target the
+  // exact PowerShell process rather than using WINDOWTITLE (which on Windows
+  // Terminal matches WindowsTerminal.exe and would close all tabs with /T).
+  const pidFile = join(tmpdir(), `${tag}-pid.txt`);
+  // Escape path for PowerShell single-quoted string
+  const psafePidFile = pidFile.replace(/'/g, "''");
+
+  // Set title first, write PID, then echo banner. -NoExit keeps the window alive.
   const psScript = [
     `$Host.UI.RawUI.WindowTitle = '${tag}'`,
+    `[string]$PID | Set-Content -Path '${psafePidFile}'`,
     banner ? `Write-Host '${banner.replace(/'/g, "''")}'` : "",
   ].filter(Boolean).join("; ");
 
@@ -62,10 +76,12 @@ export async function launchPowerShell(opts?: { banner?: string; exe?: string })
   }
   if (!found) {
     try { proc.kill(); } catch { /* ignore */ }
+    try { unlinkSync(pidFile); } catch { /* ignore */ }
     throw new Error(`PowerShell window with tag "${tag}" did not appear within 10s`);
   }
 
-  // Give PowerShell a moment to actually print the banner into the buffer.
+  // Give PowerShell a moment to actually print the banner into the buffer
+  // AND finish writing the PID file.
   await sleep(500);
 
   const captured = found; // capture for kill closure
@@ -76,13 +92,22 @@ export async function launchPowerShell(opts?: { banner?: string; exe?: string })
     hwnd: captured.hwnd,
     kill() {
       try { clearWindowTopmost(captured.hwnd); } catch { /* ignore */ }
-      // cmd /c start spawns a detached grandchild — kill by PID via taskkill.
-      // Find the PowerShell process that owns the window and kill by window.
+
+      // Kill by PowerShell PID — avoids matching WindowsTerminal.exe on Win11.
+      let killedByPid = false;
       try {
         const { execSync } = require("child_process");
-        execSync(`taskkill /F /FI "WINDOWTITLE eq ${tag}*" /T`, { stdio: "ignore" });
+        const pidStr = readFileSync(pidFile, "utf-8").trim();
+        const pid = parseInt(pidStr, 10);
+        if (pid > 0 && !isNaN(pid)) {
+          execSync(`taskkill /F /PID ${pid} /T`, { stdio: "ignore" });
+          killedByPid = true;
+        }
       } catch { /* best-effort */ }
-      if (!proc.killed) {
+      try { unlinkSync(pidFile); } catch { /* ignore */ }
+
+      // Fallback: kill the cmd.exe proc we directly spawned
+      if (!killedByPid && !proc.killed) {
         try { proc.kill(); } catch { /* ignore */ }
       }
     },

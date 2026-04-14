@@ -12,7 +12,7 @@ import { getElementBounds } from "../engine/uia-bridge.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
-import { withPostState } from "./_post.js";
+import { withRichNarration, narrateParam } from "./_narration.js";
 import { detectFocusLoss } from "./_focus.js";
 
 /**
@@ -223,6 +223,7 @@ export const mouseClickSchema = {
     ),
   button: z.enum(["left", "right", "middle"]).default("left").describe("Mouse button to click"),
   doubleClick: z.boolean().default(false).describe("Whether to double-click"),
+  narrate: narrateParam,
   speed: speedParam,
   homing: homingParam,
   windowTitle: windowTitleParam,
@@ -238,6 +239,7 @@ export const mouseDragSchema = {
   startY: z.coerce.number(),
   endX: z.coerce.number(),
   endY: z.coerce.number(),
+  narrate: narrateParam,
   speed: speedParam,
   homing: homingParam,
   windowTitle: windowTitleParam,
@@ -465,9 +467,9 @@ export function registerMouseTools(server: McpServer): void {
       "     Server converts: screen = origin + (x,y) / (scale ?? 1). No manual math needed.",
     ].join("\n"),
     mouseClickSchema,
-    withPostState("mouse_click", mouseClickHandler)
+    withRichNarration("mouse_click", mouseClickHandler, { windowTitleKey: "windowTitle" })
   );
-  server.tool("mouse_drag", "Click and drag from one position to another (left button hold).", mouseDragSchema, withPostState("mouse_drag", mouseDragHandler));
+  server.tool("mouse_drag", "Click and drag from one position to another (left button hold).", mouseDragSchema, withRichNarration("mouse_drag", mouseDragHandler, { windowTitleKey: "windowTitle" }));
   server.tool("scroll", "Scroll at the current position or at specified coordinates.", scrollSchema, scrollHandler);
   server.tool("get_cursor_position", "Get the current mouse cursor position in virtual screen coordinates.", getCursorPositionSchema, getCursorPositionHandler);
 }

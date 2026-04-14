@@ -5,7 +5,7 @@ import { captureScreen } from "../engine/image.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith, failArgs } from "./_errors.js";
-import { withPostState } from "./_post.js";
+import { withRichNarration, narrateParam } from "./_narration.js";
 import { buildHintsForTitle } from "../engine/identity-tracker.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -23,6 +23,7 @@ export const clickElementSchema = {
   name: z.string().max(200).optional().describe("Element name/label (partial match, case-insensitive)"),
   automationId: z.string().max(200).optional().describe("Exact AutomationId of the element"),
   controlType: z.string().max(100).optional().describe("Control type filter, e.g. 'Button', 'MenuItem'"),
+  narrate: narrateParam,
 };
 
 export const setElementValueSchema = {
@@ -30,6 +31,7 @@ export const setElementValueSchema = {
   value: z.string().max(10000).describe("The value to set"),
   name: z.string().max(200).optional().describe("Element name/label (partial match)"),
   automationId: z.string().max(200).optional().describe("Exact AutomationId of the element"),
+  narrate: narrateParam,
 };
 
 export const scopeElementSchema = {
@@ -193,7 +195,7 @@ export function registerUiElementTools(server: McpServer): void {
       "Ideal for buttons, menu items, and links.",
     ].join(" "),
     clickElementSchema,
-    withPostState("click_element", clickElementHandler)
+    withRichNarration("click_element", clickElementHandler, { windowTitleKey: "windowTitle" })
   );
 
   server.tool(
@@ -201,9 +203,10 @@ export function registerUiElementTools(server: McpServer): void {
     [
       "Directly set the value of a text field or combo box using Windows UI Automation ValuePattern.",
       "More reliable than keyboard_type for programmatic input into form fields.",
+      "Use narrate:'rich' to confirm the value was applied without a verification screenshot.",
     ].join(" "),
     setElementValueSchema,
-    withPostState("set_element_value", setElementValueHandler)
+    withRichNarration("set_element_value", setElementValueHandler, { windowTitleKey: "windowTitle" })
   );
 
   server.tool(

@@ -5,17 +5,37 @@
  * Adds a small `post` block to action tool responses so the LLM can decide
  * its next move without taking a confirmation screenshot.
  *
+ * Phase 3.1 extension: focusedElement is now populated from UIA
+ * (getFocusedAndPointInfo) instead of being hard-coded to null.
+ * A short timeout (800 ms) prevents this from blocking fast actions.
+ *
  * Also maintains a ring buffer of recent action posts for get_history().
  */
 
 import { enumWindowsInZOrder, getWindowProcessId, getProcessIdentityByPid } from "../engine/win32.js";
+import { getFocusedAndPointInfo } from "../engine/uia-bridge.js";
 import type { ToolResult } from "./_types.js";
+import type { RichBlock } from "../engine/uia-diff.js";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface PostElementInfo {
+  name: string;
+  type: string;
+  value?: string;
+  automationId?: string;
+}
 
 export interface PostState {
   focusedWindow: string | null;
-  focusedElement: string | null;
+  /** UIA-derived focused element info. Null when UIA is unavailable or timed out. */
+  focusedElement: PostElementInfo | null;
   windowChanged: boolean;
   elapsedMs: number;
+  /** UIA diff block injected by withRichNarration. Stripped before history storage. */
+  rich?: RichBlock;
 }
 
 export interface HistoryEntry {
@@ -23,9 +43,13 @@ export interface HistoryEntry {
   argsDigest: string;
   ok: boolean;
   errorCode?: string;
-  post: PostState;
+  post: Omit<PostState, "rich">;
   tsMs: number;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// History ring buffer
+// ─────────────────────────────────────────────────────────────────────────────
 
 const HISTORY_MAX = 20;
 const history: HistoryEntry[] = [];
@@ -38,6 +62,10 @@ export function recordHistory(entry: HistoryEntry): void {
 export function getHistorySnapshot(n = 5): HistoryEntry[] {
   return history.slice(-Math.max(1, Math.min(n, HISTORY_MAX)));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
 
 /** Capture the current foreground window. Cheap (~1 EnumWindows call). */
 function snapshotFocus(): { title: string | null; hwnd: string | null; processName: string } {
@@ -52,6 +80,27 @@ function snapshotFocus(): { title: string | null; hwnd: string | null; processNa
     return { title: null, hwnd: null, processName: "" };
   }
 }
+
+/**
+ * Best-effort: call getFocusedAndPointInfo with a tight timeout.
+ * Returns null on timeout or error — never throws.
+ */
+async function snapshotFocusedElement(): Promise<PostElementInfo | null> {
+  try {
+    const { focused } = await getFocusedAndPointInfo(0, 0, false, 800);
+    if (!focused?.name) return null;
+    const info: PostElementInfo = { name: focused.name, type: focused.controlType };
+    if (focused.automationId) info.automationId = focused.automationId;
+    if (focused.value != null) info.value = focused.value;
+    return info;
+  } catch {
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// withPostState
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Wrap an action handler so its response is augmented with a `post` block.
@@ -70,10 +119,11 @@ export function withPostState<T extends Record<string, unknown>>(
     const result = await handler(args);
     try {
       const after = snapshotFocus();
+      const focusedElement = await snapshotFocusedElement();
       const windowChanged = !!after.hwnd && !!before.hwnd && after.hwnd !== before.hwnd;
       const post: PostState = {
         focusedWindow: after.title,
-        focusedElement: null, // Phase 2.1 keeps this minimal; rich variant lives in get_context()
+        focusedElement,
         windowChanged,
         elapsedMs: Date.now() - startedAt,
       };
@@ -93,17 +143,30 @@ export function withPostState<T extends Record<string, unknown>>(
             errorCode = typeof obj.code === "string" ? obj.code : undefined;
           } else {
             obj.post = post;
+            // If the handler injected a CDP-sourced rich block via _richForPost,
+            // move it into post.rich and remove the temporary key.
+            // Convention: browser handlers set result._richForPost = RichBlock before returning.
+            if (
+              obj._richForPost !== null &&
+              typeof obj._richForPost === "object" &&
+              Array.isArray((obj._richForPost as Record<string, unknown>).appeared)
+            ) {
+              post.rich = obj._richForPost as RichBlock;
+              delete obj._richForPost;
+            }
             block.text = JSON.stringify(obj, null, 2);
           }
         }
       }
 
+      // Strip rich block from history to avoid bloating the ring buffer.
+      const { rich: _rich, ...postForHistory } = post;
       recordHistory({
         tool: toolName,
         argsDigest: digest(args),
         ok: okFlag,
         ...(errorCode ? { errorCode } : {}),
-        post,
+        post: postForHistory,
         tsMs: Date.now(),
       });
     } catch {
@@ -112,6 +175,10 @@ export function withPostState<T extends Record<string, unknown>>(
     return result;
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
 
 function digest(args: Record<string, unknown>): string {
   try {

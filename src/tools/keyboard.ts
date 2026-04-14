@@ -9,7 +9,7 @@ import { enumWindowsInZOrder, restoreAndFocusWindow } from "../engine/win32.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
-import { withPostState } from "./_post.js";
+import { withRichNarration, narrateParam } from "./_narration.js";
 import { detectFocusLoss } from "./_focus.js";
 
 const execFileAsync = promisify(execFile);
@@ -92,6 +92,7 @@ const windowTitleFocusParam = z.string().optional().describe(
 
 export const keyboardTypeSchema = {
   text: z.string().max(10000).describe("The text to type (max 10,000 characters)"),
+  narrate: narrateParam,
   use_clipboard: z
     .boolean()
     .optional()
@@ -112,6 +113,7 @@ export const keyboardPressSchema = {
     .string()
     .max(100)
     .describe("Key combo string, e.g. 'ctrl+c', 'alt+tab', 'enter', 'ctrl+shift+s'. Note: win+r, win+x, win+s, win+l are blocked for security."),
+  narrate: narrateParam,
   windowTitle: windowTitleFocusParam,
   forceFocus: forceFocusParam,
   trackFocus: trackFocusParam,
@@ -272,7 +274,7 @@ export function registerKeyboardTools(server: McpServer): void {
     "keyboard_type",
     "Type a string of text using the keyboard. The text is sent to whatever window is currently focused.",
     keyboardTypeSchema,
-    withPostState("keyboard_type", keyboardTypeHandler)
+    withRichNarration("keyboard_type", keyboardTypeHandler, { windowTitleKey: "windowTitle" })
   );
 
   server.tool(
@@ -283,8 +285,13 @@ export function registerKeyboardTools(server: McpServer): void {
       "Modifiers: ctrl, alt, shift, win/meta.",
       "Special keys: enter, tab, space, backspace, delete, home, end, pageup, pagedown,",
       "up, down, left, right, escape, f1-f12.",
+      "narrate:'rich' is active only for state-transitioning keys (Enter, Tab, Esc, F-keys).",
     ].join(" "),
     keyboardPressSchema,
-    withPostState("keyboard_press", keyboardPressHandler)
+    withRichNarration("keyboard_press", keyboardPressHandler, {
+      windowTitleKey: "windowTitle",
+      keyboardPressGate: true,
+      keysKey: "keys",
+    })
   );
 }

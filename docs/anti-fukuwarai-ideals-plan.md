@@ -15,8 +15,8 @@
 | 2.1 Post-state narration (always ON) | ✅ Done | `f79f6e7` `c147234` |
 | 2.2 why/state hints extension (incl. click_element disabled pre-check) | ✅ Done | `f79f6e7` `c147234` |
 | 2.3 OCR confidence exposure (placeholder heuristic — real `OcrLine.Confidence` via win-ocr.exe pending) | ✅ Done | `f79f6e7` `c147234` |
-| 3.1 Context retrieval tools (get_context / get_history / get_document_state) | ✅ Done | `f79f6e7` `c147234` |
-| 3.2 Rich narration (opt-in) | ⬜ Not started — defer until usage data justifies UIA-diff cost | — |
+| 3.1 Context retrieval tools (get_context / get_history / get_document_state) + deepened (focusedElement / cursorOverElement via UIA) | ✅ Done | `f79f6e7` `c147234` + `feat/anti-fukuwarai` |
+| 3.2 Rich narration (opt-in) — withRichNarration / uia-diff / narrate:"rich" param on all action tools | ✅ Done | `feat/anti-fukuwarai` |
 | 3.3 UIA confidence synthesis | ✅ Done | `f79f6e7` |
 | 3.4 Async event subscribe (events_subscribe / poll / unsubscribe + pid memoization) | ✅ Done | `f79f6e7` `c147234` |
 

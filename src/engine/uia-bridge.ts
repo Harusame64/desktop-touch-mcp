@@ -43,9 +43,18 @@ export async function runPS(script: string, timeoutMs = 8000): Promise<string> {
 function makeGetElementsScript(
   windowTitle: string,
   maxDepth: number,
-  maxElements: number
+  maxElements: number,
+  fetchValues = false
 ): string {
   const safeTitle = escapeLike(windowTitle);
+  const fetchValuesBlock = fetchValues
+    ? `
+    $elVal = $null
+    try {
+        $vp2 = $el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+        if ($null -ne $vp2) { $elVal = $vp2.Current.Value }
+    } catch {}`
+    : "";
   return `
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName UIAutomationClient
@@ -129,7 +138,8 @@ while ($stack.Count -gt 0 -and $count -lt ${maxElements} -and $sw.ElapsedMillise
     $elCls  = ''; try { $elCls  = $el.Current.ClassName } catch {}
     $elEna  = $false; try { $elEna = $el.Current.IsEnabled } catch {}
 
-    $results.Add(@{
+    ${fetchValuesBlock}
+    $elObj = @{
         name         = $elName
         controlType  = $ctName
         automationId = $elAid
@@ -138,7 +148,9 @@ while ($stack.Count -gt 0 -and $count -lt ${maxElements} -and $sw.ElapsedMillise
         boundingRect = $rect
         patterns     = [string[]]($pats.ToArray())
         depth        = $depth
-    })
+    }
+    if ($null -ne $elVal) { $elObj['value'] = $elVal }
+    $results.Add($elObj)
     $count++
 
     # Push first child after sibling so child is popped next (depth-first)
@@ -269,6 +281,102 @@ export interface UiElement {
   boundingRect: { x: number; y: number; width: number; height: number } | null;
   patterns: string[];
   depth: number;
+  /** Present only when getUiElements was called with fetchValues:true. */
+  value?: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Focused element / element-at-point (for get_context & post narration)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface UiaFocusInfo {
+  name: string;
+  controlType: string;
+  automationId?: string;
+  /** Present for focused element when ValuePattern is supported. */
+  value?: string;
+}
+
+/**
+ * Run a single PowerShell script that returns both:
+ *   focused — the element that currently has keyboard focus (FocusedElement)
+ *   atPoint — the element under screen coordinates (x, y)  [skipped when includePoint=false]
+ *
+ * Both are normalized via TreeWalker.ControlViewWalker to reach the nearest
+ * addressable control (avoids landing on raw Pane descendants).
+ *
+ * Timeout is intentionally short (default 2 s) — these are non-essential fields;
+ * null is acceptable when UIA is unavailable or slow.
+ */
+export async function getFocusedAndPointInfo(
+  x = 0,
+  y = 0,
+  includePoint = true,
+  timeoutMs = 2000
+): Promise<{ focused: UiaFocusInfo | null; atPoint: UiaFocusInfo | null }> {
+  const safeX = Number.isFinite(x) ? Math.trunc(x) : 0;
+  const safeY = Number.isFinite(y) ? Math.trunc(y) : 0;
+  const includePointPS = includePoint ? "true" : "false";
+  const script = `
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+$walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+$result = @{ focused = $null; atPoint = $null }
+
+# Focused element
+try {
+    $fe = [System.Windows.Automation.AutomationElement]::FocusedElement
+    if ($null -ne $fe) {
+        $fe = $walker.Normalize($fe)
+        $fn = ''; try { $fn = $fe.Current.Name } catch {}
+        $fc = ''; try { $fc = $fe.Current.ControlType.ProgrammaticName -replace 'ControlType\\.',''; } catch {}
+        $fa = ''; try { $fa = $fe.Current.AutomationId } catch {}
+        $fv = $null
+        try {
+            $fvp = $fe.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+            if ($null -ne $fvp) { $fv = $fvp.Current.Value }
+        } catch {}
+        $fo = @{ name=$fn; controlType=$fc; automationId=$fa }
+        if ($null -ne $fv) { $fo['value'] = $fv }
+        $result.focused = $fo
+    }
+} catch {}
+
+# Element at cursor point (optional)
+if (${includePointPS}) {
+    try {
+        $pt = [System.Windows.Point]::new(${safeX}, ${safeY})
+        $ep = [System.Windows.Automation.AutomationElement]::FromPoint($pt)
+        if ($null -ne $ep) {
+            $ep = $walker.Normalize($ep)
+            $en = ''; try { $en = $ep.Current.Name } catch {}
+            $ec = ''; try { $ec = $ep.Current.ControlType.ProgrammaticName -replace 'ControlType\\.',''; } catch {}
+            $ea = ''; try { $ea = $ep.Current.AutomationId } catch {}
+            $result.atPoint = @{ name=$en; controlType=$ec; automationId=$ea }
+        }
+    } catch {}
+}
+
+$result | ConvertTo-Json -Compress
+`;
+  try {
+    const output = await runPS(script, timeoutMs);
+    const parsed = JSON.parse(output) as {
+      focused?: Record<string, string | undefined> | null;
+      atPoint?: Record<string, string | undefined> | null;
+    };
+    const toInfo = (obj: Record<string, string | undefined> | null | undefined): UiaFocusInfo | null => {
+      if (!obj || !obj.name) return null;
+      const info: UiaFocusInfo = { name: obj.name, controlType: obj.controlType ?? "" };
+      if (obj.automationId) info.automationId = obj.automationId;
+      if (obj.value != null) info.value = obj.value;
+      return info;
+    };
+    return { focused: toInfo(parsed.focused), atPoint: toInfo(parsed.atPoint) };
+  } catch {
+    return { focused: null, atPoint: null };
+  }
 }
 
 export interface UiElementsResult {
@@ -286,10 +394,11 @@ export async function getUiElements(
   maxDepth = 3,
   maxElements = 50,
   timeoutMs = 10000,
-  options?: { cached?: boolean; hwnd?: bigint }
+  options?: { cached?: boolean; hwnd?: bigint; fetchValues?: boolean }
 ): Promise<UiElementsResult & { _cacheHit?: boolean }> {
   // Cache hit path — only when caller provides hwnd + cached:true
-  if (options?.cached && options.hwnd !== undefined) {
+  // Note: cache is never used when fetchValues:true (values may have changed)
+  if (options?.cached && options.hwnd !== undefined && !options.fetchValues) {
     const cached = getCachedUia(options.hwnd);
     if (cached) {
       try {
@@ -301,7 +410,7 @@ export async function getUiElements(
     }
   }
 
-  const script = makeGetElementsScript(windowTitle, maxDepth, maxElements);
+  const script = makeGetElementsScript(windowTitle, maxDepth, maxElements, options?.fetchValues ?? false);
   const output = await runPS(script, timeoutMs);
   const result = JSON.parse(output);
   if (result.error) throw new Error(result.error);
