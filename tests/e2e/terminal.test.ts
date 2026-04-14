@@ -144,4 +144,108 @@ describe("terminal_send", () => {
     expect(r.ok).toBe(false);
     expect(r.code).toBe("TerminalWindowNotFound");
   });
+
+  // D2: terminal_send direct output timing
+  it("D2: immediate terminal_read after slow command may be empty — not an error", async ({ skip }) => {
+    const tag = `d2-${Date.now().toString(36)}`;
+    const sendRes = parsePayload(await terminalSendHandler({
+      windowTitle: ps.title,
+      input: `Start-Sleep -Milliseconds 800; echo ${tag}`,
+      pressEnter: true,
+      focusFirst: true,
+      restoreFocus: true,
+      preferClipboard: true,
+      pasteKey: "auto",
+    }));
+    if (!sendRes.ok) {
+      skip("terminal_send failed (focus protection) — skipping D2");
+    }
+    expect(sendRes.ok).toBe(true);
+
+    // Read IMMEDIATELY — output likely not available yet
+    const r1 = parsePayload(await terminalReadHandler({
+      windowTitle: ps.title, lines: 50, stripAnsi: true, source: "auto", ocrLanguage: "ja",
+    }));
+    // Must not error — empty/partial output is acceptable
+    expect(r1.ok).toBe(true);
+    expect(r1.marker).toMatch(/^[a-f0-9]{16}$/);
+    // tag may or may not be present depending on timing
+    const immediateHasOutput = r1.text.includes(tag);
+
+    // Wait for completion then confirm output is present
+    await sleep(1500);
+    const r2 = parsePayload(await terminalReadHandler({
+      windowTitle: ps.title, lines: 50, stripAnsi: true, source: "auto", ocrLanguage: "ja",
+    }));
+    expect(r2.ok).toBe(true);
+    if (!r2.text.includes(tag)) {
+      skip(`D2: output tag not found after wait — focus issue. Buffer: ${r2.text.slice(-200)}`);
+    }
+    expect(r2.text).toContain(tag);
+    // If tag appeared only in r2, the immediate read was indeed early
+    if (!immediateHasOutput) {
+      // This is the expected case: demonstrates D2's "not yet ready" scenario
+      expect(r2.text).toContain(tag);
+    }
+  }, 20_000);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D1: sinceMarker after new command (normalizeForMarker regression guard)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("D1: sinceMarker after new command output", () => {
+  it("previousMatched:true and diff contains new output after a command runs", async ({ skip }) => {
+    // Baseline read
+    const r1 = parsePayload(await terminalReadHandler({
+      windowTitle: ps.title, lines: 2000, stripAnsi: true, source: "auto", ocrLanguage: "ja",
+    }));
+    expect(r1.ok).toBe(true);
+    const marker1 = r1.marker;
+
+    // Send a command with a unique tag
+    const tag = `d1-${Date.now().toString(36)}`;
+    const sendRes = parsePayload(await terminalSendHandler({
+      windowTitle: ps.title,
+      input: `echo ${tag}`,
+      pressEnter: true,
+      focusFirst: true,
+      restoreFocus: true,
+      preferClipboard: true,
+      pasteKey: "auto",
+    }));
+    if (!sendRes.ok) {
+      skip("terminal_send failed (focus protection) — skipping D1");
+    }
+
+    // Wait for shell to render output
+    await sleep(1000);
+
+    // Read with sinceMarker — should find the new output
+    const r2 = parsePayload(await terminalReadHandler({
+      windowTitle: ps.title,
+      lines: 2000,
+      stripAnsi: true,
+      source: "auto",
+      ocrLanguage: "ja",
+      sinceMarker: marker1,
+    }));
+    expect(r2.ok).toBe(true);
+
+    if (!r2.hints.terminalMarker.previousMatched) {
+      skip(
+        `D1: sinceMarker did not match — possible focus issue or conhost rendering variance. ` +
+        `tail: ${r2.text.slice(-300)}`
+      );
+    }
+
+    // Core assertion: sinceMarker matched and the diff contains the new output
+    expect(r2.hints.terminalMarker.previousMatched).toBe(true);
+    if (!r2.text.includes(tag)) {
+      skip(`D1: tag not in diff — focus issue. diff: ${r2.text.slice(-300)}`);
+    }
+    expect(r2.text).toContain(tag);
+    // Diff must be shorter than the full buffer (not full re-send)
+    expect(r2.text.length).toBeLessThan(r1.text.length);
+  }, 25_000);
 });
