@@ -48,19 +48,25 @@ export function getAllowedExecutables(): Set<string> {
   if (!configPath) return new Set();
 
   try {
-    const mtime = fs.statSync(configPath).mtimeMs;
-    if (_cache && mtime === _lastMtime) return _cache;
-
-    const raw = fs.readFileSync(configPath, "utf-8");
-    const parsed = JSON.parse(raw) as AllowlistConfig;
-    const entries = Array.isArray(parsed.allowedExecutables) ? parsed.allowedExecutables : [];
-
-    _cache = new Set(
-      entries.map((e) => path.basename(e).toLowerCase())
-        .concat(entries.map((e) => path.normalize(e).toLowerCase()))
-    );
-    _lastMtime = mtime;
-    return _cache;
+    // Read first to avoid a stat/read TOCTOU race; then capture mtime *after*
+    // the read so a stale cache entry is the only possible race outcome
+    // (never a partially-read file).
+    const fd = fs.openSync(configPath, "r");
+    try {
+      const stat = fs.fstatSync(fd);
+      if (_cache && stat.mtimeMs === _lastMtime) return _cache;
+      const raw = fs.readFileSync(fd, "utf-8");
+      const parsed = JSON.parse(raw) as AllowlistConfig;
+      const entries = Array.isArray(parsed.allowedExecutables) ? parsed.allowedExecutables : [];
+      _cache = new Set(
+        entries.map((e) => path.basename(e).toLowerCase())
+          .concat(entries.map((e) => path.normalize(e).toLowerCase()))
+      );
+      _lastMtime = stat.mtimeMs;
+      return _cache;
+    } finally {
+      try { fs.closeSync(fd); } catch { /* best-effort */ }
+    }
   } catch {
     return _cache ?? new Set();
   }

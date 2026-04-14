@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { captureScreen, captureDisplay, captureWindowBackground } from "../engine/image.js";
-import { captureAndDiff, captureAllLayers, hasBuffer, clearLayers } from "../engine/layer-buffer.js";
+import { captureAndDiff, captureAllLayers, hasBuffer } from "../engine/layer-buffer.js";
 import type { WindowInfo } from "../engine/layer-buffer.js";
 import { getWindows } from "../engine/nutjs.js";
 import { enumMonitors, getVirtualScreen, getWindowTitleW, enumWindowsInZOrder } from "../engine/win32.js";
@@ -241,15 +241,6 @@ async function buildUiaData(title: string, hwnd?: bigint, cached?: boolean): Pro
 async function buildUiaText(title: string): Promise<string> {
   const { result } = await buildUiaData(title);
   return JSON.stringify(result, null, 2);
-}
-
-/** Resolve a partial window title to its bigint HWND via EnumWindows. */
-function resolveHwndForTitle(partialTitle: string): { hwnd: bigint; resolved: string } | null {
-  const wins = enumWindowsInZOrder();
-  const q = partialTitle.toLowerCase();
-  const found = wins.find((w) => w.title.toLowerCase().includes(q));
-  if (!found) return null;
-  return { hwnd: found.hwnd, resolved: found.title };
 }
 
 /** Convert enumWindowsInZOrder result to WindowInfo array for layer-buffer. */

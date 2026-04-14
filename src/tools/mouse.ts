@@ -434,7 +434,6 @@ export const scrollHandler = async ({
         for (let i = 0; i < amount; i++) await mouse.scrollLeft(SCROLL_MULTIPLIER);
         break;
     }
-    const homingStr = !homing ? " [homing: off]" : notes.length ? ` [homing: ${notes.join(", ")}]` : "";
     return ok({ ok: true, scrolled: direction, steps: amount, ...(notes.length && { homing: notes.join(", ") }) });
   } catch (err) {
     return failWith(err, "scroll");
