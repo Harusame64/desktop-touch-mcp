@@ -13,6 +13,7 @@ const SUGGESTS: Record<string, string[]> = {
     "Run get_windows to see available titles",
     "Try a shorter partial title match (e.g. first word only)",
     "The window may be minimized — try focus_window first",
+    "If the app is still launching, use wait_until(condition='window_appears') before focus_window",
   ],
   ElementNotFound: [
     "Call get_ui_elements to see candidate names and automationIds",
