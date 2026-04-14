@@ -1,5 +1,5 @@
 /**
- * focus-integrity.test.ts — E2E tests for focus tracking and windowTitle usage (A1)
+ * focus-integrity.test.ts — E2E tests for focus tracking and windowTitle usage (A1, A2)
  *
  * A1: LLM risk — keyboard_type without windowTitle cannot detect focus loss
  *   - With windowTitle: focusLost detection is armed
@@ -7,8 +7,10 @@
  *   - This is the "silent misfire" scenario: if another window steals focus,
  *     keystrokes go to the wrong target but the LLM gets no signal.
  *
- * A2: terminal_send(restoreFocus:true) with minimized source window
- *   - Structural test: restoreFocus parameter exists in schema and is accepted
+ * A2: terminal_send(restoreFocus:true) restores previous foreground window
+ *   - Focus returns to the caller's window (e.g. Notepad) after terminal command
+ *   - focusRestored:true in response confirms the restore happened
+ *   - Structural test: restoreFocus parameter works end-to-end
  *
  * Design note:
  *   The actual "focus stolen by another app" scenario requires a second process
@@ -21,7 +23,9 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { keyboardTypeHandler } from "../../src/tools/keyboard.js";
 import { keyboardPressHandler } from "../../src/tools/keyboard.js";
+import { terminalSendHandler } from "../../src/tools/terminal.js";
 import { launchNotepad, type NpInstance } from "./helpers/notepad-launcher.js";
+import { launchPowerShell, type PsInstance } from "./helpers/powershell-launcher.js";
 import { parsePayload, sleep } from "./helpers/wait.js";
 import { focusWindow } from "../../src/engine/win32.js";
 
@@ -194,4 +198,100 @@ describe("A1-press: keyboard_press follows the same focusLost contract", () => {
     // No detection possible without windowTitle
     expect(p.focusLost).toBeUndefined();
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A2: terminal_send(restoreFocus:true) — focus returns to caller window
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("A2: terminal_send(restoreFocus:true) restores caller's focus", () => {
+  let ps: PsInstance;
+
+  beforeAll(async () => {
+    ps = await launchPowerShell({ banner: "a2-ready" });
+  }, 15_000);
+
+  afterAll(() => ps?.kill());
+
+  it("focusRestored:true when Notepad was active before terminal_send", async ({ skip }) => {
+    // Focus Notepad first (the window we want focus to return to)
+    try { focusWindow(np.hwnd); } catch { /* non-fatal */ }
+    await sleep(300);
+
+    // Verify Notepad is active
+    const { enumWindowsInZOrder } = await import("../../src/engine/win32.js");
+    const active = enumWindowsInZOrder().find(w => w.isActive);
+    if (!active?.title.includes(np.tag)) {
+      skip("Could not transfer focus to Notepad (foreground-stealing protection) — skipping A2");
+      return;
+    }
+
+    // Send a command to PowerShell with restoreFocus:true
+    const result = await terminalSendHandler({
+      windowTitle: ps.tag,
+      input: "echo a2-test",
+      pressEnter: true,
+      focusFirst: true,
+      restoreFocus: true,   // <-- key parameter
+      preferClipboard: false,
+      pasteKey: "ctrl+v",
+      trackFocus: false,
+      settleMs: 300,
+    });
+    const p = parsePayload(result);
+
+    expect(p.ok).toBe(true);
+    // focusRestored:true confirms the terminal tool restored the previous window
+    expect(p.focusRestored).toBe(true);
+  }, 20_000);
+
+  it("focusRestored:false when restoreFocus is disabled", async ({ skip }) => {
+    // Focus Notepad first
+    try { focusWindow(np.hwnd); } catch { /* non-fatal */ }
+    await sleep(300);
+
+    const { enumWindowsInZOrder } = await import("../../src/engine/win32.js");
+    const active = enumWindowsInZOrder().find(w => w.isActive);
+    if (!active?.title.includes(np.tag)) {
+      skip("Could not transfer focus to Notepad — skipping A2 restoreFocus:false test");
+      return;
+    }
+
+    const result = await terminalSendHandler({
+      windowTitle: ps.tag,
+      input: "echo a2-no-restore",
+      pressEnter: true,
+      focusFirst: true,
+      restoreFocus: false,  // <-- disabled
+      preferClipboard: false,
+      pasteKey: "ctrl+v",
+      trackFocus: false,
+      settleMs: 200,
+    });
+    const p = parsePayload(result);
+
+    expect(p.ok).toBe(true);
+    // restoreFocus:false → focusRestored must be false
+    expect(p.focusRestored).toBe(false);
+  }, 20_000);
+
+  it("terminal_send response always has focusRestored boolean field", async () => {
+    // Structural contract: focusRestored is always present in ok:true responses
+    const result = await terminalSendHandler({
+      windowTitle: ps.tag,
+      input: "echo structural-test",
+      pressEnter: false,
+      focusFirst: true,
+      restoreFocus: true,
+      preferClipboard: false,
+      pasteKey: "ctrl+v",
+      trackFocus: false,
+      settleMs: 0,
+    });
+    const p = parsePayload(result);
+
+    expect(p.ok).toBe(true);
+    expect("focusRestored" in p).toBe(true);
+    expect(typeof p.focusRestored).toBe("boolean");
+  }, 15_000);
 });
