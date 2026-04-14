@@ -359,15 +359,59 @@ export async function getElementScreenCoords(
   return parsed as ElementCoords;
 }
 
+// ─── TabContext helper ────────────────────────────────────────────────────────
+
+export interface TabContext {
+  /** Tab ID from CDP. null when the tab could not be identified (fallback/error path). */
+  id: string | null;
+  title: string;
+  url: string;
+  readyState: "loading" | "interactive" | "complete";
+}
+
+/**
+ * Get the current tab context (id, title, url, readyState).
+ * Best-effort: never throws; returns partial info on failure.
+ */
+export async function getTabContext(
+  tabId: string | null,
+  port = DEFAULT_CDP_PORT
+): Promise<TabContext> {
+  let id: string | null = tabId ?? null;
+  try {
+    const tab = await resolveTab(tabId, port);
+    id = tab.id;
+    const raw = await evaluateInTab(
+      "JSON.stringify([document.title, location.href, document.readyState])",
+      tab.id,
+      port
+    );
+    const parsed = JSON.parse(raw as string) as [string, string, string];
+    const rs = parsed[2];
+    return {
+      id: tab.id,
+      title: parsed[0] ?? "",
+      url: parsed[1] ?? "",
+      readyState: (rs === "loading" || rs === "interactive" || rs === "complete")
+        ? rs
+        : "loading",
+    };
+  } catch {
+    // null id signals "tab could not be identified" — callers should handle this
+    return { id: null, title: "", url: "", readyState: "loading" };
+  }
+}
+
 /**
  * Navigate the browser tab to a URL.
  * Only http:// and https:// URLs are accepted; javascript: and file: are rejected.
+ * Returns { frameId, errorText } from Page.navigate response.
  */
 export async function navigateTo(
   url: string,
   tabId: string | null = null,
   port = DEFAULT_CDP_PORT
-): Promise<void> {
+): Promise<{ frameId?: string; errorText?: string }> {
   // P2 fix: reject non-http(s) URLs to prevent javascript: injection and file: access
   if (!/^https?:\/\//i.test(url)) {
     throw new Error(
@@ -376,7 +420,11 @@ export async function navigateTo(
   }
   const tab = await resolveTab(tabId, port);
   const session = await openSession(tab, port);
-  await session.send("Page.navigate", { url });
+  const result = (await session.send("Page.navigate", { url })) as {
+    frameId?: string;
+    errorText?: string;
+  } | null;
+  return result ?? {};
 }
 
 /**

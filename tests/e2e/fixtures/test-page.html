@@ -62,6 +62,44 @@
 
     <!-- Below-fold element for scroll testing -->
     <div id="section-scroll">Below the fold</div>
+
+    <!-- ──────────────────────────────────────────────────────────────── -->
+    <!-- browser_search fixtures — cover all 5 "by" axes                    -->
+    <!-- ──────────────────────────────────────────────────────────────── -->
+    <div id="search-fixtures" style="position:absolute;left:100px;top:450px;width:600px;">
+      <h2>Search Fixtures</h2>
+
+      <!-- by:'text' — literal substring, case-sensitive toggles, regex -->
+      <p class="search-text">Unique search needle alpha</p>
+      <p class="search-text">Another needle appears here</p>
+      <p class="search-text">Uppercase NEEDLE for case tests</p>
+
+      <!-- by:'role' — explicit + implicit -->
+      <nav role="navigation" id="search-nav">
+        <a href="#nav1">Home</a>
+        <a href="#nav2">About</a>
+        <a href="#nav3">Contact</a>
+      </nav>
+      <button id="search-btn-submit">Submit Form</button>
+      <button id="search-btn-cancel">Cancel</button>
+      <button disabled id="search-btn-disabled">Disabled button</button>
+
+      <!-- by:'ariaLabel' -->
+      <input aria-label="Search query" id="search-input-query">
+      <input aria-label="Email address" id="search-input-email">
+
+      <!-- by:'selector' scope test -->
+      <div id="search-scope-parent">
+        <span>inside-scope-alpha</span>
+        <span>inside-scope-beta</span>
+      </div>
+      <div id="search-scope-other">
+        <span>outside-scope-gamma</span>
+      </div>
+
+      <!-- visibility penalty test -->
+      <button style="display:none" id="search-btn-hidden-unique-marker">Hidden Unique Marker</button>
+    </div>
   </div>
 
   <script>

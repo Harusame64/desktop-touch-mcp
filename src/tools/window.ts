@@ -5,6 +5,7 @@ import { getWindowTitleW, enumWindowsInZOrder, restoreAndFocusWindow } from "../
 import { getVirtualDesktopStatus } from "../engine/uia-bridge.js";
 import { updateWindowCache } from "../engine/window-cache.js";
 import type { ToolResult } from "./_types.js";
+import { failWith } from "./_errors.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -94,14 +95,9 @@ export const focusWindowHandler = async ({ title }: { title: string }): Promise<
       };
     }
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({ ok: false, error: `No window found matching: "${title}"` }),
-      }],
-    };
+    return failWith(`Window not found: "${title}"`, "focus_window", { title });
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `focus_window failed: ${String(err)}` }] };
+    return failWith(err, "focus_window", { title });
   }
 };
 

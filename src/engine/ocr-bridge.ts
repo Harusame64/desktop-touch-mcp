@@ -238,6 +238,33 @@ export async function recognizeWindow(
 }
 
 /**
+ * Reconstruct lines of text from OCR words by clustering on y-midpoint and
+ * sorting horizontally. Used by terminal_read OCR fallback to keep the 2D
+ * structure intact (so sinceMarker stays comparable across UIA / OCR sources).
+ */
+export function ocrWordsToLines(words: OcrWord[]): string {
+  if (words.length === 0) return "";
+  const sorted = [...words].sort(
+    (a, b) => (a.bbox.y + a.bbox.height / 2) - (b.bbox.y + b.bbox.height / 2)
+  );
+  const lines: OcrWord[][] = [];
+  let cur: OcrWord[] = [sorted[0]!];
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = cur[cur.length - 1]!;
+    const next = sorted[i]!;
+    const avgH = (prev.bbox.height + next.bbox.height) / 2;
+    const prevMid = prev.bbox.y + prev.bbox.height / 2;
+    const nextMid = next.bbox.y + next.bbox.height / 2;
+    if (Math.abs(prevMid - nextMid) < avgH * 0.6) cur.push(next);
+    else { lines.push(cur); cur = [next]; }
+  }
+  lines.push(cur);
+  return lines
+    .map((line) => line.sort((a, b) => a.bbox.x - b.bbox.x).map((w) => w.text).join(" "))
+    .join("\n");
+}
+
+/**
  * Convert OCR words (with window-local bboxes + origin) into ActionableElements.
  * clickAt is in absolute screen coordinates.
  */
@@ -249,6 +276,18 @@ export function ocrWordsToActionable(
   for (const word of words) {
     if (!word.text.trim()) continue;
     const { bbox } = word;
+    // Phase 2.3 — PLACEHOLDER OCR confidence (win-ocr.exe does not yet expose
+    // OcrLine.Confidence). Tuned so a vanilla OCR word reads as "moderate" not
+    // "high" — this keeps it below UIA Name-exact (0.95) when results are mixed.
+    let confidence = 0.7;
+    const t = word.text;
+    if (t.length === 1) confidence = 0.55;          // single chars are unreliable
+    if (/[\u00A0-\u00BF\u2000-\u206F]/.test(t)) confidence = 0.45;
+    if (/[\uFFFD]/.test(t)) confidence = 0.2;       // replacement char = unrecognized
+    const suggest = confidence < 0.5
+      ? "Use dotByDot screenshot or browser_eval for verification"
+      : undefined;
+
     result.push({
       action: "click",
       name: word.text,
@@ -264,6 +303,8 @@ export function ocrWordsToActionable(
         height: bbox.height,
       },
       source: "ocr",
+      confidence,
+      ...(suggest ? { suggest } : {}),
     });
   }
   return result;

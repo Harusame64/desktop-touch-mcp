@@ -354,6 +354,49 @@ Common values: `0` = teleport, `1500` = default gentle, `3000` = fast, `5000` = 
 
 ---
 
+## Force-Focus (AttachThreadInput)
+
+Windows foreground-stealing protection can prevent `SetForegroundWindow` from succeeding when another window (such as a pinned Claude CLI) is in the foreground. This causes subsequent keystrokes or clicks to land in the wrong window — a silent failure.
+
+`mouse_click`, `keyboard_type`, `keyboard_press`, and `terminal_send` all accept a `forceFocus` parameter that bypasses this protection using `AttachThreadInput`:
+
+```json
+{
+  "name": "mouse_click",
+  "arguments": {
+    "x": 500,
+    "y": 300,
+    "windowTitle": "Google Chrome",
+    "forceFocus": true
+  }
+}
+```
+
+If the force attempt is refused despite `AttachThreadInput`, the response includes `hints.warnings: ["ForceFocusRefused"]`.
+
+**Global default via environment variable:**
+
+```json
+{
+  "mcpServers": {
+    "desktop-touch": {
+      "env": {
+        "DESKTOP_TOUCH_FORCE_FOCUS": "1"
+      }
+    }
+  }
+}
+```
+
+Setting `DESKTOP_TOUCH_FORCE_FOCUS=1` makes `forceFocus: true` the default for all four tools without changing each call.
+
+**Known tradeoffs:**
+
+- During the ~10ms `AttachThreadInput` window, key state and mouse capture are shared between the two threads. In rapid macro sequences this can cause a race condition (rare in practice).
+- Disable `forceFocus` (or unset the env var) when the user is manually operating another app to avoid unexpected focus shifts.
+
+---
+
 ## Known limitations
 
 | Limitation | Detail | Workaround |

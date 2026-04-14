@@ -2,7 +2,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { getUiElements, clickElement, setElementValue, getElementBounds, getElementChildren } from "../engine/uia-bridge.js";
 import { captureScreen } from "../engine/image.js";
+import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
+import { failWith, failArgs } from "./_errors.js";
+import { withRichNarration, narrateParam } from "./_narration.js";
+import { buildHintsForTitle } from "../engine/identity-tracker.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -19,6 +23,7 @@ export const clickElementSchema = {
   name: z.string().max(200).optional().describe("Element name/label (partial match, case-insensitive)"),
   automationId: z.string().max(200).optional().describe("Exact AutomationId of the element"),
   controlType: z.string().max(100).optional().describe("Control type filter, e.g. 'Button', 'MenuItem'"),
+  narrate: narrateParam,
 };
 
 export const setElementValueSchema = {
@@ -26,6 +31,7 @@ export const setElementValueSchema = {
   value: z.string().max(10000).describe("The value to set"),
   name: z.string().max(200).optional().describe("Element name/label (partial match)"),
   automationId: z.string().max(200).optional().describe("Exact AutomationId of the element"),
+  narrate: narrateParam,
 };
 
 export const scopeElementSchema = {
@@ -46,10 +52,16 @@ export const getUiElementsHandler = async ({
   windowTitle, maxDepth, maxElements,
 }: { windowTitle: string; maxDepth: number; maxElements: number }): Promise<ToolResult> => {
   try {
-    const result = await getUiElements(windowTitle, maxDepth, maxElements);
-    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    const hintsBlock = buildHintsForTitle(windowTitle);
+    const result = await getUiElements(windowTitle, maxDepth, maxElements, 10000, {
+      hwnd: hintsBlock?.hwnd, cached: false,
+    });
+    const enriched = hintsBlock
+      ? { ...result, hints: { target: hintsBlock.target, caches: hintsBlock.caches } }
+      : result;
+    return ok(enriched, true);
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `get_ui_elements failed: ${String(err)}` }] };
+    return failWith(err, "get_ui_elements", { windowTitle });
   }
 };
 
@@ -58,12 +70,19 @@ export const clickElementHandler = async ({
 }: { windowTitle: string; name?: string; automationId?: string; controlType?: string }): Promise<ToolResult> => {
   try {
     if (!name && !automationId) {
-      return { content: [{ type: "text" as const, text: "Provide at least one of: name, automationId" }] };
+      return failArgs("Provide at least one of: name, automationId", "click_element", { windowTitle });
     }
+    const hintsBlock = buildHintsForTitle(windowTitle);
     const result = await clickElement(windowTitle, name, automationId, controlType);
-    return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+    if (!result.ok) {
+      return failWith(result.error ?? "Unknown error", "click_element", { windowTitle, name, automationId });
+    }
+    const enriched = hintsBlock
+      ? { ...result, hints: { target: hintsBlock.target, caches: hintsBlock.caches } }
+      : result;
+    return ok(enriched);
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `click_element failed: ${String(err)}` }] };
+    return failWith(err, "click_element", { windowTitle, name, automationId });
   }
 };
 
@@ -72,12 +91,19 @@ export const setElementValueHandler = async ({
 }: { windowTitle: string; value: string; name?: string; automationId?: string }): Promise<ToolResult> => {
   try {
     if (!name && !automationId) {
-      return { content: [{ type: "text" as const, text: "Provide at least one of: name, automationId" }] };
+      return failArgs("Provide at least one of: name, automationId", "set_element_value", { windowTitle });
     }
+    const hintsBlock = buildHintsForTitle(windowTitle);
     const result = await setElementValue(windowTitle, value, name, automationId);
-    return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+    if (!result.ok) {
+      return failWith(result.error ?? "Unknown error", "set_element_value", { windowTitle, name, automationId });
+    }
+    const enriched = hintsBlock
+      ? { ...result, hints: { target: hintsBlock.target, caches: hintsBlock.caches } }
+      : result;
+    return ok(enriched);
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `set_element_value failed: ${String(err)}` }] };
+    return failWith(err, "set_element_value", { windowTitle, name, automationId });
   }
 };
 
@@ -94,12 +120,13 @@ export const scopeElementHandler = async ({
 }): Promise<ToolResult> => {
   try {
     if (!name && !automationId && !controlType) {
-      return { content: [{ type: "text" as const, text: "Provide at least one of: name, automationId, controlType" }] };
+      return failArgs("Provide at least one of: name, automationId, controlType", "scope_element", { windowTitle });
     }
 
+    const hintsBlock = buildHintsForTitle(windowTitle);
     const bounds = await getElementBounds(windowTitle, name, automationId, controlType);
     if (!bounds) {
-      return { content: [{ type: "text" as const, text: JSON.stringify({ error: "Element not found" }) }] };
+      return failWith("Element not found", "scope_element", { windowTitle, name, automationId, controlType });
     }
 
     const content: ToolResult["content"] = [];
@@ -131,10 +158,13 @@ export const scopeElementHandler = async ({
       // UIA may fail; return element info without children
     }
 
-    content.push({ type: "text" as const, text: JSON.stringify({ element: bounds, children }, null, 2) });
+    const payload = hintsBlock
+      ? { element: bounds, children, hints: { target: hintsBlock.target, caches: hintsBlock.caches } }
+      : { element: bounds, children };
+    content.push({ type: "text" as const, text: JSON.stringify(payload, null, 2) });
     return { content };
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `scope_element failed: ${String(err)}` }] };
+    return failWith(err, "scope_element", { windowTitle, name, automationId });
   }
 };
 
@@ -165,7 +195,7 @@ export function registerUiElementTools(server: McpServer): void {
       "Ideal for buttons, menu items, and links.",
     ].join(" "),
     clickElementSchema,
-    clickElementHandler
+    withRichNarration("click_element", clickElementHandler, { windowTitleKey: "windowTitle" })
   );
 
   server.tool(
@@ -173,9 +203,10 @@ export function registerUiElementTools(server: McpServer): void {
     [
       "Directly set the value of a text field or combo box using Windows UI Automation ValuePattern.",
       "More reliable than keyboard_type for programmatic input into form fields.",
+      "Use narrate:'rich' to confirm the value was applied without a verification screenshot.",
     ].join(" "),
     setElementValueSchema,
-    setElementValueHandler
+    withRichNarration("set_element_value", setElementValueHandler, { windowTitleKey: "windowTitle" })
   );
 
   server.tool(

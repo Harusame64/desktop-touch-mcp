@@ -1,0 +1,449 @@
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
+import { createHash } from "node:crypto";
+import { ok, fail } from "./_types.js";
+import type { ToolResult } from "./_types.js";
+import { failWith } from "./_errors.js";
+import {
+  enumWindowsInZOrder,
+  restoreAndFocusWindow,
+  getProcessIdentityByPid,
+  getWindowProcessId,
+  type WindowZInfo,
+} from "../engine/win32.js";
+import { detectFocusLoss } from "./_focus.js";
+import { getTextViaTextPattern } from "../engine/uia-bridge.js";
+import { recognizeWindow, ocrWordsToLines } from "../engine/ocr-bridge.js";
+import { stripAnsi, tailLines } from "../engine/ansi.js";
+import {
+  observeTarget,
+  buildCacheStateHints,
+  toTargetHints,
+  type InvalidationReason,
+} from "../engine/identity-tracker.js";
+import { keyboard } from "../engine/nutjs.js";
+import { parseKeys } from "../utils/key-map.js";
+import { typeViaClipboard } from "./keyboard.js";
+import { setTerminalReadHook } from "./wait-until.js";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Schemas
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const terminalReadSchema = {
+  windowTitle: z.string().max(200).describe("Partial title of the terminal window (e.g. 'PowerShell', 'pwsh', 'WindowsTerminal')."),
+  lines: z.coerce.number().int().min(1).max(2000).default(50).describe("Tail N lines (default 50)."),
+  sinceMarker: z.string().max(64).optional().describe("Marker returned from a previous call. If found in current text, only the diff is returned."),
+  stripAnsi: z.boolean().default(true).describe("Strip ANSI escape sequences (default true)."),
+  source: z.enum(["auto", "uia", "ocr"]).default("auto").describe("'auto' = UIA TextPattern then OCR fallback; 'uia' = TextPattern only (fail on miss); 'ocr' = OCR only."),
+  ocrLanguage: z.string().max(20).default("ja").describe("BCP-47 language tag for OCR fallback (default 'ja')."),
+};
+
+export const terminalSendSchema = {
+  windowTitle: z.string().max(200).describe("Partial title of the terminal window."),
+  input: z.string().max(10000).describe("Text to send (max 10,000 chars)."),
+  pressEnter: z.boolean().default(true).describe("Press Enter after typing (default true)."),
+  focusFirst: z.boolean().default(true).describe("Focus the terminal before sending (default true)."),
+  restoreFocus: z.boolean().default(true).describe("Restore the previously-focused window after sending (default true)."),
+  preferClipboard: z.boolean().default(true).describe("Use clipboard paste (typeViaClipboard) — IME/long-text safe (default true)."),
+  pasteKey: z.enum(["auto", "ctrl+v", "ctrl+shift+v"]).default("auto").describe("Paste key combo. 'auto' picks ctrl+shift+v for WSL/bash/mintty/wezterm/alacritty, ctrl+v elsewhere. Only used when preferClipboard=true."),
+  forceFocus: z.boolean().optional().describe(
+    "When true, bypass Windows foreground-stealing protection via AttachThreadInput " +
+    "before focusing the terminal window. Default: follows env DESKTOP_TOUCH_FORCE_FOCUS (default false)."
+  ),
+  trackFocus: z.boolean().default(true).describe(
+    "When true (default), detect if focus was stolen after sending. Reports focusLost in the response."
+  ),
+  settleMs: z.coerce.number().int().min(0).max(2000).default(300).describe(
+    "Milliseconds to wait after sending before checking foreground window (default 300)."
+  ),
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TERMINAL_PROCESS_RE = /^(WindowsTerminal|conhost|pwsh|powershell|cmd|bash|wsl|alacritty|wezterm|mintty)(\.exe)?$/i;
+
+function findTerminalWindow(partialTitle: string): WindowZInfo | null {
+  const wins = enumWindowsInZOrder();
+  const q = partialTitle.toLowerCase();
+  // First try exact partial match on title.
+  let candidate = wins.find((w) => w.title.toLowerCase().includes(q));
+  if (candidate) return candidate;
+  // Fallback: process-name match (LLM might pass 'pwsh' even if title is "Windows PowerShell - …")
+  for (const w of wins) {
+    const pid = getWindowProcessId(w.hwnd);
+    const ident = getProcessIdentityByPid(pid);
+    if (ident.processName.toLowerCase().includes(q.replace(/\.exe$/i, ""))) {
+      return w;
+    }
+  }
+  return null;
+}
+
+/**
+ * Normalise terminal text before hashing for marker computation.
+ *
+ * Windows Terminal's UIA TextPattern introduces three sources of churn that
+ * would otherwise cause sinceMarker to miss on every new line:
+ *   1. CRLF vs LF — TextPattern can return either depending on terminal state.
+ *   2. Trailing-space padding — each row is padded to terminal column width;
+ *      the current cursor row may gain or lose that padding between reads.
+ *   3. Trailing blank lines — the last row(s) after the prompt may or may not
+ *      carry a trailing newline depending on whether output followed.
+ *
+ * Normalising these away before hashing makes the marker stable across reads
+ * that differ only in rendering artefacts.
+ */
+function normalizeForMarker(text: string): string {
+  return text
+    .replace(/\r\n/g, "\n")     // CRLF → LF
+    .replace(/[ \t]+$/gm, "")   // strip trailing whitespace from every line
+    .replace(/\n+$/, "");       // strip trailing blank lines
+}
+
+function makeMarker(text: string): string {
+  // Take the last 256 chars (or full text if shorter) and hash.
+  const norm = normalizeForMarker(text);
+  const slice = norm.slice(-256);
+  return createHash("sha256").update(slice).digest("hex").slice(0, 16);
+}
+
+function applySinceMarker(text: string, marker: string): { text: string; matched: boolean } {
+  // Search for any tail window whose hash matches `marker`. Walk from the tail
+  // backward — a recent terminal will hit within a few chars. Capped at 32k
+  // candidate window endings to bound cost.
+  // NOTE: both makeMarker and this function normalise text before hashing so
+  // that Windows Terminal padding/CRLF churn does not cause spurious misses.
+  const norm = normalizeForMarker(text);
+  const WINDOW = 256;
+
+  /** Return the normalised tail starting just after normEnd.
+   *  Stripping a leading newline avoids returning a blank first line when
+   *  the match ends exactly at a line boundary. */
+  function tailFromNormEnd(normEnd: number): string {
+    return norm.slice(normEnd).replace(/^\n/, "");
+  }
+
+  // ── Sliding-window path (norm ≥ 256 chars) ────────────────────────────────
+  // makeMarker hashed norm.slice(-256), so look for any 256-char window match.
+  // Note: maxScan caps the lookback at 32k bytes. If the terminal has scrolled
+  // more than ~32k chars since the marker was taken, this will miss silently
+  // (returning matched:false and falling through to full-text return).
+  if (norm.length >= WINDOW) {
+    const maxScan = Math.min(norm.length, WINDOW + 32_000);
+    for (let end = norm.length; end >= norm.length - maxScan && end >= WINDOW; end--) {
+      const slice = norm.slice(end - WINDOW, end);
+      if (createHash("sha256").update(slice).digest("hex").slice(0, 16) === marker) {
+        return { text: tailFromNormEnd(end), matched: true };
+      }
+    }
+    // Marker not found within the 32k scan range — fall through to return full text.
+    return { text, matched: false };
+  }
+
+  // ── Prefix-scan path (norm < 256 chars, so previous norm was also < 256) ──
+  // makeMarker hashed the entire previous normalised text. Find the prefix
+  // of the current norm whose hash matches, i.e. where the old snapshot ends.
+  // Scan from longest (current full text = unchanged) down to empty string.
+  // At most WINDOW=256 iterations, so O(N) total hashing work.
+  for (let end = norm.length; end >= 0; end--) {
+    if (createHash("sha256").update(norm.slice(0, end)).digest("hex").slice(0, 16) === marker) {
+      return { text: tailFromNormEnd(end), matched: true };
+    }
+  }
+
+  return { text, matched: false };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// terminal_read
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const terminalReadHandler = async ({
+  windowTitle, lines, sinceMarker, stripAnsi: doStripAnsi, source, ocrLanguage,
+}: {
+  windowTitle: string;
+  lines: number;
+  sinceMarker?: string;
+  stripAnsi: boolean;
+  source: "auto" | "uia" | "ocr";
+  ocrLanguage: string;
+}): Promise<ToolResult> => {
+  try {
+    const win = findTerminalWindow(windowTitle);
+    if (!win) {
+      return failWith("Terminal window not found: " + windowTitle, "terminal_read", { windowTitle });
+    }
+
+    const obs = observeTarget(windowTitle, win.hwnd, win.title);
+    const identityHints = toTargetHints(obs.identity);
+
+    let raw: string | null = null;
+    let usedSource: "uia" | "ocr" = "uia";
+
+    if (source === "uia" || source === "auto") {
+      raw = await getTextViaTextPattern(win.title);
+    }
+    if ((raw === null || raw === "") && source !== "uia") {
+      try {
+        const { words } = await recognizeWindow(win.title, ocrLanguage);
+        // Preserve 2D layout: cluster by y, sort by x, join with \n.
+        // Critical for sinceMarker compatibility with the UIA path.
+        raw = ocrWordsToLines(words);
+        usedSource = "ocr";
+      } catch (err) {
+        if (source === "ocr") {
+          return failWith(err, "terminal_read", { windowTitle });
+        }
+        // auto: both failed
+      }
+    }
+    if (raw === null) {
+      return fail({
+        ok: false,
+        code: "TerminalTextPatternUnavailable",
+        error: "TextPattern not available and no OCR fallback usable",
+        suggest: [
+          "Retry with source:'ocr' to force OCR",
+          "Verify the window is actually a terminal (Windows Terminal, conhost, PowerShell)",
+        ],
+        context: { windowTitle: win.title },
+      });
+    }
+
+    const cleaned = doStripAnsi ? stripAnsi(raw) : raw;
+    let returnText = tailLines(cleaned, lines);
+
+    let invalidatedBy: InvalidationReason | undefined;
+    let previousMatched = false;
+
+    // Apply sinceMarker against the FULL cleaned text (not the tailed slice — markers
+    // are computed from the tail end, so test against the same data we saw last time).
+    if (sinceMarker) {
+      // Identity invalidation overrides marker matching.
+      if (obs.invalidatedBy) {
+        invalidatedBy = obs.invalidatedBy === "hwnd_reused" || obs.invalidatedBy === "process_restarted"
+          ? "process_restarted"
+          : undefined;
+      }
+      if (invalidatedBy) {
+        // Don't try to match — stale.
+      } else {
+        const sliced = applySinceMarker(cleaned, sinceMarker);
+        previousMatched = sliced.matched;
+        if (sliced.matched) {
+          returnText = sliced.text;
+        }
+      }
+    }
+
+    const marker = makeMarker(cleaned);
+
+    const cacheStateHints = buildCacheStateHints(win.hwnd, obs.invalidatedBy ? { reason: obs.invalidatedBy, previousTarget: obs.previousTarget } : null);
+
+    const payload = {
+      ok: true,
+      text: returnText,
+      lineCount: returnText.length === 0 ? 0 : returnText.split(/\r?\n/).length,
+      source: usedSource,
+      marker,
+      truncated: returnText.length < cleaned.length,
+      hints: {
+        target: identityHints,
+        terminalMarker: {
+          current: marker,
+          previousMatched,
+          ...(invalidatedBy ? { invalidatedBy } : {}),
+        },
+        ...(Object.keys(cacheStateHints).length > 0 ? { caches: cacheStateHints } : {}),
+        ...(usedSource === "ocr" ? { ocrFallbackFired: true } : {}),
+      },
+    };
+
+    return ok(payload);
+  } catch (err) {
+    return failWith(err, "terminal_read", { windowTitle });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// terminal_send
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const terminalSendHandler = async ({
+  windowTitle, input, pressEnter, focusFirst, restoreFocus, preferClipboard, pasteKey,
+  forceFocus: forceFocusArg, trackFocus, settleMs,
+}: {
+  windowTitle: string;
+  input: string;
+  pressEnter: boolean;
+  focusFirst: boolean;
+  restoreFocus: boolean;
+  preferClipboard: boolean;
+  pasteKey: "auto" | "ctrl+v" | "ctrl+shift+v";
+  forceFocus?: boolean;
+  trackFocus: boolean;
+  settleMs: number;
+}): Promise<ToolResult> => {
+  const force = forceFocusArg ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
+  const startedAt = Date.now();
+  try {
+    const win = findTerminalWindow(windowTitle);
+    if (!win) {
+      return failWith("Terminal window not found: " + windowTitle, "terminal_send", { windowTitle });
+    }
+
+    // Capture current foreground for restore.
+    const allBefore = enumWindowsInZOrder();
+    const prevFg = allBefore.find((w) => w.isActive);
+    const prevFgHwnd = prevFg?.hwnd ?? null;
+
+    const warnings: string[] = [];
+    const homingNotes: string[] = [];
+
+    let foregrounded = !focusFirst; // when not requested, treat as success
+    if (focusFirst) {
+      // Windows SetForegroundWindow is racy under load — retry until the target
+      // really is in the foreground (or give up after 5 tries).
+      const targetHwnd = String(win.hwnd);
+      if (force) {
+        // AttachThreadInput path: single attempt is usually sufficient
+        restoreAndFocusWindow(win.hwnd, { force: true });
+        // Small settle
+        await new Promise<void>((r) => setTimeout(r, 100));
+        const fg = enumWindowsInZOrder().find((w) => w.isActive);
+        if (fg && String(fg.hwnd) === targetHwnd) {
+          foregrounded = true;
+          homingNotes.push(`brought "${win.title}" to front`);
+        } else {
+          warnings.push("ForceFocusRefused");
+        }
+      } else {
+        for (let attempt = 0; attempt < 5; attempt++) {
+          restoreAndFocusWindow(win.hwnd);
+          await new Promise<void>((r) => setTimeout(r, 100));
+          const fg = enumWindowsInZOrder().find((w) => w.isActive);
+          if (fg && String(fg.hwnd) === targetHwnd) { foregrounded = true; break; }
+        }
+        if (!foregrounded) {
+          // Windows foreground-stealing protection refused the focus shift.
+          // Surface this as a warning so callers (LLM / tests) can detect that
+          // subsequent keystrokes may have landed on the wrong window.
+          warnings.push("ForegroundNotTransferred: Windows refused SetForegroundWindow; keystrokes may have missed the target. Retry after focus_window or click on the terminal.");
+        } else {
+          homingNotes.push(`brought "${win.title}" to front`);
+        }
+      }
+    }
+
+    if (preferClipboard) {
+      let chosenKey: "ctrl+v" | "ctrl+shift+v" = pasteKey === "auto" ? "ctrl+v" : pasteKey;
+      if (pasteKey === "auto") {
+        const procName = getProcessIdentityByPid(getWindowProcessId(win.hwnd)).processName.toLowerCase();
+        if (/^(bash|wsl|mintty|alacritty|wezterm)$/.test(procName)) {
+          chosenKey = "ctrl+shift+v";
+        }
+      }
+      await typeViaClipboard(input, chosenKey);
+    } else {
+      await keyboard.type(input);
+    }
+
+    if (pressEnter) {
+      const enter = parseKeys("enter");
+      await keyboard.pressKey(...enter);
+      await keyboard.releaseKey(...enter);
+    }
+
+    let focusRestored = false;
+    if (restoreFocus && prevFgHwnd && prevFgHwnd !== win.hwnd) {
+      try {
+        restoreAndFocusWindow(prevFgHwnd);
+        focusRestored = true;
+      } catch { /* best-effort */ }
+    }
+
+    // Detect focus loss after sending (separate from ForegroundNotTransferred)
+    let focusLost = undefined;
+    if (trackFocus && !focusRestored) {
+      const fl = await detectFocusLoss({
+        target: windowTitle,
+        homingNotes,
+        settleMs,
+      });
+      if (fl) focusLost = fl;
+    }
+
+    const ident = observeTarget(windowTitle, win.hwnd, win.title);
+
+    return ok({
+      ok: true,
+      sent: input,
+      pressedEnter: pressEnter,
+      focusRestored,
+      ...(focusLost && { focusLost }),
+      post: {
+        focusedWindow: focusRestored ? prevFg?.title ?? null : win.title,
+        focusedElement: null,
+        windowChanged: !!prevFgHwnd && prevFgHwnd !== win.hwnd,
+        elapsedMs: Date.now() - startedAt,
+      },
+      hints: {
+        target: toTargetHints(ident.identity),
+        ...(warnings.length > 0 ? { warnings } : {}),
+      },
+    });
+  } catch (err) {
+    return failWith(err, "terminal_send", { windowTitle });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Hook for wait_until(terminal_output_contains)
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function readForHook(windowTitle: string): Promise<{ text: string; marker: string } | null> {
+  const win = findTerminalWindow(windowTitle);
+  if (!win) return null;
+  const raw = (await getTextViaTextPattern(win.title)) ?? "";
+  const cleaned = stripAnsi(raw);
+  return { text: cleaned, marker: makeMarker(cleaned) };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Registration
+// ─────────────────────────────────────────────────────────────────────────────
+
+export { TERMINAL_PROCESS_RE };
+
+export function registerTerminalTools(server: McpServer): void {
+  setTerminalReadHook(readForHook);
+
+  server.tool(
+    "terminal_read",
+    [
+      "Read text from a terminal window (Windows Terminal / conhost / PowerShell / cmd / WSL).",
+      "Uses UIA TextPattern when available; falls back to Windows OCR. Strips ANSI escape sequences by default.",
+      "",
+      "sinceMarker: pass the marker from a previous response to fetch only new output (diff).",
+      "When the underlying process restarts, the marker is invalidated and full text is returned.",
+      "",
+      "Cheaper than screenshot+OCR and structurally aware (preserves line breaks).",
+    ].join("\n"),
+    terminalReadSchema,
+    terminalReadHandler
+  );
+
+  server.tool(
+    "terminal_send",
+    [
+      "Send a command (or any text) to a terminal window.",
+      "Wraps focus_window + keyboard typing + optional foreground restore.",
+      "Defaults: focusFirst=true, pressEnter=true, restoreFocus=true, preferClipboard=true (IME-safe).",
+    ].join("\n"),
+    terminalSendSchema,
+    terminalSendHandler
+  );
+}
