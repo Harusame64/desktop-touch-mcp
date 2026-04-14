@@ -4,6 +4,7 @@ import { ok } from "./_types.js";
 import { fail } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
+import { coercedBoolean, coercedJsonObject } from "./_coerce.js";
 import { pollUntil } from "../engine/poll.js";
 import {
   enumWindowsInZOrder,
@@ -46,18 +47,20 @@ export const waitUntilSchema = {
     "terminal_output_contains",
     "element_matches",
   ]).describe("Condition to wait for. See per-condition target requirements."),
-  target: z.object({
+  target: coercedJsonObject({
     windowTitle: z.string().optional(),
     elementName: z.string().optional(),
     elementSelector: z.string().optional(),
     pattern: z.string().optional(),
-    regex: z.boolean().optional(),
+    regex: coercedBoolean().optional(),
     scope: z.string().optional(),
     port: z.coerce.number().optional(),
     tabId: z.string().optional(),
     by: z.enum(["text", "regex", "role", "ariaLabel"]).optional(),
     fromHwnd: z.string().optional(),     // for focus_changes — initial fg HWND as decimal string
-  }).default({}).describe("Target descriptor — fields used depend on condition."),
+  }).default({}).describe(
+    "Target descriptor — fields used depend on condition. Accepts an object literal or a JSON-stringified object."
+  ),
   timeoutMs: z.coerce.number().int().min(100).max(60000).default(5000)
     .describe("Maximum time to wait (default 5000ms)"),
   intervalMs: z.coerce.number().int().min(50).max(5000).default(200)
