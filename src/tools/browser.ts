@@ -6,6 +6,7 @@ import { updateWindowCache } from "../engine/window-cache.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
+import { coercedBoolean } from "./_coerce.js";
 import { pollUntil } from "../engine/poll.js";
 import {
   listTabs,
@@ -16,6 +17,7 @@ import {
   disconnectAll,
   getTabContext,
   type CdpTab,
+  type TabContext,
 } from "../engine/cdp-bridge.js";
 import { resolveWellKnownPath, spawnDetached } from "../utils/launch.js";
 import { getCdpPort } from "../utils/desktop-config.js";
@@ -53,10 +55,18 @@ export const browserConnectSchema = {
   port: portParam,
 };
 
+const includeContextParam = coercedBoolean()
+  .default(true)
+  .describe(
+    "When true (default), append `activeTab` + `readyState` lines to the response. " +
+    "Set false to skip — saves ~150 tokens per call when chaining several browser_* calls in the same tab."
+  );
+
 export const browserFindElementSchema = {
   selector: selectorParam,
   tabId: tabIdParam,
   port: portParam,
+  includeContext: includeContextParam,
 };
 
 export const browserClickElementSchema = {
@@ -70,6 +80,7 @@ export const browserEvalSchema = {
   expression: z.string().describe("JavaScript expression to evaluate in the browser tab"),
   tabId: tabIdParam,
   port: portParam,
+  includeContext: includeContextParam,
 };
 
 export const browserGetDomSchema = {
@@ -86,6 +97,7 @@ export const browserGetDomSchema = {
     .max(100_000)
     .default(10_000)
     .describe("Maximum characters to return (default 10000)"),
+  includeContext: includeContextParam,
 };
 
 export const browserNavigateSchema = {
@@ -93,9 +105,10 @@ export const browserNavigateSchema = {
   narrate: narrateParam,
   tabId: tabIdParam,
   port: portParam,
-  waitForLoad: z.boolean().default(true).describe(
+  waitForLoad: coercedBoolean().default(true).describe(
     "When true (default), wait for document.readyState === 'complete' before returning. " +
-    "Use waitForLoad:false for the legacy behavior (return immediately after Page.navigate)."
+    "Use waitForLoad:false for the legacy behavior (return immediately after Page.navigate). " +
+    "Accepts the strings \"true\"/\"false\"."
   ),
   loadTimeoutMs: z.coerce.number().int().min(500).max(30000).default(15000).describe(
     "Max milliseconds to wait for page load when waitForLoad=true (default 15000). " +
@@ -143,9 +156,9 @@ export const browserSearchSchema = {
   scope: z.string().optional().describe("CSS selector to limit the search scope."),
   maxResults: z.coerce.number().int().min(1).max(200).default(50).describe("Max results returned (default 50)."),
   offset: z.coerce.number().int().min(0).default(0).describe("Offset into the result set (default 0)."),
-  visibleOnly: z.boolean().default(true).describe("Only visible elements (default true). Set false to include hidden ones with confidence penalty."),
-  inViewportOnly: z.boolean().default(false).describe("Only currently-in-viewport elements (default false)."),
-  caseSensitive: z.boolean().default(false).describe("Case-sensitive matching for text/regex (default false)."),
+  visibleOnly: coercedBoolean().default(true).describe("Only visible elements (default true). Set false to include hidden ones with confidence penalty."),
+  inViewportOnly: coercedBoolean().default(false).describe("Only currently-in-viewport elements (default false)."),
+  caseSensitive: coercedBoolean().default(false).describe("Case-sensitive matching for text/regex (default false)."),
   tabId: tabIdParam,
   port: portParam,
 };
@@ -162,8 +175,7 @@ export const browserGetInteractiveSchema = {
     .array(z.enum(["link", "button", "input", "all"]))
     .default(["all"])
     .describe("Element types to include. Default 'all' returns links, buttons, and inputs."),
-  inViewportOnly: z
-    .boolean()
+  inViewportOnly: coercedBoolean()
     .default(false)
     .describe("When true, only return elements currently visible in the viewport."),
   maxResults: z.coerce
@@ -175,7 +187,40 @@ export const browserGetInteractiveSchema = {
     .describe("Maximum number of elements to return (default 50)."),
   tabId: tabIdParam,
   port: portParam,
+  includeContext: includeContextParam,
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tab context cache (500ms TTL keyed by port:tabId)
+//   - Eliminates duplicate `Runtime.evaluate` calls when the LLM chains several
+//     browser_* calls in the same tab. Cache is short enough that "the page
+//     just navigated" caller intent is still respected (next call refetches).
+// ─────────────────────────────────────────────────────────────────────────────
+
+const tabContextCache = new Map<string, { value: TabContext; expiresAt: number }>();
+const TAB_CONTEXT_TTL_MS = 500;
+
+async function getCachedTabContext(tabId: string | null, port: number): Promise<TabContext> {
+  const key = `${port}:${tabId ?? ""}`;
+  const cached = tabContextCache.get(key);
+  const now = Date.now();
+  if (cached && cached.expiresAt > now) return cached.value;
+  const fresh = await getTabContext(tabId, port);
+  tabContextCache.set(key, { value: fresh, expiresAt: now + TAB_CONTEXT_TTL_MS });
+  // Bound the map size — entries naturally expire, but a parade of unique
+  // (port,tabId) pairs would otherwise leak.
+  if (tabContextCache.size > 64) {
+    for (const [k, v] of tabContextCache) {
+      if (v.expiresAt <= now) tabContextCache.delete(k);
+    }
+  }
+  return fresh;
+}
+
+/** Test-only — not exported via index, but accessible to e2e tests. */
+export function _resetTabContextCache(): void {
+  tabContextCache.clear();
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal helpers
@@ -302,10 +347,12 @@ export const browserFindElementHandler = async ({
   selector,
   tabId,
   port,
+  includeContext,
 }: {
   selector: string;
   tabId?: string;
   port: number;
+  includeContext: boolean;
 }): Promise<ToolResult> => {
   try {
     const coords = await getElementScreenCoords(
@@ -313,28 +360,33 @@ export const browserFindElementHandler = async ({
       tabId ?? null,
       port
     );
-    const tabCtx = await getTabContext(tabId ?? null, port);
+    const lines = [
+      `Element found: ${selector}`,
+      JSON.stringify({
+        center: { x: coords.x, y: coords.y },
+        topLeft: { x: coords.left, y: coords.top },
+        size: { width: coords.width, height: coords.height },
+        inViewport: coords.inViewport,
+        clickAt: { x: coords.x, y: coords.y },
+      }, null, 2),
+      "",
+      !coords.inViewport
+        ? "Warning: element is outside the visible viewport. Scroll into view before clicking."
+        : "Element is visible. Pass clickAt coords to mouse_click.",
+    ];
+    if (includeContext) {
+      const tabCtx = await getCachedTabContext(tabId ?? null, port);
+      lines.push(
+        "",
+        `activeTab: ${JSON.stringify({ id: tabCtx.id, title: tabCtx.title, url: tabCtx.url })}`,
+        `readyState: "${tabCtx.readyState}"`,
+      );
+    }
     return {
       content: [
         {
           type: "text" as const,
-          text: [
-            `Element found: ${selector}`,
-            JSON.stringify({
-              center: { x: coords.x, y: coords.y },
-              topLeft: { x: coords.left, y: coords.top },
-              size: { width: coords.width, height: coords.height },
-              inViewport: coords.inViewport,
-              clickAt: { x: coords.x, y: coords.y },
-            }, null, 2),
-            "",
-            !coords.inViewport
-              ? "Warning: element is outside the visible viewport. Scroll into view before clicking."
-              : "Element is visible. Pass clickAt coords to mouse_click.",
-            "",
-            `activeTab: ${JSON.stringify({ id: tabCtx.id, title: tabCtx.title, url: tabCtx.url })}`,
-            `readyState: "${tabCtx.readyState}"`,
-          ].join("\n"),
+          text: lines.join("\n"),
         },
       ],
     };
@@ -434,30 +486,32 @@ export const browserEvalHandler = async ({
   expression,
   tabId,
   port,
+  includeContext,
 }: {
   expression: string;
   tabId?: string;
   port: number;
+  includeContext: boolean;
 }): Promise<ToolResult> => {
   try {
     const result = await evaluateInTab(expression, tabId ?? null, port);
-    const tabCtx = await getTabContext(tabId ?? null, port);
     const text =
       result === null || result === undefined
         ? "(null)"
         : typeof result === "string"
           ? result
           : JSON.stringify(result, null, 2);
+    const lines = [text];
+    if (includeContext) {
+      const tabCtx = await getCachedTabContext(tabId ?? null, port);
+      lines.push(
+        "",
+        `activeTab: ${JSON.stringify({ id: tabCtx.id, title: tabCtx.title, url: tabCtx.url })}`,
+        `readyState: "${tabCtx.readyState}"`,
+      );
+    }
     return {
-      content: [{
-        type: "text" as const,
-        text: [
-          text,
-          "",
-          `activeTab: ${JSON.stringify({ id: tabCtx.id, title: tabCtx.title, url: tabCtx.url })}`,
-          `readyState: "${tabCtx.readyState}"`,
-        ].join("\n"),
-      }],
+      content: [{ type: "text" as const, text: lines.join("\n") }],
     };
   } catch (err) {
     return failWith(err, "browser_eval");
@@ -469,11 +523,13 @@ export const browserGetDomHandler = async ({
   tabId,
   port,
   maxLength,
+  includeContext,
 }: {
   selector?: string;
   tabId?: string;
   port: number;
   maxLength: number;
+  includeContext: boolean;
 }): Promise<ToolResult> => {
   try {
     const html = await getDomHtml(
@@ -482,17 +538,17 @@ export const browserGetDomHandler = async ({
       port,
       maxLength
     );
-    const tabCtx = await getTabContext(tabId ?? null, port);
+    const lines = [html];
+    if (includeContext) {
+      const tabCtx = await getCachedTabContext(tabId ?? null, port);
+      lines.push(
+        "",
+        `activeTab: ${JSON.stringify({ id: tabCtx.id, title: tabCtx.title, url: tabCtx.url })}`,
+        `readyState: "${tabCtx.readyState}"`,
+      );
+    }
     return {
-      content: [{
-        type: "text" as const,
-        text: [
-          html,
-          "",
-          `activeTab: ${JSON.stringify({ id: tabCtx.id, title: tabCtx.title, url: tabCtx.url })}`,
-          `readyState: "${tabCtx.readyState}"`,
-        ].join("\n"),
-      }],
+      content: [{ type: "text" as const, text: lines.join("\n") }],
     };
   } catch (err) {
     return failWith(err, "browser_get_dom");
@@ -611,6 +667,7 @@ export const browserGetInteractiveHandler = async ({
   maxResults,
   tabId,
   port,
+  includeContext,
 }: {
   scope?: string;
   types: Array<"link" | "button" | "input" | "all">;
@@ -618,6 +675,7 @@ export const browserGetInteractiveHandler = async ({
   maxResults: number;
   tabId?: string;
   port: number;
+  includeContext: boolean;
 }): Promise<ToolResult> => {
   try {
     const includeAll = types.includes("all");
@@ -634,6 +692,18 @@ export const browserGetInteractiveHandler = async ({
       "select:not([disabled])",
       "textarea:not([disabled])"
     );
+    // ARIA-roled custom controls (Radix / shadcn / MUI / Headless UI / GitHub all use these).
+    // Always included when any type was requested — they are interactive by definition.
+    if (includeAll || includeButtons || includeInputs || includeLinks) {
+      parts.push(
+        "[role='switch']:not([aria-disabled='true'])",
+        "[role='checkbox']:not([aria-disabled='true'])",
+        "[role='radio']:not([aria-disabled='true'])",
+        "[role='tab']:not([aria-disabled='true'])",
+        "[role='menuitem']:not([aria-disabled='true'])",
+        "[role='option']:not([aria-disabled='true'])",
+      );
+    }
     const cssQuery = parts.join(", ");
 
     // Fix #1: guard against empty query (types:[]) which causes querySelectorAll("") to throw
@@ -702,10 +772,30 @@ export const browserGetInteractiveHandler = async ({
 
   function elType(el) {
     const tag = el.tagName.toLowerCase();
+    const role = el.getAttribute('role');
+    if (role === 'switch' || role === 'checkbox' || role === 'radio') return 'toggle[' + role + ']';
+    if (role === 'tab') return 'tab';
+    if (role === 'menuitem' || role === 'option') return role;
     if (tag === 'a') return 'link';
-    if (tag === 'button' || el.getAttribute('role') === 'button') return 'button';
+    if (tag === 'button' || role === 'button') return 'button';
     if (tag === 'input') return 'input[' + (el.type || 'text') + ']';
     return tag;
+  }
+
+  // Surface ARIA toggle/expanded/selected state. Returns undefined when the
+  // element exposes none of the four — keeps the response shape stable for
+  // simple links and unstateful buttons.
+  function elState(el) {
+    const out = {};
+    const ac = el.getAttribute('aria-checked');
+    if (ac !== null) out.checked = (ac === 'true' || ac === 'mixed');
+    const ap = el.getAttribute('aria-pressed');
+    if (ap !== null) out.pressed = (ap === 'true');
+    const as = el.getAttribute('aria-selected');
+    if (as !== null) out.selected = (as === 'true');
+    const ae = el.getAttribute('aria-expanded');
+    if (ae !== null) out.expanded = (ae === 'true');
+    return Object.keys(out).length ? out : undefined;
   }
 
   function elText(el) {
@@ -723,6 +813,8 @@ export const browserGetInteractiveHandler = async ({
     if (viewportOnly && !vp) continue;
     const item = { type: elType(el), text: elText(el), selector: bestSelector(el), inViewport: vp };
     if (el.tagName === 'A') item.href = el.href;
+    const st = elState(el);
+    if (st) item.state = st;
     out.push(item);
     if (out.length >= maxN) break;
   }
@@ -732,18 +824,20 @@ export const browserGetInteractiveHandler = async ({
 
     const result = await evaluateInTab(expression, tabId ?? null, port);
     const items = Array.isArray(result) ? result : [];
-    const tabCtx = await getTabContext(tabId ?? null, port);
+    const lines = [
+      `Found ${items.length} interactive element(s)${scope ? ` within "${scope}"` : ""}:`,
+      JSON.stringify(items, null, 2),
+    ];
+    if (includeContext) {
+      const tabCtx = await getCachedTabContext(tabId ?? null, port);
+      lines.push(
+        "",
+        `activeTab: ${JSON.stringify({ id: tabCtx.id, title: tabCtx.title, url: tabCtx.url })}`,
+        `readyState: "${tabCtx.readyState}"`,
+      );
+    }
     return {
-      content: [{
-        type: "text" as const,
-        text: [
-          `Found ${items.length} interactive element(s)${scope ? ` within "${scope}"` : ""}:`,
-          JSON.stringify(items, null, 2),
-          "",
-          `activeTab: ${JSON.stringify({ id: tabCtx.id, title: tabCtx.title, url: tabCtx.url })}`,
-          `readyState: "${tabCtx.readyState}"`,
-        ].join("\n"),
-      }],
+      content: [{ type: "text" as const, text: lines.join("\n") }],
     };
   } catch (err) {
     return failWith(err, "browser_get_interactive");
@@ -1133,6 +1227,133 @@ export const browserSearchHandler = async ({
   }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// browser_get_app_state — extract embedded JSON / SPA hydration payloads
+//
+// Many SPAs render almost no useful HTML but ship the actual state in one of
+// a handful of well-known script tags or window globals. Probing them blindly
+// from the LLM costs 3-5 round-trips. This tool runs one CDP eval that scans
+// the standard locations and returns whatever it finds, parsed.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const browserGetAppStateSchema = {
+  selectors: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Optional override list of CSS selectors / window globals to probe. " +
+      "Window globals must be prefixed with 'window:' (e.g. 'window:__INITIAL_STATE__'). " +
+      "When omitted, scans the standard list (Next.js, GitHub react-app, Nuxt, Apollo, Remix, Redux SSR, JSON-LD)."
+    ),
+  maxBytes: z.coerce
+    .number()
+    .int()
+    .min(256)
+    .max(64_000)
+    .default(4_000)
+    .describe("Maximum bytes per individual payload (default 4000). Larger payloads are stringified and truncated."),
+  tabId: tabIdParam,
+  port: portParam,
+  includeContext: includeContextParam,
+};
+
+interface AppStateHit {
+  selector: string;
+  framework: string;
+  sizeBytes: number;
+  truncated: boolean;
+  payload: unknown;
+}
+
+export const browserGetAppStateHandler = async ({
+  selectors,
+  maxBytes,
+  tabId,
+  port,
+  includeContext,
+}: {
+  selectors?: string[];
+  maxBytes: number;
+  tabId?: string;
+  port: number;
+  includeContext: boolean;
+}): Promise<ToolResult> => {
+  try {
+    const probes: Array<{ selector: string; framework: string }> = selectors
+      ? selectors.map((s) => ({ selector: s, framework: "custom" }))
+      : [
+          { selector: 'script#__NEXT_DATA__',                                                 framework: "next" },
+          { selector: 'script#__NUXT_DATA__',                                                 framework: "nuxt" },
+          { selector: 'script#__NUXT__',                                                      framework: "nuxt" },
+          { selector: 'script#__REMIX_CONTEXT__',                                             framework: "remix" },
+          { selector: 'script[type="application/json"][data-target$=".embeddedData"]',         framework: "react-app" },
+          { selector: 'script[type="application/json"][data-target$="embeddedData"]',          framework: "react-app" },
+          { selector: 'script[type="application/json"][id*="__APOLLO_STATE__"]',               framework: "apollo" },
+          { selector: 'script[type="application/json"][id*="server-data"]',                    framework: "vue-ssr" },
+          { selector: 'script[type="application/ld+json"]',                                   framework: "ld+json" },
+          { selector: 'window:__INITIAL_STATE__',                                             framework: "redux-ssr" },
+          { selector: 'window:__APOLLO_STATE__',                                              framework: "apollo" },
+          { selector: 'window:__NUXT__',                                                      framework: "nuxt" },
+        ];
+
+    const expression = `
+(function() {
+  const probes = ${JSON.stringify(probes)};
+  const maxBytes = ${JSON.stringify(maxBytes)};
+  const found = [];
+  const notFound = [];
+  for (const p of probes) {
+    try {
+      let raw;
+      if (p.selector.startsWith('window:')) {
+        const key = p.selector.slice('window:'.length);
+        const v = window[key];
+        if (v === undefined || v === null) { notFound.push(p.selector); continue; }
+        raw = (typeof v === 'string') ? v : JSON.stringify(v);
+      } else {
+        const els = document.querySelectorAll(p.selector);
+        if (els.length === 0) { notFound.push(p.selector); continue; }
+        // For multi-match selectors (ld+json), join entries; otherwise take first.
+        if (els.length > 1 && p.framework === 'ld+json') {
+          const parts = [];
+          for (const el of els) parts.push(el.textContent || '');
+          raw = '[' + parts.filter(s => s.trim()).join(',') + ']';
+        } else {
+          raw = els[0].textContent || '';
+        }
+      }
+      const sizeBytes = raw.length;
+      const truncated = sizeBytes > maxBytes;
+      const slice = truncated ? raw.slice(0, maxBytes) : raw;
+      let payload;
+      try { payload = JSON.parse(slice); }
+      catch (e) { payload = { __parseError: String(e && e.message || e), preview: slice.slice(0, 240) }; }
+      found.push({ selector: p.selector, framework: p.framework, sizeBytes, truncated, payload });
+    } catch (e) {
+      notFound.push(p.selector);
+    }
+  }
+  return JSON.stringify({ found, notFound });
+})()
+`;
+    const raw = (await evaluateInTab(expression, tabId ?? null, port)) as string;
+    const parsed = JSON.parse(raw) as { found: AppStateHit[]; notFound: string[] };
+    const payload: Record<string, unknown> = {
+      ok: true,
+      found: parsed.found,
+      notFound: parsed.notFound,
+    };
+    if (includeContext) {
+      const tabCtx = await getCachedTabContext(tabId ?? null, port);
+      payload.activeTab = { id: tabCtx.id, title: tabCtx.title, url: tabCtx.url };
+      payload.readyState = tabCtx.readyState;
+    }
+    return ok(payload);
+  } catch (err) {
+    return failWith(err, "browser_get_app_state");
+  }
+};
+
 export const browserDisconnectHandler = async ({
   port,
 }: {
@@ -1193,9 +1414,25 @@ export function registerBrowserTools(server: McpServer): void {
       "Use this before browser_click_element to discover stable selectors without trial-and-error.",
       "scope: limit to a section (e.g. '.s-main-slot'). inViewportOnly: skip off-screen elements.",
       "Each result includes 'selector' ready to pass to browser_click_element or browser_find_element.",
+      "Also detects ARIA-roled custom controls (role=switch/checkbox/radio/tab/menuitem/option) and surfaces",
+      "their state (state.checked / pressed / selected / expanded) when present.",
     ].join("\n"),
     browserGetInteractiveSchema,
     browserGetInteractiveHandler
+  );
+
+  server.tool(
+    "browser_get_app_state",
+    [
+      "Extract embedded SPA state in one CDP call. Scans the well-known locations:",
+      "  Next.js (#__NEXT_DATA__), Nuxt (#__NUXT_DATA__/#__NUXT__), Remix (#__REMIX_CONTEXT__),",
+      "  GitHub react-app ([data-target$=embeddedData]), Apollo, JSON-LD, Redux SSR (window.__INITIAL_STATE__).",
+      "Returns parsed payloads with framework label. Use this BEFORE browser_eval / browser_get_dom on SPAs",
+      "where the rendered HTML is sparse but the state is rich.",
+      "Pass `selectors` to override the scan list (window globals: 'window:__YOUR_KEY__').",
+    ].join("\n"),
+    browserGetAppStateSchema,
+    browserGetAppStateHandler
   );
 
   server.tool(

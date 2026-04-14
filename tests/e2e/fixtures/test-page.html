@@ -99,8 +99,23 @@
 
       <!-- visibility penalty test -->
       <button style="display:none" id="search-btn-hidden-unique-marker">Hidden Unique Marker</button>
+
+      <!-- ARIA toggle / radio / tab fixtures (Radix / shadcn / GitHub style) -->
+      <button type="button" role="switch" aria-checked="true" id="aria-switch-on">Email notifications</button>
+      <button type="button" role="switch" aria-checked="false" id="aria-switch-off">Web notifications</button>
+      <button type="button" role="checkbox" aria-checked="true" id="aria-checkbox-on">Subscribe to updates</button>
+      <button type="button" role="radio" aria-checked="false" id="aria-radio-off">Plan B</button>
+      <button type="button" role="tab" aria-selected="true" id="aria-tab-active">Active tab</button>
+      <button type="button" aria-pressed="true" id="aria-pressed-on">Pressed button</button>
+      <button type="button" aria-expanded="false" id="aria-expanded-off">Expand</button>
     </div>
   </div>
+
+  <!-- SPA state fixtures for browser_get_app_state -->
+  <script type="application/json" id="__NEXT_DATA__">{"props":{"pageProps":{"foo":"next-bar"}},"page":"/"}</script>
+  <script type="application/json" data-target="react-app.embeddedData">{"payload":{"vulnerabilityEmail":true,"vulnerabilityWeb":false}}</script>
+  <script type="application/ld+json">{"@type":"WebPage","name":"desktop-touch CDP Test Page"}</script>
+  <script>window.__INITIAL_STATE__ = { user: "harusame64", count: 42 };</script>
 
   <script>
     // Track click events for test verification
