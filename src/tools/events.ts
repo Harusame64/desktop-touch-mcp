@@ -3,6 +3,7 @@ import { z } from "zod";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
+import { coercedBoolean } from "./_coerce.js";
 import { subscribe, poll, unsubscribe, getActiveSubscriptions } from "../engine/event-bus.js";
 
 const EVENT_TYPES = ["window_appeared", "window_disappeared", "foreground_changed"] as const;
@@ -14,7 +15,7 @@ export const eventsSubscribeSchema = {
 export const eventsPollSchema = {
   subscriptionId: z.string().describe("ID returned from events_subscribe."),
   sinceMs: z.coerce.number().optional().describe("Only return events newer than this epoch-ms timestamp."),
-  drain: z.boolean().default(true).describe("Drain buffer after read (default true). Set false to peek without consuming."),
+  drain: coercedBoolean().default(true).describe("Drain buffer after read (default true). Set false to peek without consuming."),
 };
 
 export const eventsUnsubscribeSchema = {

@@ -9,6 +9,7 @@ import { enumWindowsInZOrder, restoreAndFocusWindow } from "../engine/win32.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
+import { coercedBoolean } from "./_coerce.js";
 import { withRichNarration, narrateParam } from "./_narration.js";
 import { detectFocusLoss } from "./_focus.js";
 
@@ -70,12 +71,12 @@ export async function typeViaClipboard(text: string, pasteCombo: "ctrl+v" | "ctr
 // Schemas
 // ─────────────────────────────────────────────────────────────────────────────
 
-const forceFocusParam = z.boolean().optional().describe(
+const forceFocusParam = coercedBoolean().optional().describe(
   "When true, bypass Windows foreground-stealing protection via AttachThreadInput " +
   "before focusing the target window. Default: follows env DESKTOP_TOUCH_FORCE_FOCUS (default false)."
 );
 
-const trackFocusParam = z.boolean().default(true).describe(
+const trackFocusParam = coercedBoolean().default(true).describe(
   "When true (default), detect if focus was stolen from the target window after the action. " +
   "Reports focusLost in the response. Set false to skip."
 );
