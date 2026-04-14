@@ -249,3 +249,45 @@ describe("D1: sinceMarker after new command output", () => {
     expect(r2.text.length).toBeLessThan(r1.text.length);
   }, 25_000);
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D3: UIA TextPattern tab-title contamination regression guard
+//     Commit bec8721 fixed "TextPattern selection picks terminal buffer, not
+//     tab title". This describe block guards against regression.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("D3: terminal_read returns actual buffer — not tab title (regression guard)", () => {
+  it("returned text is multi-line (a tab title is a single line)", async () => {
+    const r = parsePayload(await terminalReadHandler({
+      windowTitle: ps.title, lines: 100, stripAnsi: true, source: "auto", ocrLanguage: "ja",
+    }));
+    expect(r.ok).toBe(true);
+
+    // A tab title would be a single line ("PowerShell" or similar).
+    // The actual terminal buffer always has multiple lines (prompt + history).
+    const lineCount = r.text.split("\n").filter((l: string) => l.trim()).length;
+    expect(lineCount).toBeGreaterThan(1);
+  });
+
+  it("returned text contains the banner (not just window title)", async () => {
+    const r = parsePayload(await terminalReadHandler({
+      windowTitle: ps.title, lines: 200, stripAnsi: true, source: "auto", ocrLanguage: "ja",
+    }));
+    expect(r.ok).toBe(true);
+
+    // If TextPattern had returned the tab title, the banner would not be present.
+    expect(r.text).toContain(`ready-${BANNER_TAG}`);
+
+    // Buffer must be substantially longer than the window title.
+    // Tab title ≈ 20–40 chars; real PS session buffer ≫ that.
+    expect(r.text.length).toBeGreaterThan(ps.title.length * 3);
+  });
+
+  it("text does NOT equal window title (direct tab-title match guard)", async () => {
+    const r = parsePayload(await terminalReadHandler({
+      windowTitle: ps.title, lines: 10, stripAnsi: true, source: "auto", ocrLanguage: "ja",
+    }));
+    expect(r.ok).toBe(true);
+    expect(r.text.trim()).not.toBe(ps.title.trim());
+  });
+});
