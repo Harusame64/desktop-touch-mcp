@@ -156,11 +156,26 @@
 - **シナリオ**: ダイアログ表示 → get_ui_elements でツリー取得 → ダイアログが閉じる → 取得済み automationId で click_element
 - **検証点**: `not_found` として明確にエラーを返し、「cached stale → re-fetch」の suggest が返ること
 
-### F2: UIA sparse（Electron/WinUI3）で actionable が 0
+### F2: UIA sparse（Electron）で actionable が 0 → OCR fallback（VS Code を fixture として使用）
 - **対象ツール**: `screenshot(detail:'text')`
-- **シナリオ**: Slack（Electron）に `screenshot({ detail:"text" })`
-- **検証点**: `hints.uiaSparse:true`、`hints.ocrFallbackFired:true`、`actionable[].source === "ocr"` であること
-- **発生しやすいバグ**: UIA が 3〜4 要素返すと sparse 判定しきい値を外れて OCR fallback が走らず、LLM は 3 要素しか見えない
+- **シナリオ**: VS Code（Electron、`windowClassName=Chrome_WidgetWin_1`）に `screenshot({ detail:"text" })`
+- **実測値（2026-04-14）**: VS Code は UIA で 6 要素を返すが全て無名 Pane → `actionable.length === 0`
+  - `hints.uiaSparse: false`（elementCount=6 ≥ threshold=5）
+  - OCR は `uiaSparse` 経路ではなく **`actionable=0` 経路** で発動
+  - `hints.chromiumGuard: false`（CHROMIUM_TITLE_RE はタイトルベース判定、VS Code は非マッチ）
+  - `hints.winui3: false`（Chrome_WidgetWin_1 ≠ WinUI3）
+- **検証点**:
+  - `hints.ocrFallbackFired: true`（`actionable=0` 経路でトリガー）
+  - `actionable[].source === "ocr"` のみ（UIA 由来ゼロ）
+  - `hints.chromiumGuard` が存在しない（VS Code はブラウザ扱いされない設計の確認）
+  - `ocrFallback:'never'` 時は `actionable=[]`（LLM が誤指定した場合の危険シナリオ）
+  - アクセシビリティモード ON 時は precheck で検出して skip
+- **テストファイル**: `tests/e2e/screenshot-electron.test.ts`
+- **発生しやすいバグ**:
+  1. UIA が 3〜4 要素返すと `uiaSparse=false` かつ `actionable≠0` なら OCR が走らず LLM に要素が少ししか見えない
+     → sparse しきい値境界テストは `tests/unit/screenshot-ocr-path.test.ts`（mock ベース）で担保
+  2. `CHROMIUM_TITLE_RE` にクラス名ベースの判定が誤って追加されると VS Code が `chromiumGuard` 経路に入り挙動変化
+- **備考**: Opus レビュー（2026-04-14）にて設計確認済み。元計画の「sparse しきい値経路」テストは VS Code では非該当（elementCount=6）のため unit test 側に分離。
 
 ---
 
