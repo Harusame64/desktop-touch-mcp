@@ -1,15 +1,20 @@
 /**
- * context-consistency.test.ts — E2E tests for get_context consistency (C1)
+ * context-consistency.test.ts — E2E tests for get_context consistency (C1, C3)
  *
  * C1: get_context → keyboard_type → get_context round-trip
  *   - focusedElement is captured before and after typing
  *   - focusedWindow reflects the Notepad title
  *   - focusedElementSource is "uia"
+ *
+ * C3: hasModal detection — real dialog vs normal window
+ *   - Notepad without dialog → hasModal:false, pageState:"ready"
+ *   - Notepad with Save-As dialog open → hasModal:true, pageState:"dialog"
+ *   - After dialog closes → hasModal:false again
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { getContextHandler } from "../../src/tools/context.js";
-import { keyboardTypeHandler } from "../../src/tools/keyboard.js";
+import { keyboardTypeHandler, keyboardPressHandler } from "../../src/tools/keyboard.js";
 import { launchNotepad, type NpInstance } from "./helpers/notepad-launcher.js";
 import { parsePayload, sleep } from "./helpers/wait.js";
 import { focusWindow } from "../../src/engine/win32.js";
@@ -132,5 +137,85 @@ describe("C1: get_context → keyboard_type → get_context round-trip", () => {
     await focusNotepad();
     const p = parsePayload(await getContextHandler());
     expect(p.hasModal).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C3: hasModal detection — real dialog vs file-name false positives
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("C3: hasModal real dialog detection", () => {
+  let np3: NpInstance;
+
+  beforeAll(async () => {
+    np3 = await launchNotepad();
+    try { focusWindow(np3.hwnd); } catch { /* non-fatal */ }
+    await sleep(400);
+  }, 10_000);
+
+  afterAll(() => np3?.kill());
+
+  it("hasModal:false and pageState:'ready' before any dialog opens", async () => {
+    const p = parsePayload(await getContextHandler());
+
+    expect(p.hasModal).toBe(false);
+    // pageState is ready when no dialog title is detected
+    expect(p.pageState).toBe("ready");
+  });
+
+  it("hasModal:true and pageState:'dialog' when Save-As dialog is open", async ({ skip }) => {
+    // Open Save-As with ctrl+s (new file — dialog always appears)
+    try { focusWindow(np3.hwnd); } catch { /* non-fatal */ }
+    await sleep(300);
+
+    await keyboardPressHandler({
+      keys: "ctrl+s",
+      windowTitle: np3.title,
+      trackFocus: false,
+      settleMs: 500,
+    });
+
+    // Verify that the dialog appeared
+    const { enumWindowsInZOrder } = await import("../../src/engine/win32.js");
+    const dialogTitles = enumWindowsInZOrder()
+      .map(w => w.title)
+      .filter(t => t.includes("名前を付けて保存") || t.includes("Save As") || t.includes("Save"));
+
+    if (dialogTitles.length === 0) {
+      // Dismiss any opened dialog and skip
+      await keyboardPressHandler({ keys: "escape", trackFocus: false, settleMs: 200 });
+      skip("Save-As dialog did not appear (file may have auto-saved) — skipping C3 dialog test");
+      return;
+    }
+
+    const p = parsePayload(await getContextHandler());
+
+    // Modal is detected via MODAL_RE on window titles
+    expect(p.hasModal).toBe(true);
+    expect(p.pageState).toBe("dialog");
+
+    // Close the dialog
+    await keyboardPressHandler({ keys: "escape", trackFocus: false, settleMs: 300 });
+  }, 15_000);
+
+  it("hasModal returns to false after dialog closes", async () => {
+    // Dialog should already be closed (previous test closed it, or it never opened)
+    await sleep(300);
+    const p = parsePayload(await getContextHandler());
+
+    // After dismiss, no dialog-titled window should remain
+    expect(p.hasModal).toBe(false);
+    expect(p.pageState).toBe("ready");
+  });
+
+  it("get_context structure is stable: focusedWindow, hasModal, pageState always present", async () => {
+    const p = parsePayload(await getContextHandler());
+
+    // Structural contract: these fields are always in the response
+    expect("focusedWindow" in p).toBe(true);
+    expect("hasModal" in p).toBe(true);
+    expect("pageState" in p).toBe(true);
+    expect(typeof p.hasModal).toBe("boolean");
+    expect(["ready", "loading", "dialog"]).toContain(p.pageState);
   });
 });
