@@ -7,7 +7,7 @@
 > **「Claude CLI にスクショを毎回コピーしていたあなたへ。」**
 
 Claude がデスクトップを直接見て、直接操作する。  
-マウス・キーボード・スクリーンショット・Windows UI Automation・ブラウザ CDP を統合した 32 のツールを提供する MCP サーバーです。
+マウス・キーボード・スクリーンショット・Windows UI Automation・Chrome DevTools Protocol を統合した 46 のツールを提供する MCP サーバーです。
 
 > *ウィンドウキャプチャに MPEG P フレーム方式の差分処理を適用。初回フレーム以降は変化したウィンドウのみを送信するため、一般的な自動化ループでトークン使用量を約 60〜80% 削減できます。*
 
@@ -106,16 +106,22 @@ npm install
 | `set_element_value` | テキストフィールドに直接値をセット |
 | `scope_element` | 要素を高解像度ズームキャプチャ + 子ツリー |
 
-### ブラウザ CDP (7)
+### ブラウザ CDP (11)
 | ツール | 概要 |
 |---|---|
-| `browser_connect` | Chrome/Edge に CDP 接続してタブ一覧取得 |
+| `browser_launch` | Chrome/Edge/Brave を `--remote-debugging-port` 付きで起動し CDP 接続まで待機（すでに起動中なら何もしない） |
+| `browser_connect` | Chrome/Edge に CDP 接続してタブ一覧取得（各タブの `active` フラグ付き） |
 | `browser_find_element` | CSS セレクター → 物理ピクセル座標 |
 | `browser_click_element` | DOM 要素を検索してクリック（1ステップ） |
 | `browser_eval` | ブラウザタブで JS 式を評価して結果を返す |
 | `browser_get_dom` | 要素または body の outerHTML 取得 |
-| `browser_navigate` | CDP 経由で URL 遷移（アドレスバー操作不要） |
+| `browser_get_interactive` | リンク/ボタン/入力 + **ARIA トグル** (`role=switch/checkbox/radio/tab/menuitem/option`) を `state.{checked,pressed,selected,expanded}` 付きで列挙 |
+| `browser_get_app_state` | **SPA ステート抽出** — `__NEXT_DATA__` / `__NUXT_DATA__` / `__REMIX_CONTEXT__` / `__APOLLO_STATE__` / GitHub react-app embeddedData / JSON-LD / `window.__INITIAL_STATE__` を 1 回の CDP 呼び出しで取得 |
+| `browser_search` | text / regex / role / ariaLabel / selector で DOM を grep（confidence 順） |
+| `browser_navigate` | CDP 経由で URL 遷移。`waitForLoad:true`（既定）で `readyState==='complete'` まで待機 |
 | `browser_disconnect` | CDP WebSocket セッションをクリーンアップ |
+
+DOM を触る `browser_*` ツールは `includeContext:false` で末尾の `activeTab:` / `readyState:` 2 行を省略可（連続呼び出しで ~150 tok/call 削減）。500ms 以内の連続 call は getTabContext を内部キャッシュで 1 回に圧縮。
 
 ### ワークスペース (2)
 | ツール | 概要 |
@@ -141,14 +147,20 @@ chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\tmp\cdp
 ```
 
 ```
+browser_launch()                         → Chrome/Edge/Brave をデバッグモードで起動（起動済みなら何もしない）
 browser_connect()                        → タブ一覧 + tabId 取得
 browser_find_element("#submit")          → CSS セレクター → 物理ピクセル座標
 browser_click_element("#submit")         → 検索 + クリックを 1 ステップで
 browser_eval("document.title")           → JS 評価して結果を返す
 browser_get_dom("#main", maxLength=5000) → outerHTML を取得（文字数制限付き）
+browser_get_interactive()                → リンク/ボタン/入力 + ARIA トグル (state.checked 等) を列挙
+browser_get_app_state()                  → SPA ステートを 1 呼び出しで抽出（Next/Nuxt/Remix/Apollo/GitHub/Redux SSR）
+browser_search(by="text", pattern="...") → DOM を grep（confidence 順）
 browser_navigate("https://example.com") → CDP 経由でページ遷移
 browser_disconnect()                     → WebSocket セッションをクリーンアップ
 ```
+
+同一タブで連続呼び出しする場合は `includeContext:false` で末尾の activeTab/readyState 行を省略可（~150 tok/call 削減）。boolean / object パラメータは LLM が string 化した値（`"true"` / `"{}"`）でも受け付けます。
 
 `browser_find_element` が返す座標はブラウザUI（タブストリップ + アドレスバー）の高さと `devicePixelRatio` を考慮済みなので、`mouse_click` にそのまま渡せます。
 

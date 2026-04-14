@@ -1,10 +1,10 @@
-# desktop-touch-mcp システム概要
+# desktop-touch-mcp — System Overview
 
-Claude CLI からデスクトップアプリを自由に操作する MCP (Model Context Protocol) サーバー。
+MCP (Model Context Protocol) server that lets Claude CLI drive any Windows desktop application.
 
 ---
 
-## アーキテクチャ
+## Architecture
 
 ```
 Claude CLI
@@ -12,294 +12,290 @@ Claude CLI
     ▼
 desktop-touch-mcp (Node.js / TypeScript)
     ├── Layer 1: Engine
-    │   ├── nutjs.js        — マウス・キーボード・画面キャプチャ (nut-js)
-    │   ├── win32.ts        — Win32 API (koffi): ウィンドウ列挙・DPI・PrintWindow・SetWindowPos
-    │   ├── uia-bridge.ts   — Windows UI Automation (PowerShell経由): 要素ツリー・クリック・値設定・getFocusedElement・ElementFromPoint
-    │   ├── uia-diff.ts     — UIA スナップショット差分算出 (appeared/disappeared/valueDeltas)
-    │   ├── image.ts        — 画像エンコード (sharp): PNG / WebP 1:1 / クロップ
-    │   ├── layer-buffer.ts — ウィンドウレイヤーバッファ: フレーム差分検出 (MPEG P-frame方式)
-    │   ├── cdp-bridge.ts   — Chrome DevTools Protocol: WebSocket セッション・DOM座標変換
-    │   ├── window-cache.ts — ウィンドウ位置キャッシュ: ホーミング補正用 (dx,dy 差分計算)
-    │   └── poll.ts         — pollUntil 共通ポーリングユーティリティ
-    └── Layer 2: 45 MCP ツール
+    │   ├── nutjs.js        — mouse / keyboard / screen capture (nut-js)
+    │   ├── win32.ts        — Win32 API via koffi: window enum, DPI, PrintWindow, SetWindowPos
+    │   ├── uia-bridge.ts   — Windows UI Automation (PowerShell): element tree, click, set-value,
+    │   │                     GetFocusedElement, ElementFromPoint
+    │   ├── uia-diff.ts     — UIA snapshot diff (appeared / disappeared / valueDeltas)
+    │   ├── image.ts        — image encode (sharp): PNG / WebP 1:1 / crop
+    │   ├── layer-buffer.ts — per-window layer buffer: frame-diff detection (MPEG P-frame style)
+    │   ├── cdp-bridge.ts   — Chrome DevTools Protocol: WebSocket sessions + DOM→screen coords
+    │   ├── window-cache.ts — window-position cache used by the homing-correction path (dx,dy)
+    │   └── poll.ts         — shared pollUntil utility
+    └── Layer 2: 46 MCP tools
         screenshot(4) + window(3) + mouse(5) + keyboard(2) + ui_elements(4) +
-        browser_cdp(10) + workspace(2) + pin(2) + dock(1) + macro(1) +
+        browser_cdp(11) + workspace(2) + pin(2) + dock(1) + macro(1) +
         scroll_capture(1) + context(3) + terminal(2) + events(4) + wait_until(1)
 ```
 
 ---
 
-## アクション応答の共通構造（post ブロック）
+## Action response shape (the `post` block)
 
-すべてのアクションツール（mouse_click / keyboard_press / click_element 等）は成功時に `post` ブロックを返す。
+Every action tool (`mouse_click`, `keyboard_press`, `click_element`, …) returns a `post` block on success.
 
 ```json
 {
   "ok": true,
   "post": {
-    "focusedWindow": "メモ帳",
-    "focusedElement": { "name": "テキスト エディター", "type": "Document", "value": "Hello" },
+    "focusedWindow": "Notepad",
+    "focusedElement": { "name": "Text editor", "type": "Document", "value": "Hello" },
     "windowChanged": false,
     "elapsedMs": 42,
     "rich": {
       "diffSource": "uia",
-      "appeared":  [{ "name": "保存ダイアログ", "type": "Dialog" }],
+      "appeared":  [{ "name": "Save dialog", "type": "Dialog" }],
       "disappeared": [],
-      "valueDeltas": [{ "name": "ファイル名", "before": "", "after": "memo.txt" }]
+      "valueDeltas": [{ "name": "File name", "before": "", "after": "memo.txt" }]
     }
   }
 }
 ```
 
-| フィールド | 説明 |
+| Field | Meaning |
 |---|---|
-| `focusedWindow` | アクション後のフォアグラウンドウィンドウタイトル |
-| `focusedElement` | UIA フォーカス要素（名前・コントロール種別・値）。UIA 未対応時は null |
-| `windowChanged` | アクション前後でフォーカスウィンドウが変わったか |
-| `elapsedMs` | アクション実行時間 (ms) |
-| `rich` | **opt-in** — `narrate:"rich"` 指定時のみ付与される UIA diff ブロック |
+| `focusedWindow` | Foreground window title after the action |
+| `focusedElement` | UIA focused element (name / control type / value). `null` when UIA is unavailable |
+| `windowChanged` | Whether the foreground window changed between before and after |
+| `elapsedMs` | Wall-clock duration of the action |
+| `rich` | **Opt-in** — present only when the caller passed `narrate:"rich"`. UIA diff block |
 
-### narrate パラメータ
+### `narrate` parameter
 
-マウス・キーボード・UI 要素操作ツールは `narrate` パラメータを持つ。
+Mouse / keyboard / UI-element tools take a `narrate` parameter.
 
-| 値 | 動作 |
+| Value | Behaviour |
 |---|---|
-| `"minimal"` (デフォルト) | post ブロックのみ（追加コストなし） |
-| `"rich"` | アクション前後の UIA スナップショットを差分計算して `post.rich` に付与。確認スクリーンショット不要になる |
+| `"minimal"` (default) | Just the `post` block; zero added cost |
+| `"rich"` | Diffs a UIA snapshot before and after the action; result lands in `post.rich`. Lets callers skip the confirmation screenshot |
 
-`keyboard_press` では Enter/Tab/Esc/F5 等の「状態遷移キー」のみ rich が有効。単一文字キーは自動で minimal にダウングレード。
+For `keyboard_press`, rich mode only fires for state-transitioning keys (Enter / Tab / Esc / F5). Single-character keys silently downgrade to minimal.
 
 ---
 
-## ツール一覧
+## Tool catalogue
 
-### 📸 スクリーンショット系
+### 📸 Screenshot family
 
 #### `screenshot`
-最も重要なツール。3つのモードを持つ。
+The most important tool. Three orthogonal modes.
 
-| パラメータ | 説明 |
+| Parameter | Meaning |
 |---|---|
-| `windowTitle` | ウィンドウを名前で絞り込み |
-| `displayId` | モニター指定 |
-| `region` | 画面上の矩形領域（`windowTitle` 併用時はウィンドウ内相対座標 = ブラウザクロム除外に便利） |
-| `maxDimension` | スケーリング上限 (デフォルト768px, PNG モード) |
-| `dotByDot` | **1:1ピクセルモード** — WebP, 座標変換不要 |
-| `dotByDotMaxDimension` | **dotByDot 時の最大辺 cap** — 指定すると response に `scale` が入り `screen_x = origin_x + image_x / scale` で逆算 |
-| `grayscale` | グレースケール化で画像サイズ ~50% 削減（テキスト主体のキャプチャ向け） |
-| `webpQuality` | WebP 品質 1-100 (デフォルト60) |
-| `diffMode` | **レイヤー差分モード** — 変化したウィンドウのみ返す |
+| `windowTitle` | Narrow to a specific window |
+| `displayId` | Target a monitor |
+| `region` | Rectangle on the screen (with `windowTitle`, this becomes window-relative — handy to exclude the browser chrome) |
+| `maxDimension` | Upscale cap (default 768 px, PNG mode) |
+| `dotByDot` | **1:1 pixel mode** — WebP, no coord conversion needed |
+| `dotByDotMaxDimension` | Long-edge cap under dotByDot. When set, the response carries `scale`; recover a screen coord via `screen_x = origin_x + image_x / scale` |
+| `grayscale` | Grayscale cuts image size by ~50% — good for text-heavy captures |
+| `webpQuality` | WebP quality 1–100 (default 60) |
+| `diffMode` | **Layer diff mode** — only windows that changed are sent |
 | `detail` | `"image"` / `"text"` / `"meta"` |
-| `ocrFallback` | `"auto"`（既定: UIA sparse/空・Chromium 時に OCR）/ `"always"` / `"never"` |
+| `ocrFallback` | `"auto"` (default: OCR when UIA is sparse/empty or the foreground is Chromium) / `"always"` / `"never"` |
 
-**`detail` の選択指針:**
+**Picking `detail`:**
 
 ```
-detail="image"  (デフォルト) — ピクセル画像。視覚確認が必要な時
-detail="text"   — UIA要素ツリーJSON。ボタン名・入力欄の確認・操作
-detail="meta"   — タイトル+座標のみ。ウィンドウ配置確認
+detail="image"  (default) — pixel image. Use when you need visual confirmation.
+detail="text"             — UIA element-tree JSON. Inspect and operate on buttons / fields.
+detail="meta"             — title + rectangle only. Cheap layout orientation.
 ```
 
-**座標モードの違い:**
+**Coordinate modes at a glance:**
 
-| モード | トークン | 座標計算 |
+| Mode | Tokens | Coord math |
 |---|---|---|
-| デフォルト (768px PNG) | ~443 | `screen = window_origin + img_px / scale` |
-| `dotByDot=true` (WebP) | ~800-2765 | `screen = origin + img_px` (変換不要) |
-| `diffMode=true` | ~160 (差分のみ) | 変化したウィンドウのみ送信 |
-| `detail="text"` | ~100-300 | 座標は `clickAt` として直接提供 |
+| Default (768 px PNG) | ~443 | `screen = window_origin + img_px / scale` |
+| `dotByDot=true` (WebP) | ~800–2765 | `screen = origin + img_px` (no conversion) |
+| `diffMode=true` | ~160 (deltas only) | Only changed windows are sent |
+| `detail="text"` | ~100–300 | Coords arrive as `clickAt` — no math at all |
 
-**推奨ワークフロー:**
+**Recommended workflow:**
 ```
-# 操作開始: 全体把握
-workspace_snapshot()                    → I-frame + 全ウィンドウの actionable 要素
+# Kick-off: see the whole desktop
+workspace_snapshot()                     → I-frame + actionable elements for every window
 
-# 効率的な操作ループ
-screenshot(detail="text", windowTitle=X) → actionable[].clickAt で直接クリック可能
+# Efficient operate loop
+screenshot(detail="text", windowTitle=X) → click via actionable[].clickAt
 mouse_click(clickAt.x, clickAt.y)
-screenshot(diffMode=true)               → 変化したウィンドウのみ確認 (~160 tok)
+screenshot(diffMode=true)                → only the windows that changed (~160 tok)
 
-# 精密確認が必要な時だけ画像
-screenshot(dotByDot=true, windowTitle=X) → 1:1 WebP, 座標変換不要
+# Reach for pixels only when you really need them
+screenshot(dotByDot=true, windowTitle=X) → 1:1 WebP, no coord conversion
 ```
 
 #### `screenshot_background`
-ウィンドウが背後にあっても捕捉 (PrintWindow API)。
-- `dotByDot=true` で 1:1 WebP 出力可
-- GPU レンダリングアプリ (Chrome/WinUI3) では黒画像になる既知制限あり
+Captures a window even when it is behind another (PrintWindow API).
+- `dotByDot=true` emits 1:1 WebP.
+- Known limitation: GPU-rendered apps (Chrome / WinUI3) come back black.
 
 #### `screenshot_ocr`
-Windows OCR (Windows.Media.Ocr) で単語レベルのテキストと画面座標を返す。UIA が sparse なアプリへのフォールバック。
+Word-level text with on-screen coords via Windows OCR (`Windows.Media.Ocr`). Fallback for apps where UIA is sparse.
 
 #### `get_screen_info`
-全モニターの解像度・位置・DPI・カーソル位置。
+Monitor list: resolution, position, DPI, cursor position.
 
 ---
 
-### 🖥️ ウィンドウ管理
+### 🖥️ Window management
 
 #### `get_windows`
-全ウィンドウをZ-order順で一覧。
+All windows in Z-order.
 ```json
-{ "zOrder": 0, "title": "メモ帳", "region": {"x":78,"y":78,"w":976,"h":618},
+{ "zOrder": 0, "title": "Notepad", "region": {"x":78,"y":78,"w":976,"h":618},
   "isActive": true, "isMinimized": false, "isOnCurrentDesktop": true }
 ```
 
 #### `get_active_window`
-現在フォーカスのあるウィンドウの情報。
+Information about the currently-focused window.
 
 #### `focus_window`
-タイトルの部分一致でウィンドウをフォアグラウンドに。
+Bring a window to the foreground by partial title match.
 ```
-focus_window(title="メモ帳")
+focus_window(title="Notepad")
 ```
 
 #### `pin_window` / `unpin_window`
-ウィンドウを常に最前面に固定 / 解除。
-- `duration_ms` で自動解除タイマー指定可
+Toggle always-on-top; `duration_ms` for an auto-release timer.
 
 #### `dock_window`
-任意のウィンドウを画面コーナーに小さく配置しつつ常時最前面化。Claude CLI を操作中も視界に残したい用途。
+Parks any window in a screen corner while keeping it topmost. Handy for keeping the Claude CLI visible while other tools work.
 ```
 dock_window({title:'Claude Code', corner:'bottom-right', width:480, height:360, pin:true})
 ```
-パラメータ: `corner`（top-left / top-right / bottom-left / bottom-right）, `width` / `height`, `pin`, `monitorId`, `margin`。最小化・最大化されたウィンドウは自動的に復元されてからドック。
+Parameters: `corner` (top-left / top-right / bottom-left / bottom-right), `width` / `height`, `pin`, `monitorId`, `margin`. Minimized / maximized windows are restored before docking.
 
-**環境変数による MCP 起動時自動ドック:**
+**MCP-startup auto-dock via environment:**
 
-| 環境変数 | 説明 |
+| Env var | Meaning |
 |---|---|
-| `DESKTOP_TOUCH_DOCK_TITLE` | 必須（無効化したい時は未設定）。`"@parent"` 指定で MCP プロセスの親ツリーを walk してターミナルウィンドウを自動検出（タイトル依存無し、推奨） |
-| `DESKTOP_TOUCH_DOCK_CORNER` | 既定 `bottom-right` |
-| `DESKTOP_TOUCH_DOCK_WIDTH` / `HEIGHT` | `"480"`（px）または `"25%"`（workArea 比率）。4K/8K 自動追従 |
-| `DESKTOP_TOUCH_DOCK_PIN` | 既定 `true` |
-| `DESKTOP_TOUCH_DOCK_MONITOR` | モニター id（既定プライマリ） |
-| `DESKTOP_TOUCH_DOCK_SCALE_DPI` | `true` で px 値を dpi/96 倍（opt-in） |
+| `DESKTOP_TOUCH_DOCK_TITLE` | Required. `"@parent"` walks the MCP process's parent tree to auto-detect the terminal (title-independent; recommended) |
+| `DESKTOP_TOUCH_DOCK_CORNER` | Default `bottom-right` |
+| `DESKTOP_TOUCH_DOCK_WIDTH` / `HEIGHT` | `"480"` (px) or `"25%"` (workArea ratio). Auto-follows on 4K/8K |
+| `DESKTOP_TOUCH_DOCK_PIN` | Default `true` |
+| `DESKTOP_TOUCH_DOCK_MONITOR` | Monitor ID (default primary) |
+| `DESKTOP_TOUCH_DOCK_SCALE_DPI` | `true` scales px values by `dpi/96` (opt-in) |
 
 ---
 
-### 🖱️ マウス操作
+### 🖱️ Mouse
 
-全マウスツールは `speed` に加え `homing` / `windowTitle` / `elementName` / `elementId` パラメータを持つ。アクション後は `post` ブロックを返す（`narrate:"rich"` で UIA diff 付与可）。
+All mouse tools take `speed` plus `homing` / `windowTitle` / `elementName` / `elementId`. Success responses carry the `post` block (`narrate:"rich"` adds a UIA diff).
 
 #### `mouse_move`
-カーソル移動。
+Move the cursor.
 
 #### `mouse_click`
-クリック (`left` / `right` / `middle`)。`doubleClick=true` でダブルクリック。
+Click (`left` / `right` / `middle`). `doubleClick=true` for a double click.
 
-**ホーミング補正（トラクションコントロール）:**  
-スクリーンショット取得→クリック実行の間にウィンドウが移動・裏に隠れる問題を自動補正。
+**Homing correction (traction control):** compensates for window movement / occlusion that happens between the screenshot and the click.
 
-| Tier | トリガー | レイテンシ | 効果 |
-|------|---------|-----------|------|
-| 1 | 常時（cache あれば） | <1ms | GetWindowRect で差分計算 → (dx,dy) 補正 |
-| 2 | `windowTitle` 指定 | ~100ms | 裏に隠れたウィンドウを `restoreAndFocusWindow` |
-| 3 | `elementName/Id` + `windowTitle` + リサイズ検出 | 1-3s | UIA `getElementBounds` で最新座標を再クエリ |
+| Tier | Trigger | Latency | Effect |
+|---|---|---|---|
+| 1 | Always (if cache) | <1 ms | `GetWindowRect` delta → (dx,dy) correction |
+| 2 | `windowTitle` given | ~100 ms | `restoreAndFocusWindow` if the target went behind |
+| 3 | `elementName`/`Id` + `windowTitle` + resize detected | 1–3 s | Re-query fresh coords via UIA `getElementBounds` |
 
 ```
-mouse_click(x, y, windowTitle="メモ帳")           # Tier 1 + 2
-mouse_click(x, y, homing=false)                   # 補正 OFF
+mouse_click(x, y, windowTitle="Notepad")    # Tier 1 + 2
+mouse_click(x, y, homing=false)             # correction off
 ```
 
-キャッシュは `screenshot` / `get_windows` / `focus_window` / `workspace_snapshot` で自動更新。  
-60 秒 TTL で HWND 再利用による誤補正を防止。
+The cache is refreshed automatically by `screenshot` / `get_windows` / `focus_window` / `workspace_snapshot`. A 60-second TTL keeps HWND reuse from steering the wrong window.
 
 #### `mouse_drag`
-ドラッグ (startX,startY) → (endX,endY)。ホーミング補正適用時は終点にも同じ delta を適用。
+Drag (startX,startY) → (endX,endY). When homing is active, the end-point gets the same delta as the start.
 
 #### `scroll`
-スクロール。`direction`: `up` / `down` / `left` / `right`。`amount` はステップ数。
-内部で ×3 の乗算を適用（nut-js の1ステップが極小なため）。
+`direction`: `up` / `down` / `left` / `right`; `amount` is the step count. Internally multiplied by 3 because nut-js's single step is tiny.
 
 #### `get_cursor_position`
-現在のカーソル座標。
+Current cursor coords.
 
 ---
 
-### ⌨️ キーボード操作
+### ⌨️ Keyboard
 
-アクション後は `post` ブロックを返す（`narrate:"rich"` で状態遷移キーに限り UIA diff 付与可）。
+Responses carry the `post` block; `narrate:"rich"` attaches a UIA diff (state-transitioning keys only).
 
 #### `keyboard_type`
-テキスト入力。
-- `use_clipboard=true` で PowerShell 経由クリップボード入力 → **IME バイパス**
-  - URL・パス・ASCII を日本語 IME 環境で入力する際は必須
+Text input.
+- `use_clipboard=true` routes via PowerShell + clipboard, **bypassing any Japanese IME**. Required when typing URLs / paths under an active IME.
 
 #### `keyboard_press`
-キー入力。修飾キー組み合わせ対応。
+Key combos.
 ```
 keyboard_press(keys="ctrl+c")
 keyboard_press(keys="alt+f4")
 keyboard_press(keys="ctrl+shift+s")
 ```
 
-> **⚠️ 入力ルーティング注意（dock_window pin 時）**
-> `keyboard_type` / `keyboard_press` は**現在フォーカスがあるウィンドウ**にキー入力を送る。`dock_window(pin=true)` で Claude CLI が常時最前面化されていると、キー入力が CLI に奪われて目的アプリに届かない。
-> **必ず `focus_window(title=...)` を呼んでから**キー操作し、`screenshot(detail='meta')` で `isActive=true` を確認すること。推奨パターン：`focus_window → keyboard_press/type → screenshot(diffMode=true)`。
+> **⚠️ Input routing gotcha (when `dock_window` is pinned)**
+> `keyboard_type` / `keyboard_press` send to **whichever window is currently focused**. If `dock_window(pin=true)` has pinned the Claude CLI topmost, keystrokes can land on the CLI instead of the target app.
+> Always call `focus_window(title=…)` first, then verify with `screenshot(detail='meta')` that `isActive=true` on the target. Canonical pattern: `focus_window → keyboard_press/type → screenshot(diffMode=true)`.
 
 ---
 
 ### 🔍 UI Automation (UIA)
 
-アクション系ツール（`click_element` / `set_element_value`）はアクション後に `post` ブロックを返す（`narrate:"rich"` で UIA diff 付与可）。
+Action tools (`click_element` / `set_element_value`) return the `post` block; `narrate:"rich"` adds a UIA diff.
 
-#### `screenshot(detail="text")` ← 推奨
-アクション指向の要素抽出。各要素に `clickAt` 座標付き。
+#### `screenshot(detail="text")` ← recommended
+Action-oriented element extraction. Every entry carries `clickAt` coords.
 
 ```json
 {
-  "window": "メモ帳",
+  "window": "Notepad",
   "actionable": [
-    { "action": "click", "name": "設定", "type": "Button",
+    { "action": "click", "name": "Settings", "type": "Button",
       "clickAt": {"x": 1025, "y": 136}, "id": "SettingsButton" },
-    { "action": "type", "name": "テキスト エディター", "type": "Document",
-      "clickAt": {"x": 566, "y": 405}, "value": "現在のテキスト..." }
+    { "action": "type", "name": "Text editor", "type": "Document",
+      "clickAt": {"x": 566, "y": 405}, "value": "Current text…" }
   ],
   "texts": [
-    { "content": "行 1, 列 1", "at": {"x": 100, "y": 666} }
+    { "content": "Ln 1, Col 1", "at": {"x": 100, "y": 666} }
   ]
 }
 ```
 
 #### `get_ui_elements`
-生の UIA ツリー全体。`automationId` 等を探す時に使用。
+The raw UIA tree. Use this when you need an `automationId`.
 
 #### `click_element`
-UIA の InvokePattern で名前/ID でボタンをクリック。座標不要。
+Click by name / ID via UIA `InvokePattern` — no coords needed.
 ```
-click_element(windowTitle="メモ帳", name="設定", controlType="Button")
+click_element(windowTitle="Notepad", name="Settings", controlType="Button")
 ```
 
 #### `set_element_value`
-UIA の ValuePattern でテキストフィールドに直接値をセット。
+Set a text field directly via UIA `ValuePattern`.
 ```
-set_element_value(windowTitle="メモ帳", name="テキスト エディター", value="Hello!")
+set_element_value(windowTitle="Notepad", name="Text editor", value="Hello!")
 ```
 
 #### `scope_element`
-特定要素を高解像度 (1280px) でズームキャプチャ + 子要素ツリー。
+Zoomed (1280 px) capture of one element + its child tree.
 
 ---
 
-### 🚀 ワークスペース
+### 🚀 Workspace
 
 #### `workspace_snapshot`
-デスクトップ全体を1回のコールで把握。
-- 全ウィンドウのサムネイル (WebP)
-- `uiSummary.actionable` — 各ウィンドウのインタラクティブ要素 + `clickAt` 座標
-- レイヤーバッファをリセット → 以降の `screenshot(diffMode=true)` の I-frame になる
+The whole desktop in one call.
+- Thumbnails (WebP) of every window
+- `uiSummary.actionable` — interactive elements + `clickAt` per window
+- Resets the layer buffer → becomes the I-frame for subsequent `screenshot(diffMode=true)` calls
 
 ```json
 {
   "windows": [{
-    "title": "メモ帳",
+    "title": "Notepad",
     "region": {"x":78,"y":78,"width":976,"height":618},
     "uiSummary": {
       "actionable": [
-        { "action": "click", "name": "設定", "clickAt": {"x":1025,"y":136} },
-        { "action": "type",  "name": "テキスト エディター", "clickAt": {"x":566,"y":405}, "value": "..." }
+        { "action": "click", "name": "Settings", "clickAt": {"x":1025,"y":136} },
+        { "action": "type",  "name": "Text editor", "clickAt": {"x":566,"y":405}, "value": "…" }
       ],
       "texts": [{ "content": "UTF-8", "at": {"x":913,"y":666} }]
     }
@@ -308,48 +304,48 @@ set_element_value(windowTitle="メモ帳", name="テキスト エディター", 
 ```
 
 #### `workspace_launch`
-アプリ起動 + 新ウィンドウ自動検出 (起動前後の差分で判定 → 日本語タイトルのUWPアプリ対応)。
+Launch an app + auto-detect the new window (diffs the window set before and after — handles localized UWP titles).
 
 ---
 
-### 📊 コンテキスト・履歴
+### 📊 Context & history
 
 #### `get_context`
-OS + アプリレベルの軽量コンテキスト取得。スクリーンショット不要で現状把握できる。
+Lightweight OS + app context. See the current state without a screenshot.
 
 ```json
 {
-  "focusedWindow": "メモ帳 — 無題",
-  "focusedElement": { "name": "テキスト エディター", "type": "Document", "value": "Hello" },
+  "focusedWindow": "Notepad — Untitled",
+  "focusedElement": { "name": "Text editor", "type": "Document", "value": "Hello" },
   "cursorPos": {"x": 523, "y": 401},
-  "cursorOverElement": { "name": "テキスト エディター", "type": "Document" },
+  "cursorOverElement": { "name": "Text editor", "type": "Document" },
   "windows": [...]
 }
 ```
 
-| フィールド | 説明 |
+| Field | Meaning |
 |---|---|
-| `focusedElement` | UIA `GetFocusedElement` — 入力フォーカスのある要素（名前・型・値） |
-| `cursorOverElement` | UIA `ElementFromPoint` — カーソル直下の UIA 要素 |
-| `windows` | Z-order 付きウィンドウ一覧（`get_windows` 相当） |
+| `focusedElement` | UIA `GetFocusedElement` — the element with keyboard focus (name / type / value) |
+| `cursorOverElement` | UIA `ElementFromPoint` — the UIA element directly under the cursor |
+| `windows` | Z-ordered window list (same shape as `get_windows`) |
 
-Chromium ウィンドウでは UIA がスパースなため `focusedElement`/`cursorOverElement` は null になることがある（CDP ツールを使うこと）。
+On Chromium windows UIA is sparse, so `focusedElement` / `cursorOverElement` can be `null` — reach for the CDP tools there.
 
 #### `get_history`
-直近 n 件（デフォルト5、最大20）のアクション結果サマリを返す。
+Summaries of the most recent actions (default 5, max 20).
 
 ```json
 [
   { "tool": "mouse_click", "ok": true,
-    "post": { "focusedWindow": "メモ帳", "windowChanged": false, "elapsedMs": 35 },
+    "post": { "focusedWindow": "Notepad", "windowChanged": false, "elapsedMs": 35 },
     "tsMs": 1744600000000 }
 ]
 ```
 
-ループや繰り返し操作で「直前に何をしたか」を確認するのに使用。`post.rich` はリングバッファには保存されない（サイズ節約）。
+Useful inside loops / repeated operations to check what the previous step actually did. `post.rich` is not stored in the ring buffer (keeps it small).
 
 #### `get_document_state`
-アクティブタブの CDP 状態取得（Chrome/Edge のみ）。
+CDP state for the active tab (Chrome / Edge).
 
 ```json
 {
@@ -365,185 +361,199 @@ Chromium ウィンドウでは UIA がスパースなため `focusedElement`/`cu
 ### ⏱️ wait_until
 
 #### `wait_until`
-指定条件が満たされるまでサーバー側でポーリング。ラウンドトリップなしで待機できる。
+Server-side polling until a condition is met — no round trips from the LLM.
 
 ```
-wait_until(condition="window_appears",   target={windowTitle:"保存完了"}, timeoutMs=10000)
-wait_until(condition="window_disappears", target={windowTitle:"読み込み中..."})
-wait_until(condition="element_appears",  target={windowTitle:"メモ帳", elementName:"保存"})
-wait_until(condition="focus_changes",    target={windowTitle:"メモ帳"})
-wait_until(condition="value_matches",    target={windowTitle:"メモ帳", elementName:"ファイル名", pattern:"memo"})
-wait_until(condition="page_ready",       target={windowTitle:"Chrome"})
+wait_until(condition="window_appears",          target={windowTitle:"Save complete"}, timeoutMs=10000)
+wait_until(condition="window_disappears",       target={windowTitle:"Loading…"})
+wait_until(condition="element_appears",         target={windowTitle:"Notepad", elementName:"Save"})
+wait_until(condition="focus_changes",           target={windowTitle:"Notepad"})
+wait_until(condition="value_matches",           target={windowTitle:"Notepad", elementName:"File name", pattern:"memo"})
+wait_until(condition="page_ready",              target={windowTitle:"Chrome"})
 wait_until(condition="terminal_output_contains", target={windowTitle:"PowerShell", pattern:"Done"})
-wait_until(condition="element_matches",  target={windowTitle:"メモ帳", selector:"#status", pattern:"ready"})
+wait_until(condition="element_matches",         target={windowTitle:"Notepad", selector:"#status", pattern:"ready"})
 ```
 
-| パラメータ | 説明 |
+| Parameter | Meaning |
 |---|---|
-| `condition` | 待機条件（上記一覧） |
-| `target` | 条件に応じた対象（`windowTitle` / `elementName` / `pattern` 等） |
-| `timeoutMs` | タイムアウト (デフォルト 10000ms) |
-| `pollMs` | ポーリング間隔 (デフォルト 500ms) |
+| `condition` | One of the values above |
+| `target` | Condition-specific descriptor (`windowTitle` / `elementName` / `pattern` …). **Also accepts a JSON-stringified object** (see *Param coercion*) |
+| `timeoutMs` | Default 10000 |
+| `pollMs` | Default 500 |
 
 ---
 
-### 🖥️ ターミナル操作
+### 🖥️ Terminal
 
 #### `terminal_read`
-PowerShell / cmd / Windows Terminal の現在バッファを取得。TextPattern (UIA) または OCR で内容を読む。
+Reads the current buffer of PowerShell / cmd / Windows Terminal via UIA `TextPattern`, falling back to OCR.
 
 ```json
-{
-  "text": "PS C:\\> echo hello\nhello\nPS C:\\> ",
-  "source": "uia"
-}
+{ "text": "PS C:\\> echo hello\nhello\nPS C:\\> ", "source": "uia" }
 ```
 
 #### `terminal_send`
-ターミナルにコマンドを送信（SendKeys 経由）。`waitForPrompt` で次のプロンプト出現まで待機可。
+Sends input to a terminal (SendKeys). `waitForPrompt` blocks until the next prompt reappears.
 
 ---
 
-### 📡 非同期イベント
+### 📡 Async events
 
 #### `events_subscribe`
-ウィンドウ変化・フォーカス変化・ブラウザナビゲーション等を購読。`subscriptionId` を返す。
+Subscribe to window / focus / browser-navigation changes. Returns a `subscriptionId`.
 
 #### `events_poll`
-購読イベントのキューをドレイン（最大 `maxEvents` 件）。ロングポーリング相当。
+Drain the queue for a subscription (up to `maxEvents`). Long-poll style.
 
 #### `events_unsubscribe`
-購読を解除。
+Drop a subscription.
 
 #### `events_list`
-アクティブな購読一覧。
+List active subscriptions.
 
-**イベント種別:** `window_appeared` / `window_disappeared` / `window_moved` / `focus_changed` / `browser_navigated`
+**Event kinds:** `window_appeared` / `window_disappeared` / `window_moved` / `focus_changed` / `browser_navigated`
 
 ---
 
-### 🌐 ブラウザ CDP (Chrome/Edge)
+### 🌐 Browser CDP (Chrome / Edge)
 
-Chrome/Edge を `--remote-debugging-port=9222` で起動することで利用可能。
+Available once Chrome / Edge is running with `--remote-debugging-port=9222`.
 
 ```bash
 chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\tmp\cdp
 ```
 
 #### `browser_launch`
-指定ポートで Chrome/Edge を起動し CDP 接続まで待機。`url` で初期ページ指定可。
+Launch Chrome / Edge / Brave in debug mode and wait for the CDP endpoint. Idempotent: if an endpoint is already live on the target port, returns immediately. `url` sets an initial page.
 
 #### `browser_connect`
-CDP に接続してタブ一覧を返す。返却される `tabId` を他の browser_* ツールに渡して対象タブを指定できる。
+Connect to CDP and list tabs. The returned `tabId` pins subsequent calls to a specific tab. Each tab carries an `active` flag, and the top-level response surfaces the currently-focused tab.
 
 #### `browser_find_element`
-CSS セレクター → 物理ピクセル座標。  
-座標変換式: `physX = (screenX + chromeW/2 + rect.left) * dpr`  
-ブラウザ UI（タブストリップ + アドレスバー）の高さと `devicePixelRatio` を考慮済み。  
-`inViewport` は要素中心点ベースの判定（エッジが 1px はみ出しても false にならない）。
+CSS selector → physical pixel coords.
+Formula: `physX = (screenX + chromeW/2 + rect.left) * dpr`, with the browser chrome (tab strip + address bar) and `devicePixelRatio` already baked in.
+`inViewport` is judged from the element's centre point, so a 1-pixel overflow does not flip it to `false`.
 
 #### `browser_click_element`
-`getElementScreenCoords` + `ensureBrowserFocused` + nut-js click を1ステップで実行。  
-`inViewport=false` の場合は scrollIntoView を促すメッセージを返して終了。
+`getElementScreenCoords` + `ensureBrowserFocused` + nut-js click in one step. If the element is out of the viewport, returns a message telling the caller to scroll it into view instead of guessing.
 
 #### `browser_eval`
-`Runtime.evaluate` (CDP) で JS 式を評価。`awaitPromise=true` で async 対応。  
-エラー時は `exceptionDetails` を解析して `JS exception in tab: ...` をスロー。
+Evaluate JS via `Runtime.evaluate` (CDP). `awaitPromise=true`, so `await` works. Exceptions from the page surface as `JS exception in tab: …`.
 
 #### `browser_get_dom`
-要素または `document.body` の outerHTML を返す。`maxLength` で切り詰め。  
-要素不在は structured error `{"__cdpError":"..."}` で区別。
+`outerHTML` of an element (or `document.body`), truncated to `maxLength`. Missing-element errors come back as a structured `{"__cdpError":"…"}` so the caller can distinguish "no match" from "empty HTML".
 
 #### `browser_get_interactive`
-ページのインタラクティブ要素一覧（入力・ボタン・リンク等）と `clickAt` 座標を返す。UIA の `screenshot(detail="text")` のブラウザ版。
+Enumerates interactive elements with `clickAt` coords — the browser analogue of `screenshot(detail="text")`.
+Also **ARIA-aware**: surfaces `role=switch` / `checkbox` / `radio` / `tab` / `menuitem` / `option` custom controls with a `state` block carrying `checked` / `pressed` / `selected` / `expanded` derived from the matching `aria-*` attributes. Use this when a page (Radix / shadcn / MUI / Headless UI / GitHub) renders toggles as ARIA buttons instead of native `<input>`.
+
+#### `browser_get_app_state`
+One CDP call that scans the well-known places SPAs stash their hydration payloads:
+`__NEXT_DATA__` / `__NUXT_DATA__` / `__NUXT__` / `__REMIX_CONTEXT__` / `__APOLLO_STATE__` / GitHub react-app `[data-target$="embeddedData"]` / JSON-LD / `window.__INITIAL_STATE__`. Returns `{found:[{selector, framework, sizeBytes, truncated, payload}], notFound:[…]}`.
+Use this *before* `browser_eval` / `browser_get_dom` on SPA pages where the HTML is sparse but the state is rich. Override with `selectors:['script#my-data', 'window:__MY_KEY__']`.
 
 #### `browser_navigate`
-`Page.navigate` (CDP) で URL 遷移。`http://` / `https://` のみ許可 (javascript: / file: は拒否)。`waitForLoad` で `domContentEventFired` まで待機可。
+`Page.navigate` (CDP). Only `http://` / `https://` are accepted (`javascript:` / `file:` rejected). `waitForLoad:true` (default) blocks until `document.readyState === "complete"` and returns `{title, url, readyState, elapsedMs}`. On timeout the call stays `ok:true` with `hints.warnings:["NavigateTimeout"]` so callers can continue.
 
 #### `browser_search`
-ページ内テキスト・CSS セレクター・XPath で要素を検索。`by: "text" | "css" | "xpath"`。
+Grep the DOM by text / regex / role / ariaLabel / CSS selector with confidence ranking. `scope` limits the search; `offset` / `maxResults` paginate.
 
 #### `browser_disconnect`
-ポートに紐づく全 WebSocket セッションをクローズ。HWND close 前に呼ぶことを推奨。
+Close every cached WebSocket session for a port. Call this before the target HWND goes away.
 
-**セッション管理:**  
-`sessions: Map<"port:tabId", CdpSession>` でキャッシュ。  
-`connecting: Map` でコンカレントな同一タブへの接続をデデュープ。  
-エラー・クローズ時は `_closed=true` にセットして新規コマンドをブロック。
+**Response annotations shared by the DOM-touching tools**
+(`browser_eval` / `browser_find_element` / `browser_get_dom` / `browser_get_interactive` / `browser_get_app_state`)
+- On success the response ends with `activeTab:{id,title,url}` + `readyState:"complete"` so callers can detect tab drift.
+- Pass `includeContext:false` to drop those two trailing lines (saves ~150 tokens per call when chaining invocations in one tab).
+- Even at `includeContext:true`, consecutive calls within 500 ms reuse one internal `getTabContext` round-trip.
+
+**Session management**
+`sessions: Map<"port:tabId", CdpSession>` caches live sessions. `connecting: Map` deduplicates concurrent connects to the same tab. On error / close the session flips `_closed=true`, blocking further commands.
 
 ---
 
-### 📜 マクロ・スクロール
+### 📜 Macro / scroll
 
 #### `run_macro`
-複数ツールをシーケンシャルに実行。最大50ステップ。
-`sleep` 疑似コマンドで待機 (最大10000ms)。再帰禁止。
+Runs up to 50 tools sequentially in a single MCP call. A `sleep` pseudo-command waits up to 10 000 ms. No recursion.
 
 ```json
 {
   "steps": [
-    { "tool": "focus_window",    "params": {"title": "メモ帳"} },
+    { "tool": "focus_window",    "params": {"title": "Notepad"} },
     { "tool": "sleep",           "params": {"ms": 300} },
     { "tool": "keyboard_type",   "params": {"text": "Hello!", "use_clipboard": true} },
-    { "tool": "screenshot",      "params": {"windowTitle": "メモ帳", "detail": "text"} }
+    { "tool": "screenshot",      "params": {"windowTitle": "Notepad", "detail": "text"} }
   ]
 }
 ```
 
 #### `scroll_capture`
-ページを上から下までスクロールしながら全体をスティッチ。
-長いWebページやドキュメントの全体確認に使用。
+Scrolls a window top-to-bottom and stitches a full-height screenshot — useful for long pages / documents.
 
 ---
 
-## レイヤーバッファの仕組み (MPEG P-frame 方式)
+## Param coercion for LLM-friendly spellings
+
+Boolean / object parameters accept the string spellings some MCP clients emit by accident:
+
+- **boolean**: `"true"` / `"false"` (case-insensitive, whitespace trimmed) or `0` / `1` → real boolean
+- **object**: a JSON-stringified object (`"{}"` or `'{"windowTitle":"x"}'`) is parsed before validation
+
+Ambiguous input (`"yes"`, arbitrary strings) is still rejected so a typo cannot silently flip a flag. Numbers are **not** coerced here — use `z.coerce.number()` at the call site when you explicitly want it.
+
+Touch points: `browser_navigate.waitForLoad` / `browser_search.visibleOnly|inViewportOnly|caseSensitive` / `events.drain` / `keyboard_*.forceFocus|trackFocus` / `wait_until.target` (and its nested `target.regex`).
+
+---
+
+## Layer buffer — MPEG P-frame strategy
 
 ```
 workspace_snapshot()
-    │  → 全ウィンドウをキャプチャ & バッファに格納 (I-frame)
+    │  → capture every window, store in the buffer (I-frame)
     │
-操作 (click, type, ...)
+action (click, type, …)
     │
 screenshot(diffMode=true)
-    │  → 各ウィンドウを再キャプチャ
-    │  → 8x8ブロック単位でピクセル比較 (ノイズ閾値=16)
-    │  → 変化率 < 2%: unchanged (画像なし)
-    │  → 変化率 2-100%: content_changed (そのウィンドウのみ送信)
-    │  → 位置変化: moved (画像なし、座標のみ)
-    │  → 新規: new (キャプチャして送信)
-    └  → 閉じた: closed (通知のみ)
+    │  → re-capture every window
+    │  → 8×8-block pixel compare (noise threshold = 16)
+    │  → change ratio <2%:   unchanged (no image sent)
+    │  → change ratio 2–100%: content_changed (only that window sent)
+    │  → position change:    moved (coords only, no image)
+    │  → new window:         new (full capture)
+    └  → window closed:      closed (notification only)
 ```
 
-**効果:** 1クリック後の確認が ~443 tok (通常) → ~160 tok (差分) に削減。
+**Net effect:** a confirmation after one click drops from ~443 tok (full) to ~160 tok (diff).
 
 ---
 
-## 技術ノート
+## Engineering notes
 
-| 項目 | 内容 |
+| Item | Detail |
 |---|---|
-| ウィンドウタイトル取得 | `GetWindowTextW` (koffi) — nut-js は CJK 文字化けするため |
-| スクロール量 | nut-js 1ステップは極小 → 内部で `× SCROLL_MULTIPLIER=3` |
-| UIA タイムアウト | workspace_snapshot 内は 2s (通常 8s) |
-| PrintWindow フラグ | `0` — GPU/DX ウィンドウは黒になる既知制限 |
-| WebP デフォルト品質 | `60` — テキストが読める最低品質 |
-| レイヤーバッファ TTL | 90秒で自動クリア |
-| focus_window フィルタ | width < 50 または height < 50 の補助窓はスキップ |
-| UIA 要素検索 | 再帰 `FindAll(Children)` — `FindAll(Descendants)` は WinUI3 で一部漏れ |
-| CDP コマンドタイムアウト | 15s (CMD_TIMEOUT_MS) — WebSocket 接続は 5s (CONNECT_TIMEOUT_MS) |
-| CDP fetch タイムアウト | `AbortSignal.timeout(5s)` — /json エンドポイントが応答しない場合 |
-| window-cache TTL | 60秒 — HWND 再利用による誤補正を防ぐため古いエントリを無視 |
-| ホーミング Tier 3 閾値 | delta > 200px または sizeChanged=true のときのみ UIA 再クエリ発動 |
-| post.focusedElement タイムアウト | 800ms — UIA 未対応アプリで応答しない場合の上限 |
-| UIA diff キャップ | appeared/disappeared 各5件・valueDeltas 3件 — 超過分は `truncated` フィールドに件数 |
-| narrate:"rich" settle 待機 | アクション後 120ms 待機してから after-snapshot 取得 |
-| --disable-extensions 除外 | Chrome 147+ でこのフラグが CDP ポートバインドを阻害するため E2E テストから除外 |
+| Window title | `GetWindowTextW` via koffi — nut-js mangles CJK |
+| Scroll amount | nut-js's single step is tiny → multiplied internally by `SCROLL_MULTIPLIER=3` |
+| UIA timeout | 2 s inside `workspace_snapshot`, 8 s elsewhere |
+| PrintWindow flag | `0` — GPU / DX windows come back black (known limitation) |
+| Default WebP quality | `60` — the lowest quality at which text stays readable |
+| Layer-buffer TTL | Auto-cleared after 90 s |
+| focus_window filter | Skips helper windows with width < 50 or height < 50 |
+| UIA element search | Recursive `FindAll(Children)` — `FindAll(Descendants)` misses items on some WinUI3 apps |
+| CDP command timeout | 15 s (`CMD_TIMEOUT_MS`); WebSocket connect timeout 5 s (`CONNECT_TIMEOUT_MS`) |
+| CDP fetch timeout | `AbortSignal.timeout(5s)` — handles a hung `/json` endpoint |
+| window-cache TTL | 60 s — prevents stale-HWND mis-correction after reuse |
+| Homing Tier 3 gate | Fires only when `delta > 200px` or `sizeChanged=true` |
+| `post.focusedElement` timeout | 800 ms — cap for apps that don't answer UIA queries |
+| UIA diff caps | 5 for `appeared` / `disappeared`, 3 for `valueDeltas` — overflow count lives in `truncated` |
+| `narrate:"rich"` settle | 120 ms wait between the action and the after-snapshot |
+| tab-context cache (browser tools) | 500 ms keyed by `(port, tabId)` — chained calls share one `getTabContext` round-trip |
+| `--disable-extensions` exclusion | Chrome 147+ with this flag fails to bind the CDP port; removed from the E2E launcher |
 
 ---
 
-## 登録設定
+## Install / registration
 
-`~/.claude.json` の `mcpServers` に `desktop-touch` として stdio 登録済み。
-Claude CLI 起動時に自動起動・終了。
+Registered as `desktop-touch` under `mcpServers` in `~/.claude.json` (stdio). Auto-starts / stops with the Claude CLI.
 
-ビルド: `cd D:\git\desktop-touch-mcp && npm run build`
+Build: `cd D:\git\desktop-touch-mcp && npm install` (the `prepare` hook runs `tsc` automatically).
