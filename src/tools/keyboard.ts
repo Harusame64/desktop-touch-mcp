@@ -5,7 +5,12 @@ import { promisify } from "node:util";
 import { keyboard } from "../engine/nutjs.js";
 import { parseKeys } from "../utils/key-map.js";
 import { assertKeyComboSafe } from "../utils/key-safety.js";
+import { enumWindowsInZOrder, restoreAndFocusWindow } from "../engine/win32.js";
+import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
+import { failWith } from "./_errors.js";
+import { withRichNarration, narrateParam } from "./_narration.js";
+import { detectFocusLoss } from "./_focus.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -13,7 +18,7 @@ const execFileAsync = promisify(execFile);
  * Set the Windows clipboard via PowerShell, using Base64 to handle any Unicode text.
  * Then paste with Ctrl+V to bypass IME conversion.
  */
-async function typeViaClipboard(text: string): Promise<void> {
+export async function typeViaClipboard(text: string, pasteCombo: "ctrl+v" | "ctrl+shift+v" = "ctrl+v"): Promise<void> {
   // Save current clipboard (best-effort — non-text content will be lost)
   let savedClipboard: string | null = null;
   try {
@@ -37,9 +42,9 @@ async function typeViaClipboard(text: string): Promise<void> {
     timeout: 5000,
   });
 
-  const ctrlV = parseKeys("ctrl+v");
-  await keyboard.pressKey(...ctrlV);
-  await keyboard.releaseKey(...ctrlV);
+  const combo = parseKeys(pasteCombo);
+  await keyboard.pressKey(...combo);
+  await keyboard.releaseKey(...combo);
 
   // Brief delay to let the paste complete before restoring clipboard
   await new Promise((resolve) => setTimeout(resolve, 120));
@@ -65,8 +70,29 @@ async function typeViaClipboard(text: string): Promise<void> {
 // Schemas
 // ─────────────────────────────────────────────────────────────────────────────
 
+const forceFocusParam = z.boolean().optional().describe(
+  "When true, bypass Windows foreground-stealing protection via AttachThreadInput " +
+  "before focusing the target window. Default: follows env DESKTOP_TOUCH_FORCE_FOCUS (default false)."
+);
+
+const trackFocusParam = z.boolean().default(true).describe(
+  "When true (default), detect if focus was stolen from the target window after the action. " +
+  "Reports focusLost in the response. Set false to skip."
+);
+
+const settleMsParam = z.coerce.number().int().min(0).max(2000).default(300).describe(
+  "Milliseconds to wait after the action before checking foreground window (default 300)."
+);
+
+const windowTitleFocusParam = z.string().optional().describe(
+  "Partial title of the window that should receive the keystrokes. " +
+  "When provided, the server focuses this window before typing and uses it as the expected " +
+  "target for focusLost detection."
+);
+
 export const keyboardTypeSchema = {
   text: z.string().max(10000).describe("The text to type (max 10,000 characters)"),
+  narrate: narrateParam,
   use_clipboard: z
     .boolean()
     .optional()
@@ -76,6 +102,10 @@ export const keyboardTypeSchema = {
       "Use this when typing URLs, paths, or ASCII text into apps with Japanese IME active — " +
       "prevents IME from converting characters. Default false."
     ),
+  windowTitle: windowTitleFocusParam,
+  forceFocus: forceFocusParam,
+  trackFocus: trackFocusParam,
+  settleMs: settleMsParam,
 };
 
 export const keyboardPressSchema = {
@@ -83,40 +113,155 @@ export const keyboardPressSchema = {
     .string()
     .max(100)
     .describe("Key combo string, e.g. 'ctrl+c', 'alt+tab', 'enter', 'ctrl+shift+s'. Note: win+r, win+x, win+s, win+l are blocked for security."),
+  narrate: narrateParam,
+  windowTitle: windowTitleFocusParam,
+  forceFocus: forceFocusParam,
+  trackFocus: trackFocusParam,
+  settleMs: settleMsParam,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Handlers
 // ─────────────────────────────────────────────────────────────────────────────
 
+async function focusWindowForKeyboard(
+  windowTitle: string,
+  force: boolean,
+): Promise<{ warnings: string[]; homingNotes: string[] }> {
+  const warnings: string[] = [];
+  const homingNotes: string[] = [];
+  try {
+    const windows = enumWindowsInZOrder();
+    const active = windows.find((w) => w.isActive);
+    if (!active || !active.title.toLowerCase().includes(windowTitle.toLowerCase())) {
+      const target = windows.find((w) =>
+        w.title.toLowerCase().includes(windowTitle.toLowerCase())
+      );
+      if (target) {
+        restoreAndFocusWindow(target.hwnd, { force });
+        if (force) {
+          // Re-check if foreground was actually transferred to surface ForceFocusRefused
+          await new Promise<void>((r) => setTimeout(r, 100));
+          const after = enumWindowsInZOrder().find((w) => w.isActive);
+          if (!after || !after.title.toLowerCase().includes(windowTitle.toLowerCase())) {
+            warnings.push("ForceFocusRefused");
+          } else {
+            homingNotes.push(`brought "${target.title}" to front`);
+          }
+        } else {
+          await new Promise<void>((r) => setTimeout(r, 100));
+          homingNotes.push(`brought "${target.title}" to front`);
+        }
+      }
+    }
+  } catch {
+    // best-effort
+  }
+  return { warnings, homingNotes };
+}
+
 export const keyboardTypeHandler = async ({
   text,
   use_clipboard,
+  windowTitle,
+  forceFocus: forceFocusArg,
+  trackFocus,
+  settleMs,
 }: {
   text: string;
   use_clipboard: boolean;
+  windowTitle?: string;
+  forceFocus?: boolean;
+  trackFocus: boolean;
+  settleMs: number;
 }): Promise<ToolResult> => {
+  const force = forceFocusArg ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
   try {
+    const warnings: string[] = [];
+
+    const homingNotes: string[] = [];
+    if (windowTitle) {
+      const fw = await focusWindowForKeyboard(windowTitle, force);
+      warnings.push(...fw.warnings);
+      homingNotes.push(...fw.homingNotes);
+    }
+
     if (use_clipboard) {
       await typeViaClipboard(text);
-      return { content: [{ type: "text" as const, text: `Typed ${text.length} character(s) via clipboard (IME bypassed)` }] };
+    } else {
+      await keyboard.type(text);
     }
-    await keyboard.type(text);
-    return { content: [{ type: "text" as const, text: `Typed ${text.length} character(s)` }] };
+
+    let focusLost = undefined;
+    if (trackFocus) {
+      const fl = await detectFocusLoss({
+        target: windowTitle,
+        homingNotes,
+        settleMs,
+      });
+      if (fl) focusLost = fl;
+    }
+
+    return ok({
+      ok: true,
+      typed: text.length,
+      method: use_clipboard ? "clipboard" : "keystroke",
+      ...(focusLost && { focusLost }),
+      ...(warnings.length > 0 && { hints: { warnings } }),
+    });
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `keyboard_type failed: ${String(err)}` }] };
+    return failWith(err, "keyboard_type");
   }
 };
 
-export const keyboardPressHandler = async ({ keys }: { keys: string }): Promise<ToolResult> => {
+export const keyboardPressHandler = async ({
+  keys,
+  windowTitle,
+  forceFocus: forceFocusArg,
+  trackFocus,
+  settleMs,
+}: {
+  keys: string;
+  windowTitle?: string;
+  forceFocus?: boolean;
+  trackFocus: boolean;
+  settleMs: number;
+}): Promise<ToolResult> => {
+  const force = forceFocusArg ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
   try {
     assertKeyComboSafe(keys);
+
+    const warnings: string[] = [];
+    const homingNotes: string[] = [];
+
+    if (windowTitle) {
+      const fw = await focusWindowForKeyboard(windowTitle, force);
+      warnings.push(...fw.warnings);
+      homingNotes.push(...fw.homingNotes);
+    }
+
     const keyList = parseKeys(keys);
     await keyboard.pressKey(...keyList);
     await keyboard.releaseKey(...keyList);
-    return { content: [{ type: "text" as const, text: `Pressed: ${keys}` }] };
+
+    let focusLost = undefined;
+    if (trackFocus) {
+      const fl = await detectFocusLoss({
+        target: windowTitle,
+        homingNotes,
+        settleMs,
+      });
+      if (fl) focusLost = fl;
+    }
+
+    return ok({
+      ok: true,
+      pressed: keys,
+      ...(focusLost && { focusLost }),
+      ...(warnings.length > 0 && { hints: { warnings } }),
+    });
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `keyboard_press failed: ${String(err)}` }] };
+    return failWith(err, "keyboard_press");
   }
 };
 
@@ -129,7 +274,7 @@ export function registerKeyboardTools(server: McpServer): void {
     "keyboard_type",
     "Type a string of text using the keyboard. The text is sent to whatever window is currently focused.",
     keyboardTypeSchema,
-    keyboardTypeHandler
+    withRichNarration("keyboard_type", keyboardTypeHandler, { windowTitleKey: "windowTitle" })
   );
 
   server.tool(
@@ -140,8 +285,13 @@ export function registerKeyboardTools(server: McpServer): void {
       "Modifiers: ctrl, alt, shift, win/meta.",
       "Special keys: enter, tab, space, backspace, delete, home, end, pageup, pagedown,",
       "up, down, left, right, escape, f1-f12.",
+      "narrate:'rich' is active only for state-transitioning keys (Enter, Tab, Esc, F-keys).",
     ].join(" "),
     keyboardPressSchema,
-    keyboardPressHandler
+    withRichNarration("keyboard_press", keyboardPressHandler, {
+      windowTitleKey: "windowTitle",
+      keyboardPressGate: true,
+      keysKey: "keys",
+    })
   );
 }

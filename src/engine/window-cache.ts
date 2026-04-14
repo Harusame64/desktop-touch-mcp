@@ -34,6 +34,12 @@ const cache = new Map<string, CachedWindow>();
 
 /** Cache entries older than this are treated as stale — HWND may have been recycled. */
 const CACHE_TTL_MS = 60_000;
+export const WINDOW_CACHE_TTL_EXPORTED_MS = CACHE_TTL_MS;
+
+/** Get the timestamp this hwnd was last cached, or null if not cached. */
+export function getWindowCacheTimestamp(hwnd: bigint): number | null {
+  return cache.get(String(hwnd))?.timestamp ?? null;
+}
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 

@@ -137,11 +137,38 @@ const CloseHandle = kernel32.func("bool __stdcall CloseHandle(void *hObject)");
 const TH32CS_SNAPPROCESS = 0x00000002;
 const INVALID_HANDLE_VALUE_BIG = 0xffffffffffffffffn; // -1 as u64 for comparison
 
+// Process identity (pid + creation time + image name) for cache invalidation
+const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+const FILETIME = koffi.struct("FILETIME", {
+  dwLowDateTime: "uint32",
+  dwHighDateTime: "uint32",
+});
+const OpenProcess = kernel32.func(
+  "void* __stdcall OpenProcess(uint32 dwDesiredAccess, bool bInheritHandle, uint32 dwProcessId)"
+);
+const GetProcessTimes = kernel32.func(
+  "bool __stdcall GetProcessTimes(void *hProcess, _Out_ FILETIME *creation, _Out_ FILETIME *exit, _Out_ FILETIME *kernel, _Out_ FILETIME *user)"
+);
+const QueryFullProcessImageNameW = kernel32.func(
+  "bool __stdcall QueryFullProcessImageNameW(void *hProcess, uint32 dwFlags, _Out_ uint16 *lpExeName, _Inout_ uint32 *lpdwSize)"
+);
+
 // Window Z-order / always-on-top
 // hWndInsertAfter is intptr (not void*) so negative sentinel values -1/-2 pass correctly
 const SetWindowPos = user32.func(
   "bool __stdcall SetWindowPos(void *hWnd, intptr hWndInsertAfter, int X, int Y, int cx, int cy, uint32 uFlags)"
 );
+
+// BringWindowToTop — secondary foreground hint
+const BringWindowToTop = user32.func("bool __stdcall BringWindowToTop(void *hWnd)");
+
+// AttachThreadInput — bypass foreground-stealing protection
+const AttachThreadInput = user32.func(
+  "bool __stdcall AttachThreadInput(uint32 idAttach, uint32 idAttachTo, bool fAttach)"
+);
+
+// GetCurrentThreadId — from kernel32.dll
+const GetCurrentThreadId = kernel32.func("uint32 __stdcall GetCurrentThreadId()");
 const HWND_TOPMOST = -1;
 const HWND_NOTOPMOST = -2;
 const SWP_NOSIZE = 0x0001;
@@ -335,14 +362,82 @@ export function getWindowRectByHwnd(hwnd: unknown): { x: number; y: number; widt
 }
 
 /** Restore a minimized window and bring it to the foreground.
- *  Returns the actual window rect after restoration. */
-export function restoreAndFocusWindow(hwnd: unknown): { x: number; y: number; width: number; height: number } {
+ *  Returns the actual window rect after restoration, plus force-focus result when opts.force=true.
+ *  @param force When true, use AttachThreadInput to bypass Windows foreground-stealing protection. */
+export function restoreAndFocusWindow(
+  hwnd: unknown,
+  opts?: { force?: boolean }
+): { x: number; y: number; width: number; height: number; forceFocusOk?: boolean } {
   const SW_RESTORE = 9;
   ShowWindow(hwnd, SW_RESTORE);
-  SetForegroundWindow(hwnd);
+  let forceFocusOk: boolean | undefined;
+  if (opts?.force) {
+    const fr = forceSetForegroundWindow(hwnd);
+    forceFocusOk = fr.ok;
+  } else {
+    SetForegroundWindow(hwnd);
+  }
   const rect = { left: 0, top: 0, right: 0, bottom: 0 };
   GetWindowRect(hwnd, rect);
-  return { x: rect.left, y: rect.top, width: rect.right - rect.left, height: rect.bottom - rect.top };
+  return { x: rect.left, y: rect.top, width: rect.right - rect.left, height: rect.bottom - rect.top, ...(forceFocusOk !== undefined && { forceFocusOk }) };
+}
+
+/**
+ * Force the given window to the foreground using AttachThreadInput.
+ * This bypasses Windows foreground-stealing protection.
+ *
+ * Returns:
+ *   ok: true  — window is now in the foreground
+ *   ok: false — SetForegroundWindow was called but refused
+ *   attached: whether AttachThreadInput succeeded
+ */
+export function forceSetForegroundWindow(hwnd: unknown): {
+  ok: boolean;
+  attached: boolean;
+  fg_before: bigint;
+  fg_after: bigint;
+} {
+  const fg_before = GetForegroundWindow() as bigint;
+  const hwndBig = hwnd as bigint;
+
+  // If already in foreground, nothing to do
+  if (String(fg_before) === String(hwndBig)) {
+    return { ok: true, attached: false, fg_before, fg_after: fg_before };
+  }
+
+  // Use getWindowProcessId helper to avoid passing bigint directly to koffi (type safety)
+  const fgThread = (GetWindowThreadProcessId(fg_before as unknown as bigint, null) as number) >>> 0;
+  const myThread = (GetCurrentThreadId() as number) >>> 0;
+
+  let attached = false;
+  if (fgThread !== 0 && fgThread !== myThread) {
+    try {
+      attached = !!(AttachThreadInput(myThread, fgThread, true) as boolean);
+    } catch {
+      // If AttachThreadInput is unavailable or fails, fall through to legacy path
+      attached = false;
+    }
+  }
+
+  try {
+    // SetForegroundWindow + BringWindowToTop always, regardless of attach success.
+    // BringWindowToTop is a secondary hint that helps even without AttachThreadInput.
+    SetForegroundWindow(hwnd);
+    BringWindowToTop(hwnd);
+  } finally {
+    // Detach only if we successfully attached
+    if (attached) {
+      try {
+        AttachThreadInput(myThread, fgThread, false);
+      } catch {
+        // detach is best-effort
+      }
+    }
+  }
+
+  const fg_after = GetForegroundWindow() as bigint;
+  const ok = String(fg_after) === String(hwndBig);
+  return { ok, attached, fg_before, fg_after };
 }
 
 /** Make a window always-on-top (HWND_TOPMOST). */
@@ -363,6 +458,74 @@ export function getWindowProcessId(hwnd: unknown): number {
   const pidOut = [0];
   GetWindowThreadProcessId(hwnd, pidOut);
   return pidOut[0] >>> 0; // coerce to unsigned
+}
+
+/** Identity record that survives across HWND reuse / process restart. */
+export interface ProcessIdentity {
+  pid: number;
+  processName: string;            // e.g. "powershell" (no .exe)
+  /** Process creation time in ms since Windows epoch (1601). 0 on failure. */
+  processStartTimeMs: number;
+}
+
+/**
+ * Convert a Windows FILETIME (100-ns intervals since 1601) to ms.
+ * Returns 0 if both halves are zero.
+ */
+function fileTimeToMs(low: number, high: number): number {
+  if (low === 0 && high === 0) return 0;
+  // BigInt to avoid precision loss; result is ms since Windows epoch (we don't need Unix conversion — only equality matters).
+  const ticks = (BigInt(high >>> 0) << 32n) | BigInt(low >>> 0);
+  return Number(ticks / 10000n);
+}
+
+/**
+ * Resolve a PID into {pid, processName, processStartTimeMs}.
+ * Used to detect "same window title but different process" (HWND reuse / app restart).
+ * On failure returns identity with empty processName / startTime=0 (still usable for equality of pid).
+ */
+export function getProcessIdentityByPid(pid: number): ProcessIdentity {
+  const out: ProcessIdentity = { pid: pid >>> 0, processName: "", processStartTimeMs: 0 };
+  if (pid === 0) return out;
+  let h: bigint = 0n;
+  try {
+    h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid >>> 0) as bigint;
+    if (!h || h === 0n) return out;
+
+    // Image name
+    const nameBuf = Buffer.alloc(520); // 260 wchars
+    const sizeArr = [260];
+    if (QueryFullProcessImageNameW(h, 0, nameBuf, sizeArr)) {
+      const wlen = sizeArr[0] >>> 0;
+      if (wlen > 0) {
+        const path = nameBuf.slice(0, wlen * 2).toString("utf16le");
+        const base = path.split(/[\\/]/).pop() ?? "";
+        out.processName = base.replace(/\.exe$/i, "");
+      }
+    }
+
+    // Creation time
+    const cre = { dwLowDateTime: 0, dwHighDateTime: 0 };
+    const ext = { dwLowDateTime: 0, dwHighDateTime: 0 };
+    const krn = { dwLowDateTime: 0, dwHighDateTime: 0 };
+    const usr = { dwLowDateTime: 0, dwHighDateTime: 0 };
+    if (GetProcessTimes(h, cre, ext, krn, usr)) {
+      out.processStartTimeMs = fileTimeToMs(cre.dwLowDateTime, cre.dwHighDateTime);
+    }
+  } catch {
+    // swallow; partial identity is still useful
+  } finally {
+    if (h && h !== 0n) {
+      try { CloseHandle(h); } catch { /* noop */ }
+    }
+  }
+  return out;
+}
+
+/** Convenience: identity for the process that owns a window. */
+export function getWindowIdentity(hwnd: unknown): ProcessIdentity {
+  const pid = getWindowProcessId(hwnd);
+  return getProcessIdentityByPid(pid);
 }
 
 /**

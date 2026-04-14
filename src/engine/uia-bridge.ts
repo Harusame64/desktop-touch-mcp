@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { getCachedUia, updateUiaCache } from "./layer-buffer.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -42,9 +43,18 @@ export async function runPS(script: string, timeoutMs = 8000): Promise<string> {
 function makeGetElementsScript(
   windowTitle: string,
   maxDepth: number,
-  maxElements: number
+  maxElements: number,
+  fetchValues = false
 ): string {
   const safeTitle = escapeLike(windowTitle);
+  const fetchValuesBlock = fetchValues
+    ? `
+    $elVal = $null
+    try {
+        $vp2 = $el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+        if ($null -ne $vp2) { $elVal = $vp2.Current.Value }
+    } catch {}`
+    : "";
   return `
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName UIAutomationClient
@@ -128,7 +138,8 @@ while ($stack.Count -gt 0 -and $count -lt ${maxElements} -and $sw.ElapsedMillise
     $elCls  = ''; try { $elCls  = $el.Current.ClassName } catch {}
     $elEna  = $false; try { $elEna = $el.Current.IsEnabled } catch {}
 
-    $results.Add(@{
+    ${fetchValuesBlock}
+    $elObj = @{
         name         = $elName
         controlType  = $ctName
         automationId = $elAid
@@ -137,7 +148,9 @@ while ($stack.Count -gt 0 -and $count -lt ${maxElements} -and $sw.ElapsedMillise
         boundingRect = $rect
         patterns     = [string[]]($pats.ToArray())
         depth        = $depth
-    })
+    }
+    if ($null -ne $elVal) { $elObj['value'] = $elVal }
+    $results.Add($elObj)
     $count++
 
     # Push first child after sibling so child is popped next (depth-first)
@@ -192,8 +205,19 @@ foreach ($el in $all) {
 }
 if (-not $found) { Write-Output '{"ok":false,"error":"Element not found"}'; exit }
 
+# Phase 2.2 — pre-detect disabled clicks so the LLM gets ElementDisabled + suggest
+# rather than a silent success that did nothing visible.
 try {
-    $ip = $found.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+    if (-not $found.Current.IsEnabled) {
+        Write-Output '{"ok":false,"error":"Element is disabled"}'; exit
+    }
+} catch {}
+
+$ip = $null
+if (-not $found.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$ip)) {
+    Write-Output '{"ok":false,"error":"InvokePattern not supported by this element"}'; exit
+}
+try {
     $ip.Invoke()
     Write-Output ('{"ok":true,"element":"' + $found.Current.Name + '"}')
 } catch {
@@ -260,6 +284,102 @@ export interface UiElement {
   boundingRect: { x: number; y: number; width: number; height: number } | null;
   patterns: string[];
   depth: number;
+  /** Present only when getUiElements was called with fetchValues:true. */
+  value?: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Focused element / element-at-point (for get_context & post narration)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface UiaFocusInfo {
+  name: string;
+  controlType: string;
+  automationId?: string;
+  /** Present for focused element when ValuePattern is supported. */
+  value?: string;
+}
+
+/**
+ * Run a single PowerShell script that returns both:
+ *   focused — the element that currently has keyboard focus (FocusedElement)
+ *   atPoint — the element under screen coordinates (x, y)  [skipped when includePoint=false]
+ *
+ * Both are normalized via TreeWalker.ControlViewWalker to reach the nearest
+ * addressable control (avoids landing on raw Pane descendants).
+ *
+ * Timeout is intentionally short (default 2 s) — these are non-essential fields;
+ * null is acceptable when UIA is unavailable or slow.
+ */
+export async function getFocusedAndPointInfo(
+  x = 0,
+  y = 0,
+  includePoint = true,
+  timeoutMs = 2000
+): Promise<{ focused: UiaFocusInfo | null; atPoint: UiaFocusInfo | null }> {
+  const safeX = Number.isFinite(x) ? Math.trunc(x) : 0;
+  const safeY = Number.isFinite(y) ? Math.trunc(y) : 0;
+  const includePointPS = includePoint ? "true" : "false";
+  const script = `
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+$walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+$result = @{ focused = $null; atPoint = $null }
+
+# Focused element
+try {
+    $fe = [System.Windows.Automation.AutomationElement]::FocusedElement
+    if ($null -ne $fe) {
+        $fe = $walker.Normalize($fe)
+        $fn = ''; try { $fn = $fe.Current.Name } catch {}
+        $fc = ''; try { $fc = $fe.Current.ControlType.ProgrammaticName -replace 'ControlType\\.',''; } catch {}
+        $fa = ''; try { $fa = $fe.Current.AutomationId } catch {}
+        $fv = $null
+        try {
+            $fvp = $fe.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+            if ($null -ne $fvp) { $fv = $fvp.Current.Value }
+        } catch {}
+        $fo = @{ name=$fn; controlType=$fc; automationId=$fa }
+        if ($null -ne $fv) { $fo['value'] = $fv }
+        $result.focused = $fo
+    }
+} catch {}
+
+# Element at cursor point (optional)
+if (${includePointPS}) {
+    try {
+        $pt = [System.Windows.Point]::new(${safeX}, ${safeY})
+        $ep = [System.Windows.Automation.AutomationElement]::FromPoint($pt)
+        if ($null -ne $ep) {
+            $ep = $walker.Normalize($ep)
+            $en = ''; try { $en = $ep.Current.Name } catch {}
+            $ec = ''; try { $ec = $ep.Current.ControlType.ProgrammaticName -replace 'ControlType\\.',''; } catch {}
+            $ea = ''; try { $ea = $ep.Current.AutomationId } catch {}
+            $result.atPoint = @{ name=$en; controlType=$ec; automationId=$ea }
+        }
+    } catch {}
+}
+
+$result | ConvertTo-Json -Compress
+`;
+  try {
+    const output = await runPS(script, timeoutMs);
+    const parsed = JSON.parse(output) as {
+      focused?: Record<string, string | undefined> | null;
+      atPoint?: Record<string, string | undefined> | null;
+    };
+    const toInfo = (obj: Record<string, string | undefined> | null | undefined): UiaFocusInfo | null => {
+      if (!obj || !obj.name) return null;
+      const info: UiaFocusInfo = { name: obj.name, controlType: obj.controlType ?? "" };
+      if (obj.automationId) info.automationId = obj.automationId;
+      if (obj.value != null) info.value = obj.value;
+      return info;
+    };
+    return { focused: toInfo(parsed.focused), atPoint: toInfo(parsed.atPoint) };
+  } catch {
+    return { focused: null, atPoint: null };
+  }
 }
 
 export interface UiElementsResult {
@@ -276,12 +396,32 @@ export async function getUiElements(
   windowTitle: string,
   maxDepth = 3,
   maxElements = 50,
-  timeoutMs = 10000
-): Promise<UiElementsResult> {
-  const script = makeGetElementsScript(windowTitle, maxDepth, maxElements);
+  timeoutMs = 10000,
+  options?: { cached?: boolean; hwnd?: bigint; fetchValues?: boolean }
+): Promise<UiElementsResult & { _cacheHit?: boolean }> {
+  // Cache hit path — only when caller provides hwnd + cached:true
+  // Note: cache is never used when fetchValues:true (values may have changed)
+  if (options?.cached && options.hwnd !== undefined && !options.fetchValues) {
+    const cached = getCachedUia(options.hwnd);
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached) as UiElementsResult;
+        return { ...parsed, _cacheHit: true };
+      } catch {
+        // fall through to live fetch
+      }
+    }
+  }
+
+  const script = makeGetElementsScript(windowTitle, maxDepth, maxElements, options?.fetchValues ?? false);
   const output = await runPS(script, timeoutMs);
   const result = JSON.parse(output);
   if (result.error) throw new Error(result.error);
+
+  // Update cache if we know the hwnd
+  if (options?.hwnd !== undefined) {
+    try { updateUiaCache(options.hwnd, output); } catch { /* ignore */ }
+  }
   return result as UiElementsResult;
 }
 
@@ -311,6 +451,12 @@ export interface ActionableElement {
   enabled?: boolean;
   /** Origin of this element's data: 'uia' = UI Automation, 'ocr' = Windows OCR. */
   source?: "uia" | "ocr";
+  /** Phase 2.2 — semantic state: enabled / disabled / toggled / readonly. */
+  state?: "enabled" | "disabled" | "toggled" | "readonly";
+  /** Phase 2.3 / 3.3 — match-confidence on a unified 0-1 scale. */
+  confidence?: number;
+  /** Optional next-step hint for low-confidence items. */
+  suggest?: string;
 }
 
 export interface TextContent {
@@ -382,6 +528,19 @@ export function extractActionableElements(result: UiElementsResult): ActionableR
     const label = el.name || el.automationId || el.controlType;
     if (!label) continue;
 
+    // Phase 3.3 — synthetic UIA confidence:
+    //   automationId present  → 1.0
+    //   Name (full)           → 0.95
+    //   Name (substring/short)→ 0.7
+    //   ControlType-only label→ 0.5
+    let confidence = 0.5;
+    if (el.automationId) confidence = 1.0;
+    else if (el.name && el.name.length > 1 && el.name === label) confidence = 0.95;
+    else if (el.name && label === el.name) confidence = 0.7;
+
+    // Phase 2.2 — semantic state.
+    const state: ActionableElement["state"] = el.isEnabled ? "enabled" : "disabled";
+
     const item: ActionableElement = {
       action,
       name: label,
@@ -389,6 +548,8 @@ export function extractActionableElements(result: UiElementsResult): ActionableR
       clickAt,
       region: { x: r.x, y: r.y, width: r.width, height: r.height },
       source: "uia",
+      state,
+      confidence,
     };
 
     if (el.automationId) item.id = el.automationId;
@@ -591,6 +752,104 @@ export async function getElementChildren(
   const result = JSON.parse(output);
   if (result.error) throw new Error(result.error);
   return (result.elements ?? []) as UiElement[];
+}
+
+/**
+ * Extract terminal text content via UIA TextPattern.
+ * Works for Windows Terminal / conhost / PowerShell ISE windows that
+ * implement TextPattern (most modern terminal hosts do).
+ *
+ * Returns the full visible buffer text, or null if TextPattern is unavailable.
+ */
+export async function getTextViaTextPattern(windowTitle: string, timeoutMs = 6000): Promise<string | null> {
+  const safeTitle = escapeLike(windowTitle);
+  const script = `
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+
+$root = [System.Windows.Automation.AutomationElement]::RootElement
+$trueC = [System.Windows.Automation.Condition]::TrueCondition
+$desc  = [System.Windows.Automation.TreeScope]::Descendants
+
+$target = $null
+$allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
+foreach ($w in $allWins) {
+    if ($w.Current.Name -like '*${safeTitle}*') { $target = $w; break }
+}
+if (-not $target) { Write-Output '{"ok":false,"error":"Window not found"}'; exit }
+
+# Collect ALL descendants with TextPattern, score by control-type preference
+# (Document/Custom/Edit favored — these host the real terminal buffer) and
+# fall back to the largest GetText payload. A naive "first match" picks the
+# tab-title label in Windows Terminal and returns one line.
+$candidates = [System.Collections.Generic.List[object]]::new()
+$all = $target.FindAll($desc, $trueC)
+foreach ($el in $all) {
+    try {
+        $tp = $el.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
+        if ($null -ne $tp) {
+            $ctName = ''
+            try { $ctName = $el.Current.ControlType.ProgrammaticName -replace 'ControlType\.','' } catch {}
+            $candidates.Add(@{ tp=$tp; controlType=$ctName })
+        }
+    } catch {}
+}
+# Also consider the root window itself
+try {
+    $rootTp = $target.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
+    if ($null -ne $rootTp) { $candidates.Add(@{ tp=$rootTp; controlType='Window' }) }
+} catch {}
+
+if ($candidates.Count -eq 0) { Write-Output '{"ok":false,"error":"TextPattern not available"}'; exit }
+
+function ControlTypeScore($ct) {
+    switch -Regex ($ct) {
+        '^(Document|Edit)$' { return 3 }
+        '^Custom$'          { return 2 }
+        '^(Pane|Group)$'    { return 1 }
+        default             { return 0 }
+    }
+}
+
+$best = $null
+$bestScore = -1
+$bestLen = -1
+$bestText = ''
+foreach ($c in $candidates) {
+    $txt = ''
+    try { $txt = $c.tp.DocumentRange.GetText(-1) } catch { continue }
+    if ($null -eq $txt) { $txt = '' }
+    $score = ControlTypeScore $c.controlType
+    # Prefer higher ControlType score; tie-break by longer text.
+    if ($score -gt $bestScore -or ($score -eq $bestScore -and $txt.Length -gt $bestLen)) {
+        $bestScore = $score
+        $bestLen   = $txt.Length
+        $bestText  = $txt
+        $best      = $c
+    }
+    # Short-circuit: Document/Edit (score=3) with non-empty text is the best
+    # we can hope for; skip GetText() on remaining candidates to save time.
+    if ($bestScore -eq 3 -and $bestLen -gt 0) { break }
+}
+
+if ($null -eq $best) { Write-Output '{"ok":false,"error":"TextPattern not available"}'; exit }
+
+try {
+    $payload = @{ ok=$true; text=$bestText; controlType=$best.controlType } | ConvertTo-Json -Compress
+    Write-Output $payload
+} catch {
+    Write-Output ('{"ok":false,"error":"' + ($_.Exception.Message -replace '"','\\"') + '"}')
+}
+`;
+  try {
+    const out = await runPS(script, timeoutMs);
+    const parsed = JSON.parse(out) as { ok: boolean; text?: string; error?: string };
+    if (!parsed.ok) return null;
+    return parsed.text ?? "";
+  } catch {
+    return null;
+  }
 }
 
 /**

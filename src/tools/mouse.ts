@@ -9,7 +9,11 @@ import {
   computeWindowDelta,
 } from "../engine/window-cache.js";
 import { getElementBounds } from "../engine/uia-bridge.js";
+import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
+import { failWith } from "./_errors.js";
+import { withRichNarration, narrateParam } from "./_narration.js";
+import { detectFocusLoss } from "./_focus.js";
 
 /**
  * Move cursor to (x, y) at the given speed.
@@ -68,6 +72,7 @@ async function applyHoming(
   windowTitle?: string,
   elementName?: string,
   elementId?: string,
+  force?: boolean,
 ): Promise<HomingResult> {
   const notes: string[] = [];
 
@@ -81,7 +86,10 @@ async function applyHoming(
         w.title.toLowerCase().includes(windowTitle.toLowerCase())
       );
       if (target) {
-        restoreAndFocusWindow(target.hwnd);
+        const rf = restoreAndFocusWindow(target.hwnd, { force: !!force });
+        if (force && rf.forceFocusOk === false) {
+          notes.push(`ForceFocusRefused`);
+        }
         await new Promise<void>((r) => setTimeout(r, 100));
         // Refresh cache again after restore: window may have moved/unminimized
         updateWindowCache(enumWindowsInZOrder());
@@ -167,6 +175,24 @@ export const mouseMoveSchema = {
   windowTitle: windowTitleParam,
 };
 
+const forceFocusParam = z.boolean().optional().describe(
+  "When true, bypass Windows foreground-stealing protection via AttachThreadInput " +
+  "before focusing the target window. Required when a pinned window (e.g. Claude CLI) " +
+  "keeps stealing focus. Default: follows env DESKTOP_TOUCH_FORCE_FOCUS (default false). " +
+  "Set DESKTOP_TOUCH_FORCE_FOCUS=1 to make true the global default."
+);
+
+const trackFocusParam = z.boolean().default(true).describe(
+  "When true (default), detect if focus was stolen from the target window after the action. " +
+  "Reports focusLost:{afterMs,expected,stolenBy,stolenByProcessName} in the response. " +
+  "Set false to skip the settle wait and focus check."
+);
+
+const settleMsParam = z.coerce.number().int().min(0).max(2000).default(300).describe(
+  "Milliseconds to wait after the action before checking foreground window (default 300). " +
+  "Only used when trackFocus=true."
+);
+
 export const mouseClickSchema = {
   x: z.coerce.number().describe(
     "X coordinate. Screen-absolute by default. When 'origin' is provided, treated as image-local " +
@@ -197,11 +223,15 @@ export const mouseClickSchema = {
     ),
   button: z.enum(["left", "right", "middle"]).default("left").describe("Mouse button to click"),
   doubleClick: z.boolean().default(false).describe("Whether to double-click"),
+  narrate: narrateParam,
   speed: speedParam,
   homing: homingParam,
   windowTitle: windowTitleParam,
   elementName: elementNameParam,
   elementId: elementIdParam,
+  forceFocus: forceFocusParam,
+  trackFocus: trackFocusParam,
+  settleMs: settleMsParam,
 };
 
 export const mouseDragSchema = {
@@ -209,6 +239,7 @@ export const mouseDragSchema = {
   startY: z.coerce.number(),
   endX: z.coerce.number(),
   endY: z.coerce.number(),
+  narrate: narrateParam,
   speed: speedParam,
   homing: homingParam,
   windowTitle: windowTitleParam,
@@ -245,21 +276,24 @@ export const mouseMoveHandler = async ({
     }
     await moveTo(tx, ty, speed);
     const homingStr = !homing ? " [homing: off]" : notes.length ? ` [homing: ${notes.join(", ")}]` : "";
-    return { content: [{ type: "text" as const, text: `Mouse moved to (${tx}, ${ty})${homingStr}` }] };
+    return ok({ ok: true, movedTo: { x: tx, y: ty }, homing: homingStr || undefined });
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `mouse_move failed: ${String(err)}` }] };
+    return failWith(err, "mouse_move");
   }
 };
 
 export const mouseClickHandler = async ({
   x, y, origin, scale, button, doubleClick, speed, homing, windowTitle, elementName, elementId,
+  forceFocus: forceFocusArg, trackFocus, settleMs,
 }: {
   x: number; y: number;
   origin?: { x: number; y: number };
   scale?: number;
   button: "left" | "right" | "middle"; doubleClick: boolean;
   speed?: number; homing: boolean; windowTitle?: string; elementName?: string; elementId?: string;
+  forceFocus?: boolean; trackFocus: boolean; settleMs: number;
 }): Promise<ToolResult> => {
+  const force = forceFocusArg ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
   try {
     // Image-local → screen conversion (before homing).
     // When origin is given, (x,y) are image-local; convert using scale factor.
@@ -268,7 +302,7 @@ export const mouseClickHandler = async ({
     if (origin !== undefined) {
       const s = scale ?? 1;
       if (s <= 0) {
-        return { content: [{ type: "text" as const, text: `mouse_click failed: scale must be positive (got ${s})` }] };
+        return failWith(`scale must be positive (got ${s})`, "mouse_click");
       }
       screenX = Math.round(origin.x + x / s);
       screenY = Math.round(origin.y + y / s);
@@ -281,7 +315,7 @@ export const mouseClickHandler = async ({
     let tx = screenX, ty = screenY;
     const notes: string[] = [];
     if (homing) {
-      const result = await applyHoming(screenX, screenY, windowTitle, elementName, elementId);
+      const result = await applyHoming(screenX, screenY, windowTitle, elementName, elementId, force);
       tx = result.x; ty = result.y;
       notes.push(...result.notes);
     }
@@ -292,12 +326,38 @@ export const mouseClickHandler = async ({
     } else {
       await mouse.click(btn);
     }
-    const action = doubleClick ? "Double-clicked" : "Clicked";
-    const convStr = conversionNotes.length ? ` [${conversionNotes.join("; ")}]` : "";
-    const homingStr = !homing ? " [homing: off]" : notes.length ? ` [homing: ${notes.join(", ")}]` : "";
-    return { content: [{ type: "text" as const, text: `${action} ${button} at (${tx}, ${ty})${convStr}${homingStr}` }] };
+    const action = doubleClick ? "doubleClick" : "click";
+
+    // Detect focus loss after the click
+    let focusLost = undefined;
+    const warnings: string[] = [];
+
+    // Promote ForceFocusRefused from homing notes to warnings
+    const idx = notes.indexOf("ForceFocusRefused");
+    if (idx >= 0) {
+      warnings.push("ForceFocusRefused");
+      notes.splice(idx, 1);
+    }
+    const filteredNotes = notes;
+
+    if (trackFocus) {
+      const fl = await detectFocusLoss({
+        target: windowTitle,
+        homingNotes: filteredNotes,
+        settleMs,
+      });
+      if (fl) focusLost = fl;
+    }
+
+    return ok({
+      ok: true, action, button, at: { x: tx, y: ty },
+      ...(conversionNotes.length && { conversion: conversionNotes.join("; ") }),
+      ...(filteredNotes.length && { homing: filteredNotes.join(", ") }),
+      ...(focusLost && { focusLost }),
+      ...(warnings.length > 0 && { hints: { warnings } }),
+    });
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `mouse_click failed: ${String(err)}` }] };
+    return failWith(err, "mouse_click");
   }
 };
 
@@ -336,12 +396,13 @@ export const mouseDragHandler = async ({
         mouse.config.mouseSpeed = prev;
       }
     }
-    const homingStr = !homing ? " [homing: off]" : notes.length ? ` [homing: ${notes.join(", ")}]` : "";
-    return {
-      content: [{ type: "text" as const, text: `Dragged from (${tsx}, ${tsy}) to (${tex}, ${tey})${homingStr}` }],
-    };
+    return ok({
+      ok: true, action: "drag",
+      from: { x: tsx, y: tsy }, to: { x: tex, y: tey },
+      ...(notes.length && { homing: notes.join(", ") }),
+    });
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `mouse_drag failed: ${String(err)}` }] };
+    return failWith(err, "mouse_drag");
   }
 };
 
@@ -374,18 +435,18 @@ export const scrollHandler = async ({
         break;
     }
     const homingStr = !homing ? " [homing: off]" : notes.length ? ` [homing: ${notes.join(", ")}]` : "";
-    return { content: [{ type: "text" as const, text: `Scrolled ${direction} by ${amount} steps${homingStr}` }] };
+    return ok({ ok: true, scrolled: direction, steps: amount, ...(notes.length && { homing: notes.join(", ") }) });
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `scroll failed: ${String(err)}` }] };
+    return failWith(err, "scroll");
   }
 };
 
 export const getCursorPositionHandler = async (): Promise<ToolResult> => {
   try {
     const pos = await mouse.getPosition();
-    return { content: [{ type: "text" as const, text: JSON.stringify({ x: pos.x, y: pos.y }) }] };
+    return ok({ x: pos.x, y: pos.y });
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `get_cursor_position failed: ${String(err)}` }] };
+    return failWith(err, "get_cursor_position");
   }
 };
 
@@ -404,21 +465,12 @@ export function registerMouseTools(server: McpServer): void {
       "  1. Screen-absolute (default): x,y are virtual screen pixels.",
       "  2. Image-local: pass origin (and scale when present) from the screenshot response.",
       "     Server converts: screen = origin + (x,y) / (scale ?? 1). No manual math needed.",
-      "     Example: after screenshot(dotByDot, dotByDotMaxDimension=1280, windowTitle='Chrome'),",
-      "              the response prints 'origin: (0, 120) | scale: 0.6667'. To click image pixel (640, 300):",
-      "              mouse_click(x=640, y=300, origin={x:0, y:120}, scale=0.6667, windowTitle='Chrome').",
-      "     This path is preferred — it eliminates a whole class of off-by-one/scale bugs.",
-      "",
-      "Pass windowTitle (and optionally elementName/elementId) as hints to enable homing correction:",
-      "  - Tier 1: auto-corrects (dx,dy) if the window moved since the last screenshot (<1ms overhead)",
-      "  - Tier 2: auto-focuses the window if it went behind another (~100ms overhead)",
-      "  - Tier 3: re-queries UIA for fresh coords if the window resized (1-3s, only when elementName/Id given)",
-      "Set homing=false to disable all correction (like traction control OFF).",
     ].join("\n"),
     mouseClickSchema,
-    mouseClickHandler
+    withRichNarration("mouse_click", mouseClickHandler, { windowTitleKey: "windowTitle" })
   );
-  server.tool("mouse_drag", "Click and drag from one position to another (left button hold).", mouseDragSchema, mouseDragHandler);
+  server.tool("mouse_drag", "Click and drag from one position to another (left button hold).", mouseDragSchema, withRichNarration("mouse_drag", mouseDragHandler, { windowTitleKey: "windowTitle" }));
   server.tool("scroll", "Scroll at the current position or at specified coordinates.", scrollSchema, scrollHandler);
   server.tool("get_cursor_position", "Get the current mouse cursor position in virtual screen coordinates.", getCursorPositionSchema, getCursorPositionHandler);
 }
+

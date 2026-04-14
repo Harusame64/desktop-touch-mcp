@@ -14,14 +14,61 @@ desktop-touch-mcp (Node.js / TypeScript)
     ├── Layer 1: Engine
     │   ├── nutjs.js        — マウス・キーボード・画面キャプチャ (nut-js)
     │   ├── win32.ts        — Win32 API (koffi): ウィンドウ列挙・DPI・PrintWindow・SetWindowPos
-    │   ├── uia-bridge.ts   — Windows UI Automation (PowerShell経由): 要素ツリー・クリック・値設定
+    │   ├── uia-bridge.ts   — Windows UI Automation (PowerShell経由): 要素ツリー・クリック・値設定・getFocusedElement・ElementFromPoint
+    │   ├── uia-diff.ts     — UIA スナップショット差分算出 (appeared/disappeared/valueDeltas)
     │   ├── image.ts        — 画像エンコード (sharp): PNG / WebP 1:1 / クロップ
     │   ├── layer-buffer.ts — ウィンドウレイヤーバッファ: フレーム差分検出 (MPEG P-frame方式)
     │   ├── cdp-bridge.ts   — Chrome DevTools Protocol: WebSocket セッション・DOM座標変換
-    │   └── window-cache.ts — ウィンドウ位置キャッシュ: ホーミング補正用 (dx,dy 差分計算)
-    └── Layer 2: 34 MCP ツール
-        screenshot(5) + window(4) + mouse(5) + keyboard(2) + ui_elements(4) + browser_cdp(7) + workspace(2) + pin(2) + macro(1) + scroll_capture(1) + dock(1)
+    │   ├── window-cache.ts — ウィンドウ位置キャッシュ: ホーミング補正用 (dx,dy 差分計算)
+    │   └── poll.ts         — pollUntil 共通ポーリングユーティリティ
+    └── Layer 2: 45 MCP ツール
+        screenshot(4) + window(3) + mouse(5) + keyboard(2) + ui_elements(4) +
+        browser_cdp(10) + workspace(2) + pin(2) + dock(1) + macro(1) +
+        scroll_capture(1) + context(3) + terminal(2) + events(4) + wait_until(1)
 ```
+
+---
+
+## アクション応答の共通構造（post ブロック）
+
+すべてのアクションツール（mouse_click / keyboard_press / click_element 等）は成功時に `post` ブロックを返す。
+
+```json
+{
+  "ok": true,
+  "post": {
+    "focusedWindow": "メモ帳",
+    "focusedElement": { "name": "テキスト エディター", "type": "Document", "value": "Hello" },
+    "windowChanged": false,
+    "elapsedMs": 42,
+    "rich": {
+      "diffSource": "uia",
+      "appeared":  [{ "name": "保存ダイアログ", "type": "Dialog" }],
+      "disappeared": [],
+      "valueDeltas": [{ "name": "ファイル名", "before": "", "after": "memo.txt" }]
+    }
+  }
+}
+```
+
+| フィールド | 説明 |
+|---|---|
+| `focusedWindow` | アクション後のフォアグラウンドウィンドウタイトル |
+| `focusedElement` | UIA フォーカス要素（名前・コントロール種別・値）。UIA 未対応時は null |
+| `windowChanged` | アクション前後でフォーカスウィンドウが変わったか |
+| `elapsedMs` | アクション実行時間 (ms) |
+| `rich` | **opt-in** — `narrate:"rich"` 指定時のみ付与される UIA diff ブロック |
+
+### narrate パラメータ
+
+マウス・キーボード・UI 要素操作ツールは `narrate` パラメータを持つ。
+
+| 値 | 動作 |
+|---|---|
+| `"minimal"` (デフォルト) | post ブロックのみ（追加コストなし） |
+| `"rich"` | アクション前後の UIA スナップショットを差分計算して `post.rich` に付与。確認スクリーンショット不要になる |
+
+`keyboard_press` では Enter/Tab/Esc/F5 等の「状態遷移キー」のみ rich が有効。単一文字キーは自動で minimal にダウングレード。
 
 ---
 
@@ -82,6 +129,9 @@ screenshot(dotByDot=true, windowTitle=X) → 1:1 WebP, 座標変換不要
 - `dotByDot=true` で 1:1 WebP 出力可
 - GPU レンダリングアプリ (Chrome/WinUI3) では黒画像になる既知制限あり
 
+#### `screenshot_ocr`
+Windows OCR (Windows.Media.Ocr) で単語レベルのテキストと画面座標を返す。UIA が sparse なアプリへのフォールバック。
+
 #### `get_screen_info`
 全モニターの解像度・位置・DPI・カーソル位置。
 
@@ -131,7 +181,7 @@ dock_window({title:'Claude Code', corner:'bottom-right', width:480, height:360, 
 
 ### 🖱️ マウス操作
 
-全マウスツールは `speed` に加え `homing` / `windowTitle` / `elementName` / `elementId` パラメータを持つ。
+全マウスツールは `speed` に加え `homing` / `windowTitle` / `elementName` / `elementId` パラメータを持つ。アクション後は `post` ブロックを返す（`narrate:"rich"` で UIA diff 付与可）。
 
 #### `mouse_move`
 カーソル移動。
@@ -170,6 +220,8 @@ mouse_click(x, y, homing=false)                   # 補正 OFF
 
 ### ⌨️ キーボード操作
 
+アクション後は `post` ブロックを返す（`narrate:"rich"` で状態遷移キーに限り UIA diff 付与可）。
+
 #### `keyboard_type`
 テキスト入力。
 - `use_clipboard=true` で PowerShell 経由クリップボード入力 → **IME バイパス**
@@ -190,6 +242,8 @@ keyboard_press(keys="ctrl+shift+s")
 ---
 
 ### 🔍 UI Automation (UIA)
+
+アクション系ツール（`click_element` / `set_element_value`）はアクション後に `post` ブロックを返す（`narrate:"rich"` で UIA diff 付与可）。
 
 #### `screenshot(detail="text")` ← 推奨
 アクション指向の要素抽出。各要素に `clickAt` 座標付き。
@@ -258,6 +312,116 @@ set_element_value(windowTitle="メモ帳", name="テキスト エディター", 
 
 ---
 
+### 📊 コンテキスト・履歴
+
+#### `get_context`
+OS + アプリレベルの軽量コンテキスト取得。スクリーンショット不要で現状把握できる。
+
+```json
+{
+  "focusedWindow": "メモ帳 — 無題",
+  "focusedElement": { "name": "テキスト エディター", "type": "Document", "value": "Hello" },
+  "cursorPos": {"x": 523, "y": 401},
+  "cursorOverElement": { "name": "テキスト エディター", "type": "Document" },
+  "windows": [...]
+}
+```
+
+| フィールド | 説明 |
+|---|---|
+| `focusedElement` | UIA `GetFocusedElement` — 入力フォーカスのある要素（名前・型・値） |
+| `cursorOverElement` | UIA `ElementFromPoint` — カーソル直下の UIA 要素 |
+| `windows` | Z-order 付きウィンドウ一覧（`get_windows` 相当） |
+
+Chromium ウィンドウでは UIA がスパースなため `focusedElement`/`cursorOverElement` は null になることがある（CDP ツールを使うこと）。
+
+#### `get_history`
+直近 n 件（デフォルト5、最大20）のアクション結果サマリを返す。
+
+```json
+[
+  { "tool": "mouse_click", "ok": true,
+    "post": { "focusedWindow": "メモ帳", "windowChanged": false, "elapsedMs": 35 },
+    "tsMs": 1744600000000 }
+]
+```
+
+ループや繰り返し操作で「直前に何をしたか」を確認するのに使用。`post.rich` はリングバッファには保存されない（サイズ節約）。
+
+#### `get_document_state`
+アクティブタブの CDP 状態取得（Chrome/Edge のみ）。
+
+```json
+{
+  "title": "Google",
+  "url": "https://www.google.com/",
+  "readyState": "complete",
+  "activeTab": { "id": "abc123", "port": 9222 }
+}
+```
+
+---
+
+### ⏱️ wait_until
+
+#### `wait_until`
+指定条件が満たされるまでサーバー側でポーリング。ラウンドトリップなしで待機できる。
+
+```
+wait_until(condition="window_appears",   target={windowTitle:"保存完了"}, timeoutMs=10000)
+wait_until(condition="window_disappears", target={windowTitle:"読み込み中..."})
+wait_until(condition="element_appears",  target={windowTitle:"メモ帳", elementName:"保存"})
+wait_until(condition="focus_changes",    target={windowTitle:"メモ帳"})
+wait_until(condition="value_matches",    target={windowTitle:"メモ帳", elementName:"ファイル名", pattern:"memo"})
+wait_until(condition="page_ready",       target={windowTitle:"Chrome"})
+wait_until(condition="terminal_output_contains", target={windowTitle:"PowerShell", pattern:"Done"})
+wait_until(condition="element_matches",  target={windowTitle:"メモ帳", selector:"#status", pattern:"ready"})
+```
+
+| パラメータ | 説明 |
+|---|---|
+| `condition` | 待機条件（上記一覧） |
+| `target` | 条件に応じた対象（`windowTitle` / `elementName` / `pattern` 等） |
+| `timeoutMs` | タイムアウト (デフォルト 10000ms) |
+| `pollMs` | ポーリング間隔 (デフォルト 500ms) |
+
+---
+
+### 🖥️ ターミナル操作
+
+#### `terminal_read`
+PowerShell / cmd / Windows Terminal の現在バッファを取得。TextPattern (UIA) または OCR で内容を読む。
+
+```json
+{
+  "text": "PS C:\\> echo hello\nhello\nPS C:\\> ",
+  "source": "uia"
+}
+```
+
+#### `terminal_send`
+ターミナルにコマンドを送信（SendKeys 経由）。`waitForPrompt` で次のプロンプト出現まで待機可。
+
+---
+
+### 📡 非同期イベント
+
+#### `events_subscribe`
+ウィンドウ変化・フォーカス変化・ブラウザナビゲーション等を購読。`subscriptionId` を返す。
+
+#### `events_poll`
+購読イベントのキューをドレイン（最大 `maxEvents` 件）。ロングポーリング相当。
+
+#### `events_unsubscribe`
+購読を解除。
+
+#### `events_list`
+アクティブな購読一覧。
+
+**イベント種別:** `window_appeared` / `window_disappeared` / `window_moved` / `focus_changed` / `browser_navigated`
+
+---
+
 ### 🌐 ブラウザ CDP (Chrome/Edge)
 
 Chrome/Edge を `--remote-debugging-port=9222` で起動することで利用可能。
@@ -265,6 +429,9 @@ Chrome/Edge を `--remote-debugging-port=9222` で起動することで利用可
 ```bash
 chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\tmp\cdp
 ```
+
+#### `browser_launch`
+指定ポートで Chrome/Edge を起動し CDP 接続まで待機。`url` で初期ページ指定可。
 
 #### `browser_connect`
 CDP に接続してタブ一覧を返す。返却される `tabId` を他の browser_* ツールに渡して対象タブを指定できる。
@@ -287,8 +454,14 @@ CSS セレクター → 物理ピクセル座標。
 要素または `document.body` の outerHTML を返す。`maxLength` で切り詰め。  
 要素不在は structured error `{"__cdpError":"..."}` で区別。
 
+#### `browser_get_interactive`
+ページのインタラクティブ要素一覧（入力・ボタン・リンク等）と `clickAt` 座標を返す。UIA の `screenshot(detail="text")` のブラウザ版。
+
 #### `browser_navigate`
-`Page.navigate` (CDP) で URL 遷移。`http://` / `https://` のみ許可 (javascript: / file: は拒否)。
+`Page.navigate` (CDP) で URL 遷移。`http://` / `https://` のみ許可 (javascript: / file: は拒否)。`waitForLoad` で `domContentEventFired` まで待機可。
+
+#### `browser_search`
+ページ内テキスト・CSS セレクター・XPath で要素を検索。`by: "text" | "css" | "xpath"`。
 
 #### `browser_disconnect`
 ポートに紐づく全 WebSocket セッションをクローズ。HWND close 前に呼ぶことを推奨。
@@ -361,6 +534,10 @@ screenshot(diffMode=true)
 | CDP fetch タイムアウト | `AbortSignal.timeout(5s)` — /json エンドポイントが応答しない場合 |
 | window-cache TTL | 60秒 — HWND 再利用による誤補正を防ぐため古いエントリを無視 |
 | ホーミング Tier 3 閾値 | delta > 200px または sizeChanged=true のときのみ UIA 再クエリ発動 |
+| post.focusedElement タイムアウト | 800ms — UIA 未対応アプリで応答しない場合の上限 |
+| UIA diff キャップ | appeared/disappeared 各5件・valueDeltas 3件 — 超過分は `truncated` フィールドに件数 |
+| narrate:"rich" settle 待機 | アクション後 120ms 待機してから after-snapshot 取得 |
+| --disable-extensions 除外 | Chrome 147+ でこのフラグが CDP ポートバインドを阻害するため E2E テストから除外 |
 
 ---
 

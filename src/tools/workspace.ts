@@ -5,9 +5,13 @@ import { validateLaunchCommand, resolveWellKnownPath, spawnDetached } from "../u
 import { enumMonitors, getVirtualScreen, enumWindowsInZOrder, type WindowZInfo } from "../engine/win32.js";
 import { captureScreen } from "../engine/image.js";
 import { clearLayers } from "../engine/layer-buffer.js";
+import { noteInvalidation } from "../engine/identity-tracker.js";
 import { getUiElements, extractActionableElements, WINUI3_CLASS_RE } from "../engine/uia-bridge.js";
 import { updateWindowCache } from "../engine/window-cache.js";
+import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
+import { failWith } from "./_errors.js";
+import { pollUntil } from "../engine/poll.js";
 
 /** Chromium-based browser windows — UIA traversal is prohibitively slow on these */
 export const CHROMIUM_TITLE_RE = /- (?:Google Chrome|Microsoft Edge|Brave|Opera|Vivaldi|Arc|Chromium)$/;
@@ -100,6 +104,7 @@ export const workspaceSnapshotHandler = async ({
   try {
     // Reset layer buffer — workspace_snapshot acts as an I-frame baseline
     clearLayers();
+    noteInvalidation("workspace_snapshot");
 
     // enumWindowsInZOrder() is a single synchronous Win32 EnumWindows sweep that
     // collects title, region, z-order, active state in one pass — far faster than
@@ -166,7 +171,7 @@ export const workspaceSnapshotHandler = async ({
 
     return { content };
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `workspace_snapshot failed: ${String(err)}` }] };
+    return failWith(err, "workspace_snapshot");
   }
 };
 
@@ -202,28 +207,28 @@ export const workspaceLaunchHandler = async ({
     let foundRegion: { x: number; y: number; width: number; height: number } | null = null;
 
     if (waitMs > 0) {
-      const POLL_INTERVAL = 200;
-      const deadline = Date.now() + waitMs;
-
-      while (Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
-
-        try {
-          const afterWindows = enumWindowsInZOrder();
-          for (const w of afterWindows) {
-            if (!w.title) continue;
-            if (w.isMinimized || w.region.width < 50 || w.region.height < 50) continue;
-            const isNewWindow = !beforeHwnds.has(w.hwnd);
-            const isTitleChange = beforeHwnds.has(w.hwnd) && !beforeTitles.has(w.title);
-            if (!isNewWindow && !isTitleChange) continue;
-            foundTitle = w.title;
-            foundRegion = w.region;
-            break;
+      const r = await pollUntil(
+        async () => {
+          try {
+            const afterWindows = enumWindowsInZOrder();
+            for (const w of afterWindows) {
+              if (!w.title) continue;
+              if (w.isMinimized || w.region.width < 50 || w.region.height < 50) continue;
+              const isNewWindow = !beforeHwnds.has(w.hwnd);
+              const isTitleChange = beforeHwnds.has(w.hwnd) && !beforeTitles.has(w.title);
+              if (!isNewWindow && !isTitleChange) continue;
+              return { title: w.title, region: w.region };
+            }
+          } catch {
+            // enumWindowsInZOrder FFI failure — non-fatal, retry on next poll
           }
-          if (foundTitle) break; // Window found — stop polling early
-        } catch {
-          // enumWindowsInZOrder FFI failure — non-fatal, retry on next poll
-        }
+          return null;
+        },
+        { intervalMs: 200, timeoutMs: waitMs }
+      );
+      if (r.ok) {
+        foundTitle = r.value.title;
+        foundRegion = r.value.region;
       }
     }
 
@@ -242,14 +247,9 @@ export const workspaceLaunchHandler = async ({
         "or it may need more time. Use workspace_snapshot to check current windows.";
     }
 
-    return {
-      content: [{
-        type: "text",
-        text: JSON.stringify(result),
-      }],
-    };
+    return ok(result);
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `workspace_launch failed: ${String(err)}` }] };
+    return failWith(err, "workspace_launch");
   }
 };
 

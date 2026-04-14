@@ -3,12 +3,9 @@ dist/
 *.log
 .env
 
-# Development artifacts in docs (scripts and internal planning docs)
+# Development artifacts in docs (scripts and temporary working files)
 docs/*.ps1
-docs/*-plan.md
 docs/*-plan-*.md
-docs/test-*.md
-docs/e2e-*.md
 
 # Claude Code session data (auto-memory, local settings) — never distribute
 .claude/
