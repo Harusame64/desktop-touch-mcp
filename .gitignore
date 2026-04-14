@@ -6,6 +6,7 @@ dist/
 # Development artifacts in docs (scripts and temporary working files)
 docs/*.ps1
 docs/*-plan-*.md
+docs/*-plan.md
 
 # Claude Code session data (auto-memory, local settings) — never distribute
 .claude/
