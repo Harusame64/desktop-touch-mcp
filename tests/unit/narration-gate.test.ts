@@ -69,6 +69,35 @@ describe("isStateTransitioningKey", () => {
   it("is case-insensitive: ALT+TAB", () => expect(isStateTransitioningKey("ALT+TAB")).toBe(true));
   it("is case-insensitive: ENTER",   () => expect(isStateTransitioningKey("ENTER")).toBe(true));
 
+  // ── "control" alias for ctrl ──────────────────────────────────────────────
+
+  it("returns true for control+s (control = ctrl alias)",
+    () => expect(isStateTransitioningKey("control+s")).toBe(true));
+  it("returns true for Control+S (mixed case)",
+    () => expect(isStateTransitioningKey("Control+S")).toBe(true));
+  it("returns true for control+shift+z",
+    () => expect(isStateTransitioningKey("control+shift+z")).toBe(true));
+
+  // ── STATE_KEYS coverage ────────────────────────────────────────────────────
+
+  it("returns true for space (in STATE_KEYS)",
+    () => expect(isStateTransitioningKey("space")).toBe(true));
+  it("returns true for down arrow",  () => expect(isStateTransitioningKey("down")).toBe(true));
+  it("returns true for left arrow",  () => expect(isStateTransitioningKey("left")).toBe(true));
+  it("returns true for right arrow", () => expect(isStateTransitioningKey("right")).toBe(true));
+  it("returns true for pagedown",    () => expect(isStateTransitioningKey("pagedown")).toBe(true));
+  it("returns true for end",         () => expect(isStateTransitioningKey("end")).toBe(true));
+
+  // ── malformed input ────────────────────────────────────────────────────────
+
+  it("'ctrl+' (empty trailing token after filter) → false",
+    // "ctrl+".split("+").filter(Boolean) = ["ctrl"] → base="ctrl", no mod, not in STATE_KEYS
+    () => expect(isStateTransitioningKey("ctrl+")).toBe(false));
+
+  it("'+s' (empty leading token) → false (no modifier recognised)",
+    // "+s".split("+").filter(Boolean) = ["s"] → base="s", length=1 → false
+    () => expect(isStateTransitioningKey("+s")).toBe(false));
+
   // ── edge cases ──────────────────────────────────────────────────────────────
 
   it("returns false for empty string", () => expect(isStateTransitioningKey("")).toBe(false));

@@ -69,8 +69,10 @@ export function isStateTransitioningKey(keys: string): boolean {
   const mods = new Set(tokens.slice(0, -1));
 
   // Any ctrl/alt/meta/win combo → state-transitioning regardless of base key.
+  // "control" is an alias for "ctrl" (mirrors key-map.ts normalisation).
   if (
-    mods.has("ctrl") || mods.has("alt") || mods.has("meta") ||
+    mods.has("ctrl") || mods.has("control") ||
+    mods.has("alt") || mods.has("meta") ||
     mods.has("win") || mods.has("super") || mods.has("cmd")
   ) {
     return true;
