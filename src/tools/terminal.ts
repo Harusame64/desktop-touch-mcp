@@ -309,13 +309,13 @@ export const terminalSendHandler = async ({
       // really is in the foreground (or give up after 5 tries).
       const targetHwnd = String(win.hwnd);
       if (force) {
-        // AttachThreadInput path: single attempt is usually sufficient
+        // AttachThreadInput path: single attempt is usually sufficient.
+        // `foregrounded` is not read on this branch — the warning/homing note
+        // below is the only observable effect.
         restoreAndFocusWindow(win.hwnd, { force: true });
-        // Small settle
         await new Promise<void>((r) => setTimeout(r, 100));
         const fg = enumWindowsInZOrder().find((w) => w.isActive);
         if (fg && String(fg.hwnd) === targetHwnd) {
-          foregrounded = true;
           homingNotes.push(`brought "${win.title}" to front`);
         } else {
           warnings.push("ForceFocusRefused");

@@ -377,10 +377,8 @@ export async function getTabContext(
   tabId: string | null,
   port = DEFAULT_CDP_PORT
 ): Promise<TabContext> {
-  let id: string | null = tabId ?? null;
   try {
     const tab = await resolveTab(tabId, port);
-    id = tab.id;
     const raw = await evaluateInTab(
       "JSON.stringify([document.title, location.href, document.readyState])",
       tab.id,
