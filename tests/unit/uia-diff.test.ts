@@ -244,4 +244,66 @@ describe("computeUiaDiff", () => {
     expect(result.disappeared.some((d) => d.name === "Panel")).toBe(true);
     expect(result.appeared).toHaveLength(0);
   });
+
+  // ── J3 supplement: truncated shape ────────────────────────────────────────
+
+  it("truncated only contains keys for overflowed categories", () => {
+    // Only appeared overflows — truncated.disappeared should be absent
+    const before: UiElement[] = [];
+    const after = Array.from({ length: 7 }, (_, i) => el(`Item${i}`));
+    const result = computeUiaDiff(before, after);
+    expect(result.truncated?.appeared).toBe(2);
+    expect(result.truncated?.disappeared).toBeUndefined();
+    expect(result.truncated?.valueDeltas).toBeUndefined();
+  });
+
+  it("truncated is undefined when no category overflows", () => {
+    const before = [el("A"), el("B")];
+    const after  = [el("A"), el("C")];
+    const result = computeUiaDiff(before, after);
+    // 1 appeared, 1 disappeared — both within caps
+    expect(result.truncated).toBeUndefined();
+  });
+
+  // ── J3 supplement: name-only fallback key ─────────────────────────────────
+
+  it("uses name+controlType+depth as fallback key when automationId is empty", () => {
+    // Same name/type/depth → same key → no appeared/disappeared
+    const before = [el("Save", "Button")];
+    const after  = [el("Save", "Button")];
+    const result = computeUiaDiff(before, after);
+    expect(result.appeared).toHaveLength(0);
+    expect(result.disappeared).toHaveLength(0);
+  });
+
+  it("treats same name at different depths as different elements", () => {
+    const before = [el("Item", "ListItem", { depth: 1 })];
+    const after  = [el("Item", "ListItem", { depth: 2 })];
+    const result = computeUiaDiff(before, after);
+    // depth differs → different key → appeared + disappeared
+    expect(result.appeared).toHaveLength(1);
+    expect(result.disappeared).toHaveLength(1);
+  });
+
+  // ── J3 supplement: zero-size bounding rect ────────────────────────────────
+
+  it("treats zero-width bounding rect as invisible", () => {
+    const zeroWidth: UiElement = {
+      ...el("Ghost"), boundingRect: { x: 0, y: 0, width: 0, height: 30 },
+    };
+    const before: UiElement[] = [];
+    const after = [zeroWidth];
+    const result = computeUiaDiff(before, after);
+    expect(result.appeared).toHaveLength(0);
+  });
+
+  it("treats zero-height bounding rect as invisible", () => {
+    const zeroHeight: UiElement = {
+      ...el("Ghost"), boundingRect: { x: 0, y: 0, width: 100, height: 0 },
+    };
+    const before: UiElement[] = [];
+    const after = [zeroHeight];
+    const result = computeUiaDiff(before, after);
+    expect(result.appeared).toHaveLength(0);
+  });
 });
