@@ -25,6 +25,10 @@ const SUGGESTS: Record<string, string[]> = {
     "Use set_element_value for text input fields",
     "Try scope_element to inspect available patterns for this element",
   ],
+  BlockedKeyCombo: [
+    "Use workspace_launch to open applications by name instead",
+    "If you need shell execution, use terminal_send to an existing terminal window",
+  ],
   UiaTimeout: [
     "The target app may be unresponsive — wait and retry",
     "Try screenshot(detail='image') as a visual fallback",
@@ -105,6 +109,9 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   if (m.includes("element is disabled") || m.includes("is disabled") || m === "disabled") {
     return { code: "ElementDisabled", suggest: SUGGESTS.ElementDisabled };
+  }
+  if (m.includes("is not allowed because it could open a shell")) {
+    return { code: "BlockedKeyCombo", suggest: SUGGESTS.BlockedKeyCombo };
   }
   if (m.includes("invokepattern") || m.includes("invoke pattern")) {
     return { code: "InvokePatternNotSupported", suggest: SUGGESTS.InvokePatternNotSupported };

@@ -213,8 +213,11 @@ try {
     }
 } catch {}
 
+$ip = $null
+if (-not $found.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$ip)) {
+    Write-Output '{"ok":false,"error":"InvokePattern not supported by this element"}'; exit
+}
 try {
-    $ip = $found.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
     $ip.Invoke()
     Write-Output ('{"ok":true,"element":"' + $found.Current.Name + '"}')
 } catch {
