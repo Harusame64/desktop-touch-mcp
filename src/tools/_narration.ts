@@ -52,12 +52,31 @@ const STATE_KEYS = new Set([
 
 /**
  * Returns true if the key combo is likely to trigger a UI state change.
- * Single-character keys (a, b, 1, …) return false → rich downgrade.
+ *
+ * Rules:
+ *   - ctrl / alt / meta / win / super / cmd + any key → true
+ *     (ctrl+s, ctrl+f, alt+tab, alt+f4 etc. all cause UI state changes)
+ *   - shift is NOT treated as a state modifier on its own:
+ *     shift+a = uppercase A (text input), not a state transition.
+ *     shift+tab / shift+enter / shift+f10 still return true via STATE_KEYS.
+ *   - Bare single-character keys (a, b, 1, …) → false
+ *   - Bare special keys in STATE_KEYS (enter, f5, delete, …) → true
  */
 export function isStateTransitioningKey(keys: string): boolean {
-  // Strip modifiers (ctrl+, alt+, shift+, meta+) and check the base key.
-  const base = keys.toLowerCase().split("+").at(-1)?.trim() ?? "";
-  if (base.length === 1) return false;         // single character
+  const tokens = keys.toLowerCase().split("+").map(t => t.trim()).filter(Boolean);
+  if (tokens.length === 0) return false;
+  const base = tokens[tokens.length - 1];
+  const mods = new Set(tokens.slice(0, -1));
+
+  // Any ctrl/alt/meta/win combo → state-transitioning regardless of base key.
+  if (
+    mods.has("ctrl") || mods.has("alt") || mods.has("meta") ||
+    mods.has("win") || mods.has("super") || mods.has("cmd")
+  ) {
+    return true;
+  }
+
+  if (base.length === 1) return false;   // bare single character (a, b, 1, …)
   return STATE_KEYS.has(base);
 }
 
