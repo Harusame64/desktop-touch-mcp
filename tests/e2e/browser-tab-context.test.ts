@@ -77,6 +77,7 @@ describe("browser_eval — activeTab/readyState annotation", () => {
     const result = await browserEvalHandler({
       expression: "1 + 1",
       port: TEST_PORT,
+      includeContext: true,
     });
     const text = (result.content[0] as { text: string }).text;
     const ctx = extractTabContext(text);
@@ -91,6 +92,7 @@ describe("browser_eval — activeTab/readyState annotation", () => {
     const result = await browserEvalHandler({
       expression: "throw new Error('intentional')",
       port: TEST_PORT,
+      includeContext: true,
     });
     const text = (result.content[0] as { text: string }).text;
     // Should be a failure JSON, not have activeTab
@@ -103,6 +105,7 @@ describe("browser_find_element — activeTab/readyState annotation", () => {
     const result = await browserFindElementHandler({
       selector: "#btn-submit",
       port: TEST_PORT,
+      includeContext: true,
     });
     const text = (result.content[0] as { text: string }).text;
     const ctx = extractTabContext(text);
@@ -122,6 +125,7 @@ describe("browser_get_dom — activeTab/readyState annotation", () => {
       selector: "#btn-submit",
       maxLength: 500,
       port: TEST_PORT,
+      includeContext: true,
     });
     const text = (result.content[0] as { text: string }).text;
     const ctx = extractTabContext(text);
@@ -141,10 +145,68 @@ describe("browser_get_interactive — activeTab/readyState annotation", () => {
       inViewportOnly: false,
       maxResults: 10,
       port: TEST_PORT,
+      includeContext: true,
     });
     const text = (result.content[0] as { text: string }).text;
     const ctx = extractTabContext(text);
     expect(ctx).not.toBeNull();
     expect(["loading", "interactive", "complete"]).toContain(ctx!.readyState);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// includeContext: false — opt-out for chained calls in the same tab
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("includeContext: false omits the trailing activeTab / readyState lines", () => {
+  it("browser_eval(includeContext:false) returns just the evaluated value", async () => {
+    const result = await browserEvalHandler({
+      expression: "1 + 1",
+      port: TEST_PORT,
+      includeContext: false,
+    });
+    const text = (result.content[0] as { text: string }).text;
+    expect(text.trim()).toBe("2");
+    expect(text).not.toMatch(/^activeTab:/m);
+    expect(text).not.toMatch(/^readyState:/m);
+  });
+
+  it("browser_find_element(includeContext:false) omits the context block", async () => {
+    const result = await browserFindElementHandler({
+      selector: "#btn-submit",
+      port: TEST_PORT,
+      includeContext: false,
+    });
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toMatch(/Element found: #btn-submit/);
+    expect(text).not.toMatch(/^activeTab:/m);
+    expect(text).not.toMatch(/^readyState:/m);
+  });
+
+  it("browser_get_dom(includeContext:false) omits the context block", async () => {
+    const result = await browserGetDomHandler({
+      selector: "#btn-submit",
+      maxLength: 500,
+      port: TEST_PORT,
+      includeContext: false,
+    });
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toMatch(/<button[^>]*id="btn-submit"/);
+    expect(text).not.toMatch(/^activeTab:/m);
+    expect(text).not.toMatch(/^readyState:/m);
+  });
+
+  it("browser_get_interactive(includeContext:false) omits the context block", async () => {
+    const result = await browserGetInteractiveHandler({
+      types: ["all"],
+      inViewportOnly: false,
+      maxResults: 5,
+      port: TEST_PORT,
+      includeContext: false,
+    });
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toMatch(/Found \d+ interactive element/);
+    expect(text).not.toMatch(/^activeTab:/m);
+    expect(text).not.toMatch(/^readyState:/m);
   });
 });
