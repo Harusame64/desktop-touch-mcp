@@ -22,11 +22,11 @@ desktop-touch-mcp (Node.js / TypeScript)
     │   ├── cdp-bridge.ts   — Chrome DevTools Protocol: WebSocket sessions + DOM→screen coords
     │   ├── window-cache.ts — window-position cache used by the homing-correction path (dx,dy)
     │   └── poll.ts         — shared pollUntil utility
-    └── Layer 2: 51 MCP tools
+    └── Layer 2: 52 MCP tools
         screenshot(4) + window(3) + mouse(5) + keyboard(2) + ui_elements(4) +
         browser_cdp(12) + workspace(2) + pin(2) + dock(1) + macro(1) +
         scroll_capture(1) + context(3) + terminal(2) + events(4) + wait_until(1) +
-        clipboard(2) + notification(1) + scroll_to_element(1)
+        clipboard(2) + notification(1) + scroll_to_element(1) + smart_scroll(1)
 ```
 
 ---
@@ -560,6 +560,46 @@ scroll_to_element({selector: '.hero', block: 'start'})          # align to top o
 `block` controls vertical alignment (`start` / `center` / `end` / `nearest`, default `center`) — Chrome path only.
 
 Returns `scrolled:true` on success; `scrolled:false` if the element doesn't expose `ScrollItemPattern` (fall back to `scroll` + `screenshot`). Pairs well with `browser_get_interactive` / `screenshot(detail='text')` to confirm `viewportPosition:'in-view'` after scrolling.
+
+---
+
+### 🚀 SmartScroll
+
+#### `smart_scroll`
+
+Unified scroll dispatcher that handles the cases where `scroll_to_element` falls short:
+
+| Situation | What `smart_scroll` does |
+|---|---|
+| Virtualised list (TanStack, React Virtualized) | TanStack API → `data-index` DOM → proportional bisect (≤6 iterations) |
+| Nested scroll containers | Walks ancestor chain (CDP or UIA), scrolls outer → inner |
+| Sticky header occlusion | Detects fixed/sticky header overlap, compensates `scrollTop` |
+| `overflow:hidden` ancestor | Returns `OverflowHiddenAncestor` error; `expandHidden:true` unlocks |
+| No CDP/UIA (image-only) | Win32 `GetScrollInfo` + scrollbar-strip pixel sampling + dHash binary-search |
+
+**Scroll verification:** `verifyWithHash:true` (auto-enabled for image path) computes a 64-bit perceptual hash before and after each attempt — if Hamming distance < 5, the page didn't move (virtual scroll boundary or swallowed input). Reported as `scrolled:false`.
+
+**Unified response:** `{ ok, path:"cdp"|"uia"|"image", attempts, pageRatio, scrolled, ancestors[], viewportPosition, occludedBy?, warnings? }`
+
+`pageRatio` (0..1): normalised vertical position of the target element on the full page (0 = top, 1 = bottom).
+
+**Scroll resolution priority:** `strategy:"auto"` (default) tries CDP → UIA → image in order, falling through on failure or no-op.
+
+```
+# CDP: nested scroll + virtualised list
+smart_scroll({target: '[data-index]', virtualIndex: 500, virtualTotal: 10000})
+
+# UIA: native app
+smart_scroll({target: 'Create Release', windowTitle: 'File Explorer', strategy: 'uia'})
+
+# Image: binary-search with LLM hint
+smart_scroll({target: 'readme section', windowTitle: 'MyApp', strategy: 'image', hint: 'below'})
+
+# Sticky-header-compensated CDP scroll
+smart_scroll({target: '#footer-nav'})  # detects and compensates automatically
+```
+
+`pageRatio` is also emitted per-element by `browser_get_interactive` (injected JS now computes `(scrollY + rect.top) / scrollHeight`).
 
 ---
 

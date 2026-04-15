@@ -496,3 +496,263 @@ export function disconnectAll(port = DEFAULT_CDP_PORT): void {
     session.close();
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SmartScroll — CDP ancestor walk, scroll control, sticky-header, virtual lists
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface CdpScrollAncestor {
+  cssSelectorPath: string;
+  scrollTop: number;
+  scrollLeft: number;
+  scrollHeight: number;
+  clientHeight: number;
+  scrollWidth: number;
+  clientWidth: number;
+  overflowX: string;
+  overflowY: string;
+  /** true when overflow is "hidden" (scrolls silently swallowed). */
+  isHidden: boolean;
+  /** true when the container looks like a virtualised list. */
+  isVirtualized: boolean;
+}
+
+/**
+ * Walk the DOM ancestor chain of the given CSS selector and return all scrollable
+ * ancestors (outer → inner). Pierces shadow roots; skips cross-origin iframes
+ * (warning is added to the returned warnings array).
+ */
+export async function getScrollAncestorsCdp(
+  selector: string,
+  tabId: string | null = null,
+  port = DEFAULT_CDP_PORT,
+  maxDepth = 3
+): Promise<{ ancestors: CdpScrollAncestor[]; warnings: string[] }> {
+  const expr = `
+(function() {
+  const MAXDEPTH = ${maxDepth};
+  const el = document.querySelector(${JSON.stringify(selector)});
+  if (!el) return { ancestors: [], warnings: ['Element not found: ' + ${JSON.stringify(selector)}] };
+
+  const ancestors = [];
+  const warnings = [];
+  let depth = 0;
+  let cur = el.parentNode;
+
+  function getHost(node) {
+    try {
+      const root = node.getRootNode();
+      if (root instanceof ShadowRoot) return root.host;
+    } catch (_) { /* ignore */ }
+    return null;
+  }
+
+  function selectorPath(node) {
+    if (!node || node === document.documentElement) return 'html';
+    const tag = node.tagName ? node.tagName.toLowerCase() : '?';
+    const id = node.id ? '#' + node.id : '';
+    if (id) return tag + id;
+    const classes = node.classList ? '.' + [...node.classList].slice(0, 2).join('.') : '';
+    return tag + (classes || '');
+  }
+
+  while (cur && depth < MAXDEPTH) {
+    // Shadow DOM: skip to host
+    const host = getHost(cur);
+    if (host) { cur = host; continue; }
+
+    // iframe descent (same-origin only)
+    if (cur.tagName === 'IFRAME') {
+      try {
+        const doc = cur.contentDocument;
+        if (doc) { cur = doc.body; continue; }
+      } catch (_) {
+        warnings.push('cross-origin-iframe-skipped');
+        break;
+      }
+    }
+
+    if (cur === document.documentElement || cur === document.body || !cur.tagName) {
+      cur = cur.parentNode;
+      continue;
+    }
+
+    const style = getComputedStyle(cur);
+    const overflowY = style.overflowY;
+    const overflowX = style.overflowX;
+    const scrollable = overflowY === 'scroll' || overflowY === 'auto' || overflowY === 'overlay'
+                    || overflowX === 'scroll' || overflowX === 'auto' || overflowX === 'overlay';
+    const hidden = overflowY === 'hidden' || overflowX === 'hidden';
+
+    if (scrollable || hidden) {
+      const isVirtualized = ('__tanstackVirtualInstance' in cur)
+        || !!cur.querySelector('[data-index]');
+      ancestors.push({
+        cssSelectorPath: selectorPath(cur),
+        scrollTop: cur.scrollTop,
+        scrollLeft: cur.scrollLeft,
+        scrollHeight: cur.scrollHeight,
+        clientHeight: cur.clientHeight,
+        scrollWidth: cur.scrollWidth,
+        clientWidth: cur.clientWidth,
+        overflowX,
+        overflowY,
+        isHidden: hidden && !scrollable,
+        isVirtualized,
+      });
+      depth++;
+    }
+
+    cur = cur.parentNode;
+  }
+
+  return { ancestors, warnings };
+})()`;
+
+  try {
+    const result = await evaluateInTab(expr, tabId, port) as {
+      ancestors: CdpScrollAncestor[];
+      warnings: string[];
+    };
+    return result ?? { ancestors: [], warnings: [] };
+  } catch (err) {
+    return { ancestors: [], warnings: [String(err)] };
+  }
+}
+
+/**
+ * Set the scrollTop / scrollLeft of the element matching the selector.
+ */
+export async function setScrollPositionCdp(
+  selector: string,
+  top: number,
+  left: number,
+  tabId: string | null = null,
+  port = DEFAULT_CDP_PORT
+): Promise<{ ok: boolean; newTop: number; newLeft: number }> {
+  const expr = `
+(function() {
+  const el = document.querySelector(${JSON.stringify(selector)});
+  if (!el) return { ok: false, newTop: 0, newLeft: 0 };
+  el.scrollTop = ${top};
+  el.scrollLeft = ${left};
+  return { ok: true, newTop: el.scrollTop, newLeft: el.scrollLeft };
+})()`;
+  try {
+    const result = await evaluateInTab(expr, tabId, port) as { ok: boolean; newTop: number; newLeft: number };
+    return result;
+  } catch {
+    return { ok: false, newTop: 0, newLeft: 0 };
+  }
+}
+
+/**
+ * Detect whether the element matching selector is occluded by a sticky or fixed header
+ * after scrolling. Returns occluded=true only when position is sticky/fixed, z-index ≥ 1,
+ * and the x-range overlaps the target element.
+ */
+export async function detectStickyHeaderCdp(
+  selector: string,
+  tabId: string | null = null,
+  port = DEFAULT_CDP_PORT
+): Promise<{ occluded: boolean; headerRect?: { top: number; left: number; width: number; height: number } }> {
+  const expr = `
+(function() {
+  const el = document.querySelector(${JSON.stringify(selector)});
+  if (!el) return { occluded: false };
+  const rect = el.getBoundingClientRect();
+  const midX = rect.left + rect.width / 2;
+  const probeY = 4;
+  const header = document.elementFromPoint(midX, probeY);
+  if (!header || el.contains(header) || header.contains(el)) return { occluded: false };
+  const hs = getComputedStyle(header);
+  const position = hs.position;
+  if (position !== 'sticky' && position !== 'fixed') return { occluded: false };
+  const zi = parseInt(hs.zIndex, 10);
+  if (isNaN(zi) || zi < 1) return { occluded: false };
+  const hr = header.getBoundingClientRect();
+  // Check x-range overlap
+  if (hr.right < rect.left || hr.left > rect.right) return { occluded: false };
+  return { occluded: true, headerRect: { top: hr.top, left: hr.left, width: hr.width, height: hr.height } };
+})()`;
+  try {
+    const result = await evaluateInTab(expr, tabId, port) as {
+      occluded: boolean;
+      headerRect?: { top: number; left: number; width: number; height: number };
+    };
+    return result;
+  } catch {
+    return { occluded: false };
+  }
+}
+
+/**
+ * Scroll a virtualised list container to bring `virtualIndex` into view.
+ * Tries TanStack API first, then data-index DOM query, then binary bisect (≤ 6 iterations).
+ */
+export async function scrollVirtualListCdp(
+  selector: string,
+  virtualIndex: number,
+  virtualTotal: number,
+  tabId: string | null = null,
+  port = DEFAULT_CDP_PORT
+): Promise<{ ok: boolean; scrolled: boolean; method: string; warnings: string[] }> {
+  const expr = `
+(function() {
+  const container = document.querySelector(${JSON.stringify(selector)});
+  if (!container) return { ok: false, scrolled: false, method: 'none', warnings: ['Container not found'] };
+  const idx = ${virtualIndex};
+  const total = ${virtualTotal};
+
+  // 1. TanStack Virtual API
+  if ('__tanstackVirtualInstance' in container) {
+    try {
+      container.__tanstackVirtualInstance.scrollToIndex(idx, { align: 'center' });
+      return { ok: true, scrolled: true, method: 'tanstack', warnings: [] };
+    } catch (_) { /* fall through */ }
+  }
+
+  // 2. data-index DOM element
+  const item = container.querySelector('[data-index="' + idx + '"]');
+  if (item) {
+    item.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+    return { ok: true, scrolled: true, method: 'data-index', warnings: [] };
+  }
+
+  // 3. Proportional bisect (≤ 6 iterations)
+  const LIMIT = 6;
+  let lo = 0, hi = 1, bestDist = Infinity;
+  for (let i = 0; i < LIMIT; i++) {
+    const ratio = (lo + hi) / 2;
+    container.scrollTop = Math.round(ratio * container.scrollHeight);
+    // Find closest visible data-index
+    const items = container.querySelectorAll('[data-index]');
+    let closest = null, closestDist = Infinity;
+    for (const it of items) {
+      const di = parseInt(it.getAttribute('data-index'), 10);
+      const d = Math.abs(di - idx);
+      if (d < closestDist) { closestDist = d; closest = di; }
+    }
+    if (closest === null) break;
+    bestDist = closestDist;
+    if (closest < idx) lo = ratio;
+    else if (closest > idx) hi = ratio;
+    else break; // found
+  }
+
+  return {
+    ok: true,
+    scrolled: true,
+    method: 'bisect',
+    warnings: bestDist > 5 ? ['Bisect ended ' + bestDist + ' items from target'] : [],
+  };
+})()`;
+  try {
+    const result = await evaluateInTab(expr, tabId, port) as {
+      ok: boolean; scrolled: boolean; method: string; warnings: string[];
+    };
+    return result;
+  } catch (err) {
+    return { ok: false, scrolled: false, method: 'error', warnings: [String(err)] };
+  }
+}

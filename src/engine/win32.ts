@@ -55,6 +55,28 @@ const BITMAPINFOHEADER = koffi.struct("BITMAPINFOHEADER", {
   biClrImportant: "uint32",
 });
 
+/** SCROLLINFO — passed to GetScrollInfo to query scrollbar position. */
+const SCROLLINFO = koffi.struct("SCROLLINFO", {
+  cbSize:     "uint32",
+  fMask:      "uint32",
+  nMin:       "int32",
+  nMax:       "int32",
+  nPage:      "uint32",
+  nPos:       "int32",
+  nTrackPos:  "int32",
+});
+
+// SCROLLINFO fMask flags
+const SIF_ALL      = 0x17;  // SIF_RANGE | SIF_PAGE | SIF_POS | SIF_TRACKPOS
+// nBar constants for GetScrollInfo
+const SB_HORZ = 0;
+const SB_VERT = 1;
+
+// Sanity-check at module load: SCROLLINFO must be 28 bytes on x64 (no padding)
+if (koffi.sizeof(SCROLLINFO) !== 28) {
+  throw new Error(`SCROLLINFO sizeof mismatch: expected 28, got ${koffi.sizeof(SCROLLINFO)}`);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Function bindings
 // ─────────────────────────────────────────────────────────────────────────────
@@ -169,6 +191,12 @@ const AttachThreadInput = user32.func(
 
 // GetCurrentThreadId — from kernel32.dll
 const GetCurrentThreadId = kernel32.func("uint32 __stdcall GetCurrentThreadId()");
+
+// Scrollbar
+const GetScrollInfo = user32.func(
+  "bool __stdcall GetScrollInfo(void *hWnd, int fnBar, _Inout_ SCROLLINFO *lpsi)"
+);
+
 const HWND_TOPMOST = -1;
 const HWND_NOTOPMOST = -2;
 const SWP_NOSIZE = 0x0001;
@@ -702,5 +730,45 @@ export function printWindowToBuffer(hwnd: unknown, flags = 2): {
     DeleteObject(hBitmap);
     DeleteDC(memDC);
     ReleaseDC(null, screenDC);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scrollbar info
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface ScrollInfoResult {
+  nMin: number;
+  nMax: number;
+  nPage: number;
+  nPos: number;
+  /** Scroll position normalised to 0..1. */
+  pageRatio: number;
+}
+
+/**
+ * Query the scrollbar position of a window using Win32 GetScrollInfo.
+ * Returns null when the window has no scrollbar, the range is degenerate,
+ * or the call fails.
+ */
+export function readScrollInfo(
+  hwnd: bigint | unknown,
+  axis: "vertical" | "horizontal"
+): ScrollInfoResult | null {
+  try {
+    const si = {
+      cbSize: koffi.sizeof(SCROLLINFO),
+      fMask: SIF_ALL,
+      nMin: 0, nMax: 0, nPage: 0, nPos: 0, nTrackPos: 0,
+    };
+    const fnBar = axis === "vertical" ? SB_VERT : SB_HORZ;
+    const ok = GetScrollInfo(hwnd, fnBar, si);
+    if (!ok) return null;
+    const range = si.nMax - si.nMin - si.nPage + 1;
+    if (range <= 0) return null;  // no real scroll range
+    const pageRatio = Math.max(0, Math.min(1, (si.nPos - si.nMin) / range));
+    return { nMin: si.nMin, nMax: si.nMax, nPage: si.nPage, nPos: si.nPos, pageRatio };
+  } catch {
+    return null;
   }
 }

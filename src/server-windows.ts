@@ -19,6 +19,7 @@ import { registerEventTools } from "./tools/events.js";
 import { registerClipboardTools } from "./tools/clipboard.js";
 import { registerNotificationTools } from "./tools/notification.js";
 import { registerScrollToElementTools } from "./tools/scroll-to-element.js";
+import { registerSmartScrollTools } from "./tools/smart-scroll.js";
 import { startTray, stopTray } from "./utils/tray.js";
 import { checkFailsafe, FailsafeError } from "./utils/failsafe.js";
 
@@ -114,6 +115,7 @@ registerEventTools(server);
 registerClipboardTools(server);
 registerNotificationTools(server);
 registerScrollToElementTools(server);
+registerSmartScrollTools(server);
 
 // ─── Failsafe background monitor (backup for long-running operations) ─────────
 // Primary check: per-tool call via the wrapper above.

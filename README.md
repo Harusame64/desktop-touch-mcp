@@ -6,7 +6,7 @@
 
 > **Stop pasting screenshots. Let Claude see and control your desktop directly.**
 
-An MCP server that gives Claude eyes and hands on Windows — 51 tools covering screenshots, mouse, keyboard, Windows UI Automation, Chrome DevTools Protocol, clipboard, and desktop notifications, designed from the ground up for LLM efficiency.
+An MCP server that gives Claude eyes and hands on Windows — 52 tools covering screenshots, mouse, keyboard, Windows UI Automation, Chrome DevTools Protocol, clipboard, desktop notifications, and SmartScroll, designed from the ground up for LLM efficiency.
 
 > *Applies MPEG P-frame diffing to window capture: only changed windows are sent after the first frame, cutting token usage by ~60–80% in typical automation loops.*
 
@@ -160,6 +160,7 @@ All `browser_*` tools that touch the DOM accept `includeContext:false` to omit t
 | Tool | Description |
 |---|---|
 | `scroll_to_element` | Scroll a named element into the viewport without computing scroll amounts. Chrome path: `selector` + `block` alignment. Native path: `name` + `windowTitle` via UIA ScrollItemPattern |
+| `smart_scroll` | **SmartScroll** — unified scroll dispatcher: CDP → UIA → image binary-search fallback. Handles nested containers, virtualised lists (TanStack/React Virtualized), sticky-header occlusion, and image-only environments. Returns `pageRatio`, `ancestors[]`, and hash-verified `scrolled` |
 
 ---
 
