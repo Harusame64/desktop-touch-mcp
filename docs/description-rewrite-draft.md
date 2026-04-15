@@ -438,12 +438,20 @@ scroll_capture stitches full-page images. sizeReduced=true means the image was d
 
 ## 次のステップ
 
+### v0.6.3（2026-04-15 リリース済み）
 - [x] ドラフト v1 作成
 - [x] Opus レビュー round 3 完了
 - [x] MUST 修正適用 → ドラフト v2
-- [ ] **ユーザ承認**
-- [ ] Phase 3A: `buildDesc()` + 計測スクリプト
-- [ ] Phase 3B-D: 全ツール description 書き換え
-- [ ] Phase 3E: Tier 4 examples 付与
-- [ ] Phase 3F: instructions 書き換え
-- [ ] Phase 4: 検証 + Opus round 4
+- [x] ユーザ承認
+- [x] Phase 3A: `buildDesc()` helper 実装（`src/tools/_types.ts`）
+- [x] Phase 3B-D: 全46ツール description 書き換え（Tier A/B/C）
+- [x] Phase 3E: Tier 4 examples 付与（5ツール）
+- [x] Phase 3F: instructions 圧縮（`src/server-windows.ts`、~310 words）
+- [x] `scroll_capture` 1MB guard（700KB cap + WebP fallback + iterative downscale）
+- [x] `docs/description-rewrite-draft.md` をリポジトリに保存
+
+### v0.6.4（進行中）
+- [x] Opus round 4 レビュー実施
+- [ ] `scripts/measure-tools-list-tokens.ts` 実装（token 定量化）
+- [ ] MUST-FIX 5件（scroll_capture sizeReduced 明記、wait_until predicates、workspace_launch suggest contract、terminal_send restoreFocus、windowTitle 省略 blind-spot）
+- [ ] description contract テスト追加（非空・文字数上限）
