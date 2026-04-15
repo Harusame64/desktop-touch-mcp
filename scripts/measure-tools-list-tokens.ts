@@ -214,8 +214,9 @@ function parseToolFile(filePath: string, fileName: string): ToolEntry[] {
 
 const TOOL_FILES = [
   "browser.ts", "clipboard.ts", "context.ts", "dock.ts", "events.ts", "keyboard.ts",
-  "macro.ts", "mouse.ts", "notification.ts", "pin.ts", "screenshot.ts", "scroll-capture.ts",
-  "scroll-to-element.ts", "smart-scroll.ts", "terminal.ts", "ui-elements.ts", "wait-until.ts", "window.ts", "workspace.ts",
+  "macro.ts", "mouse.ts", "notification.ts", "perception.ts", "pin.ts", "screenshot.ts",
+  "scroll-capture.ts", "scroll-to-element.ts", "smart-scroll.ts", "terminal.ts",
+  "ui-elements.ts", "wait-until.ts", "window.ts", "workspace.ts",
 ];
 
 const all: ToolEntry[] = [];

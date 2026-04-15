@@ -22,9 +22,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "../..");
 
 const TOOL_FILES = [
-  "browser.ts", "context.ts", "dock.ts", "events.ts", "keyboard.ts",
-  "macro.ts", "mouse.ts", "pin.ts", "screenshot.ts", "scroll-capture.ts",
-  "terminal.ts", "ui-elements.ts", "wait-until.ts", "window.ts", "workspace.ts",
+  "browser.ts", "clipboard.ts", "context.ts", "dock.ts", "events.ts", "keyboard.ts",
+  "macro.ts", "mouse.ts", "notification.ts", "perception.ts", "pin.ts", "screenshot.ts",
+  "scroll-capture.ts", "scroll-to-element.ts", "smart-scroll.ts", "terminal.ts",
+  "ui-elements.ts", "wait-until.ts", "window.ts", "workspace.ts",
 ];
 
 const MIN_CHARS = 20;
@@ -147,8 +148,8 @@ for (const f of TOOL_FILES) {
 }
 
 describe("tool descriptions — contract", () => {
-  it("finds at least 40 registered tools", () => {
-    expect(allTools.length).toBeGreaterThanOrEqual(40);
+  it("finds exactly 56 registered tools", () => {
+    expect(allTools.length).toBe(56);
   });
 
   for (const tool of allTools) {

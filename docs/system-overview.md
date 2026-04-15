@@ -13,7 +13,8 @@ Claude CLI
 desktop-touch-mcp (Node.js / TypeScript)
     ├── Layer 1: Engine
     │   ├── nutjs.js        — mouse / keyboard / screen capture (nut-js)
-    │   ├── win32.ts        — Win32 API via koffi: window enum, DPI, PrintWindow, SetWindowPos
+    │   ├── win32.ts        — Win32 API via koffi: window enum, DPI, PrintWindow, SetWindowPos,
+    │   │                     getForegroundHwnd, getWindowClassName, isWindowTopmost, getWindowOwner
     │   ├── uia-bridge.ts   — Windows UI Automation (PowerShell): element tree, click, set-value,
     │   │                     GetFocusedElement, ElementFromPoint
     │   ├── uia-diff.ts     — UIA snapshot diff (appeared / disappeared / valueDeltas)
@@ -21,12 +22,25 @@ desktop-touch-mcp (Node.js / TypeScript)
     │   ├── layer-buffer.ts — per-window layer buffer: frame-diff detection (MPEG P-frame style)
     │   ├── cdp-bridge.ts   — Chrome DevTools Protocol: WebSocket sessions + DOM→screen coords
     │   ├── window-cache.ts — window-position cache used by the homing-correction path (dx,dy)
-    │   └── poll.ts         — shared pollUntil utility
-    └── Layer 2: 52 MCP tools
+    │   ├── event-bus.ts    — 500 ms Win32 polling bus; perception sensor piggybacks on it
+    │   ├── identity-tracker.ts — processStartTimeMs-based window identity; detects restarts
+    │   ├── poll.ts         — shared pollUntil utility
+    │   └── perception/     — Reactive Perception Graph (v0.9)
+    │       ├── types.ts            — pure types: Observation / Fluent / PerceptionLens / GuardResult / PerceptionEnvelope
+    │       ├── evidence.ts         — makeEvidence / isStale / confidenceFor (win32=0.98, image=0.60, inferred=0.50)
+    │       ├── fluent-store.ts     — FluentStore: TMS-lite reconcile (newer seq wins; higher confidence wins)
+    │       ├── dependency-graph.ts — fluentKey → Set<lensId> reverse index
+    │       ├── lens.ts             — compileLens / resolveBindingFromSnapshot / expandFluentKeys
+    │       ├── guards.ts           — 4 pure guards: identityStable / keyboardTarget / clickCoordinates / stable.rect
+    │       ├── envelope.ts         — projectEnvelope: attention derivation + token-budget trimming
+    │       ├── sensors-win32.ts    — only impure module; piggybacks event-bus 500 ms tick
+    │       └── registry.ts         — central coordinator; max 16 lenses (FIFO evict)
+    └── Layer 2: 56 MCP tools
         screenshot(4) + window(3) + mouse(5) + keyboard(2) + ui_elements(4) +
         browser_cdp(12) + workspace(2) + pin(2) + dock(1) + macro(1) +
         scroll_capture(1) + context(3) + terminal(2) + events(4) + wait_until(1) +
-        clipboard(2) + notification(1) + scroll_to_element(1) + smart_scroll(1)
+        clipboard(2) + notification(1) + scroll_to_element(1) + smart_scroll(1) +
+        perception(4)
 ```
 
 ---
@@ -48,6 +62,16 @@ Every action tool (`mouse_click`, `keyboard_press`, `click_element`, …) return
       "appeared":  [{ "name": "Save dialog", "type": "Dialog" }],
       "disappeared": [],
       "valueDeltas": [{ "name": "File name", "before": "", "after": "memo.txt" }]
+    },
+    "perception": {
+      "lens": "perc-1",
+      "seq": 7,
+      "attention": "ok",
+      "guards": { "target.identityStable": true, "safe.keyboardTarget": true },
+      "latest": {
+        "target": { "title": "Untitled - Notepad", "foreground": true, "rect": {"x":78,"y":78,"width":976,"height":618} }
+      },
+      "changed": []
     }
   }
 }
@@ -60,6 +84,7 @@ Every action tool (`mouse_click`, `keyboard_press`, `click_element`, …) return
 | `windowChanged` | Whether the foreground window changed between before and after |
 | `elapsedMs` | Wall-clock duration of the action |
 | `rich` | **Opt-in** — present only when the caller passed `narrate:"rich"`. UIA diff block |
+| `perception` | **Opt-in** — present only when the caller passed a `lensId`. Perception envelope (see below) |
 
 ### `narrate` parameter
 
@@ -144,7 +169,7 @@ Monitor list: resolution, position, DPI, cursor position.
 #### `get_windows`
 All windows in Z-order.
 ```json
-{ "zOrder": 0, "title": "Notepad", "region": {"x":78,"y":78,"w":976,"h":618},
+{ "zOrder": 0, "title": "Notepad", "region": {"x":78,"y":78,"width":976,"height":618},
   "isActive": true, "isMinimized": false, "isOnCurrentDesktop": true }
 ```
 
@@ -603,6 +628,116 @@ smart_scroll({target: '#footer-nav'})  # detects and compensates automatically
 
 ---
 
+### 👁️ Reactive Perception (v0.9)
+
+Server-side window state tracking. Register a lens on a target window once, then pass `lensId` to action tools to get guards before each action and a perception envelope in every response — without extra round-trips.
+
+#### `perception_register`
+
+Register a standing perception lens on a target window. Returns a `lensId`.
+
+```
+perception_register({
+  name: "editor",
+  target: { kind: "window", match: { titleIncludes: "Notepad" } },
+  guards: ["target.identityStable", "safe.keyboardTarget"],
+  guardPolicy: "block",   // "warn" | "block" (default: "block")
+  maxEnvelopeTokens: 120,
+})
+→ { lensId: "perc-1", seq: 1, digest: "..." }
+```
+
+The server immediately resolves the window (foreground-preferred when multiple titles match), populates Win32 fluents, and starts listening to the event-bus for state changes. Subsequent action tool calls with `lensId` will:
+1. **Guard check** — evaluate guards before the action. If `guardPolicy:"block"` and a guard fails → `{ok:false, code:"GuardFailed", suggest:[...]}`.
+2. **Envelope** — attach `post.perception` (attention + guard states + latest fluents) to the success response.
+
+#### `perception_read`
+
+Force-refresh all Win32 fluents for a lens and return its current perception envelope. Use when you want fresh state without performing an action.
+
+```
+perception_read({ lensId: "perc-1" })
+→ PerceptionEnvelope
+```
+
+#### `perception_forget`
+
+Deregister a lens. When all lenses are deregistered the sensor loop stops automatically.
+
+```
+perception_forget({ lensId: "perc-1" }) → { ok: true }
+```
+
+#### `perception_list`
+
+List all active lenses with their binding, seq, and attention state.
+
+#### Fluents maintained per lens
+
+| Fluent | What it tracks |
+|---|---|
+| `target.exists` | Is the HWND still visible? |
+| `target.title` | Current window title |
+| `target.foreground` | Is the window in the foreground? |
+| `target.zOrder` | Z-order index (0 = topmost) |
+| `target.rect` | Window bounding rect (pixels) |
+| `target.identity` | `{ hwnd, pid, processName, processStartTimeMs }` |
+| `modal.above` | Is a topmost/dialog-class window above the target? |
+
+#### Guards
+
+| Guard | Blocks when |
+|---|---|
+| `target.identityStable` | `pid` or `processStartTimeMs` differs from registration time (app restarted / different process) |
+| `safe.keyboardTarget` | Window is not foreground, OR a modal is above it, OR identity is unstable |
+| `safe.clickCoordinates` | Click point is outside the target rect (or rect is stale >500 ms) |
+| `stable.rect` | Rect changed in the last 250 ms (window moving / resizing) |
+
+#### Perception envelope shape (`post.perception`)
+
+```json
+{
+  "lens": "perc-1",
+  "seq": 12,
+  "attention": "ok",
+  "guards": { "target.identityStable": true, "safe.keyboardTarget": true },
+  "latest": {
+    "target": {
+      "title": "Untitled - Notepad",
+      "foreground": true,
+      "rect": { "x": 78, "y": 78, "width": 976, "height": 618 },
+      "identity": { "hwnd": "...", "pid": 1234, "processName": "notepad.exe" }
+    },
+    "modal": { "above": false }
+  },
+  "changed": []
+}
+```
+
+`attention` values: `"ok"` / `"changed"` / `"dirty"` / `"stale"` / `"guard_failed"` / `"identity_changed"` / `"needs_escalation"`
+
+#### Usage example
+
+```
+# Register once
+perception_register({name:"editor", target:{kind:"window", match:{titleIncludes:"Notepad"}}})
+→ {lensId:"perc-1"}
+
+# Pass lensId to any action tool — guards + envelope are automatic
+keyboard_type({text:"hello", windowTitle:"Notepad", lensId:"perc-1"})
+→ post.perception: {attention:"ok", guards:{...}, latest:{target:{title, rect, foreground}}}
+
+# When the app restarts (different pid), identity guard fires:
+keyboard_type({text:"x", lensId:"perc-1"})
+→ {ok:false, code:"GuardFailed", suggest:["Re-register lens for the new process instance"]}
+```
+
+`lensId` is opt-in on: `keyboard_type`, `keyboard_press`, `mouse_click`, `mouse_drag`, `click_element`, `set_element_value`, `browser_click_element`, `browser_navigate`, `browser_eval`. Omitting `lensId` preserves existing behavior exactly.
+
+**Limits:** max 16 active lenses (FIFO evict when exceeded). Sensor loop runs a separate 250 ms drain timer on top of the event-bus's 500 ms Win32 polling tick; no extra `EnumWindows` calls beyond the event-bus's own sweep.
+
+---
+
 ## Param coercion for LLM-friendly spellings
 
 Boolean / object parameters accept the string spellings some MCP clients emit by accident:
@@ -660,6 +795,11 @@ screenshot(diffMode=true)
 | `narrate:"rich"` settle | 120 ms wait between the action and the after-snapshot |
 | tab-context cache (browser tools) | 500 ms keyed by `(port, tabId)` — chained calls share one `getTabContext` round-trip |
 | `--disable-extensions` exclusion | Chrome 147+ with this flag fails to bind the CDP port; removed from the E2E launcher |
+| Perception lens limit | Max 16 active lenses; oldest evicted (FIFO) when exceeded |
+| Perception sensor timer | Drains event-bus every 250 ms via a separate 250 ms `setInterval` on top of the event-bus's 500 ms Win32 polling tick; no extra `EnumWindows` calls |
+| HWND type (koffi) | koffi `intptr` returns JS `number` at runtime; compared as strings (`String(w.hwnd) === hwnd`) to avoid `number === bigint` always-false |
+| Perception confidence | `confidenceFor()` uses evidence SOURCE base (win32=0.98, image=0.60, inferred=0.50) — NOT the stored numeric observation value |
+| `post.perception` strip | Included in the LLM-visible tool response (current call only); stripped from the history ring buffer only. Stored in `PostState.perception` for the duration of the current tool call |
 
 ---
 

@@ -16,6 +16,7 @@ import { enumWindowsInZOrder, getWindowProcessId, getProcessIdentityByPid } from
 import { getFocusedAndPointInfo } from "../engine/uia-bridge.js";
 import type { ToolResult } from "./_types.js";
 import type { RichBlock } from "../engine/uia-diff.js";
+import type { PerceptionEnvelope } from "../engine/perception/types.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -36,6 +37,8 @@ export interface PostState {
   elapsedMs: number;
   /** UIA diff block injected by withRichNarration. Stripped before history storage. */
   rich?: RichBlock;
+  /** RPG perception envelope injected via _perceptionForPost. Stripped before history storage. */
+  perception?: PerceptionEnvelope;
 }
 
 export interface HistoryEntry {
@@ -43,7 +46,7 @@ export interface HistoryEntry {
   argsDigest: string;
   ok: boolean;
   errorCode?: string;
-  post: Omit<PostState, "rich">;
+  post: Omit<PostState, "rich" | "perception">;
   tsMs: number;
 }
 
@@ -154,13 +157,18 @@ export function withPostState<T extends Record<string, unknown>>(
               post.rich = obj._richForPost as RichBlock;
               delete obj._richForPost;
             }
+            // RPG perception envelope — handlers set _perceptionForPost on success.
+            if (obj._perceptionForPost !== null && typeof obj._perceptionForPost === "object") {
+              post.perception = obj._perceptionForPost as PerceptionEnvelope;
+              delete obj._perceptionForPost;
+            }
             block.text = JSON.stringify(obj, null, 2);
           }
         }
       }
 
-      // Strip rich block from history to avoid bloating the ring buffer.
-      const { rich: _rich, ...postForHistory } = post;
+      // Strip rich and perception blocks from history to avoid bloating the ring buffer.
+      const { rich: _rich, perception: _perception, ...postForHistory } = post;
       recordHistory({
         tool: toolName,
         argsDigest: digest(args),
