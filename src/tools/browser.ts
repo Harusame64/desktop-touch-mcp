@@ -1404,7 +1404,7 @@ export function registerBrowserTools(server: McpServer): void {
 
   server.tool(
     "browser_get_interactive",
-    "List all interactive elements (links, buttons, inputs, ARIA controls) on the current page with CSS selectors and viewport status — use before browser_click_element to discover stable selectors without trial-and-error. scope limits to a CSS subsection (e.g. '.sidebar'). Returns state (checked/pressed/selected/expanded) for ARIA custom controls. Caveats: Selectors are CDP-generated snapshots — re-call after page navigates or re-renders.",
+    "List all interactive elements (links, buttons, inputs, ARIA controls) on the current page with CSS selectors, visible text or value for inputs, and viewport status — use before browser_click_element to discover stable selectors, and prefer this over screenshot when verifying button/toggle state after submission (no image tokens, structured output). scope limits to a CSS subsection (e.g. '.sidebar'). Returns state (checked/pressed/selected/expanded) for ARIA custom controls. Caveats: Selectors are CDP-generated snapshots — re-call after page navigates or re-renders. Input text reflects the empty-field hint text when defined (takes priority over typed value) — use browser_eval('document.querySelector(sel).value') to read actual typed content.",
     browserGetInteractiveSchema,
     browserGetInteractiveHandler
   );
@@ -1446,7 +1446,7 @@ export function registerBrowserTools(server: McpServer): void {
 
   server.tool(
     "browser_eval",
-    "Evaluate a JavaScript expression in a browser tab and return the result. Use for reading page state, scrolling, or filling inputs programmatically. Caveats: Returns JSON-serializable values only — DOM nodes cannot be returned directly.",
+    "Evaluate a JavaScript expression in a browser tab and return the result. Use for reading page state, scrolling, or triggering simple DOM mutations. Caveats: Returns JSON-serializable values only — DOM nodes cannot be returned directly. React / Vue / Svelte controlled inputs cannot be updated via element.value = ... or native-setter + dispatchEvent — the framework's internal state is not refreshed; use keyboard_type (click the field first, pass windowTitle) for such form fields.",
     browserEvalSchema,
     withPostState("browser_eval", browserEvalHandler)
   );

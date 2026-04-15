@@ -273,7 +273,7 @@ export const keyboardPressHandler = async ({
 export function registerKeyboardTools(server: McpServer): void {
   server.tool(
     "keyboard_type",
-    "Type a string into the focused window. Pass windowTitle to auto-focus the target before typing and enable focus-loss detection (focusLost in response) — eliminates a separate focus_window call. Prefer set_element_value for form fields. Caveats: Omitting windowTitle types into whatever window is currently active — if focus may have shifted since your last get_context, pass windowTitle explicitly. Does not handle IME composition for CJK — use use_clipboard=true or set_element_value instead.",
+    "Type a string into the focused window. Pass windowTitle to auto-focus the target before typing and enable focus-loss detection (focusLost in response) — eliminates a separate focus_window call. Prefer set_element_value for form fields. Caveats: Omitting windowTitle types into whatever window is currently active — if focus may have shifted since your last get_context, pass windowTitle explicitly. Does not handle IME composition for CJK — use use_clipboard=true or set_element_value instead. Text containing em-dash, en-dash, smart quotes, or other non-ASCII punctuation can be intercepted as keyboard accelerators by Chrome/Edge (e.g. address bar hijack) — use use_clipboard=true for URLs, paths, or release notes that include such characters.",
     keyboardTypeSchema,
     withRichNarration("keyboard_type", keyboardTypeHandler, { windowTitleKey: "windowTitle" })
   );

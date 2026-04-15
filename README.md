@@ -104,7 +104,7 @@ Add to `~/.claude.json` under `mcpServers`:
 ### Keyboard (2)
 | Tool | Description |
 |---|---|
-| `keyboard_type` | Type text (`use_clipboard=true` bypasses IME) |
+| `keyboard_type` | Type text (`use_clipboard=true` bypasses IME and is required for em-dash / smart quotes / non-ASCII punctuation to avoid Chrome/Edge address-bar hijack) |
 | `keyboard_press` | Key combos (`ctrl+c`, `alt+f4`, etc.) |
 
 ### UI Automation (4)
@@ -124,7 +124,7 @@ Add to `~/.claude.json` under `mcpServers`:
 | `browser_click_element` | Find DOM element + click in one step |
 | `browser_eval` | Evaluate JS expression in the browser tab |
 | `browser_get_dom` | Get outerHTML of element or `document.body` |
-| `browser_get_interactive` | Enumerate links / buttons / inputs + **ARIA toggles** (`role=switch/checkbox/radio/tab/menuitem/option`) with `state.{checked,pressed,selected,expanded}` |
+| `browser_get_interactive` | Enumerate links / buttons / inputs + **ARIA toggles** (`role=switch/checkbox/radio/tab/menuitem/option`) with `state.{checked,pressed,selected,expanded}`; also the first-choice form-state verifier after submission (structured output, no image tokens) |
 | `browser_get_app_state` | **SPA state extractor** — one CDP call that scans `__NEXT_DATA__`, `__NUXT_DATA__`, `__REMIX_CONTEXT__`, `__APOLLO_STATE__`, GitHub `react-app` embeddedData, JSON-LD, `window.__INITIAL_STATE__` |
 | `browser_search` | Grep DOM by text / regex / role / ariaLabel / selector with confidence ranking |
 | `browser_navigate` | Navigate via CDP `Page.navigate`; `waitForLoad:true` (default) returns once `readyState==='complete'` |
@@ -424,6 +424,8 @@ Setting `DESKTOP_TOUCH_FORCE_FOCUS=1` makes `forceFocus: true` the default for a
 | `browser_*` CDP tools need Chrome launched with `--remote-debugging-port` | If Chrome is already running on the default profile without the flag, `browser_launch` / `browser_connect` fail. The CDP E2E suite (`tests/e2e/browser-cdp.test.ts`) will also fail in that state | Close Chrome first, then `browser_launch` will relaunch it in debug mode, or start Chrome manually with `--remote-debugging-port=9222 --user-data-dir=C:\tmp\cdp` |
 | Layer buffer TTL | Buffer auto-clears after 90s of inactivity → next `diffMode` becomes an I-frame | After long waits, call `workspace_snapshot` to explicitly reset the buffer |
 | `keyboard_type` / `keyboard_press` follow focus | When `dock_window(pin=true)` keeps another window on top (e.g. Claude CLI), keystrokes may be absorbed by that window | Call `focus_window(title=...)` first and verify `isActive=true` via `screenshot(detail='meta')` before sending keys |
+| `keyboard_type` em-dash / smart quotes in Chrome/Edge | Non-ASCII punctuation (em-dash `—`, en-dash `–`, smart quotes `"" ''`) can be intercepted as keyboard accelerators, shifting focus to the address bar | Always use `use_clipboard=true` when the text contains such characters |
+| `browser_eval` on React / Vue / Svelte inputs | Setting `element.value = ...` or dispatching synthetic events does not update the framework's internal state | Use `keyboard_type` (click the field first) instead of `browser_eval` for controlled inputs |
 
 ---
 

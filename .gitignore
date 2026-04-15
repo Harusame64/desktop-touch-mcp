@@ -8,6 +8,7 @@ docs/*.ps1
 docs/*-plan-*.md
 docs/*-plan.md
 docs/*-research.md
+!docs/mcp-ux-review-research.md
 
 # Claude Code session data (auto-memory, local settings) — never distribute
 .claude/
