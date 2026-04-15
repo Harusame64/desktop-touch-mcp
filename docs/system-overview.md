@@ -491,6 +491,8 @@ Runs up to 50 tools sequentially in a single MCP call. A `sleep` pseudo-command 
 #### `scroll_capture`
 Scrolls a window top-to-bottom and stitches a full-height screenshot — useful for long pages / documents.
 
+Output is size-guarded to fit the MCP 1 MB envelope: PNG is tried first; if the raw bytes exceed 700 KB, the image falls back to WebP (q70 → q55 → q40) and then iterative ×0.75 downscaling. When compression is applied, the `summary` object includes a `sizeReduced` field (e.g. `"webp_q55"`) and a `tip` suggesting `maxScrolls` reduction or `grayscale=true`.
+
 ---
 
 ## Param coercion for LLM-friendly spellings
