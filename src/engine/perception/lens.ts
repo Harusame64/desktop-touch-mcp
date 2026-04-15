@@ -63,7 +63,7 @@ export function resolveBindingFromSnapshot(
   if (candidates.length === 0) return null;
 
   const foreground = candidates.find(w => w.isActive);
-  const best = foreground ?? candidates.sort((a, b) => a.zOrder - b.zOrder)[0]!;
+  const best = foreground ?? [...candidates].sort((a, b) => a.zOrder - b.zOrder)[0]!;
   return { hwnd: best.hwnd, windowTitle: best.title };
 }
 

@@ -87,8 +87,8 @@ export const browserEvalSchema = {
   port: portParam,
   includeContext: includeContextParam,
   lensId: z.string().optional().describe(
-    "Optional perception lens ID. Guards (target.identityStable) are evaluated before eval, " +
-    "and a perception envelope is attached to post.perception on success."
+    "Optional perception lens ID. Guards (target.identityStable) are evaluated before eval. " +
+    "Note: browser_eval returns raw text, so no perception envelope is attached (guards only)."
   ),
 };
 

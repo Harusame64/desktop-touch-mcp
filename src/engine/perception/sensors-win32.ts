@@ -39,16 +39,19 @@ export function refreshWin32Fluents(hwnd: string, titleKey: string): Observation
   const obs: Observation[] = [];
   const hwndBig = BigInt(hwnd);
 
-  const makeObs = (property: string, value: unknown, confidence: number): Observation => ({
-    seq: nextSeq(),
-    tsMs: nowMs,
-    source: "win32",
-    entity: { kind: "window", id: hwnd },
-    property,
-    value,
-    confidence,
-    evidence: makeEvidence("win32", nextSeq(), nowMs),
-  });
+  const makeObs = (property: string, value: unknown, confidence: number): Observation => {
+    const seq = nextSeq();
+    return {
+      seq,
+      tsMs: nowMs,
+      source: "win32",
+      entity: { kind: "window", id: hwnd },
+      property,
+      value,
+      confidence,
+      evidence: makeEvidence("win32", seq, nowMs),
+    };
+  };
 
   // Enumerate all visible windows to check existence, foreground, z-order, modal
   // Compare by string to avoid number vs bigint mismatch (koffi returns intptr as JS number)
@@ -155,7 +158,7 @@ export function startSensorLoop(
   // Drain event-bus every 250ms (faster than the 500ms tick; no extra EnumWindows calls)
   _drainTimer = setInterval(() => {
     if (!_subscriptionId) return;
-    const events = poll(_subscriptionId, undefined, false); // drain=false to keep other subscribers' events
+    const events = poll(_subscriptionId, undefined, true); // drain our own buffer (each subscription has its own buffer; draining does not affect other subscribers)
     if (events.length === 0) return;
 
     // For each affected HWND, refresh all tracked windows that might be relevant

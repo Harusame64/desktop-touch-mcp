@@ -148,8 +148,8 @@ for (const f of TOOL_FILES) {
 }
 
 describe("tool descriptions — contract", () => {
-  it("finds at least 50 registered tools", () => {
-    expect(allTools.length).toBeGreaterThanOrEqual(50);
+  it("finds exactly 56 registered tools", () => {
+    expect(allTools.length).toBe(56);
   });
 
   for (const tool of allTools) {

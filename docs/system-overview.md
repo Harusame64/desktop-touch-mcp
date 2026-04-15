@@ -34,7 +34,7 @@ desktop-touch-mcp (Node.js / TypeScript)
     │       ├── guards.ts           — 4 pure guards: identityStable / keyboardTarget / clickCoordinates / stable.rect
     │       ├── envelope.ts         — projectEnvelope: attention derivation + token-budget trimming
     │       ├── sensors-win32.ts    — only impure module; piggybacks event-bus 500 ms tick
-    │       └── registry.ts         — central coordinator; max 16 lenses (LRU evict)
+    │       └── registry.ts         — central coordinator; max 16 lenses (FIFO evict)
     └── Layer 2: 56 MCP tools
         screenshot(4) + window(3) + mouse(5) + keyboard(2) + ui_elements(4) +
         browser_cdp(12) + workspace(2) + pin(2) + dock(1) + macro(1) +
@@ -69,7 +69,7 @@ Every action tool (`mouse_click`, `keyboard_press`, `click_element`, …) return
       "attention": "ok",
       "guards": { "target.identityStable": true, "safe.keyboardTarget": true },
       "latest": {
-        "target": { "title": "Untitled - Notepad", "foreground": true, "rect": {"x":78,"y":78,"w":976,"h":618} }
+        "target": { "title": "Untitled - Notepad", "foreground": true, "rect": {"x":78,"y":78,"width":976,"height":618} }
       },
       "changed": []
     }
@@ -169,7 +169,7 @@ Monitor list: resolution, position, DPI, cursor position.
 #### `get_windows`
 All windows in Z-order.
 ```json
-{ "zOrder": 0, "title": "Notepad", "region": {"x":78,"y":78,"w":976,"h":618},
+{ "zOrder": 0, "title": "Notepad", "region": {"x":78,"y":78,"width":976,"height":618},
   "isActive": true, "isMinimized": false, "isOnCurrentDesktop": true }
 ```
 
@@ -705,7 +705,7 @@ List all active lenses with their binding, seq, and attention state.
     "target": {
       "title": "Untitled - Notepad",
       "foreground": true,
-      "rect": { "x": 78, "y": 78, "w": 976, "h": 618 },
+      "rect": { "x": 78, "y": 78, "width": 976, "height": 618 },
       "identity": { "hwnd": "...", "pid": 1234, "processName": "notepad.exe" }
     },
     "modal": { "above": false }
@@ -734,7 +734,7 @@ keyboard_type({text:"x", lensId:"perc-1"})
 
 `lensId` is opt-in on: `keyboard_type`, `keyboard_press`, `mouse_click`, `mouse_drag`, `click_element`, `set_element_value`, `browser_click_element`, `browser_navigate`, `browser_eval`. Omitting `lensId` preserves existing behavior exactly.
 
-**Limits:** max 16 active lenses (LRU evict when exceeded). Sensor loop piggybacks the event-bus 500 ms tick — no second timer.
+**Limits:** max 16 active lenses (FIFO evict when exceeded). Sensor loop runs a separate 250 ms drain timer on top of the event-bus's 500 ms Win32 polling tick; no extra `EnumWindows` calls beyond the event-bus's own sweep.
 
 ---
 
@@ -795,11 +795,11 @@ screenshot(diffMode=true)
 | `narrate:"rich"` settle | 120 ms wait between the action and the after-snapshot |
 | tab-context cache (browser tools) | 500 ms keyed by `(port, tabId)` — chained calls share one `getTabContext` round-trip |
 | `--disable-extensions` exclusion | Chrome 147+ with this flag fails to bind the CDP port; removed from the E2E launcher |
-| Perception lens limit | Max 16 active lenses; oldest evicted (LRU) when exceeded |
-| Perception sensor timer | Drains event-bus every 250 ms — no second `setInterval`; piggybacks the existing 500 ms Win32 polling tick |
+| Perception lens limit | Max 16 active lenses; oldest evicted (FIFO) when exceeded |
+| Perception sensor timer | Drains event-bus every 250 ms via a separate 250 ms `setInterval` on top of the event-bus's 500 ms Win32 polling tick; no extra `EnumWindows` calls |
 | HWND type (koffi) | koffi `intptr` returns JS `number` at runtime; compared as strings (`String(w.hwnd) === hwnd`) to avoid `number === bigint` always-false |
 | Perception confidence | `confidenceFor()` uses evidence SOURCE base (win32=0.98, image=0.60, inferred=0.50) — NOT the stored numeric observation value |
-| `post.perception` strip | Stripped from the LLM-visible payload and from history; stored in `PostState.perception` for the current tool call only |
+| `post.perception` strip | Included in the LLM-visible tool response (current call only); stripped from the history ring buffer only. Stored in `PostState.perception` for the duration of the current tool call |
 
 ---
 

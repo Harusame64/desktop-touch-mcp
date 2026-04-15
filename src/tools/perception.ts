@@ -204,8 +204,65 @@ const perceptionListDesc =
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function registerPerceptionTools(server: McpServer): void {
-  server.tool("perception_register", perceptionRegisterDesc, perceptionRegisterSchema, perceptionRegisterHandler);
-  server.tool("perception_read",     perceptionReadDesc,     perceptionReadSchema,     perceptionReadHandler);
-  server.tool("perception_forget",   perceptionForgetDesc,   perceptionForgetSchema,   perceptionForgetHandler);
-  server.tool("perception_list",     perceptionListDesc,     perceptionListSchema,     perceptionListHandler);
+  server.tool(
+    "perception_register",
+    buildDesc({
+      purpose:
+        "Register a standing perception lens on a target window. " +
+        "The MCP server will maintain Win32-backed fluents (position, foreground, identity, modal " +
+        "obstruction) and evaluate safety guards before actions that reference this lens.",
+      details:
+        "Creates a PerceptionLens bound to the first foreground window whose title matches " +
+        "titleIncludes. Immediately reads Win32 state to populate fluents (exists, identity, " +
+        "title, rect, foreground, zOrder, modal.above). Returns a lensId to pass to action tools " +
+        "(keyboard_type, mouse_click, etc.) via the lensId parameter. When lensId is provided, " +
+        "the tool: (1) refreshes fluents just before acting, (2) evaluates guards, (3) blocks " +
+        "(guardPolicy:'block') or warns (guardPolicy:'warn') if any guard fails, and (4) attaches " +
+        "a perception envelope to post.perception in the response so the LLM can see what changed " +
+        "without an extra get_context call. The sensor runs on the existing 500 ms event-bus tick " +
+        "(no new polling timer). Maximum 16 active lenses; oldest is evicted when exceeded.",
+      prefer:
+        "Use when you need keyboard/mouse safety across multiple actions on the same window: " +
+        "prevents typing into wrong window after focus changes, detects moved windows before " +
+        "coordinate clicks, and surfaces modal dialogs before they cause errors. Not needed for " +
+        "single one-shot actions.",
+      caveats:
+        "MVP (v0.9): Win32 sensors only — no UIA focused-element push, no CDP navigation events. " +
+        "modal.above uses title-regex + WS_EX_TOPMOST heuristic (may miss some native modals). " +
+        "safe.clickCoordinates uses rect containment only (no pixel-level z-order hit test). " +
+        "Browser tab-level fluents (readyState, URL) defer to a future release.",
+      examples: [
+        "perception_register({name:'editor', target:{kind:'window', match:{titleIncludes:'Visual Studio Code'}}})" +
+          " → {lensId:'perc-1', ...}",
+        "keyboard_type({windowTitle:'Visual Studio Code', text:'hello', lensId:'perc-1'})" +
+          " → includes post.perception.{attention, guards, latest}",
+        "perception_read({lensId:'perc-1'})" +
+          " → explicit refresh + full envelope when you want to inspect state without acting",
+      ],
+    }),
+    perceptionRegisterSchema,
+    perceptionRegisterHandler
+  );
+  server.tool(
+    "perception_read",
+    "Force-refresh Win32 fluents for a lens and return a full perception envelope. " +
+    "Use after an action that may have changed window state, or when post.perception.attention " +
+    "is 'dirty' or 'stale'. Returns {ok, seq, attention, guards, latest, changed}.",
+    perceptionReadSchema,
+    perceptionReadHandler
+  );
+  server.tool(
+    "perception_forget",
+    "Deregister a lens by lensId. Removes it from the dependency graph and cleans up its " +
+    "event-bus subscription when no other lenses remain. Returns {ok, removed, lensId}.",
+    perceptionForgetSchema,
+    perceptionForgetHandler
+  );
+  server.tool(
+    "perception_list",
+    "List all currently active perception lenses with their lensId, name, target window, " +
+    "guardPolicy, salience, and registration time. Returns {ok, count, lenses[]}.",
+    perceptionListSchema,
+    perceptionListHandler
+  );
 }

@@ -36,7 +36,7 @@ const MAX_LENSES = 16;
 const store = new FluentStore();
 const graph = new DependencyGraph();
 const lenses = new Map<string, PerceptionLens>();
-/** Insertion order for LRU eviction */
+/** Insertion order for FIFO eviction */
 const lensOrder: string[] = [];
 
 let _disposeSensorLoop: (() => void) | null = null;
@@ -74,9 +74,6 @@ function ingestObservations(obs: Observation[]): void {
   if (obs.length === 0) return;
   const { changed } = store.apply(obs);
   if (changed.size === 0) return;
-
-  // Mark-dirty propagation
-  store.markDirty([...changed]);
 
   // Track changes per lens for envelope projection
   const affectedLenses = graph.lookupAffectedLenses(changed);
