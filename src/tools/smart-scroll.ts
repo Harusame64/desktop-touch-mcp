@@ -114,7 +114,7 @@ async function tryCdp(params: {
 
   try {
     // Ancestor walk
-    const { ancestors, warnings: ancWarn } = await getScrollAncestorsCdp(target, tabId ?? null, port, maxDepth);
+    const { ancestors, warnings: ancWarn } = await getScrollAncestorsCdp(target, tabId ?? null, port, maxDepth, expandHidden);
     warnings.push(...ancWarn);
 
     // Overflow:hidden check

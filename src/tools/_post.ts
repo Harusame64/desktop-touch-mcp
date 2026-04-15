@@ -46,7 +46,7 @@ export interface HistoryEntry {
   argsDigest: string;
   ok: boolean;
   errorCode?: string;
-  post: Omit<PostState, "rich">;
+  post: Omit<PostState, "rich" | "perception">;
   tsMs: number;
 }
 
