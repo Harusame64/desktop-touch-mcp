@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { buildDesc } from "./_types.js";
 import type { ToolHandler, ToolResult } from "./_types.js";
 import { checkFailsafe } from "../utils/failsafe.js";
 import { assertKeyComboSafe } from "../utils/key-safety.js";
@@ -210,17 +211,16 @@ export const runMacroHandler = async ({
 export function registerMacroTools(server: McpServer): void {
   server.tool(
     "run_macro",
-    [
-      "Execute multiple tools in sequence with a single MCP call — eliminates round-trip latency for multi-step workflows.",
-      "",
-      `Available tools: ${Object.keys(TOOL_REGISTRY).join(", ")}.`,
-      'Special pseudo-command: "sleep" with params { "ms": N } — wait N milliseconds (max 10000).',
-      "",
-      "Steps execute sequentially. stop_on_error (default true) halts on first failure.",
-      "Maximum 50 steps per call.",
-      "",
-      "Example: focus window → sleep 300ms → type text → screenshot.",
-    ].join("\n"),
+    buildDesc({
+      purpose: "Execute multiple tools sequentially in one MCP call — eliminates round-trip latency for predictable multi-step workflows.",
+      details: "steps[] is an array of {tool, params} objects. Accepts all desktop-touch tools plus a special sleep pseudo-step: {tool:\"sleep\", params:{ms:N}} (max 10000ms per step). stop_on_error=true (default) halts on first failure. Max 50 steps. The LLM cannot inspect intermediate results during execution — all steps run to completion (or first error) before any output is returned.",
+      prefer: "Use for predictable fixed sequences (focus → sleep → type → screenshot). Do not use for conditional logic — return to the LLM between branches so it can inspect intermediate state.",
+      caveats: "If any step may fail conditionally (e.g. a dialog that may or may not appear), split the macro at that point. Each screenshot step within a macro incurs the same token cost as a standalone call.",
+      examples: [
+        "[{tool:'focus_window',params:{windowTitle:'Notepad'}},{tool:'sleep',params:{ms:300}},{tool:'keyboard_type',params:{text:'Hello'}},{tool:'screenshot',params:{detail:'text',windowTitle:'Notepad'}}]",
+        "[{tool:'browser_navigate',params:{url:'https://example.com'}},{tool:'wait_until',params:{condition:'element_matches',target:{by:'text',pattern:'Example Domain'}}}]",
+      ],
+    }),
     runMacroSchema,
     runMacroHandler
   );
