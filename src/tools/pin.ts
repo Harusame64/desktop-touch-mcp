@@ -107,14 +107,7 @@ export const unpinWindowHandler = async ({ title }: { title: string }): Promise<
 export function registerPinTools(server: McpServer): void {
   server.tool(
     "pin_window",
-    [
-      "Make a window always-on-top (keep it in front of all other windows).",
-      "",
-      "If duration_ms is specified, the window is pinned for that duration then automatically unpinned.",
-      "If duration_ms is omitted, the window stays pinned until unpin_window is called.",
-      "",
-      "Useful in run_macro sequences: pin_window → interact → unpin_window.",
-    ].join("\n"),
+    "Make a window always-on-top until unpin_window is called (or duration_ms elapses). Useful in run_macro sequences: pin_window → interact → unpin_window. Caveats: Pin state survives window minimize/restore; call unpin_window explicitly to release.",
     pinWindowSchema,
     pinWindowHandler
   );

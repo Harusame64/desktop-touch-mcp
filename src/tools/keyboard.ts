@@ -273,21 +273,14 @@ export const keyboardPressHandler = async ({
 export function registerKeyboardTools(server: McpServer): void {
   server.tool(
     "keyboard_type",
-    "Type a string of text using the keyboard. The text is sent to whatever window is currently focused.",
+    "Requires focus on the target window — call focus_window first when the dock is pinned or another window may have stolen focus. Types a string of text into the focused window. Prefer set_element_value for form fields (more reliable for programmatic input without focus side-effects). Caveats: Does not handle IME composition for CJK input — use terminal_send(preferClipboard=true) or set_element_value for non-ASCII strings.",
     keyboardTypeSchema,
     withRichNarration("keyboard_type", keyboardTypeHandler, { windowTitleKey: "windowTitle" })
   );
 
   server.tool(
     "keyboard_press",
-    [
-      "Press a key or key combination.",
-      "Examples: 'enter', 'ctrl+c', 'alt+tab', 'ctrl+shift+s', 'f5', 'escape'.",
-      "Modifiers: ctrl, alt, shift, win/meta.",
-      "Special keys: enter, tab, space, backspace, delete, home, end, pageup, pagedown,",
-      "up, down, left, right, escape, f1-f12.",
-      "narrate:'rich' is active only for state-transitioning keys (Enter, Tab, Esc, F-keys).",
-    ].join(" "),
+    "Press a key or key combination: 'enter', 'ctrl+c', 'alt+tab', 'ctrl+shift+s', 'f5', 'escape', 'f1'–'f12'. Modifiers: ctrl, alt, shift, win/meta. Call focus_window first — when the dock is pinned, keystrokes go to the pinned overlay instead of the target window unless focus is explicitly set. Caveats: narrate:'rich' adds UIA state feedback for state-transitioning keys (Enter, Tab, Esc, F-keys) only; has no effect on letter/number keys.",
     keyboardPressSchema,
     withRichNarration("keyboard_press", keyboardPressHandler, {
       windowTitleKey: "windowTitle",

@@ -11,7 +11,7 @@ import {
   findAncestorWindow,
 } from "../engine/win32.js";
 import type { WindowZInfo, MonitorInfo } from "../engine/win32.js";
-import { ok } from "./_types.js";
+import { ok, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
 import { pollUntil } from "../engine/poll.js";
@@ -386,24 +386,12 @@ export async function autoDockFromEnv(): Promise<void> {
 export function registerDockTools(server: McpServer): void {
   server.tool(
     "dock_window",
-    [
-      "Snap a window to a screen corner at a small size and (optionally) pin it always-on-top.",
-      "",
-      "Primary use case: keep Claude CLI visible while operating other apps full-screen.",
-      "Example: dock_window({ title: 'Claude Code', corner: 'bottom-right' })",
-      "         → Claude CLI becomes a 480x360 window in the bottom-right corner, always-on-top.",
-      "",
-      "Behaviour:",
-      "- title:      partial match against window titles (case-insensitive).",
-      "- corner:     top-left / top-right / bottom-left / bottom-right. Default bottom-right.",
-      "- width/height: default 480x360. Clamped to fit the target monitor's work area.",
-      "- pin=true:   always-on-top (default). Call unpin_window to release.",
-      "- monitorId:  optional — target a specific monitor (see get_screen_info).",
-      "- margin:     pixels between the window and the screen edge (default 8). Avoids taskbar overlap.",
-      "",
-      "Minimized windows are automatically restored before docking.",
-      "Snap (Win+Arrow) arrangements will be overridden.",
-    ].join("\n"),
+    buildDesc({
+      purpose: "Snap a window to a screen corner at a fixed small size and pin it always-on-top — primarily to keep Claude CLI visible while operating other apps full-screen.",
+      details: "Accepts corner ('bottom-right' default), width/height (480×360 default, clamped to monitor work area), pin (true default = always-on-top), margin (8px default gap from screen edges, avoids taskbar overlap), and monitorId (see get_screen_info for IDs). Minimized windows are automatically restored before docking.",
+      prefer: "Use pin_window alone when you only need always-on-top without moving or resizing. Use dock_window when you need corner placement + resize + pin in one step.",
+      caveats: "Overrides any existing Win+Arrow snap arrangement. Call unpin_window explicitly to release always-on-top when the docked window is no longer needed in front.",
+    }),
     dockWindowSchema,
     dockWindowHandler
   );
