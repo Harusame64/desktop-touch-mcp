@@ -108,30 +108,21 @@ export const focusWindowHandler = async ({ title }: { title: string }): Promise<
 export function registerWindowTools(server: McpServer): void {
   server.tool(
     "get_windows",
-    [
-      "List all visible windows with their titles, screen positions, Z-order, and virtual desktop status.",
-      "",
-      "zOrder: 0 = frontmost window, higher = further behind.",
-      "isActive: true = the window currently receiving keyboard input.",
-      "isMinimized / isMaximized: window state.",
-      "isOnCurrentDesktop: false = window exists on a different virtual desktop (cannot interact without switching).",
-      "",
-      "Use this to understand the window stack before deciding whether a screenshot is needed.",
-    ].join("\n"),
+    "List all visible windows with titles, screen positions, Z-order, active state, and virtual desktop membership. zOrder=0 is frontmost; isActive=true is the keyboard-focused window; isOnCurrentDesktop=false means the window is on another virtual desktop and cannot be interacted with without switching. Use before screenshot to determine whether a specific window needs capturing. Caveats: Returns only top-level visible windows — child windows and system tray items are excluded.",
     getWindowsSchema,
     getWindowsHandler
   );
 
   server.tool(
     "get_active_window",
-    "Get information about the currently focused window.",
+    "Return the title, hwnd, and bounds of the currently focused window.",
     getActiveWindowSchema,
     getActiveWindowHandler
   );
 
   server.tool(
     "focus_window",
-    "Bring a window to the foreground by finding it by title (partial, case-insensitive match).",
+    "Bring a window to the foreground by partial title match (case-insensitive). Required before keyboard_* when the dock is pinned — otherwise keystrokes go to the pinned overlay. Returns WindowNotFound if no match exists; call get_windows to see available titles. Caveats: On some apps focus may be immediately stolen back (modal dialogs, UAC prompts) — verify with get_context after focusing.",
     focusWindowSchema,
     focusWindowHandler
   );

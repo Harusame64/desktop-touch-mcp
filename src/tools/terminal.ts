@@ -423,26 +423,14 @@ export function registerTerminalTools(server: McpServer): void {
 
   server.tool(
     "terminal_read",
-    [
-      "Read text from a terminal window (Windows Terminal / conhost / PowerShell / cmd / WSL).",
-      "Uses UIA TextPattern when available; falls back to Windows OCR. Strips ANSI escape sequences by default.",
-      "",
-      "sinceMarker: pass the marker from a previous response to fetch only new output (diff).",
-      "When the underlying process restarts, the marker is invalidated and full text is returned.",
-      "",
-      "Cheaper than screenshot+OCR and structurally aware (preserves line breaks).",
-    ].join("\n"),
+    "Read current text from a terminal window via UIA TextPattern (falls back to OCR). Strips ANSI escape sequences. sinceMarker: pass the marker from a previous response to get only new output (diff mode — cheaper than full read). Caveats: When the underlying process restarts, the marker is invalidated and full text is returned.",
     terminalReadSchema,
     terminalReadHandler
   );
 
   server.tool(
     "terminal_send",
-    [
-      "Send a command (or any text) to a terminal window.",
-      "Wraps focus_window + keyboard typing + optional foreground restore.",
-      "Defaults: focusFirst=true, pressEnter=true, restoreFocus=true, preferClipboard=true (IME-safe).",
-    ].join("\n"),
+    "Send a command to a terminal window (Windows Terminal, conhost, PowerShell, cmd, WSL). Wraps focus_window + keyboard type + Enter. preferClipboard=true (default) uses clipboard paste — IME-safe for CJK text, but overwrites the user's clipboard. restoreFocus=true (default) returns focus to the previously active window after sending. Caveats: If the terminal is busy (previous command still running), text will be injected mid-stream — check terminal_read first or use wait_until(terminal_output_contains) to confirm completion before sending.",
     terminalSendSchema,
     terminalSendHandler
   );
