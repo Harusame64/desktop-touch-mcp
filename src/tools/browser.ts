@@ -163,6 +163,14 @@ export const browserSearchSchema = {
   port: portParam,
 };
 
+export const browserFillInputSchema = {
+  selector: selectorParam,
+  value: z.string().max(10_000).describe("Text to fill into the input element"),
+  tabId: tabIdParam,
+  port: portParam,
+  includeContext: includeContextParam,
+};
+
 export const browserGetInteractiveSchema = {
   scope: z
     .string()
@@ -290,6 +298,90 @@ async function ensureBrowserFocused(port: number): Promise<void> {
 // ─────────────────────────────────────────────────────────────────────────────
 // Handlers
 // ─────────────────────────────────────────────────────────────────────────────
+
+export const browserFillInputHandler = async ({
+  selector,
+  value,
+  tabId,
+  port,
+  includeContext,
+}: {
+  selector: string;
+  value: string;
+  tabId?: string;
+  port: number;
+  includeContext: boolean;
+}): Promise<ToolResult> => {
+  try {
+    // CDP sequence: focus element → select all → insert text via Input.insertText.
+    // This triggers React/Vue synthetic events correctly because CDP Input.insertText
+    // fires the browser's native input event pipeline, which React intercepts.
+    const focusExpr = `
+(function() {
+  const el = document.querySelector(${JSON.stringify(selector)});
+  if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)} };
+  el.focus();
+  const tag = el.tagName.toLowerCase();
+  const type = el.getAttribute('type') || '';
+  return { ok: true, tag, type };
+})()`;
+    const focusResult = await evaluateInTab(focusExpr, tabId ?? null, port) as { ok: boolean; error?: string; tag?: string; type?: string };
+    if (!focusResult.ok) {
+      return failWith(focusResult.error ?? "browser_fill_input: focus failed", "browser_fill_input");
+    }
+
+    // Fill the input using the React-compatible path:
+    //   focus → select all → use native prototype setter (bypasses React's proxy) +
+    //   dispatch InputEvent so React fiber intercepts the synthetic event.
+    // This is more reliable than execCommand('insertText') which is deprecated.
+    const fillExpr = `
+(function() {
+  const el = document.querySelector(${JSON.stringify(selector)});
+  if (!el) return { ok: false, error: 'Element not found after focus' };
+  el.focus();
+  // Select all existing content before replacing
+  if (typeof el.select === 'function') {
+    el.select();
+  }
+  // Pick the correct native prototype setter by element type to avoid
+  // "Illegal invocation" when calling HTMLInputElement.prototype.set on a textarea.
+  const tag = el.tagName;
+  let proto = null;
+  if (tag === 'INPUT') proto = HTMLInputElement.prototype;
+  else if (tag === 'TEXTAREA') proto = HTMLTextAreaElement.prototype;
+  const descriptor = proto ? Object.getOwnPropertyDescriptor(proto, 'value') : null;
+  if (descriptor && descriptor.set) {
+    descriptor.set.call(el, ${JSON.stringify(value)});
+  } else {
+    el.value = ${JSON.stringify(value)};
+  }
+  // Dispatch native InputEvent — React 16+ intercepts 'input' for onChange
+  el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: ${JSON.stringify(value)} }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+  const actual = el.value !== undefined ? el.value : el.textContent;
+  return { ok: true, actual: (actual || '').slice(0, 100) };
+})()`;
+    const fillResult = await evaluateInTab(fillExpr, tabId ?? null, port) as { ok: boolean; error?: string; actual?: string };
+    if (!fillResult.ok) {
+      return failWith(fillResult.error ?? "browser_fill_input: fill failed", "browser_fill_input");
+    }
+
+    const lines = [
+      JSON.stringify({ ok: true, selector, value, actual: fillResult.actual }),
+    ];
+    if (includeContext) {
+      const tabCtx = await getCachedTabContext(tabId ?? null, port);
+      lines.push(
+        "",
+        `activeTab: ${JSON.stringify({ id: tabCtx.id, title: tabCtx.title, url: tabCtx.url })}`,
+        `readyState: "${tabCtx.readyState}"`,
+      );
+    }
+    return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+  } catch (err) {
+    return failWith(err, "browser_fill_input");
+  }
+};
 
 export const browserConnectHandler = async ({
   port,
@@ -805,13 +897,24 @@ export const browserGetInteractiveHandler = async ({
     return t;
   }
 
+  // Use element center-point for consistency with the UIA/OCR viewport-position helper.
+  function viewportPos(rect) {
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    if (cy < 0) return 'above';
+    if (cy > window.innerHeight) return 'below';
+    if (cx < 0) return 'left';
+    if (cx > window.innerWidth) return 'right';
+    return 'in-view';
+  }
+
   const out = [];
   for (const el of root.querySelectorAll(cssQ)) {
     if (!isVisible(el)) continue;
     const rect = el.getBoundingClientRect();
     const vp = inViewportRect(rect);
     if (viewportOnly && !vp) continue;
-    const item = { type: elType(el), text: elText(el), selector: bestSelector(el), inViewport: vp };
+    const item = { type: elType(el), text: elText(el), selector: bestSelector(el), inViewport: vp, viewportPosition: viewportPos(rect) };
     if (el.tagName === 'A') item.href = el.href;
     const st = elState(el);
     if (st) item.state = st;
@@ -1470,5 +1573,12 @@ export function registerBrowserTools(server: McpServer): void {
     "Close cached CDP WebSocket sessions for a port. Call when browser interaction is complete to release connections.",
     browserDisconnectSchema,
     browserDisconnectHandler
+  );
+
+  server.tool(
+    "browser_fill_input",
+    "Fill a form input with a value via CDP — works on React/Vue/Svelte controlled inputs that reject browser_eval value assignment. Uses document.execCommand('insertText') which triggers the browser's native input event pipeline including React fiber state updates. Use this over browser_eval when setting a controlled input's value via JS does not update the framework state. Caveats: Requires browser_connect (CDP active). Does not work on contenteditable rich-text editors — use keyboard_type for those. actual in response shows what the element's value property reads after fill; verify it matches the intended value.",
+    browserFillInputSchema,
+    browserFillInputHandler
   );
 }

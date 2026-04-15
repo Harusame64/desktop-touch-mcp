@@ -27,6 +27,27 @@ Deferred to v0.7+: see the original "v0.7 検討候補" block below (unchanged).
 
 Token impact (tools/list descriptions): 22,200 chars (v0.6.4) → 23,313 chars (v0.6.5) — delta +1,113 chars ≈ **+278 tokens**.
 
+### v0.7.0 (2026-04-15)
+
+Branch: `feat/v0.7`
+
+Shipped (from "v0.7 検討候補" list):
+- [x] Prio 3.5-B: `viewportPosition` field added to all `actionable[]` items in `screenshot(detail='text')`, `get_ui_elements`, and `browser_get_interactive` — values: `in-view | above | below | left | right`
+- [x] Prio 3.5-A: `scroll_to_element(selector|name, windowTitle?, block?)` — new tool. Chrome path via CDP scrollIntoView; native path via UIA ScrollItemPattern
+- [x] Prio 2-B: `browser_fill_input(selector, value)` — new tool. CDP execCommand('insertText') path that triggers React/Vue fiber events correctly
+- [x] Prio 4-A: `keyboard_type(replaceAll:true)` — send Ctrl+A before typing
+- [x] Prio 4-B: `mouse_click(tripleClick:true)` — triple-click for full line selection
+- [x] Prio 3-B: `focus_window(chromeTabUrlContains)` — activate Chrome tab by URL substring via CDP Target.activateTarget before focusing HWND
+- [x] Prio 1-B: `keyboard_type` non-ASCII auto-clipboard — em-dash/en-dash/smart quotes auto-rerouted via clipboard (method:'clipboard-auto'); opt-out via `forceKeystrokes:true`
+
+Also shipped (from competitor-research.md Quick wins / A-items):
+- [x] `notification_show(title, body)` — Windows tray balloon tip via System.Windows.Forms.NotifyIcon
+- [x] `clipboard_read()` / `clipboard_write(text)` — first-class clipboard tools
+- [x] `glama.json` — displayName / categories / platforms for Glama listing
+
+Token impact (tools/list descriptions): 23,313 chars (v0.6.5) → 26,537 chars (v0.7.0) — delta +3,224 chars ≈ **+806 tokens**.
+Tool count: 46 → **51 tools**.
+
 ---
 
 ## 今回スムーズに動いた部分

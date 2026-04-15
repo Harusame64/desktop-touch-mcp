@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { getCachedUia, updateUiaCache } from "./layer-buffer.js";
+import { computeViewportPosition } from "../utils/viewport-position.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -457,6 +458,8 @@ export interface ActionableElement {
   confidence?: number;
   /** Optional next-step hint for low-confidence items. */
   suggest?: string;
+  /** Position of this element relative to the window/viewport. */
+  viewportPosition?: "in-view" | "above" | "below" | "left" | "right";
 }
 
 export interface TextContent {
@@ -555,6 +558,13 @@ export function extractActionableElements(result: UiElementsResult): ActionableR
     if (el.automationId) item.id = el.automationId;
     if (!el.isEnabled) item.enabled = false;
 
+    if (result.windowRect) {
+      item.viewportPosition = computeViewportPosition(
+        { x: r.x, y: r.y, width: r.width, height: r.height },
+        result.windowRect
+      );
+    }
+
     actionable.push(item);
   }
 
@@ -571,7 +581,7 @@ export function extractActionableElements(result: UiElementsResult): ActionableR
   return {
     window: result.windowTitle,
     windowClassName: result.windowClassName,
-    windowRegion: windowRegion ?? undefined,
+    windowRegion,
     actionable,
     texts,
   };
@@ -924,5 +934,62 @@ try {
     return parsed as ElementBounds;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Scroll a UIA element into view using ScrollItemPattern.ScrollIntoView().
+ * Falls back to a no-op (returns false) when the element does not expose ScrollItemPattern.
+ */
+export async function scrollElementIntoView(
+  windowTitle: string,
+  name?: string,
+  automationId?: string,
+): Promise<{ ok: boolean; scrolled: boolean; error?: string }> {
+  const safeTitle = escapeLike(windowTitle);
+  const nameFilter = name ? `$c.Name -like '*${escapeLike(name)}*'` : "$true";
+  const idFilter = automationId ? `$c.AutomationId -eq '${escapePS(automationId)}'` : "$true";
+
+  const script = `
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+
+$root = [System.Windows.Automation.AutomationElement]::RootElement
+$trueC = [System.Windows.Automation.Condition]::TrueCondition
+
+$target = $null
+$allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
+foreach ($w in $allWins) {
+    if ($w.Current.Name -like '*${safeTitle}*') { $target = $w; break }
+}
+if (-not $target) { Write-Output '{"ok":false,"scrolled":false,"error":"Window not found"}'; exit }
+
+$found = $null
+function FindElement($el, $depth) {
+    if ($script:found) { return }
+    $c = $el.Current
+    if ((${nameFilter}) -and (${idFilter})) { $script:found = $el; return }
+    if ($depth -gt 12) { return }
+    $kids = $el.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
+    foreach ($k in $kids) { FindElement $k ($depth+1) }
+}
+FindElement $target 0
+if (-not $script:found) { Write-Output '{"ok":false,"scrolled":false,"error":"Element not found"}'; exit }
+
+try {
+    $sip = $script:found.GetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern)
+    $sip.ScrollIntoView()
+    Write-Output '{"ok":true,"scrolled":true}'
+} catch {
+    Write-Output '{"ok":true,"scrolled":false,"error":"ScrollItemPattern not available"}'
+}
+`;
+
+  try {
+    const output = await runPS(script, 8000);
+    return JSON.parse(output) as { ok: boolean; scrolled: boolean; error?: string };
+  } catch (err) {
+    return { ok: false, scrolled: false, error: String(err) };
   }
 }

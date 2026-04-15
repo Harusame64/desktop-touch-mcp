@@ -4,6 +4,7 @@ import { getActiveWindow } from "../engine/nutjs.js";
 import { getWindowTitleW, enumWindowsInZOrder, restoreAndFocusWindow } from "../engine/win32.js";
 import { getVirtualDesktopStatus } from "../engine/uia-bridge.js";
 import { updateWindowCache } from "../engine/window-cache.js";
+import { listTabs, activateTab, DEFAULT_CDP_PORT } from "../engine/cdp-bridge.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
 
@@ -17,6 +18,15 @@ export const getActiveWindowSchema = {};
 
 export const focusWindowSchema = {
   title: z.string().describe("Partial window title to search for (case-insensitive)"),
+  chromeTabUrlContains: z.string().optional().describe(
+    "When set, activate the Chrome/Edge tab whose URL contains this substring before focusing the window. " +
+    "Requires Chrome/Edge running with --remote-debugging-port (default 9222). " +
+    "Use this when the target is a Chrome tab that is not currently active — " +
+    "the active tab title is the only one visible in the window title list."
+  ),
+  cdpPort: z.coerce.number().int().min(1).max(65535).default(DEFAULT_CDP_PORT).describe(
+    `CDP port for chromeTabUrlContains (default ${DEFAULT_CDP_PORT})`
+  ),
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -69,8 +79,37 @@ export const getActiveWindowHandler = async (): Promise<ToolResult> => {
   }
 };
 
-export const focusWindowHandler = async ({ title }: { title: string }): Promise<ToolResult> => {
+export const focusWindowHandler = async ({
+  title,
+  chromeTabUrlContains,
+  cdpPort,
+}: {
+  title: string;
+  chromeTabUrlContains?: string;
+  cdpPort: number;
+}): Promise<ToolResult> => {
   try {
+    // If chromeTabUrlContains is set, activate the matching Chrome tab first via CDP
+    let activatedTab: string | undefined;
+    let cdpUnavailable: boolean | undefined;
+    if (chromeTabUrlContains) {
+      try {
+        const tabs = await listTabs(cdpPort);
+        const target = tabs.find(
+          (t) => t.type === "page" && t.url.includes(chromeTabUrlContains)
+        );
+        if (target) {
+          await activateTab(target.id, cdpPort);
+          activatedTab = target.title;
+          // Brief settle so Chrome updates the HWND title to the newly active tab
+          await new Promise<void>((r) => setTimeout(r, 200));
+        }
+      } catch {
+        // CDP unavailable — fall through to title-based window match, but surface the fact
+        cdpUnavailable = true;
+      }
+    }
+
     // Use enumWindowsInZOrder (Win32-based) so minimized windows are also included.
     const windows = enumWindowsInZOrder();
     updateWindowCache(windows);
@@ -90,6 +129,8 @@ export const focusWindowHandler = async ({ title }: { title: string }): Promise<
             ok: true,
             focused: win.title,
             region,
+            ...(activatedTab && { activatedTab }),
+            ...(cdpUnavailable && { hints: { warnings: ["cdpUnavailable — chromeTabUrlContains was ignored; use browser_connect first"] } }),
           }),
         }],
       };
@@ -122,7 +163,7 @@ export function registerWindowTools(server: McpServer): void {
 
   server.tool(
     "focus_window",
-    "Bring a window to the foreground by partial title match (case-insensitive). Required before keyboard_* when the dock is pinned — otherwise keystrokes go to the pinned overlay. Returns WindowNotFound if no match exists; call get_windows to see available titles. Caveats: On some apps focus may be immediately stolen back (modal dialogs, UAC prompts) — verify with get_context after focusing.",
+    "Bring a window to the foreground by partial title match (case-insensitive). Required before keyboard_* when the dock is pinned — otherwise keystrokes go to the pinned overlay. Use chromeTabUrlContains to activate a specific Chrome/Edge tab by URL substring before focusing — only the active tab's title appears in get_windows. Returns WindowNotFound if no match exists; call get_windows to see available titles. Caveats: On some apps focus may be immediately stolen back (modal dialogs, UAC prompts) — verify with get_context after focusing.",
     focusWindowSchema,
     focusWindowHandler
   );
