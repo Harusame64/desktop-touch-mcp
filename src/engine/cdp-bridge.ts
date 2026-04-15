@@ -526,11 +526,13 @@ export async function getScrollAncestorsCdp(
   selector: string,
   tabId: string | null = null,
   port = DEFAULT_CDP_PORT,
-  maxDepth = 3
+  maxDepth = 3,
+  markHidden = false
 ): Promise<{ ancestors: CdpScrollAncestor[]; warnings: string[] }> {
   const expr = `
 (function() {
   const MAXDEPTH = ${maxDepth};
+  const MARK_HIDDEN = ${markHidden};
   const el = document.querySelector(${JSON.stringify(selector)});
   if (!el) return { ancestors: [], warnings: ['Element not found: ' + ${JSON.stringify(selector)}] };
 
@@ -587,6 +589,12 @@ export async function getScrollAncestorsCdp(
     if (scrollable || hidden) {
       const isVirtualized = ('__tanstackVirtualInstance' in cur)
         || !!cur.querySelector('[data-index]');
+      const isHidden = hidden && !scrollable;
+      if (isHidden && MARK_HIDDEN) {
+        // Mark element so callers can unlock via querySelectorAll without embedding selector strings.
+        // Only marked when the caller opts in (expandHidden=true) so early-return paths leave no stale markers.
+        cur.setAttribute('data-dt-hidden-ancestor', '');
+      }
       ancestors.push({
         cssSelectorPath: selectorPath(cur),
         scrollTop: cur.scrollTop,
@@ -597,7 +605,7 @@ export async function getScrollAncestorsCdp(
         clientWidth: cur.clientWidth,
         overflowX,
         overflowY,
-        isHidden: hidden && !scrollable,
+        isHidden,
         isVirtualized,
       });
       depth++;

@@ -14,6 +14,7 @@ import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
 import { withRichNarration, narrateParam } from "./_narration.js";
 import { detectFocusLoss } from "./_focus.js";
+import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 
 /**
  * Move cursor to (x, y) at the given speed.
@@ -233,6 +234,11 @@ export const mouseClickSchema = {
   forceFocus: forceFocusParam,
   trackFocus: trackFocusParam,
   settleMs: settleMsParam,
+  lensId: z.string().optional().describe(
+    "Optional perception lens ID from perception_register. When provided, guards are evaluated " +
+    "before clicking (safe.clickCoordinates, target.identityStable) and a perception envelope " +
+    "is attached to post.perception in the response."
+  ),
 };
 
 export const mouseDragSchema = {
@@ -244,6 +250,9 @@ export const mouseDragSchema = {
   speed: speedParam,
   homing: homingParam,
   windowTitle: windowTitleParam,
+  lensId: z.string().optional().describe(
+    "Optional perception lens ID. Guards and envelope same as mouse_click."
+  ),
 };
 
 export const scrollSchema = {
@@ -285,17 +294,28 @@ export const mouseMoveHandler = async ({
 
 export const mouseClickHandler = async ({
   x, y, origin, scale, button, doubleClick, tripleClick, speed, homing, windowTitle, elementName, elementId,
-  forceFocus: forceFocusArg, trackFocus, settleMs,
+  forceFocus: forceFocusArg, trackFocus, settleMs, lensId,
 }: {
   x: number; y: number;
   origin?: { x: number; y: number };
   scale?: number;
   button: "left" | "right" | "middle"; doubleClick: boolean; tripleClick: boolean;
   speed?: number; homing: boolean; windowTitle?: string; elementName?: string; elementId?: string;
-  forceFocus?: boolean; trackFocus: boolean; settleMs: number;
+  forceFocus?: boolean; trackFocus: boolean; settleMs: number; lensId?: string;
 }): Promise<ToolResult> => {
   const force = forceFocusArg ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
   try {
+    // Perception guard evaluation (opt-in via lensId)
+    if (lensId) {
+      const guardResult = evaluatePreToolGuards(lensId, "mouse_click", { x, y, clickAt: { x, y } });
+      if (!guardResult.ok && guardResult.policy === "block") {
+        return failWith(
+          new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
+          "mouse_click",
+          { lensId, guard: guardResult.failedGuard }
+        );
+      }
+    }
     // Image-local → screen conversion (before homing).
     // When origin is given, (x,y) are image-local; convert using scale factor.
     let screenX = x, screenY = y;
@@ -357,12 +377,14 @@ export const mouseClickHandler = async ({
       if (fl) focusLost = fl;
     }
 
+    const perceptionEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "mouse_click", args: { x: tx, y: ty } }) : undefined;
     return ok({
       ok: true, action, button, at: { x: tx, y: ty },
       ...(conversionNotes.length && { conversion: conversionNotes.join("; ") }),
       ...(filteredNotes.length && { homing: filteredNotes.join(", ") }),
       ...(focusLost && { focusLost }),
       ...(warnings.length > 0 && { hints: { warnings } }),
+      ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
     });
   } catch (err) {
     return failWith(err, "mouse_click");
@@ -370,12 +392,22 @@ export const mouseClickHandler = async ({
 };
 
 export const mouseDragHandler = async ({
-  startX, startY, endX, endY, speed, homing, windowTitle,
+  startX, startY, endX, endY, speed, homing, windowTitle, lensId,
 }: {
   startX: number; startY: number; endX: number; endY: number;
-  speed?: number; homing: boolean; windowTitle?: string;
+  speed?: number; homing: boolean; windowTitle?: string; lensId?: string;
 }): Promise<ToolResult> => {
   try {
+    if (lensId) {
+      const guardResult = evaluatePreToolGuards(lensId, "mouse_drag", { x: startX, y: startY });
+      if (!guardResult.ok && guardResult.policy === "block") {
+        return failWith(
+          new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
+          "mouse_drag",
+          { lensId, guard: guardResult.failedGuard }
+        );
+      }
+    }
     let tsx = startX, tsy = startY;
     let tex = endX, tey = endY;
     const notes: string[] = [];
@@ -404,10 +436,12 @@ export const mouseDragHandler = async ({
         mouse.config.mouseSpeed = prev;
       }
     }
+    const perceptionEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "mouse_drag" }) : undefined;
     return ok({
       ok: true, action: "drag",
       from: { x: tsx, y: tsy }, to: { x: tex, y: tey },
       ...(notes.length && { homing: notes.join(", ") }),
+      ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
     });
   } catch (err) {
     return failWith(err, "mouse_drag");

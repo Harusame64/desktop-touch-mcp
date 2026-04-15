@@ -203,6 +203,20 @@ const SWP_NOSIZE = 0x0001;
 const SWP_NOMOVE = 0x0002;
 const SWP_NOZORDER = 0x0004;
 
+// Window class name, extended style, and owner query
+const GetClassNameW = user32.func(
+  "int __stdcall GetClassNameW(void *hWnd, _Out_ uint16 *lpClassName, int nMaxCount)"
+);
+const GetWindowLongPtrW = user32.func(
+  "long __stdcall GetWindowLongPtrW(void *hWnd, int nIndex)"
+);
+const GetWindowHwnd = user32.func(
+  "intptr __stdcall GetWindow(void *hWnd, uint32 uCmd)"
+);
+const GWL_EXSTYLE  = -20;
+const WS_EX_TOPMOST = 0x00000008;
+const GW_OWNER     = 4;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // DPI awareness initialization (PROCESS_PER_MONITOR_DPI_AWARE = 2)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -736,6 +750,61 @@ export function printWindowToBuffer(hwnd: unknown, flags = 2): {
 // ─────────────────────────────────────────────────────────────────────────────
 // Scrollbar info
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Return the HWND of the currently active (foreground) window.
+ * Cheaper than enumWindowsInZOrder() when only foreground identity is needed.
+ */
+export function getForegroundHwnd(): bigint | null {
+  try {
+    const hwnd = GetForegroundWindow() as bigint;
+    return hwnd === 0n ? null : hwnd;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Return the registered class name of a window.
+ * Returns an empty string if the window no longer exists or the call fails.
+ */
+export function getWindowClassName(hwnd: unknown): string {
+  try {
+    const MAX = 256;
+    const buf = Buffer.alloc(MAX * 2);
+    const len = GetClassNameW(hwnd, buf, MAX) as number;
+    if (len <= 0) return "";
+    return buf.slice(0, len * 2).toString("utf16le");
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Return true when the window has the WS_EX_TOPMOST extended style set,
+ * meaning it floats above all non-topmost windows regardless of z-order.
+ */
+export function isWindowTopmost(hwnd: unknown): boolean {
+  try {
+    const exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as number;
+    return (exStyle & WS_EX_TOPMOST) !== 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Return the HWND of the owner window (GW_OWNER) or null if the window
+ * has no owner (i.e. is a top-level unowned window).
+ */
+export function getWindowOwner(hwnd: unknown): bigint | null {
+  try {
+    const owner = GetWindowHwnd(hwnd, GW_OWNER) as bigint;
+    return owner === 0n ? null : owner;
+  } catch {
+    return null;
+  }
+}
 
 export interface ScrollInfoResult {
   nMin: number;

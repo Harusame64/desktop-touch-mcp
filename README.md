@@ -6,7 +6,7 @@
 
 > **Stop pasting screenshots. Let Claude see and control your desktop directly.**
 
-An MCP server that gives Claude eyes and hands on Windows — 52 tools covering screenshots, mouse, keyboard, Windows UI Automation, Chrome DevTools Protocol, clipboard, desktop notifications, and SmartScroll, designed from the ground up for LLM efficiency.
+An MCP server that gives Claude eyes and hands on Windows — 56 tools covering screenshots, mouse, keyboard, Windows UI Automation, Chrome DevTools Protocol, clipboard, desktop notifications, SmartScroll, and a Reactive Perception Graph for safe multi-step automation, designed from the ground up for LLM efficiency.
 
 > *Applies MPEG P-frame diffing to window capture: only changed windows are sent after the first frame, cutting token usage by ~60–80% in typical automation loops.*
 
@@ -72,7 +72,7 @@ Add to `~/.claude.json` under `mcpServers`:
 
 ---
 
-## Tools (51 total)
+## Tools (56 total)
 
 > 📖 **Full command reference**: [`docs/system-overview.md`](docs/system-overview.md) — every tool's parameters, response shape, coordinate math, layer-buffer strategy, and engineering notes in one place.
 
@@ -234,6 +234,33 @@ Keep Claude CLI visible while operating other apps full-screen. Set env vars in 
 | `DESKTOP_TOUCH_DOCK_TIMEOUT_MS` | `5000` | Max wait for the target window to appear |
 
 > **Input routing gotcha:** when a pinned window is active (e.g. Claude CLI), `keyboard_type` / `keyboard_press` send keys to it, **not** the app you wanted to type into. Always call `focus_window(title=...)` before keyboard operations, then verify `isActive=true` via `screenshot(detail='meta')`.
+
+### Reactive Perception (experimental)
+
+| Tool | Description |
+|---|---|
+| `perception_register` | Register a standing perception lens on a target window. Returns a `lensId` to pass to action tools |
+| `perception_read` | Force-refresh Win32 fluents and return a full perception envelope |
+| `perception_forget` | Deregister a lens by ID |
+| `perception_list` | List all active lenses |
+
+Prevents typing into wrong windows, detects moved windows before coordinate clicks, and surfaces modal dialogs before they cause errors.
+
+```
+# Register a lens on the target window
+perception_register({name:"editor", target:{kind:"window", match:{titleIncludes:"Notepad"}}})
+→ {lensId:"perc-1", ...}
+
+# Pass lensId to action tools — guards run before the action, envelope arrives in post.perception
+keyboard_type({text:"hello", windowTitle:"Notepad", lensId:"perc-1"})
+→ post.perception: {attention:"ok", guards:{...}, latest:{target:{title, rect, foreground}}}
+
+# When the window closes and a new one opens, identity guard blocks automatically:
+keyboard_type({text:"x", lensId:"perc-1"})
+→ {ok:false, code:"GuardFailed", suggest:["Re-register lens for the new process instance"]}
+```
+
+`lensId` is opt-in on all action tools (`keyboard_type`, `keyboard_press`, `mouse_click`, `mouse_drag`, `click_element`, `set_element_value`, `browser_click_element`, `browser_navigate`, `browser_eval`). Omitting `lensId` preserves existing behavior exactly.
 
 ---
 

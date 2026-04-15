@@ -100,6 +100,20 @@ const SUGGESTS: Record<string, string[]> = {
     "Increase maxDepth to walk more layers",
     "Or scroll an outer container first via a separate smart_scroll call",
   ],
+  GuardFailed: [
+    "Read the perception envelope for attention/guard details",
+    "Call perception_read(lensId) to see fresh fluent state",
+    "Consider a corrective action: focus_window, dismiss modal, or wait_until",
+    "Or register the lens with guardPolicy:'warn' to receive warnings instead of blocks",
+  ],
+  LensNotFound: [
+    "Call perception_register first to create a lens for the target window",
+    "Call perception_list to see currently active lens IDs",
+  ],
+  LensBudgetExceeded: [
+    "Raise maxEnvelopeTokens when calling perception_register",
+    "Use perception_read for explicit inspection without the envelope overhead",
+  ],
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -110,6 +124,16 @@ function classify(message: string): { code: string; suggest: string[] } {
   const m = message.toLowerCase();
 
   // Order matters: check more-specific patterns first, then fall back to general ones.
+  // Perception guards and lens errors — check before generic "not found" patterns
+  if (m.includes("guardfailed") || m.startsWith("guard failed") || m.includes("guard failed:")) {
+    return { code: "GuardFailed", suggest: SUGGESTS.GuardFailed };
+  }
+  if (m.includes("lens not found") || m.includes("unknownlens")) {
+    return { code: "LensNotFound", suggest: SUGGESTS.LensNotFound };
+  }
+  if (m.includes("lens budget") || m.includes("lensbudget")) {
+    return { code: "LensBudgetExceeded", suggest: SUGGESTS.LensBudgetExceeded };
+  }
   // "Terminal window not found" must match BEFORE "window not found" (substring).
   if (m.includes("terminal window not found") || m.includes("terminal not found")) {
     return { code: "TerminalWindowNotFound", suggest: SUGGESTS.TerminalWindowNotFound };

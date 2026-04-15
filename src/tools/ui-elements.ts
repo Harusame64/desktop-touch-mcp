@@ -7,6 +7,7 @@ import type { ToolResult } from "./_types.js";
 import { failWith, failArgs } from "./_errors.js";
 import { withRichNarration, narrateParam } from "./_narration.js";
 import { buildHintsForTitle } from "../engine/identity-tracker.js";
+import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -24,6 +25,10 @@ export const clickElementSchema = {
   automationId: z.string().max(200).optional().describe("Exact AutomationId of the element"),
   controlType: z.string().max(100).optional().describe("Control type filter, e.g. 'Button', 'MenuItem'"),
   narrate: narrateParam,
+  lensId: z.string().optional().describe(
+    "Optional perception lens ID. Guards (safe.keyboardTarget, target.identityStable) are evaluated before clicking, " +
+    "and a perception envelope is attached to post.perception on success."
+  ),
 };
 
 export const setElementValueSchema = {
@@ -32,6 +37,10 @@ export const setElementValueSchema = {
   name: z.string().max(200).optional().describe("Element name/label (partial match)"),
   automationId: z.string().max(200).optional().describe("Exact AutomationId of the element"),
   narrate: narrateParam,
+  lensId: z.string().optional().describe(
+    "Optional perception lens ID. Guards (safe.keyboardTarget, target.identityStable) are evaluated before setting, " +
+    "and a perception envelope is attached to post.perception on success."
+  ),
 };
 
 export const scopeElementSchema = {
@@ -66,11 +75,21 @@ export const getUiElementsHandler = async ({
 };
 
 export const clickElementHandler = async ({
-  windowTitle, name, automationId, controlType,
-}: { windowTitle: string; name?: string; automationId?: string; controlType?: string }): Promise<ToolResult> => {
+  windowTitle, name, automationId, controlType, lensId,
+}: { windowTitle: string; name?: string; automationId?: string; controlType?: string; lensId?: string }): Promise<ToolResult> => {
   try {
     if (!name && !automationId) {
       return failArgs("Provide at least one of: name, automationId", "click_element", { windowTitle });
+    }
+    if (lensId) {
+      const guardResult = evaluatePreToolGuards(lensId, "click_element", {});
+      if (!guardResult.ok && guardResult.policy === "block") {
+        return failWith(
+          new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
+          "click_element",
+          { lensId, guard: guardResult.failedGuard }
+        );
+      }
     }
     const hintsBlock = buildHintsForTitle(windowTitle);
     const result = await clickElement(windowTitle, name, automationId, controlType);
@@ -80,18 +99,29 @@ export const clickElementHandler = async ({
     const enriched = hintsBlock
       ? { ...result, hints: { target: hintsBlock.target, caches: hintsBlock.caches } }
       : result;
-    return ok(enriched);
+    const perceptionEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "click_element" }) : undefined;
+    return ok({ ...enriched, ...(perceptionEnv && { _perceptionForPost: perceptionEnv }) });
   } catch (err) {
     return failWith(err, "click_element", { windowTitle, name, automationId });
   }
 };
 
 export const setElementValueHandler = async ({
-  windowTitle, value, name, automationId,
-}: { windowTitle: string; value: string; name?: string; automationId?: string }): Promise<ToolResult> => {
+  windowTitle, value, name, automationId, lensId,
+}: { windowTitle: string; value: string; name?: string; automationId?: string; lensId?: string }): Promise<ToolResult> => {
   try {
     if (!name && !automationId) {
       return failArgs("Provide at least one of: name, automationId", "set_element_value", { windowTitle });
+    }
+    if (lensId) {
+      const guardResult = evaluatePreToolGuards(lensId, "set_element_value", {});
+      if (!guardResult.ok && guardResult.policy === "block") {
+        return failWith(
+          new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
+          "set_element_value",
+          { lensId, guard: guardResult.failedGuard }
+        );
+      }
     }
     const hintsBlock = buildHintsForTitle(windowTitle);
     const result = await setElementValue(windowTitle, value, name, automationId);
@@ -101,7 +131,8 @@ export const setElementValueHandler = async ({
     const enriched = hintsBlock
       ? { ...result, hints: { target: hintsBlock.target, caches: hintsBlock.caches } }
       : result;
-    return ok(enriched);
+    const perceptionEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "set_element_value" }) : undefined;
+    return ok({ ...enriched, ...(perceptionEnv && { _perceptionForPost: perceptionEnv }) });
   } catch (err) {
     return failWith(err, "set_element_value", { windowTitle, name, automationId });
   }

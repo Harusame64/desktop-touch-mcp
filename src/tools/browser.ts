@@ -26,6 +26,7 @@ import { setBrowserSearchHook } from "./wait-until.js";
 import { withPostState } from "./_post.js";
 import { narrateParam } from "./_narration.js";
 import type { RichBlock } from "../engine/uia-diff.js";
+import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -74,6 +75,10 @@ export const browserClickElementSchema = {
   narrate: narrateParam,
   tabId: tabIdParam,
   port: portParam,
+  lensId: z.string().optional().describe(
+    "Optional perception lens ID. Guards (target.identityStable) are evaluated before clicking, " +
+    "and a perception envelope is attached to post.perception on success."
+  ),
 };
 
 export const browserEvalSchema = {
@@ -81,6 +86,10 @@ export const browserEvalSchema = {
   tabId: tabIdParam,
   port: portParam,
   includeContext: includeContextParam,
+  lensId: z.string().optional().describe(
+    "Optional perception lens ID. Guards (target.identityStable) are evaluated before eval. " +
+    "Note: browser_eval returns raw text, so no perception envelope is attached (guards only)."
+  ),
 };
 
 export const browserGetDomSchema = {
@@ -113,6 +122,10 @@ export const browserNavigateSchema = {
   loadTimeoutMs: z.coerce.number().int().min(500).max(30000).default(15000).describe(
     "Max milliseconds to wait for page load when waitForLoad=true (default 15000). " +
     "On timeout, returns ok:true with readyState set to current state and hints.warnings=['NavigateTimeout']."
+  ),
+  lensId: z.string().optional().describe(
+    "Optional perception lens ID. Guards (target.identityStable) are evaluated before navigating, " +
+    "and a perception envelope is attached to post.perception on success."
   ),
 };
 
@@ -492,13 +505,25 @@ export const browserClickElementHandler = async ({
   narrate,
   tabId,
   port,
+  lensId,
 }: {
   selector: string;
   narrate?: string;
   tabId?: string;
   port: number;
+  lensId?: string;
 }): Promise<ToolResult> => {
   try {
+    if (lensId) {
+      const guardResult = evaluatePreToolGuards(lensId, "browser_click_element", {});
+      if (!guardResult.ok && guardResult.policy === "block") {
+        return failWith(
+          new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
+          "browser_click_element",
+          { lensId, guard: guardResult.failedGuard }
+        );
+      }
+    }
     // CDP snapshot before click (for narrate:"rich")
     let beforeUrl: string | null = null;
     if (narrate === "rich") {
@@ -561,6 +586,7 @@ export const browserClickElementHandler = async ({
       }
     }
 
+    const perceptionEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "browser_click_element" }) : undefined;
     return ok({
       ok: true,
       clicked: selector,
@@ -568,6 +594,7 @@ export const browserClickElementHandler = async ({
       activeTab: { id: tabCtx.id, title: tabCtx.title, url: tabCtx.url },
       readyState: tabCtx.readyState,
       ...(richBlock ? { _richForPost: richBlock } : {}),
+      ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
     });
   } catch (err) {
     return failWith(err, "browser_click_element");
@@ -579,13 +606,25 @@ export const browserEvalHandler = async ({
   tabId,
   port,
   includeContext,
+  lensId,
 }: {
   expression: string;
   tabId?: string;
   port: number;
   includeContext: boolean;
+  lensId?: string;
 }): Promise<ToolResult> => {
   try {
+    if (lensId) {
+      const guardResult = evaluatePreToolGuards(lensId, "browser_eval", {});
+      if (!guardResult.ok && guardResult.policy === "block") {
+        return failWith(
+          new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
+          "browser_eval",
+          { lensId, guard: guardResult.failedGuard }
+        );
+      }
+    }
     const result = await evaluateInTab(expression, tabId ?? null, port);
     const text =
       result === null || result === undefined
@@ -602,6 +641,7 @@ export const browserEvalHandler = async ({
         `readyState: "${tabCtx.readyState}"`,
       );
     }
+    // browser_eval returns raw text, not ok() JSON — perception envelope not attachable here
     return {
       content: [{ type: "text" as const, text: lines.join("\n") }],
     };
@@ -654,6 +694,7 @@ export const browserNavigateHandler = async ({
   port,
   waitForLoad,
   loadTimeoutMs,
+  lensId,
 }: {
   url: string;
   narrate?: string;
@@ -661,8 +702,19 @@ export const browserNavigateHandler = async ({
   port: number;
   waitForLoad: boolean;
   loadTimeoutMs: number;
+  lensId?: string;
 }): Promise<ToolResult> => {
   try {
+    if (lensId) {
+      const guardResult = evaluatePreToolGuards(lensId, "browser_navigate", {});
+      if (!guardResult.ok && guardResult.policy === "block") {
+        return failWith(
+          new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
+          "browser_navigate",
+          { lensId, guard: guardResult.failedGuard }
+        );
+      }
+    }
     const startedAt = Date.now();
     // Capture beforeUrl for rich narration
     let beforeUrl: string | null = null;
@@ -738,6 +790,7 @@ export const browserNavigateHandler = async ({
         : {}),
     } : undefined;
 
+    const perceptionEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "browser_navigate" }) : undefined;
     return ok({
       ok: true,
       url: tabCtx.url || url,
@@ -746,6 +799,7 @@ export const browserNavigateHandler = async ({
       elapsedMs,
       waited: true,
       ...(richBlock ? { _richForPost: richBlock } : {}),
+      ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
     });
   } catch (err) {
     return failWith(err, "browser_navigate");
