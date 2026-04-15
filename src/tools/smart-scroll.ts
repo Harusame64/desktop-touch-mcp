@@ -127,19 +127,22 @@ async function tryCdp(params: {
       );
     }
 
-    // Unlock hidden ancestors if requested
+    // Unlock hidden ancestors if requested.
+    // getScrollAncestorsCdp already marked each hidden ancestor with data-dt-hidden-ancestor,
+    // so the unlock expression needs no external data embedded — pure attribute query.
     if (expandHidden && hiddenAncestors.length > 0) {
-      const selectorList = JSON.stringify(hiddenAncestors.map(a => a.cssSelectorPath));
-      const unlockExpr = `(function(){var sels=${selectorList};sels.forEach(function(sel){var el=document.querySelector(sel);if(el&&el.style.overflow==='hidden'){el.setAttribute('data-dt-prev-overflow','hidden');el.style.overflow='auto';}});})()`;
+      const unlockExpr = `(function(){var els=document.querySelectorAll('[data-dt-hidden-ancestor]');els.forEach(function(el){el.setAttribute('data-dt-prev-overflow','hidden');el.style.overflow='auto';el.removeAttribute('data-dt-hidden-ancestor');});})()`;
       try { await evaluateInTab(unlockExpr, tabId ?? null, port); } catch { /* ignore */ }
       warnings.push("expandHidden: overflow:hidden unlocked — call smart_scroll again to restore");
     }
 
-    // Restore any previously unlocked elements (data-dt-prev-overflow older than 30s)
+    // Restore any previously unlocked elements, and clean up stale data-dt-hidden-ancestor markers.
     const restoreExpr = `
 (function(){
   const old = document.querySelectorAll('[data-dt-prev-overflow]');
   for (const el of old) { el.style.overflow = el.getAttribute('data-dt-prev-overflow') || ''; el.removeAttribute('data-dt-prev-overflow'); }
+  const marked = document.querySelectorAll('[data-dt-hidden-ancestor]');
+  for (const el of marked) { el.removeAttribute('data-dt-hidden-ancestor'); }
 })()`;
     try { await evaluateInTab(restoreExpr, tabId ?? null, port); } catch { /* ignore */ }
 

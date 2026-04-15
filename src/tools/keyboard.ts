@@ -12,6 +12,7 @@ import { failWith } from "./_errors.js";
 import { coercedBoolean } from "./_coerce.js";
 import { withRichNarration, narrateParam } from "./_narration.js";
 import { detectFocusLoss } from "./_focus.js";
+import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -119,6 +120,10 @@ export const keyboardTypeSchema = {
   forceFocus: forceFocusParam,
   trackFocus: trackFocusParam,
   settleMs: settleMsParam,
+  lensId: z.string().optional().describe(
+    "Optional perception lens ID. Guards (safe.keyboardTarget) are evaluated before typing, " +
+    "and a perception envelope is attached to post.perception on success."
+  ),
 };
 
 export const keyboardPressSchema = {
@@ -131,6 +136,9 @@ export const keyboardPressSchema = {
   forceFocus: forceFocusParam,
   trackFocus: trackFocusParam,
   settleMs: settleMsParam,
+  lensId: z.string().optional().describe(
+    "Optional perception lens ID. Guards (safe.keyboardTarget) are evaluated before the key press."
+  ),
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -182,6 +190,7 @@ export const keyboardTypeHandler = async ({
   forceFocus: forceFocusArg,
   trackFocus,
   settleMs,
+  lensId,
 }: {
   text: string;
   use_clipboard: boolean;
@@ -191,9 +200,20 @@ export const keyboardTypeHandler = async ({
   forceFocus?: boolean;
   trackFocus: boolean;
   settleMs: number;
+  lensId?: string;
 }): Promise<ToolResult> => {
   const force = forceFocusArg ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
   try {
+    if (lensId) {
+      const guardResult = evaluatePreToolGuards(lensId, "keyboard_type", {});
+      if (!guardResult.ok && guardResult.policy === "block") {
+        return failWith(
+          new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
+          "keyboard_type",
+          { lensId, guard: guardResult.failedGuard }
+        );
+      }
+    }
     const warnings: string[] = [];
 
     const homingNotes: string[] = [];
@@ -241,6 +261,7 @@ export const keyboardTypeHandler = async ({
         : "clipboard"
       : "keystroke";
 
+    const perceptionEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "keyboard_type" }) : undefined;
     return ok({
       ok: true,
       typed: text.length,
@@ -248,6 +269,7 @@ export const keyboardTypeHandler = async ({
       ...(autoClipboardReason && { autoClipboardReason }),
       ...(focusLost && { focusLost }),
       ...(warnings.length > 0 && { hints: { warnings } }),
+      ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
     });
   } catch (err) {
     return failWith(err, "keyboard_type");
@@ -260,15 +282,27 @@ export const keyboardPressHandler = async ({
   forceFocus: forceFocusArg,
   trackFocus,
   settleMs,
+  lensId,
 }: {
   keys: string;
   windowTitle?: string;
   forceFocus?: boolean;
   trackFocus: boolean;
   settleMs: number;
+  lensId?: string;
 }): Promise<ToolResult> => {
   const force = forceFocusArg ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
   try {
+    if (lensId) {
+      const guardResult = evaluatePreToolGuards(lensId, "keyboard_press", {});
+      if (!guardResult.ok && guardResult.policy === "block") {
+        return failWith(
+          new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
+          "keyboard_press",
+          { lensId, guard: guardResult.failedGuard }
+        );
+      }
+    }
     assertKeyComboSafe(keys);
 
     const warnings: string[] = [];
@@ -294,11 +328,13 @@ export const keyboardPressHandler = async ({
       if (fl) focusLost = fl;
     }
 
+    const perceptionEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "keyboard_press" }) : undefined;
     return ok({
       ok: true,
       pressed: keys,
       ...(focusLost && { focusLost }),
       ...(warnings.length > 0 && { hints: { warnings } }),
+      ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
     });
   } catch (err) {
     return failWith(err, "keyboard_press");

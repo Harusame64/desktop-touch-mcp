@@ -587,6 +587,11 @@ export async function getScrollAncestorsCdp(
     if (scrollable || hidden) {
       const isVirtualized = ('__tanstackVirtualInstance' in cur)
         || !!cur.querySelector('[data-index]');
+      const isHidden = hidden && !scrollable;
+      if (isHidden) {
+        // Mark element so callers can unlock via querySelectorAll without embedding selector strings
+        cur.setAttribute('data-dt-hidden-ancestor', '');
+      }
       ancestors.push({
         cssSelectorPath: selectorPath(cur),
         scrollTop: cur.scrollTop,
@@ -597,7 +602,7 @@ export async function getScrollAncestorsCdp(
         clientWidth: cur.clientWidth,
         overflowX,
         overflowY,
-        isHidden: hidden && !scrollable,
+        isHidden,
         isVirtualized,
       });
       depth++;
