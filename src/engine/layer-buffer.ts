@@ -7,7 +7,7 @@
  */
 
 import { screen, Region } from "./nutjs.js";
-import { encodeToWebPFromRaw } from "./image.js";
+import { encodeToWebPFromRaw, dHashFromRaw } from "./image.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -33,6 +33,9 @@ interface WindowLayer {
   /** Cached UIA text representation (JSON string). */
   uiaText: string | null;
   uiaTimestamp: number;
+  /** Cached 64-bit dHash of rawPixels for scroll-verification. */
+  lastDHash?: bigint;
+  lastDHashAt?: number;
 }
 
 export type LayerChangeType = "unchanged" | "moved" | "content_changed" | "new" | "closed";
@@ -356,4 +359,54 @@ export function getBaselineTimestamp(hwnd: bigint): number | null {
 /** Get the UIA-cache timestamp for a window, or null if no cached UIA. */
 export function getUiaCacheTimestamp(hwnd: bigint): number | null {
   return uiaCache.get(hwnd)?.timestamp ?? null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SmartScroll raw-pixel + dHash access
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Return the cached raw pixel buffer for a window (from the last diffMode capture).
+ * Used by smart_scroll image path to derive dHash without re-screenshotting.
+ * Returns null when no baseline has been captured for this HWND.
+ */
+export function getCachedRaw(hwnd: bigint): {
+  rawPixels: Buffer; channels: 3 | 4; width: number; height: number;
+} | null {
+  const layer = layers.get(hwnd);
+  if (!layer) return null;
+  return { rawPixels: layer.rawPixels, channels: layer.channels, width: layer.width, height: layer.height };
+}
+
+/**
+ * Return the last cached dHash for a window, or null if none computed yet.
+ * Updated lazily on each captureWindowRaw call inside captureAndDiff.
+ */
+export function getCachedDHash(hwnd: bigint): bigint | null {
+  return layers.get(hwnd)?.lastDHash ?? null;
+}
+
+/**
+ * Capture the raw pixels for a window region and update the dHash cache.
+ * Returns null on capture failure.
+ * Callers (smart_scroll image path) use this between scroll attempts.
+ */
+export async function captureWindowRawAndHash(
+  hwnd: bigint,
+  region: { x: number; y: number; width: number; height: number }
+): Promise<{ rawPixels: Buffer; channels: 3 | 4; width: number; height: number; dHash: bigint } | null> {
+  const raw = await captureWindowRaw(region);
+  if (!raw) return null;
+  const dHash = await dHashFromRaw(raw.rawPixels, raw.width, raw.height, raw.channels);
+  // Update layer cache if present
+  const layer = layers.get(hwnd);
+  if (layer) {
+    layer.rawPixels = raw.rawPixels;
+    layer.channels = raw.channels;
+    layer.width = raw.width;
+    layer.height = raw.height;
+    layer.lastDHash = dHash;
+    layer.lastDHashAt = Date.now();
+  }
+  return { ...raw, dHash };
 }

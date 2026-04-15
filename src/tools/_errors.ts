@@ -80,6 +80,26 @@ const SUGGESTS: Record<string, string[]> = {
     "Verify the target window/element appears as expected",
     "Check intermediate state with screenshot(detail='meta') or get_context()",
   ],
+  ScrollbarUnavailable: [
+    "The target window has no Win32 scrollbar (e.g. overlay scrollbars or non-scrollable content)",
+    "Try strategy:'image' with a hint param for binary-search scrolling",
+    "Verify the target is actually a scrollable container",
+  ],
+  OverflowHiddenAncestor: [
+    "A parent element has overflow:hidden which silently swallows scroll input",
+    "Pass expandHidden:true to temporarily unlock it (mutates live CSS)",
+    "Or click an expand/collapse control on the page to reveal the content first",
+  ],
+  VirtualScrollExhausted: [
+    "The virtualised list did not reach the target after retryCount attempts",
+    "Provide virtualIndex + virtualTotal for direct proportional seeking",
+    "Increase retryCount (default 3) or narrow search with hint:'above'|'below'",
+  ],
+  MaxDepthExceeded: [
+    "The scroll ancestor chain is deeper than maxDepth (default 3)",
+    "Increase maxDepth to walk more layers",
+    "Or scroll an outer container first via a separate smart_scroll call",
+  ],
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -126,6 +146,18 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   if (m.includes("timeout") || m.includes("timed out")) {
     return { code: "UiaTimeout", suggest: SUGGESTS.UiaTimeout };
+  }
+  if (m.includes("scrollbar unavailable") || m.includes("no scrollbar") || m.includes("no scrollpattern")) {
+    return { code: "ScrollbarUnavailable", suggest: SUGGESTS.ScrollbarUnavailable ?? [] };
+  }
+  if (m.includes("overflow:hidden") || m.includes("overflowancestor")) {
+    return { code: "OverflowHiddenAncestor", suggest: SUGGESTS.OverflowHiddenAncestor ?? [] };
+  }
+  if (m.includes("virtual scroll exhausted") || m.includes("virtualscrollexhausted")) {
+    return { code: "VirtualScrollExhausted", suggest: SUGGESTS.VirtualScrollExhausted ?? [] };
+  }
+  if (m.includes("max depth") || m.includes("maxdepth exceeded")) {
+    return { code: "MaxDepthExceeded", suggest: SUGGESTS.MaxDepthExceeded ?? [] };
   }
 
   return { code: "ToolError", suggest: [] };

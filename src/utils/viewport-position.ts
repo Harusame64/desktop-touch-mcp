@@ -39,3 +39,16 @@ export function computeViewportPosition(
   if (cx >= vRight) return "right";
   return "in-view";
 }
+
+/**
+ * Compute the normalised vertical position of an element's centre point on the page.
+ *
+ * @param elementRect    Bounding rect of the element (screen / document coords).
+ * @param documentHeight Total scrollable height of the document (e.g. scrollHeight).
+ * @returns 0 (top of page) … 1 (bottom of page), clamped.
+ */
+export function computePageRatio(elementRect: Rect, documentHeight: number): number {
+  if (documentHeight <= 0) return 0;
+  const cy = elementRect.y + elementRect.height / 2;
+  return Math.max(0, Math.min(1, cy / documentHeight));
+}
