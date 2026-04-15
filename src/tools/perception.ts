@@ -172,8 +172,9 @@ const perceptionRegisterDesc = buildDesc({
     "coordinate clicks, and surfaces modal dialogs before they cause errors. Not needed for " +
     "single one-shot actions.",
   caveats:
-    "MVP (v0.9): Win32 sensors only — no UIA focused-element push, no CDP navigation events. " +
-    "modal.above uses title-regex + WS_EX_TOPMOST heuristic (may miss some native modals). " +
+    "Win32 sensors + modal owner-chain detection. modal.above uses disabled-owner, direct ownership, " +
+    "#32770 class, and WS_EX_TOPMOST rules (cloaked/tooltip windows filtered). " +
+    "No UIA focused-element push or CDP navigation events yet. " +
     "safe.clickCoordinates uses rect containment only (no pixel-level z-order hit test). " +
     "Browser tab-level fluents (readyState, URL) defer to a future release.",
   examples: [
