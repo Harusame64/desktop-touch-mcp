@@ -34,7 +34,7 @@ Branch: `feat/v0.7`
 Shipped (from "v0.7 検討候補" list):
 - [x] Prio 3.5-B: `viewportPosition` field added to all `actionable[]` items in `screenshot(detail='text')`, `get_ui_elements`, and `browser_get_interactive` — values: `in-view | above | below | left | right`
 - [x] Prio 3.5-A: `scroll_to_element(selector|name, windowTitle?, block?)` — new tool. Chrome path via CDP scrollIntoView; native path via UIA ScrollItemPattern
-- [x] Prio 2-B: `browser_fill_input(selector, value)` — new tool. CDP execCommand('insertText') path that triggers React/Vue fiber events correctly
+- [x] Prio 2-B: `browser_fill_input(selector, value)` — new tool. Native value prototype setter + InputEvent/change dispatch via CDP; triggers React/Vue fiber events correctly
 - [x] Prio 4-A: `keyboard_type(replaceAll:true)` — send Ctrl+A before typing
 - [x] Prio 4-B: `mouse_click(tripleClick:true)` — triple-click for full line selection
 - [x] Prio 3-B: `focus_window(chromeTabUrlContains)` — activate Chrome tab by URL substring via CDP Target.activateTarget before focusing HWND

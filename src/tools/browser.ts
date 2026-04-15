@@ -313,9 +313,9 @@ export const browserFillInputHandler = async ({
   includeContext: boolean;
 }): Promise<ToolResult> => {
   try {
-    // CDP sequence: focus element → select all → insert text via Input.insertText.
-    // This triggers React/Vue synthetic events correctly because CDP Input.insertText
-    // fires the browser's native input event pipeline, which React intercepts.
+    // Fill sequence: focus the element first, then update its value from page context
+    // using the native prototype setter and dispatch InputEvent/change so frameworks
+    // such as React/Vue observe the same DOM updates they listen for in normal input flows.
     const focusExpr = `
 (function() {
   const el = document.querySelector(${JSON.stringify(selector)});
@@ -902,9 +902,9 @@ export const browserGetInteractiveHandler = async ({
     const cx = rect.left + rect.width / 2;
     const cy = rect.top + rect.height / 2;
     if (cy < 0) return 'above';
-    if (cy > window.innerHeight) return 'below';
+    if (cy >= window.innerHeight) return 'below';
     if (cx < 0) return 'left';
-    if (cx > window.innerWidth) return 'right';
+    if (cx >= window.innerWidth) return 'right';
     return 'in-view';
   }
 

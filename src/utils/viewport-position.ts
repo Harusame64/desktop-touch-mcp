@@ -34,8 +34,8 @@ export function computeViewportPosition(
   const vBottom = viewportRect.y + viewportRect.height;
 
   if (cy < vTop) return "above";
-  if (cy > vBottom) return "below";
+  if (cy >= vBottom) return "below";
   if (cx < vLeft) return "left";
-  if (cx > vRight) return "right";
+  if (cx >= vRight) return "right";
   return "in-view";
 }

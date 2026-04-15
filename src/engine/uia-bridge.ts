@@ -573,10 +573,10 @@ export function extractActionableElements(result: UiElementsResult): ActionableR
     a.region.y !== b.region.y ? a.region.y - b.region.y : a.region.x - b.region.x
   );
 
-  // Use windowRect from PS output (preferred), fall back to searching elements
-  const windowRegion = result.windowRect
-    ?? result.elements.find((e) => e.controlType === "Window")?.boundingRect
-    ?? undefined;
+  // Use windowRect from PS output (preferred), fall back to searching elements.
+  // Normalise null → undefined so the field is absent (not null) when unknown.
+  const windowRegion = (result.windowRect != null ? result.windowRect
+    : result.elements.find((e) => e.controlType === "Window")?.boundingRect) ?? undefined;
 
   return {
     window: result.windowTitle,
