@@ -6,7 +6,7 @@
 
 > **Stop pasting screenshots. Let Claude see and control your desktop directly.**
 
-An MCP server that gives Claude eyes and hands on Windows — 46 tools covering screenshots, mouse, keyboard, Windows UI Automation, and Chrome DevTools Protocol, designed from the ground up for LLM efficiency.
+An MCP server that gives Claude eyes and hands on Windows — 51 tools covering screenshots, mouse, keyboard, Windows UI Automation, Chrome DevTools Protocol, clipboard, and desktop notifications, designed from the ground up for LLM efficiency.
 
 > *Applies MPEG P-frame diffing to window capture: only changed windows are sent after the first frame, cutting token usage by ~60–80% in typical automation loops.*
 
@@ -72,7 +72,7 @@ Add to `~/.claude.json` under `mcpServers`:
 
 ---
 
-## Tools (46 total)
+## Tools (51 total)
 
 > 📖 **Full command reference**: [`docs/system-overview.md`](docs/system-overview.md) — every tool's parameters, response shape, coordinate math, layer-buffer strategy, and engineering notes in one place.
 
@@ -97,14 +97,14 @@ Add to `~/.claude.json` under `mcpServers`:
 ### Mouse (5)
 | Tool | Description |
 |---|---|
-| `mouse_move` / `mouse_click` / `mouse_drag` | Move, click, drag. Accept `speed` and `homing` parameters |
+| `mouse_move` / `mouse_click` / `mouse_drag` | Move, click, drag. `doubleClick` / `tripleClick` (line-select). Accept `speed` and `homing` parameters |
 | `scroll` | Scroll in any direction. Accepts `speed` and `homing` parameters |
 | `get_cursor_position` | Current cursor coordinates |
 
 ### Keyboard (2)
 | Tool | Description |
 |---|---|
-| `keyboard_type` | Type text (`use_clipboard=true` bypasses IME and is required for em-dash / smart quotes / non-ASCII punctuation to avoid Chrome/Edge address-bar hijack) |
+| `keyboard_type` | Type text. `use_clipboard=true` bypasses IME (required for em-dash / smart quotes). `replaceAll=true` sends Ctrl+A before typing. Non-ASCII symbols trigger clipboard mode automatically (opt-out: `forceKeystrokes=true`) |
 | `keyboard_press` | Key combos (`ctrl+c`, `alt+f4`, etc.) |
 
 ### UI Automation (4)
@@ -115,7 +115,7 @@ Add to `~/.claude.json` under `mcpServers`:
 | `set_element_value` | Write directly to a text field |
 | `scope_element` | High-res zoom crop of an element + its child tree |
 
-### Browser CDP (11)
+### Browser CDP (12)
 | Tool | Description |
 |---|---|
 | `browser_launch` | Launch Chrome/Edge/Brave with `--remote-debugging-port` and wait for the CDP endpoint (idempotent) |
@@ -123,8 +123,9 @@ Add to `~/.claude.json` under `mcpServers`:
 | `browser_find_element` | CSS selector → exact physical screen coords |
 | `browser_click_element` | Find DOM element + click in one step |
 | `browser_eval` | Evaluate JS expression in the browser tab |
+| `browser_fill_input` | Fill React/Vue/Svelte controlled inputs via CDP — works where `browser_eval` value assignment doesn't update framework state |
 | `browser_get_dom` | Get outerHTML of element or `document.body` |
-| `browser_get_interactive` | Enumerate links / buttons / inputs + **ARIA toggles** (`role=switch/checkbox/radio/tab/menuitem/option`) with `state.{checked,pressed,selected,expanded}`; also the first-choice form-state verifier after submission (structured output, no image tokens) |
+| `browser_get_interactive` | Enumerate links / buttons / inputs + **ARIA toggles** with `state.{checked,pressed,selected,expanded}`; each element includes `viewportPosition` |
 | `browser_get_app_state` | **SPA state extractor** — one CDP call that scans `__NEXT_DATA__`, `__NUXT_DATA__`, `__REMIX_CONTEXT__`, `__APOLLO_STATE__`, GitHub `react-app` embeddedData, JSON-LD, `window.__INITIAL_STATE__` |
 | `browser_search` | Grep DOM by text / regex / role / ariaLabel / selector with confidence ranking |
 | `browser_navigate` | Navigate via CDP `Page.navigate`; `waitForLoad:true` (default) returns once `readyState==='complete'` |
@@ -144,6 +145,22 @@ All `browser_*` tools that touch the DOM accept `includeContext:false` to omit t
 | `pin_window` / `unpin_window` | Always-on-top toggle |
 | `run_macro` | Execute up to 50 steps sequentially in one MCP call |
 
+### Clipboard (2)
+| Tool | Description |
+|---|---|
+| `clipboard_read` | Read the current Windows clipboard text (non-text payloads return empty string) |
+| `clipboard_write` | Write text to the Windows clipboard; full Unicode / emoji / CJK support |
+
+### Notification (1)
+| Tool | Description |
+|---|---|
+| `notification_show` | Show a Windows system tray balloon notification — useful to alert the user when a long-running task finishes |
+
+### Scroll (1)
+| Tool | Description |
+|---|---|
+| `scroll_to_element` | Scroll a named element into the viewport without computing scroll amounts. Chrome path: `selector` + `block` alignment. Native path: `name` + `windowTitle` via UIA ScrollItemPattern |
+
 ---
 
 ## Browser CDP automation
@@ -161,8 +178,9 @@ browser_connect()                       → list open tabs + get tabIds
 browser_find_element("#submit")         → CSS selector → physical screen coords
 browser_click_element("#submit")        → find + click in one step (auto-focuses browser)
 browser_eval("document.title")          → evaluate JS, returns result
+browser_fill_input("#email", "user@example.com") → fill React/Vue/Svelte controlled input (state-safe)
 browser_get_dom("#main", maxLength=5000)→ outerHTML, truncated to maxLength chars
-browser_get_interactive()               → links/buttons/inputs + ARIA toggles with state.checked/pressed/...
+browser_get_interactive()               → links/buttons/inputs + ARIA toggles + viewportPosition per element
 browser_get_app_state()                 → one-shot SPA state (Next/Nuxt/Remix/Apollo/GitHub react-app/Redux SSR)
 browser_search(by="text", pattern="...")→ grep DOM with confidence ranking
 browser_navigate("https://example.com") → navigate via CDP (no address bar interaction)
@@ -425,7 +443,7 @@ Setting `DESKTOP_TOUCH_FORCE_FOCUS=1` makes `forceFocus: true` the default for a
 | Layer buffer TTL | Buffer auto-clears after 90s of inactivity → next `diffMode` becomes an I-frame | After long waits, call `workspace_snapshot` to explicitly reset the buffer |
 | `keyboard_type` / `keyboard_press` follow focus | When `dock_window(pin=true)` keeps another window on top (e.g. Claude CLI), keystrokes may be absorbed by that window | Call `focus_window(title=...)` first and verify `isActive=true` via `screenshot(detail='meta')` before sending keys |
 | `keyboard_type` em-dash / smart quotes in Chrome/Edge | Non-ASCII punctuation (em-dash `—`, en-dash `–`, smart quotes `"" ''`) can be intercepted as keyboard accelerators, shifting focus to the address bar | Always use `use_clipboard=true` when the text contains such characters |
-| `browser_eval` on React / Vue / Svelte inputs | Setting `element.value = ...` or dispatching synthetic events does not update the framework's internal state | Use `keyboard_type` (click the field first) instead of `browser_eval` for controlled inputs |
+| `browser_eval` on React / Vue / Svelte inputs | Setting `element.value = ...` or dispatching synthetic events does not update the framework's internal state | Use `browser_fill_input(selector, value)` — it uses native prototype setter + InputEvent which does update React/Vue/Svelte state |
 
 ---
 

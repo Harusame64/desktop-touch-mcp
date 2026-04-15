@@ -108,7 +108,7 @@ export const keyboardTypeSchema = {
     ),
   replaceAll: z.boolean().optional().default(false).describe(
     "When true, send Ctrl+A to select all existing text before typing. " +
-    "Equivalent to click → Ctrl+A → keyboard_type in a single call. Default false."
+    "Equivalent to Ctrl+A → keyboard_type in one call (requires field already focused). Default false."
   ),
   forceKeystrokes: z.boolean().optional().default(false).describe(
     "When true, always use keystroke mode even if text contains non-ASCII symbols " +

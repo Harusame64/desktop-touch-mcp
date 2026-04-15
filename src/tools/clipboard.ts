@@ -75,7 +75,7 @@ export const clipboardWriteHandler = async ({
 export function registerClipboardTools(server: McpServer): void {
   server.tool(
     "clipboard_read",
-    "Return the current text content of the Windows clipboard. Use after the user copies something to inspect it, or to retrieve text written by clipboard_write.",
+    "Return the current text content of the Windows clipboard. Use after the user copies something to inspect it, or to retrieve text written by clipboard_write. Caveats: Non-text clipboard payloads (images, files) return an empty string — not an error.",
     clipboardReadSchema,
     clipboardReadHandler
   );
