@@ -908,13 +908,19 @@ export const browserGetInteractiveHandler = async ({
     return 'in-view';
   }
 
+  const _docHeight = document.documentElement.scrollHeight || 1;
+  function pageRatio(rect) {
+    const cy = rect.top + rect.height / 2 + window.scrollY;
+    return Math.max(0, Math.min(1, cy / _docHeight));
+  }
+
   const out = [];
   for (const el of root.querySelectorAll(cssQ)) {
     if (!isVisible(el)) continue;
     const rect = el.getBoundingClientRect();
     const vp = inViewportRect(rect);
     if (viewportOnly && !vp) continue;
-    const item = { type: elType(el), text: elText(el), selector: bestSelector(el), inViewport: vp, viewportPosition: viewportPos(rect) };
+    const item = { type: elType(el), text: elText(el), selector: bestSelector(el), inViewport: vp, viewportPosition: viewportPos(rect), pageRatio: pageRatio(rect) };
     if (el.tagName === 'A') item.href = el.href;
     const st = elState(el);
     if (st) item.state = st;

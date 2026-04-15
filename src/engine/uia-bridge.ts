@@ -460,6 +460,8 @@ export interface ActionableElement {
   suggest?: string;
   /** Position of this element relative to the window/viewport. */
   viewportPosition?: "in-view" | "above" | "below" | "left" | "right";
+  /** Normalised vertical position on the page (0 = top, 1 = bottom). Only filled by smart_scroll. */
+  pageRatio?: number;
 }
 
 export interface TextContent {
@@ -983,6 +985,165 @@ try {
     Write-Output '{"ok":true,"scrolled":true}'
 } catch {
     Write-Output '{"ok":true,"scrolled":false,"error":"ScrollItemPattern not available"}'
+}
+`;
+
+  try {
+    const output = await runPS(script, 8000);
+    return JSON.parse(output) as { ok: boolean; scrolled: boolean; error?: string };
+  } catch (err) {
+    return { ok: false, scrolled: false, error: String(err) };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SmartScroll — UIA ancestor walk + ScrollPattern control
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface UiaScrollAncestor {
+  name: string;
+  automationId: string;
+  controlType: string;
+  verticalPercent: number;
+  horizontalPercent: number;
+  verticallyScrollable: boolean;
+  horizontallyScrollable: boolean;
+}
+
+/**
+ * Walk the UIA tree from the named element upward, collecting all ancestors
+ * that expose ScrollPattern. Returns them ordered outer → inner.
+ */
+export async function getScrollAncestors(
+  windowTitle: string,
+  elementName: string
+): Promise<UiaScrollAncestor[]> {
+  const safeTitle = escapeLike(windowTitle);
+  const safeName = escapeLike(elementName);
+
+  const script = `
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+
+$root = [System.Windows.Automation.AutomationElement]::RootElement
+$trueC = [System.Windows.Automation.Condition]::TrueCondition
+$ScrollPat = [System.Windows.Automation.ScrollPattern]::Pattern
+
+$target = $null
+$allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
+foreach ($w in $allWins) {
+    if ($w.Current.Name -like '*${safeTitle}*') { $target = $w; break }
+}
+if (-not $target) { Write-Output '{"ok":false,"error":"Window not found","ancestors":[]}'; exit }
+
+$found = $null
+function FindElement($el, $depth) {
+    if ($script:found) { return }
+    $c = $el.Current
+    if ($c.Name -like '*${safeName}*') { $script:found = $el; return }
+    if ($depth -gt 14) { return }
+    $kids = $el.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
+    foreach ($k in $kids) { FindElement $k ($depth+1) }
+}
+FindElement $target 0
+
+$ancestors = @()
+if ($script:found) {
+    $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+    $cur = $walker.GetParent($script:found)
+    while ($cur -and $cur -ne $root) {
+        try {
+            $sp = $cur.GetCurrentPattern($ScrollPat)
+            $sv = $sp.Current
+            $ancestors += @{
+                name = $cur.Current.Name
+                automationId = $cur.Current.AutomationId
+                controlType = $cur.Current.ControlType.ProgrammaticName
+                verticalPercent = $sv.VerticalScrollPercent
+                horizontalPercent = $sv.HorizontalScrollPercent
+                verticallyScrollable = $sv.VerticallyScrollable
+                horizontallyScrollable = $sv.HorizontallyScrollable
+            }
+        } catch { }
+        $cur = $walker.GetParent($cur)
+    }
+}
+
+# Reverse to outer→inner
+[array]::Reverse($ancestors)
+$json = $ancestors | ConvertTo-Json -Compress -Depth 3
+if (-not $json) { $json = '[]' }
+# Ensure array (ConvertTo-Json emits object when count=1)
+if ($json -notmatch '^\\[') { $json = "[$json]" }
+Write-Output "{""ok"":true,""ancestors"":$json}"
+`;
+
+  try {
+    const output = await runPS(script, 10000);
+    const result = JSON.parse(output) as { ok: boolean; error?: string; ancestors: UiaScrollAncestor[] };
+    return result.ancestors ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Scroll a UIA element's ScrollPattern ancestor to a given percentage.
+ * Pass -1 for either axis to leave it unchanged (UIA NoScroll).
+ */
+export async function scrollByPercent(
+  windowTitle: string,
+  elementName: string,
+  verticalPercent: number,
+  horizontalPercent: number
+): Promise<{ ok: boolean; scrolled: boolean; error?: string }> {
+  const safeTitle = escapeLike(windowTitle);
+  const safeName = escapeLike(elementName);
+  const vp = verticalPercent < 0 ? -1 : Math.max(0, Math.min(100, Math.round(verticalPercent)));
+  const hp = horizontalPercent < 0 ? -1 : Math.max(0, Math.min(100, Math.round(horizontalPercent)));
+
+  const script = `
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+
+$root = [System.Windows.Automation.AutomationElement]::RootElement
+$trueC = [System.Windows.Automation.Condition]::TrueCondition
+$ScrollPat = [System.Windows.Automation.ScrollPattern]::Pattern
+
+$target = $null
+$allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
+foreach ($w in $allWins) {
+    if ($w.Current.Name -like '*${safeTitle}*') { $target = $w; break }
+}
+if (-not $target) { Write-Output '{"ok":false,"scrolled":false,"error":"Window not found"}'; exit }
+
+$found = $null
+function FindElement($el, $depth) {
+    if ($script:found) { return }
+    if ($el.Current.Name -like '*${safeName}*') { $script:found = $el; return }
+    if ($depth -gt 14) { return }
+    $kids = $el.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
+    foreach ($k in $kids) { FindElement $k ($depth+1) }
+}
+FindElement $target 0
+if (-not $script:found) { Write-Output '{"ok":false,"scrolled":false,"error":"Element not found"}'; exit }
+
+$walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+$cur = $walker.GetParent($script:found)
+$sp = $null
+while ($cur -and $cur -ne $root) {
+    try { $sp = $cur.GetCurrentPattern($ScrollPat); break } catch { }
+    $cur = $walker.GetParent($cur)
+}
+if (-not $sp) { Write-Output '{"ok":false,"scrolled":false,"error":"No ScrollPattern ancestor found"}'; exit }
+
+try {
+    $sp.SetScrollPercent(${hp}, ${vp})
+    Write-Output '{"ok":true,"scrolled":true}'
+} catch {
+    Write-Output "{""ok"":false,""scrolled"":false,""error"":""$($_.Exception.Message)""}"
 }
 `;
 

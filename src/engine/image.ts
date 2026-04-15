@@ -239,6 +239,130 @@ export async function encodeCrop(
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SmartScroll image primitives
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Extract a rectangular strip from a raw RGB/RGBA buffer and return raw pixels.
+ * First use of the `{data, info}` idiom in this codebase — established here.
+ */
+export async function extractStripRaw(
+  rawRgb: Buffer,
+  width: number,
+  height: number,
+  channels: 3 | 4,
+  strip: { left: number; top: number; width: number; height: number }
+): Promise<{ data: Buffer; info: { width: number; height: number; channels: number } }> {
+  const result = await sharp(rawRgb, { raw: { width, height, channels } })
+    .extract({ left: strip.left, top: strip.top, width: strip.width, height: strip.height })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  return { data: result.data, info: { width: result.info.width, height: result.info.height, channels: result.info.channels } };
+}
+
+/**
+ * Compute a 64-bit difference hash (dHash) from a raw RGB/RGBA buffer.
+ * Resizes to 9×8 grayscale, then builds 64 bits via row-major horizontal comparison.
+ * Returns a bigint where bit=1 means the left pixel is brighter than the right.
+ */
+export async function dHashFromRaw(
+  rawRgb: Buffer,
+  width: number,
+  height: number,
+  channels: 3 | 4
+): Promise<bigint> {
+  const { data } = await sharp(rawRgb, { raw: { width, height, channels } })
+    .grayscale()
+    .resize({ width: 9, height: 8, kernel: "cubic", fit: "fill" })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  let hash = 0n;
+  for (let row = 0; row < 8; row++) {
+    for (let col = 0; col < 8; col++) {
+      const left  = data[row * 9 + col] ?? 0;
+      const right = data[row * 9 + col + 1] ?? 0;
+      hash = (hash << 1n) | (left > right ? 1n : 0n);
+    }
+  }
+  return hash;
+}
+
+/** Count differing bits between two 64-bit dHash values (Hamming distance). */
+export function hammingDistance(a: bigint, b: bigint): number {
+  let x = a ^ b;
+  let n = 0;
+  while (x !== 0n) {
+    n += Number(x & 1n);
+    x >>= 1n;
+  }
+  return n;
+}
+
+/**
+ * Detect the scrollbar thumb position from a narrow vertical strip (rightmost ~16 px).
+ * Uses luminance (Y = 0.299R + 0.587G + 0.114B) to find the thumb via RLE.
+ * Returns null when no clear thumb is detected (e.g., overlay scrollbars hidden).
+ */
+export function detectScrollThumbFromStrip(
+  stripRgb: Buffer,
+  stripW: number,
+  stripH: number,
+  channels: 3 | 4
+): { thumbTop: number; thumbHeight: number; trackHeight: number } | null {
+  if (stripH < 10 || stripW < 1) return null;
+
+  // Sample the centre column of the strip for luminance
+  const col = Math.floor(stripW / 2);
+  const luminance: number[] = [];
+  for (let row = 0; row < stripH; row++) {
+    const idx = (row * stripW + col) * channels;
+    const r = stripRgb[idx] ?? 0;
+    const g = stripRgb[idx + 1] ?? 0;
+    const b = stripRgb[idx + 2] ?? 0;
+    luminance.push(Math.round(0.299 * r + 0.587 * g + 0.114 * b));
+  }
+
+  // Overall track median
+  const sorted = [...luminance].sort((a, b) => a - b);
+  const trackMedian = sorted[Math.floor(sorted.length / 2)] ?? 128;
+
+  // RLE to find runs whose median deviates from the track median by ≥ 24
+  const TOLERANCE = 24;
+  const MIN_THUMB_PX = 6;
+
+  let best: { start: number; length: number; median: number } | null = null;
+  let runStart = 0;
+  let runDir: number = luminance[0]! > trackMedian ? 1 : -1;
+
+  const commitRun = (end: number) => {
+    const slice = luminance.slice(runStart, end);
+    const sliceSorted = [...slice].sort((a, b) => a - b);
+    const sliceMedian = sliceSorted[Math.floor(sliceSorted.length / 2)] ?? 0;
+    const diff = Math.abs(sliceMedian - trackMedian);
+    if (diff >= TOLERANCE && slice.length >= MIN_THUMB_PX) {
+      if (!best || slice.length > best.length) {
+        best = { start: runStart, length: slice.length, median: sliceMedian };
+      }
+    }
+  };
+
+  for (let i = 1; i < luminance.length; i++) {
+    const dir = (luminance[i] ?? 0) > trackMedian ? 1 : -1;
+    if (dir !== runDir) {
+      commitRun(i);
+      runStart = i;
+      runDir = dir;
+    }
+  }
+  commitRun(luminance.length);
+
+  if (best === null) return null;
+  const b = best as { start: number; length: number; median: number };
+  return { thumbTop: b.start, thumbHeight: b.length, trackHeight: stripH };
+}
+
 /** WebP encoder — 1:1 pixels, lossy compression. No resizing. (also exported for layer-buffer) */
 export async function encodeToWebPFromRaw(
   rawData: Buffer,
