@@ -17,7 +17,6 @@ import { DependencyGraph } from "./dependency-graph.js";
 import {
   compileLens,
   resolveBindingFromSnapshot,
-  expandFluentKeys,
   resetLensCounter,
 } from "./lens.js";
 import type { PerceptionLens } from "./types.js";

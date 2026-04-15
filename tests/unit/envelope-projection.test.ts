@@ -3,7 +3,7 @@
  * Unit tests for projectEnvelope — perception envelope projection logic.
  */
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import { projectEnvelope } from "../../src/engine/perception/envelope.js";
 import { FluentStore } from "../../src/engine/perception/fluent-store.js";
 import type { GuardEvalResult, PerceptionLens, LensSpec, WindowIdentity } from "../../src/engine/perception/types.js";

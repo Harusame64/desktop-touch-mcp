@@ -60,7 +60,6 @@ export function projectEnvelope(
 
   // Read current fluent values
   const existsFluent  = store.read(`window:${hwnd}.target.exists`);
-  const identFluent   = store.read(`window:${hwnd}.target.identity`);
   const titleFluent   = store.read(`window:${hwnd}.target.title`);
   const rectFluent    = store.read(`window:${hwnd}.target.rect`);
   const fgFluent      = store.read(`window:${hwnd}.target.foreground`);

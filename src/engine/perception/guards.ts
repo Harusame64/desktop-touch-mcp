@@ -14,10 +14,8 @@ import type { FluentStore } from "./fluent-store.js";
 import { confidenceFor } from "./evidence.js";
 
 // Confidence thresholds per guard class (from design doc)
-const THRESHOLD_DESTRUCTIVE  = 0.95;
 const THRESHOLD_ORDINARY_KB  = 0.90;
 const THRESHOLD_CLICK        = 0.90;
-const THRESHOLD_INFORMATIONAL = 0.60;
 
 /** Context for guards that need action-call arguments. */
 export interface GuardContext {
@@ -159,9 +157,6 @@ function evalClickCoordinates(
       suggestedAction: "Call perception_read to populate rect before clicking",
     };
   }
-
-  const ageMs = rectFluent.status === "stale" ? Infinity
-    : nowMs - (store.read(`window:${hwnd}.target.rect`)?.support[0]?.observedAtMs ?? 0);
 
   if (rectFluent.confidence < THRESHOLD_CLICK) {
     return {

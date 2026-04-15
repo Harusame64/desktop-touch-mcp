@@ -3,7 +3,7 @@
  * Unit tests for guard evaluators — pure functions over FluentStore.
  */
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import { evaluateGuard, evaluateGuards } from "../../src/engine/perception/guards.js";
 import { FluentStore } from "../../src/engine/perception/fluent-store.js";
 import type { PerceptionLens, LensSpec, WindowIdentity } from "../../src/engine/perception/types.js";

@@ -78,7 +78,7 @@ export function refreshWin32Fluents(hwnd: string, titleKey: string): Observation
   obs.push(makeObs("target.rect", rect, rect ? 0.98 : 0.40));
 
   // target.identity (via identity-tracker for processStartTimeMs)
-  const { identity, invalidatedBy } = observeTarget(titleKey, hwndBig, target.title);
+  const { identity } = observeTarget(titleKey, hwndBig, target.title);
   const identValue: WindowIdentity | null = identity
     ? {
         hwnd,

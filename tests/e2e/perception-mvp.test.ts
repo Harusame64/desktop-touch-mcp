@@ -26,7 +26,7 @@ import {
 import { keyboardTypeHandler } from "../../src/tools/keyboard.js";
 import { launchNotepad, type NpInstance } from "./helpers/notepad-launcher.js";
 import { parsePayload, sleep } from "./helpers/wait.js";
-import { focusWindow } from "../../src/engine/win32.js";
+import { restoreAndFocusWindow } from "../../src/engine/win32.js";
 import type { LensSpec } from "../../src/engine/perception/types.js";
 import { FLUENT_KINDS } from "../../src/engine/perception/types.js";
 
@@ -61,7 +61,7 @@ describe("Scenario 1: perception lens — envelope in keyboard_type response", (
   beforeAll(async () => {
     __resetRegistry();
     np = await launchNotepad();
-    try { focusWindow(np.hwnd); } catch { /* non-fatal */ }
+    try { restoreAndFocusWindow(np.hwnd); } catch { /* non-fatal */ }
     await sleep(400);
 
     // Register lens with warn mode so guards don't block typing
@@ -80,7 +80,7 @@ describe("Scenario 1: perception lens — envelope in keyboard_type response", (
   });
 
   it("keyboard_type with lensId attaches post.perception envelope", async () => {
-    try { focusWindow(np.hwnd); } catch { /* non-fatal */ }
+    try { restoreAndFocusWindow(np.hwnd); } catch { /* non-fatal */ }
     await sleep(300);
 
     const result = await keyboardTypeHandler({
@@ -111,7 +111,7 @@ describe("Scenario 1: perception lens — envelope in keyboard_type response", (
   });
 
   it("evaluatePreToolGuards returns results with focus active", () => {
-    try { focusWindow(np.hwnd); } catch { /* non-fatal */ }
+    try { restoreAndFocusWindow(np.hwnd); } catch { /* non-fatal */ }
     const result = evaluatePreToolGuards(lensId, "keyboard_type", {});
     // policy is warn — ok may be false if not foreground, but policy field is correct
     expect(result.policy).toBe("warn");
@@ -141,7 +141,7 @@ describe("Scenario 2: identity invalidation blocks keyboard_type", () => {
     __resetRegistry();
     // Launch first Notepad and register a BLOCK-mode lens
     np1 = await launchNotepad();
-    try { focusWindow(np1.hwnd); } catch { /* non-fatal */ }
+    try { restoreAndFocusWindow(np1.hwnd); } catch { /* non-fatal */ }
     await sleep(400);
 
     const spec: LensSpec = {
@@ -159,7 +159,7 @@ describe("Scenario 2: identity invalidation blocks keyboard_type", () => {
     // Launch a second Notepad with the SAME tag (so the lens's titleIncludes still matches)
     // but this is a different process — different pid + processStartTimeMs
     np2 = await launchNotepad();
-    try { focusWindow(np2.hwnd); } catch { /* non-fatal */ }
+    try { restoreAndFocusWindow(np2.hwnd); } catch { /* non-fatal */ }
     await sleep(400);
   }, 60_000);
 
