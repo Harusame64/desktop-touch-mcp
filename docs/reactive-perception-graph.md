@@ -1,4 +1,6 @@
-# Reactive Perception Graph
+# Reactive Perception Graph — Design Specification
+
+> **New to RPG?** Start with the [Beginner's Guide](./reactive-perception-graph-guide.md) first — it explains lenses, fluents, guards, and envelopes with diagrams and examples before diving into this spec.
 
 LLM-facing desktop perception algorithm for desktop-touch-mcp.
 
