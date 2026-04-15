@@ -14,7 +14,7 @@ const SUGGESTS: Record<string, string[]> = {
     "Try a shorter partial title match (e.g. first word only)",
     "The window may be minimized — try focus_window first",
     "If the app is still launching, use wait_until(condition='window_appears') before focus_window",
-    "If the target is a Chrome/Edge tab (only the active tab's title appears in window titles), use browser_connect to list tabs and browser_navigate or activate via CDP instead",
+    "If the target is a Chrome/Edge tab (only the active tab's title appears in window titles), use browser_connect to get the tabId, then browser_navigate to the target URL to switch tabs",
   ],
   ElementNotFound: [
     "Call get_ui_elements to see candidate names and automationIds",

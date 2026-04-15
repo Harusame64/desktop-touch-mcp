@@ -450,7 +450,7 @@ Evaluate JS via `Runtime.evaluate` (CDP). `awaitPromise=true`, so `await` works.
 Enumerates interactive elements with `clickAt` coords — the browser analogue of `screenshot(detail="text")`.
 Also **ARIA-aware**: surfaces `role=switch` / `checkbox` / `radio` / `tab` / `menuitem` / `option` custom controls with a `state` block carrying `checked` / `pressed` / `selected` / `expanded` derived from the matching `aria-*` attributes. Use this when a page (Radix / shadcn / MUI / Headless UI / GitHub) renders toggles as ARIA buttons instead of native `<input>`.
 
-**Form-state verification (preferred over screenshot):** Call this after form submission to verify field values — it returns structured JSON with no image tokens. Input `text` surfaces the typed value; for an unfilled input, the empty-field hint text is returned instead.
+**Form-state verification (preferred over screenshot for button/toggle state):** Call this after form submission to check button, checkbox, and ARIA toggle states — structured JSON, no image tokens. For inputs, `text` reflects the empty-field hint text when set (takes priority over any typed value); to read the actual typed content use `browser_eval('document.querySelector(sel).value')`.
 
 #### `browser_get_app_state`
 One CDP call that scans the well-known places SPAs stash their hydration payloads:

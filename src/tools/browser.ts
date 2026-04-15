@@ -1404,7 +1404,7 @@ export function registerBrowserTools(server: McpServer): void {
 
   server.tool(
     "browser_get_interactive",
-    "List all interactive elements (links, buttons, inputs, ARIA controls) on the current page with CSS selectors, visible text or typed value for inputs (unfilled fields show hint text), and viewport status — use before browser_click_element to discover stable selectors, and prefer this over screenshot when verifying form state after submission (no image tokens, structured output). scope limits to a CSS subsection (e.g. '.sidebar'). Returns state (checked/pressed/selected/expanded) for ARIA custom controls. Caveats: Selectors are CDP-generated snapshots — re-call after page navigates or re-renders. For unfilled inputs, the empty-field hint text is surfaced in text; once a value is typed, text reflects the typed value.",
+    "List all interactive elements (links, buttons, inputs, ARIA controls) on the current page with CSS selectors, visible text or value for inputs, and viewport status — use before browser_click_element to discover stable selectors, and prefer this over screenshot when verifying button/toggle state after submission (no image tokens, structured output). scope limits to a CSS subsection (e.g. '.sidebar'). Returns state (checked/pressed/selected/expanded) for ARIA custom controls. Caveats: Selectors are CDP-generated snapshots — re-call after page navigates or re-renders. Input text reflects the empty-field hint text when defined (takes priority over typed value) — use browser_eval('document.querySelector(sel).value') to read actual typed content.",
     browserGetInteractiveSchema,
     browserGetInteractiveHandler
   );
