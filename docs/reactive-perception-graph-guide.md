@@ -2,6 +2,11 @@
 
 > **TL;DR** — While the LLM is thinking, the user can switch windows. By the time a keyboard or mouse action fires, the target may no longer be in front — and there is no cheap way to know. RPG solves this: register a window once, and every action that carries `lensId` will automatically verify the window is still correct before firing, then report what changed — no extra round-trip needed.
 
+**Who should care?**
+- **Casual users** — You don't need to call `perception_*` directly. RPG activates only when `lensId` is present; omitting it preserves existing behavior exactly.
+- **Power users** — Registering lenses makes long action sequences safer and cheaper (fewer `get_context` round-trips).
+- **Developers / contributors** — This document explains how the perception layer works end-to-end.
+
 ---
 
 ## Contents
@@ -86,7 +91,7 @@ perception_register({
 
 Think of it like a **watchlist entry** the server keeps permanently alive until you remove it.
 
-> Each action still needs `lensId` passed explicitly. Omitting `lensId` uses the existing behavior exactly as before — no perception layer is involved.
+> Each action still needs `lensId` passed explicitly. This makes perception **opt-in per action**, avoiding accidental coupling and keeping legacy behavior untouched. Omitting `lensId` works exactly as before — no perception layer is involved.
 
 ---
 
@@ -286,6 +291,8 @@ perception_register({
 ```
 
 Returns a `lensId`. Pass this to any action tool via `lensId: "perc-1"`.
+
+> ⚠️ For keyboard and mouse actions, keep the default `guardPolicy: "block"`. See [Guard Reference](#7-guard-reference) for the risks of `"warn"`.
 
 **Limits:** max 16 active lenses. The oldest lens is evicted (FIFO) when the limit is exceeded. Lenses persist until `perception_forget` is called or the server restarts. Currently, each action tool accepts one `lensId` at a time.
 
