@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { ok } from "./_types.js";
+import { ok, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
 import { mouse } from "../engine/nutjs.js";
@@ -228,46 +228,26 @@ export const getDocumentStateHandler = async ({ port, tabId }: { port: number; t
 export function registerContextTools(server: McpServer): void {
   server.tool(
     "get_context",
-    [
-      "Semantic-level orientation — far cheaper than any screenshot. Returns:",
-      "  focusedWindow + focusedElement (name, type, value)",
-      "  cursorPos + cursorOverElement (name, type)",
-      "  hasModal / pageState (ready|loading|dialog|error)",
-      "",
-      "Use this in place of screenshot(detail='meta') whenever the question is",
-      "\"which window/control has focus\" or \"what value is currently in the field",
-      "I just typed into\". Use it INSTEAD OF a verification screenshot after",
-      "keyboard_type / set_element_value when you only need to confirm the value",
-      "landed in the expected control.",
-      "",
-      "Does NOT enumerate descendants. If you need the list of clickable items,",
-      "use screenshot(detail='text') or get_ui_elements.",
-      "",
-      "Chromium windows: cursorOverElement is null (UIA sparse). focusedElement",
-      "may fall back to CDP document.activeElement — hints.focusedElementSource",
-      "indicates which source was used.",
-    ].join("\n"),
+    buildDesc({
+      purpose: "Query focused window, focused element, cursor position, and page state in one call — far cheaper than any screenshot for confirming current state after an action.",
+      details: "Returns focusedWindow (title, hwnd), focusedElement (name, type, value), cursorPos {x,y}, cursorOverElement (name, type), hasModal (boolean), pageState ('ready'|'loading'|'dialog'|'error'). Does NOT enumerate descendants — use screenshot(detail='text') or get_ui_elements for the full clickable element list. Chromium: cursorOverElement is null (UIA sparse); focusedElement may fall back to CDP document.activeElement; hints.focusedElementSource reports which was used ('uia' or 'cdp').",
+      prefer: "Use after keyboard_type or set_element_value to confirm the value landed in the expected field — cheaper than a verification screenshot. Use instead of screenshot(detail='meta') when the question is only \"which window/control has focus.\"",
+      caveats: "Cannot detect non-UIA elements (custom-drawn UIs, game overlays). hasModal only detects modal dialogs exposed via UIA — browser alert/confirm dialogs may not appear here.",
+    }),
     getContextSchema,
     getContextHandler
   );
 
   server.tool(
     "get_history",
-    [
-      "Recent action history (ring buffer, max 20 entries).",
-      "Each entry includes tool name, argsDigest, post-state, and timestamp.",
-      "Useful to reconstruct context after model interruption or to verify a step occurred.",
-    ].join("\n"),
+    "Return recent action history (ring buffer, last 20 entries) with tool name, argsDigest, post-state, and timestamp. Use to reconstruct context after model interruption or verify a step occurred.",
     getHistorySchema,
     getHistoryHandler
   );
 
   server.tool(
     "get_document_state",
-    [
-      "CDP — get current Chrome page state: url, title, readyState, selection, scroll position.",
-      "Far cheaper than browser_get_dom for orientation.",
-    ].join("\n"),
+    "Return current Chrome page state via CDP: url, title, readyState, selection, and scroll position. Far cheaper than browser_get_dom for page orientation.",
     getDocumentStateSchema,
     getDocumentStateHandler
   );

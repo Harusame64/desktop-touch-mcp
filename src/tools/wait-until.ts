@@ -1,7 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { ok } from "./_types.js";
-import { fail } from "./_types.js";
+import { ok, fail, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
 import { coercedBoolean, coercedJsonObject } from "./_coerce.js";
@@ -335,21 +334,17 @@ export const waitUntilHandler = async ({ condition, target, timeoutMs, intervalM
 export function registerWaitUntilTool(server: McpServer): void {
   server.tool(
     "wait_until",
-    [
-      "Wait until an observable condition becomes true. Server-side polling — eliminates LLM screenshot loops.",
-      "",
-      "Conditions:",
-      "  window_appears             — target.windowTitle (partial)",
-      "  window_disappears          — target.windowTitle",
-      "  focus_changes              — captures current foreground at first poll, returns when it changes",
-      "  element_appears            — target.windowTitle + target.elementName (UIA)",
-      "  value_changes              — target.windowTitle + target.elementName (compares ValuePattern)",
-      "  ready_state                — target.windowTitle visible + not minimized",
-      "  terminal_output_contains   — target.windowTitle + target.pattern [+ regex:true] (uses terminal_read)",
-      "  element_matches            — target.by ('text'|'regex'|'role'|'ariaLabel') + target.pattern (uses browser_search)",
-      "",
-      "Returns elapsedMs + observed object on success, or a WaitTimeout failure.",
-    ].join("\n"),
+    buildDesc({
+      purpose: "Server-side poll for an observable condition — eliminates screenshot-polling loops when waiting for state changes.",
+      details: "condition selects what to watch: window_appears/window_disappears (target.windowTitle required), focus_changes (optional target.fromHwnd), element_appears/value_changes (target.windowTitle + target.elementName required, UIA; min 500ms interval), ready_state (target.windowTitle; visible + not minimized), terminal_output_contains (target.windowTitle + target.pattern required [+target.regex:true], needs terminal tools loaded), element_matches (target.by + target.pattern required, needs browser tools loaded). Returns {ok:true, elapsedMs, observed} on success, or WaitTimeout error with suggest hints. timeoutMs default 5000 (max 60000).",
+      prefer: "Use instead of run_macro({sleep:N}) + screenshot loops. Use terminal_output_contains to detect CLI command completion. Use element_matches for browser DOM readiness after navigation.",
+      caveats: "terminal_output_contains and element_matches require the respective tool modules to be loaded. element_appears/value_changes spawn a UIA process per poll — interval clamped to 500ms minimum. On WaitTimeout, read the suggest[] array in the error for recovery steps.",
+      examples: [
+        "wait_until({condition:'window_appears', target:{windowTitle:'Save As'}, timeoutMs:10000})",
+        "wait_until({condition:'terminal_output_contains', target:{windowTitle:'Terminal', pattern:'$ '}, timeoutMs:30000})",
+        "wait_until({condition:'element_matches', target:{by:'text', pattern:'Submit', scope:'#checkout-form'}})",
+      ],
+    }),
     waitUntilSchema,
     waitUntilHandler
   );

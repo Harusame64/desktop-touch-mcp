@@ -4,6 +4,7 @@ import sharp from "sharp";
 import { screen, keyboard, mouse, getWindows, Region } from "../engine/nutjs.js";
 import { getWindowTitleW } from "../engine/win32.js";
 import { parseKeys } from "../utils/key-map.js";
+import { buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 
 // Horizontal mouse scroll units per step (matches nut-js scroll granularity)
@@ -498,10 +499,85 @@ export const scrollCaptureHandler = async ({
       pipeline = pipeline.resize({ height: maxWidth, withoutEnlargement: true });
     }
 
+    // ── 1MB guard ─────────────────────────────────────────────────────────────
+    // MCP base64 encodes binary: 1 raw byte → ~1.33 base64 chars.
+    // 700KB raw  → ~933KB base64, safely within the 1MB message envelope limit.
+    const MCP_RAW_LIMIT = 700_000;
+
+    let imageBuffer: Buffer;
+    let mimeType: "image/png" | "image/webp" = "image/png";
+    let sizeReduced: string | undefined;
+
     const pngBuffer = await pipeline.png({ compressionLevel: 6 }).toBuffer();
-    const pngMeta = await sharp(pngBuffer).metadata();
-    const outW = pngMeta.width ?? stitchedWidth;
-    const outH = pngMeta.height ?? stitchedHeight;
+
+    if (pngBuffer.length <= MCP_RAW_LIMIT) {
+      imageBuffer = pngBuffer;
+    } else {
+      // Helper: rebuild the resize pipeline from the raw stitched buffer.
+      const rawPipeline = () => {
+        let p = sharp(stitchedBuffer, {
+          raw: { width: stitchedWidth, height: stitchedHeight, channels },
+        });
+        if (direction === "down" && stitchedWidth > maxWidth) {
+          p = p.resize({ width: maxWidth, withoutEnlargement: true });
+        } else if (direction === "right" && stitchedHeight > maxWidth) {
+          p = p.resize({ height: maxWidth, withoutEnlargement: true });
+        }
+        return p;
+      };
+
+      // Try WebP at decreasing quality levels first.
+      let resolved = false;
+      for (const q of [70, 55, 40] as const) {
+        const buf = await rawPipeline().webp({ quality: q }).toBuffer();
+        if (buf.length <= MCP_RAW_LIMIT) {
+          imageBuffer = buf;
+          mimeType = "image/webp";
+          sizeReduced = `webp_q${q}`;
+          resolved = true;
+          break;
+        }
+      }
+
+      // If still too large, iteratively downscale (×0.75 per pass, up to 3 passes).
+      if (!resolved) {
+        const pngLen = pngBuffer.length;
+        let scale = Math.sqrt(MCP_RAW_LIMIT / pngLen) * 0.85;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const targetW = Math.max(1, Math.round(stitchedWidth * scale));
+          const buf = await rawPipeline()
+            .resize({ width: targetW, withoutEnlargement: false })
+            .webp({ quality: 40 })
+            .toBuffer();
+          if (buf.length <= MCP_RAW_LIMIT) {
+            imageBuffer = buf;
+            mimeType = "image/webp";
+            const meta = await sharp(buf).metadata();
+            sizeReduced = `auto_downscaled_${meta.width ?? targetW}px`;
+            resolved = true;
+            break;
+          }
+          scale *= 0.75;
+        }
+
+        // Final fallback: extreme downscale + lowest quality — always fits.
+        if (!resolved) {
+          const targetW = Math.max(1, Math.round(stitchedWidth * 0.25));
+          const buf = await rawPipeline()
+            .resize({ width: targetW, withoutEnlargement: false })
+            .webp({ quality: 30 })
+            .toBuffer();
+          imageBuffer = buf;
+          mimeType = "image/webp";
+          const meta = await sharp(buf).metadata();
+          sizeReduced = `forced_fallback_${meta.width ?? targetW}px`;
+        }
+      }
+    }
+
+    const outMeta = await sharp(imageBuffer!).metadata();
+    const outW = outMeta.width ?? stitchedWidth;
+    const outH = outMeta.height ?? stitchedHeight;
 
     const truncated = frames.length > maxScrolls;
     const stitchTotal = exactMatchCount + estimatedCount + failedCount;
@@ -524,11 +600,12 @@ export const scrollCaptureHandler = async ({
       },
       ...(truncated ? { warning: "maxScrolls reached, image may be truncated" } : {}),
       ...(failedCount > 0 ? { overlapWarnings: warnings.filter(w => w.includes("failed")) } : {}),
+      ...(sizeReduced ? { sizeReduced, tip: "Reduce maxScrolls or add grayscale=true for smaller output." } : {}),
     };
 
     return {
       content: [
-        { type: "image" as const, data: pngBuffer.toString("base64"), mimeType: "image/png" as const },
+        { type: "image" as const, data: imageBuffer!.toString("base64"), mimeType: mimeType as "image/png" | "image/webp" },
         { type: "text" as const, text: JSON.stringify(summary, null, 2) },
       ],
     };
@@ -546,16 +623,12 @@ export const scrollCaptureHandler = async ({
 export function registerScrollCaptureTools(server: McpServer): void {
   server.tool(
     "scroll_capture",
-    [
-      "Scroll through a window from top to bottom (or left to right) and stitch all frames into a single image.",
-      "",
-      "The tool focuses the target window, scrolls to the start (Ctrl+Home), then repeatedly presses Page Down",
-      "(or scrolls right for direction='right') and captures each frame. Consecutive frames are stitched by detecting",
-      "pixel overlap so there are no duplicate seams. Stops when the end is reached (identical frames) or maxScrolls is hit.",
-      "",
-      "Useful for capturing full-length webpages in Chrome, long documents, or any scrollable UI.",
-      "Tip: increase scrollDelayMs for pages with animations or lazy-loaded content.",
-    ].join("\n"),
+    buildDesc({
+      purpose: "Scroll a window top-to-bottom (or left-to-right) and stitch all frames into one image — for full-length webpages or documents that exceed a single screenshot.",
+      details: "Output is capped at ~700KB raw (MCP base64 encoding inflates to ~933KB, approaching the 1MB message limit); when sizeReduced=true appears in the response, iterative WebP downscale was applied (up to 3 passes at 0.75× each) — reduce maxScrolls or add grayscale=true to avoid truncation. Focuses the target window, scrolls to Ctrl+Home, then captures frames via Page Down until identical consecutive frames are detected or maxScrolls is reached. Pixel-overlap detection eliminates seam duplication; check response overlapMode — 'mixed-with-failures' means some seams may have duplicate rows.",
+      prefer: "Use only for content too long to fit one screenshot. Prefer screenshot(detail='text') for interactive UIs — scroll_capture returns an image, not clickable elements.",
+      caveats: "When sizeReduced=true, stitched image pixels do NOT match screen coords — use for reading only, not for mouse_click. When overlapMode='mixed-with-failures', expect occasional duplicate content rows near frame boundaries. Increase scrollDelayMs for pages with animations or lazy-loaded images.",
+    }),
     scrollCaptureSchema,
     scrollCaptureHandler
   );

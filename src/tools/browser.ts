@@ -1397,123 +1397,77 @@ export function registerBrowserTools(server: McpServer): void {
 
   server.tool(
     "browser_search",
-    [
-      "Grep-like element search. Pick the best match by confidence rank.",
-      "by: 'text' (literal substring), 'regex', 'role', 'ariaLabel', 'selector' (CSS).",
-      "Returns results[] sorted by confidence desc — pass results[0].selector to browser_click_element.",
-      "Pagination: offset/maxResults. Visibility: visibleOnly/inViewportOnly. Case: caseSensitive.",
-    ].join("\n"),
+    "Grep-like element search across the current page. by: 'text' (literal substring), 'regex', 'role', 'ariaLabel', 'selector' (CSS). Returns results[] sorted by confidence descending — pass results[0].selector to browser_click_element. Pagination via offset/maxResults. Caveats: Use browser_get_interactive for broad discovery; use browser_search when you know specific text or role to target.",
     browserSearchSchema,
     browserSearchHandler
   );
 
   server.tool(
     "browser_get_interactive",
-    [
-      "List all interactive elements (links, buttons, inputs) on the current page with their text, CSS selector, and viewport status.",
-      "Use this before browser_click_element to discover stable selectors without trial-and-error.",
-      "scope: limit to a section (e.g. '.s-main-slot'). inViewportOnly: skip off-screen elements.",
-      "Each result includes 'selector' ready to pass to browser_click_element or browser_find_element.",
-      "Also detects ARIA-roled custom controls (role=switch/checkbox/radio/tab/menuitem/option) and surfaces",
-      "their state (state.checked / pressed / selected / expanded) when present.",
-    ].join("\n"),
+    "List all interactive elements (links, buttons, inputs, ARIA controls) on the current page with CSS selectors and viewport status — use before browser_click_element to discover stable selectors without trial-and-error. scope limits to a CSS subsection (e.g. '.sidebar'). Returns state (checked/pressed/selected/expanded) for ARIA custom controls. Caveats: Selectors are CDP-generated snapshots — re-call after page navigates or re-renders.",
     browserGetInteractiveSchema,
     browserGetInteractiveHandler
   );
 
   server.tool(
     "browser_get_app_state",
-    [
-      "Extract embedded SPA state in one CDP call. Scans the well-known locations:",
-      "  Next.js (#__NEXT_DATA__), Nuxt (#__NUXT_DATA__/#__NUXT__), Remix (#__REMIX_CONTEXT__),",
-      "  GitHub react-app ([data-target$=embeddedData]), Apollo, JSON-LD, Redux SSR (window.__INITIAL_STATE__).",
-      "Returns parsed payloads with framework label. Use this BEFORE browser_eval / browser_get_dom on SPAs",
-      "where the rendered HTML is sparse but the state is rich.",
-      "Pass `selectors` to override the scan list (window globals: 'window:__YOUR_KEY__').",
-    ].join("\n"),
+    "Extract embedded SPA framework state (Next.js, Nuxt, Remix, GitHub, Apollo, Redux SSR) in one CDP call. Returns parsed payloads with framework labels. Use BEFORE browser_eval or browser_get_dom on SPAs where rendered HTML is sparse. Pass selectors to target specific window globals (e.g. 'window:__MY_STATE__'). Caveats: Only extracts SSR-injected state — client-only runtime state requires browser_eval.",
     browserGetAppStateSchema,
     browserGetAppStateHandler
   );
 
   server.tool(
     "browser_launch",
-    [
-      "Launch Chrome/Edge/Brave in CDP debug mode and wait until the DevTools endpoint is ready.",
-      "If a CDP endpoint is already live on the target port, returns immediately without spawning (idempotent).",
-      "Default: tries chrome → edge → brave (first installed wins), port 9222, userDataDir C:\\tmp\\cdp.",
-      "Pass url to open a page on launch. After this returns, call browser_connect / browser_* tools normally.",
-    ].join("\n"),
+    "Launch Chrome/Edge/Brave in CDP debug mode and wait until the DevTools endpoint is ready. Idempotent — if a CDP endpoint is already live on the target port, returns immediately without spawning. Default: tries chrome → edge → brave (first installed wins), port 9222, userDataDir C:\\tmp\\cdp. Pass url to open a specific page on launch; follow with browser_connect to get tab IDs. Caveats: A Chrome session started without --remote-debugging-port cannot be taken over — close it first or use a separate profile.",
     browserLaunchSchema,
     browserLaunchHandler
   );
 
   server.tool(
     "browser_connect",
-    [
-      "Connect to Chrome or Edge running with --remote-debugging-port and list open tabs.",
-      "Launch with: browser_launch() or chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\\tmp\\cdp",
-      "Returns tab IDs needed for other browser_* tools.",
-    ].join("\n"),
+    "Connect to Chrome/Edge running with --remote-debugging-port and return open tab IDs — required before all other browser_* tools. Launch with browser_launch() or manually: chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\\tmp\\cdp. Returns tabs[] with id, url, title — pass tabId to browser_* tools to target a specific tab. Caveats: CDP connection is per-process; if Chrome restarts, call browser_connect again to get fresh tab IDs.",
     browserConnectSchema,
     browserConnectHandler
   );
 
   server.tool(
     "browser_find_element",
-    [
-      "Find a DOM element by CSS selector and return its exact screen coordinates (physical pixels).",
-      "Coordinates are directly compatible with mouse_click — no manual scaling needed.",
-      "More accurate than screenshot-based coordinate estimation.",
-    ].join("\n"),
+    "Find a DOM element by CSS selector and return its physical screen coordinates — compatible directly with mouse_click. Prefer browser_click_element to find+click in one step. Prefer browser_get_interactive to discover selectors. Caveats: Coordinates are captured at call time; if the page reflows before mouse_click, coords may be stale.",
     browserFindElementSchema,
     browserFindElementHandler
   );
 
   server.tool(
     "browser_click_element",
-    [
-      "Find a DOM element by CSS selector and click it. Combines browser_find_element + mouse_click in one step.",
-      "Fails if the element is outside the visible viewport — scroll into view first.",
-    ].join("\n"),
+    "Find a DOM element by CSS selector and click it (combines browser_find_element + mouse_click in one step). Prefer over mouse_click for Chrome — selector-based clicking is stable across repaints. Caveats: Fails if the element is outside the visible viewport — scroll it into view with browser_eval(\"document.querySelector('sel').scrollIntoView()\") first.",
     browserClickElementSchema,
     withPostState("browser_click_element", browserClickElementHandler)
   );
 
   server.tool(
     "browser_eval",
-    [
-      "Evaluate a JavaScript expression in the browser tab and return the result.",
-      "Use for: reading text content, checking state, scrolling, filling inputs via JS.",
-      "Example: browser_eval(\"document.title\") → page title string.",
-    ].join("\n"),
+    "Evaluate a JavaScript expression in a browser tab and return the result. Use for reading page state, scrolling, or filling inputs programmatically. Caveats: Returns JSON-serializable values only — DOM nodes cannot be returned directly.",
     browserEvalSchema,
     withPostState("browser_eval", browserEvalHandler)
   );
 
   server.tool(
     "browser_get_dom",
-    [
-      "Get the HTML of a DOM element (or document.body if no selector). Truncated to maxLength chars.",
-      "Useful for inspecting the page structure before deciding which selector to use.",
-    ].join("\n"),
+    "Return the HTML of a DOM element (or document.body when no selector is given), truncated to maxLength characters. Use when browser_get_interactive is insufficient for inspecting page structure.",
     browserGetDomSchema,
     browserGetDomHandler
   );
 
   server.tool(
     "browser_navigate",
-    [
-      "Navigate the browser tab to a URL using CDP Page.navigate.",
-      "More reliable than clicking the address bar — no need to find UI elements.",
-      "After calling, wait and check document.readyState via browser_eval.",
-    ].join("\n"),
+    "Navigate a browser tab to a URL via CDP Page.navigate — more reliable than clicking the address bar (no need to find UI elements). Verify readiness with browser_eval(\"document.readyState\") after calling. Caveats: Does not block until page load completes — follow with wait_until(element_matches) or repeated browser_eval polling for slow pages.",
     browserNavigateSchema,
     withPostState("browser_navigate", browserNavigateHandler)
   );
 
   server.tool(
     "browser_disconnect",
-    "Close cached CDP WebSocket sessions for a port. Call when done to release connections.",
+    "Close cached CDP WebSocket sessions for a port. Call when browser interaction is complete to release connections.",
     browserDisconnectSchema,
     browserDisconnectHandler
   );

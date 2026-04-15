@@ -175,51 +175,28 @@ export const scopeElementHandler = async ({
 export function registerUiElementTools(server: McpServer): void {
   server.tool(
     "get_ui_elements",
-    [
-      "Inspect the UI element tree of a window using Windows UI Automation.",
-      "Returns element names, control types, automation IDs, bounding rectangles (screen coords), and interaction patterns.",
-      "",
-      "TIP: For interactive automation, prefer screenshot(detail='text') which returns the same data",
-      "pre-filtered to actionable elements with pre-computed clickAt coordinates.",
-      "Use get_ui_elements when you need the full raw tree (e.g., to find automationIds for click_element).",
-    ].join("\n"),
+    "Inspect the raw UIA element tree of a window — returns names, control types, automationIds, bounding rects, and interaction patterns. Prefer screenshot(detail='text') for interactive automation (returns pre-filtered actionable[] with clickAt coords). Use get_ui_elements when you need the unfiltered tree or specific automationIds for click_element. Caveats: Large windows may return hundreds of elements — scope with windowTitle.",
     getUiElementsSchema,
     getUiElementsHandler
   );
 
   server.tool(
     "click_element",
-    [
-      "Click (invoke) a UI element by name or automation ID — no screen coordinates needed.",
-      "Uses Windows UI Automation InvokePattern.",
-      "Ideal for buttons, menu items, and links.",
-    ].join(" "),
+    "Invoke a UI element by name or automationId via UIA InvokePattern — no screen coordinates needed. Prefer over mouse_click for buttons, menu items, and links in native Windows apps. Use get_ui_elements first to discover automationIds. Caveats: Requires the element to expose InvokePattern — some read-only or custom controls do not; fall back to mouse_click in that case.",
     clickElementSchema,
     withRichNarration("click_element", clickElementHandler, { windowTitleKey: "windowTitle" })
   );
 
   server.tool(
     "set_element_value",
-    [
-      "Directly set the value of a text field or combo box using Windows UI Automation ValuePattern.",
-      "More reliable than keyboard_type for programmatic input into form fields.",
-      "Use narrate:'rich' to confirm the value was applied without a verification screenshot.",
-    ].join(" "),
+    "Set the value of a text field or combo box via UIA ValuePattern — more reliable than keyboard_type for programmatic form input. Use narrate:'rich' to confirm the value was applied without a verification screenshot. Caveats: Only works for elements that expose ValuePattern; does not work on contenteditable HTML or custom rich-text editors — use keyboard_type for those.",
     setElementValueSchema,
     withRichNarration("set_element_value", setElementValueHandler, { windowTitleKey: "windowTitle" })
   );
 
   server.tool(
     "scope_element",
-    [
-      "Zoom into a specific UI element: returns a high-resolution screenshot of just that element's region",
-      "plus its child element tree.",
-      "",
-      "Works with any app that exposes Windows UI Automation (native apps, Chrome/Edge, VS Code, etc.).",
-      "Use get_ui_elements first to discover element names / automationIds.",
-      "",
-      "At least one of: name, automationId, controlType must be provided.",
-    ].join("\n"),
+    "Return a high-resolution screenshot of a specific element's region plus its child element tree. Requires UIA — works with native apps, Chrome/Edge, VS Code. Use get_ui_elements first to discover element names or automationIds. At least one of name, automationId, or controlType must be provided.",
     scopeElementSchema,
     scopeElementHandler
   );

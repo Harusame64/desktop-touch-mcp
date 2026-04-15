@@ -454,22 +454,15 @@ export const getCursorPositionHandler = async (): Promise<ToolResult> => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function registerMouseTools(server: McpServer): void {
-  server.tool("mouse_move", "Move the mouse cursor to the specified screen coordinates.", mouseMoveSchema, mouseMoveHandler);
+  server.tool("mouse_move", "Move the cursor to coordinates without clicking — for hover-only effects such as revealing tooltips or triggering hover states. Use mouse_click for click targets (it moves and clicks in one call).", mouseMoveSchema, mouseMoveHandler);
   server.tool(
     "mouse_click",
-    [
-      "Click the mouse at the specified coordinates.",
-      "",
-      "COORDINATE MODES:",
-      "  1. Screen-absolute (default): x,y are virtual screen pixels.",
-      "  2. Image-local: pass origin (and scale when present) from the screenshot response.",
-      "     Server converts: screen = origin + (x,y) / (scale ?? 1). No manual math needed.",
-    ].join("\n"),
+    "Click at screen-absolute coordinates (virtual screen pixels), or pass origin+scale from a dotByDot=true screenshot response to let the server convert image-local coords automatically: screen = origin + (x,y) / (scale ?? 1). windowTitle optionally focuses the window first (for pinned-dock setups). Prefer click_element (UIA) for stable text-addressed clicking in native apps. Prefer browser_click_element for Chrome. Use mouse_click only when pixel coords are the only available option. Caveats: origin+scale are meaningful ONLY with dotByDot=true screenshot responses — applying them to scaled detail='text'/'meta' output lands clicks in the wrong positions.",
     mouseClickSchema,
     withRichNarration("mouse_click", mouseClickHandler, { windowTitleKey: "windowTitle" })
   );
-  server.tool("mouse_drag", "Click and drag from one position to another (left button hold).", mouseDragSchema, withRichNarration("mouse_drag", mouseDragHandler, { windowTitleKey: "windowTitle" }));
-  server.tool("scroll", "Scroll at the current position or at specified coordinates.", scrollSchema, scrollHandler);
-  server.tool("get_cursor_position", "Get the current mouse cursor position in virtual screen coordinates.", getCursorPositionSchema, getCursorPositionHandler);
+  server.tool("mouse_drag", "Click and drag from (startX, startY) to (endX, endY) holding the left mouse button — for sliders, drag-and-drop, canvas drawing, and window resizing. windowTitle optionally focuses before drag. Caveats: Left button only; does not support right-drag or middle-drag.", mouseDragSchema, withRichNarration("mouse_drag", mouseDragHandler, { windowTitleKey: "windowTitle" }));
+  server.tool("scroll", "Scroll at specified coordinates (or current cursor position). direction: 'up'|'down'|'left'|'right'. amount: scroll clicks (default 3).", scrollSchema, scrollHandler);
+  server.tool("get_cursor_position", "Return the current mouse cursor position in virtual screen coordinates.", getCursorPositionSchema, getCursorPositionHandler);
 }
 

@@ -10,7 +10,7 @@ import type { UiElementsResult } from "../engine/uia-bridge.js";
 import { recognizeWindow, ocrWordsToActionable, runOcr, mergeNearbyWords } from "../engine/ocr-bridge.js";
 import { updateWindowCache } from "../engine/window-cache.js";
 import { CHROMIUM_TITLE_RE } from "./workspace.js";
-import { ok } from "./_types.js";
+import { ok, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
 import {
@@ -877,68 +877,43 @@ export const getScreenInfoHandler = async (): Promise<ToolResult> => {
 export function registerScreenshotTools(server: McpServer): void {
   server.tool(
     "screenshot",
-    [
-      "Take a screenshot of the desktop, a specific window, display, or region.",
-      "",
-      "MODES (set detail or dotByDot):",
-      "  detail='meta'  — window titles + positions only. Cheapest (~20 tok/window). [DEFAULT]",
-      "  detail='text'  — UIA element tree as JSON with screen coords. No image. ~100-300 tokens.",
-      "  detail='image' — PNG/WebP pixels. BLOCKED unless confirmImage=true is also passed.",
-      "  dotByDot=true  — 1:1 pixel WebP. Image pixel = screen coord (+ origin offset for windows).",
-      "  diffMode=true  — Layer diff: only changed windows sent. First call = full, subsequent = diff.",
-      "",
-      "DATA REDUCTION (Chrome/AWS console):",
-      "  grayscale=true              — ~50% smaller. Use for text-heavy UIs, avoid for charts/colors.",
-      "  dotByDotMaxDimension=1280   — cap longest edge; response includes scale for coord math.",
-      "  windowTitle + region        — sub-crop to exclude browser chrome (tabs/address bar).",
-      "  Recommended Chrome combo: dotByDot=true, dotByDotMaxDimension=1280, grayscale=true,",
-      "    windowTitle='Chrome', region={x:0, y:120, width:1920, height:900}",
-      "",
-      "COORDINATE TIPS:",
-      "  Default (scaled): screen_x = window.x + image_x * (window.width / image.width)",
-      "  dotByDot (1:1):   screen_x = origin_x + image_x",
-      "  dotByDot + scale: screen_x = origin_x + image_x / scale  (scale printed in response)",
-      "",
-      "To minimize data, prefer in order: windowTitle > region > displayId > (no args).",
-      "maxDimension defaults to 768. Increase to 1280 for fine text (ignored when dotByDot=true).",
-    ].join("\n"),
+    buildDesc({
+      purpose: "Capture desktop, window, or region state across four output modes — from cheap orientation metadata to pixel-accurate images.",
+      details: "detail='meta' (default) returns window titles+positions only (~20 tok/window, no image). detail='text' returns UIA actionable elements with clickAt coords, no image (~100-300 tok). detail='image' is server-blocked unless confirmImage=true is also passed. dotByDot=true returns 1:1 pixel WebP; compute screen coords: screen_x = origin_x + image_x (or screen_x = origin_x + image_x / scale when dotByDotMaxDimension is set — scale printed in response). diffMode=true returns only changed windows after the first call (~160 tok). Data reduction: grayscale=true (−50%), dotByDotMaxDimension=1280 (caps longest edge), windowTitle+region (sub-crop to exclude browser chrome — e.g. region={x:0, y:120, width:1920, height:900}).",
+      prefer: "Use meta to orient, text before clicking, dotByDot only when precise pixel coords are needed. Prefer browser_* tools for Chrome. Use diffMode after actions to confirm state changed. Only use image+confirmImage when text returned 0 actionable elements and visual inspection is genuinely required.",
+      caveats: "Default mode scales to maxDimension=768 — image pixels ≠ screen pixels; apply the scale formula before passing to mouse_click. detail='image' is always blocked without confirmImage=true. diffMode requires a prior full-capture baseline (non-diff call or workspace_snapshot) — calling diffMode cold returns a full frame, not a diff.",
+      examples: [
+        "screenshot() → meta orientation of all windows",
+        "screenshot({detail:'text', windowTitle:'Notepad'}) → clickable elements with coords",
+        "screenshot({dotByDot:true, dotByDotMaxDimension:1280, grayscale:true, windowTitle:'Chrome', region:{x:0,y:120,width:1920,height:900}}) → pixel-accurate Chrome content",
+      ],
+    }),
     screenshotSchema,
     screenshotHandler
   );
 
   server.tool(
     "screenshot_background",
-    [
-      "Capture a window even if it is hidden behind other windows, minimized, or off-screen.",
-      "Uses Win32 PrintWindow API with PW_RENDERFULLCONTENT (fullContent=true by default),",
-      "which captures GPU-rendered content in Chrome, Electron, and WinUI3 apps.",
-      "Set fullContent=false for legacy mode (faster, but GPU windows may appear black).",
-      "Note: some game/DX12 windows may cause a 1-3s delay with fullContent=true — use fullContent=false in that case.",
-      "Add dotByDot=true for 1:1 pixel WebP output.",
-      "Add grayscale=true to reduce size ~50% for text-heavy content.",
-      "Add dotByDotMaxDimension=1280 to cap resolution; response includes scale for coord math.",
-      "Add region to sub-crop (window-local image coordinates) — useful to exclude browser chrome.",
-    ].join(" "),
+    buildDesc({
+      purpose: "Capture a window that is hidden, minimized, or behind other windows using Win32 PrintWindow API.",
+      details: "Uses PW_RENDERFULLCONTENT (fullContent=true, default) for GPU-rendered content in Chrome, Electron, and WinUI3 apps. Supports same detail and dotByDot modes as screenshot. Default mode scales to maxDimension=768; dotByDot=true gives 1:1 WebP with origin in response — compute screen coords: screen_x = origin_x + image_x. grayscale=true reduces size ~50%. dotByDotMaxDimension caps resolution; response includes scale (screen_x = origin_x + image_x / scale).",
+      prefer: "Prefer screenshot(windowTitle=X) for visible windows (faster, no API overhead). Use screenshot_background when the window must stay hidden or cannot be brought to foreground.",
+      caveats: "Default (scaled) mode: image pixels ≠ screen pixels — always use dotByDot=true + origin for mouse_click coords. Set fullContent=false for legacy or game windows where GPU rendering causes 1-3s delay or black capture. Some DX12 games may not capture correctly even with fullContent=true.",
+    }),
     screenshotBgSchema,
     screenshotBgHandler
   );
 
   server.tool(
     "screenshot_ocr",
-    [
-      "Run Windows OCR (Windows.Media.Ocr) on a window and return word-level text with screen coordinates.",
-      "Use when UIA returns no actionable elements (e.g. WinUI3 apps like Paint, custom-drawn UIs).",
-      "Returns words[] with clickAt coords — pass directly to mouse_click.",
-      "language: BCP-47 tag (default 'ja'). First call may be ~1s due to WinRT cold-start.",
-      "Requires the matching Windows OCR language pack to be installed.",
-    ].join("\n"),
+    "Run Windows OCR on a window and return word-level text with screen-pixel clickAt coordinates — use when UIA returns no actionable elements (WinUI3 custom-drawn UIs, game overlays, PDF viewers). Note: screenshot(detail='text') auto-falls back to OCR when UIA is sparse (ocrFallback='auto' default) — call screenshot_ocr directly only when forcing OCR unconditionally. language: BCP-47 tag (default 'ja'). Caveats: First call may take ~1s (WinRT cold-start). Requires the matching Windows OCR language pack installed.",
     screenshotOcrSchema,
     screenshotOcrHandler
   );
 
   server.tool(
     "get_screen_info",
-    "Get information about all connected displays: resolution, position, DPI scaling, and current cursor position.",
+    "Return all connected display info: resolution, position, DPI scaling, and current cursor position. Use monitorId from this response to target a specific display in dock_window.",
     getScreenInfoSchema,
     getScreenInfoHandler
   );
