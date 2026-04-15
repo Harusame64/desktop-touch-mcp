@@ -499,10 +499,85 @@ export const scrollCaptureHandler = async ({
       pipeline = pipeline.resize({ height: maxWidth, withoutEnlargement: true });
     }
 
+    // ── 1MB guard ─────────────────────────────────────────────────────────────
+    // MCP base64 encodes binary: 1 raw byte → ~1.33 base64 chars.
+    // 700KB raw  → ~933KB base64, safely within the 1MB message envelope limit.
+    const MCP_RAW_LIMIT = 700_000;
+
+    let imageBuffer: Buffer;
+    let mimeType: "image/png" | "image/webp" = "image/png";
+    let sizeReduced: string | undefined;
+
     const pngBuffer = await pipeline.png({ compressionLevel: 6 }).toBuffer();
-    const pngMeta = await sharp(pngBuffer).metadata();
-    const outW = pngMeta.width ?? stitchedWidth;
-    const outH = pngMeta.height ?? stitchedHeight;
+
+    if (pngBuffer.length <= MCP_RAW_LIMIT) {
+      imageBuffer = pngBuffer;
+    } else {
+      // Helper: rebuild the resize pipeline from the raw stitched buffer.
+      const rawPipeline = () => {
+        let p = sharp(stitchedBuffer, {
+          raw: { width: stitchedWidth, height: stitchedHeight, channels },
+        });
+        if (direction === "down" && stitchedWidth > maxWidth) {
+          p = p.resize({ width: maxWidth, withoutEnlargement: true });
+        } else if (direction === "right" && stitchedHeight > maxWidth) {
+          p = p.resize({ height: maxWidth, withoutEnlargement: true });
+        }
+        return p;
+      };
+
+      // Try WebP at decreasing quality levels first.
+      let resolved = false;
+      for (const q of [70, 55, 40] as const) {
+        const buf = await rawPipeline().webp({ quality: q }).toBuffer();
+        if (buf.length <= MCP_RAW_LIMIT) {
+          imageBuffer = buf;
+          mimeType = "image/webp";
+          sizeReduced = `webp_q${q}`;
+          resolved = true;
+          break;
+        }
+      }
+
+      // If still too large, iteratively downscale (×0.75 per pass, up to 3 passes).
+      if (!resolved) {
+        const pngLen = pngBuffer.length;
+        let scale = Math.sqrt(MCP_RAW_LIMIT / pngLen) * 0.85;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const targetW = Math.max(1, Math.round(stitchedWidth * scale));
+          const buf = await rawPipeline()
+            .resize({ width: targetW, withoutEnlargement: false })
+            .webp({ quality: 40 })
+            .toBuffer();
+          if (buf.length <= MCP_RAW_LIMIT) {
+            imageBuffer = buf;
+            mimeType = "image/webp";
+            const meta = await sharp(buf).metadata();
+            sizeReduced = `auto_downscaled_${meta.width ?? targetW}px`;
+            resolved = true;
+            break;
+          }
+          scale *= 0.75;
+        }
+
+        // Final fallback: extreme downscale + lowest quality — always fits.
+        if (!resolved) {
+          const targetW = Math.max(1, Math.round(stitchedWidth * 0.25));
+          const buf = await rawPipeline()
+            .resize({ width: targetW, withoutEnlargement: false })
+            .webp({ quality: 30 })
+            .toBuffer();
+          imageBuffer = buf;
+          mimeType = "image/webp";
+          const meta = await sharp(buf).metadata();
+          sizeReduced = `forced_fallback_${meta.width ?? targetW}px`;
+        }
+      }
+    }
+
+    const outMeta = await sharp(imageBuffer!).metadata();
+    const outW = outMeta.width ?? stitchedWidth;
+    const outH = outMeta.height ?? stitchedHeight;
 
     const truncated = frames.length > maxScrolls;
     const stitchTotal = exactMatchCount + estimatedCount + failedCount;
@@ -525,11 +600,12 @@ export const scrollCaptureHandler = async ({
       },
       ...(truncated ? { warning: "maxScrolls reached, image may be truncated" } : {}),
       ...(failedCount > 0 ? { overlapWarnings: warnings.filter(w => w.includes("failed")) } : {}),
+      ...(sizeReduced ? { sizeReduced, tip: "Reduce maxScrolls or add grayscale=true for smaller output." } : {}),
     };
 
     return {
       content: [
-        { type: "image" as const, data: pngBuffer.toString("base64"), mimeType: "image/png" as const },
+        { type: "image" as const, data: imageBuffer!.toString("base64"), mimeType: mimeType as "image/png" | "image/webp" },
         { type: "text" as const, text: JSON.stringify(summary, null, 2) },
       ],
     };
