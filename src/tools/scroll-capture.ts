@@ -4,6 +4,7 @@ import sharp from "sharp";
 import { screen, keyboard, mouse, getWindows, Region } from "../engine/nutjs.js";
 import { getWindowTitleW } from "../engine/win32.js";
 import { parseKeys } from "../utils/key-map.js";
+import { buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 
 // Horizontal mouse scroll units per step (matches nut-js scroll granularity)
@@ -546,16 +547,12 @@ export const scrollCaptureHandler = async ({
 export function registerScrollCaptureTools(server: McpServer): void {
   server.tool(
     "scroll_capture",
-    [
-      "Scroll through a window from top to bottom (or left to right) and stitch all frames into a single image.",
-      "",
-      "The tool focuses the target window, scrolls to the start (Ctrl+Home), then repeatedly presses Page Down",
-      "(or scrolls right for direction='right') and captures each frame. Consecutive frames are stitched by detecting",
-      "pixel overlap so there are no duplicate seams. Stops when the end is reached (identical frames) or maxScrolls is hit.",
-      "",
-      "Useful for capturing full-length webpages in Chrome, long documents, or any scrollable UI.",
-      "Tip: increase scrollDelayMs for pages with animations or lazy-loaded content.",
-    ].join("\n"),
+    buildDesc({
+      purpose: "Scroll a window top-to-bottom (or left-to-right) and stitch all frames into one image — for full-length webpages or documents that exceed a single screenshot.",
+      details: "Output is capped at ~700KB raw (MCP base64 encoding inflates to ~933KB, approaching the 1MB message limit); when sizeReduced=true appears in the response, iterative WebP downscale was applied (up to 3 passes at 0.75× each) — reduce maxScrolls or add grayscale=true to avoid truncation. Focuses the target window, scrolls to Ctrl+Home, then captures frames via Page Down until identical consecutive frames are detected or maxScrolls is reached. Pixel-overlap detection eliminates seam duplication; check response overlapMode — 'mixed-with-failures' means some seams may have duplicate rows.",
+      prefer: "Use only for content too long to fit one screenshot. Prefer screenshot(detail='text') for interactive UIs — scroll_capture returns an image, not clickable elements.",
+      caveats: "When sizeReduced=true, stitched image pixels do NOT match screen coords — use for reading only, not for mouse_click. When overlapMode='mixed-with-failures', expect occasional duplicate content rows near frame boundaries. Increase scrollDelayMs for pages with animations or lazy-loaded images.",
+    }),
     scrollCaptureSchema,
     scrollCaptureHandler
   );
