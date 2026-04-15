@@ -82,7 +82,7 @@ const TOOL_NAMES: string[] = [
 ];
 
 const server = new McpServer(
-  { name: "desktop-touch", version: "0.6.2" },
+  { name: "desktop-touch", version: "0.8.0" },
   {
     instructions: [
       `desktop-touch-mcp is a Windows-native MCP server. The current host`,
