@@ -273,14 +273,14 @@ export const keyboardPressHandler = async ({
 export function registerKeyboardTools(server: McpServer): void {
   server.tool(
     "keyboard_type",
-    "Requires focus on the target window — call focus_window first when the dock is pinned or another window may have stolen focus. Types a string of text into the focused window. Prefer set_element_value for form fields (more reliable for programmatic input without focus side-effects). Caveats: Does not handle IME composition for CJK input — use terminal_send(preferClipboard=true) or set_element_value for non-ASCII strings.",
+    "Type a string into the focused window. Pass windowTitle to auto-focus the target before typing and enable focus-loss detection (focusLost in response) — eliminates a separate focus_window call. Prefer set_element_value for form fields. Caveats: Omitting windowTitle types into whatever window is currently active — if focus may have shifted since your last get_context, pass windowTitle explicitly. Does not handle IME composition for CJK — use use_clipboard=true or set_element_value instead.",
     keyboardTypeSchema,
     withRichNarration("keyboard_type", keyboardTypeHandler, { windowTitleKey: "windowTitle" })
   );
 
   server.tool(
     "keyboard_press",
-    "Press a key or key combination: 'enter', 'ctrl+c', 'alt+tab', 'ctrl+shift+s', 'f5', 'escape', 'f1'–'f12'. Modifiers: ctrl, alt, shift, win/meta. Call focus_window first — when the dock is pinned, keystrokes go to the pinned overlay instead of the target window unless focus is explicitly set. Caveats: narrate:'rich' adds UIA state feedback for state-transitioning keys (Enter, Tab, Esc, F-keys) only; has no effect on letter/number keys.",
+    "Press a key or key combination (e.g. 'ctrl+c', 'alt+tab', 'ctrl+shift+s', 'f5', 'escape', 'f1'–'f12'). Pass windowTitle to auto-focus before pressing — eliminates a separate focus_window call. Caveats: Omitting windowTitle sends keystrokes to the currently active window — if focus may have shifted since your last observation, pass windowTitle explicitly. win+r, win+x, win+s, win+l are blocked for security. narrate:'rich' adds UIA state feedback for state-transitioning keys (Enter, Tab, Esc, F-keys) only.",
     keyboardPressSchema,
     withRichNarration("keyboard_press", keyboardPressHandler, {
       windowTitleKey: "windowTitle",
