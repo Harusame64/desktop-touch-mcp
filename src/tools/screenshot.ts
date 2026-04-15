@@ -10,6 +10,7 @@ import type { UiElementsResult } from "../engine/uia-bridge.js";
 import { recognizeWindow, ocrWordsToActionable, runOcr, mergeNearbyWords } from "../engine/ocr-bridge.js";
 import { updateWindowCache } from "../engine/window-cache.js";
 import { CHROMIUM_TITLE_RE } from "./workspace.js";
+import { computeViewportPosition } from "../utils/viewport-position.js";
 import { ok, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
@@ -527,6 +528,12 @@ export const screenshotHandler = async ({
           try {
             const { words, origin } = await recognizeWindow(windowTitle, ocrLanguage);
             const ocrItems = ocrWordsToActionable(words, origin);
+            // Add viewportPosition to OCR items using the window region
+            if (result.windowRegion) {
+              for (const item of ocrItems) {
+                item.viewportPosition = computeViewportPosition(item.region, result.windowRegion);
+              }
+            }
             result.actionable.push(...ocrItems);
             // Re-sort after merge to maintain top→bottom, left→right ordering
             result.actionable.sort((a, b) =>
