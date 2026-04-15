@@ -41,8 +41,6 @@ describe("computeViewportPosition", () => {
 });
 
 describe("computePageRatio", () => {
-  const vp = { x: 0, y: 0, width: 1920, height: 1080 };
-
   it("element at top of page → 0", () => {
     expect(computePageRatio({ x: 0, y: 0, width: 100, height: 20 }, 2000)).toBeCloseTo(0.005);
   });

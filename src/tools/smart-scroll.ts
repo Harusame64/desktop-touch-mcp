@@ -129,10 +129,8 @@ async function tryCdp(params: {
 
     // Unlock hidden ancestors if requested
     if (expandHidden && hiddenAncestors.length > 0) {
-      const unlockExpr = hiddenAncestors.map(a => {
-        const sel = JSON.stringify(a.cssSelectorPath);
-        return `(function(){const el=document.querySelector(${sel});if(el&&el.style.overflow==='hidden'){el.setAttribute('data-dt-prev-overflow','hidden');el.style.overflow='auto';}})()`;
-      }).join(";");
+      const selectorList = JSON.stringify(hiddenAncestors.map(a => a.cssSelectorPath));
+      const unlockExpr = `(function(){var sels=${selectorList};sels.forEach(function(sel){var el=document.querySelector(sel);if(el&&el.style.overflow==='hidden'){el.setAttribute('data-dt-prev-overflow','hidden');el.style.overflow='auto';}});})()`;
       try { await evaluateInTab(unlockExpr, tabId ?? null, port); } catch { /* ignore */ }
       warnings.push("expandHidden: overflow:hidden unlocked — call smart_scroll again to restore");
     }
