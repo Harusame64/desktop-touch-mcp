@@ -8,7 +8,7 @@ import { clearLayers } from "../engine/layer-buffer.js";
 import { noteInvalidation } from "../engine/identity-tracker.js";
 import { getUiElements, extractActionableElements, WINUI3_CLASS_RE } from "../engine/uia-bridge.js";
 import { updateWindowCache } from "../engine/window-cache.js";
-import { ok } from "./_types.js";
+import { ok, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
 import { pollUntil } from "../engine/poll.js";
@@ -260,32 +260,28 @@ export const workspaceLaunchHandler = async ({
 export function registerWorkspaceTools(server: McpServer): void {
   server.tool(
     "workspace_snapshot",
-    [
-      "Get a complete snapshot of the current desktop workspace in a single call.",
-      "Returns: display layouts, all visible windows with thumbnails (WebP), cursor position,",
-      "and per-window UI summaries listing actionable elements with pre-computed clickAt coordinates.",
-      "",
-      "uiSummary.actionable — interactive elements (buttons, inputs, menus) with:",
-      "  action: 'click' | 'type' | 'expand' | 'select'",
-      "  clickAt: {x, y} — pass directly to mouse_click, no coordinate math needed",
-      "  value: current text content for editable fields",
-      "",
-      "Also resets the layer diff buffer, so subsequent screenshot(diffMode=true) calls",
-      "will send only changed windows (P-frame) instead of the full desktop.",
-      "",
-      "Use this at the start of a session or when you need full desktop orientation.",
-    ].join("\n"),
+    buildDesc({
+      purpose: "Orient fully in one call — returns display layouts, all window thumbnails (WebP), and per-window actionable element lists with clickAt coords.",
+      details: "uiSummary.actionable[] per window includes: action ('click'|'type'|'expand'|'select'), clickAt {x,y} (pass directly to mouse_click), value (current text for editable fields). Runs parallel internally; latency ≈ max(single screenshot), not N×screenshots. Also resets the diffMode buffer so subsequent screenshot(diffMode=true) returns only changes (P-frame).",
+      prefer: "Use at session start or after major workspace changes. Use screenshot(detail='meta') for cheap re-orientation within a session. Use screenshot(detail='text', windowTitle=X) for a single-window update.",
+      caveats: "Thumbnails are scaled, not 1:1 — use screenshot(dotByDot=true, windowTitle=X) for pixel-accurate coords on a specific window after snapshot.",
+    }),
     workspaceSnapshotSchema,
     workspaceSnapshotHandler
   );
 
   server.tool(
     "workspace_launch",
-    [
-      "Launch an application and wait for it to appear, then return its window info.",
-      "Detects the new window by comparing window list before/after launch —",
-      "works for apps with localized (non-English) window titles (e.g. '電卓' for calc.exe).",
-    ].join(" "),
+    buildDesc({
+      purpose: "Launch an application and wait for its new window to appear, returning title, HWND, and PID.",
+      details: "Runs the command via ShellExecute, snapshots the window list before launch, then polls until a new HWND appears (compared by HWND, not title). Returns {windowTitle, hwnd, pid, elapsedMs}. Works for localized window titles (e.g. '電卓' for calc.exe) because detection is HWND-based, not title-based. timeoutMs default 10000. detach=true fires without waiting and returns no window info.",
+      prefer: "Use instead of run_macro({exec, sleep, get_windows}) combos. Follow with focus_window(windowTitle) to interact with the launched app.",
+      caveats: "Single-instance apps that reuse an existing window will not register as a new HWND — call get_windows first to check if the window is already open. detach=true returns immediately with no window title or hwnd.",
+      examples: [
+        "workspace_launch({command:'notepad.exe'}) → {windowTitle:'<localized title>', hwnd:'...', pid:...}",
+        "workspace_launch({command:'calc.exe', timeoutMs:15000})",
+      ],
+    }),
     workspaceLaunchSchema,
     workspaceLaunchHandler
   );
