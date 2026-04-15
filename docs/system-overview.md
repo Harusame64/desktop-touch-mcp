@@ -222,6 +222,7 @@ Responses carry the `post` block; `narrate:"rich"` attaches a UIA diff (state-tr
 #### `keyboard_type`
 Text input.
 - `use_clipboard=true` routes via PowerShell + clipboard, **bypassing any Japanese IME**. Required when typing URLs / paths under an active IME.
+- Also required for text that contains em-dash (`—`), en-dash (`–`), smart quotes, or other non-ASCII punctuation — these can be intercepted as keyboard accelerators by Chrome/Edge (e.g. shifting focus to the address bar).
 
 #### `keyboard_press`
 Key combos.
@@ -440,12 +441,16 @@ Formula: `physX = (screenX + chromeW/2 + rect.left) * dpr`, with the browser chr
 #### `browser_eval`
 Evaluate JS via `Runtime.evaluate` (CDP). `awaitPromise=true`, so `await` works. Exceptions from the page surface as `JS exception in tab: …`.
 
+> **Caveat — React / Vue / Svelte controlled inputs:** Setting `element.value = ...` or using a native-setter + `dispatchEvent` does **not** update the framework's internal state. The submission will treat the field as empty. Use `keyboard_type` (click the input first, pass `windowTitle`) to populate controlled form fields.
+
 #### `browser_get_dom`
 `outerHTML` of an element (or `document.body`), truncated to `maxLength`. Missing-element errors come back as a structured `{"__cdpError":"…"}` so the caller can distinguish "no match" from "empty HTML".
 
 #### `browser_get_interactive`
 Enumerates interactive elements with `clickAt` coords — the browser analogue of `screenshot(detail="text")`.
 Also **ARIA-aware**: surfaces `role=switch` / `checkbox` / `radio` / `tab` / `menuitem` / `option` custom controls with a `state` block carrying `checked` / `pressed` / `selected` / `expanded` derived from the matching `aria-*` attributes. Use this when a page (Radix / shadcn / MUI / Headless UI / GitHub) renders toggles as ARIA buttons instead of native `<input>`.
+
+**Form-state verification (preferred over screenshot for button/toggle state):** Call this after form submission to check button, checkbox, and ARIA toggle states — structured JSON, no image tokens. For inputs, `text` reflects the empty-field hint text when set (takes priority over any typed value); to read the actual typed content use `browser_eval('document.querySelector(sel).value')`.
 
 #### `browser_get_app_state`
 One CDP call that scans the well-known places SPAs stash their hydration payloads:
@@ -489,9 +494,11 @@ Runs up to 50 tools sequentially in a single MCP call. A `sleep` pseudo-command 
 ```
 
 #### `scroll_capture`
-Scrolls a window top-to-bottom and stitches a full-height screenshot — useful for long pages / documents.
+Scrolls a window top-to-bottom and stitches a full-height screenshot — useful for **whole-page content overview** (long pages / documents).
 
 Output is size-guarded to fit the MCP 1 MB envelope: PNG is tried first; if the raw bytes exceed 700 KB, the image falls back to WebP (q70 → q55 → q40) and then iterative ×0.75 downscaling. When compression is applied, the `summary` object includes a `sizeReduced` field (e.g. `"webp_q55"`) and a `tip` suggesting `maxScrolls` reduction or `grayscale=true`.
+
+> **When not to use:** For partial verification or locating a specific element, prefer `scroll` + `screenshot(detail='text')` — you get `actionable[]` with `clickAt` coords and pay only per-viewport token cost. `scroll_capture` returns a stitched image (not clickable elements) that is expensive in tokens regardless of the 1 MB guard.
 
 ---
 
@@ -541,6 +548,7 @@ screenshot(diffMode=true)
 | Default WebP quality | `60` — the lowest quality at which text stays readable |
 | Layer-buffer TTL | Auto-cleared after 90 s |
 | focus_window filter | Skips helper windows with width < 50 or height < 50 |
+| focus_window / Chrome tabs | Chrome/Edge uses one HWND per browser window; only the active tab title is visible to the OS. `WindowNotFound` on a tab title → use `browser_connect` to list tabs and switch via CDP instead |
 | UIA element search | Recursive `FindAll(Children)` — `FindAll(Descendants)` misses items on some WinUI3 apps |
 | CDP command timeout | 15 s (`CMD_TIMEOUT_MS`); WebSocket connect timeout 5 s (`CONNECT_TIMEOUT_MS`) |
 | CDP fetch timeout | `AbortSignal.timeout(5s)` — handles a hung `/json` endpoint |
