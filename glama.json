@@ -1,0 +1,7 @@
+{
+  "displayName": "desktop-touch-mcp",
+  "description": "Windows desktop automation MCP: screenshot, click, keyboard, browser CDP, terminal, scroll, events — 51 tools with 3-tier token reduction and post-state narration.",
+  "categories": ["desktop-automation", "browser"],
+  "platforms": ["windows"],
+  "license": "MIT"
+}

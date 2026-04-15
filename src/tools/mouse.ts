@@ -223,6 +223,7 @@ export const mouseClickSchema = {
     ),
   button: z.enum(["left", "right", "middle"]).default("left").describe("Mouse button to click"),
   doubleClick: z.boolean().default(false).describe("Whether to double-click"),
+  tripleClick: z.boolean().default(false).describe("Whether to triple-click (select a line of text). Takes precedence over doubleClick when both are true."),
   narrate: narrateParam,
   speed: speedParam,
   homing: homingParam,
@@ -283,13 +284,13 @@ export const mouseMoveHandler = async ({
 };
 
 export const mouseClickHandler = async ({
-  x, y, origin, scale, button, doubleClick, speed, homing, windowTitle, elementName, elementId,
+  x, y, origin, scale, button, doubleClick, tripleClick, speed, homing, windowTitle, elementName, elementId,
   forceFocus: forceFocusArg, trackFocus, settleMs,
 }: {
   x: number; y: number;
   origin?: { x: number; y: number };
   scale?: number;
-  button: "left" | "right" | "middle"; doubleClick: boolean;
+  button: "left" | "right" | "middle"; doubleClick: boolean; tripleClick: boolean;
   speed?: number; homing: boolean; windowTitle?: string; elementName?: string; elementId?: string;
   forceFocus?: boolean; trackFocus: boolean; settleMs: number;
 }): Promise<ToolResult> => {
@@ -321,12 +322,19 @@ export const mouseClickHandler = async ({
     }
     await moveTo(tx, ty, speed);
     const btn = toButton(button);
-    if (doubleClick) {
+    let action: string;
+    if (tripleClick) {
+      await mouse.click(btn);
+      await mouse.click(btn);
+      await mouse.click(btn);
+      action = "tripleClick";
+    } else if (doubleClick) {
       await mouse.doubleClick(btn);
+      action = "doubleClick";
     } else {
       await mouse.click(btn);
+      action = "click";
     }
-    const action = doubleClick ? "doubleClick" : "click";
 
     // Detect focus loss after the click
     let focusLost = undefined;
@@ -457,7 +465,7 @@ export function registerMouseTools(server: McpServer): void {
   server.tool("mouse_move", "Move the cursor to coordinates without clicking — for hover-only effects such as revealing tooltips or triggering hover states. Use mouse_click for click targets (it moves and clicks in one call).", mouseMoveSchema, mouseMoveHandler);
   server.tool(
     "mouse_click",
-    "Click at screen-absolute coordinates (virtual screen pixels), or pass origin+scale from a dotByDot=true screenshot response to let the server convert image-local coords automatically: screen = origin + (x,y) / (scale ?? 1). windowTitle optionally focuses the window first (for pinned-dock setups). Prefer click_element (UIA) for stable text-addressed clicking in native apps. Prefer browser_click_element for Chrome. Use mouse_click only when pixel coords are the only available option. Caveats: origin+scale are meaningful ONLY with dotByDot=true screenshot responses — applying them to scaled detail='text'/'meta' output lands clicks in the wrong positions.",
+    "Click at screen-absolute coordinates (virtual screen pixels), or pass origin+scale from a dotByDot=true screenshot response to let the server convert image-local coords automatically: screen = origin + (x,y) / (scale ?? 1). doubleClick:true for double-click; tripleClick:true for triple-click (selects a full line of text) — if both are set, tripleClick wins. windowTitle optionally focuses the window first (for pinned-dock setups). Prefer click_element (UIA) for stable text-addressed clicking in native apps. Prefer browser_click_element for Chrome. Use mouse_click only when pixel coords are the only available option. Caveats: origin+scale are meaningful ONLY with dotByDot=true screenshot responses — applying them to scaled detail='text'/'meta' output lands clicks in the wrong positions.",
     mouseClickSchema,
     withRichNarration("mouse_click", mouseClickHandler, { windowTitleKey: "windowTitle" })
   );

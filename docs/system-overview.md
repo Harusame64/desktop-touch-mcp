@@ -22,10 +22,11 @@ desktop-touch-mcp (Node.js / TypeScript)
     │   ├── cdp-bridge.ts   — Chrome DevTools Protocol: WebSocket sessions + DOM→screen coords
     │   ├── window-cache.ts — window-position cache used by the homing-correction path (dx,dy)
     │   └── poll.ts         — shared pollUntil utility
-    └── Layer 2: 46 MCP tools
+    └── Layer 2: 51 MCP tools
         screenshot(4) + window(3) + mouse(5) + keyboard(2) + ui_elements(4) +
-        browser_cdp(11) + workspace(2) + pin(2) + dock(1) + macro(1) +
-        scroll_capture(1) + context(3) + terminal(2) + events(4) + wait_until(1)
+        browser_cdp(12) + workspace(2) + pin(2) + dock(1) + macro(1) +
+        scroll_capture(1) + context(3) + terminal(2) + events(4) + wait_until(1) +
+        clipboard(2) + notification(1) + scroll_to_element(1)
 ```
 
 ---
@@ -154,7 +155,9 @@ Information about the currently-focused window.
 Bring a window to the foreground by partial title match.
 ```
 focus_window(title="Notepad")
+focus_window(title="Chrome", chromeTabUrlContains="github.com")  # activate a specific tab first
 ```
+`chromeTabUrlContains` activates the matching Chrome/Edge tab by URL substring before focusing the HWND. If CDP is unavailable, the parameter is silently skipped and `hints.warnings` surfaces `"cdpUnavailable"`.
 
 #### `pin_window` / `unpin_window`
 Toggle always-on-top; `duration_ms` for an auto-release timer.
@@ -187,7 +190,7 @@ All mouse tools take `speed` plus `homing` / `windowTitle` / `elementName` / `el
 Move the cursor.
 
 #### `mouse_click`
-Click (`left` / `right` / `middle`). `doubleClick=true` for a double click.
+Click (`left` / `right` / `middle`). `doubleClick=true` for a double-click; `tripleClick=true` for a triple-click (selects a full line of text). If both are set, `tripleClick` wins.
 
 **Homing correction (traction control):** compensates for window movement / occlusion that happens between the screenshot and the click.
 
@@ -222,7 +225,8 @@ Responses carry the `post` block; `narrate:"rich"` attaches a UIA diff (state-tr
 #### `keyboard_type`
 Text input.
 - `use_clipboard=true` routes via PowerShell + clipboard, **bypassing any Japanese IME**. Required when typing URLs / paths under an active IME.
-- Also required for text that contains em-dash (`—`), en-dash (`–`), smart quotes, or other non-ASCII punctuation — these can be intercepted as keyboard accelerators by Chrome/Edge (e.g. shifting focus to the address bar).
+- Also required for text that contains em-dash (`—`), en-dash (`–`), smart quotes, or other non-ASCII punctuation — these can be intercepted as keyboard accelerators by Chrome/Edge. `keyboard_type` detects these characters automatically and upgrades to clipboard mode (`method:'clipboard-auto'`). Opt out with `forceKeystrokes=true`.
+- `replaceAll=true` sends Ctrl+A before typing to replace any existing content (requires the field to already be focused).
 
 #### `keyboard_press`
 Key combos.
@@ -261,7 +265,7 @@ Action-oriented element extraction. Every entry carries `clickAt` coords.
 ```
 
 #### `get_ui_elements`
-The raw UIA tree. Use this when you need an `automationId`.
+The raw UIA tree. Use this when you need an `automationId`. Each element includes `viewportPosition` (`'in-view'|'above'|'below'|'left'|'right'`) relative to the window client region — use it to decide whether `scroll_to_element` is needed before clicking. Results are capped at `maxElements` (default 80, max 200).
 
 #### `click_element`
 Click by name / ID via UIA `InvokePattern` — no coords needed.
@@ -441,16 +445,19 @@ Formula: `physX = (screenX + chromeW/2 + rect.left) * dpr`, with the browser chr
 #### `browser_eval`
 Evaluate JS via `Runtime.evaluate` (CDP). `awaitPromise=true`, so `await` works. Exceptions from the page surface as `JS exception in tab: …`.
 
-> **Caveat — React / Vue / Svelte controlled inputs:** Setting `element.value = ...` or using a native-setter + `dispatchEvent` does **not** update the framework's internal state. The submission will treat the field as empty. Use `keyboard_type` (click the input first, pass `windowTitle`) to populate controlled form fields.
+> **Caveat — React / Vue / Svelte controlled inputs:** Setting `element.value = ...` via `browser_eval` does **not** update the framework's internal state. Use `browser_fill_input(selector, value)` instead — it uses the native prototype setter + `InputEvent` which does trigger React/Vue/Svelte state updates.
 
 #### `browser_get_dom`
 `outerHTML` of an element (or `document.body`), truncated to `maxLength`. Missing-element errors come back as a structured `{"__cdpError":"…"}` so the caller can distinguish "no match" from "empty HTML".
 
 #### `browser_get_interactive`
-Enumerates interactive elements with `clickAt` coords — the browser analogue of `screenshot(detail="text")`.
+Enumerates interactive elements with `clickAt` coords — the browser analogue of `screenshot(detail="text")`. Each element includes `viewportPosition` (`'in-view'|'above'|'below'|'left'|'right'`) — use it to decide whether `scroll_to_element` is needed before clicking.
 Also **ARIA-aware**: surfaces `role=switch` / `checkbox` / `radio` / `tab` / `menuitem` / `option` custom controls with a `state` block carrying `checked` / `pressed` / `selected` / `expanded` derived from the matching `aria-*` attributes. Use this when a page (Radix / shadcn / MUI / Headless UI / GitHub) renders toggles as ARIA buttons instead of native `<input>`.
 
 **Form-state verification (preferred over screenshot for button/toggle state):** Call this after form submission to check button, checkbox, and ARIA toggle states — structured JSON, no image tokens. For inputs, `text` reflects the empty-field hint text when set (takes priority over any typed value); to read the actual typed content use `browser_eval('document.querySelector(sel).value')`.
+
+#### `browser_fill_input`
+Fill a React/Vue/Svelte controlled input via CDP without breaking framework state. Uses native prototype setter + `InputEvent` dispatch (not `execCommand`). Obtain `selector` from `browser_get_interactive` or `browser_find_element` first. `actual` in the response reflects what the element's `value` property reads after fill — verify it matches. Does not work on `contenteditable` rich-text editors.
 
 #### `browser_get_app_state`
 One CDP call that scans the well-known places SPAs stash their hydration payloads:
@@ -499,6 +506,60 @@ Scrolls a window top-to-bottom and stitches a full-height screenshot — useful 
 Output is size-guarded to fit the MCP 1 MB envelope: PNG is tried first; if the raw bytes exceed 700 KB, the image falls back to WebP (q70 → q55 → q40) and then iterative ×0.75 downscaling. When compression is applied, the `summary` object includes a `sizeReduced` field (e.g. `"webp_q55"`) and a `tip` suggesting `maxScrolls` reduction or `grayscale=true`.
 
 > **When not to use:** For partial verification or locating a specific element, prefer `scroll` + `screenshot(detail='text')` — you get `actionable[]` with `clickAt` coords and pay only per-viewport token cost. `scroll_capture` returns a stitched image (not clickable elements) that is expensive in tokens regardless of the 1 MB guard.
+
+---
+
+### 📋 Clipboard
+
+#### `clipboard_read`
+Return the current Windows clipboard text.
+```json
+{ "ok": true, "text": "Hello, clipboard!" }
+```
+Non-text payloads (images, file paths copied as shell objects) return `text: ""` — not an error.
+
+#### `clipboard_write`
+Place text on the Windows clipboard. Full Unicode / emoji / CJK support via UTF-16LE base64 encoding.
+```
+clipboard_write(text="Hello — smart quotes: "test"")
+```
+Overwrites any existing clipboard content; non-text formats (images, files) are cleared.
+
+---
+
+### 🔔 Notification
+
+#### `notification_show`
+Show a Windows system tray balloon notification. Useful to alert the user when a long-running automated task finishes without them needing to watch the screen.
+```
+notification_show(title="Build complete", body="All 42 tests passed in 18s")
+```
+Uses `System.Windows.Forms.NotifyIcon` — no external modules or WinRT dependency. Fire-and-forget: returns immediately; the balloon stays visible for ~6 s.
+**Caveat:** Focus Assist (Do Not Disturb) suppresses balloon tips. The tool still returns `ok:true` in that case.
+
+---
+
+### 🎯 Scroll to Element
+
+#### `scroll_to_element`
+Scroll a named element into the visible viewport without computing scroll amounts manually.
+
+Two paths:
+
+| Path | Required args | Mechanism |
+|---|---|---|
+| Chrome/Edge (CDP) | `selector` | `el.scrollIntoView({block, behavior:'instant'})` — coords stabilize immediately |
+| Native (UIA) | `name` + `windowTitle` | `ScrollItemPattern.ScrollIntoView()` |
+
+```
+scroll_to_element({selector: '#submit-btn'})                    # Chrome path
+scroll_to_element({name: 'OK', windowTitle: 'Settings'})        # native UIA path
+scroll_to_element({selector: '.hero', block: 'start'})          # align to top of viewport
+```
+
+`block` controls vertical alignment (`start` / `center` / `end` / `nearest`, default `center`) — Chrome path only.
+
+Returns `scrolled:true` on success; `scrolled:false` if the element doesn't expose `ScrollItemPattern` (fall back to `scroll` + `screenshot`). Pairs well with `browser_get_interactive` / `screenshot(detail='text')` to confirm `viewportPosition:'in-view'` after scrolling.
 
 ---
 

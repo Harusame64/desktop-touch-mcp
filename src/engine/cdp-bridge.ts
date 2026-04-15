@@ -470,6 +470,20 @@ export async function getDomHtml(
 }
 
 /**
+ * Activate (bring to foreground) a specific tab by its CDP tab ID.
+ * Uses the CDP HTTP /json/activate endpoint — does not require a WebSocket session.
+ */
+export async function activateTab(tabId: string, port = DEFAULT_CDP_PORT): Promise<void> {
+  const res = await fetch(`http://127.0.0.1:${port}/json/activate/${tabId}`, {
+    method: "GET",
+    signal: AbortSignal.timeout(4000),
+  });
+  if (!res.ok) {
+    throw new Error(`CDP activate failed: HTTP ${res.status}`);
+  }
+}
+
+/**
  * Close all cached CDP sessions for a given port.
  */
 export function disconnectAll(port = DEFAULT_CDP_PORT): void {

@@ -91,6 +91,9 @@ const windowTitleFocusParam = z.string().optional().describe(
   "target for focusLost detection."
 );
 
+/** Non-ASCII punctuation that can be hijacked as Chrome/Edge keyboard accelerators */
+const NON_ASCII_SYMBOL_RE = /[\u2013\u2014\u2018\u2019\u201C\u201D\u2026\u00A0]/;
+
 export const keyboardTypeSchema = {
   text: z.string().max(10000).describe("The text to type (max 10,000 characters)"),
   narrate: narrateParam,
@@ -103,6 +106,15 @@ export const keyboardTypeSchema = {
       "Use this when typing URLs, paths, or ASCII text into apps with Japanese IME active — " +
       "prevents IME from converting characters. Default false."
     ),
+  replaceAll: z.boolean().optional().default(false).describe(
+    "When true, send Ctrl+A to select all existing text before typing. " +
+    "Equivalent to Ctrl+A → keyboard_type in one call (requires field already focused). Default false."
+  ),
+  forceKeystrokes: z.boolean().optional().default(false).describe(
+    "When true, always use keystroke mode even if text contains non-ASCII symbols " +
+    "(em-dash, en-dash, smart quotes, etc.) that would normally trigger auto-clipboard. " +
+    "Default false — auto-clipboard is enabled."
+  ),
   windowTitle: windowTitleFocusParam,
   forceFocus: forceFocusParam,
   trackFocus: trackFocusParam,
@@ -164,6 +176,8 @@ async function focusWindowForKeyboard(
 export const keyboardTypeHandler = async ({
   text,
   use_clipboard,
+  replaceAll,
+  forceKeystrokes,
   windowTitle,
   forceFocus: forceFocusArg,
   trackFocus,
@@ -171,6 +185,8 @@ export const keyboardTypeHandler = async ({
 }: {
   text: string;
   use_clipboard: boolean;
+  replaceAll: boolean;
+  forceKeystrokes: boolean;
   windowTitle?: string;
   forceFocus?: boolean;
   trackFocus: boolean;
@@ -187,7 +203,23 @@ export const keyboardTypeHandler = async ({
       homingNotes.push(...fw.homingNotes);
     }
 
-    if (use_clipboard) {
+    // Ctrl+A to replace existing content before typing
+    if (replaceAll) {
+      const selectAll = parseKeys("ctrl+a");
+      await keyboard.pressKey(...selectAll);
+      await keyboard.releaseKey(...selectAll);
+    }
+
+    // Auto-clipboard: upgrade to clipboard mode when non-ASCII symbols are present
+    // (unless the caller opted out via forceKeystrokes)
+    let effectiveClipboard = use_clipboard;
+    let autoClipboardReason: string | undefined;
+    if (!use_clipboard && !forceKeystrokes && NON_ASCII_SYMBOL_RE.test(text)) {
+      effectiveClipboard = true;
+      autoClipboardReason = "non-ASCII symbol detected";
+    }
+
+    if (effectiveClipboard) {
       await typeViaClipboard(text);
     } else {
       await keyboard.type(text);
@@ -203,10 +235,17 @@ export const keyboardTypeHandler = async ({
       if (fl) focusLost = fl;
     }
 
+    const method = effectiveClipboard
+      ? autoClipboardReason
+        ? "clipboard-auto"
+        : "clipboard"
+      : "keystroke";
+
     return ok({
       ok: true,
       typed: text.length,
-      method: use_clipboard ? "clipboard" : "keystroke",
+      method,
+      ...(autoClipboardReason && { autoClipboardReason }),
       ...(focusLost && { focusLost }),
       ...(warnings.length > 0 && { hints: { warnings } }),
     });
@@ -273,7 +312,7 @@ export const keyboardPressHandler = async ({
 export function registerKeyboardTools(server: McpServer): void {
   server.tool(
     "keyboard_type",
-    "Type a string into the focused window. Pass windowTitle to auto-focus the target before typing and enable focus-loss detection (focusLost in response) — eliminates a separate focus_window call. Prefer set_element_value for form fields. Caveats: Omitting windowTitle types into whatever window is currently active — if focus may have shifted since your last get_context, pass windowTitle explicitly. Does not handle IME composition for CJK — use use_clipboard=true or set_element_value instead. Text containing em-dash, en-dash, smart quotes, or other non-ASCII punctuation can be intercepted as keyboard accelerators by Chrome/Edge (e.g. address bar hijack) — use use_clipboard=true for URLs, paths, or release notes that include such characters.",
+    "Type a string into the focused window. Pass windowTitle to auto-focus the target before typing and enable focus-loss detection (focusLost in response) — eliminates a separate focus_window call. Pass replaceAll:true to Ctrl+A before typing (replace existing content in one call). Prefer set_element_value for form fields. Caveats: Omitting windowTitle types into whatever window is currently active — if focus may have shifted since your last get_context, pass windowTitle explicitly. Does not handle IME composition for CJK — use use_clipboard=true or set_element_value instead. Text containing em-dash (—), en-dash (–), smart quotes, or other non-ASCII punctuation is automatically rerouted via clipboard (method:'clipboard-auto') to prevent Chrome/Edge from intercepting keystrokes as keyboard accelerators (e.g. address bar hijack). Pass forceKeystrokes:true to disable this auto-upgrade.",
     keyboardTypeSchema,
     withRichNarration("keyboard_type", keyboardTypeHandler, { windowTitleKey: "windowTitle" })
   );
