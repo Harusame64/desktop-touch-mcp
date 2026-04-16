@@ -82,8 +82,13 @@ jobs:
           $pkg | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $pkgPath -Encoding UTF8
 
       - name: Install production dependencies
-        working-directory: release_build
-        run: npm install --omit=dev
+        shell: pwsh
+        run: |
+          # Remove the lock file so npm generates a fresh one based on the modified package.json.
+          # The original lock file marks all runtime deps as dev:true, causing --omit=dev to skip them.
+          Remove-Item -LiteralPath "release_build\package-lock.json" -Force -ErrorAction SilentlyContinue
+          Set-Location release_build
+          npm install --omit=dev
 
       - name: Prune release package metadata
         shell: pwsh
