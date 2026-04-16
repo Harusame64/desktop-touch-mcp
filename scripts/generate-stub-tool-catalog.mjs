@@ -91,7 +91,7 @@ function evalExpr(expr, extra = {}) {
     _defaultPort: 9222,
     DEFAULT_CDP_PORT: 9222,
     FLUENT_KINDS: ['target.exists', 'target.identity', 'target.title', 'target.rect', 'target.foreground', 'target.zOrder', 'modal.above', 'target.focusedElement', 'browser.url', 'browser.title', 'browser.readyState'],
-    GUARD_KINDS: ['target.identityStable', 'safe.keyboardTarget', 'safe.clickCoordinates', 'stable.rect', 'modal.none', 'browser.ready'],
+    GUARD_KINDS: ['target.identityStable', 'safe.keyboardTarget', 'safe.clickCoordinates', 'stable.rect', 'browser.ready'],
     EVENT_TYPES: ['window_appeared', 'window_disappeared', 'foreground_changed'],
     ...extra,
   };
