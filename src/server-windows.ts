@@ -1,5 +1,10 @@
+import { createServer, type Server as HttpServer } from "node:http";
+import { dirname, join } from "node:path";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 import { registerScreenshotTools } from "./tools/screenshot.js";
 import { registerMouseTools } from "./tools/mouse.js";
@@ -23,9 +28,14 @@ import { registerSmartScrollTools } from "./tools/smart-scroll.js";
 import { registerPerceptionTools } from "./tools/perception.js";
 import { registerPerceptionResources } from "./tools/perception-resources.js";
 import { stopNativeRuntime } from "./engine/perception/registry.js";
-import { startTray, stopTray } from "./utils/tray.js";
+import { startTray, stopTray, type TrayOptions } from "./utils/tray.js";
 import { checkFailsafe, FailsafeError } from "./utils/failsafe.js";
 import { SERVER_VERSION } from "./version.js";
+
+// Resolve assets/icons directory (works both in dev: dist/ and release: dist/)
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const icoDir = join(__dirname, "..", "assets", "icons");
+const icoOk = existsSync(join(icoDir, "tray_ok.ico")) ? join(icoDir, "tray_ok.ico") : undefined;
 
 const server = new McpServer(
   { name: "desktop-touch", version: SERVER_VERSION },
@@ -166,10 +176,15 @@ const failsafeTimer = setInterval(async () => {
 failsafeTimer.unref(); // don't keep process alive for this alone
 
 // ─── Graceful shutdown ────────────────────────────────────────────────────────
+let httpServerRef: HttpServer | null = null;
+let httpTransportRef: StreamableHTTPServerTransport | null = null;
+
 function shutdown(): void {
   console.error("[desktop-touch] Shutting down...");
   stopNativeRuntime();
   stopTray();
+  httpServerRef?.close();
+  void httpTransportRef?.close();
   process.exit(0);
 }
 
@@ -177,14 +192,83 @@ process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 process.on("disconnect", shutdown);
 
-// Start tray icon (non-critical)
-startTray();
+// ─── Parse CLI flags ──────────────────────────────────────────────────────────
+const args = process.argv.slice(2);
 
-// Connect MCP transport
-const transport = new StdioServerTransport();
-await server.connect(transport);
+if (args.includes("--help") || args.includes("-h")) {
+  console.log(`desktop-touch-mcp v${SERVER_VERSION}
 
-console.error("[desktop-touch] MCP server running (stdio)");
+Usage: desktop-touch-mcp [options]
+
+Options:
+  --http          Use Streamable HTTP transport (default: stdio)
+  --port <port>   HTTP port (default: 23847, requires --http)
+  -h, --help      Show this help message
+
+HTTP endpoint: http://127.0.0.1:<port>/mcp
+Health check:  http://127.0.0.1:<port>/health`);
+  process.exit(0);
+}
+
+const useHttp = args.includes("--http");
+const portIndex = args.indexOf("--port");
+const httpPort = portIndex !== -1 && args[portIndex + 1] ? parseInt(args[portIndex + 1], 10) : 23847;
+const httpUrl = useHttp ? `http://127.0.0.1:${httpPort}/mcp` : undefined;
+
+// ─── Start tray icon ─────────────────────────────────────────────────────────
+const trayOptions: TrayOptions = { httpUrl, icoPath: icoOk, version: SERVER_VERSION };
+startTray(trayOptions);
+
+// ─── Connect MCP transport ───────────────────────────────────────────────────
+if (useHttp) {
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true,
+  });
+  httpTransportRef = transport;
+
+  const httpServer = createServer((req, res) => {
+    // DNS rebinding protection
+    const host = req.headers.host ?? "";
+    if (!host.startsWith("127.0.0.1:") && !host.startsWith("localhost:")
+        && host !== "127.0.0.1" && host !== "localhost") {
+      res.writeHead(403);
+      res.end("Forbidden");
+      return;
+    }
+
+    // CORS for browser-based clients
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, mcp-session-id, MCP-Protocol-Version");
+
+    if (req.method === "OPTIONS") {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    if (req.url?.startsWith("/mcp")) {
+      transport.handleRequest(req, res);
+    } else if (req.url === "/health" || req.url === "/") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "ok", name: "desktop-touch-mcp", version: SERVER_VERSION }));
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+
+  httpServerRef = httpServer;
+  await server.connect(transport);
+  httpServer.listen(httpPort, "127.0.0.1", () => {
+    console.error(`[desktop-touch] MCP server running (http) on ${httpUrl}`);
+  });
+} else {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error("[desktop-touch] MCP server running (stdio)");
+}
 
 // Auto-dock CLI window if DESKTOP_TOUCH_DOCK_TITLE is set (opt-in).
 // Detached so a missing window or poll timeout doesn't delay server readiness.

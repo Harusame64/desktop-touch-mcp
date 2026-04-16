@@ -45,6 +45,10 @@ jobs:
           Copy-Item -LiteralPath "README.ja.md" -Destination $releaseDir
           Copy-Item -LiteralPath "dist" -Destination $releaseDir -Recurse
 
+          if (Test-Path -LiteralPath "assets") {
+            Copy-Item -LiteralPath "assets" -Destination $releaseDir -Recurse
+          }
+
           if (Test-Path -LiteralPath "bin") {
             $binDir = Join-Path $releaseDir "bin"
             New-Item -ItemType Directory -Path $binDir -Force | Out-Null
