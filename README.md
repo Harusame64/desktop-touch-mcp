@@ -67,6 +67,20 @@ Add to `~/.claude.json` under `mcpServers`:
 
 **No system prompt needed.** The command reference is automatically injected into Claude via the MCP `initialize` response's `instructions` field.
 
+### Register with other clients (HTTP mode)
+
+Clients that require an HTTP endpoint (GPT Desktop, VS Code Copilot, Cursor, etc.) can use the built-in Streamable HTTP transport:
+
+```bash
+npx -y @harusame64/desktop-touch-mcp --http
+# or with a custom port:
+npx -y @harusame64/desktop-touch-mcp --http --port 8080
+```
+
+The server starts at `http://127.0.0.1:23847/mcp` (localhost only). Register the URL in your MCP client settings. A health check is available at `http://127.0.0.1:<port>/health`.
+
+In HTTP mode the system tray icon shows the active URL and provides quick-copy and open-in-browser shortcuts.
+
 ### Development install
 
 ```bash
