@@ -4,8 +4,6 @@
 
 [English](README.md)
 
-[Glamaリンク](https://glama.ai/mcp/servers/Harusame64/desktop-touch-mcp)
-
 > **「Claude CLI にスクショを毎回コピーしていたあなたへ。」**
 
 Claude がデスクトップを直接見て、直接操作する。  
@@ -18,9 +16,11 @@ Claude がデスクトップを直接見て、直接操作する。
 ## 特徴
 
 - **LLM ネイティブ設計** — 人間の操作を模倣するのではなく、「LLM がいかにコンテキストを消費せず高速に動けるか」を前提に設計。`run_macro` による複数操作の一括実行（API 往復の削減）と、**MPEG P-frame 方式のレイヤー差分** (`diffMode`) を組み合わせることで、無駄な画像転送や推論ループを極限まで削ぎ落とす。
+- **Reactive Perception Graph** — ウィンドウやブラウザタブに `lensId` を登録し、以後の action tool に渡すだけで、操作前の安全 guard と操作後の `post.perception` フィードバックを受け取れます。`screenshot` / `get_context` の反復を減らし、別ウィンドウへの誤入力や古い座標クリックを防ぎます。
 - **日本語/CJK 完全対応** — ウィンドウタイトル取得に Win32 `GetWindowTextW` を使用。nut-js の文字化けを回避。IME バイパス入力にも対応。
 - **3 段階トークン削減** — `detail="image"`（~443 tok）/ `detail="text"`（~100-300 tok）/ `diffMode=true`（~160 tok）を用途に応じて使い分け。視覚確認が必要な時だけ画像を送る。
 - **座標変換不要の 1:1 モード** — `dotByDot=true` で WebP 1:1 キャプチャ。画像上のピクセル座標 = 画面座標なのでスケール計算が不要。
+- **ブラウザキャプチャのデータ削減** — `grayscale=true`、`dotByDotMaxDimension=1280`、`windowTitle + region` の部分切り出しで、ブラウザ chrome や不要な余白を除外。重いキャプチャで 50〜70% 程度の削減を狙えます。
 - **UIA アクション要素抽出** — `detail="text"` でボタン・入力欄の名前と `clickAt` 座標を JSON で返すため、画像を見なくても操作できる。
 - **緊急停止 (Failsafe)** — マウスを**画面左上コーナー (0,0 付近 10px)** に移動すると MCP サーバーが即座に終了。
 
@@ -169,13 +169,15 @@ DOM を触る `browser_*` ツールは `includeContext:false` で末尾の `acti
 | `scroll_to_element` | 要素名またはCSS selectorで対象をviewportへスクロール |
 | `smart_scroll` | CDP → UIA → 画像binary-searchの統合スクロール。ネスト・仮想リスト・sticky header対応 |
 
-### Reactive Perception (4, experimental)
+### Reactive Perception Graph (4)
 | ツール | 概要 |
 |---|---|
-| `perception_register` | 対象ウィンドウ/タブのperception lensを登録し、action toolに渡す`lensId`を返す |
-| `perception_read` | lensの状態を強制更新し、perception envelopeを返す |
-| `perception_forget` | lensを解除 |
-| `perception_list` | 登録中lens一覧を取得 |
+| `perception_register` | 対象ウィンドウ/タブの live perception lens を登録し、action tool に渡す `lensId` を返す |
+| `perception_read` | attention が dirty/stale/blocked の時に lens を強制更新し、perception envelope を返す |
+| `perception_forget` | ワークフロー完了時や対象が置き換わった時に lens を解除 |
+| `perception_list` | 登録中 lens を一覧し、再利用やクリーンアップに使う |
+
+Reactive Perception Graph は desktop-touch の低コストな状況把握レイヤーです。対象の同一性・フォーカス・矩形・準備状態・guard 結果を操作間で維持し、Claude が小さな操作のたびにスクリーンショットで確認し直さなくて済むようにします。
 
 ---
 ## ブラウザ CDP 自動化

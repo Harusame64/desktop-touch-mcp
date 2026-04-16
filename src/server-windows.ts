@@ -22,6 +22,7 @@ import { registerScrollToElementTools } from "./tools/scroll-to-element.js";
 import { registerSmartScrollTools } from "./tools/smart-scroll.js";
 import { registerPerceptionTools } from "./tools/perception.js";
 import { registerPerceptionResources } from "./tools/perception-resources.js";
+import { stopNativeRuntime } from "./engine/perception/registry.js";
 import { startTray, stopTray } from "./utils/tray.js";
 import { checkFailsafe, FailsafeError } from "./utils/failsafe.js";
 import { SERVER_VERSION } from "./version.js";
@@ -82,12 +83,15 @@ const server = new McpServer(
       "Move mouse to the top-left corner of the screen (within 10px of 0,0) to immediately terminate the MCP server.",
       "",
       "## Reactive Perception (lensId-based workflow)",
-      "For repeated interactions with the same window or browser tab, use the perception workflow:",
-      "1. perception_register(spec) — bind a lens to a window/tab; receive lensId",
-      "2. Pass lensId to action tools (mouse_click, keyboard_type, etc.) — the server evaluates safety guards before acting",
-      "3. Check post.perception in the tool response — attention/guards/changed summarize what happened",
-      "4. Use perception_read(lensId) to force a full refresh and get a fresh envelope",
-      "5. perception_forget(lensId) when done",
+      "For repeated work on the same window or browser tab, register a perception lens before acting.",
+      "A lens is a lightweight live state tracker. Pass its lensId to action tools so the server can verify focus, identity, readiness, modal obstruction, and click safety before the action, then return post.perception after the action.",
+      "",
+      "Use this workflow:",
+      "1. perception_register — create a lens for the target window/tab",
+      "2. Pass lensId to keyboard/mouse/browser action tools",
+      "3. Read post.perception.attention after each action",
+      "4. If attention is dirty, stale, settling, guard_failed, or identity_changed, follow suggestedAction or call perception_read",
+      "5. perception_forget when the workflow is done",
       "",
       "Attention values and recommended actions:",
       "  ok           — safe to act",
@@ -98,7 +102,7 @@ const server = new McpServer(
       "  guard_failed — unsafe; read failedGuard.suggestedAction before proceeding",
       "  identity_changed — window was replaced; re-register the lens",
       "",
-      "Screenshots are a fallback — use perception_read for structured state.",
+      "Prefer perception_read over screenshot/get_context when a lens already exists. Screenshots are a fallback for visual details, not the default state check.",
     ].join("\n"),
   }
 );
@@ -164,6 +168,7 @@ failsafeTimer.unref(); // don't keep process alive for this alone
 // ─── Graceful shutdown ────────────────────────────────────────────────────────
 function shutdown(): void {
   console.error("[desktop-touch] Shutting down...");
+  stopNativeRuntime();
   stopTray();
   process.exit(0);
 }
