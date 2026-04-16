@@ -82,7 +82,7 @@ export const clickElementHandler = async ({
       return failArgs("Provide at least one of: name, automationId", "click_element", { windowTitle });
     }
     if (lensId) {
-      const guardResult = evaluatePreToolGuards(lensId, "click_element", {});
+      const guardResult = await evaluatePreToolGuards(lensId, "click_element", {});
       if (!guardResult.ok && guardResult.policy === "block") {
         return failWith(
           new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
@@ -114,7 +114,7 @@ export const setElementValueHandler = async ({
       return failArgs("Provide at least one of: name, automationId", "set_element_value", { windowTitle });
     }
     if (lensId) {
-      const guardResult = evaluatePreToolGuards(lensId, "set_element_value", {});
+      const guardResult = await evaluatePreToolGuards(lensId, "set_element_value", {});
       if (!guardResult.ok && guardResult.policy === "block") {
         return failWith(
           new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),

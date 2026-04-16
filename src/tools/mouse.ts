@@ -307,7 +307,7 @@ export const mouseClickHandler = async ({
   try {
     // Perception guard evaluation (opt-in via lensId)
     if (lensId) {
-      const guardResult = evaluatePreToolGuards(lensId, "mouse_click", { x, y, clickAt: { x, y } });
+      const guardResult = await evaluatePreToolGuards(lensId, "mouse_click", { x, y, clickAt: { x, y } });
       if (!guardResult.ok && guardResult.policy === "block") {
         return failWith(
           new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
@@ -399,7 +399,7 @@ export const mouseDragHandler = async ({
 }): Promise<ToolResult> => {
   try {
     if (lensId) {
-      const guardResult = evaluatePreToolGuards(lensId, "mouse_drag", { x: startX, y: startY });
+      const guardResult = await evaluatePreToolGuards(lensId, "mouse_drag", { x: startX, y: startY });
       if (!guardResult.ok && guardResult.policy === "block") {
         return failWith(
           new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),

@@ -205,7 +205,7 @@ export const keyboardTypeHandler = async ({
   const force = forceFocusArg ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
   try {
     if (lensId) {
-      const guardResult = evaluatePreToolGuards(lensId, "keyboard_type", {});
+      const guardResult = await evaluatePreToolGuards(lensId, "keyboard_type", {});
       if (!guardResult.ok && guardResult.policy === "block") {
         return failWith(
           new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
@@ -294,7 +294,7 @@ export const keyboardPressHandler = async ({
   const force = forceFocusArg ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
   try {
     if (lensId) {
-      const guardResult = evaluatePreToolGuards(lensId, "keyboard_press", {});
+      const guardResult = await evaluatePreToolGuards(lensId, "keyboard_press", {});
       if (!guardResult.ok && guardResult.policy === "block") {
         return failWith(
           new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),

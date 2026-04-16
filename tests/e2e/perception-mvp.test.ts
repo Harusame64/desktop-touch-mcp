@@ -118,9 +118,9 @@ describe("Scenario 1: perception lens — envelope in keyboard_type response", (
     expect(typeof env.canAct.mouse).toBe("boolean");
   });
 
-  it("evaluatePreToolGuards returns results with focus active", () => {
+  it("evaluatePreToolGuards returns results with focus active", async () => {
     try { restoreAndFocusWindow(np.hwnd); } catch { /* non-fatal */ }
-    const result = evaluatePreToolGuards(lensId, "keyboard_type", {});
+    const result = await evaluatePreToolGuards(lensId, "keyboard_type", {});
     // policy is warn — ok may be false if not foreground, but policy field is correct
     expect(result.policy).toBe("warn");
     expect(result.results.length).toBeGreaterThan(0);
@@ -177,11 +177,11 @@ describe("Scenario 2: identity invalidation blocks keyboard_type", () => {
     np2?.kill();
   });
 
-  it("evaluatePreToolGuards blocks after original process exited (identity changed)", () => {
+  it("evaluatePreToolGuards blocks after original process exited (identity changed)", async () => {
     // The registered lens has the old window's identity (pid + processStartTimeMs).
     // After np1 dies and np2 starts, the identity stored in the FluentStore will be
     // refreshed to np2's identity on the next guard evaluation, which won't match boundIdentity.
-    const result = evaluatePreToolGuards(lensId, "keyboard_type", {});
+    const result = await evaluatePreToolGuards(lensId, "keyboard_type", {});
     // Identity should be unstable (different process)
     const identityGuard = result.results.find(r => r.kind === "target.identityStable");
     // If np1 and np2 happen to have same pid (rare but possible), this test may not fail.

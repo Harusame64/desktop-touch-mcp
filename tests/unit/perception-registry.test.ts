@@ -187,25 +187,25 @@ describe("LRU eviction (max 16)", () => {
 // ── evaluatePreToolGuards ────────────────────────────────────────────────────
 
 describe("evaluatePreToolGuards", () => {
-  it("throws when lensId is unknown", () => {
-    expect(() => evaluatePreToolGuards("nonexistent", "keyboard_type", {})).toThrow(/Lens not found/);
+  it("rejects when lensId is unknown", async () => {
+    await expect(evaluatePreToolGuards("nonexistent", "keyboard_type", {})).rejects.toThrow(/Lens not found/);
   });
 
-  it("returns ok:true when window is foreground and identity stable", () => {
+  it("returns ok:true when window is foreground and identity stable", async () => {
     setupMocks(100n, "Untitled - Notepad", true);
     const { lensId } = registerLens(baseSpec);
     // Mock for the pre-guard refresh call
     setupMocks(100n, "Untitled - Notepad", true);
-    const result = evaluatePreToolGuards(lensId, "keyboard_type", {});
+    const result = await evaluatePreToolGuards(lensId, "keyboard_type", {});
     expect(result.ok).toBe(true);
   });
 
-  it("returns ok:false when window is not foreground", () => {
+  it("returns ok:false when window is not foreground", async () => {
     setupMocks(100n, "Untitled - Notepad", true);
     const { lensId } = registerLens(baseSpec);
     // Simulate window losing foreground on pre-guard refresh
     setupMocks(100n, "Untitled - Notepad", false);
-    const result = evaluatePreToolGuards(lensId, "keyboard_type", {});
+    const result = await evaluatePreToolGuards(lensId, "keyboard_type", {});
     expect(result.ok).toBe(false);
     expect(result.policy).toBe("block");
   });

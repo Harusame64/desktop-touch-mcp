@@ -95,9 +95,22 @@ function evalIdentityStable(lens: PerceptionLens, store: FluentStore, nowMs: num
   return { kind: "target.identityStable", ok: true, confidence: identityFluent.confidence };
 }
 
-function evalKeyboardTarget(lens: PerceptionLens, store: FluentStore, nowMs: number): GuardResult {
-  // For browserTab lenses, keyboard safety is determined by browser.readyState, not Win32 foreground
+function evalKeyboardTarget(lens: PerceptionLens, store: FluentStore, nowMs: number, ctx?: GuardContext): GuardResult {
   if (lens.spec.target.kind === "browserTab") {
+    // OS keyboard tools send keys to the focused OS window, not to a browser tab.
+    // If the caller is keyboard_type or keyboard_press, fail-closed: the correct tool
+    // for browser content input is browser_fill_input.
+    const kbTools = ["keyboard_type", "keyboard_press"];
+    if (ctx?.toolName && kbTools.includes(ctx.toolName)) {
+      return {
+        kind: "safe.keyboardTarget",
+        ok: false,
+        confidence: 1,
+        reason: `${ctx.toolName} sends OS-level keystrokes to the focused window, not to a browser tab. Chrome must be in the foreground and the correct tab must be active.`,
+        suggestedAction: "Use browser_fill_input to type into browser fields, or call focus_window(Chrome) first",
+      };
+    }
+    // For non-keyboard browser tools, readyState check is sufficient.
     return evalBrowserReady(lens, store, nowMs, "safe.keyboardTarget");
   }
 
@@ -397,7 +410,7 @@ export function evaluateGuard(
 ): GuardResult {
   switch (kind) {
     case "target.identityStable":  return evalIdentityStable(lens, store, nowMs);
-    case "safe.keyboardTarget":    return evalKeyboardTarget(lens, store, nowMs);
+    case "safe.keyboardTarget":    return evalKeyboardTarget(lens, store, nowMs, ctx);
     case "safe.clickCoordinates":  return evalClickCoordinates(lens, store, nowMs, ctx);
     case "stable.rect":            return evalStableRect(lens, store, nowMs);
     case "browser.ready":          return evalBrowserReady(lens, store, nowMs);

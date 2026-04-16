@@ -14,6 +14,9 @@
  */
 
 import { performance } from "node:perf_hooks";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import * as nodePath from "node:path";
 import type {
   AttentionState,
   GuardEvalResult,
@@ -165,9 +168,19 @@ let _reconciler: ReconciliationScheduler | null = null;
 let _winEventSource: WinEventSource | null = null;
 let _nativeDrainTimer: ReturnType<typeof setInterval> | null = null;
 
+function defaultSidecarPath(): string {
+  const __dirname = nodePath.dirname(fileURLToPath(import.meta.url));
+  return nodePath.join(__dirname, "..", "..", "..", "bin", "dt-winevent-sidecar.exe");
+}
+
 function nativeEventsEnabled(): boolean {
-  return process.platform === "win32" &&
-    process.env.DESKTOP_TOUCH_NATIVE_WINEVENTS !== "0";
+  if (process.platform !== "win32") return false;
+  if (process.env.DESKTOP_TOUCH_NATIVE_WINEVENTS === "0") return false;
+  if (process.env.DESKTOP_TOUCH_NATIVE_WINEVENTS === "1") return true; // explicit opt-in
+  // Auto-detect: only enable if the sidecar binary is present to avoid
+  // noisy spawn failures and restart-backoff loops when it is not bundled.
+  const sidecarPath = process.env.DESKTOP_TOUCH_SIDECAR_PATH ?? defaultSidecarPath();
+  return existsSync(sidecarPath);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -329,13 +342,14 @@ export function stopNativeRuntime(): void {
 
 function drainNativeEventQueue(): void {
   if (!_rawQueue || !_nativeBridge) return;
+  // Read overflow flag BEFORE drain — drain() resets overflowPending to false,
+  // so checking post-drain would always see false and skip overflow recovery.
+  const overflowWasPending = _rawQueue.overflowPending;
   const batch = _rawQueue.drain();
   if (batch.length > 0) {
     _nativeBridge.processBatch(batch, _lensEventIndex, _journal);
   }
-  // Check overflowPending AFTER drain so we only trigger once per drain cycle
-  // (drain clears the queue; overflow flag checked post-drain avoids double processing).
-  if (_rawQueue.overflowPending) {
+  if (overflowWasPending) {
     _nativeBridge.processOverflow(performance.now());
     _reconciler?.triggerImmediate();
   }
@@ -554,9 +568,12 @@ export async function registerLensAsync(spec: LensSpec): Promise<{ lensId: strin
 
   const lens = compileLens(spec, binding, identity, store.currentSeq());
 
-  refreshCdpFluents(binding.hwnd, 9222)
-    .then(obs => ingestObservations(obs))
-    .catch(() => { /* non-fatal */ });
+  // Await initial CDP refresh so guard evaluation on the very next call sees
+  // populated browser.readyState/url/title fluents instead of empty state.
+  try {
+    const obs = await refreshCdpFluents(binding.hwnd, 9222);
+    ingestObservations(obs);
+  } catch { /* non-fatal — lens is registered; guards will show stale until next read */ }
 
   graph.addLens(lens.lensId, lens.fluentKeys);
   addLensToIndex(_lensEventIndex, lens);
@@ -601,15 +618,21 @@ export function listLenses(): LensSummary[] {
 // Public: evaluate guards before a tool action
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function evaluatePreToolGuards(
+export async function evaluatePreToolGuards(
   lensId: string,
   toolName: string,
   args: unknown
-): GuardEvalResult {
+): Promise<GuardEvalResult> {
   const lens = lenses.get(lensId);
   if (!lens) throw new Error(`Lens not found: ${lensId}`);
 
-  if (lens.spec.target.kind === "window") {
+  if (lens.spec.target.kind === "browserTab") {
+    // Refresh CDP state before guard evaluation so browser.readyState/url are current.
+    try {
+      const obs = await refreshCdpFluents(lens.binding.hwnd, 9222);
+      ingestObservations(obs);
+    } catch { /* non-fatal — guards evaluate on whatever is in the store */ }
+  } else {
     const obs = refreshWin32Fluents(
       lens.binding.hwnd,
       lens.spec.target.match.titleIncludes
@@ -617,7 +640,7 @@ export function evaluatePreToolGuards(
     ingestObservations(obs);
   }
 
-  const ctx: GuardContext = {};
+  const ctx: GuardContext = { toolName };
   if (args && typeof args === "object") {
     const a = args as Record<string, unknown>;
     if (typeof a["x"] === "number") ctx.clickX = a["x"] as number;
@@ -627,7 +650,6 @@ export function evaluatePreToolGuards(
       if (typeof ca["x"] === "number") ctx.clickX = ca["x"] as number;
       if (typeof ca["y"] === "number") ctx.clickY = ca["y"] as number;
     }
-    ctx.toolName = toolName;
   }
 
   return evaluateGuards(lens, store, lens.spec.guardPolicy, ctx);
