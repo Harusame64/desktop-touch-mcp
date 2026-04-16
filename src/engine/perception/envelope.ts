@@ -21,9 +21,13 @@ export interface ProjectEnvelopeOptions {
 function deriveAttention(
   guardResult: GuardEvalResult,
   changedKeys: Set<string>,
+  hasDirty: boolean,
+  hasSettling: boolean,
   hasStale: boolean
 ): AttentionState {
   if (!guardResult.ok) return "guard_failed";
+  if (hasDirty) return "dirty";
+  if (hasSettling) return "settling";
   if (changedKeys.size > 0) return "changed";
   if (hasStale) return "stale";
   return "ok";
@@ -93,11 +97,13 @@ export function projectEnvelope(
     const bTitleFluent    = read("browser.title");
     const readyStateFluent = read("browser.readyState");
 
-    const hasStale = [urlFluent, bTitleFluent, readyStateFluent]
-      .some(f => f?.status === "stale" || f?.status === "dirty");
-    envelope.attention = deriveAttention(guardResult, changedKeys, hasStale);
+    const bFluentsAll = [urlFluent, bTitleFluent, readyStateFluent];
+    const hasDirty    = bFluentsAll.some(f => f?.status === "dirty");
+    const hasSettling = bFluentsAll.some(f => f?.status === "settling");
+    const hasStale    = bFluentsAll.some(f => f?.status === "stale");
+    envelope.attention = deriveAttention(guardResult, changedKeys, hasDirty, hasSettling, hasStale);
 
-    const bFluents = [urlFluent, bTitleFluent, readyStateFluent].filter(Boolean);
+    const bFluents = bFluentsAll.filter(Boolean);
     const avgConf = bFluents.length > 0
       ? bFluents.reduce((s, f) => s + (f?.support[0] ? confidenceFor(f.support[0], nowMs) : f?.confidence ?? 0), 0) / bFluents.length
       : 0;
@@ -118,9 +124,11 @@ export function projectEnvelope(
     const modalFluent   = read("modal.above");
     const feFluent      = read("target.focusedElement");
 
-    const hasStale = [existsFluent, titleFluent, rectFluent, fgFluent, modalFluent]
-      .some(f => f?.status === "stale" || f?.status === "dirty");
-    envelope.attention = deriveAttention(guardResult, changedKeys, hasStale);
+    const windowFluentsAll = [existsFluent, titleFluent, rectFluent, fgFluent, modalFluent];
+    const hasDirty    = windowFluentsAll.some(f => f?.status === "dirty");
+    const hasSettling = windowFluentsAll.some(f => f?.status === "settling");
+    const hasStale    = windowFluentsAll.some(f => f?.status === "stale");
+    envelope.attention = deriveAttention(guardResult, changedKeys, hasDirty, hasSettling, hasStale);
 
     const fluents = [existsFluent, titleFluent, rectFluent, fgFluent, zOrderFluent, modalFluent, feFluent].filter(Boolean);
     const avgConf = fluents.length > 0

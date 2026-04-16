@@ -58,6 +58,13 @@ export interface Observation {
   value: unknown;
   confidence: number;
   evidence: Evidence;
+  /**
+   * Monotonic timestamp (performance.now()) recorded at the START of the sensor read
+   * that produced this observation. Used to compare against lastDirtyAtMonoMs in FluentStore
+   * to determine whether the evidence is newer than the last invalidation hint.
+   * Optional: sensors that do not support monotonic timestamps omit this field.
+   */
+  monoMs?: number;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -68,6 +75,7 @@ export type FluentStatus =
   | "observed"
   | "inferred"
   | "dirty"
+  | "settling"
   | "stale"
   | "contradicted"
   | "invalidated";
@@ -77,10 +85,23 @@ export interface Fluent {
   property: string;
   value: unknown;
   validFromSeq: number;
+  /** Monotonic timestamp (performance.now()) when this fluent was last written by apply(). */
+  validFromMonoMs: number;
   confidence: number;
   support: Evidence[];
   contradictions: Evidence[];
   status: FluentStatus;
+  /** Sequence number of the last dirty-mark applied to this fluent. */
+  lastDirtySeq?: number;
+  /** Monotonic timestamp of the last dirty-mark applied to this fluent. */
+  lastDirtyAtMonoMs?: number;
+  /** Human-readable cause string for the last dirty-mark. */
+  lastDirtyCause?: string;
+  /**
+   * Generation token — changes when target identity changes.
+   * Coordinates derived under generation G1 must not be used after the target becomes G2.
+   */
+  generation?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -190,6 +211,7 @@ export type AttentionState =
   | "ok"
   | "changed"
   | "dirty"
+  | "settling"
   | "stale"
   | "guard_failed"
   | "identity_changed"

@@ -160,6 +160,75 @@ describe("FluentStore", () => {
     expect(obs.confidence).toBe(0.98);
   });
 
+  // ── validFromMonoMs ───────────────────────────────────────────────────────
+
+  it("apply sets validFromMonoMs on new fluent", () => {
+    store.apply([makeObs(1, "100", "target.title", "A")]);
+    const f = store.read("window:100.target.title");
+    expect(f?.validFromMonoMs).toBeTypeOf("number");
+    expect(f!.validFromMonoMs).toBeGreaterThan(0);
+  });
+
+  it("apply uses obs.monoMs when provided", () => {
+    const obs = { ...makeObs(1, "100", "target.title", "A"), monoMs: 12345 };
+    store.apply([obs]);
+    expect(store.read("window:100.target.title")?.validFromMonoMs).toBe(12345);
+  });
+
+  // ── markDirtyWithCause / watermark ────────────────────────────────────────
+
+  it("markDirtyWithCause sets status, cause, and monoMs", () => {
+    store.apply([makeObs(1, "100", "target.rect", { x: 0, y: 0, width: 800, height: 600 })]);
+    store.markDirtyWithCause(["window:100.target.rect"], "MOVESIZEEND", 9999);
+    const f = store.read("window:100.target.rect")!;
+    expect(f.status).toBe("dirty");
+    expect(f.lastDirtyCause).toBe("MOVESIZEEND");
+    expect(f.lastDirtyAtMonoMs).toBe(9999);
+  });
+
+  it("watermark rule: observation older than lastDirtyAtMonoMs does NOT clear dirty", () => {
+    store.apply([makeObs(1, "100", "target.rect", { x: 0, y: 0, width: 800, height: 600 })]);
+    store.markDirtyWithCause(["window:100.target.rect"], "move", 5000);
+
+    // Apply an observation with monoMs=4999 (BEFORE the dirty mark at 5000)
+    const staleObs = { ...makeObs(2, "100", "target.rect", { x: 10, y: 0, width: 800, height: 600 }), monoMs: 4999 };
+    const { changed } = store.apply([staleObs]);
+    expect(changed.size).toBe(0); // skipped
+    expect(store.read("window:100.target.rect")?.status).toBe("dirty"); // still dirty
+    expect(store.read("window:100.target.rect")?.value).toEqual({ x: 0, y: 0, width: 800, height: 600 }); // old value preserved
+  });
+
+  it("observation EQUAL to lastDirtyAtMonoMs does NOT clear dirty (boundary)", () => {
+    store.apply([makeObs(1, "100", "target.rect", { x: 0, y: 0, width: 800, height: 600 })]);
+    store.markDirtyWithCause(["window:100.target.rect"], "move", 5000);
+
+    const equalObs = { ...makeObs(2, "100", "target.rect", { x: 10, y: 0, width: 800, height: 600 }), monoMs: 5000 };
+    store.apply([equalObs]);
+    expect(store.read("window:100.target.rect")?.status).toBe("dirty");
+  });
+
+  it("observation NEWER than lastDirtyAtMonoMs DOES clear dirty and updates fluent", () => {
+    store.apply([makeObs(1, "100", "target.rect", { x: 0, y: 0, width: 800, height: 600 })]);
+    store.markDirtyWithCause(["window:100.target.rect"], "move", 5000);
+
+    const freshObs = { ...makeObs(2, "100", "target.rect", { x: 20, y: 0, width: 800, height: 600 }), monoMs: 5001 };
+    const { changed } = store.apply([freshObs]);
+    expect(changed.size).toBe(1);
+    expect(store.read("window:100.target.rect")?.status).toBe("observed");
+    expect((store.read("window:100.target.rect")?.value as { x: number }).x).toBe(20);
+  });
+
+  // ── markSettling ──────────────────────────────────────────────────────────
+
+  it("markSettling sets status to settling", () => {
+    store.apply([makeObs(1, "100", "target.rect", { x: 0, y: 0, width: 800, height: 600 })]);
+    store.markSettling(["window:100.target.rect"], 7000);
+    const f = store.read("window:100.target.rect")!;
+    expect(f.status).toBe("settling");
+    expect(f.lastDirtyAtMonoMs).toBe(7000);
+    expect(f.lastDirtyCause).toBe("settling");
+  });
+
   // ── __resetForTests ───────────────────────────────────────────────────────
 
   it("__resetForTests clears state", () => {
