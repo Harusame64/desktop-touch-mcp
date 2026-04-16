@@ -213,14 +213,14 @@ export function registerUiElementTools(server: McpServer): void {
 
   server.tool(
     "click_element",
-    "Invoke a UI element by name or automationId via UIA InvokePattern — no screen coordinates needed. Prefer over mouse_click for buttons, menu items, and links in native Windows apps. Use get_ui_elements first to discover automationIds. Caveats: Requires the element to expose InvokePattern — some read-only or custom controls do not; fall back to mouse_click in that case.",
+    "Invoke a UI element by name or automationId via UIA InvokePattern — no screen coordinates needed. Prefer over mouse_click for buttons, menu items, and links in native Windows apps. Use get_ui_elements first to discover automationIds. Pass lensId (from perception_register) to run safety guards (identity stable, foreground, modal) before invoking and receive post.perception state feedback without a screenshot. Caveats: Requires the element to expose InvokePattern — some read-only or custom controls do not; fall back to mouse_click in that case.",
     clickElementSchema,
     withRichNarration("click_element", clickElementHandler, { windowTitleKey: "windowTitle" })
   );
 
   server.tool(
     "set_element_value",
-    "Set the value of a text field or combo box via UIA ValuePattern — more reliable than keyboard_type for programmatic form input. Use narrate:'rich' to confirm the value was applied without a verification screenshot. Caveats: Only works for elements that expose ValuePattern; does not work on contenteditable HTML or custom rich-text editors — use keyboard_type for those.",
+    "Set the value of a text field or combo box via UIA ValuePattern — more reliable than keyboard_type for programmatic form input. Use narrate:'rich' to confirm the value was applied without a verification screenshot. Pass lensId (from perception_register) to run safety guards (identity stable, foreground, modal) before setting and receive post.perception state feedback without a screenshot. Caveats: Only works for elements that expose ValuePattern; does not work on contenteditable HTML or custom rich-text editors — use keyboard_type for those.",
     setElementValueSchema,
     withRichNarration("set_element_value", setElementValueHandler, { windowTitleKey: "windowTitle" })
   );

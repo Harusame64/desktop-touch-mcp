@@ -1602,14 +1602,14 @@ export function registerBrowserTools(server: McpServer): void {
 
   server.tool(
     "browser_click_element",
-    "Find a DOM element by CSS selector and click it (combines browser_find_element + mouse_click in one step). Prefer over mouse_click for Chrome — selector-based clicking is stable across repaints. Caveats: Fails if the element is outside the visible viewport — scroll it into view with browser_eval(\"document.querySelector('sel').scrollIntoView()\") first.",
+    "Find a DOM element by CSS selector and click it (combines browser_find_element + mouse_click in one step). Prefer over mouse_click for Chrome — selector-based clicking is stable across repaints. Pass lensId (from perception_register) to verify tab identity and readyState before clicking and receive post.perception state feedback without a screenshot. Caveats: Fails if the element is outside the visible viewport — scroll it into view with browser_eval(\"document.querySelector('sel').scrollIntoView()\") first.",
     browserClickElementSchema,
     withPostState("browser_click_element", browserClickElementHandler)
   );
 
   server.tool(
     "browser_eval",
-    "Evaluate a JavaScript expression in a browser tab and return the result. Use for reading page state, scrolling, or triggering simple DOM mutations. Caveats: Returns JSON-serializable values only — DOM nodes cannot be returned directly. React / Vue / Svelte controlled inputs cannot be updated via element.value = ... or native-setter + dispatchEvent — the framework's internal state is not refreshed; use keyboard_type (click the field first, pass windowTitle) for such form fields.",
+    "Evaluate a JavaScript expression in a browser tab and return the result. Use for reading page state, scrolling, or triggering simple DOM mutations. Pass lensId (from perception_register) to verify tab identity and readyState before evaluating and receive post.perception state feedback without a screenshot. Caveats: Returns JSON-serializable values only — DOM nodes cannot be returned directly. React / Vue / Svelte controlled inputs cannot be updated via element.value = ... or native-setter + dispatchEvent — the framework's internal state is not refreshed; use keyboard_type (click the field first, pass windowTitle) for such form fields.",
     browserEvalSchema,
     withPostState("browser_eval", browserEvalHandler)
   );
@@ -1623,7 +1623,7 @@ export function registerBrowserTools(server: McpServer): void {
 
   server.tool(
     "browser_navigate",
-    "Navigate a browser tab to a URL via CDP Page.navigate — more reliable than clicking the address bar (no need to find UI elements). Verify readiness with browser_eval(\"document.readyState\") after calling. Caveats: Does not block until page load completes — follow with wait_until(element_matches) or repeated browser_eval polling for slow pages.",
+    "Navigate a browser tab to a URL via CDP Page.navigate — more reliable than clicking the address bar (no need to find UI elements). Verify readiness with browser_eval(\"document.readyState\") after calling. Pass lensId (from perception_register) to verify tab identity before navigating and receive post.perception state feedback without a screenshot. Caveats: Does not block until page load completes — follow with wait_until(element_matches) or repeated browser_eval polling for slow pages.",
     browserNavigateSchema,
     withPostState("browser_navigate", browserNavigateHandler)
   );
