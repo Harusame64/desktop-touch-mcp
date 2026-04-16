@@ -1,0 +1,284 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import vm from 'node:vm';
+
+const root = process.cwd();
+const toolsDir = path.join(root, 'src', 'tools');
+const outPath = path.join(root, 'src', 'stub-tool-catalog.ts');
+
+const TOOL_FILES = [
+  'browser.ts', 'clipboard.ts', 'context.ts', 'dock.ts', 'events.ts', 'keyboard.ts',
+  'macro.ts', 'mouse.ts', 'notification.ts', 'perception.ts', 'pin.ts', 'screenshot.ts',
+  'scroll-capture.ts', 'scroll-to-element.ts', 'smart-scroll.ts', 'terminal.ts',
+  'ui-elements.ts', 'wait-until.ts', 'window.ts', 'workspace.ts',
+];
+
+function buildDesc(d) {
+  const parts = [`Purpose: ${d.purpose}`, `Details: ${d.details}`];
+  if (d.prefer) parts.push(`Prefer: ${d.prefer}`);
+  if (d.caveats) parts.push(`Caveats: ${d.caveats}`);
+  if (d.examples?.length) parts.push(`Examples:\n${d.examples.map((e) => `  ${e}`).join('\n')}`);
+  return parts.join('\n');
+}
+
+function skipString(src, i) {
+  const quote = src[i];
+  i++;
+  while (i < src.length) {
+    if (src[i] === '\\') { i += 2; continue; }
+    if (src[i] === quote) return i + 1;
+    i++;
+  }
+  return i;
+}
+
+function skipTemplate(src, i) {
+  i++;
+  while (i < src.length) {
+    if (src[i] === '\\') { i += 2; continue; }
+    if (src[i] === '`') return i + 1;
+    if (src[i] === '$' && src[i + 1] === '{') {
+      i += 2;
+      i = scanBalanced(src, i, '{', '}');
+      continue;
+    }
+    i++;
+  }
+  return i;
+}
+
+function scanBalanced(src, i, open, close) {
+  let depth = 1;
+  while (i < src.length && depth > 0) {
+    const c = src[i];
+    if (c === '"' || c === "'") { i = skipString(src, i); continue; }
+    if (c === '`') { i = skipTemplate(src, i); continue; }
+    if (c === '/' && src[i + 1] === '/') { i = src.indexOf('\n', i + 2); if (i < 0) return src.length; continue; }
+    if (c === '/' && src[i + 1] === '*') { const end = src.indexOf('*/', i + 2); i = end < 0 ? src.length : end + 2; continue; }
+    if (c === open) depth++;
+    else if (c === close) depth--;
+    i++;
+  }
+  return i;
+}
+
+function splitTopLevelArgs(s) {
+  const args = [];
+  let start = 0;
+  let depthParen = 0, depthBrace = 0, depthBracket = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '"' || c === "'") { i = skipString(s, i) - 1; continue; }
+    if (c === '`') { i = skipTemplate(s, i) - 1; continue; }
+    if (c === '(') depthParen++;
+    else if (c === ')') depthParen--;
+    else if (c === '{') depthBrace++;
+    else if (c === '}') depthBrace--;
+    else if (c === '[') depthBracket++;
+    else if (c === ']') depthBracket--;
+    else if (c === ',' && depthParen === 0 && depthBrace === 0 && depthBracket === 0) {
+      args.push(s.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  args.push(s.slice(start).trim());
+  return args;
+}
+
+function evalExpr(expr, extra = {}) {
+  const context = {
+    buildDesc,
+    _defaultPort: 9222,
+    DEFAULT_CDP_PORT: 9222,
+    FLUENT_KINDS: ['target.exists', 'target.identity', 'target.title', 'target.rect', 'target.foreground', 'target.zOrder', 'modal.above', 'target.focusedElement', 'browser.url', 'browser.title', 'browser.readyState'],
+    GUARD_KINDS: ['target.identityStable', 'safe.keyboardTarget', 'safe.clickCoordinates', 'stable.rect', 'modal.none', 'browser.ready'],
+    EVENT_TYPES: ['window_appeared', 'window_disappeared', 'foreground_changed'],
+    ...extra,
+  };
+  return vm.runInNewContext(expr, context, { timeout: 1000 });
+}
+
+function parseDescription(expr) {
+  try {
+    return String(evalExpr(expr));
+  } catch {
+    const m = /^([A-Za-z_$][\w$]*)$/.exec(expr.trim());
+    if (m) return undefined;
+    return expr.replace(/\s+/g, ' ').slice(0, 500);
+  }
+}
+
+function extractServerTools(src, file) {
+  const out = [];
+  let idx = 0;
+  while ((idx = src.indexOf('server.tool(', idx)) >= 0) {
+    const argsStart = idx + 'server.tool('.length;
+    const end = scanBalanced(src, argsStart, '(', ')');
+    const callBody = src.slice(argsStart, end - 1);
+    const args = splitTopLevelArgs(callBody);
+    if (args.length >= 3) {
+      let name;
+      try { name = String(evalExpr(args[0])); } catch {}
+      const description = parseDescription(args[1]);
+      const schemaName = /^[A-Za-z_$][\w$]*$/.test(args[2]) ? args[2] : undefined;
+      if (name && description) out.push({ name, description, schemaName, file });
+    }
+    idx = end;
+  }
+  return out;
+}
+
+function findConstExpression(src, name) {
+  const re = new RegExp(`(?:export\\s+)?const\\s+${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*=`);
+  const m = re.exec(src);
+  if (!m) return undefined;
+  let i = m.index + m[0].length;
+  while (/\s/.test(src[i] || '')) i++;
+  if (src[i] === '{') {
+    const end = scanBalanced(src, i + 1, '{', '}');
+    return src.slice(i, end);
+  }
+  let end = i;
+  while (end < src.length && src[end] !== ';' && src[end] !== '\n') end++;
+  return src.slice(i, end).trim();
+}
+
+function splitObjectFields(objExpr) {
+  const body = objExpr.trim().replace(/^\{/, '').replace(/\}$/, '');
+  const fields = [];
+  let start = 0;
+  let depthParen = 0, depthBrace = 0, depthBracket = 0;
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c === '"' || c === "'") { i = skipString(body, i) - 1; continue; }
+    if (c === '`') { i = skipTemplate(body, i) - 1; continue; }
+    if (c === '(') depthParen++;
+    else if (c === ')') depthParen--;
+    else if (c === '{') depthBrace++;
+    else if (c === '}') depthBrace--;
+    else if (c === '[') depthBracket++;
+    else if (c === ']') depthBracket--;
+    else if (c === ',' && depthParen === 0 && depthBrace === 0 && depthBracket === 0) {
+      const field = body.slice(start, i).trim();
+      if (field) fields.push(field);
+      start = i + 1;
+    }
+  }
+  const last = body.slice(start).trim();
+  if (last) fields.push(last);
+  return fields;
+}
+
+const commonParams = {
+  portParam: { type: 'integer', minimum: 1, maximum: 65535, default: 9222, description: 'Chrome/Edge CDP remote debugging port.', __optional: true },
+  tabIdParam: { type: 'string', description: 'Tab ID from browser_connect. Omit to use the first page tab.', __optional: true },
+  selectorParam: { type: 'string', description: "CSS selector for the target element (e.g. '#submit', '.btn', 'button[type=submit]')." },
+  includeContextParam: { type: 'boolean', default: true, description: 'When true, append activeTab and readyState context to the response.', __optional: true },
+  narrateParam: { type: 'string', enum: ['minimal', 'rich'], default: 'minimal', description: 'Narration level. rich includes UIA or browser state diff when supported.', __optional: true },
+  speedParam: { type: 'integer', minimum: 0, description: 'Cursor movement speed in px/sec. 0 = instant.', __optional: true },
+  homingParam: { type: 'boolean', default: true, description: 'Enable homing correction if the target window moved.', __optional: true },
+  windowTitleParam: { type: 'string', description: 'Partial title of the target window.', __optional: true },
+  windowTitleFocusParam: { type: 'string', description: 'Partial title of the window that should receive keyboard input.', __optional: true },
+  elementNameParam: { type: 'string', description: 'Name or label of the UI element.', __optional: true },
+  elementIdParam: { type: 'string', description: 'AutomationId of the UI element.', __optional: true },
+  forceFocusParam: { type: 'boolean', description: 'Bypass Windows foreground-stealing protection before focusing.', __optional: true },
+  trackFocusParam: { type: 'boolean', default: true, description: 'Detect if focus was stolen after the action.', __optional: true },
+  settleMsParam: { type: 'integer', minimum: 0, maximum: 2000, default: 300, description: 'Milliseconds to wait before checking post-action state.', __optional: true },
+};
+
+function extractDescribe(valueExpr) {
+  const idx = valueExpr.indexOf('.describe(');
+  if (idx < 0) return undefined;
+  const start = idx + '.describe('.length;
+  const end = scanBalanced(valueExpr, start, '(', ')');
+  const arg = valueExpr.slice(start, end - 1).trim();
+  try { return String(evalExpr(arg)); } catch { return undefined; }
+}
+
+function extractEnum(valueExpr) {
+  const m = /z\.enum\s*\(\s*(\[[\s\S]*?\])\s*\)/.exec(valueExpr);
+  if (!m) return undefined;
+  try { return evalExpr(m[1]); } catch { return undefined; }
+}
+
+function extractDefault(valueExpr) {
+  const idx = valueExpr.indexOf('.default(');
+  if (idx < 0) return undefined;
+  const start = idx + '.default('.length;
+  const end = scanBalanced(valueExpr, start, '(', ')');
+  const arg = valueExpr.slice(start, end - 1).trim();
+  try { return evalExpr(arg); } catch { return undefined; }
+}
+
+function inferProperty(valueExpr) {
+  const v = valueExpr.trim();
+  if (commonParams[v]) return { ...commonParams[v] };
+  const prop = {};
+  const description = extractDescribe(v);
+  if (description) prop.description = description;
+  const enumValues = extractEnum(v);
+  if (enumValues) { prop.type = 'string'; prop.enum = enumValues; }
+  else if (/z\.literal\(/.test(v)) { prop.const = undefined; }
+  else if (/z\.(coerce\.)?number\s*\(/.test(v) || /z\.number\s*\(/.test(v)) { prop.type = v.includes('.int()') ? 'integer' : 'number'; }
+  else if (/z\.string\s*\(/.test(v)) { prop.type = 'string'; }
+  else if (/z\.boolean\s*\(/.test(v) || /coercedBoolean\s*\(/.test(v)) { prop.type = 'boolean'; }
+  else if (/z\.array\s*\(/.test(v) || /^\[/.test(v)) { prop.type = 'array'; }
+  else if (/z\.object\s*\(/.test(v) || /z\.record\s*\(/.test(v) || /z\.discriminatedUnion\s*\(/.test(v) || /z\.union\s*\(/.test(v)) { prop.type = 'object'; }
+  else { prop.description ||= `Parameter '${v}' from the Windows server schema.`; }
+
+  const def = extractDefault(v);
+  if (def !== undefined) prop.default = def;
+  const min = /\.min\((\d[\d_]*)\)/.exec(v);
+  const max = /\.max\((\d[\d_]*)\)/.exec(v);
+  if (min) prop.minimum = Number(min[1].replaceAll('_', ''));
+  if (max) prop.maximum = Number(max[1].replaceAll('_', ''));
+  return prop;
+}
+
+function parseSchema(src, schemaName) {
+  if (!schemaName) return { type: 'object', properties: {}, additionalProperties: false };
+  const expr = findConstExpression(src, schemaName);
+  if (!expr || !expr.trim().startsWith('{')) return { type: 'object', properties: {}, additionalProperties: true };
+  const properties = {};
+  const required = [];
+  for (const field of splitObjectFields(expr)) {
+    const m = /^([A-Za-z_$][\w$]*|["'][^"']+["'])\s*:\s*([\s\S]*)$/.exec(field);
+    if (!m) continue;
+    const rawKey = m[1];
+    const key = rawKey[0] === '"' || rawKey[0] === "'" ? rawKey.slice(1, -1) : rawKey;
+    const valueExpr = m[2].trim();
+    const prop = inferProperty(valueExpr);
+    const optional = prop.__optional === true || valueExpr.includes('.optional()') || valueExpr.includes('.default(');
+    delete prop.__optional;
+    properties[key] = prop;
+    if (!optional) required.push(key);
+  }
+  const schema = { type: 'object', properties, additionalProperties: false };
+  if (required.length) schema.required = required;
+  return schema;
+}
+
+const byName = new Map();
+for (const file of TOOL_FILES) {
+  const src = fs.readFileSync(path.join(toolsDir, file), 'utf8');
+  for (const tool of extractServerTools(src, file)) {
+    tool.inputSchema = parseSchema(src, tool.schemaName);
+    byName.set(tool.name, tool);
+  }
+}
+
+const tools = [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+if (tools.length < 50) {
+  throw new Error(`Expected at least 50 tools, generated ${tools.length}`);
+}
+
+const header = `/**\n * Auto-generated by scripts/generate-stub-tool-catalog.mjs.\n *\n * This catalog is native-free: the non-Windows stub imports it so directory\n * hosts such as Glama can inspect the real tool descriptions and argument\n * schema without loading Win32, UIA, CDP, nut-js, or koffi modules.\n */\n\n`;
+const content = header +
+`export type JsonSchemaObject = {\n  type: \"object\";\n  properties: Record<string, unknown>;\n  required?: string[];\n  additionalProperties?: boolean;\n};\n\n` +
+`export interface StubToolCatalogEntry {\n  name: string;\n  description: string;\n  inputSchema: JsonSchemaObject;\n}\n\n` +
+`export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = ${JSON.stringify(tools.map(({name, description, inputSchema}) => ({name, description, inputSchema})), null, 2)};\n\n` +
+`export const STUB_TOOL_COUNT = STUB_TOOL_CATALOG.length;\n`;
+fs.writeFileSync(outPath, content, 'utf8');
+console.log(`Generated ${tools.length} tools -> ${path.relative(root, outPath)}`);
+
+

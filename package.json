@@ -1,7 +1,7 @@
 {
   "name": "desktop-touch-mcp",
   "version": "0.9.0",
-  "description": "MCP server for Windows desktop automation — screenshot, mouse, keyboard & UI Automation with token-efficient P-frame diffing for LLM agents",
+  "description": "LLM-native Windows computer-use MCP server with 56 tools for screenshots, UIA, mouse/keyboard, Chrome CDP, terminal, SmartScroll, and perception guards",
   "engines": {
     "node": ">=20.0.0"
   },
@@ -17,7 +17,9 @@
     "test:capture": "vitest run --reporter=json --outputFile=.vitest-out.json --reporter=default",
     "test:e2e": "vitest run tests/e2e",
     "test:headed": "HEADED=1 vitest run tests/e2e",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "generate:stub-catalog": "node scripts/generate-stub-tool-catalog.mjs",
+    "check:stub-catalog": "node scripts/generate-stub-tool-catalog.mjs && git diff --exit-code src/stub-tool-catalog.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.10.0",

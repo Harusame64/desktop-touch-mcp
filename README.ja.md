@@ -7,7 +7,7 @@
 > **「Claude CLI にスクショを毎回コピーしていたあなたへ。」**
 
 Claude がデスクトップを直接見て、直接操作する。  
-マウス・キーボード・スクリーンショット・Windows UI Automation・Chrome DevTools Protocol を統合した 46 のツールを提供する MCP サーバーです。
+マウス・キーボード・スクリーンショット・Windows UI Automation・Chrome DevTools Protocol・ターミナル・SmartScroll・Reactive Perception Graph を統合した 56 のツールを提供する MCP サーバーです。
 
 > *ウィンドウキャプチャに MPEG P フレーム方式の差分処理を適用。初回フレーム以降は変化したウィンドウのみを送信するため、一般的な自動化ループでトークン使用量を約 60〜80% 削減できます。*
 
@@ -68,60 +68,62 @@ npm install
 
 ---
 
-## ツール一覧 (46 ツール)
+## ツール一覧 (56 ツール)
 
 > 📖 **詳細リファレンス**: [`docs/system-overview.md`](docs/system-overview.md) — 各ツールのパラメータ・応答形式・座標計算・レイヤーバッファ・技術ノートを網羅（英語）。
 
-
-### スクリーンショット系 (4)
+### スクリーンショット系 (5)
 | ツール | 概要 |
 |---|---|
-| `screenshot` | メインキャプチャ。`detail` / `dotByDot` / `diffMode` 対応 |
-| `screenshot_background` | 背面ウィンドウをキャプチャ (PrintWindow API) |
+| `screenshot` | メインキャプチャ。`detail` / `dotByDot` / `dotByDotMaxDimension` / `grayscale` / `region` / `diffMode` 対応 |
+| `screenshot_background` | 背面・最小化ウィンドウをキャプチャ (PrintWindow API) |
+| `screenshot_ocr` | Windows OCR で文字と `clickAt` 座標を取得 |
 | `get_screen_info` | モニター解像度・DPI・カーソル位置 |
 | `scroll_capture` | ページ全体をスクロールしながらスティッチ |
 
-### ウィンドウ管理 (3)
+### ウィンドウ管理 (4)
 | ツール | 概要 |
 |---|---|
 | `get_windows` | 全ウィンドウを Z-order 順で一覧 |
 | `get_active_window` | フォーカス中ウィンドウの情報 |
-| `focus_window` | タイトル部分一致でフォアグラウンドに |
+| `focus_window` | タイトル部分一致でフォアグラウンドに移動。ChromeタブURL指定にも対応 |
+| `dock_window` | Claude CLIなどを画面隅にドックして最前面固定 |
 
 ### マウス操作 (5)
 | ツール | 概要 |
 |---|---|
-| `mouse_move` / `mouse_click` / `mouse_drag` | 移動・クリック・ドラッグ。`speed` / `homing` パラメータ対応 |
-| `scroll` | 上下左右スクロール。`speed` / `homing` パラメータ対応 |
+| `mouse_move` / `mouse_click` / `mouse_drag` | 移動・クリック・ドラッグ。`speed` / `homing` / `forceFocus` 対応 |
+| `scroll` | 上下左右スクロール。`speed` / `homing` 対応 |
 | `get_cursor_position` | 現在カーソル座標 |
 
 ### キーボード操作 (2)
 | ツール | 概要 |
 |---|---|
-| `keyboard_type` | テキスト入力 (`use_clipboard=true` で IME バイパス) |
-| `keyboard_press` | キー入力・修飾キー組み合わせ |
+| `keyboard_type` | テキスト入力。`use_clipboard=true` で IME バイパス、非ASCII記号は自動clipboard経路 |
+| `keyboard_press` | `ctrl+c` / `alt+tab` / `f5` などのキー入力・修飾キー組み合わせ |
 
 ### UI Automation (4)
 | ツール | 概要 |
 |---|---|
 | `get_ui_elements` | UIA 要素ツリー取得 |
-| `click_element` | 名前/ID でボタンをクリック (座標不要) |
+| `click_element` | 名前/AutomationId でボタンやメニューをクリック (座標不要) |
 | `set_element_value` | テキストフィールドに直接値をセット |
 | `scope_element` | 要素を高解像度ズームキャプチャ + 子ツリー |
 
-### ブラウザ CDP (11)
+### Browser CDP (12)
 | ツール | 概要 |
 |---|---|
-| `browser_launch` | Chrome/Edge/Brave を `--remote-debugging-port` 付きで起動し CDP 接続まで待機（すでに起動中なら何もしない） |
-| `browser_connect` | Chrome/Edge に CDP 接続してタブ一覧取得（各タブの `active` フラグ付き） |
+| `browser_launch` | Chrome/Edge/Brave を `--remote-debugging-port` 付きで起動し CDP 接続まで待機 |
+| `browser_connect` | Chrome/Edge に CDP 接続してタブ一覧取得 |
 | `browser_find_element` | CSS セレクター → 物理ピクセル座標 |
 | `browser_click_element` | DOM 要素を検索してクリック（1ステップ） |
 | `browser_eval` | ブラウザタブで JS 式を評価して結果を返す |
+| `browser_fill_input` | React/Vue/Svelte の controlled input をCDPで安全に入力 |
 | `browser_get_dom` | 要素または body の outerHTML 取得 |
-| `browser_get_interactive` | リンク/ボタン/入力 + **ARIA トグル** (`role=switch/checkbox/radio/tab/menuitem/option`) を `state.{checked,pressed,selected,expanded}` 付きで列挙 |
-| `browser_get_app_state` | **SPA ステート抽出** — `__NEXT_DATA__` / `__NUXT_DATA__` / `__REMIX_CONTEXT__` / `__APOLLO_STATE__` / GitHub react-app embeddedData / JSON-LD / `window.__INITIAL_STATE__` を 1 回の CDP 呼び出しで取得 |
+| `browser_get_interactive` | リンク/ボタン/入力 + ARIA トグルを状態付きで列挙 |
+| `browser_get_app_state` | Next/Nuxt/Remix/Apollo/GitHub/Redux SSR などのSPA埋め込みstateを抽出 |
 | `browser_search` | text / regex / role / ariaLabel / selector で DOM を grep（confidence 順） |
-| `browser_navigate` | CDP 経由で URL 遷移。`waitForLoad:true`（既定）で `readyState==='complete'` まで待機 |
+| `browser_navigate` | CDP 経由で URL 遷移。`waitForLoad:true` が既定 |
 | `browser_disconnect` | CDP WebSocket セッションをクリーンアップ |
 
 DOM を触る `browser_*` ツールは `includeContext:false` で末尾の `activeTab:` / `readyState:` 2 行を省略可（連続呼び出しで ~150 tok/call 削減）。500ms 以内の連続 call は getTabContext を内部キャッシュで 1 回に圧縮。
@@ -132,14 +134,48 @@ DOM を触る `browser_*` ツールは `includeContext:false` で末尾の `acti
 | `workspace_snapshot` | 全ウィンドウをサムネイル + UI 要素サマリで一括取得 |
 | `workspace_launch` | アプリ起動 + 新ウィンドウ自動検出 |
 
+### コンテキスト・待機・履歴 (8)
+| ツール | 概要 |
+|---|---|
+| `get_context` | フォーカス中ウィンドウ・要素・カーソル・ページ状態を軽量取得 |
+| `get_history` | 直近ツール履歴を取得 |
+| `get_document_state` | Chromeページ状態（URL/title/readyState/scroll）をCDPで取得 |
+| `wait_until` | window/focus/terminal/browser DOM などの状態変化をサーバー側で待機 |
+| `events_subscribe` / `events_poll` / `events_unsubscribe` / `events_list` | ウィンドウ出現・消滅・フォーカス変化を購読/取得 |
+
+### ターミナル (2)
+| ツール | 概要 |
+|---|---|
+| `terminal_read` | Windows Terminal / PowerShell / cmd / WSL のテキストをUIA/OCRで取得。`sinceMarker`差分対応 |
+| `terminal_send` | ターミナルへコマンド送信。clipboard paste既定でIME安全 |
+
 ### ピン・マクロ (3)
 | ツール | 概要 |
 |---|---|
 | `pin_window` / `unpin_window` | 最前面固定 / 解除 |
 | `run_macro` | 最大 50 ステップを順次実行 |
 
----
+### Clipboard / Notification (3)
+| ツール | 概要 |
+|---|---|
+| `clipboard_read` / `clipboard_write` | Windows clipboard のテキスト読み書き。Unicode/CJK対応 |
+| `notification_show` | 長時間タスク完了時などにWindows通知を表示 |
 
+### 高度スクロール (2)
+| ツール | 概要 |
+|---|---|
+| `scroll_to_element` | 要素名またはCSS selectorで対象をviewportへスクロール |
+| `smart_scroll` | CDP → UIA → 画像binary-searchの統合スクロール。ネスト・仮想リスト・sticky header対応 |
+
+### Reactive Perception (4, experimental)
+| ツール | 概要 |
+|---|---|
+| `perception_register` | 対象ウィンドウ/タブのperception lensを登録し、action toolに渡す`lensId`を返す |
+| `perception_read` | lensの状態を強制更新し、perception envelopeを返す |
+| `perception_forget` | lensを解除 |
+| `perception_list` | 登録中lens一覧を取得 |
+
+---
 ## ブラウザ CDP 自動化
 
 Chrome/Edge をリモートデバッグポート付きで起動するだけで、DOM 要素をピクセル精度でクリックできます。
@@ -401,3 +437,4 @@ keyboard_type(use_clipboard=true) を使うこと（IME バイパス）
 ## ライセンス
 
 MIT
+

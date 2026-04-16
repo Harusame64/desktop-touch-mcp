@@ -23,9 +23,10 @@ import { registerSmartScrollTools } from "./tools/smart-scroll.js";
 import { registerPerceptionTools } from "./tools/perception.js";
 import { startTray, stopTray } from "./utils/tray.js";
 import { checkFailsafe, FailsafeError } from "./utils/failsafe.js";
+import { SERVER_VERSION } from "./version.js";
 
 const server = new McpServer(
-  { name: "desktop-touch", version: "0.1.0" },
+  { name: "desktop-touch", version: SERVER_VERSION },
   {
     instructions: [
       "# desktop-touch-mcp",
@@ -160,3 +161,5 @@ console.error("[desktop-touch] MCP server running (stdio)");
 void autoDockFromEnv().catch((err) => {
   console.error("[desktop-touch] auto-dock error:", err);
 });
+
+
