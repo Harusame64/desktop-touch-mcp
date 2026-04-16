@@ -122,7 +122,7 @@ export const perceptionReadHandler = async (params: {
   maxTokens?: number;
 }) => {
   try {
-    const envelope = readLens(params.lensId, { maxTokens: params.maxTokens });
+    const envelope = await readLens(params.lensId, { maxTokens: params.maxTokens });
     return ok({ ok: true, ...envelope });
   } catch (err) {
     return failWith(err, "perception_read");

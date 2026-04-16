@@ -93,6 +93,7 @@ export const FLUENT_KINDS = [
   "target.foreground",
   "target.zOrder",
   "modal.above",
+  "target.focusedElement",
 ] as const;
 export type FluentKind = (typeof FLUENT_KINDS)[number];
 
@@ -196,6 +197,8 @@ export interface PerceptionEnvelope {
       zOrder?: number;
       exists?: boolean;
       modalAbove?: boolean;
+      /** Focused UI element — only present for salience:"critical" lenses with UIA enabled. */
+      focusedElement?: { name: string; controlType: string; automationId?: string; value?: string } | null;
       confidence: number;
     };
   };

@@ -124,6 +124,23 @@ function evalKeyboardTarget(lens: PerceptionLens, store: FluentStore, nowMs: num
     };
   }
 
+  // Additive focused-element gate (only when fluent is present — requires salience:"critical").
+  // Absent fluent: passes silently, preserving backward compat for normal/background lenses.
+  const fe = readValue(store, lens.lensId, hwnd, "target.focusedElement");
+  if (fe && fe.value) {
+    const info = fe.value as { controlType: string };
+    const READONLY_TYPES = new Set(["Text", "Image", "StatusBar", "TitleBar", "ToolBar"]);
+    if (READONLY_TYPES.has(info.controlType)) {
+      return {
+        kind: "safe.keyboardTarget",
+        ok: false,
+        confidence: fe.confidence,
+        reason: `Focused element is a read-only ${info.controlType} — keys would be dropped`,
+        suggestedAction: "Click an editable control (Edit, ComboBox, RichEdit) before typing",
+      };
+    }
+  }
+
   return { kind: "safe.keyboardTarget", ok: true, confidence: foreground.confidence };
 }
 

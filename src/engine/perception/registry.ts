@@ -29,6 +29,11 @@ import {
   startSensorLoop,
   __resetSensorForTests,
 } from "./sensors-win32.js";
+import {
+  refreshUiaFluents,
+  startUiaSensorLoop,
+  __resetUiaSensorForTests,
+} from "./sensors-uia.js";
 import { enumWindowsInZOrder } from "../win32.js";
 
 const MAX_LENSES = 16;
@@ -40,20 +45,39 @@ const lenses = new Map<string, PerceptionLens>();
 const lensOrder: string[] = [];
 
 let _disposeSensorLoop: (() => void) | null = null;
+let _disposeUiaLoop: (() => void) | null = null;
 const _recentChanges = new Map<string, Set<string>>(); // lensId → changed keys since last read
 
 function ensureSensorLoop(): void {
-  if (_disposeSensorLoop) return;
-  _disposeSensorLoop = startSensorLoop(
-    () => [...lenses.values()].map(l => ({ hwnd: l.binding.hwnd, titleKey: l.spec.target.match.titleIncludes })),
-    (_hwnd, _titleKey, obs) => ingestObservations(obs)
-  );
+  if (!_disposeSensorLoop) {
+    _disposeSensorLoop = startSensorLoop(
+      () => [...lenses.values()].map(l => ({ hwnd: l.binding.hwnd, titleKey: l.spec.target.match.titleIncludes })),
+      (_hwnd, _titleKey, obs) => ingestObservations(obs)
+    );
+  }
+
+  const hasCritical = [...lenses.values()].some(l => l.spec.salience === "critical");
+  if (hasCritical && !_disposeUiaLoop) {
+    _disposeUiaLoop = startUiaSensorLoop(
+      () => [...lenses.values()]
+        .filter(l => l.spec.salience === "critical")
+        .map(l => ({ hwnd: l.binding.hwnd })),
+      (_hwnd, obs) => ingestObservations(obs)
+    );
+  }
 }
 
 function stopSensorLoopIfEmpty(): void {
-  if (lenses.size === 0 && _disposeSensorLoop) {
-    _disposeSensorLoop();
-    _disposeSensorLoop = null;
+  if (lenses.size === 0) {
+    if (_disposeSensorLoop) { _disposeSensorLoop(); _disposeSensorLoop = null; }
+    if (_disposeUiaLoop)    { _disposeUiaLoop();    _disposeUiaLoop = null;    }
+    return;
+  }
+  // Stop UIA loop if no critical lenses remain
+  const hasCritical = [...lenses.values()].some(l => l.spec.salience === "critical");
+  if (!hasCritical && _disposeUiaLoop) {
+    _disposeUiaLoop();
+    _disposeUiaLoop = null;
   }
 }
 
@@ -111,7 +135,7 @@ export function registerLens(spec: LensSpec): { lensId: string; seq: number; dig
 
   const lens = compileLens(spec, binding, identity, store.currentSeq());
 
-  // Initial eager refresh
+  // Initial eager refresh (Win32)
   const initialObs = refreshWin32Fluents(binding.hwnd, spec.target.match.titleIncludes);
   ingestObservations(initialObs);
 
@@ -121,6 +145,13 @@ export function registerLens(spec: LensSpec): { lensId: string; seq: number; dig
   lensOrder.push(lens.lensId);
 
   ensureSensorLoop();
+
+  // Fire-and-forget UIA refresh for critical lenses (async, does not block registration)
+  if (spec.salience === "critical") {
+    refreshUiaFluents(binding.hwnd, "critical", true)
+      .then(obs => ingestObservations(obs))
+      .catch(() => { /* non-fatal — UIA may be slow or unavailable */ });
+  }
 
   return {
     lensId: lens.lensId,
@@ -228,15 +259,21 @@ export function buildEnvelopeFor(
 // Public: explicit read (refresh then return envelope)
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function readLens(
+export async function readLens(
   lensId: string,
   opts: { maxTokens?: number } = {}
-): PerceptionEnvelope {
+): Promise<PerceptionEnvelope> {
   const lens = lenses.get(lensId);
   if (!lens) throw new Error(`Lens not found: ${lensId}`);
 
   const obs = refreshWin32Fluents(lens.binding.hwnd, lens.spec.target.match.titleIncludes);
   ingestObservations(obs);
+
+  // For critical lenses, force-refresh UIA focused-element before returning the envelope
+  if (lens.spec.salience === "critical") {
+    const uiaObs = await refreshUiaFluents(lens.binding.hwnd, "critical", true);
+    ingestObservations(uiaObs);
+  }
 
   const changedKeys = _recentChanges.get(lensId) ?? new Set<string>();
   const guardResult = evaluateGuards(lens, store, lens.spec.guardPolicy);
@@ -257,8 +294,10 @@ export function __resetForTests(): void {
   lensOrder.length = 0;
   _recentChanges.clear();
   if (_disposeSensorLoop) { _disposeSensorLoop(); _disposeSensorLoop = null; }
+  if (_disposeUiaLoop)    { _disposeUiaLoop();    _disposeUiaLoop = null;    }
   store.__resetForTests();
   graph.__resetForTests();
   __resetSensorForTests();
+  __resetUiaSensorForTests();
   resetLensCounter();
 }

@@ -65,6 +65,7 @@ export function projectEnvelope(
   const fgFluent      = store.read(`window:${hwnd}.target.foreground`);
   const zOrderFluent  = store.read(`window:${hwnd}.target.zOrder`);
   const modalFluent   = store.read(`window:${hwnd}.modal.above`);
+  const feFluent      = store.read(`window:${hwnd}.target.focusedElement`);
 
   const hasStale = [existsFluent, titleFluent, rectFluent, fgFluent, modalFluent]
     .some(f => f?.status === "stale" || f?.status === "dirty");
@@ -88,7 +89,7 @@ export function projectEnvelope(
   }
 
   // Compute latest target block confidence
-  const fluents = [existsFluent, titleFluent, rectFluent, fgFluent, zOrderFluent, modalFluent].filter(Boolean);
+  const fluents = [existsFluent, titleFluent, rectFluent, fgFluent, zOrderFluent, modalFluent, feFluent].filter(Boolean);
   const avgConf = fluents.length > 0
     ? fluents.reduce((s, f) => s + (f ? confidenceFor(f.support[0]!, nowMs) : 0), 0) / fluents.length
     : 0;
@@ -107,6 +108,7 @@ export function projectEnvelope(
         ...(fgFluent && { foreground: fgFluent.value as boolean }),
         ...(zOrderFluent && { zOrder: zOrderFluent.value as number }),
         ...(modalFluent && { modalAbove: modalFluent.value as boolean }),
+        ...(feFluent && { focusedElement: feFluent.value as { name: string; controlType: string; automationId?: string; value?: string } | null }),
         confidence: Math.round(avgConf * 100) / 100,
       },
     },
@@ -119,9 +121,12 @@ export function projectEnvelope(
     while (changedSummaries.length > 1 && estimateTokens(envelope) > maxTokens) {
       changedSummaries.shift();
     }
-    // 3. Drop optional latest fields
+    // 3. Drop optional latest fields (in ascending importance order)
     if (estimateTokens(envelope) > maxTokens && envelope.latest.target) {
       delete envelope.latest.target.zOrder;
+    }
+    if (estimateTokens(envelope) > maxTokens && envelope.latest.target) {
+      delete envelope.latest.target.focusedElement;
     }
     if (estimateTokens(envelope) > maxTokens && envelope.latest.target) {
       delete envelope.latest.target.modalAbove;
