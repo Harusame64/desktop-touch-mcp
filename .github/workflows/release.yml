@@ -87,8 +87,17 @@ jobs:
           # Remove the lock file so npm generates a fresh one based on the modified package.json.
           # The original lock file marks all runtime deps as dev:true, causing --omit=dev to skip them.
           Remove-Item -LiteralPath "release_build\package-lock.json" -Force -ErrorAction SilentlyContinue
-          Set-Location release_build
-          npm install --omit=dev
+          # npm 7+ walks up to parent directories looking for node_modules.
+          # The root node_modules (from npm ci) satisfies all deps, so npm skips
+          # installing into release_build/node_modules.  Hide it temporarily.
+          Rename-Item -LiteralPath "node_modules" -NewName "node_modules_hidden"
+          try {
+            Set-Location release_build
+            npm install --omit=dev
+          } finally {
+            Set-Location $env:GITHUB_WORKSPACE
+            Rename-Item -LiteralPath "node_modules_hidden" -NewName "node_modules"
+          }
 
       - name: Prune release package metadata
         shell: pwsh
