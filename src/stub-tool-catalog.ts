@@ -1365,7 +1365,6 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
               "safe.keyboardTarget",
               "safe.clickCoordinates",
               "stable.rect",
-              "modal.none",
               "browser.ready"
             ]
           },
@@ -1374,7 +1373,6 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
             "safe.keyboardTarget",
             "safe.clickCoordinates",
             "stable.rect",
-            "modal.none",
             "browser.ready"
           ]
         },
