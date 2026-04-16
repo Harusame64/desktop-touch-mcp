@@ -187,26 +187,58 @@ const commonParams = {
 };
 
 function extractDescribe(valueExpr) {
-  const idx = valueExpr.indexOf('.describe(');
+  const searchExpr = primaryCallSuffix(valueExpr);
+  const idx = searchExpr.indexOf('.describe(');
   if (idx < 0) return undefined;
   const start = idx + '.describe('.length;
-  const end = scanBalanced(valueExpr, start, '(', ')');
-  const arg = valueExpr.slice(start, end - 1).trim();
+  const end = scanBalanced(searchExpr, start, '(', ')');
+  const arg = searchExpr.slice(start, end - 1).trim();
   try { return String(evalExpr(arg)); } catch { return undefined; }
 }
 
+function topLevelZCallMatch(valueExpr, callPath) {
+  const segments = callPath.split('.').map((segment) => `\\s*\\.\\s*${segment}`).join('');
+  return new RegExp(`^\\s*z${segments}\\s*\\(`).exec(valueExpr);
+}
+
+function hasTopLevelZCall(valueExpr, callPath) {
+  return Boolean(topLevelZCallMatch(valueExpr, callPath));
+}
+
+function primaryCallSuffix(valueExpr) {
+  const m = /^\s*z(?:\s*\.\s*[A-Za-z_$][\w$]*)+\s*\(/.exec(valueExpr);
+  if (!m) return valueExpr;
+  const end = scanBalanced(valueExpr, m[0].length, '(', ')');
+  return valueExpr.slice(end);
+}
+
 function extractEnum(valueExpr) {
-  const m = /z\.enum\s*\(\s*(\[[\s\S]*?\])\s*\)/.exec(valueExpr);
+  const v = valueExpr.trim();
+  const m = topLevelZCallMatch(v, 'enum');
   if (!m) return undefined;
-  try { return evalExpr(m[1]); } catch { return undefined; }
+  const start = m[0].length;
+  const end = scanBalanced(v, start, '(', ')');
+  const arg = v.slice(start, end - 1).trim();
+  try { return evalExpr(arg); } catch { return undefined; }
+}
+
+function extractArrayEnum(valueExpr) {
+  const v = valueExpr.trim();
+  const m = topLevelZCallMatch(v, 'array');
+  if (!m) return undefined;
+  const start = m[0].length;
+  const end = scanBalanced(v, start, '(', ')');
+  const inner = v.slice(start, end - 1).trim();
+  return extractEnum(inner);
 }
 
 function extractDefault(valueExpr) {
-  const idx = valueExpr.indexOf('.default(');
+  const searchExpr = primaryCallSuffix(valueExpr);
+  const idx = searchExpr.indexOf('.default(');
   if (idx < 0) return undefined;
   const start = idx + '.default('.length;
-  const end = scanBalanced(valueExpr, start, '(', ')');
-  const arg = valueExpr.slice(start, end - 1).trim();
+  const end = scanBalanced(searchExpr, start, '(', ')');
+  const arg = searchExpr.slice(start, end - 1).trim();
   try { return evalExpr(arg); } catch { return undefined; }
 }
 
@@ -218,21 +250,94 @@ function inferProperty(valueExpr) {
   if (description) prop.description = description;
   const enumValues = extractEnum(v);
   if (enumValues) { prop.type = 'string'; prop.enum = enumValues; }
-  else if (/z\.literal\(/.test(v)) { prop.const = undefined; }
-  else if (/z\.(coerce\.)?number\s*\(/.test(v) || /z\.number\s*\(/.test(v)) { prop.type = v.includes('.int()') ? 'integer' : 'number'; }
-  else if (/z\.string\s*\(/.test(v)) { prop.type = 'string'; }
-  else if (/z\.boolean\s*\(/.test(v) || /coercedBoolean\s*\(/.test(v)) { prop.type = 'boolean'; }
-  else if (/z\.array\s*\(/.test(v) || /^\[/.test(v)) { prop.type = 'array'; }
-  else if (/z\.object\s*\(/.test(v) || /z\.record\s*\(/.test(v) || /z\.discriminatedUnion\s*\(/.test(v) || /z\.union\s*\(/.test(v)) { prop.type = 'object'; }
+  else if (hasTopLevelZCall(v, 'literal')) { prop.const = undefined; }
+  else if (hasTopLevelZCall(v, 'array') || /^\[/.test(v)) {
+    prop.type = 'array';
+    const itemEnum = extractArrayEnum(v);
+    if (itemEnum) prop.items = { type: 'string', enum: itemEnum };
+  }
+  else if (hasTopLevelZCall(v, 'object') || hasTopLevelZCall(v, 'record') || hasTopLevelZCall(v, 'discriminatedUnion') || hasTopLevelZCall(v, 'union')) { prop.type = 'object'; }
+  else if (hasTopLevelZCall(v, 'coerce.number') || hasTopLevelZCall(v, 'number')) { prop.type = v.includes('.int()') ? 'integer' : 'number'; }
+  else if (hasTopLevelZCall(v, 'string')) { prop.type = 'string'; }
+  else if (hasTopLevelZCall(v, 'boolean') || /^coercedBoolean\s*\(/.test(v)) { prop.type = 'boolean'; }
   else { prop.description ||= `Parameter '${v}' from the Windows server schema.`; }
 
   const def = extractDefault(v);
   if (def !== undefined) prop.default = def;
-  const min = /\.min\((\d[\d_]*)\)/.exec(v);
-  const max = /\.max\((\d[\d_]*)\)/.exec(v);
-  if (min) prop.minimum = Number(min[1].replaceAll('_', ''));
-  if (max) prop.maximum = Number(max[1].replaceAll('_', ''));
+  const modifierSuffix = primaryCallSuffix(v);
+  const min = /\.min\((\d[\d_]*)\)/.exec(modifierSuffix);
+  const max = /\.max\((\d[\d_]*)\)/.exec(modifierSuffix);
+  if (min) {
+    const value = Number(min[1].replaceAll('_', ''));
+    if (prop.type === 'string') prop.minLength = value;
+    else if (prop.type === 'array') prop.minItems = value;
+    else if (prop.type === 'number' || prop.type === 'integer') prop.minimum = value;
+  }
+  if (max) {
+    const value = Number(max[1].replaceAll('_', ''));
+    if (prop.type === 'string') prop.maxLength = value;
+    else if (prop.type === 'array') prop.maxItems = value;
+    else if (prop.type === 'number' || prop.type === 'integer') prop.maximum = value;
+  }
   return prop;
+}
+
+function applySchemaOverrides(schemaName, properties, required) {
+  if (schemaName !== 'perceptionRegisterSchema') return;
+
+  properties.target = {
+    description: "Target entity to track. 'window' targets use Win32; 'browserTab' targets use CDP.",
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      kind: {
+        type: 'string',
+        enum: ['window', 'browserTab'],
+        description: "Target kind to bind this lens to.",
+      },
+      match: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          titleIncludes: {
+            type: 'string',
+            minLength: 1,
+            description: 'Case-insensitive substring that must appear in the window or browser tab title.',
+          },
+          urlIncludes: {
+            type: 'string',
+            minLength: 1,
+            description: 'Case-insensitive substring that must appear in the browser tab URL.',
+          },
+        },
+      },
+    },
+    required: ['kind', 'match'],
+    anyOf: [
+      {
+        properties: {
+          kind: { const: 'window' },
+          match: {
+            type: 'object',
+            required: ['titleIncludes'],
+          },
+        },
+      },
+      {
+        properties: {
+          kind: { const: 'browserTab' },
+          match: {
+            type: 'object',
+            anyOf: [
+              { required: ['urlIncludes'] },
+              { required: ['titleIncludes'] },
+            ],
+          },
+        },
+      },
+    ],
+  };
+  if (!required.includes('target')) required.push('target');
 }
 
 function parseSchema(src, schemaName) {
@@ -253,6 +358,7 @@ function parseSchema(src, schemaName) {
     properties[key] = prop;
     if (!optional) required.push(key);
   }
+  applySchemaOverrides(schemaName, properties, required);
   const schema = { type: 'object', properties, additionalProperties: false };
   if (required.length) schema.required = required;
   return schema;

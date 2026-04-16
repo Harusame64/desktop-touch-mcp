@@ -145,7 +145,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "value": {
           "description": "Text to fill into the input element",
           "type": "string",
-          "maximum": 10000
+          "maxLength": 10000
         },
         "tabId": {
           "type": "string",
@@ -212,10 +212,11 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       "properties": {
         "selectors": {
           "description": "Optional override list of CSS selectors / window globals to probe. Window globals must be prefixed with 'window:' (e.g. 'window:__INITIAL_STATE__'). When omitted, scans the standard list (Next.js, GitHub react-app, Nuxt, Apollo, Remix, Redux SSR, JSON-LD).",
-          "type": "string"
+          "type": "array"
         },
         "maxBytes": {
           "description": "Maximum bytes per individual payload (default 4000). Larger payloads are stringified and truncated.",
+          "type": "integer",
           "default": 4000,
           "minimum": 256,
           "maximum": 64000
@@ -247,7 +248,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       "type": "object",
       "properties": {
         "selector": {
-          "description": "CSS selector for root element. Omit for document.body."
+          "description": "CSS selector for root element. Omit for document.body.",
+          "type": "string"
         },
         "tabId": {
           "type": "string",
@@ -262,6 +264,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "maxLength": {
           "description": "Maximum characters to return (default 10000)",
+          "type": "integer",
           "default": 10000,
           "minimum": 100,
           "maximum": 100000
@@ -282,17 +285,21 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       "type": "object",
       "properties": {
         "scope": {
-          "description": "CSS selector to limit the search scope (e.g. '.s-main-slot', '#nav-search-form'). Omit to scan the full page."
+          "description": "CSS selector to limit the search scope (e.g. '.s-main-slot', '#nav-search-form'). Omit to scan the full page.",
+          "type": "string"
         },
         "types": {
           "description": "Element types to include. Default 'all' returns links, buttons, and inputs.",
-          "type": "string",
-          "enum": [
-            "link",
-            "button",
-            "input",
-            "all"
-          ],
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "link",
+              "button",
+              "input",
+              "all"
+            ]
+          },
           "default": [
             "all"
           ]
@@ -304,6 +311,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "maxResults": {
           "description": "Maximum number of elements to return (default 50).",
+          "type": "integer",
           "default": 50,
           "minimum": 1,
           "maximum": 200
@@ -336,6 +344,13 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       "properties": {
         "browser": {
           "description": "Which browser to launch. 'auto' tries chrome → edge → brave and picks the first installed. Ignored if a CDP endpoint is already live on the target port.",
+          "type": "string",
+          "enum": [
+            "auto",
+            "chrome",
+            "edge",
+            "brave"
+          ],
           "default": "auto"
         },
         "port": {
@@ -347,13 +362,16 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "userDataDir": {
           "description": "Path for --user-data-dir. Using a dedicated profile avoids conflicts with your normal browser session. Default C:\\tmp\\cdp is safe to reuse across sessions.",
+          "type": "string",
           "default": "C:\\tmp\\cdp"
         },
         "url": {
-          "description": "Optional URL to navigate to immediately after launch."
+          "description": "Optional URL to navigate to immediately after launch.",
+          "type": "string"
         },
         "waitMs": {
           "description": "Max milliseconds to wait for the CDP endpoint to become ready (default 10000).",
+          "type": "integer",
           "default": 10000,
           "minimum": 1000,
           "maximum": 30000
@@ -435,7 +453,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "pattern": {
           "description": "Pattern to match against the chosen axis.",
           "type": "string",
-          "minimum": 1
+          "minLength": 1
         },
         "scope": {
           "description": "CSS selector to limit the search scope.",
@@ -497,22 +515,22 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "windowTitle": {
           "description": "Partial window title of the target window",
           "type": "string",
-          "maximum": 200
+          "maxLength": 200
         },
         "name": {
           "description": "Element name/label (partial match, case-insensitive)",
           "type": "string",
-          "maximum": 200
+          "maxLength": 200
         },
         "automationId": {
           "description": "Exact AutomationId of the element",
           "type": "string",
-          "maximum": 200
+          "maxLength": 200
         },
         "controlType": {
           "description": "Control type filter, e.g. 'Button', 'MenuItem'",
           "type": "string",
-          "maximum": 100
+          "maxLength": 100
         },
         "narrate": {
           "type": "string",
@@ -552,7 +570,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "text": {
           "description": "Text to place on the clipboard",
           "type": "string",
-          "maximum": 100000
+          "maxLength": 100000
         }
       },
       "additionalProperties": false,
@@ -568,30 +586,43 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       "type": "object",
       "properties": {
         "title": {
-          "description": "Partial window title to dock (case-insensitive). Matches the first visible window containing this text. Example: 'Claude Code', 'メモ帳'."
+          "description": "Partial window title to dock (case-insensitive). Matches the first visible window containing this text. Example: 'Claude Code', 'メモ帳'.",
+          "type": "string"
         },
         "corner": {
           "description": "Screen corner to snap the window to. Default 'bottom-right'.",
+          "type": "string",
+          "enum": [
+            "top-left",
+            "top-right",
+            "bottom-left",
+            "bottom-right"
+          ],
           "default": "bottom-right"
         },
         "width": {
           "description": "Window width in pixels after docking. Default 480.",
+          "type": "integer",
           "default": 480
         },
         "height": {
           "description": "Window height in pixels after docking. Default 360.",
+          "type": "integer",
           "default": 360
         },
         "pin": {
           "description": "If true, set always-on-top so the docked window stays visible on top of other windows. Use unpin_window to remove the topmost flag later. Default true.",
+          "type": "boolean",
           "default": true
         },
         "monitorId": {
           "description": "Monitor to dock on (from get_screen_info). Omit for primary monitor.",
+          "type": "integer",
           "minimum": 0
         },
         "margin": {
           "description": "Pixel padding between the window and the screen edge. Default 8.",
+          "type": "integer",
           "default": 8,
           "minimum": 0
         }
@@ -646,12 +677,20 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "types": {
           "description": "Event types to listen for.",
           "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "window_appeared",
+              "window_disappeared",
+              "foreground_changed"
+            ]
+          },
           "default": [
             "window_appeared",
             "window_disappeared",
             "foreground_changed"
           ],
-          "minimum": 1
+          "minItems": 1
         }
       },
       "additionalProperties": false
@@ -785,7 +824,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "windowTitle": {
           "description": "Partial window title to find the target window",
           "type": "string",
-          "maximum": 200
+          "maxLength": 200
         },
         "maxDepth": {
           "description": "Maximum depth of the element tree to traverse (default 4)",
@@ -825,7 +864,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       "properties": {
         "keys": {
           "description": "Key combo string, e.g. 'ctrl+c', 'alt+tab', 'enter', 'ctrl+shift+s'. Note: win+r, win+x, win+s, win+l are blocked for security.",
-          "maximum": 100
+          "type": "string",
+          "maxLength": 100
         },
         "narrate": {
           "type": "string",
@@ -876,7 +916,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "text": {
           "description": "The text to type (max 10,000 characters)",
           "type": "string",
-          "maximum": 10000
+          "maxLength": 10000
         },
         "narrate": {
           "type": "string",
@@ -889,6 +929,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "use_clipboard": {
           "description": "If true, copy text to clipboard and paste with Ctrl+V instead of simulating keystrokes. Use this when typing URLs, paths, or ASCII text into apps with Japanese IME active — prevents IME from converting characters. Default false.",
+          "type": "boolean",
           "default": false
         },
         "replaceAll": {
@@ -947,11 +988,12 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "type": "number"
         },
         "origin": {
-          "description": "Screen x of image top-left (copy from screenshot response)",
-          "type": "number"
+          "description": "When set, (x,y) are image-local coords from a screenshot. Server converts to screen coords: screen_x = origin.x + x / (scale ?? 1), screen_y = origin.y + y / (scale ?? 1). Copy origin values directly from the screenshot response text. This eliminates manual coord math and prevents out-of-window clicks.",
+          "type": "object"
         },
         "scale": {
-          "description": "Scale factor from screenshot response (only when dotByDotMaxDimension caused a resize). Omit if the screenshot was 1:1. Only used when 'origin' is also provided."
+          "description": "Scale factor from screenshot response (only when dotByDotMaxDimension caused a resize). Omit if the screenshot was 1:1. Only used when 'origin' is also provided.",
+          "type": "number"
         },
         "button": {
           "description": "Mouse button to click",
@@ -1132,12 +1174,12 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "title": {
           "description": "Notification title",
           "type": "string",
-          "maximum": 200
+          "maxLength": 200
         },
         "body": {
           "description": "Notification body text",
           "type": "string",
-          "maximum": 500
+          "maxLength": 500
         }
       },
       "additionalProperties": false,
@@ -1205,16 +1247,100 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "name": {
           "description": "Human-readable name for this lens (e.g. 'target-editor'). Helps identify it in perception_list.",
           "type": "string",
-          "minimum": 1,
-          "maximum": 80
+          "minLength": 1,
+          "maxLength": 80
         },
         "target": {
-          "description": "Case-insensitive substring that must appear in the window title. The foreground window is preferred when multiple windows match.",
-          "minimum": 1
+          "description": "Target entity to track. 'window' targets use Win32; 'browserTab' targets use CDP.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "window",
+                "browserTab"
+              ],
+              "description": "Target kind to bind this lens to."
+            },
+            "match": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "titleIncludes": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Case-insensitive substring that must appear in the window or browser tab title."
+                },
+                "urlIncludes": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Case-insensitive substring that must appear in the browser tab URL."
+                }
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "match"
+          ],
+          "anyOf": [
+            {
+              "properties": {
+                "kind": {
+                  "const": "window"
+                },
+                "match": {
+                  "type": "object",
+                  "required": [
+                    "titleIncludes"
+                  ]
+                }
+              }
+            },
+            {
+              "properties": {
+                "kind": {
+                  "const": "browserTab"
+                },
+                "match": {
+                  "type": "object",
+                  "anyOf": [
+                    {
+                      "required": [
+                        "urlIncludes"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "titleIncludes"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ]
         },
         "maintain": {
           "description": "Fluents to keep alive. Defaults to all fluents; irrelevant kinds for the target type are silently ignored (e.g., browser.* fluents are skipped on window lenses).",
           "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "target.exists",
+              "target.identity",
+              "target.title",
+              "target.rect",
+              "target.foreground",
+              "target.zOrder",
+              "modal.above",
+              "target.focusedElement",
+              "browser.url",
+              "browser.title",
+              "browser.readyState"
+            ]
+          },
           "default": [
             "target.exists",
             "target.identity",
@@ -1232,6 +1358,17 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "guards": {
           "description": "Guards to evaluate before actions that pass this lensId. Defaults to all guards. Remove guards you don't need to reduce false blocks.",
           "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "target.identityStable",
+              "safe.keyboardTarget",
+              "safe.clickCoordinates",
+              "stable.rect",
+              "modal.none",
+              "browser.ready"
+            ]
+          },
           "default": [
             "target.identityStable",
             "safe.keyboardTarget",
@@ -1270,7 +1407,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       },
       "additionalProperties": false,
       "required": [
-        "name"
+        "name",
+        "target"
       ]
     }
   },
@@ -1286,6 +1424,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "duration_ms": {
           "description": "Auto-unpin after this many milliseconds (0–60000). Omit to pin indefinitely.",
+          "type": "integer",
           "minimum": 0,
           "maximum": 60000
         }
@@ -1303,12 +1442,14 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       "type": "object",
       "properties": {
         "steps": {
-          "type": "string",
-          "minimum": 1,
-          "maximum": 50
+          "description": "Ordered list of tool calls to execute sequentially (max 50 steps).",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50
         },
         "stop_on_error": {
           "description": "Stop execution on the first error (default true). Set false to collect all results.",
+          "type": "boolean",
           "default": true
         }
       },
@@ -1324,22 +1465,22 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "windowTitle": {
           "description": "Partial window title of the target window",
           "type": "string",
-          "maximum": 200
+          "maxLength": 200
         },
         "name": {
           "description": "Element name/label (partial match, case-insensitive)",
           "type": "string",
-          "maximum": 200
+          "maxLength": 200
         },
         "automationId": {
           "description": "Exact AutomationId of the element",
           "type": "string",
-          "maximum": 200
+          "maxLength": 200
         },
         "controlType": {
           "description": "Control type filter, e.g. 'Edit', 'Button', 'List'",
           "type": "string",
-          "maximum": 100
+          "maxLength": 100
         },
         "maxDepth": {
           "description": "Child element tree depth (default 2)",
@@ -1376,54 +1517,76 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       "type": "object",
       "properties": {
         "windowTitle": {
-          "description": "Capture only the window whose title contains this string. Prefer over full-screen when target window is known."
+          "description": "Capture only the window whose title contains this string. Prefer over full-screen when target window is known.",
+          "type": "string"
         },
         "displayId": {
           "description": "Capture a specific monitor (0 = primary). Use get_screen_info to list displays.",
+          "type": "integer",
           "minimum": 0
         },
         "region": {
-          "description": "Left edge. Without windowTitle: virtual screen coordinates. With windowTitle: window-local coordinates (0 = window left edge).",
-          "type": "number"
+          "description": "Capture only this sub-region. Without windowTitle: virtual screen coordinates. With windowTitle: window-local coordinates — useful to exclude browser chrome (tabs/address bar). Example: windowTitle='Chrome', region={x:0, y:120, width:1920, height:900} skips the 120px browser chrome.",
+          "type": "object"
         },
         "maxDimension": {
           "description": "Max width or height in pixels (default 768). Use 1280 to read small text, code, or fine UI details. Ignored when dotByDot=true.",
+          "type": "integer",
           "default": 768
         },
         "dotByDot": {
           "description": "1:1 pixel mode — no scaling, WebP compression. Window captures include 'origin: (x,y)' so you can compute screen position: screen_x = origin_x + image_x. When dotByDotMaxDimension is also set, scale factor is included: screen_x = origin_x + image_x / scale.",
+          "type": "boolean",
           "default": false
         },
         "dotByDotMaxDimension": {
-          "description": "Cap the longest edge (pixels) when dotByDot=true. Reduces payload while preserving coordinate math. Example: 1280 on a 1920×1080 screen → scale≈0.667. Response includes scale factor: screen_x = origin_x + image_x / scale. Recommended for Chrome: dotByDot=true, dotByDotMaxDimension=1280, grayscale=true."
+          "description": "Cap the longest edge (pixels) when dotByDot=true. Reduces payload while preserving coordinate math. Example: 1280 on a 1920×1080 screen → scale≈0.667. Response includes scale factor: screen_x = origin_x + image_x / scale. Recommended for Chrome: dotByDot=true, dotByDotMaxDimension=1280, grayscale=true.",
+          "type": "integer"
         },
         "grayscale": {
           "description": "Convert to grayscale before encoding. Reduces file size ~50% for text-heavy content (e.g. AWS console, code editors). Avoid when color is meaningful (charts, status indicators).",
+          "type": "boolean",
           "default": false
         },
         "webpQuality": {
           "description": "WebP quality when dotByDot=true or diffMode=true. 40=layout only, 60=general (default), 80=fine text.",
+          "type": "integer",
           "default": 60,
           "minimum": 1,
           "maximum": 100
         },
         "diffMode": {
           "description": "Layer diff mode — compares each window against the buffered previous frame. First call = full I-frame (all windows). Subsequent calls = only changed windows (P-frame). Implicitly enables dotByDot. Best used with windowTitle=undefined to snapshot all windows.",
+          "type": "boolean",
           "default": false
         },
         "detail": {
-          "description": "Response detail level (omit to let the server pick a smart default):\n  omitted — auto: 'image' when dotByDot/region/displayId is specified, else 'meta'\n  'meta'  — window title + screen region only (~20 tok/window, cheapest)\n  'text'  — UIA element tree as JSON with text values (~100-300 tok/window, no image)\n  'image' — actual screenshot pixels. BLOCKED unless confirmImage=true is also passed."
+          "description": "Response detail level (omit to let the server pick a smart default):\n  omitted — auto: 'image' when dotByDot/region/displayId is specified, else 'meta'\n  'meta'  — window title + screen region only (~20 tok/window, cheapest)\n  'text'  — UIA element tree as JSON with text values (~100-300 tok/window, no image)\n  'image' — actual screenshot pixels. BLOCKED unless confirmImage=true is also passed.",
+          "type": "string",
+          "enum": [
+            "meta",
+            "text",
+            "image"
+          ]
         },
         "confirmImage": {
           "description": "Must be true to receive image pixels when detail='image'. Without this flag, detail='image' is blocked and a guidance message is returned instead. Prefer detail='text' / diffMode=true / dotByDot=true first — only set confirmImage=true when visual inspection is genuinely required.",
+          "type": "boolean",
           "default": false
         },
         "ocrFallback": {
           "description": "OCR fallback behaviour when detail='text'. 'auto' (default): fire Windows OCR if UIA returns 0 actionable elements OR hints.uiaSparse=true (UIA returned <5 elements, typical for Chrome). 'always': always augment actionable[] with OCR words. 'never': disable OCR entirely.",
+          "type": "string",
+          "enum": [
+            "auto",
+            "always",
+            "never"
+          ],
           "default": "auto"
         },
         "ocrLanguage": {
           "description": "BCP-47 language tag for the OCR engine (e.g. 'ja', 'en-US'). Only used when detail='text'.",
+          "type": "string",
           "default": "ja"
         }
       },
@@ -1437,35 +1600,42 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       "type": "object",
       "properties": {
         "windowTitle": {
-          "description": "Title (partial match) of the window to capture"
+          "description": "Title (partial match) of the window to capture",
+          "type": "string"
         },
         "region": {
-          "description": "Left edge in window-local coordinates (0 = window left)",
-          "type": "number"
+          "description": "Capture only this sub-region of the window (window-local image coordinates). Coordinates are in image pixels, not screen pixels (may differ on high-DPI). Useful to exclude browser chrome (tabs/address bar): e.g. {x:0, y:120, width:1920, height:900}.",
+          "type": "object"
         },
         "maxDimension": {
           "description": "Max width or height in pixels (default 768). Use 1280 to read small text or fine UI details.",
+          "type": "integer",
           "default": 768
         },
         "dotByDot": {
           "description": "1:1 pixel mode — no scaling, WebP compression. When region is also specified, origin reflects the window + region offset for coordinate math.",
+          "type": "boolean",
           "default": false
         },
         "dotByDotMaxDimension": {
-          "description": "Cap the longest edge (pixels) when dotByDot=true. Response includes scale factor: screen_x = origin_x + image_x / scale."
+          "description": "Cap the longest edge (pixels) when dotByDot=true. Response includes scale factor: screen_x = origin_x + image_x / scale.",
+          "type": "integer"
         },
         "grayscale": {
           "description": "Convert to grayscale. Reduces file size ~50% for text-heavy content.",
+          "type": "boolean",
           "default": false
         },
         "webpQuality": {
           "description": "WebP quality when dotByDot=true.",
+          "type": "integer",
           "default": 60,
           "minimum": 1,
           "maximum": 100
         },
         "fullContent": {
           "description": "Use PW_RENDERFULLCONTENT flag (default true) to capture GPU-rendered windows (Chrome, Electron, WinUI3). Set false for legacy mode (faster, but GPU windows may appear black). If this call hangs on a game/video window, retry with fullContent=false.",
+          "type": "boolean",
           "default": true
         }
       },
@@ -1492,7 +1662,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "region": {
           "description": "Optional sub-region in window-local coordinates",
-          "type": "number"
+          "type": "object"
         }
       },
       "additionalProperties": false,
@@ -1558,26 +1728,35 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       "type": "object",
       "properties": {
         "windowTitle": {
-          "description": "Partial title of the window to capture (case-insensitive match)"
+          "description": "Partial title of the window to capture (case-insensitive match)",
+          "type": "string"
         },
         "direction": {
           "description": "Scroll direction: 'down' (vertical, uses Page Down key) or 'right' (horizontal, uses mouse scroll). Default 'down'.",
+          "type": "string",
+          "enum": [
+            "down",
+            "right"
+          ],
           "default": "down"
         },
         "maxScrolls": {
           "description": "Maximum scroll iterations before stopping (default 10, max 30)",
+          "type": "integer",
           "default": 10,
           "minimum": 1,
           "maximum": 30
         },
         "scrollDelayMs": {
           "description": "Milliseconds to wait after each scroll for rendering to settle (default 400). Increase for slow/animated pages.",
+          "type": "integer",
           "default": 400,
           "minimum": 100,
           "maximum": 3000
         },
         "maxWidth": {
           "description": "Max size of the short edge of the final image (default 1280). For 'down': caps the image width; height is unconstrained. For 'right': caps the image height; width is unconstrained.",
+          "type": "integer",
           "default": 1280
         }
       },
@@ -1640,22 +1819,22 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "windowTitle": {
           "description": "Partial window title",
           "type": "string",
-          "maximum": 200
+          "maxLength": 200
         },
         "value": {
           "description": "The value to set",
           "type": "string",
-          "maximum": 10000
+          "maxLength": 10000
         },
         "name": {
           "description": "Element name/label (partial match)",
           "type": "string",
-          "maximum": 200
+          "maxLength": 200
         },
         "automationId": {
           "description": "Exact AutomationId of the element",
           "type": "string",
-          "maximum": 200
+          "maxLength": 200
         },
         "narrate": {
           "type": "string",
@@ -1797,7 +1976,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "windowTitle": {
           "description": "Partial title of the terminal window (e.g. 'PowerShell', 'pwsh', 'WindowsTerminal').",
           "type": "string",
-          "maximum": 200
+          "maxLength": 200
         },
         "lines": {
           "description": "Tail N lines (default 50).",
@@ -1809,7 +1988,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "sinceMarker": {
           "description": "Marker returned from a previous call. If found in current text, only the diff is returned.",
           "type": "string",
-          "maximum": 64
+          "maxLength": 64
         },
         "stripAnsi": {
           "description": "Strip ANSI escape sequences (default true).",
@@ -1830,7 +2009,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "description": "BCP-47 language tag for OCR fallback (default 'ja').",
           "type": "string",
           "default": "ja",
-          "maximum": 20
+          "maxLength": 20
         }
       },
       "additionalProperties": false,
@@ -1848,12 +2027,12 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "windowTitle": {
           "description": "Partial title of the terminal window.",
           "type": "string",
-          "maximum": 200
+          "maxLength": 200
         },
         "input": {
           "description": "Text to send (max 10,000 chars).",
           "type": "string",
-          "maximum": 10000
+          "maxLength": 10000
         },
         "pressEnter": {
           "description": "Press Enter after typing (default true).",
@@ -1947,14 +2126,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           ]
         },
         "target": {
-          "description": "Target descriptor — fields used depend on condition. Accepts an object literal or a JSON-stringified object.",
-          "type": "string",
-          "enum": [
-            "text",
-            "regex",
-            "role",
-            "ariaLabel"
-          ]
+          "description": "Target descriptor — fields used depend on condition. Accepts an object literal or a JSON-stringified object."
         },
         "timeoutMs": {
           "description": "Maximum time to wait (default 5000ms)",
@@ -1986,13 +2158,13 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "command": {
           "description": "Executable name or full path (e.g. 'notepad.exe', 'calc.exe'). Shell interpreters (cmd.exe, powershell.exe, etc.) are blocked.",
           "type": "string",
-          "maximum": 260
+          "maxLength": 260
         },
         "args": {
           "description": "Command-line arguments (max 20). Shell metacharacters (; & | ` $() ${}) are not allowed.",
-          "type": "string",
+          "type": "array",
           "default": [],
-          "maximum": 1000
+          "maxItems": 20
         },
         "waitMs": {
           "description": "Milliseconds to wait for the window to appear (default 2000)",
