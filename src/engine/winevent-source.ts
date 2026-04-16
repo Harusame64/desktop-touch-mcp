@@ -151,6 +151,7 @@ export class WinEventSource {
 
     proc.once("error", (err) => {
       console.error(`[winevent-source] Sidecar process error: ${err.message}`);
+      this.process = null;
       if (!this.disposed) this.scheduleRestart();
     });
 
@@ -212,12 +213,16 @@ export class WinEventSource {
 
   private scheduleRestart(): void {
     if (this.disposed) return;
+    // Guard against double-fire from both "error" and "exit" events on the same crash.
+    if (this.state === "restarting" || this.state === "degraded") return;
+
     if (this.restartCount >= MAX_RESTART_CYCLES) {
       console.error("[winevent-source] Max restart cycles reached — staying degraded");
       this.setState("degraded");
       return;
     }
 
+    this.clearRestartTimer(); // clear any prior timer before setting a new one
     this.setState("restarting");
     this.restartCount++;
     this._lastRestartAtMs = Date.now();
@@ -229,6 +234,7 @@ export class WinEventSource {
     this.restartTimer = setTimeout(() => {
       if (!this.disposed) this.spawn();
     }, delay);
+    if (this.restartTimer.unref) this.restartTimer.unref();
   }
 
   private clearRestartTimer(): void {

@@ -20,6 +20,8 @@ export interface LensEventIndex {
   byHwnd: Map<string, Set<string>>;
   /** pid number → Set of lensIds tracking a window owned by that process. */
   byPid: Map<number, Set<string>>;
+  /** lensId → hwnd — reverse lookup to find which window a lens tracks. */
+  lensToHwnd: Map<string, string>;
   /** lensIds that maintain `target.foreground` and must be notified on foreground events. */
   foregroundSensitive: Set<string>;
   /** lensIds that maintain `modal.above` and must be notified on z-order/modal events. */
@@ -58,6 +60,7 @@ export function createLensEventIndex(): LensEventIndex {
   return {
     byHwnd: new Map(),
     byPid: new Map(),
+    lensToHwnd: new Map(),
     foregroundSensitive: new Set(),
     modalSensitive: new Set(),
     zOrderSensitive: new Set(),
@@ -69,8 +72,9 @@ export function addLensToIndex(index: LensEventIndex, lens: PerceptionLens): voi
   const { lensId } = lens;
   const hwnd = lens.binding.hwnd;
 
-  // All lenses go into byHwnd
+  // All lenses go into byHwnd and reverse map
   addToSet(index.byHwnd, hwnd, lensId);
+  index.lensToHwnd.set(lensId, hwnd);
 
   // Window lenses also indexed by pid
   if (isWindowIdentity(lens.boundIdentity)) {
@@ -90,6 +94,7 @@ export function removeLensFromIndex(index: LensEventIndex, lens: PerceptionLens)
   const hwnd = lens.binding.hwnd;
 
   removeFromSet(index.byHwnd, hwnd, lensId);
+  index.lensToHwnd.delete(lensId);
 
   if (isWindowIdentity(lens.boundIdentity)) {
     removeFromSet(index.byPid, lens.boundIdentity.pid, lensId);
