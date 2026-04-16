@@ -10,8 +10,10 @@
 // Entity references
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** MVP: only "window" kind. Future kinds: browserTab, uiaElement, cursor, modal. */
-export type EntityRef = { kind: "window"; id: string };
+/** Entity that a perception lens tracks. */
+export type EntityRef =
+  | { kind: "window"; id: string }
+  | { kind: "browserTab"; id: string };  // id = CDP tab ID
 
 /** Identity fingerprint for a tracked window. */
 export interface WindowIdentity {
@@ -93,6 +95,10 @@ export const FLUENT_KINDS = [
   "target.foreground",
   "target.zOrder",
   "modal.above",
+  "target.focusedElement",
+  "browser.url",
+  "browser.title",
+  "browser.readyState",
 ] as const;
 export type FluentKind = (typeof FLUENT_KINDS)[number];
 
@@ -101,6 +107,7 @@ export const GUARD_KINDS = [
   "safe.keyboardTarget",
   "safe.clickCoordinates",
   "stable.rect",
+  "browser.ready",
 ] as const;
 export type GuardKind = (typeof GUARD_KINDS)[number];
 
@@ -112,12 +119,22 @@ export type GuardPolicy = "warn" | "block";
 
 export interface LensSpec {
   name: string;
-  target: { kind: "window"; match: { titleIncludes: string } };
+  target:
+    | { kind: "window"; match: { titleIncludes: string } }
+    | { kind: "browserTab"; match: { urlIncludes?: string; titleIncludes?: string } };
   maintain: FluentKind[];
   guards: GuardKind[];
   guardPolicy: GuardPolicy;
   maxEnvelopeTokens: number;
   salience: "critical" | "normal" | "background";
+}
+
+/** Identity fingerprint for a tracked browser tab. */
+export interface BrowserTabIdentity {
+  tabId: string;
+  title: string;
+  url: string;
+  port: number;
 }
 
 export interface ResolvedBinding {
@@ -129,7 +146,7 @@ export interface PerceptionLens {
   lensId: string;
   spec: LensSpec;
   binding: ResolvedBinding;
-  boundIdentity: WindowIdentity;
+  boundIdentity: WindowIdentity | BrowserTabIdentity;
   fluentKeys: string[];  // concrete dependency keys in the store
   registeredAtSeq: number;
   registeredAtMs: number;
@@ -189,6 +206,7 @@ export interface PerceptionEnvelope {
   changed: string[];  // coalesced human-readable change summaries
   guards: Record<string, boolean>;
   latest: {
+    /** Present for window-kind lenses. */
     target?: {
       title?: string;
       rect?: { x: number; y: number; width: number; height: number };
@@ -196,6 +214,15 @@ export interface PerceptionEnvelope {
       zOrder?: number;
       exists?: boolean;
       modalAbove?: boolean;
+      /** Focused UI element — only present for salience:"critical" lenses with UIA enabled. */
+      focusedElement?: { name: string; controlType: string; automationId?: string; value?: string } | null;
+      confidence: number;
+    };
+    /** Present for browserTab-kind lenses. */
+    browser?: {
+      url?: string;
+      title?: string;
+      readyState?: string;
       confidence: number;
     };
   };

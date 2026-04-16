@@ -8,6 +8,9 @@ const user32 = koffi.load("user32.dll");
 const gdi32 = koffi.load("gdi32.dll");
 const shcore = koffi.load("shcore.dll");
 const kernel32 = koffi.load("kernel32.dll");
+// dwmapi — window composition queries; available on Vista+ (always present on Win 10/11)
+let _dwmapi: ReturnType<typeof koffi.load> | null = null;
+try { _dwmapi = koffi.load("dwmapi.dll"); } catch { /* not available */ }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Structs
@@ -217,6 +220,27 @@ const GWL_EXSTYLE  = -20;
 const WS_EX_TOPMOST = 0x00000008;
 const GW_OWNER     = 4;
 
+// Window ancestry, enabled state, and DWM cloaked detection
+const GetAncestor = user32.func(
+  "intptr __stdcall GetAncestor(void *hWnd, uint32 gaFlags)"
+);
+const GA_ROOTOWNER = 3;
+const IsWindowEnabled = user32.func(
+  "bool __stdcall IsWindowEnabled(void *hWnd)"
+);
+const GetLastActivePopup = user32.func(
+  "intptr __stdcall GetLastActivePopup(void *hWnd)"
+);
+const DWMWA_CLOAKED = 14;
+const _DwmGetWindowAttribute = _dwmapi
+  ? _dwmapi.func(
+      "long __stdcall DwmGetWindowAttribute(void *hwnd, uint32 dwAttribute, _Out_ uint32 *pvAttribute, uint32 cbAttribute)"
+    )
+  : null;
+
+// Suppress unused-variable warning for GetLastActivePopup (reserved for future use)
+void GetLastActivePopup;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // DPI awareness initialization (PROCESS_PER_MONITOR_DPI_AWARE = 2)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -319,6 +343,16 @@ export interface WindowZInfo {
   isMaximized: boolean;
   /** true if this is the current foreground (focused) window. */
   isActive: boolean;
+  /** Extended window style flags (WS_EX_*). Present when enumerated via enumWindowsInZOrder. */
+  exStyle?: number;
+  /** HWND of the direct owner window (GW_OWNER), or null for unowned top-level windows. */
+  ownerHwnd?: bigint | null;
+  /** Window class name (e.g. "#32770" for standard Win32 dialogs). */
+  className?: string;
+  /** True when the window is cloaked by DWM (e.g. UWP background / virtual-desktop windows). */
+  isCloaked?: boolean;
+  /** False when the window is disabled — indicates a modal dialog is blocking input. */
+  isEnabled?: boolean;
 }
 
 /**
@@ -349,6 +383,26 @@ export function enumWindowsInZOrder(): WindowZInfo[] {
 
         const isMaximized = !isMinimized && !!IsZoomed(hwnd);
 
+        // Extended fields for perception modal detection
+        let exStyle = 0;
+        try { exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as number; } catch { /* keep 0 */ }
+        let ownerHwnd: bigint | null = null;
+        try {
+          const raw = GetWindowHwnd(hwnd, GW_OWNER) as bigint;
+          ownerHwnd = raw === 0n ? null : raw;
+        } catch { /* keep null */ }
+        const className = getWindowClassName(hwnd);
+        let isCloaked = false;
+        if (_DwmGetWindowAttribute) {
+          try {
+            const val = [0];
+            _DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, val, 4);
+            isCloaked = val[0] !== 0;
+          } catch { /* keep false */ }
+        }
+        let isEnabled = true;
+        try { isEnabled = !!IsWindowEnabled(hwnd); } catch { /* keep true */ }
+
         results.push({
           hwnd,
           title,
@@ -359,6 +413,11 @@ export function enumWindowsInZOrder(): WindowZInfo[] {
           isMinimized,
           isMaximized,
           isActive: String(hwnd) === fgKey,
+          exStyle,
+          ownerHwnd,
+          className,
+          isCloaked,
+          isEnabled,
         });
       } catch {
         // skip problematic windows
@@ -803,6 +862,49 @@ export function getWindowOwner(hwnd: unknown): bigint | null {
     return owner === 0n ? null : owner;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Return the root-owner HWND (GetAncestor GA_ROOTOWNER=3).
+ * Follows the owner chain to its root; returns the window's own HWND when unowned.
+ * Returns null on failure.
+ */
+export function getWindowRootOwner(hwnd: unknown): bigint | null {
+  try {
+    const root = GetAncestor(hwnd, GA_ROOTOWNER) as bigint;
+    return root === 0n ? null : root;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Return true if the window is enabled (accepts keyboard/mouse input).
+ * Returns true on error (conservative — assume not disabled to avoid missing modals).
+ */
+export function isWindowEnabled(hwnd: unknown): boolean {
+  try {
+    return !!IsWindowEnabled(hwnd);
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Return true if the window is cloaked by DWM (e.g. UWP background windows on
+ * another virtual desktop). Cloaked windows pass IsWindowVisible but are not
+ * actually drawn to the user's screen.
+ * Returns false on error or when DWM is unavailable.
+ */
+export function isWindowCloaked(hwnd: unknown): boolean {
+  if (!_DwmGetWindowAttribute) return false;
+  try {
+    const val = [0];
+    _DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, val, 4);
+    return val[0] !== 0;
+  } catch {
+    return false;
   }
 }
 
