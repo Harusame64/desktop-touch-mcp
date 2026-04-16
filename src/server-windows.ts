@@ -21,7 +21,7 @@ import { registerNotificationTools } from "./tools/notification.js";
 import { registerScrollToElementTools } from "./tools/scroll-to-element.js";
 import { registerSmartScrollTools } from "./tools/smart-scroll.js";
 import { registerPerceptionTools } from "./tools/perception.js";
-import { registerPerceptionResources } from "./tools/perception-resources.js";
+import { registerPerceptionResources, resourceRegistry } from "./tools/perception-resources.js";
 import { startTray, stopTray } from "./utils/tray.js";
 import { checkFailsafe, FailsafeError } from "./utils/failsafe.js";
 import { SERVER_VERSION } from "./version.js";

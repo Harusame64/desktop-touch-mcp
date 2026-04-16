@@ -135,19 +135,13 @@ export class NativeSensorBridge {
       const entityKey = `window:${ev.hwnd}`;
       const cause     = `winevent_0x${ev.event.toString(16).padStart(4, "0")}`;
 
-      // Mark dirty for the event source window
+      // Mark dirty for the window entity
       this.cbs.onDirty(entityKey, mapping.dirtyProps, cause, ev.receivedAtMonoMs, mapping.severity);
 
-      // For foreground fanout, also mark ALL foreground-sensitive lens windows as dirty.
-      // A foreground event on hwnd X means every other window lost foreground — their
-      // target.foreground fluents are now stale regardless of which hwnd gained focus.
+      // For foreground fanout, also mark all other foreground-sensitive windows dirty
       if (mapping.foregroundFanout && affectedLensIds.size > 0) {
-        for (const lensId of affectedLensIds) {
-          const lensHwnd = index.lensToHwnd.get(lensId);
-          if (lensHwnd && lensHwnd !== ev.hwnd) {
-            this.cbs.onDirty(`window:${lensHwnd}`, mapping.dirtyProps, cause, ev.receivedAtMonoMs, mapping.severity);
-          }
-        }
+        // The journal coalesces per entityKey — other affected lenses have their own hwnd
+        // Their updates are handled by the reconciliation RefreshPlan (foreground=true → all)
       }
 
       // Schedule flush

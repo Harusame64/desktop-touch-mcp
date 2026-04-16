@@ -4,7 +4,7 @@
  * Unit tests for resource-model projections.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import {
   buildLensSnapshot,
   projectResourceSummary,
