@@ -89,8 +89,13 @@ async function fetchLatestRelease() {
     throw new Error(`Latest release does not contain ${ASSET_NAME}`);
   }
 
+  const tagName = String(release.tag_name);
+  if (!/^v\d+\.\d+\.\d+$/.test(tagName)) {
+    throw new Error(`Unexpected tag format: ${tagName}`);
+  }
+
   return {
-    tagName: release.tag_name,
+    tagName,
     assetUrl: asset.browser_download_url,
   };
 }
