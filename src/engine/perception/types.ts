@@ -249,4 +249,12 @@ export interface PerceptionEnvelope {
     };
   };
   warnings?: string[];
+  /** Derived action capability (keyboard/mouse) based on guard result. */
+  canAct?: { keyboard: boolean; mouse: boolean };
+  /** Present when attention is identity_changed — tells LLM to forget and re-register. */
+  rebindSuggestion?: {
+    action: "forget_and_register_again";
+    reason: "identity_changed" | "target_missing";
+    lensId: string;
+  };
 }

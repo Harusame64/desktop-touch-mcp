@@ -7,7 +7,7 @@
  * Views:
  *   summary  — attention, watermark, canAct, guards summary, target/browser state
  *   guards   — full GuardResult list
- *   debug    — all fluents, dirty journal, diagnostics (gated behind DEBUG_RESOURCES)
+ *   debug    — all fluents, dirty journal, native diagnostics (gated behind DEBUG_RESOURCES)
  */
 
 import type {
@@ -47,6 +47,14 @@ export function formatGuardSummary(r: GuardResult): string {
   return parts.join(" | ");
 }
 
+// ── RebindSuggestion ──────────────────────────────────────────────────────────
+
+export interface RebindSuggestion {
+  action: "forget_and_register_again";
+  reason: "identity_changed" | "target_missing";
+  lensId: string;
+}
+
 // ── LensSnapshot ─────────────────────────────────────────────────────────────
 
 export interface LensSnapshot {
@@ -58,6 +66,12 @@ export interface LensSnapshot {
   hasDirty: boolean;
   hasSettling: boolean;
   hasStale: boolean;
+  /** Whether the DirtyJournal has any entries for this lens's entity. */
+  hasJournalDirty: boolean;
+  /** Whether the journal is globally dirty (all lenses). For debug resource only. */
+  journalGlobalDirty: boolean;
+  /** Total number of dirty journal entries. For debug resource only. */
+  journalEntryCount: number;
   nowMs: number;
   seq: number;
 }
@@ -65,7 +79,7 @@ export interface LensSnapshot {
 export function buildLensSnapshot(
   lens: PerceptionLens,
   store: FluentStore,
-  _journal: DirtyJournal,
+  journal: DirtyJournal,
 ): LensSnapshot {
   const nowMs = Date.now();
   const guardResult = evaluateGuards(lens, store, lens.spec.guardPolicy ?? "block");
@@ -81,11 +95,17 @@ export function buildLensSnapshot(
   const hasSettling = [...fluents.values()].some(f => f.status === "settling");
   const hasStale    = [...fluents.values()].some(f => f.status === "stale");
 
+  // Check journal for event-driven dirty marks on this entity.
+  const entityKey   = `${lens.spec.target.kind}:${lens.binding.hwnd}`;
+  const hasJournalDirty = journal.isGlobalDirty() || journal.entries().has(entityKey);
+
   // Derive attention with full priority chain (mirrors envelope.ts deriveAttention)
   let attention: AttentionState;
   if (!guardResult.ok) {
-    attention = "guard_failed";
-  } else if (hasDirty) {
+    // identity_changed guard failure gets specific attention state
+    const failedKind = guardResult.failedGuard?.kind ?? "";
+    attention = failedKind === "target.identityStable" ? "identity_changed" : "guard_failed";
+  } else if (hasDirty || hasJournalDirty) {
     attention = "dirty";
   } else if (hasSettling) {
     attention = "settling";
@@ -104,6 +124,9 @@ export function buildLensSnapshot(
     hasDirty,
     hasSettling,
     hasStale,
+    hasJournalDirty,
+    journalGlobalDirty: journal.isGlobalDirty(),
+    journalEntryCount:  journal.entries().size,
     nowMs,
     seq: store.currentSeq(),
   };
@@ -119,6 +142,7 @@ export interface SummaryResource {
     hasDirty: boolean;
     hasSettling: boolean;
     hasStale: boolean;
+    hasJournalDirty: boolean;
   };
   target?: Record<string, unknown>;
   browser?: Record<string, unknown>;
@@ -126,10 +150,11 @@ export interface SummaryResource {
   changed: string[];
   canAct: CanAct;
   suggestedNext?: string;
+  rebindSuggestion?: RebindSuggestion;
 }
 
 export function projectResourceSummary(snapshot: LensSnapshot): SummaryResource {
-  const { lens, guardResult, canAct, attention, fluents, hasDirty, hasSettling, hasStale, nowMs, seq } = snapshot;
+  const { lens, guardResult, canAct, attention, fluents, hasDirty, hasSettling, hasStale, hasJournalDirty, nowMs, seq } = snapshot;
   const entityKind = lens.spec.target.kind;
   const entityId   = lens.binding.hwnd;
 
@@ -146,17 +171,26 @@ export function projectResourceSummary(snapshot: LensSnapshot): SummaryResource 
     lensId: lens.lensId,
     seq,
     attention,
-    watermark: { hasDirty, hasSettling, hasStale },
+    watermark: { hasDirty, hasSettling, hasStale, hasJournalDirty },
     guards: guardsOut,
     changed: [],
     canAct,
   };
 
   // Suggest next action based on attention
-  if (!guardResult.ok && guardResult.failedGuard) {
+  if (attention === "identity_changed") {
+    summary.suggestedNext = "Window identity changed. Forget and re-register the lens.";
+    summary.rebindSuggestion = {
+      action: "forget_and_register_again",
+      reason: "identity_changed",
+      lensId: lens.lensId,
+    };
+  } else if (!guardResult.ok && guardResult.failedGuard) {
     summary.suggestedNext = guardResult.failedGuard.suggestedAction;
-  } else if (hasDirty || hasSettling) {
-    summary.suggestedNext = "Call perception_read to get fresh observations";
+  } else if (attention === "dirty" || attention === "settling") {
+    summary.suggestedNext = "Call perception_read to get fresh observations before acting";
+  } else if (attention === "stale") {
+    summary.suggestedNext = "Call perception_read to refresh stale state";
   } else if (attention === "ok") {
     summary.suggestedNext = "Ready to act";
   }
@@ -196,11 +230,12 @@ export interface GuardsResource {
   policy: string;
   ok: boolean;
   guards: Array<GuardResult & { summary: string }>;
+  rebindSuggestion?: RebindSuggestion;
 }
 
 export function projectResourceGuards(snapshot: LensSnapshot): GuardsResource {
-  const { lens, guardResult, seq } = snapshot;
-  return {
+  const { lens, guardResult, seq, attention } = snapshot;
+  const result: GuardsResource = {
     lensId: lens.lensId,
     seq,
     policy: lens.spec.guardPolicy ?? "block",
@@ -210,6 +245,14 @@ export function projectResourceGuards(snapshot: LensSnapshot): GuardsResource {
       summary: formatGuardSummary(r),
     })),
   };
+  if (attention === "identity_changed") {
+    result.rebindSuggestion = {
+      action: "forget_and_register_again",
+      reason: "identity_changed",
+      lensId: lens.lensId,
+    };
+  }
+  return result;
 }
 
 export interface DebugResource {
@@ -224,24 +267,39 @@ export interface DebugResource {
     lastDirtyAtMonoMs: number | undefined;
     lastDirtyCause: string | undefined;
   }>;
+  dirtyJournal: {
+    hasEntityDirty: boolean;
+    globalDirty: boolean;
+    entryCount: number;
+    dirtyEntityKeys: string[];
+  };
   diagnostics: {
     hasDirty: boolean;
     hasSettling: boolean;
     hasStale: boolean;
+    hasJournalDirty: boolean;
     guardOk: boolean;
     attention: AttentionState;
   };
+  native?: unknown;
   warnings: string[];
 }
 
-export function projectResourceDebug(snapshot: LensSnapshot): DebugResource {
-  const { lens, guardResult, fluents, hasDirty, hasSettling, hasStale, attention, seq, nowMs } = snapshot;
+export function projectResourceDebug(
+  snapshot: LensSnapshot,
+  nativeDiagnostics?: unknown,
+): DebugResource {
+  const { lens, guardResult, fluents, hasDirty, hasSettling, hasStale, hasJournalDirty, attention, seq, nowMs } = snapshot;
 
   const warnings: string[] = [];
-  if (hasDirty)    warnings.push("has_dirty_fluents");
-  if (hasSettling) warnings.push("has_settling_fluents");
-  if (hasStale)    warnings.push("has_stale_fluents");
+  if (hasDirty)        warnings.push("has_dirty_fluents");
+  if (hasSettling)     warnings.push("has_settling_fluents");
+  if (hasStale)        warnings.push("has_stale_fluents");
+  if (hasJournalDirty) warnings.push("has_journal_dirty");
   if (!guardResult.ok) warnings.push(`guard_failed:${guardResult.failedGuard?.kind}`);
+
+  // Journal info: lens-specific entity key
+  const entityKey = `${lens.spec.target.kind}:${lens.binding.hwnd}`;
 
   return {
     lensId: lens.lensId,
@@ -255,13 +313,21 @@ export function projectResourceDebug(snapshot: LensSnapshot): DebugResource {
       lastDirtyAtMonoMs: f.lastDirtyAtMonoMs,
       lastDirtyCause: f.lastDirtyCause,
     })),
+    dirtyJournal: {
+      hasEntityDirty:  snapshot.hasJournalDirty,
+      globalDirty:     snapshot.journalGlobalDirty,
+      entryCount:      snapshot.journalEntryCount,
+      dirtyEntityKeys: snapshot.hasJournalDirty ? [entityKey] : [],
+    },
     diagnostics: {
       hasDirty,
       hasSettling,
       hasStale,
+      hasJournalDirty,
       guardOk: guardResult.ok,
       attention,
     },
+    ...(nativeDiagnostics !== undefined && { native: nativeDiagnostics }),
     warnings,
   };
 }

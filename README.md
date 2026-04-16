@@ -4,8 +4,6 @@
 
 [日本語](README.ja.md)
 
-[Glama Link](https://glama.ai/mcp/servers/Harusame64/desktop-touch-mcp)
-
 > **Stop pasting screenshots. Let Claude see and control your desktop directly.**
 
 An MCP server that gives Claude eyes and hands on Windows — 56 tools covering screenshots, mouse, keyboard, Windows UI Automation, Chrome DevTools Protocol, clipboard, desktop notifications, SmartScroll, and a Reactive Perception Graph for safe multi-step automation, designed from the ground up for LLM efficiency.
@@ -17,10 +15,11 @@ An MCP server that gives Claude eyes and hands on Windows — 56 tools covering 
 ## Features
 
 - **LLM-native design** — Built around how LLMs think, not how humans click. `run_macro` batches multiple operations into a single API call; `diffMode` sends only the windows that changed since the last frame. Minimal tokens, minimal round-trips.
+- **Reactive Perception Graph** — Register a `lensId` for a window or browser tab, pass it to action tools, and get guard-checked `post.perception` feedback after each action. It reduces repeated `screenshot` / `get_context` calls and prevents wrong-window typing or stale-coordinate clicks.
 - **Full CJK support** — Uses Win32 `GetWindowTextW` for window titles, avoiding nut-js garbling. IME bypass input supported for Japanese/Chinese/Korean environments.
 - **3-tier token reduction** — `detail="image"` (~443 tok) / `detail="text"` (~100–300 tok) / `diffMode=true` (~160 tok). Send pixels only when you actually need to see them.
 - **1:1 coordinate mode** — `dotByDot=true` captures at native resolution (WebP). Image pixel = screen coordinate — no scale math needed. With `origin`+`scale` passed to `mouse_click`, the server converts coords for you — eliminating off-by-one / scale bugs.
-- **Chrome / AWS data reduction** — `grayscale=true` (~50% size), `dotByDotMaxDimension=1280` (auto-scaled with coord preservation), `windowTitle + region` sub-crop (exclude browser chrome). Targeted at heavy dotByDot captures. Typical token reduction: 50–70%.
+- **Browser capture data reduction** — `grayscale=true` (~50% size), `dotByDotMaxDimension=1280` (auto-scaled with coord preservation), and `windowTitle + region` sub-crops help exclude browser chrome and other irrelevant pixels. Typical reduction for heavy captures: 50–70%.
 - **Chromium smart fallback** — `detail="text"` on Chrome/Edge/Brave auto-skips UIA (prohibitively slow there) and runs Windows OCR. `hints.chromiumGuard` + `hints.ocrFallbackFired` flag the path taken.
 - **UIA element extraction** — `detail="text"` returns button names and `clickAt` coords as JSON. Claude can click the right element without ever looking at a screenshot.
 - **Auto-dock CLI** — `dock_window` snaps any window to a screen corner with always-on-top. Set `DESKTOP_TOUCH_DOCK_TITLE='@parent'` to auto-dock the terminal hosting Claude on MCP startup — the process-tree walker finds the right window regardless of title.
@@ -237,27 +236,28 @@ Keep Claude CLI visible while operating other apps full-screen. Set env vars in 
 
 > **Input routing gotcha:** when a pinned window is active (e.g. Claude CLI), `keyboard_type` / `keyboard_press` send keys to it, **not** the app you wanted to type into. Always call `focus_window(title=...)` before keyboard operations, then verify `isActive=true` via `screenshot(detail='meta')`.
 
-### Reactive Perception (experimental)
+### Reactive Perception Graph (4)
 
 | Tool | Description |
 |---|---|
-| `perception_register` | Register a standing perception lens on a target window. Returns a `lensId` to pass to action tools |
-| `perception_read` | Force-refresh Win32 fluents and return a full perception envelope |
-| `perception_forget` | Deregister a lens by ID |
-| `perception_list` | List all active lenses |
+| `perception_register` | Register a live perception lens on a window or browser tab. Returns a `lensId` to pass to action tools |
+| `perception_read` | Force-refresh the lens and return a full perception envelope when attention is dirty/stale/blocked |
+| `perception_forget` | Release a lens when the workflow ends or the target was replaced |
+| `perception_list` | List active lenses so Claude can reuse or clean up existing tracking |
 
-Prevents typing into wrong windows, detects moved windows before coordinate clicks, and surfaces modal dialogs before they cause errors.
+Reactive Perception Graph is desktop-touch's low-cost situational awareness layer. It keeps the target identity, focus, rect, readiness, and guard state alive across actions so Claude does not need to re-check everything with a screenshot after every small move.
 
 ```
-# Register a lens on the target window
+# Register a lens on the target window or browser tab
 perception_register({name:"editor", target:{kind:"window", match:{titleIncludes:"Notepad"}}})
 → {lensId:"perc-1", ...}
 
-# Pass lensId to action tools — guards run before the action, envelope arrives in post.perception
+# Pass lensId to action tools. Guards run before the action;
+# compact feedback arrives in post.perception after the action.
 keyboard_type({text:"hello", windowTitle:"Notepad", lensId:"perc-1"})
 → post.perception: {attention:"ok", guards:{...}, latest:{target:{title, rect, foreground}}}
 
-# When the window closes and a new one opens, identity guard blocks automatically:
+# If the app restarts or focus moves away, guards fail closed before unsafe input:
 keyboard_type({text:"x", lensId:"perc-1"})
 → {ok:false, code:"GuardFailed", suggest:["Re-register lens for the new process instance"]}
 ```

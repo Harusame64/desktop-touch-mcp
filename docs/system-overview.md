@@ -22,10 +22,10 @@ desktop-touch-mcp (Node.js / TypeScript)
     │   ├── layer-buffer.ts — per-window layer buffer: frame-diff detection (MPEG P-frame style)
     │   ├── cdp-bridge.ts   — Chrome DevTools Protocol: WebSocket sessions + DOM→screen coords
     │   ├── window-cache.ts — window-position cache used by the homing-correction path (dx,dy)
-    │   ├── event-bus.ts    — 500 ms Win32 polling bus; perception sensor piggybacks on it
+    │   ├── event-bus.ts    — Win32 window-state event bus used by perception sensors
     │   ├── identity-tracker.ts — processStartTimeMs-based window identity; detects restarts
     │   ├── poll.ts         — shared pollUntil utility
-    │   └── perception/     — Reactive Perception Graph (v0.9)
+    │   └── perception/     — Reactive Perception Graph (v0.11)
     │       ├── types.ts            — pure types: Observation / Fluent / PerceptionLens / GuardResult / PerceptionEnvelope
     │       ├── evidence.ts         — makeEvidence / isStale / confidenceFor (win32=0.98, image=0.60, inferred=0.50)
     │       ├── fluent-store.ts     — FluentStore: TMS-lite reconcile (newer seq wins; higher confidence wins)
@@ -628,13 +628,15 @@ smart_scroll({target: '#footer-nav'})  # detects and compensates automatically
 
 ---
 
-### 👁️ Reactive Perception (v0.9)
+### 👁️ Reactive Perception Graph (v0.11)
 
-Server-side window state tracking. Register a lens on a target window once, then pass `lensId` to action tools to get guards before each action and a perception envelope in every response — without extra round-trips.
+Low-cost situational awareness for repeated desktop actions. Register a perception lens on a target window or browser tab, then pass `lensId` to action tools. The server verifies target identity, focus, readiness, modal obstruction, and click safety before the action, then attaches a compact `post.perception` envelope after the action — without forcing another `screenshot` or `get_context` round trip.
+
+The unit of tracking is a `PerceptionLens`: a live state tracker for one task-relevant target. It is not a screenshot cache and not a raw event stream. It maintains only the structured state needed to decide whether the next action is still safe.
 
 #### `perception_register`
 
-Register a standing perception lens on a target window. Returns a `lensId`.
+Register a live perception lens on a target window or browser tab. Returns a `lensId`.
 
 ```
 perception_register({
@@ -647,13 +649,13 @@ perception_register({
 → { lensId: "perc-1", seq: 1, digest: "..." }
 ```
 
-The server immediately resolves the window (foreground-preferred when multiple titles match), populates Win32 fluents, and starts listening to the event-bus for state changes. Subsequent action tool calls with `lensId` will:
-1. **Guard check** — evaluate guards before the action. If `guardPolicy:"block"` and a guard fails → `{ok:false, code:"GuardFailed", suggest:[...]}`.
-2. **Envelope** — attach `post.perception` (attention + guard states + latest fluents) to the success response.
+The server resolves the target (foreground-preferred for duplicate window titles), populates structured fluents, and keeps them fresh through Win32/CDP/UIA sensors. Subsequent action tool calls with `lensId` will:
+1. **Guard check** — refresh relevant state and evaluate guards before the action. If `guardPolicy:"block"` and a guard fails, the action fails closed with `{ok:false, code:"GuardFailed", suggest:[...]}`.
+2. **Envelope** — attach `post.perception` to the success response with attention, guard states, changed fields, and the latest known target state.
 
 #### `perception_read`
 
-Force-refresh all Win32 fluents for a lens and return its current perception envelope. Use when you want fresh state without performing an action.
+Force-refresh a lens and return its current perception envelope. Use when `post.perception.attention` is `dirty`, `stale`, `settling`, `guard_failed`, or `identity_changed`, or when you want fresh structured state without performing an action.
 
 ```
 perception_read({ lensId: "perc-1" })
@@ -683,6 +685,9 @@ List all active lenses with their binding, seq, and attention state.
 | `target.rect` | Window bounding rect (pixels) |
 | `target.identity` | `{ hwnd, pid, processName, processStartTimeMs }` |
 | `modal.above` | Is a topmost/dialog-class window above the target? |
+| `browser.url` | Current browser tab URL for `browserTab` lenses |
+| `browser.title` | Current browser tab title for `browserTab` lenses |
+| `browser.readyState` | Current document readiness for `browserTab` lenses |
 
 #### Guards
 
@@ -692,6 +697,7 @@ List all active lenses with their binding, seq, and attention state.
 | `safe.keyboardTarget` | Window is not foreground, OR a modal is above it, OR identity is unstable |
 | `safe.clickCoordinates` | Click point is outside the target rect (or rect is stale >500 ms) |
 | `stable.rect` | Rect changed in the last 250 ms (window moving / resizing) |
+| `browser.ready` | Browser tab is not yet ready for DOM-oriented actions |
 
 #### Perception envelope shape (`post.perception`)
 
@@ -714,7 +720,7 @@ List all active lenses with their binding, seq, and attention state.
 }
 ```
 
-`attention` values: `"ok"` / `"changed"` / `"dirty"` / `"stale"` / `"guard_failed"` / `"identity_changed"` / `"needs_escalation"`
+`attention` values: `"ok"` / `"changed"` / `"dirty"` / `"settling"` / `"stale"` / `"guard_failed"` / `"identity_changed"` / `"needs_escalation"`
 
 #### Usage example
 
@@ -723,7 +729,7 @@ List all active lenses with their binding, seq, and attention state.
 perception_register({name:"editor", target:{kind:"window", match:{titleIncludes:"Notepad"}}})
 → {lensId:"perc-1"}
 
-# Pass lensId to any action tool — guards + envelope are automatic
+# Pass lensId to any action tool. Guards + envelope are automatic.
 keyboard_type({text:"hello", windowTitle:"Notepad", lensId:"perc-1"})
 → post.perception: {attention:"ok", guards:{...}, latest:{target:{title, rect, foreground}}}
 
@@ -734,7 +740,7 @@ keyboard_type({text:"x", lensId:"perc-1"})
 
 `lensId` is opt-in on: `keyboard_type`, `keyboard_press`, `mouse_click`, `mouse_drag`, `click_element`, `set_element_value`, `browser_click_element`, `browser_navigate`, `browser_eval`. Omitting `lensId` preserves existing behavior exactly.
 
-**Limits:** max 16 active lenses (FIFO evict when exceeded). Sensor loop runs a separate 250 ms drain timer on top of the event-bus's 500 ms Win32 polling tick; no extra `EnumWindows` calls beyond the event-bus's own sweep.
+**Limits:** max 16 active lenses. Sensor work is staged by cost: cheap Win32/CDP state is refreshed first; UIA focus, OCR, and screenshots remain escalation paths rather than baseline perception. `safe.clickCoordinates` validates window bounds, not pixel-level occlusion.
 
 ---
 

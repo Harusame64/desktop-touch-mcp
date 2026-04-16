@@ -1191,7 +1191,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "perception_forget",
-    "description": "Deregister a lens by lensId. Removes it from the dependency graph and cleans up its event-bus subscription when no other lenses remain. Returns {ok, removed, lensId}.",
+    "description": "Deregister a perception lens and release its tracking resources. Use when a workflow is complete, when attention is identity_changed, or before re-registering a target that was closed, restarted, or replaced. Removes the lens from guard evaluation, resource listings, and sensor subscriptions. Returns whether a lens was removed.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1208,7 +1208,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "perception_list",
-    "description": "List all currently active perception lenses with their lensId, name, target window, guardPolicy, salience, and registration time. Returns {ok, count, lenses[]}.",
+    "description": "List all active perception lenses. Use when you need to find an existing lensId, verify which windows or browser tabs are being tracked, or clean up stale lenses before starting a new workflow. Returns lensId, name, target kind, guardPolicy, salience, attention, and registration metadata.",
     "inputSchema": {
       "type": "object",
       "properties": {},
@@ -1217,7 +1217,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "perception_read",
-    "description": "Force-refresh Win32 fluents for a lens and return a full perception envelope. Use after an action that may have changed window state, or when post.perception.attention is 'dirty' or 'stale'. Returns {ok, seq, attention, guards, latest, changed}.",
+    "description": "Force-refresh a registered perception lens and return a full perception envelope. Use when post.perception.attention is dirty, stale, settling, guard_failed, or identity_changed, or when you need fresh structured state before the next action. Returns attention, guard results, latest target/browser state, changed fields, and suggested recovery actions. Prefer this over screenshot/get_context when a lens already exists.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1240,7 +1240,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "perception_register",
-    "description": "Purpose: Register a standing perception lens on a target window. The MCP server will maintain Win32-backed fluents (position, foreground, identity, modal obstruction) and evaluate safety guards before actions that reference this lens.\nDetails: Creates a PerceptionLens bound to the first foreground window whose title matches titleIncludes. Immediately reads Win32 state to populate fluents (exists, identity, title, rect, foreground, zOrder, modal.above). Returns a lensId to pass to action tools (keyboard_type, mouse_click, etc.) via the lensId parameter. When lensId is provided, the tool: (1) refreshes fluents just before acting, (2) evaluates guards, (3) blocks (guardPolicy:'block') or warns (guardPolicy:'warn') if any guard fails, and (4) attaches a perception envelope to post.perception in the response so the LLM can see what changed without an extra get_context call. The sensor runs on the existing 500 ms event-bus tick (no new polling timer). Maximum 16 active lenses; oldest is evicted when exceeded.\nPrefer: Use when you need keyboard/mouse safety across multiple actions on the same window: prevents typing into wrong window after focus changes, detects moved windows before coordinate clicks, and surfaces modal dialogs before they cause errors. Not needed for single one-shot actions.\nCaveats: Phase 4 (v0.10): Win32 + CDP + UIA sensors. modal.above uses owner-chain and disabled-owner rules. target.focusedElement is maintained only for salience:'critical' window lenses (UIA, cached 500ms). browserTab lenses require Chrome/Edge with --remote-debugging-port=9222; they maintain browser.url/title/readyState and check browser.readyState==='complete' for browser.ready guard. Focus-within-window changes (Tab key) surface on the next 500ms tick or explicit perception_read. safe.clickCoordinates uses rect containment only (no pixel-level z-order hit test).\nExamples:\n  perception_register({name:'editor', target:{kind:'window', match:{titleIncludes:'Visual Studio Code'}}}) → {lensId:'perc-1', ...}\n  keyboard_type({windowTitle:'Visual Studio Code', text:'hello', lensId:'perc-1'}) → includes post.perception.{attention, guards, latest}\n  perception_read({lensId:'perc-1'}) → explicit refresh + full envelope when you want to inspect state without acting",
+    "description": "Purpose: Register a perception lens, a lightweight live state tracker for one window or browser tab. Use it before repeated actions so later tool calls can verify target identity, focus, readiness, modal obstruction, and click safety without taking another screenshot.\nDetails: Returns a lensId that can be passed to action tools such as keyboard_type, keyboard_press, mouse_click, browser_click_element, and browser_navigate. When a tool receives lensId, desktop-touch refreshes the tracked state, evaluates safety guards, and attaches a compact post.perception envelope to the response. The envelope reports attention, guard status, recent changes, and the latest known target state, reducing get_context/screenshot round trips.\nPrefer: Use for multi-step workflows on the same app window or browser tab, especially before typing, clicking coordinates, navigating browser tabs, or acting after focus may have changed. It is most useful when mistakes would be costly, such as typing into the wrong window or clicking stale coordinates.\nCaveats: A lens is not a visual recognition model. It tracks structured state from Win32, CDP, and optional UIA sensors. safe.clickCoordinates checks window bounds, not pixel-level occlusion. browserTab lenses require Chrome/Edge with --remote-debugging-port=9222. If attention is dirty, stale, settling, guard_failed, or identity_changed, follow the suggested action before continuing. Maximum 16 active lenses are kept; old lenses may be evicted.\nExamples:\n  perception_register({name:'editor', target:{kind:'window', match:{titleIncludes:'Visual Studio Code'}}}) → {lensId:'perc-1'}\n  keyboard_type({windowTitle:'Visual Studio Code', text:'hello', lensId:'perc-1'}) → response includes post.perception\n  perception_read({lensId:'perc-1'}) → force a fresh envelope when attention is dirty/stale\n  perception_forget({lensId:'perc-1'}) → release tracking when the workflow is done",
     "inputSchema": {
       "type": "object",
       "properties": {

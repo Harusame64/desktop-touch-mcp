@@ -4,12 +4,16 @@
  * Scenario 1: "guard warn mode — envelope attached to keyboard_type"
  *   - Launch Notepad, register a perception lens (guardPolicy:"warn")
  *   - Type text with lensId → verify post.perception envelope is attached
- *   - Envelope should include attention, guards, latest.target fields
+ *   - Envelope should include attention, guards, canAct, latest.target fields
  *
  * Scenario 2: "identity invalidation blocks keyboard_type (block mode)"
  *   - Launch Notepad, register a lens (guardPolicy:"block")
  *   - Kill Notepad, launch a new Notepad (different pid)
  *   - keyboard_type with lensId → should return {ok:false, code:"GuardFailed"}
+ *
+ * Scenario 3: "rebindSuggestion in envelope when identity_changed (v0.11.0 F8)"
+ *   - Register a lens, kill the target, rebuild the envelope
+ *   - If identity changed, rebindSuggestion must be present in the envelope
  *
  * Prerequisites: desktop, Notepad available, Win32 access.
  * Run with: npx vitest run tests/e2e/perception-mvp.test.ts
@@ -108,11 +112,15 @@ describe("Scenario 1: perception lens — envelope in keyboard_type response", (
     expect(env.attention).toBeDefined();
     expect(env.guards).toBeDefined();
     expect(env.latest?.target).toBeDefined();
+    // v0.11.0 F8: canAct must be present in every envelope
+    expect(env.canAct).toBeDefined();
+    expect(typeof env.canAct.keyboard).toBe("boolean");
+    expect(typeof env.canAct.mouse).toBe("boolean");
   });
 
-  it("evaluatePreToolGuards returns results with focus active", () => {
+  it("evaluatePreToolGuards returns results with focus active", async () => {
     try { restoreAndFocusWindow(np.hwnd); } catch { /* non-fatal */ }
-    const result = evaluatePreToolGuards(lensId, "keyboard_type", {});
+    const result = await evaluatePreToolGuards(lensId, "keyboard_type", {});
     // policy is warn — ok may be false if not foreground, but policy field is correct
     expect(result.policy).toBe("warn");
     expect(result.results.length).toBeGreaterThan(0);
@@ -169,11 +177,11 @@ describe("Scenario 2: identity invalidation blocks keyboard_type", () => {
     np2?.kill();
   });
 
-  it("evaluatePreToolGuards blocks after original process exited (identity changed)", () => {
+  it("evaluatePreToolGuards blocks after original process exited (identity changed)", async () => {
     // The registered lens has the old window's identity (pid + processStartTimeMs).
     // After np1 dies and np2 starts, the identity stored in the FluentStore will be
     // refreshed to np2's identity on the next guard evaluation, which won't match boundIdentity.
-    const result = evaluatePreToolGuards(lensId, "keyboard_type", {});
+    const result = await evaluatePreToolGuards(lensId, "keyboard_type", {});
     // Identity should be unstable (different process)
     const identityGuard = result.results.find(r => r.kind === "target.identityStable");
     // If np1 and np2 happen to have same pid (rare but possible), this test may not fail.
@@ -209,6 +217,68 @@ describe("Scenario 2: identity invalidation blocks keyboard_type", () => {
     } else {
       // Identity happened to match (same pid reuse) → guard passed
       expect(p.ok).toBe(true);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scenario 3: rebindSuggestion in envelope when identity_changed (v0.11.0 F8)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("Scenario 3: rebindSuggestion in envelope on identity_changed", () => {
+  let np1: NpInstance;
+  let np2: NpInstance;
+  let lensId: string;
+
+  beforeAll(async () => {
+    __resetRegistry();
+    np1 = await launchNotepad();
+    try { restoreAndFocusWindow(np1.hwnd); } catch { /* non-fatal */ }
+    await sleep(400);
+
+    const spec: LensSpec = {
+      ...blockSpec,
+      name: `rebind-${np1.tag}`,
+      target: { kind: "window", match: { titleIncludes: np1.tag } },
+    };
+    const result = registerLens(spec);
+    lensId = result.lensId;
+
+    // Kill original window, launch a different one to change identity
+    np1.kill();
+    await sleep(600);
+    np2 = await launchNotepad();
+    await sleep(300);
+  }, 60_000);
+
+  afterAll(() => {
+    if (lensId) { try { forgetLens(lensId); } catch { /* ignore */ } }
+    np1?.kill();
+    np2?.kill();
+  });
+
+  it("buildEnvelopeFor returns canAct in every envelope", () => {
+    const env = buildEnvelopeFor(lensId, { toolName: "test" });
+    expect(env).not.toBeNull();
+    // v0.11.0 F8: canAct is always present
+    expect(env!.canAct).toBeDefined();
+    expect(typeof env!.canAct.keyboard).toBe("boolean");
+    expect(typeof env!.canAct.mouse).toBe("boolean");
+  });
+
+  it("buildEnvelopeFor includes rebindSuggestion when identity_changed", () => {
+    const env = buildEnvelopeFor(lensId, { toolName: "test" });
+    expect(env).not.toBeNull();
+
+    if (env!.attention === "identity_changed") {
+      // v0.11.0 F8: rebindSuggestion must be present
+      expect(env!.rebindSuggestion).toBeDefined();
+      expect(env!.rebindSuggestion!.action).toBe("forget_and_register_again");
+      expect(env!.rebindSuggestion!.reason).toBe("identity_changed");
+      expect(env!.rebindSuggestion!.lensId).toBe(lensId);
+    } else {
+      // identity did not change (pid reuse) — rebindSuggestion absent is correct
+      expect(env!.rebindSuggestion).toBeUndefined();
     }
   });
 });

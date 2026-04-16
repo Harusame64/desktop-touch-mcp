@@ -135,8 +135,13 @@ export class NativeSensorBridge {
       const entityKey = `window:${ev.hwnd}`;
       const cause     = `winevent_0x${ev.event.toString(16).padStart(4, "0")}`;
 
-      // Mark dirty for the event source window
-      this.cbs.onDirty(entityKey, mapping.dirtyProps, cause, ev.receivedAtMonoMs, mapping.severity);
+      // For foreground fanout events, only dirty the source HWND when it is a tracked lens.
+      // Dirtying an untracked HWND creates a journal entry that executeRefreshPlan never clears,
+      // causing repeated sweeps. For non-fanout events the source is always relevant.
+      const shouldDirtySource = !mapping.foregroundFanout || lensesForHwnd(index, ev.hwnd).size > 0;
+      if (shouldDirtySource) {
+        this.cbs.onDirty(entityKey, mapping.dirtyProps, cause, ev.receivedAtMonoMs, mapping.severity);
+      }
 
       // For foreground fanout, also mark ALL foreground-sensitive lens windows as dirty.
       // A foreground event on hwnd X means every other window lost foreground — their

@@ -515,7 +515,7 @@ export const browserClickElementHandler = async ({
 }): Promise<ToolResult> => {
   try {
     if (lensId) {
-      const guardResult = evaluatePreToolGuards(lensId, "browser_click_element", {});
+      const guardResult = await evaluatePreToolGuards(lensId, "browser_click_element", {});
       if (!guardResult.ok && guardResult.policy === "block") {
         return failWith(
           new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
@@ -616,7 +616,7 @@ export const browserEvalHandler = async ({
 }): Promise<ToolResult> => {
   try {
     if (lensId) {
-      const guardResult = evaluatePreToolGuards(lensId, "browser_eval", {});
+      const guardResult = await evaluatePreToolGuards(lensId, "browser_eval", {});
       if (!guardResult.ok && guardResult.policy === "block") {
         return failWith(
           new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
@@ -706,7 +706,7 @@ export const browserNavigateHandler = async ({
 }): Promise<ToolResult> => {
   try {
     if (lensId) {
-      const guardResult = evaluatePreToolGuards(lensId, "browser_navigate", {});
+      const guardResult = await evaluatePreToolGuards(lensId, "browser_navigate", {});
       if (!guardResult.ok && guardResult.policy === "block") {
         return failWith(
           new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
