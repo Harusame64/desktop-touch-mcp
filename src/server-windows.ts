@@ -227,7 +227,7 @@ if (useHttp) {
   });
   httpTransportRef = transport;
 
-  const httpServer = createServer((req, res) => {
+  const httpServer = createServer(async (req, res) => {
     // DNS rebinding protection
     const host = req.headers.host ?? "";
     if (!host.startsWith("127.0.0.1:") && !host.startsWith("localhost:")
@@ -249,7 +249,7 @@ if (useHttp) {
     }
 
     if (req.url?.startsWith("/mcp")) {
-      transport.handleRequest(req, res);
+      await transport.handleRequest(req, res);
     } else if (req.url === "/health" || req.url === "/") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ status: "ok", name: "desktop-touch-mcp", version: SERVER_VERSION }));
