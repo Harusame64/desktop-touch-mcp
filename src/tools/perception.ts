@@ -12,7 +12,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ok, buildDesc } from "./_types.js";
 import { failWith, failArgs } from "./_errors.js";
 import {
-  registerLens,
+  registerLensAsync,
   forgetLens,
   listLenses,
   readLens,
@@ -28,20 +28,38 @@ export const perceptionRegisterSchema = {
   name: z.string().min(1).max(80).describe(
     "Human-readable name for this lens (e.g. 'target-editor'). Helps identify it in perception_list."
   ),
-  target: z.object({
-    kind: z.literal("window"),
-    match: z.object({
-      titleIncludes: z.string().min(1).describe(
-        "Case-insensitive substring that must appear in the window title. " +
-        "The foreground window is preferred when multiple windows match."
-      ),
+  target: z.discriminatedUnion("kind", [
+    z.object({
+      kind: z.literal("window"),
+      match: z.object({
+        titleIncludes: z.string().min(1).describe(
+          "Case-insensitive substring that must appear in the window title. " +
+          "The foreground window is preferred when multiple windows match."
+        ),
+      }),
     }),
-  }).describe("Target entity to track. MVP supports window targets only."),
+    z.object({
+      kind: z.literal("browserTab"),
+      match: z.object({
+        urlIncludes: z.string().min(1).optional().describe(
+          "Case-insensitive substring that must appear in the tab URL."
+        ),
+        titleIncludes: z.string().min(1).optional().describe(
+          "Case-insensitive substring that must appear in the tab title."
+        ),
+      }).refine(m => m.urlIncludes || m.titleIncludes, {
+        message: "browserTab match requires at least urlIncludes or titleIncludes",
+      }),
+    }),
+  ]).describe(
+    "Target entity to track. 'window' targets use Win32; 'browserTab' targets use CDP " +
+    "(requires Chrome/Edge running with --remote-debugging-port=9222)."
+  ),
   maintain: z.array(z.enum(FLUENT_KINDS))
     .default([...FLUENT_KINDS])
     .describe(
-      "Fluents to keep alive. Defaults to all MVP fluents: exists, identity, title, rect, " +
-      "foreground, zOrder, modal.above."
+      "Fluents to keep alive. Defaults to all fluents; irrelevant kinds for the target type are " +
+      "silently ignored (e.g., browser.* fluents are skipped on window lenses)."
     ),
   guards: z.array(z.enum(GUARD_KINDS))
     .default([...GUARD_KINDS])
@@ -81,7 +99,7 @@ export const perceptionListSchema = {};
 
 export const perceptionRegisterHandler = async (params: {
   name: string;
-  target: { kind: "window"; match: { titleIncludes: string } };
+  target: LensSpec["target"];
   maintain: string[];
   guards: string[];
   guardPolicy: "warn" | "block";
@@ -103,7 +121,7 @@ export const perceptionRegisterHandler = async (params: {
       salience: params.salience,
     };
 
-    const result = registerLens(spec);
+    const result = await registerLensAsync(spec);
     return ok({
       ok: true,
       lensId: result.lensId,
@@ -172,11 +190,12 @@ const perceptionRegisterDesc = buildDesc({
     "coordinate clicks, and surfaces modal dialogs before they cause errors. Not needed for " +
     "single one-shot actions.",
   caveats:
-    "Win32 sensors + modal owner-chain detection. modal.above uses disabled-owner, direct ownership, " +
-    "#32770 class, and WS_EX_TOPMOST rules (cloaked/tooltip windows filtered). " +
-    "No UIA focused-element push or CDP navigation events yet. " +
-    "safe.clickCoordinates uses rect containment only (no pixel-level z-order hit test). " +
-    "Browser tab-level fluents (readyState, URL) defer to a future release.",
+    "Phase 4 (v0.10): Win32 + CDP + UIA sensors. modal.above uses owner-chain and disabled-owner " +
+    "rules. target.focusedElement is maintained only for salience:'critical' window lenses (UIA, cached 500ms). " +
+    "browserTab lenses require Chrome/Edge with --remote-debugging-port=9222; they maintain " +
+    "browser.url/title/readyState and check browser.readyState==='complete' for browser.ready guard. " +
+    "Focus-within-window changes (Tab key) surface on the next 500ms tick or explicit perception_read. " +
+    "safe.clickCoordinates uses rect containment only (no pixel-level z-order hit test).",
   examples: [
     "perception_register({name:'editor', target:{kind:'window', match:{titleIncludes:'Visual Studio Code'}}})" +
       " → {lensId:'perc-1', ...}",
@@ -228,10 +247,12 @@ export function registerPerceptionTools(server: McpServer): void {
         "coordinate clicks, and surfaces modal dialogs before they cause errors. Not needed for " +
         "single one-shot actions.",
       caveats:
-        "MVP (v0.9): Win32 sensors only — no UIA focused-element push, no CDP navigation events. " +
-        "modal.above uses title-regex + WS_EX_TOPMOST heuristic (may miss some native modals). " +
-        "safe.clickCoordinates uses rect containment only (no pixel-level z-order hit test). " +
-        "Browser tab-level fluents (readyState, URL) defer to a future release.",
+        "Phase 4 (v0.10): Win32 + CDP + UIA sensors. modal.above uses owner-chain and disabled-owner " +
+        "rules. target.focusedElement is maintained only for salience:'critical' window lenses (UIA, cached 500ms). " +
+        "browserTab lenses require Chrome/Edge with --remote-debugging-port=9222; they maintain " +
+        "browser.url/title/readyState and check browser.readyState==='complete' for browser.ready guard. " +
+        "Focus-within-window changes (Tab key) surface on the next 500ms tick or explicit perception_read. " +
+        "safe.clickCoordinates uses rect containment only (no pixel-level z-order hit test).",
       examples: [
         "perception_register({name:'editor', target:{kind:'window', match:{titleIncludes:'Visual Studio Code'}}})" +
           " → {lensId:'perc-1', ...}",

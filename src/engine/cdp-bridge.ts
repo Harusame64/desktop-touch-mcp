@@ -262,6 +262,17 @@ export async function listTabs(port = DEFAULT_CDP_PORT): Promise<CdpTab[]> {
 }
 
 /**
+ * Lightweight tab listing — returns only the three fields needed for lens binding.
+ * Does NOT open any WebSocket connections. Throws if CDP is unreachable.
+ */
+export async function listTabsLight(
+  port = DEFAULT_CDP_PORT
+): Promise<Array<{ id: string; title: string; url: string }>> {
+  const tabs = await fetchTabs(port);
+  return tabs.map(t => ({ id: t.id, title: t.title, url: t.url }));
+}
+
+/**
  * Evaluate a JavaScript expression in a browser tab.
  *
  * @param expression  JS expression string (may use `await`)

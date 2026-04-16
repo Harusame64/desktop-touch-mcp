@@ -56,28 +56,18 @@ export function projectEnvelope(
 ): PerceptionEnvelope {
   const { changedKeys = new Set<string>(), maxTokens = lens.spec.maxEnvelopeTokens } = opts;
   const nowMs = Date.now();
-  const hwnd = lens.binding.hwnd;
+  const entityId = lens.binding.hwnd;
+  const entityKind = lens.spec.target.kind;
 
-  // Read current fluent values
-  const existsFluent  = store.read(`window:${hwnd}.target.exists`);
-  const titleFluent   = store.read(`window:${hwnd}.target.title`);
-  const rectFluent    = store.read(`window:${hwnd}.target.rect`);
-  const fgFluent      = store.read(`window:${hwnd}.target.foreground`);
-  const zOrderFluent  = store.read(`window:${hwnd}.target.zOrder`);
-  const modalFluent   = store.read(`window:${hwnd}.modal.above`);
-  const feFluent      = store.read(`window:${hwnd}.target.focusedElement`);
-
-  const hasStale = [existsFluent, titleFluent, rectFluent, fgFluent, modalFluent]
-    .some(f => f?.status === "stale" || f?.status === "dirty");
-
-  const attention = deriveAttention(guardResult, changedKeys, hasStale);
+  function read(property: string) {
+    return store.read(`${entityKind}:${entityId}.${property}`);
+  }
 
   // Build changed summaries (coalesced)
   const changedSummaries: string[] = [];
   for (const key of changedKeys) {
     const prop = key.split(".").slice(1).join(".");
-    // Skip identity details from summary (verbose)
-    if (prop === "target.identity") continue;
+    if (prop === "target.identity") continue; // verbose, skip
     const fluent = store.read(key);
     changedSummaries.push(describeChange(key, fluent));
   }
@@ -88,51 +78,84 @@ export function projectEnvelope(
     guardsMap[r.kind] = r.ok;
   }
 
-  // Compute latest target block confidence
-  const fluents = [existsFluent, titleFluent, rectFluent, fgFluent, zOrderFluent, modalFluent, feFluent].filter(Boolean);
-  const avgConf = fluents.length > 0
-    ? fluents.reduce((s, f) => s + (f ? confidenceFor(f.support[0]!, nowMs) : 0), 0) / fluents.length
-    : 0;
-
   const envelope: PerceptionEnvelope = {
     seq: store.currentSeq(),
     lens: lens.lensId,
-    attention,
+    attention: "ok",
     changed: changedSummaries,
     guards: guardsMap,
-    latest: {
-      target: {
-        ...(existsFluent && { exists: existsFluent.value as boolean }),
-        ...(titleFluent && { title: titleFluent.value as string }),
-        ...(rectFluent && { rect: rectFluent.value as PerceptionEnvelope["latest"]["target"] extends undefined ? never : NonNullable<PerceptionEnvelope["latest"]["target"]>["rect"] }),
-        ...(fgFluent && { foreground: fgFluent.value as boolean }),
-        ...(zOrderFluent && { zOrder: zOrderFluent.value as number }),
-        ...(modalFluent && { modalAbove: modalFluent.value as boolean }),
-        ...(feFluent && { focusedElement: feFluent.value as { name: string; controlType: string; automationId?: string; value?: string } | null }),
-        confidence: Math.round(avgConf * 100) / 100,
-      },
-    },
+    latest: {},
   };
 
-  // Token-budget trimming: drop fields in priority order until within budget
-  if (estimateTokens(envelope) > maxTokens) {
-    // 1. Drop evidence from support arrays (already not in envelope)
-    // 2. Trim changed summaries to most recent
-    while (changedSummaries.length > 1 && estimateTokens(envelope) > maxTokens) {
-      changedSummaries.shift();
-    }
-    // 3. Drop optional latest fields (in ascending importance order)
-    if (estimateTokens(envelope) > maxTokens && envelope.latest.target) {
-      delete envelope.latest.target.zOrder;
-    }
-    if (estimateTokens(envelope) > maxTokens && envelope.latest.target) {
-      delete envelope.latest.target.focusedElement;
-    }
-    if (estimateTokens(envelope) > maxTokens && envelope.latest.target) {
-      delete envelope.latest.target.modalAbove;
-    }
-    if (estimateTokens(envelope) > maxTokens && envelope.latest.target) {
-      delete envelope.latest.target.rect;
+  if (entityKind === "browserTab") {
+    // ── browserTab block ──────────────────────────────────────────────────────
+    const urlFluent       = read("browser.url");
+    const bTitleFluent    = read("browser.title");
+    const readyStateFluent = read("browser.readyState");
+
+    const hasStale = [urlFluent, bTitleFluent, readyStateFluent]
+      .some(f => f?.status === "stale" || f?.status === "dirty");
+    envelope.attention = deriveAttention(guardResult, changedKeys, hasStale);
+
+    const bFluents = [urlFluent, bTitleFluent, readyStateFluent].filter(Boolean);
+    const avgConf = bFluents.length > 0
+      ? bFluents.reduce((s, f) => s + (f?.support[0] ? confidenceFor(f.support[0], nowMs) : f?.confidence ?? 0), 0) / bFluents.length
+      : 0;
+
+    envelope.latest.browser = {
+      ...(urlFluent       && { url:        urlFluent.value as string }),
+      ...(bTitleFluent    && { title:      bTitleFluent.value as string }),
+      ...(readyStateFluent && { readyState: readyStateFluent.value as string }),
+      confidence: Math.round(avgConf * 100) / 100,
+    };
+  } else {
+    // ── window block ──────────────────────────────────────────────────────────
+    const existsFluent  = read("target.exists");
+    const titleFluent   = read("target.title");
+    const rectFluent    = read("target.rect");
+    const fgFluent      = read("target.foreground");
+    const zOrderFluent  = read("target.zOrder");
+    const modalFluent   = read("modal.above");
+    const feFluent      = read("target.focusedElement");
+
+    const hasStale = [existsFluent, titleFluent, rectFluent, fgFluent, modalFluent]
+      .some(f => f?.status === "stale" || f?.status === "dirty");
+    envelope.attention = deriveAttention(guardResult, changedKeys, hasStale);
+
+    const fluents = [existsFluent, titleFluent, rectFluent, fgFluent, zOrderFluent, modalFluent, feFluent].filter(Boolean);
+    const avgConf = fluents.length > 0
+      ? fluents.reduce((s, f) => s + (f?.support[0] ? confidenceFor(f.support[0], nowMs) : f?.confidence ?? 0), 0) / fluents.length
+      : 0;
+
+    type RectType = NonNullable<NonNullable<PerceptionEnvelope["latest"]["target"]>["rect"]>;
+    envelope.latest.target = {
+      ...(existsFluent && { exists: existsFluent.value as boolean }),
+      ...(titleFluent && { title: titleFluent.value as string }),
+      ...(rectFluent && { rect: rectFluent.value as RectType }),
+      ...(fgFluent && { foreground: fgFluent.value as boolean }),
+      ...(zOrderFluent && { zOrder: zOrderFluent.value as number }),
+      ...(modalFluent && { modalAbove: modalFluent.value as boolean }),
+      ...(feFluent && { focusedElement: feFluent.value as { name: string; controlType: string; automationId?: string; value?: string } | null }),
+      confidence: Math.round(avgConf * 100) / 100,
+    };
+
+    // Token-budget trimming: drop optional window fields in ascending importance order
+    if (estimateTokens(envelope) > maxTokens) {
+      while (changedSummaries.length > 1 && estimateTokens(envelope) > maxTokens) {
+        changedSummaries.shift();
+      }
+      if (estimateTokens(envelope) > maxTokens && envelope.latest.target) {
+        delete envelope.latest.target.zOrder;
+      }
+      if (estimateTokens(envelope) > maxTokens && envelope.latest.target) {
+        delete envelope.latest.target.focusedElement;
+      }
+      if (estimateTokens(envelope) > maxTokens && envelope.latest.target) {
+        delete envelope.latest.target.modalAbove;
+      }
+      if (estimateTokens(envelope) > maxTokens && envelope.latest.target) {
+        delete envelope.latest.target.rect;
+      }
     }
   }
 
