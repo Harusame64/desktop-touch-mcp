@@ -1,6 +1,6 @@
 {
   "name": "@harusame64/desktop-touch-mcp",
-  "version": "0.11.2",
+  "version": "0.11.3",
   "description": "LLM-native Windows computer-use MCP server with 56 tools for screenshots, UIA, mouse/keyboard, Chrome CDP, terminal, SmartScroll, and perception guards",
   "engines": {
     "node": ">=20.0.0"
@@ -41,18 +41,16 @@
     "generate:stub-catalog": "node scripts/generate-stub-tool-catalog.mjs",
     "check:stub-catalog": "node scripts/generate-stub-tool-catalog.mjs && git diff --exit-code src/stub-tool-catalog.ts"
   },
-  "dependencies": {
+  "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.10.0",
     "@nut-tree-fork/nut-js": "^4.2.6",
-    "koffi": "^2.9.0",
-    "sharp": "^0.34.5",
-    "ws": "^8.20.0",
-    "zod": "^4.3.6"
-  },
-  "devDependencies": {
     "@types/node": "^25.6.0",
     "@types/ws": "^8.18.1",
+    "koffi": "^2.9.0",
+    "sharp": "^0.34.5",
     "typescript": "^6.0.2",
-    "vitest": "^4.1.4"
+    "vitest": "^4.1.4",
+    "ws": "^8.20.0",
+    "zod": "^4.3.6"
   }
 }
