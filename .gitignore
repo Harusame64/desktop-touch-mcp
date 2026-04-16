@@ -17,3 +17,7 @@ docs/*-research.md
 bin/*.pdb
 tools/win-ocr/bin/
 tools/win-ocr/obj/
+
+# vitest capture output
+.vitest-out.json
+.vitest-out.txt

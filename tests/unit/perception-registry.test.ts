@@ -244,15 +244,16 @@ describe("buildEnvelopeFor", () => {
 // ── readLens ─────────────────────────────────────────────────────────────────
 
 describe("readLens", () => {
-  it("throws for unknown lensId", () => {
-    expect(() => readLens("nonexistent")).toThrow(/Lens not found/);
+  it("throws for unknown lensId", async () => {
+    // readLens is async — thrown errors become rejected Promises
+    await expect(readLens("nonexistent")).rejects.toThrow(/Lens not found/);
   });
 
-  it("returns envelope with current state", () => {
+  it("returns envelope with current state", async () => {
     setupMocks(100n, "Untitled - Notepad", true);
     const { lensId } = registerLens(baseSpec);
     setupMocks(100n, "Untitled - Notepad", true);
-    const env = readLens(lensId);
+    const env = await readLens(lensId);
     expect(env.lens).toBe(lensId);
     expect(env.attention).toBeDefined();
   });

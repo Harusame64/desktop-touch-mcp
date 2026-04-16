@@ -24,12 +24,17 @@ export interface GuardContext {
   toolName?: string;
 }
 
-function readValue(store: FluentStore, lensId: string, hwnd: string, property: string): {
+/** Build a fluent-store key from the lens's target kind + binding id. */
+function entityKey(lens: PerceptionLens, property: string): string {
+  return `${lens.spec.target.kind}:${lens.binding.hwnd}.${property}`;
+}
+
+function readValue(store: FluentStore, lens: PerceptionLens, property: string): {
   value: unknown;
   confidence: number;
   status: string;
 } | null {
-  const key = `window:${hwnd}.${property}`;
+  const key = entityKey(lens, property);
   const fluent = store.read(key);
   if (!fluent) return null;
   const nowMs = Date.now();
@@ -40,8 +45,11 @@ function readValue(store: FluentStore, lensId: string, hwnd: string, property: s
 // ─────────────────────────────────────────────────────────────────────────────
 
 function evalIdentityStable(lens: PerceptionLens, store: FluentStore, nowMs: number): GuardResult {
-  const hwnd = lens.binding.hwnd;
-  const identityFluent = readValue(store, lens.lensId, hwnd, "target.identity");
+  // target.identity is not tracked for browserTab lenses — vacuously pass
+  if (lens.spec.target.kind !== "window") {
+    return { kind: "target.identityStable", ok: true, confidence: 1 };
+  }
+  const identityFluent = readValue(store, lens, "target.identity");
 
   if (!identityFluent) {
     return {
@@ -54,7 +62,7 @@ function evalIdentityStable(lens: PerceptionLens, store: FluentStore, nowMs: num
   }
 
   const identity = identityFluent.value as { pid?: number; processStartTimeMs?: number } | null;
-  const bound = lens.boundIdentity;
+  const bound = lens.boundIdentity as { pid?: number; processStartTimeMs?: number };
 
   if (!identity) {
     return {
@@ -80,7 +88,10 @@ function evalIdentityStable(lens: PerceptionLens, store: FluentStore, nowMs: num
 }
 
 function evalKeyboardTarget(lens: PerceptionLens, store: FluentStore, nowMs: number): GuardResult {
-  const hwnd = lens.binding.hwnd;
+  // For browserTab lenses, keyboard safety is determined by browser.readyState, not Win32 foreground
+  if (lens.spec.target.kind === "browserTab") {
+    return evalBrowserReady(lens, store, nowMs, "safe.keyboardTarget");
+  }
 
   const identityGuard = evalIdentityStable(lens, store, nowMs);
   if (!identityGuard.ok) {
@@ -93,7 +104,7 @@ function evalKeyboardTarget(lens: PerceptionLens, store: FluentStore, nowMs: num
     };
   }
 
-  const foreground = readValue(store, lens.lensId, hwnd, "target.foreground");
+  const foreground = readValue(store, lens, "target.foreground");
   if (!foreground || foreground.value !== true) {
     return {
       kind: "safe.keyboardTarget",
@@ -113,7 +124,7 @@ function evalKeyboardTarget(lens: PerceptionLens, store: FluentStore, nowMs: num
     };
   }
 
-  const modal = readValue(store, lens.lensId, hwnd, "modal.above");
+  const modal = readValue(store, lens, "modal.above");
   if (modal && modal.value === true) {
     return {
       kind: "safe.keyboardTarget",
@@ -122,6 +133,23 @@ function evalKeyboardTarget(lens: PerceptionLens, store: FluentStore, nowMs: num
       reason: "A modal dialog is blocking the target window",
       suggestedAction: "Dismiss the modal first, then retry",
     };
+  }
+
+  // Additive focused-element gate (only when fluent is present — requires salience:"critical").
+  // Absent fluent: passes silently, preserving backward compat for normal/background lenses.
+  const fe = readValue(store, lens, "target.focusedElement");
+  if (fe && fe.value) {
+    const info = fe.value as { controlType: string };
+    const READONLY_TYPES = new Set(["Text", "Image", "StatusBar", "TitleBar", "ToolBar"]);
+    if (READONLY_TYPES.has(info.controlType)) {
+      return {
+        kind: "safe.keyboardTarget",
+        ok: false,
+        confidence: fe.confidence,
+        reason: `Focused element is a read-only ${info.controlType} — keys would be dropped`,
+        suggestedAction: "Click an editable control (Edit, ComboBox, RichEdit) before typing",
+      };
+    }
   }
 
   return { kind: "safe.keyboardTarget", ok: true, confidence: foreground.confidence };
@@ -133,7 +161,11 @@ function evalClickCoordinates(
   nowMs: number,
   ctx: GuardContext
 ): GuardResult {
-  const hwnd = lens.binding.hwnd;
+  // Click coordinate safety is not applicable for browserTab lenses — vacuously pass
+  if (lens.spec.target.kind !== "window") {
+    return { kind: "safe.clickCoordinates", ok: true, confidence: 1 };
+  }
+
   const { clickX, clickY } = ctx;
 
   const identityGuard = evalIdentityStable(lens, store, nowMs);
@@ -147,7 +179,7 @@ function evalClickCoordinates(
     };
   }
 
-  const rectFluent = readValue(store, lens.lensId, hwnd, "target.rect");
+  const rectFluent = readValue(store, lens, "target.rect");
   if (!rectFluent) {
     return {
       kind: "safe.clickCoordinates",
@@ -190,6 +222,11 @@ function evalClickCoordinates(
 }
 
 function evalStableRect(lens: PerceptionLens, store: FluentStore, nowMs: number): GuardResult {
+  // Rect stability is not applicable for browserTab lenses — vacuously pass
+  if (lens.spec.target.kind !== "window") {
+    return { kind: "stable.rect", ok: true, confidence: 1 };
+  }
+
   /**
    * MVP: fixed 250ms stability window.
    * Pass when the rect evidence age >= 250ms AND status is "observed" (not dirty/stale).
@@ -197,9 +234,8 @@ function evalStableRect(lens: PerceptionLens, store: FluentStore, nowMs: number)
    * Note: confidence 0.6 is below the click/keyboard threshold (0.90), so this guard alone
    * won't block — other guards (foreground, identity) will catch problems first.
    */
-  const hwnd = lens.binding.hwnd;
   const STABLE_MS = 250;
-  const rectFluent = store.read(`window:${hwnd}.target.rect`);
+  const rectFluent = store.read(entityKey(lens, "target.rect"));
 
   if (!rectFluent) {
     return {
@@ -235,6 +271,39 @@ function evalStableRect(lens: PerceptionLens, store: FluentStore, nowMs: number)
   return { kind: "stable.rect", ok: true, confidence: confidenceFor(ev, nowMs) };
 }
 
+function evalBrowserReady(
+  lens: PerceptionLens,
+  store: FluentStore,
+  _nowMs: number,
+  kind: "browser.ready" | "safe.keyboardTarget" = "browser.ready"
+): GuardResult {
+  // browser.ready is not applicable for window lenses — vacuously pass
+  if (lens.spec.target.kind !== "browserTab") {
+    return { kind, ok: true, confidence: 1 };
+  }
+
+  const readyState = readValue(store, lens, "browser.readyState");
+  if (!readyState) {
+    return {
+      kind,
+      ok: false,
+      confidence: 0,
+      reason: "browser.readyState fluent not present — tab may not have been refreshed yet",
+      suggestedAction: "Call perception_read to force a CDP refresh",
+    };
+  }
+  if (readyState.value !== "complete") {
+    return {
+      kind,
+      ok: false,
+      confidence: readyState.confidence,
+      reason: `Browser is not ready (readyState: "${readyState.value}") — page still loading`,
+      suggestedAction: `Wait for browser_navigate to complete, or poll browser_eval("document.readyState")`,
+    };
+  }
+  return { kind, ok: true, confidence: readyState.confidence };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Public API
 // ─────────────────────────────────────────────────────────────────────────────
@@ -251,6 +320,7 @@ export function evaluateGuard(
     case "safe.keyboardTarget":    return evalKeyboardTarget(lens, store, nowMs);
     case "safe.clickCoordinates":  return evalClickCoordinates(lens, store, nowMs, ctx);
     case "stable.rect":            return evalStableRect(lens, store, nowMs);
+    case "browser.ready":          return evalBrowserReady(lens, store, nowMs);
   }
 }
 

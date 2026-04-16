@@ -1,7 +1,17 @@
 {
   "displayName": "desktop-touch-mcp",
-  "description": "Windows desktop automation MCP: screenshot, click, keyboard, browser CDP, terminal, scroll, events — 51 tools with 3-tier token reduction and post-state narration.",
-  "categories": ["desktop-automation", "browser"],
+  "description": "LLM-native Windows computer-use MCP server: 56 tools for screenshots, UIA, mouse/keyboard, Chrome CDP, terminal, SmartScroll, clipboard, notifications, and perception guards with token-efficient P-frame diffing.",
+  "categories": ["OS Automation", "App Automation", "Browser Automation", "Autonomous Agents"],
   "platforms": ["windows"],
-  "license": "MIT"
+  "license": "MIT",
+  "repository": "https://github.com/Harusame64/desktop-touch-mcp",
+  "keywords": [
+    "mcp",
+    "windows",
+    "desktop-automation",
+    "computer-use",
+    "chrome-devtools-protocol",
+    "ui-automation",
+    "llm-agents"
+  ]
 }

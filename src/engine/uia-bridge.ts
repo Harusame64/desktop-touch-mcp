@@ -383,6 +383,19 @@ $result | ConvertTo-Json -Compress
   }
 }
 
+/**
+ * Lightweight focused-element query — skips the FromPoint work.
+ * Intended for the perception UIA sensor loop; bounded at 500ms to limit cost.
+ *
+ * @param _hwnd      Reserved for future per-window filtering (currently ignored —
+ *                   UIA FocusedElement is system-global).
+ * @param timeoutMs  PowerShell timeout (default 500ms vs 2000ms in getFocusedAndPointInfo).
+ */
+export async function getFocusedElement(_hwnd?: bigint, timeoutMs = 500): Promise<UiaFocusInfo | null> {
+  const { focused } = await getFocusedAndPointInfo(0, 0, false, timeoutMs);
+  return focused;
+}
+
 export interface UiElementsResult {
   windowTitle: string;
   /** ClassName of the root window element — used for WinUI3 detection. */
