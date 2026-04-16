@@ -29,6 +29,11 @@ export class FluentStore {
       // TMS-lite: reject if observation is older than current
       if (existing && obs.seq < existing.validFromSeq) continue;
 
+      // Watermark check: if the observation's monotonic timestamp is NOT newer than
+      // the last dirty-mark, the evidence predates the invalidation hint — keep dirty.
+      const obsMonoMs = obs.monoMs ?? performance.now();
+      if (existing?.lastDirtyAtMonoMs != null && obsMonoMs <= existing.lastDirtyAtMonoMs) continue;
+
       // Same source: newer overrides
       // Different source: higher confidence replaces lower
       if (existing && obs.seq === existing.validFromSeq) {
@@ -47,10 +52,13 @@ export class FluentStore {
         property: obs.property,
         value: obs.value,
         validFromSeq: obs.seq,
+        validFromMonoMs: obsMonoMs,
         confidence: obs.confidence,
         support: [obs.evidence],
         contradictions: existing?.contradictions ?? [],
         status: "observed",
+        // Preserve generation across updates (cleared only on identity change)
+        ...(existing?.generation != null && { generation: existing.generation }),
       };
       this.store.set(key, updated);
       changed.add(key);
@@ -76,6 +84,39 @@ export class FluentStore {
     for (const k of keys) {
       const f = this.store.get(k);
       if (f) f.status = "dirty";
+    }
+  }
+
+  /**
+   * Mark fluents dirty with a cause and monotonic timestamp.
+   * The monoMs watermark is used by apply() to decide whether subsequent observations
+   * are newer than this invalidation hint.
+   */
+  markDirtyWithCause(keys: string[], cause: string, monoMs: number, seq?: number): void {
+    for (const k of keys) {
+      const f = this.store.get(k);
+      if (f) {
+        f.status = "dirty";
+        f.lastDirtyCause = cause;
+        f.lastDirtyAtMonoMs = monoMs;
+        if (seq != null) f.lastDirtySeq = seq;
+      }
+    }
+  }
+
+  /**
+   * Mark fluents as "settling" — used when a move/resize starts.
+   * Settling is a soft dirty: the value is becoming invalid due to an in-progress
+   * animation or drag. Guards should block on settling rects.
+   */
+  markSettling(keys: string[], monoMs: number): void {
+    for (const k of keys) {
+      const f = this.store.get(k);
+      if (f) {
+        f.status = "settling";
+        f.lastDirtyAtMonoMs = monoMs;
+        f.lastDirtyCause = "settling";
+      }
     }
   }
 
