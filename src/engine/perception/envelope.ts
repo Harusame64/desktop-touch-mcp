@@ -17,6 +17,8 @@ import { formatGuardSummary } from "./resource-model.js";
 export interface ProjectEnvelopeOptions {
   maxTokens?: number;
   changedKeys?: Set<string>;
+  /** When true, marks the lens as dirty regardless of individual fluent statuses. */
+  hasJournalDirty?: boolean;
 }
 
 function deriveAttention(
@@ -24,14 +26,15 @@ function deriveAttention(
   changedKeys: Set<string>,
   hasDirty: boolean,
   hasSettling: boolean,
-  hasStale: boolean
+  hasStale: boolean,
+  hasJournalDirty = false
 ): AttentionState {
   if (!guardResult.ok) {
     // identity_changed has a specific attention state
     const failedKind = guardResult.failedGuard?.kind ?? "";
     return failedKind === "target.identityStable" ? "identity_changed" : "guard_failed";
   }
-  if (hasDirty) return "dirty";
+  if (hasDirty || hasJournalDirty) return "dirty";
   if (hasSettling) return "settling";
   if (changedKeys.size > 0) return "changed";
   if (hasStale) return "stale";
@@ -95,7 +98,7 @@ export function projectEnvelope(
   guardResult: GuardEvalResult,
   opts: ProjectEnvelopeOptions = {}
 ): PerceptionEnvelope {
-  const { changedKeys = new Set<string>(), maxTokens = lens.spec.maxEnvelopeTokens } = opts;
+  const { changedKeys = new Set<string>(), maxTokens = lens.spec.maxEnvelopeTokens, hasJournalDirty = false } = opts;
   const nowMs = Date.now();
   const entityId = lens.binding.hwnd;
   const entityKind = lens.spec.target.kind;
@@ -142,7 +145,7 @@ export function projectEnvelope(
     const hasDirty    = bFluentsAll.some(f => f?.status === "dirty");
     const hasSettling = bFluentsAll.some(f => f?.status === "settling");
     const hasStale    = bFluentsAll.some(f => f?.status === "stale");
-    envelope.attention = deriveAttention(guardResult, changedKeys, hasDirty, hasSettling, hasStale);
+    envelope.attention = deriveAttention(guardResult, changedKeys, hasDirty, hasSettling, hasStale, hasJournalDirty);
 
     const bFluents = bFluentsAll.filter(Boolean);
     const avgConf = bFluents.length > 0
@@ -173,7 +176,7 @@ export function projectEnvelope(
     const hasDirty    = windowFluentsAll.some(f => f?.status === "dirty");
     const hasSettling = windowFluentsAll.some(f => f?.status === "settling");
     const hasStale    = windowFluentsAll.some(f => f?.status === "stale");
-    envelope.attention = deriveAttention(guardResult, changedKeys, hasDirty, hasSettling, hasStale);
+    envelope.attention = deriveAttention(guardResult, changedKeys, hasDirty, hasSettling, hasStale, hasJournalDirty);
 
     const fluents = [existsFluent, titleFluent, rectFluent, fgFluent, zOrderFluent, modalFluent, feFluent].filter(Boolean);
     const avgConf = fluents.length > 0

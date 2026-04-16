@@ -54,7 +54,11 @@ export function registerPerceptionResources(server: McpServer): void {
   _disposeLifecycleListener?.();
   _disposeLifecycleListener = addLensLifecycleListener({
     onRegistered: lens => resourceRegistry.onLensRegistered(lens),
-    onForgotten:  lensId => resourceRegistry.onLensForgotten(lensId),
+    onForgotten:  lensId => {
+      resourceRegistry.onLensForgotten(lensId);
+      // F8-fix: prune notification scheduler state to prevent unbounded growth.
+      _notificationScheduler?.removeLens(lensId);
+    },
   });
 
   // F7: Wire notification scheduler for attention-transition resource updates.

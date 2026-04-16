@@ -294,11 +294,12 @@ function ensureNativeEventRuntime(): void {
 
   _winEventSource = new WinEventSource({
     onRawEvent: (ev) => {
-      _rawQueue!.enqueue(ev);
-      if (_rawQueue!.overflowPending) {
-        _nativeBridge!.processOverflow(performance.now());
-        _reconciler?.triggerImmediate();
-      }
+      // F1-fix: guard against null after stopNativeRuntime() races with buffered sidecar output.
+      if (!_rawQueue || !_nativeBridge) return;
+      _rawQueue.enqueue(ev);
+      // Overflow is handled exclusively in the drain timer (drainNativeEventQueue).
+      // Do NOT call processOverflow here to avoid double processing — the timer fires
+      // every 50ms and will pick up the overflow flag on the next drain cycle.
     },
     onMalformedLine: (line) => {
       console.error(`[perception] Malformed sidecar line: ${line.slice(0, 200)}`);
@@ -328,12 +329,13 @@ export function stopNativeRuntime(): void {
 
 function drainNativeEventQueue(): void {
   if (!_rawQueue || !_nativeBridge) return;
-  const hadOverflow = _rawQueue.overflowPending;
   const batch = _rawQueue.drain();
   if (batch.length > 0) {
     _nativeBridge.processBatch(batch, _lensEventIndex, _journal);
   }
-  if (hadOverflow) {
+  // Check overflowPending AFTER drain so we only trigger once per drain cycle
+  // (drain clears the queue; overflow flag checked post-drain avoids double processing).
+  if (_rawQueue.overflowPending) {
     _nativeBridge.processOverflow(performance.now());
     _reconciler?.triggerImmediate();
   }
@@ -369,10 +371,13 @@ async function flushDirty(reason: string): Promise<void> {
       .map(l => l.binding.hwnd)
   );
   const plan = buildRefreshPlan(_journal, _lensEventIndex, allHwnds);
+  // F5-fix: derive trigger from journal global-dirty state so executeRefreshPlan
+  // correctly calls _journal.clearGlobal() when the journal is globally dirty.
+  const trigger: "sweep" | "overflow" = _journal.isGlobalDirty() ? "overflow" : "sweep";
   executeRefreshPlan({
     ...plan,
     reason: plan.reason.length ? plan.reason : [reason],
-    trigger: "sweep",
+    trigger,
   });
 }
 
@@ -648,10 +653,13 @@ export function buildEnvelopeFor(
 
   const guardResult = evaluateGuards(lens, store, lens.spec.guardPolicy, ctx);
   const changedKeys = _recentChanges.get(lensId) ?? new Set<string>();
+  const entityKey   = `${lens.spec.target.kind}:${lens.binding.hwnd}`;
+  const hasJournalDirty = _journal.isGlobalDirty() || _journal.entries().has(entityKey);
 
   const envelope = projectEnvelope(lens, store, guardResult, {
     maxTokens: lens.spec.maxEnvelopeTokens,
     changedKeys,
+    hasJournalDirty,
   });
 
   _recentChanges.delete(lensId);
@@ -688,9 +696,12 @@ export async function readLens(
 
   const changedKeys = _recentChanges.get(lensId) ?? new Set<string>();
   const guardResult = evaluateGuards(lens, store, lens.spec.guardPolicy);
+  const entityKey   = `${lens.spec.target.kind}:${lens.binding.hwnd}`;
+  const hasJournalDirty = _journal.isGlobalDirty() || _journal.entries().has(entityKey);
   const envelope = projectEnvelope(lens, store, guardResult, {
     maxTokens: opts.maxTokens ?? lens.spec.maxEnvelopeTokens,
     changedKeys,
+    hasJournalDirty,
   });
   _recentChanges.delete(lensId);
   return envelope;
@@ -721,7 +732,11 @@ export function __resetForTests(): void {
   __resetUiaSensorForTests();
   __resetCdpSensorForTests();
   resetLensCounter();
-  // Note: lifecycle and change listeners are NOT cleared — tests may re-register them.
+  // Lifecycle and change listeners are cleared here so tests with addLensLifecycleListener
+  // calls don't accumulate stale listeners across test files. Tests that need listeners
+  // must re-register them after __resetForTests().
+  lifecycleListeners.clear();
+  changeListeners.clear();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

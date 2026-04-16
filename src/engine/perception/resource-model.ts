@@ -68,6 +68,10 @@ export interface LensSnapshot {
   hasStale: boolean;
   /** Whether the DirtyJournal has any entries for this lens's entity. */
   hasJournalDirty: boolean;
+  /** Whether the journal is globally dirty (all lenses). For debug resource only. */
+  journalGlobalDirty: boolean;
+  /** Total number of dirty journal entries. For debug resource only. */
+  journalEntryCount: number;
   nowMs: number;
   seq: number;
 }
@@ -121,6 +125,8 @@ export function buildLensSnapshot(
     hasSettling,
     hasStale,
     hasJournalDirty,
+    journalGlobalDirty: journal.isGlobalDirty(),
+    journalEntryCount:  journal.entries().size,
     nowMs,
     seq: store.currentSeq(),
   };
@@ -308,9 +314,9 @@ export function projectResourceDebug(
       lastDirtyCause: f.lastDirtyCause,
     })),
     dirtyJournal: {
-      hasEntityDirty: snapshot.hasJournalDirty,
-      globalDirty:    false, // resolved at snapshot time
-      entryCount:     0,     // not exposed per-lens to avoid leaking other lens data
+      hasEntityDirty:  snapshot.hasJournalDirty,
+      globalDirty:     snapshot.journalGlobalDirty,
+      entryCount:      snapshot.journalEntryCount,
       dirtyEntityKeys: snapshot.hasJournalDirty ? [entityKey] : [],
     },
     diagnostics: {

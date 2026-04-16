@@ -111,6 +111,13 @@ export class ResourceNotificationScheduler {
     return state;
   }
 
+  /** Remove tracking state for a forgotten lens (prevents unbounded state growth). */
+  removeLens(lensId: string): void {
+    const state = this.states.get(lensId);
+    if (state?.timer) { clearTimeout(state.timer); state.timer = null; }
+    this.states.delete(lensId);
+  }
+
   dispose(): void {
     this.disposed = true;
     for (const state of this.states.values()) {
