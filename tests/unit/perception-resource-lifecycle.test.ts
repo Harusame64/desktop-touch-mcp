@@ -44,7 +44,6 @@ import * as identTracker from "../../src/engine/identity-tracker.js";
 import {
   registerLens,
   forgetLens,
-  listLenses,
   addLensLifecycleListener,
   getAllLenses,
   __resetForTests,
