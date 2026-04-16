@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows-release:
+    name: Build Windows release zip
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Prepare release directory
+        shell: pwsh
+        run: |
+          $releaseDir = Join-Path $PWD "release_build"
+          $zipPath = Join-Path $PWD "desktop-touch-mcp-windows.zip"
+
+          Remove-Item -LiteralPath $releaseDir -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $releaseDir | Out-Null
+
+          Copy-Item -LiteralPath "package.json" -Destination $releaseDir
+          Copy-Item -LiteralPath "package-lock.json" -Destination $releaseDir
+          Copy-Item -LiteralPath "LICENSE" -Destination $releaseDir
+          Copy-Item -LiteralPath "README.md" -Destination $releaseDir
+          Copy-Item -LiteralPath "README.ja.md" -Destination $releaseDir
+          Copy-Item -LiteralPath "dist" -Destination $releaseDir -Recurse
+
+          if (Test-Path -LiteralPath "bin") {
+            $binDir = Join-Path $releaseDir "bin"
+            New-Item -ItemType Directory -Path $binDir -Force | Out-Null
+            Copy-Item -Path "bin\*.exe" -Destination $binDir -ErrorAction SilentlyContinue
+          }
+
+          $pkgPath = Join-Path $releaseDir "package.json"
+          $pkg = Get-Content -Raw -LiteralPath $pkgPath | ConvertFrom-Json
+          $pkg.main = "dist/index.js"
+          if ($pkg.PSObject.Properties.Name -contains "bin") {
+            $pkg.PSObject.Properties.Remove("bin")
+          }
+          if ($pkg.PSObject.Properties.Name -contains "files") {
+            $pkg.PSObject.Properties.Remove("files")
+          }
+          if ($pkg.PSObject.Properties.Name -contains "scripts") {
+            $pkg.PSObject.Properties.Remove("scripts")
+          }
+          $pkg | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $pkgPath -Encoding UTF8
+
+      - name: Install production dependencies
+        working-directory: release_build
+        run: npm ci --omit=dev
+
+      - name: Prune release package metadata
+        shell: pwsh
+        run: |
+          $pkgPath = Join-Path $PWD "release_build\package.json"
+          $pkg = Get-Content -Raw -LiteralPath $pkgPath | ConvertFrom-Json
+          if ($pkg.PSObject.Properties.Name -contains "devDependencies") {
+            $pkg.PSObject.Properties.Remove("devDependencies")
+          }
+          $pkg | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $pkgPath -Encoding UTF8
+
+      - name: Create zip
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "release_build\*" -DestinationPath "desktop-touch-mcp-windows.zip" -Force
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: desktop-touch-mcp-windows.zip
+          fail_on_unmatched_files: true

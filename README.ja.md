@@ -43,6 +43,30 @@ Claude がデスクトップを直接見て、直接操作する。
 ## インストール
 
 ```bash
+npx -y @harusame64/desktop-touch-mcp
+```
+
+npm ランチャーは初回起動時に GitHub Releases から最新の `desktop-touch-mcp-windows.zip` をダウンロードし、`%USERPROFILE%\.desktop-touch-mcp` に展開してキャッシュします。以後は新しい GitHub Release が出ていない限り、キャッシュ済みの実体を再利用します。
+
+### Claude CLI への登録
+
+`~/.claude.json` の `mcpServers` に追加：
+
+```json
+{
+  "mcpServers": {
+    "desktop-touch": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@harusame64/desktop-touch-mcp"]
+    }
+  }
+}
+```
+
+### 開発用インストール
+
+```bash
 git clone https://github.com/Harusame64/desktop-touch-mcp.git
 cd desktop-touch-mcp
 npm install
@@ -50,9 +74,7 @@ npm install
 
 `npm install` 実行時に `prepare` スクリプトが TypeScript を `dist/` にコンパイルします。別途 `npm run build` は不要です。
 
-### Claude CLI への登録
-
-`~/.claude.json` の `mcpServers` に追加：
+ローカルチェックアウトを使う場合は、ビルド済みのサーバーを直接登録します。
 
 ```json
 {
@@ -304,8 +326,8 @@ UIA ブリッジの `-like` パターンには `escapeLike()` でワイルドカ
   "mcpServers": {
     "desktop-touch": {
       "type": "stdio",
-      "command": "node",
-      "args": ["D:/path/to/desktop-touch-mcp/dist/index.js"],
+      "command": "npx",
+      "args": ["-y", "@harusame64/desktop-touch-mcp"],
       "env": {
         "DESKTOP_TOUCH_MOUSE_SPEED": "3000"
       }
