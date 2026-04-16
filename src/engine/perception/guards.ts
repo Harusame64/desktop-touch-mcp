@@ -45,6 +45,10 @@ function readValue(store: FluentStore, lens: PerceptionLens, property: string): 
 // ─────────────────────────────────────────────────────────────────────────────
 
 function evalIdentityStable(lens: PerceptionLens, store: FluentStore, nowMs: number): GuardResult {
+  // target.identity is not tracked for browserTab lenses — vacuously pass
+  if (lens.spec.target.kind !== "window") {
+    return { kind: "target.identityStable", ok: true, confidence: 1 };
+  }
   const identityFluent = readValue(store, lens, "target.identity");
 
   if (!identityFluent) {
@@ -157,6 +161,11 @@ function evalClickCoordinates(
   nowMs: number,
   ctx: GuardContext
 ): GuardResult {
+  // Click coordinate safety is not applicable for browserTab lenses — vacuously pass
+  if (lens.spec.target.kind !== "window") {
+    return { kind: "safe.clickCoordinates", ok: true, confidence: 1 };
+  }
+
   const { clickX, clickY } = ctx;
 
   const identityGuard = evalIdentityStable(lens, store, nowMs);
@@ -213,6 +222,11 @@ function evalClickCoordinates(
 }
 
 function evalStableRect(lens: PerceptionLens, store: FluentStore, nowMs: number): GuardResult {
+  // Rect stability is not applicable for browserTab lenses — vacuously pass
+  if (lens.spec.target.kind !== "window") {
+    return { kind: "stable.rect", ok: true, confidence: 1 };
+  }
+
   /**
    * MVP: fixed 250ms stability window.
    * Pass when the rect evidence age >= 250ms AND status is "observed" (not dirty/stale).
@@ -263,6 +277,11 @@ function evalBrowserReady(
   _nowMs: number,
   kind: "browser.ready" | "safe.keyboardTarget" = "browser.ready"
 ): GuardResult {
+  // browser.ready is not applicable for window lenses — vacuously pass
+  if (lens.spec.target.kind !== "browserTab") {
+    return { kind, ok: true, confidence: 1 };
+  }
+
   const readyState = readValue(store, lens, "browser.readyState");
   if (!readyState) {
     return {

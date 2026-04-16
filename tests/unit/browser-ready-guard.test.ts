@@ -97,6 +97,23 @@ describe("browser.ready guard", () => {
   });
 });
 
+describe("browser.ready guard on window lens (vacuous pass)", () => {
+  it("passes vacuously — browser.ready is not applicable to window lenses", () => {
+    const windowLens: PerceptionLens = {
+      ...baseLens,
+      spec: {
+        ...baseLens.spec,
+        target: { kind: "window", match: { titleIncludes: "Notepad" } },
+        guards: ["browser.ready"],
+      },
+    };
+    const store = makeStore(); // no fluents needed
+    const result = evaluateGuard("browser.ready", windowLens, store, Date.now());
+    expect(result.ok).toBe(true);
+    expect(result.confidence).toBe(1);
+  });
+});
+
 describe("safe.keyboardTarget on browserTab lens", () => {
   it("passes when readyState is 'complete'", () => {
     const store = makeStore();
