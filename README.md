@@ -44,6 +44,32 @@ An MCP server that gives Claude eyes and hands on Windows — 56 tools covering 
 ## Installation
 
 ```bash
+npx -y @harusame64/desktop-touch-mcp
+```
+
+The npm launcher downloads the latest `desktop-touch-mcp-windows.zip` from GitHub Releases on first run and caches it under `%USERPROFILE%\.desktop-touch-mcp`. Later runs reuse the cached release unless a newer GitHub Release is available.
+
+### Register with Claude CLI
+
+Add to `~/.claude.json` under `mcpServers`:
+
+```json
+{
+  "mcpServers": {
+    "desktop-touch": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@harusame64/desktop-touch-mcp"]
+    }
+  }
+}
+```
+
+**No system prompt needed.** The command reference is automatically injected into Claude via the MCP `initialize` response's `instructions` field.
+
+### Development install
+
+```bash
 git clone https://github.com/Harusame64/desktop-touch-mcp.git
 cd desktop-touch-mcp
 npm install
@@ -51,9 +77,7 @@ npm install
 
 `npm install` runs the `prepare` script, which compiles TypeScript to `dist/`. No separate build step is required.
 
-### Register with Claude CLI
-
-Add to `~/.claude.json` under `mcpServers`:
+For a local checkout, register the built server directly:
 
 ```json
 {
@@ -68,8 +92,6 @@ Add to `~/.claude.json` under `mcpServers`:
 ```
 
 > **Note:** Replace `D:/path/to/desktop-touch-mcp` with the actual path where you cloned this repository.
-
-**No system prompt needed.** The command reference is automatically injected into Claude via the MCP `initialize` response's `instructions` field.
 
 ---
 
@@ -209,8 +231,8 @@ Keep Claude CLI visible while operating other apps full-screen. Set env vars in 
   "mcpServers": {
     "desktop-touch": {
       "type": "stdio",
-      "command": "node",
-      "args": ["D:/path/to/desktop-touch-mcp/dist/index.js"],
+      "command": "npx",
+      "args": ["-y", "@harusame64/desktop-touch-mcp"],
       "env": {
         "DESKTOP_TOUCH_DOCK_TITLE": "@parent",
         "DESKTOP_TOUCH_DOCK_CORNER": "bottom-right",
@@ -404,8 +426,8 @@ All mouse tools (`mouse_move`, `mouse_click`, `mouse_drag`, `scroll`) accept an 
   "mcpServers": {
     "desktop-touch": {
       "type": "stdio",
-      "command": "node",
-      "args": ["D:/path/to/desktop-touch-mcp/dist/index.js"],
+      "command": "npx",
+      "args": ["-y", "@harusame64/desktop-touch-mcp"],
       "env": {
         "DESKTOP_TOUCH_MOUSE_SPEED": "3000"
       }

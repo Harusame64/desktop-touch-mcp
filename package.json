@@ -1,12 +1,32 @@
 {
-  "name": "desktop-touch-mcp",
+  "name": "@harusame64/desktop-touch-mcp",
   "version": "0.11.1",
   "description": "LLM-native Windows computer-use MCP server with 56 tools for screenshots, UIA, mouse/keyboard, Chrome CDP, terminal, SmartScroll, and perception guards",
   "engines": {
     "node": ">=20.0.0"
   },
   "type": "module",
-  "main": "dist/index.js",
+  "main": "bin/launcher.js",
+  "bin": {
+    "desktop-touch-mcp": "bin/launcher.js"
+  },
+  "files": [
+    "bin/launcher.js",
+    "LICENSE",
+    "README.md",
+    "README.ja.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Harusame64/desktop-touch-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Harusame64/desktop-touch-mcp/issues"
+  },
+  "homepage": "https://github.com/Harusame64/desktop-touch-mcp#readme",
   "license": "MIT",
   "scripts": {
     "build": "tsc",
