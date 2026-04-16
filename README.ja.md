@@ -64,6 +64,21 @@ npm ランチャーは初回起動時に GitHub Releases から最新の `deskto
 }
 ```
 
+### HTTP モードでの起動（GPT Desktop / VS Code / Cursor など）
+
+HTTP 接続が必要なクライアントには `--http` フラグを使います。
+
+```bash
+npx -y @harusame64/desktop-touch-mcp --http
+# ポートを変更する場合:
+npx -y @harusame64/desktop-touch-mcp --http --port 8080
+```
+
+デフォルトポートは `23847`。`http://127.0.0.1:23847/mcp` をクライアントの MCP サーバー URL に登録してください（ローカルのみ、外部公開なし）。
+ヘルスチェック: `http://127.0.0.1:<port>/health`
+
+HTTP モード起動時はタスクトレイにバルーン通知が表示され、右クリックメニューから URL コピー・ブラウザで確認・終了が行えます。
+
 ### 開発用インストール
 
 ```bash
