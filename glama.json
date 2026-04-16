@@ -1,7 +1,9 @@
 {
+  "$schema": "https://glama.ai/mcp/schemas/server.json",
   "displayName": "desktop-touch-mcp",
   "description": "LLM-native Windows computer-use MCP server: 56 tools for screenshots, UIA, mouse/keyboard, Chrome CDP, terminal, SmartScroll, clipboard, notifications, and perception guards with token-efficient P-frame diffing.",
-  "categories": ["OS Automation", "App Automation", "Browser Automation", "Autonomous Agents"],
+  "maintainers": ["Harusame64"],
+  "categories": ["OS Automation", "App Automation", "Autonomous Agents"],
   "platforms": ["windows"],
   "license": "MIT",
   "repository": "https://github.com/Harusame64/desktop-touch-mcp",
