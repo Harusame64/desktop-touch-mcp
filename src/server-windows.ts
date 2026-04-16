@@ -21,6 +21,7 @@ import { registerNotificationTools } from "./tools/notification.js";
 import { registerScrollToElementTools } from "./tools/scroll-to-element.js";
 import { registerSmartScrollTools } from "./tools/smart-scroll.js";
 import { registerPerceptionTools } from "./tools/perception.js";
+import { registerPerceptionResources, resourceRegistry } from "./tools/perception-resources.js";
 import { startTray, stopTray } from "./utils/tray.js";
 import { checkFailsafe, FailsafeError } from "./utils/failsafe.js";
 import { SERVER_VERSION } from "./version.js";
@@ -79,6 +80,25 @@ const server = new McpServer(
       "",
       "## Emergency stop (Failsafe)",
       "Move mouse to the top-left corner of the screen (within 10px of 0,0) to immediately terminate the MCP server.",
+      "",
+      "## Reactive Perception (lensId-based workflow)",
+      "For repeated interactions with the same window or browser tab, use the perception workflow:",
+      "1. perception_register(spec) — bind a lens to a window/tab; receive lensId",
+      "2. Pass lensId to action tools (mouse_click, keyboard_type, etc.) — the server evaluates safety guards before acting",
+      "3. Check post.perception in the tool response — attention/guards/changed summarize what happened",
+      "4. Use perception_read(lensId) to force a full refresh and get a fresh envelope",
+      "5. perception_forget(lensId) when done",
+      "",
+      "Attention values and recommended actions:",
+      "  ok           — safe to act",
+      "  changed      — state updated; verify before acting",
+      "  dirty        — evidence pending; call perception_read first",
+      "  settling     — window in motion; wait then call perception_read",
+      "  stale        — evidence may be old; call perception_read to refresh",
+      "  guard_failed — unsafe; read failedGuard.suggestedAction before proceeding",
+      "  identity_changed — window was replaced; re-register the lens",
+      "",
+      "Screenshots are a fallback — use perception_read for structured state.",
     ].join("\n"),
   }
 );
@@ -119,6 +139,11 @@ registerNotificationTools(server);
 registerScrollToElementTools(server);
 registerSmartScrollTools(server);
 registerPerceptionTools(server);
+
+// ─── Perception resources (opt-in: DESKTOP_TOUCH_PERCEPTION_RESOURCES=1) ──────
+if (process.env.DESKTOP_TOUCH_PERCEPTION_RESOURCES === "1") {
+  registerPerceptionResources(server);
+}
 
 // ─── Failsafe background monitor (backup for long-running operations) ─────────
 // Primary check: per-tool call via the wrapper above.

@@ -111,6 +111,39 @@ describe("FlushScheduler — trailing debounce", () => {
 
     scheduler.dispose();
   });
+
+  it("50 LOCATIONCHANGE events within 150ms coalesce into a single flush (Milestone 4)", () => {
+    const calls: string[] = [];
+    const scheduler = new FlushScheduler({ onFlush: (r) => { calls.push(r); } });
+
+    // 50 location events fired every 2ms = 100ms total (< 150ms debounce)
+    for (let i = 0; i < 50; i++) {
+      scheduler.schedule("location", `locationchange:hwnd=100:seq=${i}`);
+      vi.advanceTimersByTime(2);
+    }
+    expect(calls).toHaveLength(0); // still within debounce window
+
+    vi.advanceTimersByTime(DEFAULT_DEBOUNCE_MS.location);
+    expect(calls).toHaveLength(1); // single coalesced flush
+
+    scheduler.dispose();
+  });
+
+  it("MOVESIZESTART fires synchronously (debounce=0), MOVESIZEEND fires after 50ms", () => {
+    const calls: string[] = [];
+    const scheduler = new FlushScheduler({ onFlush: (r) => { calls.push(r); } });
+
+    scheduler.schedule("move_start", "movesizestart:hwnd=100");
+    expect(calls).toHaveLength(1); // synchronous
+
+    scheduler.schedule("move_end", "movesizeend:hwnd=100");
+    expect(calls).toHaveLength(1); // pending
+
+    vi.advanceTimersByTime(DEFAULT_DEBOUNCE_MS.move_end);
+    expect(calls).toHaveLength(2); // flushed after 50ms
+
+    scheduler.dispose();
+  });
 });
 
 describe("FlushScheduler — scheduleImmediate", () => {

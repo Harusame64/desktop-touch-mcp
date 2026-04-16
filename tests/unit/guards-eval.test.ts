@@ -165,6 +165,49 @@ describe("safe.keyboardTarget", () => {
     expect(result.ok).toBe(false);
     expect(result.reason).toMatch(/confidence/i);
   });
+
+  it("fails when foreground status is dirty (watermark gate)", () => {
+    const store = makeStore();
+    populateStore(store, hwnd);
+    store.markDirtyWithCause([`window:${hwnd}.target.foreground`], "foreground_change", 9000);
+    const result = evaluateGuard("safe.keyboardTarget", makeLens(), store, Date.now());
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/dirty/i);
+  });
+
+  it("fails when foreground status is settling (watermark gate)", () => {
+    const store = makeStore();
+    populateStore(store, hwnd);
+    store.markSettling([`window:${hwnd}.target.foreground`], 9000);
+    const result = evaluateGuard("safe.keyboardTarget", makeLens(), store, Date.now());
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/settling/i);
+  });
+
+  it("fails when foreground evidence is older than dirty mark (watermark gate, status=dirty)", () => {
+    const store = makeStore();
+    // Apply observation with explicit early monoMs
+    const nowMs = Date.now();
+    const ev = makeEvidence("win32", 1, nowMs);
+    store.apply([{
+      seq: 1, tsMs: nowMs, source: "win32",
+      entity: { kind: "window", id: hwnd }, property: "target.identity",
+      value: { pid: 1234, processStartTimeMs: 1700000000000 }, confidence: 0.98, evidence: ev,
+    }]);
+    store.apply([{
+      seq: 2, tsMs: nowMs, source: "win32",
+      entity: { kind: "window", id: hwnd }, property: "target.foreground",
+      value: true, confidence: 0.98, evidence: ev,
+      monoMs: 1000,  // observation monoMs = 1000
+    }]);
+    // dirty mark at monoMs=2000 (AFTER the observation) → status becomes "dirty"
+    // old obs (monoMs=1000) cannot clear dirty (watermark prevents it)
+    store.markDirtyWithCause([`window:${hwnd}.target.foreground`], "fg_change", 2000);
+    const result = evaluateGuard("safe.keyboardTarget", makeLens(), store, Date.now());
+    expect(result.ok).toBe(false);
+    // dirty status check fires first (Rule 1) — confirms guard blocks
+    expect(result.reason).toMatch(/dirty/i);
+  });
 });
 
 describe("safe.clickCoordinates", () => {
@@ -198,6 +241,46 @@ describe("safe.clickCoordinates", () => {
     populateStore(store, hwnd);
     const result = evaluateGuard("safe.clickCoordinates", makeLens(), store, Date.now(), {});
     expect(result.ok).toBe(true);
+  });
+
+  it("fails when rect status is dirty (watermark gate)", () => {
+    const store = makeStore();
+    populateStore(store, hwnd);
+    store.markDirtyWithCause([`window:${hwnd}.target.rect`], "move", 9000);
+    const result = evaluateGuard("safe.clickCoordinates", makeLens(), store, Date.now(), { clickX: 100, clickY: 100 });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/dirty/i);
+  });
+
+  it("fails when rect status is settling (watermark gate)", () => {
+    const store = makeStore();
+    populateStore(store, hwnd);
+    store.markSettling([`window:${hwnd}.target.rect`], 9000);
+    const result = evaluateGuard("safe.clickCoordinates", makeLens(), store, Date.now(), { clickX: 100, clickY: 100 });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/settling/i);
+  });
+
+  it("fails when rect evidence is older than dirty mark (watermark gate, status=dirty)", () => {
+    const store = makeStore();
+    const nowMs = Date.now();
+    const ev = makeEvidence("win32", 1, nowMs);
+    store.apply([{
+      seq: 1, tsMs: nowMs, source: "win32",
+      entity: { kind: "window", id: hwnd }, property: "target.identity",
+      value: { pid: 1234, processStartTimeMs: 1700000000000 }, confidence: 0.98, evidence: ev,
+    }]);
+    store.apply([{
+      seq: 2, tsMs: nowMs, source: "win32",
+      entity: { kind: "window", id: hwnd }, property: "target.rect",
+      value: { x: 0, y: 0, width: 800, height: 600 }, confidence: 0.98, evidence: ev,
+      monoMs: 1000,  // observation monoMs = 1000
+    }]);
+    // dirty mark at monoMs=2000 (AFTER the observation) → status becomes "dirty"
+    store.markDirtyWithCause([`window:${hwnd}.target.rect`], "move", 2000);
+    const result = evaluateGuard("safe.clickCoordinates", makeLens(), store, Date.now(), { clickX: 100, clickY: 100 });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/dirty/i);
   });
 });
 
@@ -242,6 +325,58 @@ describe("stable.rect", () => {
     const result = evaluateGuard("stable.rect", makeLens(), store, Date.now());
     expect(result.ok).toBe(true);
     expect(result.confidence).toBe(0.6);
+  });
+
+  it("fails when rect status is settling", () => {
+    const store = makeStore();
+    populateStore(store, hwnd);
+    store.markSettling([`window:${hwnd}.target.rect`], 9000);
+    const result = evaluateGuard("stable.rect", makeLens(), store, Date.now());
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/settling/i);
+  });
+
+  it("fails when rect evidence is older than dirty mark (watermark rule, status=dirty)", () => {
+    const store = makeStore();
+    const nowMs = Date.now();
+    const ev = makeEvidence("win32", 1, nowMs);
+    store.apply([{
+      seq: 1, tsMs: nowMs, source: "win32",
+      entity: { kind: "window", id: hwnd }, property: "target.rect",
+      value: { x: 0, y: 0, width: 800, height: 600 }, confidence: 0.98, evidence: ev,
+      monoMs: 1000,  // observation before dirty mark
+    }]);
+    // dirty mark at monoMs=2000 → status="dirty"; old obs cannot clear it (watermark)
+    store.markDirtyWithCause([`window:${hwnd}.target.rect`], "move", 2000);
+    const result = evaluateGuard("stable.rect", makeLens(), store, Date.now());
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/dirty/i);
+  });
+
+  it("passes with confidence=0.6 for rect observed right after dirty mark (quiet window < 250ms)", () => {
+    const store = makeStore();
+    const nowMs = Date.now();
+    const ev = makeEvidence("win32", 1, nowMs);
+    // First apply to establish the fluent
+    store.apply([{
+      seq: 1, tsMs: nowMs, source: "win32",
+      entity: { kind: "window", id: hwnd }, property: "target.rect",
+      value: { x: 0, y: 0, width: 800, height: 600 }, confidence: 0.98, evidence: ev,
+      monoMs: 1000,
+    }]);
+    // Mark dirty at monoMs=2000
+    store.markDirtyWithCause([`window:${hwnd}.target.rect`], "move", 2000);
+    // Apply fresh observation at monoMs=2050 (just 50ms after dirty, < 250ms quiet window)
+    const ev2 = makeEvidence("win32", 2, nowMs);
+    store.apply([{
+      seq: 2, tsMs: nowMs, source: "win32",
+      entity: { kind: "window", id: hwnd }, property: "target.rect",
+      value: { x: 10, y: 0, width: 800, height: 600 }, confidence: 0.98, evidence: ev2,
+      monoMs: 2050,
+    }]);
+    const result = evaluateGuard("stable.rect", makeLens(), store, Date.now());
+    expect(result.ok).toBe(true);
+    expect(result.confidence).toBe(0.6); // quiet window not yet elapsed
   });
 });
 
