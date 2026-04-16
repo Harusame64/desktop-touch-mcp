@@ -404,7 +404,7 @@ export function enumWindowsInZOrder(): WindowZInfo[] {
         try { isEnabled = !!IsWindowEnabled(hwnd); } catch { /* keep true */ }
 
         results.push({
-          hwnd,
+          hwnd: BigInt(hwnd as bigint | number), // normalize koffi intptr → always bigint
           title,
           region: isMinimized
             ? { x: 0, y: 0, width: 0, height: 0 }
