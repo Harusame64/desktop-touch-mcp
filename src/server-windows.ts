@@ -22,6 +22,7 @@ import { registerScrollToElementTools } from "./tools/scroll-to-element.js";
 import { registerSmartScrollTools } from "./tools/smart-scroll.js";
 import { registerPerceptionTools } from "./tools/perception.js";
 import { registerPerceptionResources } from "./tools/perception-resources.js";
+import { stopNativeRuntime } from "./engine/perception/registry.js";
 import { startTray, stopTray } from "./utils/tray.js";
 import { checkFailsafe, FailsafeError } from "./utils/failsafe.js";
 import { SERVER_VERSION } from "./version.js";
@@ -164,6 +165,7 @@ failsafeTimer.unref(); // don't keep process alive for this alone
 // ─── Graceful shutdown ────────────────────────────────────────────────────────
 function shutdown(): void {
   console.error("[desktop-touch] Shutting down...");
+  stopNativeRuntime();
   stopTray();
   process.exit(0);
 }

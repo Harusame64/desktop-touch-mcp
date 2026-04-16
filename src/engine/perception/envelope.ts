@@ -12,6 +12,7 @@ import type {
 } from "./types.js";
 import type { FluentStore } from "./fluent-store.js";
 import { confidenceFor } from "./evidence.js";
+import { formatGuardSummary } from "./resource-model.js";
 
 export interface ProjectEnvelopeOptions {
   maxTokens?: number;
@@ -25,7 +26,11 @@ function deriveAttention(
   hasSettling: boolean,
   hasStale: boolean
 ): AttentionState {
-  if (!guardResult.ok) return "guard_failed";
+  if (!guardResult.ok) {
+    // identity_changed has a specific attention state
+    const failedKind = guardResult.failedGuard?.kind ?? "";
+    return failedKind === "target.identityStable" ? "identity_changed" : "guard_failed";
+  }
   if (hasDirty) return "dirty";
   if (hasSettling) return "settling";
   if (changedKeys.size > 0) return "changed";
@@ -50,6 +55,38 @@ function describeChange(key: string, fluent: Fluent | undefined): string {
 
 function estimateTokens(obj: unknown): number {
   return Math.ceil(JSON.stringify(obj).length / 4);
+}
+
+/**
+ * Shared token-budget trimming for both window and browserTab envelopes.
+ * Removes changed summaries (oldest first) and optional fields in order of increasing importance.
+ */
+function trimEnvelopeToBudget(
+  envelope: PerceptionEnvelope,
+  changedSummaries: string[],
+  maxTokens: number
+): void {
+  if (estimateTokens(envelope) <= maxTokens) return;
+
+  // Drop changed summaries (oldest first), keep at least 1
+  while (changedSummaries.length > 1 && estimateTokens(envelope) > maxTokens) {
+    changedSummaries.shift();
+  }
+  if (estimateTokens(envelope) <= maxTokens) return;
+
+  // Window fields (optional, in ascending importance)
+  if (envelope.latest.target) {
+    for (const field of ["zOrder", "focusedElement", "modalAbove", "rect"] as const) {
+      if (estimateTokens(envelope) <= maxTokens) return;
+      delete envelope.latest.target[field];
+    }
+  }
+
+  // browserTab fields (optional, in ascending importance)
+  if (envelope.latest.browser) {
+    if (estimateTokens(envelope) > maxTokens) delete envelope.latest.browser.title;
+    if (estimateTokens(envelope) > maxTokens) delete envelope.latest.browser.url;
+  }
 }
 
 export function projectEnvelope(
@@ -82,12 +119,16 @@ export function projectEnvelope(
     guardsMap[r.kind] = r.ok;
   }
 
+  // canAct derived from guard result
+  const canAct = { keyboard: guardResult.ok, mouse: guardResult.ok };
+
   const envelope: PerceptionEnvelope = {
     seq: store.currentSeq(),
     lens: lens.lensId,
     attention: "ok",
     changed: changedSummaries,
     guards: guardsMap,
+    canAct,
     latest: {},
   };
 
@@ -114,6 +155,10 @@ export function projectEnvelope(
       ...(readyStateFluent && { readyState: readyStateFluent.value as string }),
       confidence: Math.round(avgConf * 100) / 100,
     };
+
+    // F4: Apply token-budget trimming (same policy as window branch)
+    trimEnvelopeToBudget(envelope, changedSummaries, maxTokens);
+
   } else {
     // ── window block ──────────────────────────────────────────────────────────
     const existsFluent  = read("target.exists");
@@ -147,24 +192,21 @@ export function projectEnvelope(
       confidence: Math.round(avgConf * 100) / 100,
     };
 
-    // Token-budget trimming: drop optional window fields in ascending importance order
-    if (estimateTokens(envelope) > maxTokens) {
-      while (changedSummaries.length > 1 && estimateTokens(envelope) > maxTokens) {
-        changedSummaries.shift();
-      }
-      if (estimateTokens(envelope) > maxTokens && envelope.latest.target) {
-        delete envelope.latest.target.zOrder;
-      }
-      if (estimateTokens(envelope) > maxTokens && envelope.latest.target) {
-        delete envelope.latest.target.focusedElement;
-      }
-      if (estimateTokens(envelope) > maxTokens && envelope.latest.target) {
-        delete envelope.latest.target.modalAbove;
-      }
-      if (estimateTokens(envelope) > maxTokens && envelope.latest.target) {
-        delete envelope.latest.target.rect;
+    // F8: Add rebind suggestion on identity_changed
+    if (envelope.attention === "identity_changed") {
+      envelope.rebindSuggestion = {
+        action: "forget_and_register_again",
+        reason: "identity_changed",
+        lensId: lens.lensId,
+      };
+      const failedGuard = guardResult.failedGuard;
+      if (failedGuard) {
+        envelope.warnings = [formatGuardSummary(failedGuard)];
       }
     }
+
+    // Token-budget trimming (shared helper)
+    trimEnvelopeToBudget(envelope, changedSummaries, maxTokens);
   }
 
   return envelope;

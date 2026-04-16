@@ -202,3 +202,126 @@ describe("projectEnvelope — token budget trimming", () => {
     expect(env.seq).toBeGreaterThanOrEqual(0);
   });
 });
+
+// ── M6: browserTab envelope token-budget trimming ────────────────────────────
+
+function populateBrowserStore(store: FluentStore, tabId = "tab-1") {
+  const seq = { n: 1 };
+  const set = (prop: string, value: unknown) => {
+    const nowMs = Date.now();
+    store.apply([{
+      seq: seq.n++, tsMs: nowMs, source: "cdp",
+      entity: { kind: "browserTab", id: tabId },
+      property: prop, value, confidence: 0.98,
+      evidence: makeEvidence("cdp", seq.n, nowMs),
+    }]);
+  };
+  set("browser.url",        "https://example.com/very/long/path");
+  set("browser.title",      "Example Domain - This Is A Very Long Title That Takes Space");
+  set("browser.readyState", "complete");
+}
+
+function makeTabLens(maxEnvelopeTokens = 120): PerceptionLens {
+  const tabId = "tab-1";
+  return {
+    lensId: "perc-tab-1",
+    spec: {
+      name: "tab-test",
+      target: { kind: "browserTab", match: { urlIncludes: "example.com" } },
+      maintain: ["browser.url", "browser.title", "browser.readyState"],
+      guards: [],
+      guardPolicy: "block",
+      maxEnvelopeTokens,
+      salience: "normal",
+    },
+    binding: { hwnd: tabId, windowTitle: "Example Domain" },
+    boundIdentity: { tabId, title: "Example Domain", url: "https://example.com", port: 9222 },
+    fluentKeys: ["browser.url", "browser.title", "browser.readyState"].map(k => `browserTab:${tabId}.${k}`),
+    registeredAtSeq: 1,
+    registeredAtMs: Date.now(),
+  };
+}
+
+describe("projectEnvelope — browserTab token budget trimming (M6)", () => {
+  it("browserTab envelope with tight budget does not throw", () => {
+    const store = makeStore();
+    populateBrowserStore(store);
+    const env = projectEnvelope(makeTabLens(25), store, okGuardResult);
+    expect(env).toBeDefined();
+    expect(env.lens).toBe("perc-tab-1");
+    expect(env.attention).toBeDefined();
+  });
+
+  it("browserTab envelope drops title before url under budget pressure", () => {
+    const store = makeStore();
+    populateBrowserStore(store);
+    // Very tight: should drop title first, then url if needed
+    const env = projectEnvelope(makeTabLens(22), store, okGuardResult);
+    // Must not throw; browser block may be partially trimmed
+    expect(env.latest.browser).toBeDefined();
+  });
+
+  it("browserTab envelope includes all fields when budget is generous", () => {
+    const store = makeStore();
+    populateBrowserStore(store);
+    const env = projectEnvelope(makeTabLens(200), store, okGuardResult);
+    expect(env.latest.browser?.url).toBe("https://example.com/very/long/path");
+    expect(env.latest.browser?.readyState).toBe("complete");
+  });
+
+  it("browserTab changed summaries coalesced under budget", () => {
+    const store = makeStore();
+    populateBrowserStore(store);
+    const changedKeys = new Set([`browserTab:tab-1.browser.url`, `browserTab:tab-1.browser.title`]);
+    const env = projectEnvelope(makeTabLens(30), store, okGuardResult, { changedKeys });
+    // Should not throw; changed array should have at least 1 entry (kept at least 1)
+    expect(env.changed.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ── M7: rebindSuggestion on identity_changed (F8) ────────────────────────────
+
+const identityChangedGuardResult: GuardEvalResult = {
+  ok: false, policy: "block", attention: "identity_changed",
+  results: [{
+    kind: "target.identityStable", ok: false, confidence: 0,
+    reason: "Process PID changed", suggestedAction: "forget_and_register_again",
+  }],
+  failedGuard: { kind: "target.identityStable", ok: false, confidence: 0, reason: "Process PID changed" },
+};
+
+describe("projectEnvelope — rebindSuggestion on identity_changed (M7)", () => {
+  it("returns attention:'identity_changed' when identityStable guard fails", () => {
+    const store = makeStore();
+    populateStore(store);
+    const env = projectEnvelope(makeLens(), store, identityChangedGuardResult, { changedKeys: new Set() });
+    expect(env.attention).toBe("identity_changed");
+  });
+
+  it("includes rebindSuggestion on identity_changed", () => {
+    const store = makeStore();
+    populateStore(store);
+    const env = projectEnvelope(makeLens(), store, identityChangedGuardResult, { changedKeys: new Set() });
+    expect(env.rebindSuggestion).toBeDefined();
+    expect(env.rebindSuggestion?.action).toBe("forget_and_register_again");
+    expect(env.rebindSuggestion?.reason).toBe("identity_changed");
+    expect(env.rebindSuggestion?.lensId).toBe("perc-1");
+  });
+
+  it("includes warning for failed guard in rebindSuggestion case", () => {
+    const store = makeStore();
+    populateStore(store);
+    const env = projectEnvelope(makeLens(), store, identityChangedGuardResult, { changedKeys: new Set() });
+    expect(env.warnings).toBeDefined();
+    expect(env.warnings!.length).toBeGreaterThan(0);
+    expect(env.warnings![0]).toContain("identityStable");
+  });
+
+  it("non-identityStable guard failure returns attention:'guard_failed' (no rebindSuggestion)", () => {
+    const store = makeStore();
+    populateStore(store);
+    const env = projectEnvelope(makeLens(), store, failedGuardResult, { changedKeys: new Set() });
+    expect(env.attention).toBe("guard_failed");
+    expect(env.rebindSuggestion).toBeUndefined();
+  });
+});

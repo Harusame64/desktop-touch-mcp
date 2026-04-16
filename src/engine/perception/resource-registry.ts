@@ -82,6 +82,11 @@ export class ResourceRegistry {
     return this.uriToLensId.get(uri);
   }
 
+  /** Returns all active (non-tombstone) URIs for a given lens. */
+  getUrisForLens(lensId: string): string[] {
+    return [...(this.lensUris.get(lensId) ?? [])];
+  }
+
   getTombstone(uri: string): TombstoneEntry | undefined {
     return this.tombstones.get(uri);
   }

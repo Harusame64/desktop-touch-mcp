@@ -166,58 +166,8 @@ export const perceptionListHandler = async (_params: Record<string, never>) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Descriptions
+// Descriptions (F9: updated for v0.11.0 — removed stale "500ms" / "Phase 4" refs)
 // ─────────────────────────────────────────────────────────────────────────────
-
-const perceptionRegisterDesc = buildDesc({
-  purpose:
-    "Register a standing perception lens on a target window. " +
-    "The MCP server will maintain Win32-backed fluents (position, foreground, identity, modal " +
-    "obstruction) and evaluate safety guards before actions that reference this lens.",
-  details:
-    "Creates a PerceptionLens bound to the first foreground window whose title matches " +
-    "titleIncludes. Immediately reads Win32 state to populate fluents (exists, identity, " +
-    "title, rect, foreground, zOrder, modal.above). Returns a lensId to pass to action tools " +
-    "(keyboard_type, mouse_click, etc.) via the lensId parameter. When lensId is provided, " +
-    "the tool: (1) refreshes fluents just before acting, (2) evaluates guards, (3) blocks " +
-    "(guardPolicy:'block') or warns (guardPolicy:'warn') if any guard fails, and (4) attaches " +
-    "a perception envelope to post.perception in the response so the LLM can see what changed " +
-    "without an extra get_context call. The sensor runs on the existing 500 ms event-bus tick " +
-    "(no new polling timer). Maximum 16 active lenses; oldest is evicted when exceeded.",
-  prefer:
-    "Use when you need keyboard/mouse safety across multiple actions on the same window: " +
-    "prevents typing into wrong window after focus changes, detects moved windows before " +
-    "coordinate clicks, and surfaces modal dialogs before they cause errors. Not needed for " +
-    "single one-shot actions.",
-  caveats:
-    "Phase 4 (v0.10): Win32 + CDP + UIA sensors. modal.above uses owner-chain and disabled-owner " +
-    "rules. target.focusedElement is maintained only for salience:'critical' window lenses (UIA, cached 500ms). " +
-    "browserTab lenses require Chrome/Edge with --remote-debugging-port=9222; they maintain " +
-    "browser.url/title/readyState and check browser.readyState==='complete' for browser.ready guard. " +
-    "Focus-within-window changes (Tab key) surface on the next 500ms tick or explicit perception_read. " +
-    "safe.clickCoordinates uses rect containment only (no pixel-level z-order hit test).",
-  examples: [
-    "perception_register({name:'editor', target:{kind:'window', match:{titleIncludes:'Visual Studio Code'}}})" +
-      " → {lensId:'perc-1', ...}",
-    "keyboard_type({windowTitle:'Visual Studio Code', text:'hello', lensId:'perc-1'})" +
-      " → includes post.perception.{attention, guards, latest}",
-    "perception_read({lensId:'perc-1'})" +
-      " → explicit refresh + full envelope when you want to inspect state without acting",
-  ],
-});
-
-const perceptionReadDesc =
-  "Force-refresh Win32 fluents for a lens and return a full perception envelope. " +
-  "Use after an action that may have changed window state, or when post.perception.attention " +
-  "is 'dirty' or 'stale'. Returns {ok, seq, attention, guards, latest, changed}.";
-
-const perceptionForgetDesc =
-  "Deregister a lens by lensId. Removes it from the dependency graph and cleans up its " +
-  "event-bus subscription when no other lenses remain. Returns {ok, removed, lensId}.";
-
-const perceptionListDesc =
-  "List all currently active perception lenses with their lensId, name, target window, " +
-  "guardPolicy, salience, and registration time. Returns {ok, count, lenses[]}.";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Registration
@@ -228,31 +178,30 @@ export function registerPerceptionTools(server: McpServer): void {
     "perception_register",
     buildDesc({
       purpose:
-        "Register a standing perception lens on a target window. " +
-        "The MCP server will maintain Win32-backed fluents (position, foreground, identity, modal " +
-        "obstruction) and evaluate safety guards before actions that reference this lens.",
+        "Register a standing perception lens on a target window or browser tab. " +
+        "The MCP server maintains Win32/CDP/UIA-backed fluents (position, foreground, identity, " +
+        "modal obstruction) and evaluates safety guards before actions that reference this lens.",
       details:
-        "Creates a PerceptionLens bound to the first foreground window whose title matches " +
-        "titleIncludes. Immediately reads Win32 state to populate fluents (exists, identity, " +
-        "title, rect, foreground, zOrder, modal.above). Returns a lensId to pass to action tools " +
-        "(keyboard_type, mouse_click, etc.) via the lensId parameter. When lensId is provided, " +
-        "the tool: (1) refreshes fluents just before acting, (2) evaluates guards, (3) blocks " +
-        "(guardPolicy:'block') or warns (guardPolicy:'warn') if any guard fails, and (4) attaches " +
-        "a perception envelope to post.perception in the response so the LLM can see what changed " +
-        "without an extra get_context call. The sensor runs on the existing 500 ms event-bus tick " +
-        "(no new polling timer). Maximum 16 active lenses; oldest is evicted when exceeded.",
+        "Creates a PerceptionLens bound to the first matching window/tab. Immediately reads " +
+        "Win32 state to populate fluents (exists, identity, title, rect, foreground, zOrder, " +
+        "modal.above). Returns a lensId to pass to action tools (keyboard_type, mouse_click, etc.) " +
+        "via the lensId parameter. When lensId is provided, the tool: (1) refreshes fluents just " +
+        "before acting, (2) evaluates guards, (3) blocks (guardPolicy:'block') or warns " +
+        "(guardPolicy:'warn') if any guard fails, and (4) attaches a perception envelope to " +
+        "post.perception in the response so the LLM can see what changed without an extra " +
+        "get_context call. Maximum 16 active lenses; oldest is evicted when exceeded.",
       prefer:
         "Use when you need keyboard/mouse safety across multiple actions on the same window: " +
         "prevents typing into wrong window after focus changes, detects moved windows before " +
         "coordinate clicks, and surfaces modal dialogs before they cause errors. Not needed for " +
         "single one-shot actions.",
       caveats:
-        "Phase 4 (v0.10): Win32 + CDP + UIA sensors. modal.above uses owner-chain and disabled-owner " +
-        "rules. target.focusedElement is maintained only for salience:'critical' window lenses (UIA, cached 500ms). " +
+        "Win32 + CDP + UIA sensors. modal.above uses owner-chain and disabled-owner rules. " +
+        "target.focusedElement is maintained only for salience:'critical' window lenses (UIA). " +
         "browserTab lenses require Chrome/Edge with --remote-debugging-port=9222; they maintain " +
         "browser.url/title/readyState and check browser.readyState==='complete' for browser.ready guard. " +
-        "Focus-within-window changes (Tab key) surface on the next 500ms tick or explicit perception_read. " +
-        "safe.clickCoordinates uses rect containment only (no pixel-level z-order hit test).",
+        "safe.clickCoordinates uses rect containment only (no pixel-level z-order hit test). " +
+        "attention:'identity_changed' means the window was replaced — forget and re-register the lens.",
       examples: [
         "perception_register({name:'editor', target:{kind:'window', match:{titleIncludes:'Visual Studio Code'}}})" +
           " → {lensId:'perc-1', ...}",
@@ -267,7 +216,7 @@ export function registerPerceptionTools(server: McpServer): void {
   );
   server.tool(
     "perception_read",
-    "Force-refresh Win32 fluents for a lens and return a full perception envelope. " +
+    "Force-refresh Win32/CDP fluents for a lens and return a full perception envelope. " +
     "Use after an action that may have changed window state, or when post.perception.attention " +
     "is 'dirty' or 'stale'. Returns {ok, seq, attention, guards, latest, changed}.",
     perceptionReadSchema,
@@ -275,8 +224,9 @@ export function registerPerceptionTools(server: McpServer): void {
   );
   server.tool(
     "perception_forget",
-    "Deregister a lens by lensId. Removes it from the dependency graph and cleans up its " +
-    "event-bus subscription when no other lenses remain. Returns {ok, removed, lensId}.",
+    "Deregister a lens by lensId. Removes it from the dependency graph and cleans up sensor " +
+    "subscriptions. Call when you no longer need perception tracking for a window/tab. " +
+    "Returns {ok, removed, lensId}.",
     perceptionForgetSchema,
     perceptionForgetHandler
   );
