@@ -22,7 +22,7 @@ export interface StubToolCatalogEntry {
 export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   {
     "name": "browser_click_element",
-    "description": "Find a DOM element by CSS selector and click it (combines browser_find_element + mouse_click in one step). Prefer over mouse_click for Chrome — selector-based clicking is stable across repaints. Caveats: Fails if the element is outside the visible viewport — scroll it into view with browser_eval(\"document.querySelector('sel').scrollIntoView()\") first.",
+    "description": "Find a DOM element by CSS selector and click it (combines browser_find_element + mouse_click in one step). Prefer over mouse_click for Chrome — selector-based clicking is stable across repaints. Pass lensId (from perception_register) to verify tab identity and readyState before clicking and receive post.perception state feedback without a screenshot. Caveats: Fails if the element is outside the visible viewport — scroll it into view with browser_eval(\"document.querySelector('sel').scrollIntoView()\") first.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -97,7 +97,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "browser_eval",
-    "description": "Evaluate a JavaScript expression in a browser tab and return the result. Use for reading page state, scrolling, or triggering simple DOM mutations. Caveats: Returns JSON-serializable values only — DOM nodes cannot be returned directly. React / Vue / Svelte controlled inputs cannot be updated via element.value = ... or native-setter + dispatchEvent — the framework's internal state is not refreshed; use keyboard_type (click the field first, pass windowTitle) for such form fields.",
+    "description": "Evaluate a JavaScript expression in a browser tab and return the result. Use for reading page state, scrolling, or triggering simple DOM mutations. Pass lensId (from perception_register) to verify tab identity and readyState before evaluating and receive post.perception state feedback without a screenshot. Caveats: Returns JSON-serializable values only — DOM nodes cannot be returned directly. React / Vue / Svelte controlled inputs cannot be updated via element.value = ... or native-setter + dispatchEvent — the framework's internal state is not refreshed; use keyboard_type (click the field first, pass windowTitle) for such form fields.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -382,7 +382,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "browser_navigate",
-    "description": "Navigate a browser tab to a URL via CDP Page.navigate — more reliable than clicking the address bar (no need to find UI elements). Verify readiness with browser_eval(\"document.readyState\") after calling. Caveats: Does not block until page load completes — follow with wait_until(element_matches) or repeated browser_eval polling for slow pages.",
+    "description": "Navigate a browser tab to a URL via CDP Page.navigate — more reliable than clicking the address bar (no need to find UI elements). Verify readiness with browser_eval(\"document.readyState\") after calling. Pass lensId (from perception_register) to verify tab identity before navigating and receive post.perception state feedback without a screenshot. Caveats: Does not block until page load completes — follow with wait_until(element_matches) or repeated browser_eval polling for slow pages.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -508,7 +508,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "click_element",
-    "description": "Invoke a UI element by name or automationId via UIA InvokePattern — no screen coordinates needed. Prefer over mouse_click for buttons, menu items, and links in native Windows apps. Use get_ui_elements first to discover automationIds. Caveats: Requires the element to expose InvokePattern — some read-only or custom controls do not; fall back to mouse_click in that case.",
+    "description": "Invoke a UI element by name or automationId via UIA InvokePattern — no screen coordinates needed. Prefer over mouse_click for buttons, menu items, and links in native Windows apps. Use get_ui_elements first to discover automationIds. Pass lensId (from perception_register) to run safety guards (identity stable, foreground, modal) before invoking and receive post.perception state feedback without a screenshot. Caveats: Requires the element to expose InvokePattern — some read-only or custom controls do not; fall back to mouse_click in that case.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -858,7 +858,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "keyboard_press",
-    "description": "Press a key or key combination (e.g. 'ctrl+c', 'alt+tab', 'ctrl+shift+s', 'f5', 'escape', 'f1'–'f12'). Pass windowTitle to auto-focus before pressing — eliminates a separate focus_window call. Caveats: Omitting windowTitle sends keystrokes to the currently active window — if focus may have shifted since your last observation, pass windowTitle explicitly. win+r, win+x, win+s, win+l are blocked for security. narrate:'rich' adds UIA state feedback for state-transitioning keys (Enter, Tab, Esc, F-keys) only.",
+    "description": "Press a key or key combination (e.g. 'ctrl+c', 'alt+tab', 'ctrl+shift+s', 'f5', 'escape', 'f1'–'f12'). Pass windowTitle to auto-focus before pressing — eliminates a separate focus_window call. Pass lensId (from perception_register, window lens only) to run safety guards (identity stable, foreground, modal) before pressing and receive post.perception state feedback without a screenshot. Caveats: Omitting windowTitle sends keystrokes to the currently active window — if focus may have shifted since your last observation, pass windowTitle explicitly. win+r, win+x, win+s, win+l are blocked for security. narrate:'rich' adds UIA state feedback for state-transitioning keys (Enter, Tab, Esc, F-keys) only.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -909,7 +909,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "keyboard_type",
-    "description": "Type a string into the focused window. Pass windowTitle to auto-focus the target before typing and enable focus-loss detection (focusLost in response) — eliminates a separate focus_window call. Pass replaceAll:true to Ctrl+A before typing (replace existing content in one call). Prefer set_element_value for form fields. Caveats: Omitting windowTitle types into whatever window is currently active — if focus may have shifted since your last get_context, pass windowTitle explicitly. Does not handle IME composition for CJK — use use_clipboard=true or set_element_value instead. Text containing em-dash (—), en-dash (–), smart quotes, or other non-ASCII punctuation is automatically rerouted via clipboard (method:'clipboard-auto') to prevent Chrome/Edge from intercepting keystrokes as keyboard accelerators (e.g. address bar hijack). Pass forceKeystrokes:true to disable this auto-upgrade.",
+    "description": "Type a string into the focused window. Pass windowTitle to auto-focus the target before typing and enable focus-loss detection (focusLost in response) — eliminates a separate focus_window call. Pass replaceAll:true to Ctrl+A before typing (replace existing content in one call). Prefer set_element_value for form fields. Pass lensId (from perception_register, window lens only) to run safety guards (identity stable, foreground, modal) before typing and receive post.perception state feedback without a screenshot. Caveats: Omitting windowTitle types into whatever window is currently active — if focus may have shifted since your last get_context, pass windowTitle explicitly. Does not handle IME composition for CJK — use use_clipboard=true or set_element_value instead. Text containing em-dash (—), en-dash (–), smart quotes, or other non-ASCII punctuation is automatically rerouted via clipboard (method:'clipboard-auto') to prevent Chrome/Edge from intercepting keystrokes as keyboard accelerators (e.g. address bar hijack). Pass forceKeystrokes:true to disable this auto-upgrade.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -975,7 +975,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "mouse_click",
-    "description": "Click at screen-absolute coordinates (virtual screen pixels), or pass origin+scale from a dotByDot=true screenshot response to let the server convert image-local coords automatically: screen = origin + (x,y) / (scale ?? 1). doubleClick:true for double-click; tripleClick:true for triple-click (selects a full line of text) — if both are set, tripleClick wins. windowTitle optionally focuses the window first (for pinned-dock setups). Prefer click_element (UIA) for stable text-addressed clicking in native apps. Prefer browser_click_element for Chrome. Use mouse_click only when pixel coords are the only available option. Caveats: origin+scale are meaningful ONLY with dotByDot=true screenshot responses — applying them to scaled detail='text'/'meta' output lands clicks in the wrong positions.",
+    "description": "Click at screen-absolute coordinates (virtual screen pixels), or pass origin+scale from a dotByDot=true screenshot response to let the server convert image-local coords automatically: screen = origin + (x,y) / (scale ?? 1). doubleClick:true for double-click; tripleClick:true for triple-click (selects a full line of text) — if both are set, tripleClick wins. windowTitle optionally focuses the window first (for pinned-dock setups). Prefer click_element (UIA) for stable text-addressed clicking in native apps. Prefer browser_click_element for Chrome. Use mouse_click only when pixel coords are the only available option. Pass lensId (from perception_register) to run safety guards (identity stable, foreground, coordinates in rect) before clicking and receive post.perception state feedback without a screenshot. Caveats: origin+scale are meaningful ONLY with dotByDot=true screenshot responses — applying them to scaled detail='text'/'meta' output lands clicks in the wrong positions.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1076,7 +1076,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "mouse_drag",
-    "description": "Click and drag from (startX, startY) to (endX, endY) holding the left mouse button — for sliders, drag-and-drop, canvas drawing, and window resizing. windowTitle optionally focuses before drag. Caveats: Left button only; does not support right-drag or middle-drag.",
+    "description": "Click and drag from (startX, startY) to (endX, endY) holding the left mouse button — for sliders, drag-and-drop, canvas drawing, and window resizing. windowTitle optionally focuses before drag. Pass lensId (from perception_register) to run safety guards (identity stable, foreground, coordinates in rect) before dragging and receive post.perception state feedback without a screenshot. Caveats: Left button only; does not support right-drag or middle-drag.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1810,7 +1810,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "set_element_value",
-    "description": "Set the value of a text field or combo box via UIA ValuePattern — more reliable than keyboard_type for programmatic form input. Use narrate:'rich' to confirm the value was applied without a verification screenshot. Caveats: Only works for elements that expose ValuePattern; does not work on contenteditable HTML or custom rich-text editors — use keyboard_type for those.",
+    "description": "Set the value of a text field or combo box via UIA ValuePattern — more reliable than keyboard_type for programmatic form input. Use narrate:'rich' to confirm the value was applied without a verification screenshot. Pass lensId (from perception_register) to run safety guards (identity stable, foreground, modal) before setting and receive post.perception state feedback without a screenshot. Caveats: Only works for elements that expose ValuePattern; does not work on contenteditable HTML or custom rich-text editors — use keyboard_type for those.",
     "inputSchema": {
       "type": "object",
       "properties": {
