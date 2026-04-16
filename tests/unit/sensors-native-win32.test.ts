@@ -102,6 +102,21 @@ describe("NativeSensorBridge — Phase 5-A event mapping", () => {
     expect(cbs.onEnumWindowsNeeded).not.toHaveBeenCalled();
   });
 
+  it("EVENT_SYSTEM_FOREGROUND fanout — other foreground-sensitive windows also marked dirty", () => {
+    const cbs = makeCallbacks();
+    const bridge = new NativeSensorBridge(cbs);
+    // Add a second foreground-sensitive lens on a different hwnd
+    addLensToIndex(index, makeLens("perc-2", "200", ["target.foreground"]));
+
+    // Foreground event on hwnd 100 → hwnd 100 AND hwnd 200 should both be dirty
+    bridge.processBatch([makeEvent(EVENT_SYSTEM_FOREGROUND, "100")], index, journal);
+
+    const dirtyCalls = (cbs.onDirty as ReturnType<typeof vi.fn>).mock.calls;
+    const dirtyEntityKeys = dirtyCalls.map((c: unknown[]) => c[0]);
+    expect(dirtyEntityKeys).toContain("window:100"); // event source
+    expect(dirtyEntityKeys).toContain("window:200"); // foreground-sensitive fanout
+  });
+
   it("EVENT_OBJECT_SHOW → structural severity, EnumWindows needed", () => {
     const cbs = makeCallbacks();
     const bridge = new NativeSensorBridge(cbs);
