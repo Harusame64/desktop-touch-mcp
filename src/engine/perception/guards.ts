@@ -33,13 +33,21 @@ function readValue(store: FluentStore, lens: PerceptionLens, property: string): 
   value: unknown;
   confidence: number;
   status: string;
+  validFromMonoMs: number;
+  lastDirtyAtMonoMs: number | undefined;
 } | null {
   const key = entityKey(lens, property);
   const fluent = store.read(key);
   if (!fluent) return null;
   const nowMs = Date.now();
   const conf = fluent.support[0] ? confidenceFor(fluent.support[0], nowMs) : fluent.confidence;
-  return { value: fluent.value, confidence: conf, status: fluent.status };
+  return {
+    value: fluent.value,
+    confidence: conf,
+    status: fluent.status,
+    validFromMonoMs: fluent.validFromMonoMs,
+    lastDirtyAtMonoMs: fluent.lastDirtyAtMonoMs,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -135,6 +143,29 @@ function evalKeyboardTarget(lens: PerceptionLens, store: FluentStore, nowMs: num
     };
   }
 
+  // Dirty/settling watermark gate: block if foreground evidence is stale w.r.t. dirty mark.
+  if (foreground.status === "dirty" || foreground.status === "settling") {
+    return {
+      kind: "safe.keyboardTarget",
+      ok: false,
+      confidence: foreground.confidence * 0.5,
+      reason: `Foreground state is ${foreground.status} — cannot confirm safe keyboard target`,
+      suggestedAction: "Call perception_read to get a fresh foreground observation",
+    };
+  }
+  if (
+    foreground.lastDirtyAtMonoMs != null &&
+    foreground.validFromMonoMs <= foreground.lastDirtyAtMonoMs
+  ) {
+    return {
+      kind: "safe.keyboardTarget",
+      ok: false,
+      confidence: foreground.confidence * 0.5,
+      reason: "Foreground evidence predates last dirty mark — window focus may have changed",
+      suggestedAction: "Call perception_read to refresh foreground state",
+    };
+  }
+
   // Additive focused-element gate (only when fluent is present — requires salience:"critical").
   // Absent fluent: passes silently, preserving backward compat for normal/background lenses.
   const fe = readValue(store, lens, "target.focusedElement");
@@ -200,6 +231,29 @@ function evalClickCoordinates(
     };
   }
 
+  // Dirty/settling watermark gate: block if rect is in motion or evidence is pre-dirty.
+  if (rectFluent.status === "dirty" || rectFluent.status === "settling") {
+    return {
+      kind: "safe.clickCoordinates",
+      ok: false,
+      confidence: rectFluent.confidence * 0.5,
+      reason: `Rect is ${rectFluent.status} — window may be moving or animating`,
+      suggestedAction: "Wait for the window to settle, then call perception_read",
+    };
+  }
+  if (
+    rectFluent.lastDirtyAtMonoMs != null &&
+    rectFluent.validFromMonoMs <= rectFluent.lastDirtyAtMonoMs
+  ) {
+    return {
+      kind: "safe.clickCoordinates",
+      ok: false,
+      confidence: rectFluent.confidence * 0.5,
+      reason: "Rect evidence predates last dirty mark — window may have moved since last observation",
+      suggestedAction: "Take a new screenshot and call perception_read to get updated coordinates",
+    };
+  }
+
   // Point-in-rect check (if coords provided)
   if (clickX != null && clickY != null) {
     const rect = rectFluent.value as { x: number; y: number; width: number; height: number } | null;
@@ -228,11 +282,12 @@ function evalStableRect(lens: PerceptionLens, store: FluentStore, nowMs: number)
   }
 
   /**
-   * MVP: fixed 250ms stability window.
-   * Pass when the rect evidence age >= 250ms AND status is "observed" (not dirty/stale).
-   * First-sample case (only one observation, <250ms old): pass with confidence 0.6.
-   * Note: confidence 0.6 is below the click/keyboard threshold (0.90), so this guard alone
-   * won't block — other guards (foreground, identity) will catch problems first.
+   * Quiet-window rule (watermark-based):
+   * 1. Block if status is dirty/settling/stale/invalidated — window in motion.
+   * 2. Block if validFromMonoMs <= lastDirtyAtMonoMs — evidence predates the last invalidation.
+   * 3. Wait (pass with low confidence) if evidence is very fresh (< 250ms) and there's no
+   *    prior dirty mark to anchor against.
+   * 4. Pass once we have post-dirty evidence that is >=250ms old.
    */
   const STABLE_MS = 250;
   const rectFluent = store.read(entityKey(lens, "target.rect"));
@@ -247,7 +302,13 @@ function evalStableRect(lens: PerceptionLens, store: FluentStore, nowMs: number)
     };
   }
 
-  if (rectFluent.status === "dirty" || rectFluent.status === "stale" || rectFluent.status === "invalidated") {
+  // Rule 1: dirty/settling/stale/invalidated — rect is in motion or evidence is unreliable.
+  if (
+    rectFluent.status === "dirty" ||
+    rectFluent.status === "settling" ||
+    rectFluent.status === "stale" ||
+    rectFluent.status === "invalidated"
+  ) {
     return {
       kind: "stable.rect",
       ok: false,
@@ -257,14 +318,33 @@ function evalStableRect(lens: PerceptionLens, store: FluentStore, nowMs: number)
     };
   }
 
-  const ev = rectFluent.support[0];
-  if (!ev) {
-    return { kind: "stable.rect", ok: true, confidence: 0.6 }; // first sample
+  // Rule 2: evidence predates the dirty mark — stale observation snuck through before watermark.
+  if (
+    rectFluent.lastDirtyAtMonoMs != null &&
+    rectFluent.validFromMonoMs <= rectFluent.lastDirtyAtMonoMs
+  ) {
+    return {
+      kind: "stable.rect",
+      ok: false,
+      confidence: 0.3,
+      reason: "Rect evidence predates last move/resize event — window position may have changed",
+      suggestedAction: "Call perception_read to capture post-move rect",
+    };
   }
 
-  const age = nowMs - ev.observedAtMs;
-  if (age < STABLE_MS) {
-    // First measurement or very fresh — pass with lower confidence
+  const ev = rectFluent.support[0];
+  if (!ev) {
+    // No evidence support record yet — first sample, treat as marginally stable.
+    return { kind: "stable.rect", ok: true, confidence: 0.6 };
+  }
+
+  // Rule 3/4: quiet-window check using monoMs-relative age.
+  // If we have a dirty mark, measure age from that mark (post-dirty observation).
+  // Otherwise fall back to evidence observation age.
+  const anchorMs = rectFluent.lastDirtyAtMonoMs ?? ev.observedAtMs;
+  const quietMs = rectFluent.validFromMonoMs - anchorMs;
+  if (quietMs < STABLE_MS) {
+    // Very fresh post-dirty observation — pass with lower confidence (guard alone won't block).
     return { kind: "stable.rect", ok: true, confidence: 0.6 };
   }
 

@@ -11,7 +11,9 @@ import type {
   LensSpec,
   Observation,
   PerceptionEnvelope,
+  PerceptionLens,
 } from "./types.js";
+import { DirtyJournal } from "./dirty-journal.js";
 import { FluentStore } from "./fluent-store.js";
 import { DependencyGraph } from "./dependency-graph.js";
 import {
@@ -21,7 +23,6 @@ import {
   buildBrowserTabIdentity,
   resetLensCounter,
 } from "./lens.js";
-import type { PerceptionLens } from "./types.js";
 import { evaluateGuards } from "./guards.js";
 import type { GuardContext } from "./guards.js";
 import { projectEnvelope } from "./envelope.js";
@@ -46,8 +47,9 @@ import { enumWindowsInZOrder } from "../win32.js";
 
 const MAX_LENSES = 16;
 
-const store = new FluentStore();
-const graph = new DependencyGraph();
+const store  = new FluentStore();
+const graph  = new DependencyGraph();
+const _journal = new DirtyJournal();
 const lenses = new Map<string, PerceptionLens>();
 /** Insertion order for FIFO eviction */
 const lensOrder: string[] = [];
@@ -402,8 +404,18 @@ export function __resetForTests(): void {
   if (_disposeCdpLoop)    { _disposeCdpLoop();    _disposeCdpLoop = null;    }
   store.__resetForTests();
   graph.__resetForTests();
+  _journal.__resetForTests();
   __resetSensorForTests();
   __resetUiaSensorForTests();
   __resetCdpSensorForTests();
   resetLensCounter();
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Accessors for resource model and tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function getStore(): FluentStore { return store; }
+export function getDirtyJournal(): DirtyJournal { return _journal; }
+export function getLens(lensId: string): PerceptionLens | undefined { return lenses.get(lensId); }
+export function getAllLenses(): PerceptionLens[] { return [...lenses.values()]; }

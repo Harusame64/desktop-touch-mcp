@@ -14,7 +14,7 @@
     "start": "node dist/index.js",
     "dev": "tsc --watch",
     "test": "vitest run",
-    "test:capture": "vitest run --reporter=json --outputFile=.vitest-out.json --reporter=default",
+    "test:capture": "node scripts/test-capture.mjs",
     "test:e2e": "vitest run tests/e2e",
     "test:headed": "HEADED=1 vitest run tests/e2e",
     "test:watch": "vitest",
