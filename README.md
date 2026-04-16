@@ -281,10 +281,10 @@ When Claude calls `screenshot(detail='text')` to read coordinates and then `mous
 mouse_click(x=500, y=300)
 
 # Tier 1 + 2: also bring window to front if hidden
-mouse_click(x=500, y=300, windowTitle="メモ帳")
+mouse_click(x=500, y=300, windowTitle="Notepad")
 
 # Tier 1 + 2 + 3: also re-query UIA if window resized
-mouse_click(x=500, y=300, windowTitle="メモ帳", elementName="保存")
+mouse_click(x=500, y=300, windowTitle="Notepad", elementName="Save")
 
 # Traction control OFF — no correction
 mouse_click(x=500, y=300, homing=false)
