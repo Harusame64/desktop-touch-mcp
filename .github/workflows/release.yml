@@ -84,20 +84,49 @@ jobs:
       - name: Install production dependencies
         shell: pwsh
         run: |
-          # Remove the lock file so npm generates a fresh one based on the modified package.json.
-          # The original lock file marks all runtime deps as dev:true, causing --omit=dev to skip them.
-          Remove-Item -LiteralPath "release_build\package-lock.json" -Force -ErrorAction SilentlyContinue
-          # npm 7+ walks up to parent directories looking for node_modules.
-          # The root node_modules (from npm ci) satisfies all deps, so npm skips
-          # installing into release_build/node_modules.  Hide it temporarily.
-          Rename-Item -LiteralPath "node_modules" -NewName "node_modules_hidden"
-          try {
-            Set-Location release_build
-            npm install --omit=dev
-          } finally {
-            Set-Location $env:GITHUB_WORKSPACE
-            Rename-Item -LiteralPath "node_modules_hidden" -NewName "node_modules"
+          # Build a clean package.json with ONLY dependencies (no devDependencies)
+          # in a completely isolated temp directory to avoid any npm parent-traversal
+          # or cache interference from the workspace.
+          $isolatedDir = Join-Path $env:TEMP "dtmcp-release-$(New-Guid)"
+          New-Item -ItemType Directory -Path $isolatedDir | Out-Null
+
+          # Read the release_build package.json (which has both dependencies and devDependencies)
+          $releasePkg = Get-Content -Raw -LiteralPath "release_build\package.json" | ConvertFrom-Json
+
+          # Create a minimal package.json with only the fields npm install needs
+          $minimalPkg = [ordered]@{
+            name         = $releasePkg.name
+            version      = $releasePkg.version
+            type         = "module"
+            dependencies = [ordered]@{}
           }
+          foreach ($prop in $releasePkg.dependencies.PSObject.Properties) {
+            $minimalPkg.dependencies[$prop.Name] = $prop.Value
+          }
+          $minimalPkg | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath "$isolatedDir\package.json" -Encoding UTF8
+
+          Write-Host "=== Isolated package.json ==="
+          Get-Content "$isolatedDir\package.json"
+          Write-Host "=== Installing in $isolatedDir ==="
+
+          Push-Location $isolatedDir
+          npm install --no-package-lock 2>&1 | Write-Host
+          Pop-Location
+
+          # Verify node_modules was actually created
+          $nmPath = Join-Path $isolatedDir "node_modules"
+          if (-not (Test-Path $nmPath)) {
+            throw "FATAL: npm install produced no node_modules in $isolatedDir"
+          }
+          $count = (Get-ChildItem -Path $nmPath -Directory | Measure-Object).Count
+          Write-Host "=== Installed $count top-level packages ==="
+          if ($count -lt 5) {
+            Get-ChildItem -Path $nmPath -Directory | ForEach-Object { Write-Host "  $_" }
+            throw "FATAL: Expected 5+ top-level packages, got $count"
+          }
+
+          # Move the node_modules into release_build
+          Move-Item -LiteralPath $nmPath -Destination "release_build\node_modules"
 
       - name: Prune release package metadata
         shell: pwsh
