@@ -98,7 +98,12 @@ jobs:
       - name: Create zip
         shell: pwsh
         run: |
-          Compress-Archive -Path "release_build\*" -DestinationPath "desktop-touch-mcp-windows.zip" -Force
+          # Compress-Archive silently drops files in deeply nested node_modules (e.g. @modelcontextprotocol/sdk).
+          # Use 7-Zip which is pre-installed on windows-latest runners.
+          Push-Location release_build
+          & "C:\Program Files\7-Zip\7z.exe" a -tzip "..\desktop-touch-mcp-windows.zip" "." -r
+          Pop-Location
+          if ($LASTEXITCODE -ne 0) { throw "7z failed with exit code $LASTEXITCODE" }
 
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
