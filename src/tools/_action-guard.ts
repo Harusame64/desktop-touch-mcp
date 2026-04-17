@@ -57,6 +57,11 @@ export interface RunActionGuardParams {
   browserReadinessPolicy?: "strict" | "selectorInViewport" | "navigationGate";
   /** Phase F: true when target selector was resolved in-viewport (browser_click_element). */
   browserSelectorInViewport?: boolean;
+  /**
+   * Phase G: caller-supplied args to carry into SuggestedFix (text, selector, name, automationId…).
+   * Merged into fix.args so the LLM can re-approve with the original intent.
+   */
+  fixCarryingArgs?: Record<string, unknown>;
 }
 
 export interface ActionGuardResult {
@@ -66,6 +71,34 @@ export interface ActionGuardResult {
 }
 
 export type { SuggestedFix };
+export { resolveFix, consumeFix } from "../engine/perception/suggested-fix-store.js";
+import { resolveFix, consumeFix } from "../engine/perception/suggested-fix-store.js";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase G: fixId fingerprint re-validation
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface FixRevalidationResult {
+  ok: boolean;
+  errorCode?: "FixNotFoundOrExpired" | "FixToolMismatch" | "FixAlreadyConsumed" | "FixTargetMismatch";
+  fix?: SuggestedFix;
+}
+
+/**
+ * Resolve and validate a fixId for a given tool name.
+ * Returns the fix's merged args on success, or an error code on failure.
+ * The fix is NOT consumed here — callers must call consumeFix() after execution.
+ */
+export function validateAndPrepareFix(
+  fixId: string,
+  expectedTool: SuggestedFix["tool"]
+): FixRevalidationResult {
+  const fix = resolveFix(fixId);
+  if (!fix) return { ok: false, errorCode: "FixNotFoundOrExpired" };
+  if (fix.tool !== expectedTool) return { ok: false, errorCode: "FixToolMismatch" };
+  if (fix.consumed) return { ok: false, errorCode: "FixAlreadyConsumed" };
+  return { ok: true, fix };
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Env flag
@@ -118,60 +151,137 @@ function nextStepFor(
 import type { ResolveActionTargetResult } from "../engine/perception/action-target.js";
 import type { TargetFingerprint } from "../engine/perception/suggested-fix-store.js";
 
-function tryBuildSuggestedFix(
-  gr: GuardEvalResult,
+function buildWindowFingerprint(
   descriptor: ActionTargetDescriptor,
-  clickCoordinates: { x: number; y: number },
   resolved: ResolveActionTargetResult
-): Omit<SuggestedFix, "fixId" | "createdAtMs" | "expiresAtMs" | "consumed"> | null {
-  const failedKind = gr.failedGuard?.kind;
-  if (descriptor.kind !== "window" && descriptor.kind !== "coordinate") return null;
+): TargetFingerprint | null {
   if (!resolved.lens) return null;
-
   const hwnd = resolved.lens.binding.hwnd;
   const identity = resolved.identity as WindowIdentity | null;
-  const descriptorKey = descriptor.kind === "window"
+  const dKey = descriptor.kind === "window"
     ? `window:${descriptor.titleIncludes.toLowerCase()}`
-    : `window:${(descriptor.windowTitle ?? "").toLowerCase()}`;
-
-  const fingerprint: TargetFingerprint = {
+    : descriptor.kind === "coordinate"
+      ? `window:${(descriptor.windowTitle ?? "").toLowerCase()}`
+      : null;
+  if (!dKey) return null;
+  return {
     kind: "window",
-    descriptorKey,
+    descriptorKey: dKey,
     hwnd,
     ...(identity?.pid !== undefined && { pid: identity.pid }),
     ...(identity?.processStartTimeMs !== undefined && { processStartTimeMs: identity.processStartTimeMs }),
   };
+}
 
-  const fixArgs: Record<string, unknown> = {
-    x: clickCoordinates.x,
-    y: clickCoordinates.y,
-    ...(descriptor.kind === "window" && { windowTitle: descriptor.titleIncludes }),
-    ...(descriptor.kind === "coordinate" && descriptor.windowTitle && { windowTitle: descriptor.windowTitle }),
+function buildBrowserTabFingerprint(
+  descriptor: ActionTargetDescriptor,
+  resolved: ResolveActionTargetResult
+): TargetFingerprint | null {
+  if (!resolved.lens) return null;
+  const tabIdentity = resolved.identity as import("../engine/perception/types.js").BrowserTabIdentity | null;
+  const dKey = descriptor.kind === "browserTab"
+    ? `browserTab:${descriptor.tabId ?? descriptor.urlIncludes ?? "?"}`
+    : null;
+  if (!dKey) return null;
+  return {
+    kind: "browserTab",
+    descriptorKey: dKey,
+    tabId: tabIdentity?.tabId,
+    url:   tabIdentity?.url,
   };
+}
 
-  // safe.clickCoordinates: coordinates are outside rect — emit fix with same coords
-  // LLM approval confirms intent; guard will re-evaluate with fresh state
-  if (failedKind === "safe.clickCoordinates") {
-    return {
-      tool: "mouse_click",
-      args: fixArgs,
-      targetFingerprint: fingerprint,
-      reason: `Click at (${clickCoordinates.x}, ${clickCoordinates.y}) is outside window rect. Guard detected coordinate drift.`,
-    };
+function windowTitleOf(descriptor: ActionTargetDescriptor): string | undefined {
+  if (descriptor.kind === "window") return descriptor.titleIncludes;
+  if (descriptor.kind === "coordinate") return descriptor.windowTitle;
+  return undefined;
+}
+
+function tryBuildSuggestedFix(
+  gr: GuardEvalResult,
+  descriptor: ActionTargetDescriptor,
+  resolved: ResolveActionTargetResult,
+  actionKind: ActionKind,
+  clickCoordinates?: { x: number; y: number },
+  fixCarryingArgs?: Record<string, unknown>
+): Omit<SuggestedFix, "fixId" | "createdAtMs" | "expiresAtMs" | "consumed"> | null {
+  const failedKind = gr.failedGuard?.kind;
+  if (!resolved.lens) return null;
+
+  switch (actionKind) {
+    case "mouseClick":
+    case "mouseDrag": {
+      if (!clickCoordinates) return null;
+      if (descriptor.kind !== "window" && descriptor.kind !== "coordinate") return null;
+      const fp = buildWindowFingerprint(descriptor, resolved);
+      if (!fp) return null;
+      const fixArgs: Record<string, unknown> = {
+        x: clickCoordinates.x,
+        y: clickCoordinates.y,
+        ...(descriptor.kind === "window" && { windowTitle: descriptor.titleIncludes }),
+        ...(descriptor.kind === "coordinate" && descriptor.windowTitle && { windowTitle: descriptor.windowTitle }),
+        ...(fixCarryingArgs ?? {}),
+      };
+      if (failedKind === "safe.clickCoordinates") {
+        return { tool: "mouse_click", args: fixArgs, targetFingerprint: fp,
+          reason: `Click at (${clickCoordinates.x}, ${clickCoordinates.y}) is outside window rect. Guard detected coordinate drift.` };
+      }
+      if (failedKind === "target.identityStable" && resolved.changed?.includes("identity")) {
+        return { tool: "mouse_click", args: fixArgs, targetFingerprint: fp,
+          reason: `Target window identity changed (process restarted or HWND replaced). Fix retries with new identity.` };
+      }
+      return null;
+    }
+
+    case "keyboard": {
+      const fp = buildWindowFingerprint(descriptor, resolved);
+      if (!fp) return null;
+      const title = windowTitleOf(descriptor);
+      if (!title) return null;
+      const fixArgs = { windowTitle: title, ...(fixCarryingArgs ?? {}) };
+      if (failedKind === "target.identityStable" && resolved.changed?.includes("identity")) {
+        return { tool: "keyboard_type", args: fixArgs, targetFingerprint: fp,
+          reason: `Keyboard target identity changed. Approve to re-type into new identity.` };
+      }
+      if (failedKind === "safe.keyboardTarget") {
+        return { tool: "keyboard_type", args: fixArgs, targetFingerprint: fp,
+          reason: `Keyboard target verification failed (foreground/modal drift). Approve to retry.` };
+      }
+      return null;
+    }
+
+    case "uiaInvoke":
+    case "uiaSetValue": {
+      const fp = buildWindowFingerprint(descriptor, resolved);
+      if (!fp) return null;
+      const title = windowTitleOf(descriptor);
+      if (!title) return null;
+      const fixArgs = { windowTitle: title, ...(fixCarryingArgs ?? {}) };
+      if (failedKind === "target.identityStable" && resolved.changed?.includes("identity")) {
+        return { tool: "click_element", args: fixArgs, targetFingerprint: fp,
+          reason: `UIA target identity changed. Approve to retry with new identity.` };
+      }
+      return null;
+    }
+
+    case "browserCdp": {
+      const fp = buildBrowserTabFingerprint(descriptor, resolved);
+      if (!fp) return null;
+      const fixArgs = { ...(fixCarryingArgs ?? {}) };
+      if (failedKind === "target.identityStable" && resolved.changed?.includes("identity")) {
+        return { tool: "browser_click_element", args: fixArgs, targetFingerprint: fp,
+          reason: `Browser tab identity changed. Approve to retry.` };
+      }
+      if (failedKind === "browser.ready") {
+        return { tool: "browser_click_element", args: fixArgs, targetFingerprint: fp,
+          reason: `Browser tab not ready. Approve to retry when ready.` };
+      }
+      return null;
+    }
+
+    default:
+      return null;
   }
-
-  // target.identityStable: window replaced — emit fix only if HotTargetCache has rect history
-  // (indicates the LLM was working with a known window that changed under it)
-  if (failedKind === "target.identityStable" && resolved.changed?.includes("identity")) {
-    return {
-      tool: "mouse_click",
-      args: fixArgs,
-      targetFingerprint: fingerprint,
-      reason: `Target window identity changed (process restarted or HWND replaced). Fix retries with new identity.`,
-    };
-  }
-
-  return null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -229,7 +339,7 @@ function mapGuardResult(
 export async function runActionGuard(
   params: RunActionGuardParams
 ): Promise<ActionGuardResult> {
-  const { toolName, actionKind, descriptor, clickCoordinates, guardPolicy = "block", foregroundVerified, browserReadinessPolicy, browserSelectorInViewport } = params;
+  const { toolName, actionKind, descriptor, clickCoordinates, foregroundVerified, browserReadinessPolicy, browserSelectorInViewport, fixCarryingArgs } = params;
 
   // Env flag OFF → unguarded pass-through
   if (!isAutoGuardEnabled()) {
@@ -385,18 +495,21 @@ export async function runActionGuard(
     result.summary.changed = resolved.changed;
   }
 
-  // Phase C: emit SuggestedFix when a recoverable drift is detected
-  if (result.block && clickCoordinates && descriptor) {
+  // Phase C/G: emit SuggestedFix when a recoverable drift is detected
+  if (result.block) {
     const fix = tryBuildSuggestedFix(
       gr,
       descriptor,
+      resolved,
+      actionKind,
       clickCoordinates,
-      resolved
+      fixCarryingArgs
     );
     if (fix) {
       const stored = storeFix(fix);
       result.suggestedFix = stored;
-      result.summary.next += ` fixId="${stored.fixId}" is available — call mouse_click({fixId}) to approve.`;
+      const toolHint = fix.tool === "mouse_click" ? "mouse_click" : `${fix.tool}`;
+      result.summary.next += ` fixId="${stored.fixId}" is available — call ${toolHint}({fixId}) to approve.`;
     }
   }
 

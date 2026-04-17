@@ -27,7 +27,7 @@ import { withPostState } from "./_post.js";
 import { narrateParam } from "./_narration.js";
 import type { RichBlock } from "../engine/uia-diff.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
-import { runActionGuard, isAutoGuardEnabled } from "./_action-guard.js";
+import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -80,6 +80,7 @@ export const browserClickElementSchema = {
     "Optional perception lens ID. Guards (target.identityStable) are evaluated before clicking, " +
     "and a perception envelope is attached to post.perception on success."
   ),
+  fixId: z.string().optional().describe("Approve a pending suggestedFix (one-shot, 15s TTL)."),
 };
 
 export const browserEvalSchema = {
@@ -90,6 +91,12 @@ export const browserEvalSchema = {
   lensId: z.string().optional().describe(
     "Optional perception lens ID. Guards (target.identityStable) are evaluated before eval. " +
     "Note: browser_eval returns raw text, so no perception envelope is attached (guards only)."
+  ),
+  withPerception: z.boolean().optional().default(false).describe(
+    "When true, return structured JSON { ok, result, post } instead of raw text. " +
+    "Enables post.perception attachment so the LLM can see guard status. " +
+    "Default false preserves the raw-text return for backwards compatibility. " +
+    "Example: browser_eval({expression:'document.title', withPerception:true})"
   ),
 };
 
@@ -507,14 +514,27 @@ export const browserClickElementHandler = async ({
   tabId,
   port,
   lensId,
+  fixId,
 }: {
   selector: string;
   narrate?: string;
   tabId?: string;
   port: number;
   lensId?: string;
+  fixId?: string;
 }): Promise<ToolResult> => {
   try {
+    // Phase G: fixId approval prologue
+    let effectiveSelector = selector;
+    let effectiveTabId = tabId;
+    if (fixId) {
+      const vr = validateAndPrepareFix(fixId, "browser_click_element");
+      if (!vr.ok || !vr.fix) return failWith(new Error(vr.errorCode!), "browser_click_element");
+      if (typeof vr.fix.args.selector === "string") effectiveSelector = vr.fix.args.selector;
+      if (typeof vr.fix.args.tabId === "string") effectiveTabId = vr.fix.args.tabId;
+      consumeFix(fixId);
+    }
+
     let perceptionEnvBrowser: import("../engine/perception/types.js").PostPerception | undefined;
     if (lensId) {
       const guardResult = await evaluatePreToolGuards(lensId, "browser_click_element", {});
@@ -529,25 +549,26 @@ export const browserClickElementHandler = async ({
       perceptionEnvBrowser = buildEnvelopeFor(lensId, { toolName: "browser_click_element" }) ?? undefined;
     } else if (isAutoGuardEnabled() && (tabId || port)) {
       // Phase F: get coords first so we know inViewport for selectorInViewport policy
-      const coordsForGuard = await getElementScreenCoords(selector, tabId ?? null, port);
+      const coordsForGuard = await getElementScreenCoords(effectiveSelector, effectiveTabId ?? null, port);
       if (!coordsForGuard.inViewport) {
         // Element not in viewport — fail before running guard
         return fail({
           ok: false,
           code: "ElementNotInViewport",
-          error: `browser_click_element: element "${selector}" is outside the visible viewport.`,
-          suggest: [`Scroll it into view first: browser_eval("document.querySelector(${JSON.stringify(selector)}).scrollIntoView()")`],
-          context: { selector },
+          error: `browser_click_element: element "${effectiveSelector}" is outside the visible viewport.`,
+          suggest: [`Scroll it into view first: browser_eval("document.querySelector(${JSON.stringify(effectiveSelector)}).scrollIntoView()")`],
+          context: { selector: effectiveSelector },
         });
       }
       const descriptor: import("./_action-guard.js").ActionTargetDescriptor = {
-        kind: "browserTab", port, tabId, urlIncludes: undefined,
+        kind: "browserTab", port, tabId: effectiveTabId, urlIncludes: undefined,
       };
-      // Phase F: pass inViewport + selectorInViewport policy so readyState check can pass-with-note
+      // Phase F/G: pass inViewport + selectorInViewport policy; carry selector for fixId
       const ag = await runActionGuard({
         toolName: "browser_click_element", actionKind: "browserCdp", descriptor,
         browserReadinessPolicy: "selectorInViewport",
         browserSelectorInViewport: coordsForGuard.inViewport,
+        fixCarryingArgs: { selector: effectiveSelector, tabId: effectiveTabId, port },
       });
       if (ag.block) {
         return failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "browser_click_element", { _perceptionForPost: ag.summary });
@@ -558,23 +579,23 @@ export const browserClickElementHandler = async ({
     let beforeUrl: string | null = null;
     if (narrate === "rich") {
       try {
-        const ctx = await getTabContext(tabId ?? null, port);
+        const ctx = await getTabContext(effectiveTabId ?? null, port);
         beforeUrl = ctx.url ?? null;
       } catch { /* ignore */ }
     }
 
     const coords = await getElementScreenCoords(
-      selector,
-      tabId ?? null,
+      effectiveSelector,
+      effectiveTabId ?? null,
       port
     );
     if (!coords.inViewport) {
       return fail({
         ok: false,
         code: "ElementNotInViewport",
-        error: `browser_click_element: element "${selector}" is outside the visible viewport.`,
-        suggest: [`Scroll it into view first: browser_eval("document.querySelector(${JSON.stringify(selector)}).scrollIntoView()")`],
-        context: { selector },
+        error: `browser_click_element: element "${effectiveSelector}" is outside the visible viewport.`,
+        suggest: [`Scroll it into view first: browser_eval("document.querySelector(${JSON.stringify(effectiveSelector)}).scrollIntoView()")`],
+        context: { selector: effectiveSelector },
       });
     }
     // Ensure browser window is focused so click events reach the page
@@ -593,14 +614,14 @@ export const browserClickElementHandler = async ({
       }
     }
     await mouse.click(Button.LEFT);
-    const tabCtx = await getTabContext(tabId ?? null, port);
+    const tabCtx = await getTabContext(effectiveTabId ?? null, port);
 
     // Build rich block for CDP diff
     let richBlock: RichBlock | undefined;
     if (narrate === "rich" && beforeUrl !== null) {
       await new Promise<void>((r) => setTimeout(r, 150));
       try {
-        const afterCtx = await getTabContext(tabId ?? null, port);
+        const afterCtx = await getTabContext(effectiveTabId ?? null, port);
         const afterUrl = afterCtx.url ?? null;
         richBlock = {
           appeared: [],
@@ -630,20 +651,50 @@ export const browserClickElementHandler = async ({
   }
 };
 
+/** Phase J: safe JSON serialization for eval results — handles circular refs, functions, etc. */
+function safeStringifyEval(value: unknown): string {
+  const seen = new WeakSet<object>();
+  const replacer = (_key: string, val: unknown): unknown => {
+    if (typeof val === "function") return "[Function]";
+    if (typeof val === "symbol")   return "[Symbol]";
+    if (typeof val === "bigint")   return String(val) + "n";
+    if (val === undefined)         return "[Undefined]";
+    if (val !== null && typeof val === "object") {
+      if (seen.has(val as object)) return "[Circular]";
+      seen.add(val as object);
+    }
+    return val;
+  };
+  try { return JSON.stringify(value, replacer, 2) ?? "[Unserializable]"; }
+  catch {
+    try { return String(value); }
+    catch { return "[Unserializable]"; }
+  }
+}
+
+/** Phase J: Deep-clone via JSON round-trip to break circular refs before passing to ok() transport. */
+function safeCloneForTransport(value: unknown): unknown {
+  try { return JSON.parse(safeStringifyEval(value)); }
+  catch { return "[Unserializable]"; }
+}
+
 export const browserEvalHandler = async ({
   expression,
   tabId,
   port,
   includeContext,
   lensId,
+  withPerception,
 }: {
   expression: string;
   tabId?: string;
   port: number;
   includeContext: boolean;
   lensId?: string;
+  withPerception?: boolean;
 }): Promise<ToolResult> => {
   try {
+    let perceptionEnv: import("../engine/perception/types.js").PostPerception | undefined;
     if (lensId) {
       const guardResult = await evaluatePreToolGuards(lensId, "browser_eval", {});
       if (!guardResult.ok && guardResult.policy === "block") {
@@ -657,19 +708,40 @@ export const browserEvalHandler = async ({
       const descriptor: import("./_action-guard.js").ActionTargetDescriptor = {
         kind: "browserTab", port, tabId, urlIncludes: undefined,
       };
-      const ag = await runActionGuard({ toolName: "browser_eval", actionKind: "browserCdp", descriptor });
+      // Phase F: strict policy for browser_eval (v3 §5.4)
+      const ag = await runActionGuard({
+        toolName: "browser_eval", actionKind: "browserCdp", descriptor,
+        browserReadinessPolicy: "strict",
+      });
       if (ag.block) {
-        return failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "browser_eval", { context: { guardStatus: ag.summary.status } });
+        return failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "browser_eval", {
+          context: { guardStatus: ag.summary.status },
+          ...(withPerception && { _perceptionForPost: ag.summary }),
+        });
       }
-      // browser_eval returns raw text — no envelope attached on success (by design)
+      perceptionEnv = ag.summary;
     }
-    const result = await evaluateInTab(expression, tabId ?? null, port);
-    const text =
-      result === null || result === undefined
-        ? "(null)"
-        : typeof result === "string"
-          ? result
-          : JSON.stringify(result, null, 2);
+
+    const rawResult = await evaluateInTab(expression, tabId ?? null, port);
+
+    if (withPerception) {
+      // Phase J: structured response mode — safeClone to avoid circular ref in transport
+      const safeResult = rawResult === null || rawResult === undefined ? null : safeCloneForTransport(rawResult);
+      const tabCtx = includeContext ? await getCachedTabContext(tabId ?? null, port) : undefined;
+      return ok({
+        ok: true,
+        result: safeResult,
+        ...(tabCtx && { activeTab: { id: tabCtx.id, title: tabCtx.title, url: tabCtx.url }, readyState: tabCtx.readyState }),
+        ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
+      });
+    }
+
+    // Default raw text path (backwards compatible)
+    const text = rawResult === null || rawResult === undefined
+      ? "(null)"
+      : typeof rawResult === "string"
+        ? rawResult
+        : safeStringifyEval(rawResult);
     const lines = [text];
     if (includeContext) {
       const tabCtx = await getCachedTabContext(tabId ?? null, port);
@@ -679,7 +751,6 @@ export const browserEvalHandler = async ({
         `readyState: "${tabCtx.readyState}"`,
       );
     }
-    // browser_eval returns raw text, not ok() JSON — perception envelope not attachable here
     return {
       content: [{ type: "text" as const, text: lines.join("\n") }],
     };

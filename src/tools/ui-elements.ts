@@ -8,7 +8,7 @@ import { failWith, failArgs } from "./_errors.js";
 import { withRichNarration, narrateParam } from "./_narration.js";
 import { buildHintsForTitle } from "../engine/identity-tracker.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
-import { runActionGuard, isAutoGuardEnabled } from "./_action-guard.js";
+import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -30,6 +30,7 @@ export const clickElementSchema = {
     "Optional perception lens ID. Guards (safe.keyboardTarget, target.identityStable) are evaluated before clicking, " +
     "and a perception envelope is attached to post.perception on success."
   ),
+  fixId: z.string().optional().describe("Approve a pending suggestedFix (one-shot, 15s TTL)."),
 };
 
 export const setElementValueSchema = {
@@ -76,11 +77,24 @@ export const getUiElementsHandler = async ({
 };
 
 export const clickElementHandler = async ({
-  windowTitle, name, automationId, controlType, lensId,
-}: { windowTitle: string; name?: string; automationId?: string; controlType?: string; lensId?: string }): Promise<ToolResult> => {
+  windowTitle, name, automationId, controlType, lensId, fixId,
+}: { windowTitle: string; name?: string; automationId?: string; controlType?: string; lensId?: string; fixId?: string }): Promise<ToolResult> => {
+  // Phase G: fixId approval prologue (declared outside try for catch block visibility)
+  let effectiveWindowTitle = windowTitle;
+  let effectiveName = name;
+  let effectiveAutomationId = automationId;
   try {
-    if (!name && !automationId) {
-      return failArgs("Provide at least one of: name, automationId", "click_element", { windowTitle });
+    if (fixId) {
+      const vr = validateAndPrepareFix(fixId, "click_element");
+      if (!vr.ok || !vr.fix) return failWith(new Error(vr.errorCode!), "click_element");
+      if (typeof vr.fix.args.windowTitle === "string") effectiveWindowTitle = vr.fix.args.windowTitle;
+      if (typeof vr.fix.args.name === "string") effectiveName = vr.fix.args.name;
+      if (typeof vr.fix.args.automationId === "string") effectiveAutomationId = vr.fix.args.automationId;
+      consumeFix(fixId);  // consume before executing
+    }
+
+    if (!effectiveName && !effectiveAutomationId) {
+      return failArgs("Provide at least one of: name, automationId", "click_element", { windowTitle: effectiveWindowTitle });
     }
 
     let perceptionEnv: import("../engine/perception/types.js").PostPerception | undefined;
@@ -98,7 +112,8 @@ export const clickElementHandler = async ({
     } else if (isAutoGuardEnabled()) {
       const ag = await runActionGuard({
         toolName: "click_element", actionKind: "uiaInvoke",
-        descriptor: { kind: "window", titleIncludes: windowTitle },
+        descriptor: { kind: "window", titleIncludes: effectiveWindowTitle },
+        fixCarryingArgs: { windowTitle: effectiveWindowTitle, name: effectiveName, automationId: effectiveAutomationId, controlType },
       });
       if (ag.block) {
         return failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "click_element", { _perceptionForPost: ag.summary });
@@ -106,17 +121,17 @@ export const clickElementHandler = async ({
       perceptionEnv = ag.summary;
     }
 
-    const hintsBlock = buildHintsForTitle(windowTitle);
-    const result = await clickElement(windowTitle, name, automationId, controlType);
+    const hintsBlock = buildHintsForTitle(effectiveWindowTitle);
+    const result = await clickElement(effectiveWindowTitle, effectiveName, effectiveAutomationId, controlType);
     if (!result.ok) {
-      return failWith(result.error ?? "Unknown error", "click_element", { windowTitle, name, automationId });
+      return failWith(result.error ?? "Unknown error", "click_element", { windowTitle: effectiveWindowTitle, name: effectiveName, automationId: effectiveAutomationId });
     }
     const enriched = hintsBlock
       ? { ...result, hints: { target: hintsBlock.target, caches: hintsBlock.caches } }
       : result;
     return ok({ ...enriched, ...(perceptionEnv && { _perceptionForPost: perceptionEnv }) });
   } catch (err) {
-    return failWith(err, "click_element", { windowTitle, name, automationId });
+    return failWith(err, "click_element", { windowTitle: effectiveWindowTitle, name: effectiveName, automationId: effectiveAutomationId });
   }
 };
 

@@ -9,14 +9,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // ─── Hoist mocks ───────────────────────────────────────────────────────────────
 
 const { mockEnumWindows, mockBuildWindowIdentity, mockRefreshWin32Fluents,
-        mockFindContainingWindow, mockGetCachedWindowByTitle,
-        mockResetLensCounter } = vi.hoisted(() => ({
+        mockFindContainingWindow, mockGetCachedWindowByTitle } = vi.hoisted(() => ({
   mockEnumWindows: vi.fn(),
   mockBuildWindowIdentity: vi.fn(),
   mockRefreshWin32Fluents: vi.fn(),
   mockFindContainingWindow: vi.fn(),
   mockGetCachedWindowByTitle: vi.fn(),
-  mockResetLensCounter: vi.fn(),
 }));
 
 vi.mock("../../src/engine/win32.js", () => ({

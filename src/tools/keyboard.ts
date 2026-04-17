@@ -13,7 +13,7 @@ import { coercedBoolean } from "./_coerce.js";
 import { withRichNarration, narrateParam } from "./_narration.js";
 import { detectFocusLoss } from "./_focus.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
-import { runActionGuard, isAutoGuardEnabled } from "./_action-guard.js";
+import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -125,6 +125,10 @@ export const keyboardTypeSchema = {
     "Optional perception lens ID. Guards (safe.keyboardTarget) are evaluated before typing, " +
     "and a perception envelope is attached to post.perception on success."
   ),
+  fixId: z.string().optional().describe(
+    "Approve a pending suggestedFix (one-shot, 15s TTL). Pass the fixId returned by a previous " +
+    "failed keyboard_type to re-attempt with guard-validated args."
+  ),
 };
 
 export const keyboardPressSchema = {
@@ -226,6 +230,7 @@ export const keyboardTypeHandler = async ({
   trackFocus,
   settleMs,
   lensId,
+  fixId,
 }: {
   text: string;
   use_clipboard: boolean;
@@ -236,16 +241,27 @@ export const keyboardTypeHandler = async ({
   trackFocus: boolean;
   settleMs: number;
   lensId?: string;
+  fixId?: string;
 }): Promise<ToolResult> => {
   const force = forceFocusArg ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
   try {
+    // Phase G: fixId approval prologue
+    let effectiveText = text;
+    let effectiveWindowTitle = windowTitle;
+    if (fixId) {
+      const vr = validateAndPrepareFix(fixId, "keyboard_type");
+      if (!vr.ok || !vr.fix) return failWith(new Error(vr.errorCode!), "keyboard_type");
+      if (typeof vr.fix.args.windowTitle === "string") effectiveWindowTitle = vr.fix.args.windowTitle;
+      if (typeof vr.fix.args.text === "string") effectiveText = vr.fix.args.text;
+      consumeFix(fixId);
+    }
     const warnings: string[] = [];
     const homingNotes: string[] = [];
     let foregroundVerified = false;
 
     // Step 1: Focus first (guard needs foreground state to be correct).
-    if (windowTitle) {
-      const fw = await focusWindowForKeyboard(windowTitle, force);
+    if (effectiveWindowTitle) {
+      const fw = await focusWindowForKeyboard(effectiveWindowTitle, force);
       warnings.push(...fw.warnings);
       homingNotes.push(...fw.homingNotes);
       foregroundVerified = fw.foregroundVerified;
@@ -270,12 +286,13 @@ export const keyboardTypeHandler = async ({
       }
       perceptionEnv = buildEnvelopeFor(lensId, { toolName: "keyboard_type" }) ?? undefined;
     } else if (isAutoGuardEnabled()) {
-      const descriptor = windowTitle
-        ? { kind: "window" as const, titleIncludes: windowTitle }
+      const descriptor = effectiveWindowTitle
+        ? { kind: "window" as const, titleIncludes: effectiveWindowTitle }
         : null;
       const ag = await runActionGuard({
         toolName: "keyboard_type", actionKind: "keyboard", descriptor,
         ...(foregroundVerified && { foregroundVerified: true }),
+        ...(fixId && { fixCarryingArgs: { text: effectiveText, windowTitle: effectiveWindowTitle } }),
       });
       if (ag.block) {
         return failWith(
@@ -301,21 +318,21 @@ export const keyboardTypeHandler = async ({
     // (unless the caller opted out via forceKeystrokes)
     let effectiveClipboard = use_clipboard;
     let autoClipboardReason: string | undefined;
-    if (!use_clipboard && !forceKeystrokes && NON_ASCII_SYMBOL_RE.test(text)) {
+    if (!use_clipboard && !forceKeystrokes && NON_ASCII_SYMBOL_RE.test(effectiveText)) {
       effectiveClipboard = true;
       autoClipboardReason = "non-ASCII symbol detected";
     }
 
     if (effectiveClipboard) {
-      await typeViaClipboard(text);
+      await typeViaClipboard(effectiveText);
     } else {
-      await keyboard.type(text);
+      await keyboard.type(effectiveText);
     }
 
     let focusLost = undefined;
     if (trackFocus) {
       const fl = await detectFocusLoss({
-        target: windowTitle,
+        target: effectiveWindowTitle,
         homingNotes,
         settleMs,
       });
@@ -330,7 +347,7 @@ export const keyboardTypeHandler = async ({
 
     return ok({
       ok: true,
-      typed: text.length,
+      typed: effectiveText.length,
       method,
       ...(autoClipboardReason && { autoClipboardReason }),
       ...(focusLost && { focusLost }),
