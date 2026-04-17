@@ -24,7 +24,7 @@ import {
 import { FluentStore } from "./fluent-store.js";
 import { enumWindowsInZOrder } from "../win32.js";
 import { refreshWin32Fluents, buildWindowIdentity } from "./sensors-win32.js";
-import { findContainingWindow, getCachedWindowByTitle } from "../window-cache.js";
+import { findContainingWindow } from "../window-cache.js";
 import { getOrCreateSlot, updateSlot } from "./hot-target-cache.js";
 
 // ─────────────────────────────────────────────────────────────────────────────

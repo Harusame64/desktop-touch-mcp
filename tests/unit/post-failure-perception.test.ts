@@ -4,13 +4,7 @@
  * when _perceptionForPost is present (A-8 requirement, 4 cases).
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
-
-// Mock OS-dependent calls in _post.ts
-const { mockSnapshotFocus, mockSnapshotFocusedElement } = vi.hoisted(() => ({
-  mockSnapshotFocus: vi.fn(),
-  mockSnapshotFocusedElement: vi.fn(),
-}));
+import { describe, it, expect, vi } from "vitest";
 
 vi.mock("../../src/engine/win32.js", () => ({
   enumWindowsInZOrder: vi.fn(() => []),

@@ -259,6 +259,11 @@ export const mouseDragSchema = {
   lensId: z.string().optional().describe(
     "Optional perception lens ID. Guards and envelope same as mouse_click."
   ),
+  allowCrossWindowDrag: z.boolean().optional().default(false).describe(
+    "When true, allow dragging the endpoint into a different window or the desktop background. " +
+    "Default false — cross-window drags (including desktop/wallpaper) are blocked to prevent accidents. " +
+    "Pass true to confirm intent for deliberate cross-window or desktop-area drags."
+  ),
 };
 
 export const scrollSchema = {
@@ -454,10 +459,10 @@ export const mouseClickHandler = async ({
 };
 
 export const mouseDragHandler = async ({
-  startX, startY, endX, endY, speed, homing, windowTitle, lensId,
+  startX, startY, endX, endY, speed, homing, windowTitle, lensId, allowCrossWindowDrag,
 }: {
   startX: number; startY: number; endX: number; endY: number;
-  speed?: number; homing: boolean; windowTitle?: string; lensId?: string;
+  speed?: number; homing: boolean; windowTitle?: string; lensId?: string; allowCrossWindowDrag?: boolean;
 }): Promise<ToolResult> => {
   try {
     // Step 1: Homing correction on start point.
@@ -503,6 +508,40 @@ export const mouseDragHandler = async ({
         );
       }
       perceptionEnv = ag.summary;
+
+      // Phase I: endpoint guard (v3 §5.2)
+      const descEnd: import("./_action-guard.js").ActionTargetDescriptor = {
+        kind: "coordinate", x: tex, y: tey, windowTitle,
+      };
+      const agEnd = await runActionGuard({
+        toolName: "mouse_drag", actionKind: "mouseDrag", descriptor: descEnd, clickCoordinates: { x: tex, y: tey },
+      });
+      if (agEnd.block) {
+        return failWith(
+          new Error(`AutoGuardBlocked[endpoint]: ${agEnd.summary.next}`),
+          "mouse_drag",
+          { _perceptionForPost: agEnd.summary }
+        );
+      }
+
+      // Phase I: cross-window / desktop drag check
+      // start point is safety-critical; endpoint is also guarded (v3 §5.2)
+      if (!allowCrossWindowDrag) {
+        const startWin = findContainingWindow(tsx, tsy);
+        const endWin   = findContainingWindow(tex, tey);
+        const startHwnd = startWin ? String(startWin.hwnd) : null;
+        const endHwnd   = endWin   ? String(endWin.hwnd)   : null;
+        if (startHwnd !== endHwnd) {
+          return failWith(
+            new Error(
+              `CrossWindowDragBlocked: start hwnd=${startHwnd ?? "desktop"} → end hwnd=${endHwnd ?? "desktop"}. ` +
+              `Pass allowCrossWindowDrag:true to confirm intent (e.g. for desktop range selection).`
+            ),
+            "mouse_drag",
+            { suggest: ["Pass allowCrossWindowDrag:true to confirm cross-window or desktop drag intent"] }
+          );
+        }
+      }
     }
 
     // Step 3: Execute drag.

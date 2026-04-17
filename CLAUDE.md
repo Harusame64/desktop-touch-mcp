@@ -100,6 +100,14 @@ npm launcher は GitHub Releases から zip をダウンロードする。**zip 
 4. 大きめ plan には Phase 毎の checklist を埋め込み、実装担当が `[ ]` → `[x]` と flip する
 5. テスト出力は `npm run test:capture > .vitest-out.txt` で 1 回取得し、tail/grep で読む（再実行禁止）
 
+## git / npm 操作ルール
+
+- **git 操作は可能な限り Claude が実施する**（commit / push / tag など MCP または Bash ツール経由）
+- **npm publish は Claude が PowerShell をワークディレクトリで操作し、ユーザーの 2FA 認証待ちに入る**
+  - `npm login --auth-type=web` でブラウザ認証、その後 `npm publish` を MCP terminal_send で実行
+  - ユーザーはブラウザ認証のみ担当
+- **npm publish 完了後、同じ PowerShell で npx ダウンロード＆動作チェックを実施する**（`docs/release-process.md` の Smoke Test スクリプトを MCP 経由で実行）
+
 ---
 
 ## テスト・ビルド
