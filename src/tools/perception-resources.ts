@@ -34,6 +34,12 @@ import {
   addLensLifecycleListener,
   addPerceptionChangeListener,
 } from "../engine/perception/registry.js";
+import {
+  subscribeGlobal,
+  listRecentTargetKeys,
+  listEventsForTarget,
+  type TargetIdentityTimelineEvent,
+} from "../engine/perception/target-timeline.js";
 
 export const resourceRegistry = new ResourceRegistry();
 
@@ -41,6 +47,55 @@ let _disposeLifecycleListener: (() => void) | null = null;
 let _disposeChangeListener:    (() => void) | null = null;
 let _notificationScheduler: ResourceNotificationScheduler | null = null;
 let _server: McpServer | null = null;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D-6: Timeline resource state
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Per-targetKey → active subscription handles from MCP clients */
+interface TimelineSubscriptionEntry { targetKey: string; dispose: () => void; }
+const _activeTimelineSubscriptions = new Map<string, TimelineSubscriptionEntry>();
+
+/** Global timeline listener: notifies on new events for subscribed keys */
+let _disposeGlobalTimelineListener: (() => void) | null = null;
+/** Debounce: last-notified-at per targetKey URI */
+const _timelineNotifyAt = new Map<string, number>();
+const TIMELINE_DEBOUNCE_MS = 300;
+
+function _notifyTimelineSubscribers(ev: TargetIdentityTimelineEvent): void {
+  const uri = `perception://target/${encodeURIComponent(ev.targetKey)}/timeline`;
+  const now  = Date.now();
+  const last = _timelineNotifyAt.get(uri);
+  if (last !== undefined && now - last < TIMELINE_DEBOUNCE_MS) return;
+  _timelineNotifyAt.set(uri, now);
+  if (!_server) return;
+  try {
+    // @ts-expect-error — sendResourceUpdated may not exist in all SDK versions
+    if (typeof _server.sendResourceUpdated === "function") {
+      // @ts-expect-error
+      _server.sendResourceUpdated({ uri });
+    } else {
+      _server.sendResourceListChanged();
+    }
+  } catch { /* non-fatal */ }
+}
+
+function _disposeAllTimelineSubscriptions(): void {
+  for (const entry of _activeTimelineSubscriptions.values()) entry.dispose();
+  _activeTimelineSubscriptions.clear();
+  _timelineNotifyAt.clear();
+}
+
+function _addTimelineSubscription(subscriptionId: string, targetKey: string): void {
+  if (_activeTimelineSubscriptions.has(subscriptionId)) return;
+  // No per-subscription per-targetKey listener needed; global listener handles all
+  const dispose = () => { _activeTimelineSubscriptions.delete(subscriptionId); };
+  _activeTimelineSubscriptions.set(subscriptionId, { targetKey, dispose });
+}
+
+function _removeTimelineSubscription(subscriptionId: string): void {
+  _activeTimelineSubscriptions.get(subscriptionId)?.dispose();
+}
 
 /** Called once at server start to register the perception resource template. */
 export function registerPerceptionResources(server: McpServer): void {
@@ -201,6 +256,79 @@ export function registerPerceptionResources(server: McpServer): void {
       };
     }
   );
+
+  // D-6a/b: Register timeline resources behind the same env flag
+  if (process.env.DESKTOP_TOUCH_PERCEPTION_RESOURCES === "1") {
+    // Wire global timeline listener for push notifications
+    _disposeGlobalTimelineListener?.();
+    _disposeGlobalTimelineListener = subscribeGlobal(_notifyTimelineSubscribers);
+
+    // Wire client disconnect: clean up timeline subscriptions
+    const underlying = (server as unknown as { server?: { onclose?: () => void } }).server;
+    if (underlying) {
+      const prevOnClose = underlying.onclose;
+      underlying.onclose = () => {
+        try { _disposeAllTimelineSubscriptions(); } catch { /* non-fatal */ }
+        if (typeof prevOnClose === "function") prevOnClose.call(underlying);
+      };
+    }
+
+    // perception://target/{targetKey}/timeline
+    const timelineTemplate = new ResourceTemplate(
+      "perception://target/{targetKey}/timeline",
+      {
+        list: async () => ({
+          resources: listRecentTargetKeys(20).map(k => ({
+            uri:      `perception://target/${encodeURIComponent(k)}/timeline`,
+            name:     `timeline:${k}`,
+            mimeType: "application/json",
+          })),
+        }),
+        complete: {
+          targetKey: async () => listRecentTargetKeys(20),
+        },
+      }
+    );
+
+    server.registerResource(
+      "perception-target-timeline",
+      timelineTemplate,
+      {
+        title: "Target-Identity Timeline",
+        description: "Semantic event timeline for a target (v3 §6.3). Flag-gated: DESKTOP_TOUCH_PERCEPTION_RESOURCES=1.",
+        mimeType: "application/json",
+      },
+      async (uri, { targetKey }) => {
+        const key    = Array.isArray(targetKey) ? targetKey[0] : targetKey;
+        const events = listEventsForTarget(decodeURIComponent(key as string), 50);
+        return {
+          contents: [{
+            uri:      uri.href,
+            mimeType: "application/json",
+            text:     JSON.stringify({ targetKey: key, events }, null, 2),
+          }],
+        };
+      }
+    );
+
+    // perception://targets/recent — static URI listing recent target keys
+    server.registerResource(
+      "perception-targets-recent",
+      "perception://targets/recent",
+      {
+        title: "Recent Perception Targets",
+        description: "Most recently active target keys (v3 §12.4). Flag-gated: DESKTOP_TOUCH_PERCEPTION_RESOURCES=1.",
+        mimeType: "application/json",
+      },
+      async (uri) => ({
+        contents: [{
+          uri:      uri.href,
+          mimeType: "application/json",
+          text:     JSON.stringify({ targets: listRecentTargetKeys(20) }, null, 2),
+        }],
+      })
+    );
+  }
 }
 
 /** Tear down resource listeners (called from test reset or server shutdown). */
@@ -208,6 +336,8 @@ export function unregisterPerceptionResources(): void {
   _disposeLifecycleListener?.(); _disposeLifecycleListener = null;
   _disposeChangeListener?.();    _disposeChangeListener    = null;
   _notificationScheduler?.dispose(); _notificationScheduler = null;
+  _disposeGlobalTimelineListener?.(); _disposeGlobalTimelineListener = null;
+  _disposeAllTimelineSubscriptions();
   _server = null;
   resourceRegistry.__resetForTests();
 }

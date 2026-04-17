@@ -77,6 +77,8 @@ export interface ResolveActionTargetResult {
   candidates: number;
   warnings: string[];
   changed?: Array<"title" | "rect" | "foreground" | "identity" | "navigation" | "modal">;
+  /** True when this is the first time this descriptor resolved to a live target (slot useCount was 0). */
+  isNewTarget?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -112,6 +114,29 @@ export function normalizeTitle(raw: string): string {
     s = s.replace(re, "");
   }
   return s.trim().toLowerCase();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Target key derivation (shared with hot-target-cache and target-timeline)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Derive a stable string key for a descriptor.
+ * Coordinate-only descriptors (no windowTitle) return null — they are not cached.
+ */
+export function deriveTargetKey(descriptor: ActionTargetDescriptor): string | null {
+  if (descriptor.kind === "window") {
+    return `window:${normalizeTitle(descriptor.titleIncludes)}`;
+  }
+  if (descriptor.kind === "browserTab") {
+    if (descriptor.tabId) return `browserTab:${descriptor.tabId}`;
+    if (descriptor.urlIncludes) return `browserTab:url:${descriptor.urlIncludes.toLowerCase()}`;
+    if (descriptor.titleIncludes) return `browserTab:title:${normalizeTitle(descriptor.titleIncludes)}`;
+    return null;
+  }
+  // coordinate
+  if (descriptor.windowTitle) return `window:${normalizeTitle(descriptor.windowTitle)}`;
+  return null;  // coordinate-only — not cached
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -474,6 +499,8 @@ function applyHotCacheWindow(
                   : changed.includes("title") ? "changed"
                   : "ok";
 
+  if (slot.useCount === 0) result.isNewTarget = true;
+
   updateSlot(slot.key, {
     identity: result.identity,
     ...(currentRect ? { lastRect: currentRect } : {}),
@@ -510,6 +537,8 @@ function applyHotCacheBrowserTab(
   }
 
   const attention = changed.includes("navigation") ? "changed" : "ok";
+
+  if (slot.useCount === 0) result.isNewTarget = true;
 
   updateSlot(slot.key, {
     identity,

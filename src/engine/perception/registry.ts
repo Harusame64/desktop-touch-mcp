@@ -17,6 +17,8 @@ import { performance } from "node:perf_hooks";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import * as nodePath from "node:path";
+import { appendEvent, deriveLensTargetKey } from "./target-timeline.js";
+import type { TimelineSemantic } from "./target-timeline.js";
 import type {
   AttentionState,
   GuardEvalResult,
@@ -198,6 +200,21 @@ function removeLensInternal(lensId: string, reason: LensRemovalReason): boolean 
 
   const idx = lensOrder.indexOf(lensId);
   if (idx >= 0) lensOrder.splice(idx, 1);
+
+  // D-3: emit target_closed timeline event
+  const targetKey = deriveLensTargetKey(lens);
+  appendEvent({
+    targetKey,
+    identity: lens.boundIdentity,
+    source: "manual_lens",
+    semantic: "target_closed",
+    result: reason === "evict" ? "failed" : "ok",
+    summary: `Lens ${reason}: ${targetKey}`,
+  });
+  // Clean up prev-fluent cache for this lens
+  for (const key of [..._prevFluentValues.keys()]) {
+    if (key.startsWith(`${lensId}:`)) _prevFluentValues.delete(key);
+  }
 
   notifyLensForgotten(lensId, reason);
   stopSensorLoopIfEmpty();
@@ -464,6 +481,62 @@ function findTitleKeyForHwnd(hwnd: string): string {
 // Core ingest pipeline
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// D-3: Timeline fluent-change emission (sensor-sourced events)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** micro-cache: "${lensId}:${fluentKey}" → last known value (for before/after comparison) */
+const _prevFluentValues = new Map<string, unknown>();
+
+function emitFluentChangeEvents(lensId: string, changedKeys: Set<string>): void {
+  const lens = lenses.get(lensId);
+  if (!lens) return;
+  const targetKey = deriveLensTargetKey(lens);
+  const identity  = lens.boundIdentity;
+  for (const fk of changedKeys) {
+    const prevCacheKey = `${lensId}:${fk}`;
+    const prev = _prevFluentValues.get(prevCacheKey);
+    const cur  = store.read(fk)?.value;
+    _prevFluentValues.set(prevCacheKey, cur);
+
+    // Derive timeline semantic from the last segment of the fluent key
+    const suffix = fk.split(".").at(-1);
+    let semantic: TimelineSemantic | null = null;
+    let summary = "";
+    switch (suffix) {
+      case "title":
+        semantic = "title_changed";
+        summary  = `title → ${String(cur ?? "")}`;
+        break;
+      case "rect":
+        semantic = "rect_changed";
+        summary  = "rect changed";
+        break;
+      case "foreground":
+        semantic = "foreground_changed";
+        summary  = `foreground: ${String(prev ?? "")}→${String(cur ?? "")}`;
+        break;
+      case "identity":
+        semantic = "identity_changed";
+        summary  = "identity changed";
+        break;
+      case "url":
+        semantic = "navigation";
+        summary  = `url → ${String(cur ?? "")}`;
+        break;
+      case "above":
+        if (fk.startsWith("modal.") || fk.includes(".modal.")) {
+          if (!prev && cur)      { semantic = "modal_appeared";  summary = "modal appeared"; }
+          else if (prev && !cur) { semantic = "modal_dismissed"; summary = "modal dismissed"; }
+        }
+        break;
+    }
+    if (semantic) {
+      appendEvent({ targetKey, identity, source: "sensor", semantic, summary });
+    }
+  }
+}
+
 function ingestObservations(obs: Observation[]): void {
   if (obs.length === 0) return;
   const { changed } = store.apply(obs);
@@ -477,6 +550,8 @@ function ingestObservations(obs: Observation[]): void {
     for (const k of changed) {
       if (graph.fluentsForLens(lensId).includes(k)) lensChanges.add(k);
     }
+    // D-3: emit timeline events for sensor-detected fluent changes
+    emitFluentChangeEvents(lensId, _recentChanges.get(lensId) ?? new Set());
   }
 
   // Notify resource/notification listeners
@@ -528,6 +603,9 @@ function _registerWindowLens(spec: LensSpec): { lensId: string; seq: number; dig
   notifyLensRegistered(lens);
   ensureSensorLoop();
   ensureNativeEventRuntime();
+
+  // D-3: emit target_bound for manual lens registration
+  appendEvent({ targetKey: deriveLensTargetKey(lens), identity: lens.boundIdentity, source: "manual_lens", semantic: "target_bound", summary: `Manual lens registered: ${lens.spec.name}` });
 
   if (spec.salience === "critical") {
     refreshUiaFluents(binding.hwnd, "critical", true)
@@ -582,6 +660,9 @@ export async function registerLensAsync(spec: LensSpec): Promise<{ lensId: strin
 
   notifyLensRegistered(lens);
   ensureSensorLoop();
+
+  // D-3: emit target_bound for manual browser tab lens registration
+  appendEvent({ targetKey: deriveLensTargetKey(lens), identity: lens.boundIdentity, source: "manual_lens", semantic: "target_bound", summary: `Manual lens registered: ${lens.spec.name}` });
 
   return {
     lensId: lens.lensId,
