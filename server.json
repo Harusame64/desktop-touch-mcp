@@ -6,26 +6,29 @@
     "url": "https://github.com/Harusame64/desktop-touch-mcp",
     "source": "github"
   },
-  "version_detail": {
-    "version": "0.13.1"
-  },
+  "version": "0.13.1",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@harusame64/desktop-touch-mcp",
       "version": "0.13.1",
-      "transport": { "type": "stdio" },
-      "runtime_arguments": [],
-      "environment_variables": [
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
         {
           "name": "DESKTOP_TOUCH_AUTO_GUARD",
-          "description": "Set to '0' to disable automatic action guards.",
-          "required": false
+          "description": "Set to '0' to disable automatic action guards (reverts to v0.11.12 behavior).",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
         },
         {
           "name": "DESKTOP_TOUCH_PERCEPTION_RESOURCES",
-          "description": "Set to '1' to enable MCP perception resources.",
-          "required": false
+          "description": "Set to '1' to enable MCP perception resources (perception://target/.../timeline etc.).",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
         }
       ]
     }
