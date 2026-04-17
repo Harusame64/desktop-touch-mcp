@@ -25,3 +25,8 @@ tools/win-ocr/obj/
 # vitest capture output
 .vitest-out.json
 .vitest-out.txt
+
+# Smoke test working directories (npm cache, npx cache, run dir)
+_smoke-npm-cache/
+_smoke-npx-cache/
+_smoke-run/
