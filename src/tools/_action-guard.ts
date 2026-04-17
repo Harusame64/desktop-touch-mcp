@@ -53,6 +53,10 @@ export interface RunActionGuardParams {
    * (identity, modal, dirty watermark, focused element) still run.
    */
   foregroundVerified?: boolean;
+  /** Phase F: browser readiness policy (v3 §4.2, §12.3). Forwarded to evalBrowserReady. */
+  browserReadinessPolicy?: "strict" | "selectorInViewport" | "navigationGate";
+  /** Phase F: true when target selector was resolved in-viewport (browser_click_element). */
+  browserSelectorInViewport?: boolean;
 }
 
 export interface ActionGuardResult {
@@ -225,7 +229,7 @@ function mapGuardResult(
 export async function runActionGuard(
   params: RunActionGuardParams
 ): Promise<ActionGuardResult> {
-  const { toolName, actionKind, descriptor, clickCoordinates, guardPolicy = "block", foregroundVerified } = params;
+  const { toolName, actionKind, descriptor, clickCoordinates, guardPolicy = "block", foregroundVerified, browserReadinessPolicy, browserSelectorInViewport } = params;
 
   // Env flag OFF → unguarded pass-through
   if (!isAutoGuardEnabled()) {
@@ -315,7 +319,7 @@ export async function runActionGuard(
     }
   }
 
-  // Ambiguous (multiple windows)
+  // Ambiguous (multiple windows) — v3 §4.1 step 4: keyboard/UIA fail closed, mouse uses coord disambiguation
   if (resolved.candidates > 1) {
     if (
       actionKind === "keyboard" ||
@@ -343,6 +347,8 @@ export async function runActionGuard(
     clickX: clickCoordinates?.x,
     clickY: clickCoordinates?.y,
     ...(foregroundVerified !== undefined && { foregroundVerified }),
+    ...(browserReadinessPolicy !== undefined && { browserReadinessPolicy }),
+    ...(browserSelectorInViewport !== undefined && { browserSelectorInViewport }),
   };
 
   const targetLabel =

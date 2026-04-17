@@ -30,6 +30,17 @@ export interface GuardContext {
    * Other gates (identity, modal, dirty watermark, focused element) still run.
    */
   foregroundVerified?: boolean;
+  /**
+   * Phase F: browser readiness policy for browser tools (v3 §4.2, §12.3).
+   *   "strict"             — block on readyState !== "complete" (default, browser_eval)
+   *   "selectorInViewport" — pass-with-note when readyState !== "complete" but
+   *                          browserSelectorInViewport is true (browser_click_element)
+   *   "navigationGate"     — pass-with-note when readyState === "interactive"
+   *                          (browser_navigate: navigation in progress is acceptable)
+   */
+  browserReadinessPolicy?: "strict" | "selectorInViewport" | "navigationGate";
+  /** True when the target selector was resolved in-viewport (browser_click_element). */
+  browserSelectorInViewport?: boolean;
 }
 
 /** Build a fluent-store key from the lens's target kind + binding id. */
@@ -391,7 +402,8 @@ function evalBrowserReady(
   lens: PerceptionLens,
   store: FluentStore,
   _nowMs: number,
-  kind: "browser.ready" | "safe.keyboardTarget" = "browser.ready"
+  kind: "browser.ready" | "safe.keyboardTarget" = "browser.ready",
+  ctx?: GuardContext
 ): GuardResult {
   // browser.ready is not applicable for window lenses — vacuously pass
   if (lens.spec.target.kind !== "browserTab") {
@@ -409,6 +421,29 @@ function evalBrowserReady(
     };
   }
   if (readyState.value !== "complete") {
+    const policy = ctx?.browserReadinessPolicy ?? "strict";
+
+    // selectorInViewport: pass with warn-note when selector is already in view (F-3)
+    if (policy === "selectorInViewport" && ctx?.browserSelectorInViewport === true) {
+      return {
+        kind,
+        ok: true,
+        confidence: readyState.confidence,
+        note: `warn: readyState="${readyState.value}" but selector in viewport — continuing`,
+      };
+    }
+
+    // navigationGate: treat "interactive" as acceptable (F-3, browser_navigate)
+    if (policy === "navigationGate" && readyState.value === "interactive") {
+      return {
+        kind,
+        ok: true,
+        confidence: readyState.confidence,
+        note: `warn: readyState=interactive (navigation in progress)`,
+      };
+    }
+
+    // strict (default) or loading with other policies → block
     return {
       kind,
       ok: false,
@@ -436,7 +471,7 @@ export function evaluateGuard(
     case "safe.keyboardTarget":    return evalKeyboardTarget(lens, store, nowMs, ctx);
     case "safe.clickCoordinates":  return evalClickCoordinates(lens, store, nowMs, ctx);
     case "stable.rect":            return evalStableRect(lens, store, nowMs);
-    case "browser.ready":          return evalBrowserReady(lens, store, nowMs);
+    case "browser.ready":          return evalBrowserReady(lens, store, nowMs, "browser.ready", ctx);
   }
 }
 

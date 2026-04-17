@@ -528,10 +528,27 @@ export const browserClickElementHandler = async ({
       }
       perceptionEnvBrowser = buildEnvelopeFor(lensId, { toolName: "browser_click_element" }) ?? undefined;
     } else if (isAutoGuardEnabled() && (tabId || port)) {
+      // Phase F: get coords first so we know inViewport for selectorInViewport policy
+      const coordsForGuard = await getElementScreenCoords(selector, tabId ?? null, port);
+      if (!coordsForGuard.inViewport) {
+        // Element not in viewport — fail before running guard
+        return fail({
+          ok: false,
+          code: "ElementNotInViewport",
+          error: `browser_click_element: element "${selector}" is outside the visible viewport.`,
+          suggest: [`Scroll it into view first: browser_eval("document.querySelector(${JSON.stringify(selector)}).scrollIntoView()")`],
+          context: { selector },
+        });
+      }
       const descriptor: import("./_action-guard.js").ActionTargetDescriptor = {
         kind: "browserTab", port, tabId, urlIncludes: undefined,
       };
-      const ag = await runActionGuard({ toolName: "browser_click_element", actionKind: "browserCdp", descriptor });
+      // Phase F: pass inViewport + selectorInViewport policy so readyState check can pass-with-note
+      const ag = await runActionGuard({
+        toolName: "browser_click_element", actionKind: "browserCdp", descriptor,
+        browserReadinessPolicy: "selectorInViewport",
+        browserSelectorInViewport: coordsForGuard.inViewport,
+      });
       if (ag.block) {
         return failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "browser_click_element", { _perceptionForPost: ag.summary });
       }
@@ -742,7 +759,11 @@ export const browserNavigateHandler = async ({
       const descriptor: import("./_action-guard.js").ActionTargetDescriptor = {
         kind: "browserTab", port, tabId, urlIncludes: undefined,
       };
-      const ag = await runActionGuard({ toolName: "browser_navigate", actionKind: "browserCdp", descriptor });
+      // Phase F: navigationGate policy — interactive is acceptable for pre-navigation guard
+      const ag = await runActionGuard({
+        toolName: "browser_navigate", actionKind: "browserCdp", descriptor,
+        browserReadinessPolicy: "navigationGate",
+      });
       if (ag.block) {
         return failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "browser_navigate", { _perceptionForPost: ag.summary });
       }
