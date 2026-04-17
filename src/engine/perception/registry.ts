@@ -283,6 +283,20 @@ function stopSensorLoopIfEmpty(): void {
   if (!hasBrowserTab && _disposeCdpLoop)  { _disposeCdpLoop();    _disposeCdpLoop = null;    }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase E — LRU touch on use
+// lensOrder is maintained in LRU order (least-recently-used at index 0).
+// evaluatePreToolGuards / buildEnvelopeFor / readLens call touchLens to promote.
+// Sensor loop and listLenses do NOT touch to avoid confounding real usage signal.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function touchLens(lensId: string): void {
+  const idx = lensOrder.indexOf(lensId);
+  if (idx < 0 || idx === lensOrder.length - 1) return;  // not found or already MRU
+  lensOrder.splice(idx, 1);
+  lensOrder.push(lensId);
+}
+
 function evictOldestIfNeeded(): void {
   while (lensOrder.length >= MAX_LENSES) {
     const oldest = lensOrder[0]; // peek; removeLensInternal will splice it
@@ -706,6 +720,7 @@ export async function evaluatePreToolGuards(
 ): Promise<GuardEvalResult> {
   const lens = lenses.get(lensId);
   if (!lens) throw new Error(`Lens not found: ${lensId}`);
+  touchLens(lensId);  // Phase E: promote to MRU on use
 
   if (lens.spec.target.kind === "browserTab") {
     // Refresh CDP state before guard evaluation so browser.readyState/url are current.
@@ -746,6 +761,7 @@ export function buildEnvelopeFor(
 ): PerceptionEnvelope | null {
   const lens = lenses.get(lensId);
   if (!lens) return null;
+  touchLens(lensId);  // Phase E: promote to MRU on use
 
   const ctx: GuardContext = {};
   if (opts.args && typeof opts.args === "object") {
@@ -780,6 +796,7 @@ export async function readLens(
 ): Promise<PerceptionEnvelope> {
   const lens = lenses.get(lensId);
   if (!lens) throw new Error(`Lens not found: ${lensId}`);
+  touchLens(lensId);  // Phase E: promote to MRU on use
 
   if (lens.spec.target.kind === "browserTab") {
     const cdpObs = await refreshCdpFluents(lens.binding.hwnd, 9222);
