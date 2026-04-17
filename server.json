@@ -1,0 +1,32 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.Harusame64/desktop-touch-mcp",
+  "description": "Windows 11 desktop automation MCP server (56 tools). Covers Win32 window control, UIA named-element clicking, CDP/Chrome browser automation, mouse/keyboard input, screenshot, scroll, and reactive perception guards. Windows 11 x64 only. Launched via npx — downloads the prebuilt runtime from GitHub Releases on first run.",
+  "repository": {
+    "url": "https://github.com/Harusame64/desktop-touch-mcp",
+    "source": "github"
+  },
+  "version_detail": {
+    "version": "0.13.1"
+  },
+  "packages": [
+    {
+      "registry_name": "npm",
+      "name": "@harusame64/desktop-touch-mcp",
+      "version": "0.13.1",
+      "runtime_arguments": [],
+      "environment_variables": [
+        {
+          "name": "DESKTOP_TOUCH_AUTO_GUARD",
+          "description": "Set to '0' to disable automatic action guards and revert to v0.11.12 semantics.",
+          "required": false
+        },
+        {
+          "name": "DESKTOP_TOUCH_PERCEPTION_RESOURCES",
+          "description": "Set to '1' to enable MCP perception resources (perception://lens/... and perception://target/.../timeline).",
+          "required": false
+        }
+      ]
+    }
+  ]
+}

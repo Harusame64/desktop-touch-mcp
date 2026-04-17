@@ -64,10 +64,8 @@ vi.mock("../../src/engine/perception/reconciliation.js", () => ({
 
 import {
   registerLens,
-  forgetLens,
   evaluatePreToolGuards,
   buildEnvelopeFor,
-  readLens,
   listLenses,
   getLensAttention,
   addLensLifecycleListener,
@@ -78,10 +76,7 @@ import { _resetForTest as resetTimeline } from "../../src/engine/perception/targ
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // Stub refreshWin32Fluents so register doesn't need real Win32
-const { refreshWin32Fluents, buildWindowIdentity } = await vi.importMock("../../src/engine/perception/sensors-win32.js") as {
-  refreshWin32Fluents: ReturnType<typeof vi.fn>;
-  buildWindowIdentity: ReturnType<typeof vi.fn>;
-};
+await vi.importMock("../../src/engine/perception/sensors-win32.js");
 
 vi.mock("../../src/engine/perception/sensors-win32.js", () => ({
   refreshWin32Fluents: vi.fn().mockReturnValue([]),
