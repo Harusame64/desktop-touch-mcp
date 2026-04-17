@@ -14,6 +14,9 @@ docs/release-process.md
 # Claude Code session data (auto-memory, local settings) — never distribute
 .claude/
 
+# Project instructions for Claude (local only — contains dev workflow details)
+CLAUDE.md
+
 # Native tool build artifacts (only the compiled .exe in bin/ is shipped)
 bin/*.pdb
 tools/win-ocr/bin/
