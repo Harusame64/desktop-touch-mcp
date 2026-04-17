@@ -556,7 +556,7 @@ export const browserClickElementHandler = async ({
           ok: false,
           code: "ElementNotInViewport",
           error: `browser_click_element: element "${effectiveSelector}" is outside the visible viewport.`,
-          suggest: [`Scroll it into view first: browser_eval({expression: "document.querySelector(SELECTOR).scrollIntoView()", tabId: "${effectiveTabId ?? ''}", port: ${port}})`],
+          suggest: ["Element is outside the visible viewport. Scroll it into view first using browser_eval with element.scrollIntoView(), then retry browser_click_element."],
           context: { selector: effectiveSelector },
         });
       }
@@ -594,7 +594,7 @@ export const browserClickElementHandler = async ({
         ok: false,
         code: "ElementNotInViewport",
         error: `browser_click_element: element "${effectiveSelector}" is outside the visible viewport.`,
-        suggest: [`Scroll it into view first: browser_eval("document.querySelector(${JSON.stringify(effectiveSelector)}).scrollIntoView()")`],
+        suggest: ["Element is outside the visible viewport. Scroll it into view first using browser_eval with element.scrollIntoView(), then retry browser_click_element."],
         context: { selector: effectiveSelector },
       });
     }
