@@ -740,7 +740,26 @@ keyboard_type({text:"x", lensId:"perc-1"})
 
 `lensId` is opt-in on: `keyboard_type`, `keyboard_press`, `mouse_click`, `mouse_drag`, `click_element`, `set_element_value`, `browser_click_element`, `browser_navigate`, `browser_eval`. Omitting `lensId` preserves existing behavior exactly.
 
-**Limits:** max 16 active lenses. Sensor work is staged by cost: cheap Win32/CDP state is refreshed first; UIA focus, OCR, and screenshots remain escalation paths rather than baseline perception. `safe.clickCoordinates` validates window bounds, not pixel-level occlusion.
+**Limits:** max 16 active lenses (LRU eviction — see below). Sensor work is staged by cost: cheap Win32/CDP state is refreshed first; UIA focus, OCR, and screenshots remain escalation paths rather than baseline perception. `safe.clickCoordinates` validates window bounds, not pixel-level occlusion.
+
+#### v0.13 — Auto Perception (v3 closure)
+
+**Auto guard (v0.12+)**: Action tools guard automatically when `windowTitle`/`tabId` is passed — no `perception_register` needed. The `lensId` path remains for advanced pinned-lens workflows.
+
+**Manual Lens LRU (v0.13)**: Lens eviction is now LRU (least-recently-used). Using a lens via `perception_read`, evaluatePreToolGuards, or buildEnvelopeFor promotes it to MRU. Idle lenses are evicted first. Max 16 unchanged.
+
+**SuggestedFix — all 4 tools (v0.13)**: `fixId` approval is now supported by `mouse_click`, `keyboard_type`, `click_element`, and `browser_click_element`. The server revalidates the stored target fingerprint (process pid + start-time for windows; subsequent guard for browser tabs) before executing.
+
+**Target-Identity Timeline (v0.13)**: The server maintains a per-target semantic event timeline. 13 event kinds (`target_bound`, `action_attempted`, `action_succeeded`, `action_blocked`, `title_changed`, `rect_changed`, `foreground_changed`, `navigation`, `modal_appeared`, `modal_dismissed`, `identity_changed`, `target_closed`, `compacted`). Storage: per-target ring (32), global FIFO cap (256). Sensor events are 200ms leading-edge debounced; action/post events are not. Exposed via:
+- `get_history` → `recentTargetKeys` (3 keys, no event bodies)
+- `perception_read(lensId)` → `recentEvents` (up to 10 per target)
+- `perception://target/{targetKey}/timeline` + `perception://targets/recent` (flag: `DESKTOP_TOUCH_PERCEPTION_RESOURCES=1`)
+
+**Browser readiness policies (v0.13)**: `browser_click_element` passes with a warn-note when `readyState !== "complete"` but the selector is already in-viewport (policy: `selectorInViewport`). `browser_navigate` accepts `interactive` (policy: `navigationGate`). `browser_eval` remains strict.
+
+**mouse_drag endpoint guard (v0.13)**: Both start and end coordinates are guarded. Cross-window / desktop drags blocked by default; opt in with `allowCrossWindowDrag:true`.
+
+**browser_eval structured mode (v0.13)**: Pass `withPerception:true` to receive `{ok, result, post}` JSON instead of raw text. Circular references, functions, and BigInt in eval results are safely serialized via WeakSet-based replacer.
 
 ---
 
@@ -801,7 +820,7 @@ screenshot(diffMode=true)
 | `narrate:"rich"` settle | 120 ms wait between the action and the after-snapshot |
 | tab-context cache (browser tools) | 500 ms keyed by `(port, tabId)` — chained calls share one `getTabContext` round-trip |
 | `--disable-extensions` exclusion | Chrome 147+ with this flag fails to bind the CDP port; removed from the E2E launcher |
-| Perception lens limit | Max 16 active lenses; oldest evicted (FIFO) when exceeded |
+| Perception lens limit | Max 16 active lenses; least-recently-used evicted (LRU since v0.13; FIFO in v0.12) |
 | Perception sensor timer | Drains event-bus every 250 ms via a separate 250 ms `setInterval` on top of the event-bus's 500 ms Win32 polling tick; no extra `EnumWindows` calls |
 | HWND type (koffi) | koffi `intptr` returns JS `number` at runtime; compared as strings (`String(w.hwnd) === hwnd`) to avoid `number === bigint` always-false |
 | Perception confidence | `confidenceFor()` uses evidence SOURCE base (win32=0.98, image=0.60, inferred=0.50) — NOT the stored numeric observation value |
