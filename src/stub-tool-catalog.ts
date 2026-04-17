@@ -53,6 +53,10 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "lensId": {
           "description": "Optional perception lens ID. Guards (target.identityStable) are evaluated before clicking, and a perception envelope is attached to post.perception on success.",
           "type": "string"
+        },
+        "fixId": {
+          "description": "Approve a pending suggestedFix (one-shot, 15s TTL).",
+          "type": "string"
         }
       },
       "additionalProperties": false,
@@ -97,7 +101,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "browser_eval",
-    "description": "Evaluate a JavaScript expression in a browser tab and return the result. Use for reading page state, scrolling, or triggering simple DOM mutations. Pass lensId (from perception_register) to verify tab identity and readyState before evaluating and receive post.perception state feedback without a screenshot. Caveats: Returns JSON-serializable values only — DOM nodes cannot be returned directly. React / Vue / Svelte controlled inputs cannot be updated via element.value = ... or native-setter + dispatchEvent — the framework's internal state is not refreshed; use keyboard_type (click the field first, pass windowTitle) for such form fields.",
+    "description": "Evaluate a JavaScript expression in a browser tab and return raw text. Pass withPerception:true to receive structured JSON {ok, result, post} with post.perception attached. lensId is optional for advanced pinned-lens use. Caveats: DOM nodes cannot be returned directly (circular refs are serialized safely). React/Vue/Svelte controlled inputs cannot be set via element.value — use keyboard_type instead. readyState is strictly checked; guard blocks if page is still loading.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -124,6 +128,11 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "lensId": {
           "description": "Optional perception lens ID. Guards (target.identityStable) are evaluated before eval. Note: browser_eval returns raw text, so no perception envelope is attached (guards only).",
           "type": "string"
+        },
+        "withPerception": {
+          "description": "When true, return structured JSON { ok, result, post } instead of raw text. Enables post.perception attachment so the LLM can see guard status. Default false preserves the raw-text return for backwards compatibility. Example: browser_eval({expression:'document.title', withPerception:true})",
+          "type": "boolean",
+          "default": false
         }
       },
       "additionalProperties": false,
@@ -508,7 +517,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "click_element",
-    "description": "Invoke a UI element by name or automationId via UIA InvokePattern — no screen coordinates needed. The server auto-guards using windowTitle (verifies identity, foreground, modal) and returns post.perception.status. Prefer over mouse_click for buttons, menu items, and links in native Windows apps. Use get_ui_elements first to discover automationIds. lensId is optional for advanced pinned-lens use. Caveats: Requires InvokePattern — some custom controls do not expose it; fall back to mouse_click in that case.",
+    "description": "Invoke a UI element by name or automationId via UIA InvokePattern — no screen coordinates needed. The server auto-guards using windowTitle (verifies identity, foreground, modal) and returns post.perception.status. Prefer over mouse_click for buttons, menu items, and links in native Windows apps. Use get_ui_elements first to discover automationIds. Pass fixId from a suggestedFix to re-target after window identity drift. lensId is optional for advanced pinned-lens use. Caveats: Requires InvokePattern — some custom controls do not expose it; fall back to mouse_click in that case.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -543,6 +552,10 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "lensId": {
           "description": "Optional perception lens ID. Guards (safe.keyboardTarget, target.identityStable) are evaluated before clicking, and a perception envelope is attached to post.perception on success.",
+          "type": "string"
+        },
+        "fixId": {
+          "description": "Approve a pending suggestedFix (one-shot, 15s TTL).",
           "type": "string"
         }
       },
@@ -698,7 +711,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "events_unsubscribe",
-    "description": "Stop a subscription and free its event buffer.",
+    "description": "Stop an events_subscribe subscription and free its buffer. Call when monitoring ends — otherwise the 50-event buffer keeps filling. Use events_list to find leaked ids from prior sessions. Example: events_unsubscribe({subscriptionId:id}).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -909,7 +922,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "keyboard_type",
-    "description": "Type a string into the focused window. Pass windowTitle to auto-focus and auto-guard (verifies identity, foreground, modal) before typing — returns post.perception.status without a screenshot. Omitting windowTitle types into the active window and returns post.perception.status='unguarded'. Pass replaceAll:true to Ctrl+A before typing. Prefer set_element_value for form fields. Examples: keyboard_type({windowTitle:'Notepad', text:'hello'}) // guarded. keyboard_type({text:'hello'}) // unguarded. lensId is optional for advanced pinned-lens use. Caveats: Does not handle IME composition for CJK — use use_clipboard=true or set_element_value instead. Non-ASCII punctuation (em-dash etc.) auto-routes via clipboard (method:'clipboard-auto') to prevent Chrome address-bar hijack; pass forceKeystrokes:true to disable.",
+    "description": "Type a string into the focused window. Pass windowTitle to auto-focus and auto-guard (verifies identity, foreground, modal) before typing — returns post.perception.status without a screenshot. Omitting windowTitle types into the active window and returns post.perception.status='unguarded'. Pass replaceAll:true to Ctrl+A before typing. Prefer set_element_value for form fields. Examples: keyboard_type({windowTitle:'Notepad', text:'hello'}) // guarded. keyboard_type({text:'hello'}) // unguarded. keyboard_type({fixId:'fix-...'}) // approve suggestedFix to re-target. lensId is optional for advanced pinned-lens use. Caveats: Does not handle IME composition for CJK — use use_clipboard=true or set_element_value instead. Non-ASCII punctuation (em-dash etc.) auto-routes via clipboard (method:'clipboard-auto') to prevent Chrome address-bar hijack; pass forceKeystrokes:true to disable.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -964,6 +977,10 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "lensId": {
           "description": "Optional perception lens ID. Guards (safe.keyboardTarget) are evaluated before typing, and a perception envelope is attached to post.perception on success.",
+          "type": "string"
+        },
+        "fixId": {
+          "description": "Approve a pending suggestedFix (one-shot, 15s TTL). Pass the fixId returned by a previous failed keyboard_type to re-attempt with guard-validated args.",
           "type": "string"
         }
       },
@@ -1080,7 +1097,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "mouse_drag",
-    "description": "Click and drag from (startX, startY) to (endX, endY) holding the left mouse button — for sliders, drag-and-drop, canvas drawing, and window resizing. Pass windowTitle so the server auto-guards the start coordinate and returns post.perception. Examples: mouse_drag({windowTitle:'Notepad', startX:50, startY:50, endX:200, endY:200}). lensId is optional and only for advanced pinned-target workflows. Caveats: Left button only; endpoint guard deferred to v0.13.",
+    "description": "Click and drag from (startX, startY) to (endX, endY) holding the left mouse button — for sliders, drag-and-drop, canvas drawing, and window resizing. Pass windowTitle so the server auto-guards the start coordinate and returns post.perception. Examples: mouse_drag({windowTitle:'Notepad', startX:50, startY:50, endX:200, endY:200}). lensId is optional and only for advanced pinned-target workflows. Caveats: Left button only. Both start and endpoint are guarded. Cross-window and desktop drags are blocked by default — pass allowCrossWindowDrag:true to confirm intent.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1122,6 +1139,11 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "lensId": {
           "description": "Optional perception lens ID. Guards and envelope same as mouse_click.",
           "type": "string"
+        },
+        "allowCrossWindowDrag": {
+          "description": "When true, allow dragging the endpoint into a different window or the desktop background. Default false — cross-window drags (including desktop/wallpaper) are blocked to prevent accidents. Pass true to confirm intent for deliberate cross-window or desktop-area drags.",
+          "type": "boolean",
+          "default": false
         }
       },
       "additionalProperties": false,
@@ -1675,7 +1697,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "scroll",
-    "description": "Scroll at specified coordinates (or current cursor position). direction: 'up'|'down'|'left'|'right'. amount: scroll clicks (default 3).",
+    "description": "Send raw mouse-wheel notches at (x,y) or current cursor. amount = notches (1 ≈ 3 lines, default 3). direction: 'up'|'down'|'left'|'right'. Pass windowTitle to auto-focus + enable homing. Prefer scroll_to_element / smart_scroll / scroll_capture / browser-side scroll for their specific cases. Example: scroll({windowTitle:'Chrome', direction:'down', amount:5}).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1814,7 +1836,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "set_element_value",
-    "description": "Set the value of a text field or combo box via UIA ValuePattern. The server auto-guards using windowTitle and returns post.perception.status. More reliable than keyboard_type for programmatic form input. Use narrate:'rich' to confirm the value was applied. lensId is optional for advanced pinned-lens use. Caveats: Only works for elements that expose ValuePattern; does not work on contenteditable HTML or custom rich-text editors — use keyboard_type for those.",
+    "description": "Set the value of a text field or combo box via UIA ValuePattern. The server auto-guards using windowTitle and returns post.perception.status. More reliable than keyboard_type for programmatic form input. Use narrate:'rich' to confirm the value was applied. lensId is optional for advanced pinned-lens use. Caveats: Only works for elements that expose ValuePattern; does not work on contenteditable HTML or custom rich-text editors — use keyboard_type for those. If guard blocks with a suggestedFix, the fix.tool will be 'click_element' (v3 §7.1); approve via click_element({fixId}) then re-set.",
     "inputSchema": {
       "type": "object",
       "properties": {
