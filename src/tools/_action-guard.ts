@@ -35,7 +35,6 @@ export interface ActionGuardOptions<T> {
   extractTarget: (args: T) => ActionTargetDescriptor | null;
   actionKind: ActionKind;
   coordinateSource?: (args: T) => { x: number; y: number } | undefined;
-  guardPolicy?: "block" | "warn";
   forbidBrowserTabForKeyboard?: boolean;
 }
 
@@ -44,7 +43,6 @@ export interface RunActionGuardParams {
   actionKind: ActionKind;
   descriptor: ActionTargetDescriptor | null;
   clickCoordinates?: { x: number; y: number };
-  guardPolicy?: "block" | "warn";
   /**
    * Set by keyboard tools after focusWindowForKeyboard successfully drove the target
    * to the foreground. Passed through to safe.keyboardTarget to bypass the
@@ -86,7 +84,7 @@ export interface FixRevalidationResult {
 
 /**
  * Resolve and validate a fixId for a given tool name.
- * Returns the fix's merged args on success, or an error code on failure.
+ * Checks: existence+TTL, tool match, consumed, and targetFingerprint (v3 §7.2 rule 3).
  * The fix is NOT consumed here — callers must call consumeFix() after execution.
  */
 export function validateAndPrepareFix(
@@ -97,7 +95,45 @@ export function validateAndPrepareFix(
   if (!fix) return { ok: false, errorCode: "FixNotFoundOrExpired" };
   if (fix.tool !== expectedTool) return { ok: false, errorCode: "FixToolMismatch" };
   if (fix.consumed) return { ok: false, errorCode: "FixAlreadyConsumed" };
+  // v3 §7.2 rule 3: fingerprint must still match
+  if (!revalidateFingerprint(fix)) return { ok: false, errorCode: "FixTargetMismatch" };
   return { ok: true, fix };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fingerprint revalidation — v3 §7.2 rule 3
+// ─────────────────────────────────────────────────────────────────────────────
+
+function revalidateFingerprint(fix: SuggestedFix): boolean {
+  const fp = fix.targetFingerprint;
+  try {
+    if (fp.kind === "window") {
+      // For window fingerprints: check that the stored hwnd still belongs to the
+      // same process (pid + processStartTimeMs). This prevents applying a fix to
+      // a window that happened to get the same HWND after the original process closed.
+      if (!fp.hwnd || (fp.pid === undefined && fp.processStartTimeMs === undefined)) {
+        return true;  // no identity info → allow guard to re-check
+      }
+      const { getWindowProcessId, getProcessIdentityByPid } = require("../engine/win32.js") as typeof import("../engine/win32.js");
+      const pid = getWindowProcessId(BigInt(fp.hwnd));
+      if (pid === null || pid === undefined) return false;  // window gone
+      if (fp.pid !== undefined && pid !== fp.pid) return false;  // different PID
+      if (fp.processStartTimeMs !== undefined && fp.pid !== undefined) {
+        const identity = getProcessIdentityByPid(pid);
+        if (!identity || identity.processStartTimeMs !== fp.processStartTimeMs) return false;
+      }
+      return true;
+    }
+    if (fp.kind === "browserTab") {
+      // For browser tab fingerprints: can't synchronously verify without CDP.
+      // Allow; the subsequent runActionGuard will catch identity drift via target.identityStable.
+      return true;
+    }
+    return true;
+  } catch {
+    // If OS calls fail (e.g. process already gone), treat as mismatch
+    return false;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -391,8 +427,8 @@ export async function runActionGuard(
   // No candidates → target not found
   if (resolved.candidates === 0 || !resolved.lens || !resolved.localStore) {
     const status: AutoGuardEnvelope["status"] = "target_not_found";
-    // If the cache had a prior slot for this key, it means the target was closed
-    const closedKey = descriptor ? deriveTargetKey(descriptor) : null;
+    // descriptor is non-null at this point (null-checked above)
+    const closedKey = deriveTargetKey(descriptor);
     if (closedKey) {
       appendEvent({ targetKey: closedKey, identity: null, source: "action_guard", semantic: "target_closed", tool: toolName, summary: "Target not found after prior resolution" });
     }
@@ -539,7 +575,6 @@ export function withActionGuard<T extends Record<string, unknown>>(
       actionKind: opts.actionKind,
       descriptor,
       clickCoordinates: coords,
-      guardPolicy: opts.guardPolicy ?? "block",
     });
 
     if (ag.block) {
