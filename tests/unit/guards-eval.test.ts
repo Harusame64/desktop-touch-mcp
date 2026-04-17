@@ -208,6 +208,56 @@ describe("safe.keyboardTarget", () => {
     // dirty status check fires first (Rule 1) — confirms guard blocks
     expect(result.reason).toMatch(/dirty/i);
   });
+
+  // ── foregroundVerified bypass ───────────────────────────────────────────────
+  // When the caller (keyboard tool) has already driven the window to the
+  // foreground and verified the transition, safe.keyboardTarget must bypass
+  // the foreground fluent check (racy against foreground-stealing protection).
+  // Other gates (identity, modal, focused element) must still run.
+  it("passes when foreground=false but foregroundVerified=true is supplied", () => {
+    const store = makeStore();
+    populateStore(store, hwnd, { "target.foreground": false });
+    const result = evaluateGuard(
+      "safe.keyboardTarget", makeLens(), store, Date.now(),
+      { foregroundVerified: true }
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("passes when foreground confidence is low but foregroundVerified=true", () => {
+    const store = makeStore();
+    populateStore(store, hwnd, { "fg.source": "image" });
+    const result = evaluateGuard(
+      "safe.keyboardTarget", makeLens(), store, Date.now(),
+      { foregroundVerified: true }
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("still fails on identity instability even when foregroundVerified=true", () => {
+    const store = makeStore();
+    populateStore(store, hwnd, {
+      "target.foreground": false,
+      "target.identity": { pid: 9999, processStartTimeMs: 0 },
+    });
+    const result = evaluateGuard(
+      "safe.keyboardTarget", makeLens(), store, Date.now(),
+      { foregroundVerified: true }
+    );
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/unstable/i);
+  });
+
+  it("still fails on modal block even when foregroundVerified=true", () => {
+    const store = makeStore();
+    populateStore(store, hwnd, { "target.foreground": false, "modal.above": true });
+    const result = evaluateGuard(
+      "safe.keyboardTarget", makeLens(), store, Date.now(),
+      { foregroundVerified: true }
+    );
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/modal/i);
+  });
 });
 
 describe("safe.clickCoordinates", () => {

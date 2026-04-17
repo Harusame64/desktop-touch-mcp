@@ -1,5 +1,11 @@
 import { fail, type ToolFailure, type ToolResult } from "./_types.js";
 
+// Context keys that must be hoisted to the root of the failure JSON so that
+// _post.ts (withPostState) can find them. `_post.ts` reads obj._perceptionForPost /
+// obj._richForPost from the root of the parsed response body; if we let failWith
+// put them under `context`, the failure path never attaches post.perception.
+const ROOT_HOISTED_KEYS = new Set<string>(["_perceptionForPost", "_richForPost"]);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Error code → suggest dictionary
 // ─────────────────────────────────────────────────────────────────────────────
@@ -204,12 +210,29 @@ export function failWith(
   const message = err instanceof Error ? err.message : String(err);
   const { code, suggest } = classify(message);
 
-  const failure: ToolFailure = {
+  // Split incoming context into (a) keys that belong on the root of the failure
+  // JSON so downstream middleware (_post.ts) can find them, and (b) the actual
+  // LLM-facing context that stays nested under `context`.
+  const rootExtras: Record<string, unknown> = {};
+  let nestedContext: Record<string, unknown> | undefined;
+  if (context) {
+    for (const [k, v] of Object.entries(context)) {
+      if (ROOT_HOISTED_KEYS.has(k)) {
+        rootExtras[k] = v;
+      } else {
+        if (!nestedContext) nestedContext = {};
+        nestedContext[k] = v;
+      }
+    }
+  }
+
+  const failure: ToolFailure & Record<string, unknown> = {
     ok: false,
     code,
     error: `${toolName} failed: ${message}`,
     ...(suggest.length > 0 && { suggest }),
-    ...(context && { context }),
+    ...(nestedContext && { context: nestedContext }),
+    ...rootExtras,
   };
 
   return fail(failure);

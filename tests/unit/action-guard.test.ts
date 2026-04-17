@@ -222,4 +222,37 @@ describe("runActionGuard", () => {
     expect(result.summary.status).toBe("ok");
     expect(result.summary.canContinue).toBe(true);
   });
+
+  it("propagates foregroundVerified into the guard context", async () => {
+    const lens = makeFakeLens();
+    mockResolveActionTarget.mockResolvedValue({
+      lens, localStore: new FluentStore(), identity: null, candidates: 1, warnings: [],
+    });
+    mockEvaluateGuards.mockReturnValue(makeOkGuardResult());
+    await runActionGuard({
+      toolName: "keyboard_type",
+      actionKind: "keyboard",
+      descriptor: { kind: "window", titleIncludes: "notepad" },
+      foregroundVerified: true,
+    });
+    const ctxArg = mockEvaluateGuards.mock.calls.at(-1)?.[3];
+    expect(ctxArg).toMatchObject({ foregroundVerified: true, toolName: "keyboard_type" });
+  });
+
+  it("does not set foregroundVerified when caller omits it", async () => {
+    const lens = makeFakeLens();
+    mockResolveActionTarget.mockResolvedValue({
+      lens, localStore: new FluentStore(), identity: null, candidates: 1, warnings: [],
+    });
+    mockEvaluateGuards.mockReturnValue(makeOkGuardResult());
+    await runActionGuard({
+      toolName: "keyboard_type",
+      actionKind: "keyboard",
+      descriptor: { kind: "window", titleIncludes: "notepad" },
+    });
+    const ctxArg = mockEvaluateGuards.mock.calls.at(-1)?.[3] as Record<string, unknown>;
+    expect(ctxArg).toBeDefined();
+    expect("foregroundVerified" in ctxArg).toBe(false);
+  });
 });
+

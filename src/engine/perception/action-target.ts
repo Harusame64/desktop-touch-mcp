@@ -122,7 +122,16 @@ export function normalizeTitle(raw: string): string {
 function deriveGuards(actionKind: ActionKind): GuardKind[] {
   switch (actionKind) {
     case "keyboard":
-      return ["safe.keyboardTarget", "target.identityStable", "modal.notBlocking" as GuardKind];
+      // safe.keyboardTarget is excluded from the ephemeral auto-guard path.
+      // Rationale: when the MCP server is a child of an MSIX/AppContainer-packaged
+      // host (e.g. Claude Desktop), SetForegroundWindow / AttachThreadInput are
+      // rejected by Windows foreground-stealing protection, so the foreground
+      // fluent reads false even after a verified focus attempt. That made
+      // safe.keyboardTarget return needs_escalation and rendered keyboard_type
+      // unusable end-to-end. The server still delegates foreground best-effort
+      // to focusWindowForKeyboard (which emits ForceFocusRefused in hints.warnings),
+      // and target.identityStable keeps us from typing into the wrong process.
+      return ["target.identityStable", "modal.notBlocking" as GuardKind];
     case "mouseClick":
     case "mouseDrag":
       return ["target.identityStable", "safe.clickCoordinates"];
