@@ -178,9 +178,10 @@ export function registerPerceptionTools(server: McpServer): void {
     "perception_register",
     buildDesc({
       purpose:
-        "Register a perception lens, a lightweight live state tracker for one window or browser tab. " +
-        "Use it before repeated actions so later tool calls can verify target identity, focus, " +
-        "readiness, modal obstruction, and click safety without taking another screenshot.",
+        "ADVANCED / DEBUG ONLY. Register a named perception lens that pins a specific HWND or " +
+        "browser tab identity across many actions and delivers rich perception envelopes via " +
+        "perception_read. For normal action tools, you do NOT need to call this — just pass " +
+        "windowTitle or tabId directly to the action tool and the server will auto-guard.",
       details:
         "Returns a lensId that can be passed to action tools such as keyboard_type, keyboard_press, " +
         "mouse_click, browser_click_element, and browser_navigate. When a tool receives lensId, " +
@@ -188,10 +189,9 @@ export function registerPerceptionTools(server: McpServer): void {
         "post.perception envelope to the response. The envelope reports attention, guard status, " +
         "recent changes, and the latest known target state, reducing get_context/screenshot round trips.",
       prefer:
-        "Use for multi-step workflows on the same app window or browser tab, especially before " +
-        "typing, clicking coordinates, navigating browser tabs, or acting after focus may have changed. " +
-        "It is most useful when mistakes would be costly, such as typing into the wrong window or " +
-        "clicking stale coordinates.",
+        "Use only when you need pinned long-lived HWND tracking or explicit perception_read access. " +
+        "For one-off actions, passing windowTitle directly to the action tool is sufficient and " +
+        "returns post.perception.status without a separate register call.",
       caveats:
         "A lens is not a visual recognition model. It tracks structured state from Win32, CDP, and " +
         "optional UIA sensors. safe.clickCoordinates checks window bounds, not pixel-level occlusion. " +
@@ -199,14 +199,16 @@ export function registerPerceptionTools(server: McpServer): void {
         "dirty, stale, settling, guard_failed, or identity_changed, follow the suggested action before " +
         "continuing. Maximum 16 active lenses are kept; old lenses may be evicted.",
       examples: [
+        "// Normal use — no registration needed:",
+        "keyboard_type({windowTitle:'Notepad', text:'hello'})" +
+          " → post.perception.status='ok' auto-guard without lensId",
+        "// Advanced pinned-lens use:",
         "perception_register({name:'editor', target:{kind:'window', match:{titleIncludes:'Visual Studio Code'}}})" +
           " → {lensId:'perc-1'}",
         "keyboard_type({windowTitle:'Visual Studio Code', text:'hello', lensId:'perc-1'})" +
-          " → response includes post.perception",
-        "perception_read({lensId:'perc-1'})" +
-          " → force a fresh envelope when attention is dirty/stale",
+          " → response includes post.perception (rich envelope)",
         "perception_forget({lensId:'perc-1'})" +
-          " → release tracking when the workflow is done",
+          " → release tracking when done",
       ],
     }),
     perceptionRegisterSchema,

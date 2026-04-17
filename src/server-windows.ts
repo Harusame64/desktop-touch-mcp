@@ -27,6 +27,7 @@ import { registerScrollToElementTools } from "./tools/scroll-to-element.js";
 import { registerSmartScrollTools } from "./tools/smart-scroll.js";
 import { registerPerceptionTools } from "./tools/perception.js";
 import { registerPerceptionResources } from "./tools/perception-resources.js";
+import { logAutoGuardStartup } from "./tools/_action-guard.js";
 import { stopNativeRuntime } from "./engine/perception/registry.js";
 import { startTray, stopTray, type TrayOptions } from "./utils/tray.js";
 import { checkFailsafe, FailsafeError } from "./utils/failsafe.js";
@@ -214,6 +215,9 @@ const useHttp = args.includes("--http");
 const portIndex = args.indexOf("--port");
 const httpPort = portIndex !== -1 && args[portIndex + 1] ? parseInt(args[portIndex + 1], 10) : 23847;
 const httpUrl = useHttp ? `http://127.0.0.1:${httpPort}/mcp` : undefined;
+
+// ─── Log auto-guard startup status ───────────────────────────────────────────
+logAutoGuardStartup();
 
 // ─── Start tray icon ─────────────────────────────────────────────────────────
 const trayOptions: TrayOptions = { httpUrl, icoPath: icoOk, version: SERVER_VERSION };

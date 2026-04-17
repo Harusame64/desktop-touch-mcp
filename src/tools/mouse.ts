@@ -15,6 +15,7 @@ import { failWith } from "./_errors.js";
 import { withRichNarration, narrateParam } from "./_narration.js";
 import { detectFocusLoss } from "./_focus.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
+import { runActionGuard, isAutoGuardEnabled } from "./_action-guard.js";
 
 /**
  * Move cursor to (x, y) at the given speed.
@@ -239,6 +240,11 @@ export const mouseClickSchema = {
     "before clicking (safe.clickCoordinates, target.identityStable) and a perception envelope " +
     "is attached to post.perception in the response."
   ),
+  fixId: z.string().optional().describe(
+    "One-shot fix approval ID. If a previous mouse_click returned a suggestedFix, pass that fixId " +
+    "here to approve it. The server revalidates the fix and executes with corrected args. " +
+    "fixId expires in 15 seconds and can only be used once."
+  ),
 };
 
 export const mouseDragSchema = {
@@ -293,30 +299,54 @@ export const mouseMoveHandler = async ({
 };
 
 export const mouseClickHandler = async ({
-  x, y, origin, scale, button, doubleClick, tripleClick, speed, homing, windowTitle, elementName, elementId,
-  forceFocus: forceFocusArg, trackFocus, settleMs, lensId,
+  x: xIn, y: yIn, origin, scale, button, doubleClick, tripleClick, speed, homing, windowTitle: windowTitleIn, elementName, elementId,
+  forceFocus: forceFocusArg, trackFocus, settleMs, lensId, fixId,
 }: {
   x: number; y: number;
   origin?: { x: number; y: number };
   scale?: number;
   button: "left" | "right" | "middle"; doubleClick: boolean; tripleClick: boolean;
   speed?: number; homing: boolean; windowTitle?: string; elementName?: string; elementId?: string;
-  forceFocus?: boolean; trackFocus: boolean; settleMs: number; lensId?: string;
+  forceFocus?: boolean; trackFocus: boolean; settleMs: number; lensId?: string; fixId?: string;
 }): Promise<ToolResult> => {
   const force = forceFocusArg ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
-  try {
-    // Perception guard evaluation (opt-in via lensId)
-    if (lensId) {
-      const guardResult = await evaluatePreToolGuards(lensId, "mouse_click", { x, y, clickAt: { x, y } });
-      if (!guardResult.ok && guardResult.policy === "block") {
+
+  // fixId path: resolve the suggested fix and override args
+  let x = xIn, y = yIn, windowTitle = windowTitleIn;
+  if (fixId) {
+    const { resolveFix, consumeFix } = await import("../engine/perception/suggested-fix-store.js");
+    const fix = resolveFix(fixId);
+    if (!fix) {
+      return failWith(new Error(`fixId "${fixId}" not found, expired, or already used`), "mouse_click");
+    }
+    if (fix.tool !== "mouse_click") {
+      return failWith(new Error(`fixId "${fixId}" is for tool "${fix.tool}", not mouse_click`), "mouse_click");
+    }
+
+    // targetFingerprint revalidation — prevent applying fix to wrong target (v3 §7)
+    if (fix.targetFingerprint.hwnd && fix.targetFingerprint.processStartTimeMs !== undefined) {
+      const { buildWindowIdentity } = await import("../engine/perception/sensors-win32.js");
+      const currentId = buildWindowIdentity(fix.targetFingerprint.hwnd);
+      if (!currentId || currentId.processStartTimeMs !== fix.targetFingerprint.processStartTimeMs) {
         return failWith(
-          new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
-          "mouse_click",
-          { lensId, guard: guardResult.failedGuard }
+          new Error(`fixId target fingerprint mismatch: window identity changed since fix was created`),
+          "mouse_click"
         );
       }
     }
-    // Image-local → screen conversion (before homing).
+
+    // Apply fix args (override user-supplied x/y/windowTitle; fix args are already screen coords)
+    x = fix.args.x as number;
+    y = fix.args.y as number;
+    if (typeof fix.args.windowTitle === "string") windowTitle = fix.args.windowTitle;
+    // Consume immediately (one-shot) — after revalidation succeeds
+    consumeFix(fixId);
+    // Disable origin/scale — fix args are already screen coordinates
+    origin = undefined;
+  }
+
+  try {
+    // Step 1: Image-local → screen conversion.
     // When origin is given, (x,y) are image-local; convert using scale factor.
     let screenX = x, screenY = y;
     const conversionNotes: string[] = [];
@@ -333,6 +363,7 @@ export const mouseClickHandler = async ({
       );
     }
 
+    // Step 2: Homing correction.
     let tx = screenX, ty = screenY;
     const notes: string[] = [];
     if (homing) {
@@ -340,6 +371,38 @@ export const mouseClickHandler = async ({
       tx = result.x; ty = result.y;
       notes.push(...result.notes);
     }
+
+    // Step 3: Guard evaluation on FINAL coordinates (after conversion + homing).
+    let perceptionEnv: import("../engine/perception/types.js").PostPerception | undefined;
+    if (lensId) {
+      const guardResult = await evaluatePreToolGuards(lensId, "mouse_click", { x: tx, y: ty, clickAt: { x: tx, y: ty } });
+      if (!guardResult.ok && guardResult.policy === "block") {
+        const env = buildEnvelopeFor(lensId, { toolName: "mouse_click", args: { x: tx, y: ty } });
+        return failWith(
+          new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
+          "mouse_click",
+          { lensId, guard: guardResult.failedGuard, _perceptionForPost: env }
+        );
+      }
+      perceptionEnv = buildEnvelopeFor(lensId, { toolName: "mouse_click", args: { x: tx, y: ty } }) ?? undefined;
+    } else if (isAutoGuardEnabled()) {
+      const descriptor: import("./_action-guard.js").ActionTargetDescriptor = {
+        kind: "coordinate", x: tx, y: ty, windowTitle,
+      };
+      const ag = await runActionGuard({
+        toolName: "mouse_click", actionKind: "mouseClick", descriptor, clickCoordinates: { x: tx, y: ty },
+      });
+      if (ag.block) {
+        return failWith(
+          new Error(`AutoGuardBlocked: ${ag.summary.next}`),
+          "mouse_click",
+          { _perceptionForPost: ag.summary }
+        );
+      }
+      perceptionEnv = ag.summary;
+    }
+
+    // Step 4: Execute click.
     await moveTo(tx, ty, speed);
     const btn = toButton(button);
     let action: string;
@@ -377,7 +440,6 @@ export const mouseClickHandler = async ({
       if (fl) focusLost = fl;
     }
 
-    const perceptionEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "mouse_click", args: { x: tx, y: ty } }) : undefined;
     return ok({
       ok: true, action, button, at: { x: tx, y: ty },
       ...(conversionNotes.length && { conversion: conversionNotes.join("; ") }),
@@ -398,16 +460,7 @@ export const mouseDragHandler = async ({
   speed?: number; homing: boolean; windowTitle?: string; lensId?: string;
 }): Promise<ToolResult> => {
   try {
-    if (lensId) {
-      const guardResult = await evaluatePreToolGuards(lensId, "mouse_drag", { x: startX, y: startY });
-      if (!guardResult.ok && guardResult.policy === "block") {
-        return failWith(
-          new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
-          "mouse_drag",
-          { lensId, guard: guardResult.failedGuard }
-        );
-      }
-    }
+    // Step 1: Homing correction on start point.
     let tsx = startX, tsy = startY;
     let tex = endX, tey = endY;
     const notes: string[] = [];
@@ -421,6 +474,38 @@ export const mouseDragHandler = async ({
       tex = endX + dx; tey = endY + dy;
       notes.push(...result.notes);
     }
+
+    // Step 2: Guard evaluation on FINAL start coordinates (after homing).
+    let perceptionEnv: import("../engine/perception/types.js").PostPerception | undefined;
+    if (lensId) {
+      const guardResult = await evaluatePreToolGuards(lensId, "mouse_drag", { x: tsx, y: tsy });
+      if (!guardResult.ok && guardResult.policy === "block") {
+        const env = buildEnvelopeFor(lensId, { toolName: "mouse_drag" });
+        return failWith(
+          new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
+          "mouse_drag",
+          { lensId, guard: guardResult.failedGuard, _perceptionForPost: env }
+        );
+      }
+      perceptionEnv = buildEnvelopeFor(lensId, { toolName: "mouse_drag" }) ?? undefined;
+    } else if (isAutoGuardEnabled()) {
+      const descriptor: import("./_action-guard.js").ActionTargetDescriptor = {
+        kind: "coordinate", x: tsx, y: tsy, windowTitle,
+      };
+      const ag = await runActionGuard({
+        toolName: "mouse_drag", actionKind: "mouseDrag", descriptor, clickCoordinates: { x: tsx, y: tsy },
+      });
+      if (ag.block) {
+        return failWith(
+          new Error(`AutoGuardBlocked: ${ag.summary.next}`),
+          "mouse_drag",
+          { _perceptionForPost: ag.summary }
+        );
+      }
+      perceptionEnv = ag.summary;
+    }
+
+    // Step 3: Execute drag.
     await moveTo(tsx, tsy, speed);
     const s = speed ?? DEFAULT_MOUSE_SPEED;
     if (s === 0) {
@@ -436,7 +521,6 @@ export const mouseDragHandler = async ({
         mouse.config.mouseSpeed = prev;
       }
     }
-    const perceptionEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "mouse_drag" }) : undefined;
     return ok({
       ok: true, action: "drag",
       from: { x: tsx, y: tsy }, to: { x: tex, y: tey },
@@ -499,11 +583,11 @@ export function registerMouseTools(server: McpServer): void {
   server.tool("mouse_move", "Move the cursor to coordinates without clicking — for hover-only effects such as revealing tooltips or triggering hover states. Use mouse_click for click targets (it moves and clicks in one call).", mouseMoveSchema, mouseMoveHandler);
   server.tool(
     "mouse_click",
-    "Click at screen-absolute coordinates (virtual screen pixels), or pass origin+scale from a dotByDot=true screenshot response to let the server convert image-local coords automatically: screen = origin + (x,y) / (scale ?? 1). doubleClick:true for double-click; tripleClick:true for triple-click (selects a full line of text) — if both are set, tripleClick wins. windowTitle optionally focuses the window first (for pinned-dock setups). Prefer click_element (UIA) for stable text-addressed clicking in native apps. Prefer browser_click_element for Chrome. Use mouse_click only when pixel coords are the only available option. Pass lensId (from perception_register) to run safety guards (identity stable, foreground, coordinates in rect) before clicking and receive post.perception state feedback without a screenshot. Caveats: origin+scale are meaningful ONLY with dotByDot=true screenshot responses — applying them to scaled detail='text'/'meta' output lands clicks in the wrong positions.",
+    "Click at screen coordinates. Normally pass windowTitle so the server auto-guards the click (verifies target identity, foreground, coordinate is inside the target rect) and returns post.perception without a confirmation screenshot. origin+scale from dotByDot=true screenshots are converted to screen coords before guarding. doubleClick:true for double-click; tripleClick:true for triple-click (selects a full line of text). Prefer click_element (UIA) for native apps, prefer browser_click_element for Chrome. Examples: mouse_click({windowTitle:'Notepad', x:200, y:150}) // guarded — post.perception.status='ok'. mouse_click({x:100, y:100}) // unguarded — post.perception.status='unguarded'. If a guard failure returns a suggestedFix, pass its fixId to approve the fix: mouse_click({fixId:'fix-...'}) // one-shot, expires in 15s. lensId is optional and only for advanced pinned-target workflows after perception_register; omit it for normal use. Caveats: origin+scale are meaningful ONLY with dotByDot=true screenshot responses.",
     mouseClickSchema,
     withRichNarration("mouse_click", mouseClickHandler, { windowTitleKey: "windowTitle" })
   );
-  server.tool("mouse_drag", "Click and drag from (startX, startY) to (endX, endY) holding the left mouse button — for sliders, drag-and-drop, canvas drawing, and window resizing. windowTitle optionally focuses before drag. Pass lensId (from perception_register) to run safety guards (identity stable, foreground, coordinates in rect) before dragging and receive post.perception state feedback without a screenshot. Caveats: Left button only; does not support right-drag or middle-drag.", mouseDragSchema, withRichNarration("mouse_drag", mouseDragHandler, { windowTitleKey: "windowTitle" }));
+  server.tool("mouse_drag", "Click and drag from (startX, startY) to (endX, endY) holding the left mouse button — for sliders, drag-and-drop, canvas drawing, and window resizing. Pass windowTitle so the server auto-guards the start coordinate and returns post.perception. Examples: mouse_drag({windowTitle:'Notepad', startX:50, startY:50, endX:200, endY:200}). lensId is optional and only for advanced pinned-target workflows. Caveats: Left button only; endpoint guard deferred to v0.13.", mouseDragSchema, withRichNarration("mouse_drag", mouseDragHandler, { windowTitleKey: "windowTitle" }));
   server.tool("scroll", "Scroll at specified coordinates (or current cursor position). direction: 'up'|'down'|'left'|'right'. amount: scroll clicks (default 3).", scrollSchema, scrollHandler);
   server.tool("get_cursor_position", "Return the current mouse cursor position in virtual screen coordinates.", getCursorPositionSchema, getCursorPositionHandler);
 }

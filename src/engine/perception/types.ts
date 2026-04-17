@@ -222,6 +222,7 @@ export type AttentionState =
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface PerceptionEnvelope {
+  kind?: "manual";    // discriminator — absent on legacy shapes, explicit on new ones
   seq: number;
   lens: string;       // lensId
   attention: AttentionState;
@@ -258,3 +259,18 @@ export interface PerceptionEnvelope {
     lensId: string;
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PostPerception union (manual lens envelope OR auto-guard compact envelope)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Union of manual-lens PerceptionEnvelope and auto-guard AutoGuardEnvelope.
+ * Discriminate with `"kind" in env ? env.kind === "auto" : false`.
+ *
+ * AutoGuardEnvelope is defined in action-target.ts to keep OS-free types separate.
+ * Re-exported here for consumers that only import from types.ts.
+ */
+export type PostPerception =
+  | PerceptionEnvelope
+  | import("./action-target.js").AutoGuardEnvelope;

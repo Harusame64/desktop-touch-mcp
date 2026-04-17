@@ -1,6 +1,6 @@
 {
   "name": "@harusame64/desktop-touch-mcp",
-  "version": "0.11.12",
+  "version": "0.12.0",
   "description": "LLM-native Windows computer-use MCP server with 56 tools for screenshots, UIA, mouse/keyboard, Chrome CDP, terminal, SmartScroll, and perception guards",
   "engines": {
     "node": ">=20.0.0"
