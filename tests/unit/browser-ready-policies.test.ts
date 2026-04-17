@@ -8,7 +8,7 @@
  *   "navigationGate"     — pass-with-note when readyState === "interactive"
  */
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { evaluateGuard } from "../../src/engine/perception/guards.js";
 import type { GuardContext } from "../../src/engine/perception/guards.js";
 import { FluentStore } from "../../src/engine/perception/fluent-store.js";

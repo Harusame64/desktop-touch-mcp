@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.13.1] - 2026-04-18 — CodeQL fixes + MCP Registry listing
+
+### Fixed
+- `browser_click_element`: removed `JSON.stringify(selector)` from `suggest` hint string to eliminate
+  CWE-94 code-injection false-positive flagged by CodeQL (alerts #67/#68). The hint is now a
+  generic fixed string instead of an interpolated selector value.
+- `_action-guard.ts`: removed duplicate `consumeFix` from local `import` statement (alert #69).
+  It is still re-exported for callers via `export { ... } from`.
+
+### Chore
+- Removed unused `vi` import from `browser-ready-policies.test.ts` (alert #70).
+- Removed unused `forgetLens`, `readLens`, `refreshWin32Fluents`, `buildWindowIdentity` from
+  `registry-lru.test.ts` (alerts #71-73).
+- Added `server.json` MCP Registry manifest for future listing on `registry.modelcontextprotocol.io`.
+- Added `mcpName` field to `package.json` per MCP Registry requirements.
+
+### Compatibility
+- No behavior change. All existing tool APIs unchanged.
+
+---
+
 ## [0.13.0] - 2026-04-18 — v3 Auto-Perception Final Closure
 
 ### Added (Phase D — Target-Identity Timeline)

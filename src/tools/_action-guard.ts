@@ -70,7 +70,7 @@ export interface ActionGuardResult {
 
 export type { SuggestedFix };
 export { resolveFix, consumeFix } from "../engine/perception/suggested-fix-store.js";
-import { resolveFix, consumeFix } from "../engine/perception/suggested-fix-store.js";
+import { resolveFix } from "../engine/perception/suggested-fix-store.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Phase G: fixId fingerprint re-validation
