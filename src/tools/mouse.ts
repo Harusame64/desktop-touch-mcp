@@ -627,7 +627,7 @@ export function registerMouseTools(server: McpServer): void {
     withRichNarration("mouse_click", mouseClickHandler, { windowTitleKey: "windowTitle" })
   );
   server.tool("mouse_drag", "Click and drag from (startX, startY) to (endX, endY) holding the left mouse button — for sliders, drag-and-drop, canvas drawing, and window resizing. Pass windowTitle so the server auto-guards the start coordinate and returns post.perception. Examples: mouse_drag({windowTitle:'Notepad', startX:50, startY:50, endX:200, endY:200}). lensId is optional and only for advanced pinned-target workflows. Caveats: Left button only. Both start and endpoint are guarded. Cross-window and desktop drags are blocked by default — pass allowCrossWindowDrag:true to confirm intent.", mouseDragSchema, withRichNarration("mouse_drag", mouseDragHandler, { windowTitleKey: "windowTitle" }));
-  server.tool("scroll", "Scroll at specified coordinates (or current cursor position). direction: 'up'|'down'|'left'|'right'. amount: scroll clicks (default 3).", scrollSchema, scrollHandler);
+  server.tool("scroll", "Send raw mouse-wheel notches at (x,y) or current cursor. amount = notches (1 ≈ 3 lines, default 3). direction: 'up'|'down'|'left'|'right'. Pass windowTitle to auto-focus + enable homing. Prefer scroll_to_element / smart_scroll / scroll_capture / browser-side scroll for their specific cases. Example: scroll({windowTitle:'Chrome', direction:'down', amount:5}).", scrollSchema, scrollHandler);
   server.tool("get_cursor_position", "Return the current mouse cursor position in virtual screen coordinates.", getCursorPositionSchema, getCursorPositionHandler);
 }
 

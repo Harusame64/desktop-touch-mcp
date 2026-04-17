@@ -1733,7 +1733,7 @@ export function registerBrowserTools(server: McpServer): void {
 
   server.tool(
     "browser_eval",
-    "Evaluate a JavaScript expression in a browser tab and return the result. Use for reading page state, scrolling, or triggering simple DOM mutations. Pass lensId (from perception_register) to verify tab identity and readyState before evaluating and receive post.perception state feedback without a screenshot. Caveats: Returns JSON-serializable values only — DOM nodes cannot be returned directly. React / Vue / Svelte controlled inputs cannot be updated via element.value = ... or native-setter + dispatchEvent — the framework's internal state is not refreshed; use keyboard_type (click the field first, pass windowTitle) for such form fields.",
+    "Evaluate a JavaScript expression in a browser tab and return raw text. Pass withPerception:true to receive structured JSON {ok, result, post} with post.perception attached. lensId is optional for advanced pinned-lens use. Caveats: DOM nodes cannot be returned directly (circular refs are serialized safely). React/Vue/Svelte controlled inputs cannot be set via element.value — use keyboard_type instead. readyState is strictly checked; guard blocks if page is still loading.",
     browserEvalSchema,
     withPostState("browser_eval", browserEvalHandler)
   );

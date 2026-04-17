@@ -82,7 +82,7 @@ export function registerEventTools(server: McpServer): void {
   );
   server.tool(
     "events_unsubscribe",
-    "Stop a subscription and free its event buffer.",
+    "Stop an events_subscribe subscription and free its buffer. Call when monitoring ends — otherwise the 50-event buffer keeps filling. Use events_list to find leaked ids from prior sessions. Example: events_unsubscribe({subscriptionId:id}).",
     eventsUnsubscribeSchema,
     eventsUnsubscribeHandler
   );

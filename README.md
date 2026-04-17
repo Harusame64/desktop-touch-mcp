@@ -534,13 +534,63 @@ When auto guard is enabled (default), `post.perception.status` will be one of:
 | `unsafe_coordinates` | Click coordinates are outside the target window rect |
 | `needs_escalation` | Use `browser_click_element` or specify `windowTitle` |
 
-When `unsafe_coordinates` or `identity_changed` is returned, the response may include a `suggestedFix.fixId`. Pass that `fixId` to the next `mouse_click` call to approve the recovery:
+When `unsafe_coordinates` or `identity_changed` is returned, the response may include a `suggestedFix.fixId`. Pass that `fixId` to the relevant tool call to approve the recovery:
 
 ```json
-{ "name": "mouse_click", "arguments": { "fixId": "fix-..." } }
+{ "name": "mouse_click",           "arguments": { "fixId": "fix-..." } }
+{ "name": "keyboard_type",         "arguments": { "fixId": "fix-...", "text": "hello" } }
+{ "name": "click_element",         "arguments": { "fixId": "fix-..." } }
+{ "name": "browser_click_element", "arguments": { "fixId": "fix-..." } }
 ```
 
-The fix is one-shot and expires in 15 seconds.
+The fix is one-shot and expires in 15 seconds. The server revalidates the target process identity before executing.
+
+---
+
+## v0.13 Additions
+
+### Target-Identity Timeline
+
+The server tracks a semantic timeline of what happened to each target window/tab. Recent events are included in:
+
+- `get_history` → `recentTargetKeys`: array of 3 most recently active target keys (compact, no event bodies)
+- `perception_read(lensId)` → `recentEvents`: up to 10 events for that lens's target, each with `tsMs`, `semantic`, `summary`
+
+Enable the MCP resources below to browse timelines:
+
+```json
+{ "env": { "DESKTOP_TOUCH_PERCEPTION_RESOURCES": "1" } }
+```
+
+MCP resources available when enabled:
+
+| URI | Content |
+|---|---|
+| `perception://target/{targetKey}/timeline` | Semantic event timeline for a target |
+| `perception://targets/recent` | Most recently active target keys |
+| `perception://lens/{lensId}/summary` | Lens attention/guard state |
+
+### Manual Lens Eviction: FIFO → LRU
+
+Manual lenses (created via `perception_register`) are now evicted by **least-recently-used** instead of insertion order. Using `perception_read`, `evaluatePreToolGuards`, or `buildEnvelopeFor` on a lens promotes it. The hard limit of 16 active lenses is unchanged.
+
+### browser_eval Structured Mode
+
+Pass `withPerception: true` to receive a structured JSON response with `post.perception` instead of raw text:
+
+```json
+{ "name": "browser_eval", "arguments": { "expression": "document.title", "withPerception": true } }
+```
+
+Returns `{ ok: true, result: "...", post: { perception: { status: "ok", ... } } }`.
+
+### mouse_drag Cross-Window Guard
+
+`mouse_drag` now guards both start and end coordinates. Drags that cross window boundaries (or reach the desktop wallpaper) are blocked by default. To allow intentional cross-window or range-selection drags:
+
+```json
+{ "name": "mouse_drag", "arguments": { "startX": 100, "startY": 100, "endX": 900, "endY": 900, "allowCrossWindowDrag": true } }
+```
 
 ---
 
