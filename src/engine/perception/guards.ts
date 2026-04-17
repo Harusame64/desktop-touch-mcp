@@ -22,6 +22,14 @@ export interface GuardContext {
   clickX?: number;
   clickY?: number;
   toolName?: string;
+  /**
+   * Set by the caller (e.g. keyboard tools after a successful focusWindowForKeyboard)
+   * to indicate that the target window was just brought to the foreground by a
+   * verified transition. When true, safe.keyboardTarget skips the foreground==true
+   * fluent check because the caller already verified it via post-focus EnumWindows.
+   * Other gates (identity, modal, dirty watermark, focused element) still run.
+   */
+  foregroundVerified?: boolean;
 }
 
 /** Build a fluent-store key from the lens's target kind + binding id. */
@@ -126,23 +134,30 @@ function evalKeyboardTarget(lens: PerceptionLens, store: FluentStore, nowMs: num
   }
 
   const foreground = readValue(store, lens, "target.foreground");
-  if (!foreground || foreground.value !== true) {
-    return {
-      kind: "safe.keyboardTarget",
-      ok: false,
-      confidence: foreground?.confidence ?? 0,
-      reason: "Target window is not in the foreground — keyboard input may go to wrong window",
-      suggestedAction: "Call focus_window to bring target to foreground first",
-    };
-  }
-  if (foreground.confidence < THRESHOLD_ORDINARY_KB) {
-    return {
-      kind: "safe.keyboardTarget",
-      ok: false,
-      confidence: foreground.confidence,
-      reason: "Target foreground confidence too low (stale evidence)",
-      suggestedAction: "Call perception_read to force a foreground refresh",
-    };
+  // foregroundVerified: caller (keyboard tool) already drove the window to the
+  // foreground and confirmed the transition via post-focus EnumWindows. The fluent
+  // store reads are taken a few ms later and can race with foreground-stealing
+  // protection, so we trust the caller's verification for this single check.
+  // All other gates (identity, modal, dirty watermark, focused element) still run.
+  if (!ctx?.foregroundVerified) {
+    if (!foreground || foreground.value !== true) {
+      return {
+        kind: "safe.keyboardTarget",
+        ok: false,
+        confidence: foreground?.confidence ?? 0,
+        reason: "Target window is not in the foreground — keyboard input may go to wrong window",
+        suggestedAction: "Call focus_window to bring target to foreground first",
+      };
+    }
+    if (foreground.confidence < THRESHOLD_ORDINARY_KB) {
+      return {
+        kind: "safe.keyboardTarget",
+        ok: false,
+        confidence: foreground.confidence,
+        reason: "Target foreground confidence too low (stale evidence)",
+        suggestedAction: "Call perception_read to force a foreground refresh",
+      };
+    }
   }
 
   const modal = readValue(store, lens, "modal.above");
@@ -157,26 +172,30 @@ function evalKeyboardTarget(lens: PerceptionLens, store: FluentStore, nowMs: num
   }
 
   // Dirty/settling watermark gate: block if foreground evidence is stale w.r.t. dirty mark.
-  if (foreground.status === "dirty" || foreground.status === "settling") {
-    return {
-      kind: "safe.keyboardTarget",
-      ok: false,
-      confidence: foreground.confidence * 0.5,
-      reason: `Foreground state is ${foreground.status} — cannot confirm safe keyboard target`,
-      suggestedAction: "Call perception_read to get a fresh foreground observation",
-    };
-  }
-  if (
-    foreground.lastDirtyAtMonoMs != null &&
-    foreground.validFromMonoMs <= foreground.lastDirtyAtMonoMs
-  ) {
-    return {
-      kind: "safe.keyboardTarget",
-      ok: false,
-      confidence: foreground.confidence * 0.5,
-      reason: "Foreground evidence predates last dirty mark — window focus may have changed",
-      suggestedAction: "Call perception_read to refresh foreground state",
-    };
+  // Skipped when foregroundVerified (caller already confirmed transition), and when the
+  // fluent is absent (the non-verified branch above would already have returned failure).
+  if (foreground) {
+    if (foreground.status === "dirty" || foreground.status === "settling") {
+      return {
+        kind: "safe.keyboardTarget",
+        ok: false,
+        confidence: foreground.confidence * 0.5,
+        reason: `Foreground state is ${foreground.status} — cannot confirm safe keyboard target`,
+        suggestedAction: "Call perception_read to get a fresh foreground observation",
+      };
+    }
+    if (
+      foreground.lastDirtyAtMonoMs != null &&
+      foreground.validFromMonoMs <= foreground.lastDirtyAtMonoMs
+    ) {
+      return {
+        kind: "safe.keyboardTarget",
+        ok: false,
+        confidence: foreground.confidence * 0.5,
+        reason: "Foreground evidence predates last dirty mark — window focus may have changed",
+        suggestedAction: "Call perception_read to refresh foreground state",
+      };
+    }
   }
 
   // Additive focused-element gate (only when fluent is present — requires salience:"critical").
@@ -196,7 +215,11 @@ function evalKeyboardTarget(lens: PerceptionLens, store: FluentStore, nowMs: num
     }
   }
 
-  return { kind: "safe.keyboardTarget", ok: true, confidence: foreground.confidence };
+  return {
+    kind: "safe.keyboardTarget",
+    ok: true,
+    confidence: foreground?.confidence ?? 1,
+  };
 }
 
 function evalClickCoordinates(

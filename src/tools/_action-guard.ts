@@ -44,6 +44,14 @@ export interface RunActionGuardParams {
   descriptor: ActionTargetDescriptor | null;
   clickCoordinates?: { x: number; y: number };
   guardPolicy?: "block" | "warn";
+  /**
+   * Set by keyboard tools after focusWindowForKeyboard successfully drove the target
+   * to the foreground. Passed through to safe.keyboardTarget to bypass the
+   * foreground==true fluent check (which can race with foreground-stealing protection
+   * between the post-focus EnumWindows and the guard's own snapshot). Other gates
+   * (identity, modal, dirty watermark, focused element) still run.
+   */
+  foregroundVerified?: boolean;
 }
 
 export interface ActionGuardResult {
@@ -216,7 +224,7 @@ function mapGuardResult(
 export async function runActionGuard(
   params: RunActionGuardParams
 ): Promise<ActionGuardResult> {
-  const { toolName, actionKind, descriptor, clickCoordinates, guardPolicy = "block" } = params;
+  const { toolName, actionKind, descriptor, clickCoordinates, guardPolicy = "block", foregroundVerified } = params;
 
   // Env flag OFF → unguarded pass-through
   if (!isAutoGuardEnabled()) {
@@ -306,6 +314,7 @@ export async function runActionGuard(
     toolName,
     clickX: clickCoordinates?.x,
     clickY: clickCoordinates?.y,
+    ...(foregroundVerified !== undefined && { foregroundVerified }),
   };
 
   const targetLabel =

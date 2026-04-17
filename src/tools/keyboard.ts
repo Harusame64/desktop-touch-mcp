@@ -146,40 +146,74 @@ export const keyboardPressSchema = {
 // Handlers
 // ─────────────────────────────────────────────────────────────────────────────
 
+interface FocusForKeyboardResult {
+  warnings: string[];
+  homingNotes: string[];
+  /**
+   * true when the target window is confirmed to be in the foreground after
+   * focusWindowForKeyboard returns. Covers two cases:
+   *   1. Target was already the active window at entry (no focus work needed).
+   *   2. Focus attempt (with or without force-escalation) verified via EnumWindows.
+   * Callers pass this into the auto-guard so safe.keyboardTarget's foreground
+   * fluent check is bypassed (the caller's verification is more authoritative than
+   * a second EnumWindows racing with foreground-stealing protection).
+   */
+  foregroundVerified: boolean;
+  /** true when SetForegroundWindow was refused even after force-escalation. */
+  forceRefused: boolean;
+}
+
 async function focusWindowForKeyboard(
   windowTitle: string,
   force: boolean,
-): Promise<{ warnings: string[]; homingNotes: string[] }> {
+): Promise<FocusForKeyboardResult> {
   const warnings: string[] = [];
   const homingNotes: string[] = [];
+  let foregroundVerified = false;
+  let forceRefused = false;
+  const needle = windowTitle.toLowerCase();
   try {
     const windows = enumWindowsInZOrder();
     const active = windows.find((w) => w.isActive);
-    if (!active || !active.title.toLowerCase().includes(windowTitle.toLowerCase())) {
-      const target = windows.find((w) =>
-        w.title.toLowerCase().includes(windowTitle.toLowerCase())
-      );
+    if (active && active.title.toLowerCase().includes(needle)) {
+      // Target is already in the foreground — nothing to do.
+      foregroundVerified = true;
+    } else {
+      const target = windows.find((w) => w.title.toLowerCase().includes(needle));
       if (target) {
+        // Always verify foreground after focus so the auto-guard does not block
+        // on a stale/foreground-steal-prevented SetForegroundWindow. If the first
+        // attempt (honoring caller's `force` flag) fails to transfer the foreground,
+        // auto-escalate to force=true so windowTitle+auto-guard remains a reliable
+        // contract (the caller already expressed intent by passing windowTitle).
         restoreAndFocusWindow(target.hwnd, { force });
-        if (force) {
-          // Re-check if foreground was actually transferred to surface ForceFocusRefused
+        await new Promise<void>((r) => setTimeout(r, 100));
+        let after = enumWindowsInZOrder().find((w) => w.isActive);
+        let reachedForeground = !!after && after.title.toLowerCase().includes(needle);
+
+        if (!reachedForeground && !force) {
+          // Auto-escalate to force focus (AttachThreadInput bypass) — the caller
+          // asked us to type into this window, so bringing it to the foreground
+          // is required for the keystrokes to reach the right target.
+          restoreAndFocusWindow(target.hwnd, { force: true });
           await new Promise<void>((r) => setTimeout(r, 100));
-          const after = enumWindowsInZOrder().find((w) => w.isActive);
-          if (!after || !after.title.toLowerCase().includes(windowTitle.toLowerCase())) {
-            warnings.push("ForceFocusRefused");
-          } else {
-            homingNotes.push(`brought "${target.title}" to front`);
-          }
-        } else {
-          await new Promise<void>((r) => setTimeout(r, 100));
+          after = enumWindowsInZOrder().find((w) => w.isActive);
+          reachedForeground = !!after && after.title.toLowerCase().includes(needle);
+        }
+
+        if (reachedForeground) {
           homingNotes.push(`brought "${target.title}" to front`);
+          foregroundVerified = true;
+        } else {
+          warnings.push("ForceFocusRefused");
+          forceRefused = true;
         }
       }
     }
   } catch {
     // best-effort
   }
-  return { warnings, homingNotes };
+  return { warnings, homingNotes, foregroundVerified, forceRefused };
 }
 
 export const keyboardTypeHandler = async ({
@@ -207,12 +241,14 @@ export const keyboardTypeHandler = async ({
   try {
     const warnings: string[] = [];
     const homingNotes: string[] = [];
+    let foregroundVerified = false;
 
     // Step 1: Focus first (guard needs foreground state to be correct).
     if (windowTitle) {
       const fw = await focusWindowForKeyboard(windowTitle, force);
       warnings.push(...fw.warnings);
       homingNotes.push(...fw.homingNotes);
+      foregroundVerified = fw.foregroundVerified;
     }
 
     // Step 2: Guard evaluation (on already-focused window).
@@ -224,7 +260,12 @@ export const keyboardTypeHandler = async ({
         return failWith(
           new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
           "keyboard_type",
-          { lensId, guard: guardResult.failedGuard, _perceptionForPost: env }
+          {
+            lensId,
+            guard: guardResult.failedGuard,
+            _perceptionForPost: env,
+            ...(warnings.length > 0 && { hints: { warnings } }),
+          }
         );
       }
       perceptionEnv = buildEnvelopeFor(lensId, { toolName: "keyboard_type" }) ?? undefined;
@@ -234,12 +275,16 @@ export const keyboardTypeHandler = async ({
         : null;
       const ag = await runActionGuard({
         toolName: "keyboard_type", actionKind: "keyboard", descriptor,
+        ...(foregroundVerified && { foregroundVerified: true }),
       });
       if (ag.block) {
         return failWith(
           new Error(`AutoGuardBlocked: ${ag.summary.next}`),
           "keyboard_type",
-          { _perceptionForPost: ag.summary }
+          {
+            _perceptionForPost: ag.summary,
+            ...(warnings.length > 0 && { hints: { warnings } }),
+          }
         );
       }
       perceptionEnv = ag.summary;
@@ -319,12 +364,14 @@ export const keyboardPressHandler = async ({
 
     const warnings: string[] = [];
     const homingNotes: string[] = [];
+    let foregroundVerified = false;
 
     // Step 1: Focus first (guard needs foreground state to be correct).
     if (windowTitle) {
       const fw = await focusWindowForKeyboard(windowTitle, force);
       warnings.push(...fw.warnings);
       homingNotes.push(...fw.homingNotes);
+      foregroundVerified = fw.foregroundVerified;
     }
 
     // Step 2: Guard evaluation (on already-focused window).
@@ -336,7 +383,12 @@ export const keyboardPressHandler = async ({
         return failWith(
           new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
           "keyboard_press",
-          { lensId, guard: guardResult.failedGuard, _perceptionForPost: env }
+          {
+            lensId,
+            guard: guardResult.failedGuard,
+            _perceptionForPost: env,
+            ...(warnings.length > 0 && { hints: { warnings } }),
+          }
         );
       }
       perceptionEnv = buildEnvelopeFor(lensId, { toolName: "keyboard_press" }) ?? undefined;
@@ -346,12 +398,16 @@ export const keyboardPressHandler = async ({
         : null;
       const ag = await runActionGuard({
         toolName: "keyboard_press", actionKind: "keyboard", descriptor,
+        ...(foregroundVerified && { foregroundVerified: true }),
       });
       if (ag.block) {
         return failWith(
           new Error(`AutoGuardBlocked: ${ag.summary.next}`),
           "keyboard_press",
-          { _perceptionForPost: ag.summary }
+          {
+            _perceptionForPost: ag.summary,
+            ...(warnings.length > 0 && { hints: { warnings } }),
+          }
         );
       }
       perceptionEnv = ag.summary;
