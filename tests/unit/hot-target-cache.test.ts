@@ -182,3 +182,54 @@ describe("HotTargetCache — browserTab descriptor", () => {
     expect(slot?.key).toBe("browserTab:tab-abc-123");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-5: stale-identity LRU detail assertions (v3 §6.1 specification compliance)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("F-5: stale-identity LRU detail (v3 §6.1)", () => {
+  it("F-5(a): LRU tiebreak uses lastUsedAtMs — oldest is evicted", () => {
+    // Fill to HOT_MAX_SLOTS
+    for (let i = 0; i < HOT_MAX_SLOTS; i++) {
+      getOrCreateSlot(windowDescriptor(`window${i}`), 1000 + i * 100);
+    }
+    expect(getSlotSnapshot()).toHaveLength(HOT_MAX_SLOTS);
+
+    // Add one more — should evict oldest (window0 with lastUsedAtMs=1000)
+    getOrCreateSlot(windowDescriptor("windowNew"), 2000);
+    const keys = getSlotSnapshot().map(s => s.key);
+    // window0 is the oldest by lastUsedAtMs
+    expect(keys).not.toContain("window:window0");
+    expect(keys).toContain("window:windownew");
+  });
+
+  it("F-5(b): bad-TTL expired slot is cleared by clearExpired", () => {
+    const now = 1_000_000;
+    const slot = getOrCreateSlot(windowDescriptor("notepad"), now);
+    markBad(slot!.key, "test bad", now);
+    expect(getSlotSnapshot().find(s => s.key === slot!.key)?.badUntilMs).toBeGreaterThan(now);
+
+    // Before TTL expiry — slot still present
+    clearExpired(now + HOT_BAD_TTL_MS - 1);
+    expect(getSlotSnapshot().find(s => s.key === slot!.key)).toBeTruthy();
+
+    // After TTL expiry — slot removed
+    clearExpired(now + HOT_BAD_TTL_MS + 1);
+    expect(getSlotSnapshot().find(s => s.key === slot!.key)).toBeUndefined();
+  });
+
+  it("F-5(c): getOrCreateSlot read-only call does NOT extend TTL", () => {
+    const now = 1_000_000;
+    const slot = getOrCreateSlot(windowDescriptor("notepad"), now);
+    const originalLastUsed = slot!.lastUsedAtMs;
+
+    // Multiple read-only calls should NOT change lastUsedAtMs
+    getOrCreateSlot(windowDescriptor("notepad"), now + 5000);
+    getOrCreateSlot(windowDescriptor("notepad"), now + 10000);
+    expect(slot!.lastUsedAtMs).toBe(originalLastUsed);
+
+    // Only updateSlot (called by model actions) should advance TTL
+    updateSlot(slot!.key, { useCount: slot!.useCount + 1 }, now + 10000);
+    expect(slot!.lastUsedAtMs).toBe(now + 10000);
+  });
+});

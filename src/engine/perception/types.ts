@@ -193,6 +193,8 @@ export interface GuardResult {
   confidence: number;
   reason?: string;
   suggestedAction?: string;
+  /** Phase F: informational note for pass-with-note browser readiness outcomes. */
+  note?: string;
 }
 
 export interface GuardEvalResult {
