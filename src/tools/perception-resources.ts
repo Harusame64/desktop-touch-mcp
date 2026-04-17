@@ -49,16 +49,14 @@ let _notificationScheduler: ResourceNotificationScheduler | null = null;
 let _server: McpServer | null = null;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// D-6: Timeline resource state
+// D-6: Timeline resource notification state
+// Global timeline listener fires sendResourceUpdated for each new event URI.
+// Client subscribe/unsubscribe is managed by the MCP SDK transport layer;
+// on disconnect the SDK triggers onclose → disposeAllTimelineNotifications.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Per-targetKey → active subscription handles from MCP clients */
-interface TimelineSubscriptionEntry { targetKey: string; dispose: () => void; }
-const _activeTimelineSubscriptions = new Map<string, TimelineSubscriptionEntry>();
-
-/** Global timeline listener: notifies on new events for subscribed keys */
 let _disposeGlobalTimelineListener: (() => void) | null = null;
-/** Debounce: last-notified-at per targetKey URI */
+/** Debounce: last-notified-at per targetKey URI to avoid flooding clients */
 const _timelineNotifyAt = new Map<string, number>();
 const TIMELINE_DEBOUNCE_MS = 300;
 
@@ -80,21 +78,10 @@ function _notifyTimelineSubscribers(ev: TargetIdentityTimelineEvent): void {
   } catch { /* non-fatal */ }
 }
 
-function _disposeAllTimelineSubscriptions(): void {
-  for (const entry of _activeTimelineSubscriptions.values()) entry.dispose();
-  _activeTimelineSubscriptions.clear();
+function _disposeAllTimelineNotifications(): void {
+  _disposeGlobalTimelineListener?.();
+  _disposeGlobalTimelineListener = null;
   _timelineNotifyAt.clear();
-}
-
-function _addTimelineSubscription(subscriptionId: string, targetKey: string): void {
-  if (_activeTimelineSubscriptions.has(subscriptionId)) return;
-  // No per-subscription per-targetKey listener needed; global listener handles all
-  const dispose = () => { _activeTimelineSubscriptions.delete(subscriptionId); };
-  _activeTimelineSubscriptions.set(subscriptionId, { targetKey, dispose });
-}
-
-function _removeTimelineSubscription(subscriptionId: string): void {
-  _activeTimelineSubscriptions.get(subscriptionId)?.dispose();
 }
 
 /** Called once at server start to register the perception resource template. */
@@ -263,12 +250,12 @@ export function registerPerceptionResources(server: McpServer): void {
     _disposeGlobalTimelineListener?.();
     _disposeGlobalTimelineListener = subscribeGlobal(_notifyTimelineSubscribers);
 
-    // Wire client disconnect: clean up timeline subscriptions
+    // Wire client disconnect: stop global listener + clear debounce cache
     const underlying = (server as unknown as { server?: { onclose?: () => void } }).server;
     if (underlying) {
       const prevOnClose = underlying.onclose;
       underlying.onclose = () => {
-        try { _disposeAllTimelineSubscriptions(); } catch { /* non-fatal */ }
+        try { _disposeAllTimelineNotifications(); } catch { /* non-fatal */ }
         if (typeof prevOnClose === "function") prevOnClose.call(underlying);
       };
     }
@@ -336,8 +323,7 @@ export function unregisterPerceptionResources(): void {
   _disposeLifecycleListener?.(); _disposeLifecycleListener = null;
   _disposeChangeListener?.();    _disposeChangeListener    = null;
   _notificationScheduler?.dispose(); _notificationScheduler = null;
-  _disposeGlobalTimelineListener?.(); _disposeGlobalTimelineListener = null;
-  _disposeAllTimelineSubscriptions();
+  _disposeAllTimelineNotifications();
   _server = null;
   resourceRegistry.__resetForTests();
 }

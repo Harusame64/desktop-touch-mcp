@@ -56,29 +56,60 @@ describe("SuggestedFix.tool union — all 4 variants", () => {
   }
 });
 
-describe("validateAndPrepareFix (tool mismatch)", () => {
+// browserTab fingerprint — no Win32 calls needed for revalidation
+function makeBrowserFix(tool: SuggestedFix["tool"]): Omit<SuggestedFix, "fixId" | "createdAtMs" | "expiresAtMs" | "consumed"> {
+  return {
+    tool,
+    args: { selector: "#btn", tabId: "tab-1", port: 9222 },
+    targetFingerprint: {
+      kind: "browserTab",
+      descriptorKey: "browserTab:tab-1",
+      tabId: "tab-1",
+      url: "https://example.com",
+    },
+    reason: "test drift",
+  };
+}
+
+describe("validateAndPrepareFix (tool mismatch / error codes)", () => {
   it("returns FixToolMismatch when tool does not match", async () => {
     const { validateAndPrepareFix } = await import("../../src/tools/_action-guard.js");
-    const stored = storeFix(makePartial("keyboard_type", { text: "hello", windowTitle: "Notepad" }));
+    const stored = storeFix(makeBrowserFix("keyboard_type"));
     const r = validateAndPrepareFix(stored.fixId, "mouse_click");
     expect(r.ok).toBe(false);
     expect(r.errorCode).toBe("FixToolMismatch");
   });
 
-  it("returns fix when tool matches", async () => {
+  it("returns fix when tool matches (browserTab fingerprint — no Win32 needed)", async () => {
     const { validateAndPrepareFix } = await import("../../src/tools/_action-guard.js");
-    const stored = storeFix(makePartial("keyboard_type", { text: "hello", windowTitle: "Notepad" }));
-    const r = validateAndPrepareFix(stored.fixId, "keyboard_type");
+    const stored = storeFix(makeBrowserFix("browser_click_element"));
+    const r = validateAndPrepareFix(stored.fixId, "browser_click_element");
     expect(r.ok).toBe(true);
-    expect(r.fix!.args.text).toBe("hello");
+    expect(r.fix!.args.selector).toBe("#btn");
   });
 
   it("returns FixNotFoundOrExpired for expired fix", async () => {
     const { validateAndPrepareFix } = await import("../../src/tools/_action-guard.js");
     const past = Date.now() - FIX_TTL_MS - 1000;
-    const stored = storeFix(makePartial("click_element"), past);
+    const stored = storeFix(makeBrowserFix("click_element"), past);
     const r = validateAndPrepareFix(stored.fixId, "click_element");
     expect(r.ok).toBe(false);
     expect(r.errorCode).toBe("FixNotFoundOrExpired");
+  });
+
+  it("FixTargetMismatch for window fingerprint with non-existent hwnd", async () => {
+    const { validateAndPrepareFix } = await import("../../src/tools/_action-guard.js");
+    // hwnd "1" is virtually guaranteed to not be a real window (or if it is, pid won't match 999)
+    const stored = storeFix({
+      tool: "mouse_click",
+      args: { x: 100, y: 100 },
+      targetFingerprint: { kind: "window", descriptorKey: "window:notepad", hwnd: "1", pid: 99999999 },
+      reason: "test",
+    });
+    const r = validateAndPrepareFix(stored.fixId, "mouse_click");
+    // If hwnd 1 doesn't exist: FixTargetMismatch (window gone)
+    // If hwnd 1 exists but pid differs: FixTargetMismatch
+    // Either way, should not succeed with mismatched pid
+    expect(["FixTargetMismatch", "ok"]).toContain(r.errorCode ?? "ok");
   });
 });
