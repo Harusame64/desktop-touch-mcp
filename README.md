@@ -497,6 +497,53 @@ Setting `DESKTOP_TOUCH_FORCE_FOCUS=1` makes `forceFocus: true` the default for a
 
 ---
 
+## Auto Guard (v0.12+)
+
+Action tools (`mouse_click`, `mouse_drag`, `keyboard_type`, `keyboard_press`, `click_element`, `set_element_value`, `browser_click_element`, `browser_navigate`) automatically guard each action when you pass `windowTitle` / `tabId`:
+
+- Verifies target window identity (process restart / HWND replacement detected)
+- Confirms click coordinates are inside the target window rect
+- Returns `post.perception.status` on every response — including failures — so the LLM can recover without a screenshot
+
+**Disabling auto guard** — set `DESKTOP_TOUCH_AUTO_GUARD=0` to restore v0.11.12 behavior (no auto guard):
+
+```json
+{
+  "mcpServers": {
+    "desktop-touch": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@harusame64/desktop-touch-mcp"],
+      "env": {
+        "DESKTOP_TOUCH_AUTO_GUARD": "0"
+      }
+    }
+  }
+}
+```
+
+When auto guard is enabled (default), `post.perception.status` will be one of:
+
+| Status | Meaning |
+|---|---|
+| `ok` | Guard passed — target verified |
+| `unguarded` | `windowTitle` not provided; action ran without guard |
+| `target_not_found` | No window matched the given title |
+| `ambiguous_target` | Multiple windows matched; use a more specific title |
+| `identity_changed` | Window was replaced (process restart / HWND change) |
+| `unsafe_coordinates` | Click coordinates are outside the target window rect |
+| `needs_escalation` | Use `browser_click_element` or specify `windowTitle` |
+
+When `unsafe_coordinates` or `identity_changed` is returned, the response may include a `suggestedFix.fixId`. Pass that `fixId` to the next `mouse_click` call to approve the recovery:
+
+```json
+{ "name": "mouse_click", "arguments": { "fixId": "fix-..." } }
+```
+
+The fix is one-shot and expires in 15 seconds.
+
+---
+
 ## Known limitations
 
 | Limitation | Detail | Workaround |

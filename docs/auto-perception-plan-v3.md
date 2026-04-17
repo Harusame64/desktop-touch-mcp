@@ -797,8 +797,16 @@ Useful existing helpers for `ActionTarget` inference:
 
 Recommended new modules:
 
-- `src/tools/_action-guard.ts` — tool-facing middleware that turns existing
-  action args into automatic guard calls and compact `post.perception` summaries.
+- `src/tools/_action-guard.ts` — tool-facing action-guard module. Exposes
+  `runActionGuard()` as the primary entry point; all Phase A handlers
+  (mouse / keyboard / ui-elements / browser) call it directly so each
+  handler can keep its own ordering (e.g. mouse: conversion → homing →
+  guard → click) and its own `lensId` branching. Also exports
+  `withActionGuard<T>()` as a middleware wrapper retained for future
+  use (Phase B HotTargetCache integration, Phase E prompt-surface work)
+  and as the reference implementation of the guard contract covered by
+  `tests/unit/action-guard.test.ts`. Phase A itself does not use
+  `withActionGuard` from any handler.
 - `src/engine/perception/action-target.ts` — pure-ish target inference from
   `windowTitle`, `tabId`, selector context, and final coordinates.
 - `src/engine/perception/hot-target-cache.ts` — Phase B hidden descriptor-bound
@@ -1690,8 +1698,15 @@ automatic guards は既存 perception logic を再利用する。ただし、aut
 
 推奨する新規 modules:
 
-- `src/tools/_action-guard.ts` — tool-facing middleware。既存 action args を
-  automatic guard calls と compact `post.perception` summaries に変換する。
+- `src/tools/_action-guard.ts` — tool-facing action-guard モジュール。
+  主エントリは `runActionGuard()` で、Phase A の全 handler
+  (mouse / keyboard / ui-elements / browser) から直接呼び出す。これにより
+  各 handler が独自順序 (mouse: 変換 → homing → guard → click) と
+  `lensId` 分岐を自然に維持できる。`withActionGuard<T>()` は middleware
+  ラッパーとして export を残し、Phase B (HotTargetCache) や Phase E
+  (prompt surface) での将来利用と、`tests/unit/action-guard.test.ts` が
+  検証する guard 契約の参照実装として保持する。Phase A では どの handler
+  からも `withActionGuard` を呼ばない。
 - `src/engine/perception/action-target.ts` — `windowTitle`, `tabId`,
   selector context, final coordinates から target を推論する。
 - `src/engine/perception/hot-target-cache.ts` — Phase B hidden descriptor-bound

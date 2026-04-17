@@ -27,6 +27,7 @@ import { withPostState } from "./_post.js";
 import { narrateParam } from "./_narration.js";
 import type { RichBlock } from "../engine/uia-diff.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
+import { runActionGuard, isAutoGuardEnabled } from "./_action-guard.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -514,15 +515,27 @@ export const browserClickElementHandler = async ({
   lensId?: string;
 }): Promise<ToolResult> => {
   try {
+    let perceptionEnvBrowser: import("../engine/perception/types.js").PostPerception | undefined;
     if (lensId) {
       const guardResult = await evaluatePreToolGuards(lensId, "browser_click_element", {});
       if (!guardResult.ok && guardResult.policy === "block") {
+        const env = buildEnvelopeFor(lensId, { toolName: "browser_click_element" });
         return failWith(
           new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
           "browser_click_element",
-          { lensId, guard: guardResult.failedGuard }
+          { lensId, guard: guardResult.failedGuard, _perceptionForPost: env }
         );
       }
+      perceptionEnvBrowser = buildEnvelopeFor(lensId, { toolName: "browser_click_element" }) ?? undefined;
+    } else if (isAutoGuardEnabled() && (tabId || port)) {
+      const descriptor: import("./_action-guard.js").ActionTargetDescriptor = {
+        kind: "browserTab", port, tabId, urlIncludes: undefined,
+      };
+      const ag = await runActionGuard({ toolName: "browser_click_element", actionKind: "browserCdp", descriptor });
+      if (ag.block) {
+        return failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "browser_click_element", { _perceptionForPost: ag.summary });
+      }
+      perceptionEnvBrowser = ag.summary;
     }
     // CDP snapshot before click (for narrate:"rich")
     let beforeUrl: string | null = null;
@@ -586,7 +599,6 @@ export const browserClickElementHandler = async ({
       }
     }
 
-    const perceptionEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "browser_click_element" }) : undefined;
     return ok({
       ok: true,
       clicked: selector,
@@ -594,7 +606,7 @@ export const browserClickElementHandler = async ({
       activeTab: { id: tabCtx.id, title: tabCtx.title, url: tabCtx.url },
       readyState: tabCtx.readyState,
       ...(richBlock ? { _richForPost: richBlock } : {}),
-      ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
+      ...(perceptionEnvBrowser && { _perceptionForPost: perceptionEnvBrowser }),
     });
   } catch (err) {
     return failWith(err, "browser_click_element");
@@ -624,6 +636,15 @@ export const browserEvalHandler = async ({
           { lensId, guard: guardResult.failedGuard }
         );
       }
+    } else if (isAutoGuardEnabled() && (tabId || port)) {
+      const descriptor: import("./_action-guard.js").ActionTargetDescriptor = {
+        kind: "browserTab", port, tabId, urlIncludes: undefined,
+      };
+      const ag = await runActionGuard({ toolName: "browser_eval", actionKind: "browserCdp", descriptor });
+      if (ag.block) {
+        return failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "browser_eval", { context: { guardStatus: ag.summary.status } });
+      }
+      // browser_eval returns raw text — no envelope attached on success (by design)
     }
     const result = await evaluateInTab(expression, tabId ?? null, port);
     const text =
@@ -705,15 +726,27 @@ export const browserNavigateHandler = async ({
   lensId?: string;
 }): Promise<ToolResult> => {
   try {
+    let perceptionEnvNav: import("../engine/perception/types.js").PostPerception | undefined;
     if (lensId) {
       const guardResult = await evaluatePreToolGuards(lensId, "browser_navigate", {});
       if (!guardResult.ok && guardResult.policy === "block") {
+        const env = buildEnvelopeFor(lensId, { toolName: "browser_navigate" });
         return failWith(
           new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
           "browser_navigate",
-          { lensId, guard: guardResult.failedGuard }
+          { lensId, guard: guardResult.failedGuard, _perceptionForPost: env }
         );
       }
+      perceptionEnvNav = buildEnvelopeFor(lensId, { toolName: "browser_navigate" }) ?? undefined;
+    } else if (isAutoGuardEnabled() && (tabId || port)) {
+      const descriptor: import("./_action-guard.js").ActionTargetDescriptor = {
+        kind: "browserTab", port, tabId, urlIncludes: undefined,
+      };
+      const ag = await runActionGuard({ toolName: "browser_navigate", actionKind: "browserCdp", descriptor });
+      if (ag.block) {
+        return failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "browser_navigate", { _perceptionForPost: ag.summary });
+      }
+      perceptionEnvNav = ag.summary;
     }
     const startedAt = Date.now();
     // Capture beforeUrl for rich narration
@@ -790,7 +823,6 @@ export const browserNavigateHandler = async ({
         : {}),
     } : undefined;
 
-    const perceptionEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "browser_navigate" }) : undefined;
     return ok({
       ok: true,
       url: tabCtx.url || url,
@@ -799,7 +831,7 @@ export const browserNavigateHandler = async ({
       elapsedMs,
       waited: true,
       ...(richBlock ? { _richForPost: richBlock } : {}),
-      ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
+      ...(perceptionEnvNav && { _perceptionForPost: perceptionEnvNav }),
     });
   } catch (err) {
     return failWith(err, "browser_navigate");
@@ -1602,7 +1634,7 @@ export function registerBrowserTools(server: McpServer): void {
 
   server.tool(
     "browser_click_element",
-    "Find a DOM element by CSS selector and click it (combines browser_find_element + mouse_click in one step). Prefer over mouse_click for Chrome — selector-based clicking is stable across repaints. Pass lensId (from perception_register) to verify tab identity and readyState before clicking and receive post.perception state feedback without a screenshot. Caveats: Fails if the element is outside the visible viewport — scroll it into view with browser_eval(\"document.querySelector('sel').scrollIntoView()\") first.",
+    "Find a DOM element by CSS selector and click it (combines browser_find_element + mouse_click in one step). Prefer over mouse_click for Chrome — selector-based clicking is stable across repaints. Pass tabId+port so the server auto-guards (verifies tab readyState and identity) and returns post.perception.status. lensId is optional for advanced pinned-tab workflows. Caveats: Fails if the element is outside the visible viewport — scroll it into view with browser_eval(\"document.querySelector('sel').scrollIntoView()\") first.",
     browserClickElementSchema,
     withPostState("browser_click_element", browserClickElementHandler)
   );
@@ -1623,7 +1655,7 @@ export function registerBrowserTools(server: McpServer): void {
 
   server.tool(
     "browser_navigate",
-    "Navigate a browser tab to a URL via CDP Page.navigate — more reliable than clicking the address bar (no need to find UI elements). Verify readiness with browser_eval(\"document.readyState\") after calling. Pass lensId (from perception_register) to verify tab identity before navigating and receive post.perception state feedback without a screenshot. Caveats: Does not block until page load completes — follow with wait_until(element_matches) or repeated browser_eval polling for slow pages.",
+    "Navigate a browser tab to a URL via CDP Page.navigate — more reliable than clicking the address bar. Pass tabId+port so the server auto-guards (verifies tab readyState) and returns post.perception.status. lensId is optional for advanced pinned-tab workflows. Caveats: Does not block until page load completes — follow with wait_until(element_matches) or repeated browser_eval polling for slow pages.",
     browserNavigateSchema,
     withPostState("browser_navigate", browserNavigateHandler)
   );

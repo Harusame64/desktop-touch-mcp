@@ -16,7 +16,7 @@ import { enumWindowsInZOrder, getWindowProcessId, getProcessIdentityByPid } from
 import { getFocusedAndPointInfo } from "../engine/uia-bridge.js";
 import type { ToolResult } from "./_types.js";
 import type { RichBlock } from "../engine/uia-diff.js";
-import type { PerceptionEnvelope } from "../engine/perception/types.js";
+import type { PerceptionEnvelope, PostPerception } from "../engine/perception/types.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -38,7 +38,7 @@ export interface PostState {
   /** UIA diff block injected by withRichNarration. Stripped before history storage. */
   rich?: RichBlock;
   /** RPG perception envelope injected via _perceptionForPost. Stripped before history storage. */
-  perception?: PerceptionEnvelope;
+  perception?: PostPerception;
 }
 
 export interface HistoryEntry {
@@ -144,6 +144,20 @@ export function withPostState<T extends Record<string, unknown>>(
           if (obj.ok === false) {
             okFlag = false;
             errorCode = typeof obj.code === "string" ? obj.code : undefined;
+            // Attach post.perception on failure if handler set _perceptionForPost.
+            // This lets LLMs recover from guard blocks using post.perception.next.
+            if (obj._perceptionForPost !== null && typeof obj._perceptionForPost === "object") {
+              const failurePost: PostState = {
+                focusedWindow: after.title,
+                focusedElement: null,
+                windowChanged: !!after.hwnd && !!before.hwnd && after.hwnd !== before.hwnd,
+                elapsedMs: Date.now() - startedAt,
+                perception: obj._perceptionForPost as PostPerception,
+              };
+              obj.post = failurePost;
+              delete obj._perceptionForPost;
+              block.text = JSON.stringify(obj, null, 2);
+            }
           } else {
             obj.post = post;
             // If the handler injected a CDP-sourced rich block via _richForPost,

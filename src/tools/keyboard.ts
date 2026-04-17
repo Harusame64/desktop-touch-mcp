@@ -13,6 +13,7 @@ import { coercedBoolean } from "./_coerce.js";
 import { withRichNarration, narrateParam } from "./_narration.js";
 import { detectFocusLoss } from "./_focus.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
+import { runActionGuard, isAutoGuardEnabled } from "./_action-guard.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -204,23 +205,44 @@ export const keyboardTypeHandler = async ({
 }): Promise<ToolResult> => {
   const force = forceFocusArg ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
   try {
-    if (lensId) {
-      const guardResult = await evaluatePreToolGuards(lensId, "keyboard_type", {});
-      if (!guardResult.ok && guardResult.policy === "block") {
-        return failWith(
-          new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
-          "keyboard_type",
-          { lensId, guard: guardResult.failedGuard }
-        );
-      }
-    }
     const warnings: string[] = [];
-
     const homingNotes: string[] = [];
+
+    // Step 1: Focus first (guard needs foreground state to be correct).
     if (windowTitle) {
       const fw = await focusWindowForKeyboard(windowTitle, force);
       warnings.push(...fw.warnings);
       homingNotes.push(...fw.homingNotes);
+    }
+
+    // Step 2: Guard evaluation (on already-focused window).
+    let perceptionEnv: import("../engine/perception/types.js").PostPerception | undefined;
+    if (lensId) {
+      const guardResult = await evaluatePreToolGuards(lensId, "keyboard_type", {});
+      if (!guardResult.ok && guardResult.policy === "block") {
+        const env = buildEnvelopeFor(lensId, { toolName: "keyboard_type" });
+        return failWith(
+          new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
+          "keyboard_type",
+          { lensId, guard: guardResult.failedGuard, _perceptionForPost: env }
+        );
+      }
+      perceptionEnv = buildEnvelopeFor(lensId, { toolName: "keyboard_type" }) ?? undefined;
+    } else if (isAutoGuardEnabled()) {
+      const descriptor = windowTitle
+        ? { kind: "window" as const, titleIncludes: windowTitle }
+        : null;
+      const ag = await runActionGuard({
+        toolName: "keyboard_type", actionKind: "keyboard", descriptor,
+      });
+      if (ag.block) {
+        return failWith(
+          new Error(`AutoGuardBlocked: ${ag.summary.next}`),
+          "keyboard_type",
+          { _perceptionForPost: ag.summary }
+        );
+      }
+      perceptionEnv = ag.summary;
     }
 
     // Ctrl+A to replace existing content before typing
@@ -261,7 +283,6 @@ export const keyboardTypeHandler = async ({
         : "clipboard"
       : "keystroke";
 
-    const perceptionEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "keyboard_type" }) : undefined;
     return ok({
       ok: true,
       typed: text.length,
@@ -293,25 +314,47 @@ export const keyboardPressHandler = async ({
 }): Promise<ToolResult> => {
   const force = forceFocusArg ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
   try {
-    if (lensId) {
-      const guardResult = await evaluatePreToolGuards(lensId, "keyboard_press", {});
-      if (!guardResult.ok && guardResult.policy === "block") {
-        return failWith(
-          new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
-          "keyboard_press",
-          { lensId, guard: guardResult.failedGuard }
-        );
-      }
-    }
+    // assertKeyComboSafe before focus — invalid keys fail immediately.
     assertKeyComboSafe(keys);
 
     const warnings: string[] = [];
     const homingNotes: string[] = [];
 
+    // Step 1: Focus first (guard needs foreground state to be correct).
     if (windowTitle) {
       const fw = await focusWindowForKeyboard(windowTitle, force);
       warnings.push(...fw.warnings);
       homingNotes.push(...fw.homingNotes);
+    }
+
+    // Step 2: Guard evaluation (on already-focused window).
+    let perceptionEnv: import("../engine/perception/types.js").PostPerception | undefined;
+    if (lensId) {
+      const guardResult = await evaluatePreToolGuards(lensId, "keyboard_press", {});
+      if (!guardResult.ok && guardResult.policy === "block") {
+        const env = buildEnvelopeFor(lensId, { toolName: "keyboard_press" });
+        return failWith(
+          new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
+          "keyboard_press",
+          { lensId, guard: guardResult.failedGuard, _perceptionForPost: env }
+        );
+      }
+      perceptionEnv = buildEnvelopeFor(lensId, { toolName: "keyboard_press" }) ?? undefined;
+    } else if (isAutoGuardEnabled()) {
+      const descriptor = windowTitle
+        ? { kind: "window" as const, titleIncludes: windowTitle }
+        : null;
+      const ag = await runActionGuard({
+        toolName: "keyboard_press", actionKind: "keyboard", descriptor,
+      });
+      if (ag.block) {
+        return failWith(
+          new Error(`AutoGuardBlocked: ${ag.summary.next}`),
+          "keyboard_press",
+          { _perceptionForPost: ag.summary }
+        );
+      }
+      perceptionEnv = ag.summary;
     }
 
     const keyList = parseKeys(keys);
@@ -328,7 +371,6 @@ export const keyboardPressHandler = async ({
       if (fl) focusLost = fl;
     }
 
-    const perceptionEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "keyboard_press" }) : undefined;
     return ok({
       ok: true,
       pressed: keys,
@@ -348,14 +390,14 @@ export const keyboardPressHandler = async ({
 export function registerKeyboardTools(server: McpServer): void {
   server.tool(
     "keyboard_type",
-    "Type a string into the focused window. Pass windowTitle to auto-focus the target before typing and enable focus-loss detection (focusLost in response) — eliminates a separate focus_window call. Pass replaceAll:true to Ctrl+A before typing (replace existing content in one call). Prefer set_element_value for form fields. Pass lensId (from perception_register, window lens only) to run safety guards (identity stable, foreground, modal) before typing and receive post.perception state feedback without a screenshot. Caveats: Omitting windowTitle types into whatever window is currently active — if focus may have shifted since your last get_context, pass windowTitle explicitly. Does not handle IME composition for CJK — use use_clipboard=true or set_element_value instead. Text containing em-dash (—), en-dash (–), smart quotes, or other non-ASCII punctuation is automatically rerouted via clipboard (method:'clipboard-auto') to prevent Chrome/Edge from intercepting keystrokes as keyboard accelerators (e.g. address bar hijack). Pass forceKeystrokes:true to disable this auto-upgrade.",
+    "Type a string into the focused window. Pass windowTitle to auto-focus and auto-guard (verifies identity, foreground, modal) before typing — returns post.perception.status without a screenshot. Omitting windowTitle types into the active window and returns post.perception.status='unguarded'. Pass replaceAll:true to Ctrl+A before typing. Prefer set_element_value for form fields. Examples: keyboard_type({windowTitle:'Notepad', text:'hello'}) // guarded. keyboard_type({text:'hello'}) // unguarded. lensId is optional for advanced pinned-lens use. Caveats: Does not handle IME composition for CJK — use use_clipboard=true or set_element_value instead. Non-ASCII punctuation (em-dash etc.) auto-routes via clipboard (method:'clipboard-auto') to prevent Chrome address-bar hijack; pass forceKeystrokes:true to disable.",
     keyboardTypeSchema,
     withRichNarration("keyboard_type", keyboardTypeHandler, { windowTitleKey: "windowTitle" })
   );
 
   server.tool(
     "keyboard_press",
-    "Press a key or key combination (e.g. 'ctrl+c', 'alt+tab', 'ctrl+shift+s', 'f5', 'escape', 'f1'–'f12'). Pass windowTitle to auto-focus before pressing — eliminates a separate focus_window call. Pass lensId (from perception_register, window lens only) to run safety guards (identity stable, foreground, modal) before pressing and receive post.perception state feedback without a screenshot. Caveats: Omitting windowTitle sends keystrokes to the currently active window — if focus may have shifted since your last observation, pass windowTitle explicitly. win+r, win+x, win+s, win+l are blocked for security. narrate:'rich' adds UIA state feedback for state-transitioning keys (Enter, Tab, Esc, F-keys) only.",
+    "Press a key or key combination (e.g. 'ctrl+c', 'alt+tab', 'f5', 'escape'). Pass windowTitle to auto-focus and auto-guard before pressing — returns post.perception.status. Omitting windowTitle sends to the active window and returns post.perception.status='unguarded'. Examples: keyboard_press({windowTitle:'Notepad', keys:'ctrl+s'}) // guarded. keyboard_press({keys:'escape'}) // unguarded. lensId is optional for advanced pinned-lens use. Caveats: win+r, win+x, win+s, win+l are blocked for security. narrate:'rich' adds UIA state feedback for state-transitioning keys only.",
     keyboardPressSchema,
     withRichNarration("keyboard_press", keyboardPressHandler, {
       windowTitleKey: "windowTitle",
