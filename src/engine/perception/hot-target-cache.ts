@@ -14,7 +14,7 @@
 
 import type { ActionTargetDescriptor } from "./action-target.js";
 import type { WindowIdentity, BrowserTabIdentity } from "./types.js";
-import { normalizeTitle } from "./action-target.js";
+import { deriveTargetKey } from "./action-target.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TTL constants
@@ -62,19 +62,8 @@ const _slots = new Map<string, HotTargetSlot>();
 // Key derivation
 // ─────────────────────────────────────────────────────────────────────────────
 
-function descriptorKey(descriptor: ActionTargetDescriptor): string | null {
-  if (descriptor.kind === "window") {
-    return `window:${normalizeTitle(descriptor.titleIncludes)}`;
-  }
-  if (descriptor.kind === "browserTab") {
-    if (descriptor.tabId) return `browserTab:${descriptor.tabId}`;
-    if (descriptor.urlIncludes) return `browserTab:url:${descriptor.urlIncludes.toLowerCase()}`;
-    if (descriptor.titleIncludes) return `browserTab:title:${normalizeTitle(descriptor.titleIncludes)}`;
-    return null;  // no discriminating field
-  }
-  // coordinate-only — NOT cached (v3 §6)
-  return null;
-}
+// key derivation is now shared via deriveTargetKey from action-target.ts
+const descriptorKey = deriveTargetKey;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TTL helpers

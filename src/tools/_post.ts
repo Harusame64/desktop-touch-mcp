@@ -17,6 +17,7 @@ import { getFocusedAndPointInfo } from "../engine/uia-bridge.js";
 import type { ToolResult } from "./_types.js";
 import type { RichBlock } from "../engine/uia-diff.js";
 import type { PerceptionEnvelope, PostPerception } from "../engine/perception/types.js";
+import { appendEvent } from "../engine/perception/target-timeline.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -175,6 +176,21 @@ export function withPostState<T extends Record<string, unknown>>(
             if (obj._perceptionForPost !== null && typeof obj._perceptionForPost === "object") {
               post.perception = obj._perceptionForPost as PerceptionEnvelope;
               delete obj._perceptionForPost;
+
+              // D-4: Emit action_succeeded and optionally foreground_changed timeline events
+              const percAny = post.perception as unknown as Record<string, unknown>;
+              const targetStr = typeof percAny.target === "string" ? percAny.target : null;
+              if (targetStr) {
+                appendEvent({ targetKey: targetStr, identity: null, source: "post_check", semantic: "action_succeeded", tool: toolName, result: "ok", summary: `${toolName} succeeded` });
+              }
+            }
+            // D-4: foreground_changed when window focus moved between actions
+            if (windowChanged && before.hwnd && after.hwnd) {
+              // Use the after-window title as the target key approximation
+              const afterKey = after.title ? `window:${after.title.toLowerCase().trim()}` : null;
+              if (afterKey) {
+                appendEvent({ targetKey: afterKey, identity: null, source: "post_check", semantic: "foreground_changed", tool: toolName, summary: `Focus moved to ${after.title}` });
+              }
             }
             block.text = JSON.stringify(obj, null, 2);
           }

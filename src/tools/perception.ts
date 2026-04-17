@@ -16,7 +16,9 @@ import {
   forgetLens,
   listLenses,
   readLens,
+  getLens,
 } from "../engine/perception/registry.js";
+import { listEventsForTarget, deriveLensTargetKey } from "../engine/perception/target-timeline.js";
 import { FLUENT_KINDS, GUARD_KINDS } from "../engine/perception/types.js";
 import type { LensSpec } from "../engine/perception/types.js";
 
@@ -141,7 +143,18 @@ export const perceptionReadHandler = async (params: {
 }) => {
   try {
     const envelope = await readLens(params.lensId, { maxTokens: params.maxTokens });
-    return ok({ ok: true, ...envelope });
+    // D-5b: include up to 10 recent timeline events for this lens's target
+    const lens = getLens(params.lensId);
+    const recentEvents = lens
+      ? listEventsForTarget(deriveLensTargetKey(lens), 10).map(ev => ({
+          tsMs:     ev.tsMs,
+          semantic: ev.semantic,
+          summary:  ev.summary,
+          ...(ev.tool   ? { tool:   ev.tool   } : {}),
+          ...(ev.result ? { result: ev.result } : {}),
+        }))
+      : [];
+    return ok({ ok: true, ...envelope, ...(recentEvents.length > 0 && { recentEvents }) });
   } catch (err) {
     return failWith(err, "perception_read");
   }

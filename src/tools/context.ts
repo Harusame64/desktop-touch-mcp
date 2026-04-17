@@ -10,6 +10,7 @@ import {
   getProcessIdentityByPid,
 } from "../engine/win32.js";
 import { getHistorySnapshot } from "./_post.js";
+import { listRecentTargetKeys } from "../engine/perception/target-timeline.js";
 import { evaluateInTab } from "../engine/cdp-bridge.js";
 import { getCdpPort } from "../utils/desktop-config.js";
 import { getFocusedAndPointInfo } from "../engine/uia-bridge.js";
@@ -190,7 +191,9 @@ export const getContextHandler = async (): Promise<ToolResult> => {
 export const getHistoryHandler = async ({ n }: { n: number }): Promise<ToolResult> => {
   try {
     const items = getHistorySnapshot(n);
-    return ok({ count: items.length, actions: items });
+    // D-5a: include 3 most recent target keys (not bloating with full events — v3 §10.6)
+    const recentTargetKeys = listRecentTargetKeys(3);
+    return ok({ count: items.length, actions: items, ...(recentTargetKeys.length > 0 && { recentTargetKeys }) });
   } catch (err) {
     return failWith(err, "get_history");
   }

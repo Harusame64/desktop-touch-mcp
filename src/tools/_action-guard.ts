@@ -12,7 +12,7 @@
 
 import { failWith } from "./_errors.js";
 import type { ToolResult } from "./_types.js";
-import { resolveActionTarget } from "../engine/perception/action-target.js";
+import { resolveActionTarget, deriveTargetKey } from "../engine/perception/action-target.js";
 import type {
   ActionKind,
   ActionTargetDescriptor,
@@ -23,6 +23,7 @@ import type { GuardEvalResult } from "../engine/perception/types.js";
 import type { WindowIdentity } from "../engine/perception/types.js";
 import { storeFix } from "../engine/perception/suggested-fix-store.js";
 import type { SuggestedFix } from "../engine/perception/suggested-fix-store.js";
+import { appendEvent } from "../engine/perception/target-timeline.js";
 
 export type { ActionKind, ActionTargetDescriptor, AutoGuardEnvelope };
 
@@ -276,6 +277,11 @@ export async function runActionGuard(
   // No candidates → target not found
   if (resolved.candidates === 0 || !resolved.lens || !resolved.localStore) {
     const status: AutoGuardEnvelope["status"] = "target_not_found";
+    // If the cache had a prior slot for this key, it means the target was closed
+    const closedKey = descriptor ? deriveTargetKey(descriptor) : null;
+    if (closedKey) {
+      appendEvent({ targetKey: closedKey, identity: null, source: "action_guard", semantic: "target_closed", tool: toolName, summary: "Target not found after prior resolution" });
+    }
     return {
       summary: {
         kind: "auto",
@@ -285,6 +291,28 @@ export async function runActionGuard(
       },
       block: true,
     };
+  }
+
+  // D-2: Emit target_bound on first resolution for this descriptor
+  const targetKey = deriveTargetKey(descriptor);
+  if (targetKey) {
+    if (resolved.isNewTarget) {
+      appendEvent({ targetKey, identity: resolved.identity, source: "action_guard", semantic: "target_bound", tool: toolName, summary: `Bound to ${targetKey}` });
+    }
+    // Emit change events from HotTargetCache changed flags
+    if (resolved.changed) {
+      const changeMap: Record<string, Parameters<typeof appendEvent>[0]["semantic"]> = {
+        rect:      "rect_changed",
+        title:     "title_changed",
+        identity:  "identity_changed",
+        navigation:"navigation",
+        foreground:"foreground_changed",
+      };
+      for (const c of resolved.changed) {
+        const sem = changeMap[c];
+        if (sem) appendEvent({ targetKey, identity: resolved.identity, source: "action_guard", semantic: sem, tool: toolName, summary: `${c} changed` });
+      }
+    }
   }
 
   // Ambiguous (multiple windows)
@@ -324,6 +352,11 @@ export async function runActionGuard(
         ? `browserTab:${descriptor.urlIncludes ?? descriptor.titleIncludes ?? descriptor.tabId ?? "?"}`
         : `coordinate:${descriptor.x},${descriptor.y}`;
 
+  // D-2: Emit action_attempted before guard evaluation
+  if (targetKey) {
+    appendEvent({ targetKey, identity: resolved.identity, source: "action_guard", semantic: "action_attempted", tool: toolName, summary: `${toolName} attempted` });
+  }
+
   const gr = evaluateGuards(
     resolved.lens,
     resolved.localStore,
@@ -332,6 +365,12 @@ export async function runActionGuard(
   );
 
   const result = mapGuardResult(gr, targetLabel);
+
+  // D-2: Emit action_blocked when guard blocks
+  if (result.block && targetKey) {
+    const reason = gr.failedGuard?.reason ?? gr.failedGuard?.kind ?? "unknown guard";
+    appendEvent({ targetKey, identity: resolved.identity, source: "action_guard", semantic: "action_blocked", tool: toolName, result: "blocked", summary: `${toolName} blocked: ${reason}` });
+  }
   if (!result.block) {
     result.summary.target = targetLabel;
   }
