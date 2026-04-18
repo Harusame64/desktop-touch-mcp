@@ -36,3 +36,11 @@ mcp-publisher.exe
 
 # Ad-hoc working notes (captured remote commit lists, etc.)
 remote_commits.txt
+
+# Rust build artefacts (monorepo: napi-rs native addon)
+target/
+*.node
+libnode.a
+libnode.dll.a
+node.def
+node.lib
