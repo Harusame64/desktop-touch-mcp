@@ -120,6 +120,19 @@ const SUGGESTS: Record<string, string[]> = {
     "Raise maxEnvelopeTokens when calling perception_register",
     "Use perception_read for explicit inspection without the envelope overhead",
   ],
+  BackgroundInputUnsupported: [
+    "Target app does not accept background input - use method:'foreground' or omit",
+    "For Chrome/Edge: use browser_fill_input instead",
+  ],
+  BackgroundInputIncomplete: [
+    "Input sent partially - retry with method:'foreground' for full input",
+    "Check context.sent vs context.total",
+  ],
+  SetValueAllChannelsFailed: [
+    "Verify the element supports text input",
+    "Try click_element + keyboard_type manually",
+    "Check context.attempts for per-channel error codes",
+  ],
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -188,6 +201,15 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   if (m.includes("max depth") || m.includes("maxdepth exceeded")) {
     return { code: "MaxDepthExceeded", suggest: SUGGESTS.MaxDepthExceeded ?? [] };
+  }
+  if (m.includes("backgroundinputunsupported") || m.includes("background input unsupported")) {
+    return { code: "BackgroundInputUnsupported", suggest: SUGGESTS.BackgroundInputUnsupported };
+  }
+  if (m.includes("backgroundinputincomplete") || m.includes("background input incomplete")) {
+    return { code: "BackgroundInputIncomplete", suggest: SUGGESTS.BackgroundInputIncomplete };
+  }
+  if (m.includes("setvalueallchannelsfailed") || m.includes("all channels failed")) {
+    return { code: "SetValueAllChannelsFailed", suggest: SUGGESTS.SetValueAllChannelsFailed };
   }
 
   return { code: "ToolError", suggest: [] };

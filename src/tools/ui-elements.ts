@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { getUiElements, clickElement, setElementValue, getElementBounds, getElementChildren } from "../engine/uia-bridge.js";
+import { getUiElements, clickElement, setElementValue, insertTextViaTextPattern2, getElementBounds, getElementChildren } from "../engine/uia-bridge.js";
+import { keyboardTypeHandler } from "./keyboard.js";
 import { captureScreen } from "../engine/image.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
@@ -135,6 +136,11 @@ export const clickElementHandler = async ({
   }
 };
 
+/** true when DTM_SET_VALUE_CHAIN=1 — enables TextPattern2 and keyboard fallback channels */
+function isSetValueChainEnabled(): boolean {
+  return process.env["DTM_SET_VALUE_CHAIN"] === "1";
+}
+
 export const setElementValueHandler = async ({
   windowTitle, value, name, automationId, lensId,
 }: { windowTitle: string; value: string; name?: string; automationId?: string; lensId?: string }): Promise<ToolResult> => {
@@ -167,14 +173,69 @@ export const setElementValueHandler = async ({
     }
 
     const hintsBlock = buildHintsForTitle(windowTitle);
-    const result = await setElementValue(windowTitle, value, name, automationId);
-    if (!result.ok) {
-      return failWith(result.error ?? "Unknown error", "set_element_value", { windowTitle, name, automationId });
+    const chainEnabled = isSetValueChainEnabled();
+    const attempts: Array<{ channel: string; error: string }> = [];
+
+    // Channel 1: ValuePattern (always tried first)
+    const r1 = await setElementValue(windowTitle, value, name, automationId);
+    if (r1.ok) {
+      const enriched = hintsBlock
+        ? { ...r1, hints: { target: hintsBlock.target, caches: hintsBlock.caches } }
+        : r1;
+      return ok({ ...enriched, channel: "value", ...(perceptionEnv && { _perceptionForPost: perceptionEnv }) });
     }
-    const enriched = hintsBlock
-      ? { ...result, hints: { target: hintsBlock.target, caches: hintsBlock.caches } }
-      : result;
-    return ok({ ...enriched, ...(perceptionEnv && { _perceptionForPost: perceptionEnv }) });
+    attempts.push({ channel: "value", error: r1.error ?? "ValuePatternFailed" });
+
+    if (chainEnabled) {
+      // Channel 2: TextPattern2.InsertTextAtSelection (foreground-free)
+      const r2 = await insertTextViaTextPattern2(windowTitle, value, name, automationId);
+      if (r2.ok) {
+        const enriched = hintsBlock
+          ? { hints: { target: hintsBlock.target, caches: hintsBlock.caches } }
+          : {};
+        return ok({ ok: true, channel: "text2", ...enriched, ...(perceptionEnv && { _perceptionForPost: perceptionEnv }) });
+      }
+      if (r2.code !== "TextPattern2NotSupported") {
+        attempts.push({ channel: "text2", error: r2.code ?? "TextPattern2Error" });
+      } else {
+        attempts.push({ channel: "text2", error: "TextPattern2NotSupported" });
+      }
+
+      // Channel 3: keyboard_type fallback (foreground required)
+      const r3 = await keyboardTypeHandler({
+        text: value,
+        method: "foreground",
+        use_clipboard: false,
+        replaceAll: true,
+        forceKeystrokes: false,
+        windowTitle,
+        trackFocus: false,
+        settleMs: 0,
+      });
+      if (r3.content?.[0]?.type === "text") {
+        try {
+          const parsed = JSON.parse(r3.content[0].text);
+          if (parsed.ok) {
+            return ok({ ok: true, channel: "keyboard", ...(perceptionEnv && { _perceptionForPost: perceptionEnv }) });
+          }
+          attempts.push({ channel: "keyboard", error: parsed.error ?? "KeyboardFailed" });
+        } catch {
+          attempts.push({ channel: "keyboard", error: "KeyboardResponseParseError" });
+        }
+      } else {
+        attempts.push({ channel: "keyboard", error: "KeyboardFailed" });
+      }
+
+      // All channels failed — suggest comes from _errors.ts SUGGESTS.SetValueAllChannelsFailed
+      return failWith(
+        new Error("SetValueAllChannelsFailed"),
+        "set_element_value",
+        { windowTitle, name, automationId, attempts }
+      );
+    }
+
+    // Chain disabled: report ValuePattern failure
+    return failWith(r1.error ?? "Unknown error", "set_element_value", { windowTitle, name, automationId });
   } catch (err) {
     return failWith(err, "set_element_value", { windowTitle, name, automationId });
   }
