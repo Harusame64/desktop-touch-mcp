@@ -30,3 +30,9 @@ tools/win-ocr/obj/
 _smoke-npm-cache/
 _smoke-npx-cache/
 _smoke-run/
+
+# MCP Registry publisher binary (downloaded locally, not distributed)
+mcp-publisher.exe
+
+# Ad-hoc working notes (captured remote commit lists, etc.)
+remote_commits.txt
