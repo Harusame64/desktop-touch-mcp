@@ -22,11 +22,19 @@ jobs:
           node-version: "22"
           cache: "npm"
 
+      - name: Set up Rust (MSVC toolchain)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
       - name: Install dependencies
         run: npm ci
 
-      - name: Build
+      - name: Build TypeScript
         run: npm run build
+
+      - name: Build native addon (Rust → .node)
+        run: npm run build:rs
 
       - name: Prepare release directory
         shell: pwsh
@@ -44,6 +52,13 @@ jobs:
           Copy-Item -LiteralPath "README.md" -Destination $releaseDir
           Copy-Item -LiteralPath "README.ja.md" -Destination $releaseDir
           Copy-Item -LiteralPath "dist" -Destination $releaseDir -Recurse
+
+          # Native addon: ESM loader + type defs + compiled .node binary at root.
+          # dist/engine/native-engine.js imports "../../index.js" → needs index.js
+          # at the release root alongside the .node file.
+          Copy-Item -LiteralPath "index.js" -Destination $releaseDir
+          Copy-Item -LiteralPath "index.d.ts" -Destination $releaseDir
+          Copy-Item -Path "desktop-touch-engine.*.node" -Destination $releaseDir
 
           if (Test-Path -LiteralPath "assets") {
             Copy-Item -LiteralPath "assets" -Destination $releaseDir -Recurse
