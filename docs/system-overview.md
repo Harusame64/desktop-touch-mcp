@@ -51,12 +51,12 @@ desktop-touch-mcp (Node.js / TypeScript)
     │       ├── envelope.ts         — projectEnvelope: attention derivation + token-budget trimming
     │       ├── sensors-win32.ts    — only impure module; piggybacks event-bus 500 ms tick
     │       └── registry.ts         — central coordinator; max 16 lenses (FIFO evict)
-    └── Layer 2: 56 MCP tools
+    └── Layer 2: 57 MCP tools
         screenshot(4) + window(3) + mouse(5) + keyboard(2) + ui_elements(4) +
         browser_cdp(12) + workspace(2) + pin(2) + dock(1) + macro(1) +
         scroll_capture(1) + context(3) + terminal(2) + events(4) + wait_until(1) +
         clipboard(2) + notification(1) + scroll_to_element(1) + smart_scroll(1) +
-        perception(4)
+        perception(4) + engine_status(1)
 ```
 
 ### Rust Native Engine — Data Flow

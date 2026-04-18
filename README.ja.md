@@ -7,7 +7,7 @@
 > **「Claude CLI にスクショを毎回コピーしていたあなたへ。」**
 
 Claude がデスクトップを直接見て、直接操作する。  
-マウス・キーボード・スクリーンショット・Windows UI Automation・Chrome DevTools Protocol・ターミナル・SmartScroll・Reactive Perception Graph を統合した 56 のツールを提供する MCP サーバーです。
+マウス・キーボード・スクリーンショット・Windows UI Automation・Chrome DevTools Protocol・ターミナル・SmartScroll・Reactive Perception Graph を統合した 57 のツールを提供する MCP サーバーです。
 
 > *v0.15: Rust ネイティブエンジンにより**平均 82 倍高速化** — UIA フォーカス取得 2ms、SSE2 SIMD 画像差分 13〜15 倍速。設定不要：エンジンは自動ロード、不在時は PowerShell に透過フォールバック。*
 
@@ -110,7 +110,7 @@ npm install
 
 ---
 
-## ツール一覧 (56 ツール)
+## ツール一覧 (57 ツール)
 
 > 📖 **詳細リファレンス**: [`docs/system-overview.md`](docs/system-overview.md) — 各ツールのパラメータ・応答形式・座標計算・レイヤーバッファ・技術ノートを網羅（英語）。
 
@@ -182,6 +182,7 @@ DOM を触る `browser_*` ツールは `includeContext:false` で末尾の `acti
 | `get_context` | フォーカス中ウィンドウ・要素・カーソル・ページ状態を軽量取得 |
 | `get_history` | 直近ツール履歴を取得 |
 | `get_document_state` | Chromeページ状態（URL/title/readyState/scroll）をCDPで取得 |
+| `engine_status` | 各サブシステムの動作バックエンドを返す：`uia`（Rust native または powershell）/ `imageDiff`（Rust SSE2 または typescript）。診断用 — パフォーマンス調査時に1回呼ぶ |
 | `wait_until` | window/focus/terminal/browser DOM などの状態変化をサーバー側で待機 |
 | `events_subscribe` / `events_poll` / `events_unsubscribe` / `events_list` | ウィンドウ出現・消滅・フォーカス変化を購読/取得 |
 
