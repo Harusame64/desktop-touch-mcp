@@ -336,14 +336,29 @@ export const terminalSendHandler = async ({
               "terminal_send",
               {
                 suggest: [
-                  "Input sent partially — retry with method:'foreground' for full input",
+                  "Input sent partially - retry with method:'foreground' for full input",
                   "Check context.sent vs context.total",
                 ],
                 context: { sent: totalSent, total: input.length },
               }
             );
           }
-          break; // auto: stop chunk loop, fall through would require refactor — just report partial
+          // auto: partial fail — do NOT send Enter (would execute partial command)
+          // Report partial send in hints and return without Enter.
+          return ok({
+            ok: true,
+            sent: input.slice(0, totalSent),
+            pressedEnter: false,
+            focusRestored: false,
+            method: "background",
+            channel: "wm_char",
+            foregroundChanged: false,
+            post: { focusedWindow: null, focusedElement: null, windowChanged: false, elapsedMs: Date.now() - startedAt },
+            hints: {
+              target: {},
+              warnings: [...bgWarnings, "BackgroundInputPartial"],
+            },
+          });
         }
       }
 
@@ -351,7 +366,7 @@ export const terminalSendHandler = async ({
 
       return ok({
         ok: true,
-        sent: input,
+        sent: input.slice(0, totalSent),
         pressedEnter: pressEnter,
         focusRestored: false,
         method: "background",

@@ -294,20 +294,21 @@ export const keyboardTypeHandler = async ({
           }
           if (replaceAll) postKeyComboToHwnd(target.hwnd, "ctrl+a");
           const result = postCharsToHwnd(target.hwnd, effectiveText);
-          if (!result.full && effectiveMethod === "background") {
+          if (!result.full) {
+            // Partial fail: do NOT fall through to foreground (would cause double input).
+            // Return error regardless of effectiveMethod.
             return failWith(
               new Error("BackgroundInputIncomplete"),
               "keyboard_type",
               {
                 suggest: [
-                  "Input sent partially — retry with method:'foreground' for full input",
+                  "Input sent partially - retry with method:'foreground' for full input",
                   "Check context.sent vs context.total",
                 ],
                 context: { sent: result.sent, total: effectiveText.length },
               }
             );
-          }
-          if (result.full || effectiveMethod === "background-auto") {
+          } else {
             return ok({
               ok: true,
               typed: result.sent,
@@ -317,15 +318,13 @@ export const keyboardTypeHandler = async ({
               ...(bgWarnings.length > 0 && { hints: { warnings: bgWarnings } }),
             });
           }
-          // auto fallback: BG partially failed → fall through to foreground path
-          homingNotes.push("BgInputFailed:fallbackToForeground");
         } else if (effectiveMethod === "background") {
           return failWith(
             new Error("BackgroundInputUnsupported"),
             "keyboard_type",
             {
               suggest: [
-                "Target app does not accept background input — use method:'foreground' or omit",
+                "Target app does not accept background input - use method:'foreground' or omit",
                 "For Chrome/Edge: use browser_fill_input instead",
               ],
               context: { className: check.className, processName: check.processName },
@@ -337,7 +336,7 @@ export const keyboardTypeHandler = async ({
         return failWith(
           new Error("BackgroundInputUnsupported"),
           "keyboard_type",
-          { suggest: ["Window not found — verify windowTitle"], context: { windowTitle: effectiveWindowTitle } }
+          { suggest: ["Window not found - verify windowTitle"], context: { windowTitle: effectiveWindowTitle } }
         );
       }
     }
@@ -474,12 +473,11 @@ export const keyboardPressHandler = async ({
       const wins = enumWindowsInZOrder();
       const target = wins.find(w => w.title.toLowerCase().includes(windowTitle.toLowerCase()));
       if (target && canInjectViaPostMessage(target.hwnd).supported) {
-        // Enter key: use WM_CHAR '\r' for terminal compatibility
         const isEnter = keys.toLowerCase() === "enter";
         const ok2 = isEnter
           ? postEnterToHwnd(target.hwnd)
           : postKeyComboToHwnd(target.hwnd, keys);
-        if (ok2 || effectiveMethod === "background-auto") {
+        if (ok2) {
           return ok({
             ok: true,
             pressed: keys,
@@ -488,11 +486,19 @@ export const keyboardPressHandler = async ({
             foregroundChanged: false,
           });
         }
+        if (effectiveMethod === "background") {
+          return failWith(
+            new Error("BackgroundInputIncomplete"),
+            "keyboard_press",
+            { suggest: ["Key press failed in background mode - retry with method:'foreground'"], context: { keys } }
+          );
+        }
+        // background-auto: fall through to foreground path
       } else if (effectiveMethod === "background") {
         return failWith(
           new Error("BackgroundInputUnsupported"),
           "keyboard_press",
-          { suggest: ["Target app does not accept background input — use method:'foreground' or omit"], context: { windowTitle } }
+          { suggest: ["Target app does not accept background input - use method:'foreground' or omit"], context: { windowTitle } }
         );
       }
     }
