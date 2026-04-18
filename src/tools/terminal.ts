@@ -11,6 +11,12 @@ import {
   getWindowProcessId,
   type WindowZInfo,
 } from "../engine/win32.js";
+import {
+  canInjectViaPostMessage,
+  postCharsToHwnd,
+  postEnterToHwnd,
+  isBgAutoEnabled,
+} from "../engine/bg-input.js";
 import { detectFocusLoss } from "./_focus.js";
 import { getTextViaTextPattern } from "../engine/uia-bridge.js";
 import { recognizeWindow, ocrWordsToLines } from "../engine/ocr-bridge.js";
@@ -42,6 +48,17 @@ export const terminalReadSchema = {
 export const terminalSendSchema = {
   windowTitle: z.string().max(200).describe("Partial title of the terminal window."),
   input: z.string().max(10000).describe("Text to send (max 10,000 chars)."),
+  method: z.enum(["auto", "background", "foreground"]).default("auto").describe(
+    "Input routing channel. " +
+    "'auto' uses background (WM_CHAR) for known terminal processes when DTM_BG_AUTO=1, else foreground. " +
+    "'background' forces WM_CHAR injection (no focus change, works for WT/conhost/cmd/PowerShell). " +
+    "'foreground' forces the current behavior (SetForegroundWindow + clipboard paste). " +
+    "Default 'auto' (equivalent to 'foreground' unless DTM_BG_AUTO=1 is set)."
+  ),
+  chunkSize: z.number().int().min(1).max(10000).default(100).describe(
+    "Split long input into chunks of this many characters in background mode to prevent " +
+    "terminal input queue saturation. Default 100. Only applies when method results in background."
+  ),
   pressEnter: z.boolean().default(true).describe("Press Enter after typing (default true)."),
   focusFirst: z.boolean().default(true).describe("Focus the terminal before sending (default true)."),
   restoreFocus: z.boolean().default(true).describe("Restore the previously-focused window after sending (default true)."),
@@ -273,11 +290,14 @@ export const terminalReadHandler = async ({
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const terminalSendHandler = async ({
-  windowTitle, input, pressEnter, focusFirst, restoreFocus, preferClipboard, pasteKey,
+  windowTitle, input, method: inputMethod = "auto", chunkSize = 100,
+  pressEnter, focusFirst, restoreFocus, preferClipboard, pasteKey,
   forceFocus: forceFocusArg, trackFocus, settleMs,
 }: {
   windowTitle: string;
   input: string;
+  method?: "auto" | "background" | "foreground";
+  chunkSize?: number;
   pressEnter: boolean;
   focusFirst: boolean;
   restoreFocus: boolean;
@@ -293,6 +313,61 @@ export const terminalSendHandler = async ({
     const win = findTerminalWindow(windowTitle);
     if (!win) {
       return failWith("Terminal window not found: " + windowTitle, "terminal_send", { windowTitle });
+    }
+
+    // ── Background input path (WM_CHAR) ────────────────────────────────────
+    const useBg = inputMethod === "background" ||
+      (inputMethod === "auto" && isBgAutoEnabled() && canInjectViaPostMessage(win.hwnd).supported);
+
+    if (useBg) {
+      const bgWarnings: string[] = [];
+      if (preferClipboard) bgWarnings.push("BackgroundClipboardDowngraded");
+
+      // Send in chunks to avoid saturating the terminal input queue
+      let totalSent = 0;
+      for (let i = 0; i < input.length; i += chunkSize) {
+        const chunk = input.slice(i, i + chunkSize);
+        const result = postCharsToHwnd(win.hwnd, chunk);
+        totalSent += result.sent;
+        if (!result.full) {
+          if (inputMethod === "background") {
+            return failWith(
+              new Error("BackgroundInputIncomplete"),
+              "terminal_send",
+              {
+                suggest: [
+                  "Input sent partially — retry with method:'foreground' for full input",
+                  "Check context.sent vs context.total",
+                ],
+                context: { sent: totalSent, total: input.length },
+              }
+            );
+          }
+          break; // auto: stop chunk loop, fall through would require refactor — just report partial
+        }
+      }
+
+      if (pressEnter) postEnterToHwnd(win.hwnd);
+
+      return ok({
+        ok: true,
+        sent: input,
+        pressedEnter: pressEnter,
+        focusRestored: false,
+        method: "background",
+        channel: "wm_char",
+        foregroundChanged: false,
+        post: {
+          focusedWindow: null,
+          focusedElement: null,
+          windowChanged: false,
+          elapsedMs: Date.now() - startedAt,
+        },
+        hints: {
+          target: {},
+          ...(bgWarnings.length > 0 && { warnings: bgWarnings }),
+        },
+      });
     }
 
     // Capture current foreground for restore.

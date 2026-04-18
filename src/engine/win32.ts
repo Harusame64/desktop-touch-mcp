@@ -231,6 +231,15 @@ const IsWindowEnabled = user32.func(
 const GetLastActivePopup = user32.func(
   "intptr __stdcall GetLastActivePopup(void *hWnd)"
 );
+
+// Background input — PostMessage / focus resolution / key mapping
+const PostMessageW = user32.func(
+  "bool __stdcall PostMessageW(void *hWnd, uint32 Msg, uintptr wParam, intptr lParam)"
+);
+const GetFocus = user32.func("intptr __stdcall GetFocus()");
+const MapVirtualKeyW = user32.func(
+  "uint32 __stdcall MapVirtualKeyW(uint32 uCode, uint32 uMapType)"
+);
 const DWMWA_CLOAKED = 14;
 const _DwmGetWindowAttribute = _dwmapi
   ? _dwmapi.func(
@@ -942,4 +951,50 @@ export function readScrollInfo(
   } catch {
     return null;
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Background input helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const WM_CHAR    = 0x0102;
+export const WM_KEYDOWN = 0x0100;
+export const WM_KEYUP   = 0x0101;
+export const VK_RETURN  = 0x0D;
+export const VK_BACK    = 0x08;
+export const VK_DELETE  = 0x2E;
+export const VK_CONTROL = 0x11;
+export const VK_SHIFT   = 0x10;
+export const VK_MENU    = 0x12; // Alt
+export const MAPVK_VK_TO_VSC = 0;
+
+/** Post a single WM message to a window. Returns false on failure. */
+export function postMessageToHwnd(hwnd: unknown, msg: number, wParam: number, lParam: number): boolean {
+  try { return !!PostMessageW(hwnd, msg, wParam, lParam); } catch { return false; }
+}
+
+/** Return the HWND that currently has keyboard focus within the thread owning `hwnd`.
+ *  Uses AttachThreadInput briefly to read focus across thread boundary.
+ *  Returns null on failure — callers should fall back to the top-level hwnd. */
+export function getFocusedChildHwnd(targetHwnd: unknown): bigint | null {
+  try {
+    const targetThread = (GetWindowThreadProcessId(targetHwnd, null) as number) >>> 0;
+    const myThread = (GetCurrentThreadId() as number) >>> 0;
+    if (targetThread === myThread) {
+      const f = GetFocus();
+      return f ? BigInt(f as number) : null;
+    }
+    AttachThreadInput(myThread, targetThread, true);
+    try {
+      const f = GetFocus();
+      return f ? BigInt(f as number) : null;
+    } finally {
+      AttachThreadInput(myThread, targetThread, false);
+    }
+  } catch { return null; }
+}
+
+/** Map a Virtual Key code to a scan code (used for lParam of WM_KEYDOWN). */
+export function vkToScanCode(vk: number): number {
+  try { return (MapVirtualKeyW(vk, MAPVK_VK_TO_VSC) as number) >>> 0; } catch { return 0; }
 }

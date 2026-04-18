@@ -6,6 +6,13 @@ import { keyboard } from "../engine/nutjs.js";
 import { parseKeys } from "../utils/key-map.js";
 import { assertKeyComboSafe } from "../utils/key-safety.js";
 import { enumWindowsInZOrder, restoreAndFocusWindow } from "../engine/win32.js";
+import {
+  canInjectViaPostMessage,
+  postCharsToHwnd,
+  postKeyComboToHwnd,
+  postEnterToHwnd,
+  isBgAutoEnabled,
+} from "../engine/bg-input.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
@@ -96,8 +103,17 @@ const windowTitleFocusParam = z.string().optional().describe(
 /** Non-ASCII punctuation that can be hijacked as Chrome/Edge keyboard accelerators */
 const NON_ASCII_SYMBOL_RE = /[\u2013\u2014\u2018\u2019\u201C\u201D\u2026\u00A0]/;
 
+const methodParam = z.enum(["auto", "background", "foreground"]).default("auto").describe(
+  "Input routing channel. " +
+  "'auto' uses background (PostMessage) when supported and DTM_BG_AUTO=1, else foreground. " +
+  "'background' forces PostMessage-only (no focus change, fails on Chromium/IME). " +
+  "'foreground' forces the current behavior (SetForegroundWindow + keystrokes). " +
+  "Default 'auto' (equivalent to 'foreground' unless DTM_BG_AUTO=1 is set)."
+);
+
 export const keyboardTypeSchema = {
   text: z.string().max(10000).describe("The text to type (max 10,000 characters)"),
+  method: methodParam,
   narrate: narrateParam,
   use_clipboard: z
     .boolean()
@@ -136,6 +152,7 @@ export const keyboardPressSchema = {
     .string()
     .max(100)
     .describe("Key combo string, e.g. 'ctrl+c', 'alt+tab', 'enter', 'ctrl+shift+s'. Note: win+r, win+x, win+s, win+l are blocked for security."),
+  method: methodParam,
   narrate: narrateParam,
   windowTitle: windowTitleFocusParam,
   forceFocus: forceFocusParam,
@@ -222,6 +239,7 @@ async function focusWindowForKeyboard(
 
 export const keyboardTypeHandler = async ({
   text,
+  method: inputMethod = "auto",
   use_clipboard,
   replaceAll,
   forceKeystrokes,
@@ -233,6 +251,7 @@ export const keyboardTypeHandler = async ({
   fixId,
 }: {
   text: string;
+  method?: "auto" | "background" | "foreground";
   use_clipboard: boolean;
   replaceAll: boolean;
   forceKeystrokes: boolean;
@@ -258,6 +277,70 @@ export const keyboardTypeHandler = async ({
     const warnings: string[] = [];
     const homingNotes: string[] = [];
     let foregroundVerified = false;
+
+    // ── Background input path ──────────────────────────────────────────────
+    // Resolve effective method: "auto" with DTM_BG_AUTO=1 → try BG first.
+    const effectiveMethod = (inputMethod === "auto" && isBgAutoEnabled()) ? "background-auto" : inputMethod;
+
+    if ((effectiveMethod === "background" || effectiveMethod === "background-auto") && effectiveWindowTitle) {
+      const wins = enumWindowsInZOrder();
+      const target = wins.find(w => w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase()));
+      if (target) {
+        const check = canInjectViaPostMessage(target.hwnd);
+        if (check.supported) {
+          const bgWarnings: string[] = [];
+          if (use_clipboard && !forceKeystrokes) {
+            bgWarnings.push("BackgroundClipboardDowngraded");
+          }
+          if (replaceAll) postKeyComboToHwnd(target.hwnd, "ctrl+a");
+          const result = postCharsToHwnd(target.hwnd, effectiveText);
+          if (!result.full && effectiveMethod === "background") {
+            return failWith(
+              new Error("BackgroundInputIncomplete"),
+              "keyboard_type",
+              {
+                suggest: [
+                  "Input sent partially — retry with method:'foreground' for full input",
+                  "Check context.sent vs context.total",
+                ],
+                context: { sent: result.sent, total: effectiveText.length },
+              }
+            );
+          }
+          if (result.full || effectiveMethod === "background-auto") {
+            return ok({
+              ok: true,
+              typed: result.sent,
+              method: "background",
+              channel: "wm_char",
+              foregroundChanged: false,
+              ...(bgWarnings.length > 0 && { hints: { warnings: bgWarnings } }),
+            });
+          }
+          // auto fallback: BG partially failed → fall through to foreground path
+          homingNotes.push("BgInputFailed:fallbackToForeground");
+        } else if (effectiveMethod === "background") {
+          return failWith(
+            new Error("BackgroundInputUnsupported"),
+            "keyboard_type",
+            {
+              suggest: [
+                "Target app does not accept background input — use method:'foreground' or omit",
+                "For Chrome/Edge: use browser_fill_input instead",
+              ],
+              context: { className: check.className, processName: check.processName },
+            }
+          );
+        }
+        // auto + not supported → fall through to foreground path
+      } else if (effectiveMethod === "background") {
+        return failWith(
+          new Error("BackgroundInputUnsupported"),
+          "keyboard_type",
+          { suggest: ["Window not found — verify windowTitle"], context: { windowTitle: effectiveWindowTitle } }
+        );
+      }
+    }
 
     // Step 1: Focus first (guard needs foreground state to be correct).
     if (effectiveWindowTitle) {
@@ -361,6 +444,7 @@ export const keyboardTypeHandler = async ({
 
 export const keyboardPressHandler = async ({
   keys,
+  method: inputMethod = "auto",
   windowTitle,
   forceFocus: forceFocusArg,
   trackFocus,
@@ -368,6 +452,7 @@ export const keyboardPressHandler = async ({
   lensId,
 }: {
   keys: string;
+  method?: "auto" | "background" | "foreground";
   windowTitle?: string;
   forceFocus?: boolean;
   trackFocus: boolean;
@@ -382,6 +467,35 @@ export const keyboardPressHandler = async ({
     const warnings: string[] = [];
     const homingNotes: string[] = [];
     let foregroundVerified = false;
+
+    // ── Background input path ──────────────────────────────────────────────
+    const effectiveMethod = (inputMethod === "auto" && isBgAutoEnabled()) ? "background-auto" : inputMethod;
+    if ((effectiveMethod === "background" || effectiveMethod === "background-auto") && windowTitle) {
+      const wins = enumWindowsInZOrder();
+      const target = wins.find(w => w.title.toLowerCase().includes(windowTitle.toLowerCase()));
+      if (target && canInjectViaPostMessage(target.hwnd).supported) {
+        // Enter key: use WM_CHAR '\r' for terminal compatibility
+        const isEnter = keys.toLowerCase() === "enter";
+        const ok2 = isEnter
+          ? postEnterToHwnd(target.hwnd)
+          : postKeyComboToHwnd(target.hwnd, keys);
+        if (ok2 || effectiveMethod === "background-auto") {
+          return ok({
+            ok: true,
+            pressed: keys,
+            method: "background",
+            channel: "wm_char",
+            foregroundChanged: false,
+          });
+        }
+      } else if (effectiveMethod === "background") {
+        return failWith(
+          new Error("BackgroundInputUnsupported"),
+          "keyboard_press",
+          { suggest: ["Target app does not accept background input — use method:'foreground' or omit"], context: { windowTitle } }
+        );
+      }
+    }
 
     // Step 1: Focus first (guard needs foreground state to be correct).
     if (windowTitle) {

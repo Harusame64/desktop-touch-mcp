@@ -880,6 +880,9 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "type": "string",
           "maxLength": 100
         },
+        "method": {
+          "description": "Parameter 'methodParam' from the Windows server schema."
+        },
         "narrate": {
           "type": "string",
           "enum": [
@@ -916,7 +919,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       },
       "additionalProperties": false,
       "required": [
-        "keys"
+        "keys",
+        "method"
       ]
     }
   },
@@ -930,6 +934,9 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "description": "The text to type (max 10,000 characters)",
           "type": "string",
           "maxLength": 10000
+        },
+        "method": {
+          "description": "Parameter 'methodParam' from the Windows server schema."
         },
         "narrate": {
           "type": "string",
@@ -986,7 +993,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       },
       "additionalProperties": false,
       "required": [
-        "text"
+        "text",
+        "method"
       ]
     }
   },
@@ -2062,6 +2070,23 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "description": "Text to send (max 10,000 chars).",
           "type": "string",
           "maxLength": 10000
+        },
+        "method": {
+          "description": "Input routing channel. 'auto' uses background (WM_CHAR) for known terminal processes when DTM_BG_AUTO=1, else foreground. 'background' forces WM_CHAR injection (no focus change, works for WT/conhost/cmd/PowerShell). 'foreground' forces the current behavior (SetForegroundWindow + clipboard paste). Default 'auto' (equivalent to 'foreground' unless DTM_BG_AUTO=1 is set).",
+          "type": "string",
+          "enum": [
+            "auto",
+            "background",
+            "foreground"
+          ],
+          "default": "auto"
+        },
+        "chunkSize": {
+          "description": "Split long input into chunks of this many characters in background mode to prevent terminal input queue saturation. Default 100. Only applies when method results in background.",
+          "type": "integer",
+          "default": 100,
+          "minimum": 1,
+          "maximum": 10000
         },
         "pressEnter": {
           "description": "Press Enter after typing (default true).",
