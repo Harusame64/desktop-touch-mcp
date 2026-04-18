@@ -24,13 +24,7 @@ export const engineStatusHandler = async (): Promise<ToolResult> => {
 export function registerEngineStatusTool(server: McpServer): void {
   server.tool(
     "engine_status",
-    [
-      "Returns which backend engine is active for each subsystem.",
-      "uia: 'native' = Rust UIA addon (fast, ~2 ms focus / ~100 ms tree); 'powershell' = PS fallback (~366 ms focus).",
-      "imageDiff: 'native' = Rust SSE2 SIMD (0.26 ms @ 1080p); 'typescript' = TS fallback (~3.8 ms).",
-      "Diagnostic metadata — do not surface these values to the user unless they ask about performance or troubleshooting.",
-      "Call once per session if you need to know which path is active; the result is stable for the lifetime of the server process.",
-    ].join(" "),
+    "Returns which backend engine is active for each subsystem. uia: 'native' = Rust UIA addon (fast, ~2 ms focus / ~100 ms tree); 'powershell' = PS fallback (~366 ms focus). imageDiff: 'native' = Rust SSE2 SIMD (0.26 ms @ 1080p); 'typescript' = TS fallback (~3.8 ms). Diagnostic metadata — do not surface these values to the user unless they ask about performance or troubleshooting. Call once per session if you need to know which path is active; the result is stable for the lifetime of the server process.",
     {},
     engineStatusHandler
   );
