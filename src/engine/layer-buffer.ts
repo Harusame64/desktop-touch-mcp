@@ -8,6 +8,7 @@
 
 import { screen, Region } from "./nutjs.js";
 import { encodeToWebPFromRaw, dHashFromRaw } from "./image.js";
+import { nativeEngine } from "./native-engine.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -80,6 +81,11 @@ function computeChangeFraction(
   prev: Buffer, curr: Buffer,
   width: number, height: number, channels: number
 ): number {
+  if (nativeEngine) {
+    return nativeEngine.computeChangeFraction(prev, curr, width, height, channels);
+  }
+
+  // TS fallback
   const blocksX = Math.ceil(width / BLOCK_SIZE);
   const blocksY = Math.ceil(height / BLOCK_SIZE);
   let changedBlocks = 0;
