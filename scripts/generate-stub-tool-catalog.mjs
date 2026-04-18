@@ -7,10 +7,10 @@ const toolsDir = path.join(root, 'src', 'tools');
 const outPath = path.join(root, 'src', 'stub-tool-catalog.ts');
 
 const TOOL_FILES = [
-  'browser.ts', 'clipboard.ts', 'context.ts', 'dock.ts', 'events.ts', 'keyboard.ts',
-  'macro.ts', 'mouse.ts', 'notification.ts', 'perception.ts', 'pin.ts', 'screenshot.ts',
-  'scroll-capture.ts', 'scroll-to-element.ts', 'smart-scroll.ts', 'terminal.ts',
-  'ui-elements.ts', 'wait-until.ts', 'window.ts', 'workspace.ts',
+  'browser.ts', 'clipboard.ts', 'context.ts', 'dock.ts', 'engine-status.ts', 'events.ts',
+  'keyboard.ts', 'macro.ts', 'mouse.ts', 'notification.ts', 'perception.ts', 'pin.ts',
+  'screenshot.ts', 'scroll-capture.ts', 'scroll-to-element.ts', 'smart-scroll.ts',
+  'terminal.ts', 'ui-elements.ts', 'wait-until.ts', 'window.ts', 'workspace.ts',
 ];
 
 function buildDesc(d) {
