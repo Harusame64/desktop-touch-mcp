@@ -211,6 +211,7 @@ export const setElementValueHandler = async ({
         windowTitle,
         trackFocus: false,
         settleMs: 0,
+        _skipAutoGuard: true,
       });
       if (r3.content?.[0]?.type === "text") {
         try {

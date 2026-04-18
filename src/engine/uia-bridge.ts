@@ -665,17 +665,16 @@ foreach ($el in $all) {
 if (-not $found) { Write-Output '{"ok":false,"code":"ElementNotFound"}'; exit }
 
 try {
-    $tp2PatternId = [System.Windows.Automation.TextPattern2]::Pattern
-    $tp2 = $found.GetCurrentPattern($tp2PatternId)
-    if ($null -eq $tp2) { Write-Output '{"ok":false,"code":"TextPattern2NotSupported"}'; exit }
+    $tp2 = $null
+    $patId = [System.Windows.Automation.TextPattern2]::Pattern
+    $supported = $found.TryGetCurrentPattern($patId, [ref]$tp2)
+    if (-not $supported -or $null -eq $tp2) {
+        Write-Output '{"ok":false,"code":"TextPattern2NotSupported"}'; exit
+    }
     $tp2.InsertTextAtSelection('${escaped}')
     Write-Output '{"ok":true}'
-} catch [System.Exception] {
-    if ($_.Exception.Message -match 'not supported') {
-        Write-Output '{"ok":false,"code":"TextPattern2NotSupported"}'
-    } else {
-        Write-Output ('{"ok":false,"code":"TextPattern2Error"}')
-    }
+} catch {
+    Write-Output '{"ok":false,"code":"TextPattern2Error"}'
 }
 `;
   const output = await runPS(script, 8000);

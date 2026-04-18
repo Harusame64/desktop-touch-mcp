@@ -249,9 +249,12 @@ export const keyboardTypeHandler = async ({
   settleMs,
   lensId,
   fixId,
+  _skipAutoGuard = false,
 }: {
   text: string;
   method?: "auto" | "background" | "foreground";
+  /** Internal flag: skip auto-guard evaluation (used by set_element_value keyboard fallback). */
+  _skipAutoGuard?: boolean;
   use_clipboard: boolean;
   replaceAll: boolean;
   forceKeystrokes: boolean;
@@ -367,7 +370,7 @@ export const keyboardTypeHandler = async ({
         );
       }
       perceptionEnv = buildEnvelopeFor(lensId, { toolName: "keyboard_type" }) ?? undefined;
-    } else if (isAutoGuardEnabled()) {
+    } else if (!_skipAutoGuard && isAutoGuardEnabled()) {
       const descriptor = effectiveWindowTitle
         ? { kind: "window" as const, titleIncludes: effectiveWindowTitle }
         : null;
