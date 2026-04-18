@@ -322,6 +322,11 @@ export const terminalSendHandler = async ({
     if (useBg) {
       const bgWarnings: string[] = [];
       if (preferClipboard) bgWarnings.push("BackgroundClipboardDowngraded");
+      if (focusFirst) bgWarnings.push("BackgroundIgnoresFocusFirst");
+
+      // Avoid duplicate Enter if input already ends with CR/LF
+      const inputEndsWithNewline = /[\r\n]$/.test(input);
+      const effectivePressEnter = pressEnter && !inputEndsWithNewline;
 
       // Send in chunks to avoid saturating the terminal input queue
       let totalSent = 0;
@@ -362,12 +367,12 @@ export const terminalSendHandler = async ({
         }
       }
 
-      if (pressEnter) postEnterToHwnd(win.hwnd);
+      if (effectivePressEnter) postEnterToHwnd(win.hwnd);
 
       return ok({
         ok: true,
         sent: input.slice(0, totalSent),
-        pressedEnter: pressEnter,
+        pressedEnter: effectivePressEnter,
         focusRestored: false,
         method: "background",
         channel: "wm_char",

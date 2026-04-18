@@ -20,6 +20,16 @@ import {
 } from "./win32.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Known-compatible terminal window classes (fast-path supported:true)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Terminal window classes that reliably accept WM_CHAR injection. */
+export const TERMINAL_WINDOW_CLASSES = new Set([
+  "CASCADIA_HOSTING_WINDOW_CLASS", // Windows Terminal (wt.exe)
+  "ConsoleWindowClass",             // conhost.exe (cmd, PowerShell, pwsh)
+]);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Known-incompatible window class prefixes
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -69,6 +79,11 @@ export function canInjectViaPostMessage(hwnd: unknown): InjectCheckResult {
 function _check(hwnd: unknown): InjectCheckResult {
   try {
     const cls = getWindowClassName(hwnd);
+
+    // Fast-path: known terminal classes are always supported
+    if (TERMINAL_WINDOW_CLASSES.has(cls)) {
+      return { supported: true, className: cls };
+    }
 
     if (CHROMIUM_CLASSES.has(cls) || cls.startsWith("Chrome_")) {
       return { supported: false, reason: "chromium", className: cls };
