@@ -625,6 +625,65 @@ export async function setElementValue(
 }
 
 /**
+ * Set text on an element using UIA TextPattern2.InsertTextAtSelection.
+ * Foreground-free — works for apps that support TextPattern2 but not ValuePattern.
+ * Returns ok:false with code:"TextPattern2NotSupported" when the pattern is unavailable.
+ */
+export async function insertTextViaTextPattern2(
+  windowTitle: string,
+  value: string,
+  name?: string,
+  automationId?: string
+): Promise<{ ok: boolean; code?: string; error?: string }> {
+  const safeTitle = escapeLike(windowTitle);
+  const nameFilter = name ? `$c.Name -like '*${escapeLike(name)}*'` : "$true";
+  const idFilter = automationId ? `$c.AutomationId -eq '${escapePS(automationId)}'` : "$true";
+  const escaped = escapePS(value);
+
+  const script = `
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+
+$root = [System.Windows.Automation.AutomationElement]::RootElement
+$trueC = [System.Windows.Automation.Condition]::TrueCondition
+$desc  = [System.Windows.Automation.TreeScope]::Descendants
+
+$target = $null
+$allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
+foreach ($w in $allWins) {
+    if ($w.Current.Name -like '*${safeTitle}*') { $target = $w; break }
+}
+if (-not $target) { Write-Output '{"ok":false,"code":"WindowNotFound"}'; exit }
+
+$found = $null
+$all = $target.FindAll($desc, $trueC)
+foreach ($el in $all) {
+    $c = $el.Current
+    if ((${nameFilter}) -and (${idFilter})) { $found = $el; break }
+}
+if (-not $found) { Write-Output '{"ok":false,"code":"ElementNotFound"}'; exit }
+
+try {
+    $tp2PatternId = [System.Windows.Automation.TextPattern2]::Pattern
+    $tp2 = $found.GetCurrentPattern($tp2PatternId)
+    if ($null -eq $tp2) { Write-Output '{"ok":false,"code":"TextPattern2NotSupported"}'; exit }
+    $tp2.InsertTextAtSelection('${escaped}')
+    Write-Output '{"ok":true}'
+} catch [System.Exception] {
+    if ($_.Exception.Message -match 'not supported') {
+        Write-Output '{"ok":false,"code":"TextPattern2NotSupported"}'
+    } else {
+        Write-Output ('{"ok":false,"code":"TextPattern2Error"}')
+    }
+}
+`;
+  const output = await runPS(script, 8000);
+  try { return JSON.parse(output); }
+  catch { return { ok: false, code: "TextPattern2ParseError", error: output.slice(0, 200) }; }
+}
+
+/**
  * Query IVirtualDesktopManager COM to determine which HWNDs are on the current virtual desktop.
  * @param hwndIntegers - Array of HWND values as decimal strings
  * @returns Map of hwndString → isOnCurrentDesktop (true if on current desktop or on error)
