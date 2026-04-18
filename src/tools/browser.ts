@@ -192,6 +192,18 @@ export const browserFillInputSchema = {
   includeContext: includeContextParam,
 };
 
+export const browserGetFormSchema = {
+  selector: z
+    .string()
+    .describe(
+      "CSS selector for the form or container element to inspect (e.g. '#login-form', '.search-bar'). " +
+      "All input, select, textarea, and button descendants are returned."
+    ),
+  tabId: tabIdParam,
+  port: portParam,
+  includeContext: includeContextParam,
+};
+
 export const browserGetInteractiveSchema = {
   scope: z
     .string()
@@ -401,6 +413,97 @@ export const browserFillInputHandler = async ({
     return { content: [{ type: "text" as const, text: lines.join("\n") }] };
   } catch (err) {
     return failWith(err, "browser_fill_input");
+  }
+};
+
+export const browserGetFormHandler = async ({
+  selector,
+  tabId,
+  port,
+  includeContext,
+}: {
+  selector: string;
+  tabId?: string;
+  port: number;
+  includeContext: boolean;
+}): Promise<ToolResult> => {
+  try {
+    const expr = `
+(function() {
+  const scope = document.querySelector(${JSON.stringify(selector)});
+  if (!scope) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)} };
+  const fields = [];
+  const elements = scope.querySelectorAll('input, select, textarea, button');
+  for (const el of elements) {
+    const tagName = el.tagName.toLowerCase();
+    const attrType = el.getAttribute('type') || '';
+    const type = attrType ||
+      (tagName === 'select' ? 'select' :
+       tagName === 'textarea' ? 'textarea' :
+       tagName === 'button' ? 'button' : 'text');
+    const name = el.name || null;
+    const id = el.id || null;
+    let value = null;
+    let checked = null;
+    if (tagName === 'input' && (type === 'checkbox' || type === 'radio')) {
+      checked = el.checked;
+      value = el.value || null;
+    } else if (tagName === 'input' || tagName === 'textarea' || tagName === 'select') {
+      value = el.value || null;
+    }
+    // Resolve associated label text
+    let label = null;
+    if (id) {
+      const labelEl = document.querySelector('label[for=' + JSON.stringify(id) + ']');
+      if (labelEl) label = labelEl.textContent.trim() || null;
+    }
+    if (!label) {
+      let p = el.parentElement;
+      while (p) {
+        if (p.tagName === 'LABEL') {
+          // Strip the input's own text contribution to avoid duplicating value in label
+          label = p.textContent.trim() || null;
+          break;
+        }
+        p = p.parentElement;
+      }
+    }
+    fields.push({
+      tagName,
+      type,
+      name,
+      id,
+      value,
+      checked,
+      placeholder: el.placeholder || null,
+      disabled: el.disabled,
+      readOnly: el.readOnly || false,
+      label,
+    });
+  }
+  return { ok: true, selector: ${JSON.stringify(selector)}, count: fields.length, fields };
+})()`;
+
+    const result = await evaluateInTab(expr, tabId ?? null, port) as
+      | { ok: true; selector: string; count: number; fields: unknown[] }
+      | { ok: false; error: string };
+
+    if (!result.ok) {
+      return failWith(result.error, "browser_get_form");
+    }
+
+    const lines = [JSON.stringify(result)];
+    if (includeContext) {
+      const tabCtx = await getCachedTabContext(tabId ?? null, port);
+      lines.push(
+        "",
+        `activeTab: ${JSON.stringify({ id: tabCtx.id, title: tabCtx.title, url: tabCtx.url })}`,
+        `readyState: "${tabCtx.readyState}"`,
+      );
+    }
+    return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+  } catch (err) {
+    return failWith(err, "browser_get_form");
   }
 };
 
@@ -1764,5 +1867,12 @@ export function registerBrowserTools(server: McpServer): void {
     "Fill a form input with a value via CDP — works on React/Vue/Svelte controlled inputs that reject browser_eval value assignment. Use browser_get_interactive or browser_find_element first to obtain a stable selector. Use this over browser_eval when setting a controlled input's value via JS does not update the framework state. Caveats: Requires browser_connect (CDP active). Does not work on contenteditable rich-text editors — use keyboard_type for those. actual in response shows what the element's value property reads after fill; verify it matches the intended value.",
     browserFillInputSchema,
     browserFillInputHandler
+  );
+
+  server.tool(
+    "browser_get_form",
+    "Inspect all form fields (input, select, textarea, button) within a CSS-selector-specified container and return their name, type, id, current value, hint text, disabled/readOnly state, and associated label text. Use this before browser_fill_input to discover exact field selectors and avoid accidentally targeting the wrong input (e.g. a global search bar). Caveats: Requires browser_connect (CDP active). Hidden inputs (type=hidden) are included — filter by type if needed.",
+    browserGetFormSchema,
+    browserGetFormHandler
   );
 }
