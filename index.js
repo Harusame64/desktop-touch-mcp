@@ -1,13 +1,19 @@
 /* eslint-disable */
-// Auto-generated JS binding for desktop-touch-engine native addon.
+// ESM wrapper for the desktop-touch-engine native addon. Node addons (.node)
+// are always CJS, so we use createRequire to load them from within this module.
 
-const { existsSync } = require('fs');
-const { join } = require('path');
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+import { createRequire } from "node:module";
+
+const _require = createRequire(import.meta.url);
+const here = dirname(fileURLToPath(import.meta.url));
 
 // Try MSVC first (official publish triple per package.json), then GNU (dev toolchain).
 const bindingCandidates = [
-  'desktop-touch-engine.win32-x64-msvc.node',
-  'desktop-touch-engine.win32-x64-gnu.node',
+  "desktop-touch-engine.win32-x64-msvc.node",
+  "desktop-touch-engine.win32-x64-gnu.node",
 ];
 
 let nativeBinding = null;
@@ -15,11 +21,11 @@ let lastError = null;
 const triedPaths = [];
 
 for (const name of bindingCandidates) {
-  const bindingPath = join(__dirname, name);
+  const bindingPath = join(here, name);
   triedPaths.push(bindingPath);
   if (!existsSync(bindingPath)) continue;
   try {
-    nativeBinding = require(bindingPath);
+    nativeBinding = _require(bindingPath);
     break;
   } catch (e) {
     lastError = e;
@@ -28,60 +34,32 @@ for (const name of bindingCandidates) {
 
 if (!nativeBinding) {
   throw new Error(
-    'Failed to load desktop-touch-engine native addon. ' +
-    `Tried: ${triedPaths.join(', ')}. ` +
-    (lastError ? `Last load error: ${lastError.message}` : 'No matching .node binary found for this platform.')
+    "Failed to load desktop-touch-engine native addon. " +
+    `Tried: ${triedPaths.join(", ")}. ` +
+    (lastError
+      ? `Last load error: ${lastError.message}`
+      : "No matching .node binary found for this platform.")
   );
 }
 
-const { computeChangeFraction, dhashFromRaw, hammingDistance } = nativeBinding;
+// ─── Image diff ──────────────────────────────────────────────────────────────
+export const computeChangeFraction = nativeBinding.computeChangeFraction;
+export const dhashFromRaw = nativeBinding.dhashFromRaw;
+export const hammingDistance = nativeBinding.hammingDistance;
 
-module.exports.computeChangeFraction = computeChangeFraction;
-module.exports.dhashFromRaw = dhashFromRaw;
-module.exports.hammingDistance = hammingDistance;
+// ─── UIA (Windows-only; properties may be undefined on non-Windows builds) ───
+export const uiaGetElements = nativeBinding.uiaGetElements;
+export const uiaGetFocusedAndPoint = nativeBinding.uiaGetFocusedAndPoint;
+export const uiaGetFocusedElement = nativeBinding.uiaGetFocusedElement;
+export const uiaScrollIntoView = nativeBinding.uiaScrollIntoView;
+export const uiaGetScrollAncestors = nativeBinding.uiaGetScrollAncestors;
+export const uiaScrollByPercent = nativeBinding.uiaScrollByPercent;
+export const uiaGetVirtualDesktopStatus = nativeBinding.uiaGetVirtualDesktopStatus;
+export const uiaClickElement = nativeBinding.uiaClickElement;
+export const uiaSetValue = nativeBinding.uiaSetValue;
+export const uiaInsertText = nativeBinding.uiaInsertText;
+export const uiaGetElementBounds = nativeBinding.uiaGetElementBounds;
+export const uiaGetElementChildren = nativeBinding.uiaGetElementChildren;
+export const uiaGetTextViaTextPattern = nativeBinding.uiaGetTextViaTextPattern;
 
-// ─── UIA (Windows-only) ─────────────────────────────────────────────────────
-// These are available only when the .node binary was compiled on Windows.
-// Each is guarded so non-Windows builds don't throw at import time.
-
-if (typeof nativeBinding.uiaGetElements === 'function') {
-  module.exports.uiaGetElements = nativeBinding.uiaGetElements;
-}
-if (typeof nativeBinding.uiaGetFocusedAndPoint === 'function') {
-  module.exports.uiaGetFocusedAndPoint = nativeBinding.uiaGetFocusedAndPoint;
-}
-if (typeof nativeBinding.uiaGetFocusedElement === 'function') {
-  module.exports.uiaGetFocusedElement = nativeBinding.uiaGetFocusedElement;
-}
-if (typeof nativeBinding.uiaScrollIntoView === 'function') {
-  module.exports.uiaScrollIntoView = nativeBinding.uiaScrollIntoView;
-}
-if (typeof nativeBinding.uiaGetScrollAncestors === 'function') {
-  module.exports.uiaGetScrollAncestors = nativeBinding.uiaGetScrollAncestors;
-}
-if (typeof nativeBinding.uiaScrollByPercent === 'function') {
-  module.exports.uiaScrollByPercent = nativeBinding.uiaScrollByPercent;
-}
-if (typeof nativeBinding.uiaGetVirtualDesktopStatus === 'function') {
-  module.exports.uiaGetVirtualDesktopStatus = nativeBinding.uiaGetVirtualDesktopStatus;
-}
-
-// Phase C: Actions
-if (typeof nativeBinding.uiaClickElement === 'function') {
-  module.exports.uiaClickElement = nativeBinding.uiaClickElement;
-}
-if (typeof nativeBinding.uiaSetValue === 'function') {
-  module.exports.uiaSetValue = nativeBinding.uiaSetValue;
-}
-if (typeof nativeBinding.uiaInsertText === 'function') {
-  module.exports.uiaInsertText = nativeBinding.uiaInsertText;
-}
-if (typeof nativeBinding.uiaGetElementBounds === 'function') {
-  module.exports.uiaGetElementBounds = nativeBinding.uiaGetElementBounds;
-}
-if (typeof nativeBinding.uiaGetElementChildren === 'function') {
-  module.exports.uiaGetElementChildren = nativeBinding.uiaGetElementChildren;
-}
-if (typeof nativeBinding.uiaGetTextViaTextPattern === 'function') {
-  module.exports.uiaGetTextViaTextPattern = nativeBinding.uiaGetTextViaTextPattern;
-}
+export default nativeBinding;

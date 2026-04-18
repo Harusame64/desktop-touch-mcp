@@ -9,8 +9,7 @@
  * Requires: Windows desktop environment (not CI/headless).
  */
 import { describe, it, expect } from "vitest";
-
-const native = require("../index.js");
+import * as native from "../index.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. Export presence: all 13 UIA functions exist
