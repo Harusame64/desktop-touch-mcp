@@ -8,12 +8,13 @@
 
 An MCP server that gives Claude eyes and hands on Windows — 56 tools covering screenshots, mouse, keyboard, Windows UI Automation, Chrome DevTools Protocol, clipboard, desktop notifications, SmartScroll, and a Reactive Perception Graph for safe multi-step automation, designed from the ground up for LLM efficiency.
 
-> *Applies MPEG P-frame diffing to window capture: only changed windows are sent after the first frame, cutting token usage by ~60–80% in typical automation loops.*
+> *v0.15: **82× average speedup** via Rust native engine — UIA focus queries in 2 ms, SSE2-accelerated image diffing at 13–15× native speed. Zero-config: the engine auto-loads when present, with transparent PowerShell fallback.*
 
 ---
 
 ## Features
 
+- **⚡ High-performance Rust Native Core** — The UIA bridge and image-diff engine are written in Rust (`napi-rs` + `windows-rs`) and loaded as a native `.node` addon. Direct COM calls from a dedicated MTA thread eliminate PowerShell process spawning — `getFocusedElement` completes in **2 ms** (160× faster), and `getUiElements` returns full trees in **~100 ms** with a batch BFS algorithm that minimizes cross-process RPC. Image-diff operations use **SSE2 SIMD** for 13–15× throughput. When the native engine is unavailable, every function transparently falls back to PowerShell — zero config required.
 - **LLM-native design** — Built around how LLMs think, not how humans click. `run_macro` batches multiple operations into a single API call; `diffMode` sends only the windows that changed since the last frame. Minimal tokens, minimal round-trips.
 - **Reactive Perception Graph** — Register a `lensId` for a window or browser tab, pass it to action tools, and get guard-checked `post.perception` feedback after each action. It reduces repeated `screenshot` / `get_context` calls and prevents wrong-window typing or stale-coordinate clicks.
 - **Full CJK support** — Uses Win32 `GetWindowTextW` for window titles, avoiding nut-js garbling. IME bypass input supported for Japanese/Chinese/Korean environments.
@@ -33,7 +34,7 @@ An MCP server that gives Claude eyes and hands on Windows — 56 tools covering 
 |---|---|
 | OS | Windows 10 / 11 (64-bit) |
 | Node.js | v20+ recommended (tested on v22+) |
-| PowerShell | 5.1+ (bundled with Windows) |
+| PowerShell | 5.1+ (bundled with Windows) — used only as fallback when the Rust native engine is unavailable |
 | Claude CLI | `claude` command must be available |
 
 > **Note:** nut-js native bindings require the Visual C++ Redistributable.
@@ -176,6 +177,21 @@ All `browser_*` tools that touch the DOM accept `includeContext:false` to omit t
 | `workspace_snapshot` | All windows: thumbnails + UI summaries in one call |
 | `workspace_launch` | Launch an app and auto-detect the new window |
 
+### Context / Wait / History (8)
+| Tool | Description |
+|---|---|
+| `get_context` | Lightweight snapshot of focused window, element, cursor, and page state |
+| `get_history` | Retrieve recent tool invocation history |
+| `get_document_state` | Chrome page state (URL/title/readyState/scroll) via CDP |
+| `wait_until` | Server-side wait for window/focus/terminal/browser DOM state changes |
+| `events_subscribe` / `events_poll` / `events_unsubscribe` / `events_list` | Subscribe to and poll window appearance/disappearance/focus events |
+
+### Terminal (2)
+| Tool | Description |
+|---|---|
+| `terminal_read` | Read text from Windows Terminal / PowerShell / cmd / WSL via UIA/OCR. Supports `sinceMarker` for diff reads |
+| `terminal_send` | Send commands to a terminal. Uses clipboard paste by default for IME safety |
+
 ### Pin / Macro (3)
 | Tool | Description |
 |---|---|
@@ -193,7 +209,7 @@ All `browser_*` tools that touch the DOM accept `includeContext:false` to omit t
 |---|---|
 | `notification_show` | Show a Windows system tray balloon notification — useful to alert the user when a long-running task finishes |
 
-### Scroll (1)
+### Scroll (2)
 | Tool | Description |
 |---|---|
 | `scroll_to_element` | Scroll a named element into the viewport without computing scroll amounts. Chrome path: `selector` + `block` alignment. Native path: `name` + `windowTitle` via UIA ScrollItemPattern |
@@ -398,7 +414,7 @@ Script extensions (`.bat`, `.ps1`, `.vbs`, etc.) are rejected. Arguments contain
 
 ### PowerShell injection protection
 
-All `-like` patterns in the UIA bridge are sanitized with `escapeLike()`, which escapes wildcard characters (`*`, `?`, `[`, `]`) before they reach PowerShell.
+All `-like` patterns in the UIA bridge PowerShell fallback path are sanitized with `escapeLike()`, which escapes wildcard characters (`*`, `?`, `[`, `]`) before they reach PowerShell. When the Rust native engine is active, PowerShell is not invoked for UIA operations.
 
 ### Allowlist for `workspace_launch`
 
@@ -594,12 +610,54 @@ Returns `{ ok: true, result: "...", post: { perception: { status: "ok", ... } } 
 
 ---
 
+## Performance (v0.15 — Rust Native Engine)
+
+The Rust native engine (`@harusame64/desktop-touch-engine`) replaces PowerShell process spawning with direct COM calls over a persistent MTA thread. It loads automatically as a `.node` addon — no configuration needed.
+
+### UIA Benchmark (vs PowerShell baseline)
+
+| Function | Rust Native | PowerShell | Speedup |
+|---|---|---|---|
+| `getFocusedElement` | **2.2 ms** | 366 ms | **163.9×** |
+| `getUiElements` (Explorer, ~60 elements) | **106.5 ms** | 346 ms | **3.3×** |
+| **Weighted average** | | | **~82×** |
+
+### Image Diff Benchmark (SSE2 SIMD)
+
+| Function | Rust (SSE2) | TypeScript | Speedup |
+|---|---|---|---|
+| `computeChangeFraction` (1920×1080) | **0.26 ms** | 3.8 ms | **~15×** |
+| `dHash` (perceptual hash) | **0.09 ms** | 1.2 ms | **~13×** |
+
+### Architecture
+
+```
+Claude CLI / MCP Client
+    │  stdio or HTTP (MCP protocol)
+    ▼
+desktop-touch-mcp (TypeScript)
+    │
+    ├── Rust Native Engine (.node addon)          ← NEW in v0.15
+    │   ├── UIA: 13 functions via napi-rs + windows-rs 0.62
+    │   │   └── Dedicated COM thread (MTA) + batch BFS algorithm
+    │   └── Image: SSE2 SIMD pixel diff + perceptual hashing
+    │
+    └── PowerShell Fallback (automatic)
+        └── Activates transparently if .node is unavailable
+```
+
+### Why `getUiElements` is 3.3× (not 160×)
+
+The 160× speedup on `getFocusedElement` comes from eliminating PowerShell process startup (~200 ms) and .NET assembly loading. For `getUiElements`, the bottleneck shifts to the **UIA provider** inside the target application (e.g., Explorer) — it must enumerate its UI tree regardless of who asks. The Rust engine uses a **batch BFS algorithm** (`FindAllBuildCache` + `TreeScope_Children`) that minimizes cross-process RPC calls and supports `maxElements` early exit, making it dramatically faster on large trees (VS Code, browsers with 1000+ elements).
+
+---
+
 ## Known limitations
 
 | Limitation | Detail | Workaround |
 |---|---|---|
 | Games / video players may return black or hang in background capture | DirectX fullscreen apps may not work even with `PW_RENDERFULLCONTENT` | Retry with `screenshot_background(fullContent=false)`; if still black, use foreground `screenshot` |
-| UIA call overhead | ~300ms per call via PowerShell; `workspace_snapshot` uses a 2s timeout internally | Batch with `workspace_snapshot` upfront, then use `diffMode` for incremental checks |
+| UIA call overhead | ~2 ms (focus) / ~100 ms (tree) via Rust native engine; ~300 ms via PowerShell fallback | Rust engine loads automatically; `workspace_snapshot` uses a 2 s timeout internally |
 | Chrome / WinUI3 UIA elements are empty | Chromium exposes only limited UIA | `screenshot(detail='text')` auto-detects Chromium and falls back to Windows OCR (`hints.chromiumGuard=true`). For richer DOM access use `browser_connect` + `browser_find_element` |
 | Chromium title-regex misses when sites rewrite `document.title` | Guard relies on the ` - Google Chrome` suffix being present; some sites push it off the end of a long title | Title is treated as plain Chrome (UIA runs). OCR path is still reachable via `ocrFallback='always'` or when UIA returns `<5` elements (`uiaSparse`) |
 | `browser_*` CDP tools need Chrome launched with `--remote-debugging-port` | If Chrome is already running on the default profile without the flag, `browser_launch` / `browser_connect` fail. The CDP E2E suite (`tests/e2e/browser-cdp.test.ts`) will also fail in that state | Close Chrome first, then `browser_launch` will relaunch it in debug mode, or start Chrome manually with `--remote-debugging-port=9222 --user-data-dir=C:\tmp\cdp` |
