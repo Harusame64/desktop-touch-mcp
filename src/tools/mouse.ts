@@ -145,7 +145,7 @@ async function applyHoming(
 
 const speedParam = z.coerce.number().int().min(0).optional().describe(
   "Cursor movement speed in px/sec. 0 = instant (teleport, no animation). " +
-  "Omit to use the configured default (DESKTOP_TOUCH_MOUSE_SPEED env var, default 1500)."
+  "Omit to use the configured default (DESKTOP_TOUCH_MOUSE_SPEED env var, default 3000)."
 );
 
 const homingParam = z.boolean().default(true).describe(
