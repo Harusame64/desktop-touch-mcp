@@ -7,10 +7,23 @@
  * and the trackFocus=false opt-out.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mouseClickHandler } from "../../src/tools/mouse.js";
 
 describe("mouse_click focusLost", () => {
+  // These tests pre-date v0.12 Auto Perception. They exercise focusLost
+  // detection, not the auto-guard path — disable auto-guard so it doesn't
+  // block clicks based on live desktop modal/window state.
+  let prevAutoGuard: string | undefined;
+  beforeAll(() => {
+    prevAutoGuard = process.env.DESKTOP_TOUCH_AUTO_GUARD;
+    process.env.DESKTOP_TOUCH_AUTO_GUARD = "0";
+  });
+  afterAll(() => {
+    if (prevAutoGuard === undefined) delete process.env.DESKTOP_TOUCH_AUTO_GUARD;
+    else process.env.DESKTOP_TOUCH_AUTO_GUARD = prevAutoGuard;
+  });
+
   it("succeeds and contains ok:true", async () => {
     // Click at screen center — may or may not hit a real window
     const result = await mouseClickHandler({

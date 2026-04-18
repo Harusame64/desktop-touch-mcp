@@ -7,11 +7,24 @@
  * skipped with reason when conditions cannot be met.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mouseClickHandler } from "../../src/tools/mouse.js";
 import { keyboardPressHandler } from "../../src/tools/keyboard.js";
 
 describe("forceFocus param — structural tests", () => {
+  // These tests pre-date v0.12 Auto Perception. They exercise the forceFocus
+  // plumbing, not the auto-guard path — disable auto-guard so it doesn't
+  // block clicks based on live desktop modal/window state.
+  let prevAutoGuard: string | undefined;
+  beforeAll(() => {
+    prevAutoGuard = process.env.DESKTOP_TOUCH_AUTO_GUARD;
+    process.env.DESKTOP_TOUCH_AUTO_GUARD = "0";
+  });
+  afterAll(() => {
+    if (prevAutoGuard === undefined) delete process.env.DESKTOP_TOUCH_AUTO_GUARD;
+    else process.env.DESKTOP_TOUCH_AUTO_GUARD = prevAutoGuard;
+  });
+
   it("mouse_click succeeds with forceFocus=true (no target window)", async () => {
     // When no windowTitle is given, force path is not triggered in applyHoming
     // (homing=false skips applyHoming entirely). Should succeed normally.

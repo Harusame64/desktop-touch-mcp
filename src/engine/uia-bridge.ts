@@ -2,8 +2,18 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { getCachedUia, updateUiaCache } from "./layer-buffer.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
+import { nativeUia } from "./native-engine.js";
 
 const execFileAsync = promisify(execFile);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Native UIA Engine (Rust) — consumed via ./native-engine.js (single load point).
+// When nativeUia is null, every call site below falls back to PowerShell.
+// ─────────────────────────────────────────────────────────────────────────────
+
+if (!nativeUia) {
+  console.warn("[uia-bridge] Native UIA engine not available — using PowerShell fallback");
+}
 
 /**
  * Escape a string for use inside a PowerShell single-quoted string literal.
@@ -318,6 +328,32 @@ export async function getFocusedAndPointInfo(
   includePoint = true,
   timeoutMs = 2000
 ): Promise<{ focused: UiaFocusInfo | null; atPoint: UiaFocusInfo | null }> {
+  // ★ Rust native path
+  if (nativeUia?.uiaGetFocusedAndPoint) {
+    try {
+      const safeX = Number.isFinite(x) ? Math.trunc(x) : 0;
+      const safeY = Number.isFinite(y) ? Math.trunc(y) : 0;
+      const result = await nativeUia.uiaGetFocusedAndPoint({
+        cursorX: safeX,
+        cursorY: safeY,
+      });
+      const toInfo = (obj: { name: string; controlType: string; automationId?: string; value?: string } | null | undefined): UiaFocusInfo | null => {
+        if (!obj || !obj.name) return null;
+        const info: UiaFocusInfo = { name: obj.name, controlType: obj.controlType ?? "" };
+        if (obj.automationId) info.automationId = obj.automationId;
+        if (obj.value != null) info.value = obj.value;
+        return info;
+      };
+      return {
+        focused: toInfo(result.focused),
+        atPoint: includePoint ? toInfo(result.atPoint) : null,
+      };
+    } catch (e) {
+      console.warn("[uia-bridge] Native uiaGetFocusedAndPoint failed, falling back to PowerShell:", e);
+    }
+  }
+
+  // PowerShell fallback
   const safeX = Number.isFinite(x) ? Math.trunc(x) : 0;
   const safeY = Number.isFinite(y) ? Math.trunc(y) : 0;
   const includePointPS = includePoint ? "true" : "false";
@@ -392,6 +428,21 @@ $result | ConvertTo-Json -Compress
  * @param timeoutMs  PowerShell timeout (default 500ms vs 2000ms in getFocusedAndPointInfo).
  */
 export async function getFocusedElement(_hwnd?: bigint, timeoutMs = 500): Promise<UiaFocusInfo | null> {
+  // ★ Rust native path
+  if (nativeUia?.uiaGetFocusedElement) {
+    try {
+      const result = await nativeUia.uiaGetFocusedElement();
+      if (!result || !result.name) return null;
+      const info: UiaFocusInfo = { name: result.name, controlType: result.controlType ?? "" };
+      if (result.automationId) info.automationId = result.automationId;
+      if (result.value != null) info.value = result.value;
+      return info;
+    } catch (e) {
+      console.warn("[uia-bridge] Native uiaGetFocusedElement failed, falling back to PowerShell:", e);
+    }
+  }
+
+  // PowerShell fallback
   const { focused } = await getFocusedAndPointInfo(0, 0, false, timeoutMs);
   return focused;
 }
@@ -427,6 +478,38 @@ export async function getUiElements(
     }
   }
 
+  // ★ Rust native path
+  if (nativeUia?.uiaGetElements) {
+    try {
+      const result = await nativeUia.uiaGetElements({
+        windowTitle,
+        maxDepth,
+        maxElements,
+        fetchValues: options?.fetchValues ?? false,
+      });
+      // Normalise: Rust returns Option<T> as undefined; TS expects null for rects
+      const normalised: UiElementsResult = {
+        windowTitle: result.windowTitle,
+        windowClassName: result.windowClassName ?? undefined,
+        windowRect: result.windowRect ?? null,
+        elementCount: result.elementCount,
+        elements: result.elements.map((el) => ({
+          ...el,
+          boundingRect: el.boundingRect ?? null,
+        })),
+      };
+      // Update cache if we know the hwnd
+      if (options?.hwnd !== undefined) {
+        try { updateUiaCache(options.hwnd, JSON.stringify(normalised)); } catch { /* ignore */ }
+      }
+      return normalised;
+    } catch (e) {
+      console.warn("[uia-bridge] Native uiaGetElements failed, falling back to PowerShell:", e);
+      // fall through to PowerShell
+    }
+  }
+
+  // PowerShell fallback (existing implementation)
   const script = makeGetElementsScript(windowTitle, maxDepth, maxElements, options?.fetchValues ?? false);
   const output = await runPS(script, timeoutMs);
   const result = JSON.parse(output);
@@ -608,6 +691,22 @@ export async function clickElement(
   automationId?: string,
   controlType?: string
 ): Promise<{ ok: boolean; element?: string; error?: string }> {
+  // ★ Rust native path (Phase C)
+  if (nativeUia?.uiaClickElement) {
+    try {
+      const result = await nativeUia.uiaClickElement({
+        windowTitle,
+        name: name ?? undefined,
+        automationId: automationId ?? undefined,
+        controlType: controlType ?? undefined,
+      });
+      return { ok: result.ok, element: result.element ?? undefined, error: result.error ?? undefined };
+    } catch (e) {
+      console.warn("[uia-bridge] Native uiaClickElement failed, falling back to PowerShell:", e);
+    }
+  }
+
+  // PowerShell fallback
   const script = makeClickElementScript(windowTitle, name, automationId, controlType);
   const output = await runPS(script, 8000);
   return JSON.parse(output);
@@ -619,6 +718,22 @@ export async function setElementValue(
   name?: string,
   automationId?: string
 ): Promise<{ ok: boolean; error?: string }> {
+  // ★ Rust native path (Phase C)
+  if (nativeUia?.uiaSetValue) {
+    try {
+      const result = await nativeUia.uiaSetValue({
+        windowTitle,
+        value,
+        name: name ?? undefined,
+        automationId: automationId ?? undefined,
+      });
+      return { ok: result.ok, error: result.error ?? undefined };
+    } catch (e) {
+      console.warn("[uia-bridge] Native uiaSetValue failed, falling back to PowerShell:", e);
+    }
+  }
+
+  // PowerShell fallback
   const script = makeSetValueScript(windowTitle, name, automationId, value);
   const output = await runPS(script, 8000);
   return JSON.parse(output);
@@ -635,6 +750,22 @@ export async function insertTextViaTextPattern2(
   name?: string,
   automationId?: string
 ): Promise<{ ok: boolean; code?: string; error?: string }> {
+  // ★ Rust native path (Phase C)
+  if (nativeUia?.uiaInsertText) {
+    try {
+      const result = await nativeUia.uiaInsertText({
+        windowTitle,
+        value,
+        name: name ?? undefined,
+        automationId: automationId ?? undefined,
+      });
+      return { ok: result.ok, code: result.code ?? undefined, error: result.error ?? undefined };
+    } catch (e) {
+      console.warn("[uia-bridge] Native uiaInsertText failed, falling back to PowerShell:", e);
+    }
+  }
+
+  // PowerShell fallback
   const safeTitle = escapeLike(windowTitle);
   const nameFilter = name ? `$c.Name -like '*${escapeLike(name)}*'` : "$true";
   const idFilter = automationId ? `$c.AutomationId -eq '${escapePS(automationId)}'` : "$true";
@@ -692,6 +823,16 @@ export async function getVirtualDesktopStatus(
 ): Promise<Record<string, boolean>> {
   if (hwndIntegers.length === 0) return {};
 
+  // ★ Rust native path
+  if (nativeUia?.uiaGetVirtualDesktopStatus) {
+    try {
+      return await nativeUia.uiaGetVirtualDesktopStatus(hwndIntegers);
+    } catch (e) {
+      console.warn("[uia-bridge] Native uiaGetVirtualDesktopStatus failed, falling back to PowerShell:", e);
+    }
+  }
+
+  // PowerShell fallback
   const hwndList = hwndIntegers.join(",");
   const script = `
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -830,6 +971,26 @@ export async function getElementChildren(
   maxElements = 30,
   timeoutMs = 5000
 ): Promise<UiElement[]> {
+  // ★ Rust native path (Phase C)
+  if (nativeUia?.uiaGetElementChildren) {
+    try {
+      const result = await nativeUia.uiaGetElementChildren({
+        windowTitle,
+        name: name ?? undefined,
+        automationId: automationId ?? undefined,
+        controlType: controlType ?? undefined,
+        maxDepth,
+        maxElements,
+        timeoutMs,
+      });
+      // Normalise boundingRect: Rust Option → null
+      return result.map((el) => ({ ...el, boundingRect: el.boundingRect ?? null }));
+    } catch (e) {
+      console.warn("[uia-bridge] Native uiaGetElementChildren failed, falling back to PowerShell:", e);
+    }
+  }
+
+  // PowerShell fallback
   const script = makeGetChildrenScript(windowTitle, name, automationId, controlType, maxDepth, maxElements);
   const output = await runPS(script, timeoutMs);
   const result = JSON.parse(output);
@@ -845,6 +1006,16 @@ export async function getElementChildren(
  * Returns the full visible buffer text, or null if TextPattern is unavailable.
  */
 export async function getTextViaTextPattern(windowTitle: string, timeoutMs = 6000): Promise<string | null> {
+  // ★ Rust native path (Phase C)
+  if (nativeUia?.uiaGetTextViaTextPattern) {
+    try {
+      return await nativeUia.uiaGetTextViaTextPattern({ windowTitle, timeoutMs });
+    } catch (e) {
+      console.warn("[uia-bridge] Native uiaGetTextViaTextPattern failed, falling back to PowerShell:", e);
+    }
+  }
+
+  // PowerShell fallback
   const safeTitle = escapeLike(windowTitle);
   const script = `
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -945,6 +1116,29 @@ export async function getElementBounds(
   automationId?: string,
   controlType?: string
 ): Promise<ElementBounds | null> {
+  // ★ Rust native path (Phase C)
+  if (nativeUia?.uiaGetElementBounds) {
+    try {
+      const result = await nativeUia.uiaGetElementBounds({
+        windowTitle,
+        name: name ?? undefined,
+        automationId: automationId ?? undefined,
+        controlType: controlType ?? undefined,
+      });
+      if (!result) return null;
+      return {
+        name: result.name,
+        controlType: result.controlType,
+        automationId: result.automationId,
+        boundingRect: result.boundingRect ?? null,
+        value: result.value ?? null,
+      };
+    } catch (e) {
+      console.warn("[uia-bridge] Native uiaGetElementBounds failed, falling back to PowerShell:", e);
+    }
+  }
+
+  // PowerShell fallback
   const safeTitle = escapeLike(windowTitle);
   const nameFilter = name ? `$c.Name -like '*${escapeLike(name)}*'` : "$true";
   const idFilter = automationId ? `$c.AutomationId -eq '${escapePS(automationId)}'` : "$true";
@@ -1019,6 +1213,21 @@ export async function scrollElementIntoView(
   name?: string,
   automationId?: string,
 ): Promise<{ ok: boolean; scrolled: boolean; error?: string }> {
+  // ★ Rust native path
+  if (nativeUia?.uiaScrollIntoView) {
+    try {
+      const result = await nativeUia.uiaScrollIntoView({
+        windowTitle,
+        name: name ?? undefined,
+        automationId: automationId ?? undefined,
+      });
+      return { ok: result.ok, scrolled: result.scrolled, error: result.error ?? undefined };
+    } catch (e) {
+      console.warn("[uia-bridge] Native uiaScrollIntoView failed, falling back to PowerShell:", e);
+    }
+  }
+
+  // PowerShell fallback
   const safeTitle = escapeLike(windowTitle);
   const nameFilter = name ? `$c.Name -like '*${escapeLike(name)}*'` : "$true";
   const idFilter = automationId ? `$c.AutomationId -eq '${escapePS(automationId)}'` : "$true";
@@ -1089,6 +1298,21 @@ export async function getScrollAncestors(
   windowTitle: string,
   elementName: string
 ): Promise<UiaScrollAncestor[]> {
+  // ★ Rust native path
+  if (nativeUia?.uiaGetScrollAncestors) {
+    try {
+      const result = await nativeUia.uiaGetScrollAncestors({
+        windowTitle,
+        elementName,
+      });
+      // Rust returns controlType without "ControlType." prefix — same as TS
+      return result;
+    } catch (e) {
+      console.warn("[uia-bridge] Native uiaGetScrollAncestors failed, falling back to PowerShell:", e);
+    }
+  }
+
+  // PowerShell fallback
   const safeTitle = escapeLike(windowTitle);
   const safeName = escapeLike(elementName);
 
@@ -1169,6 +1393,22 @@ export async function scrollByPercent(
   verticalPercent: number,
   horizontalPercent: number
 ): Promise<{ ok: boolean; scrolled: boolean; error?: string }> {
+  // ★ Rust native path
+  if (nativeUia?.uiaScrollByPercent) {
+    try {
+      const result = await nativeUia.uiaScrollByPercent({
+        windowTitle,
+        elementName,
+        verticalPercent,
+        horizontalPercent,
+      });
+      return { ok: result.ok, scrolled: result.scrolled, error: result.error ?? undefined };
+    } catch (e) {
+      console.warn("[uia-bridge] Native uiaScrollByPercent failed, falling back to PowerShell:", e);
+    }
+  }
+
+  // PowerShell fallback
   const safeTitle = escapeLike(windowTitle);
   const safeName = escapeLike(elementName);
   const vp = verticalPercent < 0 ? -1 : Math.max(0, Math.min(100, Math.round(verticalPercent)));

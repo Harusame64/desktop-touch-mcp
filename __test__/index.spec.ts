@@ -3,8 +3,7 @@
  * Validates that the Rust implementation matches the TypeScript reference behavior.
  */
 import { describe, it, expect } from "vitest";
-
-const native = require("../index.js");
+import * as native from "../index.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Reference TS implementations (from layer-buffer.ts and image.ts)

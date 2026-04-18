@@ -20,6 +20,15 @@
   "publishConfig": {
     "access": "public"
   },
+  "napi": {
+    "name": "desktop-touch-engine",
+    "triples": {
+      "defaults": false,
+      "additional": [
+        "x86_64-pc-windows-msvc"
+      ]
+    }
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Harusame64/desktop-touch-mcp.git"
@@ -42,10 +51,14 @@
     "test:headed": "HEADED=1 vitest run tests/e2e",
     "test:watch": "vitest",
     "generate:stub-catalog": "node scripts/generate-stub-tool-catalog.mjs",
-    "check:stub-catalog": "node scripts/generate-stub-tool-catalog.mjs && git diff --exit-code src/stub-tool-catalog.ts"
+    "check:stub-catalog": "node scripts/generate-stub-tool-catalog.mjs && git diff --exit-code src/stub-tool-catalog.ts",
+    "build:rs": "napi build --platform --release",
+    "build:rs:debug": "napi build --platform",
+    "artifacts:rs": "napi artifacts"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.10.0",
+    "@napi-rs/cli": "^3.6.2",
     "@nut-tree-fork/nut-js": "^4.2.6",
     "@types/node": "^25.6.0",
     "@types/ws": "^8.18.1",
