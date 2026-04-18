@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { mouse, Button, Point, straightTo, DEFAULT_MOUSE_SPEED } from "../engine/nutjs.js";
-import { enumWindowsInZOrder, restoreAndFocusWindow } from "../engine/win32.js";
+import { enumWindowsInZOrder, restoreAndFocusWindow, getWindowIdentity } from "../engine/win32.js";
 import {
   updateWindowCache,
   findContainingWindow,
@@ -16,6 +16,7 @@ import { withRichNarration, narrateParam } from "./_narration.js";
 import { detectFocusLoss } from "./_focus.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled } from "./_action-guard.js";
+import { detectTabDragRisk } from "../engine/perception/tab-drag-heuristic.js";
 
 /**
  * Move cursor to (x, y) at the given speed.
@@ -264,6 +265,13 @@ export const mouseDragSchema = {
     "Default false — cross-window drags (including desktop/wallpaper) are blocked to prevent accidents. " +
     "Pass true to confirm intent for deliberate cross-window or desktop-area drags."
   ),
+  allowTabDrag: z.boolean().optional().default(false).describe(
+    "When true, allow drags that start in the title-bar / tab-strip area of a tabbed app " +
+    "(Notepad, Terminal, Edge, Chrome, etc.). Default false — such drags are blocked because " +
+    "they detach the tab into a new window rather than moving the window. " +
+    "Pass true only when you intentionally want to rearrange or detach a tab. " +
+    "Note: active only when auto-guard is enabled (same scope as allowCrossWindowDrag)."
+  ),
 };
 
 export const scrollSchema = {
@@ -459,10 +467,11 @@ export const mouseClickHandler = async ({
 };
 
 export const mouseDragHandler = async ({
-  startX, startY, endX, endY, speed, homing, windowTitle, lensId, allowCrossWindowDrag,
+  startX, startY, endX, endY, speed, homing, windowTitle, lensId, allowCrossWindowDrag, allowTabDrag,
 }: {
   startX: number; startY: number; endX: number; endY: number;
-  speed?: number; homing: boolean; windowTitle?: string; lensId?: string; allowCrossWindowDrag?: boolean;
+  speed?: number; homing: boolean; windowTitle?: string; lensId?: string;
+  allowCrossWindowDrag?: boolean; allowTabDrag?: boolean;
 }): Promise<ToolResult> => {
   try {
     // Step 1: Homing correction on start point.
@@ -524,7 +533,30 @@ export const mouseDragHandler = async ({
         );
       }
 
-      // Phase I: cross-window / desktop drag check
+      // Phase I-a: tab-strip drag detection (checked before cross-window to give better error)
+      if (!allowTabDrag) {
+        const startWinForTab = findContainingWindow(tsx, tsy);
+        if (startWinForTab) {
+          const identity = getWindowIdentity(startWinForTab.hwnd);
+          const tabRisk = detectTabDragRisk(
+            tsx, tsy, tex, tey,
+            startWinForTab.region.y,
+            identity.processName
+          );
+          if (tabRisk.risk) {
+            return failWith(
+              new Error("TabDragBlocked: drag starts in the tab-strip area of a tabbed application"),
+              "mouse_drag",
+              { suggest: [
+                "To move the window, drag from the window border or use Win+Arrow keys instead",
+                "Pass allowTabDrag:true if you intend to rearrange or detach a tab",
+              ] }
+            );
+          }
+        }
+      }
+
+      // Phase I-b: cross-window / desktop drag check
       // start point is safety-critical; endpoint is also guarded (v3 §5.2)
       if (!allowCrossWindowDrag) {
         const startWin = findContainingWindow(tsx, tsy);
