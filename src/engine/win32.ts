@@ -979,12 +979,14 @@ export function postMessageToHwnd(hwnd: unknown, msg: number, wParam: number, lP
 export function getFocusedChildHwnd(targetHwnd: unknown): bigint | null {
   try {
     const targetThread = (GetWindowThreadProcessId(targetHwnd, null) as number) >>> 0;
+    if (targetThread === 0) return null; // GetWindowThreadProcessId failed
     const myThread = (GetCurrentThreadId() as number) >>> 0;
     if (targetThread === myThread) {
       const f = GetFocus();
       return f ? BigInt(f as number) : null;
     }
-    AttachThreadInput(myThread, targetThread, true);
+    const attached = !!AttachThreadInput(myThread, targetThread, true);
+    if (!attached) return null;
     try {
       const f = GetFocus();
       return f ? BigInt(f as number) : null;
