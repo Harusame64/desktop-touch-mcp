@@ -1144,6 +1144,11 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "description": "When true, allow dragging the endpoint into a different window or the desktop background. Default false — cross-window drags (including desktop/wallpaper) are blocked to prevent accidents. Pass true to confirm intent for deliberate cross-window or desktop-area drags.",
           "type": "boolean",
           "default": false
+        },
+        "allowTabDrag": {
+          "description": "When true, allow drags that start in the title-bar / tab-strip area of a tabbed app (Notepad, Terminal, Edge, Chrome, etc.). Default false — such drags are blocked because they detach the tab into a new window rather than moving the window. Pass true only when you intentionally want to rearrange or detach a tab. Note: active only when auto-guard is enabled (same scope as allowCrossWindowDrag).",
+          "type": "boolean",
+          "default": false
         }
       },
       "additionalProperties": false,

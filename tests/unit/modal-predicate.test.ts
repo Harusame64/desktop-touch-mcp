@@ -89,13 +89,43 @@ describe("evaluateModalAbove", () => {
     expect(result.confidence).toBeCloseTo(0.80, 2);
   });
 
-  it("returns isModal:true (0.75) for a floating topmost window with no ownership", () => {
+  it("returns isModal:false for a topmost window with no ownership (WS_EX_TOPMOST alone is not a trigger)", () => {
     const target = makeTarget();
-    const toast = makeWindow(4000n, 3, { exStyle: 0x00000008 }); // WS_EX_TOPMOST
+    const toast = makeWindow(4000n, 3, { exStyle: 0x00000008 }); // WS_EX_TOPMOST only
     const result = evaluateModalAbove(target, [target, toast]);
-    expect(result.isModal).toBe(true);
-    expect(result.confidence).toBeCloseTo(0.75, 2);
+    expect(result.isModal).toBe(false);
   });
+
+  it("returns isModal:false for a system-resident UWP class (Windows.UI.Core.CoreWindow)", () => {
+    const target = makeTarget();
+    // Simulates 'Windows 入力エクスペリエンス' — topmost UWP IME window
+    const ime = makeWindow(4001n, 3, {
+      className: "Windows.UI.Core.CoreWindow",
+      exStyle: 0x00000008,
+    });
+    const result = evaluateModalAbove(target, [target, ime]);
+    expect(result.isModal).toBe(false);
+  });
+
+  it("returns isModal:false for ApplicationFrameWindow above target", () => {
+    const target = makeTarget();
+    const uwpHost = makeWindow(4002n, 2, { className: "ApplicationFrameWindow" });
+    const result = evaluateModalAbove(target, [target, uwpHost]);
+    expect(result.isModal).toBe(false);
+  });
+
+  it("boosts confidence by 0.03 when candidate is topmost AND Rule 1/2/3 already matched", () => {
+    const target = makeTarget();
+    // Owned dialog (0.88) + topmost booster (+0.03) = 0.91
+    const ownedTopmost = makeWindow(4003n, 2, {
+      ownerHwnd: TARGET_HWND,
+      exStyle: 0x00000008,
+    });
+    const result = evaluateModalAbove(target, [target, ownedTopmost]);
+    expect(result.isModal).toBe(true);
+    expect(result.confidence).toBeCloseTo(0.91, 2);
+  });
+
 
   it("returns isModal:false for a cloaked window above target (UWP background)", () => {
     const target = makeTarget();

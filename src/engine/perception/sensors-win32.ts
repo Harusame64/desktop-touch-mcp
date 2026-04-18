@@ -24,6 +24,20 @@ const MODAL_TITLE_RE = /dialog|confirm|prompt|alert|error|警告|エラー|確�
 // Minimum pixel area for a candidate modal window — filters out tooltips
 const MODAL_MIN_AREA = 10_000;
 
+// System-resident UWP/shell window classes that are never modal blockers.
+// These windows are always-on-top (WS_EX_TOPMOST) by design but do not block input.
+// Add entries here when new system window classes cause false positives.
+const SYSTEM_RESIDENT_CLASSES = new Set([
+  "Windows.UI.Core.CoreWindow",         // UWP core (IME, 入力エクスペリエンス, etc.)
+  "ApplicationFrameWindow",             // UWP app host frame
+  "Windows.UI.Input.InputSite.WindowClass", // IME on-screen keyboard / handwriting
+  "Shell_TrayWnd",                      // taskbar
+  "Shell_SecondaryTrayWnd",             // secondary monitor taskbar
+  "NotifyIconOverflowWindow",           // system tray overflow
+  "TaskListThumbnailWnd",               // alt-tab thumbnail
+  "MultitaskingViewFrame",              // task view
+]);
+
 let _seq = 0;
 function nextSeq(): number { return ++_seq; }
 
@@ -40,17 +54,18 @@ const WS_EX_TOPMOST_FLAG = 0x00000008;
  *   1. Target is disabled (isEnabled===false) — classic Win32 modal pattern. (0.93)
  *   2. Candidate is directly owned by target (ownerHwnd === target.hwnd). (0.88)
  *   3. Candidate has Win32 dialog class "#32770". (0.80)
- *   4. Candidate has WS_EX_TOPMOST extended style. (0.75)
+ *
+ * Boosters (only raise conf, never trigger alone):
+ *   - Candidate has WS_EX_TOPMOST extended style: +0.03
+ *   - Candidate title matches MODAL_TITLE_RE: +0.02
  *
  * Candidates must pass pre-filters:
  *   - Not the target window itself
  *   - Above target in z-order (lower zOrder value)
  *   - Enabled and not cloaked by DWM
  *   - Area > MODAL_MIN_AREA (filters out tooltips)
- *
- * The title-regex heuristic (MODAL_TITLE_RE) acts as a confidence booster only —
- * it is no longer a primary trigger to prevent false positives from windows whose
- * title incidentally contains words like "Error" or "Confirm".
+ *   - Not a known system-resident UWP/shell class (SYSTEM_RESIDENT_CLASSES)
+ *   - When target is foreground: only Rule 1/2 are eligible (Rule 3 skipped)
  *
  * Returns { isModal: false } when no window qualifies.
  * When multiple windows qualify, returns the highest-confidence result.
@@ -72,6 +87,10 @@ export function evaluateModalAbove(
     const area = (w.region.width * w.region.height);
     if (area > 0 && area < MODAL_MIN_AREA) continue;  // tooltip-sized popup
 
+    // Skip known system-resident windows — always-on-top but never block input
+    const cls = w.className ?? (w.hwnd ? getWindowClassName(w.hwnd) : "");
+    if (SYSTEM_RESIDENT_CLASSES.has(cls)) continue;
+
     let conf = 0;
 
     // Rule 1: target is disabled — strongest signal (owner blocked by dialog)
@@ -85,21 +104,16 @@ export function evaluateModalAbove(
     }
 
     // Rule 3: standard Win32 dialog class
-    const cls = w.className ?? (w.hwnd ? getWindowClassName(w.hwnd) : "");
     if (cls === "#32770") {
       conf = Math.max(conf, 0.80);
     }
 
-    // Rule 4: topmost flag
-    const exStyle = w.exStyle ?? (isWindowTopmost(w.hwnd) ? WS_EX_TOPMOST_FLAG : 0);
-    if ((exStyle & WS_EX_TOPMOST_FLAG) !== 0) {
-      conf = Math.max(conf, 0.75);
-    }
-
     if (conf === 0) continue;
 
-    // Title-regex boosts confidence slightly (not a trigger on its own)
-    if (MODAL_TITLE_RE.test(w.title)) conf = Math.min(1, conf + 0.02);
+    // Boosters — raise confidence but never trigger modal detection alone
+    const exStyle = w.exStyle ?? (isWindowTopmost(w.hwnd) ? WS_EX_TOPMOST_FLAG : 0);
+    if ((exStyle & WS_EX_TOPMOST_FLAG) !== 0) conf = Math.min(1, conf + 0.03);
+    if (MODAL_TITLE_RE.test(w.title))          conf = Math.min(1, conf + 0.02);
 
     if (conf > bestConf) bestConf = conf;
   }
