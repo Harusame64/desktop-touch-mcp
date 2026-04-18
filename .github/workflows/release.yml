@@ -33,6 +33,27 @@ jobs:
       - name: Build TypeScript
         run: npm run build
 
+      - name: Fetch node.lib for MSVC linking
+        shell: pwsh
+        run: |
+          # The custom build.rs links the addon against node.lib at the repo root.
+          # GitHub-hosted runners don't ship node.lib, so fetch it via node-gyp
+          # (which caches headers + import lib per Node version).
+          $ver = (node -v).TrimStart('v')
+          Write-Host "Installing node-gyp headers for Node $ver"
+          npx --yes node-gyp install --target=$ver
+          $cache = "$env:LOCALAPPDATA\node-gyp\Cache"
+          $found = Get-ChildItem -Path $cache -Recurse -Filter node.lib -ErrorAction SilentlyContinue |
+                   Where-Object { $_.FullName -match '\\(x64|win-x64)\\node\.lib$' } |
+                   Select-Object -First 1
+          if (-not $found) {
+            Get-ChildItem -Path $cache -Recurse -Filter node.lib -ErrorAction SilentlyContinue |
+              ForEach-Object { Write-Host "  candidate: $($_.FullName)" }
+            throw "node.lib not found in $cache"
+          }
+          Copy-Item -LiteralPath $found.FullName -Destination (Join-Path $PWD "node.lib")
+          Write-Host "Copied node.lib from $($found.FullName)"
+
       - name: Build native addon (Rust → .node)
         run: npm run build:rs
 
