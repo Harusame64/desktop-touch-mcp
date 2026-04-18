@@ -11,15 +11,31 @@ Claude CLI
     │  stdio (MCP protocol)
     ▼
 desktop-touch-mcp (Node.js / TypeScript)
-    ├── Layer 1: Engine
+    ├── Layer 0: Rust Native Engine (.node addon — @harusame64/desktop-touch-engine)
+    │   │  Loaded automatically; transparent PowerShell fallback if unavailable
+    │   │
+    │   ├── UIA Engine (napi-rs + windows-rs 0.62)
+    │   │   ├── Dedicated COM thread: OnceLock<Sender<UiaTask>> singleton, MTA initialized
+    │   │   ├── UiaContext: IUIAutomation + TreeWalker + CacheRequest (7 props + 6 patterns)
+    │   │   ├── Batch BFS: FindAllBuildCache(TreeScope_Children) — 1 RPC per tree level
+    │   │   ├── 13 napi exports: tree(2) + focus(2) + actions(3) + search(2) + text(1) + scroll(3)
+    │   │   └── AsyncTask: compute() on libuv worker thread → non-blocking Promise
+    │   │
+    │   └── Image Engine (SSE2 SIMD)
+    │       ├── computeChangeFraction — 8×8 block pixel diff (0.26 ms @ 1080p)
+    │       ├── dHash — 64-bit perceptual hash (0.09 ms)
+    │       └── hammingDistance — bitwise comparison
+    │
+    ├── Layer 1: Engine (TypeScript)
     │   ├── nutjs.js        — mouse / keyboard / screen capture (nut-js)
     │   ├── win32.ts        — Win32 API via koffi: window enum, DPI, PrintWindow, SetWindowPos,
     │   │                     getForegroundHwnd, getWindowClassName, isWindowTopmost, getWindowOwner
-    │   ├── uia-bridge.ts   — Windows UI Automation (PowerShell): element tree, click, set-value,
-    │   │                     GetFocusedElement, ElementFromPoint
+    │   ├── uia-bridge.ts   — UIA bridge: routes to Rust native → PowerShell fallback
+    │   │                     13 functions: getUiElements, clickElement, setElementValue, etc.
     │   ├── uia-diff.ts     — UIA snapshot diff (appeared / disappeared / valueDeltas)
     │   ├── image.ts        — image encode (sharp): PNG / WebP 1:1 / crop
     │   ├── layer-buffer.ts — per-window layer buffer: frame-diff detection (MPEG P-frame style)
+    │   │                     Uses Rust SSE2 engine for computeChangeFraction / dHash when available
     │   ├── cdp-bridge.ts   — Chrome DevTools Protocol: WebSocket sessions + DOM→screen coords
     │   ├── window-cache.ts — window-position cache used by the homing-correction path (dx,dy)
     │   ├── event-bus.ts    — Win32 window-state event bus used by perception sensors
@@ -42,6 +58,50 @@ desktop-touch-mcp (Node.js / TypeScript)
         clipboard(2) + notification(1) + scroll_to_element(1) + smart_scroll(1) +
         perception(4)
 ```
+
+### Rust Native Engine — Data Flow
+
+```
+[MCP Tool call]
+    │
+    ▼
+uia-bridge.ts
+    │  nativeUia?.uiaGetElements(opts)    ← existence check
+    │  ├── Success → return result
+    │  └── Error / null → runPS(script)   ← PowerShell fallback
+    │
+    ▼ (Rust path)
+lib.rs  #[napi] uia_get_elements(opts) → AsyncTask<UiaGetElementsTask>
+    │
+    ▼ (libuv worker thread)
+AsyncTask::compute()
+    │  execute_with_timeout(8s, |ctx: &UiaContext| { ... })
+    │
+    ▼ (crossbeam channel → COM thread)
+UIA Dedicated Thread (MTA)
+    │  ctx.automation / ctx.walker / ctx.cache_request
+    │  FindAllBuildCache(TreeScope_Children, ControlViewCondition, CacheRequest)
+    │
+    ▼ (bounded(1) reply channel)
+Result<Vec<UiElement>> → napi Promise → JavaScript
+```
+
+### Performance (v0.15)
+
+#### UIA Bridge — Rust Native vs PowerShell
+
+| Operation | Rust Native | PowerShell | Speedup |
+|---|---|---|---|
+| `getFocusedElement` | **2.2 ms** | 366 ms | **163.9×** |
+| `getUiElements` (Explorer ~60 elements) | **106.5 ms** | 346 ms | **3.3×** |
+| **UIA weighted average** | | | **~82×** |
+
+#### Image Diff Engine — Rust SSE2 vs TypeScript
+
+| Operation | Rust SSE2 | TypeScript | Speedup |
+|---|---|---|---|
+| `computeChangeFraction` (1920×1080) | **0.26 ms** | 3.8 ms | **~15×** |
+| `dHash` (perceptual hash) | **0.09 ms** | 1.2 ms | **~13×** |
 
 ---
 
@@ -268,6 +328,8 @@ keyboard_press(keys="ctrl+shift+s")
 ---
 
 ### 🔍 UI Automation (UIA)
+
+> **v0.15:** All UIA operations route through the Rust native engine by default (direct COM calls, 2–100 ms). PowerShell fallback activates automatically if the native engine is unavailable.
 
 Action tools (`click_element` / `set_element_value`) return the `post` block; `narrate:"rich"` adds a UIA diff.
 
@@ -778,6 +840,8 @@ Touch points: `browser_navigate.waitForLoad` / `browser_search.visibleOnly|inVie
 
 ## Layer buffer — MPEG P-frame strategy
 
+> **v0.15:** The pixel-comparison kernel (`computeChangeFraction`) and perceptual hash (`dHash`) now run via the Rust SSE2 SIMD engine when available, achieving **13–15× throughput** over the TypeScript implementation.
+
 ```
 workspace_snapshot()
     │  → capture every window, store in the buffer (I-frame)
@@ -804,13 +868,17 @@ screenshot(diffMode=true)
 |---|---|
 | Window title | `GetWindowTextW` via koffi — nut-js mangles CJK |
 | Scroll amount | nut-js's single step is tiny → multiplied internally by `SCROLL_MULTIPLIER=3` |
-| UIA timeout | 2 s inside `workspace_snapshot`, 8 s elsewhere |
+| UIA timeout | 8 s default; 500 ms for `getFocusedElement`; 2 s inside `workspace_snapshot` |
+| UIA engine | Rust native (napi-rs + windows-rs 0.62) → PowerShell fallback. Native path: dedicated COM thread (MTA), batch BFS with `FindAllBuildCache(TreeScope_Children)` |
+| UIA focus latency | **2.2 ms** (Rust) vs ~366 ms (PowerShell) |
+| UIA tree latency | **~100 ms** (Rust, Explorer ~60 elements) vs ~346 ms (PowerShell) |
+| Image diff engine | Rust SSE2 SIMD: `computeChangeFraction` 0.26 ms, `dHash` 0.09 ms (1080p) |
 | PrintWindow flag | `0` — GPU / DX windows come back black (known limitation) |
 | Default WebP quality | `60` — the lowest quality at which text stays readable |
 | Layer-buffer TTL | Auto-cleared after 90 s |
 | focus_window filter | Skips helper windows with width < 50 or height < 50 |
 | focus_window / Chrome tabs | Chrome/Edge uses one HWND per browser window; only the active tab title is visible to the OS. `WindowNotFound` on a tab title → use `browser_connect` to list tabs and switch via CDP instead |
-| UIA element search | Recursive `FindAll(Children)` — `FindAll(Descendants)` misses items on some WinUI3 apps |
+| UIA element search | Rust: batch BFS with `FindAllBuildCache(TreeScope_Children)` + `maxElements` early exit. PowerShell fallback: recursive `FindAll(Children)` — `FindAll(Descendants)` misses items on some WinUI3 apps |
 | CDP command timeout | 15 s (`CMD_TIMEOUT_MS`); WebSocket connect timeout 5 s (`CONNECT_TIMEOUT_MS`) |
 | CDP fetch timeout | `AbortSignal.timeout(5s)` — handles a hung `/json` endpoint |
 | window-cache TTL | 60 s — prevents stale-HWND mis-correction after reuse |
@@ -833,3 +901,5 @@ screenshot(diffMode=true)
 Registered as `desktop-touch` under `mcpServers` in `~/.claude.json` (stdio). Auto-starts / stops with the Claude CLI.
 
 Build: `cd D:\git\desktop-touch-mcp && npm install` (the `prepare` hook runs `tsc` automatically).
+
+The Rust native engine (`@harusame64/desktop-touch-engine`) is included in the release zip. It loads as a `.node` addon at startup — no Rust toolchain required for end users. If the addon is missing or fails to load, all UIA and image-diff operations fall back to TypeScript/PowerShell transparently.

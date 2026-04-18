@@ -9,12 +9,13 @@
 Claude がデスクトップを直接見て、直接操作する。  
 マウス・キーボード・スクリーンショット・Windows UI Automation・Chrome DevTools Protocol・ターミナル・SmartScroll・Reactive Perception Graph を統合した 56 のツールを提供する MCP サーバーです。
 
-> *ウィンドウキャプチャに MPEG P フレーム方式の差分処理を適用。初回フレーム以降は変化したウィンドウのみを送信するため、一般的な自動化ループでトークン使用量を約 60〜80% 削減できます。*
+> *v0.15: Rust ネイティブエンジンにより**平均 82 倍高速化** — UIA フォーカス取得 2ms、SSE2 SIMD 画像差分 13〜15 倍速。設定不要：エンジンは自動ロード、不在時は PowerShell に透過フォールバック。*
 
 ---
 
 ## 特徴
 
+- **⚡ 高性能 Rust ネイティブコア** — UIA ブリッジと画像差分エンジンを Rust (`napi-rs` + `windows-rs`) で実装し、ネイティブ `.node` アドオンとしてロード。専用 MTA スレッドからの直接 COM 呼び出しにより PowerShell プロセス起動を排除 — `getFocusedElement` は **2ms**（160 倍高速）、`getUiElements` はバッチ型 BFS アルゴリズムでクロスプロセス RPC を最小化し **約 100ms** で完了。画像差分は **SSE2 SIMD** で 13〜15 倍のスループット。ネイティブエンジンが利用不可の場合、全関数が PowerShell に透過フォールバック — 設定不要。
 - **LLM ネイティブ設計** — 人間の操作を模倣するのではなく、「LLM がいかにコンテキストを消費せず高速に動けるか」を前提に設計。`run_macro` による複数操作の一括実行（API 往復の削減）と、**MPEG P-frame 方式のレイヤー差分** (`diffMode`) を組み合わせることで、無駄な画像転送や推論ループを極限まで削ぎ落とす。
 - **Reactive Perception Graph** — ウィンドウやブラウザタブに `lensId` を登録し、以後の action tool に渡すだけで、操作前の安全 guard と操作後の `post.perception` フィードバックを受け取れます。`screenshot` / `get_context` の反復を減らし、別ウィンドウへの誤入力や古い座標クリックを防ぎます。
 - **日本語/CJK 完全対応** — ウィンドウタイトル取得に Win32 `GetWindowTextW` を使用。nut-js の文字化けを回避。IME バイパス入力にも対応。
@@ -22,6 +23,8 @@ Claude がデスクトップを直接見て、直接操作する。
 - **座標変換不要の 1:1 モード** — `dotByDot=true` で WebP 1:1 キャプチャ。画像上のピクセル座標 = 画面座標なのでスケール計算が不要。
 - **ブラウザキャプチャのデータ削減** — `grayscale=true`、`dotByDotMaxDimension=1280`、`windowTitle + region` の部分切り出しで、ブラウザ chrome や不要な余白を除外。重いキャプチャで 50〜70% 程度の削減を狙えます。
 - **UIA アクション要素抽出** — `detail="text"` でボタン・入力欄の名前と `clickAt` 座標を JSON で返すため、画像を見なくても操作できる。
+- **Chromium スマートフォールバック** — Chrome/Edge/Brave に対して `detail="text"` を使うと、低速な UIA を自動スキップし Windows OCR を実行。`hints.chromiumGuard` + `hints.ocrFallbackFired` で経路を判別可能。
+- **CLI 自動ドック** — `dock_window` でウィンドウを画面隅にスナップ＆最前面固定。`DESKTOP_TOUCH_DOCK_TITLE='@parent'` を設定すると、MCP 起動時にプロセスツリーを辿って Claude CLI をホストするターミナルを自動ドック。
 - **緊急停止 (Failsafe)** — マウスを**画面左上コーナー (0,0 付近 10px)** に移動すると MCP サーバーが即座に終了。
 
 ---
@@ -32,7 +35,7 @@ Claude がデスクトップを直接見て、直接操作する。
 |---|---|
 | OS | Windows 10 / 11 (64-bit) |
 | Node.js | v20 以上推奨 (v22+ で動作確認済み) |
-| PowerShell | 5.1 以上 (Windows 標準同梱) |
+| PowerShell | 5.1 以上 (Windows 標準同梱) — Rust ネイティブエンジン不在時のフォールバック用 |
 | Claude CLI | `claude` コマンドが使えること |
 
 > **注意:** nut-js のネイティブバインディングは Visual C++ 再頒布可能パッケージを必要とします。  
@@ -320,7 +323,7 @@ screenshot(diffMode=true)               → 変化した窓だけ確認（~160 t
 
 ### PowerShell インジェクション対策
 
-UIA ブリッジの `-like` パターンには `escapeLike()` でワイルドカード文字 (`*`, `?`, `[`, `]`) をエスケープ済み。
+UIA ブリッジの PowerShell フォールバックパスでは、`-like` パターンに `escapeLike()` でワイルドカード文字 (`*`, `?`, `[`, `]`) をエスケープ済み。v0.15 以降、UIA の主パスは Rust ネイティブエンジン（直接 COM 呼び出し）のため、PowerShell は補助的なフォールバックとしてのみ使用されます。
 
 ---
 
@@ -403,9 +406,41 @@ Windows のフォアグラウンド保護機能により、ピン固定された
 | 制限 | 詳細 | 回避策 |
 |---|---|---|
 | ゲーム・動画プレイヤーの背面キャプチャが黒またはハング | DirectX フルスクリーン等は `PW_RENDERFULLCONTENT (flag=2)` でもキャプチャ不可な場合がある | `screenshot_background(fullContent=false)` で旧フラグに切り替え、それでも黒なら前面キャプチャ (`screenshot`) を使用 |
-| UIA 呼び出しのオーバーヘッド | PowerShell 経由のため 1 回約 300ms。`workspace_snapshot` 内は 2s タイムアウトに短縮 | 操作前に `workspace_snapshot` で一括取得し、以降は `diffMode` で差分確認 |
+| UIA 呼び出しのオーバーヘッド | Rust ネイティブ: フォーカス取得 ~2ms、ツリー走査 ~100ms。PowerShell フォールバック: ~300ms | 操作前に `workspace_snapshot` で一括取得し、以降は `diffMode` で差分確認 |
 | Chrome / WinUI3 の UIA 要素が空 | Chromium は UIA を限定的にしか公開しない | `browser_connect` + `browser_find_element` で DOM ベースのクリックを使用。視覚確認のみなら `screenshot(detail="image")` |
 | レイヤーバッファの TTL | 90 秒操作なしでバッファが自動クリア → 次回 `diffMode` が I-frame になる | 長い待機後は `workspace_snapshot` で明示的にリセット |
+
+---
+
+## パフォーマンス (v0.15)
+
+### UIA ブリッジ — Rust ネイティブ vs PowerShell
+
+| 関数 | Rust Native | PowerShell | 高速化 |
+|---|---|---|---|
+| `getFocusedElement` | **2.2 ms** | 366 ms | 🚀 **163.9×** |
+| `getUiElements` | **106.5 ms** | 346 ms | 🚀 **3.3×** |
+| **平均** | | | **🚀 ~82×** |
+
+### 画像差分エンジン — Rust SSE2 SIMD vs TypeScript
+
+| 関数 | Rust SSE2 | TypeScript | 高速化 |
+|---|---|---|---|
+| `computeChangeFraction` (1080p) | **0.26 ms** | 3.8 ms | 🚀 **~15×** |
+| `dHash` (1080p) | **0.09 ms** | 1.2 ms | 🚀 **~13×** |
+
+### アーキテクチャ概要
+
+```
+Claude CLI → MCP Server (TypeScript)
+                ├── Rust Native Engine (.node addon)
+                │     ├── UIA: 専用 MTA スレッド → 直接 COM 呼び出し
+                │     └── Image: SSE2 SIMD カーネル
+                └── PowerShell フォールバック（自動切替）
+```
+
+- **バッチ型 BFS**: `FindAllBuildCache(TreeScope_Children)` による階層ごとの一括フェッチ。`maxElements` 到達で即打ち切りし、巨大ツリーでもスケーラブル。
+- **自動フォールバック**: ネイティブエンジンが利用不可の場合、全関数が PowerShell に透過切替 — 設定不要。
 
 ---
 
