@@ -27,6 +27,7 @@ import { registerScrollToElementTools } from "./tools/scroll-to-element.js";
 import { registerSmartScrollTools } from "./tools/smart-scroll.js";
 import { registerPerceptionTools } from "./tools/perception.js";
 import { registerPerceptionResources } from "./tools/perception-resources.js";
+import { registerEngineStatusTool } from "./tools/engine-status.js";
 import { logAutoGuardStartup } from "./tools/_action-guard.js";
 import { stopNativeRuntime } from "./engine/perception/registry.js";
 import { startTray, stopTray, type TrayOptions } from "./utils/tray.js";
@@ -154,6 +155,7 @@ registerNotificationTools(server);
 registerScrollToElementTools(server);
 registerSmartScrollTools(server);
 registerPerceptionTools(server);
+registerEngineStatusTool(server);
 
 // ─── Perception resources (opt-in: DESKTOP_TOUCH_PERCEPTION_RESOURCES=1) ──────
 if (process.env.DESKTOP_TOUCH_PERCEPTION_RESOURCES === "1") {

@@ -6,7 +6,7 @@
 
 > **Stop pasting screenshots. Let Claude see and control your desktop directly.**
 
-An MCP server that gives Claude eyes and hands on Windows — 56 tools covering screenshots, mouse, keyboard, Windows UI Automation, Chrome DevTools Protocol, clipboard, desktop notifications, SmartScroll, and a Reactive Perception Graph for safe multi-step automation, designed from the ground up for LLM efficiency.
+An MCP server that gives Claude eyes and hands on Windows — 57 tools covering screenshots, mouse, keyboard, Windows UI Automation, Chrome DevTools Protocol, clipboard, desktop notifications, SmartScroll, and a Reactive Perception Graph for safe multi-step automation, designed from the ground up for LLM efficiency.
 
 > *v0.15: **82× average speedup** via Rust native engine — UIA focus queries in 2 ms, SSE2-accelerated image diffing at 13–15× native speed. Zero-config: the engine auto-loads when present, with transparent PowerShell fallback.*
 
@@ -110,7 +110,7 @@ For a local checkout, register the built server directly:
 
 ---
 
-## Tools (56 total)
+## Tools (57 total)
 
 > 📖 **Full command reference**: [`docs/system-overview.md`](docs/system-overview.md) — every tool's parameters, response shape, coordinate math, layer-buffer strategy, and engineering notes in one place.
 
@@ -183,6 +183,7 @@ All `browser_*` tools that touch the DOM accept `includeContext:false` to omit t
 | `get_context` | Lightweight snapshot of focused window, element, cursor, and page state |
 | `get_history` | Retrieve recent tool invocation history |
 | `get_document_state` | Chrome page state (URL/title/readyState/scroll) via CDP |
+| `engine_status` | Returns which backend is active: `uia` (native Rust or powershell) and `imageDiff` (native Rust SSE2 or typescript). Diagnostic — call once per session when troubleshooting performance |
 | `wait_until` | Server-side wait for window/focus/terminal/browser DOM state changes |
 | `events_subscribe` / `events_poll` / `events_unsubscribe` / `events_list` | Subscribe to and poll window appearance/disappearance/focus events |
 
