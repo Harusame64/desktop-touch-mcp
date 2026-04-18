@@ -288,6 +288,39 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
     }
   },
   {
+    "name": "browser_get_form",
+    "description": "Inspect all form fields (input, select, textarea, button) within a CSS-selector-specified container and return their name, type, id, current value, hint text, disabled/readOnly state, and associated label text. Use this before browser_fill_input to discover exact field selectors and avoid accidentally targeting the wrong input (e.g. a global search bar). Caveats: Requires browser_connect (CDP active). Hidden inputs (type=hidden) are included — filter by type if needed.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "selector": {
+          "description": "CSS selector for the form or container element to inspect (e.g. '#login-form', '.search-bar'). All input, select, textarea, and button descendants are returned.",
+          "type": "string"
+        },
+        "tabId": {
+          "type": "string",
+          "description": "Tab ID from browser_connect. Omit to use the first page tab."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 9222,
+          "description": "Chrome/Edge CDP remote debugging port."
+        },
+        "includeContext": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true, append activeTab and readyState context to the response."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "selector"
+      ]
+    }
+  },
+  {
     "name": "browser_get_interactive",
     "description": "List all interactive elements (links, buttons, inputs, ARIA controls) on the current page with CSS selectors, visible text or value for inputs, and viewport status — use before browser_click_element to discover stable selectors, and prefer this over screenshot when verifying button/toggle state after submission (no image tokens, structured output). scope limits to a CSS subsection (e.g. '.sidebar'). Returns state (checked/pressed/selected/expanded) for ARIA custom controls. Caveats: Selectors are CDP-generated snapshots — re-call after page navigates or re-renders. Input text reflects the empty-field hint text when defined (takes priority over typed value) — use browser_eval('document.querySelector(sel).value') to read actual typed content.",
     "inputSchema": {
