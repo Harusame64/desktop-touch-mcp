@@ -1,0 +1,31 @@
+[package]
+name = "desktop-touch-engine"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "High-performance image diff engine for desktop-touch-mcp (napi-rs native addon)"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "2", default-features = false, features = ["napi8"] }
+napi-derive = "2"
+crossbeam-channel = "0.5"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_UI_Accessibility",
+    "Win32_System_Com",
+    "Win32_Foundation",
+    "Win32_UI_Shell",
+] }
+
+[build-dependencies]
+napi-build = "2"
+
+[profile.release]
+lto = true
+opt-level = 3
+codegen-units = 1
+strip = "symbols"
