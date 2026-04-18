@@ -169,6 +169,23 @@ describe("postKeyComboToHwnd", () => {
   });
 });
 
+describe("canInjectViaPostMessage — terminal fast-path", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("returns supported:true for CASCADIA_HOSTING_WINDOW_CLASS (Windows Terminal)", () => {
+    vi.mocked(getWindowClassName).mockReturnValue("CASCADIA_HOSTING_WINDOW_CLASS");
+    const result = canInjectViaPostMessage(10n);
+    expect(result.supported).toBe(true);
+    expect(result.className).toBe("CASCADIA_HOSTING_WINDOW_CLASS");
+  });
+
+  it("returns supported:true for ConsoleWindowClass (conhost/cmd)", () => {
+    vi.mocked(getWindowClassName).mockReturnValue("ConsoleWindowClass");
+    const result = canInjectViaPostMessage(11n);
+    expect(result.supported).toBe(true);
+  });
+});
+
 describe("isBgAutoEnabled", () => {
   it("returns false when DTM_BG_AUTO is not set", () => {
     delete process.env["DTM_BG_AUTO"];
