@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.14.0] - 2026-04-18 — Background Input (WM_CHAR) + SetValue Chain + Terminal BG Fast-Path
+
+### Added
+- **Background input engine** (`src/engine/bg-input.ts`): WM_CHAR/WM_KEYDOWN injection via
+  `PostMessageW` — delivers keystrokes to a target HWND without changing the foreground window.
+  Works for standard Win32 controls, Windows Terminal, conhost, cmd, and PowerShell.
+  Chromium (Chrome/Edge/Electron) and UWP sandboxed apps are automatically excluded.
+- **`keyboard_type` / `keyboard_press`**: new `method:"auto"|"background"|"foreground"` parameter.
+  `"background"` injects via WM_CHAR without bringing the window to front.
+  `"auto"` selects BG when `DTM_BG_AUTO=1` and the target supports injection, else foreground.
+- **`terminal_send`**: new `method` + `chunkSize` parameters. BG mode sends in 100-char chunks
+  to avoid queue saturation. Windows Terminal and conhost are fast-pathed as always-supported.
+  Duplicate Enter is suppressed when input already ends with CR/LF.
+- **`set_element_value` channel chain**: ValuePattern → TextPattern2 → keyboard fallback.
+  Enabled via `DTM_SET_VALUE_CHAIN=1` (default off for safety). Uses `TryGetCurrentPattern`
+  for locale-independent TextPattern2 detection.
+- New error codes: `BackgroundInputUnsupported`, `BackgroundInputIncomplete`,
+  `SetValueAllChannelsFailed`.
+
+### Fixed
+- **Modal false-positive** (`Windows 入力エクスペリエンス` IME window detected as modal):
+  Added `SYSTEM_RESIDENT_CLASSES` blocklist; `WS_EX_TOPMOST` demoted from standalone modal
+  trigger to confidence booster (+0.03). Fixes `safe.keyboardTarget` guard always blocking
+  with lensId on Japanese Windows.
+- **Tab-strip drag detection** (`mouse_drag`): horizontal drags starting in the title-bar area
+  of tabbed apps (Notepad, Terminal, Chrome, VS Code, etc.) are now blocked by default with
+  `TabDragBlocked` error. Pass `allowTabDrag:true` to rearrange or detach tabs intentionally.
+- **`getFocusedChildHwnd`**: guard `targetThread === 0` and `attached=false` before calling
+  `GetFocus()` — prevents reading caller-thread focus when `AttachThreadInput` fails.
+
+### Changed
+- Default mouse movement speed increased from 1500 → 3000 px/sec.
+  Override with `DESKTOP_TOUCH_MOUSE_SPEED` env var or per-call `speed` parameter.
+
+### Feature Flags (default OFF — zero impact on existing users)
+- `DTM_BG_AUTO=1`: enables automatic BG channel selection for `keyboard_type` / `keyboard_press`
+  / `terminal_send` when `method:"auto"` and the target supports WM_CHAR injection.
+- `DTM_SET_VALUE_CHAIN=1`: enables TextPattern2 + keyboard fallback in `set_element_value`.
+
+### Compatibility
+- 56 tools unchanged (no additions or removals).
+- All new parameters are optional with backward-compatible defaults.
+- `DTM_BG_AUTO=0` and `DTM_SET_VALUE_CHAIN=0` (both default) preserve all existing behavior.
+
 ## [0.13.1] - 2026-04-18 — CodeQL fixes + MCP Registry listing
 
 ### Fixed
