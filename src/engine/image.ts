@@ -1,6 +1,7 @@
 import sharp from "sharp";
 import { screen, Region } from "./nutjs.js";
 import { printWindowToBuffer } from "./win32.js";
+import { nativeEngine } from "./native-engine.js";
 
 export interface CaptureOptions {
   /** Scale longest edge to this value (PNG mode). Default 1280. Ignored when format="webp". */
@@ -272,6 +273,12 @@ export async function dHashFromRaw(
   height: number,
   channels: 3 | 4
 ): Promise<bigint> {
+  // Rust native path: sync, includes bilinear resize + grayscale (no sharp dependency)
+  if (nativeEngine) {
+    return nativeEngine.dhashFromRaw(rawRgb, width, height, channels);
+  }
+
+  // TS fallback via sharp
   const { data } = await sharp(rawRgb, { raw: { width, height, channels } })
     .grayscale()
     .resize({ width: 9, height: 8, kernel: "cubic", fit: "fill" })
@@ -291,6 +298,9 @@ export async function dHashFromRaw(
 
 /** Count differing bits between two 64-bit dHash values (Hamming distance). */
 export function hammingDistance(a: bigint, b: bigint): number {
+  if (nativeEngine) {
+    return nativeEngine.hammingDistance(a, b);
+  }
   let x = a ^ b;
   let n = 0;
   while (x !== 0n) {
