@@ -172,6 +172,8 @@ describe("C3: hasModal real dialog detection", () => {
     await dismissStaleModals();
     np3 = await launchNotepad();
     try { restoreAndFocusWindow(np3.hwnd); } catch { /* non-fatal */ }
+    await sleep(400);
+  }, 15_000);
 
   afterAll(() => np3?.kill());
 
@@ -185,7 +187,7 @@ describe("C3: hasModal real dialog detection", () => {
 
   it("hasModal:true and pageState:'dialog' when Save-As dialog is open", async ({ skip }) => {
     // Open Save-As with ctrl+s (new file — dialog always appears)
-    try { focusWindow(np3.hwnd); } catch { /* non-fatal */ }
+    try { restoreAndFocusWindow(np3.hwnd); } catch { /* non-fatal */ }
     await sleep(300);
 
     await keyboardPressHandler({
