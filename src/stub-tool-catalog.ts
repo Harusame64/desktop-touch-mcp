@@ -298,16 +298,16 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "type": "string"
         },
         "includeHidden": {
+          "description": "When true, include hidden inputs (type=hidden). Default false to avoid CSRF-token / serialized-state clutter.",
           "type": "boolean",
-          "default": false,
-          "description": "When true, include hidden inputs (type=hidden). Default false to avoid CSRF-token / serialized-state clutter."
+          "default": false
         },
         "maxResults": {
+          "description": "Maximum number of form fields to return (default 100).",
           "type": "integer",
-          "minimum": 1,
-          "maximum": 500,
           "default": 100,
-          "description": "Maximum number of form fields to return (default 100)."
+          "minimum": 1,
+          "maximum": 500
         },
         "tabId": {
           "type": "string",
