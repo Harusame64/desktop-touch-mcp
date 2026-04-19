@@ -51,7 +51,9 @@ Claude がデスクトップを直接見て、直接操作する。
 npx -y @harusame64/desktop-touch-mcp
 ```
 
-npm ランチャーは初回起動時に GitHub Releases から最新の `desktop-touch-mcp-windows.zip` をダウンロードし、`%USERPROFILE%\.desktop-touch-mcp` に展開してキャッシュします。以後は新しい GitHub Release が出ていない限り、キャッシュ済みの実体を再利用します。
+npm ランチャーは npm package version に厳密に対応する runtime だけを取得します。`X.Y.Z` を実行した場合は GitHub Release `vX.Y.Z` のみを参照し、`desktop-touch-mcp-windows.zip` をダウンロードして SHA256 を検証できた場合にだけ `%USERPROFILE%\.desktop-touch-mcp` へ展開します。検証済みキャッシュは次回以降も再利用されます。
+
+キャッシュの保存先は `DESKTOP_TOUCH_MCP_HOME` で変更できます。
 
 ### Claude CLI への登録
 
@@ -92,7 +94,11 @@ cd desktop-touch-mcp
 npm install
 ```
 
-`npm install` 実行時に `prepare` スクリプトが TypeScript を `dist/` にコンパイルします。別途 `npm run build` は不要です。
+`npm install` 後にビルドを実行してください。
+
+```bash
+npm run build
+```
 
 ローカルチェックアウトを使う場合は、ビルド済みのサーバーを直接登録します。
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFile, spawn } from "node:child_process";
-import { createWriteStream, existsSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync } from "node:fs";
 import {
   mkdir,
   mkdtemp,
@@ -11,13 +11,22 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
-const REPO_API_URL = "https://api.github.com/repos/Harusame64/desktop-touch-mcp/releases/latest";
+const PACKAGE_VERSION = "0.15.4";
+const RELEASE_TAG = `v${PACKAGE_VERSION}`;
+const REPO_API_URL = `https://api.github.com/repos/Harusame64/desktop-touch-mcp/releases/tags/${RELEASE_TAG}`;
 const ASSET_NAME = "desktop-touch-mcp-windows.zip";
+const RELEASE_METADATA_FILE = ".desktop-touch-release.json";
+const RELEASE_MANIFEST = {
+  tagName: "v0.15.4",
+  assetName: ASSET_NAME,
+  sha256: "9a28370e2c4ca901b5d18bfcda7ca54a60ee3aef6bb5443980a708eac86b5df2",
+};
 const CACHE_ROOT = process.env.DESKTOP_TOUCH_MCP_HOME
   ? path.resolve(process.env.DESKTOP_TOUCH_MCP_HOME)
   : path.join(os.homedir(), ".desktop-touch-mcp");
@@ -42,33 +51,80 @@ function releaseDirForTag(tagName) {
   return path.join(RELEASES_DIR, tagToDirName(tagName));
 }
 
-async function isInstalled(releaseDir) {
-  return existsSync(path.join(releaseDir, "dist", "index.js"));
+function releaseMetadataPath(releaseDir) {
+  return path.join(releaseDir, RELEASE_METADATA_FILE);
 }
 
-async function readCurrentRelease() {
+function expectedReleaseSpec() {
+  if (RELEASE_MANIFEST.tagName !== RELEASE_TAG) {
+    throw new Error(
+      `Release manifest mismatch: PACKAGE_VERSION=${PACKAGE_VERSION}, manifest=${RELEASE_MANIFEST.tagName}`
+    );
+  }
+  if (!RELEASE_MANIFEST.sha256 || RELEASE_MANIFEST.assetName !== ASSET_NAME) {
+    throw new Error(`Missing release manifest for ${RELEASE_TAG}`);
+  }
+  return {
+    tagName: RELEASE_MANIFEST.tagName,
+    assetName: RELEASE_MANIFEST.assetName,
+    sha256: String(RELEASE_MANIFEST.sha256).toLowerCase(),
+  };
+}
+
+async function readReleaseMetadata(releaseDir) {
+  try {
+    const raw = await readFile(releaseMetadataPath(releaseDir), "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+async function isInstalled(releaseDir, expected) {
+  if (!existsSync(path.join(releaseDir, "dist", "index.js"))) return false;
+  const metadata = await readReleaseMetadata(releaseDir);
+  if (!metadata) return false;
+  return (
+    metadata.tagName === expected.tagName &&
+    metadata.assetName === expected.assetName &&
+    String(metadata.sha256 || "").toLowerCase() === expected.sha256
+  );
+}
+
+async function readCurrentRelease(expected) {
   try {
     const raw = await readFile(CURRENT_FILE, "utf8");
     const parsed = JSON.parse(raw);
     if (typeof parsed?.tagName !== "string") return null;
+    if (parsed.tagName !== expected.tagName) return null;
+    if (parsed.assetName !== expected.assetName) return null;
+    if (String(parsed.sha256 || "").toLowerCase() !== expected.sha256) return null;
     const releaseDir = releaseDirForTag(parsed.tagName);
-    if (!(await isInstalled(releaseDir))) return null;
+    if (!(await isInstalled(releaseDir, expected))) return null;
     return { tagName: parsed.tagName, releaseDir };
   } catch {
     return null;
   }
 }
 
-async function writeCurrentRelease(tagName) {
-  await mkdir(CACHE_ROOT, { recursive: true });
+async function writeReleaseMetadata(releaseDir, expected) {
   await writeFile(
-    CURRENT_FILE,
-    `${JSON.stringify({ tagName, updatedAt: new Date().toISOString() }, null, 2)}\n`,
+    releaseMetadataPath(releaseDir),
+    `${JSON.stringify({ ...expected, updatedAt: new Date().toISOString() }, null, 2)}\n`,
     "utf8"
   );
 }
 
-async function fetchLatestRelease() {
+async function writeCurrentRelease(expected) {
+  await mkdir(CACHE_ROOT, { recursive: true });
+  await writeFile(
+    CURRENT_FILE,
+    `${JSON.stringify({ ...expected, updatedAt: new Date().toISOString() }, null, 2)}\n`,
+    "utf8"
+  );
+}
+
+async function fetchReleaseByTag(expected) {
   const response = await fetch(REPO_API_URL, {
     headers: {
       "Accept": "application/vnd.github+json",
@@ -77,7 +133,7 @@ async function fetchLatestRelease() {
   });
 
   if (!response.ok) {
-    throw new Error(`GitHub Releases API returned ${response.status} ${response.statusText}`);
+    throw new Error(`GitHub Releases API returned ${response.status} ${response.statusText} for ${expected.tagName}`);
   }
 
   const release = await response.json();
@@ -86,18 +142,40 @@ async function fetchLatestRelease() {
     : undefined;
 
   if (!release.tag_name || !asset?.browser_download_url) {
-    throw new Error(`Latest release does not contain ${ASSET_NAME}`);
+    throw new Error(`Release ${expected.tagName} does not contain ${ASSET_NAME}`);
   }
 
   const tagName = String(release.tag_name);
   if (!/^v\d+\.\d+\.\d+$/.test(tagName)) {
     throw new Error(`Unexpected tag format: ${tagName}`);
   }
+  if (tagName !== expected.tagName) {
+    throw new Error(`Unexpected tag: expected ${expected.tagName}, got ${tagName}`);
+  }
 
   return {
     tagName,
     assetUrl: asset.browser_download_url,
   };
+}
+
+async function sha256File(filePath) {
+  const hash = createHash("sha256");
+  await new Promise((resolve, reject) => {
+    const stream = createReadStream(filePath);
+    stream.on("error", reject);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("end", resolve);
+  });
+  return hash.digest("hex").toLowerCase();
+}
+
+async function verifySha256(filePath, expectedSha256) {
+  const actual = await sha256File(filePath);
+  const expected = String(expectedSha256).toLowerCase();
+  if (actual !== expected) {
+    throw new Error(`SHA256 mismatch for ${ASSET_NAME}: expected ${expected}, got ${actual}`);
+  }
 }
 
 async function downloadFile(url, destination) {
@@ -144,19 +222,19 @@ async function expandZip(zipPath, destination) {
 }
 
 async function findExtractedRoot(extractDir) {
-  if (await isInstalled(extractDir)) return extractDir;
+  if (existsSync(path.join(extractDir, "dist", "index.js"))) return extractDir;
 
   const entries = await readdir(extractDir, { withFileTypes: true });
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const candidate = path.join(extractDir, entry.name);
-    if (await isInstalled(candidate)) return candidate;
+    if (existsSync(path.join(candidate, "dist", "index.js"))) return candidate;
   }
 
   throw new Error("Release zip did not contain dist/index.js");
 }
 
-async function installRelease(release) {
+async function installRelease(release, expected) {
   await mkdir(RELEASES_DIR, { recursive: true });
 
   const targetDir = releaseDirForTag(release.tagName);
@@ -167,13 +245,15 @@ async function installRelease(release) {
   try {
     log(`Downloading ${ASSET_NAME} from ${release.tagName}`);
     await downloadFile(release.assetUrl, zipPath);
+    await verifySha256(zipPath, expected.sha256);
     await mkdir(extractDir, { recursive: true });
     await expandZip(zipPath, extractDir);
 
     const extractedRoot = await findExtractedRoot(extractDir);
     await rm(targetDir, { recursive: true, force: true });
     await rename(extractedRoot, targetDir);
-    await writeCurrentRelease(release.tagName);
+    await writeReleaseMetadata(targetDir, expected);
+    await writeCurrentRelease(expected);
     log(`Installed ${release.tagName} to ${targetDir}`);
     return targetDir;
   } finally {
@@ -182,26 +262,21 @@ async function installRelease(release) {
 }
 
 async function ensureRelease() {
-  const current = await readCurrentRelease();
-
-  let latest;
-  try {
-    latest = await fetchLatestRelease();
-  } catch (error) {
-    if (current) {
-      log(`Could not check GitHub Releases; using cached ${current.tagName}`);
-      return current.releaseDir;
-    }
-    throw error;
-  }
-
-  const targetDir = releaseDirForTag(latest.tagName);
-  if (await isInstalled(targetDir)) {
-    await writeCurrentRelease(latest.tagName);
+  const expected = expectedReleaseSpec();
+  const targetDir = releaseDirForTag(expected.tagName);
+  if (await isInstalled(targetDir, expected)) {
+    await writeCurrentRelease(expected);
     return targetDir;
   }
 
-  return installRelease(latest);
+  const current = await readCurrentRelease(expected);
+  if (current) {
+    return current.releaseDir;
+  }
+
+  const release = await fetchReleaseByTag(expected);
+
+  return installRelease(release, expected);
 }
 
 function launchServer(releaseDir) {

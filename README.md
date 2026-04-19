@@ -50,7 +50,9 @@ An MCP server that gives Claude eyes and hands on Windows — 57 tools covering 
 npx -y @harusame64/desktop-touch-mcp
 ```
 
-The npm launcher downloads the latest `desktop-touch-mcp-windows.zip` from GitHub Releases on first run and caches it under `%USERPROFILE%\.desktop-touch-mcp`. Later runs reuse the cached release unless a newer GitHub Release is available.
+The npm launcher resolves runtime strictly by npm package version. For package `X.Y.Z`, it fetches only GitHub Release tag `vX.Y.Z`, downloads `desktop-touch-mcp-windows.zip`, verifies its SHA256 digest, and only then expands it under `%USERPROFILE%\.desktop-touch-mcp`. Verified cached releases are reused on later runs.
+
+Set `DESKTOP_TOUCH_MCP_HOME` to override the cache root directory.
 
 ### Register with Claude CLI
 
@@ -92,7 +94,11 @@ cd desktop-touch-mcp
 npm install
 ```
 
-`npm install` runs the `prepare` script, which compiles TypeScript to `dist/`. No separate build step is required.
+Build after install:
+
+```bash
+npm run build
+```
 
 For a local checkout, register the built server directly:
 
