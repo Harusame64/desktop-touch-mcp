@@ -28,6 +28,34 @@ export interface NativeEngine {
     channels: number,
   ): bigint;
   hammingDistance(a: bigint, b: bigint): number;
+
+  // ── Hybrid Non-CDP pipeline (optional — only present after native rebuild) ──
+
+  /**
+   * Preprocess a raw RGB/RGBA buffer for OCR (Step 2):
+   * upscale `scale`×, convert to grayscale, apply min-max contrast stretch.
+   * Returns a 1-channel grayscale buffer at (`width*scale`) × (`height*scale`).
+   */
+  preprocessImage?(opts: {
+    data: Buffer;
+    width: number;
+    height: number;
+    channels: number;
+    scale: number;
+  }): Promise<{ data: Buffer; width: number; height: number; channels: number }>;
+
+  /**
+   * Render Set-of-Mark annotations on a raw RGB/RGBA buffer (Step 4).
+   * Draws a 2px red bounding box + white/black ID badge for each label.
+   * Returns a buffer with the same dimensions and channel count as input.
+   */
+  drawSomLabels?(opts: {
+    data: Buffer;
+    width: number;
+    height: number;
+    channels: number;
+    labels: Array<{ id: number; x: number; y: number; width: number; height: number }>;
+  }): Promise<{ data: Buffer; width: number; height: number; channels: number }>;
 }
 
 // ─── UIA surface (used by uia-bridge.ts) ─────────────────────────────────────

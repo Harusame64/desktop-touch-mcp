@@ -1465,3 +1465,75 @@ try {
     return { ok: false, scrolled: false, error: String(err) };
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UIA-Blind detection (Step 1 of Hybrid Non-CDP pipeline)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Reason why a window is considered "UIA-Blind".
+ * - "too-few-elements"  : total element count is below the sparse threshold
+ * - "single-giant-pane" : a single Pane covers ≥90% of the window area,
+ *                         suggesting a non-accessible renderer (game, RDP, etc.)
+ */
+export type UiaBlindReason = "too-few-elements" | "single-giant-pane";
+
+/** Minimum element count below which the window is considered UIA-Blind. */
+const UIA_BLIND_MIN_ELEMENTS = 5;
+
+/** Area ratio threshold above which a single Pane triggers UIA-Blind. */
+const UIA_BLIND_PANE_AREA_RATIO = 0.9;
+
+/**
+ * Inspect a `UiElementsResult` and determine whether the window is "UIA-Blind"
+ * (i.e. UIA tree is too sparse to be useful — likely a game, RDP session, or
+ * app using a custom non-accessible renderer).
+ *
+ * Pure function — does not perform any async I/O.
+ *
+ * @returns `{ blind: false }` when the UIA tree looks healthy.
+ *          `{ blind: true, reason }` when the Sparsity conditions are met.
+ */
+export function detectUiaBlind(
+  result: UiElementsResult,
+): { blind: false } | { blind: true; reason: UiaBlindReason } {
+  // Condition A: total element count is critically low
+  if (result.elementCount < UIA_BLIND_MIN_ELEMENTS) {
+    return { blind: true, reason: "too-few-elements" };
+  }
+
+  // Condition B: a single Pane dominates the entire window area
+  const wr = result.windowRect;
+  if (wr != null) {
+    const windowArea = wr.width * wr.height;
+    if (windowArea > 0) {
+      const giantPane = result.elements.find((el) => {
+        if (el.controlType !== "Pane") return false;
+        const r = el.boundingRect;
+        if (!r || r.width <= 0 || r.height <= 0) return false;
+        return (r.width * r.height) / windowArea >= UIA_BLIND_PANE_AREA_RATIO;
+      });
+
+      if (giantPane) {
+        // Allow up to 4 other actionable elements before we accept the tree as valid.
+        // This prevents false positives on apps that wrap everything in one Pane
+        // but still expose buttons/edits inside it.
+        const otherActionable = result.elements.filter(
+          (el) =>
+            el !== giantPane &&
+            el.boundingRect != null &&
+            el.boundingRect.width >= 4 &&
+            el.boundingRect.height >= 4 &&
+            el.controlType !== "Pane" &&
+            el.controlType !== "Window",
+        );
+
+        if (otherActionable.length < UIA_BLIND_MIN_ELEMENTS) {
+          return { blind: true, reason: "single-giant-pane" };
+        }
+      }
+    }
+  }
+
+  return { blind: false };
+}

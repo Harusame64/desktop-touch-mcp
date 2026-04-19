@@ -133,6 +133,9 @@ const EnumDisplayMonitors = user32.func(
 const GetMonitorInfoW = user32.func(
   "bool __stdcall GetMonitorInfoW(void *hMonitor, _Inout_ MONITORINFO *lpmi)"
 );
+const MonitorFromWindow = user32.func(
+  "void* __stdcall MonitorFromWindow(void *hWnd, uint32 dwFlags)"
+);
 
 // DPI
 const GetDpiForMonitor = shcore.func(
@@ -999,4 +1002,28 @@ export function getFocusedChildHwnd(targetHwnd: unknown): bigint | null {
 /** Map a Virtual Key code to a scan code (used for lParam of WM_KEYDOWN). */
 export function vkToScanCode(vk: number): number {
   try { return (MapVirtualKeyW(vk, MAPVK_VK_TO_VSC) as number) >>> 0; } catch { return 0; }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DPI helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+const MONITOR_DEFAULTTONEAREST = 2;
+
+/**
+ * Return the effective DPI of the monitor that contains the given window.
+ * Uses MonitorFromWindow → GetDpiForMonitor(MDT_EFFECTIVE_DPI).
+ * Returns 96 (100% baseline) on any failure — safe fallback (keeps scale=2).
+ */
+export function getWindowDpi(hwnd: unknown): number {
+  try {
+    const hMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    if (!hMonitor) return 96;
+    const dpiXArr = [0];
+    const dpiYArr = [0];
+    GetDpiForMonitor(hMonitor, 0 /* MDT_EFFECTIVE_DPI */, dpiXArr, dpiYArr);
+    return dpiXArr[0] || 96;
+  } catch {
+    return 96;
+  }
 }
