@@ -23,6 +23,7 @@ import {
 import { getTextViaTextPattern } from "../engine/uia-bridge.js";
 import { stripAnsi, tailLines } from "../engine/ansi.js";
 import { getProcessIdentityByPid, getWindowProcessId } from "../engine/win32.js";
+import { resolveWindowTarget } from "./_resolve-window.js";
 
 const TERMINAL_PROCESS_RE = /^(WindowsTerminal|conhost|pwsh|powershell|cmd|bash|wsl|alacritty|wezterm|mintty)(\.exe)?$/i;
 
@@ -34,7 +35,11 @@ export const screenshotSchema = {
   windowTitle: z
     .string()
     .optional()
-    .describe("Capture only the window whose title contains this string. Prefer over full-screen when target window is known."),
+    .describe("Capture only the window whose title contains this string. Use '@active' for the current foreground window. Prefer over full-screen when target window is known."),
+  hwnd: z
+    .string()
+    .optional()
+    .describe("Direct window handle ID (takes precedence over windowTitle). Obtain from get_windows (hwnd field). String type to avoid 64-bit precision issues."),
   displayId: z
     .coerce.number()
     .int()
@@ -137,7 +142,8 @@ export const screenshotSchema = {
 };
 
 export const screenshotOcrSchema = {
-  windowTitle: z.string().describe("Title (partial match) of the window to OCR"),
+  windowTitle: z.string().describe("Title (partial match) of the window to OCR. Use '@active' for the current foreground window."),
+  hwnd: z.string().optional().describe("Direct window handle ID (takes precedence over windowTitle). String to avoid 64-bit precision issues."),
   language: z.string().default("ja").describe("BCP-47 language tag (e.g. 'ja', 'en-US')"),
   region: z
     .object({
@@ -153,7 +159,11 @@ export const screenshotOcrSchema = {
 export const screenshotBgSchema = {
   windowTitle: z
     .string()
-    .describe("Title (partial match) of the window to capture"),
+    .describe("Title (partial match) of the window to capture. Use '@active' for the current foreground window."),
+  hwnd: z
+    .string()
+    .optional()
+    .describe("Direct window handle ID (takes precedence over windowTitle). String to avoid 64-bit precision issues."),
   region: z
     .object({
       x: z.coerce.number().describe("Left edge in window-local coordinates (0 = window left)"),
@@ -288,6 +298,7 @@ function formatOriginText(
 
 export const screenshotHandler = async ({
   windowTitle,
+  hwnd: hwndParam,
   displayId,
   region,
   maxDimension,
@@ -302,6 +313,7 @@ export const screenshotHandler = async ({
   ocrLanguage,
 }: {
   windowTitle?: string;
+  hwnd?: string;
   displayId?: number;
   region?: { x: number; y: number; width: number; height: number };
   maxDimension: number;
@@ -322,6 +334,11 @@ export const screenshotHandler = async ({
   );
 
   try {
+    // Resolve hwnd / @active → effective window title
+    const resolvedWin = await resolveWindowTarget({ hwnd: hwndParam, windowTitle });
+    const effectiveTitle = resolvedWin?.title ?? windowTitle;
+    const screenshotWarnings: string[] = [...(resolvedWin?.warnings ?? [])];
+
     // ── Guard: block bare detail='image' unless explicitly confirmed ─────────
     // Only fires when 'image' was explicitly requested (detail==='image'), not when inferred
     // from dotByDot/region/displayId context — those are intentional spatial captures.
@@ -386,10 +403,11 @@ export const screenshotHandler = async ({
         }
       }
 
+      if (screenshotWarnings.length > 0) {
+        content.push({ type: "text" as const, text: JSON.stringify({ hints: { warnings: screenshotWarnings } }) });
+      }
       return { content };
     }
-
-    // ── detail=meta: window positions only, no image ─────────────────────────
     if (effectiveDetail === "meta") {
       const wins = enumWindowsInZOrder();
       updateWindowCache(wins);
@@ -403,32 +421,40 @@ export const screenshotHandler = async ({
         }));
 
       // If windowTitle filter specified, narrow down
-      const filtered = windowTitle
-        ? metaList.filter((w) => w.title.toLowerCase().includes(windowTitle.toLowerCase()))
+      const filtered = effectiveTitle
+        ? metaList.filter((w) => w.title.toLowerCase().includes(effectiveTitle.toLowerCase()))
         : metaList;
 
       return {
         content: [{
           type: "text" as const,
-          text: JSON.stringify({ detail: "meta", windows: filtered }, null, 2),
+          text: JSON.stringify(
+            {
+              detail: "meta",
+              windows: filtered,
+              ...(screenshotWarnings.length > 0 ? { hints: { warnings: screenshotWarnings } } : {}),
+            },
+            null,
+            2
+          ),
         }],
       };
     }
 
     // ── detail=text: UIA element tree as JSON ────────────────────────────────
     if (effectiveDetail === "text") {
-      if (windowTitle) {
+      if (effectiveTitle) {
         const wins = enumWindowsInZOrder();
         updateWindowCache(wins);
 
         // Resolve the full window title from the partial match, then test the
         // Chromium regex against the resolved title — not the user-supplied
         // substring (which typically won't contain the "- Google Chrome" suffix).
-        const resolvedWin = wins.find((w) =>
-          w.title.toLowerCase().includes(windowTitle.toLowerCase())
-        );
-        const resolvedTitle = resolvedWin?.title ?? windowTitle;
-        const targetHwnd = resolvedWin?.hwnd ?? null;
+        const resolvedWin2 = resolvedWin
+          ? wins.find((w) => w.title === resolvedWin.title) ?? wins.find((w) => w.title.toLowerCase().includes(effectiveTitle.toLowerCase()))
+          : wins.find((w) => w.title.toLowerCase().includes(effectiveTitle.toLowerCase()));
+        const resolvedTitle = resolvedWin2?.title ?? effectiveTitle;
+        const targetHwnd = resolvedWin2?.hwnd ?? null;
         const isChromium = CHROMIUM_TITLE_RE.test(resolvedTitle);
 
         // terminalGuard — for terminal hosts, UIA actionable is meaningless; use TextPattern.
@@ -441,7 +467,7 @@ export const screenshotHandler = async ({
           } catch { /* ignore */ }
         }
         if (isTerminal) {
-          const obs = observeTarget(windowTitle, targetHwnd!, resolvedTitle);
+          const obs = observeTarget(effectiveTitle, targetHwnd!, resolvedTitle);
           const identityHints = toTargetHints(obs.identity);
           const invalidation = obs.invalidatedBy
             ? { reason: obs.invalidatedBy, previousTarget: obs.previousTarget }
@@ -461,6 +487,7 @@ export const screenshotHandler = async ({
                   terminalGuard: true,
                   target: identityHints,
                   ...(Object.keys(cacheStateHints).length > 0 ? { caches: cacheStateHints } : {}),
+                  ...(screenshotWarnings.length > 0 ? { warnings: screenshotWarnings } : {}),
                 },
               }, null, 2),
             }],
@@ -471,7 +498,7 @@ export const screenshotHandler = async ({
         let identityHints: ReturnType<typeof toTargetHints> | null = null;
         let invalidation: ReturnType<typeof takeLastInvalidation> = null;
         if (targetHwnd !== null) {
-          const obs = observeTarget(windowTitle, targetHwnd, resolvedTitle);
+          const obs = observeTarget(effectiveTitle, targetHwnd, resolvedTitle);
           identityHints = toTargetHints(obs.identity);
           if (obs.invalidatedBy) {
             invalidation = { reason: obs.invalidatedBy, previousTarget: obs.previousTarget };
@@ -487,11 +514,11 @@ export const screenshotHandler = async ({
         if (isChromium) {
           // Skip UIA entirely for Chromium — it's slow and returns almost nothing useful.
           // Go directly to OCR fallback below.
-          result = { window: windowTitle, actionable: [], texts: [] };
+          result = { window: effectiveTitle, actionable: [], texts: [] };
           raw = null;
         } else {
           // Try cache first — large UI trees benefit from skipping PowerShell startup
-          ({ result, raw, cacheHit } = await buildUiaData(windowTitle, targetHwnd ?? undefined, true));
+          ({ result, raw, cacheHit } = await buildUiaData(effectiveTitle, targetHwnd ?? undefined, true));
         }
 
         // Compute hints from raw UIA output
@@ -507,6 +534,7 @@ export const screenshotHandler = async ({
           uiaCached?: boolean;
           target?: ReturnType<typeof toTargetHints>;
           caches?: ReturnType<typeof buildCacheStateHints>;
+          warnings?: string[];
         } = {
           winui3,
           uiaSparse,
@@ -515,6 +543,7 @@ export const screenshotHandler = async ({
           ...(cacheHit ? { uiaCached: true } : {}),
           ...(identityHints ? { target: identityHints } : {}),
           ...(Object.keys(cacheStateHints).length > 0 ? { caches: cacheStateHints } : {}),
+          ...(screenshotWarnings.length > 0 ? { warnings: screenshotWarnings } : {}),
         };
 
         // OCR fallback — fires when:
@@ -526,7 +555,7 @@ export const screenshotHandler = async ({
           (ocrFallback === "auto" && (result.actionable.length === 0 || uiaSparse || isChromium));
         if (shouldOcr) {
           try {
-            const { words, origin } = await recognizeWindow(windowTitle, ocrLanguage);
+            const { words, origin } = await recognizeWindow(effectiveTitle, ocrLanguage);
             const ocrItems = ocrWordsToActionable(words, origin);
             // Add viewportPosition to OCR items using the window region
             if (result.windowRegion) {
@@ -570,15 +599,15 @@ export const screenshotHandler = async ({
       ? { format: "webp" as const, webpQuality, grayscale, dotByDotMaxDimension }
       : { maxDimension, grayscale };
 
-    if (windowTitle) {
+    if (effectiveTitle) {
       const windows = await getWindows();
       let windowRegion: { x: number; y: number; width: number; height: number } | undefined;
       let originX = 0, originY = 0;
 
       for (const win of windows) {
-        const hwnd = (win as unknown as { windowHandle: unknown }).windowHandle;
-        const title = hwnd ? getWindowTitleW(hwnd) : await win.title;
-        if (title.toLowerCase().includes(windowTitle.toLowerCase())) {
+        const h = (win as unknown as { windowHandle: unknown }).windowHandle;
+        const title = h ? getWindowTitleW(h) : await win.title;
+        if (title.toLowerCase().includes(effectiveTitle.toLowerCase())) {
           const reg = await win.region;
           windowRegion = { x: reg.left, y: reg.top, width: reg.width, height: reg.height };
           originX = reg.left;
@@ -588,7 +617,7 @@ export const screenshotHandler = async ({
       }
 
       if (!windowRegion) {
-        return failWith(`Window not found: "${windowTitle}"`, "screenshot", { windowTitle });
+        return failWith(`Window not found: "${effectiveTitle}"`, "screenshot", { windowTitle: effectiveTitle });
       }
 
       // Sub-crop: treat region as window-local screen coordinates.
@@ -630,6 +659,7 @@ export const screenshotHandler = async ({
         content: [
           { type: "image" as const, data: result.base64, mimeType: result.mimeType },
           { type: "text" as const, text: dimensionText },
+          ...(screenshotWarnings.length > 0 ? [{ type: "text" as const, text: JSON.stringify({ hints: { warnings: screenshotWarnings } }) }] : []),
         ],
       };
     } else if (displayId !== undefined) {
@@ -680,6 +710,7 @@ export const screenshotHandler = async ({
 
 export const screenshotBgHandler = async ({
   windowTitle,
+  hwnd: hwndParam,
   region,
   maxDimension,
   dotByDot,
@@ -689,6 +720,7 @@ export const screenshotBgHandler = async ({
   fullContent,
 }: {
   windowTitle: string;
+  hwnd?: string;
   region?: { x: number; y: number; width: number; height: number };
   maxDimension: number;
   dotByDot: boolean;
@@ -698,6 +730,10 @@ export const screenshotBgHandler = async ({
   fullContent: boolean;
 }): Promise<ToolResult> => {
   try {
+    const resolvedWin = await resolveWindowTarget({ hwnd: hwndParam, windowTitle });
+    const effectiveTitle = resolvedWin?.title ?? windowTitle;
+    const bgWarnings: string[] = [...(resolvedWin?.warnings ?? [])];
+
     const windows = await getWindows();
     let hwnd: unknown = null;
     let foundTitle = "";
@@ -706,7 +742,7 @@ export const screenshotBgHandler = async ({
     for (const win of windows) {
       const h = (win as unknown as { windowHandle: unknown }).windowHandle;
       const title = h ? getWindowTitleW(h) : await win.title;
-      if (title.toLowerCase().includes(windowTitle.toLowerCase())) {
+      if (title.toLowerCase().includes(effectiveTitle.toLowerCase())) {
         hwnd = h;
         foundTitle = title;
         const reg = await win.region;
@@ -716,7 +752,7 @@ export const screenshotBgHandler = async ({
     }
 
     if (!hwnd) {
-      return failWith(`Window not found: "${windowTitle}"`, "screenshot_background", { windowTitle });
+      return failWith(`Window not found: "${effectiveTitle}"`, "screenshot_background", { windowTitle: effectiveTitle });
     }
 
     // Build capture options with optional sub-crop (image-local coordinates).
@@ -764,6 +800,7 @@ export const screenshotBgHandler = async ({
       content: [
         { type: "image" as const, data: result.base64, mimeType: result.mimeType },
         { type: "text" as const, text: dimensionText },
+        ...(bgWarnings.length > 0 ? [{ type: "text" as const, text: JSON.stringify({ hints: { warnings: bgWarnings } }) }] : []),
       ],
     };
   } catch (err) {
@@ -773,18 +810,23 @@ export const screenshotBgHandler = async ({
 
 export const screenshotOcrHandler = async ({
   windowTitle,
+  hwnd: hwndParam,
   language,
   region: subRegion,
 }: {
   windowTitle: string;
+  hwnd?: string;
   language: string;
   region?: { x: number; y: number; width: number; height: number };
 }): Promise<ToolResult> => {
   try {
+    const resolvedWin = await resolveWindowTarget({ hwnd: hwndParam, windowTitle });
+    const effectiveTitle = resolvedWin?.title ?? windowTitle;
+    const ocrWarnings: string[] = [...(resolvedWin?.warnings ?? [])];
     const wins = enumWindowsInZOrder();
-    const win = wins.find((w) => w.title.toLowerCase().includes(windowTitle.toLowerCase()));
+    const win = wins.find((w) => w.title.toLowerCase().includes(effectiveTitle.toLowerCase()));
     if (!win) {
-      return failWith(`Window not found: "${windowTitle}"`, "screenshot_ocr", { windowTitle });
+      return failWith(`Window not found: "${effectiveTitle}"`, "screenshot_ocr", { windowTitle: effectiveTitle });
     }
 
     const origin = { x: win.region.x, y: win.region.y };
@@ -844,7 +886,13 @@ export const screenshotOcrHandler = async ({
       content: [{
         type: "text" as const,
         text: JSON.stringify(
-          { windowTitle: win.title, origin, words, wordCount: words.length },
+          {
+            windowTitle: win.title,
+            origin,
+            words,
+            wordCount: words.length,
+            ...(ocrWarnings.length > 0 ? { hints: { warnings: ocrWarnings } } : {}),
+          },
           null,
           2
         ),

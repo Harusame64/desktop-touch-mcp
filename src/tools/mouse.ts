@@ -17,6 +17,7 @@ import { detectFocusLoss } from "./_focus.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled } from "./_action-guard.js";
 import { detectTabDragRisk } from "../engine/perception/tab-drag-heuristic.js";
+import { resolveWindowTarget } from "./_resolve-window.js";
 
 /**
  * Move cursor to (x, y) at the given speed.
@@ -157,7 +158,14 @@ const homingParam = z.boolean().default(true).describe(
 const windowTitleParam = z.string().optional().describe(
   "Hint: partial title of the window being clicked. " +
   "Enables window-delta correction and auto-focus if the window went behind another. " +
+  "Use '@active' for the current foreground window. " +
   "Example: \"メモ帳\", \"Google Chrome\""
+);
+
+const hwndParam = z.string().optional().describe(
+  "Direct window handle ID (takes precedence over windowTitle). " +
+  "Obtain from get_windows response (hwnd field). " +
+  "String type to avoid 64-bit precision issues."
 );
 
 const elementNameParam = z.string().optional().describe(
@@ -176,6 +184,7 @@ export const mouseMoveSchema = {
   speed: speedParam,
   homing: homingParam,
   windowTitle: windowTitleParam,
+  hwnd: hwndParam,
 };
 
 const forceFocusParam = z.boolean().optional().describe(
@@ -233,6 +242,7 @@ export const mouseClickSchema = {
   windowTitle: windowTitleParam,
   elementName: elementNameParam,
   elementId: elementIdParam,
+  hwnd: hwndParam,
   forceFocus: forceFocusParam,
   trackFocus: trackFocusParam,
   settleMs: settleMsParam,
@@ -257,6 +267,7 @@ export const mouseDragSchema = {
   speed: speedParam,
   homing: homingParam,
   windowTitle: windowTitleParam,
+  hwnd: hwndParam,
   lensId: z.string().optional().describe(
     "Optional perception lens ID. Guards and envelope same as mouse_click."
   ),
@@ -282,6 +293,7 @@ export const scrollSchema = {
   speed: speedParam,
   homing: homingParam,
   windowTitle: windowTitleParam,
+  hwnd: hwndParam,
 };
 
 export const getCursorPositionSchema = {};
@@ -291,21 +303,27 @@ export const getCursorPositionSchema = {};
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const mouseMoveHandler = async ({
-  x, y, speed, homing, windowTitle,
+  x, y, speed, homing, windowTitle, hwnd,
 }: {
-  x: number; y: number; speed?: number; homing: boolean; windowTitle?: string;
+  x: number; y: number; speed?: number; homing: boolean; windowTitle?: string; hwnd?: string;
 }): Promise<ToolResult> => {
   try {
     let tx = x, ty = y;
-    const notes: string[] = [];
+    const homingNotes: string[] = [];
+    const resolved = await resolveWindowTarget({ hwnd, windowTitle });
+    const effectiveTitle = resolved?.title ?? windowTitle;
+    const warnings: string[] = [...(resolved?.warnings ?? [])];
     if (homing) {
-      const result = await applyHoming(x, y, windowTitle);
+      const result = await applyHoming(x, y, effectiveTitle);
       tx = result.x; ty = result.y;
-      notes.push(...result.notes);
+      homingNotes.push(...result.notes);
     }
     await moveTo(tx, ty, speed);
-    const homingStr = !homing ? " [homing: off]" : notes.length ? ` [homing: ${notes.join(", ")}]` : "";
-    return ok({ ok: true, movedTo: { x: tx, y: ty }, homing: homingStr || undefined });
+    const homingStr = !homing ? " [homing: off]" : homingNotes.length ? ` [homing: ${homingNotes.join(", ")}]` : "";
+    return ok({
+      ok: true, movedTo: { x: tx, y: ty }, homing: homingStr || undefined,
+      ...(warnings.length > 0 && { hints: { warnings } }),
+    });
   } catch (err) {
     return failWith(err, "mouse_move");
   }
@@ -313,7 +331,7 @@ export const mouseMoveHandler = async ({
 
 export const mouseClickHandler = async ({
   x: xIn, y: yIn, origin, scale, button, doubleClick, tripleClick, speed, homing, windowTitle: windowTitleIn, elementName, elementId,
-  forceFocus: forceFocusArg, trackFocus, settleMs, lensId, fixId,
+  forceFocus: forceFocusArg, trackFocus, settleMs, lensId, fixId, hwnd: hwndIn,
 }: {
   x: number; y: number;
   origin?: { x: number; y: number };
@@ -321,11 +339,13 @@ export const mouseClickHandler = async ({
   button: "left" | "right" | "middle"; doubleClick: boolean; tripleClick: boolean;
   speed?: number; homing: boolean; windowTitle?: string; elementName?: string; elementId?: string;
   forceFocus?: boolean; trackFocus: boolean; settleMs: number; lensId?: string; fixId?: string;
+  hwnd?: string;
 }): Promise<ToolResult> => {
   const force = forceFocusArg ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
 
   // fixId path: resolve the suggested fix and override args
   let x = xIn, y = yIn, windowTitle = windowTitleIn;
+  const hwnd = hwndIn;
   if (fixId) {
     const { resolveFix, consumeFix } = await import("../engine/perception/suggested-fix-store.js");
     const fix = resolveFix(fixId);
@@ -359,6 +379,10 @@ export const mouseClickHandler = async ({
   }
 
   try {
+    // Resolve hwnd / @active to an effective window title (only when not using a fixId)
+    const resolvedWin = !fixId ? await resolveWindowTarget({ hwnd, windowTitle }) : null;
+    const effectiveTitle = resolvedWin?.title ?? windowTitle;
+
     // Step 1: Image-local → screen conversion.
     // When origin is given, (x,y) are image-local; convert using scale factor.
     let screenX = x, screenY = y;
@@ -380,7 +404,7 @@ export const mouseClickHandler = async ({
     let tx = screenX, ty = screenY;
     const notes: string[] = [];
     if (homing) {
-      const result = await applyHoming(screenX, screenY, windowTitle, elementName, elementId, force);
+      const result = await applyHoming(screenX, screenY, effectiveTitle, elementName, elementId, force);
       tx = result.x; ty = result.y;
       notes.push(...result.notes);
     }
@@ -400,7 +424,7 @@ export const mouseClickHandler = async ({
       perceptionEnv = buildEnvelopeFor(lensId, { toolName: "mouse_click", args: { x: tx, y: ty } }) ?? undefined;
     } else if (isAutoGuardEnabled()) {
       const descriptor: import("./_action-guard.js").ActionTargetDescriptor = {
-        kind: "coordinate", x: tx, y: ty, windowTitle,
+        kind: "coordinate", x: tx, y: ty, windowTitle: effectiveTitle,
       };
       const ag = await runActionGuard({
         toolName: "mouse_click", actionKind: "mouseClick", descriptor, clickCoordinates: { x: tx, y: ty },
@@ -434,7 +458,7 @@ export const mouseClickHandler = async ({
 
     // Detect focus loss after the click
     let focusLost = undefined;
-    const warnings: string[] = [];
+    const warnings: string[] = [...(resolvedWin?.warnings ?? [])];
 
     // Promote ForceFocusRefused from homing notes to warnings
     const idx = notes.indexOf("ForceFocusRefused");
@@ -446,7 +470,7 @@ export const mouseClickHandler = async ({
 
     if (trackFocus) {
       const fl = await detectFocusLoss({
-        target: windowTitle,
+        target: effectiveTitle,
         homingNotes: filteredNotes,
         settleMs,
       });
@@ -467,13 +491,17 @@ export const mouseClickHandler = async ({
 };
 
 export const mouseDragHandler = async ({
-  startX, startY, endX, endY, speed, homing, windowTitle, lensId, allowCrossWindowDrag, allowTabDrag,
+  startX, startY, endX, endY, speed, homing, windowTitle, hwnd, lensId, allowCrossWindowDrag, allowTabDrag,
 }: {
   startX: number; startY: number; endX: number; endY: number;
-  speed?: number; homing: boolean; windowTitle?: string; lensId?: string;
+  speed?: number; homing: boolean; windowTitle?: string; hwnd?: string; lensId?: string;
   allowCrossWindowDrag?: boolean; allowTabDrag?: boolean;
 }): Promise<ToolResult> => {
   try {
+    const resolvedWin = await resolveWindowTarget({ hwnd, windowTitle });
+    const effectiveTitle = resolvedWin?.title ?? windowTitle;
+    const dragWarnings: string[] = [...(resolvedWin?.warnings ?? [])];
+
     // Step 1: Homing correction on start point.
     let tsx = startX, tsy = startY;
     let tex = endX, tey = endY;
@@ -481,7 +509,7 @@ export const mouseDragHandler = async ({
     if (homing) {
       // Homing result gives us (correctedX, correctedY) and the underlying delta.
       // Apply the same (dx, dy) to the end point so the drag vector is preserved.
-      const result = await applyHoming(startX, startY, windowTitle);
+      const result = await applyHoming(startX, startY, effectiveTitle);
       const dx = result.x - startX;
       const dy = result.y - startY;
       tsx = result.x; tsy = result.y;
@@ -504,7 +532,7 @@ export const mouseDragHandler = async ({
       perceptionEnv = buildEnvelopeFor(lensId, { toolName: "mouse_drag" }) ?? undefined;
     } else if (isAutoGuardEnabled()) {
       const descriptor: import("./_action-guard.js").ActionTargetDescriptor = {
-        kind: "coordinate", x: tsx, y: tsy, windowTitle,
+        kind: "coordinate", x: tsx, y: tsy, windowTitle: effectiveTitle,
       };
       const ag = await runActionGuard({
         toolName: "mouse_drag", actionKind: "mouseDrag", descriptor, clickCoordinates: { x: tsx, y: tsy },
@@ -520,7 +548,7 @@ export const mouseDragHandler = async ({
 
       // Phase I: endpoint guard (v3 §5.2)
       const descEnd: import("./_action-guard.js").ActionTargetDescriptor = {
-        kind: "coordinate", x: tex, y: tey, windowTitle,
+        kind: "coordinate", x: tex, y: tey, windowTitle: effectiveTitle,
       };
       const agEnd = await runActionGuard({
         toolName: "mouse_drag", actionKind: "mouseDrag", descriptor: descEnd, clickCoordinates: { x: tex, y: tey },
@@ -596,6 +624,7 @@ export const mouseDragHandler = async ({
       ok: true, action: "drag",
       from: { x: tsx, y: tsy }, to: { x: tex, y: tey },
       ...(notes.length && { homing: notes.join(", ") }),
+      ...(dragWarnings.length > 0 && { hints: { warnings: dragWarnings } }),
       ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
     });
   } catch (err) {
@@ -604,16 +633,20 @@ export const mouseDragHandler = async ({
 };
 
 export const scrollHandler = async ({
-  direction, amount, x, y, speed, homing, windowTitle,
+  direction, amount, x, y, speed, homing, windowTitle, hwnd,
 }: {
   direction: "up" | "down" | "left" | "right"; amount: number;
-  x?: number; y?: number; speed?: number; homing: boolean; windowTitle?: string;
+  x?: number; y?: number; speed?: number; homing: boolean; windowTitle?: string; hwnd?: string;
 }): Promise<ToolResult> => {
   try {
+    const resolvedWin = await resolveWindowTarget({ hwnd, windowTitle });
+    const effectiveTitle = resolvedWin?.title ?? windowTitle;
+    const scrollWarnings: string[] = [...(resolvedWin?.warnings ?? [])];
+
     let tx = x, ty = y;
     const notes: string[] = [];
     if (homing && x !== undefined && y !== undefined) {
-      const result = await applyHoming(x, y, windowTitle);
+      const result = await applyHoming(x, y, effectiveTitle);
       tx = result.x; ty = result.y;
       notes.push(...result.notes);
     }
@@ -631,7 +664,11 @@ export const scrollHandler = async ({
         for (let i = 0; i < amount; i++) await mouse.scrollLeft(SCROLL_MULTIPLIER);
         break;
     }
-    return ok({ ok: true, scrolled: direction, steps: amount, ...(notes.length && { homing: notes.join(", ") }) });
+    return ok({
+      ok: true, scrolled: direction, steps: amount,
+      ...(notes.length && { homing: notes.join(", ") }),
+      ...(scrollWarnings.length > 0 && { hints: { warnings: scrollWarnings } }),
+    });
   } catch (err) {
     return failWith(err, "scroll");
   }
