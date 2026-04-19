@@ -5,9 +5,9 @@ import { captureAndDiff, captureAllLayers, hasBuffer } from "../engine/layer-buf
 import type { WindowInfo } from "../engine/layer-buffer.js";
 import { getWindows } from "../engine/nutjs.js";
 import { enumMonitors, getVirtualScreen, getWindowTitleW, enumWindowsInZOrder } from "../engine/win32.js";
-import { getUiElements, extractActionableElements, WINUI3_CLASS_RE } from "../engine/uia-bridge.js";
+import { getUiElements, extractActionableElements, WINUI3_CLASS_RE, detectUiaBlind } from "../engine/uia-bridge.js";
 import type { UiElementsResult } from "../engine/uia-bridge.js";
-import { recognizeWindow, ocrWordsToActionable, runOcr, mergeNearbyWords } from "../engine/ocr-bridge.js";
+import { recognizeWindow, ocrWordsToActionable, runOcr, mergeNearbyWords, runSomPipeline } from "../engine/ocr-bridge.js";
 import { updateWindowCache } from "../engine/window-cache.js";
 import { CHROMIUM_TITLE_RE } from "./workspace.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
@@ -553,6 +553,53 @@ export const screenshotHandler = async ({
         const shouldOcr =
           ocrFallback === "always" ||
           (ocrFallback === "auto" && (result.actionable.length === 0 || uiaSparse || isChromium));
+
+        // SoM mode — when UIA-Blind is detected AND OCR would fire, run the full
+        // Set-of-Mark pipeline (preprocess → OCR → cluster → draw) instead of the
+        // plain word-list fallback. Falls through to normal OCR on any error.
+        const uiaBlind = raw !== null ? detectUiaBlind(raw) : { blind: false as const };
+        if (shouldOcr && uiaBlind.blind) {
+          try {
+            const somResult = await runSomPipeline(effectiveTitle, targetHwnd, ocrLanguage);
+            hints.ocrFallbackFired = true;
+            (hints as Record<string, unknown>).somMode = true;
+            (hints as Record<string, unknown>).uiaBlindReason = uiaBlind.reason;
+
+            const textContent = {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  window: resolvedTitle,
+                  hints,
+                  // Step 5: structured element list with ID-to-coordinate mapping
+                  elements: somResult.elements,
+                },
+                null,
+                2,
+              ),
+            };
+
+            const contentItems: Array<
+              { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
+            > = [textContent];
+
+            // Attach the annotated SoM image when Rust rendering succeeded
+            if (somResult.somImage) {
+              contentItems.push({
+                type: "image" as const,
+                data: somResult.somImage.base64,
+                mimeType: somResult.somImage.mimeType,
+              });
+            }
+
+            return { content: contentItems };
+          } catch (somErr) {
+            // SoM pipeline failed (win-ocr not installed, Rust unavailable, etc.)
+            // Fall through to the regular OCR word-list path below.
+            console.error("[SoM] pipeline failed, falling back to regular OCR:", somErr);
+          }
+        }
+
         if (shouldOcr) {
           try {
             const { words, origin } = await recognizeWindow(effectiveTitle, ocrLanguage);

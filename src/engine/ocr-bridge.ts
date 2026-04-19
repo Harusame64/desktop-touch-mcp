@@ -2,8 +2,10 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, dirname } from "node:path";
+import sharp from "sharp";
 import { captureWindowBackground } from "./image.js";
-import { enumWindowsInZOrder } from "./win32.js";
+import { enumWindowsInZOrder, getWindowDpi, printWindowToBuffer } from "./win32.js";
+import { nativeEngine } from "./native-engine.js";
 import type { ActionableElement } from "./uia-bridge.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -308,4 +310,259 @@ export function ocrWordsToActionable(
     });
   }
   return result;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Set-of-Mark pipeline (Step 3 + Step 5 — Hybrid Non-CDP)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One UI element produced by the SoM pipeline.
+ * `clickAt` and `region` are in **absolute screen coordinates**.
+ */
+export interface SomElement {
+  /** Sequential 1-based ID matching the badge drawn on the SoM image. */
+  id: number;
+  /** Merged text label (after word clustering). */
+  text: string;
+  /** Absolute screen coordinates of the element centre — pass to mouse_click. */
+  clickAt: { x: number; y: number };
+  /** Absolute screen bounding rectangle. */
+  region: { x: number; y: number; width: number; height: number };
+}
+
+export interface SomPipelineResult {
+  /** Annotated SoM image (PNG base64). null when Rust draw_som_labels unavailable. */
+  somImage: { base64: string; mimeType: "image/png" } | null;
+  /** Structured element list with ID-to-coordinate mapping. */
+  elements: SomElement[];
+  /** Upscale factor used during OCR preprocessing (for debugging). */
+  preprocessScale: number;
+}
+
+/**
+ * Cluster merged OCR words into UI element groups and assign sequential IDs.
+ *
+ * Applies a second pass of `mergeNearbyWords` with a larger gap threshold
+ * (`elementGapThreshold`, default 35px) to join words that form a single
+ * clickable element (e.g., "Save As", "検索 ボタン").
+ *
+ * The result is a flat array of `SomElement` ordered top→bottom, left→right.
+ */
+export function clusterOcrWords(words: OcrWord[], elementGapThreshold = 35): SomElement[] {
+  // Reuse the merge logic with a wider gap to produce element-level groups.
+  const clustered = mergeNearbyWords(words, elementGapThreshold);
+
+  return clustered
+    .filter((w) => w.text.trim().length > 0)
+    .map((w, i): SomElement => ({
+      id: i + 1,
+      text: w.text.trim(),
+      clickAt: {
+        x: Math.round(w.bbox.x + w.bbox.width / 2),
+        y: Math.round(w.bbox.y + w.bbox.height / 2),
+      },
+      region: {
+        x: w.bbox.x,
+        y: w.bbox.y,
+        width: w.bbox.width,
+        height: w.bbox.height,
+      },
+    }));
+}
+
+/**
+ * Full UIA-Blind SoM pipeline for a single window.
+ *
+ * Steps:
+ *  1. Capture raw RGBA via PrintWindow (background-safe, no focus steal).
+ *  2. Preprocess via Rust `preprocessImage` (or sharp fallback):
+ *     upscale `scale`× + grayscale + contrast stretch.
+ *  3. Encode preprocessed buffer to PNG → feed to win-ocr.exe.
+ *  4. Scale OCR bbox coords back to original image space (÷ scale).
+ *  5. Convert image-local coords → absolute screen coords (+ origin).
+ *  6. `mergeNearbyWords` → `clusterOcrWords` → `SomElement[]`.
+ *  7. Render SoM image via Rust `drawSomLabels` (or skip if unavailable).
+ *  8. Return `{ somImage, elements, preprocessScale }`.
+ *
+ * @param windowTitle  Partial window title (same matching convention as UIA calls).
+ * @param hwnd         Optional HWND (bigint) — uses enumWindowsInZOrder when null.
+ * @param ocrLang      BCP-47 language tag (default "ja").
+ * @param scale        Upscale factor for OCR preprocessing: 2 or 3 (default 2).
+ */
+export async function runSomPipeline(
+  windowTitle: string,
+  hwnd?: bigint | null,
+  ocrLang = "ja",
+  scale = 2,
+): Promise<SomPipelineResult> {
+  // ── Locate window & capture raw RGBA ───────────────────────────────────────
+  let targetHwnd: unknown = hwnd ?? null;
+  let origin = { x: 0, y: 0 };
+
+  if (!targetHwnd) {
+    const wins = enumWindowsInZOrder();
+    const win  = wins.find((w) => w.title.toLowerCase().includes(windowTitle.toLowerCase()));
+    if (!win) throw new Error(`runSomPipeline: window not found: "${windowTitle}"`);
+    targetHwnd = win.hwnd;
+    origin = { x: win.region.x, y: win.region.y };
+  } else {
+    // Resolve origin from enumWindowsInZOrder for the known hwnd
+    const wins = enumWindowsInZOrder();
+    const win  = wins.find((w) => w.hwnd === targetHwnd);
+    if (win) {
+      origin = { x: win.region.x, y: win.region.y };
+    } else {
+      console.error(
+        `[SoM] WARNING: hwnd provided but window not found in enumWindowsInZOrder ` +
+        `(hwnd=${String(targetHwnd)}). Screen coordinates will be image-local (origin=0,0). ` +
+        `The window may be minimized or on a different virtual desktop.`,
+      );
+    }
+  }
+
+  const { data: rawData, width, height } = printWindowToBuffer(targetHwnd);
+  // printWindowToBuffer returns RGBA (4 channels)
+
+  const _somT0 = performance.now();
+
+  // ── Auto-scale: prevent OOM on high-resolution captures ────────────────────
+  // 4K (8MP) scale=2 → 132 MB f32 peak in Rust → acceptable.
+  // 5K (14.7MP) scale=2 → ~240 MB → marginal.
+  // 8K (33MP) scale=2 → ~530 MB f32 → OOM risk near Node.js 1.4 GB heap limit.
+  // Hard-cap: force scale=1 when the captured area exceeds 8 megapixels.
+  const megapixels = (width * height) / 1_000_000;
+  const oomScale = megapixels > 8 ? 1 : scale;
+  if (oomScale !== scale) {
+    console.error(
+      `[SoM] auto-scale: ${width}×${height} = ${megapixels.toFixed(1)}MP > 8MP threshold ` +
+      `→ scale clamped ${scale} → ${oomScale} to prevent OOM`,
+    );
+  }
+
+  // ── DPI-linked scale: high-DPI monitors already have large physical pixels ──
+  // At 150%+ DPI (≥144dpi), text pixels are already 24px+ tall.
+  // Upscaling doubles memory with minimal OCR benefit.
+  // Threshold: 144dpi = 150% scaling (conservative — not 120dpi/125%).
+  const DPI_SCALE1_THRESHOLD = 144;
+  const windowDpi = getWindowDpi(targetHwnd);
+  const dpiScale = windowDpi >= DPI_SCALE1_THRESHOLD ? 1 : oomScale;
+  if (dpiScale !== oomScale) {
+    console.error(
+      `[SoM] dpi: ${windowDpi} (${Math.round(windowDpi / 96 * 100)}%) ≥ ${DPI_SCALE1_THRESHOLD} ` +
+      `→ scale clamped ${oomScale} → ${dpiScale}`,
+    );
+  } else {
+    console.error(`[SoM] dpi: ${windowDpi} (${Math.round(windowDpi / 96 * 100)}%) → scale=${dpiScale}`);
+  }
+  const effectiveScale = dpiScale;
+
+  // ── Step 2: Preprocess (upscale + grayscale + contrast) ────────────────────
+  let preprocessedData: Buffer;
+  let outW: number;
+  let outH: number;
+
+  const _tPreStart = performance.now();
+  if (nativeEngine?.preprocessImage) {
+    const res = await nativeEngine.preprocessImage({
+      data: rawData,
+      width,
+      height,
+      channels: 4,
+      scale: effectiveScale,
+    });
+    preprocessedData = res.data as Buffer;
+    outW = res.width;
+    outH = res.height;
+  } else {
+    // sharp fallback: grayscale + bilinear upscale (matches Rust bilinear_resize_u8)
+    const { data, info } = await sharp(rawData, { raw: { width, height, channels: 4 } })
+      .grayscale()
+      .resize({ width: width * effectiveScale, height: height * effectiveScale, kernel: "mitchell" })
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    preprocessedData = data;
+    outW = info.width;
+    outH = info.height;
+  }
+  console.error(`[SoM] preprocess: ${(performance.now() - _tPreStart).toFixed(1)}ms  (${width}×${height} → ${outW}×${outH}, effectiveScale=${effectiveScale})`);
+
+  // ── Step 3: OCR on preprocessed PNG ────────────────────────────────────────
+  const pngBuffer = await sharp(preprocessedData, {
+    raw: { width: outW, height: outH, channels: 1 },
+  })
+    .png({ compressionLevel: 1 })
+    .toBuffer();
+
+  const _tOcrStart = performance.now();
+  const rawWords = await runOcr(pngBuffer.toString("base64"), ocrLang);
+  console.error(`[SoM] win-ocr: ${(performance.now() - _tOcrStart).toFixed(1)}ms  (${rawWords.length} words)`);
+
+  // ── Scale OCR coords back to original image space (÷ effectiveScale) ────────
+  // Use effectiveScale (not scale) — DPI/OOM guards may have clamped it to 1.
+  const scaledWords: OcrWord[] = rawWords.map((w) => ({
+    text: w.text,
+    bbox: {
+      x:      Math.round(w.bbox.x      / effectiveScale),
+      y:      Math.round(w.bbox.y      / effectiveScale),
+      width:  Math.max(1, Math.round(w.bbox.width  / effectiveScale)),
+      height: Math.max(1, Math.round(w.bbox.height / effectiveScale)),
+    },
+  }));
+
+  // Convert image-local → absolute screen coordinates
+  const screenWords: OcrWord[] = scaledWords.map((w) => ({
+    text: w.text,
+    bbox: {
+      x:      origin.x + w.bbox.x,
+      y:      origin.y + w.bbox.y,
+      width:  w.bbox.width,
+      height: w.bbox.height,
+    },
+  }));
+
+  // ── Merge chars → words → elements (2-stage clustering) ────────────────────
+  // Stage 1 (gap≈12px): raw OCR words → merged word spans  [handled in clusterOcrWords]
+  // Stage 2 (gap=35px): word spans   → logical UI elements [handled in clusterOcrWords]
+  // This call applies stage 1 on screenWords, then stage 2 inside clusterOcrWords.
+  const _tClsStart = performance.now();
+  const merged   = mergeNearbyWords(screenWords);
+  const elements = clusterOcrWords(merged);
+  console.error(`[SoM] clustering: ${(performance.now() - _tClsStart).toFixed(1)}ms  (${merged.length} words → ${elements.length} elements)`);
+
+  // ── Step 4: Render SoM image via Rust ───────────────────────────────────────
+  let somImage: SomPipelineResult["somImage"] = null;
+
+  if (nativeEngine?.drawSomLabels) {
+    // Labels are in image-local coordinates (subtract origin)
+    const labels = elements.map((el) => ({
+      id:     el.id,
+      x:      Math.max(0, el.region.x - origin.x),
+      y:      Math.max(0, el.region.y - origin.y),
+      width:  el.region.width,
+      height: el.region.height,
+    }));
+
+    const _tDrawStart = performance.now();
+    const drawn = await nativeEngine.drawSomLabels({
+      data:     rawData,
+      width,
+      height,
+      channels: 4,
+      labels,
+    });
+    console.error(`[SoM] drawSomLabels (Rust): ${(performance.now() - _tDrawStart).toFixed(1)}ms  (${labels.length} labels)`);
+
+    const pngOut = await sharp(drawn.data as Buffer, {
+      raw: { width: drawn.width, height: drawn.height, channels: drawn.channels as 1 | 2 | 3 | 4 },
+    })
+      .png({ compressionLevel: 6 })
+      .toBuffer();
+
+    somImage = { base64: pngOut.toString("base64"), mimeType: "image/png" };
+  }
+
+  console.error(`[SoM] total pipeline: ${(performance.now() - _somT0).toFixed(1)}ms`);
+
+  return { somImage, elements, preprocessScale: effectiveScale };
 }

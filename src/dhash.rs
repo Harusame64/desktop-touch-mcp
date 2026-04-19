@@ -49,7 +49,12 @@ pub fn dhash_from_raw(raw: &[u8], width: u32, height: u32, channels: u32) -> Res
 
 /// Convert raw RGB/RGBA to grayscale using BT.601 luminance coefficients.
 /// Returns a Vec<f32> of luminance values (one per pixel).
-fn to_grayscale(raw: &[u8], width: u32, height: u32, channels: u32) -> Vec<f32> {
+///
+/// Note: `pub(crate)` visibility was added for potential reuse within the crate,
+/// but `image_processing.rs` uses its own independent u8 integer implementation
+/// (`to_grayscale_u8`) for memory efficiency. This f32 version is used only by
+/// `dhash_from_raw` below.
+pub(crate) fn to_grayscale(raw: &[u8], width: u32, height: u32, channels: u32) -> Vec<f32> {
     let pixel_count = (width as usize) * (height as usize);
     let ch = channels as usize;
     let mut gray = Vec::with_capacity(pixel_count);
@@ -65,8 +70,10 @@ fn to_grayscale(raw: &[u8], width: u32, height: u32, channels: u32) -> Vec<f32> 
     gray
 }
 
-/// Bilinear interpolation resize of a single-channel (grayscale) image.
-fn bilinear_resize(
+/// Bilinear interpolation resize of a single-channel f32 grayscale image.
+/// Used exclusively by `dhash_from_raw`; `image_processing.rs` has a separate
+/// u8 integer implementation (`bilinear_resize_u8`) for memory efficiency.
+pub(crate) fn bilinear_resize(
     src: &[f32],
     src_w: u32,
     src_h: u32,
