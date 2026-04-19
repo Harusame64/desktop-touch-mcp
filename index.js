@@ -62,4 +62,8 @@ export const uiaGetElementBounds = nativeBinding.uiaGetElementBounds;
 export const uiaGetElementChildren = nativeBinding.uiaGetElementChildren;
 export const uiaGetTextViaTextPattern = nativeBinding.uiaGetTextViaTextPattern;
 
+// ─── Hybrid Non-CDP pipeline (Step 2 + Step 4) ───────────────────────────────
+export const preprocessImage  = nativeBinding.preprocessImage;
+export const drawSomLabels    = nativeBinding.drawSomLabels;
+
 export default nativeBinding;

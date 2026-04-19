@@ -9,12 +9,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // ─── Hoist mocks ───────────────────────────────────────────────────────────────
 
 const { mockEnumWindows, mockBuildWindowIdentity, mockRefreshWin32Fluents,
-        mockFindContainingWindow, mockGetCachedWindowByTitle } = vi.hoisted(() => ({
+        mockFindContainingWindow, mockGetCachedWindowByTitle,
+        mockListTabsLight } = vi.hoisted(() => ({
   mockEnumWindows: vi.fn(),
   mockBuildWindowIdentity: vi.fn(),
   mockRefreshWin32Fluents: vi.fn(),
   mockFindContainingWindow: vi.fn(),
   mockGetCachedWindowByTitle: vi.fn(),
+  mockListTabsLight: vi.fn(),
 }));
 
 vi.mock("../../src/engine/win32.js", () => ({
@@ -30,6 +32,12 @@ vi.mock("../../src/engine/window-cache.js", () => ({
   findContainingWindow: mockFindContainingWindow,
   getCachedWindowByTitle: mockGetCachedWindowByTitle,
   computeWindowDelta: vi.fn(() => null),
+}));
+
+// Mock CDP bridge to prevent real Chrome connections in unit tests
+vi.mock("../../src/engine/cdp-bridge.js", () => ({
+  listTabsLight: mockListTabsLight,
+  DEFAULT_CDP_PORT: 9222,
 }));
 
 // Mock compileLens to track idSeed calls
@@ -63,10 +71,13 @@ beforeEach(() => {
   mockRefreshWin32Fluents.mockReset();
   mockFindContainingWindow.mockReset();
   mockGetCachedWindowByTitle.mockReset();
+  mockListTabsLight.mockReset();
   compiledLensIds.length = 0;
 
   mockRefreshWin32Fluents.mockReturnValue([]);
   mockBuildWindowIdentity.mockReturnValue(null);
+  // Default: CDP unavailable (listTabsLight throws)
+  mockListTabsLight.mockRejectedValue(new Error("CDP unavailable (mock)"));
 });
 
 // ─── Window kind ──────────────────────────────────────────────────────────────

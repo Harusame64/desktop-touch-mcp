@@ -17,7 +17,27 @@ import { getContextHandler } from "../../src/tools/context.js";
 import { keyboardTypeHandler, keyboardPressHandler } from "../../src/tools/keyboard.js";
 import { launchNotepad, type NpInstance } from "./helpers/notepad-launcher.js";
 import { parsePayload, sleep } from "./helpers/wait.js";
-import { focusWindow } from "../../src/engine/win32.js";
+import { focusWindow, enumWindowsInZOrder } from "../../src/engine/win32.js";
+
+/**
+ * Dismiss stale modal dialogs left by previous E2E tests.
+ * The get_context handler checks ALL windows against MODAL_RE,
+ * so a leftover dialog from another test file pollutes hasModal.
+ */
+async function dismissStaleModals() {
+  const MODAL_RE = /dialog|confirm|prompt|alert|error|警告|エラー|確認|通知|ダイアログ/i;
+  const wins = enumWindowsInZOrder();
+  for (const w of wins) {
+    if (MODAL_RE.test(w.title)) {
+      try {
+        focusWindow(w.hwnd);
+        await sleep(200);
+        await keyboardPressHandler({ keys: "escape", trackFocus: false, settleMs: 200 });
+      } catch { /* best-effort */ }
+    }
+  }
+  await sleep(300);
+}
 
 let np: NpInstance;
 
@@ -27,9 +47,10 @@ async function focusNotepad() {
 }
 
 beforeAll(async () => {
+  await dismissStaleModals();
   np = await launchNotepad();
   await focusNotepad();
-}, 10_000);
+}, 15_000);
 
 afterAll(() => np?.kill());
 
@@ -148,10 +169,11 @@ describe("C3: hasModal real dialog detection", () => {
   let np3: NpInstance;
 
   beforeAll(async () => {
+    await dismissStaleModals();
     np3 = await launchNotepad();
     try { focusWindow(np3.hwnd); } catch { /* non-fatal */ }
     await sleep(400);
-  }, 10_000);
+  }, 15_000);
 
   afterAll(() => np3?.kill());
 
