@@ -21,6 +21,7 @@ import {
 import { listEventsForTarget, deriveLensTargetKey } from "../engine/perception/target-timeline.js";
 import { FLUENT_KINDS, GUARD_KINDS } from "../engine/perception/types.js";
 import type { LensSpec } from "../engine/perception/types.js";
+import { resolveWindowTarget } from "./_resolve-window.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -34,10 +35,17 @@ export const perceptionRegisterSchema = {
     z.object({
       kind: z.literal("window"),
       match: z.object({
-        titleIncludes: z.string().min(1).describe(
+        titleIncludes: z.string().min(1).optional().describe(
           "Case-insensitive substring that must appear in the window title. " +
-          "The foreground window is preferred when multiple windows match."
+          "The foreground window is preferred when multiple windows match. " +
+          "Use '@active' to target the current foreground window."
         ),
+        hwnd: z.string().max(20).optional().describe(
+          "Direct window handle ID. Takes precedence over titleIncludes. " +
+          "String to avoid 64-bit precision issues. Obtain from get_windows."
+        ),
+      }).refine(m => m.titleIncludes || m.hwnd, {
+        message: "window match requires at least titleIncludes or hwnd",
       }),
     }),
     z.object({
@@ -99,9 +107,14 @@ export const perceptionListSchema = {};
 // Handlers
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Extended target type that includes optional hwnd for resolution before creating the spec
+type PerceptionRegisterTarget =
+  | { kind: "window"; match: { titleIncludes?: string; hwnd?: string } }
+  | { kind: "browserTab"; match: { urlIncludes?: string; titleIncludes?: string } };
+
 export const perceptionRegisterHandler = async (params: {
   name: string;
-  target: LensSpec["target"];
+  target: PerceptionRegisterTarget;
   maintain: string[];
   guards: string[];
   guardPolicy: "warn" | "block";
@@ -113,9 +126,33 @@ export const perceptionRegisterHandler = async (params: {
       return failArgs("name must not be blank", "perception_register");
     }
 
+    // Resolve hwnd / @active → titleIncludes for window lenses
+    let resolvedTarget: LensSpec["target"];
+    const resolveWarnings: string[] = [];
+    if (params.target.kind === "window") {
+      const match = params.target.match;
+      const hwndStr = match.hwnd;
+      const titleIn = match.titleIncludes;
+      if (hwndStr || titleIn === "@active") {
+        const resolved = await resolveWindowTarget({ hwnd: hwndStr, windowTitle: titleIn });
+        if (resolved) {
+          resolvedTarget = { kind: "window", match: { titleIncludes: resolved.title } };
+          if (resolved.warnings.length > 0) {
+            resolveWarnings.push(...resolved.warnings);
+          }
+        } else {
+          resolvedTarget = { kind: "window", match: { titleIncludes: titleIn ?? "" } };
+        }
+      } else {
+        resolvedTarget = { kind: "window", match: { titleIncludes: titleIn ?? "" } };
+      }
+    } else {
+      resolvedTarget = params.target as LensSpec["target"];
+    }
+
     const spec: LensSpec = {
       name: params.name.trim(),
-      target: params.target,
+      target: resolvedTarget,
       maintain: params.maintain as LensSpec["maintain"],
       guards: params.guards as LensSpec["guards"],
       guardPolicy: params.guardPolicy,
@@ -131,6 +168,7 @@ export const perceptionRegisterHandler = async (params: {
       digest: result.digest,
       name: params.name.trim(),
       hint: `Pass lensId:'${result.lensId}' to keyboard/mouse/click tools to get guards and perception envelope.`,
+      ...(resolveWarnings.length > 0 && { hints: { warnings: resolveWarnings } }),
     });
   } catch (err) {
     return failWith(err, "perception_register");

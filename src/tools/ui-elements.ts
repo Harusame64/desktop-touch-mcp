@@ -10,19 +10,22 @@ import { withRichNarration, narrateParam } from "./_narration.js";
 import { buildHintsForTitle } from "../engine/identity-tracker.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
+import { resolveWindowTarget } from "./_resolve-window.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getUiElementsSchema = {
-  windowTitle: z.string().max(200).describe("Partial window title to find the target window"),
+  windowTitle: z.string().max(200).describe("Partial window title to find the target window. Use '@active' for the current foreground window."),
+  hwnd: z.string().max(20).optional().describe("Direct window handle ID (takes precedence over windowTitle). String to avoid 64-bit precision issues."),
   maxDepth: z.coerce.number().int().min(1).max(8).default(4).describe("Maximum depth of the element tree to traverse (default 4)"),
   maxElements: z.coerce.number().int().min(1).max(200).default(80).describe("Maximum number of elements to return (default 80)"),
 };
 
 export const clickElementSchema = {
-  windowTitle: z.string().max(200).describe("Partial window title of the target window"),
+  windowTitle: z.string().max(200).describe("Partial window title of the target window. Use '@active' for the current foreground window."),
+  hwnd: z.string().max(20).optional().describe("Direct window handle ID (takes precedence over windowTitle). String to avoid 64-bit precision issues."),
   name: z.string().max(200).optional().describe("Element name/label (partial match, case-insensitive)"),
   automationId: z.string().max(200).optional().describe("Exact AutomationId of the element"),
   controlType: z.string().max(100).optional().describe("Control type filter, e.g. 'Button', 'MenuItem'"),
@@ -35,7 +38,8 @@ export const clickElementSchema = {
 };
 
 export const setElementValueSchema = {
-  windowTitle: z.string().max(200).describe("Partial window title"),
+  windowTitle: z.string().max(200).describe("Partial window title. Use '@active' for the current foreground window."),
+  hwnd: z.string().max(20).optional().describe("Direct window handle ID (takes precedence over windowTitle). String to avoid 64-bit precision issues."),
   value: z.string().max(10000).describe("The value to set"),
   name: z.string().max(200).optional().describe("Element name/label (partial match)"),
   automationId: z.string().max(200).optional().describe("Exact AutomationId of the element"),
@@ -47,7 +51,8 @@ export const setElementValueSchema = {
 };
 
 export const scopeElementSchema = {
-  windowTitle: z.string().max(200).describe("Partial window title of the target window"),
+  windowTitle: z.string().max(200).describe("Partial window title of the target window. Use '@active' for the current foreground window."),
+  hwnd: z.string().max(20).optional().describe("Direct window handle ID (takes precedence over windowTitle). String to avoid 64-bit precision issues."),
   name: z.string().max(200).optional().describe("Element name/label (partial match, case-insensitive)"),
   automationId: z.string().max(200).optional().describe("Exact AutomationId of the element"),
   controlType: z.string().max(100).optional().describe("Control type filter, e.g. 'Edit', 'Button', 'List'"),
@@ -61,16 +66,21 @@ export const scopeElementSchema = {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getUiElementsHandler = async ({
-  windowTitle, maxDepth, maxElements,
-}: { windowTitle: string; maxDepth: number; maxElements: number }): Promise<ToolResult> => {
+  windowTitle, hwnd: hwndParam, maxDepth, maxElements,
+}: { windowTitle: string; hwnd?: string; maxDepth: number; maxElements: number }): Promise<ToolResult> => {
   try {
-    const hintsBlock = buildHintsForTitle(windowTitle);
-    const result = await getUiElements(windowTitle, maxDepth, maxElements, 10000, {
+    const resolvedWin = await resolveWindowTarget({ hwnd: hwndParam, windowTitle });
+    const effectiveTitle = resolvedWin?.title ?? windowTitle;
+    const uiWarnings: string[] = [...(resolvedWin?.warnings ?? [])];
+    const hintsBlock = buildHintsForTitle(effectiveTitle);
+    const result = await getUiElements(effectiveTitle, maxDepth, maxElements, 10000, {
       hwnd: hintsBlock?.hwnd, cached: false,
     });
-    const enriched = hintsBlock
-      ? { ...result, hints: { target: hintsBlock.target, caches: hintsBlock.caches } }
-      : result;
+    const hints = {
+      ...(hintsBlock ? { target: hintsBlock.target, caches: hintsBlock.caches } : {}),
+      ...(uiWarnings.length > 0 ? { warnings: uiWarnings } : {}),
+    };
+    const enriched = Object.keys(hints).length > 0 ? { ...result, hints } : result;
     return ok(enriched, true);
   } catch (err) {
     return failWith(err, "get_ui_elements", { windowTitle });
@@ -78,12 +88,13 @@ export const getUiElementsHandler = async ({
 };
 
 export const clickElementHandler = async ({
-  windowTitle, name, automationId, controlType, lensId, fixId,
-}: { windowTitle: string; name?: string; automationId?: string; controlType?: string; lensId?: string; fixId?: string }): Promise<ToolResult> => {
+  windowTitle, hwnd: hwndParam, name, automationId, controlType, lensId, fixId,
+}: { windowTitle: string; hwnd?: string; name?: string; automationId?: string; controlType?: string; lensId?: string; fixId?: string }): Promise<ToolResult> => {
   // Phase G: fixId approval prologue (declared outside try for catch block visibility)
   let effectiveWindowTitle = windowTitle;
   let effectiveName = name;
   let effectiveAutomationId = automationId;
+  let winWarnings: string[] = [];
   try {
     if (fixId) {
       const vr = validateAndPrepareFix(fixId, "click_element");
@@ -92,6 +103,12 @@ export const clickElementHandler = async ({
       if (typeof vr.fix.args.name === "string") effectiveName = vr.fix.args.name;
       if (typeof vr.fix.args.automationId === "string") effectiveAutomationId = vr.fix.args.automationId;
       consumeFix(fixId);  // consume before executing
+    } else {
+      const resolvedWin = await resolveWindowTarget({ hwnd: hwndParam, windowTitle });
+      if (resolvedWin) {
+        effectiveWindowTitle = resolvedWin.title;
+        winWarnings = resolvedWin.warnings;
+      }
     }
 
     if (!effectiveName && !effectiveAutomationId) {
@@ -127,9 +144,11 @@ export const clickElementHandler = async ({
     if (!result.ok) {
       return failWith(result.error ?? "Unknown error", "click_element", { windowTitle: effectiveWindowTitle, name: effectiveName, automationId: effectiveAutomationId });
     }
-    const enriched = hintsBlock
-      ? { ...result, hints: { target: hintsBlock.target, caches: hintsBlock.caches } }
-      : result;
+    const hints = {
+      ...(hintsBlock ? { target: hintsBlock.target, caches: hintsBlock.caches } : {}),
+      ...(winWarnings.length > 0 ? { warnings: winWarnings } : {}),
+    };
+    const enriched = Object.keys(hints).length > 0 ? { ...result, hints } : result;
     return ok({ ...enriched, ...(perceptionEnv && { _perceptionForPost: perceptionEnv }) });
   } catch (err) {
     return failWith(err, "click_element", { windowTitle: effectiveWindowTitle, name: effectiveName, automationId: effectiveAutomationId });
@@ -142,11 +161,14 @@ function isSetValueChainEnabled(): boolean {
 }
 
 export const setElementValueHandler = async ({
-  windowTitle, value, name, automationId, lensId,
-}: { windowTitle: string; value: string; name?: string; automationId?: string; lensId?: string }): Promise<ToolResult> => {
+  windowTitle, hwnd: hwndParam, value, name, automationId, lensId,
+}: { windowTitle: string; hwnd?: string; value: string; name?: string; automationId?: string; lensId?: string }): Promise<ToolResult> => {
   try {
+    const resolvedWin = await resolveWindowTarget({ hwnd: hwndParam, windowTitle });
+    const effectiveTitle = resolvedWin?.title ?? windowTitle;
+    const uiWarnings: string[] = [...(resolvedWin?.warnings ?? [])];
     if (!name && !automationId) {
-      return failArgs("Provide at least one of: name, automationId", "set_element_value", { windowTitle });
+      return failArgs("Provide at least one of: name, automationId", "set_element_value", { windowTitle: effectiveTitle });
     }
 
     let perceptionEnv: import("../engine/perception/types.js").PostPerception | undefined;
@@ -164,7 +186,7 @@ export const setElementValueHandler = async ({
     } else if (isAutoGuardEnabled()) {
       const ag = await runActionGuard({
         toolName: "set_element_value", actionKind: "uiaSetValue",
-        descriptor: { kind: "window", titleIncludes: windowTitle },
+        descriptor: { kind: "window", titleIncludes: effectiveTitle },
       });
       if (ag.block) {
         return failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "set_element_value", { _perceptionForPost: ag.summary });
@@ -172,27 +194,31 @@ export const setElementValueHandler = async ({
       perceptionEnv = ag.summary;
     }
 
-    const hintsBlock = buildHintsForTitle(windowTitle);
+    const hintsBlock = buildHintsForTitle(effectiveTitle);
     const chainEnabled = isSetValueChainEnabled();
     const attempts: Array<{ channel: string; error: string }> = [];
 
     // Channel 1: ValuePattern (always tried first)
-    const r1 = await setElementValue(windowTitle, value, name, automationId);
+    const r1 = await setElementValue(effectiveTitle, value, name, automationId);
     if (r1.ok) {
-      const enriched = hintsBlock
-        ? { ...r1, hints: { target: hintsBlock.target, caches: hintsBlock.caches } }
-        : r1;
+      const hints = {
+        ...(hintsBlock ? { target: hintsBlock.target, caches: hintsBlock.caches } : {}),
+        ...(uiWarnings.length > 0 ? { warnings: uiWarnings } : {}),
+      };
+      const enriched = Object.keys(hints).length > 0 ? { ...r1, hints } : r1;
       return ok({ ...enriched, channel: "value", ...(perceptionEnv && { _perceptionForPost: perceptionEnv }) });
     }
     attempts.push({ channel: "value", error: r1.error ?? "ValuePatternFailed" });
 
     if (chainEnabled) {
       // Channel 2: TextPattern2.InsertTextAtSelection (foreground-free)
-      const r2 = await insertTextViaTextPattern2(windowTitle, value, name, automationId);
+      const r2 = await insertTextViaTextPattern2(effectiveTitle, value, name, automationId);
       if (r2.ok) {
-        const enriched = hintsBlock
-          ? { hints: { target: hintsBlock.target, caches: hintsBlock.caches } }
-          : {};
+        const hints = {
+          ...(hintsBlock ? { target: hintsBlock.target, caches: hintsBlock.caches } : {}),
+          ...(uiWarnings.length > 0 ? { warnings: uiWarnings } : {}),
+        };
+        const enriched = Object.keys(hints).length > 0 ? { hints } : {};
         return ok({ ok: true, channel: "text2", ...enriched, ...(perceptionEnv && { _perceptionForPost: perceptionEnv }) });
       }
       if (r2.code !== "TextPattern2NotSupported") {
@@ -208,7 +234,7 @@ export const setElementValueHandler = async ({
         use_clipboard: false,
         replaceAll: true,
         forceKeystrokes: false,
-        windowTitle,
+        windowTitle: effectiveTitle,
         trackFocus: false,
         settleMs: 0,
         _skipAutoGuard: true,
@@ -231,21 +257,22 @@ export const setElementValueHandler = async ({
       return failWith(
         new Error("SetValueAllChannelsFailed"),
         "set_element_value",
-        { windowTitle, name, automationId, attempts }
+        { windowTitle: effectiveTitle, name, automationId, attempts }
       );
     }
 
     // Chain disabled: report ValuePattern failure
-    return failWith(r1.error ?? "Unknown error", "set_element_value", { windowTitle, name, automationId });
+    return failWith(r1.error ?? "Unknown error", "set_element_value", { windowTitle: effectiveTitle, name, automationId });
   } catch (err) {
     return failWith(err, "set_element_value", { windowTitle, name, automationId });
   }
 };
 
 export const scopeElementHandler = async ({
-  windowTitle, name, automationId, controlType, maxDepth, maxElements, padding,
+  windowTitle, hwnd: hwndParam, name, automationId, controlType, maxDepth, maxElements, padding,
 }: {
   windowTitle: string;
+  hwnd?: string;
   name?: string;
   automationId?: string;
   controlType?: string;
@@ -258,8 +285,11 @@ export const scopeElementHandler = async ({
       return failArgs("Provide at least one of: name, automationId, controlType", "scope_element", { windowTitle });
     }
 
-    const hintsBlock = buildHintsForTitle(windowTitle);
-    const bounds = await getElementBounds(windowTitle, name, automationId, controlType);
+    const resolvedWin = await resolveWindowTarget({ hwnd: hwndParam, windowTitle });
+    const effectiveTitle = resolvedWin?.title ?? windowTitle;
+    const uiWarnings: string[] = [...(resolvedWin?.warnings ?? [])];
+    const hintsBlock = buildHintsForTitle(effectiveTitle);
+    const bounds = await getElementBounds(effectiveTitle, name, automationId, controlType);
     if (!bounds) {
       return failWith("Element not found", "scope_element", { windowTitle, name, automationId, controlType });
     }
@@ -288,13 +318,17 @@ export const scopeElementHandler = async ({
 
     let children = null;
     try {
-      children = await getElementChildren(windowTitle, name, automationId, controlType, maxDepth, maxElements, 5000);
+      children = await getElementChildren(effectiveTitle, name, automationId, controlType, maxDepth, maxElements, 5000);
     } catch {
       // UIA may fail; return element info without children
     }
 
-    const payload = hintsBlock
-      ? { element: bounds, children, hints: { target: hintsBlock.target, caches: hintsBlock.caches } }
+    const hints = {
+      ...(hintsBlock ? { target: hintsBlock.target, caches: hintsBlock.caches } : {}),
+      ...(uiWarnings.length > 0 ? { warnings: uiWarnings } : {}),
+    };
+    const payload = Object.keys(hints).length > 0
+      ? { element: bounds, children, hints }
       : { element: bounds, children };
     content.push({ type: "text" as const, text: JSON.stringify(payload, null, 2) });
     return { content };

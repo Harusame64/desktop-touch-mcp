@@ -21,6 +21,7 @@ import { withRichNarration, narrateParam } from "./_narration.js";
 import { detectFocusLoss } from "./_focus.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
+import { resolveWindowTarget } from "./_resolve-window.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -97,7 +98,13 @@ const settleMsParam = z.coerce.number().int().min(0).max(2000).default(300).desc
 const windowTitleFocusParam = z.string().optional().describe(
   "Partial title of the window that should receive the keystrokes. " +
   "When provided, the server focuses this window before typing and uses it as the expected " +
-  "target for focusLost detection."
+  "target for focusLost detection. Use '@active' for the current foreground window."
+);
+
+const hwndFocusParam = z.string().optional().describe(
+  "Direct window handle ID (takes precedence over windowTitle). " +
+  "Obtain from get_windows response (hwnd field). " +
+  "String type to avoid 64-bit precision issues."
 );
 
 /** Non-ASCII punctuation that can be hijacked as Chrome/Edge keyboard accelerators */
@@ -134,6 +141,7 @@ export const keyboardTypeSchema = {
     "Default false — auto-clipboard is enabled."
   ),
   windowTitle: windowTitleFocusParam,
+  hwnd: hwndFocusParam,
   forceFocus: forceFocusParam,
   trackFocus: trackFocusParam,
   settleMs: settleMsParam,
@@ -155,6 +163,7 @@ export const keyboardPressSchema = {
   method: methodParam,
   narrate: narrateParam,
   windowTitle: windowTitleFocusParam,
+  hwnd: hwndFocusParam,
   forceFocus: forceFocusParam,
   trackFocus: trackFocusParam,
   settleMs: settleMsParam,
@@ -244,6 +253,7 @@ export const keyboardTypeHandler = async ({
   replaceAll,
   forceKeystrokes,
   windowTitle,
+  hwnd,
   forceFocus: forceFocusArg,
   trackFocus,
   settleMs,
@@ -259,6 +269,7 @@ export const keyboardTypeHandler = async ({
   replaceAll: boolean;
   forceKeystrokes: boolean;
   windowTitle?: string;
+  hwnd?: string;
   forceFocus?: boolean;
   trackFocus: boolean;
   settleMs: number;
@@ -277,7 +288,12 @@ export const keyboardTypeHandler = async ({
       if (typeof vr.fix.args.text === "string") effectiveText = vr.fix.args.text;
       consumeFix(fixId);
     }
-    const warnings: string[] = [];
+
+    // Resolve hwnd / @active → effective window title (only when not using a fixId)
+    const resolvedWin = !fixId ? await resolveWindowTarget({ hwnd, windowTitle: effectiveWindowTitle }) : null;
+    if (resolvedWin) effectiveWindowTitle = resolvedWin.title;
+
+    const warnings: string[] = [...(resolvedWin?.warnings ?? [])];
     const homingNotes: string[] = [];
     let foregroundVerified = false;
 
@@ -448,6 +464,7 @@ export const keyboardPressHandler = async ({
   keys,
   method: inputMethod = "auto",
   windowTitle,
+  hwnd,
   forceFocus: forceFocusArg,
   trackFocus,
   settleMs,
@@ -456,6 +473,7 @@ export const keyboardPressHandler = async ({
   keys: string;
   method?: "auto" | "background" | "foreground";
   windowTitle?: string;
+  hwnd?: string;
   forceFocus?: boolean;
   trackFocus: boolean;
   settleMs: number;
@@ -466,15 +484,19 @@ export const keyboardPressHandler = async ({
     // assertKeyComboSafe before focus — invalid keys fail immediately.
     assertKeyComboSafe(keys);
 
-    const warnings: string[] = [];
+    // Resolve hwnd / @active → effective window title
+    const resolvedWin = await resolveWindowTarget({ hwnd, windowTitle });
+    let effectiveWindowTitle = resolvedWin?.title ?? windowTitle;
+
+    const warnings: string[] = [...(resolvedWin?.warnings ?? [])];
     const homingNotes: string[] = [];
     let foregroundVerified = false;
 
     // ── Background input path ──────────────────────────────────────────────
     const effectiveMethod = (inputMethod === "auto" && isBgAutoEnabled()) ? "background-auto" : inputMethod;
-    if ((effectiveMethod === "background" || effectiveMethod === "background-auto") && windowTitle) {
+    if ((effectiveMethod === "background" || effectiveMethod === "background-auto") && effectiveWindowTitle) {
       const wins = enumWindowsInZOrder();
-      const target = wins.find(w => w.title.toLowerCase().includes(windowTitle.toLowerCase()));
+      const target = wins.find(w => w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase()));
       if (target && canInjectViaPostMessage(target.hwnd).supported) {
         const isEnter = keys.toLowerCase() === "enter";
         const ok2 = isEnter
@@ -501,14 +523,14 @@ export const keyboardPressHandler = async ({
         return failWith(
           new Error("BackgroundInputUnsupported"),
           "keyboard_press",
-          { suggest: ["Target app does not accept background input - use method:'foreground' or omit"], context: { windowTitle } }
+          { suggest: ["Target app does not accept background input - use method:'foreground' or omit"], context: { windowTitle: effectiveWindowTitle } }
         );
       }
     }
 
     // Step 1: Focus first (guard needs foreground state to be correct).
-    if (windowTitle) {
-      const fw = await focusWindowForKeyboard(windowTitle, force);
+    if (effectiveWindowTitle) {
+      const fw = await focusWindowForKeyboard(effectiveWindowTitle, force);
       warnings.push(...fw.warnings);
       homingNotes.push(...fw.homingNotes);
       foregroundVerified = fw.foregroundVerified;
@@ -533,8 +555,8 @@ export const keyboardPressHandler = async ({
       }
       perceptionEnv = buildEnvelopeFor(lensId, { toolName: "keyboard_press" }) ?? undefined;
     } else if (isAutoGuardEnabled()) {
-      const descriptor = windowTitle
-        ? { kind: "window" as const, titleIncludes: windowTitle }
+      const descriptor = effectiveWindowTitle
+        ? { kind: "window" as const, titleIncludes: effectiveWindowTitle }
         : null;
       const ag = await runActionGuard({
         toolName: "keyboard_press", actionKind: "keyboard", descriptor,
@@ -560,7 +582,7 @@ export const keyboardPressHandler = async ({
     let focusLost = undefined;
     if (trackFocus) {
       const fl = await detectFocusLoss({
-        target: windowTitle,
+        target: effectiveWindowTitle,
         homingNotes,
         settleMs,
       });
