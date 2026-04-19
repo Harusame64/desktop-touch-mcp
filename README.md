@@ -9,12 +9,14 @@
 An MCP server that gives Claude eyes and hands on Windows — 57 tools covering screenshots, mouse, keyboard, Windows UI Automation, Chrome DevTools Protocol, clipboard, desktop notifications, SmartScroll, and a Reactive Perception Graph for safe multi-step automation, designed from the ground up for LLM efficiency.
 
 > *v0.15: **82× average speedup** via Rust native engine — UIA focus queries in 2 ms, SSE2-accelerated image diffing at 13–15× native speed. Zero-config: the engine auto-loads when present, with transparent PowerShell fallback.*
+> *v0.15.4: **Set-of-Marks (SoM) visual fallback** — games, RDP sessions, and non-accessible Electron apps now return clickable elements via OCR + Rust image preprocessing, even when UIA is completely unavailable.*
 
 ---
 
 ## Features
 
 - **⚡ High-performance Rust Native Core** — The UIA bridge and image-diff engine are written in Rust (`napi-rs` + `windows-rs`) and loaded as a native `.node` addon. Direct COM calls from a dedicated MTA thread eliminate PowerShell process spawning — `getFocusedElement` completes in **2 ms** (160× faster), and `getUiElements` returns full trees in **~100 ms** with a batch BFS algorithm that minimizes cross-process RPC. Image-diff operations use **SSE2 SIMD** for 13–15× throughput. When the native engine is unavailable, every function transparently falls back to PowerShell — zero config required.
+- **🎯 Set-of-Marks (SoM) visual fallback** — Games, RDP sessions, and non-accessible Electron apps return clickable elements even when UIA is completely blind. `screenshot(detail="text")` automatically detects UIA sparsity and activates a Hybrid Non-CDP pipeline: Rust-powered grayscale + bilinear upscale → Windows OCR → clustering → red bounding-box annotation with numbered badges (`[1]`, `[2]`…). Two parallel representations returned: a visual PNG for spatial orientation and a semantic `elements[]` list with `clickAt` coords — no CDP required.
 - **LLM-native design** — Built around how LLMs think, not how humans click. `run_macro` batches multiple operations into a single API call; `diffMode` sends only the windows that changed since the last frame. Minimal tokens, minimal round-trips.
 - **Reactive Perception Graph** — Register a `lensId` for a window or browser tab, pass it to action tools, and get guard-checked `post.perception` feedback after each action. It reduces repeated `screenshot` / `get_context` calls and prevents wrong-window typing or stale-coordinate clicks.
 - **Full CJK support** — Uses Win32 `GetWindowTextW` for window titles, avoiding nut-js garbling. IME bypass input supported for Japanese/Chinese/Korean environments.
@@ -118,7 +120,7 @@ For a local checkout, register the built server directly:
 ### Screenshot (5)
 | Tool | Description |
 |---|---|
-| `screenshot` | Main capture. Supports `detail`, `dotByDot`, `dotByDotMaxDimension`, `grayscale`, `region` sub-crop, `diffMode` |
+| `screenshot` | Main capture. Supports `detail`, `dotByDot`, `dotByDotMaxDimension`, `grayscale`, `region` sub-crop, `diffMode`. `detail="text"` auto-activates the SoM pipeline when UIA is blind (games, RDP, custom Electron) |
 | `screenshot_background` | Capture a background window without focusing it (PrintWindow API) |
 | `screenshot_ocr` | Windows.Media.Ocr on a window; returns word-level text + screen clickAt coords |
 | `get_screen_info` | Monitor layout, DPI, cursor position |
