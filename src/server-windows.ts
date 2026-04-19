@@ -1,4 +1,5 @@
 import { createServer, type Server as HttpServer } from "node:http";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -231,7 +232,7 @@ startTray(trayOptions);
 // ─── Connect MCP transport ───────────────────────────────────────────────────
 if (useHttp) {
   const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: undefined,
+    sessionIdGenerator: () => randomUUID(),
     enableJsonResponse: true,
   });
   httpTransportRef = transport;
@@ -250,6 +251,7 @@ if (useHttp) {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, mcp-session-id, MCP-Protocol-Version");
+    res.setHeader("Access-Control-Expose-Headers", "mcp-session-id");
 
     if (req.method === "OPTIONS") {
       res.writeHead(204);
