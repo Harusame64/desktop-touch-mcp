@@ -1,5 +1,4 @@
 import { createServer, type Server as HttpServer } from "node:http";
-import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
