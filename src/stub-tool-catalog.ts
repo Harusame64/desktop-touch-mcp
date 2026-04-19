@@ -555,9 +555,14 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       "type": "object",
       "properties": {
         "windowTitle": {
-          "description": "Partial window title of the target window",
+          "description": "Partial window title of the target window. Use '@active' for the current foreground window.",
           "type": "string",
           "maxLength": 200
+        },
+        "hwnd": {
+          "description": "Direct window handle ID (takes precedence over windowTitle). String to avoid 64-bit precision issues.",
+          "type": "string",
+          "maxLength": 20
         },
         "name": {
           "description": "Element name/label (partial match, case-insensitive)",
@@ -877,9 +882,14 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       "type": "object",
       "properties": {
         "windowTitle": {
-          "description": "Partial window title to find the target window",
+          "description": "Partial window title to find the target window. Use '@active' for the current foreground window.",
           "type": "string",
           "maxLength": 200
+        },
+        "hwnd": {
+          "description": "Direct window handle ID (takes precedence over windowTitle). String to avoid 64-bit precision issues.",
+          "type": "string",
+          "maxLength": 20
         },
         "maxDepth": {
           "description": "Maximum depth of the element tree to traverse (default 4)",
@@ -937,6 +947,10 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "windowTitle": {
           "type": "string",
           "description": "Partial title of the window that should receive keyboard input."
+        },
+        "hwnd": {
+          "type": "string",
+          "description": "Direct window handle ID (takes precedence over windowTitle). Obtain from get_windows response (hwnd field). String type to avoid 64-bit precision issues."
         },
         "forceFocus": {
           "type": "boolean",
@@ -1007,6 +1021,10 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "windowTitle": {
           "type": "string",
           "description": "Partial title of the window that should receive keyboard input."
+        },
+        "hwnd": {
+          "type": "string",
+          "description": "Direct window handle ID (takes precedence over windowTitle). Obtain from get_windows response (hwnd field). String type to avoid 64-bit precision issues."
         },
         "forceFocus": {
           "type": "boolean",
@@ -1113,6 +1131,10 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "type": "string",
           "description": "AutomationId of the UI element."
         },
+        "hwnd": {
+          "type": "string",
+          "description": "Direct window handle ID (takes precedence over windowTitle). Obtain from get_windows response (hwnd field). String type to avoid 64-bit precision issues."
+        },
         "forceFocus": {
           "type": "boolean",
           "description": "Bypass Windows foreground-stealing protection before focusing."
@@ -1186,6 +1208,10 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "type": "string",
           "description": "Partial title of the target window."
         },
+        "hwnd": {
+          "type": "string",
+          "description": "Direct window handle ID (takes precedence over windowTitle). Obtain from get_windows response (hwnd field). String type to avoid 64-bit precision issues."
+        },
         "lensId": {
           "description": "Optional perception lens ID. Guards and envelope same as mouse_click.",
           "type": "string"
@@ -1237,6 +1263,10 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "windowTitle": {
           "type": "string",
           "description": "Partial title of the target window."
+        },
+        "hwnd": {
+          "type": "string",
+          "description": "Direct window handle ID (takes precedence over windowTitle). Obtain from get_windows response (hwnd field). String type to avoid 64-bit precision issues."
         }
       },
       "additionalProperties": false,
@@ -1542,9 +1572,14 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       "type": "object",
       "properties": {
         "windowTitle": {
-          "description": "Partial window title of the target window",
+          "description": "Partial window title of the target window. Use '@active' for the current foreground window.",
           "type": "string",
           "maxLength": 200
+        },
+        "hwnd": {
+          "description": "Direct window handle ID (takes precedence over windowTitle). String to avoid 64-bit precision issues.",
+          "type": "string",
+          "maxLength": 20
         },
         "name": {
           "description": "Element name/label (partial match, case-insensitive)",
@@ -1596,7 +1631,11 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       "type": "object",
       "properties": {
         "windowTitle": {
-          "description": "Capture only the window whose title contains this string. Prefer over full-screen when target window is known.",
+          "description": "Capture only the window whose title contains this string. Use '@active' for the current foreground window. Prefer over full-screen when target window is known.",
+          "type": "string"
+        },
+        "hwnd": {
+          "description": "Direct window handle ID (takes precedence over windowTitle). Obtain from get_windows (hwnd field). String type to avoid 64-bit precision issues.",
           "type": "string"
         },
         "displayId": {
@@ -1679,7 +1718,11 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       "type": "object",
       "properties": {
         "windowTitle": {
-          "description": "Title (partial match) of the window to capture",
+          "description": "Title (partial match) of the window to capture. Use '@active' for the current foreground window.",
+          "type": "string"
+        },
+        "hwnd": {
+          "description": "Direct window handle ID (takes precedence over windowTitle). String to avoid 64-bit precision issues.",
           "type": "string"
         },
         "region": {
@@ -1731,7 +1774,11 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       "type": "object",
       "properties": {
         "windowTitle": {
-          "description": "Title (partial match) of the window to OCR",
+          "description": "Title (partial match) of the window to OCR. Use '@active' for the current foreground window.",
+          "type": "string"
+        },
+        "hwnd": {
+          "description": "Direct window handle ID (takes precedence over windowTitle). String to avoid 64-bit precision issues.",
           "type": "string"
         },
         "language": {
@@ -1792,6 +1839,10 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "windowTitle": {
           "type": "string",
           "description": "Partial title of the target window."
+        },
+        "hwnd": {
+          "type": "string",
+          "description": "Direct window handle ID (takes precedence over windowTitle). Obtain from get_windows response (hwnd field). String type to avoid 64-bit precision issues."
         }
       },
       "additionalProperties": false,
@@ -1896,9 +1947,14 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       "type": "object",
       "properties": {
         "windowTitle": {
-          "description": "Partial window title",
+          "description": "Partial window title. Use '@active' for the current foreground window.",
           "type": "string",
           "maxLength": 200
+        },
+        "hwnd": {
+          "description": "Direct window handle ID (takes precedence over windowTitle). String to avoid 64-bit precision issues.",
+          "type": "string",
+          "maxLength": 20
         },
         "value": {
           "description": "The value to set",

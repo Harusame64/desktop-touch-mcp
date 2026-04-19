@@ -184,6 +184,8 @@ const commonParams = {
   forceFocusParam: { type: 'boolean', description: 'Bypass Windows foreground-stealing protection before focusing.', __optional: true },
   trackFocusParam: { type: 'boolean', default: true, description: 'Detect if focus was stolen after the action.', __optional: true },
   settleMsParam: { type: 'integer', minimum: 0, maximum: 2000, default: 300, description: 'Milliseconds to wait before checking post-action state.', __optional: true },
+  hwndParam: { type: 'string', description: 'Direct window handle ID (takes precedence over windowTitle). Obtain from get_windows response (hwnd field). String type to avoid 64-bit precision issues.', __optional: true },
+  hwndFocusParam: { type: 'string', description: 'Direct window handle ID (takes precedence over windowTitle). Obtain from get_windows response (hwnd field). String type to avoid 64-bit precision issues.', __optional: true },
 };
 
 function extractDescribe(valueExpr) {
