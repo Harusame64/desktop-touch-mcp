@@ -25,7 +25,7 @@ const RELEASE_METADATA_FILE = ".desktop-touch-release.json";
 const RELEASE_MANIFEST = {
   tagName: "v0.15.6",
   assetName: ASSET_NAME,
-  sha256: "PENDING",
+  sha256: "0bd778c91e32bbb800548acb66ec76b5651af4d64cdb98ca185d0e2635646a78",
 };
 const CACHE_ROOT = process.env.DESKTOP_TOUCH_MCP_HOME
   ? path.resolve(process.env.DESKTOP_TOUCH_MCP_HOME)
