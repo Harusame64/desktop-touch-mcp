@@ -22,8 +22,10 @@
 
 import { spawn } from "node:child_process";
 import {
+  appendFileSync,
   createWriteStream,
   existsSync,
+  readFileSync,
   statSync,
   writeFileSync,
   unlinkSync,
@@ -137,6 +139,32 @@ child.on("close", (code) => {
       console.error("Hint: vitest may have crashed before producing output.");
       process.exit(1);
     }
+
+    // ── Fail suggestions ───────────────────────────────────────────────────
+    try {
+      const jsonOut = JSON.parse(readFileSync(jsonPath, "utf-8"));
+      const failed = (jsonOut.testResults ?? []).filter((r) => r.status === "failed");
+      if (failed.length > 0) {
+        const cwdFwd = root.replace(/\\/g, "/");
+        const lines = [
+          "",
+          "── 失敗テストの個別実行コマンド ──────────────────────────────────",
+          ...failed.map((f) => {
+            const abs = (f.name ?? "").replace(/\\/g, "/");
+            const rel = abs.startsWith(cwdFwd + "/") ? abs.slice(cwdFwd.length + 1) : abs;
+            const project = rel.startsWith("tests/e2e/") ? "--project=e2e "
+                          : rel.startsWith("tests/unit/") ? "--project=unit "
+                          : "";
+            return `  npx vitest run ${project}"${rel}"`;
+          }),
+          "  ※ test:capture で実行: npm run test:capture -- <上記パス>",
+          "──────────────────────────────────────────────────────────────────",
+          "",
+        ].join("\n");
+        process.stdout.write(lines);
+        appendFileSync(txtPath, lines, "utf-8");
+      }
+    } catch { /* JSON parse failure is non-fatal */ }
 
     process.exit(code ?? 1);
   });

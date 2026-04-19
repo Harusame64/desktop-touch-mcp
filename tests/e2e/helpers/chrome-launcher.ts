@@ -163,3 +163,11 @@ export function findChrome(): string {
       `Checked: ${CHROME_CANDIDATES.join(", ")}`
   );
 }
+
+/** Returns the Chrome/Edge path if found, or null (never throws). */
+export function tryFindChrome(): string | null {
+  for (const candidate of CHROME_CANDIDATES) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}

@@ -9,7 +9,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
-import { launchChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
+import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
 import { sleep } from "./helpers/wait.js";
 import {
   browserEvalHandler,
@@ -23,10 +23,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_PATH = join(__dirname, "fixtures", "test-page.html");
 const TEST_PORT = 9226;
 const FIXTURE_URL = `file:///${FIXTURE_PATH.replace(/\\/g, "/")}`;
+const CHROME_AVAILABLE = tryFindChrome() !== null;
 
 let chrome: ChromeInstance;
 
 beforeAll(async () => {
+  if (!CHROME_AVAILABLE) return;
   chrome = await launchChrome(TEST_PORT, true, FIXTURE_URL);
   // Wait until the fixture page itself is fully loaded — not just any tab.
   // Headless Chrome can briefly expose an about:blank tab before navigating
@@ -72,7 +74,7 @@ function extractTabContext(text: string): { activeTab: unknown; readyState: stri
   }
 }
 
-describe("browser_eval — activeTab/readyState annotation", () => {
+describe.skipIf(!CHROME_AVAILABLE)("browser_eval — activeTab/readyState annotation", () => {
   it("appends activeTab and readyState to successful eval", async () => {
     const result = await browserEvalHandler({
       expression: "1 + 1",
@@ -100,7 +102,7 @@ describe("browser_eval — activeTab/readyState annotation", () => {
   });
 });
 
-describe("browser_find_element — activeTab/readyState annotation", () => {
+describe.skipIf(!CHROME_AVAILABLE)("browser_find_element — activeTab/readyState annotation", () => {
   it("appends activeTab and readyState on success", async () => {
     const result = await browserFindElementHandler({
       selector: "#btn-submit",
@@ -119,7 +121,7 @@ describe("browser_find_element — activeTab/readyState annotation", () => {
   });
 });
 
-describe("browser_get_dom — activeTab/readyState annotation", () => {
+describe.skipIf(!CHROME_AVAILABLE)("browser_get_dom — activeTab/readyState annotation", () => {
   it("appends activeTab and readyState on success", async () => {
     const result = await browserGetDomHandler({
       selector: "#btn-submit",
@@ -138,7 +140,7 @@ describe("browser_get_dom — activeTab/readyState annotation", () => {
   });
 });
 
-describe("browser_get_interactive — activeTab/readyState annotation", () => {
+describe.skipIf(!CHROME_AVAILABLE)("browser_get_interactive — activeTab/readyState annotation", () => {
   it("appends activeTab and readyState on success", async () => {
     const result = await browserGetInteractiveHandler({
       types: ["all"],
@@ -158,7 +160,7 @@ describe("browser_get_interactive — activeTab/readyState annotation", () => {
 // includeContext: false — opt-out for chained calls in the same tab
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("includeContext: false omits the trailing activeTab / readyState lines", () => {
+describe.skipIf(!CHROME_AVAILABLE)("includeContext: false omits the trailing activeTab / readyState lines", () => {
   it("browser_eval(includeContext:false) returns just the evaluated value", async () => {
     const result = await browserEvalHandler({
       expression: "1 + 1",

@@ -13,7 +13,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
-import { launchChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
+import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
 import {
   listTabs,
   evaluateInTab,
@@ -27,6 +27,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_PATH = join(__dirname, "fixtures", "test-page.html");
 const TEST_PORT = 9224; // Separate from dev port 9222 and other test suite 9223
 const IS_HEADED = Boolean(process.env.HEADED);
+const CHROME_AVAILABLE = tryFindChrome() !== null;
 
 // ─── Test fixture URL ─────────────────────────────────────────────────────────
 
@@ -38,6 +39,7 @@ const FIXTURE_URL = `file:///${FIXTURE_PATH.replace(/\\/g, "/")}`;
 let chrome: ChromeInstance;
 
 beforeAll(async () => {
+  if (!CHROME_AVAILABLE) return;
   // Launch Chrome with the fixture page as initial URL (file:// bypasses the
   // http-only restriction in navigateTo, which is correct for production use)
   chrome = await launchChrome(TEST_PORT, !IS_HEADED, FIXTURE_URL);
@@ -77,7 +79,7 @@ function sleep(ms: number): Promise<void> {
 // browser_connect equivalent — listTabs
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("listTabs", () => {
+describe.skipIf(!CHROME_AVAILABLE)("listTabs", () => {
   it("returns at least one page tab", async () => {
     const tabs = await listTabs(TEST_PORT);
     expect(tabs.length).toBeGreaterThan(0);
@@ -101,7 +103,7 @@ describe("listTabs", () => {
 // evaluateInTab — browser_eval
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("evaluateInTab", () => {
+describe.skipIf(!CHROME_AVAILABLE)("evaluateInTab", () => {
   it("returns document.title of the test page", async () => {
     const title = await evaluateInTab("document.title", null, TEST_PORT);
     expect(title).toBe("desktop-touch CDP Test Page");
@@ -168,7 +170,7 @@ describe("evaluateInTab", () => {
 // getElementScreenCoords — browser_find_element
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("getElementScreenCoords", () => {
+describe.skipIf(!CHROME_AVAILABLE)("getElementScreenCoords", () => {
   it("returns coords for #btn-submit", async () => {
     const coords = await getElementScreenCoords("#btn-submit", null, TEST_PORT);
     expect(coords.x).toBeGreaterThan(0);
@@ -255,7 +257,7 @@ describe("getElementScreenCoords", () => {
 // getDomHtml — browser_get_dom
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("getDomHtml", () => {
+describe.skipIf(!CHROME_AVAILABLE)("getDomHtml", () => {
   it("returns document.body HTML when no selector given", async () => {
     const html = await getDomHtml(null, null, TEST_PORT);
     expect(html).toContain("btn-submit");
@@ -285,7 +287,7 @@ describe("getDomHtml", () => {
 // navigateTo — browser_navigate
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("navigateTo", () => {
+describe.skipIf(!CHROME_AVAILABLE)("navigateTo", () => {
   it("navigates to a new http page and title changes", async () => {
     await navigateTo("https://example.com", null, TEST_PORT);
     await sleep(2000);
@@ -312,7 +314,7 @@ describe("navigateTo", () => {
 // Coordinate precision — headed only (requires HEADED=1)
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe.runIf(IS_HEADED)("coordinate precision (headed mode)", () => {
+describe.runIf(IS_HEADED && CHROME_AVAILABLE)("coordinate precision (headed mode)", () => {
   it("coords change consistently when page is scrolled", async () => {
     await evaluateInTab("window.scrollTo(0, 0)", null, TEST_PORT);
     const before = await getElementScreenCoords("#btn-submit", null, TEST_PORT);
