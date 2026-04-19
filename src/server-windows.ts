@@ -231,11 +231,9 @@ startTray(trayOptions);
 
 // ─── Connect MCP transport ───────────────────────────────────────────────────
 if (useHttp) {
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: undefined, // stateless: no session ID required per request
-    enableJsonResponse: true,
-  });
-  httpTransportRef = transport;
+  // Stateful mode: each client session gets its own transport instance.
+  // The McpServer routes messages to the correct transport via mcp-session-id.
+  const transports = new Map<string, StreamableHTTPServerTransport>();
 
   const httpServer = createServer(async (req, res) => {
     // DNS rebinding protection
@@ -260,7 +258,30 @@ if (useHttp) {
     }
 
     if (req.url?.startsWith("/mcp")) {
-      await transport.handleRequest(req, res);
+      const sessionId = req.headers["mcp-session-id"] as string | undefined;
+
+      if (sessionId && transports.has(sessionId)) {
+        // Existing session — reuse transport
+        await transports.get(sessionId)!.handleRequest(req, res);
+      } else if (!sessionId && req.method === "POST") {
+        // New session — create a fresh transport
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          enableJsonResponse: true,
+          onsessioninitialized: (id) => {
+            transports.set(id, transport);
+          },
+        });
+        transport.onclose = () => {
+          const id = transport.sessionId;
+          if (id) transports.delete(id);
+        };
+        await server.connect(transport);
+        await transport.handleRequest(req, res);
+      } else {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Bad Request: invalid or missing session" }));
+      }
     } else if (req.url === "/health" || req.url === "/") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ status: "ok", name: "desktop-touch-mcp", version: SERVER_VERSION }));
@@ -271,7 +292,6 @@ if (useHttp) {
   });
 
   httpServerRef = httpServer;
-  await server.connect(transport);
   httpServer.listen(httpPort, "127.0.0.1", () => {
     console.error(`[desktop-touch] MCP server running (http) on ${httpUrl}`);
   });
