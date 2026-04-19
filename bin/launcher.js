@@ -17,15 +17,15 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
-const PACKAGE_VERSION = "0.15.4";
+const PACKAGE_VERSION = "0.15.5";
 const RELEASE_TAG = `v${PACKAGE_VERSION}`;
 const REPO_API_URL = `https://api.github.com/repos/Harusame64/desktop-touch-mcp/releases/tags/${RELEASE_TAG}`;
 const ASSET_NAME = "desktop-touch-mcp-windows.zip";
 const RELEASE_METADATA_FILE = ".desktop-touch-release.json";
 const RELEASE_MANIFEST = {
-  tagName: "v0.15.4",
+  tagName: "v0.15.5",
   assetName: ASSET_NAME,
-  sha256: "9a28370e2c4ca901b5d18bfcda7ca54a60ee3aef6bb5443980a708eac86b5df2",
+  sha256: "REPLACE_WITH_RELEASE_ZIP_SHA256",
 };
 const CACHE_ROOT = process.env.DESKTOP_TOUCH_MCP_HOME
   ? path.resolve(process.env.DESKTOP_TOUCH_MCP_HOME)
@@ -63,6 +63,9 @@ function expectedReleaseSpec() {
   }
   if (!RELEASE_MANIFEST.sha256 || RELEASE_MANIFEST.assetName !== ASSET_NAME) {
     throw new Error(`Missing release manifest for ${RELEASE_TAG}`);
+  }
+  if (!/^[a-f0-9]{64}$/i.test(RELEASE_MANIFEST.sha256)) {
+    throw new Error(`Invalid release SHA256 manifest for ${RELEASE_TAG}`);
   }
   return {
     tagName: RELEASE_MANIFEST.tagName,
