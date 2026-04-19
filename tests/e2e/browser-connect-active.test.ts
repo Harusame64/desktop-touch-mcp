@@ -10,7 +10,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
-import { launchChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
+import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
 import { sleep } from "./helpers/wait.js";
 import { browserConnectHandler } from "../../src/tools/browser.js";
 import { evaluateInTab, disconnectAll } from "../../src/engine/cdp-bridge.js";
@@ -19,10 +19,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_PATH = join(__dirname, "fixtures", "test-page.html");
 const TEST_PORT = 9228;
 const FIXTURE_URL = `file:///${FIXTURE_PATH.replace(/\\/g, "/")}`;
+const CHROME_AVAILABLE = tryFindChrome() !== null;
 
 let chrome: ChromeInstance;
 
 beforeAll(async () => {
+  if (!CHROME_AVAILABLE) return;
   chrome = await launchChrome(TEST_PORT, true, FIXTURE_URL);
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
@@ -48,7 +50,7 @@ function extractJsonBlock(text: string): unknown {
   return JSON.parse(text.slice(jsonStart, jsonEnd + 1));
 }
 
-describe("browser_connect active tab detection", () => {
+describe.skipIf(!CHROME_AVAILABLE)("browser_connect active tab detection", () => {
   it("returns tabs array with active boolean field on each tab", async () => {
     const result = await browserConnectHandler({ port: TEST_PORT });
     const text = (result.content[0] as { text: string }).text;

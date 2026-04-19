@@ -11,7 +11,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
-import { launchChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
+import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
 import { sleep } from "./helpers/wait.js";
 import { browserGetAppStateHandler } from "../../src/tools/browser.js";
 import { evaluateInTab, disconnectAll } from "../../src/engine/cdp-bridge.js";
@@ -20,10 +20,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_PATH = join(__dirname, "fixtures", "test-page.html");
 const TEST_PORT = 9230;
 const FIXTURE_URL = `file:///${FIXTURE_PATH.replace(/\\/g, "/")}`;
+const CHROME_AVAILABLE = tryFindChrome() !== null;
 
 let chrome: ChromeInstance;
 
 beforeAll(async () => {
+  if (!CHROME_AVAILABLE) return;
   chrome = await launchChrome(TEST_PORT, true, FIXTURE_URL);
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
@@ -64,7 +66,7 @@ function parseResponse(text: string): AppStateResponse {
   return JSON.parse(text) as AppStateResponse;
 }
 
-describe("browser_get_app_state — default selectors", () => {
+describe.skipIf(!CHROME_AVAILABLE)("browser_get_app_state — default selectors", () => {
   it("discovers Next.js __NEXT_DATA__ payload", async () => {
     const result = await browserGetAppStateHandler({
       maxBytes: 4000,
@@ -128,7 +130,7 @@ describe("browser_get_app_state — default selectors", () => {
   });
 });
 
-describe("browser_get_app_state — custom selectors", () => {
+describe.skipIf(!CHROME_AVAILABLE)("browser_get_app_state — custom selectors", () => {
   it("respects an explicit selector list", async () => {
     const result = await browserGetAppStateHandler({
       selectors: ["script#__NEXT_DATA__"],
@@ -171,7 +173,7 @@ describe("browser_get_app_state — custom selectors", () => {
   });
 });
 
-describe("browser_get_app_state — truncation", () => {
+describe.skipIf(!CHROME_AVAILABLE)("browser_get_app_state — truncation", () => {
   it("flags truncated:true and slices the payload when over maxBytes", async () => {
     const result = await browserGetAppStateHandler({
       selectors: ["script#__NEXT_DATA__"],

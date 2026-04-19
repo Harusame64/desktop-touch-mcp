@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
-import { launchChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
+import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
 import { parsePayload, sleep } from "./helpers/wait.js";
 import { browserSearchHandler } from "../../src/tools/browser.js";
 import { evaluateInTab, disconnectAll } from "../../src/engine/cdp-bridge.js";
@@ -14,10 +14,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_PATH = join(__dirname, "fixtures", "test-page.html");
 const TEST_PORT = 9225;                               // separate from other suites (9223/9224)
 const FIXTURE_URL = `file:///${FIXTURE_PATH.replace(/\\/g, "/")}`;
+const CHROME_AVAILABLE = tryFindChrome() !== null;
 
 let chrome: ChromeInstance;
 
 beforeAll(async () => {
+  if (!CHROME_AVAILABLE) return;
   chrome = await launchChrome(TEST_PORT, true /* headless */, FIXTURE_URL);
   // Wait until:
   //   1. document.readyState === 'complete'
@@ -53,7 +55,7 @@ async function search(args: Partial<Parameters<typeof browserSearchHandler>[0]>)
   } as Parameters<typeof browserSearchHandler>[0]));
 }
 
-describe("sanity", () => {
+describe.skipIf(!CHROME_AVAILABLE)("sanity", () => {
   it("page is loaded with the expected fixture content", async () => {
     const title = await evaluateInTab("document.title", null, TEST_PORT);
     expect(title).toBe("desktop-touch CDP Test Page");
@@ -66,7 +68,7 @@ describe("sanity", () => {
 
 });
 
-describe("browser_search — by:'text'", () => {
+describe.skipIf(!CHROME_AVAILABLE)("browser_search — by:'text'", () => {
   it("finds a unique literal substring", async () => {
     const r = await search({ by: "text", pattern: "Unique search needle alpha" });
     expect(r.ok !== false, JSON.stringify(r)).toBe(true);
@@ -95,7 +97,7 @@ describe("browser_search — by:'text'", () => {
   });
 });
 
-describe("browser_search — by:'regex'", () => {
+describe.skipIf(!CHROME_AVAILABLE)("browser_search — by:'regex'", () => {
   it("matches a regex pattern", async () => {
     const r = await search({ by: "regex", pattern: "^Unique.*alpha$" });
     expect(r.total).toBeGreaterThan(0);
@@ -110,7 +112,7 @@ describe("browser_search — by:'regex'", () => {
   });
 });
 
-describe("browser_search — by:'role'", () => {
+describe.skipIf(!CHROME_AVAILABLE)("browser_search — by:'role'", () => {
   it("finds implicit button role", async () => {
     const r = await search({ by: "role", pattern: "button" });
     expect(r.total).toBeGreaterThanOrEqual(2); // submit / cancel at least
@@ -131,7 +133,7 @@ describe("browser_search — by:'role'", () => {
   });
 });
 
-describe("browser_search — by:'ariaLabel'", () => {
+describe.skipIf(!CHROME_AVAILABLE)("browser_search — by:'ariaLabel'", () => {
   it("finds exact aria-label", async () => {
     const r = await search({ by: "ariaLabel", pattern: "Search query" });
     expect(r.total).toBeGreaterThan(0);
@@ -145,7 +147,7 @@ describe("browser_search — by:'ariaLabel'", () => {
   });
 });
 
-describe("browser_search — by:'selector'", () => {
+describe.skipIf(!CHROME_AVAILABLE)("browser_search — by:'selector'", () => {
   it("finds elements by CSS selector with confidence 1.0", async () => {
     const r = await search({ by: "selector", pattern: "button[id^='search-btn-']" });
     expect(r.total).toBeGreaterThanOrEqual(2);
@@ -163,7 +165,7 @@ describe("browser_search — by:'selector'", () => {
   });
 });
 
-describe("browser_search — scope / pagination / visibility", () => {
+describe.skipIf(!CHROME_AVAILABLE)("browser_search — scope / pagination / visibility", () => {
   it("scope limits results to within the selector", async () => {
     const inScope = await search({ by: "text", pattern: "inside-scope", scope: "#search-scope-parent" });
     const outScope = await search({ by: "text", pattern: "inside-scope" });

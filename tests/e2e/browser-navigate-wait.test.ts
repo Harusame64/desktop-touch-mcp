@@ -14,7 +14,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
-import { launchChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
+import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
 import { sleep } from "./helpers/wait.js";
 import { browserNavigateHandler } from "../../src/tools/browser.js";
 import { evaluateInTab, disconnectAll } from "../../src/engine/cdp-bridge.js";
@@ -27,11 +27,18 @@ const FIXTURE_URL = `file:///${FIXTURE_PATH.replace(/\\/g, "/")}`;
 
 // A real http URL to test navigate with — uses example.com which is reliably reachable
 const TEST_HTTP_URL = "http://example.com";
+const CHROME_AVAILABLE = tryFindChrome() !== null;
 
 let chrome: ChromeInstance;
 let hasNetwork = false;
+let prevAutoGuard: string | undefined;
 
 beforeAll(async () => {
+  if (!CHROME_AVAILABLE) return;
+  // Disable Auto Perception guard — this suite has no lensId and the guard would
+  // block navigation calls with AutoGuardBlocked on machines running v0.12+.
+  prevAutoGuard = process.env.DESKTOP_TOUCH_AUTO_GUARD;
+  process.env.DESKTOP_TOUCH_AUTO_GUARD = "0";
   chrome = await launchChrome(TEST_PORT, true, FIXTURE_URL);
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
@@ -51,11 +58,13 @@ beforeAll(async () => {
 }, 20_000);
 
 afterAll(() => {
+  if (prevAutoGuard === undefined) delete process.env.DESKTOP_TOUCH_AUTO_GUARD;
+  else process.env.DESKTOP_TOUCH_AUTO_GUARD = prevAutoGuard;
   disconnectAll(TEST_PORT);
   chrome?.kill();
 });
 
-describe("browser_navigate waitForLoad", () => {
+describe.skipIf(!CHROME_AVAILABLE)("browser_navigate waitForLoad", () => {
   it("rejects file:// URLs with error (http/https only)", async () => {
     const result = await browserNavigateHandler({
       url: FIXTURE_URL,

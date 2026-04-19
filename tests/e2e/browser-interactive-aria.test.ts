@@ -10,7 +10,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
-import { launchChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
+import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
 import { sleep } from "./helpers/wait.js";
 import { browserGetInteractiveHandler } from "../../src/tools/browser.js";
 import { evaluateInTab, disconnectAll } from "../../src/engine/cdp-bridge.js";
@@ -19,10 +19,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_PATH = join(__dirname, "fixtures", "test-page.html");
 const TEST_PORT = 9229;
 const FIXTURE_URL = `file:///${FIXTURE_PATH.replace(/\\/g, "/")}`;
+const CHROME_AVAILABLE = tryFindChrome() !== null;
 
 let chrome: ChromeInstance;
 
 beforeAll(async () => {
+  if (!CHROME_AVAILABLE) return;
   chrome = await launchChrome(TEST_PORT, true, FIXTURE_URL);
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
@@ -67,7 +69,7 @@ function extractItems(text: string): InteractiveItem[] {
   return JSON.parse(text.slice(open, close + 1)) as InteractiveItem[];
 }
 
-describe("browser_get_interactive ARIA support", () => {
+describe.skipIf(!CHROME_AVAILABLE)("browser_get_interactive ARIA support", () => {
   it("surfaces role=switch with state.checked", async () => {
     const result = await browserGetInteractiveHandler({
       types: ["all"],
