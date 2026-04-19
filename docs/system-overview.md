@@ -36,9 +36,9 @@ desktop-touch-mcp (Node.js / TypeScript)
     │   │                     getForegroundHwnd, getWindowClassName, isWindowTopmost, getWindowOwner
     │   ├── uia-bridge.ts   — UIA bridge: routes to Rust native → PowerShell fallback
     │   │                     13 functions: getUiElements, clickElement, setElementValue, etc.
-    │   │                     detectUiaBlind(): sparsity guard (< 5 elements OR single giant Pane ≥ 90%)
+    │   │                     detectUiaBlind(): sparsity guard (< 5 elements OR single giant Pane ≥ 90% with < 5 other actionable elements)
     │   ├── ocr-bridge.ts   — Windows OCR runner + SoM pipeline (v0.15.4)
-    │   │                     runSomPipeline(): 11-stage Hybrid Non-CDP pipeline
+    │   │                     runSomPipeline(): Hybrid Non-CDP pipeline (8 stages)
     │   │                       capture → preprocess (Rust) → OCR → cluster → drawSomLabels (Rust)
     │   │                     clusterOcrWords(): 2-stage merge (char→word→element) via proximity heuristics
     │   ├── uia-diff.ts     — UIA snapshot diff (appeared / disappeared / valueDeltas)
@@ -229,16 +229,16 @@ Captures a window even when it is behind another (PrintWindow API).
 Word-level text with on-screen coords via Windows OCR (`Windows.Media.Ocr`). Fallback for apps where UIA is sparse.
 
 #### `screenshot(detail="text")` — SoM fallback (v0.15.4)
-When `detectUiaBlind()` fires (fewer than 5 UIA elements, or a single Pane covering ≥ 90% of the window), `screenshot(detail="text")` automatically activates the Hybrid Non-CDP pipeline instead of returning an empty element list:
+When `detectUiaBlind()` fires (fewer than 5 UIA elements, or a single Pane covering ≥ 90% of the window with fewer than 5 other actionable elements), `screenshot(detail="text")` automatically activates the Hybrid Non-CDP pipeline instead of returning an empty element list:
 
 1. Capture window via PrintWindow → RGBA buffer
 2. Rust `preprocessImage()`: grayscale (BT.601 u8) + bilinear 2×/3× upscale + contrast stretch. Auto-clamps to scale=1 at >8 MP or ≥144 DPI.
 3. Windows OCR → word list with bounding boxes
-4. Two-stage clustering: char→word merges (gap < 0.5× char height) then word→element merges (gap < 2× line height)
+4. Two-stage clustering: char→word merges (gap ≤ max(12px, 0.5× glyph height)) then word→element merges (gap ≤ 35px)
 5. Rust `drawSomLabels()`: red 2px bounding boxes + white badge with black ID number
 6. Returns `somImage` (base64 PNG) + `elements[]` with `{ id, text, clickAt, region }`
 
-Sharp library is the transparent fallback if the native `.node` engine is unavailable (no feature loss, only performance difference).
+Sharp library is the transparent fallback for `preprocessImage` if the native `.node` engine is unavailable (no feature loss, only performance difference). When `drawSomLabels` is unavailable (Rust engine not built), `somImage` is `null` — the `elements[]` list with `clickAt` coords is still returned, but without the visual annotation PNG. If the SoM pipeline fails at any stage, `screenshot(detail="text")` transparently falls back to the regular OCR word-list path.
 
 #### `get_screen_info`
 Monitor list: resolution, position, DPI, cursor position.
