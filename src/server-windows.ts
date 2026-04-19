@@ -181,7 +181,7 @@ failsafeTimer.unref(); // don't keep process alive for this alone
 
 // ─── Graceful shutdown ────────────────────────────────────────────────────────
 let httpServerRef: HttpServer | null = null;
-let httpTransportRef: StreamableHTTPServerTransport | null = null;
+let httpTransportsRef: Map<string, StreamableHTTPServerTransport> | null = null;
 let shuttingDown = false;
 
 function shutdown(): void {
@@ -191,7 +191,10 @@ function shutdown(): void {
   stopNativeRuntime();
   stopTray();
   httpServerRef?.close();
-  void httpTransportRef?.close();
+  if (httpTransportsRef) {
+    for (const t of httpTransportsRef.values()) void t.close();
+    httpTransportsRef.clear();
+  }
   process.exit(0);
 }
 
@@ -234,6 +237,8 @@ if (useHttp) {
   // Stateful mode: each client session gets its own transport instance.
   // The McpServer routes messages to the correct transport via mcp-session-id.
   const transports = new Map<string, StreamableHTTPServerTransport>();
+  httpTransportsRef = transports;
+  const MAX_SESSIONS = 10;
 
   const httpServer = createServer(async (req, res) => {
     // DNS rebinding protection
@@ -262,9 +267,23 @@ if (useHttp) {
 
       if (sessionId && transports.has(sessionId)) {
         // Existing session — reuse transport
-        await transports.get(sessionId)!.handleRequest(req, res);
+        try {
+          await transports.get(sessionId)!.handleRequest(req, res);
+        } catch (err) {
+          console.error("[desktop-touch] handleRequest error:", err);
+          if (!res.headersSent) {
+            res.writeHead(500, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Internal server error" }));
+          }
+        }
       } else if (!sessionId && req.method === "POST") {
-        // New session — create a fresh transport
+        // New session — enforce session cap to prevent unbounded memory growth
+        if (transports.size >= MAX_SESSIONS) {
+          res.writeHead(503, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Too many active sessions" }));
+          return;
+        }
+        // Create a fresh transport
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           enableJsonResponse: true,
@@ -276,8 +295,16 @@ if (useHttp) {
           const id = transport.sessionId;
           if (id) transports.delete(id);
         };
-        await server.connect(transport);
-        await transport.handleRequest(req, res);
+        try {
+          await server.connect(transport);
+          await transport.handleRequest(req, res);
+        } catch (err) {
+          console.error("[desktop-touch] session init error:", err);
+          if (!res.headersSent) {
+            res.writeHead(500, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Internal server error" }));
+          }
+        }
       } else {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Bad Request: invalid or missing session" }));
