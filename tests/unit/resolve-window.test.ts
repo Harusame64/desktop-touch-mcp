@@ -31,12 +31,6 @@ import { resolveWindowTarget } from "../../src/tools/_resolve-window.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function setupDefaultWin32() {
-  mockGetWindowTitleW.mockReturnValue("Untitled - Notepad");
-  mockGetWindowRectByHwnd.mockReturnValue({ x: 0, y: 0, width: 800, height: 600 });
-  mockGetForegroundHwnd.mockReturnValue(1234n);
-}
-
 beforeEach(() => {
   mockGetForegroundHwnd.mockReset();
   mockGetWindowTitleW.mockReset();
