@@ -26,6 +26,11 @@ tools/win-ocr/obj/
 .vitest-out.json
 .vitest-out.txt
 
+# Ad-hoc test output and HTTP debug captures
+_som-test-output.png
+response_body.txt
+response_headers.txt
+
 # Smoke test working directories (npm cache, npx cache, run dir)
 _smoke-npm-cache/
 _smoke-npx-cache/
@@ -40,6 +45,7 @@ remote_commits.txt
 # Rust build artefacts (monorepo: napi-rs native addon)
 target/
 *.node
+*.node.bak
 libnode.a
 libnode.dll.a
 node.def
