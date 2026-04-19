@@ -10,7 +10,7 @@ Claude がデスクトップを直接見て、直接操作する。
 マウス・キーボード・スクリーンショット・Windows UI Automation・Chrome DevTools Protocol・ターミナル・SmartScroll・Reactive Perception Graph を統合した 57 のツールを提供する MCP サーバーです。
 
 > *v0.15: Rust ネイティブエンジンにより**平均 82 倍高速化** — UIA フォーカス取得 2ms、SSE2 SIMD 画像差分 13〜15 倍速。設定不要：エンジンは自動ロード、不在時は PowerShell に透過フォールバック。*
-> *v0.15.4: **Set-of-Marks (SoM) ビジュアルフォールバック** — ゲーム・RDP・非対応 Electron アプリでも OCR + Rust 画像前処理で操作可能な要素を返す。UIA が完全に無効でも動作します。*
+> *v0.15.5: **固定リリース検証** — npm ランチャーは対応する GitHub Release tag だけを取得し、Windows runtime zip を検証してから展開します。*
 
 ---
 

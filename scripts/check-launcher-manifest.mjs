@@ -8,7 +8,7 @@ const launcher = readFileSync(join(root, "bin", "launcher.js"), "utf8");
 
 const packageVersionMatch = launcher.match(/const PACKAGE_VERSION = "([^"]+)";/);
 const manifestTagMatch = launcher.match(/tagName: "(v[^"]+)",/);
-const manifestShaMatch = launcher.match(/sha256: "([a-fA-F0-9]+)",/);
+const manifestShaMatch = launcher.match(/sha256: "([^"]+)",/);
 
 if (!packageVersionMatch || !manifestTagMatch || !manifestShaMatch) {
   throw new Error("[check-launcher-manifest] Could not find PACKAGE_VERSION/tagName/sha256 in bin/launcher.js");

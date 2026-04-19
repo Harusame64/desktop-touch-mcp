@@ -9,7 +9,7 @@
 An MCP server that gives Claude eyes and hands on Windows — 57 tools covering screenshots, mouse, keyboard, Windows UI Automation, Chrome DevTools Protocol, clipboard, desktop notifications, SmartScroll, and a Reactive Perception Graph for safe multi-step automation, designed from the ground up for LLM efficiency.
 
 > *v0.15: **82× average speedup** via Rust native engine — UIA focus queries in 2 ms, SSE2-accelerated image diffing at 13–15× native speed. Zero-config: the engine auto-loads when present, with transparent PowerShell fallback.*
-> *v0.15.4: **Set-of-Marks (SoM) visual fallback** — games, RDP sessions, and non-accessible Electron apps now return clickable elements via OCR + Rust image preprocessing, even when UIA is completely unavailable.*
+> *v0.15.5: **Pinned release verification** — the npm launcher now fetches only the matching GitHub Release tag and verifies the Windows runtime zip before extraction.*
 
 ---
 
