@@ -199,6 +199,18 @@ export const browserGetFormSchema = {
       "CSS selector for the form or container element to inspect (e.g. '#login-form', '.search-bar'). " +
       "All input, select, textarea, and button descendants are returned."
     ),
+  includeHidden: coercedBoolean()
+    .default(false)
+    .describe(
+      "When true, include hidden inputs (type=hidden). Default false to avoid CSRF-token / serialized-state clutter."
+    ),
+  maxResults: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(500)
+    .default(100)
+    .describe("Maximum number of form fields to return (default 100)."),
   tabId: tabIdParam,
   port: portParam,
   includeContext: includeContextParam,
@@ -418,11 +430,15 @@ export const browserFillInputHandler = async ({
 
 export const browserGetFormHandler = async ({
   selector,
+  includeHidden,
+  maxResults,
   tabId,
   port,
   includeContext,
 }: {
   selector: string;
+  includeHidden: boolean;
+  maxResults: number;
   tabId?: string;
   port: number;
   includeContext: boolean;
@@ -431,27 +447,40 @@ export const browserGetFormHandler = async ({
     const expr = `
 (function() {
   const scope = document.querySelector(${JSON.stringify(selector)});
-  if (!scope) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)} };
+  if (!scope) return { ok: false, error: 'element not found' };
+  const FIELD_SEL = 'input, select, textarea, button';
+  const isSelf = scope.matches(FIELD_SEL);
+  const children = Array.from(scope.querySelectorAll(FIELD_SEL));
+  const elements = isSelf ? [scope, ...children] : children;
+  const includeHidden = ${includeHidden};
+  const maxResults = ${maxResults};
+  const MAX_VALUE_LEN = 200;
   const fields = [];
-  const elements = scope.querySelectorAll('input, select, textarea, button');
   for (const el of elements) {
+    if (fields.length >= maxResults) break;
     const tagName = el.tagName.toLowerCase();
     const attrType = el.getAttribute('type') || '';
     const type = attrType ||
       (tagName === 'select' ? 'select' :
        tagName === 'textarea' ? 'textarea' :
        tagName === 'button' ? 'button' : 'text');
+    if (!includeHidden && type === 'hidden') continue;
     const name = el.name || null;
     const id = el.id || null;
     let value = null;
     let checked = null;
-    if (tagName === 'input' && (type === 'checkbox' || type === 'radio')) {
+    if (tagName === 'button') {
+      value = el.textContent.trim() || null;
+    } else if (tagName === 'input' && (type === 'checkbox' || type === 'radio')) {
       checked = el.checked;
-      value = el.value || null;
-    } else if (tagName === 'input' || tagName === 'textarea' || tagName === 'select') {
+      value = el.getAttribute('value');
+    } else if (tagName === 'input' || tagName === 'textarea') {
+      const raw = el.value || '';
+      value = raw ? (raw.length > MAX_VALUE_LEN ? raw.slice(0, MAX_VALUE_LEN) + '\u2026' : raw) : null;
+    } else if (tagName === 'select') {
       value = el.value || null;
     }
-    // Resolve associated label text
+    // Resolve label: for[id] > ancestor LABEL (strip child inputs) > aria-labelledby > aria-label
     let label = null;
     if (id) {
       const labelEl = document.querySelector('label[for=' + JSON.stringify(id) + ']');
@@ -461,12 +490,24 @@ export const browserGetFormHandler = async ({
       let p = el.parentElement;
       while (p) {
         if (p.tagName === 'LABEL') {
-          // Strip the input's own text contribution to avoid duplicating value in label
-          label = p.textContent.trim() || null;
+          const clone = p.cloneNode(true);
+          clone.querySelectorAll(FIELD_SEL).forEach(function(n) { n.remove(); });
+          label = clone.textContent.trim() || null;
           break;
         }
         p = p.parentElement;
       }
+    }
+    if (!label) {
+      const lbAttr = el.getAttribute('aria-labelledby');
+      if (lbAttr) {
+        label = lbAttr.trim().split(/\s+/).map(function(i) {
+          var e = document.getElementById(i); return e ? e.textContent.trim() : '';
+        }).filter(Boolean).join(' ') || null;
+      }
+    }
+    if (!label) {
+      label = el.getAttribute('aria-label') || null;
     }
     fields.push({
       tagName,
@@ -477,7 +518,7 @@ export const browserGetFormHandler = async ({
       checked,
       placeholder: el.placeholder || null,
       disabled: el.disabled,
-      readOnly: el.readOnly || false,
+      readOnly: !!el.readOnly,
       label,
     });
   }
@@ -489,7 +530,7 @@ export const browserGetFormHandler = async ({
       | { ok: false; error: string };
 
     if (!result.ok) {
-      return failWith(result.error, "browser_get_form");
+      return failWith("Element not found", "browser_get_form", { selector });
     }
 
     const lines = [JSON.stringify(result)];
@@ -1871,7 +1912,7 @@ export function registerBrowserTools(server: McpServer): void {
 
   server.tool(
     "browser_get_form",
-    "Inspect all form fields (input, select, textarea, button) within a CSS-selector-specified container and return their name, type, id, current value, hint text, disabled/readOnly state, and associated label text. Use this before browser_fill_input to discover exact field selectors and avoid accidentally targeting the wrong input (e.g. a global search bar). Caveats: Requires browser_connect (CDP active). Hidden inputs (type=hidden) are included — filter by type if needed.",
+    "Inspect all form fields (input, select, textarea, button) within a CSS-selector-specified container and return their name, type, id, current value, hint text, disabled/readOnly state, and associated label text (resolved via for[id], ancestor LABEL, aria-labelledby, aria-label in that order). Use this before browser_fill_input to discover exact field selectors and avoid accidentally targeting the wrong input (e.g. a global search bar). Caveats: Requires browser_connect (CDP active). Hidden inputs (type=hidden) are excluded by default — set includeHidden:true if needed. Value text is truncated at 200 chars.",
     browserGetFormSchema,
     browserGetFormHandler
   );

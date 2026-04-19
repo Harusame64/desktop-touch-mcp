@@ -289,13 +289,25 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "browser_get_form",
-    "description": "Inspect all form fields (input, select, textarea, button) within a CSS-selector-specified container and return their name, type, id, current value, hint text, disabled/readOnly state, and associated label text. Use this before browser_fill_input to discover exact field selectors and avoid accidentally targeting the wrong input (e.g. a global search bar). Caveats: Requires browser_connect (CDP active). Hidden inputs (type=hidden) are included — filter by type if needed.",
+    "description": "Inspect all form fields (input, select, textarea, button) within a CSS-selector-specified container and return their name, type, id, current value, hint text, disabled/readOnly state, and associated label text (resolved via for[id], ancestor LABEL, aria-labelledby, aria-label in that order). Use this before browser_fill_input to discover exact field selectors and avoid accidentally targeting the wrong input (e.g. a global search bar). Caveats: Requires browser_connect (CDP active). Hidden inputs (type=hidden) are excluded by default — set includeHidden:true if needed. Value text is truncated at 200 chars.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "selector": {
           "description": "CSS selector for the form or container element to inspect (e.g. '#login-form', '.search-bar'). All input, select, textarea, and button descendants are returned.",
           "type": "string"
+        },
+        "includeHidden": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, include hidden inputs (type=hidden). Default false to avoid CSRF-token / serialized-state clutter."
+        },
+        "maxResults": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500,
+          "default": 100,
+          "description": "Maximum number of form fields to return (default 100)."
         },
         "tabId": {
           "type": "string",
