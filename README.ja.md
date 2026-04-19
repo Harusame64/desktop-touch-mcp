@@ -10,12 +10,14 @@ Claude がデスクトップを直接見て、直接操作する。
 マウス・キーボード・スクリーンショット・Windows UI Automation・Chrome DevTools Protocol・ターミナル・SmartScroll・Reactive Perception Graph を統合した 57 のツールを提供する MCP サーバーです。
 
 > *v0.15: Rust ネイティブエンジンにより**平均 82 倍高速化** — UIA フォーカス取得 2ms、SSE2 SIMD 画像差分 13〜15 倍速。設定不要：エンジンは自動ロード、不在時は PowerShell に透過フォールバック。*
+> *v0.15.4: **Set-of-Marks (SoM) ビジュアルフォールバック** — ゲーム・RDP・非対応 Electron アプリでも OCR + Rust 画像前処理で操作可能な要素を返す。UIA が完全に無効でも動作します。*
 
 ---
 
 ## 特徴
 
 - **⚡ 高性能 Rust ネイティブコア** — UIA ブリッジと画像差分エンジンを Rust (`napi-rs` + `windows-rs`) で実装し、ネイティブ `.node` アドオンとしてロード。専用 MTA スレッドからの直接 COM 呼び出しにより PowerShell プロセス起動を排除 — `getFocusedElement` は **2ms**（160 倍高速）、`getUiElements` はバッチ型 BFS アルゴリズムでクロスプロセス RPC を最小化し **約 100ms** で完了。画像差分は **SSE2 SIMD** で 13〜15 倍のスループット。ネイティブエンジンが利用不可の場合、全関数が PowerShell に透過フォールバック — 設定不要。
+- **🎯 Set-of-Marks (SoM) ビジュアルフォールバック** — ゲーム・RDP・非対応 Electron アプリで UIA が完全に機能しない場合でも、`screenshot(detail="text")` が Hybrid Non-CDP パイプラインを自動起動。Rust 画像前処理 → Windows OCR → クラスタリング → 赤い枠線 + 番号バッジ（`[1]`、`[2]`…）付き PNG 画像を生成し、`clickAt` 座標付きの要素リストを返します。CDP 不要。
 - **LLM ネイティブ設計** — 人間の操作を模倣するのではなく、「LLM がいかにコンテキストを消費せず高速に動けるか」を前提に設計。`run_macro` による複数操作の一括実行（API 往復の削減）と、**MPEG P-frame 方式のレイヤー差分** (`diffMode`) を組み合わせることで、無駄な画像転送や推論ループを極限まで削ぎ落とす。
 - **Reactive Perception Graph** — ウィンドウやブラウザタブに `lensId` を登録し、以後の action tool に渡すだけで、操作前の安全 guard と操作後の `post.perception` フィードバックを受け取れます。`screenshot` / `get_context` の反復を減らし、別ウィンドウへの誤入力や古い座標クリックを防ぎます。
 - **日本語/CJK 完全対応** — ウィンドウタイトル取得に Win32 `GetWindowTextW` を使用。nut-js の文字化けを回避。IME バイパス入力にも対応。

@@ -21,10 +21,14 @@ desktop-touch-mcp (Node.js / TypeScript)
     │   │   ├── 13 napi exports: tree(2) + focus(2) + actions(3) + search(2) + text(1) + scroll(3)
     │   │   └── AsyncTask: compute() on libuv worker thread → non-blocking Promise
     │   │
-    │   └── Image Engine (SSE2 SIMD)
-    │       ├── computeChangeFraction — 8×8 block pixel diff (0.26 ms @ 1080p)
-    │       ├── dHash — 64-bit perceptual hash (0.09 ms)
-    │       └── hammingDistance — bitwise comparison
+    │   ├── Image Engine (SSE2 SIMD)
+    │   │   ├── computeChangeFraction — 8×8 block pixel diff (0.26 ms @ 1080p)
+    │   │   ├── dHash — 64-bit perceptual hash (0.09 ms)
+    │   │   └── hammingDistance — bitwise comparison
+    │   │
+    │   └── Image Processing Engine (SoM pipeline — v0.15.4)
+    │       ├── preprocessImage() — grayscale (BT.601 u8) + bilinear upscale (2×/3×, Q16 fixed-point) + contrast stretch
+    │       └── drawSomLabels()  — red bounding boxes + 5×7 bitmap-font ID badges ([1],[2],…) on RGBA buffer
     │
     ├── Layer 1: Engine (TypeScript)
     │   ├── nutjs.js        — mouse / keyboard / screen capture (nut-js)
@@ -32,6 +36,11 @@ desktop-touch-mcp (Node.js / TypeScript)
     │   │                     getForegroundHwnd, getWindowClassName, isWindowTopmost, getWindowOwner
     │   ├── uia-bridge.ts   — UIA bridge: routes to Rust native → PowerShell fallback
     │   │                     13 functions: getUiElements, clickElement, setElementValue, etc.
+    │   │                     detectUiaBlind(): sparsity guard (< 5 elements OR single giant Pane ≥ 90%)
+    │   ├── ocr-bridge.ts   — Windows OCR runner + SoM pipeline (v0.15.4)
+    │   │                     runSomPipeline(): 11-stage Hybrid Non-CDP pipeline
+    │   │                       capture → preprocess (Rust) → OCR → cluster → drawSomLabels (Rust)
+    │   │                     clusterOcrWords(): 2-stage merge (char→word→element) via proximity heuristics
     │   ├── uia-diff.ts     — UIA snapshot diff (appeared / disappeared / valueDeltas)
     │   ├── image.ts        — image encode (sharp): PNG / WebP 1:1 / crop
     │   ├── layer-buffer.ts — per-window layer buffer: frame-diff detection (MPEG P-frame style)
@@ -218,6 +227,18 @@ Captures a window even when it is behind another (PrintWindow API).
 
 #### `screenshot_ocr`
 Word-level text with on-screen coords via Windows OCR (`Windows.Media.Ocr`). Fallback for apps where UIA is sparse.
+
+#### `screenshot(detail="text")` — SoM fallback (v0.15.4)
+When `detectUiaBlind()` fires (fewer than 5 UIA elements, or a single Pane covering ≥ 90% of the window), `screenshot(detail="text")` automatically activates the Hybrid Non-CDP pipeline instead of returning an empty element list:
+
+1. Capture window via PrintWindow → RGBA buffer
+2. Rust `preprocessImage()`: grayscale (BT.601 u8) + bilinear 2×/3× upscale + contrast stretch. Auto-clamps to scale=1 at >8 MP or ≥144 DPI.
+3. Windows OCR → word list with bounding boxes
+4. Two-stage clustering: char→word merges (gap < 0.5× char height) then word→element merges (gap < 2× line height)
+5. Rust `drawSomLabels()`: red 2px bounding boxes + white badge with black ID number
+6. Returns `somImage` (base64 PNG) + `elements[]` with `{ id, text, clickAt, region }`
+
+Sharp library is the transparent fallback if the native `.node` engine is unavailable (no feature loss, only performance difference).
 
 #### `get_screen_info`
 Monitor list: resolution, position, DPI, cursor position.
