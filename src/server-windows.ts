@@ -181,8 +181,11 @@ failsafeTimer.unref(); // don't keep process alive for this alone
 // ─── Graceful shutdown ────────────────────────────────────────────────────────
 let httpServerRef: HttpServer | null = null;
 let httpTransportRef: StreamableHTTPServerTransport | null = null;
+let shuttingDown = false;
 
 function shutdown(): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
   console.error("[desktop-touch] Shutting down...");
   stopNativeRuntime();
   stopTray();
@@ -273,6 +276,22 @@ if (useHttp) {
 } else {
   const transport = new StdioServerTransport();
   await server.connect(transport);
+
+  // Detect parent process exit: stdin EOF when the client's write-end closes.
+  // The MCP SDK only listens for 'data' and 'error', not 'end'.
+  process.stdin.on("end", () => {
+    console.error("[desktop-touch] stdin closed — parent exited. Shutting down.");
+    shutdown();
+  });
+
+  // Fallback: catch broken-pipe when writing responses after parent exits.
+  process.stdout.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED") {
+      console.error("[desktop-touch] stdout broken pipe — parent exited. Shutting down.");
+      shutdown();
+    }
+  });
+
   console.error("[desktop-touch] MCP server running (stdio)");
 }
 
