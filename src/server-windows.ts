@@ -40,127 +40,132 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const icoDir = join(__dirname, "..", "assets", "icons");
 const icoOk = existsSync(join(icoDir, "tray_ok.ico")) ? join(icoDir, "tray_ok.ico") : undefined;
 
-const server = new McpServer(
-  { name: "desktop-touch", version: SERVER_VERSION },
-  {
-    instructions: [
-      "# desktop-touch-mcp",
-      "",
-      "## Entry point",
-      "Call screenshot(detail='meta') to orient before acting. Returns all window positions and titles at ~20 tok/window — no image.",
-      "",
-      "## Standard workflow",
-      "1. screenshot(detail='meta') — identify target window title",
-      "2. screenshot(detail='text', windowTitle=X) — get actionable[] with clickAt coords",
-      "3. click_element / mouse_click(clickAt.x, clickAt.y) — act",
-      "4. screenshot(diffMode=true) — confirm changes (~160 tok, changed windows only)",
-      "",
-      "## Clicking — priority order",
-      "1. browser_click_element(selector) — Chrome/Edge (CDP, stable across repaints)",
-      "2. click_element(name or automationId) — native Windows apps (UIA)",
-      "3. mouse_click(x, y, origin?, scale?) — pixel fallback; origin+scale from dotByDot screenshots only",
-      "",
-      "## Observation — priority order",
-      "1. get_context — cheapest; confirms focused element, value, modal state after actions",
-      "2. screenshot(detail='text') — actionable elements with coords",
-      "3. screenshot(dotByDot=true) — pixel-accurate image when text mode returns 0 elements",
-      "4. screenshot(detail='image', confirmImage=true) — visual inspection only; server-blocked without confirmImage",
-      "",
-      "## Terminal workflow",
-      "terminal_send → wait_until(terminal_output_contains, pattern='$ ') → terminal_read(sinceMarker).",
-      "Do not screenshot the terminal — terminal_read is cheaper and structured.",
-      "",
-      "## Waiting for state changes",
-      "Use wait_until instead of sleep+screenshot loops:",
-      "  window_appears    — wait for a dialog or new app window",
-      "  terminal_output_contains — wait for CLI command completion",
-      "  element_matches   — wait for browser DOM readiness after navigation",
-      "  focus_changes     — wait for focus to shift after an action",
-      "On WaitTimeout, read the suggest[] array in the error response for recovery steps.",
-      "",
-      "## Failure recovery",
-      "- WindowNotFound → call get_windows to list available titles, then retry focus_window",
-      "- WaitTimeout → read suggest[] in the error; increase timeoutMs or verify target exists",
-      "- keyboard_press / keyboard_type wrong window → call focus_window(windowTitle) first",
-      "- scroll_capture sizeReduced=true → reduce maxScrolls or add grayscale=true",
-      "",
-      "## Scroll capture",
-      "scroll_capture stitches full-page images. sizeReduced=true means the image was downscaled (pixel coords ≠ screen) — use for reading only, not mouse_click. overlapMode='mixed-with-failures' means some frame seams have duplicate rows.",
-      "",
-      "## Auto-dock CLI window (optional)",
-      "Set env vars in your MCP client config to auto-dock Claude CLI on startup:",
-      "  DESKTOP_TOUCH_DOCK_TITLE='@parent'  — auto-detect the hosting terminal (recommended)",
-      "  DESKTOP_TOUCH_DOCK_CORNER=bottom-right  DESKTOP_TOUCH_DOCK_WIDTH=480  DESKTOP_TOUCH_DOCK_HEIGHT=360",
-      "",
-      "## Emergency stop (Failsafe)",
-      "Move mouse to the top-left corner of the screen (within 10px of 0,0) to immediately terminate the MCP server.",
-      "",
-      "## Reactive Perception (lensId-based workflow)",
-      "For repeated work on the same window or browser tab, register a perception lens before acting.",
-      "A lens is a lightweight live state tracker. Pass its lensId to action tools so the server can verify focus, identity, readiness, modal obstruction, and click safety before the action, then return post.perception after the action.",
-      "",
-      "Use this workflow:",
-      "1. perception_register — create a lens for the target window/tab",
-      "2. Pass lensId to keyboard/mouse/browser action tools",
-      "3. Read post.perception.attention after each action",
-      "4. If attention is dirty, stale, settling, guard_failed, or identity_changed, follow suggestedAction or call perception_read",
-      "5. perception_forget when the workflow is done",
-      "",
-      "Attention values and recommended actions:",
-      "  ok           — safe to act",
-      "  changed      — state updated; verify before acting",
-      "  dirty        — evidence pending; call perception_read first",
-      "  settling     — window in motion; wait then call perception_read",
-      "  stale        — evidence may be old; call perception_read to refresh",
-      "  guard_failed — unsafe; read failedGuard.suggestedAction before proceeding",
-      "  identity_changed — window was replaced; re-register the lens",
-      "",
-      "Prefer perception_read over screenshot/get_context when a lens already exists. Screenshots are a fallback for visual details, not the default state check.",
-    ].join("\n"),
-  }
-);
+// ─── MCP server factory ───────────────────────────────────────────────────────
+// Returns a fully-configured McpServer with all tools registered.
+// Called once for STDIO mode, and once per HTTP request for stateless HTTP mode.
+function createMcpServer(): McpServer {
+  const s = new McpServer(
+    { name: "desktop-touch", version: SERVER_VERSION },
+    {
+      instructions: [
+        "# desktop-touch-mcp",
+        "",
+        "## Entry point",
+        "Call screenshot(detail='meta') to orient before acting. Returns all window positions and titles at ~20 tok/window — no image.",
+        "",
+        "## Standard workflow",
+        "1. screenshot(detail='meta') — identify target window title",
+        "2. screenshot(detail='text', windowTitle=X) — get actionable[] with clickAt coords",
+        "3. click_element / mouse_click(clickAt.x, clickAt.y) — act",
+        "4. screenshot(diffMode=true) — confirm changes (~160 tok, changed windows only)",
+        "",
+        "## Clicking — priority order",
+        "1. browser_click_element(selector) — Chrome/Edge (CDP, stable across repaints)",
+        "2. click_element(name or automationId) — native Windows apps (UIA)",
+        "3. mouse_click(x, y, origin?, scale?) — pixel fallback; origin+scale from dotByDot screenshots only",
+        "",
+        "## Observation — priority order",
+        "1. get_context — cheapest; confirms focused element, value, modal state after actions",
+        "2. screenshot(detail='text') — actionable elements with coords",
+        "3. screenshot(dotByDot=true) — pixel-accurate image when text mode returns 0 elements",
+        "4. screenshot(detail='image', confirmImage=true) — visual inspection only; server-blocked without confirmImage",
+        "",
+        "## Terminal workflow",
+        "terminal_send → wait_until(terminal_output_contains, pattern='$ ') → terminal_read(sinceMarker).",
+        "Do not screenshot the terminal — terminal_read is cheaper and structured.",
+        "",
+        "## Waiting for state changes",
+        "Use wait_until instead of sleep+screenshot loops:",
+        "  window_appears    — wait for a dialog or new app window",
+        "  terminal_output_contains — wait for CLI command completion",
+        "  element_matches   — wait for browser DOM readiness after navigation",
+        "  focus_changes     — wait for focus to shift after an action",
+        "On WaitTimeout, read the suggest[] array in the error response for recovery steps.",
+        "",
+        "## Failure recovery",
+        "- WindowNotFound → call get_windows to list available titles, then retry focus_window",
+        "- WaitTimeout → read suggest[] in the error; increase timeoutMs or verify target exists",
+        "- keyboard_press / keyboard_type wrong window → call focus_window(windowTitle) first",
+        "- scroll_capture sizeReduced=true → reduce maxScrolls or add grayscale=true",
+        "",
+        "## Scroll capture",
+        "scroll_capture stitches full-page images. sizeReduced=true means the image was downscaled (pixel coords ≠ screen) — use for reading only, not mouse_click. overlapMode='mixed-with-failures' means some frame seams have duplicate rows.",
+        "",
+        "## Auto-dock CLI window (optional)",
+        "Set env vars in your MCP client config to auto-dock Claude CLI on startup:",
+        "  DESKTOP_TOUCH_DOCK_TITLE='@parent'  — auto-detect the hosting terminal (recommended)",
+        "  DESKTOP_TOUCH_DOCK_CORNER=bottom-right  DESKTOP_TOUCH_DOCK_WIDTH=480  DESKTOP_TOUCH_DOCK_HEIGHT=360",
+        "",
+        "## Emergency stop (Failsafe)",
+        "Move mouse to the top-left corner of the screen (within 10px of 0,0) to immediately terminate the MCP server.",
+        "",
+        "## Reactive Perception (lensId-based workflow)",
+        "For repeated work on the same window or browser tab, register a perception lens before acting.",
+        "A lens is a lightweight live state tracker. Pass its lensId to action tools so the server can verify focus, identity, readiness, modal obstruction, and click safety before the action, then return post.perception after the action.",
+        "",
+        "Use this workflow:",
+        "1. perception_register — create a lens for the target window/tab",
+        "2. Pass lensId to keyboard/mouse/browser action tools",
+        "3. Read post.perception.attention after each action",
+        "4. If attention is dirty, stale, settling, guard_failed, or identity_changed, follow suggestedAction or call perception_read",
+        "5. perception_forget when the workflow is done",
+        "",
+        "Attention values and recommended actions:",
+        "  ok           — safe to act",
+        "  changed      — state updated; verify before acting",
+        "  dirty        — evidence pending; call perception_read first",
+        "  settling     — window in motion; wait then call perception_read",
+        "  stale        — evidence may be old; call perception_read to refresh",
+        "  guard_failed — unsafe; read failedGuard.suggestedAction before proceeding",
+        "  identity_changed — window was replaced; re-register the lens",
+        "",
+        "Prefer perception_read over screenshot/get_context when a lens already exists. Screenshots are a fallback for visual details, not the default state check.",
+      ].join("\n"),
+    }
+  );
 
-// ─── Inject failsafe pre-check into every tool handler ───────────────────────
-// Wraps server.tool so that checkFailsafe() runs before each handler,
-// without touching individual tool files.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const _originalTool = server.tool.bind(server) as (...args: any[]) => any;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-(server as any).tool = function (...toolArgs: any[]) {
-  const lastIdx = toolArgs.length - 1;
-  const originalHandler = toolArgs[lastIdx] as (...args: unknown[]) => Promise<unknown>;
-  toolArgs[lastIdx] = async (...handlerArgs: unknown[]) => {
-    await checkFailsafe();
-    return originalHandler(...handlerArgs);
+  // Inject failsafe pre-check into every tool handler.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const _originalTool = s.tool.bind(s) as (...args: any[]) => any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (s as any).tool = function (...toolArgs: any[]) {
+    const lastIdx = toolArgs.length - 1;
+    const originalHandler = toolArgs[lastIdx] as (...args: unknown[]) => Promise<unknown>;
+    toolArgs[lastIdx] = async (...handlerArgs: unknown[]) => {
+      await checkFailsafe();
+      return originalHandler(...handlerArgs);
+    };
+    return _originalTool(...toolArgs);
   };
-  return _originalTool(...toolArgs);
-};
 
-registerScreenshotTools(server);
-registerMouseTools(server);
-registerKeyboardTools(server);
-registerWindowTools(server);
-registerUiElementTools(server);
-registerWorkspaceTools(server);
-registerPinTools(server);
-registerMacroTools(server);
-registerScrollCaptureTools(server);
-registerBrowserTools(server);
-registerDockTools(server);
-registerWaitUntilTool(server);
-registerContextTools(server);
-registerTerminalTools(server);
-registerEventTools(server);
-registerClipboardTools(server);
-registerNotificationTools(server);
-registerScrollToElementTools(server);
-registerSmartScrollTools(server);
-registerPerceptionTools(server);
-registerEngineStatusTool(server);
+  registerScreenshotTools(s);
+  registerMouseTools(s);
+  registerKeyboardTools(s);
+  registerWindowTools(s);
+  registerUiElementTools(s);
+  registerWorkspaceTools(s);
+  registerPinTools(s);
+  registerMacroTools(s);
+  registerScrollCaptureTools(s);
+  registerBrowserTools(s);
+  registerDockTools(s);
+  registerWaitUntilTool(s);
+  registerContextTools(s);
+  registerTerminalTools(s);
+  registerEventTools(s);
+  registerClipboardTools(s);
+  registerNotificationTools(s);
+  registerScrollToElementTools(s);
+  registerSmartScrollTools(s);
+  registerPerceptionTools(s);
+  registerEngineStatusTool(s);
 
-// ─── Perception resources (opt-in: DESKTOP_TOUCH_PERCEPTION_RESOURCES=1) ──────
-if (process.env.DESKTOP_TOUCH_PERCEPTION_RESOURCES === "1") {
-  registerPerceptionResources(server);
+  // Perception resources (opt-in: DESKTOP_TOUCH_PERCEPTION_RESOURCES=1)
+  if (process.env.DESKTOP_TOUCH_PERCEPTION_RESOURCES === "1") {
+    registerPerceptionResources(s);
+  }
+
+  return s;
 }
 
 // ─── Failsafe background monitor (backup for long-running operations) ─────────
@@ -181,7 +186,6 @@ failsafeTimer.unref(); // don't keep process alive for this alone
 
 // ─── Graceful shutdown ────────────────────────────────────────────────────────
 let httpServerRef: HttpServer | null = null;
-let httpTransportsRef: Map<string, StreamableHTTPServerTransport> | null = null;
 let shuttingDown = false;
 
 function shutdown(): void {
@@ -191,10 +195,7 @@ function shutdown(): void {
   stopNativeRuntime();
   stopTray();
   httpServerRef?.close();
-  if (httpTransportsRef) {
-    for (const t of httpTransportsRef.values()) void t.close();
-    httpTransportsRef.clear();
-  }
+  // In-flight requests clean up their own server/transport instances via res.on("close").
   process.exit(0);
 }
 
@@ -234,12 +235,9 @@ startTray(trayOptions);
 
 // ─── Connect MCP transport ───────────────────────────────────────────────────
 if (useHttp) {
-  // Stateful mode: each client session gets its own transport instance.
-  // The McpServer routes messages to the correct transport via mcp-session-id.
-  const transports = new Map<string, StreamableHTTPServerTransport>();
-  httpTransportsRef = transports;
-  const MAX_SESSIONS = 10;
-
+  // Stateless mode: each HTTP request gets its own McpServer + Transport instance.
+  // This is required by the MCP SDK — server.connect() can only be called once per
+  // McpServer instance, so we must create fresh instances per request.
   const httpServer = createServer(async (req, res) => {
     // DNS rebinding protection
     const host = req.headers.host ?? "";
@@ -263,51 +261,25 @@ if (useHttp) {
     }
 
     if (req.url?.startsWith("/mcp")) {
-      const sessionId = req.headers["mcp-session-id"] as string | undefined;
-
-      if (sessionId && transports.has(sessionId)) {
-        // Existing session — reuse transport
-        try {
-          await transports.get(sessionId)!.handleRequest(req, res);
-        } catch (err) {
-          console.error("[desktop-touch] handleRequest error:", err);
-          if (!res.headersSent) {
-            res.writeHead(500, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Internal server error" }));
-          }
+      const reqServer = createMcpServer();
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined, // Stateless — no session management
+        enableJsonResponse: true,
+      });
+      // Clean up when the HTTP response closes.
+      res.on("close", () => {
+        transport.close().catch(() => {});
+        reqServer.close().catch(() => {});
+      });
+      try {
+        await reqServer.connect(transport);
+        await transport.handleRequest(req, res);
+      } catch (err) {
+        console.error("[desktop-touch] handleRequest error:", err);
+        if (!res.headersSent) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Internal server error" }));
         }
-      } else if (!sessionId && req.method === "POST") {
-        // New session — enforce session cap to prevent unbounded memory growth
-        if (transports.size >= MAX_SESSIONS) {
-          res.writeHead(503, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Too many active sessions" }));
-          return;
-        }
-        // Create a fresh transport
-        const transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => randomUUID(),
-          enableJsonResponse: true,
-          onsessioninitialized: (id) => {
-            transports.set(id, transport);
-          },
-        });
-        transport.onclose = () => {
-          const id = transport.sessionId;
-          if (id) transports.delete(id);
-        };
-        try {
-          await server.connect(transport);
-          await transport.handleRequest(req, res);
-        } catch (err) {
-          console.error("[desktop-touch] session init error:", err);
-          if (!res.headersSent) {
-            res.writeHead(500, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Internal server error" }));
-          }
-        }
-      } else {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Bad Request: invalid or missing session" }));
       }
     } else if (req.url === "/health" || req.url === "/") {
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -323,6 +295,7 @@ if (useHttp) {
     console.error(`[desktop-touch] MCP server running (http) on ${httpUrl}`);
   });
 } else {
+  const server = createMcpServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
