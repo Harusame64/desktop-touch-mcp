@@ -232,7 +232,7 @@ startTray(trayOptions);
 // ─── Connect MCP transport ───────────────────────────────────────────────────
 if (useHttp) {
   const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: () => randomUUID(),
+    sessionIdGenerator: undefined, // stateless: no session ID required per request
     enableJsonResponse: true,
   });
   httpTransportRef = transport;
