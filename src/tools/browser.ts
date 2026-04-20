@@ -28,7 +28,7 @@ import { narrateParam } from "./_narration.js";
 import type { RichBlock } from "../engine/uia-diff.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
-import { canParseAsExpression, isAlreadyWrappedIife, prepareBrowserEvalExpression } from "./browser-eval-helpers.js";
+import { prepareBrowserEvalExpression } from "./browser-eval-helpers.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
