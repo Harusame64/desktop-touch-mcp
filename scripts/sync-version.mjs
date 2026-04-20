@@ -38,8 +38,18 @@ syncFile(
   /SERVER_VERSION = "[^"]+"/,
   `SERVER_VERSION = "${pkg.version}"`
 );
-syncFile(
-  launcherFile,
-  /const PACKAGE_VERSION = "[^"]+";/,
-  `const PACKAGE_VERSION = "${pkg.version}";`
-);
+// Update PACKAGE_VERSION, tagName, and reset sha256 to PENDING in one pass.
+// Resetting sha256 prevents the "forgot to set PENDING" mistake on version bumps.
+{
+  const content = readFileSync(launcherFile, "utf8");
+  const updated = content
+    .replace(/const PACKAGE_VERSION = "[^"]+";/, `const PACKAGE_VERSION = "${pkg.version}";`)
+    .replace(/tagName: "v[^"]*"/, `tagName: "v${pkg.version}"`)
+    .replace(/sha256: "[^"]*"/, 'sha256: "PENDING"');
+  if (content !== updated) {
+    writeFileSync(launcherFile, updated, "utf8");
+    console.log(`[sync-version] bin/launcher.js updated to ${pkg.version}`);
+  } else {
+    console.log(`[sync-version] bin/launcher.js already at ${pkg.version}`);
+  }
+}
