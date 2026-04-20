@@ -6,69 +6,11 @@
  */
 
 import { describe, it, expect } from "vitest";
-
-// ── Import internal helpers via module augmentation trick ─────────────────────
-// The three helpers are not exported, so we re-implement them here using the
-// same logic so we can test the logic in isolation. If the implementation in
-// browser.ts changes, these shadows must be updated in lock-step.
-// Alternatively, export them with an `@internal` JSDoc tag and import directly.
-
-type AsyncFunctionConstructor = new (...args: string[]) => (...args: unknown[]) => Promise<unknown>;
-const AsyncFunction = Object.getPrototypeOf(async function () {
-  /* constructor only */
-}).constructor as AsyncFunctionConstructor;
-
-function canParseAsExpression(expression: string): boolean {
-  try {
-    new AsyncFunction(`return (\n${expression}\n);`);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function isAlreadyWrappedIife(expression: string): boolean {
-  const normalized = expression
-    .trim()
-    .replace(/^;/, "")
-    .replace(/;+\s*$/, "");
-
-  if (
-    !/^\s*\(\s*(?:async\s+function\b|function\b|async\s*\([^)]*\)\s*=>|\([^)]*\)\s*=>)/.test(
-      normalized
-    )
-  ) {
-    return false;
-  }
-
-  return canParseAsExpression(normalized);
-}
-
-function prepareBrowserEvalExpression(expression: string): string {
-  if (isAlreadyWrappedIife(expression)) return expression;
-
-  if (canParseAsExpression(expression)) {
-    return `;(async () => (\n${expression}\n))()`;
-  }
-
-  const serializedExpression = JSON.stringify(expression);
-  return `;(async () => {
-  const __mcpExpression = ${serializedExpression};
-  try {
-    return eval(__mcpExpression);
-  } catch (__mcpEvalError) {
-    if (
-      __mcpEvalError instanceof SyntaxError ||
-      (__mcpEvalError instanceof Error && __mcpEvalError.name === "EvalError")
-    ) {
-      return (async () => {
-${expression}
-      })();
-    }
-    throw __mcpEvalError;
-  }
-})()`;
-}
+import {
+  canParseAsExpression,
+  isAlreadyWrappedIife,
+  prepareBrowserEvalExpression,
+} from "../../src/tools/browser-eval-helpers.js";
 
 // ── canParseAsExpression ──────────────────────────────────────────────────────
 

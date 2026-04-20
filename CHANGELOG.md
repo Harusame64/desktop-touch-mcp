@@ -24,7 +24,7 @@
   now scoped to each individual snippet. Migrate persistent state to `window.myVar = …` or
   `globalThis.myVar = …`.
 
-
+## [0.14.0] - 2026-04-18 — Background Input (WM_CHAR) + SetValue Chain + Terminal BG Fast-Path
 
 ### Added
 - **Background input engine** (`src/engine/bg-input.ts`): WM_CHAR/WM_KEYDOWN injection via
