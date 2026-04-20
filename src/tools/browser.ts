@@ -28,6 +28,7 @@ import { narrateParam } from "./_narration.js";
 import type { RichBlock } from "../engine/uia-diff.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
+import { prepareBrowserEvalExpression } from "./browser-eval-helpers.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -84,7 +85,13 @@ export const browserClickElementSchema = {
 };
 
 export const browserEvalSchema = {
-  expression: z.string().describe("JavaScript expression to evaluate in the browser tab"),
+  expression: z.string().describe(
+    "JavaScript expression to evaluate in the browser tab. " +
+    "The server automatically wraps snippets in an async IIFE to avoid repeated const/let name collisions. " +
+    "For multi-statement snippets, use an explicit final return value. " +
+    "Declarations (const/let/var) are scoped to each snippet and will not persist across repeated browser_eval calls; " +
+    "use window.* or globalThis.* for persistence."
+  ),
   tabId: tabIdParam,
   port: portParam,
   includeContext: includeContextParam,
@@ -866,7 +873,8 @@ export const browserEvalHandler = async ({
       perceptionEnv = ag.summary;
     }
 
-    const rawResult = await evaluateInTab(expression, tabId ?? null, port);
+    const preparedExpression = prepareBrowserEvalExpression(expression);
+    const rawResult = await evaluateInTab(preparedExpression, tabId ?? null, port);
 
     if (withPerception) {
       // Phase J: structured response mode — safeClone to avoid circular ref in transport

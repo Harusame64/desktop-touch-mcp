@@ -106,7 +106,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       "type": "object",
       "properties": {
         "expression": {
-          "description": "JavaScript expression to evaluate in the browser tab",
+          "description": "JavaScript expression to evaluate in the browser tab. The server automatically wraps snippets in an async IIFE to avoid repeated const/let name collisions. For multi-statement snippets, use an explicit final return value. Declarations (const/let/var) are scoped to each snippet and will not persist across repeated browser_eval calls; use window.* or globalThis.* for persistence.",
           "type": "string"
         },
         "tabId": {
