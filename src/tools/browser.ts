@@ -84,7 +84,11 @@ export const browserClickElementSchema = {
 };
 
 export const browserEvalSchema = {
-  expression: z.string().describe("JavaScript expression to evaluate in the browser tab"),
+  expression: z.string().describe(
+    "JavaScript expression to evaluate in the browser tab. " +
+    "The server automatically wraps snippets in an async IIFE to avoid repeated const/let name collisions. " +
+    "For multi-statement snippets, use an explicit final return value."
+  ),
   tabId: tabIdParam,
   port: portParam,
   includeContext: includeContextParam,
@@ -822,6 +826,32 @@ function safeCloneForTransport(value: unknown): unknown {
   catch { return "[Unserializable]"; }
 }
 
+type AsyncFunctionConstructor = new (...args: string[]) => (...args: unknown[]) => Promise<unknown>;
+const AsyncFunction = Object.getPrototypeOf(async function () { /* constructor only */ }).constructor as AsyncFunctionConstructor;
+
+function isAlreadyWrappedIife(expression: string): boolean {
+  return /^\s*;?\s*\(\s*(?:async\s+function\b|function\b|async\s*\([^)]*\)\s*=>|\([^)]*\)\s*=>)/.test(expression);
+}
+
+function canParseAsExpression(expression: string): boolean {
+  try {
+    new AsyncFunction(`return (\n${expression}\n);`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function prepareBrowserEvalExpression(expression: string): string {
+  if (isAlreadyWrappedIife(expression)) return expression;
+
+  if (canParseAsExpression(expression)) {
+    return `;(async () => (\n${expression}\n))()`;
+  }
+
+  return `;(async () => {\n${expression}\n})()`;
+}
+
 export const browserEvalHandler = async ({
   expression,
   tabId,
@@ -866,7 +896,8 @@ export const browserEvalHandler = async ({
       perceptionEnv = ag.summary;
     }
 
-    const rawResult = await evaluateInTab(expression, tabId ?? null, port);
+    const preparedExpression = prepareBrowserEvalExpression(expression);
+    const rawResult = await evaluateInTab(preparedExpression, tabId ?? null, port);
 
     if (withPerception) {
       // Phase J: structured response mode — safeClone to avoid circular ref in transport
