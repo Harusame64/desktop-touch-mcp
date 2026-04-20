@@ -12,6 +12,7 @@ jobs:
   windows-release:
     name: Build Windows release zip
     runs-on: windows-latest
+    if: github.repository == 'Harusame64/desktop-touch-mcp'
 
     steps:
       - uses: actions/checkout@v4
@@ -189,3 +190,82 @@ jobs:
         with:
           files: desktop-touch-mcp-windows.zip
           fail_on_unmatched_files: true
+
+  npm-publish:
+    name: Publish to npm (OIDC)
+    runs-on: ubuntu-latest
+    needs: windows-release
+    if: github.repository == 'Harusame64/desktop-touch-mcp'
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Get and validate version from tag
+        id: tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Tag ${GITHUB_REF_NAME} is not in vX.Y.Z format"
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Download release zip, verify contents, compute SHA256
+        id: sha
+        run: |
+          VERSION="${{ steps.tag.outputs.version }}"
+          ZIP_URL="https://github.com/Harusame64/desktop-touch-mcp/releases/download/v${VERSION}/desktop-touch-mcp-windows.zip"
+          for i in $(seq 1 30); do
+            if curl -fL -o release.zip "$ZIP_URL"; then
+              break
+            fi
+            echo "Asset not yet available, retry $i/30 (sleeping 10s)"
+            sleep 10
+          done
+          if [ ! -f release.zip ]; then
+            echo "::error::Failed to download release zip after 30 retries"
+            exit 1
+          fi
+          unzip -l release.zip | grep -qE '[[:space:]]dist/index\.js$' || {
+            echo "::error::dist/index.js missing from release zip"
+            exit 1
+          }
+          SHA256=$(sha256sum release.zip | cut -d' ' -f1)
+          echo "sha256=${SHA256}" >> "$GITHUB_OUTPUT"
+          rm release.zip
+
+      - name: Update SHA256 in launcher.js
+        env:
+          SHA256: ${{ steps.sha.outputs.sha256 }}
+        run: node scripts/update-sha.mjs "$SHA256"
+
+      - name: Verify manifest
+        run: npm run check:launcher-manifest
+
+      - name: Publish to npm
+        run: npm publish --ignore-scripts --provenance
+
+      - name: Verify npm publish
+        run: |
+          VERSION="${{ steps.tag.outputs.version }}"
+          for i in $(seq 1 12); do
+            PUBLISHED=$(npm view "@harusame64/desktop-touch-mcp" dist-tags.latest 2>/dev/null || echo "")
+            if [ "$PUBLISHED" = "$VERSION" ]; then
+              echo "npm publish verified: $PUBLISHED"
+              exit 0
+            fi
+            echo "Waiting for npm registry propagation ($i/12, got: $PUBLISHED)"
+            sleep 10
+          done
+          echo "::error::Expected $VERSION on npm, got $PUBLISHED"
+          exit 1

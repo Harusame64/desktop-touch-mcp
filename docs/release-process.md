@@ -42,8 +42,11 @@ npm version 0.11.4 --no-git-tag-version
 `src/version.ts` and `bin/launcher.js` `PACKAGE_VERSION` are **automatically updated** by the `version` lifecycle hook
 (`scripts/sync-version.mjs`). No manual edit needed.
 
-`bin/launcher.js` `RELEASE_MANIFEST.tagName` / `sha256` are **not** auto-generated.
-They must be updated for each release and are validated by `npm run check:launcher-manifest`.
+`bin/launcher.js` `RELEASE_MANIFEST.tagName` must be updated manually.
+`RELEASE_MANIFEST.sha256` is set to `"PENDING"` and **automatically updated by CI** (`npm-publish` job in `release.yml`).
+
+`npm run check:launcher-manifest` will **fail** while sha256 is `"PENDING"`. That is expected and intentional —
+it prevents accidental local `npm publish` before the automated job runs.
 
 To sync manually without bumping:
 
@@ -480,30 +483,24 @@ Successfully authenticated!
 
 Verify at: `https://registry.modelcontextprotocol.io/servers/io.github.Harusame64/desktop-touch-mcp`
 
-## Operational Notes From v0.15.5
-
-These are practical release traps observed during the first fixed-tag/SHA256 launcher release.
+## Operational Notes
 
 - `docs/release-process.md` is intentionally local-only and ignored by git in this checkout.
   Keep it useful locally, but do not rely on it being present in a fresh clone unless the ignore policy changes.
 - `npm version X.Y.Z --no-git-tag-version` can update `package.json`, `package-lock.json`,
   `src/version.ts`, and `bin/launcher.js` even if the lifecycle `git add` fails with an index permission error.
   Check the file contents after a failed version command before retrying or editing.
-- The SHA256 cannot be known until the GitHub Release zip exists. A safe flow is:
-  version bump -> set `RELEASE_MANIFEST.tagName` for the new version and a placeholder SHA ->
-  commit/tag/push -> wait for release asset -> compute SHA -> update `RELEASE_MANIFEST.sha256` ->
-  rerun preflight -> commit/push -> publish npm.
-- `npm run check:launcher-manifest` should fail while the SHA placeholder is present. That is expected and
-  prevents accidental npm publish before the real release asset is pinned.
-- The release tag may point at the pre-SHA commit, while `main` has a later commit that pins the generated
-  release asset hash. This is acceptable because the GitHub Release zip must be built from the tagged runtime,
-  while the npm launcher must be published from the later commit containing the hash.
+- `bin/launcher.js` in `main` always shows `sha256: "PENDING"` after a release commit. This is intentional.
+  The CI `npm-publish` job updates the hash in its working-tree only before publishing. The published npm
+  tarball contains the correct SHA256; `main` does not need a second commit.
+- `npm run check:launcher-manifest` fails while sha256 is `"PENDING"`. That is expected and prevents
+  accidental local `npm publish`.
+- If the `npm-publish` job fails after zip is uploaded: do NOT re-push the same tag. Create a new patch
+  version (vX.Y.Z+1) and go through the full flow again.
 - `gh` may be unusable if its stored token is expired, and unauthenticated GitHub API calls can hit rate limits.
-  In that case, use CDP/browser on the GitHub Actions or Release pages plus the direct asset URL:
-  `https://github.com/Harusame64/desktop-touch-mcp/releases/download/vX.Y.Z/desktop-touch-mcp-windows.zip`.
+  In that case, monitor the Actions and Release pages in the browser.
 - A direct asset URL can return `404` while the workflow is still running or before upload completes.
-  Re-check the Actions page or Release page. Seeing `Assets 3` on the Release page is a useful hint, but
-  GitHub can lazy-load asset names; direct download remains the final proof.
+  The CI job retries for up to 5 minutes (30 × 10s). If it still fails, check the Actions log.
 - Always run a clean-cache npx smoke test after npm publish. The important proof is that the public npm
   launcher downloads `vX.Y.Z`, verifies the SHA, extracts the zip, and prints `desktop-touch-mcp vX.Y.Z`.
 
@@ -542,31 +539,38 @@ foreach ($name in "_smoke-run", "_smoke-npm-cache", "_smoke-npx-cache") {
 
 ---
 
-## Release Phase Checklist (Opus-reviewed)
+## Release Phase Checklist (Automated via CI)
 
-This checklist summarises the execution order reviewed by Opus for the hybrid distribution model.
-Use it as a quick reference when running a release. The full details are in the sections above.
+This checklist summarises the execution order after npm Trusted Publishing + SHA256 auto-update automation.
+Phases 4, 5, 6 are now handled by the `npm-publish` job in `release.yml`. Manual steps: Phase 1, 2, 3, 7.
 
-### Why this order is mandatory
-
-The npm launcher downloads the runtime zip from GitHub Releases.
-Publishing npm **before** the zip exists causes a 404 on first `npx` run.
-The SHA256 of the zip is unknown until GitHub Actions finishes building it,
-which means there is always a second commit after the tag that pins the hash.
+### How automation works
 
 ```
-tag → zip generated by GH Actions → SHA256 computed → launcher updated (commit 2) → npm publish
+tag push
+  → windows-release job: build zip (~4 min)
+  → npm-publish job:
+      download zip → compute SHA256 → update launcher.js (working-tree only)
+      → check:launcher-manifest → build → npm publish --provenance (OIDC, no 2FA)
+      → verify npm view
 ```
+
+**Note**: `bin/launcher.js` in the `main` branch retains `sha256: "PENDING"` after the tag push.
+This is intentional. The correct SHA256 is embedded in the npm package tarball by CI.
+To inspect the published SHA256: `npm pack @harusame64/desktop-touch-mcp --dry-run` and read bin/launcher.js.
+
+**Prerequisite (one-time)**: Trusted Publisher must be configured on npmjs.com.
+See "npm Trusted Publisher Setup" section below.
 
 ### Phase 1 — Version bump + build
 
-- `npm version X.Y.Z --no-git-tag-version` (auto-updates package.json, package-lock.json, src/version.ts, bin/launcher.js PACKAGE_VERSION)
-- Set `RELEASE_MANIFEST.tagName = "vX.Y.Z"` in `bin/launcher.js`
-- Set `RELEASE_MANIFEST.sha256 = "PENDING"` (placeholder — check:launcher-manifest will fail, that is expected)
+- `npm version X.Y.Z --no-git-tag-version`
+  → auto-updates: `package.json`, `package-lock.json`, `src/version.ts`, `bin/launcher.js` PACKAGE_VERSION, `RELEASE_MANIFEST.tagName`, and `RELEASE_MANIFEST.sha256` (reset to `"PENDING"`)
+  → No manual edits to `bin/launcher.js` needed.
 - `node --check bin/launcher.js`
 - `npm run build`
 
-**Done when**: build passes; `package.json`, `src/version.ts`, and `bin/launcher.js` tagName all show the new version.
+**Done when**: build passes; `package.json`, `src/version.ts`, and `bin/launcher.js` tagName all show the new version; sha256 shows `"PENDING"`.
 
 ### Phase 2 — HTTP transport verification
 
@@ -584,48 +588,48 @@ tag → zip generated by GH Actions → SHA256 computed → launcher updated (co
 - Verify no existing tag: `git tag --list vX.Y.Z` and `git ls-remote --tags origin vX.Y.Z`
 - Create tag: `git tag vX.Y.Z && git push origin vX.Y.Z`
 
-**Done when**: tag exists on origin; GitHub Actions release.yml starts running.
+**Done when**: tag exists on origin; GitHub Actions `release.yml` starts running both jobs automatically.
 
-### Phase 4 — Wait for GH Release zip + compute SHA256
+### Phase 4–6 — Automated by CI
 
-- Wait for Actions to finish (~2–5 min)
-- Confirm: `gh release view vX.Y.Z --json tagName,assets,url` shows `desktop-touch-mcp-windows.zip`
-- Download and hash:
-  ```powershell
-  $v = "X.Y.Z"
-  $url = "https://github.com/Harusame64/desktop-touch-mcp/releases/download/v$v/desktop-touch-mcp-windows.zip"
-  $out = "desktop-touch-mcp-windows-v$v.zip"
-  Invoke-WebRequest -Uri $url -OutFile $out
-  Get-FileHash -Algorithm SHA256 $out | Select-Object -ExpandProperty Hash
-  Remove-Item $out -Force
-  ```
+Monitor at: `https://github.com/Harusame64/desktop-touch-mcp/actions`
 
-**Done when**: 64-character hex SHA256 is in hand. Do not proceed without it.
+The `npm-publish` job (runs after `windows-release`):
+1. Downloads zip with retry loop (handles GitHub asset eventual consistency)
+2. Verifies `dist/index.js` is present in the zip
+3. Computes SHA256 and updates `bin/launcher.js` in working-tree
+4. Runs `check:launcher-manifest` and `build`
+5. Runs `npm publish --provenance` (OIDC Trusted Publishing — no 2FA required)
+6. Verifies the published version with `npm view`
 
-### Phase 5 — Pin SHA256 + final preflight
+**Done when**: both jobs show green; `npm view @harusame64/desktop-touch-mcp dist-tags.latest` returns X.Y.Z.
 
-- Update `RELEASE_MANIFEST.sha256` in `bin/launcher.js` with the real hash
-- `npm run check:launcher-manifest` (must pass now)
-- `node --check bin/launcher.js`
-- `npm run build`
-- `npm publish --dry-run`
-- Stage and commit: `git add bin/launcher.js && git commit -m "chore: update SHA256 for vX.Y.Z release asset" && git push origin HEAD:main`
-
-**Done when**: `check:launcher-manifest` passes and dry-run succeeds.
-
-### Phase 6 — npm publish
-
-- `npm whoami` → expect `harusame64`
-- `npm publish`
-- Complete 2FA browser auth
-- Verify: `npm view @harusame64/desktop-touch-mcp version dist-tags.latest`
-
-**Done when**: version shows X.Y.Z on npm registry.
+If the `npm-publish` job fails after zip is built: create a new patch version (vX.Y.Z+1).
+Do NOT re-push the same tag.
 
 ### Phase 7 — Smoke test + MCP Registry
 
-- Clear caches and run npx smoke test (see "Smoke Test" and "npx Download & HTTP Smoke Test" sections above)
+- Optional: clear caches and run npx smoke test (see "Smoke Test" section above)
 - Update `server.json` version to X.Y.Z
-- `.\mcp-publisher.exe publish`
+- `.\mcp-publisher.exe validate`
+- `.\mcp-publisher.exe publish` (run `.\mcp-publisher.exe login github` first if JWT expired)
 
-**Done when**: MCP Registry shows the new version and npx clean-install downloads + starts the server correctly.
+**Done when**: MCP Registry shows the new version.
+
+---
+
+## npm Trusted Publisher Setup (One-Time)
+
+Required before the `npm-publish` CI job can publish without 2FA.
+
+1. Login at `https://www.npmjs.com` → package `@harusame64/desktop-touch-mcp` → Settings
+2. Under "Publishing access" → "Trusted Publishers" → "Add a publisher"
+3. Configure:
+   - Publisher: **GitHub Actions**
+   - Repository owner: `Harusame64`
+   - Repository name: `desktop-touch-mcp`
+   - Workflow filename: `release.yml`
+   - Environment: *(leave blank)*
+4. Save
+
+Without this, `npm publish --provenance` in CI will still prompt for OTP and the job will hang.

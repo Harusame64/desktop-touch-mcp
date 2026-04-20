@@ -42,6 +42,7 @@
     "build": "tsc",
     "sync-version": "node scripts/sync-version.mjs",
     "check:launcher-manifest": "node scripts/check-launcher-manifest.mjs",
+    "update-sha": "node scripts/update-sha.mjs",
     "version": "npm run sync-version && git add src/version.ts bin/launcher.js",
     "prepare": "tsc",
     "start": "node dist/index.js",
