@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { getCachedUia, updateUiaCache } from "./layer-buffer.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
-import { nativeUia } from "./native-engine.js";
+import { nativeUia, type NativeUiElement } from "./native-engine.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -493,7 +493,7 @@ export async function getUiElements(
         windowClassName: result.windowClassName ?? undefined,
         windowRect: result.windowRect ?? null,
         elementCount: result.elementCount,
-        elements: result.elements.map((el) => ({
+        elements: result.elements.map((el: NativeUiElement) => ({
           ...el,
           boundingRect: el.boundingRect ?? null,
         })),
@@ -984,7 +984,7 @@ export async function getElementChildren(
         timeoutMs,
       });
       // Normalise boundingRect: Rust Option → null
-      return result.map((el) => ({ ...el, boundingRect: el.boundingRect ?? null }));
+      return result.map((el: NativeUiElement) => ({ ...el, boundingRect: el.boundingRect ?? null }));
     } catch (e) {
       console.warn("[uia-bridge] Native uiaGetElementChildren failed, falling back to PowerShell:", e);
     }

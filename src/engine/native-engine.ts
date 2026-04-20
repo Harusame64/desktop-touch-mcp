@@ -12,6 +12,23 @@
  * would drift if the load logic ever evolves (e.g., fallback ordering).
  */
 
+import type {
+  NativeUiElementsResult,
+  NativeFocusAndPointResult,
+  NativeUiaFocusInfo,
+  NativeActionResult,
+  NativeElementBounds,
+  NativeUiElement,
+  NativeScrollResult,
+  NativeScrollAncestor,
+  NativePreprocessOptions,
+  NativeImageProcessingResult,
+  NativeDrawSomLabelsOptions,
+  NativeDrawSomLabelsResult,
+} from "./native-types.js";
+
+export type * from "./native-types.js";
+
 // ─── Image diff surface (used by image.ts, layer-buffer.ts) ──────────────────
 export interface NativeEngine {
   computeChangeFraction(
@@ -36,26 +53,14 @@ export interface NativeEngine {
    * upscale `scale`×, convert to grayscale, apply min-max contrast stretch.
    * Returns a 1-channel grayscale buffer at (`width*scale`) × (`height*scale`).
    */
-  preprocessImage?(opts: {
-    data: Buffer;
-    width: number;
-    height: number;
-    channels: number;
-    scale: number;
-  }): Promise<{ data: Buffer; width: number; height: number; channels: number }>;
+  preprocessImage?(opts: NativePreprocessOptions): Promise<NativeImageProcessingResult>;
 
   /**
    * Render Set-of-Mark annotations on a raw RGB/RGBA buffer (Step 4).
    * Draws a 2px red bounding box + white/black ID badge for each label.
    * Returns a buffer with the same dimensions and channel count as input.
    */
-  drawSomLabels?(opts: {
-    data: Buffer;
-    width: number;
-    height: number;
-    channels: number;
-    labels: Array<{ id: number; x: number; y: number; width: number; height: number }>;
-  }): Promise<{ data: Buffer; width: number; height: number; channels: number }>;
+  drawSomLabels?(opts: NativeDrawSomLabelsOptions): Promise<NativeDrawSomLabelsResult>;
 }
 
 // ─── UIA surface (used by uia-bridge.ts) ─────────────────────────────────────
@@ -68,12 +73,12 @@ export interface NativeUia {
     maxDepth?: number;
     maxElements?: number;
     fetchValues?: boolean;
-  }): Promise<import("../../index.js").NativeUiElementsResult>;
+  }): Promise<NativeUiElementsResult>;
   uiaGetFocusedAndPoint?(opts: {
     cursorX: number;
     cursorY: number;
-  }): Promise<import("../../index.js").NativeFocusAndPointResult>;
-  uiaGetFocusedElement?(): Promise<import("../../index.js").NativeUiaFocusInfo | null>;
+  }): Promise<NativeFocusAndPointResult>;
+  uiaGetFocusedElement?(): Promise<NativeUiaFocusInfo | null>;
 
   // Phase C: Actions
   uiaClickElement?(opts: {
@@ -81,25 +86,25 @@ export interface NativeUia {
     name?: string;
     automationId?: string;
     controlType?: string;
-  }): Promise<import("../../index.js").NativeActionResult>;
+  }): Promise<NativeActionResult>;
   uiaSetValue?(opts: {
     windowTitle: string;
     value: string;
     name?: string;
     automationId?: string;
-  }): Promise<import("../../index.js").NativeActionResult>;
+  }): Promise<NativeActionResult>;
   uiaInsertText?(opts: {
     windowTitle: string;
     value: string;
     name?: string;
     automationId?: string;
-  }): Promise<import("../../index.js").NativeActionResult>;
+  }): Promise<NativeActionResult>;
   uiaGetElementBounds?(opts: {
     windowTitle: string;
     name?: string;
     automationId?: string;
     controlType?: string;
-  }): Promise<import("../../index.js").NativeElementBounds | null>;
+  }): Promise<NativeElementBounds | null>;
   uiaGetElementChildren?(opts: {
     windowTitle: string;
     name?: string;
@@ -108,7 +113,7 @@ export interface NativeUia {
     maxDepth: number;
     maxElements: number;
     timeoutMs: number;
-  }): Promise<import("../../index.js").NativeUiElement[]>;
+  }): Promise<NativeUiElement[]>;
   uiaGetTextViaTextPattern?(opts: {
     windowTitle: string;
     timeoutMs: number;
@@ -119,17 +124,17 @@ export interface NativeUia {
     windowTitle: string;
     name?: string;
     automationId?: string;
-  }): Promise<import("../../index.js").NativeScrollResult>;
+  }): Promise<NativeScrollResult>;
   uiaGetScrollAncestors?(opts: {
     windowTitle: string;
     elementName: string;
-  }): Promise<import("../../index.js").NativeScrollAncestor[]>;
+  }): Promise<NativeScrollAncestor[]>;
   uiaScrollByPercent?(opts: {
     windowTitle: string;
     elementName: string;
     verticalPercent: number;
     horizontalPercent: number;
-  }): Promise<import("../../index.js").NativeScrollResult>;
+  }): Promise<NativeScrollResult>;
   uiaGetVirtualDesktopStatus?(
     hwndIntegers: string[],
   ): Promise<Record<string, boolean>>;
