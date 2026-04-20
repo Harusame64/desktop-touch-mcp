@@ -1,6 +1,30 @@
 # Changelog
 
-## [0.14.0] - 2026-04-18 — Background Input (WM_CHAR) + SetValue Chain + Terminal BG Fast-Path
+## [Unreleased] — browser_eval IIFE wrapping
+
+### Added
+- **`browser_eval` IIFE auto-wrapping**: snippets are now automatically wrapped in an async IIFE
+  before CDP evaluation. This prevents `const`/`let` redeclaration errors when calling
+  `browser_eval` multiple times in the same tab with identical variable names.
+- Expression-shaped snippets are wrapped as `;(async () => (expr))()` to preserve the return
+  value without requiring an explicit `return`.
+- Statement-shaped snippets fall back to an `eval()`-based wrapper that preserves completion
+  values (e.g. `const x = 1; x` still returns `1`). On pages with CSP that blocks `unsafe-eval`,
+  the wrapper automatically falls back to a plain IIFE block so the snippet still runs (completion
+  value may be lost but no error is thrown).
+- Explicitly-wrapped IIFE expressions are passed through unchanged.
+
+### Changed
+- **`browser_eval` schema description** updated to document the IIFE wrapping behavior and
+  note that `window.*` / `globalThis.*` should be used when state must persist across calls.
+
+### Breaking Changes
+- **Variable declarations do not persist across `browser_eval` calls.** Previously, `var`
+  declarations evaluated in the same CDP session were visible in subsequent calls; they are
+  now scoped to each individual snippet. Migrate persistent state to `window.myVar = …` or
+  `globalThis.myVar = …`.
+
+
 
 ### Added
 - **Background input engine** (`src/engine/bg-input.ts`): WM_CHAR/WM_KEYDOWN injection via

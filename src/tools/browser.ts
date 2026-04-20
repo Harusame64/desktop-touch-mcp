@@ -87,7 +87,9 @@ export const browserEvalSchema = {
   expression: z.string().describe(
     "JavaScript expression to evaluate in the browser tab. " +
     "The server automatically wraps snippets in an async IIFE to avoid repeated const/let name collisions. " +
-    "For multi-statement snippets, use an explicit final return value."
+    "For multi-statement snippets, use an explicit final return value. " +
+    "Declarations (const/let/var) are scoped to each snippet and will not persist across repeated browser_eval calls; " +
+    "use window.* or globalThis.* for persistence."
   ),
   tabId: tabIdParam,
   port: portParam,
@@ -864,7 +866,10 @@ function prepareBrowserEvalExpression(expression: string): string {
   try {
     return eval(__mcpExpression);
   } catch (__mcpEvalError) {
-    if (__mcpEvalError instanceof SyntaxError) {
+    if (
+      __mcpEvalError instanceof SyntaxError ||
+      (__mcpEvalError instanceof Error && __mcpEvalError.name === "EvalError")
+    ) {
       return (async () => {
 ${expression}
       })();
