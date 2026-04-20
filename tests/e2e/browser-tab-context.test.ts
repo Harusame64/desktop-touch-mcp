@@ -100,6 +100,64 @@ describe.skipIf(!CHROME_AVAILABLE)("browser_eval — activeTab/readyState annota
     // Should be a failure JSON, not have activeTab
     expect(text).not.toMatch(/activeTab:/);
   });
+
+  it("allows repeated const declarations in the same tab", async () => {
+    const first = await browserEvalHandler({
+      expression: "const items = document.querySelectorAll('button'); return items.length;",
+      port: TEST_PORT,
+      includeContext: false,
+    });
+    const second = await browserEvalHandler({
+      expression: "const items = document.querySelectorAll('a'); return items.length;",
+      port: TEST_PORT,
+      includeContext: false,
+    });
+
+    expect((first.content[0] as { text: string }).text.trim()).toMatch(/^\d+$/);
+    expect((second.content[0] as { text: string }).text.trim()).toMatch(/^\d+$/);
+  });
+
+  it("returns explicit values from multi-statement snippets", async () => {
+    const result = await browserEvalHandler({
+      expression: "const value = 20 + 22; return value;",
+      port: TEST_PORT,
+      includeContext: false,
+    });
+
+    expect((result.content[0] as { text: string }).text.trim()).toBe("42");
+  });
+
+  it("preserves completion values from multi-statement snippets", async () => {
+    const first = await browserEvalHandler({
+      expression: "const completionValue = 20 + 22; completionValue",
+      port: TEST_PORT,
+      includeContext: false,
+    });
+    const second = await browserEvalHandler({
+      expression: "const completionValue = 30 + 12; completionValue",
+      port: TEST_PORT,
+      includeContext: false,
+    });
+
+    expect((first.content[0] as { text: string }).text.trim()).toBe("42");
+    expect((second.content[0] as { text: string }).text.trim()).toBe("42");
+  });
+
+  it("wraps IIFE-prefixed snippets that include trailing top-level declarations", async () => {
+    const first = await browserEvalHandler({
+      expression: "(() => 1)(); const iifePrefixedValue = 20 + 22; iifePrefixedValue",
+      port: TEST_PORT,
+      includeContext: false,
+    });
+    const second = await browserEvalHandler({
+      expression: "(() => 2)(); const iifePrefixedValue = 30 + 12; iifePrefixedValue",
+      port: TEST_PORT,
+      includeContext: false,
+    });
+
+    expect((first.content[0] as { text: string }).text.trim()).toBe("42");
+    expect((second.content[0] as { text: string }).text.trim()).toBe("42");
+  });
 });
 
 describe.skipIf(!CHROME_AVAILABLE)("browser_find_element — activeTab/readyState annotation", () => {
