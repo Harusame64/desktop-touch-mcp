@@ -17,15 +17,15 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
-const PACKAGE_VERSION = "0.15.6";
+const PACKAGE_VERSION = "0.15.7";
 const RELEASE_TAG = `v${PACKAGE_VERSION}`;
 const REPO_API_URL = `https://api.github.com/repos/Harusame64/desktop-touch-mcp/releases/tags/${RELEASE_TAG}`;
 const ASSET_NAME = "desktop-touch-mcp-windows.zip";
 const RELEASE_METADATA_FILE = ".desktop-touch-release.json";
 const RELEASE_MANIFEST = {
-  tagName: "v0.15.6",
+  tagName: "v0.15.7",
   assetName: ASSET_NAME,
-  sha256: "0bd778c91e32bbb800548acb66ec76b5651af4d64cdb98ca185d0e2635646a78",
+  sha256: "PENDING",
 };
 const CACHE_ROOT = process.env.DESKTOP_TOUCH_MCP_HOME
   ? path.resolve(process.env.DESKTOP_TOUCH_MCP_HOME)
