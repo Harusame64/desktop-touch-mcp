@@ -29,6 +29,8 @@ global `const` / `let` redeclaration collisions.
 - [x] Add e2e coverage for multi-statement snippets with explicit `return`.
 - [x] Run targeted browser e2e test.
 - [x] Run `npm run build`.
+- [x] Address Copilot review: preserve statement completion values.
+- [x] Address Copilot review: only skip wrapping for standalone IIFE expressions.
 
 ## Implementation Notes
 
@@ -47,6 +49,8 @@ global `const` / `let` redeclaration collisions.
   with 11 tests.
 - `npm run generate:stub-catalog` updated the browser_eval schema description in
   `src/stub-tool-catalog.ts`.
+- Copilot review follow-up tightened IIFE detection and preserved completion
+  values for statement snippets such as `const x = 1; x`.
 - The first sandboxed Vitest attempt failed before tests with `spawn EPERM`;
   rerunning the same targeted test outside the sandbox succeeded.
 - Existing dirty files before this work: `.gitignore`,

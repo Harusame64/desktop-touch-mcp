@@ -830,7 +830,16 @@ type AsyncFunctionConstructor = new (...args: string[]) => (...args: unknown[]) 
 const AsyncFunction = Object.getPrototypeOf(async function () { /* constructor only */ }).constructor as AsyncFunctionConstructor;
 
 function isAlreadyWrappedIife(expression: string): boolean {
-  return /^\s*;?\s*\(\s*(?:async\s+function\b|function\b|async\s*\([^)]*\)\s*=>|\([^)]*\)\s*=>)/.test(expression);
+  const normalized = expression
+    .trim()
+    .replace(/^;/, "")
+    .replace(/;+\s*$/, "");
+
+  if (!/^\s*\(\s*(?:async\s+function\b|function\b|async\s*\([^)]*\)\s*=>|\([^)]*\)\s*=>)/.test(normalized)) {
+    return false;
+  }
+
+  return canParseAsExpression(normalized);
 }
 
 function canParseAsExpression(expression: string): boolean {
@@ -849,7 +858,20 @@ function prepareBrowserEvalExpression(expression: string): string {
     return `;(async () => (\n${expression}\n))()`;
   }
 
-  return `;(async () => {\n${expression}\n})()`;
+  const serializedExpression = JSON.stringify(expression);
+  return `;(async () => {
+  const __mcpExpression = ${serializedExpression};
+  try {
+    return eval(__mcpExpression);
+  } catch (__mcpEvalError) {
+    if (__mcpEvalError instanceof SyntaxError) {
+      return (async () => {
+${expression}
+      })();
+    }
+    throw __mcpEvalError;
+  }
+})()`;
 }
 
 export const browserEvalHandler = async ({

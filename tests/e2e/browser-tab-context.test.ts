@@ -126,6 +126,38 @@ describe.skipIf(!CHROME_AVAILABLE)("browser_eval — activeTab/readyState annota
 
     expect((result.content[0] as { text: string }).text.trim()).toBe("42");
   });
+
+  it("preserves completion values from multi-statement snippets", async () => {
+    const first = await browserEvalHandler({
+      expression: "const completionValue = 20 + 22; completionValue",
+      port: TEST_PORT,
+      includeContext: false,
+    });
+    const second = await browserEvalHandler({
+      expression: "const completionValue = 30 + 12; completionValue",
+      port: TEST_PORT,
+      includeContext: false,
+    });
+
+    expect((first.content[0] as { text: string }).text.trim()).toBe("42");
+    expect((second.content[0] as { text: string }).text.trim()).toBe("42");
+  });
+
+  it("wraps IIFE-prefixed snippets that include trailing top-level declarations", async () => {
+    const first = await browserEvalHandler({
+      expression: "(() => 1)(); const iifePrefixedValue = 20 + 22; iifePrefixedValue",
+      port: TEST_PORT,
+      includeContext: false,
+    });
+    const second = await browserEvalHandler({
+      expression: "(() => 2)(); const iifePrefixedValue = 30 + 12; iifePrefixedValue",
+      port: TEST_PORT,
+      includeContext: false,
+    });
+
+    expect((first.content[0] as { text: string }).text.trim()).toBe("42");
+    expect((second.content[0] as { text: string }).text.trim()).toBe("42");
+  });
 });
 
 describe.skipIf(!CHROME_AVAILABLE)("browser_find_element — activeTab/readyState annotation", () => {
