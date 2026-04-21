@@ -54,6 +54,12 @@ describe("Facade singleton (flag-ON lifecycle)", () => {
     expect(first).not.toBe(second);
   });
 
+  it("DesktopFacade has dispose() to close ingress subscriptions on reset", () => {
+    const facade = getDesktopFacade();
+    // dispose must exist — _resetFacadeForTest calls it to prevent subscription leaks
+    expect(typeof (facade as unknown as { dispose?: unknown }).dispose).toBe("function");
+  });
+
   it("facade from registerDesktopTools is the same singleton as getDesktopFacade", () => {
     const singleton = getDesktopFacade();
     const server = makeServer();

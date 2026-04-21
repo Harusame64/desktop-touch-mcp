@@ -216,6 +216,11 @@ export class DesktopFacade {
     );
   }
 
+  /** Dispose the facade and its ingress (event subscriptions). */
+  dispose(): void {
+    this.opts.ingress?.dispose();
+  }
+
   // ── private ─────────────────────────────────────────────────────────────────
 
   /**

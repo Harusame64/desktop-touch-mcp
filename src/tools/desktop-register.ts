@@ -53,7 +53,12 @@ export function getDesktopFacade(): DesktopFacade {
   return _facade;
 }
 
-/** Parse a TargetSessionKey back to a TargetSpec for the UIA provider. */
+/**
+ * Parse a TargetSessionKey back to a TargetSpec for the UIA provider.
+ * `window:__default__` returns undefined so the provider sees an empty target
+ * and short-circuits to []. The "@active" foreground fallback happens inside
+ * the UIA provider itself when windowTitle is absent, not here.
+ */
 function targetKeyToSpec(key: string): TargetSpec | undefined {
   if (key.startsWith("window:") && key !== "window:__default__") return { hwnd: key.slice(7) };
   if (key.startsWith("tab:"))    return { tabId: key.slice(4) };
@@ -61,8 +66,14 @@ function targetKeyToSpec(key: string): TargetSpec | undefined {
   return undefined;
 }
 
-/** Reset the facade singleton (for testing only). */
+/**
+ * Reset the facade singleton (for testing only).
+ * Disposes the old instance (closes ingress event subscriptions) before clearing.
+ */
 export function _resetFacadeForTest(): void {
+  // dispose() is defined on DesktopFacade → ingress.dispose() → eventSource.dispose()
+  // Without this, old WinEvent subscriptions would leak in the module-singleton event-bus.
+  (_facade as unknown as { dispose?: () => void })?.dispose?.();
   _facade = undefined;
 }
 
