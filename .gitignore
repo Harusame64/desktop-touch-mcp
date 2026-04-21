@@ -17,6 +17,9 @@ docs/release-process.md
 # Project instructions for Claude (local only — contains dev workflow details)
 CLAUDE.md
 
+# Project instructions for Gemini (local only)
+GEMINI.md
+
 # Project instructions for Codex / OpenAI agents (local only)
 AGENTS.md
 

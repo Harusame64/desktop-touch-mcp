@@ -108,14 +108,15 @@ export const screenshotSchema = {
       "Implicitly enables dotByDot. Best used with windowTitle=undefined to snapshot all windows."
     ),
   detail: z
-    .enum(["meta", "text", "image"])
+    .enum(["meta", "text", "image", "som"])
     .optional()
     .describe(
       "Response detail level (omit to let the server pick a smart default):\n" +
       "  omitted — auto: 'image' when dotByDot/region/displayId is specified, else 'meta'\n" +
       "  'meta'  — window title + screen region only (~20 tok/window, cheapest)\n" +
       "  'text'  — UIA element tree as JSON with text values (~100-300 tok/window, no image)\n" +
-      "  'image' — actual screenshot pixels. BLOCKED unless confirmImage=true is also passed."
+      "  'image' — actual screenshot pixels. BLOCKED unless confirmImage=true is also passed.\n" +
+      "  'som'   — Set-of-Marks image + OCR elements (bypasses UIA entirely). BLOCKED unless confirmImage=true is also passed."
     ),
   confirmImage: z
     .boolean()
@@ -322,14 +323,14 @@ export const screenshotHandler = async ({
   grayscale: boolean;
   webpQuality: number;
   diffMode: boolean;
-  detail: "meta" | "text" | "image" | undefined;
+  detail: "meta" | "text" | "image" | "som" | undefined;
   confirmImage: boolean;
   ocrFallback: "auto" | "always" | "never";
   ocrLanguage: string;
 }): Promise<ToolResult> => {
   // Compute effective detail: explicit value wins; otherwise infer from context.
   // dotByDot / region / displayId imply the caller wants pixels, so default to 'image'.
-  const effectiveDetail: "meta" | "text" | "image" = detail ?? (
+  const effectiveDetail: "meta" | "text" | "image" | "som" = detail ?? (
     dotByDot || region !== undefined || displayId !== undefined ? "image" : "meta"
   );
 
@@ -339,28 +340,73 @@ export const screenshotHandler = async ({
     const effectiveTitle = resolvedWin?.title ?? windowTitle;
     const screenshotWarnings: string[] = [...(resolvedWin?.warnings ?? [])];
 
-    // ── Guard: block bare detail='image' unless explicitly confirmed ─────────
-    // Only fires when 'image' was explicitly requested (detail==='image'), not when inferred
-    // from dotByDot/region/displayId context — those are intentional spatial captures.
+    // ── Guard: block bare detail='image'/'som' unless explicitly confirmed ──
+    // Only fires when 'image' or 'som' was explicitly requested, not when
+    // inferred from dotByDot/region context.
     const guardDisabled = process.env.DESKTOP_TOUCH_DISABLE_IMAGE_GUARD === "1";
-    if (detail === "image" && !diffMode && !dotByDot && !confirmImage && !guardDisabled) {
+    const isExplicitImage = detail === "image" || detail === "som";
+    if (isExplicitImage && !diffMode && !dotByDot && !confirmImage && !guardDisabled) {
       return {
         isError: true,
         content: [{
           type: "text" as const,
           text: [
-            "[screenshot-guard] detail='image' was blocked to prevent accidental heavy image payloads.",
+            `[screenshot-guard] detail='${detail}' was blocked to prevent accidental heavy image payloads.`,
             "",
             "Prefer these lighter alternatives (in order):",
             "  1. screenshot(detail='text', windowTitle=X)  — UIA actionable[] with clickAt coords",
             "  2. screenshot(diffMode=true)                 — only changed windows as image",
             "  3. screenshot(dotByDot=true, windowTitle=X)  — 1:1 WebP for pixel-perfect coords",
             "",
-            "If an image truly is required, re-call with confirmImage=true (and prefer windowTitle).",
+            `If a ${detail === "som" ? "Set-of-Marks" : "full"} image truly is required, re-call with confirmImage=true.`,
             "To disable this guard globally, set DESKTOP_TOUCH_DISABLE_IMAGE_GUARD=1 in the environment.",
           ].join("\n"),
         }],
       };
+    }
+
+    // ── detail=som: Set-of-Marks image + OCR elements ────────────────────────
+    if (effectiveDetail === "som") {
+      if (!effectiveTitle) {
+        return failWith(
+          "detail='som' requires windowTitle or hwnd to target a specific window.",
+          "screenshot"
+        );
+      }
+
+      // Pass hwnd when resolveWindowTarget found one; otherwise pass null and
+      // let runSomPipeline do its own title-based window search (avoiding a
+      // redundant enumWindowsInZOrder call).
+      const resolvedTitle = resolvedWin?.title ?? effectiveTitle;
+      const targetHwnd = resolvedWin?.hwnd ?? null;
+
+      const somResult = await runSomPipeline(resolvedTitle, targetHwnd, ocrLanguage);
+      const content: ToolResult["content"] = [
+        {
+          type: "text" as const,
+          text: JSON.stringify(
+            {
+              window: resolvedTitle,
+              detail: "som",
+              elements: somResult.elements,
+              preprocessScale: somResult.preprocessScale,
+              ...(screenshotWarnings.length > 0 ? { hints: { warnings: screenshotWarnings } } : {}),
+            },
+            null,
+            2
+          ),
+        },
+      ];
+
+      if (somResult.somImage) {
+        content.push({
+          type: "image" as const,
+          data: somResult.somImage.base64,
+          mimeType: somResult.somImage.mimeType,
+        });
+      }
+
+      return { content };
     }
 
     // ── diffMode: layer-based differential capture ───────────────────────────
@@ -981,8 +1027,8 @@ export function registerScreenshotTools(server: McpServer): void {
     "screenshot",
     buildDesc({
       purpose: "Capture desktop, window, or region state across four output modes — from cheap orientation metadata to pixel-accurate images.",
-      details: "detail='meta' (default) returns window titles+positions only (~20 tok/window, no image). detail='text' returns UIA actionable elements with clickAt coords, no image (~100-300 tok). detail='image' is server-blocked unless confirmImage=true is also passed. dotByDot=true returns 1:1 pixel WebP; compute screen coords: screen_x = origin_x + image_x (or screen_x = origin_x + image_x / scale when dotByDotMaxDimension is set — scale printed in response). diffMode=true returns only changed windows after the first call (~160 tok). Data reduction: grayscale=true (−50%), dotByDotMaxDimension=1280 (caps longest edge), windowTitle+region (sub-crop to exclude browser chrome — e.g. region={x:0, y:120, width:1920, height:900}).",
-      prefer: "Use meta to orient, text before clicking, dotByDot only when precise pixel coords are needed. Prefer browser_* tools for Chrome. Use diffMode after actions to confirm state changed. Only use image+confirmImage when text returned 0 actionable elements and visual inspection is genuinely required.",
+      details: "detail='meta' (default) returns window titles+positions only (~20 tok/window, no image). detail='text' returns UIA actionable elements with clickAt coords, no image (~100-300 tok). detail='som' returns a Set-of-Marks annotated image plus OCR-detected elements with IDs (bypasses UIA entirely). detail='image' and detail='som' are server-blocked unless confirmImage=true is also passed. dotByDot=true returns 1:1 pixel WebP; compute screen coords: screen_x = origin_x + image_x (or screen_x = origin_x + image_x / scale when dotByDotMaxDimension is set — scale printed in response). diffMode=true returns only changed windows after the first call (~160 tok). Data reduction: grayscale=true (−50%), dotByDotMaxDimension=1280 (caps longest edge), windowTitle+region (sub-crop to exclude browser chrome — e.g. region={x:0, y:120, width:1920, height:900}).",
+      prefer: "Use meta to orient, text before clicking, dotByDot only when precise pixel coords are needed. Use detail='som' for native apps or games that do not expose UIA elements (UIA-Blind). Prefer browser_* tools for Chrome. Use diffMode after actions to confirm state changed. Only use image+confirmImage when text returned 0 actionable elements and visual inspection is genuinely required.",
       caveats: "Default mode scales to maxDimension=768 — image pixels ≠ screen pixels; apply the scale formula before passing to mouse_click. detail='image' is always blocked without confirmImage=true. diffMode requires a prior full-capture baseline (non-diff call or workspace_snapshot) — calling diffMode cold returns a full frame, not a diff.",
       examples: [
         "screenshot() → meta orientation of all windows",
