@@ -28,6 +28,8 @@ import { createTerminalIngressSource } from "../engine/world-graph/terminal-ingr
 import { createVisualIngressSource, type VisualIngressSource } from "../engine/world-graph/visual-ingress.js";
 import type { TargetSpec } from "../engine/world-graph/session-registry.js";
 import { composeCandidates } from "./desktop-providers/compose-providers.js";
+import { getVisualRuntime } from "../engine/vision-gpu/runtime.js";
+import { PocVisualBackend } from "../engine/vision-gpu/poc-backend.js";
 
 // ── Process-level facade singleton ───────────────────────────────────────────
 
@@ -36,12 +38,23 @@ let _facade: DesktopFacade | undefined;
 /** Process-level visual invalidation hook. Call to trigger visual cache refresh. */
 let _visualSource: VisualIngressSource | undefined;
 
+/** Process-level PoC visual backend. Expose for P3-D pipeline to call updateSnapshot(). */
+let _pocBackend: PocVisualBackend | undefined;
+
 /**
  * Return the visual invalidation source so external code (e.g. GPU pipeline)
  * can mark visual targets dirty without going through the facade.
  */
 export function getVisualIngressSource(): VisualIngressSource | undefined {
   return _visualSource;
+}
+
+/**
+ * Return the PocVisualBackend so P3-D can feed recognition output.
+ * Call backend.updateSnapshot(targetKey, candidates) to deliver stable candidates.
+ */
+export function getPocVisualBackend(): PocVisualBackend | undefined {
+  return _pocBackend;
 }
 
 /**
@@ -60,6 +73,28 @@ export function getVisualIngressSource(): VisualIngressSource | undefined {
  *   - Terminal buffer fingerprint change              → title: terminal keys
  *   - Visual manual invalidation hook                 → any key (GPU pipeline)
  */
+/**
+ * P3-B: Attach PocVisualBackend to the global VisualRuntime and wire its dirty
+ * signals to the visual ingress source so target caches are invalidated automatically
+ * when the GPU pipeline produces new stable candidates.
+ *
+ * Flow:
+ *   PocVisualBackend.updateSnapshot(targetKey, candidates)
+ *     → backend fires dirty listeners
+ *     → VisualIngressSource.markDirty(targetKey)
+ *     → next see() call: ingress.getSnapshot(targetKey) refreshes from visual provider
+ */
+async function initVisualRuntime(visualSource: VisualIngressSource): Promise<void> {
+  const backend = new PocVisualBackend();
+  _pocBackend = backend;
+
+  // Dirty callback: when the GPU pipeline updates a snapshot, mark the ingress dirty.
+  backend.onDirty((targetKey) => visualSource.markDirty(targetKey, "dirty-rect"));
+
+  // Attach to the process-level runtime (disposes any previous backend).
+  await getVisualRuntime().attach(backend);
+}
+
 export function getDesktopFacade(): DesktopFacade {
   if (!_facade) {
     const provider: CandidateProvider = (input: DesktopSeeInput) =>
@@ -78,6 +113,11 @@ export function getDesktopFacade(): DesktopFacade {
     );
 
     _facade = new DesktopFacade(provider, { ingress });
+
+    // Wire the visual runtime (non-blocking — failure does not prevent facade creation).
+    initVisualRuntime(_visualSource).catch((err) => {
+      console.error("[desktop-register] Failed to initialize visual runtime:", err);
+    });
   }
   return _facade;
 }
@@ -102,6 +142,7 @@ export function _resetFacadeForTest(): void {
   (_facade as unknown as { dispose?: () => void })?.dispose?.();
   _facade = undefined;
   _visualSource = undefined;
+  _pocBackend = undefined;
 }
 
 // ── Zod schemas ───────────────────────────────────────────────────────────────
