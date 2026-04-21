@@ -284,3 +284,155 @@ describe("GuardedTouchLoop — semantic diff", () => {
     if (!result.ok) expect(result.diff).toHaveLength(0);
   });
 });
+
+describe("GuardedTouchLoop — enriched semantic diff (P2-D)", () => {
+  it("value_changed when entity value differs pre vs post", async () => {
+    const pre  = entity("e1", GEN, { role: "textbox", value: "" });
+    const post = entity("e1", GEN, { role: "textbox", value: "hello" });
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(pre, "v1");
+    const loop = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities:      () => [pre],
+      resolvePostTouchEntities: async () => [post],
+    }));
+    const result = await loop.touch({ lease, action: "type", text: "hello" });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.diff).toContain("value_changed");
+  });
+
+  it("no value_changed when value is the same", async () => {
+    const e = entity("e1", GEN, { role: "textbox", value: "same" });
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(e, "v1");
+    const loop = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities:      () => [e],
+      resolvePostTouchEntities: async () => [entity("e1", GEN, { role: "textbox", value: "same" })],
+    }));
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.diff).not.toContain("value_changed");
+  });
+
+  it("no value_changed when entity has no value field (not comparable)", async () => {
+    const pre  = entity("e1", GEN, { role: "button" }); // no value field
+    const post = entity("e1", GEN, { role: "button" });
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(pre, "v1");
+    const loop = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities:      () => [pre],
+      resolvePostTouchEntities: async () => [post],
+    }));
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.diff).not.toContain("value_changed");
+  });
+
+  it("entity_appeared when non-modal entity appears after touch", async () => {
+    const btn = entity("btn", GEN, { sources: ["visual_gpu"] });
+    const newBtn = entity("new", GEN, { sources: ["visual_gpu"], role: "button" });
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(btn, "v1");
+    const loop = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities:      () => [btn],
+      resolvePostTouchEntities: async () => [btn, newBtn],
+    }));
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.diff).toContain("entity_appeared");
+  });
+
+  it("entity_appeared not emitted for modal (modal_appeared takes priority)", async () => {
+    const btn   = entity("btn",   GEN, { sources: ["visual_gpu"] });
+    const modal = entity("modal", GEN, { sources: ["uia"], role: "unknown" });
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(btn, "v1");
+    const loop  = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities:      () => [btn],
+      resolvePostTouchEntities: async () => [btn, modal],
+    }));
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.diff).toContain("modal_appeared");
+      expect(result.diff).not.toContain("entity_appeared"); // modal suppresses entity_appeared
+    }
+  });
+
+  it("both entity_appeared and modal_appeared when both types appear", async () => {
+    const btn    = entity("btn",    GEN, { sources: ["visual_gpu"] });
+    const newBtn = entity("new",    GEN, { sources: ["visual_gpu"], role: "button" });
+    const modal  = entity("modal",  GEN, { sources: ["uia"],        role: "unknown" });
+    const store  = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease  = store.issue(btn, "v1");
+    const loop   = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities:      () => [btn],
+      resolvePostTouchEntities: async () => [btn, newBtn, modal],
+    }));
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.diff).toContain("modal_appeared");
+      expect(result.diff).toContain("entity_appeared"); // non-modal also appeared
+    }
+  });
+
+  it("focus_shifted when getFocusedEntityId changes pre vs post", async () => {
+    const e = entity("e1", GEN);
+    let callCount = 0;
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(e, "v1");
+    const loop = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities:      () => [e],
+      resolvePostTouchEntities: async () => [e],
+      getFocusedEntityId: () => {
+        callCount++;
+        return callCount === 1 ? "e1" : "e2"; // focus moved from e1 to e2
+      },
+    }));
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.diff).toContain("focus_shifted");
+  });
+
+  it("no focus_shifted when focus does not change", async () => {
+    const e = entity("e1", GEN);
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(e, "v1");
+    const loop = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities:      () => [e],
+      resolvePostTouchEntities: async () => [e],
+      getFocusedEntityId: () => "e1", // focus stays on e1
+    }));
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.diff).not.toContain("focus_shifted");
+  });
+
+  it("no focus_shifted when getFocusedEntityId is not provided", async () => {
+    const e = entity("e1", GEN);
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(e, "v1");
+    const loop = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities:      () => [e],
+      resolvePostTouchEntities: async () => [e],
+      // No getFocusedEntityId — conservative, no focus_shifted emitted
+    }));
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.diff).not.toContain("focus_shifted");
+  });
+
+  it("terminal textbox: label change triggers value_changed (label IS the value)", async () => {
+    const pre  = entity("t1", GEN, { sources: ["terminal"], role: "textbox", label: "PS C:\> " });
+    const post = entity("t1", GEN, { sources: ["terminal"], role: "textbox", label: "PS C:\src> " });
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(pre, "v1");
+    const loop = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities:      () => [pre],
+      resolvePostTouchEntities: async () => [post],
+    }));
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.diff).toContain("value_changed");
+  });
+});

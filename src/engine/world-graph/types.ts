@@ -36,6 +36,12 @@ export interface UiEntity {
   entityId: string;
   role: UiEntityRole;
   label?: string;
+  /**
+   * Current value of the entity (UIA ValuePattern, CDP el.value, terminal prompt text).
+   * Used by computeDiff to detect value_changed after a type/select action.
+   * Absent for sources that don't expose values (visual_gpu, unknown roles).
+   */
+  value?: string;
   rect?: Rect;
   confidence: number;
   sources: EntitySourceKind[];
