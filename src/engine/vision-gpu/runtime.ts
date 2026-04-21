@@ -101,8 +101,10 @@ export function _resetVisualRuntimeForTest(): void {
  * NOTE: `WarmTarget.kind === "game"` does NOT exclusively mean a 3D game. It means
  * "a native window target that the visual lane will treat via the GPU/ROI pipeline".
  * Terminal windows routed via HWND also receive kind="game" for now.
+ * The `kind` field is currently unused by all Phase 3 backends (GpuWarmupManager,
+ * PocVisualBackend, ReplayBackend, MockVisualBackend) — it is metadata only.
  *
- * TODO (P3-D): add terminal detection and emit kind="terminal" for terminal windows.
+ * TODO (Phase 4): add terminal detection and emit kind="terminal" for terminal windows.
  * The SidecarBackend can then apply a lighter warmup path for terminal targets.
  */
 export function targetKeyToWarmTarget(targetKey: string): WarmTarget {

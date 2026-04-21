@@ -123,6 +123,15 @@ export function getDesktopFacade(): DesktopFacade {
     _facade = new DesktopFacade(provider, { ingress });
 
     // Wire the visual runtime (non-blocking — failure does not prevent facade creation).
+    //
+    // First-request window: `initVisualRuntime` is async. Between `getDesktopFacade()`
+    // returning and the attach completing, `runtime.isAvailable()` is false and
+    // `fetchVisualCandidates` emits `visual_provider_unavailable`. This is correct
+    // behavior (the backend is genuinely not ready yet) and harmless in practice
+    // because the first see() call typically arrives after the event loop yields.
+    //
+    // Before Phase 4 default-on: consider making getDesktopFacade() return
+    // Promise<DesktopFacade> and awaiting this to eliminate the window entirely.
     initVisualRuntime(_visualSource).catch((err) => {
       console.error("[desktop-register] Failed to initialize visual runtime:", err);
     });
