@@ -37,6 +37,8 @@ export interface DesktopSeeOutput {
   viewId: string;
   target: { title: string; generation: string };
   entities: EntityView[];
+  /** Non-fatal warnings (e.g. provider unavailable, partial results). */
+  warnings?: string[];
 }
 
 export interface DesktopTouchInput {
