@@ -23,9 +23,14 @@ import type { VisualBackend } from "./backend.js";
 export class VisualRuntime {
   private _backend: VisualBackend | null = null;
 
-  /** Attach a backend. Calling again replaces the previous one (old is not disposed). */
-  attach(backend: VisualBackend): void {
+  /**
+   * Attach a backend, disposing the previous one first.
+   * Must be awaited — the old backend may hold OS-level resources (sidecar process, GPU handles).
+   */
+  async attach(backend: VisualBackend): Promise<void> {
+    const old = this._backend;
     this._backend = backend;
+    if (old) await old.dispose();
   }
 
   /** Detach the backend without disposing it. */
@@ -89,9 +94,16 @@ export function _resetVisualRuntimeForTest(): void {
  * Convert a TargetSessionKey to a WarmTarget for backend warmup calls.
  *
  * Mapping:
- *   window:{hwnd}  → { kind: "game",     id: hwnd }   — native window / game assumed
  *   tab:{tabId}    → { kind: "browser",  id: tabId }
- *   title:{title}  → { kind: "game",     id: title }  — visual lane operates on window
+ *   window:{hwnd}  → { kind: "game",     id: hwnd }   — "game" = generic native window
+ *   title:{title}  → { kind: "game",     id: title }
+ *
+ * NOTE: `WarmTarget.kind === "game"` does NOT exclusively mean a 3D game. It means
+ * "a native window target that the visual lane will treat via the GPU/ROI pipeline".
+ * Terminal windows routed via HWND also receive kind="game" for now.
+ *
+ * TODO (P3-D): add terminal detection and emit kind="terminal" for terminal windows.
+ * The SidecarBackend can then apply a lighter warmup path for terminal targets.
  */
 export function targetKeyToWarmTarget(targetKey: string): WarmTarget {
   if (targetKey.startsWith("tab:")) {

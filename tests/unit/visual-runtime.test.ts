@@ -16,22 +16,22 @@ describe("VisualRuntime — availability", () => {
     expect(rt.isAvailable()).toBe(false);
   });
 
-  it("available after attach()", () => {
+  it("available after attach()", async () => {
     const rt = new VisualRuntime();
-    rt.attach(new MockVisualBackend());
+    await rt.attach(new MockVisualBackend());
     expect(rt.isAvailable()).toBe(true);
   });
 
-  it("not available after detach()", () => {
+  it("not available after detach()", async () => {
     const rt = new VisualRuntime();
-    rt.attach(new MockVisualBackend());
+    await rt.attach(new MockVisualBackend());
     rt.detach();
     expect(rt.isAvailable()).toBe(false);
   });
 
   it("not available after dispose()", async () => {
     const rt = new VisualRuntime();
-    rt.attach(new MockVisualBackend());
+    await rt.attach(new MockVisualBackend());
     await rt.dispose();
     expect(rt.isAvailable()).toBe(false);
   });
@@ -45,7 +45,7 @@ describe("VisualRuntime — ensureWarm", () => {
 
   it("returns warm after backend.ensureWarm", async () => {
     const rt = new VisualRuntime();
-    rt.attach(new MockVisualBackend());
+    await rt.attach(new MockVisualBackend());
     expect(await rt.ensureWarm({ kind: "game", id: "g1" })).toBe("warm");
   });
 });
@@ -71,7 +71,7 @@ describe("VisualRuntime — getStableCandidates", () => {
       provisional: false,
     };
     mock.setCandidates("window:g1", [candidate]);
-    rt.attach(mock);
+    await rt.attach(mock);
     const result = await rt.getStableCandidates("window:g1");
     expect(result).toHaveLength(1);
     expect(result[0].label).toBe("Start Match");
@@ -85,20 +85,20 @@ describe("VisualRuntime — onDirty", () => {
     expect(() => unsub()).not.toThrow();
   });
 
-  it("listener receives dirty signal from backend", () => {
+  it("listener receives dirty signal from backend", async () => {
     const rt = new VisualRuntime();
     const mock = new MockVisualBackend();
-    rt.attach(mock);
+    await rt.attach(mock);
     const received: string[] = [];
     rt.onDirty((key) => received.push(key));
     mock.triggerDirty("window:game1");
     expect(received).toContain("window:game1");
   });
 
-  it("unsubscribe stops callbacks", () => {
+  it("unsubscribe stops callbacks", async () => {
     const rt = new VisualRuntime();
     const mock = new MockVisualBackend();
-    rt.attach(mock);
+    await rt.attach(mock);
     const received: string[] = [];
     const unsub = rt.onDirty((key) => received.push(key));
     unsub();
@@ -106,10 +106,10 @@ describe("VisualRuntime — onDirty", () => {
     expect(received).toHaveLength(0);
   });
 
-  it("target isolation: only specified key fires", () => {
+  it("target isolation: only specified key fires", async () => {
     const rt = new VisualRuntime();
     const mock = new MockVisualBackend();
-    rt.attach(mock);
+    await rt.attach(mock);
     const received: string[] = [];
     rt.onDirty((key) => received.push(key));
     mock.triggerDirty("window:game1");
@@ -172,14 +172,14 @@ describe("fetchVisualCandidates — runtime dependency (P3-A)", () => {
       onDirty: () => () => {},
       dispose: async () => {},
     };
-    rt.attach(slowMock);
+    await rt.attach(slowMock);
     const r = await fetchVisualCandidates({ hwnd: "123" });
     expect(r.warnings).toContain("visual_provider_warming");
   });
 
   it("returns empty candidates (no warning) when backend is warm but has no tracks yet", async () => {
     const rt = getVisualRuntime();
-    rt.attach(new MockVisualBackend()); // warm but no candidates
+    await rt.attach(new MockVisualBackend()); // warm but no candidates
     const r = await fetchVisualCandidates({ hwnd: "123" });
     expect(r.warnings).toHaveLength(0);
     expect(r.candidates).toHaveLength(0);
@@ -200,7 +200,7 @@ describe("fetchVisualCandidates — runtime dependency (P3-A)", () => {
       provisional: false,
     };
     mock.setCandidates("window:123", [candidate]);
-    rt.attach(mock);
+    await rt.attach(mock);
     const r = await fetchVisualCandidates({ hwnd: "123" });
     expect(r.candidates).toHaveLength(1);
     expect(r.candidates[0].label).toBe("Play");
@@ -221,9 +221,45 @@ describe("fetchVisualCandidates — runtime dependency (P3-A)", () => {
       observedAtMs: Date.now(),
       provisional: false,
     }]);
-    rt.attach(mock);
+    await rt.attach(mock);
     const r = await fetchVisualCandidates({ hwnd: "abc" });
     expect(r.candidates[0].locator?.visual?.trackId).toBe("track-99");
     expect(r.candidates[0].source).toBe("visual_gpu");
+  });
+});
+
+describe("fetchVisualCandidates — evicted retry (P3-A hardening)", () => {
+  it("retries ensureWarm when backend state is evicted, then succeeds", async () => {
+    const rt = getVisualRuntime();
+    const mock = new MockVisualBackend();
+    mock.forceState("evicted"); // simulate evicted session
+    await rt.attach(mock);
+    // After evicted, provider retries ensureWarm → mock transitions to warm
+    const r = await fetchVisualCandidates({ hwnd: "123" });
+    // Second ensureWarm call should produce "warm" from the mock
+    expect(mock.warmCalls.length).toBeGreaterThanOrEqual(1);
+    // No failure warning (retry succeeded)
+    expect(r.warnings).not.toContain("visual_provider_failed");
+  });
+});
+
+describe("MockVisualBackend — warmCalls spy (P3-B readiness)", () => {
+  it("warmCalls records WarmTarget passed to ensureWarm", async () => {
+    const rt = getVisualRuntime();
+    const mock = new MockVisualBackend();
+    await rt.attach(mock);
+    await fetchVisualCandidates({ hwnd: "hwnd-42" });
+    expect(mock.warmCalls).toHaveLength(1);
+    expect(mock.warmCalls[0]).toEqual({ kind: "game", id: "hwnd-42" });
+  });
+
+  it("attach() disposes previous backend before replacing", async () => {
+    const rt = new VisualRuntime();
+    const old = new MockVisualBackend();
+    await rt.attach(old);
+    const fresh = new MockVisualBackend();
+    await rt.attach(fresh); // should dispose old
+    expect(old.getWarmState()).toBe("evicted"); // old was disposed
+    expect(rt.isAvailable()).toBe(true);
   });
 });

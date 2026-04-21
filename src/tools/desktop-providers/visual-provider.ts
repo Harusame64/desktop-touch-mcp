@@ -51,7 +51,16 @@ export async function fetchVisualCandidates(
   }
 
   if (warmState === "evicted") {
-    return { candidates: [], warnings: ["visual_provider_failed"] };
+    // Evicted means session was torn down but backend is still attached.
+    // Retry once — ensureWarm should rebuild the session on re-call.
+    try {
+      warmState = await runtime.ensureWarm(warmTarget);
+    } catch {
+      return { candidates: [], warnings: ["visual_provider_failed"] };
+    }
+    if (warmState !== "warm") {
+      return { candidates: [], warnings: ["visual_provider_warming"] };
+    }
   }
 
   // warm — fetch stable candidates from the backend.
