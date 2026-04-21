@@ -7,6 +7,8 @@ export interface TrayOptions {
   icoPath?: string;
   /** Server version string for About dialog and tooltip */
   version?: string;
+  /** Called when the tray explicitly requests that the parent process exit. */
+  onExitRequested?: () => void;
 }
 
 function escapePs(s: string): string {
@@ -52,6 +54,8 @@ function buildTrayScript(options: TrayOptions): string {
   ].join("\n");
 
   const exitBody = [
+    `    [Console]::Out.WriteLine('EXIT')`,
+    `    [Console]::Out.Flush()`,
     `    $icon.Visible = $false`,
     `    $icon.Dispose()`,
     `    [System.Windows.Forms.Application]::Exit()`,
@@ -150,6 +154,22 @@ function buildTrayScript(options: TrayOptions): string {
 
 let trayProcess: ChildProcess | null = null;
 
+export function createTrayMessageParser(
+  onMessage: (message: string) => void
+): (chunk: string | Buffer) => void {
+  let pending = "";
+  return (chunk: string | Buffer) => {
+    pending += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+    let newlineIndex = pending.indexOf("\n");
+    while (newlineIndex !== -1) {
+      const line = pending.slice(0, newlineIndex).trim();
+      pending = pending.slice(newlineIndex + 1);
+      if (line) onMessage(line);
+      newlineIndex = pending.indexOf("\n");
+    }
+  };
+}
+
 /** Start the system tray icon in a background PowerShell process */
 export function startTray(options: TrayOptions = {}): void {
   try {
@@ -163,12 +183,18 @@ export function startTray(options: TrayOptions = {}): void {
       }
     );
 
-    trayProcess.stdout?.once("data", (chunk: Buffer) => {
-      const msg = chunk.toString().trim();
+    const parseStdout = createTrayMessageParser((msg) => {
       if (msg === "READY") {
         console.error("[tray] System tray icon active");
+        return;
+      }
+      if (msg === "EXIT") {
+        console.error("[tray] Exit requested from tray");
+        options.onExitRequested?.();
       }
     });
+
+    trayProcess.stdout?.on("data", parseStdout);
 
     trayProcess.on("exit", (code) => {
       console.error(`[tray] Tray process exited (code ${code})`);
