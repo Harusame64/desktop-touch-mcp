@@ -41,8 +41,9 @@ export function getDesktopFacade(): DesktopFacade {
     const provider: CandidateProvider = (input: DesktopSeeInput) =>
       composeCandidates(input.target);
 
+    // fetchFn returns ProviderResult (candidates + warnings) so see() can surface warnings.
     const ingress = new SnapshotIngress(
-      async (key: string) => composeCandidates(targetKeyToSpec(key)),
+      (key: string) => composeCandidates(targetKeyToSpec(key)),
       createWinEventIngressSource()
     );
 

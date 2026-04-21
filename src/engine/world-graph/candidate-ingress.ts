@@ -25,9 +25,28 @@ import type { UiEntityCandidate } from "../vision-gpu/types.js";
 
 export type IngressReason = "winevent" | "cdp" | "dirty-rect" | "startup" | "cache-miss" | "manual";
 
+/**
+ * Result envelope returned by providers and the ingress.
+ *
+ * Warning codes are stable machine-readable strings (not prose):
+ *   uia_provider_failed       — UIA call threw or returned an error
+ *   cdp_provider_failed       — CDP evaluateInTab failed or timed out
+ *   terminal_provider_failed  — getTextViaTextPattern threw
+ *   visual_provider_unavailable — visual GPU lane is a Phase 3 stub
+ *   terminal_buffer_empty     — terminal window found but buffer was empty
+ *   ingress_fetch_error       — ingress fetchFn threw; stale cache returned
+ *   no_provider_matched       — target is undefined or has no routing key
+ *   partial_results_only      — primary provider returned 0 entities; fallback used
+ */
+export interface ProviderResult {
+  candidates: UiEntityCandidate[];
+  /** Non-fatal diagnostic codes. Empty means all providers succeeded. */
+  warnings: string[];
+}
+
 export interface CandidateIngress {
-  /** Return candidates for a target key. Refreshes if cache is dirty or expired. */
-  getSnapshot(targetKey: string): Promise<UiEntityCandidate[]>;
+  /** Return candidates + warnings for a target key. Refreshes if dirty or expired. */
+  getSnapshot(targetKey: string): Promise<ProviderResult>;
   /** Mark a target's cache as dirty. Called by event adapters. */
   invalidate(targetKey: string, reason: IngressReason): void;
   /** Subscribe to invalidation events. Returns an unsubscribe function. */
@@ -50,6 +69,7 @@ export interface IngressEventSource {
 
 interface CacheEntry {
   candidates: UiEntityCandidate[];
+  warnings: string[];
   fetchedAtMs: number;
   dirty: boolean;
 }
@@ -73,15 +93,15 @@ export class SnapshotIngress implements CandidateIngress {
   private disposed = false;
 
   constructor(
-    private readonly fetchFn: (targetKey: string) => Promise<UiEntityCandidate[]>,
+    private readonly fetchFn: (targetKey: string) => Promise<ProviderResult>,
     private readonly eventSource?: IngressEventSource,
     opts: SnapshotIngressOptions = {}
   ) {
     this.cacheTtlMs = opts.cacheTtlMs ?? 30_000;
   }
 
-  async getSnapshot(targetKey: string): Promise<UiEntityCandidate[]> {
-    if (this.disposed) return [];
+  async getSnapshot(targetKey: string): Promise<ProviderResult> {
+    if (this.disposed) return { candidates: [], warnings: [] };
     this.knownKeys.add(targetKey);
 
     // Drain events lazily — no background polling needed.
@@ -95,18 +115,26 @@ export class SnapshotIngress implements CandidateIngress {
     const entry = this.cache.get(targetKey);
     const now   = Date.now();
     const fresh = entry && !entry.dirty && (now - entry.fetchedAtMs) < this.cacheTtlMs;
-    if (fresh) return entry!.candidates;
+    if (fresh) return { candidates: entry!.candidates, warnings: entry!.warnings };
 
     // Cache miss, dirty, or TTL expired → fetch.
     try {
-      const candidates = await this.fetchFn(targetKey);
-      this.cache.set(targetKey, { candidates, fetchedAtMs: now, dirty: false });
-      return candidates;
+      const result = await this.fetchFn(targetKey);
+      this.cache.set(targetKey, {
+        candidates: result.candidates,
+        warnings: result.warnings,
+        fetchedAtMs: now,
+        dirty: false,
+      });
+      return result;
     } catch (err) {
       console.error(`[candidate-ingress] Fetch error for "${targetKey}":`, err);
       // Stale cache fallback — mark dirty so next call retries.
-      if (entry) { entry.dirty = true; return entry.candidates; }
-      return [];
+      if (entry) {
+        entry.dirty = true;
+        return { candidates: entry.candidates, warnings: [...entry.warnings, "ingress_fetch_error"] };
+      }
+      return { candidates: [], warnings: ["ingress_fetch_error"] };
     }
   }
 

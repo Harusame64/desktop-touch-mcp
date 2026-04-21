@@ -2,12 +2,16 @@
  * browser-provider.ts — CDP candidate provider for browser tabs.
  *
  * Queries interactive DOM elements via evaluateInTab and converts them to
- * UiEntityCandidates with locator.cdp set. Never produces visual_gpu or
- * UIA candidates — those come from other providers in compose-providers.
+ * UiEntityCandidates with locator.cdp set.
+ *
+ * Warnings:
+ *   cdp_provider_failed — evaluateInTab threw (CDP unavailable, port mismatch, etc.)
+ *   cdp_no_elements     — tab reachable but no interactive elements found
  */
 
 import type { UiEntityCandidate } from "../../engine/vision-gpu/types.js";
 import type { TargetSpec } from "../../engine/world-graph/session-registry.js";
+import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.js";
 
 interface BrowserElement {
   type: string;
@@ -33,7 +37,6 @@ function cdpActionability(type: string): Array<"click" | "invoke" | "type" | "re
   return ["read"];
 }
 
-/** CDP script that collects interactive elements. Reuses logic from browser_get_interactive. */
 const INTERACTIVE_SCRIPT = `
 (function() {
   const CSS_Q = "a[href], button:not([disabled]), [role='button'], input:not([type='hidden']):not([disabled]), select:not([disabled]), textarea:not([disabled]), [role='menuitem']:not([aria-disabled='true']), [role='tab']:not([aria-disabled='true']), [role='switch']:not([aria-disabled='true'])";
@@ -83,17 +86,19 @@ const INTERACTIVE_SCRIPT = `
 
 export async function fetchBrowserCandidates(
   target: TargetSpec | undefined
-): Promise<UiEntityCandidate[]> {
-  if (!target?.tabId) return [];
+): Promise<ProviderResult> {
+  if (!target?.tabId) return { candidates: [], warnings: [] };
   const tabId = target.tabId;
 
   try {
     const { evaluateInTab, DEFAULT_CDP_PORT } = await import("../../engine/cdp-bridge.js");
     const elements = await evaluateInTab(INTERACTIVE_SCRIPT, tabId, DEFAULT_CDP_PORT) as BrowserElement[];
 
-    if (!Array.isArray(elements)) return [];
+    if (!Array.isArray(elements)) {
+      return { candidates: [], warnings: ["cdp_provider_failed"] };
+    }
 
-    return elements
+    const candidates: UiEntityCandidate[] = elements
       .filter((el) => el.text || el.href)
       .map((el): UiEntityCandidate => ({
         source: "cdp",
@@ -108,8 +113,11 @@ export async function fetchBrowserCandidates(
         observedAtMs: Date.now(),
         provisional: false,
       }));
+
+    const warnings = candidates.length === 0 ? ["cdp_no_elements"] : [];
+    return { candidates, warnings };
   } catch (err) {
     console.error(`[browser-provider] CDP error for tab "${tabId}":`, err);
-    return [];
+    return { candidates: [], warnings: ["cdp_provider_failed"] };
   }
 }

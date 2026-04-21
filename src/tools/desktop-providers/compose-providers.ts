@@ -10,12 +10,16 @@
  * do not replace other sources. The resolver deduplicates by digest/label+rect,
  * so overlap between sources naturally produces cross-source entities.
  *
- * Errors in individual providers are silenced (each logs to stderr and returns []).
- * compose() always returns a flat deduplicated candidate list.
+ * Warnings from all providers are collected and deduplicated. Rejection of one
+ * provider does not prevent others from contributing candidates.
+ *
+ * Warning codes emitted here:
+ *   no_provider_matched  — target is undefined with no routing key
+ *   partial_results_only — primary provider returned 0 entities; fallback attempted
  */
 
-import type { UiEntityCandidate } from "../../engine/vision-gpu/types.js";
 import type { TargetSpec } from "../../engine/world-graph/session-registry.js";
+import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.js";
 import { fetchUiaCandidates }      from "./uia-provider.js";
 import { fetchBrowserCandidates }  from "./browser-provider.js";
 import { fetchTerminalCandidates } from "./terminal-provider.js";
@@ -28,8 +32,7 @@ import { fetchVisualCandidates }   from "./visual-provider.js";
  * - Use word boundaries (\b) for short tokens like "sh", "wsl", "cmd" to avoid
  *   matching "Photoshop", "Dashboard", "cmd inside longer title", etc.
  * - "cmd.exe" doesn't appear in window titles — use "Command Prompt" instead.
- * - "terminal" is a common substring — anchor with \b to reduce false positives
- *   (still catches "Windows Terminal", "Terminal — ...", etc.).
+ * - "terminal" is a common substring — anchor with \b to reduce false positives.
  *
  * A future improvement: prefer processName checks (more reliable than title).
  */
@@ -44,44 +47,85 @@ export function isBrowserTarget(target: TargetSpec | undefined): boolean {
   return Boolean(target?.tabId);
 }
 
+function mergeResults(results: ProviderResult[]): ProviderResult {
+  const candidates = results.flatMap((r) => r.candidates);
+  // Deduplicate warnings while preserving order.
+  const seen = new Set<string>();
+  const warnings: string[] = [];
+  for (const r of results) {
+    for (const w of r.warnings) {
+      if (!seen.has(w)) { seen.add(w); warnings.push(w); }
+    }
+  }
+  return { candidates, warnings };
+}
+
+function addWarningIfPartial(result: ProviderResult, primaryCount: number): ProviderResult {
+  if (primaryCount === 0 && result.candidates.length === 0) return result;
+  if (primaryCount === 0 && result.candidates.length > 0) {
+    // Primary returned nothing but additive providers contributed — flag as partial.
+    if (!result.warnings.includes("partial_results_only")) {
+      return { ...result, warnings: [...result.warnings, "partial_results_only"] };
+    }
+  }
+  return result;
+}
+
 /**
- * Fetch candidates from all appropriate providers and return the merged list.
- * Each provider result is appended; the resolver handles cross-source deduplication.
+ * Fetch candidates from all appropriate providers and return merged result + warnings.
+ * Uses Promise.allSettled so one failing provider doesn't block others.
  */
 export async function composeCandidates(
   target: TargetSpec | undefined
-): Promise<UiEntityCandidate[]> {
-  const all: UiEntityCandidate[] = [];
+): Promise<ProviderResult> {
+  if (!target || (!target.hwnd && !target.windowTitle && !target.tabId)) {
+    return { candidates: [], warnings: ["no_provider_matched"] };
+  }
 
   if (isBrowserTarget(target)) {
-    // Browser tab: CDP is the primary structured source.
     const [browser, visual] = await Promise.allSettled([
       fetchBrowserCandidates(target),
       fetchVisualCandidates(target),
     ]);
-    if (browser.status === "fulfilled") all.push(...browser.value);
-    if (visual.status  === "fulfilled") all.push(...visual.value);
+    const browserResult = browser.status === "fulfilled"
+      ? browser.value
+      : { candidates: [], warnings: ["cdp_provider_failed"] };
+    const visualResult  = visual.status  === "fulfilled"
+      ? visual.value
+      : { candidates: [], warnings: ["visual_provider_unavailable"] };
 
-  } else if (isTerminalTarget(target)) {
-    // Terminal window: terminal buffer is primary; UIA adds control structure.
+    return addWarningIfPartial(
+      mergeResults([browserResult, visualResult]),
+      browserResult.candidates.length
+    );
+  }
+
+  if (isTerminalTarget(target)) {
     const [terminal, uia, visual] = await Promise.allSettled([
       fetchTerminalCandidates(target),
       fetchUiaCandidates(target),
       fetchVisualCandidates(target),
     ]);
-    if (terminal.status === "fulfilled") all.push(...terminal.value);
-    if (uia.status      === "fulfilled") all.push(...uia.value);
-    if (visual.status   === "fulfilled") all.push(...visual.value);
+    const termResult   = terminal.status === "fulfilled" ? terminal.value : { candidates: [], warnings: ["terminal_provider_failed"] };
+    const uiaResult    = uia.status      === "fulfilled" ? uia.value      : { candidates: [], warnings: ["uia_provider_failed"] };
+    const visualResult = visual.status   === "fulfilled" ? visual.value   : { candidates: [], warnings: ["visual_provider_unavailable"] };
 
-  } else {
-    // Native Windows window: UIA is primary; visual GPU as additive overlay.
-    const [uia, visual] = await Promise.allSettled([
-      fetchUiaCandidates(target),
-      fetchVisualCandidates(target),
-    ]);
-    if (uia.status    === "fulfilled") all.push(...uia.value);
-    if (visual.status === "fulfilled") all.push(...visual.value);
+    return addWarningIfPartial(
+      mergeResults([termResult, uiaResult, visualResult]),
+      termResult.candidates.length
+    );
   }
 
-  return all;
+  // Native Windows window: UIA primary + visual additive.
+  const [uia, visual] = await Promise.allSettled([
+    fetchUiaCandidates(target),
+    fetchVisualCandidates(target),
+  ]);
+  const uiaResult    = uia.status    === "fulfilled" ? uia.value    : { candidates: [], warnings: ["uia_provider_failed"] };
+  const visualResult = visual.status === "fulfilled" ? visual.value : { candidates: [], warnings: ["visual_provider_unavailable"] };
+
+  return addWarningIfPartial(
+    mergeResults([uiaResult, visualResult]),
+    uiaResult.candidates.length
+  );
 }
