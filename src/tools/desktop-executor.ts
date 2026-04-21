@@ -2,10 +2,10 @@
  * desktop-executor.ts — Route desktop_touch actions to the appropriate native backend.
  *
  * Priority order:
- *   1. uia    → clickElement / setElementValue (UIA Invoke/ValuePattern)
- *   2. cdp    → CDP click via screen coords / evaluateInTab fill
- *   3. terminal → keyboard type into terminal window
- *   4. mouse  → mouse click at entity rect center (visual-only fallback)
+ *   1. uia      → clickElement / setElementValue (UIA Invoke/ValuePattern)
+ *   2. cdp      → CDP click via screen coords / evaluateInTab fill
+ *   3. terminal → keyboard type into terminal window (foreground path — steals focus)
+ *   4. mouse    → mouse click at entity rect center (visual-only fallback)
  *
  * All deps are injectable so tests can mock every route without OS bindings.
  * Real deps are imported lazily (dynamic import) to keep module load light.
@@ -24,9 +24,14 @@ export interface ExecutorDeps {
   uiaSetValue(windowTitle: string, value: string, name?: string, automationId?: string): Promise<void>;
   /** CDP: click a DOM element by CSS selector. */
   cdpClick(selector: string, tabId?: string): Promise<void>;
-  /** CDP: fill a text input by CSS selector. */
+  /** CDP: fill a text input by CSS selector.
+   * NOTE: uses DEFAULT_CDP_PORT (9222). Phase 2 should extend TargetSpec with optional cdpPort. */
   cdpFill(selector: string, value: string, tabId?: string): Promise<void>;
-  /** Terminal: send text to a terminal window (types without pressing Enter). */
+  /**
+   * Terminal: send text to a terminal window (foreground path via keyboard.type).
+   * This steals focus from the LLM client. Phase 2 should prefer the background
+   * WM_CHAR path from terminalSendHandler to avoid focus disruption.
+   */
   terminalSend(windowTitle: string, text: string): Promise<void>;
   /** Mouse: click at absolute screen coordinates. */
   mouseClick(x: number, y: number): Promise<void>;
@@ -48,16 +53,24 @@ function rectCenter(rect: { x: number; y: number; width: number; height: number 
 // ── Executor factory ──────────────────────────────────────────────────────────
 
 /**
- * Build an ExecutorFn for the given session target.
+ * Build an ExecutorFn that routes to the appropriate native backend.
  *
- * Called lazily so `target` is resolved at touch time (after the latest see()).
+ * Called lazily so `target` reflects the current session.lastTarget at touch time.
  * Pass `deps` to inject mock backends in tests; omit for production native bindings.
+ *
+ * NOTE: `entity.sourceId` is forwarded as `automationId` to UIA opportunistically.
+ * For visual_gpu entities, sourceId is a UUID trackId — UIA ignores it and falls
+ * back to name-only matching. For UIA-native entities, sourceId should carry the
+ * actual UIA AutomationId. This is currently implicit; a future `sourceIds` map
+ * per entity source would make this explicit.
+ *
+ * UIA click failure gracefully falls through to mouse when entity has a rect.
  */
 export function createDesktopExecutor(
   target: TargetSpec | undefined,
   deps?: ExecutorDeps
 ): (entity: UiEntity, action: TouchAction, text?: string) => Promise<ExecutorKind> {
-  const d = deps ?? buildRealDeps();
+  const d = deps ?? getSharedRealDeps();
 
   return async (entity, action, text) => {
     const winTitle = resolveWindowTitle(target);
@@ -68,9 +81,19 @@ export function createDesktopExecutor(
         await d.uiaSetValue(winTitle, text, entity.label, entity.sourceId);
         return "uia";
       }
-      // invoke / click / auto with UIA evidence
-      await d.uiaClick(winTitle, entity.label, entity.sourceId);
-      return "uia";
+      try {
+        await d.uiaClick(winTitle, entity.label, entity.sourceId);
+        return "uia";
+      } catch {
+        // UIA click failed (element not found, stale tree, etc.).
+        // Fall through to mouse if rect is available rather than failing the touch.
+        if (!entity.rect) throw new Error(
+          `UIA click failed for "${entity.label ?? entity.entityId}" and no rect for mouse fallback`
+        );
+        const { x, y } = rectCenter(entity.rect);
+        await d.mouseClick(x, y);
+        return "mouse";
+      }
     }
 
     // ── CDP route ────────────────────────────────────────────────────────────
@@ -104,11 +127,14 @@ export function createDesktopExecutor(
 // ── Real deps (Windows native) ────────────────────────────────────────────────
 
 /**
- * Production deps using native UIA / CDP / nutjs backends.
- * All imports are lazy so this module loads without errors in test environments.
+ * Module-level cache so all sessions share one set of native handles
+ * (keyboard/mouse singletons, dynamic-imported modules).
  */
-function buildRealDeps(): ExecutorDeps {
-  return {
+let _realDepsCache: ExecutorDeps | undefined;
+
+function getSharedRealDeps(): ExecutorDeps {
+  if (_realDepsCache) return _realDepsCache;
+  _realDepsCache = {
     async uiaClick(windowTitle, name, automationId) {
       const { clickElement } = await import("../engine/uia-bridge.js");
       const r = await clickElement(windowTitle, name, automationId);
@@ -122,6 +148,7 @@ function buildRealDeps(): ExecutorDeps {
     },
 
     async cdpClick(selector, tabId) {
+      // TODO: support non-default CDP port via TargetSpec.cdpPort (Phase 2)
       const { getElementScreenCoords, DEFAULT_CDP_PORT } = await import("../engine/cdp-bridge.js");
       const coords = await getElementScreenCoords(selector, tabId ?? null, DEFAULT_CDP_PORT);
       if ((coords as { error?: string }).error) {
@@ -134,7 +161,6 @@ function buildRealDeps(): ExecutorDeps {
 
     async cdpFill(selector, value, tabId) {
       const { evaluateInTab, DEFAULT_CDP_PORT } = await import("../engine/cdp-bridge.js");
-      // Use native prototype setter path (same as browserFillInputHandler)
       const expr = `(function(){
   const el = document.querySelector(${JSON.stringify(selector)});
   if(!el) return { ok:false, error:"Element not found: ${selector}" };
@@ -152,6 +178,8 @@ function buildRealDeps(): ExecutorDeps {
     },
 
     async terminalSend(windowTitle, text) {
+      // Foreground path: focus window then type. See docstring on ExecutorDeps.terminalSend
+      // for the Phase 2 plan to use the WM_CHAR background path instead.
       const { keyboard } = await import("../engine/nutjs.js");
       const { enumWindowsInZOrder, restoreAndFocusWindow } = await import("../engine/win32.js");
       const wins = enumWindowsInZOrder();
@@ -167,4 +195,5 @@ function buildRealDeps(): ExecutorDeps {
       await mouse.click(Button.LEFT);
     },
   };
+  return _realDepsCache;
 }
