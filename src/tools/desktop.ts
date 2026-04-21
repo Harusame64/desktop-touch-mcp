@@ -51,16 +51,17 @@ export type DesktopTouchOutput = TouchResult;
 
 /**
  * Returns UiEntityCandidates for a given see request.
+ * May be sync or async — facade.see() awaits via Promise.resolve().
  *
  * Production implementations:
  *   - game target    → CandidateProducer (visual_gpu lane)
  *   - browser target → CDP AX + OCR fallback
  *   - terminal       → terminal buffer + OCR fallback
- *   - native UI      → UIA
+ *   - native UI      → UIA (async getUiElements)
  *
  * All sources converge to UiEntityCandidate before entering the facade.
  */
-export type CandidateProvider = (input: DesktopSeeInput) => UiEntityCandidate[];
+export type CandidateProvider = (input: DesktopSeeInput) => UiEntityCandidate[] | Promise<UiEntityCandidate[]>;
 
 export type { ExecutorFn };
 
@@ -131,8 +132,9 @@ export class DesktopFacade {
    * Resolve entities for the given target and view mode.
    * Bumps the target's generation — prior leases for this target become stale.
    * Leases for other targets are unaffected.
+   * Async because CandidateProvider may return a Promise (e.g. UIA getUiElements).
    */
-  see(input: DesktopSeeInput = {}): DesktopSeeOutput {
+  async see(input: DesktopSeeInput = {}): Promise<DesktopSeeOutput> {
     const key = this.registry.resolveKey(input.target);
     const session = this.registry.getOrCreate(key, this._sessionOpts());
 
@@ -143,7 +145,10 @@ export class DesktopFacade {
     session.generation = `${newViewId}:${session.seq}`;
     session.viewId = newViewId;
 
-    let resolved = resolveCandidates(this.candidateProvider(input), session.generation);
+    let resolved = resolveCandidates(
+      await Promise.resolve(this.candidateProvider(input)),
+      session.generation
+    );
 
     if (input.query) {
       const q = input.query.toLowerCase();
