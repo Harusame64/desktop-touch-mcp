@@ -6,22 +6,26 @@
  *   - One "label" entity for each visible output line (for read access)
  *
  * Populated locator: { terminal: { windowTitle } }
+ *
+ * Warnings:
+ *   terminal_provider_failed — getTextViaTextPattern threw
+ *   terminal_buffer_empty    — window found but buffer was empty or unreadable
  */
 
 import type { UiEntityCandidate } from "../../engine/vision-gpu/types.js";
 import type { TargetSpec } from "../../engine/world-graph/session-registry.js";
+import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.js";
 
-/** Heuristic: does a line look like a shell prompt? */
 function isPromptLine(line: string): boolean {
   return /[>$#]\s*$/.test(line.trim());
 }
 
 export async function fetchTerminalCandidates(
   target: TargetSpec | undefined
-): Promise<UiEntityCandidate[]> {
+): Promise<ProviderResult> {
   // getTextViaTextPattern takes a title string — hwnd-only targets are not supported
   // until a dedicated hwnd overload is added. Return [] rather than passing hwnd as title.
-  if (!target?.windowTitle) return [];
+  if (!target?.windowTitle) return { candidates: [], warnings: [] };
   const windowTitle = target.windowTitle;
   const targetId    = target.hwnd ?? target.windowTitle;
 
@@ -30,13 +34,13 @@ export async function fetchTerminalCandidates(
     const raw = await getTextViaTextPattern(windowTitle);
 
     const candidates: UiEntityCandidate[] = [];
+    const warnings: string[] = [];
     const now = Date.now();
 
     if (raw) {
       const lines = raw.split("\n").map((l) => l.trimEnd()).filter(Boolean);
       const promptLine = [...lines].reverse().find(isPromptLine);
 
-      // Primary: the input prompt entity (always the touch target for terminal_send)
       candidates.push({
         source: "terminal",
         target: { kind: "window", id: targetId },
@@ -49,7 +53,9 @@ export async function fetchTerminalCandidates(
         provisional: false,
       });
 
-      // Secondary: last few visible output lines as readable labels
+      // Last few visible output lines as readable labels.
+      // NOTE: getTextViaTextPattern may return large buffers (vim/less scrollback).
+      // TODO (Phase 3): add a line-cap parameter to getTextViaTextPattern.
       const outputLines = lines.slice(-5).filter((l) => !isPromptLine(l));
       for (const line of outputLines) {
         candidates.push({
@@ -65,7 +71,8 @@ export async function fetchTerminalCandidates(
         });
       }
     } else {
-      // Buffer unreadable — return a bare input entity so touch still works
+      // Buffer unreadable — return bare input entity so touch still works.
+      warnings.push("terminal_buffer_empty");
       candidates.push({
         source: "terminal",
         target: { kind: "window", id: targetId },
@@ -79,9 +86,9 @@ export async function fetchTerminalCandidates(
       });
     }
 
-    return candidates;
+    return { candidates, warnings };
   } catch (err) {
     console.error(`[terminal-provider] Error for "${windowTitle}":`, err);
-    return [];
+    return { candidates: [], warnings: ["terminal_provider_failed"] };
   }
 }

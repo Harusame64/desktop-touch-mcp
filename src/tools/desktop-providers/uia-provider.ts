@@ -1,13 +1,18 @@
 /**
  * uia-provider.ts — UIA candidate provider for native Windows windows.
  *
- * Uses getUiElements() with hwnd when available (precise, no title ambiguity).
+ * Uses getUiElements() with hwnd option when available (precise, no title ambiguity).
  * Falls back to windowTitle when only a title is given.
  * Populates locator.uia for every candidate.
+ *
+ * Warnings:
+ *   uia_provider_failed — getUiElements threw or returned an error
+ *   uia_no_elements     — window found but no actionable elements returned
  */
 
 import type { UiEntityCandidate } from "../../engine/vision-gpu/types.js";
 import type { TargetSpec } from "../../engine/world-graph/session-registry.js";
+import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.js";
 
 function uiaRoleFromControlType(ct: string): string {
   const map: Record<string, string> = {
@@ -27,8 +32,10 @@ function uiaActionability(ct: string): Array<"click" | "invoke" | "type" | "read
 
 export async function fetchUiaCandidates(
   target: TargetSpec | undefined
-): Promise<UiEntityCandidate[]> {
-  if (!target || (!target.hwnd && !target.windowTitle)) return [];
+): Promise<ProviderResult> {
+  if (!target || (!target.hwnd && !target.windowTitle)) {
+    return { candidates: [], warnings: [] };
+  }
 
   const windowTitle = target.windowTitle ?? target.hwnd ?? "@active";
   const targetId    = target.hwnd ?? target.windowTitle ?? "@active";
@@ -36,15 +43,11 @@ export async function fetchUiaCandidates(
   try {
     const { getUiElements } = await import("../../engine/uia-bridge.js");
 
-    // Use hwnd option when available — avoids title-substring ambiguity and is
-    // more robust for windows whose titles change (e.g. document editors).
-    const options = target.hwnd
-      ? { hwnd: BigInt(target.hwnd) }
-      : undefined;
+    // hwnd invariant: always decimal string (bigint as decimal, per codebase convention)
+    const options = target.hwnd ? { hwnd: BigInt(target.hwnd) } : undefined;
+    const result  = await getUiElements(windowTitle, 4, 80, 8000, options);
 
-    const result = await getUiElements(windowTitle, 4, 80, 8000, options);
-
-    return result.elements
+    const candidates: UiEntityCandidate[] = result.elements
       .filter((el) => el.isEnabled && el.name)
       .map((el): UiEntityCandidate => ({
         source: "uia",
@@ -60,8 +63,11 @@ export async function fetchUiaCandidates(
         observedAtMs: Date.now(),
         provisional: false,
       }));
+
+    const warnings = candidates.length === 0 ? ["uia_no_elements"] : [];
+    return { candidates, warnings };
   } catch (err) {
     console.error(`[uia-provider] Error for target "${targetId}":`, err);
-    return [];
+    return { candidates: [], warnings: ["uia_provider_failed"] };
   }
 }

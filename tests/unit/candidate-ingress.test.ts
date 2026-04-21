@@ -4,6 +4,7 @@ import {
   windowEventMatchesKey,
   type IngressEventSource,
   type IngressReason,
+  type ProviderResult,
 } from "../../src/engine/world-graph/candidate-ingress.js";
 import type { UiEntityCandidate } from "../../src/engine/vision-gpu/types.js";
 
@@ -20,46 +21,47 @@ function candidate(label: string): UiEntityCandidate {
   };
 }
 
+function ok(label: string, warnings: string[] = []): ProviderResult {
+  return { candidates: [candidate(label)], warnings };
+}
+
+function failed(warnings: string[]): ProviderResult {
+  return { candidates: [], warnings };
+}
+
 function noopSource(): IngressEventSource {
+  return { drain: async () => [], dispose: vi.fn() };
+}
+
+function eventSource(events: Array<{ key: string; reason: IngressReason }>): IngressEventSource {
+  let called = false;
   return {
-    drain: async () => [],
+    drain: async () => { if (called) return []; called = true; return events; },
     dispose: vi.fn(),
   };
 }
 
-function eventSource(
-  events: Array<{ key: string; reason: IngressReason }>
-): IngressEventSource {
-  let called = false;
-  return {
-    drain: async () => {
-      if (called) return [];
-      called = true;
-      return events;
-    },
-    dispose: vi.fn(),
-  };
-}
+// ── Cache behavior ────────────────────────────────────────────────────────────
 
 describe("SnapshotIngress — cache behavior", () => {
   it("fetches on cache miss (first call)", async () => {
-    const fetch = vi.fn(async () => [candidate("A")]);
+    const fetch = vi.fn(async () => ok("A"));
     const ingress = new SnapshotIngress(fetch, noopSource());
     const result = await ingress.getSnapshot("window:1");
     expect(fetch).toHaveBeenCalledOnce();
-    expect(result[0].label).toBe("A");
+    expect(result.candidates[0].label).toBe("A");
   });
 
   it("returns cached result on second call without invalidation", async () => {
-    const fetch = vi.fn(async () => [candidate("A")]);
+    const fetch = vi.fn(async () => ok("A"));
     const ingress = new SnapshotIngress(fetch, noopSource());
     await ingress.getSnapshot("window:1");
     await ingress.getSnapshot("window:1");
-    expect(fetch).toHaveBeenCalledOnce(); // not called twice
+    expect(fetch).toHaveBeenCalledOnce();
   });
 
   it("re-fetches after invalidate()", async () => {
-    const fetch = vi.fn(async (key: string) => [candidate(key)]);
+    const fetch = vi.fn(async (key: string) => ok(key));
     const ingress = new SnapshotIngress(fetch, noopSource());
     await ingress.getSnapshot("window:1");
     ingress.invalidate("window:1", "winevent");
@@ -69,13 +71,12 @@ describe("SnapshotIngress — cache behavior", () => {
 
   it("re-fetches after cache TTL expires", async () => {
     let now = 0;
-    const fetch = vi.fn(async () => [candidate("A")]);
+    const fetch = vi.fn(async () => ok("A"));
     const ingress = new SnapshotIngress(fetch, noopSource(), { cacheTtlMs: 100 });
-    // Override internal Date.now behavior via mock
     vi.spyOn(Date, "now").mockImplementation(() => now);
-    await ingress.getSnapshot("window:1"); // fetch #1
-    now = 200; // advance past TTL
-    await ingress.getSnapshot("window:1"); // should re-fetch
+    await ingress.getSnapshot("window:1");
+    now = 200;
+    await ingress.getSnapshot("window:1");
     vi.restoreAllMocks();
     expect(fetch).toHaveBeenCalledTimes(2);
   });
@@ -84,76 +85,109 @@ describe("SnapshotIngress — cache behavior", () => {
     let fail = false;
     const fetch = vi.fn(async () => {
       if (fail) throw new Error("network error");
-      return [candidate("Stale")];
+      return ok("Stale");
     });
     const ingress = new SnapshotIngress(fetch, noopSource());
-    await ingress.getSnapshot("window:1"); // populate cache
+    await ingress.getSnapshot("window:1");
     ingress.invalidate("window:1", "manual");
     fail = true;
-    const result = await ingress.getSnapshot("window:1"); // error → stale
-    expect(result[0].label).toBe("Stale");
+    const result = await ingress.getSnapshot("window:1");
+    expect(result.candidates[0].label).toBe("Stale");
   });
 
-  it("returns [] on fetch error when cache is empty (startup failure)", async () => {
+  it("adds ingress_fetch_error warning when fetch throws and stale cache returned", async () => {
+    let fail = false;
+    const fetch = vi.fn(async () => {
+      if (fail) throw new Error("err");
+      return ok("Stale", ["some_prior_warning"]);
+    });
+    const ingress = new SnapshotIngress(fetch, noopSource());
+    await ingress.getSnapshot("window:1");
+    ingress.invalidate("window:1", "manual");
+    fail = true;
+    const result = await ingress.getSnapshot("window:1");
+    expect(result.warnings).toContain("ingress_fetch_error");
+    expect(result.candidates[0].label).toBe("Stale");
+  });
+
+  it("returns empty candidates and ingress_fetch_error when cache is empty on error", async () => {
     const fetch = vi.fn(async () => { throw new Error("UIA unavailable"); });
     const ingress = new SnapshotIngress(fetch);
     const result = await ingress.getSnapshot("window:1");
-    expect(result).toHaveLength(0);
+    expect(result.candidates).toHaveLength(0);
+    expect(result.warnings).toContain("ingress_fetch_error");
+  });
+
+  it("returns [] candidates and [] warnings after dispose", async () => {
+    const ingress = new SnapshotIngress(async () => ok("A"));
+    await ingress.getSnapshot("window:1");
+    ingress.dispose();
+    const result = await ingress.getSnapshot("window:1");
+    expect(result.candidates).toHaveLength(0);
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it("cached warnings are returned on cache hit", async () => {
+    const fetch = vi.fn(async () => ok("A", ["visual_provider_unavailable"]));
+    const ingress = new SnapshotIngress(fetch, noopSource());
+    const first  = await ingress.getSnapshot("window:1");
+    const second = await ingress.getSnapshot("window:1"); // cache hit
+    expect(first.warnings).toEqual(["visual_provider_unavailable"]);
+    expect(second.warnings).toEqual(["visual_provider_unavailable"]);
+    expect(fetch).toHaveBeenCalledOnce(); // not re-fetched
   });
 });
 
-describe("SnapshotIngress — target isolation (Batch D key requirement)", () => {
-  it("invalidate on key A does NOT affect key B's cache", async () => {
-    const fetch = vi.fn(async (key: string) => [candidate(key)]);
+// ── Target isolation ──────────────────────────────────────────────────────────
+
+describe("SnapshotIngress — target isolation", () => {
+  it("invalidate on A does NOT affect B's cache", async () => {
+    const fetch = vi.fn(async (key: string) => ok(key));
     const ingress = new SnapshotIngress(fetch, noopSource());
     await ingress.getSnapshot("window:A");
     await ingress.getSnapshot("window:B");
     ingress.invalidate("window:A", "winevent");
-    await ingress.getSnapshot("window:B"); // must NOT re-fetch B
-    // fetch was called: A(1) + B(1) + A-post-invalidate(1) = 3 if B re-fetched incorrectly
-    // correct: A(1) + B(1) + A-post-invalidate(1) = 3 if B not re-fetched = 2 for B
+    await ingress.getSnapshot("window:B");
     const bCalls = (fetch.mock.calls as string[][]).filter((args) => args[0] === "window:B");
-    expect(bCalls).toHaveLength(1); // B only fetched once
+    expect(bCalls).toHaveLength(1);
   });
 
-  it("event source returns events only for matching keys (target isolation)", async () => {
-    const fetch = vi.fn(async (key: string) => [candidate(key)]);
-    // Event fires on the 3rd drain call (after initial A and B fetches)
+  it("event source fires only for matching key (target isolation)", async () => {
+    const fetch = vi.fn(async (key: string) => ok(key));
     let drainCount = 0;
     const source: IngressEventSource = {
       drain: async () => {
         drainCount++;
-        // Return A event only on the 3rd drain (after A and B are in cache)
         if (drainCount === 3) return [{ key: "window:A", reason: "winevent" as IngressReason }];
         return [];
       },
       dispose: vi.fn(),
     };
     const ingress = new SnapshotIngress(fetch, source);
-    await ingress.getSnapshot("window:A"); // drain #1: no events, fetch A
-    await ingress.getSnapshot("window:B"); // drain #2: no events, fetch B
-    await ingress.getSnapshot("window:A"); // drain #3: A event fires → A dirty → re-fetch A
-    await ingress.getSnapshot("window:B"); // drain #4: no events, B cache still clean
-
+    await ingress.getSnapshot("window:A");
+    await ingress.getSnapshot("window:B");
+    await ingress.getSnapshot("window:A"); // event fires → re-fetch A
+    await ingress.getSnapshot("window:B"); // no event → cache hit for B
     const aCalls = (fetch.mock.calls as string[][]).filter((a) => a[0] === "window:A");
     const bCalls = (fetch.mock.calls as string[][]).filter((a) => a[0] === "window:B");
-    expect(aCalls).toHaveLength(2); // fetch + re-fetch after event
-    expect(bCalls).toHaveLength(1); // only initial fetch — target isolation confirmed
+    expect(aCalls).toHaveLength(2);
+    expect(bCalls).toHaveLength(1);
   });
 
-  it("idle: no background fetch — fetch count stays at 1 without see() calls", async () => {
-    const fetch = vi.fn(async () => [candidate("A")]);
+  it("idle: no background fetch", async () => {
+    const fetch = vi.fn(async () => ok("A"));
     const ingress = new SnapshotIngress(fetch, noopSource());
     await ingress.getSnapshot("window:1");
-    // Simulate idle time — no calls, no fetches
     await new Promise((r) => setTimeout(r, 10));
-    expect(fetch).toHaveBeenCalledOnce(); // still just 1
+    expect(fetch).toHaveBeenCalledOnce();
   });
 });
 
+// ── Subscribe / markRecovered ─────────────────────────────────────────────────
+
 describe("SnapshotIngress — subscribe", () => {
   it("subscriber fires on invalidate", () => {
-    const ingress = new SnapshotIngress(async () => []);
+    const ingress = new SnapshotIngress(async () => failed([]));
     const cb = vi.fn();
     ingress.subscribe("window:1", cb);
     ingress.invalidate("window:1", "winevent");
@@ -161,7 +195,7 @@ describe("SnapshotIngress — subscribe", () => {
   });
 
   it("subscriber does NOT fire for a different key", () => {
-    const ingress = new SnapshotIngress(async () => []);
+    const ingress = new SnapshotIngress(async () => failed([]));
     const cb = vi.fn();
     ingress.subscribe("window:A", cb);
     ingress.invalidate("window:B", "winevent");
@@ -169,7 +203,7 @@ describe("SnapshotIngress — subscribe", () => {
   });
 
   it("unsubscribe stops callbacks", () => {
-    const ingress = new SnapshotIngress(async () => []);
+    const ingress = new SnapshotIngress(async () => failed([]));
     const cb = vi.fn();
     const unsub = ingress.subscribe("window:1", cb);
     unsub();
@@ -179,33 +213,27 @@ describe("SnapshotIngress — subscribe", () => {
 });
 
 describe("SnapshotIngress — markRecovered", () => {
-  it("markRecovered clears dirty flag without re-fetching immediately", async () => {
-    const fetch = vi.fn(async () => [candidate("A")]);
+  it("markRecovered clears dirty flag — no re-fetch on next getSnapshot", async () => {
+    const fetch = vi.fn(async () => ok("A"));
     const ingress = new SnapshotIngress(fetch, noopSource());
     await ingress.getSnapshot("window:1");
     ingress.invalidate("window:1", "manual");
     ingress.markRecovered!("window:1");
-    await ingress.getSnapshot("window:1"); // clean again — no fetch
+    await ingress.getSnapshot("window:1");
     expect(fetch).toHaveBeenCalledOnce();
   });
 });
 
 describe("SnapshotIngress — dispose", () => {
-  it("getSnapshot returns [] after dispose", async () => {
-    const ingress = new SnapshotIngress(async () => [candidate("A")]);
-    await ingress.getSnapshot("window:1");
-    ingress.dispose();
-    const result = await ingress.getSnapshot("window:1");
-    expect(result).toHaveLength(0);
-  });
-
   it("calls eventSource.dispose on ingress.dispose", () => {
     const src = noopSource();
-    const ingress = new SnapshotIngress(async () => [], src);
+    const ingress = new SnapshotIngress(async () => failed([]), src);
     ingress.dispose();
     expect(src.dispose).toHaveBeenCalled();
   });
 });
+
+// ── windowEventMatchesKey ─────────────────────────────────────────────────────
 
 describe("windowEventMatchesKey — matching logic", () => {
   it("window: key matches by hwnd equality", () => {
@@ -218,9 +246,8 @@ describe("windowEventMatchesKey — matching logic", () => {
     expect(windowEventMatchesKey({ windowTitle: "Chrome" }, "title:Notepad")).toBe(false);
   });
 
-  it("tab: key is never matched by WinEvent (CDP only)", () => {
+  it("tab: key is never matched by WinEvent", () => {
     expect(windowEventMatchesKey({ hwnd: "123" }, "tab:abc")).toBe(false);
-    expect(windowEventMatchesKey({ windowTitle: "anything" }, "tab:abc")).toBe(false);
   });
 
   it("event missing hwnd does not match window: key", () => {

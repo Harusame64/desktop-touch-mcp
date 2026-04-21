@@ -157,10 +157,10 @@ export class DesktopFacade {
     session.viewId = newViewId;
 
     // Use ingress (event-driven cache) if available; fall back to direct provider.
-    const rawCandidates = this.opts.ingress
+    const rawResult = this.opts.ingress
       ? await this.opts.ingress.getSnapshot(key)
-      : await Promise.resolve(this.candidateProvider(input));
-    let resolved = resolveCandidates(rawCandidates, session.generation);
+      : { candidates: await Promise.resolve(this.candidateProvider(input)), warnings: [] as string[] };
+    let resolved = resolveCandidates(rawResult.candidates, session.generation);
 
     if (input.query) {
       const q = input.query.toLowerCase();
@@ -188,11 +188,13 @@ export class DesktopFacade {
       return view;
     });
 
-    return {
+    const output: DesktopSeeOutput = {
       viewId: newViewId,
       target: { title: targetTitle(input.target), generation: session.generation },
       entities: entityViews,
     };
+    if (rawResult.warnings.length > 0) output.warnings = rawResult.warnings;
+    return output;
   }
 
   /**
