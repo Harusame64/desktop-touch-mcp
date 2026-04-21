@@ -55,25 +55,28 @@ describe("wireLauncherStdio", () => {
 
   it("requests graceful child shutdown when parent stdin closes", async () => {
     vi.useFakeTimers();
-    const parentStdin = new MockReadable();
-    const parentStdout = new MockWritable();
-    const parentStderr = new MockWritable();
-    const child = new MockChildProcess();
+    try {
+      const parentStdin = new MockReadable();
+      const parentStdout = new MockWritable();
+      const parentStderr = new MockWritable();
+      const child = new MockChildProcess();
 
-    wireLauncherStdio(child as never, {
-      parentStdin: parentStdin as never,
-      parentStdout: parentStdout as never,
-      parentStderr: parentStderr as never,
-      shutdownGraceMs: 25,
-    });
+      wireLauncherStdio(child as never, {
+        parentStdin: parentStdin as never,
+        parentStdout: parentStdout as never,
+        parentStderr: parentStderr as never,
+        shutdownGraceMs: 25,
+      });
 
-    parentStdin.emit("end");
-    expect(child.stdin.end).toHaveBeenCalledTimes(1);
-    expect(child.kill).not.toHaveBeenCalled();
+      parentStdin.emit("end");
+      expect(child.stdin.end).toHaveBeenCalledTimes(1);
+      expect(child.kill).not.toHaveBeenCalled();
 
-    await vi.advanceTimersByTimeAsync(25);
-    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
-    vi.useRealTimers();
+      await vi.advanceTimersByTimeAsync(25);
+      expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("terminates the child immediately when parent stdout breaks", () => {
