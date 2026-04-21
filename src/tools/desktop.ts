@@ -8,6 +8,7 @@ import {
   type SnapshotFn,
   type ExecutorFn,
 } from "../engine/world-graph/session-registry.js";
+import { createDesktopExecutor, type ExecutorDeps } from "./desktop-executor.js";
 import type { TouchAction, TouchResult } from "../engine/world-graph/guarded-touch.js";
 
 // ── Input / Output types ──────────────────────────────────────────────────────
@@ -66,8 +67,17 @@ export type { ExecutorFn };
 // ── Facade options ────────────────────────────────────────────────────────────
 
 export interface DesktopFacadeOptions {
-  /** Executor wired to Win32/UIA/CDP/mouse. Default: simulated "mouse". */
+  /**
+   * Fixed executor — overrides executorDeps.
+   * Use in tests to provide a fully-controlled mock.
+   */
   executorFn?: ExecutorFn;
+  /**
+   * Injectable backends for createDesktopExecutor.
+   * When set, each session gets a target-aware executor via createDesktopExecutor(target, deps).
+   * When omitted, production native bindings are used (UIA/CDP/nutjs).
+   */
+  executorDeps?: ExecutorDeps;
   /** Override modal detection. Default: always false. */
   isModalBlocking?: (entity: UiEntity) => boolean;
   /** Override viewport check. Default: always true. */
@@ -81,6 +91,8 @@ export interface DesktopFacadeOptions {
   /** Session eviction TTL in ms (default: 120 000 = 2 min). */
   sessionTtlMs?: number;
 }
+
+export type { ExecutorDeps };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -200,7 +212,11 @@ export class DesktopFacade {
     return {
       snapshotFn:      (target) => candidateProvider({ target }),
       postSnapshotFn:  postTouchCandidates ? (target) => postTouchCandidates({ target }) : undefined,
+      // executorFn takes precedence; executorFactory provides target-aware executor for production.
       executorFn:      this.opts.executorFn,
+      executorFactory: this.opts.executorFn
+        ? undefined
+        : (target) => createDesktopExecutor(target, this.opts.executorDeps),
       isModalBlocking: this.opts.isModalBlocking,
       isInViewport:    this.opts.isInViewport,
       defaultTtlMs:    this.opts.defaultTtlMs,
