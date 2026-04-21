@@ -192,6 +192,48 @@ export function windowEventMatchesKey(event: WindowEventLike, key: string): bool
   return false;
 }
 
+// ── Source composition ────────────────────────────────────────────────────────
+
+/**
+ * Combine multiple IngressEventSource instances into one.
+ * Each sub-source is drained independently; results are deduplicated by key.
+ * If a sub-source throws, it is skipped (graceful degradation — one broken source
+ * does not block the others).
+ *
+ * Composite source preserves target isolation: each sub-source is responsible for
+ * only emitting events for keys it recognises.
+ */
+export function combineEventSources(sources: IngressEventSource[]): IngressEventSource {
+  return {
+    async drain(knownKeys: ReadonlySet<string>): Promise<Iterable<{ key: string; reason: IngressReason }>> {
+      const results: Array<{ key: string; reason: IngressReason }> = [];
+      const seen = new Set<string>();
+
+      for (const source of sources) {
+        try {
+          const events = await source.drain(knownKeys);
+          for (const e of events) {
+            if (!seen.has(e.key)) {
+              seen.add(e.key);
+              results.push(e);
+            }
+          }
+        } catch {
+          // One broken source never blocks the others.
+        }
+      }
+
+      return results;
+    },
+
+    dispose(): void {
+      for (const source of sources) {
+        try { source.dispose(); } catch { /* best-effort */ }
+      }
+    },
+  };
+}
+
 /**
  * Create an IngressEventSource backed by event-bus.ts.
  *

@@ -20,14 +20,29 @@ import { DesktopFacade, type CandidateProvider, type DesktopSeeInput } from "./d
 import type { EntityLease } from "../engine/world-graph/types.js";
 import {
   SnapshotIngress,
+  combineEventSources,
   createWinEventIngressSource,
 } from "../engine/world-graph/candidate-ingress.js";
+import { createBrowserIngressSource } from "../engine/world-graph/browser-ingress.js";
+import { createTerminalIngressSource } from "../engine/world-graph/terminal-ingress.js";
+import { createVisualIngressSource, type VisualIngressSource } from "../engine/world-graph/visual-ingress.js";
 import type { TargetSpec } from "../engine/world-graph/session-registry.js";
 import { composeCandidates } from "./desktop-providers/compose-providers.js";
 
 // ── Process-level facade singleton ───────────────────────────────────────────
 
 let _facade: DesktopFacade | undefined;
+
+/** Process-level visual invalidation hook. Call to trigger visual cache refresh. */
+let _visualSource: VisualIngressSource | undefined;
+
+/**
+ * Return the visual invalidation source so external code (e.g. GPU pipeline)
+ * can mark visual targets dirty without going through the facade.
+ */
+export function getVisualIngressSource(): VisualIngressSource | undefined {
+  return _visualSource;
+}
 
 /**
  * Return the process-level DesktopFacade.
@@ -36,15 +51,30 @@ let _facade: DesktopFacade | undefined;
  * P2-B: uses composeCandidates() as the provider — routes to browser/terminal/uia
  * based on target type and merges results additively.
  */
+/**
+ * Return the process-level DesktopFacade.
+ *
+ * P2-E: uses a composite event source that combines:
+ *   - WinEvent (window appear/disappear/foreground)  → native window keys
+ *   - CDP lifecycle change detection                  → tab: keys
+ *   - Terminal buffer fingerprint change              → title: terminal keys
+ *   - Visual manual invalidation hook                 → any key (GPU pipeline)
+ */
 export function getDesktopFacade(): DesktopFacade {
   if (!_facade) {
     const provider: CandidateProvider = (input: DesktopSeeInput) =>
       composeCandidates(input.target);
 
-    // fetchFn returns ProviderResult (candidates + warnings) so see() can surface warnings.
+    _visualSource = createVisualIngressSource();
+
     const ingress = new SnapshotIngress(
       (key: string) => composeCandidates(targetKeyToSpec(key)),
-      createWinEventIngressSource()
+      combineEventSources([
+        createWinEventIngressSource(),
+        createBrowserIngressSource(),
+        createTerminalIngressSource(),
+        _visualSource,
+      ])
     );
 
     _facade = new DesktopFacade(provider, { ingress });
@@ -71,6 +101,7 @@ function targetKeyToSpec(key: string): TargetSpec | undefined {
 export function _resetFacadeForTest(): void {
   (_facade as unknown as { dispose?: () => void })?.dispose?.();
   _facade = undefined;
+  _visualSource = undefined;
 }
 
 // ── Zod schemas ───────────────────────────────────────────────────────────────
