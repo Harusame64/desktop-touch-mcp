@@ -2,6 +2,7 @@
 
 import { execFile, spawn } from "node:child_process";
 import { createReadStream, createWriteStream, existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   mkdir,
   mkdtemp,
@@ -40,6 +41,71 @@ function log(message) {
 function fail(message) {
   console.error(`[desktop-touch-mcp] ${message}`);
   process.exit(1);
+}
+
+export function isDisconnectError(error) {
+  return error?.code === "EPIPE" || error?.code === "ERR_STREAM_DESTROYED";
+}
+
+export function wireLauncherStdio(child, options = {}) {
+  const parentStdin = options.parentStdin ?? process.stdin;
+  const parentStdout = options.parentStdout ?? process.stdout;
+  const parentStderr = options.parentStderr ?? process.stderr;
+  const shutdownGraceMs = options.shutdownGraceMs ?? 1000;
+
+  let shutdownRequested = false;
+  let forcedShutdownTimer = null;
+
+  function clearForcedShutdownTimer() {
+    if (forcedShutdownTimer !== null) {
+      clearTimeout(forcedShutdownTimer);
+      forcedShutdownTimer = null;
+    }
+  }
+
+  function requestChildShutdown() {
+    if (shutdownRequested) return;
+    shutdownRequested = true;
+    try {
+      child.stdin?.end();
+    } catch {
+      // ignore
+    }
+    forcedShutdownTimer = setTimeout(() => {
+      if (child.exitCode === null && !child.killed) {
+        try { child.kill("SIGTERM"); } catch { /* ignore */ }
+      }
+    }, shutdownGraceMs);
+    if (forcedShutdownTimer.unref) forcedShutdownTimer.unref();
+  }
+
+  function terminateChild() {
+    clearForcedShutdownTimer();
+    if (child.exitCode === null && !child.killed) {
+      try { child.kill("SIGTERM"); } catch { /* ignore */ }
+    }
+  }
+
+  parentStdin.pipe(child.stdin);
+  child.stdout?.pipe(parentStdout);
+  child.stderr?.pipe(parentStderr);
+
+  parentStdin.on("end", requestChildShutdown);
+  parentStdin.on("close", requestChildShutdown);
+  parentStdin.on("error", requestChildShutdown);
+
+  const onParentOutputError = (error) => {
+    if (isDisconnectError(error)) {
+      terminateChild();
+    }
+  };
+  parentStdout.on("error", onParentOutputError);
+  parentStderr.on("error", onParentOutputError);
+
+  child.stdin?.on("error", (error) => {
+    if (!isDisconnectError(error)) throw error;
+  });
+  child.on("exit", clearForcedShutdownTimer);
 }
 
 function tagToDirName(tagName) {
@@ -286,9 +352,11 @@ function launchServer(releaseDir) {
   const entry = path.join(releaseDir, "dist", "index.js");
   const child = spawn(process.execPath, [entry, ...process.argv.slice(2)], {
     cwd: releaseDir,
-    stdio: "inherit",
+    stdio: ["pipe", "pipe", "pipe"],
     windowsHide: false,
   });
+
+  wireLauncherStdio(child);
 
   for (const signal of ["SIGINT", "SIGTERM"]) {
     process.on(signal, () => {
@@ -318,6 +386,14 @@ async function main() {
   launchServer(releaseDir);
 }
 
-main().catch((error) => {
-  fail(error instanceof Error ? error.message : String(error));
-});
+const launchedAsScript = (() => {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  return path.resolve(entry) === path.resolve(fileURLToPath(import.meta.url));
+})();
+
+if (launchedAsScript) {
+  main().catch((error) => {
+    fail(error instanceof Error ? error.message : String(error));
+  });
+}

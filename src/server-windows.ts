@@ -229,7 +229,12 @@ const httpUrl = useHttp ? `http://127.0.0.1:${httpPort}/mcp` : undefined;
 logAutoGuardStartup();
 
 // ─── Start tray icon ─────────────────────────────────────────────────────────
-const trayOptions: TrayOptions = { httpUrl, icoPath: icoOk, version: SERVER_VERSION };
+const trayOptions: TrayOptions = {
+  httpUrl,
+  icoPath: icoOk,
+  version: SERVER_VERSION,
+  onExitRequested: shutdown,
+};
 startTray(trayOptions);
 
 // ─── Connect MCP transport ───────────────────────────────────────────────────
