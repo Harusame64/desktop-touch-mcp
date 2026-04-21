@@ -30,6 +30,7 @@ import type { TargetSpec } from "../engine/world-graph/session-registry.js";
 import { composeCandidates } from "./desktop-providers/compose-providers.js";
 import { getVisualRuntime } from "../engine/vision-gpu/runtime.js";
 import { PocVisualBackend } from "../engine/vision-gpu/poc-backend.js";
+import { onDirtySignal } from "../engine/vision-gpu/dirty-signal.js";
 
 // ── Process-level facade singleton ───────────────────────────────────────────
 
@@ -90,6 +91,13 @@ async function initVisualRuntime(visualSource: VisualIngressSource): Promise<voi
 
   // Dirty callback: when the GPU pipeline updates a snapshot, mark the ingress dirty.
   backend.onDirty((targetKey) => visualSource.markDirty(targetKey, "dirty-rect"));
+
+  // P3-C: register as a receiver for process-global dirty signals from the GPU lane.
+  // pushDirtySignal(targetKey, candidates) will call updateSnapshot() and fire the
+  // ingress invalidation — this is the entry point for the P3-D recognition pipeline.
+  onDirtySignal((targetKey, candidates) => {
+    backend.updateSnapshot(targetKey, candidates);
+  });
 
   // Attach to the process-level runtime (disposes any previous backend).
   await getVisualRuntime().attach(backend);
