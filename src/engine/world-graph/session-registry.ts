@@ -49,7 +49,17 @@ export interface SessionCreateOpts {
   /** Called to fetch candidates for post-touch diff. Falls back to snapshotFn. */
   snapshotFn: SnapshotFn;
   postSnapshotFn?: SnapshotFn;
+  /**
+   * Fixed executor — takes precedence over executorFactory.
+   * Use for testing or when the executor does not depend on session target.
+   */
   executorFn?: ExecutorFn;
+  /**
+   * Target-aware executor factory — called at touch time with the current session.lastTarget.
+   * Use this (via createDesktopExecutor) so the executor sees the up-to-date target spec.
+   * Ignored when executorFn is set.
+   */
+  executorFactory?: (target: TargetSpec | undefined) => ExecutorFn;
   isModalBlocking?: (entity: UiEntity) => boolean;
   isInViewport?: (entity: UiEntity) => boolean;
   defaultTtlMs?: number;
@@ -152,13 +162,18 @@ export class SessionRegistry {
       lastAccessMs: opts.nowFn?.() ?? Date.now(),
     };
 
-    const execFn: ExecutorFn = opts.executorFn ?? (async () => "mouse");
     const env: TouchEnvironment = {
       resolveLiveEntities:      () => s.entities,
       currentGeneration:        () => s.generation,
       isModalBlocking:          opts.isModalBlocking ?? (() => false),
       isInViewport:             opts.isInViewport    ?? (() => true),
-      execute:                  execFn,
+      // Resolve executor lazily so s.lastTarget is current at touch time.
+      execute: (entity, action, text) => {
+        const execFn = opts.executorFn
+          ?? opts.executorFactory?.(s.lastTarget)
+          ?? (async () => "mouse" as ExecutorKind);
+        return execFn(entity, action, text);
+      },
       resolvePostTouchEntities: async () => {
         const fn = opts.postSnapshotFn ?? opts.snapshotFn;
         const post = fn(s.lastTarget);
