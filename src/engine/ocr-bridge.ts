@@ -338,6 +338,8 @@ export interface SomPipelineResult {
   elements: SomElement[];
   /** Upscale factor used during OCR preprocessing (for debugging). */
   preprocessScale: number;
+  /** Full title of the resolved window. When hwnd is passed, reflects the window's current title rather than the windowTitle argument. */
+  resolvedWindowTitle: string;
 }
 
 /**
@@ -399,6 +401,7 @@ export async function runSomPipeline(
   // ── Locate window & capture raw RGBA ───────────────────────────────────────
   let targetHwnd: unknown = hwnd ?? null;
   let origin = { x: 0, y: 0 };
+  let resolvedWindowTitle = windowTitle;
 
   if (!targetHwnd) {
     const wins = enumWindowsInZOrder();
@@ -406,12 +409,14 @@ export async function runSomPipeline(
     if (!win) throw new Error(`runSomPipeline: window not found: "${windowTitle}"`);
     targetHwnd = win.hwnd;
     origin = { x: win.region.x, y: win.region.y };
+    resolvedWindowTitle = win.title;
   } else {
     // Resolve origin from enumWindowsInZOrder for the known hwnd
     const wins = enumWindowsInZOrder();
     const win  = wins.find((w) => w.hwnd === targetHwnd);
     if (win) {
       origin = { x: win.region.x, y: win.region.y };
+      resolvedWindowTitle = win.title;
     } else {
       console.error(
         `[SoM] WARNING: hwnd provided but window not found in enumWindowsInZOrder ` +
@@ -564,5 +569,5 @@ export async function runSomPipeline(
 
   console.error(`[SoM] total pipeline: ${(performance.now() - _somT0).toFixed(1)}ms`);
 
-  return { somImage, elements, preprocessScale: effectiveScale };
+  return { somImage, elements, preprocessScale: effectiveScale, resolvedWindowTitle };
 }
