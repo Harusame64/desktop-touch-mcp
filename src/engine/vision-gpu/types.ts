@@ -42,7 +42,17 @@ export interface RecognizedText {
 export interface UiEntityCandidate {
   source: "uia" | "cdp" | "win32" | "ocr" | "som" | "visual_gpu" | "terminal";
   target: { kind: "window" | "browserTab"; id: string };
+  /**
+   * @deprecated Use `locator` for source-aware routing.
+   * Legacy single-field ID: carries UIA automationId OR CDP selector OR visual trackId
+   * depending on source — ambiguous by design. Preserved for backward compatibility.
+   */
   sourceId?: string;
+  /**
+   * Source-specific locators. Populated by source-specific providers.
+   * The resolver merges these into UiEntity.locator.
+   */
+  locator?: import("../world-graph/types.js").EntityLocator;
   /** Observed role; resolver normalises to "button"|"textbox"|"link"|"menuitem"|"label"|"unknown". */
   role?: string;
   label?: string;

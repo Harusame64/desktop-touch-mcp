@@ -58,11 +58,9 @@ function rectCenter(rect: { x: number; y: number; width: number; height: number 
  * Called lazily so `target` reflects the current session.lastTarget at touch time.
  * Pass `deps` to inject mock backends in tests; omit for production native bindings.
  *
- * NOTE: `entity.sourceId` is forwarded as `automationId` to UIA opportunistically.
- * For visual_gpu entities, sourceId is a UUID trackId — UIA ignores it and falls
- * back to name-only matching. For UIA-native entities, sourceId should carry the
- * actual UIA AutomationId. This is currently implicit; a future `sourceIds` map
- * per entity source would make this explicit.
+ * Routing priority: uia → cdp → terminal → mouse (visual fallback)
+ * Locator fields (P2-A) are used when present; sourceId is used as a fallback
+ * for candidates that pre-date the locator migration.
  *
  * UIA click failure gracefully falls through to mouse when entity has a rect.
  */
@@ -77,38 +75,46 @@ export function createDesktopExecutor(
 
     // ── UIA route ────────────────────────────────────────────────────────────
     if (entity.sources.includes("uia")) {
+      // Prefer typed locator; fall back to sourceId (legacy bridge — remove in P3).
+      const automationId = entity.locator?.uia?.automationId ?? entity.sourceId;
+      const name         = entity.locator?.uia?.name ?? entity.label;
       if (action === "type" && text !== undefined) {
-        await d.uiaSetValue(winTitle, text, entity.label, entity.sourceId);
+        await d.uiaSetValue(winTitle, text, name, automationId);
         return "uia";
       }
       try {
-        await d.uiaClick(winTitle, entity.label, entity.sourceId);
+        await d.uiaClick(winTitle, name, automationId);
         return "uia";
       } catch {
         // UIA click failed (element not found, stale tree, etc.).
         // Fall through to mouse if rect is available rather than failing the touch.
-        if (!entity.rect) throw new Error(
+        const rect = entity.locator?.visual?.rect ?? entity.rect;
+        if (!rect) throw new Error(
           `UIA click failed for "${entity.label ?? entity.entityId}" and no rect for mouse fallback`
         );
-        const { x, y } = rectCenter(entity.rect);
+        const { x, y } = rectCenter(rect);
         await d.mouseClick(x, y);
         return "mouse";
       }
     }
 
     // ── CDP route ────────────────────────────────────────────────────────────
-    if (entity.sources.includes("cdp") && entity.sourceId) {
+    // Prefer locator.cdp.selector; fall back to sourceId (legacy bridge).
+    const cdpSelector = entity.locator?.cdp?.selector ?? (entity.sources.includes("cdp") ? entity.sourceId : undefined);
+    if (cdpSelector) {
+      const cdpTabId = entity.locator?.cdp?.tabId ?? target?.tabId;
       if (action === "type" && text !== undefined) {
-        await d.cdpFill(entity.sourceId, text, target?.tabId);
+        await d.cdpFill(cdpSelector, text, cdpTabId);
         return "cdp";
       }
-      await d.cdpClick(entity.sourceId, target?.tabId);
+      await d.cdpClick(cdpSelector, cdpTabId);
       return "cdp";
     }
 
     // ── Terminal route ───────────────────────────────────────────────────────
     if (entity.sources.includes("terminal")) {
-      await d.terminalSend(winTitle, text ?? "");
+      const termWin = entity.locator?.terminal?.windowTitle ?? winTitle;
+      await d.terminalSend(termWin, text ?? "");
       return "terminal";
     }
 

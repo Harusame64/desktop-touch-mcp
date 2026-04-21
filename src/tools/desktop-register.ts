@@ -118,7 +118,9 @@ function createUiaCandidateProvider(): CandidateProvider {
         .map((el): UiEntityCandidate => ({
           source: "uia",
           target: { kind: "window", id: targetId },
+          // Keep sourceId for backward compat; locator.uia provides typed routing.
           sourceId: el.automationId || undefined,
+          locator: { uia: { automationId: el.automationId || undefined, name: el.name } },
           role: uiaRoleFromControlType(el.controlType),
           label: el.name,
           value: el.value,
