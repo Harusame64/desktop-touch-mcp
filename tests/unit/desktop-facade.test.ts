@@ -41,9 +41,9 @@ const terminalProvider: CandidateProvider = (_input) => [
 ];
 
 describe("DesktopFacade — desktop_see (game / chrome / terminal)", () => {
-  it("game: resolves visual_gpu entities without raw coords", () => {
+  it("game: resolves visual_gpu entities without raw coords", async () => {
     const facade = new DesktopFacade(gameProvider);
-    const out = facade.see({ target: TARGET_GAME });
+    const out = await facade.see({ target: TARGET_GAME });
     expect(out.entities).toHaveLength(2);
     expect(out.entities[0].label).toBe("Start Match");
     expect(out.entities[0].sources).toContain("visual_gpu");
@@ -51,71 +51,71 @@ describe("DesktopFacade — desktop_see (game / chrome / terminal)", () => {
     expect(out.entities[0].lease).toBeDefined();
   });
 
-  it("chrome: resolves CDP entities without raw coords", () => {
+  it("chrome: resolves CDP entities without raw coords", async () => {
     const facade = new DesktopFacade(chromeProvider);
-    const out = facade.see({ target: TARGET_CHROME });
+    const out = await facade.see({ target: TARGET_CHROME });
     expect(out.entities).toHaveLength(2);
     expect(out.entities[0].sources).toContain("cdp");
     expect(out.entities[0].rect).toBeUndefined();
   });
 
-  it("terminal: resolves terminal entities without raw coords", () => {
+  it("terminal: resolves terminal entities without raw coords", async () => {
     const facade = new DesktopFacade(terminalProvider);
-    const out = facade.see({ target: TARGET_TERM });
+    const out = await facade.see({ target: TARGET_TERM });
     expect(out.entities).toHaveLength(1);
     expect(out.entities[0].sources).toContain("terminal");
     expect(out.entities[0].rect).toBeUndefined();
   });
 
-  it("debug=true exposes raw rect for all target types", () => {
+  it("debug=true exposes raw rect for all target types", async () => {
     for (const [provider, target] of [
       [gameProvider,    TARGET_GAME],
       [chromeProvider,  TARGET_CHROME],
       [terminalProvider, TARGET_TERM],
     ] as const) {
       const facade = new DesktopFacade(provider);
-      const out = facade.see({ target, debug: true });
+      const out = await facade.see({ target, debug: true });
       for (const e of out.entities) {
         expect(e.rect).toBeDefined(); // coords exposed in debug mode
       }
     }
   });
 
-  it("viewId and generation are present in response", () => {
+  it("viewId and generation are present in response", async () => {
     const facade = new DesktopFacade(gameProvider);
-    const out = facade.see();
+    const out = await facade.see();
     expect(out.viewId).toBeTruthy();
     expect(out.target.generation).toBeTruthy();
   });
 
-  it("query filters entities by label substring", () => {
+  it("query filters entities by label substring", async () => {
     const facade = new DesktopFacade(gameProvider);
-    const out = facade.see({ query: "start" });
+    const out = await facade.see({ query: "start" });
     expect(out.entities).toHaveLength(1);
     expect(out.entities[0].label).toBe("Start Match");
   });
 
-  it("maxEntities limits the returned count", () => {
+  it("maxEntities limits the returned count", async () => {
     const manyProvider: CandidateProvider = () =>
       Array.from({ length: 30 }, (_, i) => cand(`Item ${i}`, "uia", { digest: `d${i}` }));
     const facade = new DesktopFacade(manyProvider);
-    const out = facade.see({ maxEntities: 5 });
+    const out = await facade.see({ maxEntities: 5 });
     expect(out.entities).toHaveLength(5);
   });
 
-  it("explore view raises default maxEntities to 50", () => {
+  it("explore view raises default maxEntities to 50", async () => {
     const manyProvider: CandidateProvider = () =>
       Array.from({ length: 60 }, (_, i) => cand(`Item ${i}`, "uia", { digest: `d${i}` }));
     const facade = new DesktopFacade(manyProvider);
-    expect(facade.see({ view: "explore" }).entities).toHaveLength(50);
-    expect(facade.see({ view: "action"  }).entities).toHaveLength(20);
+    expect((await facade.see({ view: "explore" })).entities).toHaveLength(50);
+    expect((await facade.see({ view: "action"  })).entities).toHaveLength(20);
   });
 });
 
 describe("DesktopFacade — desktop_touch", () => {
   it("touch with valid lease returns ok:true + diff", async () => {
     const facade = new DesktopFacade(gameProvider, { executorFn: async () => "mouse" });
-    const view = facade.see({ target: TARGET_GAME });
+    const view = await facade.see({ target: TARGET_GAME });
     const lease = view.entities[0].lease;
     const result = await facade.touch({ lease });
     expect(result.ok).toBe(true);
@@ -123,9 +123,9 @@ describe("DesktopFacade — desktop_touch", () => {
 
   it("touch after second see() invalidates leases from first see()", async () => {
     const facade = new DesktopFacade(gameProvider);
-    const view1 = facade.see();
+    const view1 = await facade.see();
     const oldLease = view1.entities[0].lease;
-    facade.see(); // replaceViewId evicts view1's viewId from index
+    await facade.see(); // replaceViewId evicts view1's viewId from index
     const result = await facade.touch({ lease: oldLease });
     // viewId removed from index → entity_not_found (safe fail)
     expect(result.ok).toBe(false);
@@ -140,7 +140,7 @@ describe("DesktopFacade — desktop_touch", () => {
     const facade = new DesktopFacade(dynamicProvider, {
       postTouchCandidates: () => { callCount++; return []; }, // no entities after click
     });
-    const view = facade.see();
+    const view = await facade.see();
     const result = await facade.touch({ lease: view.entities[0].lease });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.diff).toContain("entity_disappeared");
@@ -152,7 +152,7 @@ describe("DesktopFacade — desktop_touch", () => {
       defaultTtlMs: 1000,
       nowFn: () => now,
     });
-    const view = facade.see();
+    const view = await facade.see();
     now = 2000; // past TTL
     const result = await facade.touch({ lease: view.entities[0].lease });
     expect(result.ok).toBe(false);
@@ -169,7 +169,7 @@ describe("DesktopFacade — desktop_touch", () => {
       })],
       { executorFn: async (_, action, text) => { calls.push({ action, text }); return "uia"; } }
     );
-    const view = facade.see();
+    const view = await facade.see();
     await facade.touch({ lease: view.entities[0].lease, action: "type", text: "hello" });
     expect(calls[0].action).toBe("type");
     expect(calls[0].text).toBe("hello");
@@ -177,13 +177,13 @@ describe("DesktopFacade — desktop_touch", () => {
 });
 
 describe("DesktopFacade — cross-source entity merging", () => {
-  it("visual_gpu + uia with same digest merge into one entity with both sources", () => {
+  it("visual_gpu + uia with same digest merge into one entity with both sources", async () => {
     const provider: CandidateProvider = () => [
       cand("Submit", "visual_gpu", { digest: "d-submit" }),
       cand("Submit", "uia",        { digest: "d-submit" }),
     ];
     const facade = new DesktopFacade(provider);
-    const out = facade.see();
+    const out = await facade.see();
     expect(out.entities).toHaveLength(1);
     expect(out.entities[0].sources).toContain("visual_gpu");
     expect(out.entities[0].sources).toContain("uia");
@@ -196,12 +196,12 @@ describe("DesktopFacade — per-target session isolation (Batch A)", () => {
 
   it("see() on target A does NOT invalidate leases for target B", async () => {
     const facade = new DesktopFacade(gameProvider);
-    const viewA = facade.see({ target: TARGET_A });
-    const viewB = facade.see({ target: TARGET_B });
+    const viewA = await facade.see({ target: TARGET_A });
+    const viewB = await facade.see({ target: TARGET_B });
     const leaseB = viewB.entities[0].lease;
 
     // Call see() on A again — bumps A's generation, not B's
-    facade.see({ target: TARGET_A });
+    await facade.see({ target: TARGET_A });
 
     const result = await facade.touch({ lease: leaseB });
     // B's lease must still be valid
@@ -211,21 +211,21 @@ describe("DesktopFacade — per-target session isolation (Batch A)", () => {
 
   it("see() on the same target invalidates its own previous leases", async () => {
     const facade = new DesktopFacade(gameProvider);
-    const view1 = facade.see({ target: TARGET_A });
+    const view1 = await facade.see({ target: TARGET_A });
     const oldLease = view1.entities[0].lease;
-    facade.see({ target: TARGET_A }); // replaceViewId removes view1's viewId
+    await facade.see({ target: TARGET_A }); // replaceViewId removes view1's viewId
     const result = await facade.touch({ lease: oldLease });
     // Old viewId evicted from index → entity_not_found (safe fail)
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("entity_not_found");
   });
 
-  it("two independent targets maintain separate generation counters", () => {
+  it("two independent targets maintain separate generation counters", async () => {
     const facade = new DesktopFacade(gameProvider);
-    const vA1 = facade.see({ target: TARGET_A });
-    const vB1 = facade.see({ target: TARGET_B });
-    facade.see({ target: TARGET_A }); // bumps A seq to 2
-    const vB2 = facade.see({ target: TARGET_B }); // bumps B seq to 2
+    const vA1 = await facade.see({ target: TARGET_A });
+    const vB1 = await facade.see({ target: TARGET_B });
+    await facade.see({ target: TARGET_A }); // bumps A seq to 2
+    const vB2 = await facade.see({ target: TARGET_B }); // bumps B seq to 2
     // Generations should embed different viewIds and seq numbers
     expect(vA1.target.generation).not.toBe(vB1.target.generation);
     expect(vB1.target.generation).not.toBe(vB2.target.generation);
@@ -236,8 +236,8 @@ describe("DesktopFacade — per-target session isolation (Batch A)", () => {
     const facade = new DesktopFacade(gameProvider, {
       executorFn: async (entity) => { executorCalls.push(entity.entityId); return "mouse"; },
     });
-    const vA = facade.see({ target: TARGET_A });
-    const vB = facade.see({ target: TARGET_B });
+    const vA = await facade.see({ target: TARGET_A });
+    const vB = await facade.see({ target: TARGET_B });
 
     await facade.touch({ lease: vA.entities[0].lease });
     await facade.touch({ lease: vB.entities[0].lease });
@@ -248,7 +248,7 @@ describe("DesktopFacade — per-target session isolation (Batch A)", () => {
 
   it("touch for unknown viewId returns entity_not_found (evicted or never existed)", async () => {
     const facade = new DesktopFacade(gameProvider);
-    facade.see({ target: TARGET_A }); // establishes session
+    await facade.see({ target: TARGET_A }); // establishes session
     const tampered = {
       entityId: "e1", viewId: "completely-unknown-view-id",
       targetGeneration: "x", expiresAtMs: Date.now() + 99999, evidenceDigest: "d",
@@ -260,9 +260,9 @@ describe("DesktopFacade — per-target session isolation (Batch A)", () => {
 
   it("old viewId evicted after second see() — stale lease returns entity_not_found via viewId miss", async () => {
     const facade = new DesktopFacade(gameProvider);
-    const view1 = facade.see({ target: TARGET_A });
+    const view1 = await facade.see({ target: TARGET_A });
     const oldLease = view1.entities[0].lease;
-    facade.see({ target: TARGET_A }); // replaceViewId removes view1's viewId from index
+    await facade.see({ target: TARGET_A }); // replaceViewId removes view1's viewId from index
     // The old viewId is gone from the index → entity_not_found (even though session exists)
     // NOTE: the generation check would also catch it, but the index is cleaned up first.
     const result = await facade.touch({ lease: oldLease });

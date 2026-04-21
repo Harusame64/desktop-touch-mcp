@@ -43,7 +43,7 @@ export interface SessionState {
 
 // ── Session creation options ──────────────────────────────────────────────────
 
-export type SnapshotFn = (target?: TargetSpec) => UiEntityCandidate[];
+export type SnapshotFn = (target?: TargetSpec) => UiEntityCandidate[] | Promise<UiEntityCandidate[]>;
 
 export interface SessionCreateOpts {
   /** Called to fetch candidates for post-touch diff. Falls back to snapshotFn. */
@@ -176,7 +176,7 @@ export class SessionRegistry {
       },
       resolvePostTouchEntities: async () => {
         const fn = opts.postSnapshotFn ?? opts.snapshotFn;
-        const post = fn(s.lastTarget);
+        const post = await Promise.resolve(fn(s.lastTarget));
         return resolveCandidates(post, s.generation);
       },
     };

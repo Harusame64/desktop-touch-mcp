@@ -39,6 +39,18 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const icoDir = join(__dirname, "..", "assets", "icons");
 const icoOk = existsSync(join(icoDir, "tray_ok.ico")) ? join(icoDir, "tray_ok.ico") : undefined;
 
+// ─── Anti-Fukuwarai v2 feature flag ──────────────────────────────────────────
+// Pre-load the v2 module at startup so registerDesktopTools() is synchronous inside
+// createMcpServer(). Dynamic import keeps zero side-effects on flag-OFF path.
+// Top-level await is valid in ES modules (NodeNext, Node 20+).
+const _desktopV2 = process.env.DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2 === "1"
+  ? await import("./tools/desktop-register.js").catch((err) => {
+      // Registration failure must not crash the server.
+      console.error("[desktop-touch] Failed to load desktop v2 module:", err);
+      return null;
+    })
+  : null;
+
 // ─── MCP server factory ───────────────────────────────────────────────────────
 // Returns a fully-configured McpServer with all tools registered.
 // Called once for STDIO mode, and once per HTTP request for stateless HTTP mode.
@@ -162,6 +174,13 @@ function createMcpServer(): McpServer {
   // Perception resources (opt-in: DESKTOP_TOUCH_PERCEPTION_RESOURCES=1)
   if (process.env.DESKTOP_TOUCH_PERCEPTION_RESOURCES === "1") {
     registerPerceptionResources(s);
+  }
+
+  // Anti-Fukuwarai v2: desktop_see / desktop_touch (opt-in: DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2=1)
+  // _desktopV2 is pre-loaded at module init time (top-level await below) so registration
+  // is synchronous here — no race window between createMcpServer() and tool availability.
+  if (_desktopV2) {
+    _desktopV2.registerDesktopTools(s);
   }
 
   return s;
