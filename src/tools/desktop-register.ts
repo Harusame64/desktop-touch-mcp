@@ -69,16 +69,14 @@ function uiaActionability(ct: string): Array<"click" | "invoke" | "type" | "read
 function createUiaCandidateProvider(): CandidateProvider {
   return async (input: DesktopSeeInput): Promise<UiEntityCandidate[]> => {
     const target = input.target;
-    if (!target && !Object.keys(target ?? {}).length) return [];
+    if (!target || Object.keys(target).length === 0) return [];
 
-    const windowTitle =
-      target?.windowTitle ?? target?.hwnd ?? "@active";
+    const windowTitle = target.windowTitle ?? target.hwnd ?? "@active";
+    const targetId    = target.hwnd ?? target.windowTitle ?? "@active";
 
     try {
       const { getUiElements } = await import("../engine/uia-bridge.js");
       const result = await getUiElements(windowTitle, 4, 80, 8000);
-      const targetId = target?.hwnd ?? target?.windowTitle ?? "@active";
-
       return result.elements
         .filter((el) => el.isEnabled && el.name)
         .map((el): UiEntityCandidate => ({
@@ -94,8 +92,12 @@ function createUiaCandidateProvider(): CandidateProvider {
           observedAtMs: Date.now(),
           provisional: false,
         }));
-    } catch {
-      // Best-effort: return empty on error (window not found, UIA unavailable, etc.)
+    } catch (err) {
+      // Log provider error so the LLM client can see it in server stderr.
+      // Empty result is distinguishable from "no entities" via the absence of
+      // entities — but the LLM cannot tell why. Phase 2 will surface this via
+      // DesktopSeeOutput.warnings.
+      console.error("[desktop-see] UIA candidate provider error:", err);
       return [];
     }
   };
