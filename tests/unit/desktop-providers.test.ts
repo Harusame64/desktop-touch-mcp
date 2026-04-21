@@ -23,17 +23,21 @@ describe("isBrowserTarget", () => {
 });
 
 describe("isTerminalTarget", () => {
-  it("detects PowerShell, cmd, bash, terminal, WSL", () => {
+  it("detects PowerShell, bash, terminal, WSL, zsh", () => {
     expect(isTerminalTarget({ windowTitle: "Windows PowerShell" })).toBe(true);
     expect(isTerminalTarget({ windowTitle: "PowerShell 7" })).toBe(true);
-    expect(isTerminalTarget({ windowTitle: "cmd.exe" })).toBe(true);
     expect(isTerminalTarget({ windowTitle: "Git Bash" })).toBe(true);
     expect(isTerminalTarget({ windowTitle: "WSL: Ubuntu" })).toBe(true);
     expect(isTerminalTarget({ windowTitle: "Windows Terminal" })).toBe(true);
+    // "Command Prompt" replaces "cmd.exe" which doesn't appear in window titles
+    expect(isTerminalTarget({ windowTitle: "Command Prompt" })).toBe(true);
   });
-  it("false for non-terminal windows", () => {
+  it("false for non-terminal windows (no false positives from broad patterns)", () => {
     expect(isTerminalTarget({ windowTitle: "Notepad" })).toBe(false);
     expect(isTerminalTarget({ windowTitle: "Chrome" })).toBe(false);
+    // 'sh' should not match "Photoshop", "Dashboard", "Flash Player"
+    expect(isTerminalTarget({ windowTitle: "Photoshop 2024" })).toBe(false);
+    expect(isTerminalTarget({ windowTitle: "Dashboard" })).toBe(false);
     expect(isTerminalTarget(undefined)).toBe(false);
   });
 });
