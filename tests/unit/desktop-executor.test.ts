@@ -113,7 +113,7 @@ describe("createDesktopExecutor — route priority", () => {
   });
 });
 
-describe("createDesktopExecutor — error handling", () => {
+describe("createDesktopExecutor — error handling and UIA fallback", () => {
   it("mouse fallback throws when entity has no rect", async () => {
     const deps = mockDeps();
     const exec = createDesktopExecutor(undefined, deps);
@@ -121,10 +121,32 @@ describe("createDesktopExecutor — error handling", () => {
       .rejects.toThrow("no rect for mouse fallback");
   });
 
-  it("executor propagates errors from backend", async () => {
-    const deps = mockDeps({ uiaClick: vi.fn(async () => { throw new Error("UIA bridge error"); }) });
+  it("UIA click failure falls through to mouse when rect is present", async () => {
+    const deps = mockDeps({
+      uiaClick: vi.fn(async () => { throw new Error("element not found"); }),
+    });
     const exec = createDesktopExecutor({ hwnd: "1" }, deps);
-    await expect(exec(entity({ sources: ["uia"] }), "click")).rejects.toThrow("UIA bridge error");
+    const result = await exec(
+      entity({ sources: ["uia"], rect: { x: 100, y: 200, width: 80, height: 30 } }),
+      "click"
+    );
+    expect(result).toBe("mouse");
+    expect(deps.mouseClick).toHaveBeenCalledWith(140, 215);
+  });
+
+  it("UIA click failure throws when no rect available (no mouse fallback)", async () => {
+    const deps = mockDeps({
+      uiaClick: vi.fn(async () => { throw new Error("UIA error"); }),
+    });
+    const exec = createDesktopExecutor({ hwnd: "1" }, deps);
+    await expect(exec(entity({ sources: ["uia"], rect: undefined }), "click"))
+      .rejects.toThrow("no rect for mouse fallback");
+  });
+
+  it("non-UIA errors are propagated directly", async () => {
+    const deps = mockDeps({ cdpClick: vi.fn(async () => { throw new Error("CDP error"); }) });
+    const exec = createDesktopExecutor({ tabId: "t" }, deps);
+    await expect(exec(entity({ sources: ["cdp"], sourceId: "#x" }), "click")).rejects.toThrow("CDP error");
   });
 });
 
