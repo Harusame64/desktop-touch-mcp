@@ -12,6 +12,8 @@ docs/release-process.md
 !docs/mcp-ux-review-research.md
 !docs/Anti-Fukuwarai-V2.md
 !docs/anti-fukuwarai-v2-*.md
+!docs/gpu-visual-poc-plan.md
+!docs/空間と時間の仮想化-plan.md
 
 # Claude Code session data (auto-memory, local settings) — never distribute
 .claude/
