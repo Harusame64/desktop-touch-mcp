@@ -8,6 +8,7 @@ import {
   type SnapshotFn,
   type ExecutorFn,
 } from "../engine/world-graph/session-registry.js";
+import type { CandidateIngress } from "../engine/world-graph/candidate-ingress.js";
 import { createDesktopExecutor, type ExecutorDeps } from "./desktop-executor.js";
 import type { TouchAction, TouchResult } from "../engine/world-graph/guarded-touch.js";
 
@@ -93,7 +94,15 @@ export interface DesktopFacadeOptions {
   postTouchCandidates?: (input: DesktopSeeInput) => UiEntityCandidate[];
   /** Session eviction TTL in ms (default: 120 000 = 2 min). */
   sessionTtlMs?: number;
+  /**
+   * Event-driven candidate ingress. When set, see() calls ingress.getSnapshot(key)
+   * instead of candidateProvider(input) directly — reducing idle refresh cost.
+   * candidateProvider is still used as the underlying fetch function via the ingress.
+   */
+  ingress?: CandidateIngress;
 }
+
+export type { CandidateIngress };
 
 export type { ExecutorDeps };
 
@@ -147,10 +156,11 @@ export class DesktopFacade {
     session.generation = `${newViewId}:${session.seq}`;
     session.viewId = newViewId;
 
-    let resolved = resolveCandidates(
-      await Promise.resolve(this.candidateProvider(input)),
-      session.generation
-    );
+    // Use ingress (event-driven cache) if available; fall back to direct provider.
+    const rawCandidates = this.opts.ingress
+      ? await this.opts.ingress.getSnapshot(key)
+      : await Promise.resolve(this.candidateProvider(input));
+    let resolved = resolveCandidates(rawCandidates, session.generation);
 
     if (input.query) {
       const q = input.query.toLowerCase();
