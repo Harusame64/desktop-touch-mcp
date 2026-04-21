@@ -122,9 +122,10 @@ export class DesktopFacade {
    */
   see(input: DesktopSeeInput = {}): DesktopSeeOutput {
     const key = this.registry.resolveKey(input.target);
-    const session = this.registry.getOrCreate(key, this._sessionOpts(input));
+    const session = this.registry.getOrCreate(key, this._sessionOpts());
 
     session.lastTarget = input.target;
+    const prevViewId = session.viewId;
     const newViewId = randomUUID();
     session.seq++;
     session.generation = `${newViewId}:${session.seq}`;
@@ -141,7 +142,7 @@ export class DesktopFacade {
     resolved = resolved.slice(0, max);
 
     session.entities = resolved;
-    this.registry.indexViewId(newViewId, key);
+    this.registry.replaceViewId(prevViewId, newViewId, key);
 
     const entityViews: EntityView[] = resolved.map((e) => {
       const lease = session.leaseStore.issue(e, newViewId);
@@ -188,18 +189,17 @@ export class DesktopFacade {
 
   // ── private ─────────────────────────────────────────────────────────────────
 
-  private _sessionOpts(input: DesktopSeeInput): import("../engine/world-graph/session-registry.js").SessionCreateOpts {
+  /**
+   * Build SessionCreateOpts from facade-level config.
+   * Called on every see() but only used on first session creation for a given key.
+   * No per-input state is forwarded — post-touch snapshots receive the bare target.
+   */
+  private _sessionOpts(): import("../engine/world-graph/session-registry.js").SessionCreateOpts {
     const candidateProvider = this.candidateProvider;
     const postTouchCandidates = this.opts.postTouchCandidates;
-
-    const snapshotFn: SnapshotFn = (target) => candidateProvider({ target });
-    const postSnapshotFn: SnapshotFn | undefined = postTouchCandidates
-      ? (target) => postTouchCandidates({ target })
-      : undefined;
-
     return {
-      snapshotFn,
-      postSnapshotFn,
+      snapshotFn:      (target) => candidateProvider({ target }),
+      postSnapshotFn:  postTouchCandidates ? (target) => postTouchCandidates({ target }) : undefined,
       executorFn:      this.opts.executorFn,
       isModalBlocking: this.opts.isModalBlocking,
       isInViewport:    this.opts.isInViewport,

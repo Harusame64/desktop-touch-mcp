@@ -78,7 +78,7 @@ describe("SessionRegistry — viewId index", () => {
     const r = new SessionRegistry();
     const key = r.resolveKey({ hwnd: "1" });
     const s = r.getOrCreate(key, makeOpts());
-    r.indexViewId("view-abc", key);
+    r.replaceViewId(undefined, "view-abc", key);
     expect(r.getByViewId("view-abc")).toBe(s);
   });
 
@@ -87,15 +87,15 @@ describe("SessionRegistry — viewId index", () => {
     expect(r.getByViewId("nonexistent")).toBeUndefined();
   });
 
-  it("old viewIds from the same target still find the session (generation_mismatch path)", () => {
+  it("replaceViewId removes old entry and adds new one", () => {
     const r = new SessionRegistry();
     const key = r.resolveKey({ hwnd: "1" });
     const s = r.getOrCreate(key, makeOpts());
-    r.indexViewId("view-old", key);
-    r.indexViewId("view-new", key); // new viewId after second see()
-    // Old viewId still maps to the session — validation will catch generation_mismatch
-    expect(r.getByViewId("view-old")).toBe(s);
-    expect(r.getByViewId("view-new")).toBe(s);
+    r.replaceViewId(undefined, "view-first", key);
+    r.replaceViewId("view-first", "view-second", key);
+    // Old viewId evicted from index (bounded growth)
+    expect(r.getByViewId("view-first")).toBeUndefined();
+    expect(r.getByViewId("view-second")).toBe(s);
   });
 });
 
@@ -106,7 +106,7 @@ describe("SessionRegistry — eviction", () => {
     const opts = makeOpts({ nowFn: () => now });
     const key = r.resolveKey({ hwnd: "1" });
     r.getOrCreate(key, opts); // lastAccess = 1000
-    r.indexViewId("view-1", key);
+    r.replaceViewId(undefined, "view-1", key);
 
     now = 2200; // 1200ms later
     r.evictStale(1000, () => now); // TTL = 1000ms → threshold = 1200 → 1000 < 1200 → evict
@@ -124,7 +124,7 @@ describe("SessionRegistry — eviction", () => {
     now = 1500; // 500ms later
     r.evictStale(1000, () => now); // TTL = 1000ms → threshold = 500 → 1000 >= 500 → keep
 
-    r.indexViewId("view-1", key);
+    r.replaceViewId(undefined, "view-1", key);
     expect(r.getByViewId("view-1")).toBeDefined();
   });
 
@@ -134,7 +134,7 @@ describe("SessionRegistry — eviction", () => {
     const opts = makeOpts({ nowFn: () => now });
     const key = r.resolveKey({ hwnd: "1" });
     r.getOrCreate(key, opts);
-    r.indexViewId("view-1", key);
+    r.replaceViewId(undefined, "view-1", key);
 
     now = 5000;
     r.evictStale(1000, () => now);

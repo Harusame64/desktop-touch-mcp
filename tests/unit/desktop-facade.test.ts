@@ -125,10 +125,11 @@ describe("DesktopFacade — desktop_touch", () => {
     const facade = new DesktopFacade(gameProvider);
     const view1 = facade.see();
     const oldLease = view1.entities[0].lease;
-    facade.see(); // generation bumped
+    facade.see(); // replaceViewId evicts view1's viewId from index
     const result = await facade.touch({ lease: oldLease });
+    // viewId removed from index → entity_not_found (safe fail)
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe("lease_generation_mismatch");
+    if (!result.ok) expect(result.reason).toBe("entity_not_found");
   });
 
   it("touch returns entity_disappeared when entity vanishes after click", async () => {
@@ -212,10 +213,11 @@ describe("DesktopFacade — per-target session isolation (Batch A)", () => {
     const facade = new DesktopFacade(gameProvider);
     const view1 = facade.see({ target: TARGET_A });
     const oldLease = view1.entities[0].lease;
-    facade.see({ target: TARGET_A }); // bumps A's generation
+    facade.see({ target: TARGET_A }); // replaceViewId removes view1's viewId
     const result = await facade.touch({ lease: oldLease });
+    // Old viewId evicted from index → entity_not_found (safe fail)
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe("lease_generation_mismatch");
+    if (!result.ok) expect(result.reason).toBe("entity_not_found");
   });
 
   it("two independent targets maintain separate generation counters", () => {
@@ -244,12 +246,26 @@ describe("DesktopFacade — per-target session isolation (Batch A)", () => {
     expect(executorCalls).toHaveLength(2);
   });
 
-  it("touch for unknown viewId returns entity_not_found (session evicted or never existed)", async () => {
+  it("touch for unknown viewId returns entity_not_found (evicted or never existed)", async () => {
     const facade = new DesktopFacade(gameProvider);
-    const fakeLeases = facade.see({ target: TARGET_A }).entities[0].lease;
-    const tampered = { ...fakeLeases, viewId: "completely-unknown-view-id" };
+    facade.see({ target: TARGET_A }); // establishes session
+    const tampered = {
+      entityId: "e1", viewId: "completely-unknown-view-id",
+      targetGeneration: "x", expiresAtMs: Date.now() + 99999, evidenceDigest: "d",
+    };
     const result = await facade.touch({ lease: tampered });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("entity_not_found");
+  });
+
+  it("old viewId evicted after second see() — stale lease returns entity_not_found via viewId miss", async () => {
+    const facade = new DesktopFacade(gameProvider);
+    const view1 = facade.see({ target: TARGET_A });
+    const oldLease = view1.entities[0].lease;
+    facade.see({ target: TARGET_A }); // replaceViewId removes view1's viewId from index
+    // The old viewId is gone from the index → entity_not_found (even though session exists)
+    // NOTE: the generation check would also catch it, but the index is cleaned up first.
+    const result = await facade.touch({ lease: oldLease });
+    expect(result.ok).toBe(false);
   });
 });

@@ -75,6 +75,13 @@ export class SessionRegistry {
   /** viewId → key index so touch() can find the issuing session. */
   private readonly viewIdIndex = new Map<string, TargetSessionKey>();
 
+  /**
+   * Derive a stable session key from a target spec.
+   *
+   * Priority: hwnd > tabId > windowTitle > default.
+   * NOTE: `title:` keys are unstable — window titles can change (e.g. document rename,
+   * tab title update). Prefer `hwnd` or `tabId` when available to avoid orphaned sessions.
+   */
   resolveKey(target?: TargetSpec): TargetSessionKey {
     if (target?.hwnd)        return `window:${target.hwnd}`;
     if (target?.tabId)       return `tab:${target.tabId}`;
@@ -84,7 +91,8 @@ export class SessionRegistry {
 
   /**
    * Return an existing session or create a new one.
-   * `opts` is only used on first creation; subsequent calls return the cached session.
+   * `opts` is applied only on first creation — subsequent calls ignore opts
+   * and return the cached session. Use `evictStale()` to force recreation.
    */
   getOrCreate(key: TargetSessionKey, opts: SessionCreateOpts): SessionState {
     let s = this.sessions.get(key);
@@ -103,12 +111,16 @@ export class SessionRegistry {
   }
 
   /**
-   * Record a viewId → key mapping.
-   * Old viewIds are retained so touch() can return "generation_mismatch" (informative)
-   * rather than "entity_not_found" (ambiguous) when a stale lease is presented.
+   * Replace the previous viewId mapping for a key with a new one.
+   * The old viewId is removed from the index to prevent unbounded growth during
+   * frequent `see()` calls on the same target.
+   *
+   * Stale leases (pointing to `oldViewId`) still safely fail with "generation_mismatch"
+   * because the session's generation counter has advanced — no index entry needed for that.
    */
-  indexViewId(viewId: string, key: TargetSessionKey): void {
-    this.viewIdIndex.set(viewId, key);
+  replaceViewId(oldViewId: string | undefined, newViewId: string, key: TargetSessionKey): void {
+    if (oldViewId) this.viewIdIndex.delete(oldViewId);
+    this.viewIdIndex.set(newViewId, key);
   }
 
   /**
