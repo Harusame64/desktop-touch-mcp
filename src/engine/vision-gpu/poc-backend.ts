@@ -54,7 +54,13 @@ export class PocVisualBackend implements VisualBackend {
    */
   updateSnapshot(targetKey: string, candidates: UiEntityCandidate[]): void {
     this.snapshots.set(targetKey, candidates);
-    for (const cb of this.listeners) cb(targetKey);
+    for (const cb of this.listeners) {
+      try {
+        cb(targetKey);
+      } catch {
+        // One failing listener (e.g. visualSource.markDirty) must not block others.
+      }
+    }
   }
 
   /** Return current warm state (for diagnostics). */

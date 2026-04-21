@@ -46,6 +46,14 @@ export function onDirtySignal(handler: DirtySignalHandler): () => void {
  * fires the ingress invalidation. When empty, only the dirty mark is sent.
  */
 export function pushDirtySignal(targetKey: string, candidates: UiEntityCandidate[] = []): void {
+  if (handlers.size === 0) {
+    // Debug log: helps detect cases where the signal is pushed but no ingress is listening.
+    // Expected before getDesktopFacade() is called; unexpected in steady state.
+    if (typeof process !== "undefined" && process.env["NODE_ENV"] !== "test") {
+      console.debug(`[dirty-signal] No handlers registered for targetKey "${targetKey}"`);
+    }
+    return;
+  }
   for (const handler of handlers) {
     try {
       handler(targetKey, candidates);
