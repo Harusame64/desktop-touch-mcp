@@ -385,7 +385,7 @@ export function clusterOcrWords(words: OcrWord[], elementGapThreshold = 35): Som
  *  5. Convert image-local coords → absolute screen coords (+ origin).
  *  6. `mergeNearbyWords` → `clusterOcrWords` → `SomElement[]`.
  *  7. Render SoM image via Rust `drawSomLabels` (or skip if unavailable).
- *  8. Return `{ somImage, elements, preprocessScale }`.
+ *  8. Return `{ somImage, elements, preprocessScale, resolvedWindowTitle }`.
  *
  * @param windowTitle  Partial window title (same matching convention as UIA calls).
  * @param hwnd         Optional HWND (bigint) — uses enumWindowsInZOrder when null.
