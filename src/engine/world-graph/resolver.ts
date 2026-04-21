@@ -155,6 +155,7 @@ export function resolveCandidates(
       entityId: stableEntityId(key),
       role: normalizeRole(primary.role),
       label: primary.label,
+      value: primary.value,
       rect: primary.rect,
       confidence,
       sources,
