@@ -82,29 +82,39 @@ function mergeLocators(candidates: UiEntityCandidate[]): EntityLocator | undefin
   for (const c of candidates) {
     // Prefer explicit locator from the candidate; fall back to sourceId inference.
     if (c.locator) {
-      if (c.locator.uia)      { loc.uia      = { ...loc.uia,      ...c.locator.uia      }; any = true; }
-      if (c.locator.cdp)      { loc.cdp      = { ...loc.cdp,      ...c.locator.cdp      }; any = true; }
-      if (c.locator.terminal) { loc.terminal = { ...loc.terminal, ...c.locator.terminal }; any = true; }
-      if (c.locator.visual)   { loc.visual   = { ...loc.visual,   ...c.locator.visual   }; any = true; }
+      // group is sorted newest-first; spread so the CURRENT (older) entry fills only
+      // missing fields — existing (newer) values win.
+      if (c.locator.uia)      { loc.uia      = { ...c.locator.uia,      ...loc.uia      }; any = true; }
+      if (c.locator.cdp)      { loc.cdp      = { ...c.locator.cdp,      ...loc.cdp      }; any = true; }
+      if (c.locator.terminal) { loc.terminal = { ...c.locator.terminal, ...loc.terminal }; any = true; }
+      if (c.locator.visual)   { loc.visual   = { ...c.locator.visual,   ...loc.visual   }; any = true; }
       continue;
     }
 
     // Legacy sourceId inference (P2-A backward compat bridge — remove in P3).
+    // Log a warning so providers that haven't migrated to locator are visible.
+    if (c.sourceId && process.env["NODE_ENV"] !== "test") {
+      console.warn(`[resolver] entity "${c.label}" from source "${c.source}" uses deprecated sourceId — add locator in P3`);
+    }
     if (c.source === "uia" && c.sourceId) {
-      loc.uia = { automationId: c.sourceId, name: c.label };
-      any = true;
+      if (!loc.uia) { loc.uia = { automationId: c.sourceId, name: c.label }; any = true; }
     } else if (c.source === "cdp" && c.sourceId) {
-      loc.cdp = {
-        selector: c.sourceId,
-        tabId: c.target.kind === "browserTab" ? c.target.id : undefined,
-      };
-      any = true;
+      if (!loc.cdp) {
+        loc.cdp = {
+          selector: c.sourceId,
+          tabId: c.target.kind === "browserTab" ? c.target.id : undefined,
+        };
+        any = true;
+      }
     } else if (c.source === "visual_gpu" && c.sourceId) {
-      loc.visual = { trackId: c.sourceId, rect: c.rect };
-      any = true;
+      if (!loc.visual) { loc.visual = { trackId: c.sourceId, rect: c.rect }; any = true; }
     } else if (c.source === "terminal") {
-      loc.terminal = { windowTitle: c.target.kind === "window" ? c.target.id : undefined };
-      any = true;
+      // c.target.id for terminal is hwnd/session — use c.label as windowTitle proxy.
+      // TODO: add dedicated terminalWindowTitle field on UiEntityCandidate in P3.
+      if (!loc.terminal) {
+        loc.terminal = { windowTitle: c.label ?? c.target.id };
+        any = true;
+      }
     }
   }
 

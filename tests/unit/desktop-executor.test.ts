@@ -219,18 +219,30 @@ describe("createDesktopExecutor — locator-based routing (P2-A)", () => {
     expect(deps.terminalSend).toHaveBeenCalledWith("PowerShell 7", "ls");
   });
 
-  it("UIA fallback uses locator.visual.rect for mouse fallback on UIA error", async () => {
+  it("UIA fallback uses entity.rect first, then locator.visual.rect as secondary fallback", async () => {
     const deps = mockDeps({
       uiaClick: vi.fn(async () => { throw new Error("not found"); }),
     });
     const exec = createDesktopExecutor({ hwnd: "1" }, deps);
+    // entity.rect absent → falls back to locator.visual.rect
     const e = entity({
       sources: ["uia"],
-      rect: undefined, // no rect on entity itself
+      rect: undefined,
       locator: { uia: { automationId: "btn-x" }, visual: { rect: { x: 50, y: 60, width: 100, height: 40 } } },
     });
     const result = await exec(e, "click");
     expect(result).toBe("mouse");
     expect(deps.mouseClick).toHaveBeenCalledWith(100, 80); // center of locator.visual.rect
+
+    // entity.rect present → entity.rect wins over locator.visual.rect
+    const deps2 = mockDeps({ uiaClick: vi.fn(async () => { throw new Error("fail"); }) });
+    const exec2 = createDesktopExecutor({ hwnd: "1" }, deps2);
+    const e2 = entity({
+      sources: ["uia"],
+      rect: { x: 10, y: 20, width: 40, height: 20 }, // live rect
+      locator: { uia: { automationId: "btn" }, visual: { rect: { x: 999, y: 999, width: 10, height: 10 } } },
+    });
+    await exec2(e2, "click");
+    expect(deps2.mouseClick).toHaveBeenCalledWith(30, 30); // center of entity.rect, not locator.visual.rect
   });
 });

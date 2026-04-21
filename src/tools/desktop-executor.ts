@@ -87,8 +87,9 @@ export function createDesktopExecutor(
         return "uia";
       } catch {
         // UIA click failed (element not found, stale tree, etc.).
-        // Fall through to mouse if rect is available rather than failing the touch.
-        const rect = entity.locator?.visual?.rect ?? entity.rect;
+        // Prefer entity.rect (freshest, from most-recent candidate) over locator.visual.rect
+        // which may be stale (captured at recognition time, before the element moved).
+        const rect = entity.rect ?? entity.locator?.visual?.rect;
         if (!rect) throw new Error(
           `UIA click failed for "${entity.label ?? entity.entityId}" and no rect for mouse fallback`
         );
