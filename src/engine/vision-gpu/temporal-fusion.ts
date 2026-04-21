@@ -41,6 +41,8 @@ interface FusionState {
 
 export class TemporalFusion {
   private readonly states = new Map<string, FusionState>();
+  /** Per-track last-processed tsMs for frame dedup. tsMs=0 bypasses the guard. */
+  private readonly lastSeenTsMs = new Map<string, number>();
   private readonly stableConsecutive: number;
   private readonly voteDecay: number;
   private readonly minConfidence: number;
@@ -52,6 +54,17 @@ export class TemporalFusion {
   }
 
   update(trackId: string, candidate: RecognizedText): FusedTextState {
+    // Frame dedup: prevent the same observation from advancing consecutive count twice.
+    // tsMs=0 bypasses the guard (unit tests that don't track real timestamps).
+    if (candidate.tsMs > 0) {
+      const last = this.lastSeenTsMs.get(trackId) ?? -1;
+      if (candidate.tsMs <= last) {
+        const s = this.states.get(trackId);
+        return s ? this._snapshot(s) : this._emptySnapshot(candidate.tsMs);
+      }
+      this.lastSeenTsMs.set(trackId, candidate.tsMs);
+    }
+
     // Filter invalid observations — empty text or below confidence floor.
     if (!candidate.text.trim() || candidate.confidence < this.minConfidence) {
       const s = this.states.get(trackId);
@@ -135,6 +148,7 @@ export class TemporalFusion {
   /** Call when TrackStore evicts a lost track to prevent unbounded state growth. */
   clear(trackId: string): void {
     this.states.delete(trackId);
+    this.lastSeenTsMs.delete(trackId);
   }
 
   private _snapshot(s: FusionState): FusedTextState {
