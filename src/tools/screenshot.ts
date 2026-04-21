@@ -386,7 +386,7 @@ export const screenshotHandler = async ({
           type: "text" as const,
           text: JSON.stringify(
             {
-              window: resolvedTitle,
+              window: somResult.resolvedWindowTitle,
               detail: "som",
               elements: somResult.elements,
               preprocessScale: somResult.preprocessScale,
@@ -615,7 +615,7 @@ export const screenshotHandler = async ({
               type: "text" as const,
               text: JSON.stringify(
                 {
-                  window: resolvedTitle,
+                  window: somResult.resolvedWindowTitle,
                   hints,
                   // Step 5: structured element list with ID-to-coordinate mapping
                   elements: somResult.elements,
