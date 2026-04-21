@@ -56,11 +56,17 @@ export class MockVisualBackend implements VisualBackend {
   private state: WarmState = "cold";
   private readonly listeners = new Set<(key: string) => void>();
   private readonly candidateStore = new Map<string, UiEntityCandidate[]>();
+  /** Call log — inspect in tests to verify correct WarmTarget is forwarded. */
+  readonly warmCalls: WarmTarget[] = [];
 
-  async ensureWarm(_target: WarmTarget): Promise<WarmState> {
+  async ensureWarm(target: WarmTarget): Promise<WarmState> {
+    this.warmCalls.push(target);
     if (this.state === "cold") this.state = "warm";
     return this.state;
   }
+
+  /** Force the warmup state (for testing evicted/warming paths). */
+  forceState(state: WarmState): void { this.state = state; }
 
   getWarmState(): WarmState { return this.state; }
 
