@@ -374,19 +374,11 @@ export const screenshotHandler = async ({
         );
       }
 
-      // Resolve full title and hwnd for SoM pipeline.
-      // Use the resolved hwnd directly when available; only fall back to
-      // title-based matching if the target could not be resolved earlier.
-      const wins = resolvedWin?.hwnd ? null : enumWindowsInZOrder();
-      const fallbackWin = !resolvedWin?.hwnd && effectiveTitle
-        ? wins?.find((w) => w.title.toLowerCase().includes(effectiveTitle.toLowerCase())) ?? null
-        : null;
-      const resolvedTitle = resolvedWin?.title ?? fallbackWin?.title ?? effectiveTitle;
-      const targetHwnd = resolvedWin?.hwnd != null
-        ? BigInt(resolvedWin.hwnd as unknown as number)
-        : fallbackWin?.hwnd
-          ? BigInt(fallbackWin.hwnd as unknown as number)
-          : null;
+      // Pass hwnd when resolveWindowTarget found one; otherwise pass null and
+      // let runSomPipeline do its own title-based window search (avoiding a
+      // redundant enumWindowsInZOrder call).
+      const resolvedTitle = resolvedWin?.title ?? effectiveTitle;
+      const targetHwnd = resolvedWin?.hwnd ?? null;
 
       const somResult = await runSomPipeline(resolvedTitle, targetHwnd, ocrLanguage);
       const content: ToolResult["content"] = [

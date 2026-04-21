@@ -35,7 +35,7 @@ describe("screenshotHandler - detail='som' mode", () => {
   });
 
   it("should block 'som' mode unless confirmImage=true is passed", async () => {
-    mockResolveWindowTarget.mockResolvedValue({ title: "My App", hwnd: "12345" });
+    mockResolveWindowTarget.mockResolvedValue({ title: "My App", hwnd: 12345n });
 
     const result = await screenshotHandler({
       detail: "som",
@@ -55,9 +55,9 @@ describe("screenshotHandler - detail='som' mode", () => {
   });
 
   it("should successfully trigger SoM pipeline when confirmImage=true is passed", async () => {
-    mockResolveWindowTarget.mockResolvedValue({ title: "My App", hwnd: "12345" });
+    mockResolveWindowTarget.mockResolvedValue({ title: "My App", hwnd: 12345n });
     mockRunSomPipeline.mockResolvedValue({
-      elements: [{ id: 1, text: "Click Me", region: { x: 10, y: 10, width: 50, height: 20 } }],
+      elements: [{ id: 1, text: "Click Me", region: { x: 10, y: 10, width: 50, height: 20 }, clickAt: { x: 35, y: 20 } }],
       somImage: { base64: "fake-image", mimeType: "image/png" },
       preprocessScale: 1.0,
     });
@@ -84,8 +84,8 @@ describe("screenshotHandler - detail='som' mode", () => {
   });
 
   it("should prioritize hwnd from resolveWindowTarget", async () => {
-    mockResolveWindowTarget.mockResolvedValue({ title: "My App", hwnd: "54321" });
-    mockRunSomPipeline.mockResolvedValue({ elements: [], somImage: null });
+    mockResolveWindowTarget.mockResolvedValue({ title: "My App", hwnd: 54321n });
+    mockRunSomPipeline.mockResolvedValue({ elements: [], somImage: null, preprocessScale: 1.0 });
 
     await screenshotHandler({
       detail: "som",
@@ -101,14 +101,12 @@ describe("screenshotHandler - detail='som' mode", () => {
     });
 
     expect(mockRunSomPipeline).toHaveBeenCalledWith("My App", 54321n, "ja");
+    expect(mockEnumWindowsInZOrder).not.toHaveBeenCalled();
   });
 
-  it("should fall back to title search if resolveWindowTarget returns null (plain title match)", async () => {
+  it("should delegate title search to runSomPipeline when resolveWindowTarget returns null", async () => {
     mockResolveWindowTarget.mockResolvedValue(null);
-    mockEnumWindowsInZOrder.mockReturnValue([
-      { title: "My App (Actual)", hwnd: "99999", region: { x: 0, y: 0, width: 100, height: 100 }, zOrder: 0, isActive: true }
-    ]);
-    mockRunSomPipeline.mockResolvedValue({ elements: [], somImage: null });
+    mockRunSomPipeline.mockResolvedValue({ elements: [], somImage: null, preprocessScale: 1.0 });
 
     await screenshotHandler({
       detail: "som",
@@ -123,6 +121,34 @@ describe("screenshotHandler - detail='som' mode", () => {
       ocrLanguage: "ja",
     });
 
-    expect(mockRunSomPipeline).toHaveBeenCalledWith("My App (Actual)", 99999n, "ja");
+    // Handler passes null hwnd; runSomPipeline handles its own window search
+    expect(mockRunSomPipeline).toHaveBeenCalledWith("My App", null, "ja");
+    expect(mockEnumWindowsInZOrder).not.toHaveBeenCalled();
+  });
+
+  it("should return only text content when somImage is null", async () => {
+    mockResolveWindowTarget.mockResolvedValue({ title: "My App", hwnd: 12345n });
+    mockRunSomPipeline.mockResolvedValue({
+      elements: [],
+      somImage: null,
+      preprocessScale: 1.0,
+    });
+
+    const result = await screenshotHandler({
+      detail: "som",
+      confirmImage: true,
+      windowTitle: "My App",
+      maxDimension: 768,
+      dotByDot: false,
+      grayscale: false,
+      webpQuality: 60,
+      diffMode: false,
+      ocrFallback: "auto",
+      ocrLanguage: "ja",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0].type).toBe("text");
   });
 });
