@@ -19,9 +19,11 @@ function isPromptLine(line: string): boolean {
 export async function fetchTerminalCandidates(
   target: TargetSpec | undefined
 ): Promise<UiEntityCandidate[]> {
-  if (!target?.windowTitle && !target?.hwnd) return [];
-  const windowTitle = target.windowTitle ?? target.hwnd ?? "@active";
-  const targetId    = target.hwnd ?? target.windowTitle ?? "@active";
+  // getTextViaTextPattern takes a title string — hwnd-only targets are not supported
+  // until a dedicated hwnd overload is added. Return [] rather than passing hwnd as title.
+  if (!target?.windowTitle) return [];
+  const windowTitle = target.windowTitle;
+  const targetId    = target.hwnd ?? target.windowTitle;
 
   try {
     const { getTextViaTextPattern } = await import("../../engine/uia-bridge.js");

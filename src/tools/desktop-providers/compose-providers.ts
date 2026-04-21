@@ -21,8 +21,20 @@ import { fetchBrowserCandidates }  from "./browser-provider.js";
 import { fetchTerminalCandidates } from "./terminal-provider.js";
 import { fetchVisualCandidates }   from "./visual-provider.js";
 
-/** Common terminal process name patterns for heuristic detection. */
-const TERMINAL_TITLE_PATTERN = /powershell|cmd\.exe|command prompt|terminal|bash|wsl|sh|git.?bash|conemu|mintty/i;
+/**
+ * Heuristic terminal title patterns.
+ *
+ * Design notes:
+ * - Use word boundaries (\b) for short tokens like "sh", "wsl", "cmd" to avoid
+ *   matching "Photoshop", "Dashboard", "cmd inside longer title", etc.
+ * - "cmd.exe" doesn't appear in window titles — use "Command Prompt" instead.
+ * - "terminal" is a common substring — anchor with \b to reduce false positives
+ *   (still catches "Windows Terminal", "Terminal — ...", etc.).
+ *
+ * A future improvement: prefer processName checks (more reliable than title).
+ */
+const TERMINAL_TITLE_PATTERN =
+  /powershell|\bcommand prompt\b|\bterminal\b|\bbash\b|\b(wsl|zsh|fish|ksh|sh)\b|git.?bash|conemu|mintty/i;
 
 export function isTerminalTarget(target: TargetSpec | undefined): boolean {
   return TERMINAL_TITLE_PATTERN.test(target?.windowTitle ?? "");
