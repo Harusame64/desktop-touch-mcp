@@ -19,6 +19,11 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { DesktopFacade, type CandidateProvider, type DesktopSeeInput } from "./desktop.js";
 import type { UiEntityCandidate } from "../engine/vision-gpu/types.js";
 import type { EntityLease } from "../engine/world-graph/types.js";
+import {
+  SnapshotIngress,
+  createWinEventIngressSource,
+} from "../engine/world-graph/candidate-ingress.js";
+import type { TargetSpec } from "../engine/world-graph/session-registry.js";
 
 // ── Process-level facade singleton ───────────────────────────────────────────
 
@@ -30,10 +35,30 @@ let _facade: DesktopFacade | undefined;
  */
 export function getDesktopFacade(): DesktopFacade {
   if (!_facade) {
-    _facade = new DesktopFacade(createUiaCandidateProvider());
-    // Real executor wiring (Batch B) is used by default (no executorFn / executorDeps override).
+    const provider = createUiaCandidateProvider();
+
+    // Build ingress: wraps provider with a per-target cache + WinEvent invalidation.
+    // fetch function adapts TargetSessionKey → DesktopSeeInput for the provider.
+    const ingress = new SnapshotIngress(
+      async (key: string) => {
+        const target = targetKeyToSpec(key);
+        return provider({ target });
+      },
+      createWinEventIngressSource()
+    );
+
+    _facade = new DesktopFacade(provider, { ingress });
+    // Real executor wiring (Batch B) is used by default.
   }
   return _facade;
+}
+
+/** Parse a TargetSessionKey back to a TargetSpec for the UIA provider. */
+function targetKeyToSpec(key: string): TargetSpec | undefined {
+  if (key.startsWith("window:") && key !== "window:__default__") return { hwnd: key.slice(7) };
+  if (key.startsWith("tab:"))    return { tabId: key.slice(4) };
+  if (key.startsWith("title:"))  return { windowTitle: key.slice(6) };
+  return undefined;
 }
 
 /** Reset the facade singleton (for testing only). */
