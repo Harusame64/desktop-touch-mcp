@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { UiEntityCandidate } from "../vision-gpu/types.js";
 import type {
   UiEntity, UiEntityRole, UiAffordance, AffordanceVerb,
-  ExecutorKind, EntitySourceKind,
+  ExecutorKind, EntitySourceKind, EntityLocator,
 } from "./types.js";
 
 const ROLE_ALLOW: ReadonlySet<string> = new Set([
@@ -72,6 +72,46 @@ function stableEntityId(key: string): string {
 }
 
 /**
+ * Build an EntityLocator by merging source-specific fields from all candidates in a group.
+ * Each source contributes the fields it knows; merging gives the executor unambiguous routing.
+ */
+function mergeLocators(candidates: UiEntityCandidate[]): EntityLocator | undefined {
+  const loc: EntityLocator = {};
+  let any = false;
+
+  for (const c of candidates) {
+    // Prefer explicit locator from the candidate; fall back to sourceId inference.
+    if (c.locator) {
+      if (c.locator.uia)      { loc.uia      = { ...loc.uia,      ...c.locator.uia      }; any = true; }
+      if (c.locator.cdp)      { loc.cdp      = { ...loc.cdp,      ...c.locator.cdp      }; any = true; }
+      if (c.locator.terminal) { loc.terminal = { ...loc.terminal, ...c.locator.terminal }; any = true; }
+      if (c.locator.visual)   { loc.visual   = { ...loc.visual,   ...c.locator.visual   }; any = true; }
+      continue;
+    }
+
+    // Legacy sourceId inference (P2-A backward compat bridge — remove in P3).
+    if (c.source === "uia" && c.sourceId) {
+      loc.uia = { automationId: c.sourceId, name: c.label };
+      any = true;
+    } else if (c.source === "cdp" && c.sourceId) {
+      loc.cdp = {
+        selector: c.sourceId,
+        tabId: c.target.kind === "browserTab" ? c.target.id : undefined,
+      };
+      any = true;
+    } else if (c.source === "visual_gpu" && c.sourceId) {
+      loc.visual = { trackId: c.sourceId, rect: c.rect };
+      any = true;
+    } else if (c.source === "terminal") {
+      loc.terminal = { windowTitle: c.target.kind === "window" ? c.target.id : undefined };
+      any = true;
+    }
+  }
+
+  return any ? loc : undefined;
+}
+
+/**
  * Merge UiEntityCandidates from multiple sources into UiEntity objects.
  *
  * - Provisional candidates are excluded (fusion not yet stable).
@@ -109,6 +149,7 @@ export function resolveCandidates(
       confidence,
       sources,
       affordances: synthesizeAffordances([...verbSet]),
+      locator: mergeLocators(group),
       generation,
       evidenceDigest: key,
     });

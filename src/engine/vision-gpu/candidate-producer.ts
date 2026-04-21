@@ -111,7 +111,8 @@ export class CandidateProducer {
       candidates.push({
         source: "visual_gpu",
         target: this.target,
-        sourceId: trackId,
+        sourceId: trackId, // kept for backward compat
+        locator: { visual: { trackId, rect: track.roi } },
         role,
         label: fusedState.text,
         rect: track.roi,

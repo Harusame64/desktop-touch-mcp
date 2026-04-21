@@ -179,3 +179,57 @@ describe("resolveCandidates — fallback key (no digest)", () => {
     expect(entities).toHaveLength(2);
   });
 });
+
+describe("resolveCandidates — EntityLocator population (P2-A)", () => {
+  it("UIA candidate with sourceId populates locator.uia via legacy bridge", () => {
+    const [e] = resolveCandidates([
+      candidate("Submit", { source: "uia", sourceId: "btn-submit" }),
+    ], GEN);
+    expect(e.locator?.uia?.automationId).toBe("btn-submit");
+    expect(e.locator?.uia?.name).toBe("Submit");
+  });
+
+  it("UIA candidate with explicit locator uses it directly", () => {
+    const [e] = resolveCandidates([
+      candidate("Submit", {
+        source: "uia",
+        locator: { uia: { automationId: "AutomationId_123", name: "Submit Button" } },
+      }),
+    ], GEN);
+    expect(e.locator?.uia?.automationId).toBe("AutomationId_123");
+    expect(e.locator?.uia?.name).toBe("Submit Button");
+  });
+
+  it("CDP candidate populates locator.cdp with selector and tabId", () => {
+    const [e] = resolveCandidates([
+      candidate("Sign In", {
+        source: "cdp",
+        target: { kind: "browserTab", id: "tab-99" },
+        sourceId: "#sign-in-btn",
+      }),
+    ], GEN);
+    expect(e.locator?.cdp?.selector).toBe("#sign-in-btn");
+    expect(e.locator?.cdp?.tabId).toBe("tab-99");
+  });
+
+  it("visual_gpu candidate populates locator.visual with trackId and rect", () => {
+    const [e] = resolveCandidates([
+      candidate("Start", {
+        source: "visual_gpu",
+        sourceId: "track-uuid",
+        rect: { x: 10, y: 20, width: 80, height: 30 },
+      }),
+    ], GEN);
+    expect(e.locator?.visual?.trackId).toBe("track-uuid");
+    expect(e.locator?.visual?.rect).toEqual({ x: 10, y: 20, width: 80, height: 30 });
+  });
+
+  it("merged UIA + visual_gpu entity has both locators", () => {
+    const [e] = resolveCandidates([
+      candidate("Start", { source: "uia",        digest: "d-s", sourceId: "uia-id" }),
+      candidate("Start", { source: "visual_gpu", digest: "d-s", sourceId: "gpu-track" }),
+    ], GEN);
+    expect(e.locator?.uia?.automationId).toBe("uia-id");
+    expect(e.locator?.visual?.trackId).toBe("gpu-track");
+  });
+});

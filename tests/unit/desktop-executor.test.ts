@@ -172,3 +172,65 @@ describe("createDesktopExecutor — target spec to windowTitle", () => {
     expect(deps.uiaClick).toHaveBeenCalledWith("@active", "Start", undefined);
   });
 });
+
+describe("createDesktopExecutor — locator-based routing (P2-A)", () => {
+  it("UIA locator: uses locator.uia.automationId over sourceId", async () => {
+    const deps = mockDeps();
+    const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
+    const e = entity({
+      sources: ["uia"],
+      sourceId: "stale-legacy-id", // should be ignored when locator is present
+      locator: { uia: { automationId: "btn-submit", name: "Submit" } },
+    });
+    await exec(e, "invoke");
+    expect(deps.uiaClick).toHaveBeenCalledWith("App", "Submit", "btn-submit");
+  });
+
+  it("CDP locator: uses locator.cdp.selector and locator.cdp.tabId", async () => {
+    const deps = mockDeps();
+    const exec = createDesktopExecutor(undefined, deps);
+    const e = entity({
+      sources: ["cdp"],
+      locator: { cdp: { selector: "#login-btn", tabId: "tab-42" } },
+    });
+    await exec(e, "click");
+    expect(deps.cdpClick).toHaveBeenCalledWith("#login-btn", "tab-42");
+  });
+
+  it("CDP locator: locator.cdp.tabId overrides target.tabId", async () => {
+    const deps = mockDeps();
+    const exec = createDesktopExecutor({ tabId: "target-tab" }, deps);
+    const e = entity({
+      sources: ["cdp"],
+      locator: { cdp: { selector: "#btn", tabId: "locator-tab" } },
+    });
+    await exec(e, "click");
+    expect(deps.cdpClick).toHaveBeenCalledWith("#btn", "locator-tab");
+  });
+
+  it("terminal locator: uses locator.terminal.windowTitle over target", async () => {
+    const deps = mockDeps();
+    const exec = createDesktopExecutor({ windowTitle: "wrong-window" }, deps);
+    const e = entity({
+      sources: ["terminal"],
+      locator: { terminal: { windowTitle: "PowerShell 7" } },
+    });
+    await exec(e, "invoke", "ls");
+    expect(deps.terminalSend).toHaveBeenCalledWith("PowerShell 7", "ls");
+  });
+
+  it("UIA fallback uses locator.visual.rect for mouse fallback on UIA error", async () => {
+    const deps = mockDeps({
+      uiaClick: vi.fn(async () => { throw new Error("not found"); }),
+    });
+    const exec = createDesktopExecutor({ hwnd: "1" }, deps);
+    const e = entity({
+      sources: ["uia"],
+      rect: undefined, // no rect on entity itself
+      locator: { uia: { automationId: "btn-x" }, visual: { rect: { x: 50, y: 60, width: 100, height: 40 } } },
+    });
+    const result = await exec(e, "click");
+    expect(result).toBe("mouse");
+    expect(deps.mouseClick).toHaveBeenCalledWith(100, 80); // center of locator.visual.rect
+  });
+});
