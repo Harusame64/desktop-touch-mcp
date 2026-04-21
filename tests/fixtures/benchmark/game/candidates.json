@@ -1,0 +1,37 @@
+{
+  "window:game-window": [
+    {
+      "source": "visual_gpu",
+      "target": { "kind": "window", "id": "game-window" },
+      "label": "Start Match",
+      "role": "button",
+      "locator": { "visual": { "trackId": "track-start", "rect": { "x": 640, "y": 500, "width": 200, "height": 60 } } },
+      "actionability": ["invoke", "click"],
+      "confidence": 0.94,
+      "observedAtMs": 0,
+      "provisional": false
+    },
+    {
+      "source": "visual_gpu",
+      "target": { "kind": "window", "id": "game-window" },
+      "label": "Settings",
+      "role": "button",
+      "locator": { "visual": { "trackId": "track-settings", "rect": { "x": 640, "y": 580, "width": 200, "height": 60 } } },
+      "actionability": ["invoke", "click"],
+      "confidence": 0.91,
+      "observedAtMs": 0,
+      "provisional": false
+    },
+    {
+      "source": "visual_gpu",
+      "target": { "kind": "window", "id": "game-window" },
+      "label": "Exit",
+      "role": "button",
+      "locator": { "visual": { "trackId": "track-exit", "rect": { "x": 640, "y": 660, "width": 200, "height": 60 } } },
+      "actionability": ["invoke", "click"],
+      "confidence": 0.89,
+      "observedAtMs": 0,
+      "provisional": false
+    }
+  ]
+}
