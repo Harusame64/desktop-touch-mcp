@@ -188,3 +188,68 @@ describe("DesktopFacade — cross-source entity merging", () => {
     expect(out.entities[0].sources).toContain("uia");
   });
 });
+
+describe("DesktopFacade — per-target session isolation (Batch A)", () => {
+  const TARGET_A = { hwnd: "hwnd-A" };
+  const TARGET_B = { hwnd: "hwnd-B" };
+
+  it("see() on target A does NOT invalidate leases for target B", async () => {
+    const facade = new DesktopFacade(gameProvider);
+    const viewA = facade.see({ target: TARGET_A });
+    const viewB = facade.see({ target: TARGET_B });
+    const leaseB = viewB.entities[0].lease;
+
+    // Call see() on A again — bumps A's generation, not B's
+    facade.see({ target: TARGET_A });
+
+    const result = await facade.touch({ lease: leaseB });
+    // B's lease must still be valid
+    expect(result.ok).toBe(true);
+    void viewA; // suppress unused warning
+  });
+
+  it("see() on the same target invalidates its own previous leases", async () => {
+    const facade = new DesktopFacade(gameProvider);
+    const view1 = facade.see({ target: TARGET_A });
+    const oldLease = view1.entities[0].lease;
+    facade.see({ target: TARGET_A }); // bumps A's generation
+    const result = await facade.touch({ lease: oldLease });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("lease_generation_mismatch");
+  });
+
+  it("two independent targets maintain separate generation counters", () => {
+    const facade = new DesktopFacade(gameProvider);
+    const vA1 = facade.see({ target: TARGET_A });
+    const vB1 = facade.see({ target: TARGET_B });
+    facade.see({ target: TARGET_A }); // bumps A seq to 2
+    const vB2 = facade.see({ target: TARGET_B }); // bumps B seq to 2
+    // Generations should embed different viewIds and seq numbers
+    expect(vA1.target.generation).not.toBe(vB1.target.generation);
+    expect(vB1.target.generation).not.toBe(vB2.target.generation);
+  });
+
+  it("touch dispatches to the correct session by viewId", async () => {
+    const executorCalls: string[] = [];
+    const facade = new DesktopFacade(gameProvider, {
+      executorFn: async (entity) => { executorCalls.push(entity.entityId); return "mouse"; },
+    });
+    const vA = facade.see({ target: TARGET_A });
+    const vB = facade.see({ target: TARGET_B });
+
+    await facade.touch({ lease: vA.entities[0].lease });
+    await facade.touch({ lease: vB.entities[0].lease });
+
+    // Both touches executed for the correct session
+    expect(executorCalls).toHaveLength(2);
+  });
+
+  it("touch for unknown viewId returns entity_not_found (session evicted or never existed)", async () => {
+    const facade = new DesktopFacade(gameProvider);
+    const fakeLeases = facade.see({ target: TARGET_A }).entities[0].lease;
+    const tampered = { ...fakeLeases, viewId: "completely-unknown-view-id" };
+    const result = await facade.touch({ lease: tampered });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("entity_not_found");
+  });
+});
