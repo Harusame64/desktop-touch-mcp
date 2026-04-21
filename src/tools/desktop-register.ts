@@ -17,13 +17,13 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { DesktopFacade, type CandidateProvider, type DesktopSeeInput } from "./desktop.js";
-import type { UiEntityCandidate } from "../engine/vision-gpu/types.js";
 import type { EntityLease } from "../engine/world-graph/types.js";
 import {
   SnapshotIngress,
   createWinEventIngressSource,
 } from "../engine/world-graph/candidate-ingress.js";
 import type { TargetSpec } from "../engine/world-graph/session-registry.js";
+import { composeCandidates } from "./desktop-providers/compose-providers.js";
 
 // ── Process-level facade singleton ───────────────────────────────────────────
 
@@ -32,32 +32,29 @@ let _facade: DesktopFacade | undefined;
 /**
  * Return the process-level DesktopFacade.
  * Created lazily on first call; no heavy initialization happens at import time.
+ *
+ * P2-B: uses composeCandidates() as the provider — routes to browser/terminal/uia
+ * based on target type and merges results additively.
  */
 export function getDesktopFacade(): DesktopFacade {
   if (!_facade) {
-    const provider = createUiaCandidateProvider();
+    const provider: CandidateProvider = (input: DesktopSeeInput) =>
+      composeCandidates(input.target);
 
-    // Build ingress: wraps provider with a per-target cache + WinEvent invalidation.
-    // fetch function adapts TargetSessionKey → DesktopSeeInput for the provider.
     const ingress = new SnapshotIngress(
-      async (key: string) => {
-        const target = targetKeyToSpec(key);
-        return provider({ target });
-      },
+      async (key: string) => composeCandidates(targetKeyToSpec(key)),
       createWinEventIngressSource()
     );
 
     _facade = new DesktopFacade(provider, { ingress });
-    // Real executor wiring (Batch B) is used by default.
   }
   return _facade;
 }
 
 /**
- * Parse a TargetSessionKey back to a TargetSpec for the UIA provider.
- * `window:__default__` returns undefined so the provider sees an empty target
- * and short-circuits to []. The "@active" foreground fallback happens inside
- * the UIA provider itself when windowTitle is absent, not here.
+ * Parse a TargetSessionKey back to a TargetSpec.
+ * `window:__default__` returns undefined so the provider sees no target and returns [].
+ * "@active" foreground fallback is handled inside each individual provider.
  */
 function targetKeyToSpec(key: string): TargetSpec | undefined {
   if (key.startsWith("window:") && key !== "window:__default__") return { hwnd: key.slice(7) };
@@ -68,77 +65,11 @@ function targetKeyToSpec(key: string): TargetSpec | undefined {
 
 /**
  * Reset the facade singleton (for testing only).
- * Disposes the old instance (closes ingress event subscriptions) before clearing.
+ * Calls dispose() to close ingress event subscriptions before clearing.
  */
 export function _resetFacadeForTest(): void {
-  // dispose() is defined on DesktopFacade → ingress.dispose() → eventSource.dispose()
-  // Without this, old WinEvent subscriptions would leak in the module-singleton event-bus.
   (_facade as unknown as { dispose?: () => void })?.dispose?.();
   _facade = undefined;
-}
-
-// ── Candidate provider: UIA snapshot (Phase 1) ───────────────────────────────
-// Phase 2 (Batch D) will replace this with event-driven CandidateIngress.
-
-function uiaRoleFromControlType(ct: string): string {
-  const map: Record<string, string> = {
-    Button: "button",
-    Edit: "textbox",
-    CheckBox: "button",
-    RadioButton: "button",
-    Hyperlink: "link",
-    MenuItem: "menuitem",
-    Text: "label",
-    Document: "label",
-  };
-  return map[ct] ?? "unknown";
-}
-
-function uiaActionability(ct: string): Array<"click" | "invoke" | "type" | "read"> {
-  if (["Button", "CheckBox", "RadioButton", "Hyperlink", "MenuItem"].includes(ct)) {
-    return ["invoke", "click"];
-  }
-  if (ct === "Edit") return ["type", "click"];
-  return ["read"];
-}
-
-function createUiaCandidateProvider(): CandidateProvider {
-  return async (input: DesktopSeeInput): Promise<UiEntityCandidate[]> => {
-    const target = input.target;
-    if (!target || Object.keys(target).length === 0) return [];
-
-    const windowTitle = target.windowTitle ?? target.hwnd ?? "@active";
-    const targetId    = target.hwnd ?? target.windowTitle ?? "@active";
-
-    try {
-      const { getUiElements } = await import("../engine/uia-bridge.js");
-      const result = await getUiElements(windowTitle, 4, 80, 8000);
-      return result.elements
-        .filter((el) => el.isEnabled && el.name)
-        .map((el): UiEntityCandidate => ({
-          source: "uia",
-          target: { kind: "window", id: targetId },
-          // Keep sourceId for backward compat; locator.uia provides typed routing.
-          sourceId: el.automationId || undefined,
-          locator: { uia: { automationId: el.automationId || undefined, name: el.name } },
-          role: uiaRoleFromControlType(el.controlType),
-          label: el.name,
-          value: el.value,
-          rect: el.boundingRect ?? undefined,
-          actionability: uiaActionability(el.controlType),
-          confidence: 1.0,
-          observedAtMs: Date.now(),
-          provisional: false,
-        }));
-    } catch (err) {
-      // Log provider error so the LLM client can see it in server stderr.
-      // Empty result is distinguishable from "no entities" via the absence of
-      // entities — but the LLM cannot tell why. Phase 2 will surface this via
-      // DesktopSeeOutput.warnings.
-      console.error("[desktop-see] UIA candidate provider error:", err);
-      return [];
-    }
-  };
 }
 
 // ── Zod schemas ───────────────────────────────────────────────────────────────
@@ -184,9 +115,9 @@ export function registerDesktopTools(server: McpServer): void {
     "desktop_see",
     [
       "[EXPERIMENTAL] Observe a window or browser tab and return interactive entities as structured data.",
-      "Unlike screenshot, this returns named entities (buttons, inputs, links) with leases for use with desktop_touch.",
-      "Raw screen coordinates are NOT returned in normal mode — use debug=true only for debugging, never relay coords to end-users.",
-      "Call desktop_touch with a returned lease to interact with an entity.",
+      "Supports multiple source lanes: UIA (native), CDP (browser), terminal buffer, and visual GPU.",
+      "Returns entities with leases — pass a lease to desktop_touch to interact.",
+      "Raw screen coordinates are NOT returned in normal mode (debug=true only).",
     ].join(" "),
     desktopSeeSchema,
     async (input) => {
@@ -198,7 +129,7 @@ export function registerDesktopTools(server: McpServer): void {
   server.tool(
     "desktop_touch",
     [
-      "[EXPERIMENTAL] Interact with an entity previously returned by desktop_see.",
+      "[EXPERIMENTAL] Interact with an entity returned by desktop_see.",
       "Validates the lease before executing — rejects stale, expired, or mismatched leases.",
       "Returns a semantic diff (entity_disappeared, modal_appeared, etc.) and a 'next' hint.",
       "If ok=false, read 'reason' and re-call desktop_see to refresh the view.",
