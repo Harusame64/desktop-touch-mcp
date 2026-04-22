@@ -661,6 +661,46 @@ The 160× speedup on `getFocusedElement` comes from eliminating PowerShell proce
 
 ---
 
+## Experimental: UI Operating Layer (V2)
+
+> **Status: Experimental — default OFF.** These tools are hidden unless you opt in.
+
+V2 introduces two new tools that replace coordinate-based clicking with entity-based interaction:
+
+| Tool | Description |
+|---|---|
+| `desktop_see` | Observe a window or browser tab. Returns interactive entities with leases — no raw screen coordinates. Supports UIA (native), CDP (browser), terminal, and visual GPU lanes. |
+| `desktop_touch` | Interact with an entity returned by `desktop_see`. Validates the lease before executing. Returns a semantic diff (`entity_disappeared`, `modal_appeared`, `focus_shifted`, …). |
+
+### Enable V2
+
+Add `DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2=1` to your MCP env config:
+
+```json
+{
+  "mcpServers": {
+    "desktop-touch": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@harusame64/desktop-touch-mcp"],
+      "env": {
+        "DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2": "1"
+      }
+    }
+  }
+}
+```
+
+### Kill switch
+
+Remove `DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2` from env and restart. All V1 tools continue to work without interruption — no reinstall required.
+
+### Recovery when V2 fails
+
+If `desktop_touch` returns `ok: false`, read `reason` and follow the built-in recovery hints in the tool description. In all cases, V1 tools (`screenshot`, `click_element`, `get_ui_elements`, `terminal_send`, …) are available as an escape hatch.
+
+---
+
 ## Known limitations
 
 | Limitation | Detail | Workaround |
