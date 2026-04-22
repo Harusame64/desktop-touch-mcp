@@ -208,6 +208,10 @@ export function registerDesktopTools(server: McpServer): void {
       "Supports multiple source lanes: UIA (native), CDP (browser), terminal buffer, and visual GPU.",
       "Returns entities with leases — pass a lease to desktop_touch to interact.",
       "Raw screen coordinates are NOT returned in normal mode (debug=true only).",
+      "If response.warnings[] is non-empty, results may be partial.",
+      "Recovery: no_provider_matched → add target.windowTitle or retry; partial_results_only → compare with V1 get_ui_elements;",
+      "cdp_provider_failed → check --remote-debugging-port=9222;",
+      "visual_provider_unavailable → retry or continue with structured lane; uia/terminal_provider_failed → use V1 tools (get_ui_elements / terminal_read).",
     ].join(" "),
     desktopSeeSchema,
     async (input) => {
@@ -222,7 +226,11 @@ export function registerDesktopTools(server: McpServer): void {
       "[EXPERIMENTAL] Interact with an entity returned by desktop_see.",
       "Validates the lease before executing — rejects stale, expired, or mismatched leases.",
       "Returns a semantic diff (entity_disappeared, modal_appeared, etc.) and a 'next' hint.",
-      "If ok=false, read 'reason' and re-call desktop_see to refresh the view.",
+      "If ok=false, read 'reason':",
+      "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_see;",
+      "  modal_blocking → dismiss modal via V1 click_element then retry;",
+      "  entity_outside_viewport → scroll via V1 scroll/scroll_to_element then retry;",
+      "  executor_failed → fall back to V1 tools (click_element / mouse_click / browser_click_element).",
     ].join(" "),
     desktopTouchSchema,
     async (input) => {

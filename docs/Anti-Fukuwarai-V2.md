@@ -348,7 +348,8 @@ PoC の段階では次をやらない。
 
 ## 9. 関連ドキュメント
 
-- [anti-fukuwarai-v2-experimental-quality-review.md](D:/git/desktop-touch-mcp-fukuwaraiv2/docs/anti-fukuwarai-v2-experimental-quality-review.md)
+- [anti-fukuwarai-v2-experimental-quality-review.md](anti-fukuwarai-v2-experimental-quality-review.md) — P4-A review 結果 (pass/partial/issue list)
+- [anti-fukuwarai-v2-default-on-readiness.md](anti-fukuwarai-v2-default-on-readiness.md) — P4-B: default-on readiness / rollback policy
 - [空間と時間の仮想化-plan.md](D:/git/desktop-touch-mcp/docs/空間と時間の仮想化-plan.md)
 - [gpu-visual-poc-plan.md](D:/git/desktop-touch-mcp/docs/gpu-visual-poc-plan.md)
 - [system-overview.md](D:/git/desktop-touch-mcp/docs/system-overview.md)
