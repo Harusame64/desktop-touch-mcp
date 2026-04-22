@@ -60,8 +60,19 @@ export interface SessionCreateOpts {
    * Ignored when executorFn is set.
    */
   executorFactory?: (target: TargetSpec | undefined) => ExecutorFn;
+  /**
+   * Override modal detection. Default: session-aware check — blocks if any OTHER entity
+   * in the current snapshot is a UIA "unknown"-role element (overlay/dialog pattern).
+   */
   isModalBlocking?: (entity: UiEntity) => boolean;
+  /** Override viewport check. Default: conservative pass (always true). */
   isInViewport?: (entity: UiEntity) => boolean;
+  /**
+   * Return a focus fingerprint for the currently focused element (or undefined if unknown).
+   * Used for focus_shifted detection: pre- vs post-touch fingerprint is compared.
+   * Conservative: when not provided, focus_shifted is never emitted.
+   */
+  getFocusedEntityId?: () => string | undefined;
   defaultTtlMs?: number;
   nowFn?: () => number;
 }
@@ -163,10 +174,23 @@ export class SessionRegistry {
     };
 
     const env: TouchEnvironment = {
-      resolveLiveEntities:      () => s.entities,
-      currentGeneration:        () => s.generation,
-      isModalBlocking:          opts.isModalBlocking ?? (() => false),
-      isInViewport:             opts.isInViewport    ?? (() => true),
+      resolveLiveEntities: () => s.entities,
+      currentGeneration:   () => s.generation,
+      // G1-A: Session-aware modal guard.
+      // Default: block if any OTHER entity in the live snapshot is a UIA "unknown"-role
+      // element. UIA exposes system dialogs and overlays as unknown-role elements, so
+      // this catches modal blocking without a Win32 round-trip.
+      // Override via opts.isModalBlocking for custom/test implementations.
+      isModalBlocking: opts.isModalBlocking ?? ((entity: UiEntity) =>
+        s.entities.some(
+          (e) => e.entityId !== entity.entityId && e.sources.includes("uia") && e.role === "unknown"
+        )
+      ),
+      isInViewport: opts.isInViewport ?? (() => true),
+      // G1-C: Focus fingerprint for focus_shifted detection.
+      // Only wired when opts.getFocusedEntityId is provided (e.g. production desktop-register.ts).
+      // Conservative: if not provided, focus_shifted is never emitted.
+      getFocusedEntityId: opts.getFocusedEntityId,
       // Resolve executor lazily so s.lastTarget is current at touch time.
       execute: (entity, action, text) => {
         const execFn = opts.executorFn

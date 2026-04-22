@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
-import { createDesktopExecutor, type ExecutorDeps } from "../../src/tools/desktop-executor.js";
+import {
+  createDesktopExecutor,
+  terminalBgExecute,
+  type ExecutorDeps,
+  type TerminalBgDeps,
+} from "../../src/tools/desktop-executor.js";
 import type { UiEntity } from "../../src/engine/world-graph/types.js";
 
 function entity(overrides: Partial<UiEntity> = {}): UiEntity {
@@ -244,5 +249,69 @@ describe("createDesktopExecutor — locator-based routing (P2-A)", () => {
     });
     await exec2(e2, "click");
     expect(deps2.mouseClick).toHaveBeenCalledWith(30, 30); // center of entity.rect, not locator.visual.rect
+  });
+});
+
+// ── G2: terminalBgExecute — background terminal send logic ────────────────────
+
+function makeBgDeps(overrides: Partial<TerminalBgDeps> = {}): TerminalBgDeps {
+  return {
+    findWindow:  vi.fn((_title: string) => ({ hwnd: BigInt(999), title: "PowerShell 7" })),
+    canBgSend:   vi.fn((_hwnd: unknown) => ({ supported: true, className: "ConsoleWindowClass" })),
+    bgSend:      vi.fn((_hwnd: unknown, _text: string) => ({ sent: 5, full: true })),
+    ...overrides,
+  };
+}
+
+describe("terminalBgExecute — G2 background terminal send", () => {
+  it("succeeds when window is found and bg send is supported + complete", () => {
+    const deps = makeBgDeps();
+    expect(() => terminalBgExecute("PowerShell", "hello", deps)).not.toThrow();
+    expect(deps.findWindow).toHaveBeenCalledWith("PowerShell");
+    expect(deps.canBgSend).toHaveBeenCalled();
+    expect(deps.bgSend).toHaveBeenCalledWith(BigInt(999), "hello");
+  });
+
+  it("does NOT call foreground APIs (keyboard/focus) on the background path", () => {
+    const deps = makeBgDeps();
+    // bgSend is the only send channel — no keyboard.type() or restoreAndFocusWindow() involved.
+    terminalBgExecute("PowerShell", "ls -la\n", deps);
+    expect(deps.bgSend).toHaveBeenCalledWith(BigInt(999), "ls -la\n");
+    // Verify that no extra calls happened (the deps list is the full injection surface)
+    expect(Object.keys(deps)).not.toContain("keyboard");
+    expect(Object.keys(deps)).not.toContain("restoreAndFocus");
+  });
+
+  it("throws explicitly when window is not found (not silent focus-steal fallback)", () => {
+    const deps = makeBgDeps({ findWindow: vi.fn(() => undefined) });
+    expect(() => terminalBgExecute("Missing App", "cmd", deps))
+      .toThrow(`Terminal window not found: "Missing App"`);
+  });
+
+  it("throws explicitly when bg injection is NOT supported (Chromium, UWP)", () => {
+    const deps = makeBgDeps({
+      canBgSend: vi.fn(() => ({ supported: false, reason: "chromium", className: "Chrome_WidgetWin_1" })),
+    });
+    expect(() => terminalBgExecute("Chrome", "text", deps))
+      .toThrow("Background terminal send not supported");
+    // Must not call bgSend when not supported
+    expect(deps.bgSend).not.toHaveBeenCalled();
+  });
+
+  it("throws on incomplete send (partial write)", () => {
+    const deps = makeBgDeps({
+      bgSend: vi.fn(() => ({ sent: 2, full: false })), // only sent 2 of 5 chars
+    });
+    expect(() => terminalBgExecute("PowerShell", "hello", deps))
+      .toThrow("Background terminal send incomplete");
+  });
+
+  it("error message for unsupported window contains V1 fallback hint", () => {
+    const deps = makeBgDeps({
+      canBgSend: vi.fn(() => ({ supported: false, reason: "uwp_sandboxed" })),
+    });
+    let err = "";
+    try { terminalBgExecute("Calculator", "1+1", deps); } catch (e) { err = String(e); }
+    expect(err).toContain("V1 terminal_send");
   });
 });

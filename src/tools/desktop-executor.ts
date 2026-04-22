@@ -4,11 +4,15 @@
  * Priority order:
  *   1. uia      → clickElement / setElementValue (UIA Invoke/ValuePattern)
  *   2. cdp      → CDP click via screen coords / evaluateInTab fill
- *   3. terminal → keyboard type into terminal window (foreground path — steals focus)
+ *   3. terminal → background WM_CHAR injection (no focus steal); explicit fail if unsupported
  *   4. mouse    → mouse click at entity rect center (visual-only fallback)
  *
  * All deps are injectable so tests can mock every route without OS bindings.
  * Real deps are imported lazily (dynamic import) to keep module load light.
+ *
+ * G2: terminal route now uses background WM_CHAR path via bg-input.ts.
+ *     On unsupported windows (Chromium, UWP) it throws explicitly so the caller
+ *     gets ok:false reason:"executor_failed" and can fall back to V1 terminal_send.
  */
 
 import type { UiEntity, ExecutorKind } from "../engine/world-graph/types.js";
@@ -28,13 +32,63 @@ export interface ExecutorDeps {
    * NOTE: uses DEFAULT_CDP_PORT (9222). Phase 2 should extend TargetSpec with optional cdpPort. */
   cdpFill(selector: string, value: string, tabId?: string): Promise<void>;
   /**
-   * Terminal: send text to a terminal window (foreground path via keyboard.type).
-   * This steals focus from the LLM client. Phase 2 should prefer the background
-   * WM_CHAR path from terminalSendHandler to avoid focus disruption.
+   * Terminal: send text to a terminal window via background WM_CHAR injection (G2).
+   * Does not steal focus. Throws explicitly for unsupported windows (Chromium, UWP).
+   * On failure, caller sees ok:false reason:"executor_failed" and can fall back to V1 terminal_send.
    */
   terminalSend(windowTitle: string, text: string): Promise<void>;
   /** Mouse: click at absolute screen coordinates. */
   mouseClick(x: number, y: number): Promise<void>;
+}
+
+// ── G2: Background terminal send — injectable for testing ─────────────────────
+
+/**
+ * Injectable deps for the background terminal send path.
+ * Exported so unit tests can exercise the routing logic without OS bindings.
+ */
+export interface TerminalBgDeps {
+  /** Find terminal window by title substring. Returns undefined if not found. */
+  findWindow(windowTitle: string): { hwnd: unknown; title: string } | undefined;
+  /** Check if WM_CHAR injection is supported for this HWND. */
+  canBgSend(hwnd: unknown): { supported: boolean; reason?: string; className?: string };
+  /** Send text to HWND via WM_CHAR. Returns partial result if send was incomplete. */
+  bgSend(hwnd: unknown, text: string): { sent: number; full: boolean };
+}
+
+/**
+ * Core background terminal send logic — separated for testability.
+ *
+ * Throws if:
+ *   - Window not found by title
+ *   - Background injection not supported (Chromium, UWP, etc.)
+ *   - Send incomplete (partial write)
+ *
+ * Never falls back to foreground focus-steal (G2 contract).
+ */
+export function terminalBgExecute(
+  windowTitle: string,
+  text: string,
+  deps: TerminalBgDeps
+): void {
+  const win = deps.findWindow(windowTitle);
+  if (!win) throw new Error(`Terminal window not found: "${windowTitle}"`);
+
+  const check = deps.canBgSend(win.hwnd);
+  if (!check.supported) {
+    throw new Error(
+      `Background terminal send not supported for "${windowTitle}" ` +
+      `(${check.reason ?? "unknown"}, class: ${check.className ?? "?"}).` +
+      ` Use V1 terminal_send as fallback.`
+    );
+  }
+
+  const result = deps.bgSend(win.hwnd, text);
+  if (!result.full) {
+    throw new Error(
+      `Background terminal send incomplete: sent ${result.sent}/${text.length} chars to "${windowTitle}"`
+    );
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -185,15 +239,18 @@ function getSharedRealDeps(): ExecutorDeps {
     },
 
     async terminalSend(windowTitle, text) {
-      // Foreground path: focus window then type. See docstring on ExecutorDeps.terminalSend
-      // for the Phase 2 plan to use the WM_CHAR background path instead.
-      const { keyboard } = await import("../engine/nutjs.js");
-      const { enumWindowsInZOrder, restoreAndFocusWindow } = await import("../engine/win32.js");
+      // G2: Background WM_CHAR path — no focus steal.
+      // canInjectViaPostMessage() gates supported terminals (Windows Terminal, conhost).
+      // Unsupported windows (Chromium, UWP) throw explicitly — caller gets executor_failed
+      // and the LLM description directs them to V1 terminal_send as fallback.
+      const { enumWindowsInZOrder } = await import("../engine/win32.js");
+      const { canInjectViaPostMessage, postCharsToHwnd } = await import("../engine/bg-input.js");
       const wins = enumWindowsInZOrder();
-      const win = wins.find((w) => w.title.toLowerCase().includes(windowTitle.toLowerCase()));
-      if (!win) throw new Error(`Terminal window not found: "${windowTitle}"`);
-      restoreAndFocusWindow(win.hwnd);
-      await keyboard.type(text);
+      terminalBgExecute(windowTitle, text, {
+        findWindow: (title) => wins.find((w) => w.title.toLowerCase().includes(title.toLowerCase())),
+        canBgSend:  (hwnd) => canInjectViaPostMessage(hwnd),
+        bgSend:     (hwnd, t) => postCharsToHwnd(hwnd, t),
+      });
     },
 
     async mouseClick(x, y) {

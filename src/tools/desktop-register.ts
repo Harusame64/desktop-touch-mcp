@@ -17,7 +17,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { DesktopFacade, type CandidateProvider, type DesktopSeeInput } from "./desktop.js";
-import type { EntityLease } from "../engine/world-graph/types.js";
+import type { EntityLease, UiEntity } from "../engine/world-graph/types.js";
 import {
   SnapshotIngress,
   combineEventSources,
@@ -31,6 +31,54 @@ import { composeCandidates } from "./desktop-providers/compose-providers.js";
 import { getVisualRuntime } from "../engine/vision-gpu/runtime.js";
 import { PocVisualBackend } from "../engine/vision-gpu/poc-backend.js";
 import { onDirtySignal } from "../engine/vision-gpu/dirty-signal.js";
+import { enumWindowsInZOrder } from "../engine/win32.js";
+import { computeViewportPosition } from "../utils/viewport-position.js";
+
+// ── G1: Production guards (viewport + focus) ──────────────────────────────────
+
+/**
+ * G1-B: Production viewport guard.
+ *
+ * Structured sources (uia, cdp, terminal) guarantee that the element is accessible
+ * to the OS at the time of candidate resolution — they cannot be truly "out of viewport"
+ * from the OS's perspective. We pass these conservatively.
+ *
+ * Visual-only entities with a rect are checked against the current foreground window.
+ * If the entity center lies outside the foreground window's region, we block the touch.
+ * Conservative fallback (return true) on any Win32 error.
+ */
+function productionIsInViewport(entity: UiEntity): boolean {
+  if (!entity.rect) return true; // no rect → can't check → conservative pass
+  // Structured sources: OS guarantees accessibility, skip rect check.
+  if (entity.sources.some((s) => s === "uia" || s === "cdp" || s === "terminal")) return true;
+  // Visual-only: check entity rect against current foreground window.
+  try {
+    const wins = enumWindowsInZOrder();
+    const fg = wins.find((w) => w.isActive);
+    if (!fg) return true; // no foreground window → conservative pass
+    return computeViewportPosition(entity.rect, fg.region) === "in-view";
+  } catch {
+    return true; // conservative on Win32 error
+  }
+}
+
+/**
+ * G1-C: Production focus fingerprint (window-level, best-effort).
+ *
+ * Returns the foreground window's hwnd as an opaque string.
+ * When the foreground shifts between pre- and post-touch snapshots,
+ * GuardedTouchLoop emits focus_shifted in the diff.
+ * Conservative: returns undefined on any Win32 error.
+ */
+function productionGetFocusedEntityId(): string | undefined {
+  try {
+    const wins = enumWindowsInZOrder();
+    const fg = wins.find((w) => w.isActive);
+    return fg ? `hwnd:${fg.hwnd}` : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 // ── Process-level facade singleton ───────────────────────────────────────────
 
@@ -120,7 +168,15 @@ export function getDesktopFacade(): DesktopFacade {
       ])
     );
 
-    _facade = new DesktopFacade(provider, { ingress });
+    _facade = new DesktopFacade(provider, {
+      ingress,
+      // G1-B: viewport guard — blocks visual-only entities outside the foreground window.
+      isInViewport: productionIsInViewport,
+      // G1-C: window-level focus fingerprint for focus_shifted diff.
+      getFocusedEntityId: productionGetFocusedEntityId,
+      // G1-A: modal guard — session-aware default in session-registry.ts (UIA unknown-role).
+      // No override needed here; the session-registry default is already production-grade.
+    });
 
     // Wire the visual runtime (non-blocking — failure does not prevent facade creation).
     //
