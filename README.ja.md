@@ -410,6 +410,46 @@ Windows のフォアグラウンド保護機能により、ピン固定された
 
 ---
 
+## 実験的機能: UI オペレーティングレイヤー (V2)
+
+> **ステータス: 実験的 — デフォルト OFF。** オプトインしない限り、これらのツールは公開されません。
+
+V2 は、座標ベースのクリックをエンティティベースの操作に置き換える 2 つの新ツールを追加します。
+
+| ツール | 説明 |
+|---|---|
+| `desktop_see` | ウィンドウまたはブラウザタブを観測し、インタラクティブなエンティティを返します。raw 座標は返しません。UIA（ネイティブ）、CDP（ブラウザ）、ターミナル、GPU ビジュアルレーンに対応。 |
+| `desktop_touch` | `desktop_see` が返したエンティティを操作します。実行前にリースを検証し、セマンティック diff（`entity_disappeared`、`modal_appeared`、`focus_shifted` など）を返します。 |
+
+### V2 を有効にする
+
+MCP 設定の env に `DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2=1` を追加します。
+
+```json
+{
+  "mcpServers": {
+    "desktop-touch": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@harusame64/desktop-touch-mcp"],
+      "env": {
+        "DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2": "1"
+      }
+    }
+  }
+}
+```
+
+### キルスイッチ
+
+env から `DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2` を削除して再起動するだけで元に戻ります。V1 ツールはすべてそのまま動作します。再インストール不要。
+
+### V2 が失敗した場合のリカバリ
+
+`desktop_touch` が `ok: false` を返した場合は `reason` を確認し、ツール説明に記載されているリカバリヒントに従ってください。いずれの場合も、V1 ツール（`screenshot`、`click_element`、`get_ui_elements`、`terminal_send` など）がエスケープハッチとして使えます。
+
+---
+
 ## 既知の制限
 
 | 制限 | 詳細 | 回避策 |
