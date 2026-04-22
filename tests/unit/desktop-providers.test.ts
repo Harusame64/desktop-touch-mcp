@@ -170,12 +170,6 @@ describe("Provider locator contracts — shape invariants (P2-B)", () => {
 // ── Warnings (P2-C) ───────────────────────────────────────────────────────────
 
 describe("composeCandidates — warnings surface (P2-C)", () => {
-  it("no_provider_matched when target is undefined", async () => {
-    const r = await composeCandidates(undefined);
-    expect(r.warnings).toContain("no_provider_matched");
-    expect(r.candidates).toHaveLength(0);
-  });
-
   it("visual_provider_unavailable always present (Phase 2 stub)", async () => {
     const r = await fetchVisualCandidates({ hwnd: "123" });
     expect(r.warnings).toContain("visual_provider_unavailable");

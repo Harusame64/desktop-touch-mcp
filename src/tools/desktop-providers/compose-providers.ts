@@ -14,7 +14,7 @@
  * provider does not prevent others from contributing candidates.
  *
  * Warning codes emitted here:
- *   no_provider_matched  — target is undefined with no routing key
+ *   no_provider_matched  — target omitted and foreground window could not be resolved
  *   partial_results_only — primary provider returned 0 entities; fallback attempted
  */
 
@@ -24,6 +24,7 @@ import { fetchUiaCandidates }      from "./uia-provider.js";
 import { fetchBrowserCandidates }  from "./browser-provider.js";
 import { fetchTerminalCandidates } from "./terminal-provider.js";
 import { fetchVisualCandidates }   from "./visual-provider.js";
+import { resolveWindowTarget }     from "../_resolve-window.js";
 
 /**
  * Heuristic terminal title patterns.
@@ -71,6 +72,62 @@ function addWarningIfPartial(result: ProviderResult, primaryCount: number): Prov
   return result;
 }
 
+function withPrependedWarnings(result: ProviderResult, warnings: string[]): ProviderResult {
+  if (warnings.length === 0) return result;
+  const seen = new Set<string>();
+  const mergedWarnings: string[] = [];
+  for (const warning of [...warnings, ...result.warnings]) {
+    if (!seen.has(warning)) {
+      seen.add(warning);
+      mergedWarnings.push(warning);
+    }
+  }
+  return { ...result, warnings: mergedWarnings };
+}
+
+async function normalizeTarget(
+  target: TargetSpec | undefined
+): Promise<{ target: TargetSpec | undefined; warnings: string[] }> {
+  if (target?.tabId) {
+    return { target, warnings: [] };
+  }
+
+  if (target?.hwnd && !target.windowTitle) {
+    try {
+      const resolved = await resolveWindowTarget({ hwnd: target.hwnd });
+      if (!resolved) return { target, warnings: [] };
+      return {
+        target: {
+          ...target,
+          hwnd: target.hwnd,
+          windowTitle: resolved.title,
+        },
+        warnings: resolved.warnings,
+      };
+    } catch {
+      return { target, warnings: [] };
+    }
+  }
+
+  if (target?.windowTitle) {
+    return { target, warnings: [] };
+  }
+
+  try {
+    const resolved = await resolveWindowTarget({ windowTitle: "@active" });
+    if (!resolved) return { target: undefined, warnings: ["no_provider_matched"] };
+    return {
+      target: {
+        hwnd: resolved.hwnd.toString(),
+        windowTitle: resolved.title,
+      },
+      warnings: resolved.warnings,
+    };
+  } catch {
+    return { target: undefined, warnings: ["no_provider_matched"] };
+  }
+}
+
 /**
  * Fetch candidates from all appropriate providers and return merged result + warnings.
  * Uses Promise.allSettled so one failing provider doesn't block others.
@@ -78,9 +135,11 @@ function addWarningIfPartial(result: ProviderResult, primaryCount: number): Prov
 export async function composeCandidates(
   target: TargetSpec | undefined
 ): Promise<ProviderResult> {
-  if (!target || (!target.hwnd && !target.windowTitle && !target.tabId)) {
-    return { candidates: [], warnings: ["no_provider_matched"] };
+  const normalized = await normalizeTarget(target);
+  if (!normalized.target) {
+    return { candidates: [], warnings: normalized.warnings };
   }
+  target = normalized.target;
 
   if (isBrowserTarget(target)) {
     const [browser, visual] = await Promise.allSettled([
@@ -94,9 +153,12 @@ export async function composeCandidates(
       ? visual.value
       : { candidates: [], warnings: ["visual_provider_unavailable"] };
 
-    return addWarningIfPartial(
-      mergeResults([browserResult, visualResult]),
-      browserResult.candidates.length
+    return withPrependedWarnings(
+      addWarningIfPartial(
+        mergeResults([browserResult, visualResult]),
+        browserResult.candidates.length
+      ),
+      normalized.warnings
     );
   }
 
@@ -110,9 +172,12 @@ export async function composeCandidates(
     const uiaResult    = uia.status      === "fulfilled" ? uia.value      : { candidates: [], warnings: ["uia_provider_failed"] };
     const visualResult = visual.status   === "fulfilled" ? visual.value   : { candidates: [], warnings: ["visual_provider_unavailable"] };
 
-    return addWarningIfPartial(
-      mergeResults([termResult, uiaResult, visualResult]),
-      termResult.candidates.length
+    return withPrependedWarnings(
+      addWarningIfPartial(
+        mergeResults([termResult, uiaResult, visualResult]),
+        termResult.candidates.length
+      ),
+      normalized.warnings
     );
   }
 
@@ -124,8 +189,11 @@ export async function composeCandidates(
   const uiaResult    = uia.status    === "fulfilled" ? uia.value    : { candidates: [], warnings: ["uia_provider_failed"] };
   const visualResult = visual.status === "fulfilled" ? visual.value : { candidates: [], warnings: ["visual_provider_unavailable"] };
 
-  return addWarningIfPartial(
-    mergeResults([uiaResult, visualResult]),
-    uiaResult.candidates.length
+  return withPrependedWarnings(
+    addWarningIfPartial(
+      mergeResults([uiaResult, visualResult]),
+      uiaResult.candidates.length
+    ),
+    normalized.warnings
   );
 }

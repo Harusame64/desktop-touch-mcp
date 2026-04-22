@@ -105,8 +105,8 @@ async function initVisualRuntime(visualSource: VisualIngressSource): Promise<voi
 
 export function getDesktopFacade(): DesktopFacade {
   if (!_facade) {
-    const provider: CandidateProvider = (input: DesktopSeeInput) =>
-      composeCandidates(input.target);
+    const provider: CandidateProvider = async (input: DesktopSeeInput) =>
+      (await composeCandidates(input.target)).candidates;
 
     _visualSource = createVisualIngressSource();
 
@@ -141,8 +141,8 @@ export function getDesktopFacade(): DesktopFacade {
 
 /**
  * Parse a TargetSessionKey back to a TargetSpec.
- * `window:__default__` returns undefined so the provider sees no target and returns [].
- * "@active" foreground fallback is handled inside each individual provider.
+ * `window:__default__` returns undefined; composeCandidates() then resolves the
+ * current foreground window and routes providers against that live target.
  */
 function targetKeyToSpec(key: string): TargetSpec | undefined {
   if (key.startsWith("window:") && key !== "window:__default__") return { hwnd: key.slice(7) };
