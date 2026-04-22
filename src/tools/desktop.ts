@@ -82,10 +82,22 @@ export interface DesktopFacadeOptions {
    * When omitted, production native bindings are used (UIA/CDP/nutjs).
    */
   executorDeps?: ExecutorDeps;
-  /** Override modal detection. Default: always false. */
+  /**
+   * Override modal detection. Default: session-aware check (UIA unknown-role entity in snapshot).
+   * Set to () => false to disable.
+   */
   isModalBlocking?: (entity: UiEntity) => boolean;
-  /** Override viewport check. Default: always true. */
+  /**
+   * Override viewport check. Default: conservative pass (always true).
+   * Production implementation provided by desktop-register.ts (G1-B).
+   */
   isInViewport?: (entity: UiEntity) => boolean;
+  /**
+   * Return a focus fingerprint for the currently focused element, or undefined if unknown.
+   * Production: uses win32.enumWindowsInZOrder() for window-level focus detection (G1-C).
+   * When not set, focus_shifted is never emitted (conservative default).
+   */
+  getFocusedEntityId?: () => string | undefined;
   /** Default lease TTL in ms (default: 5000). */
   defaultTtlMs?: number;
   /** Injectable clock for testing. */
@@ -237,14 +249,15 @@ export class DesktopFacade {
       snapshotFn:      (target) => candidateProvider({ target }),
       postSnapshotFn:  postTouchCandidates ? (target) => postTouchCandidates({ target }) : undefined,
       // executorFn takes precedence; executorFactory provides target-aware executor for production.
-      executorFn:      this.opts.executorFn,
-      executorFactory: this.opts.executorFn
+      executorFn:         this.opts.executorFn,
+      executorFactory:    this.opts.executorFn
         ? undefined
         : (target) => createDesktopExecutor(target, this.opts.executorDeps),
-      isModalBlocking: this.opts.isModalBlocking,
-      isInViewport:    this.opts.isInViewport,
-      defaultTtlMs:    this.opts.defaultTtlMs,
-      nowFn:           this.opts.nowFn,
+      isModalBlocking:    this.opts.isModalBlocking,
+      isInViewport:       this.opts.isInViewport,
+      getFocusedEntityId: this.opts.getFocusedEntityId,
+      defaultTtlMs:       this.opts.defaultTtlMs,
+      nowFn:              this.opts.nowFn,
     };
   }
 }

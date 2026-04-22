@@ -176,6 +176,146 @@ describe("DesktopFacade — desktop_touch", () => {
   });
 });
 
+// ── G1: Production guard wiring ───────────────────────────────────────────────
+
+describe("DesktopFacade — G1 modal guard (session-aware default)", () => {
+  // The session-aware modal default (in session-registry.ts) checks if any OTHER entity
+  // in the session's live snapshot has sources:["uia"] and role:"unknown".
+  // No isModalBlocking override needed — the default is production-grade.
+
+  it("modal_blocking when a UIA 'unknown' entity co-exists with the touch target", async () => {
+    const modalCand: UiEntityCandidate = {
+      source: "uia",
+      target: { kind: "window", id: "win-1" },
+      label: "Dialog",
+      role: "unknown",   // ← triggers modal guard
+      actionability: [],
+      confidence: 0.95,
+      observedAtMs: 1000,
+      provisional: false,
+      digest: "digest-modal",
+      rect: { x: 0, y: 0, width: 400, height: 300 },
+    };
+    // Provider returns both the button (touch target) and a modal overlay.
+    const providerWithModal: CandidateProvider = () => [
+      cand("Start Match", "visual_gpu"),
+      modalCand,
+    ];
+    const facade = new DesktopFacade(providerWithModal, { executorFn: async () => "mouse" });
+    const view = await facade.see({ target: TARGET_GAME });
+    // Touch the "Start Match" button — session has the "Dialog" UIA unknown entity too.
+    const btnLease = view.entities.find((e) => e.label === "Start Match")?.lease;
+    expect(btnLease).toBeDefined();
+    const result = await facade.touch({ lease: btnLease! });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("modal_blocking");
+  });
+
+  it("no modal_blocking when all live entities have non-unknown roles", async () => {
+    // All entities are regular buttons — no modal overlay.
+    const facade = new DesktopFacade(gameProvider, { executorFn: async () => "mouse" });
+    const view = await facade.see({ target: TARGET_GAME });
+    const result = await facade.touch({ lease: view.entities[0].lease });
+    expect(result.ok).toBe(true);
+  });
+
+  it("touching the modal entity itself is NOT blocked by its own role", async () => {
+    // If an LLM tries to touch the modal/dialog entity itself (e.g. to dismiss it),
+    // the entity being touched is excluded from the modal check — no self-blocking.
+    const modalCand: UiEntityCandidate = {
+      source: "uia",
+      target: { kind: "window", id: "win-1" },
+      label: "OK",
+      role: "unknown",
+      actionability: ["invoke"],
+      confidence: 0.9,
+      observedAtMs: 1000,
+      provisional: false,
+      digest: "digest-modal-ok",
+    };
+    const facade = new DesktopFacade(
+      () => [modalCand],
+      { executorFn: async () => "uia" }
+    );
+    const view = await facade.see();
+    const result = await facade.touch({ lease: view.entities[0].lease });
+    // Only the modal entity is in session — it doesn't block itself.
+    expect(result.ok).toBe(true);
+  });
+
+  it("isModalBlocking override takes precedence over session-aware default", async () => {
+    // Explicit override: always block (even with no UIA unknown entities).
+    const facade = new DesktopFacade(gameProvider, {
+      executorFn: async () => "mouse",
+      isModalBlocking: () => true,
+    });
+    const view = await facade.see({ target: TARGET_GAME });
+    const result = await facade.touch({ lease: view.entities[0].lease });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("modal_blocking");
+  });
+});
+
+describe("DesktopFacade — G1 viewport guard", () => {
+  it("entity_outside_viewport when isInViewport returns false", async () => {
+    const facade = new DesktopFacade(gameProvider, {
+      executorFn: async () => "mouse",
+      isInViewport: () => false, // simulate entity outside window
+    });
+    const view = await facade.see({ target: TARGET_GAME });
+    const result = await facade.touch({ lease: view.entities[0].lease });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("entity_outside_viewport");
+  });
+
+  it("touch proceeds when isInViewport returns true", async () => {
+    const facade = new DesktopFacade(gameProvider, {
+      executorFn: async () => "mouse",
+      isInViewport: () => true,
+    });
+    const view = await facade.see({ target: TARGET_GAME });
+    const result = await facade.touch({ lease: view.entities[0].lease });
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe("DesktopFacade — G1 focus detection (getFocusedEntityId)", () => {
+  it("focus_shifted emitted when getFocusedEntityId changes pre vs post touch", async () => {
+    let callCount = 0;
+    const facade = new DesktopFacade(gameProvider, {
+      executorFn: async () => "mouse",
+      getFocusedEntityId: () => {
+        callCount++;
+        return callCount === 1 ? "hwnd:111" : "hwnd:222"; // focus moved to different window
+      },
+    });
+    const view = await facade.see({ target: TARGET_GAME });
+    const result = await facade.touch({ lease: view.entities[0].lease });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.diff).toContain("focus_shifted");
+  });
+
+  it("no focus_shifted when getFocusedEntityId is stable", async () => {
+    const facade = new DesktopFacade(gameProvider, {
+      executorFn: async () => "mouse",
+      getFocusedEntityId: () => "hwnd:111", // same every time
+    });
+    const view = await facade.see({ target: TARGET_GAME });
+    const result = await facade.touch({ lease: view.entities[0].lease });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.diff).not.toContain("focus_shifted");
+  });
+
+  it("no focus_shifted when getFocusedEntityId not provided (conservative default)", async () => {
+    // No getFocusedEntityId → focus_shifted never emitted
+    const facade = new DesktopFacade(gameProvider, { executorFn: async () => "mouse" });
+    const view = await facade.see({ target: TARGET_GAME });
+    const result = await facade.touch({ lease: view.entities[0].lease });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.diff).not.toContain("focus_shifted");
+  });
+});
+
 describe("DesktopFacade — cross-source entity merging", () => {
   it("visual_gpu + uia with same digest merge into one entity with both sources", async () => {
     const provider: CandidateProvider = () => [
