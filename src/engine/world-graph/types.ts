@@ -21,7 +21,7 @@ export interface EntityLocator {
   visual?: { rect?: Rect; trackId?: string };
 }
 export type AffordanceVerb = "invoke" | "click" | "type" | "select" | "scrollTo" | "read";
-export type EntitySourceKind = "uia" | "cdp" | "win32" | "ocr" | "som" | "visual_gpu" | "inferred";
+export type EntitySourceKind = "uia" | "cdp" | "win32" | "ocr" | "som" | "visual_gpu" | "terminal" | "inferred";
 export type ExecutorKind = "uia" | "cdp" | "terminal" | "mouse";
 
 export interface UiAffordance {
@@ -51,6 +51,11 @@ export interface UiEntity {
    * Prefer these over `sourceId` — each field is unambiguous for its backend.
    */
   locator?: EntityLocator;
+  /**
+   * @deprecated Legacy single-field ID retained for backward-compatible executor fallback.
+   * Prefer locator.* for new code.
+   */
+  sourceId?: string;
   /**
    * Opaque string that identifies the world-state snapshot this entity was resolved from.
    * Production source: `"${viewId}:${monotonicSeq}"` incremented on each WinEvent /

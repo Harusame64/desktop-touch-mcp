@@ -60,7 +60,7 @@ export interface TouchEnvironment {
 
 // ── Action resolution ─────────────────────────────────────────────────────────
 
-const AUTO_PRIORITY: ReadonlyArray<TouchAction> = ["invoke", "click", "type", "select"];
+const AUTO_PRIORITY: ReadonlyArray<Exclude<TouchAction, "auto">> = ["invoke", "click", "type", "select"];
 
 function resolveAction(entity: UiEntity, requested: TouchAction): TouchAction {
   if (requested !== "auto") return requested;

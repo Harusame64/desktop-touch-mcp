@@ -161,6 +161,7 @@ export function resolveCandidates(
       sources,
       affordances: synthesizeAffordances([...verbSet]),
       locator: mergeLocators(group),
+      sourceId: primary.sourceId,
       generation,
       evidenceDigest: key,
     });
