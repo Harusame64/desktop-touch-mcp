@@ -273,7 +273,9 @@ export function registerDesktopTools(server: McpServer): void {
       "uia_blind_single_pane / uia_blind_too_few_elements → target is PWA/Electron/canvas; try view=debug for visual lane hints, or fall back to screenshot(ocrFallback=always);",
       "visual_not_attempted → GPU backend unavailable; use V1 screenshot+mouse_click or wait and retry;",
       "visual_attempted_empty → visual lane ran but produced no stable candidates; consider screenshot(ocrFallback=always) or V1 tools;",
-      "visual_attempted_empty_cdp_fallback → CDP failed and visual also empty (browser); check --remote-debugging-port=9222 and retry.",
+      "visual_attempted_empty_cdp_fallback → CDP failed and visual also empty (browser); check --remote-debugging-port=9222 and retry;",
+      "dialog_resolved_via_owner_chain → common dialog (Save As/Open) found via owner chain; targeting is now hwnd-based;",
+      "parent_disabled_prefer_popup → parent window blocked by a modal; switched to targeting the active popup dialog.",
     ].join(" "),
     desktopSeeSchema,
     async (input) => {

@@ -177,6 +177,104 @@ while ($stack.Count -gt 0 -and $count -lt ${maxElements} -and $sw.ElapsedMillise
 `;
 }
 
+/**
+ * (H3) Click an element by finding the window via HWND directly.
+ * AutomationElement.FromHandle() bypasses the title-based root search,
+ * which fixes WindowNotFound for common dialogs whose title is not visible
+ * in the root children list (e.g. Save As on Windows 11 Notepad).
+ */
+function makeClickElementScriptByHwnd(
+  hwnd: bigint,
+  name: string | undefined,
+  automationId: string | undefined,
+  controlType: string | undefined
+): string {
+  const nameFilter = name ? `$c.Name -like '*${escapeLike(name)}*'` : "$true";
+  const idFilter = automationId ? `$c.AutomationId -eq '${escapePS(automationId)}'` : "$true";
+  const typeFilter = controlType
+    ? `$c.ControlType.ProgrammaticName -like '*${escapeLike(controlType)}*'`
+    : "$true";
+
+  return `
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+
+$hwndPtr = [System.IntPtr]::new(${hwnd.toString()})
+$target  = [System.Windows.Automation.AutomationElement]::FromHandle($hwndPtr)
+if (-not $target) { Write-Output '{"ok":false,"error":"Window not found by hwnd"}'; exit }
+
+$desc  = [System.Windows.Automation.TreeScope]::Descendants
+$trueC = [System.Windows.Automation.Condition]::TrueCondition
+$found = $null
+$all   = $target.FindAll($desc, $trueC)
+foreach ($el in $all) {
+    $c = $el.Current
+    if ((${nameFilter}) -and (${idFilter}) -and (${typeFilter})) { $found = $el; break }
+}
+if (-not $found) { Write-Output '{"ok":false,"error":"Element not found"}'; exit }
+
+try {
+    if (-not $found.Current.IsEnabled) {
+        Write-Output '{"ok":false,"error":"Element is disabled"}'; exit
+    }
+} catch {}
+
+$ip = $null
+if (-not $found.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$ip)) {
+    Write-Output '{"ok":false,"error":"InvokePattern not supported by this element"}'; exit
+}
+try {
+    $ip.Invoke()
+    Write-Output ('{"ok":true,"element":"' + $found.Current.Name + '"}')
+} catch {
+    Write-Output ('{"ok":false,"error":"' + $_.Exception.Message + '"}')
+}
+`;
+}
+
+/**
+ * (H3) Set a value on an element by finding the window via HWND directly.
+ */
+function makeSetValueScriptByHwnd(
+  hwnd: bigint,
+  name: string | undefined,
+  automationId: string | undefined,
+  value: string
+): string {
+  const nameFilter = name ? `$c.Name -like '*${escapeLike(name)}*'` : "$true";
+  const idFilter = automationId ? `$c.AutomationId -eq '${escapePS(automationId)}'` : "$true";
+  const escaped = escapePS(value);
+
+  return `
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+
+$hwndPtr = [System.IntPtr]::new(${hwnd.toString()})
+$target  = [System.Windows.Automation.AutomationElement]::FromHandle($hwndPtr)
+if (-not $target) { Write-Output '{"ok":false,"error":"Window not found by hwnd"}'; exit }
+
+$desc  = [System.Windows.Automation.TreeScope]::Descendants
+$trueC = [System.Windows.Automation.Condition]::TrueCondition
+$found = $null
+$all   = $target.FindAll($desc, $trueC)
+foreach ($el in $all) {
+    $c = $el.Current
+    if ((${nameFilter}) -and (${idFilter})) { $found = $el; break }
+}
+if (-not $found) { Write-Output '{"ok":false,"error":"Element not found"}'; exit }
+
+try {
+    $vp = $found.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+    $vp.SetValue('${escaped}')
+    Write-Output '{"ok":true}'
+} catch {
+    Write-Output ('{"ok":false,"error":"' + $_.Exception.Message + '"}')
+}
+`;
+}
+
 function makeClickElementScript(
   windowTitle: string,
   name: string | undefined,
@@ -689,10 +787,14 @@ export async function clickElement(
   windowTitle: string,
   name?: string,
   automationId?: string,
-  controlType?: string
+  controlType?: string,
+  /** (H3) When hwnd is provided, bypass title-based root search (fixes Save As / common dialogs). */
+  options?: { hwnd?: bigint }
 ): Promise<{ ok: boolean; element?: string; error?: string }> {
-  // ★ Rust native path (Phase C)
-  if (nativeUia?.uiaClickElement) {
+  // H3: hwnd-based lookup goes directly to PowerShell FromHandle path.
+  // The Rust native path (uiaClickElement) does not accept hwnd, so we skip it
+  // when hwnd is provided to ensure the hwnd-aware PS script is used.
+  if (options?.hwnd === undefined && nativeUia?.uiaClickElement) {
     try {
       const result = await nativeUia.uiaClickElement({
         windowTitle,
@@ -706,8 +808,10 @@ export async function clickElement(
     }
   }
 
-  // PowerShell fallback
-  const script = makeClickElementScript(windowTitle, name, automationId, controlType);
+  // PowerShell fallback — use hwnd-based script when available (H3)
+  const script = options?.hwnd !== undefined
+    ? makeClickElementScriptByHwnd(options.hwnd, name, automationId, controlType)
+    : makeClickElementScript(windowTitle, name, automationId, controlType);
   const output = await runPS(script, 8000);
   return JSON.parse(output);
 }
@@ -716,10 +820,12 @@ export async function setElementValue(
   windowTitle: string,
   value: string,
   name?: string,
-  automationId?: string
+  automationId?: string,
+  /** (H3) When hwnd is provided, bypass title-based root search (fixes Save As / common dialogs). */
+  options?: { hwnd?: bigint }
 ): Promise<{ ok: boolean; error?: string }> {
-  // ★ Rust native path (Phase C)
-  if (nativeUia?.uiaSetValue) {
+  // H3: hwnd-based lookup skips Rust native (same reason as clickElement above).
+  if (options?.hwnd === undefined && nativeUia?.uiaSetValue) {
     try {
       const result = await nativeUia.uiaSetValue({
         windowTitle,
@@ -733,8 +839,10 @@ export async function setElementValue(
     }
   }
 
-  // PowerShell fallback
-  const script = makeSetValueScript(windowTitle, name, automationId, value);
+  // PowerShell fallback — use hwnd-based script when available (H3)
+  const script = options?.hwnd !== undefined
+    ? makeSetValueScriptByHwnd(options.hwnd, name, automationId, value)
+    : makeSetValueScript(windowTitle, name, automationId, value);
   const output = await runPS(script, 8000);
   return JSON.parse(output);
 }

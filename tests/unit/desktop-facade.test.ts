@@ -332,6 +332,44 @@ describe("DesktopFacade — cross-source entity merging", () => {
 
 // ── H1: Response-size aware lease TTL ────────────────────────────────────────
 
+// ── H3: Common dialog reachability regression ────────────────────────────────
+// H3 targets dogfood incident S4 (Save As dialog — W-1/W-2/W-4/U-1/M-2 failures).
+// When desktop_see targets a dialog hwnd directly (after owner-chain resolution),
+// the session uses the dialog's hwnd as its key so entities come from the dialog itself.
+
+describe("DesktopFacade — H3 common dialog reachability", () => {
+  it("dialog hwnd session yields dialog entities (filename textbox)", async () => {
+    const provider: CandidateProvider = async (input) => {
+      if (input.target?.hwnd === "200") {
+        return [cand("File name", "uia", {
+          role: "textbox", actionability: ["type", "click"],
+          digest: "d-filename",
+        })];
+      }
+      return [];
+    };
+    const facade = new DesktopFacade(provider);
+    const out = await facade.see({ target: { hwnd: "200" } });
+    expect(out.entities).toHaveLength(1);
+    expect(out.entities[0].label).toBe("File name");
+    expect(out.entities[0].role).toBe("textbox");
+  });
+
+  it("dialog entity can be touched (no modal_blocking from dialog-own session)", async () => {
+    // The dialog session contains only dialog entities — no other window's unknown-role entity.
+    // The default session-aware modal guard should NOT fire.
+    const provider: CandidateProvider = async () => [
+      cand("File name", "uia", {
+        role: "textbox", actionability: ["type", "click"], digest: "d-filename",
+      }),
+    ];
+    const facade = new DesktopFacade(provider, { executorFn: async () => "uia" });
+    const view = await facade.see({ target: { hwnd: "200" } });
+    const result = await facade.touch({ lease: view.entities[0].lease });
+    expect(result.ok).toBe(true);
+  });
+});
+
 // ── H4: Visual escalation warning propagation ────────────────────────────────
 
 describe("DesktopFacade — H4 visual escalation in view=debug", () => {

@@ -95,6 +95,8 @@ export const clickElementHandler = async ({
   let effectiveName = name;
   let effectiveAutomationId = automationId;
   let winWarnings: string[] = [];
+  // H3: lifted to outer scope so hwnd is available for clickElement call below
+  let resolvedWin: import("./_resolve-window.js").ResolvedWindow | null = null;
   try {
     if (fixId) {
       const vr = validateAndPrepareFix(fixId, "click_element");
@@ -104,7 +106,7 @@ export const clickElementHandler = async ({
       if (typeof vr.fix.args.automationId === "string") effectiveAutomationId = vr.fix.args.automationId;
       consumeFix(fixId);  // consume before executing
     } else {
-      const resolvedWin = await resolveWindowTarget({ hwnd: hwndParam, windowTitle });
+      resolvedWin = await resolveWindowTarget({ hwnd: hwndParam, windowTitle });
       if (resolvedWin) {
         effectiveWindowTitle = resolvedWin.title;
         winWarnings = resolvedWin.warnings;
@@ -140,7 +142,11 @@ export const clickElementHandler = async ({
     }
 
     const hintsBlock = buildHintsForTitle(effectiveWindowTitle);
-    const result = await clickElement(effectiveWindowTitle, effectiveName, effectiveAutomationId, controlType);
+    // H3: pass resolved hwnd so uia-bridge uses FromHandle() for common dialogs
+    const result = await clickElement(
+      effectiveWindowTitle, effectiveName, effectiveAutomationId, controlType,
+      resolvedWin ? { hwnd: resolvedWin.hwnd } : undefined,
+    );
     if (!result.ok) {
       return failWith(result.error ?? "Unknown error", "click_element", { windowTitle: effectiveWindowTitle, name: effectiveName, automationId: effectiveAutomationId });
     }
@@ -199,7 +205,11 @@ export const setElementValueHandler = async ({
     const attempts: Array<{ channel: string; error: string }> = [];
 
     // Channel 1: ValuePattern (always tried first)
-    const r1 = await setElementValue(effectiveTitle, value, name, automationId);
+    // H3: pass resolved hwnd so uia-bridge uses FromHandle() for common dialogs
+    const r1 = await setElementValue(
+      effectiveTitle, value, name, automationId,
+      resolvedWin ? { hwnd: resolvedWin.hwnd } : undefined,
+    );
     if (r1.ok) {
       const hints = {
         ...(hintsBlock ? { target: hintsBlock.target, caches: hintsBlock.caches } : {}),
