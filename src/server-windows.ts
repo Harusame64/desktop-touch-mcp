@@ -44,7 +44,10 @@ const icoOk = existsSync(join(icoDir, "tray_ok.ico")) ? join(icoDir, "tray_ok.ic
 // createMcpServer(). Dynamic import keeps zero side-effects on flag-OFF path.
 // Top-level await is valid in ES modules (NodeNext, Node 20+).
 const _desktopV2 = process.env.DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2 === "1"
-  ? await import("./tools/desktop-register.js").catch((err) => {
+  ? await import("./tools/desktop-register.js").then((m) => {
+      console.error("[desktop-touch] v2 experimental tools: enabled (DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2=1)");
+      return m;
+    }).catch((err) => {
       // Registration failure must not crash the server.
       console.error("[desktop-touch] Failed to load desktop v2 module:", err);
       return null;
