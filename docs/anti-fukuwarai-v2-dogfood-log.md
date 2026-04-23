@@ -42,12 +42,12 @@
 5. **安定性**: dogfood 期間中に crash / hang / session leak が **0 件**
 
 **チェック状況（Tier 2）:**
-- [ ] S1 browser-form
-- [ ] S2 browser-click
-- [ ] S3 terminal
-- [ ] S4 native-dialog
-- [ ] S5 visual-only
-- [ ] 合格ライン 5 点達成 → v0.17.0 release 実行可
+- [x] S1 browser-form
+- [x] S2 browser-click
+- [x] S3 terminal
+- [x] S4 native-dialog
+- [x] S5 visual-only
+- [x] 合格ライン 5 点達成 → v0.17.0 release 実行可
 
 ---
 
@@ -99,38 +99,36 @@
 
 ## Scenario 1: Browser Form — Issue タイトル入力
 
-- **date**: TBD
-- **version**: TBD（v0.16.x を使用）
+- **date**: 2026-04-23
+- **version**: `desktop-touch-mcp-fukuwaraiv2` HEAD（pre-v0.17.0 default-on candidate）
 - **target**: GitHub Issues 新規作成ページ（または任意のブラウザフォーム）
 - **category**: browser-form
 - **goal**: フォームの title / body フィールドに `desktop_see` + `desktop_touch` で入力し、V1 fallback なしで完了する
 
-**実録手順:**
-1. Chrome/Edge を `--remote-debugging-port=9222` で起動し GitHub Issue 作成ページを開く
-2. `desktop_see` を `target: { tabId: <cdp tab id> }` で呼ぶ
-3. title フィールドの entity を確認（`type: "input"` など）
-4. `desktop_touch` で lease を渡して `action: "input"`, `text: "test title"` を実行
-5. `ok: true` / warnings / diff を記録
-6. body フィールドも同様に実行
-
-**確認ポイント:**
-- CDP lane が使われているか（`sources` に `cdp` があるか）
-- `visual_provider_warming` / `visual_provider_unavailable` が出た場合、retry 後に解消するか
-- `entity_outside_viewport` が出る場合は scroll してから retry
-
 ### Steps
-<!-- 実録時に記入（上記手順に従う） -->
+| # | tool | args summary | result |
+|---|---|---|---|
+| 1 | `screenshot(meta)` | window list | ok |
+| 2 | `desktop_see` | `windowTitle=<browser>` | ok, UIA only |
+| 3 | `desktop_see` | `tabId=<issue page>, view=explore` | ok, CDP form entities found |
+| 4 | `desktop_touch` | title entity | fail, `lease_expired` |
+| 5 | `desktop_see` | `tabId=<issue page>, query=Title` | ok, 1 entity |
+| 6 | `desktop_touch` | title entity | ok, `value_changed` |
+| 7 | `desktop_see` | `query=body` / `query=leave comment` | ok, 0 entities |
+| 8 | `desktop_see` | `tabId=<issue page>, view=explore` | ok, body textbox discovered via unlabeled entity |
+| 9 | `desktop_touch` | body entity | fail, `lease_expired` |
+| 10 | `desktop_see` | `tabId=<issue page>, query=on` | ok, narrowed entities |
+| 11 | `desktop_touch` | body entity | ok, body entered |
 
 ### Observations
-<!-- 実録時に記入 -->
-- **round-trips**: 
-- **warnings seen**: 
-- **fail reasons seen**: 
-- **fallback taken**: 
-- **user-facing friction**: 
+- **round-trips**: 12
+- **warnings seen**: `[]`
+- **fail reasons seen**: `[lease_expired]`
+- **fallback taken**: no
+- **user-facing friction**: Chrome form では `windowTitle` 指定だけだと UIA しか返らず、`tabId` 指定が実質必須。大きい `explore` 応答では lease TTL に負けやすい。GitHub body editor の aria-label が `"on"` で、query discovery が難しい。
 
 ### Verdict
-- [ ] Passed without V1 fallback
+- [x] Passed without V1 fallback
 - [ ] Passed with V1 fallback (acceptable)
 - [ ] Failed — <root cause>
 
@@ -138,153 +136,134 @@
 
 ## Scenario 2: Browser Click — Webmail Compose ボタン
 
-- **date**: TBD
-- **version**: TBD（v0.16.x を使用）
+- **date**: 2026-04-23
+- **version**: `desktop-touch-mcp-fukuwaraiv2` HEAD（pre-v0.17.0 default-on candidate）
 - **target**: Gmail / Outlook Web 等の webmail
 - **category**: browser-click
 - **goal**: Compose / 新規作成ボタンを `desktop_see` + `desktop_touch` でクリックし、作成ウィンドウが開くことを確認する
 
-**実録手順:**
-1. Chrome/Edge で webmail を開く（CDP 接続済み）
-2. `desktop_see` で Compose / 新規作成ボタンを含む entity を取得
-3. `desktop_touch` で `action: "click"` を実行
-4. `diff` に `modal_appeared` / `focus_shifted` が含まれるか確認
-
-**確認ポイント:**
-- CDP selector を使う Priority 1（`browser_click_element`）との比較
-- `desktop_touch` でも同等に動作するか（Priority 2 の機能確認）
-- lease の期限内に実行できているか（round-trip が短いか）
-
 ### Steps
-<!-- 実録時に記入 -->
+| # | tool | args summary | result |
+|---|---|---|---|
+| 1 | `browser_connect` | port=9222 | ok |
+| 2 | `browser_navigate` | Gmail | fail, unauthenticated landing page |
+| 3 | `browser_navigate` | Outlook Web | fail, unauthenticated landing page |
+| 4 | `focus_window` | logged-in Outlook PWA | ok |
+| 5 | `desktop_see` | `query=compose/新規作成` | fail, 0 entities |
+| 6 | `desktop_see` | no query | fail, UIA chrome only |
+| 7 | `screenshot(text)` | `ocrFallback=always` | ok, OCR found `新規メール` |
+| 8 | `desktop_see` | `query=新規メール` | fail, 0 entities |
+| 9 | `mouse_click` | OCR coords | ok, compose opened |
 
 ### Observations
-<!-- 実録時に記入 -->
-- **round-trips**: 
-- **warnings seen**: 
-- **fail reasons seen**: 
-- **fallback taken**: 
-- **user-facing friction**: 
+- **round-trips**: 8
+- **warnings seen**: `[]`
+- **fail reasons seen**: `[]`
+- **fallback taken**: yes — `screenshot(ocrFallback=always)` + `mouse_click`, success
+- **user-facing friction**: Outlook PWA は CDP 未接続かつ UIA が `single-giant-pane` で、`desktop_see` が entity を返せなかった。通常の browser-click より PWA / visual-only 寄りの難ケースだった。
 
 ### Verdict
 - [ ] Passed without V1 fallback
-- [ ] Passed with V1 fallback (acceptable)
+- [x] Passed with V1 fallback (acceptable)
 - [ ] Failed — <root cause>
 
 ---
 
 ## Scenario 3: Terminal — git status 送信
 
-- **date**: TBD
-- **version**: TBD（v0.16.x を使用）
+- **date**: 2026-04-23
+- **version**: `desktop-touch-mcp-fukuwaraiv2` HEAD（pre-v0.17.0 default-on candidate）
 - **target**: Windows Terminal / Git Bash / cmd.exe
 - **category**: terminal
 - **goal**: `desktop_see` でターミナルを観測し、`desktop_touch` で `git status\n` を送信。フォアグラウンドウィンドウが変わらないことを確認（G2 WM_CHAR path 実動作）
 
-**実録手順:**
-1. Windows Terminal を開いてリポジトリのディレクトリに移動しておく
-2. 別ウィンドウ（例: メモ帳）をフォアグラウンドにしておく
-3. `desktop_see` を `target: { windowTitle: "Terminal" }` 等で呼ぶ
-4. ターミナル入力エリアの entity を確認
-5. `desktop_touch` で `action: "input"`, `text: "git status\n"` を実行
-6. ターミナルにコマンドが入力されたか、フォアグラウンドウィンドウが変わらないかを確認
-
-**確認ポイント:**
-- `terminal` lane の entity が取れているか
-- `executor_failed` が出た場合: WM_CHAR が非サポートのターミナルか確認
-- フォアグラウンドウィンドウが奪われていないか（G2 確認）
-
 ### Steps
-<!-- 実録時に記入 -->
+| # | tool | args summary | result |
+|---|---|---|---|
+| 1 | `screenshot(meta)` | terminal window discovery | ok |
+| 2 | `desktop_see` | terminal target | ok, lease acquired |
+| 3 | `desktop_touch` | type `git status` | fail, `lease_expired` |
+| 4 | `desktop_see` | terminal target re-query | ok |
+| 5 | `desktop_touch` | type `git status` | fail, `modal_blocking` |
+| 6 | `terminal_send` | `git status` | ok, command sent |
 
 ### Observations
-<!-- 実録時に記入 -->
-- **round-trips**: 
-- **warnings seen**: 
-- **fail reasons seen**: 
-- **fallback taken**: 
-- **user-facing friction**: 
+- **round-trips**: 6
+- **warnings seen**: `[]`
+- **fail reasons seen**: `[lease_expired, modal_blocking]`
+- **fallback taken**: yes — `terminal_send` (V1), success
+- **user-facing friction**: `desktop_touch` では terminal input が安定せず、TTL 切れと `modal_blocking` で 2 回失敗。最終的には V1 fallback で完了。
 
 ### Verdict
 - [ ] Passed without V1 fallback
-- [ ] Passed with V1 fallback (acceptable)
+- [x] Passed with V1 fallback (acceptable)
 - [ ] Failed — <root cause>
 
 ---
 
 ## Scenario 4: Native Dialog — 名前を付けて保存
 
-- **date**: TBD
-- **version**: TBD（v0.16.x を使用）
+- **date**: 2026-04-23
+- **version**: `desktop-touch-mcp-fukuwaraiv2` HEAD（pre-v0.17.0 default-on candidate）
 - **target**: メモ帳（notepad.exe）→ ファイル → 名前を付けて保存
 - **category**: native-dialog
 - **goal**: `desktop_see` でダイアログの entity を観測し、ファイル名フィールドに入力して保存ボタンをクリック。modal guard（G1, §9）の実動作を確認する
 
-**実録手順:**
-1. メモ帳を開き、ファイル → 名前を付けて保存 でダイアログを開く
-2. `desktop_see` を `target: { windowTitle: "名前を付けて保存" }` 等で呼ぶ
-3. ファイル名フィールド、保存ボタンの entity を確認
-4. `desktop_touch` でファイル名フィールドに入力
-5. `desktop_touch` で保存ボタンをクリック
-
-**確認ポイント:**
-- `modal_blocking` が出る場合は別のモーダルが前面にある（G1-A 動作確認）
-- `entity_outside_viewport` が出る場合はダイアログが画面外（G1-B 動作確認）
-- UIA lane で dialog entity が正しく取れているか
-
 ### Steps
-<!-- 実録時に記入 -->
+| # | tool | args summary | result |
+|---|---|---|---|
+| 1 | `click_element` | File menu / Save As | ok, dialog opened |
+| 2 | `desktop_see` | `windowTitle=名前を付けて保存` | fail, `uia_provider_failed` |
+| 3 | `desktop_see` | `hwnd=<notepad>` | ok, dialog descendants visible through parent |
+| 4 | `desktop_touch` | filename entity via parent hwnd | fail, `modal_blocking` |
+| 5 | `desktop_see` | dialog hwnd direct | fail, `uia_provider_failed` |
+| 6 | `focus_window` | Save As dialog | ok |
+| 7 | `keyboard_type` | filename input | ok |
+| 8 | `keyboard_press` | `enter` | ok, save completed |
 
 ### Observations
-<!-- 実録時に記入 -->
-- **round-trips**: 
-- **warnings seen**: 
-- **fail reasons seen**: 
-- **fallback taken**: 
-- **user-facing friction**: 
+- **round-trips**: 21
+- **warnings seen**: `[uia_provider_failed]`
+- **fail reasons seen**: `[modal_blocking]`
+- **fallback taken**: yes — full V1 fallback (`focus_window` + `keyboard_type` + `keyboard_press enter`), success
+- **user-facing friction**: Save As dialog では `desktop_see` が dialog title / dialog hwnd / parent hwnd のいずれでも安定せず、V2 path は成立しなかった。日本語タイトルを含む V1 window resolution でも不安定な経路があった。
 
 ### Verdict
 - [ ] Passed without V1 fallback
 - [ ] Passed with V1 fallback (acceptable)
-- [ ] Failed — <root cause>
+- [x] Failed — V2 path unavailable for Windows common file dialog; task completed via V1 fallback
 
 ---
 
 ## Scenario 5: Visual-Only — Electron アプリのカスタム描画領域
 
-- **date**: TBD
-- **version**: TBD（v0.16.x を使用）
+- **date**: 2026-04-23
+- **version**: `desktop-touch-mcp-fukuwaraiv2` HEAD（pre-v0.17.0 default-on candidate）
 - **target**: VS Code / Discord / Slack 等の Electron アプリ（カスタム描画領域）
 - **category**: visual-only
 - **goal**: UIA/CDP が効きにくい領域で `desktop_see` の visual lane entity を確認し、`desktop_touch` でクリックを試みる
 
-**実録手順:**
-1. VS Code 等の Electron アプリを開く
-2. `desktop_see` を `target: { windowTitle: "..." }` で呼ぶ
-3. `sources` に `visual_gpu` が含まれる entity があるか確認
-4. visual entity に `desktop_touch` を実行
-5. `visual_provider_warming` / `visual_provider_unavailable` の出方を記録
-
-**確認ポイント:**
-- visual lane が取れているか（GPU pipeline が有効か）
-- initial warming で 1 回目に warning が出ても 2 回目（retry 済み）で解消するか
-- visual entity の lease が valid かどうか
-- `executor_failed` になる場合はどの executor が fallback するか
-
 ### Steps
-<!-- 実録時に記入 -->
+| # | tool | args summary | result |
+|---|---|---|---|
+| 1 | `screenshot(meta)` | Electron window discovery | ok |
+| 2 | `desktop_see` | `view=explore` | fail, UIA chrome only |
+| 3 | `browser_connect` | guessed CDP port | fail, no CDP |
+| 4 | `screenshot(text)` | `ocrFallback=always` | ok, OCR found target button |
+| 5 | `desktop_see` | `view=debug` | fail, same 4 UIA entities, no visual lane |
+| 6 | PowerShell | inspect process args | ok, no `--remote-debugging-port` |
+| 7 | `mouse_click` | OCR coords | ok, target clicked |
 
 ### Observations
-<!-- 実録時に記入 -->
-- **round-trips**: 
-- **warnings seen**: 
-- **fail reasons seen**: 
-- **fallback taken**: 
-- **user-facing friction**: 
+- **round-trips**: 7
+- **warnings seen**: `[]`
+- **fail reasons seen**: `[]`
+- **fallback taken**: yes — `screenshot(ocrFallback=always)` + `mouse_click`, success
+- **user-facing friction**: Electron custom-drawn 領域では UIA が `single-giant-pane` で閉じており、CDP も未接続だったため、`desktop_see` は entity を返せなかった。visual lane も今回は発動せず、OCR 座標 fallback が必要だった。
 
 ### Verdict
 - [ ] Passed without V1 fallback
-- [ ] Passed with V1 fallback (acceptable)
+- [x] Passed with V1 fallback (acceptable)
 - [ ] Failed — <root cause>
 
 ---
@@ -293,8 +272,38 @@
 
 | # | シナリオ | 日付 | Verdict | V1 fallback |
 |---|---|---|---|---|
-| S1 | browser-form | TBD | - | - |
-| S2 | browser-click | TBD | - | - |
-| S3 | terminal | TBD | - | - |
-| S4 | native-dialog | TBD | - | - |
-| S5 | visual-only | TBD | - | - |
+| S1 | browser-form | 2026-04-23 | Passed without V1 fallback | no |
+| S2 | browser-click | 2026-04-23 | Passed with V1 fallback (acceptable) | yes |
+| S3 | terminal | 2026-04-23 | Passed with V1 fallback (acceptable) | yes |
+| S4 | native-dialog | 2026-04-23 | Failed | yes |
+| S5 | visual-only | 2026-04-23 | Passed with V1 fallback (acceptable) | yes |
+
+---
+
+## Tier 2 判定結果
+
+| # | 条件 | 判定 | 根拠 |
+|---|---|---|---|
+| 1 | 5 シナリオ全て記録済み | ✅ | S1-S5 実録完了 |
+| 2 | 3 シナリオ以上が V2 単独 pass / V1 fallback 1 回以内 | ✅ | S1, S2, S3, S5 |
+| 3 | fail したシナリオ全てで V1 fallback 成功 | ✅ | S4 は V1 fallback で保存完了 |
+| 4 | warning / fail reason が docs と整合 | ✅ | `lease_expired` / `modal_blocking` / `uia_provider_failed` は docs 契約内。観測メモと公式 warning/fail reason を分離して記録 |
+| 5 | crash / hang / session leak 0 件 | ✅ | 今回の 5 シナリオ実録では未観測 |
+
+**Tier 2 結論:** ✅ **Go** — v0.17.0 default-on release candidate として進行可能。
+
+---
+
+## Dogfood で見えた改善候補
+
+1. **Lease TTL と LLM レイテンシの競合**
+   - 大きい `explore` 応答を読むと `desktop_see -> desktop_touch` 間で `lease_expired` が出やすい。
+   - 候補: lease TTL 延長、large explore 時だけ TTL を加算、`desktop_see + desktop_touch` の往復短縮。
+
+2. **Visual lane の発動閾値**
+   - Electron / PWA の `single-giant-pane` ケースで visual lane が起動せず、OCR fallback に依存した。
+   - 候補: sparse UIA + no CDP 時に visual lane をより早く昇格、`view=debug` で visual forcing を明確化。
+
+3. **Native common file dialog**
+   - Windows common dialog では V2 path が成立しなかった。
+   - 候補: dialog reachability の再調査、common dialog 専用 resolver、V1 fallback 導線の docs 強化。
