@@ -104,14 +104,19 @@ describe("deriveViewConstraints — window", () => {
     expect(c?.window).toBe("no_provider_matched");
   });
 
-  it("dialog_resolved_via_owner_chain → constraints.window=dialog_resolved_via_owner_chain", () => {
-    const c = deriveViewConstraints(["dialog_resolved_via_owner_chain"], 3);
-    expect(c?.window).toBe("dialog_resolved_via_owner_chain");
+  it("dialog_resolved_via_owner_chain is a success-path notification — does NOT produce constraints", () => {
+    // H3 success notifications stay in warnings[] only; they are not failure constraints.
+    expect(deriveViewConstraints(["dialog_resolved_via_owner_chain"], 3)).toBeUndefined();
   });
 
-  it("parent_disabled_prefer_popup → constraints.window=parent_disabled_prefer_popup", () => {
-    const c = deriveViewConstraints(["parent_disabled_prefer_popup"], 2);
-    expect(c?.window).toBe("parent_disabled_prefer_popup");
+  it("parent_disabled_prefer_popup is a success-path notification — does NOT produce constraints", () => {
+    expect(deriveViewConstraints(["parent_disabled_prefer_popup"], 2)).toBeUndefined();
+  });
+
+  it("dialog_resolved + no_provider_matched: window constraint is no_provider_matched (failure wins)", () => {
+    const c = deriveViewConstraints(["dialog_resolved_via_owner_chain", "no_provider_matched"], 0);
+    expect(c?.window).toBe("no_provider_matched");
+    expect(c?.entityZeroReason).toBe("foreground_unresolved");
   });
 });
 
