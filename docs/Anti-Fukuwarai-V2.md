@@ -360,6 +360,10 @@ PoC の段階では次をやらない。
 - [anti-fukuwarai-v2-v17-final-decision-memo.md](anti-fukuwarai-v2-v17-final-decision-memo.md) — **v0.17.0 default-on 最終判定: Go（release candidate）**
 - [anti-fukuwarai-v2-hardening-backlog.md](anti-fukuwarai-v2-hardening-backlog.md) — dogfood 後の post-Go hardening backlog（TTL / visual / hierarchy / capability）
 - [anti-fukuwarai-v2-hardening-implementation-instructions.md](anti-fukuwarai-v2-hardening-implementation-instructions.md) — hardening backlog を順次修正で進めるための実装指示書
+- [anti-fukuwarai-v2-h1-lease-ttl-instructions.md](anti-fukuwarai-v2-h1-lease-ttl-instructions.md) — hardening Batch H1: lease / TTL response-size aware 化の実装指示書
+- [anti-fukuwarai-v2-h4-visual-escalation-instructions.md](anti-fukuwarai-v2-h4-visual-escalation-instructions.md) — hardening Batch H4: visual lane 昇格条件と未発動理由の改善指示書
+- [anti-fukuwarai-v2-h2-negative-capability-instructions.md](anti-fukuwarai-v2-h2-negative-capability-instructions.md) — hardening Batch H2: negative capability / constraint 可視化の実装指示書
+- [anti-fukuwarai-v2-h3-window-hierarchy-instructions.md](anti-fukuwarai-v2-h3-window-hierarchy-instructions.md) — hardening Batch H3: common dialog / window hierarchy 改善指示書
 - [anti-fukuwarai-v2-g1-g2-implementation-instructions.md](anti-fukuwarai-v2-g1-g2-implementation-instructions.md) — G1/G2: production guard / terminal background send 実装指示
 - [anti-fukuwarai-v2-phase4c-release-planning-instructions.md](anti-fukuwarai-v2-phase4c-release-planning-instructions.md) — P4-C: release planning / packaging review 指示書
 - [anti-fukuwarai-v2-phase4d-decision-memo-instructions.md](anti-fukuwarai-v2-phase4d-decision-memo-instructions.md) — P4-D: ship / no-ship decision memo 指示書
