@@ -1,5 +1,16 @@
 import type { UiEntity, EntityLease, LeaseValidationResult } from "./types.js";
 
+/**
+ * Default TTL used when the caller does not pass `ttlMs` to issue().
+ *
+ * For production see() calls, the TTL is chosen by lease-ttl-policy.ts based
+ * on `view` and entity count (H1 hardening). This default only applies to:
+ *   - tests that construct LeaseStore directly
+ *   - legacy callers that bypass the facade policy
+ *
+ * Safety: `cap` in lease-ttl-policy.ts bounds production TTLs so stale leases
+ * cannot live indefinitely regardless of policy inputs.
+ */
 const DEFAULT_TTL_MS = 5_000;
 
 export interface LeaseStoreOptions {

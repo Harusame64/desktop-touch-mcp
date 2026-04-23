@@ -330,6 +330,83 @@ describe("DesktopFacade — cross-source entity merging", () => {
   });
 });
 
+// ── H1: Response-size aware lease TTL ────────────────────────────────────────
+
+// H1 targets dogfood incidents L-1/L-2/L-3:
+//   S1 (browser-form, explore ~50 entities) and S3 (terminal, action view)
+//   both hit lease_expired because fixed 5s TTL < LLM read+reason+tool-call latency.
+describe("DesktopFacade — response-size aware lease TTL (H1)", () => {
+  it("explore view issues longer TTL than action view for same entity set", async () => {
+    const manyProvider: CandidateProvider = () =>
+      Array.from({ length: 30 }, (_, i) => cand(`Item ${i}`, "uia", { digest: `d${i}` }));
+    const facadeAction  = new DesktopFacade(manyProvider, { nowFn: () => 0 });
+    const facadeExplore = new DesktopFacade(manyProvider, { nowFn: () => 0 });
+
+    const viewAction  = await facadeAction.see({ view: "action" });
+    const viewExplore = await facadeExplore.see({ view: "explore" });
+
+    const expiryAction  = viewAction.entities[0].lease.expiresAtMs;
+    const expiryExplore = viewExplore.entities[0].lease.expiresAtMs;
+
+    expect(expiryExplore).toBeGreaterThan(expiryAction);
+  });
+
+  it("action view with few entities keeps TTL at base 5s", async () => {
+    const facade = new DesktopFacade(gameProvider, { nowFn: () => 0 });
+    const view = await facade.see({ view: "action" });
+    // base 5000 + no view bonus + no entity bonus (2 entities)
+    expect(view.entities[0].lease.expiresAtMs).toBe(5_000);
+  });
+
+  it("explore view with 50 entities adds meaningful TTL bonus", async () => {
+    const manyProvider: CandidateProvider = () =>
+      Array.from({ length: 60 }, (_, i) => cand(`Item ${i}`, "uia", { digest: `d${i}` }));
+    const facade = new DesktopFacade(manyProvider, { nowFn: () => 0 });
+    const view = await facade.see({ view: "explore" }); // 50 entities after maxEntities slice
+    // 5000 base + 5000 explore + (50-20)*100 = 13000
+    expect(view.entities[0].lease.expiresAtMs).toBe(13_000);
+  });
+
+  it("stale lease safety: TTL extension does NOT bypass generation eviction", async () => {
+    const facade = new DesktopFacade(gameProvider, { nowFn: () => 0 });
+    const view1 = await facade.see({ view: "explore" }); // longer TTL
+    const oldLease = view1.entities[0].lease;
+    await facade.see({ view: "explore" }); // bumps generation, evicts view1 from viewId index
+    const result = await facade.touch({ lease: oldLease });
+    expect(result.ok).toBe(false);
+    // evicted from viewId index → entity_not_found (same as pre-H1 behavior)
+    if (!result.ok) expect(result.reason).toBe("entity_not_found");
+  });
+
+  it("stale lease safety: expired lease rejected even at high TTL (past 30s)", async () => {
+    let now = 0;
+    const manyProvider: CandidateProvider = () =>
+      Array.from({ length: 80 }, (_, i) => cand(`Item ${i}`, "uia", { digest: `d${i}` }));
+    const facade = new DesktopFacade(manyProvider, { nowFn: () => now });
+    const view = await facade.see({ view: "explore" });
+    const lease = view.entities[0].lease;
+    // Push clock well past the maximum possible TTL (cap: 30s)
+    now = 40_000;
+    const result = await facade.touch({ lease });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("lease_expired");
+  });
+
+  it("explicit defaultTtlMs overrides policy (backward compat for tests)", async () => {
+    let now = 0;
+    const facade = new DesktopFacade(gameProvider, {
+      defaultTtlMs: 1_000,
+      nowFn: () => now,
+    });
+    const view = await facade.see({ view: "explore" }); // policy would give 10s, but override wins
+    expect(view.entities[0].lease.expiresAtMs).toBe(1_000);
+    now = 2_000; // past the 1s override TTL
+    const result = await facade.touch({ lease: view.entities[0].lease });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("lease_expired");
+  });
+});
+
 describe("DesktopFacade — per-target session isolation (Batch A)", () => {
   const TARGET_A = { hwnd: "hwnd-A" };
   const TARGET_B = { hwnd: "hwnd-B" };
