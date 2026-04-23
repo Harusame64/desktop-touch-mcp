@@ -496,6 +496,116 @@ describe("DesktopFacade — response-size aware lease TTL (H1)", () => {
   });
 });
 
+// ── H2: Negative capability surfacing ────────────────────────────────────────
+
+describe("DesktopFacade — H2 constraints surfacing", () => {
+  it("no constraints field when provider returns no warnings", async () => {
+    const facade = new DesktopFacade(gameProvider);
+    const out = await facade.see({ target: TARGET_GAME });
+    expect(out.constraints).toBeUndefined();
+  });
+
+  it("constraints.uia=blind_single_pane when warning present and entities > 0", async () => {
+    const fakeIngress: CandidateIngress = {
+      getSnapshot: async () => ({
+        candidates: [cand("X", "uia")],
+        warnings:   ["uia_blind_single_pane"],
+      }),
+      invalidate:  () => {},
+      subscribe:   () => () => {},
+      dispose:     () => {},
+    };
+    const facade = new DesktopFacade(() => [], { ingress: fakeIngress });
+    const out = await facade.see({ target: TARGET_GAME });
+    expect(out.constraints?.uia).toBe("blind_single_pane");
+    expect(out.constraints?.entityZeroReason).toBeUndefined(); // entities > 0
+  });
+
+  it("constraints.entityZeroReason=uia_blind_visual_unready when 0 entities + UIA blind + visual unready", async () => {
+    const fakeIngress: CandidateIngress = {
+      getSnapshot: async () => ({
+        candidates: [],
+        warnings:   ["uia_blind_single_pane", "visual_not_attempted"],
+      }),
+      invalidate:  () => {},
+      subscribe:   () => () => {},
+      dispose:     () => {},
+    };
+    const facade = new DesktopFacade(() => [], { ingress: fakeIngress });
+    const out = await facade.see({ target: TARGET_GAME });
+    expect(out.entities).toHaveLength(0);
+    expect(out.constraints?.entityZeroReason).toBe("uia_blind_visual_unready");
+    expect(out.constraints?.uia).toBe("blind_single_pane");
+    expect(out.constraints?.visual).toBe("not_attempted");
+  });
+
+  it("constraints.entityZeroReason=cdp_failed_visual_empty for browser PWA 0-entity scenario", async () => {
+    const fakeIngress: CandidateIngress = {
+      getSnapshot: async () => ({
+        candidates: [],
+        warnings:   ["visual_attempted_empty_cdp_fallback"],
+      }),
+      invalidate:  () => {},
+      subscribe:   () => () => {},
+      dispose:     () => {},
+    };
+    const facade = new DesktopFacade(() => [], { ingress: fakeIngress });
+    const out = await facade.see({ target: TARGET_CHROME });
+    expect(out.entities).toHaveLength(0);
+    expect(out.constraints?.entityZeroReason).toBe("cdp_failed_visual_empty");
+    expect(out.constraints?.cdp).toBe("provider_failed");
+    expect(out.constraints?.visual).toBe("attempted_empty");
+  });
+
+  it("constraints.entityZeroReason=foreground_unresolved when no_provider_matched + 0 entities", async () => {
+    const fakeIngress: CandidateIngress = {
+      getSnapshot: async () => ({
+        candidates: [],
+        warnings:   ["no_provider_matched"],
+      }),
+      invalidate:  () => {},
+      subscribe:   () => () => {},
+      dispose:     () => {},
+    };
+    const facade = new DesktopFacade(() => [], { ingress: fakeIngress });
+    const out = await facade.see();
+    expect(out.constraints?.entityZeroReason).toBe("foreground_unresolved");
+    expect(out.constraints?.window).toBe("no_provider_matched");
+  });
+
+  it("constraints and warnings co-exist (additive)", async () => {
+    const fakeIngress: CandidateIngress = {
+      getSnapshot: async () => ({
+        candidates: [],
+        warnings:   ["uia_provider_failed", "terminal_provider_failed"],
+      }),
+      invalidate:  () => {},
+      subscribe:   () => () => {},
+      dispose:     () => {},
+    };
+    const facade = new DesktopFacade(() => [], { ingress: fakeIngress });
+    const out = await facade.see();
+    expect(out.warnings).toContain("uia_provider_failed");
+    expect(out.warnings).toContain("terminal_provider_failed");
+    expect(out.constraints?.entityZeroReason).toBe("all_providers_failed");
+  });
+
+  it("constraints absent when only partial_results_only warning", async () => {
+    const fakeIngress: CandidateIngress = {
+      getSnapshot: async () => ({
+        candidates: [cand("OK", "uia")],
+        warnings:   ["partial_results_only"],
+      }),
+      invalidate:  () => {},
+      subscribe:   () => () => {},
+      dispose:     () => {},
+    };
+    const facade = new DesktopFacade(() => [], { ingress: fakeIngress });
+    const out = await facade.see();
+    expect(out.constraints).toBeUndefined();
+  });
+});
+
 describe("DesktopFacade — per-target session isolation (Batch A)", () => {
   const TARGET_A = { hwnd: "hwnd-A" };
   const TARGET_B = { hwnd: "hwnd-B" };
