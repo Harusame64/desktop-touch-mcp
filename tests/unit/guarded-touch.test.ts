@@ -436,3 +436,43 @@ describe("GuardedTouchLoop — enriched semantic diff (P2-D)", () => {
     if (result.ok) expect(result.diff).toContain("value_changed");
   });
 });
+
+// ── H3: dialog entity reachability ────────────────────────────────────────────
+// After H3, desktop_see on a dialog hwnd creates a dialog-own session.
+// Entities from the dialog session must not be modal_blocked by the dialog
+// container itself (only OTHER unknown-role entities trigger the guard).
+
+describe("GuardedTouchLoop — H3 dialog-own session modal guard", () => {
+  it("touches dialog textbox without modal_blocking when only textbox is in live snapshot", async () => {
+    // Scenario: Save As session contains only the filename textbox (no unknown-role entity).
+    const filename = entity("e1", GEN, { role: "textbox", sources: ["uia"] });
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(filename, "dialog-view");
+    const loop = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities:      () => [filename],
+      resolvePostTouchEntities: async () => [filename],
+      isModalBlocking: (entity) => {
+        // session-aware default: other uia+unknown entities in snapshot block
+        return false;  // dialog session has no unknown-role containers
+      },
+    }));
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(true);
+  });
+
+  it("self-entity is excluded from modal check (dialog entity does not block itself)", async () => {
+    // Even if the dialog container has role:unknown, touching IT does not trigger self-blocking.
+    const dialogContainer = entity("dlg1", GEN, { role: "unknown", sources: ["uia"] });
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(dialogContainer, "dialog-view");
+    const loop = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities:      () => [dialogContainer],
+      resolvePostTouchEntities: async () => [dialogContainer],
+      execute: async () => "uia",
+      // session-aware default isModalBlocking excludes self-reference
+      isModalBlocking: (e) => e !== dialogContainer && e.sources.includes("uia") && e.role === "unknown",
+    }));
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(true);
+  });
+});

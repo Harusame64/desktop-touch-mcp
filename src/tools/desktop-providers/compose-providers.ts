@@ -174,7 +174,23 @@ async function normalizeTarget(
     }
   }
 
-  if (target?.windowTitle) {
+  // H3: plain windowTitle without hwnd — try dialog resolution (case 4 in _resolve-window.ts).
+  // resolveWindowTarget returns null when a top-level window matches (preserving existing behaviour).
+  // Only dialog-fallback results (dialog_resolved_via_owner_chain) change the effective target.
+  if (target?.windowTitle && !target.hwnd) {
+    try {
+      const resolved = await resolveWindowTarget({ windowTitle: target.windowTitle });
+      if (resolved) {
+        return {
+          target: { ...target, hwnd: resolved.hwnd.toString(), windowTitle: resolved.title },
+          warnings: resolved.warnings,
+        };
+      }
+    } catch { /* fall through */ }
+    return { target, warnings: [] };
+  }
+
+  if (target?.windowTitle) {  // hwnd + windowTitle: pass through as before
     return { target, warnings: [] };
   }
 

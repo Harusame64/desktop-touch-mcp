@@ -250,8 +250,18 @@ const _DwmGetWindowAttribute = _dwmapi
     )
   : null;
 
-// Suppress unused-variable warning for GetLastActivePopup (reserved for future use)
-void GetLastActivePopup;
+/**
+ * Return the hwnd of the last active popup owned by `hwnd`.
+ * Returns null when no popup exists (GetLastActivePopup returns the window itself).
+ */
+export function getLastActivePopup(hwnd: unknown): bigint | null {
+  try {
+    const result = GetLastActivePopup(hwnd) as bigint;
+    return result === 0n ? null : result;
+  } catch {
+    return null;
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DPI awareness initialization (PROCESS_PER_MONITOR_DPI_AWARE = 2)

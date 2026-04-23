@@ -15,16 +15,31 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ─── Hoist mocks ─────────────────────────────────────────────────────────────
 
-const { mockGetForegroundHwnd, mockGetWindowTitleW, mockGetWindowRectByHwnd } = vi.hoisted(() => ({
-  mockGetForegroundHwnd: vi.fn<() => bigint | null>(),
-  mockGetWindowTitleW: vi.fn<(hwnd: unknown) => string>(),
-  mockGetWindowRectByHwnd: vi.fn<(hwnd: unknown) => { x: number; y: number; width: number; height: number } | null>(),
+const {
+  mockGetForegroundHwnd, mockGetWindowTitleW, mockGetWindowRectByHwnd,
+  // H3 additions
+  mockEnumWindowsInZOrder, mockGetWindowOwner, mockGetWindowClassName,
+  mockIsWindowEnabled, mockGetLastActivePopup,
+} = vi.hoisted(() => ({
+  mockGetForegroundHwnd:    vi.fn<() => bigint | null>(),
+  mockGetWindowTitleW:      vi.fn<(hwnd: unknown) => string>(),
+  mockGetWindowRectByHwnd:  vi.fn<(hwnd: unknown) => { x: number; y: number; width: number; height: number } | null>(),
+  mockEnumWindowsInZOrder:  vi.fn(),
+  mockGetWindowOwner:       vi.fn<(hwnd: unknown) => bigint | null>(),
+  mockGetWindowClassName:   vi.fn<(hwnd: unknown) => string>(),
+  mockIsWindowEnabled:      vi.fn<(hwnd: unknown) => boolean>(),
+  mockGetLastActivePopup:   vi.fn<(hwnd: unknown) => bigint | null>(),
 }));
 
 vi.mock("../../src/engine/win32.js", () => ({
-  getForegroundHwnd: mockGetForegroundHwnd,
-  getWindowTitleW: mockGetWindowTitleW,
-  getWindowRectByHwnd: mockGetWindowRectByHwnd,
+  getForegroundHwnd:    mockGetForegroundHwnd,
+  getWindowTitleW:      mockGetWindowTitleW,
+  getWindowRectByHwnd:  mockGetWindowRectByHwnd,
+  enumWindowsInZOrder:  mockEnumWindowsInZOrder,
+  getWindowOwner:       mockGetWindowOwner,
+  getWindowClassName:   mockGetWindowClassName,
+  isWindowEnabled:      mockIsWindowEnabled,
+  getLastActivePopup:   mockGetLastActivePopup,
 }));
 
 import { resolveWindowTarget } from "../../src/tools/_resolve-window.js";
@@ -35,6 +50,12 @@ beforeEach(() => {
   mockGetForegroundHwnd.mockReset();
   mockGetWindowTitleW.mockReset();
   mockGetWindowRectByHwnd.mockReset();
+  // H3 defaults: enabled windows, no popup, no dialog in enum
+  mockEnumWindowsInZOrder.mockReturnValue([]);
+  mockGetWindowOwner.mockReturnValue(null);
+  mockGetWindowClassName.mockReturnValue("");
+  mockIsWindowEnabled.mockReturnValue(true);
+  mockGetLastActivePopup.mockReturnValue(null);
   delete process.env.DESKTOP_TOUCH_DOCK_TITLE;
 });
 
@@ -141,6 +162,97 @@ describe("resolveWindowTarget — dock-window warnings", () => {
     mockGetWindowTitleW.mockReturnValue("Claude CLI");
     const result = await resolveWindowTarget({ windowTitle: "@active" });
     expect(result!.warnings.some(w => w.toLowerCase().includes("cli host"))).toBe(true);
+  });
+});
+
+// ─── H3: common dialog resolution ───────────────────────────────────────────
+
+describe("resolveWindowTarget — common dialog (H3 case 4)", () => {
+  it("falls back to #32770 dialog when plain title has no top-level match", async () => {
+    mockEnumWindowsInZOrder.mockReturnValue([
+      { hwnd: 100n, title: "Untitled - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false },
+      { hwnd: 200n, title: "名前を付けて保存",    className: "#32770",  ownerHwnd: 100n, isMinimized: false },
+    ]);
+    const result = await resolveWindowTarget({ windowTitle: "名前を付けて保存" });
+    expect(result).not.toBeNull();
+    expect(result!.hwnd).toBe(200n);
+    expect(result!.warnings).toContain("dialog_resolved_via_owner_chain");
+  });
+
+  it("falls back to owned popup when plain title has no top-level match and no #32770", async () => {
+    mockEnumWindowsInZOrder.mockReturnValue([
+      { hwnd: 300n, title: "Open File",  className: "DirectUIHWND", ownerHwnd: 100n, isMinimized: false },
+    ]);
+    const result = await resolveWindowTarget({ windowTitle: "Open File" });
+    expect(result).not.toBeNull();
+    expect(result!.hwnd).toBe(300n);
+    expect(result!.warnings).toContain("dialog_resolved_via_owner_chain");
+  });
+
+  it("returns null (defers to caller) when a plain top-level window matches", async () => {
+    mockEnumWindowsInZOrder.mockReturnValue([
+      { hwnd: 400n, title: "名前を付けて保存 - App", className: "AppClass", ownerHwnd: null, isMinimized: false },
+    ]);
+    // Plain top-level match exists → existing behaviour: return null
+    const result = await resolveWindowTarget({ windowTitle: "名前を付けて保存" });
+    expect(result).toBeNull();
+  });
+
+  it("returns null when no match found (no top-level, no dialog)", async () => {
+    mockEnumWindowsInZOrder.mockReturnValue([
+      { hwnd: 500n, title: "Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false },
+    ]);
+    const result = await resolveWindowTarget({ windowTitle: "Does Not Exist" });
+    expect(result).toBeNull();
+  });
+});
+
+describe("resolveWindowTarget — disabled-owner popup prefer (H3 case 5)", () => {
+  it("prefers active popup when owner is disabled and popup is owned by it", async () => {
+    mockGetWindowTitleW.mockImplementation((h) =>
+      h === 100n ? "Untitled - Notepad" : h === 200n ? "名前を付けて保存" : ""
+    );
+    mockIsWindowEnabled.mockImplementation((h) => h !== 100n);  // 100 = disabled
+    mockGetLastActivePopup.mockReturnValue(200n);
+    mockGetWindowOwner.mockReturnValue(100n);   // popup is owned by 100
+    mockGetWindowClassName.mockReturnValue("SomeClass");
+
+    const result = await resolveWindowTarget({ hwnd: "100" });
+    expect(result).not.toBeNull();
+    expect(result!.hwnd).toBe(200n);
+    expect(result!.title).toBe("名前を付けて保存");
+    expect(result!.warnings).toContain("parent_disabled_prefer_popup");
+  });
+
+  it("prefers active popup when popup is #32770 class (regardless of owner chain)", async () => {
+    mockGetWindowTitleW.mockImplementation((h) =>
+      h === 100n ? "Notepad" : h === 200n ? "Save" : ""
+    );
+    mockIsWindowEnabled.mockImplementation((h) => h !== 100n);
+    mockGetLastActivePopup.mockReturnValue(200n);
+    mockGetWindowOwner.mockReturnValue(null);   // no explicit owner
+    mockGetWindowClassName.mockReturnValue("#32770");  // but it's a dialog class
+
+    const result = await resolveWindowTarget({ hwnd: "100" });
+    expect(result!.hwnd).toBe(200n);
+    expect(result!.warnings).toContain("parent_disabled_prefer_popup");
+  });
+
+  it("does NOT prefer popup when owner window is enabled", async () => {
+    mockGetWindowTitleW.mockReturnValue("Notepad");
+    mockIsWindowEnabled.mockReturnValue(true);  // owner is enabled → no modal
+    const result = await resolveWindowTarget({ hwnd: "100" });
+    expect(result!.hwnd).toBe(100n);
+    expect(result!.warnings).not.toContain("parent_disabled_prefer_popup");
+  });
+
+  it("does NOT prefer popup when popup is same hwnd as owner (GetLastActivePopup self)", async () => {
+    mockGetWindowTitleW.mockReturnValue("Notepad");
+    mockIsWindowEnabled.mockReturnValue(false);
+    mockGetLastActivePopup.mockReturnValue(100n);  // returns self = no popup
+    const result = await resolveWindowTarget({ hwnd: "100" });
+    expect(result!.hwnd).toBe(100n);
+    expect(result!.warnings).not.toContain("parent_disabled_prefer_popup");
   });
 });
 
