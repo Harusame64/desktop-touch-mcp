@@ -252,7 +252,8 @@ const desktopTouchSchema = {
 
 /**
  * Register desktop_see and desktop_touch on the MCP server.
- * Only called when DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2=1.
+ * Called by default on v0.17+; suppressed only when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1.
+ * See docs/anti-fukuwarai-v2-activation-policy.md.
  */
 export function registerDesktopTools(server: McpServer): void {
   const facade = getDesktopFacade();

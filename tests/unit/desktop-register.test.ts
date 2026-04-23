@@ -121,7 +121,7 @@ describe("Activation policy — V2 tool description contract", () => {
     //
     // Direct string-level assertion would require reading the source file, which is
     // a meta-test and fragile. The architectural lock is:
-    //   "registerDesktopTools MUST NOT be called unless DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2=1
+    //   "registerDesktopTools is called by default (v0.17+) unless DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1
     //    (enforced in src/server-windows.ts — this module itself has no flag guard)."
     expect(expectedFragments).toHaveLength(5); // sentinel: keep list in sync with description
   });
