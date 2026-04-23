@@ -124,17 +124,18 @@ P4 系 docs でも、dogfood 実録は「あると安心」ではなく、
 
 ### A. visual attach race → **やる（Batch B 必須）**
 
-- 初回 `desktop_see` で `visual_provider_unavailable` が出うる
+- 初回 `desktop_see` で `visual_provider_unavailable`（backend 未 attach）または `visual_provider_warming`（attach 済み・warm 前）が出うる
 - default-on だと warning noise が「V2 は信頼できない」という LLM 学習を作る
-- 対処: `desktop-register.ts` で `visual_provider_unavailable` 検出時に ~200ms 待機 + 1 回 retry
-- retry 上限 1 回。失敗した場合は現行の warnings[] と同等
+- 対処: `desktop-register.ts` で **`visual_provider_unavailable` または `visual_provider_warming`** 検出時に ~200ms 待機 + 1 回 retry
+- retry 上限 1 回。retry 後も同警告が出る場合は現行の warnings[] と同等（structured lane で継続可能）
 - **Batch B で実装する（G4 necessary gate）**
 
 ### B. browser `9222` 固定前提 → **やらない（deferred）**
 
-- `TargetSpec` に `cdpPort` がないため、非デフォルト port では browser lane 未対応
-- 非 9222 ポートは advanced user であり docs で「`--remote-debugging-port=9222` 前提」を明記すれば自己解決可能
-- V1 `browser_*` も同じ制約であり、V2 固有の回帰ではない
+- V2 `TargetSpec` に `cdpPort` がないため、非 9222 port の Chrome/Edge では browser lane が機能しない
+- 非 9222 ポートは advanced user であり、docs で「`--remote-debugging-port=9222` 前提」を明記すれば自己解決可能
+- 注: V1 `browser_*` は `desktop-touch-config.json` の `{ "cdpPort": N }` で非 9222 対応済み。ただし V2 内部の browser-provider がこの config を読むかは未確認（`TargetSpec` 経由では非対応）
+- V2 の cdpPort 対応は API surface 変更を伴うため、default-on 直前に設計するより実使用で要望が来てから正しい形で実施する
 - API surface 変更を default-on 直前に入れるより、実使用で要望が来てから正しい形で設計する
 - **G5 deferred: default-on 後に要望ベースで実施**
 

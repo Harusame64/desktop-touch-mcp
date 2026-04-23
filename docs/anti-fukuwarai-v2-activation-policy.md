@@ -62,7 +62,9 @@ process.env.DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2 !== "1"
 ログ出力も合わせて更新する:
 - `DISABLE=1` 時: `[desktop-touch] v2 tools: disabled (DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1)`
 - デフォルト ON 時: `[desktop-touch] v2 tools: enabled (default-on)`
-- `ENABLE=1` が残っている場合: `[desktop-touch] DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2 is deprecated in v0.17; use DISABLE to opt out`
+- `ENABLE=1` が残っている場合: **v2 の ON/OFF にかかわらず** deprecation warning を出す
+  - `[desktop-touch] DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2 is deprecated in v0.17; use DISABLE to opt out`
+  - `DISABLE=1` で v2 が OFF になっている場合でも `ENABLE=1` が残っていれば警告（移行前ユーザーへの通知）
 
 今バッチ (Batch A) はドキュメントのみ。コード変更は Batch B。
 
