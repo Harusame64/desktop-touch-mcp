@@ -6,8 +6,10 @@
  * Populates locator.uia for every candidate.
  *
  * Warnings:
- *   uia_provider_failed — getUiElements threw or returned an error
- *   uia_no_elements     — window found but no actionable elements returned
+ *   uia_provider_failed       — getUiElements threw or returned an error
+ *   uia_no_elements           — window found but no actionable elements returned
+ *   uia_blind_single_pane     — (H4) UIA tree is a single giant Pane (PWA/Electron/canvas)
+ *   uia_blind_too_few_elements — (H4) UIA tree element count below threshold
  */
 
 import type { UiEntityCandidate } from "../../engine/vision-gpu/types.js";
@@ -41,7 +43,7 @@ export async function fetchUiaCandidates(
   const targetId    = target.hwnd ?? target.windowTitle ?? "@active";
 
   try {
-    const { getUiElements } = await import("../../engine/uia-bridge.js");
+    const { getUiElements, detectUiaBlind } = await import("../../engine/uia-bridge.js");
 
     // hwnd invariant: always decimal string (bigint as decimal, per codebase convention)
     const options = target.hwnd ? { hwnd: BigInt(target.hwnd) } : undefined;
@@ -64,7 +66,16 @@ export async function fetchUiaCandidates(
         provisional: false,
       }));
 
-    const warnings = candidates.length === 0 ? ["uia_no_elements"] : [];
+    const warnings: string[] = candidates.length === 0 ? ["uia_no_elements"] : [];
+
+    // H4: detect UIA-blind conditions (single-giant-pane / too-few-elements)
+    // so that compose-providers can escalate visual lane explainability.
+    const blind = detectUiaBlind(result);
+    if (blind.blind) {
+      if (blind.reason === "single-giant-pane")  warnings.push("uia_blind_single_pane");
+      else if (blind.reason === "too-few-elements") warnings.push("uia_blind_too_few_elements");
+    }
+
     return { candidates, warnings };
   } catch (err) {
     console.error(`[uia-provider] Error for target "${targetId}":`, err);

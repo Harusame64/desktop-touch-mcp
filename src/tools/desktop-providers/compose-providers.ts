@@ -14,8 +14,11 @@
  * provider does not prevent others from contributing candidates.
  *
  * Warning codes emitted here:
- *   no_provider_matched  — target omitted and foreground window could not be resolved
- *   partial_results_only — primary provider returned 0 entities; fallback attempted
+ *   no_provider_matched               — target omitted and foreground window could not be resolved
+ *   partial_results_only              — primary provider returned 0 entities; fallback attempted
+ *   visual_not_attempted              — (H4) visual lane was unready (unavailable/warming) on a blind target
+ *   visual_attempted_empty            — (H4) visual lane ran warm but produced no candidates on a blind target
+ *   visual_attempted_empty_cdp_fallback — (H4) CDP failed and visual also empty (browser target)
  */
 
 import type { TargetSpec } from "../../engine/world-graph/session-registry.js";
@@ -93,6 +96,45 @@ function addWarningIfPartial(result: ProviderResult, primaryCount: number): Prov
     }
   }
   return result;
+}
+
+// ── H4: visual escalation ─────────────────────────────────────────────────────
+// When structured lanes (UIA / CDP) cannot surface actionable entities due to
+// renderer opacity, surface the visual lane's outcome for explainability.
+// Call frequency is NOT increased — only the interpretation of existing results.
+//
+// Scope: applied to "uia" (native window) and "browser" primary routes only.
+// Terminal route is excluded intentionally: terminal provider is the primary
+// there, and uia is additive. Even if uia is blind, the terminal buffer is the
+// authoritative source — visual escalation would add noise, not signal.
+
+const UIA_BLIND_WARNINGS   = new Set(["uia_blind_single_pane", "uia_blind_too_few_elements"]);
+const VISUAL_UNREADY_WARNINGS = new Set(["visual_provider_unavailable", "visual_provider_warming"]);
+
+function applyVisualEscalation(
+  primaryResult: ProviderResult,
+  visualResult: ProviderResult,
+  primaryKind: "uia" | "browser",
+): string[] {
+  const extra: string[] = [];
+  const uiaBlind      = primaryResult.warnings.some((w) => UIA_BLIND_WARNINGS.has(w));
+  const cdpFailed     = primaryResult.warnings.includes("cdp_provider_failed");
+  const visualUnready = visualResult.warnings.some((w) => VISUAL_UNREADY_WARNINGS.has(w));
+  const visualEmpty   = visualResult.candidates.length === 0;
+
+  // Rule-A: uia blind + visual backend unready → visual_not_attempted
+  if (primaryKind === "uia" && uiaBlind && visualUnready) {
+    extra.push("visual_not_attempted");
+  }
+  // Rule-A': uia blind + visual warm but empty → visual_attempted_empty
+  if (primaryKind === "uia" && uiaBlind && !visualUnready && visualEmpty) {
+    extra.push("visual_attempted_empty");
+  }
+  // Rule-C: browser CDP failed + visual also empty → visual_attempted_empty_cdp_fallback
+  if (primaryKind === "browser" && cdpFailed && visualEmpty) {
+    extra.push("visual_attempted_empty_cdp_fallback");
+  }
+  return extra;
 }
 
 function withPrependedWarnings(result: ProviderResult, warnings: string[]): ProviderResult {
@@ -176,11 +218,15 @@ export async function composeCandidates(
       ? visual.value
       : { candidates: [], warnings: ["visual_provider_unavailable"] };
 
+    const merged     = mergeResults([browserResult, visualResult]);
+    const escalation = applyVisualEscalation(browserResult, visualResult, "browser");
+    const extra      = escalation.filter((w) => !merged.warnings.includes(w));
+    const finalMerged = extra.length > 0
+      ? { ...merged, warnings: [...merged.warnings, ...extra] }
+      : merged;
+
     return withPrependedWarnings(
-      addWarningIfPartial(
-        mergeResults([browserResult, visualResult]),
-        browserResult.candidates.length
-      ),
+      addWarningIfPartial(finalMerged, browserResult.candidates.length),
       normalized.warnings
     );
   }
@@ -212,11 +258,15 @@ export async function composeCandidates(
   const uiaResult    = uia.status    === "fulfilled" ? uia.value    : { candidates: [], warnings: ["uia_provider_failed"] };
   const visualResult = visual.status === "fulfilled" ? visual.value : { candidates: [], warnings: ["visual_provider_unavailable"] };
 
+  const merged     = mergeResults([uiaResult, visualResult]);
+  const escalation = applyVisualEscalation(uiaResult, visualResult, "uia");
+  const extra      = escalation.filter((w) => !merged.warnings.includes(w));
+  const finalMerged = extra.length > 0
+    ? { ...merged, warnings: [...merged.warnings, ...extra] }
+    : merged;
+
   return withPrependedWarnings(
-    addWarningIfPartial(
-      mergeResults([uiaResult, visualResult]),
-      uiaResult.candidates.length
-    ),
+    addWarningIfPartial(finalMerged, uiaResult.candidates.length),
     normalized.warnings
   );
 }

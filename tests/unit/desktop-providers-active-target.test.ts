@@ -80,6 +80,104 @@ beforeEach(() => {
   });
 });
 
+// ── H4: visual escalation warnings ───────────────────────────────────────────
+// H4 targets dogfood incidents Z-1 (Outlook PWA — S2) and Z-2 (Electron Codex — S5):
+//   single-giant-pane / UIA-blind + no CDP → desktop_see returned 0 entities with
+//   no explanation. These tests verify that compose surfaces escalation warnings
+//   so LLM / operator can understand why and fall back to OCR / V1 tools.
+
+describe("composeCandidates — H4 visual escalation (uia-blind + visual state)", () => {
+  it("emits visual_not_attempted when uia is blind (single-giant-pane) and visual is unavailable", async () => {
+    mocks.fetchUiaCandidates.mockResolvedValue({
+      candidates: [],
+      warnings: ["uia_blind_single_pane", "uia_no_elements"],
+    });
+    mocks.fetchVisualCandidates.mockResolvedValue({
+      candidates: [],
+      warnings: ["visual_provider_unavailable"],
+    });
+    const result = await composeCandidates({ hwnd: "999" });
+    expect(result.warnings).toContain("uia_blind_single_pane");
+    expect(result.warnings).toContain("visual_provider_unavailable");
+    expect(result.warnings).toContain("visual_not_attempted");
+  });
+
+  it("emits visual_not_attempted when uia is blind (too-few-elements) and visual is unavailable", async () => {
+    mocks.fetchUiaCandidates.mockResolvedValue({
+      candidates: [],
+      warnings: ["uia_blind_too_few_elements", "uia_no_elements"],
+    });
+    mocks.fetchVisualCandidates.mockResolvedValue({
+      candidates: [],
+      warnings: ["visual_provider_warming"],
+    });
+    const result = await composeCandidates({ hwnd: "999" });
+    expect(result.warnings).toContain("uia_blind_too_few_elements");
+    expect(result.warnings).toContain("visual_not_attempted");
+  });
+
+  it("emits visual_attempted_empty when uia is blind and visual is warm-but-empty", async () => {
+    mocks.fetchUiaCandidates.mockResolvedValue({
+      candidates: [],
+      warnings: ["uia_blind_single_pane"],
+    });
+    mocks.fetchVisualCandidates.mockResolvedValue({
+      candidates: [],
+      warnings: [],
+    });
+    const result = await composeCandidates({ hwnd: "999" });
+    expect(result.warnings).toContain("visual_attempted_empty");
+    expect(result.warnings).not.toContain("visual_not_attempted");
+  });
+
+  it("does NOT emit escalation warnings when uia tree is healthy", async () => {
+    mocks.fetchUiaCandidates.mockResolvedValue({
+      candidates: [candidate("Save", "uia", "123")],
+      warnings: [],
+    });
+    mocks.fetchVisualCandidates.mockResolvedValue({ candidates: [], warnings: [] });
+    const result = await composeCandidates({ hwnd: "123" });
+    expect(result.warnings).not.toContain("visual_not_attempted");
+    expect(result.warnings).not.toContain("visual_attempted_empty");
+  });
+
+  it("emits visual_attempted_empty_cdp_fallback for browser target with cdp failure and empty visual", async () => {
+    mocks.fetchBrowserCandidates.mockResolvedValue({
+      candidates: [],
+      warnings: ["cdp_provider_failed"],
+    });
+    mocks.fetchVisualCandidates.mockResolvedValue({ candidates: [], warnings: [] });
+    const result = await composeCandidates({ tabId: "tab-1" });
+    expect(result.warnings).toContain("cdp_provider_failed");
+    expect(result.warnings).toContain("visual_attempted_empty_cdp_fallback");
+  });
+
+  it("does NOT emit visual escalation for browser target when CDP succeeds", async () => {
+    mocks.fetchBrowserCandidates.mockResolvedValue({
+      candidates: [candidate("Button", "cdp", "tab-1")],
+      warnings: [],
+    });
+    mocks.fetchVisualCandidates.mockResolvedValue({ candidates: [], warnings: [] });
+    const result = await composeCandidates({ tabId: "tab-1" });
+    expect(result.warnings).not.toContain("visual_attempted_empty_cdp_fallback");
+  });
+
+  it("escalation warning is not duplicated when already present in merged result", async () => {
+    // Edge case: if somehow "visual_not_attempted" arrives from uia or visual mock
+    mocks.fetchUiaCandidates.mockResolvedValue({
+      candidates: [],
+      warnings: ["uia_blind_single_pane", "visual_not_attempted"],
+    });
+    mocks.fetchVisualCandidates.mockResolvedValue({
+      candidates: [],
+      warnings: ["visual_provider_unavailable"],
+    });
+    const result = await composeCandidates({ hwnd: "999" });
+    const count = result.warnings.filter((w) => w === "visual_not_attempted").length;
+    expect(count).toBe(1);
+  });
+});
+
 describe("composeCandidates — active target fallback", () => {
   it("hwnd-only target resolves the live title before terminal routing", async () => {
     mocks.resolveWindowTarget.mockResolvedValue({
