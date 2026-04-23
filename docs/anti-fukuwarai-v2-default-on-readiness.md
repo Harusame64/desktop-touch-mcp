@@ -31,7 +31,9 @@ P2 も 2 件残存しているが default-on ブロッカーではなく、optio
 
 ---
 
-## 2. Why Not Default-On Yet
+## 2. Why Not Default-On Yet（P4-B 時点の記録）
+
+> **※ P4-C で解消済み。** P1-1 → G1 ✅、P1-2 → G2 ✅（§9 参照）。以下は経緯として残す。
 
 ### P1-1. `desktop_touch` production wiring に modal / viewport / focus 観測が未接続
 
@@ -147,7 +149,8 @@ V1 ツール群（56 tools）は以下の役割で当面残す。削除しない
 | `no_provider_matched` | target 未指定かつ foreground window 解決失敗（Win32 API 一時失敗を含む） | `target.windowTitle` または `target.hwnd` を明示して再呼び出し。一時的な API 失敗の可能性もあるため短時間後にリトライ。V1 `screenshot(detail='meta')` で状態確認 |
 | `partial_results_only` | primary provider が 0 件、additive provider が補完 | entity 数が少ない可能性。V1 `get_ui_elements` と比較して判断 |
 | `cdp_provider_failed` | Chrome/Edge の CDP 接続失敗 | ブラウザが `--remote-debugging-port=9222` 付きで起動しているか確認。V1 `browser_*` tools で代替 |
-| `visual_provider_unavailable` | GPU 視覚認識が未準備または失敗 | 初回呼び出し直後の場合はリトライ。structured lane (uia/cdp) の結果だけで続行可能 |
+| `visual_provider_unavailable` | GPU backend が未 attach | 初回呼び出し直後の場合はリトライ（G4 retry が対処）。structured lane (uia/cdp) の結果だけで続行可能 |
+| `visual_provider_warming` | GPU backend は attach 済みだが warm 前 | 200-500ms 後に retry / structured lane で継続。G4 retry の対象（`unavailable` と同様に扱う） |
 | `uia_provider_failed` | UIA プロバイダーが失敗 | V1 `get_ui_elements` / `click_element` で代替 |
 | `terminal_provider_failed` | terminal プロバイダーが失敗 | V1 `terminal_read` / `terminal_send` で代替 |
 
@@ -171,11 +174,12 @@ V1 ツール群（56 tools）は以下の役割で当面残す。削除しない
 
 | ステージ | 状態 | 内容 |
 |---|---|---|
-| S1. Experimental opt-in | ✅ 完了 | `DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2=1` で使える状態 |
-| S2. Dogfood 実録 | 🔄 進行中 | 3-5 シナリオの実録ログを docs に追加する |
-| S3. P1 解消 | ❌ 未着手 | modal/viewport/focus wiring + terminal background path |
-| S4. Default-on 判断 | ❌ 未着手 | Gate 通過後に再評価 |
-| S5. Release planning | ❌ 未着手 | P4-C へ進む |
+| S1. Experimental opt-in | ✅ 完了 | `DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2=1` で opt-in、v0.16.0 ship 決定（P4-D） |
+| S2. G1/G2 解消 | ✅ 完了 | modal/viewport/focus wiring + WM_CHAR background path（P4-C） |
+| S3. Policy 設計 | ✅ 完了 | activation / coexistence / dogfood 合格ライン（P4-E Batch A） |
+| S4. Batch B 実装 | ❌ 未着手 | DISABLE flag 実装、visual attach retry（G4）、README 更新 |
+| S5. Dogfood 実録 | ❌ 未着手 | 5 シナリオ実録 + 合格ライン 5 点チェック（G3） |
+| S6. Default-on 最終判断 | ❌ 未着手 | 合格ライン達成後に v0.17.0 切替 or 継続判断 |
 
 ---
 
@@ -188,7 +192,7 @@ default-on 判断を再開するための前提条件（gate）。すべて ❌ 
 | G1. P1-1 解消 | 必須 | ✅ 閉 | production facade に modal / viewport / focus wiring 配線済み（P4-C） |
 | G2. P1-2 解消 | 必須 | ✅ 閉 | terminal executor を WM_CHAR background path に切替済み（P4-C） |
 | G3. Dogfood 実録 | **必須** | ❌ Open | 5 シナリオの実録ログ（合格ライン 5 点）— [`anti-fukuwarai-v2-dogfood-log.md`](anti-fukuwarai-v2-dogfood-log.md) |
-| G4. visual attach race 対処 | **必須** | ❌ Open | first-call retry ~200ms × 1 回（Batch B 実装） |
+| G4. visual attach race 対処 | **必須** | ❌ Open | `visual_provider_unavailable` **または `visual_provider_warming`** が出たら 1 回 retry ~200ms（Batch B 実装） |
 | G5. cdpPort 対応 | deferred | 🔵 Deferred | `TargetSpec.cdpPort` 追加は default-on 後に要望ベースで実施 |
 
 G1・G2 は解消済み。G3（dogfood 合格ライン）・G4（visual attach retry）が次の必須 gate。G5 は deferred。

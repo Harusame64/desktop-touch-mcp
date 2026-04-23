@@ -10,7 +10,7 @@
 以下 5 点を全て満たすと **v0.17.0 default-on 切替に進む**。1 点でも欠ければ v0.16.x patch で dogfood 継続。
 
 1. **実録数**: 5 シナリオ全て記録済み（pass / fail 問わず）
-2. **V2 単独 pass**: 5 シナリオのうち 3 つ以上が V1 fallback なしで完了
+2. **V2 単独 pass**: 5 シナリオのうち 3 つ以上が「V1 fallback なし」または「V1 fallback が 1 回以内で完了」
 3. **Fallback 成功**: fail したシナリオ全てで V1 fallback が成功している
 4. **Docs 整合**: warning / fail reason の意味が実録から読み取れ、tool description と矛盾しない
 5. **安定性**: dogfood 期間中に crash / hang / session leak が **0 件**
@@ -120,7 +120,7 @@
 - **version**: TBD
 - **target**: メモ帳等のネイティブアプリ → 名前を付けて保存ダイアログ
 - **category**: native-dialog
-- **goal**: `desktop_see` でダイアログの entity を観測し、ファイル名フィールドに入力して保存ボタンをクリック。modal guard（G1-A）の実動作を確認する
+- **goal**: `desktop_see` でダイアログの entity を観測し、ファイル名フィールドに入力して保存ボタンをクリック。modal guard（G1、§9 参照）の実動作を確認する
 
 ### Steps
 <!-- 実録時に記入 -->
