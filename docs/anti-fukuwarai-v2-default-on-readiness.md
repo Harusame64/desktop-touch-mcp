@@ -192,10 +192,10 @@ default-on 判断を再開するための前提条件（gate）。すべて ❌ 
 | G1. P1-1 解消 | 必須 | ✅ 閉 | production facade に modal / viewport / focus wiring 配線済み（P4-C） |
 | G2. P1-2 解消 | 必須 | ✅ 閉 | terminal executor を WM_CHAR background path に切替済み（P4-C） |
 | G3. Dogfood 実録 | **必須** | ❌ Open | 5 シナリオの実録ログ（合格ライン 5 点）— [`anti-fukuwarai-v2-dogfood-log.md`](anti-fukuwarai-v2-dogfood-log.md) |
-| G4. visual attach race 対処 | **必須** | ❌ Open | `visual_provider_unavailable` **または `visual_provider_warming`** が出たら 1 回 retry ~200ms（Batch B 実装） |
+| G4. visual attach race 対処 | **必須** | ✅ 閉 | `visual_provider_unavailable` / `visual_provider_warming` 時に 200ms × 1 回 retry 実装済み（Batch B） |
 | G5. cdpPort 対応 | deferred | 🔵 Deferred | `TargetSpec.cdpPort` 追加は default-on 後に要望ベースで実施 |
 
-G1・G2 は解消済み。G3（dogfood 合格ライン）・G4（visual attach retry）が次の必須 gate。G5 は deferred。
+G1・G2・G4 は解消済み。G3（dogfood 5 シナリオ実録・合格ライン 5 点）が残る必須 gate。G5 は deferred。
 
 ---
 
@@ -206,12 +206,16 @@ G1・G2 は解消済み。G3（dogfood 合格ライン）・G4（visual attach r
 | Batch | 内容 | 状態 |
 |---|---|---|
 | **Batch A** | Activation / rollback / coexistence policy を docs に落とす | ✅ 完了（2026-04-23） |
-| **Batch B** | `DISABLE` flag 実装・visual attach retry・server instructions 更新・README 更新 | ❌ 未着手 |
-| **Batch C** | dogfood 5 シナリオ実録・合格ライン 5 点チェック・v0.17 切替可否の最終判断メモ | ❌ 未着手 |
+| **Batch B** | `DISABLE` flag 実装・visual attach retry（G4）・server instructions / README 更新 | ✅ 完了（2026-04-23） |
+| **Batch C** | Tier 1 技術的暫定 Go 確認・dogfood 手順書整備 / Tier 2 ユーザー実録（5 シナリオ）・最終判断 | 🔄 Tier 1 ✅ / Tier 2 待機中 |
 
-**default-on 再判定ライン（Batch C 完了後）:**
-- 合格ライン 5 点満たす → v0.17.0 default-on 切替 commit + release 計画
-- 1 点でも欠ける → v0.16.x patch で dogfood 継続、不足シナリオを追記
+**default-on 再判定ライン:**
+- Tier 1（技術的暫定 Go）: T1-T7 全 ✅ → **達成済み（2026-04-23）**
+- Tier 2（dogfood 最終 Go）: 合格ライン 5 点満たす → v0.17.0 release 実行可
+- Tier 2 未達 → v0.16.x patch で dogfood 継続、不足シナリオを追記
+
+詳細: [`anti-fukuwarai-v2-batch-c-tier1-review.md`](anti-fukuwarai-v2-batch-c-tier1-review.md)  
+実録: [`anti-fukuwarai-v2-dogfood-log.md`](anti-fukuwarai-v2-dogfood-log.md)
 
 ---
 
