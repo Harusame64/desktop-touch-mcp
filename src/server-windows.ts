@@ -33,6 +33,7 @@ import { stopNativeRuntime } from "./engine/perception/registry.js";
 import { startTray, stopTray, type TrayOptions } from "./utils/tray.js";
 import { checkFailsafe, FailsafeError } from "./utils/failsafe.js";
 import { SERVER_VERSION } from "./version.js";
+import { resolveV2Activation } from "./tools/desktop-activation.js";
 
 // Resolve assets/icons directory (works both in dev: dist/ and release: dist/)
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -40,14 +41,32 @@ const icoDir = join(__dirname, "..", "assets", "icons");
 const icoOk = existsSync(join(icoDir, "tray_ok.ico")) ? join(icoDir, "tray_ok.ico") : undefined;
 
 // ─── Anti-Fukuwarai v2 feature flag ──────────────────────────────────────────
+// v0.17+: default-on. Kill switch: DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1.
+// Priority: DISABLE=1 > ENABLE=1 > default(ON).
+// Exact-match semantics: only the literal string "1" counts; "true"/"yes"/"0"/" " are unset.
+// See docs/anti-fukuwarai-v2-activation-policy.md for the full env matrix.
+const { enabled: _v2Enabled, disabledByFlag: _v2Disabled, legacyEnableSet: _v2LegacySet } =
+  resolveV2Activation(process.env);
+
+if (_v2Enabled) {
+  console.error("[desktop-touch] v2 tools: enabled (default-on)");
+} else {
+  console.error("[desktop-touch] v2 tools: disabled (DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1)");
+}
+
+// ENABLE=1 is deprecated since v0.17. Warn regardless of whether v2 ends up ON or OFF.
+if (_v2LegacySet) {
+  console.error(
+    "[desktop-touch] DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2 is deprecated in v0.17; " +
+    "remove it from your MCP env. Use DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1 to opt out."
+  );
+}
+
 // Pre-load the v2 module at startup so registerDesktopTools() is synchronous inside
 // createMcpServer(). Dynamic import keeps zero side-effects on flag-OFF path.
 // Top-level await is valid in ES modules (NodeNext, Node 20+).
-const _desktopV2 = process.env.DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2 === "1"
-  ? await import("./tools/desktop-register.js").then((m) => {
-      console.error("[desktop-touch] v2 experimental tools: enabled (DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2=1)");
-      return m;
-    }).catch((err) => {
+const _desktopV2 = _v2Enabled
+  ? await import("./tools/desktop-register.js").catch((err) => {
       // Registration failure must not crash the server.
       console.error("[desktop-touch] Failed to load desktop v2 module:", err);
       return null;
@@ -75,8 +94,16 @@ function createMcpServer(): McpServer {
         "",
         "## Clicking — priority order",
         "1. browser_click_element(selector) — Chrome/Edge (CDP, stable across repaints)",
-        "2. click_element(name or automationId) — native Windows apps (UIA)",
-        "3. mouse_click(x, y, origin?, scale?) — pixel fallback; origin+scale from dotByDot screenshots only",
+        "2. desktop_touch(lease) — native/dialog/visual (entity-based; use after desktop_see)",
+        "3. click_element(name or automationId) — native UIA fallback if desktop_touch ok=false",
+        "4. mouse_click(x, y, origin?, scale?) — pixel last resort; origin+scale from dotByDot screenshots only",
+        "",
+        "## When desktop_touch returns ok:false",
+        "Read reason and follow the recovery path:",
+        "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_see;",
+        "  modal_blocking → dismiss modal via click_element, then retry;",
+        "  entity_outside_viewport → scroll via scroll/scroll_to_element, then re-call desktop_see;",
+        "  executor_failed → fall back to click_element / mouse_click / browser_click_element",
         "",
         "## Observation — priority order",
         "1. get_context — cheapest; confirms focused element, value, modal state after actions",

@@ -267,7 +267,8 @@ export function registerDesktopTools(server: McpServer): void {
       "If response.warnings[] is non-empty, results may be partial.",
       "Recovery: no_provider_matched → add target.windowTitle or retry; partial_results_only → compare with V1 get_ui_elements;",
       "cdp_provider_failed → check --remote-debugging-port=9222;",
-      "visual_provider_unavailable → retry or continue with structured lane; uia/terminal_provider_failed → use V1 tools (get_ui_elements / terminal_read).",
+      "visual_provider_unavailable / visual_provider_warming → server retried once (~200ms); if still warned, continue with structured lane or retry later;",
+      "uia/terminal_provider_failed → use V1 tools (get_ui_elements / terminal_read).",
     ].join(" "),
     desktopSeeSchema,
     async (input) => {

@@ -661,9 +661,9 @@ The 160× speedup on `getFocusedElement` comes from eliminating PowerShell proce
 
 ---
 
-## Experimental: UI Operating Layer (V2)
+## UI Operating Layer (V2)
 
-> **Status: Experimental — default OFF.** These tools are hidden unless you opt in.
+> **Status: Default ON since v0.17.** `desktop_see` and `desktop_touch` are available out of the box.
 
 V2 introduces two new tools that replace coordinate-based clicking with entity-based interaction:
 
@@ -672,9 +672,18 @@ V2 introduces two new tools that replace coordinate-based clicking with entity-b
 | `desktop_see` | Observe a window or browser tab. Returns interactive entities with leases — no raw screen coordinates. Supports UIA (native), CDP (browser), terminal, and visual GPU lanes. |
 | `desktop_touch` | Interact with an entity returned by `desktop_see`. Validates the lease before executing. Returns a semantic diff (`entity_disappeared`, `modal_appeared`, `focus_shifted`, …). |
 
-### Enable V2
+### Clicking — priority order
 
-Add `DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2=1` to your MCP env config:
+When multiple tools could perform the same click, prefer them in this order:
+
+1. `browser_click_element(selector)` — Chrome / Edge over CDP (stable across repaints)
+2. `desktop_touch(lease)` — native windows, dialogs, visual-only targets (entity-based; use after `desktop_see`)
+3. `click_element(name | automationId)` — native UIA fallback when `desktop_touch` returns `ok:false`
+4. `mouse_click(x, y)` — pixel-level last resort (`origin` + `scale` from `dotByDot` screenshots only)
+
+### Disabling V2 (kill switch)
+
+To hide `desktop_see` / `desktop_touch` from the tool catalog, add the disable flag and restart:
 
 ```json
 {
@@ -684,20 +693,37 @@ Add `DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2=1` to your MCP env config:
       "command": "npx",
       "args": ["-y", "@harusame64/desktop-touch-mcp"],
       "env": {
-        "DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2": "1"
+        "DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2": "1"
       }
     }
   }
 }
 ```
 
-### Kill switch
+All V1 tools continue to work without interruption — no reinstall required. Remove the env entry and restart to re-enable.
 
-Remove `DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2` from env and restart. All V1 tools continue to work without interruption — no reinstall required.
+Flag semantics (exact-match: only the literal string `"1"` counts):
+
+| `DISABLE_FUKUWARAI_V2` | `ENABLE_FUKUWARAI_V2` | V2 state |
+|---|---|---|
+| unset / not `"1"` | unset / not `"1"` | **ON** (default) |
+| unset / not `"1"` | `"1"` | ON (legacy flag — see below) |
+| `"1"` | any | **OFF** — DISABLE wins |
+
+### Deprecated: `DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2`
+
+This was the opt-in switch in v0.16.x. From v0.17 it is accepted for compatibility but no longer required — the server prints a deprecation warning on startup when it is set. It will be removed in v0.18. Remove it from your config when you upgrade.
 
 ### Recovery when V2 fails
 
-If `desktop_touch` returns `ok: false`, read `reason` and follow the built-in recovery hints in the tool description. In all cases, V1 tools (`screenshot`, `click_element`, `get_ui_elements`, `terminal_send`, …) are available as an escape hatch.
+If `desktop_touch` returns `ok: false`, read `reason` and follow the built-in recovery hints in the tool description. Common paths:
+
+- `lease_expired` / `*_mismatch` / `entity_not_found` → re-call `desktop_see`
+- `modal_blocking` → dismiss the modal with `click_element`, then retry
+- `entity_outside_viewport` → `scroll` / `scroll_to_element`, then re-call `desktop_see`
+- `executor_failed` → fall back to `click_element` / `mouse_click` / `browser_click_element`
+
+For `desktop_see` warnings (`visual_provider_unavailable`, `visual_provider_warming`, `cdp_provider_failed`, …), V1 tools (`screenshot`, `click_element`, `get_ui_elements`, `terminal_send`, …) remain available as an escape hatch.
 
 ---
 
