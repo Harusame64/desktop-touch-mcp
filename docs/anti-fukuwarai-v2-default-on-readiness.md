@@ -177,9 +177,9 @@ V1 ツール群（56 tools）は以下の役割で当面残す。削除しない
 | S1. Experimental opt-in | ✅ 完了 | `DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2=1` で opt-in、v0.16.0 ship 決定（P4-D） |
 | S2. G1/G2 解消 | ✅ 完了 | modal/viewport/focus wiring + WM_CHAR background path（P4-C） |
 | S3. Policy 設計 | ✅ 完了 | activation / coexistence / dogfood 合格ライン（P4-E Batch A） |
-| S4. Batch B 実装 | ❌ 未着手 | DISABLE flag 実装、visual attach retry（G4）、README 更新 |
-| S5. Dogfood 実録 | ❌ 未着手 | 5 シナリオ実録 + 合格ライン 5 点チェック（G3） |
-| S6. Default-on 最終判断 | ❌ 未着手 | 合格ライン達成後に v0.17.0 切替 or 継続判断 |
+| S4. Batch B 実装 | ✅ 完了（2026-04-23） | DISABLE flag 実装、visual attach retry（G4）、README 更新 |
+| S5. Dogfood 実録 | 🔄 待機中 | 5 シナリオ実録 + 合格ライン 5 点チェック（G3）— ユーザー実施待ち |
+| S6. Default-on 最終判断 | ❌ No-Go（2026-04-23） | 合格ライン 1 未達。詳細: [v17-final-decision-memo.md](anti-fukuwarai-v2-v17-final-decision-memo.md) |
 
 ---
 
