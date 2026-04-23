@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { UiEntityCandidate } from "../engine/vision-gpu/types.js";
 import type { UiEntity, EntityLease } from "../engine/world-graph/types.js";
+import { computeLeaseTtlMs } from "../engine/world-graph/lease-ttl-policy.js";
 import { resolveCandidates } from "../engine/world-graph/resolver.js";
 import {
   SessionRegistry,
@@ -98,7 +99,11 @@ export interface DesktopFacadeOptions {
    * When not set, focus_shifted is never emitted (conservative default).
    */
   getFocusedEntityId?: () => string | undefined;
-  /** Default lease TTL in ms (default: 5000). */
+  /**
+   * Override lease TTL in ms — bypasses view/entityCount policy when set.
+   * Use in tests to inject a fixed TTL. Production callers should omit this
+   * to let lease-ttl-policy.ts compute a response-size-aware TTL.
+   */
   defaultTtlMs?: number;
   /** Injectable clock for testing. */
   nowFn?: () => number;
@@ -185,8 +190,14 @@ export class DesktopFacade {
     session.entities = resolved;
     this.registry.replaceViewId(prevViewId, newViewId, key);
 
+    // H1: response-size aware TTL. Ignored when facade.defaultTtlMs explicitly set
+    // (preserves backward compat for tests that inject a fixed TTL).
+    const policyTtl = this.opts.defaultTtlMs !== undefined
+      ? this.opts.defaultTtlMs
+      : computeLeaseTtlMs({ view: input.view, entityCount: resolved.length });
+
     const entityViews: EntityView[] = resolved.map((e) => {
-      const lease = session.leaseStore.issue(e, newViewId);
+      const lease = session.leaseStore.issue(e, newViewId, policyTtl);
       const view: EntityView = {
         entityId: e.entityId,
         label: e.label,
