@@ -1,14 +1,15 @@
 # Anti-Fukuwarai v2 — Default-On Readiness & Rollback Policy
 
 作成: 2026-04-22  
-フェーズ: Phase 4 / Batch P4-B  
+更新: 2026-04-23 (P4-E Batch A)  
+フェーズ: Phase 4 / Batch P4-B → P4-E  
 ブランチ: `desktop-touch-mcp-fukuwaraiv2`
 
 ---
 
 ## 1. Current Decision
 
-**Decision: opt-in 継続 / default-on 見送り**
+**P4-B 判断: opt-in 継続 / default-on 見送り**（当時）
 
 理由:
 
@@ -19,6 +20,14 @@
 P4-B の推奨判断: **選択肢 1 — opt-in 継続 + docs 推奨 + dogfood 継続**
 
 P2 も 2 件残存しているが default-on ブロッカーではなく、optional gate として §9 (G4/G5) に整理している。
+
+**P4-E Batch A 更新（2026-04-23）:**
+
+- G1 / G2 は解消済み（P4-C / ship decision memo 参照）
+- Activation Policy: **Option A（disable flag 方式）を採択**（詳細 §3 更新参照）
+- G3（dogfood 実録）を **required** に格上げ
+- G4（visual attach race）を **必須** に格上げ
+- G5（cdpPort）を **deferred** に降格
 
 ---
 
@@ -46,36 +55,37 @@ LLM が他のウィンドウを操作しながら terminal command を送ると 
 
 ## 3. Activation Policy
 
-### 現行 — Flag-gated opt-in
+### v0.16.x — Flag-gated opt-in（現行）
 
 ```
 DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2=1
 ```
 
-| フラグ状態 | V2 tools (desktop_see / desktop_touch) | V1 tools (56 ツール) |
+| フラグ状態 | V2 tools (desktop_see / desktop_touch) | V1 tools |
 |---|---|---|
 | 設定なし (default) | 公開されない | 常時公開 |
 | `=1` | 公開される | 常時公開 |
 | その他の値 | 公開されない | 常時公開 |
 
-実装位置: `src/server-windows.ts:46` の top-level dynamic import guard
+### v0.17.0 — Default-on + Disable flag（P4-E Batch A 決定: Option A）
 
-```ts
-const _desktopV2 = process.env.DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2 === "1"
-  ? await import("./tools/desktop-register.js")...
-  : null;
+**決定: `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1` を kill switch として使う。**
+
+詳細仕様・理由・env matrix: [`anti-fukuwarai-v2-activation-policy.md`](anti-fukuwarai-v2-activation-policy.md)
+
+v0.17 優先順位（明文化）:
+```
+優先順位: DISABLE=1 > ENABLE=1 > default(ON)
 ```
 
-フラグが `1` でない場合: dynamic import は行われず zero side-effects。
+| DISABLE | ENABLE | v2 状態 |
+|---|---|---|
+| 未設定 / 非"1" | 未設定 / 非"1" | **ON**（default-on） |
+| 未設定 / 非"1" | "1" | ON（ENABLE は deprecated 互換） |
+| "1" | 未設定 / 非"1" | **OFF** |
+| "1" | "1" | **OFF**（DISABLE wins） |
 
-### 将来候補 — Default-like preference (未実装)
-
-```
-DESKTOP_TOUCH_PREFER_FUKUWARAI_V2=1   # P4-B 時点では実装しない
-```
-
-このフラグは、default-on readiness が確認された後に設計・実装を検討する。  
-**P4-B ではコードに追加しない。**
+実装変更は Batch B で実施（今回は docs のみ）。
 
 ---
 
@@ -175,26 +185,29 @@ default-on 判断を再開するための前提条件（gate）。すべて ❌ 
 
 | Gate | 優先 | 状態 | 説明 |
 |---|---|---|---|
-| G1. P1-1 解消 | 必須 | ❌ Open | `desktop_touch` production facade に modal / viewport / focus wiring を接続する |
-| G2. P1-2 解消 | 必須 | ❌ Open | terminal executor を background/WM_CHAR 系 path に切り替える |
-| G3. Dogfood 実録 | 推奨 | ❌ Open | 3-5 シナリオの実録ログを docs に追加する |
-| G4. P2-1 対処 | optional | 🟡 Optional | facade init の async 化、または first-call retry 追加 |
-| G5. P2-2 対処 | optional | 🟡 Optional | `TargetSpec` に `cdpPort` を追加 |
+| G1. P1-1 解消 | 必須 | ✅ 閉 | production facade に modal / viewport / focus wiring 配線済み（P4-C） |
+| G2. P1-2 解消 | 必須 | ✅ 閉 | terminal executor を WM_CHAR background path に切替済み（P4-C） |
+| G3. Dogfood 実録 | **必須** | ❌ Open | 5 シナリオの実録ログ（合格ライン 5 点）— [`anti-fukuwarai-v2-dogfood-log.md`](anti-fukuwarai-v2-dogfood-log.md) |
+| G4. visual attach race 対処 | **必須** | ❌ Open | first-call retry ~200ms × 1 回（Batch B 実装） |
+| G5. cdpPort 対応 | deferred | 🔵 Deferred | `TargetSpec.cdpPort` 追加は default-on 後に要望ベースで実施 |
 
-G1・G2 は default-on の必須条件。G3 は推奨。G4・G5 は optional。
+G1・G2 は解消済み。G3（dogfood 合格ライン）・G4（visual attach retry）が次の必須 gate。G5 は deferred。
 
 ---
 
 ## 10. Recommended Next Action
 
-P4-B 完了後の推奨アクション順:
+**P4-E Batch A 完了後の推奨アクション順:**
 
-1. **Gate G1 着手**: `src/tools/desktop-executor.ts` + `session-registry.ts` に production modal/viewport/focus guard を配線する
-2. **Gate G2 着手**: terminal executor を background send path に切り替える
-3. **Gate G3 着手**: 実録ログを docs に追加する（`docs/anti-fukuwarai-v2-dogfood-log.md` など）
-4. **全 gate 通過後**: P4-C (Release Planning) へ進む
+| Batch | 内容 | 状態 |
+|---|---|---|
+| **Batch A** | Activation / rollback / coexistence policy を docs に落とす | ✅ 完了（2026-04-23） |
+| **Batch B** | `DISABLE` flag 実装・visual attach retry・server instructions 更新・README 更新 | ❌ 未着手 |
+| **Batch C** | dogfood 5 シナリオ実録・合格ライン 5 点チェック・v0.17 切替可否の最終判断メモ | ❌ 未着手 |
 
-P4-C への進行条件: G1 + G2 が両方 ✅ であること。
+**default-on 再判定ライン（Batch C 完了後）:**
+- 合格ライン 5 点満たす → v0.17.0 default-on 切替 commit + release 計画
+- 1 点でも欠ける → v0.16.x patch で dogfood 継続、不足シナリオを追記
 
 ---
 

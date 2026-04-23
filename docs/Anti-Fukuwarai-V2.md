@@ -350,6 +350,10 @@ PoC の段階では次をやらない。
 
 - [anti-fukuwarai-v2-experimental-quality-review.md](anti-fukuwarai-v2-experimental-quality-review.md) — P4-A review 結果 (pass/partial/issue list)
 - [anti-fukuwarai-v2-default-on-readiness.md](anti-fukuwarai-v2-default-on-readiness.md) — P4-B: default-on readiness / rollback policy
+- [anti-fukuwarai-v2-default-on-rollout-plan.md](anti-fukuwarai-v2-default-on-rollout-plan.md) — default-on 候補へ進めるための次タスク整理
+- [anti-fukuwarai-v2-activation-policy.md](anti-fukuwarai-v2-activation-policy.md) — P4-E Batch A: activation / disable flag / env matrix
+- [anti-fukuwarai-v2-coexistence-policy.md](anti-fukuwarai-v2-coexistence-policy.md) — P4-E Batch A: V1/V2 priority order / fallback policy
+- [anti-fukuwarai-v2-dogfood-log.md](anti-fukuwarai-v2-dogfood-log.md) — P4-E Batch B/C: dogfood 実録 / 合格ライン
 - [anti-fukuwarai-v2-g1-g2-implementation-instructions.md](anti-fukuwarai-v2-g1-g2-implementation-instructions.md) — G1/G2: production guard / terminal background send 実装指示
 - [anti-fukuwarai-v2-phase4c-release-planning-instructions.md](anti-fukuwarai-v2-phase4c-release-planning-instructions.md) — P4-C: release planning / packaging review 指示書
 - [anti-fukuwarai-v2-phase4d-decision-memo-instructions.md](anti-fukuwarai-v2-phase4d-decision-memo-instructions.md) — P4-D: ship / no-ship decision memo 指示書
