@@ -357,7 +357,9 @@ PoC の段階では次をやらない。
 - [anti-fukuwarai-v2-tier2-dogfood-checklist.md](anti-fukuwarai-v2-tier2-dogfood-checklist.md) — Tier 2 実録を埋めるための簡易チェックリスト
 - [anti-fukuwarai-v2-tier2-final-decision-instructions.md](anti-fukuwarai-v2-tier2-final-decision-instructions.md) — Tier 2 実録後の Go / No-Go 最終判定 instructions
 - [anti-fukuwarai-v2-batch-c-tier1-review.md](anti-fukuwarai-v2-batch-c-tier1-review.md) — P4-E Batch C: Tier 1 技術的暫定 Go レビュー ✅
-- [anti-fukuwarai-v2-v17-final-decision-memo.md](anti-fukuwarai-v2-v17-final-decision-memo.md) — **v0.17.0 default-on 最終判定: No-Go（Tier 2 dogfood 実録待ち）**
+- [anti-fukuwarai-v2-v17-final-decision-memo.md](anti-fukuwarai-v2-v17-final-decision-memo.md) — **v0.17.0 default-on 最終判定: Go（release candidate）**
+- [anti-fukuwarai-v2-hardening-backlog.md](anti-fukuwarai-v2-hardening-backlog.md) — dogfood 後の post-Go hardening backlog（TTL / visual / hierarchy / capability）
+- [anti-fukuwarai-v2-hardening-implementation-instructions.md](anti-fukuwarai-v2-hardening-implementation-instructions.md) — hardening backlog を順次修正で進めるための実装指示書
 - [anti-fukuwarai-v2-g1-g2-implementation-instructions.md](anti-fukuwarai-v2-g1-g2-implementation-instructions.md) — G1/G2: production guard / terminal background send 実装指示
 - [anti-fukuwarai-v2-phase4c-release-planning-instructions.md](anti-fukuwarai-v2-phase4c-release-planning-instructions.md) — P4-C: release planning / packaging review 指示書
 - [anti-fukuwarai-v2-phase4d-decision-memo-instructions.md](anti-fukuwarai-v2-phase4d-decision-memo-instructions.md) — P4-D: ship / no-ship decision memo 指示書

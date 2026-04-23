@@ -9,17 +9,21 @@
 
 ## Decision
 
-**No-Go — v0.17.0 default-on release は保留**
+**Go — v0.17.0 default-on release candidate として進行可**
 
 ---
 
 ## Why
 
-Tier 2 dogfood 5 シナリオが未実施（S1〜S5 全て TBD）。合格ライン 1（実録数: 5 シナリオ全て記録済み）を満たしていない。
+Tier 1（技術的暫定 Go）に加え、Tier 2 dogfood 5 シナリオが完了し、合格ライン 5 点を全て満たした。
 
-`tier2-final-decision-instructions.md §6`: 「Tier 2 実録が埋まっていない場合、Go を出さない」
+- S1 browser-form: **Passed without V1 fallback**
+- S2 browser-click: **Passed with V1 fallback (acceptable)**
+- S3 terminal: **Passed with V1 fallback (acceptable)**
+- S4 native-dialog: **Failed**, but V1 fallback で最終成功
+- S5 visual-only: **Passed with V1 fallback (acceptable)**
 
-Tier 1 は技術的 Go（コード準備完了）だが、release の許可は Tier 2 完了が条件。実装品質の問題ではなく、実録エビデンスが未整備なことが No-Go の唯一の理由。
+このため、`tier2-final-decision-instructions.md §6` の Go 条件を満たし、v0.17.0 default-on release candidate として release process に進める。
 
 ---
 
@@ -45,15 +49,15 @@ Tier 1 は技術的 Go（コード準備完了）だが、release の許可は T
 
 ## Tier 2 Status（dogfood 実録）
 
-❌ **未完了** — S1〜S5 全て TBD
+✅ **完了** — S1〜S5 実録済み
 
 | # | シナリオ | カテゴリ | 状態 |
 |---|---|---|---|
-| S1 | Issue タイトル入力 | browser-form | ❌ 未実施 |
-| S2 | Webmail Compose ボタン | browser-click | ❌ 未実施 |
-| S3 | git status 送信 | terminal | ❌ 未実施 |
-| S4 | 名前を付けて保存 | native-dialog | ❌ 未実施 |
-| S5 | Electron カスタム描画領域 | visual-only | ❌ 未実施 |
+| S1 | Issue タイトル入力 | browser-form | ✅ V2 単独 pass |
+| S2 | Webmail Compose ボタン | browser-click | ✅ V1 fallback 1 回以内で成功 |
+| S3 | git status 送信 | terminal | ✅ V1 fallback 1 回以内で成功 |
+| S4 | 名前を付けて保存 | native-dialog | ⚠️ V2 fail / V1 fallback 成功 |
+| S5 | Electron カスタム描画領域 | visual-only | ✅ V1 fallback 1 回以内で成功 |
 
 ---
 
@@ -63,7 +67,7 @@ Tier 1 は技術的 Go（コード準備完了）だが、release の許可は T
 |---|---|---|
 | G1: modal/viewport/focus wiring | ✅ 閉 | P4-C 完了 |
 | G2: terminal WM_CHAR background path | ✅ 閉 | P4-C 完了 |
-| G3: dogfood 実録 5 シナリオ | ❌ Open | **現在のブロッカー** |
+| G3: dogfood 実録 5 シナリオ | ✅ 閉 | Tier 2 実録完了 |
 | G4: visual attach retry | ✅ 閉 | Batch B 完了 |
 | G5: cdpPort 対応 | 🔵 Deferred | default-on 後に要望ベース |
 
@@ -73,57 +77,45 @@ Tier 1 は技術的 Go（コード準備完了）だが、release の許可は T
 
 | # | 条件 | 判定 |
 |---|---|---|
-| 1 | 5 シナリオ全て記録済み | ❌ **未達（S1-S5 全て未実施）** |
-| 2 | 3 シナリオ以上が V2 単独 pass / V1 fallback 1 回以内 | ❌ 判定不能 |
-| 3 | fail したシナリオで V1 fallback 成功 | ❌ 判定不能 |
-| 4 | warning / fail reason が docs と整合 | ⚠️ enum 静的確認済み（T7 ✅）、実録確認は未実施 |
-| 5 | crash / hang / session leak 0 件 | ❌ 判定不能（T8 N/A） |
+| 1 | 5 シナリオ全て記録済み | ✅ |
+| 2 | 3 シナリオ以上が V2 単独 pass / V1 fallback 1 回以内 | ✅ |
+| 3 | fail したシナリオで V1 fallback 成功 | ✅ |
+| 4 | warning / fail reason が docs と整合 | ✅ |
+| 5 | crash / hang / session leak 0 件 | ✅ |
 
 ---
 
-## Holding Version Policy
+## Release Outcome
 
-- **現行**: v0.16.x で opt-in 継続（`DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2=1`）
-- **v0.17.0 default-on**: Tier 2 実録完了・合格ライン 5 点達成後に再判定
+- **推奨**: v0.17.0 を default-on release candidate として進める
+- **kill switch**: `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1`
+- **互換**: V1 tools は catalog に残し、fallback / escape hatch として維持
+- **deprecation**: `DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2=1` は v0.17.x では deprecated 互換として受理し、v0.18.0+ で撤去予定
 
 ---
 
-## Next Action（No-Go）
+## Next Action（Go）
 
-### 1. ユーザーが dogfood 5 シナリオを実施する
+1. `docs/release-process.md` を full read
+2. `npm version 0.17.0 --no-git-tag-version`
+3. `npm run build` / `npm publish --dry-run` / HTTP preflight
+4. `git commit` / `git tag v0.17.0` / `git push origin v0.17.0`
+5. CI（GitHub Actions release.yml）で zip 生成完了を待つ
+6. `gh release view v0.17.0 --json assets` で zip 存在確認後に `npm publish`
+7. クリーンキャッシュで npx スモークテスト
 
-- 手順書: `docs/anti-fukuwarai-v2-tier2-dogfood-checklist.md`
-- 記録先: `docs/anti-fukuwarai-v2-dogfood-log.md`
-- 各シナリオの step-by-step 手順は dogfood-log.md 内に記載済み
+---
 
-### 2. 実録時の注意
+## Post-Go Hardening Items
 
-- `focus_shifted` は **fail reason ではなく観測シグナル**。出ても即 fail にしない
-- `visual_provider_warming` / `visual_provider_unavailable` は G4 retry 後に解消するか確認
-- crash / hang / session leak が出たらその場でメモ（合格ライン 5 の観測）
+1. **Lease TTL**
+   - large `explore` 応答を読むと `desktop_see -> desktop_touch` 間で `lease_expired` が出やすい。
+   - 候補: TTL 延長、response-size aware TTL、see/touch 往復短縮。
 
-### 3. 合格ライン 5 点を自己チェックする
+2. **Visual lane trigger**
+   - Electron / PWA の `single-giant-pane` ケースで visual lane が起動せず、OCR fallback に依存した。
+   - 候補: sparse UIA + no CDP 時の visual lane 昇格条件見直し、debug/force visual の明文化。
 
-5 点全て満たした後、Claude にこの判定作業を再依頼する。
-
-### 4. Go に更新して release へ進む（Tier 2 達成後）
-
-1. このメモを「Go」に更新
-2. `docs/release-process.md` を full read
-3. `npm version 0.17.0 --no-git-tag-version` で version bump
-4. `npm run build` / `npm publish --dry-run` / HTTP preflight
-5. `git commit` / `git tag v0.17.0` / `git push origin v0.17.0`
-6. CI（GitHub Actions release.yml）が zip 生成を完了するのを待つ
-7. `gh release view v0.17.0 --json assets` で zip 存在確認
-8. `npm publish`（2FA ブラウザ認証）
-9. クリーンキャッシュで npx スモークテスト
-
-### 5. 不足シナリオの優先順
-
-実録が難しい場合は以下の順で着手を推奨:
-
-1. **S3 terminal** — 最もシンプル（git status 送信、CDP 不要）
-2. **S1 browser-form** — Chrome/Edge CDP 接続があれば比較的容易
-3. **S4 native-dialog** — メモ帳があれば実施可能
-4. **S2 browser-click** — S1 と同じ環境で実施可
-5. **S5 visual-only** — GPU pipeline 依存、最後に実施
+3. **Native common file dialog**
+   - Windows common dialog では V2 path が成立しなかった。
+   - 候補: common dialog resolver / UIA bridge reachability の再調査、V1 fallback docs 強化。
