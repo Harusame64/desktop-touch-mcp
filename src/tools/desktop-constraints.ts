@@ -9,9 +9,17 @@
 /**
  * View-level negative capability hints.
  * Derived deterministically from warnings[]. Absent field = no constraint known for that provider.
+ *
+ * Extension policy: new values are always ADDITIVE (new enum literal or new field).
+ * Existing values are never renamed — deprecation requires a minor-version notice
+ * and a 1-release alias period before removal.
  */
 export interface ViewConstraints {
-  /** UIA lane unable to surface meaningful entities for this target. */
+  /**
+   * UIA lane unable to surface meaningful entities for this target.
+   * Priority: blind_single_pane > blind_too_few_elements > provider_failed
+   * (blind_single_pane is always set when present, regardless of order in warnings[]).
+   */
   uia?: "blind_single_pane" | "blind_too_few_elements" | "provider_failed";
   /** CDP lane unavailable or failed (browser targets only). */
   cdp?: "provider_failed";
@@ -24,8 +32,13 @@ export interface ViewConstraints {
   visual?: "not_attempted" | "attempted_empty" | "provider_unavailable" | "provider_warming";
   /** Terminal provider status (terminal targets only). */
   terminal?: "buffer_empty" | "provider_failed";
-  /** Foreground / window hierarchy resolution status. */
-  window?: "no_provider_matched" | "dialog_resolved_via_owner_chain" | "parent_disabled_prefer_popup";
+  /**
+   * Foreground window resolution failure.
+   * Only "no_provider_matched" is a true failure (constraint).
+   * H3 success notifications (dialog_resolved_via_owner_chain, parent_disabled_prefer_popup)
+   * are informational and remain in warnings[] only — not surfaced here.
+   */
+  window?: "no_provider_matched";
   /** Ingress snapshot fetch error — stale cache returned when present. */
   ingress?: "fetch_error";
   /**
@@ -39,7 +52,8 @@ export interface ViewConstraints {
    *   uia_blind_visual_unready → retry when visual backend is ready, or use screenshot(ocrFallback=always)
    *   uia_blind_visual_empty   → use screenshot(ocrFallback=always) or V1 tools
    *   cdp_failed_visual_empty  → check --remote-debugging-port=9222 and retry
-   *   all_providers_failed     → use V1 tools (get_ui_elements / terminal_read / screenshot)
+   *   all_providers_failed     → use V1 tools (get_ui_elements / terminal_read / screenshot);
+   *                              also covers terminal-only failure (terminal_send / terminal_read as recovery)
    */
   entityZeroReason?:
     | "uia_blind_visual_unready"
@@ -131,16 +145,12 @@ export function deriveViewConstraints(
       case "terminal_buffer_empty":
         if (!c.terminal) { c.terminal = "buffer_empty"; hasConstraint = true; }
         break;
-      // Window / hierarchy
+      // Window / hierarchy (failure path only)
+      // H3 success notifications (dialog_resolved_via_owner_chain, parent_disabled_prefer_popup)
+      // are NOT constraints — they remain in warnings[] as informational.
       case "no_provider_matched":
         c.window = "no_provider_matched";
         hasConstraint = true;
-        break;
-      case "dialog_resolved_via_owner_chain":
-        if (!c.window) { c.window = "dialog_resolved_via_owner_chain"; hasConstraint = true; }
-        break;
-      case "parent_disabled_prefer_popup":
-        if (!c.window) { c.window = "parent_disabled_prefer_popup"; hasConstraint = true; }
         break;
       // Ingress
       case "ingress_fetch_error":
