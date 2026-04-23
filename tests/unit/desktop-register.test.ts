@@ -139,3 +139,20 @@ describe("Activation policy — V2 tool description contract", () => {
     }).not.toThrow();
   });
 });
+
+// ── Activation policy — flag exact-match semantics ────────────────────────────
+describe("Activation policy — flag exact-match semantics", () => {
+  const isV2Enabled = () => process.env.DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2 === "1";
+
+  it('enables only when env is exactly "1"', () => {
+    vi.stubEnv("DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2", "1");
+    expect(isV2Enabled()).toBe(true);
+  });
+
+  it('disables when env is "0" / "true" / "yes" / "1 " / empty', () => {
+    for (const v of ["0", "true", "yes", "1 ", ""]) {
+      vi.stubEnv("DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2", v);
+      expect(isV2Enabled()).toBe(false);
+    }
+  });
+});
