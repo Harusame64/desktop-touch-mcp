@@ -26,6 +26,29 @@ import { fetchTerminalCandidates } from "./terminal-provider.js";
 import { fetchVisualCandidates }   from "./visual-provider.js";
 import { resolveWindowTarget }     from "../_resolve-window.js";
 
+// ── G4: transient visual warnings trigger a single 200ms retry ────────────────
+// Covers the first-request race where VisualRuntime.attach() (fire-and-forget in
+// desktop-register.ts) has not completed yet (unavailable) or the backend has
+// attached but warmup is still in flight (warming). Retry once with a short
+// delay; if the warning persists, return it and let the caller continue on the
+// structured lane.
+const VISUAL_TRANSIENT_WARNINGS = new Set([
+  "visual_provider_unavailable",
+  "visual_provider_warming",
+]);
+const VISUAL_RETRY_DELAY_MS = 200;
+
+async function fetchVisualCandidatesWithRetry(
+  target: TargetSpec | undefined
+): Promise<ProviderResult> {
+  const first = await fetchVisualCandidates(target);
+  const isTransient = first.warnings.some((w) => VISUAL_TRANSIENT_WARNINGS.has(w));
+  if (!isTransient) return first;
+
+  await new Promise<void>((resolve) => setTimeout(resolve, VISUAL_RETRY_DELAY_MS));
+  return fetchVisualCandidates(target);
+}
+
 /**
  * Heuristic terminal title patterns.
  *
@@ -144,7 +167,7 @@ export async function composeCandidates(
   if (isBrowserTarget(target)) {
     const [browser, visual] = await Promise.allSettled([
       fetchBrowserCandidates(target),
-      fetchVisualCandidates(target),
+      fetchVisualCandidatesWithRetry(target),
     ]);
     const browserResult = browser.status === "fulfilled"
       ? browser.value
@@ -166,7 +189,7 @@ export async function composeCandidates(
     const [terminal, uia, visual] = await Promise.allSettled([
       fetchTerminalCandidates(target),
       fetchUiaCandidates(target),
-      fetchVisualCandidates(target),
+      fetchVisualCandidatesWithRetry(target),
     ]);
     const termResult   = terminal.status === "fulfilled" ? terminal.value : { candidates: [], warnings: ["terminal_provider_failed"] };
     const uiaResult    = uia.status      === "fulfilled" ? uia.value      : { candidates: [], warnings: ["uia_provider_failed"] };
@@ -184,7 +207,7 @@ export async function composeCandidates(
   // Native Windows window: UIA primary + visual additive.
   const [uia, visual] = await Promise.allSettled([
     fetchUiaCandidates(target),
-    fetchVisualCandidates(target),
+    fetchVisualCandidatesWithRetry(target),
   ]);
   const uiaResult    = uia.status    === "fulfilled" ? uia.value    : { candidates: [], warnings: ["uia_provider_failed"] };
   const visualResult = visual.status === "fulfilled" ? visual.value : { candidates: [], warnings: ["visual_provider_unavailable"] };

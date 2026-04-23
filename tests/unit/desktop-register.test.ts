@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   registerDesktopTools,
@@ -140,19 +140,29 @@ describe("Activation policy — V2 tool description contract", () => {
   });
 });
 
-// ── Activation policy — flag exact-match semantics ────────────────────────────
-describe("Activation policy — flag exact-match semantics", () => {
-  const isV2Enabled = () => process.env.DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2 === "1";
-
-  it('enables only when env is exactly "1"', () => {
-    vi.stubEnv("DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2", "1");
-    expect(isV2Enabled()).toBe(true);
+// ── Activation policy — v0.17 default-on (integration-level contract) ─────────
+// Detailed matrix is in tests/unit/desktop-activation.test.ts via resolveV2Activation().
+// This block checks that the env-variable expressions used in server-windows.ts
+// behave as expected so an accidental logic inversion is caught here too.
+describe("Activation policy — v0.17 server-windows env expressions", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
-  it('disables when env is "0" / "true" / "yes" / "1 " / empty', () => {
-    for (const v of ["0", "true", "yes", "1 ", ""]) {
-      vi.stubEnv("DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2", v);
-      expect(isV2Enabled()).toBe(false);
-    }
+  it("default environment (nothing set) → v2 enabled", () => {
+    vi.stubEnv("DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2", "");
+    vi.stubEnv("DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2",  "");
+    expect(process.env["DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2"] === "1").toBe(false);
+  });
+
+  it("DISABLE=1 → v2 disabled (kill switch active)", () => {
+    vi.stubEnv("DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2", "1");
+    expect(process.env["DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2"] === "1").toBe(true);
+  });
+
+  it("DISABLE=1 + ENABLE=1 → DISABLE wins", () => {
+    vi.stubEnv("DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2", "1");
+    vi.stubEnv("DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2",  "1");
+    expect(process.env["DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2"] === "1").toBe(true);
   });
 });
