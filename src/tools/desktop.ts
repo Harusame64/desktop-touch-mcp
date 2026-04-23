@@ -12,6 +12,9 @@ import {
 import type { CandidateIngress } from "../engine/world-graph/candidate-ingress.js";
 import { createDesktopExecutor, type ExecutorDeps } from "./desktop-executor.js";
 import type { TouchAction, TouchResult } from "../engine/world-graph/guarded-touch.js";
+import { deriveViewConstraints, type ViewConstraints, type EntityCapabilities } from "./desktop-constraints.js";
+
+export type { ViewConstraints, EntityCapabilities };
 
 // ── Input / Output types ──────────────────────────────────────────────────────
 
@@ -33,6 +36,12 @@ export interface EntityView {
   primaryAction: string;
   lease: EntityLease;
   rect?: { x: number; y: number; width: number; height: number };
+  /**
+   * Optional negative capability hints for this entity.
+   * Advisory — touch may still succeed or fail irrespective of these hints.
+   * Phase 1: type present; values populated in future batches.
+   */
+  capabilities?: EntityCapabilities;
 }
 
 export interface DesktopSeeOutput {
@@ -41,6 +50,13 @@ export interface DesktopSeeOutput {
   entities: EntityView[];
   /** Non-fatal warnings (e.g. provider unavailable, partial results). */
   warnings?: string[];
+  /**
+   * Structured view-level constraints derived from warnings[].
+   * Absent when no provider signalled a constraint.
+   * Use these to decide fallback strategy without parsing warnings[] strings.
+   * entityZeroReason explains why entities.length === 0 when set.
+   */
+  constraints?: ViewConstraints;
 }
 
 export interface DesktopTouchInput {
@@ -233,6 +249,11 @@ export class DesktopFacade {
       entities: entityViews,
     };
     if (rawResult.warnings.length > 0) output.warnings = rawResult.warnings;
+
+    // H2: derive structured constraints from warnings for LLM fallback decisions.
+    const constraints = deriveViewConstraints(rawResult.warnings, entityViews.length);
+    if (constraints) output.constraints = constraints;
+
     return output;
   }
 
