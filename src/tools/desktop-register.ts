@@ -269,7 +269,11 @@ export function registerDesktopTools(server: McpServer): void {
       "Recovery: no_provider_matched → add target.windowTitle or retry; partial_results_only → compare with V1 get_ui_elements;",
       "cdp_provider_failed → check --remote-debugging-port=9222;",
       "visual_provider_unavailable / visual_provider_warming → server retried once (~200ms); if still warned, continue with structured lane or retry later;",
-      "uia/terminal_provider_failed → use V1 tools (get_ui_elements / terminal_read).",
+      "uia/terminal_provider_failed → use V1 tools (get_ui_elements / terminal_read);",
+      "uia_blind_single_pane / uia_blind_too_few_elements → target is PWA/Electron/canvas; try view=debug for visual lane hints, or fall back to screenshot(ocrFallback=always);",
+      "visual_not_attempted → GPU backend unavailable; use V1 screenshot+mouse_click or wait and retry;",
+      "visual_attempted_empty → visual lane ran but produced no stable candidates; consider screenshot(ocrFallback=always) or V1 tools;",
+      "visual_attempted_empty_cdp_fallback → CDP failed and visual also empty (browser); check --remote-debugging-port=9222 and retry.",
     ].join(" "),
     desktopSeeSchema,
     async (input) => {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { DesktopFacade, type CandidateProvider, type DesktopSeeInput } from "../../src/tools/desktop.js";
+import { DesktopFacade, type CandidateProvider, type DesktopSeeInput, type CandidateIngress } from "../../src/tools/desktop.js";
 import type { UiEntityCandidate } from "../../src/engine/vision-gpu/types.js";
 
 const TARGET_GAME    = { windowTitle: "GameWindow" };
@@ -331,6 +331,57 @@ describe("DesktopFacade — cross-source entity merging", () => {
 });
 
 // ── H1: Response-size aware lease TTL ────────────────────────────────────────
+
+// ── H4: Visual escalation warning propagation ────────────────────────────────
+
+describe("DesktopFacade — H4 visual escalation in view=debug", () => {
+  it("view=debug surfaces visual_not_attempted when provider warnings contain visual_provider_unavailable", async () => {
+    const fakeIngress: CandidateIngress = {
+      getSnapshot: async () => ({
+        candidates: [],
+        warnings:   ["uia_blind_single_pane", "visual_provider_unavailable"],
+      }),
+      invalidate:  () => {},
+      subscribe:   () => () => {},
+      dispose:     () => {},
+    };
+    const facade = new DesktopFacade(() => [], { ingress: fakeIngress });
+    const out = await facade.see({ view: "debug" });
+    expect(out.warnings).toBeDefined();
+    expect(out.warnings).toContain("visual_not_attempted");
+  });
+
+  it("view=debug does NOT add duplicate visual_not_attempted when already present", async () => {
+    const fakeIngress: CandidateIngress = {
+      getSnapshot: async () => ({
+        candidates: [],
+        warnings:   ["visual_provider_unavailable", "visual_not_attempted"],
+      }),
+      invalidate:  () => {},
+      subscribe:   () => () => {},
+      dispose:     () => {},
+    };
+    const facade = new DesktopFacade(() => [], { ingress: fakeIngress });
+    const out = await facade.see({ view: "debug" });
+    const count = (out.warnings ?? []).filter((w) => w === "visual_not_attempted").length;
+    expect(count).toBe(1);
+  });
+
+  it("non-debug view does NOT inject visual_not_attempted even with visual_provider_unavailable", async () => {
+    const fakeIngress: CandidateIngress = {
+      getSnapshot: async () => ({
+        candidates: [],
+        warnings:   ["visual_provider_unavailable"],
+      }),
+      invalidate:  () => {},
+      subscribe:   () => () => {},
+      dispose:     () => {},
+    };
+    const facade = new DesktopFacade(() => [], { ingress: fakeIngress });
+    const out = await facade.see({ view: "action" });
+    expect((out.warnings ?? []).includes("visual_not_attempted")).toBe(false);
+  });
+});
 
 // H1 targets dogfood incidents L-1/L-2/L-3:
 //   S1 (browser-form, explore ~50 entities) and S3 (terminal, action view)

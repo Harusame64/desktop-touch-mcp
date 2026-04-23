@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import {
   composeCandidates,
   isBrowserTarget,
@@ -8,6 +8,27 @@ import { fetchUiaCandidates }      from "../../src/tools/desktop-providers/uia-p
 import { fetchBrowserCandidates }  from "../../src/tools/desktop-providers/browser-provider.js";
 import { fetchTerminalCandidates } from "../../src/tools/desktop-providers/terminal-provider.js";
 import { fetchVisualCandidates }   from "../../src/tools/desktop-providers/visual-provider.js";
+
+// H4: Mock uia-bridge so fetchUiaCandidates is testable in isolation.
+// Intercepted via vitest module mock (applies to the dynamic import inside uia-provider.ts).
+const uiaBridgeMocks = vi.hoisted(() => ({
+  getUiElements: vi.fn().mockResolvedValue({
+    elements:     [],
+    elementCount: 0,
+    windowRect:   null,
+  }),
+  detectUiaBlind: vi.fn().mockReturnValue({ blind: false }),
+}));
+
+vi.mock("../../src/engine/uia-bridge.js", () => ({
+  getUiElements:  uiaBridgeMocks.getUiElements,
+  detectUiaBlind: uiaBridgeMocks.detectUiaBlind,
+}));
+
+beforeEach(() => {
+  uiaBridgeMocks.getUiElements.mockResolvedValue({ elements: [], elementCount: 0, windowRect: null });
+  uiaBridgeMocks.detectUiaBlind.mockReturnValue({ blind: false });
+});
 
 // ── Routing helpers ───────────────────────────────────────────────────────────
 
@@ -187,10 +208,13 @@ describe("composeCandidates — warnings surface (P2-C)", () => {
     expect(Array.isArray(r.candidates)).toBe(true);
   });
 
-  it("uia_provider_failed returned when UIA throws (or uia_no_elements on empty)", async () => {
+  it("uia_provider_failed returned when UIA throws (or uia_no_elements / uia_blind_* on empty)", async () => {
     const r = await fetchUiaCandidates({ windowTitle: "__nonexistent__" });
-    // Either the window was not found (failed) or found but empty
-    const knownWarnings = new Set(["uia_provider_failed", "uia_no_elements"]);
+    // Either the window was not found (failed), found but empty, or UIA-blind (H4)
+    const knownWarnings = new Set([
+      "uia_provider_failed", "uia_no_elements",
+      "uia_blind_single_pane", "uia_blind_too_few_elements",
+    ]);
     for (const w of r.warnings) {
       expect(knownWarnings.has(w)).toBe(true);
     }
@@ -203,5 +227,51 @@ describe("composeCandidates — warnings surface (P2-C)", () => {
     for (const w of r.warnings) {
       expect(knownWarnings.has(w)).toBe(true);
     }
+  });
+});
+
+// ── H4: UIA-blind warning detection ─────────────────────────────────────────
+
+describe("fetchUiaCandidates — UIA-blind warnings (H4)", () => {
+  it("emits uia_blind_single_pane when detectUiaBlind returns single-giant-pane", async () => {
+    uiaBridgeMocks.getUiElements.mockResolvedValue({
+      elements: [], elementCount: 10, windowRect: { x: 0, y: 0, width: 1920, height: 1080 },
+    });
+    uiaBridgeMocks.detectUiaBlind.mockReturnValue({ blind: true, reason: "single-giant-pane" });
+    const r = await fetchUiaCandidates({ windowTitle: "Outlook" });
+    expect(r.warnings).toContain("uia_blind_single_pane");
+    expect(r.warnings).not.toContain("uia_blind_too_few_elements");
+  });
+
+  it("emits uia_blind_too_few_elements when detectUiaBlind returns too-few-elements", async () => {
+    uiaBridgeMocks.getUiElements.mockResolvedValue({
+      elements: [], elementCount: 2, windowRect: null,
+    });
+    uiaBridgeMocks.detectUiaBlind.mockReturnValue({ blind: true, reason: "too-few-elements" });
+    const r = await fetchUiaCandidates({ windowTitle: "Codex" });
+    expect(r.warnings).toContain("uia_blind_too_few_elements");
+    expect(r.warnings).not.toContain("uia_blind_single_pane");
+  });
+
+  it("does NOT emit uia_blind_* when tree is healthy", async () => {
+    uiaBridgeMocks.getUiElements.mockResolvedValue({
+      elements: [{ name: "Save", controlType: "Button", isEnabled: true, automationId: "1" }],
+      elementCount: 20,
+      windowRect: null,
+    });
+    uiaBridgeMocks.detectUiaBlind.mockReturnValue({ blind: false });
+    const r = await fetchUiaCandidates({ windowTitle: "Notepad" });
+    expect(r.warnings).not.toContain("uia_blind_single_pane");
+    expect(r.warnings).not.toContain("uia_blind_too_few_elements");
+  });
+
+  it("co-emits uia_no_elements and uia_blind_* on opaque empty window", async () => {
+    uiaBridgeMocks.getUiElements.mockResolvedValue({
+      elements: [], elementCount: 1, windowRect: null,
+    });
+    uiaBridgeMocks.detectUiaBlind.mockReturnValue({ blind: true, reason: "too-few-elements" });
+    const r = await fetchUiaCandidates({ windowTitle: "Electron" });
+    expect(r.warnings).toContain("uia_no_elements");
+    expect(r.warnings).toContain("uia_blind_too_few_elements");
   });
 });

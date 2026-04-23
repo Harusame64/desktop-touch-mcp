@@ -174,9 +174,25 @@ export class DesktopFacade {
     session.viewId = newViewId;
 
     // Use ingress (event-driven cache) if available; fall back to direct provider.
-    const rawResult = this.opts.ingress
+    let rawResult = this.opts.ingress
       ? await this.opts.ingress.getSnapshot(key)
       : { candidates: await Promise.resolve(this.candidateProvider(input)), warnings: [] as string[] };
+
+    // H4: view=debug escalation (Rule-B) — surface visual_not_attempted when the
+    // visual backend is unready, regardless of whether compose's Rule-A fired.
+    // Scope: Rule-B only handles the "visual unready" path (visual_provider_unavailable /
+    // visual_provider_warming). Rule-A' (warm-but-empty) and Rule-C (CDP+visual both
+    // empty) are compose-side concerns and are NOT repeated here to avoid dual sourcing.
+    // When compose has already applied Rule-A the alreadyEscalated guard prevents duplication.
+    if (input.view === "debug") {
+      const hasVisualUnready = rawResult.warnings.some(
+        (w) => w === "visual_provider_unavailable" || w === "visual_provider_warming"
+      );
+      const alreadyEscalated = rawResult.warnings.includes("visual_not_attempted");
+      if (hasVisualUnready && !alreadyEscalated) {
+        rawResult = { ...rawResult, warnings: [...rawResult.warnings, "visual_not_attempted"] };
+      }
+    }
     let resolved = resolveCandidates(rawResult.candidates, session.generation);
 
     if (input.query) {
