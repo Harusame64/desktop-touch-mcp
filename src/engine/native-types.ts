@@ -79,6 +79,8 @@ export interface NativePreprocessOptions {
   channels: number
   /** Upscale factor: 1, 2, 3, or 4. Values above 4 are rejected by the Rust layer. */
   scale: number
+  /** When true, apply Sauvola adaptive binarization after contrast stretch (output: 0/255 only). */
+  adaptive?: boolean
 }
 
 export interface NativeImageProcessingResult {
