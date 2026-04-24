@@ -27,6 +27,7 @@ const BASE_INPUT: StagePipelineInput = {
   rois: [{ trackId: "t1", rect: { x: 0, y: 0, width: 100, height: 50 }, classHint: null }],
   frameWidth: 1920,
   frameHeight: 1080,
+  frameBuffer: Buffer.alloc(0),
   nowMs: 0,
 };
 

@@ -293,3 +293,84 @@ describe("OnnxBackend Phase 4b-5 stage pipeline integration", () => {
     expect(callCount).toBeGreaterThanOrEqual(2);
   });
 });
+
+// ── Block E: Phase 4b-5a-1 frameBuffer plumbing ───────────────────────────────
+
+describe("OnnxBackend Phase 4b-5a-1 frameBuffer plumbing", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it("recognizeRois forwards frameBuffer to native request when provided", async () => {
+    const recorded: Array<{ sessionKey: string; bufferLen: number }> = [];
+    vi.doMock("../../src/engine/native-engine.js", () => ({
+      nativeVision: {
+        visionInitSession: vi.fn().mockImplementation(async (req: NativeSessionInit) => ({
+          ok: true, selectedEp: "DirectML(0)", error: null, sessionKey: req.sessionKey,
+        })),
+        visionRecognizeRois: vi.fn().mockImplementation(async (req: { sessionKey: string; frameBuffer?: { length: number }; rois: Array<{ trackId: string; rect: object; classHint: string | null }> }) => {
+          recorded.push({ sessionKey: req.sessionKey, bufferLen: req.frameBuffer?.length ?? 0 });
+          return req.rois.map((r) => ({
+            trackId: r.trackId, rect: r.rect, label: "", class: "other", confidence: 0.5, provisional: true,
+          }));
+        }),
+        detectCapability: vi.fn().mockReturnValue({
+          os: "windows", osBuild: 26100, gpuVendor: "AMD", gpuDevice: "X",
+          gpuArch: "RDNA4", gpuVramMb: 16384, winml: true, directml: true,
+          rocm: false, cuda: false, tensorrt: false, cpuIsa: ["avx2"],
+          backendBuilt: true, epsBuilt: ["directml"],
+        }),
+      },
+      nativeEngine: null, nativeUia: null,
+    }));
+    const { OnnxBackend } = await import("../../src/engine/vision-gpu/onnx-backend.js");
+    const b = new OnnxBackend();
+    await b.ensureWarm({ kind: "game", id: "g1" });
+
+    const frameBuf = Buffer.alloc(100 * 100 * 4, 128);
+    await b.recognizeRois(
+      "window:1",
+      [{ trackId: "t1", rect: { x: 0, y: 0, width: 100, height: 100 } }],
+      100, 100, frameBuf,
+    );
+    expect(recorded.length).toBeGreaterThanOrEqual(1);
+    expect(recorded[0]!.bufferLen).toBe(100 * 100 * 4);
+  });
+
+  it("recognizeRois without frameBuffer uses empty Buffer (legacy-safe)", async () => {
+    const recorded: Array<{ bufferLen: number }> = [];
+    vi.doMock("../../src/engine/native-engine.js", () => ({
+      nativeVision: {
+        visionInitSession: vi.fn().mockImplementation(async (req: NativeSessionInit) => ({
+          ok: true, selectedEp: "DirectML(0)", error: null, sessionKey: req.sessionKey,
+        })),
+        visionRecognizeRois: vi.fn().mockImplementation(async (req: { frameBuffer?: { length: number }; rois: Array<{ trackId: string; rect: object; classHint: string | null }> }) => {
+          recorded.push({ bufferLen: req.frameBuffer?.length ?? 0 });
+          return req.rois.map((r) => ({
+            trackId: r.trackId, rect: r.rect, label: "", class: "other", confidence: 0.5, provisional: true,
+          }));
+        }),
+        detectCapability: vi.fn().mockReturnValue({
+          os: "windows", osBuild: 26100, gpuVendor: "AMD", gpuDevice: "X",
+          gpuArch: "RDNA4", gpuVramMb: 16384, winml: true, directml: true,
+          rocm: false, cuda: false, tensorrt: false, cpuIsa: ["avx2"],
+          backendBuilt: true, epsBuilt: ["directml"],
+        }),
+      },
+      nativeEngine: null, nativeUia: null,
+    }));
+    const { OnnxBackend } = await import("../../src/engine/vision-gpu/onnx-backend.js");
+    const b = new OnnxBackend();
+    await b.ensureWarm({ kind: "game", id: "g1" });
+
+    // Call without frameBuffer — should use empty Buffer (bufferLen === 0)
+    await b.recognizeRois(
+      "window:1",
+      [{ trackId: "t1", rect: { x: 0, y: 0, width: 100, height: 100 } }],
+      100, 100,
+      // frameBuffer omitted
+    );
+    expect(recorded.length).toBeGreaterThanOrEqual(1);
+    expect(recorded[0]!.bufferLen).toBe(0);
+  });
+});
