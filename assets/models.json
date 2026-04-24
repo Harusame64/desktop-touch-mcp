@@ -1,0 +1,187 @@
+{
+  "schema": "1.0",
+  "generated_at": "2026-04-25",
+  "models": {
+    "florence-2-base": {
+      "task": "ui_detector",
+      "variants": [
+        {
+          "name": "winml-fp16",
+          "ep": ["WinML"],
+          "min_os": "win11_24h2",
+          "url": "https://huggingface.co/microsoft/Florence-2-base/resolve/main/model.onnx",
+          "sha256": "pending:florence-2-base/winml-fp16",
+          "size_mb": 540
+        },
+        {
+          "name": "dml-fp16",
+          "ep": ["DirectML"],
+          "url": "https://huggingface.co/microsoft/Florence-2-base/resolve/main/model.onnx",
+          "sha256": "pending:florence-2-base/dml-fp16",
+          "size_mb": 540
+        },
+        {
+          "name": "webgpu-fp16",
+          "ep": ["WebGPU"],
+          "url": "TBD:florence-2-base/webgpu-fp16",
+          "sha256": "pending:florence-2-base/webgpu-fp16",
+          "size_mb": 540
+        },
+        {
+          "name": "cuda-fp16",
+          "ep": ["CUDA"],
+          "url": "TBD:florence-2-base/cuda-fp16",
+          "sha256": "pending:florence-2-base/cuda-fp16",
+          "size_mb": 540
+        },
+        {
+          "name": "cpu-int8",
+          "ep": ["CPU"],
+          "url": "TBD:florence-2-base/cpu-int8",
+          "sha256": "pending:florence-2-base/cpu-int8",
+          "size_mb": 180
+        }
+      ]
+    },
+    "omniparser-v2-icon-detect": {
+      "task": "ui_detector",
+      "variants": [
+        {
+          "name": "winml-fp16",
+          "ep": ["WinML"],
+          "min_os": "win11_24h2",
+          "url": "https://huggingface.co/microsoft/OmniParser-v2.0/resolve/main/icon_detect/model.onnx",
+          "sha256": "pending:omniparser-v2-icon-detect/winml-fp16",
+          "size_mb": 32
+        },
+        {
+          "name": "dml-fp16",
+          "ep": ["DirectML"],
+          "url": "https://huggingface.co/microsoft/OmniParser-v2.0/resolve/main/icon_detect/model.onnx",
+          "sha256": "pending:omniparser-v2-icon-detect/dml-fp16",
+          "size_mb": 32
+        },
+        {
+          "name": "rocm-fp16",
+          "ep": ["ROCm", "MIGraphX"],
+          "min_rocm": "7.2.1",
+          "url": "TBD:omniparser-v2-icon-detect/rocm-fp16",
+          "sha256": "pending:omniparser-v2-icon-detect/rocm-fp16",
+          "size_mb": 32
+        },
+        {
+          "name": "webgpu-fp16",
+          "ep": ["WebGPU"],
+          "url": "TBD:omniparser-v2-icon-detect/webgpu-fp16",
+          "sha256": "pending:omniparser-v2-icon-detect/webgpu-fp16",
+          "size_mb": 32
+        },
+        {
+          "name": "cuda-fp16",
+          "ep": ["CUDA"],
+          "url": "TBD:omniparser-v2-icon-detect/cuda-fp16",
+          "sha256": "pending:omniparser-v2-icon-detect/cuda-fp16",
+          "size_mb": 32
+        },
+        {
+          "name": "trt-fp8",
+          "ep": ["TensorRT"],
+          "min_arch": "ada",
+          "url": "TBD:omniparser-v2-icon-detect/trt-fp8",
+          "sha256": "pending:omniparser-v2-icon-detect/trt-fp8",
+          "size_mb": 18
+        },
+        {
+          "name": "cpu-int8",
+          "ep": ["CPU"],
+          "url": "TBD:omniparser-v2-icon-detect/cpu-int8",
+          "sha256": "pending:omniparser-v2-icon-detect/cpu-int8",
+          "size_mb": 12
+        }
+      ]
+    },
+    "paddleocr-v4-server": {
+      "task": "text_recognizer",
+      "variants": [
+        {
+          "name": "winml-fp16",
+          "ep": ["WinML"],
+          "min_os": "win11_24h2",
+          "url": "TBD:paddleocr-v4-server/winml-fp16",
+          "sha256": "pending:paddleocr-v4-server/winml-fp16",
+          "size_mb": 95
+        },
+        {
+          "name": "dml-fp16",
+          "ep": ["DirectML"],
+          "url": "TBD:paddleocr-v4-server/dml-fp16",
+          "sha256": "pending:paddleocr-v4-server/dml-fp16",
+          "size_mb": 95
+        },
+        {
+          "name": "rocm-fp16",
+          "ep": ["ROCm", "MIGraphX"],
+          "min_rocm": "7.2.1",
+          "url": "TBD:paddleocr-v4-server/rocm-fp16",
+          "sha256": "pending:paddleocr-v4-server/rocm-fp16",
+          "size_mb": 95
+        },
+        {
+          "name": "webgpu-fp16",
+          "ep": ["WebGPU"],
+          "url": "TBD:paddleocr-v4-server/webgpu-fp16",
+          "sha256": "pending:paddleocr-v4-server/webgpu-fp16",
+          "size_mb": 95
+        },
+        {
+          "name": "cuda-fp16",
+          "ep": ["CUDA"],
+          "url": "TBD:paddleocr-v4-server/cuda-fp16",
+          "sha256": "pending:paddleocr-v4-server/cuda-fp16",
+          "size_mb": 95
+        },
+        {
+          "name": "trt-fp8",
+          "ep": ["TensorRT"],
+          "min_arch": "ada",
+          "url": "TBD:paddleocr-v4-server/trt-fp8",
+          "sha256": "pending:paddleocr-v4-server/trt-fp8",
+          "size_mb": 48
+        },
+        {
+          "name": "cpu-int8",
+          "ep": ["CPU"],
+          "url": "TBD:paddleocr-v4-server/cpu-int8",
+          "sha256": "pending:paddleocr-v4-server/cpu-int8",
+          "size_mb": 28
+        }
+      ]
+    },
+    "paddleocr-v4-mobile": {
+      "task": "text_recognizer",
+      "variants": [
+        {
+          "name": "dml-fp16",
+          "ep": ["DirectML"],
+          "url": "TBD:paddleocr-v4-mobile/dml-fp16",
+          "sha256": "pending:paddleocr-v4-mobile/dml-fp16",
+          "size_mb": 11
+        },
+        {
+          "name": "webgpu-fp16",
+          "ep": ["WebGPU"],
+          "url": "TBD:paddleocr-v4-mobile/webgpu-fp16",
+          "sha256": "pending:paddleocr-v4-mobile/webgpu-fp16",
+          "size_mb": 11
+        },
+        {
+          "name": "cpu-int8",
+          "ep": ["CPU"],
+          "url": "TBD:paddleocr-v4-mobile/cpu-int8",
+          "sha256": "pending:paddleocr-v4-mobile/cpu-int8",
+          "size_mb": 5
+        }
+      ]
+    }
+  }
+}
