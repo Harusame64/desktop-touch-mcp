@@ -1,9 +1,9 @@
 # Phase 4b 実装 Handbook — Opus 設計 + Sonnet 実装 + Opus レビュー
 
-- Status: Active (2026-04-24 発効、A案 workflow 採用)
+- Status: Active (2026-04-24 発効、A案 workflow 採用 + 2026-04-24 更に Opus 直実装に修正)
 - 設計担当: Opus 4.7 (各 batch 着手前に設計書を docs/ に書く)
-- 実装担当: Sonnet 4.6 (設計書通り実装、設計書にない判断は委譲)
-- レビュー担当: Opus 4.7 (各 batch 完了後、指摘ゼロまで反復)
+- 実装担当: **Opus 4.7 (直接実装)** 原則。Sonnet 4.6 は機械的部分 (annotation / benchmark script / doc formatting 等) のみ opt-in で委譲。4b-1 で Sonnet が cargo check 1 サイクル 4 エラー同時発生、4a で windows crate 0.62 API mismatch 3 連続失敗の経緯を踏まえた判断 (ユーザー 2026-04-24)
+- レビュー担当: Opus 4.7 (各 batch 完了後、subagent で self-review、指摘ゼロまで反復)
 - 前提 ADR: [`visual-gpu-backend-adr-v2.md`](D:/git/desktop-touch-mcp-fukuwaraiv2/docs/visual-gpu-backend-adr-v2.md) (ADR-005)
 - 前提 commits (5 つ、origin に push 済):
   - `c4a9a7f` docs(vision-gpu): ADR-005 (AMD-first reconsideration)
@@ -54,16 +54,23 @@ Opus が `docs/phase4b-{batch}-design.md` を書く。**コード変更は一切
 
 設計書完成後、ユーザーに見せて approve をもらう (CLAUDE.md 作業フロー §1)。
 
-### Step B — Sonnet 実装 (Opus は介入しない)
+### Step B — Opus 直接実装 (default) / Sonnet 委譲 (opt-in)
 
-Opus は `Agent` tool with `subagent_type=general-purpose` + `model=sonnet` で Sonnet を起動。
+**default: Opus が設計書 §10 の実装順序に従って直接コードを書く**。
+Sonnet 委譲はユーザー事前承認 + 以下のどれか該当時のみ:
+- 機械的繰り返し作業 (model manifest の大量エントリ生成、benchmark harness の boilerplate、annotation script)
+- 設計書で「Sonnet 委譲可」と明示した batch
+- Opus の context が他 batch で圧迫されていてセッション分離したい場合
+
+Sonnet 委譲時は `Agent` tool with `subagent_type=general-purpose` + `model=sonnet`、
 prompt は `docs/phase4b-sonnet-prompt.md` の「Sonnet 実装起動 prompt」を使う。
+Sonnet は設計書 + handbook §4 絶対条件のみ context、設計書にない判断は即 Opus 委譲。
 
-Sonnet は:
-- 設計書 (`docs/phase4b-{batch}-design.md`) と handbook §4 の絶対条件のみを context にする
-- ADR-005 全文や CLAUDE.md は **読まない** (設計書に必要事項が抽出されている)
-- 設計書に書かれていない判断点に当たったら、**実装を止めて Opus に判断委譲** (§5 stop conditions)
-- 完了報告は §6 報告フォーマットに従う
+Opus 直実装時は:
+- 設計書 §10 の手順に従って順次コード作成
+- 設計書 §9 Forbidden / handbook §4 absolute rules は自身にも適用
+- 同一箇所で trial & error 2 連続したら別 Opus subagent 立ち上げて判断委譲 (強制命令 4)
+- 完了後は Step C self-review subagent を必ず回す
 
 ### Step C — Opus レビュー (Sonnet 完了後)
 
@@ -383,9 +390,9 @@ Opus が最終 review 後にユーザーに報告:
 
 | Batch | summary | 設計書 (Opus 起草) | 実装 (Sonnet) |
 |---|---|---|---|
-| 4b-1 | EP cascade real wiring | `docs/phase4b-1-ep-cascade-design.md` | Rust `vision_backend::inference` で ort::Session lifecycle |
-| 4b-2 | WinML EP integration | `docs/phase4b-2-winml-design.md` | windows crate AI namespace or onnxruntime-winml |
-| 4b-3 | Vulkan/ncnn lane | `docs/phase4b-3-vulkan-ncnn-design.md` | ncnn-rs binding, Layer 3 統合 |
+| 4b-1 | EP cascade real wiring | `docs/phase4b-1-ep-cascade-design.md` | Rust `vision_backend::inference` で ort::Session lifecycle (✅完了) |
+| ~~4b-2~~ | ~~WinML EP integration~~ | ~~`docs/phase4b-2-winml-design.md`~~ | **Deferred to ADR-006** (`windows-app` crate yanked + repo archived、独立 ADR で取り扱う) |
+| 4b-3 | Vulkan/ncnn lane | `docs/phase4b-3-vulkan-ncnn-design.md` | ncnn-rs binding, Layer 3 統合 (**4b-2 deferred により次の着手対象**) |
 | 4b-4 | Florence-2 投入 | `docs/phase4b-4-florence2-design.md` | Stage 1 region proposer |
 | 4b-5 | OmniParser-v2 + PaddleOCR-v4 | `docs/phase4b-5-stage23-design.md` | Stage 2 + 3 直列接続 |
 | 4b-6 | ROCm opt-in | `docs/phase4b-6-rocm-design.md` | RX 9070 XT + ROCm 7.2.1 動作 |

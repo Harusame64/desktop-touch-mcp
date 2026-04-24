@@ -37,6 +37,7 @@ tools/win-ocr/obj/
 # vitest capture output
 .vitest-out.json
 .vitest-out.txt
+.vitest-verbose.txt
 
 # cargo check / build output (captured for diagnostics)
 .cargo-check-out.txt

@@ -610,7 +610,8 @@ ADR-004 の rollout (`visual-gpu-phase4-rollout.md`) も以下に再構成する
 実装担当: Opus + 必要に応じ Sonnet (annotation / benchmark スクリプト等の機械的部分のみ)
 
 - [x] **4b-1**: EP cascade real wiring — `session.rs` / `ep_select.rs` / `dylib.rs` 新規作成、`VisionInitSessionTask` + `vision_init_session` napi 追加、WinML → DirectML → ROCm → CUDA → CPU の順次試行実装 (WinML は 4b-2 まで stub)
-- [ ] **4b-2**: Vulkan(ncnn) lane を Layer 3 として追加 (Rust 側で別 module、ncnn-rs binding)
+- [-] **4b-2 → Deferred to ADR-006 (2026-04-24)**: WinML EP integration は実装着手後に `windows-app` crate 全版 yanked + `microsoft/windows-app-rs` repo archived (Microsoft 公式に WinAppSDK-Rust 開発停止表明) を発見。設計書 §4.4 Path C (windows-bindgen 自前生成) も WinAppSDK 全体が .NET/VS 前提で数ヶ月規模、1 batch 範囲外。独立 ADR-006 (`docs/adr-006-winml-rust-binding.md`) として切り出し。途中作成された `winml.rs` / `winml_fallback.rs` は削除、`ep_select::winml_attempt` は Phase 4b-1 時点の stub (常に Err、cascade は DirectML に fall through) を維持。Phase 4b は **4b-3 (Vulkan/ncnn lane) を次の着手対象**として進行継続。
+- [ ] **4b-3**: Vulkan(ncnn) lane を Layer 3 として追加 (Rust 側で別 module、ncnn-rs binding)
 - [ ] **4b-3**: ROCm/CUDA/TensorRT EP は build feature flag で opt-in 化
 - [ ] **4b-4**: Florence-2 / OmniParser-v2 / PaddleOCR-v4 の variant を `models.json` に登録
 - [ ] **4b-5**: Stage 1 (region proposer) → Stage 2 (UI detector) → Stage 3 (OCR) を直列で繋ぐ

@@ -32,6 +32,10 @@ pub mod inference;
 pub mod registry;
 pub mod session;
 pub mod types;
+// Phase 4b-2 WinML 統合は ADR-006 に移管 (2026-04-24、windows-app crate yanked +
+// repo archived)。`winml.rs` / `winml_fallback.rs` は削除済、ADR-006 採用 option
+// 決定後に再作成する。現状 `ep_select::winml_attempt` は Phase 4b-1 時点の stub
+// (常に Err、cascade は DirectML に fall through) を維持。
 
 pub use capability::{detect_capability, CapabilityProfile};
 pub use error::VisionBackendError;
@@ -60,6 +64,10 @@ pub fn init_session_blocking(init: NativeSessionInit) -> NativeSessionResult {
             session_key: init.session_key,
         };
     }
+
+    // Phase 4b-2 WinAppSDK bootstrap は ADR-006 移管のため一旦削除。
+    // ADR-006 採用 option 決定後、同じ位置に再追加する。
+
     let path = std::path::Path::new(&init.model_path);
     match session::VisionSession::create(path, &init.profile, init.session_key.clone()) {
         Ok(sess) => {
