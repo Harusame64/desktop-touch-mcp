@@ -342,6 +342,40 @@ export interface SomPipelineResult {
   resolvedWindowTitle: string;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Preprocessing policy
+// ─────────────────────────────────────────────────────────────────────────────
+
+const OOM_THRESHOLD_MP = 8;
+const AUTO_DPI_THRESHOLD = 144;   // 150% scaling — conservative baseline
+const AGGRESSIVE_DPI_THRESHOLD = 168; // 175% scaling — aggressive limit
+
+/**
+ * Decide the effective upscale factor to apply before OCR, based on the
+ * preprocessing policy, base scale, image megapixels, and window DPI.
+ *
+ * OOM guard (megapixels > 8 → scale=1) is always applied regardless of policy.
+ *
+ * @param policy      "auto" | "aggressive" | "minimal"
+ * @param baseScale   Caller-specified base scale (1..4).
+ * @param megapixels  Captured image area in megapixels (width×height / 1_000_000).
+ * @param windowDpi   Logical DPI of the target window (96 = 100%).
+ */
+export function decideEffectiveScale(
+  policy: "auto" | "aggressive" | "minimal",
+  baseScale: number,
+  megapixels: number,
+  windowDpi: number,
+): number {
+  if (policy === "minimal") return 1;
+  if (megapixels > OOM_THRESHOLD_MP) return 1; // OOM guard — same for all policies
+  if (policy === "aggressive") {
+    return windowDpi >= AGGRESSIVE_DPI_THRESHOLD ? 1 : baseScale;
+  }
+  // "auto" — original behaviour
+  return windowDpi >= AUTO_DPI_THRESHOLD ? 1 : baseScale;
+}
+
 /**
  * Cluster merged OCR words into UI element groups and assign sequential IDs.
  *
@@ -436,36 +470,18 @@ export async function runSomPipeline(
 
   const _somT0 = performance.now();
 
-  // ── Auto-scale: prevent OOM on high-resolution captures ────────────────────
-  // 4K (8MP) scale=2 → 132 MB f32 peak in Rust → acceptable.
-  // 5K (14.7MP) scale=2 → ~240 MB → marginal.
-  // 8K (33MP) scale=2 → ~530 MB f32 → OOM risk near Node.js 1.4 GB heap limit.
-  // Hard-cap: force scale=1 when the captured area exceeds 8 megapixels.
+  // ── Scale decision via preprocessPolicy ─────────────────────────────────────
+  // OOM guard and DPI clamp are delegated to decideEffectiveScale().
+  // "auto"       — original thresholds (OOM>8MP or DPI≥144 → scale=1)
+  // "aggressive" — relaxed DPI clamp to 168dpi (175% scaling)
+  // "minimal"    — always scale=1
   const megapixels = (width * height) / 1_000_000;
-  const oomScale = megapixels > 8 ? 1 : scale;
-  if (oomScale !== scale) {
-    console.error(
-      `[SoM] auto-scale: ${width}×${height} = ${megapixels.toFixed(1)}MP > 8MP threshold ` +
-      `→ scale clamped ${scale} → ${oomScale} to prevent OOM`,
-    );
-  }
-
-  // ── DPI-linked scale: high-DPI monitors already have large physical pixels ──
-  // At 150%+ DPI (≥144dpi), text pixels are already 24px+ tall.
-  // Upscaling doubles memory with minimal OCR benefit.
-  // Threshold: 144dpi = 150% scaling (conservative — not 120dpi/125%).
-  const DPI_SCALE1_THRESHOLD = 144;
   const windowDpi = getWindowDpi(targetHwnd);
-  const dpiScale = windowDpi >= DPI_SCALE1_THRESHOLD ? 1 : oomScale;
-  if (dpiScale !== oomScale) {
-    console.error(
-      `[SoM] dpi: ${windowDpi} (${Math.round(windowDpi / 96 * 100)}%) ≥ ${DPI_SCALE1_THRESHOLD} ` +
-      `→ scale clamped ${oomScale} → ${dpiScale}`,
-    );
-  } else {
-    console.error(`[SoM] dpi: ${windowDpi} (${Math.round(windowDpi / 96 * 100)}%) → scale=${dpiScale}`);
-  }
-  const effectiveScale = dpiScale;
+  const effectiveScale = decideEffectiveScale(preprocessPolicy, scale, megapixels, windowDpi);
+  console.error(
+    `[SoM] scale: policy=${preprocessPolicy} base=${scale} mp=${megapixels.toFixed(1)} dpi=${windowDpi}` +
+    ` (${Math.round(windowDpi / 96 * 100)}%) → effectiveScale=${effectiveScale}`,
+  );
 
   // ── Step 2: Preprocess (upscale + grayscale + contrast) ────────────────────
   let preprocessedData: Buffer;
