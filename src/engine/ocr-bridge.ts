@@ -529,6 +529,12 @@ export interface SomElement {
   clickAt: { x: number; y: number };
   /** Absolute screen bounding rectangle. */
   region: { x: number; y: number; width: number; height: number };
+  /**
+   * Aggregated OCR confidence (minimum of constituent word scores).
+   * Present when the SoM pipeline had access to word-level confidence values.
+   * Used by ocr-provider to propagate quality signals to UiEntityCandidate.
+   */
+  confidence?: number;
 }
 
 export interface SomPipelineResult {
@@ -591,20 +597,24 @@ export function clusterOcrWords(words: OcrWord[], elementGapThreshold = 35): Som
 
   return clustered
     .filter((w) => w.text.trim().length > 0)
-    .map((w, i): SomElement => ({
-      id: i + 1,
-      text: w.text.trim(),
-      clickAt: {
-        x: Math.round(w.bbox.x + w.bbox.width / 2),
-        y: Math.round(w.bbox.y + w.bbox.height / 2),
-      },
-      region: {
-        x: w.bbox.x,
-        y: w.bbox.y,
-        width: w.bbox.width,
-        height: w.bbox.height,
-      },
-    }));
+    .map((w, i): SomElement => {
+      const conf = calibrateOcrConfidence(w);
+      return {
+        id: i + 1,
+        text: w.text.trim(),
+        clickAt: {
+          x: Math.round(w.bbox.x + w.bbox.width / 2),
+          y: Math.round(w.bbox.y + w.bbox.height / 2),
+        },
+        region: {
+          x: w.bbox.x,
+          y: w.bbox.y,
+          width: w.bbox.width,
+          height: w.bbox.height,
+        },
+        confidence: conf,
+      };
+    });
 }
 
 /**
