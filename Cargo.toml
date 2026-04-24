@@ -28,6 +28,14 @@ ort = { version = "=2.0.0-rc.12", default-features = false, features = [
     "api-22",
 ], optional = true }
 
+# Phase 4b-5a-1: image preprocessing (bilinear resize for Florence-2 input)
+image = { version = "0.25", default-features = false, features = ["png"] }
+# ndarray is already a transitive dep via ort (vision-gpu). Explicit listing
+# is required because Rust 2018+ does not make transitive deps directly usable
+# via `use ndarray::...` without an explicit entry in Cargo.toml.
+# Version is pinned to match ort's requirement (0.17.x). Not a new dependency.
+ndarray = { version = "0.17", optional = true }
+
 # ── Visual GPU Phase 4b-2: WinML 統合は ADR-006 に移管 (2026-04-24) ──────────
 # 背景: `windows-app` crate は全バージョン yanked + microsoft/windows-app-rs
 # repo archived (Microsoft が WinAppSDK-Rust 開発停止を発表)。
@@ -39,7 +47,7 @@ ort = { version = "=2.0.0-rc.12", default-features = false, features = [
 [features]
 default = ["vision-gpu"]
 # Visual GPU lane を build に含める。CI/最小ビルドでは --no-default-features で除外可能。
-vision-gpu = ["dep:ort"]
+vision-gpu = ["dep:ort", "dep:ndarray"]
 # Opt-in EPs (ADR-005 D2' Layer 2 cascade)
 vision-gpu-cuda     = ["vision-gpu", "ort/cuda"]
 vision-gpu-tensorrt = ["vision-gpu", "ort/tensorrt"]

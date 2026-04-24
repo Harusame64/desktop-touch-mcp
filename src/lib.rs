@@ -521,6 +521,7 @@ impl Task for VisionRecognizeTask {
             rois: Vec::new(),
             frame_width: 0,
             frame_height: 0,
+            frame_buffer: napi::bindgen_prelude::Buffer::from(vec![]),
             now_ms: 0.0,
         };
         let req = std::mem::replace(&mut self.0, placeholder);

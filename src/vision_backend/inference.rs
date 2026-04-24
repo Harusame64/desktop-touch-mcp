@@ -13,7 +13,7 @@
 use std::panic::AssertUnwindSafe;
 
 use crate::vision_backend::error::VisionBackendError;
-use crate::vision_backend::types::{RawCandidate, RecognizeRequest, RoiInput};
+use crate::vision_backend::types::{RawCandidate, RecognizeRequest, Rect, RoiInput};
 
 /// Synchronous recognise call (panic-isolated).
 ///
@@ -51,12 +51,36 @@ pub fn recognize_rois_blocking(req: RecognizeRequest) -> Result<Vec<RawCandidate
 /// candidate with `selected_ep` info for downstream tracing. Real preprocess /
 /// session.run() / postprocess go into 4b-5a/b/c as drop-in replacements.
 #[allow(unused_variables)]
-fn stub_recognise_with_session(req: RecognizeRequest, _sess: std::sync::Arc<crate::vision_backend::session::VisionSession>) -> Vec<RawCandidate> {
-    // The dummy body matches Phase 4a behavior: 1 RawCandidate per input ROI,
-    // empty label, provisional=true, class from class_hint or "other".
-    //
-    // Keeping the stub identical to dummy_recognise makes 4b-5 a pure wiring
-    // change — no test output drift for existing dummy-path tests.
+fn stub_recognise_with_session(req: RecognizeRequest, sess: std::sync::Arc<crate::vision_backend::session::VisionSession>) -> Vec<RawCandidate> {
+    // Phase 4b-5a-1: Florence-2 session_key dispatch (preprocess only, encoder TBD)
+    if sess.session_key.starts_with("florence-2-base:") && !req.frame_buffer.is_empty() {
+        // Preprocess the frame. Errors are logged but do not fail the call —
+        // L5 says the visual lane should degrade, not abort. Fall back to
+        // dummy_recognise output.
+        match crate::vision_backend::florence2::preprocess_image(
+            &req.frame_buffer,
+            req.frame_width,
+            req.frame_height,
+            // Use a synthetic full-frame roi if no rois; otherwise first roi.
+            req.rois.first().map(|r| &r.rect).unwrap_or(&Rect {
+                x: 0, y: 0, width: req.frame_width as i32, height: req.frame_height as i32,
+            }),
+        ) {
+            Ok(tensor) => {
+                // Sanity-check the tensor shape. Phase 4b-5a-3 will feed this
+                // into ort::Session::run; for now we just verify it exists and
+                // log for debugging.
+                debug_assert_eq!(tensor.dim(), crate::vision_backend::florence2::expected_shape());
+                // Fall through to dummy output — real inference in 4b-5a-3.
+            }
+            Err(e) => {
+                eprintln!("[florence2] preprocess failed: {e}");
+                // Continue with dummy output. Visual lane stays alive (L5).
+            }
+        }
+    }
+    // Return stub candidates identical to dummy_recognise so stage-pipeline
+    // tests continue to pass unchanged in 4b-5a-1.
     dummy_recognise(req)
 }
 
@@ -115,6 +139,7 @@ mod tests {
             ],
             frame_width: 1920,
             frame_height: 1080,
+            frame_buffer: napi::bindgen_prelude::Buffer::from(vec![]),
             now_ms: 0.0,
         };
         let out = recognize_rois_blocking(req).expect("dummy must succeed");
@@ -137,6 +162,7 @@ mod tests {
             rois: vec![],
             frame_width: 0,
             frame_height: 0,
+            frame_buffer: napi::bindgen_prelude::Buffer::from(vec![]),
             now_ms: 0.0,
         };
         let _ok = recognize_rois_blocking(req).expect("empty rois must succeed");
