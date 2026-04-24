@@ -28,6 +28,7 @@ pub mod capability;
 pub mod dylib;
 pub mod ep_select;
 pub mod error;
+pub mod florence2;
 pub mod inference;
 pub mod registry;
 pub mod session;

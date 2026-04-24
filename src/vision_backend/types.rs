@@ -39,7 +39,7 @@ pub struct RoiInput {
 /// In Phase 4b it will hold the captured DXGI frame as RGBA bytes (zero-copy
 /// from the napi `Buffer`).
 #[napi(object)]
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RecognizeRequest {
     /// Stable target key (`window:{hwnd}` / `tab:{tabId}` / `title:{title}`).
     pub target_key: String,
@@ -52,8 +52,28 @@ pub struct RecognizeRequest {
     pub frame_width: u32,
     /// Captured frame height in pixels. 0 in Phase 4a.
     pub frame_height: u32,
+    /// Captured frame RGBA bytes, length = frame_width * frame_height * 4.
+    /// Empty buffer → legacy dummy path (no preprocess, stub candidates).
+    pub frame_buffer: napi::bindgen_prelude::Buffer,
     /// Frame timestamp (ms since epoch).
     pub now_ms: f64,
+}
+
+/// Manual Debug impl for RecognizeRequest: Buffer is excluded to avoid
+/// logging potentially large frame data. napi::bindgen_prelude::Buffer does
+/// not implement Debug, so we derive it here manually.
+impl std::fmt::Debug for RecognizeRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RecognizeRequest")
+            .field("target_key", &self.target_key)
+            .field("session_key", &self.session_key)
+            .field("rois", &self.rois)
+            .field("frame_width", &self.frame_width)
+            .field("frame_height", &self.frame_height)
+            .field("frame_buffer", &format!("[Buffer; {} bytes]", self.frame_buffer.len()))
+            .field("now_ms", &self.now_ms)
+            .finish()
+    }
 }
 
 /// One recognized candidate emitted by the backend.
