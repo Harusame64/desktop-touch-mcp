@@ -36,6 +36,11 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # Version is pinned to match ort's requirement (0.17.x). Not a new dependency.
 ndarray = { version = "0.17", optional = true }
 
+# Phase 4b-5a-2: Florence-2 BART tokenizer (HuggingFace official pure-Rust crate)
+# default-features=false to disable: progressbar (cli only), http (network from_pretrained),
+# unstable_wasm. Keep `onig` for the ByteLevel BPE regex backend that Florence-2 uses.
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+
 # ── Visual GPU Phase 4b-2: WinML 統合は ADR-006 に移管 (2026-04-24) ──────────
 # 背景: `windows-app` crate は全バージョン yanked + microsoft/windows-app-rs
 # repo archived (Microsoft が WinAppSDK-Rust 開発停止を発表)。
