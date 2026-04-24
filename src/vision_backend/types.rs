@@ -85,13 +85,17 @@ pub struct RawCandidate {
 
 /// Final EP that the cascade settled on. Echoed back to TS for diagnostics.
 /// String form (used in NativeSessionResult): "WinML" | "DirectML(0)" |
-/// "ROCm(0)" | "CUDA(0)" | "CPU" | "Fallback(reason)"
+/// "ROCm(0)" | "CUDA(0)" | "WebGPU" | "WebGPU(adapter)" | "CPU" |
+/// "Fallback(reason)"
 #[derive(Debug, Clone)]
 pub enum SelectedEp {
     WinML,
     DirectML { device_id: u32 },
     Rocm { device_id: u32 },
     Cuda { device_id: u32 },
+    /// Phase 4b-3: ort WebGPU EP (wgpu backed — Vulkan / DX12 / Metal). Vendor-neutral Layer 3 lane.
+    /// `adapter` is wgpu's physical adapter name when known, empty string otherwise.
+    WebGPU { adapter: String },
     Cpu,
     /// All preferred EPs failed; reason is the concatenated error chain.
     Fallback(String),
@@ -104,6 +108,8 @@ impl SelectedEp {
             Self::DirectML { device_id } => format!("DirectML({device_id})"),
             Self::Rocm { device_id } => format!("ROCm({device_id})"),
             Self::Cuda { device_id } => format!("CUDA({device_id})"),
+            Self::WebGPU { adapter } if adapter.is_empty() => "WebGPU".into(),
+            Self::WebGPU { adapter } => format!("WebGPU({adapter})"),
             Self::Cpu => "CPU".into(),
             Self::Fallback(r) => format!("Fallback({r})"),
         }
