@@ -31,6 +31,7 @@ import { composeCandidates } from "./desktop-providers/compose-providers.js";
 import { getVisualRuntime } from "../engine/vision-gpu/runtime.js";
 import { PocVisualBackend } from "../engine/vision-gpu/poc-backend.js";
 import { onDirtySignal } from "../engine/vision-gpu/dirty-signal.js";
+import { _resetOcrAdaptersForTest } from "../engine/vision-gpu/ocr-adapter-registry.js";
 import { enumWindowsInZOrder } from "../engine/win32.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 
@@ -216,6 +217,7 @@ export function _resetFacadeForTest(): void {
   _facade = undefined;
   _visualSource = undefined;
   _pocBackend = undefined;
+  _resetOcrAdaptersForTest();
 }
 
 // ── Zod schemas ───────────────────────────────────────────────────────────────
