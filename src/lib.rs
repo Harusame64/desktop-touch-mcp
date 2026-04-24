@@ -558,3 +558,54 @@ pub struct CapabilityProfile {
 pub fn detect_capability() -> CapabilityProfile {
     CapabilityProfile { backend_built: false }
 }
+
+// ─── Visual GPU Phase 4b-1: EP cascade session init ────────────────────────
+//
+// `vision_init_session` starts an AsyncTask that:
+//   1. Calls `dylib::ensure_ort_initialized()` (OnceLock, safe to call many times)
+//   2. Runs EP cascade (WinML → DirectML → ROCm → CUDA → CPU)
+//   3. Returns `NativeSessionResult` to TS (never throws — panic isolation via L5)
+//
+// Phase 4b-1: the session is created and immediately discarded (no pool yet).
+// Phase 4b-4 introduces `VisionSessionPool` and stores it.
+
+#[cfg(feature = "vision-gpu")]
+pub struct VisionInitSessionTask(vision_backend::NativeSessionInit);
+
+#[cfg(feature = "vision-gpu")]
+impl Task for VisionInitSessionTask {
+    type Output = vision_backend::NativeSessionResult;
+    type JsValue = vision_backend::NativeSessionResult;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        // Move the init out of self using a placeholder (same pattern as
+        // PreprocessImageTask above — avoids partial-move in &mut self).
+        let placeholder = vision_backend::NativeSessionInit {
+            model_path: String::new(),
+            profile: vision_backend::detect_capability(),
+            session_key: String::new(),
+        };
+        let req = std::mem::replace(&mut self.0, placeholder);
+        Ok(vision_backend::init_session_blocking(req))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+/// Initialise an ORT session using the EP cascade determined by `profile`.
+///
+/// Returns a Promise resolving to `NativeSessionResult`. The Promise **never
+/// rejects** — all errors (including ort panics) are reported via
+/// `result.ok === false`. The MCP server never crashes (L5).
+///
+/// Phase 4b-1: creates and drops the session immediately (no pool yet).
+/// Phase 4b-4 will retain the session in a pool for reuse.
+#[cfg(feature = "vision-gpu")]
+#[napi]
+pub fn vision_init_session(
+    init: vision_backend::NativeSessionInit,
+) -> AsyncTask<VisionInitSessionTask> {
+    AsyncTask::new(VisionInitSessionTask(init))
+}

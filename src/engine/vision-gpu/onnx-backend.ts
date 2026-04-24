@@ -53,8 +53,11 @@ export class OnnxBackend implements VisualBackend {
   }
 
   async ensureWarm(_target: WarmTarget): Promise<WarmState> {
-    // Phase 4a: no real model load. The native call itself is cheap; we simply
-    // mark the lane as warm. Phase 4b will load actual ort::Session here.
+    // Phase 4b-1: defer real session init until a model is requested.
+    // Mark warm because the binding is loaded; Phase 4b-4 changes this to
+    // actually load the detector model via `visionInitSession` and gate on success.
+    // `visionInitSession` is now available on `nativeVision` (Phase 4b-1 wired it),
+    // but calling it here requires a model path — that comes in Phase 4b-4.
     if (!OnnxBackend.isAvailable()) {
       this.state = "evicted";
       return this.state;

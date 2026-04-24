@@ -609,7 +609,7 @@ ADR-004 の rollout (`visual-gpu-phase4-rollout.md`) も以下に再構成する
 
 実装担当: Opus + 必要に応じ Sonnet (annotation / benchmark スクリプト等の機械的部分のみ)
 
-- [ ] **4b-1**: WinML EP を `ort` で有効化 (`features = ["winml"]`)
+- [x] **4b-1**: EP cascade real wiring — `session.rs` / `ep_select.rs` / `dylib.rs` 新規作成、`VisionInitSessionTask` + `vision_init_session` napi 追加、WinML → DirectML → ROCm → CUDA → CPU の順次試行実装 (WinML は 4b-2 まで stub)
 - [ ] **4b-2**: Vulkan(ncnn) lane を Layer 3 として追加 (Rust 側で別 module、ncnn-rs binding)
 - [ ] **4b-3**: ROCm/CUDA/TensorRT EP は build feature flag で opt-in 化
 - [ ] **4b-4**: Florence-2 / OmniParser-v2 / PaddleOCR-v4 の variant を `models.json` に登録
