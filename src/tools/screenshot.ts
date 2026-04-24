@@ -7,7 +7,8 @@ import { getWindows } from "../engine/nutjs.js";
 import { enumMonitors, getVirtualScreen, getWindowTitleW, enumWindowsInZOrder } from "../engine/win32.js";
 import { getUiElements, extractActionableElements, WINUI3_CLASS_RE, detectUiaBlind } from "../engine/uia-bridge.js";
 import type { UiElementsResult } from "../engine/uia-bridge.js";
-import { recognizeWindow, ocrWordsToActionable, runOcr, mergeNearbyWords, runSomPipeline } from "../engine/ocr-bridge.js";
+import { recognizeWindow, ocrWordsToActionable, runOcr, mergeNearbyWords, runSomPipeline, snapToDictionary } from "../engine/ocr-bridge.js";
+import type { OcrDictionaryEntry } from "../engine/ocr-bridge.js";
 import { updateWindowCache } from "../engine/window-cache.js";
 import { CHROMIUM_TITLE_RE } from "./workspace.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
@@ -622,13 +623,20 @@ export const screenshotHandler = async ({
           ocrFallback === "always" ||
           (ocrFallback === "auto" && (result.actionable.length === 0 || uiaSparse || isChromium));
 
+        // UIA dictionary for snap-correction (commit 2-4).
+        // Built from enabled elements with screen-absolute boundingRect.
+        // Used by both SoM and plain OCR paths to correct glyph-confusion errors.
+        const uiaDict: OcrDictionaryEntry[] = (raw?.elements ?? [])
+          .filter((e) => e.isEnabled && e.boundingRect !== null && e.name.length >= 2)
+          .map((e) => ({ label: e.name, rect: e.boundingRect! }));
+
         // SoM mode — when UIA-Blind is detected AND OCR would fire, run the full
         // Set-of-Mark pipeline (preprocess → OCR → cluster → draw) instead of the
         // plain word-list fallback. Falls through to normal OCR on any error.
         const uiaBlind = raw !== null ? detectUiaBlind(raw) : { blind: false as const };
         if (shouldOcr && uiaBlind.blind) {
           try {
-            const somResult = await runSomPipeline(effectiveTitle, targetHwnd, ocrLanguage, 2, preprocessPolicy, preprocessAdaptive);
+            const somResult = await runSomPipeline(effectiveTitle, targetHwnd, ocrLanguage, 2, preprocessPolicy, preprocessAdaptive, uiaDict);
             hints.ocrFallbackFired = true;
             (hints as Record<string, unknown>).somMode = true;
             (hints as Record<string, unknown>).uiaBlindReason = uiaBlind.reason;
@@ -671,7 +679,18 @@ export const screenshotHandler = async ({
         if (shouldOcr) {
           try {
             const { words, origin } = await recognizeWindow(effectiveTitle, ocrLanguage);
-            const ocrItems = ocrWordsToActionable(words, origin);
+            // Convert words to screen-absolute coords so snapToDictionary locality
+            // filter aligns with UIA boundingRect (also screen-absolute).
+            const screenAbsWords = words.map((w) => ({
+              ...w,
+              bbox: { x: origin.x + w.bbox.x, y: origin.y + w.bbox.y,
+                      width: w.bbox.width, height: w.bbox.height },
+            }));
+            const snappedWords = uiaDict.length > 0
+              ? snapToDictionary(screenAbsWords, uiaDict)
+              : screenAbsWords;
+            // Pass origin={x:0,y:0} because words are already screen-absolute.
+            const ocrItems = ocrWordsToActionable(snappedWords, { x: 0, y: 0 });
             // Add viewportPosition to OCR items using the window region
             if (result.windowRegion) {
               for (const item of ocrItems) {

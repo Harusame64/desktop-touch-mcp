@@ -632,6 +632,9 @@ export function clusterOcrWords(words: OcrWord[], elementGapThreshold = 35): Som
  * @param adaptive   When true, apply Sauvola adaptive binarization after contrast stretch.
  *   Automatically promoted to true when preprocessPolicy="aggressive".
  *   Ignored (warning logged) when Rust native engine is unavailable.
+ * @param dictionary UIA-derived label dictionary for snap-correction (commit 2-4).
+ *   Applied to screen-absolute words between mergeNearbyWords and clusterOcrWords.
+ *   Caller must provide screen-absolute rects (same space as OcrWord.bbox after origin offset).
  */
 export async function runSomPipeline(
   windowTitle: string,
@@ -640,6 +643,7 @@ export async function runSomPipeline(
   scale = 2,
   preprocessPolicy: "auto" | "aggressive" | "minimal" = "auto",
   adaptive = false,
+  dictionary: OcrDictionaryEntry[] = [],
 ): Promise<SomPipelineResult> {
   // ── Locate window & capture raw RGBA ───────────────────────────────────────
   let targetHwnd: unknown = hwnd ?? null;
@@ -762,10 +766,12 @@ export async function runSomPipeline(
   // ── Merge chars → words → elements (2-stage clustering) ────────────────────
   // Stage 1 (gap≈12px): raw OCR words → merged word spans  [handled in clusterOcrWords]
   // Stage 2 (gap=35px): word spans   → logical UI elements [handled in clusterOcrWords]
-  // This call applies stage 1 on screenWords, then stage 2 inside clusterOcrWords.
+  // UIA dictionary snap is applied after stage 1 (word-span level) for best accuracy.
+  // Words are already screen-absolute at this point; dictionary rects must match.
   const _tClsStart = performance.now();
-  const merged   = mergeNearbyWords(screenWords);
-  const elements = clusterOcrWords(merged);
+  const merged  = mergeNearbyWords(screenWords);
+  const snapped = dictionary.length > 0 ? snapToDictionary(merged, dictionary) : merged;
+  const elements = clusterOcrWords(snapped);
   console.error(`[SoM] clustering: ${(performance.now() - _tClsStart).toFixed(1)}ms  (${merged.length} words → ${elements.length} elements)`);
 
   // ── Step 4: Render SoM image via Rust ───────────────────────────────────────
