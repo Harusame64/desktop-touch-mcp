@@ -146,8 +146,17 @@ export const screenshotSchema = {
     .describe(
       "OCR preprocessing scale policy for detail='som' and OCR fallback paths. " +
       "'auto' (default): clamp scale to 1 on OOM (>8MP) or high-DPI (≥150%). " +
-      "'aggressive': relaxes DPI clamp to 175%, preserving upscale on 150%-DPI monitors (e.g. Outlook PWA). " +
+      "'aggressive': relaxes DPI clamp to 175%, preserving upscale on 150%-DPI monitors (e.g. Outlook PWA). Also auto-enables adaptive binarization. " +
       "'minimal': always scale=1 regardless of DPI/resolution."
+    ),
+  preprocessAdaptive: z
+    .boolean()
+    .default(false)
+    .describe(
+      "When true, apply Sauvola adaptive binarization after contrast stretch. " +
+      "Improves recognition of thin text on low-contrast or gradient backgrounds. " +
+      "Automatically enabled when preprocessPolicy='aggressive'. " +
+      "Requires Rust native engine; silently skipped otherwise."
     ),
 };
 
@@ -322,6 +331,7 @@ export const screenshotHandler = async ({
   ocrFallback,
   ocrLanguage,
   preprocessPolicy = "auto",
+  preprocessAdaptive = false,
 }: {
   windowTitle?: string;
   hwnd?: string;
@@ -338,6 +348,7 @@ export const screenshotHandler = async ({
   ocrFallback: "auto" | "always" | "never";
   ocrLanguage: string;
   preprocessPolicy: "auto" | "aggressive" | "minimal";
+  preprocessAdaptive: boolean;
 }): Promise<ToolResult> => {
   // Compute effective detail: explicit value wins; otherwise infer from context.
   // dotByDot / region / displayId imply the caller wants pixels, so default to 'image'.
@@ -391,7 +402,7 @@ export const screenshotHandler = async ({
       const resolvedTitle = resolvedWin?.title ?? effectiveTitle;
       const targetHwnd = resolvedWin?.hwnd ?? null;
 
-      const somResult = await runSomPipeline(resolvedTitle, targetHwnd, ocrLanguage, 2, preprocessPolicy);
+      const somResult = await runSomPipeline(resolvedTitle, targetHwnd, ocrLanguage, 2, preprocessPolicy, preprocessAdaptive);
       const content: ToolResult["content"] = [
         {
           type: "text" as const,
@@ -617,7 +628,7 @@ export const screenshotHandler = async ({
         const uiaBlind = raw !== null ? detectUiaBlind(raw) : { blind: false as const };
         if (shouldOcr && uiaBlind.blind) {
           try {
-            const somResult = await runSomPipeline(effectiveTitle, targetHwnd, ocrLanguage, 2, preprocessPolicy);
+            const somResult = await runSomPipeline(effectiveTitle, targetHwnd, ocrLanguage, 2, preprocessPolicy, preprocessAdaptive);
             hints.ocrFallbackFired = true;
             (hints as Record<string, unknown>).somMode = true;
             (hints as Record<string, unknown>).uiaBlindReason = uiaBlind.reason;

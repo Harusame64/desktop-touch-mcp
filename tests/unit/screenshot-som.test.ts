@@ -77,7 +77,7 @@ describe("screenshotHandler - detail='som' mode", () => {
     });
 
     expect(result.isError).toBeUndefined();
-    expect(mockRunSomPipeline).toHaveBeenCalledWith("My App", 12345n, "ja", 2, "auto");
+    expect(mockRunSomPipeline).toHaveBeenCalledWith("My App", 12345n, "ja", 2, "auto", false);
     const textContent = JSON.parse(result.content[0].text);
     expect(textContent.window).toBe("My App");
     expect(textContent.detail).toBe("som");
@@ -107,7 +107,7 @@ describe("screenshotHandler - detail='som' mode", () => {
       ocrLanguage: "ja",
     });
 
-    expect(mockRunSomPipeline).toHaveBeenCalledWith("My App", 54321n, "ja", 2, "auto");
+    expect(mockRunSomPipeline).toHaveBeenCalledWith("My App", 54321n, "ja", 2, "auto", false);
     expect(mockEnumWindowsInZOrder).not.toHaveBeenCalled();
     const textContent = JSON.parse(result.content[0].text);
     expect(textContent.window).toBe("My App — Full Title");
@@ -136,7 +136,7 @@ describe("screenshotHandler - detail='som' mode", () => {
     });
 
     // Handler passes null hwnd; runSomPipeline handles its own window search
-    expect(mockRunSomPipeline).toHaveBeenCalledWith("My App", null, "ja", 2, "auto");
+    expect(mockRunSomPipeline).toHaveBeenCalledWith("My App", null, "ja", 2, "auto", false);
     expect(mockEnumWindowsInZOrder).not.toHaveBeenCalled();
     // window field must reflect the full resolved title, not the partial input
     const textContent = JSON.parse(result.content[0].text);
