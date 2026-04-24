@@ -27,6 +27,24 @@ export interface OcrWord {
    * Paired with lineWordCount to compute word density = lineWordCount / lineCharCount.
    */
   lineCharCount?: number;
+  /**
+   * Set by snapToDictionary when this word's text was corrected to a UIA dictionary label.
+   * Holds the original (pre-correction) OCR text for debugging and dedupe.
+   * Absent when the word was not corrected.
+   */
+  _correctedFrom?: string;
+}
+
+/** One entry in a UIA-derived dictionary used by snapToDictionary. */
+export interface OcrDictionaryEntry {
+  /** The label to snap matched OCR words toward (UIA element name). */
+  label: string;
+  /**
+   * Optional bounding rect of the source UIA element.
+   * When present, enables locality filtering (only snap if close enough).
+   * Must be in the same coordinate space as OcrWord.bbox — caller's responsibility.
+   */
+  rect?: { x: number; y: number; width: number; height: number };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -288,6 +306,123 @@ export function ocrWordsToLines(words: OcrWord[]): string {
   return lines
     .map((line) => line.sort((a, b) => a.bbox.x - b.bbox.x).map((w) => w.text).join(" "))
     .join("\n");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UIA dictionary snap-correction
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Row-buffer Levenshtein — O(min(m,n)) space. */
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  // Keep the shorter string in the inner loop (row buffer = b.length + 1)
+  const [s, t] = a.length <= b.length ? [a, b] : [b, a];
+  const row = Array.from({ length: t.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= s.length; i++) {
+    let prev = i - 1;
+    row[0] = i;
+    for (let j = 1; j <= t.length; j++) {
+      const temp = row[j];
+      row[j] = s[i - 1] === t[j - 1] ? prev : 1 + Math.min(prev, row[j], row[j - 1]!);
+      prev = temp;
+    }
+  }
+  return row[t.length]!;
+}
+
+function bboxCenterDist(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number },
+): number {
+  const dx = (a.x + a.width / 2) - (b.x + b.width / 2);
+  const dy = (a.y + a.height / 2) - (b.y + b.height / 2);
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+/**
+ * Snap OCR words toward the nearest matching entry in a UIA-derived dictionary.
+ * Improves recognition of broken words (e.g. "こ一DUCNET-SIJPPORT" → "CUSCNET-SUPPORT")
+ * when the correct label exists in the UIA element tree.
+ *
+ * Matching priority (tie-breaking order):
+ *   1. Exact match (NFKC + lowercase) — no correction applied (word already correct)
+ *   2. Levenshtein distance (ascending) — minimum edit distance wins
+ *   3. Rect distance (ascending) — when two entries share the same Levenshtein distance
+ *
+ * NOTE: Caller must ensure words[].bbox and dictionary[].rect share the same
+ * coordinate space (both screen-absolute or both window-local).
+ * No coordinate transformation happens inside this function.
+ *
+ * @param words       OCR words to correct.
+ * @param dictionary  UIA-derived labels to snap toward.
+ * @param opts        maxDistance (default min(2, ⌈len×0.2⌉)), localityPx (default 200).
+ */
+export function snapToDictionary(
+  words: OcrWord[],
+  dictionary: OcrDictionaryEntry[],
+  opts?: { maxDistance?: number; localityPx?: number },
+): OcrWord[] {
+  if (words.length === 0 || dictionary.length === 0) return words;
+
+  const localityPx = opts?.localityPx ?? 200;
+
+  // Pre-normalise dictionary; skip labels that are too short or become empty after normalisation
+  type NormEntry = { entry: OcrDictionaryEntry; norm: string };
+  const normDict: NormEntry[] = dictionary
+    .filter((e) => e.label.length >= 2)
+    .map((e) => ({ entry: e, norm: e.label.normalize("NFKC").toLowerCase() }))
+    .filter((ne) => ne.norm.length >= 2);
+
+  if (normDict.length === 0) return words;
+
+  return words.map((word) => {
+    const normText = word.text.normalize("NFKC").toLowerCase();
+    const maxDist = opts?.maxDistance ?? Math.min(2, Math.ceil(normText.length * 0.2));
+
+    let bestEntry: OcrDictionaryEntry | null = null;
+    let bestLev = Infinity;
+    let bestRectDist = Infinity;
+
+    for (const { entry, norm: normLabel } of normDict) {
+      // Locality filter (O(1)) — runs before Levenshtein to cheaply prune the search
+      if (entry.rect !== undefined) {
+        const d = bboxCenterDist(word.bbox, entry.rect);
+        if (d > localityPx) continue;
+      }
+
+      // Exact match after normalisation: word is semantically correct.
+      // If the raw text already equals the label (e.g. same halfwidth ASCII) → no-op.
+      // If they differ visually (e.g. fullwidth ＡBC vs halfwidth ABC) → correct the form.
+      if (normLabel === normText) {
+        if (entry.label === word.text) return word;
+        return { ...word, text: entry.label, _correctedFrom: word.text };
+      }
+
+      // Early termination: length difference exceeds maxDist → Levenshtein lower bound
+      if (Math.abs(normLabel.length - normText.length) > maxDist) continue;
+
+      const lev = levenshtein(normText, normLabel);
+      if (lev > maxDist) continue;
+
+      // Tie-breaking: prefer minimum Levenshtein, then minimum rect distance
+      const rectDist = entry.rect !== undefined ? bboxCenterDist(word.bbox, entry.rect) : Infinity;
+      if (
+        lev < bestLev ||
+        (lev === bestLev && rectDist < bestRectDist)
+      ) {
+        bestLev = lev;
+        bestRectDist = rectDist;
+        bestEntry = entry;
+      }
+    }
+
+    if (bestEntry === null) return word;
+
+    // Apply correction: keep all existing fields (bbox, lineWordCount, lineCharCount, etc.)
+    return { ...word, text: bestEntry.label, _correctedFrom: word.text };
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
