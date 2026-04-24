@@ -423,6 +423,7 @@ impl Task for PreprocessImageTask {
             height: 0,
             channels: 3,
             scale: 2,
+            adaptive: None,
         };
         let opts = std::mem::replace(&mut self.0, dummy);
         image_processing::upscale_grayscale_contrast(opts)
