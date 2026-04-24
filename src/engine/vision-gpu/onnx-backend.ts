@@ -182,9 +182,14 @@ export class OnnxBackend implements VisualBackend {
     rois: RoiInput[],
     frameWidth?: number,
     frameHeight?: number,
+    frameBuffer?: Buffer,  // Phase 4b-5a-1 addition (optional, backward-compat)
   ): Promise<UiEntityCandidate[]> {
     if (!OnnxBackend.isAvailable() || !nativeVision?.visionRecognizeRois) return [];
     if (rois.length === 0) return [];
+
+    const effectiveBuffer = frameBuffer ?? Buffer.alloc(0);
+    // Backward-compat: empty Buffer triggers legacy dummy path in Rust
+    // (frame_buffer.is_empty()), keeping 4a/4b-1 test assertions stable.
 
     const nativeRois = rois.map((r) => ({
       trackId: r.trackId,
@@ -201,6 +206,7 @@ export class OnnxBackend implements VisualBackend {
         rois: nativeRois,
         frameWidth: frameWidth ?? this.opts.defaultFrameWidth ?? 0,
         frameHeight: frameHeight ?? this.opts.defaultFrameHeight ?? 0,
+        frameBuffer: effectiveBuffer,
         nowMs: Date.now(),
       };
       try {
@@ -223,6 +229,7 @@ export class OnnxBackend implements VisualBackend {
         rois: nativeRois,
         frameWidth: frameWidth ?? this.opts.defaultFrameWidth ?? 0,
         frameHeight: frameHeight ?? this.opts.defaultFrameHeight ?? 0,
+        frameBuffer: effectiveBuffer,
         nowMs: Date.now(),
       };
       try {

@@ -52,7 +52,13 @@ export interface VisualBackend {
    * Always non-throwing: backend errors / inference panics surface as an empty
    * array, never as a rejected Promise. The MCP server stays alive (L5).
    */
-  recognizeRois?(targetKey: string, rois: RoiInput[], frameWidth?: number, frameHeight?: number): Promise<UiEntityCandidate[]>;
+  recognizeRois?(
+    targetKey: string,
+    rois: RoiInput[],
+    frameWidth?: number,
+    frameHeight?: number,
+    frameBuffer?: Buffer,  // Phase 4b-5a-1 addition (optional, backward-compat)
+  ): Promise<UiEntityCandidate[]>;
 
   dispose(): Promise<void>;
 }

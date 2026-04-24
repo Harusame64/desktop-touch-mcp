@@ -154,6 +154,9 @@ export interface NativeRecognizeRequest {
   rois: NativeRoiInput[]
   frameWidth: number
   frameHeight: number
+  /** Captured frame RGBA bytes, length = frameWidth * frameHeight * 4.
+   *  Empty Buffer → legacy dummy path (no preprocess, stub candidates). */
+  frameBuffer: Buffer
   nowMs: number
 }
 
