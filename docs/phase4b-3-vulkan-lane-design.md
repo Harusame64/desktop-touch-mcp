@@ -1,6 +1,6 @@
 # Phase 4b-3 設計書 — Vulkan lane via ORT WebGPU EP
 
-- Status: Draft (2026-04-24) — ユーザー approve 待ち
+- Status: Implemented (2026-04-25、commit `b0600fb`)
 - 設計者: Claude (Opus, max effort)
 - 実装担当: **Opus 直接実装** (handbook §2 Step B、外部 library binding は Opus 原則)
 - 対応 ADR-005 セクション: D2' Layer 3 (Vulkan/ncnn lane、ただし ncnn-rs 不在のため **ort webgpu EP** に切替) / D7' (vendor portability)
