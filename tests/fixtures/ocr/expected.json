@@ -1,0 +1,17 @@
+{
+  "description": "Outlook PWA OCR quality baseline. Regenerate: UPDATE_FIXTURES=1 RUN_OCR_GOLDEN=1 npx vitest run --project integration",
+  "generatedAt": null,
+  "known_correct": [
+    "FANUC Integration Service",
+    "受信トレイ",
+    "FabriQR_LOG",
+    "DUCNET-SUPPORT",
+    "PSIRT"
+  ],
+  "known_broken": [
+    { "input": "こ一DUCNET-SIJPPORT", "note": "DUCNET-SUPPORT への誤認識（全角一、記号混入、I↔1 混在）" },
+    { "input": "Fab「iQR_LOG", "note": "FabriQR_LOG への誤認識（r が全角「に変化）" },
+    { "input": "Hi「0t3k切see", "note": "英語テキストの重篤な誤認識（複数の glyph confusion）" },
+    { "input": "5VDX2030", "note": "SVDX2030 への誤認識（S→5 の glyph confusion）" }
+  ]
+}
