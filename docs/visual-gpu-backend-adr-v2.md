@@ -580,6 +580,7 @@ ADR-004 の rollout (`visual-gpu-phase4-rollout.md`) も以下に再構成する
   - `DESKTOP_TOUCH_ENABLE_ONNX_BACKEND=1` で OnnxBackend opt-in
   - native binding 不在時は自動的に PocVisualBackend に fall through
   - `_resetFacadeForTest` で OnnxBackend も dispose
+  - **WinML detection は Phase 4a では `capability.detect_winml()` の OS build 判定 (Win11 24H2+) のみ**。`vision-gpu-winml` feature は Phase 4b で実装予定 (windows crate の AI namespace または onnxruntime-winml binding)、4a では `eps_built` に "winml" は現れない
 - [x] **4a-8**: Model distribution skeleton (`src/engine/vision-gpu/model-registry.ts`):
   - `ModelManifest` schema 定義 (variants matrix, EP / arch / OS / ROCm gates)
   - `selectVariant(modelName, profile)` capability-aware 選択 (bench_ms 昇順、size_mb tie-breaker)
@@ -591,13 +592,18 @@ ADR-004 の rollout (`visual-gpu-phase4-rollout.md`) も以下に再構成する
   - 9 unit tests 全パス
 
 **Done criteria**:
-- [ ] `OnnxBackend` が **CPU EP + DirectML EP の両方** で dummy 推論を実行できる (RX 9070 XT 実機で動作確認 — 要 cargo build:rs + ユーザー実機テスト)
+- [ ] `OnnxBackend` が **CPU EP + DirectML EP の両方** で dummy 推論を実行できる (Gate A: RX 9070 XT 実機 `cargo build:rs` + ユーザー実機テストで verify)
 - [x] DXGI 取得 dirty rect → Rust 推論 → TS Snapshot に届く end-to-end の **wiring** が通る (実機 inference は要 Phase 4b 実モデル投入後)
 - [x] kill-switch (`DESKTOP_TOUCH_DISABLE_VISUAL_GPU=1`) で `PocVisualBackend` に瞬時に戻れる、および opt-in 未設定時は default で PocVisualBackend
 - [x] inference 内で panic を起こしても MCP server (Node main プロセス) が生存する (L5、Rust catch_unwind + TS test で検証)
-- [ ] capability detection が RX 9070 XT を `gpu_vendor=AMD, gpu_arch=RDNA4, dml=true, winml=true` と正しく判定 (要 cargo build:rs + ユーザー実機 verify)
-- [x] 既存 Phase 1-3 のテスト全パス (regression なし) — vitest 1931 pass / 31 skipped、新規 9 tests も全パス
-- [x] `tsc --noEmit` パス (eslint 設定無いため lint は対象外)、`cargo check --release --features vision-gpu` の結果は別途確認
+- [ ] capability detection が RX 9070 XT を `gpu_vendor=AMD, gpu_arch=RDNA4, dml=true, winml=true` と正しく判定 (Gate A: ユーザー実機 verify、PowerShell から `node -e "console.log(require('./index.js').detectCapability())"` で確認手順)
+- [x] 既存 Phase 1-3 のテスト全パス (regression なし) — vitest 1931 pass / 31 skipped、新規 9 tests + ModelRegistry test も全パス
+- [x] `tsc --noEmit` パス (eslint 設定無いため lint は対象外)、`cargo check --release --features vision-gpu` exit 0 確認済 (Opus subagent 修正経由)
+
+**Gate A 移行条件 (4a → 4b)**:
+- 上記の `[ ]` 2 項目をユーザー実機で verify
+- skeleton が Phase 1-3 を一切壊さない (現時点でクリア)
+- Phase 4b で実装すべき項目が ADR §3 D5' / §5 4b-1〜4b-8 に明記されている (済)
 
 ### Phase 4b — Real detector + multi-engine OCR + ベンチ (3-5 weeks)
 

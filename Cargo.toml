@@ -40,7 +40,9 @@ vision-gpu-migraphx = ["vision-gpu", "ort/migraphx"]
 vision-gpu-coreml   = ["vision-gpu", "ort/coreml"]
 vision-gpu-openvino = ["vision-gpu", "ort/openvino"]
 vision-gpu-webgpu   = ["vision-gpu", "ort/webgpu"]
-# Phase 4c+ で WinML 統合検討用。現時点では windows crate で直接 binding する想定なので feature flag のみ予約。
+# Phase 4b で WinML 統合予定 (windows crate の AI namespace または onnxruntime-winml).
+# Phase 4a では feature 自体が no-op (eps_built には現れない).
+# 「WinML 利用可」判定は capability.detect_winml() の OS build version 判定でカバー.
 vision-gpu-winml    = ["vision-gpu"]
 
 [target.'cfg(windows)'.dependencies]

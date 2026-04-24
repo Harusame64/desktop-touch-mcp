@@ -177,8 +177,15 @@ export const nativeUia: NativeUia | null =
     ? (nativeBinding as unknown as NativeUia)
     : null;
 
+// Treat the binding as "vision available" when EITHER end of the surface is
+// callable. `detectCapability` is exported even when `vision-gpu` cargo
+// feature is OFF (returns `{ backendBuilt: false }`); `visionRecognizeRois`
+// is exported only when the feature is ON. Either function being present
+// means the addon is loaded and the TS layer can probe for capability.
 export const nativeVision: NativeVision | null =
-  nativeBinding && typeof nativeBinding.visionRecognizeRois === "function"
+  nativeBinding &&
+  (typeof nativeBinding.visionRecognizeRois === "function"
+    || typeof nativeBinding.detectCapability === "function")
     ? (nativeBinding as unknown as NativeVision)
     : null;
 
