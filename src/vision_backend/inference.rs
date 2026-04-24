@@ -52,36 +52,69 @@ pub fn recognize_rois_blocking(req: RecognizeRequest) -> Result<Vec<RawCandidate
 /// session.run() / postprocess go into 4b-5a/b/c as drop-in replacements.
 #[allow(unused_variables)]
 fn stub_recognise_with_session(req: RecognizeRequest, sess: std::sync::Arc<crate::vision_backend::session::VisionSession>) -> Vec<RawCandidate> {
-    // Phase 4b-5a-1: Florence-2 session_key dispatch (preprocess only, encoder TBD)
     if sess.session_key.starts_with("florence-2-base:") && !req.frame_buffer.is_empty() {
-        // Preprocess the frame. Errors are logged but do not fail the call —
-        // L5 says the visual lane should degrade, not abort. Fall back to
-        // dummy_recognise output.
-        match crate::vision_backend::florence2::preprocess_image(
+        // 4b-5a-1: image preprocess
+        let preprocess_ok = match crate::vision_backend::florence2::preprocess_image(
             &req.frame_buffer,
             req.frame_width,
             req.frame_height,
-            // Use a synthetic full-frame roi if no rois; otherwise first roi.
             req.rois.first().map(|r| &r.rect).unwrap_or(&Rect {
-                x: 0, y: 0, width: req.frame_width as i32, height: req.frame_height as i32,
+                x: 0, y: 0,
+                width: req.frame_width as i32,
+                height: req.frame_height as i32,
             }),
         ) {
             Ok(tensor) => {
-                // Sanity-check the tensor shape. Phase 4b-5a-3 will feed this
-                // into ort::Session::run; for now we just verify it exists and
-                // log for debugging.
                 debug_assert_eq!(tensor.dim(), crate::vision_backend::florence2::expected_shape());
-                // Fall through to dummy output — real inference in 4b-5a-3.
+                true
             }
             Err(e) => {
                 eprintln!("[florence2] preprocess failed: {e}");
-                // Continue with dummy output. Visual lane stays alive (L5).
+                false
+            }
+        };
+
+        // 4b-5a-2: tokenizer. Try loading tokenizer.json adjacent to the model file
+        // (convention: <model_root>/tokenizer.json, where model_root is the parent
+        // directory of the .onnx file). If the file is absent, log and continue —
+        // 4b-5a-3 will require it for real inference, but Stage 1 stub paths must
+        // not panic on missing artifact (L5).
+        if preprocess_ok {
+            if let Some(tokenizer_path) = tokenizer_path_for_session(&sess) {
+                if tokenizer_path.exists() {
+                    match crate::vision_backend::florence2::Florence2Tokenizer::from_file(&tokenizer_path) {
+                        Ok(tok) => match tok.tokenize_region_proposal() {
+                            Ok(prompt_tokens) => {
+                                debug_assert!(!prompt_tokens.is_empty());
+                                debug_assert_eq!(
+                                    prompt_tokens.input_ids.len(),
+                                    prompt_tokens.attention_mask.len(),
+                                );
+                                // Sanity-check: BART encoding of any non-empty prompt yields ≥ 2 tokens
+                                // (BOS + EOS at minimum). Real Florence-2 tokenization of
+                                // <REGION_PROPOSAL> is typically 3 tokens.
+                                debug_assert!(prompt_tokens.len() >= 2);
+                            }
+                            Err(e) => eprintln!("[florence2] tokenize failed: {e}"),
+                        },
+                        Err(e) => eprintln!("[florence2] tokenizer load failed: {e}"),
+                    }
+                }
+                // tokenizer_path absent is normal in 4b-5a-2 (no real artifact yet); silent.
             }
         }
     }
-    // Return stub candidates identical to dummy_recognise so stage-pipeline
-    // tests continue to pass unchanged in 4b-5a-1.
     dummy_recognise(req)
+}
+
+/// Resolve the tokenizer.json path adjacent to the session's model file.
+/// Returns None if the model_path has no parent directory (defensive).
+fn tokenizer_path_for_session(
+    sess: &crate::vision_backend::session::VisionSession,
+) -> Option<std::path::PathBuf> {
+    std::path::Path::new(&sess.model_path)
+        .parent()
+        .map(|p| p.join("tokenizer.json"))
 }
 
 /// Phase 4a dummy: 1 input ROI → 1 RawCandidate.
