@@ -30,6 +30,10 @@ pub struct PreprocessOptions {
     pub channels: u32,
     /// Upscale factor: 1, 2, 3, or 4.
     pub scale: u32,
+    /// When true, apply Sauvola adaptive binarization after contrast stretch.
+    /// Output pixels become 0 (dark/text) or 255 (light/background) only.
+    /// Omit or set false for normal grayscale output.
+    pub adaptive: Option<bool>,
 }
 
 /// Output of `preprocess_image`.
@@ -107,7 +111,16 @@ pub fn upscale_grayscale_contrast(opts: PreprocessOptions) -> Result<ImageProces
     let scaled_u8 = bilinear_resize_u8(&gray_u8, opts.width, opts.height, out_w, out_h);
 
     // ── Step 3: Min-max contrast stretch (u8 → u8) ───────────────────────
-    let output_u8 = minmax_stretch_u8(&scaled_u8);
+    let stretched_u8 = minmax_stretch_u8(&scaled_u8);
+
+    // ── Step 4 (optional): Sauvola adaptive binarization ─────────────────
+    // When adaptive=true, output becomes strictly 0/255 (text/background).
+    // Improves recognition of thin text on low-contrast or uneven backgrounds.
+    let output_u8 = if opts.adaptive == Some(true) {
+        sauvola_binarize_u8(&stretched_u8, out_w, out_h, 15, 0.2)
+    } else {
+        stretched_u8
+    };
 
     Ok(ImageProcessingResult {
         data: Buffer::from(output_u8),
@@ -216,6 +229,73 @@ fn minmax_stretch_u8(src: &[u8]) -> Vec<u8> {
     src.iter()
         .map(|&v| (((v as u32 - min_val) * 255 + range / 2) / range) as u8)
         .collect()
+}
+
+/// Sauvola adaptive thresholding on a 1-channel u8 grayscale image.
+///
+/// For each pixel, computes local mean `m` and standard deviation `σ` in a
+/// (`window` × `window`) neighbourhood using integral images — O(1) per pixel.
+///
+/// Threshold: T(x,y) = m · (1 + k · (σ/R − 1))
+///   m = local mean, σ = local std-dev, R = 128 (half of max u8 range), k = 0.2.
+///
+/// Convention: pixel < T → 0 (dark text), pixel ≥ T → 255 (light background).
+///
+/// Memory: two u64 integral images of size (w+1)×(h+1).
+/// Overflow analysis for a 15×15 window:
+///   max sum²  = 225 × 255² = 14,626,875 < u64::MAX ✓
+///   max sum   = 225 × 255  = 57,375     < u64::MAX ✓
+fn sauvola_binarize_u8(src: &[u8], w: u32, h: u32, window: u32, k: f32) -> Vec<u8> {
+    let w = w as usize;
+    let h = h as usize;
+    let half = (window as usize) / 2;
+    let stride = w + 1;
+
+    // Build integral images (1-based, 0-padded border)
+    let mut isum  = vec![0u64; stride * (h + 1)];
+    let mut isum2 = vec![0u64; stride * (h + 1)];
+
+    for y in 0..h {
+        for x in 0..w {
+            let v = src[y * w + x] as u64;
+            let idx = (y + 1) * stride + (x + 1);
+            isum [idx] = v      + isum [idx - stride] + isum [idx - 1] - isum [idx - stride - 1];
+            isum2[idx] = v * v  + isum2[idx - stride] + isum2[idx - 1] - isum2[idx - stride - 1];
+        }
+    }
+
+    let mut dst = vec![0u8; w * h];
+
+    for y in 0..h {
+        let y1 = y.saturating_sub(half);
+        let y2 = (y + half + 1).min(h);
+
+        for x in 0..w {
+            let x1 = x.saturating_sub(half);
+            let x2 = (x + half + 1).min(w);
+
+            // Rectangular sum via 4-corner difference on the integral image
+            let count = ((y2 - y1) * (x2 - x1)) as u64;
+            let a = y2 * stride + x2;
+            let b = y1 * stride + x2;
+            let c = y2 * stride + x1;
+            let d = y1 * stride + x1;
+            let sum  = isum [a] - isum [b] - isum [c] + isum [d];
+            let sum2 = isum2[a] - isum2[b] - isum2[c] + isum2[d];
+
+            let mean     = sum as f32 / count as f32;
+            // Variance = E[X²] − E[X]² ; clamp to ≥0 to absorb integer rounding
+            let variance = (sum2 as f32 / count as f32 - mean * mean).max(0.0);
+            let sigma    = variance.sqrt();
+
+            const R: f32 = 128.0;
+            let threshold = mean * (1.0 + k * (sigma / R - 1.0));
+
+            dst[y * w + x] = if (src[y * w + x] as f32) < threshold { 0 } else { 255 };
+        }
+    }
+
+    dst
 }
 
 // ─── Set-of-Mark label drawing (Step 4) ─────────────────────────────────────
