@@ -1,6 +1,6 @@
 # Phase 4b-5a-1 設計書 — Florence-2 Stage 1 image preprocess + frame_buffer plumbing
 
-- Status: Implemented (2026-04-25、commit hash TBD — see git log)
+- Status: Implemented (2026-04-25、commits de09bc1〜866e692)
 - 設計者: Claude (Opus 4.7)
 - 実装担当: **Sonnet** (handbook §2 Step B)
 - レビュー担当: Opus 4.7 (別 subagent)
