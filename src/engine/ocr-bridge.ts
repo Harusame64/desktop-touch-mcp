@@ -427,8 +427,11 @@ export function clusterOcrWords(words: OcrWord[], elementGapThreshold = 35): Som
  * @param scale            Base upscale factor for OCR preprocessing: 1..4 (default 2).
  * @param preprocessPolicy Controls effective scale selection strategy (default "auto").
  *   "auto"       — current behaviour: clamp to 1 on OOM (>8MP) or high-DPI (≥144dpi).
- *   "aggressive" — relax DPI clamp to 168dpi; implemented in commit 1-3.
- *   "minimal"    — always scale=1 regardless of DPI/OOM; implemented in commit 1-3.
+ *   "aggressive" — relax DPI clamp to 168dpi; auto-promotes adaptive=true.
+ *   "minimal"    — always scale=1 regardless of DPI/OOM.
+ * @param adaptive   When true, apply Sauvola adaptive binarization after contrast stretch.
+ *   Automatically promoted to true when preprocessPolicy="aggressive".
+ *   Ignored (warning logged) when Rust native engine is unavailable.
  */
 export async function runSomPipeline(
   windowTitle: string,
@@ -436,6 +439,7 @@ export async function runSomPipeline(
   ocrLang = "ja",
   scale = 2,
   preprocessPolicy: "auto" | "aggressive" | "minimal" = "auto",
+  adaptive = false,
 ): Promise<SomPipelineResult> {
   // ── Locate window & capture raw RGBA ───────────────────────────────────────
   let targetHwnd: unknown = hwnd ?? null;
@@ -483,7 +487,11 @@ export async function runSomPipeline(
     ` (${Math.round(windowDpi / 96 * 100)}%) → effectiveScale=${effectiveScale}`,
   );
 
-  // ── Step 2: Preprocess (upscale + grayscale + contrast) ────────────────────
+  // ── Step 2: Preprocess (upscale + grayscale + contrast [+ optional Sauvola]) ──
+  // "aggressive" policy auto-promotes adaptive binarization — the relaxed DPI clamp
+  // means we're processing denser pixels where Sauvola's local thresholding helps.
+  const effectiveAdaptive = preprocessPolicy === "aggressive" ? true : adaptive;
+
   let preprocessedData: Buffer;
   let outW: number;
   let outH: number;
@@ -496,12 +504,16 @@ export async function runSomPipeline(
       height,
       channels: 4,
       scale: effectiveScale,
+      adaptive: effectiveAdaptive,
     });
     preprocessedData = res.data as Buffer;
     outW = res.width;
     outH = res.height;
   } else {
     // sharp fallback: grayscale + bilinear upscale (matches Rust bilinear_resize_u8)
+    if (effectiveAdaptive) {
+      console.error("[SoM] adaptive=true requested but Rust native engine unavailable — skipping Sauvola");
+    }
     const { data, info } = await sharp(rawData, { raw: { width, height, channels: 4 } })
       .grayscale()
       .resize({ width: width * effectiveScale, height: height * effectiveScale, kernel: "mitchell" })
