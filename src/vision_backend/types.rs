@@ -80,3 +80,57 @@ pub struct RawCandidate {
     /// hasn't committed). Resolver must not issue a lease for provisional.
     pub provisional: bool,
 }
+
+// ── Phase 4b-1: EP cascade types ─────────────────────────────────────────────
+
+/// Final EP that the cascade settled on. Echoed back to TS for diagnostics.
+/// String form (used in NativeSessionResult): "WinML" | "DirectML(0)" |
+/// "ROCm(0)" | "CUDA(0)" | "CPU" | "Fallback(reason)"
+#[derive(Debug, Clone)]
+pub enum SelectedEp {
+    WinML,
+    DirectML { device_id: u32 },
+    Rocm { device_id: u32 },
+    Cuda { device_id: u32 },
+    Cpu,
+    /// All preferred EPs failed; reason is the concatenated error chain.
+    Fallback(String),
+}
+
+impl SelectedEp {
+    pub fn as_label(&self) -> String {
+        match self {
+            Self::WinML => "WinML".into(),
+            Self::DirectML { device_id } => format!("DirectML({device_id})"),
+            Self::Rocm { device_id } => format!("ROCm({device_id})"),
+            Self::Cuda { device_id } => format!("CUDA({device_id})"),
+            Self::Cpu => "CPU".into(),
+            Self::Fallback(r) => format!("Fallback({r})"),
+        }
+    }
+}
+
+#[napi(object)]
+#[derive(Debug, Clone)]
+pub struct NativeSessionInit {
+    /// Absolute path to the .onnx file to load.
+    pub model_path: String,
+    /// CapabilityProfile produced by detect_capability().
+    pub profile: crate::vision_backend::capability::CapabilityProfile,
+    /// Optional: stable session key used to look up the session later
+    /// (e.g. "ui_detector:dml-fp16"). Empty string for ad-hoc sessions.
+    pub session_key: String,
+}
+
+#[napi(object)]
+#[derive(Debug, Clone)]
+pub struct NativeSessionResult {
+    pub ok: bool,
+    /// Set when `ok == true`. SelectedEp.as_label() format.
+    pub selected_ep: String,
+    /// Set when `ok == false`. Concatenated cascade attempt errors.
+    pub error: Option<String>,
+    /// Set when `ok == true`. Echoed `session_key` (caller can use it as
+    /// the lookup key for subsequent recognize_rois calls in 4b-4+).
+    pub session_key: String,
+}

@@ -47,6 +47,12 @@ fn dummy_recognise(req: RecognizeRequest) -> Vec<RawCandidate> {
 }
 
 fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
+    panic_payload_to_string_pub(payload)
+}
+
+/// Public version so `session.rs` can reuse the same conversion without
+/// duplicating the downcast logic. Not part of the FFI surface.
+pub fn panic_payload_to_string_pub(payload: Box<dyn std::any::Any + Send>) -> String {
     if let Some(s) = payload.downcast_ref::<&'static str>() {
         (*s).to_string()
     } else if let Some(s) = payload.downcast_ref::<String>() {

@@ -25,13 +25,58 @@
 //! - Zero-copy buffer sharing with DXGI capture (future Phase 4b)
 
 pub mod capability;
+pub mod dylib;
+pub mod ep_select;
 pub mod error;
 pub mod inference;
 pub mod registry;
+pub mod session;
 pub mod types;
 
 pub use capability::{detect_capability, CapabilityProfile};
 pub use error::VisionBackendError;
 pub use inference::{recognize_rois_blocking, VisionSessionPool};
 pub use registry::ModelRegistry;
-pub use types::{RawCandidate, RecognizeRequest, Rect, RoiInput};
+pub use types::{
+    NativeSessionInit, NativeSessionResult, RawCandidate, RecognizeRequest, Rect, RoiInput,
+    SelectedEp,
+};
+
+/// Initialize an ORT session using the EP cascade determined by `profile`.
+///
+/// This function is the synchronous body called from `VisionInitSessionTask::compute`
+/// on a libuv worker thread. It never panics — all errors are returned via
+/// `NativeSessionResult::ok == false`.
+///
+/// Phase 4b-1: creates and immediately drops the session (no pool yet).
+/// Phase 4b-4 will introduce a global `VisionSessionPool` and store it here.
+pub fn init_session_blocking(init: NativeSessionInit) -> NativeSessionResult {
+    // Ensure ORT is initialized exactly once
+    if let Err(e) = dylib::ensure_ort_initialized() {
+        return NativeSessionResult {
+            ok: false,
+            selected_ep: String::new(),
+            error: Some(e.to_string()),
+            session_key: init.session_key,
+        };
+    }
+    let path = std::path::Path::new(&init.model_path);
+    match session::VisionSession::create(path, &init.profile, init.session_key.clone()) {
+        Ok(sess) => {
+            // Phase 4b-1: session created successfully but not stored in a pool yet.
+            // Phase 4b-4 will introduce VisionSessionPool and insert here.
+            NativeSessionResult {
+                ok: true,
+                selected_ep: sess.selected_ep_label(),
+                error: None,
+                session_key: init.session_key,
+            }
+        }
+        Err(e) => NativeSessionResult {
+            ok: false,
+            selected_ep: String::new(),
+            error: Some(e.to_string()),
+            session_key: init.session_key,
+        },
+    }
+}

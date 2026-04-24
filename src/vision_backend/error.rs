@@ -6,7 +6,7 @@
 use napi::Error as NapiError;
 use napi::Status;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum VisionBackendError {
     /// `ort` feature was disabled at build time (`--no-default-features`).
     BackendDisabled,
