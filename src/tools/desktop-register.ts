@@ -31,7 +31,8 @@ import { composeCandidates } from "./desktop-providers/compose-providers.js";
 import { getVisualRuntime } from "../engine/vision-gpu/runtime.js";
 import { PocVisualBackend } from "../engine/vision-gpu/poc-backend.js";
 import { onDirtySignal } from "../engine/vision-gpu/dirty-signal.js";
-import { _resetOcrAdaptersForTest } from "../engine/vision-gpu/ocr-adapter-registry.js";
+import { _resetOcrAdaptersForTest, getOcrVisualAdapter } from "../engine/vision-gpu/ocr-adapter-registry.js";
+import { DirtyRectRouter } from "../engine/vision-gpu/dirty-rect-source.js";
 import { enumWindowsInZOrder } from "../engine/win32.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 
@@ -90,6 +91,9 @@ let _visualSource: VisualIngressSource | undefined;
 
 /** Process-level PoC visual backend. Expose for P3-D pipeline to call updateSnapshot(). */
 let _pocBackend: PocVisualBackend | undefined;
+
+/** Phase 3: dirty-rect router (Desktop Duplication → RoiScheduler → OcrVisualAdapter). */
+let _dirtyRouter: DirtyRectRouter | undefined;
 
 /**
  * @internal Test-only entry point. Production code does not call this.
@@ -200,6 +204,29 @@ export function getDesktopFacade(): DesktopFacade {
       initVisualRuntime(_visualSource).catch((err) => {
         console.error("[desktop-register] Failed to initialize visual runtime:", err);
       });
+
+      // Phase 3: start dirty-rect router. Routes Desktop Duplication events
+      // to the foreground window's OcrVisualAdapter for immediate re-polling.
+      // Falls back to no-op if native addon is absent (no RDP error, just silence).
+      if (process.env["DESKTOP_TOUCH_DISABLE_DIRTY_RECTS"] !== "1") {
+        _dirtyRouter = new DirtyRectRouter({
+          onRois: (_rois, _nowMs) => {
+            // Phase 3: trigger the foreground window's OCR adapter on dirty-rect events.
+            // Full per-roi recognition is deferred to Phase 4 (real detector).
+            try {
+              const wins = enumWindowsInZOrder();
+              const fg = wins.find((w) => w.isActive);
+              if (!fg) return;
+              const target = { hwnd: String(fg.hwnd), windowTitle: fg.title };
+              void getOcrVisualAdapter(target).pollOnce(target).catch(() => {});
+            } catch { /* best-effort */ }
+          },
+          onFallback: (reason) => {
+            console.debug(`[desktop-register] DirtyRectRouter fallback: ${reason}`);
+          },
+        });
+        _dirtyRouter.start();
+      }
     }
   }
   return _facade;
@@ -226,6 +253,8 @@ export function _resetFacadeForTest(): void {
   _facade = undefined;
   _visualSource = undefined;
   _pocBackend = undefined;
+  _dirtyRouter?.stop();
+  _dirtyRouter = undefined;
   _resetOcrAdaptersForTest();
 }
 

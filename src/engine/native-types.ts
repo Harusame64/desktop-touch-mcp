@@ -112,3 +112,19 @@ export interface NativeDrawSomLabelsResult {
   height: number
   channels: number
 }
+
+// ── Desktop Duplication (Phase 3) ────────────────────────────────────────────
+
+export interface NativeDirtyRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface NativeOutputBounds {
+  x: number
+  y: number
+  width: number
+  height: number
+}
