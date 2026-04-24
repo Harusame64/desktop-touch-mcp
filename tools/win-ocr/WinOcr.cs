@@ -65,6 +65,14 @@ class Program
             var words = new List<string>();
             foreach (var line in ocrResult.Lines)
             {
+                // Line-level quality statistics — added as lineWordCount / lineCharCount.
+                // WinRT does not expose word-level confidence; these raw counts let the
+                // TypeScript layer derive quality signals (e.g. word density for ASCII lines).
+                // lineWordCount: number of OcrWord objects in this line
+                // lineCharCount: length of OcrLine.Text (includes inter-word spaces)
+                int lineWordCount = line.Words.Count;
+                int lineCharCount = line.Text.Length;
+
                 foreach (var word in line.Words)
                 {
                     var r = word.BoundingRect;
@@ -78,7 +86,9 @@ class Program
                         ",\"bbox\":{\"x\":" + x +
                         ",\"y\":" + y +
                         ",\"width\":" + w +
-                        ",\"height\":" + h + "}}");
+                        ",\"height\":" + h + "}" +
+                        ",\"lineWordCount\":" + lineWordCount +
+                        ",\"lineCharCount\":" + lineCharCount + "}");
                 }
             }
 
