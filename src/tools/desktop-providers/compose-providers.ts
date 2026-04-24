@@ -27,6 +27,7 @@ import { fetchUiaCandidates }      from "./uia-provider.js";
 import { fetchBrowserCandidates }  from "./browser-provider.js";
 import { fetchTerminalCandidates } from "./terminal-provider.js";
 import { fetchVisualCandidates }   from "./visual-provider.js";
+import { fetchOcrCandidates }      from "./ocr-provider.js";
 import { resolveWindowTarget }     from "../_resolve-window.js";
 
 // ── G4: transient visual warnings trigger a single 200ms retry ────────────────
@@ -274,7 +275,19 @@ export async function composeCandidates(
   const uiaResult    = uia.status    === "fulfilled" ? uia.value    : { candidates: [], warnings: ["uia_provider_failed"] };
   const visualResult = visual.status === "fulfilled" ? visual.value : { candidates: [], warnings: ["visual_provider_unavailable"] };
 
-  const merged     = mergeResults([uiaResult, visualResult]);
+  // OCR lane: additive, UIA-blind targets only.
+  // Builds a label dictionary from UIA candidates for snap-correction inside runSomPipeline.
+  const uiaBlindForOcr = uiaResult.warnings.some((w) => UIA_BLIND_WARNINGS.has(w));
+  const ocrResult: ProviderResult = uiaBlindForOcr
+    ? await fetchOcrCandidates(
+        target,
+        uiaResult.candidates
+          .filter((c) => c.label && c.rect)
+          .map((c) => ({ label: c.label!, rect: c.rect })),
+      ).catch((): ProviderResult => ({ candidates: [], warnings: ["ocr_provider_failed"] }))
+    : { candidates: [], warnings: [] };
+
+  const merged     = mergeResults([uiaResult, visualResult, ocrResult]);
   const escalation = applyVisualEscalation(uiaResult, visualResult, "uia");
   const extra      = escalation.filter((w) => !merged.warnings.includes(w));
   const finalMerged = extra.length > 0
