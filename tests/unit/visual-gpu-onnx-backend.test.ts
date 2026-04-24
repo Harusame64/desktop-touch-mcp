@@ -201,3 +201,95 @@ describe("OnnxBackend empty input", () => {
     expect(nativeVision?.visionRecognizeRois).not.toHaveBeenCalled();
   });
 });
+
+// ── Block D: Phase 4b-5 stage pipeline integration ────────────────────────────
+
+import type { NativeSessionInit } from "../../src/engine/native-types.js";
+
+describe("OnnxBackend Phase 4b-5 stage pipeline integration", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it("ensureWarm loads manifest, initialises 3 sessions, transitions to warm", async () => {
+    const initCalls: string[] = [];
+    vi.doMock("../../src/engine/native-engine.js", () => ({
+      nativeVision: {
+        visionInitSession: vi.fn().mockImplementation(async (req: NativeSessionInit) => {
+          initCalls.push(req.sessionKey);
+          return { ok: true, selectedEp: "DirectML(0)", error: null, sessionKey: req.sessionKey };
+        }),
+        visionRecognizeRois: vi.fn(),
+        detectCapability: vi.fn().mockReturnValue({
+          os: "windows", osBuild: 26100, gpuVendor: "AMD", gpuDevice: "Radeon RX 9070 XT",
+          gpuArch: "RDNA4", gpuVramMb: 16384, winml: true, directml: true,
+          rocm: false, cuda: false, tensorrt: false, cpuIsa: ["avx2"],
+          backendBuilt: true, epsBuilt: ["directml"],
+        }),
+      },
+      nativeEngine: null, nativeUia: null,
+    }));
+    const { OnnxBackend } = await import("../../src/engine/vision-gpu/onnx-backend.js");
+    const b = new OnnxBackend();
+    const state = await b.ensureWarm({ kind: "game", id: "g1" });
+    expect(state).toBe("warm");
+    // 3 sessions initialised — one per stage
+    expect(initCalls.length).toBe(3);
+    expect(initCalls.some((k) => k.startsWith("florence-2-base"))).toBe(true);
+    expect(initCalls.some((k) => k.startsWith("omniparser-v2-icon-detect"))).toBe(true);
+    expect(initCalls.some((k) => k.startsWith("paddleocr-v4-server"))).toBe(true);
+  });
+
+  it("ensureWarm transitions to evicted when visionInitSession rejects on any stage", async () => {
+    let call = 0;
+    vi.doMock("../../src/engine/native-engine.js", () => ({
+      nativeVision: {
+        visionInitSession: vi.fn().mockImplementation(async () => {
+          call++;
+          if (call === 2) return { ok: false, selectedEp: "", error: "artifact missing", sessionKey: "" };
+          return { ok: true, selectedEp: "DirectML(0)", error: null, sessionKey: `k${call}` };
+        }),
+        visionRecognizeRois: vi.fn(),
+        detectCapability: vi.fn().mockReturnValue({
+          os: "windows", osBuild: 26100, gpuVendor: "AMD", gpuDevice: "X", gpuArch: "RDNA4",
+          gpuVramMb: 16384, winml: true, directml: true, rocm: false, cuda: false, tensorrt: false,
+          cpuIsa: ["avx2"], backendBuilt: true, epsBuilt: ["directml"],
+        }),
+      },
+      nativeEngine: null, nativeUia: null,
+    }));
+    const { OnnxBackend } = await import("../../src/engine/vision-gpu/onnx-backend.js");
+    const b = new OnnxBackend();
+    const state = await b.ensureWarm({ kind: "game", id: "g1" });
+    expect(state).toBe("evicted");
+  });
+
+  it("recognizeRois invokes stage pipeline after warm (at least 2 native calls, stage3 skipped for 'other' class)", async () => {
+    vi.doMock("../../src/engine/native-engine.js", () => ({
+      nativeVision: {
+        visionInitSession: vi.fn().mockResolvedValue({ ok: true, selectedEp: "DirectML(0)", error: null, sessionKey: "k" }),
+        visionRecognizeRois: vi.fn().mockImplementation(async (req: { rois: Array<{ trackId: string; rect: object; classHint: string | null }> }) =>
+          req.rois.map((r) => ({ trackId: r.trackId, rect: r.rect, label: "", class: r.classHint ?? "other", confidence: 0.5, provisional: true })),
+        ),
+        detectCapability: vi.fn().mockReturnValue({
+          os: "windows", osBuild: 26100, gpuVendor: "AMD", gpuDevice: "X", gpuArch: "RDNA4",
+          gpuVramMb: 16384, winml: true, directml: true, rocm: false, cuda: false, tensorrt: false,
+          cpuIsa: ["avx2"], backendBuilt: true, epsBuilt: ["directml"],
+        }),
+      },
+      nativeEngine: null, nativeUia: null,
+    }));
+    const { OnnxBackend } = await import("../../src/engine/vision-gpu/onnx-backend.js");
+    const b = new OnnxBackend();
+
+    await b.ensureWarm({ kind: "game", id: "g1" });
+    expect(b.getWarmState()).toBe("warm");
+
+    const after = await b.recognizeRois("window:1", [{ trackId: "t1", rect: { x: 0, y: 0, width: 100, height: 50 } }]);
+    expect(after).toHaveLength(1);
+    // At least 2 native calls (stage1 + stage2, stage3 skipped because stub class is "other")
+    const { nativeVision } = await import("../../src/engine/native-engine.js");
+    const callCount = (nativeVision!.visionRecognizeRois as ReturnType<typeof vi.fn>).mock.calls.length;
+    expect(callCount).toBeGreaterThanOrEqual(2);
+  });
+});
