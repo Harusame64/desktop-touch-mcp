@@ -31,6 +31,7 @@ pub mod error;
 pub mod inference;
 pub mod registry;
 pub mod session;
+pub mod session_pool;
 pub mod types;
 // Phase 4b-2 WinML 統合は ADR-006 に移管 (2026-04-24、windows-app crate yanked +
 // repo archived)。`winml.rs` / `winml_fallback.rs` は削除済、ADR-006 採用 option
@@ -39,8 +40,9 @@ pub mod types;
 
 pub use capability::{detect_capability, CapabilityProfile};
 pub use error::VisionBackendError;
-pub use inference::{recognize_rois_blocking, VisionSessionPool};
+pub use inference::recognize_rois_blocking;
 pub use registry::ModelRegistry;
+pub use session_pool::VisionSessionPool;
 pub use types::{
     NativeSessionInit, NativeSessionResult, RawCandidate, RecognizeRequest, Rect, RoiInput,
     SelectedEp,
@@ -71,11 +73,17 @@ pub fn init_session_blocking(init: NativeSessionInit) -> NativeSessionResult {
     let path = std::path::Path::new(&init.model_path);
     match session::VisionSession::create(path, &init.profile, init.session_key.clone()) {
         Ok(sess) => {
-            // Phase 4b-1: session created successfully but not stored in a pool yet.
-            // Phase 4b-4 will introduce VisionSessionPool and insert here.
+            let label = sess.selected_ep_label();
+            // Phase 4b-5: insert into pool so subsequent recognize_rois_blocking
+            // calls can look it up by session_key. If session_key is empty, we
+            // still insert under "" — but the pool treats "" as a legitimate key
+            // (caller decides not to send session_key in recognize_rois for
+            // the legacy path, so "" entries are harmless).
+            crate::vision_backend::session_pool::global_pool()
+                .insert(init.session_key.clone(), std::sync::Arc::new(sess));
             NativeSessionResult {
                 ok: true,
-                selected_ep: sess.selected_ep_label(),
+                selected_ep: label,
                 error: None,
                 session_key: init.session_key,
             }

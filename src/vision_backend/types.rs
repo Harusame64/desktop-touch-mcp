@@ -43,6 +43,9 @@ pub struct RoiInput {
 pub struct RecognizeRequest {
     /// Stable target key (`window:{hwnd}` / `tab:{tabId}` / `title:{title}`).
     pub target_key: String,
+    /// Session key from `init_session_blocking`. Empty string → legacy dummy path
+    /// (kept for Phase 4a backward-compat with tests / PocVisualBackend migration).
+    pub session_key: String,
     /// ROIs to recognize.
     pub rois: Vec<RoiInput>,
     /// Captured frame width in pixels (for ROI clipping). 0 in Phase 4a.

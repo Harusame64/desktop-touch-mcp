@@ -17,11 +17,27 @@ use crate::vision_backend::types::{RawCandidate, RecognizeRequest, RoiInput};
 
 /// Synchronous recognise call (panic-isolated).
 ///
-/// In Phase 4a no real model is loaded. The body is structured so Phase 4b
-/// only needs to swap the `dummy_recognise` body for a real ORT session run.
+/// Phase 4b-5: if `req.session_key` is non-empty, looks up the session in the
+/// global pool and runs stub inference bound to that session. If the key is
+/// absent from the pool, returns an empty Vec so TS can detect "session not
+/// ready". Falls back to the Phase 4a `dummy_recognise` path when session_key
+/// is empty (legacy backward-compat for tests / PocVisualBackend migration).
 pub fn recognize_rois_blocking(req: RecognizeRequest) -> Result<Vec<RawCandidate>, VisionBackendError> {
     // AssertUnwindSafe: req is a plain data struct (no shared mutable state captured).
-    let result = std::panic::catch_unwind(AssertUnwindSafe(|| dummy_recognise(req)));
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        if !req.session_key.is_empty() {
+            // Phase 4b-5: session-bound stub path
+            if let Some(sess) = crate::vision_backend::session_pool::global_pool().get(&req.session_key) {
+                return stub_recognise_with_session(req, sess);
+            }
+            // session_key requested but absent — emit a single empty fallback
+            // candidate list so TS can tell "session not ready" from "no ROIs"
+            // via `raw.length === 0 && input.rois.length > 0`.
+            return Vec::new();
+        }
+        // Legacy dummy path (Phase 4a compatible)
+        dummy_recognise(req)
+    }));
     match result {
         Ok(out) => Ok(out),
         Err(payload) => {
@@ -29,6 +45,19 @@ pub fn recognize_rois_blocking(req: RecognizeRequest) -> Result<Vec<RawCandidate
             Err(VisionBackendError::InferencePanic(msg))
         }
     }
+}
+
+/// Phase 4b-5 stub inference. Reuses `dummy_recognise` body and tags each
+/// candidate with `selected_ep` info for downstream tracing. Real preprocess /
+/// session.run() / postprocess go into 4b-5a/b/c as drop-in replacements.
+#[allow(unused_variables)]
+fn stub_recognise_with_session(req: RecognizeRequest, _sess: std::sync::Arc<crate::vision_backend::session::VisionSession>) -> Vec<RawCandidate> {
+    // The dummy body matches Phase 4a behavior: 1 RawCandidate per input ROI,
+    // empty label, provisional=true, class from class_hint or "other".
+    //
+    // Keeping the stub identical to dummy_recognise makes 4b-5 a pure wiring
+    // change — no test output drift for existing dummy-path tests.
+    dummy_recognise(req)
 }
 
 /// Phase 4a dummy: 1 input ROI → 1 RawCandidate.
@@ -62,17 +91,6 @@ pub fn panic_payload_to_string_pub(payload: Box<dyn std::any::Any + Send>) -> St
     }
 }
 
-/// Placeholder for the per-target session pool. Phase 4b will keep one
-/// `ort::Session` per (model_name, variant) and reuse across calls.
-#[derive(Debug, Default)]
-pub struct VisionSessionPool {
-    // Phase 4b: HashMap<String, ort::Session>
-}
-
-impl VisionSessionPool {
-    pub fn new() -> Self { Self::default() }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,6 +100,7 @@ mod tests {
     fn dummy_returns_one_candidate_per_roi() {
         let req = RecognizeRequest {
             target_key: "window:1234".into(),
+            session_key: String::new(), // empty → legacy dummy path (Phase 4a compat)
             rois: vec![
                 RoiInput {
                     track_id: "t1".into(),
@@ -110,6 +129,7 @@ mod tests {
     fn panic_in_inference_returns_err_not_abort() {
         let req = RecognizeRequest {
             target_key: "window:panic".into(),
+            session_key: String::new(), // empty → legacy dummy path (Phase 4a compat)
             // Empty rois — the panic test below needs a forced panic, not an
             // input-derived one. We exercise the catch_unwind path via a
             // direct call to a panicking closure; this verifies the
