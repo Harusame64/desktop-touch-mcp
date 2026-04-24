@@ -204,6 +204,8 @@ describe("NativeSessionResult.selectedEp label format contract", () => {
     "DirectML(1)",
     "ROCm(0)",
     "CUDA(0)",
+    "WebGPU",
+    "WebGPU(AMD Radeon RX 9070 XT (Vulkan))",
     "CPU",
     "Fallback(some reason)",
   ];
@@ -218,5 +220,61 @@ describe("NativeSessionResult.selectedEp label format contract", () => {
     expect(result.selectedEp).toBe(label);
     // Validate the format is a string (type-level check at runtime)
     expect(typeof result.selectedEp).toBe("string");
+  });
+});
+
+// ── Block D: Phase 4b-3 WebGPU selectedEp ─────────────────────────────────────
+
+describe("visionInitSession resolves with WebGPU selectedEp (Phase 4b-3)", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it("resolves with ok=true and selectedEp='WebGPU' when adapter unknown", async () => {
+    const result: NativeSessionResult = {
+      ok: true,
+      selectedEp: "WebGPU",
+      error: null,
+      sessionKey: "ui_detector:webgpu-fp16",
+    };
+    vi.doMock("../../src/engine/native-engine.js", () => ({
+      nativeVision: {
+        visionInitSession: vi.fn().mockResolvedValue(result),
+        visionRecognizeRois: vi.fn(),
+        detectCapability: vi.fn().mockReturnValue(makeProfile()),
+      },
+      nativeEngine: null,
+      nativeUia: null,
+    }));
+    const { nativeVision } = await import("../../src/engine/native-engine.js");
+    const r = await nativeVision!.visionInitSession!(
+      makeSessionInit({ sessionKey: "ui_detector:webgpu-fp16" }),
+    );
+    expect(r.ok).toBe(true);
+    expect(r.selectedEp).toBe("WebGPU");
+    expect(r.sessionKey).toBe("ui_detector:webgpu-fp16");
+  });
+
+  it("resolves with selectedEp containing the wgpu adapter name when known", async () => {
+    const selected = "WebGPU(AMD Radeon RX 9070 XT (Vulkan))";
+    const result: NativeSessionResult = {
+      ok: true,
+      selectedEp: selected,
+      error: null,
+      sessionKey: "ui_detector:webgpu-fp16",
+    };
+    vi.doMock("../../src/engine/native-engine.js", () => ({
+      nativeVision: {
+        visionInitSession: vi.fn().mockResolvedValue(result),
+        visionRecognizeRois: vi.fn(),
+        detectCapability: vi.fn().mockReturnValue(makeProfile()),
+      },
+      nativeEngine: null,
+      nativeUia: null,
+    }));
+    const { nativeVision } = await import("../../src/engine/native-engine.js");
+    const r = await nativeVision!.visionInitSession!(makeSessionInit());
+    expect(r.selectedEp).toBe(selected);
+    expect(r.selectedEp.startsWith("WebGPU(")).toBe(true);
   });
 });
