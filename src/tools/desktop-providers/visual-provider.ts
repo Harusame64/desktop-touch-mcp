@@ -17,6 +17,13 @@ import type { TargetSpec } from "../../engine/world-graph/session-registry.js";
 import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.js";
 import { getVisualRuntime, targetKeyToWarmTarget } from "../../engine/vision-gpu/runtime.js";
 
+// H-killswitch: operator escape hatch. When set, the visual lane behaves
+// exactly as if no backend were attached — the provider returns
+// visual_provider_unavailable and composer falls through to OCR or
+// structured-only mode. Evaluated once at module load; tests use
+// vi.resetModules() + dynamic import() to re-evaluate.
+const VISUAL_GPU_DISABLED = process.env["DESKTOP_TOUCH_DISABLE_VISUAL_GPU"] === "1";
+
 function targetKeyFromSpec(target: TargetSpec | undefined): string {
   if (target?.hwnd)        return `window:${target.hwnd}`;
   if (target?.tabId)       return `tab:${target.tabId}`;
@@ -27,6 +34,10 @@ function targetKeyFromSpec(target: TargetSpec | undefined): string {
 export async function fetchVisualCandidates(
   target: TargetSpec | undefined
 ): Promise<ProviderResult> {
+  if (VISUAL_GPU_DISABLED) {
+    return { candidates: [], warnings: ["visual_provider_unavailable"] };
+  }
+
   const runtime = getVisualRuntime();
 
   if (!runtime.isAvailable()) {
