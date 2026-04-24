@@ -28,7 +28,7 @@ pub struct PreprocessOptions {
     pub height: u32,
     /// Number of channels per pixel: 3 (RGB) or 4 (RGBA).
     pub channels: u32,
-    /// Upscale factor: 2 or 3.
+    /// Upscale factor: 1, 2, 3, or 4.
     pub scale: u32,
 }
 
@@ -62,9 +62,9 @@ pub fn upscale_grayscale_contrast(opts: PreprocessOptions) -> Result<ImageProces
             opts.channels
         )));
     }
-    if opts.scale == 0 || opts.scale > 3 {
+    if opts.scale == 0 || opts.scale > 4 {
         return Err(napi::Error::from_reason(format!(
-            "preprocess_image: scale must be 1, 2, or 3, got {}",
+            "preprocess_image: scale must be 1, 2, 3, or 4, got {}",
             opts.scale
         )));
     }
