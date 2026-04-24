@@ -290,6 +290,54 @@ export function ocrWordsToLines(words: OcrWord[]): string {
     .join("\n");
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// OCR confidence calibration
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Returns true when the word text shows patterns strongly associated with
+ * OCR glyph-confusion errors observed on Outlook PWA and similar sparse-UIA targets.
+ */
+export function hasGlyphConfusion(t: string): boolean {
+  if (/[぀-ヿ一-鿿　-〿]/.test(t) && /[A-Za-z0-9]/.test(t)) return true;
+  if (/[「」【】〔〕]/.test(t) && /[A-Za-z0-9]/.test(t)) return true;
+  if (/[①-⓿]/.test(t)) return true;
+  const ascii = t.replace(/[^A-Za-z0-9]/g, "");
+  if (ascii.length >= 3) {
+    const hasNumLetter = /[0-9]/.test(ascii) && /[A-Za-z]/.test(ascii);
+    const confusion =
+      (ascii.match(/[lI1|]/g)?.length ?? 0) +
+      (ascii.match(/[O0]/g)?.length ?? 0) +
+      (ascii.match(/[S5]/g)?.length ?? 0);
+    if (hasNumLetter && confusion >= 2) return true;
+  }
+  return false;
+}
+
+/**
+ * Calibrated OCR confidence score replacing the flat 0.7 placeholder.
+ * Consumes lineWordCount/lineCharCount from win-ocr.exe (commit 2-1).
+ */
+export function calibrateOcrConfidence(word: OcrWord): number {
+  const t = word.text;
+  if (/�/.test(t)) return 0.2;
+  let base = 0.7;
+  const { lineWordCount, lineCharCount } = word;
+  if (lineWordCount !== undefined && lineCharCount !== undefined && lineCharCount >= 8) {
+    const density = lineWordCount / lineCharCount;
+    if (/[A-Za-z0-9]/.test(t) && density > 0.4) {
+      base = Math.max(0.4, 0.7 - (density - 0.4) * 0.5);
+    }
+  }
+  let score = base;
+  if (t.length === 1) score *= 0.85;
+  if (/^[A-Za-z0-9]{2,3}$/.test(t)) score *= 0.90;
+  if (/[ -¿ -⁯]/.test(t)) score *= 0.65;
+  if (word.bbox.height < 10) score *= 0.80;
+  if (hasGlyphConfusion(t)) score *= 0.70;
+  return Math.round(Math.min(1, Math.max(0, score)) * 100) / 100;
+}
+
 /**
  * Convert OCR words (with window-local bboxes + origin) into ActionableElements.
  * clickAt is in absolute screen coordinates.
@@ -302,15 +350,8 @@ export function ocrWordsToActionable(
   for (const word of words) {
     if (!word.text.trim()) continue;
     const { bbox } = word;
-    // Phase 2.3 — PLACEHOLDER OCR confidence (win-ocr.exe does not yet expose
-    // OcrLine.Confidence). Tuned so a vanilla OCR word reads as "moderate" not
-    // "high" — this keeps it below UIA Name-exact (0.95) when results are mixed.
-    let confidence = 0.7;
-    const t = word.text;
-    if (t.length === 1) confidence = 0.55;          // single chars are unreliable
-    if (/[\u00A0-\u00BF\u2000-\u206F]/.test(t)) confidence = 0.45;
-    if (/[\uFFFD]/.test(t)) confidence = 0.2;       // replacement char = unrecognized
-    const suggest = confidence < 0.5
+    const confidence = calibrateOcrConfidence(word);
+    const suggest = confidence < 0.55
       ? "Use dotByDot screenshot or browser_eval for verification"
       : undefined;
 
