@@ -77,6 +77,7 @@ export interface NativePreprocessOptions {
   width: number
   height: number
   channels: number
+  /** Upscale factor: 1, 2, 3, or 4. Values above 4 are rejected by the Rust layer. */
   scale: number
 }
 

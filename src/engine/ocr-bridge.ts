@@ -387,16 +387,21 @@ export function clusterOcrWords(words: OcrWord[], elementGapThreshold = 35): Som
  *  7. Render SoM image via Rust `drawSomLabels` (or skip if unavailable).
  *  8. Return `{ somImage, elements, preprocessScale, resolvedWindowTitle }`.
  *
- * @param windowTitle  Partial window title (same matching convention as UIA calls).
- * @param hwnd         Optional HWND (bigint) — uses enumWindowsInZOrder when null.
- * @param ocrLang      BCP-47 language tag (default "ja").
- * @param scale        Upscale factor for OCR preprocessing: 2 or 3 (default 2).
+ * @param windowTitle      Partial window title (same matching convention as UIA calls).
+ * @param hwnd             Optional HWND (bigint) — uses enumWindowsInZOrder when null.
+ * @param ocrLang          BCP-47 language tag (default "ja").
+ * @param scale            Base upscale factor for OCR preprocessing: 1..4 (default 2).
+ * @param preprocessPolicy Controls effective scale selection strategy (default "auto").
+ *   "auto"       — current behaviour: clamp to 1 on OOM (>8MP) or high-DPI (≥144dpi).
+ *   "aggressive" — relax DPI clamp to 168dpi; implemented in commit 1-3.
+ *   "minimal"    — always scale=1 regardless of DPI/OOM; implemented in commit 1-3.
  */
 export async function runSomPipeline(
   windowTitle: string,
   hwnd?: bigint | null,
   ocrLang = "ja",
   scale = 2,
+  preprocessPolicy: "auto" | "aggressive" | "minimal" = "auto",
 ): Promise<SomPipelineResult> {
   // ── Locate window & capture raw RGBA ───────────────────────────────────────
   let targetHwnd: unknown = hwnd ?? null;
