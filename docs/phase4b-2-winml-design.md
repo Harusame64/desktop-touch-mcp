@@ -1,6 +1,6 @@
 # Phase 4b-2 設計書 — WinML EP integration (new Windows ML via ExecutionProviderCatalog)
 
-- Status: **Approved (2026-04-24)** — ユーザー承認済 (「初期方針を維持し。Cで妥協せず。頑張ろう！」+ 「おすすめで！」)、Sonnet 実装中
+- Status: **Deferred to ADR-006 (2026-04-24)** — 実装着手後に `windows-app` crate **全版 yanked + `microsoft/windows-app-rs` repo archived** を発見 (Microsoft が WinAppSDK-Rust 開発停止を公式表明)。設計書 §4.4 Path C (windows-bindgen 自前生成) も WinAppSDK 全体が .NET/VS 前提のため数ヶ月規模で 1 batch 範囲を超える。ユーザー判断 (2026-04-24): defer + 4b-3 (Vulkan/ncnn) 先行 + ADR-006 として独立切り出し。Sonnet が途中まで書いた `winml.rs` / `winml_fallback.rs` は ADR-006 で再設計するため削除。本設計書は ADR-006 執筆時の参考資料として保持。
 - 設計者: Claude (Opus, max effort)
 - 実装担当: Sonnet (起動方法は `docs/phase4b-sonnet-prompt.md` の Prompt 2)
 - 対応 ADR-005 セクション: D2' (Layer 1 WinML default の本体実装) / D7' (vendor portability 強化、NPU 対応)

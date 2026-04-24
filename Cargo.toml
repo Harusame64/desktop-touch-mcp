@@ -28,6 +28,14 @@ ort = { version = "=2.0.0-rc.12", default-features = false, features = [
     "api-22",
 ], optional = true }
 
+# ── Visual GPU Phase 4b-2: WinML 統合は ADR-006 に移管 (2026-04-24) ──────────
+# 背景: `windows-app` crate は全バージョン yanked + microsoft/windows-app-rs
+# repo archived (Microsoft が WinAppSDK-Rust 開発停止を発表)。
+# 代替パス (windows-bindgen 自前生成 / 完全手動 COM binding) は 1 batch の
+# 範囲を大きく超えるため、独立 ADR-006 として切り出し。
+# ep_select の winml_attempt は Phase 4b-1 時点の stub (常に Err) を維持、
+# cascade は DirectML (Layer 2) に自動 fall through。
+
 [features]
 default = ["vision-gpu"]
 # Visual GPU lane を build に含める。CI/最小ビルドでは --no-default-features で除外可能。
@@ -40,9 +48,9 @@ vision-gpu-migraphx = ["vision-gpu", "ort/migraphx"]
 vision-gpu-coreml   = ["vision-gpu", "ort/coreml"]
 vision-gpu-openvino = ["vision-gpu", "ort/openvino"]
 vision-gpu-webgpu   = ["vision-gpu", "ort/webgpu"]
-# Phase 4b で WinML 統合予定 (windows crate の AI namespace または onnxruntime-winml).
-# Phase 4a では feature 自体が no-op (eps_built には現れない).
-# 「WinML 利用可」判定は capability.detect_winml() の OS build version 判定でカバー.
+# vision-gpu-winml は ADR-006 移管後、Phase 4b-1 時点の stub (no-op) に戻す。
+# 実装は ADR-006 で独自 COM binding or windows-bindgen self-generated binding を決定。
+# 「WinML 利用可」判定は capability.detect_winml() の OS build 判定 (>=26100) のみ。
 vision-gpu-winml    = ["vision-gpu"]
 
 [target.'cfg(windows)'.dependencies]
