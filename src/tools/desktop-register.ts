@@ -92,15 +92,20 @@ let _visualSource: VisualIngressSource | undefined;
 let _pocBackend: PocVisualBackend | undefined;
 
 /**
- * Return the visual invalidation source so external code (e.g. GPU pipeline)
- * can mark visual targets dirty without going through the facade.
+ * @internal Test-only entry point. Production code does not call this.
+ * Kept exported for `tests/unit/{dirty-signal,poc-backend,benchmark-gates}.test.ts`
+ * which need to inject snapshots without touching CandidateProducer.
+ *
+ * The production dataplane feeds PocVisualBackend via pushDirtySignal
+ * from OcrVisualAdapter (Phase 1) and, in Phase 3+, from the dirty-rect
+ * event loop. External callers should use pushDirtySignal, not this function.
  */
 export function getVisualIngressSource(): VisualIngressSource | undefined {
   return _visualSource;
 }
 
 /**
- * Return the PocVisualBackend so P3-D can feed recognition output.
+ * @internal Same rationale as getVisualIngressSource.
  * Call backend.updateSnapshot(targetKey, candidates) to deliver stable candidates.
  */
 export function getPocVisualBackend(): PocVisualBackend | undefined {
@@ -180,6 +185,8 @@ export function getDesktopFacade(): DesktopFacade {
     });
 
     // Wire the visual runtime (non-blocking — failure does not prevent facade creation).
+    // Guarded by DESKTOP_TOUCH_DISABLE_VISUAL_GPU so operators can suppress the
+    // entire visual lane (PocVisualBackend never attaches, 50ms warmup never runs).
     //
     // First-request window: `initVisualRuntime` is async. Between `getDesktopFacade()`
     // returning and the attach completing, `runtime.isAvailable()` is false and
@@ -189,9 +196,11 @@ export function getDesktopFacade(): DesktopFacade {
     //
     // Before Phase 4 default-on: consider making getDesktopFacade() return
     // Promise<DesktopFacade> and awaiting this to eliminate the window entirely.
-    initVisualRuntime(_visualSource).catch((err) => {
-      console.error("[desktop-register] Failed to initialize visual runtime:", err);
-    });
+    if (process.env["DESKTOP_TOUCH_DISABLE_VISUAL_GPU"] !== "1") {
+      initVisualRuntime(_visualSource).catch((err) => {
+        console.error("[desktop-register] Failed to initialize visual runtime:", err);
+      });
+    }
   }
   return _facade;
 }
