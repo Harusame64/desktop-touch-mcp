@@ -1,6 +1,6 @@
 # Phase 4b-1 設計書 — EP cascade real wiring
 
-- Status: **Implemented** — Sonnet 4.6 実装済 (commit hash: TBD after commit)
+- Status: **Implemented** — Sonnet 4.6 実装済 (commit: 8dfbdd1)
 - 設計者: Claude (Opus, max effort)
 - 実装担当: Sonnet (起動方法は `docs/phase4b-sonnet-prompt.md` の Prompt 2)
 - 対応 ADR-005 セクション: D1' (Rust 内 napi-rs AsyncTask) / D2' (AMD-first vendor-neutral cascade)
