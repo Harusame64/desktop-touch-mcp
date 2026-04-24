@@ -17,6 +17,7 @@
  * No file I/O. Manifests injected directly via setManifest().
  */
 
+import path from "node:path";
 import { describe, it, expect, beforeEach } from "vitest";
 import { ModelRegistry, type ModelManifest } from "../../src/engine/vision-gpu/model-registry.js";
 import type { NativeCapabilityProfile } from "../../src/engine/native-types.js";
@@ -145,8 +146,8 @@ describe("ModelRegistry.pathFor", () => {
 
   it("uses .param extension for ncnn format", () => {
     const r = new ModelRegistry({ cacheRoot: "C:/tmp/models" });
-    const v = { name: "vulkan-ncnn", ep: ["Vulkan"] as const, url: "u", sha256: "0".repeat(64), size_mb: 30, format: "ncnn" as const };
-    expect(r.pathFor("foo", v).endsWith("vulkan-ncnn.param")).toBe(true);
+    const v = { name: "webgpu-ncnn", ep: ["WebGPU"] as const, url: "u", sha256: "0".repeat(64), size_mb: 30, format: "ncnn" as const };
+    expect(r.pathFor("foo", v).endsWith("webgpu-ncnn.param")).toBe(true);
   });
 });
 
@@ -172,5 +173,90 @@ describe("ModelRegistry manifest validation", () => {
         bad: { task: "x", variants: [{ name: "v", ep: [] as never, url: "u", sha256: "", size_mb: 0 } as unknown as never] },
       },
     } as ModelManifest)).toThrow();
+  });
+});
+
+describe("ModelRegistry loads bundled assets/models.json", () => {
+  const manifestPath = path.join(process.cwd(), "assets", "models.json");
+
+  it("loadManifestFromFile parses bundled manifest without error", () => {
+    const r = new ModelRegistry({ cacheRoot: process.cwd() + "/_test-cache-tmp" });
+    expect(() => r.loadManifestFromFile(manifestPath)).not.toThrow();
+    const m = r.getManifest();
+    expect(m?.schema).toBe("1.0");
+    expect(Object.keys(m?.models ?? {}).length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("contains florence-2-base, omniparser-v2-icon-detect, paddleocr-v4-server, paddleocr-v4-mobile", () => {
+    const r = new ModelRegistry({ cacheRoot: process.cwd() + "/_test-cache-tmp" });
+    r.loadManifestFromFile(manifestPath);
+    const models = r.getManifest()!.models;
+    expect(models["florence-2-base"]).toBeDefined();
+    expect(models["omniparser-v2-icon-detect"]).toBeDefined();
+    expect(models["paddleocr-v4-server"]).toBeDefined();
+    expect(models["paddleocr-v4-mobile"]).toBeDefined();
+  });
+
+  it("selectVariant on RX 9070 XT profile picks WinML or DirectML first for omniparser-v2-icon-detect", () => {
+    const r = new ModelRegistry({ cacheRoot: process.cwd() + "/_test-cache-tmp" });
+    r.loadManifestFromFile(manifestPath);
+    // bench_ms が空なので size_mb tie-breaker で最小 = winml-fp16 か dml-fp16 のどちらか
+    // (同 size なら入力順序で winml が先)
+    const profile: NativeCapabilityProfile = {
+      os: "windows", osBuild: 26100,
+      gpuVendor: "AMD", gpuDevice: "Radeon RX 9070 XT", gpuArch: "RDNA4", gpuVramMb: 16384,
+      winml: true, directml: true, rocm: false, cuda: false, tensorrt: false,
+      cpuIsa: ["avx2", "avx"], backendBuilt: true, epsBuilt: ["directml"],
+    };
+    const v = r.selectVariant("omniparser-v2-icon-detect", profile);
+    expect(v).not.toBeNull();
+    expect(["winml-fp16", "dml-fp16"]).toContain(v!.name);
+  });
+
+  it("selectVariant falls back to cpu-int8 for CPU-only profile", () => {
+    const r = new ModelRegistry({ cacheRoot: process.cwd() + "/_test-cache-tmp" });
+    r.loadManifestFromFile(manifestPath);
+    const profile: NativeCapabilityProfile = {
+      os: "windows", osBuild: 26100,
+      gpuVendor: "Unknown", gpuDevice: "", gpuArch: "Unknown", gpuVramMb: 0,
+      winml: false, directml: false, rocm: false, cuda: false, tensorrt: false,
+      cpuIsa: ["avx2"], backendBuilt: true, epsBuilt: [],
+    };
+    const v = r.selectVariant("omniparser-v2-icon-detect", profile);
+    expect(v?.name).toBe("cpu-int8");
+  });
+
+  it("paddleocr-v4-mobile has fewer variants than paddleocr-v4-server", () => {
+    const r = new ModelRegistry({ cacheRoot: process.cwd() + "/_test-cache-tmp" });
+    r.loadManifestFromFile(manifestPath);
+    const mobile = r.getManifest()!.models["paddleocr-v4-mobile"]!;
+    const server = r.getManifest()!.models["paddleocr-v4-server"]!;
+    expect(mobile.variants.length).toBeLessThan(server.variants.length);
+  });
+});
+
+describe("WebGPU EP is recognized (Phase 4b-4 rename from Vulkan)", () => {
+  it("selectVariant picks webgpu-fp16 when only GPU VRAM is available", () => {
+    const r = new ModelRegistry();
+    r.setManifest({
+      schema: "1.0",
+      models: {
+        "t": {
+          task: "ui_detector",
+          variants: [
+            { name: "webgpu-fp16", ep: ["WebGPU"], url: "u", sha256: "0".repeat(64), size_mb: 30 },
+            { name: "cpu-int8",    ep: ["CPU"],     url: "u", sha256: "0".repeat(64), size_mb: 12 },
+          ],
+        },
+      },
+    });
+    const p: NativeCapabilityProfile = {
+      os: "windows", osBuild: 26100,
+      gpuVendor: "Intel", gpuDevice: "Arc A770", gpuArch: "Alchemist", gpuVramMb: 16384,
+      winml: false, directml: false, rocm: false, cuda: false, tensorrt: false,
+      cpuIsa: ["avx2"], backendBuilt: true, epsBuilt: [],
+    };
+    // DirectML=false なので WebGPU が唯一の GPU lane、選ばれるべき
+    expect(r.selectVariant("t", p)?.name).toBe("webgpu-fp16");
   });
 });
