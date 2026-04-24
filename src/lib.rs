@@ -14,6 +14,13 @@ mod uia;
 #[cfg(windows)]
 pub mod duplication;
 
+// Visual GPU Phase 4 backend (ADR-005). The module always compiles so that
+// `detect_capability()` can report `backend_built=false` cleanly when the
+// `vision-gpu` cargo feature is disabled. The actual ort-backed inference
+// path inside this module is feature-gated where it touches `ort` symbols.
+#[cfg(feature = "vision-gpu")]
+pub mod vision_backend;
+
 /// Block-based pixel comparison.
 /// Returns the fraction of changed blocks (0.0–1.0).
 ///
@@ -487,4 +494,67 @@ pub fn draw_som_labels(
     opts: image_processing::DrawSomLabelsOptions,
 ) -> AsyncTask<DrawSomLabelsTask> {
     AsyncTask::new(DrawSomLabelsTask(opts))
+}
+
+// ─── Visual GPU backend (ADR-005 Phase 4a) ─────────────────────────────────
+//
+// `recognize_rois` runs the ROI → candidate inference path in a libuv worker
+// thread. Phase 4a delivers the wiring with a dummy detector; Phase 4b will
+// swap in real ort::Session calls without touching the FFI surface.
+//
+// `detect_capability` is exported via `vision_backend::capability` itself.
+
+#[cfg(feature = "vision-gpu")]
+pub struct VisionRecognizeTask(vision_backend::RecognizeRequest);
+
+#[cfg(feature = "vision-gpu")]
+impl Task for VisionRecognizeTask {
+    type Output = Vec<vision_backend::RawCandidate>;
+    type JsValue = Vec<vision_backend::RawCandidate>;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        // Move req out of self to call the blocking entry point. Use a
+        // sentinel placeholder (mirrors PreprocessImageTask in this file).
+        let placeholder = vision_backend::RecognizeRequest {
+            target_key: String::new(),
+            rois: Vec::new(),
+            frame_width: 0,
+            frame_height: 0,
+            now_ms: 0.0,
+        };
+        let req = std::mem::replace(&mut self.0, placeholder);
+        vision_backend::recognize_rois_blocking(req).map_err(Into::into)
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+/// Recognise UI elements inside the given ROIs. Returns a Promise resolving
+/// to `RawCandidate[]`. Panics inside inference are caught and surfaced as a
+/// rejected Promise — the MCP server never crashes (L5).
+///
+/// Phase 4a: dummy implementation, one RawCandidate per input ROI with
+/// `provisional: true` and empty label.
+#[cfg(feature = "vision-gpu")]
+#[napi]
+pub fn vision_recognize_rois(
+    req: vision_backend::RecognizeRequest,
+) -> AsyncTask<VisionRecognizeTask> {
+    AsyncTask::new(VisionRecognizeTask(req))
+}
+
+/// Stub for builds without the `vision-gpu` feature: surfaces a profile
+/// where `backendBuilt: false` so TS callers can short-circuit.
+#[cfg(not(feature = "vision-gpu"))]
+#[napi(object)]
+pub struct CapabilityProfile {
+    pub backend_built: bool,
+}
+
+#[cfg(not(feature = "vision-gpu"))]
+#[napi]
+pub fn detect_capability() -> CapabilityProfile {
+    CapabilityProfile { backend_built: false }
 }
