@@ -11,6 +11,8 @@ mod dhash;
 mod image_processing;
 #[cfg(windows)]
 mod uia;
+#[cfg(windows)]
+pub mod duplication;
 
 /// Block-based pixel comparison.
 /// Returns the fraction of changed blocks (0.0–1.0).
