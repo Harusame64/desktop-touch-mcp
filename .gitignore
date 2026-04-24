@@ -15,6 +15,7 @@ docs/release-process.md
 !docs/gpu-visual-poc-plan.md
 !docs/空間と時間の仮想化-plan.md
 !docs/ocr-quality-improvement-plan.md
+!docs/visual-gpu-dataplane-plan.md
 
 # Claude Code session data (auto-memory, local settings) — never distribute
 .claude/
