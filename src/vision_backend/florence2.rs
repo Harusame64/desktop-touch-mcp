@@ -10,8 +10,14 @@
 //!   - `FLORENCE2_INPUT_SIDE` constant (768)
 //!   - Unit tests for preprocess correctness
 //!
-//! Phase 4b-5a-2 scope (future):
-//!   - `tokenize_prompt`: `<REGION_PROPOSAL>` task token → input_ids + attention_mask
+//! Phase 4b-5a-2 additions (this batch):
+//!   - `Florence2Tokenizer`: thin wrapper over `tokenizers::Tokenizer` for
+//!     loading Florence-2's BART tokenizer.json
+//!   - `PromptTokens`: result struct (input_ids + attention_mask as Vec<i64>)
+//!   - `tokenize_region_proposal()`: encode the canonical `<REGION_PROPOSAL>`
+//!     task prompt that Stage 1 uses
+//!   - `tokenize_with_prompt(&str)`: encode arbitrary prompt (used by tests
+//!     and any future task variant)
 //!
 //! Phase 4b-5a-3 scope (future):
 //!   - Encoder + decoder ort::Session::run with KV-cache autoregressive loop
@@ -167,6 +173,184 @@ fn normalize_and_transpose(src: &ndarray::Array3<u8>) -> Array4<f32> {
 #[cfg(feature = "vision-gpu")]
 pub fn expected_shape() -> (usize, usize, usize, usize) {
     (1, 3, FLORENCE2_INPUT_SIDE as usize, FLORENCE2_INPUT_SIDE as usize)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 4b-5a-2: Florence-2 BART tokenizer
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Canonical Florence-2 task prompt for Stage 1 region proposal.
+/// (See Microsoft Florence-2 model card task table.)
+pub const REGION_PROPOSAL_PROMPT: &str = "<REGION_PROPOSAL>";
+
+/// Result of tokenization. Both vectors have the same length (sequence length
+/// after BART encoding, including BOS/EOS special tokens).
+///
+/// `input_ids` and `attention_mask` are `i64` because that is the dtype
+/// Florence-2 ONNX models expect for these inputs (per HF model card).
+#[derive(Debug, Clone)]
+pub struct PromptTokens {
+    pub input_ids: Vec<i64>,
+    pub attention_mask: Vec<i64>,
+}
+
+impl PromptTokens {
+    pub fn len(&self) -> usize {
+        self.input_ids.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.input_ids.is_empty()
+    }
+}
+
+/// Florence-2 BART tokenizer wrapper. Holds a loaded `tokenizers::Tokenizer`.
+///
+/// Loading is from a `tokenizer.json` file produced by HuggingFace tokenizers
+/// (the format Microsoft ships at `microsoft/Florence-2-base/tokenizer.json`).
+/// Network-based `from_pretrained` is intentionally NOT exposed.
+pub struct Florence2Tokenizer {
+    inner: tokenizers::Tokenizer,
+}
+
+impl Florence2Tokenizer {
+    /// Load a Florence-2 tokenizer from a `tokenizer.json` file on disk.
+    ///
+    /// Errors:
+    ///   - file not found / unreadable
+    ///   - JSON parse / schema mismatch
+    pub fn from_file(path: &std::path::Path) -> Result<Self, VisionBackendError> {
+        let inner = tokenizers::Tokenizer::from_file(path)
+            .map_err(|e| VisionBackendError::Other(format!(
+                "Florence-2 tokenizer load failed for {}: {e}",
+                path.display(),
+            )))?;
+        Ok(Self { inner })
+    }
+
+    /// Construct directly from an in-memory `tokenizers::Tokenizer`. Used in
+    /// unit tests where we build a synthetic tokenizer programmatically.
+    pub fn from_tokenizer(inner: tokenizers::Tokenizer) -> Self {
+        Self { inner }
+    }
+
+    /// Encode the canonical `<REGION_PROPOSAL>` Stage 1 prompt.
+    ///
+    /// Equivalent to `tokenize_with_prompt(REGION_PROPOSAL_PROMPT)`.
+    /// For Florence-2 BART, the typical output is `[BOS, <REGION_PROPOSAL>, EOS]`
+    /// (sequence length 3) — but exact ids and length depend on the loaded
+    /// tokenizer.json.
+    pub fn tokenize_region_proposal(&self) -> Result<PromptTokens, VisionBackendError> {
+        self.tokenize_with_prompt(REGION_PROPOSAL_PROMPT)
+    }
+
+    /// Encode an arbitrary prompt. `add_special_tokens = true` so BOS/EOS are
+    /// added (BART convention).
+    pub fn tokenize_with_prompt(&self, prompt: &str) -> Result<PromptTokens, VisionBackendError> {
+        let encoding = self.inner.encode(prompt, true).map_err(|e| {
+            VisionBackendError::Other(format!("Florence-2 tokenizer encode failed: {e}"))
+        })?;
+        let input_ids: Vec<i64> = encoding.get_ids().iter().map(|&id| id as i64).collect();
+        let attention_mask: Vec<i64> = encoding
+            .get_attention_mask()
+            .iter()
+            .map(|&m| m as i64)
+            .collect();
+        Ok(PromptTokens { input_ids, attention_mask })
+    }
+}
+
+#[cfg(all(test, feature = "vision-gpu"))]
+mod tokenizer_tests {
+    use super::*;
+    use tokenizers::{
+        models::wordlevel::WordLevelBuilder,
+        Tokenizer,
+    };
+    use std::collections::HashMap;
+
+    /// Build a synthetic Florence-2-like tokenizer programmatically:
+    /// vocab = {"<s>": 0, "<pad>": 1, "</s>": 2, "<unk>": 3, "<REGION_PROPOSAL>": 50267}
+    /// uses WordLevel model (simple whole-word lookup, sufficient for special-token tests).
+    /// Special tokens BOS=0, EOS=2 are added so encode("<REGION_PROPOSAL>") yields [0, 50267, 2].
+    fn build_synthetic_tokenizer() -> Tokenizer {
+        let mut vocab: HashMap<String, u32> = HashMap::new();
+        vocab.insert("<s>".to_string(), 0);
+        vocab.insert("<pad>".to_string(), 1);
+        vocab.insert("</s>".to_string(), 2);
+        vocab.insert("<unk>".to_string(), 3);
+        vocab.insert("<REGION_PROPOSAL>".to_string(), 50267);
+        let model = WordLevelBuilder::default()
+            .vocab(vocab)
+            .unk_token("<unk>".into())
+            .build()
+            .expect("WordLevel build");
+        let mut tok = Tokenizer::new(model);
+        // BART-style: BOS at start, EOS at end, controlled by post-processor.
+        // For test simplicity we use TemplateProcessing.
+        tok.with_post_processor(
+            tokenizers::processors::template::TemplateProcessing::builder()
+                .try_single("<s> $A </s>").unwrap()
+                .special_tokens(vec![("<s>".into(), 0), ("</s>".into(), 2)])
+                .build()
+                .unwrap(),
+        );
+        tok.add_special_tokens(&[
+            tokenizers::AddedToken::from("<s>", true),
+            tokenizers::AddedToken::from("</s>", true),
+            tokenizers::AddedToken::from("<REGION_PROPOSAL>", true),
+        ]);
+        tok
+    }
+
+    #[test]
+    fn tokenize_region_proposal_returns_3_tokens_with_synthetic_tokenizer() {
+        let tok = Florence2Tokenizer::from_tokenizer(build_synthetic_tokenizer());
+        let prompts = tok.tokenize_region_proposal().unwrap();
+        assert_eq!(prompts.input_ids.len(), 3);
+        assert_eq!(prompts.attention_mask.len(), 3);
+        assert_eq!(prompts.input_ids[0], 0);     // BOS
+        assert_eq!(prompts.input_ids[1], 50267); // <REGION_PROPOSAL>
+        assert_eq!(prompts.input_ids[2], 2);     // EOS
+        assert!(prompts.attention_mask.iter().all(|&m| m == 1));
+    }
+
+    #[test]
+    fn tokenize_arbitrary_prompt_works() {
+        let tok = Florence2Tokenizer::from_tokenizer(build_synthetic_tokenizer());
+        let res = tok.tokenize_with_prompt("<REGION_PROPOSAL>").unwrap();
+        assert!(!res.is_empty());
+        assert!(res.input_ids.iter().any(|&id| id == 50267));
+    }
+
+    #[test]
+    fn prompt_tokens_len_matches_attention_mask() {
+        let tok = Florence2Tokenizer::from_tokenizer(build_synthetic_tokenizer());
+        let res = tok.tokenize_region_proposal().unwrap();
+        assert_eq!(res.input_ids.len(), res.attention_mask.len());
+        assert_eq!(res.len(), res.input_ids.len());
+        assert!(!res.is_empty());
+    }
+
+    #[test]
+    fn from_file_errors_when_path_missing() {
+        let nonexistent = std::path::PathBuf::from("/nonexistent/tokenizer.json");
+        let err = Florence2Tokenizer::from_file(&nonexistent).unwrap_err();
+        assert!(format!("{err:?}").contains("tokenizer load failed"));
+    }
+
+    #[test]
+    fn region_proposal_constant_matches_expected_value() {
+        assert_eq!(REGION_PROPOSAL_PROMPT, "<REGION_PROPOSAL>");
+    }
+
+    #[test]
+    fn prompt_tokens_i64_dtype_for_ort_compat() {
+        // Verifies the return type is Vec<i64> (compile-time check via assignment).
+        let tok = Florence2Tokenizer::from_tokenizer(build_synthetic_tokenizer());
+        let res = tok.tokenize_region_proposal().unwrap();
+        let _input_ids: &Vec<i64> = &res.input_ids;
+        let _attn: &Vec<i64> = &res.attention_mask;
+    }
 }
 
 #[cfg(all(test, feature = "vision-gpu"))]
