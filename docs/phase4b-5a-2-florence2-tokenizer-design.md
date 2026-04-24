@@ -1,6 +1,14 @@
 # Phase 4b-5a-2 設計書 — Florence-2 BART tokenizer integration
 
-- Status: Implemented (2026-04-25、commits a56d990, 53907ac)
+- Status: Implemented (2026-04-25、commits `a56d990`, `53907ac`, `de113da`、post-review addendum 含む)
+
+**Post-review addendum (Opus review 2026-04-25、BLOCKING 0)**:
+- Sonnet 追加判断 3 件 (`0.21.4` resolve / `WordLevelBuilder::default()` / mod 配置位置) 全て §8 範囲内と認定
+- **RECOMMEND R1 (medium、4b-5a-3 で対応)**: `tokenizers` / `image` / `ndarray` の 3 crate を `optional = true` + `vision-gpu` feature 配下に再構成。現状は常時 build され `--no-default-features` でも linker dead-strip に依存。ADR-005「最小 build で vision-gpu を切れる」前提の厳密化、4b-5a-3 着手時に Cargo.toml 一括 refactor 推奨
+- RECOMMEND R2 (low、4b-5a-3 以降): `from_file_errors_when_path_missing` test の path を `std::env::temp_dir().join("definitely-does-not-exist-12345.json")` 等に portability 改善
+- RECOMMEND R3 (low、現状維持): `preprocess_ok` ガード経由の tokenizer skip は設計書通り、L5 堅牢化
+- NIT N1: 上記 commit hash 一覧に `de113da` 追加 (本 addendum で対応)
+- NIT N2: `tokenizer_path_for_session` を inference.rs 内に置く現配置は OK、florence2.rs / session.rs 移動は scope 外
 - 設計者: Claude (Opus 4.7)
 - 実装担当: **Sonnet** (handbook §2 Step B)
 - レビュー担当: Opus 4.7 (別 subagent)
