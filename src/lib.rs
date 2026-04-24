@@ -517,6 +517,7 @@ impl Task for VisionRecognizeTask {
         // sentinel placeholder (mirrors PreprocessImageTask in this file).
         let placeholder = vision_backend::RecognizeRequest {
             target_key: String::new(),
+            session_key: String::new(),
             rois: Vec::new(),
             frame_width: 0,
             frame_height: 0,
