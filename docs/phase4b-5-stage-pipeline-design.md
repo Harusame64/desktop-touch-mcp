@@ -1,6 +1,12 @@
 # Phase 4b-5 設計書 — Stage pipeline orchestration framework
 
-- Status: Implemented (2026-04-25、commits d4a6244 / c539680 / 31f4f94 / ADR flip)
+- Status: Implemented (2026-04-25、commits `d4a6244` / `c539680` / `31f4f94` / `e1d1312` + post-review fix commit)
+
+**Post-review update (Opus self-review 2026-04-25)**: BLOCKING 2 件の修正として以下を反映:
+- §3.3 に `session_key.is_empty()` guard を追加 (`session_pool::insert` 冒頭で早期 return)
+- §3.8 / §6.2 に「legacy path を明示的に保持する」仕様を追記 (4b-1 時代の Block B test backward-compat 維持目的)
+- §6.2 テスト 3 の文言を「Before warm → legacy native call (sessionKey='')、warm 後に stage pipeline 経由で ≥ 2 native calls」に修正
+- ADR-005 §5 4b-5 note にも「legacy path + typeof guard は 4b-5c 完了時点で除去」を追記
 - 設計者: Claude (Opus 4.7)
 - 実装担当: **Sonnet** (handbook §2 Step B)
 - レビュー担当: Opus 4.7 (別 subagent)
@@ -131,7 +137,16 @@ impl VisionSessionPool {
 
     /// Insert a session under the given key. Replaces any prior entry with
     /// the same key (the old Arc is dropped when the last borrow returns).
+    ///
+    /// Empty keys are ignored (silent no-op) — the empty string is used as
+    /// a sentinel in `recognize_rois_blocking` for "legacy dummy path", and
+    /// allowing it into the pool would let multiple ad-hoc init calls collide
+    /// under "" (each overwriting the prior Arc) and silently drop sessions
+    /// that callers expected to retain. (Post-review BLOCKING B2 fix, 2026-04-25)
     pub fn insert(&self, key: String, session: Arc<VisionSession>) {
+        if key.is_empty() {
+            return;
+        }
         if let Ok(mut guard) = self.inner.lock() {
             guard.insert(key, session);
         }
@@ -497,9 +512,14 @@ async recognizeRois(
   if (!OnnxBackend.isAvailable() || !nativeVision?.visionRecognizeRois) return [];
   if (rois.length === 0) return [];
   if (this.state !== "warm" || this.stageKeys === null) {
-    // Not warmed up — caller should have awaited ensureWarm first. Fall back
-    // to empty to keep visual lane non-blocking (L5 spirit).
-    return [];
+    // Post-review update (Opus BLOCKING B1 fix, 2026-04-25):
+    // Fall through to the legacy single-call path (sessionKey="") instead of
+    // returning []. This preserves Phase 4b-1 Block B tests that call
+    // `recognizeRois` without a prior `ensureWarm` and expect the native
+    // `visionRecognizeRois` to be invoked once. The legacy path is
+    // back-compat only and will be removed in 4b-5c after all Block B tests
+    // are migrated to the warmed-path contract.
+    return this.recognizeRoisLegacy(targetKey, rois, frameWidth, frameHeight);
   }
 
   const nativeRois = rois.map((r) => ({
@@ -770,7 +790,11 @@ describe("OnnxBackend Phase 4b-5 stage pipeline integration", () => {
     expect(state).toBe("evicted");
   });
 
-  it("recognizeRois invokes stage pipeline after warm, returns empty before warm", async () => {
+  // Post-review update (Opus BLOCKING B1 fix, 2026-04-25): "Before warm → []"
+  // assertion is relaxed to "Before warm → legacy native call" because the
+  // implementation falls through to the legacy sessionKey="" path when state
+  // is not warm (to maintain Phase 4b-1 Block B test backward-compat).
+  it("recognizeRois invokes stage pipeline after warm, falls through to legacy native call before warm", async () => {
     vi.doMock("../../src/engine/native-engine.js", () => ({
       nativeVision: {
         visionInitSession: vi.fn().mockResolvedValue({ ok: true, selectedEp: "DirectML(0)", error: null, sessionKey: "k" }),
@@ -788,9 +812,12 @@ describe("OnnxBackend Phase 4b-5 stage pipeline integration", () => {
     const { OnnxBackend } = await import("../../src/engine/vision-gpu/onnx-backend.js");
     const b = new OnnxBackend();
 
-    // Before warm → []
+    // Before warm → legacy path (sessionKey=""), native returns 1 candidate per ROI
     const before = await b.recognizeRois("window:1", [{ trackId: "t1", rect: { x: 0, y: 0, width: 100, height: 50 } }]);
-    expect(before).toEqual([]);
+    expect(before).toHaveLength(1); // legacy path fires a single native call
+
+    // Clear the mock before warmed path verification
+    vi.clearAllMocks();
 
     await b.ensureWarm({ kind: "game", id: "g1" });
     const after = await b.recognizeRois("window:1", [{ trackId: "t1", rect: { x: 0, y: 0, width: 100, height: 50 } }]);
