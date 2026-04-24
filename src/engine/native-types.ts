@@ -128,3 +128,64 @@ export interface NativeOutputBounds {
   width: number
   height: number
 }
+
+// ── Visual GPU Phase 4 (ADR-005) ─────────────────────────────────────────────
+
+/** Rust src/vision_backend/types.rs::Rect */
+export interface NativeVisionRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/** Rust src/vision_backend/types.rs::RoiInput */
+export interface NativeRoiInput {
+  trackId: string
+  rect: NativeVisionRect
+  classHint?: string | null
+}
+
+/** Rust src/vision_backend/types.rs::RecognizeRequest */
+export interface NativeRecognizeRequest {
+  targetKey: string
+  rois: NativeRoiInput[]
+  frameWidth: number
+  frameHeight: number
+  nowMs: number
+}
+
+/** Rust src/vision_backend/types.rs::RawCandidate */
+export interface NativeRawCandidate {
+  trackId: string
+  rect: NativeVisionRect
+  /** Empty string when class is "icon" or detection found a non-text element. */
+  label: string
+  /** "text"|"icon"|"mixed"|"button"|"checkbox"|"radio"|"dropdown"|"slider"|"tab"|"label"|"image"|"title"|"other" */
+  class: string
+  confidence: number
+  provisional: boolean
+}
+
+/**
+ * Rust src/vision_backend/capability.rs::CapabilityProfile
+ *
+ * Sample for the dogfood machine (RX 9070 XT, Win11 24H2):
+ *   { os: "windows", osBuild: 26100, gpuVendor: "AMD", gpuArch: "RDNA4", winml: true, directml: true, ... }
+ */
+export interface NativeCapabilityProfile {
+  os: string
+  osBuild: number
+  gpuVendor: string
+  gpuDevice: string
+  gpuArch: string
+  gpuVramMb: number
+  winml: boolean
+  directml: boolean
+  rocm: boolean
+  cuda: boolean
+  tensorrt: boolean
+  cpuIsa: string[]
+  backendBuilt: boolean
+  epsBuilt: string[]
+}

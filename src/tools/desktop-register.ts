@@ -30,6 +30,7 @@ import type { TargetSpec } from "../engine/world-graph/session-registry.js";
 import { composeCandidates } from "./desktop-providers/compose-providers.js";
 import { getVisualRuntime } from "../engine/vision-gpu/runtime.js";
 import { PocVisualBackend } from "../engine/vision-gpu/poc-backend.js";
+import { OnnxBackend } from "../engine/vision-gpu/onnx-backend.js";
 import { onDirtySignal } from "../engine/vision-gpu/dirty-signal.js";
 import { _resetOcrAdaptersForTest, getOcrVisualAdapter } from "../engine/vision-gpu/ocr-adapter-registry.js";
 import { DirtyRectRouter } from "../engine/vision-gpu/dirty-rect-source.js";
@@ -92,6 +93,16 @@ let _visualSource: VisualIngressSource | undefined;
 /** Process-level PoC visual backend. Expose for P3-D pipeline to call updateSnapshot(). */
 let _pocBackend: PocVisualBackend | undefined;
 
+/**
+ * Phase 4a (ADR-005): OnnxBackend (Rust-internal vision_backend). Attached when:
+ *   1. Native vision binding is loaded (`OnnxBackend.isAvailable()`)
+ *   2. `DESKTOP_TOUCH_ENABLE_ONNX_BACKEND=1` opt-in is set
+ *   3. `DESKTOP_TOUCH_DISABLE_VISUAL_GPU` is unset
+ * If any condition fails, falls back to `PocVisualBackend`. This keeps Phase 1-3
+ * behaviour intact until the operator explicitly enables Phase 4 path.
+ */
+let _onnxBackend: OnnxBackend | undefined;
+
 /** Phase 3: dirty-rect router (Desktop Duplication → RoiScheduler → OcrVisualAdapter). */
 let _dirtyRouter: DirtyRectRouter | undefined;
 
@@ -114,6 +125,15 @@ export function getVisualIngressSource(): VisualIngressSource | undefined {
  */
 export function getPocVisualBackend(): PocVisualBackend | undefined {
   return _pocBackend;
+}
+
+/**
+ * @internal Phase 4a — return the OnnxBackend when attached, otherwise undefined.
+ * Used by tests that want to verify the Rust-internal vision_backend is wired.
+ * Production code should not depend on this; use `getVisualRuntime()` instead.
+ */
+export function getOnnxBackend(): OnnxBackend | undefined {
+  return _onnxBackend;
 }
 
 /**
@@ -144,21 +164,38 @@ export function getPocVisualBackend(): PocVisualBackend | undefined {
  *     → next see() call: ingress.getSnapshot(targetKey) refreshes from visual provider
  */
 async function initVisualRuntime(visualSource: VisualIngressSource): Promise<void> {
+  // Phase 4a (ADR-005): prefer Rust-internal OnnxBackend when available and
+  // explicitly opted in. Falls back to PocVisualBackend otherwise so that
+  // Phase 1-3 behaviour is unchanged when the operator has not enabled Phase 4.
+  const onnxOptIn = process.env["DESKTOP_TOUCH_ENABLE_ONNX_BACKEND"] === "1";
+  const useOnnx = onnxOptIn && OnnxBackend.isAvailable();
+
+  if (useOnnx) {
+    const backend = new OnnxBackend();
+    _onnxBackend = backend;
+    backend.onDirty((targetKey) => visualSource.markDirty(targetKey, "dirty-rect"));
+    onDirtySignal((targetKey, candidates) => {
+      backend.updateSnapshot(targetKey, candidates);
+    });
+    await getVisualRuntime().attach(backend);
+    console.error("[desktop-register] visual lane: OnnxBackend attached (ADR-005 Phase 4a)");
+    return;
+  }
+
+  // Default: PocVisualBackend (Phase 1-3 behaviour).
   const backend = new PocVisualBackend();
   _pocBackend = backend;
-
-  // Dirty callback: when the GPU pipeline updates a snapshot, mark the ingress dirty.
   backend.onDirty((targetKey) => visualSource.markDirty(targetKey, "dirty-rect"));
-
-  // P3-C: register as a receiver for process-global dirty signals from the GPU lane.
-  // pushDirtySignal(targetKey, candidates) will call updateSnapshot() and fire the
-  // ingress invalidation — this is the entry point for the P3-D recognition pipeline.
   onDirtySignal((targetKey, candidates) => {
     backend.updateSnapshot(targetKey, candidates);
   });
-
-  // Attach to the process-level runtime (disposes any previous backend).
   await getVisualRuntime().attach(backend);
+  if (onnxOptIn) {
+    console.error(
+      "[desktop-register] visual lane: PocVisualBackend attached " +
+      "(ENABLE_ONNX_BACKEND=1 set but native vision addon unavailable — falling back)",
+    );
+  }
 }
 
 export function getDesktopFacade(): DesktopFacade {
@@ -253,6 +290,8 @@ export function _resetFacadeForTest(): void {
   _facade = undefined;
   _visualSource = undefined;
   _pocBackend = undefined;
+  void _onnxBackend?.dispose();
+  _onnxBackend = undefined;
   _dirtyRouter?.stop();
   _dirtyRouter = undefined;
   _resetOcrAdaptersForTest();

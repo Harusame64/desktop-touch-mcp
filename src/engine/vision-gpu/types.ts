@@ -36,6 +36,21 @@ export interface RecognizedText {
 }
 
 /**
+ * Input for `VisualBackend.recognizeRois` (ADR-005 Phase 4a+).
+ *
+ * One per stable track from TrackStore. The backend uses the rect to crop the
+ * captured frame and run inference; trackId flows back unchanged on the
+ * matching `UiEntityCandidate.sourceId` so the temporal fusion pipeline can
+ * correlate observations.
+ */
+export interface RoiInput {
+  trackId: string;
+  rect: Rect;
+  /** Optional class hint from upstream (UIA control type, etc.). Backend may override. */
+  classHint?: string;
+}
+
+/**
  * target.kind "terminal" maps to kind:"window" with sourceId carrying the session id.
  * The resolver narrows this into a terminal-typed entity at the World Graph layer.
  */
