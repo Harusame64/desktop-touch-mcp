@@ -16,6 +16,17 @@ export interface OcrWord {
   text: string;
   /** Bounding box in window-local screen coordinates. */
   bbox: { x: number; y: number; width: number; height: number };
+  /**
+   * Number of OcrWord tokens in the originating OcrLine (from win-ocr.exe).
+   * Used by calibrateOcrConfidence to derive word-density quality signals.
+   * Absent when the word was synthesised (e.g. test fixtures without line info).
+   */
+  lineWordCount?: number;
+  /**
+   * Character length of OcrLine.Text including inter-word spaces (from win-ocr.exe).
+   * Paired with lineWordCount to compute word density = lineWordCount / lineCharCount.
+   */
+  lineCharCount?: number;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -153,6 +164,17 @@ export function mergeNearbyWords(words: OcrWord[], gapThreshold = 12): OcrWord[]
         const newTop    = Math.min(cur.bbox.y, next.bbox.y);
         const newBottom = Math.max(cur.bbox.y + cur.bbox.height, next.bbox.y + next.bbox.height);
 
+        // Propagate line stats: take the minimum so that low-quality words
+        // pull down the merged token (worst-case quality signal).
+        const mergedLineWordCount =
+          cur.lineWordCount !== undefined && next.lineWordCount !== undefined
+            ? Math.min(cur.lineWordCount, next.lineWordCount)
+            : cur.lineWordCount ?? next.lineWordCount;
+        const mergedLineCharCount =
+          cur.lineCharCount !== undefined && next.lineCharCount !== undefined
+            ? Math.min(cur.lineCharCount, next.lineCharCount)
+            : cur.lineCharCount ?? next.lineCharCount;
+
         cur = {
           text: cur.text + separator + next.text,
           bbox: {
@@ -161,6 +183,8 @@ export function mergeNearbyWords(words: OcrWord[], gapThreshold = 12): OcrWord[]
             width: newRight - cur.bbox.x,
             height: newBottom - newTop,
           },
+          ...(mergedLineWordCount !== undefined ? { lineWordCount: mergedLineWordCount } : {}),
+          ...(mergedLineCharCount !== undefined ? { lineCharCount: mergedLineCharCount } : {}),
         };
       } else {
         result.push(cur);
