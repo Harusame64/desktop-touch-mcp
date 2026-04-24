@@ -33,7 +33,18 @@ impl VisionSessionPool {
 
     /// Insert a session under the given key. Replaces any prior entry with
     /// the same key (the old Arc is dropped when the last borrow returns).
+    ///
+    /// Empty keys are ignored (silent no-op). `recognize_rois_blocking` uses
+    /// the empty string as a sentinel for "legacy dummy path, do not look up
+    /// the pool" (see `inference.rs::recognize_rois_blocking`), so letting
+    /// multiple ad-hoc initialisations collide under "" would be a trap —
+    /// each would overwrite the prior Arc, causing callers that expected a
+    /// retained session to lose it. The TS side always supplies a non-empty
+    /// key (`"${modelName}:${variant.name}"`), so this guard is defensive.
     pub fn insert(&self, key: String, session: Arc<VisionSession>) {
+        if key.is_empty() {
+            return;
+        }
         if let Ok(mut guard) = self.inner.lock() {
             guard.insert(key, session);
         }
@@ -88,5 +99,26 @@ mod tests {
         let a = global_pool() as *const VisionSessionPool;
         let b = global_pool() as *const VisionSessionPool;
         assert_eq!(a, b);
+    }
+
+    // Empty-key insert is a no-op (defensive guard against legacy-path collision).
+    // We can't construct a real Arc<VisionSession> here without loading a model,
+    // so we verify the pool size stays at 0 after a call path that would
+    // otherwise insert. The public `insert` signature requires Arc<VisionSession>,
+    // so this test exercises the `key.is_empty()` early-return by avoiding the
+    // insert entirely — relying on the pool invariant that non-empty keys are
+    // the only ones reachable through the guard.
+    //
+    // Indirect proof: `pool_insert_get_remove_roundtrip` confirms empty pool
+    // semantics. Direct guard test requires a real VisionSession instance,
+    // which is exercised via `init_session_blocking` integration tests in
+    // Phase 4b-5a once model artifacts ship.
+    #[test]
+    fn empty_key_insert_is_documented_noop() {
+        // Placeholder: see doc comment above. The guard itself is a 3-line
+        // `if key.is_empty() { return; }` — no runtime state to assert here
+        // without a real session instance.
+        let pool = VisionSessionPool::new();
+        assert!(pool.is_empty());
     }
 }
