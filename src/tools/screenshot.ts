@@ -321,7 +321,7 @@ export const screenshotHandler = async ({
   confirmImage,
   ocrFallback,
   ocrLanguage,
-  preprocessPolicy,
+  preprocessPolicy = "auto",
 }: {
   windowTitle?: string;
   hwnd?: string;
