@@ -13,6 +13,36 @@ napi = { version = "2", default-features = false, features = ["napi8"] }
 napi-derive = "2"
 crossbeam-channel = "0.5"
 
+# ── Visual GPU Phase 4 (ADR-005) ────────────────────────────────────────────
+# ORT 2.0.0-rc.12 (2026-03), pykeio/ort. directml feature で AMD/NVIDIA/Intel 全 DX12 GPU 対応。
+# WinML, ROCm/MIGraphX, CUDA, TensorRT, WebGPU, CoreML は build feature で opt-in。
+#
+# load-dynamic を採用:
+# - build 時に ONNX Runtime native library を要求しない (CI / msys2/gnu toolchain でも build 可)
+# - 実行時に DLL を `ORT_DYLIB_PATH` env または OrtEnvironment::builder で指定
+# - Windows では launcher zip に onnxruntime.dll + DirectML.dll を同梱 (Phase 4b)
+# - Linux/Mac は配布ターゲット外 (将来 ADR-008 で対応検討)
+ort = { version = "=2.0.0-rc.12", default-features = false, features = [
+    "std", "ndarray", "tracing", "load-dynamic", "tls-rustls",
+    "directml",
+    "api-22",
+], optional = true }
+
+[features]
+default = ["vision-gpu"]
+# Visual GPU lane を build に含める。CI/最小ビルドでは --no-default-features で除外可能。
+vision-gpu = ["dep:ort"]
+# Opt-in EPs (ADR-005 D2' Layer 2 cascade)
+vision-gpu-cuda     = ["vision-gpu", "ort/cuda"]
+vision-gpu-tensorrt = ["vision-gpu", "ort/tensorrt"]
+vision-gpu-rocm     = ["vision-gpu", "ort/rocm"]
+vision-gpu-migraphx = ["vision-gpu", "ort/migraphx"]
+vision-gpu-coreml   = ["vision-gpu", "ort/coreml"]
+vision-gpu-openvino = ["vision-gpu", "ort/openvino"]
+vision-gpu-webgpu   = ["vision-gpu", "ort/webgpu"]
+# Phase 4c+ で WinML 統合検討用。現時点では windows crate で直接 binding する想定なので feature flag のみ予約。
+vision-gpu-winml    = ["vision-gpu"]
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_UI_Accessibility",
@@ -24,6 +54,9 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D11",
+    # Visual GPU Phase 4 capability detection (ADR-005)
+    "Win32_System_SystemInformation",
+    "Wdk_System_SystemServices",
 ] }
 
 [build-dependencies]

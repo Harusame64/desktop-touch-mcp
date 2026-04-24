@@ -38,6 +38,9 @@ tools/win-ocr/obj/
 .vitest-out.json
 .vitest-out.txt
 
+# cargo check / build output (captured for diagnostics)
+.cargo-check-out.txt
+
 # Ad-hoc test output and HTTP debug captures
 _som-test-output.png
 _http_test_stderr.txt
