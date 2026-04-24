@@ -20,6 +20,7 @@ import type { UiEntityCandidate } from "../../engine/vision-gpu/types.js";
 import type { TargetSpec } from "../../engine/world-graph/session-registry.js";
 import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.js";
 import type { OcrDictionaryEntry } from "../../engine/ocr-bridge.js";
+import { getOcrVisualAdapter } from "../../engine/vision-gpu/ocr-adapter-registry.js";
 
 export async function fetchOcrCandidates(
   target: TargetSpec | undefined,
@@ -53,6 +54,20 @@ export async function fetchOcrCandidates(
       observedAtMs: Date.now(),
       provisional: false,
     }));
+
+    // Phase 1 dataplane hook: feed this SoM run into the visual lane so the
+    // next desktop_see returns the same entities under source:"visual_gpu".
+    // Pass somResult.elements so the adapter skips a duplicate runSomPipeline call.
+    // Fire-and-forget: adapter has its own debounce; errors never block OCR return.
+    try {
+      const adapter = getOcrVisualAdapter(target);
+      void adapter.pollOnce(target, dictionary, somResult.elements).catch(() => {
+        /* adapter logs its own errors; never block the OCR return */
+      });
+    } catch (err) {
+      console.error("[ocr-provider] visual adapter hook failed:", err);
+      // Continue — primary OCR result is unaffected.
+    }
 
     return { candidates, warnings: [] };
   } catch (err) {
