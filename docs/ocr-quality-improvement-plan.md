@@ -13,7 +13,18 @@
 | フェーズ | 状態 | コミット範囲 |
 |---|---|---|
 | フェーズ 1: 前処理強化 | ✅ **実装完了・プッシュ済み** | `b0935eb`〜`9389846` |
-| フェーズ 2: 後処理フィルター | ⏳ 未着手（Opus レビュー後に開始） | — |
+| フェーズ 2: 後処理フィルター | ✅ **実装完了・プッシュ済み** | `97d9753`〜`967ffd4` |
+
+### フェーズ 2 実装ログ（Opus レビューループで実施）
+
+| # | コミット | ハッシュ | 備考 |
+|---|---|---|---|
+| 2-1 | C# に lineWordCount/lineCharCount 追加 | `97d9753` | Option A（生統計2フィールド）採用。Opus が lineScore 計算式の恒等式バグを指摘 |
+| 2-2 | `calibrateOcrConfidence` + `hasGlyphConfusion` | `e8ff229` | Opus 修正4点（density閾値ガード、hasAscii判定、U+FFFD早期リターン、suggest閾値0.55）|
+| 2-3 | `snapToDictionary`（Levenshtein 補正） | `e9ecb4b` | substring マッチ除去（Opus 指示）、tie-breaking 明文化、NFKC 全角→半角補正 |
+| 2-4 | screenshot に辞書スナップ配線 | `b9eb9c0` | Opus が座標系の誤りを指摘（window-local vs screen-absolute）→ screen-absolute で統一 |
+| 2-5 | compose-providers に OCR 第三レーン追加 | `80c14b9` | EntityLocator.ocr 追加不要（Opus 確認）、resolver 変更ゼロ、UIA-blind 時のみ起動 |
+| 2-6 | golden テストに Phase 1+2 品質ゲート追加 | `967ffd4` | calibrateOcrConfidence と snapToDictionary を golden テストで検証 |
 
 ### フェーズ 1 実装ログ
 
@@ -31,6 +42,13 @@
 - Rust napi ビルド（`npm run build:rs`）には `node.lib` が必要。
   初回は `npx node-gyp install` でダウンロードし `C:\Users\<user>\AppData\Local\node-gyp\Cache\<version>\x64\node.lib` をプロジェクトルートにコピーしてから実行。
 - `node.lib` は `.gitignore` 対象なのでリポジトリには含まれない。
+
+### フェーズ 2 完了判定（実績）
+
+- [x] `npm test`（TS）がローカルで green（93 ファイル・1673 件）
+- [x] `tests/unit/ocr-calibrate.test.ts`（18 件）・`tests/unit/ocr-snap-dictionary.test.ts`（21 件）・`tests/unit/desktop-providers-ocr-lane.test.ts`（6 件）すべて green
+- [ ] 実機 dogfood: Outlook PWA で `"FANUC"`・`"CUSCNET-SUPPORT"` 等の誤認識例が正しい綴りに戻ることを確認（fixture PNG 未生成のため未検証）
+- [ ] Notepad 等の UIA 正常ターゲットで OCR lane が起動しないことをログで確認（未実施）
 
 ### フェーズ 1 完了判定（実績）
 
