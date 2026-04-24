@@ -189,3 +189,42 @@ export interface NativeCapabilityProfile {
   backendBuilt: boolean
   epsBuilt: string[]
 }
+
+// ── Phase 4b-1: EP cascade session init ──────────────────────────────────────
+
+/**
+ * Rust src/vision_backend/types.rs::NativeSessionInit
+ *
+ * Input to `visionInitSession`. `profile` should be obtained from
+ * `detectCapability()` so the cascade can select the optimal EP.
+ */
+export interface NativeSessionInit {
+  /** Absolute path to the .onnx file to load. */
+  modelPath: string
+  /** CapabilityProfile produced by detectCapability(). */
+  profile: NativeCapabilityProfile
+  /**
+   * Optional stable session key for later pool lookup (e.g. "ui_detector:dml-fp16").
+   * Pass an empty string for ad-hoc sessions.
+   */
+  sessionKey: string
+}
+
+/**
+ * Rust src/vision_backend/types.rs::NativeSessionResult
+ *
+ * Returned by `visionInitSession`. The Promise **never rejects** — errors are
+ * reported via `ok === false` to maintain L5 process isolation.
+ */
+export interface NativeSessionResult {
+  ok: boolean
+  /**
+   * Set when `ok === true`. Format: "WinML" | "DirectML(0)" | "ROCm(0)" |
+   * "CUDA(0)" | "CPU" | "Fallback(reason)"
+   */
+  selectedEp: string
+  /** Set when `ok === false`. Concatenated cascade attempt errors. */
+  error?: string | null
+  /** Echoed `sessionKey` — use as lookup key for subsequent recognize_rois calls (4b-4+). */
+  sessionKey: string
+}
