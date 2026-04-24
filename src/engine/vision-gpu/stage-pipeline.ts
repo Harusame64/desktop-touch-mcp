@@ -27,6 +27,8 @@ export interface StagePipelineInput {
   rois: NativeRecognizeRequest["rois"];
   frameWidth: number;
   frameHeight: number;
+  /** Captured frame RGBA bytes forwarded to Rust per-stage (empty Buffer → legacy dummy path). */
+  frameBuffer: Buffer;
   nowMs: number;
 }
 
@@ -49,6 +51,7 @@ export async function runStagePipeline(
     rois: input.rois,
     frameWidth: input.frameWidth,
     frameHeight: input.frameHeight,
+    frameBuffer: input.frameBuffer,
     nowMs: input.nowMs,
   });
   if (stage1.length === 0) return [];
@@ -64,6 +67,7 @@ export async function runStagePipeline(
     })),
     frameWidth: input.frameWidth,
     frameHeight: input.frameHeight,
+    frameBuffer: input.frameBuffer,
     nowMs: input.nowMs,
   });
   if (stage2.length === 0) return [];
@@ -84,6 +88,7 @@ export async function runStagePipeline(
     })),
     frameWidth: input.frameWidth,
     frameHeight: input.frameHeight,
+    frameBuffer: input.frameBuffer,
     nowMs: input.nowMs,
   });
 
