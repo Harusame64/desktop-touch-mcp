@@ -65,7 +65,7 @@ export interface ModelVariant {
 
 export type EpName =
   | "WinML" | "DirectML" | "ROCm" | "MIGraphX"
-  | "CUDA" | "TensorRT" | "Vulkan" | "CoreML" | "OpenVINO" | "CPU";
+  | "CUDA" | "TensorRT" | "WebGPU" | "CoreML" | "OpenVINO" | "CPU";
 
 // ── Public surface ───────────────────────────────────────────────────────────
 
@@ -133,6 +133,9 @@ export class ModelRegistry {
       const benchA = a.bench_ms?.[deviceKey] ?? Number.POSITIVE_INFINITY;
       const benchB = b.bench_ms?.[deviceKey] ?? Number.POSITIVE_INFINITY;
       if (benchA !== benchB) return benchA - benchB;
+      const aIsCpu = isCpuOnlyVariant(a) ? 1 : 0;
+      const bIsCpu = isCpuOnlyVariant(b) ? 1 : 0;
+      if (aIsCpu !== bIsCpu) return aIsCpu - bIsCpu;  // GPU (0) が CPU (1) より先
       return a.size_mb - b.size_mb;
     });
     return compatible[0]!;
@@ -197,10 +200,11 @@ function collectAvailableEps(profile: NativeCapabilityProfile): Set<EpName> {
   if (profile.rocm)      eps.add("MIGraphX"); // MIGraphX requires ROCm
   if (profile.cuda)      eps.add("CUDA");
   if (profile.tensorrt)  eps.add("TensorRT");
-  // Vulkan EP availability is not currently reported by the profile (Phase 4b
-  // adds Vulkan compute device probe). Conservatively assume Vulkan exists on
-  // any non-zero-VRAM GPU until proper detection is added.
-  if (profile.gpuVramMb > 0) eps.add("Vulkan");
+  // WebGPU EP (Phase 4b-3): ort webgpu lane runs wherever wgpu can acquire a
+  // physical adapter — practically any GPU with > 0 VRAM (DX12 / Vulkan / Metal
+  // auto-selected by wgpu). Capability-level detection is still coarse; ep_select
+  // (Rust) decides at session creation time whether registration actually succeeds.
+  if (profile.gpuVramMb > 0) eps.add("WebGPU");
   eps.add("CPU"); // always
   return eps;
 }
@@ -219,6 +223,15 @@ function isVariantCompatible(
   // ROCm gate
   if (v.min_rocm && !profile.rocm) return false;
   return true;
+}
+
+/**
+ * CPU-only variant 判定。`ep` が `["CPU"]` のみなら true。
+ * CPU が GPU EP と並列 listed (e.g. `["DirectML", "CPU"]`) の variant は
+ * GPU EP 利用を意図したものとみなし GPU tier 扱いにする (稀ケース、現状 manifest では未使用)。
+ */
+function isCpuOnlyVariant(v: ModelVariant): boolean {
+  return v.ep.length === 1 && v.ep[0] === "CPU";
 }
 
 const ARCH_ORDER: Record<string, number> = {
