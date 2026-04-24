@@ -1,6 +1,16 @@
 # Phase 4b-5a-1 設計書 — Florence-2 Stage 1 image preprocess + frame_buffer plumbing
 
-- Status: Implemented (2026-04-25、commits de09bc1〜866e692)
+- Status: Implemented (2026-04-25、commits de09bc1〜866e692、post-review addendum 含む)
+
+**Post-review addendum (Opus review 2026-04-25、BLOCKING 0)**:
+- §5 Done criteria の `cargo test --release --features vision-gpu florence2` 要件は本プロジェクトの **napi-rs cdylib + `-lnode` link 制約** で実行不可 (inference.rs / session_pool.rs tests も同じ状態)。後続 sub-batch (4b-5a-2/3/4 以降) でも同基準: **cargo check 3 features set exit 0 + `#[cfg(test)]` body 存在 + logic 読解による正確性確認** で代替する。4b-5a-3 以降 encoder 実接続時に integration test 手段を ADR-005 §5 の完了基準側で再設計
+- §11 step 16 (`recognizeRoisLegacy` helper 拡張) は誤記: 実装上 `recognizeRois` メソッド内 `else` 枝として存在し、独立 helper ではない。frame_buffer forward は同 method 内で処理済、実装影響なし
+- §11 step 17 (`src/engine/poc/poc-visual-backend.ts`) は **不存在パス**。該当 file は project 内に無く、本 batch で touch 不要 (設計書側の defect、実装影響なし)
+- Sonnet 追加判断 5 件 (ndarray explicit listing / 手動 Debug impl / cargo test 制約 / feature gate / commit 5 分割) は全て §8 許容範囲内と判定
+- RECOMMEND 3 件は 4b-5a-3 以降で対応予定:
+  1. `expect()` 4 箇所を `Result` 経路に格上げ (L5 safety margin 向上)
+  2. `extract_crop_rgb` を `Array3::from_shape_fn` / unsafe slice copy で ~3-5x 高速化
+  3. `eprintln!` を `tracing::warn!` に統一 (既存 code style 確認次第)
 - 設計者: Claude (Opus 4.7)
 - 実装担当: **Sonnet** (handbook §2 Step B)
 - レビュー担当: Opus 4.7 (別 subagent)
