@@ -38,6 +38,18 @@ export default defineConfig({
           hookTimeout: 30_000,
         },
       },
+      {
+        plugins: [stripShebang],
+        test: {
+          name: "integration",
+          include: ["tests/integration/**/*.test.ts"],
+          // Integration tests require native Win32 APIs and win-ocr.exe.
+          // Gated by RUN_OCR_GOLDEN=1 env var inside each test file.
+          fileParallelism: false,
+          testTimeout: 120_000,
+          hookTimeout: 60_000,
+        },
+      },
     ],
   },
 });
