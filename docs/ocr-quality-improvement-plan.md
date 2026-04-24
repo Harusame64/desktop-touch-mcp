@@ -1,9 +1,43 @@
 # OCR 品質改善 実装計画書
 
 **作成日**: 2026-04-24  
+**最終更新**: 2026-04-24（フェーズ 1 実装完了）  
 **対象**: desktop-touch-mcp-fukuwaraiv2 `ocr-bridge.ts` パイプラインの OCR 精度向上  
 **スコープ**: 前処理強化（フェーズ 1）+ 後処理フィルター（フェーズ 2）  
 **対象外**: Visual GPU lane 接続（PocVisualBackend 配線）、PaddleOCR/ONNX 導入、段階 3 Multi-engine フュージョン
+
+---
+
+## 実装状況（2026-04-24）
+
+| フェーズ | 状態 | コミット範囲 |
+|---|---|---|
+| フェーズ 1: 前処理強化 | ✅ **実装完了・プッシュ済み** | `b0935eb`〜`9389846` |
+| フェーズ 2: 後処理フィルター | ⏳ 未着手（Opus レビュー後に開始） | — |
+
+### フェーズ 1 実装ログ
+
+| # | コミット | ハッシュ | 備考 |
+|---|---|---|---|
+| 1-1 | golden fixture ハーネス | `b0935eb` | integration テスト基盤、vitest に integration プロジェクト追加 |
+| 1-2 | Rust scale 上限 4 + preprocessPolicy 型 | `d2093d2` | `node.lib` を node-gyp キャッシュからコピーして解決 |
+| 1-3 | `decideEffectiveScale` 純関数 | `7210701` | 16 テスト all green |
+| 1-4 | screenshot に preprocessPolicy 配線 | `04d66bb` + `c1ba9ba` | handler デフォルト値修正も含む（修正コミット）|
+| 1-5 | Sauvola 適応二値化 Rust 実装 | `639ee74` | integral image、5 テスト all green |
+| 1-6+7 | adaptive フラグ TS 全体配線 | `9389846` | 1-6 と 1-7 を一括コミット |
+
+### ビルド環境補記
+
+- Rust napi ビルド（`npm run build:rs`）には `node.lib` が必要。
+  初回は `npx node-gyp install` でダウンロードし `C:\Users\<user>\AppData\Local\node-gyp\Cache\<version>\x64\node.lib` をプロジェクトルートにコピーしてから実行。
+- `node.lib` は `.gitignore` 対象なのでリポジトリには含まれない。
+
+### フェーズ 1 完了判定（実績）
+
+- [x] `cargo test`（Rust）/ `npm test`（TS）がローカルで green（90 ファイル・1624 件）
+- [x] 既存 `tests/unit/ocr-bridge.test.ts`、`tests/unit/screenshot-ocr-path.test.ts` が green
+- [ ] `tests/integration/ocr-golden.test.ts` で `preprocessPolicy="aggressive"` + `adaptive=true` 有効時に `known-broken` が baseline 比 **-15% 以上** 減少（fixture PNG 未生成のため未検証）
+- [ ] 4K モニタ（3840×2160、200% DPI）での pipeline 時間測定（未実施）
 
 ---
 
@@ -47,7 +81,7 @@ screenshot(ocrFallback=always)
 
 ---
 
-#### commit 1-1: `test(ocr-bridge): add golden fixture harness for OCR preprocessing regression`
+#### ✅ commit 1-1 (`b0935eb`): `test(ocr-bridge): add golden fixture harness for OCR preprocessing regression`
 
 - **ファイル**:
   - 新規 `tests/fixtures/ocr/README.md`（fixture の起源と再収集手順）
@@ -61,7 +95,7 @@ screenshot(ocrFallback=always)
 
 ---
 
-#### commit 1-2: `feat(image_processing): expose scale=1..4 and wire from TS (Rust)`
+#### ✅ commit 1-2 (`d2093d2`): `feat(image_processing): expose scale=1..4 and wire from TS (Rust)`
 
 - **ファイル**:
   - `src/image_processing.rs:57-70`（`upscale_grayscale_contrast` 入力検証）— `opts.scale > 3` ガードを `> 4` に緩和
@@ -75,7 +109,7 @@ screenshot(ocrFallback=always)
 
 ---
 
-#### commit 1-3: `feat(ocr-bridge): introduce preprocessPolicy to control scale selection`
+#### ✅ commit 1-3 (`7210701`): `feat(ocr-bridge): introduce preprocessPolicy to control scale selection`
 
 - **ファイル**: `src/engine/ocr-bridge.ts:393-458`
   - `runSomPipeline` に `preprocessPolicy?: "auto" | "aggressive" | "minimal"` 追加
@@ -92,7 +126,7 @@ screenshot(ocrFallback=always)
 
 ---
 
-#### commit 1-4: `feat(screenshot): surface preprocessPolicy through screenshot tool`
+#### ✅ commit 1-4 (`04d66bb` + `c1ba9ba`): `feat(screenshot): surface preprocessPolicy through screenshot tool`
 
 - **ファイル**:
   - `src/tools/screenshot.ts:130-143`（`screenshotSchema`）— `preprocessPolicy: z.enum(["auto","aggressive","minimal"]).default("auto")` を追加
@@ -106,7 +140,7 @@ screenshot(ocrFallback=always)
 
 ---
 
-#### commit 1-5: `feat(image_processing): add adaptive binarization (Sauvola) in Rust`
+#### ✅ commit 1-5 (`639ee74`): `feat(image_processing): add adaptive binarization (Sauvola) in Rust`
 
 - **ファイル**:
   - `src/image_processing.rs` — `minmax_stretch_u8` の下に `sauvola_binarize_u8(src, w, h, window=15, k=0.2) -> Vec<u8>` を新規追加（integral image ベースで O(wh)）
@@ -120,7 +154,7 @@ screenshot(ocrFallback=always)
 
 ---
 
-#### commit 1-6: `feat(ocr-bridge): thread adaptive flag through runSomPipeline`
+#### ✅ commit 1-6 (`9389846`): `feat(ocr-bridge): thread adaptive flag through runSomPipeline`
 
 - **ファイル**:
   - `src/engine/ocr-bridge.ts:393-500` — `runSomPipeline` に `adaptive?: boolean` 引数追加（デフォルト `false` で現状互換）。`preprocessImage` 呼び出しに渡す
@@ -133,7 +167,7 @@ screenshot(ocrFallback=always)
 
 ---
 
-#### commit 1-7: `feat(screenshot): expose adaptive flag and update docs`
+#### ✅ commit 1-7 (`9389846` と同一コミット): `feat(screenshot): expose adaptive flag and update docs`
 
 - **ファイル**:
   - `src/tools/screenshot.ts:130-143` — `preprocessAdaptive: z.boolean().default(false)` を追加
