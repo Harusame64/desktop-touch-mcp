@@ -149,6 +149,8 @@ export interface NativeRoiInput {
 /** Rust src/vision_backend/types.rs::RecognizeRequest */
 export interface NativeRecognizeRequest {
   targetKey: string
+  /** Session key from `init_session_blocking`. Empty string → legacy dummy path. */
+  sessionKey: string
   rois: NativeRoiInput[]
   frameWidth: number
   frameHeight: number
