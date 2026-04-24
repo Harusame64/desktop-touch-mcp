@@ -25,6 +25,9 @@ import type {
   NativeImageProcessingResult,
   NativeDrawSomLabelsOptions,
   NativeDrawSomLabelsResult,
+  NativeRecognizeRequest,
+  NativeRawCandidate,
+  NativeCapabilityProfile,
 } from "./native-types.js";
 
 export type * from "./native-types.js";
@@ -140,6 +143,17 @@ export interface NativeUia {
   ): Promise<Record<string, boolean>>;
 }
 
+// ─── Visual GPU surface (ADR-005 Phase 4a) ───────────────────────────────────
+//
+// `visionRecognizeRois` is the AsyncTask exported from src/lib.rs.
+// `detectCapability` is exported from src/vision_backend/capability.rs.
+// Both methods are optional so a build without the `vision-gpu` cargo feature
+// (or a missing native addon) cleanly falls back to PocVisualBackend.
+export interface NativeVision {
+  visionRecognizeRois?(req: NativeRecognizeRequest): Promise<NativeRawCandidate[]>;
+  detectCapability?(): NativeCapabilityProfile;
+}
+
 // ─── Load once (top-level await; index.js throws if .node binary is missing) ─
 let nativeBinding: Record<string, unknown> | null = null;
 try {
@@ -163,9 +177,17 @@ export const nativeUia: NativeUia | null =
     ? (nativeBinding as unknown as NativeUia)
     : null;
 
+export const nativeVision: NativeVision | null =
+  nativeBinding && typeof nativeBinding.visionRecognizeRois === "function"
+    ? (nativeBinding as unknown as NativeVision)
+    : null;
+
 if (nativeEngine) {
   console.error("[native-engine] Rust image-diff engine loaded (SSE2 SIMD)");
 }
 if (nativeUia) {
   console.error("[native-engine] Rust UIA engine loaded");
+}
+if (nativeVision) {
+  console.error("[native-engine] Rust vision-gpu backend loaded (ADR-005)");
 }

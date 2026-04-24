@@ -3,14 +3,14 @@
  * and the native/sidecar data plane for the GPU visual lane.
  *
  * Implementations:
- *   MockVisualBackend   — in-process mock for testing and P3-A boundary validation
- *   SidecarBackend      — P3-D: delegates to a native sidecar process
- *   OnnxBackend         — P3-D alternative: ONNX Runtime inline backend
+ *   MockVisualBackend  — in-process mock for testing and P3-A boundary validation
+ *   PocVisualBackend   — Phase 3 fallback (snapshot store, no detector)
+ *   OnnxBackend        — Phase 4a (ADR-005): Rust-internal ort backend via napi
  *
  * The TS facade never imports detector/recognizer internals. It only sees this interface.
  */
 
-import type { WarmTarget, WarmState, UiEntityCandidate } from "./types.js";
+import type { WarmTarget, WarmState, UiEntityCandidate, RoiInput } from "./types.js";
 
 // ── Interface ─────────────────────────────────────────────────────────────────
 
@@ -36,6 +36,23 @@ export interface VisualBackend {
    * desktop_see call triggers a fresh fetch — this is the "event-first" path.
    */
   onDirty(cb: (targetKey: string) => void): () => void;
+
+  /**
+   * Recognise UI elements inside the given ROIs (ADR-005 D1' Phase 4a+).
+   *
+   * Optional because pre-Phase-4 backends (PocVisualBackend, MockVisualBackend)
+   * have no detector — they receive candidates pushed via updateSnapshot()
+   * instead. Phase 4 backends (OnnxBackend) implement this to perform actual
+   * inference. Callers must check for presence with `if (backend.recognizeRois)`
+   * before invoking.
+   *
+   * Phase 4a: returns dummy candidates (one per input ROI, empty label).
+   * Phase 4b: real ort::Session inference via Rust napi binding.
+   *
+   * Always non-throwing: backend errors / inference panics surface as an empty
+   * array, never as a rejected Promise. The MCP server stays alive (L5).
+   */
+  recognizeRois?(targetKey: string, rois: RoiInput[], frameWidth?: number, frameHeight?: number): Promise<UiEntityCandidate[]>;
 
   dispose(): Promise<void>;
 }
