@@ -755,6 +755,22 @@ export const terminalRunHandler = async ({
     return sliced.text;
   };
 
+  // Immediate post-send pattern check — runs once before the first POLL_INTERVAL_MS
+  // sleep so transient lines (e.g. CR-updated progress indicators that overwrite
+  // themselves rapidly) are not missed by waiting for the first poll tick. The
+  // truthiness gate on newContent is intentionally absent: empty content is a
+  // valid input for patterns like "" or /^$/ that match emptiness.
+  if (patternRe) {
+    const initialPostSend = await readTerminalRaw(windowTitle);
+    if (initialPostSend) {
+      const newContent = newContentSinceBaseline(initialPostSend.text);
+      if (patternRe.test(newContent)) {
+        completionReason = "pattern_matched";
+        matchedPattern = until.mode === "pattern" ? until.pattern : undefined;
+      }
+    }
+  }
+
   while (completionReason === null) {
     await new Promise<void>((r) => setTimeout(r, POLL_INTERVAL_MS));
 
@@ -784,7 +800,9 @@ export const terminalRunHandler = async ({
 
     if (until.mode === "pattern" && patternRe) {
       const newContent = newContentSinceBaseline(currentText);
-      if (newContent && patternRe.test(newContent)) {
+      // No truthiness gate: empty newContent is valid input for patterns
+      // like "" or /^$/ that intentionally match emptiness.
+      if (patternRe.test(newContent)) {
         completionReason = "pattern_matched";
         matchedPattern = until.mode === "pattern" ? until.pattern : undefined;
         break;
