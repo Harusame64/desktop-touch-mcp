@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { getContextHandler } from "../../src/tools/context.js";
+import { desktopStateHandler as getContextHandler } from "../../src/tools/desktop-state.js";
 import { keyboardTypeHandler, keyboardPressHandler } from "../../src/tools/keyboard.js";
 import { launchNotepad, type NpInstance } from "./helpers/notepad-launcher.js";
 import { parsePayload, sleep } from "./helpers/wait.js";

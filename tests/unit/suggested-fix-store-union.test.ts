@@ -33,7 +33,7 @@ function makePartial(tool: SuggestedFix["tool"], args: Record<string, unknown> =
 beforeEach(() => _resetFixStoreForTest());
 
 describe("SuggestedFix.tool union — all 4 variants", () => {
-  for (const tool of ["mouse_click", "keyboard_type", "browser_click_element", "click_element"] as const) {
+  for (const tool of ["mouse_click", "keyboard_type", "browser_click", "click_element"] as const) {
     it(`storeFix accepts tool="${tool}"`, () => {
       const fix = storeFix(makePartial(tool));
       expect(fix.tool).toBe(tool);
@@ -82,8 +82,8 @@ describe("validateAndPrepareFix (tool mismatch / error codes)", () => {
 
   it("returns fix when tool matches (browserTab fingerprint — no Win32 needed)", async () => {
     const { validateAndPrepareFix } = await import("../../src/tools/_action-guard.js");
-    const stored = storeFix(makeBrowserFix("browser_click_element"));
-    const r = validateAndPrepareFix(stored.fixId, "browser_click_element");
+    const stored = storeFix(makeBrowserFix("browser_click"));
+    const r = validateAndPrepareFix(stored.fixId, "browser_click");
     expect(r.ok).toBe(true);
     expect(r.fix!.args.selector).toBe("#btn");
   });

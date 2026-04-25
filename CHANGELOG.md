@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.0.0] - DRAFT — Tool Surface Reduction Phase 1: Naming Redesign
+
+### Breaking Changes (v1.0.0)
+
+This release renames 10 tools with **no aliases**. Update your prompts and configurations.
+
+| Old name | New name | Notes |
+|---|---|---|
+| `get_context` | `desktop_state` | Read-only desktop observation |
+| `desktop_see` | `desktop_discover` | Lease-emitting entity discovery |
+| `desktop_touch` | `desktop_act` | Lease-consuming entity action |
+| `engine_status` | `server_status` | MCP server status diagnostic |
+| `browser_connect` | `browser_open` | CDP connect + list tabs |
+| `browser_click_element` | `browser_click` | Find + click via CSS selector |
+| `browser_fill_input` | `browser_fill` | Fill controlled inputs via CDP |
+| `browser_get_form` | `browser_form` | Inspect form fields |
+| `browser_get_interactive` | `browser_overview` | List all interactive elements |
+| `browser_find_element` | `browser_locate` | CSS selector → screen coords |
+
+Phase 2-4 will absorb additional tools (scroll family, keyboard family, clipboard, terminal, window_dock, screenshot family, get_* series) — those changes are NOT in this release.
+
+### Changed
+
+- `src/server-windows.ts` instructions text fully rewritten to v1.0.0 naming (Standard workflow, Clicking priority, Observation priority, Attention signal, Recovery path).
+- `src/stub-tool-catalog.ts` regenerated with new names.
+- `README.md`, `README.ja.md`, `docs/system-overview.md` updated to new names throughout.
+
+---
+
 ## [Unreleased] — browser_eval IIFE wrapping
 
 ### Added

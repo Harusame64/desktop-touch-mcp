@@ -344,7 +344,7 @@ export const keyboardTypeHandler = async ({
             {
               suggest: [
                 "Target app does not accept background input - use method:'foreground' or omit",
-                "For Chrome/Edge: use browser_fill_input instead",
+                "For Chrome/Edge: use browser_fill instead",
               ],
               context: { className: check.className, processName: check.processName },
             }

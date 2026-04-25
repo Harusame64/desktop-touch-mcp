@@ -584,7 +584,7 @@ export function registerSmartScrollTools(server: McpServer): void {
         "or scroll_to_element returns scrolled:true but the viewport did not actually move. " +
         "For a simple single-container non-virtual scroll, scroll_to_element is lighter.",
       caveats:
-        "CDP path requires browser_connect. Cross-origin iframes are not traversed (warning returned). " +
+        "CDP path requires browser_open. Cross-origin iframes are not traversed (warning returned). " +
         "expandHidden mutates live CSS (overflow:auto); previous value is stored in data-dt-prev-overflow and restored on the next smart_scroll call (or after 30 s). " +
         "Image path cannot determine whether the target element is in-view — viewportPosition is null. Call screenshot(detail='text') afterwards to verify. " +
         "UIA ScrollPattern may not be available in all native apps — falls through to image path.",
