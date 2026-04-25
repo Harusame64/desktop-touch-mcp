@@ -13,18 +13,16 @@ import { registerWindowTools } from "./tools/window.js";
 import { registerUiElementTools } from "./tools/ui-elements.js";
 import { registerWorkspaceTools } from "./tools/workspace.js";
 import { registerMacroTools } from "./tools/macro.js";
-import { registerScrollCaptureTools } from "./tools/scroll-capture.js";
 import { registerBrowserTools } from "./tools/browser.js";
 import { autoDockFromEnv } from "./tools/dock.js";
 import { registerWindowDockTools } from "./tools/window-dock.js";
+import { registerScrollTools } from "./tools/scroll.js";
 import { registerWaitUntilTool } from "./tools/wait-until.js";
 import { registerDesktopStateTools } from "./tools/desktop-state.js";
 import { registerTerminalTools } from "./tools/terminal.js";
 import { registerEventTools } from "./tools/events.js";
 import { registerClipboardTools } from "./tools/clipboard.js";
 import { registerNotificationTools } from "./tools/notification.js";
-import { registerScrollToElementTools } from "./tools/scroll-to-element.js";
-import { registerSmartScrollTools } from "./tools/smart-scroll.js";
 import { registerPerceptionTools } from "./tools/perception.js";
 import { registerPerceptionResources } from "./tools/perception-resources.js";
 import { registerServerStatusTool } from "./tools/server-status.js";
@@ -172,7 +170,7 @@ function createMcpServer(): McpServer {
   registerUiElementTools(s);
   registerWorkspaceTools(s);
   registerMacroTools(s);
-  registerScrollCaptureTools(s);
+  registerScrollTools(s);
   registerBrowserTools(s);
   registerWindowDockTools(s);
   registerWaitUntilTool(s);
@@ -181,8 +179,6 @@ function createMcpServer(): McpServer {
   registerEventTools(s);
   registerClipboardTools(s);
   registerNotificationTools(s);
-  registerScrollToElementTools(s);
-  registerSmartScrollTools(s);
   registerPerceptionTools(s);
   registerServerStatusTool(s);
 

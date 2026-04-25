@@ -1,4 +1,3 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { evaluateInTab } from "../engine/cdp-bridge.js";
 import { scrollElementIntoView } from "../engine/uia-bridge.js";
@@ -105,21 +104,5 @@ export const scrollToElementHandler = async ({
 // Registration
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function registerScrollToElementTools(server: McpServer): void {
-  server.tool(
-    "scroll_to_element",
-    buildDesc({
-      purpose: "Scroll a named element into the visible viewport without manually computing scroll amounts.",
-      details: "Two paths: (1) Chrome/Edge (CDP): provide selector — calls el.scrollIntoView({block, behavior:'instant'}) via CDP. Uses instant (not smooth) scroll so coords stabilize immediately. block controls vertical alignment (start/center/end/nearest, default: center). (2) Native apps (UIA): provide name + windowTitle — calls ScrollItemPattern.ScrollIntoView(). Returns scrolled:true on success, scrolled:false if the element doesn't expose ScrollItemPattern (fall back to scroll + screenshot).",
-      prefer: "Use over scroll + screenshot loops when you know the element name or selector. Pairs well with screenshot(detail='text') to confirm the element is now in-view (viewportPosition:'in-view'). For Chrome, browser_overview shows viewportPosition for all elements — use that to decide whether scrolling is needed before calling this tool.",
-      caveats: "Chrome path requires browser_open (CDP active). Native path requires the element to implement UIA ScrollItemPattern — some custom/third-party controls do not; in that case scrolled:false is returned. SPA virtual-scroll lists (React Virtualized, TanStack) may not respond to scrollIntoView.",
-      examples: [
-        "scroll_to_element({selector: '#create-release-btn'}) — Chrome, scroll to button",
-        "scroll_to_element({name: 'Create Release', windowTitle: 'Glama'}) — native UIA",
-        "scroll_to_element({selector: '.submit', block: 'start'}) — align to top of viewport",
-      ],
-    }),
-    scrollToElementSchema,
-    scrollToElementHandler
-  );
-}
+// registerScrollToElementTools removed in Phase 2b (family merge).
+// scroll_to_element is now registered via scroll(action='to_element') in scroll.ts.
