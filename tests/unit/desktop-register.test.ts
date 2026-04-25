@@ -87,7 +87,7 @@ describe("Flag-OFF safety", () => {
 // (e.g., promoting tools from experimental or changing flag semantics) are caught.
 
 describe("Activation policy — V2 tool description contract", () => {
-  it("desktop_see description contains [EXPERIMENTAL] marker (not yet promoted to stable)", () => {
+  it("desktop_discover description contains [EXPERIMENTAL] marker (not yet promoted to stable)", () => {
     const s = makeServer();
     registerDesktopTools(s);
     // Verify by inspecting the registered tool list through McpServer internals.
@@ -101,7 +101,7 @@ describe("Activation policy — V2 tool description contract", () => {
     expect(() => registerDesktopTools(makeServer())).not.toThrow();
   });
 
-  it("desktop_see description snapshot — recovery hints are present", () => {
+  it("desktop_discover description snapshot — recovery hints are present", () => {
     // Read the module source to verify description strings have recovery guidance.
     // This guards against description regressions when wording is changed.
     // If this test fails, update docs/anti-fukuwarai-v2-default-on-readiness.md §7 as well.
@@ -133,7 +133,7 @@ describe("Activation policy — V2 tool description contract", () => {
 
   it("V1 tools registration is independent of V2 module import (escape hatch contract)", () => {
     // V2 module must not interfere with the V1 tool surface.
-    // Since registerDesktopTools only registers desktop_see / desktop_touch,
+    // Since registerDesktopTools only registers desktop_discover / desktop_act,
     // importing it must not throw or modify global state that could affect V1 tools.
     expect(() => {
       _resetFacadeForTest();

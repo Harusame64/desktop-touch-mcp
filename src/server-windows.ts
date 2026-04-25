@@ -18,7 +18,7 @@ import { registerScrollCaptureTools } from "./tools/scroll-capture.js";
 import { registerBrowserTools } from "./tools/browser.js";
 import { registerDockTools, autoDockFromEnv } from "./tools/dock.js";
 import { registerWaitUntilTool } from "./tools/wait-until.js";
-import { registerContextTools } from "./tools/context.js";
+import { registerDesktopStateTools } from "./tools/desktop-state.js";
 import { registerTerminalTools } from "./tools/terminal.js";
 import { registerEventTools } from "./tools/events.js";
 import { registerClipboardTools } from "./tools/clipboard.js";
@@ -191,7 +191,7 @@ function createMcpServer(): McpServer {
   registerBrowserTools(s);
   registerDockTools(s);
   registerWaitUntilTool(s);
-  registerContextTools(s);
+  registerDesktopStateTools(s);
   registerTerminalTools(s);
   registerEventTools(s);
   registerClipboardTools(s);

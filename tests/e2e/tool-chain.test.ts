@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { getHistoryHandler, getContextHandler } from "../../src/tools/context.js";
+import { getHistoryHandler, desktopStateHandler as getContextHandler } from "../../src/tools/desktop-state.js";
 import { keyboardPressHandler } from "../../src/tools/keyboard.js";
 import { mouseClickHandler } from "../../src/tools/mouse.js";
 import { withPostState } from "../../src/tools/_post.js";
