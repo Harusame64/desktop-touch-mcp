@@ -746,13 +746,18 @@ export const terminalRunHandler = async ({
   // Pattern matching must only consider content that appeared AFTER the
   // baseline marker. Otherwise prompt-shaped patterns (e.g. "PS>", "$ ") that
   // already exist in scrollback would fire pattern_matched immediately.
-  // applySinceMarker returns matched:true with the new content; on miss it
-  // returns the full text — which is the safest default if the terminal has
-  // scrolled past the marker window.
-  const newContentSinceBaseline = (text: string): string => {
-    if (!sinceMarker) return text;
+  // Returns:
+  //   - string: the new content since the baseline marker (may be "" when no
+  //     diff has accumulated yet — empty is a valid pattern target).
+  //   - undefined: the baseline boundary has been lost (no marker, or
+  //     applySinceMarker scanned past its 32k window without finding it).
+  //     Callers MUST skip pattern matching in this case — falling back to the
+  //     full buffer would re-introduce prior-history false positives because
+  //     scrollback past the scan window can still hold pre-baseline text.
+  const newContentSinceBaseline = (text: string): string | undefined => {
+    if (!sinceMarker) return undefined;
     const sliced = applySinceMarker(text, sinceMarker);
-    return sliced.text;
+    return sliced.matched ? sliced.text : undefined;
   };
 
   // Immediate post-send pattern check — runs once before the first POLL_INTERVAL_MS
@@ -764,7 +769,9 @@ export const terminalRunHandler = async ({
     const initialPostSend = await readTerminalRaw(windowTitle);
     if (initialPostSend) {
       const newContent = newContentSinceBaseline(initialPostSend.text);
-      if (patternRe.test(newContent)) {
+      // newContent === undefined → baseline lost, skip to avoid prior-history match.
+      // newContent === "" is still a valid input for patterns like /^$/.
+      if (newContent !== undefined && patternRe.test(newContent)) {
         completionReason = "pattern_matched";
         matchedPattern = until.mode === "pattern" ? until.pattern : undefined;
       }
@@ -800,9 +807,9 @@ export const terminalRunHandler = async ({
 
     if (until.mode === "pattern" && patternRe) {
       const newContent = newContentSinceBaseline(currentText);
-      // No truthiness gate: empty newContent is valid input for patterns
-      // like "" or /^$/ that intentionally match emptiness.
-      if (patternRe.test(newContent)) {
+      // newContent === undefined → baseline lost, skip to avoid prior-history match.
+      // newContent === "" is still valid input for patterns like /^$/.
+      if (newContent !== undefined && patternRe.test(newContent)) {
         completionReason = "pattern_matched";
         matchedPattern = until.mode === "pattern" ? until.pattern : undefined;
         break;
