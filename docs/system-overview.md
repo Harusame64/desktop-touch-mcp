@@ -124,7 +124,7 @@ Result<Vec<UiElement>> → napi Promise → JavaScript
 
 ## Action response shape (the `post` block)
 
-Every action tool (`mouse_click`, `keyboard_press`, `click_element`, …) returns a `post` block on success.
+Every action tool (`mouse_click`, `keyboard(action='press')`, `click_element`, …) returns a `post` block on success.
 
 ```json
 {
@@ -172,7 +172,7 @@ Mouse / keyboard / UI-element tools take a `narrate` parameter.
 | `"minimal"` (default) | Just the `post` block; zero added cost |
 | `"rich"` | Diffs a UIA snapshot before and after the action; result lands in `post.rich`. Lets callers skip the confirmation screenshot |
 
-For `keyboard_press`, rich mode only fires for state-transitioning keys (Enter / Tab / Esc / F5). Single-character keys silently downgrade to minimal.
+For `keyboard(action='press')`, rich mode only fires for state-transitioning keys (Enter / Tab / Esc / F5). Single-character keys silently downgrade to minimal.
 
 ---
 
@@ -273,13 +273,13 @@ focus_window(title="Chrome", chromeTabUrlContains="github.com")  # activate a sp
 ```
 `chromeTabUrlContains` activates the matching Chrome/Edge tab by URL substring before focusing the HWND. If CDP is unavailable, the parameter is silently skipped and `hints.warnings` surfaces `"cdpUnavailable"`.
 
-#### `pin_window` / `unpin_window`
+#### `window_dock(action='pin')` / `unwindow_dock(action='pin')`
 Toggle always-on-top; `duration_ms` for an auto-release timer.
 
-#### `dock_window`
+#### `window_dock(action='dock')`
 Parks any window in a screen corner while keeping it topmost. Handy for keeping the Claude CLI visible while other tools work.
 ```
-dock_window({title:'Claude Code', corner:'bottom-right', width:480, height:360, pin:true})
+window_dock(action='dock')({title:'Claude Code', corner:'bottom-right', width:480, height:360, pin:true})
 ```
 Parameters: `corner` (top-left / top-right / bottom-left / bottom-right), `width` / `height`, `pin`, `monitorId`, `margin`. Minimized / maximized windows are restored before docking.
 
@@ -336,23 +336,23 @@ Current cursor coords.
 
 Responses carry the `post` block; `narrate:"rich"` attaches a UIA diff (state-transitioning keys only).
 
-#### `keyboard_type`
+#### `keyboard(action='type')`
 Text input.
 - `use_clipboard=true` routes via PowerShell + clipboard, **bypassing any Japanese IME**. Required when typing URLs / paths under an active IME.
-- Also required for text that contains em-dash (`—`), en-dash (`–`), smart quotes, or other non-ASCII punctuation — these can be intercepted as keyboard accelerators by Chrome/Edge. `keyboard_type` detects these characters automatically and upgrades to clipboard mode (`method:'clipboard-auto'`). Opt out with `forceKeystrokes=true`.
+- Also required for text that contains em-dash (`—`), en-dash (`–`), smart quotes, or other non-ASCII punctuation — these can be intercepted as keyboard accelerators by Chrome/Edge. `keyboard(action='type')` detects these characters automatically and upgrades to clipboard mode (`method:'clipboard-auto'`). Opt out with `forceKeystrokes=true`.
 - `replaceAll=true` sends Ctrl+A before typing to replace any existing content (requires the field to already be focused).
 
-#### `keyboard_press`
+#### `keyboard(action='press')`
 Key combos.
 ```
-keyboard_press(keys="ctrl+c")
-keyboard_press(keys="alt+f4")
-keyboard_press(keys="ctrl+shift+s")
+keyboard(action='press')(keys="ctrl+c")
+keyboard(action='press')(keys="alt+f4")
+keyboard(action='press')(keys="ctrl+shift+s")
 ```
 
-> **⚠️ Input routing gotcha (when `dock_window` is pinned)**
-> `keyboard_type` / `keyboard_press` send to **whichever window is currently focused**. If `dock_window(pin=true)` has pinned the Claude CLI topmost, keystrokes can land on the CLI instead of the target app.
-> Always call `focus_window(title=…)` first, then verify with `screenshot(detail='meta')` that `isActive=true` on the target. Canonical pattern: `focus_window → keyboard_press/type → screenshot(diffMode=true)`.
+> **⚠️ Input routing gotcha (when `window_dock(action='dock')` is pinned)**
+> `keyboard(action='type')` / `keyboard(action='press')` send to **whichever window is currently focused**. If `window_dock(action='dock')(pin=true)` has pinned the Claude CLI topmost, keystrokes can land on the CLI instead of the target app.
+> Always call `focus_window(title=…)` first, then verify with `screenshot(detail='meta')` that `isActive=true` on the target. Canonical pattern: `focus_window → keyboard(action='press')/type → screenshot(diffMode=true)`.
 
 ---
 
@@ -381,7 +381,7 @@ Action-oriented element extraction. Every entry carries `clickAt` coords.
 ```
 
 #### `get_ui_elements`
-The raw UIA tree. Use this when you need an `automationId`. Each element includes `viewportPosition` (`'in-view'|'above'|'below'|'left'|'right'`) relative to the window client region — use it to decide whether `scroll_to_element` is needed before clicking. Results are capped at `maxElements` (default 80, max 200).
+The raw UIA tree. Use this when you need an `automationId`. Each element includes `viewportPosition` (`'in-view'|'above'|'below'|'left'|'right'`) relative to the window client region — use it to decide whether `scroll(action='to_element')` is needed before clicking. Results are capped at `maxElements` (default 80, max 200).
 
 #### `click_element`
 Click by name / ID via UIA `InvokePattern` — no coords needed.
@@ -506,14 +506,14 @@ wait_until(condition="element_matches",         target={windowTitle:"Notepad", s
 
 ### 🖥️ Terminal
 
-#### `terminal_read`
+#### `terminal(action='read')`
 Reads the current buffer of PowerShell / cmd / Windows Terminal via UIA `TextPattern`, falling back to OCR.
 
 ```json
 { "text": "PS C:\\> echo hello\nhello\nPS C:\\> ", "source": "uia" }
 ```
 
-#### `terminal_send`
+#### `terminal(action='send')`
 Sends input to a terminal (SendKeys). `waitForPrompt` blocks until the next prompt reappears.
 
 ---
@@ -567,7 +567,7 @@ Evaluate JS via `Runtime.evaluate` (CDP). `awaitPromise=true`, so `await` works.
 `outerHTML` of an element (or `document.body`), truncated to `maxLength`. Missing-element errors come back as a structured `{"__cdpError":"…"}` so the caller can distinguish "no match" from "empty HTML".
 
 #### `browser_overview`
-Enumerates interactive elements with `clickAt` coords — the browser analogue of `screenshot(detail="text")`. Each element includes `viewportPosition` (`'in-view'|'above'|'below'|'left'|'right'`) — use it to decide whether `scroll_to_element` is needed before clicking.
+Enumerates interactive elements with `clickAt` coords — the browser analogue of `screenshot(detail="text")`. Each element includes `viewportPosition` (`'in-view'|'above'|'below'|'left'|'right'`) — use it to decide whether `scroll(action='to_element')` is needed before clicking.
 Also **ARIA-aware**: surfaces `role=switch` / `checkbox` / `radio` / `tab` / `menuitem` / `option` custom controls with a `state` block carrying `checked` / `pressed` / `selected` / `expanded` derived from the matching `aria-*` attributes. Use this when a page (Radix / shadcn / MUI / Headless UI / GitHub) renders toggles as ARIA buttons instead of native `<input>`.
 
 **Form-state verification (preferred over screenshot for button/toggle state):** Call this after form submission to check button, checkbox, and ARIA toggle states — structured JSON, no image tokens. For inputs, `text` reflects the empty-field hint text when set (takes priority over any typed value); to read the actual typed content use `browser_eval('document.querySelector(sel).value')`.
@@ -610,34 +610,34 @@ Runs up to 50 tools sequentially in a single MCP call. A `sleep` pseudo-command 
   "steps": [
     { "tool": "focus_window",    "params": {"title": "Notepad"} },
     { "tool": "sleep",           "params": {"ms": 300} },
-    { "tool": "keyboard_type",   "params": {"text": "Hello!", "use_clipboard": true} },
+    { "tool": "keyboard(action='type')",   "params": {"text": "Hello!", "use_clipboard": true} },
     { "tool": "screenshot",      "params": {"windowTitle": "Notepad", "detail": "text"} }
   ]
 }
 ```
 
-#### `scroll_capture`
+#### `scroll(action='capture')`
 Scrolls a window top-to-bottom and stitches a full-height screenshot — useful for **whole-page content overview** (long pages / documents).
 
 Output is size-guarded to fit the MCP 1 MB envelope: PNG is tried first; if the raw bytes exceed 700 KB, the image falls back to WebP (q70 → q55 → q40) and then iterative ×0.75 downscaling. When compression is applied, the `summary` object includes a `sizeReduced` field (e.g. `"webp_q55"`) and a `tip` suggesting `maxScrolls` reduction or `grayscale=true`.
 
-> **When not to use:** For partial verification or locating a specific element, prefer `scroll` + `screenshot(detail='text')` — you get `actionable[]` with `clickAt` coords and pay only per-viewport token cost. `scroll_capture` returns a stitched image (not clickable elements) that is expensive in tokens regardless of the 1 MB guard.
+> **When not to use:** For partial verification or locating a specific element, prefer `scroll` + `screenshot(detail='text')` — you get `actionable[]` with `clickAt` coords and pay only per-viewport token cost. `scroll(action='capture')` returns a stitched image (not clickable elements) that is expensive in tokens regardless of the 1 MB guard.
 
 ---
 
 ### 📋 Clipboard
 
-#### `clipboard_read`
+#### `clipboard(action='read')`
 Return the current Windows clipboard text.
 ```json
 { "ok": true, "text": "Hello, clipboard!" }
 ```
 Non-text payloads (images, file paths copied as shell objects) return `text: ""` — not an error.
 
-#### `clipboard_write`
+#### `clipboard(action='write')`
 Place text on the Windows clipboard. Full Unicode / emoji / CJK support via UTF-16LE base64 encoding.
 ```
-clipboard_write(text="Hello — smart quotes: "test"")
+clipboard(action='write')(text="Hello — smart quotes: "test"")
 ```
 Overwrites any existing clipboard content; non-text formats (images, files) are cleared.
 
@@ -657,7 +657,7 @@ Uses `System.Windows.Forms.NotifyIcon` — no external modules or WinRT dependen
 
 ### 🎯 Scroll to Element
 
-#### `scroll_to_element`
+#### `scroll(action='to_element')`
 Scroll a named element into the visible viewport without computing scroll amounts manually.
 
 Two paths:
@@ -668,9 +668,9 @@ Two paths:
 | Native (UIA) | `name` + `windowTitle` | `ScrollItemPattern.ScrollIntoView()` |
 
 ```
-scroll_to_element({selector: '#submit-btn'})                    # Chrome path
-scroll_to_element({name: 'OK', windowTitle: 'Settings'})        # native UIA path
-scroll_to_element({selector: '.hero', block: 'start'})          # align to top of viewport
+scroll(action='to_element')({selector: '#submit-btn'})                    # Chrome path
+scroll(action='to_element')({name: 'OK', windowTitle: 'Settings'})        # native UIA path
+scroll(action='to_element')({selector: '.hero', block: 'start'})          # align to top of viewport
 ```
 
 `block` controls vertical alignment (`start` / `center` / `end` / `nearest`, default `center`) — Chrome path only.
@@ -681,11 +681,11 @@ Returns `scrolled:true` on success; `scrolled:false` if the element doesn't expo
 
 ### 🚀 SmartScroll
 
-#### `smart_scroll`
+#### `scroll(action='smart')`
 
-Unified scroll dispatcher that handles the cases where `scroll_to_element` falls short:
+Unified scroll dispatcher that handles the cases where `scroll(action='to_element')` falls short:
 
-| Situation | What `smart_scroll` does |
+| Situation | What `scroll(action='smart')` does |
 |---|---|
 | Virtualised list (TanStack, React Virtualized) | TanStack API → `data-index` DOM → proportional bisect (≤6 iterations) |
 | Nested scroll containers | Walks ancestor chain (CDP or UIA), scrolls outer → inner |
@@ -703,16 +703,16 @@ Unified scroll dispatcher that handles the cases where `scroll_to_element` falls
 
 ```
 # CDP: nested scroll + virtualised list
-smart_scroll({target: '[data-index]', virtualIndex: 500, virtualTotal: 10000})
+scroll(action='smart')({target: '[data-index]', virtualIndex: 500, virtualTotal: 10000})
 
 # UIA: native app
-smart_scroll({target: 'Create Release', windowTitle: 'File Explorer', strategy: 'uia'})
+scroll(action='smart')({target: 'Create Release', windowTitle: 'File Explorer', strategy: 'uia'})
 
 # Image: binary-search with LLM hint
-smart_scroll({target: 'readme section', windowTitle: 'MyApp', strategy: 'image', hint: 'below'})
+scroll(action='smart')({target: 'readme section', windowTitle: 'MyApp', strategy: 'image', hint: 'below'})
 
 # Sticky-header-compensated CDP scroll
-smart_scroll({target: '#footer-nav'})  # detects and compensates automatically
+scroll(action='smart')({target: '#footer-nav'})  # detects and compensates automatically
 ```
 
 `pageRatio` is also emitted per-element by `browser_overview` (injected JS now computes `(scrollY + rect.top) / scrollHeight`).
@@ -821,15 +821,15 @@ perception_register({name:"editor", target:{kind:"window", match:{titleIncludes:
 → {lensId:"perc-1"}
 
 # Pass lensId to any action tool. Guards + envelope are automatic.
-keyboard_type({text:"hello", windowTitle:"Notepad", lensId:"perc-1"})
+keyboard(action='type')({text:"hello", windowTitle:"Notepad", lensId:"perc-1"})
 → post.perception: {attention:"ok", guards:{...}, latest:{target:{title, rect, foreground}}}
 
 # When the app restarts (different pid), identity guard fires:
-keyboard_type({text:"x", lensId:"perc-1"})
+keyboard(action='type')({text:"x", lensId:"perc-1"})
 → {ok:false, code:"GuardFailed", suggest:["Re-register lens for the new process instance"]}
 ```
 
-`lensId` is opt-in on: `keyboard_type`, `keyboard_press`, `mouse_click`, `mouse_drag`, `click_element`, `set_element_value`, `browser_click`, `browser_navigate`, `browser_eval`. Omitting `lensId` preserves existing behavior exactly.
+`lensId` is opt-in on: `keyboard(action='type')`, `keyboard(action='press')`, `mouse_click`, `mouse_drag`, `click_element`, `set_element_value`, `browser_click`, `browser_navigate`, `browser_eval`. Omitting `lensId` preserves existing behavior exactly.
 
 **Limits:** max 16 active lenses (LRU eviction — see below). Sensor work is staged by cost: cheap Win32/CDP state is refreshed first; UIA focus, OCR, and screenshots remain escalation paths rather than baseline perception. `safe.clickCoordinates` validates window bounds, not pixel-level occlusion.
 
@@ -839,7 +839,7 @@ keyboard_type({text:"x", lensId:"perc-1"})
 
 **Manual Lens LRU (v0.13)**: Lens eviction is now LRU (least-recently-used). Using a lens via `perception_read`, evaluatePreToolGuards, or buildEnvelopeFor promotes it to MRU. Idle lenses are evicted first. Max 16 unchanged.
 
-**SuggestedFix — all 4 tools (v0.13)**: `fixId` approval is now supported by `mouse_click`, `keyboard_type`, `click_element`, and `browser_click`. The server revalidates the stored target fingerprint (process pid + start-time for windows; subsequent guard for browser tabs) before executing.
+**SuggestedFix — all 4 tools (v0.13)**: `fixId` approval is now supported by `mouse_click`, `keyboard(action='type')`, `click_element`, and `browser_click`. The server revalidates the stored target fingerprint (process pid + start-time for windows; subsequent guard for browser tabs) before executing.
 
 **Target-Identity Timeline (v0.13)**: The server maintains a per-target semantic event timeline. 13 event kinds (`target_bound`, `action_attempted`, `action_succeeded`, `action_blocked`, `title_changed`, `rect_changed`, `foreground_changed`, `navigation`, `modal_appeared`, `modal_dismissed`, `identity_changed`, `target_closed`, `compacted`). Storage: per-target ring (32), global FIFO cap (256). Sensor events are 200ms leading-edge debounced; action/post events are not. Exposed via:
 - `get_history` → `recentTargetKeys` (3 keys, no event bodies)
