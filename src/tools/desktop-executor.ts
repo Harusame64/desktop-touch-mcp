@@ -79,7 +79,7 @@ export function terminalBgExecute(
     throw new Error(
       `Background terminal send not supported for "${windowTitle}" ` +
       `(${check.reason ?? "unknown"}, class: ${check.className ?? "?"}).` +
-      ` Use V1 terminal_send as fallback.`
+      ` Use V1 terminal(action='send') as fallback.`
     );
   }
 

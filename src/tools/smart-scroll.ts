@@ -121,7 +121,7 @@ async function tryCdp(params: {
     if (hiddenAncestors.length > 0 && !expandHidden) {
       return failWith(
         `OverflowHiddenAncestor: '${hiddenAncestors[0]?.cssSelectorPath}' has overflow:hidden`,
-        "smart_scroll",
+        "scroll(action='smart')",
         { target, expandHidden }
       );
     }
@@ -153,7 +153,7 @@ async function tryCdp(params: {
       );
       warnings.push(...(vResult.warnings ?? []));
       if (!vResult.ok) {
-        return failWith("VirtualScrollExhausted: " + (vResult.warnings[0] ?? "bisect failed"), "smart_scroll", { target });
+        return failWith("VirtualScrollExhausted: " + (vResult.warnings[0] ?? "bisect failed"), "scroll(action='smart')", { target });
       }
     } else {
       // Layer-by-layer: outer → inner ancestors, then final scrollIntoView
@@ -175,7 +175,7 @@ async function tryCdp(params: {
         ok: boolean; error?: string; viewportTop?: number; viewportBottom?: number;
       };
       if (!svResult.ok) {
-        return failWith(svResult.error ?? "scrollIntoView failed", "smart_scroll", { target });
+        return failWith(svResult.error ?? "scrollIntoView failed", "scroll(action='smart')", { target });
       }
     }
 
@@ -343,7 +343,7 @@ async function tryImage(params: {
     w.title.toLowerCase().includes(windowTitle.toLowerCase())
   );
   if (!win) {
-    return failWith(`Window not found: "${windowTitle}"`, "smart_scroll", { windowTitle });
+    return failWith(`Window not found: "${windowTitle}"`, "scroll(action='smart')", { windowTitle });
   }
 
   // Focus the window before sending scroll input
@@ -363,7 +363,7 @@ async function tryImage(params: {
   const region = win.region;
   let capture = await captureWindowRawAndHash(win.hwnd, region);
   if (!capture) {
-    return failWith("Failed to capture window pixels", "smart_scroll", { windowTitle });
+    return failWith("Failed to capture window pixels", "scroll(action='smart')", { windowTitle });
   }
   let prevHash = capture.dHash;
 
@@ -405,7 +405,7 @@ async function tryImage(params: {
       if (noMoveSCount >= 2) {
         return failWith(
           "VirtualScrollExhausted: page did not move after 2 consecutive scroll attempts — may be at boundary or virtual scroll",
-          "smart_scroll",
+          "scroll(action='smart')",
           { windowTitle, attempts }
         );
       }
@@ -487,13 +487,13 @@ export const smartScrollHandler = async (params: {
 
   // Validate
   if (strategy === "uia" || strategy === "image") {
-    if (!windowTitle) return failArgs(`strategy:'${strategy}' requires windowTitle`, "smart_scroll", { strategy });
+    if (!windowTitle) return failArgs(`strategy:'${strategy}' requires windowTitle`, "scroll(action='smart')", { strategy });
   }
   if (strategy === "cdp" && !isSelectorLike(target)) {
-    return failArgs("strategy:'cdp' requires a CSS selector as target (must start with #, ., tag name, or [)", "smart_scroll", { target });
+    return failArgs("strategy:'cdp' requires a CSS selector as target (must start with #, ., tag name, or [)", "scroll(action='smart')", { target });
   }
   if (strategy === "image" && !windowTitle) {
-    return failArgs("strategy:'image' requires windowTitle", "smart_scroll", { strategy });
+    return failArgs("strategy:'image' requires windowTitle", "scroll(action='smart')", { strategy });
   }
 
   // Determine which strategies to try
@@ -508,7 +508,7 @@ export const smartScrollHandler = async (params: {
   if (tryStrategies.length === 0) {
     return failArgs(
       "Cannot determine scroll strategy: provide a CSS selector (CDP) or windowTitle (UIA/image)",
-      "smart_scroll",
+      "scroll(action='smart')",
       { target, windowTitle, strategy }
     );
   }
@@ -540,7 +540,7 @@ export const smartScrollHandler = async (params: {
 
     if (s === "image") {
       if (!windowTitle) {
-        return failArgs("image path requires windowTitle", "smart_scroll", {});
+        return failArgs("image path requires windowTitle", "scroll(action='smart')", {});
       }
       const result = await tryImage({ windowTitle, retryCount, hint });
       // Merge strategy warnings into result if present
@@ -556,7 +556,7 @@ export const smartScrollHandler = async (params: {
     }
   }
 
-  return failWith("All scroll strategies failed", "smart_scroll", { target, windowTitle, strategy });
+  return failWith("All scroll strategies failed", "scroll(action='smart')", { target, windowTitle, strategy });
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

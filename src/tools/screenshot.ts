@@ -1102,7 +1102,7 @@ export function registerScreenshotTools(server: McpServer): void {
 
   server.tool(
     "get_screen_info",
-    "Return all connected display info: resolution, position, DPI scaling, and current cursor position. Use monitorId from this response to target a specific display in dock_window.",
+    "Return all connected display info: resolution, position, DPI scaling, and current cursor position. Use monitorId from this response to target a specific display in window_dock(action='dock').",
     getScreenInfoSchema,
     getScreenInfoHandler
   );

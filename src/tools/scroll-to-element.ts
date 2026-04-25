@@ -53,7 +53,7 @@ export const scrollToElementHandler = async ({
   port: number;
 }): Promise<ToolResult> => {
   if (!name && !selector) {
-    return failArgs("Provide at least one of: name, selector", "scroll_to_element", {});
+    return failArgs("Provide at least one of: name, selector", "scroll(action='to_element')", {});
   }
 
   // ── Chrome / CDP path ────────────────────────────────────────────────────
@@ -71,12 +71,12 @@ export const scrollToElementHandler = async ({
       const result = await evaluateInTab(expr, tabId ?? null, port);
       const res = result as { ok: boolean; error?: string; tag?: string; text?: string; viewportTop?: number; viewportBottom?: number };
       if (!res.ok) {
-        return failWith(res.error ?? "scroll_to_element failed", "scroll_to_element", { selector });
+        return failWith(res.error ?? "scroll(action='to_element') failed", "scroll(action='to_element')", { selector });
       }
       const { ok: _ok, error: _err, ...rest } = res;
       return ok({ ok: true, path: "cdp", selector, block, ...rest });
     } catch (err) {
-      return failWith(err, "scroll_to_element", { selector });
+      return failWith(err, "scroll(action='to_element')", { selector });
     }
   }
 
@@ -85,17 +85,17 @@ export const scrollToElementHandler = async ({
     try {
       const result = await scrollElementIntoView(windowTitle, name);
       if (!result.ok) {
-        return failWith(result.error ?? "scroll_to_element failed", "scroll_to_element", { windowTitle, name });
+        return failWith(result.error ?? "scroll(action='to_element') failed", "scroll(action='to_element')", { windowTitle, name });
       }
       return ok({ ok: true, path: "uia", name, windowTitle, scrolled: result.scrolled, ...(result.error && { note: result.error }) });
     } catch (err) {
-      return failWith(err, "scroll_to_element", { windowTitle, name });
+      return failWith(err, "scroll(action='to_element')", { windowTitle, name });
     }
   }
 
   return failArgs(
     "For the native path, both name and windowTitle are required. For the Chrome path, provide selector.",
-    "scroll_to_element",
+    "scroll(action='to_element')",
     { name, selector, windowTitle }
   );
 };

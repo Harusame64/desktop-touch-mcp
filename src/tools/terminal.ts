@@ -191,7 +191,7 @@ export const terminalReadHandler = async ({
   try {
     const win = findTerminalWindow(windowTitle);
     if (!win) {
-      return failWith("Terminal window not found: " + windowTitle, "terminal_read", { windowTitle });
+      return failWith("Terminal window not found: " + windowTitle, "terminal:read", { windowTitle });
     }
 
     const obs = observeTarget(windowTitle, win.hwnd, win.title);
@@ -212,7 +212,7 @@ export const terminalReadHandler = async ({
         usedSource = "ocr";
       } catch (err) {
         if (source === "ocr") {
-          return failWith(err, "terminal_read", { windowTitle });
+          return failWith(err, "terminal:read", { windowTitle });
         }
         // auto: both failed
       }
@@ -281,7 +281,7 @@ export const terminalReadHandler = async ({
 
     return ok(payload);
   } catch (err) {
-    return failWith(err, "terminal_read", { windowTitle });
+    return failWith(err, "terminal:read", { windowTitle });
   }
 };
 
@@ -312,7 +312,7 @@ export const terminalSendHandler = async ({
   try {
     const win = findTerminalWindow(windowTitle);
     if (!win) {
-      return failWith("Terminal window not found: " + windowTitle, "terminal_send", { windowTitle });
+      return failWith("Terminal window not found: " + windowTitle, "terminal:send", { windowTitle });
     }
 
     // ── Background input path (WM_CHAR) ────────────────────────────────────
@@ -338,7 +338,7 @@ export const terminalSendHandler = async ({
           if (inputMethod === "background") {
             return failWith(
               new Error("BackgroundInputIncomplete"),
-              "terminal_send",
+              "terminal:send",
               {
                 suggest: [
                   "Input sent partially - retry with method:'foreground' for full input",
@@ -491,7 +491,7 @@ export const terminalSendHandler = async ({
       },
     });
   } catch (err) {
-    return failWith(err, "terminal_send", { windowTitle });
+    return failWith(err, "terminal:send", { windowTitle });
   }
 };
 
@@ -599,7 +599,7 @@ export const terminalRunHandler = async ({
         elapsedMs: Date.now() - startedAt,
       },
       hwnd: String(hwnd),
-      warnings: [`terminal_send failed`],
+      warnings: [`terminal(action='send') failed`],
     };
     return ok(res);
   }
