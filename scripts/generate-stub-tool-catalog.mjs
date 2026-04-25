@@ -11,6 +11,9 @@ const TOOL_FILES = [
   'keyboard.ts', 'macro.ts', 'mouse.ts', 'notification.ts', 'perception.ts', 'pin.ts',
   'screenshot.ts', 'scroll-capture.ts', 'scroll-to-element.ts', 'smart-scroll.ts',
   'terminal.ts', 'ui-elements.ts', 'wait-until.ts', 'window.ts', 'workspace.ts',
+  // Phase 2 dispatchers
+  'window-dock.ts',
+  'scroll.ts',
 ];
 
 function buildDesc(d) {
@@ -122,6 +125,93 @@ function extractServerTools(src, file) {
       const description = parseDescription(args[1]);
       const schemaName = /^[A-Za-z_$][\w$]*$/.test(args[2]) ? args[2] : undefined;
       if (name && description) out.push({ name, description, schemaName, file });
+    }
+    idx = end;
+  }
+  return out;
+}
+
+/**
+ * Extract tools registered via server.registerTool(name, { description, inputSchema }, handler).
+ * Used by Phase 2 dispatcher tools (keyboard, clipboard, window_dock, scroll, terminal).
+ */
+function extractRegisterTools(src, file) {
+  const out = [];
+  const pattern = 'server.registerTool(';
+  let idx = 0;
+  while ((idx = src.indexOf(pattern, idx)) >= 0) {
+    const argsStart = idx + pattern.length;
+    const end = scanBalanced(src, argsStart, '(', ')');
+    const callBody = src.slice(argsStart, end - 1);
+    const args = splitTopLevelArgs(callBody);
+    if (args.length < 2) { idx = end; continue; }
+
+    // First arg: tool name
+    let name;
+    try { name = String(evalExpr(args[0])); } catch { idx = end; continue; }
+
+    // Second arg: config object { description: ..., inputSchema: ... }
+    const configExpr = args[1].trim();
+    if (!configExpr.startsWith('{')) { idx = end; continue; }
+
+    // Extract description field
+    const configBody = configExpr.slice(1, scanBalanced(configExpr, 1, '{', '}') - 1);
+
+    // Find description: buildDesc({...}) or description: "..." or description: `...`
+    let description;
+    const descRe = /description\s*:\s*/g;
+    let dm;
+    while ((dm = descRe.exec(configBody)) !== null) {
+      const pos = dm.index + dm[0].length;
+      if (configBody.startsWith('buildDesc(', pos)) {
+        try {
+          const bdEnd = scanBalanced(configBody, pos + 'buildDesc('.length, '(', ')');
+          const bdArg = configBody.slice(pos + 'buildDesc('.length, bdEnd - 1);
+          const obj = evalExpr(`(${bdArg})`);
+          description = buildDesc(obj);
+        } catch { /* skip */ }
+      } else {
+        const q = configBody[pos];
+        if (q === '"' || q === "'") {
+          // Proper string extraction
+          let s = '';
+          let i = pos + 1;
+          while (i < configBody.length && configBody[i] !== q) {
+            if (configBody[i] === '\\' && i + 1 < configBody.length) {
+              const esc = configBody[i + 1];
+              s += esc === 'n' ? '\n' : esc === 't' ? '\t' : esc;
+              i += 2;
+            } else { s += configBody[i++]; }
+          }
+          description = s;
+        } else if (q === '`') {
+          // Template literal — skip interpolations
+          let s = '';
+          let i = pos + 1;
+          while (i < configBody.length && configBody[i] !== '`') {
+            if (configBody[i] === '$' && configBody[i + 1] === '{') {
+              let depth = 1; i += 2;
+              while (i < configBody.length && depth > 0) {
+                if (configBody[i] === '{') depth++;
+                else if (configBody[i] === '}') depth--;
+                i++;
+              }
+            } else { s += configBody[i++]; }
+          }
+          description = s;
+        }
+      }
+      if (description) break;
+    }
+
+    // Find inputSchema: schemaName
+    let schemaName;
+    const isRe = /inputSchema\s*:\s*([A-Za-z_$][\w$]*)/;
+    const ism = isRe.exec(configBody);
+    if (ism) schemaName = ism[1];
+
+    if (name && description) {
+      out.push({ name, description, schemaName, file });
     }
     idx = end;
   }
@@ -371,6 +461,17 @@ for (const file of TOOL_FILES) {
   const src = fs.readFileSync(path.join(toolsDir, file), 'utf8');
   for (const tool of extractServerTools(src, file)) {
     tool.inputSchema = parseSchema(src, tool.schemaName);
+    byName.set(tool.name, tool);
+  }
+  for (const tool of extractRegisterTools(src, file)) {
+    // For discriminated union schemas, produce a simple object stub
+    const rawExpr = tool.schemaName ? findConstExpression(src, tool.schemaName) : undefined;
+    const isDiscrimUnion = rawExpr && rawExpr.trim().startsWith('z.discriminatedUnion(');
+    if (isDiscrimUnion) {
+      tool.inputSchema = { type: 'object', properties: { action: { type: 'string' } }, additionalProperties: true };
+    } else {
+      tool.inputSchema = parseSchema(src, tool.schemaName);
+    }
     byName.set(tool.name, tool);
   }
 }

@@ -100,7 +100,7 @@ export const dockWindowSchema = {
     .default(true)
     .describe(
       "If true, set always-on-top so the docked window stays visible on top of other windows. " +
-      "Use unpin_window to remove the topmost flag later. Default true."
+      "Use window_dock(action='unpin') to remove the topmost flag later. Default true."
     ),
   monitorId: z
     .coerce.number()
@@ -185,7 +185,7 @@ function dockKnownWindow(
     actual,
     pinned,
     hint: pinned
-      ? "Window pinned always-on-top. Call unpin_window to release."
+      ? "Window pinned always-on-top. Call window_dock(action='unpin') to release."
       : `Window positioned (not pinned)${pinNote}.`,
   };
 }
@@ -210,12 +210,12 @@ export const dockWindowHandler = async ({
   try {
     const win = findWindow(title);
     if (!win) {
-      return failWith(`No window found matching: "${title}"`, "dock_window", { title });
+      return failWith(`No window found matching: "${title}"`, "window_dock", { title });
     }
     const result = dockKnownWindow(win, { corner, width, height, pin, monitorId, margin });
     return ok(result, true);
   } catch (err) {
-    return failWith(err, "dock_window");
+    return failWith(err, "window_dock");
   }
 };
 

@@ -234,7 +234,7 @@ export function registerPerceptionTools(server: McpServer): void {
         "perception_read. For normal action tools, you do NOT need to call this — just pass " +
         "windowTitle or tabId directly to the action tool and the server will auto-guard.",
       details:
-        "Returns a lensId that can be passed to action tools such as keyboard_type, keyboard_press, " +
+        "Returns a lensId that can be passed to action tools such as keyboard(action='type'/'press'), " +
         "mouse_click, browser_click, and browser_navigate. When a tool receives lensId, " +
         "desktop-touch refreshes the tracked state, evaluates safety guards, and attaches a compact " +
         "post.perception envelope to the response. The envelope reports attention, guard status, " +
@@ -251,12 +251,12 @@ export function registerPerceptionTools(server: McpServer): void {
         "continuing. Maximum 16 active lenses are kept; old lenses may be evicted.",
       examples: [
         "// Normal use — no registration needed:",
-        "keyboard_type({windowTitle:'Notepad', text:'hello'})" +
+        "keyboard({action:'type', windowTitle:'Notepad', text:'hello'})" +
           " → post.perception.status='ok' auto-guard without lensId",
         "// Advanced pinned-lens use:",
         "perception_register({name:'editor', target:{kind:'window', match:{titleIncludes:'Visual Studio Code'}}})" +
           " → {lensId:'perc-1'}",
-        "keyboard_type({windowTitle:'Visual Studio Code', text:'hello', lensId:'perc-1'})" +
+        "keyboard({action:'type', windowTitle:'Visual Studio Code', text:'hello', lensId:'perc-1'})" +
           " → response includes post.perception (rich envelope)",
         "perception_forget({lensId:'perc-1'})" +
           " → release tracking when done",

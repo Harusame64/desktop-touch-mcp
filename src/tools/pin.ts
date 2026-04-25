@@ -66,11 +66,11 @@ export const pinWindowHandler = async ({
     return {
       content: [{
         type: "text" as const,
-        text: JSON.stringify({ ok: true, title: found.title, action: "pinned (call unpin_window to remove)" }),
+        text: JSON.stringify({ ok: true, title: found.title, action: "pinned (call window_dock(action='unpin') to remove)" }),
       }],
     };
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `pin_window failed: ${String(err)}` }] };
+    return { content: [{ type: "text" as const, text: `window_dock(action='pin') failed: ${String(err)}` }] };
   }
 };
 
@@ -95,7 +95,7 @@ export const unpinWindowHandler = async ({ title }: { title: string }): Promise<
       }],
     };
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `unpin_window failed: ${String(err)}` }] };
+    return { content: [{ type: "text" as const, text: `window_dock(action='unpin') failed: ${String(err)}` }] };
   }
 };
 

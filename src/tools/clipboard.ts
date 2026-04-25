@@ -41,7 +41,7 @@ export const clipboardReadHandler = async (): Promise<ToolResult> => {
     const text = b64 ? Buffer.from(b64, "base64").toString("utf16le") : "";
     return ok({ ok: true, text });
   } catch (err) {
-    return failWith(err, "clipboard_read");
+    return failWith(err, "clipboard:read");
   }
 };
 
@@ -64,7 +64,7 @@ export const clipboardWriteHandler = async ({
     );
     return ok({ ok: true, written: text.length });
   } catch (err) {
-    return failWith(err, "clipboard_write");
+    return failWith(err, "clipboard:write");
   }
 };
 

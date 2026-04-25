@@ -119,7 +119,7 @@ function evalKeyboardTarget(lens: PerceptionLens, store: FluentStore, nowMs: num
     // OS keyboard tools send keys to the focused OS window, not to a browser tab.
     // If the caller is keyboard_type or keyboard_press, fail-closed: the correct tool
     // for browser content input is browser_fill.
-    const kbTools = ["keyboard_type", "keyboard_press"];
+    const kbTools = ["keyboard"];
     if (ctx?.toolName && kbTools.includes(ctx.toolName)) {
       return {
         kind: "safe.keyboardTarget",
