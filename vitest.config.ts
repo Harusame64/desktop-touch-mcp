@@ -24,6 +24,18 @@ export default defineConfig({
           // fileParallelism defaults to true — 57 files run in parallel
           testTimeout: 10_000,
           hookTimeout: 10_000,
+          // Zombie prevention (Phase 4b-6): use forks pool for native-binding
+          // safety, cap maxForks to limit zombie count if teardown fails,
+          // teardownTimeout forces pool exit after grace period.
+          pool: "forks",
+          poolOptions: {
+            forks: {
+              maxForks: 4,
+              minForks: 1,
+              isolate: true,
+            },
+          },
+          teardownTimeout: 5_000,
         },
       },
       {
@@ -36,6 +48,14 @@ export default defineConfig({
           sequence: { concurrent: false },
           testTimeout: 30_000,
           hookTimeout: 30_000,
+          // Single fork forces strict serial execution and clean teardown
+          // between e2e files (prevents zombie accumulation that may have
+          // caused past flaky e2e failures — context-consistency / screenshot-electron).
+          pool: "forks",
+          poolOptions: {
+            forks: { singleFork: true, isolate: true },
+          },
+          teardownTimeout: 10_000,
         },
       },
       {
@@ -48,6 +68,11 @@ export default defineConfig({
           fileParallelism: false,
           testTimeout: 120_000,
           hookTimeout: 60_000,
+          pool: "forks",
+          poolOptions: {
+            forks: { singleFork: true, isolate: true },
+          },
+          teardownTimeout: 10_000,
         },
       },
     ],
