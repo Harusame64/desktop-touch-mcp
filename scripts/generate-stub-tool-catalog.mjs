@@ -171,7 +171,7 @@ function splitObjectFields(objExpr) {
 
 const commonParams = {
   portParam: { type: 'integer', minimum: 1, maximum: 65535, default: 9222, description: 'Chrome/Edge CDP remote debugging port.', __optional: true },
-  tabIdParam: { type: 'string', description: 'Tab ID from browser_connect. Omit to use the first page tab.', __optional: true },
+  tabIdParam: { type: 'string', description: 'Tab ID from browser_open. Omit to use the first page tab.', __optional: true },
   selectorParam: { type: 'string', description: "CSS selector for the target element (e.g. '#submit', '.btn', 'button[type=submit]')." },
   includeContextParam: { type: 'boolean', default: true, description: 'When true, append activeTab and readyState context to the response.', __optional: true },
   narrateParam: { type: 'string', enum: ['minimal', 'rich'], default: 'minimal', description: 'Narration level. rich includes UIA or browser state diff when supported.', __optional: true },

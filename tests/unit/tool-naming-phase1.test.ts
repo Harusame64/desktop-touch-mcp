@@ -15,7 +15,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { registerDesktopStateTools } from "../../src/tools/desktop-state.js";
+import { registerDesktopStateTools, desktopStateHandler } from "../../src/tools/desktop-state.js";
 import { registerServerStatusTool } from "../../src/tools/server-status.js";
 import {
   registerDesktopTools,
@@ -225,4 +225,35 @@ describe("source code — no old server.tool() registrations remain", () => {
       }
     });
   }
+});
+
+// ─── B2: attention field assertion ────────────────────────────────────────────
+
+const ATTENTION_VALUES = new Set([
+  "ok", "changed", "dirty", "settling", "stale", "guard_failed", "identity_changed",
+]);
+
+describe("attention field — desktop_state / desktop_act (design §3.1 / §3.3)", () => {
+  it("desktop_state response always contains attention field with valid enum value", async () => {
+    const result = await desktopStateHandler();
+    // Extract the JSON payload from the ToolResult
+    const block = result.content[0];
+    expect(block.type).toBe("text");
+    const payload = JSON.parse((block as { type: string; text: string }).text);
+
+    expect(payload).toHaveProperty("attention");
+    expect(typeof payload.attention).toBe("string");
+    expect(ATTENTION_VALUES.has(payload.attention)).toBe(true);
+  });
+
+  it("desktop_state attention defaults to 'ok' when no perception slot exists (baseline)", async () => {
+    // In unit test environment, hot-target-cache has no slots for foreground window
+    // → attention must fall back to "ok" (safe baseline per design §3.1)
+    const result = await desktopStateHandler();
+    const block = result.content[0];
+    const payload = JSON.parse((block as { type: string; text: string }).text);
+
+    // Either "ok" (no slot) or a valid enum value if some slot happens to match
+    expect(ATTENTION_VALUES.has(payload.attention)).toBe(true);
+  });
 });

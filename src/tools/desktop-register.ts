@@ -375,7 +375,7 @@ export function registerDesktopTools(server: McpServer): void {
   server.tool(
     "desktop_act",
     [
-      "[EXPERIMENTAL] Act on a discovered entity (click/type/setValue/scroll). Replaces desktop_touch.",
+      "[EXPERIMENTAL] Act on a discovered entity (click/type/setValue/scroll). Use desktop_act.",
       "Validates the lease before executing — rejects stale, expired, or mismatched leases.",
       "Returns a semantic diff (entity_disappeared, modal_appeared, etc.) and a 'next' hint.",
       "If ok=false, read 'reason':",

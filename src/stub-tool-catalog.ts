@@ -41,7 +41,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "tabId": {
           "type": "string",
-          "description": "Tab ID from browser_connect. Omit to use the first page tab."
+          "description": "Tab ID from browser_open. Omit to use the first page tab."
         },
         "port": {
           "type": "integer",
@@ -94,7 +94,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "tabId": {
           "type": "string",
-          "description": "Tab ID from browser_connect. Omit to use the first page tab."
+          "description": "Tab ID from browser_open. Omit to use the first page tab."
         },
         "port": {
           "type": "integer",
@@ -141,7 +141,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "tabId": {
           "type": "string",
-          "description": "Tab ID from browser_connect. Omit to use the first page tab."
+          "description": "Tab ID from browser_open. Omit to use the first page tab."
         },
         "port": {
           "type": "integer",
@@ -187,7 +187,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "tabId": {
           "type": "string",
-          "description": "Tab ID from browser_connect. Omit to use the first page tab."
+          "description": "Tab ID from browser_open. Omit to use the first page tab."
         },
         "port": {
           "type": "integer",
@@ -227,7 +227,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "tabId": {
           "type": "string",
-          "description": "Tab ID from browser_connect. Omit to use the first page tab."
+          "description": "Tab ID from browser_open. Omit to use the first page tab."
         },
         "port": {
           "type": "integer",
@@ -257,7 +257,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "tabId": {
           "type": "string",
-          "description": "Tab ID from browser_connect. Omit to use the first page tab."
+          "description": "Tab ID from browser_open. Omit to use the first page tab."
         },
         "port": {
           "type": "integer",
@@ -338,7 +338,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "tabId": {
           "type": "string",
-          "description": "Tab ID from browser_connect. Omit to use the first page tab."
+          "description": "Tab ID from browser_open. Omit to use the first page tab."
         },
         "port": {
           "type": "integer",
@@ -380,7 +380,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "tabId": {
           "type": "string",
-          "description": "Tab ID from browser_connect. Omit to use the first page tab."
+          "description": "Tab ID from browser_open. Omit to use the first page tab."
         },
         "port": {
           "type": "integer",
@@ -469,7 +469,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "tabId": {
           "type": "string",
-          "description": "Tab ID from browser_connect. Omit to use the first page tab."
+          "description": "Tab ID from browser_open. Omit to use the first page tab."
         },
         "port": {
           "type": "integer",
@@ -543,7 +543,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "tabId": {
           "type": "string",
-          "description": "Tab ID from browser_connect. Omit to use the first page tab."
+          "description": "Tab ID from browser_open. Omit to use the first page tab."
         },
         "port": {
           "type": "integer",
@@ -787,7 +787,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "focus_window",
-    "description": "Bring a window to the foreground by partial title match (case-insensitive). Use when a tool does not accept a windowTitle param, or when you need to switch focus before a sequence of actions. Use chromeTabUrlContains to activate a specific Chrome/Edge tab by URL substring before focusing — only the active tab's title appears in get_windows. If CDP is unavailable, chromeTabUrlContains is silently skipped — check response.hints.warnings. Returns WindowNotFound if no match exists; call get_windows to see available titles. Caveats: On some apps focus may be immediately stolen back (modal dialogs, UAC prompts) — verify with get_context after focusing.",
+    "description": "Bring a window to the foreground by partial title match (case-insensitive). Use when a tool does not accept a windowTitle param, or when you need to switch focus before a sequence of actions. Use chromeTabUrlContains to activate a specific Chrome/Edge tab by URL substring before focusing — only the active tab's title appears in get_windows. If CDP is unavailable, chromeTabUrlContains is silently skipped — check response.hints.warnings. Returns WindowNotFound if no match exists; call get_windows to see available titles. Caveats: On some apps focus may be immediately stolen back (modal dialogs, UAC prompts) — verify with desktop_state after focusing.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1063,7 +1063,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "mouse_click",
-    "description": "Click at screen coordinates. Normally pass windowTitle so the server auto-guards the click (verifies target identity, foreground, coordinate is inside the target rect) and returns post.perception without a confirmation screenshot. origin+scale from dotByDot=true screenshots are converted to screen coords before guarding. doubleClick:true for double-click; tripleClick:true for triple-click (selects a full line of text). Prefer click_element (UIA) for native apps, prefer browser_click_element for Chrome. Examples: mouse_click({windowTitle:'Notepad', x:200, y:150}) // guarded — post.perception.status='ok'. mouse_click({x:100, y:100}) // unguarded — post.perception.status='unguarded'. If a guard failure returns a suggestedFix, pass its fixId to approve the fix: mouse_click({fixId:'fix-...'}) // one-shot, expires in 15s. lensId is optional and only for advanced pinned-target workflows after perception_register; omit it for normal use. Caveats: origin+scale are meaningful ONLY with dotByDot=true screenshot responses.",
+    "description": "Click at screen coordinates. Normally pass windowTitle so the server auto-guards the click (verifies target identity, foreground, coordinate is inside the target rect) and returns post.perception without a confirmation screenshot. origin+scale from dotByDot=true screenshots are converted to screen coords before guarding. doubleClick:true for double-click; tripleClick:true for triple-click (selects a full line of text). Prefer click_element (UIA) for native apps, prefer browser_click for Chrome. Examples: mouse_click({windowTitle:'Notepad', x:200, y:150}) // guarded — post.perception.status='ok'. mouse_click({x:100, y:100}) // unguarded — post.perception.status='unguarded'. If a guard failure returns a suggestedFix, pass its fixId to approve the fix: mouse_click({fixId:'fix-...'}) // one-shot, expires in 15s. lensId is optional and only for advanced pinned-target workflows after perception_register; omit it for normal use. Caveats: origin+scale are meaningful ONLY with dotByDot=true screenshot responses.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1331,7 +1331,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "perception_read",
-    "description": "Force-refresh a registered perception lens and return a full perception envelope. Use when post.perception.attention is dirty, stale, settling, guard_failed, or identity_changed, or when you need fresh structured state before the next action. Returns attention, guard results, latest target/browser state, changed fields, and suggested recovery actions. Prefer this over screenshot/get_context when a lens already exists.",
+    "description": "Force-refresh a registered perception lens and return a full perception envelope. Use when post.perception.attention is dirty, stale, settling, guard_failed, or identity_changed, or when you need fresh structured state before the next action. Returns attention, guard results, latest target/browser state, changed fields, and suggested recovery actions. Prefer this over screenshot/desktop_state when a lens already exists.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1354,7 +1354,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "perception_register",
-    "description": "Purpose: ADVANCED / DEBUG ONLY. Register a named perception lens that pins a specific HWND or browser tab identity across many actions and delivers rich perception envelopes via perception_read. For normal action tools, you do NOT need to call this — just pass windowTitle or tabId directly to the action tool and the server will auto-guard.\nDetails: Returns a lensId that can be passed to action tools such as keyboard_type, keyboard_press, mouse_click, browser_click_element, and browser_navigate. When a tool receives lensId, desktop-touch refreshes the tracked state, evaluates safety guards, and attaches a compact post.perception envelope to the response. The envelope reports attention, guard status, recent changes, and the latest known target state, reducing get_context/screenshot round trips.\nPrefer: Use only when you need pinned long-lived HWND tracking or explicit perception_read access. For one-off actions, passing windowTitle directly to the action tool is sufficient and returns post.perception.status without a separate register call.\nCaveats: A lens is not a visual recognition model. It tracks structured state from Win32, CDP, and optional UIA sensors. safe.clickCoordinates checks window bounds, not pixel-level occlusion. browserTab lenses require Chrome/Edge with --remote-debugging-port=9222. If attention is dirty, stale, settling, guard_failed, or identity_changed, follow the suggested action before continuing. Maximum 16 active lenses are kept; old lenses may be evicted.\nExamples:\n  // Normal use — no registration needed:\n  keyboard_type({windowTitle:'Notepad', text:'hello'}) → post.perception.status='ok' auto-guard without lensId\n  // Advanced pinned-lens use:\n  perception_register({name:'editor', target:{kind:'window', match:{titleIncludes:'Visual Studio Code'}}}) → {lensId:'perc-1'}\n  keyboard_type({windowTitle:'Visual Studio Code', text:'hello', lensId:'perc-1'}) → response includes post.perception (rich envelope)\n  perception_forget({lensId:'perc-1'}) → release tracking when done",
+    "description": "Purpose: ADVANCED / DEBUG ONLY. Register a named perception lens that pins a specific HWND or browser tab identity across many actions and delivers rich perception envelopes via perception_read. For normal action tools, you do NOT need to call this — just pass windowTitle or tabId directly to the action tool and the server will auto-guard.\nDetails: Returns a lensId that can be passed to action tools such as keyboard_type, keyboard_press, mouse_click, browser_click, and browser_navigate. When a tool receives lensId, desktop-touch refreshes the tracked state, evaluates safety guards, and attaches a compact post.perception envelope to the response. The envelope reports attention, guard status, recent changes, and the latest known target state, reducing desktop_state/screenshot round trips.\nPrefer: Use only when you need pinned long-lived HWND tracking or explicit perception_read access. For one-off actions, passing windowTitle directly to the action tool is sufficient and returns post.perception.status without a separate register call.\nCaveats: A lens is not a visual recognition model. It tracks structured state from Win32, CDP, and optional UIA sensors. safe.clickCoordinates checks window bounds, not pixel-level occlusion. browserTab lenses require Chrome/Edge with --remote-debugging-port=9222. If attention is dirty, stale, settling, guard_failed, or identity_changed, follow the suggested action before continuing. Maximum 16 active lenses are kept; old lenses may be evicted.\nExamples:\n  // Normal use — no registration needed:\n  keyboard_type({windowTitle:'Notepad', text:'hello'}) → post.perception.status='ok' auto-guard without lensId\n  // Advanced pinned-lens use:\n  perception_register({name:'editor', target:{kind:'window', match:{titleIncludes:'Visual Studio Code'}}}) → {lensId:'perc-1'}\n  keyboard_type({windowTitle:'Visual Studio Code', text:'hello', lensId:'perc-1'}) → response includes post.perception (rich envelope)\n  perception_forget({lensId:'perc-1'}) → release tracking when done",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1917,7 +1917,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "scroll_to_element",
-    "description": "Purpose: Scroll a named element into the visible viewport without manually computing scroll amounts.\nDetails: Two paths: (1) Chrome/Edge (CDP): provide selector — calls el.scrollIntoView({block, behavior:'instant'}) via CDP. Uses instant (not smooth) scroll so coords stabilize immediately. block controls vertical alignment (start/center/end/nearest, default: center). (2) Native apps (UIA): provide name + windowTitle — calls ScrollItemPattern.ScrollIntoView(). Returns scrolled:true on success, scrolled:false if the element doesn't expose ScrollItemPattern (fall back to scroll + screenshot).\nPrefer: Use over scroll + screenshot loops when you know the element name or selector. Pairs well with screenshot(detail='text') to confirm the element is now in-view (viewportPosition:'in-view'). For Chrome, browser_get_interactive shows viewportPosition for all elements — use that to decide whether scrolling is needed before calling this tool.\nCaveats: Chrome path requires browser_connect (CDP active). Native path requires the element to implement UIA ScrollItemPattern — some custom/third-party controls do not; in that case scrolled:false is returned. SPA virtual-scroll lists (React Virtualized, TanStack) may not respond to scrollIntoView.\nExamples:\n  scroll_to_element({selector: '#create-release-btn'}) — Chrome, scroll to button\n  scroll_to_element({name: 'Create Release', windowTitle: 'Glama'}) — native UIA\n  scroll_to_element({selector: '.submit', block: 'start'}) — align to top of viewport",
+    "description": "Purpose: Scroll a named element into the visible viewport without manually computing scroll amounts.\nDetails: Two paths: (1) Chrome/Edge (CDP): provide selector — calls el.scrollIntoView({block, behavior:'instant'}) via CDP. Uses instant (not smooth) scroll so coords stabilize immediately. block controls vertical alignment (start/center/end/nearest, default: center). (2) Native apps (UIA): provide name + windowTitle — calls ScrollItemPattern.ScrollIntoView(). Returns scrolled:true on success, scrolled:false if the element doesn't expose ScrollItemPattern (fall back to scroll + screenshot).\nPrefer: Use over scroll + screenshot loops when you know the element name or selector. Pairs well with screenshot(detail='text') to confirm the element is now in-view (viewportPosition:'in-view'). For Chrome, browser_overview shows viewportPosition for all elements — use that to decide whether scrolling is needed before calling this tool.\nCaveats: Chrome path requires browser_open (CDP active). Native path requires the element to implement UIA ScrollItemPattern — some custom/third-party controls do not; in that case scrolled:false is returned. SPA virtual-scroll lists (React Virtualized, TanStack) may not respond to scrollIntoView.\nExamples:\n  scroll_to_element({selector: '#create-release-btn'}) — Chrome, scroll to button\n  scroll_to_element({name: 'Create Release', windowTitle: 'Glama'}) — native UIA\n  scroll_to_element({selector: '.submit', block: 'start'}) — align to top of viewport",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2022,7 +2022,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "smart_scroll",
-    "description": "Purpose: Scroll any element into the viewport — handles nested scroll layers, virtualised lists, sticky-header occlusion, and image-only fallbacks in a single call.\nDetails: Three paths selected by strategy:'auto' (default): (1) CDP (Chrome/Edge): walks scroll ancestor chain, handles overflow:hidden (expandHidden), virtualised lists (TanStack/data-index bisect), detects sticky headers and compensates. (2) UIA (native Windows apps): uses ScrollPattern.SetScrollPercent on ancestor containers then ScrollItemPattern for final snap. (3) Image: binary-search via Win32 GetScrollInfo (exact ratio) or scrollbar-strip pixel sampling (overlay scrollbars), with dHash verification — detects no-op scrolls (Hamming < 5). All paths emit a unified response: ok, path, attempts, pageRatio (0..1), scrolled (bool), ancestors[], viewportPosition. pageRatio is the normalised vertical position of the element on the full page (0=top, 1=bottom). Set verifyWithHash:true to explicitly check that pixels changed (auto-enabled on image path). Nested scroll: ancestors[] is ordered outer→inner; the tool scrolls outer containers first. Virtual lists: set virtualIndex + virtualTotal for O(log n) bisect (≤6 iterations).\nPrefer: Use instead of scroll_to_element when: content is virtualised (React Virtualized, TanStack Virtual), multiple scroll containers nest, or scroll_to_element returns scrolled:true but the viewport did not actually move. For a simple single-container non-virtual scroll, scroll_to_element is lighter.\nCaveats: CDP path requires browser_connect. Cross-origin iframes are not traversed (warning returned). expandHidden mutates live CSS (overflow:auto); previous value is stored in data-dt-prev-overflow and restored on the next smart_scroll call (or after 30 s). Image path cannot determine whether the target element is in-view — viewportPosition is null. Call screenshot(detail='text') afterwards to verify. UIA ScrollPattern may not be available in all native apps — falls through to image path.\nExamples:\n  smart_scroll({target: '#create-release-btn'}) — CDP, nested container, no virtual list\n  smart_scroll({target: '[data-index]', virtualIndex: 500, virtualTotal: 10000}) — TanStack virtual list\n  smart_scroll({target: 'Create Release', windowTitle: 'File Explorer', strategy: 'uia'}) — native UIA\n  smart_scroll({target: 'readme section', windowTitle: 'MyApp', strategy: 'image', hint: 'below'}) — image binary-search",
+    "description": "Purpose: Scroll any element into the viewport — handles nested scroll layers, virtualised lists, sticky-header occlusion, and image-only fallbacks in a single call.\nDetails: Three paths selected by strategy:'auto' (default): (1) CDP (Chrome/Edge): walks scroll ancestor chain, handles overflow:hidden (expandHidden), virtualised lists (TanStack/data-index bisect), detects sticky headers and compensates. (2) UIA (native Windows apps): uses ScrollPattern.SetScrollPercent on ancestor containers then ScrollItemPattern for final snap. (3) Image: binary-search via Win32 GetScrollInfo (exact ratio) or scrollbar-strip pixel sampling (overlay scrollbars), with dHash verification — detects no-op scrolls (Hamming < 5). All paths emit a unified response: ok, path, attempts, pageRatio (0..1), scrolled (bool), ancestors[], viewportPosition. pageRatio is the normalised vertical position of the element on the full page (0=top, 1=bottom). Set verifyWithHash:true to explicitly check that pixels changed (auto-enabled on image path). Nested scroll: ancestors[] is ordered outer→inner; the tool scrolls outer containers first. Virtual lists: set virtualIndex + virtualTotal for O(log n) bisect (≤6 iterations).\nPrefer: Use instead of scroll_to_element when: content is virtualised (React Virtualized, TanStack Virtual), multiple scroll containers nest, or scroll_to_element returns scrolled:true but the viewport did not actually move. For a simple single-container non-virtual scroll, scroll_to_element is lighter.\nCaveats: CDP path requires browser_open. Cross-origin iframes are not traversed (warning returned). expandHidden mutates live CSS (overflow:auto); previous value is stored in data-dt-prev-overflow and restored on the next smart_scroll call (or after 30 s). Image path cannot determine whether the target element is in-view — viewportPosition is null. Call screenshot(detail='text') afterwards to verify. UIA ScrollPattern may not be available in all native apps — falls through to image path.\nExamples:\n  smart_scroll({target: '#create-release-btn'}) — CDP, nested container, no virtual list\n  smart_scroll({target: '[data-index]', virtualIndex: 500, virtualTotal: 10000}) — TanStack virtual list\n  smart_scroll({target: 'Create Release', windowTitle: 'File Explorer', strategy: 'uia'}) — native UIA\n  smart_scroll({target: 'readme section', windowTitle: 'MyApp', strategy: 'image', hint: 'below'}) — image binary-search",
     "inputSchema": {
       "type": "object",
       "properties": {

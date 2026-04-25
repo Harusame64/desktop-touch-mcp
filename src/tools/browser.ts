@@ -48,7 +48,7 @@ const portParam = z.coerce
 const tabIdParam = z
   .string()
   .optional()
-  .describe("Tab ID from browser_connect. Omit to use the first page tab.");
+  .describe("Tab ID from browser_open. Omit to use the first page tab.");
 
 const selectorParam = z
   .string()
@@ -379,7 +379,7 @@ export const browserFillInputHandler = async ({
 })()`;
     const focusResult = await evaluateInTab(focusExpr, tabId ?? null, port) as { ok: boolean; error?: string; tag?: string; type?: string };
     if (!focusResult.ok) {
-      return failWith(focusResult.error ?? "browser_fill_input: focus failed", "browser_fill_input");
+      return failWith(focusResult.error ?? "browser_fill: focus failed", "browser_fill");
     }
 
     // Fill the input using the React-compatible path:
@@ -415,7 +415,7 @@ export const browserFillInputHandler = async ({
 })()`;
     const fillResult = await evaluateInTab(fillExpr, tabId ?? null, port) as { ok: boolean; error?: string; actual?: string };
     if (!fillResult.ok) {
-      return failWith(fillResult.error ?? "browser_fill_input: fill failed", "browser_fill_input");
+      return failWith(fillResult.error ?? "browser_fill: fill failed", "browser_fill");
     }
 
     const lines = [
@@ -431,7 +431,7 @@ export const browserFillInputHandler = async ({
     }
     return { content: [{ type: "text" as const, text: lines.join("\n") }] };
   } catch (err) {
-    return failWith(err, "browser_fill_input");
+    return failWith(err, "browser_fill");
   }
 };
 
@@ -537,7 +537,7 @@ export const browserGetFormHandler = async ({
       | { ok: false; error: string };
 
     if (!result.ok) {
-      return failWith("Element not found", "browser_get_form", { selector });
+      return failWith("Element not found", "browser_form", { selector });
     }
 
     const lines = [JSON.stringify(result)];
@@ -551,7 +551,7 @@ export const browserGetFormHandler = async ({
     }
     return { content: [{ type: "text" as const, text: lines.join("\n") }] };
   } catch (err) {
-    return failWith(err, "browser_get_form");
+    return failWith(err, "browser_form");
   }
 };
 
@@ -603,7 +603,7 @@ export const browserConnectHandler = async ({
       ],
     };
   } catch (err) {
-    return failWith(err, "browser_connect");
+    return failWith(err, "browser_open");
   }
 };
 
@@ -655,7 +655,7 @@ export const browserFindElementHandler = async ({
       ],
     };
   } catch (err) {
-    return failWith(err, "browser_find_element");
+    return failWith(err, "browser_locate");
   }
 };
 
@@ -679,8 +679,8 @@ export const browserClickElementHandler = async ({
     let effectiveSelector = selector;
     let effectiveTabId = tabId;
     if (fixId) {
-      const vr = validateAndPrepareFix(fixId, "browser_click_element");
-      if (!vr.ok || !vr.fix) return failWith(new Error(vr.errorCode!), "browser_click_element");
+      const vr = validateAndPrepareFix(fixId, "browser_click");
+      if (!vr.ok || !vr.fix) return failWith(new Error(vr.errorCode!), "browser_click");
       if (typeof vr.fix.args.selector === "string") effectiveSelector = vr.fix.args.selector;
       if (typeof vr.fix.args.tabId === "string") effectiveTabId = vr.fix.args.tabId;
       consumeFix(fixId);
@@ -688,16 +688,16 @@ export const browserClickElementHandler = async ({
 
     let perceptionEnvBrowser: import("../engine/perception/types.js").PostPerception | undefined;
     if (lensId) {
-      const guardResult = await evaluatePreToolGuards(lensId, "browser_click_element", {});
+      const guardResult = await evaluatePreToolGuards(lensId, "browser_click", {});
       if (!guardResult.ok && guardResult.policy === "block") {
-        const env = buildEnvelopeFor(lensId, { toolName: "browser_click_element" });
+        const env = buildEnvelopeFor(lensId, { toolName: "browser_click" });
         return failWith(
           new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
-          "browser_click_element",
+          "browser_click",
           { lensId, guard: guardResult.failedGuard, _perceptionForPost: env }
         );
       }
-      perceptionEnvBrowser = buildEnvelopeFor(lensId, { toolName: "browser_click_element" }) ?? undefined;
+      perceptionEnvBrowser = buildEnvelopeFor(lensId, { toolName: "browser_click" }) ?? undefined;
     } else if (isAutoGuardEnabled() && (tabId || port)) {
       // Phase F: get coords first so we know inViewport for selectorInViewport policy
       const coordsForGuard = await getElementScreenCoords(effectiveSelector, effectiveTabId ?? null, port);
@@ -706,8 +706,8 @@ export const browserClickElementHandler = async ({
         return fail({
           ok: false,
           code: "ElementNotInViewport",
-          error: `browser_click_element: element "${effectiveSelector}" is outside the visible viewport.`,
-          suggest: ["Element is outside the visible viewport. Scroll it into view first using browser_eval with element.scrollIntoView(), then retry browser_click_element."],
+          error: `browser_click: element "${effectiveSelector}" is outside the visible viewport.`,
+          suggest: ["Element is outside the visible viewport. Scroll it into view first using browser_eval with element.scrollIntoView(), then retry browser_click."],
           context: { selector: effectiveSelector },
         });
       }
@@ -716,13 +716,13 @@ export const browserClickElementHandler = async ({
       };
       // Phase F/G: pass inViewport + selectorInViewport policy; carry selector for fixId
       const ag = await runActionGuard({
-        toolName: "browser_click_element", actionKind: "browserCdp", descriptor,
+        toolName: "browser_click", actionKind: "browserCdp", descriptor,
         browserReadinessPolicy: "selectorInViewport",
         browserSelectorInViewport: coordsForGuard.inViewport,
         fixCarryingArgs: { selector: effectiveSelector, tabId: effectiveTabId, port },
       });
       if (ag.block) {
-        return failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "browser_click_element", { _perceptionForPost: ag.summary });
+        return failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "browser_click", { _perceptionForPost: ag.summary });
       }
       perceptionEnvBrowser = ag.summary;
     }
@@ -744,8 +744,8 @@ export const browserClickElementHandler = async ({
       return fail({
         ok: false,
         code: "ElementNotInViewport",
-        error: `browser_click_element: element "${effectiveSelector}" is outside the visible viewport.`,
-        suggest: ["Element is outside the visible viewport. Scroll it into view first using browser_eval with element.scrollIntoView(), then retry browser_click_element."],
+        error: `browser_click: element "${effectiveSelector}" is outside the visible viewport.`,
+        suggest: ["Element is outside the visible viewport. Scroll it into view first using browser_eval with element.scrollIntoView(), then retry browser_click."],
         context: { selector: effectiveSelector },
       });
     }
@@ -798,7 +798,7 @@ export const browserClickElementHandler = async ({
       ...(perceptionEnvBrowser && { _perceptionForPost: perceptionEnvBrowser }),
     });
   } catch (err) {
-    return failWith(err, "browser_click_element");
+    return failWith(err, "browser_click");
   }
 };
 
@@ -1131,7 +1131,7 @@ export const browserGetInteractiveHandler = async ({
     // Fix #1: guard against empty query (types:[]) which causes querySelectorAll("") to throw
     if (!cssQuery) {
       return {
-        content: [{ type: "text" as const, text: "browser_get_interactive: no element types selected. Pass at least one of 'link', 'button', 'input', or 'all'." }],
+        content: [{ type: "text" as const, text: "browser_overview: no element types selected. Pass at least one of 'link', 'button', 'input', or 'all'." }],
       };
     }
 
@@ -1279,7 +1279,7 @@ export const browserGetInteractiveHandler = async ({
       content: [{ type: "text" as const, text: lines.join("\n") }],
     };
   } catch (err) {
-    return failWith(err, "browser_get_interactive");
+    return failWith(err, "browser_overview");
   }
 };
 

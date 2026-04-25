@@ -15,6 +15,8 @@ import { evaluateInTab } from "../engine/cdp-bridge.js";
 import { getCdpPort } from "../utils/desktop-config.js";
 import { getFocusedAndPointInfo } from "../engine/uia-bridge.js";
 import { CHROMIUM_TITLE_RE } from "./workspace.js";
+import { getSlotSnapshot } from "../engine/perception/hot-target-cache.js";
+import type { AttentionState } from "../engine/perception/types.js";
 
 const _defaultPort = getCdpPort();
 
@@ -50,6 +52,32 @@ export const desktopStateHandler = async (): Promise<ToolResult> => {
       const pid = getWindowProcessId(fg.hwnd);
       const ident = getProcessIdentityByPid(pid);
       focusedWindow = { title: fg.title, processName: ident.processName, hwnd: String(fg.hwnd) };
+    }
+
+    // ── Attention signal from Hot Target Cache ─────────────────────────────
+    // Look up the focused window in the hot-target-cache. If a slot exists,
+    // surface its attention value. Fallback to "ok" when no slot is found
+    // (lens not registered / Auto Perception OFF) — this is the safe baseline
+    // per design §3.1.
+    let attention: AttentionState = "ok";
+    if (fg) {
+      const fgHwnd = String(fg.hwnd);
+      const slots = getSlotSnapshot();
+      const matchingSlot = slots.find(
+        (s) => s.kind === "window" && s.identity && "hwnd" in s.identity && s.identity.hwnd === fgHwnd
+      );
+      if (matchingSlot) {
+        // Map SlotAttention → AttentionState (7 enum values in design §3.1)
+        const sa = matchingSlot.attention;
+        if (sa === "ok" || sa === "changed" || sa === "dirty" || sa === "stale" || sa === "identity_changed") {
+          attention = sa;
+        } else if (sa === "not_found") {
+          attention = "guard_failed";
+        } else {
+          // "ambiguous" → ok (conservative safe baseline)
+          attention = "ok";
+        }
+      }
     }
 
     // Cursor-over-window: Z-order hit test (cheap, always available)
@@ -176,6 +204,7 @@ export const desktopStateHandler = async (): Promise<ToolResult> => {
       cursorOverElement,
       hasModal,
       pageState,
+      attention,
       visibleWindows: wins.length,
       ...(Object.keys(hints).length > 0 ? { hints } : {}),
     });
