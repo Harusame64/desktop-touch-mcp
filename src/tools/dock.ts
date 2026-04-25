@@ -1,4 +1,3 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
   enumWindowsInZOrder,
@@ -379,20 +378,5 @@ export async function autoDockFromEnv(): Promise<void> {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Registration
-// ─────────────────────────────────────────────────────────────────────────────
-
-export function registerDockTools(server: McpServer): void {
-  server.tool(
-    "dock_window",
-    buildDesc({
-      purpose: "Snap a window to a screen corner at a fixed small size and pin it always-on-top — primarily to keep Claude CLI visible while operating other apps full-screen.",
-      details: "Accepts corner ('bottom-right' default), width/height (480×360 default, clamped to monitor work area), pin (true default = always-on-top), margin (8px default gap from screen edges, avoids taskbar overlap), and monitorId (see get_screen_info for IDs). Minimized windows are automatically restored before docking.",
-      prefer: "Use pin_window alone when you only need always-on-top without moving or resizing. Use dock_window when you need corner placement + resize + pin in one step.",
-      caveats: "Overrides any existing Win+Arrow snap arrangement. Call unpin_window explicitly to release always-on-top when the docked window is no longer needed in front.",
-    }),
-    dockWindowSchema,
-    dockWindowHandler
-  );
-}
+// registerDockTools removed in Phase 2a (family merge).
+// dock_window is now registered via window_dock(action='dock') in window-dock.ts.

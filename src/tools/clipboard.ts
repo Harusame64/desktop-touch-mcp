@@ -69,21 +69,37 @@ export const clipboardWriteHandler = async ({
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Dispatcher schema (discriminated union)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const clipboardSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("read"),
+  }),
+  z.object({
+    action: z.literal("write"),
+    text: z.string().max(100_000).describe("Text to place on the clipboard"),
+  }),
+]);
+
+export type ClipboardArgs = z.infer<typeof clipboardSchema>;
+
+export const clipboardHandler = async (args: ClipboardArgs): Promise<import("./_types.js").ToolResult> => {
+  if (args.action === "read") return clipboardReadHandler();
+  return clipboardWriteHandler(args);
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Registration
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function registerClipboardTools(server: McpServer): void {
-  server.tool(
-    "clipboard_read",
-    "Return the current text content of the Windows clipboard. Use after the user copies something to inspect it, or to retrieve text written by clipboard_write. Caveats: Non-text clipboard payloads (images, files) return an empty string — not an error.",
-    clipboardReadSchema,
-    clipboardReadHandler
-  );
-
-  server.tool(
-    "clipboard_write",
-    "Place text on the Windows clipboard. Useful for seeding clipboard content before pasting, or for sharing data between tools without typing. Caveats: Overwrites existing clipboard content; non-text clipboard data (images, files) is not supported.",
-    clipboardWriteSchema,
-    clipboardWriteHandler
+  server.registerTool(
+    "clipboard",
+    {
+      description: "Read or write the Windows clipboard. action='read' returns current text content (empty string if non-text). action='write' replaces clipboard with given text. Caveats: Non-text clipboard payloads (images, files) return empty string on read. Overwrites existing clipboard content on write.",
+      inputSchema: clipboardSchema,
+    },
+    clipboardHandler
   );
 }
