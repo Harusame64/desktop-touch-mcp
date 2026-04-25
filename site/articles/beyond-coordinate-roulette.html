@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Beyond Coordinate Roulette</title>
+    <meta name="description" content="A public-facing name for the idea that UI automation should operate on meaning, not on blind coordinate guesses." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@500;700;800&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="../assets/styles.css" />
+    <script defer src="../assets/site.js"></script>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({ startOnLoad: true, theme: "base", securityLevel: "loose", themeVariables: { primaryColor: "#e8f1ff", primaryTextColor: "#1d2433", primaryBorderColor: "#3141b7", lineColor: "#58657d", secondaryColor: "#f8dfd4", tertiaryColor: "#d7f2ed", fontFamily: "Manrope" } });
+    </script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="site-shell">
+        <a class="brand" href="../index.html">
+          <span class="brand-kicker">Philosophy</span>
+          <span class="brand-title">Beyond Coordinate Roulette</span>
+        </a>
+        <nav class="nav-links" aria-label="Main">
+          <a href="../index.html">Home</a>
+          <a href="./client-setup.html">Setup</a>
+          <a href="./reactive-perception-graph.html">RPG</a>
+          <a href="./planned-evaluation.html">Evaluation</a>
+          <a href="https://github.com/Harusame64/desktop-touch-mcp">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="page">
+      <div class="site-shell">
+        <section class="hero-card">
+          <div class="article-hero">
+            <a class="breadcrumb" href="../index.html">← Back to project top</a>
+            <span class="eyebrow">Meaning-first interaction</span>
+            <h1>Beyond Coordinate Roulette</h1>
+            <p class="lead">UI automation should not feel like a flat sequence of positional guesses. It should know what it is touching, why that action makes sense, and whether that is still true right now.</p>
+          </div>
+          <div class="hero-visual" style="padding-top: 0;">
+            <div class="mermaid-wrap" style="width: 100%;">
+              <pre class="mermaid">flowchart TB
+    subgraph A["Coordinate roulette"]
+        A1["Looks clickable"]
+        A2["Guess position"]
+        A3["Wrong target"]
+        A1 --&gt; A2 --&gt; A3
+    end
+
+    subgraph B["Beyond Coordinate Roulette"]
+        B1["See entities"]
+        B2["Affordances"]
+        B3["Lease trust"]
+        B4["Guard action"]
+        B5["Semantic diff"]
+        B1 --&gt; B2 --&gt; B3 --&gt; B4 --&gt; B5
+    end
+
+    A3 -. "move beyond this" .- B1
+
+    classDef old fill:#fde2e2,stroke:#c0392b,color:#5c1f1f;
+    classDef new fill:#e8f1ff,stroke:#3b6db3,color:#183257;
+    class A1,A2,A3 old;
+    class B1,B2,B3,B4,B5 new;</pre>
+            </div>
+          </div>
+        </section>
+
+        <div class="article-layout">
+          <div class="article-main">
+            <section class="article-card">
+              <span class="label">In one sentence</span>
+              <h2>Operate on meaning, not on blind guesses over coordinates.</h2>
+              <p>Beyond Coordinate Roulette is the public-facing name for a simple idea: interface automation should be grounded in entities, affordances, and semantic outcomes, not just rough positional clicks.</p>
+            </section>
+
+            <section class="article-card">
+              <span class="label warm">The failure mode</span>
+              <h2>Too much automation still behaves like this.</h2>
+              <div class="three-up">
+                <div class="mini-card"><h3>Guess</h3><p>Click somewhere around here.</p></div>
+                <div class="mini-card"><h3>Hope</h3><p>Hope this is still the same button.</p></div>
+                <div class="mini-card"><h3>Patch</h3><p>Patch the failure with another guess.</p></div>
+              </div>
+              <p>That loop can look automated, but it is not truly grounded.</p>
+            </section>
+
+            <section class="article-card">
+              <span class="label">What this pushes toward</span>
+              <h2>A different model of interaction.</h2>
+              <div class="feature-grid">
+                <div class="mini-card"><h3>See entities</h3><p>Treat the UI as a world containing things, not just a bitmap.</p></div>
+                <div class="mini-card"><h3>See affordances</h3><p>Know not only where something is, but what can be done with it.</p></div>
+                <div class="mini-card"><h3>Keep trust bounded</h3><p>Do not assume a target is valid forever. Trust should be temporary and revocable.</p></div>
+                <div class="mini-card"><h3>Compare semantically</h3><p>After action, ask what changed in meaning, not only whether pixels moved.</p></div>
+              </div>
+            </section>
+
+            <section class="article-card">
+              <span class="label warm">Inside this project</span>
+              <h2>Not a single feature. A direction.</h2>
+              <p>Inside <code>desktop-touch-mcp</code>, this shows up through pieces like:</p>
+              <ul>
+                <li><code>desktop_see</code></li>
+                <li><code>desktop_touch</code></li>
+                <li>entity leases</li>
+                <li>guarded execution</li>
+                <li>semantic diffs</li>
+                <li>event-first invalidation</li>
+              </ul>
+              <blockquote>Do not hide coordinate guessing behind a more polished API.</blockquote>
+            </section>
+
+            <section class="article-card">
+              <span class="label">Relationship to RPG</span>
+              <h2>Shape of interaction versus survival over time.</h2>
+              <div class="two-up">
+                <div class="mini-card"><h3>Beyond Coordinate Roulette</h3><p>Focuses on the shape of interaction: entities, affordances, and semantic outcomes.</p></div>
+                <div class="mini-card"><h3>Reactive Perception Graph</h3><p>Focuses on the time dimension: provisional state, dirty/stale tracking, leases, and guards.</p></div>
+              </div>
+              <p>Beyond Coordinate Roulette asks: <strong>what should UI interaction be grounded in?</strong><br />RPG asks: <strong>how should that grounding survive time and change?</strong></p>
+            </section>
+
+            <section class="article-card">
+              <span class="label warm">One line to keep</span>
+              <h2>Good automation knows more than where to click.</h2>
+              <blockquote>Good automation does not just know where to click. It knows what it is touching, why it can touch it, and whether that is still true right now.</blockquote>
+              <div class="hero-actions">
+                <a class="button primary" href="./reactive-perception-graph.html">Read the RPG explainer</a>
+                <a class="button secondary" href="../index.html">Back to project top</a>
+              </div>
+            </section>
+          </div>
+
+          <aside class="article-aside">
+            <div class="aside-card">
+              <h3>Internal note</h3>
+              <p>Internally, this idea is sometimes referred to by the codename <code>Anti-Fukuwarai</code>. The public page uses a more self-explanatory English name instead.</p>
+              <h3>Related pages</h3>
+              <ul>
+                <li><a href="../index.html">Project top</a></li>
+                <li><a href="./client-setup.html">Client setup</a></li>
+                <li><a href="./reactive-perception-graph.html">Reactive Perception Graph</a></li>
+                <li><a href="./planned-evaluation.html">Planned evaluation</a></li>
+              </ul>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <div class="site-shell">
+        <span>Beyond Coordinate Roulette article draft</span>
+        <span>&copy; <span data-year></span> experimental interface work</span>
+      </div>
+    </footer>
+  </body>
+</html>

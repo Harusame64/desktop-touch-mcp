@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="560" viewBox="0 0 1200 560" role="img" aria-labelledby="title desc">
+  <title id="title">Snapshot-and-Act versus RPG</title>
+  <desc id="desc">A two-panel rough showing an unsafe old-snapshot action on the left and a guarded action flow on the right.</desc>
+  <rect width="1200" height="560" fill="#f7f8fb"/>
+
+  <rect x="40" y="50" width="520" height="460" rx="24" fill="#fff0f0" stroke="#d35d5d" stroke-width="2"/>
+  <text x="80" y="95" font-family="Segoe UI, Arial, sans-serif" font-size="32" font-weight="700" fill="#7a1f1f">Snapshot-and-Act</text>
+  <text x="80" y="132" font-family="Segoe UI, Arial, sans-serif" font-size="18" fill="#7a1f1f">Looks simple, but trusts an old screen too much.</text>
+
+  <rect x="80" y="170" width="150" height="80" rx="16" fill="#ffffff" stroke="#c04b4b" stroke-width="2"/>
+  <text x="124" y="218" font-family="Segoe UI, Arial, sans-serif" font-size="24" font-weight="600" fill="#6a2525">Observe</text>
+
+  <rect x="250" y="170" width="120" height="80" rx="16" fill="#ffffff" stroke="#c04b4b" stroke-width="2"/>
+  <text x="284" y="218" font-family="Segoe UI, Arial, sans-serif" font-size="24" font-weight="600" fill="#6a2525">Think</text>
+
+  <rect x="390" y="170" width="120" height="80" rx="16" fill="#ffffff" stroke="#c04b4b" stroke-width="2"/>
+  <text x="433" y="218" font-family="Segoe UI, Arial, sans-serif" font-size="24" font-weight="600" fill="#6a2525">Act</text>
+
+  <line x1="230" y1="210" x2="250" y2="210" stroke="#c04b4b" stroke-width="3"/>
+  <polygon points="250,210 238,204 238,216" fill="#c04b4b"/>
+  <line x1="370" y1="210" x2="390" y2="210" stroke="#c04b4b" stroke-width="3"/>
+  <polygon points="390,210 378,204 378,216" fill="#c04b4b"/>
+
+  <rect x="150" y="300" width="300" height="74" rx="18" fill="#ffe1e1" stroke="#d35d5d" stroke-width="2"/>
+  <text x="195" y="343" font-family="Segoe UI, Arial, sans-serif" font-size="26" font-weight="700" fill="#7a1f1f">World changed here</text>
+
+  <line x1="300" y1="374" x2="450" y2="430" stroke="#d35d5d" stroke-width="4" stroke-dasharray="10 8"/>
+  <polygon points="450,430 435,420 431,435" fill="#d35d5d"/>
+
+  <rect x="360" y="420" width="150" height="50" rx="14" fill="#d35d5d"/>
+  <text x="389" y="452" font-family="Segoe UI, Arial, sans-serif" font-size="22" font-weight="700" fill="#ffffff">Unsafe action</text>
+
+  <rect x="640" y="50" width="520" height="460" rx="24" fill="#eef8f0" stroke="#3c8d5f" stroke-width="2"/>
+  <text x="680" y="95" font-family="Segoe UI, Arial, sans-serif" font-size="32" font-weight="700" fill="#1f5f3b">Reactive Perception Graph</text>
+  <text x="680" y="132" font-family="Segoe UI, Arial, sans-serif" font-size="18" fill="#1f5f3b">Treats external state as provisional and checks before acting.</text>
+
+  <rect x="680" y="170" width="140" height="74" rx="16" fill="#ffffff" stroke="#3c8d5f" stroke-width="2"/>
+  <text x="713" y="214" font-family="Segoe UI, Arial, sans-serif" font-size="22" font-weight="600" fill="#234f35">Observe</text>
+
+  <rect x="840" y="170" width="150" height="74" rx="16" fill="#ffffff" stroke="#3c8d5f" stroke-width="2"/>
+  <text x="870" y="203" font-family="Segoe UI, Arial, sans-serif" font-size="21" font-weight="600" fill="#234f35">Provisional</text>
+  <text x="894" y="228" font-family="Segoe UI, Arial, sans-serif" font-size="18" fill="#234f35">state</text>
+
+  <rect x="1010" y="170" width="110" height="74" rx="16" fill="#ffffff" stroke="#3c8d5f" stroke-width="2"/>
+  <text x="1034" y="214" font-family="Segoe UI, Arial, sans-serif" font-size="22" font-weight="600" fill="#234f35">Guard</text>
+
+  <line x1="820" y1="207" x2="840" y2="207" stroke="#3c8d5f" stroke-width="3"/>
+  <polygon points="840,207 828,201 828,213" fill="#3c8d5f"/>
+  <line x1="990" y1="207" x2="1010" y2="207" stroke="#3c8d5f" stroke-width="3"/>
+  <polygon points="1010,207 998,201 998,213" fill="#3c8d5f"/>
+
+  <rect x="730" y="300" width="170" height="62" rx="18" fill="#dff2e4" stroke="#3c8d5f" stroke-width="2"/>
+  <text x="771" y="338" font-family="Segoe UI, Arial, sans-serif" font-size="24" font-weight="700" fill="#1f5f3b">Lease check</text>
+
+  <rect x="930" y="300" width="170" height="62" rx="18" fill="#dff2e4" stroke="#3c8d5f" stroke-width="2"/>
+  <text x="967" y="338" font-family="Segoe UI, Arial, sans-serif" font-size="24" font-weight="700" fill="#1f5f3b">Execute or block</text>
+
+  <line x1="900" y1="331" x2="930" y2="331" stroke="#3c8d5f" stroke-width="3"/>
+  <polygon points="930,331 918,325 918,337" fill="#3c8d5f"/>
+
+  <rect x="900" y="410" width="190" height="52" rx="14" fill="#3c8d5f"/>
+  <text x="943" y="443" font-family="Segoe UI, Arial, sans-serif" font-size="22" font-weight="700" fill="#ffffff">Safer contract</text>
+
+  <line x1="1065" y1="244" x2="1065" y2="300" stroke="#3c8d5f" stroke-width="3"/>
+  <polygon points="1065,300 1059,288 1071,288" fill="#3c8d5f"/>
+</svg>

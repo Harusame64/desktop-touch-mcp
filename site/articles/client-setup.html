@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Client Setup</title>
+    <meta name="description" content="Copy-paste setup snippets for connecting desktop-touch-mcp to Claude, GitHub Copilot, VS Code, Codex, ChatGPT Developer mode, and Gemini CLI." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@500;700;800&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="../assets/styles.css" />
+    <script defer src="../assets/site.js"></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="site-shell">
+        <a class="brand" href="../index.html">
+          <span class="brand-kicker">Practical setup</span>
+          <span class="brand-title">Client Setup</span>
+        </a>
+        <nav class="nav-links" aria-label="Main">
+          <a href="../index.html">Home</a>
+          <a href="./reactive-perception-graph.html">RPG</a>
+          <a href="./beyond-coordinate-roulette.html">Beyond Coordinate Roulette</a>
+          <a href="./planned-evaluation.html">Evaluation</a>
+          <a href="https://github.com/Harusame64/desktop-touch-mcp">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="page">
+      <div class="site-shell">
+        <section class="hero-card">
+          <div class="article-hero">
+            <a class="breadcrumb" href="../index.html">← Back to project top</a>
+            <span class="eyebrow">Copy, paste, try</span>
+            <h1>Connect <code>desktop-touch-mcp</code> to the client you already use</h1>
+            <p class="lead">This page keeps the setup practical. Pick your client, copy one snippet, and you should be able to get moving without reverse-engineering transport names or config shapes.</p>
+            <p><strong>Current scope:</strong> all examples on this page assume a local <strong>Windows 11</strong> machine. This project is not yet a multi-OS setup story.</p>
+          </div>
+        </section>
+
+        <div class="article-layout">
+          <div class="article-main">
+            <section class="article-card">
+              <span class="label">Start here</span>
+              <h2>Choose the transport first.</h2>
+              <p>Before transport, one important scope note: the runtime and client setup on this page are documented as <strong>Windows 11 only for now</strong>.</p>
+              <p><strong>Stdio</strong> is the simplest path when your client can launch local MCP servers itself.</p>
+              <pre>npx -y @harusame64/desktop-touch-mcp</pre>
+              <p><strong>HTTP</strong> is the right path when your client wants a server URL.</p>
+              <pre>npx -y @harusame64/desktop-touch-mcp --http</pre>
+              <p>The default local MCP endpoint is:</p>
+              <pre>http://127.0.0.1:23847/mcp</pre>
+              <p>Optional health check:</p>
+              <pre>http://127.0.0.1:23847/health</pre>
+              <p>Custom port example:</p>
+              <pre>npx -y @harusame64/desktop-touch-mcp --http --port 8080</pre>
+            </section>
+
+            <section class="article-card">
+              <span class="label warm">Rule of thumb</span>
+              <h2>If the client can launch, use stdio. If it asks for a URL, use HTTP.</h2>
+              <div class="three-up">
+                <div class="mini-card"><h3>Use stdio</h3><p>Claude Code, Codex, Gemini CLI, and many local clients are comfortable launching a local command.</p></div>
+                <div class="mini-card"><h3>Use HTTP</h3><p>VS Code, URL-based clients, and ChatGPT Developer mode fit better with a local endpoint.</p></div>
+                <div class="mini-card"><h3>Keep both</h3><p>It is reasonable for public docs to show stdio first and HTTP second for the same project.</p></div>
+              </div>
+            </section>
+
+            <section class="article-card">
+              <span class="label">Tested shape</span>
+              <h2>These setup patterns are based on current official client docs.</h2>
+              <p>This project has also been manually checked against Claude, GitHub Copilot CLI, VS Code / Copilot Chat, OpenAI Codex, and Gemini CLI.</p>
+            </section>
+
+            <section class="article-card">
+              <span class="label warm">Claude Code</span>
+              <h2>CLI registration or shared project JSON.</h2>
+              <p>Fastest path:</p>
+              <pre>claude mcp add --transport stdio desktop-touch -- npx -y @harusame64/desktop-touch-mcp</pre>
+              <p>HTTP path:</p>
+              <pre>claude mcp add --transport http desktop-touch http://127.0.0.1:23847/mcp</pre>
+              <p>Shared project <code>.mcp.json</code> for stdio:</p>
+              <pre>{
+  "mcpServers": {
+    "desktop-touch": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@harusame64/desktop-touch-mcp"]
+    }
+  }
+}</pre>
+              <p>HTTP version:</p>
+              <pre>{
+  "mcpServers": {
+    "desktop-touch": {
+      "type": "http",
+      "url": "http://127.0.0.1:23847/mcp"
+    }
+  }
+}</pre>
+            </section>
+
+            <section class="article-card">
+              <span class="label">GitHub Copilot CLI</span>
+              <h2>Interactive form or <code>~/.copilot/mcp-config.json</code>.</h2>
+              <p>Interactive path:</p>
+              <pre>/mcp add</pre>
+              <p>Then enter:</p>
+              <ul>
+                <li>Server Name: <code>desktop-touch</code></li>
+                <li>Server Type: <code>Local</code> or <code>STDIO</code></li>
+                <li>Command: <code>npx -y @harusame64/desktop-touch-mcp</code></li>
+              </ul>
+              <p>For HTTP, choose <code>HTTP</code> and use <code>http://127.0.0.1:23847/mcp</code>.</p>
+              <p>JSON config for stdio:</p>
+              <pre>{
+  "mcpServers": {
+    "desktop-touch": {
+      "type": "local",
+      "command": "npx",
+      "args": ["-y", "@harusame64/desktop-touch-mcp"],
+      "env": {},
+      "tools": ["*"]
+    }
+  }
+}</pre>
+              <p>HTTP version:</p>
+              <pre>{
+  "mcpServers": {
+    "desktop-touch": {
+      "type": "http",
+      "url": "http://127.0.0.1:23847/mcp",
+      "tools": ["*"]
+    }
+  }
+}</pre>
+            </section>
+
+            <section class="article-card">
+              <span class="label warm">VS Code / Copilot Chat</span>
+              <h2>Use <code>.vscode/mcp.json</code>.</h2>
+              <p>Stdio:</p>
+              <pre>{
+  "servers": {
+    "desktop-touch": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@harusame64/desktop-touch-mcp"]
+    }
+  }
+}</pre>
+              <p>HTTP:</p>
+              <pre>{
+  "servers": {
+    "desktop-touch": {
+      "type": "http",
+      "url": "http://127.0.0.1:23847/mcp"
+    }
+  }
+}</pre>
+              <p>Once it is registered, open Copilot Chat, switch to Agent mode, and enable the server from the tools picker.</p>
+            </section>
+
+            <section class="article-card">
+              <span class="label">OpenAI Codex</span>
+              <h2>Use <code>~/.codex/config.toml</code>.</h2>
+              <p>Stdio:</p>
+              <pre>[mcp_servers.desktop_touch]
+command = "npx"
+args = ["-y", "@harusame64/desktop-touch-mcp"]</pre>
+              <p>HTTP:</p>
+              <pre>[mcp_servers.desktop_touch]
+url = "http://127.0.0.1:23847/mcp"</pre>
+              <p>Check what Codex sees:</p>
+              <pre>codex mcp list</pre>
+            </section>
+
+            <section class="article-card">
+              <span class="label warm">ChatGPT Developer mode</span>
+              <h2>Treat ChatGPT as an HTTP-first client.</h2>
+              <p>The current public OpenAI docs describe ChatGPT Developer mode with remote MCP over streaming HTTP or SSE. For <code>desktop-touch-mcp</code>, that means the local HTTP mode is the right public setup story.</p>
+              <pre>npx -y @harusame64/desktop-touch-mcp --http</pre>
+              <pre>http://127.0.0.1:23847/mcp</pre>
+              <ol>
+                <li>Open <code>Settings -&gt; Apps -&gt; Advanced settings -&gt; Developer mode</code></li>
+                <li>Enable Developer mode</li>
+                <li>Create an app for your MCP server</li>
+                <li>Add the local MCP endpoint</li>
+              </ol>
+            </section>
+
+            <section class="article-card">
+              <span class="label">Gemini CLI</span>
+              <h2>Use <code>settings.json</code>.</h2>
+              <p>Gemini CLI supports both user and workspace config:</p>
+              <ul>
+                <li><code>~/.gemini/settings.json</code></li>
+                <li><code>.gemini/settings.json</code></li>
+              </ul>
+              <p>Stdio:</p>
+              <pre>{
+  "mcpServers": {
+    "desktop-touch": {
+      "command": "npx",
+      "args": ["-y", "@harusame64/desktop-touch-mcp"]
+    }
+  }
+}</pre>
+              <p>HTTP:</p>
+              <pre>{
+  "mcpServers": {
+    "desktop-touch": {
+      "httpUrl": "http://127.0.0.1:23847/mcp"
+    }
+  }
+}</pre>
+              <p>After registration, <code>/mcp</code> is the quickest way to check status.</p>
+            </section>
+
+            <section class="article-card">
+              <span class="label warm">Tiny advice</span>
+              <h2>Make the first run obvious.</h2>
+              <div class="three-up">
+                <div class="mini-card"><h3>Show stdio first</h3><p>It is the least surprising local path for most technical readers.</p></div>
+                <div class="mini-card"><h3>Show HTTP second</h3><p>It removes ambiguity for URL-based clients and web clients.</p></div>
+                <div class="mini-card"><h3>Keep one snippet per client</h3><p>Readers should never have to translate one client’s config shape into another by hand.</p></div>
+              </div>
+              <div class="hero-actions">
+                <a class="button primary" href="https://github.com/Harusame64/desktop-touch-mcp">Go to the repository</a>
+                <a class="button secondary" href="../index.html">Back to project top</a>
+              </div>
+            </section>
+          </div>
+
+          <aside class="article-aside">
+            <div class="aside-card">
+              <h3>Quick links</h3>
+              <ul>
+                <li><a href="../index.html">Project top</a></li>
+                <li><a href="./reactive-perception-graph.html">Reactive Perception Graph</a></li>
+                <li><a href="./beyond-coordinate-roulette.html">Beyond Coordinate Roulette</a></li>
+                <li><a href="./planned-evaluation.html">Planned evaluation</a></li>
+              </ul>
+              <h3>Default local endpoint</h3>
+              <pre>http://127.0.0.1:23847/mcp</pre>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <div class="site-shell">
+        <span>Client setup draft</span>
+        <span>&copy; <span data-year></span> experimental interface work</span>
+      </div>
+    </footer>
+  </body>
+</html>

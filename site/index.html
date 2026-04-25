@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>desktop-touch-mcp</title>
+    <meta name="description" content="An experimental project exploring safer contracts between LLM agents and dynamic desktop interfaces." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@500;700;800&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="./assets/styles.css" />
+    <script defer src="./assets/site.js"></script>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({ startOnLoad: true, theme: "base", securityLevel: "loose", themeVariables: { primaryColor: "#e8f1ff", primaryTextColor: "#1d2433", primaryBorderColor: "#3141b7", lineColor: "#58657d", secondaryColor: "#f8dfd4", tertiaryColor: "#d7f2ed", fontFamily: "Manrope" } });
+    </script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="site-shell">
+        <a class="brand" href="./index.html">
+          <span class="brand-kicker">Experimental Interface Work</span>
+          <span class="brand-title">desktop-touch-mcp</span>
+        </a>
+        <nav class="nav-links" aria-label="Main">
+          <a href="./articles/client-setup.html">Setup</a>
+          <a href="./articles/reactive-perception-graph.html">RPG</a>
+          <a href="./articles/beyond-coordinate-roulette.html">Beyond Coordinate Roulette</a>
+          <a href="./articles/planned-evaluation.html">Evaluation</a>
+          <a href="https://github.com/Harusame64/desktop-touch-mcp">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="page">
+      <div class="site-shell">
+        <section class="hero-card hero-grid">
+          <div class="hero-copy">
+            <span class="eyebrow">Experimental by design</span>
+            <h1>A safer way for LLM agents to touch the outside world</h1>
+            <p class="lead"><code>desktop-touch-mcp</code> is an experimental MCP server for giving LLM agents eyes, hands, and a better safety contract with dynamic interfaces.</p>
+            <p>For now, treat this project as <strong>Windows 11 only</strong>. It already lets LLMs interact with Windows applications through screenshots, keyboard, mouse, Windows UI Automation, and Chrome DevTools Protocol.</p>
+            <p>But the deeper goal is not just “look at a screenshot and click some coordinates.” This project is exploring how LLM agents can interact with changing interfaces in a way that is more semantic, more bounded, and less fragile.</p>
+            <div class="hero-actions">
+              <a class="button primary" href="./articles/client-setup.html">Client setup</a>
+              <a class="button secondary" href="./articles/reactive-perception-graph.html">Read the RPG explainer</a>
+              <a class="button secondary" href="./articles/beyond-coordinate-roulette.html">Beyond Coordinate Roulette</a>
+              <a class="button secondary" href="https://github.com/Harusame64/desktop-touch-mcp">Browse the repository</a>
+            </div>
+          </div>
+          <div class="hero-visual">
+            <img src="./assets/figures/hero-accident.svg" alt="Unsafe snapshot-and-act flow versus guarded RPG flow" />
+          </div>
+        </section>
+
+        <div class="section-stack">
+          <section class="section-card">
+            <span class="label warm">Current scope</span>
+            <h2>Windows 11 only, not multi-OS yet.</h2>
+            <p>This public site currently documents the <strong>Windows 11</strong> path. Multi-OS support is not implemented yet, so the examples, screenshots, and client setup flow should all be read as Windows-first and Windows-only for now.</p>
+          </section>
+
+          <section class="section-card">
+            <span class="label">What this project is</span>
+            <h2>Not a bigger tool catalog. A different contract with the world.</h2>
+            <p><code>desktop-touch-mcp</code> is a Windows MCP server that exposes screenshots, keyboard and mouse input, Windows UI Automation, Chrome DevTools Protocol, and related desktop-control tools.</p>
+            <div class="quote-card">
+              <blockquote>How should an LLM agent interact safely with an external world that may already have changed while it was thinking?</blockquote>
+            </div>
+          </section>
+
+          <section class="section-card">
+            <span class="label warm">Quick start</span>
+            <h2>Want to try it first?</h2>
+            <p>The quickest way to install and launch the runtime is:</p>
+            <pre>npx -y @harusame64/desktop-touch-mcp</pre>
+            <p>
+              On first run, the launcher downloads the matching Windows runtime from GitHub Releases,
+              verifies it, and caches it locally.
+            </p>
+            <div class="hero-actions">
+              <a class="button primary" href="./articles/client-setup.html">See client setup examples</a>
+              <a class="button secondary" href="https://github.com/Harusame64/desktop-touch-mcp">See installation details</a>
+              <a class="button secondary" href="./articles/reactive-perception-graph.html">Why this project exists</a>
+            </div>
+          </section>
+
+          <section class="section-card">
+            <span class="label warm">Experimental note</span>
+            <h2>This is a public workbench, not a finished product brochure.</h2>
+            <div class="three-up">
+              <div class="mini-card"><h3>Already practical</h3><p>Some pieces are useful today and already shape real desktop control workflows.</p></div>
+              <div class="mini-card"><h3>Still under test</h3><p>Some pieces are active design hypotheses being tested in code and dogfooding.</p></div>
+              <div class="mini-card"><h3>Evaluation in progress</h3><p>Benchmarking and systematic evidence are still being built out alongside the implementation.</p></div>
+            </div>
+          </section>
+
+          <section class="section-card">
+            <span class="label">Why this exists</span>
+            <h2>Most GUI agents trust the world for too long.</h2>
+            <div class="two-up">
+              <div><p>Many agents still follow a simple loop:</p><pre>observe
+think
+act</pre></div>
+              <div><p>On a real desktop, that is often enough to fail:</p><ul><li>another window comes to the front</li><li>a modal dialog appears</li><li>a button moves</li><li>the target element disappears</li></ul></div>
+            </div>
+            <p>So the problem is not only whether the model is intelligent enough. The problem is also whether it is acting on assumptions that are already stale.</p>
+          </section>
+
+          <section class="section-card">
+            <span class="label">Beyond Coordinate Roulette</span>
+            <h2>Meaning-first interaction instead of positional guesswork.</h2>
+            <p>This project publicly describes one of its guiding ideas as <strong>Beyond Coordinate Roulette</strong>. The phrase points at a familiar failure mode in UI automation: the interface is treated as a flat picture, and action becomes a positional guess.</p>
+            <div class="mermaid-wrap">
+              <pre class="mermaid">flowchart TB
+    subgraph A["Coordinate roulette"]
+        A1["Looks clickable"]
+        A2["Guess position"]
+        A3["Wrong target"]
+        A1 --&gt; A2 --&gt; A3
+    end
+
+    subgraph B["Beyond Coordinate Roulette"]
+        B1["See entities"]
+        B2["Affordances"]
+        B3["Lease trust"]
+        B4["Guard action"]
+        B5["Semantic diff"]
+        B1 --&gt; B2 --&gt; B3 --&gt; B4 --&gt; B5
+    end
+
+    A3 -. "move beyond this" .- B1
+
+    classDef old fill:#fde2e2,stroke:#c0392b,color:#5c1f1f;
+    classDef new fill:#e8f1ff,stroke:#3b6db3,color:#183257;
+    class A1,A2,A3 old;
+    class B1,B2,B3,B4,B5 new;</pre>
+            </div>
+          </section>
+
+          <section class="section-card">
+            <span class="label">Core ideas</span>
+            <h2>Four recurring design moves.</h2>
+            <div class="feature-grid">
+              <div class="mini-card"><h3>Provisional state</h3><p>Do not keep observed state as timeless truth. Keep it as something that is probably true for now.</p></div>
+              <div class="mini-card"><h3>Leased trust</h3><p>Do not trust a target forever. Trust it through a short-lived lease.</p></div>
+              <div class="mini-card"><h3>Guarded action</h3><p>Before acting, check whether the assumptions behind the action are still valid.</p></div>
+              <div class="mini-card"><h3>Demand-driven perception</h3><p>Do not pay for expensive perception on every step. Escalate only when the situation demands it.</p></div>
+            </div>
+          </section>
+
+          <section class="section-card">
+            <span class="label">One concrete example</span>
+            <h2>Reactive Perception Graph</h2>
+            <p>One concrete expression of these ideas is the <strong>Reactive Perception Graph (RPG)</strong>. RPG keeps external state provisional, tracks when that state becomes dirty or stale, and evaluates safety checks before an action is allowed to fire.</p>
+            <blockquote>Screenshots are not truth.</blockquote>
+            <div class="mermaid-wrap">
+              <pre class="mermaid">flowchart LR
+    subgraph A["Snapshot-and-Act"]
+        A1["Observe screen"]
+        A2["Think"]
+        A3["Act on old assumption"]
+        A1 --&gt; A2 --&gt; A3
+        AX["World changed"] -.-> A3
+    end
+
+    subgraph B["Reactive Perception Graph"]
+        B1["Observe target"]
+        B2["Store provisional state"]
+        B3["Dirty / stale signals"]
+        B4["Validate lease"]
+        B5["Run guards"]
+        B6["Execute or block"]
+        B1 --&gt; B2 --&gt; B3 --&gt; B4 --&gt; B5 --&gt; B6
+    end
+
+    A3 --&gt; C["Unsafe action"]
+    B6 --&gt; D["Safer action contract"]
+
+    classDef bad fill:#fde2e2,stroke:#c0392b,color:#5c1f1f;
+    classDef good fill:#e5f6ea,stroke:#2e8b57,color:#123d28;
+    class C bad;
+    class D good;</pre>
+            </div>
+            <div class="hero-actions">
+              <a class="button primary" href="./articles/reactive-perception-graph.html">Read the full RPG explainer</a>
+              <a class="button secondary" href="./articles/planned-evaluation.html">See the evaluation plan</a>
+            </div>
+          </section>
+
+          <section class="section-card">
+            <span class="label warm">Explore</span>
+            <h2>Where to go next</h2>
+            <div class="three-up">
+              <a class="mini-card" href="./articles/client-setup.html"><h3>Client setup</h3><p>Copy-paste config snippets for Claude, Copilot, VS Code, Codex, ChatGPT, and Gemini CLI.</p></a>
+              <a class="mini-card" href="./articles/reactive-perception-graph.html"><h3>RPG explainer</h3><p>A diagram-heavy walkthrough of why stale assumptions matter and how RPG responds.</p></a>
+              <a class="mini-card" href="./articles/beyond-coordinate-roulette.html"><h3>Beyond Coordinate Roulette</h3><p>The philosophy piece behind entity-first, meaning-first UI interaction.</p></a>
+            </div>
+            <div class="three-up" style="margin-top: 18px;">
+              <a class="mini-card" href="./articles/planned-evaluation.html"><h3>Planned evaluation</h3><p>The scenarios, metrics, and reporting format intended to validate these ideas.</p></a>
+            </div>
+          </section>
+
+          <section class="section-card">
+            <span class="label">Get in touch</span>
+            <h2>Questions, bugs, or ideas? Start with GitHub.</h2>
+            <p>I am not publishing a direct contact email on this site. If you found a bug, hit an integration problem, or want to discuss the direction of the project, the best path is GitHub.</p>
+            <div class="three-up">
+              <a class="mini-card" href="https://github.com/Harusame64/desktop-touch-mcp/issues"><h3>Open an issue</h3><p>Best for bugs, setup problems, and feature requests.</p></a>
+              <a class="mini-card" href="https://github.com/Harusame64/desktop-touch-mcp/issues/new/choose"><h3>Start with a template</h3><p>Use the issue chooser if you want a more structured report.</p></a>
+              <a class="mini-card" href="https://github.com/Harusame64/desktop-touch-mcp"><h3>Browse the repository</h3><p>Useful if you want to inspect current work before opening a discussion.</p></a>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <div class="site-shell">
+        <span>desktop-touch-mcp site draft</span>
+        <span>&copy; <span data-year></span> experimental interface work</span>
+      </div>
+    </footer>
+  </body>
+</html>
