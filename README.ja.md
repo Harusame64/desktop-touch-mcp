@@ -6,6 +6,9 @@
 
 > **「Claude CLI にスクショを毎回コピーしていたあなたへ。」**
 
+> **公開サイト:** [harusame64.github.io/desktop-touch-mcp](https://harusame64.github.io/desktop-touch-mcp/)  
+> まずはここから、公開向けの解説、client setup、Reactive Perception Graph の紹介を読めます。
+
 Claude がデスクトップを直接見て、直接操作する。  
 マウス・キーボード・スクリーンショット・Windows UI Automation・Chrome DevTools Protocol・ターミナル・SmartScroll・Reactive Perception Graph を統合した 57 のツールを提供する MCP サーバーです。
 
