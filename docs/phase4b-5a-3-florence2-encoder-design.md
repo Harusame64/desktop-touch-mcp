@@ -1,6 +1,14 @@
 # Phase 4b-5a-3 設計書 — Florence-2 Stage 1 multi-session loading + encoder forward
 
-- Status: Implemented (2026-04-25、commits 91a18d9〜1851e71)
+- Status: Implemented (2026-04-25、commits `91a18d9`〜`83f39d0`、Opus post-review addendum 含む)
+
+**Post-review addendum (Opus review 2026-04-25、BLOCKING 0)**:
+- Sonnet 追加判断 2 件: (a) encoder_tests 5 ケース (Debug test 追加) は §7 範囲内、(b) `stub_recognise_with_session` lite path 保持 (sub-sessions 不在時の preprocess + tokenize fallback) は §7/§8 中間 (4b-5a-1/2 既存テスト挙動維持目的、妥当だが冗長 — 4b-5a-4 で削除検討)
+- **RECOMMEND R1 (4b-5a-4 で対応)**: lite path 削除 — 現実装 ~80 行に膨張、`preprocess_ok` debug_assert のみで実体無し
+- **RECOMMEND R2 (4b-5a-4 design に註記)**: 設計書 §6 Known traps「`pub mod florence2;` 自体を cfg(feature) gate」は src/lib.rs:21 の `vision_backend` 全体 gate でカバー済 — 実害なし
+- **RECOMMEND R3 (4b-5a-4 design に反映)**: `init_florence2_stage1_blocking` の Vec 中間蓄積方式は設計書「部分挿入可能性」より safer (途中失敗時何も insert しない)
+- NIT N1: `format!("{outputs:?}")` の方が `.contains("encoder_hidden_states")` より堅牢
+- NIT N2: 4 sub-session の EP 分散時 `last_label` 集約は妥当だが multi-EP ロギングを 4b-5a-4 で検討
 - 設計者: Claude (Opus 4.7)
 - 実装担当: **Sonnet** (handbook §2 Step B)
 - レビュー担当: Opus 4.7 (別 subagent)
