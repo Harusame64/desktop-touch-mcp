@@ -185,7 +185,10 @@ p, li, td, th, blockquote { font-size: 1.05rem; }
 .section-stack, .article-main {
   display: grid;
   gap: 24px;
-  margin-top: 24px;
+}
+
+.article-main {
+  min-width: 0;
 }
 
 .section-card, .article-card { padding: 32px; }
@@ -298,6 +301,7 @@ blockquote {
   grid-template-columns: minmax(0, 1fr) 290px;
   gap: 24px;
   align-items: start;
+  margin-top: 24px;
 }
 
 .article-aside {

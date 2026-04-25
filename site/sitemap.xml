@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://harusame64.github.io/desktop-touch-mcp/</loc>
+    <priority>1.0</priority>
+  </url>
+  <url>
+    <loc>https://harusame64.github.io/desktop-touch-mcp/articles/beyond-coordinate-roulette.html</loc>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://harusame64.github.io/desktop-touch-mcp/articles/client-setup.html</loc>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://harusame64.github.io/desktop-touch-mcp/articles/planned-evaluation.html</loc>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://harusame64.github.io/desktop-touch-mcp/articles/reactive-perception-graph.html</loc>
+    <priority>0.8</priority>
+  </url>
+</urlset>
