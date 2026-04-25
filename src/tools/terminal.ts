@@ -589,21 +589,25 @@ export const terminalRunHandler = async ({
   // Reject invalid sendOptions/readOptions BEFORE doing any I/O so unbounded
   // values (e.g. chunkSize:0 hanging the background loop, source:'uia' on a
   // non-TextPattern terminal) cannot bypass the public schema bounds.
+  // Use fail() directly (not failWith) so we get code:"InvalidArgs" and the
+  // suggest[] array stays at the top level. failWith would classify "Invalid
+  // sendOptions" as the generic "ToolError" code and bury our custom suggest
+  // strings under context.suggest, which mis-classifies argument errors as
+  // internal errors and hides actionable remediation guidance from callers.
   let validatedSendOptions: z.infer<typeof TERMINAL_RUN_SEND_OPTIONS_SCHEMA> = {};
   if (sendOptions !== undefined) {
     const parsed = TERMINAL_RUN_SEND_OPTIONS_SCHEMA.safeParse(sendOptions);
     if (!parsed.success) {
-      return failWith(
-        new Error(`Invalid sendOptions: ${describeZodIssues(parsed.error)}`),
-        "terminal:run",
-        {
-          windowTitle,
-          suggest: [
-            "Refer to terminal(action='send') schema for valid keys/types",
-            "windowTitle, input, and sinceMarker cannot be overridden via sendOptions",
-          ],
-        }
-      );
+      return fail({
+        ok: false,
+        code: "InvalidArgs",
+        error: `terminal:run: Invalid sendOptions: ${describeZodIssues(parsed.error)}`,
+        suggest: [
+          "Refer to terminal(action='send') schema for valid keys/types",
+          "windowTitle, input, and sinceMarker cannot be overridden via sendOptions",
+        ],
+        context: { windowTitle },
+      });
     }
     validatedSendOptions = parsed.data;
   }
@@ -611,17 +615,16 @@ export const terminalRunHandler = async ({
   if (readOptions !== undefined) {
     const parsed = TERMINAL_RUN_READ_OPTIONS_SCHEMA.safeParse(readOptions);
     if (!parsed.success) {
-      return failWith(
-        new Error(`Invalid readOptions: ${describeZodIssues(parsed.error)}`),
-        "terminal:run",
-        {
-          windowTitle,
-          suggest: [
-            "Refer to terminal(action='read') schema for valid keys/types",
-            "windowTitle and sinceMarker cannot be overridden via readOptions",
-          ],
-        }
-      );
+      return fail({
+        ok: false,
+        code: "InvalidArgs",
+        error: `terminal:run: Invalid readOptions: ${describeZodIssues(parsed.error)}`,
+        suggest: [
+          "Refer to terminal(action='read') schema for valid keys/types",
+          "windowTitle and sinceMarker cannot be overridden via readOptions",
+        ],
+        context: { windowTitle },
+      });
     }
     validatedReadOptions = parsed.data;
   }
