@@ -164,7 +164,7 @@ describe("Case 6: runSomPipeline throws", () => {
     const adapter = new OcrVisualAdapter(target, { minPollIntervalMs: 0 });
 
     // Should not throw.
-    const result = await expect(adapter.pollOnce(target)).resolves.toEqual([]);
+    await expect(adapter.pollOnce(target)).resolves.toEqual([]);
     expect(received).toEqual([]);
   });
 });
