@@ -1,6 +1,6 @@
 # Phase 4b-5c 設計書 — PaddleOCR-v4 Stage 3 (text OCR) + 4b-5 post-review legacy 除去
 
-- Status: Implemented (2026-04-25、commit hash TBD — see §10 step 14)
+- Status: Implemented (2026-04-25、commits `2778847`〜`094183f`)
 - 設計者: Claude (Opus 4.7)
 - 実装担当: **Sonnet** (handbook §2 Step B)
 - レビュー担当: Opus 4.7 (別 subagent)
