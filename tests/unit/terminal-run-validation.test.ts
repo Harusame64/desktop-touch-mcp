@@ -17,10 +17,11 @@ function parseRunResponse(result: { content: Array<{ type: string; text?: string
   completion?: { reason?: string; elapsedMs?: number };
   warnings?: string[];
   readError?: { code?: string; error?: string; suggest?: string[] };
-  // failWith shape:
+  // fail() shape (used for InvalidArgs validation errors):
   error?: string;
   code?: string;
   suggest?: string[];
+  context?: Record<string, unknown>;
 } {
   const block = result.content[0];
   if (block?.type !== "text" || !block.text) return {};
@@ -38,8 +39,12 @@ describe("terminal(action='run') — sendOptions/readOptions validation (Phase 2
     });
     const parsed = parseRunResponse(result);
     expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("InvalidArgs");
     expect(parsed.error ?? "").toMatch(/Invalid sendOptions/);
     expect(parsed.error ?? "").toMatch(/chunkSize/);
+    // Custom suggest stays at top level (not nested under context)
+    expect(parsed.suggest).toBeDefined();
+    expect(parsed.suggest!.some((s) => /terminal\(action='send'\)/.test(s))).toBe(true);
   });
 
   it("rejects sendOptions with unknown keys (strict mode)", async () => {
@@ -92,8 +97,11 @@ describe("terminal(action='run') — sendOptions/readOptions validation (Phase 2
     });
     const parsed = parseRunResponse(result);
     expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("InvalidArgs");
     expect(parsed.error ?? "").toMatch(/Invalid readOptions/);
     expect(parsed.error ?? "").toMatch(/lines/);
+    expect(parsed.suggest).toBeDefined();
+    expect(parsed.suggest!.some((s) => /terminal\(action='read'\)/.test(s))).toBe(true);
   });
 
   it("rejects readOptions with source:'invalid' (not in enum)", async () => {
