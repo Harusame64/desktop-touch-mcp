@@ -65,6 +65,14 @@ fn stub_recognise_with_session(req: RecognizeRequest, sess: std::sync::Arc<crate
                 // Fall through to dummy output for L5 robustness.
             }
         }
+    } else if sess.session_key.starts_with("omniparser-v2-icon-detect:") {
+        match crate::vision_backend::omniparser::omniparser_stage2_recognise(&req, &sess) {
+            Ok(candidates) => return candidates,
+            Err(e) => {
+                tracing::warn!(target: "omniparser", "stage2 recognise failed: {e}");
+                // Fall through to dummy output for L5 robustness.
+            }
+        }
     }
     dummy_recognise(req)
 }
