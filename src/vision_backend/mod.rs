@@ -30,6 +30,7 @@ pub mod ep_select;
 pub mod error;
 pub mod florence2;
 pub mod inference;
+pub mod omniparser;
 pub mod registry;
 pub mod session;
 pub mod session_pool;
