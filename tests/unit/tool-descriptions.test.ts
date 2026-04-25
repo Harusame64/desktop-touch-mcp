@@ -205,8 +205,9 @@ describe("tool descriptions — contract", () => {
   //            +3 new dispatchers (keyboard, clipboard, window_dock) → 58-7+3 = 54
   // Phase 2b: -4 old (scroll raw, scroll_capture, smart_scroll, scroll_to_element)
   //            +1 new dispatcher (scroll) → 54-4+1 = 51
-  it("finds exactly 51 registered tools", () => {
-    expect(allTools.length).toBe(51);
+  // Phase 2c: -2 old (terminal_read, terminal_send) +1 new dispatcher (terminal) → 51-2+1 = 50
+  it("finds exactly 50 registered tools", () => {
+    expect(allTools.length).toBe(50);
   });
 
   for (const tool of allTools) {
