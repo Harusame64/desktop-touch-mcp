@@ -189,16 +189,15 @@ p, li, td, th, blockquote { font-size: 1.05rem; }
 }
 
 .section-card, .article-card { padding: 32px; }
-.article-card { margin-top: 24px; }
 
 .two-up, .three-up, .feature-grid {
   display: grid;
   gap: 18px;
 }
 
-.two-up { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.three-up { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.feature-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.two-up { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.three-up { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.feature-grid { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
 
 .mini-card, .callout, .quote-card, .aside-card {
   padding: 22px;
@@ -298,6 +297,7 @@ blockquote {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 290px;
   gap: 24px;
+  align-items: start;
 }
 
 .article-aside {

@@ -6,6 +6,9 @@
 
 > **Stop pasting screenshots. Let Claude see and control your desktop directly.**
 
+> **Project site:** [harusame64.github.io/desktop-touch-mcp](https://harusame64.github.io/desktop-touch-mcp/)  
+> Start here for the public explainer, client setup guides, and the Reactive Perception Graph overview.
+
 An MCP server that gives Claude eyes and hands on Windows — 57 tools covering screenshots, mouse, keyboard, Windows UI Automation, Chrome DevTools Protocol, clipboard, desktop notifications, SmartScroll, and a Reactive Perception Graph for safe multi-step automation, designed from the ground up for LLM efficiency.
 
 > *v0.15: **82× average speedup** via Rust native engine — UIA focus queries in 2 ms, SSE2-accelerated image diffing at 13–15× native speed. Zero-config: the engine auto-loads when present, with transparent PowerShell fallback.*
