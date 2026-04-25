@@ -49,7 +49,6 @@ import {
   targetKeyToWarmTarget,
 } from "../../src/engine/vision-gpu/runtime.js";
 import { fetchVisualCandidates } from "../../src/tools/desktop-providers/visual-provider.js";
-import { composeCandidates } from "../../src/tools/desktop-providers/compose-providers.js";
 import {
   onDirtySignal,
   pushDirtySignal,

@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { PocVisualBackend } from "../../src/engine/vision-gpu/poc-backend.js";
 import {
   getVisualRuntime,

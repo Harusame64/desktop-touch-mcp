@@ -33,13 +33,7 @@ function noopSource(): IngressEventSource {
   return { drain: async () => [], dispose: vi.fn() };
 }
 
-function eventSource(events: Array<{ key: string; reason: IngressReason }>): IngressEventSource {
-  let called = false;
-  return {
-    drain: async () => { if (called) return []; called = true; return events; },
-    dispose: vi.fn(),
-  };
-}
+// (Helper `eventSource` was removed — was unused, see code-scanning #87.)
 
 // ── Cache behavior ────────────────────────────────────────────────────────────
 
