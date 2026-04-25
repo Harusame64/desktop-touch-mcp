@@ -9,9 +9,12 @@
  * stubbed on the Rust side (returns input ROIs echoed back). Sub-batches
  * 4b-5a (Florence-2) / 4b-5b (OmniParser-v2) / 4b-5c (PaddleOCR-v4) drop in
  * the real preprocess/postprocess per stage without touching this module.
+ *
+ * Phase 4b-6: optional stage3b (PaddleOCR-v4-mobile) for cross-check voting.
  */
 
 import type { NativeRecognizeRequest, NativeRawCandidate } from "../native-types.js";
+import type { WinOcrFallbackFn } from "./cross-check.js";
 
 export interface StageSessionKeys {
   /** Session key for the Stage 1 model (region proposer, e.g. florence-2-base). */
@@ -20,6 +23,10 @@ export interface StageSessionKeys {
   stage2: string;
   /** Session key for the Stage 3 model (OCR recognizer, e.g. paddleocr-v4-server). */
   stage3: string;
+  /** Phase 4b-6: optional secondary OCR (PaddleOCR-mobile) for cross-check.
+   *  When set, `runStagePipeline` runs stage3 and stage3b in parallel and
+   *  arbitrates via `crossCheckLabels`. */
+  stage3b?: string;
 }
 
 export interface StagePipelineInput {
@@ -30,6 +37,8 @@ export interface StagePipelineInput {
   /** Captured frame RGBA bytes forwarded to Rust per-stage (empty Buffer → legacy dummy path). */
   frameBuffer: Buffer;
   nowMs: number;
+  /** Phase 4b-6: optional Tier ∞ fallback for when both OCR engines fail. */
+  winOcrFallback?: WinOcrFallbackFn;
 }
 
 export type VisionRecognizeFn = (req: NativeRecognizeRequest) => Promise<NativeRawCandidate[]>;
@@ -78,23 +87,47 @@ export async function runStagePipeline(
     // No text to OCR — return stage 2 as final output unchanged.
     return stage2;
   }
-  const stage3 = await visionRecognize({
+
+  const textRois = textCandidates.map((c) => ({
+    trackId: c.trackId,
+    rect: c.rect,
+    classHint: c.class || null,
+  }));
+
+  const stage3Primary = await visionRecognize({
     targetKey: input.targetKey,
     sessionKey: keys.stage3,
-    rois: textCandidates.map((c) => ({
-      trackId: c.trackId,
-      rect: c.rect,
-      classHint: c.class || null,
-    })),
+    rois: textRois,
     frameWidth: input.frameWidth,
     frameHeight: input.frameHeight,
     frameBuffer: input.frameBuffer,
     nowMs: input.nowMs,
   });
 
+  // Phase 4b-6: cross-check with secondary engine if available
+  let stage3Final = stage3Primary;
+  if (keys.stage3b) {
+    const [stage3Secondary] = await Promise.all([
+      visionRecognize({
+        targetKey: input.targetKey,
+        sessionKey: keys.stage3b,
+        rois: textRois,
+        frameWidth: input.frameWidth,
+        frameHeight: input.frameHeight,
+        frameBuffer: input.frameBuffer,
+        nowMs: input.nowMs,
+      }),
+    ]);
+    const { crossCheckLabels } = await import("./cross-check.js");
+    stage3Final = await crossCheckLabels(stage3Primary, stage3Secondary, {
+      targetKey: input.targetKey,
+      winOcrFallback: input.winOcrFallback,
+    });
+  }
+
   // Merge stage 3 labels into stage 2 candidates keyed by trackId.
   const labelByTrackId = new Map<string, string>();
-  for (const c of stage3) {
+  for (const c of stage3Final) {
     if (c.label) labelByTrackId.set(c.trackId, c.label);
   }
   return stage2.map((c) => {

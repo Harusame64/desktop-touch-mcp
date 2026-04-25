@@ -138,3 +138,37 @@ describe("runStagePipeline (Phase 4b-5)", () => {
     await expect(runStagePipeline(KEYS, BASE_INPUT, recognize)).rejects.toThrow(/simulated/);
   });
 });
+
+// Phase 4b-6: cross-check stage3b tests
+describe("runStagePipeline (Phase 4b-6 cross-check)", () => {
+  it("invokes stage3b in addition to stage3 when stage3b key is set (cross-check)", async () => {
+    const calls: string[] = [];
+    const recognize: VisionRecognizeFn = async (req) => {
+      calls.push(req.sessionKey);
+      return req.rois.map((r) => ({
+        trackId: r.trackId, rect: r.rect, label: "ocr", class: "text",
+        confidence: 0.5, provisional: true,
+      }));
+    };
+    const keys: StageSessionKeys = {
+      stage1: "s1", stage2: "s2", stage3: "s3", stage3b: "s3b",
+    };
+    await runStagePipeline(keys, BASE_INPUT, recognize);
+    expect(calls).toContain("s3");
+    expect(calls).toContain("s3b");
+  });
+
+  it("skips stage3b when keys.stage3b is undefined (default no-cross-check)", async () => {
+    const calls: string[] = [];
+    const recognize: VisionRecognizeFn = async (req) => {
+      calls.push(req.sessionKey);
+      return req.rois.map((r) => ({
+        trackId: r.trackId, rect: r.rect, label: "ocr", class: "text",
+        confidence: 0.5, provisional: true,
+      }));
+    };
+    const keys: StageSessionKeys = { stage1: "s1", stage2: "s2", stage3: "s3" };
+    await runStagePipeline(keys, BASE_INPUT, recognize);
+    expect(calls).not.toContain("s3b");
+  });
+});
