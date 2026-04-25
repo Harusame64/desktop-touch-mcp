@@ -7,7 +7,7 @@ const toolsDir = path.join(root, 'src', 'tools');
 const outPath = path.join(root, 'src', 'stub-tool-catalog.ts');
 
 const TOOL_FILES = [
-  'browser.ts', 'clipboard.ts', 'context.ts', 'dock.ts', 'engine-status.ts', 'events.ts',
+  'browser.ts', 'clipboard.ts', 'desktop-state.ts', 'dock.ts', 'server-status.ts', 'events.ts',
   'keyboard.ts', 'macro.ts', 'mouse.ts', 'notification.ts', 'perception.ts', 'pin.ts',
   'screenshot.ts', 'scroll-capture.ts', 'scroll-to-element.ts', 'smart-scroll.ts',
   'terminal.ts', 'ui-elements.ts', 'wait-until.ts', 'window.ts', 'workspace.ts',
@@ -171,7 +171,7 @@ function splitObjectFields(objExpr) {
 
 const commonParams = {
   portParam: { type: 'integer', minimum: 1, maximum: 65535, default: 9222, description: 'Chrome/Edge CDP remote debugging port.', __optional: true },
-  tabIdParam: { type: 'string', description: 'Tab ID from browser_connect. Omit to use the first page tab.', __optional: true },
+  tabIdParam: { type: 'string', description: 'Tab ID from browser_open. Omit to use the first page tab.', __optional: true },
   selectorParam: { type: 'string', description: "CSS selector for the target element (e.g. '#submit', '.btn', 'button[type=submit]')." },
   includeContextParam: { type: 'boolean', default: true, description: 'When true, append activeTab and readyState context to the response.', __optional: true },
   narrateParam: { type: 'string', enum: ['minimal', 'rich'], default: 'minimal', description: 'Narration level. rich includes UIA or browser state diff when supported.', __optional: true },

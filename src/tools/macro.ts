@@ -23,8 +23,8 @@ import { pinWindowHandler, pinWindowSchema, unpinWindowHandler, unpinWindowSchem
 import { scrollCaptureHandler, scrollCaptureSchema } from "./scroll-capture.js";
 // Wait until
 import { waitUntilHandler, waitUntilSchema } from "./wait-until.js";
-// Context
-import { getContextHandler, getContextSchema, getHistoryHandler, getHistorySchema, getDocumentStateHandler, getDocumentStateSchema } from "./context.js";
+// Context (desktop_state)
+import { desktopStateHandler, desktopStateSchema, getHistoryHandler, getHistorySchema, getDocumentStateHandler, getDocumentStateSchema } from "./desktop-state.js";
 // Terminal
 import { terminalReadHandler, terminalReadSchema, terminalSendHandler, terminalSendSchema } from "./terminal.js";
 // Browser search
@@ -67,7 +67,7 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   unpin_window:           { schema: z.object(unpinWindowSchema),          handler: unpinWindowHandler },
   scroll_capture:         { schema: z.object(scrollCaptureSchema),        handler: scrollCaptureHandler },
   wait_until:             { schema: z.object(waitUntilSchema),             handler: waitUntilHandler },
-  get_context:            { schema: z.object(getContextSchema),            handler: getContextHandler },
+  desktop_state:          { schema: z.object(desktopStateSchema),          handler: desktopStateHandler },
   get_history:            { schema: z.object(getHistorySchema),            handler: getHistoryHandler },
   get_document_state:     { schema: z.object(getDocumentStateSchema),      handler: getDocumentStateHandler },
   terminal_read:          { schema: z.object(terminalReadSchema),          handler: terminalReadHandler },

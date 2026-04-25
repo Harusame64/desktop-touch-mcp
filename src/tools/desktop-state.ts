@@ -15,6 +15,8 @@ import { evaluateInTab } from "../engine/cdp-bridge.js";
 import { getCdpPort } from "../utils/desktop-config.js";
 import { getFocusedAndPointInfo } from "../engine/uia-bridge.js";
 import { CHROMIUM_TITLE_RE } from "./workspace.js";
+import { getSlotSnapshot } from "../engine/perception/hot-target-cache.js";
+import type { AttentionState } from "../engine/perception/types.js";
 
 const _defaultPort = getCdpPort();
 
@@ -22,7 +24,7 @@ const _defaultPort = getCdpPort();
 // Schemas
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const getContextSchema = {};
+export const desktopStateSchema = {};
 
 export const getHistorySchema = {
   n: z.coerce.number().int().min(1).max(20).default(5).describe("Number of recent action records to return (max 20)."),
@@ -34,10 +36,10 @@ export const getDocumentStateSchema = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// get_context v2 — OS + App level (lightweight)
+// desktop_state — OS + App level (lightweight)
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const getContextHandler = async (): Promise<ToolResult> => {
+export const desktopStateHandler = async (): Promise<ToolResult> => {
   try {
     const wins = enumWindowsInZOrder();
     const fg = wins.find((w) => w.isActive) ?? null;
@@ -50,6 +52,32 @@ export const getContextHandler = async (): Promise<ToolResult> => {
       const pid = getWindowProcessId(fg.hwnd);
       const ident = getProcessIdentityByPid(pid);
       focusedWindow = { title: fg.title, processName: ident.processName, hwnd: String(fg.hwnd) };
+    }
+
+    // ── Attention signal from Hot Target Cache ─────────────────────────────
+    // Look up the focused window in the hot-target-cache. If a slot exists,
+    // surface its attention value. Fallback to "ok" when no slot is found
+    // (lens not registered / Auto Perception OFF) — this is the safe baseline
+    // per design §3.1.
+    let attention: AttentionState = "ok";
+    if (fg) {
+      const fgHwnd = String(fg.hwnd);
+      const slots = getSlotSnapshot();
+      const matchingSlot = slots.find(
+        (s) => s.kind === "window" && s.identity && "hwnd" in s.identity && s.identity.hwnd === fgHwnd
+      );
+      if (matchingSlot) {
+        // Map SlotAttention → AttentionState (7 enum values in design §3.1)
+        const sa = matchingSlot.attention;
+        if (sa === "ok" || sa === "changed" || sa === "dirty" || sa === "stale" || sa === "identity_changed") {
+          attention = sa;
+        } else if (sa === "not_found") {
+          attention = "guard_failed";
+        } else {
+          // "ambiguous" → ok (conservative safe baseline)
+          attention = "ok";
+        }
+      }
     }
 
     // Cursor-over-window: Z-order hit test (cheap, always available)
@@ -176,11 +204,12 @@ export const getContextHandler = async (): Promise<ToolResult> => {
       cursorOverElement,
       hasModal,
       pageState,
+      attention,
       visibleWindows: wins.length,
       ...(Object.keys(hints).length > 0 ? { hints } : {}),
     });
   } catch (err) {
-    return failWith(err, "get_context");
+    return failWith(err, "desktop_state");
   }
 };
 
@@ -228,17 +257,17 @@ export const getDocumentStateHandler = async ({ port, tabId }: { port: number; t
 // Registration
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function registerContextTools(server: McpServer): void {
+export function registerDesktopStateTools(server: McpServer): void {
   server.tool(
-    "get_context",
+    "desktop_state",
     buildDesc({
-      purpose: "Query focused window, focused element, cursor position, and page state in one call — far cheaper than any screenshot for confirming current state after an action.",
-      details: "Returns focusedWindow (title, hwnd), focusedElement (name, type, value), cursorPos {x,y}, cursorOverElement (name, type), hasModal (boolean), pageState ('ready'|'loading'|'dialog'|'error'). Does NOT enumerate descendants — use screenshot(detail='text') or get_ui_elements for the full clickable element list. Chromium: cursorOverElement is null (UIA sparse); focusedElement may fall back to CDP document.activeElement; hints.focusedElementSource reports which was used ('uia' or 'cdp').",
-      prefer: "Use after keyboard_type or set_element_value to confirm the value landed in the expected field — cheaper than a verification screenshot. Use instead of screenshot(detail='meta') when the question is only \"which window/control has focus.\"",
+      purpose: "Read-only observation of the current desktop state. Returns focused window/element, modal flag, and attention signal from Auto Perception.",
+      details: "Returns focusedWindow (title, hwnd, processName), focusedElement (name, type, value, automationId), cursorPos {x,y}, cursorOverElement (name, type), hasModal (boolean), pageState ('ready'|'loading'|'dialog'). Does NOT enumerate descendants — use desktop_discover for actionable entity list. Chromium: cursorOverElement is null (UIA sparse); focusedElement may fall back to CDP document.activeElement; hints.focusedElementSource reports which was used ('uia' or 'cdp').",
+      prefer: "Use after each action to confirm state. Cheapest observation tool — cheaper than any screenshot. attention='ok' means safe to proceed; other values require recovery (see suggest[]).",
       caveats: "Cannot detect non-UIA elements (custom-drawn UIs, game overlays). hasModal only detects modal dialogs exposed via UIA — browser alert/confirm dialogs may not appear here.",
     }),
-    getContextSchema,
-    getContextHandler
+    desktopStateSchema,
+    desktopStateHandler
   );
 
   server.tool(

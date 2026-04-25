@@ -2,6 +2,10 @@
 
 MCP (Model Context Protocol) server that lets Claude CLI drive any Windows desktop application.
 
+> 現行の設計判断・残タスク・方針転換は、まず [README.md](D:/git/desktop-touch-mcp/docs/README.md) と
+> [todo-index.md](D:/git/desktop-touch-mcp/docs/todo-index.md) を参照してください。
+> この文書は **現行実装の概観** を説明する正本であり、tool surface 再編の将来案までは確定事項として扱いません。
+
 ---
 
 ## Architecture
@@ -59,14 +63,18 @@ desktop-touch-mcp (Node.js / TypeScript)
     │       ├── guards.ts           — 4 pure guards: identityStable / keyboardTarget / clickCoordinates / stable.rect
     │       ├── envelope.ts         — projectEnvelope: attention derivation + token-budget trimming
     │       ├── sensors-win32.ts    — only impure module; piggybacks event-bus 500 ms tick
-    │       └── registry.ts         — central coordinator; max 16 lenses (FIFO evict)
-    └── Layer 2: 57 MCP tools
-        screenshot(4) + window(3) + mouse(5) + keyboard(2) + ui_elements(4) +
-        browser_cdp(12) + workspace(2) + pin(2) + dock(1) + macro(1) +
-        scroll_capture(1) + context(3) + terminal(2) + events(4) + wait_until(1) +
-        clipboard(2) + notification(1) + scroll_to_element(1) + smart_scroll(1) +
-        perception(4) + engine_status(1)
+    │       └── registry.ts         — central coordinator; max 16 lenses (LRU evict)
+    └── Layer 2: 58 MCP tools
+        See [tool-descriptions.md](D:/git/desktop-touch-mcp/docs/tool-descriptions.md) for the up-to-date catalog.
 ```
+
+### Surface status
+
+- **Current public surface**: 58 tools, including `desktop_discover` / `desktop_act`
+- **Planned redesign**: `desktop_state` / `desktop_discover` / `desktop_act` naming and single-surface cleanup are still design-stage, not the current shipped interface
+- Reference plans:
+  - [tool-surface-reduction-plan.md](D:/git/desktop-touch-mcp/docs/tool-surface-reduction-plan.md)
+  - [tool-surface-phase1-naming-design.md](D:/git/desktop-touch-mcp/docs/tool-surface-phase1-naming-design.md)
 
 ### Rust Native Engine — Data Flow
 
@@ -423,7 +431,7 @@ Launch an app + auto-detect the new window (diffs the window set before and afte
 
 ### 📊 Context & history
 
-#### `get_context`
+#### `desktop_state`
 Lightweight OS + app context. See the current state without a screenshot.
 
 ```json
@@ -539,33 +547,33 @@ chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\tmp\cdp
 #### `browser_launch`
 Launch Chrome / Edge / Brave in debug mode and wait for the CDP endpoint. Idempotent: if an endpoint is already live on the target port, returns immediately. `url` sets an initial page.
 
-#### `browser_connect`
+#### `browser_open`
 Connect to CDP and list tabs. The returned `tabId` pins subsequent calls to a specific tab. Each tab carries an `active` flag, and the top-level response surfaces the currently-focused tab.
 
-#### `browser_find_element`
+#### `browser_locate`
 CSS selector → physical pixel coords.
 Formula: `physX = (screenX + chromeW/2 + rect.left) * dpr`, with the browser chrome (tab strip + address bar) and `devicePixelRatio` already baked in.
 `inViewport` is judged from the element's centre point, so a 1-pixel overflow does not flip it to `false`.
 
-#### `browser_click_element`
+#### `browser_click`
 `getElementScreenCoords` + `ensureBrowserFocused` + nut-js click in one step. If the element is out of the viewport, returns a message telling the caller to scroll it into view instead of guessing.
 
 #### `browser_eval`
 Evaluate JS via `Runtime.evaluate` (CDP). `awaitPromise=true`, so `await` works. Exceptions from the page surface as `JS exception in tab: …`.
 
-> **Caveat — React / Vue / Svelte controlled inputs:** Setting `element.value = ...` via `browser_eval` does **not** update the framework's internal state. Use `browser_fill_input(selector, value)` instead — it uses the native prototype setter + `InputEvent` which does trigger React/Vue/Svelte state updates.
+> **Caveat — React / Vue / Svelte controlled inputs:** Setting `element.value = ...` via `browser_eval` does **not** update the framework's internal state. Use `browser_fill(selector, value)` instead — it uses the native prototype setter + `InputEvent` which does trigger React/Vue/Svelte state updates.
 
 #### `browser_get_dom`
 `outerHTML` of an element (or `document.body`), truncated to `maxLength`. Missing-element errors come back as a structured `{"__cdpError":"…"}` so the caller can distinguish "no match" from "empty HTML".
 
-#### `browser_get_interactive`
+#### `browser_overview`
 Enumerates interactive elements with `clickAt` coords — the browser analogue of `screenshot(detail="text")`. Each element includes `viewportPosition` (`'in-view'|'above'|'below'|'left'|'right'`) — use it to decide whether `scroll_to_element` is needed before clicking.
 Also **ARIA-aware**: surfaces `role=switch` / `checkbox` / `radio` / `tab` / `menuitem` / `option` custom controls with a `state` block carrying `checked` / `pressed` / `selected` / `expanded` derived from the matching `aria-*` attributes. Use this when a page (Radix / shadcn / MUI / Headless UI / GitHub) renders toggles as ARIA buttons instead of native `<input>`.
 
 **Form-state verification (preferred over screenshot for button/toggle state):** Call this after form submission to check button, checkbox, and ARIA toggle states — structured JSON, no image tokens. For inputs, `text` reflects the empty-field hint text when set (takes priority over any typed value); to read the actual typed content use `browser_eval('document.querySelector(sel).value')`.
 
-#### `browser_fill_input`
-Fill a React/Vue/Svelte controlled input via CDP without breaking framework state. Uses native prototype setter + `InputEvent` dispatch (not `execCommand`). Obtain `selector` from `browser_get_interactive` or `browser_find_element` first. `actual` in the response reflects what the element's `value` property reads after fill — verify it matches. Does not work on `contenteditable` rich-text editors.
+#### `browser_fill`
+Fill a React/Vue/Svelte controlled input via CDP without breaking framework state. Uses native prototype setter + `InputEvent` dispatch (not `execCommand`). Obtain `selector` from `browser_overview` or `browser_locate` first. `actual` in the response reflects what the element's `value` property reads after fill — verify it matches. Does not work on `contenteditable` rich-text editors.
 
 #### `browser_get_app_state`
 One CDP call that scans the well-known places SPAs stash their hydration payloads:
@@ -582,7 +590,7 @@ Grep the DOM by text / regex / role / ariaLabel / CSS selector with confidence r
 Close every cached WebSocket session for a port. Call this before the target HWND goes away.
 
 **Response annotations shared by the DOM-touching tools**
-(`browser_eval` / `browser_find_element` / `browser_get_dom` / `browser_get_interactive` / `browser_get_app_state`)
+(`browser_eval` / `browser_locate` / `browser_get_dom` / `browser_overview` / `browser_get_app_state`)
 - On success the response ends with `activeTab:{id,title,url}` + `readyState:"complete"` so callers can detect tab drift.
 - Pass `includeContext:false` to drop those two trailing lines (saves ~150 tokens per call when chaining invocations in one tab).
 - Even at `includeContext:true`, consecutive calls within 500 ms reuse one internal `getTabContext` round-trip.
@@ -667,7 +675,7 @@ scroll_to_element({selector: '.hero', block: 'start'})          # align to top o
 
 `block` controls vertical alignment (`start` / `center` / `end` / `nearest`, default `center`) — Chrome path only.
 
-Returns `scrolled:true` on success; `scrolled:false` if the element doesn't expose `ScrollItemPattern` (fall back to `scroll` + `screenshot`). Pairs well with `browser_get_interactive` / `screenshot(detail='text')` to confirm `viewportPosition:'in-view'` after scrolling.
+Returns `scrolled:true` on success; `scrolled:false` if the element doesn't expose `ScrollItemPattern` (fall back to `scroll` + `screenshot`). Pairs well with `browser_overview` / `screenshot(detail='text')` to confirm `viewportPosition:'in-view'` after scrolling.
 
 ---
 
@@ -707,13 +715,13 @@ smart_scroll({target: 'readme section', windowTitle: 'MyApp', strategy: 'image',
 smart_scroll({target: '#footer-nav'})  # detects and compensates automatically
 ```
 
-`pageRatio` is also emitted per-element by `browser_get_interactive` (injected JS now computes `(scrollY + rect.top) / scrollHeight`).
+`pageRatio` is also emitted per-element by `browser_overview` (injected JS now computes `(scrollY + rect.top) / scrollHeight`).
 
 ---
 
 ### 👁️ Reactive Perception Graph (v0.11)
 
-Low-cost situational awareness for repeated desktop actions. Register a perception lens on a target window or browser tab, then pass `lensId` to action tools. The server verifies target identity, focus, readiness, modal obstruction, and click safety before the action, then attaches a compact `post.perception` envelope after the action — without forcing another `screenshot` or `get_context` round trip.
+Low-cost situational awareness for repeated desktop actions. Register a perception lens on a target window or browser tab, then pass `lensId` to action tools. The server verifies target identity, focus, readiness, modal obstruction, and click safety before the action, then attaches a compact `post.perception` envelope after the action — without forcing another `screenshot` or `desktop_state` round trip.
 
 The unit of tracking is a `PerceptionLens`: a live state tracker for one task-relevant target. It is not a screenshot cache and not a raw event stream. It maintains only the structured state needed to decide whether the next action is still safe.
 
@@ -821,7 +829,7 @@ keyboard_type({text:"x", lensId:"perc-1"})
 → {ok:false, code:"GuardFailed", suggest:["Re-register lens for the new process instance"]}
 ```
 
-`lensId` is opt-in on: `keyboard_type`, `keyboard_press`, `mouse_click`, `mouse_drag`, `click_element`, `set_element_value`, `browser_click_element`, `browser_navigate`, `browser_eval`. Omitting `lensId` preserves existing behavior exactly.
+`lensId` is opt-in on: `keyboard_type`, `keyboard_press`, `mouse_click`, `mouse_drag`, `click_element`, `set_element_value`, `browser_click`, `browser_navigate`, `browser_eval`. Omitting `lensId` preserves existing behavior exactly.
 
 **Limits:** max 16 active lenses (LRU eviction — see below). Sensor work is staged by cost: cheap Win32/CDP state is refreshed first; UIA focus, OCR, and screenshots remain escalation paths rather than baseline perception. `safe.clickCoordinates` validates window bounds, not pixel-level occlusion.
 
@@ -831,14 +839,14 @@ keyboard_type({text:"x", lensId:"perc-1"})
 
 **Manual Lens LRU (v0.13)**: Lens eviction is now LRU (least-recently-used). Using a lens via `perception_read`, evaluatePreToolGuards, or buildEnvelopeFor promotes it to MRU. Idle lenses are evicted first. Max 16 unchanged.
 
-**SuggestedFix — all 4 tools (v0.13)**: `fixId` approval is now supported by `mouse_click`, `keyboard_type`, `click_element`, and `browser_click_element`. The server revalidates the stored target fingerprint (process pid + start-time for windows; subsequent guard for browser tabs) before executing.
+**SuggestedFix — all 4 tools (v0.13)**: `fixId` approval is now supported by `mouse_click`, `keyboard_type`, `click_element`, and `browser_click`. The server revalidates the stored target fingerprint (process pid + start-time for windows; subsequent guard for browser tabs) before executing.
 
 **Target-Identity Timeline (v0.13)**: The server maintains a per-target semantic event timeline. 13 event kinds (`target_bound`, `action_attempted`, `action_succeeded`, `action_blocked`, `title_changed`, `rect_changed`, `foreground_changed`, `navigation`, `modal_appeared`, `modal_dismissed`, `identity_changed`, `target_closed`, `compacted`). Storage: per-target ring (32), global FIFO cap (256). Sensor events are 200ms leading-edge debounced; action/post events are not. Exposed via:
 - `get_history` → `recentTargetKeys` (3 keys, no event bodies)
 - `perception_read(lensId)` → `recentEvents` (up to 10 per target)
 - `perception://target/{targetKey}/timeline` + `perception://targets/recent` (flag: `DESKTOP_TOUCH_PERCEPTION_RESOURCES=1`)
 
-**Browser readiness policies (v0.13)**: `browser_click_element` passes with a warn-note when `readyState !== "complete"` but the selector is already in-viewport (policy: `selectorInViewport`). `browser_navigate` accepts `interactive` (policy: `navigationGate`). `browser_eval` remains strict.
+**Browser readiness policies (v0.13)**: `browser_click` passes with a warn-note when `readyState !== "complete"` but the selector is already in-viewport (policy: `selectorInViewport`). `browser_navigate` accepts `interactive` (policy: `navigationGate`). `browser_eval` remains strict.
 
 **mouse_drag endpoint guard (v0.13)**: Both start and end coordinates are guarded. Cross-window / desktop drags blocked by default; opt in with `allowCrossWindowDrag:true`.
 
@@ -898,7 +906,7 @@ screenshot(diffMode=true)
 | Default WebP quality | `60` — the lowest quality at which text stays readable |
 | Layer-buffer TTL | Auto-cleared after 90 s |
 | focus_window filter | Skips helper windows with width < 50 or height < 50 |
-| focus_window / Chrome tabs | Chrome/Edge uses one HWND per browser window; only the active tab title is visible to the OS. `WindowNotFound` on a tab title → use `browser_connect` to list tabs and switch via CDP instead |
+| focus_window / Chrome tabs | Chrome/Edge uses one HWND per browser window; only the active tab title is visible to the OS. `WindowNotFound` on a tab title → use `browser_open` to list tabs and switch via CDP instead |
 | UIA element search | Rust: batch BFS with `FindAllBuildCache(TreeScope_Children)` + `maxElements` early exit. PowerShell fallback: recursive `FindAll(Children)` — `FindAll(Descendants)` misses items on some WinUI3 apps |
 | CDP command timeout | 15 s (`CMD_TIMEOUT_MS`); WebSocket connect timeout 5 s (`CONNECT_TIMEOUT_MS`) |
 | CDP fetch timeout | `AbortSignal.timeout(5s)` — handles a hung `/json` endpoint |
