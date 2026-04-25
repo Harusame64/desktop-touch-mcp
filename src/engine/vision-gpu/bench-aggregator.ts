@@ -99,10 +99,20 @@ export function formatMarkdownTable(rows: VendorRow[]): string {
   for (const r of rows) {
     const w = r.warmP99Ms === null ? "—" : `${r.warmP99Ms.toFixed(1)} ms`;
     const c = r.coldMs === null ? "—" : `${r.coldMs.toFixed(1)} ms`;
-    const note = r.notes ? r.notes.replace(/\|/g, "\\|") : (r.ranWarm ? "—" : "_evicted_");
-    lines.push(`| ${r.label.replace(/\|/g, "\\|")} | ${w} | ${c} | ${r.warmSamples} | ${note} |`);
+    const note = r.notes ? escapeMarkdownCell(r.notes) : (r.ranWarm ? "—" : "_evicted_");
+    lines.push(`| ${escapeMarkdownCell(r.label)} | ${w} | ${c} | ${r.warmSamples} | ${note} |`);
   }
   return lines.join("\n") + "\n";
+}
+
+/**
+ * Escape characters with special meaning inside a markdown table cell.
+ * Backslash MUST be escaped first (otherwise subsequent escapes get re-doubled).
+ * Pipe (`|`) is the column separator. Newlines flatten to spaces (would otherwise
+ * break the row). Code scanning js/incomplete-sanitization fix.
+ */
+function escapeMarkdownCell(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
 }
 
 /**
