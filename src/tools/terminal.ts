@@ -716,11 +716,17 @@ export const terminalRunHandler = async ({
     }
   }
 
-  // Check if initial output already matches pattern
-  if (patternRe && lastText && patternRe.test(lastText)) {
-    completionReason = "pattern_matched";
-    matchedPattern = until.mode === "pattern" ? until.pattern : undefined;
-  }
+  // Pattern matching must only consider content that appeared AFTER the
+  // baseline marker. Otherwise prompt-shaped patterns (e.g. "PS>", "$ ") that
+  // already exist in scrollback would fire pattern_matched immediately.
+  // applySinceMarker returns matched:true with the new content; on miss it
+  // returns the full text — which is the safest default if the terminal has
+  // scrolled past the marker window.
+  const newContentSinceBaseline = (text: string): string => {
+    if (!sinceMarker) return text;
+    const sliced = applySinceMarker(text, sinceMarker);
+    return sliced.text;
+  };
 
   while (completionReason === null) {
     await new Promise<void>((r) => setTimeout(r, POLL_INTERVAL_MS));
@@ -750,7 +756,8 @@ export const terminalRunHandler = async ({
     const currentText = current.text;
 
     if (until.mode === "pattern" && patternRe) {
-      if (patternRe.test(currentText)) {
+      const newContent = newContentSinceBaseline(currentText);
+      if (newContent && patternRe.test(newContent)) {
         completionReason = "pattern_matched";
         matchedPattern = until.mode === "pattern" ? until.pattern : undefined;
         break;
