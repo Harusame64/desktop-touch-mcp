@@ -524,7 +524,15 @@ interface TerminalRunResponse {
 // Forwarded-option whitelists derived from the public terminal_send / _read schemas.
 // `windowTitle` and `input` are excluded because run() owns those, and `sinceMarker`
 // is excluded because run() computes the baseline marker itself.
-const TERMINAL_RUN_SEND_OPTIONS_SCHEMA = z.object({
+//
+// IMPORTANT: every wrapped field still carries its `.default(...)` from the public
+// schema. Zod v4's `.partial()` makes the key optional but does NOT strip defaults;
+// the parsed object will materialise default values for any missing key. We rely
+// on `keepOnlyProvidedKeys()` below to filter the parsed result back down to the
+// keys the caller actually supplied — otherwise an empty `sendOptions:{}` would
+// silently overwrite run-specific defaults (`restoreFocus:false`, `trackFocus:false`,
+// `settleMs:100`) with terminal_send's defaults (true / true / 300).
+export const TERMINAL_RUN_SEND_OPTIONS_SCHEMA = z.object({
   method: terminalSendSchema.method,
   chunkSize: terminalSendSchema.chunkSize,
   pressEnter: terminalSendSchema.pressEnter,
@@ -537,7 +545,7 @@ const TERMINAL_RUN_SEND_OPTIONS_SCHEMA = z.object({
   settleMs: terminalSendSchema.settleMs,
 }).partial().strict();
 
-const TERMINAL_RUN_READ_OPTIONS_SCHEMA = z.object({
+export const TERMINAL_RUN_READ_OPTIONS_SCHEMA = z.object({
   lines: terminalReadSchema.lines,
   stripAnsi: terminalReadSchema.stripAnsi,
   source: terminalReadSchema.source,
@@ -548,6 +556,25 @@ function describeZodIssues(err: z.ZodError): string {
   return err.issues
     .map((i) => `${i.path.length > 0 ? i.path.join(".") + ": " : ""}${i.message}`)
     .join("; ");
+}
+
+/**
+ * Filter a Zod-parsed object to only the keys actually present in the original
+ * caller input. Required because `z.partial()` does not strip `.default(...)`
+ * markers from inner field types — without this, defaults injected by Zod for
+ * absent keys would leak into the merged sendArgs/readArgs and overwrite run's
+ * intentional non-default values.
+ */
+function keepOnlyProvidedKeys<T extends Record<string, unknown>>(
+  parsed: T,
+  input: Record<string, unknown>
+): Partial<T> {
+  const inputKeys = new Set(Object.keys(input));
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(parsed)) {
+    if (inputKeys.has(k)) out[k] = v;
+  }
+  return out as Partial<T>;
 }
 
 /**
@@ -594,7 +621,7 @@ export const terminalRunHandler = async ({
   // sendOptions" as the generic "ToolError" code and bury our custom suggest
   // strings under context.suggest, which mis-classifies argument errors as
   // internal errors and hides actionable remediation guidance from callers.
-  let validatedSendOptions: z.infer<typeof TERMINAL_RUN_SEND_OPTIONS_SCHEMA> = {};
+  let validatedSendOptions: Partial<z.infer<typeof TERMINAL_RUN_SEND_OPTIONS_SCHEMA>> = {};
   if (sendOptions !== undefined) {
     const parsed = TERMINAL_RUN_SEND_OPTIONS_SCHEMA.safeParse(sendOptions);
     if (!parsed.success) {
@@ -609,9 +636,9 @@ export const terminalRunHandler = async ({
         context: { windowTitle },
       });
     }
-    validatedSendOptions = parsed.data;
+    validatedSendOptions = keepOnlyProvidedKeys(parsed.data, sendOptions);
   }
-  let validatedReadOptions: z.infer<typeof TERMINAL_RUN_READ_OPTIONS_SCHEMA> = {};
+  let validatedReadOptions: Partial<z.infer<typeof TERMINAL_RUN_READ_OPTIONS_SCHEMA>> = {};
   if (readOptions !== undefined) {
     const parsed = TERMINAL_RUN_READ_OPTIONS_SCHEMA.safeParse(readOptions);
     if (!parsed.success) {
@@ -626,7 +653,7 @@ export const terminalRunHandler = async ({
         context: { windowTitle },
       });
     }
-    validatedReadOptions = parsed.data;
+    validatedReadOptions = keepOnlyProvidedKeys(parsed.data, readOptions);
   }
 
   // ── Phase 1: Send ──────────────────────────────────────────────────────────

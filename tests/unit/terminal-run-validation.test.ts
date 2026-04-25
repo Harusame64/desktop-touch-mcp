@@ -9,7 +9,11 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { terminalRunHandler } from "../../src/tools/terminal.js";
+import {
+  terminalRunHandler,
+  TERMINAL_RUN_SEND_OPTIONS_SCHEMA,
+  TERMINAL_RUN_READ_OPTIONS_SCHEMA,
+} from "../../src/tools/terminal.js";
 
 function parseRunResponse(result: { content: Array<{ type: string; text?: string }> }): {
   ok?: boolean;
@@ -132,6 +136,61 @@ describe("terminal(action='run') — sendOptions/readOptions validation (Phase 2
     // window_not_found is reported as ok:false on the run-response shape (not failWith)
     expect(parsed.ok).toBe(false);
     expect(parsed.completion?.reason).toBe("window_not_found");
+  });
+});
+
+describe("terminal(action='run') — Zod default leak guard (PR #37 Codex P1)", () => {
+  // Background: TERMINAL_RUN_SEND_OPTIONS_SCHEMA / READ_OPTIONS_SCHEMA wrap fields
+  // from terminalSendSchema / _readSchema that already carry .default(...). In
+  // Zod v4, .partial() makes keys optional but does NOT strip .default markers,
+  // so the parsed result materialises defaults for absent keys. Without filtering,
+  // those leak into the merged sendArgs/readArgs and overwrite run-specific
+  // defaults (restoreFocus:false, trackFocus:false, settleMs:100).
+
+  it("documents the Zod default-leak behavior so the filter cannot be silently removed", () => {
+    const input = { chunkSize: 50 };
+    const parsed = TERMINAL_RUN_SEND_OPTIONS_SCHEMA.parse(input);
+    // Zod injects defaults for keys NOT in the input — this is the bug source.
+    expect(parsed.restoreFocus).toBe(true);
+    expect(parsed.trackFocus).toBe(true);
+    expect(parsed.settleMs).toBe(300);
+    // The chunkSize the caller actually provided survives.
+    expect(parsed.chunkSize).toBe(50);
+  });
+
+  it("documents the same default-leak for readOptions", () => {
+    const input = { lines: 10 };
+    const parsed = TERMINAL_RUN_READ_OPTIONS_SCHEMA.parse(input);
+    expect(parsed.stripAnsi).toBe(true);
+    expect(parsed.source).toBe("auto");
+    expect(parsed.ocrLanguage).toBe("ja");
+    expect(parsed.lines).toBe(10);
+  });
+
+  it("verifies the keepOnlyProvidedKeys filter pattern strips the leaked defaults", () => {
+    const input = { chunkSize: 50 };
+    const parsed = TERMINAL_RUN_SEND_OPTIONS_SCHEMA.parse(input);
+    const inputKeys = new Set(Object.keys(input));
+    const filtered = Object.fromEntries(
+      Object.entries(parsed).filter(([k]) => inputKeys.has(k))
+    );
+    // Only the explicitly-provided key remains.
+    expect(filtered).toEqual({ chunkSize: 50 });
+    expect("restoreFocus" in filtered).toBe(false);
+    expect("trackFocus" in filtered).toBe(false);
+    expect("settleMs" in filtered).toBe(false);
+  });
+
+  it("filter handles empty sendOptions:{} without leaking any defaults", () => {
+    const input = {};
+    const parsed = TERMINAL_RUN_SEND_OPTIONS_SCHEMA.parse(input);
+    // Empty input → Zod parsed object is full of defaults.
+    expect(Object.keys(parsed).length).toBeGreaterThan(0);
+    // Filter to provided keys only → empty result.
+    const filtered = Object.fromEntries(
+      Object.entries(parsed).filter(([k]) => Object.prototype.hasOwnProperty.call(input, k))
+    );
+    expect(filtered).toEqual({});
   });
 });
 
