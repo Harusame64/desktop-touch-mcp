@@ -1,4 +1,3 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { mouse } from "../engine/nutjs.js";
 import {
@@ -122,7 +121,7 @@ async function tryCdp(params: {
     if (hiddenAncestors.length > 0 && !expandHidden) {
       return failWith(
         `OverflowHiddenAncestor: '${hiddenAncestors[0]?.cssSelectorPath}' has overflow:hidden`,
-        "smart_scroll",
+        "scroll(action='smart')",
         { target, expandHidden }
       );
     }
@@ -154,7 +153,7 @@ async function tryCdp(params: {
       );
       warnings.push(...(vResult.warnings ?? []));
       if (!vResult.ok) {
-        return failWith("VirtualScrollExhausted: " + (vResult.warnings[0] ?? "bisect failed"), "smart_scroll", { target });
+        return failWith("VirtualScrollExhausted: " + (vResult.warnings[0] ?? "bisect failed"), "scroll(action='smart')", { target });
       }
     } else {
       // Layer-by-layer: outer → inner ancestors, then final scrollIntoView
@@ -176,7 +175,7 @@ async function tryCdp(params: {
         ok: boolean; error?: string; viewportTop?: number; viewportBottom?: number;
       };
       if (!svResult.ok) {
-        return failWith(svResult.error ?? "scrollIntoView failed", "smart_scroll", { target });
+        return failWith(svResult.error ?? "scrollIntoView failed", "scroll(action='smart')", { target });
       }
     }
 
@@ -344,7 +343,7 @@ async function tryImage(params: {
     w.title.toLowerCase().includes(windowTitle.toLowerCase())
   );
   if (!win) {
-    return failWith(`Window not found: "${windowTitle}"`, "smart_scroll", { windowTitle });
+    return failWith(`Window not found: "${windowTitle}"`, "scroll(action='smart')", { windowTitle });
   }
 
   // Focus the window before sending scroll input
@@ -364,7 +363,7 @@ async function tryImage(params: {
   const region = win.region;
   let capture = await captureWindowRawAndHash(win.hwnd, region);
   if (!capture) {
-    return failWith("Failed to capture window pixels", "smart_scroll", { windowTitle });
+    return failWith("Failed to capture window pixels", "scroll(action='smart')", { windowTitle });
   }
   let prevHash = capture.dHash;
 
@@ -406,7 +405,7 @@ async function tryImage(params: {
       if (noMoveSCount >= 2) {
         return failWith(
           "VirtualScrollExhausted: page did not move after 2 consecutive scroll attempts — may be at boundary or virtual scroll",
-          "smart_scroll",
+          "scroll(action='smart')",
           { windowTitle, attempts }
         );
       }
@@ -488,13 +487,13 @@ export const smartScrollHandler = async (params: {
 
   // Validate
   if (strategy === "uia" || strategy === "image") {
-    if (!windowTitle) return failArgs(`strategy:'${strategy}' requires windowTitle`, "smart_scroll", { strategy });
+    if (!windowTitle) return failArgs(`strategy:'${strategy}' requires windowTitle`, "scroll(action='smart')", { strategy });
   }
   if (strategy === "cdp" && !isSelectorLike(target)) {
-    return failArgs("strategy:'cdp' requires a CSS selector as target (must start with #, ., tag name, or [)", "smart_scroll", { target });
+    return failArgs("strategy:'cdp' requires a CSS selector as target (must start with #, ., tag name, or [)", "scroll(action='smart')", { target });
   }
   if (strategy === "image" && !windowTitle) {
-    return failArgs("strategy:'image' requires windowTitle", "smart_scroll", { strategy });
+    return failArgs("strategy:'image' requires windowTitle", "scroll(action='smart')", { strategy });
   }
 
   // Determine which strategies to try
@@ -509,7 +508,7 @@ export const smartScrollHandler = async (params: {
   if (tryStrategies.length === 0) {
     return failArgs(
       "Cannot determine scroll strategy: provide a CSS selector (CDP) or windowTitle (UIA/image)",
-      "smart_scroll",
+      "scroll(action='smart')",
       { target, windowTitle, strategy }
     );
   }
@@ -541,7 +540,7 @@ export const smartScrollHandler = async (params: {
 
     if (s === "image") {
       if (!windowTitle) {
-        return failArgs("image path requires windowTitle", "smart_scroll", {});
+        return failArgs("image path requires windowTitle", "scroll(action='smart')", {});
       }
       const result = await tryImage({ windowTitle, retryCount, hint });
       // Merge strategy warnings into result if present
@@ -557,45 +556,12 @@ export const smartScrollHandler = async (params: {
     }
   }
 
-  return failWith("All scroll strategies failed", "smart_scroll", { target, windowTitle, strategy });
+  return failWith("All scroll strategies failed", "scroll(action='smart')", { target, windowTitle, strategy });
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Registration
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function registerSmartScrollTools(server: McpServer): void {
-  server.tool(
-    "smart_scroll",
-    buildDesc({
-      purpose: "Scroll any element into the viewport — handles nested scroll layers, virtualised lists, sticky-header occlusion, and image-only fallbacks in a single call.",
-      details:
-        "Three paths selected by strategy:'auto' (default): " +
-        "(1) CDP (Chrome/Edge): walks scroll ancestor chain, handles overflow:hidden (expandHidden), virtualised lists (TanStack/data-index bisect), detects sticky headers and compensates. " +
-        "(2) UIA (native Windows apps): uses ScrollPattern.SetScrollPercent on ancestor containers then ScrollItemPattern for final snap. " +
-        "(3) Image: binary-search via Win32 GetScrollInfo (exact ratio) or scrollbar-strip pixel sampling (overlay scrollbars), with dHash verification — detects no-op scrolls (Hamming < 5). " +
-        "All paths emit a unified response: ok, path, attempts, pageRatio (0..1), scrolled (bool), ancestors[], viewportPosition. " +
-        "pageRatio is the normalised vertical position of the element on the full page (0=top, 1=bottom). " +
-        "Set verifyWithHash:true to explicitly check that pixels changed (auto-enabled on image path). " +
-        "Nested scroll: ancestors[] is ordered outer→inner; the tool scrolls outer containers first. " +
-        "Virtual lists: set virtualIndex + virtualTotal for O(log n) bisect (≤6 iterations).",
-      prefer:
-        "Use instead of scroll_to_element when: content is virtualised (React Virtualized, TanStack Virtual), multiple scroll containers nest, " +
-        "or scroll_to_element returns scrolled:true but the viewport did not actually move. " +
-        "For a simple single-container non-virtual scroll, scroll_to_element is lighter.",
-      caveats:
-        "CDP path requires browser_open. Cross-origin iframes are not traversed (warning returned). " +
-        "expandHidden mutates live CSS (overflow:auto); previous value is stored in data-dt-prev-overflow and restored on the next smart_scroll call (or after 30 s). " +
-        "Image path cannot determine whether the target element is in-view — viewportPosition is null. Call screenshot(detail='text') afterwards to verify. " +
-        "UIA ScrollPattern may not be available in all native apps — falls through to image path.",
-      examples: [
-        "smart_scroll({target: '#create-release-btn'}) — CDP, nested container, no virtual list",
-        "smart_scroll({target: '[data-index]', virtualIndex: 500, virtualTotal: 10000}) — TanStack virtual list",
-        "smart_scroll({target: 'Create Release', windowTitle: 'File Explorer', strategy: 'uia'}) — native UIA",
-        "smart_scroll({target: 'readme section', windowTitle: 'MyApp', strategy: 'image', hint: 'below'}) — image binary-search",
-      ],
-    }),
-    smartScrollSchema,
-    smartScrollHandler
-  );
-}
+// registerSmartScrollTools removed in Phase 2b (family merge).
+// smart_scroll is now registered via scroll(action='smart') in scroll.ts.

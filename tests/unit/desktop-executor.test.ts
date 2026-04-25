@@ -312,6 +312,6 @@ describe("terminalBgExecute — G2 background terminal send", () => {
     });
     let err = "";
     try { terminalBgExecute("Calculator", "1+1", deps); } catch (e) { err = String(e); }
-    expect(err).toContain("V1 terminal_send");
+    expect(err).toContain("V1 terminal(action='send')");
   });
 });

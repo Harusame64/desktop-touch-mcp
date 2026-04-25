@@ -12,19 +12,17 @@ import { registerKeyboardTools } from "./tools/keyboard.js";
 import { registerWindowTools } from "./tools/window.js";
 import { registerUiElementTools } from "./tools/ui-elements.js";
 import { registerWorkspaceTools } from "./tools/workspace.js";
-import { registerPinTools } from "./tools/pin.js";
 import { registerMacroTools } from "./tools/macro.js";
-import { registerScrollCaptureTools } from "./tools/scroll-capture.js";
 import { registerBrowserTools } from "./tools/browser.js";
-import { registerDockTools, autoDockFromEnv } from "./tools/dock.js";
+import { autoDockFromEnv } from "./tools/dock.js";
+import { registerWindowDockTools } from "./tools/window-dock.js";
+import { registerScrollTools } from "./tools/scroll.js";
 import { registerWaitUntilTool } from "./tools/wait-until.js";
 import { registerDesktopStateTools } from "./tools/desktop-state.js";
 import { registerTerminalTools } from "./tools/terminal.js";
 import { registerEventTools } from "./tools/events.js";
 import { registerClipboardTools } from "./tools/clipboard.js";
 import { registerNotificationTools } from "./tools/notification.js";
-import { registerScrollToElementTools } from "./tools/scroll-to-element.js";
-import { registerSmartScrollTools } from "./tools/smart-scroll.js";
 import { registerPerceptionTools } from "./tools/perception.js";
 import { registerPerceptionResources } from "./tools/perception-resources.js";
 import { registerServerStatusTool } from "./tools/server-status.js";
@@ -99,7 +97,7 @@ function createMcpServer(): McpServer {
         "Read reason and follow the recovery path:",
         "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_discover;",
         "  modal_blocking → dismiss modal via click_element, then retry;",
-        "  entity_outside_viewport → scroll via scroll/scroll_to_element, then re-call desktop_discover;",
+        "  entity_outside_viewport → scroll via scroll(action='raw') or scroll(action='to_element'), then re-call desktop_discover;",
         "  executor_failed → fall back to click_element / mouse_click / browser_click",
         "",
         "## Observation — priority order",
@@ -120,8 +118,9 @@ function createMcpServer(): McpServer {
         "  identity_changed — window was replaced; re-discover with desktop_discover",
         "",
         "## Terminal workflow",
-        "terminal_send → wait_until(terminal_output_contains, pattern='$ ') → terminal_read(sinceMarker).",
-        "Do not screenshot the terminal — terminal_read is cheaper and structured.",
+        "Preferred: terminal(action='run', input='cmd', until={mode:'pattern', pattern:'$ '}) — send + wait + read in one call.",
+        "Manual: terminal(action='send') → wait_until(terminal_output_contains, pattern='$ ') → terminal(action='read', sinceMarker).",
+        "Do not screenshot the terminal — terminal(action='read') is cheaper and structured.",
         "",
         "## Waiting for state changes",
         "Use wait_until instead of sleep+screenshot loops:",
@@ -134,14 +133,14 @@ function createMcpServer(): McpServer {
         "## Failure recovery",
         "- WindowNotFound → call get_windows to list available titles, then retry focus_window",
         "- WaitTimeout → read suggest[] in the error; increase timeoutMs or verify target exists",
-        "- keyboard_press / keyboard_type wrong window → call focus_window(windowTitle) first",
-        "- scroll_capture sizeReduced=true → reduce maxScrolls or add grayscale=true",
+        "- keyboard(action='press') or keyboard(action='type') wrong window → call focus_window(windowTitle) first",
+        "- scroll(action='capture') sizeReduced=true → reduce maxScrolls or add grayscale=true",
         "",
         "## Scroll capture",
-        "scroll_capture stitches full-page images. sizeReduced=true means the image was downscaled (pixel coords ≠ screen) — use for reading only, not mouse_click. overlapMode='mixed-with-failures' means some frame seams have duplicate rows.",
+        "scroll(action='capture') stitches full-page images. sizeReduced=true means the image was downscaled (pixel coords ≠ screen) — use for reading only, not mouse_click. overlapMode='mixed-with-failures' means some frame seams have duplicate rows.",
         "",
         "## Auto-dock CLI window (optional)",
-        "Set env vars in your MCP client config to auto-dock Claude CLI on startup:",
+        "Set env vars in your MCP client config to auto-dock Claude CLI on startup (uses window_dock(action='dock') internally):",
         "  DESKTOP_TOUCH_DOCK_TITLE='@parent'  — auto-detect the hosting terminal (recommended)",
         "  DESKTOP_TOUCH_DOCK_CORNER=bottom-right  DESKTOP_TOUCH_DOCK_WIDTH=480  DESKTOP_TOUCH_DOCK_HEIGHT=360",
         "",
@@ -171,19 +170,16 @@ function createMcpServer(): McpServer {
   registerWindowTools(s);
   registerUiElementTools(s);
   registerWorkspaceTools(s);
-  registerPinTools(s);
   registerMacroTools(s);
-  registerScrollCaptureTools(s);
+  registerScrollTools(s);
   registerBrowserTools(s);
-  registerDockTools(s);
+  registerWindowDockTools(s);
   registerWaitUntilTool(s);
   registerDesktopStateTools(s);
   registerTerminalTools(s);
   registerEventTools(s);
   registerClipboardTools(s);
   registerNotificationTools(s);
-  registerScrollToElementTools(s);
-  registerSmartScrollTools(s);
   registerPerceptionTools(s);
   registerServerStatusTool(s);
 

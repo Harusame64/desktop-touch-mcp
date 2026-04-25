@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { createHash } from "node:crypto";
-import { ok, fail } from "./_types.js";
+import { ok, fail, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
 import {
@@ -191,7 +191,7 @@ export const terminalReadHandler = async ({
   try {
     const win = findTerminalWindow(windowTitle);
     if (!win) {
-      return failWith("Terminal window not found: " + windowTitle, "terminal_read", { windowTitle });
+      return failWith("Terminal window not found: " + windowTitle, "terminal:read", { windowTitle });
     }
 
     const obs = observeTarget(windowTitle, win.hwnd, win.title);
@@ -212,7 +212,7 @@ export const terminalReadHandler = async ({
         usedSource = "ocr";
       } catch (err) {
         if (source === "ocr") {
-          return failWith(err, "terminal_read", { windowTitle });
+          return failWith(err, "terminal:read", { windowTitle });
         }
         // auto: both failed
       }
@@ -281,7 +281,7 @@ export const terminalReadHandler = async ({
 
     return ok(payload);
   } catch (err) {
-    return failWith(err, "terminal_read", { windowTitle });
+    return failWith(err, "terminal:read", { windowTitle });
   }
 };
 
@@ -312,7 +312,7 @@ export const terminalSendHandler = async ({
   try {
     const win = findTerminalWindow(windowTitle);
     if (!win) {
-      return failWith("Terminal window not found: " + windowTitle, "terminal_send", { windowTitle });
+      return failWith("Terminal window not found: " + windowTitle, "terminal:send", { windowTitle });
     }
 
     // ── Background input path (WM_CHAR) ────────────────────────────────────
@@ -338,7 +338,7 @@ export const terminalSendHandler = async ({
           if (inputMethod === "background") {
             return failWith(
               new Error("BackgroundInputIncomplete"),
-              "terminal_send",
+              "terminal:send",
               {
                 suggest: [
                   "Input sent partially - retry with method:'foreground' for full input",
@@ -491,7 +491,278 @@ export const terminalSendHandler = async ({
       },
     });
   } catch (err) {
-    return failWith(err, "terminal_send", { windowTitle });
+    return failWith(err, "terminal:send", { windowTitle });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// terminal run handler — send → wait → read in one call
+// ─────────────────────────────────────────────────────────────────────────────
+
+type CompletionReason = "quiet" | "pattern_matched" | "timeout" | "window_closed" | "window_not_found";
+
+interface TerminalRunResponse {
+  ok: boolean;
+  output: string;
+  completion: {
+    reason: CompletionReason;
+    elapsedMs: number;
+    matchedPattern?: string;
+  };
+  marker?: string;
+  warnings?: string[];
+  hwnd?: string;
+}
+
+/**
+ * Read raw text from a terminal window (for run polling — avoids full ToolResult overhead).
+ * Returns null if window not found.
+ */
+async function readTerminalRaw(windowTitle: string): Promise<{ text: string; marker: string } | null> {
+  const win = findTerminalWindow(windowTitle);
+  if (!win) return null;
+  const raw = (await getTextViaTextPattern(win.title)) ?? "";
+  const cleaned = stripAnsi(raw);
+  return { text: cleaned, marker: makeMarker(cleaned) };
+}
+
+/** Check if a window with the given hwnd still exists in the z-order list. */
+function isWindowStillAlive(hwnd: unknown): boolean {
+  try {
+    const wins = enumWindowsInZOrder();
+    return wins.some((w) => String(w.hwnd) === String(hwnd));
+  } catch {
+    return false;
+  }
+}
+
+export const terminalRunHandler = async ({
+  windowTitle, input, until, timeoutMs, sendOptions, readOptions,
+}: {
+  windowTitle: string;
+  input: string;
+  until: { mode: "quiet"; quietMs: number } | { mode: "pattern"; pattern: string; regex: boolean };
+  timeoutMs: number;
+  sendOptions?: Record<string, unknown>;
+  readOptions?: Record<string, unknown>;
+}): Promise<ToolResult> => {
+  const startedAt = Date.now();
+  const warnings: string[] = [];
+
+  // ── Phase 1: Send ──────────────────────────────────────────────────────────
+  const win = findTerminalWindow(windowTitle);
+  if (!win) {
+    const res: TerminalRunResponse = {
+      ok: false,
+      output: "",
+      completion: { reason: "window_not_found", elapsedMs: Date.now() - startedAt },
+      warnings: [`Terminal window not found: "${windowTitle}"`],
+    };
+    return ok(res);
+  }
+
+  const hwnd = win.hwnd;
+
+  const sendArgs = {
+    windowTitle,
+    input,
+    method: "auto" as const,
+    chunkSize: 100,
+    pressEnter: true,
+    focusFirst: true,
+    restoreFocus: false,   // keep focus on terminal for polling
+    preferClipboard: true,
+    pasteKey: "auto" as const,
+    trackFocus: false,
+    settleMs: 100,
+    ...(sendOptions as object ?? {}),
+  };
+
+  const sendResult = await terminalSendHandler(sendArgs);
+  // Check send result — if send failed, detect window state
+  const sendPayload = (() => {
+    try {
+      const block = sendResult.content[0];
+      if (block?.type === "text") return JSON.parse(block.text) as { ok?: boolean };
+    } catch { /* fall through */ }
+    return null;
+  })();
+
+  if (sendPayload && sendPayload.ok === false) {
+    // Window disappeared after we found it (race)
+    const alive = isWindowStillAlive(hwnd);
+    const res: TerminalRunResponse = {
+      ok: false,
+      output: "",
+      completion: {
+        reason: alive ? "window_not_found" : "window_closed",
+        elapsedMs: Date.now() - startedAt,
+      },
+      hwnd: String(hwnd),
+      warnings: [`terminal(action='send') failed`],
+    };
+    return ok(res);
+  }
+
+  // Take a marker snapshot just after sending (for sinceMarker diff)
+  const initialRead = await readTerminalRaw(windowTitle);
+  const sinceMarker = initialRead?.marker;
+
+  // ── Phase 2: Wait ──────────────────────────────────────────────────────────
+  const POLL_INTERVAL_MS = 200;
+  let completionReason: CompletionReason | null = null;
+  let matchedPattern: string | undefined;
+  let lastText = initialRead?.text ?? "";
+  let lastTextTime = Date.now();
+  const quietMs = until.mode === "quiet" ? until.quietMs : 800;
+
+  // Compile pattern if pattern mode
+  let patternRe: RegExp | null = null;
+  if (until.mode === "pattern") {
+    try {
+      patternRe = until.regex
+        ? new RegExp(until.pattern)
+        : new RegExp(until.pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    } catch {
+      patternRe = null;
+      warnings.push(`Invalid regex pattern: "${until.pattern}" — falling back to quiet mode`);
+    }
+  }
+
+  // Check if initial output already matches pattern
+  if (patternRe && lastText && patternRe.test(lastText)) {
+    completionReason = "pattern_matched";
+    matchedPattern = until.mode === "pattern" ? until.pattern : undefined;
+  }
+
+  while (completionReason === null) {
+    await new Promise<void>((r) => setTimeout(r, POLL_INTERVAL_MS));
+
+    const elapsed = Date.now() - startedAt;
+
+    // Timeout check
+    if (elapsed >= timeoutMs) {
+      completionReason = "timeout";
+      break;
+    }
+
+    // Window alive check
+    if (!isWindowStillAlive(hwnd)) {
+      completionReason = "window_closed";
+      break;
+    }
+
+    // Read current output
+    const current = await readTerminalRaw(windowTitle);
+    if (!current) {
+      // Window disappeared between our alive check and read
+      completionReason = "window_closed";
+      break;
+    }
+
+    const currentText = current.text;
+
+    if (until.mode === "pattern" && patternRe) {
+      if (patternRe.test(currentText)) {
+        completionReason = "pattern_matched";
+        matchedPattern = until.mode === "pattern" ? until.pattern : undefined;
+        break;
+      }
+    } else {
+      // quiet mode: check if text has changed
+      if (currentText !== lastText) {
+        lastText = currentText;
+        lastTextTime = Date.now();
+      } else if (Date.now() - lastTextTime >= quietMs) {
+        completionReason = "quiet";
+        break;
+      }
+    }
+  }
+
+  // ── Phase 3: Read final output ─────────────────────────────────────────────
+  const readArgs = {
+    windowTitle,
+    lines: 50,
+    sinceMarker,
+    stripAnsi: true,
+    source: "auto" as const,
+    ocrLanguage: "ja",
+    ...(readOptions as object ?? {}),
+  };
+
+  const readResult = await terminalReadHandler(readArgs);
+  let output = "";
+  let finalMarker: string | undefined;
+  try {
+    const block = readResult.content[0];
+    if (block?.type === "text") {
+      const parsed = JSON.parse(block.text) as { text?: string; marker?: string; hints?: unknown };
+      output = parsed.text ?? "";
+      finalMarker = parsed.marker;
+    }
+  } catch { /* output stays empty */ }
+
+  const response: TerminalRunResponse = {
+    ok: true,
+    output,
+    completion: {
+      // Loop only exits via the four break paths (each assigns completionReason)
+      // or when the while-condition becomes false (also non-null). Non-null assertion
+      // keeps the type clean without a CodeQL "always-false" defensive guard.
+      reason: completionReason!,
+      elapsedMs: Date.now() - startedAt,
+      ...(matchedPattern !== undefined ? { matchedPattern } : {}),
+    },
+    ...(finalMarker ? { marker: finalMarker } : {}),
+    hwnd: String(hwnd),
+    ...(warnings.length > 0 ? { warnings } : {}),
+  };
+
+  return ok(response);
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Dispatcher schema (discriminated union)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const terminalSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("read"),
+    ...terminalReadSchema,
+  }),
+  z.object({
+    action: z.literal("send"),
+    ...terminalSendSchema,
+  }),
+  z.object({
+    action: z.literal("run"),
+    windowTitle: z.string().max(200).describe("Partial title of the terminal window (e.g. 'PowerShell', 'pwsh', 'WindowsTerminal')."),
+    input: z.string().max(10000).describe("Command to send (Enter is appended automatically)"),
+    until: z.discriminatedUnion("mode", [
+      z.object({
+        mode: z.literal("quiet"),
+        quietMs: z.coerce.number().int().min(50).max(30000).default(800).describe("Stop when output is silent for this many ms"),
+      }),
+      z.object({
+        mode: z.literal("pattern"),
+        pattern: z.string().describe("Stop when output matches this string (or regex if regex:true)"),
+        regex: z.boolean().default(false).describe("If true, treat pattern as a regex"),
+      }),
+    ]).default({ mode: "quiet", quietMs: 800 }),
+    timeoutMs: z.coerce.number().int().min(500).max(600_000).default(30_000).describe("Hard timeout in ms (default 30s)"),
+    sendOptions: z.record(z.string(), z.unknown()).optional().describe("Extra options forwarded to terminal send (method, chunkSize, etc.)"),
+    readOptions: z.record(z.string(), z.unknown()).optional().describe("Extra options forwarded to terminal read (lines, source, ocrLanguage, etc.)"),
+  }),
+]);
+
+export type TerminalArgs = z.infer<typeof terminalSchema>;
+
+export const terminalDispatchHandler = async (args: TerminalArgs): Promise<ToolResult> => {
+  switch (args.action) {
+    case "read": return terminalReadHandler(args);
+    case "send": return terminalSendHandler(args);
+    case "run": return terminalRunHandler(args);
   }
 };
 
@@ -500,11 +771,7 @@ export const terminalSendHandler = async ({
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function readForHook(windowTitle: string): Promise<{ text: string; marker: string } | null> {
-  const win = findTerminalWindow(windowTitle);
-  if (!win) return null;
-  const raw = (await getTextViaTextPattern(win.title)) ?? "";
-  const cleaned = stripAnsi(raw);
-  return { text: cleaned, marker: makeMarker(cleaned) };
+  return readTerminalRaw(windowTitle);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -516,17 +783,23 @@ export { TERMINAL_PROCESS_RE };
 export function registerTerminalTools(server: McpServer): void {
   setTerminalReadHook(readForHook);
 
-  server.tool(
-    "terminal_read",
-    "Read current text from a terminal window via UIA TextPattern (falls back to OCR). Strips ANSI escape sequences. sinceMarker: pass the marker from a previous response to get only new output (diff mode — cheaper than full read). Caveats: When the underlying process restarts, the marker is invalidated and full text is returned.",
-    terminalReadSchema,
-    terminalReadHandler
-  );
-
-  server.tool(
-    "terminal_send",
-    "Send a command to a terminal window (Windows Terminal, conhost, PowerShell, cmd, WSL). Wraps focus_window + keyboard type + Enter. preferClipboard=true (default) uses clipboard paste — IME-safe for CJK text, but overwrites the user's clipboard. restoreFocus=true (default) returns focus to the previously active window after sending. Caveats: If the terminal is busy (previous command still running), text will be injected mid-stream — check terminal_read first or use wait_until(terminal_output_contains) to confirm completion before sending.",
-    terminalSendSchema,
-    terminalSendHandler
+  server.registerTool(
+    "terminal",
+    {
+      description: buildDesc({
+        purpose: "Interact with a terminal window: read output, send input, or run+wait+read in one call.",
+        details: "action='run' is the recommended high-level workflow: send command → wait until quiet/pattern/timeout → read output. Returns completion={reason, elapsedMs} first-class. action='read' reads current text via UIA TextPattern (falls back to OCR); use sinceMarker for incremental diff. action='send' sends a command with focus management.",
+        prefer: "action='run' for command execution + result. Use action='read'/'send' for fine-grained control or when you need to interleave other actions.",
+        caveats: "Do not screenshot the terminal — terminal(action='read') is cheaper and structured. action='run' supports completion reasons: quiet | pattern_matched | timeout | window_closed | window_not_found. preferClipboard=true (send default) overwrites user clipboard.",
+        examples: [
+          "terminal({action:'run', windowTitle:'PowerShell', input:'npm test', until:{mode:'pattern', pattern:'npm test:'}}) → {output, completion:{reason:'pattern_matched'}}",
+          "terminal({action:'run', windowTitle:'pwsh', input:'ls'}) → quiet 800ms wait, returns output",
+          "terminal({action:'read', windowTitle:'PowerShell', sinceMarker:'...'}) → incremental diff",
+          "terminal({action:'send', windowTitle:'PowerShell', input:'echo hello'}) → sends text + Enter",
+        ],
+      }),
+      inputSchema: terminalSchema,
+    },
+    terminalDispatchHandler as (args: Record<string, unknown>) => Promise<ToolResult>
   );
 }

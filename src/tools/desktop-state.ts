@@ -94,7 +94,7 @@ export const desktopStateHandler = async (): Promise<ToolResult> => {
 
     // Modal heuristic
     let hasModal = false;
-    const MODAL_RE = /dialog|confirm|prompt|alert|error|警告|エラー|確認|通知|ダイアログ/i;
+    const MODAL_RE = /dialog|confirm|prompt|alert|error|警告|エラー|確認|通知|ダイアログ|名前を付けて|Save As/i;
     for (const w of wins) {
       if (MODAL_RE.test(w.title)) { hasModal = true; break; }
     }

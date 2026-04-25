@@ -33,8 +33,11 @@ describe("B1: Chromium narrate:rich → chromium_sparse", () => {
     const chromeWin = enumWindowsInZOrder().find(w =>
       /- (?:Google Chrome|Microsoft Edge|Brave|Chromium)$/.test(w.title)
     );
-    if (!chromeWin) {
-      skip("No Chromium window open — skipping B1");
+    // Sonnet 誤判断ループ防止 (memory feedback_sonnet_e2e_twice_delegate.md / docs/tool-surface-known-issues.md §1.2):
+    // Chrome がアクティブ foreground かつ可視 (非最小化) のときだけ run。それ以外は title 変動で
+    // focus 失敗 → ok=false の flaky を生むため skip。カバレッジは Chrome アクティブ環境でのみ取得。
+    if (!chromeWin || chromeWin.isMinimized || !chromeWin.isActive) {
+      skip("No active foreground Chromium window — skipping B1 (avoid flaky)");
     }
 
     const result = await richKeyboardPress({
