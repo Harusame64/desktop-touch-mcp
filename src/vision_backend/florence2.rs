@@ -19,10 +19,16 @@
 //!   - `tokenize_with_prompt(&str)`: encode arbitrary prompt (used by tests
 //!     and any future task variant)
 //!
-//! Phase 4b-5a-3 scope (future):
-//!   - Encoder + decoder ort::Session::run with KV-cache autoregressive loop
+//! Phase 4b-5a-3 scope (this batch):
+//!   - `Florence2Stage1Sessions`: bundle of 4 ONNX sessions for Stage 1
+//!   - `EncoderOutputs`: result of encoder forward pass
+//!   - `encoder_forward`: vision_encoder → embed_tokens → encoder_model pipeline
+//!   - `expect()` → `Result` upgrade for `resize_bilinear_rgb` (4b-5a-1 R1)
 //!
 //! Phase 4b-5a-4 scope (future):
+//!   - Decoder + KV cache + autoregressive loop
+//!
+//! Phase 4b-5a-5 scope (future):
 //!   - `<loc_X>` token sequence → bbox RawCandidate[] parser
 //!
 //! Note: ndarray is a transitive dependency of ort, available under the
@@ -92,7 +98,7 @@ pub fn preprocess_image(
 
     // Bilinear-resize the crop to (FLORENCE2_INPUT_SIDE, FLORENCE2_INPUT_SIDE).
     // The `image` crate handles RGB u8 resize efficiently.
-    let resized: ndarray::Array3<u8> = resize_bilinear_rgb(&crop_rgb, FLORENCE2_INPUT_SIDE, FLORENCE2_INPUT_SIDE);
+    let resized: ndarray::Array3<u8> = resize_bilinear_rgb(&crop_rgb, FLORENCE2_INPUT_SIDE, FLORENCE2_INPUT_SIDE)?;
 
     // Convert to f32 NCHW and apply ImageNet normalization.
     Ok(normalize_and_transpose(&resized))
@@ -138,17 +144,20 @@ fn extract_crop_rgb(buffer: &[u8], frame_w: u32, crop: &Crop) -> ndarray::Array3
 }
 
 /// Bilinear resize using the `image` crate. Input / output are packed RGB u8.
+/// Phase 4b-5a-3 R1: upgraded from expect() to Result to improve L5 panic safety.
 #[cfg(feature = "vision-gpu")]
-fn resize_bilinear_rgb(src: &ndarray::Array3<u8>, dst_w: u32, dst_h: u32) -> ndarray::Array3<u8> {
+fn resize_bilinear_rgb(src: &ndarray::Array3<u8>, dst_w: u32, dst_h: u32) -> Result<ndarray::Array3<u8>, VisionBackendError> {
     use image::{imageops::FilterType, ImageBuffer, Rgb};
     let (h, w, _) = src.dim();
-    let flat = src.as_slice().expect("Array3<u8> must be contiguous").to_vec();
+    let flat = src.as_slice()
+        .ok_or_else(|| VisionBackendError::Other("Array3<u8> not contiguous".into()))?
+        .to_vec();
     let src_img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_raw(w as u32, h as u32, flat)
-        .expect("ImageBuffer::from_raw with correct size");
+        .ok_or_else(|| VisionBackendError::Other("ImageBuffer::from_raw shape mismatch".into()))?;
     let resized = image::imageops::resize(&src_img, dst_w, dst_h, FilterType::Triangle);
     let raw = resized.into_raw();
     ndarray::Array3::from_shape_vec((dst_h as usize, dst_w as usize, 3), raw)
-        .expect("resized Array3 shape must match")
+        .map_err(|e| VisionBackendError::Other(format!("resized Array3 shape mismatch: {e}")))
 }
 
 /// Convert packed RGB u8 Array3 (H, W, 3) → f32 NCHW Array4 (1, 3, H, W) with
@@ -173,6 +182,226 @@ fn normalize_and_transpose(src: &ndarray::Array3<u8>) -> Array4<f32> {
 #[cfg(feature = "vision-gpu")]
 pub fn expected_shape() -> (usize, usize, usize, usize) {
     (1, 3, FLORENCE2_INPUT_SIDE as usize, FLORENCE2_INPUT_SIDE as usize)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 4b-5a-3: Florence-2 Stage 1 multi-session + encoder forward
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "vision-gpu")]
+use std::sync::Arc;
+
+/// Bundle of 4 ONNX sessions composing Florence-2 Stage 1.
+///
+/// Phase 4b-5a-3 scope: vision_encoder / embed_tokens / encoder_model are
+/// fully wired through `encoder_forward`. `decoder_model_merged` is loaded
+/// (pool-resident) but not invoked here — Phase 4b-5a-4 connects it.
+///
+/// All four sessions live under composite keys in the global pool:
+///   - `<base_key>::vision_encoder`
+///   - `<base_key>::embed_tokens`
+///   - `<base_key>::encoder_model`
+///   - `<base_key>::decoder_model_merged`
+/// where `<base_key>` is the session_key passed to `init_session_blocking`
+/// (e.g. `"florence-2-base:dml-fp16"`).
+#[cfg(feature = "vision-gpu")]
+#[derive(Clone)]
+pub struct Florence2Stage1Sessions {
+    pub vision_encoder: Arc<crate::vision_backend::session::VisionSession>,
+    pub embed_tokens: Arc<crate::vision_backend::session::VisionSession>,
+    pub encoder_model: Arc<crate::vision_backend::session::VisionSession>,
+    pub decoder_model_merged: Arc<crate::vision_backend::session::VisionSession>,
+}
+
+/// Output of `encoder_forward`. Both arrays are kept for use by
+/// 4b-5a-4 decoder loop (`encoder_hidden_states` is the cross-attention
+/// source, `encoder_attention_mask` is the mask for cross-attn).
+#[cfg(feature = "vision-gpu")]
+#[derive(Debug)]
+pub struct EncoderOutputs {
+    /// `[batch=1, total_seq, hidden_dim]` — concatenated vision + text
+    /// embeddings after BART encoder. Total seq length = N_image_tokens + N_text_tokens.
+    pub encoder_hidden_states: ndarray::Array3<f32>,
+    /// `[batch=1, total_seq]` — 1s for valid positions. Image positions are
+    /// always 1; text positions follow `prompt_tokens.attention_mask`.
+    pub encoder_attention_mask: ndarray::Array2<i64>,
+}
+
+#[cfg(feature = "vision-gpu")]
+impl Florence2Stage1Sessions {
+    /// Try to acquire all 4 sub-sessions from the global pool by composite keys.
+    /// Returns `None` if any one is missing — caller falls back to dummy stub.
+    pub fn from_pool(base_key: &str) -> Option<Self> {
+        let pool = crate::vision_backend::session_pool::global_pool();
+        Some(Self {
+            vision_encoder: pool.get(&format!("{base_key}::vision_encoder"))?,
+            embed_tokens: pool.get(&format!("{base_key}::embed_tokens"))?,
+            encoder_model: pool.get(&format!("{base_key}::encoder_model"))?,
+            decoder_model_merged: pool.get(&format!("{base_key}::decoder_model_merged"))?,
+        })
+    }
+
+    /// Run vision_encoder → embed_tokens → encoder_model in sequence and
+    /// return concatenated encoder_hidden_states + the corresponding
+    /// attention_mask suitable for the 4b-5a-4 decoder loop.
+    ///
+    /// Input shapes:
+    ///   - `pixel_values`: `[1, 3, 768, 768]` (from `preprocess_image`)
+    ///   - `prompt_tokens.input_ids`: `Vec<i64>` length = text seq len
+    ///   - `prompt_tokens.attention_mask`: `Vec<i64>` length = same
+    ///
+    /// Output shapes (assuming Florence-2-base):
+    ///   - encoder_hidden_states: `[1, 577 + text_seq, 768]`
+    ///   - encoder_attention_mask: `[1, 577 + text_seq]`
+    /// (577 image tokens is the DaViT output for 768x768 input — verified
+    /// at runtime via shape inspection, not hardcoded as a constraint.)
+    pub fn encoder_forward(
+        &self,
+        pixel_values: ndarray::Array4<f32>,
+        prompt_tokens: &PromptTokens,
+    ) -> Result<EncoderOutputs, VisionBackendError> {
+        // Step 1: vision_encoder.run(pixel_values) → image_features [1, N_img, hidden]
+        let image_features = run_vision_encoder(&self.vision_encoder, pixel_values)?;
+
+        // Step 2: embed_tokens.run(input_ids) → text_embeds [1, N_text, hidden]
+        let input_ids_array = ndarray::Array2::from_shape_vec(
+            (1, prompt_tokens.input_ids.len()),
+            prompt_tokens.input_ids.clone(),
+        )
+        .map_err(|e| VisionBackendError::Other(format!("input_ids reshape: {e}")))?;
+        let text_embeds = run_embed_tokens(&self.embed_tokens, input_ids_array)?;
+
+        // Step 3: concatenate along sequence dim (axis 1)
+        if image_features.shape()[2] != text_embeds.shape()[2] {
+            return Err(VisionBackendError::Other(format!(
+                "hidden dim mismatch: vision_encoder={} vs embed_tokens={}",
+                image_features.shape()[2],
+                text_embeds.shape()[2],
+            )));
+        }
+        let combined = ndarray::concatenate(
+            ndarray::Axis(1),
+            &[image_features.view(), text_embeds.view()],
+        )
+        .map_err(|e| VisionBackendError::Other(format!("concat: {e}")))?;
+
+        // Step 4: build encoder_attention_mask = [1; N_img] ++ prompt_tokens.attention_mask
+        let n_img = image_features.shape()[1];
+        let n_text = text_embeds.shape()[1];
+        let mut mask_vec: Vec<i64> = Vec::with_capacity(n_img + n_text);
+        mask_vec.extend(std::iter::repeat(1i64).take(n_img));
+        mask_vec.extend(prompt_tokens.attention_mask.iter().copied());
+        let attention_mask = ndarray::Array2::from_shape_vec((1, n_img + n_text), mask_vec)
+            .map_err(|e| VisionBackendError::Other(format!("mask reshape: {e}")))?;
+
+        // Step 5: encoder_model.run(combined, attention_mask) → encoder_hidden_states
+        let encoder_hidden_states = run_encoder_model(
+            &self.encoder_model,
+            combined,
+            attention_mask.clone(),
+        )?;
+
+        Ok(EncoderOutputs {
+            encoder_hidden_states,
+            encoder_attention_mask: attention_mask,
+        })
+    }
+}
+
+/// Run vision_encoder.onnx with a single input tensor `pixel_values`.
+/// Output: `image_features` of shape `[1, N_img, hidden_dim]`.
+#[cfg(feature = "vision-gpu")]
+fn run_vision_encoder(
+    sess: &crate::vision_backend::session::VisionSession,
+    pixel_values: ndarray::Array4<f32>,
+) -> Result<ndarray::Array3<f32>, VisionBackendError> {
+    use ort::value::Tensor;
+    let pixel_tensor = Tensor::from_array(pixel_values)
+        .map_err(|e| VisionBackendError::Other(format!("pixel_values tensor: {e}")))?;
+
+    let mut session = sess.lock();
+    let outputs = session
+        .run(ort::inputs![ "pixel_values" => pixel_tensor ])
+        .map_err(|e| VisionBackendError::Other(format!("vision_encoder run: {e}")))?;
+    let (_, output_tensor) = outputs
+        .iter()
+        .next()
+        .ok_or_else(|| VisionBackendError::Other("vision_encoder returned no outputs".into()))?;
+    let view = output_tensor
+        .try_extract_array::<f32>()
+        .map_err(|e| VisionBackendError::Other(format!("vision_encoder output extract: {e}")))?;
+    let array3 = view
+        .into_dimensionality::<ndarray::Ix3>()
+        .map_err(|e| VisionBackendError::Other(format!("vision_encoder output dim: {e}")))?
+        .to_owned();
+    Ok(array3)
+}
+
+/// Run embed_tokens.onnx with `input_ids: [1, N_text]` (i64).
+/// Output: `inputs_embeds` of shape `[1, N_text, hidden_dim]`.
+#[cfg(feature = "vision-gpu")]
+fn run_embed_tokens(
+    sess: &crate::vision_backend::session::VisionSession,
+    input_ids: ndarray::Array2<i64>,
+) -> Result<ndarray::Array3<f32>, VisionBackendError> {
+    use ort::value::Tensor;
+    let input_tensor = Tensor::from_array(input_ids)
+        .map_err(|e| VisionBackendError::Other(format!("input_ids tensor: {e}")))?;
+
+    let mut session = sess.lock();
+    let outputs = session
+        .run(ort::inputs![ "input_ids" => input_tensor ])
+        .map_err(|e| VisionBackendError::Other(format!("embed_tokens run: {e}")))?;
+    let (_, output_tensor) = outputs
+        .iter()
+        .next()
+        .ok_or_else(|| VisionBackendError::Other("embed_tokens returned no outputs".into()))?;
+    let view = output_tensor
+        .try_extract_array::<f32>()
+        .map_err(|e| VisionBackendError::Other(format!("embed_tokens output extract: {e}")))?;
+    let array3 = view
+        .into_dimensionality::<ndarray::Ix3>()
+        .map_err(|e| VisionBackendError::Other(format!("embed_tokens output dim: {e}")))?
+        .to_owned();
+    Ok(array3)
+}
+
+/// Run encoder_model.onnx with combined inputs_embeds + attention_mask.
+/// Output: `encoder_hidden_states` of shape `[1, total_seq, hidden_dim]`.
+///
+/// Note on input names: Florence-2 BART encoder ONNX export uses
+/// `inputs_embeds` (not `input_ids`) when given pre-computed embeddings.
+#[cfg(feature = "vision-gpu")]
+fn run_encoder_model(
+    sess: &crate::vision_backend::session::VisionSession,
+    inputs_embeds: ndarray::Array3<f32>,
+    attention_mask: ndarray::Array2<i64>,
+) -> Result<ndarray::Array3<f32>, VisionBackendError> {
+    use ort::value::Tensor;
+    let embeds_tensor = Tensor::from_array(inputs_embeds)
+        .map_err(|e| VisionBackendError::Other(format!("inputs_embeds tensor: {e}")))?;
+    let mask_tensor = Tensor::from_array(attention_mask)
+        .map_err(|e| VisionBackendError::Other(format!("attention_mask tensor: {e}")))?;
+
+    let mut session = sess.lock();
+    let outputs = session
+        .run(ort::inputs![
+            "inputs_embeds" => embeds_tensor,
+            "attention_mask" => mask_tensor,
+        ])
+        .map_err(|e| VisionBackendError::Other(format!("encoder_model run: {e}")))?;
+    let (_, output_tensor) = outputs
+        .iter()
+        .next()
+        .ok_or_else(|| VisionBackendError::Other("encoder_model returned no outputs".into()))?;
+    let view = output_tensor
+        .try_extract_array::<f32>()
+        .map_err(|e| VisionBackendError::Other(format!("encoder_model output extract: {e}")))?;
+    let array3 = view
+        .into_dimensionality::<ndarray::Ix3>()
+        .map_err(|e| VisionBackendError::Other(format!("encoder_model output dim: {e}")))?
+        .to_owned();
+    Ok(array3)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -431,4 +660,73 @@ mod tests {
         let out = preprocess_image(&buf, 50, 50, &full).unwrap();
         assert_eq!(out.dim(), expected_shape());
     }
+}
+
+#[cfg(all(test, feature = "vision-gpu"))]
+mod encoder_tests {
+    use super::*;
+    use ndarray::{Array2, Array3};
+    use crate::vision_backend::types::Rect;
+
+    #[test]
+    fn florence2_stage1_sessions_from_pool_returns_none_when_keys_absent() {
+        // Empty pool (or keys absent) → from_pool returns None.
+        let result = Florence2Stage1Sessions::from_pool("nonexistent:variant");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn encoder_outputs_struct_fields_accessible() {
+        let outputs = EncoderOutputs {
+            encoder_hidden_states: Array3::<f32>::zeros((1, 580, 768)),
+            encoder_attention_mask: Array2::<i64>::ones((1, 580)),
+        };
+        assert_eq!(outputs.encoder_hidden_states.shape(), &[1, 580, 768]);
+        assert_eq!(outputs.encoder_attention_mask.shape(), &[1, 580]);
+        assert!(outputs.encoder_attention_mask.iter().all(|&v| v == 1));
+    }
+
+    #[test]
+    fn encoder_outputs_hidden_dim_matches_mask_len() {
+        // Verify that shape[1] of encoder_hidden_states == shape[1] of mask
+        // (the invariant asserted in stub_recognise_with_session).
+        let n = 583usize; // 577 image tokens + 3 text tokens + BOS/EOS variation
+        let outputs = EncoderOutputs {
+            encoder_hidden_states: Array3::<f32>::zeros((1, n, 768)),
+            encoder_attention_mask: Array2::<i64>::ones((1, n)),
+        };
+        assert_eq!(
+            outputs.encoder_hidden_states.shape()[1],
+            outputs.encoder_attention_mask.shape()[1],
+        );
+        assert_eq!(outputs.encoder_hidden_states.shape()[0], 1);
+        assert_eq!(outputs.encoder_attention_mask.shape()[0], 1);
+    }
+
+    #[test]
+    fn preprocess_image_is_still_panic_safe_after_result_refactor() {
+        // 4b-5a-1 R1 fix: previously expect() panicked on edge cases,
+        // now returns Result. Verify a 0-sized buffer produces Err not panic.
+        let buf = vec![];
+        let roi = Rect { x: 0, y: 0, width: 0, height: 0 };
+        let result = preprocess_image(&buf, 0, 0, &roi);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn encoder_outputs_debug_impl_works() {
+        // Verify #[derive(Debug)] on EncoderOutputs compiles and formats without panic.
+        let outputs = EncoderOutputs {
+            encoder_hidden_states: Array3::<f32>::zeros((1, 2, 4)),
+            encoder_attention_mask: Array2::<i64>::ones((1, 2)),
+        };
+        let s = format!("{outputs:?}");
+        assert!(s.contains("encoder_hidden_states"));
+        assert!(s.contains("encoder_attention_mask"));
+    }
+
+    // Note: Full encoder_forward() integration test requires real ort::Session
+    // instances (not constructible without ONNX files). Manually verified at
+    // dogfood with real Florence-2-base artifact (handbook §6.4 cargo test
+    // 制約受容、4b-5a-1 post-review addendum 通り).
 }
