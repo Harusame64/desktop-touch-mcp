@@ -1,4 +1,3 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { enumWindowsInZOrder, setWindowTopmost, clearWindowTopmost } from "../engine/win32.js";
 import type { ToolResult } from "./_types.js";
@@ -67,11 +66,11 @@ export const pinWindowHandler = async ({
     return {
       content: [{
         type: "text" as const,
-        text: JSON.stringify({ ok: true, title: found.title, action: "pinned (call unpin_window to remove)" }),
+        text: JSON.stringify({ ok: true, title: found.title, action: "pinned (call window_dock(action='unpin') to remove)" }),
       }],
     };
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `pin_window failed: ${String(err)}` }] };
+    return { content: [{ type: "text" as const, text: `window_dock(action='pin') failed: ${String(err)}` }] };
   }
 };
 
@@ -96,26 +95,9 @@ export const unpinWindowHandler = async ({ title }: { title: string }): Promise<
       }],
     };
   } catch (err) {
-    return { content: [{ type: "text" as const, text: `unpin_window failed: ${String(err)}` }] };
+    return { content: [{ type: "text" as const, text: `window_dock(action='unpin') failed: ${String(err)}` }] };
   }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Registration
-// ─────────────────────────────────────────────────────────────────────────────
-
-export function registerPinTools(server: McpServer): void {
-  server.tool(
-    "pin_window",
-    "Make a window always-on-top until unpin_window is called (or duration_ms elapses). Useful in run_macro sequences: pin_window → interact → unpin_window. Caveats: Pin state survives window minimize/restore; call unpin_window explicitly to release.",
-    pinWindowSchema,
-    pinWindowHandler
-  );
-
-  server.tool(
-    "unpin_window",
-    "Remove always-on-top from a window. Reverses pin_window.",
-    unpinWindowSchema,
-    unpinWindowHandler
-  );
-}
+// registerPinTools removed in Phase 2a (family merge).
+// pin_window and unpin_window are now registered via window_dock(action='pin'|'unpin') in window-dock.ts.

@@ -1,16 +1,16 @@
 # Changelog
 
-## [1.0.0] - DRAFT — Tool Surface Reduction Phase 1: Naming Redesign
+## [1.0.0] - DRAFT — Tool Surface Reduction Phase 1 + Phase 2
 
-### Breaking Changes (v1.0.0)
+### Breaking Changes — Phase 1 (Naming Redesign, 10 tools)
 
-This release renames 10 tools with **no aliases**. Update your prompts and configurations.
+This phase renames 10 tools with **no aliases**.
 
 | Old name | New name | Notes |
 |---|---|---|
-| `get_context` | `desktop_state` | Read-only desktop observation |
+| `get_context` | `desktop_state` | Read-only desktop observation (returns `attention` field) |
 | `desktop_see` | `desktop_discover` | Lease-emitting entity discovery |
-| `desktop_touch` | `desktop_act` | Lease-consuming entity action |
+| `desktop_touch` | `desktop_act` | Lease-consuming entity action (returns `attention` field) |
 | `engine_status` | `server_status` | MCP server status diagnostic |
 | `browser_connect` | `browser_open` | CDP connect + list tabs |
 | `browser_click_element` | `browser_click` | Find + click via CSS selector |
@@ -19,13 +19,50 @@ This release renames 10 tools with **no aliases**. Update your prompts and confi
 | `browser_get_interactive` | `browser_overview` | List all interactive elements |
 | `browser_find_element` | `browser_locate` | CSS selector → screen coords |
 
-Phase 2-4 will absorb additional tools (scroll family, keyboard family, clipboard, terminal, window_dock, screenshot family, get_* series) — those changes are NOT in this release.
+### Breaking Changes — Phase 2 (Family Merge, 13 tools → 5 dispatchers)
+
+This phase merges 13 tools into 5 family dispatchers via discriminated `action` parameter.
+
+| Old name | New invocation |
+|---|---|
+| `keyboard_type({text})` | `keyboard({action:"type", text})` |
+| `keyboard_press({keys})` | `keyboard({action:"press", keys})` |
+| `clipboard_read()` | `clipboard({action:"read"})` |
+| `clipboard_write({text})` | `clipboard({action:"write", text})` |
+| `pin_window({title, duration_ms?})` | `window_dock({action:"pin", title, duration_ms?})` |
+| `unpin_window({title})` | `window_dock({action:"unpin", title})` |
+| `dock_window({title, corner, ...})` | `window_dock({action:"dock", title, corner, ...})` |
+| `scroll({direction, amount, ...})` | `scroll({action:"raw", direction, amount, ...})` |
+| `scroll_to_element({...})` | `scroll({action:"to_element", ...})` |
+| `smart_scroll({...})` | `scroll({action:"smart", ...})` |
+| `scroll_capture({...})` | `scroll({action:"capture", ...})` |
+| `terminal_read({windowTitle, ...})` | `terminal({action:"read", windowTitle, ...})` |
+| `terminal_send({windowTitle, input, ...})` | `terminal({action:"send", windowTitle, input, ...})` |
+
+**New `terminal({action:"run", ...})` workflow** — sends input, waits, and reads in one call. Returns `completion={reason, ...}` with reasons: `quiet | pattern_matched | timeout | window_closed | window_not_found`.
+
+```js
+terminal({action:"run", windowTitle:"PowerShell", input:"npm test",
+          until:{mode:"pattern", pattern:"npm test:"}, timeoutMs:30000})
+// → {output, completion:{reason:"pattern_matched", elapsedMs, matchedPattern}}
+```
+
+### Tool Count
+
+- Phase 1 + Phase 2 combined: **65 → 52 tools** (Phase 1: 10 renames, no count change; Phase 2: 13 → 5).
+- Stub catalog: 50 entries (v2 `desktop_discover`/`desktop_act` are dynamic, registered at startup, not in static catalog).
+
+### Phase 2 Outstanding (deferred to Phase 3-4)
+
+- `run_macro` DSL still accepts old tool names (`keyboard_type`, `pin_window`, etc.) via internal `TOOL_REGISTRY` mapping. Will be migrated to new dispatcher names in Phase 4.
+- Phase 3-4 will absorb additional tools (browser family rearrangement, get_* series, set_element_value, screenshot variants, events_*/perception_* hide).
 
 ### Changed
 
-- `src/server-windows.ts` instructions text fully rewritten to v1.0.0 naming (Standard workflow, Clicking priority, Observation priority, Attention signal, Recovery path).
-- `src/stub-tool-catalog.ts` regenerated with new names.
-- `README.md`, `README.ja.md`, `docs/system-overview.md` updated to new names throughout.
+- `src/server-windows.ts` instructions text updated for Phase 1 + Phase 2 naming.
+- `src/stub-tool-catalog.ts` regenerated.
+- All LLM-visible strings (description / suggest / error.message / engine layer literal types) updated.
+- `README.md`, `README.ja.md`, `docs/system-overview.md` updated.
 
 ---
 

@@ -117,10 +117,12 @@ function evalIdentityStable(lens: PerceptionLens, store: FluentStore, nowMs: num
 function evalKeyboardTarget(lens: PerceptionLens, store: FluentStore, nowMs: number, ctx?: GuardContext): GuardResult {
   if (lens.spec.target.kind === "browserTab") {
     // OS keyboard tools send keys to the focused OS window, not to a browser tab.
-    // If the caller is keyboard_type or keyboard_press, fail-closed: the correct tool
-    // for browser content input is browser_fill.
-    const kbTools = ["keyboard_type", "keyboard_press"];
-    if (ctx?.toolName && kbTools.includes(ctx.toolName)) {
+    // Phase 2 dispatcher passes "keyboard:type" / "keyboard:press"; legacy callers
+    // may still pass bare "keyboard". Match both shapes — fail-closed is mandatory
+    // for browser-tab lenses since the correct tool is browser_fill.
+    const isKeyboardTool =
+      ctx?.toolName === "keyboard" || ctx?.toolName?.startsWith("keyboard:") === true;
+    if (isKeyboardTool) {
       return {
         kind: "safe.keyboardTarget",
         ok: false,

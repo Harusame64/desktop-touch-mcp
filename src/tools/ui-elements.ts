@@ -354,7 +354,7 @@ export const scopeElementHandler = async ({
 export function registerUiElementTools(server: McpServer): void {
   server.tool(
     "get_ui_elements",
-    "Inspect the raw UIA element tree of a window — returns names, control types, automationIds, bounding rects, and interaction patterns. Each element includes viewportPosition ('in-view'|'above'|'below'|'left'|'right') relative to the window client region — use it to decide whether scroll_to_element is needed before clicking. Prefer screenshot(detail='text') for interactive automation (returns pre-filtered actionable[] with clickAt coords). Use get_ui_elements when you need the unfiltered tree or specific automationIds for click_element. Caveats: Large windows may return hundreds of elements — scope with windowTitle. Results are capped at maxElements (default 80, max 200) — increase if the target element is missing.",
+    "Inspect the raw UIA element tree of a window — returns names, control types, automationIds, bounding rects, and interaction patterns. Each element includes viewportPosition ('in-view'|'above'|'below'|'left'|'right') relative to the window client region — use it to decide whether scroll(action='to_element') is needed before clicking. Prefer screenshot(detail='text') for interactive automation (returns pre-filtered actionable[] with clickAt coords). Use get_ui_elements when you need the unfiltered tree or specific automationIds for click_element. Caveats: Large windows may return hundreds of elements — scope with windowTitle. Results are capped at maxElements (default 80, max 200) — increase if the target element is missing.",
     getUiElementsSchema,
     getUiElementsHandler
   );
@@ -368,7 +368,7 @@ export function registerUiElementTools(server: McpServer): void {
 
   server.tool(
     "set_element_value",
-    "Set the value of a text field or combo box via UIA ValuePattern. The server auto-guards using windowTitle and returns post.perception.status. More reliable than keyboard_type for programmatic form input. Use narrate:'rich' to confirm the value was applied. lensId is optional for advanced pinned-lens use. Caveats: Only works for elements that expose ValuePattern; does not work on contenteditable HTML or custom rich-text editors — use keyboard_type for those. If guard blocks with a suggestedFix, the fix.tool will be 'click_element' (v3 §7.1); approve via click_element({fixId}) then re-set.",
+    "Set the value of a text field or combo box via UIA ValuePattern. The server auto-guards using windowTitle and returns post.perception.status. More reliable than keyboard(action='type') for programmatic form input. Use narrate:'rich' to confirm the value was applied. lensId is optional for advanced pinned-lens use. Caveats: Only works for elements that expose ValuePattern; does not work on contenteditable HTML or custom rich-text editors — use keyboard(action='type') for those. If guard blocks with a suggestedFix, the fix.tool will be 'click_element' (v3 §7.1); approve via click_element({fixId}) then re-set.",
     setElementValueSchema,
     withRichNarration("set_element_value", setElementValueHandler, { windowTitleKey: "windowTitle" })
   );
