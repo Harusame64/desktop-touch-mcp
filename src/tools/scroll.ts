@@ -1,10 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { ok, buildDesc } from "./_types.js";
+import { buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
-import { failWith } from "./_errors.js";
 import { coercedBoolean } from "./_coerce.js";
-import { withRichNarration } from "./_narration.js";
 import { getCdpPort } from "../utils/desktop-config.js";
 
 // Internal handlers imported from existing files (retained as internal exports)

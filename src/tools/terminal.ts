@@ -595,7 +595,7 @@ export const terminalRunHandler = async ({
       ok: false,
       output: "",
       completion: {
-        reason: alive ? "window_not_found" : "window_not_found",
+        reason: alive ? "window_not_found" : "window_closed",
         elapsedMs: Date.now() - startedAt,
       },
       hwnd: String(hwnd),
@@ -680,8 +680,6 @@ export const terminalRunHandler = async ({
     }
   }
 
-  if (completionReason === null) completionReason = "timeout";
-
   // ── Phase 3: Read final output ─────────────────────────────────────────────
   const readArgs = {
     windowTitle,
@@ -709,7 +707,10 @@ export const terminalRunHandler = async ({
     ok: true,
     output,
     completion: {
-      reason: completionReason,
+      // Loop only exits via the four break paths (each assigns completionReason)
+      // or when the while-condition becomes false (also non-null). Non-null assertion
+      // keeps the type clean without a CodeQL "always-false" defensive guard.
+      reason: completionReason!,
       elapsedMs: Date.now() - startedAt,
       ...(matchedPattern !== undefined ? { matchedPattern } : {}),
     },

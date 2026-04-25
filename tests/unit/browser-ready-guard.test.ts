@@ -134,4 +134,51 @@ describe("safe.keyboardTarget on browserTab lens", () => {
     expect(result.ok).toBe(false);
     expect(result.kind).toBe("safe.keyboardTarget");
   });
+
+  // Regression: dispatcher tools pass "keyboard:type" / "keyboard:press"; the
+  // browserTab fail-closed branch must match both bare and prefixed forms so
+  // OS-level keystrokes are never injected into a browser-tab lens.
+  it("fails-closed for ctx.toolName='keyboard:type' even when readyState is 'complete'", () => {
+    const store = makeStore();
+    setReadyState(store, "complete");
+    const result = evaluateGuard(
+      "safe.keyboardTarget", baseLens, store, Date.now(),
+      { toolName: "keyboard:type" }
+    );
+    expect(result.ok).toBe(false);
+    expect(result.kind).toBe("safe.keyboardTarget");
+    expect(result.suggestedAction).toContain("browser_fill");
+  });
+
+  it("fails-closed for ctx.toolName='keyboard:press' even when readyState is 'complete'", () => {
+    const store = makeStore();
+    setReadyState(store, "complete");
+    const result = evaluateGuard(
+      "safe.keyboardTarget", baseLens, store, Date.now(),
+      { toolName: "keyboard:press" }
+    );
+    expect(result.ok).toBe(false);
+    expect(result.kind).toBe("safe.keyboardTarget");
+    expect(result.suggestedAction).toContain("browser_fill");
+  });
+
+  it("fails-closed for legacy ctx.toolName='keyboard'", () => {
+    const store = makeStore();
+    setReadyState(store, "complete");
+    const result = evaluateGuard(
+      "safe.keyboardTarget", baseLens, store, Date.now(),
+      { toolName: "keyboard" }
+    );
+    expect(result.ok).toBe(false);
+  });
+
+  it("does NOT fail-closed for non-keyboard tools (falls through to readyState check)", () => {
+    const store = makeStore();
+    setReadyState(store, "complete");
+    const result = evaluateGuard(
+      "safe.keyboardTarget", baseLens, store, Date.now(),
+      { toolName: "browser_click" }
+    );
+    expect(result.ok).toBe(true);
+  });
 });
