@@ -73,6 +73,14 @@ fn stub_recognise_with_session(req: RecognizeRequest, sess: std::sync::Arc<crate
                 // Fall through to dummy output for L5 robustness.
             }
         }
+    } else if sess.session_key.starts_with("paddleocr-v4-server:") {
+        match crate::vision_backend::paddleocr::paddleocr_stage3_recognise(&req, &sess) {
+            Ok(candidates) => return candidates,
+            Err(e) => {
+                tracing::warn!(target: "paddleocr", "stage3 recognise failed: {e}");
+                // Fall through to dummy output for L5 robustness.
+            }
+        }
     }
     dummy_recognise(req)
 }
