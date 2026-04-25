@@ -1719,6 +1719,21 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "description": "BCP-47 language tag for the OCR engine (e.g. 'ja', 'en-US'). Only used when detail='text'.",
           "type": "string",
           "default": "ja"
+        },
+        "preprocessPolicy": {
+          "description": "OCR preprocessing scale policy for detail='som' and OCR fallback paths. 'auto' (default): clamp scale to 1 on OOM (>8MP) or high-DPI (≥150%). 'aggressive': relaxes DPI clamp to 175%, preserving upscale on 150%-DPI monitors (e.g. Outlook PWA). Also auto-enables adaptive binarization. 'minimal': always scale=1 regardless of DPI/resolution.",
+          "type": "string",
+          "enum": [
+            "auto",
+            "aggressive",
+            "minimal"
+          ],
+          "default": "auto"
+        },
+        "preprocessAdaptive": {
+          "description": "When true, apply Sauvola adaptive binarization after contrast stretch. Improves recognition of thin text on low-contrast or gradient backgrounds. Automatically enabled when preprocessPolicy='aggressive'. Requires Rust native engine; silently skipped otherwise.",
+          "type": "boolean",
+          "default": false
         }
       },
       "additionalProperties": false
