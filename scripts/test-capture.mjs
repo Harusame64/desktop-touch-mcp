@@ -89,8 +89,38 @@ function releaseLock() {
   try { unlinkSync(lockPath); } catch { /* already gone */ }
 }
 process.on("exit",    releaseLock);
-process.on("SIGINT",  () => { releaseLock(); process.exit(130); });
-process.on("SIGTERM", () => { releaseLock(); process.exit(143); });
+process.on("SIGINT",  () => { releaseLock(); killVitestZombies(); process.exit(130); });
+process.on("SIGTERM", () => { releaseLock(); killVitestZombies(); process.exit(143); });
+
+// ── Zombie cleanup (vitest worker pool が teardown 失敗で残留する node プロセスを kill) ──
+//
+// 対象は command line に "vitest" を含む node プロセスのみ。MCP server / Claude Code /
+// AWS Toolkit / Gemini CLI 等の正規 node プロセスには触らない。
+//
+// pre-run: 過去の test 実行で残った zombie を kill
+// post-run: 自分の child の descendant が消えていなければ kill (defence-in-depth)
+import { execSync } from "node:child_process";
+
+function killVitestZombies() {
+  if (process.platform !== "win32") return; // Unix では vitest 自身が teardown 確実
+  try {
+    // PowerShell で vitest を含む node プロセスを列挙、自分以外を kill
+    const myPid = process.pid;
+    const ps = `Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
+      Where-Object {
+        $_.ProcessId -ne ${myPid} -and
+        ($_.CommandLine -match 'vitest' -or $_.CommandLine -match 'test-capture')
+      } |
+      ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
+    execSync(`powershell -NoProfile -Command "${ps.replace(/"/g, '\\"').replace(/\n\s*/g, ' ')}"`, {
+      stdio: "ignore",
+      timeout: 5000,
+    });
+  } catch { /* cleanup is best-effort */ }
+}
+
+// pre-run cleanup
+killVitestZombies();
 
 // ── Spawn vitest ──────────────────────────────────────────────────────────────
 
@@ -123,6 +153,8 @@ child.stderr.pipe(process.stderr);
 child.on("close", (code) => {
   txtStream.end(() => {
     releaseLock();
+    // post-run: vitest worker pool が teardown で残した zombie を kill (defence-in-depth)
+    killVitestZombies();
 
     // ── Validate output files ──────────────────────────────────────────────
     const errors = [];
