@@ -99,20 +99,22 @@ process.on("SIGTERM", () => { releaseLock(); killVitestZombies(); process.exit(1
 //
 // pre-run: 過去の test 実行で残った zombie を kill
 // post-run: 自分の child の descendant が消えていなければ kill (defence-in-depth)
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 
 function killVitestZombies() {
   if (process.platform !== "win32") return; // Unix では vitest 自身が teardown 確実
   try {
-    // PowerShell で vitest を含む node プロセスを列挙、自分以外を kill
-    const myPid = process.pid;
-    const ps = `Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
-      Where-Object {
-        $_.ProcessId -ne ${myPid} -and
-        ($_.CommandLine -match 'vitest' -or $_.CommandLine -match 'test-capture')
-      } |
-      ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
-    execSync(`powershell -NoProfile -Command "${ps.replace(/"/g, '\\"').replace(/\n\s*/g, ' ')}"`, {
+    // process.pid is always a positive integer; coerce explicitly for static analyzers
+    // (code scanning js/incomplete-sanitization). PowerShell command itself uses
+    // single-quoted string literals to avoid double-quote escape ambiguity.
+    const myPid = Number(process.pid);
+    if (!Number.isInteger(myPid) || myPid <= 0) return;
+    const ps = "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | " +
+      "Where-Object { $_.ProcessId -ne " + myPid + " -and " +
+      "($_.CommandLine -match 'vitest' -or $_.CommandLine -match 'test-capture') } | " +
+      "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }";
+    // Pass PowerShell command via argv array (no shell-level quoting needed).
+    execFileSync("powershell", ["-NoProfile", "-Command", ps], {
       stdio: "ignore",
       timeout: 5000,
     });

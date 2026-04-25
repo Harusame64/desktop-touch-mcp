@@ -39,7 +39,10 @@ function computeDigest(
   const snap = (n: number) => Math.floor(n / bucketPx) * bucketPx;
   const rectKey = `${snap(roi.x)},${snap(roi.y)},${snap(roi.width)},${snap(roi.height)}`;
   // Include target.kind to prevent HWND / CDP-tabId collision in digest.
-  return createHash("sha1")
+  // SHA-256 used as a non-cryptographic fingerprint (collision avoidance only,
+  // not a security primitive — output truncated to 16 hex chars). Replaces
+  // former SHA-1 to satisfy code scanning js/weak-cryptographic-algorithm.
+  return createHash("sha256")
     .update(`${source}|${target.kind}:${target.id}|${label}|${rectKey}`)
     .digest("hex")
     .slice(0, 16);

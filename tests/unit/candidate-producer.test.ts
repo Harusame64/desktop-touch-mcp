@@ -172,7 +172,7 @@ describe("CandidateProducer — eviction and cleanup", () => {
 
   it("create() factory wires onEvict automatically — eviction clears fusion", () => {
     const fusion = new TemporalFusion({ stableConsecutive: 2 });
-    const { store, producer } = CandidateProducer.create({}, fusion, { target: TARGET });
+    const { store } = CandidateProducer.create({}, fusion, { target: TARGET });
 
     const trackId = makeStableTrack(store, R(0, 0, 100, 40));
     fusion.update(trackId, { text: "X", confidence: 0.9, tsMs: 0 });
