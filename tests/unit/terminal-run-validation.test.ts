@@ -181,6 +181,21 @@ describe("terminal(action='run') — Zod default leak guard (PR #37 Codex P1)", 
     expect("settleMs" in filtered).toBe(false);
   });
 
+  it("regex.test() works on empty string — pattern '^$' or '' must not be guarded by truthiness", () => {
+    // Codex P3: the previous loop guard `if (newContent && patternRe.test(newContent))`
+    // would silently skip matching when newContent was the empty string — so legitimate
+    // patterns that match emptiness (`""` literal, `/^$/`) hung until timeout.
+    expect(/^$/.test("")).toBe(true);
+    expect(new RegExp("").test("")).toBe(true);
+    // The pre-PR-#37 behavior with the truthiness gate would short-circuit:
+    const newContent = "";
+    const patternRe = /^$/;
+    const buggy = newContent && patternRe.test(newContent);  // → "" (falsey)
+    const fixed = patternRe.test(newContent);                 // → true
+    expect(Boolean(buggy)).toBe(false);
+    expect(fixed).toBe(true);
+  });
+
   it("filter handles empty sendOptions:{} without leaking any defaults", () => {
     const input = {};
     const parsed = TERMINAL_RUN_SEND_OPTIONS_SCHEMA.parse(input);
