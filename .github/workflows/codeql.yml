@@ -3,8 +3,18 @@ name: CodeQL
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'site/**'
+      - 'README.md'
+      - 'README.ja.md'
+      - '.github/workflows/pages.yml'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'site/**'
+      - 'README.md'
+      - 'README.ja.md'
+      - '.github/workflows/pages.yml'
   schedule:
     - cron: '23 4 * * 1'
 
