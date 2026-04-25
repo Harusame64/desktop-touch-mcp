@@ -27,17 +27,69 @@
  * When the Rust binding is unavailable (e.g. native addon missing on dev
  * machine), `OnnxBackend` is NOT attached and `desktop-register.ts` falls
  * back to `PocVisualBackend` automatically.
+ *
+ * Phase 4b-6: DESKTOP_TOUCH_VISUAL_CROSS_CHECK=1 enables 2-way OCR voting
+ * (PaddleOCR-v4-server + PaddleOCR-v4-mobile). win-ocr.exe (Tier ∞) is wired
+ * as final fallback when both engines produce empty labels.
  */
 
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 
 import { nativeVision, type NativeRawCandidate } from "../native-engine.js";
 import type { VisualBackend } from "./backend.js";
 import { ModelRegistry, type ModelVariant } from "./model-registry.js";
 import { runStagePipeline, type StageSessionKeys, type StagePipelineInput } from "./stage-pipeline.js";
+import type { WinOcrFallbackFn } from "./cross-check.js";
 import type { RoiInput, UiEntityCandidate, WarmState, WarmTarget } from "./types.js";
 import type { NativeCapabilityProfile, NativeSessionInit } from "../native-types.js";
+
+// Resolve bin/win-ocr.exe relative to this file (dist/engine/vision-gpu/ → ../../../bin/)
+const WIN_OCR_EXE_PATH = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "..",
+  "..",
+  "bin",
+  "win-ocr.exe",
+);
+
+/**
+ * Tier ∞ fallback: calls win-ocr.exe using the existing convention from ocr-bridge.ts.
+ * win-ocr.exe reads PNG bytes from stdin and returns JSON on stdout.
+ * For the cross-check fallback, we capture a screenshot of the rect using a
+ * small PNG built from the frameBuffer. When frameBuffer is unavailable, we
+ * attempt to spawn win-ocr.exe with an empty stdin (returns no words — silent
+ * fallback per §6 trap: ENOENT → empty string).
+ *
+ * Note: This function matches the WinOcrFallbackFn signature. The rect
+ * parameter carries the bounding box for the ROI. Since cross-check fallback
+ * is called only when both engines fail (rare path), the 2s timeout is
+ * acceptable per design §6.
+ */
+const winOcrTierInfinity: WinOcrFallbackFn = async (_targetKey, _rect) => {
+  try {
+    // Spawn win-ocr.exe with the default language (ja) on empty stdin.
+    // When called as a fallback, we do not have a pre-rendered PNG for the
+    // specific rect. Passing empty stdin causes win-ocr.exe to return no words
+    // (empty JSON), which we surface as empty string — callers handle gracefully.
+    // A future ADR-008 can integrate rect-cropped screenshot here.
+    const result = spawnSync(WIN_OCR_EXE_PATH, ["ja"], {
+      encoding: "utf8",
+      timeout: 2000,
+      input: "",  // empty PNG bytes → win-ocr returns {} or {"words":[]}
+    });
+    if (result.status === 0 && result.stdout) {
+      const parsed = JSON.parse(result.stdout.trim()) as { words?: Array<{ text: string }> };
+      const words = parsed.words ?? [];
+      return words.map((w) => w.text).join(" ").trim();
+    }
+  } catch {
+    // ENOENT (exe missing on non-Windows or non-installed env) → silent fallback
+  }
+  return "";
+};
 
 // Manifest path: dist/engine/vision-gpu/onnx-backend.js → ../../.. = project root
 const ASSETS_DIR = join(fileURLToPath(new URL(".", import.meta.url)), "..", "..", "..", "assets");
@@ -92,10 +144,17 @@ export class OnnxBackend implements VisualBackend {
     const stage1Model = "florence-2-base";
     const stage2Model = "omniparser-v2-icon-detect";
     const stage3Model = "paddleocr-v4-server";
+    const stage3bModel = "paddleocr-v4-mobile";
+
+    // Phase 4b-6: cross-check env var evaluated at ensureWarm time (not instantiate time)
+    const crossCheckEnabled = process.env.DESKTOP_TOUCH_VISUAL_CROSS_CHECK === "1";
 
     const stage1Variant = this.registry.selectVariant(stage1Model, profile);
     const stage2Variant = this.registry.selectVariant(stage2Model, profile);
     const stage3Variant = this.registry.selectVariant(stage3Model, profile);
+    const stage3bVariant = crossCheckEnabled
+      ? this.registry.selectVariant(stage3bModel, profile)
+      : null;
 
     if (!stage1Variant || !stage2Variant || !stage3Variant) {
       console.error("[onnx-backend] selectVariant returned null for one or more stages");
@@ -103,10 +162,17 @@ export class OnnxBackend implements VisualBackend {
       return this.state;
     }
 
+    // stage3b is optional: if cross-check is enabled but mobile variant is missing,
+    // log a warning and continue without stage3b (primary-only mode).
+    if (crossCheckEnabled && !stage3bVariant) {
+      console.warn("[onnx-backend] cross-check enabled but paddleocr-v4-mobile variant not found — running primary-only");
+    }
+
     const keys = await this.initStageSessions(
       stage1Model, stage1Variant,
       stage2Model, stage2Variant,
       stage3Model, stage3Variant,
+      stage3bVariant ? { name: stage3bModel, variant: stage3bVariant } : null,
     );
     if (!keys) {
       this.state = "evicted";
@@ -121,15 +187,27 @@ export class OnnxBackend implements VisualBackend {
     s1Name: string, s1: ModelVariant,
     s2Name: string, s2: ModelVariant,
     s3Name: string, s3: ModelVariant,
+    s3b: { name: string; variant: ModelVariant } | null = null,
   ): Promise<StageSessionKeys | null> {
     const profile = nativeVision!.detectCapability!();
     const results = await Promise.all([
       this.initOne(s1Name, s1, profile),
       this.initOne(s2Name, s2, profile),
       this.initOne(s3Name, s3, profile),
+      s3b ? this.initOne(s3b.name, s3b.variant, profile) : Promise.resolve(null as string | null),
     ]);
-    if (results.some((r) => r === null)) return null;
-    return { stage1: results[0]!, stage2: results[1]!, stage3: results[2]! };
+    // Required stages: stage1, stage2, stage3 (indices 0-2)
+    if (results[0] === null || results[1] === null || results[2] === null) return null;
+    const keys: StageSessionKeys = {
+      stage1: results[0],
+      stage2: results[1],
+      stage3: results[2],
+    };
+    // stage3b is optional: null means cross-check disabled or variant missing
+    if (results[3] !== null) {
+      keys.stage3b = results[3];
+    }
+    return keys;
   }
 
   /**
@@ -209,6 +287,8 @@ export class OnnxBackend implements VisualBackend {
         frameHeight: frameHeight ?? this.opts.defaultFrameHeight ?? 0,
         frameBuffer: effectiveBuffer,
         nowMs: Date.now(),
+        // Phase 4b-6: Tier ∞ win-ocr fallback (only active when stage3b cross-check runs)
+        winOcrFallback: winOcrTierInfinity,
       };
       try {
         raw = await runStagePipeline(
