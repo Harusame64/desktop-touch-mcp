@@ -14,7 +14,7 @@
  */
 
 import type { NativeRecognizeRequest, NativeRawCandidate } from "../native-types.js";
-import type { WinOcrFallbackFn } from "./cross-check.js";
+import { crossCheckLabels, type WinOcrFallbackFn } from "./cross-check.js";
 
 export interface StageSessionKeys {
   /** Session key for the Stage 1 model (region proposer, e.g. florence-2-base). */
@@ -94,7 +94,8 @@ export async function runStagePipeline(
     classHint: c.class || null,
   }));
 
-  const stage3Primary = await visionRecognize({
+  // Phase 4b-6 R1 fix: run stage3 and stage3b in parallel (was sequential).
+  const stage3PrimaryReq = visionRecognize({
     targetKey: input.targetKey,
     sessionKey: keys.stage3,
     rois: textRois,
@@ -104,25 +105,30 @@ export async function runStagePipeline(
     nowMs: input.nowMs,
   });
 
-  // Phase 4b-6: cross-check with secondary engine if available
-  let stage3Final = stage3Primary;
+  let stage3Final: NativeRawCandidate[];
   if (keys.stage3b) {
-    const [stage3Secondary] = await Promise.all([
-      visionRecognize({
-        targetKey: input.targetKey,
-        sessionKey: keys.stage3b,
-        rois: textRois,
-        frameWidth: input.frameWidth,
-        frameHeight: input.frameHeight,
-        frameBuffer: input.frameBuffer,
-        nowMs: input.nowMs,
-      }),
+    const stage3SecondaryReq = visionRecognize({
+      targetKey: input.targetKey,
+      sessionKey: keys.stage3b,
+      rois: textRois,
+      frameWidth: input.frameWidth,
+      frameHeight: input.frameHeight,
+      frameBuffer: input.frameBuffer,
+      nowMs: input.nowMs,
+    });
+    const [stage3Primary, stage3Secondary] = await Promise.all([
+      stage3PrimaryReq,
+      stage3SecondaryReq,
     ]);
-    const { crossCheckLabels } = await import("./cross-check.js");
     stage3Final = await crossCheckLabels(stage3Primary, stage3Secondary, {
       targetKey: input.targetKey,
       winOcrFallback: input.winOcrFallback,
+      frameBuffer: input.frameBuffer,
+      frameWidth: input.frameWidth,
+      frameHeight: input.frameHeight,
     });
+  } else {
+    stage3Final = await stage3PrimaryReq;
   }
 
   // Merge stage 3 labels into stage 2 candidates keyed by trackId.

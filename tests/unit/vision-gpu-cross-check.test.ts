@@ -81,8 +81,13 @@ describe("crossCheckLabels fallback paths", () => {
     const p = [candidate("t1", "", 0.2)];
     const s = [candidate("t1", "", 0.2)];
     const fallback = vi.fn().mockResolvedValue("ocr-result");
+    // Phase 4b-6 post-review B1: fallback now requires frameBuffer + dims
     const out = await crossCheckLabels(p, s, {
-      winOcrFallback: fallback, targetKey: "w:1",
+      winOcrFallback: fallback,
+      targetKey: "w:1",
+      frameBuffer: Buffer.alloc(100 * 100 * 4),
+      frameWidth: 100,
+      frameHeight: 100,
     });
     expect(fallback).toHaveBeenCalledOnce();
     expect(out[0]!.label).toBe("ocr-result");
@@ -93,7 +98,22 @@ describe("crossCheckLabels fallback paths", () => {
     const p = [candidate("t1", "", 0.2)];
     const s = [candidate("t1", "", 0.2)];
     const fallback = vi.fn().mockRejectedValue(new Error("winocr crashed"));
+    const out = await crossCheckLabels(p, s, {
+      winOcrFallback: fallback,
+      frameBuffer: Buffer.alloc(100 * 100 * 4),
+      frameWidth: 100,
+      frameHeight: 100,
+    });
+    expect(out[0]!.label).toBe("");
+  });
+
+  it("skips fallback when frameBuffer is missing (defensive)", async () => {
+    // Post-review B1: fallback only fires when frame data is also present
+    const p = [candidate("t1", "", 0.2)];
+    const s = [candidate("t1", "", 0.2)];
+    const fallback = vi.fn().mockResolvedValue("would-be-result");
     const out = await crossCheckLabels(p, s, { winOcrFallback: fallback });
+    expect(fallback).not.toHaveBeenCalled();
     expect(out[0]!.label).toBe("");
   });
 });
