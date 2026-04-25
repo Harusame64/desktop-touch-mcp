@@ -28,6 +28,7 @@ const TOOL_FILES = [
   "terminal.ts", "ui-elements.ts", "wait-until.ts", "window.ts", "workspace.ts",
   // Phase 2 dispatchers
   "window-dock.ts",
+  "scroll.ts",
 ];
 
 const MIN_CHARS = 20;
@@ -202,8 +203,10 @@ for (const f of TOOL_FILES) {
 describe("tool descriptions — contract", () => {
   // Phase 2a: -7 old (keyboard_type/press, clipboard_read/write, dock_window, pin_window, unpin_window)
   //            +3 new dispatchers (keyboard, clipboard, window_dock) → 58-7+3 = 54
-  it("finds exactly 54 registered tools", () => {
-    expect(allTools.length).toBe(54);
+  // Phase 2b: -4 old (scroll raw, scroll_capture, smart_scroll, scroll_to_element)
+  //            +1 new dispatcher (scroll) → 54-4+1 = 51
+  it("finds exactly 51 registered tools", () => {
+    expect(allTools.length).toBe(51);
   });
 
   for (const tool of allTools) {
