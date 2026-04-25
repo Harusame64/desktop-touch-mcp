@@ -21,8 +21,8 @@ export interface StubToolCatalogEntry {
 
 export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   {
-    "name": "browser_click_element",
-    "description": "Find a DOM element by CSS selector and click it (combines browser_find_element + mouse_click in one step). Prefer over mouse_click for Chrome — selector-based clicking is stable across repaints. Pass tabId+port so the server auto-guards (verifies tab readyState and identity) and returns post.perception.status. lensId is optional for advanced pinned-tab workflows. Caveats: Fails if the element is outside the visible viewport — scroll it into view with browser_eval(\"document.querySelector('sel').scrollIntoView()\") first.",
+    "name": "browser_click",
+    "description": "Find a DOM element by CSS selector and click it (combines browser_locate + mouse_click in one step). Prefer over mouse_click for Chrome — selector-based clicking is stable across repaints. Pass tabId+port so the server auto-guards (verifies tab readyState and identity) and returns post.perception.status. lensId is optional for advanced pinned-tab workflows. Caveats: Fails if the element is outside the visible viewport — scroll it into view with browser_eval(\"document.querySelector('sel').scrollIntoView()\") first.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -63,23 +63,6 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       "required": [
         "selector"
       ]
-    }
-  },
-  {
-    "name": "browser_connect",
-    "description": "Connect to Chrome/Edge running with --remote-debugging-port and return open tab IDs — required before all other browser_* tools. Launch with browser_launch() or manually: chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\\tmp\\cdp. Returns tabs[] with id, url, title — pass tabId to browser_* tools to target a specific tab. Caveats: CDP connection is per-process; if Chrome restarts, call browser_connect again to get fresh tab IDs.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "port": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 65535,
-          "default": 9222,
-          "description": "Chrome/Edge CDP remote debugging port."
-        }
-      },
-      "additionalProperties": false
     }
   },
   {
@@ -142,8 +125,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
     }
   },
   {
-    "name": "browser_fill_input",
-    "description": "Fill a form input with a value via CDP — works on React/Vue/Svelte controlled inputs that reject browser_eval value assignment. Use browser_get_interactive or browser_find_element first to obtain a stable selector. Use this over browser_eval when setting a controlled input's value via JS does not update the framework state. Caveats: Requires browser_connect (CDP active). Does not work on contenteditable rich-text editors — use keyboard_type for those. actual in response shows what the element's value property reads after fill; verify it matches the intended value.",
+    "name": "browser_fill",
+    "description": "Fill a form input with a value via CDP — works on React/Vue/Svelte controlled inputs that reject browser_eval value assignment. Use browser_overview or browser_locate first to obtain a stable selector. Use this over browser_eval when setting a controlled input's value via JS does not update the framework state. Caveats: Requires browser_open (CDP active). Does not work on contenteditable rich-text editors — use keyboard_type for those. actual in response shows what the element's value property reads after fill; verify it matches the intended value.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -181,14 +164,26 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
     }
   },
   {
-    "name": "browser_find_element",
-    "description": "Find a DOM element by CSS selector and return its physical screen coordinates — compatible directly with mouse_click. Prefer browser_click_element to find+click in one step. Prefer browser_get_interactive to discover selectors. Caveats: Coordinates are captured at call time; if the page reflows before mouse_click, coords may be stale.",
+    "name": "browser_form",
+    "description": "Inspect all form fields (input, select, textarea, button) within a CSS-selector-specified container and return their name, type, id, current value, hint text, disabled/readOnly state, and associated label text (resolved via for[id], ancestor LABEL, aria-labelledby, aria-label in that order). Use this before browser_fill to discover exact field selectors and avoid accidentally targeting the wrong input (e.g. a global search bar). Caveats: Requires browser_open (CDP active). Hidden inputs (type=hidden) are excluded by default — set includeHidden:true if needed. Value text is truncated at 200 chars.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "selector": {
-          "type": "string",
-          "description": "CSS selector for the target element (e.g. '#submit', '.btn', 'button[type=submit]')."
+          "description": "CSS selector for the form or container element to inspect (e.g. '#login-form', '.search-bar'). All input, select, textarea, and button descendants are returned.",
+          "type": "string"
+        },
+        "includeHidden": {
+          "description": "When true, include hidden inputs (type=hidden). Default false to avoid CSRF-token / serialized-state clutter.",
+          "type": "boolean",
+          "default": false
+        },
+        "maxResults": {
+          "description": "Maximum number of form fields to return (default 100).",
+          "type": "integer",
+          "default": 100,
+          "minimum": 1,
+          "maximum": 500
         },
         "tabId": {
           "type": "string",
@@ -252,7 +247,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "browser_get_dom",
-    "description": "Return the HTML of a DOM element (or document.body when no selector is given), truncated to maxLength characters. Use when browser_get_interactive is insufficient for inspecting page structure.",
+    "description": "Return the HTML of a DOM element (or document.body when no selector is given), truncated to maxLength characters. Use when browser_overview is insufficient for inspecting page structure.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -288,111 +283,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
     }
   },
   {
-    "name": "browser_get_form",
-    "description": "Inspect all form fields (input, select, textarea, button) within a CSS-selector-specified container and return their name, type, id, current value, hint text, disabled/readOnly state, and associated label text (resolved via for[id], ancestor LABEL, aria-labelledby, aria-label in that order). Use this before browser_fill_input to discover exact field selectors and avoid accidentally targeting the wrong input (e.g. a global search bar). Caveats: Requires browser_connect (CDP active). Hidden inputs (type=hidden) are excluded by default — set includeHidden:true if needed. Value text is truncated at 200 chars.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "selector": {
-          "description": "CSS selector for the form or container element to inspect (e.g. '#login-form', '.search-bar'). All input, select, textarea, and button descendants are returned.",
-          "type": "string"
-        },
-        "includeHidden": {
-          "description": "When true, include hidden inputs (type=hidden). Default false to avoid CSRF-token / serialized-state clutter.",
-          "type": "boolean",
-          "default": false
-        },
-        "maxResults": {
-          "description": "Maximum number of form fields to return (default 100).",
-          "type": "integer",
-          "default": 100,
-          "minimum": 1,
-          "maximum": 500
-        },
-        "tabId": {
-          "type": "string",
-          "description": "Tab ID from browser_connect. Omit to use the first page tab."
-        },
-        "port": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 65535,
-          "default": 9222,
-          "description": "Chrome/Edge CDP remote debugging port."
-        },
-        "includeContext": {
-          "type": "boolean",
-          "default": true,
-          "description": "When true, append activeTab and readyState context to the response."
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "selector"
-      ]
-    }
-  },
-  {
-    "name": "browser_get_interactive",
-    "description": "List all interactive elements (links, buttons, inputs, ARIA controls) on the current page with CSS selectors, visible text or value for inputs, and viewport status — use before browser_click_element to discover stable selectors, and prefer this over screenshot when verifying button/toggle state after submission (no image tokens, structured output). scope limits to a CSS subsection (e.g. '.sidebar'). Returns state (checked/pressed/selected/expanded) for ARIA custom controls. Caveats: Selectors are CDP-generated snapshots — re-call after page navigates or re-renders. Input text reflects the empty-field hint text when defined (takes priority over typed value) — use browser_eval('document.querySelector(sel).value') to read actual typed content.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "scope": {
-          "description": "CSS selector to limit the search scope (e.g. '.s-main-slot', '#nav-search-form'). Omit to scan the full page.",
-          "type": "string"
-        },
-        "types": {
-          "description": "Element types to include. Default 'all' returns links, buttons, and inputs.",
-          "type": "array",
-          "items": {
-            "type": "string",
-            "enum": [
-              "link",
-              "button",
-              "input",
-              "all"
-            ]
-          },
-          "default": [
-            "all"
-          ]
-        },
-        "inViewportOnly": {
-          "description": "When true, only return elements currently visible in the viewport.",
-          "type": "boolean",
-          "default": false
-        },
-        "maxResults": {
-          "description": "Maximum number of elements to return (default 50).",
-          "type": "integer",
-          "default": 50,
-          "minimum": 1,
-          "maximum": 200
-        },
-        "tabId": {
-          "type": "string",
-          "description": "Tab ID from browser_connect. Omit to use the first page tab."
-        },
-        "port": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 65535,
-          "default": 9222,
-          "description": "Chrome/Edge CDP remote debugging port."
-        },
-        "includeContext": {
-          "type": "boolean",
-          "default": true,
-          "description": "When true, append activeTab and readyState context to the response."
-        }
-      },
-      "additionalProperties": false
-    }
-  },
-  {
     "name": "browser_launch",
-    "description": "Launch Chrome/Edge/Brave in CDP debug mode and wait until the DevTools endpoint is ready. Idempotent — if a CDP endpoint is already live on the target port, returns immediately without spawning. Default: tries chrome → edge → brave (first installed wins), port 9222, userDataDir C:\\tmp\\cdp. Pass url to open a specific page on launch; follow with browser_connect to get tab IDs. Caveats: A Chrome session started without --remote-debugging-port cannot be taken over — close it first or use a separate profile.",
+    "description": "Launch Chrome/Edge/Brave in CDP debug mode and wait until the DevTools endpoint is ready. Idempotent — if a CDP endpoint is already live on the target port, returns immediately without spawning. Default: tries chrome → edge → brave (first installed wins), port 9222, userDataDir C:\\tmp\\cdp. Pass url to open a specific page on launch; follow with browser_open to get tab IDs. Caveats: A Chrome session started without --remote-debugging-port cannot be taken over — close it first or use a separate profile.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -432,6 +324,39 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         }
       },
       "additionalProperties": false
+    }
+  },
+  {
+    "name": "browser_locate",
+    "description": "Find a DOM element by CSS selector and return its physical screen coordinates — compatible directly with mouse_click. Prefer browser_click to find+click in one step. Prefer browser_overview to discover selectors. Caveats: Coordinates are captured at call time; if the page reflows before mouse_click, coords may be stale.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "selector": {
+          "type": "string",
+          "description": "CSS selector for the target element (e.g. '#submit', '.btn', 'button[type=submit]')."
+        },
+        "tabId": {
+          "type": "string",
+          "description": "Tab ID from browser_connect. Omit to use the first page tab."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 9222,
+          "description": "Chrome/Edge CDP remote debugging port."
+        },
+        "includeContext": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true, append activeTab and readyState context to the response."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "selector"
+      ]
     }
   },
   {
@@ -488,8 +413,83 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
     }
   },
   {
+    "name": "browser_open",
+    "description": "Connect to Chrome/Edge running with --remote-debugging-port and return open tab IDs — required before all other browser_* tools. Launch with browser_launch() or manually: chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\\tmp\\cdp. Returns tabs[] with id, url, title — pass tabId to browser_* tools to target a specific tab. Caveats: CDP connection is per-process; if Chrome restarts, call browser_open again to get fresh tab IDs.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 9222,
+          "description": "Chrome/Edge CDP remote debugging port."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "browser_overview",
+    "description": "List all interactive elements (links, buttons, inputs, ARIA controls) on the current page with CSS selectors, visible text or value for inputs, and viewport status — use before browser_click to discover stable selectors, and prefer this over screenshot when verifying button/toggle state after submission (no image tokens, structured output). scope limits to a CSS subsection (e.g. '.sidebar'). Returns state (checked/pressed/selected/expanded) for ARIA custom controls. Caveats: Selectors are CDP-generated snapshots — re-call after page navigates or re-renders. Input text reflects the empty-field hint text when defined (takes priority over typed value) — use browser_eval('document.querySelector(sel).value') to read actual typed content.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "scope": {
+          "description": "CSS selector to limit the search scope (e.g. '.s-main-slot', '#nav-search-form'). Omit to scan the full page.",
+          "type": "string"
+        },
+        "types": {
+          "description": "Element types to include. Default 'all' returns links, buttons, and inputs.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "link",
+              "button",
+              "input",
+              "all"
+            ]
+          },
+          "default": [
+            "all"
+          ]
+        },
+        "inViewportOnly": {
+          "description": "When true, only return elements currently visible in the viewport.",
+          "type": "boolean",
+          "default": false
+        },
+        "maxResults": {
+          "description": "Maximum number of elements to return (default 50).",
+          "type": "integer",
+          "default": 50,
+          "minimum": 1,
+          "maximum": 200
+        },
+        "tabId": {
+          "type": "string",
+          "description": "Tab ID from browser_connect. Omit to use the first page tab."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 9222,
+          "description": "Chrome/Edge CDP remote debugging port."
+        },
+        "includeContext": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true, append activeTab and readyState context to the response."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
     "name": "browser_search",
-    "description": "Grep-like element search across the current page. by: 'text' (literal substring), 'regex', 'role', 'ariaLabel', 'selector' (CSS). Returns results[] sorted by confidence descending — pass results[0].selector to browser_click_element. Pagination via offset/maxResults. Caveats: Use browser_get_interactive for broad discovery; use browser_search when you know specific text or role to target.",
+    "description": "Grep-like element search across the current page. by: 'text' (literal substring), 'regex', 'role', 'ariaLabel', 'selector' (CSS). Returns results[] sorted by confidence descending — pass results[0].selector to browser_click. Pagination via offset/maxResults. Caveats: Use browser_overview for broad discovery; use browser_search when you know specific text or role to target.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -643,6 +643,15 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
     }
   },
   {
+    "name": "desktop_state",
+    "description": "Purpose: Read-only observation of the current desktop state. Returns focused window/element, modal flag, and attention signal from Auto Perception.\nDetails: Returns focusedWindow (title, hwnd, processName), focusedElement (name, type, value, automationId), cursorPos {x,y}, cursorOverElement (name, type), hasModal (boolean), pageState ('ready'|'loading'|'dialog'). Does NOT enumerate descendants — use desktop_discover for actionable entity list. Chromium: cursorOverElement is null (UIA sparse); focusedElement may fall back to CDP document.activeElement; hints.focusedElementSource reports which was used ('uia' or 'cdp').\nPrefer: Use after each action to confirm state. Cheapest observation tool — cheaper than any screenshot. attention='ok' means safe to proceed; other values require recovery (see suggest[]).\nCaveats: Cannot detect non-UIA elements (custom-drawn UIs, game overlays). hasModal only detects modal dialogs exposed via UIA — browser alert/confirm dialogs may not appear here.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
     "name": "dock_window",
     "description": "Purpose: Snap a window to a screen corner at a fixed small size and pin it always-on-top — primarily to keep Claude CLI visible while operating other apps full-screen.\nDetails: Accepts corner ('bottom-right' default), width/height (480×360 default, clamped to monitor work area), pin (true default = always-on-top), margin (8px default gap from screen edges, avoids taskbar overlap), and monitorId (see get_screen_info for IDs). Minimized windows are automatically restored before docking.\nPrefer: Use pin_window alone when you only need always-on-top without moving or resizing. Use dock_window when you need corner placement + resize + pin in one step.\nCaveats: Overrides any existing Win+Arrow snap arrangement. Call unpin_window explicitly to release always-on-top when the docked window is no longer needed in front.",
     "inputSchema": {
@@ -694,15 +703,6 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       "required": [
         "title"
       ]
-    }
-  },
-  {
-    "name": "engine_status",
-    "description": "Returns which backend engine is active for each subsystem. uia: 'native' = Rust UIA addon (fast, ~2 ms focus / ~100 ms tree); 'powershell' = PS fallback (~366 ms focus). imageDiff: 'native' = Rust SSE2 SIMD (0.26 ms @ 1080p); 'typescript' = TS fallback (~3.8 ms). Diagnostic metadata — do not surface these values to the user unless they ask about performance or troubleshooting. Call once per session if you need to know which path is active; the result is stable for the lifetime of the server process.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {},
-      "additionalProperties": false
     }
   },
   {
@@ -816,15 +816,6 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   {
     "name": "get_active_window",
     "description": "Return the title, hwnd, and bounds of the currently focused window.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {},
-      "additionalProperties": false
-    }
-  },
-  {
-    "name": "get_context",
-    "description": "Purpose: Query focused window, focused element, cursor position, and page state in one call — far cheaper than any screenshot for confirming current state after an action.\nDetails: Returns focusedWindow (title, hwnd), focusedElement (name, type, value), cursorPos {x,y}, cursorOverElement (name, type), hasModal (boolean), pageState ('ready'|'loading'|'dialog'|'error'). Does NOT enumerate descendants — use screenshot(detail='text') or get_ui_elements for the full clickable element list. Chromium: cursorOverElement is null (UIA sparse); focusedElement may fall back to CDP document.activeElement; hints.focusedElementSource reports which was used ('uia' or 'cdp').\nPrefer: Use after keyboard_type or set_element_value to confirm the value landed in the expected field — cheaper than a verification screenshot. Use instead of screenshot(detail='meta') when the question is only \"which window/control has focus.\"\nCaveats: Cannot detect non-UIA elements (custom-drawn UIs, game overlays). hasModal only detects modal dialogs exposed via UIA — browser alert/confirm dialogs may not appear here.",
     "inputSchema": {
       "type": "object",
       "properties": {},
@@ -1965,6 +1956,15 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "maximum": 65535
         }
       },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "server_status",
+    "description": "Return MCP server status: version / native engine availability / Auto Perception state / v2 activation. uia: 'native' = Rust UIA addon (fast, ~2 ms focus / ~100 ms tree); 'powershell' = PS fallback (~366 ms focus). imageDiff: 'native' = Rust SSE2 SIMD (0.26 ms @ 1080p); 'typescript' = TS fallback (~3.8 ms). Diagnostic metadata — do not surface these values to the user unless they ask about performance or troubleshooting. Call once per session if you need to know which path is active; the result is stable for the lifetime of the server process.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
       "additionalProperties": false
     }
   },
