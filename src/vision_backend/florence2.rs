@@ -42,7 +42,7 @@
 use ndarray::Array4;
 
 use crate::vision_backend::error::VisionBackendError;
-use crate::vision_backend::types::Rect;
+use crate::vision_backend::types::{RawCandidate, Rect};
 
 /// Florence-2-base expects 768x768 RGB images (per Microsoft's HF model card).
 pub const FLORENCE2_INPUT_SIDE: u32 = 768;
@@ -761,6 +761,16 @@ impl Florence2Tokenizer {
         self.tokenize_with_prompt(REGION_PROPOSAL_PROMPT)
     }
 
+    /// Decode a token id sequence back to text using the loaded tokenizer.
+    /// `skip_special_tokens = false` because `<loc_X>` and `<region_proposal>`
+    /// are part of Florence-2's task output and must be preserved for parsing.
+    pub fn decode(&self, token_ids: &[i64]) -> Result<String, VisionBackendError> {
+        let ids: Vec<u32> = token_ids.iter().map(|&id| id as u32).collect();
+        self.inner.decode(&ids, false).map_err(|e| {
+            VisionBackendError::Other(format!("Florence-2 tokenizer decode failed: {e}"))
+        })
+    }
+
     /// Encode an arbitrary prompt. `add_special_tokens = true` so BOS/EOS are
     /// added (BART convention).
     pub fn tokenize_with_prompt(&self, prompt: &str) -> Result<PromptTokens, VisionBackendError> {
@@ -1102,4 +1112,255 @@ mod decoder_tests {
     // real ort::Session instances (not constructible without ONNX files).
     // Per 4b-5a-1 post-review addendum, manual verify at dogfood with real
     // Florence-2-base artifact.
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 4b-5a-5: florence2_stage1_recognise — full Stage 1 pipeline entry point
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Stage 1 region proposer entry point. Runs the full Florence-2 pipeline:
+///   1. preprocess (4b-5a-1)
+///   2. tokenize (4b-5a-2)
+///   3. encoder forward (4b-5a-3)
+///   4. decoder + autoregressive loop (4b-5a-4)
+///   5. token decode + parse → RawCandidate (this batch, 4b-5a-5)
+///
+/// Returns `Ok(Vec<RawCandidate>)` with class="region" bboxes on success.
+/// Returns `Err` on any pipeline step failure — caller (`stub_recognise_with_session`)
+/// converts to fall-through dummy output for L5 robustness.
+#[cfg(feature = "vision-gpu")]
+pub fn florence2_stage1_recognise(
+    req: &crate::vision_backend::types::RecognizeRequest,
+    sess: &crate::vision_backend::session::VisionSession,
+) -> Result<Vec<RawCandidate>, VisionBackendError> {
+    if req.frame_buffer.is_empty() {
+        return Err(VisionBackendError::Other("frame_buffer is empty".into()));
+    }
+    let stage1 = Florence2Stage1Sessions::from_pool(&sess.session_key)
+        .ok_or_else(|| VisionBackendError::Other(format!(
+            "Stage1 sub-sessions not in pool for {}",
+            sess.session_key,
+        )))?;
+
+    // Step 1: preprocess
+    let roi = req.rois.first().map(|r| r.rect.clone()).unwrap_or(Rect {
+        x: 0, y: 0,
+        width: req.frame_width as i32,
+        height: req.frame_height as i32,
+    });
+    let pixel_values = preprocess_image(
+        &req.frame_buffer,
+        req.frame_width,
+        req.frame_height,
+        &roi,
+    )?;
+
+    // Step 2: tokenize
+    let tokenizer_path = match crate::vision_backend::inference::tokenizer_path_for_session(sess) {
+        Some(p) if p.exists() => p,
+        Some(_) => return Err(VisionBackendError::Other("tokenizer.json not found".into())),
+        None => return Err(VisionBackendError::Other("model_path has no parent dir".into())),
+    };
+    let tokenizer = Florence2Tokenizer::from_file(&tokenizer_path)?;
+    let prompt_tokens = tokenizer.tokenize_region_proposal()?;
+
+    // Step 3: encoder
+    let encoder_outputs = stage1.encoder_forward(pixel_values, &prompt_tokens)?;
+
+    // Step 4: decoder loop
+    let token_ids = stage1.generate_tokens(&encoder_outputs, FLORENCE2_DEFAULT_MAX_LENGTH)?;
+
+    // Step 5: decode + parse
+    let text = tokenizer.decode(&token_ids)?;
+    let candidates = parse_region_proposal_output(
+        &text,
+        roi.width.max(0) as u32,
+        roi.height.max(0) as u32,
+    );
+    Ok(candidates)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 4b-5a-5: token sequence → RawCandidate parse
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Parse Florence-2 `<REGION_PROPOSAL>` task output text into bbox candidates.
+///
+/// Florence-2 emits region proposals as runs of 4 location tokens:
+///   `<loc_x1><loc_y1><loc_x2><loc_y2><loc_x1><loc_y1>...`
+/// Each `<loc_N>` is a quantized coordinate where N ∈ [0, 999] maps linearly
+/// onto the image dimension (0 → 0, 999 → image_w-1 or image_h-1).
+/// Bboxes always come in 4-tuples; partial trailing tuples (text length not
+/// divisible by 4) are discarded.
+///
+/// Inputs:
+///   - `text`: decoded token sequence (e.g. `"<loc_120><loc_50><loc_400><loc_300>"`)
+///   - `image_w` / `image_h`: original image dimensions in pixels (the ROI passed
+///     to `preprocess_image`, after which Florence-2 scales coordinates relative to)
+///
+/// Output: `Vec<RawCandidate>` with class="region", label="", provisional=true,
+///   confidence=0.5 (Stage 1 doesn't emit per-bbox confidence — refined in Stage 2).
+///
+/// Returns an empty Vec on no `<loc_X>` tokens (broken output, no regions detected).
+pub fn parse_region_proposal_output(
+    text: &str,
+    image_w: u32,
+    image_h: u32,
+) -> Vec<RawCandidate> {
+    let coords = extract_loc_tokens(text);
+    let mut out = Vec::with_capacity(coords.len() / 4);
+    for chunk in coords.chunks_exact(4) {
+        let (qx1, qy1, qx2, qy2) = (chunk[0], chunk[1], chunk[2], chunk[3]);
+        // Quantized → pixel: floor(q * image_dim / 1000)
+        let x1 = ((qx1 as u64) * (image_w as u64) / 1000) as i32;
+        let y1 = ((qy1 as u64) * (image_h as u64) / 1000) as i32;
+        let x2 = ((qx2 as u64) * (image_w as u64) / 1000) as i32;
+        let y2 = ((qy2 as u64) * (image_h as u64) / 1000) as i32;
+        // Skip degenerate boxes (zero or negative size after quantization rounding)
+        if x2 <= x1 || y2 <= y1 {
+            continue;
+        }
+        let idx = out.len();
+        out.push(RawCandidate {
+            track_id: format!("florence2-stage1-{}", idx),
+            rect: Rect {
+                x: x1,
+                y: y1,
+                width: x2 - x1,
+                height: y2 - y1,
+            },
+            label: String::new(),
+            class: "region".into(),
+            confidence: 0.5,
+            provisional: true,
+        });
+    }
+    out
+}
+
+/// Extract all `<loc_N>` integers from the text in order.
+/// Manual parser (no regex dep) — scans for the literal prefix "<loc_" and
+/// reads until ">". Robust against intermixed task tokens and arbitrary text.
+fn extract_loc_tokens(text: &str) -> Vec<u32> {
+    let mut out = Vec::new();
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    let prefix = b"<loc_";
+    while i + prefix.len() <= bytes.len() {
+        if &bytes[i..i + prefix.len()] == prefix {
+            // Found "<loc_", scan until '>'
+            let mut j = i + prefix.len();
+            let mut value: u32 = 0;
+            let mut any_digit = false;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                // Saturating parse — a malformed huge number caps at u32::MAX,
+                // but downstream we clamp to [0, 999] anyway.
+                value = value.saturating_mul(10).saturating_add((bytes[j] - b'0') as u32);
+                any_digit = true;
+                j += 1;
+            }
+            if any_digit && j < bytes.len() && bytes[j] == b'>' {
+                // Clamp to the canonical Florence-2 range [0, 999].
+                out.push(value.min(999));
+                i = j + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+#[cfg(all(test, feature = "vision-gpu"))]
+mod parse_tests {
+    use super::*;
+
+    #[test]
+    fn extract_loc_tokens_simple() {
+        let text = "<loc_120><loc_50><loc_400><loc_300>";
+        let coords = extract_loc_tokens(text);
+        assert_eq!(coords, vec![120, 50, 400, 300]);
+    }
+
+    #[test]
+    fn extract_loc_tokens_empty_string() {
+        assert_eq!(extract_loc_tokens(""), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn extract_loc_tokens_no_loc_tokens() {
+        assert_eq!(extract_loc_tokens("hello world"), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn extract_loc_tokens_with_intermixed_text() {
+        let text = "panel<loc_100><loc_200><loc_300><loc_400>form<loc_50><loc_60><loc_900><loc_950>";
+        let coords = extract_loc_tokens(text);
+        assert_eq!(coords, vec![100, 200, 300, 400, 50, 60, 900, 950]);
+    }
+
+    #[test]
+    fn extract_loc_tokens_clamps_to_999() {
+        let text = "<loc_1500><loc_99999>";
+        assert_eq!(extract_loc_tokens(text), vec![999, 999]);
+    }
+
+    #[test]
+    fn extract_loc_tokens_skips_malformed() {
+        let text = "<loc_><loc_abc><loc_500>";
+        // First two have no digits / non-digit content; only "<loc_500>" valid.
+        assert_eq!(extract_loc_tokens(text), vec![500]);
+    }
+
+    #[test]
+    fn parse_region_proposal_basic_bbox() {
+        // Quantized [120, 50, 400, 300] on 1000x500 image → pixels [120, 25, 400, 150]
+        let text = "<loc_120><loc_50><loc_400><loc_300>";
+        let candidates = parse_region_proposal_output(text, 1000, 500);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].class, "region");
+        assert_eq!(candidates[0].label, "");
+        assert!(candidates[0].provisional);
+        assert_eq!(candidates[0].rect.x, 120);
+        assert_eq!(candidates[0].rect.y, 25);
+        assert_eq!(candidates[0].rect.width, 400 - 120);
+        assert_eq!(candidates[0].rect.height, 150 - 25);
+    }
+
+    #[test]
+    fn parse_region_proposal_multiple_bboxes() {
+        let text = "<loc_0><loc_0><loc_500><loc_500><loc_500><loc_500><loc_999><loc_999>";
+        let candidates = parse_region_proposal_output(text, 1000, 1000);
+        assert_eq!(candidates.len(), 2);
+    }
+
+    #[test]
+    fn parse_region_proposal_drops_partial_trailing() {
+        // 5 loc tokens — last one is partial 4-tuple, dropped
+        let text = "<loc_100><loc_100><loc_500><loc_500><loc_700>";
+        let candidates = parse_region_proposal_output(text, 1000, 1000);
+        assert_eq!(candidates.len(), 1);
+    }
+
+    #[test]
+    fn parse_region_proposal_skips_degenerate_bbox() {
+        // x2 <= x1 case
+        let text = "<loc_500><loc_100><loc_400><loc_500>";
+        let candidates = parse_region_proposal_output(text, 1000, 1000);
+        assert_eq!(candidates.len(), 0);
+    }
+
+    #[test]
+    fn parse_region_proposal_empty_text() {
+        let candidates = parse_region_proposal_output("", 1000, 1000);
+        assert_eq!(candidates.len(), 0);
+    }
+
+    #[test]
+    fn parse_region_proposal_unique_track_ids() {
+        let text = "<loc_0><loc_0><loc_100><loc_100><loc_100><loc_100><loc_200><loc_200>";
+        let candidates = parse_region_proposal_output(text, 1000, 1000);
+        assert_eq!(candidates.len(), 2);
+        assert_ne!(candidates[0].track_id, candidates[1].track_id);
+    }
 }
