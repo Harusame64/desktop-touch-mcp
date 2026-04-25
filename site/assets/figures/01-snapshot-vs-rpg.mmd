@@ -1,0 +1,27 @@
+flowchart LR
+    subgraph A["Snapshot-and-Act"]
+        A1["Observe screen"]
+        A2["Think"]
+        A3["Act on old assumption"]
+        A1 --> A2 --> A3
+        AX["World changed"] -.-> A3
+    end
+
+    subgraph B["Reactive Perception Graph"]
+        B1["Observe target"]
+        B2["Store provisional state"]
+        B3["Dirty / stale signals"]
+        B4["Validate lease"]
+        B5["Run guards"]
+        B6["Execute or block"]
+        B1 --> B2 --> B3 --> B4 --> B5 --> B6
+    end
+
+    A3 --> C["Unsafe action"]
+    B6 --> D["Safer action contract"]
+
+    classDef bad fill:#fde2e2,stroke:#c0392b,color:#5c1f1f;
+    classDef good fill:#e5f6ea,stroke:#2e8b57,color:#123d28;
+    class C bad;
+    class D good;
+

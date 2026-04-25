@@ -1,0 +1,23 @@
+flowchart TB
+    subgraph A["Coordinate roulette"]
+        A1["Looks clickable"]
+        A2["Guess position"]
+        A3["Wrong target"]
+        A1 --> A2 --> A3
+    end
+
+    subgraph B["Beyond Coordinate Roulette"]
+        B1["See entities"]
+        B2["Affordances"]
+        B3["Lease trust"]
+        B4["Guard action"]
+        B5["Semantic diff"]
+        B1 --> B2 --> B3 --> B4 --> B5
+    end
+
+    A3 -. "move beyond this" .- B1
+
+    classDef old fill:#fde2e2,stroke:#c0392b,color:#5c1f1f;
+    classDef new fill:#e8f1ff,stroke:#3b6db3,color:#183257;
+    class A1,A2,A3 old;
+    class B1,B2,B3,B4,B5 new;
