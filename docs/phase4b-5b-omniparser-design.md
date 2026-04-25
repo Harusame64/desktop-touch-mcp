@@ -1,6 +1,6 @@
 # Phase 4b-5b 設計書 — OmniParser-v2 Stage 2 (UI element detector)
 
-- Status: Implemented — commit TBD (2026-04-25)
+- Status: Implemented — commit 5fe3f9d (2026-04-25)
 - 設計者: Claude (Opus 4.7)
 - 実装担当: **Sonnet** (handbook §2 Step B)
 - レビュー担当: Opus 4.7 (別 subagent)
