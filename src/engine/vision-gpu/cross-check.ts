@@ -15,10 +15,15 @@ import type { NativeRawCandidate } from "../native-types.js";
 export const CROSS_CHECK_AGREEMENT_THRESHOLD = 0.2;
 
 /** Optional Tier ∞ fallback function. Invoked per-candidate when both engines
- *  produce empty labels. Should return a label string (or empty on failure). */
+ *  produce empty labels. Receives the original frameBuffer + dims so the
+ *  fallback can crop the rect to a PNG and feed win-ocr.exe.
+ *  Should return a label string (or empty on failure). */
 export type WinOcrFallbackFn = (
   targetKey: string,
   rect: { x: number; y: number; width: number; height: number },
+  frameBuffer: Buffer,
+  frameWidth: number,
+  frameHeight: number,
 ) => Promise<string>;
 
 /**
@@ -69,6 +74,9 @@ export async function crossCheckLabels(
     threshold?: number;
     winOcrFallback?: WinOcrFallbackFn;
     targetKey?: string;
+    frameBuffer?: Buffer;
+    frameWidth?: number;
+    frameHeight?: number;
   },
 ): Promise<NativeRawCandidate[]> {
   const threshold = options?.threshold ?? CROSS_CHECK_AGREEMENT_THRESHOLD;
@@ -111,11 +119,19 @@ export async function crossCheckLabels(
     if (sLabel !== "") { out.push({ ...p, label: sLabel, confidence: s.confidence }); continue; }
 
     // Both empty → Tier ∞ fallback if provided.
-    if (options?.winOcrFallback) {
+    if (options?.winOcrFallback && options.frameBuffer && options.frameWidth && options.frameHeight) {
       try {
-        const fallback = await options.winOcrFallback(options.targetKey ?? "", p.rect);
+        const fallback = await options.winOcrFallback(
+          options.targetKey ?? "",
+          p.rect,
+          options.frameBuffer,
+          options.frameWidth,
+          options.frameHeight,
+        );
         out.push({ ...p, label: fallback, confidence: fallback ? 0.5 : 0.3, provisional: true });
-      } catch {
+      } catch (err) {
+        // Post-review R4: log Tier ∞ failures so operations can detect win-ocr breakage.
+        console.warn("[cross-check] winOcrFallback threw:", err);
         out.push(p);
       }
     } else {

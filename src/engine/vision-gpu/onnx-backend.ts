@@ -35,7 +35,9 @@
 
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
+
+import sharp from "sharp";
 
 import { nativeVision, type NativeRawCandidate } from "../native-engine.js";
 import type { VisualBackend } from "./backend.js";
@@ -56,39 +58,69 @@ const WIN_OCR_EXE_PATH = join(
 );
 
 /**
- * Tier ∞ fallback: calls win-ocr.exe using the existing convention from ocr-bridge.ts.
- * win-ocr.exe reads PNG bytes from stdin and returns JSON on stdout.
- * For the cross-check fallback, we capture a screenshot of the rect using a
- * small PNG built from the frameBuffer. When frameBuffer is unavailable, we
- * attempt to spawn win-ocr.exe with an empty stdin (returns no words — silent
- * fallback per §6 trap: ENOENT → empty string).
+ * Tier ∞ fallback (Phase 4b-6 post-review B1 fix): crop the frame buffer to
+ * the candidate's rect, encode as PNG, and feed to win-ocr.exe via stdin.
+ * Uses the existing convention from `src/engine/ocr-bridge.ts::runOcrExe`
+ * (PNG bytes on stdin → JSON on stdout, language "ja").
  *
- * Note: This function matches the WinOcrFallbackFn signature. The rect
- * parameter carries the bounding box for the ROI. Since cross-check fallback
- * is called only when both engines fail (rare path), the 2s timeout is
- * acceptable per design §6.
+ * Returns the concatenated word texts, or empty string on any failure
+ * (ENOENT / timeout / parse error / out-of-bounds rect — all treated as
+ * silent fallback per L5 robustness).
  */
-const winOcrTierInfinity: WinOcrFallbackFn = async (_targetKey, _rect) => {
+const winOcrTierInfinity: WinOcrFallbackFn = async (
+  _targetKey,
+  rect,
+  frameBuffer,
+  frameWidth,
+  frameHeight,
+) => {
+  if (frameBuffer.length === 0 || frameWidth === 0 || frameHeight === 0) return "";
   try {
-    // Spawn win-ocr.exe with the default language (ja) on empty stdin.
-    // When called as a fallback, we do not have a pre-rendered PNG for the
-    // specific rect. Passing empty stdin causes win-ocr.exe to return no words
-    // (empty JSON), which we surface as empty string — callers handle gracefully.
-    // A future ADR-008 can integrate rect-cropped screenshot here.
-    const result = spawnSync(WIN_OCR_EXE_PATH, ["ja"], {
-      encoding: "utf8",
-      timeout: 2000,
-      input: "",  // empty PNG bytes → win-ocr returns {} or {"words":[]}
+    // Clip rect to frame bounds (defensive — rect may be out-of-bounds after upstream scaling)
+    const x = Math.max(0, Math.min(rect.x, frameWidth - 1));
+    const y = Math.max(0, Math.min(rect.y, frameHeight - 1));
+    const w = Math.max(1, Math.min(rect.width, frameWidth - x));
+    const h = Math.max(1, Math.min(rect.height, frameHeight - y));
+
+    // Crop raw RGBA → PNG using sharp (already a dependency from ocr-bridge).
+    const pngBytes = await sharp(frameBuffer, {
+      raw: { width: frameWidth, height: frameHeight, channels: 4 },
+    })
+      .extract({ left: x, top: y, width: w, height: h })
+      .png()
+      .toBuffer();
+
+    // Spawn win-ocr.exe and feed PNG bytes (mirrors ocr-bridge.ts::runOcrExe pattern).
+    const stdout = await new Promise<string>((resolve, reject) => {
+      const child = spawn(WIN_OCR_EXE_PATH, ["ja"], { windowsHide: true });
+      const timer = setTimeout(() => {
+        child.kill();
+        reject(new Error("win-ocr.exe timed out (2000ms)"));
+      }, 2000);
+      let buf = "";
+      child.stdout.on("data", (d: Buffer) => { buf += d.toString("utf8"); });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        if (code !== 0 && !buf) reject(new Error(`win-ocr.exe exited ${String(code)}`));
+        else resolve(buf.trim());
+      });
+      child.on("error", (err) => { clearTimeout(timer); reject(err); });
+      child.stdin.on("error", () => { /* swallow EPIPE */ });
+      const ok = child.stdin.write(pngBytes);
+      if (ok) child.stdin.end();
+      else child.stdin.once("drain", () => { child.stdin.end(); });
     });
-    if (result.status === 0 && result.stdout) {
-      const parsed = JSON.parse(result.stdout.trim()) as { words?: Array<{ text: string }> };
-      const words = parsed.words ?? [];
-      return words.map((w) => w.text).join(" ").trim();
-    }
-  } catch {
-    // ENOENT (exe missing on non-Windows or non-installed env) → silent fallback
+
+    if (!stdout) return "";
+    const parsed = JSON.parse(stdout) as { words?: Array<{ text: string }> };
+    const words = parsed.words ?? [];
+    return words.map((w) => w.text).join(" ").trim();
+  } catch (err) {
+    // Silent fallback per L5: ENOENT (exe missing on non-Windows), timeout,
+    // sharp crop error (out-of-bounds), JSON parse failure all treated as empty.
+    console.warn("[onnx-backend] winOcrTierInfinity failed:", err);
+    return "";
   }
-  return "";
 };
 
 // Manifest path: dist/engine/vision-gpu/onnx-backend.js → ../../.. = project root

@@ -1,6 +1,14 @@
 # Phase 4b-6 設計書 — Cross-check (multi-engine OCR voting) + win-ocr Tier ∞ 接続
 
-- Status: Implemented (2026-04-25) — commits `0d7eae9`〜`6d16c36`
+- Status: Implemented (2026-04-25) — commits `0d7eae9`〜`6d16c36` + post-review B1 fix
+
+**Post-review addendum (Opus review 2026-04-25、BLOCKING 1 → 0)**:
+- **BLOCKING B1 修正**: `winOcrTierInfinity` が空 stdin で win-ocr.exe を呼ぶ ghost fallback だった問題を解消。`WinOcrFallbackFn` signature に `frameBuffer / frameWidth / frameHeight` を追加し、`sharp` で rect crop → PNG → win-ocr.exe stdin (async spawn) で本格 Tier ∞ fallback に変更
+- **R1 修正**: stage3 + stage3b の並列化 (sequential await → `Promise.all([primaryReq, secondaryReq])`)
+- **R2 修正**: `await import("./cross-check.js")` → static `import { crossCheckLabels }` に変更
+- **R4 修正**: `winOcrFallback` throw 時に `console.warn` 追加
+- 残: R3 (confidence 0.5 マジックナンバーのコメント追加) / N1 (secondary-only 時の provisional 維持) / N2 (JSON.parse コメント) / N3 (ADR 文言「14 ケース + 1」修正) は将来 batch
+- cross-check test に「frameBuffer 欠落時 fallback skip」ケース 1 件追加 (16 → 17 ケース)
 - 設計者: Claude (Opus 4.7)
 - 実装担当: **Sonnet** (handbook §2 Step B)
 - レビュー担当: Opus 4.7 (別 subagent)
