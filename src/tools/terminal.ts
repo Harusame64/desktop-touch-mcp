@@ -501,6 +501,12 @@ export const terminalSendHandler = async ({
 
 type CompletionReason = "quiet" | "pattern_matched" | "timeout" | "window_closed" | "window_not_found";
 
+interface ReadFailurePayload {
+  code?: string;
+  error?: string;
+  suggest?: string[];
+}
+
 interface TerminalRunResponse {
   ok: boolean;
   output: string;
@@ -510,8 +516,38 @@ interface TerminalRunResponse {
     matchedPattern?: string;
   };
   marker?: string;
+  readError?: ReadFailurePayload;
   warnings?: string[];
   hwnd?: string;
+}
+
+// Forwarded-option whitelists derived from the public terminal_send / _read schemas.
+// `windowTitle` and `input` are excluded because run() owns those, and `sinceMarker`
+// is excluded because run() computes the baseline marker itself.
+const TERMINAL_RUN_SEND_OPTIONS_SCHEMA = z.object({
+  method: terminalSendSchema.method,
+  chunkSize: terminalSendSchema.chunkSize,
+  pressEnter: terminalSendSchema.pressEnter,
+  focusFirst: terminalSendSchema.focusFirst,
+  restoreFocus: terminalSendSchema.restoreFocus,
+  preferClipboard: terminalSendSchema.preferClipboard,
+  pasteKey: terminalSendSchema.pasteKey,
+  forceFocus: terminalSendSchema.forceFocus,
+  trackFocus: terminalSendSchema.trackFocus,
+  settleMs: terminalSendSchema.settleMs,
+}).partial().strict();
+
+const TERMINAL_RUN_READ_OPTIONS_SCHEMA = z.object({
+  lines: terminalReadSchema.lines,
+  stripAnsi: terminalReadSchema.stripAnsi,
+  source: terminalReadSchema.source,
+  ocrLanguage: terminalReadSchema.ocrLanguage,
+}).partial().strict();
+
+function describeZodIssues(err: z.ZodError): string {
+  return err.issues
+    .map((i) => `${i.path.length > 0 ? i.path.join(".") + ": " : ""}${i.message}`)
+    .join("; ");
 }
 
 /**
@@ -549,6 +585,47 @@ export const terminalRunHandler = async ({
   const startedAt = Date.now();
   const warnings: string[] = [];
 
+  // ── Phase 0: Validate forwarded options ────────────────────────────────────
+  // Reject invalid sendOptions/readOptions BEFORE doing any I/O so unbounded
+  // values (e.g. chunkSize:0 hanging the background loop, source:'uia' on a
+  // non-TextPattern terminal) cannot bypass the public schema bounds.
+  let validatedSendOptions: z.infer<typeof TERMINAL_RUN_SEND_OPTIONS_SCHEMA> = {};
+  if (sendOptions !== undefined) {
+    const parsed = TERMINAL_RUN_SEND_OPTIONS_SCHEMA.safeParse(sendOptions);
+    if (!parsed.success) {
+      return failWith(
+        new Error(`Invalid sendOptions: ${describeZodIssues(parsed.error)}`),
+        "terminal:run",
+        {
+          windowTitle,
+          suggest: [
+            "Refer to terminal(action='send') schema for valid keys/types",
+            "windowTitle, input, and sinceMarker cannot be overridden via sendOptions",
+          ],
+        }
+      );
+    }
+    validatedSendOptions = parsed.data;
+  }
+  let validatedReadOptions: z.infer<typeof TERMINAL_RUN_READ_OPTIONS_SCHEMA> = {};
+  if (readOptions !== undefined) {
+    const parsed = TERMINAL_RUN_READ_OPTIONS_SCHEMA.safeParse(readOptions);
+    if (!parsed.success) {
+      return failWith(
+        new Error(`Invalid readOptions: ${describeZodIssues(parsed.error)}`),
+        "terminal:run",
+        {
+          windowTitle,
+          suggest: [
+            "Refer to terminal(action='read') schema for valid keys/types",
+            "windowTitle and sinceMarker cannot be overridden via readOptions",
+          ],
+        }
+      );
+    }
+    validatedReadOptions = parsed.data;
+  }
+
   // ── Phase 1: Send ──────────────────────────────────────────────────────────
   const win = findTerminalWindow(windowTitle);
   if (!win) {
@@ -563,6 +640,13 @@ export const terminalRunHandler = async ({
 
   const hwnd = win.hwnd;
 
+  // Capture the baseline marker BEFORE sending. If we wait until after the send
+  // returns, fast-completing commands (e.g. `echo`) may already have written
+  // their output, and using a post-send marker would slice that output off in
+  // the final sinceMarker diff.
+  const baselineRead = await readTerminalRaw(windowTitle);
+  const sinceMarker = baselineRead?.marker;
+
   const sendArgs = {
     windowTitle,
     input,
@@ -575,7 +659,7 @@ export const terminalRunHandler = async ({
     pasteKey: "auto" as const,
     trackFocus: false,
     settleMs: 100,
-    ...(sendOptions as object ?? {}),
+    ...validatedSendOptions,
   };
 
   const sendResult = await terminalSendHandler(sendArgs);
@@ -604,15 +688,15 @@ export const terminalRunHandler = async ({
     return ok(res);
   }
 
-  // Take a marker snapshot just after sending (for sinceMarker diff)
-  const initialRead = await readTerminalRaw(windowTitle);
-  const sinceMarker = initialRead?.marker;
-
   // ── Phase 2: Wait ──────────────────────────────────────────────────────────
+  // Quiet detection starts from the pre-send baseline. The first poll iteration
+  // will observe the new prompt + command echo + early output as a diff and
+  // reset the quiet timer — this is correct: we want to wait quietMs from the
+  // moment output actually starts appearing, not from the send completion.
   const POLL_INTERVAL_MS = 200;
   let completionReason: CompletionReason | null = null;
   let matchedPattern: string | undefined;
-  let lastText = initialRead?.text ?? "";
+  let lastText = baselineRead?.text ?? "";
   let lastTextTime = Date.now();
   const quietMs = until.mode === "quiet" ? until.quietMs : 800;
 
@@ -688,23 +772,44 @@ export const terminalRunHandler = async ({
     stripAnsi: true,
     source: "auto" as const,
     ocrLanguage: "ja",
-    ...(readOptions as object ?? {}),
+    ...validatedReadOptions,
   };
 
   const readResult = await terminalReadHandler(readArgs);
   let output = "";
   let finalMarker: string | undefined;
+  let readError: ReadFailurePayload | undefined;
   try {
     const block = readResult.content[0];
     if (block?.type === "text") {
-      const parsed = JSON.parse(block.text) as { text?: string; marker?: string; hints?: unknown };
-      output = parsed.text ?? "";
-      finalMarker = parsed.marker;
+      const parsed = JSON.parse(block.text) as {
+        ok?: boolean;
+        text?: string;
+        marker?: string;
+        code?: string;
+        error?: string;
+        suggest?: string[];
+        hints?: unknown;
+      };
+      if (parsed.ok === false) {
+        // Surface read-handler failures (e.g. source:'uia' on a terminal
+        // without TextPattern) instead of silently returning ok:true with
+        // empty output.
+        readError = {
+          ...(parsed.code ? { code: parsed.code } : {}),
+          ...(parsed.error ? { error: parsed.error } : {}),
+          ...(parsed.suggest && parsed.suggest.length > 0 ? { suggest: parsed.suggest } : {}),
+        };
+        warnings.push("Final read failed — output may be unavailable. See readError for details.");
+      } else {
+        output = parsed.text ?? "";
+        finalMarker = parsed.marker;
+      }
     }
   } catch { /* output stays empty */ }
 
   const response: TerminalRunResponse = {
-    ok: true,
+    ok: readError === undefined,
     output,
     completion: {
       // Loop only exits via the four break paths (each assigns completionReason)
@@ -715,6 +820,7 @@ export const terminalRunHandler = async ({
       ...(matchedPattern !== undefined ? { matchedPattern } : {}),
     },
     ...(finalMarker ? { marker: finalMarker } : {}),
+    ...(readError ? { readError } : {}),
     hwnd: String(hwnd),
     ...(warnings.length > 0 ? { warnings } : {}),
   };
