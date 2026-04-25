@@ -1,8 +1,9 @@
 # Phase 1 設計書 — Naming Redesign + 主軸 family 責務境界凍結
 
-- Status: Draft (2026-04-25) — ユーザー approve 待ち
+- Status: **Implemented** (2026-04-25, PR #35 squash merge `2954e29`)
 - 設計者: Claude (Opus 4.7)
 - 実装担当: Sonnet 4.6 (起動方法は §11 + 既存 `docs/phase4b-sonnet-prompt.md` Prompt 2 を流用)
+- レビュー: Opus 独立 self-review (BLOCKING 4 → fix commit `b3d53f5` で 0)、Codex review (P1+P2、`b3d53f5` で解消済)
 - 対応プラン: `docs/tool-surface-reduction-plan.md` §6.1 / §6.3 / §15 Phase 1 / §16 互換性ポリシー
 - 対応 handbook: `docs/phase4b-implementation-handbook.md` §3 設計書テンプレ全 9 セクション
 - 並走前提: Phase 4b dogfood (PR #34 merged 後の `docs/phase4b-dogfood-runbook.md`) と独立 — Phase 1 は Phase 4b の機能 (vision-gpu) と互いに干渉しない
@@ -452,15 +453,26 @@ Sonnet が独自に決めてはいけない:
 
 - **tool 登録名の変更** (本書 §3 で固定、新名のスペル変更不可)
 - **schema 構造の変更** (Phase 1 ではリネームのみ、フィールド追加 / 削除 / 型変更禁止 — Phase 4 で行う)
+  - **★ 例外 (2026-04-25 Opus レビュー指摘で明示)**: `desktop_state` / `desktop_act` レスポンスへの `attention` 必須フィールド追加は Phase 1 で必須 (§3.1 / §3.3)、これは設計書 §3 で定義済の必須化なので Forbidden に該当しない
 - **handler ロジックの変更** (旧名 → 新名の同義語リネーム以外の動作変更禁止)
+  - **★ 例外**: `desktop_state` handler 内で perception envelope を取得して `attention` を root に attach する logic 追加は §3.1 を満たすために必須
 - **handler 残置対象 (`events_*` / `perception_*` / 他 Phase 4 対象) のファイル変更**
 - **engine 層 (`src/engine/event-bus.ts` / `src/engine/perception/registry.ts` 等) の変更**
+  - **★ 例外 (2026-04-25 Opus レビュー指摘)**: engine 層のうち **LLM レスポンスに直接出力される literal type / suggest 文字列** は Phase 1 で旧名 → 新名置換が必要。対象:
+    - `src/engine/perception/suggested-fix-store.ts` の `SuggestedFix.tool` literal type (`"browser_click_element"` → `"browser_click"` 等)
+    - `src/tools/_action-guard.ts` の `as const` literal の tool 名
+    - `src/tools/_errors.ts` の error message / suggest 文字列内の tool 名
+    - `src/tools/mouse.ts` / `keyboard.ts` / `window.ts` / `perception.ts` / `scroll-to-element.ts` / `smart-scroll.ts` 等の description / suggest 内の旧名 mention
+  - 理由: これらは LLM レスポンスに直接出力され、旧名が混入すると LLM が存在しないツールを呼びにきて InputValidationError で停止 = 北極星「能力不足で詰まらない」直接違反
+  - 対応: 全件 grep で `browser_connect|browser_click_element|browser_fill_input|browser_get_form|browser_get_interactive|browser_find_element|get_context|desktop_see|desktop_touch|engine_status` が `src/` 配下で 0 件になるまで置換
 - **既存テストの assertion 緩和** (handbook §4.1)
 - **Phase 4b skeleton (vision-gpu / native engine) の変更**
 - **`src/version.ts` / `package.json:version` の変更** (v1.0.0 release は Phase 5 完了後、§16.3)
 - **`bin/launcher.js` / `.github/workflows/release.yml` の変更** (リリース経路、Opus 設計で承認後のみ)
 - **alias / deprecation 機構の追加** (§16.1 で即破壊と確定)
+  - **★ 関連**: `tests/e2e/tool-chain.test.ts` の `desktopStateHandler as getContextHandler` のような alias import は §16.1 と精神的に矛盾するため避ける。テスト本体の関数呼び出し名を全て `desktopStateHandler(...)` に直接置換
 - **stub-tool-catalog.ts の手動編集** (generator 経由のみ、`scripts/generate-stub-tool-catalog.mjs` 経由)
+  - **★ 関連**: stub-tool-catalog の `description` 内に旧名が残らないよう、generator が読み込む元の **handler description / `_TAB_ID_DESCRIPTION` 等の定数** で旧名を新名に置換 → generator 再実行
 - **新規 tool 追加** (Phase 1 はリネームのみ)
 
 これらに該当する判断が必要になったら、即 Opus 委譲 (handbook §5 stop conditions)。
