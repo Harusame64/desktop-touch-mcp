@@ -42,6 +42,10 @@ ndarray = { version = "0.17", optional = true }
 # unstable_wasm. Keep `onig` for the ByteLevel BPE regex backend that Florence-2 uses.
 tokenizers = { version = "0.21", default-features = false, features = ["onig"], optional = true }
 
+# Phase 4b-5a-5: tracing for structured logging (R3: eprintln → tracing::warn! 統一) — gated
+# ort also uses tracing internally, so this adds virtually zero binary overhead.
+tracing = { version = "0.1", optional = true }
+
 # ── Visual GPU Phase 4b-2: WinML 統合は ADR-006 に移管 (2026-04-24) ──────────
 # 背景: `windows-app` crate は全バージョン yanked + microsoft/windows-app-rs
 # repo archived (Microsoft が WinAppSDK-Rust 開発停止を発表)。
@@ -53,7 +57,7 @@ tokenizers = { version = "0.21", default-features = false, features = ["onig"], 
 [features]
 default = ["vision-gpu"]
 # Visual GPU lane を build に含める。CI/最小ビルドでは --no-default-features で除外可能。
-vision-gpu = ["dep:ort", "dep:image", "dep:ndarray", "dep:tokenizers"]
+vision-gpu = ["dep:ort", "dep:image", "dep:ndarray", "dep:tokenizers", "dep:tracing"]
 # Opt-in EPs (ADR-005 D2' Layer 2 cascade)
 vision-gpu-cuda     = ["vision-gpu", "ort/cuda"]
 vision-gpu-tensorrt = ["vision-gpu", "ort/tensorrt"]
