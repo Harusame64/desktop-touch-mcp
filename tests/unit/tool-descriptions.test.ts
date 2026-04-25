@@ -26,6 +26,9 @@ const TOOL_FILES = [
   "keyboard.ts", "macro.ts", "mouse.ts", "notification.ts", "perception.ts", "pin.ts",
   "screenshot.ts", "scroll-capture.ts", "scroll-to-element.ts", "smart-scroll.ts",
   "terminal.ts", "ui-elements.ts", "wait-until.ts", "window.ts", "workspace.ts",
+  // Phase 2 dispatchers
+  "window-dock.ts",
+  "scroll.ts",
 ];
 
 const MIN_CHARS = 20;
@@ -109,9 +112,37 @@ function extractBuildDescText(src: string, startIdx: number): string {
 
 interface ToolDesc { name: string; description: string; file: string; }
 
+/** Extract the description from a registerTool config block (description: "..." or buildDesc(...)) */
+function extractRegisterToolDescription(src: string, configStartIdx: number): string {
+  // Find the end of the config object by matching braces
+  let depth = 1; let i = configStartIdx;
+  while (i < src.length && depth > 0) {
+    if (src[i] === "{") depth++; else if (src[i] === "}") depth--;
+    i++;
+  }
+  const body = src.slice(configStartIdx, i - 1);
+
+  // Look for description: "..." or description: buildDesc(...)
+  const descFieldRe = /description\s*:\s*/g;
+  let dm: RegExpExecArray | null;
+  while ((dm = descFieldRe.exec(body)) !== null) {
+    const pos = dm.index + dm[0].length;
+    if (body.startsWith("buildDesc(", pos)) {
+      return extractBuildDescText(body, pos + "buildDesc(".length);
+    }
+    const q = body[pos];
+    if (q === '"' || q === "'" || q === "`") {
+      return extractStringLiteral(body, pos);
+    }
+  }
+  return "";
+}
+
 function parseToolFile(filePath: string, fileName: string): ToolDesc[] {
   const src = readFileSync(filePath, "utf-8");
   const entries: ToolDesc[] = [];
+
+  // --- server.tool(...) calls ---
   const serverToolRe = /server\.tool\s*\(\s*/g;
   let m: RegExpExecArray | null;
 
@@ -135,6 +166,28 @@ function parseToolFile(filePath: string, fileName: string): ToolDesc[] {
     }
     entries.push({ name, description, file: fileName });
   }
+
+  // --- server.registerTool(...) calls ---
+  const registerToolRe = /server\.registerTool\s*\(\s*/g;
+  let rm: RegExpExecArray | null;
+
+  while ((rm = registerToolRe.exec(src)) !== null) {
+    const afterOpen = rm.index + rm[0].length;
+    const nameQuote = src[afterOpen];
+    if (nameQuote !== '"' && nameQuote !== "'" && nameQuote !== "`") continue;
+    const name = extractStringLiteral(src, afterOpen);
+    const afterName = src.indexOf(nameQuote, afterOpen + 1) + 1;
+
+    let pos = afterName;
+    while (pos < src.length && /[\s,]/.test(src[pos]!)) pos++;
+
+    // Next arg should be the config object starting with {
+    if (src[pos] !== "{") continue;
+    const description = extractRegisterToolDescription(src, pos + 1);
+    if (!description) continue;
+    entries.push({ name, description, file: fileName });
+  }
+
   return entries;
 }
 
@@ -148,8 +201,13 @@ for (const f of TOOL_FILES) {
 }
 
 describe("tool descriptions — contract", () => {
-  it("finds exactly 58 registered tools", () => {
-    expect(allTools.length).toBe(58);
+  // Phase 2a: -7 old (keyboard_type/press, clipboard_read/write, dock_window, pin_window, unpin_window)
+  //            +3 new dispatchers (keyboard, clipboard, window_dock) → 58-7+3 = 54
+  // Phase 2b: -4 old (scroll raw, scroll_capture, smart_scroll, scroll_to_element)
+  //            +1 new dispatcher (scroll) → 54-4+1 = 51
+  // Phase 2c: -2 old (terminal_read, terminal_send) +1 new dispatcher (terminal) → 51-2+1 = 50
+  it("finds exactly 50 registered tools", () => {
+    expect(allTools.length).toBe(50);
   });
 
   for (const tool of allTools) {

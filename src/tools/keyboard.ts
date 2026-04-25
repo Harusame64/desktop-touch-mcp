@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { buildDesc } from "./_types.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { keyboard } from "../engine/nutjs.js";
@@ -133,7 +134,7 @@ export const keyboardTypeSchema = {
     ),
   replaceAll: z.boolean().optional().default(false).describe(
     "When true, send Ctrl+A to select all existing text before typing. " +
-    "Equivalent to Ctrl+A → keyboard_type in one call (requires field already focused). Default false."
+    "Equivalent to Ctrl+A → keyboard(action='type') in one call (requires field already focused). Default false."
   ),
   forceKeystrokes: z.boolean().optional().default(false).describe(
     "When true, always use keystroke mode even if text contains non-ASCII symbols " +
@@ -151,7 +152,7 @@ export const keyboardTypeSchema = {
   ),
   fixId: z.string().optional().describe(
     "Approve a pending suggestedFix (one-shot, 15s TTL). Pass the fixId returned by a previous " +
-    "failed keyboard_type to re-attempt with guard-validated args."
+    "failed keyboard(action='type') to re-attempt with guard-validated args."
   ),
 };
 
@@ -282,8 +283,8 @@ export const keyboardTypeHandler = async ({
     let effectiveText = text;
     let effectiveWindowTitle = windowTitle;
     if (fixId) {
-      const vr = validateAndPrepareFix(fixId, "keyboard_type");
-      if (!vr.ok || !vr.fix) return failWith(new Error(vr.errorCode!), "keyboard_type");
+      const vr = validateAndPrepareFix(fixId, "keyboard");
+      if (!vr.ok || !vr.fix) return failWith(new Error(vr.errorCode!), "keyboard");
       if (typeof vr.fix.args.windowTitle === "string") effectiveWindowTitle = vr.fix.args.windowTitle;
       if (typeof vr.fix.args.text === "string") effectiveText = vr.fix.args.text;
       consumeFix(fixId);
@@ -318,7 +319,7 @@ export const keyboardTypeHandler = async ({
             // Return error regardless of effectiveMethod.
             return failWith(
               new Error("BackgroundInputIncomplete"),
-              "keyboard_type",
+              "keyboard:type",
               {
                 suggest: [
                   "Input sent partially - retry with method:'foreground' for full input",
@@ -340,7 +341,7 @@ export const keyboardTypeHandler = async ({
         } else if (effectiveMethod === "background") {
           return failWith(
             new Error("BackgroundInputUnsupported"),
-            "keyboard_type",
+            "keyboard:type",
             {
               suggest: [
                 "Target app does not accept background input - use method:'foreground' or omit",
@@ -354,7 +355,7 @@ export const keyboardTypeHandler = async ({
       } else if (effectiveMethod === "background") {
         return failWith(
           new Error("BackgroundInputUnsupported"),
-          "keyboard_type",
+          "keyboard:type",
           { suggest: ["Window not found - verify windowTitle"], context: { windowTitle: effectiveWindowTitle } }
         );
       }
@@ -371,12 +372,12 @@ export const keyboardTypeHandler = async ({
     // Step 2: Guard evaluation (on already-focused window).
     let perceptionEnv: import("../engine/perception/types.js").PostPerception | undefined;
     if (lensId) {
-      const guardResult = await evaluatePreToolGuards(lensId, "keyboard_type", {});
+      const guardResult = await evaluatePreToolGuards(lensId, "keyboard:type", {});
       if (!guardResult.ok && guardResult.policy === "block") {
-        const env = buildEnvelopeFor(lensId, { toolName: "keyboard_type" });
+        const env = buildEnvelopeFor(lensId, { toolName: "keyboard:type" });
         return failWith(
           new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
-          "keyboard_type",
+          "keyboard:type",
           {
             lensId,
             guard: guardResult.failedGuard,
@@ -385,20 +386,20 @@ export const keyboardTypeHandler = async ({
           }
         );
       }
-      perceptionEnv = buildEnvelopeFor(lensId, { toolName: "keyboard_type" }) ?? undefined;
+      perceptionEnv = buildEnvelopeFor(lensId, { toolName: "keyboard:type" }) ?? undefined;
     } else if (!_skipAutoGuard && isAutoGuardEnabled()) {
       const descriptor = effectiveWindowTitle
         ? { kind: "window" as const, titleIncludes: effectiveWindowTitle }
         : null;
       const ag = await runActionGuard({
-        toolName: "keyboard_type", actionKind: "keyboard", descriptor,
+        toolName: "keyboard:type", actionKind: "keyboard", descriptor,
         ...(foregroundVerified && { foregroundVerified: true }),
         ...(fixId && { fixCarryingArgs: { text: effectiveText, windowTitle: effectiveWindowTitle } }),
       });
       if (ag.block) {
         return failWith(
           new Error(`AutoGuardBlocked: ${ag.summary.next}`),
-          "keyboard_type",
+          "keyboard:type",
           {
             _perceptionForPost: ag.summary,
             ...(warnings.length > 0 && { hints: { warnings } }),
@@ -456,7 +457,7 @@ export const keyboardTypeHandler = async ({
       ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
     });
   } catch (err) {
-    return failWith(err, "keyboard_type");
+    return failWith(err, "keyboard:type");
   }
 };
 
@@ -514,7 +515,7 @@ export const keyboardPressHandler = async ({
         if (effectiveMethod === "background") {
           return failWith(
             new Error("BackgroundInputIncomplete"),
-            "keyboard_press",
+            "keyboard:press",
             { suggest: ["Key press failed in background mode - retry with method:'foreground'"], context: { keys } }
           );
         }
@@ -522,7 +523,7 @@ export const keyboardPressHandler = async ({
       } else if (effectiveMethod === "background") {
         return failWith(
           new Error("BackgroundInputUnsupported"),
-          "keyboard_press",
+          "keyboard:press",
           { suggest: ["Target app does not accept background input - use method:'foreground' or omit"], context: { windowTitle: effectiveWindowTitle } }
         );
       }
@@ -539,12 +540,12 @@ export const keyboardPressHandler = async ({
     // Step 2: Guard evaluation (on already-focused window).
     let perceptionEnv: import("../engine/perception/types.js").PostPerception | undefined;
     if (lensId) {
-      const guardResult = await evaluatePreToolGuards(lensId, "keyboard_press", {});
+      const guardResult = await evaluatePreToolGuards(lensId, "keyboard:press", {});
       if (!guardResult.ok && guardResult.policy === "block") {
-        const env = buildEnvelopeFor(lensId, { toolName: "keyboard_press" });
+        const env = buildEnvelopeFor(lensId, { toolName: "keyboard:press" });
         return failWith(
           new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
-          "keyboard_press",
+          "keyboard:press",
           {
             lensId,
             guard: guardResult.failedGuard,
@@ -553,19 +554,19 @@ export const keyboardPressHandler = async ({
           }
         );
       }
-      perceptionEnv = buildEnvelopeFor(lensId, { toolName: "keyboard_press" }) ?? undefined;
+      perceptionEnv = buildEnvelopeFor(lensId, { toolName: "keyboard:press" }) ?? undefined;
     } else if (isAutoGuardEnabled()) {
       const descriptor = effectiveWindowTitle
         ? { kind: "window" as const, titleIncludes: effectiveWindowTitle }
         : null;
       const ag = await runActionGuard({
-        toolName: "keyboard_press", actionKind: "keyboard", descriptor,
+        toolName: "keyboard:press", actionKind: "keyboard", descriptor,
         ...(foregroundVerified && { foregroundVerified: true }),
       });
       if (ag.block) {
         return failWith(
           new Error(`AutoGuardBlocked: ${ag.summary.next}`),
-          "keyboard_press",
+          "keyboard:press",
           {
             _perceptionForPost: ag.summary,
             ...(warnings.length > 0 && { hints: { warnings } }),
@@ -597,8 +598,78 @@ export const keyboardPressHandler = async ({
       ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
     });
   } catch (err) {
-    return failWith(err, "keyboard_press");
+    return failWith(err, "keyboard:press");
   }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Dispatcher schema (discriminated union)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const keyboardSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("type"),
+    text: z.string().max(10000).describe("The text to type (max 10,000 characters)"),
+    method: methodParam,
+    narrate: narrateParam,
+    use_clipboard: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe(
+        "If true, copy text to clipboard and paste with Ctrl+V instead of simulating keystrokes. " +
+        "Use this when typing URLs, paths, or ASCII text into apps with Japanese IME active — " +
+        "prevents IME from converting characters. Default false."
+      ),
+    replaceAll: z.boolean().optional().default(false).describe(
+      "When true, send Ctrl+A to select all existing text before typing. " +
+      "Equivalent to Ctrl+A → keyboard(action='type') in one call (requires field already focused). Default false."
+    ),
+    forceKeystrokes: z.boolean().optional().default(false).describe(
+      "When true, always use keystroke mode even if text contains non-ASCII symbols " +
+      "(em-dash, en-dash, smart quotes, etc.) that would normally trigger auto-clipboard. " +
+      "Default false — auto-clipboard is enabled."
+    ),
+    windowTitle: windowTitleFocusParam,
+    hwnd: hwndFocusParam,
+    forceFocus: forceFocusParam,
+    trackFocus: trackFocusParam,
+    settleMs: settleMsParam,
+    lensId: z.string().optional().describe(
+      "Optional perception lens ID. Guards (safe.keyboardTarget) are evaluated before typing, " +
+      "and a perception envelope is attached to post.perception on success."
+    ),
+    fixId: z.string().optional().describe(
+      "Approve a pending suggestedFix (one-shot, 15s TTL). Pass the fixId returned by a previous " +
+      "failed keyboard(action='type') to re-attempt with guard-validated args."
+    ),
+  }),
+  z.object({
+    action: z.literal("press"),
+    keys: z
+      .string()
+      .max(100)
+      .describe("Key combo string, e.g. 'ctrl+c', 'alt+tab', 'enter', 'ctrl+shift+s'. Note: win+r, win+x, win+s, win+l are blocked for security."),
+    method: methodParam,
+    narrate: narrateParam,
+    windowTitle: windowTitleFocusParam,
+    hwnd: hwndFocusParam,
+    forceFocus: forceFocusParam,
+    trackFocus: trackFocusParam,
+    settleMs: settleMsParam,
+    lensId: z.string().optional().describe(
+      "Optional perception lens ID. Guards (safe.keyboardTarget) are evaluated before the key press."
+    ),
+  }),
+]);
+
+export type KeyboardArgs = z.infer<typeof keyboardSchema>;
+
+export const keyboardHandler = async (args: KeyboardArgs): Promise<import("./_types.js").ToolResult> => {
+  if (args.action === "type") {
+    return keyboardTypeHandler(args);
+  }
+  return keyboardPressHandler(args);
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -606,21 +677,23 @@ export const keyboardPressHandler = async ({
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function registerKeyboardTools(server: McpServer): void {
-  server.tool(
-    "keyboard_type",
-    "Type a string into the focused window. Pass windowTitle to auto-focus and auto-guard (verifies identity, foreground, modal) before typing — returns post.perception.status without a screenshot. Omitting windowTitle types into the active window and returns post.perception.status='unguarded'. Pass replaceAll:true to Ctrl+A before typing. Prefer set_element_value for form fields. Examples: keyboard_type({windowTitle:'Notepad', text:'hello'}) // guarded. keyboard_type({text:'hello'}) // unguarded. keyboard_type({fixId:'fix-...'}) // approve suggestedFix to re-target. lensId is optional for advanced pinned-lens use. Caveats: Does not handle IME composition for CJK — use use_clipboard=true or set_element_value instead. Non-ASCII punctuation (em-dash etc.) auto-routes via clipboard (method:'clipboard-auto') to prevent Chrome address-bar hijack; pass forceKeystrokes:true to disable.",
-    keyboardTypeSchema,
-    withRichNarration("keyboard_type", keyboardTypeHandler, { windowTitleKey: "windowTitle" })
-  );
-
-  server.tool(
-    "keyboard_press",
-    "Press a key or key combination (e.g. 'ctrl+c', 'alt+tab', 'f5', 'escape'). Pass windowTitle to auto-focus and auto-guard before pressing — returns post.perception.status. Omitting windowTitle sends to the active window and returns post.perception.status='unguarded'. Examples: keyboard_press({windowTitle:'Notepad', keys:'ctrl+s'}) // guarded. keyboard_press({keys:'escape'}) // unguarded. lensId is optional for advanced pinned-lens use. Caveats: win+r, win+x, win+s, win+l are blocked for security. narrate:'rich' adds UIA state feedback for state-transitioning keys only.",
-    keyboardPressSchema,
-    withRichNarration("keyboard_press", keyboardPressHandler, {
-      windowTitleKey: "windowTitle",
-      keyboardPressGate: true,
-      keysKey: "keys",
-    })
+  server.registerTool(
+    "keyboard",
+    {
+      description: buildDesc({
+        purpose: "Send keyboard input to a window: 'type' for text, 'press' for key combos.",
+        details: "action='type' inserts text (auto-clipboard for non-ASCII / IME-safe). action='press' sends key combos like 'ctrl+c'/'alt+tab'. Pass windowTitle to auto-focus and auto-guard (verifies identity, foreground, modal) before input. Omitting windowTitle acts on the active window (unguarded).",
+        prefer: "Use windowTitle to auto-focus before injection. Set lensId to enable perception guards. Use set_element_value for form fields.",
+        caveats: "win+r/win+x/win+s/win+l blocked for security. action='type' does not handle IME composition for CJK — use use_clipboard=true or set_element_value instead. Non-ASCII punctuation (em-dash etc.) auto-routes via clipboard to prevent Chrome address-bar hijack; pass forceKeystrokes:true to disable. Background mode (DTM_BG_AUTO=1) skips focus change.",
+        examples: [
+          "keyboard({action:'type', text:'hello', windowTitle:'Notepad'}) → text injected (guarded)",
+          "keyboard({action:'type', text:'hello'}) → text injected (unguarded)",
+          "keyboard({action:'press', keys:'ctrl+c'}) → copy",
+          "keyboard({action:'press', keys:'escape', windowTitle:'Dialog'}) → dismiss dialog",
+        ],
+      }),
+      inputSchema: keyboardSchema,
+    },
+    withRichNarration("keyboard", keyboardHandler as (args: Record<string, unknown>) => Promise<import("./_types.js").ToolResult>, { windowTitleKey: "windowTitle" })
   );
 }

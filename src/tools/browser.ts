@@ -1885,7 +1885,7 @@ export function registerBrowserTools(server: McpServer): void {
 
   server.tool(
     "browser_eval",
-    "Evaluate a JavaScript expression in a browser tab and return raw text. Pass withPerception:true to receive structured JSON {ok, result, post} with post.perception attached. lensId is optional for advanced pinned-lens use. Caveats: DOM nodes cannot be returned directly (circular refs are serialized safely). React/Vue/Svelte controlled inputs cannot be set via element.value — use keyboard_type instead. readyState is strictly checked; guard blocks if page is still loading.",
+    "Evaluate a JavaScript expression in a browser tab and return raw text. Pass withPerception:true to receive structured JSON {ok, result, post} with post.perception attached. lensId is optional for advanced pinned-lens use. Caveats: DOM nodes cannot be returned directly (circular refs are serialized safely). React/Vue/Svelte controlled inputs cannot be set via element.value — use keyboard(action='type') instead. readyState is strictly checked; guard blocks if page is still loading.",
     browserEvalSchema,
     withPostState("browser_eval", browserEvalHandler)
   );
@@ -1913,7 +1913,7 @@ export function registerBrowserTools(server: McpServer): void {
 
   server.tool(
     "browser_fill",
-    "Fill a form input with a value via CDP — works on React/Vue/Svelte controlled inputs that reject browser_eval value assignment. Use browser_overview or browser_locate first to obtain a stable selector. Use this over browser_eval when setting a controlled input's value via JS does not update the framework state. Caveats: Requires browser_open (CDP active). Does not work on contenteditable rich-text editors — use keyboard_type for those. actual in response shows what the element's value property reads after fill; verify it matches the intended value.",
+    "Fill a form input with a value via CDP — works on React/Vue/Svelte controlled inputs that reject browser_eval value assignment. Use browser_overview or browser_locate first to obtain a stable selector. Use this over browser_eval when setting a controlled input's value via JS does not update the framework state. Caveats: Requires browser_open (CDP active). Does not work on contenteditable rich-text editors — use keyboard(action='type') for those. actual in response shows what the element's value property reads after fill; verify it matches the intended value.",
     browserFillInputSchema,
     browserFillInputHandler
   );
