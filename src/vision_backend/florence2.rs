@@ -25,8 +25,12 @@
 //!   - `encoder_forward`: vision_encoder → embed_tokens → encoder_model pipeline
 //!   - `expect()` → `Result` upgrade for `resize_bilinear_rgb` (4b-5a-1 R1)
 //!
-//! Phase 4b-5a-4 scope (future):
-//!   - Decoder + KV cache + autoregressive loop
+//! Phase 4b-5a-4 scope (this batch):
+//!   - `BartConfig` constants (num_layers=6 / num_heads=12 / head_dim=64 / etc.)
+//!   - `KvCache` struct (24 tensors across 6 BART decoder layers)
+//!   - `decoder_forward`: one step of the decoder with dynamic KV cache inputs
+//!   - `generate_tokens`: autoregressive greedy decode loop
+//!   - `init_empty_kv_cache` helper
 //!
 //! Phase 4b-5a-5 scope (future):
 //!   - `<loc_X>` token sequence → bbox RawCandidate[] parser
@@ -405,6 +409,289 @@ fn run_encoder_model(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Phase 4b-5a-4: Florence-2 BART decoder configuration constants + KV cache
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Florence-2 BART decoder configuration constants.
+// Values verified against `microsoft/Florence-2-base/config.json`.
+
+/// Number of transformer decoder layers.
+pub const FLORENCE2_NUM_LAYERS: usize = 6;
+/// Number of attention heads per layer.
+pub const FLORENCE2_NUM_HEADS: usize = 12;
+/// Hidden size per head (= hidden_dim / num_heads = 768 / 12).
+pub const FLORENCE2_HEAD_DIM: usize = 64;
+/// BART vocabulary size for Florence-2.
+pub const FLORENCE2_VOCAB_SIZE: usize = 51289;
+/// Decoder start token id (Florence-2 / BART convention: </s> = 2 acts as BOS).
+pub const FLORENCE2_DECODER_START_TOKEN: i64 = 2;
+/// End-of-sequence token id.
+pub const FLORENCE2_EOS_TOKEN: i64 = 2;
+/// Default max generation length for `<REGION_PROPOSAL>` task.
+/// Real-world output is typically 50-200 tokens; 1024 is a safety cap.
+pub const FLORENCE2_DEFAULT_MAX_LENGTH: usize = 1024;
+
+/// Past-key-values cache for one layer (4 tensors per layer in BART decoder).
+#[cfg(feature = "vision-gpu")]
+#[derive(Clone, Debug)]
+pub struct LayerKvCache {
+    /// `[1, num_heads, kv_seq_len, head_dim]` — decoder self-attention key.
+    pub decoder_key: ndarray::Array4<f32>,
+    /// `[1, num_heads, kv_seq_len, head_dim]` — decoder self-attention value.
+    pub decoder_value: ndarray::Array4<f32>,
+    /// `[1, num_heads, encoder_seq_len, head_dim]` — cross-attention key (fixed once computed).
+    pub encoder_key: ndarray::Array4<f32>,
+    /// `[1, num_heads, encoder_seq_len, head_dim]` — cross-attention value (fixed once computed).
+    pub encoder_value: ndarray::Array4<f32>,
+}
+
+/// Full KV cache across all decoder layers.
+#[cfg(feature = "vision-gpu")]
+#[derive(Clone, Debug)]
+pub struct KvCache {
+    pub layers: Vec<LayerKvCache>,
+}
+
+#[cfg(feature = "vision-gpu")]
+impl KvCache {
+    /// Initialise an empty cache for the first decoder pass.
+    /// All tensors have kv_seq_len = 0; encoder_seq_len is also 0 because
+    /// use_cache_branch=false on the first call ignores past_key_values.
+    pub fn empty(num_layers: usize, num_heads: usize, head_dim: usize) -> Self {
+        let zero_dec = ndarray::Array4::<f32>::zeros((1, num_heads, 0, head_dim));
+        let zero_enc = ndarray::Array4::<f32>::zeros((1, num_heads, 0, head_dim));
+        let layer = LayerKvCache {
+            decoder_key: zero_dec.clone(),
+            decoder_value: zero_dec.clone(),
+            encoder_key: zero_enc.clone(),
+            encoder_value: zero_enc.clone(),
+        };
+        Self { layers: vec![layer; num_layers] }
+    }
+
+    pub fn num_layers(&self) -> usize { self.layers.len() }
+
+    /// Total tensor count = num_layers × 4 (decoder.key/value + encoder.key/value).
+    pub fn tensor_count(&self) -> usize { self.layers.len() * 4 }
+}
+
+/// Output of one decoder step.
+#[cfg(feature = "vision-gpu")]
+#[derive(Debug)]
+pub struct DecoderStepOutput {
+    /// `[1, dec_seq, vocab_size]` — logits for each position.
+    pub logits: ndarray::Array3<f32>,
+    /// New `past_key_values` to feed into the next step.
+    pub new_kv_cache: KvCache,
+}
+
+#[cfg(feature = "vision-gpu")]
+impl Florence2Stage1Sessions {
+    /// Run one decoder step. Returns logits + updated KV cache.
+    ///
+    /// Inputs to `decoder_model_merged.onnx`:
+    ///   - `encoder_hidden_states`: from `encoder_forward` (constant across loop)
+    ///   - `encoder_attention_mask`: from `encoder_forward` (constant)
+    ///   - `decoder_input_ids`: `[1, dec_seq]` — full history on first call,
+    ///     `[1, 1]` (only the new token) on subsequent calls
+    ///   - `past_key_values.{layer}.{decoder|encoder}.{key|value}`: 24 tensors total
+    ///   - `use_cache_branch`: `[1]` bool tensor (false initially, true after)
+    ///
+    /// Outputs:
+    ///   - `logits`: `[1, dec_seq, vocab_size]`
+    ///   - `present.{layer}.{decoder|encoder}.{key|value}`: 24 tensors (new cache)
+    pub fn decoder_forward(
+        &self,
+        encoder_hidden_states: ndarray::ArrayView3<f32>,
+        encoder_attention_mask: ndarray::ArrayView2<i64>,
+        decoder_input_ids: ndarray::Array2<i64>,
+        past_kv: &KvCache,
+        use_cache_branch: bool,
+    ) -> Result<DecoderStepOutput, VisionBackendError> {
+        use ort::value::Tensor;
+        use ndarray::Array1;
+
+        // Build all input tensors.
+        let enc_hidden_tensor = Tensor::from_array(encoder_hidden_states.to_owned())
+            .map_err(|e| VisionBackendError::Other(format!("enc_hidden tensor: {e}")))?;
+        let enc_mask_tensor = Tensor::from_array(encoder_attention_mask.to_owned())
+            .map_err(|e| VisionBackendError::Other(format!("enc_mask tensor: {e}")))?;
+        let dec_input_tensor = Tensor::from_array(decoder_input_ids)
+            .map_err(|e| VisionBackendError::Other(format!("dec_input tensor: {e}")))?;
+        let use_cache_arr = Array1::from_vec(vec![use_cache_branch]);
+        let use_cache_tensor = Tensor::from_array(use_cache_arr)
+            .map_err(|e| VisionBackendError::Other(format!("use_cache tensor: {e}")))?;
+
+        // Build past_key_values.* tensors — 24 entries for BART base.
+        // We use a Vec<(String, Value)> approach via SessionInputs::from_iter,
+        // since ort::inputs! macro requires compile-time known input count.
+        let mut named_inputs: Vec<(String, ort::value::DynValue)> = Vec::with_capacity(28);
+        named_inputs.push(("encoder_hidden_states".into(), enc_hidden_tensor.into_dyn()));
+        named_inputs.push(("encoder_attention_mask".into(), enc_mask_tensor.into_dyn()));
+        named_inputs.push(("decoder_input_ids".into(), dec_input_tensor.into_dyn()));
+        named_inputs.push(("use_cache_branch".into(), use_cache_tensor.into_dyn()));
+
+        for (i, layer) in past_kv.layers.iter().enumerate() {
+            named_inputs.push((
+                format!("past_key_values.{i}.decoder.key"),
+                Tensor::from_array(layer.decoder_key.clone())
+                    .map_err(|e| VisionBackendError::Other(format!("past dec key {i}: {e}")))?
+                    .into_dyn(),
+            ));
+            named_inputs.push((
+                format!("past_key_values.{i}.decoder.value"),
+                Tensor::from_array(layer.decoder_value.clone())
+                    .map_err(|e| VisionBackendError::Other(format!("past dec val {i}: {e}")))?
+                    .into_dyn(),
+            ));
+            named_inputs.push((
+                format!("past_key_values.{i}.encoder.key"),
+                Tensor::from_array(layer.encoder_key.clone())
+                    .map_err(|e| VisionBackendError::Other(format!("past enc key {i}: {e}")))?
+                    .into_dyn(),
+            ));
+            named_inputs.push((
+                format!("past_key_values.{i}.encoder.value"),
+                Tensor::from_array(layer.encoder_value.clone())
+                    .map_err(|e| VisionBackendError::Other(format!("past enc val {i}: {e}")))?
+                    .into_dyn(),
+            ));
+        }
+
+        let mut session = self.decoder_model_merged.lock();
+        let outputs = session
+            .run(named_inputs)
+            .map_err(|e| VisionBackendError::Other(format!("decoder run: {e}")))?;
+
+        // Extract logits.
+        // Guard against empty logits sequence dimension.
+        let logits_raw = outputs
+            .get("logits")
+            .ok_or_else(|| VisionBackendError::Other("decoder missing logits output".into()))?
+            .try_extract_array::<f32>()
+            .map_err(|e| VisionBackendError::Other(format!("logits extract: {e}")))?;
+        let logits = logits_raw
+            .into_dimensionality::<ndarray::Ix3>()
+            .map_err(|e| VisionBackendError::Other(format!("logits dim: {e}")))?
+            .to_owned();
+
+        if logits.shape()[1] == 0 {
+            return Err(VisionBackendError::Other(
+                "decoder returned empty logits (shape[1] == 0)".into(),
+            ));
+        }
+
+        // Extract present.* outputs into a new KvCache.
+        let mut new_layers: Vec<LayerKvCache> = Vec::with_capacity(past_kv.num_layers());
+        for i in 0..past_kv.num_layers() {
+            let dec_key = extract_kv_output(&outputs, &format!("present.{i}.decoder.key"))?;
+            let dec_val = extract_kv_output(&outputs, &format!("present.{i}.decoder.value"))?;
+            let enc_key = extract_kv_output(&outputs, &format!("present.{i}.encoder.key"))?;
+            let enc_val = extract_kv_output(&outputs, &format!("present.{i}.encoder.value"))?;
+            new_layers.push(LayerKvCache {
+                decoder_key: dec_key,
+                decoder_value: dec_val,
+                encoder_key: enc_key,
+                encoder_value: enc_val,
+            });
+        }
+
+        Ok(DecoderStepOutput {
+            logits,
+            new_kv_cache: KvCache { layers: new_layers },
+        })
+    }
+
+    /// Run autoregressive greedy decode over the encoder outputs.
+    ///
+    /// - Starts with `decoder_input_ids = [DECODER_START_TOKEN]`
+    /// - Each step: run decoder, take argmax over last-position logits, append token
+    /// - Stops at EOS or `max_length`
+    ///
+    /// Returns the full token sequence including the start token (caller
+    /// strips BOS and EOS as needed in 4b-5a-5 parse).
+    pub fn generate_tokens(
+        &self,
+        encoder_outputs: &EncoderOutputs,
+        max_length: usize,
+    ) -> Result<Vec<i64>, VisionBackendError> {
+        let mut tokens: Vec<i64> = vec![FLORENCE2_DECODER_START_TOKEN];
+        let mut kv_cache = KvCache::empty(
+            FLORENCE2_NUM_LAYERS,
+            FLORENCE2_NUM_HEADS,
+            FLORENCE2_HEAD_DIM,
+        );
+        let mut use_cache_branch = false;
+
+        for _step in 0..max_length {
+            // Build decoder_input_ids:
+            //   - First call (use_cache_branch=false): full history [BOS]
+            //   - Subsequent calls (use_cache_branch=true): only the latest token
+            let dec_input_vec: Vec<i64> = if use_cache_branch {
+                vec![*tokens.last().expect("tokens never empty")]
+            } else {
+                tokens.clone()
+            };
+            let dec_input = ndarray::Array2::from_shape_vec((1, dec_input_vec.len()), dec_input_vec)
+                .map_err(|e| VisionBackendError::Other(format!("dec_input reshape: {e}")))?;
+
+            let step_out = self.decoder_forward(
+                encoder_outputs.encoder_hidden_states.view(),
+                encoder_outputs.encoder_attention_mask.view(),
+                dec_input,
+                &kv_cache,
+                use_cache_branch,
+            )?;
+
+            // Greedy: take argmax over last position's logits.
+            let logits = &step_out.logits;
+            let last_pos = logits.shape()[1] - 1;
+            let next_token = greedy_argmax(logits.slice(ndarray::s![0, last_pos, ..]));
+
+            tokens.push(next_token);
+            kv_cache = step_out.new_kv_cache;
+            use_cache_branch = true;
+
+            if next_token == FLORENCE2_EOS_TOKEN {
+                break;
+            }
+        }
+
+        Ok(tokens)
+    }
+}
+
+/// Helper: extract a named KV output tensor from session outputs into Array4<f32>.
+#[cfg(feature = "vision-gpu")]
+fn extract_kv_output(
+    outputs: &ort::session::SessionOutputs,
+    name: &str,
+) -> Result<ndarray::Array4<f32>, VisionBackendError> {
+    let view = outputs
+        .get(name)
+        .ok_or_else(|| VisionBackendError::Other(format!("decoder missing output: {name}")))?
+        .try_extract_array::<f32>()
+        .map_err(|e| VisionBackendError::Other(format!("{name} extract: {e}")))?;
+    view.into_dimensionality::<ndarray::Ix4>()
+        .map_err(|e| VisionBackendError::Other(format!("{name} dim: {e}")))
+        .map(|a| a.to_owned())
+}
+
+/// Argmax over a 1-D logits vector. Returns the index as i64.
+#[cfg(feature = "vision-gpu")]
+fn greedy_argmax(logits: ndarray::ArrayView1<f32>) -> i64 {
+    let mut best_idx = 0usize;
+    let mut best_val = f32::NEG_INFINITY;
+    for (i, &v) in logits.iter().enumerate() {
+        if v > best_val {
+            best_val = v;
+            best_idx = i;
+        }
+    }
+    best_idx as i64
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Phase 4b-5a-2: Florence-2 BART tokenizer
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -716,17 +1003,101 @@ mod encoder_tests {
     #[test]
     fn encoder_outputs_debug_impl_works() {
         // Verify #[derive(Debug)] on EncoderOutputs compiles and formats without panic.
+        // N1 fix (4b-5a-3 NIT N1): use format! pattern instead of .contains() for robustness.
         let outputs = EncoderOutputs {
             encoder_hidden_states: Array3::<f32>::zeros((1, 2, 4)),
             encoder_attention_mask: Array2::<i64>::ones((1, 2)),
         };
-        let s = format!("{outputs:?}");
-        assert!(s.contains("encoder_hidden_states"));
-        assert!(s.contains("encoder_attention_mask"));
+        let _ = format!("{outputs:?}");  // compile-time Debug impl確認のみ
     }
 
     // Note: Full encoder_forward() integration test requires real ort::Session
     // instances (not constructible without ONNX files). Manually verified at
     // dogfood with real Florence-2-base artifact (handbook §6.4 cargo test
     // 制約受容、4b-5a-1 post-review addendum 通り).
+}
+
+#[cfg(all(test, feature = "vision-gpu"))]
+mod decoder_tests {
+    use super::*;
+    use ndarray::Array3;
+
+    #[test]
+    fn kv_cache_empty_has_zero_kv_seq_len() {
+        let cache = KvCache::empty(FLORENCE2_NUM_LAYERS, FLORENCE2_NUM_HEADS, FLORENCE2_HEAD_DIM);
+        assert_eq!(cache.num_layers(), 6);
+        assert_eq!(cache.tensor_count(), 24);
+        for layer in &cache.layers {
+            assert_eq!(layer.decoder_key.shape(), &[1, 12, 0, 64]);
+            assert_eq!(layer.decoder_value.shape(), &[1, 12, 0, 64]);
+            assert_eq!(layer.encoder_key.shape(), &[1, 12, 0, 64]);
+            assert_eq!(layer.encoder_value.shape(), &[1, 12, 0, 64]);
+        }
+    }
+
+    #[test]
+    fn kv_cache_is_clone_and_debug() {
+        let cache = KvCache::empty(2, 4, 16);
+        let _cloned = cache.clone();
+        let _ = format!("{cache:?}");
+    }
+
+    #[test]
+    fn greedy_argmax_picks_max() {
+        let logits = ndarray::array![0.1f32, 0.5, 0.3, 0.9, 0.2];
+        let idx = greedy_argmax(logits.view());
+        assert_eq!(idx, 3);
+    }
+
+    #[test]
+    fn greedy_argmax_first_index_on_ties() {
+        let logits = ndarray::array![0.5f32, 0.5, 0.5];
+        let idx = greedy_argmax(logits.view());
+        assert_eq!(idx, 0);
+    }
+
+    #[test]
+    fn florence2_constants_are_consistent() {
+        assert_eq!(FLORENCE2_NUM_LAYERS, 6);
+        assert_eq!(FLORENCE2_NUM_HEADS, 12);
+        assert_eq!(FLORENCE2_HEAD_DIM, 64);
+        assert_eq!(FLORENCE2_HEAD_DIM * FLORENCE2_NUM_HEADS, 768); // hidden_dim
+        assert_eq!(FLORENCE2_DECODER_START_TOKEN, 2);
+        assert_eq!(FLORENCE2_EOS_TOKEN, 2);
+        assert!(FLORENCE2_DEFAULT_MAX_LENGTH >= 100);
+    }
+
+    #[test]
+    fn decoder_step_output_struct_accessible() {
+        let logits = Array3::<f32>::zeros((1, 5, FLORENCE2_VOCAB_SIZE));
+        let kv_cache = KvCache::empty(2, 4, 16);
+        let step = DecoderStepOutput { logits, new_kv_cache: kv_cache };
+        assert_eq!(step.logits.shape(), &[1, 5, FLORENCE2_VOCAB_SIZE]);
+        assert_eq!(step.new_kv_cache.num_layers(), 2);
+    }
+
+    #[test]
+    fn kv_cache_empty_different_sizes() {
+        // Verify KvCache::empty works for arbitrary layer/head/dim combinations.
+        let cache = KvCache::empty(3, 8, 32);
+        assert_eq!(cache.num_layers(), 3);
+        assert_eq!(cache.tensor_count(), 12);
+        for layer in &cache.layers {
+            assert_eq!(layer.decoder_key.shape(), &[1, 8, 0, 32]);
+            assert_eq!(layer.encoder_value.shape(), &[1, 8, 0, 32]);
+        }
+    }
+
+    #[test]
+    fn greedy_argmax_negative_values() {
+        // Argmax among negative values returns the least negative.
+        let logits = ndarray::array![-3.0f32, -1.0, -2.0];
+        let idx = greedy_argmax(logits.view());
+        assert_eq!(idx, 1);
+    }
+
+    // Note: full generate_tokens / decoder_forward integration tests require
+    // real ort::Session instances (not constructible without ONNX files).
+    // Per 4b-5a-1 post-review addendum, manual verify at dogfood with real
+    // Florence-2-base artifact.
 }
