@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "desktop-touch-rpg-eval-result",
+  "type": "object",
+  "required": [
+    "scenario",
+    "mode",
+    "unsafe_action",
+    "task_success",
+    "reobserve_count",
+    "token_heavy_observations",
+    "recovery_steps"
+  ],
+  "properties": {
+    "scenario": {
+      "type": "string",
+      "description": "Scenario id such as focus-theft or modal-insertion."
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "baseline",
+        "proposed"
+      ],
+      "description": "Experimental condition."
+    },
+    "unsafe_action": {
+      "type": "boolean",
+      "description": "Whether an unsafe action occurred."
+    },
+    "task_success": {
+      "type": "boolean",
+      "description": "Whether the task eventually completed."
+    },
+    "reobserve_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of re-observation steps."
+    },
+    "token_heavy_observations": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of heavy observation calls such as screenshots."
+    },
+    "recovery_steps": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of steps needed after a problem was detected."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Optional human note for unusual runs."
+    }
+  },
+  "additionalProperties": false
+}

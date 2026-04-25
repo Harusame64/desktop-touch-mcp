@@ -1,0 +1,21 @@
+flowchart TB
+    L["Lens\nWhat am I watching?"]
+    P["Provisional state\nWhat do I currently believe?"]
+    G["Guard\nIs this action still safe?"]
+    T["Lease\nCan I still trust this target?"]
+    X["Action"]
+
+    L --> P
+    P --> G
+    P --> T
+    T --> G
+    G --> X
+
+    W["World changes"] -. "marks dirty" .-> P
+    W -. "can revoke trust" .-> T
+
+    classDef core fill:#eef4ff,stroke:#3b6db3,color:#183257;
+    classDef edge fill:#fff6df,stroke:#b8860b,color:#5a4300;
+    class L,P,G,T core;
+    class X edge;
+

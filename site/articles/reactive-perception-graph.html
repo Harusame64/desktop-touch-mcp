@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Reactive Perception Graph</title>
+    <meta name="description" content="Why screenshots are not enough, and how Reactive Perception Graph treats external state as provisional." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@500;700;800&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="../assets/styles.css" />
+    <script defer src="../assets/site.js"></script>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({ startOnLoad: true, theme: "base", securityLevel: "loose", themeVariables: { primaryColor: "#e8f1ff", primaryTextColor: "#1d2433", primaryBorderColor: "#3141b7", lineColor: "#58657d", secondaryColor: "#f8dfd4", tertiaryColor: "#d7f2ed", fontFamily: "Manrope" } });
+    </script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="site-shell">
+        <a class="brand" href="../index.html">
+          <span class="brand-kicker">Explainer Article</span>
+          <span class="brand-title">Reactive Perception Graph</span>
+        </a>
+        <nav class="nav-links" aria-label="Main">
+          <a href="../index.html">Home</a>
+          <a href="./client-setup.html">Setup</a>
+          <a href="./beyond-coordinate-roulette.html">Beyond Coordinate Roulette</a>
+          <a href="./planned-evaluation.html">Evaluation</a>
+          <a href="https://github.com/Harusame64/desktop-touch-mcp">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="page">
+      <div class="site-shell">
+        <section class="hero-card">
+          <div class="article-hero">
+            <a class="breadcrumb" href="../index.html">← Back to project top</a>
+            <span class="eyebrow">Why screenshots are not enough</span>
+            <h1>Reactive Perception Graph</h1>
+            <p class="lead">By the time an LLM acts, the world may already be different. Reactive Perception Graph is one way to deal with that.</p>
+          </div>
+          <div class="hero-visual" style="padding-top: 0;">
+            <div class="mermaid-wrap" style="width: 100%;">
+              <pre class="mermaid">flowchart LR
+    subgraph A["Snapshot-and-Act"]
+        A1["Observe screen"]
+        A2["Think"]
+        A3["Act on old assumption"]
+        A1 --&gt; A2 --&gt; A3
+        AX["World changed"] -.-> A3
+    end
+
+    subgraph B["Reactive Perception Graph"]
+        B1["Observe target"]
+        B2["Store provisional state"]
+        B3["Dirty / stale signals"]
+        B4["Validate lease"]
+        B5["Run guards"]
+        B6["Execute or block"]
+        B1 --&gt; B2 --&gt; B3 --&gt; B4 --&gt; B5 --&gt; B6
+    end
+
+    A3 --&gt; C["Unsafe action"]
+    B6 --&gt; D["Safer action contract"]
+
+    classDef bad fill:#fde2e2,stroke:#c0392b,color:#5c1f1f;
+    classDef good fill:#e5f6ea,stroke:#2e8b57,color:#123d28;
+    class C bad;
+    class D good;</pre>
+            </div>
+          </div>
+        </section>
+
+        <div class="article-layout">
+          <div class="article-main">
+            <section class="article-card">
+              <span class="label">The problem</span>
+              <h2>Seeing and touching are separated by time.</h2>
+              <p>Many LLM agents implicitly follow a loop like this: observe the interface, think, then act. That sounds harmless. In a dynamic interface, it is fragile.</p>
+              <div class="two-up">
+                <div class="mini-card">
+                  <h3>What can change?</h3>
+                  <ul>
+                    <li>the user focuses another window</li>
+                    <li>a modal appears</li>
+                    <li>the UI re-renders</li>
+                    <li>the target moves or disappears</li>
+                  </ul>
+                </div>
+                <div class="mini-card">
+                  <h3>What breaks?</h3>
+                  <p>The model still acts on the assumptions formed at observation time, even though those assumptions are no longer valid at action time.</p>
+                </div>
+              </div>
+            </section>
+
+            <section class="article-card">
+              <span class="label warm">Tiny accident story</span>
+              <h2>Correct intent, wrong target.</h2>
+              <p>Suppose an LLM wants to type <code>hello</code> into Notepad. It observes Notepad, decides where to type, another window comes to the front, and it sends <code>hello</code> anyway.</p>
+              <blockquote>The agent may execute the intended action correctly, but on the wrong target.</blockquote>
+              <p>That is not mainly an intelligence failure. It is a stale-assumption failure.</p>
+            </section>
+
+            <section class="article-card">
+              <span class="label">Core claim</span>
+              <h2>External state should be treated as provisional.</h2>
+              <p>Reactive Perception Graph is a layer that treats external state as provisional and re-checks the assumptions behind action before the action fires.</p>
+              <div class="callout">
+                <h3>Important clarification</h3>
+                <p>RPG is not a screenshot cache. It is a different contract between the agent and the world.</p>
+              </div>
+            </section>
+
+            <section class="article-card">
+              <span class="label">Four ideas</span>
+              <h2>The parts that make the contract work.</h2>
+              <div class="mermaid-wrap">
+                <pre class="mermaid">flowchart TB
+    L["Lens\nWhat am I watching?"]
+    P["Provisional state\nWhat do I currently believe?"]
+    G["Guard\nIs this action still safe?"]
+    T["Lease\nCan I still trust this target?"]
+    X["Action"]
+
+    L --&gt; P
+    P --&gt; G
+    P --&gt; T
+    T --&gt; G
+    G --&gt; X
+
+    W["World changes"] -. "marks dirty" .-&gt; P
+    W -. "can revoke trust" .-&gt; T
+
+    classDef core fill:#eef4ff,stroke:#3b6db3,color:#183257;
+    classDef edge fill:#fff6df,stroke:#b8860b,color:#5a4300;
+    class L,P,G,T core;
+    class X edge;</pre>
+              </div>
+              <div class="feature-grid" style="margin-top: 18px;">
+                <div class="mini-card"><h3>Provisional state</h3><p>Keep not only what the agent believes, but how trustworthy that belief still is.</p></div>
+                <div class="mini-card"><h3>Lens</h3><p>A watchpoint on something the agent currently cares about.</p></div>
+                <div class="mini-card"><h3>Guard</h3><p>A safety check before action when the environment may have drifted.</p></div>
+                <div class="mini-card"><h3>Lease</h3><p>A temporary trust contract for an external target.</p></div>
+              </div>
+            </section>
+
+            <section class="article-card">
+              <span class="label warm">Before action</span>
+              <h2>Execute should be the final step, not the default step.</h2>
+              <div class="mermaid-wrap">
+                <pre class="mermaid">flowchart TD
+    S["See target"] --&gt; P["Issue lease"]
+    P --&gt; Q["Keep state as provisional"]
+    Q --&gt; R{"World changed?"}
+    R -- "No" --&gt; U["Action proposed"]
+    R -- "Yes" --&gt; T["Mark dirty / stale"]
+    T --&gt; U
+    U --&gt; V{"Lease valid?"}
+    V -- "No" --&gt; W["Refresh view"]
+    V -- "Yes" --&gt; X{"Guards pass?"}
+    X -- "No" --&gt; Y["Block or recover"]
+    X -- "Yes" --&gt; Z["Execute action"]
+
+    classDef safe fill:#e7f8ec,stroke:#2e8b57,color:#173d29;
+    classDef risk fill:#fff4d6,stroke:#b8860b,color:#5a4300;
+    classDef stop fill:#fde8e8,stroke:#c0392b,color:#5c1f1f;
+    class Z safe;
+    class T,W risk;
+    class Y stop;</pre>
+              </div>
+              <pre>const lease = issueLease(target);
+const state = rememberAsProvisional(target);
+
+if (!validateLease(lease, state)) {
+  return refresh();
+}
+
+if (!guardsPass(state)) {
+  return block();
+}
+
+return execute();</pre>
+            </section>
+
+            <section class="article-card">
+              <span class="label">Beyond the desktop</span>
+              <h2>This is a broader contract problem.</h2>
+              <div class="three-up">
+                <div class="mini-card"><h3>Browser agents</h3><p>A DOM observed earlier may no longer match the live page.</p></div>
+                <div class="mini-card"><h3>Workflow or API agents</h3><p>A previously fetched resource handle may no longer be valid.</p></div>
+                <div class="mini-card"><h3>Embodied agents</h3><p>An object seen a moment ago may no longer be where the agent assumes it is.</p></div>
+              </div>
+            </section>
+
+            <section class="article-card">
+              <span class="label warm">Validation</span>
+              <h2>The next thing that matters is evidence.</h2>
+              <p>To validate this direction, the project still needs to measure:</p>
+              <ul>
+                <li>unsafe action rate</li>
+                <li>re-observation count</li>
+                <li>token-heavy observation count</li>
+                <li>task success rate</li>
+                <li>recovery steps</li>
+              </ul>
+              <div class="hero-actions">
+                <a class="button primary" href="./planned-evaluation.html">See planned evaluation</a>
+                <a class="button secondary" href="./beyond-coordinate-roulette.html">Read Beyond Coordinate Roulette</a>
+              </div>
+            </section>
+          </div>
+
+          <aside class="article-aside">
+            <div class="aside-card">
+              <h3>Keep this line</h3>
+              <blockquote style="margin-top: 0;">Screenshots are not truth. External state should be treated as provisional.</blockquote>
+              <h3 style="margin-top: 18px;">Related pages</h3>
+              <ul>
+                <li><a href="../index.html">Project top</a></li>
+                <li><a href="./client-setup.html">Client setup</a></li>
+                <li><a href="./beyond-coordinate-roulette.html">Beyond Coordinate Roulette</a></li>
+                <li><a href="./planned-evaluation.html">Planned evaluation</a></li>
+                <li><a href="https://github.com/Harusame64/desktop-touch-mcp">GitHub repository</a></li>
+              </ul>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <div class="site-shell">
+        <span>Reactive Perception Graph article draft</span>
+        <span>&copy; <span data-year></span> experimental interface work</span>
+      </div>
+    </footer>
+  </body>
+</html>

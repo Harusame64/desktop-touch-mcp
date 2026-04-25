@@ -1,0 +1,20 @@
+flowchart TD
+    S["See target"] --> P["Issue lease"]
+    P --> Q["Keep state as provisional"]
+    Q --> R{"World changed?"}
+    R -- "No" --> U["Action proposed"]
+    R -- "Yes" --> T["Mark dirty / stale"]
+    T --> U
+    U --> V{"Lease valid?"}
+    V -- "No" --> W["Refresh view"]
+    V -- "Yes" --> X{"Guards pass?"}
+    X -- "No" --> Y["Block or recover"]
+    X -- "Yes" --> Z["Execute action"]
+
+    classDef safe fill:#e7f8ec,stroke:#2e8b57,color:#173d29;
+    classDef risk fill:#fff4d6,stroke:#b8860b,color:#5a4300;
+    classDef stop fill:#fde8e8,stroke:#c0392b,color:#5c1f1f;
+    class Z safe;
+    class T,W risk;
+    class Y stop;
+

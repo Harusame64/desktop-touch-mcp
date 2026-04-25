@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Planned Evaluation</title>
+    <meta name="description" content="Planned scenarios, metrics, and reporting format for evaluating RPG, leases, and guarded execution." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@500;700;800&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="../assets/styles.css" />
+    <script defer src="../assets/site.js"></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="site-shell">
+        <a class="brand" href="../index.html">
+          <span class="brand-kicker">Evaluation plan</span>
+          <span class="brand-title">Planned Evaluation</span>
+        </a>
+        <nav class="nav-links" aria-label="Main">
+          <a href="../index.html">Home</a>
+          <a href="./client-setup.html">Setup</a>
+          <a href="./reactive-perception-graph.html">RPG</a>
+          <a href="./beyond-coordinate-roulette.html">Beyond Coordinate Roulette</a>
+          <a href="https://github.com/Harusame64/desktop-touch-mcp">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="page">
+      <div class="site-shell">
+        <section class="hero-card">
+          <div class="article-hero">
+            <a class="breadcrumb" href="../index.html">← Back to project top</a>
+            <span class="eyebrow">What should count as evidence?</span>
+            <h1>Planned Evaluation</h1>
+            <p class="lead">Ideas like RPG, lease validation, and guarded execution feel intuitively right. The point of this page is to turn that intuition into concrete measurements.</p>
+          </div>
+        </section>
+
+        <div class="article-layout">
+          <div class="article-main">
+            <section class="article-card">
+              <span class="label">Why evaluate at all?</span>
+              <h2>Because “this seems right” is not enough.</h2>
+              <p>We need to know whether these ideas actually help in practice:</p>
+              <ol>
+                <li>Do they reduce unsafe actions?</li>
+                <li>Do they reduce unnecessary re-observation?</li>
+                <li>Do they reduce expensive retries and recovery loops?</li>
+              </ol>
+            </section>
+
+            <section class="article-card">
+              <span class="label warm">Evaluation questions</span>
+              <h2>Three first questions.</h2>
+              <div class="three-up">
+                <div class="mini-card"><h3>Q1. Safety</h3><p>Can <code>RPG + lease + guard</code> reduce unsafe actions compared with snapshot-and-act?</p></div>
+                <div class="mini-card"><h3>Q2. Observation efficiency</h3><p>Can it reduce repeated screenshots and other high-cost observation steps?</p></div>
+                <div class="mini-card"><h3>Q3. Recovery quality</h3><p>When the world changes, can it fail safely instead of failing silently?</p></div>
+              </div>
+            </section>
+
+            <section class="article-card">
+              <span class="label">Scenarios</span>
+              <h2>The first planned perturbations.</h2>
+              <div class="three-up">
+                <div class="mini-card"><h3>focus-theft</h3><p>The active target changes while the agent is still relying on the old one.</p></div>
+                <div class="mini-card"><h3>modal-insertion</h3><p>A new dialog blocks the expected action path.</p></div>
+                <div class="mini-card"><h3>window-drift</h3><p>The window or target moves after observation.</p></div>
+                <div class="mini-card"><h3>entity-replacement</h3><p>The target is re-rendered or replaced under the same rough visual identity.</p></div>
+                <div class="mini-card"><h3>delayed-action</h3><p>The action happens late enough that earlier assumptions are no longer safe.</p></div>
+              </div>
+            </section>
+
+            <section class="article-card">
+              <span class="label warm">Metrics</span>
+              <h2>The first metric set is intentionally small.</h2>
+              <table class="metric-table">
+                <thead><tr><th>Metric</th><th>Meaning</th></tr></thead>
+                <tbody>
+                  <tr><td><code>unsafe_action_rate</code></td><td>How often an action lands on the wrong target</td></tr>
+                  <tr><td><code>reobserve_count</code></td><td>How often the agent has to observe again</td></tr>
+                  <tr><td><code>token_heavy_observations</code></td><td>How often expensive observation is used</td></tr>
+                  <tr><td><code>task_success_rate</code></td><td>How often the task eventually completes</td></tr>
+                  <tr><td><code>recovery_steps</code></td><td>How many steps are needed after a problem is detected</td></tr>
+                </tbody>
+              </table>
+            </section>
+
+            <section class="article-card">
+              <span class="label">Baseline vs proposed</span>
+              <h2>What is being compared?</h2>
+              <div class="two-up">
+                <div class="mini-card"><h3>Baseline</h3><ul><li>observe</li><li>think</li><li>act</li><li>optionally confirm</li></ul><p>This is the simple loop that implicitly trusts the old snapshot.</p></div>
+                <div class="mini-card"><h3>Proposed</h3><ul><li>provisional state</li><li>dirty / stale tracking</li><li>lease validation</li><li>guarded execution</li><li>demand-driven refresh</li></ul><p>This is the uncertainty-aware loop.</p></div>
+              </div>
+            </section>
+
+            <section class="article-card">
+              <span class="label warm">Reporting format</span>
+              <h2>Machine-readable first, human-readable second.</h2>
+              <p>The plan is to store evaluation results in a machine-readable format first:</p>
+              <ul>
+                <li>raw JSON</li>
+                <li>summary CSV</li>
+                <li>short Markdown report</li>
+              </ul>
+              <p>The public page should show only compact tables and short explanations, while the raw artifacts remain available for inspection.</p>
+            </section>
+          </div>
+
+          <aside class="article-aside">
+            <div class="aside-card">
+              <h3>Current status</h3>
+              <ul>
+                <li>scenario definitions: in progress</li>
+                <li>experiment command design: sketched</li>
+                <li>automatic aggregation: not implemented yet</li>
+                <li>public result schema: added</li>
+              </ul>
+              <h3 style="margin-top: 18px;">Related pages</h3>
+              <ul>
+                <li><a href="../index.html">Project top</a></li>
+                <li><a href="./client-setup.html">Client setup</a></li>
+                <li><a href="./reactive-perception-graph.html">Reactive Perception Graph</a></li>
+                <li><a href="./beyond-coordinate-roulette.html">Beyond Coordinate Roulette</a></li>
+              </ul>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <div class="site-shell">
+        <span>Planned evaluation page draft</span>
+        <span>&copy; <span data-year></span> experimental interface work</span>
+      </div>
+    </footer>
+  </body>
+</html>
