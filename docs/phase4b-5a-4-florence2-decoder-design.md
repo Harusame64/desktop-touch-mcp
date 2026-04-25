@@ -1,6 +1,13 @@
 # Phase 4b-5a-4 設計書 — Florence-2 Stage 1 decoder + KV cache + autoregressive loop
 
-- Status: Implemented (2026-04-25) — commits `38b94f5`〜`f0c8fb1` (Sonnet 実装) + D docs commit TBD
+- Status: Implemented (2026-04-25) — commits `38b94f5`, `f0c8fb1`, `9c763e4` + post-review fix
+
+**Post-review addendum (Opus review 2026-04-25、BLOCKING 0)**:
+- Sonnet 追加判断 5 件 (`Tensor::into_dyn` / `Vec<(String, DynValue)>` / bool tensor / decoder_tests +2 / commit 4→3 統合) 全て §7 範囲内認定
+- **RECOMMEND R2 (本 batch で対応)**: `tokens.last().expect()` を `tokens.last().copied().unwrap_or(FLORENCE2_EOS_TOKEN)` に置換 (defensive fallback、L5 panic-free 原則維持)
+- RECOMMEND R1 (4b-5a-5 検証時): Florence-2 ONNX export の decoder_input_ids 初回 shape (prefill 1 token vs prompt prefix) を dogfood 1 回目で `decoder run` error 経由で確認するチェックリストに追加
+- NIT N1: `generate_tokens` doc-comment に「BOS を含めて max_length+1 が上限」明記推奨 (本 batch 対応せず)
+- NIT N2: commit 4→3 統合は §7 commit 分割 acceptable scope 内 — 問題なし
 - 設計者: Claude (Opus 4.7)
 - 実装担当: **Sonnet** (handbook §2 Step B)
 - レビュー担当: Opus 4.7 (別 subagent)

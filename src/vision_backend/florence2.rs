@@ -628,7 +628,9 @@ impl Florence2Stage1Sessions {
             //   - First call (use_cache_branch=false): full history [BOS]
             //   - Subsequent calls (use_cache_branch=true): only the latest token
             let dec_input_vec: Vec<i64> = if use_cache_branch {
-                vec![*tokens.last().expect("tokens never empty")]
+                // Defensive fallback to EOS if tokens is somehow empty (theoretically
+                // unreachable since we initialize with vec![BOS]). 4b-5a-4 post-review R2.
+                vec![tokens.last().copied().unwrap_or(FLORENCE2_EOS_TOKEN)]
             } else {
                 tokens.clone()
             };
