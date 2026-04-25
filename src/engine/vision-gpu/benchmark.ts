@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 
+import type { NativeCapabilityProfile } from "../native-types.js";
+
 export type BenchmarkTarget = "chrome" | "terminal" | "game";
 export type BenchmarkMode = "cold" | "warm" | "idle";
 
@@ -23,6 +25,8 @@ export interface BenchmarkResult {
   runId: string;
   startedAtMs: number;
   metrics: BenchmarkMetrics[];
+  /** Phase 4b-7: capability profile snapshot at run start (used by 4b-8 vendor matrix). */
+  capabilityProfile?: NativeCapabilityProfile;
 }
 
 export class BenchmarkHarness {
