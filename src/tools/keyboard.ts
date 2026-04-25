@@ -134,7 +134,7 @@ export const keyboardTypeSchema = {
     ),
   replaceAll: z.boolean().optional().default(false).describe(
     "When true, send Ctrl+A to select all existing text before typing. " +
-    "Equivalent to Ctrl+A → keyboard_type in one call (requires field already focused). Default false."
+    "Equivalent to Ctrl+A → keyboard(action='type') in one call (requires field already focused). Default false."
   ),
   forceKeystrokes: z.boolean().optional().default(false).describe(
     "When true, always use keystroke mode even if text contains non-ASCII symbols " +
@@ -152,7 +152,7 @@ export const keyboardTypeSchema = {
   ),
   fixId: z.string().optional().describe(
     "Approve a pending suggestedFix (one-shot, 15s TTL). Pass the fixId returned by a previous " +
-    "failed keyboard_type to re-attempt with guard-validated args."
+    "failed keyboard(action='type') to re-attempt with guard-validated args."
   ),
 };
 
@@ -283,8 +283,8 @@ export const keyboardTypeHandler = async ({
     let effectiveText = text;
     let effectiveWindowTitle = windowTitle;
     if (fixId) {
-      const vr = validateAndPrepareFix(fixId, "keyboard_type");
-      if (!vr.ok || !vr.fix) return failWith(new Error(vr.errorCode!), "keyboard_type");
+      const vr = validateAndPrepareFix(fixId, "keyboard");
+      if (!vr.ok || !vr.fix) return failWith(new Error(vr.errorCode!), "keyboard");
       if (typeof vr.fix.args.windowTitle === "string") effectiveWindowTitle = vr.fix.args.windowTitle;
       if (typeof vr.fix.args.text === "string") effectiveText = vr.fix.args.text;
       consumeFix(fixId);
@@ -319,7 +319,7 @@ export const keyboardTypeHandler = async ({
             // Return error regardless of effectiveMethod.
             return failWith(
               new Error("BackgroundInputIncomplete"),
-              "keyboard_type",
+              "keyboard:type",
               {
                 suggest: [
                   "Input sent partially - retry with method:'foreground' for full input",
@@ -341,7 +341,7 @@ export const keyboardTypeHandler = async ({
         } else if (effectiveMethod === "background") {
           return failWith(
             new Error("BackgroundInputUnsupported"),
-            "keyboard_type",
+            "keyboard:type",
             {
               suggest: [
                 "Target app does not accept background input - use method:'foreground' or omit",
@@ -355,7 +355,7 @@ export const keyboardTypeHandler = async ({
       } else if (effectiveMethod === "background") {
         return failWith(
           new Error("BackgroundInputUnsupported"),
-          "keyboard_type",
+          "keyboard:type",
           { suggest: ["Window not found - verify windowTitle"], context: { windowTitle: effectiveWindowTitle } }
         );
       }
@@ -372,12 +372,12 @@ export const keyboardTypeHandler = async ({
     // Step 2: Guard evaluation (on already-focused window).
     let perceptionEnv: import("../engine/perception/types.js").PostPerception | undefined;
     if (lensId) {
-      const guardResult = await evaluatePreToolGuards(lensId, "keyboard_type", {});
+      const guardResult = await evaluatePreToolGuards(lensId, "keyboard:type", {});
       if (!guardResult.ok && guardResult.policy === "block") {
-        const env = buildEnvelopeFor(lensId, { toolName: "keyboard_type" });
+        const env = buildEnvelopeFor(lensId, { toolName: "keyboard:type" });
         return failWith(
           new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
-          "keyboard_type",
+          "keyboard:type",
           {
             lensId,
             guard: guardResult.failedGuard,
@@ -386,20 +386,20 @@ export const keyboardTypeHandler = async ({
           }
         );
       }
-      perceptionEnv = buildEnvelopeFor(lensId, { toolName: "keyboard_type" }) ?? undefined;
+      perceptionEnv = buildEnvelopeFor(lensId, { toolName: "keyboard:type" }) ?? undefined;
     } else if (!_skipAutoGuard && isAutoGuardEnabled()) {
       const descriptor = effectiveWindowTitle
         ? { kind: "window" as const, titleIncludes: effectiveWindowTitle }
         : null;
       const ag = await runActionGuard({
-        toolName: "keyboard_type", actionKind: "keyboard", descriptor,
+        toolName: "keyboard:type", actionKind: "keyboard", descriptor,
         ...(foregroundVerified && { foregroundVerified: true }),
         ...(fixId && { fixCarryingArgs: { text: effectiveText, windowTitle: effectiveWindowTitle } }),
       });
       if (ag.block) {
         return failWith(
           new Error(`AutoGuardBlocked: ${ag.summary.next}`),
-          "keyboard_type",
+          "keyboard:type",
           {
             _perceptionForPost: ag.summary,
             ...(warnings.length > 0 && { hints: { warnings } }),
@@ -457,7 +457,7 @@ export const keyboardTypeHandler = async ({
       ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
     });
   } catch (err) {
-    return failWith(err, "keyboard_type");
+    return failWith(err, "keyboard:type");
   }
 };
 
@@ -515,7 +515,7 @@ export const keyboardPressHandler = async ({
         if (effectiveMethod === "background") {
           return failWith(
             new Error("BackgroundInputIncomplete"),
-            "keyboard_press",
+            "keyboard:press",
             { suggest: ["Key press failed in background mode - retry with method:'foreground'"], context: { keys } }
           );
         }
@@ -523,7 +523,7 @@ export const keyboardPressHandler = async ({
       } else if (effectiveMethod === "background") {
         return failWith(
           new Error("BackgroundInputUnsupported"),
-          "keyboard_press",
+          "keyboard:press",
           { suggest: ["Target app does not accept background input - use method:'foreground' or omit"], context: { windowTitle: effectiveWindowTitle } }
         );
       }
@@ -540,12 +540,12 @@ export const keyboardPressHandler = async ({
     // Step 2: Guard evaluation (on already-focused window).
     let perceptionEnv: import("../engine/perception/types.js").PostPerception | undefined;
     if (lensId) {
-      const guardResult = await evaluatePreToolGuards(lensId, "keyboard_press", {});
+      const guardResult = await evaluatePreToolGuards(lensId, "keyboard:press", {});
       if (!guardResult.ok && guardResult.policy === "block") {
-        const env = buildEnvelopeFor(lensId, { toolName: "keyboard_press" });
+        const env = buildEnvelopeFor(lensId, { toolName: "keyboard:press" });
         return failWith(
           new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
-          "keyboard_press",
+          "keyboard:press",
           {
             lensId,
             guard: guardResult.failedGuard,
@@ -554,19 +554,19 @@ export const keyboardPressHandler = async ({
           }
         );
       }
-      perceptionEnv = buildEnvelopeFor(lensId, { toolName: "keyboard_press" }) ?? undefined;
+      perceptionEnv = buildEnvelopeFor(lensId, { toolName: "keyboard:press" }) ?? undefined;
     } else if (isAutoGuardEnabled()) {
       const descriptor = effectiveWindowTitle
         ? { kind: "window" as const, titleIncludes: effectiveWindowTitle }
         : null;
       const ag = await runActionGuard({
-        toolName: "keyboard_press", actionKind: "keyboard", descriptor,
+        toolName: "keyboard:press", actionKind: "keyboard", descriptor,
         ...(foregroundVerified && { foregroundVerified: true }),
       });
       if (ag.block) {
         return failWith(
           new Error(`AutoGuardBlocked: ${ag.summary.next}`),
-          "keyboard_press",
+          "keyboard:press",
           {
             _perceptionForPost: ag.summary,
             ...(warnings.length > 0 && { hints: { warnings } }),
@@ -598,7 +598,7 @@ export const keyboardPressHandler = async ({
       ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
     });
   } catch (err) {
-    return failWith(err, "keyboard_press");
+    return failWith(err, "keyboard:press");
   }
 };
 

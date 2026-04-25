@@ -610,7 +610,7 @@ export const scrollCaptureHandler = async ({
     };
   } catch (err) {
     return {
-      content: [{ type: "text" as const, text: `scroll_capture failed: ${String(err)}` }],
+      content: [{ type: "text" as const, text: `scroll(action='capture') failed: ${String(err)}` }],
     };
   }
 };

@@ -276,11 +276,11 @@ function tryBuildSuggestedFix(
       if (!title) return null;
       const fixArgs = { windowTitle: title, ...(fixCarryingArgs ?? {}) };
       if (failedKind === "target.identityStable" && resolved.changed?.includes("identity")) {
-        return { tool: "keyboard_type", args: fixArgs, targetFingerprint: fp,
+        return { tool: "keyboard", args: fixArgs, targetFingerprint: fp,
           reason: `Keyboard target identity changed. Approve to re-type into new identity.` };
       }
       if (failedKind === "safe.keyboardTarget") {
-        return { tool: "keyboard_type", args: fixArgs, targetFingerprint: fp,
+        return { tool: "keyboard", args: fixArgs, targetFingerprint: fp,
           reason: `Keyboard target verification failed (foreground/modal drift). Approve to retry.` };
       }
       return null;
