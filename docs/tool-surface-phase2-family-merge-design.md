@@ -1,8 +1,9 @@
 # Phase 2 設計書 — Family Merge (scroll / keyboard / clipboard / terminal / window_dock)
 
-- Status: Draft (2026-04-25) — ユーザー approve 待ち
+- Status: **Implemented** (2026-04-25)
 - 設計者: Claude (Opus 4.7)
-- 実装担当: Sonnet 4.6 (起動方法は §11 + 既存 `docs/phase4b-sonnet-prompt.md` Prompt 2 を流用)
+- 実装担当: Sonnet 4.6 (Phase 2a/2b/2c) + Opus takeover (Phase 2d、Sonnet が E2E 4 回でルール違反、停止後 Opus 引取)
+- レビュー: Opus 自己レビュー / Codex (PR 提出後)
 - 対応プラン: `docs/tool-surface-reduction-plan.md` §8.2 / §10 / §15 Phase 2 / §16 互換性ポリシー
 - 対応 handbook: `docs/phase4b-implementation-handbook.md` §3 設計書テンプレ全 9 セクション
 - 前提 Phase: Phase 1 完了 (PR #35 squash merge `2954e29`、設計書補足 `61ebc8c`)

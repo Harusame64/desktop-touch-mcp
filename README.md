@@ -28,7 +28,7 @@ An MCP server that gives Claude eyes and hands on Windows — 57 tools covering 
 - **Browser capture data reduction** — `grayscale=true` (~50% size), `dotByDotMaxDimension=1280` (auto-scaled with coord preservation), and `windowTitle + region` sub-crops help exclude browser chrome and other irrelevant pixels. Typical reduction for heavy captures: 50–70%.
 - **Chromium smart fallback** — `detail="text"` on Chrome/Edge/Brave auto-skips UIA (prohibitively slow there) and runs Windows OCR. `hints.chromiumGuard` + `hints.ocrFallbackFired` flag the path taken.
 - **UIA element extraction** — `detail="text"` returns button names and `clickAt` coords as JSON. Claude can click the right element without ever looking at a screenshot.
-- **Auto-dock CLI** — `dock_window` snaps any window to a screen corner with always-on-top. Set `DESKTOP_TOUCH_DOCK_TITLE='@parent'` to auto-dock the terminal hosting Claude on MCP startup — the process-tree walker finds the right window regardless of title.
+- **Auto-dock CLI** — `window_dock(action='dock')` snaps any window to a screen corner with always-on-top. Set `DESKTOP_TOUCH_DOCK_TITLE='@parent'` to auto-dock the terminal hosting Claude on MCP startup — the process-tree walker finds the right window regardless of title.
 - **Emergency stop (Failsafe)** — Move the mouse to the **top-left corner (within 10px of 0,0)** to immediately terminate the MCP server.
 
 ---
@@ -133,7 +133,7 @@ For a local checkout, register the built server directly:
 | `screenshot_background` | Capture a background window without focusing it (PrintWindow API) |
 | `screenshot_ocr` | Windows.Media.Ocr on a window; returns word-level text + screen clickAt coords |
 | `get_screen_info` | Monitor layout, DPI, cursor position |
-| `scroll_capture` | Full-page stitch by scrolling (MAE overlap detection + 10% fallback) |
+| `scroll(action='capture')` | Full-page stitch by scrolling (MAE overlap detection + 10% fallback) |
 
 ### Window management (4)
 | Tool | Description |
@@ -141,7 +141,7 @@ For a local checkout, register the built server directly:
 | `get_windows` | List all windows in Z-order |
 | `get_active_window` | Info about the focused window |
 | `focus_window` | Bring a window to foreground by partial title match |
-| `dock_window` | Snap a window to a screen corner at a small size + always-on-top (for keeping CLI visible) |
+| `window_dock(action='dock')` | Snap a window to a screen corner at a small size + always-on-top (for keeping CLI visible) |
 
 ### Mouse (5)
 | Tool | Description |
@@ -153,8 +153,8 @@ For a local checkout, register the built server directly:
 ### Keyboard (2)
 | Tool | Description |
 |---|---|
-| `keyboard_type` | Type text. `use_clipboard=true` bypasses IME (required for em-dash / smart quotes). `replaceAll=true` sends Ctrl+A before typing. Non-ASCII symbols trigger clipboard mode automatically (opt-out: `forceKeystrokes=true`) |
-| `keyboard_press` | Key combos (`ctrl+c`, `alt+f4`, etc.) |
+| `keyboard(action='type')` | Type text. `use_clipboard=true` bypasses IME (required for em-dash / smart quotes). `replaceAll=true` sends Ctrl+A before typing. Non-ASCII symbols trigger clipboard mode automatically (opt-out: `forceKeystrokes=true`) |
+| `keyboard(action='press')` | Key combos (`ctrl+c`, `alt+f4`, etc.) |
 
 ### UI Automation (4)
 | Tool | Description |
@@ -201,20 +201,20 @@ All `browser_*` tools that touch the DOM accept `includeContext:false` to omit t
 ### Terminal (2)
 | Tool | Description |
 |---|---|
-| `terminal_read` | Read text from Windows Terminal / PowerShell / cmd / WSL via UIA/OCR. Supports `sinceMarker` for diff reads |
-| `terminal_send` | Send commands to a terminal. Uses clipboard paste by default for IME safety |
+| `terminal(action='read')` | Read text from Windows Terminal / PowerShell / cmd / WSL via UIA/OCR. Supports `sinceMarker` for diff reads |
+| `terminal(action='send')` | Send commands to a terminal. Uses clipboard paste by default for IME safety |
 
 ### Pin / Macro (3)
 | Tool | Description |
 |---|---|
-| `pin_window` / `unpin_window` | Always-on-top toggle |
+| `window_dock(action='pin')` / `unwindow_dock(action='pin')` | Always-on-top toggle |
 | `run_macro` | Execute up to 50 steps sequentially in one MCP call |
 
 ### Clipboard (2)
 | Tool | Description |
 |---|---|
-| `clipboard_read` | Read the current Windows clipboard text (non-text payloads return empty string) |
-| `clipboard_write` | Write text to the Windows clipboard; full Unicode / emoji / CJK support |
+| `clipboard(action='read')` | Read the current Windows clipboard text (non-text payloads return empty string) |
+| `clipboard(action='write')` | Write text to the Windows clipboard; full Unicode / emoji / CJK support |
 
 ### Notification (1)
 | Tool | Description |
@@ -224,8 +224,8 @@ All `browser_*` tools that touch the DOM accept `includeContext:false` to omit t
 ### Scroll (2)
 | Tool | Description |
 |---|---|
-| `scroll_to_element` | Scroll a named element into the viewport without computing scroll amounts. Chrome path: `selector` + `block` alignment. Native path: `name` + `windowTitle` via UIA ScrollItemPattern |
-| `smart_scroll` | **SmartScroll** — unified scroll dispatcher: CDP → UIA → image binary-search fallback. Handles nested containers, virtualised lists (TanStack/React Virtualized), sticky-header occlusion, and image-only environments. Returns `pageRatio`, `ancestors[]`, and hash-verified `scrolled` |
+| `scroll(action='to_element')` | Scroll a named element into the viewport without computing scroll amounts. Chrome path: `selector` + `block` alignment. Native path: `name` + `windowTitle` via UIA ScrollItemPattern |
+| `scroll(action='smart')` | **SmartScroll** — unified scroll dispatcher: CDP → UIA → image binary-search fallback. Handles nested containers, virtualised lists (TanStack/React Virtualized), sticky-header occlusion, and image-only environments. Returns `pageRatio`, `ancestors[]`, and hash-verified `scrolled` |
 
 ---
 
@@ -298,7 +298,7 @@ Keep Claude CLI visible while operating other apps full-screen. Set env vars in 
 | `DESKTOP_TOUCH_DOCK_MARGIN` | `8` | Screen-edge padding (px) |
 | `DESKTOP_TOUCH_DOCK_TIMEOUT_MS` | `5000` | Max wait for the target window to appear |
 
-> **Input routing gotcha:** when a pinned window is active (e.g. Claude CLI), `keyboard_type` / `keyboard_press` send keys to it, **not** the app you wanted to type into. Always call `focus_window(title=...)` before keyboard operations, then verify `isActive=true` via `screenshot(detail='meta')`.
+> **Input routing gotcha:** when a pinned window is active (e.g. Claude CLI), `keyboard(action='type')` / `keyboard(action='press')` send keys to it, **not** the app you wanted to type into. Always call `focus_window(title=...)` before keyboard operations, then verify `isActive=true` via `screenshot(detail='meta')`.
 
 ### Reactive Perception Graph (4)
 
@@ -318,15 +318,15 @@ perception_register({name:"editor", target:{kind:"window", match:{titleIncludes:
 
 # Pass lensId to action tools. Guards run before the action;
 # compact feedback arrives in post.perception after the action.
-keyboard_type({text:"hello", windowTitle:"Notepad", lensId:"perc-1"})
+keyboard(action='type')({text:"hello", windowTitle:"Notepad", lensId:"perc-1"})
 → post.perception: {attention:"ok", guards:{...}, latest:{target:{title, rect, foreground}}}
 
 # If the app restarts or focus moves away, guards fail closed before unsafe input:
-keyboard_type({text:"x", lensId:"perc-1"})
+keyboard(action='type')({text:"x", lensId:"perc-1"})
 → {ok:false, code:"GuardFailed", suggest:["Re-register lens for the new process instance"]}
 ```
 
-`lensId` is opt-in on all action tools (`keyboard_type`, `keyboard_press`, `mouse_click`, `mouse_drag`, `click_element`, `set_element_value`, `browser_click`, `browser_navigate`, `browser_eval`). Omitting `lensId` preserves existing behavior exactly.
+`lensId` is opt-in on all action tools (`keyboard(action='type')`, `keyboard(action='press')`, `mouse_click`, `mouse_drag`, `click_element`, `set_element_value`, `browser_click`, `browser_navigate`, `browser_eval`). Omitting `lensId` preserves existing behavior exactly.
 
 ---
 
@@ -421,7 +421,7 @@ screenshot(diffMode=true)                → check only what changed (~160 tok)
 `cmd.exe`, `powershell.exe`, `pwsh.exe`, `wscript.exe`, `cscript.exe`, `mshta.exe`, `regsvr32.exe`, `rundll32.exe`, `msiexec.exe`, `bash.exe`, `wsl.exe` are blocked.
 Script extensions (`.bat`, `.ps1`, `.vbs`, etc.) are rejected. Arguments containing `;`, `&`, `|`, `` ` ``, `$(`, `${` are also rejected.
 
-**`keyboard_press` blocklist:**
+**`keyboard(action='press')` blocklist:**
 `Win+R` (Run dialog), `Win+X` (admin menu), `Win+S` (search), `Win+L` (lock screen) are blocked.
 
 ### PowerShell injection protection
@@ -486,7 +486,7 @@ Common values: `0` = teleport, `1500` = default gentle, `3000` = fast, `5000` = 
 
 Windows foreground-stealing protection can prevent `SetForegroundWindow` from succeeding when another window (such as a pinned Claude CLI) is in the foreground. This causes subsequent keystrokes or clicks to land in the wrong window — a silent failure.
 
-`mouse_click`, `keyboard_type`, `keyboard_press`, and `terminal_send` all accept a `forceFocus` parameter that bypasses this protection using `AttachThreadInput`:
+`mouse_click`, `keyboard(action='type')`, `keyboard(action='press')`, and `terminal(action='send')` all accept a `forceFocus` parameter that bypasses this protection using `AttachThreadInput`:
 
 ```json
 {
@@ -527,7 +527,7 @@ Setting `DESKTOP_TOUCH_FORCE_FOCUS=1` makes `forceFocus: true` the default for a
 
 ## Auto Guard (v0.12+)
 
-Action tools (`mouse_click`, `mouse_drag`, `keyboard_type`, `keyboard_press`, `click_element`, `set_element_value`, `browser_click`, `browser_navigate`) automatically guard each action when you pass `windowTitle` / `tabId`:
+Action tools (`mouse_click`, `mouse_drag`, `keyboard(action='type')`, `keyboard(action='press')`, `click_element`, `set_element_value`, `browser_click`, `browser_navigate`) automatically guard each action when you pass `windowTitle` / `tabId`:
 
 - Verifies target window identity (process restart / HWND replacement detected)
 - Confirms click coordinates are inside the target window rect
@@ -566,7 +566,7 @@ When `unsafe_coordinates` or `identity_changed` is returned, the response may in
 
 ```json
 { "name": "mouse_click",           "arguments": { "fixId": "fix-..." } }
-{ "name": "keyboard_type",         "arguments": { "fixId": "fix-...", "text": "hello" } }
+{ "name": "keyboard(action='type')",         "arguments": { "fixId": "fix-...", "text": "hello" } }
 { "name": "click_element",         "arguments": { "fixId": "fix-..." } }
 { "name": "browser_click", "arguments": { "fixId": "fix-..." } }
 ```
@@ -723,10 +723,10 @@ If `desktop_act` returns `ok: false`, read `reason` and follow the built-in reco
 
 - `lease_expired` / `*_mismatch` / `entity_not_found` → re-call `desktop_discover`
 - `modal_blocking` → dismiss the modal with `click_element`, then retry
-- `entity_outside_viewport` → `scroll` / `scroll_to_element`, then re-call `desktop_discover`
+- `entity_outside_viewport` → `scroll` / `scroll(action='to_element')`, then re-call `desktop_discover`
 - `executor_failed` → fall back to `click_element` / `mouse_click` / `browser_click`
 
-For `desktop_discover` warnings (`visual_provider_unavailable`, `visual_provider_warming`, `cdp_provider_failed`, …), V1 tools (`screenshot`, `click_element`, `get_ui_elements`, `terminal_send`, …) remain available as an escape hatch.
+For `desktop_discover` warnings (`visual_provider_unavailable`, `visual_provider_warming`, `cdp_provider_failed`, …), V1 tools (`screenshot`, `click_element`, `get_ui_elements`, `terminal(action='send')`, …) remain available as an escape hatch.
 
 ---
 
@@ -740,8 +740,8 @@ For `desktop_discover` warnings (`visual_provider_unavailable`, `visual_provider
 | Chromium title-regex misses when sites rewrite `document.title` | Guard relies on the ` - Google Chrome` suffix being present; some sites push it off the end of a long title | Title is treated as plain Chrome (UIA runs). OCR path is still reachable via `ocrFallback='always'` or when UIA returns `<5` elements (`uiaSparse`) |
 | `browser_*` CDP tools need Chrome launched with `--remote-debugging-port` | If Chrome is already running on the default profile without the flag, `browser_launch` / `browser_open` fail. The CDP E2E suite (`tests/e2e/browser-cdp.test.ts`) will also fail in that state | Close Chrome first, then `browser_launch` will relaunch it in debug mode, or start Chrome manually with `--remote-debugging-port=9222 --user-data-dir=C:\tmp\cdp` |
 | Layer buffer TTL | Buffer auto-clears after 90s of inactivity → next `diffMode` becomes an I-frame | After long waits, call `workspace_snapshot` to explicitly reset the buffer |
-| `keyboard_type` / `keyboard_press` follow focus | When `dock_window(pin=true)` keeps another window on top (e.g. Claude CLI), keystrokes may be absorbed by that window | Call `focus_window(title=...)` first and verify `isActive=true` via `screenshot(detail='meta')` before sending keys |
-| `keyboard_type` em-dash / smart quotes in Chrome/Edge | Non-ASCII punctuation (em-dash `—`, en-dash `–`, smart quotes `"" ''`) can be intercepted as keyboard accelerators, shifting focus to the address bar | Always use `use_clipboard=true` when the text contains such characters |
+| `keyboard(action='type')` / `keyboard(action='press')` follow focus | When `window_dock(action='dock')(pin=true)` keeps another window on top (e.g. Claude CLI), keystrokes may be absorbed by that window | Call `focus_window(title=...)` first and verify `isActive=true` via `screenshot(detail='meta')` before sending keys |
+| `keyboard(action='type')` em-dash / smart quotes in Chrome/Edge | Non-ASCII punctuation (em-dash `—`, en-dash `–`, smart quotes `"" ''`) can be intercepted as keyboard accelerators, shifting focus to the address bar | Always use `use_clipboard=true` when the text contains such characters |
 | `browser_eval` on React / Vue / Svelte inputs | Setting `element.value = ...` or dispatching synthetic events does not update the framework's internal state | Use `browser_fill(selector, value)` — it uses native prototype setter + InputEvent which does update React/Vue/Svelte state |
 
 ---
