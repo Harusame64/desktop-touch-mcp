@@ -319,13 +319,7 @@ describe("Phase 2 — no LLM-exposed old tool names in description/suggest/error
         const withoutBlockComments = withoutComments.replace(/\/\*[\s\S]*?\*\//g, "");
 
         if (withoutBlockComments.includes(oldName)) {
-          // Allow in import paths (e.g. from './scroll-capture.js')
-          // Check only string literals in description/suggest/error fields
-          const describeOrSuggestRe = new RegExp(
-            `(?:description|suggest|error|message)\\s*[=:].*${oldName.replace(/_/g, ".")}`,
-            "m"
-          );
-          // Simpler: any occurrence in the non-comment source is a lint failure
+          // Any occurrence in the non-comment source is a lint failure
           // UNLESS it's inside an import path string
           const importLineRe = new RegExp(`^\\s*(?:import|from)\\s+.*${oldName}`, "m");
           if (!importLineRe.test(withoutBlockComments)) {
