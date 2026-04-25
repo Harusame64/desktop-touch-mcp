@@ -48,7 +48,7 @@ const portParam = z.coerce
 const tabIdParam = z
   .string()
   .optional()
-  .describe("Tab ID from browser_connect. Omit to use the first page tab.");
+  .describe("Tab ID from browser_open. Omit to use the first page tab.");
 
 const selectorParam = z
   .string()
@@ -379,7 +379,7 @@ export const browserFillInputHandler = async ({
 })()`;
     const focusResult = await evaluateInTab(focusExpr, tabId ?? null, port) as { ok: boolean; error?: string; tag?: string; type?: string };
     if (!focusResult.ok) {
-      return failWith(focusResult.error ?? "browser_fill_input: focus failed", "browser_fill_input");
+      return failWith(focusResult.error ?? "browser_fill: focus failed", "browser_fill");
     }
 
     // Fill the input using the React-compatible path:
@@ -415,7 +415,7 @@ export const browserFillInputHandler = async ({
 })()`;
     const fillResult = await evaluateInTab(fillExpr, tabId ?? null, port) as { ok: boolean; error?: string; actual?: string };
     if (!fillResult.ok) {
-      return failWith(fillResult.error ?? "browser_fill_input: fill failed", "browser_fill_input");
+      return failWith(fillResult.error ?? "browser_fill: fill failed", "browser_fill");
     }
 
     const lines = [
@@ -431,7 +431,7 @@ export const browserFillInputHandler = async ({
     }
     return { content: [{ type: "text" as const, text: lines.join("\n") }] };
   } catch (err) {
-    return failWith(err, "browser_fill_input");
+    return failWith(err, "browser_fill");
   }
 };
 
@@ -537,7 +537,7 @@ export const browserGetFormHandler = async ({
       | { ok: false; error: string };
 
     if (!result.ok) {
-      return failWith("Element not found", "browser_get_form", { selector });
+      return failWith("Element not found", "browser_form", { selector });
     }
 
     const lines = [JSON.stringify(result)];
@@ -551,7 +551,7 @@ export const browserGetFormHandler = async ({
     }
     return { content: [{ type: "text" as const, text: lines.join("\n") }] };
   } catch (err) {
-    return failWith(err, "browser_get_form");
+    return failWith(err, "browser_form");
   }
 };
 
@@ -603,7 +603,7 @@ export const browserConnectHandler = async ({
       ],
     };
   } catch (err) {
-    return failWith(err, "browser_connect");
+    return failWith(err, "browser_open");
   }
 };
 
@@ -655,7 +655,7 @@ export const browserFindElementHandler = async ({
       ],
     };
   } catch (err) {
-    return failWith(err, "browser_find_element");
+    return failWith(err, "browser_locate");
   }
 };
 
@@ -679,8 +679,8 @@ export const browserClickElementHandler = async ({
     let effectiveSelector = selector;
     let effectiveTabId = tabId;
     if (fixId) {
-      const vr = validateAndPrepareFix(fixId, "browser_click_element");
-      if (!vr.ok || !vr.fix) return failWith(new Error(vr.errorCode!), "browser_click_element");
+      const vr = validateAndPrepareFix(fixId, "browser_click");
+      if (!vr.ok || !vr.fix) return failWith(new Error(vr.errorCode!), "browser_click");
       if (typeof vr.fix.args.selector === "string") effectiveSelector = vr.fix.args.selector;
       if (typeof vr.fix.args.tabId === "string") effectiveTabId = vr.fix.args.tabId;
       consumeFix(fixId);
@@ -688,16 +688,16 @@ export const browserClickElementHandler = async ({
 
     let perceptionEnvBrowser: import("../engine/perception/types.js").PostPerception | undefined;
     if (lensId) {
-      const guardResult = await evaluatePreToolGuards(lensId, "browser_click_element", {});
+      const guardResult = await evaluatePreToolGuards(lensId, "browser_click", {});
       if (!guardResult.ok && guardResult.policy === "block") {
-        const env = buildEnvelopeFor(lensId, { toolName: "browser_click_element" });
+        const env = buildEnvelopeFor(lensId, { toolName: "browser_click" });
         return failWith(
           new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
-          "browser_click_element",
+          "browser_click",
           { lensId, guard: guardResult.failedGuard, _perceptionForPost: env }
         );
       }
-      perceptionEnvBrowser = buildEnvelopeFor(lensId, { toolName: "browser_click_element" }) ?? undefined;
+      perceptionEnvBrowser = buildEnvelopeFor(lensId, { toolName: "browser_click" }) ?? undefined;
     } else if (isAutoGuardEnabled() && (tabId || port)) {
       // Phase F: get coords first so we know inViewport for selectorInViewport policy
       const coordsForGuard = await getElementScreenCoords(effectiveSelector, effectiveTabId ?? null, port);
@@ -706,8 +706,8 @@ export const browserClickElementHandler = async ({
         return fail({
           ok: false,
           code: "ElementNotInViewport",
-          error: `browser_click_element: element "${effectiveSelector}" is outside the visible viewport.`,
-          suggest: ["Element is outside the visible viewport. Scroll it into view first using browser_eval with element.scrollIntoView(), then retry browser_click_element."],
+          error: `browser_click: element "${effectiveSelector}" is outside the visible viewport.`,
+          suggest: ["Element is outside the visible viewport. Scroll it into view first using browser_eval with element.scrollIntoView(), then retry browser_click."],
           context: { selector: effectiveSelector },
         });
       }
@@ -716,13 +716,13 @@ export const browserClickElementHandler = async ({
       };
       // Phase F/G: pass inViewport + selectorInViewport policy; carry selector for fixId
       const ag = await runActionGuard({
-        toolName: "browser_click_element", actionKind: "browserCdp", descriptor,
+        toolName: "browser_click", actionKind: "browserCdp", descriptor,
         browserReadinessPolicy: "selectorInViewport",
         browserSelectorInViewport: coordsForGuard.inViewport,
         fixCarryingArgs: { selector: effectiveSelector, tabId: effectiveTabId, port },
       });
       if (ag.block) {
-        return failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "browser_click_element", { _perceptionForPost: ag.summary });
+        return failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "browser_click", { _perceptionForPost: ag.summary });
       }
       perceptionEnvBrowser = ag.summary;
     }
@@ -744,8 +744,8 @@ export const browserClickElementHandler = async ({
       return fail({
         ok: false,
         code: "ElementNotInViewport",
-        error: `browser_click_element: element "${effectiveSelector}" is outside the visible viewport.`,
-        suggest: ["Element is outside the visible viewport. Scroll it into view first using browser_eval with element.scrollIntoView(), then retry browser_click_element."],
+        error: `browser_click: element "${effectiveSelector}" is outside the visible viewport.`,
+        suggest: ["Element is outside the visible viewport. Scroll it into view first using browser_eval with element.scrollIntoView(), then retry browser_click."],
         context: { selector: effectiveSelector },
       });
     }
@@ -798,7 +798,7 @@ export const browserClickElementHandler = async ({
       ...(perceptionEnvBrowser && { _perceptionForPost: perceptionEnvBrowser }),
     });
   } catch (err) {
-    return failWith(err, "browser_click_element");
+    return failWith(err, "browser_click");
   }
 };
 
@@ -1131,7 +1131,7 @@ export const browserGetInteractiveHandler = async ({
     // Fix #1: guard against empty query (types:[]) which causes querySelectorAll("") to throw
     if (!cssQuery) {
       return {
-        content: [{ type: "text" as const, text: "browser_get_interactive: no element types selected. Pass at least one of 'link', 'button', 'input', or 'all'." }],
+        content: [{ type: "text" as const, text: "browser_overview: no element types selected. Pass at least one of 'link', 'button', 'input', or 'all'." }],
       };
     }
 
@@ -1279,7 +1279,7 @@ export const browserGetInteractiveHandler = async ({
       content: [{ type: "text" as const, text: lines.join("\n") }],
     };
   } catch (err) {
-    return failWith(err, "browser_get_interactive");
+    return failWith(err, "browser_overview");
   }
 };
 
@@ -1836,14 +1836,14 @@ export function registerBrowserTools(server: McpServer): void {
 
   server.tool(
     "browser_search",
-    "Grep-like element search across the current page. by: 'text' (literal substring), 'regex', 'role', 'ariaLabel', 'selector' (CSS). Returns results[] sorted by confidence descending — pass results[0].selector to browser_click_element. Pagination via offset/maxResults. Caveats: Use browser_get_interactive for broad discovery; use browser_search when you know specific text or role to target.",
+    "Grep-like element search across the current page. by: 'text' (literal substring), 'regex', 'role', 'ariaLabel', 'selector' (CSS). Returns results[] sorted by confidence descending — pass results[0].selector to browser_click. Pagination via offset/maxResults. Caveats: Use browser_overview for broad discovery; use browser_search when you know specific text or role to target.",
     browserSearchSchema,
     browserSearchHandler
   );
 
   server.tool(
-    "browser_get_interactive",
-    "List all interactive elements (links, buttons, inputs, ARIA controls) on the current page with CSS selectors, visible text or value for inputs, and viewport status — use before browser_click_element to discover stable selectors, and prefer this over screenshot when verifying button/toggle state after submission (no image tokens, structured output). scope limits to a CSS subsection (e.g. '.sidebar'). Returns state (checked/pressed/selected/expanded) for ARIA custom controls. Caveats: Selectors are CDP-generated snapshots — re-call after page navigates or re-renders. Input text reflects the empty-field hint text when defined (takes priority over typed value) — use browser_eval('document.querySelector(sel).value') to read actual typed content.",
+    "browser_overview",
+    "List all interactive elements (links, buttons, inputs, ARIA controls) on the current page with CSS selectors, visible text or value for inputs, and viewport status — use before browser_click to discover stable selectors, and prefer this over screenshot when verifying button/toggle state after submission (no image tokens, structured output). scope limits to a CSS subsection (e.g. '.sidebar'). Returns state (checked/pressed/selected/expanded) for ARIA custom controls. Caveats: Selectors are CDP-generated snapshots — re-call after page navigates or re-renders. Input text reflects the empty-field hint text when defined (takes priority over typed value) — use browser_eval('document.querySelector(sel).value') to read actual typed content.",
     browserGetInteractiveSchema,
     browserGetInteractiveHandler
   );
@@ -1857,30 +1857,30 @@ export function registerBrowserTools(server: McpServer): void {
 
   server.tool(
     "browser_launch",
-    "Launch Chrome/Edge/Brave in CDP debug mode and wait until the DevTools endpoint is ready. Idempotent — if a CDP endpoint is already live on the target port, returns immediately without spawning. Default: tries chrome → edge → brave (first installed wins), port 9222, userDataDir C:\\tmp\\cdp. Pass url to open a specific page on launch; follow with browser_connect to get tab IDs. Caveats: A Chrome session started without --remote-debugging-port cannot be taken over — close it first or use a separate profile.",
+    "Launch Chrome/Edge/Brave in CDP debug mode and wait until the DevTools endpoint is ready. Idempotent — if a CDP endpoint is already live on the target port, returns immediately without spawning. Default: tries chrome → edge → brave (first installed wins), port 9222, userDataDir C:\\tmp\\cdp. Pass url to open a specific page on launch; follow with browser_open to get tab IDs. Caveats: A Chrome session started without --remote-debugging-port cannot be taken over — close it first or use a separate profile.",
     browserLaunchSchema,
     browserLaunchHandler
   );
 
   server.tool(
-    "browser_connect",
-    "Connect to Chrome/Edge running with --remote-debugging-port and return open tab IDs — required before all other browser_* tools. Launch with browser_launch() or manually: chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\\tmp\\cdp. Returns tabs[] with id, url, title — pass tabId to browser_* tools to target a specific tab. Caveats: CDP connection is per-process; if Chrome restarts, call browser_connect again to get fresh tab IDs.",
+    "browser_open",
+    "Connect to Chrome/Edge running with --remote-debugging-port and return open tab IDs — required before all other browser_* tools. Launch with browser_launch() or manually: chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\\tmp\\cdp. Returns tabs[] with id, url, title — pass tabId to browser_* tools to target a specific tab. Caveats: CDP connection is per-process; if Chrome restarts, call browser_open again to get fresh tab IDs.",
     browserConnectSchema,
     browserConnectHandler
   );
 
   server.tool(
-    "browser_find_element",
-    "Find a DOM element by CSS selector and return its physical screen coordinates — compatible directly with mouse_click. Prefer browser_click_element to find+click in one step. Prefer browser_get_interactive to discover selectors. Caveats: Coordinates are captured at call time; if the page reflows before mouse_click, coords may be stale.",
+    "browser_locate",
+    "Find a DOM element by CSS selector and return its physical screen coordinates — compatible directly with mouse_click. Prefer browser_click to find+click in one step. Prefer browser_overview to discover selectors. Caveats: Coordinates are captured at call time; if the page reflows before mouse_click, coords may be stale.",
     browserFindElementSchema,
     browserFindElementHandler
   );
 
   server.tool(
-    "browser_click_element",
-    "Find a DOM element by CSS selector and click it (combines browser_find_element + mouse_click in one step). Prefer over mouse_click for Chrome — selector-based clicking is stable across repaints. Pass tabId+port so the server auto-guards (verifies tab readyState and identity) and returns post.perception.status. lensId is optional for advanced pinned-tab workflows. Caveats: Fails if the element is outside the visible viewport — scroll it into view with browser_eval(\"document.querySelector('sel').scrollIntoView()\") first.",
+    "browser_click",
+    "Find a DOM element by CSS selector and click it (combines browser_locate + mouse_click in one step). Prefer over mouse_click for Chrome — selector-based clicking is stable across repaints. Pass tabId+port so the server auto-guards (verifies tab readyState and identity) and returns post.perception.status. lensId is optional for advanced pinned-tab workflows. Caveats: Fails if the element is outside the visible viewport — scroll it into view with browser_eval(\"document.querySelector('sel').scrollIntoView()\") first.",
     browserClickElementSchema,
-    withPostState("browser_click_element", browserClickElementHandler)
+    withPostState("browser_click", browserClickElementHandler)
   );
 
   server.tool(
@@ -1892,7 +1892,7 @@ export function registerBrowserTools(server: McpServer): void {
 
   server.tool(
     "browser_get_dom",
-    "Return the HTML of a DOM element (or document.body when no selector is given), truncated to maxLength characters. Use when browser_get_interactive is insufficient for inspecting page structure.",
+    "Return the HTML of a DOM element (or document.body when no selector is given), truncated to maxLength characters. Use when browser_overview is insufficient for inspecting page structure.",
     browserGetDomSchema,
     browserGetDomHandler
   );
@@ -1912,15 +1912,15 @@ export function registerBrowserTools(server: McpServer): void {
   );
 
   server.tool(
-    "browser_fill_input",
-    "Fill a form input with a value via CDP — works on React/Vue/Svelte controlled inputs that reject browser_eval value assignment. Use browser_get_interactive or browser_find_element first to obtain a stable selector. Use this over browser_eval when setting a controlled input's value via JS does not update the framework state. Caveats: Requires browser_connect (CDP active). Does not work on contenteditable rich-text editors — use keyboard_type for those. actual in response shows what the element's value property reads after fill; verify it matches the intended value.",
+    "browser_fill",
+    "Fill a form input with a value via CDP — works on React/Vue/Svelte controlled inputs that reject browser_eval value assignment. Use browser_overview or browser_locate first to obtain a stable selector. Use this over browser_eval when setting a controlled input's value via JS does not update the framework state. Caveats: Requires browser_open (CDP active). Does not work on contenteditable rich-text editors — use keyboard_type for those. actual in response shows what the element's value property reads after fill; verify it matches the intended value.",
     browserFillInputSchema,
     browserFillInputHandler
   );
 
   server.tool(
-    "browser_get_form",
-    "Inspect all form fields (input, select, textarea, button) within a CSS-selector-specified container and return their name, type, id, current value, hint text, disabled/readOnly state, and associated label text (resolved via for[id], ancestor LABEL, aria-labelledby, aria-label in that order). Use this before browser_fill_input to discover exact field selectors and avoid accidentally targeting the wrong input (e.g. a global search bar). Caveats: Requires browser_connect (CDP active). Hidden inputs (type=hidden) are excluded by default — set includeHidden:true if needed. Value text is truncated at 200 chars.",
+    "browser_form",
+    "Inspect all form fields (input, select, textarea, button) within a CSS-selector-specified container and return their name, type, id, current value, hint text, disabled/readOnly state, and associated label text (resolved via for[id], ancestor LABEL, aria-labelledby, aria-label in that order). Use this before browser_fill to discover exact field selectors and avoid accidentally targeting the wrong input (e.g. a global search bar). Caveats: Requires browser_open (CDP active). Hidden inputs (type=hidden) are excluded by default — set includeHidden:true if needed. Value text is truncated at 200 chars.",
     browserGetFormSchema,
     browserGetFormHandler
   );

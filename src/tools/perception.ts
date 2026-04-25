@@ -235,10 +235,10 @@ export function registerPerceptionTools(server: McpServer): void {
         "windowTitle or tabId directly to the action tool and the server will auto-guard.",
       details:
         "Returns a lensId that can be passed to action tools such as keyboard_type, keyboard_press, " +
-        "mouse_click, browser_click_element, and browser_navigate. When a tool receives lensId, " +
+        "mouse_click, browser_click, and browser_navigate. When a tool receives lensId, " +
         "desktop-touch refreshes the tracked state, evaluates safety guards, and attaches a compact " +
         "post.perception envelope to the response. The envelope reports attention, guard status, " +
-        "recent changes, and the latest known target state, reducing get_context/screenshot round trips.",
+        "recent changes, and the latest known target state, reducing desktop_state/screenshot round trips.",
       prefer:
         "Use only when you need pinned long-lived HWND tracking or explicit perception_read access. " +
         "For one-off actions, passing windowTitle directly to the action tool is sufficient and " +
@@ -271,7 +271,7 @@ export function registerPerceptionTools(server: McpServer): void {
     "Use when post.perception.attention is dirty, stale, settling, guard_failed, or identity_changed, " +
     "or when you need fresh structured state before the next action. Returns attention, guard results, " +
     "latest target/browser state, changed fields, and suggested recovery actions. Prefer this over " +
-    "screenshot/get_context when a lens already exists.",
+    "screenshot/desktop_state when a lens already exists.",
     perceptionReadSchema,
     perceptionReadHandler
   );

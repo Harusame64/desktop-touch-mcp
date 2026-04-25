@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { getHistoryHandler, getContextHandler } from "../../src/tools/context.js";
+import { getHistoryHandler, desktopStateHandler } from "../../src/tools/desktop-state.js";
 import { keyboardPressHandler } from "../../src/tools/keyboard.js";
 import { mouseClickHandler } from "../../src/tools/mouse.js";
 import { withPostState } from "../../src/tools/_post.js";
@@ -203,8 +203,8 @@ describe("H3: mouse_click → get_context focus propagates within 300ms", () => 
       settleMs: 0,
     });
 
-    // Immediately call get_context — no artificial sleep
-    const ctxResult = await getContextHandler();
+    // Immediately call desktop_state — no artificial sleep
+    const ctxResult = await desktopStateHandler();
     const ctx = parsePayload(ctxResult);
 
     // get_context must return a valid result (structured, not a thrown error)

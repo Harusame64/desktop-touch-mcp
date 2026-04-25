@@ -20,7 +20,7 @@ const SUGGESTS: Record<string, string[]> = {
     "Try a shorter partial title match (e.g. first word only)",
     "The window may be minimized — try focus_window first",
     "If the app is still launching, use wait_until(condition='window_appears') before focus_window",
-    "If the target is a Chrome/Edge tab (only the active tab's title appears in window titles), use browser_connect to get the tabId, then browser_navigate to the target URL to switch tabs",
+    "If the target is a Chrome/Edge tab (only the active tab's title appears in window titles), use browser_open to get the tabId, then browser_navigate to the target URL to switch tabs",
   ],
   ElementNotFound: [
     "Call get_ui_elements to see candidate names and automationIds",
@@ -47,7 +47,7 @@ const SUGGESTS: Record<string, string[]> = {
     "Check page state with screenshot(detail='text') before retrying",
   ],
   BrowserNotConnected: [
-    "Call browser_connect first with the correct port",
+    "Call browser_open first with the correct port",
     "Verify Chrome was launched with --remote-debugging-port",
     "Use browser_launch to open a new debugging-enabled Chrome instance",
   ],
@@ -84,7 +84,7 @@ const SUGGESTS: Record<string, string[]> = {
   WaitTimeout: [
     "Increase timeoutMs",
     "Verify the target window/element appears as expected",
-    "Check intermediate state with screenshot(detail='meta') or get_context()",
+    "Check intermediate state with screenshot(detail='meta') or desktop_state()",
   ],
   ScrollbarUnavailable: [
     "The target window has no Win32 scrollbar (e.g. overlay scrollbars or non-scrollable content)",
@@ -122,7 +122,7 @@ const SUGGESTS: Record<string, string[]> = {
   ],
   BackgroundInputUnsupported: [
     "Target app does not accept background input - use method:'foreground' or omit",
-    "For Chrome/Edge: use browser_fill_input instead",
+    "For Chrome/Edge: use browser_fill instead",
   ],
   BackgroundInputIncomplete: [
     "Input sent partially - retry with method:'foreground' for full input",

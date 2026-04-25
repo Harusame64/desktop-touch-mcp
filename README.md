@@ -21,7 +21,7 @@ An MCP server that gives Claude eyes and hands on Windows — 57 tools covering 
 - **⚡ High-performance Rust Native Core** — The UIA bridge and image-diff engine are written in Rust (`napi-rs` + `windows-rs`) and loaded as a native `.node` addon. Direct COM calls from a dedicated MTA thread eliminate PowerShell process spawning — `getFocusedElement` completes in **2 ms** (160× faster), and `getUiElements` returns full trees in **~100 ms** with a batch BFS algorithm that minimizes cross-process RPC. Image-diff operations use **SSE2 SIMD** for 13–15× throughput. When the native engine is unavailable, every function transparently falls back to PowerShell — zero config required.
 - **🎯 Set-of-Marks (SoM) visual fallback** — Games, RDP sessions, and non-accessible Electron apps return clickable elements even when UIA is completely blind. `screenshot(detail="text")` automatically detects UIA sparsity and activates a Hybrid Non-CDP pipeline: Rust-powered grayscale + bilinear upscale → Windows OCR → clustering → red bounding-box annotation with numbered badges (`[1]`, `[2]`…). Two parallel representations returned: a visual PNG for spatial orientation and a semantic `elements[]` list with `clickAt` coords — no CDP required.
 - **LLM-native design** — Built around how LLMs think, not how humans click. `run_macro` batches multiple operations into a single API call; `diffMode` sends only the windows that changed since the last frame. Minimal tokens, minimal round-trips.
-- **Reactive Perception Graph** — Register a `lensId` for a window or browser tab, pass it to action tools, and get guard-checked `post.perception` feedback after each action. It reduces repeated `screenshot` / `get_context` calls and prevents wrong-window typing or stale-coordinate clicks.
+- **Reactive Perception Graph** — Register a `lensId` for a window or browser tab, pass it to action tools, and get guard-checked `post.perception` feedback after each action. It reduces repeated `screenshot` / `desktop_state` calls and prevents wrong-window typing or stale-coordinate clicks.
 - **Full CJK support** — Uses Win32 `GetWindowTextW` for window titles, avoiding nut-js garbling. IME bypass input supported for Japanese/Chinese/Korean environments.
 - **3-tier token reduction** — `detail="image"` (~443 tok) / `detail="text"` (~100–300 tok) / `diffMode=true` (~160 tok). Send pixels only when you actually need to see them.
 - **1:1 coordinate mode** — `dotByDot=true` captures at native resolution (WebP). Image pixel = screen coordinate — no scale math needed. With `origin`+`scale` passed to `mouse_click`, the server converts coords for you — eliminating off-by-one / scale bugs.
@@ -168,13 +168,13 @@ For a local checkout, register the built server directly:
 | Tool | Description |
 |---|---|
 | `browser_launch` | Launch Chrome/Edge/Brave with `--remote-debugging-port` and wait for the CDP endpoint (idempotent) |
-| `browser_connect` | Connect to Chrome/Edge via CDP; lists open tabs with `active:true/false` |
-| `browser_find_element` | CSS selector → exact physical screen coords |
-| `browser_click_element` | Find DOM element + click in one step |
+| `browser_open` | Connect to Chrome/Edge via CDP; lists open tabs with `active:true/false` |
+| `browser_locate` | CSS selector → exact physical screen coords |
+| `browser_click` | Find DOM element + click in one step |
 | `browser_eval` | Evaluate JS expression in the browser tab |
-| `browser_fill_input` | Fill React/Vue/Svelte controlled inputs via CDP — works where `browser_eval` value assignment doesn't update framework state |
+| `browser_fill` | Fill React/Vue/Svelte controlled inputs via CDP — works where `browser_eval` value assignment doesn't update framework state |
 | `browser_get_dom` | Get outerHTML of element or `document.body` |
-| `browser_get_interactive` | Enumerate links / buttons / inputs + **ARIA toggles** with `state.{checked,pressed,selected,expanded}`; each element includes `viewportPosition` |
+| `browser_overview` | Enumerate links / buttons / inputs + **ARIA toggles** with `state.{checked,pressed,selected,expanded}`; each element includes `viewportPosition` |
 | `browser_get_app_state` | **SPA state extractor** — one CDP call that scans `__NEXT_DATA__`, `__NUXT_DATA__`, `__REMIX_CONTEXT__`, `__APOLLO_STATE__`, GitHub `react-app` embeddedData, JSON-LD, `window.__INITIAL_STATE__` |
 | `browser_search` | Grep DOM by text / regex / role / ariaLabel / selector with confidence ranking |
 | `browser_navigate` | Navigate via CDP `Page.navigate`; `waitForLoad:true` (default) returns once `readyState==='complete'` |
@@ -191,10 +191,10 @@ All `browser_*` tools that touch the DOM accept `includeContext:false` to omit t
 ### Context / Wait / History (8)
 | Tool | Description |
 |---|---|
-| `get_context` | Lightweight snapshot of focused window, element, cursor, and page state |
+| `desktop_state` | Lightweight snapshot of focused window, element, cursor, and page state |
 | `get_history` | Retrieve recent tool invocation history |
 | `get_document_state` | Chrome page state (URL/title/readyState/scroll) via CDP |
-| `engine_status` | Returns which backend is active: `uia` (native Rust or powershell) and `imageDiff` (native Rust SSE2 or typescript). Diagnostic — call once per session when troubleshooting performance |
+| `server_status` | Returns which backend is active: `uia` (native Rust or powershell) and `imageDiff` (native Rust SSE2 or typescript). Diagnostic — call once per session when troubleshooting performance |
 | `wait_until` | Server-side wait for window/focus/terminal/browser DOM state changes |
 | `events_subscribe` / `events_poll` / `events_unsubscribe` / `events_list` | Subscribe to and poll window appearance/disappearance/focus events |
 
@@ -240,13 +240,13 @@ chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\tmp\cdp
 
 ```
 browser_launch()                        → launch Chrome/Edge/Brave in debug mode (idempotent)
-browser_connect()                       → list open tabs + get tabIds
-browser_find_element("#submit")         → CSS selector → physical screen coords
-browser_click_element("#submit")        → find + click in one step (auto-focuses browser)
+browser_open()                       → list open tabs + get tabIds
+browser_locate("#submit")         → CSS selector → physical screen coords
+browser_click("#submit")        → find + click in one step (auto-focuses browser)
 browser_eval("document.title")          → evaluate JS, returns result
-browser_fill_input("#email", "user@example.com") → fill React/Vue/Svelte controlled input (state-safe)
+browser_fill("#email", "user@example.com") → fill React/Vue/Svelte controlled input (state-safe)
 browser_get_dom("#main", maxLength=5000)→ outerHTML, truncated to maxLength chars
-browser_get_interactive()               → links/buttons/inputs + ARIA toggles + viewportPosition per element
+browser_overview()               → links/buttons/inputs + ARIA toggles + viewportPosition per element
 browser_get_app_state()                 → one-shot SPA state (Next/Nuxt/Remix/Apollo/GitHub react-app/Redux SSR)
 browser_search(by="text", pattern="...")→ grep DOM with confidence ranking
 browser_navigate("https://example.com") → navigate via CDP (no address bar interaction)
@@ -255,11 +255,11 @@ browser_disconnect()                    → clean up WebSocket sessions
 
 For chained calls in the same tab, pass `includeContext:false` to omit the activeTab/readyState annotation (~150 tok/call saved). Boolean / object params accept the LLM-friendly string spellings (`"true"`, `"{}"`).
 
-Coordinates returned by `browser_find_element` account for the browser chrome (tab strip + address bar height) and `devicePixelRatio`, so they can be passed directly to `mouse_click` without any scaling.
+Coordinates returned by `browser_locate` account for the browser chrome (tab strip + address bar height) and `devicePixelRatio`, so they can be passed directly to `mouse_click` without any scaling.
 
 **Recommended web workflow:**
 ```
-browser_connect() → browser_get_dom() → browser_find_element(selector) → browser_click_element(selector)
+browser_open() → browser_get_dom() → browser_locate(selector) → browser_click(selector)
 ```
 
 ---
@@ -326,7 +326,7 @@ keyboard_type({text:"x", lensId:"perc-1"})
 → {ok:false, code:"GuardFailed", suggest:["Re-register lens for the new process instance"]}
 ```
 
-`lensId` is opt-in on all action tools (`keyboard_type`, `keyboard_press`, `mouse_click`, `mouse_drag`, `click_element`, `set_element_value`, `browser_click_element`, `browser_navigate`, `browser_eval`). Omitting `lensId` preserves existing behavior exactly.
+`lensId` is opt-in on all action tools (`keyboard_type`, `keyboard_press`, `mouse_click`, `mouse_drag`, `click_element`, `set_element_value`, `browser_click`, `browser_navigate`, `browser_eval`). Omitting `lensId` preserves existing behavior exactly.
 
 ---
 
@@ -527,7 +527,7 @@ Setting `DESKTOP_TOUCH_FORCE_FOCUS=1` makes `forceFocus: true` the default for a
 
 ## Auto Guard (v0.12+)
 
-Action tools (`mouse_click`, `mouse_drag`, `keyboard_type`, `keyboard_press`, `click_element`, `set_element_value`, `browser_click_element`, `browser_navigate`) automatically guard each action when you pass `windowTitle` / `tabId`:
+Action tools (`mouse_click`, `mouse_drag`, `keyboard_type`, `keyboard_press`, `click_element`, `set_element_value`, `browser_click`, `browser_navigate`) automatically guard each action when you pass `windowTitle` / `tabId`:
 
 - Verifies target window identity (process restart / HWND replacement detected)
 - Confirms click coordinates are inside the target window rect
@@ -560,7 +560,7 @@ When auto guard is enabled (default), `post.perception.status` will be one of:
 | `ambiguous_target` | Multiple windows matched; use a more specific title |
 | `identity_changed` | Window was replaced (process restart / HWND change) |
 | `unsafe_coordinates` | Click coordinates are outside the target window rect |
-| `needs_escalation` | Use `browser_click_element` or specify `windowTitle` |
+| `needs_escalation` | Use `browser_click` or specify `windowTitle` |
 
 When `unsafe_coordinates` or `identity_changed` is returned, the response may include a `suggestedFix.fixId`. Pass that `fixId` to the relevant tool call to approve the recovery:
 
@@ -568,7 +568,7 @@ When `unsafe_coordinates` or `identity_changed` is returned, the response may in
 { "name": "mouse_click",           "arguments": { "fixId": "fix-..." } }
 { "name": "keyboard_type",         "arguments": { "fixId": "fix-...", "text": "hello" } }
 { "name": "click_element",         "arguments": { "fixId": "fix-..." } }
-{ "name": "browser_click_element", "arguments": { "fixId": "fix-..." } }
+{ "name": "browser_click", "arguments": { "fixId": "fix-..." } }
 ```
 
 The fix is one-shot and expires in 15 seconds. The server revalidates the target process identity before executing.
@@ -666,27 +666,27 @@ The 160× speedup on `getFocusedElement` comes from eliminating PowerShell proce
 
 ## UI Operating Layer (V2)
 
-> **Status: Default ON since v0.17.** `desktop_see` and `desktop_touch` are available out of the box.
+> **Status: Default ON since v0.17.** `desktop_discover` and `desktop_act` are available out of the box.
 
 V2 introduces two new tools that replace coordinate-based clicking with entity-based interaction:
 
 | Tool | Description |
 |---|---|
-| `desktop_see` | Observe a window or browser tab. Returns interactive entities with leases — no raw screen coordinates. Supports UIA (native), CDP (browser), terminal, and visual GPU lanes. |
-| `desktop_touch` | Interact with an entity returned by `desktop_see`. Validates the lease before executing. Returns a semantic diff (`entity_disappeared`, `modal_appeared`, `focus_shifted`, …). |
+| `desktop_discover` | Observe a window or browser tab. Returns interactive entities with leases — no raw screen coordinates. Supports UIA (native), CDP (browser), terminal, and visual GPU lanes. |
+| `desktop_act` | Interact with an entity returned by `desktop_discover`. Validates the lease before executing. Returns a semantic diff (`entity_disappeared`, `modal_appeared`, `focus_shifted`, …). |
 
 ### Clicking — priority order
 
 When multiple tools could perform the same click, prefer them in this order:
 
-1. `browser_click_element(selector)` — Chrome / Edge over CDP (stable across repaints)
-2. `desktop_touch(lease)` — native windows, dialogs, visual-only targets (entity-based; use after `desktop_see`)
-3. `click_element(name | automationId)` — native UIA fallback when `desktop_touch` returns `ok:false`
+1. `browser_click(selector)` — Chrome / Edge over CDP (stable across repaints)
+2. `desktop_act(lease)` — native windows, dialogs, visual-only targets (entity-based; use after `desktop_discover`)
+3. `click_element(name | automationId)` — native UIA fallback when `desktop_act` returns `ok:false`
 4. `mouse_click(x, y)` — pixel-level last resort (`origin` + `scale` from `dotByDot` screenshots only)
 
 ### Disabling V2 (kill switch)
 
-To hide `desktop_see` / `desktop_touch` from the tool catalog, add the disable flag and restart:
+To hide `desktop_discover` / `desktop_act` from the tool catalog, add the disable flag and restart:
 
 ```json
 {
@@ -719,14 +719,14 @@ This was the opt-in switch in v0.16.x. From v0.17 it is accepted for compatibili
 
 ### Recovery when V2 fails
 
-If `desktop_touch` returns `ok: false`, read `reason` and follow the built-in recovery hints in the tool description. Common paths:
+If `desktop_act` returns `ok: false`, read `reason` and follow the built-in recovery hints in the tool description. Common paths:
 
-- `lease_expired` / `*_mismatch` / `entity_not_found` → re-call `desktop_see`
+- `lease_expired` / `*_mismatch` / `entity_not_found` → re-call `desktop_discover`
 - `modal_blocking` → dismiss the modal with `click_element`, then retry
-- `entity_outside_viewport` → `scroll` / `scroll_to_element`, then re-call `desktop_see`
-- `executor_failed` → fall back to `click_element` / `mouse_click` / `browser_click_element`
+- `entity_outside_viewport` → `scroll` / `scroll_to_element`, then re-call `desktop_discover`
+- `executor_failed` → fall back to `click_element` / `mouse_click` / `browser_click`
 
-For `desktop_see` warnings (`visual_provider_unavailable`, `visual_provider_warming`, `cdp_provider_failed`, …), V1 tools (`screenshot`, `click_element`, `get_ui_elements`, `terminal_send`, …) remain available as an escape hatch.
+For `desktop_discover` warnings (`visual_provider_unavailable`, `visual_provider_warming`, `cdp_provider_failed`, …), V1 tools (`screenshot`, `click_element`, `get_ui_elements`, `terminal_send`, …) remain available as an escape hatch.
 
 ---
 
@@ -736,13 +736,13 @@ For `desktop_see` warnings (`visual_provider_unavailable`, `visual_provider_warm
 |---|---|---|
 | Games / video players may return black or hang in background capture | DirectX fullscreen apps may not work even with `PW_RENDERFULLCONTENT` | Retry with `screenshot_background(fullContent=false)`; if still black, use foreground `screenshot` |
 | UIA call overhead | ~2 ms (focus) / ~100 ms (tree) via Rust native engine; ~300 ms via PowerShell fallback | Rust engine loads automatically; `workspace_snapshot` uses a 2 s timeout internally |
-| Chrome / WinUI3 UIA elements are empty | Chromium exposes only limited UIA | `screenshot(detail='text')` auto-detects Chromium and falls back to Windows OCR (`hints.chromiumGuard=true`). For richer DOM access use `browser_connect` + `browser_find_element` |
+| Chrome / WinUI3 UIA elements are empty | Chromium exposes only limited UIA | `screenshot(detail='text')` auto-detects Chromium and falls back to Windows OCR (`hints.chromiumGuard=true`). For richer DOM access use `browser_open` + `browser_locate` |
 | Chromium title-regex misses when sites rewrite `document.title` | Guard relies on the ` - Google Chrome` suffix being present; some sites push it off the end of a long title | Title is treated as plain Chrome (UIA runs). OCR path is still reachable via `ocrFallback='always'` or when UIA returns `<5` elements (`uiaSparse`) |
-| `browser_*` CDP tools need Chrome launched with `--remote-debugging-port` | If Chrome is already running on the default profile without the flag, `browser_launch` / `browser_connect` fail. The CDP E2E suite (`tests/e2e/browser-cdp.test.ts`) will also fail in that state | Close Chrome first, then `browser_launch` will relaunch it in debug mode, or start Chrome manually with `--remote-debugging-port=9222 --user-data-dir=C:\tmp\cdp` |
+| `browser_*` CDP tools need Chrome launched with `--remote-debugging-port` | If Chrome is already running on the default profile without the flag, `browser_launch` / `browser_open` fail. The CDP E2E suite (`tests/e2e/browser-cdp.test.ts`) will also fail in that state | Close Chrome first, then `browser_launch` will relaunch it in debug mode, or start Chrome manually with `--remote-debugging-port=9222 --user-data-dir=C:\tmp\cdp` |
 | Layer buffer TTL | Buffer auto-clears after 90s of inactivity → next `diffMode` becomes an I-frame | After long waits, call `workspace_snapshot` to explicitly reset the buffer |
 | `keyboard_type` / `keyboard_press` follow focus | When `dock_window(pin=true)` keeps another window on top (e.g. Claude CLI), keystrokes may be absorbed by that window | Call `focus_window(title=...)` first and verify `isActive=true` via `screenshot(detail='meta')` before sending keys |
 | `keyboard_type` em-dash / smart quotes in Chrome/Edge | Non-ASCII punctuation (em-dash `—`, en-dash `–`, smart quotes `"" ''`) can be intercepted as keyboard accelerators, shifting focus to the address bar | Always use `use_clipboard=true` when the text contains such characters |
-| `browser_eval` on React / Vue / Svelte inputs | Setting `element.value = ...` or dispatching synthetic events does not update the framework's internal state | Use `browser_fill_input(selector, value)` — it uses native prototype setter + InputEvent which does update React/Vue/Svelte state |
+| `browser_eval` on React / Vue / Svelte inputs | Setting `element.value = ...` or dispatching synthetic events does not update the framework's internal state | Use `browser_fill(selector, value)` — it uses native prototype setter + InputEvent which does update React/Vue/Svelte state |
 
 ---
 

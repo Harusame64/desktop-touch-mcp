@@ -22,7 +22,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "../..");
 
 const TOOL_FILES = [
-  "browser.ts", "clipboard.ts", "context.ts", "dock.ts", "engine-status.ts", "events.ts",
+  "browser.ts", "clipboard.ts", "desktop-state.ts", "dock.ts", "server-status.ts", "events.ts",
   "keyboard.ts", "macro.ts", "mouse.ts", "notification.ts", "perception.ts", "pin.ts",
   "screenshot.ts", "scroll-capture.ts", "scroll-to-element.ts", "smart-scroll.ts",
   "terminal.ts", "ui-elements.ts", "wait-until.ts", "window.ts", "workspace.ts",

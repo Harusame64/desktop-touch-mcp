@@ -38,7 +38,7 @@ export interface TargetFingerprint {
 export interface SuggestedFix {
   fixId: string;
   /** v3 §7.1: all 4 supported tool kinds */
-  tool: "mouse_click" | "keyboard_type" | "browser_click_element" | "click_element";
+  tool: "mouse_click" | "keyboard_type" | "browser_click" | "click_element";
   args: Record<string, unknown>;
   targetFingerprint: TargetFingerprint;
   createdAtMs: number;

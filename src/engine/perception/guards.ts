@@ -34,12 +34,12 @@ export interface GuardContext {
    * Phase F: browser readiness policy for browser tools (v3 §4.2, §12.3).
    *   "strict"             — block on readyState !== "complete" (default, browser_eval)
    *   "selectorInViewport" — pass-with-note when readyState !== "complete" but
-   *                          browserSelectorInViewport is true (browser_click_element)
+   *                          browserSelectorInViewport is true (browser_click)
    *   "navigationGate"     — pass-with-note when readyState === "interactive"
    *                          (browser_navigate: navigation in progress is acceptable)
    */
   browserReadinessPolicy?: "strict" | "selectorInViewport" | "navigationGate";
-  /** True when the target selector was resolved in-viewport (browser_click_element). */
+  /** True when the target selector was resolved in-viewport (browser_click). */
   browserSelectorInViewport?: boolean;
 }
 
@@ -118,7 +118,7 @@ function evalKeyboardTarget(lens: PerceptionLens, store: FluentStore, nowMs: num
   if (lens.spec.target.kind === "browserTab") {
     // OS keyboard tools send keys to the focused OS window, not to a browser tab.
     // If the caller is keyboard_type or keyboard_press, fail-closed: the correct tool
-    // for browser content input is browser_fill_input.
+    // for browser content input is browser_fill.
     const kbTools = ["keyboard_type", "keyboard_press"];
     if (ctx?.toolName && kbTools.includes(ctx.toolName)) {
       return {
@@ -126,7 +126,7 @@ function evalKeyboardTarget(lens: PerceptionLens, store: FluentStore, nowMs: num
         ok: false,
         confidence: 1,
         reason: `${ctx.toolName} sends OS-level keystrokes to the focused window, not to a browser tab. Chrome must be in the foreground and the correct tab must be active.`,
-        suggestedAction: "Use browser_fill_input to type into browser fields, or call focus_window(Chrome) first",
+        suggestedAction: "Use browser_fill to type into browser fields, or call focus_window(Chrome) first",
       };
     }
     // For non-keyboard browser tools, readyState check is sufficient.

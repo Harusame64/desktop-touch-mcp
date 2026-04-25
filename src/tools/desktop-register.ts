@@ -1,5 +1,5 @@
 /**
- * desktop-register.ts — MCP tool registration for desktop_see / desktop_touch.
+ * desktop-register.ts — MCP tool registration for desktop_discover / desktop_act.
  *
  * Guarded by env flag DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2=1.
  * Only imported when the flag is set — OFF path has zero side-effects.
@@ -8,7 +8,7 @@
  *   - Process-local singleton (shared across all createMcpServer() calls).
  *   - In stateless HTTP mode, multiple requests share the same facade instance;
  *     session state (leases, generations) persists within the process lifetime.
- *     This is required: desktop_see in request N must be followed by desktop_touch
+ *     This is required: desktop_discover in request N must be followed by desktop_act
  *     in request N+1 using the same session.
  *   - State bleed between targets is prevented by the per-target SessionRegistry
  *     (each hwnd/tabId/windowTitle has its own LeaseStore and generation counter).
@@ -322,7 +322,7 @@ const desktopSeeSchema = {
 };
 
 const desktopTouchSchema = {
-  lease:  leaseSchema.describe("Lease returned by desktop_see. Expires after TTL; re-call desktop_see if touch fails with lease_expired."),
+  lease:  leaseSchema.describe("Lease returned by desktop_discover. Expires after TTL; re-call desktop_discover if desktop_act fails with lease_expired."),
   action: z.enum(["auto", "invoke", "click", "type", "select"]).optional().describe("Action to perform. 'auto' selects the best affordance from the entity."),
   text:   z.string().optional().describe("Text to type (required when action=type)"),
 };
@@ -330,7 +330,7 @@ const desktopTouchSchema = {
 // ── Tool registration ─────────────────────────────────────────────────────────
 
 /**
- * Register desktop_see and desktop_touch on the MCP server.
+ * Register desktop_discover and desktop_act on the MCP server.
  * Called by default on v0.17+; suppressed only when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1.
  * See docs/anti-fukuwarai-v2-activation-policy.md.
  */
@@ -338,11 +338,11 @@ export function registerDesktopTools(server: McpServer): void {
   const facade = getDesktopFacade();
 
   server.tool(
-    "desktop_see",
+    "desktop_discover",
     [
-      "[EXPERIMENTAL] Observe a window or browser tab and return interactive entities as structured data.",
+      "[EXPERIMENTAL] Find actionable entities and emit leases for desktop_act. Observe a window or browser tab and return interactive entities as structured data.",
       "Supports multiple source lanes: UIA (native), CDP (browser), terminal buffer, and visual GPU.",
-      "Returns entities with leases — pass a lease to desktop_touch to interact.",
+      "Returns entities with leases — pass a lease to desktop_act to interact.",
       "Raw screen coordinates are NOT returned in normal mode (debug=true only).",
       "If response.warnings[] is non-empty, results may be partial.",
       "response.constraints (when present) is a structured summary of provider limitations — use it to decide fallback without parsing warnings[] strings.",
@@ -373,18 +373,18 @@ export function registerDesktopTools(server: McpServer): void {
   );
 
   server.tool(
-    "desktop_touch",
+    "desktop_act",
     [
-      "[EXPERIMENTAL] Interact with an entity returned by desktop_see.",
+      "[EXPERIMENTAL] Act on a discovered entity (click/type/setValue/scroll). Use desktop_act.",
       "Validates the lease before executing — rejects stale, expired, or mismatched leases.",
       "Returns a semantic diff (entity_disappeared, modal_appeared, etc.) and a 'next' hint.",
       "If ok=false, read 'reason':",
-      "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_see;",
+      "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_discover;",
       "  modal_blocking → dismiss modal via V1 click_element then retry;",
       "  entity_outside_viewport → scroll via V1 scroll/scroll_to_element then retry;",
-      "  executor_failed → fall back to V1 tools (click_element / mouse_click / browser_click_element);",
+      "  executor_failed → fall back to V1 tools (click_element / mouse_click / browser_click);",
       "  executor_failed on terminal textbox (action=type) → use V1 terminal_send instead.",
-      "Check desktop_see response.constraints for pre-emptive fallback hints before calling touch.",
+      "Check desktop_discover response.constraints for pre-emptive fallback hints before calling desktop_act.",
     ].join(" "),
     desktopTouchSchema,
     async (input) => {

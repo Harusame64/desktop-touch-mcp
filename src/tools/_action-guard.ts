@@ -53,7 +53,7 @@ export interface RunActionGuardParams {
   foregroundVerified?: boolean;
   /** Phase F: browser readiness policy (v3 §4.2, §12.3). Forwarded to evalBrowserReady. */
   browserReadinessPolicy?: "strict" | "selectorInViewport" | "navigationGate";
-  /** Phase F: true when target selector was resolved in-viewport (browser_click_element). */
+  /** Phase F: true when target selector was resolved in-viewport (browser_click). */
   browserSelectorInViewport?: boolean;
   /**
    * Phase G: caller-supplied args to carry into SuggestedFix (text, selector, name, automationId…).
@@ -176,7 +176,7 @@ function nextStepFor(
     case "browser_not_ready":
       return "Browser tab is not ready. Wait and retry.";
     case "needs_escalation":
-      return "Use browser_click_element or specify windowTitle for this action.";
+      return "Use browser_click or specify windowTitle for this action.";
   }
 }
 
@@ -305,11 +305,11 @@ function tryBuildSuggestedFix(
       if (!fp) return null;
       const fixArgs = { ...(fixCarryingArgs ?? {}) };
       if (failedKind === "target.identityStable" && resolved.changed?.includes("identity")) {
-        return { tool: "browser_click_element", args: fixArgs, targetFingerprint: fp,
+        return { tool: "browser_click", args: fixArgs, targetFingerprint: fp,
           reason: `Browser tab identity changed. Approve to retry.` };
       }
       if (failedKind === "browser.ready") {
-        return { tool: "browser_click_element", args: fixArgs, targetFingerprint: fp,
+        return { tool: "browser_click", args: fixArgs, targetFingerprint: fp,
           reason: `Browser tab not ready. Approve to retry when ready.` };
       }
       return null;
