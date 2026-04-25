@@ -32,7 +32,7 @@
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { nativeVision, type NativeRawCandidate, type NativeRecognizeRequest } from "../native-engine.js";
+import { nativeVision, type NativeRawCandidate } from "../native-engine.js";
 import type { VisualBackend } from "./backend.js";
 import { ModelRegistry, type ModelVariant } from "./model-registry.js";
 import { runStagePipeline, type StageSessionKeys, type StagePipelineInput } from "./stage-pipeline.js";
@@ -74,13 +74,10 @@ export class OnnxBackend implements VisualBackend {
     // Idempotent: if already warm with session keys, short-circuit.
     if (this.state === "warm" && this.stageKeys !== null) return "warm";
 
-    // Phase 4b-1 backward-compat: if visionInitSession is not yet available
-    // (older native build or test environment), skip session init and remain
-    // warm using the Phase 4a direct-native-call path (stageKeys stays null).
-    if (typeof nativeVision!.visionInitSession !== "function") {
-      this.state = "warm";
-      return this.state;
-    }
+    // 4b-5c: typeof visionInitSession guard removed (B1 cleanup).
+    // visionInitSession is always available in post-4b-5c builds; if absent,
+    // OnnxBackend.isAvailable() already catches the case via visionRecognizeRois
+    // check, or the session init below fails gracefully → evicted transition.
 
     // Load bundled manifest (fallback gracefully if missing — treat as evicted).
     try {
@@ -188,8 +185,6 @@ export class OnnxBackend implements VisualBackend {
     if (rois.length === 0) return [];
 
     const effectiveBuffer = frameBuffer ?? Buffer.alloc(0);
-    // Backward-compat: empty Buffer triggers legacy dummy path in Rust
-    // (frame_buffer.is_empty()), keeping 4a/4b-1 test assertions stable.
 
     const nativeRois = rois.map((r) => ({
       trackId: r.trackId,
@@ -199,8 +194,14 @@ export class OnnxBackend implements VisualBackend {
 
     let raw: NativeRawCandidate[];
 
-    if (this.state === "warm" && this.stageKeys !== null) {
-      // Phase 4b-5 path: run 3-stage pipeline via stage-pipeline.ts
+    if (this.state !== "warm" || this.stageKeys === null) {
+      // 4b-5 post-review B1 fix: warm 未達 → [] 返却
+      // (4b-1 時代の legacy sessionKey="" fallback path は 4b-5c で除去)
+      return [];
+    }
+
+    // Phase 4b-5 path: run 3-stage pipeline via stage-pipeline.ts
+    {
       const input: StagePipelineInput = {
         targetKey,
         rois: nativeRois,
@@ -217,27 +218,6 @@ export class OnnxBackend implements VisualBackend {
         );
       } catch (err) {
         console.error("[onnx-backend] runStagePipeline failed:", err);
-        return [];
-      }
-    } else {
-      // Phase 4a legacy path: direct native call (backward-compat for callers
-      // that do not call ensureWarm first, e.g. existing unit tests).
-      // Rust side will use session_key="" → dummy_recognise path.
-      const req: NativeRecognizeRequest = {
-        targetKey,
-        sessionKey: "",
-        rois: nativeRois,
-        frameWidth: frameWidth ?? this.opts.defaultFrameWidth ?? 0,
-        frameHeight: frameHeight ?? this.opts.defaultFrameHeight ?? 0,
-        frameBuffer: effectiveBuffer,
-        nowMs: Date.now(),
-      };
-      try {
-        raw = await nativeVision!.visionRecognizeRois!(req);
-      } catch (err) {
-        // Rust catch_unwind already converted panics to Err here. Log and bail —
-        // never throw out: the visual lane stays operational via fallback paths.
-        console.error("[onnx-backend] visionRecognizeRois failed:", err);
         return [];
       }
     }
