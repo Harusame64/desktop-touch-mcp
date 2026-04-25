@@ -52,9 +52,11 @@ function makeSessionInit(overrides: Partial<NativeSessionInit> = {}): NativeSess
   };
 }
 
-// ── Block A: visionInitSession absent ────────────────────────────────────────
+// ── Block A: visionInitSession absent (post-4b-5c accuracy追従) ──────────────
+// 4b-5c で typeof visionInitSession guard を除去。
+// visionInitSession 不在時は "warm" ではなく "evicted" へ遷移する。
 
-describe("OnnxBackend without visionInitSession (4b-1 absence test)", () => {
+describe("OnnxBackend without visionInitSession (post-4b-5c: evicted instead of warm)", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.doMock("../../src/engine/native-engine.js", () => ({
@@ -69,11 +71,12 @@ describe("OnnxBackend without visionInitSession (4b-1 absence test)", () => {
     }));
   });
 
-  it("ensureWarm() still reaches 'warm' when visionInitSession is absent", async () => {
+  it("ensureWarm() transitions to 'evicted' when visionInitSession is absent (post-4b-5c)", async () => {
     const { OnnxBackend } = await import("../../src/engine/vision-gpu/onnx-backend.js");
     const b = new OnnxBackend();
     const state = await b.ensureWarm({ kind: "game", id: "g1" });
-    expect(state).toBe("warm");
+    // changed from "warm" (4b-1 typeof guard) → "evicted" (post-4b-5c guard removed)
+    expect(state).toBe("evicted");
   });
 });
 

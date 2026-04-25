@@ -17,6 +17,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ── Block A: native binding absent ────────────────────────────────────────────
+// Block A accuracy追従 (4b-5c): visionInitSession 不在 → "evicted" 期待
+// (旧 4b-1 時代の typeof guard で "warm" を返していたシナリオを除去)
 
 describe("OnnxBackend without native vision binding", () => {
   beforeEach(() => {
@@ -50,7 +52,38 @@ describe("OnnxBackend without native vision binding", () => {
   });
 });
 
-// ── Block B: native binding present (mocked) ─────────────────────────────────
+// Block A accuracy追従: visionInitSession intentionally absent (post-4b-5c legacy removal)
+describe("OnnxBackend without visionInitSession (post-4b-5c legacy removal)", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it("ensureWarm() transitions to 'evicted' when visionInitSession is absent", async () => {
+    vi.doMock("../../src/engine/native-engine.js", () => ({
+      nativeVision: {
+        // visionInitSession intentionally absent (post-4b-5c: typeof guard removed)
+        visionRecognizeRois: vi.fn(),
+        detectCapability: vi.fn().mockReturnValue({
+          os: "windows", osBuild: 26100, gpuVendor: "AMD", gpuDevice: "X",
+          gpuArch: "RDNA4", gpuVramMb: 16384, winml: true, directml: true,
+          rocm: false, cuda: false, tensorrt: false, cpuIsa: ["avx2"],
+          backendBuilt: true, epsBuilt: ["directml"],
+        }),
+      },
+      nativeEngine: null,
+      nativeUia: null,
+    }));
+    const { OnnxBackend } = await import("../../src/engine/vision-gpu/onnx-backend.js");
+    const b = new OnnxBackend();
+    const state = await b.ensureWarm({ kind: "game", id: "g1" });
+    // changed from "warm" (4b-1 typeof guard path) → "evicted" (post-4b-5c)
+    expect(state).toBe("evicted");
+  });
+});
+
+// ── Block B: native binding present (mocked) — post-4b-5c legacy removal ─────
+// Block B accuracy追従 (4b-5c): ensureWarm 未呼出で recognizeRois は [] 返却
+// (4b-1 時代の legacy path sessionKey="" は 4b-5c で除去された)
 
 describe("OnnxBackend with mocked native binding", () => {
   beforeEach(() => {
@@ -73,7 +106,8 @@ describe("OnnxBackend with mocked native binding", () => {
     expect(cands).toEqual([]);
   });
 
-  it("recognizeRois() maps NativeRawCandidate → UiEntityCandidate", async () => {
+  // Block B accuracy追従: ensureWarm 未呼出 → [] 返却 (post-4b-5c, legacy path removed)
+  it("recognizeRois() without ensureWarm returns [] (post-4b-5c)", async () => {
     vi.doMock("../../src/engine/native-engine.js", () => ({
       nativeVision: {
         visionRecognizeRois: vi.fn().mockResolvedValue([
@@ -85,14 +119,6 @@ describe("OnnxBackend with mocked native binding", () => {
             confidence: 0.94,
             provisional: false,
           },
-          {
-            trackId: "track-B",
-            rect: { x: 100, y: 50, width: 24, height: 24 },
-            label: "",
-            class: "icon",
-            confidence: 0.71,
-            provisional: true,
-          },
         ]),
       },
       nativeEngine: null,
@@ -100,30 +126,15 @@ describe("OnnxBackend with mocked native binding", () => {
     }));
     const { OnnxBackend } = await import("../../src/engine/vision-gpu/onnx-backend.js");
     const b = new OnnxBackend();
-    expect(OnnxBackend.isAvailable()).toBe(true);
-
+    // ensureWarm NOT called → state remains "cold" → legacy path removed → []
     const cands = await b.recognizeRois("window:1234", [
       { trackId: "track-A", rect: { x: 10, y: 20, width: 80, height: 32 } },
-      { trackId: "track-B", rect: { x: 100, y: 50, width: 24, height: 24 } },
     ]);
-    expect(cands).toHaveLength(2);
-
-    expect(cands[0]?.source).toBe("visual_gpu");
-    expect(cands[0]?.target).toEqual({ kind: "window", id: "1234" });
-    expect(cands[0]?.role).toBe("button");
-    expect(cands[0]?.label).toBe("Send");
-    expect(cands[0]?.confidence).toBe(0.94);
-    expect(cands[0]?.provisional).toBe(false);
-    expect(cands[0]?.actionability).toContain("click");
-    expect(cands[0]?.actionability).toContain("invoke");
-
-    // icons are clickable (mapped to "button" role)
-    expect(cands[1]?.role).toBe("button");
-    expect(cands[1]?.label).toBeUndefined(); // empty string → undefined label
-    expect(cands[1]?.provisional).toBe(true);
+    expect(cands).toEqual([]); // changed from "native called 1 time with candidates"
   });
 
-  it("getStableCandidates() returns the last recognised snapshot per target", async () => {
+  // Block B accuracy追従: getStableCandidates も空 (ensureWarm 未呼出)
+  it("getStableCandidates() returns [] when recognizeRois was not warm (post-4b-5c)", async () => {
     vi.doMock("../../src/engine/native-engine.js", () => ({
       nativeVision: {
         visionRecognizeRois: vi.fn().mockResolvedValue([
@@ -135,17 +146,18 @@ describe("OnnxBackend with mocked native binding", () => {
     }));
     const { OnnxBackend } = await import("../../src/engine/vision-gpu/onnx-backend.js");
     const b = new OnnxBackend();
+    // ensureWarm NOT called → recognizeRois returns [] → no snapshot stored
     await b.recognizeRois("window:42", [{ trackId: "x", rect: { x: 0, y: 0, width: 10, height: 10 } }]);
 
     const got = await b.getStableCandidates("window:42");
-    expect(got).toHaveLength(1);
-    expect(got[0]?.label).toBe("A");
+    expect(got).toEqual([]); // changed: snapshot not stored because [] was returned
 
     const empty = await b.getStableCandidates("window:99");
     expect(empty).toEqual([]);
   });
 
-  it("onDirty() listeners fire after recognizeRois produces a snapshot", async () => {
+  // Block B accuracy追従: onDirty 発火しない (ensureWarm 未呼出)
+  it("onDirty() listeners do NOT fire when recognizeRois returns [] without warm (post-4b-5c)", async () => {
     vi.doMock("../../src/engine/native-engine.js", () => ({
       nativeVision: {
         visionRecognizeRois: vi.fn().mockResolvedValue([
@@ -159,8 +171,9 @@ describe("OnnxBackend with mocked native binding", () => {
     const b = new OnnxBackend();
     const seen: string[] = [];
     b.onDirty((key) => seen.push(key));
+    // ensureWarm NOT called → recognizeRois returns [] → no listener fires
     await b.recognizeRois("window:7", [{ trackId: "x", rect: { x: 0, y: 0, width: 10, height: 10 } }]);
-    expect(seen).toEqual(["window:7"]);
+    expect(seen).toEqual([]); // changed from ["window:7"]
   });
 
   it("updateSnapshot() preserves the PocBackend migration path", async () => {
