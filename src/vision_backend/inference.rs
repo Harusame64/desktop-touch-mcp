@@ -50,57 +50,108 @@ pub fn recognize_rois_blocking(req: RecognizeRequest) -> Result<Vec<RawCandidate
 /// Phase 4b-5 stub inference. Reuses `dummy_recognise` body and tags each
 /// candidate with `selected_ep` info for downstream tracing. Real preprocess /
 /// session.run() / postprocess go into 4b-5a/b/c as drop-in replacements.
+///
+/// Phase 4b-5a-3: if all sub-sessions and tokenizer are present, runs the full
+/// encoder pipeline (preprocess + tokenize + encoder_forward). Decoder is
+/// connected in 4b-5a-4. Stub falls through to dummy_recognise regardless.
 #[allow(unused_variables)]
 fn stub_recognise_with_session(req: RecognizeRequest, sess: std::sync::Arc<crate::vision_backend::session::VisionSession>) -> Vec<RawCandidate> {
     if sess.session_key.starts_with("florence-2-base:") && !req.frame_buffer.is_empty() {
-        // 4b-5a-1: image preprocess
-        let preprocess_ok = match crate::vision_backend::florence2::preprocess_image(
-            &req.frame_buffer,
-            req.frame_width,
-            req.frame_height,
-            req.rois.first().map(|r| &r.rect).unwrap_or(&Rect {
-                x: 0, y: 0,
-                width: req.frame_width as i32,
-                height: req.frame_height as i32,
-            }),
-        ) {
-            Ok(tensor) => {
-                debug_assert_eq!(tensor.dim(), crate::vision_backend::florence2::expected_shape());
-                true
-            }
-            Err(e) => {
-                eprintln!("[florence2] preprocess failed: {e}");
-                false
-            }
-        };
+        // Phase 4b-5a-3: try full encoder pipeline if all sub-sessions and tokenizer are present.
+        if let Some(stage1) = crate::vision_backend::florence2::Florence2Stage1Sessions::from_pool(&sess.session_key) {
+            // Step 1: preprocess (4b-5a-1)
+            let pixel_values = match crate::vision_backend::florence2::preprocess_image(
+                &req.frame_buffer,
+                req.frame_width,
+                req.frame_height,
+                req.rois.first().map(|r| &r.rect).unwrap_or(&Rect {
+                    x: 0, y: 0,
+                    width: req.frame_width as i32,
+                    height: req.frame_height as i32,
+                }),
+            ) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("[florence2] preprocess failed: {e}");
+                    return dummy_recognise(req);
+                }
+            };
 
-        // 4b-5a-2: tokenizer. Try loading tokenizer.json adjacent to the model file
-        // (convention: <model_root>/tokenizer.json, where model_root is the parent
-        // directory of the .onnx file). If the file is absent, log and continue —
-        // 4b-5a-3 will require it for real inference, but Stage 1 stub paths must
-        // not panic on missing artifact (L5).
-        if preprocess_ok {
+            // Step 2: tokenize (4b-5a-2)
             if let Some(tokenizer_path) = tokenizer_path_for_session(&sess) {
                 if tokenizer_path.exists() {
                     match crate::vision_backend::florence2::Florence2Tokenizer::from_file(&tokenizer_path) {
                         Ok(tok) => match tok.tokenize_region_proposal() {
                             Ok(prompt_tokens) => {
-                                debug_assert!(!prompt_tokens.is_empty());
-                                debug_assert_eq!(
-                                    prompt_tokens.input_ids.len(),
-                                    prompt_tokens.attention_mask.len(),
-                                );
-                                // Sanity-check: BART encoding of any non-empty prompt yields ≥ 2 tokens
-                                // (BOS + EOS at minimum). Real Florence-2 tokenization of
-                                // <REGION_PROPOSAL> is typically 3 tokens.
-                                debug_assert!(prompt_tokens.len() >= 2);
+                                // Step 3 (Phase 4b-5a-3): encoder forward
+                                match stage1.encoder_forward(pixel_values, &prompt_tokens) {
+                                    Ok(enc) => {
+                                        debug_assert_eq!(enc.encoder_hidden_states.shape()[0], 1);
+                                        debug_assert_eq!(enc.encoder_attention_mask.shape()[0], 1);
+                                        debug_assert_eq!(
+                                            enc.encoder_hidden_states.shape()[1],
+                                            enc.encoder_attention_mask.shape()[1],
+                                        );
+                                        // Phase 4b-5a-4 will pass `enc` to the decoder loop here.
+                                    }
+                                    Err(e) => eprintln!("[florence2] encoder_forward failed: {e}"),
+                                }
                             }
                             Err(e) => eprintln!("[florence2] tokenize failed: {e}"),
                         },
                         Err(e) => eprintln!("[florence2] tokenizer load failed: {e}"),
                     }
                 }
-                // tokenizer_path absent is normal in 4b-5a-2 (no real artifact yet); silent.
+                // tokenizer_path absent is normal (no real artifact yet); silent.
+            }
+        } else {
+            // Sub-sessions not yet loaded — fall back to 4b-5a-1/2 lite path.
+            // 4b-5a-1: image preprocess
+            let preprocess_ok = match crate::vision_backend::florence2::preprocess_image(
+                &req.frame_buffer,
+                req.frame_width,
+                req.frame_height,
+                req.rois.first().map(|r| &r.rect).unwrap_or(&Rect {
+                    x: 0, y: 0,
+                    width: req.frame_width as i32,
+                    height: req.frame_height as i32,
+                }),
+            ) {
+                Ok(tensor) => {
+                    debug_assert_eq!(tensor.dim(), crate::vision_backend::florence2::expected_shape());
+                    true
+                }
+                Err(e) => {
+                    eprintln!("[florence2] preprocess failed: {e}");
+                    false
+                }
+            };
+
+            // 4b-5a-2: tokenizer. Try loading tokenizer.json adjacent to the model file
+            // (convention: <model_root>/tokenizer.json, where model_root is the parent
+            // directory of the .onnx file). If the file is absent, log and continue —
+            // 4b-5a-3 will require it for real inference, but Stage 1 stub paths must
+            // not panic on missing artifact (L5).
+            if preprocess_ok {
+                if let Some(tokenizer_path) = tokenizer_path_for_session(&sess) {
+                    if tokenizer_path.exists() {
+                        match crate::vision_backend::florence2::Florence2Tokenizer::from_file(&tokenizer_path) {
+                            Ok(tok) => match tok.tokenize_region_proposal() {
+                                Ok(prompt_tokens) => {
+                                    debug_assert!(!prompt_tokens.is_empty());
+                                    debug_assert_eq!(
+                                        prompt_tokens.input_ids.len(),
+                                        prompt_tokens.attention_mask.len(),
+                                    );
+                                    debug_assert!(prompt_tokens.len() >= 2);
+                                }
+                                Err(e) => eprintln!("[florence2] tokenize failed: {e}"),
+                            },
+                            Err(e) => eprintln!("[florence2] tokenizer load failed: {e}"),
+                        }
+                    }
+                    // tokenizer_path absent is normal in 4b-5a-2 (no real artifact yet); silent.
+                }
             }
         }
     }
