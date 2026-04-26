@@ -112,6 +112,88 @@ describe("DesktopFacade — desktop_see (game / chrome / terminal)", () => {
   });
 });
 
+// Audit P1-12 (gap #2): explicit shape validation for the lease handed back
+// from desktop_discover. The existing tests above assert `lease` is defined;
+// these add a contract on every required field so refactors can't quietly
+// drop one and still pass the previous expectations.
+describe("DesktopFacade — desktop_discover lease shape contract", () => {
+  it("each entity carries a complete EntityLease (5 required fields, all populated)", async () => {
+    const facade = new DesktopFacade(gameProvider);
+    const before = Date.now();
+    const out = await facade.see({ target: TARGET_GAME });
+    expect(out.entities.length).toBeGreaterThan(0);
+
+    for (const entity of out.entities) {
+      const lease = entity.lease;
+      expect(lease).toBeDefined();
+      expect(typeof lease!.entityId).toBe("string");
+      expect(lease!.entityId.length).toBeGreaterThan(0);
+      expect(typeof lease!.viewId).toBe("string");
+      expect(lease!.viewId).toBe(out.viewId);
+      expect(typeof lease!.targetGeneration).toBe("string");
+      expect(lease!.targetGeneration.length).toBeGreaterThan(0);
+      expect(typeof lease!.expiresAtMs).toBe("number");
+      expect(lease!.expiresAtMs).toBeGreaterThan(before); // future timestamp
+      expect(typeof lease!.evidenceDigest).toBe("string");
+      expect(lease!.evidenceDigest.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("lease.entityId matches entity.entityId so callers can route without ambiguity", async () => {
+    const facade = new DesktopFacade(gameProvider);
+    const out = await facade.see({ target: TARGET_GAME });
+    for (const entity of out.entities) {
+      expect(entity.lease!.entityId).toBe(entity.entityId);
+    }
+  });
+});
+
+// Audit P1-12 (gap #3): the windows[] array on DesktopSeeOutput is meant to
+// reflect whatever the live windowsProvider currently reports, including a
+// focus shift between calls. These tests pin the contract so a future
+// refactor that caches the snapshot can't silently freeze focus.
+describe("DesktopFacade — windows[] reflects live windowsProvider state", () => {
+  function makeWindow(overrides: Partial<{
+    title: string; hwnd: string; isActive: boolean; zOrder: number;
+  }> = {}) {
+    return {
+      zOrder: overrides.zOrder ?? 0,
+      title: overrides.title ?? "Notepad",
+      hwnd: overrides.hwnd ?? "1000",
+      region: { x: 0, y: 0, width: 800, height: 600 },
+      isActive: overrides.isActive ?? true,
+      isMinimized: false,
+      isMaximized: false,
+      processName: "notepad.exe",
+    };
+  }
+
+  it("a focus change between two see() calls is reflected by windows[].isActive", async () => {
+    let activeHwnd = "1000";
+    const facade = new DesktopFacade(() => [], {
+      windowsProvider: () => [
+        makeWindow({ hwnd: "1000", title: "Notepad", isActive: activeHwnd === "1000", zOrder: 0 }),
+        makeWindow({ hwnd: "2000", title: "Calc",    isActive: activeHwnd === "2000", zOrder: 1 }),
+      ],
+    });
+
+    const first = await facade.see({});
+    const firstActive = first.windows.find((w) => w.isActive);
+    expect(firstActive?.hwnd).toBe("1000");
+
+    activeHwnd = "2000";
+
+    const second = await facade.see({});
+    const secondActive = second.windows.find((w) => w.isActive);
+    expect(secondActive?.hwnd).toBe("2000");
+
+    // The previously-active window must now report isActive:false (focus
+    // moved away, not lost).
+    const previousNotepad = second.windows.find((w) => w.hwnd === "1000");
+    expect(previousNotepad?.isActive).toBe(false);
+  });
+});
+
 describe("DesktopFacade — desktop_touch", () => {
   it("touch with valid lease returns ok:true + diff", async () => {
     const facade = new DesktopFacade(gameProvider, { executorFn: async () => "mouse" });
