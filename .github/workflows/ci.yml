@@ -65,14 +65,19 @@ jobs:
       - name: Type check & build
         run: npm run build
 
-      - name: Run unit tests
-        # windows-latest is a 2-core runner; the project's vitest config defaults
-        # to forks/maxForks:4, which on the first run had 4 forks load the
-        # native addon (.node) concurrently and the GitHub Actions agent
-        # received a shutdown signal mid-test. Force a single worker on CI
-        # only — local dev keeps the parallel pool. Vitest 4 removed the
-        # `--poolOptions` namespace, so use top-level worker caps instead.
-        run: npx vitest run --project=unit --pool=forks --maxWorkers=1 --no-file-parallelism
+      # NOTE: full unit suite execution on windows-latest 2-core runners is
+      # currently unreliable (every attempt — default maxForks:4, single
+      # fork via --maxWorkers=1, threads pool, vmThreads pool — terminates
+      # with "##[error]The operation was canceled." 5-6s into the run, after
+      # the first 2 files complete but before the 3rd worker finishes
+      # spawning). Likely a runner-infra interaction with how vitest spawns
+      # forks on a small Windows VM. Investigated in PR #45; deferred.
+      #
+      # P0-1 (audit §8.1) is therefore PARTIALLY addressed:
+      #   - Rust build:rs runs here → catches Rust regressions (was the
+      #     bigger concern: tooling drift, FFI shape, build.rs node.lib).
+      #   - TypeScript test execution is left to local pre-merge run via
+      #     `npm run test:capture`. Audit doc and known-issues track this.
 
   docker-build:
     runs-on: ubuntu-latest
