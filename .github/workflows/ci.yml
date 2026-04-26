@@ -69,9 +69,10 @@ jobs:
         # windows-latest is a 2-core runner; the project's vitest config defaults
         # to forks/maxForks:4, which on the first run had 4 forks load the
         # native addon (.node) concurrently and the GitHub Actions agent
-        # received a shutdown signal mid-test. Force singleFork on CI only —
-        # local dev keeps the parallel pool. CLI flags override the config.
-        run: npx vitest run --project=unit --pool=forks --poolOptions.forks.singleFork=true
+        # received a shutdown signal mid-test. Force a single worker on CI
+        # only — local dev keeps the parallel pool. Vitest 4 removed the
+        # `--poolOptions` namespace, so use top-level worker caps instead.
+        run: npx vitest run --project=unit --pool=forks --maxWorkers=1 --no-file-parallelism
 
   docker-build:
     runs-on: ubuntu-latest
