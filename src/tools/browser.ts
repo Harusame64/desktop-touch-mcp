@@ -984,7 +984,8 @@ export const browserGetDomHandler = async ({
       content: [{ type: "text" as const, text: lines.join("\n") }],
     };
   } catch (err) {
-    return failWith(err, "browser_get_dom");
+    // Phase 3: surfaced to LLM via browser_eval(action='dom') dispatcher.
+    return failWith(err, "browser_eval");
   }
 };
 
@@ -1368,7 +1369,7 @@ export const browserLaunchHandler = async ({
       return {
         content: [{
           type: "text" as const,
-          text: `browser_launch: url must not start with '-' (got: ${JSON.stringify(url)})`,
+          text: `browser_open: url must not start with '-' (got: ${JSON.stringify(url)})`,
         }],
       };
     }
@@ -1454,7 +1455,8 @@ export const browserLaunchHandler = async ({
       }],
     };
   } catch (err) {
-    return failWith(err, "browser_launch");
+    // Phase 3: surfaced to LLM via browser_open(launch:{...}) dispatcher.
+    return failWith(err, "browser_open");
   }
 };
 
@@ -1872,7 +1874,8 @@ export const browserGetAppStateHandler = async ({
     }
     return ok(payload);
   } catch (err) {
-    return failWith(err, "browser_get_app_state");
+    // Phase 3: surfaced to LLM via browser_eval(action='appState') dispatcher.
+    return failWith(err, "browser_eval");
   }
 };
 
