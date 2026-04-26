@@ -1,9 +1,11 @@
 /**
  * browser-tab-context.test.ts — E2E tests for activeTab/readyState annotation
  *
- * Verifies that browser_eval, browser_find_element, browser_get_dom,
- * browser_get_interactive, and browser_click_element all append
- * activeTab + readyState lines to their success responses.
+ * Verifies that browser_eval (action='js'/'dom'), browser_locate,
+ * browser_overview, and browser_click all append activeTab + readyState
+ * lines to their success responses. Phase 3 routes via the public dispatcher
+ * names but exercises the underlying internal handlers (browserEvalJsHandler
+ * for action='js', browserGetDomHandler for action='dom').
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -12,7 +14,11 @@ import { dirname, join } from "path";
 import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
 import { sleep } from "./helpers/wait.js";
 import {
-  browserEvalHandler,
+  // Phase 3: browserEvalJsHandler is the internal 'js' implementation;
+  // the public dispatcher is browserEvalHandler({action:'js'|'dom'|'appState'}).
+  // Tests call the internal handler directly to keep assertions on the JS
+  // evaluation path identical to pre-Phase-3.
+  browserEvalJsHandler,
   browserFindElementHandler,
   browserGetDomHandler,
   browserGetInteractiveHandler,
@@ -76,7 +82,7 @@ function extractTabContext(text: string): { activeTab: unknown; readyState: stri
 
 describe.skipIf(!CHROME_AVAILABLE)("browser_eval — activeTab/readyState annotation", () => {
   it("appends activeTab and readyState to successful eval", async () => {
-    const result = await browserEvalHandler({
+    const result = await browserEvalJsHandler({
       expression: "1 + 1",
       port: TEST_PORT,
       includeContext: true,
@@ -91,7 +97,7 @@ describe.skipIf(!CHROME_AVAILABLE)("browser_eval — activeTab/readyState annota
   });
 
   it("does not append activeTab/readyState on failure", async () => {
-    const result = await browserEvalHandler({
+    const result = await browserEvalJsHandler({
       expression: "throw new Error('intentional')",
       port: TEST_PORT,
       includeContext: true,
@@ -102,12 +108,12 @@ describe.skipIf(!CHROME_AVAILABLE)("browser_eval — activeTab/readyState annota
   });
 
   it("allows repeated const declarations in the same tab", async () => {
-    const first = await browserEvalHandler({
+    const first = await browserEvalJsHandler({
       expression: "const items = document.querySelectorAll('button'); return items.length;",
       port: TEST_PORT,
       includeContext: false,
     });
-    const second = await browserEvalHandler({
+    const second = await browserEvalJsHandler({
       expression: "const items = document.querySelectorAll('a'); return items.length;",
       port: TEST_PORT,
       includeContext: false,
@@ -118,7 +124,7 @@ describe.skipIf(!CHROME_AVAILABLE)("browser_eval — activeTab/readyState annota
   });
 
   it("returns explicit values from multi-statement snippets", async () => {
-    const result = await browserEvalHandler({
+    const result = await browserEvalJsHandler({
       expression: "const value = 20 + 22; return value;",
       port: TEST_PORT,
       includeContext: false,
@@ -128,12 +134,12 @@ describe.skipIf(!CHROME_AVAILABLE)("browser_eval — activeTab/readyState annota
   });
 
   it("preserves completion values from multi-statement snippets", async () => {
-    const first = await browserEvalHandler({
+    const first = await browserEvalJsHandler({
       expression: "const completionValue = 20 + 22; completionValue",
       port: TEST_PORT,
       includeContext: false,
     });
-    const second = await browserEvalHandler({
+    const second = await browserEvalJsHandler({
       expression: "const completionValue = 30 + 12; completionValue",
       port: TEST_PORT,
       includeContext: false,
@@ -144,12 +150,12 @@ describe.skipIf(!CHROME_AVAILABLE)("browser_eval — activeTab/readyState annota
   });
 
   it("wraps IIFE-prefixed snippets that include trailing top-level declarations", async () => {
-    const first = await browserEvalHandler({
+    const first = await browserEvalJsHandler({
       expression: "(() => 1)(); const iifePrefixedValue = 20 + 22; iifePrefixedValue",
       port: TEST_PORT,
       includeContext: false,
     });
-    const second = await browserEvalHandler({
+    const second = await browserEvalJsHandler({
       expression: "(() => 2)(); const iifePrefixedValue = 30 + 12; iifePrefixedValue",
       port: TEST_PORT,
       includeContext: false,
@@ -179,7 +185,7 @@ describe.skipIf(!CHROME_AVAILABLE)("browser_find_element — activeTab/readyStat
   });
 });
 
-describe.skipIf(!CHROME_AVAILABLE)("browser_get_dom — activeTab/readyState annotation", () => {
+describe.skipIf(!CHROME_AVAILABLE)("browser_eval(action='dom') — activeTab/readyState annotation", () => {
   it("appends activeTab and readyState on success", async () => {
     const result = await browserGetDomHandler({
       selector: "#btn-submit",
@@ -220,7 +226,7 @@ describe.skipIf(!CHROME_AVAILABLE)("browser_get_interactive — activeTab/readyS
 
 describe.skipIf(!CHROME_AVAILABLE)("includeContext: false omits the trailing activeTab / readyState lines", () => {
   it("browser_eval(includeContext:false) returns just the evaluated value", async () => {
-    const result = await browserEvalHandler({
+    const result = await browserEvalJsHandler({
       expression: "1 + 1",
       port: TEST_PORT,
       includeContext: false,
@@ -243,7 +249,7 @@ describe.skipIf(!CHROME_AVAILABLE)("includeContext: false omits the trailing act
     expect(text).not.toMatch(/^readyState:/m);
   });
 
-  it("browser_get_dom(includeContext:false) omits the context block", async () => {
+  it("browser_eval(action='dom', includeContext:false) omits the context block", async () => {
     const result = await browserGetDomHandler({
       selector: "#btn-submit",
       maxLength: 500,
