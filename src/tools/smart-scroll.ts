@@ -21,7 +21,7 @@ import {
 } from "../engine/image.js";
 import { captureWindowRawAndHash, getCachedRaw } from "../engine/layer-buffer.js";
 import { getCdpPort } from "../utils/desktop-config.js";
-import { ok, buildDesc } from "./_types.js";
+import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith, failArgs } from "./_errors.js";
 import { coercedBoolean } from "./_coerce.js";

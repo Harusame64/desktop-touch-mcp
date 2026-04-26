@@ -2,7 +2,7 @@ import { z } from "zod";
 import { evaluateInTab } from "../engine/cdp-bridge.js";
 import { scrollElementIntoView } from "../engine/uia-bridge.js";
 import { getCdpPort } from "../utils/desktop-config.js";
-import { ok, buildDesc } from "./_types.js";
+import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith, failArgs } from "./_errors.js";
 
