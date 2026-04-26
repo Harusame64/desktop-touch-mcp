@@ -373,7 +373,7 @@ export function getUiaCacheTimestamp(hwnd: bigint): number | null {
 
 /**
  * Return the cached raw pixel buffer for a window (from the last diffMode capture).
- * Used by smart_scroll image path to derive dHash without re-screenshotting.
+ * Used by scroll({action:'smart'}) image path to derive dHash without re-screenshotting.
  * Returns null when no baseline has been captured for this HWND.
  */
 export function getCachedRaw(hwnd: bigint): {
@@ -395,7 +395,7 @@ export function getCachedDHash(hwnd: bigint): bigint | null {
 /**
  * Capture the raw pixels for a window region and update the dHash cache.
  * Returns null on capture failure.
- * Callers (smart_scroll image path) use this between scroll attempts.
+ * Callers (scroll({action:'smart'}) image path) use this between scroll attempts.
  */
 export async function captureWindowRawAndHash(
   hwnd: bigint,

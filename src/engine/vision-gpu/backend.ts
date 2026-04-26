@@ -33,7 +33,7 @@ export interface VisualBackend {
    * Returns an unsubscribe function. Multiple listeners are allowed.
    *
    * Dirty signals cause the ingress to invalidate the target's cache so the next
-   * desktop_see call triggers a fresh fetch — this is the "event-first" path.
+   * desktop_discover call triggers a fresh fetch — this is the "event-first" path.
    */
   onDirty(cb: (targetKey: string) => void): () => void;
 

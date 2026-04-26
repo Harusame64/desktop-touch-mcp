@@ -398,7 +398,7 @@ export interface UiElement {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Focused element / element-at-point (for get_context & post narration)
+// Focused element / element-at-point (for desktop_state & post narration)
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface UiaFocusInfo {
@@ -654,7 +654,7 @@ export interface ActionableElement {
   suggest?: string;
   /** Position of this element relative to the window/viewport. */
   viewportPosition?: "in-view" | "above" | "below" | "left" | "right";
-  /** Normalised vertical position on the page (0 = top, 1 = bottom). Only filled by smart_scroll. */
+  /** Normalised vertical position on the page (0 = top, 1 = bottom). Only filled by scroll({action:'smart'}). */
   pageRatio?: number;
 }
 

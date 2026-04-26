@@ -283,7 +283,7 @@ export async function recognizeWindow(
 
 /**
  * Reconstruct lines of text from OCR words by clustering on y-midpoint and
- * sorting horizontally. Used by terminal_read OCR fallback to keep the 2D
+ * sorting horizontally. Used by terminal({action:'read'}) OCR fallback to keep the 2D
  * structure intact (so sinceMarker stays comparable across UIA / OCR sources).
  */
 export function ocrWordsToLines(words: OcrWord[]): string {

@@ -153,7 +153,7 @@ function targetTitle(target?: TargetSpec): string {
 // ── DesktopFacade ─────────────────────────────────────────────────────────────
 
 /**
- * DesktopFacade — `desktop_see` / `desktop_touch` surface for Anti-Fukuwarai v2.
+ * DesktopFacade — `desktop_discover` / `desktop_act` surface for Anti-Fukuwarai v2.
  *
  * Session isolation: each unique target (hwnd / tabId / windowTitle) gets its own
  * generation counter and LeaseStore. Leases from window A are never invalidated by

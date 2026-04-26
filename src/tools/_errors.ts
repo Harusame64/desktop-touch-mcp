@@ -35,7 +35,7 @@ const SUGGESTS: Record<string, string[]> = {
   ],
   BlockedKeyCombo: [
     "Use workspace_launch to open applications by name instead",
-    "If you need shell execution, use terminal_send to an existing terminal window",
+    "If you need shell execution, use terminal({action:'send'}) to an existing terminal window",
   ],
   UiaTimeout: [
     "The target app may be unresponsive — wait and retry",
@@ -104,7 +104,7 @@ const SUGGESTS: Record<string, string[]> = {
   MaxDepthExceeded: [
     "The scroll ancestor chain is deeper than maxDepth (default 3)",
     "Increase maxDepth to walk more layers",
-    "Or scroll an outer container first via a separate smart_scroll call",
+    "Or scroll an outer container first via a separate scroll({action:'smart'}) call",
   ],
   GuardFailed: [
     "Read the perception envelope for attention/guard details",
@@ -129,7 +129,7 @@ const SUGGESTS: Record<string, string[]> = {
   ],
   SetValueAllChannelsFailed: [
     "Verify the element supports text input",
-    "Try click_element + keyboard_type manually",
+    "Try click_element + keyboard({action:'type'}) manually",
     "Check context.attempts for per-channel error codes",
   ],
 };

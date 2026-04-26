@@ -281,7 +281,7 @@ export const waitUntilHandler = async ({ condition, target, timeoutMs, intervalM
         }
         if (!terminalReadHook) {
           return failWith(
-            "terminal_read hook not registered (terminal tools may not be loaded)",
+            "terminal(action='read') hook not registered (terminal tools may not be loaded)",
             "wait_until"
           );
         }

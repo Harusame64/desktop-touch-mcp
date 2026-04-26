@@ -1,7 +1,7 @@
 /**
  * launch.ts — Shared utilities for launching desktop applications.
  *
- * Extracted from workspace.ts so that browser.ts (browser_launch) can
+ * Extracted from workspace.ts so that browser.ts (browser_open with launch:{...}) can
  * reuse path resolution and spawn logic without creating a dependency
  * between tool files.
  */

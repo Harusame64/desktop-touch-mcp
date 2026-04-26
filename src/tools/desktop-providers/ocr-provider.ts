@@ -56,7 +56,7 @@ export async function fetchOcrCandidates(
     }));
 
     // Phase 1 dataplane hook: feed this SoM run into the visual lane so the
-    // next desktop_see returns the same entities under source:"visual_gpu".
+    // next desktop_discover returns the same entities under source:"visual_gpu".
     // Pass somResult.elements so the adapter skips a duplicate runSomPipeline call.
     // Fire-and-forget: adapter has its own debounce; errors never block OCR return.
     try {
