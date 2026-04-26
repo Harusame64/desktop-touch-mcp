@@ -77,6 +77,10 @@ interface MatrixRow {
   ok: boolean;
   reason?: string;
   route?: ExecutorKind;
+  /** Action the executor actually received — must equal `expectedAction` for the row. */
+  dispatchedAction?: TouchAction;
+  /** Action the dispatcher should have forwarded after auto-resolution. */
+  expectedAction: TouchAction;
   medianMs: number;
 }
 
@@ -88,14 +92,26 @@ function median(xs: number[]): number {
   return sorted[Math.floor(sorted.length / 2)]!;
 }
 
+/**
+ * Auto-resolves to the highest-priority verb the entity advertises. Our
+ * matrix entities expose actionability `["invoke","click","type","select"]`,
+ * which AUTO_PRIORITY (invoke > click > type > select) collapses to
+ * `"invoke"`. Keep this in sync with `resolveAction` in guarded-touch.ts.
+ */
+function expectedActionFor(action: TouchAction): TouchAction {
+  return action === "auto" ? "invoke" : action;
+}
+
 async function measure(source: Source, action: TouchAction): Promise<MatrixRow> {
   const provider: CandidateProvider = () => [buildCandidate(source)];
-  const calls: Array<{ route: ExecutorKind }> = [];
+  const calls: Array<{ route: ExecutorKind; action: TouchAction }> = [];
   const facade = new DesktopFacade(provider, {
-    executorFn: async (_entity, _action) => {
-      // Mocked executor: route purely based on the entity's primary source.
+    // Codex PR #54 P2: capture the action the executor actually received so
+    // the matrix asserts the (source, action) **pair** — without this the
+    // suite would still pass even if every action got coerced to click.
+    executorFn: async (_entity, dispatchedAction) => {
       const k: ExecutorKind = source === "visual_gpu" ? "mouse" : (source as ExecutorKind);
-      calls.push({ route: k });
+      calls.push({ route: k, action: dispatchedAction });
       return k;
     },
   });
@@ -118,22 +134,27 @@ async function measure(source: Source, action: TouchAction): Promise<MatrixRow> 
   }
 
   const ok = lastResult?.ok === true;
+  const lastCall = calls[calls.length - 1];
   return {
     source,
     action,
     ok,
     reason: ok ? undefined : (lastResult as { ok: false; reason?: string }).reason,
-    route: calls[calls.length - 1]?.route,
+    route: lastCall?.route,
+    dispatchedAction: lastCall?.action,
+    expectedAction: expectedActionFor(action),
     medianMs: median(samples),
   };
 }
 
 function formatTable(rows: MatrixRow[]): string {
-  const header = "| source | action | ok | route | median ms | reason |";
-  const sep    = "|---|---|---|---|---|---|";
-  const body = rows.map((r) =>
-    `| ${r.source} | ${r.action} | ${r.ok ? "✅" : "❌"} | ${r.route ?? "-"} | ${r.medianMs.toFixed(2)} | ${r.reason ?? ""} |`
-  );
+  const header = "| source | action | dispatched | expected | ok | route | median ms | reason |";
+  const sep    = "|---|---|---|---|---|---|---|---|";
+  const body = rows.map((r) => {
+    const dispatched = r.dispatchedAction ?? "-";
+    const match = r.dispatchedAction === r.expectedAction ? "✅" : "❌";
+    return `| ${r.source} | ${r.action} | ${dispatched} ${match} | ${r.expectedAction} | ${r.ok ? "✅" : "❌"} | ${r.route ?? "-"} | ${r.medianMs.toFixed(2)} | ${r.reason ?? ""} |`;
+  });
   return [header, sep, ...body].join("\n");
 }
 
@@ -200,11 +221,22 @@ describe("desktop_discover / desktop_act — reliability + latency matrix (v1.0.
     // eslint-disable-next-line no-console
     console.log("\n=== desktop_discover / desktop_act capability matrix ===\n" + formatTable(rows) + "\n");
 
-    // Hard assertions: every combination must complete with ok:true at unit
-    // level, and every median latency must stay under the ceiling.
+    // Hard assertions: every combination must
+    //   1) complete with ok:true,
+    //   2) forward the expected action to the executor (lease C / Codex
+    //      PR #54 P2: ensures the matrix actually validates the action
+    //      dimension, not just the source dimension),
+    //   3) stay under the median-latency ceiling.
     for (const row of rows) {
       expect(row.ok, `(${row.source}, ${row.action}) failed: ${row.reason ?? "unknown"}`).toBe(true);
-      expect(row.medianMs, `(${row.source}, ${row.action}) median ${row.medianMs}ms exceeds ${TIMING_CEILING_MS}ms`).toBeLessThan(TIMING_CEILING_MS);
+      expect(
+        row.dispatchedAction,
+        `(${row.source}, ${row.action}) dispatched ${row.dispatchedAction ?? "<none>"} — expected ${row.expectedAction}`,
+      ).toBe(row.expectedAction);
+      expect(
+        row.medianMs,
+        `(${row.source}, ${row.action}) median ${row.medianMs}ms exceeds ${TIMING_CEILING_MS}ms`,
+      ).toBeLessThan(TIMING_CEILING_MS);
     }
   });
 });
