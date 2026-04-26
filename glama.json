@@ -1,7 +1,7 @@
 {
   "$schema": "https://glama.ai/mcp/schemas/server.json",
   "displayName": "desktop-touch-mcp",
-  "description": "LLM-native Windows computer-use MCP server: 56 tools for screenshots, UIA, mouse/keyboard, Chrome CDP, terminal, SmartScroll, clipboard, notifications, and perception guards with token-efficient P-frame diffing.",
+  "description": "LLM-native Windows computer-use MCP server: 28 tools for screenshots, UIA, mouse/keyboard, Chrome CDP, terminal, SmartScroll, clipboard, notifications, and perception guards with token-efficient P-frame diffing.",
   "maintainers": ["Harusame64"],
   "categories": ["OS Automation", "App Automation", "Autonomous Agents"],
   "platforms": ["windows"],
