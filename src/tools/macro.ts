@@ -50,6 +50,17 @@ import {
 } from "./browser.js";
 // Notification (server_status not callable from macros — diagnostic)
 import { notificationShowHandler, notificationShowSchema } from "./notification.js";
+// v2 World-Graph dispatchers (Phase 4 / Codex PR #41 P1): the public surface
+// for discovery and lease-based action; macros need access to use the
+// action='setValue' / 'click' / 'type' flow advertised in the schema.
+import {
+  getDesktopFacade,
+  desktopSeeSchema,
+  desktopTouchSchema,
+} from "./desktop-register.js";
+import type { DesktopSeeInput } from "./desktop.js";
+import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
+import type { EntityLease } from "../engine/world-graph/types.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tool registry
@@ -95,6 +106,26 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   workspace_launch:     { schema: z.object(workspaceLaunchSchema),     handler: workspaceLaunchHandler },
   wait_until:           { schema: z.object(waitUntilSchema),           handler: waitUntilHandler },
   notification_show:    { schema: z.object(notificationShowSchema),    handler: notificationShowHandler },
+  // v2 World-Graph (default-on; kill switch DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1)
+  desktop_discover:     {
+    schema: z.object(desktopSeeSchema),
+    handler: async (input: unknown): Promise<ToolResult> => {
+      const output = await getDesktopFacade().see(input as DesktopSeeInput);
+      return { content: [{ type: "text" as const, text: JSON.stringify(output, null, 2) }] };
+    },
+  },
+  desktop_act:          {
+    schema: z.object(desktopTouchSchema),
+    handler: async (input: unknown): Promise<ToolResult> => {
+      const i = input as { lease: EntityLease; action?: TouchAction; text?: string };
+      const result = await getDesktopFacade().touch({
+        lease: i.lease,
+        action: i.action,
+        text: i.text,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    },
+  },
   // run_macro is intentionally excluded → prevents recursion
 };
 
