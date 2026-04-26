@@ -951,6 +951,42 @@ export const browserEvalJsHandler = async ({
   }
 };
 
+/**
+ * Issue #24: when a selector misses, probe `document.body`'s top-level
+ * children so the LLM gets an alternative-selector hint instead of having
+ * to blindly retry. Returns a compact descriptor list (max 10 children,
+ * tag/id/classes/childCount each) or null if probing itself fails.
+ */
+async function probeBodyStructure(
+  tabId: string | null,
+  port: number,
+): Promise<Array<{ tag: string; id: string | null; classes: string[]; childCount: number }> | null> {
+  try {
+    const expr = `(function() {
+      try {
+        return JSON.stringify(
+          Array.from(document.body.children).slice(0, 10).map(function(el) {
+            var classList = (el.className && typeof el.className === 'string')
+              ? el.className.trim().split(/\\s+/).slice(0, 3)
+              : [];
+            return {
+              tag: el.tagName.toLowerCase(),
+              id: el.id || null,
+              classes: classList,
+              childCount: el.children.length,
+            };
+          })
+        );
+      } catch (e) { return null; }
+    })()`;
+    const raw = await evaluateInTab(expr, tabId, port);
+    if (typeof raw !== "string") return null;
+    return JSON.parse(raw) as Array<{ tag: string; id: string | null; classes: string[]; childCount: number }>;
+  } catch {
+    return null;
+  }
+}
+
 export const browserGetDomHandler = async ({
   selector,
   tabId,
@@ -984,6 +1020,15 @@ export const browserGetDomHandler = async ({
       content: [{ type: "text" as const, text: lines.join("\n") }],
     };
   } catch (err) {
+    // Issue #24: when the failure is "Element not found", attach a small
+    // body-structure descriptor so the LLM has a starting point for an
+    // alternative selector instead of guessing blindly. Probing is itself
+    // best-effort — any failure leaves the original error untouched.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (selector && /Element not found:/i.test(msg)) {
+      const bodyStructure = await probeBodyStructure(tabId ?? null, port);
+      return failWith(err, "browser_eval", bodyStructure ? { selector, bodyStructure } : { selector });
+    }
     // Phase 3: surfaced to LLM via browser_eval(action='dom') dispatcher.
     return failWith(err, "browser_eval");
   }
