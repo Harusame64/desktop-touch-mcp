@@ -1996,13 +1996,6 @@ export function registerBrowserTools(server: McpServer): void {
   );
 
   server.tool(
-    "browser_get_app_state",
-    "Extract embedded SPA framework state (Next.js, Nuxt, Remix, GitHub, Apollo, Redux SSR) in one CDP call. Returns parsed payloads with framework labels. Use BEFORE browser_eval or browser_get_dom on SPAs where rendered HTML is sparse. Pass selectors to target specific window globals (e.g. 'window:__MY_STATE__'). Caveats: Only extracts SSR-injected state — client-only runtime state requires browser_eval.",
-    browserGetAppStateSchema,
-    browserGetAppStateHandler
-  );
-
-  server.tool(
     "browser_open",
     "Connect to Chrome/Edge running with --remote-debugging-port and return open tab IDs — required before all other browser_* tools. " +
     "Pass launch:{} (or with overrides) to auto-spawn a debug-mode browser when no CDP endpoint is live (idempotent: an already-running endpoint is preferred). " +
@@ -2056,24 +2049,10 @@ export function registerBrowserTools(server: McpServer): void {
   );
 
   server.tool(
-    "browser_get_dom",
-    "Return the HTML of a DOM element (or document.body when no selector is given), truncated to maxLength characters. Use when browser_overview is insufficient for inspecting page structure.",
-    browserGetDomSchema,
-    browserGetDomHandler
-  );
-
-  server.tool(
     "browser_navigate",
     "Navigate a browser tab to a URL via CDP Page.navigate — more reliable than clicking the address bar. Pass tabId+port so the server auto-guards (verifies tab readyState) and returns post.perception.status. lensId is optional for advanced pinned-tab workflows. Caveats: Does not block until page load completes — follow with wait_until(element_matches) or repeated browser_eval polling for slow pages.",
     browserNavigateSchema,
     withPostState("browser_navigate", browserNavigateHandler)
-  );
-
-  server.tool(
-    "browser_disconnect",
-    "Close cached CDP WebSocket sessions for a port. Call when browser interaction is complete to release connections.",
-    browserDisconnectSchema,
-    browserDisconnectHandler
   );
 
   server.tool(
