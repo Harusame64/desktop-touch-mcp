@@ -125,10 +125,21 @@ export class SessionRegistry {
     return s;
   }
 
-  /** Find the session that issued a lease by its viewId. Returns undefined if evicted. */
-  getByViewId(viewId: string): SessionState | undefined {
+  /**
+   * Find the session that issued a lease by its viewId. Returns undefined if evicted.
+   *
+   * Refreshes `lastAccessMs` so an in-flight workflow (see → think → touch)
+   * keeps the session alive past `sessionTtlMs` even if the LLM stretches
+   * past the eviction interval. Without this, the eviction timer (Codex
+   * PR #55 P2) could delete a session mid-workflow when the LLM's reasoning
+   * crosses the 120s default idle window between see() and touch().
+   */
+  getByViewId(viewId: string, nowFn: () => number = Date.now): SessionState | undefined {
     const key = this.viewIdIndex.get(viewId);
-    return key ? this.sessions.get(key) : undefined;
+    if (!key) return undefined;
+    const session = this.sessions.get(key);
+    if (session) session.lastAccessMs = nowFn();
+    return session;
   }
 
   /**
