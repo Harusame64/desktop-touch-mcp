@@ -390,19 +390,17 @@ export const screenshotHandler = async (args: {
   }
   // mode='background' + detail='meta' is metadata-only — bypass the bg
   // capture and let the default handler emit the meta payload (no image
-  // bytes, no PrintWindow). The bg image path also requires confirmImage
-  // (same gating as detail='image' in foreground mode) — reject early
-  // otherwise. (Codex PR #41 P2 follow-up.)
+  // bytes, no PrintWindow). For all other detail values, run the bg image
+  // capture; legacy `screenshot_background` returned image bytes without an
+  // extra acknowledgement, and the Phase 4 absorption preserves that
+  // contract — passing `mode:'background'` is itself the explicit
+  // acknowledgement that image pixels are wanted. confirmImage stays the
+  // gate ONLY for foreground `detail='image'` (handled inside the default
+  // handler below). (Codex PR #41 round 5 P2 — restore migration parity.)
   if (args.mode === "background" && args.detail !== "meta") {
     if (!args.windowTitle && !args.hwnd) {
       return failArgs(
         "screenshot(mode='background') requires windowTitle or hwnd",
-        "screenshot",
-      );
-    }
-    if (!args.confirmImage) {
-      return failArgs(
-        "screenshot(mode='background') returns image pixels — pass confirmImage:true to acknowledge, or use detail='meta' for metadata only.",
         "screenshot",
       );
     }
@@ -1179,9 +1177,9 @@ export function registerScreenshotTools(server: McpServer): void {
         "Only use image+confirmImage when text returned 0 actionable elements and visual inspection is genuinely required.",
       caveats:
         "Default mode scales to maxDimension=768 — image pixels ≠ screen pixels; apply the scale formula before passing to mouse_click. " +
-        "detail='image' is always blocked without confirmImage=true. " +
+        "Foreground detail='image' is always blocked without confirmImage=true. " +
         "diffMode requires a prior full-capture baseline (non-diff call or workspace_snapshot) — calling diffMode cold returns a full frame, not a diff. " +
-        "mode='background' requires windowTitle or hwnd, and only composes with detail in {'image','meta'} — detail='text'/'som'/'ocr' run only against foreground capture (the dispatcher rejects the conflicting combination). fullContent=false enables legacy mode (faster but GPU windows may be black). " +
+        "mode='background' requires windowTitle or hwnd, and only composes with detail in {'image','meta'} — detail='text'/'som'/'ocr' run only against foreground capture (the dispatcher rejects the conflicting combination). Passing mode='background' is itself the acknowledgement that image pixels are wanted, so confirmImage is NOT required for it (matches the former screenshot_background contract). fullContent=false enables legacy mode (faster but GPU windows may be black). " +
         "detail='ocr' requires windowTitle or hwnd; first call may take ~1s (WinRT cold-start) and the matching OCR language pack must be installed.",
       examples: [
         "screenshot() → meta orientation of all windows",
