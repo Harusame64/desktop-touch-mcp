@@ -141,4 +141,27 @@ describe("SessionRegistry — eviction", () => {
 
     expect(r.getByViewId("view-1")).toBeUndefined();
   });
+
+  // Codex PR #55 P2: in-flight workflows must keep their session alive.
+  // Without the lastAccessMs refresh on getByViewId, the eviction sweep
+  // could delete a session that the LLM is in the middle of using.
+  it("getByViewId refreshes lastAccessMs so eviction won't delete an in-flight workflow", () => {
+    let now = 1000;
+    const r = new SessionRegistry();
+    const opts = makeOpts({ nowFn: () => now });
+    const key = r.resolveKey({ hwnd: "1" });
+    r.getOrCreate(key, opts); // lastAccess = 1000
+    r.replaceViewId(undefined, "view-1", key);
+
+    // Simulate the LLM thinking past the TTL and then calling touch().
+    now = 1900;
+    expect(r.getByViewId("view-1", () => now)).toBeDefined(); // refreshes lastAccessMs to 1900
+
+    // Eviction sweep at 2100 with TTL=1000 → threshold=1100. lastAccessMs is
+    // now 1900 (not the original 1000), so the session survives.
+    now = 2100;
+    r.evictStale(1000, () => now);
+
+    expect(r.getByViewId("view-1", () => now)).toBeDefined();
+  });
 });
