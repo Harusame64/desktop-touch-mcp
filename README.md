@@ -222,6 +222,41 @@ All `browser_*` tools that touch the DOM accept `includeContext:false` to omit t
 
 ---
 
+## Standard workflow (v1.0.0)
+
+The v2 World-Graph surface (`desktop_discover` / `desktop_act`) is the recommended dispatch path. The four-call shape works for native apps, browsers, and terminals identically.
+
+```
+desktop_state          → orient: focused window/element, modal, attention signal
+desktop_discover       → find actionable entities (returns lease + windows[])
+desktop_act(lease, …)  → act on entity (returns attention + post.perception)
+desktop_state          → confirm the world changed as expected
+```
+
+Clicking — priority order:
+
+```
+browser_click(selector)               → Chrome / Edge (CDP, stable across repaints)
+desktop_act(lease, action='click')    → native / dialog / visual (entity-based; use after desktop_discover)
+click_element(name | automationId)    → native UIA fallback if desktop_act returns ok:false
+mouse_click(x, y, origin?, scale?)    → pixel last resort; origin+scale from dotByDot screenshots only
+```
+
+Recovery hints — read `response.attention` after every observation and `response.warnings[]` on `desktop_discover` / `desktop_act`. Common reasons:
+
+- `lease_expired` / `lease_generation_mismatch` / `lease_digest_mismatch` / `entity_not_found` → re-call `desktop_discover`
+- `modal_blocking` → dismiss via `click_element`, then retry
+- `entity_outside_viewport` → `scroll(action='to_element' | 'raw')`, then re-call `desktop_discover`
+- `executor_failed` → fall back to `click_element` / `mouse_click` / `browser_click`
+
+Lease lifecycle:
+
+- Each `desktop_discover` response carries `softExpiresAtMs` (≈ 60 % of the TTL window). Past that timestamp the LLM should consider re-calling `desktop_discover` even though the lease is still technically valid — `lease.expiresAtMs` is the only correctness wall.
+- TTL adapts to `view` mode (`action`/`explore`/`debug`), entity count, and response payload size. Cap is 60 s.
+- Set `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1` to fall back to the v1 tool surface (`get_windows` / `get_ui_elements` / `set_element_value`) for troubleshooting only — V2 is the recommended default.
+
+---
+
 ## Browser CDP automation
 
 For web automation, connect Chrome or Edge with the remote debugging port enabled — no Selenium or Playwright needed.
