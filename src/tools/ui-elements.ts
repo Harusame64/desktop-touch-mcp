@@ -366,14 +366,13 @@ export function registerUiElementTools(server: McpServer): void {
     withRichNarration("click_element", clickElementHandler, { windowTitleKey: "windowTitle" })
   );
 
-  server.tool(
-    "set_element_value",
-    "Set the value of a text field or combo box via UIA ValuePattern. The server auto-guards using windowTitle and returns post.perception.status. More reliable than keyboard(action='type') for programmatic form input. Use narrate:'rich' to confirm the value was applied. lensId is optional for advanced pinned-lens use. Caveats: Only works for elements that expose ValuePattern; does not work on contenteditable HTML or custom rich-text editors — use keyboard(action='type') for those. If guard blocks with a suggestedFix, the fix.tool will be 'click_element' (v3 §7.1); approve via click_element({fixId}) then re-set.",
-    setElementValueSchema,
-    withRichNarration("set_element_value", setElementValueHandler, { windowTitleKey: "windowTitle" })
-  );
-
-  // Phase 4: scope_element privatized — entry-point removed, handler retained
+  // Phase 4: set_element_value absorbed into desktop_act({action:'setValue'}).
+  // setElementValueHandler / setElementValueSchema retained as internal
+  // exports — desktop-executor calls the equivalent uia-bridge.setElementValue
+  // for any UIA entity when action='setValue' (or 'type'). For non-lease /
+  // legacy code paths the handler can still be invoked directly.
+  //
+  // scope_element privatized — entry-point removed, handler retained
   // as internal export. Discover element bounds via desktop_discover, then pass
   // region={x,y,width,height} to screenshot for the equivalent zoom.
   // (memory: feedback_disable_via_entry_block.md)
