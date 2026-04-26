@@ -244,6 +244,84 @@ describe("Phase 3 — stub-tool-catalog drops absorbed/privatized 4 names", () =
     expect(entry).toBeDefined();
     expect(entry!.description).toMatch(/launch/);
   });
+
+  // Codex PR #40 P2: stub catalog must preserve action-specific fields for
+  // discriminatedUnion dispatchers. Previous generator emitted only
+  // {action: string, additionalProperties: true} which dropped fields like
+  // expression/selector/maxLength, breaking cross-platform tool discovery.
+  it("browser_eval inputSchema is a oneOf with all 3 actions (js/dom/appState)", () => {
+    const entry = STUB_TOOL_CATALOG.find((e) => e.name === "browser_eval");
+    expect(entry).toBeDefined();
+    const schema = entry!.inputSchema as { oneOf?: Array<{ properties?: Record<string, { const?: string }> }> };
+    expect(schema.oneOf).toBeDefined();
+    expect(schema.oneOf!.length).toBe(3);
+    const actions = schema.oneOf!.map((v) => v.properties?.action?.const).sort();
+    expect(actions).toEqual(["appState", "dom", "js"]);
+  });
+
+  it("browser_eval js variant exposes the expression field", () => {
+    const entry = STUB_TOOL_CATALOG.find((e) => e.name === "browser_eval");
+    const schema = entry!.inputSchema as {
+      oneOf: Array<{ properties: Record<string, unknown>; required?: string[] }>;
+    };
+    const jsVariant = schema.oneOf.find(
+      (v) => (v.properties.action as { const?: string })?.const === "js",
+    );
+    expect(jsVariant).toBeDefined();
+    expect(jsVariant!.properties.expression).toBeDefined();
+    expect(jsVariant!.required).toContain("expression");
+  });
+
+  it("browser_eval dom variant exposes selector and maxLength fields", () => {
+    const entry = STUB_TOOL_CATALOG.find((e) => e.name === "browser_eval");
+    const schema = entry!.inputSchema as {
+      oneOf: Array<{ properties: Record<string, unknown> }>;
+    };
+    const domVariant = schema.oneOf.find(
+      (v) => (v.properties.action as { const?: string })?.const === "dom",
+    );
+    expect(domVariant).toBeDefined();
+    expect(domVariant!.properties.selector).toBeDefined();
+    expect(domVariant!.properties.maxLength).toBeDefined();
+  });
+
+  it("browser_eval appState variant exposes selectors and maxBytes fields", () => {
+    const entry = STUB_TOOL_CATALOG.find((e) => e.name === "browser_eval");
+    const schema = entry!.inputSchema as {
+      oneOf: Array<{ properties: Record<string, unknown> }>;
+    };
+    const appStateVariant = schema.oneOf.find(
+      (v) => (v.properties.action as { const?: string })?.const === "appState",
+    );
+    expect(appStateVariant).toBeDefined();
+    expect(appStateVariant!.properties.selectors).toBeDefined();
+    expect(appStateVariant!.properties.maxBytes).toBeDefined();
+  });
+
+  // Cover all six dispatchers (Phase 2 carry-over plus Phase 3 browser_eval).
+  it.each([
+    ["keyboard", ["press", "type"]],
+    ["clipboard", ["read", "write"]],
+    ["window_dock", ["dock", "pin", "unpin"]],
+    ["scroll", ["capture", "raw", "smart", "to_element"]],
+    ["terminal", ["read", "run", "send"]],
+    ["browser_eval", ["appState", "dom", "js"]],
+  ])(
+    "%s dispatcher has oneOf with action const values: %p",
+    (toolName, expectedActions) => {
+      const entry = STUB_TOOL_CATALOG.find((e) => e.name === toolName);
+      expect(entry, `${toolName} catalog entry`).toBeDefined();
+      const schema = entry!.inputSchema as {
+        oneOf?: Array<{ properties?: Record<string, { const?: string }> }>;
+      };
+      expect(schema.oneOf, `${toolName} should use oneOf, not opaque stub`).toBeDefined();
+      const actions = schema
+        .oneOf!.map((v) => v.properties?.action?.const)
+        .filter((a): a is string => typeof a === "string")
+        .sort();
+      expect(actions).toEqual(expectedActions);
+    },
+  );
 });
 
 // ─── 6. LLM-exposed string audit ──────────────────────────────────────────────

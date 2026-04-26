@@ -8,9 +8,12 @@
 
 export type JsonSchemaObject = {
   type: "object";
-  properties: Record<string, unknown>;
+  /** Property map. Omitted when the schema uses `oneOf` for discriminated-union dispatchers (Phase 2/3). */
+  properties?: Record<string, unknown>;
   required?: string[];
   additionalProperties?: boolean;
+  /** Discriminated-union variants — one schema per dispatcher action (Phase 2/3 dispatchers). */
+  oneOf?: JsonSchemaObject[];
 };
 
 export interface StubToolCatalogEntry {
@@ -70,12 +73,128 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
     "description": "Purpose: Inspect or operate on a browser tab via 3 actions: 'js' (evaluate JS), 'dom' (get HTML), 'appState' (extract SSR-injected SPA state).\nDetails: action='js' — Run a JS expression. withPerception:true wraps in {ok, result, post}. action='dom' — Return outerHTML of selector (or document.body), truncated to maxLength. action='appState' — Scan Next/Nuxt/Remix/Apollo/GitHub/Redux SSR injected JSON; pass selectors to override defaults.\nPrefer: Use action='appState' BEFORE 'dom' or 'js' on SPAs where rendered HTML is sparse — single CDP call. Use 'dom' when 'appState' is empty and you need page structure. Use 'js' as the escape hatch for arbitrary scripting.\nCaveats: DOM nodes cannot be returned from action='js' directly (circular refs are serialized safely). React/Vue/Svelte controlled inputs cannot be set via element.value — use keyboard(action='type') / browser_fill instead. readyState is strictly checked; guard blocks if page is still loading.\nExamples:\n  browser_eval({action:'js', expression:'document.title'}) → page title\n  browser_eval({action:'dom', selector:'#main', maxLength:5000}) → outerHTML\n  browser_eval({action:'appState'}) → default SPA state probes",
     "inputSchema": {
       "type": "object",
-      "properties": {
-        "action": {
-          "type": "string"
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "js"
+            },
+            "expression": {
+              "description": "JavaScript expression to evaluate. The server automatically wraps snippets in an async IIFE to avoid repeated const/let collisions. For multi-statement snippets, use an explicit final return value. Declarations (const/let/var) are scoped per snippet — use window.* / globalThis.* for persistence.",
+              "type": "string"
+            },
+            "withPerception": {
+              "description": "When true, return structured JSON {ok, result, post} with post.perception attached. Default false preserves raw-text return.",
+              "type": "boolean",
+              "default": false
+            },
+            "lensId": {
+              "description": "Optional perception lens ID. Guards (target.identityStable) are evaluated before eval.",
+              "type": "string"
+            },
+            "tabId": {
+              "type": "string",
+              "description": "Tab ID from browser_open. Omit to use the first page tab."
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "default": 9222,
+              "description": "Chrome/Edge CDP remote debugging port."
+            },
+            "includeContext": {
+              "type": "boolean",
+              "default": true,
+              "description": "When true, append activeTab and readyState context to the response."
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "expression"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "dom"
+            },
+            "selector": {
+              "description": "CSS selector for root element. Omit for document.body.",
+              "type": "string"
+            },
+            "maxLength": {
+              "description": "Max characters of HTML to return (default 10000).",
+              "type": "integer",
+              "default": 10000,
+              "minimum": 100,
+              "maximum": 100000
+            },
+            "tabId": {
+              "type": "string",
+              "description": "Tab ID from browser_open. Omit to use the first page tab."
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "default": 9222,
+              "description": "Chrome/Edge CDP remote debugging port."
+            },
+            "includeContext": {
+              "type": "boolean",
+              "default": true,
+              "description": "When true, append activeTab and readyState context to the response."
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "appState"
+            },
+            "selectors": {
+              "description": "Custom probe selectors. Omit to use the default SPA framework set (__NEXT_DATA__ / __NUXT_DATA__ / __REMIX_CONTEXT__ / __APOLLO_STATE__ / window:__INITIAL_STATE__ etc.). Window globals must be prefixed with 'window:'.",
+              "type": "array"
+            },
+            "maxBytes": {
+              "description": "Max bytes per individual payload (default 4000). Larger payloads are truncated.",
+              "type": "integer",
+              "default": 4000,
+              "minimum": 256,
+              "maximum": 64000
+            },
+            "tabId": {
+              "type": "string",
+              "description": "Tab ID from browser_open. Omit to use the first page tab."
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "default": 9222,
+              "description": "Chrome/Edge CDP remote debugging port."
+            },
+            "includeContext": {
+              "type": "boolean",
+              "default": true,
+              "description": "When true, append activeTab and readyState context to the response."
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action"
+          ]
         }
-      },
-      "additionalProperties": true
+      ]
     }
   },
   {
@@ -460,12 +579,38 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
     "description": "Read or write the Windows clipboard. action='read' returns current text content (empty string if non-text). action='write' replaces clipboard with given text. Caveats: Non-text clipboard payloads (images, files) return empty string on read. Overwrites existing clipboard content on write.",
     "inputSchema": {
       "type": "object",
-      "properties": {
-        "action": {
-          "type": "string"
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "read"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "write"
+            },
+            "text": {
+              "description": "Text to place on the clipboard",
+              "type": "string",
+              "maxLength": 100000
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "text"
+          ]
         }
-      },
-      "additionalProperties": true
+      ]
     }
   },
   {
@@ -701,12 +846,157 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
     "description": "Purpose: Send keyboard input to a window: 'type' for text, 'press' for key combos.\nDetails: action='type' inserts text (auto-clipboard for non-ASCII / IME-safe). action='press' sends key combos like 'ctrl+c'/'alt+tab'. Pass windowTitle to auto-focus and auto-guard (verifies identity, foreground, modal) before input. Omitting windowTitle acts on the active window (unguarded).\nPrefer: Use windowTitle to auto-focus before injection. Set lensId to enable perception guards. Use set_element_value for form fields.\nCaveats: win+r/win+x/win+s/win+l blocked for security. action='type' does not handle IME composition for CJK — use use_clipboard=true or set_element_value instead. Non-ASCII punctuation (em-dash etc.) auto-routes via clipboard to prevent Chrome address-bar hijack; pass forceKeystrokes:true to disable. Background mode (DTM_BG_AUTO=1) skips focus change.\nExamples:\n  keyboard({action:'type', text:'hello', windowTitle:'Notepad'}) → text injected (guarded)\n  keyboard({action:'type', text:'hello'}) → text injected (unguarded)\n  keyboard({action:'press', keys:'ctrl+c'}) → copy\n  keyboard({action:'press', keys:'escape', windowTitle:'Dialog'}) → dismiss dialog",
     "inputSchema": {
       "type": "object",
-      "properties": {
-        "action": {
-          "type": "string"
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "type"
+            },
+            "text": {
+              "description": "The text to type (max 10,000 characters)",
+              "type": "string",
+              "maxLength": 10000
+            },
+            "method": {
+              "type": "string",
+              "enum": [
+                "auto",
+                "background",
+                "foreground"
+              ],
+              "default": "auto",
+              "description": "Input method. background = WM_CHAR PostMessage (no focus change); foreground = SendInput (current default); auto = pick automatically."
+            },
+            "narrate": {
+              "type": "string",
+              "enum": [
+                "minimal",
+                "rich"
+              ],
+              "default": "minimal",
+              "description": "Narration level. rich includes UIA or browser state diff when supported."
+            },
+            "use_clipboard": {
+              "description": "If true, copy text to clipboard and paste with Ctrl+V instead of simulating keystrokes. Use this when typing URLs, paths, or ASCII text into apps with Japanese IME active — prevents IME from converting characters. Default false.",
+              "type": "boolean",
+              "default": false
+            },
+            "replaceAll": {
+              "description": "When true, send Ctrl+A to select all existing text before typing. Equivalent to Ctrl+A → keyboard(action='type') in one call (requires field already focused). Default false.",
+              "type": "boolean",
+              "default": false
+            },
+            "forceKeystrokes": {
+              "description": "When true, always use keystroke mode even if text contains non-ASCII symbols (em-dash, en-dash, smart quotes, etc.) that would normally trigger auto-clipboard. Default false — auto-clipboard is enabled.",
+              "type": "boolean",
+              "default": false
+            },
+            "windowTitle": {
+              "type": "string",
+              "description": "Partial title of the window that should receive keyboard input."
+            },
+            "hwnd": {
+              "type": "string",
+              "description": "Direct window handle ID (takes precedence over windowTitle). Obtain from get_windows response (hwnd field). String type to avoid 64-bit precision issues."
+            },
+            "forceFocus": {
+              "type": "boolean",
+              "description": "Bypass Windows foreground-stealing protection before focusing."
+            },
+            "trackFocus": {
+              "type": "boolean",
+              "default": true,
+              "description": "Detect if focus was stolen after the action."
+            },
+            "settleMs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 2000,
+              "default": 300,
+              "description": "Milliseconds to wait before checking post-action state."
+            },
+            "lensId": {
+              "description": "Optional perception lens ID. Guards (safe.keyboardTarget) are evaluated before typing, and a perception envelope is attached to post.perception on success.",
+              "type": "string"
+            },
+            "fixId": {
+              "description": "Approve a pending suggestedFix (one-shot, 15s TTL). Pass the fixId returned by a previous failed keyboard(action='type') to re-attempt with guard-validated args.",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "press"
+            },
+            "keys": {
+              "description": "Key combo string, e.g. 'ctrl+c', 'alt+tab', 'enter', 'ctrl+shift+s'. Note: win+r, win+x, win+s, win+l are blocked for security.",
+              "type": "string",
+              "maxLength": 100
+            },
+            "method": {
+              "type": "string",
+              "enum": [
+                "auto",
+                "background",
+                "foreground"
+              ],
+              "default": "auto",
+              "description": "Input method. background = WM_CHAR PostMessage (no focus change); foreground = SendInput (current default); auto = pick automatically."
+            },
+            "narrate": {
+              "type": "string",
+              "enum": [
+                "minimal",
+                "rich"
+              ],
+              "default": "minimal",
+              "description": "Narration level. rich includes UIA or browser state diff when supported."
+            },
+            "windowTitle": {
+              "type": "string",
+              "description": "Partial title of the window that should receive keyboard input."
+            },
+            "hwnd": {
+              "type": "string",
+              "description": "Direct window handle ID (takes precedence over windowTitle). Obtain from get_windows response (hwnd field). String type to avoid 64-bit precision issues."
+            },
+            "forceFocus": {
+              "type": "boolean",
+              "description": "Bypass Windows foreground-stealing protection before focusing."
+            },
+            "trackFocus": {
+              "type": "boolean",
+              "default": true,
+              "description": "Detect if focus was stolen after the action."
+            },
+            "settleMs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 2000,
+              "default": 300,
+              "description": "Milliseconds to wait before checking post-action state."
+            },
+            "lensId": {
+              "description": "Optional perception lens ID. Guards (safe.keyboardTarget) are evaluated before the key press.",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "keys"
+          ]
         }
-      },
-      "additionalProperties": true
+      ]
     }
   },
   {
@@ -1446,12 +1736,261 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
     "description": "Purpose: Scroll a window or page. 4 strategies via action: 'raw' (wheel notches), 'to_element' (UIA name/automationId or CSS selector), 'smart' (auto-detect target with multi-strategy fallback), 'capture' (full-page stitched image).\nDetails: action='raw': send raw mouse-wheel notches at (x,y) or current cursor, optional window focus. action='to_element': scroll a named element into viewport (UIA or CDP). action='smart': handles nested scroll layers, virtualised lists, sticky-header occlusion. action='capture': stitches full-page images (caps at ~700KB raw); sizeReduced=true means downscaled.\nPrefer: Use action='to_element' or action='smart' for click target out-of-viewport recovery (entity_outside_viewport). Use action='capture' for reading long pages. For simple scroll without target, use action='raw'.\nCaveats: action='capture' returns stitched image — pixels do NOT match screen coords when sizeReduced=true, use for reading only, not mouse_click. action='smart' CDP path requires browser_open. action='to_element' native path requires element to implement UIA ScrollItemPattern.\nExamples:\n  scroll({action:'raw', direction:'down', amount:5, windowTitle:'Chrome'})\n  scroll({action:'to_element', name:'OK', windowTitle:'Dialog'})\n  scroll({action:'smart', target:'#create-release-btn'})\n  scroll({action:'capture', windowTitle:'Chrome', maxScrolls:10})",
     "inputSchema": {
       "type": "object",
-      "properties": {
-        "action": {
-          "type": "string"
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "raw"
+            },
+            "direction": {
+              "description": "Scroll direction",
+              "type": "string",
+              "enum": [
+                "up",
+                "down",
+                "left",
+                "right"
+              ]
+            },
+            "amount": {
+              "description": "Number of scroll steps (default 3)",
+              "type": "integer",
+              "default": 3
+            },
+            "x": {
+              "description": "X coordinate to scroll at (moves cursor there first)",
+              "type": "number"
+            },
+            "y": {
+              "description": "Y coordinate to scroll at",
+              "type": "number"
+            },
+            "speed": {
+              "description": "Cursor movement speed in px/sec (0=teleport, omit=default)",
+              "type": "number"
+            },
+            "homing": {
+              "description": "Apply window-movement homing correction to (x,y) before scrolling. Default true.",
+              "default": true
+            },
+            "windowTitle": {
+              "description": "Partial window title. When provided, the server focuses this window first.",
+              "type": "string"
+            },
+            "hwnd": {
+              "description": "Direct window handle ID (takes precedence over windowTitle).",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "direction"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "to_element"
+            },
+            "name": {
+              "description": "Partial name/label of the element (UIA name match). Use for native app elements. At least one of name or selector must be provided.",
+              "type": "string"
+            },
+            "selector": {
+              "description": "CSS selector for the element (Chrome/Edge only). At least one of name or selector must be provided.",
+              "type": "string"
+            },
+            "windowTitle": {
+              "description": "Partial window title (required for native path when name is used)",
+              "type": "string"
+            },
+            "block": {
+              "description": "Vertical alignment after scroll — start/center/end/nearest (Chrome path only, default: center)",
+              "type": "string",
+              "enum": [
+                "start",
+                "center",
+                "end",
+                "nearest"
+              ],
+              "default": "center"
+            },
+            "tabId": {
+              "description": "Tab ID (Chrome path only). Omit for first page tab.",
+              "type": "string"
+            },
+            "port": {
+              "description": "CDP port for Chrome path (default 9222)",
+              "type": "integer",
+              "default": 9222,
+              "minimum": 1,
+              "maximum": 65535
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "smart"
+            },
+            "target": {
+              "description": "CSS selector (Chrome/Edge) or partial UIA name (native apps). For CDP path, must be a valid CSS selector (starts with #, ., tag, or [ ). For UIA path, a partial name match against element Name property.",
+              "type": "string"
+            },
+            "windowTitle": {
+              "description": "Partial window title. Required for UIA and image paths. For CDP path, optional.",
+              "type": "string"
+            },
+            "tabId": {
+              "description": "CDP tab ID (Chrome path only). Omit for first page tab.",
+              "type": "string"
+            },
+            "port": {
+              "description": "CDP port (default 9222)",
+              "type": "integer",
+              "default": 9222,
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "strategy": {
+              "description": "auto (default): try CDP → UIA → image in order. cdp: Chrome/Edge only. uia: native Windows UIA. image: image + Win32 binary-search.",
+              "type": "string",
+              "enum": [
+                "auto",
+                "cdp",
+                "uia",
+                "image"
+              ],
+              "default": "auto"
+            },
+            "direction": {
+              "description": "Scroll direction. into-view: scroll until target element is visible (default). Other values scroll unconditionally.",
+              "type": "string",
+              "enum": [
+                "into-view",
+                "up",
+                "down",
+                "left",
+                "right"
+              ],
+              "default": "into-view"
+            },
+            "inline": {
+              "description": "Vertical alignment after scroll (CDP path). Default: center.",
+              "type": "string",
+              "enum": [
+                "start",
+                "center",
+                "end",
+                "nearest"
+              ],
+              "default": "center"
+            },
+            "maxDepth": {
+              "description": "Max number of ancestor scroll containers to walk. Default 3.",
+              "type": "integer",
+              "default": 3,
+              "minimum": 1,
+              "maximum": 10
+            },
+            "retryCount": {
+              "description": "Max scroll attempts (image path binary-search). Default 3, cap 4.",
+              "type": "integer",
+              "default": 3,
+              "minimum": 1,
+              "maximum": 4
+            },
+            "verifyWithHash": {
+              "description": "Verify scroll effectiveness via perceptual hash comparison. Automatically enabled for image path.",
+              "type": "boolean",
+              "default": false
+            },
+            "virtualIndex": {
+              "description": "Target row index in a virtualised list (0-based). Enables direct TanStack/data-index seeking.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "virtualTotal": {
+              "description": "Total row count in a virtualised list. Required when virtualIndex is set.",
+              "type": "integer",
+              "minimum": 1
+            },
+            "expandHidden": {
+              "description": "Temporarily set overflow:hidden ancestors to overflow:auto to unlock scroll. Mutates live CSS.",
+              "type": "boolean",
+              "default": false
+            },
+            "hint": {
+              "description": "Scroll direction hint for binary-search (image path). Seeds lo/hi bounds to reduce attempts.",
+              "type": "string",
+              "enum": [
+                "above",
+                "below",
+                "left",
+                "right"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "target"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "capture"
+            },
+            "windowTitle": {
+              "description": "Partial title of the window to capture (case-insensitive match)",
+              "type": "string"
+            },
+            "direction": {
+              "description": "Scroll direction: 'down' (vertical, uses Page Down key) or 'right' (horizontal, uses mouse scroll). Default 'down'.",
+              "type": "string",
+              "enum": [
+                "down",
+                "right"
+              ],
+              "default": "down"
+            },
+            "maxScrolls": {
+              "description": "Maximum scroll iterations before stopping (default 10, max 30)",
+              "type": "integer",
+              "default": 10,
+              "minimum": 1,
+              "maximum": 30
+            },
+            "scrollDelayMs": {
+              "description": "Milliseconds to wait after each scroll for rendering to settle (default 400). Increase for slow/animated pages.",
+              "type": "integer",
+              "default": 400,
+              "minimum": 100,
+              "maximum": 3000
+            },
+            "maxWidth": {
+              "description": "Max size of the short edge of the final image (default 1280). For 'down': caps the image width; height is unconstrained. For 'right': caps the image height; width is unconstrained.",
+              "type": "integer",
+              "default": 1280
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "windowTitle"
+          ]
         }
-      },
-      "additionalProperties": true
+      ]
     }
   },
   {
@@ -1520,12 +2059,74 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
     "description": "Purpose: Interact with a terminal window: read output, send input, or run+wait+read in one call.\nDetails: action='run' is the recommended high-level workflow: send command → wait until quiet/pattern/timeout → read output. Returns completion={reason, elapsedMs} first-class. action='read' reads current text via UIA TextPattern (falls back to OCR); use sinceMarker for incremental diff. action='send' sends a command with focus management.\nPrefer: action='run' for command execution + result. Use action='read'/'send' for fine-grained control or when you need to interleave other actions.\nCaveats: Do not screenshot the terminal — terminal(action='read') is cheaper and structured. action='run' supports completion reasons: quiet | pattern_matched | timeout | window_closed | window_not_found. preferClipboard=true (send default) overwrites user clipboard.\nExamples:\n  terminal({action:'run', windowTitle:'PowerShell', input:'npm test', until:{mode:'pattern', pattern:'npm test:'}}) → {output, completion:{reason:'pattern_matched'}}\n  terminal({action:'run', windowTitle:'pwsh', input:'ls'}) → quiet 800ms wait, returns output\n  terminal({action:'read', windowTitle:'PowerShell', sinceMarker:'...'}) → incremental diff\n  terminal({action:'send', windowTitle:'PowerShell', input:'echo hello'}) → sends text + Enter",
     "inputSchema": {
       "type": "object",
-      "properties": {
-        "action": {
-          "type": "string"
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "read"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "send"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "run"
+            },
+            "windowTitle": {
+              "description": "Partial title of the terminal window (e.g. 'PowerShell', 'pwsh', 'WindowsTerminal').",
+              "type": "string",
+              "maxLength": 200
+            },
+            "input": {
+              "description": "Command to send (Enter is appended automatically)",
+              "type": "string",
+              "maxLength": 10000
+            },
+            "until": {
+              "type": "object"
+            },
+            "timeoutMs": {
+              "description": "Hard timeout in ms (default 30s)",
+              "type": "integer",
+              "default": 30000,
+              "minimum": 500,
+              "maximum": 600000
+            },
+            "sendOptions": {
+              "description": "Extra options forwarded to terminal send (method, chunkSize, etc.)",
+              "type": "object"
+            },
+            "readOptions": {
+              "description": "Extra options forwarded to terminal read (lines, source, ocrLanguage, etc.)",
+              "type": "object"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "windowTitle",
+            "input"
+          ]
         }
-      },
-      "additionalProperties": true
+      ]
     }
   },
   {
@@ -1577,12 +2178,102 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
     "description": "Purpose: Decorate a window: pin (always-on-top), unpin, or dock (move + resize + optional pin).\nDetails: action='pin' makes window always-on-top until unpin/duration_ms. action='unpin' removes always-on-top. action='dock' positions to corner with width/height (default 480×360 bottom-right) and optionally pins. Minimized windows are automatically restored before docking.\nPrefer: Use action='dock' for terminal/CLI window auto-positioning at session start. Use action='pin' alone when you only need always-on-top without moving or resizing.\nCaveats: Pin survives minimize/restore; explicit action='unpin' needed to release. Dock fails on elevated processes. Dock overrides any existing Win+Arrow snap arrangement.\nExamples:\n  window_dock({action:'dock', title:'PowerShell', corner:'bottom-right', width:480, height:360})\n  window_dock({action:'pin', title:'Settings', duration_ms:5000})\n  window_dock({action:'unpin', title:'Settings'})",
     "inputSchema": {
       "type": "object",
-      "properties": {
-        "action": {
-          "type": "string"
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "pin"
+            },
+            "title": {
+              "description": "Partial window title (case-insensitive)",
+              "type": "string"
+            },
+            "duration_ms": {
+              "description": "Auto-unpin after this many ms (0–60000). Omit to pin indefinitely.",
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 60000
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "title"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "unpin"
+            },
+            "title": {
+              "description": "Partial window title (case-insensitive)",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "title"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "dock"
+            },
+            "title": {
+              "description": "Partial window title to dock (case-insensitive). Matches the first visible window containing this text. Example: 'Claude Code', 'メモ帳'.",
+              "type": "string"
+            },
+            "corner": {
+              "description": "Screen corner to snap the window to. Default 'bottom-right'.",
+              "type": "string",
+              "enum": [
+                "top-left",
+                "top-right",
+                "bottom-left",
+                "bottom-right"
+              ],
+              "default": "bottom-right"
+            },
+            "width": {
+              "description": "Window width in pixels after docking. Default 480.",
+              "type": "integer",
+              "default": 480
+            },
+            "height": {
+              "description": "Window height in pixels after docking. Default 360.",
+              "type": "integer",
+              "default": 360
+            },
+            "pin": {
+              "description": "If true, set always-on-top so the docked window stays visible on top of other windows. Use window_dock(action='unpin') to remove the topmost flag later. Default true.",
+              "type": "boolean",
+              "default": true
+            },
+            "monitorId": {
+              "description": "Monitor to dock on (from get_screen_info). Omit for primary monitor.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "margin": {
+              "description": "Pixel padding between the window and the screen edge. Default 8.",
+              "type": "integer",
+              "default": 8,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "title"
+          ]
         }
-      },
-      "additionalProperties": true
+      ]
     }
   },
   {

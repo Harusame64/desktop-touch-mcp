@@ -73,6 +73,20 @@ function splitTopLevelArgs(s) {
     const c = s[i];
     if (c === '"' || c === "'") { i = skipString(s, i) - 1; continue; }
     if (c === '`') { i = skipTemplate(s, i) - 1; continue; }
+    // Skip line comments (// ...) and block comments (/* ... */). Without this
+    // a quote inside a comment (`// action='raw'`) would be interpreted as a
+    // string start and silently swallow real commas — which broke the
+    // discriminatedUnion variant split for scroll.ts (Codex PR #40 P2).
+    if (c === '/' && s[i + 1] === '/') {
+      const nl = s.indexOf('\n', i + 2);
+      i = nl < 0 ? s.length : nl;
+      continue;
+    }
+    if (c === '/' && s[i + 1] === '*') {
+      const blockEnd = s.indexOf('*/', i + 2);
+      i = blockEnd < 0 ? s.length : blockEnd + 1;
+      continue;
+    }
     if (c === '(') depthParen++;
     else if (c === ')') depthParen--;
     else if (c === '{') depthBrace++;
@@ -228,9 +242,57 @@ function findConstExpression(src, name) {
     const end = scanBalanced(src, i + 1, '{', '}');
     return src.slice(i, end);
   }
-  let end = i;
-  while (end < src.length && src[end] !== ';' && src[end] !== '\n') end++;
-  return src.slice(i, end).trim();
+  // For non-object expressions (e.g. `z.discriminatedUnion(...)`,
+  // `z.object({...})`, `coercedBoolean()...`), scan forward respecting nested
+  // parens / braces / brackets and string/template/comment lexemes. Stop at
+  // the first `;` or unmatched newline at depth 0. Without this, the previous
+  // implementation truncated multi-line expressions at the first newline,
+  // which silently broke discriminatedUnion serialization in the stub catalog
+  // (Codex PR #40 P2).
+  const start = i;
+  let depthParen = 0;
+  let depthBrace = 0;
+  let depthBracket = 0;
+  while (i < src.length) {
+    const c = src[i];
+    if (c === '"' || c === "'") { i = skipString(src, i); continue; }
+    if (c === '`') { i = skipTemplate(src, i); continue; }
+    if (c === '/' && src[i + 1] === '/') {
+      const nl = src.indexOf('\n', i + 2);
+      i = nl < 0 ? src.length : nl + 1;
+      continue;
+    }
+    if (c === '/' && src[i + 1] === '*') {
+      const blockEnd = src.indexOf('*/', i + 2);
+      i = blockEnd < 0 ? src.length : blockEnd + 2;
+      continue;
+    }
+    if (c === '(') { depthParen++; i++; continue; }
+    if (c === ')') { depthParen--; i++; continue; }
+    if (c === '{') { depthBrace++; i++; continue; }
+    if (c === '}') { depthBrace--; i++; continue; }
+    if (c === '[') { depthBracket++; i++; continue; }
+    if (c === ']') { depthBracket--; i++; continue; }
+    if (depthParen === 0 && depthBrace === 0 && depthBracket === 0) {
+      if (c === ';') break;
+      if (c === '\n') {
+        // Bare newline at depth 0 ends the expression unless the following
+        // non-whitespace continues the call chain (rare for top-level consts).
+        // Look ahead: if the next non-whitespace char is a continuation token,
+        // keep going; otherwise, terminate.
+        let j = i + 1;
+        while (j < src.length && /[ \t]/.test(src[j])) j++;
+        const next = src[j];
+        if (next === '.' || next === ',' || next === ')' || next === ']') {
+          i++;
+          continue;
+        }
+        break;
+      }
+    }
+    i++;
+  }
+  return src.slice(start, i).trim();
 }
 
 function splitObjectFields(objExpr) {
@@ -242,6 +304,16 @@ function splitObjectFields(objExpr) {
     const c = body[i];
     if (c === '"' || c === "'") { i = skipString(body, i) - 1; continue; }
     if (c === '`') { i = skipTemplate(body, i) - 1; continue; }
+    if (c === '/' && body[i + 1] === '/') {
+      const nl = body.indexOf('\n', i + 2);
+      i = nl < 0 ? body.length : nl;
+      continue;
+    }
+    if (c === '/' && body[i + 1] === '*') {
+      const blockEnd = body.indexOf('*/', i + 2);
+      i = blockEnd < 0 ? body.length : blockEnd + 1;
+      continue;
+    }
     if (c === '(') depthParen++;
     else if (c === ')') depthParen--;
     else if (c === '{') depthBrace++;
@@ -276,6 +348,7 @@ const commonParams = {
   settleMsParam: { type: 'integer', minimum: 0, maximum: 2000, default: 300, description: 'Milliseconds to wait before checking post-action state.', __optional: true },
   hwndParam: { type: 'string', description: 'Direct window handle ID (takes precedence over windowTitle). Obtain from get_windows response (hwnd field). String type to avoid 64-bit precision issues.', __optional: true },
   hwndFocusParam: { type: 'string', description: 'Direct window handle ID (takes precedence over windowTitle). Obtain from get_windows response (hwnd field). String type to avoid 64-bit precision issues.', __optional: true },
+  methodParam: { type: 'string', enum: ['auto', 'background', 'foreground'], default: 'auto', description: 'Input method. background = WM_CHAR PostMessage (no focus change); foreground = SendInput (current default); auto = pick automatically.', __optional: true },
 };
 
 function extractDescribe(valueExpr) {
@@ -432,6 +505,123 @@ function applySchemaOverrides(schemaName, properties, required) {
   if (!required.includes('target')) required.push('target');
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// discriminatedUnion → JSON Schema oneOf expansion (Codex PR #40 P2 fix)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Strip leading whitespace + line/block comments. Used by parseZObjectVariant
+// because the source frequently puts a `// action='xxx' — ...` annotation
+// directly before each `z.object({...})` variant, and splitTopLevelArgs keeps
+// those comments attached to the variant text.
+function stripLeadingTrivia(s) {
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === ' ' || c === '\t' || c === '\r' || c === '\n') { i++; continue; }
+    if (c === '/' && s[i + 1] === '/') {
+      const nl = s.indexOf('\n', i + 2);
+      i = nl < 0 ? s.length : nl + 1;
+      continue;
+    }
+    if (c === '/' && s[i + 1] === '*') {
+      const end = s.indexOf('*/', i + 2);
+      i = end < 0 ? s.length : end + 2;
+      continue;
+    }
+    break;
+  }
+  return s.slice(i);
+}
+
+// Parse a single `z.object({...})` discriminatedUnion variant into a JSON
+// Schema object. The discriminator field is rendered as `{const: literalValue}`
+// so the dispatcher's required action value is preserved in the stub catalog.
+function parseZObjectVariant(variantExprRaw, discriminator) {
+  const variantExpr = stripLeadingTrivia(variantExprRaw);
+  if (!variantExpr) return null;
+  const m = /^z\s*\.\s*object\s*\(/.exec(variantExpr);
+  if (!m) return null;
+  const start = m[0].length;
+  const end = scanBalanced(variantExpr, start, '(', ')');
+  const objExpr = variantExpr.slice(start, end - 1).trim();
+  if (!objExpr.startsWith('{')) return null;
+
+  const properties = {};
+  const required = [];
+  for (const field of splitObjectFields(objExpr)) {
+    const fm = /^([A-Za-z_$][\w$]*|["'][^"']+["'])\s*:\s*([\s\S]*)$/.exec(field);
+    if (!fm) continue;
+    const rawKey = fm[1];
+    const key = rawKey[0] === '"' || rawKey[0] === "'" ? rawKey.slice(1, -1) : rawKey;
+    const valueExpr = fm[2].trim();
+
+    if (key === discriminator) {
+      // Discriminator must be z.literal("xxx") per Zod contract.
+      const litMatch = /^z\s*\.\s*literal\s*\(/.exec(valueExpr);
+      if (litMatch) {
+        const ls = litMatch[0].length;
+        const le = scanBalanced(valueExpr, ls, '(', ')');
+        const litArg = valueExpr.slice(ls, le - 1).trim();
+        try {
+          properties[key] = { const: evalExpr(litArg) };
+        } catch {
+          properties[key] = { type: 'string' };
+        }
+      } else {
+        properties[key] = { type: 'string' };
+      }
+      required.push(key);
+      continue;
+    }
+
+    const prop = inferProperty(valueExpr);
+    const optional =
+      prop.__optional === true ||
+      valueExpr.includes('.optional()') ||
+      valueExpr.includes('.default(');
+    delete prop.__optional;
+    properties[key] = prop;
+    if (!optional) required.push(key);
+  }
+
+  const variant = { type: 'object', properties, additionalProperties: false };
+  if (required.length) variant.required = required;
+  return variant;
+}
+
+function parseDiscriminatedUnionSchema(rawExpr /*, src */) {
+  const m = /^z\s*\.\s*discriminatedUnion\s*\(/.exec(rawExpr);
+  if (!m) return null;
+  const argsStart = m[0].length;
+  const argsEnd = scanBalanced(rawExpr, argsStart, '(', ')');
+  const argsBody = rawExpr.slice(argsStart, argsEnd - 1);
+  const args = splitTopLevelArgs(argsBody);
+  if (args.length < 2) return null;
+
+  let discriminator;
+  try {
+    discriminator = String(evalExpr(args[0]));
+  } catch {
+    return null;
+  }
+
+  const variantsExpr = args[1].trim();
+  if (!variantsExpr.startsWith('[')) return null;
+  const innerEnd = scanBalanced(variantsExpr, 1, '[', ']');
+  const inner = variantsExpr.slice(1, innerEnd - 1);
+  const variantExprs = splitTopLevelArgs(inner);
+
+  const oneOf = [];
+  for (const variantExpr of variantExprs) {
+    const trimmed = variantExpr.trim();
+    if (!trimmed) continue;
+    const variantSchema = parseZObjectVariant(trimmed, discriminator);
+    if (variantSchema) oneOf.push(variantSchema);
+  }
+  if (oneOf.length === 0) return null;
+  return { type: 'object', oneOf };
+}
+
 function parseSchema(src, schemaName) {
   if (!schemaName) return { type: 'object', properties: {}, additionalProperties: false };
   const expr = findConstExpression(src, schemaName);
@@ -464,11 +654,19 @@ for (const file of TOOL_FILES) {
     byName.set(tool.name, tool);
   }
   for (const tool of extractRegisterTools(src, file)) {
-    // For discriminated union schemas, produce a simple object stub
+    // Codex PR #40 (P2): expand discriminatedUnion into oneOf with each variant's
+    // action-specific fields, instead of an opaque {action:string,
+    // additionalProperties:true} stub. This restores cross-platform tool
+    // discovery / validation accuracy for Phase 2/3 dispatchers.
     const rawExpr = tool.schemaName ? findConstExpression(src, tool.schemaName) : undefined;
-    const isDiscrimUnion = rawExpr && rawExpr.trim().startsWith('z.discriminatedUnion(');
+    const isDiscrimUnion = rawExpr && /^\s*z\s*\.\s*discriminatedUnion\s*\(/.test(rawExpr);
     if (isDiscrimUnion) {
-      tool.inputSchema = { type: 'object', properties: { action: { type: 'string' } }, additionalProperties: true };
+      const expanded = parseDiscriminatedUnionSchema(rawExpr.trim(), src);
+      tool.inputSchema = expanded || {
+        type: 'object',
+        properties: { action: { type: 'string' } },
+        additionalProperties: true,
+      };
     } else {
       tool.inputSchema = parseSchema(src, tool.schemaName);
     }
@@ -484,7 +682,7 @@ if (tools.length < 46) {
 
 const header = `/**\n * Auto-generated by scripts/generate-stub-tool-catalog.mjs.\n *\n * This catalog is native-free: the non-Windows stub imports it so directory\n * hosts such as Glama can inspect the real tool descriptions and argument\n * schema without loading Win32, UIA, CDP, nut-js, or koffi modules.\n */\n\n`;
 const content = header +
-`export type JsonSchemaObject = {\n  type: \"object\";\n  properties: Record<string, unknown>;\n  required?: string[];\n  additionalProperties?: boolean;\n};\n\n` +
+`export type JsonSchemaObject = {\n  type: \"object\";\n  /** Property map. Omitted when the schema uses \`oneOf\` for discriminated-union dispatchers (Phase 2/3). */\n  properties?: Record<string, unknown>;\n  required?: string[];\n  additionalProperties?: boolean;\n  /** Discriminated-union variants — one schema per dispatcher action (Phase 2/3 dispatchers). */\n  oneOf?: JsonSchemaObject[];\n};\n\n` +
 `export interface StubToolCatalogEntry {\n  name: string;\n  description: string;\n  inputSchema: JsonSchemaObject;\n}\n\n` +
 `export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = ${JSON.stringify(tools.map(({name, description, inputSchema}) => ({name, description, inputSchema})), null, 2)};\n\n` +
 `export const STUB_TOOL_COUNT = STUB_TOOL_CATALOG.length;\n`;
