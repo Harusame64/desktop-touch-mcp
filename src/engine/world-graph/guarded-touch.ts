@@ -29,7 +29,7 @@ export type TouchFailReason =
   | "executor_failed";
 
 export type TouchResult =
-  | { ok: true; executor: ExecutorKind; diff: SemanticDiff; next: "refresh_view" | "none" }
+  | { ok: true; executor: ExecutorKind; diff: SemanticDiff; next: "refresh_view" | "none"; warnings?: string[] }
   | { ok: false; reason: TouchFailReason; diff: SemanticDiff };
 
 /**
@@ -222,12 +222,39 @@ export class GuardedTouchLoop {
     const live = this.env.resolveLiveEntities();
     const validation = this.leaseStore.validate(lease, gen, live);
 
-    if (!validation.ok) {
+    let entity: UiEntity;
+    let warnings: string[] | undefined;
+
+    if (validation.ok) {
+      entity = validation.entity;
+    } else if (validation.reason === "expired") {
+      // No-compromise lease C: touch-side grace for the *expired-only* case.
+      // The lease's TTL ran out, but if the live snapshot still has an entity
+      // with the same id, generation, AND evidenceDigest, the world hasn't
+      // moved out from under us — the LLM just took longer than the TTL
+      // window. Content-based invalidation (digest) is the real correctness
+      // wall; the time-based one is a safety net. Re-using the unchanged
+      // entity here is safer than auto-refreshing the lease (we never extend
+      // expiry) and never bypasses content checks.
+      //
+      // Any failure mode other than "expired" — generation_mismatch /
+      // entity_not_found / digest_mismatch — represents a true content
+      // change and falls through to the normal fail path.
+      const candidate = live.find((e) => e.entityId === lease.entityId);
+      if (
+        candidate &&
+        lease.targetGeneration === gen &&
+        candidate.evidenceDigest === lease.evidenceDigest
+      ) {
+        entity = candidate;
+        warnings = ["lease_was_expired_but_entity_unchanged"];
+      } else {
+        return { ok: false, reason: "lease_expired", diff: [] };
+      }
+    } else {
       const reason = LEASE_TO_TOUCH_REASON[validation.reason] ?? "entity_not_found";
       return { ok: false, reason, diff: [] };
     }
-
-    const entity = validation.entity;
 
     // 2. Resolve "auto" to a concrete verb.
     const concreteAction = resolveAction(entity, action);
@@ -257,6 +284,12 @@ export class GuardedTouchLoop {
 
     const diff = computeDiff({ touched: entity, preEntities: live, postEntities: post, preFocusId, postFocusId });
 
-    return { ok: true, executor, diff, next: diff.length > 0 ? "refresh_view" : "none" };
+    return {
+      ok: true,
+      executor,
+      diff,
+      next: diff.length > 0 ? "refresh_view" : "none",
+      ...(warnings ? { warnings } : {}),
+    };
   }
 }
