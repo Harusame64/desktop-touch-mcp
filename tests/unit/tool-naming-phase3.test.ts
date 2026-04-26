@@ -284,6 +284,82 @@ describe("Phase 3 — no LLM-exposed old browser tool names in descriptions / su
   }
 });
 
+// ─── 6.5. classifyLaunchOutcome — Codex PR #40 review fix ─────────────────────
+//
+// browserOpenHandler must distinguish a launch SUCCESS payload from a launch
+// FAILURE payload. Both can be valid JSON, so JSON.parse alone is insufficient
+// — failWith returns `{ok:false, code, error}` JSON for caught exceptions like
+// spawnDetached permission errors. The classifier inspects the parsed shape.
+
+describe("Phase 3 — classifyLaunchOutcome (Codex PR #40 fix)", () => {
+  it("treats success JSON (alreadyRunning) as 'ok'", async () => {
+    const { classifyLaunchOutcome } = await import("../../src/tools/browser.js");
+    const successText = JSON.stringify({
+      port: 9222,
+      alreadyRunning: true,
+      launched: null,
+      tabs: [{ id: "abc", title: "x", url: "about:blank" }],
+    });
+    expect(classifyLaunchOutcome(successText)).toBe("ok");
+  });
+
+  it("treats success JSON (spawned) as 'ok'", async () => {
+    const { classifyLaunchOutcome } = await import("../../src/tools/browser.js");
+    const successText = JSON.stringify({
+      port: 9222,
+      alreadyRunning: false,
+      launched: { browser: "chrome", path: "...", userDataDir: "..." },
+      tabs: [],
+    });
+    expect(classifyLaunchOutcome(successText)).toBe("ok");
+  });
+
+  it("treats failWith JSON ({ok:false, ...}) as 'fail' (Codex regression case)", async () => {
+    const { classifyLaunchOutcome } = await import("../../src/tools/browser.js");
+    const failureText = JSON.stringify({
+      ok: false,
+      code: "ToolError",
+      error: "browser_open failed: spawnDetached EACCES",
+      suggest: ["Try running with admin privileges"],
+    });
+    expect(classifyLaunchOutcome(failureText)).toBe("fail");
+  });
+
+  it("treats plain-text failure (url validation) as 'fail'", async () => {
+    const { classifyLaunchOutcome } = await import("../../src/tools/browser.js");
+    expect(
+      classifyLaunchOutcome(`browser_open: url must not start with '-' (got: "-foo")`)
+    ).toBe("fail");
+  });
+
+  it("treats plain-text failure (browser not found) as 'fail'", async () => {
+    const { classifyLaunchOutcome } = await import("../../src/tools/browser.js");
+    expect(
+      classifyLaunchOutcome("No supported browser (Chrome/Edge/Brave) found in standard install locations.")
+    ).toBe("fail");
+  });
+
+  it("treats empty string as 'fail'", async () => {
+    const { classifyLaunchOutcome } = await import("../../src/tools/browser.js");
+    expect(classifyLaunchOutcome("")).toBe("fail");
+  });
+
+  it("does NOT misclassify non-failWith JSON without ok field as 'fail'", async () => {
+    const { classifyLaunchOutcome } = await import("../../src/tools/browser.js");
+    // Success payload from browserLaunchHandler does not include an `ok` field.
+    const text = JSON.stringify({ port: 9222, tabs: [] });
+    expect(classifyLaunchOutcome(text)).toBe("ok");
+  });
+
+  it("treats {ok:true,...} (defensive) as 'ok'", async () => {
+    const { classifyLaunchOutcome } = await import("../../src/tools/browser.js");
+    // browserLaunchHandler does not currently return ok:true, but if it ever
+    // adopts that convention, the classifier should still treat it as success.
+    const text = JSON.stringify({ ok: true, port: 9222, tabs: [] });
+    expect(classifyLaunchOutcome(text)).toBe("ok");
+  });
+});
+
 // ─── 7. Internal handlers retained (handler 残置方針) ──────────────────────────
 
 describe("Phase 3 — internal handlers retained for tests / future facade", () => {
