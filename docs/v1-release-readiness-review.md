@@ -208,8 +208,8 @@ For each finding: file:line + 1-line summary + suggested fix direction.
 | **P0-1** | H | `.github/workflows/ci.yml` | CI が `npm test` を回さない (build と stub-catalog check のみ)。テスト regression が main に入る経路 | release.yml と同じ test ステップを ci.yml に追加 |
 | **P0-2** | H | `.github/workflows/ci.yml` | CI が `npm run build:rs` を回さない (Rust 側 regression を merge 前に検知不可)。release.yml だけが Rust build を持つ | ci.yml に `node-gyp install` + `npm run build:rs` + `cargo check` を追加 |
 | **P0-3** | B1 | `src/tools/desktop-executor.ts:176` | terminal route が `setValue/type` の text undefined ガードを欠落 (UIA/CDP 経路は round 3 で追加済、terminal だけ漏れ)。`text ?? ""` で空文字 fallback してしまう | `desktop-register.ts` の `validateDesktopTouchTextRequirement` を terminal route にも適用 |
-| **P0-4** | C | `src/vision_backend/florence2.rs` (および `paddleocr.rs` / `omniparser.rs`) | 複数箇所で `unwrap()` / `expect()` panic (model 読み込み失敗で TS 側がクラッシュ) | `napi::Result` で error propagation、Tier ∞ fallback 経路を保証 |
-| **P0-5** | C | `src/uia/*.rs` (`thread.rs` / `actions.rs` ほか) | `Mutex::lock()` の poison 未処理 (一度 panic すると以降全 lock が err) | `lock().unwrap_or_else(\|e\| e.into_inner())` パターンで poison recovery |
+| ~~P0-4~~ | C | (重新調査により棄却) | audit grep が test 込みで集計していた。実コード上の `unwrap()` / `expect()` を 1 件ずつ精査した結果、florence2 / paddleocr / omniparser / dhash / pixel_diff / inference の unwrap は全て `#[cfg(test)]` 配下、`image_processing.rs:219-220` は `is_empty()` 早期 return 後の不変式保護、`uia/thread.rs:52` は OS thread spawn の startup-time intentional crash。production panic risk なし。 | (本 PR で confirm 済み) |
+| **P0-5** | C | `src/vision_backend/session.rs:66` | `inner.lock().expect("VisionSession mutex poisoned")` — Mutex poison recovery なし。pool 内の他 session も巻き添えで panic | `lock().unwrap_or_else(\|p\| p.into_inner())` で poison recovery、`try_one_ep` の `catch_unwind` パターンと整合 |
 | **P0-6** | G | `tests/unit/registry-lru.test.ts:13-23, 90-102` | 同一ファイル内で `vi.mock("../../src/engine/win32.js")` が 2 重宣言。full suite で mock 解決順が undefined → flake | 13-23 行の旧 mock を削除、90-102 のみ残す (5 分修正) |
 
 ### 8.2. P1 — 設計逸脱 / regression リスク
@@ -265,10 +265,10 @@ For each finding: file:line + 1-line summary + suggested fix direction.
 
 ### 8.6. Release recommendation (現時点)
 
-- **P0 6 件** はすべて release 前に必須:
-  - **CI gap 2 件 (P0-1/P0-2)** が最優先 (これがないと他の修正の regression を検出できない)
+- **P0 5 件** (P0-4 は重新調査で棄却) はすべて release 前に必須:
+  - **CI gap 2 件 (P0-1/P0-2)** が最優先 (これがないと他の修正の regression を検出できない、PR #45)
   - **terminal text gate (P0-3)** は 1-2 行 fix
-  - **Rust panic / poison 2 件 (P0-4/P0-5)** は別 PR ですすめる
+  - **Mutex poison 1 件 (P0-5)** は session.rs:66 の 1 行 fix
   - **registry-lru 重複 mock (P0-6)** は TS test、5 分 fix (PR #42 で済)
 - **P1 11 件** (P1-4 は P0-6 と同一のため除外) は release 前 OR v1.0.1 patch
 - **P2 12 件 / P3 6 件** は v1.0.x で対応、Phase 5 dogfood と並行可
