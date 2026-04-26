@@ -121,8 +121,15 @@ unified screenshot tool.
 
 | Old call | New call |
 |---|---|
-| `get_ui_elements({windowTitle, ...})` | `desktop_discover({windowTitle}).actionable[]` (entity name / role / value / automationId / region) |
-| `get_windows()` | `desktop_discover({}).windows[]` (zOrder / title / hwnd / region / isActive / processName) |
+| `get_ui_elements({windowTitle, ...})` | `desktop_discover({target:{windowTitle}}).entities[]` (`entityId` / `label` / `role` / `confidence` / `sources` / `primaryAction` / `lease`; `rect` only when `debug:true`) |
+| `get_windows()` | `desktop_discover().windows[]` (`zOrder` / `title` / `hwnd` / `region` / `isActive` / `isMinimized` / `isMaximized` / `processName`) |
+
+The legacy `get_windows.isOnCurrentDesktop` virtual-desktop flag is **not**
+included in `desktop_discover.windows[]` because it requires an async
+PowerShell call. Callers needing virtual-desktop awareness can keep using
+the internal `getWindowsHandler` (still exported for tests / facades).
+Other action tools (`screenshot`, `mouse_click`, `keyboard`, …) accept
+`hwnd` strings directly from `windows[].hwnd` for exact-handle workflows.
 
 #### `run_macro` DSL TOOL_REGISTRY migrated to v1.0.0 names
 

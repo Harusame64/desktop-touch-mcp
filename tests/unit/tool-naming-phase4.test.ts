@@ -481,16 +481,27 @@ describe("Phase 4 — Codex PR #41 P2: screenshot rejects incompatible mode/deta
     );
   });
 
-  // Codex PR #41 P2 follow-up: bg branch must honour detail='meta' (no image
-  // bytes, no PrintWindow) and gate detail='image'/default with confirmImage.
+  // Codex PR #41 P2 round 2: bg branch must honour detail='meta' (no image
+  // bytes, no PrintWindow). The earlier round-3 confirmImage gate for bg
+  // mode was reverted in round 5 to restore migration parity with the
+  // former screenshot_background tool — passing mode='background' is itself
+  // the acknowledgement that image pixels are wanted.
   it("screenshot dispatcher bypasses bg capture when detail='meta'", () => {
     const src = readFileSync(join(ROOT, "src", "tools", "screenshot.ts"), "utf-8");
     expect(src).toMatch(/mode === "background" && args\.detail !== "meta"/);
   });
 
-  it("screenshot dispatcher gates bg image capture with confirmImage", () => {
+  it("screenshot dispatcher does NOT gate bg image capture with confirmImage (migration parity with former screenshot_background)", () => {
     const src = readFileSync(join(ROOT, "src", "tools", "screenshot.ts"), "utf-8");
-    expect(src).toMatch(/mode='background'\) returns image pixels — pass confirmImage:true/);
+    // The former gate string must be absent — passing mode='background' is
+    // itself the explicit image acknowledgement.
+    expect(src).not.toMatch(/mode='background'\) returns image pixels — pass confirmImage:true/);
+  });
+
+  it("screenshot description says confirmImage is NOT required for mode='background'", () => {
+    const entry = STUB_TOOL_CATALOG.find((e) => e.name === "screenshot");
+    expect(entry).toBeDefined();
+    expect(entry!.description).toMatch(/confirmImage is NOT required/);
   });
 });
 
@@ -546,6 +557,76 @@ describe("Phase 4 — Codex PR #41 round 3 P1: validateDesktopTouchTextRequireme
   it("macro.ts desktop_act handler invokes the validator", () => {
     const src = readFileSync(join(ROOT, "src", "tools", "macro.ts"), "utf-8");
     expect(src).toMatch(/validateDesktopTouchTextRequirement\(i\.action, i\.text\)/);
+  });
+});
+
+// Codex PR #41 round 5: desktop_discover.windows[] enumeration + bg confirmImage revert.
+
+describe("Phase 4 — Codex PR #41 round 5 P1: desktop_discover.windows[] is implemented", () => {
+  it("DesktopSeeOutput type declares a non-optional windows field", () => {
+    const src = readFileSync(join(ROOT, "src", "tools", "desktop.ts"), "utf-8");
+    // Match the property on the interface (must be non-optional — no '?' after windows).
+    expect(src).toMatch(/windows: DesktopWindowMeta\[\];/);
+  });
+
+  it("DesktopWindowMeta exposes hwnd / zOrder / region / isActive / processName", () => {
+    const src = readFileSync(join(ROOT, "src", "tools", "desktop.ts"), "utf-8");
+    expect(src).toMatch(/interface DesktopWindowMeta/);
+    expect(src).toMatch(/zOrder: number;/);
+    expect(src).toMatch(/hwnd: string;/);
+    expect(src).toMatch(/isMinimized: boolean;/);
+    expect(src).toMatch(/isMaximized: boolean;/);
+    expect(src).toMatch(/processName\?: string;/);
+  });
+
+  it("DesktopFacade.see() populates windows via injected windowsProvider", async () => {
+    const { DesktopFacade } = await import("../../src/tools/desktop.js");
+    const facade = new DesktopFacade(
+      // No candidates — entities[] will be empty, that's fine for this test.
+      () => [],
+      {
+        windowsProvider: () => [
+          {
+            zOrder: 0,
+            title: "Notepad",
+            hwnd: "12345",
+            region: { x: 0, y: 0, width: 800, height: 600 },
+            isActive: true,
+            isMinimized: false,
+            isMaximized: false,
+            processName: "notepad.exe",
+          },
+        ],
+      },
+    );
+    const out = await facade.see({});
+    expect(Array.isArray(out.windows)).toBe(true);
+    expect(out.windows).toHaveLength(1);
+    expect(out.windows[0]!.hwnd).toBe("12345");
+    expect(out.windows[0]!.title).toBe("Notepad");
+  });
+
+  it("DesktopFacade.see() returns empty windows[] when no provider is supplied (no Win32 calls in tests)", async () => {
+    const { DesktopFacade } = await import("../../src/tools/desktop.js");
+    const facade = new DesktopFacade(() => []);
+    const out = await facade.see({});
+    expect(Array.isArray(out.windows)).toBe(true);
+    expect(out.windows).toHaveLength(0);
+  });
+
+  it("DesktopFacade.see() degrades to empty windows[] when windowsProvider throws", async () => {
+    const { DesktopFacade } = await import("../../src/tools/desktop.js");
+    const facade = new DesktopFacade(() => [], {
+      windowsProvider: () => { throw new Error("Win32 enum failed"); },
+    });
+    const out = await facade.see({});
+    expect(Array.isArray(out.windows)).toBe(true);
+    expect(out.windows).toHaveLength(0);
+  });
+
+  it("desktop-register wires the production windowsProvider via enumWindowsInZOrder", () => {
+    const src = readFileSync(join(ROOT, "src", "tools", "desktop-register.ts"), "utf-8");
+    expect(src).toMatch(/windowsProvider:\s*\(\)\s*=>\s*enumWindowsInZOrder/);
   });
 });
 

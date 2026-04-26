@@ -34,7 +34,11 @@ import { OnnxBackend } from "../engine/vision-gpu/onnx-backend.js";
 import { onDirtySignal } from "../engine/vision-gpu/dirty-signal.js";
 import { _resetOcrAdaptersForTest, getOcrVisualAdapter } from "../engine/vision-gpu/ocr-adapter-registry.js";
 import { DirtyRectRouter } from "../engine/vision-gpu/dirty-rect-source.js";
-import { enumWindowsInZOrder } from "../engine/win32.js";
+import {
+  enumWindowsInZOrder,
+  getWindowProcessId,
+  getProcessIdentityByPid,
+} from "../engine/win32.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 
 // ── G1: Production guards (viewport + focus) ──────────────────────────────────
@@ -223,6 +227,28 @@ export function getDesktopFacade(): DesktopFacade {
       getFocusedEntityId: productionGetFocusedEntityId,
       // G1-A: modal guard — session-aware default in session-registry.ts (UIA unknown-role).
       // No override needed here; the session-registry default is already production-grade.
+      // Phase 4 (Codex PR #41 round 5 P1): production windows enumerator —
+      // wraps enumWindowsInZOrder + processName resolution. The facade catches
+      // any throw and returns [] in that case, so this is allowed to fail.
+      windowsProvider: () => enumWindowsInZOrder().map((w) => {
+        let processName: string | undefined;
+        try {
+          const pid = getWindowProcessId(w.hwnd);
+          processName = getProcessIdentityByPid(pid).processName;
+        } catch {
+          processName = undefined;
+        }
+        return {
+          zOrder: w.zOrder,
+          title: w.title,
+          hwnd: String(w.hwnd),
+          region: w.region,
+          isActive: w.isActive,
+          isMinimized: w.isMinimized,
+          isMaximized: w.isMaximized,
+          processName,
+        };
+      }),
     });
 
     // Wire the visual runtime (non-blocking — failure does not prevent facade creation).

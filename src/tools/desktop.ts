@@ -44,10 +44,44 @@ export interface EntityView {
   capabilities?: EntityCapabilities;
 }
 
+/**
+ * Phase 4 (Codex PR #41 round 5 P1): a top-level windows enumeration so the
+ * legacy `get_windows` workflow — title-collision disambiguation, hwnd-targeted
+ * screenshot / mouse / window_dock — has a public replacement after
+ * privatization. CHANGELOG / README advertise this as `desktop_discover.windows[]`.
+ *
+ * Synchronous-only fields by design: virtual-desktop membership (was
+ * `isOnCurrentDesktop` on the legacy `get_windows`) requires an async PowerShell
+ * call and would force `see()` to return a Promise of windows. That is not
+ * worth the cost for the hwnd workflow this field set primarily serves; the
+ * legacy `getWindowsHandler` is still exported as an internal helper for
+ * callers that need the full async shape.
+ */
+export interface DesktopWindowMeta {
+  /** Z-order ranking; 0 is frontmost. */
+  zOrder: number;
+  title: string;
+  /** String to dodge 64-bit precision loss when round-tripped through JSON. */
+  hwnd: string;
+  region: { x: number; y: number; width: number; height: number };
+  isActive: boolean;
+  isMinimized: boolean;
+  isMaximized: boolean;
+  /** Best-effort process name (e.g. "chrome.exe"). May be absent on lookup failure. */
+  processName?: string;
+}
+
 export interface DesktopSeeOutput {
   viewId: string;
   target: { title: string; generation: string };
   entities: EntityView[];
+  /**
+   * Phase 4: top-level visible windows (Z-order, title, hwnd, region, isActive,
+   * processName). Replaces the legacy `get_windows` tool — the entity list
+   * (`entities[]`) is targeted at one window/tab; this list lets callers
+   * enumerate every candidate window before drilling in.
+   */
+  windows: DesktopWindowMeta[];
   /** Non-fatal warnings (e.g. provider unavailable, partial results). */
   warnings?: string[];
   /**
@@ -133,6 +167,15 @@ export interface DesktopFacadeOptions {
    * candidateProvider is still used as the underlying fetch function via the ingress.
    */
   ingress?: CandidateIngress;
+  /**
+   * Phase 4 (Codex PR #41 round 5 P1): inject a windows enumerator for the
+   * top-level `windows[]` field that replaces the legacy `get_windows` tool.
+   * Production uses win32.enumWindowsInZOrder + getWindowProcessId. Tests can
+   * inject a fake list to avoid platform Win32 calls. When omitted (or it
+   * throws) the field defaults to `[]` so see() never fails on enumeration
+   * problems.
+   */
+  windowsProvider?: () => DesktopWindowMeta[];
 }
 
 export type { CandidateIngress };
@@ -243,10 +286,24 @@ export class DesktopFacade {
       return view;
     });
 
+    // Phase 4 (Codex PR #41 round 5 P1): top-level windows enumeration.
+    // Failure to enumerate is non-fatal — surface an empty list rather than
+    // failing the whole call, since see()'s primary contract is entity
+    // discovery for the targeted window.
+    let windows: DesktopWindowMeta[] = [];
+    if (this.opts.windowsProvider) {
+      try {
+        windows = this.opts.windowsProvider();
+      } catch {
+        windows = [];
+      }
+    }
+
     const output: DesktopSeeOutput = {
       viewId: newViewId,
       target: { title: targetTitle(input.target), generation: session.generation },
       entities: entityViews,
+      windows,
     };
     if (rawResult.warnings.length > 0) output.warnings = rawResult.warnings;
 
