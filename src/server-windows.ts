@@ -330,8 +330,17 @@ if (useHttp) {
       return;
     }
 
-    // CORS for browser-based clients
-    res.setHeader("Access-Control-Allow-Origin", "*");
+    // CORS — only echo Origin for localhost requests. The DNS rebinding check
+    // above bounds Host to localhost; the Origin check here bounds the
+    // BROWSER side: a malicious cross-origin tab can still reach the server
+    // via the user's loopback, but without a matching Allow-Origin the
+    // browser will not expose the response to JS — preventing a tab on
+    // evil.com from exfiltrating the MCP surface.
+    const origin = req.headers.origin;
+    if (typeof origin === "string" && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+    }
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, mcp-session-id, MCP-Protocol-Version");
     res.setHeader("Access-Control-Expose-Headers", "mcp-session-id");

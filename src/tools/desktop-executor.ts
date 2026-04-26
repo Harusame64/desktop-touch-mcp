@@ -233,7 +233,7 @@ function getSharedRealDeps(): ExecutorDeps {
       const { evaluateInTab, DEFAULT_CDP_PORT } = await import("../engine/cdp-bridge.js");
       const expr = `(function(){
   const el = document.querySelector(${JSON.stringify(selector)});
-  if(!el) return { ok:false, error:"Element not found: ${selector}" };
+  if(!el) return { ok:false, error:"Element not found: " + ${JSON.stringify(selector)} };
   el.focus();
   const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,"value")?.set
     ?? Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,"value")?.set;
