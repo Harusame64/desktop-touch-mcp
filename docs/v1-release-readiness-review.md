@@ -208,8 +208,8 @@ For each finding: file:line + 1-line summary + suggested fix direction.
 | **P0-1** | H | `.github/workflows/ci.yml` | CI が `npm test` を回さない (build と stub-catalog check のみ)。テスト regression が main に入る経路 | release.yml と同じ test ステップを ci.yml に追加 |
 | **P0-2** | H | `.github/workflows/ci.yml` | CI が `npm run build:rs` を回さない (Rust 側 regression を merge 前に検知不可)。release.yml だけが Rust build を持つ | ci.yml に `node-gyp install` + `npm run build:rs` + `cargo check` を追加 |
 | **P0-3** | B1 | `src/tools/desktop-executor.ts:176` | terminal route が `setValue/type` の text undefined ガードを欠落 (UIA/CDP 経路は round 3 で追加済、terminal だけ漏れ)。`text ?? ""` で空文字 fallback してしまう | `desktop-register.ts` の `validateDesktopTouchTextRequirement` を terminal route にも適用 |
-| **P0-4** | C | `tools/win-ocr/src/florence2.rs` | 複数箇所で `unwrap()` / `expect()` panic (model 読み込み失敗で TS 側がクラッシュ) | `napi::Result` で error propagation、Tier ∞ fallback 経路を保証 |
-| **P0-5** | C | `native-rs-engine/src/uia/*.rs` | `Mutex::lock()` の poison 未処理 (一度 panic すると以降全 lock が err) | `lock().unwrap_or_else(\|e\| e.into_inner())` パターンで poison recovery |
+| **P0-4** | C | `src/vision_backend/florence2.rs` (および `paddleocr.rs` / `omniparser.rs`) | 複数箇所で `unwrap()` / `expect()` panic (model 読み込み失敗で TS 側がクラッシュ) | `napi::Result` で error propagation、Tier ∞ fallback 経路を保証 |
+| **P0-5** | C | `src/uia/*.rs` (`thread.rs` / `actions.rs` ほか) | `Mutex::lock()` の poison 未処理 (一度 panic すると以降全 lock が err) | `lock().unwrap_or_else(\|e\| e.into_inner())` パターンで poison recovery |
 | **P0-6** | G | `tests/unit/registry-lru.test.ts:13-23, 90-102` | 同一ファイル内で `vi.mock("../../src/engine/win32.js")` が 2 重宣言。full suite で mock 解決順が undefined → flake | 13-23 行の旧 mock を削除、90-102 のみ残す (5 分修正) |
 
 ### 8.2. P1 — 設計逸脱 / regression リスク
@@ -219,7 +219,7 @@ For each finding: file:line + 1-line summary + suggested fix direction.
 | **P1-1** | B1 | `src/tools/desktop-register.ts` (windowsProvider) | production windowsProvider が enumWindowsInZOrder + getWindowProcessId + getProcessIdentityByPid を毎 see() で同期実行 (40+ window で数十 ms cost) | 100ms TTL cache、または Phase 4b sensors に統合 |
 | **P1-2** | B2 | `src/engine/world-graph/session-registry.ts` | session eviction reason が呼出側に伝わらない (entity_not_found としか返らず、TTL evict か enum miss か区別不能) | `EntityLeaseRejectionReason` に `session_evicted` を追加、 LeaseStore で 区別 |
 | **P1-3** | B2 | `src/engine/world-graph/session-registry.ts` | `session.seq` が `number` で increment、長時間 session で overflow (Number.MAX_SAFE_INTEGER は 1日 50ms 1000万 ops で 30年なので低確率だが) | `seq % 2^31` で wrap、generation を組み合わせ |
-| **P1-4** | G | `tests/unit/registry-lru.test.ts` (root cause) | (P0-6 と同一) full suite parallel で `vi.mock` 解決順 undefined → 既知 flake の真因 | P0-6 修正で解消 |
+| ~~P1-4~~ | — | — | (P0-6 と同一の finding。重複削除、cross-ref のみ残置 — Codex PR #43 P2 指摘) | — |
 | **P1-5** | A | `src/engine/error/error-codes.ts` | Phase 4 で消えた tool 系の error code が dead (FUKUWARAI_V1_ONLY 等) | grep で参照 0 のものを削除 |
 | **P1-6** | C | `native-rs-engine/Cargo.toml` (vision-gpu-winml) | WinML feature が ADR-006 で停滞、stub のまま `cargo check` は通るが build:rs で残骸 | feature flag を default 外し、stub であることを README に明記 |
 | **P1-7** | D | `src/engine/win32.ts` (koffi 残留) | Phase 1 §1.5 で napi-rs に統合と引継ぎあるも、`koffi` が package.json deps に残置、koffi 経由 path 1 箇所残存 | 残存 koffi コードを napi-rs binding 経由に置換、deps から `koffi` を削除 |
@@ -268,8 +268,9 @@ For each finding: file:line + 1-line summary + suggested fix direction.
 - **P0 6 件** はすべて release 前に必須:
   - **CI gap 2 件 (P0-1/P0-2)** が最優先 (これがないと他の修正の regression を検出できない)
   - **terminal text gate (P0-3)** は 1-2 行 fix
-  - **Rust panic 3 件 (P0-4/5/6)** は別 PR ですすめる、ただし P0-6 は 5 分 fix
-- **P1 12 件** は release 前 OR v1.0.1 patch
+  - **Rust panic / poison 2 件 (P0-4/P0-5)** は別 PR ですすめる
+  - **registry-lru 重複 mock (P0-6)** は TS test、5 分 fix (PR #42 で済)
+- **P1 11 件** (P1-4 は P0-6 と同一のため除外) は release 前 OR v1.0.1 patch
 - **P2 12 件 / P3 6 件** は v1.0.x で対応、Phase 5 dogfood と並行可
 
 **結論**: P0 6 件 + P1 のうち kill-switch test (P1-10) と http-transport.test 修正 (P1-11) を v1.0.0 release 前に消化、それ以外は v1.0.1 計画に乗せる方針を提案。
