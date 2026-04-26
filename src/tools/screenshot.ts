@@ -388,10 +388,21 @@ export const screenshotHandler = async (args: {
       region: args.region,
     });
   }
-  if (args.mode === "background") {
+  // mode='background' + detail='meta' is metadata-only — bypass the bg
+  // capture and let the default handler emit the meta payload (no image
+  // bytes, no PrintWindow). The bg image path also requires confirmImage
+  // (same gating as detail='image' in foreground mode) — reject early
+  // otherwise. (Codex PR #41 P2 follow-up.)
+  if (args.mode === "background" && args.detail !== "meta") {
     if (!args.windowTitle && !args.hwnd) {
       return failArgs(
         "screenshot(mode='background') requires windowTitle or hwnd",
+        "screenshot",
+      );
+    }
+    if (!args.confirmImage) {
+      return failArgs(
+        "screenshot(mode='background') returns image pixels — pass confirmImage:true to acknowledge, or use detail='meta' for metadata only.",
         "screenshot",
       );
     }

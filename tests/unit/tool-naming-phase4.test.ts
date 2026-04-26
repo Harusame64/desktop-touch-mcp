@@ -480,6 +480,28 @@ describe("Phase 4 — Codex PR #41 P2: screenshot rejects incompatible mode/deta
       /mode='background'.*detail in \{'image','meta'\}/i,
     );
   });
+
+  // Codex PR #41 P2 follow-up: bg branch must honour detail='meta' (no image
+  // bytes, no PrintWindow) and gate detail='image'/default with confirmImage.
+  it("screenshot dispatcher bypasses bg capture when detail='meta'", () => {
+    const src = readFileSync(join(ROOT, "src", "tools", "screenshot.ts"), "utf-8");
+    expect(src).toMatch(/mode === "background" && args\.detail !== "meta"/);
+  });
+
+  it("screenshot dispatcher gates bg image capture with confirmImage", () => {
+    const src = readFileSync(join(ROOT, "src", "tools", "screenshot.ts"), "utf-8");
+    expect(src).toMatch(/mode='background'\) returns image pixels — pass confirmImage:true/);
+  });
+});
+
+describe("Phase 4 — Codex PR #41 P1: macro DSL has v2 World-Graph dispatchers", () => {
+  it("desktop_discover and desktop_act are present in TOOL_REGISTRY", () => {
+    const src = readFileSync(join(ROOT, "src", "tools", "macro.ts"), "utf-8");
+    expect(src).toContain("desktop_discover:");
+    expect(src).toContain("desktop_act:");
+    // Both should resolve their handler via the shared facade singleton.
+    expect(src).toContain("getDesktopFacade()");
+  });
 });
 
 describe("Phase 4 — Codex PR #41 P1: desktop_state.includeDocument honours explicit tabId", () => {
@@ -537,7 +559,7 @@ describe("Phase 4 — run_macro DSL TOOL_REGISTRY uses v1.0.0 dispatcher names",
     }
   });
 
-  it("macro.ts TOOL_REGISTRY contains the v1.0.0 dispatcher names", () => {
+  it("macro.ts TOOL_REGISTRY contains the v1.0.0 dispatcher names + v2 World-Graph dispatchers", () => {
     const src = readFileSync(join(ROOT, "src", "tools", "macro.ts"), "utf-8");
     const expected = [
       "desktop_state:",
@@ -556,6 +578,10 @@ describe("Phase 4 — run_macro DSL TOOL_REGISTRY uses v1.0.0 dispatcher names",
       "browser_form:",
       "wait_until:",
       "notification_show:",
+      // Codex PR #41 P1: v2 dispatchers must be in the macro registry so
+      // lease-based workflows (action='setValue' etc.) are usable in macros.
+      "desktop_discover:",
+      "desktop_act:",
     ];
     for (const name of expected) {
       expect(src, `macro.ts TOOL_REGISTRY should map ${name}`).toContain(name);

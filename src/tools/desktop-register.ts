@@ -313,7 +313,10 @@ const leaseSchema = z.object({
   evidenceDigest:   z.string(),
 });
 
-const desktopSeeSchema = {
+// Phase 4 (Codex PR #41 P1): exported so run_macro DSL can register
+// desktop_discover / desktop_act in its own TOOL_REGISTRY without duplicating
+// the schema literals.
+export const desktopSeeSchema = {
   target:      targetSchema.describe("Target window (windowTitle / hwnd) or browser tab (tabId). Omit for foreground window."),
   view:        z.enum(["action", "explore", "debug"]).optional().describe("action (default, ≤20 entities), explore (≤50), debug (includes raw rect)"),
   query:       z.string().optional().describe("Filter entities by label substring (case-insensitive)"),
@@ -321,7 +324,7 @@ const desktopSeeSchema = {
   debug:       z.boolean().optional().describe("Include raw screen coordinates in response (debug only — never relay to end-users)"),
 };
 
-const desktopTouchSchema = {
+export const desktopTouchSchema = {
   lease:  leaseSchema.describe("Lease returned by desktop_discover. Expires after TTL; re-call desktop_discover if desktop_act fails with lease_expired."),
   action: z.enum(["auto", "invoke", "click", "type", "setValue", "select"]).optional().describe(
     "Action to perform. 'auto' selects the best affordance from the entity. " +
