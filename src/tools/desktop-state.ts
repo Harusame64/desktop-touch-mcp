@@ -20,6 +20,26 @@ import type { AttentionState } from "../engine/perception/types.js";
 
 const _defaultPort = getCdpPort();
 
+/**
+ * Heuristic regex used by desktop_state.hasModal to flag windows whose titles
+ * look like modal dialogs.
+ *
+ * English keywords use \b word boundaries so that substring noise does not
+ * trigger false positives — e.g. "errors" must NOT match /error/, "Prompt
+ * Engineering" must NOT match /prompt/, "Confirmation" must NOT match
+ * /confirm/, "Alerting" must NOT match /alert/, "Dialogue" must NOT match
+ * /dialog/. The bare "prompt" keyword is intentionally absent because it is
+ * almost always a non-modal noun in real-world window titles.
+ *
+ * Japanese keywords are matched as bare substrings since \b does not recognise
+ * Japanese word boundaries; substring false positives for these terms are rare
+ * in practice (window titles like "通知センター" exist but are infrequent).
+ *
+ * Exported so unit tests can pin both the true-positive and false-positive
+ * contracts down — see tests/unit/modal-detection.test.ts.
+ */
+export const MODAL_RE = /\b(?:dialog|confirm|alert|error|warning|save as)\b|警告|エラー|確認|通知|ダイアログ|名前を付けて/i;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
 // ─────────────────────────────────────────────────────────────────────────────
@@ -92,9 +112,8 @@ export const desktopStateHandler = async (): Promise<ToolResult> => {
       }
     }
 
-    // Modal heuristic
+    // Modal heuristic — title-substring detection.
     let hasModal = false;
-    const MODAL_RE = /dialog|confirm|prompt|alert|error|警告|エラー|確認|通知|ダイアログ|名前を付けて|Save As/i;
     for (const w of wins) {
       if (MODAL_RE.test(w.title)) { hasModal = true; break; }
     }
