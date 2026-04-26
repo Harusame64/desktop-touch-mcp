@@ -170,6 +170,14 @@ export interface DesktopFacadeOptions {
   /** Session eviction TTL in ms (default: 120 000 = 2 min). */
   sessionTtlMs?: number;
   /**
+   * Interval (ms) at which `evictStaleSessions()` is invoked automatically.
+   * Set to 0 (default) to disable the timer — tests rely on this so each
+   * facade is deterministic. Production wiring (`getDesktopFacade`) opts in
+   * by passing a positive value (typically 30 000 ms). The timer is .unref'd
+   * so it never holds the process open on its own.
+   */
+  sessionEvictionIntervalMs?: number;
+  /**
    * Event-driven candidate ingress. When set, see() calls ingress.getSnapshot(key)
    * instead of candidateProvider(input) directly — reducing idle refresh cost.
    * candidateProvider is still used as the underlying fetch function via the ingress.
@@ -216,11 +224,22 @@ export class DesktopFacade {
   private readonly registry: SessionRegistry;
   private readonly candidateProvider: CandidateProvider;
   private readonly opts: DesktopFacadeOptions;
+  private _evictionTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(candidateProvider: CandidateProvider, opts: DesktopFacadeOptions = {}) {
     this.candidateProvider = candidateProvider;
     this.opts = opts;
     this.registry = new SessionRegistry();
+    const intervalMs = opts.sessionEvictionIntervalMs ?? 0;
+    if (intervalMs > 0) {
+      this._evictionTimer = setInterval(() => {
+        // Never let a transient eviction error escape the timer — it would
+        // crash the host process. Worst case is one missed sweep.
+        try { this.evictStaleSessions(); } catch { /* swallow */ }
+      }, intervalMs);
+      // Don't keep the process alive just for this timer.
+      if (typeof this._evictionTimer.unref === "function") this._evictionTimer.unref();
+    }
   }
 
   /**
@@ -338,6 +357,12 @@ export class DesktopFacade {
     const constraints = deriveViewConstraints(rawResult.warnings, entityViews.length);
     if (constraints) output.constraints = constraints;
 
+    // Codex PR #55 P2: refresh lastAccessMs at the END of see() too, in case
+    // candidateProvider / ingress took longer than the eviction interval to
+    // complete. getOrCreate stamps the start time; without this completion
+    // refresh, a multi-minute see() could be evicted mid-call.
+    session.lastAccessMs = (this.opts.nowFn ?? Date.now)();
+
     return output;
   }
 
@@ -347,7 +372,12 @@ export class DesktopFacade {
    * Returns "entity_not_found" if the issuing session has been evicted.
    */
   async touch(input: DesktopTouchInput): Promise<DesktopTouchOutput> {
-    const session = this.registry.getByViewId(input.lease.viewId);
+    // Pass nowFn so getByViewId can refresh lastAccessMs against the same
+    // injected clock the eviction sweep uses. Codex PR #55 P2: without
+    // this refresh, an in-flight workflow (see → think → touch) crossing
+    // the eviction interval (default 30s timer over a 120s sessionTtlMs)
+    // could find its session evicted at the moment of touch.
+    const session = this.registry.getByViewId(input.lease.viewId, this.opts.nowFn);
     if (!session) {
       return { ok: false, reason: "entity_not_found", diff: [] };
     }
@@ -364,6 +394,10 @@ export class DesktopFacade {
 
   /** Dispose the facade and its ingress (event subscriptions). */
   dispose(): void {
+    if (this._evictionTimer !== undefined) {
+      clearInterval(this._evictionTimer);
+      this._evictionTimer = undefined;
+    }
     this.opts.ingress?.dispose();
   }
 
