@@ -66,62 +66,16 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
     }
   },
   {
-    "name": "browser_disconnect",
-    "description": "Close cached CDP WebSocket sessions for a port. Call when browser interaction is complete to release connections.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "port": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 65535,
-          "default": 9222,
-          "description": "Chrome/Edge CDP remote debugging port."
-        }
-      },
-      "additionalProperties": false
-    }
-  },
-  {
     "name": "browser_eval",
-    "description": "Evaluate a JavaScript expression in a browser tab and return raw text. Pass withPerception:true to receive structured JSON {ok, result, post} with post.perception attached. lensId is optional for advanced pinned-lens use. Caveats: DOM nodes cannot be returned directly (circular refs are serialized safely). React/Vue/Svelte controlled inputs cannot be set via element.value — use keyboard(action='type') instead. readyState is strictly checked; guard blocks if page is still loading.",
+    "description": "Purpose: Inspect or operate on a browser tab via 3 actions: 'js' (evaluate JS), 'dom' (get HTML), 'appState' (extract SSR-injected SPA state).\nDetails: action='js' — Run a JS expression. withPerception:true wraps in {ok, result, post}. action='dom' — Return outerHTML of selector (or document.body), truncated to maxLength. action='appState' — Scan Next/Nuxt/Remix/Apollo/GitHub/Redux SSR injected JSON; pass selectors to override defaults.\nPrefer: Use action='appState' BEFORE 'dom' or 'js' on SPAs where rendered HTML is sparse — single CDP call. Use 'dom' when 'appState' is empty and you need page structure. Use 'js' as the escape hatch for arbitrary scripting.\nCaveats: DOM nodes cannot be returned from action='js' directly (circular refs are serialized safely). React/Vue/Svelte controlled inputs cannot be set via element.value — use keyboard(action='type') / browser_fill instead. readyState is strictly checked; guard blocks if page is still loading.\nExamples:\n  browser_eval({action:'js', expression:'document.title'}) → page title\n  browser_eval({action:'dom', selector:'#main', maxLength:5000}) → outerHTML\n  browser_eval({action:'appState'}) → default SPA state probes",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "expression": {
-          "description": "JavaScript expression to evaluate in the browser tab. The server automatically wraps snippets in an async IIFE to avoid repeated const/let name collisions. For multi-statement snippets, use an explicit final return value. Declarations (const/let/var) are scoped to each snippet and will not persist across repeated browser_eval calls; use window.* or globalThis.* for persistence.",
+        "action": {
           "type": "string"
-        },
-        "tabId": {
-          "type": "string",
-          "description": "Tab ID from browser_open. Omit to use the first page tab."
-        },
-        "port": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 65535,
-          "default": 9222,
-          "description": "Chrome/Edge CDP remote debugging port."
-        },
-        "includeContext": {
-          "type": "boolean",
-          "default": true,
-          "description": "When true, append activeTab and readyState context to the response."
-        },
-        "lensId": {
-          "description": "Optional perception lens ID. Guards (target.identityStable) are evaluated before eval. Note: browser_eval returns raw text, so no perception envelope is attached (guards only).",
-          "type": "string"
-        },
-        "withPerception": {
-          "description": "When true, return structured JSON { ok, result, post } instead of raw text. Enables post.perception attachment so the LLM can see guard status. Default false preserves the raw-text return for backwards compatibility. Example: browser_eval({expression:'document.title', withPerception:true})",
-          "type": "boolean",
-          "default": false
         }
       },
-      "additionalProperties": false,
-      "required": [
-        "expression"
-      ]
+      "additionalProperties": true
     }
   },
   {
@@ -206,124 +160,6 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       "required": [
         "selector"
       ]
-    }
-  },
-  {
-    "name": "browser_get_app_state",
-    "description": "Extract embedded SPA framework state (Next.js, Nuxt, Remix, GitHub, Apollo, Redux SSR) in one CDP call. Returns parsed payloads with framework labels. Use BEFORE browser_eval or browser_get_dom on SPAs where rendered HTML is sparse. Pass selectors to target specific window globals (e.g. 'window:__MY_STATE__'). Caveats: Only extracts SSR-injected state — client-only runtime state requires browser_eval.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "selectors": {
-          "description": "Optional override list of CSS selectors / window globals to probe. Window globals must be prefixed with 'window:' (e.g. 'window:__INITIAL_STATE__'). When omitted, scans the standard list (Next.js, GitHub react-app, Nuxt, Apollo, Remix, Redux SSR, JSON-LD).",
-          "type": "array"
-        },
-        "maxBytes": {
-          "description": "Maximum bytes per individual payload (default 4000). Larger payloads are stringified and truncated.",
-          "type": "integer",
-          "default": 4000,
-          "minimum": 256,
-          "maximum": 64000
-        },
-        "tabId": {
-          "type": "string",
-          "description": "Tab ID from browser_open. Omit to use the first page tab."
-        },
-        "port": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 65535,
-          "default": 9222,
-          "description": "Chrome/Edge CDP remote debugging port."
-        },
-        "includeContext": {
-          "type": "boolean",
-          "default": true,
-          "description": "When true, append activeTab and readyState context to the response."
-        }
-      },
-      "additionalProperties": false
-    }
-  },
-  {
-    "name": "browser_get_dom",
-    "description": "Return the HTML of a DOM element (or document.body when no selector is given), truncated to maxLength characters. Use when browser_overview is insufficient for inspecting page structure.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "selector": {
-          "description": "CSS selector for root element. Omit for document.body.",
-          "type": "string"
-        },
-        "tabId": {
-          "type": "string",
-          "description": "Tab ID from browser_open. Omit to use the first page tab."
-        },
-        "port": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 65535,
-          "default": 9222,
-          "description": "Chrome/Edge CDP remote debugging port."
-        },
-        "maxLength": {
-          "description": "Maximum characters to return (default 10000)",
-          "type": "integer",
-          "default": 10000,
-          "minimum": 100,
-          "maximum": 100000
-        },
-        "includeContext": {
-          "type": "boolean",
-          "default": true,
-          "description": "When true, append activeTab and readyState context to the response."
-        }
-      },
-      "additionalProperties": false
-    }
-  },
-  {
-    "name": "browser_launch",
-    "description": "Launch Chrome/Edge/Brave in CDP debug mode and wait until the DevTools endpoint is ready. Idempotent — if a CDP endpoint is already live on the target port, returns immediately without spawning. Default: tries chrome → edge → brave (first installed wins), port 9222, userDataDir C:\\tmp\\cdp. Pass url to open a specific page on launch; follow with browser_open to get tab IDs. Caveats: A Chrome session started without --remote-debugging-port cannot be taken over — close it first or use a separate profile.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "browser": {
-          "description": "Which browser to launch. 'auto' tries chrome → edge → brave and picks the first installed. Ignored if a CDP endpoint is already live on the target port.",
-          "type": "string",
-          "enum": [
-            "auto",
-            "chrome",
-            "edge",
-            "brave"
-          ],
-          "default": "auto"
-        },
-        "port": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 65535,
-          "default": 9222,
-          "description": "Chrome/Edge CDP remote debugging port."
-        },
-        "userDataDir": {
-          "description": "Path for --user-data-dir. Using a dedicated profile avoids conflicts with your normal browser session. Default C:\\tmp\\cdp is safe to reuse across sessions.",
-          "type": "string",
-          "default": "C:\\tmp\\cdp"
-        },
-        "url": {
-          "description": "Optional URL to navigate to immediately after launch.",
-          "type": "string"
-        },
-        "waitMs": {
-          "description": "Max milliseconds to wait for the CDP endpoint to become ready (default 10000).",
-          "type": "integer",
-          "default": 10000,
-          "minimum": 1000,
-          "maximum": 30000
-        }
-      },
-      "additionalProperties": false
     }
   },
   {
@@ -414,7 +250,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "browser_open",
-    "description": "Connect to Chrome/Edge running with --remote-debugging-port and return open tab IDs — required before all other browser_* tools. Launch with browser_launch() or manually: chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\\tmp\\cdp. Returns tabs[] with id, url, title — pass tabId to browser_* tools to target a specific tab. Caveats: CDP connection is per-process; if Chrome restarts, call browser_open again to get fresh tab IDs.",
+    "description": "Connect to Chrome/Edge running with --remote-debugging-port and return open tab IDs — required before all other browser_* tools. Pass launch:{} (or with overrides) to auto-spawn a debug-mode browser when no CDP endpoint is live (idempotent: an already-running endpoint is preferred). Returns tabs[] with id, url, title, active — pass tabId to browser_* tools to target a specific tab. Caveats: CDP connection is per-process; if Chrome restarts, call browser_open again to get fresh tab IDs. A Chrome session started without --remote-debugging-port cannot be taken over — close it first or use a separate userDataDir.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -424,6 +260,10 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "maximum": 65535,
           "default": 9222,
           "description": "Chrome/Edge CDP remote debugging port."
+        },
+        "launch": {
+          "description": "If set, spawn a debug-mode browser when no CDP endpoint is live on the target port (idempotent: an already-running endpoint is preferred and the spawn step is skipped). Pass {} to use defaults (chrome, C:\\tmp\\cdp, no initial URL). Omit to perform pure connect.",
+          "type": "object"
         }
       },
       "additionalProperties": false
@@ -765,7 +605,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "get_document_state",
-    "description": "Return current Chrome page state via CDP: url, title, readyState, selection, and scroll position. Far cheaper than browser_get_dom for page orientation.",
+    "description": "Return current Chrome page state via CDP: url, title, readyState, selection, and scroll position. Far cheaper than browser_eval({action:'dom'}) for page orientation.",
     "inputSchema": {
       "type": "object",
       "properties": {
