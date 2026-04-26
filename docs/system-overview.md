@@ -64,17 +64,19 @@ desktop-touch-mcp (Node.js / TypeScript)
     │       ├── envelope.ts         — projectEnvelope: attention derivation + token-budget trimming
     │       ├── sensors-win32.ts    — only impure module; piggybacks event-bus 500 ms tick
     │       └── registry.ts         — central coordinator; max 16 lenses (LRU evict)
-    └── Layer 2: 58 MCP tools
-        See [tool-descriptions.md](D:/git/desktop-touch-mcp/docs/tool-descriptions.md) for the up-to-date catalog.
+    └── Layer 2: 28 public MCP tools (26 stub catalog + 2 dynamic v2)
+        See [CHANGELOG.md](D:/git/desktop-touch-mcp/CHANGELOG.md) Phase 1+2+3+4 sections for the per-phase mapping.
 ```
 
 ### Surface status
 
-- **Current public surface**: 58 tools, including `desktop_discover` / `desktop_act`
-- **Planned redesign**: `desktop_state` / `desktop_discover` / `desktop_act` naming and single-surface cleanup are still design-stage, not the current shipped interface
-- Reference plans:
-  - [tool-surface-reduction-plan.md](D:/git/desktop-touch-mcp/docs/tool-surface-reduction-plan.md)
+- **Current public surface (v1.0.0)**: 28 tools — 26 stub catalog + 2 dynamic v2 (`desktop_discover` / `desktop_act`)
+- **Tool surface reduction (Phase 1–4) — shipped**: naming redesign, family merge dispatchers, browser rearrangement, privatize/absorb. Pre-Phase-1 surface was 65 tools.
+- Phase design references (all Implemented):
   - [tool-surface-phase1-naming-design.md](D:/git/desktop-touch-mcp/docs/tool-surface-phase1-naming-design.md)
+  - [tool-surface-phase2-family-merge-design.md](D:/git/desktop-touch-mcp/docs/tool-surface-phase2-family-merge-design.md)
+  - [tool-surface-phase3-browser-rearrangement-design.md](D:/git/desktop-touch-mcp/docs/tool-surface-phase3-browser-rearrangement-design.md)
+  - [tool-surface-phase4-privatize-absorb-design.md](D:/git/desktop-touch-mcp/docs/tool-surface-phase4-privatize-absorb-design.md)
 
 ### Rust Native Engine — Data Flow
 

@@ -259,9 +259,8 @@ For each finding: file:line + 1-line summary + suggested fix direction.
 
 ### 8.5. 残タスク
 
-- **E (security audit)** — `/security-review` + CodeQL alert 残確認、suggest fixed-string ガード再点検、secret scan
-- **I (documentation audit)** — README × 2 / system-overview / CHANGELOG / known-issues / Phase 4 design 完了マーク
-- 上記 2 つは次セッションで実施 (現セッションは context 制約)
+- ~~**E (security audit)**~~ — 完了 (PR #47 merged)。CodeQL/secret-scanning 0 open。発見 = `desktop-executor.ts:236` の CWE-94 (CDP eval 内 selector raw interpolation) + HTTP CORS `*` を localhost origin allowlist に縮約。command-injection / path-traversal / failsafe / kill-switch / 他 CDP eval / secret 取扱 はすべて clean。
+- ~~**I (documentation audit)**~~ — 完了 (本 PR)。drift 修正: README × 2 の tool count (57→28)、`system-overview.md` の "planned" → "shipped"、CLAUDE.md の tool count (56→28)、Phase 3/4 design status を Draft → Implemented。CHANGELOG の v1.0.0 DRAFT 解除は release 時 (version bump + tag と同時)。
 
 ### 8.6. Release recommendation (現時点)
 
