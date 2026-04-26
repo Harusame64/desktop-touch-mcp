@@ -4,6 +4,7 @@ import {
   registerDesktopTools,
   getDesktopFacade,
   _resetFacadeForTest,
+  createCachedProductionWindowsProvider,
 } from "../../src/tools/desktop-register.js";
 import { DesktopFacade } from "../../src/tools/desktop.js";
 
@@ -169,5 +170,129 @@ describe("Activation policy — v0.17 server-windows env expressions", () => {
     vi.stubEnv("DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2", "1");
     vi.stubEnv("DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2",  "1");
     expect(process.env["DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2"] === "1").toBe(true);
+  });
+});
+
+// Audit P1-1: production windowsProvider used to re-run enumWindowsInZOrder +
+// per-hwnd process info on every desktop_discover call. A short-lived TTL
+// cache collapses bursts; these tests pin both the cache-hit and the
+// TTL-expiry behaviour with deterministic time + injectable enumerate /
+// resolveProcessName fakes (no Win32 calls inside the test).
+describe("createCachedProductionWindowsProvider — TTL cache", () => {
+  type WinSpec = {
+    hwnd: bigint; title: string; zOrder: number;
+    region: { x: number; y: number; width: number; height: number };
+    isActive: boolean; isMinimized: boolean; isMaximized: boolean;
+  };
+  function spec(overrides: Partial<WinSpec> = {}): WinSpec {
+    return {
+      hwnd: BigInt(1000),
+      title: "Notepad",
+      zOrder: 0,
+      region: { x: 0, y: 0, width: 800, height: 600 },
+      isActive: true,
+      isMinimized: false,
+      isMaximized: false,
+      ...overrides,
+    };
+  }
+
+  it("returns the cached snapshot for repeated calls within TTL (no re-enumeration)", () => {
+    const enumerate = vi.fn().mockReturnValue([spec()]);
+    const resolveProcessName = vi.fn().mockReturnValue("notepad.exe");
+    let now = 1000;
+
+    const provider = createCachedProductionWindowsProvider({
+      ttlMs: 100,
+      nowFn: () => now,
+      enumerate,
+      resolveProcessName,
+    });
+
+    const a = provider();
+    now = 1050; // still inside TTL
+    const b = provider();
+    now = 1099; // last instant inside TTL
+    const c = provider();
+
+    expect(a).toBe(b);
+    expect(b).toBe(c);
+    expect(enumerate).toHaveBeenCalledTimes(1);
+    expect(resolveProcessName).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-runs enumerate after TTL expires", () => {
+    const enumerate = vi.fn()
+      .mockReturnValueOnce([spec({ title: "First" })])
+      .mockReturnValueOnce([spec({ title: "Second" })]);
+    let now = 1000;
+
+    const provider = createCachedProductionWindowsProvider({
+      ttlMs: 100,
+      nowFn: () => now,
+      enumerate,
+      resolveProcessName: () => "x.exe",
+    });
+
+    const first = provider();
+    now = 1100; // exactly at TTL boundary → expired
+    const second = provider();
+
+    expect(first[0]!.title).toBe("First");
+    expect(second[0]!.title).toBe("Second");
+    expect(enumerate).toHaveBeenCalledTimes(2);
+  });
+
+  it("maps DesktopWindowMeta fields correctly (hwnd to string, processName attached)", () => {
+    const provider = createCachedProductionWindowsProvider({
+      enumerate: () => [spec({ hwnd: BigInt(0xABCD), title: "App" })],
+      resolveProcessName: () => "app.exe",
+    });
+    const out = provider();
+    expect(out).toHaveLength(1);
+    expect(out[0]!.hwnd).toBe(String(BigInt(0xABCD))); // string, not bigint
+    expect(out[0]!.title).toBe("App");
+    expect(out[0]!.processName).toBe("app.exe");
+  });
+
+  it("propagates resolveProcessName === undefined as processName: undefined", () => {
+    const provider = createCachedProductionWindowsProvider({
+      enumerate: () => [spec()],
+      resolveProcessName: () => undefined, // production fallback when Win32 throws
+    });
+    const out = provider();
+    expect(out[0]!.processName).toBeUndefined();
+  });
+
+  // Codex PR #53 P2: with a non-monotonic clock (NTP step-back, manual time
+  // change, VM snapshot restore) the original `t - cached.at < ttlMs` check
+  // would treat the negative delta as a cache hit and serve a stale snapshot
+  // until wall-time caught back up to the prior `cached.at` + 100ms. The
+  // `t >= cached.at` defensive guard plus the monotonic default close that
+  // window. This test pins the guard with an injected `nowFn` that walks
+  // backward — re-enumeration must still fire.
+  it("re-enumerates when the injected clock walks backward past cached.at (P2 guard)", () => {
+    const enumerate = vi.fn()
+      .mockReturnValueOnce([spec({ title: "First" })])
+      .mockReturnValueOnce([spec({ title: "Second" })]);
+    let now = 1000;
+
+    const provider = createCachedProductionWindowsProvider({
+      ttlMs: 100,
+      nowFn: () => now,
+      enumerate,
+      resolveProcessName: () => "x.exe",
+    });
+
+    const first = provider();
+    expect(first[0]!.title).toBe("First");
+
+    // Wall-clock rolled back. Without the guard `t - cached.at = -500` would
+    // still satisfy `< 100ms` and the cache would lock on the old result.
+    now = 500;
+    const second = provider();
+
+    expect(second[0]!.title).toBe("Second");
+    expect(enumerate).toHaveBeenCalledTimes(2);
   });
 });
