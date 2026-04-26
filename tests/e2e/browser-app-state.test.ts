@@ -1,7 +1,11 @@
 /**
- * browser-app-state.test.ts — `browser_get_app_state` end-to-end.
+ * browser-app-state.test.ts — `browser_eval(action='appState')` end-to-end.
  *
- * Verifies the new tool from #2:
+ * Phase 3: the public surface is browser_eval({action:'appState'}); the test
+ * exercises the underlying browserGetAppStateHandler internal helper directly
+ * to keep assertions on the SPA state extraction unchanged.
+ *
+ * Verifies:
  *   - Discovers Next.js / GitHub react-app / JSON-LD / Redux SSR payloads
  *   - Returns parsed JSON
  *   - Empty `notFound` for selectors that match
@@ -66,7 +70,7 @@ function parseResponse(text: string): AppStateResponse {
   return JSON.parse(text) as AppStateResponse;
 }
 
-describe.skipIf(!CHROME_AVAILABLE)("browser_get_app_state — default selectors", () => {
+describe.skipIf(!CHROME_AVAILABLE)("browser_eval(action='appState') —default selectors", () => {
   it("discovers Next.js __NEXT_DATA__ payload", async () => {
     const result = await browserGetAppStateHandler({
       maxBytes: 4000,
@@ -130,7 +134,7 @@ describe.skipIf(!CHROME_AVAILABLE)("browser_get_app_state — default selectors"
   });
 });
 
-describe.skipIf(!CHROME_AVAILABLE)("browser_get_app_state — custom selectors", () => {
+describe.skipIf(!CHROME_AVAILABLE)("browser_eval(action='appState') —custom selectors", () => {
   it("respects an explicit selector list", async () => {
     const result = await browserGetAppStateHandler({
       selectors: ["script#__NEXT_DATA__"],
@@ -173,7 +177,7 @@ describe.skipIf(!CHROME_AVAILABLE)("browser_get_app_state — custom selectors",
   });
 });
 
-describe.skipIf(!CHROME_AVAILABLE)("browser_get_app_state — truncation", () => {
+describe.skipIf(!CHROME_AVAILABLE)("browser_eval(action='appState') —truncation", () => {
   it("flags truncated:true and slices the payload when over maxBytes", async () => {
     const result = await browserGetAppStateHandler({
       selectors: ["script#__NEXT_DATA__"],
