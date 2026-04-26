@@ -62,8 +62,16 @@ impl VisionSession {
 
     /// Provide access to the inner session for inference (Phase 4b-4+).
     /// Returns a guard that holds the Mutex lock.
+    ///
+    /// Recovers from a poisoned mutex by taking the inner guard. A poison
+    /// here means a previous holder panicked while holding the lock (rare,
+    /// possible if ort itself panics mid-call); the underlying `ort::Session`
+    /// remains usable, and aborting the host process would cost the caller
+    /// every unrelated session in the pool. This matches the `catch_unwind`
+    /// pattern in `try_one_ep` above — surface the failure as a recoverable
+    /// state rather than letting it cascade.
     pub fn lock(&self) -> std::sync::MutexGuard<'_, ort::session::Session> {
-        self.inner.lock().expect("VisionSession mutex poisoned")
+        self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
