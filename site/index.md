@@ -94,6 +94,16 @@ It is trying to document an active line of engineering and research.
 
 ---
 
+## Milestones
+
+As the project evolves, we document major architectural shifts and milestones here.
+
+### v1.0: Less Surface, More Meaning
+A significant consolidation of the tool surface (65 → 28 tools) and the transition to World-Graph and Auto-Perception as the default interaction model.
+- [Read the v1.0 Milestone Article](./articles/v1.0-milestone.html)
+
+---
+
 ## Why This Exists
 
 Many GUI agents implicitly follow a simple loop:

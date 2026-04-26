@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>v1.0 Milestone: Less Surface, More Meaning</title>
+    <meta name="description" content="The v1.0 release marks the crystallization of the Beyond Coordinate Roulette philosophy through tool surface reduction and World-Graph standardisation." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@500;700;800&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="../assets/styles.css" />
+    <script defer src="../assets/site.js"></script>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({ startOnLoad: true, theme: "base", securityLevel: "loose", themeVariables: { primaryColor: "#e8f1ff", primaryTextColor: "#1d2433", primaryBorderColor: "#3141b7", lineColor: "#58657d", secondaryColor: "#f8dfd4", tertiaryColor: "#d7f2ed", fontFamily: "Manrope" } });
+    </script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="site-shell">
+        <a class="brand" href="../index.html">
+          <span class="brand-kicker">Milestone</span>
+          <span class="brand-title">v1.0: Less Surface, More Meaning</span>
+        </a>
+        <nav class="nav-links" aria-label="Main">
+          <a href="../index.html">Home</a>
+          <a href="./client-setup.html">Setup</a>
+          <a href="./reactive-perception-graph.html">RPG</a>
+          <a href="./planned-evaluation.html">Evaluation</a>
+          <a href="https://github.com/Harusame64/desktop-touch-mcp">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="page">
+      <div class="site-shell">
+        <section class="hero-card">
+          <div class="article-hero">
+            <a class="breadcrumb" href="../index.html">← Back to project top</a>
+            <span class="eyebrow">Project Evolution</span>
+            <h1>The v1.0 Milestone</h1>
+            <p class="lead">The release of v1.0 marks a significant shift in how LLMs connect to the Windows desktop. We have condensed the surface, hardened the trust contract, and moved closer to meaning-first interaction.</p>
+          </div>
+          <div class="hero-visual" style="padding-top: 0;">
+            <div class="mermaid-wrap" style="width: 100%;">
+              <pre class="mermaid">graph LR
+    subgraph v015["v0.15: Cluttered Surface"]
+        A[65 Specialized Tools]
+        B[Coordinate Guessing]
+        C[Manual Perceptions]
+    end
+
+    subgraph v100["v1.0: Semantic Core"]
+        D[28 Unified Dispatchers]
+        E[World-Graph by Default]
+        F[Auto-Perception Guards]
+    end
+
+    v015 --&gt; v100
+
+    classDef old fill:#fde2e2,stroke:#c0392b,color:#5c1f1f;
+    classDef new fill:#e8f1ff,stroke:#3b6db3,color:#183257;
+    class A,B,C old;
+    class D,E,F new;</pre>
+            </div>
+          </div>
+        </section>
+
+        <div class="article-layout">
+          <div class="article-main">
+            <section class="article-card">
+              <span class="label warm">The shift</span>
+              <h2>From implementation to intention.</h2>
+              <p>In earlier versions, the agent had to reason about the implementation of the UI. v1.0 removes this friction, allowing the agent to focus on its goal.</p>
+            </section>
+
+            <section class="article-card">
+              <span class="label">Key Evolution: Semantic Condensation</span>
+              <h2>Shrinking the surface (65 → 28 tools) for better LLM UX.</h2>
+              <p>We have merged dozens of specialized functions into semantic dispatchers. This is a major <strong>LLM UX improvement</strong>: by reducing "Tool Fatigue" and context bloat, we provide a cleaner, more intuitive interface for AI agents. This leads to more robust decision-making, fewer hallucinations, and a significantly lower token overhead for every interaction.</p>
+              <div class="two-up">
+                <div class="mini-card"><h3>Dispatcher approach</h3><p><code>keyboard</code>, <code>scroll</code>, and <code>browser_eval</code> handle unified families of actions.</p></div>
+                <div class="mini-card"><h3>Reduced Fatigue</h3><p>Fewer top-level choices mean fewer hallucinations and more precise tool selection.</p></div>
+              </div>
+            </section>
+
+            <section class="article-card">
+              <span class="label">Key Evolution: World-Graph Standardisation</span>
+              <h2>Entity-based interaction by default.</h2>
+              <p>Anti-Fukuwarai v2 (World-Graph) is now the primary surface. The agent no longer clicks coordinates; it acts on affordances discovered via semantic discovery.</p>
+              <div class="feature-grid">
+                <div class="mini-card"><h3>desktop_discover</h3><p>See the desktop as a collection of interactive entities, not just pixels.</p></div>
+                <div class="mini-card"><h3>desktop_act</h3><p>Interact using short-lived, server-guarded leases.</p></div>
+              </div>
+            </section>
+
+            <section class="article-card">
+              <span class="label warm">Key Evolution: Auto-Perception</span>
+              <h2>Enforcing the RPG contract.</h2>
+              <p>Reactive Perception Graph (RPG) principles are now automated. The server monitors target identity and modal obstructions automatically, ensuring the agent's actions are grounded in current reality.</p>
+            </section>
+
+            <section class="article-card">
+              <span class="label">Operational Wins</span>
+              <h2>Background Capabilities and Robustness.</h2>
+              <p>v1.0 introduces background input injection (WM_CHAR), allowing agents to type and interact without stealing the foreground focus. This makes workflows smoother and more resilient to user interference.</p>
+              <div class="hero-actions">
+                <a class="button primary" href="https://github.com/Harusame64/desktop-touch-mcp/blob/main/CHANGELOG.md">View Full Changelog</a>
+                <a class="button secondary" href="./beyond-coordinate-roulette.html">Read the Philosophy</a>
+              </div>
+            </section>
+          </div>
+
+          <aside class="article-aside">
+            <div class="aside-card">
+              <h3>Next steps</h3>
+              <p>v1.0 is the foundation for our next phase of research into autonomous UI agents.</p>
+              <h3>Related pages</h3>
+              <ul>
+                <li><a href="../index.html">Project top</a></li>
+                <li><a href="./reactive-perception-graph.html">RPG explainer</a></li>
+                <li><a href="./beyond-coordinate-roulette.html">Beyond Coordinate Roulette</a></li>
+              </ul>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <div class="site-shell">
+        <span>v1.0 Milestone Article</span>
+        <span>&copy; <span data-year></span> experimental interface work</span>
+      </div>
+    </footer>
+  </body>
+</html>

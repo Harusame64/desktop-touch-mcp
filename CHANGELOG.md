@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.0.1] - 2026-04-26 — Release infrastructure fix
+## [1.0.3] - 2026-04-26 — Release infrastructure fix
 
 The v1.0.0 tag built the GitHub Release zip successfully but the `npm-publish`
 job failed because `npm publish --ignore-scripts` still triggered the
