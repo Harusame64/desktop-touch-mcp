@@ -2,7 +2,7 @@
   "name": "@harusame64/desktop-touch-mcp",
   "version": "1.0.3",
   "mcpName": "io.github.Harusame64/desktop-touch-mcp",
-  "description": "LLM-native Windows automation MCP server. Beyond coordinate guessing: uses a Semantic World-Graph and Auto-Perception guards for safe, grounded interaction. Features 28 optimized tools for screenshots, UIA, mouse/keyboard, Chrome CDP, background input, and token-efficient diffing.",
+  "description": "LLM-native Windows computer-use MCP server with 56 tools for screenshots, UIA, mouse/keyboard, Chrome CDP, terminal, SmartScroll, and perception guards",
   "engines": {
     "node": ">=20.0.0"
   },
