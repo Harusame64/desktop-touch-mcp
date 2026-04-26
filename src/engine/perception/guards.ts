@@ -84,7 +84,7 @@ function evalIdentityStable(lens: PerceptionLens, store: FluentStore, nowMs: num
       ok: false,
       confidence: 0,
       reason: "target.identity fluent not found — lens may not be refreshed yet",
-      suggestedAction: "Call perception_read to force a refresh",
+      suggestedAction: "Call desktop_state to force a refresh",
     };
   }
 
@@ -168,7 +168,7 @@ function evalKeyboardTarget(lens: PerceptionLens, store: FluentStore, nowMs: num
         ok: false,
         confidence: foreground.confidence,
         reason: "Target foreground confidence too low (stale evidence)",
-        suggestedAction: "Call perception_read to force a foreground refresh",
+        suggestedAction: "Call desktop_state to force a foreground refresh",
       };
     }
   }
@@ -194,7 +194,7 @@ function evalKeyboardTarget(lens: PerceptionLens, store: FluentStore, nowMs: num
         ok: false,
         confidence: foreground.confidence * 0.5,
         reason: `Foreground state is ${foreground.status} — cannot confirm safe keyboard target`,
-        suggestedAction: "Call perception_read to get a fresh foreground observation",
+        suggestedAction: "Call desktop_state to get a fresh foreground observation",
       };
     }
     if (
@@ -206,7 +206,7 @@ function evalKeyboardTarget(lens: PerceptionLens, store: FluentStore, nowMs: num
         ok: false,
         confidence: foreground.confidence * 0.5,
         reason: "Foreground evidence predates last dirty mark — window focus may have changed",
-        suggestedAction: "Call perception_read to refresh foreground state",
+        suggestedAction: "Call desktop_state to refresh foreground state",
       };
     }
   }
@@ -266,7 +266,7 @@ function evalClickCoordinates(
       ok: false,
       confidence: 0,
       reason: "target.rect fluent not found",
-      suggestedAction: "Call perception_read to populate rect before clicking",
+      suggestedAction: "Call desktop_state to populate rect before clicking",
     };
   }
 
@@ -276,7 +276,7 @@ function evalClickCoordinates(
       ok: false,
       confidence: rectFluent.confidence,
       reason: "Rect evidence confidence too low (stale or conflicting)",
-      suggestedAction: "Call perception_read to refresh window rect before clicking",
+      suggestedAction: "Call desktop_state to refresh window rect before clicking",
     };
   }
 
@@ -287,7 +287,7 @@ function evalClickCoordinates(
       ok: false,
       confidence: rectFluent.confidence * 0.5,
       reason: `Rect is ${rectFluent.status} — window may be moving or animating`,
-      suggestedAction: "Wait for the window to settle, then call perception_read",
+      suggestedAction: "Wait for the window to settle, then call desktop_state",
     };
   }
   if (
@@ -299,7 +299,7 @@ function evalClickCoordinates(
       ok: false,
       confidence: rectFluent.confidence * 0.5,
       reason: "Rect evidence predates last dirty mark — window may have moved since last observation",
-      suggestedAction: "Take a new screenshot and call perception_read to get updated coordinates",
+      suggestedAction: "Take a new screenshot and call desktop_state to get updated coordinates",
     };
   }
 
@@ -377,7 +377,7 @@ function evalStableRect(lens: PerceptionLens, store: FluentStore, nowMs: number)
       ok: false,
       confidence: 0.3,
       reason: "Rect evidence predates last move/resize event — window position may have changed",
-      suggestedAction: "Call perception_read to capture post-move rect",
+      suggestedAction: "Call desktop_state to capture post-move rect",
     };
   }
 
@@ -419,7 +419,7 @@ function evalBrowserReady(
       ok: false,
       confidence: 0,
       reason: "browser.readyState fluent not present — tab may not have been refreshed yet",
-      suggestedAction: "Call perception_read to force a CDP refresh",
+      suggestedAction: "Call desktop_state to force a CDP refresh",
     };
   }
   if (readyState.value !== "complete") {
