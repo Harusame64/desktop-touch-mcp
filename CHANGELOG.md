@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.0.0] - DRAFT — Tool Surface Reduction Phase 1 + Phase 2
+## [1.0.0] - DRAFT — Tool Surface Reduction Phase 1 + Phase 2 + Phase 3
 
 ### Breaking Changes — Phase 1 (Naming Redesign, 10 tools)
 
@@ -47,22 +47,59 @@ terminal({action:"run", windowTitle:"PowerShell", input:"npm test",
 // → {output, completion:{reason:"pattern_matched", elapsedMs, matchedPattern}}
 ```
 
+### Breaking Changes — Phase 3 (Browser Rearrangement, 4 tools absorbed/privatized)
+
+This phase reorganizes the browser CDP family from 13 → 9 tools by absorbing
+two pairs of related tools into discriminated unions and privatizing one.
+
+| Old call | New call |
+|---|---|
+| `browser_launch({})` | `browser_open({launch:{}})` |
+| `browser_launch({browser, port, userDataDir, url, waitMs})` | `browser_open({port, launch:{browser, userDataDir, url, waitMs}})` |
+| `browser_open({port})` (connect-only) | `browser_open({port})` (unchanged — `launch` is optional) |
+| `browser_eval({expression})` | `browser_eval({action:"js", expression})` |
+| `browser_eval({expression, withPerception})` | `browser_eval({action:"js", expression, withPerception})` |
+| `browser_get_dom({selector, maxLength})` | `browser_eval({action:"dom", selector, maxLength})` |
+| `browser_get_app_state({selectors, maxBytes})` | `browser_eval({action:"appState", selectors, maxBytes})` |
+| `browser_disconnect({port})` | (removed — process exit auto-cleanup) |
+
+Notes:
+- `browser_open({launch:{}})` is **idempotent**: when a CDP endpoint is already
+  live on the target port, the spawn step is skipped and connect proceeds.
+  Pass `launch:{}` to use defaults (chrome → edge → brave auto-resolution,
+  `C:\tmp\cdp` profile, no initial URL); omit `launch` entirely for pure connect.
+- `browser_eval({action:'dom'|'appState'})` is wrapped with `withPostState` so
+  all three actions (`js` / `dom` / `appState`) attach `post.perception` when
+  guards run. Previously only `browser_eval` did.
+- `browser_eval({expression})` (without `action`) now fails validation —
+  callers must supply `action:'js'`.
+- `browser_open({launch:{...}})` returns the connect payload (`tabs[].active`).
+  The former `browser_launch` extras (`alreadyRunning`, `launched.{browser,path}`)
+  are dropped from the LLM-facing response; spawn state can be inferred from
+  whether tabs[] returns immediately vs after a short delay.
+
 ### Tool Count
 
-- Phase 1 + Phase 2 combined: **65 → 52 tools** (Phase 1: 10 renames, no count change; Phase 2: 13 → 5).
-- Stub catalog: 50 entries (v2 `desktop_discover`/`desktop_act` are dynamic, registered at startup, not in static catalog).
+- Phase 1 + Phase 2 + Phase 3 combined: **65 → 48 tools** (Phase 1: 10 renames, no count change; Phase 2: 13 → 5; Phase 3: 13 → 9 in browser family).
+- Stub catalog: **46 entries** (v2 `desktop_discover` / `desktop_act` are dynamic, registered at startup, not in static catalog).
 
-### Phase 2 Outstanding (deferred to Phase 3-4)
+### Phase 3 Outstanding (deferred to Phase 4-5)
 
 - `run_macro` DSL still accepts old tool names (`keyboard_type`, `pin_window`, etc.) via internal `TOOL_REGISTRY` mapping. Will be migrated to new dispatcher names in Phase 4.
-- Phase 3-4 will absorb additional tools (browser family rearrangement, get_* series, set_element_value, screenshot variants, events_*/perception_* hide).
+- Phase 4 will absorb additional tools (`get_*` series, `set_element_value`, screenshot variants, `events_*` / `perception_*` hide).
+- Comments referencing old browser tool names (`src/utils/launch.ts:4`, `src/tools/browser.ts:64/1462/1755`) are LLM non-exposed and queued for Phase 4 polish.
+- `scripts/measure-tools-list-tokens.ts` Tier classifications still reflect pre-Phase 1 names — Phase 4 polish or removal candidate.
 
 ### Changed
 
-- `src/server-windows.ts` instructions text updated for Phase 1 + Phase 2 naming.
-- `src/stub-tool-catalog.ts` regenerated.
-- All LLM-visible strings (description / suggest / error.message / engine layer literal types) updated.
-- `README.md`, `README.ja.md`, `docs/system-overview.md` updated.
+- `src/server-windows.ts` instructions text updated for Phase 1 + Phase 2 naming. Phase 3 leaves browser-specific section addition for Phase 5 dogfood judgement (avoids preemptive surface bloat).
+- `src/stub-tool-catalog.ts` regenerated (46 entries after Phase 3).
+- All LLM-visible strings (description / suggest / error.message / engine layer literal types / `failWith` tool labels) updated:
+  - `_errors.ts` `BrowserNotConnected.suggest` → references `browser_open({launch:{}})`.
+  - `desktop-state.ts` `get_document_state` description → references `browser_eval({action:'dom'})`.
+  - `browser.ts` `failWith` calls re-attribute internal handlers to their public dispatcher names (`browser_get_dom` / `browser_get_app_state` → `browser_eval`; `browser_launch` → `browser_open`).
+- `README.md`, `README.ja.md`, `docs/system-overview.md`, `docs/tool-surface-reduction-plan.md`, `docs/tool-surface-known-issues.md` updated for Phase 3.
+- `.gitignore` strengthened: `.vitest-out*.txt` / `.vitest-out*.json` wildcards (Phase 2 §2.6 follow-up).
 
 ---
 

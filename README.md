@@ -164,21 +164,18 @@ For a local checkout, register the built server directly:
 | `set_element_value` | Write directly to a text field |
 | `scope_element` | High-res zoom crop of an element + its child tree |
 
-### Browser CDP (12)
+### Browser CDP (9)
 | Tool | Description |
 |---|---|
-| `browser_launch` | Launch Chrome/Edge/Brave with `--remote-debugging-port` and wait for the CDP endpoint (idempotent) |
-| `browser_open` | Connect to Chrome/Edge via CDP; lists open tabs with `active:true/false` |
+| `browser_open` | Connect to Chrome/Edge via CDP; lists open tabs with `active:true/false`. Pass `launch:{}` (or with overrides) to auto-spawn a debug-mode browser when no CDP endpoint is live (idempotent) |
 | `browser_locate` | CSS selector → exact physical screen coords |
 | `browser_click` | Find DOM element + click in one step |
-| `browser_eval` | Evaluate JS expression in the browser tab |
-| `browser_fill` | Fill React/Vue/Svelte controlled inputs via CDP — works where `browser_eval` value assignment doesn't update framework state |
-| `browser_get_dom` | Get outerHTML of element or `document.body` |
+| `browser_eval` | Inspect or operate on a tab via 3 actions: `js` (evaluate JS), `dom` (get HTML), `appState` (extract SSR-injected SPA state — `__NEXT_DATA__`, `__NUXT_DATA__`, `__REMIX_CONTEXT__`, `__APOLLO_STATE__`, GitHub `react-app`, JSON-LD, Redux SSR) |
+| `browser_fill` | Fill React/Vue/Svelte controlled inputs via CDP — works where `browser_eval(action='js')` value assignment doesn't update framework state |
+| `browser_form` | Inspect form fields (input/select/textarea/button) with name, type, value, label resolved via for/aria/ancestor LABEL |
 | `browser_overview` | Enumerate links / buttons / inputs + **ARIA toggles** with `state.{checked,pressed,selected,expanded}`; each element includes `viewportPosition` |
-| `browser_get_app_state` | **SPA state extractor** — one CDP call that scans `__NEXT_DATA__`, `__NUXT_DATA__`, `__REMIX_CONTEXT__`, `__APOLLO_STATE__`, GitHub `react-app` embeddedData, JSON-LD, `window.__INITIAL_STATE__` |
 | `browser_search` | Grep DOM by text / regex / role / ariaLabel / selector with confidence ranking |
 | `browser_navigate` | Navigate via CDP `Page.navigate`; `waitForLoad:true` (default) returns once `readyState==='complete'` |
-| `browser_disconnect` | Close cached CDP WebSocket sessions |
 
 All `browser_*` tools that touch the DOM accept `includeContext:false` to omit the trailing `activeTab:` / `readyState:` lines (saves ~150 tok/call on chained invocations). Within a 500 ms window, consecutive calls reuse one tab-context fetch automatically.
 
@@ -239,18 +236,17 @@ chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\tmp\cdp
 ```
 
 ```
-browser_launch()                        → launch Chrome/Edge/Brave in debug mode (idempotent)
-browser_open()                       → list open tabs + get tabIds
-browser_locate("#submit")         → CSS selector → physical screen coords
-browser_click("#submit")        → find + click in one step (auto-focuses browser)
-browser_eval("document.title")          → evaluate JS, returns result
-browser_fill("#email", "user@example.com") → fill React/Vue/Svelte controlled input (state-safe)
-browser_get_dom("#main", maxLength=5000)→ outerHTML, truncated to maxLength chars
-browser_overview()               → links/buttons/inputs + ARIA toggles + viewportPosition per element
-browser_get_app_state()                 → one-shot SPA state (Next/Nuxt/Remix/Apollo/GitHub react-app/Redux SSR)
-browser_search(by="text", pattern="...")→ grep DOM with confidence ranking
-browser_navigate("https://example.com") → navigate via CDP (no address bar interaction)
-browser_disconnect()                    → clean up WebSocket sessions
+browser_open({launch:{}})                          → spawn-if-needed Chrome in debug mode + list tabs (idempotent)
+browser_open()                                     → connect-only (fail if no CDP endpoint live)
+browser_locate({selector:"#submit"})               → CSS selector → physical screen coords
+browser_click({selector:"#submit"})                → find + click in one step (auto-focuses browser)
+browser_eval({action:"js", expression:"document.title"})  → evaluate JS, returns result
+browser_eval({action:"dom", selector:"#main", maxLength:5000})  → outerHTML, truncated to maxLength chars
+browser_eval({action:"appState"})                  → one-shot SPA state (Next/Nuxt/Remix/Apollo/GitHub react-app/Redux SSR)
+browser_fill({selector:"#email", value:"user@example.com"})  → fill React/Vue/Svelte controlled input (state-safe)
+browser_overview()                                 → links/buttons/inputs + ARIA toggles + viewportPosition per element
+browser_search({by:"text", pattern:"..."})         → grep DOM with confidence ranking
+browser_navigate({url:"https://example.com"})      → navigate via CDP (no address bar interaction)
 ```
 
 For chained calls in the same tab, pass `includeContext:false` to omit the activeTab/readyState annotation (~150 tok/call saved). Boolean / object params accept the LLM-friendly string spellings (`"true"`, `"{}"`).
@@ -259,7 +255,7 @@ Coordinates returned by `browser_locate` account for the browser chrome (tab str
 
 **Recommended web workflow:**
 ```
-browser_open() → browser_get_dom() → browser_locate(selector) → browser_click(selector)
+browser_open({launch:{}}) → browser_eval({action:"dom"}) → browser_locate(selector) → browser_click(selector)
 ```
 
 ---
@@ -738,11 +734,11 @@ For `desktop_discover` warnings (`visual_provider_unavailable`, `visual_provider
 | UIA call overhead | ~2 ms (focus) / ~100 ms (tree) via Rust native engine; ~300 ms via PowerShell fallback | Rust engine loads automatically; `workspace_snapshot` uses a 2 s timeout internally |
 | Chrome / WinUI3 UIA elements are empty | Chromium exposes only limited UIA | `screenshot(detail='text')` auto-detects Chromium and falls back to Windows OCR (`hints.chromiumGuard=true`). For richer DOM access use `browser_open` + `browser_locate` |
 | Chromium title-regex misses when sites rewrite `document.title` | Guard relies on the ` - Google Chrome` suffix being present; some sites push it off the end of a long title | Title is treated as plain Chrome (UIA runs). OCR path is still reachable via `ocrFallback='always'` or when UIA returns `<5` elements (`uiaSparse`) |
-| `browser_*` CDP tools need Chrome launched with `--remote-debugging-port` | If Chrome is already running on the default profile without the flag, `browser_launch` / `browser_open` fail. The CDP E2E suite (`tests/e2e/browser-cdp.test.ts`) will also fail in that state | Close Chrome first, then `browser_launch` will relaunch it in debug mode, or start Chrome manually with `--remote-debugging-port=9222 --user-data-dir=C:\tmp\cdp` |
+| `browser_*` CDP tools need Chrome launched with `--remote-debugging-port` | If Chrome is already running on the default profile without the flag, `browser_open` fails. The CDP E2E suite (`tests/e2e/browser-cdp.test.ts`) will also fail in that state | Close Chrome first, then `browser_open({launch:{}})` will relaunch it in debug mode, or start Chrome manually with `--remote-debugging-port=9222 --user-data-dir=C:\tmp\cdp` |
 | Layer buffer TTL | Buffer auto-clears after 90s of inactivity → next `diffMode` becomes an I-frame | After long waits, call `workspace_snapshot` to explicitly reset the buffer |
 | `keyboard(action='type')` / `keyboard(action='press')` follow focus | When `window_dock(action='dock')(pin=true)` keeps another window on top (e.g. Claude CLI), keystrokes may be absorbed by that window | Call `focus_window(title=...)` first and verify `isActive=true` via `screenshot(detail='meta')` before sending keys |
 | `keyboard(action='type')` em-dash / smart quotes in Chrome/Edge | Non-ASCII punctuation (em-dash `—`, en-dash `–`, smart quotes `"" ''`) can be intercepted as keyboard accelerators, shifting focus to the address bar | Always use `use_clipboard=true` when the text contains such characters |
-| `browser_eval` on React / Vue / Svelte inputs | Setting `element.value = ...` or dispatching synthetic events does not update the framework's internal state | Use `browser_fill(selector, value)` — it uses native prototype setter + InputEvent which does update React/Vue/Svelte state |
+| `browser_eval(action='js')` on React / Vue / Svelte inputs | Setting `element.value = ...` or dispatching synthetic events does not update the framework's internal state | Use `browser_fill(selector, value)` — it uses native prototype setter + InputEvent which does update React/Vue/Svelte state |
 
 ---
 
