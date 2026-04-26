@@ -318,21 +318,34 @@ function Test-InvalidRequest {
 }
 
 function Test-CorsHeaders {
+    # v1.0.0 (PR #47 security fix): CORS no longer returns `*` for every
+    # request. The server only echoes `Access-Control-Allow-Origin` when the
+    # client's `Origin` header matches a localhost variant. A non-localhost
+    # origin must NOT receive an Allow-Origin header (browser-side denial).
     Write-Host "`n--- Test 6: CORS Preflight (OPTIONS) ---" -ForegroundColor White
 
     try {
-        $response = Invoke-WebRequest -Uri $mcpUrl -Method Options -TimeoutSec 5
+        # Positive case: localhost origin → echoed
+        $localResponse = Invoke-WebRequest -Uri $mcpUrl -Method Options -Headers @{ Origin = "http://localhost:3000" } -TimeoutSec 5
+        $localAllowOrigin = $localResponse.Headers["Access-Control-Allow-Origin"]
+        $allowMethods = $localResponse.Headers["Access-Control-Allow-Methods"]
 
-        $allowOrigin = $response.Headers["Access-Control-Allow-Origin"]
-        $allowMethods = $response.Headers["Access-Control-Allow-Methods"]
-
-        if ($allowOrigin -eq "*" -and $allowMethods -match "POST") {
-            Write-Pass "CORS headers present"
-            return $true
-        } else {
-            Write-Fail "CORS headers incomplete" "Allow-Origin: $allowOrigin, Allow-Methods: $allowMethods"
+        if ($localAllowOrigin -ne "http://localhost:3000" -or $allowMethods -notmatch "POST") {
+            Write-Fail "Localhost CORS preflight missing expected headers" "Allow-Origin: $localAllowOrigin, Allow-Methods: $allowMethods"
             return $false
         }
+
+        # Negative case: non-localhost origin → no Allow-Origin header
+        $evilResponse = Invoke-WebRequest -Uri $mcpUrl -Method Options -Headers @{ Origin = "https://evil.example.com" } -TimeoutSec 5
+        $evilAllowOrigin = $evilResponse.Headers["Access-Control-Allow-Origin"]
+
+        if ($null -ne $evilAllowOrigin -and $evilAllowOrigin -ne "") {
+            Write-Fail "Non-localhost origin should NOT receive Allow-Origin (CORS leak)" "Got: $evilAllowOrigin"
+            return $false
+        }
+
+        Write-Pass "CORS allowlist behaves correctly (localhost echoed, evil.example.com rejected)"
+        return $true
     } catch {
         Write-Fail "OPTIONS request failed" $_.Exception.Message
         return $false
