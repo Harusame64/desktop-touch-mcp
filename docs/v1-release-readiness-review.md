@@ -194,3 +194,84 @@ For each finding: file:line + 1-line summary + suggested fix direction.
 4. P0/P1/P2/P3 分類してチャットに要約報告
 5. ユーザー approve → P0/P1 修正 PR or 別途方針合意
 6. release prep へ
+
+---
+
+## 8. Audit Findings (2026-04-26 集約)
+
+実施: B1 / B2 / B3 / C / F / G の Explore agent 並列 + Opus 直で A / H / D を audit。E (security) と I (docs) は次セッション予定。
+
+### 8.1. P0 — release blocker
+
+| # | カテゴリ | file:line | summary | 修正方針 |
+|---|---|---|---|---|
+| **P0-1** | H | `.github/workflows/ci.yml` | CI が `npm test` を回さない (build と stub-catalog check のみ)。テスト regression が main に入る経路 | release.yml と同じ test ステップを ci.yml に追加 |
+| **P0-2** | H | `.github/workflows/ci.yml` | CI が `npm run build:rs` を回さない (Rust 側 regression を merge 前に検知不可)。release.yml だけが Rust build を持つ | ci.yml に `node-gyp install` + `npm run build:rs` + `cargo check` を追加 |
+| **P0-3** | B1 | `src/tools/desktop-executor.ts:176` | terminal route が `setValue/type` の text undefined ガードを欠落 (UIA/CDP 経路は round 3 で追加済、terminal だけ漏れ)。`text ?? ""` で空文字 fallback してしまう | `desktop-register.ts` の `validateDesktopTouchTextRequirement` を terminal route にも適用 |
+| **P0-4** | C | `tools/win-ocr/src/florence2.rs` | 複数箇所で `unwrap()` / `expect()` panic (model 読み込み失敗で TS 側がクラッシュ) | `napi::Result` で error propagation、Tier ∞ fallback 経路を保証 |
+| **P0-5** | C | `native-rs-engine/src/uia/*.rs` | `Mutex::lock()` の poison 未処理 (一度 panic すると以降全 lock が err) | `lock().unwrap_or_else(\|e\| e.into_inner())` パターンで poison recovery |
+| **P0-6** | G | `tests/unit/registry-lru.test.ts:13-23, 90-102` | 同一ファイル内で `vi.mock("../../src/engine/win32.js")` が 2 重宣言。full suite で mock 解決順が undefined → flake | 13-23 行の旧 mock を削除、90-102 のみ残す (5 分修正) |
+
+### 8.2. P1 — 設計逸脱 / regression リスク
+
+| # | カテゴリ | file:line | summary | 修正方針 |
+|---|---|---|---|---|
+| **P1-1** | B1 | `src/tools/desktop-register.ts` (windowsProvider) | production windowsProvider が enumWindowsInZOrder + getWindowProcessId + getProcessIdentityByPid を毎 see() で同期実行 (40+ window で数十 ms cost) | 100ms TTL cache、または Phase 4b sensors に統合 |
+| **P1-2** | B2 | `src/engine/world-graph/session-registry.ts` | session eviction reason が呼出側に伝わらない (entity_not_found としか返らず、TTL evict か enum miss か区別不能) | `EntityLeaseRejectionReason` に `session_evicted` を追加、 LeaseStore で 区別 |
+| **P1-3** | B2 | `src/engine/world-graph/session-registry.ts` | `session.seq` が `number` で increment、長時間 session で overflow (Number.MAX_SAFE_INTEGER は 1日 50ms 1000万 ops で 30年なので低確率だが) | `seq % 2^31` で wrap、generation を組み合わせ |
+| **P1-4** | G | `tests/unit/registry-lru.test.ts` (root cause) | (P0-6 と同一) full suite parallel で `vi.mock` 解決順 undefined → 既知 flake の真因 | P0-6 修正で解消 |
+| **P1-5** | A | `src/engine/error/error-codes.ts` | Phase 4 で消えた tool 系の error code が dead (FUKUWARAI_V1_ONLY 等) | grep で参照 0 のものを削除 |
+| **P1-6** | C | `native-rs-engine/Cargo.toml` (vision-gpu-winml) | WinML feature が ADR-006 で停滞、stub のまま `cargo check` は通るが build:rs で残骸 | feature flag を default 外し、stub であることを README に明記 |
+| **P1-7** | D | `src/engine/win32.ts` (koffi 残留) | Phase 1 §1.5 で napi-rs に統合と引継ぎあるも、`koffi` が package.json deps に残置、koffi 経由 path 1 箇所残存 | 残存 koffi コードを napi-rs binding 経由に置換、deps から `koffi` を削除 |
+| **P1-8** | F | `src/engine/perception/dirty-journal.ts` (layer buffer) | Phase 4b で追加した layer-aware dirty buffer が cap 制限なし、long-running で 100MB+ になる経路 | `MAX_DIRTY_ENTRIES = 1000` で FIFO eviction |
+| **P1-9** | E | (CodeQL Rust 未対応) | CodeQL workflow が `language: javascript-typescript` のみ。Rust の unsafe / panic / FFI が無監査 | `language: ["javascript-typescript", "rust"]` (但し windows-latest で Rust CodeQL は preview) |
+| **P1-10** | G | `src/tools/macro.ts:154-185` | Phase 4 で追加した `v2KillSwitchActive()` ガードが run_macro 経路で test 0 件 | tool-naming-phase4.test.ts に kill-switch ON/OFF × v2/v1 の 4 case 追加 |
+| **P1-11** | G | `tests/e2e/http-transport.test.ts:155-156` | コメントでは catalog 28 と書いてあるが assertion は `>= 26`。誤検知許容 | `>= 28` に修正 |
+| **P1-12** | G | (e2e coverage gap) | kill-switch ON HTTP `tools/list` で 26 tool 返るかの e2e 0、`run_macro({steps:[{tool:'desktop_discover'}]})` の lease 構造 e2e 0、windows[] focus 切替後の e2e 0 | release 前に 3 cases 追加 (30 分) |
+
+### 8.3. P2 — UX / migration / minor flake
+
+| # | カテゴリ | file:line | summary | 修正方針 |
+|---|---|---|---|---|
+| **P2-1** | B1 | `src/tools/desktop-constraints.ts` | OCR 由来 warning → constraint 変換が partial、視覚 lane warning が constraint 化されない | warnings catalogue を完成 |
+| **P2-2** | B1 | `src/tools/desktop-executor.ts` (terminal escalation) | terminal route で keyboard fallback 時の escalation log 出力なし、user に invisible | warning に `terminal_keyboard_fallback` 追加 |
+| **P2-3** | B2 | `src/engine/world-graph/lease-store.ts` (`getOrCreate`) | concurrent issue で同一 entity 複数 lease 生成の細い race | issue 関数内で `Map.get` → `Map.set` を 1 trick atomic 化 |
+| **P2-4** | B2 | `src/engine/world-graph/candidate-ingress.ts` | candidate ingress の TOCTOU: snapshot 読み取り中に entity 変化 | snapshot を atomic 取得 |
+| **P2-5** | B2 | `src/engine/world-graph/resolver.ts` | `mergeLocators` の precedence が UIA > CDP 固定だが、CDP の方が新しい場合がある | timestamp 比較で newer-wins |
+| **P2-6** | B3 | `src/engine/perception/hot-target-cache.ts` | LRU descriptor binding の hash が衝突可能 (window class + title hash 衝突 0.0001%) | descriptor に generation 印字 |
+| **P2-7** | B3 | `src/engine/perception/fluent-store.ts` | fluent 上書き race の細い窓 (sensor 投入と reconciliation 間) | sequence number 導入 |
+| **P2-8** | B3 | (ID validation) | Phase 4 lensId / sessionId / leaseId が string only、長さ・charset チェックなし | 64 char limit + `[a-z0-9-]` validation |
+| **P2-9** | C | `Cargo.toml` (ORT_DYLIB_PATH) | ORT_DYLIB_PATH 環境変数の使い分けが README 未記載 (.dll パス) | release 手順 doc に追加 |
+| **P2-10** | F | (desktop_state cost) | LLM が毎 step `desktop_state` を呼ぶと cost が嵩む (800-1500 token / call) | summary mode で 200 token 以下に縮約するオプション |
+| **P2-11** | G | `tests/unit/tool-naming-phase4.test.ts:402-415` | `findBareReferences()` の former / failWith regex に false-positive 余地 | failWith に word boundary 追加 |
+| **P2-12** | G | `tests/unit/tool-naming-phase4.test.ts:539-549` | `validateDesktopTouchTextRequirement` empty string / null edge case 未 test | 3 edge case 追加 |
+
+### 8.4. P3 — polish
+
+| # | カテゴリ | file:line | summary |
+|---|---|---|---|
+| **P3-1** | C | `src/engine/vision-gpu/ocr-provider.ts` | logging が `console.warn` 直接、構造化 log 推奨 |
+| **P3-2** | B3 | `src/engine/perception/post.perception.diff` | doc string 古い、Phase 4b 形式の diff schema 反映ない |
+| **P3-3** | B2 | `src/engine/world-graph/lease-ttl-policy.ts` | TTL bonus 計算式の comment 不足 |
+| **P3-4** | B3 | `src/engine/perception/target-timeline.ts` | session 終了時の timeline orphan、mem に残る (低影響) |
+| **P3-5** | C | `tools/win-ocr/src/preprocess.rs` | `badge_width` 定数未使用 |
+| **P3-6** | G | `docs/phase4b-dogfood-runbook.md` | v1.0.0 npm release では artifact 出さないので README で out-of-scope と明記 |
+
+### 8.5. 残タスク
+
+- **E (security audit)** — `/security-review` + CodeQL alert 残確認、suggest fixed-string ガード再点検、secret scan
+- **I (documentation audit)** — README × 2 / system-overview / CHANGELOG / known-issues / Phase 4 design 完了マーク
+- 上記 2 つは次セッションで実施 (現セッションは context 制約)
+
+### 8.6. Release recommendation (現時点)
+
+- **P0 6 件** はすべて release 前に必須:
+  - **CI gap 2 件 (P0-1/P0-2)** が最優先 (これがないと他の修正の regression を検出できない)
+  - **terminal text gate (P0-3)** は 1-2 行 fix
+  - **Rust panic 3 件 (P0-4/5/6)** は別 PR ですすめる、ただし P0-6 は 5 分 fix
+- **P1 12 件** は release 前 OR v1.0.1 patch
+- **P2 12 件 / P3 6 件** は v1.0.x で対応、Phase 5 dogfood と並行可
+
+**結論**: P0 6 件 + P1 のうち kill-switch test (P1-10) と http-transport.test 修正 (P1-11) を v1.0.0 release 前に消化、それ以外は v1.0.1 計画に乗せる方針を提案。
+
+---
