@@ -50,7 +50,7 @@ export function pushDirtySignal(targetKey: string, candidates: UiEntityCandidate
     // Debug log: helps detect cases where the signal is pushed but no ingress is listening.
     // Expected before getDesktopFacade() is called; unexpected in steady state.
     if (typeof process !== "undefined" && process.env["NODE_ENV"] !== "test") {
-      console.debug(`[dirty-signal] No handlers registered for targetKey "${targetKey}"`);
+      console.error(`[dirty-signal] No handlers registered for targetKey "${targetKey}"`);
     }
     return;
   }
