@@ -1460,6 +1460,38 @@ export const browserLaunchHandler = async ({
   }
 };
 
+// Phase 3: classify the text payload returned by browserLaunchHandler so
+// browserOpenHandler can decide whether to short-circuit with the launch error
+// or proceed to connect. Exported for unit testing — the failure-detection logic
+// is the only thing that gates the connect step, so it must be exercisable in
+// isolation.
+//
+// browserLaunchHandler can return:
+//   - plain text on early failure (browser-not-found, CDP timeout, url validation)
+//   - failWith JSON `{ok:false, code, error, ...}` on caught exceptions
+//     (e.g. spawnDetached permission errors — Codex PR #40 review)
+//   - success JSON `{port, alreadyRunning, launched, tabs}` on success
+//     (success payloads omit `ok` entirely; treat anything not explicitly
+//     `ok===false` as success)
+export function classifyLaunchOutcome(text: string): "ok" | "fail" {
+  if (!text) return "fail";
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    // plain text — early failure path (url validation / browser-not-found / CDP timeout)
+    return "fail";
+  }
+  if (
+    typeof parsed === "object" &&
+    parsed !== null &&
+    (parsed as { ok?: unknown }).ok === false
+  ) {
+    return "fail";
+  }
+  return "ok";
+}
+
 // Phase 3: browser_open dispatcher — optional launch then connect.
 // Replaces former browser_launch + browser_open pair; reuses both internal
 // handlers so the spawn / poll / url-validation logic stays single-source.
@@ -1483,20 +1515,8 @@ export const browserOpenHandler = async ({
       url: launch.url,
       waitMs: launch.waitMs,
     });
-    // browserLaunchHandler returns plain-text on failure (browser-not-found,
-    // CDP timeout, url validation) and JSON on success (alreadyRunning or
-    // spawned). JSON.parse distinguishes the two — a successful launch falls
-    // through to the connect step; a failure short-circuits with the launch
-    // error surfaced to the LLM.
     const text = launchResult.content[0]?.type === "text" ? launchResult.content[0].text : "";
-    let launchOk = false;
-    try {
-      JSON.parse(text);
-      launchOk = true;
-    } catch {
-      launchOk = false;
-    }
-    if (!launchOk) {
+    if (classifyLaunchOutcome(text) === "fail") {
       return launchResult;
     }
   }
