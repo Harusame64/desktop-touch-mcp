@@ -147,23 +147,15 @@ export const focusWindowHandler = async ({
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function registerWindowTools(server: McpServer): void {
-  server.tool(
-    "get_windows",
-    "List all visible windows with titles, screen positions, Z-order, active state, and virtual desktop membership. zOrder=0 is frontmost; isActive=true is the keyboard-focused window; isOnCurrentDesktop=false means the window is on another virtual desktop and cannot be interacted with without switching. Use before screenshot to determine whether a specific window needs capturing. Caveats: Returns only top-level visible windows — child windows and system tray items are excluded.",
-    getWindowsSchema,
-    getWindowsHandler
-  );
-
-  server.tool(
-    "get_active_window",
-    "Return the title, hwnd, and bounds of the currently focused window.",
-    getActiveWindowSchema,
-    getActiveWindowHandler
-  );
+  // Phase 4: get_windows / get_active_window privatized — handlers retained
+  // as internal exports. desktop_discover returns the windows list (with
+  // zOrder / title / hwnd / region / isActive / processName) and
+  // desktop_state.focusedWindow covers the active-window case.
+  // (memory: feedback_disable_via_entry_block.md)
 
   server.tool(
     "focus_window",
-    "Bring a window to the foreground by partial title match (case-insensitive). Use when a tool does not accept a windowTitle param, or when you need to switch focus before a sequence of actions. Use chromeTabUrlContains to activate a specific Chrome/Edge tab by URL substring before focusing — only the active tab's title appears in get_windows. If CDP is unavailable, chromeTabUrlContains is silently skipped — check response.hints.warnings. Returns WindowNotFound if no match exists; call get_windows to see available titles. Caveats: On some apps focus may be immediately stolen back (modal dialogs, UAC prompts) — verify with desktop_state after focusing.",
+    "Bring a window to the foreground by partial title match (case-insensitive). Use when a tool does not accept a windowTitle param, or when you need to switch focus before a sequence of actions. Use chromeTabUrlContains to activate a specific Chrome/Edge tab by URL substring before focusing — only the active tab's title appears in the windows list. If CDP is unavailable, chromeTabUrlContains is silently skipped — check response.hints.warnings. Returns WindowNotFound if no match exists; call desktop_discover to see available titles. Caveats: On some apps focus may be immediately stolen back (modal dialogs, UAC prompts) — verify with desktop_state after focusing.",
     focusWindowSchema,
     focusWindowHandler
   );

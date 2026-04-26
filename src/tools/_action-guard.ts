@@ -164,9 +164,9 @@ function nextStepFor(
     case "unguarded":
       return "Pass windowTitle for guarded action";
     case "ambiguous_target":
-      return `Call get_windows or pass a more specific windowTitle${target ? ` (matched: ${target})` : ""}`;
+      return `Call desktop_discover or pass a more specific windowTitle${target ? ` (matched: ${target})` : ""}`;
     case "target_not_found":
-      return "Call get_windows to verify the window title, then retry";
+      return "Call desktop_discover to verify the window title, then retry";
     case "identity_changed":
       return "Target window was replaced. Take a new screenshot.";
     case "blocked_by_modal":

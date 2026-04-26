@@ -188,9 +188,9 @@ export function projectResourceSummary(snapshot: LensSnapshot): SummaryResource 
   } else if (!guardResult.ok && guardResult.failedGuard) {
     summary.suggestedNext = guardResult.failedGuard.suggestedAction;
   } else if (attention === "dirty" || attention === "settling") {
-    summary.suggestedNext = "Call perception_read to get fresh observations before acting";
+    summary.suggestedNext = "Call desktop_state to get fresh observations before acting";
   } else if (attention === "stale") {
-    summary.suggestedNext = "Call perception_read to refresh stale state";
+    summary.suggestedNext = "Call desktop_state to refresh stale state";
   } else if (attention === "ok") {
     summary.suggestedNext = "Ready to act";
   }

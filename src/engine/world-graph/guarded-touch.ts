@@ -1,7 +1,7 @@
 import type { UiEntity, EntityLease, ExecutorKind, UiAffordance } from "./types.js";
 import type { LeaseStore } from "./lease-store.js";
 
-export type TouchAction = "auto" | "invoke" | "click" | "type" | "select";
+export type TouchAction = "auto" | "invoke" | "click" | "type" | "setValue" | "select";
 
 export interface TouchInput {
   lease: EntityLease;
@@ -60,7 +60,13 @@ export interface TouchEnvironment {
 
 // ── Action resolution ─────────────────────────────────────────────────────────
 
-const AUTO_PRIORITY: ReadonlyArray<Exclude<TouchAction, "auto">> = ["invoke", "click", "type", "select"];
+// Phase 4: 'setValue' is intentionally absent from AUTO_PRIORITY. Entities
+// advertise affordances via AffordanceVerb (invoke / click / type / select /
+// scrollTo / read), and the equivalent of 'setValue' (UIA ValuePattern,
+// CDP fill) is reachable through the 'type' affordance. setValue is only
+// meaningful as an *explicit* action requested by the caller, so auto-resolve
+// stays on the original verb set.
+const AUTO_PRIORITY: ReadonlyArray<Exclude<TouchAction, "auto" | "setValue">> = ["invoke", "click", "type", "select"];
 
 function resolveAction(entity: UiEntity, requested: TouchAction): TouchAction {
   if (requested !== "auto") return requested;

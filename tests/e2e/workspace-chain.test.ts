@@ -37,14 +37,15 @@ describe("H1-base: focus_window on absent window → WindowNotFound + wait_until
     expect(p.suggest.some((s: string) => /wait_until/.test(s))).toBe(true);
   });
 
-  it("suggest also contains get_windows for discovery", async () => {
+  it("suggest also contains desktop_discover for discovery", async () => {
     const result = await focusWindowHandler({
       title: "__no_such_window_h1_test_xyz__",
     });
     const p = parsePayload(result);
 
     expect(p.ok).toBe(false);
-    expect(p.suggest.some((s: string) => /get_windows/.test(s))).toBe(true);
+    // Phase 4: get_windows privatized → WindowNotFound suggest now points at desktop_discover.
+    expect(p.suggest.some((s: string) => /desktop_discover/.test(s))).toBe(true);
   });
 
   it("context carries the searched title", async () => {

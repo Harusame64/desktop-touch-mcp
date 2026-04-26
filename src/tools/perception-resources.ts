@@ -166,7 +166,7 @@ export function registerPerceptionResources(server: McpServer): void {
       title: "Perception Lens State",
       description:
         "Read-only cached per-lens state for the Reactive Perception Graph. " +
-        "Resource reads do not force Win32/CDP/UIA refresh; call perception_read when " +
+        "Resource reads do not force Win32/CDP/UIA refresh; call desktop_state when " +
         "attention is dirty, settling, or stale. Views: summary, guards, debug (flag-gated).",
       mimeType: "application/json",
     },
@@ -214,7 +214,7 @@ export function registerPerceptionResources(server: McpServer): void {
             mimeType: "application/json",
             text: JSON.stringify({
               error: "not_found",
-              message: `Lens '${resolvedLensId}' not found. Register it first with perception_register.`,
+              message: `Lens '${resolvedLensId}' not found. Pass windowTitle / tabId directly to action tools — Auto Perception tracks state automatically; explicit lens registration is no longer the primary path.`,
             }, null, 2),
           }],
         };

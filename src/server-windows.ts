@@ -9,8 +9,15 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { registerScreenshotTools } from "./tools/screenshot.js";
 import { registerMouseTools } from "./tools/mouse.js";
 import { registerKeyboardTools } from "./tools/keyboard.js";
-import { registerWindowTools } from "./tools/window.js";
-import { registerUiElementTools } from "./tools/ui-elements.js";
+import { registerWindowTools, getWindowsHandler, getWindowsSchema } from "./tools/window.js";
+import {
+  registerUiElementTools,
+  getUiElementsHandler,
+  getUiElementsSchema,
+  setElementValueHandler,
+  setElementValueSchema,
+} from "./tools/ui-elements.js";
+import { withRichNarration } from "./tools/_narration.js";
 import { registerWorkspaceTools } from "./tools/workspace.js";
 import { registerMacroTools } from "./tools/macro.js";
 import { registerBrowserTools } from "./tools/browser.js";
@@ -132,7 +139,7 @@ function createMcpServer(): McpServer {
         "On WaitTimeout, read the suggest[] array in the error response for recovery steps.",
         "",
         "## Failure recovery",
-        "- WindowNotFound → call get_windows to list available titles, then retry focus_window",
+        "- WindowNotFound → call desktop_discover to list available titles, then retry focus_window",
         "- WaitTimeout → read suggest[] in the error; increase timeoutMs or verify target exists",
         "- keyboard(action='press') or keyboard(action='type') wrong window → call focus_window(windowTitle) first",
         "- scroll(action='capture') sizeReduced=true → reduce maxScrolls or add grayscale=true",
@@ -197,11 +204,42 @@ function createMcpServer(): McpServer {
     registerPerceptionResources(s);
   }
 
-  // Anti-Fukuwarai v2: desktop_see / desktop_touch (opt-in: DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2=1)
+  // Anti-Fukuwarai v2: desktop_discover / desktop_act (default-on; kill switch DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1)
   // _desktopV2 is pre-loaded at module init time (top-level await below) so registration
   // is synchronous here — no race window between createMcpServer() and tool availability.
   if (_desktopV2) {
     _desktopV2.registerDesktopTools(s);
+  } else {
+    // Phase 4 kill-switch V1 fallback (Codex PR #41 round 6 P1×2):
+    // when v2 is disabled, re-publish the V1 tools whose capability is
+    // ONLY available through the dispatcher path so the operator does not
+    // lose function coverage by flipping the kill switch.
+    //   - get_windows: enumerate visible HWNDs (no other tool exposes hwnd
+    //     listing for title-collision / hwnd-targeted workflows)
+    //   - get_ui_elements: raw UIA tree (screenshot(detail='text') is the
+    //     screenshot-time alternative but does not return the unfiltered tree)
+    //   - set_element_value: UIA ValuePattern (keyboard(action='type') is
+    //     keyboard-driven and does not work for programmatic value set)
+    // The other Phase 4 privatizations have non-v2 replacements (desktop_state
+    // include* flags / screenshot dispatcher / wait_until) and stay private.
+    s.tool(
+      "get_windows",
+      "[V1 fallback — registered only when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1] List all visible windows with titles, screen positions, Z-order, active state, and virtual desktop membership. zOrder=0 is frontmost; isActive=true is the keyboard-focused window; isOnCurrentDesktop=false means the window is on another virtual desktop. Use before screenshot to determine whether a specific window needs capturing.",
+      getWindowsSchema,
+      getWindowsHandler
+    );
+    s.tool(
+      "get_ui_elements",
+      "[V1 fallback — registered only when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1] Inspect the raw UIA element tree of a window — returns names, control types, automationIds, bounding rects, and interaction patterns. Prefer screenshot(detail='text') for normal automation; this fallback is here so kill-switch deployments retain access to the unfiltered tree.",
+      getUiElementsSchema,
+      getUiElementsHandler
+    );
+    s.tool(
+      "set_element_value",
+      "[V1 fallback — registered only when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1] Set the value of a text field or combo box via UIA ValuePattern. The server auto-guards using windowTitle and returns post.perception.status. More reliable than keyboard(action='type') for programmatic form input.",
+      setElementValueSchema,
+      withRichNarration("set_element_value", setElementValueHandler, { windowTitleKey: "windowTitle" })
+    );
   }
 
   return s;

@@ -34,7 +34,11 @@ import { OnnxBackend } from "../engine/vision-gpu/onnx-backend.js";
 import { onDirtySignal } from "../engine/vision-gpu/dirty-signal.js";
 import { _resetOcrAdaptersForTest, getOcrVisualAdapter } from "../engine/vision-gpu/ocr-adapter-registry.js";
 import { DirtyRectRouter } from "../engine/vision-gpu/dirty-rect-source.js";
-import { enumWindowsInZOrder } from "../engine/win32.js";
+import {
+  enumWindowsInZOrder,
+  getWindowProcessId,
+  getProcessIdentityByPid,
+} from "../engine/win32.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 
 // ── G1: Production guards (viewport + focus) ──────────────────────────────────
@@ -223,6 +227,28 @@ export function getDesktopFacade(): DesktopFacade {
       getFocusedEntityId: productionGetFocusedEntityId,
       // G1-A: modal guard — session-aware default in session-registry.ts (UIA unknown-role).
       // No override needed here; the session-registry default is already production-grade.
+      // Phase 4 (Codex PR #41 round 5 P1): production windows enumerator —
+      // wraps enumWindowsInZOrder + processName resolution. The facade catches
+      // any throw and returns [] in that case, so this is allowed to fail.
+      windowsProvider: () => enumWindowsInZOrder().map((w) => {
+        let processName: string | undefined;
+        try {
+          const pid = getWindowProcessId(w.hwnd);
+          processName = getProcessIdentityByPid(pid).processName;
+        } catch {
+          processName = undefined;
+        }
+        return {
+          zOrder: w.zOrder,
+          title: w.title,
+          hwnd: String(w.hwnd),
+          region: w.region,
+          isActive: w.isActive,
+          isMinimized: w.isMinimized,
+          isMaximized: w.isMaximized,
+          processName,
+        };
+      }),
     });
 
     // Wire the visual runtime (non-blocking — failure does not prevent facade creation).
@@ -313,7 +339,10 @@ const leaseSchema = z.object({
   evidenceDigest:   z.string(),
 });
 
-const desktopSeeSchema = {
+// Phase 4 (Codex PR #41 P1): exported so run_macro DSL can register
+// desktop_discover / desktop_act in its own TOOL_REGISTRY without duplicating
+// the schema literals.
+export const desktopSeeSchema = {
   target:      targetSchema.describe("Target window (windowTitle / hwnd) or browser tab (tabId). Omit for foreground window."),
   view:        z.enum(["action", "explore", "debug"]).optional().describe("action (default, ≤20 entities), explore (≤50), debug (includes raw rect)"),
   query:       z.string().optional().describe("Filter entities by label substring (case-insensitive)"),
@@ -321,11 +350,39 @@ const desktopSeeSchema = {
   debug:       z.boolean().optional().describe("Include raw screen coordinates in response (debug only — never relay to end-users)"),
 };
 
-const desktopTouchSchema = {
+export const desktopTouchSchema = {
   lease:  leaseSchema.describe("Lease returned by desktop_discover. Expires after TTL; re-call desktop_discover if desktop_act fails with lease_expired."),
-  action: z.enum(["auto", "invoke", "click", "type", "select"]).optional().describe("Action to perform. 'auto' selects the best affordance from the entity."),
-  text:   z.string().optional().describe("Text to type (required when action=type)"),
+  action: z.enum(["auto", "invoke", "click", "type", "setValue", "select"]).optional().describe(
+    "Action to perform. 'auto' selects the best affordance from the entity. " +
+    "'setValue' (Phase 4: absorbs former set_element_value) sets a UIA ValuePattern value or fills a CDP controlled input — pass the new value via text."
+  ),
+  text:   z.string().optional().describe("Text to type or set (required when action='type' or action='setValue')."),
 };
+
+/**
+ * Phase 4 (Codex PR #41 round 3 P1): runtime guard that desktop_act callers
+ * must provide `text` for `action='type'` / `action='setValue'`. Without
+ * this, the executor falls through to a UIA click — silently triggering an
+ * unintended side effect instead of a validation error. Used by both the
+ * MCP registration closure below and the run_macro DSL handler in macro.ts.
+ *
+ * Empty string is *not* missing — `text: ""` is a legitimate clear-field
+ * operation that the executor (`text !== undefined` gate in
+ * desktop-executor.ts) routes through `uiaSetValue` / `cdpFill` to clear
+ * the target. This mirrors the legacy `set_element_value` contract.
+ * (Codex PR #41 round 4 P2.)
+ *
+ * Returns null on success; an error message on failure.
+ */
+export function validateDesktopTouchTextRequirement(
+  action: string | undefined,
+  text: string | undefined,
+): string | null {
+  if ((action === "type" || action === "setValue") && text === undefined) {
+    return `desktop_act(action='${action}') requires text — without it the executor falls through to a click on the target entity, which is almost never what you want. Pass text explicitly (use text:'' to clear a field), or use action='click' / 'invoke' for a click-style interaction.`;
+  }
+  return null;
+}
 
 // ── Tool registration ─────────────────────────────────────────────────────────
 
@@ -348,16 +405,16 @@ export function registerDesktopTools(server: McpServer): void {
       "response.constraints (when present) is a structured summary of provider limitations — use it to decide fallback without parsing warnings[] strings.",
       "constraints.entityZeroReason (when entities is empty) explains WHY: foreground_unresolved → add target.windowTitle;",
       "uia_blind_visual_unready → retry when visual backend is ready or use screenshot(ocrFallback=always);",
-      "uia_blind_visual_empty → use screenshot(ocrFallback=always) or V1 get_ui_elements;",
+      "uia_blind_visual_empty → use screenshot(ocrFallback=always) or V1 click_element;",
       "cdp_failed_visual_empty → check --remote-debugging-port=9222 and retry;",
-      "all_providers_failed → use V1 tools (get_ui_elements / terminal(action='read') / screenshot);",
+      "all_providers_failed → use V1 tools (click_element / terminal(action='read') / screenshot);",
       "constraints.uia=blind_single_pane → PWA/Electron/canvas; try view=debug or screenshot(ocrFallback=always);",
       "constraints.cdp=provider_failed → check --remote-debugging-port=9222;",
       "constraints.terminal=provider_failed → use V1 terminal(action='read'/'send');",
-      "Recovery: no_provider_matched → add target.windowTitle or retry; partial_results_only → compare with V1 get_ui_elements;",
+      "Recovery: no_provider_matched → add target.windowTitle or retry; partial_results_only → compare with V1 click_element;",
       "cdp_provider_failed → check --remote-debugging-port=9222;",
       "visual_provider_unavailable / visual_provider_warming → server retried once (~200ms); if still warned, continue with structured lane or retry later;",
-      "uia/terminal_provider_failed → use V1 tools (get_ui_elements / terminal(action='read'));",
+      "uia/terminal_provider_failed → use V1 tools (click_element / terminal(action='read'));",
       "uia_blind_single_pane / uia_blind_too_few_elements → target is PWA/Electron/canvas; try view=debug for visual lane hints, or fall back to screenshot(ocrFallback=always);",
       "visual_not_attempted → GPU backend unavailable; use V1 screenshot+mouse_click or wait and retry;",
       "visual_attempted_empty → visual lane ran but produced no stable candidates; consider screenshot(ocrFallback=always) or V1 tools;",
@@ -388,6 +445,12 @@ export function registerDesktopTools(server: McpServer): void {
     ].join(" "),
     desktopTouchSchema,
     async (input) => {
+      const validationError = validateDesktopTouchTextRequirement(input.action, input.text);
+      if (validationError) {
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: validationError }, null, 2) }],
+        };
+      }
       const result = await facade.touch({
         lease: input.lease as EntityLease,
         action: input.action,
