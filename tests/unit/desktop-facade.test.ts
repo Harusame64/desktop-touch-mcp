@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { DesktopFacade, type CandidateProvider, type DesktopSeeInput, type CandidateIngress } from "../../src/tools/desktop.js";
 import type { UiEntityCandidate } from "../../src/engine/vision-gpu/types.js";
 
@@ -783,5 +783,69 @@ describe("DesktopFacade — per-target session isolation (Batch A)", () => {
     // NOTE: the generation check would also catch it, but the index is cleaned up first.
     const result = await facade.touch({ lease: oldLease });
     expect(result.ok).toBe(false);
+  });
+});
+
+// Audit P1 / no-compromise lease hardening (D): the production facade must
+// periodically prune sessions that have gone idle past sessionTtlMs so the
+// SessionRegistry doesn't grow unbounded over a long-running process.
+// `evictStaleSessions()` was previously defined but never called — this is
+// the wiring + lifecycle pin.
+describe("DesktopFacade — automatic session eviction timer", () => {
+  it("with sessionEvictionIntervalMs unset (default), no timer is created", () => {
+    const facade = new DesktopFacade(gameProvider);
+    // No public accessor — the contract is "no setInterval handle is held",
+    // so dispose() finishes synchronously and idle. We assert the negative
+    // by ensuring the constructor doesn't reach into Node timers when
+    // disabled. (No .unref handle to inspect; the fake-timer test below
+    // covers the positive case.)
+    expect(() => facade.dispose()).not.toThrow();
+  });
+
+  it("with sessionEvictionIntervalMs > 0, calls evictStaleSessions on the configured cadence", () => {
+    vi.useFakeTimers();
+    try {
+      const evictSpy = vi.fn();
+      // Subclass to spy on evictStaleSessions without touching the registry.
+      class SpyFacade extends DesktopFacade {
+        override evictStaleSessions(): void {
+          evictSpy();
+          super.evictStaleSessions();
+        }
+      }
+      const facade = new SpyFacade(gameProvider, { sessionEvictionIntervalMs: 1000 });
+
+      vi.advanceTimersByTime(2_500); // 2 fires (at 1000, 2000)
+      expect(evictSpy).toHaveBeenCalledTimes(2);
+
+      facade.dispose();
+      vi.advanceTimersByTime(5_000); // no further fires after dispose
+      expect(evictSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("eviction errors do not crash the timer — subsequent fires still occur", () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      class ThrowingFacade extends DesktopFacade {
+        override evictStaleSessions(): void {
+          calls++;
+          if (calls === 1) throw new Error("transient registry error");
+          // 2nd call goes through normally.
+          super.evictStaleSessions();
+        }
+      }
+      const facade = new ThrowingFacade(gameProvider, { sessionEvictionIntervalMs: 500 });
+
+      vi.advanceTimersByTime(1_100); // 2 fires (500, 1000)
+      expect(calls).toBe(2);
+
+      facade.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -295,6 +295,12 @@ export function getDesktopFacade(): DesktopFacade {
     );
 
     _facade = new DesktopFacade(provider, {
+      // Sweep stale sessions every 30s. The default sessionTtlMs is 120s
+      // (2 min idle), so ~one timer fire after a session goes idle is enough
+      // to keep the registry from growing unbounded over a long-running
+      // process. The timer is .unref'd inside the facade so it never
+      // holds the process open on its own.
+      sessionEvictionIntervalMs: 30_000,
       ingress,
       // G1-B: viewport guard — blocks visual-only entities outside the foreground window.
       isInViewport: productionIsInViewport,
