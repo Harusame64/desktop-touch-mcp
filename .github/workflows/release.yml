@@ -211,13 +211,6 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           cache: "npm"
 
-      # v1.0.2 fix: setup-node@v4 ships npm 10.9.7 with Node 22, but OIDC
-      # automatic token exchange for Trusted Publishing is only fully wired
-      # in npm 11.5.1+. Without the upgrade, `npm publish` falls back to
-      # NODE_AUTH_TOKEN (unset → anonymous PUT) and the registry returns 404.
-      - name: Upgrade npm to OIDC-capable version
-        run: npm install -g npm@latest
-
       # Install dev deps so the `prepare: tsc` lifecycle that `npm publish`
       # triggers can resolve @types/node, zod, and the MCP SDK.
       # `--ignore-scripts` was supposed to skip prepare entirely, but in
@@ -268,8 +261,14 @@ jobs:
       - name: Verify manifest
         run: npm run check:launcher-manifest
 
-      - name: Publish to npm
-        run: npm publish --ignore-scripts --provenance
+      # v1.0.3 fix: setup-node@v4 ships npm 10.9.7 (Node 22), but OIDC
+      # automatic token exchange for Trusted Publishing requires npm 11.5.1+.
+      # `npm install -g npm@latest` clobbers the runner's bundled npm
+      # mid-self-upgrade and dies with `Cannot find module 'promise-retry'`,
+      # so use npx — it stages npm 11 in a temp dir and avoids the
+      # self-overwrite race.
+      - name: Publish to npm (via npx npm@latest for OIDC support)
+        run: npx -y npm@latest publish --ignore-scripts --provenance
 
       - name: Verify npm publish
         run: |
