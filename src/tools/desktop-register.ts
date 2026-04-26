@@ -100,7 +100,15 @@ function productionGetFocusedEntityId(): string | undefined {
  * expires; OS-level focus changes between snapshots are observed by the
  * separate `getFocusedEntityId` path).
  *
- * `nowFn` and `ttlMs` are injectable for unit testing.
+ * Time source: defaults to `performance.now()` (monotonic), so wall-clock
+ * adjustments — NTP step-back, manual clock changes, VM snapshot restore —
+ * never make a stale entry look fresh. The path also defends with `t >=
+ * cached.at` so an injected non-monotonic `nowFn` (or any future regression)
+ * still falls through to a re-enumeration on backward time travel rather
+ * than serving the previous snapshot. (Codex PR #53 P2.)
+ *
+ * `nowFn`, `ttlMs`, `enumerate`, and `resolveProcessName` are injectable for
+ * unit testing.
  */
 export interface WindowsProviderCacheOptions {
   ttlMs?: number;
@@ -124,14 +132,18 @@ export function createCachedProductionWindowsProvider(
   options: WindowsProviderCacheOptions = {},
 ): () => DesktopWindowMeta[] {
   const ttlMs = options.ttlMs ?? 100;
-  const now = options.nowFn ?? Date.now;
+  const now = options.nowFn ?? (() => performance.now());
   const enumerate = options.enumerate ?? enumWindowsInZOrder;
   const resolveProcessName = options.resolveProcessName ?? defaultResolveProcessName;
   let cached: { at: number; result: DesktopWindowMeta[] } | undefined;
 
   return () => {
     const t = now();
-    if (cached && t - cached.at < ttlMs) return cached.result;
+    // Defensive: ignore the cached entry if the clock moved backward since it
+    // was stored. With the default monotonic clock this branch is unreachable;
+    // it exists so an injected non-monotonic `nowFn` (or a future regression)
+    // can't keep serving stale windows past the TTL.
+    if (cached && t >= cached.at && t - cached.at < ttlMs) return cached.result;
     const result = enumerate().map((w) => {
       const processName = resolveProcessName(w.hwnd);
       return {
