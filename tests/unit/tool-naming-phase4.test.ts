@@ -507,22 +507,28 @@ describe("Phase 4 — Codex PR #41 P1: macro DSL has v2 World-Graph dispatchers"
 // Codex PR #41 round 3: setValue/type without text + v2 kill-switch bypass.
 
 describe("Phase 4 — Codex PR #41 round 3 P1: validateDesktopTouchTextRequirement", () => {
-  it("rejects action='setValue' without text", async () => {
+  it("rejects action='setValue' when text is undefined (falls through to click)", async () => {
     const { validateDesktopTouchTextRequirement } = await import("../../src/tools/desktop-register.js");
     expect(validateDesktopTouchTextRequirement("setValue", undefined)).not.toBeNull();
-    expect(validateDesktopTouchTextRequirement("setValue", "")).not.toBeNull();
   });
 
-  it("rejects action='type' without text (same dispatch path falls through to click)", async () => {
+  it("rejects action='type' when text is undefined (same dispatch path falls through to click)", async () => {
     const { validateDesktopTouchTextRequirement } = await import("../../src/tools/desktop-register.js");
     expect(validateDesktopTouchTextRequirement("type", undefined)).not.toBeNull();
-    expect(validateDesktopTouchTextRequirement("type", "")).not.toBeNull();
   });
 
   it("accepts setValue / type with non-empty text", async () => {
     const { validateDesktopTouchTextRequirement } = await import("../../src/tools/desktop-register.js");
     expect(validateDesktopTouchTextRequirement("setValue", "hello")).toBeNull();
     expect(validateDesktopTouchTextRequirement("type", "hello")).toBeNull();
+  });
+
+  // Codex PR #41 round 4 P2: empty string is a legitimate clear-field input
+  // (legacy set_element_value contract), not a missing argument.
+  it("accepts setValue / type with text='' (clear-field operation)", async () => {
+    const { validateDesktopTouchTextRequirement } = await import("../../src/tools/desktop-register.js");
+    expect(validateDesktopTouchTextRequirement("setValue", "")).toBeNull();
+    expect(validateDesktopTouchTextRequirement("type", "")).toBeNull();
   });
 
   it("does not reject other actions when text is omitted", async () => {
