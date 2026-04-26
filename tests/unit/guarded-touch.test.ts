@@ -109,18 +109,13 @@ describe("GuardedTouchLoop — auto action resolution", () => {
 });
 
 describe("GuardedTouchLoop — lease rejection (safe fail)", () => {
-  it("rejects expired lease when the live entity's digest no longer matches", async () => {
-    // No-compromise lease C: with the grace path in place, an *expired* lease
-    // is now only rejected when the entity has actually changed underneath
-    // (or disappeared / shifted generation). Force a digest mismatch to keep
-    // the historical "expired = rejected" assertion meaningful.
+  it("rejects expired lease", async () => {
     let now = 0;
-    const e          = entity("e1", GEN, { evidenceDigest: "d-original" });
-    const eChanged   = entity("e1", GEN, { evidenceDigest: "d-changed"  });
+    const e = entity("e1", GEN);
     const store = new LeaseStore({ nowFn: () => now, defaultTtlMs: 1000 });
     const lease = store.issue(e, "v1");
     now = 1001;
-    const loop = new GuardedTouchLoop(store, makeEnv({ resolveLiveEntities: () => [eChanged] }));
+    const loop = new GuardedTouchLoop(store, makeEnv({ resolveLiveEntities: () => [e] }));
     const result = await loop.touch({ lease });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("lease_expired");
@@ -278,16 +273,12 @@ describe("GuardedTouchLoop — semantic diff", () => {
   });
 
   it("rejection carries empty diff (no post-touch state)", async () => {
-    // No-compromise lease C: keep the rejection path triggered by feeding
-    // back a digest-mismatched live entity, so the test still proves
-    // "no post-touch diff is computed on failure".
     let now = 0;
-    const e        = entity("e1", GEN, { evidenceDigest: "d-original" });
-    const eChanged = entity("e1", GEN, { evidenceDigest: "d-changed"  });
+    const e = entity("e1", GEN);
     const store = new LeaseStore({ nowFn: () => now, defaultTtlMs: 1000 });
     const lease = store.issue(e, "v1");
     now = 9999;
-    const loop = new GuardedTouchLoop(store, makeEnv({ resolveLiveEntities: () => [eChanged] }));
+    const loop = new GuardedTouchLoop(store, makeEnv({ resolveLiveEntities: () => [e] }));
     const result = await loop.touch({ lease });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.diff).toHaveLength(0);
@@ -483,74 +474,5 @@ describe("GuardedTouchLoop — H3 dialog-own session modal guard", () => {
     }));
     const result = await loop.touch({ lease });
     expect(result.ok).toBe(true);
-  });
-});
-
-// No-compromise lease C: touch-side grace. An expired lease whose live
-// counterpart still has matching generation + digest is allowed to proceed
-// — the LLM took longer than the TTL window but the world didn't move
-// underneath. Other failure modes (digest_mismatch, generation_mismatch,
-// entity_not_found) are still hard fails because they represent real
-// content change.
-describe("GuardedTouchLoop — expired-lease grace (lease C)", () => {
-  it("expired lease + live digest matches → succeeds with warning", async () => {
-    let now = 0;
-    const e = entity("e1", GEN, { evidenceDigest: "d-stable" });
-    const store = new LeaseStore({ nowFn: () => now, defaultTtlMs: 1000 });
-    const lease = store.issue(e, "v1");
-    now = 5_000; // way past TTL
-    const loop = new GuardedTouchLoop(store, makeEnv({
-      resolveLiveEntities:      () => [e],
-      resolvePostTouchEntities: async () => [e],
-    }));
-    const result = await loop.touch({ lease });
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.warnings).toContain("lease_was_expired_but_entity_unchanged");
-    }
-  });
-
-  it("expired lease + live entity missing → still fails with lease_expired", async () => {
-    let now = 0;
-    const e = entity("e1", GEN);
-    const store = new LeaseStore({ nowFn: () => now, defaultTtlMs: 1000 });
-    const lease = store.issue(e, "v1");
-    now = 5_000;
-    // Live snapshot doesn't contain the entity any more.
-    const loop = new GuardedTouchLoop(store, makeEnv({ resolveLiveEntities: () => [] }));
-    const result = await loop.touch({ lease });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe("lease_expired");
-  });
-
-  it("expired lease + generation mismatch → still fails with lease_expired (no grace)", async () => {
-    let now = 0;
-    const e = entity("e1", GEN);
-    const store = new LeaseStore({ nowFn: () => now, defaultTtlMs: 1000 });
-    const lease = store.issue(e, "v1");
-    now = 5_000;
-    const loop = new GuardedTouchLoop(store, makeEnv({
-      // Live entity exists with the same digest, but world generation moved.
-      resolveLiveEntities: () => [e],
-      currentGeneration:   () => "gen-2",
-    }));
-    const result = await loop.touch({ lease });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe("lease_expired");
-  });
-
-  it("non-expired failure modes do NOT trigger the grace path (safety)", async () => {
-    // Generation mismatch on a NON-expired lease must still surface as
-    // lease_generation_mismatch, not get re-categorized.
-    const e = entity("e1", GEN);
-    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
-    const lease = store.issue(e, "v1");
-    const loop = new GuardedTouchLoop(store, makeEnv({
-      resolveLiveEntities: () => [e],
-      currentGeneration:   () => "gen-2",
-    }));
-    const result = await loop.touch({ lease });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe("lease_generation_mismatch");
   });
 });

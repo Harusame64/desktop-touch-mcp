@@ -228,10 +228,7 @@ describe("DesktopFacade — desktop_touch", () => {
     if (result.ok) expect(result.diff).toContain("entity_disappeared");
   });
 
-  it("touch with expired lease BUT unchanged entity now succeeds via grace path (lease C)", async () => {
-    // No-compromise lease C: TTL is the soft net; digest is the real
-    // correctness wall. When the live entity still matches the lease
-    // (gen + digest), the touch proceeds and surfaces a warning.
+  it("touch with expired lease returns ok:false reason:lease_expired", async () => {
     let now = 0;
     const facade = new DesktopFacade(gameProvider, {
       defaultTtlMs: 1000,
@@ -240,17 +237,9 @@ describe("DesktopFacade — desktop_touch", () => {
     const view = await facade.see();
     now = 2000; // past TTL
     const result = await facade.touch({ lease: view.entities[0].lease });
-    expect(result.ok).toBe(true);
-    if (result.ok) expect(result.warnings).toContain("lease_was_expired_but_entity_unchanged");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("lease_expired");
   });
-
-  // Note: the symmetric "expired + digest mismatch → fail" case is exercised
-  // at the GuardedTouchLoop layer (tests/unit/guarded-touch.test.ts —
-  // "GuardedTouchLoop — expired-lease grace (lease C)"). At the facade
-  // level the per-target session caches its entity list at see() time, so
-  // a digest mismatch can only be induced via a second see() — which would
-  // first trip the generation guard, not the grace path. The lower-layer
-  // test is the canonical spec.
 
   it("touch passes action and text to executor", async () => {
     const calls: Array<{ action: string; text?: string }> = [];
@@ -560,35 +549,32 @@ describe("DesktopFacade — response-size aware lease TTL (H1)", () => {
     if (!result.ok) expect(result.reason).toBe("entity_not_found");
   });
 
-  it("stale lease safety: even past the TTL cap, the lease C grace path still fires when nothing changed (and a follow-up see() bumps generation to invalidate)", async () => {
-    // The TTL cap (60s) is now a soft watchdog — content-based invalidation
-    // is the real safety contract. With the lease C grace path, an unchanged
-    // entity at t = cap + 10s is still touchable. The hard wall is the next
-    // see() bumping the target's generation: that is the LLM's primary
-    // responsibility on long sessions and is verified separately
-    // ("touch after second see() invalidates leases from first see()").
+  it("stale lease safety: expired lease rejected even at high TTL (past 30s)", async () => {
     let now = 0;
     const manyProvider: CandidateProvider = () =>
-      Array.from({ length: 80 }, (_, i) => cand(`Item ${i}`, "uia", { digest: `d${i}`, entityId: `id${i}` }));
+      Array.from({ length: 80 }, (_, i) => cand(`Item ${i}`, "uia", { digest: `d${i}` }));
     const facade = new DesktopFacade(manyProvider, { nowFn: () => now });
     const view = await facade.see({ view: "explore" });
     const lease = view.entities[0].lease;
-    now = 70_000; // past the cap (60s)
+    // Push clock well past the maximum possible TTL (cap: 30s)
+    now = 40_000;
     const result = await facade.touch({ lease });
-    expect(result.ok).toBe(true);
-    if (result.ok) expect(result.warnings).toContain("lease_was_expired_but_entity_unchanged");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("lease_expired");
   });
 
   it("explicit defaultTtlMs overrides policy (backward compat for tests)", async () => {
-    // Override is observed via lease.expiresAtMs; the touch-side check below
-    // would now succeed via the lease-C grace path even with an expired
-    // lease (digest unchanged), so we don't use touch() to verify TTL here.
+    let now = 0;
     const facade = new DesktopFacade(gameProvider, {
       defaultTtlMs: 1_000,
-      nowFn: () => 0,
+      nowFn: () => now,
     });
     const view = await facade.see({ view: "explore" }); // policy would give 10s, but override wins
     expect(view.entities[0].lease.expiresAtMs).toBe(1_000);
+    now = 2_000; // past the 1s override TTL
+    const result = await facade.touch({ lease: view.entities[0].lease });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("lease_expired");
   });
 });
 
