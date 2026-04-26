@@ -54,8 +54,44 @@ const selectorParam = z
   .string()
   .describe("CSS selector for the target element (e.g. '#submit', '.btn', 'button[type=submit]')");
 
+// Phase 3: kept for internal documentation. Public registration uses
+// `browserOpenSchema` (defined below) which wraps connect + optional launch.
 export const browserConnectSchema = {
   port: portParam,
+};
+
+// Phase 3: browser_open dispatcher schema (connect-only by default,
+// optional launch absorbs former browser_launch).
+export const browserOpenSchema = {
+  port: portParam,
+  launch: z
+    .object({
+      browser: z
+        .enum(["auto", "chrome", "edge", "brave"])
+        .default("auto")
+        .describe("Which browser to spawn. 'auto' tries chrome → edge → brave. Ignored when a CDP endpoint is already live."),
+      userDataDir: z
+        .string()
+        .default("C:\\tmp\\cdp")
+        .describe("Path for --user-data-dir. A dedicated profile avoids conflicts with the main browser session."),
+      url: z
+        .string()
+        .optional()
+        .describe("Optional URL to open in the new browser."),
+      waitMs: z.coerce
+        .number()
+        .int()
+        .min(1000)
+        .max(30_000)
+        .default(10_000)
+        .describe("Max ms to wait for the CDP endpoint to become ready (default 10000)."),
+    })
+    .optional()
+    .describe(
+      "If set, spawn a debug-mode browser when no CDP endpoint is live on the target port (idempotent: " +
+      "an already-running endpoint is preferred and the spawn step is skipped). " +
+      "Pass {} to use defaults (chrome, C:\\tmp\\cdp, no initial URL). Omit to perform pure connect."
+    ),
 };
 
 const includeContextParam = coercedBoolean()
@@ -1422,6 +1458,49 @@ export const browserLaunchHandler = async ({
   }
 };
 
+// Phase 3: browser_open dispatcher — optional launch then connect.
+// Replaces former browser_launch + browser_open pair; reuses both internal
+// handlers so the spawn / poll / url-validation logic stays single-source.
+export const browserOpenHandler = async ({
+  port,
+  launch,
+}: {
+  port: number;
+  launch?: {
+    browser: "auto" | "chrome" | "edge" | "brave";
+    userDataDir: string;
+    url?: string;
+    waitMs: number;
+  };
+}): Promise<ToolResult> => {
+  if (launch) {
+    const launchResult = await browserLaunchHandler({
+      browser: launch.browser,
+      port,
+      userDataDir: launch.userDataDir,
+      url: launch.url,
+      waitMs: launch.waitMs,
+    });
+    // browserLaunchHandler returns plain-text on failure (browser-not-found,
+    // CDP timeout, url validation) and JSON on success (alreadyRunning or
+    // spawned). JSON.parse distinguishes the two — a successful launch falls
+    // through to the connect step; a failure short-circuits with the launch
+    // error surfaced to the LLM.
+    const text = launchResult.content[0]?.type === "text" ? launchResult.content[0].text : "";
+    let launchOk = false;
+    try {
+      JSON.parse(text);
+      launchOk = true;
+    } catch {
+      launchOk = false;
+    }
+    if (!launchOk) {
+      return launchResult;
+    }
+  }
+  return browserConnectHandler({ port });
+};
+
 export const browserSearchHandler = async ({
   by, pattern, scope, maxResults, offset, visibleOnly, inViewportOnly, caseSensitive, tabId, port,
 }: {
@@ -1924,17 +2003,14 @@ export function registerBrowserTools(server: McpServer): void {
   );
 
   server.tool(
-    "browser_launch",
-    "Launch Chrome/Edge/Brave in CDP debug mode and wait until the DevTools endpoint is ready. Idempotent — if a CDP endpoint is already live on the target port, returns immediately without spawning. Default: tries chrome → edge → brave (first installed wins), port 9222, userDataDir C:\\tmp\\cdp. Pass url to open a specific page on launch; follow with browser_open to get tab IDs. Caveats: A Chrome session started without --remote-debugging-port cannot be taken over — close it first or use a separate profile.",
-    browserLaunchSchema,
-    browserLaunchHandler
-  );
-
-  server.tool(
     "browser_open",
-    "Connect to Chrome/Edge running with --remote-debugging-port and return open tab IDs — required before all other browser_* tools. Launch with browser_launch() or manually: chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\\tmp\\cdp. Returns tabs[] with id, url, title — pass tabId to browser_* tools to target a specific tab. Caveats: CDP connection is per-process; if Chrome restarts, call browser_open again to get fresh tab IDs.",
-    browserConnectSchema,
-    browserConnectHandler
+    "Connect to Chrome/Edge running with --remote-debugging-port and return open tab IDs — required before all other browser_* tools. " +
+    "Pass launch:{} (or with overrides) to auto-spawn a debug-mode browser when no CDP endpoint is live (idempotent: an already-running endpoint is preferred). " +
+    "Returns tabs[] with id, url, title, active — pass tabId to browser_* tools to target a specific tab. " +
+    "Caveats: CDP connection is per-process; if Chrome restarts, call browser_open again to get fresh tab IDs. " +
+    "A Chrome session started without --remote-debugging-port cannot be taken over — close it first or use a separate userDataDir.",
+    browserOpenSchema,
+    browserOpenHandler
   );
 
   server.tool(
