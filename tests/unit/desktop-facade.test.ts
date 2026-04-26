@@ -88,6 +88,20 @@ describe("DesktopFacade — desktop_see (game / chrome / terminal)", () => {
     expect(out.target.generation).toBeTruthy();
   });
 
+  // No-compromise lease A: every see() carries a softExpiresAtMs hint that
+  // sits before the lease's hard expiresAtMs. The LLM uses softExpiresAtMs
+  // to decide "should I refresh proactively?" without any TTL-related
+  // correctness coupling.
+  it("response includes softExpiresAtMs strictly less than each lease.expiresAtMs", async () => {
+    const facade = new DesktopFacade(gameProvider);
+    const out = await facade.see();
+    expect(typeof out.softExpiresAtMs).toBe("number");
+    expect(Number.isInteger(out.softExpiresAtMs)).toBe(true);
+    for (const e of out.entities) {
+      expect(out.softExpiresAtMs).toBeLessThan(e.lease.expiresAtMs);
+    }
+  });
+
   it("query filters entities by label substring", async () => {
     const facade = new DesktopFacade(gameProvider);
     const out = await facade.see({ query: "start" });
@@ -534,8 +548,12 @@ describe("DesktopFacade — response-size aware lease TTL (H1)", () => {
       Array.from({ length: 60 }, (_, i) => cand(`Item ${i}`, "uia", { digest: `d${i}` }));
     const facade = new DesktopFacade(manyProvider, { nowFn: () => 0 });
     const view = await facade.see({ view: "explore" }); // 50 entities after maxEntities slice
-    // 5000 base + 5000 explore + (50-20)*100 = 13000
-    expect(view.entities[0].lease.expiresAtMs).toBe(13_000);
+    // 5000 base + 5000 explore + (50-20)*100 entityBonus + payloadBonus
+    // (no-compromise A: payload-size aware). Estimate:
+    //   estimatedPayloadBytes = 500 + 50*250 + 0*180 + 0 warnings = 13_000
+    //   payloadBonus = (13_000 - 2_000) * 0.5 = 5_500
+    // total = 5000 + 5000 + 3000 + 5500 = 18_500
+    expect(view.entities[0].lease.expiresAtMs).toBe(18_500);
   });
 
   it("stale lease safety: TTL extension does NOT bypass generation eviction", async () => {
