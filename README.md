@@ -4,12 +4,9 @@
 
 [日本語](README.ja.md)
 
-> **Stop pasting screenshots. Let Claude see and control your desktop directly.**
+> **Beyond Coordinate Roulette: LLM-native Windows automation with a Semantic World-Graph and Auto-Perception.**
 
-> **Project site:** [harusame64.github.io/desktop-touch-mcp](https://harusame64.github.io/desktop-touch-mcp/)  
-> Start here for the public explainer, client setup guides, and the Reactive Perception Graph overview.
-
-An MCP server that gives Claude eyes and hands on Windows — 28 public tools (26 stub catalog + 2 dynamic v2 World-Graph: `desktop_discover` / `desktop_act`) covering screenshots, mouse, keyboard, Windows UI Automation, Chrome DevTools Protocol, clipboard, desktop notifications, SmartScroll, and a Reactive Perception Graph for safe multi-step automation, designed from the ground up for LLM efficiency.
+An MCP server that gives Claude eyes and hands on Windows. It moves beyond pixel-guessing by grounding all interactions in a **Semantic World-Graph** (`desktop_discover`) and verifying every action with **Auto-Perception** guards. Optimized into 28 high-signal tools covering screenshots, background input (WM_CHAR), UIA, Chrome CDP, terminal, and token-efficient P-frame diffing.
 
 > *v0.15: **82× average speedup** via Rust native engine — UIA focus queries in 2 ms, SSE2-accelerated image diffing at 13–15× native speed. Zero-config: the engine auto-loads when present, with transparent PowerShell fallback.*
 > *v0.15.5: **Pinned release verification** — the npm launcher now fetches only the matching GitHub Release tag and verifies the Windows runtime zip before extraction.*
@@ -121,104 +118,49 @@ For a local checkout, register the built server directly:
 
 ---
 
-## Tools (28 total — 26 stub catalog + 2 dynamic v2)
+## Tools (28 Optimized Tools)
 
-> 📖 **Full command reference**: [`docs/system-overview.md`](docs/system-overview.md) — every tool's parameters, response shape, coordinate math, layer-buffer strategy, and engineering notes in one place.
+> 📖 **Full Reference**: [`docs/system-overview.md`](docs/system-overview.md) — Exhaustive guide on parameters, return schemas, and coordinate math.
 
-
-### Screenshot (1)
+### 🌐 World-Graph V2 (Primary Path)
 | Tool | Description |
 |---|---|
-| `screenshot` | Main capture. Supports `detail` (`meta`/`text`/`image`/`som`/`ocr`), `mode` (`normal`/`background` — Phase 4 absorbs former screenshot_background), `region` sub-crop (Phase 4 absorbs former scope_element after `desktop_discover` gives you element bounds), `dotByDot`, `dotByDotMaxDimension`, `grayscale`, `diffMode`. `detail='text'` auto-activates the SoM pipeline when UIA is blind. `detail='ocr'` (Phase 4 absorbs former screenshot_ocr) returns Windows OCR words with screen-pixel clickAt coords. `scroll(action='capture')` provides full-page stitched capture. |
+| `desktop_discover` | Observe the desktop. Returns interactive entities with leases (UIA, CDP, Terminal, Visual SoM). |
+| `desktop_act` | Perform actions (click, type, drag, select) on entities via lease validation. Returns semantic diffs. |
 
-### Observation (1) — World-Graph core
+### 👁️ Observation & State
 | Tool | Description |
 |---|---|
-| `desktop_state` | Cheapest read-only observation. Always returns focused window, focused element, modal flag, attention signal. Phase 4: `includeCursor:true` adds `cursor.{x,y,monitorId}` (former get_cursor_position); `includeScreen:true` adds `screen.{displays[],...}` (former get_screen_info); `includeDocument:true` adds `document.{url,title,readyState,scroll,...}` via CDP (former get_document_state). focusedWindow always covers the former get_active_window response. |
+| `desktop_state` | Lightweight check of focus, active window, cursor, and Auto-Perception attention signal. |
+| `screenshot` | Multi-mode capture: `detail='text'` (UIA/OCR), `diffMode` (P-frame), `dotByDot` (1:1), and `background`. |
+| `workspace_snapshot` | Instant session orientation: all window thumbnails + UI summaries in one call. |
+| `server_status` | Diagnostic check for native engine health and feature activation. |
 
-### Discovery + Action — World-Graph dispatchers (2 dynamic)
+### ⌨️ Input & Control
 | Tool | Description |
 |---|---|
-| `desktop_discover` | Find actionable entities and emit leases. Returns `entities[]` (former `get_ui_elements` equivalent — `entityId`/`label`/`role`/`confidence`/`sources`/`primaryAction`/`lease`, plus `rect` when `debug:true`) + `windows[]` (former `get_windows` equivalent — `zOrder`/`title`/`hwnd`/`region`/`isActive`/`isMinimized`/`isMaximized`/`processName`). Pre-Phase-1 `desktop_see`. |
-| `desktop_act` | Lease-consuming action (`click` / `type` / `setValue` / `scroll` / `select`). Phase 4: `action='setValue'` absorbs former set_element_value via UIA ValuePattern (UIA entities) or CDP fill (browser entities). Pre-Phase-1 `desktop_touch`. |
+| `keyboard` | Send keyboard input. Supports background input (WM_CHAR) and IME-safe clipboard bypass. |
+| `mouse_click` / `mouse_drag` | Precision coordinate-based interaction with homing and force-focus protection. |
+| `scroll` | Multi-strategy: `raw` (notches), `to_element`, `smart` (virtual lists), and `capture` (stitch). |
+| `click_element` | Legacy UIA-based click by name/ID (fallback when entities are unavailable). |
 
-### Window management (1)
+### 🌐 Browser CDP (Chrome/Edge/Brave)
 | Tool | Description |
 |---|---|
-| `focus_window` | Bring a window to foreground by partial title match. Use `desktop_discover` to list available titles. |
-| `window_dock(action='dock')` | Snap a window to a screen corner at a small size + always-on-top (for keeping CLI visible) |
+| `browser_open` / `browser_navigate` | Idempotent debug-mode launch and reliable navigation. |
+| `browser_click` / `browser_fill` / `browser_form` | High-level DOM interaction stable across repaints and framework re-renders. |
+| `browser_eval` | Deep inspection via `js` (scripting), `dom` (HTML), and `appState` (SPA data extraction). |
+| `browser_overview` / `browser_search` / `browser_locate` | Semantic discovery, grep-like DOM search, and pixel-accurate coordinate lookup. |
 
-### Mouse (2)
+### 🛠️ Utilities & Workflow
 | Tool | Description |
 |---|---|
-| `mouse_click` / `mouse_drag` | Click, drag. `doubleClick` / `tripleClick` (line-select). Accept `speed` and `homing` parameters. (`mouse_move` privatized in Phase 4.) |
-| `scroll` | Scroll in any direction (`action='raw'` / `'to_element'` / `'smart'` / `'capture'`). Accepts `speed` and `homing` parameters. |
-
-### Keyboard (1)
-| Tool | Description |
-|---|---|
-| `keyboard` | Send keyboard input. `action='type'` for text (`use_clipboard=true` bypasses IME / required for em-dash / smart quotes; `replaceAll=true` sends Ctrl+A before typing). `action='press'` for key combos (`ctrl+c`, `alt+f4`, etc.). |
-
-### UI Automation (1)
-| Tool | Description |
-|---|---|
-| `click_element` | Click a button by name or automationId — no coordinates needed. Use `desktop_discover` to find target entities. (`get_ui_elements` / `set_element_value` / `scope_element` privatized in Phase 4 — see desktop_discover / desktop_act / screenshot.region.) |
-
-### Browser CDP (9)
-| Tool | Description |
-|---|---|
-| `browser_open` | Connect to Chrome/Edge via CDP; lists open tabs with `active:true/false`. Pass `launch:{}` (or with overrides) to auto-spawn a debug-mode browser when no CDP endpoint is live (idempotent) |
-| `browser_locate` | CSS selector → exact physical screen coords |
-| `browser_click` | Find DOM element + click in one step |
-| `browser_eval` | Inspect or operate on a tab via 3 actions: `js` (evaluate JS), `dom` (get HTML), `appState` (extract SSR-injected SPA state — `__NEXT_DATA__`, `__NUXT_DATA__`, `__REMIX_CONTEXT__`, `__APOLLO_STATE__`, GitHub `react-app`, JSON-LD, Redux SSR) |
-| `browser_fill` | Fill React/Vue/Svelte controlled inputs via CDP — works where `browser_eval(action='js')` value assignment doesn't update framework state |
-| `browser_form` | Inspect form fields (input/select/textarea/button) with name, type, value, label resolved via for/aria/ancestor LABEL |
-| `browser_overview` | Enumerate links / buttons / inputs + **ARIA toggles** with `state.{checked,pressed,selected,expanded}`; each element includes `viewportPosition` |
-| `browser_search` | Grep DOM by text / regex / role / ariaLabel / selector with confidence ranking |
-| `browser_navigate` | Navigate via CDP `Page.navigate`; `waitForLoad:true` (default) returns once `readyState==='complete'` |
-
-All `browser_*` tools that touch the DOM accept `includeContext:false` to omit the trailing `activeTab:` / `readyState:` lines (saves ~150 tok/call on chained invocations). Within a 500 ms window, consecutive calls reuse one tab-context fetch automatically.
-
-### Workspace (2)
-| Tool | Description |
-|---|---|
-| `workspace_snapshot` | All windows: thumbnails + UI summaries in one call |
-| `workspace_launch` | Launch an app and auto-detect the new window |
-
-### Wait / Status (2)
-| Tool | Description |
-|---|---|
-| `wait_until` | Server-side wait for window/focus/terminal/browser DOM state changes. Replaces the former events_* polling family — use `condition='window_appears'` / `'terminal_output_contains'` / `'element_matches'` / `'focus_changes'` for one-shot waits. |
-| `server_status` | Returns which backend is active: `uia` (native Rust or powershell) and `imageDiff` (native Rust SSE2 or typescript). Diagnostic — call once per session when troubleshooting performance. |
-
-### Terminal (2)
-| Tool | Description |
-|---|---|
-| `terminal(action='read')` | Read text from Windows Terminal / PowerShell / cmd / WSL via UIA/OCR. Supports `sinceMarker` for diff reads |
-| `terminal(action='send')` | Send commands to a terminal. Uses clipboard paste by default for IME safety |
-
-### Pin / Macro (2)
-| Tool | Description |
-|---|---|
-| `window_dock(action='pin'\|'unpin'\|'dock')` | Always-on-top toggle / docking |
-| `run_macro` | Execute up to 50 steps sequentially in one MCP call. Phase 4: DSL accepts the v1.0.0 dispatcher names (`keyboard({action:'type'})` etc.) only. |
-
-### Clipboard (2)
-| Tool | Description |
-|---|---|
-| `clipboard(action='read')` | Read the current Windows clipboard text (non-text payloads return empty string) |
-| `clipboard(action='write')` | Write text to the Windows clipboard; full Unicode / emoji / CJK support |
-
-### Notification (1)
-| Tool | Description |
-|---|---|
-| `notification_show` | Show a Windows system tray balloon notification — useful to alert the user when a long-running task finishes |
-
-### Scroll (2)
-| Tool | Description |
-|---|---|
-| `scroll(action='to_element')` | Scroll a named element into the viewport without computing scroll amounts. Chrome path: `selector` + `block` alignment. Native path: `name` + `windowTitle` via UIA ScrollItemPattern |
-| `scroll(action='smart')` | **SmartScroll** — unified scroll dispatcher: CDP → UIA → image binary-search fallback. Handles nested containers, virtualised lists (TanStack/React Virtualized), sticky-header occlusion, and image-only environments. Returns `pageRatio`, `ancestors[]`, and hash-verified `scrolled` |
+| `terminal` | Unified command execution: `run` (send + wait + read), `read` (OCR/UIA), and `send`. |
+| `wait_until` | Efficient server-side polling for window, focus, text, or URL state changes. |
+| `window_dock` / `focus_window` | Window management: `pin` (always-on-top), `unpin`, `dock` (corner snap), and `focus`. |
+| `workspace_launch` | Launch apps and auto-detect new HWNDs (supports localized titles). |
+| `run_macro` | Batch up to 50 operations into a single round-trip for maximum efficiency. |
+| `clipboard` / `notification_show` | System-level text exchange and user alerts. |
 
 ---
 
