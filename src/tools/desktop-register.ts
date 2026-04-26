@@ -350,7 +350,7 @@ export function getDesktopFacade(): DesktopFacade {
             } catch { /* best-effort */ }
           },
           onFallback: (reason) => {
-            console.debug(`[desktop-register] DirtyRectRouter fallback: ${reason}`);
+            console.error(`[desktop-register] DirtyRectRouter fallback: ${reason}`);
           },
         });
         _dirtyRouter.start();
