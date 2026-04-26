@@ -10,7 +10,7 @@ import {
   findAncestorWindow,
 } from "../engine/win32.js";
 import type { WindowZInfo, MonitorInfo } from "../engine/win32.js";
-import { ok, buildDesc } from "./_types.js";
+import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
 import { pollUntil } from "../engine/poll.js";
