@@ -10,7 +10,7 @@
 > まずはここから、公開向けの解説、client setup、Reactive Perception Graph の紹介を読めます。
 
 Claude がデスクトップを直接見て、直接操作する。  
-マウス・キーボード・スクリーンショット・Windows UI Automation・Chrome DevTools Protocol・ターミナル・SmartScroll・Reactive Perception Graph を統合した 57 のツールを提供する MCP サーバーです。
+マウス・キーボード・スクリーンショット・Windows UI Automation・Chrome DevTools Protocol・ターミナル・SmartScroll・Reactive Perception Graph を統合した 28 個の public ツール (26 stub catalog + 2 dynamic v2 World-Graph: `desktop_discover` / `desktop_act`) を提供する MCP サーバーです。
 
 > *v0.15: Rust ネイティブエンジンにより**平均 82 倍高速化** — UIA フォーカス取得 2ms、SSE2 SIMD 画像差分 13〜15 倍速。設定不要：エンジンは自動ロード、不在時は PowerShell に透過フォールバック。*
 > *v0.15.5: **固定リリース検証** — npm ランチャーは対応する GitHub Release tag だけを取得し、Windows runtime zip を検証してから展開します。*
@@ -121,7 +121,7 @@ npm run build
 
 ---
 
-## ツール一覧 (57 ツール)
+## ツール一覧 (28 ツール — 26 stub catalog + 2 dynamic v2)
 
 > 📖 **詳細リファレンス**: [`docs/system-overview.md`](docs/system-overview.md) — 各ツールのパラメータ・応答形式・座標計算・レイヤーバッファ・技術ノートを網羅（英語）。
 
