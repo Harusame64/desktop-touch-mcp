@@ -182,7 +182,7 @@ describe("H4: Parallel stateless isolation", () => {
 });
 
 describe("H5: CORS preflight", () => {
-  it("OPTIONS /mcp returns 204 with Access-Control-Allow-Origin: *", async () => {
+  it("OPTIONS /mcp from a localhost origin echoes that origin back", async () => {
     const r = await fetch(MCP_URL, {
       method: "OPTIONS",
       headers: {
@@ -191,8 +191,21 @@ describe("H5: CORS preflight", () => {
       },
     });
     expect(r.status).toBe(204);
-    expect(r.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect(r.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:3000");
+    expect(r.headers.get("Vary")).toMatch(/Origin/);
     expect(r.headers.get("Access-Control-Allow-Methods")).toMatch(/POST/);
+  });
+
+  it("OPTIONS /mcp from a non-localhost origin omits Allow-Origin (CORS denies the response)", async () => {
+    const r = await fetch(MCP_URL, {
+      method: "OPTIONS",
+      headers: {
+        Origin: "https://evil.example.com",
+        "Access-Control-Request-Method": "POST",
+      },
+    });
+    expect(r.status).toBe(204);
+    expect(r.headers.get("Access-Control-Allow-Origin")).toBeNull();
   });
 });
 
