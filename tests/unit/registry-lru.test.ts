@@ -10,17 +10,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
-vi.mock("../../src/engine/win32.js", () => ({
-  enumWindowsInZOrder: vi.fn().mockReturnValue([]),
-  getWindowProcessId: vi.fn().mockReturnValue(1),
-  getProcessIdentityByPid: vi.fn().mockReturnValue({ name: "test.exe", startTimeMs: 0 }),
-  getWindowRectByHwnd: vi.fn().mockReturnValue({ x: 0, y: 0, width: 100, height: 100 }),
-  getForegroundHwnd: vi.fn().mockReturnValue(BigInt(0)),
-  isWindowTopmost: vi.fn().mockReturnValue(false),
-  getWindowClassName: vi.fn().mockReturnValue("test"),
-  getWindowIdentity: vi.fn(),
-  restoreAndFocusWindow: vi.fn(),
-}));
 vi.mock("../../src/engine/event-bus.js", () => ({
   subscribe: vi.fn().mockReturnValue("sub"),
   unsubscribe: vi.fn(),
