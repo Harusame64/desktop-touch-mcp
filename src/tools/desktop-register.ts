@@ -340,15 +340,20 @@ export const desktopTouchSchema = {
  * unintended side effect instead of a validation error. Used by both the
  * MCP registration closure below and the run_macro DSL handler in macro.ts.
  *
+ * Empty string is *not* missing — `text: ""` is a legitimate clear-field
+ * operation that the executor (`text !== undefined` gate in
+ * desktop-executor.ts) routes through `uiaSetValue` / `cdpFill` to clear
+ * the target. This mirrors the legacy `set_element_value` contract.
+ * (Codex PR #41 round 4 P2.)
+ *
  * Returns null on success; an error message on failure.
  */
 export function validateDesktopTouchTextRequirement(
   action: string | undefined,
   text: string | undefined,
 ): string | null {
-  if ((action === "type" || action === "setValue") &&
-      (text === undefined || text === "")) {
-    return `desktop_act(action='${action}') requires text — without it the executor falls through to a click on the target entity, which is almost never what you want. Pass text explicitly, or use action='click' / 'invoke' for a click-style interaction.`;
+  if ((action === "type" || action === "setValue") && text === undefined) {
+    return `desktop_act(action='${action}') requires text — without it the executor falls through to a click on the target entity, which is almost never what you want. Pass text explicitly (use text:'' to clear a field), or use action='click' / 'invoke' for a click-style interaction.`;
   }
   return null;
 }
