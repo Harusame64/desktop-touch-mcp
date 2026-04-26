@@ -263,4 +263,36 @@ describe("createCachedProductionWindowsProvider — TTL cache", () => {
     const out = provider();
     expect(out[0]!.processName).toBeUndefined();
   });
+
+  // Codex PR #53 P2: with a non-monotonic clock (NTP step-back, manual time
+  // change, VM snapshot restore) the original `t - cached.at < ttlMs` check
+  // would treat the negative delta as a cache hit and serve a stale snapshot
+  // until wall-time caught back up to the prior `cached.at` + 100ms. The
+  // `t >= cached.at` defensive guard plus the monotonic default close that
+  // window. This test pins the guard with an injected `nowFn` that walks
+  // backward — re-enumeration must still fire.
+  it("re-enumerates when the injected clock walks backward past cached.at (P2 guard)", () => {
+    const enumerate = vi.fn()
+      .mockReturnValueOnce([spec({ title: "First" })])
+      .mockReturnValueOnce([spec({ title: "Second" })]);
+    let now = 1000;
+
+    const provider = createCachedProductionWindowsProvider({
+      ttlMs: 100,
+      nowFn: () => now,
+      enumerate,
+      resolveProcessName: () => "x.exe",
+    });
+
+    const first = provider();
+    expect(first[0]!.title).toBe("First");
+
+    // Wall-clock rolled back. Without the guard `t - cached.at = -500` would
+    // still satisfy `< 100ms` and the cache would lock on the old result.
+    now = 500;
+    const second = provider();
+
+    expect(second[0]!.title).toBe("Second");
+    expect(enumerate).toHaveBeenCalledTimes(2);
+  });
 });
