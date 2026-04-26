@@ -413,6 +413,24 @@ describe("Phase 4 — no LLM-exposed old tool names in description / suggest / e
         pos += oldName.length;
         continue;
       }
+      // server.tool("X" / s.tool("X" / server.registerTool("X" / s.registerTool("X"
+      // — intentional registration. Phase 4 round 6 added a kill-switch V1
+      // fallback in server-windows.ts that re-publishes get_windows /
+      // get_ui_elements / set_element_value when v2 is disabled; those are
+      // legitimate registrations, not stale references.
+      if (
+        /(?:^|\W)(?:s|server)\.(?:register)?[Tt]ool\s*\(\s*["']$/.test(before) &&
+        after.startsWith('"')
+      ) {
+        pos += oldName.length;
+        continue;
+      }
+      // TOOL_REGISTRY entry key (e.g. `get_windows:`) — macro.ts mirror of the
+      // public surface, intentional under v1 fallback gate.
+      if (after.startsWith(":")) {
+        pos += oldName.length;
+        continue;
+      }
       // `"X failed:` — internal error template literal
       if (before.endsWith('`') && after.startsWith(" failed:")) {
         pos += oldName.length;
@@ -630,6 +648,39 @@ describe("Phase 4 — Codex PR #41 round 5 P1: desktop_discover.windows[] is imp
   });
 });
 
+describe("Phase 4 — Codex PR #41 round 6 P1×2: V1 fallback when v2 is killed", () => {
+  it("server-windows.ts has an else branch that registers V1 fallback tools", () => {
+    const src = readFileSync(join(ROOT, "src", "server-windows.ts"), "utf-8");
+    // After the v2 if-block there must be an else that publishes get_windows /
+    // get_ui_elements / set_element_value. Match the structural shape rather
+    // than exact whitespace so a future reformat doesn't trip the test.
+    expect(src).toMatch(/if \(_desktopV2\) \{[\s\S]*?\} else \{/);
+    expect(src).toMatch(/V1 fallback — registered only when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1/);
+    // Each fallback tool registration must be present.
+    for (const fallback of ["get_windows", "get_ui_elements", "set_element_value"]) {
+      const re = new RegExp(`s\\.tool\\(\\s*"${fallback}"`);
+      expect(src, `${fallback} V1 fallback registration missing`).toMatch(re);
+    }
+  });
+
+  it("macro TOOL_REGISTRY has v1 fallback entries gated on v2 kill switch", () => {
+    const src = readFileSync(join(ROOT, "src", "tools", "macro.ts"), "utf-8");
+    // Each v1 fallback entry has the inverse-gate (v2 alive → fail) call site.
+    expect(src).toMatch(/get_windows:\s*\{[\s\S]*?if \(!v2KillSwitchActive\(\)\)/);
+    expect(src).toMatch(/get_ui_elements:\s*\{[\s\S]*?if \(!v2KillSwitchActive\(\)\)/);
+    expect(src).toMatch(/set_element_value:\s*\{[\s\S]*?if \(!v2KillSwitchActive\(\)\)/);
+  });
+
+  it("v1FallbackOnlyError points users at the v2 replacement", () => {
+    const src = readFileSync(join(ROOT, "src", "tools", "macro.ts"), "utf-8");
+    expect(src).toMatch(/V1 fallback only available when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1/);
+    // Each v2 replacement hint must appear in the file.
+    expect(src).toContain("desktop_discover.windows[]");
+    expect(src).toContain("desktop_discover.entities[]");
+    expect(src).toContain("desktop_act({action:'setValue'");
+  });
+});
+
 describe("Phase 4 — Codex PR #41 round 3 P1: macro DSL honours v2 kill switch", () => {
   it("macro.ts gates desktop_discover / desktop_act on v2KillSwitchActive()", () => {
     const src = readFileSync(join(ROOT, "src", "tools", "macro.ts"), "utf-8");
@@ -668,8 +719,13 @@ describe("Phase 4 — run_macro DSL TOOL_REGISTRY uses v1.0.0 dispatcher names",
   // We can't easily import the private TOOL_REGISTRY, but we can read the
   // source file and assert that the privatized names are absent from the
   // registry block while the new dispatchers are present.
-  it("macro.ts no longer maps privatized / pre-dispatcher names", () => {
+  it("macro.ts no longer maps pre-dispatcher / pre-Phase-4 names (except v1 fallback)", () => {
     const src = readFileSync(join(ROOT, "src", "tools", "macro.ts"), "utf-8");
+    // Banned: pre-Phase-2 sub-tool names (replaced by family dispatchers)
+    // and Phase 4 privatized names that have non-v2 replacements.
+    // NOT banned: get_windows / get_ui_elements / set_element_value — Codex
+    // PR #41 round 6 reinstates them as gated v1 fallback for kill-switch
+    // mode (see the test above).
     const banned = [
       "keyboard_type:",
       "keyboard_press:",
@@ -687,13 +743,10 @@ describe("Phase 4 — run_macro DSL TOOL_REGISTRY uses v1.0.0 dispatcher names",
       "screenshot_background:",
       "screenshot_ocr:",
       "scope_element:",
-      "set_element_value:",
       "get_active_window:",
-      "get_windows:",
       "get_cursor_position:",
       "get_document_state:",
       "get_screen_info:",
-      "get_ui_elements:",
       "get_history:",
       "mouse_move:",
     ];
