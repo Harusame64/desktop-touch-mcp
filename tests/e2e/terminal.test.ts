@@ -74,7 +74,8 @@ describe("terminal_read", () => {
     expect(r.ok).toBe(false);
     expect(r.code).toBe("TerminalWindowNotFound");
     expect(Array.isArray(r.suggest)).toBe(true);
-    expect(r.suggest.some((s: string) => /get_windows/.test(s))).toBe(true);
+    // Phase 4: get_windows privatized → TerminalWindowNotFound suggest points at desktop_discover.
+    expect(r.suggest.some((s: string) => /desktop_discover/.test(s))).toBe(true);
   });
 
   it("returns hints.target and hints.caches", async () => {

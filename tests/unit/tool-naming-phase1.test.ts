@@ -71,12 +71,16 @@ describe("Phase 1a — core 3 family rename", () => {
     expect(names).not.toContain("desktop_touch");
   });
 
-  it("get_history and get_document_state are still registered (not renamed in Phase 1)", () => {
+  // Phase 4 update: get_history is now privatized (debug-only) and
+  // get_document_state is absorbed into desktop_state({includeDocument:true}).
+  // Both handlers remain exported as internal helpers; only the public
+  // server.tool registrations are gone.
+  it("get_history and get_document_state are NOT registered after Phase 4", () => {
     const s = makeServer();
     registerDesktopStateTools(s);
     const names = getRegisteredNames(s);
-    expect(names).toContain("get_history");
-    expect(names).toContain("get_document_state");
+    expect(names).not.toContain("get_history");
+    expect(names).not.toContain("get_document_state");
   });
 });
 
