@@ -11,6 +11,8 @@ import {
   type WindowZInfo,
 } from "../engine/win32.js";
 import { getElementBounds } from "../engine/uia-bridge.js";
+import { evaluateInTab } from "../engine/cdp-bridge.js";
+import { getCdpPort } from "../utils/desktop-config.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // External hooks — set by terminal.ts and browser.ts after they load.
@@ -45,6 +47,7 @@ export const waitUntilSchema = {
     "ready_state",
     "terminal_output_contains",
     "element_matches",
+    "url_matches",
   ]).describe("Condition to wait for. See per-condition target requirements."),
   target: coercedJsonObject({
     windowTitle: z.string().optional(),
@@ -185,6 +188,44 @@ function probeTerminalOutput(windowTitle: string, pattern: string, regex: boolea
   };
 }
 
+/**
+ * Issue #23: probe the active tab's URL via CDP. `pattern` is matched as
+ * a regex when `regex:true`, otherwise as a substring (case-sensitive both
+ * ways — use a regex with `i` flag for case-insensitive substring search).
+ *
+ * When `port` is omitted, falls back to the configured CDP port from
+ * `desktop-touch-config.json` (`getCdpPort()`), matching how other browser
+ * tools resolve their default. Plain `DEFAULT_CDP_PORT` would silently
+ * disagree with the configured port and emit BrowserNotConnected even
+ * when the browser is connected (Codex PR #58 P1).
+ *
+ * Returns null while waiting and surfaces a "BrowserNotConnected" error if
+ * CDP is unreachable so pollUntil can short-circuit.
+ */
+function probeUrlMatches(
+  pattern: string,
+  regex: boolean,
+  port?: number,
+  tabId?: string,
+): () => Promise<{ url: string } | null> {
+  const matcher = regex ? new RegExp(pattern) : null;
+  const effectivePort = port ?? getCdpPort();
+  return async () => {
+    try {
+      const url = (await evaluateInTab("location.href", tabId ?? null, effectivePort)) as string | null;
+      if (typeof url !== "string") return null;
+      const matched = matcher ? matcher.test(url) : url.includes(pattern);
+      return matched ? { url } : null;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/not connected|econnrefused|cdp/i.test(msg)) {
+        throw new Error("BrowserNotConnected: " + msg);
+      }
+      return null;
+    }
+  };
+}
+
 function probeElementMatches(
   by: "text" | "regex" | "role" | "ariaLabel",
   pattern: string,
@@ -218,7 +259,8 @@ function probeElementMatches(
 type WaitArgs = {
   condition:
     | "window_appears" | "window_disappears" | "focus_changes" | "value_changes"
-    | "element_appears" | "ready_state" | "terminal_output_contains" | "element_matches";
+    | "element_appears" | "ready_state" | "terminal_output_contains" | "element_matches"
+    | "url_matches";
   target: {
     windowTitle?: string;
     elementName?: string;
@@ -288,6 +330,16 @@ export const waitUntilHandler = async ({ condition, target, timeoutMs, intervalM
         probe = probeTerminalOutput(target.windowTitle, target.pattern, target.regex ?? false);
         interval = Math.max(intervalMs, 500); // terminal output benefits from longer interval
         break;
+      case "url_matches":
+        // Issue #23: wait for the active tab's URL to match a pattern.
+        // SPA route changes / redirects / OAuth flows produce a URL change
+        // before the DOM stabilises — polling location.href is the cheap,
+        // reliable signal.
+        if (!target.pattern) {
+          return failWith("target.pattern is required for url_matches", "wait_until");
+        }
+        probe = probeUrlMatches(target.pattern, target.regex ?? false, target.port, target.tabId);
+        break;
       case "element_matches":
         if (!target.by || !target.pattern) {
           return failWith("target.by and target.pattern are required for element_matches", "wait_until");
@@ -336,13 +388,15 @@ export function registerWaitUntilTool(server: McpServer): void {
     "wait_until",
     buildDesc({
       purpose: "Server-side poll for an observable condition — eliminates screenshot-polling loops when waiting for state changes.",
-      details: "condition selects what to watch: window_appears/window_disappears (target.windowTitle required), focus_changes (optional target.fromHwnd), element_appears/value_changes (target.windowTitle + target.elementName required, UIA; min 500ms interval), ready_state (target.windowTitle; visible + not minimized), terminal_output_contains (target.windowTitle + target.pattern required [+target.regex:true], needs terminal tools loaded), element_matches (target.by + target.pattern required, needs browser tools loaded). Returns {ok:true, elapsedMs, observed} on success, or WaitTimeout error with suggest hints. timeoutMs default 5000 (max 60000).",
-      prefer: "Use instead of run_macro({sleep:N}) + screenshot loops. Use terminal_output_contains to detect CLI command completion. Use element_matches for browser DOM readiness after navigation.",
-      caveats: "terminal_output_contains and element_matches require the respective tool modules to be loaded. element_appears/value_changes spawn a UIA process per poll — interval clamped to 500ms minimum. On WaitTimeout, read the suggest[] array in the error for recovery steps.",
+      details: "condition selects what to watch: window_appears/window_disappears (target.windowTitle required), focus_changes (optional target.fromHwnd), element_appears/value_changes (target.windowTitle + target.elementName required, UIA; min 500ms interval), ready_state (target.windowTitle; visible + not minimized), terminal_output_contains (target.windowTitle + target.pattern required [+target.regex:true], needs terminal tools loaded), element_matches (target.by + target.pattern required, needs browser tools loaded), url_matches (target.pattern required [+target.regex:true]; matches the active tab's location.href via CDP — use for SPA route changes, redirects, OAuth flows). Returns {ok:true, elapsedMs, observed} on success, or WaitTimeout error with suggest hints. timeoutMs default 5000 (max 60000).",
+      prefer: "Use instead of run_macro({sleep:N}) + screenshot loops. Use terminal_output_contains to detect CLI command completion. Use element_matches for browser DOM readiness after navigation. Use url_matches when the URL is the most reliable signal (SPA routing / redirect cascades).",
+      caveats: "terminal_output_contains, element_matches, and url_matches require a browser CDP connection (open --remote-debugging-port=9222 first). element_appears/value_changes spawn a UIA process per poll — interval clamped to 500ms minimum. On WaitTimeout, read the suggest[] array in the error for recovery steps.",
       examples: [
         "wait_until({condition:'window_appears', target:{windowTitle:'Save As'}, timeoutMs:10000})",
         "wait_until({condition:'terminal_output_contains', target:{windowTitle:'Terminal', pattern:'$ '}, timeoutMs:30000})",
         "wait_until({condition:'element_matches', target:{by:'text', pattern:'Submit', scope:'#checkout-form'}})",
+        "wait_until({condition:'url_matches', target:{pattern:'/dashboard'}, timeoutMs:15000})",
+        "wait_until({condition:'url_matches', target:{pattern:'^https://app\\\\.example\\\\.com/orders/[0-9]+$', regex:true}})",
       ],
     }),
     waitUntilSchema,

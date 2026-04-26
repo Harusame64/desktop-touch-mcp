@@ -1,0 +1,155 @@
+/**
+ * tests/unit/wait-until-url-matches.test.ts
+ *
+ * Issue #23: pin the matcher behavior of `wait_until(url_matches)`. The
+ * probe under test calls `evaluateInTab` once per poll, so we mock the
+ * cdp-bridge module to return a sequence of URL strings and assert the
+ * substring vs regex matching path.
+ */
+
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// Mock cdp-bridge + desktop-config before importing the handler so the
+// probe sees the stubs instead of touching real CDP / config files.
+const evalSequence: Array<string | null> = [];
+let evalCallCount = 0;
+const evalPorts: number[] = [];
+vi.mock("../../src/engine/cdp-bridge.js", () => ({
+  DEFAULT_CDP_PORT: 9222,
+  evaluateInTab: vi.fn().mockImplementation(async (_expr: string, _tabId: string | null, port: number) => {
+    evalCallCount += 1;
+    evalPorts.push(port);
+    return evalSequence.shift() ?? null;
+  }),
+}));
+// Codex PR #58 P1: probeUrlMatches must honour the configured CDP port,
+// not the cdp-bridge fallback. Stub getCdpPort to a non-default value so
+// the test can assert the override is plumbed through.
+vi.mock("../../src/utils/desktop-config.js", () => ({
+  getCdpPort: () => 9333,
+}));
+
+// Stub the other engine deps so importing wait-until.ts is cheap.
+vi.mock("../../src/engine/win32.js", () => ({
+  enumWindowsInZOrder: () => [],
+  getWindowProcessId: () => 0,
+}));
+vi.mock("../../src/engine/uia-bridge.js", () => ({
+  getElementBounds: async () => null,
+}));
+
+import { waitUntilHandler } from "../../src/tools/wait-until.js";
+
+beforeEach(() => {
+  evalSequence.length = 0;
+  evalCallCount = 0;
+  evalPorts.length = 0;
+});
+
+function expectOk(result: { content: Array<{ type: string; text?: string }> }): {
+  ok: boolean; condition: string; observed: { url: string };
+} {
+  const text = result.content.find((b) => b.type === "text")!.text!;
+  return JSON.parse(text);
+}
+
+describe("wait_until(url_matches)", () => {
+  it("substring match succeeds when location.href contains the pattern", async () => {
+    evalSequence.push("https://app.example.com/dashboard");
+    const r = await waitUntilHandler({
+      condition: "url_matches",
+      target: { pattern: "/dashboard" },
+      timeoutMs: 1000,
+      intervalMs: 50,
+    });
+    const out = expectOk(r);
+    expect(out.ok).toBe(true);
+    expect(out.observed.url).toBe("https://app.example.com/dashboard");
+  });
+
+  it("substring match keeps polling until URL transitions to the target route", async () => {
+    evalSequence.push(
+      "https://app.example.com/login",
+      "https://app.example.com/login?step=2",
+      "https://app.example.com/dashboard",
+    );
+    const r = await waitUntilHandler({
+      condition: "url_matches",
+      target: { pattern: "/dashboard" },
+      timeoutMs: 5000,
+      intervalMs: 50,
+    });
+    const out = expectOk(r);
+    expect(out.ok).toBe(true);
+    expect(evalCallCount).toBeGreaterThanOrEqual(3);
+  });
+
+  it("regex match treats pattern as JS RegExp source when regex:true", async () => {
+    evalSequence.push("https://app.example.com/orders/12345");
+    const r = await waitUntilHandler({
+      condition: "url_matches",
+      target: {
+        pattern: "^https://app\\.example\\.com/orders/[0-9]+$",
+        regex: true,
+      },
+      timeoutMs: 1000,
+      intervalMs: 50,
+    });
+    const out = expectOk(r);
+    expect(out.ok).toBe(true);
+  });
+
+  it("regex match rejects substring-only matches when regex:true", async () => {
+    // Drip 5 polls with the same wrong URL → matcher must keep returning
+    // false → caller must time out.
+    for (let i = 0; i < 5; i++) evalSequence.push("https://example.com/orders/abc");
+    const r = await waitUntilHandler({
+      condition: "url_matches",
+      target: {
+        pattern: "^https://app\\.example\\.com/orders/[0-9]+$",
+        regex: true,
+      },
+      timeoutMs: 200,
+      intervalMs: 50,
+    });
+    const text = r.content.find((b) => b.type === "text")!.text!;
+    const out = JSON.parse(text) as { ok: boolean; code?: string };
+    expect(out.ok).toBe(false);
+    expect(out.code).toBe("WaitTimeout");
+  });
+
+  it("uses the configured CDP port (getCdpPort) when target.port is omitted (Codex PR #58 P1)", async () => {
+    evalSequence.push("https://app.example.com/dashboard");
+    await waitUntilHandler({
+      condition: "url_matches",
+      target: { pattern: "/dashboard" }, // no port → fall back to config
+      timeoutMs: 1000,
+      intervalMs: 50,
+    });
+    expect(evalPorts[0]).toBe(9333); // getCdpPort() stub value
+  });
+
+  it("explicit target.port overrides the configured default", async () => {
+    evalSequence.push("https://app.example.com/dashboard");
+    await waitUntilHandler({
+      condition: "url_matches",
+      target: { pattern: "/dashboard", port: 9444 },
+      timeoutMs: 1000,
+      intervalMs: 50,
+    });
+    expect(evalPorts[0]).toBe(9444);
+  });
+
+  it("missing target.pattern fails with a useful error", async () => {
+    const r = await waitUntilHandler({
+      condition: "url_matches",
+      target: {},
+      timeoutMs: 100,
+      intervalMs: 50,
+    });
+    const text = r.content.find((b) => b.type === "text")!.text!;
+    const out = JSON.parse(text) as { ok: boolean; error?: string };
+    expect(out.ok).toBe(false);
+    expect(out.error).toMatch(/target\.pattern is required/);
+  });
+});
