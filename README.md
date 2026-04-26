@@ -9,7 +9,7 @@
 > **Project site:** [harusame64.github.io/desktop-touch-mcp](https://harusame64.github.io/desktop-touch-mcp/)  
 > Start here for the public explainer, client setup guides, and the Reactive Perception Graph overview.
 
-An MCP server that gives Claude eyes and hands on Windows — 57 tools covering screenshots, mouse, keyboard, Windows UI Automation, Chrome DevTools Protocol, clipboard, desktop notifications, SmartScroll, and a Reactive Perception Graph for safe multi-step automation, designed from the ground up for LLM efficiency.
+An MCP server that gives Claude eyes and hands on Windows — 28 public tools (26 stub catalog + 2 dynamic v2 World-Graph: `desktop_discover` / `desktop_act`) covering screenshots, mouse, keyboard, Windows UI Automation, Chrome DevTools Protocol, clipboard, desktop notifications, SmartScroll, and a Reactive Perception Graph for safe multi-step automation, designed from the ground up for LLM efficiency.
 
 > *v0.15: **82× average speedup** via Rust native engine — UIA focus queries in 2 ms, SSE2-accelerated image diffing at 13–15× native speed. Zero-config: the engine auto-loads when present, with transparent PowerShell fallback.*
 > *v0.15.5: **Pinned release verification** — the npm launcher now fetches only the matching GitHub Release tag and verifies the Windows runtime zip before extraction.*
@@ -121,7 +121,7 @@ For a local checkout, register the built server directly:
 
 ---
 
-## Tools (57 total)
+## Tools (28 total — 26 stub catalog + 2 dynamic v2)
 
 > 📖 **Full command reference**: [`docs/system-overview.md`](docs/system-overview.md) — every tool's parameters, response shape, coordinate math, layer-buffer strategy, and engineering notes in one place.
 
