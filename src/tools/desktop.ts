@@ -162,6 +162,14 @@ export interface DesktopFacadeOptions {
   /** Session eviction TTL in ms (default: 120 000 = 2 min). */
   sessionTtlMs?: number;
   /**
+   * Interval (ms) at which `evictStaleSessions()` is invoked automatically.
+   * Set to 0 (default) to disable the timer — tests rely on this so each
+   * facade is deterministic. Production wiring (`getDesktopFacade`) opts in
+   * by passing a positive value (typically 30 000 ms). The timer is .unref'd
+   * so it never holds the process open on its own.
+   */
+  sessionEvictionIntervalMs?: number;
+  /**
    * Event-driven candidate ingress. When set, see() calls ingress.getSnapshot(key)
    * instead of candidateProvider(input) directly — reducing idle refresh cost.
    * candidateProvider is still used as the underlying fetch function via the ingress.
@@ -208,11 +216,22 @@ export class DesktopFacade {
   private readonly registry: SessionRegistry;
   private readonly candidateProvider: CandidateProvider;
   private readonly opts: DesktopFacadeOptions;
+  private _evictionTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(candidateProvider: CandidateProvider, opts: DesktopFacadeOptions = {}) {
     this.candidateProvider = candidateProvider;
     this.opts = opts;
     this.registry = new SessionRegistry();
+    const intervalMs = opts.sessionEvictionIntervalMs ?? 0;
+    if (intervalMs > 0) {
+      this._evictionTimer = setInterval(() => {
+        // Never let a transient eviction error escape the timer — it would
+        // crash the host process. Worst case is one missed sweep.
+        try { this.evictStaleSessions(); } catch { /* swallow */ }
+      }, intervalMs);
+      // Don't keep the process alive just for this timer.
+      if (typeof this._evictionTimer.unref === "function") this._evictionTimer.unref();
+    }
   }
 
   /**
@@ -337,6 +356,10 @@ export class DesktopFacade {
 
   /** Dispose the facade and its ingress (event subscriptions). */
   dispose(): void {
+    if (this._evictionTimer !== undefined) {
+      clearInterval(this._evictionTimer);
+      this._evictionTimer = undefined;
+    }
     this.opts.ingress?.dispose();
   }
 
