@@ -9,7 +9,7 @@
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { ok, buildDesc } from "./_types.js";
+import { ok } from "./_types.js";
 import { failWith, failArgs } from "./_errors.js";
 import {
   registerLensAsync,
