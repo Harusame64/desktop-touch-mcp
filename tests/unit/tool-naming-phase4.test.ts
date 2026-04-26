@@ -790,3 +790,105 @@ describe("Phase 4 — run_macro DSL TOOL_REGISTRY uses v1.0.0 dispatcher names",
     expect(src).toContain("action:'type'");
   });
 });
+
+// ─── 9. run_macro × v2 kill-switch behavioural contract (v1.0.0 P1-10) ───────
+//
+// Source-grep tests above prove the gate exists; these tests prove the gate
+// actually short-circuits the dispatch without reaching the real handler
+// (which would touch Win32). All 4 cases set/restore process.env so they are
+// deterministic regardless of how the host invokes vitest.
+
+describe("Phase 4 — run_macro honours DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2 at runtime", () => {
+  const KILL_VAR = "DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2";
+
+  function withKillSwitch<T>(value: "1" | undefined, fn: () => Promise<T>): Promise<T> {
+    const prev = process.env[KILL_VAR];
+    if (value === undefined) delete process.env[KILL_VAR];
+    else process.env[KILL_VAR] = value;
+    return fn().finally(() => {
+      if (prev === undefined) delete process.env[KILL_VAR];
+      else process.env[KILL_VAR] = prev;
+    });
+  }
+
+  function summaryOf(result: { content: Array<{ type: string; text?: string }> }): {
+    results: Array<{ tool: string; ok: boolean; text?: string[]; error?: string }>;
+  } {
+    const first = result.content.find((b) => b.type === "text");
+    return JSON.parse(first!.text!) as ReturnType<typeof summaryOf>;
+  }
+
+  it("kill-switch ON → run_macro({tool:'desktop_discover'}) returns kill-switch error without invoking the facade", async () => {
+    const { runMacroHandler } = await import("../../src/tools/macro.js");
+    await withKillSwitch("1", async () => {
+      const out = await runMacroHandler({
+        steps: [{ tool: "desktop_discover", params: {} }],
+        stop_on_error: true,
+      });
+      const summary = summaryOf(out);
+      expect(summary.results).toHaveLength(1);
+      const step = summary.results[0]!;
+      expect(step.tool).toBe("desktop_discover");
+      expect(step.ok).toBe(true);
+      const payload = step.text!.join("\n");
+      expect(payload).toContain("DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1");
+      expect(payload).toContain("\"ok\": false");
+    });
+  });
+
+  it("kill-switch ON → run_macro({tool:'desktop_act'}) returns kill-switch error without invoking the facade", async () => {
+    const { runMacroHandler } = await import("../../src/tools/macro.js");
+    await withKillSwitch("1", async () => {
+      const out = await runMacroHandler({
+        steps: [{
+          tool: "desktop_act",
+          params: {
+            lease: {
+              entityId: "fake-entity",
+              viewId: "fake-view",
+              targetGeneration: "g0",
+              expiresAtMs: Date.now() + 60_000,
+              evidenceDigest: "fake-digest",
+            },
+            action: "click",
+          },
+        }],
+        stop_on_error: true,
+      });
+      const summary = summaryOf(out);
+      expect(summary.results[0]!.ok).toBe(true);
+      expect(summary.results[0]!.text!.join("\n")).toContain("DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1");
+    });
+  });
+
+  it("kill-switch OFF (default) → run_macro({tool:'set_element_value'}) returns v1-fallback hint without invoking the legacy handler", async () => {
+    const { runMacroHandler } = await import("../../src/tools/macro.js");
+    await withKillSwitch(undefined, async () => {
+      const out = await runMacroHandler({
+        steps: [{
+          tool: "set_element_value",
+          params: { windowTitle: "@active", name: "Search", value: "foo" },
+        }],
+        stop_on_error: true,
+      });
+      const summary = summaryOf(out);
+      expect(summary.results[0]!.ok).toBe(true);
+      const payload = summary.results[0]!.text!.join("\n");
+      expect(payload).toContain("V1 fallback only available when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1");
+      expect(payload).toContain("desktop_act({action:'setValue'");
+    });
+  });
+
+  it("kill-switch OFF (default) → run_macro({tool:'get_windows'}) returns v1-fallback hint pointing at desktop_discover.windows[]", async () => {
+    const { runMacroHandler } = await import("../../src/tools/macro.js");
+    await withKillSwitch(undefined, async () => {
+      const out = await runMacroHandler({
+        steps: [{ tool: "get_windows", params: {} }],
+        stop_on_error: true,
+      });
+      const summary = summaryOf(out);
+      expect(summary.results[0]!.ok).toBe(true);
+      expect(summary.results[0]!.text!.join("\n")).toContain("desktop_discover.windows[]");
+    });
+  });
+});
