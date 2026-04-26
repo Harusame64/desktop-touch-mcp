@@ -16,7 +16,7 @@
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { DesktopFacade, type CandidateProvider, type DesktopSeeInput } from "./desktop.js";
+import { DesktopFacade, type CandidateProvider, type DesktopSeeInput, type DesktopWindowMeta } from "./desktop.js";
 import type { EntityLease, UiEntity } from "../engine/world-graph/types.js";
 import {
   SnapshotIngress,
@@ -85,6 +85,81 @@ function productionGetFocusedEntityId(): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Production windowsProvider with a short-lived (default 100ms) result cache.
+ *
+ * Audit P1-1 (docs/v1-release-readiness-review.md §8.2): every desktop_discover
+ * call previously re-ran enumWindowsInZOrder + getWindowProcessId +
+ * getProcessIdentityByPid for every visible window — on a desktop with 40+
+ * windows this is tens of ms per call and shows up in chained workflows
+ * (desktop_state → desktop_discover → desktop_act). A coarse TTL cache
+ * collapses bursts of see() calls without hiding real focus shifts (the
+ * windowsProvider is intentionally re-evaluated whenever the cache TTL
+ * expires; OS-level focus changes between snapshots are observed by the
+ * separate `getFocusedEntityId` path).
+ *
+ * Time source: defaults to `performance.now()` (monotonic), so wall-clock
+ * adjustments — NTP step-back, manual clock changes, VM snapshot restore —
+ * never make a stale entry look fresh. The path also defends with `t >=
+ * cached.at` so an injected non-monotonic `nowFn` (or any future regression)
+ * still falls through to a re-enumeration on backward time travel rather
+ * than serving the previous snapshot. (Codex PR #53 P2.)
+ *
+ * `nowFn`, `ttlMs`, `enumerate`, and `resolveProcessName` are injectable for
+ * unit testing.
+ */
+export interface WindowsProviderCacheOptions {
+  ttlMs?: number;
+  nowFn?: () => number;
+  /** Override the raw window enumerator. Tests inject a fake; production uses enumWindowsInZOrder. */
+  enumerate?: typeof enumWindowsInZOrder;
+  /** Override per-hwnd process info. Tests inject a fake; production uses getWindowProcessId + getProcessIdentityByPid. */
+  resolveProcessName?: (hwnd: bigint | number) => string | undefined;
+}
+
+function defaultResolveProcessName(hwnd: bigint | number): string | undefined {
+  try {
+    const pid = getWindowProcessId(hwnd);
+    return getProcessIdentityByPid(pid).processName;
+  } catch {
+    return undefined;
+  }
+}
+
+export function createCachedProductionWindowsProvider(
+  options: WindowsProviderCacheOptions = {},
+): () => DesktopWindowMeta[] {
+  const ttlMs = options.ttlMs ?? 100;
+  const now = options.nowFn ?? (() => performance.now());
+  const enumerate = options.enumerate ?? enumWindowsInZOrder;
+  const resolveProcessName = options.resolveProcessName ?? defaultResolveProcessName;
+  let cached: { at: number; result: DesktopWindowMeta[] } | undefined;
+
+  return () => {
+    const t = now();
+    // Defensive: ignore the cached entry if the clock moved backward since it
+    // was stored. With the default monotonic clock this branch is unreachable;
+    // it exists so an injected non-monotonic `nowFn` (or a future regression)
+    // can't keep serving stale windows past the TTL.
+    if (cached && t >= cached.at && t - cached.at < ttlMs) return cached.result;
+    const result = enumerate().map((w) => {
+      const processName = resolveProcessName(w.hwnd);
+      return {
+        zOrder: w.zOrder,
+        title: w.title,
+        hwnd: String(w.hwnd),
+        region: w.region,
+        isActive: w.isActive,
+        isMinimized: w.isMinimized,
+        isMaximized: w.isMaximized,
+        processName,
+      };
+    });
+    cached = { at: t, result };
+    return result;
+  };
 }
 
 // ── Process-level facade singleton ───────────────────────────────────────────
@@ -230,25 +305,9 @@ export function getDesktopFacade(): DesktopFacade {
       // Phase 4 (Codex PR #41 round 5 P1): production windows enumerator —
       // wraps enumWindowsInZOrder + processName resolution. The facade catches
       // any throw and returns [] in that case, so this is allowed to fail.
-      windowsProvider: () => enumWindowsInZOrder().map((w) => {
-        let processName: string | undefined;
-        try {
-          const pid = getWindowProcessId(w.hwnd);
-          processName = getProcessIdentityByPid(pid).processName;
-        } catch {
-          processName = undefined;
-        }
-        return {
-          zOrder: w.zOrder,
-          title: w.title,
-          hwnd: String(w.hwnd),
-          region: w.region,
-          isActive: w.isActive,
-          isMinimized: w.isMinimized,
-          isMaximized: w.isMaximized,
-          processName,
-        };
-      }),
+      // Audit P1-1: 100ms TTL cache prevents the per-window pid+processName
+      // round-trip storm when chained tool calls land in the same tick.
+      windowsProvider: createCachedProductionWindowsProvider(),
     });
 
     // Wire the visual runtime (non-blocking — failure does not prevent facade creation).
