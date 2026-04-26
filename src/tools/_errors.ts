@@ -16,22 +16,22 @@ const SUGGESTS: Record<string, string[]> = {
     "At least one of name or automationId must be provided",
   ],
   WindowNotFound: [
-    "Run get_windows to see available titles",
+    "Run desktop_discover to see available titles",
     "Try a shorter partial title match (e.g. first word only)",
     "The window may be minimized — try focus_window first",
     "If the app is still launching, use wait_until(condition='window_appears') before focus_window",
     "If the target is a Chrome/Edge tab (only the active tab's title appears in window titles), use browser_open to get the tabId, then browser_navigate to the target URL to switch tabs",
   ],
   ElementNotFound: [
-    "Call get_ui_elements to see candidate names and automationIds",
+    "Call desktop_discover to see candidate names and automationIds",
     "Use screenshot(detail='text') for actionable[] with clickAt coords",
     "Try a shorter partial name match",
     "The element may not be visible yet — use wait_until(condition='element_appears')",
   ],
   InvokePatternNotSupported: [
     "Use mouse_click with clickAt coords from screenshot(detail='text')",
-    "Use set_element_value for text input fields",
-    "Try scope_element to inspect available patterns for this element",
+    "Use desktop_act({action:'setValue'}) for text input fields",
+    "Use screenshot({region:{x,y,width,height}}) to inspect the element region (after desktop_discover)",
   ],
   BlockedKeyCombo: [
     "Use workspace_launch to open applications by name instead",
@@ -52,7 +52,7 @@ const SUGGESTS: Record<string, string[]> = {
     "Or call browser_open({launch:{}}) to spawn a debug-mode Chrome on the configured port",
   ],
   TerminalWindowNotFound: [
-    "Call get_windows to see available titles",
+    "Call desktop_discover to see available titles",
     "Try a partial title match (e.g. 'PowerShell' or 'pwsh')",
     "Filter by processName: pwsh / powershell / cmd / bash / WindowsTerminal",
   ],

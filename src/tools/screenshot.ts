@@ -949,7 +949,8 @@ export const screenshotBgHandler = async ({
     }
 
     if (!hwnd) {
-      return failWith(`Window not found: "${effectiveTitle}"`, "screenshot_background", { windowTitle: effectiveTitle });
+      // Phase 4: surfaced to LLM via screenshot(mode='background') dispatcher.
+      return failWith(`Window not found: "${effectiveTitle}"`, "screenshot", { windowTitle: effectiveTitle });
     }
 
     // Build capture options with optional sub-crop (image-local coordinates).
@@ -1001,7 +1002,8 @@ export const screenshotBgHandler = async ({
       ],
     };
   } catch (err) {
-    return failWith(err, "screenshot_background");
+    // Phase 4: surfaced to LLM via screenshot(mode='background') dispatcher.
+    return failWith(err, "screenshot");
   }
 };
 
@@ -1023,7 +1025,8 @@ export const screenshotOcrHandler = async ({
     const wins = enumWindowsInZOrder();
     const win = wins.find((w) => w.title.toLowerCase().includes(effectiveTitle.toLowerCase()));
     if (!win) {
-      return failWith(`Window not found: "${effectiveTitle}"`, "screenshot_ocr", { windowTitle: effectiveTitle });
+      // Phase 4: surfaced to LLM via screenshot(detail='ocr') dispatcher.
+      return failWith(`Window not found: "${effectiveTitle}"`, "screenshot", { windowTitle: effectiveTitle });
     }
 
     const origin = { x: win.region.x, y: win.region.y };
@@ -1096,7 +1099,8 @@ export const screenshotOcrHandler = async ({
       }],
     };
   } catch (err) {
-    return failWith(err, "screenshot_ocr");
+    // Phase 4: surfaced to LLM via screenshot(detail='ocr') dispatcher.
+    return failWith(err, "screenshot");
   }
 };
 
