@@ -25,11 +25,20 @@
  * Design reference: docs/tool-surface-phase4-privatize-absorb-design.md
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+
+// Stub the cursor-based failsafe so behavioural run_macro tests below are
+// deterministic regardless of where the host's pointer happens to be.
+// (Codex PR #42 P2: runMacroHandler always invokes checkFailsafe before
+// dispatch — without this stub, a top-left pointer fails the step before
+// the kill-switch logic runs.)
+vi.mock("../../src/utils/failsafe.js", () => ({
+  checkFailsafe: vi.fn().mockResolvedValue(undefined),
+}));
 
 import { registerEventTools } from "../../src/tools/events.js";
 import { registerPerceptionTools } from "../../src/tools/perception.js";
