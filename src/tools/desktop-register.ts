@@ -333,6 +333,26 @@ export const desktopTouchSchema = {
   text:   z.string().optional().describe("Text to type or set (required when action='type' or action='setValue')."),
 };
 
+/**
+ * Phase 4 (Codex PR #41 round 3 P1): runtime guard that desktop_act callers
+ * must provide `text` for `action='type'` / `action='setValue'`. Without
+ * this, the executor falls through to a UIA click — silently triggering an
+ * unintended side effect instead of a validation error. Used by both the
+ * MCP registration closure below and the run_macro DSL handler in macro.ts.
+ *
+ * Returns null on success; an error message on failure.
+ */
+export function validateDesktopTouchTextRequirement(
+  action: string | undefined,
+  text: string | undefined,
+): string | null {
+  if ((action === "type" || action === "setValue") &&
+      (text === undefined || text === "")) {
+    return `desktop_act(action='${action}') requires text — without it the executor falls through to a click on the target entity, which is almost never what you want. Pass text explicitly, or use action='click' / 'invoke' for a click-style interaction.`;
+  }
+  return null;
+}
+
 // ── Tool registration ─────────────────────────────────────────────────────────
 
 /**
@@ -394,6 +414,12 @@ export function registerDesktopTools(server: McpServer): void {
     ].join(" "),
     desktopTouchSchema,
     async (input) => {
+      const validationError = validateDesktopTouchTextRequirement(input.action, input.text);
+      if (validationError) {
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: validationError }, null, 2) }],
+        };
+      }
       const result = await facade.touch({
         lease: input.lease as EntityLease,
         action: input.action,

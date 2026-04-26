@@ -504,6 +504,62 @@ describe("Phase 4 — Codex PR #41 P1: macro DSL has v2 World-Graph dispatchers"
   });
 });
 
+// Codex PR #41 round 3: setValue/type without text + v2 kill-switch bypass.
+
+describe("Phase 4 — Codex PR #41 round 3 P1: validateDesktopTouchTextRequirement", () => {
+  it("rejects action='setValue' without text", async () => {
+    const { validateDesktopTouchTextRequirement } = await import("../../src/tools/desktop-register.js");
+    expect(validateDesktopTouchTextRequirement("setValue", undefined)).not.toBeNull();
+    expect(validateDesktopTouchTextRequirement("setValue", "")).not.toBeNull();
+  });
+
+  it("rejects action='type' without text (same dispatch path falls through to click)", async () => {
+    const { validateDesktopTouchTextRequirement } = await import("../../src/tools/desktop-register.js");
+    expect(validateDesktopTouchTextRequirement("type", undefined)).not.toBeNull();
+    expect(validateDesktopTouchTextRequirement("type", "")).not.toBeNull();
+  });
+
+  it("accepts setValue / type with non-empty text", async () => {
+    const { validateDesktopTouchTextRequirement } = await import("../../src/tools/desktop-register.js");
+    expect(validateDesktopTouchTextRequirement("setValue", "hello")).toBeNull();
+    expect(validateDesktopTouchTextRequirement("type", "hello")).toBeNull();
+  });
+
+  it("does not reject other actions when text is omitted", async () => {
+    const { validateDesktopTouchTextRequirement } = await import("../../src/tools/desktop-register.js");
+    for (const action of ["click", "invoke", "select", "auto", undefined]) {
+      expect(validateDesktopTouchTextRequirement(action, undefined)).toBeNull();
+    }
+  });
+
+  it("desktop-register handler invokes the validator", () => {
+    const src = readFileSync(join(ROOT, "src", "tools", "desktop-register.ts"), "utf-8");
+    expect(src).toMatch(/validateDesktopTouchTextRequirement\(input\.action, input\.text\)/);
+  });
+
+  it("macro.ts desktop_act handler invokes the validator", () => {
+    const src = readFileSync(join(ROOT, "src", "tools", "macro.ts"), "utf-8");
+    expect(src).toMatch(/validateDesktopTouchTextRequirement\(i\.action, i\.text\)/);
+  });
+});
+
+describe("Phase 4 — Codex PR #41 round 3 P1: macro DSL honours v2 kill switch", () => {
+  it("macro.ts gates desktop_discover / desktop_act on v2KillSwitchActive()", () => {
+    const src = readFileSync(join(ROOT, "src", "tools", "macro.ts"), "utf-8");
+    expect(src).toMatch(/function v2KillSwitchActive/);
+    // Both v2 handlers should call the gate before reaching getDesktopFacade.
+    const discoverGate = /desktop_discover:\s*\{[\s\S]*?if \(v2KillSwitchActive\(\)\)/;
+    const actGate = /desktop_act:\s*\{[\s\S]*?if \(v2KillSwitchActive\(\)\)/;
+    expect(src).toMatch(discoverGate);
+    expect(src).toMatch(actGate);
+  });
+
+  it("kill-switch error message names the env var so the operator knows which flag", () => {
+    const src = readFileSync(join(ROOT, "src", "tools", "macro.ts"), "utf-8");
+    expect(src).toContain("DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1");
+  });
+});
+
 describe("Phase 4 — Codex PR #41 P1: desktop_state.includeDocument honours explicit tabId", () => {
   it("desktopStateHandler routes the includeDocument CDP call when tabId is provided regardless of foreground", () => {
     const src = readFileSync(join(ROOT, "src", "tools", "desktop-state.ts"), "utf-8");
