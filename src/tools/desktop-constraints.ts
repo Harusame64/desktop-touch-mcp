@@ -48,12 +48,12 @@ export interface ViewConstraints {
    *
    * Fallback guidance by value:
    *   foreground_unresolved    → add target.windowTitle or wait for focus
-   *   ingress_fetch_error      → retry desktop_see
+   *   ingress_fetch_error      → retry desktop_discover
    *   uia_blind_visual_unready → retry when visual backend is ready, or use screenshot(ocrFallback=always)
    *   uia_blind_visual_empty   → use screenshot(ocrFallback=always) or V1 tools
    *   cdp_failed_visual_empty  → check --remote-debugging-port=9222 and retry
-   *   all_providers_failed     → use V1 tools (get_ui_elements / terminal_read / screenshot);
-   *                              also covers terminal-only failure (terminal_send / terminal_read as recovery)
+   *   all_providers_failed     → use V1 tools (click_element / terminal(action='read') / screenshot);
+   *                              also covers terminal-only failure (terminal(action='send'/'read') as recovery)
    */
   entityZeroReason?:
     | "uia_blind_visual_unready"
@@ -71,9 +71,9 @@ export interface ViewConstraints {
  */
 export interface EntityCapabilities {
   /**
-   * False when a provider-level constraint makes this verb unreliable via desktop_touch.
+   * False when a provider-level constraint makes this verb unreliable via desktop_act.
    * Missing = no information (default: attempt normal dispatch).
-   * Recovery: use terminal_send V1 if this entity is a terminal textbox.
+   * Recovery: use terminal({action:'send'}) V1 if this entity is a terminal textbox.
    */
   canType?: false;
   canClick?: false;
@@ -81,7 +81,7 @@ export interface EntityCapabilities {
   preferredExecutors?: Array<"uia" | "cdp" | "terminal" | "mouse">;
   /** Executor kinds observed/predicted to fail for this target class. */
   unsupportedExecutors?: Array<"uia" | "cdp" | "terminal" | "mouse">;
-  /** Human-readable recovery hint, e.g. "use terminal_send V1 tool". */
+  /** Human-readable recovery hint, e.g. "use terminal(action='send') V1 tool". */
   fallbackHint?: string;
 }
 

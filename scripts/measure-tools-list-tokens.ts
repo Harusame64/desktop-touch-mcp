@@ -23,26 +23,27 @@ const ROOT = join(__dirname, "..");
 // Tool tier classification (from docs/description-rewrite-draft.md)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Tier classification refreshed for the v1.0.0 surface (Phase 1+2+3+4).
+// Tier A: core observation / orchestration / always-available tools.
+// Tier B: action verbs (native + browser + dispatcher families).
+// Tier C: support / diagnostic.
 const TIER_A = new Set([
-  "screenshot", "screenshot_background", "scroll_capture", "wait_until",
-  "workspace_snapshot", "workspace_launch", "run_macro", "events_subscribe",
-  "dock_window", "get_context",
+  "desktop_state", "desktop_discover", "desktop_act",
+  "screenshot", "workspace_snapshot", "workspace_launch", "run_macro",
 ]);
 
 const TIER_B = new Set([
-  "screenshot_ocr", "mouse_click", "mouse_drag", "keyboard_type", "keyboard_press",
-  "click_element", "set_element_value", "focus_window", "pin_window",
-  "get_ui_elements", "scope_element", "terminal_send", "terminal_read",
-  "browser_connect", "browser_get_interactive", "browser_click_element",
-  "browser_find_element", "browser_navigate", "browser_search",
-  "browser_get_app_state", "browser_launch", "get_windows",
+  // native action
+  "mouse_click", "mouse_drag", "click_element", "focus_window",
+  // family dispatchers
+  "keyboard", "clipboard", "window_dock", "scroll", "terminal",
+  // browser
+  "browser_open", "browser_navigate", "browser_click", "browser_fill", "browser_form",
+  "browser_search", "browser_overview", "browser_locate", "browser_eval",
 ]);
 
 const TIER_C = new Set([
-  "get_active_window", "mouse_move", "scroll", "get_cursor_position",
-  "get_screen_info", "get_document_state", "get_history",
-  "events_poll", "events_unsubscribe", "events_list",
-  "browser_eval", "browser_get_dom", "browser_disconnect", "unpin_window",
+  "wait_until", "server_status", "notification_show",
 ]);
 
 function tier(name: string): string {

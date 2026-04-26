@@ -107,7 +107,7 @@ export const dockWindowSchema = {
     .int()
     .min(0)
     .optional()
-    .describe("Monitor to dock on (from get_screen_info). Omit for primary monitor."),
+    .describe("Monitor to dock on (from desktop_state({includeScreen:true})). Omit for primary monitor."),
   margin: z
     .coerce.number()
     .int()

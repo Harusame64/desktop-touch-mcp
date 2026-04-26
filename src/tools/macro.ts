@@ -5,77 +5,214 @@ import type { ToolHandler, ToolResult } from "./_types.js";
 import { checkFailsafe } from "../utils/failsafe.js";
 import { assertKeyComboSafe } from "../utils/key-safety.js";
 
-// Screenshot tools
-import { screenshotHandler, screenshotSchema, screenshotBgHandler, screenshotBgSchema, getScreenInfoHandler, getScreenInfoSchema } from "./screenshot.js";
-// Mouse tools
-import { mouseMoveHandler, mouseMoveSchema, mouseClickHandler, mouseClickSchema, mouseDragHandler, mouseDragSchema, scrollHandler, scrollSchema, getCursorPositionHandler, getCursorPositionSchema } from "./mouse.js";
-// Keyboard tools
-import { keyboardTypeHandler, keyboardTypeSchema, keyboardPressHandler, keyboardPressSchema } from "./keyboard.js";
-// Window tools
-import { getWindowsHandler, getWindowsSchema, getActiveWindowHandler, getActiveWindowSchema, focusWindowHandler, focusWindowSchema } from "./window.js";
-// UI Element tools
-import { getUiElementsHandler, getUiElementsSchema, clickElementHandler, clickElementSchema, setElementValueHandler, setElementValueSchema, scopeElementHandler, scopeElementSchema } from "./ui-elements.js";
-// Workspace tools
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 4: TOOL_REGISTRY mirrors the v1.0.0 public surface — privatized tools
+// (events_*, perception_*, mouse_move, get_history, get_*) are intentionally
+// absent. Family dispatchers (keyboard / clipboard / window_dock / scroll /
+// terminal / browser_eval) replace their pre-Phase-2 sub-tool entries.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Screenshot
+import { screenshotHandler, screenshotSchema } from "./screenshot.js";
+// Mouse
+import { mouseClickHandler, mouseClickSchema, mouseDragHandler, mouseDragSchema } from "./mouse.js";
+// Keyboard dispatcher (Phase 2)
+import { keyboardHandler, keyboardSchema } from "./keyboard.js";
+// Clipboard dispatcher (Phase 2)
+import { clipboardHandler, clipboardSchema } from "./clipboard.js";
+// Window
+import {
+  focusWindowHandler, focusWindowSchema,
+  // V1 fallback (only reachable when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1).
+  getWindowsHandler, getWindowsSchema,
+} from "./window.js";
+// Window dock dispatcher (Phase 2)
+import { windowDockHandler, windowDockSchema } from "./window-dock.js";
+// UI elements (click_element always public after Phase 4; the next two are
+// V1 fallbacks only reachable when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1).
+import {
+  clickElementHandler, clickElementSchema,
+  getUiElementsHandler, getUiElementsSchema,
+  setElementValueHandler, setElementValueSchema,
+} from "./ui-elements.js";
+// Workspace
 import { workspaceSnapshotHandler, workspaceSnapshotSchema, workspaceLaunchHandler, workspaceLaunchSchema } from "./workspace.js";
-// Pin tools
-import { pinWindowHandler, pinWindowSchema, unpinWindowHandler, unpinWindowSchema } from "./pin.js";
-// Scroll capture
-import { scrollCaptureHandler, scrollCaptureSchema } from "./scroll-capture.js";
+// Scroll dispatcher (Phase 2)
+import { scrollDispatchHandler, scrollSchema } from "./scroll.js";
 // Wait until
 import { waitUntilHandler, waitUntilSchema } from "./wait-until.js";
-// Context (desktop_state)
-import { desktopStateHandler, desktopStateSchema, getHistoryHandler, getHistorySchema, getDocumentStateHandler, getDocumentStateSchema } from "./desktop-state.js";
-// Terminal
-import { terminalReadHandler, terminalReadSchema, terminalSendHandler, terminalSendSchema } from "./terminal.js";
-// Browser search
-import { browserSearchHandler, browserSearchSchema } from "./browser.js";
-// Events
-import { eventsSubscribeHandler, eventsSubscribeSchema, eventsPollHandler, eventsPollSchema, eventsUnsubscribeHandler, eventsUnsubscribeSchema } from "./events.js";
+// Desktop state
+import { desktopStateHandler, desktopStateSchema } from "./desktop-state.js";
+// Terminal dispatcher (Phase 2)
+import { terminalDispatchHandler, terminalSchema } from "./terminal.js";
+// Browser tools (Phase 3)
+import {
+  browserOpenHandler, browserOpenSchema,
+  browserEvalHandler, browserEvalSchema,
+  browserSearchHandler, browserSearchSchema,
+  browserGetInteractiveHandler, browserGetInteractiveSchema,
+  browserFindElementHandler, browserFindElementSchema,
+  browserClickElementHandler, browserClickElementSchema,
+  browserNavigateHandler, browserNavigateSchema,
+  browserFillInputHandler, browserFillInputSchema,
+  browserGetFormHandler, browserGetFormSchema,
+} from "./browser.js";
+// Notification (server_status not callable from macros — diagnostic)
+import { notificationShowHandler, notificationShowSchema } from "./notification.js";
+// v2 World-Graph dispatchers (Phase 4 / Codex PR #41 P1): the public surface
+// for discovery and lease-based action; macros need access to use the
+// action='setValue' / 'click' / 'type' flow advertised in the schema.
+import {
+  getDesktopFacade,
+  desktopSeeSchema,
+  desktopTouchSchema,
+  validateDesktopTouchTextRequirement,
+} from "./desktop-register.js";
+import { resolveV2Activation } from "./desktop-activation.js";
+import type { DesktopSeeInput } from "./desktop.js";
+import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
+import type { EntityLease } from "../engine/world-graph/types.js";
+
+/**
+ * Phase 4 (Codex PR #41 round 3 P1): the v2 World-Graph dispatchers
+ * registered above must honour the same DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1
+ * kill switch that gates the top-level registerDesktopTools registration.
+ * Without this gate, run_macro provides an alternate execution path that
+ * silently re-enables v2 even when the operator has opted out.
+ */
+function v2KillSwitchActive(): boolean {
+  return !resolveV2Activation(process.env).enabled;
+}
+
+const V2_DISABLED_ERROR = {
+  ok: false,
+  error: "DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1 is set; v2 World-Graph tools (desktop_discover / desktop_act) are disabled and may not be invoked through run_macro either.",
+} as const;
+
+/**
+ * Phase 4 (Codex PR #41 round 6 P1×2): the v1 fallback tools registered
+ * publicly only when v2 is killed. Macros mirror that surface — these
+ * entries are ONLY callable when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1 is
+ * set; otherwise they return a v2-mode replacement hint.
+ */
+function v1FallbackOnlyError(tool: string, replacement: string): ToolResult {
+  return {
+    content: [{
+      type: "text" as const,
+      text: JSON.stringify({
+        ok: false,
+        error: `${tool} is a V1 fallback only available when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1 is set. In v2 mode use ${replacement}.`,
+      }, null, 2),
+    }],
+  };
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tool registry
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface ToolEntry {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  schema: z.ZodObject<any>;
+  // Phase 4: widened from z.ZodObject to z.ZodTypeAny so dispatchers backed by
+  // z.discriminatedUnion (keyboard / clipboard / window_dock / scroll /
+  // terminal / browser_eval) can be parsed via .parse() the same way.
+  schema: z.ZodTypeAny;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   handler: ToolHandler<any>;
 }
 
 const TOOL_REGISTRY: Record<string, ToolEntry> = {
-  screenshot:             { schema: z.object(screenshotSchema),          handler: screenshotHandler },
-  screenshot_background:  { schema: z.object(screenshotBgSchema),         handler: screenshotBgHandler },
-  get_screen_info:        { schema: z.object(getScreenInfoSchema),        handler: getScreenInfoHandler },
-  mouse_move:             { schema: z.object(mouseMoveSchema),            handler: mouseMoveHandler },
-  mouse_click:            { schema: z.object(mouseClickSchema),           handler: mouseClickHandler },
-  mouse_drag:             { schema: z.object(mouseDragSchema),            handler: mouseDragHandler },
-  scroll:                 { schema: z.object(scrollSchema),               handler: scrollHandler },
-  get_cursor_position:    { schema: z.object(getCursorPositionSchema),    handler: getCursorPositionHandler },
-  keyboard_type:          { schema: z.object(keyboardTypeSchema),         handler: keyboardTypeHandler },
-  keyboard_press:         { schema: z.object(keyboardPressSchema),        handler: keyboardPressHandler },
-  get_windows:            { schema: z.object(getWindowsSchema),           handler: getWindowsHandler },
-  get_active_window:      { schema: z.object(getActiveWindowSchema),      handler: getActiveWindowHandler },
-  focus_window:           { schema: z.object(focusWindowSchema),          handler: focusWindowHandler },
-  get_ui_elements:        { schema: z.object(getUiElementsSchema),        handler: getUiElementsHandler },
-  click_element:          { schema: z.object(clickElementSchema),         handler: clickElementHandler },
-  set_element_value:      { schema: z.object(setElementValueSchema),      handler: setElementValueHandler },
-  scope_element:          { schema: z.object(scopeElementSchema),         handler: scopeElementHandler },
-  workspace_snapshot:     { schema: z.object(workspaceSnapshotSchema),    handler: workspaceSnapshotHandler },
-  workspace_launch:       { schema: z.object(workspaceLaunchSchema),      handler: workspaceLaunchHandler },
-  pin_window:             { schema: z.object(pinWindowSchema),            handler: pinWindowHandler },
-  unpin_window:           { schema: z.object(unpinWindowSchema),          handler: unpinWindowHandler },
-  scroll_capture:         { schema: z.object(scrollCaptureSchema),        handler: scrollCaptureHandler },
-  wait_until:             { schema: z.object(waitUntilSchema),             handler: waitUntilHandler },
-  desktop_state:          { schema: z.object(desktopStateSchema),          handler: desktopStateHandler },
-  get_history:            { schema: z.object(getHistorySchema),            handler: getHistoryHandler },
-  get_document_state:     { schema: z.object(getDocumentStateSchema),      handler: getDocumentStateHandler },
-  terminal_read:          { schema: z.object(terminalReadSchema),          handler: terminalReadHandler },
-  terminal_send:          { schema: z.object(terminalSendSchema),          handler: terminalSendHandler },
-  browser_search:         { schema: z.object(browserSearchSchema),         handler: browserSearchHandler },
-  events_subscribe:       { schema: z.object(eventsSubscribeSchema),       handler: eventsSubscribeHandler },
-  events_poll:            { schema: z.object(eventsPollSchema),            handler: eventsPollHandler },
-  events_unsubscribe:     { schema: z.object(eventsUnsubscribeSchema),     handler: eventsUnsubscribeHandler },
+  // Observation
+  desktop_state:        { schema: z.object(desktopStateSchema),        handler: desktopStateHandler },
+  screenshot:           { schema: z.object(screenshotSchema),          handler: screenshotHandler },
+  // Action — native
+  mouse_click:          { schema: z.object(mouseClickSchema),          handler: mouseClickHandler },
+  mouse_drag:           { schema: z.object(mouseDragSchema),           handler: mouseDragHandler },
+  click_element:        { schema: z.object(clickElementSchema),        handler: clickElementHandler },
+  focus_window:         { schema: z.object(focusWindowSchema),         handler: focusWindowHandler },
+  // Action — text/clipboard dispatchers (Phase 2)
+  keyboard:             { schema: keyboardSchema,                      handler: keyboardHandler },
+  clipboard:            { schema: clipboardSchema,                     handler: clipboardHandler },
+  // Action — window/scroll/terminal dispatchers (Phase 2)
+  window_dock:          { schema: windowDockSchema,                    handler: windowDockHandler },
+  scroll:               { schema: scrollSchema,                        handler: scrollDispatchHandler },
+  terminal:             { schema: terminalSchema,                      handler: terminalDispatchHandler },
+  // Action — browser (Phase 3)
+  browser_open:         { schema: z.object(browserOpenSchema),         handler: browserOpenHandler },
+  browser_eval:         { schema: browserEvalSchema,                   handler: browserEvalHandler },
+  browser_search:       { schema: z.object(browserSearchSchema),       handler: browserSearchHandler },
+  browser_overview:     { schema: z.object(browserGetInteractiveSchema), handler: browserGetInteractiveHandler },
+  browser_locate:       { schema: z.object(browserFindElementSchema),  handler: browserFindElementHandler },
+  browser_click:        { schema: z.object(browserClickElementSchema), handler: browserClickElementHandler },
+  browser_navigate:     { schema: z.object(browserNavigateSchema),     handler: browserNavigateHandler },
+  browser_fill:         { schema: z.object(browserFillInputSchema),    handler: browserFillInputHandler },
+  browser_form:         { schema: z.object(browserGetFormSchema),      handler: browserGetFormHandler },
+  // Workspace / wait / notification
+  workspace_snapshot:   { schema: z.object(workspaceSnapshotSchema),   handler: workspaceSnapshotHandler },
+  workspace_launch:     { schema: z.object(workspaceLaunchSchema),     handler: workspaceLaunchHandler },
+  wait_until:           { schema: z.object(waitUntilSchema),           handler: waitUntilHandler },
+  notification_show:    { schema: z.object(notificationShowSchema),    handler: notificationShowHandler },
+  // v2 World-Graph (default-on; kill switch DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1).
+  // Both handlers re-check the kill switch on every call so run_macro cannot
+  // bypass the operator's opt-out. (Codex PR #41 round 3 P1.)
+  desktop_discover:     {
+    schema: z.object(desktopSeeSchema),
+    handler: async (input: unknown): Promise<ToolResult> => {
+      if (v2KillSwitchActive()) {
+        return { content: [{ type: "text" as const, text: JSON.stringify(V2_DISABLED_ERROR, null, 2) }] };
+      }
+      const output = await getDesktopFacade().see(input as DesktopSeeInput);
+      return { content: [{ type: "text" as const, text: JSON.stringify(output, null, 2) }] };
+    },
+  },
+  desktop_act:          {
+    schema: z.object(desktopTouchSchema),
+    handler: async (input: unknown): Promise<ToolResult> => {
+      if (v2KillSwitchActive()) {
+        return { content: [{ type: "text" as const, text: JSON.stringify(V2_DISABLED_ERROR, null, 2) }] };
+      }
+      const i = input as { lease: EntityLease; action?: TouchAction; text?: string };
+      const validationError = validateDesktopTouchTextRequirement(i.action, i.text);
+      if (validationError) {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: validationError }, null, 2) }] };
+      }
+      const result = await getDesktopFacade().touch({
+        lease: i.lease,
+        action: i.action,
+        text: i.text,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    },
+  },
+  // V1 fallback macros — only callable when v2 is killed (mirrors the
+  // server-windows.ts kill-switch fallback). In v2 mode these short-circuit
+  // with a v2 replacement hint. (Codex PR #41 round 6 P1×2.)
+  get_windows: {
+    schema: z.object(getWindowsSchema),
+    handler: async (): Promise<ToolResult> => {
+      if (!v2KillSwitchActive()) {
+        return v1FallbackOnlyError("get_windows", "desktop_discover.windows[]");
+      }
+      return getWindowsHandler();
+    },
+  },
+  get_ui_elements: {
+    schema: z.object(getUiElementsSchema),
+    handler: async (input: unknown): Promise<ToolResult> => {
+      if (!v2KillSwitchActive()) {
+        return v1FallbackOnlyError("get_ui_elements", "desktop_discover.entities[]");
+      }
+      return getUiElementsHandler(input as Parameters<typeof getUiElementsHandler>[0]);
+    },
+  },
+  set_element_value: {
+    schema: z.object(setElementValueSchema),
+    handler: async (input: unknown): Promise<ToolResult> => {
+      if (!v2KillSwitchActive()) {
+        return v1FallbackOnlyError("set_element_value", "desktop_act({action:'setValue', lease, text})");
+      }
+      return setElementValueHandler(input as Parameters<typeof setElementValueHandler>[0]);
+    },
+  },
   // run_macro is intentionally excluded → prevents recursion
 };
 
@@ -152,8 +289,13 @@ export const runMacroHandler = async ({
       // Failsafe pre-check before each step
       await checkFailsafe();
 
-      // Block dangerous key combos inside macros
-      if (tool === "keyboard_press" && typeof params["keys"] === "string") {
+      // Block dangerous key combos inside macros (Phase 4: keyboard dispatcher
+      // with action='press'; pre-Phase-2 keyboard_press is no longer registered).
+      if (
+        tool === "keyboard" &&
+        params["action"] === "press" &&
+        typeof params["keys"] === "string"
+      ) {
         assertKeyComboSafe(params["keys"]);
       }
 
@@ -217,7 +359,7 @@ export function registerMacroTools(server: McpServer): void {
       prefer: "Use for predictable fixed sequences (focus → sleep → type → screenshot). Do not use for conditional logic — return to the LLM between branches so it can inspect intermediate state.",
       caveats: "If any step may fail conditionally (e.g. a dialog that may or may not appear), split the macro at that point. Each screenshot step within a macro incurs the same token cost as a standalone call.",
       examples: [
-        "[{tool:'focus_window',params:{windowTitle:'Notepad'}},{tool:'sleep',params:{ms:300}},{tool:'keyboard_type',params:{text:'Hello'}},{tool:'screenshot',params:{detail:'text',windowTitle:'Notepad'}}]",
+        "[{tool:'focus_window',params:{windowTitle:'Notepad'}},{tool:'sleep',params:{ms:300}},{tool:'keyboard',params:{action:'type',text:'Hello'}},{tool:'screenshot',params:{detail:'text',windowTitle:'Notepad'}}]",
         "[{tool:'browser_navigate',params:{url:'https://example.com'}},{tool:'wait_until',params:{condition:'element_matches',target:{by:'text',pattern:'Example Domain'}}}]",
       ],
     }),

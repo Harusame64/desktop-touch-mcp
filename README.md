@@ -126,43 +126,43 @@ For a local checkout, register the built server directly:
 > 📖 **Full command reference**: [`docs/system-overview.md`](docs/system-overview.md) — every tool's parameters, response shape, coordinate math, layer-buffer strategy, and engineering notes in one place.
 
 
-### Screenshot (5)
+### Screenshot (1)
 | Tool | Description |
 |---|---|
-| `screenshot` | Main capture. Supports `detail`, `dotByDot`, `dotByDotMaxDimension`, `grayscale`, `region` sub-crop, `diffMode`. `detail="text"` auto-activates the SoM pipeline when UIA is blind (games, RDP, custom Electron) |
-| `screenshot_background` | Capture a background window without focusing it (PrintWindow API) |
-| `screenshot_ocr` | Windows.Media.Ocr on a window; returns word-level text + screen clickAt coords |
-| `get_screen_info` | Monitor layout, DPI, cursor position |
-| `scroll(action='capture')` | Full-page stitch by scrolling (MAE overlap detection + 10% fallback) |
+| `screenshot` | Main capture. Supports `detail` (`meta`/`text`/`image`/`som`/`ocr`), `mode` (`normal`/`background` — Phase 4 absorbs former screenshot_background), `region` sub-crop (Phase 4 absorbs former scope_element after `desktop_discover` gives you element bounds), `dotByDot`, `dotByDotMaxDimension`, `grayscale`, `diffMode`. `detail='text'` auto-activates the SoM pipeline when UIA is blind. `detail='ocr'` (Phase 4 absorbs former screenshot_ocr) returns Windows OCR words with screen-pixel clickAt coords. `scroll(action='capture')` provides full-page stitched capture. |
 
-### Window management (4)
+### Observation (1) — World-Graph core
 | Tool | Description |
 |---|---|
-| `get_windows` | List all windows in Z-order |
-| `get_active_window` | Info about the focused window |
-| `focus_window` | Bring a window to foreground by partial title match |
+| `desktop_state` | Cheapest read-only observation. Always returns focused window, focused element, modal flag, attention signal. Phase 4: `includeCursor:true` adds `cursor.{x,y,monitorId}` (former get_cursor_position); `includeScreen:true` adds `screen.{displays[],...}` (former get_screen_info); `includeDocument:true` adds `document.{url,title,readyState,scroll,...}` via CDP (former get_document_state). focusedWindow always covers the former get_active_window response. |
+
+### Discovery + Action — World-Graph dispatchers (2 dynamic)
+| Tool | Description |
+|---|---|
+| `desktop_discover` | Find actionable entities and emit leases. Returns `entities[]` (former `get_ui_elements` equivalent — `entityId`/`label`/`role`/`confidence`/`sources`/`primaryAction`/`lease`, plus `rect` when `debug:true`) + `windows[]` (former `get_windows` equivalent — `zOrder`/`title`/`hwnd`/`region`/`isActive`/`isMinimized`/`isMaximized`/`processName`). Pre-Phase-1 `desktop_see`. |
+| `desktop_act` | Lease-consuming action (`click` / `type` / `setValue` / `scroll` / `select`). Phase 4: `action='setValue'` absorbs former set_element_value via UIA ValuePattern (UIA entities) or CDP fill (browser entities). Pre-Phase-1 `desktop_touch`. |
+
+### Window management (1)
+| Tool | Description |
+|---|---|
+| `focus_window` | Bring a window to foreground by partial title match. Use `desktop_discover` to list available titles. |
 | `window_dock(action='dock')` | Snap a window to a screen corner at a small size + always-on-top (for keeping CLI visible) |
 
-### Mouse (5)
+### Mouse (2)
 | Tool | Description |
 |---|---|
-| `mouse_move` / `mouse_click` / `mouse_drag` | Move, click, drag. `doubleClick` / `tripleClick` (line-select). Accept `speed` and `homing` parameters |
-| `scroll` | Scroll in any direction. Accepts `speed` and `homing` parameters |
-| `get_cursor_position` | Current cursor coordinates |
+| `mouse_click` / `mouse_drag` | Click, drag. `doubleClick` / `tripleClick` (line-select). Accept `speed` and `homing` parameters. (`mouse_move` privatized in Phase 4.) |
+| `scroll` | Scroll in any direction (`action='raw'` / `'to_element'` / `'smart'` / `'capture'`). Accepts `speed` and `homing` parameters. |
 
-### Keyboard (2)
+### Keyboard (1)
 | Tool | Description |
 |---|---|
-| `keyboard(action='type')` | Type text. `use_clipboard=true` bypasses IME (required for em-dash / smart quotes). `replaceAll=true` sends Ctrl+A before typing. Non-ASCII symbols trigger clipboard mode automatically (opt-out: `forceKeystrokes=true`) |
-| `keyboard(action='press')` | Key combos (`ctrl+c`, `alt+f4`, etc.) |
+| `keyboard` | Send keyboard input. `action='type'` for text (`use_clipboard=true` bypasses IME / required for em-dash / smart quotes; `replaceAll=true` sends Ctrl+A before typing). `action='press'` for key combos (`ctrl+c`, `alt+f4`, etc.). |
 
-### UI Automation (4)
+### UI Automation (1)
 | Tool | Description |
 |---|---|
-| `get_ui_elements` | Full UIA element tree for a window |
-| `click_element` | Click a button by name or automationId — no coordinates needed |
-| `set_element_value` | Write directly to a text field |
-| `scope_element` | High-res zoom crop of an element + its child tree |
+| `click_element` | Click a button by name or automationId — no coordinates needed. Use `desktop_discover` to find target entities. (`get_ui_elements` / `set_element_value` / `scope_element` privatized in Phase 4 — see desktop_discover / desktop_act / screenshot.region.) |
 
 ### Browser CDP (9)
 | Tool | Description |
@@ -185,15 +185,11 @@ All `browser_*` tools that touch the DOM accept `includeContext:false` to omit t
 | `workspace_snapshot` | All windows: thumbnails + UI summaries in one call |
 | `workspace_launch` | Launch an app and auto-detect the new window |
 
-### Context / Wait / History (8)
+### Wait / Status (2)
 | Tool | Description |
 |---|---|
-| `desktop_state` | Lightweight snapshot of focused window, element, cursor, and page state |
-| `get_history` | Retrieve recent tool invocation history |
-| `get_document_state` | Chrome page state (URL/title/readyState/scroll) via CDP |
-| `server_status` | Returns which backend is active: `uia` (native Rust or powershell) and `imageDiff` (native Rust SSE2 or typescript). Diagnostic — call once per session when troubleshooting performance |
-| `wait_until` | Server-side wait for window/focus/terminal/browser DOM state changes |
-| `events_subscribe` / `events_poll` / `events_unsubscribe` / `events_list` | Subscribe to and poll window appearance/disappearance/focus events |
+| `wait_until` | Server-side wait for window/focus/terminal/browser DOM state changes. Replaces the former events_* polling family — use `condition='window_appears'` / `'terminal_output_contains'` / `'element_matches'` / `'focus_changes'` for one-shot waits. |
+| `server_status` | Returns which backend is active: `uia` (native Rust or powershell) and `imageDiff` (native Rust SSE2 or typescript). Diagnostic — call once per session when troubleshooting performance. |
 
 ### Terminal (2)
 | Tool | Description |
@@ -201,11 +197,11 @@ All `browser_*` tools that touch the DOM accept `includeContext:false` to omit t
 | `terminal(action='read')` | Read text from Windows Terminal / PowerShell / cmd / WSL via UIA/OCR. Supports `sinceMarker` for diff reads |
 | `terminal(action='send')` | Send commands to a terminal. Uses clipboard paste by default for IME safety |
 
-### Pin / Macro (3)
+### Pin / Macro (2)
 | Tool | Description |
 |---|---|
-| `window_dock(action='pin')` / `unwindow_dock(action='pin')` | Always-on-top toggle |
-| `run_macro` | Execute up to 50 steps sequentially in one MCP call |
+| `window_dock(action='pin'\|'unpin'\|'dock')` | Always-on-top toggle / docking |
+| `run_macro` | Execute up to 50 steps sequentially in one MCP call. Phase 4: DSL accepts the v1.0.0 dispatcher names (`keyboard({action:'type'})` etc.) only. |
 
 ### Clipboard (2)
 | Tool | Description |
@@ -289,40 +285,40 @@ Keep Claude CLI visible while operating other apps full-screen. Set env vars in 
 | `DESKTOP_TOUCH_DOCK_CORNER` | `bottom-right` | `top-left` / `top-right` / `bottom-left` / `bottom-right` |
 | `DESKTOP_TOUCH_DOCK_WIDTH` / `HEIGHT` | `480` / `360` | px (`"480"`) or ratio of work area (`"25%"`) — 4K/8K auto-adapts |
 | `DESKTOP_TOUCH_DOCK_PIN` | `true` | Always-on-top toggle |
-| `DESKTOP_TOUCH_DOCK_MONITOR` | primary | Monitor id from `get_screen_info` |
+| `DESKTOP_TOUCH_DOCK_MONITOR` | primary | Monitor id from `desktop_state({includeScreen:true})` |
 | `DESKTOP_TOUCH_DOCK_SCALE_DPI` | `false` | If true, multiply px values by `dpi / 96` (opt-in per-monitor scaling) |
 | `DESKTOP_TOUCH_DOCK_MARGIN` | `8` | Screen-edge padding (px) |
 | `DESKTOP_TOUCH_DOCK_TIMEOUT_MS` | `5000` | Max wait for the target window to appear |
 
 > **Input routing gotcha:** when a pinned window is active (e.g. Claude CLI), `keyboard(action='type')` / `keyboard(action='press')` send keys to it, **not** the app you wanted to type into. Always call `focus_window(title=...)` before keyboard operations, then verify `isActive=true` via `screenshot(detail='meta')`.
 
-### Reactive Perception Graph (4)
+### Auto Perception (always-on)
 
-| Tool | Description |
-|---|---|
-| `perception_register` | Register a live perception lens on a window or browser tab. Returns a `lensId` to pass to action tools |
-| `perception_read` | Force-refresh the lens and return a full perception envelope when attention is dirty/stale/blocked |
-| `perception_forget` | Release a lens when the workflow ends or the target was replaced |
-| `perception_list` | List active lenses so Claude can reuse or clean up existing tracking |
-
-Reactive Perception Graph is desktop-touch's low-cost situational awareness layer. It keeps the target identity, focus, rect, readiness, and guard state alive across actions so Claude does not need to re-check everything with a screenshot after every small move.
+Phase 4 privatizes the explicit `perception_*` tool family — the v0.12 Auto
+Perception layer attaches an `attention` signal to every `desktop_state` and
+`desktop_act` response automatically. Action tools also auto-guard when given
+a `windowTitle`. There is no longer a need to register / read / forget lenses
+manually.
 
 ```
-# Register a lens on the target window or browser tab
-perception_register({name:"editor", target:{kind:"window", match:{titleIncludes:"Notepad"}}})
-→ {lensId:"perc-1", ...}
+# desktop_state always returns the attention signal
+desktop_state() → {focusedWindow, focusedElement, modal, attention:"ok", ...}
 
-# Pass lensId to action tools. Guards run before the action;
-# compact feedback arrives in post.perception after the action.
-keyboard(action='type')({text:"hello", windowTitle:"Notepad", lensId:"perc-1"})
-→ post.perception: {attention:"ok", guards:{...}, latest:{target:{title, rect, foreground}}}
+# Action tools auto-guard when windowTitle is given:
+keyboard({action:"type", text:"hello", windowTitle:"Notepad"})
+→ post.perception:{status:"ok"}  // unsafe input blocked if guards fail
 
-# If the app restarts or focus moves away, guards fail closed before unsafe input:
-keyboard(action='type')({text:"x", lensId:"perc-1"})
-→ {ok:false, code:"GuardFailed", suggest:["Re-register lens for the new process instance"]}
+# When attention is dirty / stale / settling, refresh with desktop_state:
+desktop_state()  // re-evaluates attention via Auto Perception
 ```
 
-`lensId` is opt-in on all action tools (`keyboard(action='type')`, `keyboard(action='press')`, `mouse_click`, `mouse_drag`, `click_element`, `set_element_value`, `browser_click`, `browser_navigate`, `browser_eval`). Omitting `lensId` preserves existing behavior exactly.
+For advanced pinned-target workflows, the `lensId` parameter remains on action
+tools (`keyboard`, `mouse_click`, `mouse_drag`, `click_element`,
+`browser_click`, `browser_navigate`, `browser_eval`, `desktop_act`). Omit
+`lensId` for the normal Auto Perception path. The underlying registry, hot
+target cache, and sensor loop are unchanged; only the explicit
+`perception_register / perception_read / perception_forget / perception_list`
+tools were retired.
 
 ---
 
@@ -350,7 +346,7 @@ mouse_click(x=500, y=300, windowTitle="Notepad", elementName="Save")
 mouse_click(x=500, y=300, homing=false)
 ```
 
-The `homing` parameter is available on `mouse_click`, `mouse_move`, `mouse_drag`, and `scroll`. The cache is updated automatically on every `screenshot()`, `get_windows()`, `focus_window()`, and `workspace_snapshot()` call.
+The `homing` parameter is available on `mouse_click`, `mouse_drag`, and `scroll`. The cache is updated automatically on every `screenshot()`, `desktop_discover()`, `focus_window()`, and `workspace_snapshot()` call.
 
 ### `mouse_click` image-local coords (origin + scale)
 
@@ -449,7 +445,7 @@ Changes take effect immediately — no restart needed.
 
 ## Mouse movement speed
 
-All mouse tools (`mouse_move`, `mouse_click`, `mouse_drag`, `scroll`) accept an optional `speed` parameter:
+All mouse tools (`mouse_click`, `mouse_drag`, `scroll`) accept an optional `speed` parameter:
 
 | Value | Behavior |
 |---|---|
@@ -523,7 +519,7 @@ Setting `DESKTOP_TOUCH_FORCE_FOCUS=1` makes `forceFocus: true` the default for a
 
 ## Auto Guard (v0.12+)
 
-Action tools (`mouse_click`, `mouse_drag`, `keyboard(action='type')`, `keyboard(action='press')`, `click_element`, `set_element_value`, `browser_click`, `browser_navigate`) automatically guard each action when you pass `windowTitle` / `tabId`:
+Action tools (`mouse_click`, `mouse_drag`, `keyboard(action='type'/'press')`, `click_element`, `desktop_act`, `browser_click`, `browser_navigate`) automatically guard each action when you pass `windowTitle` / `tabId`:
 
 - Verifies target window identity (process restart / HWND replacement detected)
 - Confirms click coordinates are inside the target window rect

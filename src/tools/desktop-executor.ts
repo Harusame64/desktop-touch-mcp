@@ -1,5 +1,5 @@
 /**
- * desktop-executor.ts — Route desktop_touch actions to the appropriate native backend.
+ * desktop-executor.ts — Route desktop_act actions to the appropriate native backend.
  *
  * Priority order:
  *   1. uia      → clickElement / setElementValue (UIA Invoke/ValuePattern)
@@ -12,7 +12,7 @@
  *
  * G2: terminal route now uses background WM_CHAR path via bg-input.ts.
  *     On unsupported windows (Chromium, UWP) it throws explicitly so the caller
- *     gets ok:false reason:"executor_failed" and can fall back to V1 terminal_send.
+ *     gets ok:false reason:"executor_failed" and can fall back to V1 terminal({action:'send'}).
  */
 
 import type { UiEntity, ExecutorKind } from "../engine/world-graph/types.js";
@@ -34,7 +34,7 @@ export interface ExecutorDeps {
   /**
    * Terminal: send text to a terminal window via background WM_CHAR injection (G2).
    * Does not steal focus. Throws explicitly for unsupported windows (Chromium, UWP).
-   * On failure, caller sees ok:false reason:"executor_failed" and can fall back to V1 terminal_send.
+   * On failure, caller sees ok:false reason:"executor_failed" and can fall back to V1 terminal({action:'send'}).
    */
   terminalSend(windowTitle: string, text: string): Promise<void>;
   /** Mouse: click at absolute screen coordinates. */
@@ -132,7 +132,9 @@ export function createDesktopExecutor(
       // Prefer typed locator; fall back to sourceId (legacy bridge — remove in P3).
       const automationId = entity.locator?.uia?.automationId ?? entity.sourceId;
       const name         = entity.locator?.uia?.name ?? entity.label;
-      if (action === "type" && text !== undefined) {
+      // Phase 4: 'setValue' absorbs former set_element_value tool — same UIA
+      // ValuePattern path as 'type'. Both actions land here for any UIA entity.
+      if ((action === "type" || action === "setValue") && text !== undefined) {
         await d.uiaSetValue(winTitle, text, name, automationId);
         return "uia";
       }
@@ -158,7 +160,9 @@ export function createDesktopExecutor(
     const cdpSelector = entity.locator?.cdp?.selector ?? (entity.sources.includes("cdp") ? entity.sourceId : undefined);
     if (cdpSelector) {
       const cdpTabId = entity.locator?.cdp?.tabId ?? target?.tabId;
-      if (action === "type" && text !== undefined) {
+      // Phase 4: 'setValue' on a CDP entity uses cdpFill — equivalent to
+      // browser_fill for controlled inputs (React/Vue/Svelte).
+      if ((action === "type" || action === "setValue") && text !== undefined) {
         await d.cdpFill(cdpSelector, text, cdpTabId);
         return "cdp";
       }
@@ -242,7 +246,7 @@ function getSharedRealDeps(): ExecutorDeps {
       // G2: Background WM_CHAR path — no focus steal.
       // canInjectViaPostMessage() gates supported terminals (Windows Terminal, conhost).
       // Unsupported windows (Chromium, UWP) throw explicitly — caller gets executor_failed
-      // and the LLM description directs them to V1 terminal_send as fallback.
+      // and the LLM description directs them to V1 terminal({action:'send'}) as fallback.
       const { enumWindowsInZOrder } = await import("../engine/win32.js");
       const { canInjectViaPostMessage, postCharsToHwnd } = await import("../engine/bg-input.js");
       const wins = enumWindowsInZOrder();

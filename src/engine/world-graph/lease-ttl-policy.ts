@@ -39,7 +39,7 @@ export const LEASE_TTL_POLICY = {
 } as const;
 
 export interface LeaseTtlInput {
-  /** view mode from desktop_see. Undefined = "action" (default). */
+  /** view mode from desktop_discover. Undefined = "action" (default). */
   view: "action" | "explore" | "debug" | undefined;
   /** Number of entities issued in this view (after maxEntities slicing). */
   entityCount: number;

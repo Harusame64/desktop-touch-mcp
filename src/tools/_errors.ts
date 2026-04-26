@@ -16,26 +16,26 @@ const SUGGESTS: Record<string, string[]> = {
     "At least one of name or automationId must be provided",
   ],
   WindowNotFound: [
-    "Run get_windows to see available titles",
+    "Run desktop_discover to see available titles",
     "Try a shorter partial title match (e.g. first word only)",
     "The window may be minimized — try focus_window first",
     "If the app is still launching, use wait_until(condition='window_appears') before focus_window",
     "If the target is a Chrome/Edge tab (only the active tab's title appears in window titles), use browser_open to get the tabId, then browser_navigate to the target URL to switch tabs",
   ],
   ElementNotFound: [
-    "Call get_ui_elements to see candidate names and automationIds",
+    "Call desktop_discover to see candidate names and automationIds",
     "Use screenshot(detail='text') for actionable[] with clickAt coords",
     "Try a shorter partial name match",
     "The element may not be visible yet — use wait_until(condition='element_appears')",
   ],
   InvokePatternNotSupported: [
     "Use mouse_click with clickAt coords from screenshot(detail='text')",
-    "Use set_element_value for text input fields",
-    "Try scope_element to inspect available patterns for this element",
+    "Use desktop_act({action:'setValue'}) for text input fields",
+    "Use screenshot({region:{x,y,width,height}}) to inspect the element region (after desktop_discover)",
   ],
   BlockedKeyCombo: [
     "Use workspace_launch to open applications by name instead",
-    "If you need shell execution, use terminal_send to an existing terminal window",
+    "If you need shell execution, use terminal({action:'send'}) to an existing terminal window",
   ],
   UiaTimeout: [
     "The target app may be unresponsive — wait and retry",
@@ -52,7 +52,7 @@ const SUGGESTS: Record<string, string[]> = {
     "Or call browser_open({launch:{}}) to spawn a debug-mode Chrome on the configured port",
   ],
   TerminalWindowNotFound: [
-    "Call get_windows to see available titles",
+    "Call desktop_discover to see available titles",
     "Try a partial title match (e.g. 'PowerShell' or 'pwsh')",
     "Filter by processName: pwsh / powershell / cmd / bash / WindowsTerminal",
   ],
@@ -104,21 +104,20 @@ const SUGGESTS: Record<string, string[]> = {
   MaxDepthExceeded: [
     "The scroll ancestor chain is deeper than maxDepth (default 3)",
     "Increase maxDepth to walk more layers",
-    "Or scroll an outer container first via a separate smart_scroll call",
+    "Or scroll an outer container first via a separate scroll({action:'smart'}) call",
   ],
   GuardFailed: [
     "Read the perception envelope for attention/guard details",
-    "Call perception_read(lensId) to see fresh fluent state",
+    "Call desktop_state to force a fresh observation before retrying",
     "Consider a corrective action: focus_window, dismiss modal, or wait_until",
-    "Or register the lens with guardPolicy:'warn' to receive warnings instead of blocks",
   ],
   LensNotFound: [
-    "Call perception_register first to create a lens for the target window",
-    "Call perception_list to see currently active lens IDs",
+    "Drop the lensId — Auto Perception tracks state when you pass windowTitle / tabId directly",
+    "If you cached a lensId from a prior session, treat it as expired",
   ],
   LensBudgetExceeded: [
-    "Raise maxEnvelopeTokens when calling perception_register",
-    "Use perception_read for explicit inspection without the envelope overhead",
+    "Drop lensId — Auto Perception keeps envelope cost bounded automatically",
+    "Or call desktop_state for a lightweight status check without the envelope",
   ],
   BackgroundInputUnsupported: [
     "Target app does not accept background input - use method:'foreground' or omit",
@@ -130,7 +129,7 @@ const SUGGESTS: Record<string, string[]> = {
   ],
   SetValueAllChannelsFailed: [
     "Verify the element supports text input",
-    "Try click_element + keyboard_type manually",
+    "Try click_element + keyboard({action:'type'}) manually",
     "Check context.attempts for per-channel error codes",
   ],
 };

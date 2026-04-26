@@ -185,35 +185,41 @@ LLM 非露出、Phase 4 docs polish で一括対応。
 
 ---
 
-## 4. Phase 4 で対応する事項 (非公開化 / 吸収)
+## 4. Phase 4 完了時点の懸念事項 (実装済 — 2026-04-26)
 
-### 4.1. 入り口削除 (handler 残置方針)
+### 4.1. 実装済内容
 
-memory `feedback_disable_via_entry_block.md` 通り、`server.tool(...)` 登録のみ削除、handler 関数 / engine 層 / 関連 unit test は残置:
+設計書 `docs/tool-surface-phase4-privatize-absorb-design.md` (Status: Implemented) に従い、stub catalog 46 → 26 entries (-20):
 
-- `events_*` 4 ツール
-- `perception_*` 4 ツール (自動 attention は Phase 1 で `desktop_state` / `desktop_act` レスポンスに吸収済)
-- `get_history` (debug 用)
-- `mouse_move` (hover-trigger 稀)
-- `browser_disconnect` (Phase 3 で対応する場合は除く)
+- **入り口削除 10**: `events_*` 4 + `perception_*` 4 + `get_history` + `mouse_move` (handler / schema / engine 層は internal export 残置)
+- **screenshot 吸収 3**: `mode='background'` (former `screenshot_background`) / `detail='ocr'` + `ocrLanguage` (former `screenshot_ocr`) / `region` (former `scope_element` after `desktop_discover` exposes element bounds)
+- **desktop_act 吸収 1**: `action='setValue'` (former `set_element_value`)
+- **desktop_state include* 拡張 4**: `focusedWindow` (former `get_active_window`) / `includeCursor` (former `get_cursor_position`) / `includeDocument` (former `get_document_state`) / `includeScreen` (former `get_screen_info`)
+- **desktop_discover response 確認 2**: `actionable[]` (former `get_ui_elements`) / `windows[]` (former `get_windows`)
+- **run_macro DSL TOOL_REGISTRY 移行**: pre-Phase-1 名を v1.0.0 dispatcher 名に統一 (Phase 2 §2.1 引継ぎ)
+- **コメント polish 16+ 箇所**: Phase 1 §1.1 / Phase 2 §2.5 / Phase 3 §3.2 引継ぎ
+- **measure-tools-list-tokens.ts Tier refresh**: Phase 3 §3.2 引継ぎ
+- **LLM 露出文字列 audit**: Phase 4 contract test に allowed-context 検出付きで組込 (`former X` migration breadcrumbs / `failWith` handler tags / error template literals)
 
-### 4.2. 吸収
+公開面: stub catalog 26 + dynamic v2 (`desktop_discover` / `desktop_act`) 2 = **28 public tools**。
 
-- `screenshot_background` / `screenshot_ocr` / `scope_element` を `screenshot` パラメータへ吸収 (mode='background' / detail='ocr' / region={x,y,w,h})
-- `set_element_value` を `desktop_act(action='setValue')` に統合
-- `get_*` 系 (`get_active_window` / `get_cursor_position` / `get_document_state` / `get_screen_info` / `get_ui_elements` / `get_windows`) を `desktop_state` / `desktop_discover` レスポンスフィールドに吸収
+### 4.2. Phase 5 dogfood に持ち越す確認事項
 
-### 4.3. macro.ts TOOL_REGISTRY の新名移行 (§2.1 引継ぎ)
+- **multi-monitor / virtual desktop での `desktop_state.includeScreen=true`** — monitor info の正確性 (Phase 1 §1.4 carryover)
+- **`desktop_act({action:'setValue'})` の UIA ValuePattern 失敗時の挙動** — suggestedFix の提示等
+- **`screenshot({detail:'ocr'})` の OCR 言語自動判定** — Phase 4 では明示 `ocrLanguage` のみ
+- **`mouse_move` 削除後の hover 系 UI 影響** — facade 復活判断
+- **`events_*` / `perception_*` 削除後の代替動線** — `wait_until` で全部カバーできるか
+- **Pre-existing flaky 2 件** (Phase 1 §1.2 carryover):
+  - `tests/e2e/context-consistency.test.ts` C3 (Save-As dialog 検出 — Win11 MSStore Notepad)
+  - `tests/e2e/rich-narration-edge.test.ts` B1 (Chromium narrate:rich)
+- **`registry-lru.test.ts` test-isolation flake** (Phase 3 §3.3 carryover) — vitest `vi.mock` leak
 
-`run_macro` DSL を新 dispatcher 名に統一。breaking change として CHANGELOG 追記。
+### 4.3. v1.0.0 release smoke test (Phase 5)
 
-### 4.4. Phase 4 着手時の audit 必須
-
-```bash
-grep -rn "events_\|perception_register\|perception_read\|perception_list\|perception_forget\|get_history\|mouse_move\|screenshot_background\|screenshot_ocr\|scope_element\|set_element_value\|get_active_window\|get_cursor_position\|get_document_state\|get_screen_info\|get_ui_elements\|get_windows" src/
-```
-
-LLM 露出箇所 (description / suggest / error.message / engine 層 literal type) は 0 件にする。
+- 別マシンで `npx -y @harusame64/desktop-touch-mcp` → tools/list が 28 ツール
+- run_macro DSL: 旧名 → fail / 新名 → OK を確認
+- Glama listing / MCP Registry 更新
 
 ---
 

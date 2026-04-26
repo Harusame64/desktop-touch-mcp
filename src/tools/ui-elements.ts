@@ -352,31 +352,26 @@ export const scopeElementHandler = async ({
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function registerUiElementTools(server: McpServer): void {
-  server.tool(
-    "get_ui_elements",
-    "Inspect the raw UIA element tree of a window — returns names, control types, automationIds, bounding rects, and interaction patterns. Each element includes viewportPosition ('in-view'|'above'|'below'|'left'|'right') relative to the window client region — use it to decide whether scroll(action='to_element') is needed before clicking. Prefer screenshot(detail='text') for interactive automation (returns pre-filtered actionable[] with clickAt coords). Use get_ui_elements when you need the unfiltered tree or specific automationIds for click_element. Caveats: Large windows may return hundreds of elements — scope with windowTitle. Results are capped at maxElements (default 80, max 200) — increase if the target element is missing.",
-    getUiElementsSchema,
-    getUiElementsHandler
-  );
+  // Phase 4: get_ui_elements privatized — handler retained as internal export.
+  // desktop_discover returns the actionable[] entity list (with name / role /
+  // value / automationId / region) and emits leases for desktop_act.
+  // (memory: feedback_disable_via_entry_block.md)
 
   server.tool(
     "click_element",
-    "Invoke a UI element by name or automationId via UIA InvokePattern — no screen coordinates needed. The server auto-guards using windowTitle (verifies identity, foreground, modal) and returns post.perception.status. Prefer over mouse_click for buttons, menu items, and links in native Windows apps. Use get_ui_elements first to discover automationIds. Pass fixId from a suggestedFix to re-target after window identity drift. lensId is optional for advanced pinned-lens use. Caveats: Requires InvokePattern — some custom controls do not expose it; fall back to mouse_click in that case.",
+    "Invoke a UI element by name or automationId via UIA InvokePattern — no screen coordinates needed. The server auto-guards using windowTitle (verifies identity, foreground, modal) and returns post.perception.status. Prefer over mouse_click for buttons, menu items, and links in native Windows apps. Use desktop_discover first to discover automationIds. Pass fixId from a suggestedFix to re-target after window identity drift. lensId is optional for advanced pinned-lens use. Caveats: Requires InvokePattern — some custom controls do not expose it; fall back to mouse_click in that case.",
     clickElementSchema,
     withRichNarration("click_element", clickElementHandler, { windowTitleKey: "windowTitle" })
   );
 
-  server.tool(
-    "set_element_value",
-    "Set the value of a text field or combo box via UIA ValuePattern. The server auto-guards using windowTitle and returns post.perception.status. More reliable than keyboard(action='type') for programmatic form input. Use narrate:'rich' to confirm the value was applied. lensId is optional for advanced pinned-lens use. Caveats: Only works for elements that expose ValuePattern; does not work on contenteditable HTML or custom rich-text editors — use keyboard(action='type') for those. If guard blocks with a suggestedFix, the fix.tool will be 'click_element' (v3 §7.1); approve via click_element({fixId}) then re-set.",
-    setElementValueSchema,
-    withRichNarration("set_element_value", setElementValueHandler, { windowTitleKey: "windowTitle" })
-  );
-
-  server.tool(
-    "scope_element",
-    "Return a high-resolution screenshot of a specific element's region plus its child element tree. Requires UIA — works with native apps, Chrome/Edge, VS Code. Use get_ui_elements first to discover element names or automationIds. At least one of name, automationId, or controlType must be provided.",
-    scopeElementSchema,
-    scopeElementHandler
-  );
+  // Phase 4: set_element_value absorbed into desktop_act({action:'setValue'}).
+  // setElementValueHandler / setElementValueSchema retained as internal
+  // exports — desktop-executor calls the equivalent uia-bridge.setElementValue
+  // for any UIA entity when action='setValue' (or 'type'). For non-lease /
+  // legacy code paths the handler can still be invoked directly.
+  //
+  // scope_element privatized — entry-point removed, handler retained
+  // as internal export. Discover element bounds via desktop_discover, then pass
+  // region={x,y,width,height} to screenshot for the equivalent zoom.
+  // (memory: feedback_disable_via_entry_block.md)
 }
