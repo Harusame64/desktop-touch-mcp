@@ -11,7 +11,8 @@ import {
   type WindowZInfo,
 } from "../engine/win32.js";
 import { getElementBounds } from "../engine/uia-bridge.js";
-import { evaluateInTab, DEFAULT_CDP_PORT } from "../engine/cdp-bridge.js";
+import { evaluateInTab } from "../engine/cdp-bridge.js";
+import { getCdpPort } from "../utils/desktop-config.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // External hooks — set by terminal.ts and browser.ts after they load.
@@ -192,6 +193,12 @@ function probeTerminalOutput(windowTitle: string, pattern: string, regex: boolea
  * a regex when `regex:true`, otherwise as a substring (case-sensitive both
  * ways — use a regex with `i` flag for case-insensitive substring search).
  *
+ * When `port` is omitted, falls back to the configured CDP port from
+ * `desktop-touch-config.json` (`getCdpPort()`), matching how other browser
+ * tools resolve their default. Plain `DEFAULT_CDP_PORT` would silently
+ * disagree with the configured port and emit BrowserNotConnected even
+ * when the browser is connected (Codex PR #58 P1).
+ *
  * Returns null while waiting and surfaces a "BrowserNotConnected" error if
  * CDP is unreachable so pollUntil can short-circuit.
  */
@@ -202,9 +209,10 @@ function probeUrlMatches(
   tabId?: string,
 ): () => Promise<{ url: string } | null> {
   const matcher = regex ? new RegExp(pattern) : null;
+  const effectivePort = port ?? getCdpPort();
   return async () => {
     try {
-      const url = (await evaluateInTab("location.href", tabId ?? null, port ?? DEFAULT_CDP_PORT)) as string | null;
+      const url = (await evaluateInTab("location.href", tabId ?? null, effectivePort)) as string | null;
       if (typeof url !== "string") return null;
       const matched = matcher ? matcher.test(url) : url.includes(pattern);
       return matched ? { url } : null;
