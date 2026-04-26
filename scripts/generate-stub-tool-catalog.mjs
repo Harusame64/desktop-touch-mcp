@@ -589,7 +589,7 @@ function parseZObjectVariant(variantExprRaw, discriminator) {
   return variant;
 }
 
-function parseDiscriminatedUnionSchema(rawExpr /*, src */) {
+function parseDiscriminatedUnionSchema(rawExpr) {
   const m = /^z\s*\.\s*discriminatedUnion\s*\(/.exec(rawExpr);
   if (!m) return null;
   const argsStart = m[0].length;
@@ -661,7 +661,7 @@ for (const file of TOOL_FILES) {
     const rawExpr = tool.schemaName ? findConstExpression(src, tool.schemaName) : undefined;
     const isDiscrimUnion = rawExpr && /^\s*z\s*\.\s*discriminatedUnion\s*\(/.test(rawExpr);
     if (isDiscrimUnion) {
-      const expanded = parseDiscriminatedUnionSchema(rawExpr.trim(), src);
+      const expanded = parseDiscriminatedUnionSchema(rawExpr.trim());
       tool.inputSchema = expanded || {
         type: 'object',
         properties: { action: { type: 'string' } },
