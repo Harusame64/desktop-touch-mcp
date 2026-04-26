@@ -651,9 +651,14 @@ describe("Phase 4 — Codex PR #41 round 5 P1: desktop_discover.windows[] is imp
     expect(out.windows).toHaveLength(0);
   });
 
-  it("desktop-register wires the production windowsProvider via enumWindowsInZOrder", () => {
+  it("desktop-register wires the production windowsProvider via the cached factory", () => {
     const src = readFileSync(join(ROOT, "src", "tools", "desktop-register.ts"), "utf-8");
-    expect(src).toMatch(/windowsProvider:\s*\(\)\s*=>\s*enumWindowsInZOrder/);
+    // Audit P1-1: the inline closure was replaced with createCachedProductionWindowsProvider().
+    // Both the factory definition and its use at the facade construction site must be present.
+    expect(src).toMatch(/export function createCachedProductionWindowsProvider/);
+    expect(src).toMatch(/windowsProvider:\s*createCachedProductionWindowsProvider\(\)/);
+    // The factory itself must still call enumWindowsInZOrder under the hood.
+    expect(src).toMatch(/enumerate\s*=\s*options\.enumerate\s*\?\?\s*enumWindowsInZOrder/);
   });
 });
 
