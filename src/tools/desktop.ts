@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { UiEntityCandidate } from "../engine/vision-gpu/types.js";
 import type { UiEntity, EntityLease } from "../engine/world-graph/types.js";
-import { computeLeaseTtlMs } from "../engine/world-graph/lease-ttl-policy.js";
+import { computeLeaseTtlMs, computeSoftExpiresAtMs } from "../engine/world-graph/lease-ttl-policy.js";
 import { resolveCandidates } from "../engine/world-graph/resolver.js";
 import {
   SessionRegistry,
@@ -91,6 +91,14 @@ export interface DesktopSeeOutput {
    * entityZeroReason explains why entities.length === 0 when set.
    */
   constraints?: ViewConstraints;
+  /**
+   * Soft-expiry advisory (no-compromise lease A): if the LLM is still
+   * deciding past this absolute timestamp, it should refresh via
+   * desktop_discover even though the leases are still technically valid.
+   * Positioned at 60% of the lease TTL window. The hard `expiresAtMs` on
+   * each entity's lease remains the only correctness wall.
+   */
+  softExpiresAtMs: number;
 }
 
 export interface DesktopTouchInput {
@@ -265,11 +273,42 @@ export class DesktopFacade {
     session.entities = resolved;
     this.registry.replaceViewId(prevViewId, newViewId, key);
 
-    // H1: response-size aware TTL. Ignored when facade.defaultTtlMs explicitly set
-    // (preserves backward compat for tests that inject a fixed TTL).
+    // Phase 4 (Codex PR #41 round 5 P1): top-level windows enumeration.
+    // Pulled forward (was after lease issue) so the TTL policy can size the
+    // payloadBytes estimate against the full response shape.
+    // Failure to enumerate is non-fatal — surface an empty list rather than
+    // failing the whole call, since see()'s primary contract is entity
+    // discovery for the targeted window.
+    let windows: DesktopWindowMeta[] = [];
+    if (this.opts.windowsProvider) {
+      try {
+        windows = this.opts.windowsProvider();
+      } catch {
+        windows = [];
+      }
+    }
+
+    // H1 + no-compromise A: TTL is response-size aware. Estimate payload
+    // bytes from entity / window / warning counts (the shape is stable enough
+    // that a coefficient-based estimate is within ~30% of the real serialized
+    // size — close enough for a soft TTL knob; we'd otherwise have to
+    // serialize twice).
+    const estimatedPayloadBytes =
+      500 +
+      resolved.length * 250 +
+      windows.length * 180 +
+      rawResult.warnings.length * 80;
+
     const policyTtl = this.opts.defaultTtlMs !== undefined
       ? this.opts.defaultTtlMs
-      : computeLeaseTtlMs({ view: input.view, entityCount: resolved.length });
+      : computeLeaseTtlMs({
+          view: input.view,
+          entityCount: resolved.length,
+          payloadBytes: estimatedPayloadBytes,
+        });
+
+    const nowFn = this.opts.nowFn ?? Date.now;
+    const issuedAtMs = nowFn();
 
     const entityViews: EntityView[] = resolved.map((e) => {
       const lease = session.leaseStore.issue(e, newViewId, policyTtl);
@@ -286,24 +325,12 @@ export class DesktopFacade {
       return view;
     });
 
-    // Phase 4 (Codex PR #41 round 5 P1): top-level windows enumeration.
-    // Failure to enumerate is non-fatal — surface an empty list rather than
-    // failing the whole call, since see()'s primary contract is entity
-    // discovery for the targeted window.
-    let windows: DesktopWindowMeta[] = [];
-    if (this.opts.windowsProvider) {
-      try {
-        windows = this.opts.windowsProvider();
-      } catch {
-        windows = [];
-      }
-    }
-
     const output: DesktopSeeOutput = {
       viewId: newViewId,
       target: { title: targetTitle(input.target), generation: session.generation },
       entities: entityViews,
       windows,
+      softExpiresAtMs: computeSoftExpiresAtMs(issuedAtMs, policyTtl),
     };
     if (rawResult.warnings.length > 0) output.warnings = rawResult.warnings;
 
