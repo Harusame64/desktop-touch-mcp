@@ -486,6 +486,7 @@ export function registerDesktopTools(server: McpServer): void {
       "visual_attempted_empty_cdp_fallback → CDP failed and visual also empty (browser); check --remote-debugging-port=9222 and retry;",
       "dialog_resolved_via_owner_chain → common dialog (Save As/Open) found via owner chain; targeting is now hwnd-based;",
       "parent_disabled_prefer_popup → parent window blocked by a modal; switched to targeting the active popup dialog.",
+      "response.softExpiresAtMs is an advisory timestamp at ~60% of the lease TTL window — past it the LLM should consider re-calling desktop_discover even though leases are still technically valid; lease.expiresAtMs remains the only correctness wall.",
     ].join(" "),
     desktopSeeSchema,
     async (input) => {
