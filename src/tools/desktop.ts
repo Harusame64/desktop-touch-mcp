@@ -330,6 +330,12 @@ export class DesktopFacade {
     const constraints = deriveViewConstraints(rawResult.warnings, entityViews.length);
     if (constraints) output.constraints = constraints;
 
+    // Codex PR #55 P2: refresh lastAccessMs at the END of see() too, in case
+    // candidateProvider / ingress took longer than the eviction interval to
+    // complete. getOrCreate stamps the start time; without this completion
+    // refresh, a multi-minute see() could be evicted mid-call.
+    session.lastAccessMs = (this.opts.nowFn ?? Date.now)();
+
     return output;
   }
 
@@ -339,7 +345,12 @@ export class DesktopFacade {
    * Returns "entity_not_found" if the issuing session has been evicted.
    */
   async touch(input: DesktopTouchInput): Promise<DesktopTouchOutput> {
-    const session = this.registry.getByViewId(input.lease.viewId);
+    // Pass nowFn so getByViewId can refresh lastAccessMs against the same
+    // injected clock the eviction sweep uses. Codex PR #55 P2: without
+    // this refresh, an in-flight workflow (see → think → touch) crossing
+    // the eviction interval (default 30s timer over a 120s sessionTtlMs)
+    // could find its session evicted at the moment of touch.
+    const session = this.registry.getByViewId(input.lease.viewId, this.opts.nowFn);
     if (!session) {
       return { ok: false, reason: "entity_not_found", diff: [] };
     }
