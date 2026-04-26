@@ -1,17 +1,17 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.Harusame64/desktop-touch-mcp",
-  "description": "Windows 11 desktop automation MCP server. Win32, UIA, CDP/Chrome, 57 tools. Windows-only.",
+  "description": "Windows 11 desktop automation MCP server. Win32, UIA, CDP/Chrome, 28 tools. Windows-only.",
   "repository": {
     "url": "https://github.com/Harusame64/desktop-touch-mcp",
     "source": "github"
   },
-  "version": "0.15.7",
+  "version": "1.0.3",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@harusame64/desktop-touch-mcp",
-      "version": "0.15.7",
+      "version": "1.0.3",
       "transport": {
         "type": "stdio"
       },
