@@ -289,12 +289,9 @@ export function registerDesktopStateTools(server: McpServer): void {
     desktopStateHandler
   );
 
-  server.tool(
-    "get_history",
-    "Return recent action history (ring buffer, last 20 entries) with tool name, argsDigest, post-state, and timestamp. Use to reconstruct context after model interruption or verify a step occurred.",
-    getHistorySchema,
-    getHistoryHandler
-  );
+  // Phase 4: get_history privatized — debug/diagnostic tool, not part of the
+  // LLM action workflow. Handler retained as internal export for tests.
+  // (memory: feedback_disable_via_entry_block.md)
 
   server.tool(
     "get_document_state",

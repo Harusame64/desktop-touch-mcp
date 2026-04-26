@@ -108,17 +108,16 @@ const SUGGESTS: Record<string, string[]> = {
   ],
   GuardFailed: [
     "Read the perception envelope for attention/guard details",
-    "Call perception_read(lensId) to see fresh fluent state",
+    "Call desktop_state to force a fresh observation before retrying",
     "Consider a corrective action: focus_window, dismiss modal, or wait_until",
-    "Or register the lens with guardPolicy:'warn' to receive warnings instead of blocks",
   ],
   LensNotFound: [
-    "Call perception_register first to create a lens for the target window",
-    "Call perception_list to see currently active lens IDs",
+    "Drop the lensId — Auto Perception tracks state when you pass windowTitle / tabId directly",
+    "If you cached a lensId from a prior session, treat it as expired",
   ],
   LensBudgetExceeded: [
-    "Raise maxEnvelopeTokens when calling perception_register",
-    "Use perception_read for explicit inspection without the envelope overhead",
+    "Drop lensId — Auto Perception keeps envelope cost bounded automatically",
+    "Or call desktop_state for a lightweight status check without the envelope",
   ],
   BackgroundInputUnsupported: [
     "Target app does not accept background input - use method:'foreground' or omit",

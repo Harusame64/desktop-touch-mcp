@@ -224,72 +224,14 @@ export const perceptionListHandler = async (_params: Record<string, never>) => {
 // Registration
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function registerPerceptionTools(server: McpServer): void {
-  server.tool(
-    "perception_register",
-    buildDesc({
-      purpose:
-        "ADVANCED / DEBUG ONLY. Register a named perception lens that pins a specific HWND or " +
-        "browser tab identity across many actions and delivers rich perception envelopes via " +
-        "perception_read. For normal action tools, you do NOT need to call this — just pass " +
-        "windowTitle or tabId directly to the action tool and the server will auto-guard.",
-      details:
-        "Returns a lensId that can be passed to action tools such as keyboard(action='type'/'press'), " +
-        "mouse_click, browser_click, and browser_navigate. When a tool receives lensId, " +
-        "desktop-touch refreshes the tracked state, evaluates safety guards, and attaches a compact " +
-        "post.perception envelope to the response. The envelope reports attention, guard status, " +
-        "recent changes, and the latest known target state, reducing desktop_state/screenshot round trips.",
-      prefer:
-        "Use only when you need pinned long-lived HWND tracking or explicit perception_read access. " +
-        "For one-off actions, passing windowTitle directly to the action tool is sufficient and " +
-        "returns post.perception.status without a separate register call.",
-      caveats:
-        "A lens is not a visual recognition model. It tracks structured state from Win32, CDP, and " +
-        "optional UIA sensors. safe.clickCoordinates checks window bounds, not pixel-level occlusion. " +
-        "browserTab lenses require Chrome/Edge with --remote-debugging-port=9222. If attention is " +
-        "dirty, stale, settling, guard_failed, or identity_changed, follow the suggested action before " +
-        "continuing. Maximum 16 active lenses are kept; old lenses may be evicted.",
-      examples: [
-        "// Normal use — no registration needed:",
-        "keyboard({action:'type', windowTitle:'Notepad', text:'hello'})" +
-          " → post.perception.status='ok' auto-guard without lensId",
-        "// Advanced pinned-lens use:",
-        "perception_register({name:'editor', target:{kind:'window', match:{titleIncludes:'Visual Studio Code'}}})" +
-          " → {lensId:'perc-1'}",
-        "keyboard({action:'type', windowTitle:'Visual Studio Code', text:'hello', lensId:'perc-1'})" +
-          " → response includes post.perception (rich envelope)",
-        "perception_forget({lensId:'perc-1'})" +
-          " → release tracking when done",
-      ],
-    }),
-    perceptionRegisterSchema,
-    perceptionRegisterHandler
-  );
-  server.tool(
-    "perception_read",
-    "Force-refresh a registered perception lens and return a full perception envelope. " +
-    "Use when post.perception.attention is dirty, stale, settling, guard_failed, or identity_changed, " +
-    "or when you need fresh structured state before the next action. Returns attention, guard results, " +
-    "latest target/browser state, changed fields, and suggested recovery actions. Prefer this over " +
-    "screenshot/desktop_state when a lens already exists.",
-    perceptionReadSchema,
-    perceptionReadHandler
-  );
-  server.tool(
-    "perception_forget",
-    "Deregister a perception lens and release its tracking resources. Use when a workflow is complete, " +
-    "when attention is identity_changed, or before re-registering a target that was closed, restarted, " +
-    "or replaced. Removes the lens from guard evaluation, resource listings, and sensor subscriptions. " +
-    "Returns whether a lens was removed.",
-    perceptionForgetSchema,
-    perceptionForgetHandler
-  );
-  server.tool(
-    "perception_list",
-    "List all active perception lenses. Use when you need to find an existing lensId, verify which " +
-    "windows or browser tabs are being tracked, or clean up stale lenses before starting a new workflow. " +
-    "Returns lensId, name, target kind, guardPolicy, salience, attention, and registration metadata.",
-    perceptionListSchema,
-    perceptionListHandler
-  );
+// Phase 4: perception_* tools privatized — entry-point removed, handlers
+// retained as internal exports. v0.12 Auto Perception attaches the attention
+// signal to desktop_state / desktop_act responses automatically, so explicit
+// lens management is no longer the primary access path. The engine layer
+// (perception/registry.ts, hot-target-cache, sensor loop) is unchanged; a
+// facade can be re-introduced in a later phase if dogfood shows the explicit
+// lens workflow is still needed.
+// (memory: feedback_disable_via_entry_block.md)
+export function registerPerceptionTools(_server: McpServer): void {
+  // intentionally empty — handlers above remain exported.
 }
