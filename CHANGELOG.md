@@ -1,6 +1,17 @@
 # Changelog
 
-## [1.0.0] - DRAFT — Tool Surface Reduction Phase 1 + Phase 2 + Phase 3 + Phase 4
+## [1.0.0] - 2026-04-26 — Tool Surface Reduction (Phase 1+2+3+4) + V2 World-Graph default-on + lease hardening
+
+### Highlights
+
+- **65 → 28 public tools.** Tool Surface Reduction Phase 1 (naming redesign), Phase 2 (family-merge dispatchers), Phase 3 (browser rearrangement), Phase 4 (privatize / absorb) all shipped. The MCP catalogue is 26 stub-catalog entries plus 2 dynamic v2 World-Graph tools (`desktop_discover` / `desktop_act`).
+- **Anti-Fukuwarai v2 (World-Graph) is the default surface.** `desktop_discover` issues entity leases; `desktop_act` consumes them. Kill switch `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1` exposes a v1 fallback tool set (`get_windows` / `get_ui_elements` / `set_element_value`) for troubleshooting only.
+- **Lease hardening.** Payload-size aware TTL with a soft-expiry advisory (`response.softExpiresAtMs` ≈ 60 % of the TTL window) tells the LLM when to refresh proactively; cap raised to 60 s for large explore + payload combos. Session eviction is now wired into a `.unref`'d 30 s timer so long-running processes don't leak.
+- **Security audit pass.** CWE-94 in CDP `cdpFill` fixed (raw selector interpolation → JSON.stringify), HTTP CORS narrowed from `*` to a localhost-origin allowlist with proper `Vary: Origin`, native vision-backend Mutex poison handled.
+- **CI gains Rust regression coverage.** windows-latest CI now runs the napi-rs build (`build:rs:debug`) on every PR, so any drift in the FFI shape / `build.rs` / Cargo features fails fast.
+- **Two new browser DX wins.** `wait_until(url_matches)` waits on `location.href`; `browser_get_dom` now attaches a body-structure hint to ElementNotFound errors so the LLM gets an alternative-selector starting point.
+
+
 
 ### Breaking Changes — Phase 1 (Naming Redesign, 10 tools)
 
