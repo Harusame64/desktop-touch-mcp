@@ -203,31 +203,33 @@ For each finding: file:line + 1-line summary + suggested fix direction.
 
 ### 8.1. P0 — release blocker
 
-| # | カテゴリ | file:line | summary | 修正方針 |
+すべて消化済み (P0-4 は再調査棄却)。
+
+| # | 状態 | カテゴリ | summary | merged in |
 |---|---|---|---|---|
-| **P0-1** | H | `.github/workflows/ci.yml` | CI が `npm test` を回さない (build と stub-catalog check のみ)。テスト regression が main に入る経路 | release.yml と同じ test ステップを ci.yml に追加 |
-| **P0-2** | H | `.github/workflows/ci.yml` | CI が `npm run build:rs` を回さない (Rust 側 regression を merge 前に検知不可)。release.yml だけが Rust build を持つ | ci.yml に `node-gyp install` + `npm run build:rs` + `cargo check` を追加 |
-| **P0-3** | B1 | `src/tools/desktop-executor.ts:176` | terminal route が `setValue/type` の text undefined ガードを欠落 (UIA/CDP 経路は round 3 で追加済、terminal だけ漏れ)。`text ?? ""` で空文字 fallback してしまう | `desktop-register.ts` の `validateDesktopTouchTextRequirement` を terminal route にも適用 |
-| ~~P0-4~~ | C | (重新調査により棄却) | audit grep が test 込みで集計していた。実コード上の `unwrap()` / `expect()` を 1 件ずつ精査した結果、florence2 / paddleocr / omniparser / dhash / pixel_diff / inference の unwrap は全て `#[cfg(test)]` 配下、`image_processing.rs:219-220` は `is_empty()` 早期 return 後の不変式保護、`uia/thread.rs:52` は OS thread spawn の startup-time intentional crash。production panic risk なし。 | (本 PR で confirm 済み) |
-| **P0-5** | C | `src/vision_backend/session.rs:66` | `inner.lock().expect("VisionSession mutex poisoned")` — Mutex poison recovery なし。pool 内の他 session も巻き添えで panic | `lock().unwrap_or_else(\|p\| p.into_inner())` で poison recovery、`try_one_ep` の `catch_unwind` パターンと整合 |
-| **P0-6** | G | `tests/unit/registry-lru.test.ts:13-23, 90-102` | 同一ファイル内で `vi.mock("../../src/engine/win32.js")` が 2 重宣言。full suite で mock 解決順が undefined → flake | 13-23 行の旧 mock を削除、90-102 のみ残す (5 分修正) |
+| **P0-1** | △ partial | H | CI が `npm test` を回さない | PR #45 — Rust build を ci.yml に追加。windows-latest 2-core で TS test 実行は反復 cancel するため local pre-merge 運用に。 |
+| **P0-2** | ✅ | H | CI が `npm run build:rs` を回さない | PR #45 |
+| **P0-3** | ✅ | B1 | terminal route の text undefined ガード欠落 | PR #46 |
+| ~~P0-4~~ | 棄却 | C | audit overstatement (test 込み grep) | — production panic risk なし |
+| **P0-5** | ✅ | C | `vision_backend/session.rs:66` Mutex poison | PR #46 — `unwrap_or_else(\|p\| p.into_inner())` |
+| **P0-6** | ✅ | G | `registry-lru.test.ts` 重複 vi.mock | PR #42 |
 
 ### 8.2. P1 — 設計逸脱 / regression リスク
 
-| # | カテゴリ | file:line | summary | 修正方針 |
-|---|---|---|---|---|
-| **P1-1** | B1 | `src/tools/desktop-register.ts` (windowsProvider) | production windowsProvider が enumWindowsInZOrder + getWindowProcessId + getProcessIdentityByPid を毎 see() で同期実行 (40+ window で数十 ms cost) | 100ms TTL cache、または Phase 4b sensors に統合 |
-| **P1-2** | B2 | `src/engine/world-graph/session-registry.ts` | session eviction reason が呼出側に伝わらない (entity_not_found としか返らず、TTL evict か enum miss か区別不能) | `EntityLeaseRejectionReason` に `session_evicted` を追加、 LeaseStore で 区別 |
-| **P1-3** | B2 | `src/engine/world-graph/session-registry.ts` | `session.seq` が `number` で increment、長時間 session で overflow (Number.MAX_SAFE_INTEGER は 1日 50ms 1000万 ops で 30年なので低確率だが) | `seq % 2^31` で wrap、generation を組み合わせ |
-| ~~P1-4~~ | — | — | (P0-6 と同一の finding。重複削除、cross-ref のみ残置 — Codex PR #43 P2 指摘) | — |
-| **P1-5** | A | `src/engine/error/error-codes.ts` | Phase 4 で消えた tool 系の error code が dead (FUKUWARAI_V1_ONLY 等) | grep で参照 0 のものを削除 |
-| **P1-6** | C | `native-rs-engine/Cargo.toml` (vision-gpu-winml) | WinML feature が ADR-006 で停滞、stub のまま `cargo check` は通るが build:rs で残骸 | feature flag を default 外し、stub であることを README に明記 |
-| **P1-7** | D | `src/engine/win32.ts` (koffi 残留) | Phase 1 §1.5 で napi-rs に統合と引継ぎあるも、`koffi` が package.json deps に残置、koffi 経由 path 1 箇所残存 | 残存 koffi コードを napi-rs binding 経由に置換、deps から `koffi` を削除 |
-| **P1-8** | F | `src/engine/perception/dirty-journal.ts` (layer buffer) | Phase 4b で追加した layer-aware dirty buffer が cap 制限なし、long-running で 100MB+ になる経路 | `MAX_DIRTY_ENTRIES = 1000` で FIFO eviction |
-| **P1-9** | E | (CodeQL Rust 未対応) | CodeQL workflow が `language: javascript-typescript` のみ。Rust の unsafe / panic / FFI が無監査 | `language: ["javascript-typescript", "rust"]` (但し windows-latest で Rust CodeQL は preview) |
-| **P1-10** | G | `src/tools/macro.ts:154-185` | Phase 4 で追加した `v2KillSwitchActive()` ガードが run_macro 経路で test 0 件 | tool-naming-phase4.test.ts に kill-switch ON/OFF × v2/v1 の 4 case 追加 |
-| **P1-11** | G | `tests/e2e/http-transport.test.ts:155-156` | コメントでは catalog 28 と書いてあるが assertion は `>= 26`。誤検知許容 | `>= 28` に修正 |
-| **P1-12** | G | (e2e coverage gap) | kill-switch ON HTTP `tools/list` で 26 tool 返るかの e2e 0、`run_macro({steps:[{tool:'desktop_discover'}]})` の lease 構造 e2e 0、windows[] focus 切替後の e2e 0 | release 前に 3 cases 追加 (30 分) |
+| # | 状態 | カテゴリ | file:line | summary | 修正方針 / merged |
+|---|---|---|---|---|---|
+| **P1-1** | open | B1 | `src/tools/desktop-register.ts` (windowsProvider) | production windowsProvider が enumWindowsInZOrder + getWindowProcessId + getProcessIdentityByPid を毎 see() で同期実行 (40+ window で数十 ms cost) | 100ms TTL cache、または Phase 4b sensors に統合 |
+| **P1-2** | open | B2 | `src/engine/world-graph/session-registry.ts` | session eviction reason が呼出側に伝わらない (entity_not_found としか返らず、TTL evict か enum miss か区別不能) | `EntityLeaseRejectionReason` に `session_evicted` を追加 |
+| **P1-3** | open | B2 | `src/engine/world-graph/session-registry.ts` | `session.seq` が `number` で increment、長時間 session で overflow (低確率) | `seq % 2^31` で wrap |
+| ~~P1-4~~ | dup | — | — | (P0-6 と同一の finding) | — |
+| **P1-5** | open | A | `src/engine/error/error-codes.ts` | Phase 4 で消えた tool 系の error code が dead (FUKUWARAI_V1_ONLY 等) | grep で参照 0 のものを削除 |
+| **P1-6** | open (defer) | C | `native-rs-engine/Cargo.toml` (vision-gpu-winml) | WinML feature が ADR-006 で停滞、stub のまま | feature flag を default 外し、stub であることを README に明記 |
+| **P1-7** | open | D | `src/engine/win32.ts` (koffi 残留) | Phase 1 で napi-rs に統合と引継ぎあるも、`koffi` が package.json deps に残置 | 残存 koffi コードを napi-rs binding 経由に置換、deps から削除 |
+| **P1-8** | open (defer) | F | `src/engine/perception/dirty-journal.ts` (layer buffer) | Phase 4b の layer-aware dirty buffer が cap 制限なし、long-running で 100MB+ | `MAX_DIRTY_ENTRIES = 1000` で FIFO eviction |
+| **P1-9** | open (defer) | E | (CodeQL Rust 未対応) | CodeQL workflow が `javascript-typescript` のみ | windows Rust CodeQL は preview、v1.0.x で再評価 |
+| **P1-10** | ✅ | G | `src/tools/macro.ts:154-185` | run_macro 経路 v2 kill-switch test 0 件 | PR #42 + PR #44 (failsafe stub) |
+| **P1-11** | ✅ | G | `tests/e2e/http-transport.test.ts:155-156` | catalog 28 だが threshold が `>= 26` | PR #42 |
+| **P1-12** | open | G | (e2e coverage gap) | kill-switch ON tools/list / lease 構造 / windows[] の e2e 0 | release 前に 3 cases 追加 |
 
 ### 8.3. P2 — UX / migration / minor flake
 
@@ -262,16 +264,21 @@ For each finding: file:line + 1-line summary + suggested fix direction.
 - ~~**E (security audit)**~~ — 完了 (PR #47 merged)。CodeQL/secret-scanning 0 open。発見 = `desktop-executor.ts:236` の CWE-94 (CDP eval 内 selector raw interpolation) + HTTP CORS `*` を localhost origin allowlist に縮約。command-injection / path-traversal / failsafe / kill-switch / 他 CDP eval / secret 取扱 はすべて clean。
 - ~~**I (documentation audit)**~~ — 完了 (本 PR)。drift 修正: README × 2 の tool count (57→28)、`system-overview.md` の "planned" → "shipped"、CLAUDE.md の tool count (56→28)、Phase 3/4 design status を Draft → Implemented。CHANGELOG の v1.0.0 DRAFT 解除は release 時 (version bump + tag と同時)。
 
-### 8.6. Release recommendation (現時点)
+### 8.6. Release recommendation (現時点 — 2026-04-26 更新)
 
-- **P0 5 件** (P0-4 は重新調査で棄却) はすべて release 前に必須:
-  - **CI gap 2 件 (P0-1/P0-2)** が最優先 (これがないと他の修正の regression を検出できない、PR #45)
-  - **terminal text gate (P0-3)** は 1-2 行 fix
-  - **Mutex poison 1 件 (P0-5)** は session.rs:66 の 1 行 fix
-  - **registry-lru 重複 mock (P0-6)** は TS test、5 分 fix (PR #42 で済)
-- **P1 11 件** (P1-4 は P0-6 と同一のため除外) は release 前 OR v1.0.1 patch
-- **P2 12 件 / P3 6 件** は v1.0.x で対応、Phase 5 dogfood と並行可
+**P0 / E / I 全消化**:
+- P0: 5 件 (P0-4 棄却) → PR #42 / #45 / #46 完了。P0-1 のみ partial (CI で TS test 不実行、Rust build と tsc は実行)
+- E (security): PR #47 完了
+- I (docs): PR #48 完了
 
-**結論**: P0 6 件 + P1 のうち kill-switch test (P1-10) と http-transport.test 修正 (P1-11) を v1.0.0 release 前に消化、それ以外は v1.0.1 計画に乗せる方針を提案。
+**P1 残**: 11 件中 2 件完了 (P1-10/11)、9 件 open。**release 前推奨 4 件**:
+- **P1-5** dead error codes — 1 PR (grep + delete)
+- **P1-7** koffi 残留削除 — 1 PR (napi-rs に置換、deps 削除)
+- **P1-12** v1 surface e2e coverage 3 cases — 1 PR
+- **P1-1** windowsProvider 100ms TTL cache — 1 PR (perf)
+
+**release 後 (v1.0.1) に defer**: P1-2 (session evict reason) / P1-3 (seq overflow) / P1-6 (winml feature) / P1-8 (layer-buffer cap) / P1-9 (CodeQL Rust)
+
+**P2 12 件 / P3 6 件**: v1.0.x patch + Phase 5 dogfood と並行可
 
 ---
