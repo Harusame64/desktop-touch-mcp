@@ -32,15 +32,6 @@ export function nextLensId(seed?: () => string): string {
 export function resetLensCounter(): void { _lensCounter = 0; }
 
 /**
- * Build the concrete fluent-store key for a given fluent kind on a bound window.
- * Format: "window:<hwnd>.<property>"
- * @deprecated Use fluentKeyForEntity for new code.
- */
-export function fluentKeyFor(hwnd: string, property: string): string {
-  return `window:${hwnd}.${property}`;
-}
-
-/**
  * Build the concrete fluent-store key for any entity kind.
  * Format: "<kind>:<id>.<property>"
  * Throws on unknown entity kind to catch missed migrations during testing.
