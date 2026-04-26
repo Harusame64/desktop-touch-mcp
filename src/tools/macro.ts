@@ -21,11 +21,20 @@ import { keyboardHandler, keyboardSchema } from "./keyboard.js";
 // Clipboard dispatcher (Phase 2)
 import { clipboardHandler, clipboardSchema } from "./clipboard.js";
 // Window
-import { focusWindowHandler, focusWindowSchema } from "./window.js";
+import {
+  focusWindowHandler, focusWindowSchema,
+  // V1 fallback (only reachable when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1).
+  getWindowsHandler, getWindowsSchema,
+} from "./window.js";
 // Window dock dispatcher (Phase 2)
 import { windowDockHandler, windowDockSchema } from "./window-dock.js";
-// UI elements (only click_element remains public after Phase 4)
-import { clickElementHandler, clickElementSchema } from "./ui-elements.js";
+// UI elements (click_element always public after Phase 4; the next two are
+// V1 fallbacks only reachable when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1).
+import {
+  clickElementHandler, clickElementSchema,
+  getUiElementsHandler, getUiElementsSchema,
+  setElementValueHandler, setElementValueSchema,
+} from "./ui-elements.js";
 // Workspace
 import { workspaceSnapshotHandler, workspaceSnapshotSchema, workspaceLaunchHandler, workspaceLaunchSchema } from "./workspace.js";
 // Scroll dispatcher (Phase 2)
@@ -79,6 +88,24 @@ const V2_DISABLED_ERROR = {
   ok: false,
   error: "DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1 is set; v2 World-Graph tools (desktop_discover / desktop_act) are disabled and may not be invoked through run_macro either.",
 } as const;
+
+/**
+ * Phase 4 (Codex PR #41 round 6 P1×2): the v1 fallback tools registered
+ * publicly only when v2 is killed. Macros mirror that surface — these
+ * entries are ONLY callable when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1 is
+ * set; otherwise they return a v2-mode replacement hint.
+ */
+function v1FallbackOnlyError(tool: string, replacement: string): ToolResult {
+  return {
+    content: [{
+      type: "text" as const,
+      text: JSON.stringify({
+        ok: false,
+        error: `${tool} is a V1 fallback only available when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1 is set. In v2 mode use ${replacement}.`,
+      }, null, 2),
+    }],
+  };
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tool registry
@@ -154,6 +181,36 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
         text: i.text,
       });
       return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    },
+  },
+  // V1 fallback macros — only callable when v2 is killed (mirrors the
+  // server-windows.ts kill-switch fallback). In v2 mode these short-circuit
+  // with a v2 replacement hint. (Codex PR #41 round 6 P1×2.)
+  get_windows: {
+    schema: z.object(getWindowsSchema),
+    handler: async (): Promise<ToolResult> => {
+      if (!v2KillSwitchActive()) {
+        return v1FallbackOnlyError("get_windows", "desktop_discover.windows[]");
+      }
+      return getWindowsHandler();
+    },
+  },
+  get_ui_elements: {
+    schema: z.object(getUiElementsSchema),
+    handler: async (input: unknown): Promise<ToolResult> => {
+      if (!v2KillSwitchActive()) {
+        return v1FallbackOnlyError("get_ui_elements", "desktop_discover.entities[]");
+      }
+      return getUiElementsHandler(input as Parameters<typeof getUiElementsHandler>[0]);
+    },
+  },
+  set_element_value: {
+    schema: z.object(setElementValueSchema),
+    handler: async (input: unknown): Promise<ToolResult> => {
+      if (!v2KillSwitchActive()) {
+        return v1FallbackOnlyError("set_element_value", "desktop_act({action:'setValue', lease, text})");
+      }
+      return setElementValueHandler(input as Parameters<typeof setElementValueHandler>[0]);
     },
   },
   // run_macro is intentionally excluded → prevents recursion
