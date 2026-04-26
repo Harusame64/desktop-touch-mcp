@@ -197,7 +197,7 @@ function createMcpServer(): McpServer {
     registerPerceptionResources(s);
   }
 
-  // Anti-Fukuwarai v2: desktop_see / desktop_touch (opt-in: DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2=1)
+  // Anti-Fukuwarai v2: desktop_discover / desktop_act (default-on; kill switch DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1)
   // _desktopV2 is pre-loaded at module init time (top-level await below) so registration
   // is synchronous here — no race window between createMcpServer() and tool availability.
   if (_desktopV2) {
