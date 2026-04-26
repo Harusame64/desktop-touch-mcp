@@ -29,14 +29,55 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
+      - name: Set up Rust (MSVC toolchain)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
       - name: Install dependencies
         run: npm ci
 
       - name: Check generated Linux stub catalog
         run: npm run check:stub-catalog
 
+      - name: Fetch node.lib for MSVC linking
+        shell: pwsh
+        run: |
+          # The custom build.rs links the native addon against node.lib at the
+          # repo root. GitHub-hosted runners don't ship node.lib, so fetch it
+          # via node-gyp (which caches headers + import lib per Node version).
+          $ver = (node -v).TrimStart('v')
+          Write-Host "Installing node-gyp headers for Node $ver"
+          npx --yes node-gyp install --target=$ver
+          $cache = "$env:LOCALAPPDATA\node-gyp\Cache"
+          $found = Get-ChildItem -Path $cache -Recurse -Filter node.lib -ErrorAction SilentlyContinue |
+                   Where-Object { $_.FullName -match '\\(x64|win-x64)\\node\.lib$' } |
+                   Select-Object -First 1
+          if (-not $found) { throw "node.lib not found in $cache" }
+          Copy-Item -LiteralPath $found.FullName -Destination (Join-Path $PWD "node.lib")
+
+      - name: Build native addon (Rust → .node, debug profile for CI speed)
+        run: npm run build:rs:debug
+
       - name: Type check & build
         run: npm run build
+
+      # NOTE: full unit suite execution on windows-latest 2-core runners is
+      # currently unreliable (every attempt — default maxForks:4, single
+      # fork via --maxWorkers=1, threads pool, vmThreads pool — terminates
+      # with "##[error]The operation was canceled." 5-6s into the run, after
+      # the first 2 files complete but before the 3rd worker finishes
+      # spawning). Likely a runner-infra interaction with how vitest spawns
+      # forks on a small Windows VM. Investigated in PR #45; deferred.
+      #
+      # P0-1 (audit §8.1) is therefore PARTIALLY addressed:
+      #   - Rust build:rs runs here → catches Rust regressions (was the
+      #     bigger concern: tooling drift, FFI shape, build.rs node.lib).
+      #   - TypeScript test execution is left to local pre-merge run via
+      #     `npm run test:capture`. Audit doc and known-issues track this.
 
   docker-build:
     runs-on: ubuntu-latest
