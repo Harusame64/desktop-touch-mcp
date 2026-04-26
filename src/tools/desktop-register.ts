@@ -323,8 +323,11 @@ const desktopSeeSchema = {
 
 const desktopTouchSchema = {
   lease:  leaseSchema.describe("Lease returned by desktop_discover. Expires after TTL; re-call desktop_discover if desktop_act fails with lease_expired."),
-  action: z.enum(["auto", "invoke", "click", "type", "select"]).optional().describe("Action to perform. 'auto' selects the best affordance from the entity."),
-  text:   z.string().optional().describe("Text to type (required when action=type)"),
+  action: z.enum(["auto", "invoke", "click", "type", "setValue", "select"]).optional().describe(
+    "Action to perform. 'auto' selects the best affordance from the entity. " +
+    "'setValue' (Phase 4: absorbs former set_element_value) sets a UIA ValuePattern value or fills a CDP controlled input — pass the new value via text."
+  ),
+  text:   z.string().optional().describe("Text to type or set (required when action='type' or action='setValue')."),
 };
 
 // ── Tool registration ─────────────────────────────────────────────────────────

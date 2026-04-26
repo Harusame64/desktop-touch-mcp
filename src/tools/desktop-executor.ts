@@ -132,7 +132,9 @@ export function createDesktopExecutor(
       // Prefer typed locator; fall back to sourceId (legacy bridge — remove in P3).
       const automationId = entity.locator?.uia?.automationId ?? entity.sourceId;
       const name         = entity.locator?.uia?.name ?? entity.label;
-      if (action === "type" && text !== undefined) {
+      // Phase 4: 'setValue' absorbs former set_element_value tool — same UIA
+      // ValuePattern path as 'type'. Both actions land here for any UIA entity.
+      if ((action === "type" || action === "setValue") && text !== undefined) {
         await d.uiaSetValue(winTitle, text, name, automationId);
         return "uia";
       }
@@ -158,7 +160,9 @@ export function createDesktopExecutor(
     const cdpSelector = entity.locator?.cdp?.selector ?? (entity.sources.includes("cdp") ? entity.sourceId : undefined);
     if (cdpSelector) {
       const cdpTabId = entity.locator?.cdp?.tabId ?? target?.tabId;
-      if (action === "type" && text !== undefined) {
+      // Phase 4: 'setValue' on a CDP entity uses cdpFill — equivalent to
+      // browser_fill for controlled inputs (React/Vue/Svelte).
+      if ((action === "type" || action === "setValue") && text !== undefined) {
         await d.cdpFill(cdpSelector, text, cdpTabId);
         return "cdp";
       }
