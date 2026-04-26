@@ -293,14 +293,28 @@ export const desktopStateHandler = async (args: {
       };
     }
 
-    if (args.includeDocument && isChromium) {
-      try {
-        const expression = `(function(){return{url:location.href,title:document.title,readyState:document.readyState,selection:(window.getSelection&&String(window.getSelection()))||"",scroll:{x:window.scrollX,y:window.scrollY,maxY:Math.max(0,document.documentElement.scrollHeight-window.innerHeight)},viewport:{w:window.innerWidth,h:window.innerHeight}};})()`;
-        extra.document = await evaluateInTab(expression, args.tabId ?? null, args.port ?? _defaultPort);
-      } catch (err) {
-        // Silently omit on CDP failure (no port / tab not found) — caller can
-        // diagnose via browser_open or fall through to screenshot/desktop_discover.
-        hints.documentUnavailable = err instanceof Error ? err.message.slice(0, 120) : "cdp_error";
+    // Phase 4: includeDocument honours an explicit tabId even when the
+    // foreground window is not Chromium — the legacy get_document_state took
+    // (port, tabId) and never consulted foreground state, so privatizing it
+    // without preserving that capability would regress workflows that inspect
+    // a background tab. Only fall back to the foreground/CDP path when no
+    // tabId was provided. (Codex PR #41 P1.)
+    if (args.includeDocument) {
+      const tabExplicit = args.tabId !== undefined && args.tabId !== "";
+      if (tabExplicit || isChromium) {
+        try {
+          const expression = `(function(){return{url:location.href,title:document.title,readyState:document.readyState,selection:(window.getSelection&&String(window.getSelection()))||"",scroll:{x:window.scrollX,y:window.scrollY,maxY:Math.max(0,document.documentElement.scrollHeight-window.innerHeight)},viewport:{w:window.innerWidth,h:window.innerHeight}};})()`;
+          extra.document = await evaluateInTab(expression, args.tabId ?? null, args.port ?? _defaultPort);
+        } catch (err) {
+          // Silently omit on CDP failure (no port / tab not found) — caller can
+          // diagnose via browser_open or fall through to screenshot/desktop_discover.
+          hints.documentUnavailable = err instanceof Error ? err.message.slice(0, 120) : "cdp_error";
+        }
+      } else {
+        // includeDocument requested but foreground is non-Chromium and no
+        // tabId was supplied — surface the precondition so the caller can
+        // either open a tab or pass tabId explicitly.
+        hints.documentUnavailable = "non-chromium foreground; pass tabId to inspect a specific tab";
       }
     }
 

@@ -548,7 +548,10 @@ function parseZObjectVariant(variantExprRaw, discriminator) {
 
   const properties = {};
   const required = [];
-  for (const field of splitObjectFields(objExpr)) {
+  for (const rawFieldVar of splitObjectFields(objExpr)) {
+    // Phase 4 / Codex PR #41 P2: same leading-trivia issue as parseSchema —
+    // strip before matching the key.
+    const field = stripLeadingTrivia(rawFieldVar);
     const fm = /^([A-Za-z_$][\w$]*|["'][^"']+["'])\s*:\s*([\s\S]*)$/.exec(field);
     if (!fm) continue;
     const rawKey = fm[1];
@@ -628,7 +631,15 @@ function parseSchema(src, schemaName) {
   if (!expr || !expr.trim().startsWith('{')) return { type: 'object', properties: {}, additionalProperties: true };
   const properties = {};
   const required = [];
-  for (const field of splitObjectFields(expr)) {
+  for (const rawField of splitObjectFields(expr)) {
+    // splitObjectFields strips comment **content** during the scan but the
+    // returned slice can still start with leading whitespace + // / /* */
+    // comment lines (the scan skips them but the substring boundaries are
+    // raw). Strip leading trivia before matching the field key — without
+    // this, a comment block immediately before the first field caused that
+    // field to silently drop (Codex PR #41 P2: includeCursor was missing
+    // from desktop_state stub schema).
+    const field = stripLeadingTrivia(rawField);
     const m = /^([A-Za-z_$][\w$]*|["'][^"']+["'])\s*:\s*([\s\S]*)$/.exec(field);
     if (!m) continue;
     const rawKey = m[1];
