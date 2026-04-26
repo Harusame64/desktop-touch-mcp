@@ -139,13 +139,29 @@ now accepts only the v1.0.0 dispatcher names — for example
 `{tool:'keyboard_type', params:{text:'hello'}}`. Macros built for v0.x must
 be rewritten alongside direct tool calls.
 
-#### v2 default-on caveat (carryover)
+#### v2 kill-switch fallback (Codex PR #41 round 6)
 
 Anti-Fukuwarai v2 (`desktop_discover` / `desktop_act`) is on by default since
-v0.17. Phase 4 absorbs `get_ui_elements` / `get_windows` into v2's response
-fields, so setting `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1` will lose access to
-that information as well. v1 fallbacks (`click_element` / native UIA via
-`screenshot(detail='text')`) remain available.
+v0.17. Phase 4 absorbs `get_ui_elements` / `get_windows` /
+`set_element_value` into v2's response fields and dispatcher actions; to
+keep `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1` deployments capability-complete,
+those three V1 tools are **re-published as fallback** when the kill switch
+is set:
+
+```
+DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1
+  → desktop_discover / desktop_act       NOT registered
+  → get_windows / get_ui_elements / set_element_value  registered (V1 fallback)
+```
+
+The descriptions are prefixed with `[V1 fallback — registered only when ...]`
+so the LLM sees they are a fallback layer, not the primary surface. The
+`run_macro` DSL mirrors the same gate: in v2 mode the fallback entries
+short-circuit with a `"v2 mode use ..."` hint instead of executing.
+
+Other Phase 4 privatizations have non-v2 replacements (`desktop_state.include*`
+flags / `screenshot` dispatcher / `wait_until` / `mouse_click`) and stay
+private regardless of the kill switch.
 
 ### Tool Count
 
