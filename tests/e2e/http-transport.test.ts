@@ -153,7 +153,7 @@ describe("H2: MCP initialize (stateless)", () => {
 
 describe("H3: tools/list", () => {
   // Phase 4: stub catalog 26 + 2 dynamic v2 (desktop_discover / desktop_act) = 28.
-  it("returns 200 with ≥ 26 tools", async () => {
+  it("returns 200 with ≥ 28 tools", async () => {
     const r = await mcpPost({
       jsonrpc: "2.0",
       id: 2,
@@ -164,7 +164,7 @@ describe("H3: tools/list", () => {
 
     const json = (await r.json()) as { result?: { tools?: unknown[] } };
     expect(Array.isArray(json.result?.tools)).toBe(true);
-    expect((json.result!.tools as unknown[]).length).toBeGreaterThanOrEqual(26);
+    expect((json.result!.tools as unknown[]).length).toBeGreaterThanOrEqual(28);
   });
 });
 
