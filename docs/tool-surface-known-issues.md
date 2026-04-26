@@ -134,27 +134,54 @@ LLM 非露出、Phase 4 docs polish で一括対応。
 
 ---
 
-## 3. Phase 3 で対応する事項 (browser 再配置)
+## 3. Phase 3 完了時点の懸念事項 (実装済 — 2026-04-26)
 
-### 3.1. browser family の役割再配置
+### 3.1. 実装済内容
 
-設計書 §9.1-9.6 (`docs/tool-surface-reduction-plan.md`) に従い:
+設計書 `docs/tool-surface-phase3-browser-rearrangement-design.md` (Status: Implemented) に従い:
 
-- `browser_launch` → `browser_open` に吸収 (Phase 1 でリネーム済の `browser_open` に launch 機能統合)
-- `browser_get_dom` / `browser_get_app_state` → `browser_eval` に吸収 (上級補助)
+- `browser_launch` → `browser_open({launch:{...}})` に吸収 (optional launch param、idempotent)
+- `browser_get_dom` / `browser_get_app_state` → `browser_eval` discriminatedUnion (action='dom'|'appState') に吸収
 - `browser_disconnect` 非公開化 (handler 残置、入り口削除のみ)
-- 主役 / 補助 / 上級の格付け整理
+- LLM 露出文字列修正 (`_errors.ts` `BrowserNotConnected.suggest` / `desktop-state.ts` `get_document_state` description)
+- `.gitignore` 強化 (`.vitest-out*.txt` / `.vitest-out*.json` ワイルドカード化、Phase 2 §2.6 引継ぎ)
 
-### 3.2. Phase 3 設計書で必ず参照する Phase 1+2 引継ぎ事項
+公開面: 13 → 9 browser_* tools (-4)。
 
-- §1.5 engine 層 LLM 露出 type の audit (browser 系も同様)
-- §2.3 モデル選択ルール (Sonnet 委譲は機械的リネームのみ、判断系は Opus 直)
-- §2.4 Sonnet trace-ability (作業ログ / チェックポイント commit / 時間 budget)
-- §2.6 .gitignore 強化
+### 3.2. Phase 4 polish 候補 (LLM 非露出、Phase 4 で一括対応)
 
-### 3.3. Phase 3 で対応する Phase 1+2 残課題 (前倒し候補)
+- `src/utils/launch.ts:4` のコメント `// Extracted from workspace.ts so that browser.ts (browser_launch) can ...` — Phase 4 で `browser_open` に書換
+- `src/tools/browser.ts` 内のコメント (`browser.ts:64` / `:1462` / `:1755`) — 旧 tool 名言及、polish のみ
+- `scripts/measure-tools-list-tokens.ts:38,45` — Tier 分類が pre-Phase 1 の旧名のまま (`get_context` / `keyboard_type` / `dock_window` / `browser_connect` / `browser_launch` / `browser_get_dom` / `browser_get_app_state` / `browser_disconnect` 等)。ad-hoc 計測スクリプトで LLM 非露出。Phase 4 で一括 refresh または削除候補
 
-- §1.1 / §2.5 コメント内旧名 (`desktop_see` / `desktop_touch` / `smart_scroll` / `terminal_read` 等) を browser ファイル群と同時に polish
+### 3.3. registry-lru.test.ts 全 unit suite 実行時の test-isolation 失敗 (Phase 3 と無関係)
+
+- 症状: `npm run test:capture` 全 unit suite で `tests/unit/registry-lru.test.ts` の 5 ケースが `Error: Window not found matching titleIncludes: "TestWindow"` で fail
+- 単独実行 (`npx vitest run --project=unit tests/unit/registry-lru.test.ts`) では 5/5 passing
+- 原因: 別 unit テストが `vi.mock("../../src/engine/win32.js", ...)` の mock を leak/破壊している可能性 (vitest module mock 分離問題)
+- Phase 3 の browser 系編集は perception/registry に触っていないため本 PR と無関係
+- Phase 4 で test 分離確認 (vitest config の `isolate: true` 確認、または問題のあるテストの mock 解除順を見直す)
+
+### 3.4. browser_disconnect facade 化判断 (Phase 5 dogfood)
+
+- 現状: server.tool 登録削除 + handler internal export 残置
+- engine 層の自動 cleanup (process 終了時 `disconnectAll`) で実用上の問題なし想定
+- Phase 5 dogfood で接続リーク有無を確認、問題あれば facade として復活 (Phase 4 または別 PR)
+
+### 3.5. instructions text の browser section 追加見送り
+
+- 設計書 §3.5 の判断: Phase 3 では追加しない
+- Phase 5 dogfood で実機 LLM の迷い度を観察してから判断
+- 早期追加すると後で削るときに breaking になりやすい
+
+### 3.6. Phase 3 で対応した Phase 1+2 残課題
+
+- §2.6 `.gitignore` 強化 (実施済)
+- §1.5 engine 層 LLM 露出 type の audit (browser 系で実施、`_errors.ts` / `desktop-state.ts` の修正で完了)
+
+### 3.7. Phase 1+2 残課題 (Phase 4 に再持越し)
+
+- §1.1 / §2.5 コメント内旧名 (`desktop_see` / `desktop_touch` / `smart_scroll` / `terminal_read` 等) — Phase 3 では browser 関連のみ部分対応、その他は Phase 4 で一括 polish
 
 ---
 

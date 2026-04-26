@@ -544,11 +544,10 @@ Available once Chrome / Edge is running with `--remote-debugging-port=9222`.
 chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\tmp\cdp
 ```
 
-#### `browser_launch`
-Launch Chrome / Edge / Brave in debug mode and wait for the CDP endpoint. Idempotent: if an endpoint is already live on the target port, returns immediately. `url` sets an initial page.
-
 #### `browser_open`
 Connect to CDP and list tabs. The returned `tabId` pins subsequent calls to a specific tab. Each tab carries an `active` flag, and the top-level response surfaces the currently-focused tab.
+
+Pass `launch:{}` (or `launch:{browser, userDataDir, url, waitMs}` overrides) to auto-spawn Chrome / Edge / Brave in debug mode when no CDP endpoint is live on the target port. The launch step is **idempotent**: if an endpoint is already live, the spawn is skipped and connect proceeds. Omit `launch` for pure connect (fail if no endpoint).
 
 #### `browser_locate`
 CSS selector → physical pixel coords.
@@ -559,12 +558,14 @@ Formula: `physX = (screenX + chromeW/2 + rect.left) * dpr`, with the browser chr
 `getElementScreenCoords` + `ensureBrowserFocused` + nut-js click in one step. If the element is out of the viewport, returns a message telling the caller to scroll it into view instead of guessing.
 
 #### `browser_eval`
-Evaluate JS via `Runtime.evaluate` (CDP). `awaitPromise=true`, so `await` works. Exceptions from the page surface as `JS exception in tab: …`.
+Discriminated dispatcher with three actions:
+- **`action:'js'`** — Evaluate JS via `Runtime.evaluate` (CDP). `awaitPromise=true`, so `await` works. Exceptions from the page surface as `JS exception in tab: …`.
+- **`action:'dom'`** — Return `outerHTML` of an element (or `document.body`), truncated to `maxLength`. Missing-element errors come back as a structured `{"__cdpError":"…"}` so the caller can distinguish "no match" from "empty HTML".
+- **`action:'appState'`** — One CDP call that scans the well-known places SPAs stash their hydration payloads (see `appState` section below).
 
-> **Caveat — React / Vue / Svelte controlled inputs:** Setting `element.value = ...` via `browser_eval` does **not** update the framework's internal state. Use `browser_fill(selector, value)` instead — it uses the native prototype setter + `InputEvent` which does trigger React/Vue/Svelte state updates.
+All three actions share the dispatcher's `withPostState` wrap, so guards run and `post.perception` is attached when a `lensId` is supplied.
 
-#### `browser_get_dom`
-`outerHTML` of an element (or `document.body`), truncated to `maxLength`. Missing-element errors come back as a structured `{"__cdpError":"…"}` so the caller can distinguish "no match" from "empty HTML".
+> **Caveat — React / Vue / Svelte controlled inputs:** Setting `element.value = ...` via `browser_eval(action:'js')` does **not** update the framework's internal state. Use `browser_fill(selector, value)` instead — it uses the native prototype setter + `InputEvent` which does trigger React/Vue/Svelte state updates.
 
 #### `browser_overview`
 Enumerates interactive elements with `clickAt` coords — the browser analogue of `screenshot(detail="text")`. Each element includes `viewportPosition` (`'in-view'|'above'|'below'|'left'|'right'`) — use it to decide whether `scroll(action='to_element')` is needed before clicking.
@@ -575,10 +576,10 @@ Also **ARIA-aware**: surfaces `role=switch` / `checkbox` / `radio` / `tab` / `me
 #### `browser_fill`
 Fill a React/Vue/Svelte controlled input via CDP without breaking framework state. Uses native prototype setter + `InputEvent` dispatch (not `execCommand`). Obtain `selector` from `browser_overview` or `browser_locate` first. `actual` in the response reflects what the element's `value` property reads after fill — verify it matches. Does not work on `contenteditable` rich-text editors.
 
-#### `browser_get_app_state`
+#### `browser_eval(action:'appState')`
 One CDP call that scans the well-known places SPAs stash their hydration payloads:
 `__NEXT_DATA__` / `__NUXT_DATA__` / `__NUXT__` / `__REMIX_CONTEXT__` / `__APOLLO_STATE__` / GitHub react-app `[data-target$="embeddedData"]` / JSON-LD / `window.__INITIAL_STATE__`. Returns `{found:[{selector, framework, sizeBytes, truncated, payload}], notFound:[…]}`.
-Use this *before* `browser_eval` / `browser_get_dom` on SPA pages where the HTML is sparse but the state is rich. Override with `selectors:['script#my-data', 'window:__MY_KEY__']`.
+Use this *before* `action:'js'` / `action:'dom'` on SPA pages where the HTML is sparse but the state is rich. Override with `selectors:['script#my-data', 'window:__MY_KEY__']`.
 
 #### `browser_navigate`
 `Page.navigate` (CDP). Only `http://` / `https://` are accepted (`javascript:` / `file:` rejected). `waitForLoad:true` (default) blocks until `document.readyState === "complete"` and returns `{title, url, readyState, elapsedMs}`. On timeout the call stays `ok:true` with `hints.warnings:["NavigateTimeout"]` so callers can continue.
@@ -586,11 +587,8 @@ Use this *before* `browser_eval` / `browser_get_dom` on SPA pages where the HTML
 #### `browser_search`
 Grep the DOM by text / regex / role / ariaLabel / CSS selector with confidence ranking. `scope` limits the search; `offset` / `maxResults` paginate.
 
-#### `browser_disconnect`
-Close every cached WebSocket session for a port. Call this before the target HWND goes away.
-
 **Response annotations shared by the DOM-touching tools**
-(`browser_eval` / `browser_locate` / `browser_get_dom` / `browser_overview` / `browser_get_app_state`)
+(`browser_eval` (any action) / `browser_locate` / `browser_overview`)
 - On success the response ends with `activeTab:{id,title,url}` + `readyState:"complete"` so callers can detect tab drift.
 - Pass `includeContext:false` to drop those two trailing lines (saves ~150 tokens per call when chaining invocations in one tab).
 - Even at `includeContext:true`, consecutive calls within 500 ms reuse one internal `getTabContext` round-trip.

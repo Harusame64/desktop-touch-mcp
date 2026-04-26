@@ -30,6 +30,7 @@ import { logAutoGuardStartup } from "./tools/_action-guard.js";
 import { stopNativeRuntime } from "./engine/perception/registry.js";
 import { startTray, stopTray, type TrayOptions } from "./utils/tray.js";
 import { checkFailsafe, FailsafeError } from "./utils/failsafe.js";
+import { wrapHandlerArg } from "./utils/failsafe-wrap.js";
 import { SERVER_VERSION } from "./version.js";
 import { resolveV2Activation } from "./tools/desktop-activation.js";
 
@@ -151,17 +152,25 @@ function createMcpServer(): McpServer {
   );
 
   // Inject failsafe pre-check into every tool handler.
+  //
+  // Both s.tool() and s.registerTool() take the handler as the LAST argument
+  // (s.tool: (name, [desc], [schema], handler); s.registerTool: (name, config, handler)).
+  // Wrapping that last arg gives every public tool — including Phase 2/3
+  // dispatchers (keyboard / clipboard / window_dock / scroll / terminal /
+  // browser_eval) registered via registerTool — the same emergency-stop gate
+  // as the legacy s.tool() registrations. (Codex PR #40 P1)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const _originalTool = s.tool.bind(s) as (...args: any[]) => any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (s as any).tool = function (...toolArgs: any[]) {
-    const lastIdx = toolArgs.length - 1;
-    const originalHandler = toolArgs[lastIdx] as (...args: unknown[]) => Promise<unknown>;
-    toolArgs[lastIdx] = async (...handlerArgs: unknown[]) => {
-      await checkFailsafe();
-      return originalHandler(...handlerArgs);
-    };
-    return _originalTool(...toolArgs);
+    return _originalTool(...wrapHandlerArg(toolArgs, checkFailsafe));
+  };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const _originalRegisterTool = s.registerTool.bind(s) as (...args: any[]) => any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (s as any).registerTool = function (...toolArgs: any[]) {
+    return _originalRegisterTool(...wrapHandlerArg(toolArgs, checkFailsafe));
   };
 
   registerScreenshotTools(s);

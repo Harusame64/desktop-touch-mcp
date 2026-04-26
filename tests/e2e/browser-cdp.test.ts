@@ -254,7 +254,7 @@ describe.skipIf(!CHROME_AVAILABLE)("getElementScreenCoords", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// getDomHtml — browser_get_dom
+// getDomHtml — engine layer for browser_eval(action='dom')
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe.skipIf(!CHROME_AVAILABLE)("getDomHtml", () => {
