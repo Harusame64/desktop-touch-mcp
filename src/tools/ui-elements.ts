@@ -373,10 +373,8 @@ export function registerUiElementTools(server: McpServer): void {
     withRichNarration("set_element_value", setElementValueHandler, { windowTitleKey: "windowTitle" })
   );
 
-  server.tool(
-    "scope_element",
-    "Return a high-resolution screenshot of a specific element's region plus its child element tree. Requires UIA — works with native apps, Chrome/Edge, VS Code. Use get_ui_elements first to discover element names or automationIds. At least one of name, automationId, or controlType must be provided.",
-    scopeElementSchema,
-    scopeElementHandler
-  );
+  // Phase 4: scope_element privatized — entry-point removed, handler retained
+  // as internal export. Discover element bounds via desktop_discover, then pass
+  // region={x,y,width,height} to screenshot for the equivalent zoom.
+  // (memory: feedback_disable_via_entry_block.md)
 }

@@ -14,7 +14,7 @@ import { CHROMIUM_TITLE_RE } from "./workspace.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 import { ok, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
-import { failWith } from "./_errors.js";
+import { failWith, failArgs } from "./_errors.js";
 import {
   observeTarget,
   buildCacheStateHints,
@@ -109,7 +109,7 @@ export const screenshotSchema = {
       "Implicitly enables dotByDot. Best used with windowTitle=undefined to snapshot all windows."
     ),
   detail: z
-    .enum(["meta", "text", "image", "som"])
+    .enum(["meta", "text", "image", "som", "ocr"])
     .optional()
     .describe(
       "Response detail level (omit to let the server pick a smart default):\n" +
@@ -117,7 +117,27 @@ export const screenshotSchema = {
       "  'meta'  — window title + screen region only (~20 tok/window, cheapest)\n" +
       "  'text'  — UIA element tree as JSON with text values (~100-300 tok/window, no image)\n" +
       "  'image' — actual screenshot pixels. BLOCKED unless confirmImage=true is also passed.\n" +
-      "  'som'   — Set-of-Marks image + OCR elements (bypasses UIA entirely). BLOCKED unless confirmImage=true is also passed."
+      "  'som'   — Set-of-Marks image + OCR elements (bypasses UIA entirely). BLOCKED unless confirmImage=true is also passed.\n" +
+      "  'ocr'   — Windows OCR words with screen-pixel clickAt coords (Phase 4: absorbs former screenshot_ocr). " +
+      "Use when UIA returns no actionable elements (WinUI3 custom-drawn UIs, game overlays, PDF viewers). " +
+      "Note: detail='text' auto-falls back to OCR via ocrFallback='auto'; choose detail='ocr' only when forcing OCR unconditionally."
+    ),
+  mode: z
+    .enum(["normal", "background"])
+    .default("normal")
+    .optional()
+    .describe(
+      "Capture mode (Phase 4: absorbs former screenshot_background).\n" +
+      "  'normal'     — standard foreground capture (default).\n" +
+      "  'background' — Win32 PrintWindow capture for hidden / minimised / occluded windows. Requires windowTitle (or hwnd). Pair with fullContent for GPU-rendered apps."
+    ),
+  fullContent: z
+    .boolean()
+    .default(true)
+    .optional()
+    .describe(
+      "When mode='background', use PW_RENDERFULLCONTENT to capture GPU-rendered windows (Chrome, Electron, WinUI3). Default true. " +
+      "Set false for legacy mode (faster but GPU windows may appear black). Ignored unless mode='background'."
     ),
   confirmImage: z
     .boolean()
@@ -140,7 +160,7 @@ export const screenshotSchema = {
   ocrLanguage: z
     .string()
     .default("ja")
-    .describe("BCP-47 language tag for the OCR engine (e.g. 'ja', 'en-US'). Only used when detail='text'."),
+    .describe("BCP-47 language tag for the OCR engine (e.g. 'ja', 'en-US'). Used when detail='text' (OCR fallback) or detail='ocr' (direct OCR)."),
   preprocessPolicy: z
     .enum(["auto", "aggressive", "minimal"])
     .default("auto")
@@ -316,24 +336,7 @@ function formatOriginText(
 // Handlers
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const screenshotHandler = async ({
-  windowTitle,
-  hwnd: hwndParam,
-  displayId,
-  region,
-  maxDimension,
-  dotByDot,
-  dotByDotMaxDimension,
-  grayscale,
-  webpQuality,
-  diffMode,
-  detail,
-  confirmImage,
-  ocrFallback,
-  ocrLanguage,
-  preprocessPolicy = "auto",
-  preprocessAdaptive = false,
-}: {
+export const screenshotHandler = async (args: {
   windowTitle?: string;
   hwnd?: string;
   displayId?: number;
@@ -344,15 +347,75 @@ export const screenshotHandler = async ({
   grayscale: boolean;
   webpQuality: number;
   diffMode: boolean;
-  detail: "meta" | "text" | "image" | "som" | undefined;
+  detail: "meta" | "text" | "image" | "som" | "ocr" | undefined;
+  mode?: "normal" | "background";
+  fullContent?: boolean;
   confirmImage: boolean;
   ocrFallback: "auto" | "always" | "never";
   ocrLanguage: string;
   preprocessPolicy: "auto" | "aggressive" | "minimal";
   preprocessAdaptive: boolean;
 }): Promise<ToolResult> => {
+  // Phase 4: Dispatch detail='ocr' / mode='background' to the absorbed
+  // internal handlers (former screenshot_ocr / screenshot_background).
+  // Priority: detail='ocr' > mode='background' > default. ocr is exclusive
+  // because it returns OCR words, not a layered image; bg vs default differs
+  // in capture mechanism only and stays compatible with all detail levels.
+  if (args.detail === "ocr") {
+    if (!args.windowTitle && !args.hwnd) {
+      return failArgs(
+        "screenshot(detail='ocr') requires windowTitle or hwnd",
+        "screenshot",
+      );
+    }
+    return screenshotOcrHandler({
+      windowTitle: args.windowTitle ?? "@active",
+      hwnd: args.hwnd,
+      language: args.ocrLanguage,
+      region: args.region,
+    });
+  }
+  if (args.mode === "background") {
+    if (!args.windowTitle && !args.hwnd) {
+      return failArgs(
+        "screenshot(mode='background') requires windowTitle or hwnd",
+        "screenshot",
+      );
+    }
+    return screenshotBgHandler({
+      windowTitle: args.windowTitle ?? "@active",
+      hwnd: args.hwnd,
+      region: args.region,
+      maxDimension: args.maxDimension,
+      dotByDot: args.dotByDot,
+      dotByDotMaxDimension: args.dotByDotMaxDimension,
+      grayscale: args.grayscale,
+      webpQuality: args.webpQuality,
+      fullContent: args.fullContent ?? true,
+    });
+  }
+
+  const {
+    windowTitle,
+    hwnd: hwndParam,
+    displayId,
+    region,
+    maxDimension,
+    dotByDot,
+    dotByDotMaxDimension,
+    grayscale,
+    webpQuality,
+    diffMode,
+    detail,
+    confirmImage,
+    ocrFallback,
+    ocrLanguage,
+    preprocessPolicy = "auto",
+    preprocessAdaptive = false,
+  } = args;
   // Compute effective detail: explicit value wins; otherwise infer from context.
   // dotByDot / region / displayId imply the caller wants pixels, so default to 'image'.
+  // detail='ocr' was already short-circuited above, so the narrow type excludes it here.
   const effectiveDetail: "meta" | "text" | "image" | "som" = detail ?? (
     dotByDot || region !== undefined || displayId !== undefined ? "image" : "meta"
   );
@@ -1067,43 +1130,46 @@ export function registerScreenshotTools(server: McpServer): void {
   server.tool(
     "screenshot",
     buildDesc({
-      purpose: "Capture desktop, window, or region state across four output modes — from cheap orientation metadata to pixel-accurate images.",
-      details: "detail='meta' (default) returns window titles+positions only (~20 tok/window, no image). detail='text' returns UIA actionable elements with clickAt coords, no image (~100-300 tok). detail='som' returns a Set-of-Marks annotated image plus OCR-detected elements with IDs (bypasses UIA entirely). detail='image' and detail='som' are server-blocked unless confirmImage=true is also passed. dotByDot=true returns 1:1 pixel WebP; compute screen coords: screen_x = origin_x + image_x (or screen_x = origin_x + image_x / scale when dotByDotMaxDimension is set — scale printed in response). diffMode=true returns only changed windows after the first call (~160 tok). Data reduction: grayscale=true (−50%), dotByDotMaxDimension=1280 (caps longest edge), windowTitle+region (sub-crop to exclude browser chrome — e.g. region={x:0, y:120, width:1920, height:900}).",
-      prefer: "Use meta to orient, text before clicking, dotByDot only when precise pixel coords are needed. Use detail='som' for native apps or games that do not expose UIA elements (UIA-Blind). Prefer browser_* tools for Chrome. Use diffMode after actions to confirm state changed. Only use image+confirmImage when text returned 0 actionable elements and visual inspection is genuinely required.",
-      caveats: "Default mode scales to maxDimension=768 — image pixels ≠ screen pixels; apply the scale formula before passing to mouse_click. detail='image' is always blocked without confirmImage=true. diffMode requires a prior full-capture baseline (non-diff call or workspace_snapshot) — calling diffMode cold returns a full frame, not a diff.",
+      purpose: "Capture desktop, window, or region across detail levels (meta / text / image / som / ocr) and capture modes (normal / background).",
+      details:
+        "detail='meta' (default) returns window titles+positions only (~20 tok/window, no image). " +
+        "detail='text' returns UIA actionable elements with clickAt coords, no image (~100-300 tok). " +
+        "detail='som' returns a Set-of-Marks annotated image plus OCR-detected elements with IDs (bypasses UIA entirely). " +
+        "detail='ocr' returns Windows OCR words with screen-pixel clickAt coords (Phase 4: absorbs former screenshot_ocr — use when UIA is sparse and you want to force OCR unconditionally). " +
+        "detail='image' and detail='som' are server-blocked unless confirmImage=true is also passed. " +
+        "mode='background' captures hidden/minimised/occluded windows via PrintWindow (Phase 4: absorbs former screenshot_background) — pair with windowTitle/hwnd. " +
+        "dotByDot=true returns 1:1 pixel WebP; compute screen coords: screen_x = origin_x + image_x (or screen_x = origin_x + image_x / scale when dotByDotMaxDimension is set — scale printed in response). " +
+        "diffMode=true returns only changed windows after the first call (~160 tok). " +
+        "region={x,y,width,height} captures a sub-rectangle (Phase 4: absorbs former scope_element when paired with windowTitle/hwnd — discover element bounds via desktop_discover, then pass region here). " +
+        "Data reduction: grayscale=true (−50%), dotByDotMaxDimension=1280 (caps longest edge), windowTitle+region (sub-crop to exclude browser chrome — e.g. region={x:0, y:120, width:1920, height:900}).",
+      prefer:
+        "Use meta to orient, text before clicking, dotByDot only when precise pixel coords are needed. " +
+        "Use detail='som' for native apps or games that do not expose UIA elements (UIA-Blind). " +
+        "Use detail='ocr' for OCR-only (skip UIA entirely). " +
+        "Use mode='background' when the target window must stay hidden or cannot be brought to foreground. " +
+        "Prefer browser_* tools for Chrome. Use diffMode after actions to confirm state changed. " +
+        "Only use image+confirmImage when text returned 0 actionable elements and visual inspection is genuinely required.",
+      caveats:
+        "Default mode scales to maxDimension=768 — image pixels ≠ screen pixels; apply the scale formula before passing to mouse_click. " +
+        "detail='image' is always blocked without confirmImage=true. " +
+        "diffMode requires a prior full-capture baseline (non-diff call or workspace_snapshot) — calling diffMode cold returns a full frame, not a diff. " +
+        "mode='background' requires windowTitle or hwnd. fullContent=false enables legacy mode (faster but GPU windows may be black). " +
+        "detail='ocr' requires windowTitle or hwnd; first call may take ~1s (WinRT cold-start) and the matching OCR language pack must be installed.",
       examples: [
         "screenshot() → meta orientation of all windows",
         "screenshot({detail:'text', windowTitle:'Notepad'}) → clickable elements with coords",
-        "screenshot({dotByDot:true, dotByDotMaxDimension:1280, grayscale:true, windowTitle:'Chrome', region:{x:0,y:120,width:1920,height:900}}) → pixel-accurate Chrome content",
+        "screenshot({detail:'ocr', windowTitle:'PDF', ocrLanguage:'ja'}) → OCR words with screen-pixel coords",
+        "screenshot({mode:'background', windowTitle:'Chrome', dotByDot:true, dotByDotMaxDimension:1280, grayscale:true}) → background-capture pixel-accurate Chrome",
+        "screenshot({windowTitle:'Notepad', region:{x:0,y:120,width:600,height:400}}) → cropped sub-region (zoom into element after desktop_discover)",
       ],
     }),
     screenshotSchema,
     screenshotHandler
   );
 
-  server.tool(
-    "screenshot_background",
-    buildDesc({
-      purpose: "Capture a window that is hidden, minimized, or behind other windows using Win32 PrintWindow API.",
-      details: "Uses PW_RENDERFULLCONTENT (fullContent=true, default) for GPU-rendered content in Chrome, Electron, and WinUI3 apps. Supports same detail and dotByDot modes as screenshot. Default mode scales to maxDimension=768; dotByDot=true gives 1:1 WebP with origin in response — compute screen coords: screen_x = origin_x + image_x. grayscale=true reduces size ~50%. dotByDotMaxDimension caps resolution; response includes scale (screen_x = origin_x + image_x / scale).",
-      prefer: "Prefer screenshot(windowTitle=X) for visible windows (faster, no API overhead). Use screenshot_background when the window must stay hidden or cannot be brought to foreground.",
-      caveats: "Default (scaled) mode: image pixels ≠ screen pixels — always use dotByDot=true + origin for mouse_click coords. Set fullContent=false for legacy or game windows where GPU rendering causes 1-3s delay or black capture. Some DX12 games may not capture correctly even with fullContent=true.",
-    }),
-    screenshotBgSchema,
-    screenshotBgHandler
-  );
-
-  server.tool(
-    "screenshot_ocr",
-    "Run Windows OCR on a window and return word-level text with screen-pixel clickAt coordinates — use when UIA returns no actionable elements (WinUI3 custom-drawn UIs, game overlays, PDF viewers). Note: screenshot(detail='text') auto-falls back to OCR when UIA is sparse (ocrFallback='auto' default) — call screenshot_ocr directly only when forcing OCR unconditionally. language: BCP-47 tag (default 'ja'). Caveats: First call may take ~1s (WinRT cold-start). Requires the matching Windows OCR language pack installed.",
-    screenshotOcrSchema,
-    screenshotOcrHandler
-  );
-
-  server.tool(
-    "get_screen_info",
-    "Return all connected display info: resolution, position, DPI scaling, and current cursor position. Use monitorId from this response to target a specific display in window_dock(action='dock').",
-    getScreenInfoSchema,
-    getScreenInfoHandler
-  );
+  // Phase 4: screenshot_background / screenshot_ocr / scope_element privatized
+  // — entry-points removed, handlers retained as internal exports (the
+  // dispatcher above routes via mode='background' / detail='ocr' / region).
+  // get_screen_info is privatized in batch 4d; use desktop_state({includeScreen:true}).
+  // (memory: feedback_disable_via_entry_block.md)
 }
