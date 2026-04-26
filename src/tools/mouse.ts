@@ -247,9 +247,10 @@ export const mouseClickSchema = {
   trackFocus: trackFocusParam,
   settleMs: settleMsParam,
   lensId: z.string().optional().describe(
-    "Optional perception lens ID from perception_register. When provided, guards are evaluated " +
-    "before clicking (safe.clickCoordinates, target.identityStable) and a perception envelope " +
-    "is attached to post.perception in the response."
+    "Optional perception lens ID for advanced pinned-target workflows. " +
+    "When provided, guards are evaluated before clicking (safe.clickCoordinates, target.identityStable) " +
+    "and a perception envelope is attached to post.perception in the response. " +
+    "For normal use, omit lensId and pass windowTitle directly — Auto Perception handles tracking."
   ),
   fixId: z.string().optional().describe(
     "One-shot fix approval ID. If a previous mouse_click returned a suggestedFix, pass that fixId " +
@@ -688,10 +689,12 @@ export const getCursorPositionHandler = async (): Promise<ToolResult> => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function registerMouseTools(server: McpServer): void {
-  server.tool("mouse_move", "Move the cursor to coordinates without clicking — for hover-only effects such as revealing tooltips or triggering hover states. Use mouse_click for click targets (it moves and clicks in one call).", mouseMoveSchema, mouseMoveHandler);
+  // Phase 4: mouse_move privatized — hover-trigger UIs are rare in practice.
+  // mouseMoveHandler retained as internal export for tests / future facade.
+  // (memory: feedback_disable_via_entry_block.md)
   server.tool(
     "mouse_click",
-    "Click at screen coordinates. Normally pass windowTitle so the server auto-guards the click (verifies target identity, foreground, coordinate is inside the target rect) and returns post.perception without a confirmation screenshot. origin+scale from dotByDot=true screenshots are converted to screen coords before guarding. doubleClick:true for double-click; tripleClick:true for triple-click (selects a full line of text). Prefer click_element (UIA) for native apps, prefer browser_click for Chrome. Examples: mouse_click({windowTitle:'Notepad', x:200, y:150}) // guarded — post.perception.status='ok'. mouse_click({x:100, y:100}) // unguarded — post.perception.status='unguarded'. If a guard failure returns a suggestedFix, pass its fixId to approve the fix: mouse_click({fixId:'fix-...'}) // one-shot, expires in 15s. lensId is optional and only for advanced pinned-target workflows after perception_register; omit it for normal use. Caveats: origin+scale are meaningful ONLY with dotByDot=true screenshot responses.",
+    "Click at screen coordinates. Normally pass windowTitle so the server auto-guards the click (verifies target identity, foreground, coordinate is inside the target rect) and returns post.perception without a confirmation screenshot. origin+scale from dotByDot=true screenshots are converted to screen coords before guarding. doubleClick:true for double-click; tripleClick:true for triple-click (selects a full line of text). Prefer click_element (UIA) for native apps, prefer browser_click for Chrome. Examples: mouse_click({windowTitle:'Notepad', x:200, y:150}) // guarded — post.perception.status='ok'. mouse_click({x:100, y:100}) // unguarded — post.perception.status='unguarded'. If a guard failure returns a suggestedFix, pass its fixId to approve the fix: mouse_click({fixId:'fix-...'}) // one-shot, expires in 15s. lensId is optional and only for advanced pinned-target workflows; omit it for normal use. Caveats: origin+scale are meaningful ONLY with dotByDot=true screenshot responses.",
     mouseClickSchema,
     withRichNarration("mouse_click", mouseClickHandler, { windowTitleKey: "windowTitle" })
   );
