@@ -222,14 +222,14 @@ For each finding: file:line + 1-line summary + suggested fix direction.
 | **P1-2** | open | B2 | `src/engine/world-graph/session-registry.ts` | session eviction reason が呼出側に伝わらない (entity_not_found としか返らず、TTL evict か enum miss か区別不能) | `EntityLeaseRejectionReason` に `session_evicted` を追加 |
 | **P1-3** | open | B2 | `src/engine/world-graph/session-registry.ts` | `session.seq` が `number` で increment、長時間 session で overflow (低確率) | `seq % 2^31` で wrap |
 | ~~P1-4~~ | dup | — | — | (P0-6 と同一の finding) | — |
-| **P1-5** | open | A | `src/engine/error/error-codes.ts` | Phase 4 で消えた tool 系の error code が dead (FUKUWARAI_V1_ONLY 等) | grep で参照 0 のものを削除 |
+| **P1-5** | ✅ | A | (audit overstatement — 中央 error-codes file 不在) | finding は overstated (P0-4 同様)。spirit に従い deprecated `fluentKeyFor` (lens.ts) を dead code として削除 | PR #50 |
 | **P1-6** | open (defer) | C | `native-rs-engine/Cargo.toml` (vision-gpu-winml) | WinML feature が ADR-006 で停滞、stub のまま | feature flag を default 外し、stub であることを README に明記 |
 | **P1-7** | open | D | `src/engine/win32.ts` (koffi 残留) | Phase 1 で napi-rs に統合と引継ぎあるも、`koffi` が package.json deps に残置 | 残存 koffi コードを napi-rs binding 経由に置換、deps から削除 |
 | **P1-8** | open (defer) | F | `src/engine/perception/dirty-journal.ts` (layer buffer) | Phase 4b の layer-aware dirty buffer が cap 制限なし、long-running で 100MB+ | `MAX_DIRTY_ENTRIES = 1000` で FIFO eviction |
 | **P1-9** | open (defer) | E | (CodeQL Rust 未対応) | CodeQL workflow が `javascript-typescript` のみ | windows Rust CodeQL は preview、v1.0.x で再評価 |
 | **P1-10** | ✅ | G | `src/tools/macro.ts:154-185` | run_macro 経路 v2 kill-switch test 0 件 | PR #42 + PR #44 (failsafe stub) |
 | **P1-11** | ✅ | G | `tests/e2e/http-transport.test.ts:155-156` | catalog 28 だが threshold が `>= 26` | PR #42 |
-| **P1-12** | open | G | (e2e coverage gap) | kill-switch ON tools/list / lease 構造 / windows[] の e2e 0 | release 前に 3 cases 追加 |
+| **P1-12** | ✅ | G | (e2e coverage gap) | kill-switch ON tools/list / lease 構造 / windows[] focus の 3 cases 追加 | PR #51 |
 
 ### 8.3. P2 — UX / migration / minor flake
 
@@ -276,9 +276,8 @@ For each finding: file:line + 1-line summary + suggested fix direction.
 - ✅ E (security): PR #47 完了 — CWE-94 / CORS tightening
 - ✅ I (docs): PR #48 完了 — tool count drift / phase status
 
-**P1 残**: 11 件中 3 件完了 (P1-5 PR #50 / P1-10 PR #42 / P1-11 PR #42)、8 件 open。**release 前推奨 3 件**:
+**P1 残**: 11 件中 4 件完了 (P1-5 PR #50 / P1-10 PR #42 / P1-11 PR #42 / P1-12 PR #51)、7 件 open。**release 前推奨 2 件**:
 - **P1-7** koffi 残留削除 — 1 PR (napi-rs に置換、deps 削除)
-- **P1-12** v1 surface e2e coverage 3 cases — 1 PR (PR #51 in review)
 - **P1-1** windowsProvider 100ms TTL cache — 1 PR (perf)
 
 **release 後 (v1.0.1) に defer**: P1-2 (session evict reason) / P1-3 (seq overflow) / P1-6 (winml feature) / P1-8 (layer-buffer cap) / P1-9 (CodeQL Rust)
