@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.1] - 2026-04-26 — Release infrastructure fix
+
+The v1.0.0 tag built the GitHub Release zip successfully but the `npm-publish`
+job failed because `npm publish --ignore-scripts` still triggered the
+`prepare: tsc` lifecycle and `node_modules` was missing on the ubuntu-latest
+runner — TypeScript could not resolve `@types/node`, the MCP SDK, or zod.
+
+Add an explicit `npm ci` step in `release.yml` so the prepare lifecycle has
+the dev dependencies it needs. v1.0.1 contains no functional changes from
+v1.0.0; the surface, lease hardening, security fixes, and CI Rust coverage
+are identical.
+
 ## [1.0.0] - 2026-04-26 — Tool Surface Reduction (Phase 1+2+3+4) + V2 World-Graph default-on + lease hardening
 
 ### Highlights
