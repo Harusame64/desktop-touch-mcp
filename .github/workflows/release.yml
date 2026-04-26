@@ -209,6 +209,15 @@ jobs:
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
+          cache: "npm"
+
+      # v1.0.1 fix: install dev deps so the `prepare: tsc` lifecycle that
+      # `npm publish` triggers can resolve @types/node, zod, and the MCP SDK.
+      # `--ignore-scripts` was supposed to skip prepare entirely, but in
+      # npm 11+ the publish flow still runs it for tarball staging. Cheaper
+      # to install deps than to refactor the lifecycle.
+      - name: Install dependencies
+        run: npm ci
 
       - name: Get and validate version from tag
         id: tag
