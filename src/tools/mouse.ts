@@ -164,7 +164,7 @@ const windowTitleParam = z.string().optional().describe(
 
 const hwndParam = z.string().optional().describe(
   "Direct window handle ID (takes precedence over windowTitle). " +
-  "Obtain from get_windows response (hwnd field). " +
+  "Obtain from desktop_discover response (windows[].hwnd). " +
   "String type to avoid 64-bit precision issues."
 );
 
@@ -700,6 +700,9 @@ export function registerMouseTools(server: McpServer): void {
   );
   server.tool("mouse_drag", "Click and drag from (startX, startY) to (endX, endY) holding the left mouse button — for sliders, drag-and-drop, canvas drawing, and window resizing. Pass windowTitle so the server auto-guards the start coordinate and returns post.perception. Examples: mouse_drag({windowTitle:'Notepad', startX:50, startY:50, endX:200, endY:200}). lensId is optional and only for advanced pinned-target workflows. Caveats: Left button only. Both start and endpoint are guarded. Cross-window and desktop drags are blocked by default — pass allowCrossWindowDrag:true to confirm intent.", mouseDragSchema, withRichNarration("mouse_drag", mouseDragHandler, { windowTitleKey: "windowTitle" }));
   // scroll tool removed in Phase 2b (family merge) — registered via scroll(action='raw') in scroll.ts
-  server.tool("get_cursor_position", "Return the current mouse cursor position in virtual screen coordinates.", getCursorPositionSchema, getCursorPositionHandler);
+  // Phase 4: get_cursor_position privatized — handler retained as internal export.
+  // Use desktop_state for cursorPos (always present) or desktop_state({includeCursor:true})
+  // for the richer {x, y, monitorId} shape.
+  // (memory: feedback_disable_via_entry_block.md)
 }
 

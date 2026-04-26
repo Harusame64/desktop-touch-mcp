@@ -42,7 +42,7 @@ export const windowDockSchema = z.discriminatedUnion("action", [
         "If true, set always-on-top so the docked window stays visible on top of other windows. " +
         "Use window_dock(action='unpin') to remove the topmost flag later. Default true."
       ),
-    monitorId: z.coerce.number().int().min(0).optional().describe("Monitor to dock on (from get_screen_info). Omit for primary monitor."),
+    monitorId: z.coerce.number().int().min(0).optional().describe("Monitor to dock on (from desktop_state({includeScreen:true})). Omit for primary monitor."),
     margin: z.coerce.number().int().min(0).default(8).describe("Pixel padding between the window and the screen edge. Default 8."),
   }),
 ]);

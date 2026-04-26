@@ -104,7 +104,7 @@ const windowTitleFocusParam = z.string().optional().describe(
 
 const hwndFocusParam = z.string().optional().describe(
   "Direct window handle ID (takes precedence over windowTitle). " +
-  "Obtain from get_windows response (hwnd field). " +
+  "Obtain from desktop_discover response (windows[].hwnd). " +
   "String type to avoid 64-bit precision issues."
 );
 
