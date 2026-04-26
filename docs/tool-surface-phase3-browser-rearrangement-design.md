@@ -1,6 +1,6 @@
 # Phase 3 設計書 — Browser 再配置 (launch 吸収 / eval 拡張 / disconnect 非公開化)
 
-- Status: **Draft** (2026-04-26、ユーザー approve 待ち)
+- Status: **Implemented** (PR #40 merged into main 2026-04-26)
 - 設計者: Claude (Opus 4.7)
 - 実装担当: 判断系 batch は Opus 直 / 機械的 batch のみ Sonnet 委譲 (§9 サブ batch 表参照)
 - レビュー: Opus 自己レビュー → Codex (PR 提出後)
