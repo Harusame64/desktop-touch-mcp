@@ -93,7 +93,8 @@ describe("browser.ready guard", () => {
     const result = evaluateGuard("browser.ready", baseLens, store, Date.now());
     expect(result.ok).toBe(false);
     expect(result.confidence).toBe(0);
-    expect(result.suggestedAction).toContain("perception_read");
+    // Phase 4: perception_read privatized; suggested refresh points at desktop_state.
+    expect(result.suggestedAction).toContain("desktop_state");
   });
 });
 

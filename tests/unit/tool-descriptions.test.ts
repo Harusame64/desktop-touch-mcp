@@ -209,8 +209,14 @@ describe("tool descriptions — contract", () => {
   // Phase 3:  -4 old (browser_launch, browser_get_dom, browser_get_app_state, browser_disconnect)
   //           browser_launch absorbed into browser_open.launch, get_dom + get_app_state into
   //           browser_eval discriminatedUnion, browser_disconnect privatized → 50-4 = 46
-  it("finds exactly 46 registered tools", () => {
-    expect(allTools.length).toBe(46);
+  // Phase 4: -20 (10 privatized: events_*/perception_*/get_history/mouse_move
+  //              + 3 screenshot absorbed: screenshot_background/screenshot_ocr/scope_element
+  //              + 1 desktop_act absorbed: set_element_value
+  //              + 6 desktop_state/desktop_discover absorbed:
+  //                get_active_window/get_cursor_position/get_document_state/
+  //                get_screen_info/get_ui_elements/get_windows) → 46-20 = 26
+  it("finds exactly 26 registered tools", () => {
+    expect(allTools.length).toBe(26);
   });
 
   for (const tool of allTools) {

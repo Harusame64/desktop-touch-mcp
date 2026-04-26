@@ -521,7 +521,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "click_element",
-    "description": "Invoke a UI element by name or automationId via UIA InvokePattern — no screen coordinates needed. The server auto-guards using windowTitle (verifies identity, foreground, modal) and returns post.perception.status. Prefer over mouse_click for buttons, menu items, and links in native Windows apps. Use get_ui_elements first to discover automationIds. Pass fixId from a suggestedFix to re-target after window identity drift. lensId is optional for advanced pinned-lens use. Caveats: Requires InvokePattern — some custom controls do not expose it; fall back to mouse_click in that case.",
+    "description": "Invoke a UI element by name or automationId via UIA InvokePattern — no screen coordinates needed. The server auto-guards using windowTitle (verifies identity, foreground, modal) and returns post.perception.status. Prefer over mouse_click for buttons, menu items, and links in native Windows apps. Use desktop_discover first to discover automationIds. Pass fixId from a suggestedFix to re-target after window identity drift. lensId is optional for advanced pinned-lens use. Caveats: Requires InvokePattern — some custom controls do not expose it; fall back to mouse_click in that case.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -615,96 +615,38 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "desktop_state",
-    "description": "Purpose: Read-only observation of the current desktop state. Returns focused window/element, modal flag, and attention signal from Auto Perception.\nDetails: Returns focusedWindow (title, hwnd, processName), focusedElement (name, type, value, automationId), cursorPos {x,y}, cursorOverElement (name, type), hasModal (boolean), pageState ('ready'|'loading'|'dialog'). Does NOT enumerate descendants — use desktop_discover for actionable entity list. Chromium: cursorOverElement is null (UIA sparse); focusedElement may fall back to CDP document.activeElement; hints.focusedElementSource reports which was used ('uia' or 'cdp').\nPrefer: Use after each action to confirm state. Cheapest observation tool — cheaper than any screenshot. attention='ok' means safe to proceed; other values require recovery (see suggest[]).\nCaveats: Cannot detect non-UIA elements (custom-drawn UIs, game overlays). hasModal only detects modal dialogs exposed via UIA — browser alert/confirm dialogs may not appear here.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {},
-      "additionalProperties": false
-    }
-  },
-  {
-    "name": "events_list",
-    "description": "Return all active subscription IDs.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {},
-      "additionalProperties": false
-    }
-  },
-  {
-    "name": "events_poll",
-    "description": "Drain buffered events for a subscription. Pass sinceMs to filter to events newer than that timestamp (incremental polling).",
+    "description": "Purpose: Read-only observation of the current desktop state. Returns focused window/element, modal flag, attention signal from Auto Perception. Phase 4 absorbs former get_active_window / get_cursor_position / get_screen_info / get_document_state via include* flags.\nDetails: Always returns: focusedWindow (title, hwnd, processName), focusedElement (name, type, value, automationId), cursorPos {x,y}, cursorOverElement (name, type), cursorOverWindow, hasModal (boolean), pageState ('ready'|'loading'|'dialog'), attention, visibleWindows count. Optional fields (default off): includeCursor:true → cursor {x,y,monitorId} (richer than cursorPos). includeScreen:true → screen {virtualScreen, displays[], displayCount, primaryIndex}. includeDocument:true → document {url, title, readyState, selection, scroll, viewport} via CDP (silently omitted on non-Chromium foreground). Chromium: cursorOverElement is null (UIA sparse); focusedElement may fall back to CDP document.activeElement; hints.focusedElementSource reports which was used ('uia' or 'cdp'). Does NOT enumerate descendants — use desktop_discover for actionable entity list and window list.\nPrefer: Use after each action to confirm state. Cheapest observation tool — cheaper than any screenshot. attention='ok' means safe to proceed; other values require recovery (see suggest[]). Set include* flags only when you need the extra data (each adds one syscall or CDP round-trip).\nCaveats: Cannot detect non-UIA elements (custom-drawn UIs, game overlays). hasModal only detects modal dialogs exposed via UIA — browser alert/confirm dialogs may not appear here. includeDocument requires browser_open (CDP active); silently omitted otherwise with hints.documentUnavailable.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "subscriptionId": {
-          "description": "ID returned from events_subscribe.",
-          "type": "string"
-        },
-        "sinceMs": {
-          "description": "Only return events newer than this epoch-ms timestamp.",
-          "type": "number"
-        },
-        "drain": {
-          "description": "Drain buffer after read (default true). Set false to peek without consuming.",
+        "includeScreen": {
+          "description": "When true, add a `screen` field with all connected display info (resolution, position, DPI, scale). Phase 4: absorbs former get_screen_info. Default false. Use the displayId values returned here in screenshot / window_dock(action='dock').",
           "type": "boolean",
-          "default": true
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "subscriptionId"
-      ]
-    }
-  },
-  {
-    "name": "events_subscribe",
-    "description": "Purpose: Subscribe to window-state change events (appear/disappear/focus) for continuous monitoring without repeated polling.\nDetails: Returns subscriptionId. Events are buffered internally at 500ms intervals via EnumWindows; buffer holds up to 50 events (oldest dropped on overflow). Call events_poll(subscriptionId, sinceMs: lastEventTs) to drain incrementally; call events_unsubscribe when monitoring is complete. Each buffered event: {type, hwnd, title, timestamp}.\nPrefer: Use instead of wait_until(window_appears) when you need to monitor multiple events simultaneously or over an extended period. Use wait_until for one-shot, single-condition waiting.\nCaveats: Events that occurred before subscribe() was called will not appear — buffer starts empty. Poll frequently (every few seconds) during high-frequency window activity to avoid the 50-event overflow.\nExamples:\n  id = events_subscribe() → poll: events_poll({subscriptionId:id}) → on next poll: events_poll({subscriptionId:id, sinceMs: lastEventTs}) → events_unsubscribe({subscriptionId:id})",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "types": {
-          "description": "Event types to listen for.",
-          "type": "array",
-          "items": {
-            "type": "string",
-            "enum": [
-              "window_appeared",
-              "window_disappeared",
-              "foreground_changed"
-            ]
-          },
-          "default": [
-            "window_appeared",
-            "window_disappeared",
-            "foreground_changed"
-          ],
-          "minItems": 1
-        }
-      },
-      "additionalProperties": false
-    }
-  },
-  {
-    "name": "events_unsubscribe",
-    "description": "Stop an events_subscribe subscription and free its buffer. Call when monitoring ends — otherwise the 50-event buffer keeps filling. Use events_list to find leaked ids from prior sessions. Example: events_unsubscribe({subscriptionId:id}).",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "subscriptionId": {
-          "description": "ID returned from events_subscribe.",
+          "default": false
+        },
+        "includeDocument": {
+          "description": "When true, add a `document` field with the focused Chrome tab's url, title, readyState, selection, and scroll position via CDP. Phase 4: absorbs former get_document_state. Default false. Requires browser_open (CDP active); silently omitted on non-Chromium foreground.",
+          "type": "boolean",
+          "default": false
+        },
+        "port": {
+          "description": "CDP port for includeDocument (default 9222).",
+          "type": "integer",
+          "default": 9222,
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "tabId": {
+          "description": "Optional CDP tab id for includeDocument; omit for the focused tab.",
           "type": "string"
         }
       },
-      "additionalProperties": false,
-      "required": [
-        "subscriptionId"
-      ]
+      "additionalProperties": false
     }
   },
   {
     "name": "focus_window",
-    "description": "Bring a window to the foreground by partial title match (case-insensitive). Use when a tool does not accept a windowTitle param, or when you need to switch focus before a sequence of actions. Use chromeTabUrlContains to activate a specific Chrome/Edge tab by URL substring before focusing — only the active tab's title appears in get_windows. If CDP is unavailable, chromeTabUrlContains is silently skipped — check response.hints.warnings. Returns WindowNotFound if no match exists; call get_windows to see available titles. Caveats: On some apps focus may be immediately stolen back (modal dialogs, UAC prompts) — verify with desktop_state after focusing.",
+    "description": "Bring a window to the foreground by partial title match (case-insensitive). Use when a tool does not accept a windowTitle param, or when you need to switch focus before a sequence of actions. Use chromeTabUrlContains to activate a specific Chrome/Edge tab by URL substring before focusing — only the active tab's title appears in the windows list. If CDP is unavailable, chromeTabUrlContains is silently skipped — check response.hints.warnings. Returns WindowNotFound if no match exists; call desktop_discover to see available titles. Caveats: On some apps focus may be immediately stolen back (modal dialogs, UAC prompts) — verify with desktop_state after focusing.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -728,117 +670,6 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       "required": [
         "title"
       ]
-    }
-  },
-  {
-    "name": "get_active_window",
-    "description": "Return the title, hwnd, and bounds of the currently focused window.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {},
-      "additionalProperties": false
-    }
-  },
-  {
-    "name": "get_cursor_position",
-    "description": "Return the current mouse cursor position in virtual screen coordinates.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {},
-      "additionalProperties": false
-    }
-  },
-  {
-    "name": "get_document_state",
-    "description": "Return current Chrome page state via CDP: url, title, readyState, selection, and scroll position. Far cheaper than browser_eval({action:'dom'}) for page orientation.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "port": {
-          "description": "CDP port (default 9222).",
-          "type": "integer",
-          "default": 9222,
-          "minimum": 1,
-          "maximum": 65535
-        },
-        "tabId": {
-          "description": "CDP tab id (omit for first page).",
-          "type": "string"
-        }
-      },
-      "additionalProperties": false
-    }
-  },
-  {
-    "name": "get_history",
-    "description": "Return recent action history (ring buffer, last 20 entries) with tool name, argsDigest, post-state, and timestamp. Use to reconstruct context after model interruption or verify a step occurred.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "n": {
-          "description": "Number of recent action records to return (max 20).",
-          "type": "integer",
-          "default": 5,
-          "minimum": 1,
-          "maximum": 20
-        }
-      },
-      "additionalProperties": false
-    }
-  },
-  {
-    "name": "get_screen_info",
-    "description": "Return all connected display info: resolution, position, DPI scaling, and current cursor position. Use monitorId from this response to target a specific display in window_dock(action='dock').",
-    "inputSchema": {
-      "type": "object",
-      "properties": {},
-      "additionalProperties": false
-    }
-  },
-  {
-    "name": "get_ui_elements",
-    "description": "Inspect the raw UIA element tree of a window — returns names, control types, automationIds, bounding rects, and interaction patterns. Each element includes viewportPosition ('in-view'|'above'|'below'|'left'|'right') relative to the window client region — use it to decide whether scroll(action='to_element') is needed before clicking. Prefer screenshot(detail='text') for interactive automation (returns pre-filtered actionable[] with clickAt coords). Use get_ui_elements when you need the unfiltered tree or specific automationIds for click_element. Caveats: Large windows may return hundreds of elements — scope with windowTitle. Results are capped at maxElements (default 80, max 200) — increase if the target element is missing.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "windowTitle": {
-          "description": "Partial window title to find the target window. Use '@active' for the current foreground window.",
-          "type": "string",
-          "maxLength": 200
-        },
-        "hwnd": {
-          "description": "Direct window handle ID (takes precedence over windowTitle). String to avoid 64-bit precision issues.",
-          "type": "string",
-          "maxLength": 20
-        },
-        "maxDepth": {
-          "description": "Maximum depth of the element tree to traverse (default 4)",
-          "type": "integer",
-          "default": 4,
-          "minimum": 1,
-          "maximum": 8
-        },
-        "maxElements": {
-          "description": "Maximum number of elements to return (default 80)",
-          "type": "integer",
-          "default": 80,
-          "minimum": 1,
-          "maximum": 200
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "windowTitle"
-      ]
-    }
-  },
-  {
-    "name": "get_windows",
-    "description": "List all visible windows with titles, screen positions, Z-order, active state, and virtual desktop membership. zOrder=0 is frontmost; isActive=true is the keyboard-focused window; isOnCurrentDesktop=false means the window is on another virtual desktop and cannot be interacted with without switching. Use before screenshot to determine whether a specific window needs capturing. Caveats: Returns only top-level visible windows — child windows and system tray items are excluded.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {},
-      "additionalProperties": false
     }
   },
   {
@@ -1001,7 +832,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "mouse_click",
-    "description": "Click at screen coordinates. Normally pass windowTitle so the server auto-guards the click (verifies target identity, foreground, coordinate is inside the target rect) and returns post.perception without a confirmation screenshot. origin+scale from dotByDot=true screenshots are converted to screen coords before guarding. doubleClick:true for double-click; tripleClick:true for triple-click (selects a full line of text). Prefer click_element (UIA) for native apps, prefer browser_click for Chrome. Examples: mouse_click({windowTitle:'Notepad', x:200, y:150}) // guarded — post.perception.status='ok'. mouse_click({x:100, y:100}) // unguarded — post.perception.status='unguarded'. If a guard failure returns a suggestedFix, pass its fixId to approve the fix: mouse_click({fixId:'fix-...'}) // one-shot, expires in 15s. lensId is optional and only for advanced pinned-target workflows after perception_register; omit it for normal use. Caveats: origin+scale are meaningful ONLY with dotByDot=true screenshot responses.",
+    "description": "Click at screen coordinates. Normally pass windowTitle so the server auto-guards the click (verifies target identity, foreground, coordinate is inside the target rect) and returns post.perception without a confirmation screenshot. origin+scale from dotByDot=true screenshots are converted to screen coords before guarding. doubleClick:true for double-click; tripleClick:true for triple-click (selects a full line of text). Prefer click_element (UIA) for native apps, prefer browser_click for Chrome. Examples: mouse_click({windowTitle:'Notepad', x:200, y:150}) // guarded — post.perception.status='ok'. mouse_click({x:100, y:100}) // unguarded — post.perception.status='unguarded'. If a guard failure returns a suggestedFix, pass its fixId to approve the fix: mouse_click({fixId:'fix-...'}) // one-shot, expires in 15s. lensId is optional and only for advanced pinned-target workflows; omit it for normal use. Caveats: origin+scale are meaningful ONLY with dotByDot=true screenshot responses.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1093,7 +924,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "description": "Milliseconds to wait before checking post-action state."
         },
         "lensId": {
-          "description": "Optional perception lens ID from perception_register. When provided, guards are evaluated before clicking (safe.clickCoordinates, target.identityStable) and a perception envelope is attached to post.perception in the response.",
+          "description": "Optional perception lens ID for advanced pinned-target workflows. When provided, guards are evaluated before clicking (safe.clickCoordinates, target.identityStable) and a perception envelope is attached to post.perception in the response. For normal use, omit lensId and pass windowTitle directly — Auto Perception handles tracking.",
           "type": "string"
         },
         "fixId": {
@@ -1178,46 +1009,6 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
     }
   },
   {
-    "name": "mouse_move",
-    "description": "Move the cursor to coordinates without clicking — for hover-only effects such as revealing tooltips or triggering hover states. Use mouse_click for click targets (it moves and clicks in one call).",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "x": {
-          "description": "X coordinate in virtual screen pixels",
-          "type": "number"
-        },
-        "y": {
-          "description": "Y coordinate in virtual screen pixels",
-          "type": "number"
-        },
-        "speed": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "Cursor movement speed in px/sec. 0 = instant."
-        },
-        "homing": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable homing correction if the target window moved."
-        },
-        "windowTitle": {
-          "type": "string",
-          "description": "Partial title of the target window."
-        },
-        "hwnd": {
-          "type": "string",
-          "description": "Direct window handle ID (takes precedence over windowTitle). Obtain from get_windows response (hwnd field). String type to avoid 64-bit precision issues."
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "x",
-        "y"
-      ]
-    }
-  },
-  {
     "name": "notification_show",
     "description": "Show a Windows system tray balloon notification to alert the user. Use at the end of a long-running task so the user knows it finished without watching the screen. Caveats: Focus Assist (Do Not Disturb) mode suppresses balloon tips; the tool still returns ok:true in that case. Uses System.Windows.Forms — no external modules needed.",
     "inputSchema": {
@@ -1242,229 +1033,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
     }
   },
   {
-    "name": "perception_forget",
-    "description": "Deregister a perception lens and release its tracking resources. Use when a workflow is complete, when attention is identity_changed, or before re-registering a target that was closed, restarted, or replaced. Removes the lens from guard evaluation, resource listings, and sensor subscriptions. Returns whether a lens was removed.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "lensId": {
-          "description": "Lens ID to deregister. Active sensor subscriptions are cleaned up.",
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "lensId"
-      ]
-    }
-  },
-  {
-    "name": "perception_list",
-    "description": "List all active perception lenses. Use when you need to find an existing lensId, verify which windows or browser tabs are being tracked, or clean up stale lenses before starting a new workflow. Returns lensId, name, target kind, guardPolicy, salience, attention, and registration metadata.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {},
-      "additionalProperties": false
-    }
-  },
-  {
-    "name": "perception_read",
-    "description": "Force-refresh a registered perception lens and return a full perception envelope. Use when post.perception.attention is dirty, stale, settling, guard_failed, or identity_changed, or when you need fresh structured state before the next action. Returns attention, guard results, latest target/browser state, changed fields, and suggested recovery actions. Prefer this over screenshot/desktop_state when a lens already exists.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "lensId": {
-          "description": "Lens ID returned by perception_register.",
-          "type": "string"
-        },
-        "maxTokens": {
-          "description": "Override maxEnvelopeTokens for this read. Useful to get a richer snapshot on demand.",
-          "type": "integer",
-          "minimum": 20,
-          "maximum": 500
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "lensId"
-      ]
-    }
-  },
-  {
-    "name": "perception_register",
-    "description": "Purpose: ADVANCED / DEBUG ONLY. Register a named perception lens that pins a specific HWND or browser tab identity across many actions and delivers rich perception envelopes via perception_read. For normal action tools, you do NOT need to call this — just pass windowTitle or tabId directly to the action tool and the server will auto-guard.\nDetails: Returns a lensId that can be passed to action tools such as keyboard(action='type'/'press'), mouse_click, browser_click, and browser_navigate. When a tool receives lensId, desktop-touch refreshes the tracked state, evaluates safety guards, and attaches a compact post.perception envelope to the response. The envelope reports attention, guard status, recent changes, and the latest known target state, reducing desktop_state/screenshot round trips.\nPrefer: Use only when you need pinned long-lived HWND tracking or explicit perception_read access. For one-off actions, passing windowTitle directly to the action tool is sufficient and returns post.perception.status without a separate register call.\nCaveats: A lens is not a visual recognition model. It tracks structured state from Win32, CDP, and optional UIA sensors. safe.clickCoordinates checks window bounds, not pixel-level occlusion. browserTab lenses require Chrome/Edge with --remote-debugging-port=9222. If attention is dirty, stale, settling, guard_failed, or identity_changed, follow the suggested action before continuing. Maximum 16 active lenses are kept; old lenses may be evicted.\nExamples:\n  // Normal use — no registration needed:\n  keyboard({action:'type', windowTitle:'Notepad', text:'hello'}) → post.perception.status='ok' auto-guard without lensId\n  // Advanced pinned-lens use:\n  perception_register({name:'editor', target:{kind:'window', match:{titleIncludes:'Visual Studio Code'}}}) → {lensId:'perc-1'}\n  keyboard({action:'type', windowTitle:'Visual Studio Code', text:'hello', lensId:'perc-1'}) → response includes post.perception (rich envelope)\n  perception_forget({lensId:'perc-1'}) → release tracking when done",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "name": {
-          "description": "Human-readable name for this lens (e.g. 'target-editor'). Helps identify it in perception_list.",
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 80
-        },
-        "target": {
-          "description": "Target entity to track. 'window' targets use Win32; 'browserTab' targets use CDP.",
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "kind": {
-              "type": "string",
-              "enum": [
-                "window",
-                "browserTab"
-              ],
-              "description": "Target kind to bind this lens to."
-            },
-            "match": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "titleIncludes": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "Case-insensitive substring that must appear in the window or browser tab title."
-                },
-                "urlIncludes": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "Case-insensitive substring that must appear in the browser tab URL."
-                }
-              }
-            }
-          },
-          "required": [
-            "kind",
-            "match"
-          ],
-          "anyOf": [
-            {
-              "properties": {
-                "kind": {
-                  "const": "window"
-                },
-                "match": {
-                  "type": "object",
-                  "required": [
-                    "titleIncludes"
-                  ]
-                }
-              }
-            },
-            {
-              "properties": {
-                "kind": {
-                  "const": "browserTab"
-                },
-                "match": {
-                  "type": "object",
-                  "anyOf": [
-                    {
-                      "required": [
-                        "urlIncludes"
-                      ]
-                    },
-                    {
-                      "required": [
-                        "titleIncludes"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          ]
-        },
-        "maintain": {
-          "description": "Fluents to keep alive. Defaults to all fluents; irrelevant kinds for the target type are silently ignored (e.g., browser.* fluents are skipped on window lenses).",
-          "type": "array",
-          "items": {
-            "type": "string",
-            "enum": [
-              "target.exists",
-              "target.identity",
-              "target.title",
-              "target.rect",
-              "target.foreground",
-              "target.zOrder",
-              "modal.above",
-              "target.focusedElement",
-              "browser.url",
-              "browser.title",
-              "browser.readyState"
-            ]
-          },
-          "default": [
-            "target.exists",
-            "target.identity",
-            "target.title",
-            "target.rect",
-            "target.foreground",
-            "target.zOrder",
-            "modal.above",
-            "target.focusedElement",
-            "browser.url",
-            "browser.title",
-            "browser.readyState"
-          ]
-        },
-        "guards": {
-          "description": "Guards to evaluate before actions that pass this lensId. Defaults to all guards. Remove guards you don't need to reduce false blocks.",
-          "type": "array",
-          "items": {
-            "type": "string",
-            "enum": [
-              "target.identityStable",
-              "safe.keyboardTarget",
-              "safe.clickCoordinates",
-              "stable.rect",
-              "browser.ready"
-            ]
-          },
-          "default": [
-            "target.identityStable",
-            "safe.keyboardTarget",
-            "safe.clickCoordinates",
-            "stable.rect",
-            "browser.ready"
-          ]
-        },
-        "guardPolicy": {
-          "description": "How guard failures are handled. 'block' (default) returns {ok:false, code:'GuardFailed'}. 'warn' allows the action through and sets attention:'guard_failed' in the envelope.",
-          "type": "string",
-          "enum": [
-            "warn",
-            "block"
-          ],
-          "default": "block"
-        },
-        "maxEnvelopeTokens": {
-          "description": "Maximum token budget for the perception envelope attached to tool responses. Fields are dropped in priority order when the budget is exceeded.",
-          "type": "integer",
-          "default": 120,
-          "minimum": 20,
-          "maximum": 500
-        },
-        "salience": {
-          "description": "Lens salience hint. 'critical' lenses are refreshed more eagerly (future use).",
-          "type": "string",
-          "enum": [
-            "critical",
-            "normal",
-            "background"
-          ],
-          "default": "normal"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "name",
-        "target"
-      ]
-    }
-  },
-  {
     "name": "run_macro",
-    "description": "Purpose: Execute multiple tools sequentially in one MCP call — eliminates round-trip latency for predictable multi-step workflows.\nDetails: steps[] is an array of {tool, params} objects. Accepts all desktop-touch tools plus a special sleep pseudo-step: {tool:\"sleep\", params:{ms:N}} (max 10000ms per step). stop_on_error=true (default) halts on first failure. Max 50 steps. The LLM cannot inspect intermediate results during execution — all steps run to completion (or first error) before any output is returned.\nPrefer: Use for predictable fixed sequences (focus → sleep → type → screenshot). Do not use for conditional logic — return to the LLM between branches so it can inspect intermediate state.\nCaveats: If any step may fail conditionally (e.g. a dialog that may or may not appear), split the macro at that point. Each screenshot step within a macro incurs the same token cost as a standalone call.\nExamples:\n  [{tool:'focus_window',params:{windowTitle:'Notepad'}},{tool:'sleep',params:{ms:300}},{tool:'keyboard_type',params:{text:'Hello'}},{tool:'screenshot',params:{detail:'text',windowTitle:'Notepad'}}]\n  [{tool:'browser_navigate',params:{url:'https://example.com'}},{tool:'wait_until',params:{condition:'element_matches',target:{by:'text',pattern:'Example Domain'}}}]",
+    "description": "Purpose: Execute multiple tools sequentially in one MCP call — eliminates round-trip latency for predictable multi-step workflows.\nDetails: steps[] is an array of {tool, params} objects. Accepts all desktop-touch tools plus a special sleep pseudo-step: {tool:\"sleep\", params:{ms:N}} (max 10000ms per step). stop_on_error=true (default) halts on first failure. Max 50 steps. The LLM cannot inspect intermediate results during execution — all steps run to completion (or first error) before any output is returned.\nPrefer: Use for predictable fixed sequences (focus → sleep → type → screenshot). Do not use for conditional logic — return to the LLM between branches so it can inspect intermediate state.\nCaveats: If any step may fail conditionally (e.g. a dialog that may or may not appear), split the macro at that point. Each screenshot step within a macro incurs the same token cost as a standalone call.\nExamples:\n  [{tool:'focus_window',params:{windowTitle:'Notepad'}},{tool:'sleep',params:{ms:300}},{tool:'keyboard',params:{action:'type',text:'Hello'}},{tool:'screenshot',params:{detail:'text',windowTitle:'Notepad'}}]\n  [{tool:'browser_navigate',params:{url:'https://example.com'}},{tool:'wait_until',params:{condition:'element_matches',target:{by:'text',pattern:'Example Domain'}}}]",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1484,67 +1054,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
     }
   },
   {
-    "name": "scope_element",
-    "description": "Return a high-resolution screenshot of a specific element's region plus its child element tree. Requires UIA — works with native apps, Chrome/Edge, VS Code. Use get_ui_elements first to discover element names or automationIds. At least one of name, automationId, or controlType must be provided.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "windowTitle": {
-          "description": "Partial window title of the target window. Use '@active' for the current foreground window.",
-          "type": "string",
-          "maxLength": 200
-        },
-        "hwnd": {
-          "description": "Direct window handle ID (takes precedence over windowTitle). String to avoid 64-bit precision issues.",
-          "type": "string",
-          "maxLength": 20
-        },
-        "name": {
-          "description": "Element name/label (partial match, case-insensitive)",
-          "type": "string",
-          "maxLength": 200
-        },
-        "automationId": {
-          "description": "Exact AutomationId of the element",
-          "type": "string",
-          "maxLength": 200
-        },
-        "controlType": {
-          "description": "Control type filter, e.g. 'Edit', 'Button', 'List'",
-          "type": "string",
-          "maxLength": 100
-        },
-        "maxDepth": {
-          "description": "Child element tree depth (default 2)",
-          "type": "integer",
-          "default": 2,
-          "minimum": 1,
-          "maximum": 6
-        },
-        "maxElements": {
-          "description": "Max child elements (default 30)",
-          "type": "integer",
-          "default": 30,
-          "minimum": 1,
-          "maximum": 100
-        },
-        "padding": {
-          "description": "Padding in pixels around the element in the screenshot (default 10)",
-          "type": "integer",
-          "default": 10,
-          "minimum": 0,
-          "maximum": 100
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "windowTitle"
-      ]
-    }
-  },
-  {
     "name": "screenshot",
-    "description": "Purpose: Capture desktop, window, or region state across four output modes — from cheap orientation metadata to pixel-accurate images.\nDetails: detail='meta' (default) returns window titles+positions only (~20 tok/window, no image). detail='text' returns UIA actionable elements with clickAt coords, no image (~100-300 tok). detail='som' returns a Set-of-Marks annotated image plus OCR-detected elements with IDs (bypasses UIA entirely). detail='image' and detail='som' are server-blocked unless confirmImage=true is also passed. dotByDot=true returns 1:1 pixel WebP; compute screen coords: screen_x = origin_x + image_x (or screen_x = origin_x + image_x / scale when dotByDotMaxDimension is set — scale printed in response). diffMode=true returns only changed windows after the first call (~160 tok). Data reduction: grayscale=true (−50%), dotByDotMaxDimension=1280 (caps longest edge), windowTitle+region (sub-crop to exclude browser chrome — e.g. region={x:0, y:120, width:1920, height:900}).\nPrefer: Use meta to orient, text before clicking, dotByDot only when precise pixel coords are needed. Use detail='som' for native apps or games that do not expose UIA elements (UIA-Blind). Prefer browser_* tools for Chrome. Use diffMode after actions to confirm state changed. Only use image+confirmImage when text returned 0 actionable elements and visual inspection is genuinely required.\nCaveats: Default mode scales to maxDimension=768 — image pixels ≠ screen pixels; apply the scale formula before passing to mouse_click. detail='image' is always blocked without confirmImage=true. diffMode requires a prior full-capture baseline (non-diff call or workspace_snapshot) — calling diffMode cold returns a full frame, not a diff.\nExamples:\n  screenshot() → meta orientation of all windows\n  screenshot({detail:'text', windowTitle:'Notepad'}) → clickable elements with coords\n  screenshot({dotByDot:true, dotByDotMaxDimension:1280, grayscale:true, windowTitle:'Chrome', region:{x:0,y:120,width:1920,height:900}}) → pixel-accurate Chrome content",
+    "description": "Purpose: Capture desktop, window, or region across detail levels (meta / text / image / som / ocr) and capture modes (normal / background).\nDetails: detail='meta' (default) returns window titles+positions only (~20 tok/window, no image). detail='text' returns UIA actionable elements with clickAt coords, no image (~100-300 tok). detail='som' returns a Set-of-Marks annotated image plus OCR-detected elements with IDs (bypasses UIA entirely). detail='ocr' returns Windows OCR words with screen-pixel clickAt coords (Phase 4: absorbs former screenshot_ocr — use when UIA is sparse and you want to force OCR unconditionally). detail='image' and detail='som' are server-blocked unless confirmImage=true is also passed. mode='background' captures hidden/minimised/occluded windows via PrintWindow (Phase 4: absorbs former screenshot_background) — pair with windowTitle/hwnd. dotByDot=true returns 1:1 pixel WebP; compute screen coords: screen_x = origin_x + image_x (or screen_x = origin_x + image_x / scale when dotByDotMaxDimension is set — scale printed in response). diffMode=true returns only changed windows after the first call (~160 tok). region={x,y,width,height} captures a sub-rectangle (Phase 4: absorbs former scope_element when paired with windowTitle/hwnd — discover element bounds via desktop_discover, then pass region here). Data reduction: grayscale=true (−50%), dotByDotMaxDimension=1280 (caps longest edge), windowTitle+region (sub-crop to exclude browser chrome — e.g. region={x:0, y:120, width:1920, height:900}).\nPrefer: Use meta to orient, text before clicking, dotByDot only when precise pixel coords are needed. Use detail='som' for native apps or games that do not expose UIA elements (UIA-Blind). Use detail='ocr' for OCR-only (skip UIA entirely). Use mode='background' when the target window must stay hidden or cannot be brought to foreground. Prefer browser_* tools for Chrome. Use diffMode after actions to confirm state changed. Only use image+confirmImage when text returned 0 actionable elements and visual inspection is genuinely required.\nCaveats: Default mode scales to maxDimension=768 — image pixels ≠ screen pixels; apply the scale formula before passing to mouse_click. detail='image' is always blocked without confirmImage=true. diffMode requires a prior full-capture baseline (non-diff call or workspace_snapshot) — calling diffMode cold returns a full frame, not a diff. mode='background' requires windowTitle or hwnd. fullContent=false enables legacy mode (faster but GPU windows may be black). detail='ocr' requires windowTitle or hwnd; first call may take ~1s (WinRT cold-start) and the matching OCR language pack must be installed.\nExamples:\n  screenshot() → meta orientation of all windows\n  screenshot({detail:'text', windowTitle:'Notepad'}) → clickable elements with coords\n  screenshot({detail:'ocr', windowTitle:'PDF', ocrLanguage:'ja'}) → OCR words with screen-pixel coords\n  screenshot({mode:'background', windowTitle:'Chrome', dotByDot:true, dotByDotMaxDimension:1280, grayscale:true}) → background-capture pixel-accurate Chrome\n  screenshot({windowTitle:'Notepad', region:{x:0,y:120,width:600,height:400}}) → cropped sub-region (zoom into element after desktop_discover)",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1553,11 +1064,11 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "type": "string"
         },
         "hwnd": {
-          "description": "Direct window handle ID (takes precedence over windowTitle). Obtain from get_windows (hwnd field). String type to avoid 64-bit precision issues.",
+          "description": "Direct window handle ID (takes precedence over windowTitle). Obtain from desktop_discover (windows[].hwnd). String type to avoid 64-bit precision issues.",
           "type": "string"
         },
         "displayId": {
-          "description": "Capture a specific monitor (0 = primary). Use get_screen_info to list displays.",
+          "description": "Capture a specific monitor (0 = primary). Use desktop_state({includeScreen:true}) to list displays.",
           "type": "integer",
           "minimum": 0
         },
@@ -1597,14 +1108,29 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "default": false
         },
         "detail": {
-          "description": "Response detail level (omit to let the server pick a smart default):\n  omitted — auto: 'image' when dotByDot/region/displayId is specified, else 'meta'\n  'meta'  — window title + screen region only (~20 tok/window, cheapest)\n  'text'  — UIA element tree as JSON with text values (~100-300 tok/window, no image)\n  'image' — actual screenshot pixels. BLOCKED unless confirmImage=true is also passed.\n  'som'   — Set-of-Marks image + OCR elements (bypasses UIA entirely). BLOCKED unless confirmImage=true is also passed.",
+          "description": "Response detail level (omit to let the server pick a smart default):\n  omitted — auto: 'image' when dotByDot/region/displayId is specified, else 'meta'\n  'meta'  — window title + screen region only (~20 tok/window, cheapest)\n  'text'  — UIA element tree as JSON with text values (~100-300 tok/window, no image)\n  'image' — actual screenshot pixels. BLOCKED unless confirmImage=true is also passed.\n  'som'   — Set-of-Marks image + OCR elements (bypasses UIA entirely). BLOCKED unless confirmImage=true is also passed.\n  'ocr'   — Windows OCR words with screen-pixel clickAt coords (Phase 4: absorbs former screenshot_ocr). Use when UIA returns no actionable elements (WinUI3 custom-drawn UIs, game overlays, PDF viewers). Note: detail='text' auto-falls back to OCR via ocrFallback='auto'; choose detail='ocr' only when forcing OCR unconditionally.",
           "type": "string",
           "enum": [
             "meta",
             "text",
             "image",
-            "som"
+            "som",
+            "ocr"
           ]
+        },
+        "mode": {
+          "description": "Capture mode (Phase 4: absorbs former screenshot_background).\n  'normal'     — standard foreground capture (default).\n  'background' — Win32 PrintWindow capture for hidden / minimised / occluded windows. Requires windowTitle (or hwnd). Pair with fullContent for GPU-rendered apps.",
+          "type": "string",
+          "enum": [
+            "normal",
+            "background"
+          ],
+          "default": "normal"
+        },
+        "fullContent": {
+          "description": "When mode='background', use PW_RENDERFULLCONTENT to capture GPU-rendered windows (Chrome, Electron, WinUI3). Default true. Set false for legacy mode (faster but GPU windows may appear black). Ignored unless mode='background'.",
+          "type": "boolean",
+          "default": true
         },
         "confirmImage": {
           "description": "Must be true to receive image pixels when detail='image'. Without this flag, detail='image' is blocked and a guidance message is returned instead. Prefer detail='text' / diffMode=true / dotByDot=true first — only set confirmImage=true when visual inspection is genuinely required.",
@@ -1622,7 +1148,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "default": "auto"
         },
         "ocrLanguage": {
-          "description": "BCP-47 language tag for the OCR engine (e.g. 'ja', 'en-US'). Only used when detail='text'.",
+          "description": "BCP-47 language tag for the OCR engine (e.g. 'ja', 'en-US'). Used when detail='text' (OCR fallback) or detail='ocr' (direct OCR).",
           "type": "string",
           "default": "ja"
         },
@@ -1643,92 +1169,6 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         }
       },
       "additionalProperties": false
-    }
-  },
-  {
-    "name": "screenshot_background",
-    "description": "Purpose: Capture a window that is hidden, minimized, or behind other windows using Win32 PrintWindow API.\nDetails: Uses PW_RENDERFULLCONTENT (fullContent=true, default) for GPU-rendered content in Chrome, Electron, and WinUI3 apps. Supports same detail and dotByDot modes as screenshot. Default mode scales to maxDimension=768; dotByDot=true gives 1:1 WebP with origin in response — compute screen coords: screen_x = origin_x + image_x. grayscale=true reduces size ~50%. dotByDotMaxDimension caps resolution; response includes scale (screen_x = origin_x + image_x / scale).\nPrefer: Prefer screenshot(windowTitle=X) for visible windows (faster, no API overhead). Use screenshot_background when the window must stay hidden or cannot be brought to foreground.\nCaveats: Default (scaled) mode: image pixels ≠ screen pixels — always use dotByDot=true + origin for mouse_click coords. Set fullContent=false for legacy or game windows where GPU rendering causes 1-3s delay or black capture. Some DX12 games may not capture correctly even with fullContent=true.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "windowTitle": {
-          "description": "Title (partial match) of the window to capture. Use '@active' for the current foreground window.",
-          "type": "string"
-        },
-        "hwnd": {
-          "description": "Direct window handle ID (takes precedence over windowTitle). String to avoid 64-bit precision issues.",
-          "type": "string"
-        },
-        "region": {
-          "description": "Capture only this sub-region of the window (window-local image coordinates). Coordinates are in image pixels, not screen pixels (may differ on high-DPI). Useful to exclude browser chrome (tabs/address bar): e.g. {x:0, y:120, width:1920, height:900}.",
-          "type": "object"
-        },
-        "maxDimension": {
-          "description": "Max width or height in pixels (default 768). Use 1280 to read small text or fine UI details.",
-          "type": "integer",
-          "default": 768
-        },
-        "dotByDot": {
-          "description": "1:1 pixel mode — no scaling, WebP compression. When region is also specified, origin reflects the window + region offset for coordinate math.",
-          "type": "boolean",
-          "default": false
-        },
-        "dotByDotMaxDimension": {
-          "description": "Cap the longest edge (pixels) when dotByDot=true. Response includes scale factor: screen_x = origin_x + image_x / scale.",
-          "type": "integer"
-        },
-        "grayscale": {
-          "description": "Convert to grayscale. Reduces file size ~50% for text-heavy content.",
-          "type": "boolean",
-          "default": false
-        },
-        "webpQuality": {
-          "description": "WebP quality when dotByDot=true.",
-          "type": "integer",
-          "default": 60,
-          "minimum": 1,
-          "maximum": 100
-        },
-        "fullContent": {
-          "description": "Use PW_RENDERFULLCONTENT flag (default true) to capture GPU-rendered windows (Chrome, Electron, WinUI3). Set false for legacy mode (faster, but GPU windows may appear black). If this call hangs on a game/video window, retry with fullContent=false.",
-          "type": "boolean",
-          "default": true
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "windowTitle"
-      ]
-    }
-  },
-  {
-    "name": "screenshot_ocr",
-    "description": "Run Windows OCR on a window and return word-level text with screen-pixel clickAt coordinates — use when UIA returns no actionable elements (WinUI3 custom-drawn UIs, game overlays, PDF viewers). Note: screenshot(detail='text') auto-falls back to OCR when UIA is sparse (ocrFallback='auto' default) — call screenshot_ocr directly only when forcing OCR unconditionally. language: BCP-47 tag (default 'ja'). Caveats: First call may take ~1s (WinRT cold-start). Requires the matching Windows OCR language pack installed.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "windowTitle": {
-          "description": "Title (partial match) of the window to OCR. Use '@active' for the current foreground window.",
-          "type": "string"
-        },
-        "hwnd": {
-          "description": "Direct window handle ID (takes precedence over windowTitle). String to avoid 64-bit precision issues.",
-          "type": "string"
-        },
-        "language": {
-          "description": "BCP-47 language tag (e.g. 'ja', 'en-US')",
-          "type": "string",
-          "default": "ja"
-        },
-        "region": {
-          "description": "Optional sub-region in window-local coordinates",
-          "type": "object"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "windowTitle"
-      ]
     }
   },
   {
@@ -2003,58 +1443,6 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
     }
   },
   {
-    "name": "set_element_value",
-    "description": "Set the value of a text field or combo box via UIA ValuePattern. The server auto-guards using windowTitle and returns post.perception.status. More reliable than keyboard(action='type') for programmatic form input. Use narrate:'rich' to confirm the value was applied. lensId is optional for advanced pinned-lens use. Caveats: Only works for elements that expose ValuePattern; does not work on contenteditable HTML or custom rich-text editors — use keyboard(action='type') for those. If guard blocks with a suggestedFix, the fix.tool will be 'click_element' (v3 §7.1); approve via click_element({fixId}) then re-set.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "windowTitle": {
-          "description": "Partial window title. Use '@active' for the current foreground window.",
-          "type": "string",
-          "maxLength": 200
-        },
-        "hwnd": {
-          "description": "Direct window handle ID (takes precedence over windowTitle). String to avoid 64-bit precision issues.",
-          "type": "string",
-          "maxLength": 20
-        },
-        "value": {
-          "description": "The value to set",
-          "type": "string",
-          "maxLength": 10000
-        },
-        "name": {
-          "description": "Element name/label (partial match)",
-          "type": "string",
-          "maxLength": 200
-        },
-        "automationId": {
-          "description": "Exact AutomationId of the element",
-          "type": "string",
-          "maxLength": 200
-        },
-        "narrate": {
-          "type": "string",
-          "enum": [
-            "minimal",
-            "rich"
-          ],
-          "default": "minimal",
-          "description": "Narration level. rich includes UIA or browser state diff when supported."
-        },
-        "lensId": {
-          "description": "Optional perception lens ID. Guards (safe.keyboardTarget, target.identityStable) are evaluated before setting, and a perception envelope is attached to post.perception on success.",
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "windowTitle",
-        "value"
-      ]
-    }
-  },
-  {
     "name": "terminal",
     "description": "Purpose: Interact with a terminal window: read output, send input, or run+wait+read in one call.\nDetails: action='run' is the recommended high-level workflow: send command → wait until quiet/pattern/timeout → read output. Returns completion={reason, elapsedMs} first-class. action='read' reads current text via UIA TextPattern (falls back to OCR); use sinceMarker for incremental diff. action='send' sends a command with focus management.\nPrefer: action='run' for command execution + result. Use action='read'/'send' for fine-grained control or when you need to interleave other actions.\nCaveats: Do not screenshot the terminal — terminal(action='read') is cheaper and structured. action='run' supports completion reasons: quiet | pattern_matched | timeout | window_closed | window_not_found. preferClipboard=true (send default) overwrites user clipboard.\nExamples:\n  terminal({action:'run', windowTitle:'PowerShell', input:'npm test', until:{mode:'pattern', pattern:'npm test:'}}) → {output, completion:{reason:'pattern_matched'}}\n  terminal({action:'run', windowTitle:'pwsh', input:'ls'}) → quiet 800ms wait, returns output\n  terminal({action:'read', windowTitle:'PowerShell', sinceMarker:'...'}) → incremental diff\n  terminal({action:'send', windowTitle:'PowerShell', input:'echo hello'}) → sends text + Enter",
     "inputSchema": {
@@ -2256,7 +1644,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
               "default": true
             },
             "monitorId": {
-              "description": "Monitor to dock on (from get_screen_info). Omit for primary monitor.",
+              "description": "Monitor to dock on (from desktop_state({includeScreen:true})). Omit for primary monitor.",
               "type": "integer",
               "minimum": 0
             },
@@ -2278,7 +1666,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "workspace_launch",
-    "description": "Purpose: Launch an application and wait for its new window to appear, returning title, HWND, and PID.\nDetails: Runs the command via ShellExecute, snapshots the window list before launch, then polls until a new HWND appears (compared by HWND, not title). Returns {windowTitle, hwnd, pid, elapsedMs}. Works for localized window titles (e.g. '電卓' for calc.exe) because detection is HWND-based, not title-based. timeoutMs default 10000. detach=true fires without waiting and returns no window info.\nPrefer: Use instead of run_macro({exec, sleep, get_windows}) combos. Follow with focus_window(windowTitle) to interact with the launched app.\nCaveats: Single-instance apps that reuse an existing window will not register as a new HWND — call get_windows first to check if the window is already open. detach=true returns immediately with no window title or hwnd.\nExamples:\n  workspace_launch({command:'notepad.exe'}) → {windowTitle:'<localized title>', hwnd:'...', pid:...}\n  workspace_launch({command:'calc.exe', timeoutMs:15000})",
+    "description": "Purpose: Launch an application and wait for its new window to appear, returning title, HWND, and PID.\nDetails: Runs the command via ShellExecute, snapshots the window list before launch, then polls until a new HWND appears (compared by HWND, not title). Returns {windowTitle, hwnd, pid, elapsedMs}. Works for localized window titles (e.g. '電卓' for calc.exe) because detection is HWND-based, not title-based. timeoutMs default 10000. detach=true fires without waiting and returns no window info.\nPrefer: Use instead of run_macro({exec, sleep, desktop_discover}) combos. Follow with focus_window(windowTitle) to interact with the launched app.\nCaveats: Single-instance apps that reuse an existing window will not register as a new HWND — call desktop_discover first to check if the window is already open. detach=true returns immediately with no window title or hwnd.\nExamples:\n  workspace_launch({command:'notepad.exe'}) → {windowTitle:'<localized title>', hwnd:'...', pid:...}\n  workspace_launch({command:'calc.exe', timeoutMs:15000})",
     "inputSchema": {
       "type": "object",
       "properties": {

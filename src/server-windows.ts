@@ -132,7 +132,7 @@ function createMcpServer(): McpServer {
         "On WaitTimeout, read the suggest[] array in the error response for recovery steps.",
         "",
         "## Failure recovery",
-        "- WindowNotFound → call get_windows to list available titles, then retry focus_window",
+        "- WindowNotFound → call desktop_discover to list available titles, then retry focus_window",
         "- WaitTimeout → read suggest[] in the error; increase timeoutMs or verify target exists",
         "- keyboard(action='press') or keyboard(action='type') wrong window → call focus_window(windowTitle) first",
         "- scroll(action='capture') sizeReduced=true → reduce maxScrolls or add grayscale=true",

@@ -54,7 +54,8 @@ describe("F1-base: click_element with nonexistent automationId → ElementNotFou
     expect(Array.isArray(p.suggest)).toBe(true);
     expect(p.suggest.length).toBeGreaterThan(0);
     // LLM must be directed to get_ui_elements to see the current tree
-    expect(p.suggest.some((s: string) => /get_ui_elements/.test(s))).toBe(true);
+    // Phase 4: get_ui_elements privatized → ElementNotFound suggest now points at desktop_discover.
+    expect(p.suggest.some((s: string) => /desktop_discover/.test(s))).toBe(true);
   });
 
   it("context carries windowTitle so LLM knows which window to re-query", async () => {
@@ -162,6 +163,7 @@ describe("F1-dialog: stale automationId after dialog closes → ElementNotFound"
       return;
     }
     expect(p.code).toBe("ElementNotFound");
-    expect(p.suggest.some((s: string) => /get_ui_elements/.test(s))).toBe(true);
+    // Phase 4: get_ui_elements privatized → ElementNotFound suggest now points at desktop_discover.
+    expect(p.suggest.some((s: string) => /desktop_discover/.test(s))).toBe(true);
   }, 15_000);
 });

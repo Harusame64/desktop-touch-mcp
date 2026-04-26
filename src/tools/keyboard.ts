@@ -683,8 +683,8 @@ export function registerKeyboardTools(server: McpServer): void {
       description: buildDesc({
         purpose: "Send keyboard input to a window: 'type' for text, 'press' for key combos.",
         details: "action='type' inserts text (auto-clipboard for non-ASCII / IME-safe). action='press' sends key combos like 'ctrl+c'/'alt+tab'. Pass windowTitle to auto-focus and auto-guard (verifies identity, foreground, modal) before input. Omitting windowTitle acts on the active window (unguarded).",
-        prefer: "Use windowTitle to auto-focus before injection. Set lensId to enable perception guards. Use set_element_value for form fields.",
-        caveats: "win+r/win+x/win+s/win+l blocked for security. action='type' does not handle IME composition for CJK — use use_clipboard=true or set_element_value instead. Non-ASCII punctuation (em-dash etc.) auto-routes via clipboard to prevent Chrome address-bar hijack; pass forceKeystrokes:true to disable. Background mode (DTM_BG_AUTO=1) skips focus change.",
+        prefer: "Use windowTitle to auto-focus before injection. Set lensId to enable perception guards. Use desktop_act({action:'setValue'}) for form fields backed by UIA ValuePattern.",
+        caveats: "win+r/win+x/win+s/win+l blocked for security. action='type' does not handle IME composition for CJK — use use_clipboard=true or desktop_act({action:'setValue'}) instead. Non-ASCII punctuation (em-dash etc.) auto-routes via clipboard to prevent Chrome address-bar hijack; pass forceKeystrokes:true to disable. Background mode (DTM_BG_AUTO=1) skips focus change.",
         examples: [
           "keyboard({action:'type', text:'hello', windowTitle:'Notepad'}) → text injected (guarded)",
           "keyboard({action:'type', text:'hello'}) → text injected (unguarded)",
