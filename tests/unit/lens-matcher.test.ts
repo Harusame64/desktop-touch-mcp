@@ -8,7 +8,6 @@ import {
   compileLens,
   resolveBindingFromSnapshot,
   expandFluentKeys,
-  fluentKeyFor,
   resetLensCounter,
   type WindowSnapshot,
 } from "../../src/engine/perception/lens.js";
@@ -118,13 +117,6 @@ describe("compileLens", () => {
     const binding = resolveBindingFromSnapshot(baseSpec, windows)!;
     const lens = compileLens(baseSpec, binding, baseIdentity, 42);
     expect(lens.registeredAtSeq).toBe(42);
-  });
-});
-
-describe("fluentKeyFor", () => {
-  it("formats key as window:<hwnd>.<property>", () => {
-    expect(fluentKeyFor("100", "target.title")).toBe("window:100.target.title");
-    expect(fluentKeyFor("999", "modal.above")).toBe("window:999.modal.above");
   });
 });
 
