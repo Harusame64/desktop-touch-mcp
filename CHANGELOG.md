@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.0.0] - DRAFT — Tool Surface Reduction Phase 1 + Phase 2 + Phase 3
+## [1.0.0] - DRAFT — Tool Surface Reduction Phase 1 + Phase 2 + Phase 3 + Phase 4
 
 ### Breaking Changes — Phase 1 (Naming Redesign, 10 tools)
 
@@ -78,28 +78,99 @@ Notes:
   are dropped from the LLM-facing response; spawn state can be inferred from
   whether tabs[] returns immediately vs after a short delay.
 
+### Breaking Changes — Phase 4 (Privatize / Absorb, 20 tools)
+
+The largest reduction phase — 20 tools either privatized (entry-point removed,
+internal handlers retained for tests / future facades) or absorbed into the
+World-Graph core (desktop_state / desktop_discover / desktop_act) plus the
+unified screenshot tool.
+
+#### Privatized (10 — handler retained as internal export)
+
+| Old call | New path |
+|---|---|
+| `events_subscribe` / `events_poll` / `events_unsubscribe` / `events_list` | Use `wait_until` for one-shot waits (`condition='window_appears'`/`'terminal_output_contains'`/`'element_matches'`/`'focus_changes'`). Multi-event monitoring removed; revive via facade in a later phase if dogfood shows it's needed. |
+| `perception_register` / `perception_read` / `perception_forget` / `perception_list` | Auto Perception (v0.12+) attaches `attention` to `desktop_state` / `desktop_act` responses automatically. Action tools auto-guard when given `windowTitle`. |
+| `get_history` | Debug-only tool — removed from public surface. |
+| `mouse_move` | Hover-trigger UIs are rare; use `mouse_click` for click targets. |
+
+#### Absorbed into `screenshot` (3)
+
+| Old call | New call |
+|---|---|
+| `screenshot_background({windowTitle})` | `screenshot({windowTitle, mode:'background'})` |
+| `screenshot_ocr({windowTitle, language})` | `screenshot({windowTitle, detail:'ocr', ocrLanguage})` |
+| `scope_element({windowTitle, name, automationId, ...})` | Discover element bounds via `desktop_discover`, then `screenshot({windowTitle, region:{x,y,width,height}})`. The UIA child-tree return value is no longer surfaced — `desktop_discover` already exposes that structure. |
+
+#### Absorbed into `desktop_act` (1)
+
+| Old call | New call |
+|---|---|
+| `set_element_value({windowTitle, value, name, automationId})` | `desktop_act({action:'setValue', lease, text:value})`. Lease comes from `desktop_discover`. UIA ValuePattern path or CDP fill path selected automatically based on entity source. |
+
+#### Absorbed into `desktop_state` response fields (4)
+
+| Old call | New call |
+|---|---|
+| `get_active_window()` | `desktop_state().focusedWindow` (always returned) |
+| `get_cursor_position()` | `desktop_state({includeCursor:true}).cursor` |
+| `get_document_state({port,tabId})` | `desktop_state({includeDocument:true,port?,tabId?}).document` |
+| `get_screen_info()` | `desktop_state({includeScreen:true}).screen` |
+
+#### Absorbed into `desktop_discover` response fields (2)
+
+| Old call | New call |
+|---|---|
+| `get_ui_elements({windowTitle, ...})` | `desktop_discover({windowTitle}).actionable[]` (entity name / role / value / automationId / region) |
+| `get_windows()` | `desktop_discover({}).windows[]` (zOrder / title / hwnd / region / isActive / processName) |
+
+#### `run_macro` DSL TOOL_REGISTRY migrated to v1.0.0 names
+
+The pre-Phase-1 compatibility layer in `run_macro` was retired. The macro DSL
+now accepts only the v1.0.0 dispatcher names — for example
+`{tool:'keyboard', params:{action:'type', text:'hello'}}` instead of
+`{tool:'keyboard_type', params:{text:'hello'}}`. Macros built for v0.x must
+be rewritten alongside direct tool calls.
+
+#### v2 default-on caveat (carryover)
+
+Anti-Fukuwarai v2 (`desktop_discover` / `desktop_act`) is on by default since
+v0.17. Phase 4 absorbs `get_ui_elements` / `get_windows` into v2's response
+fields, so setting `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1` will lose access to
+that information as well. v1 fallbacks (`click_element` / native UIA via
+`screenshot(detail='text')`) remain available.
+
 ### Tool Count
 
-- Phase 1 + Phase 2 + Phase 3 combined: **65 → 48 tools** (Phase 1: 10 renames, no count change; Phase 2: 13 → 5; Phase 3: 13 → 9 in browser family).
-- Stub catalog: **46 entries** (v2 `desktop_discover` / `desktop_act` are dynamic, registered at startup, not in static catalog).
+- Phase 1 + Phase 2 + Phase 3 + Phase 4 combined: **65 → 28 public tools** (about 57% reduction; matches plan §13 target of 27 ± 1).
+- Stub catalog: **26 entries** (v2 `desktop_discover` / `desktop_act` are dynamic, registered at startup, not in static catalog → 26 + 2 = 28 public surface).
 
-### Phase 3 Outstanding (deferred to Phase 4-5)
+### Phase 4 Outstanding (deferred to Phase 5)
 
-- `run_macro` DSL still accepts old tool names (`keyboard_type`, `pin_window`, etc.) via internal `TOOL_REGISTRY` mapping. Will be migrated to new dispatcher names in Phase 4.
-- Phase 4 will absorb additional tools (`get_*` series, `set_element_value`, screenshot variants, `events_*` / `perception_*` hide).
-- Comments referencing old browser tool names (`src/utils/launch.ts:4`, `src/tools/browser.ts:64/1462/1755`) are LLM non-exposed and queued for Phase 4 polish.
-- `scripts/measure-tools-list-tokens.ts` Tier classifications still reflect pre-Phase 1 names — Phase 4 polish or removal candidate.
+- Pre-existing test-isolation flakiness in `tests/unit/registry-lru.test.ts` (Phase 3 §3.3) — unrelated to Phase 4, vitest `vi.mock` leak issue. Tracked for Phase 5.
+- Pre-existing E2E flakiness in `tests/e2e/context-consistency.test.ts` C3 (Save-As dialog detection on Win11 MSStore Notepad) and `tests/e2e/rich-narration-edge.test.ts` B1 (Chromium narrate:rich) — Phase 5 dogfood will verify.
+- `browser_disconnect` / `mouse_move` facade revival decision — Phase 5 dogfood will confirm whether the privatized capability is missed.
+- MCP server instructions text (`src/server-windows.ts`) extension for the new screenshot mode/detail/region values and desktop_state include* flags — deferred to Phase 5 dogfood judgement to avoid preemptive surface bloat.
+- Performance / token-cost release notes generation via the refreshed `scripts/measure-tools-list-tokens.ts`.
 
 ### Changed
 
-- `src/server-windows.ts` instructions text updated for Phase 1 + Phase 2 naming. Phase 3 leaves browser-specific section addition for Phase 5 dogfood judgement (avoids preemptive surface bloat).
-- `src/stub-tool-catalog.ts` regenerated (46 entries after Phase 3).
+- `src/server-windows.ts` instructions text updated for Phase 1 + Phase 2 naming + Phase 4 WindowNotFound recovery.
+- `src/stub-tool-catalog.ts` regenerated (26 entries after Phase 4).
 - All LLM-visible strings (description / suggest / error.message / engine layer literal types / `failWith` tool labels) updated:
-  - `_errors.ts` `BrowserNotConnected.suggest` → references `browser_open({launch:{}})`.
-  - `desktop-state.ts` `get_document_state` description → references `browser_eval({action:'dom'})`.
+  - `_errors.ts` SUGGESTS for `WindowNotFound` / `ElementNotFound` / `InvokePatternNotSupported` / `TerminalWindowNotFound` rewritten to point at `desktop_discover` / `desktop_act({action:'setValue'})` / `screenshot({region})` / `terminal({action:'send'})`.
+  - `_errors.ts` `BrowserNotConnected.suggest` → `browser_open({launch:{}})` (Phase 3).
+  - `_errors.ts` `GuardFailed` / `LensNotFound` / `LensBudgetExceeded` rewritten away from privatized perception_* tools.
+  - `engine/perception/guards.ts` (10) + `resource-model.ts` (2) `suggestedAction` → `desktop_state` (was: `perception_read`).
+  - `desktop-state.ts` description: declares which former `get_*` tools are absorbed via `include*` flags.
+  - `desktop-register.ts` (`desktop_discover` description): V1 fallback list `get_ui_elements` → `click_element`.
+  - `screenshot.ts` `failWith` tags inside `screenshotBgHandler` / `screenshotOcrHandler` re-attribute to `"screenshot"` (the public dispatcher name).
+  - `keyboard.ts` / `mouse.ts` / `dock.ts` / `window-dock.ts` / `workspace.ts` / `screenshot.ts` schema descriptions: hwnd hints "from `get_windows`" → "from `desktop_discover`"; monitor hints "from `get_screen_info`" → "from `desktop_state({includeScreen:true})`".
   - `browser.ts` `failWith` calls re-attribute internal handlers to their public dispatcher names (`browser_get_dom` / `browser_get_app_state` → `browser_eval`; `browser_launch` → `browser_open`).
-- `README.md`, `README.ja.md`, `docs/system-overview.md`, `docs/tool-surface-reduction-plan.md`, `docs/tool-surface-known-issues.md` updated for Phase 3.
+- `README.md`, `README.ja.md`, `docs/system-overview.md`, `docs/tool-surface-reduction-plan.md`, `docs/tool-surface-known-issues.md` updated for Phase 4.
 - `.gitignore` strengthened: `.vitest-out*.txt` / `.vitest-out*.json` wildcards (Phase 2 §2.6 follow-up).
+- `scripts/measure-tools-list-tokens.ts` Tier sets refreshed for the v1.0.0 surface.
+- Comment-only references to pre-Phase-1/2/3 names in `src/engine/` and `src/tools/` polished to current dispatcher names (16+ touchpoints across uia-bridge, vision-gpu, world-graph, layer-buffer, ocr-bridge, desktop-executor, desktop-providers, desktop, server-windows, utils/launch).
 
 ---
 
