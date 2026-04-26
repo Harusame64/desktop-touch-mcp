@@ -49,7 +49,7 @@ const SUGGESTS: Record<string, string[]> = {
   BrowserNotConnected: [
     "Call browser_open first with the correct port",
     "Verify Chrome was launched with --remote-debugging-port",
-    "Use browser_launch to open a new debugging-enabled Chrome instance",
+    "Or call browser_open({launch:{}}) to spawn a debug-mode Chrome on the configured port",
   ],
   TerminalWindowNotFound: [
     "Call get_windows to see available titles",

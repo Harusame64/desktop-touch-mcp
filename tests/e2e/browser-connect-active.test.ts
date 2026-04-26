@@ -12,7 +12,7 @@ import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
 import { sleep } from "./helpers/wait.js";
-import { browserConnectHandler } from "../../src/tools/browser.js";
+import { browserConnectHandler, browserOpenHandler } from "../../src/tools/browser.js";
 import { evaluateInTab, disconnectAll } from "../../src/engine/cdp-bridge.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -107,5 +107,45 @@ describe.skipIf(!CHROME_AVAILABLE)("browser_connect active tab detection", () =>
     } else {
       expect(payload.active).toBeNull();
     }
+  });
+});
+
+// Phase 3: browser_open dispatcher absorbs former browser_launch via optional launch param.
+// This exercise targets the launch-then-connect short circuit when CDP is already live.
+describe.skipIf(!CHROME_AVAILABLE)("browser_open(launch:{}) — idempotent connect when CDP already live", () => {
+  it("launch:{} on an already-running CDP endpoint returns the connect payload (no spawn)", async () => {
+    // Chrome is already running on TEST_PORT (set up in beforeAll). browser_open with
+    // launch:{} should detect this via listTabs and skip the spawn step, returning the
+    // standard connect payload with tabs[].active.
+    const result = await browserOpenHandler({
+      port: TEST_PORT,
+      launch: {
+        browser: "auto",
+        userDataDir: "C:\\tmp\\cdp-phase3-test",
+        waitMs: 5_000,
+      },
+    });
+    const text = (result.content[0] as { text: string }).text;
+    const payload = extractJsonBlock(text) as {
+      port: number;
+      tabs: Array<{ id: string; title: string; url: string; active: boolean }>;
+    };
+    expect(payload.port).toBe(TEST_PORT);
+    expect(Array.isArray(payload.tabs)).toBe(true);
+    expect(payload.tabs.length).toBeGreaterThan(0);
+    for (const tab of payload.tabs) {
+      expect(typeof tab.active).toBe("boolean");
+    }
+  });
+
+  it("launch undefined performs pure connect (current connect behaviour)", async () => {
+    const result = await browserOpenHandler({ port: TEST_PORT });
+    const text = (result.content[0] as { text: string }).text;
+    const payload = extractJsonBlock(text) as {
+      port: number;
+      tabs: Array<{ id: string; active: boolean }>;
+    };
+    expect(payload.port).toBe(TEST_PORT);
+    expect(Array.isArray(payload.tabs)).toBe(true);
   });
 });

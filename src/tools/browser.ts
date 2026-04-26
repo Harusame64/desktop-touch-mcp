@@ -3,7 +3,7 @@ import { z } from "zod";
 import { mouse, Button, Point, straightTo, DEFAULT_MOUSE_SPEED } from "../engine/nutjs.js";
 import { enumWindowsInZOrder, restoreAndFocusWindow } from "../engine/win32.js";
 import { updateWindowCache } from "../engine/window-cache.js";
-import { ok } from "./_types.js";
+import { ok, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
 import { coercedBoolean } from "./_coerce.js";
@@ -54,8 +54,44 @@ const selectorParam = z
   .string()
   .describe("CSS selector for the target element (e.g. '#submit', '.btn', 'button[type=submit]')");
 
+// Phase 3: kept for internal documentation. Public registration uses
+// `browserOpenSchema` (defined below) which wraps connect + optional launch.
 export const browserConnectSchema = {
   port: portParam,
+};
+
+// Phase 3: browser_open dispatcher schema (connect-only by default,
+// optional launch absorbs former browser_launch).
+export const browserOpenSchema = {
+  port: portParam,
+  launch: z
+    .object({
+      browser: z
+        .enum(["auto", "chrome", "edge", "brave"])
+        .default("auto")
+        .describe("Which browser to spawn. 'auto' tries chrome → edge → brave. Ignored when a CDP endpoint is already live."),
+      userDataDir: z
+        .string()
+        .default("C:\\tmp\\cdp")
+        .describe("Path for --user-data-dir. A dedicated profile avoids conflicts with the main browser session."),
+      url: z
+        .string()
+        .optional()
+        .describe("Optional URL to open in the new browser."),
+      waitMs: z.coerce
+        .number()
+        .int()
+        .min(1000)
+        .max(30_000)
+        .default(10_000)
+        .describe("Max ms to wait for the CDP endpoint to become ready (default 10000)."),
+    })
+    .optional()
+    .describe(
+      "If set, spawn a debug-mode browser when no CDP endpoint is live on the target port (idempotent: " +
+      "an already-running endpoint is preferred and the spawn step is skipped). " +
+      "Pass {} to use defaults (chrome, C:\\tmp\\cdp, no initial URL). Omit to perform pure connect."
+    ),
 };
 
 const includeContextParam = coercedBoolean()
@@ -84,7 +120,9 @@ export const browserClickElementSchema = {
   fixId: z.string().optional().describe("Approve a pending suggestedFix (one-shot, 15s TTL)."),
 };
 
-export const browserEvalSchema = {
+// Phase 3: kept as a ZodRawShape for internal documentation / type derivation;
+// the runtime registration uses the `browserEvalSchema` discriminated union below.
+export const browserEvalJsSchema = {
   expression: z.string().describe(
     "JavaScript expression to evaluate in the browser tab. " +
     "The server automatically wraps snippets in an async IIFE to avoid repeated const/let name collisions. " +
@@ -97,13 +135,13 @@ export const browserEvalSchema = {
   includeContext: includeContextParam,
   lensId: z.string().optional().describe(
     "Optional perception lens ID. Guards (target.identityStable) are evaluated before eval. " +
-    "Note: browser_eval returns raw text, so no perception envelope is attached (guards only)."
+    "Note: action='js' returns raw text by default; pass withPerception:true to receive a structured envelope."
   ),
   withPerception: z.boolean().optional().default(false).describe(
     "When true, return structured JSON { ok, result, post } instead of raw text. " +
     "Enables post.perception attachment so the LLM can see guard status. " +
     "Default false preserves the raw-text return for backwards compatibility. " +
-    "Example: browser_eval({expression:'document.title', withPerception:true})"
+    "Example: browser_eval({action:'js', expression:'document.title', withPerception:true})"
   ),
 };
 
@@ -829,7 +867,9 @@ function safeCloneForTransport(value: unknown): unknown {
   catch { return "[Unserializable]"; }
 }
 
-export const browserEvalHandler = async ({
+// Phase 3: 'js' action implementation. Public dispatcher `browserEvalHandler`
+// (defined near the registration) routes here when args.action === "js".
+export const browserEvalJsHandler = async ({
   expression,
   tabId,
   port,
@@ -944,7 +984,8 @@ export const browserGetDomHandler = async ({
       content: [{ type: "text" as const, text: lines.join("\n") }],
     };
   } catch (err) {
-    return failWith(err, "browser_get_dom");
+    // Phase 3: surfaced to LLM via browser_eval(action='dom') dispatcher.
+    return failWith(err, "browser_eval");
   }
 };
 
@@ -1328,7 +1369,7 @@ export const browserLaunchHandler = async ({
       return {
         content: [{
           type: "text" as const,
-          text: `browser_launch: url must not start with '-' (got: ${JSON.stringify(url)})`,
+          text: `browser_open: url must not start with '-' (got: ${JSON.stringify(url)})`,
         }],
       };
     }
@@ -1414,8 +1455,72 @@ export const browserLaunchHandler = async ({
       }],
     };
   } catch (err) {
-    return failWith(err, "browser_launch");
+    // Phase 3: surfaced to LLM via browser_open(launch:{...}) dispatcher.
+    return failWith(err, "browser_open");
   }
+};
+
+// Phase 3: classify the text payload returned by browserLaunchHandler so
+// browserOpenHandler can decide whether to short-circuit with the launch error
+// or proceed to connect. Exported for unit testing — the failure-detection logic
+// is the only thing that gates the connect step, so it must be exercisable in
+// isolation.
+//
+// browserLaunchHandler can return:
+//   - plain text on early failure (browser-not-found, CDP timeout, url validation)
+//   - failWith JSON `{ok:false, code, error, ...}` on caught exceptions
+//     (e.g. spawnDetached permission errors — Codex PR #40 review)
+//   - success JSON `{port, alreadyRunning, launched, tabs}` on success
+//     (success payloads omit `ok` entirely; treat anything not explicitly
+//     `ok===false` as success)
+export function classifyLaunchOutcome(text: string): "ok" | "fail" {
+  if (!text) return "fail";
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    // plain text — early failure path (url validation / browser-not-found / CDP timeout)
+    return "fail";
+  }
+  if (
+    typeof parsed === "object" &&
+    parsed !== null &&
+    (parsed as { ok?: unknown }).ok === false
+  ) {
+    return "fail";
+  }
+  return "ok";
+}
+
+// Phase 3: browser_open dispatcher — optional launch then connect.
+// Replaces former browser_launch + browser_open pair; reuses both internal
+// handlers so the spawn / poll / url-validation logic stays single-source.
+export const browserOpenHandler = async ({
+  port,
+  launch,
+}: {
+  port: number;
+  launch?: {
+    browser: "auto" | "chrome" | "edge" | "brave";
+    userDataDir: string;
+    url?: string;
+    waitMs: number;
+  };
+}): Promise<ToolResult> => {
+  if (launch) {
+    const launchResult = await browserLaunchHandler({
+      browser: launch.browser,
+      port,
+      userDataDir: launch.userDataDir,
+      url: launch.url,
+      waitMs: launch.waitMs,
+    });
+    const text = launchResult.content[0]?.type === "text" ? launchResult.content[0].text : "";
+    if (classifyLaunchOutcome(text) === "fail") {
+      return launchResult;
+    }
+  }
+  return browserConnectHandler({ port });
 };
 
 export const browserSearchHandler = async ({
@@ -1789,7 +1894,8 @@ export const browserGetAppStateHandler = async ({
     }
     return ok(payload);
   } catch (err) {
-    return failWith(err, "browser_get_app_state");
+    // Phase 3: surfaced to LLM via browser_eval(action='appState') dispatcher.
+    return failWith(err, "browser_eval");
   }
 };
 
@@ -1810,6 +1916,70 @@ export const browserDisconnectHandler = async ({
     };
   } catch (err) {
     return failWith(err, "browser_disconnect");
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 3 dispatcher schemas (browser_eval action='js'|'dom'|'appState')
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const browserEvalSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("js"),
+    expression: z.string().describe(
+      "JavaScript expression to evaluate. " +
+      "The server automatically wraps snippets in an async IIFE to avoid repeated const/let collisions. " +
+      "For multi-statement snippets, use an explicit final return value. " +
+      "Declarations (const/let/var) are scoped per snippet — use window.* / globalThis.* for persistence."
+    ),
+    withPerception: z.boolean().optional().default(false).describe(
+      "When true, return structured JSON {ok, result, post} with post.perception attached. Default false preserves raw-text return."
+    ),
+    lensId: z.string().optional().describe(
+      "Optional perception lens ID. Guards (target.identityStable) are evaluated before eval."
+    ),
+    tabId: tabIdParam,
+    port: portParam,
+    includeContext: includeContextParam,
+  }),
+  z.object({
+    action: z.literal("dom"),
+    selector: z.string().optional().describe(
+      "CSS selector for root element. Omit for document.body."
+    ),
+    maxLength: z.coerce.number().int().min(100).max(100_000).default(10_000).describe(
+      "Max characters of HTML to return (default 10000)."
+    ),
+    tabId: tabIdParam,
+    port: portParam,
+    includeContext: includeContextParam,
+  }),
+  z.object({
+    action: z.literal("appState"),
+    selectors: z.array(z.string()).optional().describe(
+      "Custom probe selectors. Omit to use the default SPA framework set " +
+      "(__NEXT_DATA__ / __NUXT_DATA__ / __REMIX_CONTEXT__ / __APOLLO_STATE__ / window:__INITIAL_STATE__ etc.). " +
+      "Window globals must be prefixed with 'window:'."
+    ),
+    maxBytes: z.coerce.number().int().min(256).max(64_000).default(4_000).describe(
+      "Max bytes per individual payload (default 4000). Larger payloads are truncated."
+    ),
+    tabId: tabIdParam,
+    port: portParam,
+    includeContext: includeContextParam,
+  }),
+]);
+
+export type BrowserEvalArgs = z.infer<typeof browserEvalSchema>;
+
+export const browserEvalHandler = async (args: BrowserEvalArgs): Promise<ToolResult> => {
+  switch (args.action) {
+    case "js":
+      return browserEvalJsHandler(args);
+    case "dom":
+      return browserGetDomHandler(args);
+    case "appState":
+      return browserGetAppStateHandler(args);
   }
 };
 
@@ -1849,24 +2019,14 @@ export function registerBrowserTools(server: McpServer): void {
   );
 
   server.tool(
-    "browser_get_app_state",
-    "Extract embedded SPA framework state (Next.js, Nuxt, Remix, GitHub, Apollo, Redux SSR) in one CDP call. Returns parsed payloads with framework labels. Use BEFORE browser_eval or browser_get_dom on SPAs where rendered HTML is sparse. Pass selectors to target specific window globals (e.g. 'window:__MY_STATE__'). Caveats: Only extracts SSR-injected state — client-only runtime state requires browser_eval.",
-    browserGetAppStateSchema,
-    browserGetAppStateHandler
-  );
-
-  server.tool(
-    "browser_launch",
-    "Launch Chrome/Edge/Brave in CDP debug mode and wait until the DevTools endpoint is ready. Idempotent — if a CDP endpoint is already live on the target port, returns immediately without spawning. Default: tries chrome → edge → brave (first installed wins), port 9222, userDataDir C:\\tmp\\cdp. Pass url to open a specific page on launch; follow with browser_open to get tab IDs. Caveats: A Chrome session started without --remote-debugging-port cannot be taken over — close it first or use a separate profile.",
-    browserLaunchSchema,
-    browserLaunchHandler
-  );
-
-  server.tool(
     "browser_open",
-    "Connect to Chrome/Edge running with --remote-debugging-port and return open tab IDs — required before all other browser_* tools. Launch with browser_launch() or manually: chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\\tmp\\cdp. Returns tabs[] with id, url, title — pass tabId to browser_* tools to target a specific tab. Caveats: CDP connection is per-process; if Chrome restarts, call browser_open again to get fresh tab IDs.",
-    browserConnectSchema,
-    browserConnectHandler
+    "Connect to Chrome/Edge running with --remote-debugging-port and return open tab IDs — required before all other browser_* tools. " +
+    "Pass launch:{} (or with overrides) to auto-spawn a debug-mode browser when no CDP endpoint is live (idempotent: an already-running endpoint is preferred). " +
+    "Returns tabs[] with id, url, title, active — pass tabId to browser_* tools to target a specific tab. " +
+    "Caveats: CDP connection is per-process; if Chrome restarts, call browser_open again to get fresh tab IDs. " +
+    "A Chrome session started without --remote-debugging-port cannot be taken over — close it first or use a separate userDataDir.",
+    browserOpenSchema,
+    browserOpenHandler
   );
 
   server.tool(
@@ -1883,18 +2043,32 @@ export function registerBrowserTools(server: McpServer): void {
     withPostState("browser_click", browserClickElementHandler)
   );
 
-  server.tool(
+  server.registerTool(
     "browser_eval",
-    "Evaluate a JavaScript expression in a browser tab and return raw text. Pass withPerception:true to receive structured JSON {ok, result, post} with post.perception attached. lensId is optional for advanced pinned-lens use. Caveats: DOM nodes cannot be returned directly (circular refs are serialized safely). React/Vue/Svelte controlled inputs cannot be set via element.value — use keyboard(action='type') instead. readyState is strictly checked; guard blocks if page is still loading.",
-    browserEvalSchema,
-    withPostState("browser_eval", browserEvalHandler)
-  );
-
-  server.tool(
-    "browser_get_dom",
-    "Return the HTML of a DOM element (or document.body when no selector is given), truncated to maxLength characters. Use when browser_overview is insufficient for inspecting page structure.",
-    browserGetDomSchema,
-    browserGetDomHandler
+    {
+      description: buildDesc({
+        purpose: "Inspect or operate on a browser tab via 3 actions: 'js' (evaluate JS), 'dom' (get HTML), 'appState' (extract SSR-injected SPA state).",
+        details:
+          "action='js' — Run a JS expression. withPerception:true wraps in {ok, result, post}. " +
+          "action='dom' — Return outerHTML of selector (or document.body), truncated to maxLength. " +
+          "action='appState' — Scan Next/Nuxt/Remix/Apollo/GitHub/Redux SSR injected JSON; pass selectors to override defaults.",
+        prefer:
+          "Use action='appState' BEFORE 'dom' or 'js' on SPAs where rendered HTML is sparse — single CDP call. " +
+          "Use 'dom' when 'appState' is empty and you need page structure. " +
+          "Use 'js' as the escape hatch for arbitrary scripting.",
+        caveats:
+          "DOM nodes cannot be returned from action='js' directly (circular refs are serialized safely). " +
+          "React/Vue/Svelte controlled inputs cannot be set via element.value — use keyboard(action='type') / browser_fill instead. " +
+          "readyState is strictly checked; guard blocks if page is still loading.",
+        examples: [
+          "browser_eval({action:'js', expression:'document.title'}) → page title",
+          "browser_eval({action:'dom', selector:'#main', maxLength:5000}) → outerHTML",
+          "browser_eval({action:'appState'}) → default SPA state probes",
+        ],
+      }),
+      inputSchema: browserEvalSchema,
+    },
+    withPostState("browser_eval", browserEvalHandler as (args: Record<string, unknown>) => Promise<ToolResult>)
   );
 
   server.tool(
@@ -1902,13 +2076,6 @@ export function registerBrowserTools(server: McpServer): void {
     "Navigate a browser tab to a URL via CDP Page.navigate — more reliable than clicking the address bar. Pass tabId+port so the server auto-guards (verifies tab readyState) and returns post.perception.status. lensId is optional for advanced pinned-tab workflows. Caveats: Does not block until page load completes — follow with wait_until(element_matches) or repeated browser_eval polling for slow pages.",
     browserNavigateSchema,
     withPostState("browser_navigate", browserNavigateHandler)
-  );
-
-  server.tool(
-    "browser_disconnect",
-    "Close cached CDP WebSocket sessions for a port. Call when browser interaction is complete to release connections.",
-    browserDisconnectSchema,
-    browserDisconnectHandler
   );
 
   server.tool(

@@ -298,7 +298,7 @@ export function registerDesktopStateTools(server: McpServer): void {
 
   server.tool(
     "get_document_state",
-    "Return current Chrome page state via CDP: url, title, readyState, selection, and scroll position. Far cheaper than browser_get_dom for page orientation.",
+    "Return current Chrome page state via CDP: url, title, readyState, selection, and scroll position. Far cheaper than browser_eval({action:'dom'}) for page orientation.",
     getDocumentStateSchema,
     getDocumentStateHandler
   );

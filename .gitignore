@@ -34,9 +34,9 @@ bin/*.pdb
 tools/win-ocr/bin/
 tools/win-ocr/obj/
 
-# vitest capture output
-.vitest-out.json
-.vitest-out.txt
+# vitest capture output (covers .vitest-out.txt / .vitest-out-e2e.txt / .vitest-out.json etc.)
+.vitest-out*.txt
+.vitest-out*.json
 .vitest-verbose.txt
 
 # cargo check / build output (captured for diagnostics)

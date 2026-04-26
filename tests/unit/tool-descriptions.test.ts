@@ -206,8 +206,11 @@ describe("tool descriptions — contract", () => {
   // Phase 2b: -4 old (scroll raw, scroll_capture, smart_scroll, scroll_to_element)
   //            +1 new dispatcher (scroll) → 54-4+1 = 51
   // Phase 2c: -2 old (terminal_read, terminal_send) +1 new dispatcher (terminal) → 51-2+1 = 50
-  it("finds exactly 50 registered tools", () => {
-    expect(allTools.length).toBe(50);
+  // Phase 3:  -4 old (browser_launch, browser_get_dom, browser_get_app_state, browser_disconnect)
+  //           browser_launch absorbed into browser_open.launch, get_dom + get_app_state into
+  //           browser_eval discriminatedUnion, browser_disconnect privatized → 50-4 = 46
+  it("finds exactly 46 registered tools", () => {
+    expect(allTools.length).toBe(46);
   });
 
   for (const tool of allTools) {
