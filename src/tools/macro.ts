@@ -57,10 +57,28 @@ import {
   getDesktopFacade,
   desktopSeeSchema,
   desktopTouchSchema,
+  validateDesktopTouchTextRequirement,
 } from "./desktop-register.js";
+import { resolveV2Activation } from "./desktop-activation.js";
 import type { DesktopSeeInput } from "./desktop.js";
 import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
 import type { EntityLease } from "../engine/world-graph/types.js";
+
+/**
+ * Phase 4 (Codex PR #41 round 3 P1): the v2 World-Graph dispatchers
+ * registered above must honour the same DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1
+ * kill switch that gates the top-level registerDesktopTools registration.
+ * Without this gate, run_macro provides an alternate execution path that
+ * silently re-enables v2 even when the operator has opted out.
+ */
+function v2KillSwitchActive(): boolean {
+  return !resolveV2Activation(process.env).enabled;
+}
+
+const V2_DISABLED_ERROR = {
+  ok: false,
+  error: "DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1 is set; v2 World-Graph tools (desktop_discover / desktop_act) are disabled and may not be invoked through run_macro either.",
+} as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tool registry
@@ -106,10 +124,15 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   workspace_launch:     { schema: z.object(workspaceLaunchSchema),     handler: workspaceLaunchHandler },
   wait_until:           { schema: z.object(waitUntilSchema),           handler: waitUntilHandler },
   notification_show:    { schema: z.object(notificationShowSchema),    handler: notificationShowHandler },
-  // v2 World-Graph (default-on; kill switch DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1)
+  // v2 World-Graph (default-on; kill switch DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1).
+  // Both handlers re-check the kill switch on every call so run_macro cannot
+  // bypass the operator's opt-out. (Codex PR #41 round 3 P1.)
   desktop_discover:     {
     schema: z.object(desktopSeeSchema),
     handler: async (input: unknown): Promise<ToolResult> => {
+      if (v2KillSwitchActive()) {
+        return { content: [{ type: "text" as const, text: JSON.stringify(V2_DISABLED_ERROR, null, 2) }] };
+      }
       const output = await getDesktopFacade().see(input as DesktopSeeInput);
       return { content: [{ type: "text" as const, text: JSON.stringify(output, null, 2) }] };
     },
@@ -117,7 +140,14 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   desktop_act:          {
     schema: z.object(desktopTouchSchema),
     handler: async (input: unknown): Promise<ToolResult> => {
+      if (v2KillSwitchActive()) {
+        return { content: [{ type: "text" as const, text: JSON.stringify(V2_DISABLED_ERROR, null, 2) }] };
+      }
       const i = input as { lease: EntityLease; action?: TouchAction; text?: string };
+      const validationError = validateDesktopTouchTextRequirement(i.action, i.text);
+      if (validationError) {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: validationError }, null, 2) }] };
+      }
       const result = await getDesktopFacade().touch({
         lease: i.lease,
         action: i.action,
