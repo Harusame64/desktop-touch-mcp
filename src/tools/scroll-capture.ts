@@ -3,7 +3,6 @@ import sharp from "sharp";
 import { screen, keyboard, mouse, getWindows, Region } from "../engine/nutjs.js";
 import { getWindowTitleW } from "../engine/win32.js";
 import { parseKeys } from "../utils/key-map.js";
-import { buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 
 // Horizontal mouse scroll units per step (matches nut-js scroll granularity)
