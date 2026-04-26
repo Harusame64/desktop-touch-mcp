@@ -139,7 +139,7 @@ For a local checkout, register the built server directly:
 ### Discovery + Action — World-Graph dispatchers (2 dynamic)
 | Tool | Description |
 |---|---|
-| `desktop_discover` | Find actionable entities and emit leases. Returns `actionable[]` (former get_ui_elements equivalent — name/role/value/automationId/region) + `windows[]` (former get_windows equivalent — zOrder/title/hwnd/region/isActive). Pre-Phase-1 `desktop_see`. |
+| `desktop_discover` | Find actionable entities and emit leases. Returns `entities[]` (former `get_ui_elements` equivalent — `entityId`/`label`/`role`/`confidence`/`sources`/`primaryAction`/`lease`, plus `rect` when `debug:true`) + `windows[]` (former `get_windows` equivalent — `zOrder`/`title`/`hwnd`/`region`/`isActive`/`isMinimized`/`isMaximized`/`processName`). Pre-Phase-1 `desktop_see`. |
 | `desktop_act` | Lease-consuming action (`click` / `type` / `setValue` / `scroll` / `select`). Phase 4: `action='setValue'` absorbs former set_element_value via UIA ValuePattern (UIA entities) or CDP fill (browser entities). Pre-Phase-1 `desktop_touch`. |
 
 ### Window management (1)
