@@ -358,9 +358,22 @@ export const screenshotHandler = async (args: {
 }): Promise<ToolResult> => {
   // Phase 4: Dispatch detail='ocr' / mode='background' to the absorbed
   // internal handlers (former screenshot_ocr / screenshot_background).
-  // Priority: detail='ocr' > mode='background' > default. ocr is exclusive
-  // because it returns OCR words, not a layered image; bg vs default differs
-  // in capture mechanism only and stays compatible with all detail levels.
+  //
+  // detail and mode are NOT freely composable today:
+  //   - detail='ocr' returns OCR words and ignores mode (uses foreground capture
+  //     internally; not adapted to PrintWindow).
+  //   - mode='background' returns image pixels via PrintWindow and does NOT run
+  //     the UIA / SoM / OCR pipelines — so detail in {'text','som','ocr'} cannot
+  //     coexist with it.
+  // Reject incompatible combinations early instead of silently dropping one
+  // dimension. Compatible: mode='background' + detail in {undefined,'image','meta'}.
+  // (Codex PR #41 P2.)
+  if (args.mode === "background" && args.detail && args.detail !== "image" && args.detail !== "meta") {
+    return failArgs(
+      `screenshot(mode='background') only supports detail in {'image','meta'}; got detail='${args.detail}'. Use detail='ocr'/'text'/'som' with the default foreground mode, or drop mode='background' to combine.`,
+      "screenshot",
+    );
+  }
   if (args.detail === "ocr") {
     if (!args.windowTitle && !args.hwnd) {
       return failArgs(
@@ -1157,7 +1170,7 @@ export function registerScreenshotTools(server: McpServer): void {
         "Default mode scales to maxDimension=768 — image pixels ≠ screen pixels; apply the scale formula before passing to mouse_click. " +
         "detail='image' is always blocked without confirmImage=true. " +
         "diffMode requires a prior full-capture baseline (non-diff call or workspace_snapshot) — calling diffMode cold returns a full frame, not a diff. " +
-        "mode='background' requires windowTitle or hwnd. fullContent=false enables legacy mode (faster but GPU windows may be black). " +
+        "mode='background' requires windowTitle or hwnd, and only composes with detail in {'image','meta'} — detail='text'/'som'/'ocr' run only against foreground capture (the dispatcher rejects the conflicting combination). fullContent=false enables legacy mode (faster but GPU windows may be black). " +
         "detail='ocr' requires windowTitle or hwnd; first call may take ~1s (WinRT cold-start) and the matching OCR language pack must be installed.",
       examples: [
         "screenshot() → meta orientation of all windows",

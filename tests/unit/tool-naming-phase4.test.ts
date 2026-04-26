@@ -450,6 +450,53 @@ describe("Phase 4 — no LLM-exposed old tool names in description / suggest / e
   }
 });
 
+// ─── 7.5. Codex PR #41 review fixes ───────────────────────────────────────────
+
+describe("Phase 4 — Codex PR #41 P2: stub catalog desktop_state schema is complete", () => {
+  it("desktop_state inputSchema.properties exposes includeCursor", () => {
+    const entry = STUB_TOOL_CATALOG.find((e) => e.name === "desktop_state");
+    expect(entry).toBeDefined();
+    const props = entry!.inputSchema.properties;
+    expect(props).toBeDefined();
+    expect(props!.includeCursor, "includeCursor was missing in earlier generator output").toBeDefined();
+    expect(props!.includeScreen).toBeDefined();
+    expect(props!.includeDocument).toBeDefined();
+    expect(props!.port).toBeDefined();
+    expect(props!.tabId).toBeDefined();
+  });
+});
+
+describe("Phase 4 — Codex PR #41 P2: screenshot rejects incompatible mode/detail combos", () => {
+  it("screenshot dispatcher contains the mode='background' + detail incompatibility guard", () => {
+    const src = readFileSync(join(ROOT, "src", "tools", "screenshot.ts"), "utf-8");
+    expect(src).toMatch(/mode === "background" && args\.detail/);
+    expect(src).toMatch(/only supports detail in \{'image','meta'\}/);
+  });
+
+  it("screenshot description documents the mode/detail composition limit", () => {
+    const entry = STUB_TOOL_CATALOG.find((e) => e.name === "screenshot");
+    expect(entry).toBeDefined();
+    expect(entry!.description).toMatch(
+      /mode='background'.*detail in \{'image','meta'\}/i,
+    );
+  });
+});
+
+describe("Phase 4 — Codex PR #41 P1: desktop_state.includeDocument honours explicit tabId", () => {
+  it("desktopStateHandler routes the includeDocument CDP call when tabId is provided regardless of foreground", () => {
+    const src = readFileSync(join(ROOT, "src", "tools", "desktop-state.ts"), "utf-8");
+    // The fix uses tabExplicit || isChromium. Verify both names are present.
+    expect(src).toMatch(/tabExplicit\s*\|\|\s*isChromium/);
+    expect(src).toMatch(/args\.tabId !== undefined && args\.tabId !== ""/);
+  });
+
+  it("desktop_state description explains the documentUnavailable hint contract", () => {
+    const entry = STUB_TOOL_CATALOG.find((e) => e.name === "desktop_state");
+    expect(entry).toBeDefined();
+    expect(entry!.description).toMatch(/documentUnavailable/);
+  });
+});
+
 // ─── 8. run_macro DSL TOOL_REGISTRY uses v1.0.0 names ─────────────────────────
 
 describe("Phase 4 — run_macro DSL TOOL_REGISTRY uses v1.0.0 dispatcher names", () => {
