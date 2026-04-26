@@ -266,15 +266,19 @@ For each finding: file:line + 1-line summary + suggested fix direction.
 
 ### 8.6. Release recommendation (現時点 — 2026-04-26 更新)
 
-**P0 / E / I 全消化**:
-- P0: 5 件 (P0-4 棄却) → PR #42 / #45 / #46 完了。P0-1 のみ partial (CI で TS test 不実行、Rust build と tsc は実行)
-- E (security): PR #47 完了
-- I (docs): PR #48 完了
+**P0 — 4/5 完了 + 1 件 partial (P0-1 残、リスク受容で release 可)**:
+- ✅ P0-2 / P0-3 / P0-5 / P0-6 — PR #42 / #45 / #46 で完了
+- ⚠ **P0-1 partial / 残**: CI で **TypeScript unit test が実行されていない**。windows-latest 2-core runner で vitest worker が反復 cancel するため断念。
+  - 緩和策: ci.yml で `tsc` (型整合) と `npm run build:rs` (Rust regression) は実行中。TS unit test は **local pre-merge で `npm run test:capture` 経由で gate** する運用 (CLAUDE.md §テスト・ビルド)。
+  - 受容根拠: TS regression は build エラーで多くが捕捉できる + dev 機での local run で覆う。残リスクは "build pass + Rust pass しても TS test が落ちる PR が main に入る" 経路。
+  - 解消計画: v1.0.1 で代替 CI 戦略 (Linux runner + 条件付き skip / shard 並列 / 別 runner pool) を再検討。
+- ~~P0-4~~ 棄却 (audit overstatement)
+- ✅ E (security): PR #47 完了 — CWE-94 / CORS tightening
+- ✅ I (docs): PR #48 完了 — tool count drift / phase status
 
-**P1 残**: 11 件中 2 件完了 (P1-10/11)、9 件 open。**release 前推奨 4 件**:
-- **P1-5** dead error codes — 1 PR (grep + delete)
+**P1 残**: 11 件中 3 件完了 (P1-5 PR #50 / P1-10 PR #42 / P1-11 PR #42)、8 件 open。**release 前推奨 3 件**:
 - **P1-7** koffi 残留削除 — 1 PR (napi-rs に置換、deps 削除)
-- **P1-12** v1 surface e2e coverage 3 cases — 1 PR
+- **P1-12** v1 surface e2e coverage 3 cases — 1 PR (PR #51 in review)
 - **P1-1** windowsProvider 100ms TTL cache — 1 PR (perf)
 
 **release 後 (v1.0.1) に defer**: P1-2 (session evict reason) / P1-3 (seq overflow) / P1-6 (winml feature) / P1-8 (layer-buffer cap) / P1-9 (CodeQL Rust)
