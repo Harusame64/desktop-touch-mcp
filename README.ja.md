@@ -218,6 +218,41 @@ DOM を触る `browser_*` ツールは `includeContext:false` で末尾の `acti
 | `scroll(action='to_element')` | 要素名またはCSS selectorで対象をviewportへスクロール |
 | `scroll(action='smart')` | CDP → UIA → 画像binary-searchの統合スクロール。ネスト・仮想リスト・sticky header対応 |
 
+---
+
+## 推奨ワークフロー (v1.0.0)
+
+v2 World-Graph (`desktop_discover` / `desktop_act`) が標準ディスパッチパス。ネイティブアプリ・ブラウザ・ターミナルを同じ 4 ステップで扱えます。
+
+```
+desktop_state          → 状況把握: focused window/element / modal / attention
+desktop_discover       → 操作可能 entity を取得 (lease + windows[] 付き)
+desktop_act(lease, …)  → entity 操作 (attention + post.perception を返す)
+desktop_state          → 期待通りに状態が変わったか確認
+```
+
+クリック優先順:
+
+```
+browser_click(selector)               → Chrome / Edge (CDP、再描画に強い)
+desktop_act(lease, action='click')    → ネイティブ / ダイアログ / ビジュアル (entity ベース)
+click_element(name | automationId)    → desktop_act が ok:false の時の UIA フォールバック
+mouse_click(x, y, origin?, scale?)    → 最終手段。dotByDot screenshot の origin+scale を使うこと
+```
+
+リカバリ — `response.attention` を毎観測でチェック、`desktop_discover` / `desktop_act` の `response.warnings[]` を読む:
+
+- `lease_expired` / `lease_generation_mismatch` / `lease_digest_mismatch` / `entity_not_found` → `desktop_discover` を再実行
+- `modal_blocking` → `click_element` で modal を閉じてからリトライ
+- `entity_outside_viewport` → `scroll(action='to_element' | 'raw')` 後に `desktop_discover` 再実行
+- `executor_failed` → V1 (`click_element` / `mouse_click` / `browser_click`) にフォールバック
+
+Lease ライフサイクル:
+
+- `desktop_discover` のレスポンスに `softExpiresAtMs` (TTL の約 60%) が含まれます。これを過ぎたら lease 自体は valid でも proactive に `desktop_discover` を再実行することを推奨。`lease.expiresAtMs` だけが本当の correctness 境界です。
+- TTL は `view` モード (`action`/`explore`/`debug`)、entity 数、レスポンスサイズに応じて伸縮 (上限 60 秒)。
+- `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1` で V1 ツール (`get_windows` / `get_ui_elements` / `set_element_value`) にフォールバック可能 — トラブルシューティング目的のみ。標準は V2。
+
 ### Reactive Perception Graph (4)
 | ツール | 概要 |
 |---|---|
