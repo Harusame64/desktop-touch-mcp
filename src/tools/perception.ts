@@ -42,7 +42,7 @@ export const perceptionRegisterSchema = {
         ),
         hwnd: z.string().max(20).optional().describe(
           "Direct window handle ID. Takes precedence over titleIncludes. " +
-          "String to avoid 64-bit precision issues. Obtain from get_windows."
+          "String to avoid 64-bit precision issues. Obtain from desktop_discover (windows[].hwnd)."
         ),
       }).refine(m => m.titleIncludes || m.hwnd, {
         message: "window match requires at least titleIncludes or hwnd",

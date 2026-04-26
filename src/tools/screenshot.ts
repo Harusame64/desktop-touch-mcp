@@ -40,13 +40,13 @@ export const screenshotSchema = {
   hwnd: z
     .string()
     .optional()
-    .describe("Direct window handle ID (takes precedence over windowTitle). Obtain from get_windows (hwnd field). String type to avoid 64-bit precision issues."),
+    .describe("Direct window handle ID (takes precedence over windowTitle). Obtain from desktop_discover (windows[].hwnd). String type to avoid 64-bit precision issues."),
   displayId: z
     .coerce.number()
     .int()
     .min(0)
     .optional()
-    .describe("Capture a specific monitor (0 = primary). Use get_screen_info to list displays."),
+    .describe("Capture a specific monitor (0 = primary). Use desktop_state({includeScreen:true}) to list displays."),
   region: z
     .object({
       x: z.coerce.number().describe("Left edge. Without windowTitle: virtual screen coordinates. With windowTitle: window-local coordinates (0 = window left edge)."),

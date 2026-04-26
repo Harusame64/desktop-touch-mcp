@@ -6,6 +6,8 @@ import { failWith } from "./_errors.js";
 import { mouse } from "../engine/nutjs.js";
 import {
   enumWindowsInZOrder,
+  enumMonitors,
+  getVirtualScreen,
   getWindowProcessId,
   getProcessIdentityByPid,
 } from "../engine/win32.js";
@@ -44,7 +46,37 @@ export const MODAL_RE = /\b(?:dialog|confirm|alert|error|warning|save as)\b|警�
 // Schemas
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const desktopStateSchema = {};
+export const desktopStateSchema = {
+  // Phase 4: optional response-field expansion absorbing get_cursor_position /
+  // get_screen_info / get_document_state. Default off — keeps the cheap
+  // baseline observation cost at ~1 UIA + 1 EnumWindows. Enable on demand.
+  includeCursor: z
+    .boolean()
+    .optional()
+    .default(false)
+    .describe(
+      "When true, add a richer `cursor` field with monitor index alongside the lightweight `cursorPos`. " +
+      "Phase 4: absorbs former get_cursor_position. Default false."
+    ),
+  includeScreen: z
+    .boolean()
+    .optional()
+    .default(false)
+    .describe(
+      "When true, add a `screen` field with all connected display info (resolution, position, DPI, scale). " +
+      "Phase 4: absorbs former get_screen_info. Default false. Use the displayId values returned here in screenshot / window_dock(action='dock')."
+    ),
+  includeDocument: z
+    .boolean()
+    .optional()
+    .default(false)
+    .describe(
+      "When true, add a `document` field with the focused Chrome tab's url, title, readyState, selection, and scroll position via CDP. " +
+      "Phase 4: absorbs former get_document_state. Default false. Requires browser_open (CDP active); silently omitted on non-Chromium foreground."
+    ),
+  port: z.coerce.number().int().min(1).max(65535).default(_defaultPort).describe(`CDP port for includeDocument (default ${_defaultPort}).`),
+  tabId: z.string().optional().describe("Optional CDP tab id for includeDocument; omit for the focused tab."),
+};
 
 export const getHistorySchema = {
   n: z.coerce.number().int().min(1).max(20).default(5).describe("Number of recent action records to return (max 20)."),
@@ -59,7 +91,13 @@ export const getDocumentStateSchema = {
 // desktop_state — OS + App level (lightweight)
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const desktopStateHandler = async (): Promise<ToolResult> => {
+export const desktopStateHandler = async (args: {
+  includeCursor?: boolean;
+  includeScreen?: boolean;
+  includeDocument?: boolean;
+  port?: number;
+  tabId?: string;
+} = {}): Promise<ToolResult> => {
   try {
     const wins = enumWindowsInZOrder();
     const fg = wins.find((w) => w.isActive) ?? null;
@@ -215,6 +253,57 @@ export const desktopStateHandler = async (): Promise<ToolResult> => {
       }
     }
 
+    // ── Phase 4 optional response-field expansion ─────────────────────────
+    // Only the requested fields are computed — keeps the cheap baseline cost
+    // for unflagged callers.
+    const extra: Record<string, unknown> = {};
+
+    if (args.includeCursor) {
+      // Look up which monitor contains the cursor for richer context than the
+      // bare cursorPos {x,y} that's always returned.
+      const monitors = enumMonitors();
+      const containing = monitors.find(
+        (m) =>
+          cursor.x >= m.bounds.x &&
+          cursor.x < m.bounds.x + m.bounds.width &&
+          cursor.y >= m.bounds.y &&
+          cursor.y < m.bounds.y + m.bounds.height,
+      );
+      extra.cursor = {
+        x: cursor.x,
+        y: cursor.y,
+        monitorId: containing?.id,
+      };
+    }
+
+    if (args.includeScreen) {
+      const monitors = enumMonitors();
+      extra.screen = {
+        virtualScreen: getVirtualScreen(),
+        displays: monitors.map((m) => ({
+          id: m.id,
+          primary: m.primary,
+          bounds: m.bounds,
+          workArea: m.workArea,
+          dpi: m.dpi,
+          scale: `${m.scale}%`,
+        })),
+        displayCount: monitors.length,
+        primaryIndex: monitors.findIndex((m) => m.primary),
+      };
+    }
+
+    if (args.includeDocument && isChromium) {
+      try {
+        const expression = `(function(){return{url:location.href,title:document.title,readyState:document.readyState,selection:(window.getSelection&&String(window.getSelection()))||"",scroll:{x:window.scrollX,y:window.scrollY,maxY:Math.max(0,document.documentElement.scrollHeight-window.innerHeight)},viewport:{w:window.innerWidth,h:window.innerHeight}};})()`;
+        extra.document = await evaluateInTab(expression, args.tabId ?? null, args.port ?? _defaultPort);
+      } catch (err) {
+        // Silently omit on CDP failure (no port / tab not found) — caller can
+        // diagnose via browser_open or fall through to screenshot/desktop_discover.
+        hints.documentUnavailable = err instanceof Error ? err.message.slice(0, 120) : "cdp_error";
+      }
+    }
+
     return ok({
       focusedWindow,
       cursorPos: { x: cursor.x, y: cursor.y },
@@ -225,6 +314,7 @@ export const desktopStateHandler = async (): Promise<ToolResult> => {
       pageState,
       attention,
       visibleWindows: wins.length,
+      ...extra,
       ...(Object.keys(hints).length > 0 ? { hints } : {}),
     });
   } catch (err) {
@@ -280,23 +370,31 @@ export function registerDesktopStateTools(server: McpServer): void {
   server.tool(
     "desktop_state",
     buildDesc({
-      purpose: "Read-only observation of the current desktop state. Returns focused window/element, modal flag, and attention signal from Auto Perception.",
-      details: "Returns focusedWindow (title, hwnd, processName), focusedElement (name, type, value, automationId), cursorPos {x,y}, cursorOverElement (name, type), hasModal (boolean), pageState ('ready'|'loading'|'dialog'). Does NOT enumerate descendants — use desktop_discover for actionable entity list. Chromium: cursorOverElement is null (UIA sparse); focusedElement may fall back to CDP document.activeElement; hints.focusedElementSource reports which was used ('uia' or 'cdp').",
-      prefer: "Use after each action to confirm state. Cheapest observation tool — cheaper than any screenshot. attention='ok' means safe to proceed; other values require recovery (see suggest[]).",
-      caveats: "Cannot detect non-UIA elements (custom-drawn UIs, game overlays). hasModal only detects modal dialogs exposed via UIA — browser alert/confirm dialogs may not appear here.",
+      purpose:
+        "Read-only observation of the current desktop state. Returns focused window/element, modal flag, attention signal from Auto Perception. " +
+        "Phase 4 absorbs former get_active_window / get_cursor_position / get_screen_info / get_document_state via include* flags.",
+      details:
+        "Always returns: focusedWindow (title, hwnd, processName), focusedElement (name, type, value, automationId), cursorPos {x,y}, cursorOverElement (name, type), cursorOverWindow, hasModal (boolean), pageState ('ready'|'loading'|'dialog'), attention, visibleWindows count. " +
+        "Optional fields (default off): " +
+        "includeCursor:true → cursor {x,y,monitorId} (richer than cursorPos). " +
+        "includeScreen:true → screen {virtualScreen, displays[], displayCount, primaryIndex}. " +
+        "includeDocument:true → document {url, title, readyState, selection, scroll, viewport} via CDP (silently omitted on non-Chromium foreground). " +
+        "Chromium: cursorOverElement is null (UIA sparse); focusedElement may fall back to CDP document.activeElement; hints.focusedElementSource reports which was used ('uia' or 'cdp'). " +
+        "Does NOT enumerate descendants — use desktop_discover for actionable entity list and window list.",
+      prefer:
+        "Use after each action to confirm state. Cheapest observation tool — cheaper than any screenshot. " +
+        "attention='ok' means safe to proceed; other values require recovery (see suggest[]). " +
+        "Set include* flags only when you need the extra data (each adds one syscall or CDP round-trip).",
+      caveats:
+        "Cannot detect non-UIA elements (custom-drawn UIs, game overlays). hasModal only detects modal dialogs exposed via UIA — browser alert/confirm dialogs may not appear here. " +
+        "includeDocument requires browser_open (CDP active); silently omitted otherwise with hints.documentUnavailable.",
     }),
     desktopStateSchema,
     desktopStateHandler
   );
 
-  // Phase 4: get_history privatized — debug/diagnostic tool, not part of the
-  // LLM action workflow. Handler retained as internal export for tests.
+  // Phase 4: get_history / get_document_state privatized — handlers retained
+  // as internal exports. get_history is debug-only; get_document_state is now
+  // reachable via desktop_state({includeDocument:true}).
   // (memory: feedback_disable_via_entry_block.md)
-
-  server.tool(
-    "get_document_state",
-    "Return current Chrome page state via CDP: url, title, readyState, selection, and scroll position. Far cheaper than browser_eval({action:'dom'}) for page orientation.",
-    getDocumentStateSchema,
-    getDocumentStateHandler
-  );
 }

@@ -352,16 +352,14 @@ export const scopeElementHandler = async ({
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function registerUiElementTools(server: McpServer): void {
-  server.tool(
-    "get_ui_elements",
-    "Inspect the raw UIA element tree of a window — returns names, control types, automationIds, bounding rects, and interaction patterns. Each element includes viewportPosition ('in-view'|'above'|'below'|'left'|'right') relative to the window client region — use it to decide whether scroll(action='to_element') is needed before clicking. Prefer screenshot(detail='text') for interactive automation (returns pre-filtered actionable[] with clickAt coords). Use get_ui_elements when you need the unfiltered tree or specific automationIds for click_element. Caveats: Large windows may return hundreds of elements — scope with windowTitle. Results are capped at maxElements (default 80, max 200) — increase if the target element is missing.",
-    getUiElementsSchema,
-    getUiElementsHandler
-  );
+  // Phase 4: get_ui_elements privatized — handler retained as internal export.
+  // desktop_discover returns the actionable[] entity list (with name / role /
+  // value / automationId / region) and emits leases for desktop_act.
+  // (memory: feedback_disable_via_entry_block.md)
 
   server.tool(
     "click_element",
-    "Invoke a UI element by name or automationId via UIA InvokePattern — no screen coordinates needed. The server auto-guards using windowTitle (verifies identity, foreground, modal) and returns post.perception.status. Prefer over mouse_click for buttons, menu items, and links in native Windows apps. Use get_ui_elements first to discover automationIds. Pass fixId from a suggestedFix to re-target after window identity drift. lensId is optional for advanced pinned-lens use. Caveats: Requires InvokePattern — some custom controls do not expose it; fall back to mouse_click in that case.",
+    "Invoke a UI element by name or automationId via UIA InvokePattern — no screen coordinates needed. The server auto-guards using windowTitle (verifies identity, foreground, modal) and returns post.perception.status. Prefer over mouse_click for buttons, menu items, and links in native Windows apps. Use desktop_discover first to discover automationIds. Pass fixId from a suggestedFix to re-target after window identity drift. lensId is optional for advanced pinned-lens use. Caveats: Requires InvokePattern — some custom controls do not expose it; fall back to mouse_click in that case.",
     clickElementSchema,
     withRichNarration("click_element", clickElementHandler, { windowTitleKey: "windowTitle" })
   );
