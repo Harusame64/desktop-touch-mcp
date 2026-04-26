@@ -88,6 +88,33 @@ describe("createDesktopExecutor — route selection", () => {
     expect(deps.terminalSend).toHaveBeenCalledWith("PowerShell", "npm test");
   });
 
+  // P0-3 (audit §8.1): terminal route only fires when text is supplied. UIA and
+  // CDP routes already gate on `text !== undefined`; the executor's terminal
+  // arm used to send `text ?? ""` which silently writes an empty line on
+  // click/invoke. Ensure such calls fall through to the mouse fallback.
+  it("terminal source without text → falls through to mouse (no terminalSend with empty string)", async () => {
+    const deps = mockDeps();
+    const exec = createDesktopExecutor({ windowTitle: "PowerShell" }, deps);
+    const result = await exec(
+      entity({
+        sources: ["terminal"],
+        rect: { x: 10, y: 20, width: 100, height: 30 },
+      }),
+      "click",
+    );
+    expect(result).toBe("mouse");
+    expect(deps.terminalSend).not.toHaveBeenCalled();
+    expect(deps.mouseClick).toHaveBeenCalledWith(60, 35);
+  });
+
+  it("terminal source with text='' (clear-line) still routes to terminalSend", async () => {
+    const deps = mockDeps();
+    const exec = createDesktopExecutor({ windowTitle: "PowerShell" }, deps);
+    const result = await exec(entity({ sources: ["terminal"] }), "type", "");
+    expect(result).toBe("terminal");
+    expect(deps.terminalSend).toHaveBeenCalledWith("PowerShell", "");
+  });
+
   it("visual_gpu (no UIA/CDP/terminal) + rect → mouse click at center", async () => {
     const deps = mockDeps();
     const exec = createDesktopExecutor(undefined, deps);

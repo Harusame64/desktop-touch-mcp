@@ -171,9 +171,14 @@ export function createDesktopExecutor(
     }
 
     // ── Terminal route ───────────────────────────────────────────────────────
-    if (entity.sources.includes("terminal")) {
+    // Terminals have no click affordance — terminalSend requires a string.
+    // Mirror the UIA/CDP gates: only invoke when the caller actually supplied
+    // text (action='type'/'setValue', or action='auto' with text). Otherwise
+    // fall through to the mouse fallback so click/invoke on a terminal entity
+    // doesn't silently send an empty string.
+    if (entity.sources.includes("terminal") && text !== undefined) {
       const termWin = entity.locator?.terminal?.windowTitle ?? winTitle;
-      await d.terminalSend(termWin, text ?? "");
+      await d.terminalSend(termWin, text);
       return "terminal";
     }
 
