@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -140,7 +140,18 @@ afterEach(async () => {
   }
 });
 
-describe("launcher stdio shutdown", () => {
+// Skip when the launcher manifest still has the pre-release "PENDING" placeholder.
+// Real sha256 is filled in by the release pipeline (`npm run update-sha`); the test
+// can only run against a finalized launcher.
+const LAUNCHER_HAS_RELEASE_SHA = (() => {
+  try {
+    return /sha256: "[a-f0-9]{64}"/i.test(readFileSync(launcherPath, "utf8"));
+  } catch {
+    return false;
+  }
+})();
+
+describe.skipIf(!LAUNCHER_HAS_RELEASE_SHA)("launcher stdio shutdown", () => {
   it("reaps the spawned runtime when the caller closes stdin", async () => {
     const { cacheRoot, runtimePidFile, runtimeLogFile } = await setupFakeRelease();
     const stderrChunks: string[] = [];
