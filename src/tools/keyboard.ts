@@ -265,6 +265,87 @@ async function focusWindowForKeyboard(
  * The downstream BG path retains its `canInjectViaPostMessage` gate, so a class
  * misclassification simply falls through to foreground (line 354).
  */
+/**
+ * Evaluate lensId guards and auto-guard before sending keyboard input.
+ *
+ * Used by both the foreground path (after focus, with foregroundVerified=true)
+ * and the BG path (Focus Leash Phase A, with foregroundVerified=true since
+ * HWND-targeted WM_CHAR delivery is foreground-independent — see
+ * _action-guard.ts:51-53: foregroundVerified=true only skips the foreground
+ * gate, while identity/modal/dirty/focusedElement gates still run).
+ *
+ * Returns either a perception envelope (caller attaches to response) or a
+ * pre-built failure ToolResult (caller returns directly).
+ *
+ * NOTE: Phase A wires the BG path to call this. The foreground path still
+ * inlines an equivalent block; a follow-up patch may DRY them.
+ */
+export async function evaluateKeyboardGuards(opts: {
+  toolName: "keyboard:type" | "keyboard:press";
+  lensId: string | undefined;
+  skipAutoGuard: boolean;
+  effectiveWindowTitle: string | undefined;
+  foregroundVerified: boolean;
+  warnings: string[];
+}): Promise<
+  | { ok: true; perceptionEnv?: import("../engine/perception/types.js").PostPerception }
+  | { ok: false; errorResult: ToolResult }
+> {
+  const {
+    toolName, lensId, skipAutoGuard, effectiveWindowTitle, foregroundVerified, warnings,
+  } = opts;
+
+  if (lensId) {
+    const guardResult = await evaluatePreToolGuards(lensId, toolName, {});
+    if (!guardResult.ok && guardResult.policy === "block") {
+      const env = buildEnvelopeFor(lensId, { toolName });
+      return {
+        ok: false,
+        errorResult: failWith(
+          new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
+          toolName,
+          {
+            lensId,
+            guard: guardResult.failedGuard,
+            _perceptionForPost: env,
+            ...(warnings.length > 0 && { hints: { warnings } }),
+          }
+        ),
+      };
+    }
+    return {
+      ok: true,
+      perceptionEnv: buildEnvelopeFor(lensId, { toolName }) ?? undefined,
+    };
+  }
+
+  if (!skipAutoGuard && isAutoGuardEnabled()) {
+    const descriptor = effectiveWindowTitle
+      ? { kind: "window" as const, titleIncludes: effectiveWindowTitle }
+      : null;
+    const ag = await runActionGuard({
+      toolName, actionKind: "keyboard", descriptor,
+      ...(foregroundVerified && { foregroundVerified: true }),
+    });
+    if (ag.block) {
+      return {
+        ok: false,
+        errorResult: failWith(
+          new Error(`AutoGuardBlocked: ${ag.summary.next}`),
+          toolName,
+          {
+            _perceptionForPost: ag.summary,
+            ...(warnings.length > 0 && { hints: { warnings } }),
+          }
+        ),
+      };
+    }
+    return { ok: true, perceptionEnv: ag.summary };
+  }
+
+  return { ok: true };
+}
+
 export function resolveEffectiveInputMethod(
   inputMethod: "auto" | "background" | "foreground",
   effectiveWindowTitle: string | undefined,
@@ -351,6 +432,23 @@ export const keyboardTypeHandler = async ({
       if (target) {
         const check = canInjectViaPostMessage(target.hwnd);
         if (check.supported) {
+          // Phase A safety: evaluate lensId / auto-guard BEFORE WM_CHAR send so
+          // the BG path doesn't silently bypass guards that the foreground path
+          // would have run (PR #64 Codex P1). foregroundVerified=true is the
+          // semantically correct value for BG mode — HWND-targeted delivery is
+          // foreground-independent, and that flag only skips the foreground
+          // gate while modal/identity/dirty/focusedElement gates still run.
+          const bgGuard = await evaluateKeyboardGuards({
+            toolName: "keyboard:type",
+            lensId,
+            skipAutoGuard: _skipAutoGuard,
+            effectiveWindowTitle,
+            foregroundVerified: true,
+            warnings,
+          });
+          if (!bgGuard.ok) return bgGuard.errorResult;
+          const bgPerception = bgGuard.perceptionEnv;
+
           const bgWarnings: string[] = [];
           if (use_clipboard && !forceKeystrokes) {
             bgWarnings.push("BackgroundClipboardDowngraded");
@@ -369,6 +467,7 @@ export const keyboardTypeHandler = async ({
                   "Check context.sent vs context.total",
                 ],
                 context: { sent: result.sent, total: effectiveText.length },
+                ...(bgPerception && { _perceptionForPost: bgPerception }),
               }
             );
           } else {
@@ -379,6 +478,7 @@ export const keyboardTypeHandler = async ({
               channel: "wm_char",
               foregroundChanged: false,
               ...(bgWarnings.length > 0 && { hints: { warnings: bgWarnings } }),
+              ...(bgPerception && { _perceptionForPost: bgPerception }),
             });
           }
         } else if (effectiveMethod === "background") {
@@ -542,6 +642,20 @@ export const keyboardPressHandler = async ({
       const wins = enumWindowsInZOrder();
       const target = wins.find(w => w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase()));
       if (target && canInjectViaPostMessage(target.hwnd).supported) {
+        // Phase A safety: evaluate lensId / auto-guard before WM_CHAR send so
+        // BG path doesn't silently bypass guards (PR #64 Codex P1). See type
+        // handler comment above for foregroundVerified=true rationale.
+        const bgGuard = await evaluateKeyboardGuards({
+          toolName: "keyboard:press",
+          lensId,
+          skipAutoGuard: false,
+          effectiveWindowTitle,
+          foregroundVerified: true,
+          warnings,
+        });
+        if (!bgGuard.ok) return bgGuard.errorResult;
+        const bgPerception = bgGuard.perceptionEnv;
+
         const isEnter = keys.toLowerCase() === "enter";
         const ok2 = isEnter
           ? postEnterToHwnd(target.hwnd)
@@ -553,13 +667,18 @@ export const keyboardPressHandler = async ({
             method: "background",
             channel: "wm_char",
             foregroundChanged: false,
+            ...(bgPerception && { _perceptionForPost: bgPerception }),
           });
         }
         if (effectiveMethod === "background") {
           return failWith(
             new Error("BackgroundInputIncomplete"),
             "keyboard:press",
-            { suggest: ["Key press failed in background mode - retry with method:'foreground'"], context: { keys } }
+            {
+              suggest: ["Key press failed in background mode - retry with method:'foreground'"],
+              context: { keys },
+              ...(bgPerception && { _perceptionForPost: bgPerception }),
+            }
           );
         }
         // background-auto: fall through to foreground path
