@@ -269,7 +269,7 @@ export function startSensorLoop(
 
 /** Reset sensor state. Only for tests. */
 export function __resetSensorForTests(): void {
-  if (_subscriptionId) { try { unsubscribe(_subscriptionId); } catch {} _subscriptionId = null; }
+  if (_subscriptionId) { try { unsubscribe(_subscriptionId); } catch { /* already torn down */ } _subscriptionId = null; }
   if (_drainTimer) { clearInterval(_drainTimer); _drainTimer = null; }
   _seq = 0;
 }

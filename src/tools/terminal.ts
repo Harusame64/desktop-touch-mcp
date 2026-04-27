@@ -86,7 +86,7 @@ function findTerminalWindow(partialTitle: string): WindowZInfo | null {
   const wins = enumWindowsInZOrder();
   const q = partialTitle.toLowerCase();
   // First try exact partial match on title.
-  let candidate = wins.find((w) => w.title.toLowerCase().includes(q));
+  const candidate = wins.find((w) => w.title.toLowerCase().includes(q));
   if (candidate) return candidate;
   // Fallback: process-name match (LLM might pass 'pwsh' even if title is "Windows PowerShell - …")
   for (const w of wins) {

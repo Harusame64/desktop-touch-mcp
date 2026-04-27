@@ -3,7 +3,7 @@
  * Pure class, no OS imports.
  */
 
-import type { Fluent, FluentStatus, Observation } from "./types.js";
+import type { Fluent, Observation } from "./types.js";
 import { confidenceFor, isStale, makeEvidence } from "./evidence.js";
 
 function fluentKey(entity: { kind: string; id: string }, property: string): string {

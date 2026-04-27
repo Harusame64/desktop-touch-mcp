@@ -5,6 +5,9 @@
  * emitted by shells, ls --color, prompts, and progress bars.
  */
 
+// ANSI sequence regexes inherently match control characters (\x1b, \x07, etc.).
+/* eslint-disable no-control-regex */
+
 // CSI: ESC [ ... finalByte (0x40-0x7E)
 const CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 // OSC: ESC ] ... BEL or ESC \

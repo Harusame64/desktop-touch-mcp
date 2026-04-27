@@ -167,7 +167,8 @@ async function fetchTabs(port: number): Promise<CdpTab[]> {
     throw new Error(
       `Cannot reach Chrome/Edge CDP at port ${port}. ` +
         `Make sure the browser is running with --remote-debugging-port=${port}. ` +
-        `Original error: ${String(err)}`
+        `Original error: ${String(err)}`,
+      { cause: err },
     );
   }
   if (!res.ok) {

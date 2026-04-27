@@ -32,7 +32,7 @@ function makeServer(): McpServer {
 }
 
 function getRegisteredNames(s: McpServer): string[] {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   const registry = (s as any)._registeredTools as Record<string, unknown> | undefined;
   if (!registry) return [];
   return Object.keys(registry);

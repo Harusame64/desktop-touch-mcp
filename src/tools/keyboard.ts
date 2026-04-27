@@ -487,7 +487,7 @@ export const keyboardPressHandler = async ({
 
     // Resolve hwnd / @active → effective window title
     const resolvedWin = await resolveWindowTarget({ hwnd, windowTitle });
-    let effectiveWindowTitle = resolvedWin?.title ?? windowTitle;
+    const effectiveWindowTitle = resolvedWin?.title ?? windowTitle;
 
     const warnings: string[] = [...(resolvedWin?.warnings ?? [])];
     const homingNotes: string[] = [];

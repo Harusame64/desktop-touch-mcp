@@ -305,7 +305,7 @@ export async function autoDockFromEnv(): Promise<void> {
   // MCP server to find the terminal window hosting Claude Code. Anything else = title match.
   const useParent = title.trim() === "@parent";
 
-  let win: WindowZInfo | { hwnd: bigint; title: string; region: { x: number; y: number; width: number; height: number }; isMinimized: boolean; isMaximized: boolean } | null = null;
+  let win: WindowZInfo | { hwnd: bigint; title: string; region: { x: number; y: number; width: number; height: number }; isMinimized: boolean; isMaximized: boolean };
 
   if (useParent) {
     // findAncestorWindow returns immediately; our parent terminal is almost
