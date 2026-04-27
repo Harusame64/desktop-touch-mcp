@@ -350,35 +350,25 @@ export const terminalSendHandler = async ({
         const result = postCharsToHwnd(win.hwnd, chunk);
         totalSent += result.sent;
         if (!result.full) {
-          if (inputMethod === "background") {
-            return failWith(
-              new Error("BackgroundInputIncomplete"),
-              "terminal:send",
-              {
-                suggest: [
-                  "Input sent partially - retry with method:'foreground' for full input",
-                  "Check context.sent vs context.total",
-                ],
-                context: { sent: totalSent, total: input.length },
-              }
-            );
-          }
-          // auto: partial fail — do NOT send Enter (would execute partial command)
-          // Report partial send in hints and return without Enter.
-          return ok({
-            ok: true,
-            sent: input.slice(0, totalSent),
-            pressedEnter: false,
-            focusRestored: false,
-            method: "background",
-            channel: "wm_char",
-            foregroundChanged: false,
-            post: { focusedWindow: null, focusedElement: null, windowChanged: false, elapsedMs: Date.now() - startedAt },
-            hints: {
-              target: {},
-              warnings: [...bgWarnings, "BackgroundInputPartial"],
-            },
-          });
+          // Partial WM_CHAR delivery — fail regardless of method (PR #64 Codex P1):
+          //   - sent > 0: a foreground fallback would re-deliver chars and double-input.
+          //   - sent === 0: ok:true would silently mask command loss (e.g. when the
+          //     terminal is elevated and PostMessage is blocked by UIPI).
+          // Pre-Phase A this branch was opt-in via DTM_BG_AUTO=1; now it is the default
+          // for terminal-class targets, so silent ok:true on partial is no longer safe.
+          // Caller can retry with method:'foreground' or fix the integrity mismatch.
+          return failWith(
+            new Error("BackgroundInputIncomplete"),
+            "terminal:send",
+            {
+              suggest: [
+                "Input sent partially - retry with method:'foreground' for full input",
+                "Check context.sent vs context.total",
+                "If terminal runs elevated (admin) and caller does not, foreground delivery may be required (UIPI blocks WM_CHAR)",
+              ],
+              context: { sent: totalSent, total: input.length },
+            }
+          );
         }
       }
 
