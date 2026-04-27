@@ -759,6 +759,10 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
             "fixId": {
               "description": "Approve a pending suggestedFix (one-shot, 15s TTL). Pass the fixId returned by a previous failed keyboard(action='type') to re-attempt with guard-validated args.",
               "type": "string"
+            },
+            "abortOnFocusLoss": {
+              "description": "Focus Leash Phase B: when true, the foreground keystroke send is split into chunks (default 8 chars; override via DTM_LEASH_CHUNK_SIZE env) and the target window's foreground state is verified between chunks. If the user grabs focus mid-stream, the call aborts and returns FocusLostDuringType with context.typed (chars delivered to target) and context.remaining (unsent tail) so the caller can re-focus and retry the unsent portion. Default: true when windowTitle is provided, false otherwise. Has no effect on the clipboard path (atomic Ctrl+V) or the BG (WM_CHAR) path (HWND-targeted, foreground-independent).",
+              "type": "boolean"
             }
           },
           "additionalProperties": false,

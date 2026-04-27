@@ -115,8 +115,53 @@ vi.mock("../../src/tools/_resolve-window.js", async () => {
 import {
   keyboardTypeHandler,
   getLeashChunkSize,
+  keyboardSchema,
 } from "../../src/tools/keyboard.js";
 import { checkForegroundOnce } from "../../src/tools/_focus.js";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Public dispatcher schema accepts abortOnFocusLoss (PR #65 Codex P1 regression)
+// — the registered tool validates against `keyboardSchema`, NOT
+// `keyboardTypeSchema`. They previously diverged silently; this test pins the
+// new field's presence in the dispatcher schema so future additions to
+// keyboardTypeSchema can't drift again.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("keyboardSchema (public dispatcher) — abortOnFocusLoss reachable", () => {
+  it("accepts abortOnFocusLoss:false on action:'type'", () => {
+    const parsed = keyboardSchema.safeParse({
+      action: "type",
+      text: "hello",
+      windowTitle: "Notepad",
+      abortOnFocusLoss: false,
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success && parsed.data.action === "type") {
+      expect(parsed.data.abortOnFocusLoss).toBe(false);
+    }
+  });
+
+  it("accepts abortOnFocusLoss:true on action:'type'", () => {
+    const parsed = keyboardSchema.safeParse({
+      action: "type",
+      text: "hello",
+      windowTitle: "Notepad",
+      abortOnFocusLoss: true,
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success && parsed.data.action === "type") {
+      expect(parsed.data.abortOnFocusLoss).toBe(true);
+    }
+  });
+
+  it("does not require abortOnFocusLoss (optional)", () => {
+    const parsed = keyboardSchema.safeParse({
+      action: "type",
+      text: "hello",
+    });
+    expect(parsed.success).toBe(true);
+  });
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // getLeashChunkSize — env parsing

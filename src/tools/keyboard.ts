@@ -847,6 +847,16 @@ export const keyboardPressHandler = async ({
 // Dispatcher schema (discriminated union)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Discriminated union for the public `keyboard` tool — this is the schema
+// the registered tool validates against (NOT keyboardTypeSchema /
+// keyboardPressSchema above, which are kept only as exports for any external
+// consumer). Field lists are inlined here because the stub-catalog generator
+// (scripts/generate-stub-tool-catalog.mjs) statically parses the variants
+// and cannot follow Zod object spread. Keep the field set in sync with
+// keyboardTypeSchema / keyboardPressSchema; tests in
+// keyboard-leash-guard.test.ts pin abortOnFocusLoss reachability so future
+// drift trips a regression test instead of slipping through silently
+// (PR #65 Codex P1).
 export const keyboardSchema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("type"),
@@ -883,6 +893,17 @@ export const keyboardSchema = z.discriminatedUnion("action", [
     fixId: z.string().optional().describe(
       "Approve a pending suggestedFix (one-shot, 15s TTL). Pass the fixId returned by a previous " +
       "failed keyboard(action='type') to re-attempt with guard-validated args."
+    ),
+    abortOnFocusLoss: z.boolean().optional().describe(
+      "Focus Leash Phase B: when true, the foreground keystroke send is split into " +
+      "chunks (default 8 chars; override via DTM_LEASH_CHUNK_SIZE env) and the target " +
+      "window's foreground state is verified between chunks. If the user grabs focus " +
+      "mid-stream, the call aborts and returns FocusLostDuringType with " +
+      "context.typed (chars delivered to target) and context.remaining (unsent tail) " +
+      "so the caller can re-focus and retry the unsent portion. " +
+      "Default: true when windowTitle is provided, false otherwise. " +
+      "Has no effect on the clipboard path (atomic Ctrl+V) or the BG (WM_CHAR) path " +
+      "(HWND-targeted, foreground-independent)."
     ),
   }),
   z.object({
