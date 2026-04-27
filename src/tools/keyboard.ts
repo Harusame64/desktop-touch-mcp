@@ -670,18 +670,23 @@ export const keyboardPressHandler = async ({
             ...(bgPerception && { _perceptionForPost: bgPerception }),
           });
         }
-        if (effectiveMethod === "background") {
-          return failWith(
-            new Error("BackgroundInputIncomplete"),
-            "keyboard:press",
-            {
-              suggest: ["Key press failed in background mode - retry with method:'foreground'"],
-              context: { keys },
-              ...(bgPerception && { _perceptionForPost: bgPerception }),
-            }
-          );
-        }
-        // background-auto: fall through to foreground path
+        // postKeyComboToHwnd may fail after partially sending a combo (e.g.,
+        // modifier WM_KEYDOWN succeeded but the next message failed), leaving
+        // modifier state inconsistent in the target. Falling through to the
+        // foreground path would replay the combo and double-input or leave
+        // dangling modifiers — fail regardless of method (PR #64 Codex P1).
+        return failWith(
+          new Error("BackgroundInputIncomplete"),
+          "keyboard:press",
+          {
+            suggest: [
+              "Key press failed in background mode - retry with method:'foreground'",
+              "If terminal runs elevated (admin) and caller does not, foreground delivery may be required (UIPI blocks WM_CHAR)",
+            ],
+            context: { keys },
+            ...(bgPerception && { _perceptionForPost: bgPerception }),
+          }
+        );
       } else if (effectiveMethod === "background") {
         return failWith(
           new Error("BackgroundInputUnsupported"),
