@@ -280,8 +280,11 @@ fn sauvola_binarize_u8(src: &[u8], w: u32, h: u32, window: u32, k: f32) -> Vec<u
             let b = y1 * stride + x2;
             let c = y2 * stride + x1;
             let d = y1 * stride + x1;
-            let sum  = isum [a] - isum [b] - isum [c] + isum [d];
-            let sum2 = isum2[a] - isum2[b] - isum2[c] + isum2[d];
+            // 4-corner integral image formula. Sum positive corners (a, d) before
+            // subtracting negatives (b, c) so unsigned u64 arithmetic doesn't
+            // intermediate-underflow on high-contrast local windows.
+            let sum  = (isum [a] + isum [d]) - (isum [b] + isum [c]);
+            let sum2 = (isum2[a] + isum2[d]) - (isum2[b] + isum2[c]);
 
             let mean     = sum as f32 / count as f32;
             // Variance = E[X²] − E[X]² ; clamp to ≥0 to absorb integer rounding
