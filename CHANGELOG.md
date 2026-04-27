@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+- **feat(keyboard, terminal): Focus Leash Phase A — terminal-class auto-route to WM_CHAR.**
+  When `keyboard(action, method:'auto')` or `terminal(action:'send', method:'auto')`
+  targets a known terminal window (`CASCADIA_HOSTING_WINDOW_CLASS` for Windows
+  Terminal / `ConsoleWindowClass` for cmd/PowerShell/conhost), the engine now
+  automatically uses HWND-targeted PostMessage delivery instead of the foreground
+  keystroke path. Keystrokes intended for a terminal can no longer be diverted to
+  other windows when the user grabs focus mid-stream. Existing `DTM_BG_AUTO=1`
+  env flag continues to enable BG input globally for non-terminal apps; other
+  apps still default to the foreground path.
+
 ## [1.0.5] - 2026-04-27 — Security and stability patch
 
 Bundle of correctness fixes found after `v1.0.4`, plus a guard rail to prevent

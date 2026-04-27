@@ -6,13 +6,14 @@ import { promisify } from "node:util";
 import { keyboard } from "../engine/nutjs.js";
 import { parseKeys } from "../utils/key-map.js";
 import { assertKeyComboSafe } from "../utils/key-safety.js";
-import { enumWindowsInZOrder, restoreAndFocusWindow } from "../engine/win32.js";
+import { enumWindowsInZOrder, getWindowClassName, restoreAndFocusWindow } from "../engine/win32.js";
 import {
   canInjectViaPostMessage,
   postCharsToHwnd,
   postKeyComboToHwnd,
   postEnterToHwnd,
   isBgAutoEnabled,
+  TERMINAL_WINDOW_CLASSES,
 } from "../engine/bg-input.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
@@ -113,10 +114,12 @@ const NON_ASCII_SYMBOL_RE = /[\u2013\u2014\u2018\u2019\u201C\u201D\u2026\u00A0]/
 
 const methodParam = z.enum(["auto", "background", "foreground"]).default("auto").describe(
   "Input routing channel. " +
-  "'auto' uses background (PostMessage) when supported and DTM_BG_AUTO=1, else foreground. " +
+  "'auto' uses background (PostMessage) when the target window is a known terminal class " +
+  "(Windows Terminal / cmd / PowerShell) OR DTM_BG_AUTO=1 is set; else foreground. Terminal " +
+  "auto-detect is HWND-targeted so user-side focus changes mid-stream cannot divert keystrokes. " +
   "'background' forces PostMessage-only (no focus change, fails on Chromium/IME). " +
   "'foreground' forces the current behavior (SetForegroundWindow + keystrokes). " +
-  "Default 'auto' (equivalent to 'foreground' unless DTM_BG_AUTO=1 is set)."
+  "Default 'auto'."
 );
 
 export const keyboardTypeSchema = {
@@ -247,6 +250,126 @@ async function focusWindowForKeyboard(
   return { warnings, homingNotes, foregroundVerified, forceRefused };
 }
 
+/**
+ * Resolve the effective input routing channel when caller passes `method: 'auto'`.
+ *
+ * Precedence:
+ *   1. inputMethod !== 'auto' → returned as-is.
+ *   2. DTM_BG_AUTO=1 env flag → 'background-auto' (existing global toggle).
+ *   3. Target window class is a known terminal class (TERMINAL_WINDOW_CLASSES)
+ *      → 'background-auto'. Focus Leash Phase A: HWND-targeted WM_CHAR delivery
+ *      survives user-side foreground changes mid-stream, so keystrokes intended
+ *      for a terminal can no longer be diverted to a window the user clicks into.
+ *   4. Otherwise → 'auto' (downstream check fails, falls through to foreground).
+ *
+ * The downstream BG path retains its `canInjectViaPostMessage` gate, so a class
+ * misclassification simply falls through to foreground (line 354).
+ */
+/**
+ * Evaluate lensId guards and auto-guard before sending keyboard input.
+ *
+ * Used by both the foreground path (after focus, with foregroundVerified=true)
+ * and the BG path (Focus Leash Phase A, with foregroundVerified=true since
+ * HWND-targeted WM_CHAR delivery is foreground-independent — see
+ * _action-guard.ts:51-53: foregroundVerified=true only skips the foreground
+ * gate, while identity/modal/dirty/focusedElement gates still run).
+ *
+ * Returns either a perception envelope (caller attaches to response) or a
+ * pre-built failure ToolResult (caller returns directly).
+ *
+ * NOTE: Phase A wires the BG path to call this. The foreground path still
+ * inlines an equivalent block; a follow-up patch may DRY them.
+ */
+export async function evaluateKeyboardGuards(opts: {
+  toolName: "keyboard:type" | "keyboard:press";
+  lensId: string | undefined;
+  skipAutoGuard: boolean;
+  effectiveWindowTitle: string | undefined;
+  foregroundVerified: boolean;
+  warnings: string[];
+}): Promise<
+  | { ok: true; perceptionEnv?: import("../engine/perception/types.js").PostPerception }
+  | { ok: false; errorResult: ToolResult }
+> {
+  const {
+    toolName, lensId, skipAutoGuard, effectiveWindowTitle, foregroundVerified, warnings,
+  } = opts;
+
+  if (lensId) {
+    const guardResult = await evaluatePreToolGuards(lensId, toolName, {});
+    if (!guardResult.ok && guardResult.policy === "block") {
+      const env = buildEnvelopeFor(lensId, { toolName });
+      return {
+        ok: false,
+        errorResult: failWith(
+          new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
+          toolName,
+          {
+            lensId,
+            guard: guardResult.failedGuard,
+            _perceptionForPost: env,
+            ...(warnings.length > 0 && { hints: { warnings } }),
+          }
+        ),
+      };
+    }
+    return {
+      ok: true,
+      perceptionEnv: buildEnvelopeFor(lensId, { toolName }) ?? undefined,
+    };
+  }
+
+  if (!skipAutoGuard && isAutoGuardEnabled()) {
+    const descriptor = effectiveWindowTitle
+      ? { kind: "window" as const, titleIncludes: effectiveWindowTitle }
+      : null;
+    const ag = await runActionGuard({
+      toolName, actionKind: "keyboard", descriptor,
+      ...(foregroundVerified && { foregroundVerified: true }),
+    });
+    if (ag.block) {
+      return {
+        ok: false,
+        errorResult: failWith(
+          new Error(`AutoGuardBlocked: ${ag.summary.next}`),
+          toolName,
+          {
+            _perceptionForPost: ag.summary,
+            ...(warnings.length > 0 && { hints: { warnings } }),
+          }
+        ),
+      };
+    }
+    return { ok: true, perceptionEnv: ag.summary };
+  }
+
+  return { ok: true };
+}
+
+export function resolveEffectiveInputMethod(
+  inputMethod: "auto" | "background" | "foreground",
+  effectiveWindowTitle: string | undefined,
+): "auto" | "background" | "foreground" | "background-auto" {
+  if (inputMethod !== "auto") return inputMethod;
+  if (isBgAutoEnabled()) return "background-auto";
+  if (effectiveWindowTitle) {
+    try {
+      const wins = enumWindowsInZOrder();
+      const needle = effectiveWindowTitle.toLowerCase();
+      const target = wins.find((w) => w.title.toLowerCase().includes(needle));
+      if (target) {
+        const cls = getWindowClassName(target.hwnd);
+        if (cls && TERMINAL_WINDOW_CLASSES.has(cls)) {
+          return "background-auto";
+        }
+      }
+    } catch {
+      // best-effort — fall through to "auto" so downstream still works
+    }
+  }
+  return inputMethod;
+}
+
 export const keyboardTypeHandler = async ({
   text,
   method: inputMethod = "auto",
@@ -299,8 +422,9 @@ export const keyboardTypeHandler = async ({
     let foregroundVerified = false;
 
     // ── Background input path ──────────────────────────────────────────────
-    // Resolve effective method: "auto" with DTM_BG_AUTO=1 → try BG first.
-    const effectiveMethod = (inputMethod === "auto" && isBgAutoEnabled()) ? "background-auto" : inputMethod;
+    // Resolve effective method: "auto" + (DTM_BG_AUTO=1 OR target is a known
+    // terminal class) → try BG first. See resolveEffectiveInputMethod.
+    const effectiveMethod = resolveEffectiveInputMethod(inputMethod, effectiveWindowTitle);
 
     if ((effectiveMethod === "background" || effectiveMethod === "background-auto") && effectiveWindowTitle) {
       const wins = enumWindowsInZOrder();
@@ -308,6 +432,23 @@ export const keyboardTypeHandler = async ({
       if (target) {
         const check = canInjectViaPostMessage(target.hwnd);
         if (check.supported) {
+          // Phase A safety: evaluate lensId / auto-guard BEFORE WM_CHAR send so
+          // the BG path doesn't silently bypass guards that the foreground path
+          // would have run (PR #64 Codex P1). foregroundVerified=true is the
+          // semantically correct value for BG mode — HWND-targeted delivery is
+          // foreground-independent, and that flag only skips the foreground
+          // gate while modal/identity/dirty/focusedElement gates still run.
+          const bgGuard = await evaluateKeyboardGuards({
+            toolName: "keyboard:type",
+            lensId,
+            skipAutoGuard: _skipAutoGuard,
+            effectiveWindowTitle,
+            foregroundVerified: true,
+            warnings,
+          });
+          if (!bgGuard.ok) return bgGuard.errorResult;
+          const bgPerception = bgGuard.perceptionEnv;
+
           const bgWarnings: string[] = [];
           if (use_clipboard && !forceKeystrokes) {
             bgWarnings.push("BackgroundClipboardDowngraded");
@@ -326,6 +467,7 @@ export const keyboardTypeHandler = async ({
                   "Check context.sent vs context.total",
                 ],
                 context: { sent: result.sent, total: effectiveText.length },
+                ...(bgPerception && { _perceptionForPost: bgPerception }),
               }
             );
           } else {
@@ -336,6 +478,7 @@ export const keyboardTypeHandler = async ({
               channel: "wm_char",
               foregroundChanged: false,
               ...(bgWarnings.length > 0 && { hints: { warnings: bgWarnings } }),
+              ...(bgPerception && { _perceptionForPost: bgPerception }),
             });
           }
         } else if (effectiveMethod === "background") {
@@ -494,11 +637,25 @@ export const keyboardPressHandler = async ({
     let foregroundVerified = false;
 
     // ── Background input path ──────────────────────────────────────────────
-    const effectiveMethod = (inputMethod === "auto" && isBgAutoEnabled()) ? "background-auto" : inputMethod;
+    const effectiveMethod = resolveEffectiveInputMethod(inputMethod, effectiveWindowTitle);
     if ((effectiveMethod === "background" || effectiveMethod === "background-auto") && effectiveWindowTitle) {
       const wins = enumWindowsInZOrder();
       const target = wins.find(w => w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase()));
       if (target && canInjectViaPostMessage(target.hwnd).supported) {
+        // Phase A safety: evaluate lensId / auto-guard before WM_CHAR send so
+        // BG path doesn't silently bypass guards (PR #64 Codex P1). See type
+        // handler comment above for foregroundVerified=true rationale.
+        const bgGuard = await evaluateKeyboardGuards({
+          toolName: "keyboard:press",
+          lensId,
+          skipAutoGuard: false,
+          effectiveWindowTitle,
+          foregroundVerified: true,
+          warnings,
+        });
+        if (!bgGuard.ok) return bgGuard.errorResult;
+        const bgPerception = bgGuard.perceptionEnv;
+
         const isEnter = keys.toLowerCase() === "enter";
         const ok2 = isEnter
           ? postEnterToHwnd(target.hwnd)
@@ -510,16 +667,26 @@ export const keyboardPressHandler = async ({
             method: "background",
             channel: "wm_char",
             foregroundChanged: false,
+            ...(bgPerception && { _perceptionForPost: bgPerception }),
           });
         }
-        if (effectiveMethod === "background") {
-          return failWith(
-            new Error("BackgroundInputIncomplete"),
-            "keyboard:press",
-            { suggest: ["Key press failed in background mode - retry with method:'foreground'"], context: { keys } }
-          );
-        }
-        // background-auto: fall through to foreground path
+        // postKeyComboToHwnd may fail after partially sending a combo (e.g.,
+        // modifier WM_KEYDOWN succeeded but the next message failed), leaving
+        // modifier state inconsistent in the target. Falling through to the
+        // foreground path would replay the combo and double-input or leave
+        // dangling modifiers — fail regardless of method (PR #64 Codex P1).
+        return failWith(
+          new Error("BackgroundInputIncomplete"),
+          "keyboard:press",
+          {
+            suggest: [
+              "Key press failed in background mode - retry with method:'foreground'",
+              "If terminal runs elevated (admin) and caller does not, foreground delivery may be required (UIPI blocks WM_CHAR)",
+            ],
+            context: { keys },
+            ...(bgPerception && { _perceptionForPost: bgPerception }),
+          }
+        );
       } else if (effectiveMethod === "background") {
         return failWith(
           new Error("BackgroundInputUnsupported"),
@@ -684,7 +851,7 @@ export function registerKeyboardTools(server: McpServer): void {
         purpose: "Send keyboard input to a window: 'type' for text, 'press' for key combos.",
         details: "action='type' inserts text (auto-clipboard for non-ASCII / IME-safe). action='press' sends key combos like 'ctrl+c'/'alt+tab'. Pass windowTitle to auto-focus and auto-guard (verifies identity, foreground, modal) before input. Omitting windowTitle acts on the active window (unguarded).",
         prefer: "Use windowTitle to auto-focus before injection. Set lensId to enable perception guards. Use desktop_act({action:'setValue'}) for form fields backed by UIA ValuePattern.",
-        caveats: "win+r/win+x/win+s/win+l blocked for security. action='type' does not handle IME composition for CJK — use use_clipboard=true or desktop_act({action:'setValue'}) instead. Non-ASCII punctuation (em-dash etc.) auto-routes via clipboard to prevent Chrome address-bar hijack; pass forceKeystrokes:true to disable. Background mode (DTM_BG_AUTO=1) skips focus change.",
+        caveats: "win+r/win+x/win+s/win+l blocked for security. action='type' does not handle IME composition for CJK — use use_clipboard=true or desktop_act({action:'setValue'}) instead. Non-ASCII punctuation (em-dash etc.) auto-routes via clipboard to prevent Chrome address-bar hijack; pass forceKeystrokes:true to disable. Background mode (PostMessage/WM_CHAR) auto-engages for known terminal windows (Windows Terminal / cmd / PowerShell) so keystrokes survive user-side foreground changes; DTM_BG_AUTO=1 enables it globally.",
         examples: [
           "keyboard({action:'type', text:'hello', windowTitle:'Notepad'}) → text injected (guarded)",
           "keyboard({action:'type', text:'hello'}) → text injected (unguarded)",
