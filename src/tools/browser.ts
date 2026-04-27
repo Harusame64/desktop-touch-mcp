@@ -16,7 +16,6 @@ import {
   getDomHtml,
   disconnectAll,
   getTabContext,
-  type CdpTab,
   type TabContext,
 } from "../engine/cdp-bridge.js";
 import { resolveWellKnownPath, spawnDetached } from "../utils/launch.js";
@@ -546,7 +545,7 @@ export const browserGetFormHandler = async ({
     if (!label) {
       const lbAttr = el.getAttribute('aria-labelledby');
       if (lbAttr) {
-        label = lbAttr.trim().split(/\s+/).map(function(i) {
+        label = lbAttr.trim().split(/\\s+/).map(function(i) {
           var e = document.getElementById(i); return e ? e.textContent.trim() : '';
         }).filter(Boolean).join(' ') || null;
       }
