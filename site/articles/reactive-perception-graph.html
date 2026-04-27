@@ -198,6 +198,49 @@ return execute();</pre>
             </section>
 
             <section class="article-card">
+              <span class="label">Initial MVP</span>
+              <h2>Proving the reflex arc.</h2>
+              <p>Before building the full "nervous system," we spent considerable time in a trial-and-error phase with a Minimum Viable Product (MVP). The goal was to prove the <strong>reflex arc</strong>—the immediate, low-level loop that protects an action—without the overhead of a complex graph.</p>
+              <div class="two-up">
+                <div class="mini-card">
+                  <h3>The MVP Scope</h3>
+                  <ul>
+                    <li><strong>Cheap Fluents:</strong> High-signal, low-cost facts (window presence, foreground status, rect stability).</li>
+                    <li><strong>Basic Guards:</strong> "Fail-closed" predicates for identity and coordinate validity.</li>
+                  </ul>
+                </div>
+                <div class="mini-card">
+                  <h3>Intentional Omissions</h3>
+                  <p>We consciously excluded "heavy" sensors like full UIA tree traversals or continuous screenshot diffing to find the right balance between latency and safety.</p>
+                </div>
+              </div>
+              <p>This stage was crucial for finding the right balance between latency and safety. It taught us that most "accidents" could be prevented by just checking a few Win32-level fluents right before the motor command fires.</p>
+            </section>
+
+            <section class="article-card">
+              <span class="label warm">Concrete failures</span>
+              <h2>Why this exists.</h2>
+              <p>RPG is motivated by concrete failure modes that share the same structure: assumptions valid at observation time are no longer valid at action time.</p>
+              <div class="two-up">
+                <div class="mini-card">
+                  <h3>Common issues</h3>
+                  <ul>
+                    <li><strong>Focus theft:</strong> Another window pops up.</li>
+                    <li><strong>Modal insertion:</strong> A dialog box blocks the path.</li>
+                    <li><strong>Window drift:</strong> The target moved slightly.</li>
+                  </ul>
+                </div>
+                <div class="mini-card">
+                  <h3>Identity risks</h3>
+                  <ul>
+                    <li><strong>Entity replacement:</strong> The process restarted.</li>
+                    <li><strong>Delayed action:</strong> The agent waited too long to click.</li>
+                  </ul>
+                </div>
+              </div>
+            </section>
+
+            <section class="article-card">
               <span class="label warm">Validation</span>
               <h2>The next thing that matters is evidence.</h2>
               <p>To validate this direction, the project still needs to measure:</p>
@@ -219,12 +262,13 @@ return execute();</pre>
             <div class="aside-card">
               <h3>Keep this line</h3>
               <blockquote style="margin-top: 0;">Screenshots are not truth. External state should be treated as provisional.</blockquote>
-              <h3 style="margin-top: 18px;">Related pages</h3>
+              <h3>Related pages</h3>
               <ul>
                 <li><a href="../index.html">Project top</a></li>
                 <li><a href="./client-setup.html">Client setup</a></li>
                 <li><a href="./beyond-coordinate-roulette.html">Beyond Coordinate Roulette</a></li>
                 <li><a href="./planned-evaluation.html">Planned evaluation</a></li>
+                <li><a href="https://github.com/Harusame64/desktop-touch-mcp/blob/main/docs/reactive-perception-graph.md">Original design spec (GitHub)</a></li>
                 <li><a href="https://github.com/Harusame64/desktop-touch-mcp">GitHub repository</a></li>
               </ul>
             </div>

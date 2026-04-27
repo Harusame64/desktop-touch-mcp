@@ -249,7 +249,20 @@ They are parts of a single design approach for avoiding actions based on stale a
 
 ---
 
-## 9. Failure cases we care about
+## 9. The Initial MVP: Proving the Reflex Arc
+
+Before building the full "nervous system," we spent considerable time in a trial-and-error phase with a Minimum Viable Product (MVP). The goal was to prove the **reflex arc**—the immediate, low-level loop that protects an action—without the overhead of a complex graph.
+
+### The MVP Scope
+- **Cheap Fluents**: We focused only on high-signal, low-cost facts: Is the window still there? Is it still in the foreground? Has its rectangle moved?
+- **Basic Guards**: We implemented simple "fail-closed" predicates for identity stability and coordinate validity.
+- **Intentional Omissions**: To avoid early bottlenecks and noise, we consciously excluded "heavy" sensors like full UIA tree traversals, OCR, or continuous screenshot diffing.
+
+This stage was crucial for finding the right balance between latency and safety. It taught us that most "accidents" could be prevented by just checking a few Win32-level fluents right before the motor command fires.
+
+---
+
+## 10. Failure cases we care about
 
 RPG is motivated by concrete failure modes such as:
 
@@ -265,7 +278,7 @@ the assumptions that were valid at observation time are no longer valid at actio
 
 ---
 
-## 10. What still needs validation
+## 11. What still needs validation
 
 The design is intuitive, but intuition is not enough.
 
@@ -281,7 +294,7 @@ The project is being shaped so these can later be collected and published in a r
 
 ---
 
-## 11. One line to remember
+## 12. One line to remember
 
 If there is only one idea to keep from this page, it is this:
 
@@ -293,6 +306,7 @@ If there is only one idea to keep from this page, it is this:
 
 - `Back to project top`
 - `Read Beyond Coordinate Roulette`
+- `Read the original design specification (GitHub)` (../../docs/reactive-perception-graph.md)
 - `Read the preprint draft`
 - `Browse the repository`
 - `See planned evaluation`
