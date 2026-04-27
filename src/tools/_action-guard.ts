@@ -116,11 +116,11 @@ function revalidateFingerprint(fix: SuggestedFix): boolean {
         return true;  // no identity info → allow guard to re-check
       }
       const pid = getWindowProcessId(BigInt(fp.hwnd));
-      if (pid === null || pid === undefined) return false;  // window gone
+      if (pid === 0) return false;  // window gone (GetWindowThreadProcessId leaves pidOut[0]=0 on failure)
       if (fp.pid !== undefined && pid !== fp.pid) return false;  // different PID
       if (fp.processStartTimeMs !== undefined && fp.pid !== undefined) {
         const identity = getProcessIdentityByPid(pid);
-        if (!identity || identity.processStartTimeMs !== fp.processStartTimeMs) return false;
+        if (identity.processStartTimeMs !== fp.processStartTimeMs) return false;
       }
       return true;
     }
