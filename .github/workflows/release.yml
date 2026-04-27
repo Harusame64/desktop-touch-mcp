@@ -190,6 +190,16 @@ jobs:
         with:
           files: desktop-touch-mcp-windows.zip
           fail_on_unmatched_files: true
+          body: |
+            ## Install
+
+            ```bash
+            npx -y @harusame64/desktop-touch-mcp
+            ```
+
+            ## Changes
+
+            See [CHANGELOG.md](https://github.com/Harusame64/desktop-touch-mcp/blob/main/CHANGELOG.md) for the list of changes in this release.
 
   npm-publish:
     name: Publish to npm (OIDC)
