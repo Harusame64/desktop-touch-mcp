@@ -1,6 +1,14 @@
 # Changelog
 
-## [Unreleased]
+## [1.1.0] - 2026-04-27 — Focus Leash System (Phase A + B)
+
+Stray-write defense for keyboard automation when the user changes
+foreground mid-stream. Two layers landed in this minor: terminal-class
+windows auto-route through HWND-targeted WM_CHAR (foreground-independent),
+and non-terminal SendInput sends are chunked with a per-chunk foreground
+guard that aborts and returns `typed`/`remaining` for resumable retry.
+Backwards-compatible — explicit `method` values, `DTM_BG_AUTO=1`, and the
+clipboard path are unchanged.
 
 - **feat(keyboard): Focus Leash Phase B — per-chunk foreground guard for
   non-terminal apps.** When `keyboard(action:'type')` targets a non-terminal
