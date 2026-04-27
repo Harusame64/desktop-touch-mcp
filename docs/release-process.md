@@ -24,6 +24,32 @@ For package `X.Y.Z`, it fetches GitHub Release tag `vX.Y.Z`, verifies
 - Never move an existing release tag. If a tag already exists, publish a new patch version.
 - Prefer `npm deprecate` over `npm unpublish` for bad published versions.
 
+## Local Pre-Merge Testing
+
+`npm run test:capture` is the canonical pre-merge test runner (CI on windows-latest
+runs it via `scripts/test-capture.mjs`).
+
+**Always rebuild the Rust native addon first** if any file under `src/*.rs` or
+`Cargo.toml` has changed since the last build:
+
+```bash
+npm run build:rs:debug   # ~30s, debug build, fastest
+# or
+npm run build:rs         # release build, slower but matches CI artifact
+```
+
+The compiled binary lives at `desktop-touch-engine.win32-x64-msvc.node` (gitignored).
+A stale binary causes preprocess / vision_backend tests to fail or panic with
+errors that look like real test failures (e.g. "scale must be 1, 2, or 3" when the
+source already supports 1..4). Check timestamps if confused:
+
+```bash
+ls -la desktop-touch-engine.win32-x64-msvc.node
+git log -1 --format=%cd -- 'src/*.rs' 'src/**/*.rs' Cargo.toml
+```
+
+If the binary is older than the latest Rust commit, rebuild before running tests.
+
 ## Version Checklist
 
 Update both:

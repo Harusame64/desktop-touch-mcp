@@ -81,6 +81,12 @@ jobs:
       #     bigger concern: tooling drift, FFI shape, build.rs node.lib).
       #   - TypeScript test execution is left to local pre-merge run via
       #     `npm run test:capture`. Audit doc and known-issues track this.
+      #
+      # IMPORTANT for local runs: rebuild the Rust addon (`npm run build:rs:debug`)
+      # before `npm run test:capture` if any src/*.rs or Cargo.toml changed since
+      # last build. A stale .node binary causes preprocess / vision_backend tests
+      # to fail with confusing errors. See docs/release-process.md
+      # "Local Pre-Merge Testing".
 
   docker-build:
     runs-on: ubuntu-latest
