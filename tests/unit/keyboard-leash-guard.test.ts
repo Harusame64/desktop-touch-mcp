@@ -19,11 +19,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // ─────────────────────────────────────────────────────────────────────────────
 
 const mockTypeFn = vi.fn();
+const mockReleaseKeyFn = vi.fn();
 vi.mock("../../src/engine/nutjs.js", () => ({
   keyboard: {
     type: (...args: unknown[]) => mockTypeFn(...args),
     pressKey: vi.fn(),
-    releaseKey: vi.fn(),
+    releaseKey: (...args: unknown[]) => mockReleaseKeyFn(...args),
   },
 }));
 
@@ -316,6 +317,47 @@ describe("keyboardTypeHandler — Phase B leash-enabled foreground send", () => 
     expect(mockTypeFn).toHaveBeenNthCalledWith(2, "e");
   });
 
+  it("surrogate pair (emoji) is never split across chunks (Codex P2)", async () => {
+    // 😀 = U+1F600 = surrogate pair "😀" (2 UTF-16 code units = 1 codepoint).
+    // With chunkSize=4 (4 code points), 5 codepoints "abc😀d" should produce 2 chunks:
+    //   chunk 0: "abc😀" (3 ASCII + 1 emoji = 4 codepoints, 5 UTF-16 units)
+    //   chunk 1: "d" (1 codepoint, 1 UTF-16 unit)
+    // Without code-point-aware chunking, slice(0,4) of "abc😀d" returns "abc\uD83D"
+    // (a lone high surrogate) — broken character.
+    await keyboardTypeHandler({ ...baseArgs, text: "abc😀d" });
+    expect(mockTypeFn).toHaveBeenCalledTimes(2);
+    expect(mockTypeFn).toHaveBeenNthCalledWith(1, "abc😀");
+    expect(mockTypeFn).toHaveBeenNthCalledWith(2, "d");
+  });
+
+  it("emoji-heavy text: surrogate pairs preserved across chunk boundaries", async () => {
+    // 4 emojis with chunkSize=4 codepoints → 1 chunk with all 4 emojis intact.
+    const fourEmojis = "😀😁😂😃";
+    await keyboardTypeHandler({ ...baseArgs, text: fourEmojis });
+    expect(mockTypeFn).toHaveBeenCalledTimes(1);
+    expect(mockTypeFn).toHaveBeenCalledWith(fourEmojis);
+  });
+
+  it("partial 'typed' on emoji theft is UTF-16 code unit count (consistent with remaining slice)", async () => {
+    // text = "😀hello" = 1 emoji (2 UTF-16 units) + 5 ASCII = 7 code units, 6 codepoints.
+    // chunkSize=4 codepoints → chunk 0: "😀hel" (4 codepoints, 5 UTF-16 units), chunk 1: "lo".
+    // Theft on second check: typed=5 (UTF-16 units of chunk 0), remaining="lo".
+    vi.mocked(checkForegroundOnce)
+      .mockResolvedValueOnce(null) // chunk 0 OK
+      .mockResolvedValueOnce({
+        afterMs: 0,
+        expected: "Notepad",
+        stolenBy: "Chrome",
+        stolenByProcessName: "chrome",
+      });
+    const result = await keyboardTypeHandler({ ...baseArgs, text: "😀hello" });
+    const parsed = JSON.parse(result.content[0]?.text ?? "{}");
+    expect(parsed.context.context.typed).toBe(5);
+    expect(parsed.context.context.remaining).toBe("lo");
+    // First chunk delivered with intact surrogate pair
+    expect(mockTypeFn).toHaveBeenCalledWith("😀hel");
+  });
+
   it("clipboard path is unaffected by the leash (single-shot Ctrl+V is atomic)", async () => {
     // Force clipboard via use_clipboard:true
     await keyboardTypeHandler({ ...baseArgs, use_clipboard: true });
@@ -323,5 +365,80 @@ describe("keyboardTypeHandler — Phase B leash-enabled foreground send", () => 
     expect(mockTypeFn).not.toHaveBeenCalled();
     // checkForegroundOnce also not invoked (leash is per-chunk for keystroke path only)
     expect(checkForegroundOnce).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Modifier release safety valve (PR #65 Gemini review)
+//
+// Even though chunk boundaries align with character boundaries (so KeyUp is
+// already paired by nutjs.keyboard.type before await resolves), Phase B's
+// abort path emits explicit modifier KeyUps as defense-in-depth against
+// future raw-SendInput chunking, mid-character interrupts, or unexpected
+// throws that could leave Shift/Ctrl/Alt stuck-down — a notorious UX hazard
+// in UI automation ("ghost zoom on scroll", "spurious multi-select").
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("keyboardTypeHandler — modifier release safety valve", () => {
+  const baseArgs = {
+    text: "abcdefgh",
+    method: "foreground" as const,
+    use_clipboard: false,
+    replaceAll: false,
+    forceKeystrokes: false,
+    windowTitle: "Notepad",
+    trackFocus: false,
+    settleMs: 0,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.DTM_LEASH_CHUNK_SIZE = "4";
+    vi.mocked(checkForegroundOnce).mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    delete process.env.DTM_LEASH_CHUNK_SIZE;
+  });
+
+  it("normal completion does NOT call releaseKey (no spurious release on success)", async () => {
+    await keyboardTypeHandler(baseArgs);
+    expect(mockReleaseKeyFn).not.toHaveBeenCalled();
+  });
+
+  it("focus theft abort calls releaseKey for L/R variants of Ctrl/Alt/Shift (6 calls)", async () => {
+    vi.mocked(checkForegroundOnce).mockResolvedValueOnce({
+      afterMs: 0,
+      expected: "Notepad",
+      stolenBy: "Chrome",
+      stolenByProcessName: "chrome",
+    });
+    await keyboardTypeHandler(baseArgs);
+    // 6 modifiers: lctrl, rctrl, lalt, ralt, lshift, rshift
+    expect(mockReleaseKeyFn).toHaveBeenCalledTimes(6);
+  });
+
+  it("safety valve releases modifiers even when nutjs.releaseKey throws partially", async () => {
+    // Even if a single releaseKey throws, the helper must continue and try
+    // the others — partial release is better than nothing.
+    let calls = 0;
+    mockReleaseKeyFn.mockImplementation(async () => {
+      calls += 1;
+      if (calls === 2) throw new Error("simulated nutjs hiccup");
+    });
+    vi.mocked(checkForegroundOnce).mockResolvedValueOnce({
+      afterMs: 0,
+      expected: "Notepad",
+      stolenBy: "Chrome",
+      stolenByProcessName: "chrome",
+    });
+    await keyboardTypeHandler(baseArgs);
+    // Despite the throw on call #2, all 6 modifiers should still be attempted.
+    expect(mockReleaseKeyFn).toHaveBeenCalledTimes(6);
+  });
+
+  it("single-shot path (leash disabled) does NOT call releaseKey", async () => {
+    await keyboardTypeHandler({ ...baseArgs, abortOnFocusLoss: false });
+    expect(mockReleaseKeyFn).not.toHaveBeenCalled();
   });
 });

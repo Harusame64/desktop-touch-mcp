@@ -262,6 +262,42 @@ async function focusWindowForKeyboard(
 }
 
 /**
+ * Defensive safety valve: emit KeyUp for the common modifier keys so they
+ * cannot remain stuck-down after an interrupted keystroke sequence.
+ *
+ * Why this exists (Phase B follow-up — Gemini PR #65 review):
+ * Although the chunked send aborts at character boundaries (each
+ * `await keyboard.type(chunk)` resolves only after every character's
+ * modifier KeyDown/KeyUp pair completes inside nut-js), this is a
+ * defense-in-depth measure for paths where the OS-level modifier state
+ * could plausibly leak:
+ *   - Future iterations using raw SendInput with explicit modifier framing
+ *     (mid-character interrupt becomes possible).
+ *   - An exception thrown inside nutjs.keyboard.type leaving a paired
+ *     KeyUp un-emitted.
+ *   - Catastrophic exceptions during replaceAll Ctrl+A.
+ *
+ * KeyUp on a key that is not currently down is a safe no-op at the OS
+ * level (Windows tracks modifier state per-key and ignores redundant
+ * KEYEVENTF_KEYUP). Total cost: ~6 keyboard events per call, sub-ms
+ * latency. Without this, a user grabbing focus while we held Shift would
+ * see "modifier stuck-down" symptoms (Ctrl: ghost zoom on scroll; Shift:
+ * unwanted multi-select; Alt: spurious menu opens) — a notorious UX hazard
+ * in UI automation.
+ */
+async function releaseDanglingModifiers(): Promise<void> {
+  // Cover both L and R variants; Windows tracks them as distinct VKs.
+  for (const combo of ["lctrl", "rctrl", "lalt", "ralt", "lshift", "rshift"]) {
+    try {
+      const keys = parseKeys(combo);
+      await keyboard.releaseKey(...keys);
+    } catch {
+      // Best-effort: a single releaseKey failure must not skip the others.
+    }
+  }
+}
+
+/**
  * Read the chunk size for the Phase B leash (foreground SendInput chunked send).
  * Env override `DTM_LEASH_CHUNK_SIZE` accepts integer 1-1024; invalid or unset
  * values fall back to the default of 8 chars/chunk (~80ms granularity at typical
@@ -611,37 +647,58 @@ export const keyboardTypeHandler = async ({
         (abortOnFocusLoss !== undefined ? abortOnFocusLoss : true);
       if (leashEnabled) {
         const chunkSize = getLeashChunkSize();
+        // Iterate over code points (not UTF-16 code units) so chunk
+        // boundaries never bisect a surrogate pair. Without this, emoji or
+        // other non-BMP characters could be split mid-surrogate by
+        // String.slice and `keyboard.type` would receive unpaired surrogate
+        // halves (PR #65 Codex P2). `typed` counts UTF-16 code units to
+        // stay consistent with `effectiveText.length` and the slice index
+        // used to compute `remaining`, so callers can resume by passing
+        // `text: context.remaining` directly.
+        const codePoints = Array.from(effectiveText);
         let typed = 0;
-        for (let i = 0; i < effectiveText.length; i += chunkSize) {
-          const fl = await checkForegroundOnce({
-            target: effectiveWindowTitle,
-            homingNotes,
-          });
-          if (fl) {
-            return failWith(
-              new Error("FocusLostDuringType"),
-              "keyboard:type",
-              {
-                suggest: [
-                  "User stole foreground mid-type — re-focus the target window then call keyboard(action:'type') again with context.remaining as text",
-                  "For terminals, prefer method:'auto' so input routes through HWND-targeted WM_CHAR (Phase A — foreground-independent)",
-                  "Pass abortOnFocusLoss:false to disable the leash and fall back to single-shot send (post-action focusLost detection still runs)",
-                ],
-                context: {
-                  typed,
-                  remaining: effectiveText.slice(typed),
-                  total: effectiveText.length,
-                  chunkSize,
-                  focusLost: fl,
-                },
-                ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
-                ...(warnings.length > 0 && { hints: { warnings } }),
-              }
-            );
+        try {
+          for (let i = 0; i < codePoints.length; i += chunkSize) {
+            const fl = await checkForegroundOnce({
+              target: effectiveWindowTitle,
+              homingNotes,
+            });
+            if (fl) {
+              // Defensive: release any modifier that might have leaked from
+              // an interrupted keystroke sequence so the user's session
+              // doesn't get a stuck Shift/Ctrl/Alt (Gemini PR #65 review —
+              // 'release safety valve'). KeyUp is idempotent at the OS level.
+              await releaseDanglingModifiers();
+              return failWith(
+                new Error("FocusLostDuringType"),
+                "keyboard:type",
+                {
+                  suggest: [
+                    "User stole foreground mid-type — re-focus the target window then call keyboard(action:'type') again with context.remaining as text",
+                    "For terminals, prefer method:'auto' so input routes through HWND-targeted WM_CHAR (Phase A — foreground-independent)",
+                    "Pass abortOnFocusLoss:false to disable the leash and fall back to single-shot send (post-action focusLost detection still runs)",
+                  ],
+                  context: {
+                    typed,
+                    remaining: effectiveText.slice(typed),
+                    total: effectiveText.length,
+                    chunkSize,
+                    focusLost: fl,
+                  },
+                  ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
+                  ...(warnings.length > 0 && { hints: { warnings } }),
+                }
+              );
+            }
+            const chunk = codePoints.slice(i, i + chunkSize).join("");
+            await keyboard.type(chunk);
+            typed += chunk.length; // UTF-16 code units delivered
           }
-          const chunk = effectiveText.slice(i, i + chunkSize);
-          await keyboard.type(chunk);
-          typed += chunk.length;
+        } catch (err) {
+          // Unexpected throw inside the chunked send — release modifiers
+          // before bubbling so the outer catch can format the error response.
+          await releaseDanglingModifiers();
+          throw err;
         }
       } else {
         await keyboard.type(effectiveText);

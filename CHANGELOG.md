@@ -14,6 +14,13 @@
   param (default true when `windowTitle` is set) disables the leash when set
   to false. Clipboard path (atomic Ctrl+V) and BG path (HWND-targeted
   WM_CHAR — Phase A) are unaffected.
+  - Modifier release safety valve: on abort or unexpected exception inside
+    the chunked send, explicit KeyUp is emitted for L/R Ctrl/Alt/Shift so a
+    leaked modifier cannot leave the user's session with a stuck-down
+    Shift/Ctrl/Alt (defense-in-depth — KeyUp is idempotent at the OS level).
+  - Chunk boundaries are code-point-aware (`Array.from`) so non-BMP
+    characters (emoji etc.) never get bisected between chunks; resume
+    semantics (`typed` / `remaining`) stay coherent in UTF-16 code units.
 
 - **feat(keyboard, terminal): Focus Leash Phase A — terminal-class auto-route to WM_CHAR.**
   When `keyboard(action, method:'auto')` or `terminal(action:'send', method:'auto')`
