@@ -1,3 +1,5 @@
+// CJK + Latin-Extended regex literals contain intentional irregular whitespace.
+/* eslint-disable no-irregular-whitespace */
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";

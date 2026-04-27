@@ -23,7 +23,8 @@ const RECT = koffi.struct("RECT", {
   bottom: "int32",
 });
 
-const MONITORINFO = koffi.struct("MONITORINFO", {
+// Registered with koffi by name; referenced as a string in func signatures below, no JS handle needed.
+koffi.struct("MONITORINFO", {
   cbSize: "uint32",
   rcMonitor: RECT,
   rcWork: RECT,
@@ -44,7 +45,8 @@ const PROCESSENTRY32W = koffi.struct("PROCESSENTRY32W", {
   szExeFile: koffi.array("uint16", 260), // WCHAR[MAX_PATH]
 });
 
-const BITMAPINFOHEADER = koffi.struct("BITMAPINFOHEADER", {
+// Registered with koffi by name; referenced as a string in func signatures below, no JS handle needed.
+koffi.struct("BITMAPINFOHEADER", {
   biSize: "uint32",
   biWidth: "int32",
   biHeight: "int32",
@@ -167,7 +169,8 @@ const INVALID_HANDLE_VALUE_BIG = 0xffffffffffffffffn; // -1 as u64 for compariso
 
 // Process identity (pid + creation time + image name) for cache invalidation
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
-const FILETIME = koffi.struct("FILETIME", {
+// Registered with koffi by name; referenced as a string in func signatures below, no JS handle needed.
+koffi.struct("FILETIME", {
   dwLowDateTime: "uint32",
   dwHighDateTime: "uint32",
 });

@@ -6,7 +6,6 @@ import { resolveCandidates } from "../engine/world-graph/resolver.js";
 import {
   SessionRegistry,
   type TargetSpec,
-  type SnapshotFn,
   type ExecutorFn,
 } from "../engine/world-graph/session-registry.js";
 import type { CandidateIngress } from "../engine/world-graph/candidate-ingress.js";

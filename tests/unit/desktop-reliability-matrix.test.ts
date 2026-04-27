@@ -196,7 +196,7 @@ describe("desktop_discover / desktop_act — reliability + latency matrix (v1.0.
   it("every TouchFailReason is reachable from at least one other unit test", () => {
     const rows = FAIL_REASONS.map((reason) => ({ reason, files: searchTestSources(`"${reason}"`) }));
 
-    // eslint-disable-next-line no-console
+
     console.log("\n=== TouchFailReason reachability ===\n" +
       "| reason | covered in |\n" +
       "|---|---|\n" +
@@ -218,7 +218,7 @@ describe("desktop_discover / desktop_act — reliability + latency matrix (v1.0.
 
     // Print the matrix once so the developer running this test can eyeball
     // coverage without scrolling through individual it() output.
-    // eslint-disable-next-line no-console
+
     console.log("\n=== desktop_discover / desktop_act capability matrix ===\n" + formatTable(rows) + "\n");
 
     // Hard assertions: every combination must

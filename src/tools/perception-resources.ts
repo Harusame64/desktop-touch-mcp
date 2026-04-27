@@ -70,7 +70,7 @@ function _notifyTimelineSubscribers(ev: TargetIdentityTimelineEvent): void {
   try {
     // @ts-expect-error — sendResourceUpdated may not exist in all SDK versions
     if (typeof _server.sendResourceUpdated === "function") {
-      // @ts-expect-error
+      // @ts-expect-error — see runtime guard above
       _server.sendResourceUpdated({ uri });
     } else {
       _server.sendResourceListChanged();
@@ -116,7 +116,7 @@ export function registerPerceptionResources(server: McpServer): void {
           try {
             // @ts-expect-error — sendResourceUpdated is not in all SDK versions
             if (typeof server.sendResourceUpdated === "function") {
-              // @ts-expect-error
+              // @ts-expect-error — see runtime guard above
               server.sendResourceUpdated({ uri });
             } else {
               server.sendResourceListChanged();

@@ -54,7 +54,7 @@ export function validateLaunchCommand(command: string, args: string[]): void {
   }
   for (const arg of args) {
     if (SHELL_METACHAR_RE.test(arg)) {
-      throw new Error(`Blocked: argument contains shell metacharacters (;, &, |, \`, \$( or \${). Remove them and try again.`);
+      throw new Error(`Blocked: argument contains shell metacharacters (;, &, |, \`, $( or \${). Remove them and try again.`);
     }
   }
 }
@@ -143,7 +143,7 @@ export function spawnDetached(
     child.on("error", (err: NodeJS.ErrnoException) => {
       cleanup();
       // Build a helpful error message based on the error code
-      let hint = "";
+      let hint: string;
       if (err.code === "ENOENT") {
         hint = `Command "${command}" not found. Provide the full path (e.g. "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe").`;
       } else if (err.code === "EACCES" || err.code === "EPERM") {

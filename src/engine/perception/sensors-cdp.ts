@@ -124,6 +124,6 @@ export function startCdpSensorLoop(
 /** Reset all CDP sensor state. Only for use in unit tests. */
 export function __resetCdpSensorForTests(): void {
   _seq = 0;
-  if (_subscriptionId) { try { unsubscribe(_subscriptionId); } catch {} _subscriptionId = null; }
+  if (_subscriptionId) { try { unsubscribe(_subscriptionId); } catch { /* already torn down */ } _subscriptionId = null; }
   if (_drainTimer) { clearInterval(_drainTimer); _drainTimer = null; }
 }

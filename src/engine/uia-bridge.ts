@@ -34,7 +34,7 @@ export function escapePS(s: string): string {
  */
 export function escapeLike(s: string): string {
   // Escape backtick first to avoid double-escaping, then wildcards
-  return s.replace(/[`*?\[\]]/g, (ch) => "`" + ch).replace(/'/g, "''");
+  return s.replace(/[`*?[\]]/g, (ch) => "`" + ch).replace(/'/g, "''");
 }
 
 /** Execute a PowerShell script string and return stdout */
@@ -136,13 +136,13 @@ while ($stack.Count -gt 0 -and $count -lt ${maxElements} -and $sw.ElapsedMillise
     $pats = [System.Collections.Generic.List[string]]::new()
     try {
         foreach ($p in $el.GetSupportedPatterns()) {
-            $pn = $p.ProgrammaticName -replace 'Identifiers\.Pattern', ''
+            $pn = $p.ProgrammaticName -replace 'Identifiers\\.Pattern', ''
             if ($wantedPats.Contains($pn)) { $pats.Add($pn) }
         }
     } catch {}
 
     $ctName = ''
-    try { $ctName = $el.Current.ControlType.ProgrammaticName -replace 'ControlType\.', '' } catch {}
+    try { $ctName = $el.Current.ControlType.ProgrammaticName -replace 'ControlType\\.', '' } catch {}
 
     $elName = ''; try { $elName = $el.Current.Name } catch {}
     $elAid  = ''; try { $elAid  = $el.Current.AutomationId } catch {}
@@ -1152,7 +1152,7 @@ foreach ($el in $all) {
         $tp = $el.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
         if ($null -ne $tp) {
             $ctName = ''
-            try { $ctName = $el.Current.ControlType.ProgrammaticName -replace 'ControlType\.','' } catch {}
+            try { $ctName = $el.Current.ControlType.ProgrammaticName -replace 'ControlType\\.','' } catch {}
             $candidates.Add(@{ tp=$tp; controlType=$ctName })
         }
     } catch {}

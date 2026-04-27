@@ -284,6 +284,8 @@ process.on("disconnect", shutdown);
 const args = process.argv.slice(2);
 
 if (args.includes("--help") || args.includes("-h")) {
+  // CLI usage on stdout — process.exit(0) below, so MCP JSON-RPC never starts.
+  // eslint-disable-next-line no-console
   console.log(`desktop-touch-mcp v${SERVER_VERSION}
 
 Usage: desktop-touch-mcp [options]

@@ -71,7 +71,7 @@ function readValue(store: FluentStore, lens: PerceptionLens, property: string): 
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-function evalIdentityStable(lens: PerceptionLens, store: FluentStore, nowMs: number): GuardResult {
+function evalIdentityStable(lens: PerceptionLens, store: FluentStore, _nowMs: number): GuardResult {
   // target.identity is not tracked for browserTab lenses — vacuously pass
   if (lens.spec.target.kind !== "window") {
     return { kind: "target.identityStable", ok: true, confidence: 1 };

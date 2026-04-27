@@ -11,7 +11,7 @@
 
 import type { RawWinEvent } from "./raw-event-queue.js";
 import type { DirtyJournal } from "./dirty-journal.js";
-import type { FlushScheduler, PropertyClass } from "./flush-scheduler.js";
+import type { PropertyClass } from "./flush-scheduler.js";
 import type { LensEventIndex } from "./lens-event-index.js";
 import { lensesForHwnd, lensesForForegroundEvent } from "./lens-event-index.js";
 

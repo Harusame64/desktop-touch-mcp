@@ -11,6 +11,7 @@
  */
 
 import { failWith } from "./_errors.js";
+import { getWindowProcessId, getProcessIdentityByPid } from "../engine/win32.js";
 import type { ToolResult } from "./_types.js";
 import { resolveActionTarget, deriveTargetKey } from "../engine/perception/action-target.js";
 import type {
@@ -114,7 +115,6 @@ function revalidateFingerprint(fix: SuggestedFix): boolean {
       if (!fp.hwnd || (fp.pid === undefined && fp.processStartTimeMs === undefined)) {
         return true;  // no identity info → allow guard to re-check
       }
-      const { getWindowProcessId, getProcessIdentityByPid } = require("../engine/win32.js") as typeof import("../engine/win32.js");
       const pid = getWindowProcessId(BigInt(fp.hwnd));
       if (pid === null || pid === undefined) return false;  // window gone
       if (fp.pid !== undefined && pid !== fp.pid) return false;  // different PID

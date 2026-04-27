@@ -90,7 +90,7 @@ export const smartScrollSchema = {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function isSelectorLike(target: string): boolean {
-  return /^[#.\[a-zA-Z]/.test(target.trim());
+  return /^[#.[a-zA-Z]/.test(target.trim());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -213,7 +213,7 @@ async function tryCdp(params: {
     } | null;
 
     // Hash verification
-    let scrolled = true;
+    const scrolled = true;
     if (verifyWithHash) {
       // We can't easily do pre/post hash without a before-capture, so mark as assumed-true
       // when verifyWithHash is set but no pre-hash exists. The image path does full verification.
@@ -237,7 +237,7 @@ async function tryCdp(params: {
       ...(occludedBy && { occludedBy }),
       ...(warnings.length > 0 && { warnings }),
     });
-  } catch (err) {
+  } catch {
     // Let caller try next strategy
     return null;
   }
@@ -361,7 +361,7 @@ async function tryImage(params: {
 
   // Initial capture for hash baseline
   const region = win.region;
-  let capture = await captureWindowRawAndHash(win.hwnd, region);
+  const capture = await captureWindowRawAndHash(win.hwnd, region);
   if (!capture) {
     return failWith("Failed to capture window pixels", "scroll(action='smart')", { windowTitle });
   }

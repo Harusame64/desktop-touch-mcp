@@ -17,7 +17,7 @@ function entity(id: string, gen: string, digest?: string): UiEntity {
 
 describe("LeaseStore — issuance", () => {
   it("issue returns a lease with correct fields", () => {
-    let now = 10_000;
+    const now = 10_000;
     const store = new LeaseStore({ nowFn: () => now, defaultTtlMs: 5000 });
     const e = entity("ent-1", "gen-1");
     const lease = store.issue(e, "view-1");
@@ -29,7 +29,7 @@ describe("LeaseStore — issuance", () => {
   });
 
   it("custom ttlMs overrides default", () => {
-    let now = 0;
+    const now = 0;
     const store = new LeaseStore({ nowFn: () => now, defaultTtlMs: 5000 });
     const lease = store.issue(entity("e1", "g1"), "v1", 1000);
     expect(lease.expiresAtMs).toBe(1000);
@@ -49,7 +49,7 @@ describe("LeaseStore — issuance", () => {
 
 describe("LeaseStore — validation: ok paths", () => {
   it("validates a fresh lease and returns the re-resolved entity", () => {
-    let now = 0;
+    const now = 0;
     const store = new LeaseStore({ nowFn: () => now });
     const e = entity("e1", "gen-1");
     const lease = store.issue(e, "v1");

@@ -165,6 +165,6 @@ export function __resetUiaSensorForTests(): void {
   _cache = null;
   _inFlight = null;
   _seq = 0;
-  if (_subscriptionId) { try { unsubscribe(_subscriptionId); } catch {} _subscriptionId = null; }
+  if (_subscriptionId) { try { unsubscribe(_subscriptionId); } catch { /* already torn down */ } _subscriptionId = null; }
   if (_drainTimer) { clearInterval(_drainTimer); _drainTimer = null; }
 }
