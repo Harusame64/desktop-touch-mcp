@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+- **feat(keyboard): Focus Leash Phase B — per-chunk foreground guard for
+  non-terminal apps.** When `keyboard(action:'type')` targets a non-terminal
+  window via the foreground keystroke path, the send is now split into chunks
+  (default 8 chars; override via `DTM_LEASH_CHUNK_SIZE` env, range 1-1024) and
+  the target's foreground state is verified between chunks via
+  `checkForegroundOnce` (a no-settle variant of `detectFocusLoss`). If the user
+  grabs focus mid-stream, the call aborts with `FocusLostDuringType` and the
+  response includes `context.typed` (chars delivered) plus `context.remaining`
+  (unsent tail) so the caller can re-focus and resume. New `abortOnFocusLoss`
+  param (default true when `windowTitle` is set) disables the leash when set
+  to false. Clipboard path (atomic Ctrl+V) and BG path (HWND-targeted
+  WM_CHAR — Phase A) are unaffected.
+
 - **feat(keyboard, terminal): Focus Leash Phase A — terminal-class auto-route to WM_CHAR.**
   When `keyboard(action, method:'auto')` or `terminal(action:'send', method:'auto')`
   targets a known terminal window (`CASCADIA_HOSTING_WINDOW_CLASS` for Windows

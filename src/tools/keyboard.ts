@@ -20,7 +20,7 @@ import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
 import { coercedBoolean } from "./_coerce.js";
 import { withRichNarration, narrateParam } from "./_narration.js";
-import { detectFocusLoss } from "./_focus.js";
+import { detectFocusLoss, checkForegroundOnce } from "./_focus.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
 import { resolveWindowTarget } from "./_resolve-window.js";
@@ -157,6 +157,17 @@ export const keyboardTypeSchema = {
     "Approve a pending suggestedFix (one-shot, 15s TTL). Pass the fixId returned by a previous " +
     "failed keyboard(action='type') to re-attempt with guard-validated args."
   ),
+  abortOnFocusLoss: z.boolean().optional().describe(
+    "Focus Leash Phase B: when true, the foreground keystroke send is split into " +
+    "chunks (default 8 chars; override via DTM_LEASH_CHUNK_SIZE env) and the target " +
+    "window's foreground state is verified between chunks. If the user grabs focus " +
+    "mid-stream, the call aborts and returns FocusLostDuringType with " +
+    "context.typed (chars delivered to target) and context.remaining (unsent tail) " +
+    "so the caller can re-focus and retry the unsent portion. " +
+    "Default: true when windowTitle is provided, false otherwise. " +
+    "Has no effect on the clipboard path (atomic Ctrl+V) or the BG (WM_CHAR) path " +
+    "(HWND-targeted, foreground-independent)."
+  ),
 };
 
 export const keyboardPressSchema = {
@@ -248,6 +259,21 @@ async function focusWindowForKeyboard(
     // best-effort
   }
   return { warnings, homingNotes, foregroundVerified, forceRefused };
+}
+
+/**
+ * Read the chunk size for the Phase B leash (foreground SendInput chunked send).
+ * Env override `DTM_LEASH_CHUNK_SIZE` accepts integer 1-1024; invalid or unset
+ * values fall back to the default of 8 chars/chunk (~80ms granularity at typical
+ * keystroke speeds — sub-perceptible to the user but tight enough to abort
+ * within ~1 chunk of focus theft).
+ */
+export function getLeashChunkSize(): number {
+  const raw = process.env.DTM_LEASH_CHUNK_SIZE;
+  if (!raw) return 8;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 1 || n > 1024) return 8;
+  return n;
 }
 
 /**
@@ -383,6 +409,7 @@ export const keyboardTypeHandler = async ({
   settleMs,
   lensId,
   fixId,
+  abortOnFocusLoss,
   _skipAutoGuard = false,
 }: {
   text: string;
@@ -399,6 +426,7 @@ export const keyboardTypeHandler = async ({
   settleMs: number;
   lensId?: string;
   fixId?: string;
+  abortOnFocusLoss?: boolean;
 }): Promise<ToolResult> => {
   const force = forceFocusArg ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
   try {
@@ -571,7 +599,53 @@ export const keyboardTypeHandler = async ({
     if (effectiveClipboard) {
       await typeViaClipboard(effectiveText);
     } else {
-      await keyboard.type(effectiveText);
+      // Focus Leash Phase B: when the caller named a target window and didn't
+      // opt out, split the keystroke send into chunks and verify foreground
+      // between chunks. If the user grabs focus mid-stream, abort and return
+      // FocusLostDuringType with typed/remaining so the caller can re-focus
+      // and retry the unsent portion. Default abortOnFocusLoss=true when
+      // windowTitle is provided (caller stated a target = caller cares which
+      // window receives input); false otherwise.
+      const leashEnabled =
+        !!effectiveWindowTitle &&
+        (abortOnFocusLoss !== undefined ? abortOnFocusLoss : true);
+      if (leashEnabled) {
+        const chunkSize = getLeashChunkSize();
+        let typed = 0;
+        for (let i = 0; i < effectiveText.length; i += chunkSize) {
+          const fl = await checkForegroundOnce({
+            target: effectiveWindowTitle,
+            homingNotes,
+          });
+          if (fl) {
+            return failWith(
+              new Error("FocusLostDuringType"),
+              "keyboard:type",
+              {
+                suggest: [
+                  "User stole foreground mid-type — re-focus the target window then call keyboard(action:'type') again with context.remaining as text",
+                  "For terminals, prefer method:'auto' so input routes through HWND-targeted WM_CHAR (Phase A — foreground-independent)",
+                  "Pass abortOnFocusLoss:false to disable the leash and fall back to single-shot send (post-action focusLost detection still runs)",
+                ],
+                context: {
+                  typed,
+                  remaining: effectiveText.slice(typed),
+                  total: effectiveText.length,
+                  chunkSize,
+                  focusLost: fl,
+                },
+                ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
+                ...(warnings.length > 0 && { hints: { warnings } }),
+              }
+            );
+          }
+          const chunk = effectiveText.slice(i, i + chunkSize);
+          await keyboard.type(chunk);
+          typed += chunk.length;
+        }
+      } else {
+        await keyboard.type(effectiveText);
+      }
     }
 
     let focusLost = undefined;
@@ -851,7 +925,7 @@ export function registerKeyboardTools(server: McpServer): void {
         purpose: "Send keyboard input to a window: 'type' for text, 'press' for key combos.",
         details: "action='type' inserts text (auto-clipboard for non-ASCII / IME-safe). action='press' sends key combos like 'ctrl+c'/'alt+tab'. Pass windowTitle to auto-focus and auto-guard (verifies identity, foreground, modal) before input. Omitting windowTitle acts on the active window (unguarded).",
         prefer: "Use windowTitle to auto-focus before injection. Set lensId to enable perception guards. Use desktop_act({action:'setValue'}) for form fields backed by UIA ValuePattern.",
-        caveats: "win+r/win+x/win+s/win+l blocked for security. action='type' does not handle IME composition for CJK — use use_clipboard=true or desktop_act({action:'setValue'}) instead. Non-ASCII punctuation (em-dash etc.) auto-routes via clipboard to prevent Chrome address-bar hijack; pass forceKeystrokes:true to disable. Background mode (PostMessage/WM_CHAR) auto-engages for known terminal windows (Windows Terminal / cmd / PowerShell) so keystrokes survive user-side foreground changes; DTM_BG_AUTO=1 enables it globally.",
+        caveats: "win+r/win+x/win+s/win+l blocked for security. action='type' does not handle IME composition for CJK — use use_clipboard=true or desktop_act({action:'setValue'}) instead. Non-ASCII punctuation (em-dash etc.) auto-routes via clipboard to prevent Chrome address-bar hijack; pass forceKeystrokes:true to disable. Background mode (PostMessage/WM_CHAR) auto-engages for known terminal windows (Windows Terminal / cmd / PowerShell) so keystrokes survive user-side foreground changes; DTM_BG_AUTO=1 enables it globally. Foreground-path keystrokes for non-terminal apps run with a per-chunk foreground guard (Phase B) — when the user grabs focus mid-stream, the call aborts with FocusLostDuringType and returns context.typed/context.remaining so the caller can re-focus and resume; pass abortOnFocusLoss:false to disable.",
         examples: [
           "keyboard({action:'type', text:'hello', windowTitle:'Notepad'}) → text injected (guarded)",
           "keyboard({action:'type', text:'hello'}) → text injected (unguarded)",

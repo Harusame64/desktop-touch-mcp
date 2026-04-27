@@ -105,3 +105,21 @@ export async function detectFocusLoss(opts: {
     stolenByProcessName,
   };
 }
+
+/**
+ * No-settle variant of detectFocusLoss for mid-stream foreground checks.
+ *
+ * Used by Focus Leash Phase B: keyboard.type() chunked send loop calls this
+ * between chunks to detect user-side focus theft as it happens (vs. the
+ * post-action detectFocusLoss which waits settleMs first). Returns the same
+ * FocusLost shape on theft, null when target is still in foreground.
+ *
+ * Implementation note: this is a thin wrapper around detectFocusLoss with
+ * settleMs=0 — keeping the foreground measurement logic in one place.
+ */
+export async function checkForegroundOnce(opts: {
+  target?: string;
+  homingNotes?: string[];
+}): Promise<FocusLost | null> {
+  return detectFocusLoss({ ...opts, settleMs: 0 });
+}
