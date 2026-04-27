@@ -1,5 +1,39 @@
 # Changelog
 
+## [1.0.5] - 2026-04-27 — Security and stability patch
+
+Bundle of correctness fixes found after `v1.0.4`, plus a guard rail to prevent
+stdio regressions from coming back.
+
+- **fix(image_processing):** prevent `u64` underflow in the Sauvola integral-image
+  sum. Large ROIs could underflow the running difference and corrupt the
+  thresholded output.
+- **fix(browser):** correct the `\s+` regex escape in a CDP-injected template
+  literal. Whitespace matching in selector-injection paths now behaves as
+  intended.
+- **fix(action-guard):** replace a dead null/undefined check with `pid === 0`
+  (CodeQL #103). Removes unreachable code flagged by static analysis.
+- **fix(launcher-test):** skip the stdio shutdown test when the sha256 manifest
+  is `PENDING`. The check ran on the release commit before CI populated the
+  hash and produced a false failure.
+- **chore(lint):** add an ESLint rule that guards the MCP stdio JSON-RPC stream
+  (#61). Catches future `console.log` / direct `stdout` writes that would
+  re-introduce the v1.0.4 issue.
+
+## [1.0.4] - 2026-04-27 — stdio JSON-RPC stream fix (Issue #60)
+
+Some MCP clients run the launcher with `console.debug` mapped to `stdout`,
+which corrupted the JSON-RPC framing on the stdio transport (Issue #60).
+All `console.debug` calls in the runtime are replaced with `console.error`
+so stdout remains exclusively MCP protocol traffic.
+
+Documentation cleanup shipped alongside the fix:
+
+- README rewritten to match the v1.0.x positioning (28 tools, World-Graph
+  default-on).
+- Tool count corrected from 56 to 28 in `package.json` and `glama.json`.
+- Site navigation standardized across pages; v1.0 milestone article added.
+
 ## [1.0.3] - 2026-04-26 — Release infrastructure fix
 
 The v1.0.0 tag built the GitHub Release zip successfully but the `npm-publish`

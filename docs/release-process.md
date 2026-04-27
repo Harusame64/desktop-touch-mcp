@@ -52,10 +52,14 @@ If the binary is older than the latest Rust commit, rebuild before running tests
 
 ## Version Checklist
 
-Update both:
+Update:
 
 - `package.json` / `package-lock.json`
 - `src/version.ts`
+- `CHANGELOG.md` — add a new entry at the top for `X.Y.Z`. Match the existing
+  patch-style format (`## [X.Y.Z] - YYYY-MM-DD — short title`, then a short
+  paragraph or bullet list of fixes). Stage it with the other version files in
+  Phase 3.
 
 They should all match the release version, for example `0.11.4`.
 
@@ -160,7 +164,7 @@ If connecting to an already-running server:
 Commit the release changes:
 
 ```bash
-git add package.json package-lock.json src/version.ts .github/workflows/release.yml bin/launcher.js scripts/check-launcher-manifest.mjs README.md README.ja.md docs/release-process.md
+git add package.json package-lock.json src/version.ts CHANGELOG.md .github/workflows/release.yml bin/launcher.js scripts/check-launcher-manifest.mjs README.md README.ja.md docs/release-process.md
 git commit -m "Prepare release 0.11.4"
 git push origin HEAD:main
 ```
@@ -593,10 +597,11 @@ See "npm Trusted Publisher Setup" section below.
 - `npm version X.Y.Z --no-git-tag-version`
   → auto-updates: `package.json`, `package-lock.json`, `src/version.ts`, `bin/launcher.js` PACKAGE_VERSION, `RELEASE_MANIFEST.tagName`, and `RELEASE_MANIFEST.sha256` (reset to `"PENDING"`)
   → No manual edits to `bin/launcher.js` needed.
+- Add a new `CHANGELOG.md` entry for `X.Y.Z` (see "Version Checklist" above).
 - `node --check bin/launcher.js`
 - `npm run build`
 
-**Done when**: build passes; `package.json`, `src/version.ts`, and `bin/launcher.js` tagName all show the new version; sha256 shows `"PENDING"`.
+**Done when**: build passes; `package.json`, `src/version.ts`, and `bin/launcher.js` tagName all show the new version; sha256 shows `"PENDING"`; `CHANGELOG.md` has the new entry at the top.
 
 ### Phase 2 — HTTP transport verification
 
@@ -608,7 +613,7 @@ See "npm Trusted Publisher Setup" section below.
 
 ### Phase 3 — Commit, tag, push
 
-- Stage: `git add package.json package-lock.json src/version.ts bin/launcher.js`
+- Stage: `git add package.json package-lock.json src/version.ts bin/launcher.js CHANGELOG.md`
 - Commit: `git commit -m "Prepare release X.Y.Z"`
 - Push: `git push origin HEAD:main`
 - Verify no existing tag: `git tag --list vX.Y.Z` and `git ls-remote --tags origin vX.Y.Z`
