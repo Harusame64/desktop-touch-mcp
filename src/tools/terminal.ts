@@ -9,6 +9,7 @@ import {
   restoreAndFocusWindow,
   getProcessIdentityByPid,
   getWindowProcessId,
+  getWindowClassName,
   type WindowZInfo,
 } from "../engine/win32.js";
 import {
@@ -16,6 +17,7 @@ import {
   postCharsToHwnd,
   postEnterToHwnd,
   isBgAutoEnabled,
+  TERMINAL_WINDOW_CLASSES,
 } from "../engine/bg-input.js";
 import { detectFocusLoss } from "./_focus.js";
 import { getTextViaTextPattern } from "../engine/uia-bridge.js";
@@ -50,10 +52,13 @@ export const terminalSendSchema = {
   input: z.string().max(10000).describe("Text to send (max 10,000 chars)."),
   method: z.enum(["auto", "background", "foreground"]).default("auto").describe(
     "Input routing channel. " +
-    "'auto' uses background (WM_CHAR) for known terminal processes when DTM_BG_AUTO=1, else foreground. " +
-    "'background' forces WM_CHAR injection (no focus change, works for WT/conhost/cmd/PowerShell). " +
+    "'auto' defaults to background (WM_CHAR) when the target is a known terminal class " +
+    "(Windows Terminal / cmd / PowerShell / conhost) so user-side focus changes mid-stream " +
+    "cannot divert keystrokes. DTM_BG_AUTO=1 enables BG globally; 'auto' falls back to " +
+    "foreground for non-terminal targets. " +
+    "'background' forces WM_CHAR injection (no focus change). " +
     "'foreground' forces the current behavior (SetForegroundWindow + clipboard paste). " +
-    "Default 'auto' (equivalent to 'foreground' unless DTM_BG_AUTO=1 is set)."
+    "Default 'auto'."
   ),
   chunkSize: z.number().int().min(1).max(10000).default(100).describe(
     "Split long input into chunks of this many characters in background mode to prevent " +
@@ -316,8 +321,18 @@ export const terminalSendHandler = async ({
     }
 
     // ── Background input path (WM_CHAR) ────────────────────────────────────
+    // Focus Leash Phase A: when target is a known terminal class, default to BG
+    // even without DTM_BG_AUTO=1 — terminal_send by definition operates on
+    // terminals, and HWND-targeted delivery prevents user-side foreground
+    // changes from diverting keystrokes mid-stream.
+    const targetClass = (() => {
+      try { return getWindowClassName(win.hwnd); } catch { return ""; }
+    })();
+    const isTerminalTarget = !!targetClass && TERMINAL_WINDOW_CLASSES.has(targetClass);
     const useBg = inputMethod === "background" ||
-      (inputMethod === "auto" && isBgAutoEnabled() && canInjectViaPostMessage(win.hwnd).supported);
+      (inputMethod === "auto"
+        && (isBgAutoEnabled() || isTerminalTarget)
+        && canInjectViaPostMessage(win.hwnd).supported);
 
     if (useBg) {
       const bgWarnings: string[] = [];

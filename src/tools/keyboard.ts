@@ -6,13 +6,14 @@ import { promisify } from "node:util";
 import { keyboard } from "../engine/nutjs.js";
 import { parseKeys } from "../utils/key-map.js";
 import { assertKeyComboSafe } from "../utils/key-safety.js";
-import { enumWindowsInZOrder, restoreAndFocusWindow } from "../engine/win32.js";
+import { enumWindowsInZOrder, getWindowClassName, restoreAndFocusWindow } from "../engine/win32.js";
 import {
   canInjectViaPostMessage,
   postCharsToHwnd,
   postKeyComboToHwnd,
   postEnterToHwnd,
   isBgAutoEnabled,
+  TERMINAL_WINDOW_CLASSES,
 } from "../engine/bg-input.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
@@ -113,10 +114,12 @@ const NON_ASCII_SYMBOL_RE = /[\u2013\u2014\u2018\u2019\u201C\u201D\u2026\u00A0]/
 
 const methodParam = z.enum(["auto", "background", "foreground"]).default("auto").describe(
   "Input routing channel. " +
-  "'auto' uses background (PostMessage) when supported and DTM_BG_AUTO=1, else foreground. " +
+  "'auto' uses background (PostMessage) when the target window is a known terminal class " +
+  "(Windows Terminal / cmd / PowerShell) OR DTM_BG_AUTO=1 is set; else foreground. Terminal " +
+  "auto-detect is HWND-targeted so user-side focus changes mid-stream cannot divert keystrokes. " +
   "'background' forces PostMessage-only (no focus change, fails on Chromium/IME). " +
   "'foreground' forces the current behavior (SetForegroundWindow + keystrokes). " +
-  "Default 'auto' (equivalent to 'foreground' unless DTM_BG_AUTO=1 is set)."
+  "Default 'auto'."
 );
 
 export const keyboardTypeSchema = {
@@ -247,6 +250,45 @@ async function focusWindowForKeyboard(
   return { warnings, homingNotes, foregroundVerified, forceRefused };
 }
 
+/**
+ * Resolve the effective input routing channel when caller passes `method: 'auto'`.
+ *
+ * Precedence:
+ *   1. inputMethod !== 'auto' → returned as-is.
+ *   2. DTM_BG_AUTO=1 env flag → 'background-auto' (existing global toggle).
+ *   3. Target window class is a known terminal class (TERMINAL_WINDOW_CLASSES)
+ *      → 'background-auto'. Focus Leash Phase A: HWND-targeted WM_CHAR delivery
+ *      survives user-side foreground changes mid-stream, so keystrokes intended
+ *      for a terminal can no longer be diverted to a window the user clicks into.
+ *   4. Otherwise → 'auto' (downstream check fails, falls through to foreground).
+ *
+ * The downstream BG path retains its `canInjectViaPostMessage` gate, so a class
+ * misclassification simply falls through to foreground (line 354).
+ */
+export function resolveEffectiveInputMethod(
+  inputMethod: "auto" | "background" | "foreground",
+  effectiveWindowTitle: string | undefined,
+): "auto" | "background" | "foreground" | "background-auto" {
+  if (inputMethod !== "auto") return inputMethod;
+  if (isBgAutoEnabled()) return "background-auto";
+  if (effectiveWindowTitle) {
+    try {
+      const wins = enumWindowsInZOrder();
+      const needle = effectiveWindowTitle.toLowerCase();
+      const target = wins.find((w) => w.title.toLowerCase().includes(needle));
+      if (target) {
+        const cls = getWindowClassName(target.hwnd);
+        if (cls && TERMINAL_WINDOW_CLASSES.has(cls)) {
+          return "background-auto";
+        }
+      }
+    } catch {
+      // best-effort — fall through to "auto" so downstream still works
+    }
+  }
+  return inputMethod;
+}
+
 export const keyboardTypeHandler = async ({
   text,
   method: inputMethod = "auto",
@@ -299,8 +341,9 @@ export const keyboardTypeHandler = async ({
     let foregroundVerified = false;
 
     // ── Background input path ──────────────────────────────────────────────
-    // Resolve effective method: "auto" with DTM_BG_AUTO=1 → try BG first.
-    const effectiveMethod = (inputMethod === "auto" && isBgAutoEnabled()) ? "background-auto" : inputMethod;
+    // Resolve effective method: "auto" + (DTM_BG_AUTO=1 OR target is a known
+    // terminal class) → try BG first. See resolveEffectiveInputMethod.
+    const effectiveMethod = resolveEffectiveInputMethod(inputMethod, effectiveWindowTitle);
 
     if ((effectiveMethod === "background" || effectiveMethod === "background-auto") && effectiveWindowTitle) {
       const wins = enumWindowsInZOrder();
@@ -494,7 +537,7 @@ export const keyboardPressHandler = async ({
     let foregroundVerified = false;
 
     // ── Background input path ──────────────────────────────────────────────
-    const effectiveMethod = (inputMethod === "auto" && isBgAutoEnabled()) ? "background-auto" : inputMethod;
+    const effectiveMethod = resolveEffectiveInputMethod(inputMethod, effectiveWindowTitle);
     if ((effectiveMethod === "background" || effectiveMethod === "background-auto") && effectiveWindowTitle) {
       const wins = enumWindowsInZOrder();
       const target = wins.find(w => w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase()));
@@ -684,7 +727,7 @@ export function registerKeyboardTools(server: McpServer): void {
         purpose: "Send keyboard input to a window: 'type' for text, 'press' for key combos.",
         details: "action='type' inserts text (auto-clipboard for non-ASCII / IME-safe). action='press' sends key combos like 'ctrl+c'/'alt+tab'. Pass windowTitle to auto-focus and auto-guard (verifies identity, foreground, modal) before input. Omitting windowTitle acts on the active window (unguarded).",
         prefer: "Use windowTitle to auto-focus before injection. Set lensId to enable perception guards. Use desktop_act({action:'setValue'}) for form fields backed by UIA ValuePattern.",
-        caveats: "win+r/win+x/win+s/win+l blocked for security. action='type' does not handle IME composition for CJK — use use_clipboard=true or desktop_act({action:'setValue'}) instead. Non-ASCII punctuation (em-dash etc.) auto-routes via clipboard to prevent Chrome address-bar hijack; pass forceKeystrokes:true to disable. Background mode (DTM_BG_AUTO=1) skips focus change.",
+        caveats: "win+r/win+x/win+s/win+l blocked for security. action='type' does not handle IME composition for CJK — use use_clipboard=true or desktop_act({action:'setValue'}) instead. Non-ASCII punctuation (em-dash etc.) auto-routes via clipboard to prevent Chrome address-bar hijack; pass forceKeystrokes:true to disable. Background mode (PostMessage/WM_CHAR) auto-engages for known terminal windows (Windows Terminal / cmd / PowerShell) so keystrokes survive user-side foreground changes; DTM_BG_AUTO=1 enables it globally.",
         examples: [
           "keyboard({action:'type', text:'hello', windowTitle:'Notepad'}) → text injected (guarded)",
           "keyboard({action:'type', text:'hello'}) → text injected (unguarded)",
