@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.1.2] - 2026-04-28 — stdio server defers shutdown while tool calls are in flight
+
+Bug fix: when the MCP client closed its stdin write-end while a long-running
+tool call (`terminal(action='run')`, `wait_until`, large UIA polls) was still
+running, the stdio server immediately called `process.exit(0)` and the in-flight
+response was lost — the client saw `MCP error -32000: Connection closed` and
+retried the call from scratch. The server now defers shutdown until the
+in-flight JSON-RPC requests drain (60s safety timeout), so the response is
+delivered before the process exits. HTTP transport (`--http`) was unaffected.
+
+- **fix(server): defer shutdown while tool calls are in flight (#68).**
+  `process.stdin.on('end')` and `process.stdout.on('error')` now go through a
+  new `requestShutdown()` path that waits for `inflightIds` (a transport-level
+  JSON-RPC request id set tracked via wrapped `transport.onmessage` /
+  `transport.send`) to reach zero before calling `shutdown()`. Explicit
+  `SIGINT` / `SIGTERM` / `disconnect` still terminate immediately. JSON-RPC
+  ids are stored with their original type (`Set<string | number>`) so a
+  spec-compliant client sending both numeric and string ids in the same
+  session is not undercounted (Codex P2). The wrap forwards all SDK
+  options/extra args via rest-spread for forward compatibility. Closes #68.
+- **chore(repro): remove unused `t0` in `tests/repros/stdin-eof-shutdown.repro.mjs`
+  (CodeQL `js/unused-local-variable` #104).**
+
 ## [1.1.1] - 2026-04-28 — `modal_blocking` response surfaces blocker identity
 
 `desktop_act` now tells the LLM *which* modal to dismiss when a touch is
