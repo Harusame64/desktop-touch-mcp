@@ -6,7 +6,7 @@
  * between tool files.
  */
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
 import { isExecutableAllowlisted } from "./launch-config.js";
@@ -122,6 +122,29 @@ export function resolveWellKnownPath(command: string): { resolved: string; wasRe
  * - The `error` event fires on the next tick for ENOENT — caught deterministically.
  * - No arbitrary delay that could be too short or too long.
  */
+/**
+ * Terminate all instances of the given executable name(s) via taskkill /F /IM.
+ * Returns the list of exe names that actually had a process killed (taskkill exit 0).
+ * Errors / "no process found" (exit 128) are silently ignored.
+ *
+ * Windows-only — uses taskkill.exe from System32.
+ */
+export function killProcessesByName(exeNames: string[]): string[] {
+  const killed: string[] = [];
+  for (const exe of exeNames) {
+    try {
+      const result = spawnSync("taskkill.exe", ["/F", "/IM", exe], {
+        windowsHide: true,
+        timeout: 5000,
+      });
+      if (result.status === 0) killed.push(exe);
+      // exit 128 = "process not found" — ignore
+      // other non-zero = silently ignore — best-effort
+    } catch { /* ignore — best-effort */ }
+  }
+  return killed;
+}
+
 export function spawnDetached(
   command: string,
   args: string[],
