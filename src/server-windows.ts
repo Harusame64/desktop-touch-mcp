@@ -268,8 +268,11 @@ let shuttingDown = false;
 // Deferred-shutdown state (issue #68): when stdin EOF or stdout EPIPE arrives mid-flight,
 // wait for in-flight JSON-RPC responses to drain before exiting so long-running tool calls
 // (terminal/wait_until) can deliver their results instead of returning "Connection closed".
-// Ids normalized via String() so number/string mismatches between peer and SDK don't leak.
-const inflightIds = new Set<string>();
+// Ids are stored with their original type — JSON-RPC 2.0 allows both string and number ids,
+// and a spec-compliant client can legitimately send id=1 and id="1" concurrently. Collapsing
+// them into the same string key (e.g. via String()) would undercount and cause early shutdown
+// on the first response. JS Set's SameValueZero semantics (1 !== "1") keeps them distinct.
+const inflightIds = new Set<string | number>();
 let shutdownPending = false;
 let shutdownTimer: NodeJS.Timeout | null = null;
 const SHUTDOWN_GRACE_MS = 60_000;
@@ -463,13 +466,13 @@ if (useHttp) {
   transport.onmessage = ((msg: unknown, ...rest: unknown[]) => {
     const m = msg as { id?: string | number; method?: string };
     const isRequest = !!m && m.id !== undefined && typeof m.method === "string";
-    const key = isRequest ? String(m.id) : "";
-    if (isRequest) inflightIds.add(key);
+    const id = isRequest ? (m.id as string | number) : undefined;
+    if (id !== undefined) inflightIds.add(id);
     try {
       origOnmessage?.(msg, ...rest);
     } catch (err) {
-      if (isRequest) {
-        inflightIds.delete(key);
+      if (id !== undefined) {
+        inflightIds.delete(id);
         maybeFinishShutdown();
       }
       throw err;
@@ -482,7 +485,7 @@ if (useHttp) {
     } finally {
       const m = msg as { id?: string | number; method?: string };
       if (m && m.id !== undefined && m.method === undefined) {
-        inflightIds.delete(String(m.id));
+        inflightIds.delete(m.id);
         maybeFinishShutdown();
       }
     }
