@@ -187,7 +187,7 @@ mouse_click(x, y, origin?, scale?)    → pixel last resort; origin+scale from d
 Recovery hints — read `response.attention` after every observation and `response.warnings[]` on `desktop_discover` / `desktop_act`. Common reasons:
 
 - `lease_expired` / `lease_generation_mismatch` / `lease_digest_mismatch` / `entity_not_found` → re-call `desktop_discover`
-- `modal_blocking` → dismiss via `click_element`, then retry
+- `modal_blocking` → `response.blockingElement` (when present) names the blocking modal; dismiss via `click_element(name=blockingElement.name)` then retry
 - `entity_outside_viewport` → `scroll(action='to_element' | 'raw')`, then re-call `desktop_discover`
 - `executor_failed` → fall back to `click_element` / `mouse_click` / `browser_click`
 
@@ -691,7 +691,7 @@ This was the opt-in switch in v0.16.x. From v0.17 it is accepted for compatibili
 If `desktop_act` returns `ok: false`, read `reason` and follow the built-in recovery hints in the tool description. Common paths:
 
 - `lease_expired` / `*_mismatch` / `entity_not_found` → re-call `desktop_discover`
-- `modal_blocking` → dismiss the modal with `click_element`, then retry
+- `modal_blocking` → `response.blockingElement` (when present) carries `{ name, role, automationId? }`; dismiss with `click_element(name=blockingElement.name)`, then retry
 - `entity_outside_viewport` → `scroll` / `scroll(action='to_element')`, then re-call `desktop_discover`
 - `executor_failed` → fall back to `click_element` / `mouse_click` / `browser_click`
 

@@ -170,6 +170,83 @@ describe("GuardedTouchLoop — pre-touch checks", () => {
     if (!result.ok) expect(result.reason).toBe("modal_blocking");
   });
 
+  // Issue #63: modal_blocking response now surfaces the offending modal's identity
+  // so the LLM can dismiss it via click_element(name) without an extra screenshot.
+
+  it("modal_blocking includes blockingElement when findBlockingModal returns an entity", async () => {
+    const target = entity("e1", GEN);
+    const modal  = entity("m1", GEN, {
+      role: "unknown",
+      label: "Copilot",
+      sources: ["uia"],
+      locator: { uia: { automationId: "CopilotPane" } },
+    });
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(target, "v1");
+    const loop = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities: () => [target, modal],
+      isModalBlocking:     () => true,
+      findBlockingModal:   () => modal,
+    }));
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("modal_blocking");
+      expect(result.blockingElement).toEqual({
+        name: "Copilot",
+        role: "unknown",
+        automationId: "CopilotPane",
+      });
+    }
+  });
+
+  it("blockingElement falls back to locator.uia.name → role → 'modal' when label is missing", async () => {
+    const target = entity("e1", GEN);
+    const noLabel = entity("m1", GEN, {
+      role: "unknown",
+      label: undefined,
+      sources: ["uia"],
+      locator: { uia: { name: "System Dialog" } },
+    });
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(target, "v1");
+    const loop = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities: () => [target, noLabel],
+      isModalBlocking:     () => true,
+      findBlockingModal:   () => noLabel,
+    }));
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      // locator.uia.name takes precedence when label is empty.
+      expect(result.blockingElement?.name).toBe("System Dialog");
+      // automationId omitted when locator does not provide it.
+      expect(result.blockingElement?.automationId).toBeUndefined();
+    }
+  });
+
+  it("blockingElement is omitted when isModalBlocking=true but findBlockingModal returns null (predicate divergence)", async () => {
+    // Defensive case — env layers can drift if a custom isModalBlocking is paired with
+    // a default/undefined findBlockingModal. The response must still be valid (no crash,
+    // no empty {} field) so callers see "modal blocked, identity unavailable".
+    const e = entity("e1", GEN);
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(e, "v1");
+    const loop = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities: () => [e],
+      isModalBlocking:     () => true,
+      findBlockingModal:   () => null,
+    }));
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("modal_blocking");
+      expect(result.blockingElement).toBeUndefined();
+      // Confirm the property is genuinely absent, not present-as-undefined.
+      expect("blockingElement" in result).toBe(false);
+    }
+  });
+
   it("rejects when entity is outside viewport", async () => {
     const e = entity("e1", GEN);
     const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });

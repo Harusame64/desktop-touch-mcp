@@ -304,7 +304,14 @@ describe("DesktopFacade — G1 modal guard (session-aware default)", () => {
     expect(btnLease).toBeDefined();
     const result = await facade.touch({ lease: btnLease! });
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe("modal_blocking");
+    if (!result.ok) {
+      expect(result.reason).toBe("modal_blocking");
+      // Issue #63: production default propagates the blocker identity end-to-end so
+      // the LLM can dismiss it via click_element(name=blockingElement.name).
+      expect(result.blockingElement).toBeDefined();
+      expect(result.blockingElement?.name).toBe("Dialog");
+      expect(result.blockingElement?.role).toBe("unknown");
+    }
   });
 
   it("no modal_blocking when all live entities have non-unknown roles", async () => {
@@ -349,6 +356,84 @@ describe("DesktopFacade — G1 modal guard (session-aware default)", () => {
     const result = await facade.touch({ lease: view.entities[0].lease });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("modal_blocking");
+  });
+
+  // Issue #63 (Codex P1): when only one of the (isModalBlocking, findBlockingModal) pair
+  // is overridden, the other must be derived to keep the predicate ↔ blockingElement
+  // consistent. Otherwise, a default UIA-unknown finder would surface an entity unrelated
+  // to a custom predicate and the LLM would be told to dismiss the wrong element.
+
+  it("custom isModalBlocking alone omits blockingElement (no default UIA finder leak)", async () => {
+    // Snapshot contains a UIA "unknown" entity that the *default* finder would surface,
+    // but the custom predicate is what actually blocks. Without the Codex P1 fix the
+    // response would carry the unrelated dialog as blockingElement.
+    const unrelatedDialog: UiEntityCandidate = {
+      source: "uia",
+      target: { kind: "window", id: "win-1" },
+      label: "Unrelated Dialog",
+      role: "unknown",
+      actionability: [],
+      confidence: 0.9,
+      observedAtMs: 1000,
+      provisional: false,
+      digest: "digest-unrelated",
+    };
+    const facade = new DesktopFacade(
+      () => [cand("Start Match", "visual_gpu"), unrelatedDialog],
+      { executorFn: async () => "mouse", isModalBlocking: () => true },
+    );
+    const view = await facade.see({ target: TARGET_GAME });
+    const btnLease = view.entities.find((e) => e.label === "Start Match")?.lease;
+    const result = await facade.touch({ lease: btnLease! });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("modal_blocking");
+      // No custom finder → blockingElement omitted entirely.
+      expect(result.blockingElement).toBeUndefined();
+      expect("blockingElement" in result).toBe(false);
+    }
+  });
+
+  it("custom findBlockingModal alone derives isModalBlocking from the finder", async () => {
+    // Caller provides only the finder. The predicate must be derived as `finder !== null`
+    // so the block decision and the blockingElement come from the same source.
+    const customBlocker: UiEntityCandidate = {
+      source: "uia",
+      target: { kind: "window", id: "win-1" },
+      label: "Custom Modal",
+      role: "unknown",
+      actionability: [],
+      confidence: 0.9,
+      observedAtMs: 1000,
+      provisional: false,
+      digest: "digest-custom-modal",
+    };
+    let captured: { entityId: string; label?: string } | null = null;
+    const facade = new DesktopFacade(
+      () => [cand("Start Match", "visual_gpu"), customBlocker],
+      {
+        executorFn: async () => "mouse",
+        findBlockingModal: (entity) => {
+          // Locate the custom blocker in *some* hand-rolled way; here we just match by label.
+          // Returning a non-null entity must trigger modal_blocking even though
+          // isModalBlocking is unspecified.
+          if (entity.label === "Start Match") {
+            captured = { entityId: entity.entityId, label: entity.label };
+            return { ...entity, entityId: "custom-modal-id", label: "Custom Modal", role: "unknown" };
+          }
+          return null;
+        },
+      },
+    );
+    const view = await facade.see({ target: TARGET_GAME });
+    const btnLease = view.entities.find((e) => e.label === "Start Match")?.lease;
+    const result = await facade.touch({ lease: btnLease! });
+    expect(captured).not.toBeNull();
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("modal_blocking");
+      expect(result.blockingElement?.name).toBe("Custom Modal");
+    }
   });
 });
 
