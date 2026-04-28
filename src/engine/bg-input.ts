@@ -119,6 +119,17 @@ function resolveTarget(hwnd: unknown): unknown {
   }
 }
 
+/**
+ * Resolve the actual key-receiving HWND (focused child if any) and check
+ * BG-injection support against that handle. Use this in callers that gate
+ * the BG path — checking the parent alone can mis-classify a supported
+ * parent that hosts a Chromium / WebView2 child, where PostMessage to the
+ * resolved target would silently no-op even though the parent class is OK.
+ */
+export function canInjectAtTarget(hwnd: unknown): InjectCheckResult {
+  return canInjectViaPostMessage(resolveTarget(hwnd));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Character injection
 // ─────────────────────────────────────────────────────────────────────────────
