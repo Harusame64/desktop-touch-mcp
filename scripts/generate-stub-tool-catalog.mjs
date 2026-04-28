@@ -397,6 +397,22 @@ function extractArrayEnum(valueExpr) {
   return extractEnum(inner);
 }
 
+// Extract the body inside the outermost z.object(...) call so the caller can
+// recurse into the nested shape literal. Returns undefined when the value is
+// not a top-level z.object expression (e.g. z.record, z.union, primitives).
+//
+// Without this, nested launch / target schemas were collapsed to a bare
+// {type:'object'} in the stub catalog, hiding the inner property contract
+// from cross-platform tool discovery (Codex review on PR #71).
+function extractZObjectInner(valueExpr) {
+  const v = valueExpr.trim();
+  const m = topLevelZCallMatch(v, 'object');
+  if (!m) return undefined;
+  const start = m[0].length;
+  const end = scanBalanced(v, start, '(', ')');
+  return v.slice(start, end - 1).trim();
+}
+
 function extractDefault(valueExpr) {
   const searchExpr = primaryCallSuffix(valueExpr);
   const idx = searchExpr.indexOf('.default(');
@@ -421,7 +437,38 @@ function inferProperty(valueExpr) {
     const itemEnum = extractArrayEnum(v);
     if (itemEnum) prop.items = { type: 'string', enum: itemEnum };
   }
-  else if (hasTopLevelZCall(v, 'object') || hasTopLevelZCall(v, 'record') || hasTopLevelZCall(v, 'discriminatedUnion') || hasTopLevelZCall(v, 'union')) { prop.type = 'object'; }
+  else if (hasTopLevelZCall(v, 'object')) {
+    // Recursively expand the inner shape literal so nested schemas (e.g.
+    // browser_open.launch = z.object({browser, port, ...}).optional()) appear
+    // in the stub catalog with full property contracts, instead of collapsing
+    // to an opaque {type:'object'} that hides the field set from non-Windows
+    // tool discovery. Codex review on PR #71 (PR #70 follow-up).
+    prop.type = 'object';
+    prop.additionalProperties = false;
+    const innerProperties = {};
+    const innerRequired = [];
+    const innerExpr = extractZObjectInner(v);
+    if (innerExpr && innerExpr.startsWith('{')) {
+      for (const rawField of splitObjectFields(innerExpr)) {
+        const field = stripLeadingTrivia(rawField);
+        const fm = /^([A-Za-z_$][\w$]*|["'][^"']+["'])\s*:\s*([\s\S]*)$/.exec(field);
+        if (!fm) continue;
+        const rawKey = fm[1];
+        const key = rawKey[0] === '"' || rawKey[0] === "'" ? rawKey.slice(1, -1) : rawKey;
+        const innerValueExpr = fm[2].trim();
+        const innerProp = inferProperty(innerValueExpr);
+        const innerOptional = innerProp.__optional === true ||
+          innerValueExpr.includes('.optional()') ||
+          innerValueExpr.includes('.default(');
+        delete innerProp.__optional;
+        innerProperties[key] = innerProp;
+        if (!innerOptional) innerRequired.push(key);
+      }
+    }
+    prop.properties = innerProperties;
+    if (innerRequired.length) prop.required = innerRequired;
+  }
+  else if (hasTopLevelZCall(v, 'record') || hasTopLevelZCall(v, 'discriminatedUnion') || hasTopLevelZCall(v, 'union')) { prop.type = 'object'; }
   else if (hasTopLevelZCall(v, 'coerce.number') || hasTopLevelZCall(v, 'number')) { prop.type = v.includes('.int()') ? 'integer' : 'number'; }
   else if (hasTopLevelZCall(v, 'string')) { prop.type = 'string'; }
   else if (hasTopLevelZCall(v, 'boolean') || /^coercedBoolean\s*\(/.test(v)) { prop.type = 'boolean'; }

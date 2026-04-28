@@ -382,7 +382,42 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "launch": {
           "description": "If set, spawn a debug-mode browser when no CDP endpoint is live on the target port (idempotent: an already-running endpoint is preferred and the spawn step is skipped). Pass {} to use defaults (chrome, C:\\tmp\\cdp, no initial URL). Omit to perform pure connect.",
-          "type": "object"
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "browser": {
+              "description": "Which browser to spawn. 'auto' tries chrome → edge → brave. Ignored when a CDP endpoint is already live.",
+              "type": "string",
+              "enum": [
+                "auto",
+                "chrome",
+                "edge",
+                "brave"
+              ],
+              "default": "auto"
+            },
+            "userDataDir": {
+              "description": "Path for --user-data-dir. A dedicated profile avoids conflicts with the main browser session.",
+              "type": "string",
+              "default": "C:\\tmp\\cdp"
+            },
+            "url": {
+              "description": "Optional URL to open in the new browser.",
+              "type": "string"
+            },
+            "waitMs": {
+              "description": "Max ms to wait for the CDP endpoint to become ready (default 10000).",
+              "type": "integer",
+              "default": 10000,
+              "minimum": 1000,
+              "maximum": 30000
+            },
+            "killExisting": {
+              "description": "When true, terminate existing browser processes before launch. Use when a browser is already running WITHOUT --remote-debugging-port. WARNING: unsaved input in the existing session will be lost.",
+              "type": "boolean",
+              "default": false
+            }
+          }
         }
       },
       "additionalProperties": false
@@ -855,7 +890,22 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "origin": {
           "description": "When set, (x,y) are image-local coords from a screenshot. Server converts to screen coords: screen_x = origin.x + x / (scale ?? 1), screen_y = origin.y + y / (scale ?? 1). Copy origin values directly from the screenshot response text. This eliminates manual coord math and prevents out-of-window clicks.",
-          "type": "object"
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "x": {
+              "description": "Screen x of image top-left (copy from screenshot response)",
+              "type": "number"
+            },
+            "y": {
+              "description": "Screen y of image top-left (copy from screenshot response)",
+              "type": "number"
+            }
+          },
+          "required": [
+            "x",
+            "y"
+          ]
         },
         "scale": {
           "description": "Scale factor from screenshot response (only when dotByDotMaxDimension caused a resize). Omit if the screenshot was 1:1. Only used when 'origin' is also provided.",
@@ -1083,7 +1133,30 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "region": {
           "description": "Capture only this sub-region. Without windowTitle: virtual screen coordinates. With windowTitle: window-local coordinates — useful to exclude browser chrome (tabs/address bar). Example: windowTitle='Chrome', region={x:0, y:120, width:1920, height:900} skips the 120px browser chrome.",
-          "type": "object"
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "x": {
+              "description": "Left edge. Without windowTitle: virtual screen coordinates. With windowTitle: window-local coordinates (0 = window left edge).",
+              "type": "number"
+            },
+            "y": {
+              "description": "Top edge. Without windowTitle: virtual screen coordinates. With windowTitle: window-local coordinates (0 = window top edge).",
+              "type": "number"
+            },
+            "width": {
+              "type": "number"
+            },
+            "height": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "x",
+            "y",
+            "width",
+            "height"
+          ]
         },
         "maxDimension": {
           "description": "Max width or height in pixels (default 768). Use 1280 to read small text, code, or fine UI details. Ignored when dotByDot=true.",
