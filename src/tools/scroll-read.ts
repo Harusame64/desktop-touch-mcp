@@ -10,8 +10,11 @@ import { recognizeWindowByHwnd, ocrWordsToLines } from "../engine/ocr-bridge.js"
 import { keyboard } from "../engine/nutjs.js";
 import { getWindows } from "../engine/nutjs.js";
 import { getWindowTitleW } from "../engine/win32.js";
+import { postKeyComboToHwnd } from "../engine/bg-input.js";
 import { parseKeys } from "../utils/key-map.js";
 import type { ToolResult } from "./_types.js";
+
+type FocusableWin = { focus: () => Promise<void> };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -86,6 +89,7 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
   // keeps PageDown and OCR consistently aimed at one window.
   let focusedHwnd: unknown = null;
   let focusedRegion: { x: number; y: number; width: number; height: number } | null = null;
+  let focusedWin: FocusableWin | null = null;
 
   {
     const wins = await getWindows();
@@ -104,10 +108,11 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
         await win.focus();
         focusedHwnd = hwnd;
         focusedRegion = { x: reg.left, y: reg.top, width: reg.width, height: reg.height };
+        focusedWin = win as unknown as FocusableWin;
         break;
       } catch { /* skip */ }
     }
-    if (!focusedHwnd || !focusedRegion) {
+    if (!focusedHwnd || !focusedRegion || !focusedWin) {
       return {
         content: [{
           type: "text" as const,
@@ -161,10 +166,20 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
 
     if (page === args.maxPages) break;
 
-    // Send scroll key and wait
-    const combo = parseKeys(SCROLL_KEY_COMBO[args.scrollKey]!);
-    await keyboard.pressKey(...combo);
-    await keyboard.releaseKey(...combo);
+    // Send scroll key. Prefer BG-mode injection bound to the resolved hwnd
+    // (WM_KEYDOWN/KEYUP via PostMessage — does not change foreground) so a
+    // concurrent user click or system popup cannot redirect the keystroke.
+    // Fall back to global keyboard with re-focus when the host rejects
+    // PostMessage (some Chromium tabs / DRM apps).
+    const combo = SCROLL_KEY_COMBO[args.scrollKey]!;
+    const bgOk = postKeyComboToHwnd(focusedHwnd, combo);
+    if (!bgOk) {
+      await focusedWin.focus();
+      await new Promise<void>((r) => setTimeout(r, 100));
+      const arr = parseKeys(combo);
+      await keyboard.pressKey(...arr);
+      await keyboard.releaseKey(...arr);
+    }
     await new Promise<void>((r) => setTimeout(r, args.scrollDelayMs));
   }
 

@@ -243,6 +243,10 @@ describe("scrollReadHandler (mocked)", () => {
       ]),
     }));
 
+    vi.doMock("../../src/engine/bg-input.js", () => ({
+      postKeyComboToHwnd: vi.fn().mockReturnValue(true),
+    }));
+
     vi.doMock("../../src/engine/win32.js", () => ({
       getWindowTitleW: vi.fn().mockReturnValue("TestWindow"),
     }));
@@ -289,6 +293,10 @@ describe("scrollReadHandler (mocked)", () => {
           focus: vi.fn().mockResolvedValue(undefined),
         },
       ]),
+    }));
+
+    vi.doMock("../../src/engine/bg-input.js", () => ({
+      postKeyComboToHwnd: vi.fn().mockReturnValue(true),
     }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
@@ -340,6 +348,10 @@ describe("scrollReadHandler (mocked)", () => {
       ]),
     }));
 
+    vi.doMock("../../src/engine/bg-input.js", () => ({
+      postKeyComboToHwnd: vi.fn().mockReturnValue(true),
+    }));
+
     vi.doMock("../../src/engine/win32.js", () => ({
       getWindowTitleW: vi.fn().mockReturnValue("TestWindow"),
     }));
@@ -380,6 +392,10 @@ describe("scrollReadHandler (mocked)", () => {
           focus: vi.fn().mockResolvedValue(undefined),
         },
       ]),
+    }));
+
+    vi.doMock("../../src/engine/bg-input.js", () => ({
+      postKeyComboToHwnd: vi.fn().mockReturnValue(true),
     }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
@@ -433,6 +449,10 @@ describe("scrollReadHandler (mocked)", () => {
       ]),
     }));
 
+    vi.doMock("../../src/engine/bg-input.js", () => ({
+      postKeyComboToHwnd: vi.fn().mockReturnValue(true),
+    }));
+
     vi.doMock("../../src/engine/win32.js", () => ({
       getWindowTitleW: vi.fn().mockReturnValue("TestWindow"),
     }));
@@ -451,5 +471,109 @@ describe("scrollReadHandler (mocked)", () => {
     const data = JSON.parse((result.content[0] as { text: string }).text);
     expect(data.ok).toBe(false);
     expect(data.error).toContain("Window not found");
+  });
+
+  it("dispatches scroll key via postKeyComboToHwnd with the resolved hwnd (BG input — round-4 regression)", async () => {
+    const page1 = makeWords(["A"]);
+    const page2 = makeWords(["B"]);
+
+    const postKeyMock = vi.fn().mockReturnValue(true);
+
+    vi.doMock("../../src/engine/ocr-bridge.js", () => ({
+      recognizeWindowByHwnd: vi
+        .fn()
+        .mockResolvedValueOnce({ words: page1, origin: { x: 0, y: 0 } })
+        .mockResolvedValueOnce({ words: page2, origin: { x: 0, y: 0 } }),
+      ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
+    }));
+
+    const pressKeyMock = vi.fn().mockResolvedValue(undefined);
+    vi.doMock("../../src/engine/nutjs.js", () => ({
+      keyboard: { pressKey: pressKeyMock, releaseKey: vi.fn().mockResolvedValue(undefined) },
+      getWindows: vi.fn().mockResolvedValue([
+        {
+          windowHandle: "fake-hwnd",
+          title: "TestWindow",
+          region: Promise.resolve({ left: 0, top: 0, width: 800, height: 600 }),
+          focus: vi.fn().mockResolvedValue(undefined),
+        },
+      ]),
+    }));
+
+    vi.doMock("../../src/engine/bg-input.js", () => ({ postKeyComboToHwnd: postKeyMock }));
+
+    vi.doMock("../../src/engine/win32.js", () => ({
+      getWindowTitleW: vi.fn().mockReturnValue("TestWindow"),
+    }));
+
+    const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
+
+    await scrollReadHandler({
+      action: "read",
+      windowTitle: "Test",
+      maxPages: 2,
+      scrollKey: "PageDown",
+      scrollDelayMs: 0,
+      stopWhenNoChange: true,
+    });
+
+    // BG input fired with the focused hwnd and the configured combo string.
+    expect(postKeyMock).toHaveBeenCalledWith("fake-hwnd", "pagedown");
+    // global keyboard NOT used when BG path succeeds — no foreground drift.
+    expect(pressKeyMock).not.toHaveBeenCalled();
+  });
+
+  it("falls back to global keyboard with re-focus when BG injection is rejected (round-4 regression)", async () => {
+    const page1 = makeWords(["A"]);
+    const page2 = makeWords(["B"]);
+
+    const focusMock = vi.fn().mockResolvedValue(undefined);
+    const pressKeyMock = vi.fn().mockResolvedValue(undefined);
+    const releaseKeyMock = vi.fn().mockResolvedValue(undefined);
+
+    vi.doMock("../../src/engine/ocr-bridge.js", () => ({
+      recognizeWindowByHwnd: vi
+        .fn()
+        .mockResolvedValueOnce({ words: page1, origin: { x: 0, y: 0 } })
+        .mockResolvedValueOnce({ words: page2, origin: { x: 0, y: 0 } }),
+      ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
+    }));
+
+    vi.doMock("../../src/engine/nutjs.js", () => ({
+      keyboard: { pressKey: pressKeyMock, releaseKey: releaseKeyMock },
+      getWindows: vi.fn().mockResolvedValue([
+        {
+          windowHandle: "fake-hwnd",
+          title: "TestWindow",
+          region: Promise.resolve({ left: 0, top: 0, width: 800, height: 600 }),
+          focus: focusMock,
+        },
+      ]),
+    }));
+
+    // BG path rejected — exercise the fallback branch.
+    vi.doMock("../../src/engine/bg-input.js", () => ({
+      postKeyComboToHwnd: vi.fn().mockReturnValue(false),
+    }));
+
+    vi.doMock("../../src/engine/win32.js", () => ({
+      getWindowTitleW: vi.fn().mockReturnValue("TestWindow"),
+    }));
+
+    const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
+
+    await scrollReadHandler({
+      action: "read",
+      windowTitle: "Test",
+      maxPages: 2,
+      scrollKey: "PageDown",
+      scrollDelayMs: 0,
+      stopWhenNoChange: true,
+    });
+
+    // Initial focus + 1 re-focus before the only scroll keystroke (page 1 → page 2).
+    expect(focusMock).toHaveBeenCalledTimes(2);
+    expect(pressKeyMock).toHaveBeenCalled();
+    expect(releaseKeyMock).toHaveBeenCalled();
   });
 });
