@@ -10,6 +10,7 @@ import { scrollHandler as rawScrollHandler } from "./mouse.js";
 import { scrollToElementHandler } from "./scroll-to-element.js";
 import { smartScrollHandler } from "./smart-scroll.js";
 import { scrollCaptureHandler } from "./scroll-capture.js";
+import { scrollReadHandler } from "./scroll-read.js";
 
 const _defaultPort = getCdpPort();
 
@@ -137,6 +138,47 @@ export const scrollSchema = z.discriminatedUnion("action", [
         "For 'right': caps the image height; width is unconstrained."
       ),
   }),
+  // action='read' — scroll + OCR + dedupe: returns stitched text of a long document
+  z.object({
+    action: z.literal("read"),
+    windowTitle: z
+      .string()
+      .describe("Partial window title to focus and OCR (case-insensitive match)."),
+    maxPages: z
+      .coerce.number()
+      .int()
+      .min(1)
+      .max(50)
+      .default(20)
+      .describe("Maximum number of scroll steps / OCR pages (default 20, max 50)."),
+    scrollKey: z
+      .enum(["PageDown", "Space", "ArrowDown"])
+      .default("PageDown")
+      .describe(
+        "Key sent to scroll one page. PageDown (default): full-page scroll for most apps. " +
+        "Space: web/PDF readers. ArrowDown: line-by-line slow scroll."
+      ),
+    scrollDelayMs: z
+      .coerce.number()
+      .int()
+      .min(100)
+      .max(3000)
+      .default(400)
+      .describe("Milliseconds to wait after each scroll for rendering to settle (default 400)."),
+    stopWhenNoChange: coercedBoolean()
+      .default(true)
+      .describe(
+        "Stop automatically when two consecutive pages yield no new lines after deduplication " +
+        "(page-end detection). Default true."
+      ),
+    language: z
+      .string()
+      .optional()
+      .describe(
+        "OCR language code (e.g. 'ja', 'en', 'zh'). Omit to auto-detect from Windows system " +
+        "locale via Intl.DateTimeFormat().resolvedOptions().locale. Default: auto."
+      ),
+  }),
 ]);
 
 export type ScrollArgs = z.infer<typeof scrollSchema>;
@@ -151,6 +193,8 @@ export const scrollDispatchHandler = async (args: ScrollArgs): Promise<ToolResul
       return smartScrollHandler(args);
     case "capture":
       return scrollCaptureHandler(args);
+    case "read":
+      return scrollReadHandler(args);
   }
 };
 
@@ -163,15 +207,16 @@ export function registerScrollTools(server: McpServer): void {
     "scroll",
     {
       description: buildDesc({
-        purpose: "Scroll a window or page. 4 strategies via action: 'raw' (wheel notches), 'to_element' (UIA name/automationId or CSS selector), 'smart' (auto-detect target with multi-strategy fallback), 'capture' (full-page stitched image).",
-        details: "action='raw': send raw mouse-wheel notches at (x,y) or current cursor, optional window focus. action='to_element': scroll a named element into viewport (UIA or CDP). action='smart': handles nested scroll layers, virtualised lists, sticky-header occlusion. action='capture': stitches full-page images (caps at ~700KB raw); sizeReduced=true means downscaled.",
-        prefer: "Use action='to_element' or action='smart' for click target out-of-viewport recovery (entity_outside_viewport). Use action='capture' for reading long pages. For simple scroll without target, use action='raw'.",
-        caveats: "action='capture' returns stitched image — pixels do NOT match screen coords when sizeReduced=true, use for reading only, not mouse_click. action='smart' CDP path requires browser_open. action='to_element' native path requires element to implement UIA ScrollItemPattern.",
+        purpose: "Scroll a window or page. 5 strategies via action: 'raw' (wheel notches), 'to_element' (UIA name/automationId or CSS selector), 'smart' (auto-detect target with multi-strategy fallback), 'capture' (full-page stitched image), 'read' (scroll+OCR+dedupe → stitched text).",
+        details: "action='raw': send raw mouse-wheel notches at (x,y) or current cursor, optional window focus. action='to_element': scroll a named element into viewport (UIA or CDP). action='smart': handles nested scroll layers, virtualised lists, sticky-header occlusion. action='capture': stitches full-page images (caps at ~700KB raw); sizeReduced=true means downscaled. action='read': scrolls page-by-page, OCRs each viewport, deduplicates overlapping lines, returns stitched text; language auto-detected from OS locale if omitted.",
+        prefer: "Use action='to_element' or action='smart' for click target out-of-viewport recovery (entity_outside_viewport). Use action='capture' for reading long pages as images. Use action='read' for extracting text from long native-app documents (PDF readers, text editors, terminals) where copy-paste is unavailable. For simple scroll without target, use action='raw'.",
+        caveats: "action='capture' returns stitched image — pixels do NOT match screen coords when sizeReduced=true, use for reading only, not mouse_click. action='smart' CDP path requires browser_open. action='to_element' native path requires element to implement UIA ScrollItemPattern. action='read' uses OCR (imperfect accuracy) and requires the window to be visible; for browser pages prefer browser_eval (e.g. evaluate document.body.innerText) or browser_overview to extract DOM text accurately.",
         examples: [
           "scroll({action:'raw', direction:'down', amount:5, windowTitle:'Chrome'})",
           "scroll({action:'to_element', name:'OK', windowTitle:'Dialog'})",
           "scroll({action:'smart', target:'#create-release-btn'})",
           "scroll({action:'capture', windowTitle:'Chrome', maxScrolls:10})",
+          "scroll({action:'read', windowTitle:'Acrobat', maxPages:15}) // OCR + dedupe long PDF",
         ],
       }),
       inputSchema: scrollSchema,

@@ -303,7 +303,7 @@ describe("Phase 3 — stub-tool-catalog drops absorbed/privatized 4 names", () =
     ["keyboard", ["press", "type"]],
     ["clipboard", ["read", "write"]],
     ["window_dock", ["dock", "pin", "unpin"]],
-    ["scroll", ["capture", "raw", "smart", "to_element"]],
+    ["scroll", ["capture", "raw", "read", "smart", "to_element"]],
     ["terminal", ["read", "run", "send"]],
     ["browser_eval", ["appState", "dom", "js"]],
   ])(

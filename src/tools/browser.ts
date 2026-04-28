@@ -18,7 +18,7 @@ import {
   getTabContext,
   type TabContext,
 } from "../engine/cdp-bridge.js";
-import { resolveWellKnownPath, spawnDetached } from "../utils/launch.js";
+import { resolveWellKnownPath, spawnDetached, killProcessesByName } from "../utils/launch.js";
 import { getCdpPort } from "../utils/desktop-config.js";
 import { fail } from "./_types.js";
 import { setBrowserSearchHook } from "./wait-until.js";
@@ -84,6 +84,11 @@ export const browserOpenSchema = {
         .max(30_000)
         .default(10_000)
         .describe("Max ms to wait for the CDP endpoint to become ready (default 10000)."),
+      killExisting: coercedBoolean().default(false).describe(
+        "When true, terminate existing browser processes before launch. " +
+        "Use when a browser is already running WITHOUT --remote-debugging-port. " +
+        "WARNING: unsaved input in the existing session will be lost."
+      ),
     })
     .optional()
     .describe(
@@ -212,6 +217,12 @@ export const browserLaunchSchema = {
     .max(30_000)
     .default(10_000)
     .describe("Max milliseconds to wait for the CDP endpoint to become ready (default 10000)."),
+  killExisting: coercedBoolean().default(false).describe(
+    "When true, terminate existing chrome.exe / msedge.exe / brave.exe processes before launch. " +
+    "Use this when a browser is already running WITHOUT --remote-debugging-port. " +
+    "WARNING: unsaved input in the existing browser session will be lost. " +
+    "Default false (preserves the user's current browser session)."
+  ),
 };
 
 export const browserSearchSchema = {
@@ -1374,12 +1385,14 @@ export const browserLaunchHandler = async ({
   userDataDir,
   url,
   waitMs,
+  killExisting,
 }: {
   browser: "auto" | "chrome" | "edge" | "brave";
   port: number;
   userDataDir: string;
   url?: string;
   waitMs: number;
+  killExisting: boolean;
 }): Promise<ToolResult> => {
   try {
     // ── 1. Already running? ──────────────────────────────────────────────────
@@ -1401,6 +1414,7 @@ export const browserLaunchHandler = async ({
             port,
             alreadyRunning: true,
             launched: null,
+            killed: [],
             tabs: pageTabs.map((t) => ({ id: t.id, title: t.title, url: t.url })),
           }, null, 2),
         }],
@@ -1444,6 +1458,18 @@ export const browserLaunchHandler = async ({
             : `${browser} not found in standard install locations. Install it or launch manually: ${browser === "edge" ? "msedge" : browser}.exe --remote-debugging-port=${port} --user-data-dir=${userDataDir}`,
         }],
       };
+    }
+
+    // ── 3.5. Kill existing if requested ──────────────────────────────────────
+    let killed: string[] = [];
+    if (killExisting) {
+      // Kill only the chosen browser exe — minimise side effects
+      const exeToKill = chosenKey === "edge" ? "msedge.exe" : `${chosenKey}.exe`;
+      killed = killProcessesByName([exeToKill]);
+      if (killed.length > 0) {
+        // Grace period: right after kill, same user-data-dir lock may still linger
+        await new Promise<void>((r) => setTimeout(r, 500));
+      }
     }
 
     // ── 4. Spawn with CDP flags ───────────────────────────────────────────────
@@ -1494,6 +1520,7 @@ export const browserLaunchHandler = async ({
           port,
           alreadyRunning: false,
           launched: { browser: chosenKey, path: chosenPath, userDataDir },
+          killed,
           tabs: pageTabs.map((t) => ({ id: t.id, title: t.title, url: t.url })),
         }, null, 2),
       }],
@@ -1549,6 +1576,7 @@ export const browserOpenHandler = async ({
     userDataDir: string;
     url?: string;
     waitMs: number;
+    killExisting: boolean;
   };
 }): Promise<ToolResult> => {
   if (launch) {
@@ -1558,6 +1586,7 @@ export const browserOpenHandler = async ({
       userDataDir: launch.userDataDir,
       url: launch.url,
       waitMs: launch.waitMs,
+      killExisting: launch.killExisting,
     });
     const text = launchResult.content[0]?.type === "text" ? launchResult.content[0].text : "";
     if (classifyLaunchOutcome(text) === "fail") {
