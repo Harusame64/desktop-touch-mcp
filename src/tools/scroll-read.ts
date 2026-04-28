@@ -10,7 +10,7 @@ import { recognizeWindowByHwnd, ocrWordsToLines } from "../engine/ocr-bridge.js"
 import { keyboard } from "../engine/nutjs.js";
 import { getWindows } from "../engine/nutjs.js";
 import { getWindowTitleW } from "../engine/win32.js";
-import { canInjectViaPostMessage, postKeyComboToHwnd } from "../engine/bg-input.js";
+import { canInjectAtTarget, postKeyComboToHwnd } from "../engine/bg-input.js";
 import { parseKeys } from "../utils/key-map.js";
 import type { ToolResult } from "./_types.js";
 
@@ -170,14 +170,17 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
     // (WM_KEYDOWN/KEYUP via PostMessage — does not change foreground) so a
     // concurrent user click or system popup cannot redirect the keystroke.
     //
-    // canInjectViaPostMessage gates the BG path by window class / process
-    // (Chromium, UWP-sandboxed, etc.): on those hosts PostMessage returns
-    // success but the target ignores the key, so we MUST NOT trust
-    // postKeyComboToHwnd's boolean alone — it only confirms the message was
-    // posted, not consumed. Skip BG entirely for unsupported hosts and go
-    // straight to the foreground fallback so the page actually scrolls.
+    // canInjectAtTarget evaluates BG-injection support against the SAME
+    // resolved child HWND that postKeyComboToHwnd will eventually post to
+    // (resolveTarget → focused child if any, else parent). A parent-only
+    // gate would mis-classify a Chromium / WebView2 child whose parent
+    // class looks supported, letting BG send "succeed" while keys are
+    // silently dropped. postKeyComboToHwnd's boolean alone is also
+    // insufficient — it confirms the message was posted, not consumed.
+    // Either gate failing routes the keystroke through the foreground
+    // fallback so the page actually scrolls.
     const combo = SCROLL_KEY_COMBO[args.scrollKey]!;
-    const canBg = canInjectViaPostMessage(focusedHwnd);
+    const canBg = canInjectAtTarget(focusedHwnd);
     const bgOk = canBg.supported && postKeyComboToHwnd(focusedHwnd, combo);
     if (!bgOk) {
       await focusedWin.focus();

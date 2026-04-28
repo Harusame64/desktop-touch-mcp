@@ -245,7 +245,7 @@ describe("scrollReadHandler (mocked)", () => {
 
     vi.doMock("../../src/engine/bg-input.js", () => ({
       postKeyComboToHwnd: vi.fn().mockReturnValue(true),
-      canInjectViaPostMessage: vi.fn().mockReturnValue({ supported: true }),
+      canInjectAtTarget: vi.fn().mockReturnValue({ supported: true }),
     }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
@@ -298,7 +298,7 @@ describe("scrollReadHandler (mocked)", () => {
 
     vi.doMock("../../src/engine/bg-input.js", () => ({
       postKeyComboToHwnd: vi.fn().mockReturnValue(true),
-      canInjectViaPostMessage: vi.fn().mockReturnValue({ supported: true }),
+      canInjectAtTarget: vi.fn().mockReturnValue({ supported: true }),
     }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
@@ -352,7 +352,7 @@ describe("scrollReadHandler (mocked)", () => {
 
     vi.doMock("../../src/engine/bg-input.js", () => ({
       postKeyComboToHwnd: vi.fn().mockReturnValue(true),
-      canInjectViaPostMessage: vi.fn().mockReturnValue({ supported: true }),
+      canInjectAtTarget: vi.fn().mockReturnValue({ supported: true }),
     }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
@@ -399,7 +399,7 @@ describe("scrollReadHandler (mocked)", () => {
 
     vi.doMock("../../src/engine/bg-input.js", () => ({
       postKeyComboToHwnd: vi.fn().mockReturnValue(true),
-      canInjectViaPostMessage: vi.fn().mockReturnValue({ supported: true }),
+      canInjectAtTarget: vi.fn().mockReturnValue({ supported: true }),
     }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
@@ -455,7 +455,7 @@ describe("scrollReadHandler (mocked)", () => {
 
     vi.doMock("../../src/engine/bg-input.js", () => ({
       postKeyComboToHwnd: vi.fn().mockReturnValue(true),
-      canInjectViaPostMessage: vi.fn().mockReturnValue({ supported: true }),
+      canInjectAtTarget: vi.fn().mockReturnValue({ supported: true }),
     }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
@@ -507,7 +507,7 @@ describe("scrollReadHandler (mocked)", () => {
 
     vi.doMock("../../src/engine/bg-input.js", () => ({
       postKeyComboToHwnd: postKeyMock,
-      canInjectViaPostMessage: vi.fn().mockReturnValue({ supported: true }),
+      canInjectAtTarget: vi.fn().mockReturnValue({ supported: true }),
     }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
@@ -563,7 +563,7 @@ describe("scrollReadHandler (mocked)", () => {
     // (canInject says supported, but postKeyComboToHwnd itself fails).
     vi.doMock("../../src/engine/bg-input.js", () => ({
       postKeyComboToHwnd: vi.fn().mockReturnValue(false),
-      canInjectViaPostMessage: vi.fn().mockReturnValue({ supported: true }),
+      canInjectAtTarget: vi.fn().mockReturnValue({ supported: true }),
     }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
@@ -620,7 +620,7 @@ describe("scrollReadHandler (mocked)", () => {
 
     vi.doMock("../../src/engine/bg-input.js", () => ({
       postKeyComboToHwnd: postKeyMock,
-      canInjectViaPostMessage: vi.fn().mockReturnValue({ supported: false, reason: "chromium" }),
+      canInjectAtTarget: vi.fn().mockReturnValue({ supported: false, reason: "chromium" }),
     }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
