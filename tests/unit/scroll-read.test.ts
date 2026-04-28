@@ -219,7 +219,7 @@ describe("scrollReadHandler (mocked)", () => {
     const page3 = makeWords(["D", "E", "F"]);
 
     vi.doMock("../../src/engine/ocr-bridge.js", () => ({
-      recognizeWindow: vi
+      recognizeWindowByHwnd: vi
         .fn()
         .mockResolvedValueOnce({ words: page1, origin: { x: 0, y: 0 } })
         .mockResolvedValueOnce({ words: page2, origin: { x: 0, y: 0 } })
@@ -235,7 +235,7 @@ describe("scrollReadHandler (mocked)", () => {
       },
       getWindows: vi.fn().mockResolvedValue([
         {
-          windowHandle: null,
+          windowHandle: "fake-hwnd",
           title: "TestWindow",
           region: Promise.resolve({ left: 0, top: 0, width: 800, height: 600 }),
           focus: vi.fn().mockResolvedValue(undefined),
@@ -272,7 +272,7 @@ describe("scrollReadHandler (mocked)", () => {
     const words = makeWords(["A", "B", "C"]);
 
     vi.doMock("../../src/engine/ocr-bridge.js", () => ({
-      recognizeWindow: vi.fn().mockResolvedValue({ words, origin: { x: 0, y: 0 } }),
+      recognizeWindowByHwnd: vi.fn().mockResolvedValue({ words, origin: { x: 0, y: 0 } }),
       ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
     }));
 
@@ -283,7 +283,7 @@ describe("scrollReadHandler (mocked)", () => {
       },
       getWindows: vi.fn().mockResolvedValue([
         {
-          windowHandle: null,
+          windowHandle: "fake-hwnd",
           title: "TestWindow",
           region: Promise.resolve({ left: 0, top: 0, width: 800, height: 600 }),
           focus: vi.fn().mockResolvedValue(undefined),
@@ -318,7 +318,7 @@ describe("scrollReadHandler (mocked)", () => {
     // Every page returns fresh lines
     let callCount = 0;
     vi.doMock("../../src/engine/ocr-bridge.js", () => ({
-      recognizeWindow: vi.fn().mockImplementation(async () => {
+      recognizeWindowByHwnd: vi.fn().mockImplementation(async () => {
         callCount++;
         return { words: makeWords([`Line${callCount}`]), origin: { x: 0, y: 0 } };
       }),
@@ -332,7 +332,7 @@ describe("scrollReadHandler (mocked)", () => {
       },
       getWindows: vi.fn().mockResolvedValue([
         {
-          windowHandle: null,
+          windowHandle: "fake-hwnd",
           title: "TestWindow",
           region: Promise.resolve({ left: 0, top: 0, width: 800, height: 600 }),
           focus: vi.fn().mockResolvedValue(undefined),
@@ -363,7 +363,7 @@ describe("scrollReadHandler (mocked)", () => {
 
   it("stops with stoppedReason=ocr_empty when OCR returns no words", async () => {
     vi.doMock("../../src/engine/ocr-bridge.js", () => ({
-      recognizeWindow: vi.fn().mockResolvedValue({ words: [], origin: { x: 0, y: 0 } }),
+      recognizeWindowByHwnd: vi.fn().mockResolvedValue({ words: [], origin: { x: 0, y: 0 } }),
       ocrWordsToLines: () => "",
     }));
 
@@ -374,7 +374,7 @@ describe("scrollReadHandler (mocked)", () => {
       },
       getWindows: vi.fn().mockResolvedValue([
         {
-          windowHandle: null,
+          windowHandle: "fake-hwnd",
           title: "TestWindow",
           region: Promise.resolve({ left: 0, top: 0, width: 800, height: 600 }),
           focus: vi.fn().mockResolvedValue(undefined),

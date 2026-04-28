@@ -240,25 +240,25 @@ export async function runOcr(pngBase64: string, language = "ja"): Promise<OcrWor
 }
 
 /**
- * Capture a window and run OCR on it.
- * Returns words with bounding boxes already scaled to window-local screen coordinates,
- * plus the window's top-left origin in screen coordinates.
+ * Capture an OCR result from an explicit window handle (no title-based lookup).
+ *
+ * Use this when you have already resolved the target hwnd and need subsequent
+ * OCR captures to stay bound to the same window — even if title fragments
+ * collide with other windows or z-order changes between calls. The caller is
+ * responsible for supplying the window's screen-coordinate region (typically
+ * obtained at the same time the hwnd was resolved).
  */
-export async function recognizeWindow(
-  windowTitle: string,
-  language = "ja"
+export async function recognizeWindowByHwnd(
+  hwnd: unknown,
+  region: { x: number; y: number; width: number; height: number },
+  language = "ja",
 ): Promise<{ words: OcrWord[]; origin: { x: number; y: number } }> {
-  const wins = enumWindowsInZOrder();
-  const win = wins.find((w) => w.title.toLowerCase().includes(windowTitle.toLowerCase()));
-  if (!win) throw new Error(`Window not found: "${windowTitle}"`);
-
-  const region = win.region;
   const origin = { x: region.x, y: region.y };
 
   // Use PrintWindow (PW_RENDERFULLCONTENT) so the window is captured correctly
   // even when it is behind other windows (e.g. Claude Code covering Paint).
   const maxDim = 1280;
-  const captured = await captureWindowBackground(win.hwnd, maxDim);
+  const captured = await captureWindowBackground(hwnd, maxDim);
 
   // Scale factors: image may be downscaled, OCR bboxes are in image coords
   const scaleX = region.width / captured.width;
@@ -278,9 +278,25 @@ export async function recognizeWindow(
   }));
 
   // Merge adjacent characters that Windows OCR split into individual words
-  const mergedWords = mergeNearbyWords(scaledWords);
+  return { words: mergeNearbyWords(scaledWords), origin };
+}
 
-  return { words: mergedWords, origin };
+/**
+ * Capture a window and run OCR on it (title-based lookup wrapper).
+ *
+ * Resolves the window by title fragment via enumWindowsInZOrder, then delegates
+ * to recognizeWindowByHwnd. Prefer recognizeWindowByHwnd when calling repeatedly
+ * against the same window so the result cannot drift to a different window
+ * sharing the same title fragment.
+ */
+export async function recognizeWindow(
+  windowTitle: string,
+  language = "ja"
+): Promise<{ words: OcrWord[]; origin: { x: number; y: number } }> {
+  const wins = enumWindowsInZOrder();
+  const win = wins.find((w) => w.title.toLowerCase().includes(windowTitle.toLowerCase()));
+  if (!win) throw new Error(`Window not found: "${windowTitle}"`);
+  return recognizeWindowByHwnd(win.hwnd, win.region, language);
 }
 
 /**

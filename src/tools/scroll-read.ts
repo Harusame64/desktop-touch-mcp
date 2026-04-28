@@ -6,7 +6,7 @@
  * (scroll.ts). Phase 1: native apps only (browser/CDP in Phase 3).
  */
 
-import { recognizeWindow, ocrWordsToLines } from "../engine/ocr-bridge.js";
+import { recognizeWindowByHwnd, ocrWordsToLines } from "../engine/ocr-bridge.js";
 import { keyboard } from "../engine/nutjs.js";
 import { getWindows } from "../engine/nutjs.js";
 import { getWindowTitleW } from "../engine/win32.js";
@@ -79,11 +79,17 @@ export interface ScrollReadArgs {
 export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResult> {
   const language = args.language ?? detectOcrLanguage();
 
-  // Focus the target window
+  // Focus the target window — and capture hwnd + region so OCR stays bound to
+  // the resolved target across the loop. A title-based lookup on every iteration
+  // would risk drifting to a different window with the same title fragment, or
+  // to a new foreground when the user changes z-order mid-read; binding to hwnd
+  // keeps PageDown and OCR consistently aimed at one window.
+  let focusedHwnd: unknown = null;
+  let focusedRegion: { x: number; y: number; width: number; height: number } | null = null;
+
   {
     const wins = await getWindows();
     const query = args.windowTitle.toLowerCase();
-    let focused = false;
     for (const win of wins) {
       try {
         const hwnd = (win as unknown as { windowHandle: unknown }).windowHandle;
@@ -92,11 +98,12 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
         const reg = await win.region;
         if (reg.width < 10 || reg.height < 10) continue;
         await win.focus();
-        focused = true;
+        focusedHwnd = hwnd;
+        focusedRegion = { x: reg.left, y: reg.top, width: reg.width, height: reg.height };
         break;
       } catch { /* skip */ }
     }
-    if (!focused) {
+    if (focusedHwnd === null || focusedRegion === null) {
       return {
         content: [{
           type: "text" as const,
@@ -118,8 +125,8 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
   let noChangeStreak = 0;
 
   for (let page = 1; page <= args.maxPages; page++) {
-    // OCR current viewport
-    const { words } = await recognizeWindow(args.windowTitle, language);
+    // OCR bound to the hwnd resolved at focus time, not a fresh title lookup.
+    const { words } = await recognizeWindowByHwnd(focusedHwnd, focusedRegion, language);
     const lineText = ocrWordsToLines(words);
     const lines = lineText
       .split("\n")
