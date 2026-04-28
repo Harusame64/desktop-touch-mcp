@@ -79,12 +79,15 @@ describe("detectOcrLanguage", () => {
     expect(detectOcrLanguage()).toBe("ja");
   });
 
-  it('returns "en" for unknown locale', () => {
+  it('returns the primary tag verbatim for any locale (no hardcoded allowlist — round-9 regression)', () => {
+    // Swedish was previously force-coerced to "en" by the old OCR_KNOWN_LANGUAGES
+    // allowlist. The fix lets win-ocr.exe / Windows.Media.Ocr resolve the tag
+    // against whatever language packs the OS actually has installed.
     spy = vi.spyOn(Intl.DateTimeFormat.prototype, "resolvedOptions").mockReturnValue({
-      locale: "unknown-XX",
+      locale: "sv-SE",
       calendar: "gregory",
       numberingSystem: "latn",
-      timeZone: "UTC",
+      timeZone: "Europe/Stockholm",
       hour12: false,
       hourCycle: "h23",
       weekday: undefined,
@@ -97,7 +100,7 @@ describe("detectOcrLanguage", () => {
       second: undefined,
       timeZoneName: undefined,
     });
-    expect(detectOcrLanguage()).toBe("en");
+    expect(detectOcrLanguage()).toBe("sv");
   });
 
   it('returns "zh" for zh-CN locale', () => {
@@ -716,5 +719,114 @@ describe("scrollReadHandler (mocked)", () => {
     // Stitched text contains Line1..Line31 with no duplicates.
     const expectedLines = Array.from({ length: 31 }, (_, i) => `Line${i + 1}`).join("\n");
     expect(data.text).toBe(expectedLines);
+  });
+
+  it("returns ok:false structured error when OCR throws on the very first page (round-9 regression)", async () => {
+    // recognizeWindowByHwnd throws (e.g. target window already closed) before
+    // any page is captured — the handler must not let the throw escape; it
+    // should return a structured ok:false ToolResult so upstream workflows
+    // can observe the failure consistently with other scroll actions.
+    vi.doMock("../../src/engine/ocr-bridge.js", () => ({
+      recognizeWindowByHwnd: vi.fn().mockRejectedValue(new Error("PrintWindow failed: window closed")),
+      ocrWordsToLines: () => "",
+    }));
+
+    vi.doMock("../../src/engine/nutjs.js", () => ({
+      keyboard: {
+        pressKey: vi.fn().mockResolvedValue(undefined),
+        releaseKey: vi.fn().mockResolvedValue(undefined),
+      },
+      getWindows: vi.fn().mockResolvedValue([
+        {
+          windowHandle: "fake-hwnd",
+          title: "TestWindow",
+          region: Promise.resolve({ left: 0, top: 0, width: 800, height: 600 }),
+          focus: vi.fn().mockResolvedValue(undefined),
+        },
+      ]),
+    }));
+
+    vi.doMock("../../src/engine/bg-input.js", () => ({
+      postKeyComboToHwnd: vi.fn().mockReturnValue(true),
+      canInjectAtTarget: vi.fn().mockReturnValue({ supported: true }),
+    }));
+
+    vi.doMock("../../src/engine/win32.js", () => ({
+      getWindowTitleW: vi.fn().mockReturnValue("TestWindow"),
+    }));
+
+    const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
+
+    const result = await scrollReadHandler({
+      action: "read",
+      windowTitle: "Test",
+      maxPages: 5,
+      scrollKey: "PageDown",
+      scrollDelayMs: 0,
+      stopWhenNoChange: true,
+    });
+
+    const data = JSON.parse((result.content[0] as { text: string }).text);
+    expect(data.ok).toBe(false);
+    expect(data.error).toContain("PrintWindow failed: window closed");
+  });
+
+  it("preserves partial output and reports stoppedReason='ocr_failed' when OCR throws after some pages (round-9 regression)", async () => {
+    // First two pages succeed. Page 3's OCR throws (target window closed
+    // mid-read) — we must keep Line1..Line4 (the captured pages) and surface
+    // the error alongside ok:true so the caller can use the partial result.
+    const page1 = makeWords(["Line1", "Line2"]);
+    const page2 = makeWords(["Line3", "Line4"]);
+
+    vi.doMock("../../src/engine/ocr-bridge.js", () => ({
+      recognizeWindowByHwnd: vi
+        .fn()
+        .mockResolvedValueOnce({ words: page1, origin: { x: 0, y: 0 } })
+        .mockResolvedValueOnce({ words: page2, origin: { x: 0, y: 0 } })
+        .mockRejectedValueOnce(new Error("OCR subprocess crashed")),
+      ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
+    }));
+
+    vi.doMock("../../src/engine/nutjs.js", () => ({
+      keyboard: {
+        pressKey: vi.fn().mockResolvedValue(undefined),
+        releaseKey: vi.fn().mockResolvedValue(undefined),
+      },
+      getWindows: vi.fn().mockResolvedValue([
+        {
+          windowHandle: "fake-hwnd",
+          title: "TestWindow",
+          region: Promise.resolve({ left: 0, top: 0, width: 800, height: 600 }),
+          focus: vi.fn().mockResolvedValue(undefined),
+        },
+      ]),
+    }));
+
+    vi.doMock("../../src/engine/bg-input.js", () => ({
+      postKeyComboToHwnd: vi.fn().mockReturnValue(true),
+      canInjectAtTarget: vi.fn().mockReturnValue({ supported: true }),
+    }));
+
+    vi.doMock("../../src/engine/win32.js", () => ({
+      getWindowTitleW: vi.fn().mockReturnValue("TestWindow"),
+    }));
+
+    const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
+
+    const result = await scrollReadHandler({
+      action: "read",
+      windowTitle: "Test",
+      maxPages: 5,
+      scrollKey: "PageDown",
+      scrollDelayMs: 0,
+      stopWhenNoChange: true,
+    });
+
+    const data = JSON.parse((result.content[0] as { text: string }).text);
+    expect(data.ok).toBe(true);
+    expect(data.stoppedReason).toBe("ocr_failed");
+    expect(data.pages).toBe(2);
+    expect(data.text).toBe("Line1\nLine2\nLine3\nLine4");
+    expect(data.error).toContain("OCR subprocess crashed");
   });
 });
