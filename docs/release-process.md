@@ -99,21 +99,38 @@ npm publish --dry-run
 
 Before publishing, verify HTTP mode works correctly by running the built server locally:
 
+> **⚠️ Use a non-default port (`23848`+) when a desktop-touch MCP server is
+> already running in this machine's Claude Code / Claude Desktop session.**
+> That session-owned server holds the default `23847`, and our `Start-Process`
+> below silently fails to bind. The test then connects to the **old** server
+> still listening on `23847` and reports `[PASS] Health endpoint OK (version: <OLD>)`.
+> Always confirm the version line in test 1 matches the version you just
+> bumped — a 6/6 PASS against an old build is a release-blocker.
+>
+> Quick free-port check before each run:
+>
+> ```powershell
+> Get-NetTCPConnection -LocalPort 23848 -State Listen -ErrorAction SilentlyContinue
+> # No output = port is free, safe to use.
+> ```
+
 ```powershell
-# Start HTTP server in background
-$proc = Start-Process node -ArgumentList "dist/index.js --http --port 23847" -PassThru -WindowStyle Hidden
+# Start HTTP server in background (use 23848 to dodge the session-owned 23847)
+$proc = Start-Process node -ArgumentList "dist/index.js","--http","--port","23848" -PassThru -WindowStyle Hidden
 Start-Sleep 3
 
 # Run all HTTP tests (6 checks: health, initialize, notification, tools/list, error handling, CORS)
-pwsh -File scripts/test-http-mcp.ps1 -UseExisting
+pwsh -File scripts/test-http-mcp.ps1 -Port 23848 -UseExisting
 
 # Stop the server
 Stop-Process -Id $proc.Id -Force
 ```
 
-Expected: **ALL TESTS PASSED** (6/6).
+Expected: **ALL TESTS PASSED** (6/6) **AND** `[PASS] Health endpoint OK (version: X.Y.Z)`
+matches the version you just bumped.
 
-If tests fail, do NOT proceed to `git tag` or `npm publish`.
+If tests fail, **or the version line shows the previous release**, do NOT proceed
+to `git tag` or `npm publish`.
 
 Expected npm dry-run characteristics:
 
@@ -502,6 +519,33 @@ Successfully authenticated!
 ✓ Successfully logged in
 ```
 
+#### Agent guidance — DO NOT run `login github` in a background bash
+
+The auth token is written to `%USERPROFILE%\.mcp-publisher\` (or equivalent) on disk and
+**shared across all sessions on this machine**. So when an agent (Claude Code etc.) sees
+`publish` fail with `401 expired token`, the correct path is *not* to start its own
+device-flow login in a background bash. Doing so produces a device code visible only in
+the agent's tool output, requires the user to copy it into a browser, and starts a
+polling loop that competes with whatever the user is already doing.
+
+The reliable paths are, in priority order:
+
+1. **`!` prefix** — tell the user: "type `! .\mcp-publisher.exe login github` in the
+   prompt." The `!` prefix runs the command in the user's session so the device URL and
+   code appear directly in their terminal, no copy-paste from chat.
+2. **Separate PowerShell window** — ask the user to run `.\mcp-publisher.exe login github`
+   in their own visible PS window and tell you when authentication completes. The token
+   lands on disk; your next `.\mcp-publisher.exe publish` from the agent shell uses it.
+
+If you have **already** started a background `login github` in your shell when the user
+informs you they logged in elsewhere, that background process is now waiting for a device
+code that will never be entered. Stop it (`TaskStop` / kill the background task) and call
+`publish` directly — it will succeed because the disk token is already valid.
+
+The same rule applies to any other interactive auth flow on this project (npm 2FA prompts,
+gcloud auth login, etc.): never run interactive auth in a background shell where the
+prompt cannot be seen by the human in real time.
+
 ### Publish
 
 ```powershell
@@ -605,11 +649,20 @@ See "npm Trusted Publisher Setup" section below.
 
 ### Phase 2 — HTTP transport verification
 
-- Start server: `$proc = Start-Process node -ArgumentList "dist/index.js --http --port 23847" -PassThru -WindowStyle Hidden; Start-Sleep 3`
-- Run tests: `pwsh -File scripts/test-http-mcp.ps1 -UseExisting`
+> **Use port `23848` (not `23847`)** when a desktop-touch MCP server is already
+> running in your Claude Code / Claude Desktop session — that server holds
+> `23847`, our `Start-Process` silently fails to bind, and the test then
+> connects to the **old** server, reporting a 6/6 PASS against the previous
+> release. Always check the version line in test 1.
+
+- Confirm port free: `Get-NetTCPConnection -LocalPort 23848 -State Listen -ErrorAction SilentlyContinue` (no output = free)
+- Start server: `$proc = Start-Process node -ArgumentList "dist/index.js","--http","--port","23848" -PassThru -WindowStyle Hidden; Start-Sleep 3`
+- Run tests: `pwsh -File scripts/test-http-mcp.ps1 -Port 23848 -UseExisting`
 - Stop: `Stop-Process -Id $proc.Id -Force`
 
-**Done when**: **ALL TESTS PASSED (6/6)**. Do not proceed if any test fails.
+**Done when**: **ALL TESTS PASSED (6/6)** **AND** `[PASS] Health endpoint OK (version: X.Y.Z)`
+shows the version you just bumped (not the previous release). Do not proceed
+if any test fails or the version line is stale.
 
 ### Phase 3 — Commit, tag, push
 

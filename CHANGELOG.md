@@ -1,5 +1,43 @@
 # Changelog
 
+## [1.1.3] - 2026-04-28 — `browser_launch` killExisting + `scroll(action='read')` + stub catalog fixes
+
+Two v1.1 enhancements ship together with a stub-catalog generator fix that
+exposes nested `z.object` schemas to non-Windows tool discovery. Both new
+features are gated behind explicit args (`killExisting:true` / `action:'read'`)
+so existing callers are unaffected.
+
+- **feat(browser): add `killExisting` option to `browser_launch` (#22, #70).**
+  When true, terminate existing `chrome.exe` / `msedge.exe` / `brave.exe`
+  before spawning with `--remote-debugging-port`. Resolves the case where
+  a Chromium instance is already running without CDP and `browser_launch`
+  silently inherits into the existing profile, leaving the port closed.
+  `taskkill.exe` is invoked by absolute `%SystemRoot%\System32\taskkill.exe`
+  path to defeat PATH-hijack (Codex P1). The return JSON gains `killed: string[]`
+  on both `alreadyRunning` and freshly-launched paths.
+- **feat(scroll): add `action='read'` for OCR + dedupe long-doc reading (#25, #71).**
+  Scrolls a window page-by-page, OCRs each viewport, deduplicates overlapping
+  lines, and returns the stitched text in one MCP call. OCR is bound to the
+  resolved hwnd (no title-based lookup drift); scroll keys are dispatched via
+  `postKeyComboToHwnd` gated by `canInjectAtTarget` so foreground changes do
+  not redirect the keystroke. Falls back to nut-js global keyboard with
+  re-focus on Chromium / WebView2 hosts where PostMessage is silently dropped.
+  Dedupe window is bounded by the current frame length so `scrollKey:'ArrowDown'`
+  (line-by-line, near-full-viewport overlap) works correctly. OCR language is
+  auto-detected from the OS locale (BCP-47 primary tag passed verbatim — no
+  hardcoded allowlist). Capture / OCR failures surface as a structured
+  ToolResult (`ok:false` on first page, `ok:true` + `stoppedReason:"ocr_failed"` +
+  partial text on later pages) instead of escaping as a tool execution error.
+- **fix(stub-catalog): expand nested `z.object` schemas recursively (#71).**
+  `scripts/generate-stub-tool-catalog.mjs` previously collapsed every nested
+  `z.object(...)` field to an opaque `{type:'object'}`, hiding the inner
+  property contract from non-Windows clients. The generator now recurses into
+  the inner shape so `browser_open.launch` (`browser` / `userDataDir` / `url` /
+  `waitMs` / `killExisting`), `mouse_click.origin` (`x` / `y`), and
+  `screenshot.region` (`x` / `y` / `width` / `height`) all appear in
+  `STUB_TOOL_CATALOG` with full property contracts. `z.record` / `z.union` /
+  `z.discriminatedUnion` stay opaque (their shape is not a fixed property map).
+
 ## [1.1.2] - 2026-04-28 — stdio server defers shutdown while tool calls are in flight
 
 Bug fix: when the MCP client closed its stdin write-end while a long-running
