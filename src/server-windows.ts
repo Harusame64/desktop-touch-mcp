@@ -265,15 +265,69 @@ failsafeTimer.unref(); // don't keep process alive for this alone
 let httpServerRef: HttpServer | null = null;
 let shuttingDown = false;
 
+// Deferred-shutdown state (issue #68): when stdin EOF or stdout EPIPE arrives mid-flight,
+// wait for in-flight JSON-RPC responses to drain before exiting so long-running tool calls
+// (terminal/wait_until) can deliver their results instead of returning "Connection closed".
+// Ids are stored with their original type — JSON-RPC 2.0 allows both string and number ids,
+// and a spec-compliant client can legitimately send id=1 and id="1" concurrently. Collapsing
+// them into the same string key (e.g. via String()) would undercount and cause early shutdown
+// on the first response. JS Set's SameValueZero semantics (1 !== "1") keeps them distinct.
+const inflightIds = new Set<string | number>();
+let shutdownPending = false;
+let shutdownTimer: NodeJS.Timeout | null = null;
+const SHUTDOWN_GRACE_MS = 60_000;
+
 function shutdown(): void {
   if (shuttingDown) return;
   shuttingDown = true;
+  if (shutdownTimer) {
+    clearTimeout(shutdownTimer);
+    shutdownTimer = null;
+  }
   console.error("[desktop-touch] Shutting down...");
   stopNativeRuntime();
   stopTray();
   httpServerRef?.close();
   // In-flight requests clean up their own server/transport instances via res.on("close").
   process.exit(0);
+}
+
+// Issue #68: defer shutdown until in-flight tool calls drain. Used by stdin EOF /
+// stdout EPIPE only; explicit signals (SIGINT/SIGTERM/disconnect) still shutdown immediately.
+function requestShutdown(reason: string): void {
+  if (shuttingDown || shutdownPending) return;
+  if (inflightIds.size === 0) {
+    console.error(`[desktop-touch] ${reason} — shutting down.`);
+    shutdown();
+    return;
+  }
+  shutdownPending = true;
+  console.error(
+    `[desktop-touch] ${reason} — deferring shutdown for ${inflightIds.size} in-flight request(s) (grace ${SHUTDOWN_GRACE_MS}ms).`
+  );
+  // Note: do NOT unref() the timer. We want the safety timeout to keep the
+  // event loop alive so that — even if every other handle disappears — we still
+  // hit the explicit "forcing shutdown" path (with stopNativeRuntime/stopTray)
+  // instead of a silent natural exit that leaves tray icons / native runtime behind.
+  shutdownTimer = setTimeout(() => {
+    console.error(
+      `[desktop-touch] in-flight requests still pending after ${SHUTDOWN_GRACE_MS}ms — forcing shutdown.`
+    );
+    shutdown();
+  }, SHUTDOWN_GRACE_MS);
+}
+
+function maybeFinishShutdown(): void {
+  if (shutdownPending && !shuttingDown && inflightIds.size === 0) {
+    // Defer one tick so the response just written via transport.send has a
+    // chance to flush from Node's writable-stream buffer to the OS pipe before
+    // process.exit() drops the buffer.
+    setImmediate(() => {
+      if (shuttingDown) return;
+      console.error("[desktop-touch] in-flight requests drained — shutting down.");
+      shutdown();
+    });
+  }
 }
 
 process.on("SIGINT", shutdown);
@@ -392,18 +446,61 @@ if (useHttp) {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
+  // Issue #68: track in-flight JSON-RPC requests at the transport layer so that
+  // stdin EOF / stdout EPIPE can defer shutdown until responses drain. We wrap
+  // transport.onmessage (assigned by server.connect) and transport.send to ++/--
+  // a shared id set. Notifications (no id) and responses received from peer
+  // (we never act as MCP client here) are ignored.
+  // Variadic rest-spread so SDK options/extra args (relatedRequestId, resumptionToken,
+  // MessageExtraInfo, etc.) pass through transparently — the StdioServerTransport class
+  // currently has 1-arg signatures, but the Transport interface and Protocol callers
+  // pass options. Cast through `Function` so we don't fight the narrower class types.
+  const origOnmessage = transport.onmessage as
+    | ((msg: unknown, ...rest: unknown[]) => void)
+    | undefined;
+  const origSend = transport.send.bind(transport) as (
+    msg: unknown,
+    ...rest: unknown[]
+  ) => Promise<void>;
+
+  transport.onmessage = ((msg: unknown, ...rest: unknown[]) => {
+    const m = msg as { id?: string | number; method?: string };
+    const isRequest = !!m && m.id !== undefined && typeof m.method === "string";
+    const id = isRequest ? (m.id as string | number) : undefined;
+    if (id !== undefined) inflightIds.add(id);
+    try {
+      origOnmessage?.(msg, ...rest);
+    } catch (err) {
+      if (id !== undefined) {
+        inflightIds.delete(id);
+        maybeFinishShutdown();
+      }
+      throw err;
+    }
+  }) as typeof transport.onmessage;
+
+  transport.send = (async (msg: unknown, ...rest: unknown[]) => {
+    try {
+      return await origSend(msg, ...rest);
+    } finally {
+      const m = msg as { id?: string | number; method?: string };
+      if (m && m.id !== undefined && m.method === undefined) {
+        inflightIds.delete(m.id);
+        maybeFinishShutdown();
+      }
+    }
+  }) as typeof transport.send;
+
   // Detect parent process exit: stdin EOF when the client's write-end closes.
   // The MCP SDK only listens for 'data' and 'error', not 'end'.
   process.stdin.on("end", () => {
-    console.error("[desktop-touch] stdin closed — parent exited. Shutting down.");
-    shutdown();
+    requestShutdown("stdin closed — parent exited");
   });
 
   // Fallback: catch broken-pipe when writing responses after parent exits.
   process.stdout.on("error", (err: NodeJS.ErrnoException) => {
     if (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED") {
-      console.error("[desktop-touch] stdout broken pipe — parent exited. Shutting down.");
-      shutdown();
+      requestShutdown("stdout broken pipe — parent exited");
     }
   });
 
