@@ -245,6 +245,7 @@ describe("scrollReadHandler (mocked)", () => {
 
     vi.doMock("../../src/engine/bg-input.js", () => ({
       postKeyComboToHwnd: vi.fn().mockReturnValue(true),
+      canInjectViaPostMessage: vi.fn().mockReturnValue({ supported: true }),
     }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
@@ -297,6 +298,7 @@ describe("scrollReadHandler (mocked)", () => {
 
     vi.doMock("../../src/engine/bg-input.js", () => ({
       postKeyComboToHwnd: vi.fn().mockReturnValue(true),
+      canInjectViaPostMessage: vi.fn().mockReturnValue({ supported: true }),
     }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
@@ -350,6 +352,7 @@ describe("scrollReadHandler (mocked)", () => {
 
     vi.doMock("../../src/engine/bg-input.js", () => ({
       postKeyComboToHwnd: vi.fn().mockReturnValue(true),
+      canInjectViaPostMessage: vi.fn().mockReturnValue({ supported: true }),
     }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
@@ -396,6 +399,7 @@ describe("scrollReadHandler (mocked)", () => {
 
     vi.doMock("../../src/engine/bg-input.js", () => ({
       postKeyComboToHwnd: vi.fn().mockReturnValue(true),
+      canInjectViaPostMessage: vi.fn().mockReturnValue({ supported: true }),
     }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
@@ -451,6 +455,7 @@ describe("scrollReadHandler (mocked)", () => {
 
     vi.doMock("../../src/engine/bg-input.js", () => ({
       postKeyComboToHwnd: vi.fn().mockReturnValue(true),
+      canInjectViaPostMessage: vi.fn().mockReturnValue({ supported: true }),
     }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
@@ -500,7 +505,10 @@ describe("scrollReadHandler (mocked)", () => {
       ]),
     }));
 
-    vi.doMock("../../src/engine/bg-input.js", () => ({ postKeyComboToHwnd: postKeyMock }));
+    vi.doMock("../../src/engine/bg-input.js", () => ({
+      postKeyComboToHwnd: postKeyMock,
+      canInjectViaPostMessage: vi.fn().mockReturnValue({ supported: true }),
+    }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
       getWindowTitleW: vi.fn().mockReturnValue("TestWindow"),
@@ -551,9 +559,11 @@ describe("scrollReadHandler (mocked)", () => {
       ]),
     }));
 
-    // BG path rejected — exercise the fallback branch.
+    // BG path attempted but PostMessage returns false — exercise fallback
+    // (canInject says supported, but postKeyComboToHwnd itself fails).
     vi.doMock("../../src/engine/bg-input.js", () => ({
       postKeyComboToHwnd: vi.fn().mockReturnValue(false),
+      canInjectViaPostMessage: vi.fn().mockReturnValue({ supported: true }),
     }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
@@ -575,5 +585,63 @@ describe("scrollReadHandler (mocked)", () => {
     expect(focusMock).toHaveBeenCalledTimes(2);
     expect(pressKeyMock).toHaveBeenCalled();
     expect(releaseKeyMock).toHaveBeenCalled();
+  });
+
+  it("skips BG path entirely when canInjectViaPostMessage reports unsupported (Chromium host) and goes straight to foreground fallback (round-5 regression)", async () => {
+    // Chromium-class hosts: PostMessage would silently no-op so the BG
+    // dispatch must be gated out before it is even attempted, otherwise the
+    // loop would observe "BG ok" + repeated frames and stop on no_change.
+    const page1 = makeWords(["A"]);
+    const page2 = makeWords(["B"]);
+
+    const focusMock = vi.fn().mockResolvedValue(undefined);
+    const pressKeyMock = vi.fn().mockResolvedValue(undefined);
+    const postKeyMock = vi.fn(); // must NOT be called
+
+    vi.doMock("../../src/engine/ocr-bridge.js", () => ({
+      recognizeWindowByHwnd: vi
+        .fn()
+        .mockResolvedValueOnce({ words: page1, origin: { x: 0, y: 0 } })
+        .mockResolvedValueOnce({ words: page2, origin: { x: 0, y: 0 } }),
+      ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
+    }));
+
+    vi.doMock("../../src/engine/nutjs.js", () => ({
+      keyboard: { pressKey: pressKeyMock, releaseKey: vi.fn().mockResolvedValue(undefined) },
+      getWindows: vi.fn().mockResolvedValue([
+        {
+          windowHandle: "fake-hwnd",
+          title: "TestWindow",
+          region: Promise.resolve({ left: 0, top: 0, width: 800, height: 600 }),
+          focus: focusMock,
+        },
+      ]),
+    }));
+
+    vi.doMock("../../src/engine/bg-input.js", () => ({
+      postKeyComboToHwnd: postKeyMock,
+      canInjectViaPostMessage: vi.fn().mockReturnValue({ supported: false, reason: "chromium" }),
+    }));
+
+    vi.doMock("../../src/engine/win32.js", () => ({
+      getWindowTitleW: vi.fn().mockReturnValue("TestWindow"),
+    }));
+
+    const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
+
+    await scrollReadHandler({
+      action: "read",
+      windowTitle: "Test",
+      maxPages: 2,
+      scrollKey: "PageDown",
+      scrollDelayMs: 0,
+      stopWhenNoChange: true,
+    });
+
+    // postKeyComboToHwnd MUST NOT be invoked when canInject reports unsupported.
+    expect(postKeyMock).not.toHaveBeenCalled();
+    // Fallback engaged: re-focus before the single scroll keystroke.
+    expect(focusMock).toHaveBeenCalledTimes(2);
+    expect(pressKeyMock).toHaveBeenCalled();
   });
 });

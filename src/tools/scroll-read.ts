@@ -10,7 +10,7 @@ import { recognizeWindowByHwnd, ocrWordsToLines } from "../engine/ocr-bridge.js"
 import { keyboard } from "../engine/nutjs.js";
 import { getWindows } from "../engine/nutjs.js";
 import { getWindowTitleW } from "../engine/win32.js";
-import { postKeyComboToHwnd } from "../engine/bg-input.js";
+import { canInjectViaPostMessage, postKeyComboToHwnd } from "../engine/bg-input.js";
 import { parseKeys } from "../utils/key-map.js";
 import type { ToolResult } from "./_types.js";
 
@@ -169,10 +169,16 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
     // Send scroll key. Prefer BG-mode injection bound to the resolved hwnd
     // (WM_KEYDOWN/KEYUP via PostMessage — does not change foreground) so a
     // concurrent user click or system popup cannot redirect the keystroke.
-    // Fall back to global keyboard with re-focus when the host rejects
-    // PostMessage (some Chromium tabs / DRM apps).
+    //
+    // canInjectViaPostMessage gates the BG path by window class / process
+    // (Chromium, UWP-sandboxed, etc.): on those hosts PostMessage returns
+    // success but the target ignores the key, so we MUST NOT trust
+    // postKeyComboToHwnd's boolean alone — it only confirms the message was
+    // posted, not consumed. Skip BG entirely for unsupported hosts and go
+    // straight to the foreground fallback so the page actually scrolls.
     const combo = SCROLL_KEY_COMBO[args.scrollKey]!;
-    const bgOk = postKeyComboToHwnd(focusedHwnd, combo);
+    const canBg = canInjectViaPostMessage(focusedHwnd);
+    const bgOk = canBg.supported && postKeyComboToHwnd(focusedHwnd, combo);
     if (!bgOk) {
       await focusedWin.focus();
       await new Promise<void>((r) => setTimeout(r, 100));
