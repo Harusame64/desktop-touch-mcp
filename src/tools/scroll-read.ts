@@ -7,14 +7,20 @@
  */
 
 import { recognizeWindowByHwnd, ocrWordsToLines } from "../engine/ocr-bridge.js";
-import { keyboard } from "../engine/nutjs.js";
-import { getWindows } from "../engine/nutjs.js";
+import { keyboard, getWindows } from "../engine/nutjs.js";
 import { getWindowTitleW } from "../engine/win32.js";
 import { canInjectAtTarget, postKeyComboToHwnd } from "../engine/bg-input.js";
 import { parseKeys } from "../utils/key-map.js";
 import type { ToolResult } from "./_types.js";
 
 type FocusableWin = { focus: () => Promise<void> };
+
+// Primary BCP-47 language tags that win-ocr.exe accepts. Constructed once at
+// module load — detectOcrLanguage() runs on every scroll(action='read') call
+// so re-building the Set per call would be wasteful.
+const OCR_KNOWN_LANGUAGES = new Set([
+  "ja", "en", "zh", "ko", "fr", "de", "es", "it", "pt", "ru", "nl", "pl", "tr", "ar",
+]);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -29,10 +35,7 @@ type FocusableWin = { focus: () => Promise<void> };
 export function detectOcrLanguage(): string {
   const locale = Intl.DateTimeFormat().resolvedOptions().locale;
   const primary = locale.split("-")[0]?.toLowerCase() ?? "en";
-  const KNOWN = new Set([
-    "ja", "en", "zh", "ko", "fr", "de", "es", "it", "pt", "ru", "nl", "pl", "tr", "ar",
-  ]);
-  return KNOWN.has(primary) ? primary : "en";
+  return OCR_KNOWN_LANGUAGES.has(primary) ? primary : "en";
 }
 
 /**
