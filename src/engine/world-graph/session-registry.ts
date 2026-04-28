@@ -77,14 +77,22 @@ export interface SessionCreateOpts {
   /**
    * Override modal detection. Default: session-aware check — blocks if any OTHER entity
    * in the current snapshot is a UIA "unknown"-role element (overlay/dialog pattern).
-   * If overridden, also override `findBlockingModal` to keep the pair consistent —
-   * otherwise blockingElement on the response will silently drop. The session-registry
-   * default derives both from a shared predicate.
+   *
+   * Issue #63: predicate ↔ blockingElement consistency.
+   *   When overridden alone (without `findBlockingModal`), the default UIA-unknown finder
+   *   is suppressed and `findBlockingModal` returns null — `blockingElement` is omitted from
+   *   the response. This prevents the LLM from being told to dismiss an entity unrelated to
+   *   the custom predicate. To surface `blockingElement` with a custom predicate, also
+   *   override `findBlockingModal`.
    */
   isModalBlocking?: (entity: UiEntity) => boolean;
   /**
-   * Override blocking-modal identity lookup. Default: returns the first OTHER entity in
-   * the snapshot that matches the same predicate as `isModalBlocking`. Issue #63.
+   * Override blocking-modal identity lookup. The returned entity's identity is surfaced as
+   * `blockingElement` on the modal_blocking response so the LLM can dismiss it via
+   * `click_element(name=blockingElement.name)`. Issue #63.
+   *
+   * When overridden alone (without `isModalBlocking`), the predicate is derived as
+   * `findBlockingModal(entity) !== null` so the two stay consistent.
    */
   findBlockingModal?: (entity: UiEntity) => UiEntity | null;
   /** Override viewport check. Default: conservative pass (always true). */
@@ -213,14 +221,25 @@ export class SessionRegistry {
       // Default: block if any OTHER entity in the live snapshot is a UIA "unknown"-role
       // element. UIA exposes system dialogs and overlays as unknown-role elements, so
       // this catches modal blocking without a Win32 round-trip.
-      // Override via opts.isModalBlocking for custom/test implementations — keep
-      // findBlockingModal in sync to preserve blockingElement on the response (#63).
-      isModalBlocking: opts.isModalBlocking ?? ((entity: UiEntity) =>
-        s.entities.some((e) => isModalCandidate(entity, e))
-      ),
-      findBlockingModal: opts.findBlockingModal ?? ((entity: UiEntity) =>
-        s.entities.find((e) => isModalCandidate(entity, e)) ?? null
-      ),
+      //
+      // Issue #63 (Codex P1): when the user overrides exactly one of the pair, we derive
+      // the other to keep predicate ↔ blockingElement consistent — never surface a default
+      // UIA-unknown blocker alongside an unrelated custom predicate.
+      //   both default      → shared isModalCandidate predicate (consistent)
+      //   both overridden   → caller's responsibility (no derivation)
+      //   only isModalBlocking overridden → findBlockingModal returns null (blockingElement omitted,
+      //                                     so the LLM is never told to dismiss the wrong element)
+      //   only findBlockingModal overridden → isModalBlocking derived as `finder(e) !== null`
+      isModalBlocking:
+        opts.isModalBlocking ??
+        (opts.findBlockingModal
+          ? (entity: UiEntity) => opts.findBlockingModal!(entity) !== null
+          : (entity: UiEntity) => s.entities.some((e) => isModalCandidate(entity, e))),
+      findBlockingModal:
+        opts.findBlockingModal ??
+        (opts.isModalBlocking
+          ? () => null
+          : (entity: UiEntity) => s.entities.find((e) => isModalCandidate(entity, e)) ?? null),
       isInViewport: opts.isInViewport ?? (() => true),
       // G1-C: Focus fingerprint for focus_shifted detection.
       // Only wired when opts.getFocusedEntityId is provided (e.g. production desktop-register.ts).
