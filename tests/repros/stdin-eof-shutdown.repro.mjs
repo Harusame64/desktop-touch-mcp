@@ -101,7 +101,6 @@ async function scenarioA() {
   });
   await waitForStdoutLine(stdoutLines, (m) => m.id === 1 && m.result, 10_000);
   console.log("  initialize done, closing stdin...");
-  const t0 = Date.now();
   proc.stdin.end();
   const exit = await waitForExit(proc, 5_000);
   console.log(`  exit: code=${exit.code} signal=${exit.signal} after ${exit.ms}ms`);
