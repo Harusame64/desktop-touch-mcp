@@ -1,6 +1,7 @@
 # desktop-touch-mcp
 
 [![desktop-touch-mcp MCP server](https://glama.ai/mcp/servers/Harusame64/desktop-touch-mcp/badges/card.svg)](https://glama.ai/mcp/servers/Harusame64/desktop-touch-mcp)
+[![SafeSkill 69/100](https://img.shields.io/badge/SafeSkill-69%2F100_Use%20with%20Caution-orange)](https://safeskill.dev/scan/harusame64-desktop-touch-mcp)
 
 [日本語](README.ja.md)
 
