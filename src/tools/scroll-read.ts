@@ -93,7 +93,11 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
     for (const win of wins) {
       try {
         const hwnd = (win as unknown as { windowHandle: unknown }).windowHandle;
-        const title = hwnd ? getWindowTitleW(hwnd) : await win.title;
+        // OCR drives PrintWindow capture against the hwnd, so an entry without
+        // a usable handle cannot be a valid target — skip rather than letting
+        // a falsy hwnd reach recognizeWindowByHwnd and crash the Win32 layer.
+        if (!hwnd) continue;
+        const title = getWindowTitleW(hwnd);
         if (!title.toLowerCase().includes(query)) continue;
         const reg = await win.region;
         if (reg.width < 10 || reg.height < 10) continue;
@@ -103,7 +107,7 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
         break;
       } catch { /* skip */ }
     }
-    if (focusedHwnd === null || focusedRegion === null) {
+    if (!focusedHwnd || !focusedRegion) {
       return {
         content: [{
           type: "text" as const,

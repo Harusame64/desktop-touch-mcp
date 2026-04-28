@@ -403,4 +403,53 @@ describe("scrollReadHandler (mocked)", () => {
     expect(data.pages).toBe(0);
     expect(data.text).toBe("");
   });
+
+  it("returns ok:false when no candidate window exposes a usable hwnd (regression for round-3 P2)", async () => {
+    // recognizeWindowByHwnd must NOT be reached — the focus guard rejects
+    // hwnd-less entries before any OCR is attempted.
+    vi.doMock("../../src/engine/ocr-bridge.js", () => ({
+      recognizeWindowByHwnd: vi.fn().mockRejectedValue(new Error("must not be called")),
+      ocrWordsToLines: () => "",
+    }));
+
+    vi.doMock("../../src/engine/nutjs.js", () => ({
+      keyboard: {
+        pressKey: vi.fn().mockResolvedValue(undefined),
+        releaseKey: vi.fn().mockResolvedValue(undefined),
+      },
+      getWindows: vi.fn().mockResolvedValue([
+        {
+          windowHandle: null,
+          title: "TestWindow",
+          region: Promise.resolve({ left: 0, top: 0, width: 800, height: 600 }),
+          focus: vi.fn().mockResolvedValue(undefined),
+        },
+        {
+          windowHandle: undefined,
+          title: "TestWindow",
+          region: Promise.resolve({ left: 0, top: 0, width: 800, height: 600 }),
+          focus: vi.fn().mockResolvedValue(undefined),
+        },
+      ]),
+    }));
+
+    vi.doMock("../../src/engine/win32.js", () => ({
+      getWindowTitleW: vi.fn().mockReturnValue("TestWindow"),
+    }));
+
+    const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
+
+    const result = await scrollReadHandler({
+      action: "read",
+      windowTitle: "Test",
+      maxPages: 5,
+      scrollKey: "PageDown",
+      scrollDelayMs: 0,
+      stopWhenNoChange: true,
+    });
+
+    const data = JSON.parse((result.content[0] as { text: string }).text);
+    expect(data.ok).toBe(false);
+    expect(data.error).toContain("Window not found");
+  });
 });
