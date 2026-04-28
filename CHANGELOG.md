@@ -1,8 +1,12 @@
 # Changelog
 
-## [Unreleased]
+## [1.1.1] - 2026-04-28 — `modal_blocking` response surfaces blocker identity
 
-### Added
+`desktop_act` now tells the LLM *which* modal to dismiss when a touch is
+blocked, closing a one-syscall gap surfaced by Haiku 4.5 during a 3-model
+dogfood run on Outlook PWA. Backwards-compatible patch — the new field is
+optional and engines that cannot identify the blocker still return
+`modal_blocking` without it.
 
 - **feat(desktop_act): include `blockingElement` in `modal_blocking` response (#63).**
   When a `desktop_act` call fails with `reason: "modal_blocking"`, the response now
@@ -10,9 +14,10 @@
   modal. The LLM can dismiss it directly via `click_element(name=blockingElement.name)`
   without taking an extra screenshot to figure out what to close. The session-aware
   default predicate is shared between `isModalBlocking` and the new `findBlockingModal`
-  hook so the pair cannot diverge. Optional field — engines that cannot identify the
-  modal still return `modal_blocking` without it (backwards-compatible). Closes #63
-  (Haiku 4.5 dogfood feedback from 3-model comparison run on Outlook PWA).
+  hook so the pair cannot diverge. When the caller overrides exactly one of the pair,
+  the other is derived from the override (Codex P1) — `blockingElement` is omitted
+  rather than surfacing an entity unrelated to the actual blocking predicate. Closes
+  #63 (Haiku 4.5 dogfood feedback from 3-model comparison run on Outlook PWA).
 
 ## [1.1.0] - 2026-04-27 — Focus Leash System (Phase A + B)
 
