@@ -104,7 +104,7 @@ function createMcpServer(): McpServer {
         "## When desktop_act returns ok:false",
         "Read reason and follow the recovery path:",
         "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_discover;",
-        "  modal_blocking → dismiss modal via click_element, then retry;",
+        "  modal_blocking → response.blockingElement (when present) names the blocker — dismiss via click_element(name=blockingElement.name), then retry;",
         "  entity_outside_viewport → scroll via scroll(action='raw') or scroll(action='to_element'), then re-call desktop_discover;",
         "  executor_failed → fall back to click_element / mouse_click / browser_click",
         "",

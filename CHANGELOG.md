@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **feat(desktop_act): include `blockingElement` in `modal_blocking` response (#63).**
+  When a `desktop_act` call fails with `reason: "modal_blocking"`, the response now
+  carries `blockingElement: { name, role, automationId? }` identifying the offending
+  modal. The LLM can dismiss it directly via `click_element(name=blockingElement.name)`
+  without taking an extra screenshot to figure out what to close. The session-aware
+  default predicate is shared between `isModalBlocking` and the new `findBlockingModal`
+  hook so the pair cannot diverge. Optional field — engines that cannot identify the
+  modal still return `modal_blocking` without it (backwards-compatible). Closes #63
+  (Haiku 4.5 dogfood feedback from 3-model comparison run on Outlook PWA).
+
 ## [1.1.0] - 2026-04-27 — Focus Leash System (Phase A + B)
 
 Stray-write defense for keyboard automation when the user changes

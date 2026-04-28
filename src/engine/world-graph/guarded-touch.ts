@@ -28,9 +28,30 @@ export type TouchFailReason =
   | "entity_outside_viewport"
   | "executor_failed";
 
+/**
+ * Identity of the modal entity blocking a touch attempt — included in the response
+ * when reason='modal_blocking' so the LLM can dismiss the right modal without an
+ * additional screenshot. Issue #63 (Haiku 4.5 dogfood feedback).
+ *   name: best-effort identifier — entity.locator.uia.name → entity.label → entity.role → "modal".
+ *         Always non-empty so LLM-side string handling does not need to defend against "".
+ *   role: entity.role (often "unknown" for UIA dialogs; still useful as a tie-breaker).
+ *   automationId: present only when the source provides one (UIA AutomationId).
+ */
+export interface BlockingElementInfo {
+  name: string;
+  role: string;
+  automationId?: string;
+}
+
 export type TouchResult =
   | { ok: true; executor: ExecutorKind; diff: SemanticDiff; next: "refresh_view" | "none" }
-  | { ok: false; reason: TouchFailReason; diff: SemanticDiff };
+  | {
+      ok: false;
+      reason: TouchFailReason;
+      diff: SemanticDiff;
+      /** Set only when reason='modal_blocking' AND env.findBlockingModal returned a blocker. */
+      blockingElement?: BlockingElementInfo;
+    };
 
 /**
  * Injectable environment for GuardedTouchLoop.
@@ -44,6 +65,15 @@ export interface TouchEnvironment {
   currentGeneration(): string;
   /** True if a modal or system dialog is blocking the target entity. */
   isModalBlocking(entity: UiEntity): boolean;
+  /**
+   * Return the modal entity blocking `entity`, or null if none. When provided,
+   * GuardedTouchLoop attaches its identity to the response as `blockingElement`.
+   * When `isModalBlocking` is overridden, this should be overridden in lockstep —
+   * a true/null mismatch will silently drop the blockingElement field instead of
+   * crashing. The session-registry default keeps both methods in sync via a shared predicate.
+   * Issue #63.
+   */
+  findBlockingModal?(entity: UiEntity): UiEntity | null;
   /** True if the entity rect is fully or partially within the active viewport. */
   isInViewport(entity: UiEntity): boolean;
   /** Perform the action and return which executor was used. Throw on failure. */
@@ -82,6 +112,20 @@ const LEASE_TO_TOUCH_REASON: Record<string, TouchFailReason> = {
   entity_not_found:     "entity_not_found",
   digest_mismatch:      "lease_digest_mismatch",
 };
+
+// ── Blocking-modal info ───────────────────────────────────────────────────────
+
+/**
+ * Best-effort name resolution: locator.uia.name (most stable identifier when present)
+ *   → entity.label → entity.role → "modal".
+ * UIA "unknown"-role dialogs frequently lack a label, so falling all the way through
+ * keeps the field non-empty for downstream click_element lookups.
+ */
+function toBlockingElementInfo(e: UiEntity): BlockingElementInfo {
+  const name = e.locator?.uia?.name || e.label || e.role || "modal";
+  const automationId = e.locator?.uia?.automationId;
+  return automationId ? { name, role: e.role, automationId } : { name, role: e.role };
+}
 
 // ── Diff helpers ──────────────────────────────────────────────────────────────
 
@@ -234,7 +278,13 @@ export class GuardedTouchLoop {
 
     // 3. Pre-touch environment checks.
     if (this.env.isModalBlocking(entity)) {
-      return { ok: false, reason: "modal_blocking", diff: [] };
+      const blocker = this.env.findBlockingModal?.(entity) ?? null;
+      return {
+        ok: false,
+        reason: "modal_blocking",
+        diff: [],
+        ...(blocker ? { blockingElement: toBlockingElementInfo(blocker) } : {}),
+      };
     }
     if (!this.env.isInViewport(entity)) {
       return { ok: false, reason: "entity_outside_viewport", diff: [] };

@@ -142,9 +142,16 @@ export interface DesktopFacadeOptions {
   executorDeps?: ExecutorDeps;
   /**
    * Override modal detection. Default: session-aware check (UIA unknown-role entity in snapshot).
-   * Set to () => false to disable.
+   * Set to () => false to disable. When overriding, also override `findBlockingModal` to keep
+   * the pair in sync — otherwise `blockingElement` on the modal_blocking response is dropped (#63).
    */
   isModalBlocking?: (entity: UiEntity) => boolean;
+  /**
+   * Override blocking-modal identity lookup. Default: returns the first OTHER entity matching
+   * the same UIA-unknown predicate as `isModalBlocking`. The returned entity's identity is
+   * surfaced as `blockingElement` on the modal_blocking response so the LLM can dismiss it. Issue #63.
+   */
+  findBlockingModal?: (entity: UiEntity) => UiEntity | null;
   /**
    * Override viewport check. Default: conservative pass (always true).
    * Production implementation provided by desktop-register.ts (G1-B).
@@ -419,6 +426,7 @@ export class DesktopFacade {
         ? undefined
         : (target) => createDesktopExecutor(target, this.opts.executorDeps),
       isModalBlocking:    this.opts.isModalBlocking,
+      findBlockingModal:  this.opts.findBlockingModal,
       isInViewport:       this.opts.isInViewport,
       getFocusedEntityId: this.opts.getFocusedEntityId,
       defaultTtlMs:       this.opts.defaultTtlMs,

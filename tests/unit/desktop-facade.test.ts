@@ -304,7 +304,14 @@ describe("DesktopFacade — G1 modal guard (session-aware default)", () => {
     expect(btnLease).toBeDefined();
     const result = await facade.touch({ lease: btnLease! });
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe("modal_blocking");
+    if (!result.ok) {
+      expect(result.reason).toBe("modal_blocking");
+      // Issue #63: production default propagates the blocker identity end-to-end so
+      // the LLM can dismiss it via click_element(name=blockingElement.name).
+      expect(result.blockingElement).toBeDefined();
+      expect(result.blockingElement?.name).toBe("Dialog");
+      expect(result.blockingElement?.role).toBe("unknown");
+    }
   });
 
   it("no modal_blocking when all live entities have non-unknown roles", async () => {
