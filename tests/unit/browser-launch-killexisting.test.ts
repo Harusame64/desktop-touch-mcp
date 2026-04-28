@@ -73,8 +73,11 @@ describe("killProcessesByName", () => {
 
     const result = launchModule.killProcessesByName(["chrome.exe"]);
     expect(result).toEqual(["chrome.exe"]);
+    // Security: taskkill must be invoked by absolute System32 path, not bare
+    // "taskkill.exe" (PATH hijack defense — Codex P1 review on PR #70).
     expect(childProcess.spawnSync).toHaveBeenCalledWith(
-      "taskkill.exe", ["/F", "/IM", "chrome.exe"],
+      expect.stringMatching(/[\\/]System32[\\/]taskkill\.exe$/i),
+      ["/F", "/IM", "chrome.exe"],
       { windowsHide: true, timeout: 5000 },
     );
   });

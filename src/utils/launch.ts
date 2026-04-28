@@ -161,17 +161,31 @@ export function spawnDetached(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * Absolute path to the trusted System32 taskkill.exe.
+ * Computed once at module load from %SystemRoot% / %WINDIR% (with C:\Windows
+ * as last-resort fallback) to avoid PATH-hijack attacks where a malicious
+ * `taskkill.exe` planted in the working directory or another earlier search
+ * location could be invoked instead of the genuine system utility.
+ */
+const TASKKILL_EXE = path.join(
+  process.env["SystemRoot"] ?? process.env["WINDIR"] ?? "C:\\Windows",
+  "System32",
+  "taskkill.exe",
+);
+
+/**
  * Terminate all instances of the given executable name(s) via taskkill /F /IM.
  * Returns the list of exe names that actually had a process killed (taskkill exit 0).
  * Errors / "no process found" (exit 128) are silently ignored.
  *
- * Windows-only — uses taskkill.exe from System32.
+ * Windows-only — invokes %SystemRoot%\System32\taskkill.exe by absolute path
+ * to prevent PATH-hijack attacks.
  */
 export function killProcessesByName(exeNames: string[]): string[] {
   const killed: string[] = [];
   for (const exe of exeNames) {
     try {
-      const result = spawnSync("taskkill.exe", ["/F", "/IM", exe], {
+      const result = spawnSync(TASKKILL_EXE, ["/F", "/IM", exe], {
         windowsHide: true,
         timeout: 5000,
       });
