@@ -40,7 +40,8 @@ export function detectOcrLanguage(): string {
 
 /**
  * Longest suffix of `prev` that equals a prefix of `curr`.
- * Naive O(n*m), n,m ≤ 20 (we always pass `prev.slice(-20)`).
+ * Naive O(min(n,m)²) — caller bounds `prev` to at most `curr.length` so cost
+ * is dominated by the OCR page size (tens to low hundreds of lines).
  */
 export function findOverlap(prev: string[], curr: string[]): number {
   const maxOverlap = Math.min(prev.length, curr.length);
@@ -150,8 +151,14 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
       break;
     }
 
-    // Deduplicate: remove lines at start of `lines` that are already at end of `allLines`
-    const dupCount = findOverlap(allLines.slice(-20), lines);
+    // Deduplicate: remove lines at the start of `lines` that are already at
+    // the end of `allLines`. Bound the prev-side window to `lines.length` so
+    // the suffix-prefix scan covers the worst case where the entire current
+    // frame overlaps the previous one (notably scrollKey='ArrowDown' which
+    // advances by a single line and almost-fully overlaps adjacent frames).
+    // A fixed 20-line cap silently broke ArrowDown mode, leaving duplicates
+    // appended every iteration and stopWhenNoChange never firing.
+    const dupCount = findOverlap(allLines.slice(-lines.length), lines);
     const newLines = lines.slice(dupCount);
 
     perPage.push({ page, addedLines: newLines.length, duplicateLines: dupCount });

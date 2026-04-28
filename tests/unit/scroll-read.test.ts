@@ -38,6 +38,13 @@ describe("findOverlap", () => {
   it("handles single-element overlap", () => {
     expect(findOverlap(["x", "y", "z"], ["z", "w"])).toBe(1);
   });
+
+  it("handles overlap longer than 20 elements (ArrowDown viewport edge — round-7/8 regression)", () => {
+    // Prev page 30 lines, curr page = last 29 of prev + 1 new (line-by-line scroll).
+    const prev = Array.from({ length: 30 }, (_, i) => `L${i + 1}`);
+    const curr = [...Array.from({ length: 29 }, (_, i) => `L${i + 2}`), "L31"];
+    expect(findOverlap(prev, curr)).toBe(29);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -643,5 +650,71 @@ describe("scrollReadHandler (mocked)", () => {
     // Fallback engaged: re-focus before the single scroll keystroke.
     expect(focusMock).toHaveBeenCalledTimes(2);
     expect(pressKeyMock).toHaveBeenCalled();
+  });
+
+  it("dedupes overlap larger than 20 lines (ArrowDown line-by-line — round-7/8 regression)", async () => {
+    // ArrowDown advances by a single line, so adjacent OCR frames overlap
+    // by almost a full viewport. With the previous fixed slice(-20) cap,
+    // dupCount on page 2 would have been 0 → 30 duplicate "Line2..Line30"
+    // copies appended as new content, bloating the output and preventing
+    // stopWhenNoChange from firing. With slice(-lines.length) the entire
+    // 29-line overlap is detected so only "Line31" is genuinely new.
+    const page1 = makeWords(Array.from({ length: 30 }, (_, i) => `Line${i + 1}`));
+    const page2 = makeWords([
+      ...Array.from({ length: 29 }, (_, i) => `Line${i + 2}`),
+      "Line31",
+    ]);
+
+    vi.doMock("../../src/engine/ocr-bridge.js", () => ({
+      recognizeWindowByHwnd: vi
+        .fn()
+        .mockResolvedValueOnce({ words: page1, origin: { x: 0, y: 0 } })
+        .mockResolvedValueOnce({ words: page2, origin: { x: 0, y: 0 } }),
+      ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
+    }));
+
+    vi.doMock("../../src/engine/nutjs.js", () => ({
+      keyboard: {
+        pressKey: vi.fn().mockResolvedValue(undefined),
+        releaseKey: vi.fn().mockResolvedValue(undefined),
+      },
+      getWindows: vi.fn().mockResolvedValue([
+        {
+          windowHandle: "fake-hwnd",
+          title: "TestWindow",
+          region: Promise.resolve({ left: 0, top: 0, width: 800, height: 600 }),
+          focus: vi.fn().mockResolvedValue(undefined),
+        },
+      ]),
+    }));
+
+    vi.doMock("../../src/engine/bg-input.js", () => ({
+      postKeyComboToHwnd: vi.fn().mockReturnValue(true),
+      canInjectAtTarget: vi.fn().mockReturnValue({ supported: true }),
+    }));
+
+    vi.doMock("../../src/engine/win32.js", () => ({
+      getWindowTitleW: vi.fn().mockReturnValue("TestWindow"),
+    }));
+
+    const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
+
+    const result = await scrollReadHandler({
+      action: "read",
+      windowTitle: "Test",
+      maxPages: 2,
+      scrollKey: "ArrowDown",
+      scrollDelayMs: 0,
+      stopWhenNoChange: true,
+    });
+
+    const data = JSON.parse((result.content[0] as { text: string }).text);
+    expect(data.ok).toBe(true);
+    expect(data.pages).toBe(2);
+    expect(data.perPage[1].duplicateLines).toBe(29);
+    expect(data.perPage[1].addedLines).toBe(1);
+    // Stitched text contains Line1..Line31 with no duplicates.
+    const expectedLines = Array.from({ length: 31 }, (_, i) => `Line${i + 1}`).join("\n");
+    expect(data.text).toBe(expectedLines);
   });
 });
