@@ -1,9 +1,26 @@
 import koffi from "koffi";
+import { nativeWin32 } from "./native-engine.js";
+
+// Hot-path window APIs (10 functions) are routed through the napi-rs native
+// addon (ADR-007 P1). Anything missing from `nativeWin32` indicates the addon
+// was built before the win32 module landed — fail loudly so the dev rebuilds.
+function requireNativeWin32(): NonNullable<typeof nativeWin32> {
+  if (!nativeWin32) {
+    throw new Error(
+      "[win32] desktop-touch-engine native addon is missing the ADR-007 P1 " +
+      "win32 surface. Run `npm run build:rs` to rebuild.",
+    );
+  }
+  return nativeWin32;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DLL loading
 // ─────────────────────────────────────────────────────────────────────────────
 
+// `user32` still hosts a handful of legacy bindings (PrintWindow, ShowWindow,
+// SetForegroundWindow, etc.) that move to windows-rs in P2/P3. The 10 hot-path
+// APIs handled in this PR are no longer loaded here.
 const user32 = koffi.load("user32.dll");
 const gdi32 = koffi.load("gdi32.dll");
 const shcore = koffi.load("shcore.dll");
@@ -86,28 +103,19 @@ if (koffi.sizeof(SCROLLINFO) !== 28) {
 // Function bindings
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Window functions
-const GetWindowRect = user32.func(
-  "bool __stdcall GetWindowRect(void *hWnd, _Out_ RECT *lpRect)"
-);
-const GetWindowTextW = user32.func(
-  "int __stdcall GetWindowTextW(void *hWnd, _Out_ uint16 *lpString, int nMaxCount)"
-);
+// Window functions — the 10 hot-path bindings below are now in
+// src/win32/window.rs (ADR-007 P1) and reached via `requireNativeWin32()`:
+//   EnumWindows, GetWindowTextW, GetWindowRect, GetForegroundWindow,
+//   IsWindowVisible, IsIconic, IsZoomed, GetClassNameW,
+//   GetWindowThreadProcessId, GetWindowLongPtrW.
+//
+// Remaining koffi-backed bindings stay until P2/P3 (PrintWindow, ShowWindow,
+// SetForegroundWindow, etc.).
 const PrintWindow = user32.func(
   "bool __stdcall PrintWindow(void *hwnd, void *hdcBlt, uint32 nFlags)"
 );
-const IsWindowVisible = user32.func("bool __stdcall IsWindowVisible(void *hWnd)");
-const IsIconic = user32.func("bool __stdcall IsIconic(void *hWnd)");
-const IsZoomed = user32.func("bool __stdcall IsZoomed(void *hWnd)");
-const GetForegroundWindow = user32.func("intptr __stdcall GetForegroundWindow()");
 const ShowWindow = user32.func("bool __stdcall ShowWindow(void *hWnd, int nCmdShow)");
 const SetForegroundWindow = user32.func("bool __stdcall SetForegroundWindow(void *hWnd)");
-const EnumWindowsProto = koffi.proto(
-  "bool __stdcall EnumWindowsProc(intptr hwnd, intptr lParam)"
-);
-const EnumWindows = user32.func(
-  "bool __stdcall EnumWindows(EnumWindowsProc *lpEnumFunc, intptr lParam)"
-);
 
 // DC / GDI
 const GetDC = user32.func("void* __stdcall GetDC(void *hWnd)");
@@ -147,10 +155,8 @@ const SetProcessDpiAwareness = shcore.func(
   "int __stdcall SetProcessDpiAwareness(int value)"
 );
 
-// Window → PID mapping
-const GetWindowThreadProcessId = user32.func(
-  "uint32 __stdcall GetWindowThreadProcessId(void *hWnd, _Out_ uint32 *lpdwProcessId)"
-);
+// Window → PID mapping moved to ADR-007 P1 native addon
+// (see src/win32/window.rs::win32_get_window_thread_process_id).
 
 // Process tree traversal (Toolhelp32 snapshot)
 const CreateToolhelp32Snapshot = kernel32.func(
@@ -212,13 +218,9 @@ const SWP_NOSIZE = 0x0001;
 const SWP_NOMOVE = 0x0002;
 const SWP_NOZORDER = 0x0004;
 
-// Window class name, extended style, and owner query
-const GetClassNameW = user32.func(
-  "int __stdcall GetClassNameW(void *hWnd, _Out_ uint16 *lpClassName, int nMaxCount)"
-);
-const GetWindowLongPtrW = user32.func(
-  "long __stdcall GetWindowLongPtrW(void *hWnd, int nIndex)"
-);
+// Class name + extended style queries moved to ADR-007 P1 native addon
+// (win32_get_class_name / win32_get_window_long_ptr_w). The owner-query
+// `GetWindow` binding stays on koffi until P2/P3.
 const GetWindowHwnd = user32.func(
   "intptr __stdcall GetWindow(void *hWnd, uint32 uCmd)"
 );
@@ -385,77 +387,68 @@ export interface WindowZInfo {
  * Skips invisible, untitled, and tiny windows (< 50px in either dimension).
  */
 export function enumWindowsInZOrder(): WindowZInfo[] {
-  const fgHwnd = GetForegroundWindow() as bigint;
-  const fgKey = String(fgHwnd);
+  const w32 = requireNativeWin32();
+  const fg = w32.win32GetForegroundWindow!();
+  const fgKey = fg !== null ? String(fg) : "";
   const results: WindowZInfo[] = [];
   let zOrder = 0;
 
-  const cb = koffi.register(
-    (hwnd: bigint) => {
+  const hwnds = w32.win32EnumTopLevelWindows!();
+  for (const hwnd of hwnds) {
+    try {
+      if (!w32.win32IsWindowVisible!(hwnd)) continue;
+      const title = w32.win32GetWindowText!(hwnd);
+      if (!title) continue;
+      const rect = w32.win32GetWindowRect!(hwnd);
+      if (!rect) continue;
+      const width = rect.right - rect.left;
+      const height = rect.bottom - rect.top;
+
+      // Check minimized state BEFORE the size filter: minimized windows have a
+      // "parking" rect (~160x31px) that would otherwise fail the < 50px check.
+      const isMinimized = w32.win32IsIconic!(hwnd);
+      if (!isMinimized && (width < 50 || height < 50)) continue;
+
+      const isMaximized = !isMinimized && w32.win32IsZoomed!(hwnd);
+
+      // Extended fields for perception modal detection
+      const exStyle = w32.win32GetWindowLongPtrW!(hwnd, GWL_EXSTYLE);
+      let ownerHwnd: bigint | null = null;
       try {
-        if (!IsWindowVisible(hwnd)) return true;
-        const title = getWindowTitleW(hwnd);
-        if (!title) return true;
-        const rect = { left: 0, top: 0, right: 0, bottom: 0 };
-        if (!GetWindowRect(hwnd, rect)) return true;
-        const width = rect.right - rect.left;
-        const height = rect.bottom - rect.top;
-
-        // Check minimized state BEFORE the size filter: minimized windows have a
-        // "parking" rect (~160x31px) that would otherwise fail the < 50px check.
-        const isMinimized = !!IsIconic(hwnd);
-        if (!isMinimized && (width < 50 || height < 50)) return true;
-
-        const isMaximized = !isMinimized && !!IsZoomed(hwnd);
-
-        // Extended fields for perception modal detection
-        let exStyle = 0;
-        try { exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as number; } catch { /* keep 0 */ }
-        let ownerHwnd: bigint | null = null;
+        const raw = GetWindowHwnd(hwnd, GW_OWNER) as bigint;
+        ownerHwnd = raw === 0n ? null : raw;
+      } catch { /* keep null */ }
+      const className = w32.win32GetClassName!(hwnd);
+      let isCloaked = false;
+      if (_DwmGetWindowAttribute) {
         try {
-          const raw = GetWindowHwnd(hwnd, GW_OWNER) as bigint;
-          ownerHwnd = raw === 0n ? null : raw;
-        } catch { /* keep null */ }
-        const className = getWindowClassName(hwnd);
-        let isCloaked = false;
-        if (_DwmGetWindowAttribute) {
-          try {
-            const val = [0];
-            _DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, val, 4);
-            isCloaked = val[0] !== 0;
-          } catch { /* keep false */ }
-        }
-        let isEnabled = true;
-        try { isEnabled = !!IsWindowEnabled(hwnd); } catch { /* keep true */ }
-
-        results.push({
-          hwnd: BigInt(hwnd as bigint | number), // normalize koffi intptr → always bigint
-          title,
-          region: isMinimized
-            ? { x: 0, y: 0, width: 0, height: 0 }
-            : { x: rect.left, y: rect.top, width, height },
-          zOrder: zOrder++,
-          isMinimized,
-          isMaximized,
-          isActive: String(hwnd) === fgKey,
-          exStyle,
-          ownerHwnd,
-          className,
-          isCloaked,
-          isEnabled,
-        });
-      } catch {
-        // skip problematic windows
+          const val = [0];
+          _DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, val, 4);
+          isCloaked = val[0] !== 0;
+        } catch { /* keep false */ }
       }
-      return true;
-    },
-    koffi.pointer(EnumWindowsProto)
-  );
+      let isEnabled = true;
+      try { isEnabled = !!IsWindowEnabled(hwnd); } catch { /* keep true */ }
 
-  try {
-    EnumWindows(cb, 0);
-  } finally {
-    koffi.unregister(cb);
+      results.push({
+        hwnd,
+        title,
+        region: isMinimized
+          ? { x: 0, y: 0, width: 0, height: 0 }
+          : { x: rect.left, y: rect.top, width, height },
+        zOrder: zOrder++,
+        isMinimized,
+        isMaximized,
+        isActive: String(hwnd) === fgKey,
+        exStyle,
+        ownerHwnd,
+        className,
+        isCloaked,
+        isEnabled,
+      });
+    } catch {
+      // skip problematic windows
+    }
   }
 
   return results;
@@ -466,11 +459,7 @@ export function enumWindowsInZOrder(): WindowZInfo[] {
  * Returns empty string if the call fails or the window has no title.
  */
 export function getWindowTitleW(hwnd: unknown): string {
-  const MAX = 512;
-  const buf = Buffer.alloc(MAX * 2); // UTF-16LE
-  const len = GetWindowTextW(hwnd, buf, MAX) as number;
-  if (len <= 0) return "";
-  return buf.slice(0, len * 2).toString("utf16le");
+  return requireNativeWin32().win32GetWindowText!(hwnd as bigint);
 }
 
 /**
@@ -479,8 +468,8 @@ export function getWindowTitleW(hwnd: unknown): string {
  */
 export function getWindowRectByHwnd(hwnd: unknown): { x: number; y: number; width: number; height: number } | null {
   try {
-    const rect = { left: 0, top: 0, right: 0, bottom: 0 };
-    if (!GetWindowRect(hwnd, rect)) return null;
+    const rect = requireNativeWin32().win32GetWindowRect!(hwnd as bigint);
+    if (!rect) return null;
     return { x: rect.left, y: rect.top, width: rect.right - rect.left, height: rect.bottom - rect.top };
   } catch {
     return null;
@@ -503,9 +492,12 @@ export function restoreAndFocusWindow(
   } else {
     SetForegroundWindow(hwnd);
   }
-  const rect = { left: 0, top: 0, right: 0, bottom: 0 };
-  GetWindowRect(hwnd, rect);
-  return { x: rect.left, y: rect.top, width: rect.right - rect.left, height: rect.bottom - rect.top, ...(forceFocusOk !== undefined && { forceFocusOk }) };
+  const rect = requireNativeWin32().win32GetWindowRect!(hwnd as bigint);
+  const x = rect?.left ?? 0;
+  const y = rect?.top ?? 0;
+  const width = rect ? rect.right - rect.left : 0;
+  const height = rect ? rect.bottom - rect.top : 0;
+  return { x, y, width, height, ...(forceFocusOk !== undefined && { forceFocusOk }) };
 }
 
 /**
@@ -523,7 +515,8 @@ export function forceSetForegroundWindow(hwnd: unknown): {
   fg_before: bigint;
   fg_after: bigint;
 } {
-  const fg_before = GetForegroundWindow() as bigint;
+  const w32 = requireNativeWin32();
+  const fg_before = w32.win32GetForegroundWindow!() ?? 0n;
   const hwndBig = hwnd as bigint;
 
   // If already in foreground, nothing to do
@@ -531,8 +524,7 @@ export function forceSetForegroundWindow(hwnd: unknown): {
     return { ok: true, attached: false, fg_before, fg_after: fg_before };
   }
 
-  // Use getWindowProcessId helper to avoid passing bigint directly to koffi (type safety)
-  const fgThread = (GetWindowThreadProcessId(fg_before as unknown as bigint, null) as number) >>> 0;
+  const fgThread = w32.win32GetWindowThreadProcessId!(fg_before).threadId >>> 0;
   const myThread = (GetCurrentThreadId() as number) >>> 0;
 
   let attached = false;
@@ -561,7 +553,7 @@ export function forceSetForegroundWindow(hwnd: unknown): {
     }
   }
 
-  const fg_after = GetForegroundWindow() as bigint;
+  const fg_after = w32.win32GetForegroundWindow!() ?? 0n;
   const ok = String(fg_after) === String(hwndBig);
   return { ok, attached, fg_before, fg_after };
 }
@@ -579,11 +571,19 @@ export function clearWindowTopmost(hwnd: unknown): boolean {
 /**
  * Get the PID of the process that owns a window.
  * Returns 0 on failure.
+ *
+ * Accepts `unknown` for compatibility with the historic koffi binding which
+ * was lenient about `null`/`undefined` HWNDs (callers like
+ * `tests/e2e/process-tree.test.ts` rely on this). napi-rs's BigInt coercion
+ * rejects non-bigint values with `BigintExpected`, so we filter here.
  */
 export function getWindowProcessId(hwnd: unknown): number {
-  const pidOut = [0];
-  GetWindowThreadProcessId(hwnd, pidOut);
-  return pidOut[0] >>> 0; // coerce to unsigned
+  if (typeof hwnd !== "bigint") return 0;
+  try {
+    return requireNativeWin32().win32GetWindowThreadProcessId!(hwnd).processId >>> 0;
+  } catch {
+    return 0;
+  }
 }
 
 /** Identity record that survives across HWND reuse / process restart. */
@@ -761,8 +761,8 @@ export function printWindowToBuffer(hwnd: unknown, flags = 2): {
   width: number;
   height: number;
 } {
-  const rect = { left: 0, top: 0, right: 0, bottom: 0 };
-  if (!GetWindowRect(hwnd, rect)) {
+  const rect = requireNativeWin32().win32GetWindowRect!(hwnd as bigint);
+  if (!rect) {
     throw new Error("GetWindowRect failed");
   }
 
@@ -841,8 +841,7 @@ export function printWindowToBuffer(hwnd: unknown, flags = 2): {
  */
 export function getForegroundHwnd(): bigint | null {
   try {
-    const hwnd = GetForegroundWindow() as bigint;
-    return hwnd === 0n ? null : hwnd;
+    return requireNativeWin32().win32GetForegroundWindow!();
   } catch {
     return null;
   }
@@ -854,11 +853,7 @@ export function getForegroundHwnd(): bigint | null {
  */
 export function getWindowClassName(hwnd: unknown): string {
   try {
-    const MAX = 256;
-    const buf = Buffer.alloc(MAX * 2);
-    const len = GetClassNameW(hwnd, buf, MAX) as number;
-    if (len <= 0) return "";
-    return buf.slice(0, len * 2).toString("utf16le");
+    return requireNativeWin32().win32GetClassName!(hwnd as bigint);
   } catch {
     return "";
   }
@@ -870,7 +865,7 @@ export function getWindowClassName(hwnd: unknown): string {
  */
 export function isWindowTopmost(hwnd: unknown): boolean {
   try {
-    const exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as number;
+    const exStyle = requireNativeWin32().win32GetWindowLongPtrW!(hwnd as bigint, GWL_EXSTYLE);
     return (exStyle & WS_EX_TOPMOST) !== 0;
   } catch {
     return false;
@@ -994,7 +989,8 @@ export function postMessageToHwnd(hwnd: unknown, msg: number, wParam: number, lP
  *  Returns null on failure — callers should fall back to the top-level hwnd. */
 export function getFocusedChildHwnd(targetHwnd: unknown): bigint | null {
   try {
-    const targetThread = (GetWindowThreadProcessId(targetHwnd, null) as number) >>> 0;
+    const targetThread =
+      requireNativeWin32().win32GetWindowThreadProcessId!(targetHwnd as bigint).threadId >>> 0;
     if (targetThread === 0) return null; // GetWindowThreadProcessId failed
     const myThread = (GetCurrentThreadId() as number) >>> 0;
     if (targetThread === myThread) {
