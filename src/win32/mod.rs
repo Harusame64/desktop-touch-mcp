@@ -27,3 +27,6 @@ pub(crate) mod input;
 pub(crate) mod window_op;
 #[cfg(windows)]
 pub(crate) mod scroll;
+// ADR-007 P4: final 5 owner/ancestor/enabled/popup/cloaked utilities.
+#[cfg(windows)]
+pub(crate) mod dwm;
