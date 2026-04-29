@@ -266,9 +266,22 @@ pub(crate) fn shutdown_l1_for_test(timeout: Duration) -> Result<(), &'static str
     };
     match inner_arc.shutdown_with_timeout(timeout) {
         Ok(()) => {
-            // Thread confirmed joined; safe to clear the slot now.
+            // Thread confirmed joined; clear the slot **only if it
+            // still holds the same `Arc` we shut down**. A concurrent
+            // caller may already have cleared it and re-spawned a
+            // fresh worker via `ensure_l1()`, in which case clearing
+            // here would orphan that new worker (slot → None) and let
+            // the next `ensure_l1()` spawn a third worker — re-
+            // breaking the singleton invariant this `Ok` arm is
+            // supposed to preserve. Codex PR #86 P2.
             let mut guard = cell.lock().unwrap_or_else(|e| e.into_inner());
-            *guard = None;
+            if guard
+                .as_ref()
+                .map(|current| Arc::ptr_eq(current, &inner_arc))
+                .unwrap_or(false)
+            {
+                *guard = None;
+            }
             Ok(())
         }
         Err(e) => {
