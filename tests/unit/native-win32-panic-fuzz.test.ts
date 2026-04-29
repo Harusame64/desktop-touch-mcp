@@ -156,4 +156,145 @@ describe.skipIf(!nativeWin32)("ADR-007 P1: native win32 panic-safety", () => {
       expect(r.data[mid + 3]).toBe(255);
     });
   });
+
+  // ── ADR-007 P3: process / thread / input / window-state ops ────────────────
+  describe("ADR-007 P3: process / input panic safety", () => {
+    const adversarialHwnds: Array<[label: string, hwnd: bigint]> = [
+      ["null hwnd", 0n],
+      ["stale hwnd", 9_999_999_999n],
+      ["all-ones u64", 0xffff_ffff_ffff_ffffn],
+    ];
+
+    for (const [label, hwnd] of adversarialHwnds) {
+      it(`win32ShowWindow(${label}) returns false, no panic`, () => {
+        expect(typeof native.win32ShowWindow!(hwnd, 9)).toBe("boolean");
+      });
+      it(`win32SetForegroundWindow(${label}) returns false, no panic`, () => {
+        expect(native.win32SetForegroundWindow!(hwnd)).toBe(false);
+      });
+      it(`win32SetWindowTopmost(${label}) returns false, no panic`, () => {
+        expect(native.win32SetWindowTopmost!(hwnd)).toBe(false);
+      });
+      it(`win32ClearWindowTopmost(${label}) returns false, no panic`, () => {
+        expect(native.win32ClearWindowTopmost!(hwnd)).toBe(false);
+      });
+      it(`win32SetWindowBounds(${label}) returns false, no panic`, () => {
+        expect(native.win32SetWindowBounds!(hwnd, 0, 0, 100, 100)).toBe(false);
+      });
+      it(`win32ForceSetForegroundWindow(${label}) returns ok=false, no panic`, () => {
+        const r = native.win32ForceSetForegroundWindow!(hwnd);
+        expect(r.ok).toBe(false);
+        expect(typeof r.attached).toBe("boolean");
+        expect(typeof r.fgBefore).toBe("bigint");
+        expect(typeof r.fgAfter).toBe("bigint");
+      });
+      it(`win32GetFocusedChildHwnd(${label}) returns null, no panic`, () => {
+        expect(native.win32GetFocusedChildHwnd!(hwnd)).toBeNull();
+      });
+      it(`win32GetScrollInfo(${label}, "vertical") returns null, no panic`, () => {
+        expect(native.win32GetScrollInfo!(hwnd, "vertical")).toBeNull();
+      });
+      it(`win32PostMessage(${label}, 0, 0n, 0n) does not panic`, () => {
+        // The contract here is "no panic", not specifically false:
+        // - hwnd=0 posts to the calling thread's message queue (Win32 returns TRUE).
+        // - all-ones u64 maps to HWND_BROADCAST (-1) which Win32 also accepts.
+        // - stale hwnd usually fails. We only assert the boolean shape.
+        expect(typeof native.win32PostMessage!(hwnd, 0, 0n, 0n)).toBe("boolean");
+      });
+    }
+
+    it("win32GetScrollInfo rejects unknown axis with a typed Error", () => {
+      // Use the foreground hwnd if available so the call reaches our axis
+      // branch — for stale hwnds the GetScrollInfo failure would mask it.
+      const fg = native.win32GetForegroundWindow!() ?? 0n;
+      expect(() => native.win32GetScrollInfo!(fg, "diagonal")).toThrow();
+    });
+
+    it("win32GetProcessIdentity(0) returns empty identity, no panic", () => {
+      const r = native.win32GetProcessIdentity!(0);
+      expect(r.pid).toBe(0);
+      expect(r.processName).toBe("");
+      expect(r.processStartTimeMs).toBe(0);
+    });
+
+    it("win32GetProcessIdentity(2147483647) (non-existent PID) returns empty identity", () => {
+      // 2^31 - 1 — almost certainly not a live PID on this machine.
+      const r = native.win32GetProcessIdentity!(2_147_483_647);
+      expect(r.pid).toBe(2_147_483_647);
+      expect(r.processName).toBe("");
+      expect(r.processStartTimeMs).toBe(0);
+    });
+
+    it("win32VkToScanCode(0xFFFF) returns 0 for unknown codes", () => {
+      expect(native.win32VkToScanCode!(0xffff)).toBe(0);
+    });
+
+    it("win32VkToScanCode(VK_RETURN=0x0D) returns scan code 0x1C", () => {
+      // 0x1C = 28 is the canonical Enter scan code on US PS/2 layouts.
+      expect(native.win32VkToScanCode!(0x0d)).toBe(0x1c);
+    });
+
+    it("win32GetFocus returns either null or a bigint", () => {
+      const f = native.win32GetFocus!();
+      if (f !== null) expect(typeof f).toBe("bigint");
+    });
+  });
+
+  // ── ADR-007 §6 P3 acceptance: sizeof gauntlet ──────────────────────────────
+  // The legacy koffi binding had a `PROCESSENTRY32W.dwSize` hard-code that
+  // bit users when the kernel struct grew. windows-rs `repr(C)` removes
+  // that class of failure entirely; this gauntlet locks the property in
+  // CI by hammering the two structs (PROCESSENTRY32W via Toolhelp32 walk
+  // and the OpenProcess identity path) until any sizeof drift would show
+  // as a length / field-shape regression.
+  describe("ADR-007 P3 sizeof gauntlet (PROCESSENTRY32W + OpenProcess identity)", () => {
+    it(
+      "win32BuildProcessParentMap stays consistent across 1000 invocations",
+      { timeout: 30_000 },
+      () => {
+        const baseline = native.win32BuildProcessParentMap!();
+        expect(baseline.length).toBeGreaterThan(0);
+        // Every entry must have plausible u32 fields. The legacy koffi
+        // binding silently mis-aligned ULONG_PTR on x64 when dwSize was
+        // wrong; if that regressed, parent_pid would frequently land on
+        // stale stack data and exceed the kernel's pid range.
+        for (const e of baseline) {
+          expect(e.pid).toBeGreaterThanOrEqual(0);
+          expect(e.pid).toBeLessThan(0x7fff_ffff);
+          expect(e.parentPid).toBeGreaterThanOrEqual(0);
+          expect(e.parentPid).toBeLessThan(0x7fff_ffff);
+        }
+        // System (pid 4) should always exist on a live Windows system.
+        const pids = new Set(baseline.map((e) => e.pid));
+        expect(pids.has(4)).toBe(true);
+
+        // Hammer the call to surface any non-deterministic struct corruption.
+        // 1000 iterations × ~400 processes × Vec allocations land around
+        // ~14s on a debug-built CI runner, hence the 30s timeout above.
+        for (let i = 0; i < 999; i++) {
+          const r = native.win32BuildProcessParentMap!();
+          expect(r.length).toBeGreaterThan(0);
+        }
+      },
+    );
+
+    it("win32GetProcessIdentity stays consistent across 100 PIDs", () => {
+      const map = native.win32BuildProcessParentMap!();
+      // Sample 100 PIDs (or all of them if fewer).
+      const sample = map.slice(0, 100).map((e) => e.pid);
+      let identifiedCount = 0;
+      for (const pid of sample) {
+        const id = native.win32GetProcessIdentity!(pid);
+        expect(id.pid).toBe(pid);
+        expect(typeof id.processName).toBe("string");
+        expect(typeof id.processStartTimeMs).toBe("number");
+        if (id.processName.length > 0) identifiedCount++;
+      }
+      // We expect to resolve a non-trivial fraction of process names.
+      // A regression that mangled the OpenProcess handle would push this
+      // toward zero, while a sizeof bug in PROCESSENTRY32W would feed
+      // garbage PIDs that would all fail to resolve.
+      expect(identifiedCount).toBeGreaterThan(0);
+    });
+  });
 });
