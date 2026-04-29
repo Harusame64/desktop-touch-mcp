@@ -52,6 +52,9 @@ jobs:
       - name: Check native types (Rust #[napi] vs index.d.ts drift)
         run: npm run check:native-types
 
+      - name: Check no koffi (ADR-007 §6 P4 acceptance — zero koffi.X call sites)
+        run: npm run check:no-koffi
+
       - name: Fetch node.lib for MSVC linking
         shell: pwsh
         run: |
