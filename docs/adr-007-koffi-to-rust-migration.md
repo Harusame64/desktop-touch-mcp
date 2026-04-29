@@ -155,6 +155,52 @@ windows = { version = "0.62", features = [
 ] }
 ```
 
+### 3.4 Panic Containment + Worker Lifecycle
+
+L1 の堅牢性の核心は **「プロセス全滅を起こさない」** ことと **「worker thread の lifecycle を Node.js libuv と安全に接続する」** ことの 2 点。Gemini review 指摘の対応として、以下を強制する。
+
+#### 3.4.1 Panic Containment
+
+| 仕組み | 内容 |
+|---|---|
+| 自前 attr macro **`#[napi_safe]`** | 全 `#[napi]` export 関数を `std::panic::catch_unwind` で wrap、`#[napi]` 単体使用は禁止 |
+| clippy lint | `#[napi]` のみで `#[napi_safe]` が無い関数を `deny` |
+| CI panic-fuzz テスト | 各 `#[napi]` 関数に異常入力 (negative size / null Buffer / UTF-16 不正 / NaN 等) を投入、プロセス生存を確認 |
+| panic 時の envelope 化 | `MostLikelyCause::Unknown` + `failed_at_layer="L1-panic"` で typed return、`_errors.ts` SUGGESTS coverage 改善対象 |
+| `panic_rate_per_min` 監視 | catch_unwind hit を `server_status` に集約、steady state で 0/min (統合書 §17.6) |
+
+`#[napi_safe]` 実装スケッチ:
+
+```rust
+#[proc_macro_attribute]
+pub fn napi_safe(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    // 1. #[napi] export 名を抽出
+    // 2. fn body を std::panic::catch_unwind で wrap
+    // 3. panic を Result<T, napi::Error> に変換
+    //    → napi::Error::from_reason(format!("panic in {}: {:?}", fn_name, payload))
+    // 4. panic 発生回数を atomic counter に記録 (server_status 用)
+}
+```
+
+#### 3.4.2 Worker Lifecycle
+
+timely worker (ADR-008) と L1 capture worker は **dedicated thread** (既存 UIA COM thread と同パターン)、Node.js libuv main thread とは napi-rs `AsyncTask` で接続する。
+
+| ライフサイクル段階 | 内容 |
+|---|---|
+| **起動** | 初回 `#[napi]` 呼び出し時に lazy init (`OnceLock<Sender<Task>>`)、副作用なしで idle 待ち |
+| **稼働中の通信** | napi-rs `AsyncTask` で worker → libuv main thread へ Promise resolve、`crossbeam-channel` で非同期 task 配送 |
+| **panic 時 auto-restart** | catch_unwind で worker 内 panic を捕捉、worker 再起動、次の `#[napi]` 呼び出しで新 thread spawn、`recent_failures_log` (server_status) に記録 |
+| **graceful shutdown** | Node.js process exit 時に `Drop` で shutdown channel に signal、`join` (timeout 1s)、超過したら force terminate + warning log |
+| **shutdown ordering** | L5 → L4 → L3 → L2 → L1 の **逆順** で停止 (新規 tool call 拒否 → in-flight 完了待ち → arrangement flush → WAL fsync → worker join) |
+
+#### 3.4.3 Acceptance Criteria
+
+- panic-fuzz CI で **プロセス全滅 0 件**
+- worker auto-restart で **次の呼び出しが 1s 以内に成功**
+- shutdown 完了が **3s 以内** (P5d 完了基準)
+- `clippy` カスタムルールで `#[napi]` のみで `#[napi_safe]` 無しが **CI で deny pass**
+
 ---
 
 ## 4. EventEnvelope Schema (本 ADR の中核)

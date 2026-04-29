@@ -307,11 +307,14 @@ TimeCompacted
 // HW Tier
 HwTierUnavailable
 
+// Envelope サイズ管理 (§5.6 と同期)
+EnvelopeSizeExceeded
+
 // その他
 AccessDenied | Unknown
 ```
 
-合計 25 + 11 = **36 codes**。
+合計 25 + 12 = **37 codes**。
 
 #### 運用ルール
 
@@ -342,6 +345,37 @@ AccessDenied | Unknown
 - **早期 Phase では `query_past` を返さない** → P1 段階の wrapper test は `query_past` を期待しない (test fixture が phase-aware であることが必要)
 - envelope の `_version` は Phase ごとに上げない (semver のみで上げる)、Phase 間移行は internal な enrichment 拡張として扱う
 - server 側の現 Phase は `server_status` の `engine.phase` フィールドで client に通知 (実装は P1 着手時)
+
+### 5.6 Envelope Payload Size SLO (Gemini review 指摘対応)
+
+LLM context window 経済性を保証するため、envelope payload size に **上限ガイドライン** と **計測 KPI** を設ける。
+
+#### 5.6.1 Size 上限
+
+| Phase / include パターン | size 上限 | KPI 名 |
+|---|---|---|
+| 必須最小 (P1) | **< 1KB** | `envelope_size_minimal_p99` |
+| 失敗 envelope (P2) | **< 5KB** | `envelope_size_failure_p99` |
+| `include=causal` (P3) | +1KB 以内 | (差分 KPI) |
+| `include=invariants` (P3) | +0.5KB 以内 | (差分 KPI) |
+| `query_past` リンク (P4 default-on) | +0.1KB | (差分 KPI) |
+| `dry_run=true` の `if_you_did` (P5) | +2KB 以内 | (差分 KPI) |
+| `include=working:N` (N=10 default、P6) | +N×0.3KB 以内 | (差分 KPI) |
+| `include=episodic:N` (N=5 default、P6) | +N×0.5KB 以内 | (差分 KPI) |
+| **フル (causal+invariants+working:10+episodic:5+time_travel)** | **< 10KB** | `envelope_size_full_p99` |
+
+#### 5.6.2 計測
+
+- bench harness (`benches/l4_envelope.rs`) で各パターンのサイズを CI 計測
+- **前回 main から 5% 増で warning、20% 増で fail**
+- 既存 `_post.ts` (perception envelope) との比較を bench で出す
+- LLM 実セッションログから「実 include 利用率」を `server_status` 経由で集約 (将来運用フィードバック)
+
+#### 5.6.3 サイズ超過時の挙動
+
+- envelope assembly 中に上限予測超過 → **`confidence: degraded`** に降格 (統合書 §17.6.1)、`if_unexpected.most_likely_cause: "EnvelopeSizeExceeded"` で typed code 通知 (§5.4 に追加済)
+- LLM が大きな include を要求 → server 側で truncate (`working:N` の N を上限内に丸め、応答に `_truncated_to: N'` を含める)
+- truncate が発生したら envelope に **`_truncation: { reason, original_n, truncated_n }`** を付与 (LLM が再要求の判断材料に)
 
 ---
 
