@@ -49,11 +49,21 @@
 
 ### 2.4 L4 Envelope Assembly (`benches/l4_envelope.rs`)
 
-| KPI | 目標 (制約 §5.4) | bench fn |
+| KPI | 目標 (制約 §5.4 + ADR-010 §5.6) | bench fn |
 |---|---|---|
 | envelope assembly p99 (include 最大時) | < 5ms | `bench_envelope_assembly_full` |
 | envelope assembly p99 (必須最小) | < 2ms | `bench_envelope_assembly_minimal` |
 | typed reason coverage | > 95% | `bench_typed_reason_coverage` |
+| **envelope size (必須最小)** | **< 1KB** | `bench_envelope_size_minimal` |
+| **envelope size (失敗 envelope)** | **< 5KB** | `bench_envelope_size_failure` |
+| **envelope size (フル include)** | **< 10KB** | `bench_envelope_size_full` |
+| `include=causal` の size 加算 | +1KB 以内 | `bench_envelope_size_causal_delta` |
+| `include=invariants` の size 加算 | +0.5KB 以内 | `bench_envelope_size_invariants_delta` |
+| `include=working:N` の size 加算 | +N×0.3KB 以内 | `bench_envelope_size_working_delta` |
+| `include=episodic:N` の size 加算 | +N×0.5KB 以内 | `bench_envelope_size_episodic_delta` |
+| `query_past` リンク | +0.1KB | `bench_envelope_size_query_past_delta` |
+
+regression policy: 前回 main から **5% 増で warning、20% 増で fail**。
 
 ### 2.5 L5 Tool Surface (`benches/l5_tool_surface.rs`)
 
@@ -77,6 +87,15 @@
 | timestamp source | ✓ | ✓ | ✓ | ✓ |
 
 env `DESKTOP_TOUCH_MAX_TIER=N` で各 tier に pin して計測。
+
+### 2.6.1 Tier Fallback Overhead (Gemini review 指摘対応、統合書 §9.6)
+
+| KPI | 目標 | bench fn |
+|---|---|---|
+| Tier N 失敗検出 + Tier N-1 cascade 開始 overhead p99 | < 500μs | `bench_tier_fallback_overhead` |
+| 5 連続 Tier 3 失敗 → 強制 Tier 2 pin の動作確認 | (機能テスト) | `bench_tier_pin_after_consecutive_failures` |
+
+これらは個別 op の SLO とは **独立に計測**、op 単位 SLO に含めない。
 
 ### 2.7 Replay (`benches/replay.rs`)
 

@@ -161,6 +161,20 @@ pub struct EventEnvelope {
 - `differential-dataflow` 0.13+
 - L1 EventEnvelope schema (`_version` 共通)
 
+### 3.8 Worker Lifecycle (ADR-007 §3.4 と整合)
+
+L2 (timely + DD) と L1 capture worker は **dedicated thread**。Node.js libuv main thread とは napi-rs `AsyncTask` で接続。
+
+| 段階 | 規約 |
+|---|---|
+| 起動 | 初回 `#[napi]` 呼び出し時 lazy init (`OnceLock<Sender<Task>>`) |
+| 通信 | `AsyncTask` + `crossbeam-channel` (UIA bridge と同パターン) |
+| panic 時 | `catch_unwind` で捕捉、worker 再起動、`recent_failures_log` 記録 |
+| graceful shutdown | shutdown channel + 1s join timeout、超過は force terminate + warning |
+| shutdown ordering | L5 → L4 → L3 → L2 → L1 の **逆順** |
+
+詳細は ADR-007 §3.4 を SSOT として参照。
+
 ---
 
 ## 4. L3: Compute (IVM)
@@ -308,6 +322,7 @@ pub struct EventEnvelope {
 | 3 | commit 軸 tool は L1 commit を経由 (直接 OS API を叩かない) | event log 不完全 |
 | 4 | subscribe 軸 tool は capability 経由のみ | push 配信の整合性 |
 | 5 | `include` 引数は string array のみ受付 (struct 化しない) | schema 過剰複雑化 |
+| 6 | **既存 tool 名 / 関数シグネチャ / positional args は不変、新規 tool 追加なし、リネームなし** (統合書 P7 / §7.4) | tool surface の互換性破綻、LLM 学習無効化 |
 
 ### 6.4 性能制約
 
@@ -331,6 +346,8 @@ pub struct EventEnvelope {
 - **計算しない** (L4 envelope を受けて MCP に流すだけ)
 - **新しい event を生成しない** (commit は L1 経由必須)
 - **session 状態を保持しない** (session 状態は L4 working/episodic memory)
+- **tool 名のリネーム / 新規 tool 追加 / positional args 変更を禁止** (統合書 P7 / §7.4、tool surface 不変原則)
+- **`include` / `dry_run` / `as_of` 等の横断的 optional 引数は L5 wrapper が一元解釈** し、tool 個別実装に渡さない
 
 ### 6.7 依存
 
@@ -394,6 +411,19 @@ L1 から L5 へエラーが伝播する経路が **typed event として明示*
 
 - 各 op の Tier は **op 単位で独立**、L1 と L3 は別の Tier を選んで OK
 - ただし `server_status` で全 op の Tier 状態を集約 (§13)
+
+### 7.7 継続監視 SLO (統合書 §17.6 と同期、Gemini review 指摘対応)
+
+| 監視項目 | 統合書 §17.6 閾値 | 違反時の挙動 |
+|---|---|---|
+| `envelope_size_full_p99` | < 10KB | confidence `degraded`、warning event |
+| `tier_fallback_overhead_p99` | < 500μs | tier 強制 pin 5min |
+| `worker_lag_p99` | < 8.5ms | confidence `degraded` |
+| `arrangement_size_total` | < 512MB | compaction 加速 |
+| `panic_rate_per_min` | 0 in steady state | 自動 worker 再起動 |
+| `wal_disk_usage_mb` | < 1024MB | rotation 加速 |
+
+詳細・SSOT は統合書 §17.6 を参照。本書は cross-layer 制約として **違反時の挙動を確認する役割** に留める。
 
 ---
 

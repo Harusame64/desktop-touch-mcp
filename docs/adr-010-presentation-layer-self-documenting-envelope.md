@@ -56,7 +56,23 @@ LLM の不安は 7 つに分解できる。
 - lease_token は単一 ID ではなく 4-tuple (`entityId` / `viewId` / `targetGeneration` / `evidenceDigest`)、envelope 内で展開 → 統合書 §4 / `LeaseStore` 既存実装
 - L4 envelope assembly 制約 (p99 < 5ms 等) → layer-constraints §5
 - L5 tool surface 制約 (query/commit/subscribe SLO) → layer-constraints §6
-- typed reason 35 codes (PascalCase) → §5.4
+- typed reason 37 codes (PascalCase、Codex/Gemini review 経由で拡張) → §5.4
+
+### 1.5 Tool Surface 不変原則 (重要、誤読防止、統合書 P7 / §7.4 と同期)
+
+本 ADR は **既存 tool surface (~28 tool) を維持** し、応答 shape のみを envelope に進化させる。**新規 tool は追加しない**:
+
+| 観点 | 規約 |
+|---|---|
+| 既存 tool 名 | リネームしない |
+| tool 関数シグネチャ (positional args) | 変更しない |
+| 新規 tool 追加 | しない (本設計のスコープ外) |
+| `include` / `dry_run` / `as_of` 等 | 全 tool に共通する **横断的 optional 引数** (L5 wrapper が一元解釈、tool 個別実装は修正不要) |
+| `query_past`、`state_at(t)`、`replay(...)` 等の疑似コード | **新規 tool ではない**。L5 wrapper の内部 URI / 関数、または既存 tool の `as_of` 等の引数経由で参照 |
+
+LLM 露出の tool surface は **本設計で増えない**。「envelope の include で working/episodic memory を取れる」「dry_run で投機実行できる」「query_past で過去状態を引ける」等の表現は、**既存 tool が共通引数を受けて機能を獲得する** 形で実現する (L5 wrapper の責務、tool 個別の登録・命名・schema は変わらない)。
+
+詳細は統合書 §2 P7 / §7.4 を SSOT として参照。
 
 ---
 
@@ -307,11 +323,14 @@ TimeCompacted
 // HW Tier
 HwTierUnavailable
 
+// Envelope サイズ管理 (§5.6 と同期)
+EnvelopeSizeExceeded
+
 // その他
 AccessDenied | Unknown
 ```
 
-合計 25 + 11 = **36 codes**。
+合計 25 + 12 = **37 codes**。
 
 #### 運用ルール
 
@@ -342,6 +361,37 @@ AccessDenied | Unknown
 - **早期 Phase では `query_past` を返さない** → P1 段階の wrapper test は `query_past` を期待しない (test fixture が phase-aware であることが必要)
 - envelope の `_version` は Phase ごとに上げない (semver のみで上げる)、Phase 間移行は internal な enrichment 拡張として扱う
 - server 側の現 Phase は `server_status` の `engine.phase` フィールドで client に通知 (実装は P1 着手時)
+
+### 5.6 Envelope Payload Size SLO (Gemini review 指摘対応)
+
+LLM context window 経済性を保証するため、envelope payload size に **上限ガイドライン** と **計測 KPI** を設ける。
+
+#### 5.6.1 Size 上限
+
+| Phase / include パターン | size 上限 | KPI 名 |
+|---|---|---|
+| 必須最小 (P1) | **< 1KB** | `envelope_size_minimal_p99` |
+| 失敗 envelope (P2) | **< 5KB** | `envelope_size_failure_p99` |
+| `include=causal` (P3) | +1KB 以内 | (差分 KPI) |
+| `include=invariants` (P3) | +0.5KB 以内 | (差分 KPI) |
+| `query_past` リンク (P4 default-on) | +0.1KB | (差分 KPI) |
+| `dry_run=true` の `if_you_did` (P5) | +2KB 以内 | (差分 KPI) |
+| `include=working:N` (N=10 default、P6) | +N×0.3KB 以内 | (差分 KPI) |
+| `include=episodic:N` (N=5 default、P6) | +N×0.5KB 以内 | (差分 KPI) |
+| **フル (causal+invariants+working:10+episodic:5+time_travel)** | **< 10KB** | `envelope_size_full_p99` |
+
+#### 5.6.2 計測
+
+- bench harness (`benches/l4_envelope.rs`) で各パターンのサイズを CI 計測
+- **前回 main から 5% 増で warning、20% 増で fail**
+- 既存 `_post.ts` (perception envelope) との比較を bench で出す
+- LLM 実セッションログから「実 include 利用率」を `server_status` 経由で集約 (将来運用フィードバック)
+
+#### 5.6.3 サイズ超過時の挙動
+
+- envelope assembly 中に上限予測超過 → **`confidence: degraded`** に降格 (統合書 §17.6.1)、`if_unexpected.most_likely_cause: "EnvelopeSizeExceeded"` で typed code 通知 (§5.4 に追加済)
+- LLM が大きな include を要求 → server 側で truncate (`working:N` の N を上限内に丸め、応答に `_truncated_to: N'` を含める)
+- truncate が発生したら envelope に **`_truncation: { reason, original_n, truncated_n }`** を付与 (LLM が再要求の判断材料に)
 
 ---
 
