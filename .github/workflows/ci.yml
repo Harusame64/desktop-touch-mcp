@@ -55,6 +55,13 @@ jobs:
       - name: Check no koffi (ADR-007 §6 P4 acceptance — zero koffi.X call sites)
         run: npm run check:no-koffi
 
+      - name: Check Rust workspace compiles (covers non-napi member crates)
+        # `npm run build:rs:debug` only builds the root crate via napi-rs, so
+        # workspace members like `engine-perception` (ADR-008 D1+) are not
+        # exercised by the napi step alone. This explicit `cargo check
+        # --workspace` ensures every workspace member compiles in CI.
+        run: npm run check:rs-workspace
+
       - name: Fetch node.lib for MSVC linking
         shell: pwsh
         run: |
