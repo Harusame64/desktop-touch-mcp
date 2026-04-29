@@ -99,6 +99,28 @@ export interface NativeThreadProcessId {
   processId: number
 }
 
+// ─── Win32 GDI / monitor / DPI (ADR-007 P2) ──────────────────────────────────
+
+export interface NativePrintWindowResult {
+  data: Buffer
+  width: number
+  height: number
+}
+
+export interface NativeMonitorInfo {
+  handle: bigint
+  primary: boolean
+  boundsLeft: number
+  boundsTop: number
+  boundsRight: number
+  boundsBottom: number
+  workLeft: number
+  workTop: number
+  workRight: number
+  workBottom: number
+  dpi: number
+}
+
 // ─── Image processing (Hybrid Non-CDP pipeline) ──────────────────────────────
 
 export interface NativePreprocessOptions {
@@ -175,3 +197,9 @@ export declare function win32IsZoomed(hwnd: bigint): boolean
 export declare function win32GetClassName(hwnd: bigint): string
 export declare function win32GetWindowThreadProcessId(hwnd: bigint): NativeThreadProcessId
 export declare function win32GetWindowLongPtrW(hwnd: bigint, nIndex: number): number
+
+// ─── Win32 GDI / monitor / DPI (ADR-007 P2) ──────────────────────────────────
+export declare function win32PrintWindowToBuffer(hwnd: bigint, flags: number): NativePrintWindowResult
+export declare function win32EnumMonitors(): NativeMonitorInfo[]
+export declare function win32GetWindowDpi(hwnd: bigint): number
+export declare function win32SetProcessDpiAwareness(level: number): boolean

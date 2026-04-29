@@ -18,12 +18,11 @@ function requireNativeWin32(): NonNullable<typeof nativeWin32> {
 // DLL loading
 // ─────────────────────────────────────────────────────────────────────────────
 
-// `user32` still hosts a handful of legacy bindings (PrintWindow, ShowWindow,
-// SetForegroundWindow, etc.) that move to windows-rs in P2/P3. The 10 hot-path
-// APIs handled in this PR are no longer loaded here.
+// `user32` still hosts a handful of legacy bindings (ShowWindow,
+// SetForegroundWindow, SetWindowPos, AttachThreadInput, etc.) that move to
+// windows-rs in P3. `gdi32` / `shcore` were retired in P2 (their last
+// callers — PrintWindow / GDI / DPI — now live in src/win32/{gdi,dpi}.rs).
 const user32 = koffi.load("user32.dll");
-const gdi32 = koffi.load("gdi32.dll");
-const shcore = koffi.load("shcore.dll");
 const kernel32 = koffi.load("kernel32.dll");
 // dwmapi — window composition queries; available on Vista+ (always present on Win 10/11)
 let _dwmapi: ReturnType<typeof koffi.load> | null = null;
@@ -40,13 +39,8 @@ const RECT = koffi.struct("RECT", {
   bottom: "int32",
 });
 
-// Registered with koffi by name; referenced as a string in func signatures below, no JS handle needed.
-koffi.struct("MONITORINFO", {
-  cbSize: "uint32",
-  rcMonitor: RECT,
-  rcWork: RECT,
-  dwFlags: "uint32",
-});
+// MONITORINFO koffi struct removed in P2 — see src/win32/monitor.rs for the
+// windows-rs replacement.
 
 /** PROCESSENTRY32W — Toolhelp32 snapshot entry for process enumeration. */
 const PROCESSENTRY32W = koffi.struct("PROCESSENTRY32W", {
@@ -62,20 +56,8 @@ const PROCESSENTRY32W = koffi.struct("PROCESSENTRY32W", {
   szExeFile: koffi.array("uint16", 260), // WCHAR[MAX_PATH]
 });
 
-// Registered with koffi by name; referenced as a string in func signatures below, no JS handle needed.
-koffi.struct("BITMAPINFOHEADER", {
-  biSize: "uint32",
-  biWidth: "int32",
-  biHeight: "int32",
-  biPlanes: "uint16",
-  biBitCount: "uint16",
-  biCompression: "uint32",
-  biSizeImage: "uint32",
-  biXPelsPerMeter: "int32",
-  biYPelsPerMeter: "int32",
-  biClrUsed: "uint32",
-  biClrImportant: "uint32",
-});
+// BITMAPINFOHEADER koffi struct removed in P2 — GetDIBits now lives in
+// src/win32/gdi.rs and constructs the struct natively.
 
 /** SCROLLINFO — passed to GetScrollInfo to query scrollbar position. */
 const SCROLLINFO = koffi.struct("SCROLLINFO", {
@@ -103,57 +85,23 @@ if (koffi.sizeof(SCROLLINFO) !== 28) {
 // Function bindings
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Window functions — the 10 hot-path bindings below are now in
-// src/win32/window.rs (ADR-007 P1) and reached via `requireNativeWin32()`:
-//   EnumWindows, GetWindowTextW, GetWindowRect, GetForegroundWindow,
-//   IsWindowVisible, IsIconic, IsZoomed, GetClassNameW,
-//   GetWindowThreadProcessId, GetWindowLongPtrW.
+// Window functions — the hot-path bindings below have moved to the native
+// addon (ADR-007 P1 = src/win32/window.rs, P2 = src/win32/{gdi,monitor,dpi}.rs):
+//   P1: EnumWindows, GetWindowTextW, GetWindowRect, GetForegroundWindow,
+//       IsWindowVisible, IsIconic, IsZoomed, GetClassNameW,
+//       GetWindowThreadProcessId, GetWindowLongPtrW
+//   P2: PrintWindow, GetDC, ReleaseDC, CreateCompatibleDC, CreateCompatibleBitmap,
+//       SelectObject, DeleteObject, DeleteDC, GetDIBits, EnumDisplayMonitors,
+//       GetMonitorInfoW, MonitorFromWindow, GetDpiForMonitor, SetProcessDpiAwareness
 //
-// Remaining koffi-backed bindings stay until P2/P3 (PrintWindow, ShowWindow,
-// SetForegroundWindow, etc.).
-const PrintWindow = user32.func(
-  "bool __stdcall PrintWindow(void *hwnd, void *hdcBlt, uint32 nFlags)"
-);
+// Remaining koffi bindings move in P3 (ShowWindow, SetForegroundWindow,
+// SetWindowPos, AttachThreadInput, OpenProcess/Toolhelp32, etc.).
 const ShowWindow = user32.func("bool __stdcall ShowWindow(void *hWnd, int nCmdShow)");
 const SetForegroundWindow = user32.func("bool __stdcall SetForegroundWindow(void *hWnd)");
 
-// DC / GDI
-const GetDC = user32.func("void* __stdcall GetDC(void *hWnd)");
-const ReleaseDC = user32.func("int __stdcall ReleaseDC(void *hWnd, void *hDC)");
-const CreateCompatibleDC = gdi32.func("void* __stdcall CreateCompatibleDC(void *hdc)");
-const CreateCompatibleBitmap = gdi32.func(
-  "void* __stdcall CreateCompatibleBitmap(void *hdc, int cx, int cy)"
-);
-const SelectObject = gdi32.func(
-  "void* __stdcall SelectObject(void *hdc, void *h)"
-);
-const DeleteObject = gdi32.func("bool __stdcall DeleteObject(void *ho)");
-const DeleteDC = gdi32.func("bool __stdcall DeleteDC(void *hdc)");
-const GetDIBits = gdi32.func(
-  "int __stdcall GetDIBits(void *hdc, void *hbm, uint32 start, uint32 cLines, uint8 *lpvBits, _Inout_ BITMAPINFOHEADER *lpbmi, uint32 usage)"
-);
-
-// Monitor enumeration
-const MonitorEnumProcProto = koffi.proto(
-  "bool __stdcall MonitorEnumProc(void *hMonitor, void *hdcMonitor, RECT *lprcMonitor, intptr dwData)"
-);
-const EnumDisplayMonitors = user32.func(
-  "bool __stdcall EnumDisplayMonitors(void *hdc, RECT *lprcClip, MonitorEnumProc *lpfnEnum, intptr dwData)"
-);
-const GetMonitorInfoW = user32.func(
-  "bool __stdcall GetMonitorInfoW(void *hMonitor, _Inout_ MONITORINFO *lpmi)"
-);
-const MonitorFromWindow = user32.func(
-  "void* __stdcall MonitorFromWindow(void *hWnd, uint32 dwFlags)"
-);
-
-// DPI
-const GetDpiForMonitor = shcore.func(
-  "int __stdcall GetDpiForMonitor(void *hmonitor, int dpiType, _Out_ uint32 *dpiX, _Out_ uint32 *dpiY)"
-);
-const SetProcessDpiAwareness = shcore.func(
-  "int __stdcall SetProcessDpiAwareness(int value)"
-);
+// DC / GDI / Monitor enum / DPI bindings have all moved to the native addon
+// (ADR-007 P2). The TS wrappers below (`enumMonitors`, `printWindowToBuffer`,
+// `getWindowDpi`) call into `nativeWin32.win32*` directly.
 
 // Window → PID mapping moved to ADR-007 P1 native addon
 // (see src/win32/window.rs::win32_get_window_thread_process_id).
@@ -273,9 +221,11 @@ export function getLastActivePopup(hwnd: unknown): bigint | null {
 // ─────────────────────────────────────────────────────────────────────────────
 
 try {
-  SetProcessDpiAwareness(2);
+  // E_ACCESSDENIED ("already set by another API") is treated as success
+  // inside the native binding, matching the legacy try/catch swallow.
+  requireNativeWin32().win32SetProcessDpiAwareness!(2);
 } catch {
-  // Ignore: already set or not supported on this Windows version
+  // Ignore: not supported on this Windows version
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -294,59 +244,26 @@ export interface MonitorInfo {
 
 /** Enumerate all connected monitors */
 export function enumMonitors(): MonitorInfo[] {
-  const monitors: MonitorInfo[] = [];
-  let id = 0;
-
-  const cb = koffi.register(
-    (hMonitor: unknown) => {
-      const info = {
-        cbSize: 40, // sizeof MONITORINFO
-        rcMonitor: { left: 0, top: 0, right: 0, bottom: 0 },
-        rcWork: { left: 0, top: 0, right: 0, bottom: 0 },
-        dwFlags: 0,
-      };
-      GetMonitorInfoW(hMonitor, info);
-
-      const dpiXArr = [0];
-      const dpiYArr = [0];
-      try {
-        GetDpiForMonitor(hMonitor, 0 /* MDT_EFFECTIVE_DPI */, dpiXArr, dpiYArr);
-      } catch {
-        dpiXArr[0] = 96;
-      }
-      const dpi = dpiXArr[0] || 96;
-
-      monitors.push({
-        id: id++,
-        handle: hMonitor,
-        primary: (info.dwFlags & 1) !== 0,
-        bounds: {
-          x: info.rcMonitor.left,
-          y: info.rcMonitor.top,
-          width: info.rcMonitor.right - info.rcMonitor.left,
-          height: info.rcMonitor.bottom - info.rcMonitor.top,
-        },
-        workArea: {
-          x: info.rcWork.left,
-          y: info.rcWork.top,
-          width: info.rcWork.right - info.rcWork.left,
-          height: info.rcWork.bottom - info.rcWork.top,
-        },
-        dpi,
-        scale: Math.round((dpi / 96) * 100),
-      });
-      return true;
+  const raw = requireNativeWin32().win32EnumMonitors!();
+  return raw.map((m, id) => ({
+    id,
+    handle: m.handle, // bigint at runtime; declared `unknown` to keep callers opaque
+    primary: m.primary,
+    bounds: {
+      x: m.boundsLeft,
+      y: m.boundsTop,
+      width: m.boundsRight - m.boundsLeft,
+      height: m.boundsBottom - m.boundsTop,
     },
-    koffi.pointer(MonitorEnumProcProto)
-  );
-
-  try {
-    EnumDisplayMonitors(null, null, cb, 0);
-  } finally {
-    koffi.unregister(cb);
-  }
-
-  return monitors;
+    workArea: {
+      x: m.workLeft,
+      y: m.workTop,
+      width: m.workRight - m.workLeft,
+      height: m.workBottom - m.workTop,
+    },
+    dpi: m.dpi || 96,
+    scale: Math.round(((m.dpi || 96) / 96) * 100),
+  }));
 }
 
 /** Get the combined virtual screen bounds across all monitors */
@@ -761,74 +678,9 @@ export function printWindowToBuffer(hwnd: unknown, flags = 2): {
   width: number;
   height: number;
 } {
-  const rect = requireNativeWin32().win32GetWindowRect!(hwnd as bigint);
-  if (!rect) {
-    throw new Error("GetWindowRect failed");
-  }
-
-  const width = rect.right - rect.left;
-  const height = rect.bottom - rect.top;
-  if (width <= 0 || height <= 0) {
-    throw new Error(`Invalid window dimensions: ${width}x${height}`);
-  }
-
-  const screenDC = GetDC(null);
-  if (!screenDC) throw new Error("GetDC failed");
-
-  const memDC = CreateCompatibleDC(screenDC);
-  if (!memDC) {
-    ReleaseDC(null, screenDC);
-    throw new Error("CreateCompatibleDC failed");
-  }
-
-  const hBitmap = CreateCompatibleBitmap(screenDC, width, height);
-  if (!hBitmap) {
-    DeleteDC(memDC);
-    ReleaseDC(null, screenDC);
-    throw new Error("CreateCompatibleBitmap failed");
-  }
-
-  const oldBitmap = SelectObject(memDC, hBitmap);
-
-  try {
-    const ok = PrintWindow(hwnd, memDC, flags);
-    if (!ok) {
-      // Fall through — some windows partially render even when returning false
-    }
-
-    // Set up BITMAPINFOHEADER for 32bpp top-down DIB
-    const bmi = {
-      biSize: 40,
-      biWidth: width,
-      biHeight: -height, // negative = top-down
-      biPlanes: 1,
-      biBitCount: 32,
-      biCompression: 0, // BI_RGB
-      biSizeImage: 0,
-      biXPelsPerMeter: 0,
-      biYPelsPerMeter: 0,
-      biClrUsed: 0,
-      biClrImportant: 0,
-    };
-
-    const pixels = Buffer.alloc(width * height * 4);
-    GetDIBits(memDC, hBitmap, 0, height, pixels, bmi, 0 /* DIB_RGB_COLORS */);
-
-    // Convert BGRA → RGBA and set alpha=255
-    for (let i = 0; i < pixels.length; i += 4) {
-      const b = pixels[i]!;
-      pixels[i] = pixels[i + 2]!;   // R ← B
-      pixels[i + 2] = b;             // B ← R
-      pixels[i + 3] = 255;           // Alpha = opaque
-    }
-
-    return { data: pixels, width, height };
-  } finally {
-    SelectObject(memDC, oldBitmap);
-    DeleteObject(hBitmap);
-    DeleteDC(memDC);
-    ReleaseDC(null, screenDC);
-  }
+  if (typeof hwnd !== "bigint") throw new Error("printWindowToBuffer requires a bigint hwnd");
+  const r = requireNativeWin32().win32PrintWindowToBuffer!(hwnd, flags);
+  return { data: r.data, width: r.width, height: r.height };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1017,21 +869,16 @@ export function vkToScanCode(vk: number): number {
 // DPI helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-const MONITOR_DEFAULTTONEAREST = 2;
-
 /**
  * Return the effective DPI of the monitor that contains the given window.
- * Uses MonitorFromWindow → GetDpiForMonitor(MDT_EFFECTIVE_DPI).
  * Returns 96 (100% baseline) on any failure — safe fallback (keeps scale=2).
+ * `MonitorFromWindow(MONITOR_DEFAULTTONEAREST)` + `GetDpiForMonitor(MDT_EFFECTIVE_DPI)`
+ * are folded into the native binding so callers don't pay two FFI hops.
  */
 export function getWindowDpi(hwnd: unknown): number {
+  if (typeof hwnd !== "bigint") return 96;
   try {
-    const hMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-    if (!hMonitor) return 96;
-    const dpiXArr = [0];
-    const dpiYArr = [0];
-    GetDpiForMonitor(hMonitor, 0 /* MDT_EFFECTIVE_DPI */, dpiXArr, dpiYArr);
-    return dpiXArr[0] || 96;
+    return requireNativeWin32().win32GetWindowDpi!(hwnd) || 96;
   } catch {
     return 96;
   }
