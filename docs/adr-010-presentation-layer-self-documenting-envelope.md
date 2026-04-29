@@ -56,7 +56,23 @@ LLM の不安は 7 つに分解できる。
 - lease_token は単一 ID ではなく 4-tuple (`entityId` / `viewId` / `targetGeneration` / `evidenceDigest`)、envelope 内で展開 → 統合書 §4 / `LeaseStore` 既存実装
 - L4 envelope assembly 制約 (p99 < 5ms 等) → layer-constraints §5
 - L5 tool surface 制約 (query/commit/subscribe SLO) → layer-constraints §6
-- typed reason 35 codes (PascalCase) → §5.4
+- typed reason 37 codes (PascalCase、Codex/Gemini review 経由で拡張) → §5.4
+
+### 1.5 Tool Surface 不変原則 (重要、誤読防止、統合書 P7 / §7.4 と同期)
+
+本 ADR は **既存 tool surface (~28 tool) を維持** し、応答 shape のみを envelope に進化させる。**新規 tool は追加しない**:
+
+| 観点 | 規約 |
+|---|---|
+| 既存 tool 名 | リネームしない |
+| tool 関数シグネチャ (positional args) | 変更しない |
+| 新規 tool 追加 | しない (本設計のスコープ外) |
+| `include` / `dry_run` / `as_of` 等 | 全 tool に共通する **横断的 optional 引数** (L5 wrapper が一元解釈、tool 個別実装は修正不要) |
+| `query_past`、`state_at(t)`、`replay(...)` 等の疑似コード | **新規 tool ではない**。L5 wrapper の内部 URI / 関数、または既存 tool の `as_of` 等の引数経由で参照 |
+
+LLM 露出の tool surface は **本設計で増えない**。「envelope の include で working/episodic memory を取れる」「dry_run で投機実行できる」「query_past で過去状態を引ける」等の表現は、**既存 tool が共通引数を受けて機能を獲得する** 形で実現する (L5 wrapper の責務、tool 個別の登録・命名・schema は変わらない)。
+
+詳細は統合書 §2 P7 / §7.4 を SSOT として参照。
 
 ---
 

@@ -47,8 +47,9 @@
 | **P4** | Self-Documenting Envelope | 全 tool 結果が共通 envelope。LLM の不安源 7 つに 1:1 対応 | ADR-010 §1-5 |
 | **P5** | Tier Fallback | HW 成熟度の段差を Tier 0-3 で吸収、env で pin 可 | ADR-008 §5 |
 | **P6** | 4 LLM-Facing Sub-Principles | Provenance / Causality / Recovery / Time as Affordance | ADR-010 §4 |
+| **P7** | Tool Surface 不変原則 | 既存 tool 名 / 関数シグネチャ / 既存 positional args は変更しない、新規 tool 追加なし。envelope wrap は L5 wrapper が一元実装、include 等は横断的 optional 引数 | 本書 §7.4 |
 
-P3 (Whole-System Dataflow) は本書で初出の決定。各 ADR には事後追記する。
+P3 (Whole-System Dataflow) と P7 (Tool Surface 不変原則) は本書で初出の決定。各 ADR には事後追記する。
 
 ---
 
@@ -287,6 +288,45 @@ WAL に記録された #87/#88/#89 を replay worker に再注入。**logical_ti
 - 各軸ごとに envelope 組立てパターンが固定 → 実装テンプレが 3 つで済む
 - subscribe API 追加時、commit/query との整合は軸単位で考えるだけ
 - dry-run は **commit 軸の opt-in** (`dry_run=true`)、query/subscribe には不要
+
+### 7.4 Tool Surface 不変原則 (誤読防止、§2 P7 と同期)
+
+3 軸 (query / subscribe / commit) のマッピングは **既存 tool 名と関数シグネチャを維持** する形で行う。本設計は **新規 tool を追加しない**:
+
+| 観点 | 規約 |
+|---|---|
+| 既存 ~28 tool の応答 shape | envelope に進化 (L5 wrapper で一元 wrap) |
+| 新規 tool 追加 | **しない** (本設計のスコープ外、別 ADR で個別判断) |
+| tool 関数シグネチャ (positional args) | **変更しない** |
+| 既存 tool 名 | **リネームしない** |
+| `include` / `dry_run` / `as_of` 等の新引数 | **全 tool に共通する横断的 optional 引数** (各 tool 個別実装の修正は最小、L5 wrapper が一元解釈) |
+
+#### 7.4.1 横断的 optional 引数の解釈
+
+`include` / `dry_run` / `as_of` 等は L5 wrapper が tool 個別実装を呼ぶ前後で解釈する:
+
+- **tool 個別実装** は引数を意識しない (既存実装のまま動く)
+- **L5 wrapper** は tool 応答を受けて envelope を組立てる際に include を解釈し、必要なフィールドを enrichment
+- **subscribe 軸**の push 配信も同じ wrapper が一元実装
+
+#### 7.4.2 「新規 tool に見える」記述の解釈
+
+本設計書 / ADR で `state_at(t)` / `replay(...)` / `diff(t1, t2)` 等の **疑似コード** が出てくるが、これらは **新規 tool ではない**:
+
+- L4 envelope の `query_past` フィールドが示す **URI / 内部 API**
+- LLM が呼ぶ実 tool は既存の `desktop_state` 等で、将来必要なら `as_of` 引数を **既存 tool に追加** する形
+- bench / 内部関数として登場する関数名 (LLM 露出 tool ではない)
+
+**LLM 露出する tool surface は本設計で増えない。** `include` / `dry_run` / `as_of` は全 tool 共通の横断的引数として L5 wrapper に注入され、tool 個別の登録・命名・schema は変わらない。
+
+#### 7.4.3 「Tool 数を増やさず 1 tool の表現力を上げる」の意味
+
+統合書冒頭の北極星 (§1.1 / §1.2) と整合:
+
+- ❌ 新規 tool を増やす (例: `desktop_state_v2`、`desktop_state_with_envelope` 等の派生)
+- ❌ tool 数を肥大化させて LLM の選択肢を増やす
+- ✓ 既存 tool が `include` で必要な情報を **取捨選択** できるようにする (LLM が自分の認知負荷を管理)
+- ✓ 既存 tool の応答が **時間文脈・因果・予測** を持つよう envelope で進化させる
 
 ---
 

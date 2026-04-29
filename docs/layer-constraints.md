@@ -322,6 +322,7 @@ L2 (timely + DD) と L1 capture worker は **dedicated thread**。Node.js libuv 
 | 3 | commit 軸 tool は L1 commit を経由 (直接 OS API を叩かない) | event log 不完全 |
 | 4 | subscribe 軸 tool は capability 経由のみ | push 配信の整合性 |
 | 5 | `include` 引数は string array のみ受付 (struct 化しない) | schema 過剰複雑化 |
+| 6 | **既存 tool 名 / 関数シグネチャ / positional args は不変、新規 tool 追加なし、リネームなし** (統合書 P7 / §7.4) | tool surface の互換性破綻、LLM 学習無効化 |
 
 ### 6.4 性能制約
 
@@ -345,6 +346,8 @@ L2 (timely + DD) と L1 capture worker は **dedicated thread**。Node.js libuv 
 - **計算しない** (L4 envelope を受けて MCP に流すだけ)
 - **新しい event を生成しない** (commit は L1 経由必須)
 - **session 状態を保持しない** (session 状態は L4 working/episodic memory)
+- **tool 名のリネーム / 新規 tool 追加 / positional args 変更を禁止** (統合書 P7 / §7.4、tool surface 不変原則)
+- **`include` / `dry_run` / `as_of` 等の横断的 optional 引数は L5 wrapper が一元解釈** し、tool 個別実装に渡さない
 
 ### 6.7 依存
 
