@@ -10,8 +10,12 @@
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ROOT = new URL("..", import.meta.url).pathname.replace(/^\/([A-Z]):/, "$1:");
+// `fileURLToPath` decodes percent-encoded URL segments (paths with spaces or
+// non-ASCII characters) and normalises Windows drive prefixes — both of
+// which `new URL(...).pathname` mangles.
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const SRC_DIR = join(ROOT, "src");
 const INDEX_DTS = join(ROOT, "index.d.ts");
 
