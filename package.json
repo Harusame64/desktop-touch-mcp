@@ -62,8 +62,8 @@
     "check:stub-catalog": "node scripts/generate-stub-tool-catalog.mjs && git diff --exit-code src/stub-tool-catalog.ts",
     "check:napi-safe": "node scripts/check-napi-safe.mjs",
     "check:native-types": "node scripts/check-native-types.mjs",
-    "build:rs": "napi build --platform --release && node -e \"const d=require('child_process').execSync('git diff -- index.d.ts').toString();if(d){console.warn('\\n⚠️  napi changed index.d.ts — update native-types.ts!\\n');console.warn(d)}\" && git restore --source=HEAD -- index.d.ts index.js",
-    "build:rs:debug": "napi build --platform && node -e \"const d=require('child_process').execSync('git diff -- index.d.ts').toString();if(d){console.warn('\\n⚠️  napi changed index.d.ts — update native-types.ts!\\n');console.warn(d)}\" && git restore --source=HEAD -- index.d.ts index.js",
+    "build:rs": "node scripts/build-rs.mjs --release",
+    "build:rs:debug": "node scripts/build-rs.mjs --debug",
     "artifacts:rs": "napi artifacts"
   },
   "devDependencies": {
