@@ -168,9 +168,24 @@ pub(crate) fn shutdown_uia_for_test(timeout: Duration) -> Result<(), &'static st
     };
     match inner_arc.shutdown_with_timeout(timeout) {
         Ok(()) => {
-            // Thread confirmed joined; safe to clear the slot now.
+            // Thread confirmed joined; clear the slot **only if it
+            // still holds the same `Arc` we shut down**. A concurrent
+            // caller may already have cleared it and re-spawned a
+            // fresh COM thread via `ensure_uia_thread()`, in which
+            // case clearing here would orphan that new thread (slot
+            // → None) and let the next `ensure_uia_thread()` spawn a
+            // third one — re-breaking the UIA singleton +
+            // apartment-affinity invariant this `Ok` arm is supposed
+            // to preserve. Codex review on PR #86 / horizontal port
+            // of the L1 worker fix that closed ADR-007 §8 R11.
             let mut guard = cell.lock().unwrap_or_else(|e| e.into_inner());
-            *guard = None;
+            if guard
+                .as_ref()
+                .map(|current| Arc::ptr_eq(current, &inner_arc))
+                .unwrap_or(false)
+            {
+                *guard = None;
+            }
             Ok(())
         }
         Err(e) => {
