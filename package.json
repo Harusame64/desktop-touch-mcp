@@ -63,6 +63,7 @@
     "check:napi-safe": "node scripts/check-napi-safe.mjs",
     "check:native-types": "node scripts/check-native-types.mjs",
     "check:no-koffi": "node scripts/check-no-koffi.mjs",
+    "check:rs-workspace": "cargo check --workspace --locked",
     "build:rs": "node scripts/build-rs.mjs --release",
     "build:rs:debug": "node scripts/build-rs.mjs --debug",
     "artifacts:rs": "napi artifacts"
