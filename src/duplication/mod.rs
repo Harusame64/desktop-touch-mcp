@@ -1,6 +1,8 @@
 use crossbeam_channel::bounded;
 use napi::{bindgen_prelude::*, Task};
 use napi_derive::napi;
+
+use crate::win32::safety::napi_safe_call;
 use std::sync::{Arc, Mutex};
 
 mod device;
@@ -63,14 +65,16 @@ impl DirtyRectSubscription {
     /// Release resources and stop the background DXGI thread.
     #[napi]
     pub fn dispose(&self) -> Result<()> {
-        let mut guard = self
-            .inner
-            .lock()
-            .map_err(|_| DuplicationError::Other("lock poisoned".into()))?;
-        if let Some(h) = guard.take() {
-            let _ = h.tx.send(DuplicationCmd::Stop);
-        }
-        Ok(())
+        napi_safe_call("DirtyRectSubscription::dispose", || {
+            let mut guard = self
+                .inner
+                .lock()
+                .map_err(|_| DuplicationError::Other("lock poisoned".into()))?;
+            if let Some(h) = guard.take() {
+                let _ = h.tx.send(DuplicationCmd::Stop);
+            }
+            Ok(())
+        })
     }
 }
 

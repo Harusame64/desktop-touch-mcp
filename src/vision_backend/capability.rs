@@ -5,6 +5,7 @@
 //! napi export, where the model registry uses it to pick the best variant.
 
 use napi_derive::napi;
+use crate::win32::safety::napi_safe_call;
 
 /// Capability snapshot used by the TS model registry to pick a variant.
 ///
@@ -21,7 +22,7 @@ use napi_derive::napi;
 /// }
 /// ```
 #[napi(object)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CapabilityProfile {
     pub os: String,
     pub os_build: u32,
@@ -43,23 +44,25 @@ pub struct CapabilityProfile {
 
 /// Detect capability. Always succeeds — unavailable items are reported as `false`.
 #[napi]
-pub fn detect_capability() -> CapabilityProfile {
-    CapabilityProfile {
-        os: detect_os(),
-        os_build: detect_os_build(),
-        gpu_vendor: detect_gpu().vendor,
-        gpu_device: detect_gpu().device,
-        gpu_arch: detect_gpu().arch,
-        gpu_vram_mb: detect_gpu().vram_mb,
-        winml: detect_winml(),
-        directml: detect_directml(),
-        rocm: detect_rocm(),
-        cuda: detect_cuda(),
-        tensorrt: detect_tensorrt(),
-        cpu_isa: detect_cpu_isa(),
-        backend_built: cfg!(feature = "vision-gpu"),
-        eps_built: detect_eps_built(),
-    }
+pub fn detect_capability() -> napi::Result<CapabilityProfile> {
+    napi_safe_call("detect_capability", || {
+        Ok(CapabilityProfile {
+            os: detect_os(),
+            os_build: detect_os_build(),
+            gpu_vendor: detect_gpu().vendor,
+            gpu_device: detect_gpu().device,
+            gpu_arch: detect_gpu().arch,
+            gpu_vram_mb: detect_gpu().vram_mb,
+            winml: detect_winml(),
+            directml: detect_directml(),
+            rocm: detect_rocm(),
+            cuda: detect_cuda(),
+            tensorrt: detect_tensorrt(),
+            cpu_isa: detect_cpu_isa(),
+            backend_built: cfg!(feature = "vision-gpu"),
+            eps_built: detect_eps_built(),
+        })
+    })
 }
 
 // ── OS detection ────────────────────────────────────────────────────────────
