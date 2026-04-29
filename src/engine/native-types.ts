@@ -158,6 +158,42 @@ export interface NativeMonitorInfo {
   dpi: number
 }
 
+// ── Win32 process / input (ADR-007 P3) ───────────────────────────────────────
+
+/** Outcome of `win32ForceSetForegroundWindow`. The TS wrapper repacks
+ *  these into snake_case (`fg_before` / `fg_after`) for legacy public API
+ *  compatibility (Tool Surface 不変原則 P7). */
+export interface NativeForceFocusResult {
+  ok: boolean
+  attached: boolean
+  fgBefore: bigint
+  fgAfter: bigint
+}
+
+/** One Toolhelp32 row. The TS wrapper builds a Map<number, number>. */
+export interface NativeProcessParentEntry {
+  pid: number
+  parentPid: number
+}
+
+/** Process identity result. Partial success is allowed: a missing
+ *  process_name leaves it as "" and a missing creation time leaves
+ *  process_start_time_ms = 0. */
+export interface NativeProcessIdentity {
+  pid: number
+  processName: string
+  processStartTimeMs: number
+}
+
+/** Scrollbar position snapshot. `pageRatio` (0..1) is precomputed. */
+export interface NativeScrollInfo {
+  nMin: number
+  nMax: number
+  nPage: number
+  nPos: number
+  pageRatio: number
+}
+
 // ── Desktop Duplication (Phase 3) ────────────────────────────────────────────
 
 export interface NativeDirtyRect {
