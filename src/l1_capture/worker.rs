@@ -157,28 +157,57 @@ pub(crate) struct L1Inner {
 }
 
 impl L1Inner {
+    /// Signal shutdown and wait for the worker thread to join, with a timeout.
+    ///
+    /// Uses `JoinHandle::is_finished()` polling so the handle stays in
+    /// `self.join_handle` until we know the thread has actually exited.
+    /// On timeout the handle is still recoverable: a later
+    /// `shutdown_with_timeout(longer)` (or even a fresh
+    /// `shutdown_l1_for_test`) can re-poll and join the thread once
+    /// the long-running work finally drains.
+    ///
+    /// Mirrors the UIA `UiaThreadHandle::shutdown_with_timeout` shape
+    /// (PR #84 commit 7bf7743). Codex review v5 (P1+P2) and v6 (P1) on
+    /// PR #84 walked the design from "take handle eagerly + helper join
+    /// thread" to this polling shape; ADR-007 §8 R11 carried the L1
+    /// worker fix to this PR.
     pub fn shutdown_with_timeout(&self, timeout: Duration) -> Result<(), &'static str> {
-        // Idempotent: bounded(1) なので 2 回送ると Err。無視して join 側へ進む。
+        // bounded(1) shutdown channel — repeated sends are harmless.
         let _ = self.shutdown_tx.try_send(());
-        let handle_opt = {
-            let mut guard = self.join_handle.lock().unwrap_or_else(|e| e.into_inner());
-            guard.take()
-        };
-        let handle = match handle_opt {
-            Some(h) => h,
-            None => return Ok(()), // already joined
-        };
-        // std::thread::JoinHandle::join に timeout API が無いので、別 thread で
-        // join → mpsc で完了通知 → 元 thread が recv_timeout で待つ。
-        let (tx, rx) = std::sync::mpsc::channel::<()>();
-        thread::spawn(move || {
-            let _ = handle.join();
-            let _ = tx.send(());
-        });
-        match rx.recv_timeout(timeout) {
-            Ok(()) => Ok(()),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err("worker join timed out"),
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err("join helper disconnected"),
+
+        let deadline = Instant::now() + timeout;
+        let poll_interval = Duration::from_millis(10);
+
+        loop {
+            // Peek `is_finished()` without removing the handle. If the
+            // thread is already done we promote to take + join in one
+            // critical section so we don't race a concurrent caller.
+            let finished_or_done = {
+                let mut guard = self.join_handle.lock().unwrap_or_else(|e| e.into_inner());
+                match guard.as_ref() {
+                    Some(h) if h.is_finished() => {
+                        // Take and join now (won't block — thread has exited).
+                        let h = guard.take().expect("just observed Some");
+                        let _ = h.join();
+                        Some(Ok(()))
+                    }
+                    Some(_) => None, // still running
+                    // Some other caller already observed the thread as
+                    // finished and joined it; that's a successful shutdown.
+                    None => Some(Ok(())),
+                }
+            };
+            if let Some(result) = finished_or_done {
+                return result;
+            }
+
+            if Instant::now() >= deadline {
+                // Handle stays in `self.join_handle` so a subsequent
+                // call (or `shutdown_l1_for_test` retry) can poll
+                // again and join when the thread finally exits.
+                return Err("worker join timed out");
+            }
+            thread::sleep(poll_interval);
         }
     }
 }
@@ -208,18 +237,59 @@ pub(crate) fn ensure_l1() -> Arc<L1Inner> {
 
 /// L1 worker を shutdown して slot を None に戻す。次の `ensure_l1()` 呼び出しで
 /// 再 init される (test の 5 回連続 shutdown/restart に対応)。
+///
+/// **Slot is cleared only on success.** If `shutdown_with_timeout`
+/// returns `Err` (worker thread missed the deadline), the slot retains
+/// the original `Arc<L1Inner>` so the next `ensure_l1()` returns the
+/// still-running instance rather than spawning a second worker thread
+/// (which would violate the L1 singleton invariant and double-push to
+/// the ring).
+///
+/// Mirrors the UIA `shutdown_uia_for_test` shape (PR #84 commit
+/// 7bf7743). Codex review v5 P1 on PR #84 prompted moving
+/// `guard.take()` from before to after the shutdown confirmation;
+/// ADR-007 §8 R11 carried the L1 worker fix to this PR.
 pub(crate) fn shutdown_l1_for_test(timeout: Duration) -> Result<(), &'static str> {
     let cell = match L1_SLOT.get() {
         Some(c) => c,
         None => return Ok(()),
     };
-    let inner_opt = {
-        let mut guard = cell.lock().unwrap_or_else(|e| e.into_inner());
-        guard.take()
+    // Borrow the Arc out of the slot without removing it yet — we need
+    // confirmation that the thread actually stopped before we let
+    // `ensure_l1()` spawn a fresh one.
+    let inner_arc = {
+        let guard = cell.lock().unwrap_or_else(|e| e.into_inner());
+        match guard.as_ref() {
+            Some(arc) => Arc::clone(arc),
+            None => return Ok(()),
+        }
     };
-    match inner_opt {
-        Some(inner) => inner.shutdown_with_timeout(timeout),
-        None => Ok(()),
+    match inner_arc.shutdown_with_timeout(timeout) {
+        Ok(()) => {
+            // Thread confirmed joined; clear the slot **only if it
+            // still holds the same `Arc` we shut down**. A concurrent
+            // caller may already have cleared it and re-spawned a
+            // fresh worker via `ensure_l1()`, in which case clearing
+            // here would orphan that new worker (slot → None) and let
+            // the next `ensure_l1()` spawn a third worker — re-
+            // breaking the singleton invariant this `Ok` arm is
+            // supposed to preserve. Codex PR #86 P2.
+            let mut guard = cell.lock().unwrap_or_else(|e| e.into_inner());
+            if guard
+                .as_ref()
+                .map(|current| Arc::ptr_eq(current, &inner_arc))
+                .unwrap_or(false)
+            {
+                *guard = None;
+            }
+            Ok(())
+        }
+        Err(e) => {
+            // Slot retains the original Arc; the next ensure() returns
+            // the same (potentially still-running) handle. Caller sees
+            // the timeout error and can decide whether to retry.
+            Err(e)
+        }
     }
 }
 
