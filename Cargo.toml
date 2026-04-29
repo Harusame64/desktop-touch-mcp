@@ -1,5 +1,6 @@
 [workspace]
 members = [".", "crates/engine-perception"]
+default-members = [".", "crates/engine-perception"]
 resolver = "3"
 
 [package]
