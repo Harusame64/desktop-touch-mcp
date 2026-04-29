@@ -8,7 +8,8 @@
  * a structured `UnsupportedPlatform` error.
  *
  * Dynamic `import()` is used deliberately — top-level static imports would
- * eagerly load koffi → `user32.dll`, which throws on non-Windows.
+ * eagerly load the desktop-touch-engine native addon (windows-rs) → user32.dll,
+ * which throws on non-Windows.
  */
 
 if (process.platform === "win32") {

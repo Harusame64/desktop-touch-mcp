@@ -82,6 +82,8 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D11",
+    # ADR-007 P4: DwmGetWindowAttribute (DWMWA_CLOAKED used by isWindowCloaked).
+    "Win32_Graphics_Dwm",
     # Visual GPU Phase 4 capability detection (ADR-005)
     "Win32_System_SystemInformation",
     "Wdk_System_SystemServices",

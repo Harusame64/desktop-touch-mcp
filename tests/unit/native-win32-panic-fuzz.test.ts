@@ -312,4 +312,61 @@ describe.skipIf(!nativeWin32)("ADR-007 P1: native win32 panic-safety", () => {
       expect(identifiedCount).toBeGreaterThan(0);
     });
   });
+
+  // ── ADR-007 P4: owner / ancestor / enabled / popup / DWM ──────────────────
+  describe("ADR-007 P4: owner / ancestor / enabled / popup / DWM panic safety", () => {
+    const adversarialHwnds: Array<[label: string, hwnd: bigint]> = [
+      ["null hwnd", 0n],
+      ["stale hwnd", 9_999_999_999n],
+      ["all-ones u64", 0xffff_ffff_ffff_ffffn],
+    ];
+
+    for (const [label, hwnd] of adversarialHwnds) {
+      it(`win32GetWindow(${label}, GW_OWNER=4) returns null, no panic`, () => {
+        expect(native.win32GetWindow!(hwnd, 4)).toBeNull();
+      });
+      it(`win32GetAncestor(${label}, GA_ROOTOWNER=3) returns null, no panic`, () => {
+        expect(native.win32GetAncestor!(hwnd, 3)).toBeNull();
+      });
+      it(`win32IsWindowEnabled(${label}) returns false, no panic`, () => {
+        expect(native.win32IsWindowEnabled!(hwnd)).toBe(false);
+      });
+      it(`win32GetLastActivePopup(${label}) returns null, no panic`, () => {
+        expect(native.win32GetLastActivePopup!(hwnd)).toBeNull();
+      });
+      it(`win32IsWindowCloaked(${label}) returns false, no panic`, () => {
+        expect(native.win32IsWindowCloaked!(hwnd)).toBe(false);
+      });
+    }
+
+    // Codifies the Rust-side normalisation that GetLastActivePopup returns
+    // the input HWND itself when no owned popup exists — the binding maps
+    // that case to `null` so the TS wrapper does not have to re-check
+    // (Opus pre-impl review §11.4 #1).
+    it("win32GetLastActivePopup(self_hwnd) returns null when no owned popup", () => {
+      const fg = native.win32GetForegroundWindow!();
+      if (fg === null) return; // headless / lock screen
+      const r = native.win32GetLastActivePopup!(fg);
+      // The foreground window very rarely has an owned popup during a unit
+      // test run; we only require the result is either null or some other
+      // bigint, never the input hwnd itself.
+      if (r !== null) expect(r).not.toBe(fg);
+    });
+
+    it("win32GetWindow / GetAncestor on the foreground window return either bigint or null", () => {
+      const fg = native.win32GetForegroundWindow!();
+      if (fg === null) return;
+      const owner = native.win32GetWindow!(fg, 4); // GW_OWNER
+      if (owner !== null) expect(typeof owner).toBe("bigint");
+      const root = native.win32GetAncestor!(fg, 3); // GA_ROOTOWNER
+      if (root !== null) expect(typeof root).toBe("bigint");
+    });
+
+    it("win32IsWindowEnabled / IsWindowCloaked on foreground return booleans", () => {
+      const fg = native.win32GetForegroundWindow!();
+      if (fg === null) return;
+      expect(typeof native.win32IsWindowEnabled!(fg)).toBe("boolean");
+      expect(typeof native.win32IsWindowCloaked!(fg)).toBe("boolean");
+    });
+  });
 });

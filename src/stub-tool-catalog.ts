@@ -3,7 +3,7 @@
  *
  * This catalog is native-free: the non-Windows stub imports it so directory
  * hosts such as Glama can inspect the real tool descriptions and argument
- * schema without loading Win32, UIA, CDP, nut-js, or koffi modules.
+ * schema without loading Win32, UIA, CDP, nut-js, or any Windows native addon.
  */
 
 export type JsonSchemaObject = {

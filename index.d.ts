@@ -246,3 +246,10 @@ export declare function win32GetScrollInfo(hwnd: bigint, axis: string): NativeSc
 export declare function win32PostMessage(hwnd: bigint, msg: number, wParam: bigint, lParam: bigint): boolean
 export declare function win32GetFocus(): bigint | null
 export declare function win32VkToScanCode(vk: number): number
+
+// ─── Win32 owner / ancestor / enabled / popup / DWM (ADR-007 P4) ─────────────
+export declare function win32GetWindow(hwnd: bigint, uCmd: number): bigint | null
+export declare function win32GetAncestor(hwnd: bigint, gaFlags: number): bigint | null
+export declare function win32IsWindowEnabled(hwnd: bigint): boolean
+export declare function win32GetLastActivePopup(hwnd: bigint): bigint | null
+export declare function win32IsWindowCloaked(hwnd: bigint): boolean

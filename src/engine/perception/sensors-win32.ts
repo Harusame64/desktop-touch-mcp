@@ -154,7 +154,9 @@ export function refreshWin32Fluents(hwnd: string, titleKey: string): Observation
   };
 
   // Enumerate all visible windows to check existence, foreground, z-order, modal
-  // Compare by string to avoid number vs bigint mismatch (koffi returns intptr as JS number)
+  // Compare by string so the lookup tolerates whatever shape the upstream
+  // enumerator chose for the hwnd field (the legacy FFI binding returned
+  // intptr as JS number; the windows-rs path returns BigInt).
   const windows = enumWindowsInZOrder();
   const target = windows.find(w => String(w.hwnd) === hwnd);
 

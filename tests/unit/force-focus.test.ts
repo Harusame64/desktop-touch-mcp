@@ -1,57 +1,18 @@
 /**
- * force-focus.test.ts — Unit tests for forceSetForegroundWindow
+ * force-focus.test.ts — abstract documentation of the try/finally contract
+ * that `forceSetForegroundWindow` exposes.
  *
- * Verifies that AttachThreadInput is always detached (try/finally guarantee)
- * even when SetForegroundWindow throws.
+ * Originally this file mocked `koffi` to drive a fake AttachThreadInput
+ * pair, but ADR-007 P3 moved the actual implementation into Rust
+ * (`src/win32/input.rs::win32_force_set_foreground_window`) where the
+ * RAII `AttachGuard` provides the same guarantee. The contract test for
+ * the real native binding lives in
+ * `tests/unit/native-win32-panic-fuzz.test.ts` ("ADR-007 P3: process /
+ * input panic safety"); these three cases are kept as a readable
+ * specification of the try/finally invariant for future maintainers.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
-
-// ── Mocks ─────────────────────────────────────────────────────────────────────
-
-const mockGetForegroundWindow = vi.fn();
-const mockGetWindowThreadProcessId = vi.fn();
-const mockGetCurrentThreadId = vi.fn();
-const mockAttachThreadInput = vi.fn();
-const mockSetForegroundWindow = vi.fn();
-const mockBringWindowToTop = vi.fn();
-
-vi.mock("koffi", () => {
-  const structDefs: Record<string, unknown> = {};
-
-  const mockLoad = (dll: string) => {
-    return {
-      func: (sig: string) => {
-        if (sig.includes("GetForegroundWindow")) return mockGetForegroundWindow;
-        if (sig.includes("GetWindowThreadProcessId")) return mockGetWindowThreadProcessId;
-        if (sig.includes("GetCurrentThreadId")) return mockGetCurrentThreadId;
-        if (sig.includes("AttachThreadInput")) return mockAttachThreadInput;
-        if (sig.includes("SetForegroundWindow")) return mockSetForegroundWindow;
-        if (sig.includes("BringWindowToTop")) return mockBringWindowToTop;
-        return vi.fn().mockReturnValue(1);
-      },
-    };
-  };
-
-  return {
-    default: {
-      load: mockLoad,
-      struct: (name: string, fields: unknown) => { structDefs[name] = fields; return name; },
-      array: (_type: unknown, _n: number) => "array",
-      proto: (_sig: string) => "proto",
-      pointer: (_proto: unknown) => "ptr",
-      register: (_fn: unknown, _proto: unknown) => _fn,
-      unregister: (_fn: unknown) => {},
-      sizeof: (_struct: unknown) => 0,
-    },
-  };
-});
-
-// Must import after vi.mock
-// Note: forceSetForegroundWindow is already implemented in win32.ts.
-// We test via a separate test that does not import the real module
-// (which loads actual koffi bindings at module load time).
-// Instead, we test the logic by re-implementing the contract in isolation.
+import { describe, it, expect } from "vitest";
 
 describe("forceSetForegroundWindow finally guarantee", () => {
   it("always detaches AttachThreadInput even when SetForegroundWindow throws", () => {
