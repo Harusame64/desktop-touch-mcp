@@ -1,4 +1,4 @@
-import { nativeWin32 } from "./native-engine.js";
+import { nativeL1, nativeWin32 } from "./native-engine.js";
 
 // Every Win32 binding this module used to carry has migrated to the
 // napi-rs native addon (`src/win32/*.rs`) across ADR-007 P1–P4. The
@@ -581,6 +581,7 @@ export const MAPVK_VK_TO_VSC = 0;
 /** Post a single WM message to a window. Returns false on failure. */
 export function postMessageToHwnd(hwnd: unknown, msg: number, wParam: number, lParam: number): boolean {
   if (typeof hwnd !== "bigint") return false;
+  nativeL1?.l1PushHwInputPostMessage?.(hwnd, msg >>> 0, BigInt(wParam | 0), BigInt(lParam | 0));
   try {
     return requireNativeWin32().win32PostMessage!(
       hwnd,
