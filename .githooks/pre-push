@@ -1,0 +1,28 @@
+#!/bin/sh
+# Block direct push to main. Set DESKTOP_TOUCH_ALLOW_MAIN_PUSH=1 to bypass
+# (release flow only — see docs/release-process.md and CLAUDE.md 強制命令 8).
+
+protected_branch="refs/heads/main"
+zero="0000000000000000000000000000000000000000"
+
+while read local_ref local_oid remote_ref remote_oid
+do
+    if [ "$remote_ref" = "$protected_branch" ]; then
+        if [ "$local_oid" = "$zero" ]; then
+            continue
+        fi
+        if [ "${DESKTOP_TOUCH_ALLOW_MAIN_PUSH:-0}" != "1" ]; then
+            echo "" >&2
+            echo "ERROR: direct push to main is forbidden." >&2
+            echo "  - Use a feature branch + PR (CLAUDE.md 強制命令 8)." >&2
+            echo "  - Release flow may bypass with DESKTOP_TOUCH_ALLOW_MAIN_PUSH=1" >&2
+            echo "    (see docs/release-process.md)." >&2
+            echo "" >&2
+            exit 1
+        else
+            echo "WARNING: DESKTOP_TOUCH_ALLOW_MAIN_PUSH=1 — bypassing main protection." >&2
+        fi
+    fi
+done
+
+exit 0
