@@ -193,7 +193,7 @@ worker.dataflow::<u64, _, _>(|scope| {
 ```rust
 pub fn state_at<V>(arrangement: &Arrangement<...>, t: u64) -> Result<V> {
     if t < arrangement.compaction_frontier() {
-        return Err(typed_error("LeaseDigestMismatch"));  // (compaction で消えた相当)
+        return Err(typed_error("TimeCompacted"));  // 専用 enum (ADR-010 §5.4)
     }
     arrangement
         .as_collection()

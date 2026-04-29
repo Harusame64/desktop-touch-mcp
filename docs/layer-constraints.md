@@ -178,7 +178,7 @@ pub struct EventEnvelope {
 | view 名 | output type | consumer |
 |---|---|---|
 | `current_focused_element` | `Collection<UiElementRef, Diff>` | L4 envelope.data |
-| `dirty_rect_aggregate` | `Collection<Rect, Diff>` | L4 envelope.invariants_held / data |
+| `dirty_rects_aggregate` | `Collection<Rect, Diff>` | L4 envelope.invariants_held / data |
 | `semantic_event_stream` | `Collection<SemanticEvent, Diff>` | L4 envelope.caused_by |
 | `predicted_post_state` | `Collection<StateDelta, Diff>` (dry-run subgraph) | L4 envelope.if_you_did |
 
@@ -375,11 +375,12 @@ L1 hw failure
 
 L1 から L5 へエラーが伝播する経路が **typed event として明示**。throw + 文字列で揺れない。
 
-### 7.4 Schema version 整合 (§11 と連動)
+### 7.4 Schema version 整合 (§11 / 統合書 §11 と連動)
 
-- L1 EventEnvelope `_version` と L5 Envelope `_version` は **独立に進化**
+- L1 EventEnvelope の **`envelope_version: u32`** (top-level、numeric、ADR-007 §4) と L5 Tool Envelope の **`_version: "MAJOR.MINOR"`** (top-level、string、ADR-010 §5) は **独立に進化**
 - ただし「L1 v2 を L5 v1 が消費する」ような mismatch は禁止
-- 起動時に整合チェック、不一致なら fatal
+- 起動時に integration matrix でチェック、不一致なら fatal で worker 再起動
+- 詳細は ADR-007 §4.4 と `docs/schema-compat-matrix.md` (起草予定、ADR-008 D6 着手前) で管理
 
 ### 7.5 Replay determinism chain
 

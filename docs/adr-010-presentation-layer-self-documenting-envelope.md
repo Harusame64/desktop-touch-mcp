@@ -170,10 +170,9 @@ tool 呼び出しは isolated event ではなく、**直前の自分の行動の
   // ── 主データ ──
   "data": { /* tool 固有 */ },                 // 失敗時 null
 
-  // ── Self-Attestation ──
+  // ── Self-Attestation (logical_time は engine 内部、LLM には露出しない) ──
   "as_of": {
-    "wallclock_ms": 1738156823412,            // 統一 wallclock
-    "logical": [42, 7]                        // L3 logical time (epoch, sub_ordinal)
+    "wallclock_ms": 1738156823412             // 統一 wallclock (canonical、統合書 §5)
   },
   "freshness_ms": 47,                          // 観測されてからの経過
   "based_on": {
@@ -208,7 +207,7 @@ tool 呼び出しは isolated event ではなく、**直前の自分の行動の
     "escalation": "if_above_fail: capture screenshot and report"
   },
 
-  // ── Time-Travel Link (常に提供、リンクのみ) ──
+  // ── Time-Travel Link (P4 以降 default-on、Phase 別挙動は §5.5 参照) ──
   "query_past": {
     "state_2s_ago": "call: state_at(now-2s)",
     "diff_since_last_call": "call: diff(your_last_call_id, now)",
@@ -302,6 +301,9 @@ EntityNotFound | EntityOutsideViewport
 // 状態遷移
 ModalBlocking | Settling
 
+// Time-travel (views-catalog §4.3 と同期、compaction 範囲外専用)
+TimeCompacted
+
 // HW Tier
 HwTierUnavailable
 
@@ -309,7 +311,7 @@ HwTierUnavailable
 AccessDenied | Unknown
 ```
 
-合計 25 + 10 = **35 codes**。
+合計 25 + 11 = **36 codes**。
 
 #### 運用ルール
 
@@ -321,6 +323,25 @@ AccessDenied | Unknown
 #### LLM への露出
 
 `most_likely_cause: "WindowNotFound"` のように PascalCase そのまま。snake_case 変換は行わない (既存 client compat と TS型側との一貫性のため)。
+
+### 5.5 Phase 別の envelope 構造 (リリース順序と整合)
+
+実装は段階導入 (§7 + 統合書 §12) のため、各 Phase で envelope に含まれるフィールドが異なる。client SDK は server の Phase を識別して期待値を切替える (起動時 `server_status` で照会)。
+
+| Phase | 必須 | 任意 (`include` で要求) | 自動付与 (default-on) |
+|---|---|---|---|
+| **P1** (envelope 必須最小) | `_version, data, as_of, confidence` | (なし) | (なし) |
+| **P2** (typed reason) | 上記 + 失敗時 `if_unexpected.most_likely_cause` | (なし) | (なし) |
+| **P3** (include 拡張) | 上記 | `causal` (→ `caused_by`), `invariants` (→ `invariants_held`) | (なし) |
+| **P4** (time-travel link) | 上記 | 上記 | **`query_past`** (default-on、リンクのみで cost 極小) |
+| **P5** (dry-run) | 上記 | 上記 + 引数 `dry_run=true` で `if_you_did` | 上記 |
+| **P6** (working/episodic) | 上記 | 上記 + `working:N`, `episodic:N` | 上記 |
+
+注意点:
+- **`include=time_travel`** は P4 以降の **明示要求 alias** として残す (default-on でも明示で要求された場合は同じ shape を返す、後方互換のため)
+- **早期 Phase では `query_past` を返さない** → P1 段階の wrapper test は `query_past` を期待しない (test fixture が phase-aware であることが必要)
+- envelope の `_version` は Phase ごとに上げない (semver のみで上げる)、Phase 間移行は internal な enrichment 拡張として扱う
+- server 側の現 Phase は `server_status` の `engine.phase` フィールドで client に通知 (実装は P1 着手時)
 
 ---
 

@@ -164,6 +164,7 @@ windows = { version = "0.62", features = [
 ```rust
 #[napi(object)]
 pub struct EventEnvelope {
+    pub envelope_version: u32,        // ★ top-level schema version (現行: 1)
     pub event_id: BigInt,             // u64 monotonic、L1 で採番
     pub wallclock_ms: BigInt,         // canonical (統合書 §5)
     pub sub_ordinal: u32,             // 同 wallclock 内の tie-break
@@ -249,7 +250,14 @@ pub struct FailurePayload {
 
 ### 4.4 Schema versioning
 
-EventEnvelope 自体に `_version` field は無く、payload_bytes の bincode に schema version を内包する。`EventKind` 値域の追加は MINOR 互換、既存 enum の意味変更は MAJOR 破壊。
+EventEnvelope は **top-level に `envelope_version: u32`** を持つ (§4.1)。`payload_bytes` 側は `EventKind` 値域で schema を識別する (kind 追加は MINOR 互換、既存 kind の意味変更は MAJOR 破壊)。
+
+L5 Tool Envelope の `_version` (string `MAJOR.MINOR`、ADR-010 §5) とは **独立に進化** する (制約 layer-constraints §7.4 / cross-layer X4)。両者の互換 matrix は起動時 integration test で検証し、不一致は fatal で worker 再起動 (制約 §2.5)。
+
+互換 matrix の運用:
+- `envelope_version` 増分 ↔ L1 Capture / L2 Storage 側変更
+- L5 Envelope `_version` 増分 ↔ tool 応答 shape 変更
+- 起動時に両者を読んで integration matrix で許容組合せを判定 (`docs/schema-compat-matrix.md` で管理予定)
 
 ---
 

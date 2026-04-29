@@ -138,7 +138,7 @@ timely + DD の `arrangement` は `(key, val, time, diff)` 4-tuple の LSM-tree 
 | view 名 | 入力 | 用途 | 旧 tool との対応 |
 |---|---|---|---|
 | `current_focused_element` | UIA focus event | 現在 focus 要素 | `desktop_state.focused` |
-| `dirty_rect_aggregate` | DXGI dirty/move rect event | 直近 dirty 矩形集約 | `screenshot` の差分判定 |
+| `dirty_rects_aggregate` | DXGI dirty/move rect event | 直近 dirty 矩形集約 | `screenshot` の差分判定 |
 | `semantic_event_stream` | raw UIA + dirty rect + Reflex tick | "modal_appeared" / "scroll_settled" 等 | `desktop_state.attention` の高度化 |
 | `predicted_post_state` | tool call (仮想) + 現 state | dry-run 投機実行 | (新規) |
 
@@ -183,7 +183,7 @@ external clock (hw)        timely internal frontier
 | Phase | 範囲 | 完了基準 |
 |---|---|---|
 | **D1: 最小成立** | timely + DD を `engine-perception` crate に組込み、event log → `current_focused_element` の最小 view | 1 view が incrementally 更新、unit test pass、TS 版より latency 1/10 |
-| **D2: 主要 view 4 つ** | `dirty_rect_aggregate` / `semantic_event_stream` / `predicted_post_state` を declarative に | 既存 `desktop_state` を全部 view 経由に置換、tool 結果が同一 (回帰なし) |
+| **D2: 主要 view 4 つ** | `dirty_rects_aggregate` / `semantic_event_stream` / `predicted_post_state` を declarative に | 既存 `desktop_state` を全部 view 経由に置換、tool 結果が同一 (回帰なし) |
 | **D3: time-travel** | arrangement の time slice で `state_at(t)` 実装 | 「2 秒前の state」が引ける、p95 latency < 5ms |
 | **D4: cyclic RPG** | lens 依存を timely `iterative` で実装 | lens 再計算が fixed-point で settle、無限ループなし |
 | **D5: HW operator hybrid** | `DataflowAccelerator` trait + Tier 0-3 実装 + dispatch | `change_fraction` が Tier 3 で動作、Tier 0 fallback も動作 |

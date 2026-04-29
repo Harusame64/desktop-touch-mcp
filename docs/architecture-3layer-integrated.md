@@ -65,7 +65,7 @@ P3 (Whole-System Dataflow) は本書で初出の決定。各 ADR には事後追
 ├──────────────────────────────────────────────────────────────────┤
 │ L3: Compute (IVM)                                                 │
 │     differential-dataflow operator graph                          │
-│     主要 view: current_focused_element / dirty_rect_aggregate /   │
+│     主要 view: current_focused_element / dirty_rects_aggregate /   │
 │       semantic_event_stream / predicted_post_state                │
 │     cyclic: RPG lens 依存を timely iterative で fixed-point       │
 ├──────────────────────────────────────────────────────────────────┤
@@ -205,7 +205,7 @@ T+18ms    L2 arrangement: #87/#88/#89 materialize
             
 T+19ms    L3 view 更新:
             current_focused_element: "input_age"
-            dirty_rect_aggregate: 1 rect
+            dirty_rects_aggregate: 1 rect
             semantic_event_stream: ["focus_changed", "no_modal"]
             
 T+20ms    L4 envelope assembly:
@@ -246,7 +246,7 @@ WAL に記録された #87/#88/#89 を replay worker に再注入。**logical_ti
 | **subscribe** | なし (push 配信) | delta envelope の連続、各 delta が `as_of` 持つ | (新規、ADR-010 P4 で実装) |
 | **commit** | あり | `caused_by` 即時更新 (自分が原因)、`if_unexpected` 失敗時必須 | desktop_act, click_element, keyboard, browser_click |
 
-### 7.2 既存 28 tool のマッピング (現行 main 基準)
+### 7.2 既存 tool のマッピング (現行 main 基準、29 件列挙)
 
 | tool | 軸 | 備考 |
 |---|---|---|
@@ -280,7 +280,7 @@ WAL に記録された #87/#88/#89 を replay worker に再注入。**logical_ti
 | `browser_open` | commit | tab 副作用 |
 | `browser_launch` | commit | プロセス起動 |
 
-(残 5 tool 程度は適宜追加)
+正確な tool 一覧は `src/stub-tool-catalog.ts` の `name` フィールドから自動生成して維持する (TODO: `scripts/` に generator 追加、ADR-007 P5 着手前)。
 
 ### 7.3 設計上の効果
 
@@ -537,7 +537,7 @@ timely-dataflow には [`probe`](https://docs.rs/timely/latest/timely/dataflow/o
     "worker_lag_ms": { "p50": 0.3, "p95": 1.2, "p99": 8.5 },
     "arrangement": {
       "current_focused_element": { "rows": 1, "memory_mb": 0.001 },
-      "dirty_rect_aggregate": { "rows": 47, "memory_mb": 0.012 },
+      "dirty_rects_aggregate": { "rows": 47, "memory_mb": 0.012 },
       ...
     },
     "tier_dispatch_stats": { ... },
