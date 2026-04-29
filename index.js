@@ -66,4 +66,16 @@ export const uiaGetTextViaTextPattern = nativeBinding.uiaGetTextViaTextPattern;
 export const preprocessImage  = nativeBinding.preprocessImage;
 export const drawSomLabels    = nativeBinding.drawSomLabels;
 
+// ─── Win32 hot-path APIs (ADR-007 P1) ────────────────────────────────────────
+export const win32EnumTopLevelWindows       = nativeBinding.win32EnumTopLevelWindows;
+export const win32GetWindowText             = nativeBinding.win32GetWindowText;
+export const win32GetWindowRect             = nativeBinding.win32GetWindowRect;
+export const win32GetForegroundWindow       = nativeBinding.win32GetForegroundWindow;
+export const win32IsWindowVisible           = nativeBinding.win32IsWindowVisible;
+export const win32IsIconic                  = nativeBinding.win32IsIconic;
+export const win32IsZoomed                  = nativeBinding.win32IsZoomed;
+export const win32GetClassName              = nativeBinding.win32GetClassName;
+export const win32GetWindowThreadProcessId  = nativeBinding.win32GetWindowThreadProcessId;
+export const win32GetWindowLongPtrW         = nativeBinding.win32GetWindowLongPtrW;
+
 export default nativeBinding;

@@ -113,6 +113,25 @@ export interface NativeDrawSomLabelsResult {
   channels: number
 }
 
+// ── Win32 hot-path bindings (ADR-007 P1) ─────────────────────────────────────
+
+/** Rust `RECT` mirror — left/top/right/bottom in screen pixels. The TS wrapper
+ *  in `src/engine/win32.ts` converts to `{ x, y, width, height }` for callers. */
+export interface NativeWin32Rect {
+  left: number
+  top: number
+  right: number
+  bottom: number
+}
+
+/** Combined return for `GetWindowThreadProcessId`. The Win32 API's out-pointer
+ *  + return value are folded into one struct so the TS wrapper just reads
+ *  `.threadId` / `.processId`. */
+export interface NativeThreadProcessId {
+  threadId: number
+  processId: number
+}
+
 // ── Desktop Duplication (Phase 3) ────────────────────────────────────────────
 
 export interface NativeDirtyRect {

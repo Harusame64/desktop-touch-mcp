@@ -85,6 +85,20 @@ export interface NativeElementBounds {
   value?: string | null
 }
 
+// ─── Win32 hot-path bindings (ADR-007 P1) ────────────────────────────────────
+
+export interface NativeWin32Rect {
+  left: number
+  top: number
+  right: number
+  bottom: number
+}
+
+export interface NativeThreadProcessId {
+  threadId: number
+  processId: number
+}
+
 // ─── Image processing (Hybrid Non-CDP pipeline) ──────────────────────────────
 
 export interface NativePreprocessOptions {
@@ -149,3 +163,15 @@ export declare function uiaGetVirtualDesktopStatus(hwndIntegers: Array<string>):
 
 export declare function preprocessImage(opts: NativePreprocessOptions): Promise<NativeImageProcessingResult>
 export declare function drawSomLabels(opts: NativeDrawSomLabelsOptions): Promise<NativeDrawSomLabelsResult>
+
+// ─── Win32 hot-path APIs (ADR-007 P1, sync, panic-safe via napi_safe_call) ───
+export declare function win32EnumTopLevelWindows(): bigint[]
+export declare function win32GetWindowText(hwnd: bigint): string
+export declare function win32GetWindowRect(hwnd: bigint): NativeWin32Rect | null
+export declare function win32GetForegroundWindow(): bigint | null
+export declare function win32IsWindowVisible(hwnd: bigint): boolean
+export declare function win32IsIconic(hwnd: bigint): boolean
+export declare function win32IsZoomed(hwnd: bigint): boolean
+export declare function win32GetClassName(hwnd: bigint): string
+export declare function win32GetWindowThreadProcessId(hwnd: bigint): NativeThreadProcessId
+export declare function win32GetWindowLongPtrW(hwnd: bigint, nIndex: number): number

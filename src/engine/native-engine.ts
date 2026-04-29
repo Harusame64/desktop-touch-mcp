@@ -30,6 +30,8 @@ import type {
   NativeCapabilityProfile,
   NativeSessionInit,
   NativeSessionResult,
+  NativeWin32Rect,
+  NativeThreadProcessId,
 } from "./native-types.js";
 
 export type * from "./native-types.js";
@@ -66,6 +68,24 @@ export interface NativeEngine {
    * Returns a buffer with the same dimensions and channel count as input.
    */
   drawSomLabels?(opts: NativeDrawSomLabelsOptions): Promise<NativeDrawSomLabelsResult>;
+}
+
+// ─── Win32 hot-path surface (ADR-007 P1, used by src/engine/win32.ts) ────────
+//
+// Sync `#[napi]` exports replacing 10 koffi bindings. Methods are optional so
+// a missing native build (e.g. Linux dev environment) cleanly falls back to
+// the `if (!nativeWin32) throw` path inside the TS wrappers.
+export interface NativeWin32 {
+  win32EnumTopLevelWindows?(): bigint[];
+  win32GetWindowText?(hwnd: bigint): string;
+  win32GetWindowRect?(hwnd: bigint): NativeWin32Rect | null;
+  win32GetForegroundWindow?(): bigint | null;
+  win32IsWindowVisible?(hwnd: bigint): boolean;
+  win32IsIconic?(hwnd: bigint): boolean;
+  win32IsZoomed?(hwnd: bigint): boolean;
+  win32GetClassName?(hwnd: bigint): string;
+  win32GetWindowThreadProcessId?(hwnd: bigint): NativeThreadProcessId;
+  win32GetWindowLongPtrW?(hwnd: bigint, nIndex: number): number;
 }
 
 // ─── UIA surface (used by uia-bridge.ts) ─────────────────────────────────────
@@ -198,6 +218,14 @@ export const nativeVision: NativeVision | null =
     ? (nativeBinding as unknown as NativeVision)
     : null;
 
+// `nativeWin32` is non-null whenever the addon exposes the new ADR-007 P1
+// surface. TS wrappers in `src/engine/win32.ts` fall back to koffi when this
+// is null (e.g. running an older .node without the win32 module).
+export const nativeWin32: NativeWin32 | null =
+  nativeBinding && typeof nativeBinding.win32EnumTopLevelWindows === "function"
+    ? (nativeBinding as unknown as NativeWin32)
+    : null;
+
 if (nativeEngine) {
   console.error("[native-engine] Rust image-diff engine loaded (SSE2 SIMD)");
 }
@@ -206,4 +234,7 @@ if (nativeUia) {
 }
 if (nativeVision) {
   console.error("[native-engine] Rust vision-gpu backend loaded (ADR-005)");
+}
+if (nativeWin32) {
+  console.error("[native-engine] Rust win32 hot-path bindings loaded (ADR-007 P1)");
 }
