@@ -46,6 +46,12 @@ jobs:
       - name: Check generated Linux stub catalog
         run: npm run check:stub-catalog
 
+      - name: Check napi panic safety (ADR-007 §3.4 — sync #[napi] must use napi_safe_call)
+        run: npm run check:napi-safe
+
+      - name: Check native types (Rust #[napi] vs index.d.ts drift)
+        run: npm run check:native-types
+
       - name: Fetch node.lib for MSVC linking
         shell: pwsh
         run: |
