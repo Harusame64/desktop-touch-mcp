@@ -10,6 +10,11 @@ use super::thread::{self, UiaContext};
 use super::types::*;
 use super::control_type_name;
 
+// Re-export the cache-only helper so other modules in `uia/` (notably
+// the P5c-1 event handler module to be added) can build the L1 emit
+// payload without re-implementing the cached property read.
+pub(crate) use cached_focus_info::cached_element_to_focus_info;
+
 // ─── Timeout defaults (per design doc §2.4) ─────────────────────────────────
 
 const FOCUS_AND_POINT_TIMEOUT_MS: u32 = 2_000;
@@ -102,5 +107,63 @@ fn element_to_focus_info(elem: &IUIAutomationElement) -> Option<UiaFocusInfo> {
             automation_id,
             value,
         })
+    }
+}
+
+// ─── Cache-only helper (ADR-007 P5c-0b) ──────────────────────────────────────
+//
+// Used by the P5c-1 UIA Focus Changed event handler to build the L1 emit
+// payload from inside the UIA delivery thread. Distinct from
+// `element_to_focus_info` above because:
+//   - This helper must never invoke a live UIA call (the delivery thread
+//     has a tight latency budget and a slow path crashes the
+//     UiaCacheRequest hit-rate acceptance in P5c plan §11.3 / R5).
+//   - The L1 payload uses raw `u32` `UIA_CONTROLTYPE_ID`, not the string
+//     mapping that `UiaFocusInfo` exposes via napi.
+//   - The cached `NativeWindowHandle` is required so the bridge in
+//     `src/l3_bridge/` can populate `FocusEvent.hwnd` for the
+//     `current_focused_element` view.
+mod cached_focus_info {
+    use super::*;
+    use windows::Win32::UI::Accessibility::IUIAutomationElement;
+
+    /// Build a [`UiaFocusInfoExt`] from cached properties only.
+    ///
+    /// Requires the cache request used to fetch `elem` to include
+    /// `UIA_NativeWindowHandlePropertyId` (added to
+    /// `configure_cache_properties` in P5c-0b). Returns `None` only when
+    /// the element has no cached `Name` (rare; transient internal element).
+    /// `hwnd == 0` is a valid result — caller must handle the unresolved
+    /// case (P5c plan §4 P5c-0b).
+    #[allow(dead_code)] // first caller is the P5c-1 UIA Focus Changed handler
+    pub(crate) fn cached_element_to_focus_info(
+        elem: &IUIAutomationElement,
+    ) -> Option<UiaFocusInfoExt> {
+        unsafe {
+            let name = elem.CachedName().ok()?.to_string();
+            let control_type = elem.CachedControlType().ok()?.0 as u32;
+            let automation_id = elem
+                .CachedAutomationId()
+                .ok()
+                .map(|b| b.to_string())
+                .filter(|s| !s.is_empty());
+            // `CachedNativeWindowHandle` returns the element's host HWND or
+            // NULL for non-window elements. We don't walk to a parent here:
+            // that would cost another UIA call (even cached traversal can
+            // fault to live when the cache root doesn't cover the parent).
+            // The bridge handles `hwnd == 0` explicitly.
+            let hwnd = elem
+                .CachedNativeWindowHandle()
+                .ok()
+                .map(|h| h.0 as u64)
+                .unwrap_or(0);
+
+            Some(UiaFocusInfoExt {
+                hwnd,
+                name,
+                control_type,
+                automation_id,
+            })
+        }
     }
 }
