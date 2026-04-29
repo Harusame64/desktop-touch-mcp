@@ -581,14 +581,18 @@ export const MAPVK_VK_TO_VSC = 0;
 /** Post a single WM message to a window. Returns false on failure. */
 export function postMessageToHwnd(hwnd: unknown, msg: number, wParam: number, lParam: number): boolean {
   if (typeof hwnd !== "bigint") return false;
-  nativeL1?.l1PushHwInputPostMessage?.(hwnd, msg >>> 0, BigInt(wParam | 0), BigInt(lParam | 0));
   try {
-    return requireNativeWin32().win32PostMessage!(
+    const ok = requireNativeWin32().win32PostMessage!(
       hwnd,
       msg >>> 0,
       BigInt(wParam | 0),
       BigInt(lParam | 0),
     );
+    // Record only successful sends so the L1 stream stays replay-accurate.
+    if (ok) {
+      nativeL1?.l1PushHwInputPostMessage?.(hwnd, msg >>> 0, BigInt(wParam | 0), BigInt(lParam | 0));
+    }
+    return ok;
   } catch {
     return false;
   }

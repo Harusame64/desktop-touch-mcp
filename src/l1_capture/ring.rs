@@ -21,7 +21,9 @@ impl EventRing {
     pub fn new(capacity: usize) -> Self {
         EventRing {
             queue: ArrayQueue::new(capacity),
-            event_id_counter: AtomicU64::new(0),
+            // Start at 1 so that cursor 0 is the universal "beginning of time"
+            // sentinel: poll(since=0, max) returns every event in the ring.
+            event_id_counter: AtomicU64::new(1),
             drop_count: AtomicU64::new(0),
             push_count: AtomicU64::new(0),
         }
@@ -154,19 +156,13 @@ mod tests {
     #[test]
     fn poll_from_zero_returns_all() {
         let ring = EventRing::new(16);
-        // event_ids start at 0; poll(since=MAX) returns nothing, poll without cursor...
-        // Use a fresh ring where ids start at 0
+        // IDs start at 1; cursor 0 is the "beginning of time" sentinel.
         let id0 = ring.push(make_event(EventKind::Heartbeat as u16));
         let _ = ring.push(make_event(EventKind::Heartbeat as u16));
         let _ = ring.push(make_event(EventKind::Heartbeat as u16));
-        assert_eq!(id0, 0);
-        // poll(since = u64::MAX) means "since before any event" not possible with u64
-        // but since id starts at 0, we can't use MAX here.
-        // Use wrapping: poll with u64::MAX gives nothing (0 < MAX is false? no, 0 < MAX).
-        // Actually 0 > MAX is false, so poll(MAX, 10) returns nothing. Good, tested above.
-        // To get "all events since beginning", use since = u64::MAX.
-        // Let's just verify by polling with since = 0 (skips event_id 0, gets 1 and 2).
+        assert_eq!(id0, 1); // first ID is now 1
+        // poll(since = 0) means "since before any event" → returns all 3.
         let got = ring.poll(0, 10);
-        assert_eq!(got.len(), 2);
+        assert_eq!(got.len(), 3);
     }
 }

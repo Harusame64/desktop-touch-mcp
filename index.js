@@ -114,6 +114,5 @@ export const l1PushFailure              = nativeBinding.l1PushFailure;
 export const l1PollEvents               = nativeBinding.l1PollEvents;
 export const l1GetCaptureStats          = nativeBinding.l1GetCaptureStats;
 export const l1ShutdownForTest          = nativeBinding.l1ShutdownForTest;
-export const l1TestForcePanic           = nativeBinding.l1TestForcePanic;
 
 export default nativeBinding;

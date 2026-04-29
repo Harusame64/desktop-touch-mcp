@@ -225,8 +225,11 @@ export interface NativeVision {
 let nativeBinding: Record<string, unknown> | null = null;
 try {
   const addon = await import("../../index.js");
-  // index.js exports each function as a named ESM export (no default unwrap needed).
-  nativeBinding = addon as unknown as Record<string, unknown>;
+  // Use the raw napi-rs binding (default export) so debug-only exports like
+  // l1TestForcePanic are accessible via NativeL1 without appearing on the
+  // public index.d.ts surface. Named re-exports in index.js are identical
+  // references, so all other checks remain unaffected.
+  nativeBinding = (addon as unknown as { default: Record<string, unknown> }).default;
 } catch {
   // Native addon not built or platform unsupported — callers fall back to TS/PowerShell.
 }

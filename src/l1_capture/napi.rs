@@ -186,7 +186,9 @@ pub fn l1_shutdown_for_test() -> napi::Result<()> {
 
 /// Force a panic inside `napi_safe_call` to verify the PANIC_COUNTER
 /// increments and the panic hook pushes a Failure event to the L1 ring.
-/// Only for testing — always returns an Error (the panic is caught).
+/// Only compiled in debug builds; not part of the public npm surface.
+/// Always returns an Error (the panic is caught by napi_safe_call).
+#[cfg(debug_assertions)]
 #[napi]
 pub fn l1_test_force_panic() -> napi::Result<()> {
     napi_safe_call("l1_test_force_panic", || {
