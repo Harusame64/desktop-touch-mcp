@@ -305,6 +305,7 @@ export interface NativeL1 {
   l1PollEvents?(sinceEventId: bigint, maxCount: number): NativeEventEnvelope[];
   l1GetCaptureStats?(): NativeCaptureStats;
   l1ShutdownForTest?(): void;
+  l1TestForcePanic?(): void;
 }
 
 export const nativeL1: NativeL1 | null =

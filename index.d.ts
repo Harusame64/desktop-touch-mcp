@@ -284,3 +284,4 @@ export declare function l1PushFailure(layer: string, op: string, reason: string,
 export declare function l1PollEvents(sinceEventId: bigint, maxCount: number): NativeEventEnvelope[]
 export declare function l1GetCaptureStats(): NativeCaptureStats
 export declare function l1ShutdownForTest(): void
+export declare function l1TestForcePanic(): void

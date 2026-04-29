@@ -94,12 +94,14 @@ pub fn l1_push_hw_input_post_message(
     napi_safe_call("l1_push_hw_input_post_message", || {
         let ring_inner = ensure_l1();
         let (_sign, hwnd_val, _lossless) = target_hwnd.get_u64();
-        let (_sign2, wp_val, _lossless2) = w_param.get_u64();
+        // wParam: sign-preserve via get_i64 then bit-reinterpret to u64 so
+        // bit-31 is never silently flipped (PR #77 / Opus review §2.3).
+        let (wp_signed, _lossless2) = w_param.get_i64();
         let (lp_val, _lossless) = l_param.get_i64();
         let payload = encode_payload(&HwInputPostMessagePayload {
             target_hwnd: hwnd_val,
             msg,
-            w_param: wp_val,
+            w_param: wp_signed as u64,
             l_param: lp_val,
         });
         let event = build_event(
@@ -179,5 +181,15 @@ pub fn l1_shutdown_for_test() -> napi::Result<()> {
     napi_safe_call("l1_shutdown_for_test", || {
         shutdown_l1_for_test(Duration::from_secs(1))
             .map_err(|e| napi::Error::from_reason(e.to_string()))
+    })
+}
+
+/// Force a panic inside `napi_safe_call` to verify the PANIC_COUNTER
+/// increments and the panic hook pushes a Failure event to the L1 ring.
+/// Only for testing — always returns an Error (the panic is caught).
+#[napi]
+pub fn l1_test_force_panic() -> napi::Result<()> {
+    napi_safe_call("l1_test_force_panic", || {
+        panic!("intentional test panic — napi_safe_call hook verification");
     })
 }

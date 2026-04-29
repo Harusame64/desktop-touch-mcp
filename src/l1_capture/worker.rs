@@ -229,6 +229,19 @@ fn spawn_l1_inner() -> L1Inner {
     let ring_for_worker = Arc::clone(&ring);
     let started_at = Instant::now();
 
+    // Register the napi_safe_call panic hook so every caught panic also
+    // produces a Failure event in the L1 ring. OnceLock::set only succeeds
+    // once; the hook calls ensure_l1() dynamically so it always pushes to
+    // the *current* ring even after test shutdown/restart cycles.
+    let _ = crate::win32::safety::register_l1_panic_hook(|name, detail| {
+        ensure_l1().ring.push(make_failure_event(
+            "napi_safe_call",
+            name,
+            "Panic",
+            Some(detail),
+        ));
+    });
+
     // SessionStart を最初に push してから worker thread を起動
     ring.push(make_session_start_event());
 

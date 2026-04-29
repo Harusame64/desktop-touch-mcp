@@ -139,4 +139,45 @@ describe.skipIf(!nativeL1)("ADR-007 P5a: L1 panic-fuzz", () => {
       expect(typeof id).toBe("bigint");
     });
   });
+
+  // ── §13 acceptance item 14: PANIC_COUNTER hit → L1 ring Failure event ──────
+  // l1TestForcePanic() panics inside napi_safe_call. The panic hook registered
+  // by spawn_l1_inner() must push a Failure event (kind=200) to the L1 ring,
+  // and PANIC_COUNTER must increment.
+
+  describe.skipIf(typeof native.l1TestForcePanic !== "function")(
+    "PANIC_COUNTER hit flows into L1 ring as Failure event (§13 item 14)",
+    () => {
+      it("l1TestForcePanic throws Error (panic caught by napi_safe_call)", () => {
+        expect(() => native.l1TestForcePanic!()).toThrow();
+      });
+
+      it("panicCount increments after l1TestForcePanic", () => {
+        native.l1ShutdownForTest!();
+        native.l1PollEvents!(0n, 100_000); // drain
+        const s0 = native.l1GetCaptureStats!();
+
+        expect(() => native.l1TestForcePanic!()).toThrow();
+
+        const s1 = native.l1GetCaptureStats!();
+        expect(s1.panicCount > s0.panicCount).toBe(true);
+      });
+
+      it("Failure event (kind=200) appears in ring after l1TestForcePanic", () => {
+        native.l1ShutdownForTest!();
+        native.l1PollEvents!(0n, 100_000); // drain
+        const s0 = native.l1GetCaptureStats!();
+        const since = s0.eventIdHighWater;
+
+        expect(() => native.l1TestForcePanic!()).toThrow();
+
+        const events = native.l1PollEvents!(since, 100);
+        const failureEv = events.find((e) => e.kind === 200);
+        expect(failureEv).toBeDefined();
+        // The Failure event must carry a payload describing the panic source.
+        expect(Buffer.isBuffer(failureEv!.payloadBytes)).toBe(true);
+        expect(failureEv!.payloadBytes.length).toBeGreaterThan(0);
+      });
+    },
+  );
 });
