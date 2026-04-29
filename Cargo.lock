@@ -333,6 +333,7 @@ dependencies = [
  "bincode 2.0.1",
  "crossbeam-channel",
  "crossbeam-queue",
+ "engine-perception",
  "image",
  "napi",
  "napi-build",

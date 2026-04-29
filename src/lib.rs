@@ -19,6 +19,10 @@ pub mod duplication;
 mod win32;
 // ADR-007 P5a: L1 capture core — ring buffer + EventEnvelope schema + worker thread + napi API.
 mod l1_capture;
+// ADR-007 P5c-0b: root-side L1→engine-perception bridge scaffold (Windows only).
+// See `src/l3_bridge/mod.rs` for the rationale on direction-of-dep.
+#[cfg(windows)]
+mod l3_bridge;
 
 // Visual GPU Phase 4 backend (ADR-005). The module always compiles so that
 // `detect_capability()` can report `backend_built=false` cleanly when the
