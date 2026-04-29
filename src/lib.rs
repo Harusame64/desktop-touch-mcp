@@ -13,6 +13,10 @@ mod image_processing;
 mod uia;
 #[cfg(windows)]
 pub mod duplication;
+// ADR-007 P1: hot-path window APIs migrated from koffi to windows-rs.
+// All sync `#[napi]` exports under `win32::window` go through `napi_safe_call`
+// (src/win32/safety.rs) so panics never reach the libuv main thread.
+mod win32;
 
 // Visual GPU Phase 4 backend (ADR-005). The module always compiles so that
 // `detect_capability()` can report `backend_built=false` cleanly when the

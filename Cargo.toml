@@ -85,6 +85,11 @@ windows = { version = "0.62", features = [
     # Visual GPU Phase 4 capability detection (ADR-005)
     "Win32_System_SystemInformation",
     "Wdk_System_SystemServices",
+    # ADR-007 P1: hot-path window APIs (koffi → windows-rs).
+    # EnumWindows / GetWindowText / GetWindowRect / GetForegroundWindow /
+    # IsWindowVisible / IsIconic / IsZoomed / GetClassNameW /
+    # GetWindowThreadProcessId / GetWindowLongPtrW
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [build-dependencies]
