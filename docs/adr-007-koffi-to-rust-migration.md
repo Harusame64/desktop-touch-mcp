@@ -428,6 +428,7 @@ build 時に platform-aware で win32.ts vs _linux-stub.ts を切替。
 | 8 | Reflex API NVIDIA 限定 | Low | DWM/DXGI fallback (T1) で全環境動作 |
 | 9 | event_id 採番の atomic counter 競合 | Low | `AtomicU64::fetch_add(Ordering::SeqCst)` で安全 |
 | 10 | bincode payload と TS 側 decoder の不一致 | Medium | Rust struct と TS interface を 1 つの IDL から自動生成 (将来課題、初期は手動同期) |
+| 11 | **Known issue (P5a 由来、別 PR で fix 予定)** — `src/l1_capture/worker.rs::shutdown_with_timeout` (l160-184) と `shutdown_l1_for_test` (l211-224) が UIA thread と同じ shutdown bug を持つ: (a) handle を unconditional に take してから helper-thread 経由 join、timeout 後に handle が helper thread 内 stale (b) `shutdown_l1_for_test` が `inner.shutdown_with_timeout()` 前に slot clear、timeout 後 `ensure_l1()` が二重 thread spawn | High (test-only path だが、本番 shutdown ordering で再発リスク) | UIA thread と同じ修正 (`JoinHandle::is_finished()` polling + slot は Ok 時のみ clear) を別 PR で適用。発見: PR #84 Codex review v5+v6、UIA 側修正は PR #84 内、L1 worker は scope 分離で別 PR |
 
 ---
 

@@ -64,41 +64,55 @@ impl UiaThreadHandle {
 
     /// Signal shutdown and wait for the thread to join, with a timeout.
     ///
-    /// **Single-call API.** Once a call returns `Err` (timeout), the
-    /// `JoinHandle` has been moved into a helper thread that we cannot
-    /// reclaim, so subsequent calls return `Err("uia thread handle
-    /// unavailable")` rather than masking the leaked state with `Ok`.
-    /// The caller (and `Drop`) must rely on `shutdown_tx.try_send` for
-    /// best-effort signalling beyond the first attempt.
+    /// Uses `JoinHandle::is_finished()` polling so the handle stays in
+    /// `self.join_handle` until we know the thread has actually exited.
+    /// On timeout the handle is still recoverable: a later
+    /// `shutdown_with_timeout(longer)` (or even a fresh
+    /// `shutdown_uia_for_test`) can re-poll and join the thread once
+    /// the long-running task finally drains.
     ///
-    /// Codex review v5 P2 on PR #84 prompted the change from
-    /// `None => Ok(())` to `None => Err(...)` here.
+    /// Codex review v5 (P1+P2) and v6 (P1) on PR #84 walked the design
+    /// from "take handle eagerly + helper join thread" to this polling
+    /// shape. The eager take leaked the handle on timeout and made the
+    /// COM thread permanently unrecoverable; polling keeps the slot
+    /// usable for retry.
     pub(crate) fn shutdown_with_timeout(&self, timeout: Duration) -> Result<(), &'static str> {
-        // bounded(1) shutdown channel — second send is harmless.
+        // bounded(1) shutdown channel — repeated sends are harmless.
         let _ = self.shutdown_tx.try_send(());
-        let handle_opt = {
-            let mut guard = self.join_handle.lock().unwrap_or_else(|e| e.into_inner());
-            guard.take()
-        };
-        let handle = match handle_opt {
-            Some(h) => h,
-            // The handle was taken by a previous `shutdown_with_timeout`
-            // call. We can't tell whether that earlier attempt finished
-            // joining (in which case the thread is genuinely gone) or
-            // timed out (in which case it may still be alive). Be honest
-            // about the ambiguity instead of silently returning Ok.
-            None => return Err("uia thread handle unavailable — previous shutdown attempt consumed it"),
-        };
-        // No `JoinHandle::join_with_timeout` in std; mirror L1 worker pattern.
-        let (tx, rx) = std::sync::mpsc::channel::<()>();
-        thread::spawn(move || {
-            let _ = handle.join();
-            let _ = tx.send(());
-        });
-        match rx.recv_timeout(timeout) {
-            Ok(()) => Ok(()),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err("uia thread join timed out"),
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err("join helper disconnected"),
+
+        let deadline = std::time::Instant::now() + timeout;
+        let poll_interval = Duration::from_millis(10);
+
+        loop {
+            // Peek `is_finished()` without removing the handle. If the
+            // thread is already done we promote to take + join in one
+            // critical section so we don't race a concurrent caller.
+            let finished_or_done = {
+                let mut guard = self.join_handle.lock().unwrap_or_else(|e| e.into_inner());
+                match guard.as_ref() {
+                    Some(h) if h.is_finished() => {
+                        // Take and join now (won't block — thread has exited).
+                        let h = guard.take().expect("just observed Some");
+                        let _ = h.join();
+                        Some(Ok(()))
+                    }
+                    Some(_) => None, // still running
+                    // Some other caller already observed the thread as
+                    // finished and joined it; that's a successful shutdown.
+                    None => Some(Ok(())),
+                }
+            };
+            if let Some(result) = finished_or_done {
+                return result;
+            }
+
+            if std::time::Instant::now() >= deadline {
+                // Handle stays in `self.join_handle` so a subsequent
+                // call (or `shutdown_uia_for_test` retry) can poll
+                // again and join when the thread finally exits.
+                return Err("uia thread join timed out");
+            }
+            thread::sleep(poll_interval);
         }
     }
 }
