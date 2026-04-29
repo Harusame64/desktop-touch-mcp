@@ -114,8 +114,10 @@ desktop-touch-mcp/
   - 新規 `subscribe()` API を追加、subscriber ごとに cursor を保持、non-destructive read
   - 詳細実装は本 sub-batch 内で確定 (P5c plan §8 (A) で「ADR-008 D1-2 で実装」と確定済)
 - [ ] adapter thread が `ring.subscribe()` で broadcast 受信、`EventKind::UiaFocusChanged` のみ filter (D1 スコープ、他 event は drop)
-- [ ] L1 EventEnvelope を decode → `UiaFocusChangedPayload` (`{ before, after: UiElementRef, window_title }`) を取り出す
-- [ ] **`engine_perception::FocusEvent`** に変換: `{ hwnd, name, automation_id, control_type, window_title, wallclock_ms, sub_ordinal }`
+- [ ] L1 EventEnvelope を decode → `UiaFocusChangedPayload { before: Option<UiElementRef>, after: Option<UiElementRef>, window_title: String }` を取り出す (P5c plan §4 P5c-0b の shape 準拠)
+- [ ] **`payload.after` の Option を正しく handle** (Codex review v4 P2-1):
+  - `Some(after)` → `engine_perception::FocusEvent { hwnd: after.hwnd, name: after.name, automation_id: after.automation_id, control_type: after.control_type, window_title: payload.window_title, wallclock_ms, sub_ordinal }` に変換して push
+  - `None` (focus dropped、UIA で resolvable な focus がない状態) → **D1 範囲では skip** (current_focused_element view を更新しない)。「focus dropped」を意味的に view に反映するのは D2 (semantic_event_stream) のスコープ
 - [ ] **`crates/engine-perception/src/input.rs`** (PR-P5c-0b で scaffold 済) に `FocusInputHandle::push_focus(FocusEvent)` 実装 (timely InputSession への push)
 - [ ] `(wallclock_ms, sub_ordinal)` を `Pair<u64, u32>` (logical_time) に変換
 - [ ] L1 worker / UIA thread / 本 adapter thread の shutdown 順序 (本書 §5.3 で確定)
@@ -196,12 +198,14 @@ impl L1ToPerceptionPump {
         //   ring.subscribe(my_cursor) → loop:
         //     for env in ring.poll_since(cursor, max):
         //       if env.kind == UiaFocusChanged as u16:
-        //         let payload = bincode::decode(env.payload_bytes);
+        //         let payload: UiaFocusChangedPayload = bincode::decode(env.payload_bytes);
+        //         // payload.after is Option — None means focus dropped, skip in D1
+        //         let Some(after) = payload.after else { continue };
         //         let ev = FocusEvent {
-        //             hwnd: payload.after.hwnd,
-        //             name: payload.after.name,
-        //             automation_id: payload.after.automation_id,
-        //             control_type: payload.after.control_type,
+        //             hwnd: after.hwnd,                  // 0 = unresolved (P5c plan §4 P5c-0b)
+        //             name: after.name,
+        //             automation_id: after.automation_id,
+        //             control_type: after.control_type,
         //             window_title: payload.window_title,
         //             wallclock_ms: env.wallclock_ms,
         //             sub_ordinal: env.sub_ordinal,

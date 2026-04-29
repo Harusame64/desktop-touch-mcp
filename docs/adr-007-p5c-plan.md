@@ -421,7 +421,7 @@ PR-P5c-0a で D1 plan §3 D1-2 sub-batch 内に「ring を broadcast 化 (subscr
 ### 11.3 PR-P5c-1 (UIA Focus hook、D1 blocker)
 - [ ] safe target で UIA focus 移動 → `EventKind::UiaFocusChanged` event が ring に push
 - [ ] **`AddFocusChangedEventHandler` を 2 引数 `(cache_request, handler)` で正しく呼び出し** (Codex P2 API mismatch)
-- [ ] **payload `UiaFocusChangedPayload.after.hwnd` が non-zero、`window_title` が空でない** (Codex review v3 P2: bridge が `FocusEvent { hwnd, window_title, ... }` を組めることを ring 経由で verify)
+- [ ] **resolvable な focus イベントで `payload.after.hwnd` が non-zero かつ `window_title` が空でない** (Codex review v3 P2 + v4 P2-2): bridge が `FocusEvent { hwnd, window_title, ... }` を組めることを ring 経由で verify。**unresolved case** (`hwnd == 0` / `payload.after == None`) も valid な data point として扱い、handler / bridge が panic / abort せず graceful に処理することを確認
 - [ ] **`UIA_NativeWindowHandlePropertyId` が cache に乗っていることを確認** (`cached_element_to_focus_info` 内で slow path が走っていないか log で計測)
 - [ ] handler 内 panic で UIA thread / Node プロセス全滅しない
 - [ ] shutdown 時 `RemoveFocusChangedEventHandler` 呼ばれる、5 サイクル test
