@@ -314,3 +314,29 @@ export interface NativeSessionResult {
   /** Echoed `sessionKey` — use as lookup key for subsequent recognize_rois calls (4b-4+). */
   sessionKey: string
 }
+
+// ── ADR-007 P5a: L1 capture ring buffer ──────────────────────────────────────
+
+/** napi 公開する EventEnvelope の TS 側表現。Rust 内部の InternalEvent は
+ *  payload を Vec<u8> で所有するが、JS 側では Buffer (fresh allocation) として渡る。 */
+export interface NativeEventEnvelope {
+  envelopeVersion: number
+  eventId: bigint
+  wallclockMs: bigint
+  subOrdinal: number
+  timestampSource: number
+  kind: number
+  payloadBytes: Buffer
+  sessionId?: string | null
+  toolCallId?: string | null
+}
+
+/** L1 ring buffer のヘルスチェック結果。bench / server_status 用。 */
+export interface NativeCaptureStats {
+  uptimeMs: bigint
+  pushCount: bigint
+  dropCount: bigint
+  currentBuffered: number
+  panicCount: bigint
+  eventIdHighWater: bigint
+}

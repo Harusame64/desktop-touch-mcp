@@ -253,3 +253,34 @@ export declare function win32GetAncestor(hwnd: bigint, gaFlags: number): bigint 
 export declare function win32IsWindowEnabled(hwnd: bigint): boolean
 export declare function win32GetLastActivePopup(hwnd: bigint): bigint | null
 export declare function win32IsWindowCloaked(hwnd: bigint): boolean
+
+// ─── L1 capture ring buffer (ADR-007 P5a) ────────────────────────────────────
+
+export interface NativeEventEnvelope {
+  envelopeVersion: number
+  eventId: bigint
+  wallclockMs: bigint
+  subOrdinal: number
+  timestampSource: number
+  kind: number
+  payloadBytes: Buffer
+  sessionId?: string | null
+  toolCallId?: string | null
+}
+
+export interface NativeCaptureStats {
+  uptimeMs: bigint
+  pushCount: bigint
+  dropCount: bigint
+  currentBuffered: number
+  panicCount: bigint
+  eventIdHighWater: bigint
+}
+
+export declare function l1PushToolCallStarted(tool: string, argsJson: string, sessionId?: string, toolCallId?: string): bigint
+export declare function l1PushToolCallCompleted(tool: string, elapsedMs: number, ok: boolean, errorCode?: string, sessionId?: string, toolCallId?: string): bigint
+export declare function l1PushHwInputPostMessage(targetHwnd: bigint, msg: number, wParam: bigint, lParam: bigint, sessionId?: string, toolCallId?: string): bigint
+export declare function l1PushFailure(layer: string, op: string, reason: string, panicPayload?: string, sessionId?: string, toolCallId?: string): bigint
+export declare function l1PollEvents(sinceEventId: bigint, maxCount: number): NativeEventEnvelope[]
+export declare function l1GetCaptureStats(): NativeCaptureStats
+export declare function l1ShutdownForTest(): void

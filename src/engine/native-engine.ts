@@ -38,6 +38,8 @@ import type {
   NativeProcessParentEntry,
   NativeProcessIdentity,
   NativeScrollInfo,
+  NativeEventEnvelope,
+  NativeCaptureStats,
 } from "./native-types.js";
 
 export type * from "./native-types.js";
@@ -264,6 +266,52 @@ export const nativeWin32: NativeWin32 | null =
     ? (nativeBinding as unknown as NativeWin32)
     : null;
 
+// ─── L1 capture surface (ADR-007 P5a) ────────────────────────────────────────
+//
+// Ring buffer + typed push helpers + polling API. Probe key is `l1PushFailure`
+// since it's the most general of the 4 typed helpers and will remain across P5b+.
+// All methods are optional so a pre-P5a addon build cleanly falls back to null.
+export interface NativeL1 {
+  l1PushToolCallStarted?(
+    tool: string,
+    argsJson: string,
+    sessionId?: string,
+    toolCallId?: string,
+  ): bigint;
+  l1PushToolCallCompleted?(
+    tool: string,
+    elapsedMs: number,
+    ok: boolean,
+    errorCode?: string,
+    sessionId?: string,
+    toolCallId?: string,
+  ): bigint;
+  l1PushHwInputPostMessage?(
+    targetHwnd: bigint,
+    msg: number,
+    wParam: bigint,
+    lParam: bigint,
+    sessionId?: string,
+    toolCallId?: string,
+  ): bigint;
+  l1PushFailure?(
+    layer: string,
+    op: string,
+    reason: string,
+    panicPayload?: string,
+    sessionId?: string,
+    toolCallId?: string,
+  ): bigint;
+  l1PollEvents?(sinceEventId: bigint, maxCount: number): NativeEventEnvelope[];
+  l1GetCaptureStats?(): NativeCaptureStats;
+  l1ShutdownForTest?(): void;
+}
+
+export const nativeL1: NativeL1 | null =
+  nativeBinding && typeof nativeBinding.l1PushFailure === "function"
+    ? (nativeBinding as unknown as NativeL1)
+    : null;
+
 if (nativeEngine) {
   console.error("[native-engine] Rust image-diff engine loaded (SSE2 SIMD)");
 }
@@ -275,4 +323,7 @@ if (nativeVision) {
 }
 if (nativeWin32) {
   console.error("[native-engine] Rust win32 hot-path bindings loaded (ADR-007 P1)");
+}
+if (nativeL1) {
+  console.error("[native-engine] Rust L1 capture loaded (ADR-007 P5a)");
 }
