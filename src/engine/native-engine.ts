@@ -78,7 +78,8 @@ export interface NativeEngine {
 
 // ─── Win32 hot-path surface (ADR-007 P1, used by src/engine/win32.ts) ────────
 //
-// Sync `#[napi]` exports replacing 10 koffi bindings. Methods are optional so
+// Sync `#[napi]` exports — the napi-rs surface that replaced the legacy FFI
+// bindings across ADR-007 P1–P4. Methods are optional so
 // a missing native build (e.g. Linux dev environment) cleanly falls back to
 // the `if (!nativeWin32) throw` path inside the TS wrappers.
 export interface NativeWin32 {
@@ -114,6 +115,13 @@ export interface NativeWin32 {
   win32PostMessage?(hwnd: bigint, msg: number, wParam: bigint, lParam: bigint): boolean;
   win32GetFocus?(): bigint | null;
   win32VkToScanCode?(vk: number): number;
+
+  // ADR-007 P4 owner / ancestor / enabled / popup / DWM utilities
+  win32GetWindow?(hwnd: bigint, uCmd: number): bigint | null;
+  win32GetAncestor?(hwnd: bigint, gaFlags: number): bigint | null;
+  win32IsWindowEnabled?(hwnd: bigint): boolean;
+  win32GetLastActivePopup?(hwnd: bigint): bigint | null;
+  win32IsWindowCloaked?(hwnd: bigint): boolean;
 }
 
 // ─── UIA surface (used by uia-bridge.ts) ─────────────────────────────────────
@@ -247,8 +255,10 @@ export const nativeVision: NativeVision | null =
     : null;
 
 // `nativeWin32` is non-null whenever the addon exposes the new ADR-007 P1
-// surface. TS wrappers in `src/engine/win32.ts` fall back to koffi when this
-// is null (e.g. running an older .node without the win32 module).
+// surface. When this is null (e.g. running an older `.node` build without
+// the win32 module), the TS wrappers in `src/engine/win32.ts` throw a
+// loud "addon out of date" Error rather than carrying a legacy fallback —
+// since ADR-007 P4 there is nothing to fall back to.
 export const nativeWin32: NativeWin32 | null =
   nativeBinding && typeof nativeBinding.win32EnumTopLevelWindows === "function"
     ? (nativeBinding as unknown as NativeWin32)

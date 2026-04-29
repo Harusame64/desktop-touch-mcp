@@ -99,4 +99,11 @@ export const win32PostMessage                 = nativeBinding.win32PostMessage;
 export const win32GetFocus                    = nativeBinding.win32GetFocus;
 export const win32VkToScanCode                = nativeBinding.win32VkToScanCode;
 
+// ─── Win32 owner / ancestor / enabled / popup / DWM (ADR-007 P4) ─────────────
+export const win32GetWindow                   = nativeBinding.win32GetWindow;
+export const win32GetAncestor                 = nativeBinding.win32GetAncestor;
+export const win32IsWindowEnabled             = nativeBinding.win32IsWindowEnabled;
+export const win32GetLastActivePopup          = nativeBinding.win32GetLastActivePopup;
+export const win32IsWindowCloaked             = nativeBinding.win32IsWindowCloaked;
+
 export default nativeBinding;

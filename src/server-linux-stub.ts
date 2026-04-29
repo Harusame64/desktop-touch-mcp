@@ -2,7 +2,8 @@
  * server-linux-stub.ts — catalog-complete MCP server for non-Windows hosts.
  *
  * desktop-touch-mcp is Windows-native. The real server imports Win32, UIA,
- * CDP, nut-js, and koffi modules that cannot run on Linux/macOS. Directory
+ * CDP, nut-js, and the desktop-touch-engine native addon — none of which run
+ * on Linux/macOS. Directory
  * hosts such as Glama still need to inspect the real tool surface, so this
  * stub serves the generated catalog for tools/list and returns a structured
  * UnsupportedPlatform error for every tools/call.

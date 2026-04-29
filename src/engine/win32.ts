@@ -1,13 +1,16 @@
-import koffi from "koffi";
 import { nativeWin32 } from "./native-engine.js";
 
-// Hot-path window APIs (10 functions) are routed through the napi-rs native
-// addon (ADR-007 P1). Anything missing from `nativeWin32` indicates the addon
-// was built before the win32 module landed — fail loudly so the dev rebuilds.
+// Every Win32 binding this module used to carry has migrated to the
+// napi-rs native addon (`src/win32/*.rs`) across ADR-007 P1–P4. The
+// koffi import and the user32 / dwmapi DLL loads are intentionally
+// absent — `scripts/check-no-koffi.mjs` enforces zero koffi.X call
+// sites repository-wide (ADR-007 §6 P4 acceptance). Anything missing
+// from `nativeWin32` indicates the addon was built before the win32
+// module landed; fail loudly so the dev rebuilds.
 function requireNativeWin32(): NonNullable<typeof nativeWin32> {
   if (!nativeWin32) {
     throw new Error(
-      "[win32] desktop-touch-engine native addon is missing the ADR-007 P1 " +
+      "[win32] desktop-touch-engine native addon is missing the ADR-007 " +
       "win32 surface. Run `npm run build:rs` to rebuild.",
     );
   }
@@ -15,90 +18,23 @@ function requireNativeWin32(): NonNullable<typeof nativeWin32> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DLL loading
+// Win32 constants reused below
 // ─────────────────────────────────────────────────────────────────────────────
 
-// `user32` still hosts the five owner-chain / enabled / popup utility
-// bindings (`GetWindow`, `GetAncestor`, `IsWindowEnabled`,
-// `GetLastActivePopup`) that ADR-007 §6 P3 deferred to P4. `kernel32` /
-// `gdi32` / `shcore` were retired in earlier phases.
-const user32 = koffi.load("user32.dll");
-// dwmapi — window composition queries; available on Vista+ (always present on Win 10/11)
-let _dwmapi: ReturnType<typeof koffi.load> | null = null;
-try { _dwmapi = koffi.load("dwmapi.dll"); } catch { /* not available */ }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Structs
-// ─────────────────────────────────────────────────────────────────────────────
-
-// RECT / MONITORINFO koffi structs removed in P2 — their last consumers
-// (GetWindowRect / EnumDisplayMonitors / GetMonitorInfoW) live in
-// src/win32/{window,monitor}.rs.
-
-// PROCESSENTRY32W / SCROLLINFO koffi structs removed in P3 — their consumers
-// (Toolhelp32 walk, GetScrollInfo) now live in src/win32/{process,scroll}.rs
-// where windows-rs `repr(C)` enforces the field layout. The legacy
-// `koffi.sizeof(SCROLLINFO) !== 28` sanity check that guarded against koffi
-// padding bugs is therefore obsolete (windows-rs guarantees the size).
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Function bindings
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Function bindings have migrated to src/win32/*.rs in successive phases:
-//   P1 (window.rs):  EnumWindows, GetWindowTextW, GetWindowRect, IsWindowVisible,
-//                    IsIconic, IsZoomed, GetForegroundWindow, GetClassNameW,
-//                    GetWindowThreadProcessId, GetWindowLongPtrW
-//   P2 (gdi/monitor/dpi.rs): PrintWindow + GDI dance, EnumDisplayMonitors,
-//                    GetMonitorInfoW, MonitorFromWindow, GetDpiForMonitor,
-//                    SetProcessDpiAwareness
-//   P3 (process/input/window_op/scroll.rs): ShowWindow, SetForegroundWindow,
-//                    SetWindowPos (Set/Clear topmost + bounds), BringWindowToTop,
-//                    AttachThreadInput, GetCurrentThreadId, OpenProcess,
-//                    GetProcessTimes, QueryFullProcessImageNameW, Toolhelp32,
-//                    GetScrollInfo, PostMessageW, GetFocus, MapVirtualKeyW
-//
-// The five koffi bindings still defined below are owner-chain / DWM utilities
-// that ADR-007 §6 P3 deliberately deferred to P4 (`enumWindowsInZOrder`'s
-// internal koffi calls move with them). All other koffi.func / koffi.struct /
-// koffi.load entries in this file are intentionally retired.
-
-// GWL_EXSTYLE / GW_OWNER / GA_ROOTOWNER / WS_EX_TOPMOST / DWMWA_CLOAKED:
-// stable Win32 constants reused below.
 const GWL_EXSTYLE   = -20;
 const WS_EX_TOPMOST = 0x00000008;
 const GW_OWNER      = 4;
 const GA_ROOTOWNER  = 3;
-const DWMWA_CLOAKED = 14;
-
-// Owner / ancestor / enabled / DWM-cloaked queries — P4 will fold these into
-// `src/win32/window.rs` along with `enumWindowsInZOrder`'s internal usages.
-const GetWindowHwnd = user32.func(
-  "intptr __stdcall GetWindow(void *hWnd, uint32 uCmd)"
-);
-const GetAncestor = user32.func(
-  "intptr __stdcall GetAncestor(void *hWnd, uint32 gaFlags)"
-);
-const IsWindowEnabled = user32.func(
-  "bool __stdcall IsWindowEnabled(void *hWnd)"
-);
-const GetLastActivePopup = user32.func(
-  "intptr __stdcall GetLastActivePopup(void *hWnd)"
-);
-const _DwmGetWindowAttribute = _dwmapi
-  ? _dwmapi.func(
-      "long __stdcall DwmGetWindowAttribute(void *hwnd, uint32 dwAttribute, _Out_ uint32 *pvAttribute, uint32 cbAttribute)"
-    )
-  : null;
 
 /**
  * Return the hwnd of the last active popup owned by `hwnd`.
- * Returns null when no popup exists (GetLastActivePopup returns the window itself).
+ * Returns null when no popup exists — the native binding normalises Win32's
+ * "popup === hwnd" sentinel to null, so this wrapper is a thin pass-through.
  */
 export function getLastActivePopup(hwnd: unknown): bigint | null {
+  if (typeof hwnd !== "bigint") return null;
   try {
-    const result = GetLastActivePopup(hwnd) as bigint;
-    return result === 0n ? null : result;
+    return requireNativeWin32().win32GetLastActivePopup!(hwnd);
   } catch {
     return null;
   }
@@ -216,24 +152,17 @@ export function enumWindowsInZOrder(): WindowZInfo[] {
 
       const isMaximized = !isMinimized && w32.win32IsZoomed!(hwnd);
 
-      // Extended fields for perception modal detection
+      // Extended fields for perception modal detection. The native
+      // bindings normalise Win32's failure shapes (NULL hwnd / DWM
+      // disabled / etc.) so the per-window try/catch can stay trivial.
       const exStyle = w32.win32GetWindowLongPtrW!(hwnd, GWL_EXSTYLE);
       let ownerHwnd: bigint | null = null;
-      try {
-        const raw = GetWindowHwnd(hwnd, GW_OWNER) as bigint;
-        ownerHwnd = raw === 0n ? null : raw;
-      } catch { /* keep null */ }
+      try { ownerHwnd = w32.win32GetWindow!(hwnd, GW_OWNER); } catch { /* keep null */ }
       const className = w32.win32GetClassName!(hwnd);
       let isCloaked = false;
-      if (_DwmGetWindowAttribute) {
-        try {
-          const val = [0];
-          _DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, val, 4);
-          isCloaked = val[0] !== 0;
-        } catch { /* keep false */ }
-      }
+      try { isCloaked = w32.win32IsWindowCloaked!(hwnd); } catch { /* keep false */ }
       let isEnabled = true;
-      try { isEnabled = !!IsWindowEnabled(hwnd); } catch { /* keep true */ }
+      try { isEnabled = w32.win32IsWindowEnabled!(hwnd); } catch { /* keep true */ }
 
       results.push({
         hwnd,
@@ -549,9 +478,9 @@ export function isWindowTopmost(hwnd: unknown): boolean {
  * has no owner (i.e. is a top-level unowned window).
  */
 export function getWindowOwner(hwnd: unknown): bigint | null {
+  if (typeof hwnd !== "bigint") return null;
   try {
-    const owner = GetWindowHwnd(hwnd, GW_OWNER) as bigint;
-    return owner === 0n ? null : owner;
+    return requireNativeWin32().win32GetWindow!(hwnd, GW_OWNER);
   } catch {
     return null;
   }
@@ -563,9 +492,9 @@ export function getWindowOwner(hwnd: unknown): bigint | null {
  * Returns null on failure.
  */
 export function getWindowRootOwner(hwnd: unknown): bigint | null {
+  if (typeof hwnd !== "bigint") return null;
   try {
-    const root = GetAncestor(hwnd, GA_ROOTOWNER) as bigint;
-    return root === 0n ? null : root;
+    return requireNativeWin32().win32GetAncestor!(hwnd, GA_ROOTOWNER);
   } catch {
     return null;
   }
@@ -576,8 +505,9 @@ export function getWindowRootOwner(hwnd: unknown): bigint | null {
  * Returns true on error (conservative — assume not disabled to avoid missing modals).
  */
 export function isWindowEnabled(hwnd: unknown): boolean {
+  if (typeof hwnd !== "bigint") return true;
   try {
-    return !!IsWindowEnabled(hwnd);
+    return requireNativeWin32().win32IsWindowEnabled!(hwnd);
   } catch {
     return true;
   }
@@ -587,14 +517,13 @@ export function isWindowEnabled(hwnd: unknown): boolean {
  * Return true if the window is cloaked by DWM (e.g. UWP background windows on
  * another virtual desktop). Cloaked windows pass IsWindowVisible but are not
  * actually drawn to the user's screen.
- * Returns false on error or when DWM is unavailable.
+ * Returns false on error or when DWM is unavailable — the native binding
+ * folds DWM-disabled into the same false fallback (legacy contract).
  */
 export function isWindowCloaked(hwnd: unknown): boolean {
-  if (!_DwmGetWindowAttribute) return false;
+  if (typeof hwnd !== "bigint") return false;
   try {
-    const val = [0];
-    _DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, val, 4);
-    return val[0] !== 0;
+    return requireNativeWin32().win32IsWindowCloaked!(hwnd);
   } catch {
     return false;
   }
