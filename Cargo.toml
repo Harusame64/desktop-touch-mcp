@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "crates/engine-perception"]
+resolver = "3"
+
 [package]
 name = "desktop-touch-engine"
 version = "0.1.0"
