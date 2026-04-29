@@ -18,3 +18,12 @@ pub(crate) mod gdi;
 pub(crate) mod monitor;
 #[cfg(windows)]
 pub(crate) mod dpi;
+// ADR-007 P3: process/thread + input bindings.
+#[cfg(windows)]
+pub(crate) mod process;
+#[cfg(windows)]
+pub(crate) mod input;
+#[cfg(windows)]
+pub(crate) mod window_op;
+#[cfg(windows)]
+pub(crate) mod scroll;

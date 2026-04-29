@@ -101,6 +101,16 @@ windows = { version = "0.62", features = [
     # PrintWindow lives under Storage_Xps in windows-rs 0.62 (matches the
     # underlying Win32 header grouping with the printing APIs).
     "Win32_Storage_Xps",
+    # ADR-007 P3: process / thread / input.
+    # OpenProcess / GetProcessTimes / QueryFullProcessImageNameW /
+    # GetCurrentThreadId / AttachThreadInput / PROCESS_QUERY_LIMITED_INFORMATION
+    "Win32_System_Threading",
+    # CreateToolhelp32Snapshot / Process32FirstW / Process32NextW /
+    # PROCESSENTRY32W / TH32CS_SNAPPROCESS
+    "Win32_System_Diagnostics_ToolHelp",
+    # GetFocus / MapVirtualKeyW (KeyboardAndMouse re-exports these despite
+    # their "input" semantics — verified against windows-rs 0.62 docs).
+    "Win32_UI_Input_KeyboardAndMouse",
 ] }
 
 [build-dependencies]
