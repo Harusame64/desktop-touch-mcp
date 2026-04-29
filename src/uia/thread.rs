@@ -62,7 +62,17 @@ impl UiaThreadHandle {
         self.sender.send(task)
     }
 
-    /// Signal shutdown and wait for the thread to join, with a timeout. Idempotent.
+    /// Signal shutdown and wait for the thread to join, with a timeout.
+    ///
+    /// **Single-call API.** Once a call returns `Err` (timeout), the
+    /// `JoinHandle` has been moved into a helper thread that we cannot
+    /// reclaim, so subsequent calls return `Err("uia thread handle
+    /// unavailable")` rather than masking the leaked state with `Ok`.
+    /// The caller (and `Drop`) must rely on `shutdown_tx.try_send` for
+    /// best-effort signalling beyond the first attempt.
+    ///
+    /// Codex review v5 P2 on PR #84 prompted the change from
+    /// `None => Ok(())` to `None => Err(...)` here.
     pub(crate) fn shutdown_with_timeout(&self, timeout: Duration) -> Result<(), &'static str> {
         // bounded(1) shutdown channel — second send is harmless.
         let _ = self.shutdown_tx.try_send(());
@@ -72,7 +82,12 @@ impl UiaThreadHandle {
         };
         let handle = match handle_opt {
             Some(h) => h,
-            None => return Ok(()), // already joined
+            // The handle was taken by a previous `shutdown_with_timeout`
+            // call. We can't tell whether that earlier attempt finished
+            // joining (in which case the thread is genuinely gone) or
+            // timed out (in which case it may still be alive). Be honest
+            // about the ambiguity instead of silently returning Ok.
+            None => return Err("uia thread handle unavailable — previous shutdown attempt consumed it"),
         };
         // No `JoinHandle::join_with_timeout` in std; mirror L1 worker pattern.
         let (tx, rx) = std::sync::mpsc::channel::<()>();
@@ -111,19 +126,45 @@ pub(crate) fn ensure_uia_thread() -> Arc<UiaThreadHandle> {
 /// it. Used for the 5-cycle shutdown/restart test (ADR-007 §3.4.3 acceptance,
 /// applied to UIA thread in P5c-0b) and by P5c-1 to drop event handlers
 /// before `CoUninitialize`.
+///
+/// **Slot is cleared only on success.** If `shutdown_with_timeout`
+/// returns `Err` (typically a long-running UIA task exceeded the
+/// timeout), the slot retains the original `Arc<UiaThreadHandle>` so
+/// the next `ensure_uia_thread()` returns the still-running instance
+/// rather than spawning a second COM thread (which would violate the
+/// UIA singleton + apartment-affinity invariant).
+///
+/// Codex review v5 P1 on PR #84 prompted moving `guard.take()` from
+/// before to after the shutdown confirmation.
 #[allow(dead_code)] // first caller is the 5-cycle test below + P5c-1 handler dropper
 pub(crate) fn shutdown_uia_for_test(timeout: Duration) -> Result<(), &'static str> {
     let cell = match UIA_SLOT.get() {
         Some(c) => c,
         None => return Ok(()),
     };
-    let inner_opt = {
-        let mut guard = cell.lock().unwrap_or_else(|e| e.into_inner());
-        guard.take()
+    // Borrow the Arc out of the slot without removing it yet — we need
+    // confirmation that the thread actually stopped before we let
+    // `ensure_uia_thread()` spawn a fresh one.
+    let inner_arc = {
+        let guard = cell.lock().unwrap_or_else(|e| e.into_inner());
+        match guard.as_ref() {
+            Some(arc) => Arc::clone(arc),
+            None => return Ok(()),
+        }
     };
-    match inner_opt {
-        Some(inner) => inner.shutdown_with_timeout(timeout),
-        None => Ok(()),
+    match inner_arc.shutdown_with_timeout(timeout) {
+        Ok(()) => {
+            // Thread confirmed joined; safe to clear the slot now.
+            let mut guard = cell.lock().unwrap_or_else(|e| e.into_inner());
+            *guard = None;
+            Ok(())
+        }
+        Err(e) => {
+            // Slot retains the original Arc; the next ensure() returns
+            // the same (potentially still-running) handle. Caller sees
+            // the timeout error and can decide whether to retry.
+            Err(e)
+        }
     }
 }
 
