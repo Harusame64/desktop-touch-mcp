@@ -34,9 +34,11 @@ jobs:
         run: |
           rm -rf _site
           mkdir -p _site/articles
-          cp site/index.html _site/index.html
+          cp site/*.html _site/ 2>/dev/null || true
+          cp site/*.txt _site/ 2>/dev/null || true
+          cp site/*.xml _site/ 2>/dev/null || true
           cp site/index.html _site/404.html
-          cp site/articles/*.html _site/articles/
+          cp site/articles/*.html _site/articles/ 2>/dev/null || true
           cp -R site/assets _site/assets
           touch _site/.nojekyll
 
