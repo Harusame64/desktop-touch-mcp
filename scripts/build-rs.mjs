@@ -32,8 +32,12 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ROOT = new URL("..", import.meta.url).pathname.replace(/^\/([A-Z]):/, "$1:");
+// `fileURLToPath` decodes percent-encoded URL segments (so paths containing
+// spaces or non-ASCII characters round-trip correctly) and normalises
+// Windows drive prefixes — both of which `new URL(...).pathname` mangles.
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const D_TS = join(ROOT, "index.d.ts");
 const INDEX_JS = join(ROOT, "index.js");
 const FILES = [D_TS, INDEX_JS];

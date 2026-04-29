@@ -15,8 +15,12 @@
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ROOT = new URL("..", import.meta.url).pathname.replace(/^\/([A-Z]):/, "$1:");
+// `fileURLToPath` decodes percent-encoded URL segments (paths with spaces or
+// non-ASCII characters) and normalises Windows drive prefixes — both of
+// which `new URL(...).pathname` mangles.
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const SCAN_DIR = join(ROOT, "src", "win32");
 
 /** Recursively collect *.rs files under `dir`. */
