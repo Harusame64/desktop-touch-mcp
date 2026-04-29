@@ -90,6 +90,17 @@ windows = { version = "0.62", features = [
     # IsWindowVisible / IsIconic / IsZoomed / GetClassNameW /
     # GetWindowThreadProcessId / GetWindowLongPtrW
     "Win32_UI_WindowsAndMessaging",
+    # ADR-007 P2: GDI / monitor enum / DPI.
+    # GetDC / ReleaseDC / CreateCompatibleDC / CreateCompatibleBitmap /
+    # SelectObject / DeleteObject / DeleteDC / GetDIBits / BITMAPINFO /
+    # EnumDisplayMonitors / GetMonitorInfoW / MonitorFromWindow / MONITORINFO
+    "Win32_Graphics_Gdi",
+    # SetProcessDpiAwareness / GetDpiForMonitor / MDT_EFFECTIVE_DPI /
+    # PROCESS_DPI_AWARENESS
+    "Win32_UI_HiDpi",
+    # PrintWindow lives under Storage_Xps in windows-rs 0.62 (matches the
+    # underlying Win32 header grouping with the printing APIs).
+    "Win32_Storage_Xps",
 ] }
 
 [build-dependencies]

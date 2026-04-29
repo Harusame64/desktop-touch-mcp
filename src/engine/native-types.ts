@@ -132,6 +132,32 @@ export interface NativeThreadProcessId {
   processId: number
 }
 
+// ── Win32 GDI / monitor / DPI (ADR-007 P2) ───────────────────────────────────
+
+/** Result of `win32PrintWindowToBuffer`: RGBA top-down pixels (length = w*h*4). */
+export interface NativePrintWindowResult {
+  data: Buffer
+  width: number
+  height: number
+}
+
+/** One monitor as returned by `win32EnumMonitors`. The TS wrapper rebuilds
+ *  the nested `{ bounds, workArea }` shape that callers (`MonitorInfo`)
+ *  expect — this flat record matches the napi marshal layout. */
+export interface NativeMonitorInfo {
+  handle: bigint
+  primary: boolean
+  boundsLeft: number
+  boundsTop: number
+  boundsRight: number
+  boundsBottom: number
+  workLeft: number
+  workTop: number
+  workRight: number
+  workBottom: number
+  dpi: number
+}
+
 // ── Desktop Duplication (Phase 3) ────────────────────────────────────────────
 
 export interface NativeDirtyRect {
