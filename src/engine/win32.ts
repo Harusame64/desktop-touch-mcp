@@ -18,12 +18,11 @@ function requireNativeWin32(): NonNullable<typeof nativeWin32> {
 // DLL loading
 // ─────────────────────────────────────────────────────────────────────────────
 
-// `user32` still hosts a handful of legacy bindings (ShowWindow,
-// SetForegroundWindow, SetWindowPos, AttachThreadInput, etc.) that move to
-// windows-rs in P3. `gdi32` / `shcore` were retired in P2 (their last
-// callers — PrintWindow / GDI / DPI — now live in src/win32/{gdi,dpi}.rs).
+// `user32` still hosts the five owner-chain / enabled / popup utility
+// bindings (`GetWindow`, `GetAncestor`, `IsWindowEnabled`,
+// `GetLastActivePopup`) that ADR-007 §6 P3 deferred to P4. `kernel32` /
+// `gdi32` / `shcore` were retired in earlier phases.
 const user32 = koffi.load("user32.dll");
-const kernel32 = koffi.load("kernel32.dll");
 // dwmapi — window composition queries; available on Vista+ (always present on Win 10/11)
 let _dwmapi: ReturnType<typeof koffi.load> | null = null;
 try { _dwmapi = koffi.load("dwmapi.dll"); } catch { /* not available */ }
@@ -36,161 +35,56 @@ try { _dwmapi = koffi.load("dwmapi.dll"); } catch { /* not available */ }
 // (GetWindowRect / EnumDisplayMonitors / GetMonitorInfoW) live in
 // src/win32/{window,monitor}.rs.
 
-/** PROCESSENTRY32W — Toolhelp32 snapshot entry for process enumeration. */
-const PROCESSENTRY32W = koffi.struct("PROCESSENTRY32W", {
-  dwSize: "uint32",
-  cntUsage: "uint32",
-  th32ProcessID: "uint32",
-  th32DefaultHeapID: "uintptr", // ULONG_PTR: 8 bytes on x64, 4 on x86
-  th32ModuleID: "uint32",
-  cntThreads: "uint32",
-  th32ParentProcessID: "uint32",
-  pcPriClassBase: "int32",
-  dwFlags: "uint32",
-  szExeFile: koffi.array("uint16", 260), // WCHAR[MAX_PATH]
-});
-
-// BITMAPINFOHEADER koffi struct removed in P2 — GetDIBits now lives in
-// src/win32/gdi.rs and constructs the struct natively.
-
-/** SCROLLINFO — passed to GetScrollInfo to query scrollbar position. */
-const SCROLLINFO = koffi.struct("SCROLLINFO", {
-  cbSize:     "uint32",
-  fMask:      "uint32",
-  nMin:       "int32",
-  nMax:       "int32",
-  nPage:      "uint32",
-  nPos:       "int32",
-  nTrackPos:  "int32",
-});
-
-// SCROLLINFO fMask flags
-const SIF_ALL      = 0x17;  // SIF_RANGE | SIF_PAGE | SIF_POS | SIF_TRACKPOS
-// nBar constants for GetScrollInfo
-const SB_HORZ = 0;
-const SB_VERT = 1;
-
-// Sanity-check at module load: SCROLLINFO must be 28 bytes on x64 (no padding)
-if (koffi.sizeof(SCROLLINFO) !== 28) {
-  throw new Error(`SCROLLINFO sizeof mismatch: expected 28, got ${koffi.sizeof(SCROLLINFO)}`);
-}
+// PROCESSENTRY32W / SCROLLINFO koffi structs removed in P3 — their consumers
+// (Toolhelp32 walk, GetScrollInfo) now live in src/win32/{process,scroll}.rs
+// where windows-rs `repr(C)` enforces the field layout. The legacy
+// `koffi.sizeof(SCROLLINFO) !== 28` sanity check that guarded against koffi
+// padding bugs is therefore obsolete (windows-rs guarantees the size).
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Function bindings
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Window functions — the hot-path bindings below have moved to the native
-// addon (ADR-007 P1 = src/win32/window.rs, P2 = src/win32/{gdi,monitor,dpi}.rs):
-//   P1: EnumWindows, GetWindowTextW, GetWindowRect, GetForegroundWindow,
-//       IsWindowVisible, IsIconic, IsZoomed, GetClassNameW,
-//       GetWindowThreadProcessId, GetWindowLongPtrW
-//   P2: PrintWindow, GetDC, ReleaseDC, CreateCompatibleDC, CreateCompatibleBitmap,
-//       SelectObject, DeleteObject, DeleteDC, GetDIBits, EnumDisplayMonitors,
-//       GetMonitorInfoW, MonitorFromWindow, GetDpiForMonitor, SetProcessDpiAwareness
+// Function bindings have migrated to src/win32/*.rs in successive phases:
+//   P1 (window.rs):  EnumWindows, GetWindowTextW, GetWindowRect, IsWindowVisible,
+//                    IsIconic, IsZoomed, GetForegroundWindow, GetClassNameW,
+//                    GetWindowThreadProcessId, GetWindowLongPtrW
+//   P2 (gdi/monitor/dpi.rs): PrintWindow + GDI dance, EnumDisplayMonitors,
+//                    GetMonitorInfoW, MonitorFromWindow, GetDpiForMonitor,
+//                    SetProcessDpiAwareness
+//   P3 (process/input/window_op/scroll.rs): ShowWindow, SetForegroundWindow,
+//                    SetWindowPos (Set/Clear topmost + bounds), BringWindowToTop,
+//                    AttachThreadInput, GetCurrentThreadId, OpenProcess,
+//                    GetProcessTimes, QueryFullProcessImageNameW, Toolhelp32,
+//                    GetScrollInfo, PostMessageW, GetFocus, MapVirtualKeyW
 //
-// Remaining koffi bindings move in P3 (ShowWindow, SetForegroundWindow,
-// SetWindowPos, AttachThreadInput, OpenProcess/Toolhelp32, etc.).
-const ShowWindow = user32.func("bool __stdcall ShowWindow(void *hWnd, int nCmdShow)");
-const SetForegroundWindow = user32.func("bool __stdcall SetForegroundWindow(void *hWnd)");
+// The five koffi bindings still defined below are owner-chain / DWM utilities
+// that ADR-007 §6 P3 deliberately deferred to P4 (`enumWindowsInZOrder`'s
+// internal koffi calls move with them). All other koffi.func / koffi.struct /
+// koffi.load entries in this file are intentionally retired.
 
-// DC / GDI / Monitor enum / DPI bindings have all moved to the native addon
-// (ADR-007 P2). The TS wrappers below (`enumMonitors`, `printWindowToBuffer`,
-// `getWindowDpi`) call into `nativeWin32.win32*` directly.
+// GWL_EXSTYLE / GW_OWNER / GA_ROOTOWNER / WS_EX_TOPMOST / DWMWA_CLOAKED:
+// stable Win32 constants reused below.
+const GWL_EXSTYLE   = -20;
+const WS_EX_TOPMOST = 0x00000008;
+const GW_OWNER      = 4;
+const GA_ROOTOWNER  = 3;
+const DWMWA_CLOAKED = 14;
 
-// Window → PID mapping moved to ADR-007 P1 native addon
-// (see src/win32/window.rs::win32_get_window_thread_process_id).
-
-// Process tree traversal (Toolhelp32 snapshot)
-const CreateToolhelp32Snapshot = kernel32.func(
-  "void* __stdcall CreateToolhelp32Snapshot(uint32 dwFlags, uint32 th32ProcessID)"
-);
-const Process32FirstW = kernel32.func(
-  "bool __stdcall Process32FirstW(void *hSnapshot, _Inout_ PROCESSENTRY32W *lppe)"
-);
-const Process32NextW = kernel32.func(
-  "bool __stdcall Process32NextW(void *hSnapshot, _Inout_ PROCESSENTRY32W *lppe)"
-);
-const CloseHandle = kernel32.func("bool __stdcall CloseHandle(void *hObject)");
-
-const TH32CS_SNAPPROCESS = 0x00000002;
-const INVALID_HANDLE_VALUE_BIG = 0xffffffffffffffffn; // -1 as u64 for comparison
-
-// Process identity (pid + creation time + image name) for cache invalidation
-const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
-// Registered with koffi by name; referenced as a string in func signatures below, no JS handle needed.
-koffi.struct("FILETIME", {
-  dwLowDateTime: "uint32",
-  dwHighDateTime: "uint32",
-});
-const OpenProcess = kernel32.func(
-  "void* __stdcall OpenProcess(uint32 dwDesiredAccess, bool bInheritHandle, uint32 dwProcessId)"
-);
-const GetProcessTimes = kernel32.func(
-  "bool __stdcall GetProcessTimes(void *hProcess, _Out_ FILETIME *creation, _Out_ FILETIME *exit, _Out_ FILETIME *kernel, _Out_ FILETIME *user)"
-);
-const QueryFullProcessImageNameW = kernel32.func(
-  "bool __stdcall QueryFullProcessImageNameW(void *hProcess, uint32 dwFlags, _Out_ uint16 *lpExeName, _Inout_ uint32 *lpdwSize)"
-);
-
-// Window Z-order / always-on-top
-// hWndInsertAfter is intptr (not void*) so negative sentinel values -1/-2 pass correctly
-const SetWindowPos = user32.func(
-  "bool __stdcall SetWindowPos(void *hWnd, intptr hWndInsertAfter, int X, int Y, int cx, int cy, uint32 uFlags)"
-);
-
-// BringWindowToTop — secondary foreground hint
-const BringWindowToTop = user32.func("bool __stdcall BringWindowToTop(void *hWnd)");
-
-// AttachThreadInput — bypass foreground-stealing protection
-const AttachThreadInput = user32.func(
-  "bool __stdcall AttachThreadInput(uint32 idAttach, uint32 idAttachTo, bool fAttach)"
-);
-
-// GetCurrentThreadId — from kernel32.dll
-const GetCurrentThreadId = kernel32.func("uint32 __stdcall GetCurrentThreadId()");
-
-// Scrollbar
-const GetScrollInfo = user32.func(
-  "bool __stdcall GetScrollInfo(void *hWnd, int fnBar, _Inout_ SCROLLINFO *lpsi)"
-);
-
-const HWND_TOPMOST = -1;
-const HWND_NOTOPMOST = -2;
-const SWP_NOSIZE = 0x0001;
-const SWP_NOMOVE = 0x0002;
-const SWP_NOZORDER = 0x0004;
-
-// Class name + extended style queries moved to ADR-007 P1 native addon
-// (win32_get_class_name / win32_get_window_long_ptr_w). The owner-query
-// `GetWindow` binding stays on koffi until P2/P3.
+// Owner / ancestor / enabled / DWM-cloaked queries — P4 will fold these into
+// `src/win32/window.rs` along with `enumWindowsInZOrder`'s internal usages.
 const GetWindowHwnd = user32.func(
   "intptr __stdcall GetWindow(void *hWnd, uint32 uCmd)"
 );
-const GWL_EXSTYLE  = -20;
-const WS_EX_TOPMOST = 0x00000008;
-const GW_OWNER     = 4;
-
-// Window ancestry, enabled state, and DWM cloaked detection
 const GetAncestor = user32.func(
   "intptr __stdcall GetAncestor(void *hWnd, uint32 gaFlags)"
 );
-const GA_ROOTOWNER = 3;
 const IsWindowEnabled = user32.func(
   "bool __stdcall IsWindowEnabled(void *hWnd)"
 );
 const GetLastActivePopup = user32.func(
   "intptr __stdcall GetLastActivePopup(void *hWnd)"
 );
-
-// Background input — PostMessage / focus resolution / key mapping
-const PostMessageW = user32.func(
-  "bool __stdcall PostMessageW(void *hWnd, uint32 Msg, uintptr wParam, intptr lParam)"
-);
-const GetFocus = user32.func("intptr __stdcall GetFocus()");
-const MapVirtualKeyW = user32.func(
-  "uint32 __stdcall MapVirtualKeyW(uint32 uCode, uint32 uMapType)"
-);
-const DWMWA_CLOAKED = 14;
 const _DwmGetWindowAttribute = _dwmapi
   ? _dwmapi.func(
       "long __stdcall DwmGetWindowAttribute(void *hwnd, uint32 dwAttribute, _Out_ uint32 *pvAttribute, uint32 cbAttribute)"
@@ -395,15 +289,16 @@ export function restoreAndFocusWindow(
   opts?: { force?: boolean }
 ): { x: number; y: number; width: number; height: number; forceFocusOk?: boolean } {
   const SW_RESTORE = 9;
-  ShowWindow(hwnd, SW_RESTORE);
+  const w32 = requireNativeWin32();
+  if (typeof hwnd === "bigint") w32.win32ShowWindow!(hwnd, SW_RESTORE);
   let forceFocusOk: boolean | undefined;
   if (opts?.force) {
     const fr = forceSetForegroundWindow(hwnd);
     forceFocusOk = fr.ok;
-  } else {
-    SetForegroundWindow(hwnd);
+  } else if (typeof hwnd === "bigint") {
+    w32.win32SetForegroundWindow!(hwnd);
   }
-  const rect = requireNativeWin32().win32GetWindowRect!(hwnd as bigint);
+  const rect = typeof hwnd === "bigint" ? w32.win32GetWindowRect!(hwnd) : null;
   const x = rect?.left ?? 0;
   const y = rect?.top ?? 0;
   const width = rect ? rect.right - rect.left : 0;
@@ -426,57 +321,31 @@ export function forceSetForegroundWindow(hwnd: unknown): {
   fg_before: bigint;
   fg_after: bigint;
 } {
-  const w32 = requireNativeWin32();
-  const fg_before = w32.win32GetForegroundWindow!() ?? 0n;
-  const hwndBig = hwnd as bigint;
-
-  // If already in foreground, nothing to do
-  if (String(fg_before) === String(hwndBig)) {
-    return { ok: true, attached: false, fg_before, fg_after: fg_before };
+  if (typeof hwnd !== "bigint") {
+    return { ok: false, attached: false, fg_before: 0n, fg_after: 0n };
   }
-
-  const fgThread = w32.win32GetWindowThreadProcessId!(fg_before).threadId >>> 0;
-  const myThread = (GetCurrentThreadId() as number) >>> 0;
-
-  let attached = false;
-  if (fgThread !== 0 && fgThread !== myThread) {
-    try {
-      attached = !!(AttachThreadInput(myThread, fgThread, true) as boolean);
-    } catch {
-      // If AttachThreadInput is unavailable or fails, fall through to legacy path
-      attached = false;
-    }
-  }
-
-  try {
-    // SetForegroundWindow + BringWindowToTop always, regardless of attach success.
-    // BringWindowToTop is a secondary hint that helps even without AttachThreadInput.
-    SetForegroundWindow(hwnd);
-    BringWindowToTop(hwnd);
-  } finally {
-    // Detach only if we successfully attached
-    if (attached) {
-      try {
-        AttachThreadInput(myThread, fgThread, false);
-      } catch {
-        // detach is best-effort
-      }
-    }
-  }
-
-  const fg_after = w32.win32GetForegroundWindow!() ?? 0n;
-  const ok = String(fg_after) === String(hwndBig);
-  return { ok, attached, fg_before, fg_after };
+  // The native binding owns the AttachThreadInput pair lifetime via an
+  // RAII guard; the TS wrapper just repacks camelCase → snake_case to
+  // preserve the legacy public shape (Tool Surface 不変原則 P7).
+  const r = requireNativeWin32().win32ForceSetForegroundWindow!(hwnd);
+  return {
+    ok: r.ok,
+    attached: r.attached,
+    fg_before: r.fgBefore,
+    fg_after: r.fgAfter,
+  };
 }
 
 /** Make a window always-on-top (HWND_TOPMOST). */
 export function setWindowTopmost(hwnd: unknown): boolean {
-  return !!SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+  if (typeof hwnd !== "bigint") return false;
+  return requireNativeWin32().win32SetWindowTopmost!(hwnd);
 }
 
 /** Remove always-on-top from a window (HWND_NOTOPMOST). */
 export function clearWindowTopmost(hwnd: unknown): boolean {
-  return !!SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+  if (typeof hwnd !== "bigint") return false;
+  return requireNativeWin32().win32ClearWindowTopmost!(hwnd);
 }
 
 /**
@@ -506,57 +375,29 @@ export interface ProcessIdentity {
 }
 
 /**
- * Convert a Windows FILETIME (100-ns intervals since 1601) to ms.
- * Returns 0 if both halves are zero.
- */
-function fileTimeToMs(low: number, high: number): number {
-  if (low === 0 && high === 0) return 0;
-  // BigInt to avoid precision loss; result is ms since Windows epoch (we don't need Unix conversion — only equality matters).
-  const ticks = (BigInt(high >>> 0) << 32n) | BigInt(low >>> 0);
-  return Number(ticks / 10000n);
-}
-
-/**
  * Resolve a PID into {pid, processName, processStartTimeMs}.
  * Used to detect "same window title but different process" (HWND reuse / app restart).
  * On failure returns identity with empty processName / startTime=0 (still usable for equality of pid).
+ *
+ * Accepts the legacy `pid: number` contract; non-number inputs return a
+ * zeroed identity (Opus pre-impl review §13.5). The native binding owns
+ * the OpenProcess handle lifetime via RAII and supports partial success
+ * (image OR creation time independent).
  */
 export function getProcessIdentityByPid(pid: number): ProcessIdentity {
-  const out: ProcessIdentity = { pid: pid >>> 0, processName: "", processStartTimeMs: 0 };
-  if (pid === 0) return out;
-  let h: bigint = 0n;
-  try {
-    h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid >>> 0) as bigint;
-    if (!h || h === 0n) return out;
-
-    // Image name
-    const nameBuf = Buffer.alloc(520); // 260 wchars
-    const sizeArr = [260];
-    if (QueryFullProcessImageNameW(h, 0, nameBuf, sizeArr)) {
-      const wlen = sizeArr[0] >>> 0;
-      if (wlen > 0) {
-        const path = nameBuf.slice(0, wlen * 2).toString("utf16le");
-        const base = path.split(/[\\/]/).pop() ?? "";
-        out.processName = base.replace(/\.exe$/i, "");
-      }
-    }
-
-    // Creation time
-    const cre = { dwLowDateTime: 0, dwHighDateTime: 0 };
-    const ext = { dwLowDateTime: 0, dwHighDateTime: 0 };
-    const krn = { dwLowDateTime: 0, dwHighDateTime: 0 };
-    const usr = { dwLowDateTime: 0, dwHighDateTime: 0 };
-    if (GetProcessTimes(h, cre, ext, krn, usr)) {
-      out.processStartTimeMs = fileTimeToMs(cre.dwLowDateTime, cre.dwHighDateTime);
-    }
-  } catch {
-    // swallow; partial identity is still useful
-  } finally {
-    if (h && h !== 0n) {
-      try { CloseHandle(h); } catch { /* noop */ }
-    }
+  if (typeof pid !== "number" || pid === 0) {
+    return { pid: pid >>> 0, processName: "", processStartTimeMs: 0 };
   }
-  return out;
+  try {
+    const r = requireNativeWin32().win32GetProcessIdentity!(pid >>> 0);
+    return {
+      pid: r.pid,
+      processName: r.processName,
+      processStartTimeMs: r.processStartTimeMs,
+    };
+  } catch {
+    return { pid: pid >>> 0, processName: "", processStartTimeMs: 0 };
+  }
 }
 
 /** Convenience: identity for the process that owns a window. */
@@ -567,33 +408,17 @@ export function getWindowIdentity(hwnd: unknown): ProcessIdentity {
 
 /**
  * Build a Map of pid → parentPid by snapshotting all processes via Toolhelp32.
- * Returns an empty map on failure.
+ * Returns an empty map on failure. The native binding owns the snapshot
+ * handle lifetime via RAII (no JS-side leak risk).
  */
 export function buildProcessParentMap(): Map<number, number> {
   const map = new Map<number, number>();
-  const snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) as bigint;
-  // INVALID_HANDLE_VALUE is -1 (0xFFFFFFFFFFFFFFFF on x64); koffi returns it as bigint
-  if (snap === INVALID_HANDLE_VALUE_BIG || snap === 0n) return map;
   try {
-    const entry = {
-      dwSize: koffi.sizeof(PROCESSENTRY32W),
-      cntUsage: 0,
-      th32ProcessID: 0,
-      th32DefaultHeapID: 0n,
-      th32ModuleID: 0,
-      cntThreads: 0,
-      th32ParentProcessID: 0,
-      pcPriClassBase: 0,
-      dwFlags: 0,
-      szExeFile: new Array<number>(260).fill(0),
-    };
-    if (Process32FirstW(snap, entry)) {
-      do {
-        map.set(entry.th32ProcessID >>> 0, entry.th32ParentProcessID >>> 0);
-      } while (Process32NextW(snap, entry));
+    for (const entry of requireNativeWin32().win32BuildProcessParentMap!()) {
+      map.set(entry.pid >>> 0, entry.parentPid >>> 0);
     }
-  } finally {
-    CloseHandle(snap);
+  } catch {
+    // swallow; empty map is still usable
   }
   return map;
 }
@@ -655,7 +480,8 @@ export function setWindowBounds(
   width: number,
   height: number
 ): boolean {
-  return !!SetWindowPos(hwnd, 0, x, y, width, height, SWP_NOZORDER);
+  if (typeof hwnd !== "bigint") return false;
+  return requireNativeWin32().win32SetWindowBounds!(hwnd, x, y, width, height);
 }
 
 /**
@@ -792,19 +618,17 @@ export function readScrollInfo(
   hwnd: bigint | unknown,
   axis: "vertical" | "horizontal"
 ): ScrollInfoResult | null {
+  if (typeof hwnd !== "bigint") return null;
   try {
-    const si = {
-      cbSize: koffi.sizeof(SCROLLINFO),
-      fMask: SIF_ALL,
-      nMin: 0, nMax: 0, nPage: 0, nPos: 0, nTrackPos: 0,
+    const r = requireNativeWin32().win32GetScrollInfo!(hwnd, axis);
+    if (!r) return null;
+    return {
+      nMin: r.nMin,
+      nMax: r.nMax,
+      nPage: r.nPage,
+      nPos: r.nPos,
+      pageRatio: r.pageRatio,
     };
-    const fnBar = axis === "vertical" ? SB_VERT : SB_HORZ;
-    const ok = GetScrollInfo(hwnd, fnBar, si);
-    if (!ok) return null;
-    const range = si.nMax - si.nMin - si.nPage + 1;
-    if (range <= 0) return null;  // no real scroll range
-    const pageRatio = Math.max(0, Math.min(1, (si.nPos - si.nMin) / range));
-    return { nMin: si.nMin, nMax: si.nMax, nPage: si.nPage, nPos: si.nPos, pageRatio };
   } catch {
     return null;
   }
@@ -827,36 +651,39 @@ export const MAPVK_VK_TO_VSC = 0;
 
 /** Post a single WM message to a window. Returns false on failure. */
 export function postMessageToHwnd(hwnd: unknown, msg: number, wParam: number, lParam: number): boolean {
-  try { return !!PostMessageW(hwnd, msg, wParam, lParam); } catch { return false; }
+  if (typeof hwnd !== "bigint") return false;
+  try {
+    return requireNativeWin32().win32PostMessage!(
+      hwnd,
+      msg >>> 0,
+      BigInt(wParam | 0),
+      BigInt(lParam | 0),
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** Return the HWND that currently has keyboard focus within the thread owning `hwnd`.
- *  Uses AttachThreadInput briefly to read focus across thread boundary.
+ *  Uses AttachThreadInput briefly to read focus across thread boundary
+ *  (the native binding owns the attach pair via RAII).
  *  Returns null on failure — callers should fall back to the top-level hwnd. */
 export function getFocusedChildHwnd(targetHwnd: unknown): bigint | null {
+  if (typeof targetHwnd !== "bigint") return null;
   try {
-    const targetThread =
-      requireNativeWin32().win32GetWindowThreadProcessId!(targetHwnd as bigint).threadId >>> 0;
-    if (targetThread === 0) return null; // GetWindowThreadProcessId failed
-    const myThread = (GetCurrentThreadId() as number) >>> 0;
-    if (targetThread === myThread) {
-      const f = GetFocus();
-      return f ? BigInt(f as number) : null;
-    }
-    const attached = !!AttachThreadInput(myThread, targetThread, true);
-    if (!attached) return null;
-    try {
-      const f = GetFocus();
-      return f ? BigInt(f as number) : null;
-    } finally {
-      AttachThreadInput(myThread, targetThread, false);
-    }
-  } catch { return null; }
+    return requireNativeWin32().win32GetFocusedChildHwnd!(targetHwnd);
+  } catch {
+    return null;
+  }
 }
 
 /** Map a Virtual Key code to a scan code (used for lParam of WM_KEYDOWN). */
 export function vkToScanCode(vk: number): number {
-  try { return (MapVirtualKeyW(vk, MAPVK_VK_TO_VSC) as number) >>> 0; } catch { return 0; }
+  try {
+    return requireNativeWin32().win32VkToScanCode!(vk >>> 0);
+  } catch {
+    return 0;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

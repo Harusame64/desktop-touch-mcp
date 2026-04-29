@@ -52,3 +52,50 @@ pub struct NativeMonitorInfo {
     pub work_bottom: i32,
     pub dpi: u32,
 }
+
+// ── Win32 Process / Input (ADR-007 P3) ───────────────────────────────────────
+
+/// Outcome of `win32_force_set_foreground_window`. `fgBefore` / `fgAfter`
+/// (camelCase via napi-rs) are repacked into snake_case (`fg_before` /
+/// `fg_after`) by the TS wrapper to preserve the legacy public shape
+/// (Opus pre-impl review §12.3).
+#[napi(object)]
+pub struct NativeForceFocusResult {
+    pub ok: bool,
+    pub attached: bool,
+    pub fg_before: BigInt,
+    pub fg_after: BigInt,
+}
+
+/// One row of the (pid, parent_pid) map produced by Toolhelp32Snapshot. The
+/// TS wrapper rebuilds the `Map<number, number>` shape that callers expect.
+#[napi(object)]
+pub struct NativeProcessParentEntry {
+    pub pid: u32,
+    pub parent_pid: u32,
+}
+
+/// Process identity result. Field semantics match the legacy
+/// `getProcessIdentityByPid` contract: complete failure yields all-empty
+/// fields, partial success returns whatever was retrievable (e.g. the
+/// process name without the creation timestamp). `process_start_time_ms`
+/// is f64 — Windows ms-since-1601 fits comfortably in 53 mantissa bits
+/// for ~285,616 years (Opus pre-impl review §12.4).
+#[napi(object)]
+pub struct NativeProcessIdentity {
+    pub pid: u32,
+    pub process_name: String,
+    pub process_start_time_ms: f64,
+}
+
+/// Scrollbar position snapshot. `page_ratio` (0..1) is precomputed so
+/// the TS wrapper does not have to redo the same `(nPos - nMin) / range`
+/// math the legacy `readScrollInfo` used.
+#[napi(object)]
+pub struct NativeScrollInfo {
+    pub n_min: i32,
+    pub n_max: i32,
+    pub n_page: u32,
+    pub n_pos: i32,
+    pub page_ratio: f64,
+}

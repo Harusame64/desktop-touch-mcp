@@ -34,6 +34,10 @@ import type {
   NativeThreadProcessId,
   NativePrintWindowResult,
   NativeMonitorInfo,
+  NativeForceFocusResult,
+  NativeProcessParentEntry,
+  NativeProcessIdentity,
+  NativeScrollInfo,
 } from "./native-types.js";
 
 export type * from "./native-types.js";
@@ -95,6 +99,21 @@ export interface NativeWin32 {
   win32EnumMonitors?(): NativeMonitorInfo[];
   win32GetWindowDpi?(hwnd: bigint): number;
   win32SetProcessDpiAwareness?(level: number): boolean;
+
+  // ADR-007 P3 process / input / window-state ops
+  win32ShowWindow?(hwnd: bigint, nCmdShow: number): boolean;
+  win32SetForegroundWindow?(hwnd: bigint): boolean;
+  win32SetWindowTopmost?(hwnd: bigint): boolean;
+  win32ClearWindowTopmost?(hwnd: bigint): boolean;
+  win32SetWindowBounds?(hwnd: bigint, x: number, y: number, cx: number, cy: number): boolean;
+  win32ForceSetForegroundWindow?(hwnd: bigint): NativeForceFocusResult;
+  win32GetFocusedChildHwnd?(targetHwnd: bigint): bigint | null;
+  win32BuildProcessParentMap?(): NativeProcessParentEntry[];
+  win32GetProcessIdentity?(pid: number): NativeProcessIdentity;
+  win32GetScrollInfo?(hwnd: bigint, axis: string): NativeScrollInfo | null;
+  win32PostMessage?(hwnd: bigint, msg: number, wParam: bigint, lParam: bigint): boolean;
+  win32GetFocus?(): bigint | null;
+  win32VkToScanCode?(vk: number): number;
 }
 
 // ─── UIA surface (used by uia-bridge.ts) ─────────────────────────────────────

@@ -84,4 +84,19 @@ export const win32EnumMonitors              = nativeBinding.win32EnumMonitors;
 export const win32GetWindowDpi              = nativeBinding.win32GetWindowDpi;
 export const win32SetProcessDpiAwareness    = nativeBinding.win32SetProcessDpiAwareness;
 
+// ─── Win32 process / input (ADR-007 P3) ──────────────────────────────────────
+export const win32ShowWindow                  = nativeBinding.win32ShowWindow;
+export const win32SetForegroundWindow         = nativeBinding.win32SetForegroundWindow;
+export const win32SetWindowTopmost            = nativeBinding.win32SetWindowTopmost;
+export const win32ClearWindowTopmost          = nativeBinding.win32ClearWindowTopmost;
+export const win32SetWindowBounds             = nativeBinding.win32SetWindowBounds;
+export const win32ForceSetForegroundWindow    = nativeBinding.win32ForceSetForegroundWindow;
+export const win32GetFocusedChildHwnd         = nativeBinding.win32GetFocusedChildHwnd;
+export const win32BuildProcessParentMap       = nativeBinding.win32BuildProcessParentMap;
+export const win32GetProcessIdentity          = nativeBinding.win32GetProcessIdentity;
+export const win32GetScrollInfo               = nativeBinding.win32GetScrollInfo;
+export const win32PostMessage                 = nativeBinding.win32PostMessage;
+export const win32GetFocus                    = nativeBinding.win32GetFocus;
+export const win32VkToScanCode                = nativeBinding.win32VkToScanCode;
+
 export default nativeBinding;

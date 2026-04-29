@@ -121,6 +121,34 @@ export interface NativeMonitorInfo {
   dpi: number
 }
 
+// ─── Win32 process / input (ADR-007 P3) ──────────────────────────────────────
+
+export interface NativeForceFocusResult {
+  ok: boolean
+  attached: boolean
+  fgBefore: bigint
+  fgAfter: bigint
+}
+
+export interface NativeProcessParentEntry {
+  pid: number
+  parentPid: number
+}
+
+export interface NativeProcessIdentity {
+  pid: number
+  processName: string
+  processStartTimeMs: number
+}
+
+export interface NativeScrollInfo {
+  nMin: number
+  nMax: number
+  nPage: number
+  nPos: number
+  pageRatio: number
+}
+
 // ─── Image processing (Hybrid Non-CDP pipeline) ──────────────────────────────
 
 export interface NativePreprocessOptions {
@@ -203,3 +231,18 @@ export declare function win32PrintWindowToBuffer(hwnd: bigint, flags: number): N
 export declare function win32EnumMonitors(): NativeMonitorInfo[]
 export declare function win32GetWindowDpi(hwnd: bigint): number
 export declare function win32SetProcessDpiAwareness(level: number): boolean
+
+// ─── Win32 process / input (ADR-007 P3) ──────────────────────────────────────
+export declare function win32ShowWindow(hwnd: bigint, nCmdShow: number): boolean
+export declare function win32SetForegroundWindow(hwnd: bigint): boolean
+export declare function win32SetWindowTopmost(hwnd: bigint): boolean
+export declare function win32ClearWindowTopmost(hwnd: bigint): boolean
+export declare function win32SetWindowBounds(hwnd: bigint, x: number, y: number, cx: number, cy: number): boolean
+export declare function win32ForceSetForegroundWindow(hwnd: bigint): NativeForceFocusResult
+export declare function win32GetFocusedChildHwnd(targetHwnd: bigint): bigint | null
+export declare function win32BuildProcessParentMap(): NativeProcessParentEntry[]
+export declare function win32GetProcessIdentity(pid: number): NativeProcessIdentity
+export declare function win32GetScrollInfo(hwnd: bigint, axis: string): NativeScrollInfo | null
+export declare function win32PostMessage(hwnd: bigint, msg: number, wParam: bigint, lParam: bigint): boolean
+export declare function win32GetFocus(): bigint | null
+export declare function win32VkToScanCode(vk: number): number
