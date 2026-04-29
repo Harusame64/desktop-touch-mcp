@@ -80,6 +80,28 @@ pub struct FocusAndPointResult {
     pub at_point: Option<UiaFocusInfo>,
 }
 
+/// Cache-only extended focus info, used by the L1 emit path
+/// (ADR-007 P5c-1 UIA Focus Changed event hook).
+///
+/// Distinct from [`UiaFocusInfo`]: that one is the napi-facing shape
+/// with string `control_type` and a `value` populated via a live UIA
+/// call. This struct keeps `control_type` as the raw `u32`
+/// `UIA_CONTROLTYPE_ID` so it bincode-encodes compactly into the L1
+/// `UiaFocusChangedPayload`. All fields are populated from `Cached*`
+/// methods only — the handler must not invoke live UIA on the COM
+/// delivery thread.
+///
+/// `hwnd == 0` means the focus element has no resolvable native window
+/// (focus on a child UI element that isn't itself a window).
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // first caller lands in ADR-007 P5c-1
+pub(crate) struct UiaFocusInfoExt {
+    pub hwnd: u64,
+    pub name: String,
+    pub control_type: u32,
+    pub automation_id: Option<String>,
+}
+
 // ─── Actions ─────────────────────────────────────────────────────────────────
 
 #[napi(object)]

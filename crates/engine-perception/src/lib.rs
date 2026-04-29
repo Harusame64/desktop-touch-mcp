@@ -8,3 +8,7 @@
 //! Currently empty: scaffolding lands in PR-α (ADR-008 D1-0). Subsequent
 //! sub-batches (D1-1 dependencies, D1-2 L1 input adapter, D1-3 view) will
 //! populate this crate.
+
+/// L1Sink trait + pure data types received from the root crate's
+/// `src/l3_bridge/` adapter. See `docs/adr-007-p5c-plan.md` §12.
+pub mod input;

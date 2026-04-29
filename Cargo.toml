@@ -21,6 +21,14 @@ crossbeam-queue = "0.3"
 bincode = { version = "2", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 
+# ADR-007 P5c-0b: root-owns-integration path. Root crate owns the L1 ring,
+# decodes EventEnvelope, and pushes pure data (FocusEvent etc.) into the
+# `engine-perception` crate's `L1Sink`. Reverse direction
+# (engine-perception → root) was rejected by Codex review v2 P1 because
+# it would drag napi/vision-gpu/windows-rs into engine-perception's
+# compile graph and break its "pure timely+DD compute crate" contract.
+engine-perception = { path = "crates/engine-perception" }
+
 # ── Visual GPU Phase 4 (ADR-005) ────────────────────────────────────────────
 # ORT 2.0.0-rc.12 (2026-03), pykeio/ort. directml feature で AMD/NVIDIA/Intel 全 DX12 GPU 対応。
 # WinML, ROCm/MIGraphX, CUDA, TensorRT, WebGPU, CoreML は build feature で opt-in。
