@@ -5,3 +5,11 @@ edition = "2024"
 license = "MIT"
 description = "L3 Compute layer (timely + differential-dataflow) for desktop-touch-mcp (ADR-008)"
 publish = false
+
+[dependencies]
+# ADR-008 §2: partial-order time + arrangement-as-MVCC. The latest
+# crates.io versions at time of D1-1 land are 0.29 / 0.23 — significantly
+# newer than the "0.13+" baseline the ADR was drafted against.
+# Plan §6 documents the version-selection rationale.
+timely = "0.29"
+differential-dataflow = "0.23"
