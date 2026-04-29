@@ -106,4 +106,13 @@ export const win32IsWindowEnabled             = nativeBinding.win32IsWindowEnabl
 export const win32GetLastActivePopup          = nativeBinding.win32GetLastActivePopup;
 export const win32IsWindowCloaked             = nativeBinding.win32IsWindowCloaked;
 
+// ─── L1 capture ring buffer (ADR-007 P5a) ────────────────────────────────────
+export const l1PushToolCallStarted      = nativeBinding.l1PushToolCallStarted;
+export const l1PushToolCallCompleted    = nativeBinding.l1PushToolCallCompleted;
+export const l1PushHwInputPostMessage   = nativeBinding.l1PushHwInputPostMessage;
+export const l1PushFailure              = nativeBinding.l1PushFailure;
+export const l1PollEvents               = nativeBinding.l1PollEvents;
+export const l1GetCaptureStats          = nativeBinding.l1GetCaptureStats;
+export const l1ShutdownForTest          = nativeBinding.l1ShutdownForTest;
+
 export default nativeBinding;

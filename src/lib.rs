@@ -17,6 +17,8 @@ pub mod duplication;
 // All sync `#[napi]` exports under `win32::window` go through `napi_safe_call`
 // (src/win32/safety.rs) so panics never reach the libuv main thread.
 mod win32;
+// ADR-007 P5a: L1 capture core — ring buffer + EventEnvelope schema + worker thread + napi API.
+mod l1_capture;
 
 // Visual GPU Phase 4 backend (ADR-005). The module always compiles so that
 // `detect_capability()` can report `backend_built=false` cleanly when the
@@ -40,7 +42,9 @@ pub fn compute_change_fraction(
     height: u32,
     channels: u32,
 ) -> Result<f64> {
-    pixel_diff::compute_change_fraction(&prev, &curr, width, height, channels)
+    win32::safety::napi_safe_call("compute_change_fraction", || {
+        pixel_diff::compute_change_fraction(&prev, &curr, width, height, channels)
+    })
 }
 
 /// Compute a 64-bit difference hash (dHash) from raw RGB/RGBA pixels.
@@ -57,8 +61,10 @@ pub fn dhash_from_raw(
     height: u32,
     channels: u32,
 ) -> Result<BigInt> {
-    let hash = dhash::dhash_from_raw(&raw, width, height, channels)?;
-    Ok(BigInt::from(hash))
+    win32::safety::napi_safe_call("dhash_from_raw", || {
+        let hash = dhash::dhash_from_raw(&raw, width, height, channels)?;
+        Ok(BigInt::from(hash))
+    })
 }
 
 /// Hamming distance between two 64-bit dHash values.
@@ -68,11 +74,13 @@ pub fn dhash_from_raw(
 /// the lossless flag are intentionally discarded — we only need the low 64 bits.
 #[napi]
 pub fn hamming_distance(a: BigInt, b: BigInt) -> Result<u32> {
-    let (_sign, a_val, _lossless) = a.get_u128();
-    let (_sign, b_val, _lossless) = b.get_u128();
-    let a64 = a_val as u64;
-    let b64 = b_val as u64;
-    Ok((a64 ^ b64).count_ones())
+    win32::safety::napi_safe_call("hamming_distance", || {
+        let (_sign, a_val, _lossless) = a.get_u128();
+        let (_sign, b_val, _lossless) = b.get_u128();
+        let a64 = a_val as u64;
+        let b64 = b_val as u64;
+        Ok((a64 ^ b64).count_ones())
+    })
 }
 
 // ─── UIA (Windows-only) ─────────────────────────────────────────────────────
@@ -561,8 +569,10 @@ pub struct CapabilityProfile {
 
 #[cfg(not(feature = "vision-gpu"))]
 #[napi]
-pub fn detect_capability() -> CapabilityProfile {
-    CapabilityProfile { backend_built: false }
+pub fn detect_capability() -> Result<CapabilityProfile> {
+    win32::safety::napi_safe_call("detect_capability", || {
+        Ok(CapabilityProfile { backend_built: false })
+    })
 }
 
 // ─── Visual GPU Phase 4b-1: EP cascade session init ────────────────────────
@@ -588,7 +598,7 @@ impl Task for VisionInitSessionTask {
         // PreprocessImageTask above — avoids partial-move in &mut self).
         let placeholder = vision_backend::NativeSessionInit {
             model_path: String::new(),
-            profile: vision_backend::detect_capability(),
+            profile: vision_backend::CapabilityProfile::default(),
             session_key: String::new(),
         };
         let req = std::mem::replace(&mut self.0, placeholder);
