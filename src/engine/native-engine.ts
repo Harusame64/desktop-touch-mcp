@@ -32,6 +32,8 @@ import type {
   NativeSessionResult,
   NativeWin32Rect,
   NativeThreadProcessId,
+  NativePrintWindowResult,
+  NativeMonitorInfo,
 } from "./native-types.js";
 
 export type * from "./native-types.js";
@@ -76,6 +78,7 @@ export interface NativeEngine {
 // a missing native build (e.g. Linux dev environment) cleanly falls back to
 // the `if (!nativeWin32) throw` path inside the TS wrappers.
 export interface NativeWin32 {
+  // ADR-007 P1 hot-path
   win32EnumTopLevelWindows?(): bigint[];
   win32GetWindowText?(hwnd: bigint): string;
   win32GetWindowRect?(hwnd: bigint): NativeWin32Rect | null;
@@ -86,6 +89,12 @@ export interface NativeWin32 {
   win32GetClassName?(hwnd: bigint): string;
   win32GetWindowThreadProcessId?(hwnd: bigint): NativeThreadProcessId;
   win32GetWindowLongPtrW?(hwnd: bigint, nIndex: number): number;
+
+  // ADR-007 P2 GDI / monitor / DPI
+  win32PrintWindowToBuffer?(hwnd: bigint, flags: number): NativePrintWindowResult;
+  win32EnumMonitors?(): NativeMonitorInfo[];
+  win32GetWindowDpi?(hwnd: bigint): number;
+  win32SetProcessDpiAwareness?(level: number): boolean;
 }
 
 // ─── UIA surface (used by uia-bridge.ts) ─────────────────────────────────────

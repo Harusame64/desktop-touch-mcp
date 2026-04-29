@@ -12,3 +12,9 @@ pub(crate) mod safety;
 pub(crate) mod types;
 #[cfg(windows)]
 pub(crate) mod window;
+#[cfg(windows)]
+pub(crate) mod gdi;
+#[cfg(windows)]
+pub(crate) mod monitor;
+#[cfg(windows)]
+pub(crate) mod dpi;

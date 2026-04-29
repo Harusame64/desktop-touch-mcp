@@ -63,6 +63,7 @@ remote_commits.txt
 target/
 *.node
 *.node.bak
+*.node.old
 libnode.a
 libnode.dll.a
 node.def

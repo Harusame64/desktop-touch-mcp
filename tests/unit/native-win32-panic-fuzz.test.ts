@@ -92,5 +92,68 @@ describe.skipIf(!nativeWin32)("ADR-007 P1: native win32 panic-safety", () => {
       const deltaMB = (after - before) / (1024 * 1024);
       expect(deltaMB).toBeLessThan(50);
     });
+
+    // Opus review §11.6 wants P2 to match P1's iteration count and tighten
+    // the RSS guard. enumMonitors should not allocate per-call beyond the
+    // small Vec it returns; 5MB is generous headroom for V8 churn.
+    it("100 win32EnumMonitors() iterations stay under 5MB delta (ADR-007 P2)", () => {
+      native.win32EnumMonitors!();
+      const before = process.memoryUsage().rss;
+      for (let i = 0; i < 100; i++) {
+        const mons = native.win32EnumMonitors!();
+        expect(mons.length).toBeGreaterThanOrEqual(1);
+      }
+      const after = process.memoryUsage().rss;
+      const deltaMB = (after - before) / (1024 * 1024);
+      expect(deltaMB).toBeLessThan(5);
+    });
+  });
+
+  describe("ADR-007 P2: GDI / monitor / DPI panic safety", () => {
+    // Adversarial HWNDs for the new P2 surface. printWindowToBuffer must
+    // throw a typed Error (the underlying GetWindowRect fails) but NEVER
+    // crash the process; getWindowDpi must hand back the safe 96 fallback.
+    const adversarial: Array<[label: string, hwnd: bigint]> = [
+      ["null hwnd", 0n],
+      ["stale hwnd", 9_999_999_999n],
+      ["all-ones u64", 0xffff_ffff_ffff_ffffn],
+    ];
+
+    for (const [label, hwnd] of adversarial) {
+      it(`win32PrintWindowToBuffer(${label}) throws typed Error, process survives`, () => {
+        expect(() => native.win32PrintWindowToBuffer!(hwnd, 2)).toThrow();
+      });
+      it(`win32GetWindowDpi(${label}) returns 96`, () => {
+        expect(native.win32GetWindowDpi!(hwnd)).toBe(96);
+      });
+    }
+
+    it("win32SetProcessDpiAwareness with already-set state returns true", () => {
+      // The native binding maps E_ACCESSDENIED (already set) to success
+      // (Opus review §11.3). The process startup path already calls this
+      // once with level=2; calling again here exercises that mapping.
+      expect(native.win32SetProcessDpiAwareness!(2)).toBe(true);
+    });
+
+    it("win32SetProcessDpiAwareness with invalid level does not panic", () => {
+      // Some invalid levels return E_INVALIDARG; we accept either true/false
+      // (the contract is "no panic"), not the specific HRESULT outcome.
+      expect(typeof native.win32SetProcessDpiAwareness!(99)).toBe("boolean");
+    });
+
+    it("printWindowToBuffer round-trip on the foreground window produces RGBA8", () => {
+      const fg = native.win32GetForegroundWindow!();
+      if (fg === null) return; // headless / lock screen
+      const r = native.win32PrintWindowToBuffer!(fg, 2);
+      expect(r.width).toBeGreaterThan(0);
+      expect(r.height).toBeGreaterThan(0);
+      // length = w * h * 4 (RGBA8)
+      expect(r.data.length).toBe(r.width * r.height * 4);
+      // alpha channel is forced to 255 by the BGRA→RGBA pass
+      // (sample the first pixel's alpha and a middle pixel's alpha).
+      expect(r.data[3]).toBe(255);
+      const mid = Math.floor(r.data.length / 8) * 4;
+      expect(r.data[mid + 3]).toBe(255);
+    });
   });
 });
