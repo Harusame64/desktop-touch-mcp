@@ -9,7 +9,7 @@
 // corresponding `export declare function <name>` exists in index.d.ts.
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { join, sep } from "node:path";
 
 const ROOT = new URL("..", import.meta.url).pathname.replace(/^\/([A-Z]):/, "$1:");
 const SRC_DIR = join(ROOT, "src");
@@ -74,8 +74,12 @@ for (const file of rsFiles(SRC_DIR)) {
     if (isFeatureGated) continue;
 
     // Skip the rest of the attribute/comment block to reach the fn line.
+    // Blank lines must be skipped too — without that, a blank between
+    // `#[napi]` and `pub fn` would zero out `sig` and the export would
+    // be missed from `rustExports`, weakening the drift check (Codex
+    // review on PR #74).
     let j = i + 1;
-    while (j < lines.length && /^\s*(#\[|\/\/)/.test(lines[j])) j++;
+    while (j < lines.length && /^(\s*$|\s*(#\[|\/\/))/.test(lines[j])) j++;
     const sig = lines[j] ?? "";
 
     // Free functions only — struct methods (`pub fn xxx(&self, ...)` or

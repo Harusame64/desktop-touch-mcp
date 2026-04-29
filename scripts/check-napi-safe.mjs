@@ -41,8 +41,11 @@ for (const file of rsFiles(SCAN_DIR)) {
     if (!/^\s*#\[napi\]\s*$/.test(line)) continue;
 
     // Find the next non-empty, non-attribute line — that is the fn signature.
+    // Blank lines between `#[napi]` and `pub fn` must be skipped too;
+    // otherwise sigLine becomes `""`, the `\bfn\s+\w+` test below fails, and
+    // the function silently slips past the guard (Codex review on PR #74).
     let j = i + 1;
-    while (j < lines.length && /^\s*(#\[|\/\/)/.test(lines[j])) j++;
+    while (j < lines.length && /^(\s*$|\s*(#\[|\/\/))/.test(lines[j])) j++;
     const sigLine = lines[j] ?? "";
 
     // Skip AsyncTask returns — those have implicit panic safety via napi-rs.
