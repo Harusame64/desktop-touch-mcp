@@ -32,6 +32,14 @@ L3 Compute (timely + differential-dataflow) を本リポジトリに組込み、
 - HW-accelerated view (D5)
 - replay / WAL 統合 (D6)
 
+### 1.3 D1-2 着手前の前提 (ADR-007 P5c-1)
+
+D1-0 / D1-1 は既に完了 (PR #81 / #82) だが、**D1-2 (real L1 adapter) 着手前に ADR-007 P5c-1 完了が前提**:
+
+- P5c-1 で **UIA Focus Changed event hook → L1 ring に `UiaFocusChanged` event push** が実装される
+- これがないと bridge が pump する input が空、D1 acceptance「TS 版より 1/10」が synthetic 比較に格下げ → 北極星「Whole-System Dataflow」と矛盾
+- 詳細経緯: `docs/adr-007-p5c-plan.md`、判断 lesson: `memory/feedback_north_star_reconciliation.md`
+
 ---
 
 ## 2. Workspace 化方針
@@ -48,25 +56,33 @@ L3 Compute (timely + differential-dataflow) を本リポジトリに組込み、
 - 将来 `crates/` 配下に proc-macros (P5b 復活) / winml (ADR-006) を増やす土台
 - workspace `target/` 共有でビルド成果物のキャッシュは引き継がれる
 
-**Workspace 構成 (D1 完了時):**
+**Workspace 構成 (D1 完了時、root owns integration 反映):**
 
 ```
 desktop-touch-mcp/
 ├── Cargo.toml          # [workspace] + [package] desktop-touch-engine
 ├── Cargo.lock
-├── src/                # 既存 (root crate のまま)
+├── src/                # root crate (重い: napi / vision-gpu / windows-rs)
+│   ├── l1_capture/     # 既存 + P5c で観測系 payload 追加
+│   ├── uia/            # 既存 + P5c で event_handlers/ 拡張
+│   ├── duplication/    # 既存 + P5c-2 で L1 emit fork
+│   └── l3_bridge/      # 新設 (PR-P5c-0b scaffold、D1-2 で fill)
+│       ├── mod.rs
+│       └── focus_pump.rs   # L1 ring → decode → engine_perception::FocusInputHandle::push
 ├── crates/
-│   └── engine-perception/
-│       ├── Cargo.toml  # [package] engine-perception
+│   └── engine-perception/   # 純 Rust crate (timely + DD のみ、napi 非依存維持)
+│       ├── Cargo.toml
 │       └── src/
 │           ├── lib.rs
-│           ├── l1_input.rs
-│           └── views/
+│           ├── input.rs         # L1Sink trait + FocusEvent 純データ型 (PR-P5c-0b scaffold)
+│           └── views/           # D1-3 で実装
 │               └── current_focused_element.rs
 └── benches/
     ├── README.md       # 既存 (skeleton)
-    └── d1_view_latency.rs  # 新規
+    └── d1_view_latency.rs  # D1-5 で実装
 ```
+
+**依存方向**: root → engine-perception (workspace path、PR-P5c-0b で `Cargo.toml` に追加)。逆方向 (engine-perception → root) は採用しない (Codex review v2 P1 で確定、`docs/adr-007-p5c-plan.md` §2.2 / §6 / §12 と整合)。
 
 ---
 
@@ -74,28 +90,36 @@ desktop-touch-mcp/
 
 実装担当者は完了したら `[ ]` → `[x]` に flip する。
 
-### D1-0: workspace 化 + 空 crate (PR 1)
-- [ ] root `Cargo.toml` を `[workspace] + [package]` 兼用に変換、`members = ["", "crates/engine-perception"]`
-- [ ] `crates/engine-perception/Cargo.toml` 新設 (空、`[package]` のみ)
-- [ ] `crates/engine-perception/src/lib.rs` 新設 (空)
-- [ ] `npm run build:rs` がエラーなく通ること (既存 napi build に影響なし)
-- [ ] `npm test` (vitest) が回帰なく通ること
-- [ ] `scripts/check-no-koffi.mjs` / `check-napi-safe.mjs` / `check-native-types.mjs` が pass
-- [ ] `.github/workflows/release.yml` で workspace 認識を確認 (CI green)
+### D1-0: workspace 化 + 空 crate (PR 1) — **完了 PR #81 (`a1cd5e8`)**
+- [x] root `Cargo.toml` を `[workspace] + [package]` 兼用に変換、`members = [".", "crates/engine-perception"]`
+- [x] `crates/engine-perception/Cargo.toml` 新設 (空、`[package]` のみ)
+- [x] `crates/engine-perception/src/lib.rs` 新設 (空)
+- [x] `npm run build:rs` がエラーなく通ること (既存 napi build に影響なし)
+- [x] CI green、`scripts/check-no-koffi.mjs` / `check-napi-safe.mjs` / `check-native-types.mjs` が pass
+- [x] `default-members` + `check:rs-workspace` script で全 workspace member が CI で type check される (Codex P2 fix `58c1199`)
 
-### D1-1: timely + DD 依存追加 (PR 2)
+### D1-1: timely + DD 依存追加 (PR 2) — **完了 PR #82 (`f8877a8`)**
 - [x] `crates/engine-perception/Cargo.toml` に `timely = "0.29"` `differential-dataflow = "0.23"` 追加
 - [x] `cargo check --workspace` が通る (engine-perception 含む)
 - [x] root crate の build が依然 pass (Cargo.lock の影響は engine-perception の transitive のみ、root crate 経由 dep は変化なし)
 - [x] timely / DD の crates.io latest stable を確認、決定根拠を本書 §6 に追記
 
-### D1-2: L1 → timely Input Adapter (PR 3 の前半)
-- [ ] `crates/engine-perception/src/l1_input.rs` 新設
-- [ ] L1 ring の `Arc<L1Inner>` を借りる API を `src/l1_capture/` に追加 (e.g. `pub(crate) fn share_inner() -> Arc<...>` か、既存 worker 取得 API 流用)
-- [ ] adapter が独立 thread で `ring.pop()` → timely input session に push
-- [ ] `EventEnvelope` のうち `UiaFocusChanged` のみを filter (D1 スコープ限定)
+### D1-2: root → engine-perception Input Adapter (PR 3 の前半、root owns integration)
+
+**前提**: ADR-007 P5c-1 完了 (UIA Focus Changed event hook → ring に `UiaFocusChanged` event push 経路成立)。詳細: `docs/adr-007-p5c-plan.md` §11.3。
+
+- [ ] **`src/l3_bridge/focus_pump.rs`** (root crate 側、PR-P5c-0b で scaffold 済) に adapter thread 実装
+- [ ] **`EventRing` の broadcast 化** (subscribe 別 cursor):
+  - 既存 destructive `poll()` (single consumer) は維持
+  - 新規 `subscribe()` API を追加、subscriber ごとに cursor を保持、non-destructive read
+  - 詳細実装は本 sub-batch 内で確定 (P5c plan §8 (A) で「ADR-008 D1-2 で実装」と確定済)
+- [ ] adapter thread が `ring.subscribe()` で broadcast 受信、`EventKind::UiaFocusChanged` のみ filter (D1 スコープ、他 event は drop)
+- [ ] L1 EventEnvelope を decode → `UiaFocusChangedPayload` (`{ before, after: UiElementRef, window_title }`) を取り出す
+- [ ] **`engine_perception::FocusEvent`** に変換: `{ hwnd, name, automation_id, control_type, window_title, wallclock_ms, sub_ordinal }`
+- [ ] **`crates/engine-perception/src/input.rs`** (PR-P5c-0b で scaffold 済) に `FocusInputHandle::push_focus(FocusEvent)` 実装 (timely InputSession への push)
 - [ ] `(wallclock_ms, sub_ordinal)` を `Pair<u64, u32>` (logical_time) に変換
-- [ ] L1 worker が停止してもこの thread が deadlock しない (timeout pop or shutdown signal)
+- [ ] L1 worker / UIA thread / 本 adapter thread の shutdown 順序 (本書 §5.3 で確定)
+- [ ] L1 worker が停止しても adapter thread が deadlock しない (subscribe 側 timeout or shutdown signal)
 
 ### D1-3: `current_focused_element` view (PR 3 の後半)
 - [ ] `crates/engine-perception/src/views/current_focused_element.rs` 新設
@@ -143,29 +167,75 @@ PR-α が merge されないと PR-β 以降が衝突するので、stack PR で
 
 ---
 
-## 5. L1 → timely Input Source 仕様
+## 5. L1 → engine-perception Input Adapter 仕様 (root owns integration)
+
+`docs/adr-007-p5c-plan.md` §6 / §12 で確立した「root crate 内 bridge が L1 ring を所有して decode、engine-perception には純データ (`FocusEvent`) を push」経路の D1 側仕様。
 
 ### 5.1 Adapter 構造
 
 ```rust
-// crates/engine-perception/src/l1_input.rs (擬似コード)
+// src/l3_bridge/focus_pump.rs (root crate 側、擬似コード)
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use timely::dataflow::operators::{Input, InputHandle};
-use differential_dataflow::input::InputSession;
+use std::sync::atomic::AtomicBool;
 
-pub struct L1ToTimelyAdapter {
+use crate::l1_capture::{EventRing, EventEnvelope, EventKind, UiaFocusChangedPayload};
+use engine_perception::input::{FocusInputHandle, FocusEvent};
+
+pub(crate) struct L1ToPerceptionPump {
     handle: JoinHandle<()>,
     shutdown: Arc<AtomicBool>,
 }
 
-impl L1ToTimelyAdapter {
-    pub fn spawn(
-        l1_inner: Arc<L1Inner>,           // L1 ring の共有 handle
-        input: InputSession<Pair<u64, u32>, FocusEvent, isize>,
-    ) -> Self { /* ... */ }
+impl L1ToPerceptionPump {
+    pub(crate) fn spawn(
+        ring: Arc<EventRing>,                 // root crate 内、L1Inner の ring 借用
+        input: FocusInputHandle,              // engine-perception 側 InputSession wrapper
+    ) -> Self {
+        // adapter thread:
+        //   ring.subscribe(my_cursor) → loop:
+        //     for env in ring.poll_since(cursor, max):
+        //       if env.kind == UiaFocusChanged as u16:
+        //         let payload = bincode::decode(env.payload_bytes);
+        //         let ev = FocusEvent {
+        //             hwnd: payload.after.hwnd,
+        //             name: payload.after.name,
+        //             automation_id: payload.after.automation_id,
+        //             control_type: payload.after.control_type,
+        //             window_title: payload.window_title,
+        //             wallclock_ms: env.wallclock_ms,
+        //             sub_ordinal: env.sub_ordinal,
+        //         };
+        //         input.push_focus(ev);  // engine-perception InputSession に流す
+    }
 
-    pub fn shutdown(self, timeout: Duration) -> Result<(), ShutdownError> { /* ... */ }
+    pub(crate) fn shutdown(self, timeout: Duration) -> Result<(), ShutdownError> { /* ... */ }
+}
+```
+
+```rust
+// crates/engine-perception/src/input.rs (純 Rust crate 側、抜粋)
+pub struct FocusEvent {
+    pub hwnd: u64,
+    pub name: String,
+    pub automation_id: Option<String>,
+    pub control_type: u32,
+    pub window_title: String,
+    pub wallclock_ms: u64,
+    pub sub_ordinal: u32,
+}
+
+pub trait L1Sink: Send + Sync {
+    fn push_focus(&self, event: FocusEvent);
+    // P5c-3/4 拡張で push_dirty_rect / push_window_change / push_scroll を追加
+}
+
+pub struct FocusInputHandle {
+    inner: Arc<Mutex<InputSession<Pair<u64, u32>, FocusEvent, isize>>>,
+}
+
+impl L1Sink for FocusInputHandle {
+    fn push_focus(&self, event: FocusEvent) { /* InputSession に advance + insert */ }
 }
 ```
 
@@ -173,22 +243,30 @@ impl L1ToTimelyAdapter {
 
 | L1 EventEnvelope フィールド | timely / DD 表現 |
 |---|---|
-| `event_id: u64` | (engine 内部の trace key) |
+| `event_id: u64` | (engine 内部の trace key、L3 では使わず) |
 | `wallclock_ms: u64` + `sub_ordinal: u32` | logical_time = `Pair<u64, u32>` |
-| `kind: UiaFocusChanged { hwnd, name, ... }` | `FocusEvent { hwnd, ... }` row、diff = +1 |
-| (前回の focus row の retraction) | 同 logical_time に diff = -1 |
+| `payload_bytes` (decoded `UiaFocusChangedPayload`) → `FocusEvent` | `FocusEvent` row、diff = +1 |
+| (前回 focus row の retraction) | 同 logical_time に diff = -1 (state view の last-by-time semantics) |
 
-D1 範囲では `UiaFocusChanged` のみ拾い、他 event kind は drop。
+D1 範囲では `EventKind::UiaFocusChanged` のみ拾い、他 event kind は drop。
 
-### 5.3 Shutdown ordering (制約 §17.6 / 統合書 §3.4 / SSOT layer-constraints と整合)
-
-L5 → L1 逆順で shutdown する規約。adapter は L1 worker より先に止める：
+### 5.3 Shutdown ordering (統合書 §17.6 / `docs/adr-007-p5c-plan.md` §6.4 と整合)
 
 ```
-1. adapter.shutdown(2s)  // ring pop loop に shutdown signal、timely input session を drop
-2. timely worker join (timely 内部で graceful drain)
-3. L1 worker shutdown (既存 P5a の l1_shutdown_for_test と同パターン)
+shutdown 開始
+  ↓
+1. l3_bridge::focus_pump.shutdown(2s)  ← adapter thread に signal、ring subscribe を drop
+  ↓
+2. timely worker join (engine-perception 内、graceful drain)
+  ↓
+3. shutdown_uia_for_test(3s)  (P5c-0b で追加、UIA event handler を Drop で Remove*)
+  ↓
+4. shutdown_l1_for_test(3s)
+  ↓
+ring 全 drop 完了
 ```
+
+UIA / DXGI event は L1 ring に push される側、L1 を先に止めると orphan ring に push して Failure event 量産 → 逆順 (Bridge → timely → UIA → L1) が正しい (`docs/adr-007-p5c-plan.md` §6.4 と整合)。
 
 ---
 
@@ -285,12 +363,14 @@ collection<UiElementRef>  (1 row per current foreground hwnd)
 
 | # | Risk | 影響 | Mitigation |
 |---|---|---|---|
-| R1 | `napi build` が workspace 化で壊れる | 高 | D1-0 で `npm run build:rs` を必ず通す。失敗時は root を `[package]` のみに戻し、選択肢 C (同 crate 内モジュール) に切替 |
-| R2 | timely 0.13/0.14 に compile-time の重い transitive dep | 中 | `engine-perception` を napi 非依存に保ち、root crate の build に乗せない。CI cache で吸収 |
-| R3 | L1 ring から pop する thread が L1 worker と deadlock | 中 | timeout pop (`recv_timeout(100ms)`) + shutdown flag |
+| ~~R1~~ | ~~`napi build` が workspace 化で壊れる~~ | — | **解消済** (PR #81 / #82 で wkspc 化 + Codex P2 fix `58c1199` 完了) |
+| ~~R2~~ | ~~timely 0.13/0.14 に compile-time~~ | — | **解消済** (timely 0.29 / DD 0.23 採用済、PR #82) |
+| R3 | adapter thread が L1 worker / UIA thread と deadlock | 中 | broadcast subscribe + shutdown signal (本書 §5.3 ordering)、timeout subscribe |
 | R4 | partial-order semantics を間違えて view が deterministic にならない | 中 | unit test で out-of-order event を必ず covers (D1-4) |
-| R5 | bench で 1/10 達成しない | 中 | プロファイリング後に operator graph を最適化、最悪 D2 に carry over (acceptance を D1 メイル基準に変更し、再評価) |
-| R6 | windows-rs / vision-gpu feature gate との衝突 | 低 | `engine-perception` は windows-rs 直接依存しない、L1 経由 event 受信のみ |
+| R5 | bench で 1/10 達成しない | 中 | プロファイリング後に operator graph を最適化、最悪 D2 に carry over (acceptance 再評価) |
+| R6 | windows-rs / vision-gpu feature gate との衝突 | 低 | `engine-perception` は windows-rs 直接依存しない (`FocusEvent` は純データ型)、root crate の vision-gpu は本 D1 で触らない |
+| R7 | broadcast 化で既存 napi `l1Poll` 経路が壊れる | 中 | broadcast 追加時、既存 destructive `poll()` API は **そのまま維持** (single consumer 用)、新規 `subscribe()` API を別ルートで実装 (本書 §5.1 / D1-2 sub-batch で詳細化) |
+| R8 | UIA / DXGI / Bridge / L1 の shutdown ordering で deadlock | 中 | 本書 §5.3 と `docs/adr-007-p5c-plan.md` §6.4 で integrated form を確定、5 サイクル shutdown/restart test (P5a と同水準) |
 
 ---
 
@@ -298,7 +378,7 @@ collection<UiElementRef>  (1 row per current foreground hwnd)
 
 | # | OQ | 決定タイミング |
 |---|---|---|
-| 1 | timely 0.13 vs 0.14 どちらを採用 | D1-1 着手時、crates.io の latest stable を確認 |
+| ~~1~~ | ~~timely 0.13 vs 0.14 どちらを採用~~ | **解決済** (timely 0.29 / DD 0.23、PR #82、本書 §6) |
 | 2 | L1 `Arc<L1Inner>` 共有 API のシグネチャ (既存 worker と干渉しない形) | D1-2 着手前、既存 `src/l1_capture/worker.rs` を読む |
 | 3 | `current_focused_element` の "current" の定義 (foreground 1 つ vs 全 window 最新) | D1-3 着手前、ADR-008 / views-catalog を再確認 |
 | 4 | bench harness の TS 版測定方法 (criterion から MCP tool を呼ぶか、Node 別プロセスか) | D1-5 着手時 |
@@ -308,10 +388,12 @@ collection<UiElementRef>  (1 row per current foreground hwnd)
 
 ## 11. Acceptance Criteria (ADR-008 §8 D1 と完全一致)
 
+- [ ] **ADR-007 P5c-1 完了**を前提として、real L1 input (UIA Focus Changed event) が ring 経由で bridge → engine-perception に流れる
+- [ ] **`src/l3_bridge/focus_pump.rs`** が `EventRing` broadcast subscribe → decode → `engine_perception::FocusInputHandle::push_focus()` で動作 (root owns integration、`docs/adr-007-p5c-plan.md` §12.3 と整合)
 - [ ] 1 view が incremental に更新される (`current_focused_element`)
 - [ ] unit test pass (partial-order 含む)
-- [ ] bench で TS 版より latency 1/10
-- [ ] CI green、`npm run build:rs` / `npm test` 回帰なし
+- [ ] bench で TS 版より latency 1/10 (real L1 input ベース、synthetic ではない)
+- [ ] CI green、`npm run build:rs` / `npm test` 回帰なし、`check:rs-workspace` で engine-perception 含む
 - [ ] D1-6 完了 (ドキュメント / メモリ整合)
 
 ---
@@ -323,4 +405,9 @@ collection<UiElementRef>  (1 row per current foreground hwnd)
 - view 契約: `docs/views-catalog.md` §3.1
 - 制約 (起草中): `docs/layer-constraints.md` §3-§4 (本書執筆時、参照のみ)
 - L1 base: ADR-007 P5a 完了 (`src/l1_capture/`、`memory/project_adr007_p5a_done.md`)
-- 関連 PR (履歴): #79 (main-push guard、merged)、#80 (P5b defer、open)
+- **D1-2 前提**: ADR-007 P5c-1 完了 (`docs/adr-007-p5c-plan.md`)
+- 関連 PR (履歴):
+  - #79 (main-push guard、merged)
+  - #80 (P5b defer、merged)
+  - #81 (D1-0 workspace + plan tracking、merged `a1cd5e8`)
+  - #82 (D1-1 timely + DD deps、merged `f8877a8`)

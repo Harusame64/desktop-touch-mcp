@@ -17,6 +17,7 @@ docs/release-process.md
 !docs/ocr-quality-improvement-plan.md
 !docs/visual-gpu-dataplane-plan.md
 !docs/adr-008-d1-plan.md
+!docs/adr-007-p5c-plan.md
 
 # Claude Code session data (auto-memory, local settings) — never distribute
 .claude/

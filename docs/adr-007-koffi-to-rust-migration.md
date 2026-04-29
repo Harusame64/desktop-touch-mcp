@@ -368,9 +368,10 @@ P1 で **本 ADR §3.4 acceptance のうち**「panic-fuzz CI でプロセス全
 
 - P1-P4 は各 Phase を 1 PR で main 入れる (互換維持で段階導入)
 - P5 は **subphase 化**:
-  - P5a: EventEnvelope schema + ring buffer (TS API は変えない)
-  - P5b: WAL + replay E2E (record モード default off で導入)
-  - P5c: DXGI dirty rect 統合 + Tier dispatch
+  - P5a: EventEnvelope schema + ring buffer (TS API は変えない) — **完了 (2026-04-29)**
+  - P5b: (consumed) `#[napi_safe]` proc_macro 評価 — 保留決定 (PR #80、`docs/adr-007-p5b-evaluation.md`)
+  - P5c: 観測系 event 生成 (UIA hooks + DXGI dirty rect + Scroll/Window) + Tier 1 graceful disable (詳細: `docs/adr-007-p5c-plan.md`)
+  - WAL + replay E2E は **ADR-008 D6 へ移管** (SSOT §10.2 / ADR-008 §4 D6 と整合、本 ADR scope 外)
   - P5d: timestamp source 多重化 (Reflex/DXGI/DWM)
 
 ---
@@ -441,8 +442,8 @@ build 時に platform-aware で win32.ts vs _linux-stub.ts を切替。
 | P3 | sizeof 地雷 0 件 (gauntlet test pass)、AttachThreadInput 既存挙動維持 |
 | P4 | `git grep koffi` 行数 0、`package.json` から koffi 削除、launcher zip size を memory に記録 |
 | P5a | EventEnvelope が ring buffer に push される、TS から poll 取得可能 |
-| P5b | WAL に fsync 10ms batch、replay E2E で 1 session 再生成功 |
-| P5c | DXGI dirty rect を `EventKind::DirtyRect` として emit、Tier 1 cascade 動作 |
+| P5b | (consumed) proc_macro 評価で保留決定 — acceptance: `docs/adr-007-p5b-evaluation.md` の「復活条件」が観測されないこと |
+| P5c | 観測系 event 7 種 (UiaFocusChanged / DirtyRect / WindowChanged / ScrollChanged を **emit**、TreeChanged / Invoked / ValueChanged は enum + payload struct を **reserved**) を実装、Tier 1 graceful disable 動作。WAL/replay は ADR-008 D6 |
 | P5d | timestamp_source が capability に応じて自動選択、`server_status` に統計 |
 
 ### 9.2 統合書 SLO 達成 (本 ADR 範囲)
@@ -451,7 +452,7 @@ build 時に platform-aware で win32.ts vs _linux-stub.ts を切替。
 - dirty rect detect cycle: DXGI 60Hz 同期 ✓
 - ring buffer overflow rate: < 0.001% ✓
 - WAL write latency p99: < 5ms ✓
-- replay 一致率: 100% (本 ADR では P5b のスコープのみ、L2-3 は ADR-008 D6 で完成)
+- replay 一致率: ADR-008 D6 で測定 (WAL/replay は本 ADR scope 外、SSOT §10.2 と整合)
 
 ### 9.3 観測されるべき副次効果
 
@@ -465,14 +466,14 @@ build 時に platform-aware で win32.ts vs _linux-stub.ts を切替。
 
 | # | OQ | 決定タイミング |
 |---|---|---|
-| 1 | bincode vs capnproto vs flatbuffers (payload encoder) | P5a 着手時 |
-| 2 | WAL rotation サイズ (1GB / 4GB / 時間ベース) | P5b 着手時 |
-| 3 | DXGI dirty rect の secondary monitor 扱い | P5c 着手時 |
-| 4 | sub_ordinal 採番を per-source か global か | P5a 着手前 (sourceごとが推奨、tie 軽減) |
-| 5 | Intel PT 統合は本 ADR か別 ADR か | P5d 完了後 |
-| 6 | ring buffer back-pressure: drop oldest vs throttle producer | P5a 着手前 (drop oldest 推奨) |
+| 1 | bincode vs capnproto vs flatbuffers (payload encoder) | P5a 着手時 (bincode 採用済) |
+| 2 | WAL rotation サイズ (1GB / 4GB / 時間ベース) | **ADR-008 D6 へ移管** |
+| 3 | DXGI dirty rect の secondary monitor 扱い | P5c-2 着手時 (本 plan §10 OQ #3 と同期) |
+| 4 | sub_ordinal 採番を per-source か global か | P5a 着手前 (global 単一 counter 採用済) |
+| 5 | Intel PT 統合は本 ADR か別 ADR か | **ADR-008 D6 完了後** (replay と組み合わせて再評価) |
+| 6 | ring buffer back-pressure: drop oldest vs throttle producer | P5a 着手前 (drop oldest 採用済) |
 | 7 | event_id を u64 で十分か、UUID にするか | P5a (u64 で十分、replay は (record_id, event_id) で識別) |
-| 8 | `koffi-replacement` を別 crate にするか同 crate か | 着手前 (同 crate 推奨、分離価値低) |
+| 8 | `koffi-replacement` を別 crate にするか同 crate か | 着手前 (同 crate 採用済) |
 
 ---
 
