@@ -32,15 +32,9 @@ try { _dwmapi = koffi.load("dwmapi.dll"); } catch { /* not available */ }
 // Structs
 // ─────────────────────────────────────────────────────────────────────────────
 
-const RECT = koffi.struct("RECT", {
-  left: "int32",
-  top: "int32",
-  right: "int32",
-  bottom: "int32",
-});
-
-// MONITORINFO koffi struct removed in P2 — see src/win32/monitor.rs for the
-// windows-rs replacement.
+// RECT / MONITORINFO koffi structs removed in P2 — their last consumers
+// (GetWindowRect / EnumDisplayMonitors / GetMonitorInfoW) live in
+// src/win32/{window,monitor}.rs.
 
 /** PROCESSENTRY32W — Toolhelp32 snapshot entry for process enumeration. */
 const PROCESSENTRY32W = koffi.struct("PROCESSENTRY32W", {
