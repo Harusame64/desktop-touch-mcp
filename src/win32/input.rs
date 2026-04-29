@@ -92,13 +92,17 @@ pub fn win32_force_set_foreground_window(
             let _ = SetForegroundWindow(target);
             let _ = BringWindowToTop(target);
         }
-        // guard drops here, detaching if attached.
+        // Capture the actual AttachThreadInput outcome before the guard's
+        // Drop (which detaches if guard.attached==true). Reporting whether
+        // we *attempted* attach instead of whether it *succeeded* would
+        // mislead callers under UIPI / permission failures (Codex review).
+        let attached = guard.attached;
         drop(guard);
 
         let fg_after = unsafe { GetForegroundWindow() };
         Ok(NativeForceFocusResult {
             ok: fg_after.0 == target.0,
-            attached: fg_thread != 0 && fg_thread != my_thread, // matches legacy reporting
+            attached,
             fg_before: hwnd_to_bigint(fg_before),
             fg_after: hwnd_to_bigint(fg_after),
         })
@@ -157,8 +161,15 @@ pub fn win32_post_message(
 ) -> napi::Result<bool> {
     napi_safe_call("win32_post_message", || {
         let h = hwnd_from_bigint(hwnd);
-        let (_w_sign, w_val, _w_lossless) = w_param.get_u64();
-        let (_l_sign, l_val, _l_lossless) = l_param.get_u64();
+        // `get_u64()` returns the magnitude with a separate sign flag, which
+        // would silently turn negative BigInts (`BigInt(lParam | 0)` for
+        // lParam values with bit 31 set — common in WM_KEYUP scan-code
+        // encodings) into positive magnitudes. `get_i64()` preserves the
+        // signed bit pattern; `as isize` / `as usize` then reinterprets
+        // the same bits to populate WPARAM (usize) and LPARAM (isize).
+        // (Codex review on PR #77.)
+        let (w_val, _w_lossless) = w_param.get_i64();
+        let (l_val, _l_lossless) = l_param.get_i64();
         let result = unsafe {
             PostMessageW(
                 Some(h),

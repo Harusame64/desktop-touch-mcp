@@ -238,6 +238,21 @@ describe.skipIf(!nativeWin32)("ADR-007 P1: native win32 panic-safety", () => {
       const f = native.win32GetFocus!();
       if (f !== null) expect(typeof f).toBe("bigint");
     });
+
+    // Regression for Codex P1 review on PR #77: get_u64() drops the sign,
+    // so a negative LPARAM (common in WM_KEYUP scan-code encodings) used
+    // to be silently flipped to positive. We can't observe what bit
+    // pattern Win32 actually saw without a real window, but we can at
+    // least confirm the call accepts a negative bigint without throwing.
+    it("win32PostMessage accepts negative LPARAM without throwing", () => {
+      const fg = native.win32GetForegroundWindow!() ?? 0n;
+      // -1 in i32 = 0xFFFFFFFF; the Rust binding now sign-extends to
+      // 0xFFFFFFFFFFFFFFFF for the LPARAM bit pattern.
+      expect(typeof native.win32PostMessage!(fg, 0, 0n, -1n)).toBe("boolean");
+      // 0x80000000 as JS int32 is -2147483648 (bit 31 set, the case
+      // PR #77 review specifically flagged for WM_KEYUP scan codes).
+      expect(typeof native.win32PostMessage!(fg, 0, 0n, -2147483648n)).toBe("boolean");
+    });
   });
 
   // ── ADR-007 §6 P3 acceptance: sizeof gauntlet ──────────────────────────────
