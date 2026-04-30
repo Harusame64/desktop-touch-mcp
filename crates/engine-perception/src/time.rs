@@ -106,17 +106,39 @@ impl<S: Timestamp, T: Timestamp> Timestamp for Pair<S, T> {
     type Summary = ();
 }
 
-impl<S: Lattice + Ord, T: Lattice + Ord> Lattice for Pair<S, T> {
+// **Lattice on lex-total order** — Codex PR #90 P1.
+//
+// `PartialOrder` for `Pair` is implemented as lex order (above), so
+// the lattice ops MUST also be lex-consistent. A component-wise join
+// would violate lattice laws under lex order:
+//
+//   join((1, 9), (2, 0)) — lex LUB = (2, 0), component-wise = (2, 9)
+//   ← (2, 9) is lex-greater than (2, 0), so it's not the *least* upper
+//     bound. DD uses Lattice for arrangement compaction / frontier
+//     reasoning; a non-LUB join breaks that.
+//
+// Under a total order, join = max and meet = min in that order. We
+// clone via the derived `PartialOrd` (which is lex by struct field
+// order). The `Lattice + Ord` bound on the impl ensures we always
+// have both DD's `Lattice` (for the inner-component bounds DD
+// requires) and a usable `Ord` (for the lex comparison itself).
+impl<S, T> Lattice for Pair<S, T>
+where
+    S: Lattice + Ord + Clone,
+    T: Lattice + Ord + Clone,
+{
     fn join(&self, other: &Self) -> Self {
-        Pair {
-            first: self.first.join(&other.first),
-            second: self.second.join(&other.second),
+        if self >= other {
+            self.clone()
+        } else {
+            other.clone()
         }
     }
     fn meet(&self, other: &Self) -> Self {
-        Pair {
-            first: self.first.meet(&other.first),
-            second: self.second.meet(&other.second),
+        if self <= other {
+            self.clone()
+        } else {
+            other.clone()
         }
     }
 }
@@ -160,5 +182,50 @@ mod tests {
         let b = Pair::new(2u64, 5u32);
         assert!(a < b);
         assert!(a.less_equal(&b));
+    }
+
+    // ─── Lattice consistency with lex order (Codex PR #90 P1) ────
+
+    #[test]
+    fn lattice_join_is_lex_lub() {
+        // The original component-wise impl returned (2, 9) for these
+        // — non-LUB under lex order. The fix uses lex max.
+        let a = Pair::new(1u64, 9u32);
+        let b = Pair::new(2u64, 0u32);
+        let j = a.join(&b);
+        assert_eq!(j, Pair::new(2u64, 0u32), "lex LUB of (1,9) and (2,0)");
+        assert!(a.less_equal(&j));
+        assert!(b.less_equal(&j));
+        // Symmetry
+        assert_eq!(b.join(&a), j);
+    }
+
+    #[test]
+    fn lattice_meet_is_lex_glb() {
+        let a = Pair::new(1u64, 9u32);
+        let b = Pair::new(2u64, 0u32);
+        let m = a.meet(&b);
+        assert_eq!(m, Pair::new(1u64, 9u32), "lex GLB of (1,9) and (2,0)");
+        assert!(m.less_equal(&a));
+        assert!(m.less_equal(&b));
+        assert_eq!(b.meet(&a), m);
+    }
+
+    #[test]
+    fn lattice_idempotent() {
+        let a = Pair::new(7u64, 3u32);
+        assert_eq!(a.join(&a), a);
+        assert_eq!(a.meet(&a), a);
+    }
+
+    #[test]
+    fn lattice_associative_join() {
+        let a = Pair::new(1u64, 5u32);
+        let b = Pair::new(2u64, 0u32);
+        let c = Pair::new(2u64, 9u32);
+        // (a ∨ b) ∨ c == a ∨ (b ∨ c)
+        let lhs = a.join(&b).join(&c);
+        let rhs = a.join(&b.join(&c));
+        assert_eq!(lhs, rhs);
     }
 }

@@ -239,12 +239,20 @@ impl Drop for PerceptionWorker {
 }
 
 /// Read the watermark shift override from the env, clamped to
-/// `[0, WATERMARK_SHIFT_MAX_MS]`. Fall back to default 100ms.
+/// `[0, WATERMARK_SHIFT_MAX_MS]`. Fall back to default 100ms when
+/// the var is absent or unparseable.
+///
+/// Codex PR #90 P2: an earlier version used `.filter(|n| n <= MAX)`
+/// which falls back to the **default** on overflow. For an env value
+/// like `120000` that meant the user intended a long watermark (more
+/// out-of-order tolerance) but actually got 100ms (very strict),
+/// dropping events they expected to keep. The fix saturates at MAX
+/// instead.
 fn watermark_shift_ms() -> u64 {
     std::env::var("DESKTOP_TOUCH_WATERMARK_SHIFT_MS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
-        .filter(|&n| n <= WATERMARK_SHIFT_MAX_MS)
+        .map(|n| n.min(WATERMARK_SHIFT_MAX_MS))
         .unwrap_or(DEFAULT_WATERMARK_SHIFT_MS)
 }
 
@@ -509,10 +517,28 @@ mod tests {
             std::env::set_var("DESKTOP_TOUCH_WATERMARK_SHIFT_MS", "250");
         }
         assert_eq!(watermark_shift_ms(), 250);
+
+        // Codex PR #90 P2: oversized values must clamp to MAX, not
+        // fall back to the default (which would be the **opposite**
+        // of what the user wrote — a much smaller window).
         unsafe {
-            std::env::set_var("DESKTOP_TOUCH_WATERMARK_SHIFT_MS", "999999"); // > MAX
+            std::env::set_var("DESKTOP_TOUCH_WATERMARK_SHIFT_MS", "120000"); // > MAX
         }
-        assert_eq!(watermark_shift_ms(), DEFAULT_WATERMARK_SHIFT_MS);
+        assert_eq!(
+            watermark_shift_ms(),
+            WATERMARK_SHIFT_MAX_MS,
+            "oversized env must saturate to WATERMARK_SHIFT_MAX_MS, not default"
+        );
+
+        unsafe {
+            std::env::set_var("DESKTOP_TOUCH_WATERMARK_SHIFT_MS", "not_a_number");
+        }
+        assert_eq!(
+            watermark_shift_ms(),
+            DEFAULT_WATERMARK_SHIFT_MS,
+            "unparseable env falls back to default"
+        );
+
         unsafe {
             std::env::remove_var("DESKTOP_TOUCH_WATERMARK_SHIFT_MS");
         }

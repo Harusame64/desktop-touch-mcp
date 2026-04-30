@@ -63,7 +63,7 @@ ring の broadcast 側 method (subscribe 以外の Subscription / dropped_count 
 - `npm run build:rs` → 成功 (release profile、auto-target rustup detection)
 - `npm run test:capture` → **2434 pass / 1 fail (benchmark-gates timing flake、再実行で 10/10 pass) / 28 skipped** (P5c-1 baseline 2435 pass と実質同水準、本 PR 由来 regression 0)
 
-### 0.10 Codex PR #90 review 反映 (P2: lifecycle test full-path coverage)
+### 0.10 Codex PR #90 review round 1 反映 (P2: lifecycle test full-path coverage)
 
 PR #90 の Codex review で指摘:
 
@@ -77,7 +77,52 @@ PR #90 の Codex review で指摘:
 
 これにより L1 ring → focus_pump → handle → worker → `update_at` → `flush` の 5 ホップ全てが test で exercise される。北極星 N1 (event_id pivot) も TeeSink が clone して両側に流すので、forward 側も engine 側も同じ source_event_id を観測する shape のまま。
 
-### 0.11 follow-up 起票候補 (本 PR scope 外)
+---
+
+### 0.11 Codex PR #90 review round 2 反映 (P1 lattice / P2 watermark clamp)
+
+Round 1 fix 後 (commit `14ff28f`) の Codex 再 review で 2 件の追加指摘 (`time.rs` / `input.rs`):
+
+#### P1 — `Pair::Lattice` の `join`/`meet` が lex order と整合していない
+
+**`time.rs`**: `PartialOrder` を lex order で実装したのに、`Lattice::join` / `meet` を component-wise で実装していたため、ラティス則 (LUB/GLB) が破れていた。
+
+例: `(1, 9).join((2, 0))` — lex LUB は `(2, 0)` だが、component-wise だと `(2, 9)` (`> (2, 0)` で最小上界ではない)。DD は arrangement compaction / frontier reasoning に Lattice を使うので、view operator が追加される D1-3 以降で compaction が壊れる潜在的バグだった。
+
+修正: lex-total order での `join = max`, `meet = min` に変更:
+```rust
+fn join(&self, other: &Self) -> Self {
+    if self >= other { self.clone() } else { other.clone() }
+}
+fn meet(&self, other: &Self) -> Self {
+    if self <= other { self.clone() } else { other.clone() }
+}
+```
+
+`Clone` を impl bound に追加 (`S: Lattice + Ord + Clone, T: Lattice + Ord + Clone`)。timely の primitive timestamp 型は全て Clone なので影響なし。
+
+新規 unit test 4 件で lattice 則を pin: `lattice_join_is_lex_lub` / `lattice_meet_is_lex_glb` / `lattice_idempotent` / `lattice_associative_join`。最初の 2 件は元の component-wise 実装で必ず fail する反証 test。
+
+#### P2 — `watermark_shift_ms()` の "clamp" が実は filter
+
+**`input.rs`**: doc は「clamp to `[0, WATERMARK_SHIFT_MAX_MS]`」と書いてあったが、実装は `.filter(|&n| n <= MAX).unwrap_or(DEFAULT)` で **上限超過時 default 100ms にフォールバック**。`120000` を渡すと → `100ms` (極端に小さい watermark) → 過剰な out-of-order drop と、ユーザー意図の真逆挙動。
+
+修正: `.filter(...)` → `.map(|n| n.min(WATERMARK_SHIFT_MAX_MS))` で saturate:
+```rust
+fn watermark_shift_ms() -> u64 {
+    std::env::var("DESKTOP_TOUCH_WATERMARK_SHIFT_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|n| n.min(WATERMARK_SHIFT_MAX_MS))
+        .unwrap_or(DEFAULT_WATERMARK_SHIFT_MS)
+}
+```
+
+test も修正: `120000` (> MAX) は `WATERMARK_SHIFT_MAX_MS = 60_000` に saturate を assert (旧 test は default にフォールバックする間違い挙動を assert していた = 仕様化された bug だった)。`"not_a_number"` parse 失敗時は default にフォールバック (これは正しい)、を別 case として追加。
+
+verify 結果: `cargo test --workspace --lib --no-default-features` → **65/65 pass** (前回 61 + lattice 4 件)。
+
+### 0.12 follow-up 起票候補 (本 PR scope 外)
 
 1. timely worker thread が cmd 待ち時 `worker.step()` + `sleep(1ms)` で busy-loop 風味 → bench (D1-5) で CPU 測定、必要なら `condvar` ベースに改修
 2. `FocusEvent.name: String` の hot-path clone → `Arc<str>` 移行 (D1-5 bench 結果次第)
