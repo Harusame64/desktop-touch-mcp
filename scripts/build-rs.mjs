@@ -42,6 +42,45 @@ const D_TS = join(ROOT, "index.d.ts");
 const INDEX_JS = join(ROOT, "index.js");
 const FILES = [D_TS, INDEX_JS];
 
+// Detect the active rustup toolchain's target triple so we can pass
+// `--target <triple>` to napi build. Without this, a gnu-default rustup
+// setup emits artifacts to `target/x86_64-pc-windows-gnu/release/` while
+// napi-cli's post-build copy looks under `target/release/`, which fails
+// as "Failed to copy artifact" *after* the cargo build itself succeeds.
+// Passing `--target` keeps both sides agreed on the same directory and
+// makes the .node filename's platform suffix match the toolchain (gnu
+// vs msvc), so the same script works for either rustup default and on
+// CI runners that pin a host triple via `setup-rust`.
+//
+// Returns `undefined` when rustup isn't on PATH or its output shape is
+// unfamiliar; the caller then falls back to napi-cli's default
+// behaviour (host triple implicit), which already works for msvc-host
+// runners and was the only path before this script was added.
+function detectHostTriple() {
+  let result;
+  try {
+    result = spawnSync("rustup", ["show", "active-toolchain"], {
+      encoding: "utf8",
+      cwd: ROOT,
+    });
+  } catch {
+    return undefined;
+  }
+  if (result.status !== 0 || !result.stdout) return undefined;
+  // Toolchain lines look like:
+  //   "stable-x86_64-pc-windows-gnu (default)"
+  //   "nightly-2025-12-01-x86_64-pc-windows-msvc (default)"
+  // The first whitespace-separated token is the toolchain name; its last
+  // 4 hyphen-separated pieces form the target triple
+  // (`<arch>-<vendor>-<os>-<env>`) regardless of whether the channel is
+  // dated.
+  const toolchain = result.stdout.split(/\s/, 1)[0];
+  if (!toolchain) return undefined;
+  const pieces = toolchain.split("-");
+  if (pieces.length < 4) return undefined;
+  return pieces.slice(-4).join("-");
+}
+
 const args = process.argv.slice(2);
 const release = args.includes("--release");
 const passthrough = args.filter((a) => a !== "--release" && a !== "--debug");
@@ -72,7 +111,18 @@ function restore() {
 // shell lookup is brittle across MSYS bash / pwsh / cmd / GitHub Actions
 // runners. Calling node with an absolute path is portable and explicit.
 const napiCli = join(ROOT, "node_modules", "@napi-rs", "cli", "dist", "cli.js");
-const napiArgs = ["build", "--platform", ...(release ? ["--release"] : []), ...passthrough];
+const triple = detectHostTriple();
+const targetArgs = triple ? ["--target", triple] : [];
+if (triple) {
+  console.log(`[build-rs] detected rustup toolchain triple: ${triple}`);
+}
+const napiArgs = [
+  "build",
+  "--platform",
+  ...targetArgs,
+  ...(release ? ["--release"] : []),
+  ...passthrough,
+];
 console.log(`[build-rs] running: node ${napiCli} ${napiArgs.join(" ")}`);
 const napiResult = spawnSync(process.execPath, [napiCli, ...napiArgs], {
   stdio: "inherit",
