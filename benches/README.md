@@ -49,15 +49,23 @@
 
 #### D1-5 measured numbers (local run, Windows 11 / Ryzen, release build, 2026-04-30)
 
-| Path | p50 | p95 | p99 | Source |
-|---|---|---|---|---|
-| **view_get_hit** (D1 view, populated row) | ~148 ns | (criterion mean ±2.4%) | (sub-µs) | `cargo bench -p engine-perception --bench d1_view_latency` |
-| **view_get_miss** (D1 view, missing key) | ~20 ns | (criterion mean ±1.4%) | (sub-µs) | same |
-| **uiaGetFocusedElement** (TS baseline, UIA tree walk) | 1694 µs | 2924 µs | **11196 µs** | `node benches/d1_ts_baseline.mjs 1000` |
+| Path | mean | what it measures |
+|---|---|---|
+| **view_get_hit** (D1 view, populated row) | ~145 ns ±2.4% | **steady-state lookup**: `view.get(hwnd)` returning a cached `UiElementRef` (Arc<RwLock<HashMap>> read) — the post-watermark, frontier-released steady state |
+| **view_get_miss** (D1 view, missing key) | ~21 ns ±1.4% | steady-state miss path (HashMap miss) |
+| **view_update_latency** (engine-perception ingestion) | **~4.7 ms** ±1.2% | **end-to-end update**: `handle.push_focus(ev)` → `view.get(hwnd)` reflecting the new event's name. Includes cmd-channel hop, worker idle sleep (~1ms), DD reduce, inspect, RwLock write. `WATERMARK_SHIFT_MS=0` set in bench so frontier catches up promptly via idle-advance |
+| **uiaGetFocusedElement** (TS baseline, UIA tree walk) | p50 1.7 ms / p95 2.9 ms / **p99 11.2 ms** | `addon.uiaGetFocusedElement()` napi call (`benches/d1_ts_baseline.mjs`, 1000 iters + 100 warmup) — production `desktop_state`'s focus-fetch core (without MCP transport / JSON serialize) |
 
-**Acceptance ratio (ADR-008 D1 §11)**: TS p99 / view ≈ **75,000×** (target was 10×).
+**Acceptance interpretation (ADR-008 D1 §11)**:
 
-caveat: view side numbers are criterion's mean ± confidence interval, not true p99. With ~150ns mean and HashMap-read variance, p99 stays sub-µs; even at 10× mean (worst-case lock contention) it would be <1.5 µs vs TS p99 of 11.2 ms — ratio still > 7,000×. Re-run when D2 wires the view through `desktop_state` to confirm the numbers under MCP transport overhead.
+- **Steady-state lookup vs TS UIA fetch**: ratio ≈ **75,000×** (TS p99 11.2 ms / view ~145 ns) — TS / 10 acceptance dramatically met. This is the dominant production read pattern: agent calls `desktop_state` repeatedly to query focus, and each call hits the view's cached state instead of walking the UIA tree.
+- **Update latency vs TS UIA fetch**: ratio ≈ **2.4×** (TS p99 11.2 ms / view update ~4.7 ms) — modestly faster than TS, but **does not** beat by 1/10. This is bounded by the perception worker's 1 ms idle-sleep cycle (`worker_loop`'s `TryRecvError::Empty` branch). Tunable to <500 µs by reducing the sleep or switching to a parking primitive — see `docs/adr-008-d1-followups.md` §2.5.
+- **The view's value proposition**: in production, *reads dominate updates* by orders of magnitude, so the steady-state-lookup ratio is what materially compounds. Update latency at ~5 ms is comfortably within UI-responsiveness budgets (60 Hz frame ≈ 16.67 ms) but does not yet meet the aspirational `views-catalog` §3.1 SLO of "p99 < 1 ms"; that SLO is reaffirmed as a D2 follow-up in the followups doc.
+
+caveats:
+
+1. **Numbers are criterion's mean ± CI**, not strict p99. Multiplied by 10 for a worst-case bound, the steady-state ratio is still > 7,000×; for update latency the worst-case bound (~50 ms) would slip past TS p99 — D2 should extract true p99 from `target/criterion/.../sample.json`.
+2. **"Real L1 input" is not measured here**. The bench pushes through `FocusInputHandle::push_focus` directly, skipping the L1 `EventRing` + `src/l3_bridge/focus_pump.rs` decode hop. That hop is bounded by `recv_timeout(100ms)` + bincode decode (~µs) and exercised for *correctness* by `src/l3_bridge/mod.rs::lifecycle_tests::five_cycle_pipeline_spawn_push_shutdown`, but not under load. A true ring-to-view bench is deferred to D2 (where `desktop_state` will exercise the full path under MCP transport — see followups §2.3).
 
 ### 2.4 L4 Envelope Assembly (`benches/l4_envelope.rs`)
 

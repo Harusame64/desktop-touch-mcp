@@ -41,7 +41,20 @@ D2 で対応:
 - `benches/d1_ts_baseline.mjs` に `--with-point-query` mode 追加、`uiaGetFocusedAndPoint(0, 0)` で計測
 - D2 で `desktop_state` を view 経由置換した時の **整合 baseline** として両 mode 計測
 
-### 2.3 MCP transport / JSON-RPC overhead 込み bench
+### 2.3 「Real L1 input ベース」 bench (L1 EventRing → focus_pump → handle → view 全経路)
+
+現状 (D1-5):
+- 全 bench は `FocusInputHandle::push_focus` を直接呼ぶ — engine-perception 境界からの計測
+- L1 `EventRing` への push、`src/l3_bridge/focus_pump.rs` の broadcast subscribe + bincode decode + filter (UIA only) の hop は **bench 範囲外**
+- 該当 hop は `recv_timeout(100ms)` + bincode (~µs) で bounded、correctness は `src/l3_bridge/mod.rs::lifecycle_tests::five_cycle_pipeline_spawn_push_shutdown` で pin 済だが latency 下では未検証
+- D1 acceptance プラン§11 の「real L1 input ベース」文言は本 bench で実証されていない (D1-5 PR で narrow して honest 化済)
+- 制約: root crate `crate-type = ["cdylib"]` で bench 外部からの L1 ring 直 push は不可、引き当てには D2 で `desktop_state` view 経由置換時に MCP tool round-trip として測るのが筋
+
+D2 で対応:
+- `desktop_state` を view 経由実装 → MCP tool 経由 round-trip の両 path bench (`benches/d1_ts_baseline.mjs` を `desktop_state` MCP call に変更し、view 版と直接比較)
+- 真の production p99 (MCP transport + JSON serialize + napi + L1 ring push + focus_pump decode + view fetch) で再 acceptance
+
+### 2.4 MCP transport / JSON-RPC overhead 込み bench
 
 現状 (D1-5):
 - view 側は `view.get(hwnd)` を Rust から直接 call、napi boundary も MCP transport も除外
@@ -49,10 +62,23 @@ D2 で対応:
 - 「同条件比較」として acceptance は OK だが、production の MCP tool 経由 latency は別物
 
 D2 で対応:
-- `desktop_state` を view 経由実装 → MCP tool 経由 round-trip の両 path bench
-- 真の production p99 (MCP transport + JSON serialize + napi + view fetch) で再 acceptance
+- §2.3 と統合: `desktop_state` view 経由置換と同タイミングで MCP transport 込み bench も実装
 
-### 2.4 criterion features 整合 (skeleton 矛盾)
+### 2.5 worker_loop idle sleep tuning (update latency `p99 < 1ms` SLO 達成)
+
+現状 (D1-5):
+- `view_update_latency` 実測 ~4.7 ms、views-catalog §3.1 の SLO「p99 < 1ms」未達
+- ボトルネックは `crates/engine-perception/src/input.rs::worker_loop` の `TryRecvError::Empty` 分岐内 `thread::sleep(Duration::from_millis(1))`
+- `WATERMARK_SHIFT_MS=0` を設定済の bench で測ってもこの sleep に律速されている (push → 次の worker idle iteration までの待ちが ~0.5-1ms)
+- production の focus 変化頻度 (秒オーダ) に対して 5ms latency は十分許容範囲だが、SLO は未達
+
+D2 で対応:
+- option A: `thread::sleep` を `Duration::from_micros(100)` 等に短縮 (CPU 負荷増、~500µs latency 想定)
+- option B: cmd channel の `recv_timeout` で短期間 block + 待たせる (sleep 不要、cmd 到着で即起床、idle-advance は別 timer or 自前 schedule)
+- option C: parking primitive (`std::thread::park_timeout` + `unpark` から signal) で「cmd 到着または timer」両方を最短で起床
+- いずれも worker_loop の構造変更を伴うので、D2 で view-based `desktop_state` 実装と同時に再評価
+
+### 2.6 criterion features 整合 (skeleton 矛盾)
 
 現状:
 - `crates/engine-perception/Cargo.toml`: `criterion = { default-features = false, features = ["plotters", "rayon", "cargo_bench_support"] }`
