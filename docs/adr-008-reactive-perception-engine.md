@@ -312,7 +312,7 @@ pub trait DataflowAccelerator: Send + Sync {
 
 | Phase | 完了基準 |
 |---|---|
-| D1 | **完了 (2026-04-30)**: 1 view が incremental に更新 (PR #91 `2288333` `current_focused_element`)、bench で TS 版より latency 1/10 (D1-5 PR、view ~148ns vs TS p99 11.2ms = 75,000× 比)。D2 carry-over 項目: `docs/adr-008-d1-followups.md` |
+| D1 | **完了 (2026-04-30)**: 1 view が incremental に更新 (PR #91 `2288333` `current_focused_element`)、bench で TS 版より latency 1/10 (PR #92 D1-5、view ~148ns vs TS p99 11.2ms = 75,000× 比)。D2 carry-over 項目: `docs/adr-008-d1-followups.md` |
 | D2 | 既存 `desktop_state` を全部 view 経由に置換、tool 結果が同一 (回帰なし) |
 | D3 | `state_at(now-2s)` で過去 state が引ける、p95 latency < 5ms |
 | D4 | lens 再計算が fixed-point で settle、無限ループ自動検出 (max iter cap) |
