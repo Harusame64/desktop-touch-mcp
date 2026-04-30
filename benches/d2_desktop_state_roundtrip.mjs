@@ -58,7 +58,12 @@ if (!Number.isFinite(iterations) || iterations < 100) {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
-const serverPath = resolve(repoRoot, "dist", "server-windows.js");
+// Spawn `dist/index.js` (the platform-dispatching entry, matching what the
+// production launcher boots) rather than `dist/server-windows.js` directly.
+// On Windows the dispatch is a single extra `await import("./server-windows.js")`
+// that's amortised across warmup, so it doesn't perturb steady-state numbers
+// — but it keeps the bench honest about the real cold-start surface.
+const serverPath = resolve(repoRoot, "dist", "index.js");
 if (!existsSync(serverPath)) {
   console.error(`server entry not found: ${serverPath} — run \`npm run build\``);
   process.exit(2);

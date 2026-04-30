@@ -39,10 +39,12 @@ const WARMUP_ITERATIONS = 100;
 
 // ─── Arg parsing ─────────────────────────────────────────────────────────────
 // Accept `--with-point-query` (or `--point`) as a flag in any position; the
-// first remaining numeric arg is the iteration count.
+// first arg that parses as a finite number is the iteration count. (Defending
+// against future flags by `!startsWith("--")` would silently swallow typos
+// like `5O0` — finite-number check fails them at the iteration guard below.)
 const rawArgs = process.argv.slice(2);
 const withPointQuery = rawArgs.some((a) => a === "--with-point-query" || a === "--point");
-const numericArg = rawArgs.find((a) => !a.startsWith("--"));
+const numericArg = rawArgs.find((a) => Number.isFinite(Number(a)));
 const iterations = numericArg !== undefined ? Number(numericArg) : DEFAULT_ITERATIONS;
 if (!Number.isFinite(iterations) || iterations < 100) {
   console.error("usage: node d1_ts_baseline.mjs [iterations >= 100] [--with-point-query]");
@@ -69,17 +71,17 @@ for (let i = 0; i < WARMUP_ITERATIONS; i++) {
   await probe();
 }
 
-const samplesNs = new Float64Array(iterations);
+const samplesUs = new Float64Array(iterations);
 for (let i = 0; i < iterations; i++) {
   const t0 = performance.now();
   await probe();
   const t1 = performance.now();
-  samplesNs[i] = (t1 - t0) * 1000; // ms → µs (perf.now is double in ms)
+  samplesUs[i] = (t1 - t0) * 1000; // ms → µs (perf.now is double in ms)
 }
 
 // Sort for percentile extraction. (We avoid sort-in-place on the typed
 // array to keep the original samples available for any debug print.)
-const sorted = Array.from(samplesNs).sort((a, b) => a - b);
+const sorted = Array.from(samplesUs).sort((a, b) => a - b);
 const pct = (p) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))];
 const mean = sorted.reduce((s, v) => s + v, 0) / sorted.length;
 

@@ -69,16 +69,18 @@ caveats:
 
 #### D2-B-3 production gap baseline (`benches/d1_ts_baseline.mjs --with-point-query`)
 
-`desktop_state`'s non-Chromium focus path actually calls `uiaGetFocusedAndPoint(cursor.x, cursor.y)` (focus + element-at-cursor in one trip), not just `uiaGetFocusedElement()`. The D1-5 baseline above only measured the focus-only call, which is a strict lower bound on the production cost. D2-B-3 (`docs/adr-008-d1-followups.md` §2.2) lands a `--with-point-query` mode in `d1_ts_baseline.mjs` so the same harness can produce both numbers — pick the with-point one when comparing against D2 view-replaced paths.
+`desktop_state`'s non-Chromium focus path actually calls `uiaGetFocusedAndPoint(cursor.x, cursor.y)` (focus + element-at-cursor in one trip), not just `uiaGetFocusedElement()`. The D1-5 baseline above only measured the focus-only call, which is a strict lower bound on the production cost. D2-B-3 (`docs/adr-008-d1-followups.md` §2.2) lands a `--with-point-query` mode in `d1_ts_baseline.mjs` so the same harness can produce a with-point number — pick the with-point one when comparing against D2 view-replaced paths.
+
+Note on coordinate choice: the bench passes a fixed `(0, 0)` cursor (deterministic, doesn't depend on operator desktop state), which is a **production lower bound** rather than a true production-equivalent. Production's at-point query runs at the live cursor (`getCursorPos()`), where the UIA tree under the cursor can be deeper than the desktop root at `(0, 0)` — the real production cost is **at or above** the with-point number reported here. Use this baseline as the lower bound on the production gap.
 
 D2-B-3 measured numbers (local run, Windows 11 / Ryzen, release build, 2026-05-01):
 
 | Mode | command | p50 | p95 | **p99** |
 |---|---|---|---|---|
 | focus-only (D1-5 lower bound) | `node benches/d1_ts_baseline.mjs 1000` | 1.49 ms | 1.89 ms | **2.10 ms** |
-| with-point (production gap) | `node benches/d1_ts_baseline.mjs 1000 --with-point-query` | 7.41 ms | 8.78 ms | **9.58 ms** |
+| with-point @ (0,0) (production lower bound) | `node benches/d1_ts_baseline.mjs 1000 --with-point-query` | 7.41 ms | 8.78 ms | **9.58 ms** |
 
-The with-point baseline is **~4.6× heavier** than focus-only — D1 acceptance ratios computed against the with-point number stay comfortably above 1/10 (steady-state lookup ratio ≈ 66,000×, dominated by the `Arc<RwLock<HashMap>>` read cost).
+The with-point baseline is **~4.6× heavier** than focus-only — D1 acceptance ratios computed against the with-point number stay comfortably above 1/10 (steady-state lookup ratio ≈ 66,000×, dominated by the `Arc<RwLock<HashMap>>` read cost). Acceptance against the live-cursor production cost is even more favourable.
 
 #### D2-B-4 MCP transport round-trip (`benches/d2_desktop_state_roundtrip.mjs`)
 
