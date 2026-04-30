@@ -142,7 +142,7 @@ desktop-touch-mcp/
   - `shutdown_with_pending_events_drains` — 50 events pending でも 2s 以内に shutdown
   - `five_cycle_spawn_run_shutdown` — stress (state leak 検出)
   - `ui_element_ref_projection_is_lossy` — pivot field 漏洩防止 compile-time check
-- [x] **watermark caveat**: 全 push test は target event の後に「pump event」(wallclock_ms +200ms) を 1 件入れて frontier を target を超えて進める (default `DESKTOP_TOUCH_WATERMARK_SHIFT_MS=100ms` semantics に合わせた deterministic test 設計)
+- [x] **watermark caveat**: pump event (wallclock_ms +200ms) を入れる test は frontier を deterministic に進めるため。さらに **PR #91 P2 review** で `worker_loop` の idle 分岐に **idle frontier advance** を実装 — `last_event_anchor (wallclock_ms, Instant)` から real elapsed 時間で `latest_wallclock_ms` を projection、watermark 自動進行。real L1 capture が quiescent でも最新 focus event が view に materialise される (`quiescent_focus_eventually_materialises` test で pin)
 
 ### D1-5: bench harness (PR 4)
 - [ ] `benches/d1_view_latency.rs` 新規 (criterion crate ベース、または simple `#[bench]`)

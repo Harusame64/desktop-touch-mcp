@@ -319,35 +319,46 @@ mod lifecycle_tests {
             // (4c) D1-3 view assertion — the dataflow's reduce + inspect
             // updated the view's per-hwnd state. With 200ms-spaced
             // wallclocks (see push_focus_to_ring), seq 0 and 1 fall
-            // strictly below the input's watermark after seq 2's push
-            // (frontier = latest_wallclock - 100ms shift); seq 2 itself
-            // sits at the frontier and is not yet released. Wait for
-            // seq=0's hwnd to appear in the view.
+            // strictly below the input's watermark immediately after
+            // seq 2's push (frontier = latest_wallclock - 100ms
+            // shift). seq 2 itself starts at the frontier and is
+            // released slightly later by idle-advance (PR #91 P2).
+            // Wait for all 3 to appear.
             let h0 = 0xD000_u64 + cycle as u64 * 16;
             let h1 = 0xD000_u64 + cycle as u64 * 16 + 1;
+            let h2 = 0xD000_u64 + cycle as u64 * 16 + 2;
             let view_for_wait = view.clone();
-            let h0_settled = {
+            let all_settled = {
                 let deadline = Instant::now() + Duration::from_millis(500);
-                let mut got = view_for_wait.get(h0);
+                let mut got = false;
                 while Instant::now() < deadline {
-                    got = view_for_wait.get(h0);
-                    if got.is_some() {
+                    if view_for_wait.get(h0).is_some()
+                        && view_for_wait.get(h1).is_some()
+                        && view_for_wait.get(h2).is_some()
+                    {
+                        got = true;
                         break;
                     }
                     std::thread::sleep(Duration::from_millis(5));
                 }
                 got
             };
-            let elem = h0_settled
-                .unwrap_or_else(|| panic!("cycle {}: view.get(h0) must return live row", cycle));
-            assert_eq!(elem.window_title, format!("LifecycleWin{}", cycle));
-            assert_eq!(elem.name, format!("Cyc{}Seq{}", cycle, 0));
-            // h1 is also released (its wallclock is 200ms before
-            // seq=2, watermark crosses it).
-            let elem1 = view
-                .get(h1)
-                .unwrap_or_else(|| panic!("cycle {}: view.get(h1) must return live row", cycle));
+            assert!(
+                all_settled,
+                "cycle {}: view did not settle 3 hwnds (idle-advance): \
+                 h0={:?} h1={:?} h2={:?}",
+                cycle,
+                view.get(h0).map(|e| e.name),
+                view.get(h1).map(|e| e.name),
+                view.get(h2).map(|e| e.name),
+            );
+            let elem0 = view.get(h0).expect("h0 live");
+            assert_eq!(elem0.window_title, format!("LifecycleWin{}", cycle));
+            assert_eq!(elem0.name, format!("Cyc{}Seq{}", cycle, 0));
+            let elem1 = view.get(h1).expect("h1 live");
             assert_eq!(elem1.name, format!("Cyc{}Seq{}", cycle, 1));
+            let elem2 = view.get(h2).expect("h2 live");
+            assert_eq!(elem2.name, format!("Cyc{}Seq{}", cycle, 2));
 
             // Drop the original handle so its tx clone is released;
             // sink still holds its own clone, so the worker channel

@@ -44,6 +44,25 @@
 //! would panic on `update_at` with a time below the session time —
 //! we guard before calling).
 //!
+//! ## Idle frontier advance (PR #91 P2)
+//!
+//! Real L1 capture has no heartbeat: when a user focuses a window
+//! and stops, no further `UiaFocusChanged` events arrive. Without
+//! intervention the dataflow's input frontier would sit at
+//! `(latest_wallclock_ms - shift, 0)` forever, leaving the most
+//! recent event at the frontier and never released — the view would
+//! be stale for the *current* focus, the very state it's meant to
+//! materialise.
+//!
+//! We solve this by anchoring the most recent event's wallclock_ms
+//! to a real `Instant` and, in the idle branch of the worker loop,
+//! projecting `latest_wallclock_ms` forward by the real elapsed time
+//! since that anchor. The watermark advances accordingly. In
+//! production, where L1 events carry monotone real-time wallclocks,
+//! this projection is always ≤ a legitimate future event's
+//! wallclock_ms, so it never causes valid later events to appear
+//! back-dated relative to the frontier.
+//!
 //! ## Lifecycle
 //!
 //! [`spawn_perception_worker`] returns
@@ -310,6 +329,11 @@ fn worker_loop(
 ) {
     let shift_ms = watermark_shift_ms();
 
+    // `less_equal` for the LogicalTime guard / watermark advance is
+    // provided by `timely::order::PartialOrder`. Bring it into scope
+    // for both the cmd path and the idle-advance branch.
+    use timely::order::PartialOrder;
+
     timely::execute_directly(move |worker| {
         // D1-3: build the dataflow with the input collection +
         // `current_focused_element` view wired in. The InputSession
@@ -325,6 +349,19 @@ fn worker_loop(
         let mut latest_wallclock_ms: u64 = 0;
         let mut current_watermark: LogicalTime = LogicalTime::new(0, 0);
 
+        // Anchor for idle frontier advance (Codex PR #91 P2): when no
+        // further events arrive after a focus change, real L1 input
+        // has no built-in heartbeat, so without a synthetic
+        // wall-clock-driven advance the latest event would sit at the
+        // input frontier forever and never be released by the
+        // dataflow's reduce. We project `latest_wallclock_ms` forward
+        // in the idle branch using real elapsed time since the last
+        // received event, mirroring real-time clock progression.
+        //
+        // Holds (anchor_wallclock_ms, anchor_instant) of the most
+        // recent event whose wallclock advanced `latest_wallclock_ms`.
+        let mut last_event_anchor: Option<(u64, Instant)> = None;
+
         loop {
             match rx.try_recv() {
                 Ok(Cmd::PushFocus(ev)) => {
@@ -334,7 +371,6 @@ fn worker_loop(
                     // Our session_time tracks `current_watermark`,
                     // so out-of-order events older than the frontier
                     // would panic. Drop them with a log instead.
-                    use timely::order::PartialOrder;
                     if !current_watermark.less_equal(&event_time) {
                         eprintln!(
                             "[perception-worker] out-of-order event dropped: \
@@ -348,6 +384,7 @@ fn worker_loop(
                     // Frontier advances on monotone `wallclock_ms`.
                     if ev.wallclock_ms > latest_wallclock_ms {
                         latest_wallclock_ms = ev.wallclock_ms;
+                        last_event_anchor = Some((ev.wallclock_ms, Instant::now()));
                         let new_wm = watermark_for(latest_wallclock_ms, shift_ms);
                         if current_watermark.less_equal(&new_wm)
                             && current_watermark != new_wm
@@ -364,6 +401,35 @@ fn worker_loop(
                 }
                 Ok(Cmd::Shutdown) => break,
                 Err(TryRecvError::Empty) => {
+                    // Idle frontier advance (PR #91 P2). Without this,
+                    // a single focus event followed by quiescent input
+                    // (the common case after a user focuses an app and
+                    // stops) leaves the event at the frontier forever
+                    // — the view never materialises the current focus.
+                    //
+                    // Project the latest seen event's wallclock_ms
+                    // forward by real elapsed time since it was
+                    // received. In production, real L1 events arrive
+                    // with monotonic real-time wallclocks, so a future
+                    // event's wallclock will always be ≥ this
+                    // projection — the synthesis can never make a
+                    // legitimate later event look back-dated.
+                    if let Some((anchor_wc, anchor_inst)) = last_event_anchor {
+                        let elapsed = anchor_inst.elapsed().as_millis() as u64;
+                        let projected = anchor_wc.saturating_add(elapsed);
+                        if projected > latest_wallclock_ms {
+                            latest_wallclock_ms = projected;
+                            let new_wm =
+                                watermark_for(latest_wallclock_ms, shift_ms);
+                            if current_watermark.less_equal(&new_wm)
+                                && current_watermark != new_wm
+                            {
+                                current_watermark = new_wm.clone();
+                                input.advance_to(new_wm);
+                                input.flush();
+                            }
+                        }
+                    }
                     worker.step();
                     thread::sleep(Duration::from_millis(1));
                 }
@@ -506,6 +572,43 @@ mod tests {
         // Third push extends the frontier
         handle.push_focus(make_event(3, 1_000_500, 0));
         worker.shutdown(Duration::from_secs(2)).expect("shutdown");
+    }
+
+    #[test]
+    fn idle_advance_progresses_latest_wallclock() {
+        // PR #91 P2 regression: a single push followed by quiescent
+        // input must still cause the worker to project
+        // `latest_wallclock_ms` forward and advance the watermark via
+        // the idle branch. We can't observe the watermark directly,
+        // but the view (D1-3) reflects whether the event was released
+        // — see the integration counterpart
+        // `quiescent_focus_eventually_materialises`. This in-file
+        // test pins the *cmd path* (not the view): one push, no
+        // shutdown signal, and we wait for the worker to drain the
+        // single Cmd::PushFocus from the channel. Without idle
+        // progression the worker would still drain (cmd channel work
+        // is independent of frontier), so this test only guards
+        // against a regression that breaks the idle branch entirely
+        // (e.g. an early `break` or a panic in the projection code).
+        let (worker, handle, _view) = spawn_perception_worker();
+        handle.push_focus(make_event(1, 1_700_000_000_000, 0));
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while worker.processed_count() < 1 {
+            if Instant::now() >= deadline {
+                panic!(
+                    "worker did not process the single push: processed_count={}",
+                    worker.processed_count()
+                );
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        // Allow at least 150ms of idle so the projection runs many
+        // times. The worker must remain healthy throughout.
+        thread::sleep(Duration::from_millis(150));
+        assert_eq!(worker.processed_count(), 1, "no spurious processing");
+        worker
+            .shutdown(Duration::from_secs(2))
+            .expect("shutdown after idle");
     }
 
     #[test]

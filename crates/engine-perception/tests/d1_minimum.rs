@@ -14,17 +14,25 @@
 //!     → inspect → view.apply_diff → view.get / snapshot
 //! ```
 //!
-//! ## Watermark caveat
+//! ## Watermark + idle-advance semantics
 //!
 //! `worker_loop` advances the input frontier to `latest_wallclock_ms -
-//! 100ms` (default `DESKTOP_TOUCH_WATERMARK_SHIFT_MS`). For an event
-//! at logical time `(t, 0)` to be released by DD's reduce, the
-//! frontier must advance strictly past it — i.e. some later event
-//! must land with `wallclock_ms > t + 100`. Tests below space their
-//! events ≥ 200ms apart so each push advances the frontier past the
-//! preceding push, while leaving the *most recent* push at the
-//! frontier (deliberately not asserted on until a follow-up "pump"
-//! event arrives).
+//! 100ms` (default `DESKTOP_TOUCH_WATERMARK_SHIFT_MS`). Without any
+//! help, that means the most recent event sits at the frontier and is
+//! never released until a later event arrives. PR #91 P2 added an
+//! **idle frontier advance**: the worker projects
+//! `latest_wallclock_ms` forward by real elapsed time since the most
+//! recent event was received, so the latest focus event is eventually
+//! released even when L1 input goes quiescent.
+//!
+//! Tests below either:
+//!
+//! - rely on idle-advance alone (`quiescent_focus_eventually_materialises`),
+//!   waiting up to `SETTLE_TIMEOUT` (500ms) for the projection to
+//!   carry the watermark past the event, or
+//! - inject a "pump" event with wallclock_ms ≥ target + shift_ms so
+//!   the frontier advances explicitly. Pump-driven tests release
+//!   faster (no idle wait needed) and pin event ordering deterministic.
 //!
 //! ## Determinism
 //!
@@ -95,7 +103,8 @@ fn single_focus_event_appears_in_view() {
     // Event we want to verify (target).
     handle.push_focus(focus_event(1, 0xAAAA, base, "Edit", "Notepad"));
     // Watermark pump: 200ms later, advances the input frontier past
-    // the target event so the dataflow releases the target's row.
+    // the target event so the dataflow releases the target's row
+    // promptly (without waiting on idle-advance to project forward).
     handle.push_focus(focus_event(2, 0xBBBB, base + 200, "Pump", "PumpWin"));
 
     assert!(
@@ -111,9 +120,41 @@ fn single_focus_event_appears_in_view() {
     assert_eq!(elem.window_title, "Notepad");
     assert_eq!(elem.control_type, 50000);
     assert_eq!(elem.automation_id, Some("auto-1".into()));
+    // We deliberately do NOT assert on the pump hwnd's visibility:
+    // with idle-advance enabled, the pump itself eventually appears
+    // too, on a non-deterministic schedule.
 
-    // Pump's hwnd is at the frontier — not yet released.
-    assert!(view.get(0xBBBB).is_none(), "pump event should still be at frontier");
+    worker.shutdown(Duration::from_secs(2)).expect("shutdown");
+}
+
+#[test]
+fn quiescent_focus_eventually_materialises() {
+    // **PR #91 P2 regression test**. Without idle-advance, a single
+    // focus event followed by quiescent input never materialises in
+    // the view because the input frontier only advances on later
+    // events, and there are none. With idle-advance, the worker
+    // projects `latest_wallclock_ms` forward by real elapsed time and
+    // the watermark catches up, releasing the event. SETTLE_TIMEOUT
+    // (500ms) is well past the 100ms watermark shift plus
+    // worker-step jitter (~1ms per loop), so idle-advance has many
+    // opportunities to fire before the timeout.
+    let (worker, handle, view) = spawn_perception_worker();
+    let base = 1_700_000_000_000u64;
+
+    handle.push_focus(focus_event(1, 0xCAFE, base, "QuiescentEdit", "QuiescentApp"));
+    // No further events — relies entirely on idle-advance.
+
+    assert!(
+        wait_for_view(&view, SETTLE_TIMEOUT, |v| v.get(0xCAFE).is_some()),
+        "quiescent focus event must materialise via idle-advance \
+         within {:?}; snapshot={:?}",
+        SETTLE_TIMEOUT,
+        view.snapshot()
+    );
+
+    let elem = view.get(0xCAFE).expect("hwnd=0xCAFE must be live");
+    assert_eq!(elem.name, "QuiescentEdit");
+    assert_eq!(elem.window_title, "QuiescentApp");
 
     worker.shutdown(Duration::from_secs(2)).expect("shutdown");
 }
