@@ -44,11 +44,33 @@
 //! would panic on `update_at` with a time below the session time —
 //! we guard before calling).
 //!
+//! ## Idle frontier advance (PR #91 P2)
+//!
+//! Real L1 capture has no heartbeat: when a user focuses a window
+//! and stops, no further `UiaFocusChanged` events arrive. Without
+//! intervention the dataflow's input frontier would sit at
+//! `(latest_wallclock_ms - shift, 0)` forever, leaving the most
+//! recent event at the frontier and never released — the view would
+//! be stale for the *current* focus, the very state it's meant to
+//! materialise.
+//!
+//! We solve this by anchoring the most recent event's wallclock_ms
+//! to a real `Instant` and, in the idle branch of the worker loop,
+//! projecting `latest_wallclock_ms` forward by the real elapsed time
+//! since that anchor. The watermark advances accordingly. In
+//! production, where L1 events carry monotone real-time wallclocks,
+//! this projection is always ≤ a legitimate future event's
+//! wallclock_ms, so it never causes valid later events to appear
+//! back-dated relative to the frontier.
+//!
 //! ## Lifecycle
 //!
-//! [`spawn_perception_worker`] returns `(PerceptionWorker, FocusInputHandle)`.
+//! [`spawn_perception_worker`] returns
+//! `(PerceptionWorker, FocusInputHandle, CurrentFocusedElementView)`.
 //! Drop the handle (or all clones thereof) and call
-//! `PerceptionWorker::shutdown(timeout)` to stop the thread.
+//! `PerceptionWorker::shutdown(timeout)` to stop the thread. The view
+//! handle (D1-3) is independent of the worker's lifetime — it remains
+//! readable after shutdown but stops receiving updates.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -61,6 +83,7 @@ use serde::{Deserialize, Serialize};
 use differential_dataflow::input::{Input, InputSession};
 
 use crate::time::LogicalTime;
+use crate::views::current_focused_element::{self, CurrentFocusedElementView};
 
 /// Default per-worker command-channel capacity. Sized for UIA focus
 /// rate (< 10 events/sec under human use); the bridge sleeps for at
@@ -260,18 +283,27 @@ fn watermark_for(latest_wallclock_ms: u64, shift_ms: u64) -> LogicalTime {
     LogicalTime::new(latest_wallclock_ms.saturating_sub(shift_ms), 0)
 }
 
-/// Spawn the timely worker thread + return a paired
-/// `(PerceptionWorker, FocusInputHandle)`. The worker owns the
-/// `differential_dataflow::input::InputSession`; the handle is the
-/// bridge's seam (`Arc::new(handle): Arc<dyn L1Sink>`).
-pub fn spawn_perception_worker() -> (PerceptionWorker, FocusInputHandle) {
+/// Spawn the timely worker thread + return a triple
+/// `(PerceptionWorker, FocusInputHandle, CurrentFocusedElementView)`.
+///
+/// The worker owns the `differential_dataflow::input::InputSession`
+/// and the dataflow graph; the handle is the bridge's seam
+/// (`Arc::new(handle): Arc<dyn L1Sink>`); the view is the read-only
+/// reader-side of the `current_focused_element` materialised state
+/// (D1-3). The view handle is created on the parent thread and cloned
+/// into the worker so the dataflow's inspect callback can write to it.
+pub fn spawn_perception_worker(
+) -> (PerceptionWorker, FocusInputHandle, CurrentFocusedElementView) {
     let (tx, rx) = bounded::<Cmd>(CMD_CHANNEL_CAPACITY);
     let processed_count = Arc::new(AtomicU64::new(0));
     let processed_clone = Arc::clone(&processed_count);
 
+    let view = CurrentFocusedElementView::new();
+    let view_for_worker = view.clone();
+
     let join = thread::Builder::new()
         .name("l3-perception".into())
-        .spawn(move || worker_loop(rx, processed_clone))
+        .spawn(move || worker_loop(rx, processed_clone, view_for_worker))
         .expect("spawn l3-perception thread");
 
     let worker = PerceptionWorker {
@@ -280,7 +312,7 @@ pub fn spawn_perception_worker() -> (PerceptionWorker, FocusInputHandle) {
         processed_count,
     };
     let handle = FocusInputHandle { tx };
-    (worker, handle)
+    (worker, handle, view)
 }
 
 /// Body of the timely worker thread.
@@ -290,21 +322,45 @@ pub fn spawn_perception_worker() -> (PerceptionWorker, FocusInputHandle) {
 /// closure returns, `execute_directly` drains remaining work
 /// (`while worker.has_dataflows() { worker.step_or_park(None); }`)
 /// before the function returns.
-fn worker_loop(rx: Receiver<Cmd>, processed: Arc<AtomicU64>) {
+fn worker_loop(
+    rx: Receiver<Cmd>,
+    processed: Arc<AtomicU64>,
+    view: CurrentFocusedElementView,
+) {
     let shift_ms = watermark_shift_ms();
 
+    // `less_equal` for the LogicalTime guard / watermark advance is
+    // provided by `timely::order::PartialOrder`. Bring it into scope
+    // for both the cmd path and the idle-advance branch.
+    use timely::order::PartialOrder;
+
     timely::execute_directly(move |worker| {
-        // D1-2: build a minimal dataflow with just an input
-        // collection. D1-3 adds the `current_focused_element`
-        // operator graph by extending this closure.
+        // D1-3: build the dataflow with the input collection +
+        // `current_focused_element` view wired in. The InputSession
+        // returned out of the closure is the seam through which the
+        // cmd loop below feeds events.
         let mut input: InputSession<LogicalTime, FocusEvent, isize> =
             worker.dataflow::<LogicalTime, _, _>(|scope| {
-                let (input, _stream) = scope.new_collection::<FocusEvent, isize>();
+                let (input, stream) = scope.new_collection::<FocusEvent, isize>();
+                current_focused_element::build(stream, view.clone());
                 input
             });
 
         let mut latest_wallclock_ms: u64 = 0;
         let mut current_watermark: LogicalTime = LogicalTime::new(0, 0);
+
+        // Anchor for idle frontier advance (Codex PR #91 P2): when no
+        // further events arrive after a focus change, real L1 input
+        // has no built-in heartbeat, so without a synthetic
+        // wall-clock-driven advance the latest event would sit at the
+        // input frontier forever and never be released by the
+        // dataflow's reduce. We project `latest_wallclock_ms` forward
+        // in the idle branch using real elapsed time since the last
+        // received event, mirroring real-time clock progression.
+        //
+        // Holds (anchor_wallclock_ms, anchor_instant) of the most
+        // recent event whose wallclock advanced `latest_wallclock_ms`.
+        let mut last_event_anchor: Option<(u64, Instant)> = None;
 
         loop {
             match rx.try_recv() {
@@ -315,7 +371,6 @@ fn worker_loop(rx: Receiver<Cmd>, processed: Arc<AtomicU64>) {
                     // Our session_time tracks `current_watermark`,
                     // so out-of-order events older than the frontier
                     // would panic. Drop them with a log instead.
-                    use timely::order::PartialOrder;
                     if !current_watermark.less_equal(&event_time) {
                         eprintln!(
                             "[perception-worker] out-of-order event dropped: \
@@ -329,6 +384,7 @@ fn worker_loop(rx: Receiver<Cmd>, processed: Arc<AtomicU64>) {
                     // Frontier advances on monotone `wallclock_ms`.
                     if ev.wallclock_ms > latest_wallclock_ms {
                         latest_wallclock_ms = ev.wallclock_ms;
+                        last_event_anchor = Some((ev.wallclock_ms, Instant::now()));
                         let new_wm = watermark_for(latest_wallclock_ms, shift_ms);
                         if current_watermark.less_equal(&new_wm)
                             && current_watermark != new_wm
@@ -345,6 +401,35 @@ fn worker_loop(rx: Receiver<Cmd>, processed: Arc<AtomicU64>) {
                 }
                 Ok(Cmd::Shutdown) => break,
                 Err(TryRecvError::Empty) => {
+                    // Idle frontier advance (PR #91 P2). Without this,
+                    // a single focus event followed by quiescent input
+                    // (the common case after a user focuses an app and
+                    // stops) leaves the event at the frontier forever
+                    // — the view never materialises the current focus.
+                    //
+                    // Project the latest seen event's wallclock_ms
+                    // forward by real elapsed time since it was
+                    // received. In production, real L1 events arrive
+                    // with monotonic real-time wallclocks, so a future
+                    // event's wallclock will always be ≥ this
+                    // projection — the synthesis can never make a
+                    // legitimate later event look back-dated.
+                    if let Some((anchor_wc, anchor_inst)) = last_event_anchor {
+                        let elapsed = anchor_inst.elapsed().as_millis() as u64;
+                        let projected = anchor_wc.saturating_add(elapsed);
+                        if projected > latest_wallclock_ms {
+                            latest_wallclock_ms = projected;
+                            let new_wm =
+                                watermark_for(latest_wallclock_ms, shift_ms);
+                            if current_watermark.less_equal(&new_wm)
+                                && current_watermark != new_wm
+                            {
+                                current_watermark = new_wm.clone();
+                                input.advance_to(new_wm);
+                                input.flush();
+                            }
+                        }
+                    }
                     worker.step();
                     thread::sleep(Duration::from_millis(1));
                 }
@@ -378,7 +463,7 @@ mod tests {
 
     #[test]
     fn spawn_and_shutdown_clean() {
-        let (worker, _handle) = spawn_perception_worker();
+        let (worker, _handle, _view) = spawn_perception_worker();
         worker
             .shutdown(Duration::from_secs(2))
             .expect("shutdown clean");
@@ -386,7 +471,7 @@ mod tests {
 
     #[test]
     fn push_focus_roundtrip_smoke() {
-        let (worker, handle) = spawn_perception_worker();
+        let (worker, handle, _view) = spawn_perception_worker();
         for i in 0..3 {
             handle.push_focus(make_event(i, 1_000_000 + i, 0));
         }
@@ -401,7 +486,7 @@ mod tests {
         // Cmd::PushFocus from the channel, not just acknowledges
         // shutdown. Without this assertion the lifecycle test
         // could regress silently if the worker_loop body is gutted.
-        let (worker, handle) = spawn_perception_worker();
+        let (worker, handle, _view) = spawn_perception_worker();
         for i in 0..5 {
             handle.push_focus(make_event(i, 5_000_000 + i, 0));
         }
@@ -423,7 +508,7 @@ mod tests {
     #[test]
     fn five_cycle_spawn_shutdown() {
         for cycle in 0..5 {
-            let (worker, handle) = spawn_perception_worker();
+            let (worker, handle, _view) = spawn_perception_worker();
             handle.push_focus(make_event(cycle, 2_000_000 + cycle, 0));
             worker
                 .shutdown(Duration::from_secs(2))
@@ -433,7 +518,7 @@ mod tests {
 
     #[test]
     fn push_after_shutdown_silently_drops() {
-        let (worker, handle) = spawn_perception_worker();
+        let (worker, handle, _view) = spawn_perception_worker();
         worker.shutdown(Duration::from_secs(2)).expect("shutdown");
         // After worker is gone, the receiver is dropped and the
         // channel disconnects. push_focus must NOT panic.
@@ -444,7 +529,7 @@ mod tests {
     fn l1sink_object_safety() {
         // Trait must be object-safe so the bridge can hold
         // `Arc<dyn L1Sink>` without naming the concrete type.
-        let (worker, handle) = spawn_perception_worker();
+        let (worker, handle, _view) = spawn_perception_worker();
         let _h: Arc<dyn L1Sink> = Arc::new(handle);
         worker.shutdown(Duration::from_secs(2)).expect("shutdown");
     }
@@ -477,7 +562,7 @@ mod tests {
         //
         // We can't observe the dataflow output yet (D1-3), but we
         // can confirm the worker doesn't crash on a back-dated push.
-        let (worker, handle) = spawn_perception_worker();
+        let (worker, handle, _view) = spawn_perception_worker();
         // First push sets latest_wallclock_ms = 1_000_000
         handle.push_focus(make_event(1, 1_000_000, 0));
         // Sleep so the worker definitely processed the first push
@@ -490,11 +575,48 @@ mod tests {
     }
 
     #[test]
+    fn idle_advance_progresses_latest_wallclock() {
+        // PR #91 P2 regression: a single push followed by quiescent
+        // input must still cause the worker to project
+        // `latest_wallclock_ms` forward and advance the watermark via
+        // the idle branch. We can't observe the watermark directly,
+        // but the view (D1-3) reflects whether the event was released
+        // — see the integration counterpart
+        // `quiescent_focus_eventually_materialises`. This in-file
+        // test pins the *cmd path* (not the view): one push, no
+        // shutdown signal, and we wait for the worker to drain the
+        // single Cmd::PushFocus from the channel. Without idle
+        // progression the worker would still drain (cmd channel work
+        // is independent of frontier), so this test only guards
+        // against a regression that breaks the idle branch entirely
+        // (e.g. an early `break` or a panic in the projection code).
+        let (worker, handle, _view) = spawn_perception_worker();
+        handle.push_focus(make_event(1, 1_700_000_000_000, 0));
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while worker.processed_count() < 1 {
+            if Instant::now() >= deadline {
+                panic!(
+                    "worker did not process the single push: processed_count={}",
+                    worker.processed_count()
+                );
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        // Allow at least 150ms of idle so the projection runs many
+        // times. The worker must remain healthy throughout.
+        thread::sleep(Duration::from_millis(150));
+        assert_eq!(worker.processed_count(), 1, "no spurious processing");
+        worker
+            .shutdown(Duration::from_secs(2))
+            .expect("shutdown after idle");
+    }
+
+    #[test]
     fn watermark_exceeding_shift_dropped() {
         // event_time = (T - 500ms, 0) when latest = T, shift = 100ms
         // → watermark = (T - 100ms, 0), and event_time < watermark
         // → dropped with log. Test verifies the worker survives.
-        let (worker, handle) = spawn_perception_worker();
+        let (worker, handle, _view) = spawn_perception_worker();
         handle.push_focus(make_event(1, 2_000_000, 0));
         thread::sleep(Duration::from_millis(50));
         // 500ms back-dated — way outside the 100ms watermark default

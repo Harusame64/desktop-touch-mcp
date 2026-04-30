@@ -312,7 +312,7 @@ pub trait DataflowAccelerator: Send + Sync {
 
 | Phase | 完了基準 |
 |---|---|
-| D1 | 1 view が incremental に更新、bench で TS 版より latency 1/10 |
+| D1 | 1 view が incremental に更新、bench で TS 版より latency 1/10 — view (`current_focused_element`) は **D1-3 で実装完了** (`crates/engine-perception/src/views/current_focused_element.rs`、PR #91 想定)、bench は **D1-5 で実施** |
 | D2 | 既存 `desktop_state` を全部 view 経由に置換、tool 結果が同一 (回帰なし) |
 | D3 | `state_at(now-2s)` で過去 state が引ける、p95 latency < 5ms |
 | D4 | lens 再計算が fixed-point で settle、無限ループ自動検出 (max iter cap) |
