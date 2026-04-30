@@ -776,7 +776,8 @@ D1 `current_focused_element` view は `hwnd` を key にした per-hwnd state (f
 ### D2-G: ドキュメント整合 + メモリ更新 (PR 14)
 
 - [ ] `docs/views-catalog.md` §3.2 を実装した view ごとに `Implemented + Benched` flip + 実測値追記
-- [ ] **ADR-008 §8 D2 行を「focus path 完了、modal / attention は D4 carry-over」明記**で更新
+- [ ] **ADR-008 §8 D2 行を「focus path 完了、modal / attention は D4 carry-over」明記**で更新 (※ PR #99 で先行更新済、D2-G では最終確定文言で再確認のみ)
+- [ ] **本 plan H1 タイトル (L1) を「主要 view 3 + 1 carry-over」表記に更新** (D2-C0 ゲート確定 PR #99 で 4 → 3 縮小、§intro L16 も同様)。これは plan 内ローカル枠組み記述で SSOT (§3.2 / §4 / §8 / §11.1) ではないため D2-C0 PR #99 では先行更新せず carry-over、D2-G で最終整合
 - [ ] 本 plan §11 Acceptance を全 [x] flip
 - [ ] `docs/adr-008-d1-followups.md` の対応項目を Resolved 化 (§3.5 のみ carry-over)
 - [ ] memory `project_adr008_d2_done.md` 新規 + `MEMORY.md` index 更新
@@ -1207,7 +1208,7 @@ D2-E0 / D2-E と整合: **`Arranged` を外部 struct に保持せず、同 `wor
 - [ ] cargo test --workspace 全 pass、追加 unit + integration test 全 pass
 - [ ] vitest `npm run test:capture` 0 regression
 - [ ] 各 phase 完了で **Opus phase-boundary review** 実施、指摘ゼロまで反復 (強制命令 3)
-- [ ] D2-G で docs / memory 整合: views-catalog §3.2 の Implemented view 全て flip、ADR-008 §8 D2 を「focus path 完了、modal/attention は D4 carry-over」明記、D1-followups §3 を Resolved 化 (§3.5 除く)
+- [ ] D2-G で docs / memory 整合: views-catalog §3.2 の Implemented view 全て flip、ADR-008 §8 D2 を「focus path 完了、modal/attention は D4 carry-over」明記 (※ PR #99 で先行済、最終確定文言で再確認のみ)、本 plan H1 タイトル (L1) + §intro (L16) の「主要 view 4」古文言を 3 + 1 carry-over 表記に更新、D1-followups §3 を Resolved 化 (§3.5 除く)
 
 ---
 
