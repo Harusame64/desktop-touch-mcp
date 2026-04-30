@@ -1,6 +1,6 @@
 # ADR-008 D2 — 主要 view 4 つ + desktop_state focus path view 経由置換プラン
 
-- Status: **Draft v3.2 (起草中、Opus、2026-04-30) — Codex review v1 + v2 + v3 + v4 反映済**
+- Status: **Draft v3.3 (起草中、Opus、2026-04-30) — Codex review v1 + v2 + v3 + v4 + v6 反映済 + Opus phase-boundary review (D2-0 phase) 完了**
 - Date: 2026-04-30
 - Authors: Claude (Opus, max effort) — `desktop-touch-mcp`
 - 親 ADR: `docs/adr-008-reactive-perception-engine.md` §4 D2 / §8 D2
@@ -47,6 +47,22 @@ Codex から P1×1 / P2×2 の指摘。要点:
 - **P2-11 (§7 古い記述)**: §7 が `current_focused_element_arranged.import(scope)` の v2 古い記述のまま — **v3 D2-E0 / D2-E と同じ「同 scope 内 borrow」設計に修正** (§7)
 
 D2-B の最初に diff-bookkeeping materialization test を置く Codex 推奨も採用 (§5.bis.4 末尾)。共通 helper 抽出 (D1 D2-F-1 と D2-B-2 の共通化) は §10 OQ #13 で記録。
+
+### v3.3 (Codex review v6 反映、PR #94 review、2026-04-30)
+PR #94 (D2-0 PR-α) に対する Codex round 6 で **P1 級バグ** 発見:
+
+- **P1-7 (timeout 後 degraded pipeline)**: v3.2 設計の `PerceptionPipeline.{worker, pump}: Mutex<Option<...>>` は consume-shutdown を `take()` 後に呼ぶ shape。pump or worker の `shutdown` が Err を返すと、その leg は `None` として永久に失われる → slot は元 Arc retain (Codex v4 P1-6) しているが、その Arc の中身が degraded (片肺 or 両肺欠損)。次回 shutdown は `None` leg を no-op で `Ok(())` 返却 → slot clear → `ensure_perception_pipeline()` が新 worker 生成 → **二重 worker spawn の北極星違反**
+
+**修正 (Codex round 6 + 別ライン Codex 通知 反映)**:
+1. **`PerceptionWorker` / `FocusPump` 自体を retain-on-timeout 型に refactor**: `join: Mutex<Option<JoinHandle<()>>>` を持ち、`shutdown_with_timeout(&self, timeout) -> Result<...>` を新設。L1 `worker.rs:174-194` と完全同型で、timeout 失敗時は handle を retain → 後続 `shutdown_with_timeout(longer)` で再 try 可能
+2. **`PerceptionPipeline` を `Mutex` 不要に簡素化**: `worker: PerceptionWorker / pump: FocusPump` を直接保持、`shutdown_with_timeout(&self, timeout)` は `pump.shutdown_with_timeout(half) → worker.shutdown_with_timeout(half)` の薄い委譲のみ
+3. **既存の consume-form `shutdown(self, timeout)` も互換維持** (test 互換のため、内部で `shutdown_with_timeout` に delegate)
+4. **OQ #14 carry-over だった 2 timeout 失敗 test を本実装** (refactor で fixture 不要化、`Duration::from_nanos(1)` で deadline 強制超過):
+   - `shutdown_timeout_failure_retains_slot`: 1ns timeout → Err → slot retain → 同 Arc → 長 timeout 再 try で Ok
+   - `pipeline_recovers_from_partial_shutdown`: 1ns timeout 失敗 → 長 timeout retry で完了 (両 leg JoinHandle retain で resume polling)
+5. OQ #14 を Resolved 化、§2 D2-A-0 carry-over 解消
+
+これで「shutdown 失敗時に二重 worker を作らない」北極星が **設計 + 実装 + test 3 重で pin** された。L1 layer と完全同型。
 
 ### v3.2 (Codex review v4 反映、2026-04-30)
 Codex から P1×1 / P2×2 の指摘。要点:
@@ -118,43 +134,64 @@ ADR-008 §4 / §8 の D2 行は本書 D2-G で「focus path 完了、modal / att
 
 - [ ] `src/l3_bridge/mod.rs` に **`PERCEPTION_SLOT: OnceLock<Mutex<Option<Arc<PerceptionPipeline>>>>`** を新設 — 既存 `L1_SLOT: OnceLock<Mutex<Option<Arc<L1Inner>>>>` (`src/l1_capture/worker.rs:227`) と完全同型
   - `OnceLock<T>` 直置きでは shutdown 後の slot reset が不可 (Codex v2 P2-7)。既存 lib 全体で採用済の `OnceLock<Mutex<Option<Arc<T>>>>` パターンに合流
-- [ ] **`PerceptionPipeline` の内部 thread/handle は `Mutex<Option<...>>` で take 可能に保つ** (Codex v3 P2-2 反映、Implementation refinement 2026-04-30):
+- [x] **`PerceptionWorker` / `FocusPump` 自体に retain-on-timeout 型 `shutdown_with_timeout(&self, ...)` を追加** (Codex v6 P1 反映、L1 `worker.rs:174-194` と完全同型):
+  ```rust
+  // crates/engine-perception/src/input.rs::PerceptionWorker
+  pub struct PerceptionWorker {
+      join: Mutex<Option<JoinHandle<()>>>,  // ← Mutex で wrap、timeout 失敗時 retain
+      tx: Sender<Cmd>,
+      processed_count: Arc<AtomicU64>,
+  }
+  impl PerceptionWorker {
+      pub fn shutdown_with_timeout(&self, timeout: Duration) -> Result<(), &'static str> {
+          let _ = self.tx.send(Cmd::Shutdown);
+          let deadline = Instant::now() + timeout;
+          let poll_interval = Duration::from_millis(10);
+          loop {
+              let finished = {
+                  let mut g = self.join.lock().unwrap_or_else(|e| e.into_inner());
+                  match g.as_ref() {
+                      Some(h) if h.is_finished() => {
+                          let h = g.take().expect("just observed Some");
+                          let _ = h.join();
+                          true
+                      }
+                      Some(_) => false,
+                      None => true,
+                  }
+              };
+              if finished { return Ok(()); }
+              if Instant::now() >= deadline { return Err("perception worker join timed out"); }
+              thread::sleep(poll_interval);
+          }
+      }
+      // 既存 consume-form は互換維持
+      pub fn shutdown(self, timeout: Duration) -> Result<(), &'static str> {
+          self.shutdown_with_timeout(timeout)
+      }
+  }
+  ```
+  `FocusPump` も同パターン (`src/l3_bridge/focus_pump.rs::FocusPump::shutdown_with_timeout`)。
+- [x] **`PerceptionPipeline` は `Mutex` 不要に簡素化** (Codex v6 P1 反映):
   ```rust
   pub struct PerceptionPipeline {
-      pub view: CurrentFocusedElementView,           // 軽量 read handle (clone 多数 OK、thread 不要)
-      pub handle: FocusInputHandle,                  // input session wrapper
-      // PerceptionWorker / FocusPump は consume-shutdown 型 (`shutdown(self, ...)`) なので、
-      // `&self` から呼ぶには Mutex<Option<...>> で wrap して take する。internal の
-      // is_finished() polling + deadline は既に PerceptionWorker::shutdown と
-      // FocusPump::shutdown に実装済 (engine_perception/src/input.rs:218-241、
-      // focus_pump.rs::shutdown) なので pipeline 側は委譲するだけ。
-      worker: Mutex<Option<PerceptionWorker>>,
-      pump: Mutex<Option<FocusPump>>,
+      pub view: CurrentFocusedElementView,
+      pub handle: FocusInputHandle,
+      worker: PerceptionWorker,  // ← 普通の field、内部に retain-Mutex
+      pump: FocusPump,            // ← 同
   }
-
   impl PerceptionPipeline {
-      /// pump → worker 順で shutdown (D1 plan §5.3)。timeout を半分ずつ配分、
-      /// PerceptionWorker::shutdown / FocusPump::shutdown 内部の
-      /// deadline + is_finished() polling に委譲。
       pub fn shutdown_with_timeout(&self, timeout: Duration) -> Result<(), &'static str> {
           let half = timeout / 2;
-          // 1. pump first — Subscription Drop unsubscribes from L1 ring.
-          let pump_opt = self.pump.lock().unwrap_or_else(|e| e.into_inner()).take();
-          if let Some(pump) = pump_opt {
-              pump.shutdown(half)?;  // ← internal で is_finished polling + deadline
-          }
-          // 2. worker — internal で同パターン
-          let worker_opt = self.worker.lock().unwrap_or_else(|e| e.into_inner()).take();
-          if let Some(worker) = worker_opt {
-              worker.shutdown(half)?;
-          }
+          self.pump.shutdown_with_timeout(half)?;     // ← 失敗時 handle 内部 retain
+          self.worker.shutdown_with_timeout(half)?;   // ← 同
           Ok(())
       }
   }
   ```
-  v3.1 で書いた「pipeline 側で is_finished polling + JoinHandle 直管理」の擬似コードは **撤回**。実装時に既存 `PerceptionWorker::shutdown` / `FocusPump::shutdown` が `consume-self + 内部 polling` で実装済と判明したため、pipeline 側はその上に薄い委譲を被せるだけで Codex v3 P2-2 / v4 P2-12 を両方達成可能。実装は `src/l3_bridge/mod.rs::PerceptionPipeline::shutdown_with_timeout` を参照。
-- [ ] **`Arc<PerceptionPipeline>` の clone が他 caller に残っていても shutdown 可能** (Codex v3 P2-2): `&self` 経由で内部 thread を停止、`view` の read handle clone は無害に残せる (snapshot は `BTreeMap` を読むだけで thread 不要)
-- [ ] **timeout 失敗時の handle retain** (Codex v4 P2-12): pump/worker 各々の `shutdown` が `Err` を返した時点でこの leg は consumed (Mutex slot は None)。後続の `shutdown_with_timeout(longer)` は **その leg は no-op、もう一方の leg だけが再試行**される。pipeline 単位 retain は `PERCEPTION_SLOT` の slot-clear-on-success-only protocol で達成 (D2-0-2 / Codex v4 P1-6)
+  v3.2 までの「pipeline 側で `Mutex<Option<PerceptionWorker>>` を持って take する」設計は **撤回** (Codex v6 P1 = take 後 consume で Err になると leg が永久に失われる degraded pipeline 問題)。retain は `PerceptionWorker` / `FocusPump` 自体に押し下げ、pipeline は薄い委譲のみ。実装は `src/l3_bridge/mod.rs::PerceptionPipeline::shutdown_with_timeout` を参照。
+- [x] **`Arc<PerceptionPipeline>` の clone が他 caller に残っていても shutdown 可能** (Codex v3 P2-2): `&self` 経由で内部 thread を停止、`view` の read handle clone は無害に残せる
+- [x] **timeout 失敗時の per-leg handle retain** (Codex v4 P2-12 + v6 P1): pump/worker 各々の `shutdown_with_timeout` が `Err` を返しても **JoinHandle は内部 `Mutex<Option<>>` に retain される** → 後続の `shutdown_with_timeout(longer)` で同一 thread の polling を resume 可能。「片肺 degraded pipeline」状態は発生しない。pipeline 単位 retain は `PERCEPTION_SLOT` の slot-clear-on-success-only protocol で同時達成 (D2-0-2 / Codex v4 P1-6)
 - [ ] Drop は **行わない**: 明示 `shutdown_perception_pipeline_for_test()` で slot を None に戻す (既存 `shutdown_l1_for_test` と同パターン、`worker.rs:243` のコメント参照)。production process では process 終了で OS が回収する設計
 - [ ] **依存**: 起動時に L1 ring (`ensure_l1()`) と UIA event hook (`ensure_uia()` 系) が初期化済であることを assert (既存 lazy init チェーン経由)
 
@@ -203,22 +240,24 @@ ADR-008 §4 / §8 の D2 行は本書 D2-G で「focus path 完了、modal / att
 #### D2-0-3: lifecycle 検証 (既存 L1_SLOT 5-cycle test と同水準)
 
 - [ ] **shutdown ordering**: `pump.shutdown(2s)` → `worker.shutdown(2s)` → `pump` Drop → `worker` Drop (D1 plan §5.3 と整合)
-**実装済 5 test** (`src/l3_bridge/mod.rs::production_pipeline_lifecycle_tests`):
+**実装済 7 test** (`src/l3_bridge/mod.rs::production_pipeline_lifecycle_tests`、v3.3 で 5 → 7):
 
 - [x] **`ensure_returns_same_arc_under_concurrent_calls`**: 並行 32 thread から `ensure_perception_pipeline()` を叩き、全 thread が同じ `Arc<PerceptionPipeline>` を取得 (既存 `ensure_l1_returns_same_instance` と同パターン、`worker.rs:337`)
 - [x] **`double_shutdown_is_idempotent`**: `shutdown_perception_pipeline_for_test(...)` を 2 回呼んで panic しない、2 回目は `Ok(())` (slot None なので no-op)
-- [x] **`five_cycle_ensure_shutdown`**: `ensure → shutdown(Ok) → ensure → shutdown(Ok) → ...` × 5 で再 init が成立、各 cycle の `Arc::as_ptr` が前 cycle と異なる (slot が clean shutdown 後に確実に clear)
+- [x] **`five_cycle_ensure_shutdown`**: `ensure → shutdown(Ok) → ensure → shutdown(Ok) → ...` × 5 で再 init が成立、各 cycle が Arc clone 残存に block されない (Arc identity は test 5 で別途 pin)
 - [x] **`arc_clone_outliving_shutdown_is_safe`** (Codex v3 P2-2 反映): `let p = ensure_perception_pipeline(); let hold = p.clone(); shutdown_perception_pipeline_for_test(2s).unwrap()` で内部 thread が停止、`hold.view.is_empty()/len()/get()` 等は post-shutdown でも panic しない (read-only snapshot は thread 不要)
-- [x] **`slot_clears_after_clean_shutdown`** (Codex v4 P1-6 partial coverage): clean shutdown 後の `ensure_perception_pipeline()` が fresh `Arc` を返す (slot が clear された)。`Arc::as_ptr` 比較で pin
+- [x] **`slot_clears_after_clean_shutdown`** (Codex v4 P1-6 partial coverage): clean shutdown 後 slot が None、ensure で repopulate を slot 内部状態に直接 assert (heap reuse race 回避)
+- [x] **`shutdown_timeout_failure_retains_slot`** (v3.3 新規、Codex v6 P1 北極星 regression): `Duration::from_nanos(1)` で timeout 強制 → `Err` → slot に元 Arc retain → `Arc::ptr_eq` で同一性確認 → 長 timeout retry で `Ok` (二重 worker spawn 防止)
+- [x] **`pipeline_recovers_from_partial_shutdown`** (v3.3 新規、Codex v6 P1 partial-shutdown recovery): 1ns timeout 失敗 → slot retain → 長 timeout retry で完了 (両 leg JoinHandle retain で resume polling) → slot clear → ensure で fresh pipeline。「片肺 degraded pipeline」が永久に発生しないことを pin
 
-**OQ #14 carry-over** (timeout 失敗系 2 test、test fixture 整備が必要):
+**v3.3 で本実装した 2 timeout-failure test** (Codex v6 P1 refactor で fixture 不要化、`Duration::from_nanos(1)` で deadline 強制超過):
 
-- [ ] **timeout 失敗時 handle retain test** (Codex v4 P2-12): worker_loop を意図的に block する test-only fixture (engine-perception 側) が要る。flaky 回避のため D2-A 着手時に fixture を整備した上で実装、本 D2-0 PR では **type signature `Result<(), &'static str>` + コードレビューで slot-clear protocol の一致を pin**
-- [ ] **concurrent re-init で Arc::ptr_eq 不一致時 slot retain test** (実 L1 `worker.rs:269-284` と同シナリオ): race-flaky 化しやすいので fixture 整備後に実装
+- [x] **`shutdown_timeout_failure_retains_slot`** (Codex v4 P1-6 + v6 P1 北極星 regression): 1ns timeout → `Err` → slot に元 Arc retain → ensure で同一 Arc → 長 timeout retry で `Ok`
+- [x] **`pipeline_recovers_from_partial_shutdown`** (Codex v6 P1 partial-shutdown recovery): 1ns timeout 失敗 → 長 timeout retry で完了 (両 leg JoinHandle retain で resume polling)、slot clear、ensure で fresh pipeline
 
-詳細は §10 OQ #14 (新規)。
+詳細は §10 OQ #14 (Resolved)。
 
-- [x] cargo test --workspace 全 pass、既存 test 0 regression — 53 (root) + 24 (engine-perception) = 77 全 pass、vitest 2435 pass / 28 skipped (D1-5 baseline と一致)
+- [x] cargo test --workspace 全 pass、既存 test 0 regression — **55 (root) + 24 (engine-perception) = 79 全 pass** (production_pipeline_lifecycle_tests 全 7 件 pass)、vitest 2435 pass / 28 skipped (D1-5 baseline と一致)
 
 #### D2-0-4: 検証
 
@@ -231,15 +270,11 @@ ADR-008 §4 / §8 の D2 行は本書 D2-G で「focus path 完了、modal / att
 
 **目的**: D1 followups §2.5 の core 課題を **partial-order を壊さない設計** で解決、`update p99 < 1ms` SLO 達成、D1 acceptance honest 化。
 
-#### D2-A-0: OQ #14 test-only fixture 整備 (D2-0 carry-over、Opus phase-boundary review v3.2 で明示推奨)
+#### D2-A-0: ~~OQ #14 test-only fixture 整備~~ → **解消 (v3.3 で本実装、PR #94)**
 
-D2-0 PR で carry-over した「timeout 失敗時 handle retain test」「concurrent re-init で Arc::ptr_eq 不一致時 slot retain test」の 2 件を本実装するため、engine-perception 側に test-only fixture を新設。**D2-A の他作業に着手する前に必ず実装** (Sonnet 委譲時に最優先 sub-batch として明示)。
+v3.2 で carry-over していた「timeout 失敗時 handle retain test」「partial-shutdown recovery test」の 2 件は、v3.3 の `PerceptionWorker` / `FocusPump` retain-on-timeout refactor (Codex v6 P1) で **fixture 不要に解消**。`Duration::from_nanos(1)` で deadline を強制超過させるだけで Err 経路を triggered できるようになった。本 D2-A では D2-A-1 から直接着手して OK。
 
-- [ ] `crates/engine-perception/src/input.rs` に `#[cfg(test)] pub(crate) fn block_worker_for_test(duration: Duration)` (or `Cmd::BlockForTest(Duration)` バリアント) を追加 — worker_loop が `Cmd::Shutdown` を受け取っても指定時間 block する経路
-- [ ] D2-0 で `OQ #14 carry-over` だった 2 test を `production_pipeline_lifecycle_tests` に追加実装:
-  - `shutdown_timeout_failure_retains_slot`: block fixture で worker を 1s block、`shutdown_perception_pipeline_for_test(Duration::from_millis(50))` が `Err` を返し、slot に元 Arc が残ることを `Arc::ptr_eq` で assert
-  - `concurrent_re_init_during_shutdown_retains_slot`: 別 thread で shutdown 中に他 thread が ensure を呼ぶ race を作り、ptr_eq 不一致時 slot を None にしないことを assert (`worker.rs:269-284` と同シナリオ)
-- [ ] §10 OQ #14 を Resolved 化、本 plan §11.2 の D2-0 lifecycle test 完了表記を 7 件に flip
+(v3.2 までの D2-A-0 は historical artifact、§10 OQ #14 は Resolved)
 
 #### D2-A-1: revised tuning 実装 (`crates/engine-perception/src/input.rs::worker_loop`)
 
@@ -830,6 +865,7 @@ D2-E0 / D2-E と整合: **`Arranged` を外部 struct に保持せず、同 `wor
 | R15 | `Arc<PerceptionPipeline>` clone が他 caller に残った状態で shutdown を呼ぶと内部 thread が停まらない (Codex v3 P2-2) | 高 | 既存 `L1Inner::shutdown_with_timeout(&self)` パターンと同型 (`Mutex<Option<JoinHandle>>` を take()、shutdown signal で worker 停止) を D2-0-1 に明記、Arc clone 残存下 test (D2-0-3) で pin |
 | R16 | `JoinHandle::join()` を直呼びすると timeout が無効で test が無期限 block (Codex v4 P2-12) | 高 | 既存 `worker.rs:174-194` と同じ `deadline + is_finished() polling` pattern に修正、D2-0-3 で timeout 失敗 test を pin (worker_loop を block する fixture で意図的に Err 経路を踏む) |
 | R17 | shutdown 失敗時に slot を空にして二重 worker を spawn する flaky 障害 (Codex v4 P1-6、北極星) | 高 | API signature を `Result<(), &'static str>` に修正、**成功時のみ slot clear / `Arc::ptr_eq` で同一インスタンス確認 / 失敗時は元 Arc retain** を D2-0-2 に北極星扱いで明記、regression test (D2-0-3 の 3 test) で後続 PR が壊さないよう pin |
+| R18 | timeout 失敗時に pump or worker leg が consume されて degraded pipeline が永久化、retry が `Ok(())` no-op で slot clear → 二重 worker spawn (Codex v6 P1 北極星 violation) | 高 | `PerceptionWorker` / `FocusPump` 自体に retain-on-timeout 型 `shutdown_with_timeout(&self, ...)` を実装 (`Mutex<Option<JoinHandle>>` で is_finished polling、L1 同型)、`PerceptionPipeline` 側は `Mutex` なしで薄い委譲のみ。`shutdown_timeout_failure_retains_slot` / `pipeline_recovers_from_partial_shutdown` の 2 test で `Duration::from_nanos(1)` を使い直接 pin |
 
 ---
 
@@ -850,7 +886,7 @@ D2-E0 / D2-E と整合: **`Arranged` を外部 struct に保持せず、同 `wor
 | 11 | UIA control type id (u32) → 既存文字列名への変換 table の在処 (Rust 側 napi binding に新設 / 既存 UIA bridge に存在 / TS 側 helper) | D2-B-1 着手時に grep、なければ napi binding に新設 (Codex v2 P1-3) |
 | 12 | `latest_focus` view と `current_focused_element` の併存 (両方 D2-E0 同 scope 内 build) で arrangement memory が 2 倍にならないか | D2-A bench harness で測定、view 単独 vs 両者併存で memory 比較 (Codex v2 P1-4) |
 | 13 | diff bookkeeping helper (BTreeMap diff-sum + count > 0 rev walk) を `current_focused_element` (per-hwnd) と `latest_focus` (singleton) で共通化するか別実装か | D2-F-1 (current_focused_element の §3.1 強化) と D2-B-2 (latest_focus 新設) のどちらが先かで判断、後発で共通 helper 抽出 (Codex v3 P1-1) |
-| 14 | D2-0 lifecycle test の timeout 失敗系 2 件 (timeout 失敗時 handle retain / concurrent re-init で Arc::ptr_eq 不一致時 slot retain) を本実装するための test-only fixture (worker を意図的に block する) | D2-A 着手時、engine-perception 側に test-only `block_worker_for_test()` fixture を新設、その上で 2 test を実装 (race-free な形で)。D2-0 PR では type signature + コードレビューで slot-clear protocol を pin (Codex v4 P1-6 / P2-12) |
+| ~~14~~ | ~~D2-0 lifecycle test の timeout 失敗系 2 件 fixture~~ | **Resolved (v3.3, PR #94)**: `PerceptionWorker` / `FocusPump` の retain-on-timeout refactor で fixture 不要化、2 test (`shutdown_timeout_failure_retains_slot` / `pipeline_recovers_from_partial_shutdown`) を `Duration::from_nanos(1)` で本実装 |
 
 ---
 

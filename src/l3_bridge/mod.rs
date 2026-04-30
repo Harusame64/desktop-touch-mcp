@@ -129,14 +129,33 @@ pub(crate) fn shutdown_spawned_pipeline_for_test(
 // re-init'd the slot mid-shutdown does not get its fresh instance
 // orphaned.
 
-/// Cmd-channel + view + handle bundle the production lifecycle owns.
-/// `view` and `handle` are clone-cheap, but `worker` and `pump` are
-/// `Mutex<Option<...>>` because their `shutdown` consumes `self`.
+/// Production-lifecycle bundle. `view` / `handle` are clone-cheap
+/// read/write surfaces; `worker` and `pump` own retain-on-timeout
+/// JoinHandles internally (each via its own `Mutex<Option<JoinHandle>>`),
+/// so `shutdown_with_timeout(&self, ...)` can poll without consuming
+/// either side.
+///
+/// ## Why `worker` / `pump` are NOT wrapped in `Mutex<Option<...>>` here
+///
+/// An earlier draft wrapped each in `Mutex<Option<PerceptionWorker>>` /
+/// `Mutex<Option<FocusPump>>` and `take()`-ed before calling their
+/// consume-form `shutdown(self, timeout)`. Codex review v6 P1
+/// flagged that as unsound: a single failed `shutdown` would replace
+/// the leg with `None`, so a later retry could observe `None` and
+/// return `Ok(())` while the timed-out thread was still alive. That
+/// would let `ensure_perception_pipeline()` spawn a duplicate worker
+/// after `shutdown_perception_pipeline_for_test` cleared the slot.
+///
+/// Fix: push the retain-on-timeout invariant down into
+/// `PerceptionWorker` and `FocusPump` themselves (each holds a
+/// `Mutex<Option<JoinHandle<()>>>` and exposes
+/// `shutdown_with_timeout(&self, ...)`). The pipeline can then store
+/// them as plain fields and delegate `shutdown_with_timeout` directly.
 pub struct PerceptionPipeline {
     pub view: CurrentFocusedElementView,
     pub handle: FocusInputHandle,
-    worker: Mutex<Option<PerceptionWorker>>,
-    pump: Mutex<Option<FocusPump>>,
+    worker: PerceptionWorker,
+    pump: FocusPump,
 }
 
 impl PerceptionPipeline {
@@ -144,39 +163,21 @@ impl PerceptionPipeline {
     /// `timeout`. Order: pump → worker (Codex v3 P2-2 + v4 P2-12 +
     /// `docs/adr-008-d1-plan.md` §5.3). Each leg gets `timeout / 2`.
     ///
-    /// On `Err`, the underlying `PerceptionWorker` / `FocusPump` are
-    /// already taken out of their `Mutex<Option<...>>` slots — they
-    /// have been consumed by the failing `shutdown` call. The slot
-    /// for the *pipeline* (in `PERCEPTION_SLOT`) retains the original
-    /// `Arc<PerceptionPipeline>` so a later `ensure_perception_pipeline()`
-    /// returns the same instance and does NOT spawn a second worker
-    /// (Codex v4 P1-6 — slot-clear-on-success-only). Callers that
-    /// observe the `Err` should treat the pipeline as "not cleanly
-    /// shut down" and may retry `shutdown_perception_pipeline_for_test`
-    /// with a longer timeout.
+    /// On `Err`, **both legs retain their JoinHandles internally**
+    /// (Codex v6 P1) — a later call with a longer timeout resumes
+    /// polling the same threads. The slot for the pipeline (in
+    /// `PERCEPTION_SLOT`) retains the original `Arc<PerceptionPipeline>`
+    /// so a later `ensure_perception_pipeline()` returns the same
+    /// instance and does NOT spawn a second worker.
     pub fn shutdown_with_timeout(&self, timeout: Duration) -> Result<(), &'static str> {
         let half = timeout / 2;
         // 1. pump first — its Subscription Drop unsubscribes from the
         // L1 ring before the worker thread sees Cmd::Shutdown, so any
         // event in flight is forwarded before the channel disconnects.
-        let pump_opt = self
-            .pump
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take();
-        if let Some(pump) = pump_opt {
-            pump.shutdown(half)?;
-        }
+        self.pump.shutdown_with_timeout(half)?;
         // 2. worker — its `is_finished()` polling honours `half` even
-        // if the worker is mid-step (Codex v4 P2-12).
-        let worker_opt = self
-            .worker
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take();
-        if let Some(worker) = worker_opt {
-            worker.shutdown(half)?;
-        }
+        // if the worker is mid-step.
+        self.worker.shutdown_with_timeout(half)?;
         Ok(())
     }
 }
@@ -278,8 +279,8 @@ fn spawn_pipeline_inner() -> PerceptionPipeline {
     PerceptionPipeline {
         view,
         handle,
-        worker: Mutex::new(Some(worker)),
-        pump: Mutex::new(Some(pump)),
+        worker,
+        pump,
     }
 }
 
@@ -802,7 +803,14 @@ mod production_pipeline_lifecycle_tests {
         drop(hold);
     }
 
-    /// Test 5 — after a clean shutdown the slot is `None` (Codex v4
+    /// Test 5 (continued below: 6 + 7 cover the timeout failure path
+    /// previously deferred under OQ #14 — possible without a worker-
+    /// blocking fixture because the new `shutdown_with_timeout(&self, ...)`
+    /// API takes a `Duration` and we can pass `Duration::from_nanos(1)`
+    /// to force the deadline to expire before the worker can finish
+    /// joining; the `JoinHandle` is then retained per Codex v6 P1).
+    ///
+    /// Test 5 itself: after a clean shutdown the slot is `None` (Codex v4
     /// P1-6 slot-clear-on-success-only protocol). Asserts the slot
     /// state directly rather than via `Arc::as_ptr` comparison: the
     /// allocator legitimately reuses freed heap slots, so two
@@ -853,6 +861,149 @@ mod production_pipeline_lifecycle_tests {
             "slot must be repopulated after second ensure"
         );
         drop(p2);
+        shutdown_perception_pipeline_for_test(Duration::from_secs(2))
+            .expect("teardown clean");
+    }
+
+    /// Test 6 — timeout-failure path **retains** the slot's `Arc`
+    /// (Codex v4 P1-6 北極星 + v6 P1: pipeline must remain functional
+    /// after a failed shutdown attempt). Uses `Duration::from_nanos(1)`
+    /// to force the deadline to expire before the polling loop
+    /// observes `is_finished()` true, exercising the `Err` arm of
+    /// `shutdown_perception_pipeline_for_test` without needing a
+    /// worker-blocking fixture.
+    ///
+    /// Asserts:
+    ///   1. `Err` is returned (shutdown timed out).
+    ///   2. The slot still holds the **same** `Arc<PerceptionPipeline>`.
+    ///   3. A subsequent `ensure_perception_pipeline()` returns that
+    ///      same instance — proving no duplicate worker was spawned.
+    ///   4. A retry with a longer timeout succeeds (handle was retained,
+    ///      polling resumes; under v6 P1 this would have hung or
+    ///      no-op'd erroneously).
+    #[test]
+    fn shutdown_timeout_failure_retains_slot() {
+        let _guard = lifecycle_lock().lock().unwrap_or_else(|e| e.into_inner());
+        drain_slot();
+
+        let p1 = ensure_perception_pipeline();
+        let arc1_addr = Arc::as_ptr(&p1) as usize;
+        drop(p1);
+
+        // Force a timeout. 1ns is below the polling interval (10ms)
+        // so the deadline always expires before is_finished() flips.
+        let result = shutdown_perception_pipeline_for_test(Duration::from_nanos(1));
+        assert!(
+            result.is_err(),
+            "1ns deadline must produce an Err (got {:?})",
+            result
+        );
+
+        // (2) slot retained — still Some + still the same Arc.
+        let same_arc_in_slot = {
+            let g = PERCEPTION_SLOT
+                .get()
+                .expect("slot OnceLock initialised")
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            g.as_ref().map(|a| Arc::as_ptr(a) as usize)
+        };
+        assert_eq!(
+            same_arc_in_slot,
+            Some(arc1_addr),
+            "slot must retain the original Arc after timeout (Codex v4 P1-6 北極星)"
+        );
+
+        // (3) ensure returns the same instance — no duplicate worker.
+        let p2 = ensure_perception_pipeline();
+        assert_eq!(
+            Arc::as_ptr(&p2) as usize,
+            arc1_addr,
+            "ensure after timeout must return the original Arc, not spawn a new one"
+        );
+        drop(p2);
+
+        // (4) retry with a real timeout succeeds (Codex v6 P1 retain
+        // semantics: the JoinHandle inside PerceptionWorker / FocusPump
+        // is still polling the same thread).
+        shutdown_perception_pipeline_for_test(Duration::from_secs(2))
+            .expect("longer-timeout retry must succeed (handle retained)");
+    }
+
+    /// Test 7 — partial-shutdown failure scenario: pump succeeds but
+    /// worker times out, then a retry completes the worker shutdown.
+    /// Verifies that the per-leg retain semantics inside
+    /// `PerceptionPipeline::shutdown_with_timeout` lets a failed call
+    /// be resumed without entering a degraded state where one leg is
+    /// gone forever (Codex v6 P1).
+    ///
+    /// We can't easily target only the worker for timeout (the pump
+    /// shuts down faster than the worker, so a tiny timeout normally
+    /// fails on the pump leg first). Instead we exercise the same
+    /// invariant from the other side: an immediate-timeout shutdown
+    /// followed by a successful retry must leave the pipeline
+    /// completely shut down (slot None) without panicking on either
+    /// leg. If either leg's JoinHandle had been consumed by the
+    /// failing call (the v3.2 bug Codex v6 caught), the retry would
+    /// no-op against `None` and either:
+    ///   - return `Ok(())` while the thread is still alive (slot
+    ///     incorrectly cleared), OR
+    ///   - panic when it tries to take an already-`None` Mutex slot.
+    /// Neither happens with the v3.3 retain-on-timeout design.
+    #[test]
+    fn pipeline_recovers_from_partial_shutdown() {
+        let _guard = lifecycle_lock().lock().unwrap_or_else(|e| e.into_inner());
+        drain_slot();
+
+        let _p = ensure_perception_pipeline();
+
+        // First attempt times out. Both legs (or at least one) miss
+        // the 1ns deadline; retain semantics keep their JoinHandles.
+        assert!(
+            shutdown_perception_pipeline_for_test(Duration::from_nanos(1)).is_err(),
+            "1ns deadline must fail"
+        );
+
+        // Slot still populated (failure path).
+        assert!(
+            PERCEPTION_SLOT
+                .get()
+                .expect("slot OnceLock initialised")
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_some(),
+            "slot must retain Some after timeout"
+        );
+
+        // Retry succeeds — both legs poll their retained JoinHandles,
+        // observe is_finished() true (the threads have had >= 1ns to
+        // exit since the previous Cmd::Shutdown / shutdown flag was
+        // signalled), join cleanly. Slot clears on success.
+        shutdown_perception_pipeline_for_test(Duration::from_secs(2))
+            .expect("retry succeeds with retained JoinHandles");
+
+        assert!(
+            PERCEPTION_SLOT
+                .get()
+                .expect("slot OnceLock initialised")
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_none(),
+            "slot cleared after successful retry"
+        );
+
+        // ensure() spawns a fresh pipeline (the previous one is gone).
+        let p_new = ensure_perception_pipeline();
+        assert!(
+            PERCEPTION_SLOT
+                .get()
+                .expect("slot OnceLock initialised")
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_some(),
+            "fresh pipeline populates the slot"
+        );
+        drop(p_new);
         shutdown_perception_pipeline_for_test(Duration::from_secs(2))
             .expect("teardown clean");
     }

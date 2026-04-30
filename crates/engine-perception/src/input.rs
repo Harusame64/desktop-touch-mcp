@@ -73,7 +73,7 @@
 //! readable after shutdown but stops receiving updates.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -190,9 +190,28 @@ impl L1Sink for FocusInputHandle {
 
 /// Owner of the timely worker thread. Returned alongside the
 /// `FocusInputHandle` from [`spawn_perception_worker`]. Drop or
-/// `shutdown(timeout)` to stop the thread.
+/// `shutdown_with_timeout(&self, timeout)` to stop the thread; a
+/// consume-form `shutdown(self, timeout)` is also kept for callers
+/// that want to ensure the worker is gone before continuing.
+///
+/// ## Shutdown handle retain (D2-0 / Codex review v6 P1)
+///
+/// Earlier versions held `join: Option<JoinHandle<()>>` and consumed
+/// the handle inside `shutdown(self, ...)`. That pattern is unsound
+/// for the production lifecycle in `src/l3_bridge/mod.rs`: if the
+/// pipeline-level shutdown failed (timeout) on one leg, the consumed
+/// handle was lost and a subsequent retry could no-op while the
+/// timed-out thread was still running, allowing
+/// `ensure_perception_pipeline()` to spawn a duplicate worker.
+///
+/// We now mirror the L1 worker's safety contract
+/// (`src/l1_capture/worker.rs:174-194`): the JoinHandle lives behind
+/// a `Mutex<Option<JoinHandle<()>>>` and is only `take()`-ed once
+/// `is_finished()` reports true. On timeout the handle is retained,
+/// so a later `shutdown_with_timeout(longer)` can resume polling the
+/// same thread.
 pub struct PerceptionWorker {
-    join: Option<JoinHandle<()>>,
+    join: Mutex<Option<JoinHandle<()>>>,
     tx: Sender<Cmd>,
     /// Total `Cmd::PushFocus` commands the worker has dequeued and
     /// run through `InputSession::update_at` + `advance_to` +
@@ -211,33 +230,54 @@ impl PerceptionWorker {
         self.processed_count.load(Ordering::Relaxed)
     }
 
-    /// Signal shutdown and join the worker thread, polling so the
-    /// deadline applies even if the worker is mid-step. Mirrors the
-    /// L1 worker's `shutdown_with_timeout` shape (root
-    /// `src/l1_capture/worker.rs`, ADR-007 R11).
-    pub fn shutdown(mut self, timeout: Duration) -> Result<(), &'static str> {
+    /// Signal shutdown and poll the worker's `JoinHandle::is_finished()`
+    /// until the deadline. **The `JoinHandle` is retained on timeout**
+    /// so a later `shutdown_with_timeout(longer)` can resume — this
+    /// is the L1-worker-equivalent retain semantics
+    /// (`src/l1_capture/worker.rs:174-194`, Codex review v6 P1).
+    pub fn shutdown_with_timeout(&self, timeout: Duration) -> Result<(), &'static str> {
+        // Repeated sends are harmless — the worker_loop matches on
+        // Cmd::Shutdown and breaks. If the channel is full we just
+        // drop the signal; the channel is sized 8192 vs UIA rate
+        // < 10/s so the channel is essentially never full.
         let _ = self.tx.send(Cmd::Shutdown);
-        let Some(handle) = self.join.take() else {
-            return Ok(());
-        };
 
         let deadline = Instant::now() + timeout;
         let poll_interval = Duration::from_millis(10);
+
         loop {
-            if handle.is_finished() {
-                let _ = handle.join();
+            // Peek `is_finished()` while holding the guard, then
+            // promote to take + join in the same critical section so
+            // we don't race a concurrent caller.
+            let finished_or_done = {
+                let mut guard = self.join.lock().unwrap_or_else(|e| e.into_inner());
+                match guard.as_ref() {
+                    Some(h) if h.is_finished() => {
+                        let h = guard.take().expect("just observed Some");
+                        let _ = h.join();
+                        true
+                    }
+                    Some(_) => false,
+                    None => true, // already shut down
+                }
+            };
+            if finished_or_done {
                 return Ok(());
             }
             if Instant::now() >= deadline {
-                // Re-place the handle so callers can retry. (We took
-                // it out of self.join above; rebuild self for Drop.)
-                // Actually we can't rebuild — `self` was consumed.
-                // Drop the handle; the thread will eventually exit
-                // and the OS will reap it. Caller sees the timeout.
                 return Err("perception worker join timed out");
             }
             thread::sleep(poll_interval);
         }
+    }
+
+    /// Consume-form shutdown for callers that want the worker to be
+    /// gone after this returns. Delegates to
+    /// `shutdown_with_timeout(&self, ...)`. On `Err` the worker is
+    /// dropped, but its underlying thread continues until it sees
+    /// `Cmd::Shutdown` (already sent) or the cmd channel closes.
+    pub fn shutdown(self, timeout: Duration) -> Result<(), &'static str> {
+        self.shutdown_with_timeout(timeout)
     }
 }
 
@@ -245,7 +285,12 @@ impl Drop for PerceptionWorker {
     fn drop(&mut self) {
         // Best-effort: signal shutdown. Don't block in Drop.
         let _ = self.tx.send(Cmd::Shutdown);
-        if let Some(h) = self.join.take() {
+        let handle_opt = self
+            .join
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(h) = handle_opt {
             // Best-effort join, don't block forever.
             let deadline = Instant::now() + Duration::from_secs(2);
             while !h.is_finished() {
@@ -307,7 +352,7 @@ pub fn spawn_perception_worker(
         .expect("spawn l3-perception thread");
 
     let worker = PerceptionWorker {
-        join: Some(join),
+        join: Mutex::new(Some(join)),
         tx: tx.clone(),
         processed_count,
     };
