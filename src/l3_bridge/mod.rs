@@ -38,6 +38,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use engine_perception::input::{spawn_perception_worker, FocusInputHandle, L1Sink, PerceptionWorker};
+use engine_perception::views::current_focused_element::CurrentFocusedElementView;
 
 use crate::l1_capture::ensure_l1;
 
@@ -47,22 +48,27 @@ use self::focus_pump::FocusPump;
 /// L1 ring (`ensure_l1()`).
 ///
 /// Order is critical (Codex v1 P2-2 / v3 P1):
-///   1. Spawn the perception worker (cmd channel up).
+///   1. Spawn the perception worker (cmd channel up, view handle ready).
 ///   2. Take a clone of the L1 ring `Arc`.
 ///   3. Spawn the pump LAST — its `spawn()` does the parent-side
 ///      `subscribe(...)` synchronously, so by the time this helper
 ///      returns, the subscription is registered with the ring and
 ///      a caller can `ring.push(...)` without losing events.
 ///
-/// Returns `(worker, pump)`. Drop or [`shutdown_perception_pipeline_for_test`]
-/// in pump → worker order.
-pub(crate) fn spawn_perception_pipeline_for_test(
-) -> (PerceptionWorker, FocusInputHandle, FocusPump) {
-    let (worker, handle) = spawn_perception_worker();
+/// Returns `(worker, handle, view, pump)`. The `view` is the
+/// `current_focused_element` reader-side handle (D1-3). Drop or
+/// [`shutdown_perception_pipeline_for_test`] in pump → worker order.
+pub(crate) fn spawn_perception_pipeline_for_test() -> (
+    PerceptionWorker,
+    FocusInputHandle,
+    CurrentFocusedElementView,
+    FocusPump,
+) {
+    let (worker, handle, view) = spawn_perception_worker();
     let ring = ensure_l1().ring.clone();
     let sink: Arc<dyn L1Sink> = Arc::new(handle.clone());
     let pump = FocusPump::spawn(ring, sink);
-    (worker, handle, pump)
+    (worker, handle, view, pump)
 }
 
 /// Shut down a pipeline started by
@@ -170,10 +176,19 @@ mod lifecycle_tests {
             }),
             window_title: format!("LifecycleWin{}", cycle),
         };
+        // 200ms-spaced wallclocks (per seq) so the input's watermark
+        // advances past earlier seqs after the later ones land — the
+        // default 100ms watermark shift means events whose
+        // wallclock_ms is within 100ms of the latest stay below the
+        // frontier and are not yet released by the dataflow. With a
+        // 200ms gap, seq 0 and 1 get released after 3 pushes; seq 2
+        // sits at the frontier and is not asserted on.
         let internal = InternalEvent {
             envelope_version: 1,
             event_id: 0,
-            wallclock_ms: 1_800_000_000_000 + cycle as u64 * 1000 + seq as u64,
+            wallclock_ms: 1_800_000_000_000
+                + cycle as u64 * 10_000
+                + seq as u64 * 200,
             sub_ordinal: 0,
             timestamp_source: TimestampSource::StdTime as u8,
             kind: EventKind::UiaFocusChanged as u16,
@@ -240,8 +255,9 @@ mod lifecycle_tests {
         for cycle in 0..5u32 {
             // (1) spawn the engine-perception worker (real timely +
             // InputSession; we'll observe its processed_count to
-            // confirm cmds crossed into the dataflow path).
-            let (worker, handle) = engine_perception::input::spawn_perception_worker();
+            // confirm cmds crossed into the dataflow path; the view
+            // exposes the materialised current_focused_element state).
+            let (worker, handle, view) = engine_perception::input::spawn_perception_worker();
 
             // (2) spawn pump wired to a TeeSink that BOTH forwards
             // into the worker (handle.push_focus) AND captures for
@@ -300,6 +316,39 @@ mod lifecycle_tests {
             );
             assert_eq!(worker.processed_count(), 3, "cycle {} processed", cycle);
 
+            // (4c) D1-3 view assertion — the dataflow's reduce + inspect
+            // updated the view's per-hwnd state. With 200ms-spaced
+            // wallclocks (see push_focus_to_ring), seq 0 and 1 fall
+            // strictly below the input's watermark after seq 2's push
+            // (frontier = latest_wallclock - 100ms shift); seq 2 itself
+            // sits at the frontier and is not yet released. Wait for
+            // seq=0's hwnd to appear in the view.
+            let h0 = 0xD000_u64 + cycle as u64 * 16;
+            let h1 = 0xD000_u64 + cycle as u64 * 16 + 1;
+            let view_for_wait = view.clone();
+            let h0_settled = {
+                let deadline = Instant::now() + Duration::from_millis(500);
+                let mut got = view_for_wait.get(h0);
+                while Instant::now() < deadline {
+                    got = view_for_wait.get(h0);
+                    if got.is_some() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                got
+            };
+            let elem = h0_settled
+                .unwrap_or_else(|| panic!("cycle {}: view.get(h0) must return live row", cycle));
+            assert_eq!(elem.window_title, format!("LifecycleWin{}", cycle));
+            assert_eq!(elem.name, format!("Cyc{}Seq{}", cycle, 0));
+            // h1 is also released (its wallclock is 200ms before
+            // seq=2, watermark crosses it).
+            let elem1 = view
+                .get(h1)
+                .unwrap_or_else(|| panic!("cycle {}: view.get(h1) must return live row", cycle));
+            assert_eq!(elem1.name, format!("Cyc{}Seq{}", cycle, 1));
+
             // Drop the original handle so its tx clone is released;
             // sink still holds its own clone, so the worker channel
             // stays alive until pump shutdown drops the sink.
@@ -341,13 +390,15 @@ mod lifecycle_tests {
         let ring = crate::l1_capture::ensure_l1().ring.clone();
         let baseline = ring.subscriber_count();
 
-        let (worker, _handle, pump) = spawn_perception_pipeline_for_test();
+        let (worker, _handle, view, pump) = spawn_perception_pipeline_for_test();
         assert!(
             ring.subscriber_count() >= baseline + 1,
             "spawn must add at least one subscriber slot (baseline={}, after_spawn={})",
             baseline,
             ring.subscriber_count()
         );
+        // No events pushed → view stays empty.
+        assert!(view.is_empty(), "fresh pipeline view should be empty");
         shutdown_perception_pipeline_for_test(worker, pump).expect("shutdown clean");
         // The helper's own slot must be gone. Other concurrent
         // lifecycle tests may have added/removed slots in parallel,

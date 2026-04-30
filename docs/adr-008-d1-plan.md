@@ -121,18 +121,28 @@ desktop-touch-mcp/
 - [x] L1 worker が停止しても adapter thread が deadlock しない — `recv_timeout(100ms)` + `Arc<AtomicBool> shutdown` flag、5-cycle integration test (`l3_bridge::lifecycle_tests::five_cycle_pipeline_spawn_push_shutdown`) で deadlock-free 確認
 - [x] **Codex v3 P1 反映**: `FocusPump::spawn` は parent thread で `ring.subscribe(8192)` を完了させてから worker thread を起動 (Subscription を move)、spawn 直後の同期 push race を構造的解消、regression test `spawn_then_immediate_push_arrives` で固定
 
-### D1-3: `current_focused_element` view (PR 3 の後半)
-- [ ] `crates/engine-perception/src/views/current_focused_element.rs` 新設
-- [ ] input: `UiaFocusChanged` event collection
-- [ ] operator: per-window `last-by-time` で current focus 1 row を維持 (state view)
-- [ ] output struct: `UiElementRef { name, automation_id, control_type, window_title }` (views-catalog §3.1)
-- [ ] arrangement で multi-version 保持、internal read API で最新値を取得
+### D1-3: `current_focused_element` view (PR 3 の後半) — **実装完了 (本 PR)**
+- [x] `crates/engine-perception/src/views/current_focused_element.rs` 新設
+- [x] input: `FocusEvent` collection (root crate の bridge が L1 `UiaFocusChanged` を decode し push)
+- [x] operator: per-hwnd `last-by-time` で current focus 1 row を維持 (state view) — `map → reduce(last-by-(wallclock_ms, sub_ordinal)) → inspect`
+- [x] output struct: `UiElementRef { name, automation_id, control_type, window_title }` (views-catalog §3.1) — pivot 4 フィールド (`source_event_id` / `wallclock_ms` / `sub_ordinal` / `timestamp_source`) は output から除外
+- [x] internal read API: `CurrentFocusedElementView::{get(hwnd), snapshot(), len(), is_empty()}` — `Arc<RwLock<HashMap<u64, BTreeMap<UiElementRef, i64>>>>` 経由で diff bookkeeping (retraction/assertion 順序非依存で convergent)
+- [x] `spawn_perception_worker()` 戻り値を `(PerceptionWorker, FocusInputHandle, CurrentFocusedElementView)` に拡張、view を parent thread で `clone()` して worker に move
+- [x] `src/l3_bridge/mod.rs::spawn_perception_pipeline_for_test` も view 戻り、lifecycle test (5-cycle) で `view.get(h0/h1)` assertion 追加 — L1 ring → focus_pump → handle → worker → InputSession → reduce → inspect → view まで end-to-end 観測
 
-### D1-4: unit test (PR 3 内)
-- [ ] `crates/engine-perception/tests/d1_minimum.rs`
-- [ ] event を inject → view 更新を verify
-- [ ] **partial-order test**: out-of-order event を入れても deterministic な結果になる
-- [ ] shutdown sequence で deadlock しない
+### D1-4: unit test + integration test (PR 3 内) — **実装完了 (本 PR)**
+- [x] `crates/engine-perception/src/views/current_focused_element.rs` の `mod tests` (in-file unit): `apply_diff` の insert / retract / swap / out-of-order retraction / snapshot / from_event projection
+- [x] `crates/engine-perception/tests/d1_minimum.rs` (integration, 9 件):
+  - `single_focus_event_appears_in_view` — 基本 push → view 反映
+  - `last_by_time_per_hwnd` — 同一 hwnd の連続更新で latest が勝つ
+  - `out_of_order_events_settle_to_latest_by_time` — **partial-order test** (reverse wallclock 入力で deterministic)
+  - `far_back_dated_event_dropped` — watermark shift > 100ms 超の back-dated event は drop、worker 生存
+  - `multiple_hwnds_tracked_independently` — 3 hwnd 同時 live
+  - `shutdown_without_events_is_clean` — idle shutdown deadlock-free
+  - `shutdown_with_pending_events_drains` — 50 events pending でも 2s 以内に shutdown
+  - `five_cycle_spawn_run_shutdown` — stress (state leak 検出)
+  - `ui_element_ref_projection_is_lossy` — pivot field 漏洩防止 compile-time check
+- [x] **watermark caveat**: 全 push test は target event の後に「pump event」(wallclock_ms +200ms) を 1 件入れて frontier を target を超えて進める (default `DESKTOP_TOUCH_WATERMARK_SHIFT_MS=100ms` semantics に合わせた deterministic test 設計)
 
 ### D1-5: bench harness (PR 4)
 - [ ] `benches/d1_view_latency.rs` 新規 (criterion crate ベース、または simple `#[bench]`)
@@ -392,10 +402,10 @@ collection<UiElementRef>  (1 row per current foreground hwnd)
 
 - [x] **ADR-007 P5c-1 完了**を前提として、real L1 input (UIA Focus Changed event) が ring 経由で bridge → engine-perception に流れる (D1-2 PR で達成、`docs/adr-008-d1-2-plan.md`)
 - [x] **`src/l3_bridge/focus_pump.rs`** が `EventRing` broadcast subscribe → decode → `engine_perception::FocusInputHandle::push_focus()` で動作 (root owns integration、parent-side subscribe で spawn 直後の race 解消、`source_event_id` / `timestamp_source` 必ず保持)
-- [ ] 1 view が incremental に更新される (`current_focused_element`) — **D1-3 で実装**
-- [ ] unit test pass (partial-order 含む) — **D1-4 で view 経由 assert 追加**
+- [x] 1 view が incremental に更新される (`current_focused_element`) — **D1-3 で実装 (本 PR)**
+- [x] unit test pass (partial-order 含む) — D1-3 in-file unit + D1-4 integration `crates/engine-perception/tests/d1_minimum.rs` で assert (32 + 11 全 pass)
 - [ ] bench で TS 版より latency 1/10 (real L1 input ベース、synthetic ではない) — **D1-5 で実施**
-- [x] CI green、`npm run build:rs` / `npm test` 回帰なし、`check:rs-workspace` で engine-perception 含む — D1-2 PR で確認済 (cargo test 60 全 pass / vitest 2434 pass + 1 既知 timing flake)
+- [x] CI green、`npm run build:rs` / `npm test` 回帰なし、`check:rs-workspace` で engine-perception 含む — 本 PR 時点 cargo test 32 (engine-perception) + 11 (root l3_bridge `--no-default-features`) pass / vitest 2435 pass / 28 skip
 - [ ] D1-6 完了 (ドキュメント / メモリ整合) — D1-5 完了後
 
 ---

@@ -68,11 +68,11 @@ ADR-008 D2 は「主要 view 4 つを declarative に実装」を完了基準に
 
 ### 3.1 D1: 最小成立 (1 view)
 
-| view 名 | category | input | output (Rust struct) | consumer | SLO | phase |
-|---|---|---|---|---|---|---|
-| `current_focused_element` | state | `UiaFocusChanged` events from L1 | `UiElementRef { name, automation_id, control_type, window_title }` | L4 envelope.data (desktop_state) | p99 < 1ms | D1 |
+| view 名 | category | input | output (Rust struct) | consumer | SLO | phase | status |
+|---|---|---|---|---|---|---|---|
+| `current_focused_element` | state | `UiaFocusChanged` events from L1 | `UiElementRef { name, automation_id, control_type, window_title }` | L4 envelope.data (desktop_state) | p99 < 1ms | D1 | **Implemented (D1-3)** |
 
-> **D1-2 実装状況 (2026-04-30)**: pipeline 配線は完了 (`src/l3_bridge/focus_pump.rs` + `crates/engine-perception/src/input.rs`)。L1 ring の broadcast 経由で `UiaFocusChanged` event が timely InputSession に届き、`source_event_id` (北極星 N1) と watermark advance (北極星 N2) も実装済。**operator graph 本体 (`current_focused_element` view 自体)** は D1-3 で `crates/engine-perception/src/views/current_focused_element.rs` を新設して追加予定。SLO p99 < 1ms / `Implemented` 表記は D1-3 完了時に flip。
+> **D1-3 実装完了 (2026-04-30)**: operator graph 本体を `crates/engine-perception/src/views/current_focused_element.rs` に新設。`map(FocusEvent → (hwnd, ((wallclock, sub), UiElementRef)))` → `reduce(per-hwnd last-by-time)` → `inspect(diff bookkeeping)` → `Arc<RwLock<HashMap<u64, BTreeMap<UiElementRef, i64>>>>` 読み取り API (`get(hwnd)` / `snapshot()` / `len()` / `is_empty()`)。pivot 4 フィールド (`source_event_id` / `wallclock_ms` / `sub_ordinal` / `timestamp_source`) は output から除外し L4 envelope 側で別途搬送。SLO p99 < 1ms の bench 計測は **D1-5** で実施 (本書 §8 / `docs/adr-008-d1-plan.md` D1-5)。
 
 ### 3.2 D2: 主要 view 4 つ (本書の主スコープ)
 
