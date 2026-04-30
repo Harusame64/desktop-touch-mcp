@@ -328,15 +328,32 @@ fn bench_view_get_miss(c: &mut Criterion) {
 ///   bookkeeping is convergent but order-non-deterministic — see
 ///   `docs/adr-008-d1-followups.md` §3.1).
 fn bench_view_update_latency(c: &mut Criterion) {
-    // SAFETY: this bench owns the perception worker exclusively for
-    // its duration (no other test/bench in this crate reads
-    // `DESKTOP_TOUCH_WATERMARK_SHIFT_MS` while we run). Restored at
-    // the end so subsequent benches in the same process see the
-    // default behaviour.
-    let prior = std::env::var("DESKTOP_TOUCH_WATERMARK_SHIFT_MS").ok();
-    unsafe {
-        std::env::set_var("DESKTOP_TOUCH_WATERMARK_SHIFT_MS", "0");
-    }
+    // **D2-A v3.8 bench setup** (Codex v10 P1/P2 fix follow-up):
+    //
+    // The earlier D2-A v3.7 setup forced `WATERMARK_SHIFT_MS=0` to
+    // collapse the watermark window — that worked when `worker_loop`
+    // released events at `max_wc + 1 sub_ord` immediately after each
+    // cmd batch, but that release shape broke the documented
+    // out-of-order acceptance contract (Codex v10 P1/P2). v3.8 reverts
+    // `worker_loop` to the D1 watermark-shift logic
+    // (`advance_to(max_wc - shift_ms)`), where release is owned by the
+    // idle-advance branch projecting `latest_wallclock + real_elapsed`
+    // forward.
+    //
+    // Under v3.8:
+    //   - With `shift_ms = 0` and a small `wc` increment per iteration,
+    //     idle-advance can race past the next iteration's `wc`, drop
+    //     it as out-of-order, and stall the spin loop. Empirically
+    //     this measured ~32ms p99 — not a real latency, an interaction
+    //     with the bench's own clock.
+    //   - With `shift_ms = default` (100ms) and a 200ms-spaced `wc`
+    //     stream (matching the integration tests in
+    //     `tests/d1_minimum.rs`), each new push lies above the
+    //     idle-advance-projected frontier and the spin loop measures
+    //     genuine engine-perception ingestion latency.
+    //
+    // We deliberately do NOT override `WATERMARK_SHIFT_MS` here so the
+    // bench reflects the production worker's behaviour.
 
     let (worker, handle, view) = spawn_perception_worker();
 
@@ -366,11 +383,16 @@ fn bench_view_update_latency(c: &mut Criterion) {
             for _ in 0..iters {
                 wc_offset += 1;
                 let new_name = format!("upd-{}", wc_offset);
+                // 200ms-spaced wallclocks — matches the integration
+                // tests in `tests/d1_minimum.rs` so each push sits
+                // above the idle-advance-projected frontier (the
+                // projection adds ~real elapsed ms per iteration and
+                // a 200ms gap is comfortably above that).
                 let ev = make_event_with(
                     wc_offset,
                     HWND_LIVE,
                     &new_name,
-                    base_wc + wc_offset * 10, // 10ms apart, monotone
+                    base_wc + wc_offset * 200,
                 );
 
                 let t0 = Instant::now();
@@ -398,16 +420,6 @@ fn bench_view_update_latency(c: &mut Criterion) {
 
     let captured = samples.into_inner().unwrap_or_else(|e| e.into_inner());
     report_samples("view_update_latency", captured);
-
-    // Restore env first so a panic in shutdown still cleans up.
-    match prior {
-        Some(v) => unsafe {
-            std::env::set_var("DESKTOP_TOUCH_WATERMARK_SHIFT_MS", v);
-        },
-        None => unsafe {
-            std::env::remove_var("DESKTOP_TOUCH_WATERMARK_SHIFT_MS");
-        },
-    }
 
     drop(handle);
     worker

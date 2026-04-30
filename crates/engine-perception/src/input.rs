@@ -692,33 +692,52 @@ fn worker_loop(
             // a Shutdown-only / BlockForTest-only batch does NOT
             // advance the frontier or bump processed_count.
             if event_count > 0 {
+                // **N2 watermark-shift contract** (Codex v10 P2):
+                // advance the frontier to `max_wc - shift_ms`, NOT
+                // `max_wc + 1 sub_ord`. The earlier "+1 sub_ord"
+                // shape released the just-pushed event immediately,
+                // which was great for view_update_latency but
+                // *broke* the documented promise that out-of-order
+                // events within `DESKTOP_TOUCH_WATERMARK_SHIFT_MS`
+                // are accepted across batches: a later event at
+                // (wc - 50ms) would be back-dated relative to the
+                // already-advanced frontier and dropped, even though
+                // it falls inside the shift window.
+                //
+                // The integration test
+                // `multiple_hwnds_tracked_independently` documents
+                // this contract by using a "pump" focus event whose
+                // wallclock advances the frontier *past* the
+                // earlier events but is itself NOT released (it sits
+                // above the frontier). The "+1 sub_ord" shape
+                // released the pump event too, growing the snapshot
+                // to 4 entries instead of 3 (Codex v10 P1).
+                //
+                // Restoring `max_wc - shift_ms` here matches D1's
+                // watermark behaviour. The latency improvement
+                // versus D1 still comes from (a) batch-drain
+                // amortising operator-chain steps over multiple
+                // events and (b) `step_until_idle` collapsing the
+                // sleep-between-steps overhead. Releasing the
+                // just-committed event itself is left to the idle-
+                // advance branch as in D1, preserving N2.
                 if let Some(target) = max_observed {
-                    // Frontier moves past the batch's max event_time.
-                    // The watermark we advance to is the max-observed
-                    // tick + 1 sub_ordinal, which is strictly past
-                    // every event we just committed. Subsequent
-                    // batches may include same-`wc`-larger-`sub_ord`
-                    // events; those are within `current_watermark` ≤
-                    // `event_time` so they're accepted. Same-`wc`-
-                    // smaller-`sub_ord` events ARE dropped, but that
-                    // pattern is forbidden by L1 invariant: per-thread
-                    // sub_ordinal is monotone.
-                    let advance_target = LogicalTime::new(
-                        target.first,
-                        target.second.saturating_add(1),
-                    );
-                    if current_watermark.less_equal(&advance_target)
-                        && current_watermark != advance_target
+                    let new_wm = watermark_for(target.first, shift_ms);
+                    if current_watermark.less_equal(&new_wm)
+                        && current_watermark != new_wm
                     {
-                        current_watermark = advance_target.clone();
-                        input.advance_to(advance_target);
+                        current_watermark = new_wm.clone();
+                        input.advance_to(new_wm);
                     }
                 }
                 input.flush();
                 processed.fetch_add(event_count, Ordering::Relaxed);
 
-                // Step until idle (capped) so the inspect callback
-                // emits before we go back to recv_timeout.
+                // Step until idle (capped) so the operator chain
+                // makes progress on whatever the new watermark
+                // released. Newly-pushed events at the watermark
+                // edge are released by the idle-advance branch a
+                // few `recv_timeout` cycles later.
                 let mut steps = 0;
                 while steps < step_cap {
                     if !worker.step() {

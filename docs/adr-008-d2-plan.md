@@ -1,6 +1,6 @@
 # ADR-008 D2 — 主要 view 4 つ + desktop_state focus path view 経由置換プラン
 
-- Status: **Draft v3.7 (起草中、Opus、2026-04-30) — D2-A 実装完了 + 実測値反映、Codex review v1〜v9 反映済 + Opus phase-boundary review (D2-0 phase) 完了**
+- Status: **Draft v3.8 (起草中、Opus、2026-04-30) — D2-A 実装完了、Codex review v1〜v10 反映済 (v10 で N2 contract 修正)、Opus phase-boundary review (D2-0 + D2-A phase) 完了**
 - Date: 2026-04-30
 - Authors: Claude (Opus, max effort) — `desktop-touch-mcp`
 - 親 ADR: `docs/adr-008-reactive-perception-engine.md` §4 D2 / §8 D2
@@ -160,6 +160,62 @@ D2-A (worker_loop tuning revised + true p99 bench + OQ #15 fixture) を実装、
 - root `cargo test --workspace --lib --no-default-features` → 56 passed (lifecycle test 8 件含む、+1 OQ #15 stuck-worker)
 - engine-perception → 31 passed (partial-order test 5 件追加)
 - **合計 87 / 0 fail**、D1-2 / D1-3 / D1-5 / D2-0 既存 test 全て regression 0
+
+### v3.8 (Codex review v10 反映、PR #95 round 1、2026-04-30)
+
+PR #95 (D2-A PR-β) に対する Codex round 10 で **P1 + P2** を発見:
+
+- **P1-8 (D2-A が integration test を破壊)**: `cargo test -p engine-perception` (integration suite 含む) で `tests/d1_minimum.rs::multiple_hwnds_tracked_independently` が **fail** していた (snapshot.len() = 4、期待 3)。原因: `advance_to((max_wc, max_sub_ord+1))` が「pump 用に投げた `0xFEED` event」も即 release する shape になっており、test の watermark-shift 前提 (pump event は frontier を進めるが自身は released されない) を破った。私 (Opus) が D2-A 実装後の検証で `--lib` フラグだけ使い integration test を見落としていた (Sonnet 委譲時の検証フロー敵失でも常に注意すべき)
+- **P2-19 (across-batch watermark-shift contract が壊れた)**: P1 と同根。`(max_wc, max_sub_ord+1)` 設計は同 batch 内の reorder は accept だが、later batch で `(max_wc - 50ms)` event が来ると frontier より古い扱いで drop される。モジュール docstring の「`DESKTOP_TOUCH_WATERMARK_SHIFT_MS` 内の out-of-order event は accept」を裏切る
+
+**修正** (PR #95 へ追加 commit):
+1. `worker_loop` phase 4 の `advance_to` を **`watermark_for(max_wc, shift_ms)` (= `max_wc - shift_ms`) に戻す**。D1 の watermark-shift logic を完全踏襲、N2 contract 維持
+2. **batch-drain と step_until_idle (D2-A の latency 改善の主要因) は維持** — operator chain step の amortization 効果は残る
+3. 「max + 1 sub_ord で即 release」は撤回。released は idle-advance branch (D1 の P2 fix) に任せる、これが D1 と同じ shape
+4. `multiple_hwnds_tracked_independently` 等 integration test は **不変で pass** (D1 watermark logic に戻ったので test の前提が成立)
+5. `view_update_latency` p99 は **bench setup 依存で意味が変わる** ことが判明 (再測の過程で発見)
+
+**実測値 — bench setup 依存性 (重要)**:
+
+`view_update_latency` の数値は worker `WATERMARK_SHIFT_MS` と bench iter 間の `wc` 増分で大きく変わる。N2 contract が変わったわけではなく、**v3.8 では release 経路が `idle-advance` projection (= `latest_wallclock + real_elapsed`、frontier に到達するには `shift_ms` 以上の wall-clock 経過が必要)** に律速されるため、bench は production の caller 周期 (秒オーダ vs 1ms オーダ) と対応する設定で測らねば意味を持たない。
+
+| 設定 | p99 | 注 |
+|---|---|---|
+| D1 baseline (`shift=0`, wc +200ms) | ~4.7ms | 旧 D1-5 数値、shift=0 設定下で idle-advance 1ms cycle で release |
+| D2-A v3.7 (`shift=0`, wc +10ms, max+1 release) | 3.04ms | cmd 分岐で `(max+1, 0)` 即 release。N2 contract 違反 (Codex v10 P1/P2) で **撤回** |
+| D2-A v3.8 (`shift=0`, wc +1000ms) | ~32ms | shift=0 で idle-advance が次 iter wc を追い越し、bench race の artefact (production と無関係) |
+| **D2-A v3.8 (`shift=default 100ms`, wc +200ms、本 PR 数値)** | **~127ms** | release は idle-advance projection 経由で `shift_ms` 待ち = 構造的下限 ~100ms |
+
+**lookup 値 (D2-A v3.8 最終)**:
+- `view_get_hit`: p50/p95/p99/p999 = 200/300/300/500 ns、SLO `< 1ms` 余裕クリア
+- `view_get_miss`: p50/p95/p99/p999 = 0/100/100/300 ns、同上
+
+**SLO 比較は本 D2-A では結論を出さない (再確認)**:
+
+- engine-perception 単独 `view_update_latency` は **bench setup の関数** であり、production caller (MCP tool) からの実質 latency とは別物。`shift_ms` を 0 にすれば数値は下がるが N2 contract は壊れる
+- production 経路は `desktop_state` MCP round-trip (napi + JSON-RPC + L1 ring + focus_pump + view) で、その中で event arrival vs view read の race window は agent polling 周期に依存
+- **D2-B-4 の `d2_desktop_state_roundtrip.mjs` (MCP transport 込み)** が SLO の本来の指標。option C (parking_lot::Condvar 等) は MCP 数値を見てから判断
+- views-catalog §3.1 の SLO `< 1ms` は緩和なし、D2-B 完了後に MCP 数値で再評価する旨 OQ #16 に記録済み (本書 §10)
+
+**bench harness 自身の v3.8 修正 (本 PR に同梱)**:
+
+- `bench_view_update_latency` から `WATERMARK_SHIFT_MS=0` 設定を削除 (default 100ms を使用)
+- wc 増分を 10ms (D1) / 1000ms (一時試行) → **200ms** (D1-2 lifecycle test と整合) に確定
+- 本変更で v3.8 の N2 contract と整合した production-相当の bench 条件を取得
+
+**cargo test (v3.8)**:
+- `cargo test -p engine-perception` (lib + integration) → **31 + 10 = 41 全 pass**、`tests/d1_minimum.rs::multiple_hwnds_tracked_independently` 復活確認
+- `cargo test --workspace --lib --no-default-features` → 56 + 31 = 87 全 pass、D1 / D2-0 既存 test regression 0
+
+**option C (parking_lot::Condvar 等 signal-driven)** の優先度を上げる:
+- v3.8 の修正で `view_update_latency` p99 の改善幅は更に縮小、SLO 未達は確実
+- Codex も「Option C を進める判断に寄っている」、ユーザーも同意
+- ただし production acceptance surface は MCP round-trip (D2-B-4) — option C 着手判断は **D2-B 完了後** という方針は変わらず (OQ #16)
+- 本 PR では N2 contract 維持を優先、option C は別 PR (D2-B 後) で対応
+
+**learning**:
+- 検証フローで `cargo test --lib` ではなく `cargo test --workspace` (integration test 込み) を流すべき
+- Sonnet 委譲時にも明示する必要 (CLAUDE.md feedback として記録)
 
 ### v3.2 (Codex review v4 反映、2026-04-30)
 Codex から P1×1 / P2×2 の指摘。要点:
