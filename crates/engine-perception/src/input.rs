@@ -77,7 +77,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{bounded, Receiver, Sender, TryRecvError};
+use crossbeam_channel::{bounded, Receiver, Sender, TryRecvError, TrySendError};
 use serde::{Deserialize, Serialize};
 
 use differential_dataflow::input::{Input, InputSession};
@@ -236,25 +236,61 @@ impl PerceptionWorker {
     /// is the L1-worker-equivalent retain semantics
     /// (`src/l1_capture/worker.rs:174-194`, Codex review v6 P1).
     ///
-    /// The shutdown signal uses `try_send` (Codex review v7 P2): the
-    /// cmd channel is `bounded(8192)`, and although the UIA focus
-    /// rate (< 10/s) means it is essentially never full in
-    /// production, a panicking caller / stress test / pile-up could
-    /// fill it. A blocking `send` would suspend this method **before
-    /// the deadline is even computed**, defeating `timeout`. With
-    /// `try_send` we drop the signal on full/disconnected and rely
-    /// on the polling loop below to detect the worker exit (which
-    /// will eventually happen because the worker_loop's `try_recv`
-    /// branch advances even without a fresh Cmd::Shutdown — once the
-    /// channel drains the worker observes `Disconnected` and breaks).
+    /// ## Two-phase shape
+    ///
+    /// **Phase 1 — deliver `Cmd::Shutdown`**: The cmd channel is
+    /// `bounded(8192)`, so a blocking `send` would suspend this
+    /// method **before the deadline is even computed** (Codex v7 P2).
+    /// We use `try_send` instead, but a single `try_send` that hits
+    /// `Full` would silently drop the signal — the worker would then
+    /// keep waiting on the channel and `shutdown_with_timeout`
+    /// would always Err even when a healthy worker would have drained
+    /// the backlog and accepted the cmd (Codex v8 P2-15). So we
+    /// retry `try_send` within the same deadline: every
+    /// `poll_interval` we attempt to deliver the cmd, breaking out
+    /// when the send succeeds, the channel disconnects, or the
+    /// deadline expires.
+    ///
+    /// **Phase 2 — wait for the worker to exit**: Once the cmd is
+    /// queued (or the deadline forces us forward without a delivered
+    /// cmd), poll `JoinHandle::is_finished()`. This phase shares the
+    /// same `deadline`, so the total wall-clock spent in both phases
+    /// is bounded by `timeout`. On timeout, the `JoinHandle` is
+    /// retained inside the `Mutex<Option<...>>` so a later
+    /// `shutdown_with_timeout(longer)` resumes the same polling.
     pub fn shutdown_with_timeout(&self, timeout: Duration) -> Result<(), &'static str> {
-        // try_send so a full/disconnected channel does not block this
-        // method before the deadline is created (Codex v7 P2).
-        let _ = self.tx.try_send(Cmd::Shutdown);
-
         let deadline = Instant::now() + timeout;
         let poll_interval = Duration::from_millis(10);
 
+        // ─── Phase 1: deliver Cmd::Shutdown to the cmd channel ──
+        // `try_send` so a full channel does not block; retry inside
+        // the same deadline so a transient pile-up doesn't cause
+        // the call to time out unnecessarily (Codex v8 P2-15).
+        loop {
+            match self.tx.try_send(Cmd::Shutdown) {
+                Ok(()) => break,
+                Err(TrySendError::Disconnected(_)) => {
+                    // Receiver gone — worker is already exiting / exited.
+                    // Phase 2 will observe `is_finished()` shortly.
+                    break;
+                }
+                Err(TrySendError::Full(_)) => {
+                    if Instant::now() >= deadline {
+                        // Deadline hit before the channel drained.
+                        // Fall through to phase 2; if the worker has
+                        // exited via a previously-queued shutdown or
+                        // panic propagation, `is_finished()` will
+                        // observe it. Otherwise we'll Err with the
+                        // worker still running and the JoinHandle
+                        // retained.
+                        break;
+                    }
+                    thread::sleep(poll_interval);
+                }
+            }
+        }
+
+        // ─── Phase 2: poll for worker exit ──────────────────────
         loop {
             // Peek `is_finished()` while holding the guard, then
             // promote to take + join in the same critical section so
@@ -716,6 +752,75 @@ mod tests {
         // Worker must still be alive
         handle.push_focus(make_event(3, 2_000_500, 0));
         worker.shutdown(Duration::from_secs(2)).expect("shutdown");
+    }
+
+    #[test]
+    fn shutdown_with_timeout_retries_send_when_channel_drains() {
+        // Codex review v8 P2-15 regression: a single `try_send` that
+        // hits `Full` would silently drop the shutdown signal, and
+        // a healthy worker that subsequently drains its backlog
+        // would never receive a Cmd::Shutdown — the shutdown call
+        // would Err on timeout even though it could have succeeded.
+        //
+        // The fix is to retry `try_send` inside the same deadline.
+        // This test pre-fills a cap-1 channel with a `PushFocus`,
+        // spawns a worker that drains it after a short delay and
+        // then waits for `Cmd::Shutdown`, and confirms
+        // `shutdown_with_timeout` succeeds within the deadline (not
+        // Err) — i.e. the retry loop delivered the cmd once the
+        // channel had room.
+        use crossbeam_channel::bounded;
+
+        let (tx, rx) = bounded::<Cmd>(1);
+        // Pre-fill so the first try_send by shutdown_with_timeout sees Full.
+        tx.try_send(Cmd::PushFocus(make_event(0, 0, 0)))
+            .expect("first try_send fits");
+
+        // Worker: drain the pre-filled cmd after 50ms (gives us a
+        // window where the channel is full while
+        // shutdown_with_timeout is retrying), then wait for Shutdown.
+        let join = thread::Builder::new()
+            .name("test-draining-worker".into())
+            .spawn(move || {
+                thread::sleep(Duration::from_millis(50));
+                let _ = rx.try_recv(); // drain pre-fill
+                loop {
+                    match rx.recv_timeout(Duration::from_millis(100)) {
+                        Ok(Cmd::Shutdown) => return,
+                        Ok(_) => continue,
+                        Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                        Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return,
+                    }
+                }
+            })
+            .expect("spawn test draining worker");
+
+        let worker = PerceptionWorker {
+            join: Mutex::new(Some(join)),
+            tx,
+            processed_count: Arc::new(AtomicU64::new(0)),
+        };
+
+        // Generous timeout: the worker drains after 50ms, then we
+        // need 1 retry cycle (10ms poll_interval) to deliver the
+        // shutdown, and one more cycle to observe is_finished().
+        // 2 seconds is comfortably above. Under the bug (single
+        // try_send), this would Err with the worker still alive.
+        let start = Instant::now();
+        let result = worker.shutdown_with_timeout(Duration::from_secs(2));
+        let elapsed = start.elapsed();
+
+        assert!(
+            result.is_ok(),
+            "retry loop must deliver Cmd::Shutdown after channel drains (got {:?}, elapsed {:?})",
+            result,
+            elapsed
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "shutdown should complete well before deadline once channel drains (took {:?})",
+            elapsed
+        );
     }
 
     #[test]

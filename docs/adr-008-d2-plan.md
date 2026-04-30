@@ -1,6 +1,6 @@
 # ADR-008 D2 — 主要 view 4 つ + desktop_state focus path view 経由置換プラン
 
-- Status: **Draft v3.4 (起草中、Opus、2026-04-30) — Codex review v1 + v2 + v3 + v4 + v6 + v7 反映済 + Opus phase-boundary review (D2-0 phase) 完了**
+- Status: **Draft v3.5 (起草中、Opus、2026-04-30) — Codex review v1 + v2 + v3 + v4 + v6 + v7 + v8 反映済 + Opus phase-boundary review (D2-0 phase) 完了**
 - Date: 2026-04-30
 - Authors: Claude (Opus, max effort) — `desktop-touch-mcp`
 - 親 ADR: `docs/adr-008-reactive-perception-engine.md` §4 D2 / §8 D2
@@ -77,6 +77,23 @@ v3.3 の P1 修正に対し Codex round 7 で **P2 を発見**:
 5. cargo test: engine-perception 24 → **25 pass** (新 test 含む)、root 55 維持
 
 これで「shutdown が channel-full で block しない」が **コード + コメント + 直接 measure test の 3 重 pin**。
+
+### v3.5 (Codex review v8 反映、PR #94 round 3、2026-04-30)
+v3.4 の修正に対し Codex round 8 で **2 P2** を発見:
+
+- **P2-15 (full-channel で shutdown signal が drop される)**: `try_send(Cmd::Shutdown)` が `Full` を返すと shutdown 命令が discard される。channel が full のまま worker が backlog を drain して empty になっても、shutdown signal は届かず `Disconnected` も観測しない → 健全な worker でも shutdown timeout で Err
+- **P2-16 (失敗 pipeline shutdown で half-stopped state が永続化)**: pump 成功 → worker 失敗のシナリオで pump.join は take 済 + pump shutdown flag set だが、retain Arc は slot 占有。後続 `ensure_perception_pipeline()` が degraded pipeline (L1 event 転送停止済) を返してしまい、新 caller が「使える」と思って取得 → contract violation
+
+**修正**:
+1. **P2-15: `try_send` retry loop**: `PerceptionWorker::shutdown_with_timeout` を **2-phase 化** — phase 1 で `try_send(Cmd::Shutdown)` を deadline 内で retry (Full なら poll_interval sleep して再 try、Disconnected/Ok なら break)、phase 2 で従来の `is_finished()` polling。channel が transient pile-up でも deadline 内で送れれば成功
+2. **P2-16: poison flag + ensure eviction**:
+   - `PerceptionPipeline.poisoned: AtomicBool` を追加、`shutdown_with_timeout` 失敗時に set
+   - `ensure_perception_pipeline()` で existing が `is_poisoned()` なら best-effort `shutdown_with_timeout(100ms)` 再試行 → slot を `None` → fresh pipeline spawn
+   - `is_poisoned()` は public method で、stale Arc を持つ caller も状態を観測可能 (view 等の read は post-poison でも safe)
+3. **既存 test 更新**: `shutdown_timeout_failure_retains_slot` を v3.5 設計反映で `shutdown_timeout_failure_poisons_slot_and_evicts_on_next_ensure` にリネーム + 仕様変更 (poison + evict 動作を直接 assert)
+4. **新 regression test**:
+   - `shutdown_with_timeout_retries_send_when_channel_drains` (engine-perception): pre-fill channel + drain-eventually worker で retry loop が cmd を deliver して Ok を返すことを直接 measure
+5. cargo test: root 55 pass + engine-perception 26 pass (+1 新) = **81 pass / 0 fail**
 
 ### v3.2 (Codex review v4 反映、2026-04-30)
 Codex から P1×1 / P2×2 の指摘。要点:
@@ -881,6 +898,8 @@ D2-E0 / D2-E と整合: **`Arranged` を外部 struct に保持せず、同 `wor
 | R17 | shutdown 失敗時に slot を空にして二重 worker を spawn する flaky 障害 (Codex v4 P1-6、北極星) | 高 | API signature を `Result<(), &'static str>` に修正、**成功時のみ slot clear / `Arc::ptr_eq` で同一インスタンス確認 / 失敗時は元 Arc retain** を D2-0-2 に北極星扱いで明記、regression test (D2-0-3 の 3 test) で後続 PR が壊さないよう pin |
 | R18 | timeout 失敗時に pump or worker leg が consume されて degraded pipeline が永久化、retry が `Ok(())` no-op で slot clear → 二重 worker spawn (Codex v6 P1 北極星 violation) | 高 | `PerceptionWorker` / `FocusPump` 自体に retain-on-timeout 型 `shutdown_with_timeout(&self, ...)` を実装 (`Mutex<Option<JoinHandle>>` で is_finished polling、L1 同型)、`PerceptionPipeline` 側は `Mutex` なしで薄い委譲のみ。`shutdown_timeout_failure_retains_slot` / `pipeline_recovers_from_partial_shutdown` の 2 test で `Duration::from_nanos(1)` を使い直接 pin |
 | R19 | shutdown signal の `tx.send` が bounded channel full で block、deadline を作る前に止まり timeout が効かない (Codex v7 P2) | 中 | `try_send` を使用 (`shutdown_with_timeout` + `Drop` の Cmd::Shutdown 送信箇所)、push_focus は ordering 保持のため `send` 維持。`shutdown_with_timeout_does_not_block_on_full_channel` test で channel-full + stuck worker シナリオを直接 measure (regression 時は 3s block で fail) |
+| R20 | `try_send(Cmd::Shutdown)` が一発で Full なら signal drop、worker drain 後も signal 不届きで shutdown が空回り timeout (Codex v8 P2-15) | 中 | `shutdown_with_timeout` を 2-phase 化、phase 1 で `try_send` を deadline 内 retry (Full なら poll_interval sleep して再 try)、phase 2 で従来 polling。`shutdown_with_timeout_retries_send_when_channel_drains` test で drain-eventually worker から retry 成功経路を直接 measure |
+| R21 | failed shutdown が pipeline を half-stopped state で slot 占有、後続 `ensure_perception_pipeline()` が degraded pipeline を新 caller に渡す (Codex v8 P2-16) | 高 | `PerceptionPipeline.poisoned: AtomicBool` を追加、shutdown 失敗時 set。`ensure_perception_pipeline` で `is_poisoned()` 検出時 best-effort 再 shutdown → slot evict → fresh spawn。`shutdown_timeout_failure_poisons_slot_and_evicts_on_next_ensure` test で full sequence (poison set / stale Arc 観測 / fresh ensure) を pin |
 
 ---
 

@@ -34,6 +34,7 @@
 
 pub(crate) mod focus_pump;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -156,6 +157,19 @@ pub struct PerceptionPipeline {
     pub handle: FocusInputHandle,
     worker: PerceptionWorker,
     pump: FocusPump,
+    /// Set when `shutdown_with_timeout` returns `Err` from either leg
+    /// (Codex review v8 P2-16). A poisoned pipeline has lost the
+    /// retain-on-timeout safety: at minimum the pump has signalled
+    /// its `shutdown` flag (so the L1 → engine forward path is
+    /// stopped), and one of the legs may have its `JoinHandle`
+    /// already taken — the pipeline can no longer be considered
+    /// "live" for the production caller. `ensure_perception_pipeline`
+    /// detects this flag and evicts the slot, retrying the shutdown
+    /// once and respawning. Without this guard, the slot's
+    /// `Arc<PerceptionPipeline>` would be returned by `ensure(...)`
+    /// after a failed shutdown attempt, exposing callers to a
+    /// half-stopped pipeline that no longer forwards events.
+    poisoned: AtomicBool,
 }
 
 impl PerceptionPipeline {
@@ -169,16 +183,47 @@ impl PerceptionPipeline {
     /// `PERCEPTION_SLOT`) retains the original `Arc<PerceptionPipeline>`
     /// so a later `ensure_perception_pipeline()` returns the same
     /// instance and does NOT spawn a second worker.
+    ///
+    /// **Poison on first failure** (Codex v8 P2-16): if either leg
+    /// fails (or both), we set `self.poisoned`. The retain-Arc is
+    /// still useful for a `shutdown_perception_pipeline_for_test`
+    /// retry path (which does not re-check `poisoned`), but
+    /// `ensure_perception_pipeline()` checks it and evicts the slot
+    /// instead of handing out a half-stopped pipeline.
     pub fn shutdown_with_timeout(&self, timeout: Duration) -> Result<(), &'static str> {
         let half = timeout / 2;
-        // 1. pump first — its Subscription Drop unsubscribes from the
-        // L1 ring before the worker thread sees Cmd::Shutdown, so any
-        // event in flight is forwarded before the channel disconnects.
-        self.pump.shutdown_with_timeout(half)?;
-        // 2. worker — its `is_finished()` polling honours `half` even
-        // if the worker is mid-step.
-        self.worker.shutdown_with_timeout(half)?;
-        Ok(())
+        let pump_result = self.pump.shutdown_with_timeout(half);
+        // Attempt the worker leg even if the pump failed — its
+        // JoinHandle is retained on Err either way, so a retry
+        // path can still complete it.
+        let worker_result = self.worker.shutdown_with_timeout(half);
+
+        match (pump_result, worker_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(e), _) | (_, Err(e)) => {
+                // Either leg's failure means the pipeline is no
+                // longer fully live: pump.shutdown stored `true` on
+                // its own shutdown AtomicBool before polling, so
+                // even if the pump's JoinHandle was retained, its
+                // forwarder thread is winding down. Mark poisoned
+                // so `ensure_perception_pipeline()` can evict.
+                self.poisoned.store(true, Ordering::SeqCst);
+                Err(e)
+            }
+        }
+    }
+
+    /// Whether `shutdown_with_timeout` has ever failed on this
+    /// pipeline. A poisoned pipeline must not be returned from
+    /// `ensure_perception_pipeline()` to a fresh production caller —
+    /// at best the pump has stopped forwarding L1 events, at worst
+    /// one or both threads are still alive but in an undefined
+    /// post-signal state. Callers that already hold an `Arc` to a
+    /// poisoned pipeline can still read `view`/`latest_focus_view`
+    /// safely (those are pure data) but should not push new events
+    /// or expect new ones from L1.
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned.load(Ordering::Acquire)
     }
 }
 
@@ -193,9 +238,36 @@ static PERCEPTION_SLOT: OnceLock<Mutex<Option<Arc<PerceptionPipeline>>>> = OnceL
 /// First call spawns the perception worker, takes the L1 ring from
 /// `ensure_l1()`, and starts the focus pump. Subsequent calls simply
 /// `Arc::clone` the existing slot.
+///
+/// **Poisoned-slot eviction** (Codex review v8 P2-16): if a previous
+/// `shutdown_with_timeout` call returned `Err`, the slot's pipeline
+/// is marked poisoned (one or both legs are no longer live). To
+/// avoid handing a half-stopped pipeline to a new production caller,
+/// we detect the poison flag, attempt one best-effort shutdown
+/// retry (short timeout to bound the call), drop the slot whether
+/// the retry succeeds or fails, and spawn a fresh pipeline. Any
+/// caller still holding an `Arc` to the old (poisoned) pipeline
+/// keeps it — `view`/`latest_focus_view` reads remain safe — but
+/// is no longer the slot's "live" instance.
 pub fn ensure_perception_pipeline() -> Arc<PerceptionPipeline> {
     let cell = PERCEPTION_SLOT.get_or_init(|| Mutex::new(None));
     let mut guard = cell.lock().unwrap_or_else(|e| e.into_inner());
+
+    // Poisoned-slot eviction (Codex v8 P2-16). Best-effort retry the
+    // shutdown so we drop a clean slot when possible; either way,
+    // clear it so the spawn below produces a fresh pipeline.
+    if let Some(existing) = guard.as_ref() {
+        if existing.is_poisoned() {
+            // Best-effort: give the worker / pump a short window to
+            // finish if a previous timeout attempt was close. We
+            // don't propagate the result — even if it Errs again,
+            // we evict the slot. The orphaned threads (if any) will
+            // exit when the channel disconnects on Arc drop.
+            let _ = existing.shutdown_with_timeout(Duration::from_millis(100));
+            *guard = None;
+        }
+    }
+
     if guard.is_none() {
         *guard = Some(Arc::new(spawn_pipeline_inner()));
     }
@@ -281,6 +353,7 @@ fn spawn_pipeline_inner() -> PerceptionPipeline {
         handle,
         worker,
         pump,
+        poisoned: AtomicBool::new(false),
     }
 }
 
@@ -865,30 +938,33 @@ mod production_pipeline_lifecycle_tests {
             .expect("teardown clean");
     }
 
-    /// Test 6 — timeout-failure path **retains** the slot's `Arc`
-    /// (Codex v4 P1-6 北極星 + v6 P1: pipeline must remain functional
-    /// after a failed shutdown attempt). Uses `Duration::from_nanos(1)`
-    /// to force the deadline to expire before the polling loop
-    /// observes `is_finished()` true, exercising the `Err` arm of
-    /// `shutdown_perception_pipeline_for_test` without needing a
-    /// worker-blocking fixture.
+    /// Test 6 — failed shutdown poisons the pipeline; the next
+    /// `ensure_perception_pipeline()` evicts the slot and spawns a
+    /// fresh instance instead of handing out a half-stopped pipeline
+    /// (Codex review v8 P2-16). The v6 P1 contract that "the slot
+    /// retains the original `Arc`" is still satisfied for the brief
+    /// window between the failed shutdown and the next `ensure` —
+    /// long enough for `shutdown_perception_pipeline_for_test` to
+    /// retry and complete the shutdown without re-spawning. But once
+    /// `ensure` is called (the production path back into a live
+    /// pipeline), eviction kicks in.
     ///
     /// Asserts:
     ///   1. `Err` is returned (shutdown timed out).
-    ///   2. The slot still holds the **same** `Arc<PerceptionPipeline>`.
-    ///   3. A subsequent `ensure_perception_pipeline()` returns that
-    ///      same instance — proving no duplicate worker was spawned.
-    ///   4. A retry with a longer timeout succeeds (handle was retained,
-    ///      polling resumes; under v6 P1 this would have hung or
-    ///      no-op'd erroneously).
+    ///   2. The retained `Arc` reports `is_poisoned() == true`.
+    ///   3. A subsequent `ensure_perception_pipeline()` returns a
+    ///      pipeline with `is_poisoned() == false` (fresh instance).
+    ///   4. The original Arc, still held by the test, also reports
+    ///      `is_poisoned() == true` (poison flag is on the value
+    ///      itself, not a per-Arc shadow).
     #[test]
-    fn shutdown_timeout_failure_retains_slot() {
+    fn shutdown_timeout_failure_poisons_slot_and_evicts_on_next_ensure() {
         let _guard = lifecycle_lock().lock().unwrap_or_else(|e| e.into_inner());
         drain_slot();
 
         let p1 = ensure_perception_pipeline();
+        assert!(!p1.is_poisoned(), "fresh pipeline must not be poisoned");
         let arc1_addr = Arc::as_ptr(&p1) as usize;
-        drop(p1);
 
         // Force a timeout. 1ns is below the polling interval (10ms)
         // so the deadline always expires before is_finished() flips.
@@ -899,35 +975,42 @@ mod production_pipeline_lifecycle_tests {
             result
         );
 
-        // (2) slot retained — still Some + still the same Arc.
-        let same_arc_in_slot = {
+        // (2) slot retained, and the pipeline self-reports poisoned.
+        {
             let g = PERCEPTION_SLOT
                 .get()
                 .expect("slot OnceLock initialised")
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            g.as_ref().map(|a| Arc::as_ptr(a) as usize)
-        };
-        assert_eq!(
-            same_arc_in_slot,
-            Some(arc1_addr),
-            "slot must retain the original Arc after timeout (Codex v4 P1-6 北極星)"
-        );
+            let arc = g.as_ref().expect("slot still populated after timeout");
+            assert_eq!(Arc::as_ptr(arc) as usize, arc1_addr);
+            assert!(
+                arc.is_poisoned(),
+                "failed shutdown must mark pipeline poisoned (Codex v8 P2-16)"
+            );
+        }
 
-        // (3) ensure returns the same instance — no duplicate worker.
+        // (3) Outstanding clone also observes the poison — the flag
+        // lives on the `PerceptionPipeline` value, not on a per-Arc
+        // shadow. Callers holding stale clones can detect the
+        // poisoned state directly.
+        assert!(p1.is_poisoned(), "outstanding Arc clone observes poison");
+        drop(p1);
+
+        // (4) ensure() now triggers eviction + respawn. The new
+        // pipeline is not poisoned. We can't reliably assert
+        // `Arc::as_ptr(&p2) != arc1_addr` because the allocator
+        // legitimately reuses freed slots; `is_poisoned()` is the
+        // discriminator.
         let p2 = ensure_perception_pipeline();
-        assert_eq!(
-            Arc::as_ptr(&p2) as usize,
-            arc1_addr,
-            "ensure after timeout must return the original Arc, not spawn a new one"
+        assert!(
+            !p2.is_poisoned(),
+            "ensure after poison must spawn a fresh (non-poisoned) pipeline"
         );
         drop(p2);
 
-        // (4) retry with a real timeout succeeds (Codex v6 P1 retain
-        // semantics: the JoinHandle inside PerceptionWorker / FocusPump
-        // is still polling the same thread).
         shutdown_perception_pipeline_for_test(Duration::from_secs(2))
-            .expect("longer-timeout retry must succeed (handle retained)");
+            .expect("teardown clean");
     }
 
     /// Test 7 — partial-shutdown failure scenario: pump succeeds but
