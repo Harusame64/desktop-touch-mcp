@@ -5,10 +5,14 @@
 //! `current_focused_element` view; D2 onwards adds more views, time-travel,
 //! cyclic / lens computation, HW-accelerated views, and replay.
 //!
-//! Currently empty: scaffolding lands in PR-α (ADR-008 D1-0). Subsequent
-//! sub-batches (D1-1 dependencies, D1-2 L1 input adapter, D1-3 view) will
-//! populate this crate.
+//! D1-2 (this PR): the input pipeline (`L1Sink` + `FocusInputHandle` +
+//! timely worker thread + watermark advance). D1-3 will add the
+//! `current_focused_element` operator graph in a `views/` submodule.
 
 /// L1Sink trait + pure data types received from the root crate's
 /// `src/l3_bridge/` adapter. See `docs/adr-007-p5c-plan.md` §12.
 pub mod input;
+
+/// Logical time / timestamp type (`Pair<u64, u32>`). Custom because
+/// timely 0.29 only impls `Refines<()>` for primitive ints, not tuples.
+pub mod time;
