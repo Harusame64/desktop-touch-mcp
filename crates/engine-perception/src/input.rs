@@ -235,12 +235,22 @@ impl PerceptionWorker {
     /// so a later `shutdown_with_timeout(longer)` can resume — this
     /// is the L1-worker-equivalent retain semantics
     /// (`src/l1_capture/worker.rs:174-194`, Codex review v6 P1).
+    ///
+    /// The shutdown signal uses `try_send` (Codex review v7 P2): the
+    /// cmd channel is `bounded(8192)`, and although the UIA focus
+    /// rate (< 10/s) means it is essentially never full in
+    /// production, a panicking caller / stress test / pile-up could
+    /// fill it. A blocking `send` would suspend this method **before
+    /// the deadline is even computed**, defeating `timeout`. With
+    /// `try_send` we drop the signal on full/disconnected and rely
+    /// on the polling loop below to detect the worker exit (which
+    /// will eventually happen because the worker_loop's `try_recv`
+    /// branch advances even without a fresh Cmd::Shutdown — once the
+    /// channel drains the worker observes `Disconnected` and breaks).
     pub fn shutdown_with_timeout(&self, timeout: Duration) -> Result<(), &'static str> {
-        // Repeated sends are harmless — the worker_loop matches on
-        // Cmd::Shutdown and breaks. If the channel is full we just
-        // drop the signal; the channel is sized 8192 vs UIA rate
-        // < 10/s so the channel is essentially never full.
-        let _ = self.tx.send(Cmd::Shutdown);
+        // try_send so a full/disconnected channel does not block this
+        // method before the deadline is created (Codex v7 P2).
+        let _ = self.tx.try_send(Cmd::Shutdown);
 
         let deadline = Instant::now() + timeout;
         let poll_interval = Duration::from_millis(10);
@@ -283,8 +293,11 @@ impl PerceptionWorker {
 
 impl Drop for PerceptionWorker {
     fn drop(&mut self) {
-        // Best-effort: signal shutdown. Don't block in Drop.
-        let _ = self.tx.send(Cmd::Shutdown);
+        // Best-effort: signal shutdown. Don't block in Drop —
+        // try_send keeps Drop bounded even if the cmd channel is
+        // full or already disconnected (Codex v7 P2 / Drop must
+        // not stall on a degenerate state).
+        let _ = self.tx.try_send(Cmd::Shutdown);
         let handle_opt = self
             .join
             .lock()
@@ -703,6 +716,75 @@ mod tests {
         // Worker must still be alive
         handle.push_focus(make_event(3, 2_000_500, 0));
         worker.shutdown(Duration::from_secs(2)).expect("shutdown");
+    }
+
+    #[test]
+    fn shutdown_with_timeout_does_not_block_on_full_channel() {
+        // Codex review v7 P2 regression: `shutdown_with_timeout` must
+        // not block on `Sender::send` when the cmd channel is full.
+        // The fix is `try_send`. This test pins the behaviour:
+        //
+        //   1. Build a `PerceptionWorker` whose cmd channel has
+        //      capacity 1.
+        //   2. Pre-fill the channel with a sentinel so any further
+        //      send would block.
+        //   3. Spawn a dummy "worker" thread that holds the receiver
+        //      end so the channel stays connected and never drains
+        //      (simulating a stuck worker_loop / panicked worker).
+        //   4. Call `shutdown_with_timeout(50ms)` and measure the
+        //      elapsed time.
+        //   5. Assert the call returned `Err` (timeout) and finished
+        //      within ~5x the deadline. With the bug (`send` instead
+        //      of `try_send`) this would block indefinitely on the
+        //      full channel before even computing the deadline; the
+        //      test would hang and eventually time out at the cargo
+        //      test level.
+        use crossbeam_channel::bounded;
+
+        let (tx, rx) = bounded::<Cmd>(1);
+        // Pre-fill channel — any further send would block.
+        tx.try_send(Cmd::Shutdown).expect("first try_send fits");
+
+        // Dummy worker: holds `rx` so the channel stays connected,
+        // never drains. This simulates a stuck / panicked worker
+        // that ignores Cmd::Shutdown.
+        let join = thread::Builder::new()
+            .name("test-stuck-worker".into())
+            .spawn(move || {
+                // Hold rx for longer than the test's deadline so
+                // Disconnected can't unblock the assertion.
+                let _rx_held = rx;
+                thread::sleep(Duration::from_secs(3));
+            })
+            .expect("spawn test stuck worker");
+
+        let worker = PerceptionWorker {
+            join: Mutex::new(Some(join)),
+            tx,
+            processed_count: Arc::new(AtomicU64::new(0)),
+        };
+
+        let start = Instant::now();
+        let result = worker.shutdown_with_timeout(Duration::from_millis(50));
+        let elapsed = start.elapsed();
+
+        assert!(
+            result.is_err(),
+            "stuck worker + full channel must produce timeout Err, got {:?}",
+            result
+        );
+        // Deadline 50ms + poll interval 10ms + scheduler slack. If
+        // the bug (`send` instead of `try_send`) regresses, the call
+        // would block on the full channel for the full 3-second
+        // dummy-worker sleep before even starting the deadline, so a
+        // 500ms ceiling is comfortably above the correct path and
+        // well below the failure mode.
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "shutdown_with_timeout must respect deadline despite full channel \
+             (took {:?}; would block indefinitely under the v6 send-vs-try_send bug)",
+            elapsed
+        );
     }
 
     #[test]

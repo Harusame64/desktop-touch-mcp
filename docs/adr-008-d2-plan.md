@@ -1,6 +1,6 @@
 # ADR-008 D2 — 主要 view 4 つ + desktop_state focus path view 経由置換プラン
 
-- Status: **Draft v3.3 (起草中、Opus、2026-04-30) — Codex review v1 + v2 + v3 + v4 + v6 反映済 + Opus phase-boundary review (D2-0 phase) 完了**
+- Status: **Draft v3.4 (起草中、Opus、2026-04-30) — Codex review v1 + v2 + v3 + v4 + v6 + v7 反映済 + Opus phase-boundary review (D2-0 phase) 完了**
 - Date: 2026-04-30
 - Authors: Claude (Opus, max effort) — `desktop-touch-mcp`
 - 親 ADR: `docs/adr-008-reactive-perception-engine.md` §4 D2 / §8 D2
@@ -63,6 +63,20 @@ PR #94 (D2-0 PR-α) に対する Codex round 6 で **P1 級バグ** 発見:
 5. OQ #14 を Resolved 化、§2 D2-A-0 carry-over 解消
 
 これで「shutdown 失敗時に二重 worker を作らない」北極星が **設計 + 実装 + test 3 重で pin** された。L1 layer と完全同型。
+
+### v3.4 (Codex review v7 P2 反映、PR #94 round 2、2026-04-30)
+v3.3 の P1 修正に対し Codex round 7 で **P2 を発見**:
+
+- **P2-14 (shutdown signal が full channel で block)**: `PerceptionWorker::shutdown_with_timeout` の最初で `self.tx.send(Cmd::Shutdown)` を呼ぶが、`crossbeam_channel::Sender::send` は **bounded channel が full の場合 block する**。production の UIA rate (< 10/s) vs capacity 8192 で実質 fill しないが、stuck worker / panicked worker / stress test で channel が満杯になると **deadline を作る前に send が block** → timeout が効かない
+
+**修正**:
+1. `PerceptionWorker::shutdown_with_timeout` の `self.tx.send(Cmd::Shutdown)` を **`self.tx.try_send(Cmd::Shutdown)`** に変更 — full / disconnected で即 Err、deadline 経路に進める
+2. `PerceptionWorker::Drop` も同様に `try_send` 化 (Drop は best-effort、block 不可)
+3. `push_focus` 経路の `tx.send(Cmd::PushFocus(...))` は **不変** (event push、ordering 保持のため block 仕様、capacity vs rate ratio で実質 block しない)
+4. **新 regression test `shutdown_with_timeout_does_not_block_on_full_channel`**: bounded(1) を fill した状態で stuck dummy worker を spawn、`shutdown_with_timeout(50ms)` が 500ms 以内に Err を返すことを measure。`send` への regression があれば 3 秒 block して fail
+5. cargo test: engine-perception 24 → **25 pass** (新 test 含む)、root 55 維持
+
+これで「shutdown が channel-full で block しない」が **コード + コメント + 直接 measure test の 3 重 pin**。
 
 ### v3.2 (Codex review v4 反映、2026-04-30)
 Codex から P1×1 / P2×2 の指摘。要点:
@@ -866,6 +880,7 @@ D2-E0 / D2-E と整合: **`Arranged` を外部 struct に保持せず、同 `wor
 | R16 | `JoinHandle::join()` を直呼びすると timeout が無効で test が無期限 block (Codex v4 P2-12) | 高 | 既存 `worker.rs:174-194` と同じ `deadline + is_finished() polling` pattern に修正、D2-0-3 で timeout 失敗 test を pin (worker_loop を block する fixture で意図的に Err 経路を踏む) |
 | R17 | shutdown 失敗時に slot を空にして二重 worker を spawn する flaky 障害 (Codex v4 P1-6、北極星) | 高 | API signature を `Result<(), &'static str>` に修正、**成功時のみ slot clear / `Arc::ptr_eq` で同一インスタンス確認 / 失敗時は元 Arc retain** を D2-0-2 に北極星扱いで明記、regression test (D2-0-3 の 3 test) で後続 PR が壊さないよう pin |
 | R18 | timeout 失敗時に pump or worker leg が consume されて degraded pipeline が永久化、retry が `Ok(())` no-op で slot clear → 二重 worker spawn (Codex v6 P1 北極星 violation) | 高 | `PerceptionWorker` / `FocusPump` 自体に retain-on-timeout 型 `shutdown_with_timeout(&self, ...)` を実装 (`Mutex<Option<JoinHandle>>` で is_finished polling、L1 同型)、`PerceptionPipeline` 側は `Mutex` なしで薄い委譲のみ。`shutdown_timeout_failure_retains_slot` / `pipeline_recovers_from_partial_shutdown` の 2 test で `Duration::from_nanos(1)` を使い直接 pin |
+| R19 | shutdown signal の `tx.send` が bounded channel full で block、deadline を作る前に止まり timeout が効かない (Codex v7 P2) | 中 | `try_send` を使用 (`shutdown_with_timeout` + `Drop` の Cmd::Shutdown 送信箇所)、push_focus は ordering 保持のため `send` 維持。`shutdown_with_timeout_does_not_block_on_full_channel` test で channel-full + stuck worker シナリオを直接 measure (regression 時は 3s block で fail) |
 
 ---
 
