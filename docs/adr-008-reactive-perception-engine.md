@@ -135,6 +135,8 @@ timely + DD の `arrangement` は `(key, val, time, diff)` 4-tuple の LSM-tree 
 
 ### 3.2 主要 view の例 (D2 で実装する 4 view)
 
+> **D2-C0 ゲート確定 (2026-05-01、PR #99)**: `dirty_rects_aggregate` は ADR-007 P5c-2 prerequisite として **carry-over**、本 D2 で実装する view は 3 つ (`current_focused_element` / `semantic_event_stream` (`FocusMoved` variant 単独) / `predicted_post_state`)。`semantic_event_stream` の `WindowChanged` / `ScrollSettled` / `ModalAppeared` variant も P5c-3/4 + dialog event 配線後の別 phase。詳細は `docs/adr-008-d2-plan.md` §D2-C0 + §10 OQ #1 / #3 / #17。本表の本格的書き換えは D2-G で実施。
+
 | view 名 | 入力 | 用途 | 旧 tool との対応 |
 |---|---|---|---|
 | `current_focused_element` | UIA focus event | 現在 focus 要素 | `desktop_state.focused` |
@@ -183,7 +185,7 @@ external clock (hw)        timely internal frontier
 | Phase | 範囲 | 完了基準 |
 |---|---|---|
 | **D1: 最小成立** | timely + DD を `engine-perception` crate に組込み、event log → `current_focused_element` の最小 view | 1 view が incrementally 更新、unit test pass、TS 版より latency 1/10 |
-| **D2: 主要 view 4 つ** | `dirty_rects_aggregate` / `semantic_event_stream` / `predicted_post_state` を declarative に | 既存 `desktop_state` を全部 view 経由に置換、tool 結果が同一 (回帰なし) |
+| **D2: 主要 view 4 つ** | `dirty_rects_aggregate` / `semantic_event_stream` / `predicted_post_state` を declarative に — **D2-C0 ゲート (PR #99) で `dirty_rects_aggregate` は P5c-2 prerequisite carry-over、本 D2 では 3 view (詳細 `docs/adr-008-d2-plan.md` §D2-C0)** | 既存 `desktop_state` を全部 view 経由に置換、tool 結果が同一 (回帰なし) — focus path のみ本 D2 完了、modal/attention は D4 carry-over (`docs/adr-008-d2-plan.md` §1.3) |
 | **D3: time-travel** | arrangement の time slice で `state_at(t)` 実装 | 「2 秒前の state」が引ける、p95 latency < 5ms |
 | **D4: cyclic RPG** | lens 依存を timely `iterative` で実装 | lens 再計算が fixed-point で settle、無限ループなし |
 | **D5: HW operator hybrid** | `DataflowAccelerator` trait + Tier 0-3 実装 + dispatch | `change_fraction` が Tier 3 で動作、Tier 0 fallback も動作 |

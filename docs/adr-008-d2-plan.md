@@ -631,11 +631,20 @@ D1 `current_focused_element` view は `hwnd` を key にした per-hwnd state (f
 #### D2-C0-4: 検証 + Opus 判断 (2026-05-01)
 
 - [x] D2-C0-1 grep 結果を本書 §10 OQ #1 #3 に書き戻し、両 OQ Resolved 化済
-- [ ] **Opus phase-boundary review**: 「不足 emit site (P5c-2/P5c-3/P5c-4) を ADR-007 で先行実装するか、D2 内で同時実装するか」の判断を Opus に委譲。判断材料:
-  - **ADR-007 prerequisite 案** (時系列順): D2-C は P5c-2 完了後、D2-D `WindowChanged`/`ScrollSettled` variant 拡張は P5c-3/4 完了後。各 PR が独立、plan 構造的に綺麗
-  - **D2 内同時実装案** (scope 拡大): D2-C の前段に P5c-2 emit site 実装を組み込み、view + emit を 1 PR で landing。closing loop が短い反面 D2-C PR が大きくなる
-  - 本 plan 著者推奨は **ADR-007 prerequisite 案** (PR 粒度を保ちやすい、emit site 単体で test 書きやすい)
-  - Opus 結論を本書 §10 に「OQ #1 #3 補足」として記録
+- [x] **Opus phase-boundary review (2026-05-01、PR #99 review pass)**: 「不足 emit site (P5c-2/P5c-3/P5c-4) を ADR-007 で先行実装するか、D2 内で同時実装するか」の判断を Opus に委譲、結論確定。
+
+  **Opus 判断: ADR-007 prerequisite 先行案を採用** (著者推奨に同意)。
+
+  **根拠** (Opus review):
+  1. **PR ownership の純粋性**: D2-C/D は `crates/engine-perception/src/views/` の declarative view (timely + DD)、P5c-2/3/4 は `src/uia/event_handlers/` / `src/duplication/` の emit site 配線。**完全に異なるレイヤ・異なる owner mental model**。1 PR に混ぜると review reviewer が timely operator semantic と win32 callback semantic を同時判断する必要があり、review cost が跳ねる。PR #96 / #97 で実証済の sub-batch 切り効果を活かす
+  2. **test 設計の独立性**: emit site test は **integration** 形 (実 UIA hook + Notepad fixture、PR #88 P5c-1 と同型)。view test は `flow_input → flow_output` の **pure unit** 形で env mutation race も無くせる (`docs/feedback_pure_parser_for_env_helpers.md` 学習)。両者を 1 PR にすると整合 cargo test 経路が複雑化、強制命令 4 (trial & error 2 回上限) を踏みやすい
+  3. **carry-over の reversibility**: prerequisite 案で D2-C を retire しても、view 仕様 (views-catalog §3.2) は固定済で実装手順も §D2-C-1〜D2-C-4 に存在。P5c-2 完了の翌 PR で D2-C 着手可能。逆 (同時実装で巨大 PR が止まる) より取り戻しが容易
+  4. **強制命令 3 整合**: prerequisite 案なら各 phase が独立に Opus phase-boundary review を経る。同時実装案は Opus が「emit + view + integration test」を 1 round で全部判定する必要があり、3 者一致 (概念設計 × plan × 実装) の確認密度が下がる
+
+  **結論を反映した plan 状態**:
+  - PR-ε (D2-C `dirty_rects_aggregate`): ADR-007 P5c-2 完了後の独立 PR で着手 (§3 PR 表で carry-over 明記済)
+  - D2-D は本 D2 で `FocusMoved` 単独 variant、`WindowChanged`/`ScrollSettled` variant 拡張は P5c-3/4 完了後の D2 後継 phase で着手 (§D2-D-1 で確定済)
+  - `ModalAppeared` 派生は UIA dialog/structure event 配線後、別 phase
 
 ### D2-C: `dirty_rects_aggregate` view (PR 9、D2-C0 結果次第で deferred 可)
 
@@ -1117,12 +1126,13 @@ D2-E0 / D2-E と整合: **`Arranged` を外部 struct に保持せず、同 `wor
 | 8 | `predicted_post_state` subgraph で speculation を tool_call_id 単位で GC する方針 | D5 着手時、dummy 実装では全 retain |
 | 9 | `desktop_state.modal` / `attention` の view 化 (D4 担当) | D4 着手時 |
 | 10 | `desktop_state` の at-point / cursor-over element の view 化 | 別 view 新設 phase で OQ 化、本 D2 では既存維持 |
-| 11 | UIA control type id (u32) → 既存文字列名への変換 table の在処 (Rust 側 napi binding に新設 / 既存 UIA bridge に存在 / TS 側 helper) | D2-B-1 着手時に grep、なければ napi binding に新設 (Codex v2 P1-3) |
+| ~~11~~ | ~~UIA control type id (u32) → 既存文字列名への変換 table の在処 (Rust 側 napi binding に新設 / 既存 UIA bridge に存在 / TS 側 helper)~~ | **Resolved (D2-B-1、PR #96)**: `crate::uia::control_type_name` (`src/uia/mod.rs:27`) が既に 40 種マッピング実装済、`view_get_focused` napi binding で reuse (Codex v2 P1-3、§5.bis.4 末尾参照) |
 | 12 | `latest_focus` view と `current_focused_element` の併存 (両方 D2-E0 同 scope 内 build) で arrangement memory が 2 倍にならないか | D2-A bench harness で測定、view 単独 vs 両者併存で memory 比較 (Codex v2 P1-4) |
 | 13 | diff bookkeeping helper (BTreeMap diff-sum + count > 0 rev walk) を `current_focused_element` (per-hwnd) と `latest_focus` (singleton) で共通化するか別実装か | D2-F-1 (current_focused_element の §3.1 強化) と D2-B-2 (latest_focus 新設) のどちらが先かで判断、後発で共通 helper 抽出 (Codex v3 P1-1) |
 | ~~14~~ | ~~D2-0 lifecycle test の timeout 失敗系 2 件 fixture~~ | **Resolved (v3.3, PR #94)**: `PerceptionWorker` / `FocusPump` の retain-on-timeout refactor で fixture 不要化、2 test (`shutdown_timeout_failure_retains_slot` / `pipeline_recovers_from_partial_shutdown`) を `Duration::from_nanos(1)` で本実装 |
 | ~~15~~ | ~~poisoned pipeline + stuck worker scenario の regression test~~ | **Resolved (v3.7, PR-β)**: engine-perception に `Cmd::BlockForTest` + `FocusInputHandle::block_worker_for_test` を `test-fixtures` feature で追加、`poisoned_pipeline_with_stuck_worker_keeps_slot_retained_on_ensure` test で 2s block + 50ms shutdown timeout シナリオを直接 measure |
 | 16 | `view_update_latency` p99 < 1ms SLO の達成可否 (D2-A 実測 3.0ms、D1 baseline 4.7ms から 1.5× 改善ながら未達) | **D2-B 完了後**: `d2_desktop_state_roundtrip.mjs` で MCP transport (napi + JSON-RPC) 込み production 数値を取得、それを fact base に option C (parking_lot::Condvar 等 signal-driven worker_loop) 着手要否を判断。現時点で SLO は緩和せず保留 (ユーザー判断 2026-04-30) |
+| 17 | `SemanticEvent::FocusMoved` を `current_focused_element` view の delta から派生するか、L1 ring から `EventKind::UiaFocusChanged` を直接 filter するか (どちらも declarative で成立、性能 / op graph 複雑度 / `current_focused_element` 内部状態結合の trade-off) | **D2-D 着手時に確定**: 派生案は arranged collection import (D2-E0 と同 scope 配線) が前提、直接 filter 案は L1 ring subscribe + bincode decode hop が pump 側に必要 — いずれも view 単独試作 + bench で性能比較してから Opus 判断 (D2-D-1 §6.1 implementing PR で resolve) |
 
 ---
 
