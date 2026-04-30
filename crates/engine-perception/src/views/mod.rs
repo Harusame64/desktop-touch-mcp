@@ -14,5 +14,7 @@
 //! `docs/views-catalog.md`.
 
 pub mod current_focused_element;
+pub mod latest_focus;
 
 pub use current_focused_element::{CurrentFocusedElementView, UiElementRef};
+pub use latest_focus::LatestFocusView;

@@ -115,4 +115,8 @@ export const l1PollEvents               = nativeBinding.l1PollEvents;
 export const l1GetCaptureStats          = nativeBinding.l1GetCaptureStats;
 export const l1ShutdownForTest          = nativeBinding.l1ShutdownForTest;
 
+// ─── L3 perception view (ADR-008 D2-B-1) ─────────────────────────────────────
+export const viewGetFocused             = nativeBinding.viewGetFocused;
+export const viewFocusedPipelineStatus  = nativeBinding.viewFocusedPipelineStatus;
+
 export default nativeBinding;

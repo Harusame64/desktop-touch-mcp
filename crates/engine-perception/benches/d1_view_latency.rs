@@ -255,7 +255,7 @@ fn populate_view(
 }
 
 fn bench_view_get_hit(c: &mut Criterion) {
-    let (worker, handle, view) = spawn_perception_worker();
+    let (worker, handle, view, _latest_view) = spawn_perception_worker();
     populate_view(&handle, &view, HWND_LIVE, Duration::from_millis(500));
 
     // D2-A-3: capture iteration elapsed for percentile reporting.
@@ -303,7 +303,7 @@ fn bench_view_get_hit(c: &mut Criterion) {
 }
 
 fn bench_view_get_miss(c: &mut Criterion) {
-    let (worker, handle, view) = spawn_perception_worker();
+    let (worker, handle, view, _latest_view) = spawn_perception_worker();
     populate_view(&handle, &view, HWND_LIVE, Duration::from_millis(500));
 
     let samples: Mutex<Vec<Duration>> =
@@ -398,7 +398,7 @@ fn bench_view_update_latency(c: &mut Criterion) {
     // We deliberately do NOT override `WATERMARK_SHIFT_MS` here so the
     // bench reflects the production worker's behaviour.
 
-    let (worker, handle, view) = spawn_perception_worker();
+    let (worker, handle, view, _latest_view) = spawn_perception_worker();
 
     // Prime: drive a first event through and wait for the view to
     // materialise, so subsequent iterations measure pure update

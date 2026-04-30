@@ -65,12 +65,14 @@
 //!
 //! ## Lifecycle
 //!
-//! [`spawn_perception_worker`] returns
-//! `(PerceptionWorker, FocusInputHandle, CurrentFocusedElementView)`.
-//! Drop the handle (or all clones thereof) and call
-//! `PerceptionWorker::shutdown(timeout)` to stop the thread. The view
-//! handle (D1-3) is independent of the worker's lifetime — it remains
-//! readable after shutdown but stops receiving updates.
+//! [`spawn_perception_worker`] returns a 4-tuple
+//! `(PerceptionWorker, FocusInputHandle, CurrentFocusedElementView,
+//! LatestFocusView)` (D2-B-1: `LatestFocusView` added in
+//! `docs/adr-008-d2-plan.md` §5.bis). Drop the handle (or all clones
+//! thereof) and call `PerceptionWorker::shutdown(timeout)` to stop
+//! the thread. Both view handles are independent of the worker's
+//! lifetime — they remain readable after shutdown but stop
+//! receiving updates.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -84,6 +86,7 @@ use differential_dataflow::input::{Input, InputSession};
 
 use crate::time::LogicalTime;
 use crate::views::current_focused_element::{self, CurrentFocusedElementView};
+use crate::views::latest_focus::{self, LatestFocusView};
 
 /// Default per-worker command-channel capacity. Sized for UIA focus
 /// rate (< 10 events/sec under human use); the bridge sleeps for at
@@ -472,27 +475,47 @@ fn max_steps_per_cmd() -> usize {
         .unwrap_or(DEFAULT_MAX_STEPS_PER_CMD)
 }
 
-/// Spawn the timely worker thread + return a triple
-/// `(PerceptionWorker, FocusInputHandle, CurrentFocusedElementView)`.
+/// Spawn the timely worker thread + return a 4-tuple
+/// `(PerceptionWorker, FocusInputHandle, CurrentFocusedElementView, LatestFocusView)`.
 ///
 /// The worker owns the `differential_dataflow::input::InputSession`
 /// and the dataflow graph; the handle is the bridge's seam
-/// (`Arc::new(handle): Arc<dyn L1Sink>`); the view is the read-only
-/// reader-side of the `current_focused_element` materialised state
-/// (D1-3). The view handle is created on the parent thread and cloned
-/// into the worker so the dataflow's inspect callback can write to it.
-pub fn spawn_perception_worker(
-) -> (PerceptionWorker, FocusInputHandle, CurrentFocusedElementView) {
+/// (`Arc::new(handle): Arc<dyn L1Sink>`).
+///
+/// **Two view handles are returned** (D2-B / `docs/adr-008-d2-plan.md`
+/// §5.bis):
+///
+/// - `CurrentFocusedElementView` — per-hwnd state (D1-3, retained).
+/// - `LatestFocusView` — singleton-key state, "latest globally
+///   focused element". Production `desktop_state.ts` reads this one
+///   because the focused element's `hwnd` is not always equal to the
+///   foreground-window hwnd (Codex v3 P1-4).
+///
+/// Both views are cloned into the same `worker.dataflow(|scope| ...)`
+/// closure so they share a single input collection — the raw event
+/// stream is processed once and fanned out into two reduces. View
+/// handles created on the parent thread, cloned into the worker so
+/// inspect callbacks can write through.
+pub fn spawn_perception_worker() -> (
+    PerceptionWorker,
+    FocusInputHandle,
+    CurrentFocusedElementView,
+    LatestFocusView,
+) {
     let (tx, rx) = bounded::<Cmd>(CMD_CHANNEL_CAPACITY);
     let processed_count = Arc::new(AtomicU64::new(0));
     let processed_clone = Arc::clone(&processed_count);
 
     let view = CurrentFocusedElementView::new();
+    let latest_view = LatestFocusView::new();
     let view_for_worker = view.clone();
+    let latest_view_for_worker = latest_view.clone();
 
     let join = thread::Builder::new()
         .name("l3-perception".into())
-        .spawn(move || worker_loop(rx, processed_clone, view_for_worker))
+        .spawn(move || {
+            worker_loop(rx, processed_clone, view_for_worker, latest_view_for_worker)
+        })
         .expect("spawn l3-perception thread");
 
     let worker = PerceptionWorker {
@@ -501,7 +524,7 @@ pub fn spawn_perception_worker(
         processed_count,
     };
     let handle = FocusInputHandle { tx };
-    (worker, handle, view)
+    (worker, handle, view, latest_view)
 }
 
 /// Body of the timely worker thread (D2-A revised tuning).
@@ -574,6 +597,7 @@ fn worker_loop(
     rx: Receiver<Cmd>,
     processed: Arc<AtomicU64>,
     view: CurrentFocusedElementView,
+    latest_view: LatestFocusView,
 ) {
     let shift_ms = watermark_shift_ms();
     let idle_timeout = Duration::from_millis(idle_recv_timeout_ms());
@@ -593,7 +617,12 @@ fn worker_loop(
         let mut input: InputSession<LogicalTime, FocusEvent, isize> =
             worker.dataflow::<LogicalTime, _, _>(|scope| {
                 let (input, stream) = scope.new_collection::<FocusEvent, isize>();
-                current_focused_element::build(stream, view.clone());
+                // Both views consume the same input stream — DD's
+                // `Collection` is `Clone`, so each `build` call
+                // chains its own operator path off the same source
+                // (D2-B §5.bis: shared input, fanned-out reduces).
+                current_focused_element::build(stream.clone(), view.clone());
+                latest_focus::build(stream, latest_view.clone());
                 input
             });
 
@@ -804,7 +833,7 @@ mod tests {
 
     #[test]
     fn spawn_and_shutdown_clean() {
-        let (worker, _handle, _view) = spawn_perception_worker();
+        let (worker, _handle, _view, _latest_view) = spawn_perception_worker();
         worker
             .shutdown(Duration::from_secs(2))
             .expect("shutdown clean");
@@ -812,7 +841,7 @@ mod tests {
 
     #[test]
     fn push_focus_roundtrip_smoke() {
-        let (worker, handle, _view) = spawn_perception_worker();
+        let (worker, handle, _view, _latest_view) = spawn_perception_worker();
         for i in 0..3 {
             handle.push_focus(make_event(i, 1_000_000 + i, 0));
         }
@@ -827,7 +856,7 @@ mod tests {
         // Cmd::PushFocus from the channel, not just acknowledges
         // shutdown. Without this assertion the lifecycle test
         // could regress silently if the worker_loop body is gutted.
-        let (worker, handle, _view) = spawn_perception_worker();
+        let (worker, handle, _view, _latest_view) = spawn_perception_worker();
         for i in 0..5 {
             handle.push_focus(make_event(i, 5_000_000 + i, 0));
         }
@@ -849,7 +878,7 @@ mod tests {
     #[test]
     fn five_cycle_spawn_shutdown() {
         for cycle in 0..5 {
-            let (worker, handle, _view) = spawn_perception_worker();
+            let (worker, handle, _view, _latest_view) = spawn_perception_worker();
             handle.push_focus(make_event(cycle, 2_000_000 + cycle, 0));
             worker
                 .shutdown(Duration::from_secs(2))
@@ -859,7 +888,7 @@ mod tests {
 
     #[test]
     fn push_after_shutdown_silently_drops() {
-        let (worker, handle, _view) = spawn_perception_worker();
+        let (worker, handle, _view, _latest_view) = spawn_perception_worker();
         worker.shutdown(Duration::from_secs(2)).expect("shutdown");
         // After worker is gone, the receiver is dropped and the
         // channel disconnects. push_focus must NOT panic.
@@ -870,7 +899,7 @@ mod tests {
     fn l1sink_object_safety() {
         // Trait must be object-safe so the bridge can hold
         // `Arc<dyn L1Sink>` without naming the concrete type.
-        let (worker, handle, _view) = spawn_perception_worker();
+        let (worker, handle, _view, _latest_view) = spawn_perception_worker();
         let _h: Arc<dyn L1Sink> = Arc::new(handle);
         worker.shutdown(Duration::from_secs(2)).expect("shutdown");
     }
@@ -903,7 +932,7 @@ mod tests {
         //
         // We can't observe the dataflow output yet (D1-3), but we
         // can confirm the worker doesn't crash on a back-dated push.
-        let (worker, handle, _view) = spawn_perception_worker();
+        let (worker, handle, _view, _latest_view) = spawn_perception_worker();
         // First push sets latest_wallclock_ms = 1_000_000
         handle.push_focus(make_event(1, 1_000_000, 0));
         // Sleep so the worker definitely processed the first push
@@ -931,7 +960,7 @@ mod tests {
         // is independent of frontier), so this test only guards
         // against a regression that breaks the idle branch entirely
         // (e.g. an early `break` or a panic in the projection code).
-        let (worker, handle, _view) = spawn_perception_worker();
+        let (worker, handle, _view, _latest_view) = spawn_perception_worker();
         handle.push_focus(make_event(1, 1_700_000_000_000, 0));
         let deadline = Instant::now() + Duration::from_millis(500);
         while worker.processed_count() < 1 {
@@ -957,7 +986,7 @@ mod tests {
         // event_time = (T - 500ms, 0) when latest = T, shift = 100ms
         // → watermark = (T - 100ms, 0), and event_time < watermark
         // → dropped with log. Test verifies the worker survives.
-        let (worker, handle, _view) = spawn_perception_worker();
+        let (worker, handle, _view, _latest_view) = spawn_perception_worker();
         handle.push_focus(make_event(1, 2_000_000, 0));
         thread::sleep(Duration::from_millis(50));
         // 500ms back-dated — way outside the 100ms watermark default
@@ -1007,7 +1036,7 @@ mod tests {
         // max_sub_ord + 1)) does not drop the larger-sub_ord events
         // as back-dated.
         use crate::views::current_focused_element::CurrentFocusedElementView;
-        let (worker, handle, view) = spawn_perception_worker();
+        let (worker, handle, view, _latest_view) = spawn_perception_worker();
         let _: &CurrentFocusedElementView = &view; // type assertion
 
         // wallclock far enough from 0 that the watermark shift
@@ -1068,7 +1097,7 @@ mod tests {
         // wins regardless of arrival order. This is the partial-
         // order acceptance test (北極星 N3).
         use crate::views::current_focused_element::CurrentFocusedElementView;
-        let (worker, handle, view) = spawn_perception_worker();
+        let (worker, handle, view, _latest_view) = spawn_perception_worker();
         let _: &CurrentFocusedElementView = &view;
 
         let w = 1_700_000_500_000_u64;
@@ -1122,7 +1151,7 @@ mod tests {
         // frontier, then push an old event (wc = T1, T1 < T2 - 100ms
         // shift). The old event must be dropped (eprintln only),
         // and the worker must remain healthy.
-        let (worker, handle, _view) = spawn_perception_worker();
+        let (worker, handle, _view, _latest_view) = spawn_perception_worker();
 
         // T2 = 2_000_000, T1 = 2_000_000 - 500 (way past the 100ms
         // default shift, so the watermark guard rejects it).
@@ -1157,7 +1186,7 @@ mod tests {
         // the watermark; we observe this indirectly by verifying
         // the worker remains healthy and processed_count stays at 1
         // (no spurious additional processing).
-        let (worker, handle, _view) = spawn_perception_worker();
+        let (worker, handle, _view, _latest_view) = spawn_perception_worker();
 
         handle.push_focus(make_focus_event_at(1, 1_800_000_000_000, 0, 0xB002, "anchor"));
 
@@ -1192,7 +1221,7 @@ mod tests {
         // We can't observe the frontier directly from here, but
         // processed_count is a clean proxy: spawn-and-shutdown
         // without any PushFocus must leave processed_count = 0.
-        let (worker, _handle, _view) = spawn_perception_worker();
+        let (worker, _handle, _view, _latest_view) = spawn_perception_worker();
         // No pushes — straight to shutdown. The shutdown signal
         // arrives as a single Shutdown-only batch.
         let pre_shutdown_count = worker.processed_count();

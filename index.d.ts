@@ -284,3 +284,27 @@ export declare function l1PushFailure(layer: string, op: string, reason: string,
 export declare function l1PollEvents(sinceEventId: bigint, maxCount: number): NativeEventEnvelope[]
 export declare function l1GetCaptureStats(): NativeCaptureStats
 export declare function l1ShutdownForTest(): void
+
+// ─── L3 perception view (ADR-008 D2-B-1) ─────────────────────────────────────
+
+export interface NativeFocusedElement {
+  name: string
+  automationId: string | null
+  /** Human-readable UIA control type name (e.g. "Button", "Pane", "Edit"). */
+  controlType: string
+  windowTitle: string
+}
+
+export interface NativeViewFocusedPipelineStatus {
+  initialized: boolean
+  /** `true` when the slot's pipeline has had a failed shutdown
+   * (Codex review v9 P2-17). Callers should fall back to UIA. */
+  poisoned: boolean
+  processedCount: bigint
+}
+
+/** Read the latest globally focused element from the perception engine's
+ * `latest_focus` view. Returns `null` when the pipeline has no live row,
+ * is uninitialised, or the slot is poisoned (caller should use UIA fallback). */
+export declare function viewGetFocused(): NativeFocusedElement | null
+export declare function viewFocusedPipelineStatus(): NativeViewFocusedPipelineStatus

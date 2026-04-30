@@ -1,6 +1,6 @@
 # ADR-008 D2 — 主要 view 4 つ + desktop_state focus path view 経由置換プラン
 
-- Status: **Draft v3.11 (起草中、Opus、2026-04-30) — D2-A 実装完了、Codex review v1〜v13 反映済、Opus phase-boundary review (D2-0 + D2-A phase) 完了**
+- Status: **Draft v3.12 (起草中、Opus、2026-04-30) — D2-A 完了 + D2-B-1 (latest_focus view + napi binding) 実装着手、Codex review v1〜v13 反映済**
 - Date: 2026-04-30
 - Authors: Claude (Opus, max effort) — `desktop-touch-mcp`
 - 親 ADR: `docs/adr-008-reactive-perception-engine.md` §4 D2 / §8 D2
@@ -250,6 +250,36 @@ PR #95 v3.10 push 後の Codex round 13 で P1 + P2:
 **cargo test (v3.11)**:
 - `cargo test -p engine-perception` (default 並列モード、env race fix 後) で integration 含む 41 全 pass
 - env race の構造的解消で `--test-threads=1` 前提 CI も不要
+
+### v3.12 (D2-B-1 latest_focus view + napi binding 着手、PR-γ、2026-04-30)
+
+D2-A merged (`d5641fd`) を baseline に、D2-B-1 sub-batch を新 feature branch (`feature/adr-008-d2-b-desktop-state-focus`) で実装着手。
+
+**実装範囲 (PR-γ、本 commit)**:
+
+1. **`crates/engine-perception/src/views/latest_focus.rs` 新設** (§5.bis 完全準拠):
+   - singleton-key `()` で reduce、output value 型は `(LogicalTime, UiElementRef)` (Codex v4 P2-13)
+   - materialised state は `BTreeMap<(LogicalTime, UiElementRef), i64>` の diff bookkeeping (Codex v3 P1-1 inspect-order tolerance pattern)
+   - `snapshot()` は `iter().rev().find(c > 0)` で largest-ts live entry 取得
+   - in-file unit test 6 件 (`empty` / `largest_ts_live` / `retraction_first` / `assertion_first` / `full_retraction_evicts` / `same_wallclock_higher_sub`)
+2. **`spawn_perception_worker` を 4-tuple 化** `(PerceptionWorker, FocusInputHandle, CurrentFocusedElementView, LatestFocusView)`、両 view を **同 `worker.dataflow` closure 内** で build (D2-E0 同 scope 設計を踏襲、stream 1 つを fan-out)
+3. **`PerceptionPipeline` に `latest_focus_view: LatestFocusView` field 追加**、`spawn_pipeline_inner` で worker 4-tuple → pipeline 構築
+4. **napi binding 2 件 新設** (`src/l3_bridge/mod.rs`):
+   - `view_get_focused() -> Option<FocusedElementJs>`: `is_poisoned()` check + `latest_focus_view.snapshot()` + `crate::uia::control_type_name(UIA_CONTROLTYPE_ID(...))` で `controlType` を **string 化** (Codex v3 P1-3 bit-equal、既存 UIA bridge と同変換 table 共有 = OQ #11 Resolved)
+   - `view_focused_pipeline_status() -> ViewFocusedPipelineStatusJs`: diagnostics (`initialized` / `poisoned` / `processed_count`)
+5. 既存 callers 26 箇所 (root crate / engine-perception lib + integration / bench) を 4-tuple destructure に更新 (`_latest_view` で受けて影響最小化)
+
+**OQ resolutions**:
+- **OQ #11** (control_type id → string mapping table の在処): `crate::uia::control_type_name` (`src/uia/mod.rs:27`) が既に 40 種マッピング実装済、napi binding で reuse → **Resolved**
+
+**cargo test (PR-γ commit 時点)**:
+- `cargo test --workspace --lib --no-default-features` → 56 (root) + 37 (engine-perception、+6 latest_focus unit test) = **93 pass / 0 fail**
+- `cargo test -p engine-perception` (integration 込み) → 37 lib + 10 integration = **47 pass / 0 fail**
+
+**未着手 (D2-B-2 / D2-B-3 / D2-B-4 別 PR)**:
+- D2-B-2: `desktop_state.ts` focus-only path replacement + `hints.focusedElementSource = "view"` sentinel + bit-equal contract test
+- D2-B-3: `--with-point-query` baseline (`benches/d1_ts_baseline.mjs`)
+- D2-B-4: MCP transport bench (`d2_desktop_state_roundtrip.mjs`、OQ #16 SLO 判断 fact base)
 
 **option C (parking_lot::Condvar 等 signal-driven)** の優先度を上げる:
 - v3.8 の修正で `view_update_latency` p99 の改善幅は更に縮小、SLO 未達は確実
