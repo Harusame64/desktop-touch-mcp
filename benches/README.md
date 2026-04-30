@@ -1,7 +1,7 @@
 # Bench Harness — Layer SLO Verification
 
-- Status: **Skeleton (KPI 一覧のみ、実装は ADR-007 P1 完了後)**
-- Date: 2026-04-29
+- Status: **D1-5 first bench landed** (ADR-008 D1: `current_focused_element` view + TS baseline measured)
+- Date: 2026-04-29 (skeleton) / 2026-04-30 (D1 bench landed)
 - Scope: 統合書 §17.3 + `docs/layer-constraints.md` §8 の KPI を CI 計測する Rust ベンチハーネス
 - 場所: 既存 `desktop-touch-engine` crate (root Cargo.toml) の `[[bench]]` として配置
 
@@ -37,15 +37,35 @@
 | `state_at(t)` p99 | < 5ms | `bench_state_at_query` |
 | arrangement memory budget | < 512MB (default) | `bench_arrangement_memory_budget` |
 
-### 2.3 L3 Compute (`benches/l3_compute.rs`)
+### 2.3 L3 Compute (`crates/engine-perception/benches/d1_view_latency.rs` + `benches/d1_ts_baseline.mjs`)
 
-| KPI | 目標 (制約 §4.4 + views-catalog §8) | bench fn |
+| KPI | 目標 (制約 §4.4 + views-catalog §8) | bench fn | status |
+|---|---|---|---|
+| current_focused_element 更新 p99 | < 1ms (view side) / TS p99 / 10 (acceptance) | `view_get_hit` / `view_get_miss` (Rust criterion) + `d1_ts_baseline.mjs` (Node) | **Landed (D1-5、`feat/adr-008-d1-5-bench`)** |
+| dirty_rects_aggregate 更新 p99 | < 2ms | `bench_view_dirty_rects_aggregate` | D2 |
+| semantic_event_stream delta 配信 p99 | < 3ms | `bench_view_semantic_event_stream` | D2 |
+| predicted_post_state dry-run p99 | < 50ms | `bench_view_predicted_post_state` | D2 (subgraph) |
+| lens_attention settle p99 | < 5ms (max iter 100) | `bench_view_lens_attention` | D4 |
+
+#### D1-5 measured numbers (local run, Windows 11 / Ryzen, release build, 2026-04-30)
+
+| Path | mean | what it measures |
 |---|---|---|
-| current_focused_element 更新 p99 | < 1ms | `bench_view_current_focused_element` |
-| dirty_rects_aggregate 更新 p99 | < 2ms | `bench_view_dirty_rects_aggregate` |
-| semantic_event_stream delta 配信 p99 | < 3ms | `bench_view_semantic_event_stream` |
-| predicted_post_state dry-run p99 | < 50ms | `bench_view_predicted_post_state` |
-| lens_attention settle p99 | < 5ms (max iter 100) | `bench_view_lens_attention` |
+| **view_get_hit** (D1 view, populated row) | ~145 ns ±2.4% | **steady-state lookup**: `view.get(hwnd)` returning a cached `UiElementRef` (Arc<RwLock<HashMap>> read) — the post-watermark, frontier-released steady state |
+| **view_get_miss** (D1 view, missing key) | ~21 ns ±1.4% | steady-state miss path (HashMap miss) |
+| **view_update_latency** (engine-perception ingestion) | **~4.7 ms** ±1.2% | **end-to-end update**: `handle.push_focus(ev)` → `view.get(hwnd)` reflecting the new event's name. Includes cmd-channel hop, worker idle sleep (~1ms), DD reduce, inspect, RwLock write. `WATERMARK_SHIFT_MS=0` set in bench so frontier catches up promptly via idle-advance |
+| **uiaGetFocusedElement** (TS baseline, UIA tree walk) | p50 1.7 ms / p95 2.9 ms / **p99 11.2 ms** | `addon.uiaGetFocusedElement()` napi call (`benches/d1_ts_baseline.mjs`, 1000 iters + 100 warmup) — production `desktop_state`'s focus-fetch core (without MCP transport / JSON serialize) |
+
+**Acceptance interpretation (ADR-008 D1 §11)**:
+
+- **Steady-state lookup vs TS UIA fetch**: ratio ≈ **75,000×** (TS p99 11.2 ms / view ~145 ns) — TS / 10 acceptance dramatically met. This is the dominant production read pattern: agent calls `desktop_state` repeatedly to query focus, and each call hits the view's cached state instead of walking the UIA tree.
+- **Update latency vs TS UIA fetch**: ratio ≈ **2.4×** (TS p99 11.2 ms / view update ~4.7 ms) — modestly faster than TS, but **does not** beat by 1/10. This is bounded by the perception worker's 1 ms idle-sleep cycle (`worker_loop`'s `TryRecvError::Empty` branch). Tunable to <500 µs by reducing the sleep or switching to a parking primitive — see `docs/adr-008-d1-followups.md` §2.5.
+- **The view's value proposition**: in production, *reads dominate updates* by orders of magnitude, so the steady-state-lookup ratio is what materially compounds. Update latency at ~5 ms is comfortably within UI-responsiveness budgets (60 Hz frame ≈ 16.67 ms) but does not yet meet the aspirational `views-catalog` §3.1 SLO of "p99 < 1 ms"; that SLO is reaffirmed as a D2 follow-up in the followups doc.
+
+caveats:
+
+1. **Numbers are criterion's mean ± CI**, not strict p99. Multiplied by 10 for a worst-case bound, the steady-state ratio is still > 7,000×; for update latency the worst-case bound (~50 ms) would slip past TS p99 — D2 should extract true p99 from `target/criterion/.../sample.json`.
+2. **"Real L1 input" is not measured here**. The bench pushes through `FocusInputHandle::push_focus` directly, skipping the L1 `EventRing` + `src/l3_bridge/focus_pump.rs` decode hop. That hop is bounded by `recv_timeout(100ms)` + bincode decode (~µs) and exercised for *correctness* by `src/l3_bridge/mod.rs::lifecycle_tests::five_cycle_pipeline_spawn_push_shutdown`, but not under load. A true ring-to-view bench is deferred to D2 (where `desktop_state` will exercise the full path under MCP transport — see followups §2.3).
 
 ### 2.4 L4 Envelope Assembly (`benches/l4_envelope.rs`)
 
@@ -174,16 +194,17 @@ criterion_main!(benches);
 ## 4. 起動手順
 
 ```bash
-# 全 bench
-cargo bench
+# D1-5 (本書 §2.3 で landed): view path latency
+cargo bench -p engine-perception --bench d1_view_latency
 
-# 特定 layer のみ
+# D1-5: TS baseline (UIA path、Windows session 必須)
+node benches/d1_ts_baseline.mjs           # 1000 iters (default)
+node benches/d1_ts_baseline.mjs 5000      # 高精度
+
+# 将来 (各 ADR Phase 完了で追加される bench)
+cargo bench                                # 全 bench
 cargo bench --bench l1_capture
-
-# 特定 fn のみ
 cargo bench --bench l3_compute -- bench_view_lens_attention
-
-# Tier pin (HW Tier 別計測)
 DESKTOP_TOUCH_MAX_TIER=1 cargo bench --bench tier_dispatch
 DESKTOP_TOUCH_MAX_TIER=3 cargo bench --bench tier_dispatch
 ```

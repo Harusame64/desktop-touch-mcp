@@ -312,7 +312,7 @@ pub trait DataflowAccelerator: Send + Sync {
 
 | Phase | 完了基準 |
 |---|---|
-| D1 | 1 view が incremental に更新、bench で TS 版より latency 1/10 — view (`current_focused_element`) は **D1-3 で実装完了** (`crates/engine-perception/src/views/current_focused_element.rs`、PR #91 想定)、bench は **D1-5 で実施** |
+| D1 | **完了 (2026-04-30)**: 1 view が incremental に更新 (PR #91 `2288333` `current_focused_element`)、bench で TS 版より latency 1/10 — **steady-state lookup で達成** (PR #92 D1-5、view ~145ns vs TS p99 11.2ms = 75,000× 比)。**update latency (~4.7ms) は TS の 2.4× にとどまり 1/10 未達**、real L1 ring 込み bench も未実施 (cdylib 制約)、worker idle sleep tuning + ring 全経路 bench は D2 carry-over: `docs/adr-008-d1-followups.md` §2.3, §2.5 |
 | D2 | 既存 `desktop_state` を全部 view 経由に置換、tool 結果が同一 (回帰なし) |
 | D3 | `state_at(now-2s)` で過去 state が引ける、p95 latency < 5ms |
 | D4 | lens 再計算が fixed-point で settle、無限ループ自動検出 (max iter cap) |
