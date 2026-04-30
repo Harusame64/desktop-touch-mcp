@@ -67,6 +67,39 @@ caveats:
 1. **Numbers are criterion's mean ± CI**, not strict p99. Multiplied by 10 for a worst-case bound, the steady-state ratio is still > 7,000×; for update latency the worst-case bound (~50 ms) would slip past TS p99 — D2 should extract true p99 from `target/criterion/.../sample.json`.
 2. **"Real L1 input" is not measured here**. The bench pushes through `FocusInputHandle::push_focus` directly, skipping the L1 `EventRing` + `src/l3_bridge/focus_pump.rs` decode hop. That hop is bounded by `recv_timeout(100ms)` + bincode decode (~µs) and exercised for *correctness* by `src/l3_bridge/mod.rs::lifecycle_tests::five_cycle_pipeline_spawn_push_shutdown`, but not under load. A true ring-to-view bench is deferred to D2 (where `desktop_state` will exercise the full path under MCP transport — see followups §2.3).
 
+#### D2-B-3 production gap baseline (`benches/d1_ts_baseline.mjs --with-point-query`)
+
+`desktop_state`'s non-Chromium focus path actually calls `uiaGetFocusedAndPoint(cursor.x, cursor.y)` (focus + element-at-cursor in one trip), not just `uiaGetFocusedElement()`. The D1-5 baseline above only measured the focus-only call, which is a strict lower bound on the production cost. D2-B-3 (`docs/adr-008-d1-followups.md` §2.2) lands a `--with-point-query` mode in `d1_ts_baseline.mjs` so the same harness can produce a with-point number — pick the with-point one when comparing against D2 view-replaced paths.
+
+Note on coordinate choice: the bench passes a fixed `(0, 0)` cursor (deterministic, doesn't depend on operator desktop state), which is a **production lower bound** rather than a true production-equivalent. Production's at-point query runs at the live cursor (`getCursorPos()`), where the UIA tree under the cursor can be deeper than the desktop root at `(0, 0)` — the real production cost is **at or above** the with-point number reported here. Use this baseline as the lower bound on the production gap.
+
+D2-B-3 measured numbers (local run, Windows 11 / Ryzen, release build, 2026-05-01):
+
+| Mode | command | p50 | p95 | **p99** |
+|---|---|---|---|---|
+| focus-only (D1-5 lower bound) | `node benches/d1_ts_baseline.mjs 1000` | 1.49 ms | 1.89 ms | **2.10 ms** |
+| with-point @ (0,0) (production lower bound) | `node benches/d1_ts_baseline.mjs 1000 --with-point-query` | 7.41 ms | 8.78 ms | **9.58 ms** |
+
+The with-point baseline is **~4.6× heavier** than focus-only — D1 acceptance ratios computed against the with-point number stay comfortably above 1/10 (steady-state lookup ratio ≈ 66,000×, dominated by the `Arc<RwLock<HashMap>>` read cost). Acceptance against the live-cursor production cost is even more favourable.
+
+#### D2-B-4 MCP transport round-trip (`benches/d2_desktop_state_roundtrip.mjs`)
+
+`d1_ts_baseline.mjs` measures only the in-process napi UIA call; the production agent talks to the MCP server over JSON-RPC + stdio. D2-B-4 lands a separate Node bench that spawns `dist/server-windows.js` and calls `tools/call desktop_state` 1000 times through `@modelcontextprotocol/sdk`'s `Client` + `StdioClientTransport`, so the measured number includes JSON serialize, stdio framing, and the desktop_state handler's full body (foreground lookup, modal scan, etc.). The bench's report also histograms `hints.focusedElementSource` so the operator can see how many iterations took the view path vs. UIA / CDP fallback.
+
+D2-B-4 measured numbers (local run, Windows 11 / Ryzen, release build, 2026-05-01, focus held in bench terminal):
+
+| Mode | p50 | p95 | **p99** |
+|---|---|---|---|
+| `desktop_state` MCP round-trip | 4.74 ms | 5.64 ms | **6.22 ms** |
+| `focusedElementSource` distribution | uia: 100% (no focus change observed during run) | | |
+
+Operator note: `latest_focus` populates only after `focus_pump` receives at least one `UiaFocusChanged` event. If you start the bench and hold focus in the terminal, every iteration falls through to the UIA fallback — the bench prints an explicit operator note when this happens. To exercise the view path: alt+tab once during warmup so the L1 ring sees a focus event, then re-read the source distribution.
+
+#### Acceptance interpretation (D2-B view-replacement, OQ #16)
+
+- **Steady-state read** (focus stable, no view hits during run): MCP round-trip p99 = 6.22 ms vs. with-point baseline p99 = 9.58 ms → ~**1.5× faster**, dominated by `desktop_state`'s leaner non-Chromium focus path (`uiaGetFocusedAndPoint(0,0)` is heavier than `desktop_state`'s actual cursor-position query in this run's environment).
+- **D2 view-replacement gain** (operator-induced focus change): not auto-measured here. When the operator alt+tabs once during warmup the view path hits and the round-trip should drop further (view fetch ≈ ~145 ns vs. UIA ≈ ~9 ms in-process). OQ #16 — whether SLO acceptance is "TS p99 / 5" or "TS p99 / 10" — is judged after the operator-induced number is on file (D2-B-5 closure).
+
 ### 2.4 L4 Envelope Assembly (`benches/l4_envelope.rs`)
 
 | KPI | 目標 (制約 §5.4 + ADR-010 §5.6) | bench fn |

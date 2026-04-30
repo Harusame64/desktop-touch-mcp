@@ -1111,7 +1111,7 @@ D2-E0 / D2-E と整合: **`Arranged` を外部 struct に保持せず、同 `wor
 | 3 | `EventKind::WindowChanged` / `ScrollChanged` emit site の実装状況 (ADR-007 P5c-3/P5c-4) | **D2-C0 で確定**、未実装 variant は D2-D scope から除外 |
 | 4 | `parking_lot::RwLock` / `arc-swap` 切替判断 | D2-F-3 concurrent reader/writer bench 結果 |
 | 5 | L4 envelope pivot 搬送経路 (D1-3 残 §3.5) の本実装 | ADR-010 起草時、本 D2 では deferred |
-| 6 | `desktop_state` MCP round-trip acceptance を 1/10 にするか 1/5 にするか | D2-B-3 baseline 測定後、Opus 判断 |
+| 6 | `desktop_state` MCP round-trip acceptance を 1/10 にするか 1/5 にするか | **Pending Opus 判断 (D2-B-3/4 baseline 取得済 PR-γ-bench)**: TS with-point p99 9.58 ms / MCP round-trip p99 6.22 ms (steady-state、focus-change なし)。view-hit 経路は operator-induced focus change で別途測る必要、その数値を含めて Opus がレビュー |
 | 7 | `semantic_event_stream` の subscribe API (MCP notification 配信) | D2.5 / ADR-010 起草時、本 D2 では internal Rust callback のみ |
 | 8 | `predicted_post_state` subgraph で speculation を tool_call_id 単位で GC する方針 | D5 着手時、dummy 実装では全 retain |
 | 9 | `desktop_state.modal` / `attention` の view 化 (D4 担当) | D4 着手時 |
@@ -1148,9 +1148,9 @@ D2-E0 / D2-E と整合: **`Arranged` を外部 struct に保持せず、同 `wor
 
 - [ ] **`view_update_latency` p99 < 1ms** — D2-A の **revised tuning (batch drain + max-time release)** で達成 (option B 撤回、N3 維持)
 - [ ] **真の p99 抽出** — bench harness で stdout + JSON 出力 (followups §2.1)
-- [ ] **production gap baseline** — `uiaGetFocusedAndPoint` baseline (followups §2.2)
-- [ ] **MCP transport 込み bench** — `d2_desktop_state_roundtrip.mjs` で round-trip 計測 (followups §2.3, §2.4)
-- [ ] **「real L1 input ベース」** — D2-B-4 で MCP tool round-trip として達成
+- [x] **production gap baseline** — `uiaGetFocusedAndPoint` baseline (followups §2.2、D2-B-3 PR-γ-bench): `benches/d1_ts_baseline.mjs --with-point-query` で focus-only p99 2.10 ms vs with-point p99 9.58 ms (~4.6×) を `benches/README.md` §2.3 に landed
+- [x] **MCP transport 込み bench** — `d2_desktop_state_roundtrip.mjs` で round-trip 計測 (followups §2.3, §2.4、D2-B-4 PR-γ-bench): stdio MCP transport 経由 `desktop_state` 1000 iters で p99 6.22 ms 観測、`hints.focusedElementSource` distribution 計測も実装済
+- [ ] **「real L1 input ベース」** — D2-B-4 で MCP tool round-trip として達成 (steady-state は D2-B-4 で計測済、focus-change-induced は operator alt+tab で観測する手順を bench output / README §2.3 にドキュメント化、自動 induction は OQ #16 解消フェーズで再検討)
 
 ### 11.4 D1-3 残 follow-up (B 案で追加)
 
