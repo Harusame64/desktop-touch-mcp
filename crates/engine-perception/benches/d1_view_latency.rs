@@ -63,12 +63,137 @@
 //! UIA tree walk on the TS side is multi-ms; the ratio is well over
 //! 100×.
 
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
 use engine_perception::input::{spawn_perception_worker, FocusEvent, FocusInputHandle, L1Sink};
 use engine_perception::views::current_focused_element::CurrentFocusedElementView;
+
+// ─── D2-A-3: true p99 extraction (Codex review v8 / D1-followups §2.1)
+//
+// Criterion reports mean ± confidence interval, which is fine for
+// `view_get_hit` (p99 ≈ mean + a few CI widths because the
+// distribution is tight) but misleading for `view_update_latency`
+// where the worker's cmd-channel + dataflow-step path produces a
+// long tail. We need true sample-based percentiles.
+//
+// Approach: each bench captures Instants into a thread-local Vec
+// during `b.iter_custom`, then emits a percentile summary into a
+// JSON sidecar file at `target/criterion/d2_summary.json`. Each
+// bench appends one record; the file is overwritten only when the
+// first bench in a run starts (tracked via a one-shot Mutex).
+
+fn percentile(sorted: &[Duration], p: f64) -> Duration {
+    // Nearest-rank percentile (matches criterion's internal style;
+    // simple, no interpolation, robust on small samples).
+    if sorted.is_empty() {
+        return Duration::ZERO;
+    }
+    let n = sorted.len();
+    let rank = ((p * n as f64).ceil() as usize).clamp(1, n);
+    sorted[rank - 1]
+}
+
+fn fmt_duration_ns(d: Duration) -> u128 {
+    d.as_nanos()
+}
+
+/// Bench summary record written to `d2_summary.json`. One JSON
+/// object per line (jsonl) so multiple benches can append without
+/// parsing/rewriting the whole file.
+struct BenchSummary {
+    name: &'static str,
+    n_samples: usize,
+    p50_ns: u128,
+    p95_ns: u128,
+    p99_ns: u128,
+    p999_ns: u128,
+    min_ns: u128,
+    max_ns: u128,
+}
+
+impl BenchSummary {
+    fn write_jsonl(&self, path: &PathBuf) {
+        let line = format!(
+            "{{\"name\":\"{}\",\"n_samples\":{},\"p50_ns\":{},\"p95_ns\":{},\"p99_ns\":{},\"p999_ns\":{},\"min_ns\":{},\"max_ns\":{}}}\n",
+            self.name,
+            self.n_samples,
+            self.p50_ns,
+            self.p95_ns,
+            self.p99_ns,
+            self.p999_ns,
+            self.min_ns,
+            self.max_ns,
+        );
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(mut f) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let _ = f.write_all(line.as_bytes());
+        }
+    }
+}
+
+/// Wipe the summary file the first time any bench reports in a run.
+/// A `Mutex<bool>` is enough — Cargo runs benches serially per group.
+static SUMMARY_RESET: Mutex<bool> = Mutex::new(false);
+
+fn summary_path() -> PathBuf {
+    PathBuf::from("target")
+        .join("criterion")
+        .join("d2_summary.jsonl")
+}
+
+fn report_samples(name: &'static str, mut samples: Vec<Duration>) {
+    if samples.is_empty() {
+        return;
+    }
+    samples.sort_unstable();
+    let summary = BenchSummary {
+        name,
+        n_samples: samples.len(),
+        p50_ns: fmt_duration_ns(percentile(&samples, 0.50)),
+        p95_ns: fmt_duration_ns(percentile(&samples, 0.95)),
+        p99_ns: fmt_duration_ns(percentile(&samples, 0.99)),
+        p999_ns: fmt_duration_ns(percentile(&samples, 0.999)),
+        min_ns: fmt_duration_ns(*samples.first().expect("non-empty")),
+        max_ns: fmt_duration_ns(*samples.last().expect("non-empty")),
+    };
+
+    // First report in a run wipes the file.
+    let path = summary_path();
+    {
+        let mut reset = SUMMARY_RESET.lock().unwrap_or_else(|e| e.into_inner());
+        if !*reset {
+            let _ = std::fs::remove_file(&path);
+            *reset = true;
+        }
+    }
+    summary.write_jsonl(&path);
+
+    // Also echo to stdout so the bench output shows percentiles
+    // alongside criterion's mean.
+    eprintln!(
+        "[d2-summary] {name}: n={n} p50={p50}ns p95={p95}ns p99={p99}ns p999={p999}ns min={min}ns max={max}ns",
+        name = summary.name,
+        n = summary.n_samples,
+        p50 = summary.p50_ns,
+        p95 = summary.p95_ns,
+        p99 = summary.p99_ns,
+        p999 = summary.p999_ns,
+        min = summary.min_ns,
+        max = summary.max_ns,
+    );
+}
 
 const HWND_LIVE: u64 = 0xCAFE_BABE;
 const HWND_MISS: u64 = 0xDEAD_BEEF;
@@ -118,17 +243,31 @@ fn bench_view_get_hit(c: &mut Criterion) {
     let (worker, handle, view) = spawn_perception_worker();
     populate_view(&handle, &view, HWND_LIVE, Duration::from_millis(500));
 
+    // D2-A-3: capture each iteration's elapsed for true-percentile
+    // reporting. `b.iter_custom` gives us per-batch elapsed; we
+    // record one Duration per inner iteration so the JSON summary
+    // can compute p99 etc.
+    let samples: Mutex<Vec<Duration>> = Mutex::new(Vec::with_capacity(100_000));
+
     c.bench_function("view_get_hit", |b| {
-        b.iter(|| {
-            // black_box on both args keeps the optimiser from hoisting
-            // the lookup out of the loop; black_box on the result
-            // keeps it from eliminating the call entirely.
-            black_box(view.get(black_box(HWND_LIVE)));
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            let mut local = Vec::with_capacity(iters as usize);
+            for _ in 0..iters {
+                let t0 = Instant::now();
+                black_box(view.get(black_box(HWND_LIVE)));
+                let elapsed = t0.elapsed();
+                total += elapsed;
+                local.push(elapsed);
+            }
+            samples.lock().unwrap_or_else(|e| e.into_inner()).extend(local);
+            total
         });
     });
 
-    // Drop the cmd-channel handle so the worker's Sender clones drop
-    // when the worker shuts down.
+    let captured = samples.into_inner().unwrap_or_else(|e| e.into_inner());
+    report_samples("view_get_hit", captured);
+
     drop(handle);
     worker
         .shutdown(Duration::from_secs(2))
@@ -137,15 +276,28 @@ fn bench_view_get_hit(c: &mut Criterion) {
 
 fn bench_view_get_miss(c: &mut Criterion) {
     let (worker, handle, view) = spawn_perception_worker();
-    // Populate so the inner HashMap has at least one entry, exercising
-    // the realistic miss path (lookup against a non-empty table).
     populate_view(&handle, &view, HWND_LIVE, Duration::from_millis(500));
 
+    let samples: Mutex<Vec<Duration>> = Mutex::new(Vec::with_capacity(100_000));
+
     c.bench_function("view_get_miss", |b| {
-        b.iter(|| {
-            black_box(view.get(black_box(HWND_MISS)));
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            let mut local = Vec::with_capacity(iters as usize);
+            for _ in 0..iters {
+                let t0 = Instant::now();
+                black_box(view.get(black_box(HWND_MISS)));
+                let elapsed = t0.elapsed();
+                total += elapsed;
+                local.push(elapsed);
+            }
+            samples.lock().unwrap_or_else(|e| e.into_inner()).extend(local);
+            total
         });
     });
+
+    let captured = samples.into_inner().unwrap_or_else(|e| e.into_inner());
+    report_samples("view_get_miss", captured);
 
     drop(handle);
     worker
@@ -205,10 +357,12 @@ fn bench_view_update_latency(c: &mut Criterion) {
     }
 
     let mut wc_offset: u64 = 0;
+    let samples: Mutex<Vec<Duration>> = Mutex::new(Vec::with_capacity(10_000));
 
     c.bench_function("view_update_latency", |b| {
         b.iter_custom(|iters| {
             let mut total = Duration::ZERO;
+            let mut local = Vec::with_capacity(iters as usize);
             for _ in 0..iters {
                 wc_offset += 1;
                 let new_name = format!("upd-{}", wc_offset);
@@ -233,11 +387,17 @@ fn bench_view_update_latency(c: &mut Criterion) {
                     }
                     std::hint::spin_loop();
                 }
-                total += t0.elapsed();
+                let elapsed = t0.elapsed();
+                total += elapsed;
+                local.push(elapsed);
             }
+            samples.lock().unwrap_or_else(|e| e.into_inner()).extend(local);
             total
         });
     });
+
+    let captured = samples.into_inner().unwrap_or_else(|e| e.into_inner());
+    report_samples("view_update_latency", captured);
 
     // Restore env first so a panic in shutdown still cleans up.
     match prior {

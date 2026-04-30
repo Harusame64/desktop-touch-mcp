@@ -70,7 +70,7 @@ ADR-008 D2 は「主要 view 4 つを declarative に実装」を完了基準に
 
 | view 名 | category | input | output (Rust struct) | consumer | SLO | phase | status |
 |---|---|---|---|---|---|---|---|
-| `current_focused_element` | state | `UiaFocusChanged` events from L1 | `UiElementRef { name, automation_id, control_type, window_title }` | L4 envelope.data (desktop_state) | **lookup** p99 < 1ms (達成、~145ns)<br>**update** p99 < 1ms (D1-5 で ~4.7ms、未達、D2 tuning 予定: `docs/adr-008-d1-followups.md` §2.5) | D1 | **Implemented + Benched (D1-3 + D1-5)** |
+| `current_focused_element` | state | `UiaFocusChanged` events from L1 | `UiElementRef { name, automation_id, control_type, window_title }` | L4 envelope.data (desktop_state) | **lookup** p99 < 1ms (達成、D1: ~145ns / D2-A: 300ns)<br>**update** p99 < 1ms (D1-5: ~4.7ms / D2-A: ~3.0ms、**1.5× 改善ながら未達**)、D2-B MCP round-trip 計測後に option C 着手要否を判断 (ADR-008 D2 plan §10 OQ #16) | D1 / D2-A | **Implemented + Benched (D1-3 + D1-5 + D2-A revised tuning)** |
 
 > **D1-3 実装完了 (2026-04-30)**: operator graph 本体を `crates/engine-perception/src/views/current_focused_element.rs` に新設。`map(FocusEvent → (hwnd, ((wallclock, sub), UiElementRef)))` → `reduce(per-hwnd last-by-time)` → `inspect(diff bookkeeping)` → `Arc<RwLock<HashMap<u64, BTreeMap<UiElementRef, i64>>>>` 読み取り API (`get(hwnd)` / `snapshot()` / `len()` / `is_empty()`)。pivot 4 フィールド (`source_event_id` / `wallclock_ms` / `sub_ordinal` / `timestamp_source`) は output から除外し L4 envelope 側で別途搬送。
 >
@@ -83,6 +83,15 @@ ADR-008 D2 は「主要 view 4 つを declarative に実装」を完了基準に
 > - **「real L1 input ベース」 (L1 EventRing 込み全経路) bench は未実施**: `FocusInputHandle::push_focus` 直接呼び出しから計測 (engine-perception 境界、cdylib 制約のため)。D2 で `desktop_state` を view 経由置換時に MCP transport 込み bench と同時実装、followups §2.3。
 >
 > 詳細: `benches/README.md` §2.3 D1-5 measured numbers。
+>
+> **D2-A revised tuning 完了 (2026-04-30、PR-β)**: `worker_loop` を batch-drain + max-observed time release に書き換え (ADR-008 D2 plan §4.2)。phase 1 で `recv_timeout(1ms)` で cmd 即起床、phase 2 で `try_recv` drain (cap 64)、phase 3 で `update_at` × batch + N3 partial-order guard、phase 4 で `event_count > 0` ガード後 `advance_to((max_wc, max_sub_ord+1))` + `step_until_idle` (cap 32)。bench harness に true p99 抽出 (`b.iter_custom` + `target/criterion/d2_summary.jsonl`、followups §2.1 Resolved)。
+>
+> - **lookup**: `view_get_hit` p50/p95/p99/p999 = 200/300/300/700 ns、`view_get_miss` p50/p95/p99/p999 = 100/100/100/400 ns。SLO `< 1ms` 余裕クリア継続
+> - **update**: `view_update_latency` p50/p95/p99/p999 = 1.12/2.64/**3.04**/3.50 ms、criterion mean 1.87ms。D1 baseline 4.7ms → 3.04ms で **約 1.5× 改善** ながら **`p99 < 1ms` 未達**
+> - DD operator chain `input → map → reduce → inspect` の step 伝搬で CPU work が µs〜ms 消費、idle-advance も critical path 上にあり、構造的限界が近い
+> - **SLO は緩和しない** (ユーザー判断 2026-04-30): `< 1ms` 表記維持、未達は honest に明記
+> - **option C (parking_lot::Condvar 等 signal-driven)** は **D2-B 後に判断** carry-over: production acceptance surface は `desktop_state` MCP round-trip (napi + JSON-RPC 込み)、engine-perception 単独の update latency ではない。`d2_desktop_state_roundtrip.mjs` で MCP transport 込み数値を取得後に option C 着手要否を判断 (ADR-008 D2 plan §10 OQ #16)
+> - partial-order test 5 件 (`same_wallclock_different_sub_ordinal_all_observed` 等) で N3 acceptance を直接 pin、stuck-worker fixture (`Cmd::BlockForTest`) で OQ #15 (Codex v9 P2-17 retry-fail branch) も Resolved
 
 ### 3.2 D2: 主要 view 4 つ (本書の主スコープ)
 

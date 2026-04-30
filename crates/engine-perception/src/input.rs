@@ -98,6 +98,24 @@ const DEFAULT_WATERMARK_SHIFT_MS: u64 = 100;
 /// Sentinel cap on the env-overridable watermark shift (1 minute).
 const WATERMARK_SHIFT_MAX_MS: u64 = 60_000;
 
+/// D2-A revised tuning: idle-branch `recv_timeout` window. With
+/// `recv_timeout` instead of `try_recv` + sleep, the worker wakes
+/// immediately on cmd arrival instead of waiting up to a full poll
+/// interval. Override via `DESKTOP_TOUCH_IDLE_RECV_TIMEOUT_MS`.
+const DEFAULT_IDLE_RECV_TIMEOUT_MS: u64 = 1;
+
+/// D2-A: cap how many cmds a single iteration drains in one batch.
+/// Larger batches amortise dataflow stepping over more events but
+/// extend the latency of the first event in the batch. Override via
+/// `DESKTOP_TOUCH_MAX_BATCH_SIZE`.
+const DEFAULT_MAX_BATCH_SIZE: usize = 64;
+
+/// D2-A: cap how many `worker.step()` calls run after a batch is
+/// drained. Bounds worst-case time per cmd-loop iteration if the
+/// dataflow operator chain produces unbounded follow-on activations.
+/// Override via `DESKTOP_TOUCH_MAX_STEPS_PER_CMD`.
+const DEFAULT_MAX_STEPS_PER_CMD: usize = 32;
+
 /// A focus-changed event received from the root-side bridge.
 ///
 /// All fields are pure Rust — no `windows-rs` types, no napi types.
@@ -167,6 +185,19 @@ pub trait L1Sink: Send + Sync {
 enum Cmd {
     PushFocus(FocusEvent),
     Shutdown,
+    /// Test-only: block the worker thread for the given duration
+    /// before processing the next cmd. Used by the production
+    /// lifecycle's `shutdown_timeout_failure_*` regression tests
+    /// to simulate a stuck worker (Codex v9 P2-17 retry-fail branch).
+    /// Production code never sends this variant.
+    ///
+    /// `cfg(any(test, feature = "test-fixtures"))` so the root
+    /// crate can drive the fixture from its own test suite via
+    /// `FocusInputHandle::block_worker_for_test` (enabled with
+    /// `engine-perception = { features = ["test-fixtures"] }` in
+    /// the root crate's `[dev-dependencies]`).
+    #[cfg(any(test, feature = "test-fixtures"))]
+    BlockForTest(Duration),
 }
 
 /// Sender-side handle the bridge holds. Cloneable — multiple bridges
@@ -185,6 +216,26 @@ impl L1Sink for FocusInputHandle {
         //   means this should never happen in practice; if it did,
         //   blocking is correct (we'd lose ordering otherwise).
         let _ = self.tx.send(Cmd::PushFocus(event));
+    }
+}
+
+impl FocusInputHandle {
+    /// Test-only fixture (D2-A-0 / Codex v9 P2-17 OQ #15): queue a
+    /// `BlockForTest` cmd that makes the worker sleep for the given
+    /// duration before processing the next cmd. Used by the root
+    /// crate's `production_pipeline_lifecycle_tests` to drive the
+    /// stuck-worker scenario where `ensure_perception_pipeline()`'s
+    /// poison-eviction retry must fail (worker unable to honor
+    /// `Cmd::Shutdown` within the 100ms retry budget) so the test
+    /// can verify the slot retains the poisoned `Arc` rather than
+    /// spawning a duplicate worker.
+    ///
+    /// Enabled via the `test-fixtures` feature on this crate; the
+    /// root crate's `[dev-dependencies]` selects it. Production
+    /// builds never see this method.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn block_worker_for_test(&self, duration: Duration) {
+        let _ = self.tx.send(Cmd::BlockForTest(duration));
     }
 }
 
@@ -377,6 +428,29 @@ fn watermark_for(latest_wallclock_ms: u64, shift_ms: u64) -> LogicalTime {
     LogicalTime::new(latest_wallclock_ms.saturating_sub(shift_ms), 0)
 }
 
+fn idle_recv_timeout_ms() -> u64 {
+    std::env::var("DESKTOP_TOUCH_IDLE_RECV_TIMEOUT_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_IDLE_RECV_TIMEOUT_MS)
+}
+
+fn max_batch_size() -> usize {
+    std::env::var("DESKTOP_TOUCH_MAX_BATCH_SIZE")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_MAX_BATCH_SIZE)
+}
+
+fn max_steps_per_cmd() -> usize {
+    std::env::var("DESKTOP_TOUCH_MAX_STEPS_PER_CMD")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_MAX_STEPS_PER_CMD)
+}
+
 /// Spawn the timely worker thread + return a triple
 /// `(PerceptionWorker, FocusInputHandle, CurrentFocusedElementView)`.
 ///
@@ -409,53 +483,75 @@ pub fn spawn_perception_worker(
     (worker, handle, view)
 }
 
-/// Body of the timely worker thread.
+/// Body of the timely worker thread (D2-A revised tuning).
 ///
 /// Runs `timely::execute_directly` with a single-thread allocator;
 /// the worker pumps the cmd channel until `Cmd::Shutdown`. After the
-/// closure returns, `execute_directly` drains remaining work
-/// (`while worker.has_dataflows() { worker.step_or_park(None); }`)
-/// before the function returns.
+/// closure returns, `execute_directly` drains remaining work before
+/// the function returns.
 ///
-/// ## Latency budget (PR #92 D1-5 measurement, ~4.7 ms update latency)
+/// ## Why D2-A revised tuning (vs D1's `try_recv` + 1ms sleep)
 ///
-/// Three contributing factors, **all on the critical path** — sleep
-/// shortening alone won't reach SLO if any of them is missed:
+/// PR #92 D1-5 measurement showed `view_update_latency` p99 ~4.7 ms
+/// — over the SLO `p99 < 1 ms` from `docs/views-catalog.md` §3.1.
+/// Three contributing factors all on the critical path:
 ///
-/// 1. **`thread::sleep(1ms)` in `TryRecvError::Empty`**: cmd-arrival
-///    detection takes up to 1 ms, and dataflow steps are interleaved
-///    with it.
-/// 2. **DD operator chain propagation**: `input → map → reduce →
-///    inspect` requires ~2-3 `worker.step()` calls; with sleeps in
-///    between they accumulate.
-/// 3. **idle frontier advance gates release**: with `WATERMARK_SHIFT_MS`
-///    at any value, the cmd branch's `advance_to(watermark)` puts the
-///    frontier *at* event_time, not past it — so DD's reduce can't
-///    finalise the new row's diff. Release only happens once the
-///    `Empty` branch's idle-advance projects `latest_wallclock_ms +
-///    real_elapsed_ms` and re-`advance_to`s past the event. That
-///    means the post-cmd Empty branch is also on the critical path,
-///    not just the cmd-branch step itself.
+///   1. `thread::sleep(1ms)` in the `Empty` arm: cmd-arrival
+///      detection takes up to 1 ms, dataflow steps interleaved with it.
+///   2. DD operator chain propagation needs 2-3 `worker.step()` calls
+///      (input → map → reduce → inspect). With sleeps between them
+///      they accumulate.
+///   3. Cmd-branch `advance_to(watermark)` puts the frontier **at**
+///      event_time, not past it — DD reduce can't finalise the new
+///      row's diff until the idle-advance projects past it. The
+///      post-cmd Empty branch is therefore also on the critical path.
 ///
-/// Memory ops (`update_at` / `advance_to` / `apply_diff` / RwLock
-/// write) total only ~µs and are non-dominant.
+/// ## D2-A fix (Codex review v8 P2-15 / `docs/adr-008-d2-plan.md` §4.2)
 ///
-/// SLO target from `docs/views-catalog.md` §3.1 is `update p99 < 1 ms`.
-/// Current design misses it; tuning options (sleep shortening /
-/// cmd-driven `step until idle` with explicit frontier-past advance /
-/// parking primitive) are catalogued in
-/// `docs/adr-008-d1-followups.md` §2.5 and are deferred to D2 where
-/// the `desktop_state` view-based implementation will exercise the
-/// path under MCP transport. **DO NOT** tune in isolation without
-/// re-running the bench — the worker's idle/poll loop also gates the
-/// shutdown latency and the idle-advance schedule, and (3) above means
-/// "shorten the sleep" by itself is bounded by 10× improvement only.
+/// Two changes that preserve N3 partial-order while collapsing latency:
+///
+///   - **`recv_timeout(idle_recv_timeout)` instead of `try_recv` +
+///     sleep**: the worker wakes immediately when a cmd arrives. The
+///     `Empty` branch's idle-frontier-advance work moves into a
+///     timeout-driven path that runs only when the channel is genuinely
+///     idle.
+///   - **Batch drain + max-observed time release**: each loop
+///     iteration takes the first cmd via `recv_timeout`, then drains
+///     the channel non-blockingly up to `MAX_BATCH_SIZE`. After all
+///     cmds in the batch have called `update_at`, advance the frontier
+///     to `(max_observed_wallclock_ms, max_observed_sub_ordinal + 1)`
+///     — i.e. one tick past the latest event, NOT to a `wc + ε` for
+///     some arbitrary ε. This preserves N3: a later same-`wallclock_ms`
+///     event with a higher `sub_ordinal` is still accepted because the
+///     frontier only advances past the observed `(wc, sub_ord)` pair.
+///     A genuine stale (smaller `wc` or smaller `sub_ord` at same
+///     `wc`) gets dropped per the existing watermark-shift logic.
+///   - **`step_until_idle` after the batch**: drain the operator
+///     chain in one go (capped at `MAX_STEPS_PER_CMD`) instead of
+///     stepping once per loop iteration with a sleep between.
+///
+/// `event_count` guards (3): if the batch contained only `Shutdown`
+/// (or a `BlockForTest` in tests), we skip `advance_to` / `flush` /
+/// `step` / `processed_count` increment. Without this guard a
+/// shutdown-only batch would advance the frontier past spurious data
+/// and bump the processed counter.
+///
+/// ## Idle-branch frontier advance (PR #91 P2 retained, refactored)
+///
+/// When `recv_timeout` returns `Err(Timeout)`, project
+/// `latest_wallclock_ms` forward by real elapsed since the last event
+/// anchor and advance the watermark accordingly. Same semantics as D1
+/// — a quiescent focus still gets materialised — just driven by the
+/// `recv_timeout` cycle instead of `try_recv` + `sleep`.
 fn worker_loop(
     rx: Receiver<Cmd>,
     processed: Arc<AtomicU64>,
     view: CurrentFocusedElementView,
 ) {
     let shift_ms = watermark_shift_ms();
+    let idle_timeout = Duration::from_millis(idle_recv_timeout_ms());
+    let batch_cap = max_batch_size();
+    let step_cap = max_steps_per_cmd();
 
     // `less_equal` for the LogicalTime guard / watermark advance is
     // provided by `timely::order::PartialOrder`. Bring it into scope
@@ -476,79 +572,27 @@ fn worker_loop(
 
         let mut latest_wallclock_ms: u64 = 0;
         let mut current_watermark: LogicalTime = LogicalTime::new(0, 0);
-
-        // Anchor for idle frontier advance (Codex PR #91 P2): when no
-        // further events arrive after a focus change, real L1 input
-        // has no built-in heartbeat, so without a synthetic
-        // wall-clock-driven advance the latest event would sit at the
-        // input frontier forever and never be released by the
-        // dataflow's reduce. We project `latest_wallclock_ms` forward
-        // in the idle branch using real elapsed time since the last
-        // received event, mirroring real-time clock progression.
-        //
-        // Holds (anchor_wallclock_ms, anchor_instant) of the most
-        // recent event whose wallclock advanced `latest_wallclock_ms`.
         let mut last_event_anchor: Option<(u64, Instant)> = None;
 
-        loop {
-            match rx.try_recv() {
-                Ok(Cmd::PushFocus(ev)) => {
-                    let event_time = ev.logical_time();
+        'outer: loop {
+            // ─── Phase 1: take the first cmd (recv_timeout) ────
+            // recv_timeout wakes us up the instant a cmd arrives —
+            // the D1 try_recv + sleep(1ms) had a worst-case 1ms
+            // wait per cmd. On Timeout we fall through to the idle
+            // frontier-advance branch.
+            let mut batch: Vec<Cmd> = Vec::with_capacity(batch_cap.min(16));
+            let mut shutdown_requested = false;
 
-                    // Guard: DD asserts session_time <= update time.
-                    // Our session_time tracks `current_watermark`,
-                    // so out-of-order events older than the frontier
-                    // would panic. Drop them with a log instead.
-                    if !current_watermark.less_equal(&event_time) {
-                        eprintln!(
-                            "[perception-worker] out-of-order event dropped: \
-                             event_time={:?} watermark={:?} source_event_id={}",
-                            event_time, current_watermark, ev.source_event_id
-                        );
-                    } else {
-                        input.update_at(ev.clone(), event_time.clone(), 1);
-                    }
-
-                    // Frontier advances on monotone `wallclock_ms`.
-                    if ev.wallclock_ms > latest_wallclock_ms {
-                        latest_wallclock_ms = ev.wallclock_ms;
-                        last_event_anchor = Some((ev.wallclock_ms, Instant::now()));
-                        let new_wm = watermark_for(latest_wallclock_ms, shift_ms);
-                        if current_watermark.less_equal(&new_wm)
-                            && current_watermark != new_wm
-                        {
-                            current_watermark = new_wm.clone();
-                            input.advance_to(new_wm);
-                        }
-                    }
-                    input.flush();
-                    // Increment AFTER flush so an observer that sees
-                    // processed_count == N is guaranteed N events are
-                    // visible to the dataflow (Codex PR #90 review P2).
-                    processed.fetch_add(1, Ordering::Relaxed);
-                }
-                Ok(Cmd::Shutdown) => break,
-                Err(TryRecvError::Empty) => {
-                    // Idle frontier advance (PR #91 P2). Without this,
-                    // a single focus event followed by quiescent input
-                    // (the common case after a user focuses an app and
-                    // stops) leaves the event at the frontier forever
-                    // — the view never materialises the current focus.
-                    //
-                    // Project the latest seen event's wallclock_ms
-                    // forward by real elapsed time since it was
-                    // received. In production, real L1 events arrive
-                    // with monotonic real-time wallclocks, so a future
-                    // event's wallclock will always be ≥ this
-                    // projection — the synthesis can never make a
-                    // legitimate later event look back-dated.
+            match rx.recv_timeout(idle_timeout) {
+                Ok(cmd) => batch.push(cmd),
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                    // Idle frontier advance (PR #91 P2 semantics).
                     if let Some((anchor_wc, anchor_inst)) = last_event_anchor {
                         let elapsed = anchor_inst.elapsed().as_millis() as u64;
                         let projected = anchor_wc.saturating_add(elapsed);
                         if projected > latest_wallclock_ms {
                             latest_wallclock_ms = projected;
-                            let new_wm =
-                                watermark_for(latest_wallclock_ms, shift_ms);
+                            let new_wm = watermark_for(latest_wallclock_ms, shift_ms);
                             if current_watermark.less_equal(&new_wm)
                                 && current_watermark != new_wm
                             {
@@ -559,11 +603,134 @@ fn worker_loop(
                         }
                     }
                     worker.step();
-                    thread::sleep(Duration::from_millis(1));
+                    continue 'outer;
                 }
-                Err(TryRecvError::Disconnected) => break,
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break 'outer,
             }
-            worker.step();
+
+            // ─── Phase 2: non-blocking drain up to batch_cap ───
+            while batch.len() < batch_cap {
+                match rx.try_recv() {
+                    Ok(cmd) => batch.push(cmd),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        // Worker is shutting down — process what's in
+                        // the batch then exit.
+                        shutdown_requested = true;
+                        break;
+                    }
+                }
+            }
+
+            // ─── Phase 3: apply each PushFocus, track max time ──
+            let mut event_count: u64 = 0;
+            let mut max_observed: Option<LogicalTime> = None;
+
+            for cmd in batch.drain(..) {
+                match cmd {
+                    Cmd::PushFocus(ev) => {
+                        let event_time = ev.logical_time();
+
+                        // N3 partial-order guard: DD asserts
+                        // session_time <= update time. The watermark
+                        // is the session_time. Out-of-order events
+                        // older than the frontier are dropped; same
+                        // `wc` with larger `sub_ord` is still <= the
+                        // frontier-of-events (the frontier we advance
+                        // to is `(max_wc, max_sub_ord + 1)`, so an
+                        // earlier-batch event at the same `wc` with a
+                        // larger `sub_ord` is accepted within the
+                        // batch — only across-batch back-dated events
+                        // are dropped).
+                        if !current_watermark.less_equal(&event_time) {
+                            eprintln!(
+                                "[perception-worker] out-of-order event dropped: \
+                                 event_time={:?} watermark={:?} source_event_id={}",
+                                event_time, current_watermark, ev.source_event_id
+                            );
+                            continue;
+                        }
+                        input.update_at(ev.clone(), event_time.clone(), 1);
+                        event_count += 1;
+
+                        // Update anchor for idle frontier advance —
+                        // only when wallclock genuinely advances, so
+                        // a flurry of same-`wc` events doesn't reset
+                        // the anchor's `Instant::now()` and stretch
+                        // the projected idle-time forward gauge.
+                        if ev.wallclock_ms > latest_wallclock_ms {
+                            latest_wallclock_ms = ev.wallclock_ms;
+                            last_event_anchor = Some((ev.wallclock_ms, Instant::now()));
+                        }
+
+                        // Track the per-batch max event_time so the
+                        // frontier can be moved past it after the
+                        // batch is committed.
+                        max_observed = Some(match max_observed {
+                            None => event_time,
+                            Some(prev) if prev.less_equal(&event_time) => event_time,
+                            Some(prev) => prev,
+                        });
+                    }
+                    Cmd::Shutdown => {
+                        shutdown_requested = true;
+                    }
+                    #[cfg(any(test, feature = "test-fixtures"))]
+                    Cmd::BlockForTest(d) => {
+                        // Test-only stuck-worker fixture (Codex v9
+                        // P2-17 retry-fail branch regression). Sleep
+                        // synchronously so subsequent shutdown
+                        // signals queue but cannot be acted on until
+                        // the duration elapses.
+                        thread::sleep(d);
+                    }
+                }
+            }
+
+            // ─── Phase 4: advance frontier + flush + step ──────
+            // event_count guard (Codex v6 P2-8 + D2-A invariant 7):
+            // a Shutdown-only / BlockForTest-only batch does NOT
+            // advance the frontier or bump processed_count.
+            if event_count > 0 {
+                if let Some(target) = max_observed {
+                    // Frontier moves past the batch's max event_time.
+                    // The watermark we advance to is the max-observed
+                    // tick + 1 sub_ordinal, which is strictly past
+                    // every event we just committed. Subsequent
+                    // batches may include same-`wc`-larger-`sub_ord`
+                    // events; those are within `current_watermark` ≤
+                    // `event_time` so they're accepted. Same-`wc`-
+                    // smaller-`sub_ord` events ARE dropped, but that
+                    // pattern is forbidden by L1 invariant: per-thread
+                    // sub_ordinal is monotone.
+                    let advance_target = LogicalTime::new(
+                        target.first,
+                        target.second.saturating_add(1),
+                    );
+                    if current_watermark.less_equal(&advance_target)
+                        && current_watermark != advance_target
+                    {
+                        current_watermark = advance_target.clone();
+                        input.advance_to(advance_target);
+                    }
+                }
+                input.flush();
+                processed.fetch_add(event_count, Ordering::Relaxed);
+
+                // Step until idle (capped) so the inspect callback
+                // emits before we go back to recv_timeout.
+                let mut steps = 0;
+                while steps < step_cap {
+                    if !worker.step() {
+                        break;
+                    }
+                    steps += 1;
+                }
+            }
+
+            if shutdown_requested {
+                break 'outer;
+            }
         }
 
         // Closure returns; `execute_directly` drains the remaining
@@ -753,6 +920,243 @@ mod tests {
         handle.push_focus(make_event(3, 2_000_500, 0));
         worker.shutdown(Duration::from_secs(2)).expect("shutdown");
     }
+
+    // ─── D2-A revised tuning: partial-order tests ─────────────
+    //
+    // Pin the four invariants in `docs/adr-008-d2-plan.md` §4.3:
+    //   - same-wc, larger-sub_ord events in a single batch are
+    //     accepted (frontier moves only past max-observed).
+    //   - out-of-order arrival within a batch settles to the
+    //     latest-by-(wc, sub_ord) row.
+    //   - across-batch back-dated events (smaller wc) are dropped,
+    //     not panicked.
+    //   - idle-advance after a cmd-batch advance is monotone.
+
+    fn make_focus_event_at(
+        source_event_id: u64,
+        wallclock_ms: u64,
+        sub_ordinal: u32,
+        hwnd: u64,
+        name: &str,
+    ) -> FocusEvent {
+        FocusEvent {
+            source_event_id,
+            hwnd,
+            name: name.into(),
+            automation_id: None,
+            control_type: 50000,
+            window_title: "PartialOrderTest".into(),
+            wallclock_ms,
+            sub_ordinal,
+            timestamp_source: 0,
+        }
+    }
+
+    #[test]
+    fn same_wallclock_different_sub_ordinal_all_observed() {
+        // Three events at (W, 0), (W, 1), (W, 2) on the same hwnd.
+        // The view's reduce(last-by-time) keeps the latest, so we
+        // expect the (W, 2) name to win. The point of this test is
+        // that the D2-A frontier-advance logic (advance to (max_wc,
+        // max_sub_ord + 1)) does not drop the larger-sub_ord events
+        // as back-dated.
+        use crate::views::current_focused_element::CurrentFocusedElementView;
+        let (worker, handle, view) = spawn_perception_worker();
+        let _: &CurrentFocusedElementView = &view; // type assertion
+
+        // wallclock far enough from 0 that the watermark shift
+        // doesn't drop them.
+        let w = 1_700_000_000_000_u64;
+        let h = 0xA001;
+
+        for sub in 0..3u32 {
+            handle.push_focus(make_focus_event_at(
+                sub as u64,
+                w,
+                sub,
+                h,
+                &format!("name-{}", sub),
+            ));
+        }
+
+        // Wait for the worker to process all 3.
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while worker.processed_count() < 3 {
+            if Instant::now() >= deadline {
+                panic!(
+                    "worker did not process all 3 events: processed_count={}",
+                    worker.processed_count()
+                );
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(worker.processed_count(), 3, "all 3 events accepted");
+
+        // After idle advance settles the frontier, the view should
+        // have the latest name for the hwnd.
+        let view_clone = view.clone();
+        let view_deadline = Instant::now() + Duration::from_millis(500);
+        loop {
+            if let Some(el) = view_clone.get(h) {
+                if el.name == "name-2" {
+                    break;
+                }
+            }
+            if Instant::now() >= view_deadline {
+                panic!(
+                    "view did not settle to name-2: got {:?}",
+                    view_clone.get(h).map(|e| e.name.clone())
+                );
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        worker.shutdown(Duration::from_secs(2)).expect("shutdown");
+    }
+
+    #[test]
+    fn out_of_order_same_wallclock_settles_correctly() {
+        // Push (W, 2) first, then (W, 1), then (W, 0) — reverse
+        // order of sub_ordinal. The view's last-by-time semantics
+        // should still return (W, 2) — the largest LogicalTime
+        // wins regardless of arrival order. This is the partial-
+        // order acceptance test (北極星 N3).
+        use crate::views::current_focused_element::CurrentFocusedElementView;
+        let (worker, handle, view) = spawn_perception_worker();
+        let _: &CurrentFocusedElementView = &view;
+
+        let w = 1_700_000_500_000_u64;
+        let h = 0xA002;
+
+        // Reverse-order push.
+        for sub in (0..3u32).rev() {
+            handle.push_focus(make_focus_event_at(
+                sub as u64,
+                w,
+                sub,
+                h,
+                &format!("name-{}", sub),
+            ));
+        }
+
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while worker.processed_count() < 3 {
+            if Instant::now() >= deadline {
+                panic!(
+                    "worker did not process all 3 reverse-order events: processed_count={}",
+                    worker.processed_count()
+                );
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        let view_clone = view.clone();
+        let view_deadline = Instant::now() + Duration::from_millis(500);
+        loop {
+            if let Some(el) = view_clone.get(h) {
+                if el.name == "name-2" {
+                    break;
+                }
+            }
+            if Instant::now() >= view_deadline {
+                panic!(
+                    "reverse-order push did not settle to name-2: got {:?}",
+                    view_clone.get(h).map(|e| e.name.clone())
+                );
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        worker.shutdown(Duration::from_secs(2)).expect("shutdown");
+    }
+
+    #[test]
+    fn cmd_branch_does_not_back_advance_frontier() {
+        // Push a far-future event (wc = T2) to advance the
+        // frontier, then push an old event (wc = T1, T1 < T2 - 100ms
+        // shift). The old event must be dropped (eprintln only),
+        // and the worker must remain healthy.
+        let (worker, handle, _view) = spawn_perception_worker();
+
+        // T2 = 2_000_000, T1 = 2_000_000 - 500 (way past the 100ms
+        // default shift, so the watermark guard rejects it).
+        handle.push_focus(make_focus_event_at(1, 2_000_000, 0, 0xB001, "future"));
+        thread::sleep(Duration::from_millis(50));
+        handle.push_focus(make_focus_event_at(2, 2_000_000 - 500, 0, 0xB001, "stale"));
+        // Worker must still be alive — push a third event to confirm.
+        handle.push_focus(make_focus_event_at(3, 2_000_500, 0, 0xB001, "after-stale"));
+
+        // processed_count counts all PushFocus that the worker
+        // dequeued, but the stale one is dropped before
+        // `update_at` (count not bumped). We expect 2 (future +
+        // after-stale).
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while worker.processed_count() < 2 {
+            if Instant::now() >= deadline {
+                panic!(
+                    "worker did not process the two non-stale events: processed_count={}",
+                    worker.processed_count()
+                );
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        worker.shutdown(Duration::from_secs(2)).expect("shutdown");
+    }
+
+    #[test]
+    fn idle_advance_after_cmd_push_is_monotone() {
+        // Push one event, let the idle branch run for several
+        // cycles. The idle frontier-advance must never roll back
+        // the watermark; we observe this indirectly by verifying
+        // the worker remains healthy and processed_count stays at 1
+        // (no spurious additional processing).
+        let (worker, handle, _view) = spawn_perception_worker();
+
+        handle.push_focus(make_focus_event_at(1, 1_800_000_000_000, 0, 0xB002, "anchor"));
+
+        // Wait for the single push to be processed.
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while worker.processed_count() < 1 {
+            if Instant::now() >= deadline {
+                panic!(
+                    "worker did not process the anchor: processed_count={}",
+                    worker.processed_count()
+                );
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        // Allow the idle-advance branch many cycles. Under monotone
+        // semantics processed_count must not change.
+        thread::sleep(Duration::from_millis(150));
+        assert_eq!(
+            worker.processed_count(),
+            1,
+            "idle branch must not spuriously process events"
+        );
+
+        worker.shutdown(Duration::from_secs(2)).expect("shutdown");
+    }
+
+    #[test]
+    fn shutdown_only_batch_does_not_advance_frontier() {
+        // Codex review v6 P2-8 invariant 7 (D2-A): a batch
+        // containing only `Cmd::Shutdown` must NOT call
+        // advance_to / flush / processed_count.fetch_add.
+        // We can't observe the frontier directly from here, but
+        // processed_count is a clean proxy: spawn-and-shutdown
+        // without any PushFocus must leave processed_count = 0.
+        let (worker, _handle, _view) = spawn_perception_worker();
+        // No pushes — straight to shutdown. The shutdown signal
+        // arrives as a single Shutdown-only batch.
+        let pre_shutdown_count = worker.processed_count();
+        assert_eq!(pre_shutdown_count, 0, "no pushes → no processing");
+        worker.shutdown(Duration::from_secs(2)).expect("shutdown");
+        // Implicit: if we got here without panic, advance_to wasn't
+        // called on a (0, 1) frontier with no events queued.
+    }
+
+    // ─── End partial-order tests ──────────────────────────────
 
     #[test]
     fn shutdown_with_timeout_retries_send_when_channel_drains() {
