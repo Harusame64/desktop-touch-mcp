@@ -150,30 +150,55 @@ function tryViewFocus(): NativeFocusedElement | null {
 /**
  * Decide whether a view-derived focused element should populate
  * `desktop_state.focusedElement`, or whether the caller should
- * fall through to the UIA / CDP path.
+ * fall through to the UIA / CDP path. Combines three filters that
+ * together pin parity with the existing UIA branch's accept rules:
  *
- * **Chromium foreground + Pane** is the special case: when Chrome /
- * Edge is the foreground app, UIA's focus query returns the
- * top-level Chrome `Pane` element rather than the actual focused
- * DOM node, and the existing UIA path explicitly filters it out
- * (`desktop-state.ts` UIA branch: `focused.controlType !== "Pane"`)
- * so the fallback can read `document.activeElement` via CDP
- * instead. The view sees the same UIA event stream, so it can
- * surface the same Pane row — without this filter, the new
- * view-first path would publish the Pane element while the old
- * path would have skipped to CDP, breaking the `bit-equal`
- * contract (Codex review v3 P1-3 / Opus phase-boundary review
- * 2026-04-30 P1-A).
+ * 1. **Empty `name`** → reject (Codex review v17 P2). Both the
+ *    Chromium and non-Chromium UIA branches gate on
+ *    `focused?.name`, so a UIA-source row with an empty name
+ *    falls through to CDP / `null` rather than publishing. Without
+ *    this check, the view-first path would surface `name: ""`
+ *    rows that the old path would have skipped — bit-equal
+ *    violation. (Note: empty-name rows are not common in practice
+ *    — the focus_pump's `payload.after?.name?` filter already
+ *    drops most of them — but they're still possible for some
+ *    UIA providers, so the parity guard is required.)
  *
- * Non-Chromium foreground accepts Pane from the view; UIA's
- * non-Chromium branch also accepts Pane (the only filter there is
- * `focused?.name`), so the two paths agree on Pane retention.
+ * 2. **Chromium foreground + `controlType === "Pane"`** → reject
+ *    (Codex review v3 P1-3 / Opus phase-boundary review 2026-04-30
+ *    P1-A). When Chrome / Edge is the foreground app, UIA's focus
+ *    query returns the top-level Chrome `Pane` element rather
+ *    than the actual focused DOM node, and the existing UIA branch
+ *    filters it out so the fallback can read
+ *    `document.activeElement` via CDP. The view sees the same UIA
+ *    event stream and can surface the same Pane — without this
+ *    filter the view-first path would publish the Pane while the
+ *    old path would have skipped to CDP. Non-Chromium foreground
+ *    accepts Pane (Word document area is a legitimate Pane to
+ *    focus, and the UIA branch there also accepts it).
+ *
+ * 3. **`focused.windowTitle` must match the current `fgTitle`**
+ *    (Codex review v17 P1). The Rust `view_get_focused` returns
+ *    the latest GLOBALLY focused element from `latest_focus`. If
+ *    a foreground switch has just happened the view may still
+ *    hold the previous window's row before `focus_pump` has
+ *    delivered the new event — accepting that stale row would
+ *    publish state for the wrong window while UIA / CDP would
+ *    have queried the new foreground. Strict equality with the
+ *    enumerated foreground title rejects the stale row and lets
+ *    the cascade fall through; the next call (after focus_pump
+ *    catches up) will see them match. An empty `fgTitle` rejects
+ *    too (no foreground enumerated → unsafe to publish view-side
+ *    state).
  */
 export function shouldAcceptViewFocus(
   focused: NativeFocusedElement,
   isChromium: boolean,
+  fgTitle: string,
 ): boolean {
+  if (!focused.name) return false;
   if (isChromium && focused.controlType === "Pane") return false;
+  if (!fgTitle || focused.windowTitle !== fgTitle) return false;
   return true;
 }
 
@@ -325,7 +350,7 @@ export const desktopStateHandler = async (args: {
     // the old path would have skipped to CDP `document.activeElement`,
     // breaking bit-equal.
     const viewFocused = tryViewFocus();
-    if (viewFocused && shouldAcceptViewFocus(viewFocused, isChromium)) {
+    if (viewFocused && shouldAcceptViewFocus(viewFocused, isChromium, fgTitle)) {
       focusedElement = buildElementInfoFromView(viewFocused);
       hints.focusedElementSource = "view";
     }

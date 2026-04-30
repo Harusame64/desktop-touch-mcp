@@ -157,47 +157,66 @@ describe("buildElementInfoFromCdp", () => {
   });
 });
 
-describe("shouldAcceptViewFocus (Pane filter parity, Opus review 2026-04-30 P1-A)", () => {
+describe("shouldAcceptViewFocus (parity gates with the UIA branch)", () => {
   // The view returns the same UIA event stream the direct query
-  // does, including the Chrome top-level "Pane" element when Chrome
-  // is the foreground app. The UIA branch in `desktopStateHandler`
-  // explicitly skips that Pane so the CDP fallback can read the
-  // real `document.activeElement`. The view-first path must mirror
-  // that filter, otherwise the new path publishes the Pane while
-  // the old path skipped it — a bit-equal violation.
+  // does. `shouldAcceptViewFocus` ladders three accept gates so
+  // the view-first path matches the UIA branch's pre-PR accept
+  // surface exactly:
   //
-  // Non-Chromium foreground accepts Pane (the existing UIA branch
-  // there does too: its only filter is `focused?.name`).
+  //   1. empty `name`           → reject (Codex v17 P2 — UIA path
+  //                              gates on `focused?.name`).
+  //   2. Chromium + "Pane"      → reject (Codex v3 P1-3 / Opus
+  //                              2026-04-30 P1-A — Chrome top-level
+  //                              Pane defers to CDP).
+  //   3. windowTitle ≠ fgTitle  → reject (Codex v17 P1 — view holds
+  //                              latest global focus, may lag the
+  //                              foreground switch).
+  //
+  // Each test pins one gate (and the matrix corner test pins the
+  // Pane filter's two-input truth table on the happy paths).
 
-  const pane = (): NativeFocusedElement => ({
+  const CHROME_FG = "GitHub - Pull Request - Google Chrome";
+  const WORD_FG = "Document - Microsoft Word";
+
+  const chromePane = (): NativeFocusedElement => ({
     name: "Browser content",
     automationId: null,
     controlType: "Pane",
-    windowTitle: "GitHub - Pull Request - Google Chrome",
+    windowTitle: CHROME_FG,
   });
-  const button = (): NativeFocusedElement => ({
+  const chromeButton = (): NativeFocusedElement => ({
     name: "Submit",
     automationId: "submit-btn",
     controlType: "Button",
-    windowTitle: "GitHub - Pull Request - Google Chrome",
+    windowTitle: CHROME_FG,
   });
-  const nativePane = (): NativeFocusedElement => ({
+  const wordPane = (): NativeFocusedElement => ({
     name: "Document area",
     automationId: null,
     controlType: "Pane",
-    windowTitle: "Document - Microsoft Word",
+    windowTitle: WORD_FG,
+  });
+
+  it("rejects when name is empty (UIA-branch parity)", () => {
+    const empty: NativeFocusedElement = {
+      name: "",
+      automationId: null,
+      controlType: "Edit",
+      windowTitle: WORD_FG,
+    };
+    expect(shouldAcceptViewFocus(empty, false, WORD_FG)).toBe(false);
   });
 
   it("rejects Pane when Chromium foreground", () => {
-    expect(shouldAcceptViewFocus(pane(), true)).toBe(false);
+    expect(shouldAcceptViewFocus(chromePane(), true, CHROME_FG)).toBe(false);
   });
 
   it("accepts non-Pane elements on Chromium foreground", () => {
-    expect(shouldAcceptViewFocus(button(), true)).toBe(true);
+    expect(shouldAcceptViewFocus(chromeButton(), true, CHROME_FG)).toBe(true);
   });
 
   it("accepts Pane on non-Chromium foreground (matches UIA branch)", () => {
-    expect(shouldAcceptViewFocus(nativePane(), false)).toBe(true);
+    expect(shouldAcceptViewFocus(wordPane(), false, WORD_FG)).toBe(true);
   });
 
   it("accepts non-Pane elements on non-Chromium foreground", () => {
@@ -207,22 +226,44 @@ describe("shouldAcceptViewFocus (Pane filter parity, Opus review 2026-04-30 P1-A
           name: "Save",
           automationId: null,
           controlType: "Button",
-          windowTitle: "Document - Microsoft Word",
+          windowTitle: WORD_FG,
         },
         false,
+        WORD_FG,
       ),
     ).toBe(true);
   });
 
-  it("rejects only when BOTH Chromium AND Pane (matrix corner)", () => {
-    // The four-cell matrix this filter implements:
+  it("rejects when windowTitle does not match foreground (lagging view)", () => {
+    // The view holds a row from the previous foreground; we just
+    // switched windows. Reject so UIA / CDP can read the new
+    // foreground's actual focus.
+    const stale: NativeFocusedElement = {
+      name: "Submit",
+      automationId: "submit-btn",
+      controlType: "Button",
+      windowTitle: "Old Window - Notepad",
+    };
+    expect(shouldAcceptViewFocus(stale, false, WORD_FG)).toBe(false);
+  });
+
+  it("rejects when foreground title is empty (no foreground enumerated)", () => {
+    // `desktopStateHandler` defaults `fgTitle = fg?.title ?? ""`.
+    // An empty fgTitle means we couldn't enumerate a foreground
+    // window, so we cannot validate the view's match — safer to
+    // reject and let UIA / CDP surface whatever they can.
+    expect(shouldAcceptViewFocus(chromeButton(), true, "")).toBe(false);
+  });
+
+  it("rejects only when ALL three gates pass (matrix corner)", () => {
+    // Pane filter happy-path matrix (name set, fgTitle matches):
     //                      Chromium foreground     non-Chromium
-    //   Pane               false (skip → CDP)      true (UIA accepts)
-    //   non-Pane           true                    true
-    expect(shouldAcceptViewFocus(pane(), true)).toBe(false); // (T, T) skip
-    expect(shouldAcceptViewFocus(pane(), false)).toBe(true); // (F, T) accept
-    expect(shouldAcceptViewFocus(button(), true)).toBe(true); // (T, F) accept
-    expect(shouldAcceptViewFocus(button(), false)).toBe(true); // (F, F) accept
+    //   Pane               reject (→ CDP)          accept (UIA accepts)
+    //   non-Pane           accept                  accept
+    expect(shouldAcceptViewFocus(chromePane(), true, CHROME_FG)).toBe(false);
+    expect(shouldAcceptViewFocus(chromePane(), false, CHROME_FG)).toBe(true);
+    expect(shouldAcceptViewFocus(chromeButton(), true, CHROME_FG)).toBe(true);
+    expect(shouldAcceptViewFocus(chromeButton(), false, CHROME_FG)).toBe(true);
   });
 });
 
