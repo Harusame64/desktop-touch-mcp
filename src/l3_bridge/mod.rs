@@ -45,6 +45,8 @@ use napi::bindgen_prelude::BigInt;
 use napi_derive::napi;
 use windows::Win32::UI::Accessibility::UIA_CONTROLTYPE_ID;
 
+use crate::win32::safety::napi_safe_call;
+
 use engine_perception::input::{spawn_perception_worker, FocusInputHandle, L1Sink, PerceptionWorker};
 use engine_perception::views::current_focused_element::CurrentFocusedElementView;
 use engine_perception::views::latest_focus::LatestFocusView;
@@ -450,21 +452,30 @@ pub struct NativeFocusedElement {
 ///   - or the `latest_focus` view's `snapshot()` has nothing live.
 ///
 /// First call lazily spawns the pipeline (`ensure_perception_pipeline`).
+///
+/// Wrapped in `napi_safe_call` per ADR-007 §3.4 — any panic in the
+/// pipeline init / view read path turns into a typed napi error
+/// instead of unwinding through the addon boundary (which would
+/// take down the Node process).
 #[napi]
-pub fn view_get_focused() -> Option<NativeFocusedElement> {
-    let pipeline = ensure_perception_pipeline();
-    if pipeline.is_poisoned() {
-        return None;
-    }
-    let ui_ref = pipeline.latest_focus_view.snapshot()?;
-    Some(NativeFocusedElement {
-        name: ui_ref.name,
-        automation_id: ui_ref.automation_id,
-        control_type: crate::uia::control_type_name(UIA_CONTROLTYPE_ID(
-            ui_ref.control_type as i32,
-        ))
-        .to_string(),
-        window_title: ui_ref.window_title,
+pub fn view_get_focused() -> napi::Result<Option<NativeFocusedElement>> {
+    napi_safe_call("view_get_focused", || {
+        let pipeline = ensure_perception_pipeline();
+        if pipeline.is_poisoned() {
+            return Ok(None);
+        }
+        let Some(ui_ref) = pipeline.latest_focus_view.snapshot() else {
+            return Ok(None);
+        };
+        Ok(Some(NativeFocusedElement {
+            name: ui_ref.name,
+            automation_id: ui_ref.automation_id,
+            control_type: crate::uia::control_type_name(UIA_CONTROLTYPE_ID(
+                ui_ref.control_type as i32,
+            ))
+            .to_string(),
+            window_title: ui_ref.window_title,
+        }))
     })
 }
 
@@ -486,29 +497,32 @@ pub struct NativeViewFocusedPipelineStatus {
 }
 
 #[napi]
-pub fn view_focused_pipeline_status() -> NativeViewFocusedPipelineStatus {
-    match PERCEPTION_SLOT.get() {
-        None => NativeViewFocusedPipelineStatus {
-            initialized: false,
-            poisoned: false,
-            processed_count: BigInt::from(0u64),
-        },
-        Some(cell) => {
-            let g = cell.lock().unwrap_or_else(|e| e.into_inner());
-            match g.as_ref() {
-                None => NativeViewFocusedPipelineStatus {
-                    initialized: false,
-                    poisoned: false,
-                    processed_count: BigInt::from(0u64),
-                },
-                Some(pipeline) => NativeViewFocusedPipelineStatus {
-                    initialized: true,
-                    poisoned: pipeline.is_poisoned(),
-                    processed_count: BigInt::from(pipeline.worker.processed_count()),
-                },
+pub fn view_focused_pipeline_status() -> napi::Result<NativeViewFocusedPipelineStatus> {
+    napi_safe_call("view_focused_pipeline_status", || {
+        let status = match PERCEPTION_SLOT.get() {
+            None => NativeViewFocusedPipelineStatus {
+                initialized: false,
+                poisoned: false,
+                processed_count: BigInt::from(0u64),
+            },
+            Some(cell) => {
+                let g = cell.lock().unwrap_or_else(|e| e.into_inner());
+                match g.as_ref() {
+                    None => NativeViewFocusedPipelineStatus {
+                        initialized: false,
+                        poisoned: false,
+                        processed_count: BigInt::from(0u64),
+                    },
+                    Some(pipeline) => NativeViewFocusedPipelineStatus {
+                        initialized: true,
+                        poisoned: pipeline.is_poisoned(),
+                        processed_count: BigInt::from(pipeline.worker.processed_count()),
+                    },
+                }
             }
-        }
-    }
+        };
+        Ok(status)
+    })
 }
 
 // ─── 5-cycle lifecycle test (ADR-008 D1-2 §3.6) ────────────────────────
