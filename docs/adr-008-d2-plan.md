@@ -662,23 +662,33 @@ D1 `current_focused_element` view は `hwnd` を key にした per-hwnd state (f
 - [ ] SLO `update p99 < 2ms` を bench で計測
 - [ ] **Opus phase-boundary review**
 
-### D2-D: `semantic_event_stream` view (PR 10)
+### D2-D: `semantic_event_stream` skeleton + `FocusMoved` seed (PR 10)
 
-**目的**: views-catalog §3.2 の `semantic_event_stream` を実装、D2-C0 結果に応じた variant set で。
+**位置付け (User feedback 2026-05-01 反映)**: 本 D2 では `semantic_event_stream` の本来価値である modal/window/scroll 系意味イベント生成は **全て carry-over** (§3.bis ledger L2/L3/L4)。D2-D は単なる「3 つ目の view 実装 PR」ではなく、**skeleton + seed** という位置付けを明示し、後続 phase での variant 拡張前提で operator graph / read API / SLO bench を設計する。
 
-#### D2-D-1: SemanticEvent enum 確定 (D2-C0 結果反映、2026-05-01 確定)
+**目的**: views-catalog §3.2 の `semantic_event_stream` を **skeleton として land** + `FocusMoved` variant 単独を **seed** として実装。本 D2 完了時点で:
+- closed enum の variant set / ordering / serde 形は確定済 (後続で variant 追加するときの拡張点が明確)
+- pump → flat_map → concat → inspect の operator graph が `FocusMoved` 1 variant で動作 + 性能測定済
+- internal read API (`recent_n` / `since`) は最終 shape で land、後続で variant が増えても read API の API 互換は保たれる
+- SLO `delta 配信遅延 p99 < 3ms` の測定 baseline が `FocusMoved` 単独で確定
 
-- [ ] D2-C0-2 matrix の確定結果に基づき、`FocusMoved` 単独 variant の closed enum で定義:
+**先行 gate (§D2-D-1 で OQ #17 解消)**: 派生路線 (`current_focused_element` delta 経由 vs L1 ring 直接 filter) は後続 variant 拡張時の op graph 設計を左右する critical decision。D2-D-1 implementing PR で **2 案実装 → bench → Opus 判断** を必須 gate 化。
+
+#### D2-D-1: SemanticEvent enum 確定 + OQ #17 派生路線 Opus gate (D2-C0 結果反映、2026-05-01)
+
+- [ ] D2-C0-2 matrix の確定結果に基づき、`FocusMoved` 単独 variant の closed enum で定義 (本 D2 で skeleton として land):
   - `FocusMoved` (✅ `UiaFocusChanged` 単独で成立、`crate::uia::event_handlers::focus::make_focus_handler` 経由で production emit)
-  - ~~`ModalAppeared`~~ (除外、UIA dialog/structure event 未配線、P5c-3 拡張 + dialog event 配線後)
-  - ~~`WindowChanged`~~ (除外、P5c-3 prerequisite)
-  - ~~`ScrollSettled`~~ (除外、P5c-4 prerequisite)
-- 派生路線: `current_focused_element` view の delta から derive、または L1 ring から `EventKind::UiaFocusChanged` を直接 filter — どちらでも declarative
-- 後続 phase で variant 拡張は **enum 版番号 bump + test で variant 一覧 pin** (§6.1 既存方針)
+  - ~~`ModalAppeared`~~ / ~~`WindowChanged`~~ / ~~`ScrollSettled`~~ は §3.bis ledger L2-L4 で carry-over、本 D2 では未定義 (§6.1 のコメント領域に future-variant marker のみ残置)
+- [ ] **OQ #17 Opus gate (必須)**: 派生路線を 2 案で実装 → bench で latency / op graph 複雑度比較 → **Opus 判断**:
+  - 案 A (delta 派生): `current_focused_element` arranged collection を D2-E0 と同 scope で import、delta から `FocusMoved` 派生
+  - 案 B (直接 filter): `src/l3_bridge/focus_pump.rs` で L1 ring `EventKind::UiaFocusChanged` を bincode decode 後 `SemanticEvent::FocusMoved` に変換、`semantic_event_stream` 専用 input collection に push
+  - 判定基準: (1) bench p99 latency / (2) op graph step 数 (B/A 比 +2 op 以下なら許容) / (3) 後続 variant 拡張時の op graph 改修コスト
+  - 結果を本書 §6.1 + §10 OQ #17 に確定記録、D2-D-2 以降の operator graph 実装に反映
+- [ ] 後続 phase で variant 拡張は **enum 版番号 bump + variant 一覧 pin test** (§6.1 既存方針)、本 PR では `pin_variant_list_v1()` test を land して `FocusMoved` 単独であることを機械的に固定
 
 #### D2-D-2〜D2-D-4
 
-(v1 と同等、pump 拡張は本 D2 では `UiaFocusChanged` 経路のみ対象、他 event の pump 拡張は P5c-2/3/4 完了後の D2 後継 phase で着手)
+(v1 と同等、pump 拡張は本 D2 では `UiaFocusChanged` 経路のみ対象。他 event の pump 拡張は §3.bis ledger L2-L4 trigger 後の D2 後継 phase D2-D-α で着手)
 
 - [ ] operator graph: 各 input collection を `flat_map → concat → inspect`
 - [ ] internal read API: `recent_n` / `since`
@@ -791,6 +801,25 @@ D1 `current_focused_element` view は `hwnd` を key にした per-hwnd state (f
 | **PR-κ (D2-G)** | docs / memory 最終整合 | 低 | ~150 line |
 
 直列 merge、各 phase 完了で Opus phase-boundary review (強制命令 3)。
+
+---
+
+## 3.bis Carry-over ledger (D2-C0 ゲート確定後の復帰レール、User feedback 2026-05-01 反映)
+
+D2-C0 で本 D2 から外した item は、以下の **trigger PR が完了したら直後に着手する** 順序で復帰させる。これは scope shrink ではなく **時系列順の先行実装** であることを明示するための ledger — 強制命令 9 (memory ではなく docs/) の精神で永続化、後続実装担当 / 別エージェントが本 ledger を参照すれば「今着手すべきは何か」が一意に決まる。
+
+| # | 外した item | trigger prerequisite | trigger 完了後の復帰 PR | 検証手順 |
+|---|---|---|---|---|
+| L1 | D2-C `dirty_rects_aggregate` view (`crates/engine-perception/src/views/dirty_rects_aggregate.rs` + `src/l3_bridge/dirty_rect_pump.rs`) | ADR-007 **P5c-2** (DXGI dirty rect → L1 ring `EventKind::DirtyRect` emit site 配線) | **PR-ε (D2-C)** を P5c-2 完了の翌 PR で起動 (§D2-C-1〜D2-C-4 の checklist そのまま) | P5c-2 PR で `EventKind::DirtyRect` の `ring.push` 1 件以上を Notepad/Edge fixture で integration test、その上で D2-C で view test (out-of-order frame_id partial-order test 等) |
+| L2 | `SemanticEvent::WindowChanged` variant 拡張 (closed enum 版番号 bump + variant 追加 + variant 一覧 pin test) | ADR-007 **P5c-3** (UIA window-change → L1 ring `EventKind::WindowChanged` emit site 配線、5 引数 `AddAutomationEventHandler` 経由) | **D2-D 後継 PR** (D2-D-α と仮称) で SemanticEvent enum 拡張 + pump に `WindowChanged` 経路追加 | P5c-3 PR の WindowOpened/Closed/Foreground 3 種 fixture test 完了後、D2-D-α で variant 拡張 + cross-variant ordering test |
+| L3 | `SemanticEvent::ScrollSettled` variant 拡張 | ADR-007 **P5c-4** (UIA scroll property change → L1 ring `EventKind::ScrollChanged` emit site 配線、`AddPropertyChangedEventHandler` 経由) | **D2-D 後継 PR** (D2-D-α、L2 と同 PR でも可) | P5c-4 fixture (browser scroll bar / list scroll) 完了後、settled 判定 (連続 N event 後の最終値) を view 側で実装 |
+| L4 | `SemanticEvent::ModalAppeared` variant 拡張 | UIA dialog/structure-changed event 配線 (P5c-3 拡張 or 別 phase) — `AddAutomationEventHandler(UIA_Window_WindowOpenedEventId, ..., dialog_class_match_handler)` で dialog class フィルタ | **D2-D 後継 PR** (D2-D-α、L2/L3 と同 PR で構わない) | dialog class (#32770 / Windows.UI.Xaml.WindowControl 等) match で WindowOpened を ModalAppeared として派生、focus event との correlation test |
+
+**運用ルール**:
+1. trigger PR の merge 後は本 ledger を参照して **即座に復帰 PR を起こす** (本 ledger を読み忘れる事故は強制命令 7 違反の典型例 — 仕組みで防ぐため、trigger PR 著者は PR description で「§3.bis ledger 該当 (item L*) → 本 PR merge 後に復帰 PR `xxx` を着手」と必ず cross-reference する)
+2. 本 ledger の item を memory todo に書こうとしたら **絶対禁止** (強制命令 9、memory `feedback_main_direct_push_guard.md` と同型構造)
+3. ledger 更新は本 PR (PR #99) と同様に Opus phase-boundary review を経る — 復帰 PR で ledger を消化したら本表の該当行を strikethrough + Resolved 化、新たな carry-over が発生したら新 row を追加
+4. **北極星整合チェック**: ledger の item を「外したまま」にする提案 (= 別 ADR / 別 phase に永久 displacement) は memory `feedback_north_star_reconciliation.md` の「pivot 提案前に北極星と照合」ルールを発動、Opus 判断必須
 
 ---
 
