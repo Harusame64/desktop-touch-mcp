@@ -147,6 +147,36 @@ function tryViewFocus(): NativeFocusedElement | null {
   }
 }
 
+/**
+ * Decide whether a view-derived focused element should populate
+ * `desktop_state.focusedElement`, or whether the caller should
+ * fall through to the UIA / CDP path.
+ *
+ * **Chromium foreground + Pane** is the special case: when Chrome /
+ * Edge is the foreground app, UIA's focus query returns the
+ * top-level Chrome `Pane` element rather than the actual focused
+ * DOM node, and the existing UIA path explicitly filters it out
+ * (`desktop-state.ts` UIA branch: `focused.controlType !== "Pane"`)
+ * so the fallback can read `document.activeElement` via CDP
+ * instead. The view sees the same UIA event stream, so it can
+ * surface the same Pane row — without this filter, the new
+ * view-first path would publish the Pane element while the old
+ * path would have skipped to CDP, breaking the `bit-equal`
+ * contract (Codex review v3 P1-3 / Opus phase-boundary review
+ * 2026-04-30 P1-A).
+ *
+ * Non-Chromium foreground accepts Pane from the view; UIA's
+ * non-Chromium branch also accepts Pane (the only filter there is
+ * `focused?.name`), so the two paths agree on Pane retention.
+ */
+export function shouldAcceptViewFocus(
+  focused: NativeFocusedElement,
+  isChromium: boolean,
+): boolean {
+  if (isChromium && focused.controlType === "Pane") return false;
+  return true;
+}
+
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -287,8 +317,15 @@ export const desktopStateHandler = async (args: {
     // produces an `ElementInfo` shape that's bit-equal to the UIA
     // path's output (verified by the `desktop-state-focus-builder`
     // unit test).
+    //
+    // `shouldAcceptViewFocus` mirrors the Chromium-foreground Pane
+    // filter the UIA branch applies — see the helper's docs and
+    // Opus phase-boundary review 2026-04-30 P1-A. Without it, the
+    // view-first path would surface the Chrome top-level Pane while
+    // the old path would have skipped to CDP `document.activeElement`,
+    // breaking bit-equal.
     const viewFocused = tryViewFocus();
-    if (viewFocused) {
+    if (viewFocused && shouldAcceptViewFocus(viewFocused, isChromium)) {
       focusedElement = buildElementInfoFromView(viewFocused);
       hints.focusedElementSource = "view";
     }
@@ -505,7 +542,7 @@ export function registerDesktopStateTools(server: McpServer): void {
         "includeCursor:true → cursor {x,y,monitorId} (richer than cursorPos). " +
         "includeScreen:true → screen {virtualScreen, displays[], displayCount, primaryIndex}. " +
         "includeDocument:true → document {url, title, readyState, selection, scroll, viewport} via CDP (silently omitted on non-Chromium foreground). " +
-        "Chromium: cursorOverElement is null (UIA sparse); focusedElement may fall back to CDP document.activeElement; hints.focusedElementSource reports which was used ('uia' or 'cdp'). " +
+        "Chromium: cursorOverElement is null (UIA sparse); focusedElement may fall back to CDP document.activeElement; hints.focusedElementSource reports which path produced the row ('view' = engine-perception latest_focus, 'uia' = direct UIA query, 'cdp' = document.activeElement). " +
         "Does NOT enumerate descendants — use desktop_discover for actionable entity list and window list.",
       prefer:
         "Use after each action to confirm state. Cheapest observation tool — cheaper than any screenshot. " +

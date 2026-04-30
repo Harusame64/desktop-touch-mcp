@@ -27,8 +27,11 @@ import {
   buildElementInfoFromCdp,
   buildElementInfoFromUia,
   buildElementInfoFromView,
+  shouldAcceptViewFocus,
   type ElementInfo,
 } from "../../src/tools/desktop-state.js";
+
+import type { NativeFocusedElement } from "../../src/engine/native-types.js";
 
 describe("buildElementInfoFromView", () => {
   it("projects a view row with all fields populated", () => {
@@ -151,6 +154,75 @@ describe("buildElementInfoFromCdp", () => {
       value: "alice",
     });
     expect("value" in buildElementInfoFromCdp({ tag: "INPUT", value: "" })).toBe(false);
+  });
+});
+
+describe("shouldAcceptViewFocus (Pane filter parity, Opus review 2026-04-30 P1-A)", () => {
+  // The view returns the same UIA event stream the direct query
+  // does, including the Chrome top-level "Pane" element when Chrome
+  // is the foreground app. The UIA branch in `desktopStateHandler`
+  // explicitly skips that Pane so the CDP fallback can read the
+  // real `document.activeElement`. The view-first path must mirror
+  // that filter, otherwise the new path publishes the Pane while
+  // the old path skipped it — a bit-equal violation.
+  //
+  // Non-Chromium foreground accepts Pane (the existing UIA branch
+  // there does too: its only filter is `focused?.name`).
+
+  const pane = (): NativeFocusedElement => ({
+    name: "Browser content",
+    automationId: null,
+    controlType: "Pane",
+    windowTitle: "GitHub - Pull Request - Google Chrome",
+  });
+  const button = (): NativeFocusedElement => ({
+    name: "Submit",
+    automationId: "submit-btn",
+    controlType: "Button",
+    windowTitle: "GitHub - Pull Request - Google Chrome",
+  });
+  const nativePane = (): NativeFocusedElement => ({
+    name: "Document area",
+    automationId: null,
+    controlType: "Pane",
+    windowTitle: "Document - Microsoft Word",
+  });
+
+  it("rejects Pane when Chromium foreground", () => {
+    expect(shouldAcceptViewFocus(pane(), true)).toBe(false);
+  });
+
+  it("accepts non-Pane elements on Chromium foreground", () => {
+    expect(shouldAcceptViewFocus(button(), true)).toBe(true);
+  });
+
+  it("accepts Pane on non-Chromium foreground (matches UIA branch)", () => {
+    expect(shouldAcceptViewFocus(nativePane(), false)).toBe(true);
+  });
+
+  it("accepts non-Pane elements on non-Chromium foreground", () => {
+    expect(
+      shouldAcceptViewFocus(
+        {
+          name: "Save",
+          automationId: null,
+          controlType: "Button",
+          windowTitle: "Document - Microsoft Word",
+        },
+        false,
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects only when BOTH Chromium AND Pane (matrix corner)", () => {
+    // The four-cell matrix this filter implements:
+    //                      Chromium foreground     non-Chromium
+    //   Pane               false (skip → CDP)      true (UIA accepts)
+    //   non-Pane           true                    true
+    expect(shouldAcceptViewFocus(pane(), true)).toBe(false); // (T, T) skip
+    expect(shouldAcceptViewFocus(pane(), false)).toBe(true); // (F, T) accept
+    expect(shouldAcceptViewFocus(button(), true)).toBe(true); // (T, F) accept
+    expect(shouldAcceptViewFocus(button(), false)).toBe(true); // (F, F) accept
   });
 });
 
