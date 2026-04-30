@@ -97,7 +97,7 @@ fn wait_for_view<F: Fn(&CurrentFocusedElementView) -> bool>(
 
 #[test]
 fn single_focus_event_appears_in_view() {
-    let (worker, handle, view) = spawn_perception_worker();
+    let (worker, handle, view, _latest_view) = spawn_perception_worker();
     let base = 1_700_000_000_000u64;
 
     // Event we want to verify (target).
@@ -138,7 +138,7 @@ fn quiescent_focus_eventually_materialises() {
     // (500ms) is well past the 100ms watermark shift plus
     // worker-step jitter (~1ms per loop), so idle-advance has many
     // opportunities to fire before the timeout.
-    let (worker, handle, view) = spawn_perception_worker();
+    let (worker, handle, view, _latest_view) = spawn_perception_worker();
     let base = 1_700_000_000_000u64;
 
     handle.push_focus(focus_event(1, 0xCAFE, base, "QuiescentEdit", "QuiescentApp"));
@@ -163,7 +163,7 @@ fn quiescent_focus_eventually_materialises() {
 fn last_by_time_per_hwnd() {
     // Three events on the same hwnd, in wallclock-increasing order.
     // The view must converge to the LATEST (highest wallclock_ms).
-    let (worker, handle, view) = spawn_perception_worker();
+    let (worker, handle, view, _latest_view) = spawn_perception_worker();
     let base = 1_700_000_000_000u64;
     let hwnd = 0xCAFE_u64;
 
@@ -200,7 +200,7 @@ fn out_of_order_events_settle_to_latest_by_time() {
     // means both events land within the watermark window of each
     // other — neither is dropped. The view must still pick the one
     // with the higher wallclock_ms (last-by-time semantics).
-    let (worker, handle, view) = spawn_perception_worker();
+    let (worker, handle, view, _latest_view) = spawn_perception_worker();
     let base = 1_700_000_000_000u64;
     let hwnd = 0xCAFE_u64;
 
@@ -241,7 +241,7 @@ fn far_back_dated_event_dropped() {
     // BELOW the frontier and is dropped by the worker_loop guard.
     // Test verifies the worker does NOT crash on such an event and
     // the view continues to reflect the in-window event.
-    let (worker, handle, view) = spawn_perception_worker();
+    let (worker, handle, view, _latest_view) = spawn_perception_worker();
     let base = 1_700_000_000_000u64;
     let hwnd = 0xCAFE_u64;
 
@@ -271,7 +271,7 @@ fn far_back_dated_event_dropped() {
 
 #[test]
 fn multiple_hwnds_tracked_independently() {
-    let (worker, handle, view) = spawn_perception_worker();
+    let (worker, handle, view, _latest_view) = spawn_perception_worker();
     let base = 1_700_000_000_000u64;
 
     push_all(
@@ -311,7 +311,7 @@ fn shutdown_without_events_is_clean() {
     // deadlock しない". Even with no events ever pushed, the worker
     // must shut down within the timeout — the cmd channel handles
     // Cmd::Shutdown synchronously.
-    let (worker, _handle, view) = spawn_perception_worker();
+    let (worker, _handle, view, _latest_view) = spawn_perception_worker();
     assert!(view.is_empty());
     let start = Instant::now();
     worker
@@ -329,7 +329,7 @@ fn shutdown_with_pending_events_drains() {
     // settle, calling shutdown must still drain cleanly (the worker
     // pumps remaining cmds before honouring Cmd::Shutdown — see
     // worker_loop's try_recv loop). No deadlock.
-    let (worker, handle, _view) = spawn_perception_worker();
+    let (worker, handle, _view, _latest_view) = spawn_perception_worker();
     let base = 1_700_000_000_000u64;
     for i in 0..50 {
         handle.push_focus(focus_event(
@@ -353,7 +353,7 @@ fn five_cycle_spawn_run_shutdown() {
     // Mirrors the L1 worker / focus_pump 5-cycle tests; flushes any
     // hidden state leak across cycles.
     for cycle in 0..5u64 {
-        let (worker, handle, view) = spawn_perception_worker();
+        let (worker, handle, view, _latest_view) = spawn_perception_worker();
         let base = 1_700_000_000_000u64 + cycle * 1_000_000;
         handle.push_focus(focus_event(
             1,

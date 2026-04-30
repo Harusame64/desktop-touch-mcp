@@ -38,8 +38,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+// Explicit imports (NOT `use napi::bindgen_prelude::*`) — the glob
+// would shadow `std::result::Result` and break this module's
+// pre-existing `Result<(), &'static str>` shutdown signatures.
+use napi::bindgen_prelude::BigInt;
+use napi_derive::napi;
+use windows::Win32::UI::Accessibility::UIA_CONTROLTYPE_ID;
+
+use crate::win32::safety::napi_safe_call;
+
 use engine_perception::input::{spawn_perception_worker, FocusInputHandle, L1Sink, PerceptionWorker};
 use engine_perception::views::current_focused_element::CurrentFocusedElementView;
+use engine_perception::views::latest_focus::LatestFocusView;
 
 use crate::l1_capture::ensure_l1;
 
@@ -65,7 +75,11 @@ pub(crate) fn spawn_perception_pipeline_for_test() -> (
     CurrentFocusedElementView,
     FocusPump,
 ) {
-    let (worker, handle, view) = spawn_perception_worker();
+    // D2-B-1: spawn_perception_worker now returns 4 elements
+    // (latest_focus_view added). Existing test callers don't need
+    // the latest_focus_view, so we drop it here. Production
+    // `spawn_pipeline_inner` keeps it on `PerceptionPipeline`.
+    let (worker, handle, view, _latest_view) = spawn_perception_worker();
     let ring = ensure_l1().ring.clone();
     let sink: Arc<dyn L1Sink> = Arc::new(handle.clone());
     let pump = FocusPump::spawn(ring, sink);
@@ -154,6 +168,11 @@ pub(crate) fn shutdown_spawned_pipeline_for_test(
 /// them as plain fields and delegate `shutdown_with_timeout` directly.
 pub struct PerceptionPipeline {
     pub view: CurrentFocusedElementView,
+    /// Singleton-key "latest globally focused element" view (D2-B-1
+    /// / `docs/adr-008-d2-plan.md` §5.bis). `desktop_state.ts` reads
+    /// this one because the focused element's HWND is not always
+    /// the foreground-window HWND (Codex v3 P1-4).
+    pub latest_focus_view: LatestFocusView,
     pub handle: FocusInputHandle,
     worker: PerceptionWorker,
     pump: FocusPump,
@@ -372,17 +391,138 @@ pub(crate) fn shutdown_perception_pipeline_for_test(
 /// pump in the same order as `spawn_perception_pipeline_for_test` so
 /// the parent-side `subscribe(...)` runs synchronously (Codex v3 P1).
 fn spawn_pipeline_inner() -> PerceptionPipeline {
-    let (worker, handle, view) = spawn_perception_worker();
+    let (worker, handle, view, latest_focus_view) = spawn_perception_worker();
     let ring = ensure_l1().ring.clone();
     let sink: Arc<dyn L1Sink> = Arc::new(handle.clone());
     let pump = FocusPump::spawn(ring, sink);
     PerceptionPipeline {
         view,
+        latest_focus_view,
         handle,
         worker,
         pump,
         poisoned: AtomicBool::new(false),
     }
+}
+
+// ─── napi-exposed view read API (D2-B-1) ──────────────────────────────────
+//
+// `view_get_focused` is the seam through which `desktop_state.ts`'s
+// focus-only path replacement reads the perception engine's
+// `latest_focus` view. The shape is intentionally identical to the
+// existing UIA `focus.controlType` row in `desktop-state.ts` so the
+// caller can fall through between view and UIA without restructuring
+// — `controlType` is a STRING (e.g. "Button", "Pane"), not the raw
+// `UIA_CONTROLTYPE_ID` u32 the engine stores (Codex v3 P1-3
+// bit-equal contract). The `crate::uia::control_type_name` helper
+// (`src/uia/mod.rs:27`) is the same table the existing UIA bridge
+// uses, so the string mapping is shared.
+//
+// The `view_get_focused` call also honours the production-lifecycle
+// poison flag (Codex v9 P2-17 + v3.6 contract): when the slot is
+// poisoned the napi function returns `None` so the TS caller falls
+// back to UIA-direct rather than serving a half-stopped pipeline.
+
+/// Read shape returned to napi callers from [`view_get_focused`].
+/// Matches `desktop-state.ts`'s existing `ElementInfo` shape: `name`,
+/// `automationId`, `type` (string), `windowTitle`. The `value` field
+/// is omitted because the engine doesn't carry it through (UIA
+/// `ValuePattern` reads happen on the JS side).
+///
+/// Naming follows the existing `Native*` convention used elsewhere
+/// in this addon (e.g. `NativeUiaFocusInfo`); the hand-maintained
+/// `index.d.ts` / `index.js` re-exports use the same identifier.
+#[napi(object)]
+pub struct NativeFocusedElement {
+    pub name: String,
+    pub automation_id: Option<String>,
+    /// Human-readable UIA control type name (e.g. "Button", "Pane",
+    /// "Edit"). Mapped from the engine's raw `UIA_CONTROLTYPE_ID` via
+    /// `crate::uia::control_type_name`.
+    pub control_type: String,
+    pub window_title: String,
+}
+
+/// Read the latest globally focused element from the perception
+/// engine's `latest_focus` view. Returns `None` when:
+///
+///   - the perception pipeline has never received a focus event,
+///   - the slot is poisoned (a previous shutdown attempt failed),
+///     in which case the caller should use the UIA fallback path,
+///   - or the `latest_focus` view's `snapshot()` has nothing live.
+///
+/// First call lazily spawns the pipeline (`ensure_perception_pipeline`).
+///
+/// Wrapped in `napi_safe_call` per ADR-007 §3.4 — any panic in the
+/// pipeline init / view read path turns into a typed napi error
+/// instead of unwinding through the addon boundary (which would
+/// take down the Node process).
+#[napi]
+pub fn view_get_focused() -> napi::Result<Option<NativeFocusedElement>> {
+    napi_safe_call("view_get_focused", || {
+        let pipeline = ensure_perception_pipeline();
+        if pipeline.is_poisoned() {
+            return Ok(None);
+        }
+        let Some(ui_ref) = pipeline.latest_focus_view.snapshot() else {
+            return Ok(None);
+        };
+        Ok(Some(NativeFocusedElement {
+            name: ui_ref.name,
+            automation_id: ui_ref.automation_id,
+            control_type: crate::uia::control_type_name(UIA_CONTROLTYPE_ID(
+                ui_ref.control_type as i32,
+            ))
+            .to_string(),
+            window_title: ui_ref.window_title,
+        }))
+    })
+}
+
+/// Diagnostic snapshot of the perception pipeline's runtime state.
+/// `desktop_state.ts` and `server_status` use this to surface when
+/// the view path is unavailable (so the UIA fallback isn't silent).
+#[napi(object)]
+pub struct NativeViewFocusedPipelineStatus {
+    /// `true` once `ensure_perception_pipeline` has spawned at least
+    /// one pipeline in this process.
+    pub initialized: bool,
+    /// `true` when the slot's current pipeline has had a failed
+    /// shutdown (Codex v9 P2-17). Callers should fall back to UIA.
+    pub poisoned: bool,
+    /// Cumulative `Cmd::PushFocus` count the worker has dequeued
+    /// and run through `update_at` + `flush`. 0 when the pipeline
+    /// is not yet initialized.
+    pub processed_count: BigInt,
+}
+
+#[napi]
+pub fn view_focused_pipeline_status() -> napi::Result<NativeViewFocusedPipelineStatus> {
+    napi_safe_call("view_focused_pipeline_status", || {
+        let status = match PERCEPTION_SLOT.get() {
+            None => NativeViewFocusedPipelineStatus {
+                initialized: false,
+                poisoned: false,
+                processed_count: BigInt::from(0u64),
+            },
+            Some(cell) => {
+                let g = cell.lock().unwrap_or_else(|e| e.into_inner());
+                match g.as_ref() {
+                    None => NativeViewFocusedPipelineStatus {
+                        initialized: false,
+                        poisoned: false,
+                        processed_count: BigInt::from(0u64),
+                    },
+                    Some(pipeline) => NativeViewFocusedPipelineStatus {
+                        initialized: true,
+                        poisoned: pipeline.is_poisoned(),
+                        processed_count: BigInt::from(pipeline.worker.processed_count()),
+                    },
+                }
+            }
+        };
+        Ok(status)
+    })
 }
 
 // ─── 5-cycle lifecycle test (ADR-008 D1-2 §3.6) ────────────────────────
@@ -563,7 +703,8 @@ mod lifecycle_tests {
             // InputSession; we'll observe its processed_count to
             // confirm cmds crossed into the dataflow path; the view
             // exposes the materialised current_focused_element state).
-            let (worker, handle, view) = engine_perception::input::spawn_perception_worker();
+            let (worker, handle, view, _latest_view) =
+                engine_perception::input::spawn_perception_worker();
 
             // (2) spawn pump wired to a TeeSink that BOTH forwards
             // into the worker (handle.push_focus) AND captures for

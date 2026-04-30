@@ -52,6 +52,28 @@ export interface NativeUiaFocusInfo {
   value?: string
 }
 
+// ─── L3 perception view (ADR-008 D2-B-1) ─────────────────────────────────────
+// Returned by `viewGetFocused()` (root-level napi export). Mirrors the
+// engine-perception `latest_focus` view's `UiElementRef`, with
+// `controlType` pre-stringified via `crate::uia::control_type_name` so
+// the shape matches the existing `NativeUiaFocusInfo` consumer in
+// `desktop-state.ts` (Codex review v3 P1-3 bit-equal contract).
+
+export interface NativeFocusedElement {
+  name: string
+  automationId: string | null
+  controlType: string
+  windowTitle: string
+}
+
+export interface NativeViewFocusedPipelineStatus {
+  initialized: boolean
+  /** `true` when the slot's pipeline has had a failed shutdown
+   * (Codex review v9 P2-17). Callers should fall back to UIA. */
+  poisoned: boolean
+  processedCount: bigint
+}
+
 export interface NativeFocusAndPointResult {
   focused?: NativeUiaFocusInfo | null
   atPoint?: NativeUiaFocusInfo | null

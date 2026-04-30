@@ -40,6 +40,8 @@ import type {
   NativeScrollInfo,
   NativeEventEnvelope,
   NativeCaptureStats,
+  NativeFocusedElement,
+  NativeViewFocusedPipelineStatus,
 } from "./native-types.js";
 
 export type * from "./native-types.js";
@@ -314,6 +316,21 @@ export interface NativeL1 {
 export const nativeL1: NativeL1 | null =
   nativeBinding && typeof nativeBinding.l1PushFailure === "function"
     ? (nativeBinding as unknown as NativeL1)
+    : null;
+
+// ─── L3 perception view surface (ADR-008 D2-B-1) ─────────────────────────────
+// Single load point for the `latest_focus` view's read API. `desktop_state.ts`
+// (D2-B-2, next PR) reads `viewGetFocused` first and falls back to UIA when
+// the result is `null` (no live row, uninitialised, or poisoned slot).
+
+export interface NativeViewFocus {
+  viewGetFocused?(): NativeFocusedElement | null;
+  viewFocusedPipelineStatus?(): NativeViewFocusedPipelineStatus;
+}
+
+export const nativeViewFocus: NativeViewFocus | null =
+  nativeBinding && typeof nativeBinding.viewGetFocused === "function"
+    ? (nativeBinding as unknown as NativeViewFocus)
     : null;
 
 if (nativeEngine) {
