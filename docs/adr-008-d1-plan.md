@@ -108,20 +108,18 @@ desktop-touch-mcp/
 
 **前提充足** (2026-04-30): ADR-007 P5c-1 完了済 (本 PR `feat/adr-007-p5c-1-focus-hook`)。UIA Focus Changed event hook → ring に `UiaFocusChanged` event push 経路成立。次の作業は本 sub-batch から再開可能。詳細: `docs/adr-007-p5c-1-plan.md` / `docs/adr-007-p5c-plan.md` §11.3。
 
-- [ ] **`src/l3_bridge/focus_pump.rs`** (root crate 側、PR-P5c-0b で scaffold 済) に adapter thread 実装
-- [ ] **`EventRing` の broadcast 化** (subscribe 別 cursor):
-  - 既存 destructive `poll()` (single consumer) は維持
-  - 新規 `subscribe()` API を追加、subscriber ごとに cursor を保持、non-destructive read
-  - 詳細実装は本 sub-batch 内で確定 (P5c plan §8 (A) で「ADR-008 D1-2 で実装」と確定済)
-- [ ] adapter thread が `ring.subscribe()` で broadcast 受信、`EventKind::UiaFocusChanged` のみ filter (D1 スコープ、他 event は drop)
-- [ ] L1 EventEnvelope を decode → `UiaFocusChangedPayload { before: Option<UiElementRef>, after: Option<UiElementRef>, window_title: String }` を取り出す (P5c plan §4 P5c-0b の shape 準拠)
-- [ ] **`payload.after` の Option を正しく handle** (Codex review v4 P2-1):
-  - `Some(after)` → `engine_perception::FocusEvent { hwnd: after.hwnd, name: after.name, automation_id: after.automation_id, control_type: after.control_type, window_title: payload.window_title, wallclock_ms, sub_ordinal }` に変換して push
-  - `None` (focus dropped、UIA で resolvable な focus がない状態) → **D1 範囲では skip** (current_focused_element view を更新しない)。「focus dropped」を意味的に view に反映するのは D2 (semantic_event_stream) のスコープ
-- [ ] **`crates/engine-perception/src/input.rs`** (PR-P5c-0b で scaffold 済) に `FocusInputHandle::push_focus(FocusEvent)` 実装 (timely InputSession への push)
-- [ ] `(wallclock_ms, sub_ordinal)` を `Pair<u64, u32>` (logical_time) に変換
-- [ ] L1 worker / UIA thread / 本 adapter thread の shutdown 順序 (本書 §5.3 で確定)
-- [ ] L1 worker が停止しても adapter thread が deadlock しない (subscribe 側 timeout or shutdown signal)
+- [x] **`src/l3_bridge/focus_pump.rs`** (root crate 側、PR-P5c-0b で scaffold 済) に adapter thread 実装 — 詳細 plan: `docs/adr-008-d1-2-plan.md` §3.3
+- [x] **`EventRing` の broadcast 化** — `subscribe()` API + `Subscription` (Drop で auto-unsubscribe) + `SubscriptionEvent` (純 Rust snapshot、`Arc<[u8]>` payload)。既存 destructive `poll()` 経路は不変、subscribers 0 のとき push hot-path に追加コスト無し。drop-newest on full (Codex P2-1)。詳細: `docs/adr-008-d1-2-plan.md` §3.1
+- [x] adapter thread が `ring.subscribe()` で broadcast 受信、`EventKind::UiaFocusChanged` のみ filter (D1 スコープ、他 event は drop) — `src/l3_bridge/focus_pump.rs::run`
+- [x] L1 EventEnvelope を decode → `UiaFocusChangedPayload { before: Option<UiElementRef>, after: Option<UiElementRef>, window_title: String }` を取り出す
+- [x] **`payload.after` の Option を正しく handle**:
+  - `Some(after)` → `FocusEvent { source_event_id: env.event_id, hwnd, name, automation_id, control_type, window_title, wallclock_ms, sub_ordinal, timestamp_source }` に変換して push (北極星 N1 で `source_event_id` / `timestamp_source` 必ず保持)
+  - `None` → graceful skip + `after_none_skip_count` increment (D2 semantic_event_stream で意味化)
+- [x] **`crates/engine-perception/src/input.rs`** に `FocusInputHandle::push_focus(FocusEvent)` 実装 — timely worker thread + command channel + `InputSession::update_at` で push
+- [x] `(wallclock_ms, sub_ordinal)` を **lex-total な `Pair<u64, u32>`** (logical_time) に変換 — `crates/engine-perception/src/time.rs::Pair`、`Refines<()>` + `TotalOrder` 実装。watermark advance (北極星 N2): `update_at` で event-time data 投入、`advance_to(latest_wallclock - 100ms)` で frontier 別軸進行
+- [x] L1 worker / UIA thread / 本 adapter thread の shutdown 順序 — `src/l3_bridge/mod.rs::shutdown_perception_pipeline_for_test` で pump → worker 順、UIA / L1 shutdown は既存 helper 維持
+- [x] L1 worker が停止しても adapter thread が deadlock しない — `recv_timeout(100ms)` + `Arc<AtomicBool> shutdown` flag、5-cycle integration test (`l3_bridge::lifecycle_tests::five_cycle_pipeline_spawn_push_shutdown`) で deadlock-free 確認
+- [x] **Codex v3 P1 反映**: `FocusPump::spawn` は parent thread で `ring.subscribe(8192)` を完了させてから worker thread を起動 (Subscription を move)、spawn 直後の同期 push race を構造的解消、regression test `spawn_then_immediate_push_arrives` で固定
 
 ### D1-3: `current_focused_element` view (PR 3 の後半)
 - [ ] `crates/engine-perception/src/views/current_focused_element.rs` 新設
@@ -392,13 +390,13 @@ collection<UiElementRef>  (1 row per current foreground hwnd)
 
 ## 11. Acceptance Criteria (ADR-008 §8 D1 と完全一致)
 
-- [ ] **ADR-007 P5c-1 完了**を前提として、real L1 input (UIA Focus Changed event) が ring 経由で bridge → engine-perception に流れる
-- [ ] **`src/l3_bridge/focus_pump.rs`** が `EventRing` broadcast subscribe → decode → `engine_perception::FocusInputHandle::push_focus()` で動作 (root owns integration、`docs/adr-007-p5c-plan.md` §12.3 と整合)
-- [ ] 1 view が incremental に更新される (`current_focused_element`)
-- [ ] unit test pass (partial-order 含む)
-- [ ] bench で TS 版より latency 1/10 (real L1 input ベース、synthetic ではない)
-- [ ] CI green、`npm run build:rs` / `npm test` 回帰なし、`check:rs-workspace` で engine-perception 含む
-- [ ] D1-6 完了 (ドキュメント / メモリ整合)
+- [x] **ADR-007 P5c-1 完了**を前提として、real L1 input (UIA Focus Changed event) が ring 経由で bridge → engine-perception に流れる (D1-2 PR で達成、`docs/adr-008-d1-2-plan.md`)
+- [x] **`src/l3_bridge/focus_pump.rs`** が `EventRing` broadcast subscribe → decode → `engine_perception::FocusInputHandle::push_focus()` で動作 (root owns integration、parent-side subscribe で spawn 直後の race 解消、`source_event_id` / `timestamp_source` 必ず保持)
+- [ ] 1 view が incremental に更新される (`current_focused_element`) — **D1-3 で実装**
+- [ ] unit test pass (partial-order 含む) — **D1-4 で view 経由 assert 追加**
+- [ ] bench で TS 版より latency 1/10 (real L1 input ベース、synthetic ではない) — **D1-5 で実施**
+- [x] CI green、`npm run build:rs` / `npm test` 回帰なし、`check:rs-workspace` で engine-perception 含む — D1-2 PR で確認済 (cargo test 60 全 pass / vitest 2434 pass + 1 既知 timing flake)
+- [ ] D1-6 完了 (ドキュメント / メモリ整合) — D1-5 完了後
 
 ---
 
