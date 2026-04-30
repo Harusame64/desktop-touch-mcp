@@ -96,6 +96,16 @@ ADR-008 D2 は「主要 view 4 つを declarative に実装」を完了基準に
 > - SLO `< 1ms` の表記は **緩和しない** (ユーザー判断)、bench harness は production-相当条件 (`shift=default`、wc 200ms 増分) に確定済 (`crates/engine-perception/benches/d1_view_latency.rs`)
 > - partial-order test 5 件 (`same_wallclock_different_sub_ordinal_all_observed` 等) で N3 acceptance を直接 pin、stuck-worker fixture (`Cmd::BlockForTest`) で OQ #15 (Codex v9 P2-17 retry-fail branch) も Resolved
 
+#### 3.1.bis `latest_focus` view (D2-B-1、PR-γ 着手)
+
+| view 名 | category | input | output | consumer | SLO | phase | status |
+|---|---|---|---|---|---|---|---|
+| `latest_focus` | state (singleton) | (D1 と共有) `UiaFocusChanged` events from L1 (current_focused_element と同 input stream を fan-out) | `Option<UiElementRef>` (logical_time global max の event 1 件) | L4 envelope.data の **production focus path** (`desktop_state.ts` focus-only replacement、Codex v3 P1-4) | lookup p99 < 1ms、update は current_focused_element と同 floor (`shift_ms`) | D2-B-1 | **Implemented (PR-γ 起こし中、2026-04-30)** |
+
+> **D2-B-1 実装 (2026-04-30)**: `crates/engine-perception/src/views/latest_focus.rs` 新設。singleton key `()` で reduce、output value 型 `(LogicalTime, UiElementRef)` (Codex v4 P2-13)、materialised state は `BTreeMap<(LogicalTime, UiElementRef), i64>` の diff bookkeeping (Codex v3 P1-1 inspect-order tolerance)。`spawn_perception_worker` を 4-tuple 化、両 view を同 `worker.dataflow` closure 内で build (D2-E0 同 scope 設計)。
+>
+> napi binding 2 件 (`src/l3_bridge/mod.rs::view_get_focused`, `view_focused_pipeline_status`)。`view_get_focused` は `is_poisoned()` check + `latest_focus_view.snapshot()` + `crate::uia::control_type_name` で `controlType` を string 化 (bit-equal、OQ #11 Resolved)。`desktop_state.ts` 経路結線は D2-B-2 別 PR。
+
 ### 3.2 D2: 主要 view 4 つ (本書の主スコープ)
 
 | view 名 | category | input | output | consumer | SLO | phase |
