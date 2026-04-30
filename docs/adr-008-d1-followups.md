@@ -72,11 +72,87 @@ D2 で対応:
 - `WATERMARK_SHIFT_MS=0` を設定済の bench で測ってもこの sleep に律速されている (push → 次の worker idle iteration までの待ちが ~0.5-1ms)
 - production の focus 変化頻度 (秒オーダ) に対して 5ms latency は十分許容範囲だが、SLO は未達
 
-D2 で対応:
-- option A: `thread::sleep` を `Duration::from_micros(100)` 等に短縮 (CPU 負荷増、~500µs latency 想定)
-- option B: cmd channel の `recv_timeout` で短期間 block + 待たせる (sleep 不要、cmd 到着で即起床、idle-advance は別 timer or 自前 schedule)
-- option C: parking primitive (`std::thread::park_timeout` + `unpark` から signal) で「cmd 到着または timer」両方を最短で起床
-- いずれも worker_loop の構造変更を伴うので、D2 で view-based `desktop_state` 実装と同時に再評価
+#### 2.5.1 ボトルネックの内訳 (PR #92 review 過程で発見した分析)
+
+「メモリ操作だけのはずなのになぜ ~5ms かかるのか」を時系列で分解すると、**遅延要因はメモリ操作ではなく (A) worker_loop の polling pattern × (B) DD operator chain 伝搬 × (D) idle frontier advance による release-frontier 確定** の 3 つに集約される。
+
+```
+main thread:                    worker thread (l3-perception):
+                                  loop {
+[T+0]  handle.push_focus(ev@wc=W)   try_recv() → Empty
+       ↓ tx.send (~µs cmd channel)  thread::sleep(1ms)        ← ← ← (A) 1ms sleep
+                                                                     最悪 1ms 待つ
+       ↑ Cmd queued during sleep    worker.step()               平均 0.5ms 待つ
+[T+~0.5ms]                        try_recv() → Ok(PushFocus)
+                                    update_at(ev, (W,0), +1)    (~ns)
+                                    advance_to((W,0))           ← ← ← (C) frontier が
+                                                                       event_time AT、
+                                                                       未 release
+                                    flush()                     (~µs)
+                                    last_event_anchor = (W, T+0.5ms)
+                                  worker.step()                 ← ← ← (B) op 1 step
+                                                                       (input batch 開く)
+                                  try_recv() → Empty
+                                                                ← ★ idle 分岐に入って初めて
+                                  ── idle frontier advance ──         release frontier に届く
+                                  elapsed = real ≥ 0.5ms
+                                  projected = W + ~1
+                                  advance_to((W+1, 0))         ← ← ← (D) frontier が
+                                                                       event_time PAST、
+                                                                       reduce 出力確定可
+                                  flush()
+                                  worker.step()                 ← ← ← (B) op 2 step
+                                                                       (reduce が走る)
+                                  thread::sleep(1ms)            ← ← ← (A) 再び 1ms sleep
+                                  worker.step()                 ← ← ← (B) op 3 step
+                                                                       (inspect が emit、
+                                                                        apply_diff →
+                                                                        RwLock write ~100ns)
+[T+~4-5ms] view.get(...) で新 name 検出 (spin-loop が即気付く)
+```
+
+支配項:
+- **(A) `thread::sleep(1ms)`**: `TryRecvError::Empty` 時の固定遅延。Cmd 到着検知の最大 1ms 遅延 + dataflow step 間に毎回 sleep が挟まる。
+- **(B) DD operator chain 伝搬**: `input → map → reduce → inspect` の op 群を 1 回の `worker.step()` で全部回せない (timely の progress tracker は op 単位で activation を回す)。push 1 件で **2-3 step が必要**、各 step の間に sleep が挟まると累積。
+- **(D) idle frontier advance に律速される release-frontier 確定**: `WATERMARK_SHIFT_MS=0` でも (C) で frontier を進めるのは event_time **AT (= `(W, 0)`)** まで。DD reduce が出力を確定するには frontier が event_time を **strictly past (= `(W+ε, 0)`)** まで進む必要がある。これを担うのは Empty 分岐内の **idle frontier advance** (`last_event_anchor` から real elapsed time で projection)。push 直後の Empty 分岐 1 回目で初めて frontier が event_time を超え、reduce が走れる状態になる — つまり release は **(A) 1 cycle 待ち** にも律速される。
+
+非支配項 (測ってもほぼゼロ):
+- crossbeam channel send (cmd 1 件 ~µs)
+- DD `input.update_at` / `advance_to` / `flush` の純計算 (~ns 〜 µs)
+- inspect closure 内の `apply_diff` (HashMap entry + BTreeMap insert + RwLock write、合計 **~100-200 ns**)
+- 同じ inspect 内 `view.get` (RwLock read + HashMap lookup + BTreeMap iter、~145 ns で `view_get_hit` bench に出ている値)
+
+**総和の見積**: (A) 平均 0.5-1ms × 2-3 cycles + (B) op chain steps が間に挟まる + (D) frontier-past 確定 = **~3-5ms**。実測 4.7 ms と整合。**(D) を見落とすと「sleep だけ短縮すればよい」と誤認しやすい**: cmd 分岐の `advance_to((W,0))` だけでは release されないので、frontier を event_time PAST に進める段が critical path に必ず入る。
+
+#### 2.5.2 修正案 (option 比較、D2 で実装)
+
+各 option は **(A) cmd 検知の遅延** と **(D) frontier を event_time PAST に進めるタイミング** の両方を同時に短縮する必要がある。片方だけ最適化しても release は後者に律速されて改善しない (これが §2.5.1 の (D) を見落とした場合の失敗ケース)。
+
+| 案 | 想定 update latency | (A) cmd 検知 | (D) frontier-past 確定 | CPU コスト | 実装複雑度 |
+|---|---|---|---|---|---|
+| 現状 (`sleep 1ms`) | ~4.7 ms | 平均 0.5ms 待ち | 次の Empty で idle-advance、~1ms 後 | 低 (idle ~0%) | — |
+| **option A**: `sleep 100µs` に短縮 | ~500 µs | 平均 50µs 待ち | 次の Empty で idle-advance、~100µs 後 | 中 (idle ~5%) | 最小 (1 行) |
+| **option B**: Cmd 後 frontier を `event_time + ε` に押し上げ + `step until idle` + idle 時 `recv_timeout(1ms)` | <200 µs | recv で即起床 | **cmd 分岐内で frontier-past 確定** (idle-advance 待ち不要) | 低 (cmd 駆動) | 中 (worker_loop + watermark semantics 変更) |
+| **option C**: `parking_lot::Condvar` (cmd) + 短 timer (idle-advance) で park/unpark | <100 µs | unpark で即起床 | timer-driven で idle-advance を 100µs 周期化、または cmd 分岐で frontier-past 確定 | 最小 (signal 駆動) | 高 (3 軸 schedule: cmd / timer / shutdown) |
+
+注:
+- **option B の「frontier を `event_time + ε` に push」段は (D) を cmd 分岐に取り込むことが本質**。cmd 分岐内で `advance_to((wc + ε_ms, 0))` を直接呼べば、その場で reduce が走り inspect も emit する。`ε` は production の event 間隔より小さく取る (例 1ms)、subsequent push が back-dated にならないことを確認。
+- **option A はもっとも単純だが (D) cycle 自体の数は減らないので 10× 改善が上限**。SLO `p99 < 1ms` に届くが余裕はない。
+- **option C は理論上の最速**だが、idle-advance の周期 / shutdown signal / spurious wakeup 対応で worker_loop が膨らむ。D2 で desktop_state 完成後の安定状態に再評価。
+
+D2 で `desktop_state` を view 経由置換するときに option B 系から実装着手、ベンチで効果を確認しつつ option A は B/C 採用までの transit として merge してもよい。
+
+#### 2.5.3 production への影響評価
+
+「~5ms update latency」は production の以下のシナリオで観測される:
+- user が新しい window に focus を移した瞬間 → MCP agent が即座に `desktop_state` を呼ぶケース
+- 連続的な focus 変化 (キーボードナビゲーション等) → 各遷移で view が「ひとつ前」を返すウィンドウ ~5ms
+
+production 上の許容範囲か:
+- ✅ **read-dominated**: 1 回 push (focus 変化) → N 回 read (agent query) のとき、read 側 ~145ns で N 回回せるので update の 5ms は分母で薄まる
+- ⚠ **write-after-write**: focus が連続変化する場合、最新値を読みに来た agent が「ひとつ古い」を読む確率が ~5ms 分上昇
+- 60 Hz UI 同期 (~16.67 ms/frame) には収まっているので体感影響なし
+- D2 で `desktop_state` の attention signal 計算が `dirty` / `settling` を返すロジックで 5ms 窓は dirty 扱いされるはず → SLA 違反にはならない見込み
 
 ### 2.6 criterion features 整合 (skeleton 矛盾)
 
