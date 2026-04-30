@@ -416,12 +416,27 @@ impl Drop for PerceptionWorker {
 /// out-of-order tolerance) but actually got 100ms (very strict),
 /// dropping events they expected to keep. The fix saturates at MAX
 /// instead.
-fn watermark_shift_ms() -> u64 {
-    std::env::var("DESKTOP_TOUCH_WATERMARK_SHIFT_MS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
+/// Pure parsing helper (Codex v13 P1): split the env-reading from
+/// the value-shaping so the test suite can exercise the parser
+/// without touching `std::env`. Setting a process-global env var
+/// from a `#[test]` while other tests in this crate are concurrently
+/// spawning workers (which read the same var) was racing — the
+/// observed flake was `same_wallclock_different_sub_ordinal_all_observed`
+/// failing because the worker started up while the env was set to
+/// `120000`, blowing the watermark window to 60s and never releasing
+/// the same-wallclock rows within the 500ms test wait.
+pub(crate) fn parse_watermark_shift_ms(raw: Option<&str>) -> u64 {
+    raw.and_then(|s| s.parse::<u64>().ok())
         .map(|n| n.min(WATERMARK_SHIFT_MAX_MS))
         .unwrap_or(DEFAULT_WATERMARK_SHIFT_MS)
+}
+
+fn watermark_shift_ms() -> u64 {
+    parse_watermark_shift_ms(
+        std::env::var("DESKTOP_TOUCH_WATERMARK_SHIFT_MS")
+            .ok()
+            .as_deref(),
+    )
 }
 
 fn watermark_for(latest_wallclock_ms: u64, shift_ms: u64) -> LogicalTime {
@@ -512,35 +527,41 @@ pub fn spawn_perception_worker(
 ///      row's diff until the idle-advance projects past it. The
 ///      post-cmd Empty branch is therefore also on the critical path.
 ///
-/// ## D2-A fix (Codex review v8 P2-15 / `docs/adr-008-d2-plan.md` §4.2)
+/// ## D2-A fix (`docs/adr-008-d2-plan.md` §4.2 v3.8)
 ///
-/// Two changes that preserve N3 partial-order while collapsing latency:
+/// Three changes (Codex review v8 P2-15 / v10 P1+P2 / v11 P3) that
+/// reduce latency while preserving the N2 watermark-shift acceptance
+/// contract and the N3 partial-order contract:
 ///
 ///   - **`recv_timeout(idle_recv_timeout)` instead of `try_recv` +
 ///     sleep**: the worker wakes immediately when a cmd arrives. The
-///     `Empty` branch's idle-frontier-advance work moves into a
-///     timeout-driven path that runs only when the channel is genuinely
-///     idle.
-///   - **Batch drain + max-observed time release**: each loop
+///     idle-frontier-advance work moves into a timeout-driven path
+///     that runs only when the channel is genuinely idle.
+///   - **Batch drain + watermark-shift release**: each loop
 ///     iteration takes the first cmd via `recv_timeout`, then drains
 ///     the channel non-blockingly up to `MAX_BATCH_SIZE`. After all
 ///     cmds in the batch have called `update_at`, advance the frontier
-///     to `(max_observed_wallclock_ms, max_observed_sub_ordinal + 1)`
-///     — i.e. one tick past the latest event, NOT to a `wc + ε` for
-///     some arbitrary ε. This preserves N3: a later same-`wallclock_ms`
-///     event with a higher `sub_ordinal` is still accepted because the
-///     frontier only advances past the observed `(wc, sub_ord)` pair.
-///     A genuine stale (smaller `wc` or smaller `sub_ord` at same
-///     `wc`) gets dropped per the existing watermark-shift logic.
+///     to `watermark_for(max_observed_wallclock_ms, shift_ms)` =
+///     `(max_observed_wc - shift_ms, 0)`. **This is D1's watermark
+///     shift logic preserved** — release of the just-pushed event is
+///     owned by the idle-advance branch (which projects
+///     `latest_wallclock + real_elapsed` past the shift window).
+///     An earlier v3.7 attempt advanced to
+///     `(max_observed_wc, max_observed_sub_ord + 1)` to release
+///     events inside the same cmd batch, but Codex v10 caught that
+///     this dropped legitimate within-shift across-batch events
+///     (and broke the integration test's "pump" focus pattern), so
+///     v3.8 reverted to the D1 shape — see `docs/adr-008-d2-plan.md`
+///     v3.8 history.
 ///   - **`step_until_idle` after the batch**: drain the operator
 ///     chain in one go (capped at `MAX_STEPS_PER_CMD`) instead of
 ///     stepping once per loop iteration with a sleep between.
 ///
-/// `event_count` guards (3): if the batch contained only `Shutdown`
-/// (or a `BlockForTest` in tests), we skip `advance_to` / `flush` /
-/// `step` / `processed_count` increment. Without this guard a
-/// shutdown-only batch would advance the frontier past spurious data
-/// and bump the processed counter.
+/// `event_count` guards (Codex v6 P2-8 invariant 7): if the batch
+/// contained only `Shutdown` (or a `BlockForTest` in tests), skip
+/// `advance_to` / `flush` / `step` / `processed_count` increment.
+/// Without this guard a shutdown-only batch would advance the
+/// frontier past spurious data and bump the processed counter.
 ///
 /// ## Idle-branch frontier advance (PR #91 P2 retained, refactored)
 ///
@@ -1322,43 +1343,42 @@ mod tests {
     }
 
     #[test]
-    fn watermark_shift_env_override() {
-        // Smoke that the env hook is wired (no full dataflow
-        // assertion, just that read-side returns the override).
-        // SAFETY: this test mutates a process-global env var. The
-        // var name is specific to this crate and no other test in
-        // engine-perception reads it; cargo's parallel test runner
-        // could in theory race here, but the var is not observed by
-        // any other test in this crate.
-        unsafe {
-            std::env::set_var("DESKTOP_TOUCH_WATERMARK_SHIFT_MS", "250");
-        }
-        assert_eq!(watermark_shift_ms(), 250);
+    fn watermark_shift_parser_handles_typical_inputs() {
+        // Codex review v13 P1: pure-parser test, NO env mutation.
+        // Earlier versions called `std::env::set_var` from this
+        // test which raced against other tests' worker spawns
+        // reading the same var (causing rare CI flakes in
+        // `same_wallclock_different_sub_ordinal_all_observed` /
+        // similar). The parser's logic is exercised directly via
+        // `parse_watermark_shift_ms(Option<&str>)` so the env var
+        // read is decoupled from the value-shaping.
+        assert_eq!(parse_watermark_shift_ms(Some("250")), 250);
 
         // Codex PR #90 P2: oversized values must clamp to MAX, not
         // fall back to the default (which would be the **opposite**
         // of what the user wrote — a much smaller window).
-        unsafe {
-            std::env::set_var("DESKTOP_TOUCH_WATERMARK_SHIFT_MS", "120000"); // > MAX
-        }
         assert_eq!(
-            watermark_shift_ms(),
+            parse_watermark_shift_ms(Some("120000")), // > MAX
             WATERMARK_SHIFT_MAX_MS,
             "oversized env must saturate to WATERMARK_SHIFT_MAX_MS, not default"
         );
 
-        unsafe {
-            std::env::set_var("DESKTOP_TOUCH_WATERMARK_SHIFT_MS", "not_a_number");
-        }
         assert_eq!(
-            watermark_shift_ms(),
+            parse_watermark_shift_ms(Some("not_a_number")),
             DEFAULT_WATERMARK_SHIFT_MS,
             "unparseable env falls back to default"
         );
 
-        unsafe {
-            std::env::remove_var("DESKTOP_TOUCH_WATERMARK_SHIFT_MS");
-        }
-        assert_eq!(watermark_shift_ms(), DEFAULT_WATERMARK_SHIFT_MS);
+        assert_eq!(
+            parse_watermark_shift_ms(None),
+            DEFAULT_WATERMARK_SHIFT_MS,
+            "absent env falls back to default"
+        );
+
+        assert_eq!(
+            parse_watermark_shift_ms(Some("")),
+            DEFAULT_WATERMARK_SHIFT_MS,
+            "empty string falls back to default"
+        );
     }
 }

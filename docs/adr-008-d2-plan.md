@@ -1,6 +1,6 @@
 # ADR-008 D2 — 主要 view 4 つ + desktop_state focus path view 経由置換プラン
 
-- Status: **Draft v3.9 (起草中、Opus、2026-04-30) — D2-A 実装完了、Codex review v1〜v11 反映済、Opus phase-boundary review (D2-0 + D2-A phase) 完了**
+- Status: **Draft v3.11 (起草中、Opus、2026-04-30) — D2-A 実装完了、Codex review v1〜v13 反映済、Opus phase-boundary review (D2-0 + D2-A phase) 完了**
 - Date: 2026-04-30
 - Authors: Claude (Opus, max effort) — `desktop-touch-mcp`
 - 親 ADR: `docs/adr-008-reactive-perception-engine.md` §4 D2 / §8 D2
@@ -223,6 +223,33 @@ PR #95 v3.8 push 後の Codex round 11 で 3 件 (P2 ×1 + P3 ×2):
 **cargo test**:
 - 既に v3.8 で全 pass している test が変わらず動作 (本 v3.9 修正は bench harness + env helper + docs のみで worker_loop の semantics は不変)
 - bench harness 修正は cap 追加のみで既存 sample 解釈に影響なし
+
+### v3.10 (Codex review v12 反映、PR #95 round 3、2026-04-30)
+
+PR #95 v3.9 push 後の Codex round 12 で軽微 P3 1 件:
+
+- **P3-23 (bench file の docstring が v3.7 前提のまま)**: `view_update_latency` 関連の冒頭 scenario 3 と `bench_view_update_latency` docstring "Setup notes" がいずれも `WATERMARK_SHIFT_MS=0` 設定下で `~1ms` で release する旨の説明 (v3.7 暫定で N2 違反、v3.8 で撤回した shape) を保持していた。読者が v3.8 の実装と矛盾するナラティブを最初に読むことになり、再現確認や次の修正で誤った解釈を再導入するリスク
+
+**修正**: `crates/engine-perception/benches/d1_view_latency.rs` の冒頭 scenario 3 と `bench_view_update_latency` の docstring を v3.8 仕様 (production-default `shift_ms` / 200ms `wc` 増分 / release が `shift_ms` floor) に書き換え。inline `// **D2-A v3.8 bench setup**` block は v3.7→v3.8 の経緯と empirical 32ms/127ms 比較を残す役割で保持。
+
+worker_loop semantics は v3.9 から不変、本 v3.10 は docs のみ修正。
+
+### v3.11 (Codex review v13 反映、PR #95 round 4、2026-04-30)
+
+PR #95 v3.10 push 後の Codex round 13 で P1 + P2:
+
+- **P1-9 (env race による cargo test flake)**: `watermark_shift_env_override` test が `std::env::set_var("DESKTOP_TOUCH_WATERMARK_SHIFT_MS", "120000")` で process-global env を mutate している間、Rust test harness は default で並列実行する他の D2-A test (`spawn_perception_worker()` を呼ぶもの) が同 env var を起動時に読む → race。Codex 観測で `same_wallclock_different_sub_ordinal_all_observed` が `got None` で fail (worker が `120000` shift で起動 → watermark window 60s → 500ms 待ちでは release 完了せず)。`--test-threads=1` だと pass、CI flake になる前に潰す
+- **P2-24 (worker_loop docstring と plan §4.2 擬似コードが撤回 v3.7 設計のまま)**: 実装は v3.8 で `watermark_for(max_wc, shift_ms)` に戻っているが、`worker_loop` 直前 docstring と plan §4.2 擬似コードが「`(max_observed_wc, max_observed_sub_ord + 1)`」(撤回 v3.7) のまま。次の D2-B / option C 着手時に再導入する罠が残る
+
+**修正**:
+1. **P1-9**: `parse_watermark_shift_ms(raw: Option<&str>) -> u64` を pure helper として分離 (Codex 提案の方向)、`watermark_shift_ms()` は env 読みつつ helper に委譲。`watermark_shift_env_override` test を **`watermark_shift_parser_handles_typical_inputs`** にリネームし pure helper を直接呼ぶ形に書き換え、`std::env::set_var` 呼び出しを完全削除。並列 race を構造的に解消、追加テスト (`Some("")` empty string fallback) も付与
+2. **P2-24**: `crates/engine-perception/src/input.rs::worker_loop` 直前の docstring を v3.8 仕様 (`watermark_for(max_observed_wc, shift_ms) = (max_wc - shift_ms, 0)` + release は idle-advance 委ねる) に書き換え、v3.7 暫定の `(max_wc, max_sub_ord + 1)` 設計は historical note として「Codex v10 で N2 違反検出 → v3.8 で撤回」の経緯のみ残す。**plan §2 D2-A-1 + §4.2 擬似コードも同期更新** (`Pair::new(new_wm_wc, 0)` advance_target、コメントを v3.8 logic に)
+
+これで「v3.7 暫定設計の残滓」を実装・docstring・plan の全層から除去、option C 着手 (別 PR、D2-B 後) でも撤回 design を誤って再導入するリスクを排除。
+
+**cargo test (v3.11)**:
+- `cargo test -p engine-perception` (default 並列モード、env race fix 後) で integration 含む 41 全 pass
+- env race の構造的解消で `--test-threads=1` 前提 CI も不要
 
 **option C (parking_lot::Condvar 等 signal-driven)** の優先度を上げる:
 - v3.8 の修正で `view_update_latency` p99 の改善幅は更に縮小、SLO 未達は確実
@@ -452,12 +479,12 @@ v3.2 で carry-over していた「timeout 失敗時 handle retain test」「par
 
 - [ ] **batch drain**: `cmd_rx.recv_timeout(idle_recv_timeout)` で初回 1 件取得後、`try_recv` で連続吸い出し (上限 `MAX_BATCH_SIZE=64`)
 - [ ] batch 内全 cmd の `update_at` を完了後、**`max_observed_time = batch.iter().map(|c| (c.wc, c.sub_ord)).max()`** を計算
-- [ ] frontier を **`(max_observed_time.0, max_observed_time.1 + 1)`** (sub_ordinal++、physical wc 不変) に push
-  - 同 wc + 大 sub_ordinal の後続 event は前進 frontier の範囲内で受け入れ可能 (N3 維持、§4.3 invariant)
-  - 同 wc + 同 sub_ordinal の event は L1 invariant 上発生しない (layer-constraints §2.3 invariant 2)
-  - 小 wc / 小 sub_ordinal は drop 妥当 (back-dated、既存 watermark shift ロジックに合流)
+- [ ] frontier を **`watermark_for(max_observed_time.0, shift_ms) = (max_wc - shift_ms, 0)`** に push (D1 watermark-shift logic 維持、Codex v10 P1/P2 で v3.7 の `(max_wc, max_sub_ord + 1)` を撤回)
+  - 同 wc + 異 sub_ordinal の後続 event は frontier (= max - shift) より上にあるので accept (N3 維持)
+  - 小 wc / 小 sub_ordinal は frontier との比較で drop 妥当 (back-dated、watermark shift logic 一貫)
+  - **release は idle 分岐の `latest_wallclock + real_elapsed` projection に委ねる** (= D1 同パターン): release 時刻は概ね `last_event_anchor + shift_ms` の wall-clock 経過後で、shift_ms が release floor となる
 - [ ] **`step_until_idle`**: cmd 分岐内で `worker.step()` を `MAX_STEPS_PER_CMD=32` 回または `made_progress=false` まで回す (operator chain 全段消化、followups §2.5.1 (B) 対応)
-- [ ] **idle 分岐**: 既存の idle frontier advance (D1-3 PR #91 P2 fix、real elapsed projection) は **そのまま維持**。cmd 分岐で frontier を `max_observed + 1 sub_ord` まで進めた後の idle 分岐は noop or forward の判定 (monotone 維持)
+- [ ] **idle 分岐**: 既存の idle frontier advance (D1-3 PR #91 P2 fix、real elapsed projection) は **そのまま維持**。cmd 分岐で max - shift まで進めた後の idle 分岐 advance は monotone (`last_advanced` を超えない場合 noop)
 - [ ] **環境変数**:
   - `DESKTOP_TOUCH_IDLE_RECV_TIMEOUT_MS` (default 1)
   - `DESKTOP_TOUCH_MAX_BATCH_SIZE` (default 64)
@@ -784,12 +811,13 @@ loop {
     // ④ event があった時のみ advance/flush/processed_count 更新
     //    (Codex v2 P2-8 反映: shutdown-only batch で frontier/processed_count を歪めない)
     if event_count > 0 {
-        // batch 内 max logical time の「次の sub_ordinal」まで frontier 進行
-        //   physical wc は max_observed と同じ、sub_ordinal は +1
-        //   → 同 wc + 大 sub_ordinal の後着 event は frontier 内で受け入れ可能
-        //   → 同 wc + 同 sub_ordinal は L1 invariant 上発生しない
-        //   → 小 wc / 小 sub_ordinal は drop 妥当
-        let advance_target = Pair::new(max_observed.0, max_observed.1.saturating_add(1));
+        // batch 内 max wallclock_ms - shift_ms まで frontier 進行
+        //   (Codex v10 P1/P2 で v3.7 の `(max_wc, max_sub_ord + 1)`
+        //    即 release 設計を撤回、D1 watermark-shift logic に復元)
+        //   release は idle 分岐の `latest_wallclock + real_elapsed`
+        //   projection に委ねる (D1 同パターン)
+        let new_wm_wc = max_observed.0.saturating_sub(shift_ms);
+        let advance_target = Pair::new(new_wm_wc, 0);
         if last_advanced.less_than(&advance_target) {
             input.advance_to(advance_target.clone());
             last_advanced = advance_target;
