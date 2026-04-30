@@ -325,22 +325,37 @@ pub fn spawn_perception_worker(
 ///
 /// ## Latency budget (PR #92 D1-5 measurement, ~4.7 ms update latency)
 ///
-/// The `TryRecvError::Empty` branch's `thread::sleep(1ms)` is the
-/// dominant bottleneck for `view_update_latency`. On a `push_focus`,
-/// the dataflow needs ~2-3 `worker.step()` calls to propagate through
-/// `input → map → reduce → inspect`, and each step is interleaved with
-/// the 1 ms sleep — the timeline accumulates to ~3-5 ms even though
-/// the actual memory operations (`update_at` / `advance_to` /
-/// `apply_diff` / RwLock write) total only ~µs.
+/// Three contributing factors, **all on the critical path** — sleep
+/// shortening alone won't reach SLO if any of them is missed:
+///
+/// 1. **`thread::sleep(1ms)` in `TryRecvError::Empty`**: cmd-arrival
+///    detection takes up to 1 ms, and dataflow steps are interleaved
+///    with it.
+/// 2. **DD operator chain propagation**: `input → map → reduce →
+///    inspect` requires ~2-3 `worker.step()` calls; with sleeps in
+///    between they accumulate.
+/// 3. **idle frontier advance gates release**: with `WATERMARK_SHIFT_MS`
+///    at any value, the cmd branch's `advance_to(watermark)` puts the
+///    frontier *at* event_time, not past it — so DD's reduce can't
+///    finalise the new row's diff. Release only happens once the
+///    `Empty` branch's idle-advance projects `latest_wallclock_ms +
+///    real_elapsed_ms` and re-`advance_to`s past the event. That
+///    means the post-cmd Empty branch is also on the critical path,
+///    not just the cmd-branch step itself.
+///
+/// Memory ops (`update_at` / `advance_to` / `apply_diff` / RwLock
+/// write) total only ~µs and are non-dominant.
 ///
 /// SLO target from `docs/views-catalog.md` §3.1 is `update p99 < 1 ms`.
-/// Current design misses it; tuning options (sleep shortening / cmd-
-/// driven `step until idle` / parking primitive) are catalogued in
+/// Current design misses it; tuning options (sleep shortening /
+/// cmd-driven `step until idle` with explicit frontier-past advance /
+/// parking primitive) are catalogued in
 /// `docs/adr-008-d1-followups.md` §2.5 and are deferred to D2 where
 /// the `desktop_state` view-based implementation will exercise the
 /// path under MCP transport. **DO NOT** tune in isolation without
 /// re-running the bench — the worker's idle/poll loop also gates the
-/// shutdown latency and idle-advance frequency.
+/// shutdown latency and the idle-advance schedule, and (3) above means
+/// "shorten the sleep" by itself is bounded by 10× improvement only.
 fn worker_loop(
     rx: Receiver<Cmd>,
     processed: Arc<AtomicU64>,
