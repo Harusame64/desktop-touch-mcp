@@ -1,7 +1,7 @@
 # Bench Harness — Layer SLO Verification
 
-- Status: **Skeleton (KPI 一覧のみ、実装は ADR-007 P1 完了後)**
-- Date: 2026-04-29
+- Status: **D1-5 first bench landed** (ADR-008 D1: `current_focused_element` view + TS baseline measured)
+- Date: 2026-04-29 (skeleton) / 2026-04-30 (D1 bench landed)
 - Scope: 統合書 §17.3 + `docs/layer-constraints.md` §8 の KPI を CI 計測する Rust ベンチハーネス
 - 場所: 既存 `desktop-touch-engine` crate (root Cargo.toml) の `[[bench]]` として配置
 
@@ -37,15 +37,27 @@
 | `state_at(t)` p99 | < 5ms | `bench_state_at_query` |
 | arrangement memory budget | < 512MB (default) | `bench_arrangement_memory_budget` |
 
-### 2.3 L3 Compute (`benches/l3_compute.rs`)
+### 2.3 L3 Compute (`crates/engine-perception/benches/d1_view_latency.rs` + `benches/d1_ts_baseline.mjs`)
 
-| KPI | 目標 (制約 §4.4 + views-catalog §8) | bench fn |
-|---|---|---|
-| current_focused_element 更新 p99 | < 1ms | `bench_view_current_focused_element` |
-| dirty_rects_aggregate 更新 p99 | < 2ms | `bench_view_dirty_rects_aggregate` |
-| semantic_event_stream delta 配信 p99 | < 3ms | `bench_view_semantic_event_stream` |
-| predicted_post_state dry-run p99 | < 50ms | `bench_view_predicted_post_state` |
-| lens_attention settle p99 | < 5ms (max iter 100) | `bench_view_lens_attention` |
+| KPI | 目標 (制約 §4.4 + views-catalog §8) | bench fn | status |
+|---|---|---|---|
+| current_focused_element 更新 p99 | < 1ms (view side) / TS p99 / 10 (acceptance) | `view_get_hit` / `view_get_miss` (Rust criterion) + `d1_ts_baseline.mjs` (Node) | **Landed (D1-5、`feat/adr-008-d1-5-bench`)** |
+| dirty_rects_aggregate 更新 p99 | < 2ms | `bench_view_dirty_rects_aggregate` | D2 |
+| semantic_event_stream delta 配信 p99 | < 3ms | `bench_view_semantic_event_stream` | D2 |
+| predicted_post_state dry-run p99 | < 50ms | `bench_view_predicted_post_state` | D2 (subgraph) |
+| lens_attention settle p99 | < 5ms (max iter 100) | `bench_view_lens_attention` | D4 |
+
+#### D1-5 measured numbers (local run, Windows 11 / Ryzen, release build, 2026-04-30)
+
+| Path | p50 | p95 | p99 | Source |
+|---|---|---|---|---|
+| **view_get_hit** (D1 view, populated row) | ~148 ns | (criterion mean ±2.4%) | (sub-µs) | `cargo bench -p engine-perception --bench d1_view_latency` |
+| **view_get_miss** (D1 view, missing key) | ~20 ns | (criterion mean ±1.4%) | (sub-µs) | same |
+| **uiaGetFocusedElement** (TS baseline, UIA tree walk) | 1694 µs | 2924 µs | **11196 µs** | `node benches/d1_ts_baseline.mjs 1000` |
+
+**Acceptance ratio (ADR-008 D1 §11)**: TS p99 / view ≈ **75,000×** (target was 10×).
+
+caveat: view side numbers are criterion's mean ± confidence interval, not true p99. With ~150ns mean and HashMap-read variance, p99 stays sub-µs; even at 10× mean (worst-case lock contention) it would be <1.5 µs vs TS p99 of 11.2 ms — ratio still > 7,000×. Re-run when D2 wires the view through `desktop_state` to confirm the numbers under MCP transport overhead.
 
 ### 2.4 L4 Envelope Assembly (`benches/l4_envelope.rs`)
 
@@ -174,16 +186,17 @@ criterion_main!(benches);
 ## 4. 起動手順
 
 ```bash
-# 全 bench
-cargo bench
+# D1-5 (本書 §2.3 で landed): view path latency
+cargo bench -p engine-perception --bench d1_view_latency
 
-# 特定 layer のみ
+# D1-5: TS baseline (UIA path、Windows session 必須)
+node benches/d1_ts_baseline.mjs           # 1000 iters (default)
+node benches/d1_ts_baseline.mjs 5000      # 高精度
+
+# 将来 (各 ADR Phase 完了で追加される bench)
+cargo bench                                # 全 bench
 cargo bench --bench l1_capture
-
-# 特定 fn のみ
 cargo bench --bench l3_compute -- bench_view_lens_attention
-
-# Tier pin (HW Tier 別計測)
 DESKTOP_TOUCH_MAX_TIER=1 cargo bench --bench tier_dispatch
 DESKTOP_TOUCH_MAX_TIER=3 cargo bench --bench tier_dispatch
 ```

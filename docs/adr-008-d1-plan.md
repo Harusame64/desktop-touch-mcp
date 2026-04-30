@@ -144,17 +144,17 @@ desktop-touch-mcp/
   - `ui_element_ref_projection_is_lossy` — pivot field 漏洩防止 compile-time check
 - [x] **watermark caveat**: pump event (wallclock_ms +200ms) を入れる test は frontier を deterministic に進めるため。さらに **PR #91 P2 review** で `worker_loop` の idle 分岐に **idle frontier advance** を実装 — `last_event_anchor (wallclock_ms, Instant)` から real elapsed 時間で `latest_wallclock_ms` を projection、watermark 自動進行。real L1 capture が quiescent でも最新 focus event が view に materialise される (`quiescent_focus_eventually_materialises` test で pin)
 
-### D1-5: bench harness (PR 4)
-- [ ] `benches/d1_view_latency.rs` 新規 (criterion crate ベース、または simple `#[bench]`)
-- [ ] TS 版 baseline 計測手順を README に追記 (既存 `desktop_state` の focus 取得を直接呼ぶ Node script)
-- [ ] **acceptance: TS 版より latency 1/10 達成** (acceptance criterion)
-- [ ] `bench/` README に SLO 表を追加 (統合書 §13.1 と整合)
+### D1-5: bench harness (PR 4) — **実装完了 (本 PR、2026-04-30)**
+- [x] `crates/engine-perception/benches/d1_view_latency.rs` 新規 (criterion、`view_get_hit` + `view_get_miss`)
+- [x] TS 版 baseline 計測: `benches/d1_ts_baseline.mjs` (Node、napi `uiaGetFocusedElement` を warmup 100 + measure N で測定、p50/p95/p99 報告)
+- [x] **acceptance: TS 版より latency 1/10 達成** — view_get_hit ~148ns vs TS p99 ~11.2ms = **ratio ~75,000×** で大幅クリア
+- [x] `benches/README.md` §2.3 D1 SLO 表を更新 (Landed status + 実測値 + 各 path の起動手順)
 
-### D1-6: ドキュメント整合とメモリ更新 (PR 4 内 or 別 PR)
-- [ ] `docs/views-catalog.md` §3.1 の `current_focused_element` 行を `Implemented` に更新
-- [ ] ADR-008 §4 D1 行に PR 番号 + commit hash 追記
-- [ ] memory `project_3layer_architecture_design.md` を「ADR-008 D1 完了」に更新
-- [ ] memory `MEMORY.md` index 更新
+### D1-6: ドキュメント整合とメモリ更新 (本 PR 内) — **実装完了**
+- [x] `docs/views-catalog.md` §3.1 を `Implemented + Benched (D1-3 + D1-5)` に flip + 実測値追記
+- [x] ADR-008 §8 Acceptance Criteria 表で D1 行を「完了 (2026-04-30)」に更新、PR 番号 + commit hash 追記
+- [x] `docs/adr-008-d1-plan.md` (本書) の D1-5 / D1-6 / §11 Acceptance 全 [x]
+- [x] memory `project_adr008_d1_5_done.md` 新規 + `MEMORY.md` index 更新
 
 ---
 
@@ -404,9 +404,11 @@ collection<UiElementRef>  (1 row per current foreground hwnd)
 - [x] **`src/l3_bridge/focus_pump.rs`** が `EventRing` broadcast subscribe → decode → `engine_perception::FocusInputHandle::push_focus()` で動作 (root owns integration、parent-side subscribe で spawn 直後の race 解消、`source_event_id` / `timestamp_source` 必ず保持)
 - [x] 1 view が incremental に更新される (`current_focused_element`) — **D1-3 で実装 (本 PR)**
 - [x] unit test pass (partial-order 含む) — D1-3 in-file unit + D1-4 integration `crates/engine-perception/tests/d1_minimum.rs` で assert (32 + 11 全 pass)
-- [ ] bench で TS 版より latency 1/10 (real L1 input ベース、synthetic ではない) — **D1-5 で実施**
-- [x] CI green、`npm run build:rs` / `npm test` 回帰なし、`check:rs-workspace` で engine-perception 含む — 本 PR 時点 cargo test 32 (engine-perception) + 11 (root l3_bridge `--no-default-features`) pass / vitest 2435 pass / 28 skip
-- [ ] D1-6 完了 (ドキュメント / メモリ整合) — D1-5 完了後
+- [x] **bench で TS 版より latency 1/10** (real L1 input ベース、synthetic ではない) — **D1-5 PR で達成、ratio ~75,000× (view ~148ns vs TS p99 ~11.2ms)**
+- [x] CI green、`npm run build:rs` / `npm test` 回帰なし、`check:rs-workspace` で engine-perception 含む — D1-3 PR #91 時点 cargo test 32 (engine-perception) + 11 (root l3_bridge `--no-default-features`) pass / vitest 2435 pass / 28 skip。**D1-5 PR 時点で `view_get_hit` ~148ns / `view_get_miss` ~20ns、TS baseline p99 11.2ms 計測済**
+- [x] D1-6 完了 (ドキュメント / メモリ整合) — D1-5 PR 内で同時クロージャ
+
+**D1 phase 完了表記後の D2 carry-over 項目**: `docs/adr-008-d1-followups.md` に永続記録 (強制命令 9 — memory ではなく docs/ に書く)。bench harness 強化 (true p99 / production gap / MCP transport bench) + D1-3 残 follow-up (transient stale read / tie-breaker semantics / starvation 再評価 / reduce 経由 hwnd 死活 test / L4 envelope pivot 搬送 / shutdown drain 検証) の 9 項目。
 
 ---
 

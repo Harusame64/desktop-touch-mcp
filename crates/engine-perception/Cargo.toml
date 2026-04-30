@@ -26,3 +26,13 @@ serde = { version = "1", default-features = false, features = ["derive", "std"] 
 # is thread-local, so we run the InputSession inside a dedicated
 # worker thread and feed it via this channel).
 crossbeam-channel = "0.5"
+
+# ADR-008 D1-5 bench harness: criterion for the `view.get` latency
+# measurement. dev-dep only — never linked into the napi addon /
+# release zip / production code.
+[dev-dependencies]
+criterion = { version = "0.5", default-features = false, features = ["plotters", "rayon", "cargo_bench_support"] }
+
+[[bench]]
+name = "d1_view_latency"
+harness = false

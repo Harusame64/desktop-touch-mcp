@@ -70,13 +70,13 @@ ADR-008 D2 は「主要 view 4 つを declarative に実装」を完了基準に
 
 | view 名 | category | input | output (Rust struct) | consumer | SLO | phase | status |
 |---|---|---|---|---|---|---|---|
-| `current_focused_element` | state | `UiaFocusChanged` events from L1 | `UiElementRef { name, automation_id, control_type, window_title }` | L4 envelope.data (desktop_state) | p99 < 1ms | D1 | **Implemented (D1-3)** |
+| `current_focused_element` | state | `UiaFocusChanged` events from L1 | `UiElementRef { name, automation_id, control_type, window_title }` | L4 envelope.data (desktop_state) | p99 < 1ms (実測 ~148ns、TS p99 11ms の 1/75,000) | D1 | **Implemented + Benched (D1-3 + D1-5)** |
 
 > **D1-3 実装完了 (2026-04-30)**: operator graph 本体を `crates/engine-perception/src/views/current_focused_element.rs` に新設。`map(FocusEvent → (hwnd, ((wallclock, sub), UiElementRef)))` → `reduce(per-hwnd last-by-time)` → `inspect(diff bookkeeping)` → `Arc<RwLock<HashMap<u64, BTreeMap<UiElementRef, i64>>>>` 読み取り API (`get(hwnd)` / `snapshot()` / `len()` / `is_empty()`)。pivot 4 フィールド (`source_event_id` / `wallclock_ms` / `sub_ordinal` / `timestamp_source`) は output から除外し L4 envelope 側で別途搬送。
 >
 > **idle frontier advance (PR #91 P2 review fix)**: real L1 capture には heartbeat がないため、focus が変化して停止すると watermark が進まず、最新 event が永久に view に出ない問題を発見。`worker_loop` の idle 分岐で `last_event_anchor: (wallclock_ms, Instant)` から real elapsed 時間を加算して `latest_wallclock_ms` を projection、watermark を進めるように変更 (`crates/engine-perception/src/input.rs::worker_loop`)。これで quiescent focus も view に materialise される。production の monotone real-time wallclock では legitimate な後続 event を back-dated 扱いにすることはない。
 >
-> SLO p99 < 1ms の bench 計測は **D1-5** で実施 (本書 §8 / `docs/adr-008-d1-plan.md` D1-5)。
+> **D1-5 bench 完了 (2026-04-30)**: `crates/engine-perception/benches/d1_view_latency.rs` (criterion) + `benches/d1_ts_baseline.mjs` (Node)。view_get_hit ~148ns / view_get_miss ~20ns、TS baseline (`uiaGetFocusedElement`) p99 ≈ 11.2ms → ratio ~75,000× で D1 acceptance (TS / 10) を大幅クリア。詳細: `benches/README.md` §2.3 / D1-5 measured numbers。
 
 ### 3.2 D2: 主要 view 4 つ (本書の主スコープ)
 
