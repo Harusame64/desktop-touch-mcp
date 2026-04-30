@@ -34,7 +34,7 @@
 
 pub(crate) mod focus_pump;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use engine_perception::input::{spawn_perception_worker, FocusInputHandle, L1Sink, PerceptionWorker};
@@ -75,13 +75,212 @@ pub(crate) fn spawn_perception_pipeline_for_test() -> (
 /// [`spawn_perception_pipeline_for_test`]. Order: pump → worker.
 /// Pump first so its `Subscription` Drop unsubscribes from the ring
 /// before the worker thread joins.
-pub(crate) fn shutdown_perception_pipeline_for_test(
+///
+/// Renamed from `shutdown_perception_pipeline_for_test` (D2-0,
+/// 2026-04-30) to free that name for the production-lifecycle
+/// `Arc<PerceptionPipeline>` API. This helper still serves
+/// `spawn_perception_pipeline_for_test` callers that take ownership
+/// of `(worker, pump)` directly (used in `helper_pair_spawn_and_shutdown`
+/// and any future bench harness that wants per-instance lifecycle
+/// without going through `PERCEPTION_SLOT`).
+pub(crate) fn shutdown_spawned_pipeline_for_test(
     worker: PerceptionWorker,
     pump: FocusPump,
 ) -> Result<(), &'static str> {
     pump.shutdown(Duration::from_secs(2))?;
     worker.shutdown(Duration::from_secs(2))?;
     Ok(())
+}
+
+// ─── Production pipeline lifecycle (D2-0, ADR-008) ────────────────────────
+//
+// Mirrors the L1 ring's slot pattern (`L1_SLOT: OnceLock<Mutex<Option<
+// Arc<L1Inner>>>>`, `src/l1_capture/worker.rs:227`) so callers get the
+// same shutdown / restart semantics as the L1 layer.
+//
+// ## Why the slot is an `Arc<PerceptionPipeline>` and not a `Box`
+//
+// Codex review v3 P2-2: a future caller may hold an `Arc` clone past
+// our shutdown (e.g. a long-running napi binding holding the view).
+// `&self`-based `shutdown_with_timeout` lets us stop the internal
+// threads without consuming the value, so outstanding clones that
+// only read from the view handle stay valid (read paths don't depend
+// on the worker thread).
+//
+// ## Why pump / worker live behind `Mutex<Option<...>>`
+//
+// `PerceptionWorker::shutdown(self, timeout)` and
+// `FocusPump::shutdown(self, timeout)` are both **consume-on-shutdown**
+// — they take `self`. To call them from `&self`, we hold each behind a
+// `Mutex<Option<T>>` and `take()` the value before shutdown. The
+// existing `is_finished()` + deadline polling lives **inside** those
+// `shutdown` impls (`engine_perception::input::PerceptionWorker::shutdown`
+// at `crates/engine-perception/src/input.rs:218-241`,
+// `FocusPump::shutdown` mirroring it), so we just split the timeout
+// budget half-and-half across pump and worker and delegate.
+//
+// ## Slot-clear protocol (Codex v4 P1-6, North-Star)
+//
+// `shutdown_perception_pipeline_for_test` MUST clear the slot only on
+// success and only after `Arc::ptr_eq` confirms the slot still holds
+// the same instance we shut down. The L1 layer landed this exact
+// invariant in `worker.rs:267-292` (Codex PR #86 P2). We follow the
+// same shape so a concurrent `ensure_perception_pipeline()` that
+// re-init'd the slot mid-shutdown does not get its fresh instance
+// orphaned.
+
+/// Cmd-channel + view + handle bundle the production lifecycle owns.
+/// `view` and `handle` are clone-cheap, but `worker` and `pump` are
+/// `Mutex<Option<...>>` because their `shutdown` consumes `self`.
+pub struct PerceptionPipeline {
+    pub view: CurrentFocusedElementView,
+    pub handle: FocusInputHandle,
+    worker: Mutex<Option<PerceptionWorker>>,
+    pump: Mutex<Option<FocusPump>>,
+}
+
+impl PerceptionPipeline {
+    /// Stop the pump and worker threads with a combined deadline of
+    /// `timeout`. Order: pump → worker (Codex v3 P2-2 + v4 P2-12 +
+    /// `docs/adr-008-d1-plan.md` §5.3). Each leg gets `timeout / 2`.
+    ///
+    /// On `Err`, the underlying `PerceptionWorker` / `FocusPump` are
+    /// already taken out of their `Mutex<Option<...>>` slots — they
+    /// have been consumed by the failing `shutdown` call. The slot
+    /// for the *pipeline* (in `PERCEPTION_SLOT`) retains the original
+    /// `Arc<PerceptionPipeline>` so a later `ensure_perception_pipeline()`
+    /// returns the same instance and does NOT spawn a second worker
+    /// (Codex v4 P1-6 — slot-clear-on-success-only). Callers that
+    /// observe the `Err` should treat the pipeline as "not cleanly
+    /// shut down" and may retry `shutdown_perception_pipeline_for_test`
+    /// with a longer timeout.
+    pub fn shutdown_with_timeout(&self, timeout: Duration) -> Result<(), &'static str> {
+        let half = timeout / 2;
+        // 1. pump first — its Subscription Drop unsubscribes from the
+        // L1 ring before the worker thread sees Cmd::Shutdown, so any
+        // event in flight is forwarded before the channel disconnects.
+        let pump_opt = self
+            .pump
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(pump) = pump_opt {
+            pump.shutdown(half)?;
+        }
+        // 2. worker — its `is_finished()` polling honours `half` even
+        // if the worker is mid-step (Codex v4 P2-12).
+        let worker_opt = self
+            .worker
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(worker) = worker_opt {
+            worker.shutdown(half)?;
+        }
+        Ok(())
+    }
+}
+
+// Slot pattern: identical shape to `L1_SLOT` in
+// `src/l1_capture/worker.rs:227`.
+static PERCEPTION_SLOT: OnceLock<Mutex<Option<Arc<PerceptionPipeline>>>> = OnceLock::new();
+
+/// Lazy-init the production perception pipeline. Returns a clone of
+/// the shared `Arc<PerceptionPipeline>` — concurrent callers all see
+/// the same instance, mirroring `ensure_l1()` (`worker.rs:229`).
+///
+/// First call spawns the perception worker, takes the L1 ring from
+/// `ensure_l1()`, and starts the focus pump. Subsequent calls simply
+/// `Arc::clone` the existing slot.
+pub fn ensure_perception_pipeline() -> Arc<PerceptionPipeline> {
+    let cell = PERCEPTION_SLOT.get_or_init(|| Mutex::new(None));
+    let mut guard = cell.lock().unwrap_or_else(|e| e.into_inner());
+    if guard.is_none() {
+        *guard = Some(Arc::new(spawn_pipeline_inner()));
+    }
+    Arc::clone(guard.as_ref().expect("just inserted Some"))
+}
+
+/// Shut down the slot-held pipeline and clear the slot **only if**
+/// the shutdown succeeded AND the slot still holds the same `Arc`
+/// we were shutting down (Codex v4 P1-6 — slot-clear-on-success-only).
+///
+/// Returns `Ok(())` when:
+///   - The slot was empty (nothing to do, idempotent).
+///   - The pipeline cleanly shut down within `timeout`.
+///
+/// Returns `Err` when the pump or worker missed the deadline. In that
+/// case **the slot retains the original `Arc<PerceptionPipeline>`**
+/// (we never removed it from the slot — `pipeline_arc` is just a
+/// borrowed clone, not a take). The caller can retry with a longer
+/// timeout, or call `ensure_perception_pipeline()` to keep using the
+/// still-running instance — either way we never spawn a second
+/// worker, preserving the singleton invariant.
+///
+/// Mirrors `shutdown_l1_for_test` in `src/l1_capture/worker.rs:252`.
+pub(crate) fn shutdown_perception_pipeline_for_test(
+    timeout: Duration,
+) -> Result<(), &'static str> {
+    let cell = match PERCEPTION_SLOT.get() {
+        Some(c) => c,
+        None => return Ok(()), // never initialised
+    };
+    // Borrow the Arc out of the slot without removing it yet — we need
+    // confirmation that the threads stopped before we let
+    // `ensure_perception_pipeline()` spawn a fresh one.
+    let pipeline_arc = {
+        let guard = cell.lock().unwrap_or_else(|e| e.into_inner());
+        match guard.as_ref() {
+            Some(arc) => Arc::clone(arc),
+            None => return Ok(()),
+        }
+    };
+    match pipeline_arc.shutdown_with_timeout(timeout) {
+        Ok(()) => {
+            // Threads confirmed joined. Clear the slot **only if** it
+            // still holds the same `Arc` we shut down. A concurrent
+            // caller may have cleared it and re-spawned a fresh
+            // instance via `ensure_perception_pipeline()`; clearing
+            // here would orphan that new pipeline. Mirrors the L1
+            // safeguard from `worker.rs:269-284` (Codex PR #86 P2).
+            let mut guard = cell.lock().unwrap_or_else(|e| e.into_inner());
+            if guard
+                .as_ref()
+                .map(|current| Arc::ptr_eq(current, &pipeline_arc))
+                .unwrap_or(false)
+            {
+                *guard = None;
+            }
+            Ok(())
+        }
+        Err(e) => {
+            // Slot retains the original Arc. The next ensure() returns
+            // the same (potentially still-running) handle. Caller sees
+            // the timeout error and can retry. NEVER clear the slot on
+            // failure — that would let `ensure_perception_pipeline()`
+            // spawn a second worker, breaking the singleton invariant
+            // (Codex v4 P1-6, North-Star regression target).
+            Err(e)
+        }
+    }
+}
+
+/// Build a fresh `PerceptionPipeline` — used by
+/// `ensure_perception_pipeline` for first init and by
+/// `five_cycle_ensure_shutdown` between cycles. Wires the worker and
+/// pump in the same order as `spawn_perception_pipeline_for_test` so
+/// the parent-side `subscribe(...)` runs synchronously (Codex v3 P1).
+fn spawn_pipeline_inner() -> PerceptionPipeline {
+    let (worker, handle, view) = spawn_perception_worker();
+    let ring = ensure_l1().ring.clone();
+    let sink: Arc<dyn L1Sink> = Arc::new(handle.clone());
+    let pump = FocusPump::spawn(ring, sink);
+    PerceptionPipeline {
+        view,
+        handle,
+        worker: Mutex::new(Some(worker)),
+        pump: Mutex::new(Some(pump)),
+    }
 }
 
 // ─── 5-cycle lifecycle test (ADR-008 D1-2 §3.6) ────────────────────────
@@ -114,7 +313,12 @@ mod lifecycle_tests {
     /// running them in parallel would race their `subscriber_count()`
     /// observations. Other unit tests across the crate still run in
     /// parallel — only lifecycle_tests serialize against itself.
-    fn lifecycle_lock() -> &'static Mutex<()> {
+    ///
+    /// D2-0 (2026-04-30): exposed as `pub(super)` so the production-
+    /// lifecycle test module reuses the same lock — both modules
+    /// touch `ensure_l1()` and `PERCEPTION_SLOT` so they must
+    /// serialize against each other, not just within their own module.
+    pub(super) fn lifecycle_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
     }
@@ -410,7 +614,7 @@ mod lifecycle_tests {
         );
         // No events pushed → view stays empty.
         assert!(view.is_empty(), "fresh pipeline view should be empty");
-        shutdown_perception_pipeline_for_test(worker, pump).expect("shutdown clean");
+        shutdown_spawned_pipeline_for_test(worker, pump).expect("shutdown clean");
         // The helper's own slot must be gone. Other concurrent
         // lifecycle tests may have added/removed slots in parallel,
         // but our delta is back to ≤ baseline.
@@ -420,5 +624,236 @@ mod lifecycle_tests {
             baseline,
             ring.subscriber_count()
         );
+    }
+}
+
+// ─── Production pipeline lifecycle tests (D2-0, ADR-008) ──────────────────
+//
+// Cover the slot pattern's correctness contracts (Codex review v3
+// P2-2, v4 P1-6, v4 P2-12). The five tests below are deliberately
+// race-free; the timeout-failure cases (drain a worker that ignores
+// `Cmd::Shutdown`, observe the slot retains the original `Arc`) need
+// a test-only fixture in `engine-perception` and are tracked in
+// `docs/adr-008-d2-plan.md` §10 OQ #14.
+#[cfg(test)]
+mod production_pipeline_lifecycle_tests {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+    use std::time::Duration;
+
+    use crate::l1_capture::{
+        encode_payload, EventKind, InternalEvent, TimestampSource, UiElementRef,
+        UiaFocusChangedPayload,
+    };
+
+    /// Reuse the lifecycle_tests serialization lock so production-
+    /// lifecycle tests don't race with the existing 5-cycle test on
+    /// `PERCEPTION_SLOT` or the global L1 ring.
+    fn lifecycle_lock() -> &'static std::sync::Mutex<()> {
+        super::lifecycle_tests::lifecycle_lock()
+    }
+
+    /// Drain `PERCEPTION_SLOT` if a previous test left it populated.
+    /// `shutdown_perception_pipeline_for_test` is idempotent — `Ok(())`
+    /// when the slot is already empty.
+    fn drain_slot() {
+        let _ = shutdown_perception_pipeline_for_test(Duration::from_secs(2));
+    }
+
+    fn push_one_focus_event(ring: &crate::l1_capture::EventRing, hwnd: u64, name: &str, wc: u64) {
+        let payload = UiaFocusChangedPayload {
+            before: None,
+            after: Some(UiElementRef {
+                hwnd,
+                name: name.into(),
+                automation_id: None,
+                control_type: 50000,
+            }),
+            window_title: "ProductionLifecycle".into(),
+        };
+        let internal = InternalEvent {
+            envelope_version: 1,
+            event_id: 0,
+            wallclock_ms: wc,
+            sub_ordinal: 0,
+            timestamp_source: TimestampSource::StdTime as u8,
+            kind: EventKind::UiaFocusChanged as u16,
+            payload: encode_payload(&payload),
+            session_id: None,
+            tool_call_id: None,
+        };
+        ring.push(internal);
+    }
+
+    /// Test 1 — concurrent `ensure_perception_pipeline()` calls return
+    /// the **same** `Arc<PerceptionPipeline>` instance (Codex v3 P2-2).
+    /// Mirrors `ensure_l1_returns_same_instance` (`worker.rs:337`).
+    #[test]
+    fn ensure_returns_same_arc_under_concurrent_calls() {
+        let _guard = lifecycle_lock().lock().unwrap_or_else(|e| e.into_inner());
+        drain_slot();
+
+        const N: usize = 32;
+        let barrier = Arc::new(Barrier::new(N));
+        let baseline = ensure_perception_pipeline();
+        // Raw pointers aren't Send; transport identity via `usize`.
+        let baseline_addr = Arc::as_ptr(&baseline) as usize;
+
+        let handles: Vec<_> = (0..N)
+            .map(|_| {
+                let b = Arc::clone(&barrier);
+                thread::spawn(move || -> usize {
+                    b.wait();
+                    let p = ensure_perception_pipeline();
+                    Arc::as_ptr(&p) as usize
+                })
+            })
+            .collect();
+        for h in handles {
+            let addr = h.join().expect("thread join");
+            assert_eq!(
+                addr, baseline_addr,
+                "all concurrent ensure_perception_pipeline() must return the same Arc"
+            );
+        }
+
+        shutdown_perception_pipeline_for_test(Duration::from_secs(2))
+            .expect("clean shutdown");
+    }
+
+    /// Test 2 — calling `shutdown_perception_pipeline_for_test` twice
+    /// is idempotent. Second call returns `Ok(())` because the slot
+    /// is already empty (no work to do).
+    #[test]
+    fn double_shutdown_is_idempotent() {
+        let _guard = lifecycle_lock().lock().unwrap_or_else(|e| e.into_inner());
+        drain_slot();
+
+        let _p = ensure_perception_pipeline();
+        shutdown_perception_pipeline_for_test(Duration::from_secs(2))
+            .expect("first shutdown clean");
+        shutdown_perception_pipeline_for_test(Duration::from_secs(2))
+            .expect("second shutdown is a no-op");
+    }
+
+    /// Test 3 — 5-cycle ensure → shutdown without leaks. Mirrors the
+    /// L1 layer's `worker.rs:345` 5-cycle test (ADR-007 §11.3). Each
+    /// cycle: spawn a fresh pipeline, hold a clone past shutdown,
+    /// shut down cleanly, drop the clone post-shutdown. The slot
+    /// identity guarantee (slot clears on success → next ensure
+    /// returns a fresh Arc) is pinned separately by Test 5
+    /// `slot_clears_after_clean_shutdown` — comparing `Arc::as_ptr`
+    /// across cycles here would race the allocator, which legitimately
+    /// reuses freed heap slots.
+    #[test]
+    fn five_cycle_ensure_shutdown() {
+        let _guard = lifecycle_lock().lock().unwrap_or_else(|e| e.into_inner());
+        drain_slot();
+
+        for cycle in 0..5 {
+            let p = ensure_perception_pipeline();
+            // Hold an extra clone here too — must not block shutdown
+            // (Codex v3 P2-2). Drop happens at the end of the cycle.
+            let hold = Arc::clone(&p);
+            drop(p);
+            shutdown_perception_pipeline_for_test(Duration::from_secs(2))
+                .unwrap_or_else(|e| panic!("cycle {} shutdown: {}", cycle, e));
+            // Read-handle on the clone must remain safe post-shutdown.
+            let _ = hold.view.is_empty();
+            drop(hold);
+        }
+    }
+
+    /// Test 4 — an `Arc<PerceptionPipeline>` clone outliving
+    /// `shutdown_perception_pipeline_for_test` does NOT block the
+    /// shutdown (because `shutdown_with_timeout(&self)` only needs
+    /// `&self` to take internal `Mutex<Option<...>>` slots, not
+    /// ownership of the `Arc`) and the surviving clone's `view`
+    /// snapshot remains readable post-shutdown (Codex v3 P2-2).
+    #[test]
+    fn arc_clone_outliving_shutdown_is_safe() {
+        let _guard = lifecycle_lock().lock().unwrap_or_else(|e| e.into_inner());
+        drain_slot();
+
+        let p = ensure_perception_pipeline();
+        let hold = Arc::clone(&p);
+
+        // Push one event so the view has something to read after
+        // shutdown (otherwise it's just empty either way).
+        let ring = ensure_l1().ring.clone();
+        push_one_focus_event(&ring, 0xE001, "OutlivingShutdown", 1_900_000_000_000);
+        // Allow the pipeline to materialise the event.
+        thread::sleep(Duration::from_millis(150));
+
+        // Drop the original handle, then shutdown — clone is still alive.
+        drop(p);
+        shutdown_perception_pipeline_for_test(Duration::from_secs(2))
+            .expect("shutdown succeeds despite outstanding Arc clone");
+
+        // Post-shutdown reads from the held clone must NOT panic.
+        // The view's underlying `Arc<RwLock<...>>` outlives the
+        // worker thread; `is_empty()` / `len()` / `get()` only read
+        // the BTreeMap, no thread interaction.
+        let _ = hold.view.is_empty();
+        let _ = hold.view.len();
+        let _ = hold.view.get(0xE001);
+
+        drop(hold);
+    }
+
+    /// Test 5 — after a clean shutdown the slot is `None` (Codex v4
+    /// P1-6 slot-clear-on-success-only protocol). Asserts the slot
+    /// state directly rather than via `Arc::as_ptr` comparison: the
+    /// allocator legitimately reuses freed heap slots, so two
+    /// successive `Arc<PerceptionPipeline>` allocations can have the
+    /// same address. The contract under test is "slot is empty after
+    /// success", not "next allocation is at a different address".
+    #[test]
+    fn slot_clears_after_clean_shutdown() {
+        let _guard = lifecycle_lock().lock().unwrap_or_else(|e| e.into_inner());
+        drain_slot();
+
+        let p = ensure_perception_pipeline();
+        drop(p);
+        // Slot is populated after ensure.
+        assert!(
+            PERCEPTION_SLOT
+                .get()
+                .expect("slot OnceLock initialised")
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_some(),
+            "slot must be populated after ensure_perception_pipeline()"
+        );
+
+        shutdown_perception_pipeline_for_test(Duration::from_secs(2))
+            .expect("clean shutdown");
+
+        // Slot is cleared on successful shutdown (北極星).
+        assert!(
+            PERCEPTION_SLOT
+                .get()
+                .expect("slot OnceLock initialised")
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_none(),
+            "slot must be None after successful shutdown (Codex v4 P1-6)"
+        );
+
+        // Subsequent ensure repopulates.
+        let p2 = ensure_perception_pipeline();
+        assert!(
+            PERCEPTION_SLOT
+                .get()
+                .expect("slot OnceLock initialised")
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_some(),
+            "slot must be repopulated after second ensure"
+        );
+        drop(p2);
+        shutdown_perception_pipeline_for_test(Duration::from_secs(2))
+            .expect("teardown clean");
     }
 }
