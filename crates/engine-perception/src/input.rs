@@ -429,9 +429,15 @@ fn watermark_for(latest_wallclock_ms: u64, shift_ms: u64) -> LogicalTime {
 }
 
 fn idle_recv_timeout_ms() -> u64 {
+    // Reject 0 (Codex v11 P3): a Duration::ZERO recv_timeout would
+    // make the idle branch a busy loop hammering worker.step()
+    // without any sleep, pinning a CPU core. The other env knobs
+    // (max_batch_size / max_steps_per_cmd) already filter > 0; this
+    // matches.
     std::env::var("DESKTOP_TOUCH_IDLE_RECV_TIMEOUT_MS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
+        .filter(|n| *n > 0)
         .unwrap_or(DEFAULT_IDLE_RECV_TIMEOUT_MS)
 }
 

@@ -70,7 +70,7 @@ ADR-008 D2 は「主要 view 4 つを declarative に実装」を完了基準に
 
 | view 名 | category | input | output (Rust struct) | consumer | SLO | phase | status |
 |---|---|---|---|---|---|---|---|
-| `current_focused_element` | state | `UiaFocusChanged` events from L1 | `UiElementRef { name, automation_id, control_type, window_title }` | L4 envelope.data (desktop_state) | **lookup** p99 < 1ms (達成、D1: ~145ns / D2-A: 300ns)<br>**update** p99 < 1ms (D1-5: ~4.7ms / D2-A: ~3.0ms、**1.5× 改善ながら未達**)、D2-B MCP round-trip 計測後に option C 着手要否を判断 (ADR-008 D2 plan §10 OQ #16) | D1 / D2-A | **Implemented + Benched (D1-3 + D1-5 + D2-A revised tuning)** |
+| `current_focused_element` | state | `UiaFocusChanged` events from L1 | `UiElementRef { name, automation_id, control_type, window_title }` | L4 envelope.data (desktop_state) | **lookup** p99 < 1ms (達成、D1: ~145ns / D2-A v3.8: 300ns)<br>**update** p99 < 1ms (**setup-dependent**: D1-5 旧 baseline `shift=0` ~4.7ms / v3.7 暫定 `shift=0`+max+1 release 3.04ms = N2 違反で**撤回** / **D2-A v3.8 production 相当 `shift=default` ~127ms** = release が `shift_ms` に律速される構造的下限)、engine-perception 単独 SLO 比較は本 D2-A で結論を出さず D2-B-4 MCP round-trip 計測で再評価 (ADR-008 D2 plan §10 OQ #16) | D1 / D2-A | **Implemented + Benched (D1-3 + D1-5 + D2-A v3.8 watermark-shift restored)** |
 
 > **D1-3 実装完了 (2026-04-30)**: operator graph 本体を `crates/engine-perception/src/views/current_focused_element.rs` に新設。`map(FocusEvent → (hwnd, ((wallclock, sub), UiElementRef)))` → `reduce(per-hwnd last-by-time)` → `inspect(diff bookkeeping)` → `Arc<RwLock<HashMap<u64, BTreeMap<UiElementRef, i64>>>>` 読み取り API (`get(hwnd)` / `snapshot()` / `len()` / `is_empty()`)。pivot 4 フィールド (`source_event_id` / `wallclock_ms` / `sub_ordinal` / `timestamp_source`) は output から除外し L4 envelope 側で別途搬送。
 >

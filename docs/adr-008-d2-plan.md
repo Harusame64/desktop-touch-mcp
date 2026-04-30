@@ -1,6 +1,6 @@
 # ADR-008 D2 — 主要 view 4 つ + desktop_state focus path view 経由置換プラン
 
-- Status: **Draft v3.8 (起草中、Opus、2026-04-30) — D2-A 実装完了、Codex review v1〜v10 反映済 (v10 で N2 contract 修正)、Opus phase-boundary review (D2-0 + D2-A phase) 完了**
+- Status: **Draft v3.9 (起草中、Opus、2026-04-30) — D2-A 実装完了、Codex review v1〜v11 反映済、Opus phase-boundary review (D2-0 + D2-A phase) 完了**
 - Date: 2026-04-30
 - Authors: Claude (Opus, max effort) — `desktop-touch-mcp`
 - 親 ADR: `docs/adr-008-reactive-perception-engine.md` §4 D2 / §8 D2
@@ -206,6 +206,23 @@ PR #95 (D2-A PR-β) に対する Codex round 10 で **P1 + P2** を発見:
 **cargo test (v3.8)**:
 - `cargo test -p engine-perception` (lib + integration) → **31 + 10 = 41 全 pass**、`tests/d1_minimum.rs::multiple_hwnds_tracked_independently` 復活確認
 - `cargo test --workspace --lib --no-default-features` → 56 + 31 = 87 全 pass、D1 / D2-0 既存 test regression 0
+
+### v3.9 (Codex review v11 反映、PR #95 round 2、2026-04-30)
+
+PR #95 v3.8 push 後の Codex round 11 で 3 件 (P2 ×1 + P3 ×2):
+
+- **P2-20 (bench で全 iter sample 保存、メモリ blowup)**: `view_get_hit` / `view_get_miss` は 100ns オーダで Criterion が default 5s 計測で数千万 iter を要求 → 各 `Duration` を `Vec` に保存すると数百 MB。さらに `iter_custom` 返却時間に `push` / `extend` 時間が含まれず Criterion 内部調整とズレ
+- **P3-21 (idle timeout 0 で busy loop)**: `DESKTOP_TOUCH_IDLE_RECV_TIMEOUT_MS=0` を許すと `recv_timeout(Duration::ZERO)` が即 Timeout → idle branch が sleep なしで `worker.step()` を回し続ける → CPU pinning。他の env knob (`MAX_BATCH_SIZE` / `MAX_STEPS_PER_CMD`) は `> 0` filter 済、idle_recv_timeout_ms だけ非対称
+- **P3-22 (top-level views-catalog SLO 行が v3.7 撤回値のまま)**: D2-A 行が `~3.0ms / 1.5× 改善ながら未達` と要約していたが、これは Codex v10 で N2 違反で撤回された v3.7 暫定値。読者が最初に見る SLO 行が古い結論を提示している
+
+**修正**:
+1. **P2-20**: bench harness に `MAX_SAMPLES_PER_BENCH = 100_000` cap を導入。3 bench fn 全てで「cap に達したら local Vec への push を skip」(早期 cap 後は zero-allocation hot path)、`Vec::with_capacity` も cap で pre-size。100k sample で nearest-rank p99 / p999 は十分安定 (concern は memory blowup と Criterion 計測ズレ、sample 数自体ではない)
+2. **P3-21**: `idle_recv_timeout_ms()` に `.filter(|n| *n > 0)` を追加、`max_batch_size` / `max_steps_per_cmd` と同 shape に揃え。env で 0 を渡した場合 default 1ms にフォールバック
+3. **P3-22**: `docs/views-catalog.md` §3.1 の D2-A 行を v3.8 production-相当 ~127ms (setup-dependent な経緯込み) に書き換え。撤回された v3.7 値 3.04ms は表記から除外、N2 違反である旨明示
+
+**cargo test**:
+- 既に v3.8 で全 pass している test が変わらず動作 (本 v3.9 修正は bench harness + env helper + docs のみで worker_loop の semantics は不変)
+- bench harness 修正は cap 追加のみで既存 sample 解釈に影響なし
 
 **option C (parking_lot::Condvar 等 signal-driven)** の優先度を上げる:
 - v3.8 の修正で `view_update_latency` p99 の改善幅は更に縮小、SLO 未達は確実

@@ -87,6 +87,18 @@ use engine_perception::views::current_focused_element::CurrentFocusedElementView
 // JSON sidecar file at `target/criterion/d2_summary.json`. Each
 // bench appends one record; the file is overwritten only when the
 // first bench in a run starts (tracked via a one-shot Mutex).
+//
+// **Sample cap (Codex review v11 P2)**: the lookup benches run at
+// ~100ns/iter, which at criterion's default 5s measurement window
+// produces ~50M iterations. Storing 50M `Duration`s pushes
+// hundreds of MB of memory and adds `Vec::push` overhead that
+// criterion's `iter_custom` returned-time accounting does not
+// include — skewing criterion's own measurement. Cap each bench's
+// captured samples at `MAX_SAMPLES_PER_BENCH`; once the cap is
+// reached subsequent iterations skip the push. p99 / p999 from
+// 100k samples is statistically stable for these distributions
+// (the concern was nanos-bench memory blowup, not sample count).
+const MAX_SAMPLES_PER_BENCH: usize = 100_000;
 
 fn percentile(sorted: &[Duration], p: f64) -> Duration {
     // Nearest-rank percentile (matches criterion's internal style;
@@ -243,24 +255,37 @@ fn bench_view_get_hit(c: &mut Criterion) {
     let (worker, handle, view) = spawn_perception_worker();
     populate_view(&handle, &view, HWND_LIVE, Duration::from_millis(500));
 
-    // D2-A-3: capture each iteration's elapsed for true-percentile
-    // reporting. `b.iter_custom` gives us per-batch elapsed; we
-    // record one Duration per inner iteration so the JSON summary
-    // can compute p99 etc.
-    let samples: Mutex<Vec<Duration>> = Mutex::new(Vec::with_capacity(100_000));
+    // D2-A-3: capture iteration elapsed for percentile reporting.
+    // Capped at MAX_SAMPLES_PER_BENCH (Codex v11 P2): nanos-scale
+    // benches run for tens of millions of iterations under
+    // criterion's default 5s window; storing every Duration would
+    // burn hundreds of MB and skew criterion's iter_custom timing.
+    let samples: Mutex<Vec<Duration>> =
+        Mutex::new(Vec::with_capacity(MAX_SAMPLES_PER_BENCH));
 
     c.bench_function("view_get_hit", |b| {
         b.iter_custom(|iters| {
             let mut total = Duration::ZERO;
-            let mut local = Vec::with_capacity(iters as usize);
+            // Pre-size the per-batch buffer to the smaller of iter
+            // count and the global cap; once the global cap is
+            // reached we skip the push entirely so no allocation
+            // happens on the hot path.
+            let cap = MAX_SAMPLES_PER_BENCH
+                .saturating_sub(samples.lock().unwrap_or_else(|e| e.into_inner()).len());
+            let local_cap = (iters as usize).min(cap);
+            let mut local: Vec<Duration> = Vec::with_capacity(local_cap);
             for _ in 0..iters {
                 let t0 = Instant::now();
                 black_box(view.get(black_box(HWND_LIVE)));
                 let elapsed = t0.elapsed();
                 total += elapsed;
-                local.push(elapsed);
+                if local.len() < local_cap {
+                    local.push(elapsed);
+                }
             }
-            samples.lock().unwrap_or_else(|e| e.into_inner()).extend(local);
+            if !local.is_empty() {
+                samples.lock().unwrap_or_else(|e| e.into_inner()).extend(local);
+            }
             total
         });
     });
@@ -278,20 +303,28 @@ fn bench_view_get_miss(c: &mut Criterion) {
     let (worker, handle, view) = spawn_perception_worker();
     populate_view(&handle, &view, HWND_LIVE, Duration::from_millis(500));
 
-    let samples: Mutex<Vec<Duration>> = Mutex::new(Vec::with_capacity(100_000));
+    let samples: Mutex<Vec<Duration>> =
+        Mutex::new(Vec::with_capacity(MAX_SAMPLES_PER_BENCH));
 
     c.bench_function("view_get_miss", |b| {
         b.iter_custom(|iters| {
             let mut total = Duration::ZERO;
-            let mut local = Vec::with_capacity(iters as usize);
+            let cap = MAX_SAMPLES_PER_BENCH
+                .saturating_sub(samples.lock().unwrap_or_else(|e| e.into_inner()).len());
+            let local_cap = (iters as usize).min(cap);
+            let mut local: Vec<Duration> = Vec::with_capacity(local_cap);
             for _ in 0..iters {
                 let t0 = Instant::now();
                 black_box(view.get(black_box(HWND_MISS)));
                 let elapsed = t0.elapsed();
                 total += elapsed;
-                local.push(elapsed);
+                if local.len() < local_cap {
+                    local.push(elapsed);
+                }
             }
-            samples.lock().unwrap_or_else(|e| e.into_inner()).extend(local);
+            if !local.is_empty() {
+                samples.lock().unwrap_or_else(|e| e.into_inner()).extend(local);
+            }
             total
         });
     });
@@ -374,12 +407,20 @@ fn bench_view_update_latency(c: &mut Criterion) {
     }
 
     let mut wc_offset: u64 = 0;
-    let samples: Mutex<Vec<Duration>> = Mutex::new(Vec::with_capacity(10_000));
+    // update_latency runs at ms scale so even uncapped the sample
+    // count stays under 10k for a 5s criterion window. We still
+    // route through the same cap path for consistency with the
+    // lookup benches (Codex v11 P2 follow-through).
+    let samples: Mutex<Vec<Duration>> =
+        Mutex::new(Vec::with_capacity(MAX_SAMPLES_PER_BENCH.min(10_000)));
 
     c.bench_function("view_update_latency", |b| {
         b.iter_custom(|iters| {
             let mut total = Duration::ZERO;
-            let mut local = Vec::with_capacity(iters as usize);
+            let cap = MAX_SAMPLES_PER_BENCH
+                .saturating_sub(samples.lock().unwrap_or_else(|e| e.into_inner()).len());
+            let local_cap = (iters as usize).min(cap);
+            let mut local: Vec<Duration> = Vec::with_capacity(local_cap);
             for _ in 0..iters {
                 wc_offset += 1;
                 let new_name = format!("upd-{}", wc_offset);
@@ -411,9 +452,13 @@ fn bench_view_update_latency(c: &mut Criterion) {
                 }
                 let elapsed = t0.elapsed();
                 total += elapsed;
-                local.push(elapsed);
+                if local.len() < local_cap {
+                    local.push(elapsed);
+                }
             }
-            samples.lock().unwrap_or_else(|e| e.into_inner()).extend(local);
+            if !local.is_empty() {
+                samples.lock().unwrap_or_else(|e| e.into_inner()).extend(local);
+            }
             total
         });
     });
