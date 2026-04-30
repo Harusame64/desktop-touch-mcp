@@ -13,3 +13,16 @@ publish = false
 # Plan §6 documents the version-selection rationale.
 timely = "0.29"
 differential-dataflow = "0.23"
+
+# ADR-008 D1-2: data + timestamp types in the dataflow must implement
+# `ExchangeData = Send + Any + Serialize + for<'a> Deserialize<'a>`
+# (timely 0.29 src/lib.rs:128). `Pair<u64, u32>` (our LogicalTime in
+# `time.rs`) and `FocusEvent` (our row type in `input.rs`) both need
+# this — hence the derive feature.
+serde = { version = "1", default-features = false, features = ["derive", "std"] }
+
+# crossbeam-channel for the cmd channel that fans push_focus calls
+# from `FocusInputHandle` → timely worker thread (timely InputSession
+# is thread-local, so we run the InputSession inside a dedicated
+# worker thread and feed it via this channel).
+crossbeam-channel = "0.5"

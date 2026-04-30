@@ -12,5 +12,7 @@ pub use payload::{
     ToolCallStartedPayload, UiElementRef, UiaFocusChangedPayload, WindowChangeKind,
     WindowChangedPayload,
 };
-pub use ring::{ring_capacity_from_env, CaptureStats, EventRing};
+pub use ring::{
+    ring_capacity_from_env, CaptureStats, EventRing, Subscription, SubscriptionEvent,
+};
 pub(crate) use worker::{build_event, ensure_l1, make_failure_event, now_ms, shutdown_l1_for_test};
