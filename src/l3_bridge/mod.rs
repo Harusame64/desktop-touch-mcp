@@ -101,7 +101,7 @@ mod lifecycle_tests {
     use std::sync::{Mutex, OnceLock};
     use std::time::{Duration, Instant};
 
-    use engine_perception::input::FocusEvent;
+    use engine_perception::input::{FocusEvent, FocusInputHandle};
 
     /// Serializes the lifecycle tests in this module against each
     /// other. They share the singleton `ensure_l1()` ring, so
@@ -118,27 +118,40 @@ mod lifecycle_tests {
         UiaFocusChangedPayload,
     };
 
-    /// Sink that records every push for assertion. Same shape as
-    /// the unit-level CaptureSink in `focus_pump::tests`, kept
-    /// duplicated so each module can evolve independently.
-    struct LifecycleCaptureSink {
-        events: Mutex<Vec<FocusEvent>>,
+    /// Tee sink that BOTH (a) forwards each push into the real
+    /// `engine-perception` worker via a `FocusInputHandle`, and (b)
+    /// captures a copy locally for test assertions.
+    ///
+    /// Codex PR #90 review P2: an earlier draft of this test wired
+    /// the pump to a capture-only sink, so `ring.push → focus_pump
+    /// → handle → worker → InputSession` was never exercised — only
+    /// `ring.push → focus_pump → CaptureSink`. A regression in the
+    /// engine-perception side would have passed the lifecycle test.
+    /// The Tee design fixes that: `worker.processed_count()` now
+    /// observes events crossing into `update_at` for real.
+    struct TeeSink {
+        handle: FocusInputHandle,
+        captures: Mutex<Vec<FocusEvent>>,
     }
 
-    impl LifecycleCaptureSink {
-        fn new() -> Self {
+    impl TeeSink {
+        fn new(handle: FocusInputHandle) -> Self {
             Self {
-                events: Mutex::new(Vec::new()),
+                handle,
+                captures: Mutex::new(Vec::new()),
             }
         }
         fn count(&self) -> usize {
-            self.events.lock().unwrap().len()
+            self.captures.lock().unwrap().len()
         }
     }
 
-    impl L1Sink for LifecycleCaptureSink {
+    impl L1Sink for TeeSink {
         fn push_focus(&self, event: FocusEvent) {
-            self.events.lock().unwrap().push(event);
+            // (1) forward to engine-perception worker (real path)
+            self.handle.push_focus(event.clone());
+            // (2) record for test observation
+            self.captures.lock().unwrap().push(event);
         }
     }
 
@@ -171,7 +184,7 @@ mod lifecycle_tests {
         ring.push(internal)
     }
 
-    fn wait_for_count(sink: &LifecycleCaptureSink, target: usize, timeout: Duration) -> bool {
+    fn wait_for_count(sink: &TeeSink, target: usize, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             if sink.count() >= target {
@@ -180,6 +193,21 @@ mod lifecycle_tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         sink.count() >= target
+    }
+
+    fn wait_for_processed(
+        worker_processed: impl Fn() -> u64,
+        target: u64,
+        timeout: Duration,
+    ) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if worker_processed() >= target {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        worker_processed() >= target
     }
 
     /// **5-cycle lifecycle test (D1-2 §3.6)**.
@@ -210,10 +238,16 @@ mod lifecycle_tests {
         let baseline = ring.subscriber_count();
 
         for cycle in 0..5u32 {
-            // (1) spawn worker
+            // (1) spawn the engine-perception worker (real timely +
+            // InputSession; we'll observe its processed_count to
+            // confirm cmds crossed into the dataflow path).
             let (worker, handle) = engine_perception::input::spawn_perception_worker();
-            // (2) spawn pump — parent-side subscribe runs here
-            let sink = std::sync::Arc::new(LifecycleCaptureSink::new());
+
+            // (2) spawn pump wired to a TeeSink that BOTH forwards
+            // into the worker (handle.push_focus) AND captures for
+            // local assertion. This exercises the real ring → pump
+            // → handle → worker → InputSession path (Codex PR #90 P2).
+            let sink = std::sync::Arc::new(TeeSink::new(handle.clone()));
             let pump_sink: std::sync::Arc<dyn L1Sink> = sink.clone();
             let pump = focus_pump::FocusPump::spawn(ring.clone(), pump_sink);
 
@@ -232,10 +266,10 @@ mod lifecycle_tests {
                 push_focus_to_ring(&ring, cycle, seq);
             }
 
-            // (4) assert all 3 forwarded
+            // (4a) pump captured all 3 (forward path)
             assert!(
                 wait_for_count(&sink, 3, Duration::from_millis(500)),
-                "cycle {}: expected 3 forwarded events, got {}",
+                "cycle {}: expected 3 forwarded events on pump side, got {}",
                 cycle,
                 sink.count()
             );
@@ -252,10 +286,23 @@ mod lifecycle_tests {
                 cycle
             );
 
-            // Drop the unused FocusInputHandle so the worker can
-            // disconnect cleanly when it shuts down. (handle is the
-            // sender side; sink already holds its own clone via the
-            // pump dispatch.)
+            // (4b) **engine-perception worker processed all 3** —
+            // the assertion that nails down the full L1 → pump →
+            // handle → worker → InputSession path. The closure
+            // borrows `&worker` only for the duration of the
+            // wait_for_processed call; once that returns the borrow
+            // ends and `worker.shutdown(...)` can take ownership.
+            assert!(
+                wait_for_processed(|| worker.processed_count(), 3, Duration::from_millis(500)),
+                "cycle {}: expected worker to process 3 cmds, got {}",
+                cycle,
+                worker.processed_count()
+            );
+            assert_eq!(worker.processed_count(), 3, "cycle {} processed", cycle);
+
+            // Drop the original handle so its tx clone is released;
+            // sink still holds its own clone, so the worker channel
+            // stays alive until pump shutdown drops the sink.
             drop(handle);
 
             // (5) shutdown pump → worker

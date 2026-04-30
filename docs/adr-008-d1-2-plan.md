@@ -63,7 +63,21 @@ ring の broadcast 側 method (subscribe 以外の Subscription / dropped_count 
 - `npm run build:rs` → 成功 (release profile、auto-target rustup detection)
 - `npm run test:capture` → **2434 pass / 1 fail (benchmark-gates timing flake、再実行で 10/10 pass) / 28 skipped** (P5c-1 baseline 2435 pass と実質同水準、本 PR 由来 regression 0)
 
-### 0.10 follow-up 起票候補 (本 PR scope 外)
+### 0.10 Codex PR #90 review 反映 (P2: lifecycle test full-path coverage)
+
+PR #90 の Codex review で指摘:
+
+> `[P2] Lifecycle test bypasses the engine worker` — pump が `LifecycleCaptureSink` (test only) に wire されていて、`FocusInputHandle` → engine-perception worker → `update_at` の本体経路は exercise されていなかった。`spawn_perception_worker` が呼ばれても event は worker thread に届かず、worker_loop の DD 操作が壊れても 5-cycle test は通り続ける状態だった。
+
+修正 (PR #90 の review-fix commit):
+- **`PerceptionWorker::processed_count(&self) -> u64`** 追加 — worker_loop が `Cmd::PushFocus` を消化して `flush()` した直後に increment、live worker から観測可能 (D2 metrics endpoint でも公開予定)
+- **`TeeSink`** に変更 — `FocusInputHandle::push_focus` (実 worker への送信) と test capture を両立
+- **lifecycle test §3.6**: `wait_for_count(sink, 3, ...)` (forward path) + `wait_for_processed(|| worker.processed_count(), 3, ...)` (engine-perception path) + `assert_eq!(worker.processed_count(), 3)` で full pipeline 動作を pin
+- **engine-perception unit test 新規 `processed_count_reflects_pushes`** — handle.push_focus × 5 → worker が 5 件処理することを assert (lifecycle test と独立して worker_loop の核心経路を直接 covers)
+
+これにより L1 ring → focus_pump → handle → worker → `update_at` → `flush` の 5 ホップ全てが test で exercise される。北極星 N1 (event_id pivot) も TeeSink が clone して両側に流すので、forward 側も engine 側も同じ source_event_id を観測する shape のまま。
+
+### 0.11 follow-up 起票候補 (本 PR scope 外)
 
 1. timely worker thread が cmd 待ち時 `worker.step()` + `sleep(1ms)` で busy-loop 風味 → bench (D1-5) で CPU 測定、必要なら `condvar` ベースに改修
 2. `FocusEvent.name: String` の hot-path clone → `Arc<str>` 移行 (D1-5 bench 結果次第)

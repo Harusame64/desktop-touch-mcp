@@ -50,6 +50,8 @@
 //! Drop the handle (or all clones thereof) and call
 //! `PerceptionWorker::shutdown(timeout)` to stop the thread.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -169,9 +171,23 @@ impl L1Sink for FocusInputHandle {
 pub struct PerceptionWorker {
     join: Option<JoinHandle<()>>,
     tx: Sender<Cmd>,
+    /// Total `Cmd::PushFocus` commands the worker has dequeued and
+    /// run through `InputSession::update_at` + `advance_to` +
+    /// `flush()`. Exposed as a test/D2-metrics observation hook so
+    /// the L1 → focus_pump → handle → worker round-trip can be
+    /// asserted end-to-end (Codex review on PR #90 P2).
+    processed_count: Arc<AtomicU64>,
 }
 
 impl PerceptionWorker {
+    /// Number of `Cmd::PushFocus` commands the worker has fully
+    /// processed (post-`flush()`). Available on the live worker so
+    /// callers can wait for the InputSession path to drain before
+    /// shutting down.
+    pub fn processed_count(&self) -> u64 {
+        self.processed_count.load(Ordering::Relaxed)
+    }
+
     /// Signal shutdown and join the worker thread, polling so the
     /// deadline applies even if the worker is mid-step. Mirrors the
     /// L1 worker's `shutdown_with_timeout` shape (root
@@ -242,15 +258,18 @@ fn watermark_for(latest_wallclock_ms: u64, shift_ms: u64) -> LogicalTime {
 /// bridge's seam (`Arc::new(handle): Arc<dyn L1Sink>`).
 pub fn spawn_perception_worker() -> (PerceptionWorker, FocusInputHandle) {
     let (tx, rx) = bounded::<Cmd>(CMD_CHANNEL_CAPACITY);
+    let processed_count = Arc::new(AtomicU64::new(0));
+    let processed_clone = Arc::clone(&processed_count);
 
     let join = thread::Builder::new()
         .name("l3-perception".into())
-        .spawn(move || worker_loop(rx))
+        .spawn(move || worker_loop(rx, processed_clone))
         .expect("spawn l3-perception thread");
 
     let worker = PerceptionWorker {
         join: Some(join),
         tx: tx.clone(),
+        processed_count,
     };
     let handle = FocusInputHandle { tx };
     (worker, handle)
@@ -263,7 +282,7 @@ pub fn spawn_perception_worker() -> (PerceptionWorker, FocusInputHandle) {
 /// closure returns, `execute_directly` drains remaining work
 /// (`while worker.has_dataflows() { worker.step_or_park(None); }`)
 /// before the function returns.
-fn worker_loop(rx: Receiver<Cmd>) {
+fn worker_loop(rx: Receiver<Cmd>, processed: Arc<AtomicU64>) {
     let shift_ms = watermark_shift_ms();
 
     timely::execute_directly(move |worker| {
@@ -311,6 +330,10 @@ fn worker_loop(rx: Receiver<Cmd>) {
                         }
                     }
                     input.flush();
+                    // Increment AFTER flush so an observer that sees
+                    // processed_count == N is guaranteed N events are
+                    // visible to the dataflow (Codex PR #90 review P2).
+                    processed.fetch_add(1, Ordering::Relaxed);
                 }
                 Ok(Cmd::Shutdown) => break,
                 Err(TryRecvError::Empty) => {
@@ -330,7 +353,6 @@ fn worker_loop(rx: Receiver<Cmd>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     fn make_event(source_event_id: u64, wallclock_ms: u64, sub_ordinal: u32) -> FocusEvent {
         FocusEvent {
@@ -363,6 +385,31 @@ mod tests {
         worker
             .shutdown(Duration::from_secs(2))
             .expect("shutdown after push");
+    }
+
+    #[test]
+    fn processed_count_reflects_pushes() {
+        // Codex PR #90 P2: confirm the worker actually consumes
+        // Cmd::PushFocus from the channel, not just acknowledges
+        // shutdown. Without this assertion the lifecycle test
+        // could regress silently if the worker_loop body is gutted.
+        let (worker, handle) = spawn_perception_worker();
+        for i in 0..5 {
+            handle.push_focus(make_event(i, 5_000_000 + i, 0));
+        }
+        // Wait for the worker to drain its queue.
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while worker.processed_count() < 5 {
+            if Instant::now() >= deadline {
+                panic!(
+                    "worker did not process all 5 pushes: processed_count={}",
+                    worker.processed_count()
+                );
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(worker.processed_count(), 5);
+        worker.shutdown(Duration::from_secs(2)).expect("shutdown");
     }
 
     #[test]
