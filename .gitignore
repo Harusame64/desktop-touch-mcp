@@ -20,6 +20,7 @@ docs/release-process.md
 !docs/adr-007-p5c-plan.md
 !docs/adr-007-p5c-1-plan.md
 !docs/adr-008-d1-2-plan.md
+!docs/adr-008-d2-plan.md
 
 # Claude Code session data (auto-memory, local settings) — never distribute
 .claude/

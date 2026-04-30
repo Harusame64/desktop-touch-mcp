@@ -35,7 +35,7 @@
 //! so D2 metrics can read them.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -52,8 +52,20 @@ const RECV_TIMEOUT: Duration = Duration::from_millis(100);
 /// under human use; 8192 is ample (see plan §1.4 (f)).
 const SUB_CAPACITY: usize = 8192;
 
+/// L1 → engine-perception focus event pump.
+///
+/// ## Shutdown handle retain (D2-0 / Codex review v6 P1)
+///
+/// `join` lives behind `Mutex<Option<JoinHandle<()>>>` so
+/// `shutdown_with_timeout(&self, ...)` can poll without consuming the
+/// handle. On timeout the handle is retained and a later
+/// `shutdown_with_timeout(longer)` resumes polling the same thread,
+/// matching the L1 worker contract in `src/l1_capture/worker.rs:174-194`.
+/// This prevents the production lifecycle in `src/l3_bridge/mod.rs`
+/// from creating a "degraded pipeline" where one leg is `None` after
+/// a single failed shutdown attempt.
 pub(crate) struct FocusPump {
-    join: Option<JoinHandle<()>>,
+    join: Mutex<Option<JoinHandle<()>>>,
     shutdown: Arc<AtomicBool>,
     forwarded_count: Arc<AtomicU64>,
     decode_failure_count: Arc<AtomicU64>,
@@ -100,7 +112,7 @@ impl FocusPump {
             .expect("spawn l3-focus-pump");
 
         FocusPump {
-            join: Some(join),
+            join: Mutex::new(Some(join)),
             shutdown,
             forwarded_count,
             decode_failure_count,
@@ -108,20 +120,31 @@ impl FocusPump {
         }
     }
 
-    /// Signal shutdown and join the pump thread, polling so the
-    /// deadline applies even mid-recv. Mirrors the L1 / perception
-    /// worker shutdown shape.
-    pub(crate) fn shutdown(mut self, timeout: Duration) -> Result<(), &'static str> {
+    /// Signal shutdown and poll the pump thread's `is_finished()`
+    /// until the deadline. **The `JoinHandle` is retained on timeout**
+    /// so a later `shutdown_with_timeout(longer)` can resume polling
+    /// the same thread (L1-equivalent retain semantics, Codex v6 P1).
+    pub(crate) fn shutdown_with_timeout(&self, timeout: Duration) -> Result<(), &'static str> {
+        // Idempotent — `Ordering::SeqCst` store of `true` is fine to repeat.
         self.shutdown.store(true, Ordering::SeqCst);
-        let Some(handle) = self.join.take() else {
-            return Ok(());
-        };
 
         let deadline = Instant::now() + timeout;
         let poll_interval = Duration::from_millis(10);
+
         loop {
-            if handle.is_finished() {
-                let _ = handle.join();
+            let finished_or_done = {
+                let mut guard = self.join.lock().unwrap_or_else(|e| e.into_inner());
+                match guard.as_ref() {
+                    Some(h) if h.is_finished() => {
+                        let h = guard.take().expect("just observed Some");
+                        let _ = h.join();
+                        true
+                    }
+                    Some(_) => false,
+                    None => true,
+                }
+            };
+            if finished_or_done {
                 return Ok(());
             }
             if Instant::now() >= deadline {
@@ -129,6 +152,13 @@ impl FocusPump {
             }
             thread::sleep(poll_interval);
         }
+    }
+
+    /// Consume-form shutdown — delegates to
+    /// `shutdown_with_timeout(&self, ...)`. Kept for callers that
+    /// want to ensure the pump is gone before continuing.
+    pub(crate) fn shutdown(self, timeout: Duration) -> Result<(), &'static str> {
+        self.shutdown_with_timeout(timeout)
     }
 
     pub(crate) fn forwarded_count(&self) -> u64 {
@@ -148,7 +178,12 @@ impl Drop for FocusPump {
     fn drop(&mut self) {
         // Best-effort signal + best-effort join. Don't block in Drop.
         self.shutdown.store(true, Ordering::SeqCst);
-        if let Some(h) = self.join.take() {
+        let handle_opt = self
+            .join
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(h) = handle_opt {
             let deadline = Instant::now() + Duration::from_secs(2);
             while !h.is_finished() {
                 if Instant::now() >= deadline {
