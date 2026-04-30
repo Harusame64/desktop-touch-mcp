@@ -426,8 +426,12 @@ fn spawn_pipeline_inner() -> PerceptionPipeline {
 /// `automationId`, `type` (string), `windowTitle`. The `value` field
 /// is omitted because the engine doesn't carry it through (UIA
 /// `ValuePattern` reads happen on the JS side).
+///
+/// Naming follows the existing `Native*` convention used elsewhere
+/// in this addon (e.g. `NativeUiaFocusInfo`); the hand-maintained
+/// `index.d.ts` / `index.js` re-exports use the same identifier.
 #[napi(object)]
-pub struct FocusedElementJs {
+pub struct NativeFocusedElement {
     pub name: String,
     pub automation_id: Option<String>,
     /// Human-readable UIA control type name (e.g. "Button", "Pane",
@@ -447,13 +451,13 @@ pub struct FocusedElementJs {
 ///
 /// First call lazily spawns the pipeline (`ensure_perception_pipeline`).
 #[napi]
-pub fn view_get_focused() -> Option<FocusedElementJs> {
+pub fn view_get_focused() -> Option<NativeFocusedElement> {
     let pipeline = ensure_perception_pipeline();
     if pipeline.is_poisoned() {
         return None;
     }
     let ui_ref = pipeline.latest_focus_view.snapshot()?;
-    Some(FocusedElementJs {
+    Some(NativeFocusedElement {
         name: ui_ref.name,
         automation_id: ui_ref.automation_id,
         control_type: crate::uia::control_type_name(UIA_CONTROLTYPE_ID(
@@ -468,7 +472,7 @@ pub fn view_get_focused() -> Option<FocusedElementJs> {
 /// `desktop_state.ts` and `server_status` use this to surface when
 /// the view path is unavailable (so the UIA fallback isn't silent).
 #[napi(object)]
-pub struct ViewFocusedPipelineStatusJs {
+pub struct NativeViewFocusedPipelineStatus {
     /// `true` once `ensure_perception_pipeline` has spawned at least
     /// one pipeline in this process.
     pub initialized: bool,
@@ -482,9 +486,9 @@ pub struct ViewFocusedPipelineStatusJs {
 }
 
 #[napi]
-pub fn view_focused_pipeline_status() -> ViewFocusedPipelineStatusJs {
+pub fn view_focused_pipeline_status() -> NativeViewFocusedPipelineStatus {
     match PERCEPTION_SLOT.get() {
-        None => ViewFocusedPipelineStatusJs {
+        None => NativeViewFocusedPipelineStatus {
             initialized: false,
             poisoned: false,
             processed_count: BigInt::from(0u64),
@@ -492,12 +496,12 @@ pub fn view_focused_pipeline_status() -> ViewFocusedPipelineStatusJs {
         Some(cell) => {
             let g = cell.lock().unwrap_or_else(|e| e.into_inner());
             match g.as_ref() {
-                None => ViewFocusedPipelineStatusJs {
+                None => NativeViewFocusedPipelineStatus {
                     initialized: false,
                     poisoned: false,
                     processed_count: BigInt::from(0u64),
                 },
-                Some(pipeline) => ViewFocusedPipelineStatusJs {
+                Some(pipeline) => NativeViewFocusedPipelineStatus {
                     initialized: true,
                     poisoned: pipeline.is_poisoned(),
                     processed_count: BigInt::from(pipeline.worker.processed_count()),

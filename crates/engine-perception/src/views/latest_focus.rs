@@ -165,7 +165,7 @@ pub fn build<'scope>(
                 output.push(((ts.clone(), ui_ref.clone()), 1));
             }
         })
-        .inspect(move |((unit_and_value, _time, diff)): &(((), (LogicalTime, UiElementRef)), LogicalTime, isize)| {
+        .inspect(move |(unit_and_value, _time, diff): &(((), (LogicalTime, UiElementRef)), LogicalTime, isize)| {
             // The reduce output is keyed by `()` so DD lifts the row
             // into `((), (ts, ui_ref))`. We destructure here.
             let (_unit, (ts, ui_ref)) = unit_and_value;
