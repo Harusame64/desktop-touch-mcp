@@ -12,9 +12,9 @@ use napi_derive::napi;
 use windows::core::BOOL;
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect,
-    GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed,
-    WINDOW_LONG_PTR_INDEX,
+    EnumWindows, GetAncestor, GetClassNameW, GetForegroundWindow, GetWindowLongPtrW,
+    GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
+    IsZoomed, GA_ROOT, WINDOW_LONG_PTR_INDEX,
 };
 
 use super::safety::{napi_safe_call, PANIC_COUNTER};
@@ -89,15 +89,7 @@ pub fn win32_enum_top_level_windows() -> napi::Result<Vec<BigInt>> {
 #[napi]
 pub fn win32_get_window_text(hwnd: BigInt) -> napi::Result<String> {
     napi_safe_call("win32_get_window_text", || {
-        let h = hwnd_from_bigint(hwnd);
-        // 512 wchar buffer matches the existing TS behavior (truncates very
-        // long titles, which Windows itself does at 256-512 chars in practice).
-        let mut buf = [0u16; 512];
-        let len = unsafe { GetWindowTextW(h, &mut buf) };
-        if len <= 0 {
-            return Ok(String::new());
-        }
-        Ok(String::from_utf16_lossy(&buf[..len as usize]))
+        Ok(get_window_text(hwnd_from_bigint(hwnd)))
     })
 }
 
@@ -204,4 +196,47 @@ pub fn win32_get_window_long_ptr_w(hwnd: BigInt, n_index: i32) -> napi::Result<i
         // LONG_PTR is isize; truncate to i32 to match the koffi `long` shape.
         Ok(v as i32)
     })
+}
+
+// ─── Internal Rust helpers (ADR-007 P5c-1) ──────────────────────────────────
+//
+// These avoid the napi BigInt / napi::Result round-trip when called from
+// other Rust modules (UIA event handlers in particular). The `#[napi]`
+// wrappers above delegate to them so the externally observable behaviour is
+// unchanged.
+
+/// Get a window's title via `GetWindowTextW`. Returns `""` on failure or
+/// when the window has no title.
+///
+/// Buffer is 512 wchars to match the existing TS behaviour (Windows itself
+/// truncates very long titles at 256-512 chars in practice).
+pub(crate) fn get_window_text(hwnd: HWND) -> String {
+    let mut buf = [0u16; 512];
+    let len = unsafe { GetWindowTextW(hwnd, &mut buf) };
+    if len <= 0 {
+        String::new()
+    } else {
+        String::from_utf16_lossy(&buf[..len as usize])
+    }
+}
+
+/// Resolve a (possibly child) HWND to its top-level (root) window via
+/// `GetAncestor(hwnd, GA_ROOT)`. Falls back to the input `hwnd` when
+/// `GetAncestor` returns null (already root, invalid hwnd, or call failed).
+///
+/// Used by the P5c-1 UIA Focus Changed event handler:
+/// `cached_element_to_focus_info` returns the focused element's own hwnd,
+/// which is a child-control HWND for Edit/TextBox focus and would yield
+/// empty text from `GetWindowTextW`. Normalising via GA_ROOT before
+/// reading the title keeps `payload.window_title` stable across child /
+/// top-level focus targets.
+pub(crate) fn get_root_hwnd(hwnd: HWND) -> HWND {
+    // Safety: GetAncestor accepts any HWND (including invalid) and returns
+    // a null HWND on failure. No invariants we can violate from Rust.
+    let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    if root.0.is_null() {
+        hwnd
+    } else {
+        root
+    }
 }

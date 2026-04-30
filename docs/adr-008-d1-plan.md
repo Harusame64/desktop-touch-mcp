@@ -32,13 +32,13 @@ L3 Compute (timely + differential-dataflow) を本リポジトリに組込み、
 - HW-accelerated view (D5)
 - replay / WAL 統合 (D6)
 
-### 1.3 D1-2 着手前の前提 (ADR-007 P5c-1)
+### 1.3 D1-2 着手前の前提 (ADR-007 P5c-1) — **充足 (2026-04-30)**
 
-D1-0 / D1-1 は既に完了 (PR #81 / #82) だが、**D1-2 (real L1 adapter) 着手前に ADR-007 P5c-1 完了が前提**:
+D1-0 / D1-1 (PR #81 / #82) + **ADR-007 P5c-1 (本 PR `feat/adr-007-p5c-1-focus-hook`、2026-04-30)** が完了。D1-2 (real L1 adapter) 着手の blocker は **解除済**。
 
-- P5c-1 で **UIA Focus Changed event hook → L1 ring に `UiaFocusChanged` event push** が実装される
-- これがないと bridge が pump する input が空、D1 acceptance「TS 版より 1/10」が synthetic 比較に格下げ → 北極星「Whole-System Dataflow」と矛盾
-- 詳細経緯: `docs/adr-007-p5c-plan.md`、判断 lesson: `memory/feedback_north_star_reconciliation.md`
+- ✅ P5c-1 で **UIA Focus Changed event hook → L1 ring に `UiaFocusChanged` event push** 実装済 (`src/uia/event_handlers/{focus,owner}.rs` + `com_thread_main` 統合)
+- D1 acceptance「TS 版より 1/10」を **real L1 input** で計測可能に
+- 詳細: `docs/adr-007-p5c-1-plan.md`、判断 lesson: `memory/feedback_north_star_reconciliation.md`
 
 ---
 
@@ -106,7 +106,7 @@ desktop-touch-mcp/
 
 ### D1-2: root → engine-perception Input Adapter (PR 3 の前半、root owns integration)
 
-**前提**: ADR-007 P5c-1 完了 (UIA Focus Changed event hook → ring に `UiaFocusChanged` event push 経路成立)。詳細: `docs/adr-007-p5c-plan.md` §11.3。
+**前提充足** (2026-04-30): ADR-007 P5c-1 完了済 (本 PR `feat/adr-007-p5c-1-focus-hook`)。UIA Focus Changed event hook → ring に `UiaFocusChanged` event push 経路成立。次の作業は本 sub-batch から再開可能。詳細: `docs/adr-007-p5c-1-plan.md` / `docs/adr-007-p5c-plan.md` §11.3。
 
 - [ ] **`src/l3_bridge/focus_pump.rs`** (root crate 側、PR-P5c-0b で scaffold 済) に adapter thread 実装
 - [ ] **`EventRing` の broadcast 化** (subscribe 別 cursor):
