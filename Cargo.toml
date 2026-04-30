@@ -141,6 +141,17 @@ windows = { version = "0.62", features = [
 [build-dependencies]
 napi-build = "2"
 
+[dev-dependencies]
+# D2-A-0 / OQ #15 (Codex v9 P2-17 retry-fail branch regression):
+# enable the `test-fixtures` feature on engine-perception so the
+# root crate's `production_pipeline_lifecycle_tests` can drive the
+# `Cmd::BlockForTest` stuck-worker fixture via
+# `FocusInputHandle::block_worker_for_test`. Cargo merges this
+# `[dev-dependencies]` entry with the production `[dependencies]`
+# entry above when building tests; production builds never enable
+# the feature, so the fixture is compiled out of release artefacts.
+engine-perception = { path = "crates/engine-perception", features = ["test-fixtures"] }
+
 [profile.release]
 lto = true
 opt-level = 3

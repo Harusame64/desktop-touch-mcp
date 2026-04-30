@@ -1124,4 +1124,99 @@ mod production_pipeline_lifecycle_tests {
         shutdown_perception_pipeline_for_test(Duration::from_secs(2))
             .expect("teardown clean");
     }
+
+    /// Test 8 — D2-A-0 / OQ #15 (Codex v9 P2-17 retry-fail branch
+    /// regression): a stuck worker that genuinely cannot honor
+    /// `Cmd::Shutdown` within the 100ms retry budget MUST keep the
+    /// poisoned `Arc` in the slot. `ensure_perception_pipeline()`
+    /// MUST NOT spawn a duplicate worker (二重 worker spawn is the
+    /// v6 P1 北極星 violation we've been guarding against).
+    ///
+    /// Scenario:
+    ///   1. Build a fresh pipeline.
+    ///   2. Use the test-fixture `block_worker_for_test(2s)` to make
+    ///      the worker sleep for 2s before processing the next cmd.
+    ///      Subsequent `Cmd::Shutdown` is queued but cannot be acted
+    ///      on until the sleep elapses.
+    ///   3. Call `shutdown_perception_pipeline_for_test(50ms)` —
+    ///      worker stuck → returns `Err`. Pipeline gets poisoned.
+    ///   4. Call `ensure_perception_pipeline()`. Per v3.6, the
+    ///      poison-eviction retry uses 100ms timeout. The worker is
+    ///      still mid-sleep, so the retry also fails.
+    ///   5. **Per the v3.6 contract, the retry's failure means the
+    ///      slot must NOT be cleared and the same poisoned `Arc`
+    ///      must be returned**. Assert via `Arc::as_ptr` identity
+    ///      AND via `is_poisoned()`.
+    ///   6. Wait for the block to elapse, then a final
+    ///      `shutdown_perception_pipeline_for_test(2s)` retry
+    ///      cleanly resolves and clears the slot.
+    #[test]
+    fn poisoned_pipeline_with_stuck_worker_keeps_slot_retained_on_ensure() {
+        let _guard = lifecycle_lock().lock().unwrap_or_else(|e| e.into_inner());
+        drain_slot();
+
+        let p1 = ensure_perception_pipeline();
+        let arc1_addr = Arc::as_ptr(&p1) as usize;
+        assert!(!p1.is_poisoned(), "fresh pipeline must not be poisoned");
+
+        // (2) Make the worker stuck for 2 seconds.
+        let block_duration = Duration::from_millis(2_000);
+        p1.handle.block_worker_for_test(block_duration);
+
+        // Give the worker a moment to dequeue the BlockForTest cmd
+        // and enter its sleep — without this the next Shutdown could
+        // be processed first if the channel is empty when Shutdown
+        // arrives.
+        std::thread::sleep(Duration::from_millis(50));
+
+        // (3) Try to shutdown with a tight deadline. The worker is
+        // sleeping → can't see Cmd::Shutdown → timeout.
+        let result1 = shutdown_perception_pipeline_for_test(Duration::from_millis(50));
+        assert!(
+            result1.is_err(),
+            "stuck worker must produce shutdown timeout (got {:?})",
+            result1
+        );
+        assert!(
+            p1.is_poisoned(),
+            "failed shutdown must mark pipeline poisoned"
+        );
+
+        // (4)+(5) ensure() — poison eviction retry runs internally
+        // with 100ms timeout. The worker is still sleeping, so the
+        // retry also fails → slot must retain the poisoned Arc.
+        let p2 = ensure_perception_pipeline();
+        assert_eq!(
+            Arc::as_ptr(&p2) as usize,
+            arc1_addr,
+            "stuck worker must NOT cause a duplicate spawn — \
+             ensure() must return the same poisoned Arc (Codex v9 P2-17 北極星)"
+        );
+        assert!(
+            p2.is_poisoned(),
+            "ensure() returns the poisoned pipeline so callers can detect \
+             the degraded state via is_poisoned()"
+        );
+        drop(p2);
+        drop(p1);
+
+        // (6) Wait for the block to elapse, then a final retry must
+        // succeed. We give the worker generous time — the test
+        // fixture sleep is 2s, plus we want margin for the cmd
+        // queue (BlockForTest first, then Shutdown queued behind).
+        std::thread::sleep(Duration::from_millis(2_100));
+        shutdown_perception_pipeline_for_test(Duration::from_secs(2))
+            .expect("final retry succeeds once stuck worker exits its block");
+
+        // Slot cleared.
+        assert!(
+            PERCEPTION_SLOT
+                .get()
+                .expect("slot OnceLock initialised")
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_none(),
+            "slot cleared after final clean shutdown"
+        );
+    }
 }

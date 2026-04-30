@@ -27,6 +27,15 @@ serde = { version = "1", default-features = false, features = ["derive", "std"] 
 # worker thread and feed it via this channel).
 crossbeam-channel = "0.5"
 
+[features]
+# D2-A-0 / OQ #15: enable test-only stuck-worker fixture
+# (`Cmd::BlockForTest` + `FocusInputHandle::block_worker_for_test`)
+# from outside this crate's own test suite. Used by the root crate's
+# `production_pipeline_lifecycle_tests` to exercise the
+# `ensure_perception_pipeline()` retry-fail branch (Codex v9 P2-17).
+# Production code never enables this feature.
+test-fixtures = []
+
 # ADR-008 D1-5 bench harness: criterion for the `view.get` latency
 # measurement. dev-dep only — never linked into the napi addon /
 # release zip / production code.

@@ -70,7 +70,7 @@ ADR-008 D2 は「主要 view 4 つを declarative に実装」を完了基準に
 
 | view 名 | category | input | output (Rust struct) | consumer | SLO | phase | status |
 |---|---|---|---|---|---|---|---|
-| `current_focused_element` | state | `UiaFocusChanged` events from L1 | `UiElementRef { name, automation_id, control_type, window_title }` | L4 envelope.data (desktop_state) | **lookup** p99 < 1ms (達成、~145ns)<br>**update** p99 < 1ms (D1-5 で ~4.7ms、未達、D2 tuning 予定: `docs/adr-008-d1-followups.md` §2.5) | D1 | **Implemented + Benched (D1-3 + D1-5)** |
+| `current_focused_element` | state | `UiaFocusChanged` events from L1 | `UiElementRef { name, automation_id, control_type, window_title }` | L4 envelope.data (desktop_state) | **lookup** p99 < 1ms (達成、D1: ~145ns / D2-A v3.8: 300ns)<br>**update** p99 < 1ms (**setup-dependent**: D1-5 旧 baseline `shift=0` ~4.7ms / v3.7 暫定 `shift=0`+max+1 release 3.04ms = N2 違反で**撤回** / **D2-A v3.8 production 相当 `shift=default` ~127ms** = release が `shift_ms` に律速される構造的下限)、engine-perception 単独 SLO 比較は本 D2-A で結論を出さず D2-B-4 MCP round-trip 計測で再評価 (ADR-008 D2 plan §10 OQ #16) | D1 / D2-A | **Implemented + Benched (D1-3 + D1-5 + D2-A v3.8 watermark-shift restored)** |
 
 > **D1-3 実装完了 (2026-04-30)**: operator graph 本体を `crates/engine-perception/src/views/current_focused_element.rs` に新設。`map(FocusEvent → (hwnd, ((wallclock, sub), UiElementRef)))` → `reduce(per-hwnd last-by-time)` → `inspect(diff bookkeeping)` → `Arc<RwLock<HashMap<u64, BTreeMap<UiElementRef, i64>>>>` 読み取り API (`get(hwnd)` / `snapshot()` / `len()` / `is_empty()`)。pivot 4 フィールド (`source_event_id` / `wallclock_ms` / `sub_ordinal` / `timestamp_source`) は output から除外し L4 envelope 側で別途搬送。
 >
@@ -83,6 +83,18 @@ ADR-008 D2 は「主要 view 4 つを declarative に実装」を完了基準に
 > - **「real L1 input ベース」 (L1 EventRing 込み全経路) bench は未実施**: `FocusInputHandle::push_focus` 直接呼び出しから計測 (engine-perception 境界、cdylib 制約のため)。D2 で `desktop_state` を view 経由置換時に MCP transport 込み bench と同時実装、followups §2.3。
 >
 > 詳細: `benches/README.md` §2.3 D1-5 measured numbers。
+>
+> **D2-A revised tuning 完了 (2026-04-30、PR-β v3.8 後)**: `worker_loop` を batch-drain + step_until_idle に書き換え (ADR-008 D2 plan §4.2)。phase 1 で `recv_timeout(1ms)` で cmd 即起床、phase 2 で `try_recv` drain (cap 64)、phase 3 で `update_at` × batch + N3 partial-order guard、phase 4 で `event_count > 0` ガード後 **`advance_to(watermark_for(max_wc, shift_ms))` (= D1 watermark-shift 互換)** + `step_until_idle` (cap 32)。bench harness に true p99 抽出 (`b.iter_custom` + `target/criterion/d2_summary.jsonl`、followups §2.1 Resolved)。
+>
+> - **lookup**: `view_get_hit` p50/p95/p99/p999 = 200/300/300/500 ns、`view_get_miss` p50/p95/p99/p999 = 0/100/100/300 ns。SLO `< 1ms` 余裕クリア継続
+> - **update**: `view_update_latency` の数値は **bench setup 依存** (Codex v10 P1/P2 修正で N2 contract 維持を優先した結果、release が `idle-advance` projection に律速される構造):
+>   - `shift_ms = default 100ms` + wc 200ms 増分 (production-相当): p50/p95/p99/p999 = 125/127/**127**/127 ms、release が `shift_ms` 周期に律速される構造的下限
+>   - `shift_ms = 0` + 大増分: ~32ms (idle-advance race の artefact、production と無関係)
+>   - D2-A v3.7 暫定 (max+1 release、N2 違反、Codex v10 撤回): 3.04ms ← この数値は **N2 contract 違反下** での値、retain 不可
+>   - D1 baseline (`shift=0`、bench old): 4.7ms ← 同様に N2 acceptance window 0 設定下の値
+> - **engine-perception 単独 SLO 比較は本 D2-A で結論を出さない**: production caller (MCP tool) から見た実質 latency は napi + JSON-RPC + L1 ring + focus_pump + view を含む別物。**D2-B-4 の `d2_desktop_state_roundtrip.mjs` (MCP transport 込み) が SLO の本来の指標**。option C (parking_lot::Condvar 等 signal-driven) は MCP 数値を見てから判断 (ADR-008 D2 plan §10 OQ #16、ユーザー判断 2026-04-30)
+> - SLO `< 1ms` の表記は **緩和しない** (ユーザー判断)、bench harness は production-相当条件 (`shift=default`、wc 200ms 増分) に確定済 (`crates/engine-perception/benches/d1_view_latency.rs`)
+> - partial-order test 5 件 (`same_wallclock_different_sub_ordinal_all_observed` 等) で N3 acceptance を直接 pin、stuck-worker fixture (`Cmd::BlockForTest`) で OQ #15 (Codex v9 P2-17 retry-fail branch) も Resolved
 
 ### 3.2 D2: 主要 view 4 つ (本書の主スコープ)
 

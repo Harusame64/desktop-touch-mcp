@@ -1,6 +1,6 @@
 # ADR-008 D2 — 主要 view 4 つ + desktop_state focus path view 経由置換プラン
 
-- Status: **Draft v3.6 (起草中、Opus、2026-04-30) — Codex review v1 + v2 + v3 + v4 + v6 + v7 + v8 + v9 反映済 + Opus phase-boundary review (D2-0 phase) 完了**
+- Status: **Draft v3.11 (起草中、Opus、2026-04-30) — D2-A 実装完了、Codex review v1〜v13 反映済、Opus phase-boundary review (D2-0 + D2-A phase) 完了**
 - Date: 2026-04-30
 - Authors: Claude (Opus, max effort) — `desktop-touch-mcp`
 - 親 ADR: `docs/adr-008-reactive-perception-engine.md` §4 D2 / §8 D2
@@ -114,6 +114,152 @@ v3.5 の P2-16 修正に対し Codex round 9 で **更なる P2** を発見:
 - poison flag + ensure eviction success-only
 - コードコメント (各 round 番号明示)
 - test (7 lifecycle test + 2 channel test、stuck scenario は OQ #15)
+
+### v3.7 (D2-A 実装完了、2026-04-30)
+
+D2-A (worker_loop tuning revised + true p99 bench + OQ #15 fixture) を実装、PR-β を起こす段階。
+
+**実装サマリ**:
+1. `worker_loop` を batch-drain + max-observed time release に書き換え (§4.2 擬似コード)
+   - phase 1: `recv_timeout(idle_recv_timeout_ms=1)` で cmd 即起床
+   - phase 2: 残りを `try_recv` で drain (上限 `MAX_BATCH_SIZE=64`)
+   - phase 3: 各 PushFocus を `update_at`、batch 内 max LogicalTime を track、N3 partial-order guard で back-dated 落とし
+   - phase 4: `event_count > 0` ガード後 `advance_to((max_wc, max_sub_ord + 1))` → flush → `step_until_idle` (cap `MAX_STEPS_PER_CMD=32`)
+2. **`#[cfg(any(test, feature = "test-fixtures"))] Cmd::BlockForTest(Duration)`** + `FocusInputHandle::block_worker_for_test` を engine-perception に追加。root crate `[dev-dependencies]` で `engine-perception = { features = ["test-fixtures"] }` を有効化、production には漏れない
+3. **partial-order test 5 件** (`crates/engine-perception/src/input.rs::tests`):
+   - `same_wallclock_different_sub_ordinal_all_observed` (N3 acceptance)
+   - `out_of_order_same_wallclock_settles_correctly` (N3 reverse-order)
+   - `cmd_branch_does_not_back_advance_frontier` (back-dated drop)
+   - `idle_advance_after_cmd_push_is_monotone` (idle-advance monotone)
+   - `shutdown_only_batch_does_not_advance_frontier` (event_count guard, invariant 7)
+4. **OQ #15 stuck-worker fixture regression test** (`production_pipeline_lifecycle_tests`):
+   - `poisoned_pipeline_with_stuck_worker_keeps_slot_retained_on_ensure`: 2s block + 50ms shutdown timeout → poisoned + ensure() retry-fail で **same poisoned Arc** 返却 (Codex v9 P2-17 北極星 = 二重 worker 作らない、を直接 measure)
+   - OQ #15 を **Resolved** 化
+5. **bench harness に true p99 抽出**: `b.iter_custom` パターン全 3 fn、sample 採取 → sort → percentile → `target/criterion/d2_summary.jsonll` + stderr 出力 (followups §2.1)
+
+**実測値 (PR-β 着手前 baseline)**:
+
+| metric | p50 | p95 | p99 | p999 | criterion mean | SLO `<1ms` |
+|---|---|---|---|---|---|---|
+| `view_get_hit` | 200ns | 300ns | **300ns** | 700ns | 188ns | ✅ 達成 (D1 baseline ~145ns、D2-A は worker_loop 重量化で僅か悪化、許容範囲) |
+| `view_get_miss` | 100ns | 100ns | **100ns** | 400ns | 54ns | ✅ 達成 |
+| `view_update_latency` | 1.12ms | 2.64ms | **3.04ms** | 3.50ms | 1.87ms | ❌ **未達** (D1 baseline 4.7ms → D2-A 3.0ms、約 1.5× 改善) |
+
+**`view_update_latency` p99 < 1ms SLO 未達の判断**:
+
+- D1 baseline 4.7ms から **3.0ms へ約 1.5× 改善** は確認、batch-drain + step_until_idle の効果は出ている
+- ただし views-catalog §3.1 の SLO `p99 < 1ms` には届かず — 構造的に DD operator chain の step 伝搬 (input → map → reduce → inspect) に CPU work で µs〜ms オーダ消費、idle-advance 経路も critical path に絡む
+- **SLO は緩和しない** (ユーザー判断 2026-04-30): views-catalog §3.1 の `< 1ms` 表記は維持、D2-A の実測値を honest に追記
+- **option C (parking_lot::Condvar による signal-driven worker_loop)** は **D2-B 完了後に判断** (carry-over):
+  - production acceptance surface は **`desktop_state` MCP round-trip** であり、engine-perception 単独の update latency ではない
+  - MCP transport (napi + JSON-RPC) を含む真の production 数値は D2-B-4 (`d2_desktop_state_roundtrip.mjs`) で測定
+  - その fact base を見てから option C 着手要否を判断するのが筋。現時点で実装複雑度の大きい option C に踏み込むのは早計 (CPU-bound な step 伝搬部分は option C でも変わらず、効果が限定的な可能性)
+- **`view_update_latency` SLO は本 D2-A では Open** (達成も諦めもしない、D2-B fact base 待ち) — §10 OQ #16 として記録
+
+**cargo test**:
+- root `cargo test --workspace --lib --no-default-features` → 56 passed (lifecycle test 8 件含む、+1 OQ #15 stuck-worker)
+- engine-perception → 31 passed (partial-order test 5 件追加)
+- **合計 87 / 0 fail**、D1-2 / D1-3 / D1-5 / D2-0 既存 test 全て regression 0
+
+### v3.8 (Codex review v10 反映、PR #95 round 1、2026-04-30)
+
+PR #95 (D2-A PR-β) に対する Codex round 10 で **P1 + P2** を発見:
+
+- **P1-8 (D2-A が integration test を破壊)**: `cargo test -p engine-perception` (integration suite 含む) で `tests/d1_minimum.rs::multiple_hwnds_tracked_independently` が **fail** していた (snapshot.len() = 4、期待 3)。原因: `advance_to((max_wc, max_sub_ord+1))` が「pump 用に投げた `0xFEED` event」も即 release する shape になっており、test の watermark-shift 前提 (pump event は frontier を進めるが自身は released されない) を破った。私 (Opus) が D2-A 実装後の検証で `--lib` フラグだけ使い integration test を見落としていた (Sonnet 委譲時の検証フロー敵失でも常に注意すべき)
+- **P2-19 (across-batch watermark-shift contract が壊れた)**: P1 と同根。`(max_wc, max_sub_ord+1)` 設計は同 batch 内の reorder は accept だが、later batch で `(max_wc - 50ms)` event が来ると frontier より古い扱いで drop される。モジュール docstring の「`DESKTOP_TOUCH_WATERMARK_SHIFT_MS` 内の out-of-order event は accept」を裏切る
+
+**修正** (PR #95 へ追加 commit):
+1. `worker_loop` phase 4 の `advance_to` を **`watermark_for(max_wc, shift_ms)` (= `max_wc - shift_ms`) に戻す**。D1 の watermark-shift logic を完全踏襲、N2 contract 維持
+2. **batch-drain と step_until_idle (D2-A の latency 改善の主要因) は維持** — operator chain step の amortization 効果は残る
+3. 「max + 1 sub_ord で即 release」は撤回。released は idle-advance branch (D1 の P2 fix) に任せる、これが D1 と同じ shape
+4. `multiple_hwnds_tracked_independently` 等 integration test は **不変で pass** (D1 watermark logic に戻ったので test の前提が成立)
+5. `view_update_latency` p99 は **bench setup 依存で意味が変わる** ことが判明 (再測の過程で発見)
+
+**実測値 — bench setup 依存性 (重要)**:
+
+`view_update_latency` の数値は worker `WATERMARK_SHIFT_MS` と bench iter 間の `wc` 増分で大きく変わる。N2 contract が変わったわけではなく、**v3.8 では release 経路が `idle-advance` projection (= `latest_wallclock + real_elapsed`、frontier に到達するには `shift_ms` 以上の wall-clock 経過が必要)** に律速されるため、bench は production の caller 周期 (秒オーダ vs 1ms オーダ) と対応する設定で測らねば意味を持たない。
+
+| 設定 | p99 | 注 |
+|---|---|---|
+| D1 baseline (`shift=0`, wc +200ms) | ~4.7ms | 旧 D1-5 数値、shift=0 設定下で idle-advance 1ms cycle で release |
+| D2-A v3.7 (`shift=0`, wc +10ms, max+1 release) | 3.04ms | cmd 分岐で `(max+1, 0)` 即 release。N2 contract 違反 (Codex v10 P1/P2) で **撤回** |
+| D2-A v3.8 (`shift=0`, wc +1000ms) | ~32ms | shift=0 で idle-advance が次 iter wc を追い越し、bench race の artefact (production と無関係) |
+| **D2-A v3.8 (`shift=default 100ms`, wc +200ms、本 PR 数値)** | **~127ms** | release は idle-advance projection 経由で `shift_ms` 待ち = 構造的下限 ~100ms |
+
+**lookup 値 (D2-A v3.8 最終)**:
+- `view_get_hit`: p50/p95/p99/p999 = 200/300/300/500 ns、SLO `< 1ms` 余裕クリア
+- `view_get_miss`: p50/p95/p99/p999 = 0/100/100/300 ns、同上
+
+**SLO 比較は本 D2-A では結論を出さない (再確認)**:
+
+- engine-perception 単独 `view_update_latency` は **bench setup の関数** であり、production caller (MCP tool) からの実質 latency とは別物。`shift_ms` を 0 にすれば数値は下がるが N2 contract は壊れる
+- production 経路は `desktop_state` MCP round-trip (napi + JSON-RPC + L1 ring + focus_pump + view) で、その中で event arrival vs view read の race window は agent polling 周期に依存
+- **D2-B-4 の `d2_desktop_state_roundtrip.mjs` (MCP transport 込み)** が SLO の本来の指標。option C (parking_lot::Condvar 等) は MCP 数値を見てから判断
+- views-catalog §3.1 の SLO `< 1ms` は緩和なし、D2-B 完了後に MCP 数値で再評価する旨 OQ #16 に記録済み (本書 §10)
+
+**bench harness 自身の v3.8 修正 (本 PR に同梱)**:
+
+- `bench_view_update_latency` から `WATERMARK_SHIFT_MS=0` 設定を削除 (default 100ms を使用)
+- wc 増分を 10ms (D1) / 1000ms (一時試行) → **200ms** (D1-2 lifecycle test と整合) に確定
+- 本変更で v3.8 の N2 contract と整合した production-相当の bench 条件を取得
+
+**cargo test (v3.8)**:
+- `cargo test -p engine-perception` (lib + integration) → **31 + 10 = 41 全 pass**、`tests/d1_minimum.rs::multiple_hwnds_tracked_independently` 復活確認
+- `cargo test --workspace --lib --no-default-features` → 56 + 31 = 87 全 pass、D1 / D2-0 既存 test regression 0
+
+### v3.9 (Codex review v11 反映、PR #95 round 2、2026-04-30)
+
+PR #95 v3.8 push 後の Codex round 11 で 3 件 (P2 ×1 + P3 ×2):
+
+- **P2-20 (bench で全 iter sample 保存、メモリ blowup)**: `view_get_hit` / `view_get_miss` は 100ns オーダで Criterion が default 5s 計測で数千万 iter を要求 → 各 `Duration` を `Vec` に保存すると数百 MB。さらに `iter_custom` 返却時間に `push` / `extend` 時間が含まれず Criterion 内部調整とズレ
+- **P3-21 (idle timeout 0 で busy loop)**: `DESKTOP_TOUCH_IDLE_RECV_TIMEOUT_MS=0` を許すと `recv_timeout(Duration::ZERO)` が即 Timeout → idle branch が sleep なしで `worker.step()` を回し続ける → CPU pinning。他の env knob (`MAX_BATCH_SIZE` / `MAX_STEPS_PER_CMD`) は `> 0` filter 済、idle_recv_timeout_ms だけ非対称
+- **P3-22 (top-level views-catalog SLO 行が v3.7 撤回値のまま)**: D2-A 行が `~3.0ms / 1.5× 改善ながら未達` と要約していたが、これは Codex v10 で N2 違反で撤回された v3.7 暫定値。読者が最初に見る SLO 行が古い結論を提示している
+
+**修正**:
+1. **P2-20**: bench harness に `MAX_SAMPLES_PER_BENCH = 100_000` cap を導入。3 bench fn 全てで「cap に達したら local Vec への push を skip」(早期 cap 後は zero-allocation hot path)、`Vec::with_capacity` も cap で pre-size。100k sample で nearest-rank p99 / p999 は十分安定 (concern は memory blowup と Criterion 計測ズレ、sample 数自体ではない)
+2. **P3-21**: `idle_recv_timeout_ms()` に `.filter(|n| *n > 0)` を追加、`max_batch_size` / `max_steps_per_cmd` と同 shape に揃え。env で 0 を渡した場合 default 1ms にフォールバック
+3. **P3-22**: `docs/views-catalog.md` §3.1 の D2-A 行を v3.8 production-相当 ~127ms (setup-dependent な経緯込み) に書き換え。撤回された v3.7 値 3.04ms は表記から除外、N2 違反である旨明示
+
+**cargo test**:
+- 既に v3.8 で全 pass している test が変わらず動作 (本 v3.9 修正は bench harness + env helper + docs のみで worker_loop の semantics は不変)
+- bench harness 修正は cap 追加のみで既存 sample 解釈に影響なし
+
+### v3.10 (Codex review v12 反映、PR #95 round 3、2026-04-30)
+
+PR #95 v3.9 push 後の Codex round 12 で軽微 P3 1 件:
+
+- **P3-23 (bench file の docstring が v3.7 前提のまま)**: `view_update_latency` 関連の冒頭 scenario 3 と `bench_view_update_latency` docstring "Setup notes" がいずれも `WATERMARK_SHIFT_MS=0` 設定下で `~1ms` で release する旨の説明 (v3.7 暫定で N2 違反、v3.8 で撤回した shape) を保持していた。読者が v3.8 の実装と矛盾するナラティブを最初に読むことになり、再現確認や次の修正で誤った解釈を再導入するリスク
+
+**修正**: `crates/engine-perception/benches/d1_view_latency.rs` の冒頭 scenario 3 と `bench_view_update_latency` の docstring を v3.8 仕様 (production-default `shift_ms` / 200ms `wc` 増分 / release が `shift_ms` floor) に書き換え。inline `// **D2-A v3.8 bench setup**` block は v3.7→v3.8 の経緯と empirical 32ms/127ms 比較を残す役割で保持。
+
+worker_loop semantics は v3.9 から不変、本 v3.10 は docs のみ修正。
+
+### v3.11 (Codex review v13 反映、PR #95 round 4、2026-04-30)
+
+PR #95 v3.10 push 後の Codex round 13 で P1 + P2:
+
+- **P1-9 (env race による cargo test flake)**: `watermark_shift_env_override` test が `std::env::set_var("DESKTOP_TOUCH_WATERMARK_SHIFT_MS", "120000")` で process-global env を mutate している間、Rust test harness は default で並列実行する他の D2-A test (`spawn_perception_worker()` を呼ぶもの) が同 env var を起動時に読む → race。Codex 観測で `same_wallclock_different_sub_ordinal_all_observed` が `got None` で fail (worker が `120000` shift で起動 → watermark window 60s → 500ms 待ちでは release 完了せず)。`--test-threads=1` だと pass、CI flake になる前に潰す
+- **P2-24 (worker_loop docstring と plan §4.2 擬似コードが撤回 v3.7 設計のまま)**: 実装は v3.8 で `watermark_for(max_wc, shift_ms)` に戻っているが、`worker_loop` 直前 docstring と plan §4.2 擬似コードが「`(max_observed_wc, max_observed_sub_ord + 1)`」(撤回 v3.7) のまま。次の D2-B / option C 着手時に再導入する罠が残る
+
+**修正**:
+1. **P1-9**: `parse_watermark_shift_ms(raw: Option<&str>) -> u64` を pure helper として分離 (Codex 提案の方向)、`watermark_shift_ms()` は env 読みつつ helper に委譲。`watermark_shift_env_override` test を **`watermark_shift_parser_handles_typical_inputs`** にリネームし pure helper を直接呼ぶ形に書き換え、`std::env::set_var` 呼び出しを完全削除。並列 race を構造的に解消、追加テスト (`Some("")` empty string fallback) も付与
+2. **P2-24**: `crates/engine-perception/src/input.rs::worker_loop` 直前の docstring を v3.8 仕様 (`watermark_for(max_observed_wc, shift_ms) = (max_wc - shift_ms, 0)` + release は idle-advance 委ねる) に書き換え、v3.7 暫定の `(max_wc, max_sub_ord + 1)` 設計は historical note として「Codex v10 で N2 違反検出 → v3.8 で撤回」の経緯のみ残す。**plan §2 D2-A-1 + §4.2 擬似コードも同期更新** (`Pair::new(new_wm_wc, 0)` advance_target、コメントを v3.8 logic に)
+
+これで「v3.7 暫定設計の残滓」を実装・docstring・plan の全層から除去、option C 着手 (別 PR、D2-B 後) でも撤回 design を誤って再導入するリスクを排除。
+
+**cargo test (v3.11)**:
+- `cargo test -p engine-perception` (default 並列モード、env race fix 後) で integration 含む 41 全 pass
+- env race の構造的解消で `--test-threads=1` 前提 CI も不要
+
+**option C (parking_lot::Condvar 等 signal-driven)** の優先度を上げる:
+- v3.8 の修正で `view_update_latency` p99 の改善幅は更に縮小、SLO 未達は確実
+- Codex も「Option C を進める判断に寄っている」、ユーザーも同意
+- ただし production acceptance surface は MCP round-trip (D2-B-4) — option C 着手判断は **D2-B 完了後** という方針は変わらず (OQ #16)
+- 本 PR では N2 contract 維持を優先、option C は別 PR (D2-B 後) で対応
+
+**learning**:
+- 検証フローで `cargo test --lib` ではなく `cargo test --workspace` (integration test 込み) を流すべき
+- Sonnet 委譲時にも明示する必要 (CLAUDE.md feedback として記録)
 
 ### v3.2 (Codex review v4 反映、2026-04-30)
 Codex から P1×1 / P2×2 の指摘。要点:
@@ -333,12 +479,12 @@ v3.2 で carry-over していた「timeout 失敗時 handle retain test」「par
 
 - [ ] **batch drain**: `cmd_rx.recv_timeout(idle_recv_timeout)` で初回 1 件取得後、`try_recv` で連続吸い出し (上限 `MAX_BATCH_SIZE=64`)
 - [ ] batch 内全 cmd の `update_at` を完了後、**`max_observed_time = batch.iter().map(|c| (c.wc, c.sub_ord)).max()`** を計算
-- [ ] frontier を **`(max_observed_time.0, max_observed_time.1 + 1)`** (sub_ordinal++、physical wc 不変) に push
-  - 同 wc + 大 sub_ordinal の後続 event は前進 frontier の範囲内で受け入れ可能 (N3 維持、§4.3 invariant)
-  - 同 wc + 同 sub_ordinal の event は L1 invariant 上発生しない (layer-constraints §2.3 invariant 2)
-  - 小 wc / 小 sub_ordinal は drop 妥当 (back-dated、既存 watermark shift ロジックに合流)
+- [ ] frontier を **`watermark_for(max_observed_time.0, shift_ms) = (max_wc - shift_ms, 0)`** に push (D1 watermark-shift logic 維持、Codex v10 P1/P2 で v3.7 の `(max_wc, max_sub_ord + 1)` を撤回)
+  - 同 wc + 異 sub_ordinal の後続 event は frontier (= max - shift) より上にあるので accept (N3 維持)
+  - 小 wc / 小 sub_ordinal は frontier との比較で drop 妥当 (back-dated、watermark shift logic 一貫)
+  - **release は idle 分岐の `latest_wallclock + real_elapsed` projection に委ねる** (= D1 同パターン): release 時刻は概ね `last_event_anchor + shift_ms` の wall-clock 経過後で、shift_ms が release floor となる
 - [ ] **`step_until_idle`**: cmd 分岐内で `worker.step()` を `MAX_STEPS_PER_CMD=32` 回または `made_progress=false` まで回す (operator chain 全段消化、followups §2.5.1 (B) 対応)
-- [ ] **idle 分岐**: 既存の idle frontier advance (D1-3 PR #91 P2 fix、real elapsed projection) は **そのまま維持**。cmd 分岐で frontier を `max_observed + 1 sub_ord` まで進めた後の idle 分岐は noop or forward の判定 (monotone 維持)
+- [ ] **idle 分岐**: 既存の idle frontier advance (D1-3 PR #91 P2 fix、real elapsed projection) は **そのまま維持**。cmd 分岐で max - shift まで進めた後の idle 分岐 advance は monotone (`last_advanced` を超えない場合 noop)
 - [ ] **環境変数**:
   - `DESKTOP_TOUCH_IDLE_RECV_TIMEOUT_MS` (default 1)
   - `DESKTOP_TOUCH_MAX_BATCH_SIZE` (default 64)
@@ -350,11 +496,11 @@ v3.2 で carry-over していた「timeout 失敗時 handle retain test」「par
 - [ ] **新規 unit test `same_wallclock_different_sub_ordinal_all_observed`**: `(W, 0)` `(W, 1)` `(W, 2)` を順次 push、view が全 event を順番に reflect する (frontier `(W, 1)`/`(W, 2)`/`(W, 3)` で push 後 advance)
 - [ ] **新規 unit test `out_of_order_same_wallclock_settles_correctly`**: `(W, 1)` `(W, 0)` 順 push でも last-by-(wc, sub_ord) で `(W, 1)` が勝つ
 - [ ] **新規 unit test `cmd_branch_does_not_back_advance_frontier`**: `(W2, 0)` push 後に `(W1, 0)` push (W1 < W2) → 後者は drop + warning
-- [ ] **新規 unit test `idle_advance_after_cmd_push_is_noop_or_forward`**: cmd 分岐で frontier が進んだ直後の idle 分岐 advance は `last_advanced` を超えない場合 noop
+- [ ] **新規 unit test `idle_advance_after_cmd_push_is_monotone`** (実装で改名): cmd 分岐で frontier が進んだ直後の idle 分岐 advance は `last_advanced` を超えない場合 noop
 
 #### D2-A-3: 真の p99 計測 (followups §2.1)
 
-- [ ] `crates/engine-perception/benches/d1_view_latency.rs` を `b.iter_custom` パターンに変更し、各 sample の `Duration` を `Vec<Duration>` に蓄積、bench 終了時に sort して **p50/p95/p99/p99.9** を `target/criterion/.../d2_summary.json` に書き出し
+- [ ] `crates/engine-perception/benches/d1_view_latency.rs` を `b.iter_custom` パターンに変更し、各 sample の `Duration` を `Vec<Duration>` に蓄積、bench 終了時に sort して **p50/p95/p99/p99.9** を `target/criterion/.../d2_summary.jsonl` に書き出し
 - [ ] `view_get_hit` / `view_get_miss` / `view_update_latency` 全て対応
 - [ ] criterion mean ± CI report は維持 (plot 等)
 
@@ -665,12 +811,13 @@ loop {
     // ④ event があった時のみ advance/flush/processed_count 更新
     //    (Codex v2 P2-8 反映: shutdown-only batch で frontier/processed_count を歪めない)
     if event_count > 0 {
-        // batch 内 max logical time の「次の sub_ordinal」まで frontier 進行
-        //   physical wc は max_observed と同じ、sub_ordinal は +1
-        //   → 同 wc + 大 sub_ordinal の後着 event は frontier 内で受け入れ可能
-        //   → 同 wc + 同 sub_ordinal は L1 invariant 上発生しない
-        //   → 小 wc / 小 sub_ordinal は drop 妥当
-        let advance_target = Pair::new(max_observed.0, max_observed.1.saturating_add(1));
+        // batch 内 max wallclock_ms - shift_ms まで frontier 進行
+        //   (Codex v10 P1/P2 で v3.7 の `(max_wc, max_sub_ord + 1)`
+        //    即 release 設計を撤回、D1 watermark-shift logic に復元)
+        //   release は idle 分岐の `latest_wallclock + real_elapsed`
+        //   projection に委ねる (D1 同パターン)
+        let new_wm_wc = max_observed.0.saturating_sub(shift_ms);
+        let advance_target = Pair::new(new_wm_wc, 0);
         if last_advanced.less_than(&advance_target) {
             input.advance_to(advance_target.clone());
             last_advanced = advance_target;
@@ -870,7 +1017,7 @@ D2-E0 / D2-E と整合: **`Arranged` を外部 struct に保持せず、同 `wor
 
 ### 8.1 真の p99 計測 (followups §2.1)
 
-(v1 §8.1 と同等、`b.iter_custom` で sample 蓄積、`d2_summary.json` に書き出し)
+(v1 §8.1 と同等、`b.iter_custom` で sample 蓄積、`d2_summary.jsonl` に書き出し)
 
 ### 8.2 production gap bench (followups §2.2)
 
@@ -943,7 +1090,8 @@ D2-E0 / D2-E と整合: **`Arranged` を外部 struct に保持せず、同 `wor
 | 12 | `latest_focus` view と `current_focused_element` の併存 (両方 D2-E0 同 scope 内 build) で arrangement memory が 2 倍にならないか | D2-A bench harness で測定、view 単独 vs 両者併存で memory 比較 (Codex v2 P1-4) |
 | 13 | diff bookkeeping helper (BTreeMap diff-sum + count > 0 rev walk) を `current_focused_element` (per-hwnd) と `latest_focus` (singleton) で共通化するか別実装か | D2-F-1 (current_focused_element の §3.1 強化) と D2-B-2 (latest_focus 新設) のどちらが先かで判断、後発で共通 helper 抽出 (Codex v3 P1-1) |
 | ~~14~~ | ~~D2-0 lifecycle test の timeout 失敗系 2 件 fixture~~ | **Resolved (v3.3, PR #94)**: `PerceptionWorker` / `FocusPump` の retain-on-timeout refactor で fixture 不要化、2 test (`shutdown_timeout_failure_retains_slot` / `pipeline_recovers_from_partial_shutdown`) を `Duration::from_nanos(1)` で本実装 |
-| 15 | poisoned pipeline + stuck worker scenario の regression test (v3.6 P2-17 修正の retry-fail branch を直接 measure) | D2-A 着手時、engine-perception 側に test-only `spawn_stuck_worker_for_test()` fixture (cmd channel 受信を block する dummy thread) を追加、その上で「poison + ensure() retry fails → slot retains poisoned Arc + same instance returned」を直接 assert する test を実装 |
+| ~~15~~ | ~~poisoned pipeline + stuck worker scenario の regression test~~ | **Resolved (v3.7, PR-β)**: engine-perception に `Cmd::BlockForTest` + `FocusInputHandle::block_worker_for_test` を `test-fixtures` feature で追加、`poisoned_pipeline_with_stuck_worker_keeps_slot_retained_on_ensure` test で 2s block + 50ms shutdown timeout シナリオを直接 measure |
+| 16 | `view_update_latency` p99 < 1ms SLO の達成可否 (D2-A 実測 3.0ms、D1 baseline 4.7ms から 1.5× 改善ながら未達) | **D2-B 完了後**: `d2_desktop_state_roundtrip.mjs` で MCP transport (napi + JSON-RPC) 込み production 数値を取得、それを fact base に option C (parking_lot::Condvar 等 signal-driven worker_loop) 着手要否を判断。現時点で SLO は緩和せず保留 (ユーザー判断 2026-04-30) |
 
 ---
 
