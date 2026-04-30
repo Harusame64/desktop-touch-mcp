@@ -10,6 +10,7 @@
 //! * All JS-facing structs live in `types.rs` with `#[napi(object)]`.
 
 pub(crate) mod actions;
+pub(crate) mod event_handlers;
 pub(crate) mod focus;
 pub(crate) mod scroll;
 pub(crate) mod text;

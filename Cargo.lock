@@ -344,6 +344,7 @@ dependencies = [
  "tokenizers",
  "tracing",
  "windows",
+ "windows-core",
 ]
 
 [[package]]

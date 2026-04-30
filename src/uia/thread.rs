@@ -11,6 +11,8 @@ use std::thread;
 use std::time::Duration;
 
 use crossbeam_channel::{bounded, select, unbounded, Receiver, Sender};
+
+use super::event_handlers;
 use windows::Win32::System::Com::{
     CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED, CoCreateInstance, CLSCTX_INPROC_SERVER,
 };
@@ -234,6 +236,25 @@ fn com_thread_main(rx: Receiver<UiaTask>, shutdown_rx: Receiver<()>) {
         }
     };
 
+    // ── P5c-1: register UIA event handlers ──────────────────────────────────
+    // Owner holds the `IUIAutomation*EventHandler` instances; its `Drop`
+    // calls the matching `Remove*EventHandler` so we tear down the
+    // registration before `CoUninitialize` below. The handler holds an
+    // `Arc<EventRing>` so it can push directly into the L1 ring without
+    // ever touching `L1Inner` (which stays private to `l1_capture::worker`).
+    let mut event_owner = event_handlers::UiaEventHandlerOwner::new(ctx.automation.clone());
+    let ring = crate::l1_capture::ensure_l1().ring.clone();
+    let focus_handler = event_handlers::focus::make_focus_handler(ring);
+    if let Err(e) = event_owner.register_focus(&ctx.cache_request, focus_handler) {
+        // Tier 1 graceful disable: log + continue. The COM thread is
+        // still useful for everything else (existing UIA polling tasks
+        // delivered via `rx`); we just lose focus event capture.
+        eprintln!(
+            "[uia-com] AddFocusChangedEventHandler failed: {e} -- focus events disabled"
+        );
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     // Main loop — process tasks until shutdown signal or task channel closes.
     // `select!` lets us drain pending tasks and react to shutdown promptly;
     // staying in `recv()` would only exit when every Sender drops, which the
@@ -256,9 +277,13 @@ fn com_thread_main(rx: Receiver<UiaTask>, shutdown_rx: Receiver<()>) {
         }
     }
 
+    // ── P5c-1: drop the handler owner *before* CoUninitialize so each
+    // `Remove*EventHandler` runs while the apartment is still alive.
+    // Explicit drop pins the order; we don't rely on lexical scope.
+    drop(event_owner);
+
     // CoUninitialize must happen on this same thread, after the apartment is
-    // fully drained. P5c-1 will additionally drop UiaEventHandlerOwner here so
-    // Remove*EventHandler executes before the apartment dies.
+    // fully drained.
     unsafe { CoUninitialize(); }
 }
 

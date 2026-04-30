@@ -88,6 +88,13 @@ vision-gpu-webgpu   = ["vision-gpu", "ort/webgpu"]
 vision-gpu-winml    = ["vision-gpu"]
 
 [target.'cfg(windows)'.dependencies]
+# `windows-core` is a sibling crate of `windows` (split out around 0.59).
+# The `#[implement]` macro in `windows::core::implement` expands to paths
+# under `::windows_core::*` (notably `IUnknownImpl`), so user code that
+# uses `#[implement]` needs `windows-core` declared as a direct dependency
+# even though `windows` already pulls it in transitively. ADR-007 P5c-1
+# is the first place we use `#[implement]` (UIA event handler).
+windows-core = "0.62"
 windows = { version = "0.62", features = [
     "Win32_UI_Accessibility",
     "Win32_System_Com",

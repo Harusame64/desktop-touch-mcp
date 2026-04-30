@@ -371,6 +371,10 @@ P1 で **本 ADR §3.4 acceptance のうち**「panic-fuzz CI でプロセス全
   - P5a: EventEnvelope schema + ring buffer (TS API は変えない) — **完了 (2026-04-29)**
   - P5b: (consumed) `#[napi_safe]` proc_macro 評価 — 保留決定 (PR #80、`docs/adr-007-p5b-evaluation.md`)
   - P5c: 観測系 event 生成 (UIA hooks + DXGI dirty rect + Scroll/Window) + Tier 1 graceful disable (詳細: `docs/adr-007-p5c-plan.md`)
+    - **P5c-0a/0b 完了** (PR #83 / #84、2026-04-29)
+    - **R11 / R12 (shutdown race) Resolved** (PR #86 / #87、2026-04-30)
+    - **P5c-1 完了** (本 PR、2026-04-30、`feat/adr-007-p5c-1-focus-hook`) — UIA Focus Changed event hook が L1 ring に `UiaFocusChanged` event を push、ADR-008 D1-2 blocker 解除
+    - 残: P5c-2 (DXGI emit) / P5c-3 (Window) / P5c-4 (Scroll)
   - WAL + replay E2E は **ADR-008 D6 へ移管** (SSOT §10.2 / ADR-008 §4 D6 と整合、本 ADR scope 外)
   - P5d: timestamp source 多重化 (Reflex/DXGI/DWM)
 
@@ -445,7 +449,7 @@ build 時に platform-aware で win32.ts vs _linux-stub.ts を切替。
 | P4 | `git grep koffi` 行数 0、`package.json` から koffi 削除、launcher zip size を memory に記録 |
 | P5a | EventEnvelope が ring buffer に push される、TS から poll 取得可能 |
 | P5b | (consumed) proc_macro 評価で保留決定 — acceptance: `docs/adr-007-p5b-evaluation.md` の「復活条件」が観測されないこと |
-| P5c | 観測系 event 7 種 (UiaFocusChanged / DirtyRect / WindowChanged / ScrollChanged を **emit**、TreeChanged / Invoked / ValueChanged は enum + payload struct を **reserved**) を実装、Tier 1 graceful disable 動作。WAL/replay は ADR-008 D6 |
+| P5c | 観測系 event 7 種 (UiaFocusChanged / DirtyRect / WindowChanged / ScrollChanged を **emit**、TreeChanged / Invoked / ValueChanged は enum + payload struct を **reserved**) を実装、Tier 1 graceful disable 動作。WAL/replay は ADR-008 D6。**進捗 (2026-04-30): P5c-0a/0b + R11/R12 + P5c-1 (UiaFocusChanged emit) 完了。残 P5c-2/3/4 で DirtyRect / WindowChanged / ScrollChanged を emit** |
 | P5d | timestamp_source が capability に応じて自動選択、`server_status` に統計 |
 
 ### 9.2 統合書 SLO 達成 (本 ADR 範囲)
