@@ -1,6 +1,6 @@
 # ADR-008 D2 — 主要 view 4 つ + desktop_state focus path view 経由置換プラン
 
-- Status: **Draft v3.5 (起草中、Opus、2026-04-30) — Codex review v1 + v2 + v3 + v4 + v6 + v7 + v8 反映済 + Opus phase-boundary review (D2-0 phase) 完了**
+- Status: **Draft v3.6 (起草中、Opus、2026-04-30) — Codex review v1 + v2 + v3 + v4 + v6 + v7 + v8 + v9 反映済 + Opus phase-boundary review (D2-0 phase) 完了**
 - Date: 2026-04-30
 - Authors: Claude (Opus, max effort) — `desktop-touch-mcp`
 - 親 ADR: `docs/adr-008-reactive-perception-engine.md` §4 D2 / §8 D2
@@ -94,6 +94,26 @@ v3.4 の修正に対し Codex round 8 で **2 P2** を発見:
 4. **新 regression test**:
    - `shutdown_with_timeout_retries_send_when_channel_drains` (engine-perception): pre-fill channel + drain-eventually worker で retry loop が cmd を deliver して Ok を返すことを直接 measure
 5. cargo test: root 55 pass + engine-perception 26 pass (+1 新) = **81 pass / 0 fail**
+
+### v3.6 (Codex review v9 反映、PR #94 round 4、2026-04-30)
+v3.5 の P2-16 修正に対し Codex round 9 で **更なる P2** を発見:
+
+- **P2-17 (poison eviction で重複 worker 再発)**: v3.5 の `ensure_perception_pipeline()` は poisoned 検出時 `shutdown_with_timeout(100ms)` retry → **成否に関係なく** slot clear → fresh spawn。100ms retry が **失敗** (= 古い worker still running) でも slot を clear して新 worker spawn してしまう → **v6 P1 北極星「shutdown 失敗時に二重 worker を作らない」に再び抵触**。stale Arc を握る caller の handle は古い worker に依然 push 可能、さらに新 caller は ensure で fresh worker を取得 → 同時 2 worker
+
+**修正**:
+1. `ensure_perception_pipeline()` の poisoned-slot eviction を **shutdown 成功時のみ** に限定:
+   - retry `Ok` → 古い thread join 完了確認 → slot clear → fresh spawn
+   - retry `Err` → 古い thread still running → **slot retain (poisoned)** → 既存 poisoned Arc 返却
+2. caller は `is_poisoned()` で state 観測可能、必要なら `shutdown_perception_pipeline_for_test(longer_timeout)` で resolve
+3. healthy worker (cmd を受け取れば即 break) は 100ms retry で確実に finish するので、**production の通常シナリオでは v3.5 と同等の動作** (poison 後 ensure → fresh)
+4. stuck worker scenario (v9 P2-17 の core failure mode) の regression test は **engine-perception 側に stuck worker fixture 追加が必要** → §10 OQ #15 で carry-over (D2-A の `block_worker_for_test` fixture と同水準で実装)
+
+これで「shutdown 失敗時に二重 worker を作らない」北極星が **5 重 pin**:
+- 設計 (PerceptionWorker / FocusPump retain-on-timeout)
+- 実装 (PerceptionPipeline 薄い委譲、`try_send` retry loop)
+- poison flag + ensure eviction success-only
+- コードコメント (各 round 番号明示)
+- test (7 lifecycle test + 2 channel test、stuck scenario は OQ #15)
 
 ### v3.2 (Codex review v4 反映、2026-04-30)
 Codex から P1×1 / P2×2 の指摘。要点:
@@ -361,6 +381,7 @@ v3.2 で carry-over していた「timeout 失敗時 handle retain test」「par
   - bit-equal を pin する contract test を追加 (D2-B-5)
 - [ ] **first call で worker 起動 (lazy init)**: 既存 UIA worker / L1 ring の lazy init チェーンに合流
 - [ ] view が miss (latest_focus 未 capture) の場合は `None` 返却 (panic 禁止、layer-constraints §2.3 invariant 6)
+- [ ] **`is_poisoned()` check** (Codex v9 P2-17 + v3.6 contract): `view_get_focused()` 内で `pipeline.is_poisoned()` を check し、true なら view 経由化を skip して `None` 返却 (`desktop_state.ts` の UIA 直叩き fallback に進む)。stale degraded pipeline からの fresh focus event 不在で stale 値を返す事故を防ぐ
 - [ ] **`#[napi] pub fn view_focused_pipeline_status() -> { initialized: bool, processed_count: number }`** で diagnostics 公開 (server_status と同パターン)
 
 #### D2-B-2: `latest_focus_view` 経由化 (Codex v2 P1-4 反映: hwnd lookup miss 解消)
@@ -900,6 +921,7 @@ D2-E0 / D2-E と整合: **`Arranged` を外部 struct に保持せず、同 `wor
 | R19 | shutdown signal の `tx.send` が bounded channel full で block、deadline を作る前に止まり timeout が効かない (Codex v7 P2) | 中 | `try_send` を使用 (`shutdown_with_timeout` + `Drop` の Cmd::Shutdown 送信箇所)、push_focus は ordering 保持のため `send` 維持。`shutdown_with_timeout_does_not_block_on_full_channel` test で channel-full + stuck worker シナリオを直接 measure (regression 時は 3s block で fail) |
 | R20 | `try_send(Cmd::Shutdown)` が一発で Full なら signal drop、worker drain 後も signal 不届きで shutdown が空回り timeout (Codex v8 P2-15) | 中 | `shutdown_with_timeout` を 2-phase 化、phase 1 で `try_send` を deadline 内 retry (Full なら poll_interval sleep して再 try)、phase 2 で従来 polling。`shutdown_with_timeout_retries_send_when_channel_drains` test で drain-eventually worker から retry 成功経路を直接 measure |
 | R21 | failed shutdown が pipeline を half-stopped state で slot 占有、後続 `ensure_perception_pipeline()` が degraded pipeline を新 caller に渡す (Codex v8 P2-16) | 高 | `PerceptionPipeline.poisoned: AtomicBool` を追加、shutdown 失敗時 set。`ensure_perception_pipeline` で `is_poisoned()` 検出時 best-effort 再 shutdown → slot evict → fresh spawn。`shutdown_timeout_failure_poisons_slot_and_evicts_on_next_ensure` test で full sequence (poison set / stale Arc 観測 / fresh ensure) を pin |
+| R22 | poisoned pipeline の eviction 時、retry shutdown が失敗 (= 古い worker still running) でも slot evict → fresh spawn し、二重 worker (Codex v9 P2-17、v6 P1 北極星 regression) | 高 | `ensure_perception_pipeline` の eviction を **retry `Ok` の時のみ** に制限。retry `Err` なら slot を poisoned Arc で retain、既存 Arc を返却。caller は `is_poisoned()` で観測 + 長 timeout shutdown で resolve 可能。stuck worker scenario の regression test は OQ #15 で D2-A carry-over (engine-perception fixture 必要) |
 
 ---
 
@@ -921,6 +943,7 @@ D2-E0 / D2-E と整合: **`Arranged` を外部 struct に保持せず、同 `wor
 | 12 | `latest_focus` view と `current_focused_element` の併存 (両方 D2-E0 同 scope 内 build) で arrangement memory が 2 倍にならないか | D2-A bench harness で測定、view 単独 vs 両者併存で memory 比較 (Codex v2 P1-4) |
 | 13 | diff bookkeeping helper (BTreeMap diff-sum + count > 0 rev walk) を `current_focused_element` (per-hwnd) と `latest_focus` (singleton) で共通化するか別実装か | D2-F-1 (current_focused_element の §3.1 強化) と D2-B-2 (latest_focus 新設) のどちらが先かで判断、後発で共通 helper 抽出 (Codex v3 P1-1) |
 | ~~14~~ | ~~D2-0 lifecycle test の timeout 失敗系 2 件 fixture~~ | **Resolved (v3.3, PR #94)**: `PerceptionWorker` / `FocusPump` の retain-on-timeout refactor で fixture 不要化、2 test (`shutdown_timeout_failure_retains_slot` / `pipeline_recovers_from_partial_shutdown`) を `Duration::from_nanos(1)` で本実装 |
+| 15 | poisoned pipeline + stuck worker scenario の regression test (v3.6 P2-17 修正の retry-fail branch を直接 measure) | D2-A 着手時、engine-perception 側に test-only `spawn_stuck_worker_for_test()` fixture (cmd channel 受信を block する dummy thread) を追加、その上で「poison + ensure() retry fails → slot retains poisoned Arc + same instance returned」を直接 assert する test を実装 |
 
 ---
 

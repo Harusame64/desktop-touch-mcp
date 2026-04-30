@@ -233,38 +233,66 @@ static PERCEPTION_SLOT: OnceLock<Mutex<Option<Arc<PerceptionPipeline>>>> = OnceL
 
 /// Lazy-init the production perception pipeline. Returns a clone of
 /// the shared `Arc<PerceptionPipeline>` — concurrent callers all see
-/// the same instance, mirroring `ensure_l1()` (`worker.rs:229`).
+/// the same instance (or, in the poisoned-but-stuck case below, the
+/// same poisoned instance), mirroring `ensure_l1()` (`worker.rs:229`).
 ///
 /// First call spawns the perception worker, takes the L1 ring from
 /// `ensure_l1()`, and starts the focus pump. Subsequent calls simply
 /// `Arc::clone` the existing slot.
 ///
-/// **Poisoned-slot eviction** (Codex review v8 P2-16): if a previous
-/// `shutdown_with_timeout` call returned `Err`, the slot's pipeline
-/// is marked poisoned (one or both legs are no longer live). To
-/// avoid handing a half-stopped pipeline to a new production caller,
-/// we detect the poison flag, attempt one best-effort shutdown
-/// retry (short timeout to bound the call), drop the slot whether
-/// the retry succeeds or fails, and spawn a fresh pipeline. Any
-/// caller still holding an `Arc` to the old (poisoned) pipeline
-/// keeps it — `view`/`latest_focus_view` reads remain safe — but
-/// is no longer the slot's "live" instance.
+/// ## Poisoned-slot handling (Codex review v8 P2-16 + v9 P2-17)
+///
+/// If a previous `shutdown_with_timeout` returned `Err`, the slot's
+/// pipeline is marked poisoned (one or both legs are no longer
+/// live, see `PerceptionPipeline::is_poisoned`). On the next
+/// `ensure_perception_pipeline()` call we attempt **one best-effort
+/// short-timeout retry** (100ms). The slot is then handled by the
+/// outcome of that retry:
+///
+///   - **Retry succeeded** → both threads have joined, the slot can
+///     safely host a fresh pipeline. We clear the slot and the
+///     `if guard.is_none()` arm below spawns a new instance.
+///   - **Retry failed** → at least one thread is still running. We
+///     leave the slot pointing at the poisoned `Arc` and return it.
+///     **Spawning a fresh pipeline now would create a duplicate
+///     worker** (Codex v9 P2-17), violating the v6 P1 北極星
+///     ("shutdown failure must never cause two simultaneously live
+///     workers"). Callers detect this case via
+///     [`PerceptionPipeline::is_poisoned`] and may invoke
+///     `shutdown_perception_pipeline_for_test(longer_timeout)` to
+///     clear the slot once the stuck thread eventually exits.
+///
+/// Outstanding `Arc` clones to a poisoned pipeline keep their
+/// `view`/`latest_focus_view` reads safe (those are pure data) but
+/// are no longer the slot's "live" instance.
 pub fn ensure_perception_pipeline() -> Arc<PerceptionPipeline> {
     let cell = PERCEPTION_SLOT.get_or_init(|| Mutex::new(None));
     let mut guard = cell.lock().unwrap_or_else(|e| e.into_inner());
 
-    // Poisoned-slot eviction (Codex v8 P2-16). Best-effort retry the
-    // shutdown so we drop a clean slot when possible; either way,
-    // clear it so the spawn below produces a fresh pipeline.
+    // Poisoned-slot handling. Only evict on a successful retry —
+    // otherwise spawning a fresh pipeline beside a still-running
+    // poisoned worker would create two simultaneously live workers
+    // (Codex v9 P2-17 / v6 P1 北極星 regression).
     if let Some(existing) = guard.as_ref() {
         if existing.is_poisoned() {
-            // Best-effort: give the worker / pump a short window to
-            // finish if a previous timeout attempt was close. We
-            // don't propagate the result — even if it Errs again,
-            // we evict the slot. The orphaned threads (if any) will
-            // exit when the channel disconnects on Arc drop.
-            let _ = existing.shutdown_with_timeout(Duration::from_millis(100));
-            *guard = None;
+            // The retry runs `shutdown_with_timeout` which, after the
+            // pipeline is already poisoned, is allowed to be a no-op
+            // for any leg whose JoinHandle was already taken on a
+            // previous attempt. The leg(s) still holding handles
+            // resume polling.
+            if existing
+                .shutdown_with_timeout(Duration::from_millis(100))
+                .is_ok()
+            {
+                // Clean — both legs are gone. Clear the slot; the
+                // spawn block below will respawn fresh.
+                *guard = None;
+            }
+            // Else: at least one thread is still alive. Retain the
+            // slot pointing at the poisoned Arc so we don't spawn a
+            // duplicate. The next ensure() / explicit shutdown call
+            // can retry; the caller observes the retained poisoned
+            // pipeline via the return value's `is_poisoned()`.
         }
     }
 
@@ -938,25 +966,31 @@ mod production_pipeline_lifecycle_tests {
             .expect("teardown clean");
     }
 
-    /// Test 6 — failed shutdown poisons the pipeline; the next
-    /// `ensure_perception_pipeline()` evicts the slot and spawns a
-    /// fresh instance instead of handing out a half-stopped pipeline
-    /// (Codex review v8 P2-16). The v6 P1 contract that "the slot
-    /// retains the original `Arc`" is still satisfied for the brief
-    /// window between the failed shutdown and the next `ensure` —
-    /// long enough for `shutdown_perception_pipeline_for_test` to
-    /// retry and complete the shutdown without re-spawning. But once
-    /// `ensure` is called (the production path back into a live
-    /// pipeline), eviction kicks in.
+    /// Test 6 — failed shutdown poisons the pipeline. On the next
+    /// `ensure_perception_pipeline()`, a 100ms shutdown retry runs.
+    /// In this test the worker is healthy (only the original
+    /// 1-nanosecond deadline made it `Err`; the worker thread has
+    /// long since broken on the queued `Cmd::Shutdown`), so the
+    /// retry succeeds and the slot is evicted, letting the spawn
+    /// branch return a fresh non-poisoned pipeline (Codex v8 P2-16).
+    ///
+    /// **The v9 P2-17 contract** ("only evict after a successful
+    /// retry") is exercised on the success branch here. The other
+    /// branch (retry fails → keep poisoned Arc, do not respawn) is
+    /// tracked under §10 OQ #15 — exercising it requires a
+    /// stuck-worker fixture in `engine-perception`, which is queued
+    /// for D2-A alongside other fixture work.
     ///
     /// Asserts:
     ///   1. `Err` is returned (shutdown timed out).
-    ///   2. The retained `Arc` reports `is_poisoned() == true`.
-    ///   3. A subsequent `ensure_perception_pipeline()` returns a
-    ///      pipeline with `is_poisoned() == false` (fresh instance).
-    ///   4. The original Arc, still held by the test, also reports
-    ///      `is_poisoned() == true` (poison flag is on the value
-    ///      itself, not a per-Arc shadow).
+    ///   2. The retained `Arc` reports `is_poisoned() == true`
+    ///      before the next `ensure`.
+    ///   3. The original Arc, still held by the test, also reports
+    ///      `is_poisoned() == true` (the flag lives on the value,
+    ///      not a per-Arc shadow).
+    ///   4. A subsequent `ensure_perception_pipeline()` returns a
+    ///      pipeline with `is_poisoned() == false` (the retry
+    ///      succeeded → eviction happened → fresh spawn).
     #[test]
     fn shutdown_timeout_failure_poisons_slot_and_evicts_on_next_ensure() {
         let _guard = lifecycle_lock().lock().unwrap_or_else(|e| e.into_inner());
