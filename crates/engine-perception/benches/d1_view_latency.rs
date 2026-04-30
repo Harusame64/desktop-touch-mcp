@@ -27,10 +27,13 @@
 //!    timely worker's idle/poll loop, `update_at`, watermark advance,
 //!    DD reduce, inspect callback, and the `apply_diff` write under
 //!    the view's RwLock. Each iteration uses a monotone-increasing
-//!    `wallclock_ms` so the new event lies above the frontier; the
-//!    frontier is advanced by `worker_loop`'s idle-advance branch
-//!    (PR #91 P2 fix), and `WATERMARK_SHIFT_MS=0` is set so the
-//!    watermark catches up within ~1ms (the worker's idle sleep).
+//!    `wallclock_ms` (200ms apart) so the new event lies above the
+//!    idle-advance-projected frontier; under v3.8 release is owned
+//!    by `worker_loop`'s idle-advance branch (PR #91 P2) and the
+//!    bench runs with the **production-default `WATERMARK_SHIFT_MS`
+//!    (100ms)** — release is therefore floored at `shift_ms`. See
+//!    `docs/adr-008-d2-plan.md` v3.8 / v3.9 for the rationale and
+//!    the setup-dependence of the absolute number.
 //!
 //!    NB: this is **not** "real L1 input" — pushing into the
 //!    `FocusInputHandle` directly skips the L1 `EventRing` + the
@@ -338,24 +341,31 @@ fn bench_view_get_miss(c: &mut Criterion) {
         .expect("perception worker shutdown");
 }
 
-/// **Update-latency bench** (PR #92 P2 review fix).
+/// **Update-latency bench** (PR #92 P2 review fix, v3.8 watermark
+/// contract restored).
 ///
 /// Measures the end-to-end latency from `handle.push_focus(ev)` to
 /// `view.get(hwnd)` reflecting the new event's name. See module-level
 /// docs scenario 3 for what's included / excluded from this path.
 ///
-/// Setup notes:
+/// Setup notes (v3.8 / v3.9):
 ///
-/// - `WATERMARK_SHIFT_MS=0` — the worker's `latest_wallclock - shift`
-///   watermark would otherwise add up to 100ms per iteration. With
-///   shift=0 the watermark advances to `latest_wallclock` immediately;
-///   idle-advance projects 1ms past anchor each loop, so the
-///   just-pushed event falls below frontier within ~1 worker tick
-///   (~1ms) and gets released by DD's reduce.
+/// - Runs with the **production-default `WATERMARK_SHIFT_MS`**
+///   (no env override). Release is therefore floored at
+///   `shift_ms` (the idle-advance branch needs that much real
+///   wall-clock to project past `latest_wallclock`). The previous
+///   v3.7 setup forced `WATERMARK_SHIFT_MS=0` to collapse the
+///   window, but that combined with v3.7's `advance_to(max_wc + 1)`
+///   broke the N2 partial-order contract (Codex v10 P1/P2 / plan
+///   v3.8) and is no longer used.
 /// - Each iteration uses a fresh `(name, wallclock_ms)` pair so the
 ///   reduce sees a new "max-by-time" row and the inspect emits a
 ///   diff. Without uniqueness DD would consolidate identical rows
 ///   and the spin-wait wouldn't make progress.
+/// - `wc` advances 200ms per iteration (matching the integration
+///   tests in `tests/d1_minimum.rs`) so each new push lies above
+///   the idle-advance-projected frontier; smaller spacings lose
+///   pushes to the projection's race.
 /// - The wait spins on `view.get(hwnd) == Some({ name == new_name })`
 ///   to skip transient retraction-only states (BTreeMap diff
 ///   bookkeeping is convergent but order-non-deterministic — see
