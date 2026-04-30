@@ -16,6 +16,11 @@ import { listRecentTargetKeys } from "../engine/perception/target-timeline.js";
 import { evaluateInTab } from "../engine/cdp-bridge.js";
 import { getCdpPort } from "../utils/desktop-config.js";
 import { getFocusedAndPointInfo } from "../engine/uia-bridge.js";
+import { nativeViewFocus } from "../engine/native-engine.js";
+import type {
+  NativeFocusedElement,
+  NativeUiaFocusInfo,
+} from "../engine/native-types.js";
 import { CHROMIUM_TITLE_RE } from "./workspace.js";
 import { getSlotSnapshot } from "../engine/perception/hot-target-cache.js";
 import type { AttentionState } from "../engine/perception/types.js";
@@ -41,6 +46,163 @@ const _defaultPort = getCdpPort();
  * contracts down — see tests/unit/modal-detection.test.ts.
  */
 export const MODAL_RE = /\b(?:dialog|confirm|alert|error|warning|save as)\b|警告|エラー|確認|通知|ダイアログ|名前を付けて/i;
+
+// ─── Focused-element builders (D2-B-2) ───────────────────────────────────────
+// Three pure functions that project the engine's three focus sources
+// (perception view / UIA / CDP) into the same `ElementInfo` shape so
+// the bit-equal contract is mechanically pinned by
+// `tests/unit/desktop-state-focus-builder.test.ts`. The runtime
+// fallback chain (view → UIA → CDP for Chromium, view → UIA for
+// non-Chromium) lives in `desktopStateHandler` below.
+
+/**
+ * `ElementInfo` shape returned in `desktop_state.focusedElement` /
+ * `desktop_state.cursorOverElement`. Optional fields are omitted
+ * (not `undefined`-valued) so `JSON.stringify` produces the same
+ * keys regardless of which source produced the row.
+ */
+export interface ElementInfo {
+  name: string;
+  type: string;
+  value?: string;
+  automationId?: string;
+}
+
+/**
+ * Project an engine-perception `latest_focus` view row into
+ * `ElementInfo`. `controlType` arrives pre-stringified from
+ * `crate::uia::control_type_name`, so the output is bit-equal with
+ * `buildElementInfoFromUia`'s output for the same logical element.
+ *
+ * The view's `automationId` is `null` (not `undefined`) when absent,
+ * because napi-rs serialises `Option::None` as `null`. We collapse
+ * that into "field omitted" to match the UIA / CDP paths' shape.
+ *
+ * The view doesn't currently carry the UIA `ValuePattern` value
+ * (the engine-perception `UiElementRef` doesn't include it), so
+ * the `value` field is never set on the view-derived shape. UIA
+ * fallback is responsible for filling it when the agent needs the
+ * editable contents of an Edit control.
+ */
+export function buildElementInfoFromView(focused: NativeFocusedElement): ElementInfo {
+  return {
+    name: focused.name,
+    type: focused.controlType,
+    ...(focused.automationId ? { automationId: focused.automationId } : {}),
+  };
+}
+
+/**
+ * Project a UIA `getFocusedAndPointInfo` row into `ElementInfo`.
+ * Identical shape to `buildElementInfoFromView`; the only structural
+ * difference is the optional `value` (UIA exposes `ValuePattern`
+ * via napi).
+ */
+export function buildElementInfoFromUia(focused: NativeUiaFocusInfo): ElementInfo {
+  return {
+    name: focused.name,
+    type: focused.controlType,
+    ...(focused.automationId ? { automationId: focused.automationId } : {}),
+    ...(focused.value != null ? { value: focused.value } : {}),
+  };
+}
+
+/**
+ * Project a CDP `document.activeElement` snapshot into `ElementInfo`.
+ * The CDP path doesn't expose UIA `automationId`; `type` is the
+ * tag name (e.g. "INPUT") rather than a UIA control-type name.
+ */
+export function buildElementInfoFromCdp(cdp: {
+  tag?: string;
+  id?: string;
+  name?: string;
+  value?: string;
+  text?: string;
+}): ElementInfo {
+  return {
+    name: cdp.name || cdp.id || cdp.text || cdp.tag || "",
+    type: cdp.tag ?? "Element",
+    ...(cdp.value ? { value: cdp.value } : {}),
+  };
+}
+
+/**
+ * Read the engine-perception `latest_focus` view. Returns `null`
+ * (so the caller falls back to UIA / CDP) when:
+ *   - the addon doesn't expose `nativeViewFocus` (older builds),
+ *   - the pipeline isn't initialised yet,
+ *   - the slot is poisoned (Codex v9 P2-17 — failed shutdown),
+ *   - or the view's `snapshot()` has nothing live yet.
+ *
+ * The `napi_safe_call` wrap on the Rust side (ADR-007 §3.4) means a
+ * panic in the engine surfaces as a thrown napi error here; we
+ * swallow it and fall through so the existing UIA / CDP path
+ * stays the runtime safety net.
+ */
+function tryViewFocus(): NativeFocusedElement | null {
+  try {
+    return nativeViewFocus?.viewGetFocused?.() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Decide whether a view-derived focused element should populate
+ * `desktop_state.focusedElement`, or whether the caller should
+ * fall through to the UIA / CDP path. Combines three filters that
+ * together pin parity with the existing UIA branch's accept rules:
+ *
+ * 1. **Empty `name`** → reject (Codex review v17 P2). Both the
+ *    Chromium and non-Chromium UIA branches gate on
+ *    `focused?.name`, so a UIA-source row with an empty name
+ *    falls through to CDP / `null` rather than publishing. Without
+ *    this check, the view-first path would surface `name: ""`
+ *    rows that the old path would have skipped — bit-equal
+ *    violation. (Note: empty-name rows are not common in practice
+ *    — the focus_pump's `payload.after?.name?` filter already
+ *    drops most of them — but they're still possible for some
+ *    UIA providers, so the parity guard is required.)
+ *
+ * 2. **Chromium foreground + `controlType === "Pane"`** → reject
+ *    (Codex review v3 P1-3 / Opus phase-boundary review 2026-04-30
+ *    P1-A). When Chrome / Edge is the foreground app, UIA's focus
+ *    query returns the top-level Chrome `Pane` element rather
+ *    than the actual focused DOM node, and the existing UIA branch
+ *    filters it out so the fallback can read
+ *    `document.activeElement` via CDP. The view sees the same UIA
+ *    event stream and can surface the same Pane — without this
+ *    filter the view-first path would publish the Pane while the
+ *    old path would have skipped to CDP. Non-Chromium foreground
+ *    accepts Pane (Word document area is a legitimate Pane to
+ *    focus, and the UIA branch there also accepts it).
+ *
+ * 3. **`focused.windowTitle` must match the current `fgTitle`**
+ *    (Codex review v17 P1). The Rust `view_get_focused` returns
+ *    the latest GLOBALLY focused element from `latest_focus`. If
+ *    a foreground switch has just happened the view may still
+ *    hold the previous window's row before `focus_pump` has
+ *    delivered the new event — accepting that stale row would
+ *    publish state for the wrong window while UIA / CDP would
+ *    have queried the new foreground. Strict equality with the
+ *    enumerated foreground title rejects the stale row and lets
+ *    the cascade fall through; the next call (after focus_pump
+ *    catches up) will see them match. An empty `fgTitle` rejects
+ *    too (no foreground enumerated → unsafe to publish view-side
+ *    state).
+ */
+export function shouldAcceptViewFocus(
+  focused: NativeFocusedElement,
+  isChromium: boolean,
+  fgTitle: string,
+): boolean {
+  if (!focused.name) return false;
+  if (isChromium && focused.controlType === "Pane") return false;
+  if (!fgTitle || focused.windowTitle !== fgTitle) return false;
+  return true;
+}
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -160,36 +322,55 @@ export const desktopStateHandler = async (args: {
     const fgTitle = fg?.title ?? "";
     const isChromium = CHROMIUM_TITLE_RE.test(fgTitle);
 
-    interface ElementInfo {
-      name: string;
-      type: string;
-      value?: string;
-      automationId?: string;
-    }
+    // `ElementInfo` is hoisted to the top of the file (line 64) so
+    // `buildElementInfo*` helpers and the unit test can share the
+    // type. The local declaration that used to live here was
+    // identical and has been removed.
 
     let focusedElement: ElementInfo | null = null;
     let cursorOverElement: ElementInfo | null = null;
     const hints: Record<string, unknown> = {};
 
+    // D2-B-2: try the engine-perception `latest_focus` view first
+    // (`view_get_focused` napi binding from PR #96). The view returns
+    // null when the slot is poisoned (Codex v9 P2-17), uninitialised,
+    // or empty; in any of those cases we fall through to the existing
+    // UIA / CDP fallback paths so production behaviour is identical
+    // to before whenever the view path is unavailable. The
+    // `controlType` field comes pre-stringified from
+    // `crate::uia::control_type_name`, so `buildElementInfoFromView`
+    // produces an `ElementInfo` shape that's bit-equal to the UIA
+    // path's output (verified by the `desktop-state-focus-builder`
+    // unit test).
+    //
+    // `shouldAcceptViewFocus` mirrors the Chromium-foreground Pane
+    // filter the UIA branch applies — see the helper's docs and
+    // Opus phase-boundary review 2026-04-30 P1-A. Without it, the
+    // view-first path would surface the Chrome top-level Pane while
+    // the old path would have skipped to CDP `document.activeElement`,
+    // breaking bit-equal.
+    const viewFocused = tryViewFocus();
+    if (viewFocused && shouldAcceptViewFocus(viewFocused, isChromium, fgTitle)) {
+      focusedElement = buildElementInfoFromView(viewFocused);
+      hints.focusedElementSource = "view";
+    }
+
     if (isChromium) {
       hints.chromiumGuard = true;
       // cursorOverElement is always null for Chromium (no cheap UIA hit-test).
-      // focusedElement: try UIA first, fall back to CDP document.activeElement.
-      let uiaFocusOk = false;
-      try {
-        const { focused } = await getFocusedAndPointInfo(cursor.x, cursor.y, false, 1500);
-        if (focused?.name && focused.controlType !== "Pane") {
-          focusedElement = {
-            name: focused.name,
-            type: focused.controlType,
-            ...(focused.automationId ? { automationId: focused.automationId } : {}),
-            ...(focused.value != null ? { value: focused.value } : {}),
-          };
-          hints.focusedElementSource = "uia";
-          uiaFocusOk = true;
+      // focusedElement: view (above) → UIA → CDP document.activeElement.
+      let uiaFocusOk = focusedElement !== null;
+      if (!uiaFocusOk) {
+        try {
+          const { focused } = await getFocusedAndPointInfo(cursor.x, cursor.y, false, 1500);
+          if (focused?.name && focused.controlType !== "Pane") {
+            focusedElement = buildElementInfoFromUia(focused);
+            hints.focusedElementSource = "uia";
+            uiaFocusOk = true;
+          }
+        } catch {
+          // UIA unavailable — proceed to CDP fallback below
         }
-      } catch {
-        // UIA unavailable — proceed to CDP fallback below
       }
       if (!uiaFocusOk) {
         // CDP fallback
@@ -206,11 +387,7 @@ export const desktopStateHandler = async (args: {
             _defaultPort
           ) as { tag?: string; id?: string; name?: string; value?: string; text?: string } | null;
           if (cdpInfo) {
-            focusedElement = {
-              name: cdpInfo.name || cdpInfo.id || cdpInfo.text || cdpInfo.tag || "",
-              type: cdpInfo.tag ?? "Element",
-              ...(cdpInfo.value ? { value: cdpInfo.value } : {}),
-            };
+            focusedElement = buildElementInfoFromCdp(cdpInfo);
             hints.focusedElementSource = "cdp";
           }
         } catch {
@@ -218,16 +395,13 @@ export const desktopStateHandler = async (args: {
         }
       }
     } else {
-      // Non-Chromium: full UIA path for both fields
+      // Non-Chromium: view (above) → UIA. `cursorOverElement` always
+      // comes from UIA — the view doesn't carry an at-point read.
+      const needUiaFocus = focusedElement === null;
       try {
         const { focused, atPoint } = await getFocusedAndPointInfo(cursor.x, cursor.y, true, 2000);
-        if (focused?.name) {
-          focusedElement = {
-            name: focused.name,
-            type: focused.controlType,
-            ...(focused.automationId ? { automationId: focused.automationId } : {}),
-            ...(focused.value != null ? { value: focused.value } : {}),
-          };
+        if (needUiaFocus && focused?.name) {
+          focusedElement = buildElementInfoFromUia(focused);
           hints.focusedElementSource = "uia";
         }
         if (atPoint?.name) {
@@ -393,7 +567,7 @@ export function registerDesktopStateTools(server: McpServer): void {
         "includeCursor:true → cursor {x,y,monitorId} (richer than cursorPos). " +
         "includeScreen:true → screen {virtualScreen, displays[], displayCount, primaryIndex}. " +
         "includeDocument:true → document {url, title, readyState, selection, scroll, viewport} via CDP (silently omitted on non-Chromium foreground). " +
-        "Chromium: cursorOverElement is null (UIA sparse); focusedElement may fall back to CDP document.activeElement; hints.focusedElementSource reports which was used ('uia' or 'cdp'). " +
+        "Chromium: cursorOverElement is null (UIA sparse); focusedElement may fall back to CDP document.activeElement; hints.focusedElementSource reports which path produced the row ('view' = engine-perception latest_focus, 'uia' = direct UIA query, 'cdp' = document.activeElement). " +
         "Does NOT enumerate descendants — use desktop_discover for actionable entity list and window list.",
       prefer:
         "Use after each action to confirm state. Cheapest observation tool — cheaper than any screenshot. " +
