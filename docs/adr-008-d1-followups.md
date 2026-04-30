@@ -72,11 +72,68 @@ D2 で対応:
 - `WATERMARK_SHIFT_MS=0` を設定済の bench で測ってもこの sleep に律速されている (push → 次の worker idle iteration までの待ちが ~0.5-1ms)
 - production の focus 変化頻度 (秒オーダ) に対して 5ms latency は十分許容範囲だが、SLO は未達
 
-D2 で対応:
-- option A: `thread::sleep` を `Duration::from_micros(100)` 等に短縮 (CPU 負荷増、~500µs latency 想定)
-- option B: cmd channel の `recv_timeout` で短期間 block + 待たせる (sleep 不要、cmd 到着で即起床、idle-advance は別 timer or 自前 schedule)
-- option C: parking primitive (`std::thread::park_timeout` + `unpark` から signal) で「cmd 到着または timer」両方を最短で起床
-- いずれも worker_loop の構造変更を伴うので、D2 で view-based `desktop_state` 実装と同時に再評価
+#### 2.5.1 ボトルネックの内訳 (PR #92 review 過程で発見した分析)
+
+「メモリ操作だけのはずなのになぜ ~5ms かかるのか」を時系列で分解すると、**遅延要因はメモリ操作ではなく worker_loop の polling pattern + DD operator chain の伝搬コスト** に集約される。
+
+```
+main thread:                    worker thread (l3-perception):
+                                  loop {
+[T+0]  handle.push_focus()          try_recv() → Empty
+       ↓ tx.send (~µs cmd channel)  thread::sleep(1ms)        ← ← ← (A) 1ms sleep
+                                                                     最悪 1ms 待つ
+       ↑ Cmd queued during sleep    worker.step()               平均 0.5ms 待つ
+[T+~0.5ms]                        try_recv() → Ok(PushFocus)
+                                    input.update_at(...)        (~ns)
+                                    input.advance_to(...)       (~ns)
+                                    input.flush()               (~µs)
+                                  worker.step()                 ← ← ← (B) op 1 step
+                                                                       (input batch 開く)
+                                  try_recv() → Empty
+                                  worker.step()                 ← ← ← (B) op 2 step
+                                                                       (reduce が走る)
+                                  thread::sleep(1ms)            ← ← ← (A) 再び 1ms sleep
+                                  worker.step()                 ← ← ← (B) op 3 step
+                                                                       (inspect が emit、
+                                                                        view.apply_diff →
+                                                                        RwLock write ~100ns)
+[T+~4-5ms] view.get(...) で新 name 検出 (spin-loop が即気付く)
+```
+
+支配項:
+- **(A) `thread::sleep(1ms)`**: `TryRecvError::Empty` 時の固定遅延。Cmd 到着検知の最大 1ms 遅延 + dataflow step 間に毎回 sleep が挟まる。
+- **(B) DD operator chain 伝搬**: `input → map → reduce → inspect` の 4 op を 1 つの `worker.step()` で全部回せない (timely の progress tracker は op 単位で activation を回す)。push 1 件で **2-3 step が必要**、各 step の間に sleep が挟まると累積。
+
+非支配項 (測ってもほぼゼロ):
+- crossbeam channel send (cmd 1 件 ~µs)
+- DD `input.update_at` / `advance_to` / `flush` の純計算 (~ns 〜 µs)
+- inspect closure 内の `apply_diff` (HashMap entry + BTreeMap insert + RwLock write、合計 **~100-200 ns**)
+- 同じ inspect 内 `view.get` (RwLock read + HashMap lookup + BTreeMap iter、~145 ns で `view_get_hit` bench に出ている値)
+
+**総和の見積**: (A) 平均 0.5-1ms + (B) 2-3 ms (op chain × sleeps) + メモリ操作 ~µs = **~3-5ms**。実測 4.7 ms と整合。
+
+#### 2.5.2 修正案 (option 比較、D2 で実装)
+
+| 案 | 想定 update latency | CPU コスト | 実装複雑度 | コメント |
+|---|---|---|---|---|
+| 現状 (`sleep 1ms`) | ~4.7 ms | 低 (idle ~0%) | — | base case |
+| **option A**: `sleep 100µs` 等に短縮 | ~500 µs | 中 (idle ~5%) | 最小 (1 行) | 試金石として最初に当たる手 |
+| **option B**: Cmd 後 `step until idle` + idle 時 `recv_timeout(1ms)` | <200 µs | 低 (cmd 駆動) | 中 (worker_loop 構造変更) | dataflow を寝かさず drain |
+| **option C**: `parking_lot::Condvar` で park/unpark | <100 µs | 最小 (signal 駆動) | 高 (idle-advance schedule 別 thread or timer 必要) | 究極形、SLO 大幅クリア |
+
+D2 で `desktop_state` を view 経由置換するときに option B+C 系を再評価。option A は B/C 採用までの transit として merge してもよい。
+
+#### 2.5.3 production への影響評価
+
+「~5ms update latency」は production の以下のシナリオで観測される:
+- user が新しい window に focus を移した瞬間 → MCP agent が即座に `desktop_state` を呼ぶケース
+- 連続的な focus 変化 (キーボードナビゲーション等) → 各遷移で view が「ひとつ前」を返すウィンドウ ~5ms
+
+production 上の許容範囲か:
+- ✅ **read-dominated**: 1 回 push (focus 変化) → N 回 read (agent query) のとき、read 側 ~145ns で N 回回せるので update の 5ms は分母で薄まる
+- ⚠ **write-after-write**: focus が連続変化する場合、最新値を読みに来た agent が「ひとつ古い」を読む確率が ~5ms 分上昇
+- 60 Hz UI 同期 (~16.67 ms/frame) には収まっているので体感影響なし
+- D2 で `desktop_state` の attention signal 計算が `dirty` / `settling` を返すロジックで 5ms 窓は dirty 扱いされるはず → SLA 違反にはならない見込み
 
 ### 2.6 criterion features 整合 (skeleton 矛盾)
 

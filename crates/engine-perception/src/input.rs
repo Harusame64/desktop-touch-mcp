@@ -322,6 +322,25 @@ pub fn spawn_perception_worker(
 /// closure returns, `execute_directly` drains remaining work
 /// (`while worker.has_dataflows() { worker.step_or_park(None); }`)
 /// before the function returns.
+///
+/// ## Latency budget (PR #92 D1-5 measurement, ~4.7 ms update latency)
+///
+/// The `TryRecvError::Empty` branch's `thread::sleep(1ms)` is the
+/// dominant bottleneck for `view_update_latency`. On a `push_focus`,
+/// the dataflow needs ~2-3 `worker.step()` calls to propagate through
+/// `input → map → reduce → inspect`, and each step is interleaved with
+/// the 1 ms sleep — the timeline accumulates to ~3-5 ms even though
+/// the actual memory operations (`update_at` / `advance_to` /
+/// `apply_diff` / RwLock write) total only ~µs.
+///
+/// SLO target from `docs/views-catalog.md` §3.1 is `update p99 < 1 ms`.
+/// Current design misses it; tuning options (sleep shortening / cmd-
+/// driven `step until idle` / parking primitive) are catalogued in
+/// `docs/adr-008-d1-followups.md` §2.5 and are deferred to D2 where
+/// the `desktop_state` view-based implementation will exercise the
+/// path under MCP transport. **DO NOT** tune in isolation without
+/// re-running the bench — the worker's idle/poll loop also gates the
+/// shutdown latency and idle-advance frequency.
 fn worker_loop(
     rx: Receiver<Cmd>,
     processed: Arc<AtomicU64>,
