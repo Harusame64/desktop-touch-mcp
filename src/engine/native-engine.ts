@@ -44,6 +44,7 @@ import type {
   NativeViewFocusedPipelineStatus,
   NativeFocusedElementWithWallclock,
   NativeLeaseTokenSummary,
+  NativeDirtyRectsResult,
 } from "./native-types.js";
 
 export type * from "./native-types.js";
@@ -337,6 +338,11 @@ export interface NativeViewFocus {
    * event wallclock + view-poisoned signal. Used by `_envelope.ts::makeEnvelopeAware`
    * to build `as_of.wallclock_ms` from L1 event time (PR #110 Round 1 P1-4 反映). */
   viewGetFocusedWithWallclock?(): NativeFocusedElementWithWallclock;
+  /** S2 D2-C: dirty_rects_aggregate per-monitor count. Used by S5
+   * `caused_by` projector (`desktop-state.ts`) to build `produced_changes`
+   * dirty_rect entries with `monitor_index` field maintained
+   * (CLAUDE.md §3.2 PR #102 同型 regression 防止). */
+  viewGetDirtyRects?(monitorIndex: number): NativeDirtyRectsResult;
 }
 
 // PR #112 Round 1 P1-2 (Opus review): probe the **newest** function
