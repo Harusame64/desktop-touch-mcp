@@ -760,6 +760,23 @@ export function _resetSingleSessionPrototypeForTest(): void {
 }
 
 const desktopStateGetSessionId = (_args: unknown): string => {
+  // CodeQL alert #109 (`js/unneeded-defensive-code`) flags the
+  // `transportSessionId !== undefined` guard below as dead at runtime
+  // because the `getMcpTransportSessionId` stub on line 747 returns
+  // `undefined` unconditionally. The alert is **dismissed** as
+  // "Won't fix" via GitHub Code Scanning API (PR #120). Inline
+  // suppress comments (e.g. `// codeql[...]`) are NOT recognised by
+  // GitHub's CodeQL action — that syntax was a legacy LGTM platform
+  // feature, sunset in 2022-12. The runtime guard is preserved as
+  // an **ADR-011-scope-protected** future-ready stub: ADR-011
+  // (cognitive memory taxonomy + multi-session session_id source
+  // finalize) will replace the stub with a real resolver that
+  // returns the MCP transport's session id, at which point this
+  // branch becomes live. Removing the guard now would require
+  // re-introducing it in ADR-011 and re-validating the closed-loop
+  // sentinel runtime path pinned by PR #115 across 3 review rounds
+  // (see `docs/adr-010-p1-s5-plan.md` §1.1 E-2 for the sentinel
+  // contract definition).
   const transportSessionId = getMcpTransportSessionId();
   if (transportSessionId !== undefined) return transportSessionId;
   if (!_isSingleSessionPrototype()) {

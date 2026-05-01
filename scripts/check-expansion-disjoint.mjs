@@ -9,7 +9,7 @@
 // Sub-plan SSOT: docs/adr-010-p1-s6-plan.md §1.1 B + §2.1 + §2.2 (4 path
 // bit-equal sync, Round 2 P1-1 fix).
 
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 
 // Round 2 P1 fix (Opus Round 1 P1-1): bit-equal sync with §1.1 B + §2.1
 // yaml. Path list 4 件は実 repo 構造と整合 (`Glob` で存在確認済、PR #99 同型
@@ -48,9 +48,27 @@ if (!isExpansionPr()) {
 }
 
 const baseRef = process.env.BASE_REF || "origin/main";
+// CodeQL alert #110 (`js/indirect-command-line-injection`) fix:
+// validate the env-supplied ref against a strict pattern + use
+// `execFileSync` (no shell) for defense in depth. Prior code passed
+// `BASE_REF` into a `${...}` template literal handed to `execSync`,
+// allowing a hostile env var (e.g. `; rm -rf / ;`) to inject extra
+// shell commands. The validation alone is sufficient against the
+// known injection vector; combining with `execFileSync` removes the
+// shell layer entirely so future template-literal additions in this
+// command can't reintroduce the same class of bug.
+const REF_PATTERN = /^[A-Za-z0-9/_.\-^~@{}]+$/;
+if (!REF_PATTERN.test(baseRef)) {
+  console.error(
+    `[check-expansion-disjoint] invalid BASE_REF (must match ${REF_PATTERN}): ${JSON.stringify(baseRef)}`,
+  );
+  process.exit(2);
+}
 let diff = [];
 try {
-  diff = execSync(`git diff --name-only ${baseRef}...HEAD`, { encoding: "utf8" })
+  diff = execFileSync("git", ["diff", "--name-only", `${baseRef}...HEAD`], {
+    encoding: "utf8",
+  })
     .split("\n")
     .filter(Boolean);
 } catch (err) {
