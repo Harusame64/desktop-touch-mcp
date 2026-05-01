@@ -133,16 +133,16 @@ timely + DD の `arrangement` は `(key, val, time, diff)` 4-tuple の LSM-tree 
 └─────────────────────────────────────────────────────────┘
 ```
 
-### 3.2 主要 view (D2 で実装する 3 view + 1 carry-over、D2-C0 ゲート確定)
+### 3.2 主要 view (D2 で実装する 4 view、D2-C0 ゲート carry-over 復帰)
 
-> **D2-C0 ゲート確定 (2026-05-01、PR #99)**: 当初の「4 view」想定から `dirty_rects_aggregate` を ADR-007 P5c-2 prerequisite として **carry-over** に外し、本 D2 では **3 view** を実装。`semantic_event_stream` も `FocusMoved` 単独 variant を **skeleton seed として land**、`WindowChanged` / `ScrollSettled` / `ModalAppeared` variant 拡張は P5c-3/4 + UIA dialog/structure event 配線後の D2 後継 phase で carry-over。判断・復帰レールは `docs/adr-008-d2-plan.md` §D2-C0 + §3.bis carry-over ledger + §10 OQ #1 / #3 / #17。本書 D2-G phase で本表の最終整合 (status 列の [x] flip) を実施。
+> **D2-C0 ゲート (2026-05-01、PR #99)** で `dirty_rects_aggregate` は ADR-007 P5c-2 prerequisite として一旦 carry-over 化したが、**P5c-2 PR #102 merged 2026-05-01 (`c535fc2`) で trigger 完了 → §3.bis ledger L1 strikethrough**、`docs/adr-008-d2-c-plan.md` で復帰 PR sub-plan land。`semantic_event_stream` は引き続き `FocusMoved` 単独 variant を **skeleton seed** として land、`WindowChanged` / `ScrollSettled` / `ModalAppeared` variant 拡張は P5c-3/4 + UIA dialog/structure event 配線後の D2 後継 phase で carry-over (§3.bis ledger L2-L4)。判断・復帰レールは `docs/adr-008-d2-plan.md` §D2-C0 + §3.bis carry-over ledger + §10 OQ #1 / #3 / #17。本書 D2-G phase で本表の最終整合 (status 列の [x] flip) を実施。
 
 | view 名 | 入力 | 用途 | 旧 tool との対応 | D2 status |
 |---|---|---|---|---|
 | `current_focused_element` | UIA focus event | 現在 focus 要素 | `desktop_state.focused` | ✅ **Implemented** (D1 完了 PR #91 / D2-B 完了 PR #97) |
-| `semantic_event_stream` (FocusMoved seed) | UIA focus event (本 D2 では `UiaFocusChanged` のみ) | "focus moved" semantic、後続で modal/window/scroll 系拡張 | `desktop_state.attention` の前段 | 🚧 **D2-D で skeleton + FocusMoved seed**、他 variant は carry-over |
+| `dirty_rects_aggregate` | DXGI dirty/move rect event | 直近 dirty 矩形集約 | `screenshot` の差分判定 | 🚧 **D2-C で実装中 (walking skeleton S2 contract spike、count-only)** (sub-plan landed 本 D2-C plan PR、impl PR 本 plan merge 後翌 PR — `docs/adr-008-d2-c-plan.md`、完成形 (`rects` / `total_area` / 100ms window) は trunk 完了後 expansion) |
+| `semantic_event_stream` (FocusMoved seed) | UIA focus event (本 D2 では `UiaFocusChanged` のみ) | "focus moved" semantic、後続で modal/window/scroll 系拡張 | `desktop_state.attention` の前段 | 🚧 **D2-D で skeleton + FocusMoved seed**、他 variant は §3.bis ledger L2-L4 で carry-over |
 | `predicted_post_state` | tool call (仮想) + 現 state | dry-run 投機実行 | (新規) | 🚧 **D2-E で subgraph 構造**、本格化は D5 |
-| `dirty_rects_aggregate` | DXGI dirty/move rect event | 直近 dirty 矩形集約 | `screenshot` の差分判定 | ⏸️ **Carry-over** (P5c-2 prerequisite、復帰 PR-ε) |
 
 ### 3.3 cyclic / fixed-point の表現
 
@@ -185,7 +185,7 @@ external clock (hw)        timely internal frontier
 | Phase | 範囲 | 完了基準 |
 |---|---|---|
 | **D1: 最小成立** | timely + DD を `engine-perception` crate に組込み、event log → `current_focused_element` の最小 view | 1 view が incrementally 更新、unit test pass、TS 版より latency 1/10 |
-| **D2: 主要 view 3 + 1 carry-over** (D2-C0 ゲート PR #99 で確定) | `current_focused_element` (D1 完了) + `semantic_event_stream` skeleton (FocusMoved seed) + `predicted_post_state` subgraph (D5 で本格化) を declarative に — `dirty_rects_aggregate` は P5c-2 prerequisite carry-over、復帰レールは plan §3.bis ledger | `desktop_state` の focus path を view 経由化 (bit-equal 回帰 0)、modal/attention は D4 carry-over、`semantic_event_stream` の他 variant 拡張は P5c-3/4 後の D2 後継 phase (`docs/adr-008-d2-plan.md` §1.3 / §3 PR 表 / §3.bis carry-over ledger) |
+| **D2: 主要 view 4** (D2-C0 ゲート PR #99 で `dirty_rects_aggregate` 一旦 carry-over → P5c-2 PR #102 で trigger 完了 → 本 D2-C plan PR で walking skeleton S2 contract spike として復帰) | `current_focused_element` (D1 完了) + `dirty_rects_aggregate` (D2-C、**walking skeleton S2 として count-only 簡易版** で本 plan PR sub-plan land、完成形は trunk 完了後 expansion) + `semantic_event_stream` skeleton (FocusMoved seed) + `predicted_post_state` subgraph (D5 で本格化) を declarative に。`semantic_event_stream` の他 variant (`WindowChanged` / `ScrollSettled` / `ModalAppeared`) のみ §3.bis ledger L2-L4 で carry-over | `desktop_state` の focus path を view 経由化 (bit-equal 回帰 0)、modal/attention は D4 carry-over (`docs/adr-008-d2-plan.md` §1.3 / §3 PR 表 / §3.bis carry-over ledger、`docs/walking-skeleton-trunk-selection.md` Proposed v0.3 §4 trunk 全体図) |
 | **D3: time-travel** | arrangement の time slice で `state_at(t)` 実装 | 「2 秒前の state」が引ける、p95 latency < 5ms |
 | **D4: cyclic RPG** | lens 依存を timely `iterative` で実装 | lens 再計算が fixed-point で settle、無限ループなし |
 | **D5: HW operator hybrid** | `DataflowAccelerator` trait + Tier 0-3 実装 + dispatch | `change_fraction` が Tier 3 で動作、Tier 0 fallback も動作 |
@@ -315,7 +315,7 @@ pub trait DataflowAccelerator: Send + Sync {
 | Phase | 完了基準 |
 |---|---|
 | D1 | **完了 (2026-04-30)**: 1 view が incremental に更新 (PR #91 `2288333` `current_focused_element`)、bench で TS 版より latency 1/10 — **steady-state lookup で達成** (PR #92 D1-5、view ~145ns vs TS p99 11.2ms = 75,000× 比)。**update latency (~4.7ms) は TS の 2.4× にとどまり 1/10 未達**、real L1 ring 込み bench も未実施 (cdylib 制約)、worker idle sleep tuning + ring 全経路 bench は D2 carry-over: `docs/adr-008-d1-followups.md` §2.3, §2.5 |
-| D2 | **focus path のみ** view 経由化 (bit-equal 回帰 0)、`current_focused_element` (D1 完了) + `semantic_event_stream` skeleton (FocusMoved seed) + `predicted_post_state` subgraph (D5 で本格化) を declarative に。`dirty_rects_aggregate` は P5c-2 prerequisite carry-over (`docs/adr-008-d2-plan.md` §3.bis ledger L1)、modal/attention は D4 carry-over、`semantic_event_stream` の他 variant 拡張は P5c-3/4 後の D2 後継 phase (D2-D-α、§3.bis ledger L2-L4)。詳細は `docs/adr-008-d2-plan.md` §1.3 / §11.1 |
+| D2 | **focus path のみ** view 経由化 (bit-equal 回帰 0)、`current_focused_element` (D1 完了) + `dirty_rects_aggregate` (D2-C、§3.bis ledger L1 復帰、`docs/adr-008-d2-c-plan.md` sub-plan land) + `semantic_event_stream` skeleton (FocusMoved seed) + `predicted_post_state` subgraph (D5 で本格化) を declarative に。modal/attention は D4 carry-over、`semantic_event_stream` の他 variant 拡張は P5c-3/4 後の D2 後継 phase (D2-D-α、§3.bis ledger L2-L4)。詳細は `docs/adr-008-d2-plan.md` §1.3 / §11.1 |
 | D3 | `state_at(now-2s)` で過去 state が引ける、p95 latency < 5ms |
 | D4 | lens 再計算が fixed-point で settle、無限ループ自動検出 (max iter cap) |
 | D5 | `change_fraction` が Tier 3 で動作、Tier 0 fallback も動作、tier pin で挙動切替確認 |
