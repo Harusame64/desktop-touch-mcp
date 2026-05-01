@@ -111,6 +111,26 @@ impl LatestFocusView {
         self.len() == 0
     }
 
+    /// Wallclock_ms of the latest live focus event (= the `first`
+    /// field of the largest-`LogicalTime` entry whose diff sum is
+    /// positive). Used by L4 envelope's `as_of.wallclock_ms` (ADR-010
+    /// §5 + §4.1 Provenance、PR #110 Round 1 P1-4 反映): the envelope
+    /// "freshness" timestamp MUST be the L1 event wallclock, not
+    /// server-side `Date.now()`. Returns `None` when no live focus
+    /// event has been observed (initial spawn / all retractions
+    /// settled).
+    ///
+    /// Read-only via `inner.read()` so concurrent worker writes
+    /// don't block the reader (Arc<RwLock<...>> shared with the
+    /// inspect callback's writer side).
+    pub fn latest_event_wallclock_ms(&self) -> Option<u64> {
+        let g = self.inner.read().expect("LatestFocusView RwLock poisoned");
+        g.counts
+            .iter()
+            .rev()
+            .find_map(|((ts, _), &c)| if c > 0 { Some(ts.first) } else { None })
+    }
+
     /// Apply a diff observation. Internal — called from the timely
     /// worker's inspect closure inside [`build_latest_focus`]. `pub(crate)` so
     /// tests inside the crate can exercise the bookkeeping directly.

@@ -66,7 +66,8 @@
     "check:rs-workspace": "cargo check --workspace --locked",
     "build:rs": "node scripts/build-rs.mjs --release",
     "build:rs:debug": "node scripts/build-rs.mjs --debug",
-    "artifacts:rs": "napi artifacts"
+    "artifacts:rs": "napi artifacts",
+    "bench:envelope-size": "node benches/l4_envelope_size.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

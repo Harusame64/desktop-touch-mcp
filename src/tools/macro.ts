@@ -42,7 +42,10 @@ import { scrollDispatchHandler, scrollSchema } from "./scroll.js";
 // Wait until
 import { waitUntilHandler, waitUntilSchema } from "./wait-until.js";
 // Desktop state
-import { desktopStateHandler, desktopStateSchema } from "./desktop-state.js";
+import {
+  desktopStateRegistrationHandler,
+  desktopStateRegistrationSchema,
+} from "./desktop-state.js";
 // Terminal dispatcher (Phase 2)
 import { terminalDispatchHandler, terminalSchema } from "./terminal.js";
 // Browser tools (Phase 3)
@@ -122,7 +125,13 @@ interface ToolEntry {
 
 const TOOL_REGISTRY: Record<string, ToolEntry> = {
   // Observation
-  desktop_state:        { schema: z.object(desktopStateSchema),        handler: desktopStateHandler },
+  // PR #112 Round 1 P1 (Opus P1-1): use module-scope schema + handler
+  // from desktop-state.ts so `include` survives this dispatcher's
+  // `z.object(schema).parse(args)` call. Without this, `run_macro({tool:
+  // "desktop_state", args:{include:["envelope"]}})` would silently strip
+  // include — same-pattern bug as the server.tool registration path.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  desktop_state:        { schema: z.object(desktopStateRegistrationSchema), handler: desktopStateRegistrationHandler as any },
   screenshot:           { schema: z.object(screenshotSchema),          handler: screenshotHandler },
   // Action — native
   mouse_click:          { schema: z.object(mouseClickSchema),          handler: mouseClickHandler },

@@ -42,6 +42,7 @@ import type {
   NativeCaptureStats,
   NativeFocusedElement,
   NativeViewFocusedPipelineStatus,
+  NativeFocusedElementWithWallclock,
 } from "./native-types.js";
 
 export type * from "./native-types.js";
@@ -326,10 +327,23 @@ export const nativeL1: NativeL1 | null =
 export interface NativeViewFocus {
   viewGetFocused?(): NativeFocusedElement | null;
   viewFocusedPipelineStatus?(): NativeViewFocusedPipelineStatus;
+  /** S3 D2-E0 P1 (ADR-010 PR #110): combined getter returning focused + L1
+   * event wallclock + view-poisoned signal. Used by `_envelope.ts::makeEnvelopeAware`
+   * to build `as_of.wallclock_ms` from L1 event time (PR #110 Round 1 P1-4 反映). */
+  viewGetFocusedWithWallclock?(): NativeFocusedElementWithWallclock;
 }
 
+// PR #112 Round 1 P1-2 (Opus review): probe the **newest** function
+// (`viewGetFocusedWithWallclock` from S3-2) as the discriminator. Probing
+// the older `viewGetFocused` would let an old `.node` binary (PR #96
+// release-shipped, pre-S3-2) pass this check while
+// `viewGetFocusedWithWallclock` is undefined — silently degrading every
+// envelope to `confidence: "degraded"` because `desktopStateRegistrationHandler`'s
+// `fetchMeta` always returns `(false, null)` in that mismatched state.
+// Probing the newer function ensures the slot is set to non-null only
+// when the binary actually exposes both APIs.
 export const nativeViewFocus: NativeViewFocus | null =
-  nativeBinding && typeof nativeBinding.viewGetFocused === "function"
+  nativeBinding && typeof nativeBinding.viewGetFocusedWithWallclock === "function"
     ? (nativeBinding as unknown as NativeViewFocus)
     : null;
 
