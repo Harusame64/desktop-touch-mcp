@@ -74,6 +74,31 @@ export interface NativeViewFocusedPipelineStatus {
   processedCount: bigint
 }
 
+// ─── L3 perception dirty_rects_aggregate view (S2 D2-C) ──────────────────────
+// Returned by `viewGetDirtyRects(monitorIndex)`. Count-only contract spike
+// per `docs/adr-008-d2-c-plan.md` §2.3 / §3.7 — no rect geometry, just a
+// per-`(monitor, frame)` count and the latest frame for the queried monitor.
+
+export interface NativeDirtyRectFrame {
+  frameIndex: bigint
+  count: bigint
+}
+
+export interface NativeDirtyRectsResult {
+  /** The `monitor_index` the caller asked for, echoed back so the TS
+   * layer can confirm round-trip integrity (CLAUDE.md §3.2 PR #102 教訓). */
+  monitorIndex: number
+  liveFrameCount: number
+  /** Most recent `(frame_index, count)` for this monitor, if any.
+   * **Optional** because napi-rs serialises `Option::None` for nested
+   * struct fields by **omitting** the key (not setting it to `null`).
+   * User review on PR #108 (2026-05-01) pinned the runtime behaviour.
+   * Use optional chaining (`result.latest?.frameIndex`) or
+   * `result.latest != null` (covers both `undefined` from omission
+   * and a hypothetical future `null`). */
+  latest?: NativeDirtyRectFrame
+}
+
 export interface NativeFocusAndPointResult {
   focused?: NativeUiaFocusInfo | null
   atPoint?: NativeUiaFocusInfo | null

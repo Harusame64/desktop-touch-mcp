@@ -29,7 +29,9 @@
 //! `semantic_event_stream`, etc. — see `docs/views-catalog.md`.
 
 pub mod current_focused_element;
+pub mod dirty_rects_aggregate;
 pub mod latest_focus;
 
 pub use current_focused_element::{CurrentFocusedElementView, UiElementRef};
+pub use dirty_rects_aggregate::DirtyRectsAggregateView;
 pub use latest_focus::LatestFocusView;

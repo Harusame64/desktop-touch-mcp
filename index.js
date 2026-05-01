@@ -119,4 +119,7 @@ export const l1ShutdownForTest          = nativeBinding.l1ShutdownForTest;
 export const viewGetFocused             = nativeBinding.viewGetFocused;
 export const viewFocusedPipelineStatus  = nativeBinding.viewFocusedPipelineStatus;
 
+// ─── L3 perception dirty_rects_aggregate view (S2 D2-C) ──────────────────────
+export const viewGetDirtyRects          = nativeBinding.viewGetDirtyRects;
+
 export default nativeBinding;
