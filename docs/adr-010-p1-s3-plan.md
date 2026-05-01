@@ -47,7 +47,7 @@ B. **compat mode 必須** (統合書 §11.2 SSOT、Round 2 で書き直し): ser
 C. **`src/tools/desktop-state.ts` を envelope 経由に置換** (skeleton のみ、`caused_by` / `if_unexpected` / `query_past` は S4/S5 で carry-over) — `desktop_state` は **`withPostState` を使用しない** (action tool 専用 wrapper、`browser_click` / `browser_eval` / `browser_navigate` 等)、handler 末尾の `ok({...})` 出力を **L5 wrapper helper 経由で envelope 化** (Opus PR #110 Round 1 P1-1 反映、ADR-010 §1.5 「L5 wrapper が一元解釈、tool 個別実装は修正不要」と整合)
 D. **`as_of.wallclock_ms` の source 確定** — **L1 event wallclock を採用** (Opus PR #110 Round 1 P1-4 反映)。napi 拡張 (`view_get_focused_with_wallclock` 等) で view が観測した最新 L1 event の wallclock を expose、Date.now() approximation は不採用 (semantic 反転回避、ADR-010 §5 / §4.1 Provenance integral、CLAUDE.md §3.2 既存 LLM client 破壊禁止)
 E. **`confidence` 2 値判定** — `fresh` default、size 超過時 / view poisoned 時 / `view_focused_pipeline_status.poisoned == true` 時 `degraded` 降格 (`if_unexpected.most_likely_cause: "EnvelopeSizeExceeded"` は本 trunk 段階では typed enum を**含めず**、text-only marker で carry-over)
-F. **L5 wrapper helper 新設** — `_envelope.ts` 内 `makeEnvelopeAware(handler, toolName)` 等の共通 wrapper helper (Opus PR #110 Round 1 P1-3 反映、ADR-010 §1.5 横断 optional 引数 spec)。`include` 引数は **MCP server 登録 layer の wrapper で peek + strip**、tool 個別 Zod schema には **追加しない**。S4 commit 軸 wrapper への mechanical コピーで「同じ Zod field を毎回 tool 個別 schema に貼る」反復を回避
+F. **L5 wrapper helper 新設** — `_envelope.ts` 内 `makeEnvelopeAware(handler, toolName)` + `withEnvelopeIncludeSchema(baseShape)` 共通 wrapper helper (Opus PR #110 Round 1 P1-3 反映、ADR-010 §1.5 横断 optional 引数 spec、impl PR #112 Round 1 P1 修正反映)。`include` 引数は **registration site で `withEnvelopeIncludeSchema` が generic に schema injection** + **runtime で `makeEnvelopeAware` が peek + strip**。tool source file 自体には `include` 宣言を追加しない (ADR-010 §1.5 spirit 維持、schema injection 自体も L5 wrapper helper の責務に閉じる)。S4 commit 軸 wrapper への mechanical コピーで同 helper pair (`withEnvelopeIncludeSchema` + `makeCommitWrapper`) を貼るだけで両軸 cover (= 「同じ Zod field を毎回 tool 個別 schema に貼る」反復を回避)。impl PR Round 1 教訓 (Codex P1 + Opus P1-1): MCP SDK + `run_macro` どちらも `z.object(schema).parse(args)` を経由するため schema injection 必須、registration site 1 箇所追加 (registration schema export + macro registry の同 instance 参照) で両経路 cover
 G. **envelope size SLO bench harness 新設** — `benches/l4_envelope_size.mjs` (Node bench、既存 `benches/d1_ts_baseline.mjs` 同型 pattern) + bench で `desktop_state` の minimal/degraded 両 envelope size を計測 (envelope 段階で計測、hoist 後ではなく)、CI artifact 経由保存 (gitignored、Round 2 P2-2 反映)、5% 増 warning / 20% 増 fail (ADR-010 §5.6.2、G3 #2 必須)
 H. **G3 ゲート判定 + Appendix C append** — `docs/walking-skeleton-trunk-selection.md` Appendix C 末尾に `| G3 | 2026-05-XX | (継続/shrink) | (...) | (...) |` を append (本 sub-plan §3.6、impl PR merge 後に実施、ledger 永続化、§3.6 D2-E0-6 と同 pattern)
 
@@ -67,6 +67,7 @@ trunk 完了 (G3 通過) 後の expansion phase で実装、本 PR では scope 
 - **OQ #1 — `_post.ts` (existing) と `_envelope.ts` (new) の役割境界 (`desktop_state` 経路は本 S3 で共存問題発生せず)** (Opus Round 1 P1-1 再 framing): `desktop_state` は **`withPostState` を使用しない** (action tool 専用 wrapper) ため、本 trunk では役割境界判断不要。S5 で `desktop_act` (action tool) の commit response wrapper 化時、または S6 finalize で expansion 着手時に役割境界 (統合 / 共存維持) を判断する形に再 framing。本 sub-plan §8 OQ #1 で carry-over
 - **既存 LLM client 破壊禁止 (CLAUDE.md §3.2 PR #102 教訓延長)**: compat mode (server 常に envelope 組立て + default `data` hoist) が既存 raw shape 互換を構造で担保、既存 e2e test 無修正 pass を §3.5 で pin (Opus Round 1 P1-2 反映)
 - **`as_of.wallclock_ms` semantic 反転回避** (Opus Round 1 P1-4 反映): 本 trunk で **L1 event wallclock を採用** することで、後続 P3 で `freshness_ms = now - as_of.wallclock_ms` を加えた時の意味論が反転しない。Date.now() approximation を採用すると `freshness_ms` が常に 0 になり、後で source 切替時に既存 LLM client 破壊 (CLAUDE.md §3.2 PR #102 P5c-2 同型 risk) が発生するため不採用
+- **bench scenario 5 (`viewFocusedPipelineStatus` per-call latency 計測)** (impl PR #112 Round 1 Opus P2-3 反映): 当初 §2.7 / §3.5 で要求した「scenario 5: `viewFocusedPipelineStatus()` per call latency p50/p99 計測」は impl PR では size 計測のみ実装、latency 計測 scenario は不在。`viewPoisoned` 取得 overhead を quantify する §7 R3/R7 mitigation baseline は **expansion ledger に carry-over** (別 PR で `criterion` 等の native bench harness を新設して計測、size bench とは別軸の latency 専用 bench)。本 trunk は size bench 6 scenario (minimal / typical / cursor / screen / document + UTF-8 byte 検証用 japanese) で SLO compliance pin、latency 計測は §7 R3 「`fetchMeta` overhead p99 < 1ms」を後続 PR で確認する acceptance に bump
 
 ### 1.4 北極星整合 + walking skeleton G3 contract
 
@@ -339,23 +340,36 @@ ADR-010 §5 schema line 191-198 + §4.1 Provenance で `as_of.wallclock_ms` は 
 - **結果保存**: `benches/results/l4_envelope_size_*.json` を **gitignored + GitHub Actions artifacts で保存** (Opus Round 1 P2-2 反映、CI auto-commit を main 直 push する設計 = CLAUDE.md §8 spirit と整合性低い → artifacts pattern 採用)。前回比較は GitHub API で前 run の artifact を取得 (Actions Workflow で `actions/download-artifact@v4` + 比較 script)
 - **bench 計測 jitter mitigation** (Opus Round 1 P2-7 反映、※ 番号は §7 Risks 元): warm-up runs ≥ 5、3 回計測の median 採用、外れ値除外なし
 
-### 2.8 既存 caller への影響範囲 (Opus Round 1 P1-3 反映、ADR-010 §1.5 SSOT 準拠)
+### 2.8 既存 caller への影響範囲 (Opus Round 1 P1-3 + impl PR Round 1 P1 反映、ADR-010 §1.5 SSOT 準拠)
 
-`desktop_state` ツール 1 件のみ touch、**Zod schema は無修正** (`include` field は **tool individual schema に追加しない**)。MCP server 登録 site の `makeEnvelopeAware` L5 wrapper layer で `args.include` を peek + strip:
+**impl PR #112 Round 1 修正** (Codex P1 + Opus P1-1): 当初設計「**Zod schema は無修正** (`include` field は tool individual schema に追加しない)」は **MCP SDK の Zod parse 挙動 (unknown key strip) を見落とした設計バグ**。MCP SDK / `run_macro` dispatcher どちらも `z.object(schema).parse(args)` を経由するため、`include` field を schema に明示しないと **handler 呼び出し前に silent strip され per-call opt-in が機能不能**。
+
+修正後設計 (impl PR で確定): tool source file は **依然 `include` を declare しない** (ADR-010 §1.5 spirit 維持) が、registration site で **L5 wrapper helper `withEnvelopeIncludeSchema(baseShape)` が generic に `include?: string[]` を inject** する。schema injection も wrapper helper の責務、tool 実装は envelope-agnostic。
 
 ```typescript
-// src/tools/desktop-state.ts 登録部 (impl PR で実装)
-mcp.tool(
+// src/tools/desktop-state.ts (impl PR で実装、PR #112 Round 1 P1 修正反映)
+import { makeEnvelopeAware, withEnvelopeIncludeSchema } from "./_envelope.js";
+
+// 1. wrapper-layer schema injection (`include?: string[]` 追加)
+export const desktopStateRegistrationSchema = withEnvelopeIncludeSchema(desktopStateSchema);
+
+// 2. envelope-aware handler (peek + strip + envelope build + compat hoist)
+export const desktopStateRegistrationHandler = makeEnvelopeAware(
+  desktopStateHandler,
   "desktop_state",
-  desktopStateSchema,  // 既存 Zod schema 無修正
-  makeEnvelopeAware(desktopStateHandler, "desktop_state"),
+  { fetchMeta: fetchEnvelopeMeta },
 );
+
+// 3. 両 registration site (server.tool + run_macro) で同 module-scope instance 再利用
+server.tool("desktop_state", desktopStateRegistrationSchema, desktopStateRegistrationHandler);
+// → macro.ts TOOL_REGISTRY も z.object(desktopStateRegistrationSchema) 経由
 ```
 
 これにより:
 - 既存 LLM client (引数指定なし default invocation): `args.include === undefined` → wrapper が default raw mode 経由で `data` field を hoist → 既存 raw shape return → **既存 e2e test 無修正 pass** (§3.5 G3 #1 必須)
-- 新 LLM client (envelope opt-in): `args.include = ["envelope"]` → wrapper が envelope mode 経由で envelope shape return
-- S4 mechanical コピー: `desktop_discover/act` 等の commit 軸 wrapper に同 helper を貼るだけ、Zod schema 改修なし、ADR-010 §1.5「L5 wrapper が一元解釈、tool 個別実装は修正不要」と完全整合
+- 新 LLM client (envelope opt-in): `args.include = ["envelope"]` → schema injection で Zod parse を survive → wrapper が peek → envelope mode 経由で envelope shape return
+- `run_macro({tool:"desktop_state", args:{include:["envelope"]}})` 経由も同 module-scope schema + handler を経由するため同等動作 (Opus P1-1 同型 strip 防止)
+- S4 mechanical コピー: `desktop_discover/act` 等の commit 軸 wrapper に同 helper pair (`withEnvelopeIncludeSchema` + `makeCommitWrapper`) を貼る、tool 個別 schema 改修なし、ADR-010 §1.5「L5 wrapper が一元解釈、tool 個別実装は修正不要」と完全整合 (= schema injection は L5 wrapper helper の責務、tool source 不変)
 
 他 tool は本 trunk で envelope 化しない (expansion で rollout、§1.2)。`_post.ts::withPostState` も本 trunk で touch なし — `desktop_state` 経路は元々不使用、action tool への適用は S5 で OQ #1 解消時に判断。
 
@@ -392,11 +406,14 @@ mcp.tool(
 ### 3.3 S3-3: `desktop-state.ts` 統合 + size threshold baseline 計測 (~40 line) [S3 trunk]
 
 - [ ] `src/tools/desktop-state.ts`:
-  - [ ] **Zod schema は無修正** (`include` field 追加なし、ADR-010 §1.5 SSOT、Round 1 P1-3 反映)
-  - [ ] handler signature を `Promise<{ data: unknown; viewPoisoned?: boolean; asOfWallclockMs?: number }>` に変更、または既存 `Promise<ToolResult>` 維持して wrapper layer で `__envelope_meta` sentinel 経由で渡す (impl PR で 2 案を実測比較、cleaner alternative を採用)
-  - [ ] handler 内で `viewGetFocusedWithWallclock()` 呼出 (S3-2 で新設)、結果から `viewPoisoned` + `asOfWallclockMs` を抽出して wrapper に渡す
+  - [ ] **Zod schema は registration 経路で `withEnvelopeIncludeSchema(desktopStateSchema)` 経由で `include?: string[]` 注入** (impl PR Round 1 P1 反映: 旧版「Zod schema 無修正」は MCP SDK の Zod parse 挙動 = unknown key strip を見落とした設計バグ、`include` を schema 宣言なしで passthrough 不能、§2.8 修正後 SSOT)
+  - [ ] tool source file 自体には `include` 宣言を**追加しない** (ADR-010 §1.5 spirit 維持、registration site で wrapper helper が injection 担当)
+  - [ ] `desktopStateRegistrationSchema` + `desktopStateRegistrationHandler` を module-scope で export (`server.tool` + `run_macro` 両 registration site で同 instance 再利用、Opus P1-1 同型 strip 防止)
+  - [ ] `fetchEnvelopeMeta` を module-scope helper として定義: `viewGetFocusedWithWallclock()` 呼出 → `viewPoisoned` + `asOfWallclockMs` 抽出、napi 失敗時は `(true, null)` 返却で `confidence: degraded` fallback
 - [ ] MCP server 登録部 (`src/server.ts` or 同等):
-  - [ ] `mcp.tool("desktop_state", schema, makeEnvelopeAware(desktopStateHandler, "desktop_state"))`
+  - [ ] `mcp.tool("desktop_state", desktopStateRegistrationSchema, desktopStateRegistrationHandler)` (module-scope wrapped instance 経由)
+- [ ] `src/tools/macro.ts` の `TOOL_REGISTRY.desktop_state`:
+  - [ ] `{ schema: z.object(desktopStateRegistrationSchema), handler: desktopStateRegistrationHandler }` で同 module-scope instance を使用 (Opus P1-1: `run_macro` 経由でも同型 strip risk があり、両 registration site で同 wrapped instance を共有することで cover)
 - [ ] **size threshold baseline 計測** (Opus Round 1 P2-3 反映): S3-1 + S3-3 統合直後に `npm run bench:envelope-size` 1 回実行 → `desktop_state` minimal envelope size 実測 → 1024 byte 超過 risk 確認、必要なら `ENVELOPE_MINIMAL_SIZE_THRESHOLD_BYTES` を 2048 byte 等に確定 (4 SSOT bit-equal sync: §1.1 G + §2.6 + §7 R3 + ADR-010 §5.6.1)
 
 ### 3.4 S3-4: `desktop_state` envelope contract test (~80 line) [S3 trunk]

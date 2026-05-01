@@ -24,7 +24,7 @@ import type {
 import { CHROMIUM_TITLE_RE } from "./workspace.js";
 import { getSlotSnapshot } from "../engine/perception/hot-target-cache.js";
 import type { AttentionState } from "../engine/perception/types.js";
-import { makeEnvelopeAware } from "./_envelope.js";
+import { makeEnvelopeAware, withEnvelopeIncludeSchema } from "./_envelope.js";
 
 const _defaultPort = getCdpPort();
 
@@ -555,46 +555,79 @@ export const getDocumentStateHandler = async ({ port, tabId }: { port: number; t
 // Registration
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function registerDesktopStateTools(server: McpServer): void {
-  // S3 D2-E0 P1 (ADR-010): wrap handler with `makeEnvelopeAware` so the
-  // raw result is wrapped in `EnvelopeMinimalShape` (always; SSOT) and
-  // post-flatten compat-hoisted for default raw-shape clients
-  // (per `docs/adr-010-p1-s3-plan.md` §1.5 + §2.3 + §2.4 SSOT).
-  //
-  // `fetchMeta` reads L1 event wallclock + view-poisoned signal via the
-  // `viewGetFocusedWithWallclock()` napi binding (S3-2). When the napi
-  // surface is missing (non-Windows / native build absent) `fetchMeta`
-  // returns `(false, null)` so `buildEnvelope` falls back to `Date.now()`
-  // + `confidence: degraded`.
-  const wrappedHandler = makeEnvelopeAware(
-    desktopStateHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
-    "desktop_state",
-    {
-      fetchMeta: async () => {
-        if (
-          nativeViewFocus &&
-          typeof nativeViewFocus.viewGetFocusedWithWallclock === "function"
-        ) {
-          try {
-            const meta = nativeViewFocus.viewGetFocusedWithWallclock();
-            return {
-              viewPoisoned: meta.viewPoisoned,
-              asOfWallclockMs:
-                meta.latestEventWallclockMs != null
-                  ? Number(meta.latestEventWallclockMs)
-                  : null,
-            };
-          } catch {
-            // Napi call failed at runtime: degrade to Date.now() fallback
-            // + confidence: degraded so LLM clients can detect.
-            return { viewPoisoned: true, asOfWallclockMs: null };
-          }
-        }
-        return { viewPoisoned: false, asOfWallclockMs: null };
-      },
+// PR #112 Round 1 P1 fix (Codex + Opus): wrap once at module scope so
+// `server.tool` registration AND `run_macro` dispatcher (`./macro.ts`)
+// share the SAME wrapped handler + schema. Without this, macro 経路は
+// `desktopStateSchema` を直接 z.object(...) で parse して include を
+// strip するので per-call `include:["envelope"]` は機能不能 (Opus P1-1)。
+//
+// `fetchMeta` reads L1 event wallclock + view-poisoned signal via the
+// `viewGetFocusedWithWallclock()` napi binding (S3-2). Defensive paths:
+// - napi surface missing (non-Windows / native build absent): return
+//   `(false, null)` → `buildEnvelope` falls back to `Date.now()` +
+//   `confidence: degraded` so LLM clients detect approximation.
+// - napi call throws: same fallback path (try/catch).
+const fetchEnvelopeMeta = async () => {
+  if (
+    nativeViewFocus &&
+    typeof nativeViewFocus.viewGetFocusedWithWallclock === "function"
+  ) {
+    try {
+      const meta = nativeViewFocus.viewGetFocusedWithWallclock();
+      // `latestEventWallclockMs` is napi-rs `Option<u64>` and may be
+      // **omitted** (key absent) when no event observed yet — NOT just
+      // `=== null`. `meta.latestEventWallclockMs != null` covers both
+      // `undefined` (omission) and a hypothetical future explicit `null`
+      // (PR #108 same-pattern guard, memory `feedback_napi_default_export.md`).
+      return {
+        viewPoisoned: meta.viewPoisoned,
+        asOfWallclockMs:
+          meta.latestEventWallclockMs != null
+            ? Number(meta.latestEventWallclockMs)
+            : null,
+      };
+    } catch {
+      // Napi call failed at runtime: degrade to Date.now() fallback
+      // + confidence: degraded so LLM clients can detect.
+      return { viewPoisoned: true, asOfWallclockMs: null };
     }
-  );
+  }
+  return { viewPoisoned: false, asOfWallclockMs: null };
+};
 
+/**
+ * `desktop_state` registration schema with `include?: string[]` injected
+ * (PR #112 Round 1 P1 fix). Tool source files don't declare `include`
+ * themselves (ADR-010 §1.5 spirit) — the L5 wrapper helper owns both
+ * schema injection and runtime peek+strip.
+ *
+ * Used by:
+ * - `registerDesktopStateTools` (this file)
+ * - `./macro.ts` `TOOL_REGISTRY.desktop_state` (so `run_macro` dispatcher
+ *   sees the same schema and `include` survives its `z.object(...).parse()`)
+ */
+export const desktopStateRegistrationSchema = withEnvelopeIncludeSchema(desktopStateSchema);
+
+/**
+ * Envelope-aware `desktop_state` handler. Wraps `desktopStateHandler`
+ * with `makeEnvelopeAware` (always-envelope SSOT + post-flatten compat
+ * hoist + L1 event wallclock `as_of` source). Used by both
+ * `server.tool` and `run_macro` registration sites (PR #112 Opus P1-1).
+ */
+export const desktopStateRegistrationHandler = makeEnvelopeAware(
+  desktopStateHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
+  "desktop_state",
+  { fetchMeta: fetchEnvelopeMeta }
+);
+
+export function registerDesktopStateTools(server: McpServer): void {
+  // PR #112 Round 1 P1 (Codex + Opus + user review): pass the module-scope
+  // `desktopStateRegistrationSchema` (`include` injected via
+  // `withEnvelopeIncludeSchema`) and `desktopStateRegistrationHandler`
+  // (envelope-aware wrapper) so `run_macro` dispatcher reuses the SAME
+  // wrapped instances (Opus P1-1 同型 strip risk for macro path).
+  // Comments live OUTSIDE the call so the stub-catalog generator's
+  // bare-identifier regex sees clean args[2] / args[3].
   server.tool(
     "desktop_state",
     buildDesc({
@@ -617,8 +650,8 @@ export function registerDesktopStateTools(server: McpServer): void {
         "Cannot detect non-UIA elements (custom-drawn UIs, game overlays). hasModal only detects modal dialogs exposed via UIA — browser alert/confirm dialogs may not appear here. " +
         "includeDocument requires browser_open (CDP active); silently omitted otherwise with hints.documentUnavailable.",
     }),
-    desktopStateSchema,
-    wrappedHandler as typeof desktopStateHandler
+    desktopStateRegistrationSchema,
+    desktopStateRegistrationHandler as typeof desktopStateHandler
   );
 
   // Phase 4: get_history / get_document_state privatized — handlers retained

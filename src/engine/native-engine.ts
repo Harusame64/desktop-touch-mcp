@@ -333,8 +333,17 @@ export interface NativeViewFocus {
   viewGetFocusedWithWallclock?(): NativeFocusedElementWithWallclock;
 }
 
+// PR #112 Round 1 P1-2 (Opus review): probe the **newest** function
+// (`viewGetFocusedWithWallclock` from S3-2) as the discriminator. Probing
+// the older `viewGetFocused` would let an old `.node` binary (PR #96
+// release-shipped, pre-S3-2) pass this check while
+// `viewGetFocusedWithWallclock` is undefined — silently degrading every
+// envelope to `confidence: "degraded"` because `desktopStateRegistrationHandler`'s
+// `fetchMeta` always returns `(false, null)` in that mismatched state.
+// Probing the newer function ensures the slot is set to non-null only
+// when the binary actually exposes both APIs.
 export const nativeViewFocus: NativeViewFocus | null =
-  nativeBinding && typeof nativeBinding.viewGetFocused === "function"
+  nativeBinding && typeof nativeBinding.viewGetFocusedWithWallclock === "function"
     ? (nativeBinding as unknown as NativeViewFocus)
     : null;
 

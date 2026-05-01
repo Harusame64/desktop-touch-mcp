@@ -92,12 +92,32 @@ const SCENARIO_DOCUMENT = {
   },
 };
 
+// PR #112 Round 1 P2 (Codex): non-ASCII Japanese title scenario validates
+// the byte-vs-UTF-16-code-units fix in `envelopePayloadSizeBytes`. Japanese
+// CJK characters take 1 UTF-16 code unit but 3 UTF-8 bytes — the SLO must
+// measure bytes, not `JSON.stringify(...).length`.
+const SCENARIO_JAPANESE = {
+  ...SCENARIO_TYPICAL,
+  focusedWindow: {
+    title: "メモ帳 - 無題.txt",
+    hwnd: 67890,
+    processName: "notepad.exe",
+  },
+  focusedElement: {
+    name: "テキスト エディタ",
+    type: "Edit",
+    value: "こんにちは、世界",
+    automationId: "editor:main",
+  },
+};
+
 const SCENARIOS = [
   { name: "minimal",  data: SCENARIO_MINIMAL  },
   { name: "typical",  data: SCENARIO_TYPICAL  },
   { name: "cursor",   data: SCENARIO_CURSOR   },
   { name: "screen",   data: SCENARIO_SCREEN   },
   { name: "document", data: SCENARIO_DOCUMENT },
+  { name: "japanese", data: SCENARIO_JAPANESE },
 ];
 
 const FRESH_WALLCLOCK = 1_738_156_823_412;

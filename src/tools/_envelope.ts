@@ -41,13 +41,33 @@
  *
  * # `include` arg routing (Round 1 P1-3 反映、ADR-010 §1.5)
  *
- * The `include` arg is NOT added to individual tool Zod schemas.
- * Instead, `makeEnvelopeAware` peeks `args.include` at the wrapper
- * layer and strips it before invoking the handler — tool individual
- * implementations stay unchanged. S4 commit-axis wrapper extends this
- * pattern (sub-plan §2.1) by composing `makeCommitWrapper` /
- * `makeQueryWrapper` on top of `makeEnvelopeAware`.
+ * The `include` arg is NOT added to individual tool source files'
+ * Zod schemas. Instead, `withEnvelopeIncludeSchema(baseShape)` injects
+ * an `include?: string[]` field into the schema **at registration time**,
+ * and `makeEnvelopeAware` peeks `args.include` at the wrapper layer and
+ * strips it before invoking the handler.
+ *
+ * **Why injection is required** (PR #112 Round 1 P1, Codex + user
+ * review): MCP SDK's `server.tool(name, schema, handler)` runs Zod
+ * `.parse()` BEFORE invoking the registered handler. Zod's default
+ * object parsing **strips unknown keys**, so without injection
+ * `include` would be removed from `args` before `makeEnvelopeAware`
+ * could peek it. The wrapper's per-call opt-in path (`include:["envelope"]`
+ * / `include:["raw"]`) only works if `include` survives the schema
+ * parse step.
+ *
+ * Tool source files still don't declare `include` themselves — the
+ * registration site calls `withEnvelopeIncludeSchema(baseShape)` to
+ * produce the registration-time schema, keeping ADR-010 §1.5 spirit:
+ * tool implementations stay envelope-agnostic, the L5 wrapper helper
+ * owns both schema injection and runtime peek+strip.
+ *
+ * S4 commit-axis wrapper extends this pattern (sub-plan §2.1) by
+ * composing `makeCommitWrapper` / `makeQueryWrapper` on top of
+ * `makeEnvelopeAware` + `withEnvelopeIncludeSchema`.
  */
+
+import { z, type ZodArray, type ZodOptional, type ZodString, type ZodTypeAny } from "zod";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -100,6 +120,59 @@ export interface EnvelopeOptions {
   asOfWallclockMs?: number | null;
 }
 
+// ─── Schema injection helper (PR #112 Round 1 P1 fix) ─────────────────────────
+
+/**
+ * Inject the wrapper-layer `include?: string[]` field into a tool's
+ * raw Zod shape so MCP SDK's `server.tool()` parse step preserves
+ * `args.include` for `makeEnvelopeAware` to peek (per-call envelope
+ * opt-in / raw override path).
+ *
+ * **Why this is needed** (PR #112 Round 1 P1): without injection, the
+ * MCP SDK runs Zod `.parse()` on the registration schema before the
+ * handler is invoked. Zod object parsing strips unknown keys by default,
+ * so `include:["envelope"]` would be silently dropped before
+ * `makeEnvelopeAware` could peek it — only the env-var path
+ * (`DESKTOP_TOUCH_ENVELOPE=1`) would work.
+ *
+ * Generic over the input shape so the tool's existing field types
+ * (Zod schema fragments) are preserved. Returns a new object with the
+ * `include` field appended; does not mutate the caller's shape.
+ *
+ * Usage at registration site (per ADR-010 §1.5 spirit — tool source
+ * files don't need to declare `include` themselves):
+ *
+ * ```ts
+ * server.tool(
+ *   "desktop_state",
+ *   description,
+ *   withEnvelopeIncludeSchema(desktopStateSchema),  // adds include
+ *   makeEnvelopeAware(handler, "desktop_state", { fetchMeta }),
+ * );
+ * ```
+ *
+ * The injected shape: `include: z.array(z.string()).optional()`.
+ * `["envelope"]` / `["raw"]` are recognised by `resolveEnvelopeOptIn`;
+ * unknown values are ignored (priority chain falls through to env / default).
+ */
+export function withEnvelopeIncludeSchema<T extends Record<string, ZodTypeAny>>(
+  baseShape: T,
+): T & { include: ZodOptional<ZodArray<ZodString>> } {
+  return {
+    ...baseShape,
+    include: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Optional response-shape opt-in. " +
+        "`['envelope']` returns the self-documenting envelope " +
+        "(`_version` / `data` / `as_of` / `confidence`). " +
+        "`['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). " +
+        "Default behaviour is raw shape (compat with existing clients).",
+      ),
+  } as T & { include: ZodOptional<ZodArray<ZodString>> };
+}
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 /**
@@ -138,13 +211,23 @@ export function resolveEnvelopeOptIn(
 }
 
 /**
- * Compute estimated payload size of an envelope (or raw shape).
+ * Compute estimated **UTF-8 byte size** of an envelope (or raw shape).
+ *
  * Used by the size SLO bench harness + the `confidence: degraded`
  * downgrade trigger when envelope size exceeds the per-Phase threshold.
+ *
+ * **Why bytes, not `JSON.stringify(...).length`** (PR #112 Round 1 P2-A,
+ * Codex review): JS string `.length` returns the count of UTF-16 code
+ * units, not UTF-8 bytes. Non-ASCII window titles / labels (common in
+ * this project — Japanese / Chinese / Korean UI) take 1 UTF-16 code
+ * unit per BMP character but 3 UTF-8 bytes; UTF-16 surrogate pairs
+ * (emoji, supplementary plane) take 2 code units but 4 UTF-8 bytes.
+ * The 1024-byte SLO is stated in bytes (ADR-010 §5.6.1), so the gate
+ * must measure bytes via `Buffer.byteLength(s, "utf8")`.
  */
 export function envelopePayloadSizeBytes(payload: unknown): number {
   try {
-    return JSON.stringify(payload).length;
+    return Buffer.byteLength(JSON.stringify(payload), "utf8");
   } catch {
     // Circular ref or BigInt: defensive 0 (caller treats as non-degraded
     // since size-based degradation is best-effort).
@@ -213,15 +296,22 @@ export function compatHoist<T>(
 
 /**
  * MCP-shape `ToolResult` (the protocol shape every tool handler
- * returns). Imported from `./_types.js` to match the rest of the
- * tool layer; redefined inline here for self-containment of this
- * wrapper module.
+ * returns). Redefined here (rather than imported from `./_types.js`)
+ * to keep this wrapper module self-contained — `_envelope.ts` is the
+ * generic L5 helper, callers cast their `ToolResult`-typed handlers
+ * to this loose shape at the registration site.
  *
  * Note we only use `content[0]` of type `"text"` — non-text blocks
  * are passed through unchanged (defensive for handlers that return
  * mixed shapes).
+ *
+ * **Exported** (PR #112 Round 1 follow-up) so `desktop-state.ts` can
+ * declare `desktopStateRegistrationHandler` with a name TypeScript can
+ * emit in its `.d.ts` — without the export, `tsc` raises TS4023
+ * "exported variable has or is using name from external module but
+ * cannot be named".
  */
-interface McpToolResult {
+export interface McpToolResult {
   content: Array<{ type: string; text?: string; [k: string]: unknown }>;
   [k: string]: unknown;
 }

@@ -674,8 +674,26 @@ function parseDiscriminatedUnionSchema(rawExpr) {
 
 function parseSchema(src, schemaName) {
   if (!schemaName) return { type: 'object', properties: {}, additionalProperties: false };
-  const expr = findConstExpression(src, schemaName);
-  if (!expr || !expr.trim().startsWith('{')) return { type: 'object', properties: {}, additionalProperties: true };
+  let expr = findConstExpression(src, schemaName);
+  if (!expr) return { type: 'object', properties: {}, additionalProperties: true };
+
+  // PR #112 Round 1 P1 follow-up: when a schema is wrapped via the
+  // L5 envelope helper `withEnvelopeIncludeSchema(baseShape)`, recurse
+  // into the bare-identifier `baseShape` and append the injected
+  // `include?: string[]` field manually — the generator can only parse
+  // inline object literal shapes, not function-call wrappings.
+  // Pattern: `withEnvelopeIncludeSchema(<identifier>)` (single arg, bare name).
+  let envelopeWrapped = false;
+  const wrapperMatch = expr.trim().match(
+    /^withEnvelopeIncludeSchema\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*;?\s*$/,
+  );
+  if (wrapperMatch) {
+    envelopeWrapped = true;
+    const innerName = wrapperMatch[1];
+    expr = findConstExpression(src, innerName) ?? '';
+  }
+
+  if (!expr.trim().startsWith('{')) return { type: 'object', properties: {}, additionalProperties: true };
   const properties = {};
   const required = [];
   for (const rawField of splitObjectFields(expr)) {
@@ -699,6 +717,23 @@ function parseSchema(src, schemaName) {
     if (!optional) required.push(key);
   }
   applySchemaOverrides(schemaName, properties, required);
+
+  // Append the wrapper-layer `include?: string[]` field for envelope-wrapped
+  // schemas (matches the runtime injection in `_envelope.ts::withEnvelopeIncludeSchema`).
+  if (envelopeWrapped) {
+    properties.include = {
+      type: 'array',
+      items: { type: 'string' },
+      description:
+        "Optional response-shape opt-in. " +
+        "`['envelope']` returns the self-documenting envelope " +
+        "(`_version` / `data` / `as_of` / `confidence`). " +
+        "`['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). " +
+        "Default behaviour is raw shape (compat with existing clients).",
+    };
+    // include is optional — don't add to required.
+  }
+
   const schema = { type: 'object', properties, additionalProperties: false };
   if (required.length) schema.required = required;
   return schema;
