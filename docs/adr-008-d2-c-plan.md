@@ -407,7 +407,7 @@ trunk 完了後 (G2 通過後) の expansion phase で実装:
 trunk + expansion 完了後の別 phase で carry-over:
 
 - **secondary monitor 専用機能** (`docs/adr-007-p5c-2-plan.md` §10 OQ #3 と同 carry-over)
-- **D2-E0 dataflow scope refactor の追加形 refactor (carry-over の対象は **追加形 のみ**、basic refactor は S1 trunk = walking skeleton PR-η で実施済前提)**: 本 S2 着手時点で S1 (D2-E0 PR-η) は既に merged 必須 (User feedback PR #103 review 2026-05-01、§7 R7 と整合)。S1 が land する basic refactor = `spawn_perception_worker` の signature 拡張 + 複数 view を返す shape の確立。本 carry-over に該当する **追加形 refactor** = D1 `current_focused_element` も `build_*(scope, stream) -> (Arranged, View)` signature に揃える後追い refactor (本 S2 では `build_dirty_rects_aggregate` のみ新 signature、D1 view は既存 shape 維持で OK、cross-view signature 統一は trunk 完了後の cleanup)
+- **D2-E0 dataflow scope refactor の追加形 refactor (carry-over の対象は **追加形 のみ**、basic refactor は S1 trunk = walking skeleton PR-η で実施済前提)**: 本 S2 着手時点で S1 (D2-E0 PR-η) は既に merged 必須 (User feedback PR #103 review 2026-05-01、§7 R7 と整合)。S1 が land する basic refactor = `spawn_perception_worker` の closure 3-tuple 返却 shape + **D1 view 両方 (`build_current_focused_element` + `build_latest_focus`) の `build_*(scope, &stream) -> (Arranged, View)` signature 統一**を含む (D2-E0 sub-plan `docs/adr-008-d2-e0-plan.md` §1.1 A/B、Opus round 1 P1-1 sync 2026-05-01)。本 carry-over に該当する **追加形 refactor** = `build_*` cross-view docstring / 命名 convention 文書化 / mod 構造の標準化 / `Arranged` 戻り値型 alias / compile_fail test 追加 等の **完成度向上系のみ** (D2-E0 sub-plan §1.2 expansion + §6 follow-up に集約)。本 S2 では `build_dirty_rects_aggregate` のみ新規追加で同 signature pattern を mechanical コピー、D1 view 両方の signature 統一は S1 で land 済前提
 - **`recent_window(N_ms)` の time-travel API**: D3 で arrangement の time slice 機能と一緒に提供
 
 ---

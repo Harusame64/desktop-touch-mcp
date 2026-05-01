@@ -489,4 +489,4 @@ expansion フェーズ:
 
 ---
 
-END OF Walking Skeleton — trunk 選定 (Proposed v0.3)。
+END OF Walking Skeleton — trunk 選定 (Proposed v0.4)。

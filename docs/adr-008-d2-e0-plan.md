@@ -227,31 +227,43 @@ where
 
 ### 2.3 `spawn_perception_worker` の `worker.dataflow` closure 内 wiring
 
-#### [S1 trunk] 新 wiring
+#### [S1 trunk] 新 wiring (option α、§2.3 後段で確定)
 
 ```rust
 // crates/engine-perception/src/input.rs::spawn_perception_worker (一部)
 
-let mut input: InputSession<LogicalTime, FocusEvent, isize> =
-    worker.dataflow::<LogicalTime, _, _>(|scope| {
-        let (input, focus_stream) = scope.new_collection::<FocusEvent, isize>();
-        // S1 (本 PR): build_* を新 signature 経由で呼ぶ
-        let (cfe_arranged, cfe_view) =
-            current_focused_element::build_current_focused_element(scope, &focus_stream);
-        let latest_view = latest_focus::build_latest_focus(scope, &focus_stream);
-        // `cfe_arranged` は scope 内で `_` 化 — S2/D2-E で他 subgraph から
-        // borrow される設計 (本 S1 では consumer 不在、warning 抑制)。
-        // 型システム上、scope を抜けた時点で drop され、外部 struct への
-        // 持ち出しは static error になる (Codex v2 P2-9 lifetime guard)。
-        let _ = cfe_arranged;
+// closure return type を 3-tuple に拡張 → 外で destructure。
+// 旧版 `let mut input = worker.dataflow(...)` (return = InputSession) との差分:
+// closure return が `(InputSession, View, LatestView)` に拡張、`mut input` は
+// 1 要素目の destructure 受け取り。
+let (mut input, cfe_view, latest_view): (
+    InputSession<LogicalTime, FocusEvent, isize>,
+    CurrentFocusedElementView,
+    LatestFocusView,
+) = worker.dataflow::<LogicalTime, _, _>(|scope| {
+    let (input, focus_stream) = scope.new_collection::<FocusEvent, isize>();
+    // S1 (本 PR): build_* を新 signature 経由で呼ぶ
+    let (cfe_arranged, cfe_view) =
+        current_focused_element::build_current_focused_element(scope, &focus_stream);
+    let latest_view = latest_focus::build_latest_focus(scope, &focus_stream);
+    // `cfe_arranged` は scope 内で `_` 化 — S2/D2-E で他 subgraph から
+    // borrow される設計 (本 S1 では consumer 不在、warning 抑制)。
+    // 型システム上、scope を抜けた時点で drop され、外部 struct への
+    // 持ち出しは static error になる (Codex v2 P2-9 lifetime guard、§2.5)。
+    let _ = cfe_arranged;
 
-        // 既存 worker_loop が view と latest_view を使うので、parent 側で
-        // clone して渡す (現状の clone semantics 維持)。
-        // (※ build_* が view を生成する new shape に揃ったので、parent 側の
-        // `let view = View::new()` 重複行は削除する。)
-        // 戻り値: input は parent 側で `mut input` として cmd 経由 update_at)
-        input
-    });
+    // build_* が view を生成する new shape に揃ったので、parent 側の
+    // `let view = View::new()` + `let view_for_worker = view.clone()` 重複行
+    // は削除する。closure 外で `view_for_worker = cfe_view.clone()` /
+    // `latest_view_for_worker = latest_view.clone()` を作って worker_loop に
+    // move (§2.3 closure 後 worker_loop wiring + §3.3 D2-E0-3 checklist)。
+
+    // 戻り値: 3-tuple `(input, cfe_view, latest_view)` を closure 外に
+    // export (option α、§2.3 後段で判断確定)。`cfe_arranged` は同 closure
+    // 内で `_` 化済、`Arranged<G, ...>` を tuple に含めると lifetime 'scope
+    // が逃げて static error (§2.5)、3-tuple は値型 view handle のみで安全。
+    (input, cfe_view, latest_view)
+});
 ```
 
 #### 差分要約
@@ -348,10 +360,10 @@ caller は **`spawn_perception_worker` の closure 1 箇所のみ**。本 PR で
   - [ ] closure 内を §2.3 option α (3-tuple 返却) shape に変更:
     - `let (input, focus_stream) = scope.new_collection::<FocusEvent, isize>();`
     - `let (cfe_arranged, cfe_view) = current_focused_element::build_current_focused_element(scope, &focus_stream);`
-    - `let latest_view_built = latest_focus::build_latest_focus(scope, &focus_stream);`
+    - `let latest_view = latest_focus::build_latest_focus(scope, &focus_stream);`
     - `let _ = cfe_arranged;` (S2/D2-E consumer 不在の warning 抑制)
-    - closure 戻り値: `(input, cfe_view, latest_view_built)`
-  - [ ] closure 外で 3-tuple を destructure、`view_for_worker = view.clone()` / `latest_view_for_worker = latest_view.clone()` を作成
+    - closure 戻り値: `(input, cfe_view, latest_view)`
+  - [ ] closure 外で 3-tuple を destructure (`let (mut input, cfe_view, latest_view) = worker.dataflow(...);`)、`view_for_worker = cfe_view.clone()` / `latest_view_for_worker = latest_view.clone()` を作成
   - [ ] `spawn_perception_worker` 戻り値 4-tuple は不変 (`(PerceptionWorker, FocusInputHandle, View, LatestView)`)
 
 ### 3.4 D2-E0-4: docstring / mod.rs export 整合 (~10 line) [S1 trunk]
@@ -419,8 +431,8 @@ memory `project_adr008_d2_c_plan_done.md` Lesson 1-4 で確立された User rev
 ### 4.4 restore 後 numeric count sync 漏れ (carry-over → restore で件数表記更新)
 
 **確認項目**:
-- [ ] 本 PR では新規 carry-over → restore は無いが、§3 sub-batch 数 (D2-E0-1 〜 D2-E0-7 = 7 件) と §8 OQ 件数 (3 件) が本 sub-plan 内 / 親 plan §3 PR 表 PR-η size 想定 (~200-300 line) と整合か?
-- [ ] `Grep "200-300 line\|7 件\|3 件"` で本 sub-plan 内 numeric counts が bit-equal か? (acceptance / sub-batch / OQ / risks の各表で件数を引用している箇所が同期しているか)
+- [ ] 本 PR では新規 carry-over → restore は無いが、§3 sub-batch 数 (D2-E0-1 〜 D2-E0-7 = 7 件) / §8 OQ 件数 (3 件) / §7 Risks 件数 (R1-R9 = 9 件、Codex round 1 P2 反映で R9 追加) が本 sub-plan 内 / 親 plan §3 PR 表 PR-η size 想定 (~200-300 line) と整合か?
+- [ ] `Grep "200-300 line\|7 件\|3 件\|9 件"` で本 sub-plan 内 numeric counts が bit-equal か? (acceptance / sub-batch / OQ / risks の各表で件数を引用している箇所が同期しているか)
 - [ ] **G1 ゲート判定後**、§3.6 で Appendix C に append する内容が本 sub-plan §1.1 G acceptance と bit-equal か?
 
 ### 4.5 既存 public API 破壊禁止 (CLAUDE.md §3.2 PR #102 教訓延長)
@@ -434,7 +446,7 @@ memory `project_adr008_d2_c_plan_done.md` Lesson 1-4 で確立された User rev
 
 ## 5. PR 切り方
 
-| sub-batch | 範囲 | size 想定 |
+| sub-batch (1 PR で land、分割しない) | 範囲 | size 想定 |
 |---|---|---|
 | **D2-E0 (本 PR、merged sub-batch)** | 3.1 build_current_focused_element signature 変更 + 3.2 build_latest_focus signature 変更 + 3.3 spawn_perception_worker closure wiring + 3.4 docstring/export 整合 + 3.5 検証 + 3.6 G1 ゲート判定 + 3.7 push 6 ガード + Opus + Codex review | **200-300 line** (親 plan §3 PR 表 PR-η size 想定 line 803 と整合) |
 
@@ -467,6 +479,7 @@ trunk + expansion 完了後の別 phase で carry-over:
 | R6 | G1 ゲート判定が「shrink」になり、S2 (D2-C) の scope を sub-plan §1.1 から削る決定 | 中 | §3.6 で判定結果を Appendix C に append + S2 sub-plan §1.1 を必要に応じて修正、`docs/walking-skeleton-trunk-selection.md` §5.1 「scope shrink 内容」列に記載 (G1 例: 「S2 の dirty rect view を count-only にさらに絞る (`monitor_index` field は維持)」) |
 | R7 | `Arranged` を closure 外に持ち出す型エラーが意図せず通る (lifetime escape が成立してしまう) | 低 | `cargo check` で意図的 escape 試行 (§3.5)、`Arranged<G, ...>` の `G` lifetime parameter が closure 戻り値型に含まれる場合 timely が拒否することを確認 |
 | R8 | sub-plan PR (本 PR) と impl PR の間で walking skeleton trunk が更新され、S1 scope が変わる | 低 | sub-plan PR merged 後すぐ impl PR を起こす、間に walking skeleton trunk 改訂が入った場合は impl PR 着手前に本 sub-plan を再 sync (User feedback 2026-05-01 PR #103 で確立 pattern) |
+| R9 | DD `Collection<G, ...>` の `reduce` 戻り値を `inspect` と `arrange_by_key` の両方に feed する 2-borrow shape (§2.1 コード例) が DD API で成立しない (現実装 D1-3 は method chain 1 回 borrow のみで 2-borrow パターンは本 PR で新規導入) | 低-中 | 実装着手前に minimal PoC (`reduce` 結果に対し `inspect` + `arrange_by_key` を両方呼ぶ small dataflow を `cargo check`) を必ず通す。DD `Collection` は通常 `Clone` 実装するので、不成立なら `let reduced_for_inspect = reduced.clone()` で 2 handle に分離 (Codex review 2026-05-01 P2 反映) |
 
 ---
 
@@ -536,6 +549,7 @@ production-pipeline lifecycle test 8 件 → spawn_perception_worker 4-tuple des
 
 ## 10. References
 
+- **signature SSOT 注釈**: `build_current_focused_element` / `build_latest_focus` の signature SSOT は本 sub-plan §2.1 / §2.2 (`Arranged<G, TraceAgent<OrdValSpine<u64, UiElementRef, G::Timestamp, isize>>>` の full 展開)。親 plan §D2-E0-2 line 717 の `Arranged<...>` 省略表記は backward-compat 表現で、impl 着手時は本 sub-plan を参照 (Opus round 1 P2-3 反映)
 - 上位戦略: `docs/walking-skeleton-trunk-selection.md` (Proposed v0.4) §4 S1 + §5 G1 ゲート + §3.2 contract spike 方針
 - 親 plan: `docs/adr-008-d2-plan.md` §D2-E0 (line 703-739) + §3 PR 表 PR-η 行 (line 803) + §11.2 (line 1198) + §3.bis ledger L1 (line 820) + §7 (line 1078)
 - 後続 sub-plan (S2): `docs/adr-008-d2-c-plan.md` §1.1 + §3.3 (S1 で確立した shape を import) + §7 R7 (S1 完了が前提)
@@ -558,6 +572,7 @@ production-pipeline lifecycle test 8 件 → spawn_perception_worker 4-tuple des
 | version | date | author | summary |
 |---|---|---|---|
 | Drafted v0.1 | 2026-05-01 | Claude (Sonnet) | 初稿起草、walking skeleton S1 sub-plan、build_*(scope, stream) -> (Arranged, View) signature 統一 + Arranged closure 内閉込 + spawn_perception_worker closure wiring 変更 + G1 ゲート判定 |
+| Drafted v0.2 | 2026-05-01 | Claude (Sonnet) | Opus round 1 + Codex round 1 review 反映: P1-1 (D2-C sub-plan §6 line 410 と本 §1.1 A/B の S1 scope 解釈不一致) → 案 A 採用で D2-C sub-plan 側を D1 view 両方 S1 で signature 統一に sync 修正 / Codex P2 + Opus P2-4 (§2.3 closure return が `input` のみで §3.3 3-tuple 要求と矛盾、命名揺れ `latest_view_built` vs `latest_view`) → §2.3 wiring 全面書き直し + 3-tuple destructure を type-annotated 形で明示 / Opus P2-1 (§5 表 column header 即読性) / P2-2 (§7 R9 追加: `reduced` 2-borrow risk、Codex P2 と同源) / P2-3 (§10 References に signature SSOT 注釈追加) / P3-1 (walking-skeleton-trunk-selection.md line 492 末尾 `(Proposed v0.3)` → `(Proposed v0.4)` 同梱修正) / §4.4 numeric count 更新 (Risks 9 件に bump) |
 
 ---
 
