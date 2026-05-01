@@ -45,9 +45,9 @@ pub struct UiaFocusChangedPayload {
     pub window_title: String,
 }
 
-/// Payload for `EventKind::DirtyRect` (=0). Emitted by P5c-2.
+/// Payload for `EventKind::DirtyRect` (=0). Emitted by P5c-2 from
+/// `src/duplication/thread.rs::acquire_dirty_rects`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)] // P5c-2 emit
 pub struct DirtyRectPayload {
     /// `[x, y, w, h]`, virtual-screen pixels.
     pub rect: [i32; 4],
