@@ -265,6 +265,28 @@ const CAUSAL_MAX_BASED_ON = {
   sources: ["UIA", "DXGI"],
 };
 
+// Round 2 P2 (Opus #3) extreme scenario: 4 monitors + extreme dirty count
+// + args_summary at truncation cap. Validates the 2KB SLO break-point
+// for production multi-monitor environments (sub-plan §3.7 G5 #3 +
+// §6 follow-up) — if `causal_extreme` exceeds 2KB the SLO must be bumped
+// in sync with the ADR-010 §5.6.1 +1KB causal include budget.
+const CAUSAL_EXTREME_CAUSED_BY = {
+  your_last_action: `desktop_act(${"y".repeat(509)}…)`,
+  tool_call_id: "extreme-session-uuid-prefix-with-long-id:99999",
+  elapsed_ms: 1234,
+  produced_changes: [
+    "focus: → very-long-element-name-with-window-title-that-exceeds-typical-bounds",
+    "dirty_rects[monitor=0]: 100",
+    "dirty_rects[monitor=1]: 87",
+    "dirty_rects[monitor=2]: 64",
+    "dirty_rects[monitor=3]: 42",
+  ],
+};
+const CAUSAL_EXTREME_BASED_ON = {
+  events: ["18446744073709551610", "18446744073709551611"],
+  sources: ["UIA", "DXGI"],
+};
+
 const CAUSAL_SCENARIOS = [
   {
     label: "causal_minimal",
@@ -288,6 +310,14 @@ const CAUSAL_SCENARIOS = [
       asOfWallclockMs: FRESH_WALLCLOCK,
       causedBy: CAUSAL_MAX_CAUSED_BY,
       basedOn: CAUSAL_MAX_BASED_ON,
+    }),
+  },
+  {
+    label: "causal_extreme",
+    envelope: buildEnvelope(SCENARIO_TYPICAL, {
+      asOfWallclockMs: FRESH_WALLCLOCK,
+      causedBy: CAUSAL_EXTREME_CAUSED_BY,
+      basedOn: CAUSAL_EXTREME_BASED_ON,
     }),
   },
 ];

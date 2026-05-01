@@ -640,6 +640,19 @@ const desktopStateCausedByProjector = async (
 ): Promise<{ causedBy?: CausedByShape; basedOn?: BasedOnShape } | undefined> => {
   // Round 3 P1 (Opus + Codex 重複) sentinel guard: multi-session detect → skip
   if (sessionId === "multi:disabled") return undefined;
+  // Round 2 P2 (Opus #2) fix: when `nativeL1` is unavailable (non-Windows
+  // dev / pre-P5a binary), `latestEventId` would be `undefined` and the
+  // causal window's frontier check (a) would silently skip — falling
+  // back to the monotonic timeout (b) alone. That's still safe (window
+  // boundary is preserved) but it leaves the LLM with a `caused_by`
+  // that has no `based_on.events` reference, weakening the
+  // self-attestation. Skipping the projection entirely on this path
+  // routes the envelope into the standard `confidence: degraded`
+  // diagnostic that already fires for missing wallclock metadata —
+  // sub-plan §7 R3 mitigation alignment.
+  if (!nativeL1 || typeof nativeL1.l1GetCaptureStats !== "function") {
+    return undefined;
+  }
 
   // L3 latest_focus view → focus delta projection input
   let focus: { hwnd: bigint | null; elementName: string | null } | null = null;
@@ -716,14 +729,35 @@ const desktopStateCausedByProjector = async (
  * ADR-011 to finalize. Current S5 trunk skeleton ships single-LLM-client
  * prototype only; multi-LLM-client deploy requires ADR-011 transport
  * context wiring before the `getMcpTransportSessionId()` stub is replaced.
+ *
+ * Round 2 P3 (Opus #2) test seam: `_setSingleSessionPrototypeForTest`
+ * lets unit tests pin the `multi:disabled` sentinel branch without
+ * patching module internals. CodeQL line 725 dead-code alert
+ * (`if (!isSingleSessionPrototype())` always false in current stub
+ * impl) is **intentional** — the stub returns `true` to gate the
+ * sentinel branch off until ADR-011 wires real multi-session
+ * detection. The test seam exposes the branch for runtime coverage.
  */
+let _isSingleSessionPrototype: () => boolean = () => true;
+
 const getMcpTransportSessionId = (): string | undefined => undefined;
-const isSingleSessionPrototype = (): boolean => true;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const isSingleSessionPrototype = (): boolean => _isSingleSessionPrototype();
+
+/** @internal Test-only — pin the single-session prototype gate for the
+ *  `multi:disabled` sentinel branch (sub-plan §1.1 E-2). */
+export function _setSingleSessionPrototypeForTest(value: boolean): void {
+  _isSingleSessionPrototype = () => value;
+}
+/** @internal Test-only — restore the production stub. */
+export function _resetSingleSessionPrototypeForTest(): void {
+  _isSingleSessionPrototype = () => true;
+}
 
 const desktopStateGetSessionId = (_args: unknown): string => {
   const transportSessionId = getMcpTransportSessionId();
   if (transportSessionId !== undefined) return transportSessionId;
-  if (!isSingleSessionPrototype()) {
+  if (!_isSingleSessionPrototype()) {
     // Multi-session detected → sentinel disables caused_by injection
     return "multi:disabled";
   }

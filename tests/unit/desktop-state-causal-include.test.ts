@@ -30,8 +30,10 @@ import {
   _resetToolCallSeqForTest,
   _setHistoryClockForTest,
   _resetHistoryClockForTest,
+  _seedHistoryForTest,
   type CommitL1Emitter,
   type ViewSnapshot,
+  type ToolCallEvent,
 } from "../../src/tools/_envelope.js";
 
 // ── Test helpers ─────────────────────────────────────────────────────────────
@@ -533,6 +535,105 @@ describe("LRU eviction (sub-plan §6 OQ #1)", () => {
   });
 });
 
+// ── Round 2 P1 (Codex line 1501) include=["causal"] auto envelope opt-in ────
+
+describe("Round 2 P1 (Codex line 1501): include=['causal'] alone opts into envelope", () => {
+  it("include=['causal'] (no 'envelope') → envelope shape returned, caused_by + based_on present", async () => {
+    resetAll();
+    defaultL1Emitter.pushStarted({
+      tool: "desktop_act",
+      argsJson: '{}',
+      sessionId: "sessA",
+      toolCallId: "sessA:1",
+    });
+    defaultL1Emitter.pushCompleted({
+      tool: "desktop_act",
+      elapsedMs: 10,
+      ok: true,
+      sessionId: "sessA",
+      toolCallId: "sessA:1",
+    });
+
+    const projector = vi.fn(async (_args: unknown, sessionId: string) => ({
+      causedBy: buildCausedBy(sessionId, makeViewSnapshot()),
+      basedOn: buildBasedOn(sessionId, makeViewSnapshot()),
+    }));
+    const handler = async () => ({
+      content: [{ type: "text", text: '{"foo":"bar"}' }],
+    });
+    const wrapped = makeQueryWrapper(handler, "desktop_state", {
+      getSessionId: () => "sessA",
+      causedByProjector: projector,
+    });
+    // Critical: include=["causal"] without "envelope" — pre-fix this would
+    // route through compatHoist(envelope, false) and silently drop
+    // caused_by + based_on. Post-fix include=["causal"] implies envelope
+    // opt-in, preserving the projection.
+    const result = await wrapped({ include: ["causal"] } as Record<string, unknown>);
+    const parsed = JSON.parse((result.content[0] as { text: string }).text);
+    expect(parsed._version).toBe("1.0"); // envelope shape
+    expect(parsed.caused_by).toBeDefined();
+    expect(parsed.based_on).toBeDefined();
+  });
+});
+
+// ── Round 2 P2 (Codex line 1073) buildBasedOn shares causal window guards ───
+
+describe("Round 2 P2 (Codex line 1073): buildBasedOn shares causal window guards with buildCausedBy", () => {
+  it("monotonic timeout expired → both buildCausedBy and buildBasedOn return undefined", () => {
+    resetAll();
+    defaultL1Emitter.pushStarted({
+      tool: "desktop_act",
+      argsJson: '{}',
+      sessionId: "sessA",
+      toolCallId: "sessA:1",
+    });
+    defaultL1Emitter.pushCompleted({
+      tool: "desktop_act",
+      elapsedMs: 10,
+      ok: true,
+      sessionId: "sessA",
+      toolCallId: "sessA:1",
+    });
+    const futureMonotonicMs = performance.now() + 250;
+    const causedBy = buildCausedBy("sessA", makeViewSnapshot(), {
+      causalWindowTimeoutMs: 200,
+      monotonicNowMs: () => futureMonotonicMs,
+    });
+    const basedOn = buildBasedOn("sessA", makeViewSnapshot(), {
+      causalWindowTimeoutMs: 200,
+      monotonicNowMs: () => futureMonotonicMs,
+    });
+    // Both must vanish together — no half-state where based_on persists
+    // after caused_by has expired (Codex P2: stale based_on.events would
+    // mislead LLM about the causal window).
+    expect(causedBy).toBeUndefined();
+    expect(basedOn).toBeUndefined();
+  });
+
+  it("frontier 未到達 → both return undefined", () => {
+    resetAll();
+    // Seed a history entry with eventIdCompleted way ahead of the
+    // viewSnapshot.latestEventId we'll pass in.
+    _seedHistoryForTest("sessA", {
+      toolCallId: "sessA:1",
+      toolName: "desktop_act",
+      argsSummary: "{}",
+      eventIdStarted: 100n,
+      eventIdCompleted: 200n,
+      wallclockStartMs: Date.now() - 50,
+      wallclockEndMs: Date.now(),
+      monotonicStartMs: performance.now() - 50,
+      ok: true,
+      leaseToken: undefined,
+    });
+    // Frontier still at 50 — eventIdCompleted=200 > 50 → not yet visible
+    const snapshot = makeViewSnapshot({ latestEventId: 50n });
+    expect(buildCausedBy("sessA", snapshot)).toBeUndefined();
+    expect(buildBasedOn("sessA", snapshot)).toBeUndefined();
+  });
+});
+
 // ── BasedOnShape JSON serialize safety (Round 3 P1 Codex line 370) ──────────
 
 describe("BasedOnShape.events: string[] (u64 decimal、JSON.stringify safe)", () => {
@@ -562,49 +663,40 @@ describe("BasedOnShape.events: string[] (u64 decimal、JSON.stringify safe)", ()
   });
 
   it("BIG event_id (u64 max-ish) preserves precision via decimal string", () => {
+    // Round 2 P2 (Opus #4) runtime pin: seed a history entry directly with
+    // u64-max-ish bigint event_ids via `_seedHistoryForTest`, bypassing the
+    // L1 emitter so the bigint→decimal-string projection is exercised even
+    // when `nativeL1` is null in test environments. Pre-fix the test only
+    // checked typing because `defaultL1Emitter` returned `undefined` event
+    // ids without a real native binding.
     resetAll();
-    // Manually push an entry with a BIG event_id by going through the
-    // emitter path with an injected nativeL1 returning bigint > 2^53
-    const bigEventId = 9_000_000_000_000_000_000n; // > 2^53
-    const fakeEmitter: CommitL1Emitter = {
-      pushStarted: ({ tool, argsJson, sessionId, toolCallId, leaseToken }) => {
-        // Bypass nativeL1 entirely — simulate a successful push with bigint id
-        // Direct call to the production defaultL1Emitter would also work but
-        // we want to pin the bigint→string projection explicitly.
-        defaultL1Emitter.pushStarted({ tool, argsJson, sessionId, toolCallId, leaseToken });
-      },
-      pushCompleted: ({ tool, elapsedMs, ok, errorCode, sessionId, toolCallId }) => {
-        defaultL1Emitter.pushCompleted({ tool, elapsedMs, ok, errorCode, sessionId, toolCallId });
-      },
-    };
-    fakeEmitter.pushStarted({
-      tool: "desktop_act",
-      argsJson: '{}',
-      sessionId: "sessBig",
+    const bigEventIdStarted = 9_000_000_000_000_000_000n; // > 2^53
+    const bigEventIdCompleted = 9_000_000_000_000_000_001n;
+    _seedHistoryForTest("sessBig", {
       toolCallId: "sessBig:1",
-    });
-    fakeEmitter.pushCompleted({
-      tool: "desktop_act",
-      elapsedMs: 1,
+      toolName: "desktop_act",
+      argsSummary: "{}",
+      eventIdStarted: bigEventIdStarted,
+      eventIdCompleted: bigEventIdCompleted,
+      wallclockStartMs: Date.now() - 50,
+      wallclockEndMs: Date.now(),
+      monotonicStartMs: performance.now() - 50,
       ok: true,
-      sessionId: "sessBig",
-      toolCallId: "sessBig:1",
+      leaseToken: undefined,
     });
-    // Note: in the absence of nativeL1 the events ids are undefined; this case
-    // primarily exercises the typing — the production-bigint case is covered
-    // by the JSON.stringify-safety assertion above.
-    const basedOn = buildBasedOn("sessBig", makeViewSnapshot());
+    // viewSnapshot.latestEventId must be ≥ eventIdCompleted to pass frontier check
+    const snapshot = makeViewSnapshot({ latestEventId: bigEventIdCompleted + 10n });
+    const basedOn = buildBasedOn("sessBig", snapshot);
     expect(basedOn).toBeDefined();
-    // events array length depends on whether nativeL1 returned bigint;
-    // both length=0 and length=2 are valid given the test environment.
-    if (basedOn?.events) {
-      for (const e of basedOn.events) {
-        expect(typeof e).toBe("string");
-        expect(e).toMatch(/^\d+$/);
-      }
-    }
-    // Reference the bigEventId variable (avoid lint unused-warning) by using it
-    // in a defensive bound check.
-    expect(bigEventId > 2n ** 53n).toBe(true);
+    expect(basedOn?.events).toHaveLength(2);
+    // Critical: u64 precision preserved via decimal string, NOT Number()
+    expect(basedOn?.events[0]).toBe("9000000000000000000");
+    expect(basedOn?.events[1]).toBe("9000000000000000001");
+    // JSON.stringify must not throw (Round 3 P1 Codex line 370)
+    expect(() => JSON.stringify(basedOn)).not.toThrow();
+    // Round-trip preserves the exact decimal — no Number() lossy conversion
+    const roundTrip = JSON.parse(JSON.stringify(basedOn)) as { events: string[] };
+    expect(roundTrip.events[0]).toBe("9000000000000000000");
+    expect(roundTrip.events[1]).toBe("9000000000000000001");
   });
 });

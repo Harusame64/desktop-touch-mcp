@@ -917,6 +917,26 @@ export function _resetHistoryBuffersForTest(): void {
   _historyBuffers.clear();
 }
 
+/** @internal Test-only — inject a fully-formed history entry directly,
+ *  bypassing the L1 emitter path. Used by Round 2 P2 (Opus #4) to pin
+ *  the bigint→string projection at runtime when `nativeL1` is null in
+ *  test environments and the production emitter would otherwise leave
+ *  `eventIdStarted` / `eventIdCompleted` undefined. */
+export function _seedHistoryForTest(
+  sessionId: string,
+  entry: ToolCallEvent,
+): void {
+  const ring = _historyBuffers.get(sessionId) ?? {
+    capacity: HISTORY_BUFFER_CAPACITY,
+    events: [],
+    lastAccessMs: _historyClock(),
+  };
+  ring.events.push(entry);
+  while (ring.events.length > ring.capacity) ring.events.shift();
+  ring.lastAccessMs = _historyClock();
+  _historyBuffers.set(sessionId, ring);
+}
+
 /** @internal Test seam — pin Date.now() for LRU eviction tests. */
 let _historyClock: () => number = () => Date.now();
 export function _setHistoryClockForTest(clock: () => number): void {
@@ -1059,18 +1079,42 @@ export function buildCausedBy(
  * `events` は u64 decimal `string[]` で表現 (Round 3 P1 Codex line 370
  * 反映、bigint JSON.stringify TypeError 完全回避)。
  *
- * 戻り値: `undefined` when (history empty / commit in-flight) — caller が
- * envelope.based_on field を omit。
+ * **Round 2 P2 (Codex line 1073) fix**: Apply the same causal window
+ * guards as `buildCausedBy` (frontier check + monotonic timeout) so
+ * `based_on` cannot outlive `caused_by`. Without this, `caused_by`
+ * would correctly disappear after window expiry but `based_on` would
+ * keep returning the latest history entry, leaving the envelope in an
+ * inconsistent state where the LLM sees event references with no
+ * causal context.
+ *
+ * 戻り値: `undefined` when (history empty / commit in-flight / window
+ * expired / frontier 未到達) — caller が envelope.based_on field を omit。
  */
 export function buildBasedOn(
   sessionId: string,
   viewSnapshot: ViewSnapshot,
+  options?: { causalWindowTimeoutMs?: number; monotonicNowMs?: () => number },
 ): BasedOnShape | undefined {
   const ring = _historyBuffers.get(sessionId);
   if (!ring || ring.events.length === 0) return undefined;
   ring.lastAccessMs = _historyClock();
   const lastEvent = ring.events[ring.events.length - 1];
   if (lastEvent.wallclockEndMs === undefined) return undefined;
+
+  // Round 2 P2 (Codex line 1073) fix: same causal window guards as
+  // `buildCausedBy` so `based_on` / `caused_by` never diverge.
+  const timeoutMs = options?.causalWindowTimeoutMs ?? 200;
+  const nowMonotonic = options?.monotonicNowMs?.() ?? performance.now();
+  if (nowMonotonic - lastEvent.monotonicStartMs > timeoutMs) {
+    return undefined;
+  }
+  if (
+    viewSnapshot.latestEventId !== undefined &&
+    lastEvent.eventIdCompleted !== undefined &&
+    lastEvent.eventIdCompleted > viewSnapshot.latestEventId
+  ) {
+    return undefined;
+  }
 
   const events: string[] = [];
   if (lastEvent.eventIdStarted !== undefined) events.push(String(lastEvent.eventIdStarted));
@@ -1497,8 +1541,19 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
 
   return async (rawArgs) => {
     const { include, ...handlerArgs } = rawArgs as { include?: string[] } & TArgs;
-    const optIn = resolveEnvelopeOptIn(include, getEnvValue());
     const includeCausal = include?.includes("causal") === true;
+    // Round 2 P1 fix (Codex line 1501): `include=["causal"]` is an
+    // implicit envelope opt-in — causal projection (`caused_by` +
+    // `based_on`) only exists inside the envelope shape. Without this
+    // bump, `include=["causal"]` alone would hit `optIn=false` (since
+    // it contains neither "raw" nor "envelope"), the compat hoist
+    // would flatten `envelope.data` to top-level, and the projected
+    // `caused_by` / `based_on` fields would be silently dropped — the
+    // S5 cross-layer contract would not actually take effect at
+    // runtime. Treating `causal` as an envelope opt-in is the natural
+    // resolution: callers asking for causal context implicitly want
+    // the envelope shape that carries it.
+    const optIn = includeCausal || resolveEnvelopeOptIn(include, getEnvValue());
     const meta = await fetchMeta();
     const result = await handler(handlerArgs as TArgs);
 
