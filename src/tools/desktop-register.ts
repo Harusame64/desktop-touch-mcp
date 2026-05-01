@@ -17,7 +17,21 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { DesktopFacade, type CandidateProvider, type DesktopSeeInput, type DesktopWindowMeta } from "./desktop.js";
-import type { EntityLease, UiEntity } from "../engine/world-graph/types.js";
+import type {
+  EntityLease,
+  LeaseValidationResult,
+  UiEntity,
+} from "../engine/world-graph/types.js";
+import {
+  makeCommitWrapper,
+  makeQueryWrapper,
+  withEnvelopeIncludeSchema,
+  type CommitWrapperOptions,
+} from "./_envelope.js";
+import { nativeViewFocus } from "../engine/native-engine.js";
+import type { NativeLeaseTokenSummary } from "../engine/native-types.js";
+import type { ToolResult } from "./_types.js";
+import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
 import {
   SnapshotIngress,
   combineEventSources,
@@ -449,6 +463,153 @@ export function validateDesktopTouchTextRequirement(
   return null;
 }
 
+// ── L5 commit / query wrapper integration (ADR-010 P1 S4) ─────────────────────
+//
+// Sub-plan: `docs/adr-010-p1-s4-plan.md` §2.1 + §2.5 + §3.3.
+//
+// Same module-scope wrapping pattern as `desktop-state.ts` from S3 (PR
+// #112): wrap once here so `server.tool` (this file's
+// `registerDesktopTools`) and `run_macro` dispatcher (`./macro.ts`
+// `TOOL_REGISTRY`) share the SAME wrapped handler + injected schema.
+// Without this, macro 経路 would re-`z.object(rawSchema).parse(args)`
+// and silently strip the wrapper-layer `args.include` field, breaking
+// per-call envelope opt-in (PR #112 P1-1 同型 risk pattern).
+
+/** desktop_discover (query-axis) raw handler. Calls into the facade
+ *  unchanged; the L5 query wrapper takes care of envelope assembly +
+ *  compat hoist + per-call `include` opt-in. */
+const desktopDiscoverRawHandler = async (input: unknown): Promise<ToolResult> => {
+  const output = await getDesktopFacade().see(input as DesktopSeeInput);
+  return { content: [{ type: "text" as const, text: JSON.stringify(output, null, 2) }] };
+};
+
+/** desktop_act (commit-axis) raw handler. Internal logic, Zod schema,
+ *  and return shape are unchanged from before S4 (ADR-010 §1.5 spirit:
+ *  individual tool implementations stay envelope-agnostic). The L5
+ *  commit wrapper layers on lease pre-flight + ToolCall event emission +
+ *  envelope assembly. */
+const desktopActRawHandler = async (
+  input: { lease: EntityLease; action?: TouchAction; text?: string },
+): Promise<ToolResult> => {
+  const validationError = validateDesktopTouchTextRequirement(input.action, input.text);
+  if (validationError) {
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: validationError }, null, 2) }],
+    };
+  }
+  const result = await getDesktopFacade().touch({
+    lease: input.lease,
+    action: input.action,
+    text: input.text,
+  });
+  return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+};
+
+/** Pre-flight lease validation closure used by the commit wrapper
+ *  (sub-plan §3.4). Routes to the same session the lease was issued
+ *  from and runs `LeaseStore.validate()` without executing the touch.
+ *  When the lease arg is missing/malformed (caller passed garbage) we
+ *  return `entity_not_found` so the wrapper emits a typed envelope
+ *  rather than crashing inside the validator. */
+function desktopActLeaseValidator(args: unknown): Promise<LeaseValidationResult> {
+  const i = args as { lease?: EntityLease };
+  if (!i?.lease || typeof i.lease.viewId !== "string") {
+    return Promise.resolve({ ok: false, reason: "entity_not_found" });
+  }
+  return Promise.resolve(getDesktopFacade().validateLeaseOnly(i.lease));
+}
+
+/** Project the lease 4-tuple from `desktop_act` args into the
+ *  `NativeLeaseTokenSummary` carried on the L1 `ToolCallStarted`
+ *  payload (sub-plan §2.3). `evidenceDigestPrefix8` is the first 8
+ *  chars of the full digest so the L1 ring stays compact when
+ *  lease-aware tool calls are emitted at high rate. */
+function desktopActExtractLeaseToken(args: unknown): NativeLeaseTokenSummary | undefined {
+  const i = args as { lease?: EntityLease };
+  if (!i?.lease) return undefined;
+  return {
+    entityId: i.lease.entityId,
+    viewId: i.lease.viewId,
+    targetGeneration: i.lease.targetGeneration,
+    evidenceDigestPrefix8: (i.lease.evidenceDigest ?? "").slice(0, 8),
+  };
+}
+
+/** `fetchMeta` for the envelope `as_of.wallclock_ms` source. Same
+ *  pattern as `desktop-state.ts` (PR #112): read the L1 event
+ *  wallclock + view-poisoned signal via the `viewGetFocusedWithWallclock`
+ *  napi binding. Defensive paths: degrade to `Date.now()` fallback +
+ *  `confidence: degraded` when the binding is missing or throws. */
+const fetchEnvelopeMeta = async () => {
+  if (
+    nativeViewFocus &&
+    typeof nativeViewFocus.viewGetFocusedWithWallclock === "function"
+  ) {
+    try {
+      const meta = nativeViewFocus.viewGetFocusedWithWallclock();
+      return {
+        viewPoisoned: meta.viewPoisoned,
+        asOfWallclockMs:
+          meta.latestEventWallclockMs != null
+            ? Number(meta.latestEventWallclockMs)
+            : null,
+      };
+    } catch {
+      return { viewPoisoned: true, asOfWallclockMs: null };
+    }
+  }
+  return { viewPoisoned: false, asOfWallclockMs: null };
+};
+
+/** Round 1 P2 fix (Codex + user PR review): derive `tool_call_id`'s
+ *  session-id source from the lease's `viewId` so the per-session
+ *  monotone seq the wrapper emits (`${sessionId}:${seq}`) reflects
+ *  the SessionRegistry's per-target session boundaries. Without this
+ *  override, `makeCommitWrapper` falls back to the hard-coded
+ *  `"default"` session and collapses every desktop_act call across
+ *  every target/view into a single global seq — violating sub-plan
+ *  §2.1 + §3.5 contract that tool_call_id is session-local.
+ *
+ *  Falls back to `"default"` when the lease arg is missing/malformed
+ *  (the wrapper's leaseValidator has already short-circuited those
+ *  cases on the failure path; the fallback is purely defensive). */
+function desktopActSessionId(args: unknown): string {
+  const lease = (args as { lease?: EntityLease }).lease;
+  return typeof lease?.viewId === "string" && lease.viewId.length > 0
+    ? lease.viewId
+    : "default";
+}
+
+const desktopActWrapperOptions: CommitWrapperOptions<Record<string, unknown>> = {
+  fetchMeta: fetchEnvelopeMeta,
+  leaseValidator: desktopActLeaseValidator,
+  extractLeaseToken: desktopActExtractLeaseToken,
+  getSessionId: desktopActSessionId,
+};
+
+/** Module-scope schema with `include?: string[]` injected so MCP SDK's
+ *  `server.tool()` Zod parse step preserves it for `makeQueryWrapper` /
+ *  `makeCommitWrapper` to peek (PR #112 Round 1 P1 fix, sub-plan §2.5). */
+export const desktopDiscoverRegistrationSchema = withEnvelopeIncludeSchema(desktopSeeSchema);
+export const desktopActRegistrationSchema = withEnvelopeIncludeSchema(desktopTouchSchema);
+
+/** Module-scope wrapped handlers (envelope-aware). Used by both the
+ *  `server.tool` registration site below and `./macro.ts`
+ *  `TOOL_REGISTRY` so the wrapper layer is honoured uniformly across
+ *  the direct MCP path and the `run_macro` dispatcher (sub-plan §2.5,
+ *  PR #112 same-pattern fix). */
+export const desktopDiscoverRegistrationHandler = makeQueryWrapper(
+  desktopDiscoverRawHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
+  "desktop_discover",
+  { fetchMeta: fetchEnvelopeMeta },
+);
+
+export const desktopActRegistrationHandler = makeCommitWrapper(
+  desktopActRawHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
+  "desktop_act",
+  desktopActWrapperOptions,
+);
+
 // ── Tool registration ─────────────────────────────────────────────────────────
 
 /**
@@ -457,8 +618,17 @@ export function validateDesktopTouchTextRequirement(
  * See docs/anti-fukuwarai-v2-activation-policy.md.
  */
 export function registerDesktopTools(server: McpServer): void {
-  const facade = getDesktopFacade();
+  // Eagerly initialise the facade so the visual runtime + dirty-rect
+  // router boot at registration time (matches pre-S4 behaviour). The
+  // raw handlers below also call `getDesktopFacade()` lazily, but a
+  // first-request without prior init would lose the initial 50ms
+  // visual warmup window — keep the eager call for parity.
+  getDesktopFacade();
 
+  // S4 (sub-plan §2.5): pass the module-scope schema + handler so the
+  // run_macro dispatcher reuses the SAME wrapped instances. Side
+  // effect: lease pre-flight + ToolCall events + envelope assembly
+  // are owned by the L5 wrapper, not the raw handlers.
   server.tool(
     "desktop_discover",
     [
@@ -488,11 +658,8 @@ export function registerDesktopTools(server: McpServer): void {
       "parent_disabled_prefer_popup → parent window blocked by a modal; switched to targeting the active popup dialog.",
       "response.softExpiresAtMs is an advisory timestamp at ~60% of the lease TTL window — past it the LLM should consider re-calling desktop_discover even though leases are still technically valid; lease.expiresAtMs remains the only correctness wall.",
     ].join(" "),
-    desktopSeeSchema,
-    async (input) => {
-      const output = await facade.see(input as DesktopSeeInput);
-      return { content: [{ type: "text" as const, text: JSON.stringify(output, null, 2) }] };
-    }
+    desktopDiscoverRegistrationSchema,
+    desktopDiscoverRegistrationHandler as (input: unknown) => Promise<ToolResult>,
   );
 
   server.tool(
@@ -509,20 +676,7 @@ export function registerDesktopTools(server: McpServer): void {
       "  executor_failed on terminal textbox (action=type) → use V1 terminal(action='send') instead.",
       "Check desktop_discover response.constraints for pre-emptive fallback hints before calling desktop_act.",
     ].join(" "),
-    desktopTouchSchema,
-    async (input) => {
-      const validationError = validateDesktopTouchTextRequirement(input.action, input.text);
-      if (validationError) {
-        return {
-          content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: validationError }, null, 2) }],
-        };
-      }
-      const result = await facade.touch({
-        lease: input.lease as EntityLease,
-        action: input.action,
-        text: input.text,
-      });
-      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-    }
+    desktopActRegistrationSchema,
+    desktopActRegistrationHandler as (input: unknown) => Promise<ToolResult>,
   );
 }

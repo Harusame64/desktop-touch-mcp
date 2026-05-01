@@ -277,7 +277,20 @@ export interface NativeCaptureStats {
   eventIdHighWater: bigint
 }
 
-export declare function l1PushToolCallStarted(tool: string, argsJson: string, sessionId?: string, toolCallId?: string): bigint
+/** Lease 4-tuple summary attached to `l1PushToolCallStarted` when the
+ * commit wrapper's lease-validation path is used (ADR-010 P1 S4 sub-plan
+ * `docs/adr-010-p1-s4-plan.md` §2.3). The `expiresAtMs` field of the
+ * runtime `EntityLease` is intentionally absent — commit-time validation
+ * has already consumed it. `evidenceDigestPrefix8` is a fixed 8-char
+ * prefix of the full digest so the L1 ring stays compact. */
+export interface NativeLeaseTokenSummary {
+  entityId: string
+  viewId: string
+  targetGeneration: string
+  evidenceDigestPrefix8: string
+}
+
+export declare function l1PushToolCallStarted(tool: string, argsJson: string, sessionId?: string, toolCallId?: string, leaseToken?: NativeLeaseTokenSummary): bigint
 export declare function l1PushToolCallCompleted(tool: string, elapsedMs: number, ok: boolean, errorCode?: string, sessionId?: string, toolCallId?: string): bigint
 export declare function l1PushHwInputPostMessage(targetHwnd: bigint, msg: number, wParam: bigint, lParam: bigint, sessionId?: string, toolCallId?: string): bigint
 export declare function l1PushFailure(layer: string, op: string, reason: string, panicPayload?: string, sessionId?: string, toolCallId?: string): bigint

@@ -43,6 +43,7 @@ import type {
   NativeFocusedElement,
   NativeViewFocusedPipelineStatus,
   NativeFocusedElementWithWallclock,
+  NativeLeaseTokenSummary,
 } from "./native-types.js";
 
 export type * from "./native-types.js";
@@ -283,6 +284,11 @@ export interface NativeL1 {
     argsJson: string,
     sessionId?: string,
     toolCallId?: string,
+    /** Lease 4-tuple summary (ADR-010 P1 S4 sub-plan §2.3, tail-only
+     * Optional 5th parameter so existing 4-arg positional callers stay
+     * compatible — Round 1 P1-1). `undefined` for query-axis tools,
+     * lease-less commits, and pre-S4 callers. */
+    leaseToken?: NativeLeaseTokenSummary,
   ): bigint;
   l1PushToolCallCompleted?(
     tool: string,

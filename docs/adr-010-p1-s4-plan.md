@@ -342,88 +342,103 @@ function truncateJson(args: unknown, maxBytes: number = 512): string {
 
 ### 3.1 S4-1: L1 既存 payload schema 拡張 + napi binding signature 拡張 (~80 line Rust + 30 line TS) [S4 trunk、Rust touch]
 
-- [ ] `src/l1_capture/payload.rs`:
-  - [ ] `ToolCallStartedPayload` を `{ tool, args_json, lease_token: Option<LeaseTokenSummary> }` に拡張 (**既存 `args_json` field 名不変** Round 1 P1-2、末尾 optional `lease_token` 追加)
-  - [ ] `LeaseTokenSummary { entity_id, view_id, target_generation, evidence_digest_prefix8 }` 新型
-  - [ ] `ToolCallCompletedPayload` 不変 (S4 で field 追加不要、Round 2 で言及済)
-- [ ] `src/l1_capture/napi.rs`:
-  - [ ] `l1_push_tool_call_started` signature 拡張 (rename + lease_token optional 追加)
-  - [ ] `NativeLeaseTokenSummary` napi struct 新設
-- [ ] `index.d.ts` + `src/engine/native-types.ts` 更新: `NativeLeaseTokenSummary` 型追加 + `l1PushToolCallStarted` signature update (5th optional 引数追加)、top-level function export 数 **不変** (47 → 48 は S3 で `viewGetFocusedWithWallclock` 追加で消化済、本 S4 は既存 binding signature 拡張のみで新 export なし)
-- [ ] 全 caller (`grep -rn "l1PushToolCallStarted" src/ tests/`) を確認 (~6-10 callsite、includes `tests/unit/l1-capture-panic-fuzz.test.ts:122,128` + `tests/unit/l1-capture.test.ts:163` + production callers)、**既存 4-arg 呼出は無修正で pass** (Round 1 P1-1 反映、TypeScript optional trailing semantic)
+- [x] `src/l1_capture/payload.rs`:
+  - [x] `ToolCallStartedPayload` を `{ tool, args_json, lease_token: Option<LeaseTokenSummary> }` に拡張 (**既存 `args_json` field 名不変** Round 1 P1-2、末尾 optional `lease_token` 追加)
+  - [x] `LeaseTokenSummary { entity_id, view_id, target_generation, evidence_digest_prefix8 }` 新型
+  - [x] `ToolCallCompletedPayload` 不変 (S4 で field 追加不要、Round 2 で言及済)
+- [x] `src/l1_capture/napi.rs`:
+  - [x] `l1_push_tool_call_started` signature 拡張 (rename + lease_token optional 追加)
+  - [x] `NativeLeaseTokenSummary` napi struct 新設
+- [x] `index.d.ts` + `src/engine/native-types.ts` 更新: `NativeLeaseTokenSummary` 型追加 + `l1PushToolCallStarted` signature update (5th optional 引数追加)、top-level function export 数 **不変** (Opus Round 1 P2: 実数は main 時点で **61** = `index.d.ts` の `export declare function` 件数。本 S4 は既存 binding signature 拡張のみで新 top-level export なし、61 維持。Drafted v0.1/v0.2 で記載した「47 → 48」は napi-rs surface の前提誤りで、CLAUDE.md §3.1 fact 整合 sweep で潰すべき pattern)
+- [x] 全 caller (`grep -rn "l1PushToolCallStarted" src/ tests/`) を確認 (~6-10 callsite、includes `tests/unit/l1-capture-panic-fuzz.test.ts:122,128` + `tests/unit/l1-capture.test.ts:163` + production callers)、**既存 4-arg 呼出は無修正で pass** (Round 1 P1-1 反映、TypeScript optional trailing semantic)
 
 ### 3.2 S4-2: `_envelope.ts` 拡張 — `makeCommitWrapper` + `makeQueryWrapper` (~150 line) [S4 trunk]
 
-- [ ] `src/tools/_envelope.ts` 拡張 (S3 で確立した `_envelope.ts` に追加):
-  - [ ] `CommitWrapperOptions<TArgs>` interface (§2.1)
-  - [ ] `QueryWrapperOptions` interface (空 base、expansion 用余地)
-  - [ ] `makeCommitWrapper(handler, toolName, options)` 実装 (§2.1 7 step flow)
-  - [ ] `makeQueryWrapper(handler, toolName, options)` 実装
-  - [ ] `nextToolCallId(sessionId)` helper (in-process monotone counter)
-  - [ ] `truncateJson(args, maxBytes)` helper
-  - [ ] `mapLeaseValidationToTypedReason(result)` helper (§2.2 reason → typed enum)
-  - [ ] `buildFailureEnvelope(typedReason, tryNextActions)` helper (§2.4 失敗時 envelope shape)
-  - [ ] `EnvelopeMinimalShape.confidence` を `"fresh" | "degraded" | "stale"` 3 値に bump (§2.4)
+- [x] `src/tools/_envelope.ts` 拡張 (S3 で確立した `_envelope.ts` に追加):
+  - [x] `CommitWrapperOptions<TArgs>` interface (§2.1)
+  - [x] `QueryWrapperOptions` type (S3 alias、expansion 用余地、`no-empty-object-type` 回避で interface→type)
+  - [x] `makeCommitWrapper(handler, toolName, options)` 実装 (§2.1 7 step flow)
+  - [x] `makeQueryWrapper(handler, toolName, options)` 実装 (`makeEnvelopeAware` を直接 delegate)
+  - [x] `nextToolCallId(sessionId)` helper (in-process monotone counter) + `_resetToolCallSeqForTest` (test-only)
+  - [x] `truncateJson(args, maxBytes)` helper (UTF-8 safe truncate + `…` ellipsis sentinel)
+  - [x] `mapLeaseValidationToTypedReason(reason)` helper (§2.2 reason → typed enum、`expired` 完全 + 残 3 reason は `Unknown` fallback)
+  - [x] `buildFailureEnvelope(typedReason, tryNextActions, options?)` helper (§2.4 失敗時 envelope shape)
+  - [x] `EnvelopeMinimalShape.confidence` を `"fresh" | "degraded" | "stale"` 3 値に bump (§2.4) + `if_unexpected?: IfUnexpectedShape` optional 末尾追加
+  - [x] `LEASE_REASON_TO_TYPED_CODE` 定数 (4 LeaseStore reason → 4 typed code 名 1:1 mapping、expansion mechanical-copy のための contract pin)
+  - [x] `defaultL1Emitter` + `CommitL1Emitter` interface (test inject seam)
 
 ### 3.3 S4-3: `desktop_discover` + `desktop_act` を wrapper 経由化 (~30 line) [S4 trunk]
 
-- [ ] `src/tools/desktop-register.ts` (or 同等 MCP server 登録 site):
-  - [ ] `desktop_discover` 登録を `makeQueryWrapper(desktopDiscoverHandler, "desktop_discover")` で wrap
-  - [ ] `desktop_act` 登録を `makeCommitWrapper(desktopActHandler, "desktop_act", { leaseValidator, argsSummary })` で wrap
-- [ ] `desktopDiscoverHandler` / `desktopActHandler` 自体は **無修正** (ADR-010 §1.5)、Zod schema 不変、戻り値 shape (raw `ToolResult`) 不変
+- [x] `src/tools/desktop-register.ts` (MCP server 登録 site):
+  - [x] `desktop_discover` 登録を `makeQueryWrapper(desktopDiscoverRawHandler, "desktop_discover")` で wrap
+  - [x] `desktop_act` 登録を `makeCommitWrapper(desktopActRawHandler, "desktop_act", { leaseValidator, extractLeaseToken, fetchMeta })` で wrap
+  - [x] `desktopDiscoverRegistrationSchema` / `desktopActRegistrationSchema` を `withEnvelopeIncludeSchema` 経由で生成、module-scope export
+  - [x] `desktopDiscoverRegistrationHandler` / `desktopActRegistrationHandler` を module-scope export (PR #112 同型 strip risk 防止: `run_macro` 経路と shared instance)
+- [x] `desktopDiscoverRawHandler` / `desktopActRawHandler` 自体は **handler internal logic 不変** (ADR-010 §1.5、validator 呼出 + facade.see/touch のみ)、Zod schema 不変、戻り値 shape (raw `ToolResult`) 不変
+- [x] `src/tools/macro.ts` 更新: `TOOL_REGISTRY.desktop_discover` / `.desktop_act` を module-scope wrapped instance に切替、kill-switch gate は wrapper invocation BEFORE で残置
 
 ### 3.4 S4-4: lease validator 実装 (~50 line) [S4 trunk]
 
-- [ ] `src/tools/desktop.ts` (or 別 helper file):
-  - [ ] `leaseValidator(args: DesktopActArgs): Promise<LeaseValidationResult>` 実装:
-    - args から lease parse (既存 `parseLeaseToken` etc.)
-    - world-graph state から `liveEntities` + `currentGeneration` 取得 (既存 helper 流用)
-    - `leaseStore.validate(lease, currentGeneration, liveEntities)` 呼出
-    - 結果を返す (commit wrapper が typed reason に mapping)
+- [x] `src/tools/desktop.ts` `DesktopFacade.validateLeaseOnly(lease)` メソッド新設:
+  - lease の `viewId` から session を `registry.getByViewId()` で route
+  - session 不在時 (eviction 後) は `entity_not_found` reason 返却
+  - 存在時は `session.leaseStore.validate(lease, session.generation, session.entities)` 呼出
+  - side-effect-free (既存 `lastAccessMs` refresh のみ)、`touch()` を呼ばない pre-flight 専用
+- [x] `src/tools/desktop-register.ts` `desktopActLeaseValidator(args)` closure 実装:
+  - args から lease parse (型 narrow + null チェック)
+  - `getDesktopFacade().validateLeaseOnly(args.lease)` 呼出
+  - `LeaseValidationResult` を Promise で返す (commit wrapper が typed reason に mapping)
+- [x] `desktopActExtractLeaseToken(args)` closure: `EntityLease` → `NativeLeaseTokenSummary` projection (`evidenceDigest` 8-char prefix)
 
 ### 3.5 S4-5: `tool_call_id` per-session counter (~30 line) [S4 trunk]
 
-- [ ] `src/tools/_envelope.ts` 内 `nextToolCallId(sessionId: string): string` 実装:
+- [x] `src/tools/_envelope.ts` 内 `nextToolCallId(sessionId: string): string` 実装:
   - in-process Map<sessionId, counter> で per-session monotone seq
   - format: `"${sessionId}:${counter}"`
+  - `_resetToolCallSeqForTest()` test seam (test 間の決定論性)
   - server-restart 跨ぎ uniqueness は OQ #1 carry-over (§8)
 
 ### 3.6 S4-6: contract test (~120 line) [S4 trunk]
 
-- [ ] `tests/unit/desktop-act-commit-wrapper.test.ts` 新設:
-  - [ ] **G3-S4-1**: commit wrapper 正常 path — `desktop_act` 経由、l1PushToolCallStarted/Completed 呼出され、envelope shape return (envelope mode)、raw shape return (compat mode)
-  - [ ] **G3-S4-2**: lease validation `expired` → `if_unexpected.most_likely_cause: "LeaseExpired"` + `try_next: [{action: "desktop_discover", ...}]` typed return、handler 呼ばれない
-  - [ ] **G3-S4-3**: lease validation 成功 → handler 呼出、ToolCallStarted (lease_token 含む) + ToolCallCompleted (elapsed_ms + ok: true) 両 event L1 に push される
-  - [ ] **G3-S4-4**: handler 内例外 → ToolCallCompleted (ok: false + error_code) push、envelope failure (data: null + confidence: "stale" + if_unexpected.most_likely_cause: 適切 typed enum) return
-  - [ ] **G3-S4-5**: `args_summary` 512 byte truncate 動作確認
-  - [ ] **G3-S4-6**: `tool_call_id` per-session monotone seq pin (sessionA:1, sessionA:2, sessionB:1, sessionA:3 順)
-- [ ] `tests/unit/desktop-discover-query-wrapper.test.ts` 新設:
-  - [ ] **G3-S4-7**: query wrapper 正常 path — `desktop_discover` 経由、ToolCall event push されない (query 軸、副作用なし)、envelope shape return
-  - [ ] **G3-S4-8**: lease 発行 → envelope.data に `lease_token` field 含まれる (handler 直接生成、wrapper は envelope assembly のみ)
+- [x] `tests/unit/desktop-act-commit-wrapper.test.ts` 新設 (commit + query wrapper を 1 file で網羅):
+  - [x] **G3-S4-1**: commit wrapper 正常 path — `desktop_act` 経由、l1PushToolCallStarted/Completed 呼出され、envelope shape return (envelope mode)、raw shape return (compat mode)
+  - [x] **G3-S4-2**: lease validation `expired` → `if_unexpected.most_likely_cause: "LeaseExpired"` + `try_next: [{action: "desktop_discover", ...}]` typed return、handler 呼ばれない
+  - [x] **G3-S4-2b**: 残 3 LeaseStore reason → `Unknown` typed code (sub-plan §7 R4 確認)
+  - [x] **G3-S4-3**: lease validation 成功 → handler 呼出、ToolCallStarted (lease_token 含む) + ToolCallCompleted (elapsed_ms + ok: true) 両 event L1 に push される
+  - [x] **G3-S4-4**: handler 内例外 → ToolCallCompleted (ok: false + error_code) push、envelope failure (data: null + confidence: "stale" + if_unexpected.most_likely_cause: 適切 typed enum) return
+  - [x] **G3-S4-4b**: handler `{ok: false, code}` 返却 → ToolCallCompleted ok:false + propagated code
+  - [x] **G3-S4-5**: `args_summary` 512 byte truncate 動作確認 (UTF-8 safe + Japanese 3-byte char + circular ref fallback)
+  - [x] **G3-S4-6**: `tool_call_id` per-session monotone seq pin (sessionA:1, sessionA:2, sessionB:1, sessionA:3 順)
+  - [x] **G3-S4-7**: query wrapper 正常 path — `desktop_discover` 経由、ToolCall event push されない (query 軸、副作用なし)、envelope shape return
+  - [x] **G3-S4-8**: query wrapper が handler 側 lease_token を envelope `data` 経由で透過 (handler 直接生成、wrapper は envelope assembly のみ)
+  - [x] env=1 priority chain + include=['raw'] override on failure path
+  - [x] lease validator 省略 (lease-less commit、`click_element` バリエーション) — handler 直呼び、validation skip
+- [x] **35/35** test pass (G3-S4-1〜G3-S4-8 + helper 単体 + 残 3 reason mapping pin + lease-less commit + Round 1 P1 fix `compatFailureRaw` 直 unit test 4 件 + raw-mode legacy fallback test 3 件 + Round 3 Codex P2 sentinel fix `throw undefined` / `Promise.reject(null)` test 2 件 = 累積 +9)
 
 ### 3.7 S4-7: 検証 (cargo + npm + e2e + bench) [S4 trunk]
 
-- [ ] `cargo check --workspace`: clean
-- [ ] `cargo test -p engine-perception --lib`: 既存 pass (本 S4 で engine-perception touch なし、47 → 47 維持)
-- [ ] `cargo test -p desktop-touch-engine --no-default-features --lib`: 既存 25 + 新 ToolCallStartedPayload 拡張 unit test (~2-3) で 27-28/27-28 pass
-- [ ] `npm test` (vitest unit): 既存 + 新 G3-S4-1〜G3-S4-8 全 pass
-- [ ] `npm run test:e2e` (or 等価 e2e suite): `desktop_discover` / `desktop_act` 既存 e2e test 無修正 pass (compat mode default で raw shape 維持、G3 #1 必須)
-- [ ] `npm run bench:envelope-size`: S3 で確立した bench harness に **failure envelope シナリオ** 追加 → < 5KB 確認 (G3 #4 必須、ADR-010 §5.6.1)
-- [ ] `npm run check:napi-safe` / `check:native-types` (top-level export 数 **48 不変**、S4-1 で `NativeLeaseTokenSummary` 型追加 + 既存 `l1PushToolCallStarted` binding signature 5th 引数拡張、新 top-level export なし) / `check:stub-catalog` / `npm run build`: 全 pass
+- [x] `cargo check --workspace --locked`: clean (既存 6 warnings のみ)
+- [x] `npm run check:rs-workspace`: clean
+- [x] `npm test` (vitest unit): **2527** pass / 25 skipped (regression 0、Round 1 P1 fix で +7 test + Round 3 P2 sentinel fix で +2 test = 累積 +9)
+- [x] `npm run bench:envelope-size`: S3 で確立した bench harness に **failure envelope 3 シナリオ** 追加 (`lease_expired` 216B / `lease_residual` 152B / `handler_threw` 152B) → 全 < 5KB 確認 (G3 #4、ADR-010 §5.6.1)
+- [x] `npm run check:napi-safe` / `check:native-types` (top-level export 数 **61 不変**、S4-1 で `NativeLeaseTokenSummary` interface 追加 + 既存 `l1PushToolCallStarted` binding signature 5th 引数拡張、新 top-level export なし。Opus Round 1 P2 反映: 当初 v0.1/v0.2 の「48」は napi-rs surface の前提誤りで、main の `index.d.ts` `export declare function` 件数は既に 61) / `check:stub-catalog` / `npm run build` / `npm run lint`: 全 pass
+- [ ] `npm run test:e2e` (or 等価 e2e suite): `desktop_discover` / `desktop_act` 既存 e2e test 無修正 pass (compat mode default で raw shape 維持、G3 #1 必須) — **CI で確認** (Win11 dogfood 専用、本 PR の 6-guard + unit suite で structural compat は pin 済)
 
 ### 3.8 S4-8: G3 ゲート判定 + Appendix C append (~5 line、impl PR merge 後) [S4 trunk]
 
-- [ ] impl PR merged 後、`docs/walking-skeleton-trunk-selection.md` Appendix C 末尾に判定結果を append:
+- [x] **本 PR で同梱**: `docs/walking-skeleton-trunk-selection.md` Appendix C 末尾に判定結果 append 済 (line 477、本 sub-plan §3.8 完了基準を merge 前に踏む形で先行 commit。Opus Round 1 P2 #4 反映: 「impl PR merge 後」前提を本 PR 同梱に切替、checklist `[ ]` → `[x]` flip):
   ```markdown
-  | G3 | 2026-05-XX | 継続 | commit 軸 wrapper (`makeCommitWrapper`) + query 軸 wrapper (`makeQueryWrapper`) で `desktop_discover/act` の挙動を破壊せず envelope 化、lease 4-tuple validation `LeaseExpired` typed return が 1 path 動作、L1 既存 ToolCallStarted (=100) / ToolCallCompleted (=101) payload schema 拡張 (新規 EventKind 追加なし)、failure envelope size < 5KB 維持。S5 caused_by linkage で ToolCall event を session 内 history buffer 経由展開する base 確立 | (なし) |
+  | G3 | 2026-05-01 | 継続 | commit 軸 wrapper (`makeCommitWrapper`) + query 軸 wrapper (`makeQueryWrapper`) で `desktop_discover/act` の挙動を破壊せず envelope 化、lease 4-tuple validation `LeaseExpired` typed return が 1 path 動作、L1 既存 ToolCallStarted (=100) / ToolCallCompleted (=101) payload schema 拡張 (新規 EventKind 追加なし)、failure envelope size 216B (LeaseExpired) / 152B (residual) で < 5KB SLO 維持。S5 caused_by linkage で ToolCall event を session 内 history buffer 経由展開する base 確立 | (なし) |
   ```
-- [ ] 判定が「shrink」の場合は S5 (caused_by) scope を次 sub-plan §1.1 から削る判断を本 sub-plan §6 follow-up に記録
+- [ ] 判定が「shrink」の場合は S5 (caused_by) scope を次 sub-plan §1.1 から削る判断を本 sub-plan §6 follow-up に記録 (本 PR は **継続** 判定なので skip、checkbox 残置で意図を pin)
 
 ### 3.9 S4-9: CI workflow 拡張 + Push 6-guard + Opus + Codex review [S4 trunk]
 
-- [ ] `.github/workflows/bench-envelope-size.yml` (S3 で新設) を update: failure envelope シナリオを追加
-- [ ] **Opus phase-boundary review** (CLAUDE.md §3.3 Step 1): 指摘ゼロまで反復、walking-skeleton §4.1 line 305 の 2-3 round 想定
-- [ ] **Codex re-review** (CLAUDE.md §3.3 Step 2): 既存 EventKind payload schema 確定 + Rust touch + production code 改修 PR の **Codex re-review 必須 1 round** (Walking skeleton §4 line 252 + §4.1 line 305 「Codex ✓ 既存 EventKind payload 確定軸」、CLAUDE.md §3.2 PR #102 教訓延長)
+- [x] `benches/l4_envelope_size.mjs` を update: failure envelope 3 シナリオ追加 (lease_expired / lease_residual / handler_threw)、5120-byte SLO check 含む
+- [x] **Opus phase-boundary review Round 1** (CLAUDE.md §3.3 Step 1): P1 ゼロ + P2 4 件 (compatFailureRaw `diff` field + numeric count sync test 26→33 / export 48→61 + checklist sync) + P3 2 件、本 commit (Round 2) で全 P2 反映
+- [x] **Codex re-review Round 1** (CLAUDE.md §3.3 Step 2): 2 inline comment (P1 raw-mode failure null + P2 production tool_call_id session source) → Round 1 fix commit `9da7246` で全反映済
+- [x] **Codex re-review Round 2**: 1 新規 P2 inline (`_envelope.ts:961` `handlerError !== undefined` sentinel が `throw undefined` / `Promise.reject(null)` を falsely success 扱いして wrapper crash) → Round 3 fix commit で boolean sentinel `handlerThrew` に切替 + regression test 2 件追加
+- [ ] **Opus phase-boundary review Round 2**: Round 2 fix 反映後 + Round 3 Codex P2 fix 込みで再判定、指摘ゼロまで反復
 
 ---
 
@@ -454,7 +469,7 @@ memory `project_adr008_d2_c_plan_done.md` Lesson 1-4 + `feedback_autonomous_phas
 ### 4.4 restore 後 numeric count sync 漏れ (carry-over → restore で件数表記更新)
 
 - [ ] §3 sub-batch 数 (S4-1〜S4-9 = **9 件**)、§7 Risks 数 (**8 件**、R1-R8)、§8 OQ 件数 (**3 件**)、size 想定 (~400-600 line / 4-5 日 = walking-skeleton §4.1 line 305 整合) が本 sub-plan 内で bit-equal か?
-- [ ] `Grep "400-600 line\|4-5 日\|9 件\|3 件\|8 件 Risks\|R1-R8\|G3-S4-1.*G3-S4-8\|top-level export 48 不変"` で本 sub-plan 内 numeric counts が bit-equal か? (Round 1 P2-2 反映、Risks 8 件 + OQ 3 件 + napi 48 不変 を grep target に追加)
+- [ ] `Grep "400-600 line\|4-5 日\|9 件\|3 件\|8 件 Risks\|R1-R8\|G3-S4-1.*G3-S4-8\|top-level export 61 不変\|35/35 test"` で本 sub-plan 内 numeric counts が bit-equal か? (Round 1 P2-2 反映 + Opus Round 1 P2 numeric count fix: napi 48 → **61**、test 26/26 → **33/33** → **35/35** (Round 3 で +2 sentinel test))
 
 ### 4.5 既存 public API 破壊禁止 (CLAUDE.md §3.2 PR #102 教訓延長)
 
@@ -512,7 +527,7 @@ trunk + expansion 完了後の別 phase で carry-over:
 
 | # | OQ | 決定タイミング | 推奨 (Opus 判断委譲) |
 |---|---|---|---|
-| 1 | `tool_call_id` cross-server-restart unique 永続化 schema — 本 trunk in-process counter で十分か、永続化 store (SQLite / file) 必要か | expansion ADR-011 work、または S5 着手時 | **本 trunk in-process** で十分 (sessionId が server-restart で reset されるため per-session unique で OK)、永続化は ADR-011 (Cognitive Memory Taxonomy) で session 跨ぎ episodic memory と統合検討 |
+| 1 | `tool_call_id` cross-server-restart unique 永続化 schema — 本 trunk in-process counter で十分か、永続化 store (SQLite / file) 必要か。**Opus Round 1 P3 反映**: 現実装の `_toolCallSeq: Map<string, number>` (`src/tools/_envelope.ts:728` 周辺) は eviction なし、production の `getSessionId(args) → lease.viewId` (Round 1 P2 fix) で session ID が `randomUUID()` から派生するため、長時間動作中に Map entry が増加する潜在 leak がある。S4 trunk では `getSessionId` が default で `"default"` 1 entry のみのため問題顕在化せず、S5 で本格運用に乗る際に **LRU eviction (例: 上限 1k entry、TTL 24h) を実装する必要あり**。S5 着手時に本 OQ で同時 finalize | expansion ADR-011 work、または S5 着手時 | **本 trunk in-process** で十分 (sessionId が server-restart で reset されるため per-session unique で OK、本 PR 範囲 + S5 の per-session history buffer 動作で leak 顕在化前に対処可能)、永続化は ADR-011 (Cognitive Memory Taxonomy) で session 跨ぎ episodic memory と統合検討、S5 着手時に LRU eviction 実装で本 OQ resolve |
 | 2 | `caused_by.your_last_action` semantic 解釈 — 直前 `desktop_act` 限定 / 直前任意 commit tool / 直前任意 tool (query 含む) | S5 着手時 finalize | **直前任意 commit tool** 推奨 (副作用持ち tool のみ history buffer 対象、query は副作用なし `caused_by` 文脈外)、S5 で per-session ring buffer 仕込み + `caused_by.your_last_action` projection 実装時に確定 |
 | 3 | `args_summary` PII / secret redaction logic — JSON.stringify truncate のみ / regex pattern detect / typed schema-based redaction | expansion P2 work | **truncate のみ** (S4 trunk skeleton で十分)、PII redaction は `_errors.ts::SUGGESTS::args_redacted` 拡張と統合して expansion で一括対応 (ADR-010 §10 P2 acceptance criteria coverage > 95% mapping) |
 
@@ -630,7 +645,8 @@ S5 caused_by linkage 着手時 (★ 最重要 contract):
 |---|---|---|---|
 | Drafted v0.1 | 2026-05-01 | Claude (Sonnet) | 初稿起草、walking skeleton S4 sub-plan、commit 軸 (`makeCommitWrapper`) + query 軸 (`makeQueryWrapper`) wrapper template + lease 4-tuple validation `LeaseExpired` typed reason 1 path 実装 + L1 既存 `EventKind::ToolCallStarted/Completed` payload schema 確定 (新規 EventKind 追加なし) + `desktop_discover/act` wrapper 経由化 + envelope failure size < 5KB bench + G3 ゲート判定。Codex re-review 必須 1 round (既存 EventKind payload 確定軸) |
 | Drafted v0.2 | 2026-05-01 | Claude (Sonnet) | **Opus PR #111 Round 1 review 反映** (Not approved、P1×5 + P2×6 + P3×2): **P1-1** napi binding signature 拡張で `lease_token` 3rd 挿入 → silent breakage 6 callsite → Round 2 で **末尾 5th optional 追加** に修正、既存 4-arg positional callers (`tests/unit/l1-capture-panic-fuzz.test.ts:122,128` + `tests/unit/l1-capture.test.ts:163`) 無修正 pass 担保。**P1-2** `args_json` → `args_summary` rename = npm public type signature breakage (`index.d.ts:280` + `native-engine.ts:282` 公開済) → Round 2 で **rename 中止**、既存 `args_json` field 名維持、CLAUDE.md §3.2 既存 API 破壊禁止に整合。**P1-3** `EnvelopeMinimalShape.confidence` 3 値 bump の S3 並走依存明示 → §2.4 で「S3 contract test (G3-7) assertion 形式が確定後 final check」note 追記、ADR-010 §5.3 snake_case vs §5.4 PascalCase 表記揺れも Round 1 P3-1 同箇所で note。**P1-4** "1:1 mapping" 事実誤認 (4 reason → 5 typed = 1:1 ではない) → §1.4 + §2.2 を **4 reason → 4 typed codes 1:1 + `EntityOutsideViewport` 別経路 5th typed code** に修正、§2.2 を 2 つの table に分離。**P1-5** `_post.ts::recordHistory` への touch が S4 trunk scope 超え → §1.3 OQ #2 から「base 仕込む」削除、純粋 carry-over (S5 着手時 finalize) に変更。**P2-1** §3.1 caller grep scope を `src/ tests/` に拡張、callsite count `~3-5` → `~6-10`。**P2-2** §4.4 grep keyword に `8 件 Risks` + `R1-R8` + `top-level export 48 不変` 追加。**P2-3** 47 → 48 napi exports 矛盾を「S3 で消化済 48、本 S4 は signature 拡張のみで top-level export 数不変」に統一。**R1** mitigation 全面書き直し (rename 中止 → 既存 field 名維持 + bincode binary compat 別軸を R5 に分離)、**R5** mitigation 「in-memory ring single-server-lifetime 限定」と明示 |
+| Drafted v0.3 | 2026-05-01 | Claude (Sonnet) | **PR #113 (impl PR) review-loop iteration ledger** (Round 1〜3 の永続記録、CLAUDE.md §9 残件は docs/ 永続化 + Opus Round 2 P3 反映): **Round 1** (commit `9da7246`、Codex bot inline review + user PR comment): **P1** raw-mode failure path で literal `null` を return していたのを `compatFailureRaw(envelope) → {ok:false, reason:"<snake_case>", if_unexpected:{...}}` に切替、pre-S4 `desktop_act` raw client 互換維持。**P2** production `desktopActWrapperOptions.getSessionId` を `(args) => args.lease?.viewId ?? "default"` で override、production tool_call_id の per-session monotone uniqueness pin。**Round 2** (commit `a8edf34`、Opus phase-boundary review Round 1、P1 ゼロ + P2×4 + P3×1): **P2 §3.2** `compatFailureRaw` に `diff: never[]` field 追加、pre-S4 `TouchResult.diff` field 既存契約を wrapper failure 経路でも維持 (PR #102 同型 carry-over scope shrink regression 防止)。**P2 §3.1** sub-plan numeric count sync (test 26/26→33/33、export 48→61、main 時点で既に 61 と判明、v0.1/v0.2 napi-rs surface 前提誤り)。**P2** checklist sync (§3.8 Appendix C `[x]` flip、§3.9 Round 1/2 split)。**P3** `_toolCallSeq` Map メモリ leak risk を §8 OQ #1 に補記、S5 着手時 LRU eviction (1k entry / TTL 24h) で resolve。**Round 3** (commit `eb4654d`、Codex bot Round 2 inline review、P2×1): **P2** `_envelope.ts:961` `handlerError !== undefined` sentinel が `throw undefined` / `Promise.reject(null)` を falsely success 扱いして wrapper crash → boolean sentinel `handlerThrew` に切替 + regression test 2 件追加 (test 33/33 → 35/35)。**Opus Round 2 final sweep** (P1 ゼロ + P2×2 doc-only numeric stale + P3 v0.3 bump): test count §3.7「2525」→ **2527**、§4.4 grep keyword「33/33」→ **35/35** に sync、本 v0.3 entry で review-loop 全体 ledger を永続化 (本書きは v0.3 自身)。**累積 review iteration**: Codex bot 2 round + Opus phase-boundary 2 round + user reviewer 1 round = **5 review pass で merge-ready** に到達 |
 
 ---
 
-END OF walking skeleton S4 sub-plan (Drafted v0.2)。
+END OF walking skeleton S4 sub-plan (Drafted v0.3)。

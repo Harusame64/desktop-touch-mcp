@@ -98,10 +98,46 @@ pub struct ScrollChangedPayload {
 
 // ─── Side-effect / system / replay payloads (existing, P5a) ──────────────────
 
+/// Lease 4-tuple summary attached to `ToolCallStartedPayload` when the
+/// commit wrapper's lease-validation path is used (ADR-010 P1 S4 sub-plan
+/// `docs/adr-010-p1-s4-plan.md` §2.3). The 4 identity fields mirror the
+/// runtime `EntityLease` (`src/engine/world-graph/types.ts`); the fifth
+/// `expiresAtMs` is intentionally omitted because commit-time validation
+/// has already consumed it. `evidence_digest_prefix8` is a fixed-width
+/// 8-char prefix of the full digest so the L1 ring stays compact even
+/// when lease-aware tool calls are emitted at high rate.
+///
+/// `Option::None` for optional fields ⇒ napi-rs omits the JSON key
+/// (memory `feedback_napi_default_export.md`); the matching
+/// `NativeLeaseTokenSummary` napi struct in `napi.rs` carries the same
+/// shape across the FFI boundary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LeaseTokenSummary {
+    pub entity_id: String,
+    pub view_id: String,
+    pub target_generation: String,
+    pub evidence_digest_prefix8: String,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct ToolCallStartedPayload {
     pub tool: String,
+    /// **Field name unchanged** (sub-plan §2.3 / Round 1 P1-2): rename to
+    /// `args_summary` would break the `argsJson: string` field on the public
+    /// `index.d.ts` `l1PushToolCallStarted` declaration (npm public type
+    /// signature). The wrapper layer truncates / summarises the JSON
+    /// (~512-byte cap, sub-plan §2.6) before passing it through the napi
+    /// binding; the field name stays `args_json` while the semantic value
+    /// is a summary, preserving CLAUDE.md §3.2 既存 public API 破壊禁止.
     pub args_json: String,
+    /// **NEW** (sub-plan §1.1 E + §2.3): lease 4-tuple summary attached
+    /// when the commit wrapper's lease-validation path is used. `None`
+    /// for query-axis tools, lease-less commits, and pre-S4 callers.
+    /// **Tail-only Optional** so existing serialised `ToolCallStartedPayload`
+    /// values produced inside the same server lifetime stay decodable;
+    /// cross-server-restart binary-compat is out of scope (L1 ring is
+    /// in-memory only, sub-plan §7 R5).
+    pub lease_token: Option<LeaseTokenSummary>,
 }
 
 #[derive(Serialize, Deserialize)]
