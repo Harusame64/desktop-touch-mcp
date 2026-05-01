@@ -472,7 +472,7 @@ expansion フェーズ:
 
 | Gate | date | decision | rationale | scope shrink 内容 |
 |---|---|---|---|---|
-| G1 | (S1 PR merge 時に追記) | (継続 / shrink) | (...) | (S2 の dirty rect view を count-only にさらに絞る等) |
+| G1 | 2026-05-01 (PR #105 `4f912c3` merged) | **継続** | `build_*(focus_stream) -> (Arranged, View)` signature 統一が DD 0.23 actual API で成立 (impl PR #105 で実証、cargo check + 37 unit + 19 integration test 全 pass、bench regression 0)。`Arranged<'scope, ...>` の closure 外持ち出し試行は型 system で static error (Codex v2 P2-9 確認)。`spawn_perception_worker` 戻り値 4-tuple 不変 + 既存 production-pipeline lifecycle 経路 8 test 無修正で pass = 既存 caller 破壊 0。S2 `build_dirty_rects_aggregate` が同 template を mechanical コピー可能 (sub-plan §3.3 と shape integral)。Opus round 1 P1×2 + P2×4 + P3×3 → Round 2 全反映、Codex round 1 clean。Round 2 Opus re-review pending (本 G1 判定 commit 時点)、code shape 不変なので新規 P1 確率低 | (なし、S2 (D2-C) 着手は trunk 計画通り 200-300 line / 3-4 日見積、shrink 不要) |
 | G2 | (S2 PR merge 時に追記) | (継続 / shrink) | (...) | (S3-S5 の envelope / caused_by を最小 field に削る等) |
 | G3 | (S4 PR merge 時に追記) | (継続 / shrink) | (...) | (S5 を in-memory buffer + 直近 1 件のみに固定する等) |
 
