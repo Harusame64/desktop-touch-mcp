@@ -537,8 +537,15 @@ describe("Phase 4 — Codex PR #41 P1: macro DSL has v2 World-Graph dispatchers"
     const src = readFileSync(join(ROOT, "src", "tools", "macro.ts"), "utf-8");
     expect(src).toContain("desktop_discover:");
     expect(src).toContain("desktop_act:");
-    // Both should resolve their handler via the shared facade singleton.
-    expect(src).toContain("getDesktopFacade()");
+    // ADR-010 P1 S4 (sub-plan §2.5): both handlers route through the
+    // module-scope wrapped registration handlers from `desktop-register.ts`
+    // so the L5 commit/query wrapper chain (envelope + lease pre-flight +
+    // ToolCall events) is honoured uniformly across the direct
+    // `server.tool` path AND the run_macro dispatcher. The shared facade
+    // singleton is now reached transitively via these registration
+    // handlers (PR #112 same-pattern fix continued).
+    expect(src).toContain("desktopDiscoverRegistrationHandler");
+    expect(src).toContain("desktopActRegistrationHandler");
   });
 });
 
@@ -581,9 +588,18 @@ describe("Phase 4 — Codex PR #41 round 3 P1: validateDesktopTouchTextRequireme
     expect(src).toMatch(/validateDesktopTouchTextRequirement\(input\.action, input\.text\)/);
   });
 
-  it("macro.ts desktop_act handler invokes the validator", () => {
+  it("macro.ts desktop_act handler invokes the validator (via wrapped registration handler)", () => {
+    // ADR-010 P1 S4 (sub-plan §2.5): macro.ts no longer calls the
+    // validator directly — it dispatches to `desktopActRegistrationHandler`
+    // (the L5-wrapped `desktopActRawHandler` in `desktop-register.ts`),
+    // which in turn invokes `validateDesktopTouchTextRequirement`. The
+    // structural assertion is that macro.ts uses the wrapped handler so
+    // the validation contract is preserved transitively (PR #112 +
+    // CLAUDE.md §3.2 既存 public API 破壊禁止). The validator's runtime
+    // contract is still pinned by the `validateDesktopTouchTextRequirement`
+    // unit tests above.
     const src = readFileSync(join(ROOT, "src", "tools", "macro.ts"), "utf-8");
-    expect(src).toMatch(/validateDesktopTouchTextRequirement\(i\.action, i\.text\)/);
+    expect(src).toContain("desktopActRegistrationHandler");
   });
 });
 

@@ -420,3 +420,23 @@ export interface NativeCaptureStats {
   panicCount: bigint
   eventIdHighWater: bigint
 }
+
+/**
+ * Lease 4-tuple summary attached to `l1PushToolCallStarted` (ADR-010 P1 S4
+ * sub-plan `docs/adr-010-p1-s4-plan.md` §2.3). Mirrors the runtime
+ * `EntityLease` (`src/engine/world-graph/types.ts`) minus `expiresAtMs`
+ * (commit-time validation has already consumed the TTL) and with
+ * `evidenceDigest` truncated to the first 8 hex chars so the L1 ring
+ * stays compact when lease-aware tool calls run at high rate.
+ *
+ * Tail-only Optional parameter on `l1PushToolCallStarted` so existing
+ * 4-arg positional callers (`tests/unit/l1-capture.test.ts:163`,
+ * `tests/unit/l1-capture-panic-fuzz.test.ts:122,128`) keep compiling
+ * unchanged (Round 1 P1-1, sub-plan §2.3).
+ */
+export interface NativeLeaseTokenSummary {
+  entityId: string
+  viewId: string
+  targetGeneration: string
+  evidenceDigestPrefix8: string
+}

@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { UiEntityCandidate } from "../engine/vision-gpu/types.js";
-import type { UiEntity, EntityLease } from "../engine/world-graph/types.js";
+import type {
+  UiEntity,
+  EntityLease,
+  LeaseValidationResult,
+} from "../engine/world-graph/types.js";
 import { computeLeaseTtlMs, computeSoftExpiresAtMs } from "../engine/world-graph/lease-ttl-policy.js";
 import { resolveCandidates } from "../engine/world-graph/resolver.js";
 import {
@@ -372,6 +376,30 @@ export class DesktopFacade {
     session.lastAccessMs = (this.opts.nowFn ?? Date.now)();
 
     return output;
+  }
+
+  /**
+   * Pre-flight lease validation without executing a touch (ADR-010 P1
+   * S4 sub-plan §3.4). Used by `makeCommitWrapper`'s `leaseValidator`
+   * option so the L5 envelope wrapper can produce a typed-reason
+   * failure envelope (`LeaseExpired` etc.) BEFORE the side-effecting
+   * handler runs — the wrapper short-circuits via
+   * `if_unexpected.most_likely_cause` + `try_next` and does not call
+   * `touch()`.
+   *
+   * Routes to the session that issued the lease via its viewId,
+   * mirroring `touch()`'s lookup. Returns `entity_not_found` when
+   * the session has been evicted (same semantic as `touch()` so
+   * production envelope shape is consistent).
+   *
+   * Side-effect-free (only refreshes the session's lastAccessMs).
+   */
+  validateLeaseOnly(lease: EntityLease): LeaseValidationResult {
+    const session = this.registry.getByViewId(lease.viewId, this.opts.nowFn);
+    if (!session) {
+      return { ok: false, reason: "entity_not_found" };
+    }
+    return session.leaseStore.validate(lease, session.generation, session.entities);
   }
 
   /**

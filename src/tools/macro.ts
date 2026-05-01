@@ -66,15 +66,12 @@ import { notificationShowHandler, notificationShowSchema } from "./notification.
 // for discovery and lease-based action; macros need access to use the
 // action='setValue' / 'click' / 'type' flow advertised in the schema.
 import {
-  getDesktopFacade,
-  desktopSeeSchema,
-  desktopTouchSchema,
-  validateDesktopTouchTextRequirement,
+  desktopDiscoverRegistrationSchema,
+  desktopDiscoverRegistrationHandler,
+  desktopActRegistrationSchema,
+  desktopActRegistrationHandler,
 } from "./desktop-register.js";
 import { resolveV2Activation } from "./desktop-activation.js";
-import type { DesktopSeeInput } from "./desktop.js";
-import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
-import type { EntityLease } from "../engine/world-graph/types.js";
 
 /**
  * Phase 4 (Codex PR #41 round 3 P1): the v2 World-Graph dispatchers
@@ -163,34 +160,38 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   // v2 World-Graph (default-on; kill switch DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1).
   // Both handlers re-check the kill switch on every call so run_macro cannot
   // bypass the operator's opt-out. (Codex PR #41 round 3 P1.)
+  //
+  // ADR-010 P1 S4 (sub-plan §2.5 + §3.3): use the module-scope wrapped
+  // handlers + injected schemas from `desktop-register.ts` so this
+  // dispatcher honours the same envelope / commit-wrapper contract as
+  // the direct `server.tool` registration path. Without this, run_macro
+  // 経路は `args.include` を strip してしまい per-call envelope opt-in が
+  // 機能不能 (PR #112 P1-1 / PR #97 同型 risk pattern). Kill-switch
+  // gating runs BEFORE the wrapper invocation so the wrapper never
+  // emits ToolCall events for blocked calls.
   desktop_discover:     {
-    schema: z.object(desktopSeeSchema),
-    handler: async (input: unknown): Promise<ToolResult> => {
+    schema: z.object(desktopDiscoverRegistrationSchema),
+    handler: (async (input: Record<string, unknown>): Promise<ToolResult> => {
       if (v2KillSwitchActive()) {
         return { content: [{ type: "text" as const, text: JSON.stringify(V2_DISABLED_ERROR, null, 2) }] };
       }
-      const output = await getDesktopFacade().see(input as DesktopSeeInput);
-      return { content: [{ type: "text" as const, text: JSON.stringify(output, null, 2) }] };
-    },
+      // The wrapped handler returns the looser `McpToolResult` shape
+      // (`_envelope.ts`); the runtime content blocks are bit-equal with
+      // the strict `ToolResult` discriminated union, so the cast is
+      // safe — only the structural narrowing differs.
+      return (await desktopDiscoverRegistrationHandler(input)) as ToolResult;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any,
   },
   desktop_act:          {
-    schema: z.object(desktopTouchSchema),
-    handler: async (input: unknown): Promise<ToolResult> => {
+    schema: z.object(desktopActRegistrationSchema),
+    handler: (async (input: Record<string, unknown>): Promise<ToolResult> => {
       if (v2KillSwitchActive()) {
         return { content: [{ type: "text" as const, text: JSON.stringify(V2_DISABLED_ERROR, null, 2) }] };
       }
-      const i = input as { lease: EntityLease; action?: TouchAction; text?: string };
-      const validationError = validateDesktopTouchTextRequirement(i.action, i.text);
-      if (validationError) {
-        return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: validationError }, null, 2) }] };
-      }
-      const result = await getDesktopFacade().touch({
-        lease: i.lease,
-        action: i.action,
-        text: i.text,
-      });
-      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-    },
+      return (await desktopActRegistrationHandler(input)) as ToolResult;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any,
   },
   // V1 fallback macros — only callable when v2 is killed (mirrors the
   // server-windows.ts kill-switch fallback). In v2 mode these short-circuit
