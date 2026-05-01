@@ -612,21 +612,23 @@ D1 `current_focused_element` view は `hwnd` を key にした per-hwnd state (f
 
 補足 (`ModalAppeared` 評価): UIA dialog/structure-changed event registration も `src/uia/` で grep 0 件。`ModalAppeared` 派生は `WindowChanged` (window class match) または別途 dialog event 配線が必要 → **本 D2 の SemanticEvent から除外** (D2-C0-3 「最低限 acceptance」と整合)。
 
-#### D2-C0-2: go/no-go matrix (2026-05-01 確定)
+#### D2-C0-2: go/no-go matrix (2026-05-01 確定、本表は P5c-2 PR #102 trigger 完了で `DirtyRect` row が更新済)
 
 | EventKind | 実装状況 | D2 での対応 |
 |---|---|---|
 | `UiaFocusChanged` (=1) | ✅ Production (P5c-1 完了 PR #88、`src/uia/event_handlers/focus.rs:94` で `ring.push`、`src/uia/thread.rs:248` で 2 引数 `AddFocusChangedEventHandler`) | D2-D で `FocusMoved` variant 利用 |
-| `DirtyRect` (=0) | ❌ Not emitted (payload only) | **Carry-over** — ADR-007 P5c-2 prerequisite、`dirty_rects_aggregate` view は本 D2 から retire |
-| `WindowChanged` (=5) | ❌ Not emitted (payload only) | **除外** — `SemanticEvent::WindowChanged` variant は本 D2 enum から外す |
-| `ScrollChanged` (=6) | ❌ Not emitted (payload only) | **除外** — `SemanticEvent::ScrollSettled` variant は本 D2 enum から外す |
-| (semantic) `ModalAppeared` | UIA dialog/structure event 未配線 | **除外** — UIA dialog event 配線 (P5c-3 拡張) 後に追加 |
+| `DirtyRect` (=0) | ✅ Production (P5c-2 PR #102 merged 2026-05-01、`c535fc2`、`src/duplication/thread.rs::acquire_dirty_rects` で `ring.push`) | **復帰** — `dirty_rects_aggregate` view は D2-C で実装 (sub-plan `docs/adr-008-d2-c-plan.md`、impl PR は本 plan PR merge 後の翌 PR、§3.bis ledger L1 Resolved) |
+| `WindowChanged` (=5) | ❌ Not emitted (payload only) | **除外** — `SemanticEvent::WindowChanged` variant は本 D2 enum から外す (§3.bis ledger L2 carry-over) |
+| `ScrollChanged` (=6) | ❌ Not emitted (payload only) | **除外** — `SemanticEvent::ScrollSettled` variant は本 D2 enum から外す (§3.bis ledger L3 carry-over) |
+| (semantic) `ModalAppeared` | UIA dialog/structure event 未配線 | **除外** — UIA dialog event 配線 (P5c-3 拡張) 後に追加 (§3.bis ledger L4 carry-over) |
 
-#### D2-C0-3: D2 scope 最終確定 (2026-05-01 確定)
+#### D2-C0-3: D2 scope 最終確定 (PR #99、2026-05-01 確定)
 
-- [x] D2-C0-2 matrix 結果を本書 §1.1 F の variant set に反映済 (上の F 項目で `dirty_rects_aggregate` carry-over + `semantic_event_stream` `FocusMoved` 単独成立 を明記)
-- [x] **最低限 acceptance 確定**: `UiaFocusChanged` のみ実装済 → `semantic_event_stream` は `FocusMoved` variant 単独で declarative 成立 (`current_focused_element` の delta から派生 OR L1 ring から直接 filter)
-- [x] **ADR-008 §4 D2 「主要 view 4」が 3 view (current_focused / semantic_event[FocusMoved-only] / predicted_post_state subgraph) に縮小**、本書 §11.1 で対応行を更新済 (本 PR-δ で同時 land)
+> **※ 以下は PR #99 (D2-C0 ゲート、2026-05-01 morning) 時点の判断記録。P5c-2 PR #102 merged 2026-05-01 (`c535fc2`) で trigger 完了、§3.bis ledger L1 Resolved + §1.1 F 復帰 (4 view) で本 §D2-C0-3 結論は superseded。historical record として保持**
+
+- [x] D2-C0-2 matrix 結果を本書 §1.1 F の variant set に反映済 (PR #99 時点では `dirty_rects_aggregate` carry-over + `semantic_event_stream` `FocusMoved` 単独成立、現在は `dirty_rects_aggregate` 復帰で 4 view、§1.1 F line 315 参照)
+- [x] **最低限 acceptance 確定**: `UiaFocusChanged` のみ実装済 → `semantic_event_stream` は `FocusMoved` variant 単独で declarative 成立 (`current_focused_element` の delta から派生 OR L1 ring から直接 filter) — **PR #99 当時の判断、現在も有効** (D2-D scope)
+- [x] ~~**ADR-008 §4 D2 「主要 view 4」が 3 view ... に縮小**~~ — **Superseded (P5c-2 PR #102 merged で `dirty_rects_aggregate` 復帰、§4 D2 は 4 view 全部実装に restore)**、本書 §11.1 + ADR §4 phase table line 188 で 4 view restore 反映済
 
 #### D2-C0-4: 検証 + Opus 判断 (2026-05-01)
 
@@ -641,10 +643,10 @@ D1 `current_focused_element` view は `hwnd` を key にした per-hwnd state (f
   3. **carry-over の reversibility**: prerequisite 案で D2-C を retire しても、view 仕様 (views-catalog §3.2) は固定済で実装手順も §D2-C-1〜D2-C-4 に存在。P5c-2 完了の翌 PR で D2-C 着手可能。逆 (同時実装で巨大 PR が止まる) より取り戻しが容易
   4. **強制命令 3 整合**: prerequisite 案なら各 phase が独立に Opus phase-boundary review を経る。同時実装案は Opus が「emit + view + integration test」を 1 round で全部判定する必要があり、3 者一致 (概念設計 × plan × 実装) の確認密度が下がる
 
-  **結論を反映した plan 状態**:
-  - PR-ε (D2-C `dirty_rects_aggregate`): ADR-007 P5c-2 完了後の独立 PR で着手 (§3 PR 表で carry-over 明記済)
-  - D2-D は本 D2 で `FocusMoved` 単独 variant、`WindowChanged`/`ScrollSettled` variant 拡張は P5c-3/4 完了後の D2 後継 phase で着手 (§D2-D-1 で確定済)
-  - `ModalAppeared` 派生は UIA dialog/structure event 配線後、別 phase
+  **結論を反映した plan 状態 (PR #99 時点記録、P5c-2 PR #102 merge で一部 superseded)**:
+  - ~~PR-ε (D2-C `dirty_rects_aggregate`): ADR-007 P5c-2 完了後の独立 PR で着手 (§3 PR 表で carry-over 明記済)~~ — **Resolved trigger (P5c-2 PR #102 merged)**、本 D2-C plan PR で sub-plan `docs/adr-008-d2-c-plan.md` land、impl PR は本 plan PR merge 後の翌 PR
+  - D2-D は本 D2 で `FocusMoved` 単独 variant、`WindowChanged`/`ScrollSettled` variant 拡張は P5c-3/4 完了後の D2 後継 phase で着手 (§D2-D-1 で確定済) — **PR #99 当時の判断、現在も有効**
+  - `ModalAppeared` 派生は UIA dialog/structure event 配線後、別 phase — **PR #99 当時の判断、現在も有効** (§3.bis ledger L4 carry-over)
 
 ### D2-C: `dirty_rects_aggregate` view (PR-ε、§3.bis ledger L1 復帰 PR)
 
