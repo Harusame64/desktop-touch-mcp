@@ -21,7 +21,7 @@ F. **payload `DirtyRectPayload` 充足** (既に `src/l1_capture/payload.rs:48` 
 
 ### 1.2 本 sub-plan で扱わない (carry-over)
 
-- **secondary monitor 対応** (親 plan §10 OQ #3): 本 sub-plan は **primary monitor (`output_index = 0`) のみ emit**、secondary monitor は OQ #3 で別 phase
+- **secondary monitor 専用機能** (親 plan §10 OQ #3): per-output 並行 thread / per-monitor 専用 view / secondary monitor 検出ロジック等の高度機能は OQ #3 で別 phase。**ただし** 既存 `spawn(output_index)` で受け取った output index を payload `monitor_index` に正しく載せること自体は本 PR の責務 (Codex P1-Codex-3、2026-05-01 確定 — 「carry-over」を理由に既存 multi-monitor 経路を破壊する regression は出さない、北極星整合)
 - **Tier dispatch / cascade** (親 plan §1.1 G + ADR-008 D5): P5c-2 は emit のみ、Tier 別 backend dispatch は D5 carry-over
 - **`DirtyRect` event の rate throttling** (親 plan §11.4 / R4): scroll と違い dirty rect は frame 駆動で本来 60Hz 上限。明示的 rate limit は不要、ただし ring 飽和時の `drop_count` 監視は P5c 全体共通の責務として §6 で扱う
 - **`dirty_rects_aggregate` view 実装**: ADR-008 PR-ε (D2-C) で別 PR、本 PR はあくまで emit
@@ -201,7 +201,7 @@ fn acquire_dirty_rects(ctx, timeout_ms, ring: &Arc<EventRing>, enable_l1_emit: &
 |---|---|---|
 | 1 | option B (always-on consumer thread) への pivot 是非 — v2 kill switch 状態で emit 不在が production 課題化するか | P5c-2 merge 後、ADR-008 D2-C `dirty_rects_aggregate` view の bench 結果を踏まえ Opus 判断 |
 | ~~2~~ | ~~`benches/l1_capture.rs::bench_dirty_rect_60hz` を本 PR で enable するか別 PR (P5c-2-bench) で carry-over するか~~ | **Resolved (Opus 判断、2026-05-01)**: 別 PR (`P5c-2-bench`) で carry-over 採用。理由: 親 §11.4 acceptance に bench 含まれず、本 PR scope を「emit + integration test」に絞る方が PR #94/#95 の Codex round 多発教訓 (sub-batch 切り効果) と整合 |
-| 3 | secondary monitor 対応 (親 plan §10 OQ #3) | 別 phase、production 需要があれば着手 |
+| 3 | secondary monitor の **高度機能** (per-output 並行 thread / per-monitor 専用 view / detection logic) — 親 plan §10 OQ #3 | 別 phase、production 需要があれば着手。**注**: `spawn(output_index)` 経由の output index を payload `monitor_index` に正しく載せること自体は本 PR で実装済 (§3.1 / Codex P1-Codex-3 fix、2026-05-01)。本 OQ は **新機能** の追加 (= 既存 multi-monitor 経路の正しい扱いとは別軸) を carry-over する意味 |
 | ~~4~~ | ~~`frame_index` を duplication thread ローカル AtomicU64 にするか、L1 ring 全体共通の monotonic counter にするか~~ | **Resolved (Opus 判断、2026-05-01、§3.1 反映済)**: duplication thread ローカル `Arc<AtomicU64>` を採用、frame 単位採番 (1 frame で N rect が同 `frame_index` を共有)。理由: views-catalog §3.2 が `summary { count, total_area }` を frame 単位で aggregate する仕様で、`frame_index` は「同 frame の rect を束ねるキー」として必須、event_id (event 単位、ring 全体共通) では役割が違うため代替不可 |
 
 ---
