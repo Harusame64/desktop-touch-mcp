@@ -781,12 +781,27 @@ D1 `current_focused_element` view は `hwnd` を key にした per-hwnd state (f
 
 ### D2-G: ドキュメント整合 + メモリ更新 (PR 14)
 
-- [ ] `docs/views-catalog.md` §3.2 を実装した view ごとに `Implemented + Benched` flip + 実測値追記
-- [ ] **ADR-008 §8 D2 行を「focus path 完了、modal / attention は D4 carry-over」明記**で更新 (※ PR #99 で先行更新済、D2-G では最終確定文言で再確認のみ)
+**Status (2026-05-01、walking skeleton S6 merge 時点)**: D2-G は **trunk 確定 5 view の status update のみ部分着手**、完全完了 (semantic_event_stream / predicted_post_state など D4 拡張 view の docs 整合) は walking-skeleton expansion phase carry-over (`docs/walking-skeleton-expansion-plan.md` §6 Carry-over)。
+
+#### trunk 確定 5 view (S1〜S5 で land 済) の status (S6 trunk completion 時点で確定):
+
+| view | 確定 PR | Status | 実測値 / 備考 |
+|---|---|---|---|
+| `current_focused_element` | PR #91 (D1-3 merged 2026-04-30) | **Implemented + Benched** | view_get_hit ~145ns / miss ~21ns (PR #92 D1-5)、idle frontier advance で quiescent focus も materialize |
+| `latest_focus` | PR #96 (D2-B-1 merged 2026-04-30) | **Implemented + Benched** | view_get_focused / view_focused_pipeline_status napi、TS 側 desktop_state.ts が view 経由読取 (D2-B-2 PR #97) |
+| `dirty_rects_aggregate` (count-only 簡易版、S2) | PR-ε D2-C (S2、merged) | **Implemented (skeleton)** | `viewGetDirtyRects(monitor_index)` napi、count-only spike、完成形 (`rects: Vec<Rect>` / `total_area`) は expansion phase |
+| `focus_pump pipeline` | PR #90 (D1-2 merged 2026-04-30) | **Implemented + Benched** | broadcast subscribe / parent-side subscribe / FocusInputHandle worker / Pair lex-total Lattice / watermark saturating clamp、65 cargo unit pass |
+| `lease_store` | PR #98 (D2-B 全完了 merged 2026-05-01) + S4 PR #113 で本格運用 | **Implemented + Locked** | LeaseStore.validate() reason 4 種 → typed enum 4 codes 1:1 mapping (S4 lease validation で本格運用)、5 番目 `EntityOutsideViewport` は別経路 carry-over |
+
+#### S6 で部分着手済 / expansion phase carry-over
+
+- [x] **trunk 確定 5 view status update** (本 PR S6-4 で実施、上記 table)
+- [ ] `docs/views-catalog.md` §3.2 を実装した view ごとに `Implemented + Benched` flip + 実測値追記 (※expansion phase carry-over、本 S6 では skip)
 - [x] ~~**本 plan H1 タイトル (L1) を「主要 view 3 + 1 carry-over」表記に更新**~~ — **Resolved (D2-C plan PR、2026-05-01)**: P5c-2 PR #102 merged で `dirty_rects_aggregate` carry-over が解消、H1 / §intro の「主要 view 4」表記は元の通り正しく整合、D2-G で書き換え不要
-- [ ] 本 plan §11 Acceptance を全 [x] flip
-- [ ] `docs/adr-008-d1-followups.md` の対応項目を Resolved 化 (§3.5 のみ carry-over)
-- [ ] memory `project_adr008_d2_done.md` 新規 + `MEMORY.md` index 更新
+- [ ] 本 plan §11 Acceptance を全 [x] flip (※expansion phase carry-over)
+- [ ] `docs/adr-008-d1-followups.md` の対応項目を Resolved 化 (§3.5 のみ carry-over) (※expansion phase carry-over)
+- [ ] memory `project_adr008_d2_done.md` 新規 + `MEMORY.md` index 更新 (※expansion phase carry-over、本 S6 で `project_adr010_p1_s6_impl_done.md` を追加予定)
+- [ ] **D4 拡張 view (semantic_event_stream / predicted_post_state) の docs 整合** — **expansion phase carry-over** (本 S6 範囲外、`docs/walking-skeleton-expansion-plan.md` §6 整合)
 
 ---
 

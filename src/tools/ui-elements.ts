@@ -11,6 +11,7 @@ import { buildHintsForTitle } from "../engine/identity-tracker.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
 import { resolveWindowTarget } from "./_resolve-window.js";
+import { makeCommitWrapper } from "./_envelope.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -351,6 +352,32 @@ export const scopeElementHandler = async ({
 // Registration
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * S6 trunk completion PoC (sub-plan §2.3 + §3.1 G6-S6-1):
+ * `click_element` is wrapped via `makeCommitWrapper` (lease-less commit
+ * variant — `leaseValidator` omitted since `click_element` is a name/
+ * automationId match without lease 4-tuple validation, sub-plan §1.1 G).
+ * `withRichNarration` (inner) → `makeCommitWrapper` (outer) composition:
+ *   - withRichNarration enriches the handler's ToolResult (`hints.diff` 等)
+ *   - makeCommitWrapper handles L1 ToolCallStarted/Completed push +
+ *     envelope assembly + compat hoist + tool_call_id seq
+ * Module-scope export so `run_macro` (`TOOL_REGISTRY.click_element` in
+ * `macro.ts`) shares the same wrapped instance (PR #112 shared
+ * registration handler pattern, strip risk prevention).
+ *
+ * G6 contract: this PoC demonstrates the trunk-completion claim that
+ * "expansion tool addition is L5-wrapper-only" — no engine-perception
+ * layer change required, just a wrap at the registration site.
+ */
+export const clickElementRegistrationHandler = makeCommitWrapper(
+  withRichNarration("click_element", clickElementHandler, { windowTitleKey: "windowTitle" }) as (args: Record<string, unknown>) => Promise<ToolResult>,
+  "click_element",
+  {
+    // leaseValidator omitted = lease-less commit variant
+    // getSessionId / argsSummary / clock も default 利用 = mechanical コピー最小
+  },
+);
+
 export function registerUiElementTools(server: McpServer): void {
   // Phase 4: get_ui_elements privatized — handler retained as internal export.
   // desktop_discover returns the actionable[] entity list (with name / role /
@@ -361,7 +388,7 @@ export function registerUiElementTools(server: McpServer): void {
     "click_element",
     "Invoke a UI element by name or automationId via UIA InvokePattern — no screen coordinates needed. The server auto-guards using windowTitle (verifies identity, foreground, modal) and returns post.perception.status. Prefer over mouse_click for buttons, menu items, and links in native Windows apps. Use desktop_discover first to discover automationIds. Pass fixId from a suggestedFix to re-target after window identity drift. lensId is optional for advanced pinned-lens use. Caveats: Requires InvokePattern — some custom controls do not expose it; fall back to mouse_click in that case.",
     clickElementSchema,
-    withRichNarration("click_element", clickElementHandler, { windowTitleKey: "windowTitle" })
+    clickElementRegistrationHandler as typeof clickElementHandler
   );
 
   // Phase 4: set_element_value absorbed into desktop_act({action:'setValue'}).

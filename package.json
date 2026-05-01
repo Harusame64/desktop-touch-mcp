@@ -64,6 +64,7 @@
     "check:native-types": "node scripts/check-native-types.mjs",
     "check:no-koffi": "node scripts/check-no-koffi.mjs",
     "check:rs-workspace": "cargo check --workspace --locked",
+    "check:expansion-disjoint": "node scripts/check-expansion-disjoint.mjs",
     "build:rs": "node scripts/build-rs.mjs --release",
     "build:rs:debug": "node scripts/build-rs.mjs --debug",
     "artifacts:rs": "napi artifacts",
