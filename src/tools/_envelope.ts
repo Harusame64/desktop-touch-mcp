@@ -1498,7 +1498,18 @@ export interface QueryWrapperOptions extends MakeEnvelopeAwareOptions {
   causedByProjector?: (
     args: unknown,
     sessionId: string,
-  ) => Promise<{ causedBy?: CausedByShape; basedOn?: BasedOnShape } | undefined>;
+  ) => Promise<{
+    causedBy?: CausedByShape;
+    basedOn?: BasedOnShape;
+    /**
+     * Round 3 P2 fix (Codex line 655): when the projector cannot run
+     * (e.g. `nativeL1` null = telemetry binding unavailable), surface
+     * the impaired observability via `confidence: degraded` so LLM
+     * clients distinguish "include=causal asked, projection
+     * unavailable" from "include not asked". Defaults to false.
+     */
+    forceDegraded?: boolean;
+  } | undefined>;
   /**
    * S5 sessionId source (sub-plan §2.4 Round 3 P1 Opus + Codex 重複 fix).
    *
@@ -1542,6 +1553,7 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
   return async (rawArgs) => {
     const { include, ...handlerArgs } = rawArgs as { include?: string[] } & TArgs;
     const includeCausal = include?.includes("causal") === true;
+    const includeRaw = include?.includes("raw") === true;
     // Round 2 P1 fix (Codex line 1501): `include=["causal"]` is an
     // implicit envelope opt-in — causal projection (`caused_by` +
     // `based_on`) only exists inside the envelope shape. Without this
@@ -1553,7 +1565,15 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
     // runtime. Treating `causal` as an envelope opt-in is the natural
     // resolution: callers asking for causal context implicitly want
     // the envelope shape that carries it.
-    const optIn = includeCausal || resolveEnvelopeOptIn(include, getEnvValue());
+    //
+    // Round 3 P2 fix (Codex line 1556): preserve the explicit `raw`
+    // override priority. `resolveEnvelopeOptIn` already returns false
+    // when `include` contains `"raw"`, so we only auto-promote to
+    // envelope mode for `causal` when `raw` is NOT explicitly
+    // requested. This keeps the per-call opt-out path that lets
+    // legacy callers force raw shape even while asking for causal
+    // context (degraded UX, but contract-preserving).
+    const optIn = (includeCausal && !includeRaw) || resolveEnvelopeOptIn(include, getEnvValue());
     const meta = await fetchMeta();
     const result = await handler(handlerArgs as TArgs);
 
@@ -1561,11 +1581,16 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
     // → projector へ伝播。projector 内で sentinel detect → undefined.
     let causedBy: CausedByShape | undefined;
     let basedOn: BasedOnShape | undefined;
+    let projectionForceDegraded = false;
     if (includeCausal && causedByProjector) {
       const sessionId = getSessionId(handlerArgs);
       const projection = await causedByProjector(handlerArgs, sessionId);
       causedBy = projection?.causedBy;
       basedOn = projection?.basedOn;
+      // Round 3 P2 fix (Codex line 655): surface impaired observability
+      // (e.g. nativeL1 null) via `confidence: degraded` so LLM clients
+      // can distinguish "causal asked, unavailable" from healthy raw.
+      projectionForceDegraded = projection?.forceDegraded === true;
     }
 
     const block = result.content?.[0];
@@ -1580,7 +1605,12 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
     }
 
     const envelope = buildEnvelope(parsed, {
-      viewPoisoned: meta.viewPoisoned,
+      // Round 3 P2 fix (Codex line 655): merge meta.viewPoisoned with
+      // the projector's `forceDegraded` flag so impaired observability
+      // (nativeL1 null / projection unavailable while causal opted in)
+      // surfaces as `confidence: degraded` even when meta itself is
+      // healthy.
+      viewPoisoned: meta.viewPoisoned || projectionForceDegraded,
       asOfWallclockMs: meta.asOfWallclockMs,
       causedBy,
       basedOn,

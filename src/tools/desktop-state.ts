@@ -637,21 +637,25 @@ export const desktopStateRegistrationSchema = withEnvelopeIncludeSchema(desktopS
 const desktopStateCausedByProjector = async (
   _args: unknown,
   sessionId: string,
-): Promise<{ causedBy?: CausedByShape; basedOn?: BasedOnShape } | undefined> => {
+): Promise<{ causedBy?: CausedByShape; basedOn?: BasedOnShape; forceDegraded?: boolean } | undefined> => {
   // Round 3 P1 (Opus + Codex 重複) sentinel guard: multi-session detect → skip
   if (sessionId === "multi:disabled") return undefined;
   // Round 2 P2 (Opus #2) fix: when `nativeL1` is unavailable (non-Windows
   // dev / pre-P5a binary), `latestEventId` would be `undefined` and the
   // causal window's frontier check (a) would silently skip — falling
-  // back to the monotonic timeout (b) alone. That's still safe (window
-  // boundary is preserved) but it leaves the LLM with a `caused_by`
-  // that has no `based_on.events` reference, weakening the
-  // self-attestation. Skipping the projection entirely on this path
-  // routes the envelope into the standard `confidence: degraded`
-  // diagnostic that already fires for missing wallclock metadata —
-  // sub-plan §7 R3 mitigation alignment.
+  // back to the monotonic timeout (b) alone.
+  //
+  // Round 3 P2 fix (Codex line 655): also surface this via
+  // `confidence: degraded` so LLM clients can distinguish "causal
+  // requested but unavailable" from "causal not requested". Without
+  // forceDegraded, an `include=["causal"]` request when nativeL1 is
+  // null would return a fresh-confidence envelope with neither
+  // caused_by nor based_on, indistinguishable from a healthy
+  // raw-shape response that just happens to have no commits in the
+  // causal window — masking the missing telemetry binding from the
+  // LLM.
   if (!nativeL1 || typeof nativeL1.l1GetCaptureStats !== "function") {
-    return undefined;
+    return { forceDegraded: true };
   }
 
   // L3 latest_focus view → focus delta projection input
@@ -741,11 +745,12 @@ const desktopStateCausedByProjector = async (
 let _isSingleSessionPrototype: () => boolean = () => true;
 
 const getMcpTransportSessionId = (): string | undefined => undefined;
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const isSingleSessionPrototype = (): boolean => _isSingleSessionPrototype();
 
 /** @internal Test-only — pin the single-session prototype gate for the
- *  `multi:disabled` sentinel branch (sub-plan §1.1 E-2). */
+ *  `multi:disabled` sentinel branch (sub-plan §1.1 E-2). Round 3 P3 fix
+ *  (CodeQL line 745): unused `isSingleSessionPrototype` wrapper removed,
+ *  callers go directly through the module-private `_isSingleSessionPrototype`
+ *  closure (used by `desktopStateGetSessionId` below). */
 export function _setSingleSessionPrototypeForTest(value: boolean): void {
   _isSingleSessionPrototype = () => value;
 }

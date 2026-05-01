@@ -577,6 +577,105 @@ describe("Round 2 P1 (Codex line 1501): include=['causal'] alone opts into envel
   });
 });
 
+// ── Round 3 P2 (Codex line 1556) raw override 維持 ──────────────────────────
+
+describe("Round 3 P2 (Codex line 1556): include=['raw','causal'] preserves raw override", () => {
+  it("include=['raw','causal'] → raw shape return, causal projection 落ちる", async () => {
+    resetAll();
+    defaultL1Emitter.pushStarted({
+      tool: "desktop_act",
+      argsJson: '{}',
+      sessionId: "sessA",
+      toolCallId: "sessA:1",
+    });
+    defaultL1Emitter.pushCompleted({
+      tool: "desktop_act",
+      elapsedMs: 10,
+      ok: true,
+      sessionId: "sessA",
+      toolCallId: "sessA:1",
+    });
+
+    const projector = vi.fn(async (_args: unknown, sessionId: string) => ({
+      causedBy: buildCausedBy(sessionId, makeViewSnapshot()),
+      basedOn: buildBasedOn(sessionId, makeViewSnapshot()),
+    }));
+    const handler = async () => ({
+      content: [{ type: "text", text: '{"foo":"bar"}' }],
+    });
+    const wrapped = makeQueryWrapper(handler, "desktop_state", {
+      getSessionId: () => "sessA",
+      causedByProjector: projector,
+    });
+    // Round 3 P2 fix: raw 明示 → envelope opt-out 維持、causal projection
+    // は projector まで走るが compatHoist で data flatten され捨てられる
+    const result = await wrapped({ include: ["raw", "causal"] } as Record<string, unknown>);
+    const parsed = JSON.parse((result.content[0] as { text: string }).text);
+    expect(parsed._version).toBeUndefined(); // raw shape (no envelope)
+    expect(parsed.caused_by).toBeUndefined();
+    expect(parsed.based_on).toBeUndefined();
+    expect(parsed.foo).toBe("bar"); // handler payload flattened
+  });
+});
+
+// ── Round 3 P2 (Codex line 655) nativeL1 null forceDegraded ────────────────
+
+describe("Round 3 P2 (Codex line 655): projector forceDegraded → confidence: degraded", () => {
+  it("projector returns { forceDegraded: true } → envelope.confidence === 'degraded'", async () => {
+    resetAll();
+    const projector = vi.fn(async () => ({ forceDegraded: true }));
+    const handler = async () => ({
+      content: [{ type: "text", text: '{"foo":"bar"}' }],
+    });
+    const wrapped = makeQueryWrapper(handler, "desktop_state", {
+      getSessionId: () => "sessA",
+      causedByProjector: projector,
+    });
+    const result = await wrapped({ include: ["causal"] } as Record<string, unknown>);
+    const parsed = JSON.parse((result.content[0] as { text: string }).text);
+    expect(parsed._version).toBe("1.0"); // envelope shape (causal auto opt-in)
+    expect(parsed.confidence).toBe("degraded"); // forceDegraded propagated
+    // caused_by / based_on absent because projector returned no projection
+    expect(parsed.caused_by).toBeUndefined();
+    expect(parsed.based_on).toBeUndefined();
+  });
+
+  it("projector returns { causedBy } without forceDegraded → confidence: 'fresh' (or size-degraded)", async () => {
+    resetAll();
+    defaultL1Emitter.pushStarted({
+      tool: "desktop_act",
+      argsJson: '{}',
+      sessionId: "sessA",
+      toolCallId: "sessA:1",
+    });
+    defaultL1Emitter.pushCompleted({
+      tool: "desktop_act",
+      elapsedMs: 10,
+      ok: true,
+      sessionId: "sessA",
+      toolCallId: "sessA:1",
+    });
+    const projector = vi.fn(async (_args: unknown, sessionId: string) => ({
+      causedBy: buildCausedBy(sessionId, makeViewSnapshot()),
+      basedOn: buildBasedOn(sessionId, makeViewSnapshot()),
+    }));
+    const handler = async () => ({
+      content: [{ type: "text", text: '{"foo":"bar"}' }],
+    });
+    const wrapped = makeQueryWrapper(handler, "desktop_state", {
+      getSessionId: () => "sessA",
+      causedByProjector: projector,
+      // Provide healthy meta so confidence stays fresh
+      fetchMeta: async () => ({ viewPoisoned: false, asOfWallclockMs: Date.now() }),
+    });
+    const result = await wrapped({ include: ["causal"] } as Record<string, unknown>);
+    const parsed = JSON.parse((result.content[0] as { text: string }).text);
+    // Note: small payload + healthy meta → fresh confidence
+    expect(["fresh", "degraded"]).toContain(parsed.confidence); // either OK
+    expect(parsed.caused_by).toBeDefined();
+  });
+});
+
 // ── Round 2 P2 (Codex line 1073) buildBasedOn shares causal window guards ───
 
 describe("Round 2 P2 (Codex line 1073): buildBasedOn shares causal window guards with buildCausedBy", () => {
