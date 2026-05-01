@@ -42,6 +42,7 @@ import type {
   NativeCaptureStats,
   NativeFocusedElement,
   NativeViewFocusedPipelineStatus,
+  NativeFocusedElementWithWallclock,
 } from "./native-types.js";
 
 export type * from "./native-types.js";
@@ -326,6 +327,10 @@ export const nativeL1: NativeL1 | null =
 export interface NativeViewFocus {
   viewGetFocused?(): NativeFocusedElement | null;
   viewFocusedPipelineStatus?(): NativeViewFocusedPipelineStatus;
+  /** S3 D2-E0 P1 (ADR-010 PR #110): combined getter returning focused + L1
+   * event wallclock + view-poisoned signal. Used by `_envelope.ts::makeEnvelopeAware`
+   * to build `as_of.wallclock_ms` from L1 event time (PR #110 Round 1 P1-4 反映). */
+  viewGetFocusedWithWallclock?(): NativeFocusedElementWithWallclock;
 }
 
 export const nativeViewFocus: NativeViewFocus | null =

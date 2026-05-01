@@ -24,6 +24,7 @@ import type {
 import { CHROMIUM_TITLE_RE } from "./workspace.js";
 import { getSlotSnapshot } from "../engine/perception/hot-target-cache.js";
 import type { AttentionState } from "../engine/perception/types.js";
+import { makeEnvelopeAware } from "./_envelope.js";
 
 const _defaultPort = getCdpPort();
 
@@ -555,6 +556,45 @@ export const getDocumentStateHandler = async ({ port, tabId }: { port: number; t
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function registerDesktopStateTools(server: McpServer): void {
+  // S3 D2-E0 P1 (ADR-010): wrap handler with `makeEnvelopeAware` so the
+  // raw result is wrapped in `EnvelopeMinimalShape` (always; SSOT) and
+  // post-flatten compat-hoisted for default raw-shape clients
+  // (per `docs/adr-010-p1-s3-plan.md` §1.5 + §2.3 + §2.4 SSOT).
+  //
+  // `fetchMeta` reads L1 event wallclock + view-poisoned signal via the
+  // `viewGetFocusedWithWallclock()` napi binding (S3-2). When the napi
+  // surface is missing (non-Windows / native build absent) `fetchMeta`
+  // returns `(false, null)` so `buildEnvelope` falls back to `Date.now()`
+  // + `confidence: degraded`.
+  const wrappedHandler = makeEnvelopeAware(
+    desktopStateHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
+    "desktop_state",
+    {
+      fetchMeta: async () => {
+        if (
+          nativeViewFocus &&
+          typeof nativeViewFocus.viewGetFocusedWithWallclock === "function"
+        ) {
+          try {
+            const meta = nativeViewFocus.viewGetFocusedWithWallclock();
+            return {
+              viewPoisoned: meta.viewPoisoned,
+              asOfWallclockMs:
+                meta.latestEventWallclockMs != null
+                  ? Number(meta.latestEventWallclockMs)
+                  : null,
+            };
+          } catch {
+            // Napi call failed at runtime: degrade to Date.now() fallback
+            // + confidence: degraded so LLM clients can detect.
+            return { viewPoisoned: true, asOfWallclockMs: null };
+          }
+        }
+        return { viewPoisoned: false, asOfWallclockMs: null };
+      },
+    }
+  );
+
   server.tool(
     "desktop_state",
     buildDesc({
@@ -578,7 +618,7 @@ export function registerDesktopStateTools(server: McpServer): void {
         "includeDocument requires browser_open (CDP active); silently omitted otherwise with hints.documentUnavailable.",
     }),
     desktopStateSchema,
-    desktopStateHandler
+    wrappedHandler as typeof desktopStateHandler
   );
 
   // Phase 4: get_history / get_document_state privatized — handlers retained
