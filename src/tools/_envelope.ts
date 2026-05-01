@@ -617,6 +617,69 @@ export function truncateJson(args: unknown, maxBytes: number = 512): string {
 }
 
 /**
+ * Project a PascalCase typed reason code (ADR-010 §5.4) to the
+ * snake_case legacy reason field commit-tool callers were reading
+ * before envelope rollout. Used in raw-mode failure compat hoist so
+ * existing `{ok:false, reason:"lease_expired", ...}` clients keep
+ * working when the wrapper short-circuits on a lease pre-flight
+ * failure (Round 1 P1 fix per Codex / user PR review on PR #113).
+ *
+ * `LeaseExpired` → `lease_expired`. The S4 trunk runtime only emits
+ * `LeaseExpired` and `Unknown` typed codes (residual 3 LeaseStore
+ * reasons collapse to `Unknown` per sub-plan §7 R4); both project
+ * cleanly via the `[a-z][A-Z]` boundary insertion.
+ */
+function pascalToSnake(s: string): string {
+  return s.replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase();
+}
+
+/**
+ * Raw-mode projection of a failure envelope (Round 1 P1 fix).
+ *
+ * Pre-S4, `desktop_act` raw-mode failures returned a structured
+ * `{ok:false, reason, ...}` JSON object — clients reading
+ * `result.ok` and `result.reason` work without opting into the new
+ * envelope shape. The S4 commit wrapper builds a failure envelope
+ * (`data:null`); naively running `compatHoist` against it returns
+ * literal `null` and silently drops the reason / retry signal,
+ * breaking pre-S4 raw clients.
+ *
+ * This helper bridges the gap: in raw mode (no `include=["envelope"]`,
+ * no `DESKTOP_TOUCH_ENVELOPE=1`), failure envelopes are flattened
+ * to a backward-compatible `{ok:false, reason, if_unexpected}` shape
+ * that:
+ *
+ *   1. Preserves the legacy `ok:false` + `reason` (snake_case)
+ *      contract for tools whose pre-S4 failure shape used those
+ *      fields (`desktop_act` chiefly).
+ *   2. Carries the typed `if_unexpected` payload so newer clients
+ *      can read the typed cause + try_next without forcing them
+ *      through `include=["envelope"]`.
+ *
+ * Envelope-opt-in callers (sub-plan §5.3) still get the full
+ * envelope shape (`_version` + `data:null` + `as_of` + `confidence:
+ * "stale"` + `if_unexpected`) — `compatFailureRaw` is only invoked
+ * on the compat-hoist branch.
+ */
+export interface CompatRawFailureShape {
+  ok: false;
+  reason: string;
+  if_unexpected: IfUnexpectedShape;
+}
+
+export function compatFailureRaw(
+  envelope: EnvelopeMinimalShape<null>,
+): CompatRawFailureShape {
+  const ifUnexp =
+    envelope.if_unexpected ?? { most_likely_cause: "Unknown", try_next: [] };
+  return {
+    ok: false,
+    reason: pascalToSnake(ifUnexp.most_likely_cause),
+    if_unexpected: ifUnexp,
+  };
+}
+
+/**
  * Build a commit-failure envelope (ADR-010 §5.3, sub-plan §2.4).
  *
  *   {
@@ -842,7 +905,14 @@ export function makeCommitWrapper<TArgs extends Record<string, unknown>>(
       if (!validation.ok) {
         const { code, tryNext } = mapLeaseValidationToTypedReason(validation.reason);
         const failure = buildFailureEnvelope(code, tryNext, envelopeOptions);
-        const finalShape = compatHoist(failure, optIn);
+        // Round 1 P1 (Codex + user PR review): raw-mode failures must
+        // preserve the pre-S4 `{ok:false, reason, ...}` shape; literal
+        // `null` from `compatHoist(failure, false)` would silently drop
+        // the reason + retry signal for existing positional callers.
+        // `compatFailureRaw` flattens envelope.data:null into the
+        // legacy-compatible shape AND carries `if_unexpected` so newer
+        // clients can read the typed cause without opting into envelope.
+        const finalShape = optIn ? failure : compatFailureRaw(failure);
         return {
           content: [{ type: "text", text: JSON.stringify(finalShape) }],
         };
@@ -891,7 +961,11 @@ export function makeCommitWrapper<TArgs extends Record<string, unknown>>(
         [],
         envelopeOptions,
       );
-      const finalShape = compatHoist(failure, optIn);
+      // Round 1 P1 (Codex + user PR review): same legacy-compat raw
+      // projection as the lease-validation failure path — preserve
+      // `{ok:false, reason:"unknown", if_unexpected:{...}}` for raw
+      // clients instead of literal `null`.
+      const finalShape = optIn ? failure : compatFailureRaw(failure);
       return {
         content: [{ type: "text", text: JSON.stringify(finalShape) }],
       };

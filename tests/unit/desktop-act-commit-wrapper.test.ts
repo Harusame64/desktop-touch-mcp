@@ -405,14 +405,65 @@ describe("makeCommitWrapper — G3 contract test suite (S4 trunk)", () => {
       include: ["raw"],
       lease: { entityId: "ent_1" },
     } as never)) as ToolResultLike;
-    const parsed = parseResult(result);
-    // raw shape: failure envelope flattened to data (= null) at top level —
-    // sub-plan §2.5 compat hoist: envelope.data is hoisted, so a failure
-    // envelope (data: null) becomes literal `null` in raw mode. Existing
-    // LLM clients that expect raw shape see the same null they would have
-    // gotten from a failure result before envelope rollout, while
-    // include=['envelope'] callers see the typed `if_unexpected` shape.
-    expect(parsed).toBeNull();
+    const parsed = parseResult(result) as Record<string, unknown>;
+    // Round 1 P1 fix (Codex + user PR review): raw-mode failures
+    // preserve the pre-S4 `{ok:false, reason, ...}` shape so existing
+    // positional desktop_act callers keep working when the wrapper
+    // short-circuits on a lease pre-flight failure. `if_unexpected` is
+    // also surfaced in raw mode so newer clients can read the typed
+    // cause + try_next without forcing them through include=['envelope'].
+    expect(parsed.ok).toBe(false);
+    expect(parsed.reason).toBe("lease_expired");
+    const ifUnexp = parsed.if_unexpected as { most_likely_cause: string; try_next: unknown[] };
+    expect(ifUnexp.most_likely_cause).toBe("LeaseExpired");
+    expect(ifUnexp.try_next).toHaveLength(1);
+    // No envelope wrapper keys leak into raw shape.
+    expect(parsed._version).toBeUndefined();
+    expect(parsed.data).toBeUndefined();
+    expect(parsed.confidence).toBeUndefined();
+  });
+
+  it("default raw mode (no include, no env) on lease failure → legacy {ok:false, reason} shape", async () => {
+    // P1 regression guard: the canonical pre-S4 raw client receives
+    // the legacy structured failure shape, NOT literal null.
+    _resetToolCallSeqForTest();
+    const { wrapped } = buildCommitWrapped({
+      validation: { ok: false, reason: "expired" },
+    });
+    const result = (await wrapped({ lease: { entityId: "ent_1" } } as never)) as ToolResultLike;
+    const parsed = parseResult(result) as Record<string, unknown>;
+    expect(parsed.ok).toBe(false);
+    expect(parsed.reason).toBe("lease_expired");
+    expect((parsed.if_unexpected as { most_likely_cause: string }).most_likely_cause).toBe("LeaseExpired");
+  });
+
+  it("default raw mode on residual lease reason → {ok:false, reason:'unknown'}", async () => {
+    // Sub-plan §7 R4: residual 3 reasons collapse to Unknown at runtime
+    // in S4 trunk. The PascalCase→snake_case projection (Unknown→unknown)
+    // is the legacy-compat reason for raw clients.
+    _resetToolCallSeqForTest();
+    const { wrapped } = buildCommitWrapped({
+      validation: { ok: false, reason: "generation_mismatch" },
+    });
+    const result = (await wrapped({ lease: { entityId: "ent_1" } } as never)) as ToolResultLike;
+    const parsed = parseResult(result) as Record<string, unknown>;
+    expect(parsed.ok).toBe(false);
+    expect(parsed.reason).toBe("unknown");
+  });
+
+  it("default raw mode on handler throw → {ok:false, reason:'unknown'} (NOT literal null)", async () => {
+    // Same Round 1 P1 fix applies to the handler-throw path: raw
+    // clients see the legacy structured failure shape, not literal null.
+    _resetToolCallSeqForTest();
+    const { wrapped } = buildCommitWrapped({
+      validation: { ok: true, entity: { entityId: "ent_1" } as never },
+      handlerImpl: async () => { throw new Error("boom"); },
+    });
+    const result = (await wrapped({ lease: { entityId: "ent_1" } } as never)) as ToolResultLike;
+    const parsed = parseResult(result) as Record<string, unknown>;
+    expect(parsed.ok).toBe(false);
+    expect(parsed.reason).toBe("unknown");
+    expect((parsed.if_unexpected as { most_likely_cause: string }).most_likely_cause).toBe("Unknown");
   });
 
   it("lease validator omitted (lease-less commit) → no validation, handler called directly", async () => {
@@ -430,6 +481,57 @@ describe("makeCommitWrapper — G3 contract test suite (S4 trunk)", () => {
     expect(emitter.startedCalls).toHaveLength(1);
     expect(emitter.startedCalls[0]?.leaseToken).toBeUndefined();
     expect(emitter.completedCalls).toHaveLength(1);
+  });
+});
+
+// ── compatFailureRaw direct unit test (Round 1 P1 fix) ─────────────────────
+//
+// Pin the helper's PascalCase→snake_case projection independently of
+// the wrapper integration so future typed reasons (residual 3 lease
+// reasons, EntityOutsideViewport in expansion, etc.) can be added with
+// confident bit-equal contract.
+
+describe("compatFailureRaw — Round 1 P1 fix (raw-mode failure projection)", () => {
+  it("projects LeaseExpired → reason: lease_expired", async () => {
+    const { compatFailureRaw, buildFailureEnvelope } = await import("../../src/tools/_envelope.js");
+    const env = buildFailureEnvelope("LeaseExpired", [
+      { action: "desktop_discover", args: {}, confidence: "high" },
+    ], { asOfWallclockMs: FRESH_WALLCLOCK });
+    const raw = compatFailureRaw(env);
+    expect(raw.ok).toBe(false);
+    expect(raw.reason).toBe("lease_expired");
+    expect(raw.if_unexpected.most_likely_cause).toBe("LeaseExpired");
+  });
+  it("projects Unknown → reason: unknown", async () => {
+    const { compatFailureRaw, buildFailureEnvelope } = await import("../../src/tools/_envelope.js");
+    const env = buildFailureEnvelope("Unknown", [], { asOfWallclockMs: FRESH_WALLCLOCK });
+    const raw = compatFailureRaw(env);
+    expect(raw.reason).toBe("unknown");
+  });
+  it("projects PascalCase residuals (LeaseGenerationMismatch, EntityNotFound, LeaseDigestMismatch)", async () => {
+    const { compatFailureRaw, buildFailureEnvelope } = await import("../../src/tools/_envelope.js");
+    for (const [code, expected] of [
+      ["LeaseGenerationMismatch", "lease_generation_mismatch"],
+      ["EntityNotFound", "entity_not_found"],
+      ["LeaseDigestMismatch", "lease_digest_mismatch"],
+    ] as const) {
+      const env = buildFailureEnvelope(code, [], { asOfWallclockMs: FRESH_WALLCLOCK });
+      expect(compatFailureRaw(env).reason).toBe(expected);
+    }
+  });
+  it("falls back to most_likely_cause: Unknown when envelope.if_unexpected is missing", async () => {
+    const { compatFailureRaw } = await import("../../src/tools/_envelope.js");
+    const env = {
+      _version: "1.0" as const,
+      data: null,
+      as_of: { wallclock_ms: FRESH_WALLCLOCK },
+      confidence: "stale" as const,
+      // no if_unexpected
+    };
+    const raw = compatFailureRaw(env);
+    expect(raw.reason).toBe("unknown");
+    expect(raw.if_unexpected.most_likely_cause).toBe("Unknown");
+    expect(raw.if_unexpected.try_next).toEqual([]);
   });
 });
 

@@ -561,10 +561,30 @@ const fetchEnvelopeMeta = async () => {
   return { viewPoisoned: false, asOfWallclockMs: null };
 };
 
+/** Round 1 P2 fix (Codex + user PR review): derive `tool_call_id`'s
+ *  session-id source from the lease's `viewId` so the per-session
+ *  monotone seq the wrapper emits (`${sessionId}:${seq}`) reflects
+ *  the SessionRegistry's per-target session boundaries. Without this
+ *  override, `makeCommitWrapper` falls back to the hard-coded
+ *  `"default"` session and collapses every desktop_act call across
+ *  every target/view into a single global seq — violating sub-plan
+ *  §2.1 + §3.5 contract that tool_call_id is session-local.
+ *
+ *  Falls back to `"default"` when the lease arg is missing/malformed
+ *  (the wrapper's leaseValidator has already short-circuited those
+ *  cases on the failure path; the fallback is purely defensive). */
+function desktopActSessionId(args: unknown): string {
+  const lease = (args as { lease?: EntityLease }).lease;
+  return typeof lease?.viewId === "string" && lease.viewId.length > 0
+    ? lease.viewId
+    : "default";
+}
+
 const desktopActWrapperOptions: CommitWrapperOptions<Record<string, unknown>> = {
   fetchMeta: fetchEnvelopeMeta,
   leaseValidator: desktopActLeaseValidator,
   extractLeaseToken: desktopActExtractLeaseToken,
+  getSessionId: desktopActSessionId,
 };
 
 /** Module-scope schema with `include?: string[]` injected so MCP SDK's
