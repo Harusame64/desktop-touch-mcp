@@ -702,6 +702,8 @@ D1 `current_focused_element` view は `hwnd` を key にした per-hwnd state (f
 
 ### D2-E0: dataflow scope refactor (arranged + view を同 scope で build) (PR 11、Codex v2 P2-9 反映)
 
+**Sub-plan**: walking skeleton S1 contract spike として `docs/adr-008-d2-e0-plan.md` で詳細起草 (Drafted v0.1、2026-05-01)。本親 plan §D2-E0 はサマリ、impl 着手時は sub-plan を SSOT として参照。
+
 **目的**: D2-E (`predicted_post_state`) が同 dataflow scope 内で `current_focused_element` の arranged collection を import できるよう、build API を変更。
 
 #### D2-E0-1: 現状 (D1) の構造 と timely lifetime 制約
@@ -800,7 +802,7 @@ walking skeleton 採用前の Codex 推奨パス (PR-α → PR-β → PR-γ → 
 | **PR-β (D2-A)** | worker tuning revised (batch drain + max-time release + event_count guard) + true p99 bench | 中 (batch drain semantics、N3 維持確認) | ~250-350 line | (pre-trunk、merged) |
 | **PR-γ (D2-B)** | desktop_state focus-only replacement (latest_focus view + controlType 文字列変換) + MCP transport bench | 中-大 (napi binding + tool 改修 + bench、bit-equal 回帰 0) | ~500-600 line | (pre-trunk、merged) |
 | **PR-δ (D2-C0)** | L1 emitter readiness gate (research-only PR、go/no-go 判断) | 低 (調査 + 判断記録) | ~100 line (docs only) — **PR #99 (2026-05-01) で D2-C carry-over / D2-D `FocusMoved`-only 確定** | (pre-trunk、merged) |
-| **PR-η (D2-E0)** | dataflow scope refactor (build_* signature 変更、`Arranged` を外部に持ち出さない設計) | 中 (D1 build 関数 shape 変更、view 内部のみ、外部 API 不変) | ~200-300 line | **S1 (trunk start)** — User feedback PR #103 で S2 (D2-C) より先行を直列順整合 |
+| **PR-η (D2-E0)** | dataflow scope refactor (build_* signature 変更、`Arranged` を外部に持ち出さない設計、sub-plan: `docs/adr-008-d2-e0-plan.md`) | 中 (D1 build 関数 shape 変更、view 内部のみ、外部 API 不変) | ~200-300 line — **本 D2-E0 plan PR (sub-plan land) → impl PR は本 plan merge 後の翌 PR、S2 (PR-ε D2-C impl) は本 PR-η impl merge が前提条件** | **S1 (trunk start)** — User feedback PR #103 で S2 (D2-C) より先行を直列順整合 |
 | **PR-ε (D2-C)** | dirty_rects_aggregate count-only view (walking skeleton S2 contract spike、sub-plan: `docs/adr-008-d2-c-plan.md`、§3.bis ledger L1 復帰 PR、P5c-2 PR #102 trigger 完了、`docs/walking-skeleton-trunk-selection.md` §4 S2) | 中 | 200-300 line (sub-plan §4 で再見積、count-only に絞り当初 300-450 line から縮小、view + pump + spawn + napi + G2 contract test 4 件 (Rust 3 件 + Node smoke 1 件) + bench) — **本 D2-C plan PR (sub-plan land) → impl PR は本 plan merge 後の翌 PR、ただし S1 (PR-η) が impl PR 着手前に merged されている必要あり、完成形は trunk 完了後 expansion** | **S2** — S1 (PR-η D2-E0) 完了が前提 |
 | **PR-ζ (D2-D)** | semantic_event_stream (`FocusMoved` 単独 variant、D2-C0 結果反映) | 中 | ~300-400 line (variant 縮小で当初想定 ~400-500 から減) | (S2 と並走可、両方とも S1 PR-η に依存) |
 | **PR-θ (D2-E)** | predicted_post_state subgraph (D2-E0 と同 scope 配線) | 中 (timely subgraph 経験少) | ~200-300 line | (trunk 後 expansion 範囲、walking skeleton では S5 envelope 系完了後) |
