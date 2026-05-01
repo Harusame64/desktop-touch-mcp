@@ -217,6 +217,7 @@ CLAUDE.md §3.3 Step 0 の PR 種別判断:
 | ~~4~~ | ~~view-hit p99 の sample 数下限 (例: view-hit 件数が 50 件未満なら p99 信頼性低)~~ | **Resolved (impl 採択、`> 0` lower bound、2026-05-02、Opus round 1 P2-2)**: 本 PR の acceptance gate (impl `benches/d2_desktop_state_roundtrip.mjs` 304 行付近) は `> 0` を採択。視点: **本 PR は数値取得自体が目的**、precision (statistical noise の caveat threshold) は **PR-2 (views-catalog SLO 4 種分解)** の判断分岐 thresholds (≤2ms / 2-5ms / ≥5ms) 確定時に再検討。N が極端に少ない場合の caveat 警告は OQ #6 (新規) で別 PR 実施 |
 | 5 (新規) | `POST_INDUCE_WAIT_MS = 200ms` を env override に追従させるか (`max(200, env_shift_ms * 2)` 動的計算) | **別 PR carry-over (Opus round 1 P3-1 記録)**: 本 PR は production default `WATERMARK_SHIFT_MS = 100ms` 前提で 200ms 固定、operator が `WATERMARK_SHIFT_MS=500` 等を override して bench 回す場合は 200ms wait 不足。bench 起動時に env override を warn する案も併記。判断は views-catalog SLO 4 種分解 PR-2 完了後 |
 | 6 (新規) | view-hit N < 50 時の statistical noise caveat 警告を bench output に出すか | **別 PR carry-over (Opus round 1 P3-2 記録)**: N=1 時 p99 = max でノイズ、operator が信頼性判断できない。OQ #4 lower bound `> 0` 採択と整合する形で「N < 50: noisy」caveat を output に追加する方針、判断は PR-2 thresholds 確定時 |
+| 7 (新規) | bench arg parser で空文字列 / 空白の numeric token を unknownArgs に倒すか (`Number("")` = 0 で `< 100` reject に最終的に流れるが、defensive parser として trimmed empty を strict 化) | **別 PR carry-over (Opus round 2 P3-2 記録)**: 現実装は `Number.isFinite(Number(""))` = true で空文字列が `parsedNumeric = 0` 経路 → line 120 `< 100` で reject (exit 2) → 害なし。defensive 強化として `a.trim() === ""` を unknownArgs 倒し化、cosmetic improvement のみ |
 
 ---
 
@@ -251,6 +252,7 @@ merge 後の後続 PR (本 sub-plan scope 外):
 |---|---|---|---|
 | Drafted v0.1 | 2026-05-02 | Claude (Sonnet) | 初稿起草、Opus 諮問判断 (2026-05-02) §3 留保事項 R1 解消のための bench 拡張 plan、nutjs alt+tab 自動 induction + metric 3 分解 + acceptance gate (view-hit counter > 0) + fallback (operator-induced manual) |
 | Drafted v0.2 | 2026-05-02 | Claude (Sonnet) | **Opus + Codex round 1 review 反映** (PR #118): P1×1 + P2×4 + P3×2 (Opus) + P2×1 (Codex 同根) を Round 2 で全件解決。impl: `let induceEnabled` + nutjs catch で false 設定 (Opus P1-1 graceful degrade)、arg parser strict 化 (unknown flag / non-numeric / multiple numeric reject、Codex P2 + Opus P2-4)。docs: §2.4 flag 表 + §3.2 R6 mitigation 書き直し (output schema 進化として明文化、Opus P2-3)、§3.3 fallback step 1-4 詳細化 (Opus P1-1 整合)、§6 OQ #2 + #4 Resolved 化 (Opus P2-1, P2-2)、§6 OQ #5/#6 新規追加 (Opus P3-1/P3-2 記録、別 PR carry-over) |
+| Drafted v0.3 | 2026-05-02 | Claude (Sonnet) | **Opus round 2 review 反映** (PR #118 Round 2 = Approved with comments、新規 P1+P2 ゼロ、P3×2 のみ): impl: P3-1 (modeLabel dead branch + observability gap) を `let nutjsDegraded` flag 追加で 3 状態 disambiguate (auto-induce / 自動降格 manual / 明示 `--manual`)、operator が degrade と manual を視認可能。docs: §6 OQ #7 新規追加 (P3-2 空文字列 numeric 扱いを別 PR carry-over)。Codex round 2 結果は PR コメントで verify (P1 ゼロ確認後 Opus 単独 merge 判断) |
 
 ---
 

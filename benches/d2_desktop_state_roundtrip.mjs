@@ -129,6 +129,12 @@ if (!Number.isFinite(iterations) || iterations < 100) {
 // §3.3 step 1 promises "graceful degrade" which requires this.
 let induceEnabled = !manualMode;
 
+// Track whether the manual-mode state was reached via auto-degrade
+// (nutjs failure) vs explicit `--manual`. Used by the modeLabel output
+// at the end of the run so the operator can distinguish the two paths
+// (Opus round 2 P3-1 — modeLabel dead branch + observability gap fix).
+let nutjsDegraded = false;
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
 // Spawn `dist/index.js` (the platform-dispatching entry, matching what the
@@ -170,6 +176,7 @@ if (induceEnabled) {
     // and matches sub-plan §3.3 step 4 (manual mode tolerates view-hit
     // counter == 0 with exit 0).
     induceEnabled = false;
+    nutjsDegraded = true;
   }
 }
 
@@ -287,11 +294,17 @@ const nonViewStats = computeStats(nonViewSamples);
 const fmt = (us) => `${us.toFixed(2)} µs`;
 
 // ─── Output ──────────────────────────────────────────────────────────────────
+// Three observable end-states (Opus round 2 P3-1 — disambiguate the two
+// "manual" sources so operators can tell auto-degrade apart from explicit
+// `--manual`):
+//   - induceEnabled === true                              → auto-induce ran
+//   - induceEnabled === false && nutjsDegraded === true   → auto-degraded (nutjs unavailable)
+//   - induceEnabled === false && nutjsDegraded === false  → explicit --manual
 const modeLabel = induceEnabled
-  ? nutKeyboard
-    ? "auto-induce"
-    : "manual (nutjs unavailable, degraded)"
-  : "manual";
+  ? "auto-induce"
+  : nutjsDegraded
+    ? "manual (nutjs unavailable, degraded from auto-induce)"
+    : "manual (explicit --manual)";
 console.log(
   `# d2_desktop_state_roundtrip — MCP stdio transport (${iterations} iters, mode=${modeLabel})`
 );
