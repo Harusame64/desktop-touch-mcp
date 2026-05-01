@@ -1,0 +1,46 @@
+name: Expansion PR Guard
+
+# Walking skeleton trunk completion enforcement (CLAUDE.md §7 仕組みで対応):
+# When a PR is labeled "expansion" or its title contains "expansion",
+# verify that no engine-perception layer files are modified — the
+# trunk-completion contract is "expansion adds L5 wrapper only".
+#
+# Sub-plan SSOT: docs/adr-010-p1-s6-plan.md §1.1 B + §2.1 + §2.2 +
+# Appendix C G6 entry (4 path bit-equal sync, Round 2 P1-1 fix).
+#
+# TRUNK_LOCK_PATHS (Round 2 fix で実 repo 構造と整合、PR #99 同型 fact
+# divergence 防止):
+#   - crates/engine-perception/**/*.rs (Rust dataflow + view + worker)
+#   - src/l1_capture/**/*.rs (Rust L1 ring buffer + payload + napi)
+#   - src/l3_bridge/**/*.rs (Rust L3 bridge: focus_pump / dirty_rect_pump / mod)
+#   - src/engine/perception/**/*.ts (TS perception envelope)
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, labeled, unlabeled]
+
+jobs:
+  expansion-disjoint-check:
+    runs-on: ubuntu-latest
+    if: contains(github.event.pull_request.labels.*.name, 'expansion') || contains(github.event.pull_request.title, 'expansion')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check engine-perception layer is untouched
+        run: |
+          DIFF=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- \
+            'crates/engine-perception/**/*.rs' \
+            'src/l1_capture/**/*.rs' \
+            'src/l3_bridge/**/*.rs' \
+            'src/engine/perception/**/*.ts')
+          if [ -n "$DIFF" ]; then
+            echo "::error::expansion PR modified engine-perception layer (trunk violation):"
+            echo "$DIFF"
+            echo ""
+            echo "Walking skeleton trunk-completion contract requires expansion to touch only L5 wrapper / TS interface / tests / docs."
+            echo "Either narrow scope to L5 wrapper layer, or remove the 'expansion' marker if this PR is properly an engine-perception change."
+            exit 1
+          fi
+          echo "engine-perception layer untouched (trunk contract preserved)"
