@@ -572,7 +572,7 @@ timely-dataflow には [`probe`](https://docs.rs/timely/latest/timely/dataflow/o
 
 | 軸 | 対象 | KPI |
 |---|---|---|
-| latency | view 更新 / envelope assembly / time-travel query | p50/p95/p99 (μs) |
+| latency | view (operator step / lookup / release-to-view / MCP round-trip、§17.3 4 種分解参照) / envelope assembly / time-travel query | p50/p95/p99 (μs) |
 | throughput | event ingest / arrangement compaction | events/sec |
 | memory | arrangement size, ring buffer occupancy | MB / event |
 | tier dispatch | T3 hit rate / fallback rate | % |

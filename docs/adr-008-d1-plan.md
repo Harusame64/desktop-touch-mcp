@@ -343,8 +343,13 @@ collection<UiElementRef>  (1 row per current foreground hwnd)
 
 ### 7.4 SLO (views-catalog §3.1)
 
-- 更新 latency: **p99 < 1ms**
-- メモリ: arrangement 1 view 分、< 1MB 想定 (1 row × N window × multi-version compaction frontier 範囲)
+views-catalog §3.1 で **PR-2 で 4 種分解** (Opus 諮問判断 2026-05-02 §5):
+- **operator step** (DD reduce → inspect → RwLock write、純計算下限) p99 < 1ms
+- **lookup** (steady-state read) p99 < 1ms
+- **release-to-view** (event push → caller observable view fetch) p99 ≈ `shift_ms` + idle-advance cycle (N3 partial-order contract の構造的下限)
+- **MCP round-trip** (`desktop_state` JSON-RPC tools/call) p99 < 10ms
+
+メモリ: arrangement 1 view 分、< 1MB 想定 (1 row × N window × multi-version compaction frontier 範囲)
 
 ---
 
