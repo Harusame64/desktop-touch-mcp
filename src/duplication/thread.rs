@@ -136,6 +136,12 @@ fn run_loop(
     enable_l1_emit: Arc<AtomicBool>,
     frame_index: Arc<AtomicU64>,
 ) {
+    // `output_index` is also the monitor identifier the emit fork
+    // stamps onto each `DirtyRectPayload`. The same value already
+    // drives `create_context` above; reusing it here keeps the
+    // `spawn(output_index)` argument the single source of truth for
+    // which monitor a payload describes (Codex P1-Codex-3, 2026-05-01).
+    let monitor_index = output_index;
     // P5c-2: AccessLost spam suppression. Push exactly one Failure event
     // when DXGI's access-lost cycle exceeds 5 consecutive failures, then
     // stay quiet until a successful frame resets the counter. Mirrors the
@@ -153,6 +159,7 @@ fn run_loop(
                     &ring,
                     &enable_l1_emit,
                     &frame_index,
+                    monitor_index,
                 );
                 // On ACCESS_LOST, attempt to re-create the context on this thread.
                 let result = match result {
@@ -224,6 +231,7 @@ fn acquire_dirty_rects(
     ring: &Arc<EventRing>,
     enable_l1_emit: &Arc<AtomicBool>,
     frame_index: &Arc<AtomicU64>,
+    monitor_index: u32,
 ) -> Result<Vec<DirtyRect>, DuplicationError> {
     unsafe {
         let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
@@ -277,15 +285,21 @@ fn acquire_dirty_rects(
         // P5c-2: emit fork. One `EventKind::DirtyRect` envelope per rect,
         // all sharing the same `frame_index` so the D2-C
         // `dirty_rects_aggregate` view can group them per frame
-        // (views-catalog §3.2 `summary { count, total_area }`). `monitor_index`
-        // is hard-coded to 0 — secondary monitors stay carry-over per
-        // sub-plan §10 OQ #3.
+        // (views-catalog §3.2 `summary { count, total_area }`).
+        // `monitor_index` is propagated from the `spawn(output_index)`
+        // argument so secondary-monitor subscriptions
+        // (`DirtyRectSubscription::new(Some(1))` and friends) stamp
+        // their payloads with their actual output index, not the hard-
+        // coded primary (Codex P1-Codex-3, 2026-05-01). Per-output
+        // *features* (per-monitor parallel threads, dedicated views)
+        // remain carry-over per sub-plan §10 OQ #3 — just the labelling
+        // is fixed here.
         if enable_l1_emit.load(Ordering::Relaxed) && !dirty_rects.is_empty() {
             let frame_idx = frame_index.fetch_add(1, Ordering::Relaxed);
             for r in &dirty_rects {
                 let payload = DirtyRectPayload {
                     rect: [r.x, r.y, r.width, r.height],
-                    monitor_index: 0,
+                    monitor_index,
                     frame_index: frame_idx,
                 };
                 let event = build_event(
