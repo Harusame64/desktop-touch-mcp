@@ -64,13 +64,25 @@ D2 で対応:
 D2 で対応:
 - §2.3 と統合: `desktop_state` view 経由置換と同タイミングで MCP transport 込み bench も実装
 
-### 2.5 worker_loop idle sleep tuning (update latency `p99 < 1ms` SLO 達成)
+### 2.5 release-to-view latency 構造分析と SLO 文言の正確化 (D2-B-5/PR-2 で OQ closure)
 
-現状 (D1-5):
-- `view_update_latency` 実測 ~4.7 ms、views-catalog §3.1 の SLO「p99 < 1ms」未達
-- ボトルネックは `crates/engine-perception/src/input.rs::worker_loop` の `TryRecvError::Empty` 分岐内 `thread::sleep(Duration::from_millis(1))`
-- `WATERMARK_SHIFT_MS=0` を設定済の bench で測ってもこの sleep に律速されている (push → 次の worker idle iteration までの待ちが ~0.5-1ms)
-- production の focus 変化頻度 (秒オーダ) に対して 5ms latency は十分許容範囲だが、SLO は未達
+**Status: Resolved** (Opus 諮問判断 2026-05-02、案 (2) SLO 文言正確化採択、PR-2 で views-catalog §3.1 SLO 4 種分解により closure)。
+
+歴史的経緯 (D1-5 〜 D2-A v3.8、D2-B-4、D2-B-5):
+- 当初 SLO `view 更新 p99 < 1ms` は **3 種類の latency** (operator step / release-to-view / MCP round-trip) を単一表記で曖昧に包含
+- `view_update_latency` 実測値は bench setup (`shift_ms` 設定) に強く依存:
+  - D1-5 旧 baseline (`shift=0`): ~4.7 ms (1ms idle sleep 律速)
+  - D2-A v3.7 暫定 (`shift=0` + max+1 release): 3.04ms (N2 contract 違反、Codex v10 で撤回)
+  - D2-A v3.8 production-相当 (`shift=default 100ms`): ~127ms (release が `shift_ms` 律速の構造的下限)
+- 構造的真実: release-to-view は **N3 partial-order contract の必然帰結** として `shift_ms` 下限を持つ。これを `< 1ms` で測ろうとすると bench setup を変えるしかなく、production semantic と乖離する
+
+PR-2 (views-catalog §3.1 SLO 4 種分解) で SLO 文言を正確化:
+- **operator step** (DD reduce → inspect → RwLock write、純計算下限) p99 < 1ms ← **本来の `< 1ms` SLO の意図**、達成 (µs オーダ)
+- **lookup** (steady-state read) p99 < 1ms ← 達成 (~145-300ns、3000-7000× margin)
+- **release-to-view** (event push → caller observable view fetch) p99 ≈ `shift_ms` + idle-advance cycle ← **N3 contract 由来の構造的下限**、緩和ではなく物理的真実の認識
+- **MCP round-trip** (`desktop_state` JSON-RPC tools/call) p99 < 10ms ← production 観測 SLO の本来の指標、達成 (D2-B-4 6.22ms steady-state、D2-B-5 で view-hit 数値取得)
+
+option C (parking_lot::Condvar 等 signal-driven worker_loop) は **永久 defer** (Opus 諮問判断 §5、release semantics 再設計の投資効率低 + N2 violation 同型再発リスク高、production read-dominated 前提で update latency 体感影響小)。
 
 #### 2.5.1 ボトルネックの内訳 (PR #92 review 過程で発見した分析)
 

@@ -60,7 +60,7 @@ trunk 完了 (G2 通過) 後の expansion phase で実装、本 PR では scope 
 - **`recent_n(monitor_index, n)` / `recent_window()` API**: count-only の minimal getter (`get(monitor_index, frame_index) -> Option<u64>` のみ) を trunk で land、recent_* API は expansion
 - **追加 unit test (per-frame aggregation 詳細 / per-monitor isolation 詳細 / 100ms eviction / recent_n / recent_window)**: G2 contract 検証は最小 1-2 test で足りる、詳細 6 unit test は expansion
 - **L4 envelope 連携** (`envelope.invariants_held` への consumer wiring): walking skeleton S5 (caused_by linkage) で扱う、本 S2 では view declarative 構築まで
-- **`bench_view_dirty_rects_aggregate` SLO `update p99 < 2ms` 計測**: 本 PR は regression guard bench のみ、SLO 達成は別 PR (`P5c-2-bench` または `D2-C-bench`) で
+- **`bench_view_dirty_rects_aggregate` SLO `update p99 < 2ms` 計測**: 本 PR は regression guard bench のみ、SLO 達成は別 PR (`P5c-2-bench` または `D2-C-bench`) で。**Note (PR-2 SLO 4 種分解整合、Opus 諮問判断 2026-05-02 §5)**: `update p99 < 2ms` は本 view の operator step + release-to-view 合計に相当、release-to-view は `current_focused_element` と同 `shift_ms` 律速の構造的下限を継承するため 2ms 達成は実質 operator step 部分のみで評価 (views-catalog §3.1 4 種分解 SLO 文言と同 framework で解釈)
 
 ### 1.3 [carry-over] §3.bis ledger / OQ で永続化 (別 phase)
 
@@ -409,7 +409,7 @@ trunk 完了後 (G2 通過後) の expansion phase で実装:
 - **100ms wallclock-based sliding window eviction** (固定 N=8 frames から wallclock-based に切替)
 - **`recent_n(monitor_index, n)` / `recent_window()` API** 追加
 - **詳細 unit test 6 件** (per-frame aggregation / out-of-order frame_index partial-order / 100ms eviction / recent_n ordering / recent_window cross-monitor / `(monitor_index, frame_index)` 衝突 edge case)
-- **`bench_view_dirty_rects_aggregate` SLO 達成** (`update p99 < 2ms`、memory < 50MB)
+- **`bench_view_dirty_rects_aggregate` SLO 達成** (operator step p99 < 2ms / memory < 50MB / release-to-view は `shift_ms` 律速の構造的下限を継承、PR-2 SLO 4 種分解と整合、Opus 諮問判断 2026-05-02 §5)
 - **L4 envelope 連携** (S5 caused_by linkage で `produced_changes` に dirty rect count を含める)
 - **vitest live integration test** (Notepad/Edge fixture-based)
 
