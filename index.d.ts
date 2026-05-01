@@ -323,8 +323,14 @@ export interface NativeDirtyRectsResult {
   /** Number of currently-retained frames for this monitor (after the
    * per-monitor FIFO cap eviction). */
   liveFrameCount: number
-  /** Most recent `(frame_index, count)` for this monitor, if any. */
-  latest: NativeDirtyRectFrame | null
+  /** Most recent `(frame_index, count)` for this monitor, if any.
+   * **Optional** because napi-rs serialises `Option::None` for nested
+   * struct fields by **omitting** the key (not setting it to `null`).
+   * Consumers must either use optional chaining (`result.latest?.frameIndex`)
+   * or explicitly check `'latest' in result` / `result.latest != null`
+   * (both `null` and `undefined`). User review on PR #108 (2026-05-01)
+   * pinned the runtime behaviour. */
+  latest?: NativeDirtyRectFrame
 }
 
 /** Read the count-only `dirty_rects_aggregate` view for a given monitor

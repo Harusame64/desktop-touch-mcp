@@ -47,18 +47,28 @@ describe("viewGetDirtyRects (G2-4 smoke)", () => {
     expect(result).toBeDefined();
     expect(result.monitorIndex).toBe(0);
     expect(typeof result.liveFrameCount).toBe("number");
-    // `latest` is `NativeDirtyRectFrame | null | undefined` — napi-rs
-    // serialises `Option::None` as `undefined` (not null) in JS
-    // contexts, so accept both. Smoke-with-no-events case: undefined
-    // / null. With DXGI events flowing: object with frameIndex +
+    // `latest` is **optional** — napi-rs serialises `Option::None`
+    // for a nested struct field by **omitting the key entirely**
+    // (User review on PR #108 2026-05-01 pinned the runtime
+    // behaviour). The TS type uses `latest?: NativeDirtyRectFrame`
+    // to match. With DXGI events flowing: object with frameIndex +
     // count (vitest live integration scope, sub-plan §1.3 carry-over).
     expect(
-      result.latest === null ||
-        result.latest === undefined ||
+      result.latest === undefined ||
+        result.latest === null ||
         (typeof result.latest === "object" &&
           typeof result.latest.frameIndex === "bigint" &&
           typeof result.latest.count === "bigint"),
     ).toBe(true);
+    // Pin the omission-vs-null contract: in the smoke-with-no-events
+    // case the field must be **absent** from the object (not present
+    // with value null). If a future napi-rs upgrade changes the
+    // serialisation to null, this assertion fails and we know to
+    // re-evaluate the TS types (currently `latest?: NativeDirtyRectFrame`
+    // covers both omission and undefined assignment).
+    if (result.liveFrameCount === 0) {
+      expect("latest" in result).toBe(false);
+    }
   });
 
   it("returns the requested monitor_index back even for non-zero indices", async () => {

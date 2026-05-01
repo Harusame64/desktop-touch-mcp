@@ -89,7 +89,14 @@ export interface NativeDirtyRectsResult {
    * layer can confirm round-trip integrity (CLAUDE.md §3.2 PR #102 教訓). */
   monitorIndex: number
   liveFrameCount: number
-  latest: NativeDirtyRectFrame | null
+  /** Most recent `(frame_index, count)` for this monitor, if any.
+   * **Optional** because napi-rs serialises `Option::None` for nested
+   * struct fields by **omitting** the key (not setting it to `null`).
+   * User review on PR #108 (2026-05-01) pinned the runtime behaviour.
+   * Use optional chaining (`result.latest?.frameIndex`) or
+   * `result.latest != null` (covers both `undefined` from omission
+   * and a hypothetical future `null`). */
+  latest?: NativeDirtyRectFrame
 }
 
 export interface NativeFocusAndPointResult {
