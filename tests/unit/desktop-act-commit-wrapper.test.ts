@@ -423,9 +423,14 @@ describe("makeCommitWrapper — G3 contract test suite (S4 trunk)", () => {
     expect(parsed.confidence).toBeUndefined();
   });
 
-  it("default raw mode (no include, no env) on lease failure → legacy {ok:false, reason} shape", async () => {
-    // P1 regression guard: the canonical pre-S4 raw client receives
-    // the legacy structured failure shape, NOT literal null.
+  it("default raw mode (no include, no env) on lease failure → legacy {ok:false, reason, diff:[]} shape", async () => {
+    // P1 regression guard + Opus Round 1 P2 §3.2: the canonical pre-S4
+    // raw client receives the legacy structured failure shape with
+    // `diff: []` so `result.diff.length` reads keep working. Pre-S4
+    // `desktop_act` returned `TouchResult` (`guarded-touch.ts:46-54`)
+    // which carries `diff: SemanticDiff` on both ok=true and ok=false
+    // — the wrapper must preserve that field on the lease pre-flight
+    // path even though no touch executed (empty diff is correct).
     _resetToolCallSeqForTest();
     const { wrapped } = buildCommitWrapped({
       validation: { ok: false, reason: "expired" },
@@ -434,13 +439,15 @@ describe("makeCommitWrapper — G3 contract test suite (S4 trunk)", () => {
     const parsed = parseResult(result) as Record<string, unknown>;
     expect(parsed.ok).toBe(false);
     expect(parsed.reason).toBe("lease_expired");
+    expect(parsed.diff).toEqual([]);
     expect((parsed.if_unexpected as { most_likely_cause: string }).most_likely_cause).toBe("LeaseExpired");
   });
 
-  it("default raw mode on residual lease reason → {ok:false, reason:'unknown'}", async () => {
+  it("default raw mode on residual lease reason → {ok:false, reason:'unknown', diff:[]}", async () => {
     // Sub-plan §7 R4: residual 3 reasons collapse to Unknown at runtime
     // in S4 trunk. The PascalCase→snake_case projection (Unknown→unknown)
-    // is the legacy-compat reason for raw clients.
+    // is the legacy-compat reason for raw clients. `diff: []` preserved
+    // for pre-S4 `result.diff.length` reads (Opus Round 1 P2 §3.2).
     _resetToolCallSeqForTest();
     const { wrapped } = buildCommitWrapped({
       validation: { ok: false, reason: "generation_mismatch" },
@@ -449,11 +456,13 @@ describe("makeCommitWrapper — G3 contract test suite (S4 trunk)", () => {
     const parsed = parseResult(result) as Record<string, unknown>;
     expect(parsed.ok).toBe(false);
     expect(parsed.reason).toBe("unknown");
+    expect(parsed.diff).toEqual([]);
   });
 
-  it("default raw mode on handler throw → {ok:false, reason:'unknown'} (NOT literal null)", async () => {
-    // Same Round 1 P1 fix applies to the handler-throw path: raw
-    // clients see the legacy structured failure shape, not literal null.
+  it("default raw mode on handler throw → {ok:false, reason:'unknown', diff:[]} (NOT literal null)", async () => {
+    // Same Round 1 P1 fix + Opus Round 1 P2 §3.2 `diff:[]` preservation
+    // applies to the handler-throw path: raw clients see the legacy
+    // structured failure shape with diff field, not literal null.
     _resetToolCallSeqForTest();
     const { wrapped } = buildCommitWrapped({
       validation: { ok: true, entity: { entityId: "ent_1" } as never },
@@ -463,6 +472,7 @@ describe("makeCommitWrapper — G3 contract test suite (S4 trunk)", () => {
     const parsed = parseResult(result) as Record<string, unknown>;
     expect(parsed.ok).toBe(false);
     expect(parsed.reason).toBe("unknown");
+    expect(parsed.diff).toEqual([]);
     expect((parsed.if_unexpected as { most_likely_cause: string }).most_likely_cause).toBe("Unknown");
   });
 
@@ -492,7 +502,7 @@ describe("makeCommitWrapper — G3 contract test suite (S4 trunk)", () => {
 // confident bit-equal contract.
 
 describe("compatFailureRaw — Round 1 P1 fix (raw-mode failure projection)", () => {
-  it("projects LeaseExpired → reason: lease_expired", async () => {
+  it("projects LeaseExpired → reason: lease_expired with diff:[] preserved", async () => {
     const { compatFailureRaw, buildFailureEnvelope } = await import("../../src/tools/_envelope.js");
     const env = buildFailureEnvelope("LeaseExpired", [
       { action: "desktop_discover", args: {}, confidence: "high" },
@@ -500,6 +510,7 @@ describe("compatFailureRaw — Round 1 P1 fix (raw-mode failure projection)", ()
     const raw = compatFailureRaw(env);
     expect(raw.ok).toBe(false);
     expect(raw.reason).toBe("lease_expired");
+    expect(raw.diff).toEqual([]);
     expect(raw.if_unexpected.most_likely_cause).toBe("LeaseExpired");
   });
   it("projects Unknown → reason: unknown", async () => {

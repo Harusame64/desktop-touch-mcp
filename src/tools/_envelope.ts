@@ -664,6 +664,16 @@ function pascalToSnake(s: string): string {
 export interface CompatRawFailureShape {
   ok: false;
   reason: string;
+  /** Empty `SemanticDiff` array. Pre-S4 `desktop_act` callers read
+   * `result.diff.length` / iterate it for change detection (e.g.
+   * `entity_disappeared`, see `src/engine/world-graph/guarded-touch.ts:46-54`
+   * `TouchResult` shape); without this default field a raw client's
+   * `result.diff.length` would TypeError on the wrapper's pre-flight
+   * failure path (Opus Round 1 review P2: §3.2 carry-over scope shrink
+   * — pre-S4 public API 破壊禁止). The lease-validation failure path
+   * never executes the touch, so there is no observable side effect to
+   * diff against — `[]` is the correct, contract-preserving default. */
+  diff: never[];
   if_unexpected: IfUnexpectedShape;
 }
 
@@ -675,6 +685,7 @@ export function compatFailureRaw(
   return {
     ok: false,
     reason: pascalToSnake(ifUnexp.most_likely_cause),
+    diff: [],
     if_unexpected: ifUnexp,
   };
 }
