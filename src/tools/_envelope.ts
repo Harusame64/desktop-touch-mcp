@@ -951,14 +951,22 @@ export function makeCommitWrapper<TArgs extends Record<string, unknown>>(
     const startedAt = clock();
     let handlerResult: McpToolResult | undefined;
     let handlerError: unknown;
+    // Round 2 P2 fix (Codex round 2 review, `_envelope.ts:961`):
+    // JavaScript permits `throw undefined` / `Promise.reject()` — in
+    // that branch `handlerError` stays bound to the initial `undefined`,
+    // so a `handlerError !== undefined` discriminator falsely treats the
+    // throw as success and crashes on `result.content?.[0]`. A separate
+    // boolean sentinel makes the discriminator value-independent.
+    let handlerThrew = false;
     try {
       handlerResult = await handler(handlerArgs);
     } catch (err) {
       handlerError = err;
+      handlerThrew = true;
     }
     const elapsedMs = Math.max(0, Math.floor(clock() - startedAt));
 
-    if (handlerError !== undefined) {
+    if (handlerThrew) {
       l1.pushCompleted({
         tool: toolName,
         elapsedMs,

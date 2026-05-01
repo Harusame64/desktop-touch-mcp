@@ -476,6 +476,40 @@ describe("makeCommitWrapper — G3 contract test suite (S4 trunk)", () => {
     expect((parsed.if_unexpected as { most_likely_cause: string }).most_likely_cause).toBe("Unknown");
   });
 
+  it("handler throws undefined → still emits failure envelope (Round 2 P2 Codex sentinel fix)", async () => {
+    // Round 2 P2 (Codex round 2 inline review, `_envelope.ts:961`):
+    // JavaScript permits `throw undefined` / `Promise.reject()`. Without
+    // the boolean sentinel introduced in Round 2, the wrapper would
+    // misclassify this branch as success and crash on `result.content?.[0]`.
+    _resetToolCallSeqForTest();
+    const { wrapped, emitter } = buildCommitWrapped({
+      validation: { ok: true, entity: { entityId: "ent_1" } as never },
+      handlerImpl: async () => { throw undefined; },
+    });
+    const result = (await wrapped({ lease: { entityId: "ent_1" } } as never)) as ToolResultLike;
+    const parsed = parseResult(result) as Record<string, unknown>;
+    expect(parsed.ok).toBe(false);
+    expect(parsed.reason).toBe("unknown");
+    expect(parsed.diff).toEqual([]);
+    expect((parsed.if_unexpected as { most_likely_cause: string }).most_likely_cause).toBe("Unknown");
+    expect(emitter.completedCalls).toHaveLength(1);
+    expect(emitter.completedCalls[0]?.ok).toBe(false);
+  });
+
+  it("handler rejects with null → still emits failure envelope (Round 2 P2 sibling)", async () => {
+    // Same root cause as the `throw undefined` case — `null` is also a
+    // legal reject value that the boolean sentinel must catch.
+    _resetToolCallSeqForTest();
+    const { wrapped, emitter } = buildCommitWrapped({
+      validation: { ok: true, entity: { entityId: "ent_1" } as never },
+      handlerImpl: async () => Promise.reject(null),
+    });
+    const result = (await wrapped({ lease: { entityId: "ent_1" } } as never)) as ToolResultLike;
+    const parsed = parseResult(result) as Record<string, unknown>;
+    expect(parsed.ok).toBe(false);
+    expect(emitter.completedCalls[0]?.ok).toBe(false);
+  });
+
   it("lease validator omitted (lease-less commit) → no validation, handler called directly", async () => {
     _resetToolCallSeqForTest();
     const handlerSpy = vi.fn(async () => makeFakeOk({}));

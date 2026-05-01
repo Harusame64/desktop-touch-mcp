@@ -413,7 +413,7 @@ function truncateJson(args: unknown, maxBytes: number = 512): string {
   - [x] **G3-S4-8**: query wrapper が handler 側 lease_token を envelope `data` 経由で透過 (handler 直接生成、wrapper は envelope assembly のみ)
   - [x] env=1 priority chain + include=['raw'] override on failure path
   - [x] lease validator 省略 (lease-less commit、`click_element` バリエーション) — handler 直呼び、validation skip
-- [x] **33/33** test pass (G3-S4-1〜G3-S4-8 + helper 単体 + 残 3 reason mapping pin + lease-less commit + Round 1 P1 fix `compatFailureRaw` 直 unit test 4 件 + raw-mode legacy fallback test 3 件 = +7、Opus Round 1 P2 numeric count sync 反映)
+- [x] **35/35** test pass (G3-S4-1〜G3-S4-8 + helper 単体 + 残 3 reason mapping pin + lease-less commit + Round 1 P1 fix `compatFailureRaw` 直 unit test 4 件 + raw-mode legacy fallback test 3 件 + Round 3 Codex P2 sentinel fix `throw undefined` / `Promise.reject(null)` test 2 件 = 累積 +9)
 
 ### 3.7 S4-7: 検証 (cargo + npm + e2e + bench) [S4 trunk]
 
@@ -437,8 +437,8 @@ function truncateJson(args: unknown, maxBytes: number = 512): string {
 - [x] `benches/l4_envelope_size.mjs` を update: failure envelope 3 シナリオ追加 (lease_expired / lease_residual / handler_threw)、5120-byte SLO check 含む
 - [x] **Opus phase-boundary review Round 1** (CLAUDE.md §3.3 Step 1): P1 ゼロ + P2 4 件 (compatFailureRaw `diff` field + numeric count sync test 26→33 / export 48→61 + checklist sync) + P3 2 件、本 commit (Round 2) で全 P2 反映
 - [x] **Codex re-review Round 1** (CLAUDE.md §3.3 Step 2): 2 inline comment (P1 raw-mode failure null + P2 production tool_call_id session source) → Round 1 fix commit `9da7246` で全反映済
-- [ ] **Codex re-review Round 2**: Round 2 fix push 後の `@codex review` トリガー
-- [ ] **Opus phase-boundary review Round 2**: Round 2 fix 反映後、指摘ゼロまで反復
+- [x] **Codex re-review Round 2**: 1 新規 P2 inline (`_envelope.ts:961` `handlerError !== undefined` sentinel が `throw undefined` / `Promise.reject(null)` を falsely success 扱いして wrapper crash) → Round 3 fix commit で boolean sentinel `handlerThrew` に切替 + regression test 2 件追加
+- [ ] **Opus phase-boundary review Round 2**: Round 2 fix 反映後 + Round 3 Codex P2 fix 込みで再判定、指摘ゼロまで反復
 
 ---
 
