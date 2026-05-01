@@ -60,7 +60,7 @@ trunk 完了 (G1 通過) 後の expansion phase で実装、本 PR では scope 
 
 - **`FocusInputHandle` リネーム (`→ PerceptionInputHandle`)**: D2-C sub-plan §8 OQ #1 で carry-over、本 S1 では rename しない方針 (§8 OQ #1 推奨)。理由: S1 で rename すると grep 範囲が広がり (`FocusInputHandle` は `engine-perception` crate + `src/l3_bridge/` + 多数のテストで使用)、本 PR の本来 scope (signature refactor) と混在。S2 で `push_dirty_rect` method 追加するときに「機能拡張と名前変更を同 PR」で吸収する方が自然 — Opus 判断委譲
 - **`build_*` cross-view docstring 統一 / naming convention 文書化**: trunk 完了後に `docs/views-catalog.md` への build API guideline section 追加で吸収
-- **`Arranged` を返す build 関数の戻り値型 alias** (`type CfeArranged<G> = Arranged<...>`): expansion で読みやすさ向上目的の type alias 導入、本 PR では型を inline で記述
+- ~~**`Arranged` を返す build 関数の戻り値型 alias** (`type CfeArranged<G> = Arranged<...>`): expansion で読みやすさ向上目的の type alias 導入、本 PR では型を inline で記述~~ — **Resolved (S1 impl PR #105、Round 2 follow-up sync 2026-05-01)**: `pub type CurrentFocusedElementArranged<'scope> = Arranged<'scope, TraceAgent<ValSpine<u64, UiElementRef, LogicalTime, isize>>>;` を `crates/engine-perception/src/views/current_focused_element.rs` に同 PR 内で導入済、戻り値型 inline → alias 形に sync
 
 ### 1.4 北極星整合 + walking skeleton G1 contract
 
@@ -69,7 +69,7 @@ trunk 完了 (G1 通過) 後の expansion phase で実装、本 PR では scope 
 - **N3 (partial-order)**: `out_of_order_events_settle_to_latest_by_time` 等の既存 partial-order test を本 PR で **無修正で pass** することが G1 contract の一部
 - **CLAUDE.md 強制命令 3.1 (ADR/plan 複数表 fact 整合)**: 本 PR では sub-plan / 親 plan §D2-E0 / 親 plan §3 PR 表 PR-η 行 / `docs/walking-skeleton-trunk-selection.md` §4 S1 / `docs/views-catalog.md` (該当 row 注記不要、view shape 不変) の 4 SSOT を bit-equal に揃える
 - **CLAUDE.md 強制命令 3.2 (carry-over scope shrink、PR #102 教訓)**: 本 PR は既存 `Arranged` を closure 外に持ち出していないことを **型システムで pin** (lifetime escape 試行が `cargo check` で fail するように構造で防ぐ) — 過渡的に「外に持ち出してから後 PR で閉じ込める」設計は禁止 (carry-over 解釈で既存契約を壊さない)
-- **walking skeleton G1 contract**: S2 (D2-C) で `build_dirty_rects_aggregate(scope, dirty_rect_stream) -> (Arranged, View)` を **mechanical コピー** で同 scope に追加できる base が固まること。本 PR の `build_current_focused_element` 新 signature が S2 着手時の template として機能する
+- **walking skeleton G1 contract**: S2 (D2-C) で `build_dirty_rects_aggregate(&dirty_rect_stream) -> (DirtyRectsAggregateArranged<'scope>, DirtyRectsAggregateView)` を **mechanical コピー** で同 scope に追加できる base が固まること。本 PR の `build_current_focused_element` 新 signature が S2 着手時の template として機能する (Round 2 follow-up sync 2026-05-01: scope 引数なし統一形に修正、S1 unified pattern と整合)
 
 ---
 
@@ -103,12 +103,11 @@ use differential_dataflow::trace::implementations::ord_neu::OrdValSpine;
 // Note: DD 0.23 actual API uses lifetime-parameterised
 // `VecCollection<'scope, T, D, R>`, not the older `Collection<G: Scope, D, R>`
 // (impl PR sync 2026-05-01、Opus round 1 P1-1 反映)
+// Round 2 follow-up sync 2026-05-01: 戻り値型を impl で導入した
+// `CurrentFocusedElementArranged<'scope>` alias に統一 (Opus round 2 P2-1 反映)
 pub fn build_current_focused_element<'scope>(
     focus_stream: &VecCollection<'scope, LogicalTime, FocusEvent, isize>,
-) -> (
-    Arranged<'scope, TraceAgent<ValSpine<u64, UiElementRef, LogicalTime, isize>>>,
-    CurrentFocusedElementView,
-) {
+) -> (CurrentFocusedElementArranged<'scope>, CurrentFocusedElementView) {
     let view = CurrentFocusedElementView::new();
     let view_for_inspect = view.clone();
 
@@ -333,7 +332,7 @@ caller は **`spawn_perception_worker` の closure 1 箇所のみ**。本 PR で
 
 - [ ] `crates/engine-perception/src/views/current_focused_element.rs`:
   - [ ] 旧 `pub fn build<'scope>(events: VecCollection<...>, view: View)` を削除
-  - [ ] 新 `pub fn build_current_focused_element<'scope>(focus_stream: &VecCollection<'scope, LogicalTime, FocusEvent, isize>) -> (Arranged<'scope, TraceAgent<ValSpine<u64, UiElementRef, LogicalTime, isize>>>, CurrentFocusedElementView)` を新設 (§2.1、DD 0.23 actual API)
+  - [ ] 新 `pub fn build_current_focused_element<'scope>(focus_stream: &VecCollection<'scope, LogicalTime, FocusEvent, isize>) -> (CurrentFocusedElementArranged<'scope>, CurrentFocusedElementView)` を新設 (§2.1、DD 0.23 actual API、戻り値型は同 module で定義した `CurrentFocusedElementArranged<'scope>` alias を使用)
   - [ ] 関数内で `let view = CurrentFocusedElementView::new()` を生成 (caller の重複行を削除する shape)
   - [ ] `arrange_by_key()` 経由で arrangement を組み、`(arranged, view)` を return
   - [ ] inspect closure 内 logic は不変
@@ -457,7 +456,7 @@ trunk + expansion 完了後の別 phase で carry-over:
 
 - **`FocusInputHandle` → `PerceptionInputHandle` rename**: D2-C sub-plan §8 OQ #1 と同 carry-over、本 S1 では rename しない、S2 着手時に Opus 判断委譲 (§8 OQ #1)
 - **`build_*` cross-view docstring 統一 / naming convention 文書化**: trunk 完了後 `docs/views-catalog.md` への build API guideline section 追加で吸収
-- **`Arranged` 戻り値型 alias** (`type CfeArranged<G> = ...`): expansion で読みやすさ向上目的の type alias 導入
+- ~~**`Arranged` 戻り値型 alias** (`type CfeArranged<G> = ...`): expansion で読みやすさ向上目的の type alias 導入~~ — **Resolved (S1 impl PR #105、Round 2 follow-up sync 2026-05-01)**: `CurrentFocusedElementArranged<'scope>` alias を S1 で導入済 (本書 §1.3 / §2.1 / §3.1 / Round 2 follow-up commit で sync 済)、carry-over 不要
 - **compile_fail test for `Arranged` lifetime escape**: 意図的に escape を試行する pseudo code を `compile_fail` doctest で pin、本 PR では `cargo check` で十分とし carry-over
 
 ---
@@ -484,7 +483,7 @@ trunk + expansion 完了後の別 phase で carry-over:
 |---|---|---|---|
 | 1 | `FocusInputHandle` を `PerceptionInputHandle` にリネームするか、既存名を保持するか | S1 着手時 Opus 判断委譲 (D2-C sub-plan §8 OQ #1 と統合) | **私の推奨**: S1 では rename しない (本 sub-plan §1.3 + §6)。理由: S1 scope (signature refactor) と混在、S2 で `push_dirty_rect` method 追加と一緒に rename する方が自然。Opus 判断 |
 | 2 | `build_latest_focus` も `(Arranged, View)` 統一形にするか、`View` のみ simplify か | S1 着手時 Opus 判断委譲 | **私の推奨**: simplify (`View` のみ)。理由: latest_focus は singleton key で他 subgraph から import 用途無し、将来必要なら別 PR で signature 拡張 (R5 mitigation)。Opus 判断 |
-| 3 | `worker.dataflow` closure 内で view handle を closure 外に持ち出す方法 | S1 実装着手時、PoC で確認 | **私の推奨**: option α (3-tuple 返却)。理由: timely サンプルで前例あり、所有権が parent 側で集約されて cleanest。option β/γ は所有権 / locking で複雑化。PoC で不成立なら β/γ に切替 |
+| ~~3~~ | ~~`worker.dataflow` closure 内で view handle を closure 外に持ち出す方法~~ | ~~S1 実装着手時、PoC で確認~~ | **Resolved (option α' 採用、impl PR #105、Round 2 follow-up sync 2026-05-01)**: thread topology 解析で「`worker.dataflow` closure は worker thread 上で実行、view handle は parent thread (`spawn_perception_worker` の caller) 側で必要 → option α (closure 3-tuple return) と option α' (channel) いずれの選択でも channel が必要、option α' が冗長性最小」と確定。`crossbeam_channel::bounded(1)` capacity 1 採用 (vs rendezvous 0): worker `view_tx.send` を timely event loop 起動前に non-blocking で完了させて initialisation order を cleaner two-phase 化。詳細は本 sub-plan §3.3 + impl `crates/engine-perception/src/input.rs:509-540` |
 
 ---
 
@@ -569,7 +568,8 @@ production-pipeline lifecycle test 8 件 → spawn_perception_worker 4-tuple des
 | Drafted v0.1 | 2026-05-01 | Claude (Sonnet) | 初稿起草、walking skeleton S1 sub-plan、build_*(scope, stream) -> (Arranged, View) signature 統一 + Arranged closure 内閉込 + spawn_perception_worker closure wiring 変更 + G1 ゲート判定 |
 | Drafted v0.2 | 2026-05-01 | Claude (Sonnet) | Opus round 1 + Codex round 1 review 反映: P1-1 (D2-C sub-plan §6 line 410 と本 §1.1 A/B の S1 scope 解釈不一致) → 案 A 採用で D2-C sub-plan 側を D1 view 両方 S1 で signature 統一に sync 修正 / Codex P2 + Opus P2-4 (§2.3 closure return が `input` のみで §3.3 3-tuple 要求と矛盾、命名揺れ `latest_view_built` vs `latest_view`) → §2.3 wiring 全面書き直し + 3-tuple destructure を type-annotated 形で明示 / Opus P2-1 (§5 表 column header 即読性) / P2-2 (§7 R9 追加: `reduced` 2-borrow risk、Codex P2 と同源) / P2-3 (§10 References に signature SSOT 注釈追加) / P3-1 (walking-skeleton-trunk-selection.md line 492 末尾 `(Proposed v0.3)` → `(Proposed v0.4)` 同梱修正) / §4.4 numeric count 更新 (Risks 9 件に bump) |
 | Drafted v0.3 | 2026-05-01 | Claude (Sonnet) | impl PR #105 sync (Opus round 1 P1-1 反映): §2.1 / §2.2 build_* signature を DD 0.23 actual API に書き換え (`<G: Scope>(scope: &mut G, focus_stream: &Collection<G, ...>)` → `<'scope>(focus_stream: &VecCollection<'scope, LogicalTime, ...>)`、`OrdValSpine` → `ValSpine` 統一)、§3.1 / §3.2 / §3.3 checklist signature も同じく sync。§3.3 D2-E0-3 戻り値選択を **option α' (channel 経由) 採用** に明記 (Opus P1-2 反映: closure は worker thread 上で実行、view handle は parent thread 必要 → option α/α' いずれも channel 必須、option α' が冗長性最小、capacity 1 vs rendezvous 0 trade-off も注釈) |
+| Drafted v0.4 | 2026-05-01 | Claude (Sonnet) | PR #105 Round 2 follow-up (Opus round 2 P2-1/P2-2/P3-1/P3-2 反映): §1.3 alias を carry-over → Resolved 化 (impl PR #105 で `CurrentFocusedElementArranged<'scope>` 導入済)、§6 follow-up 同期、§2.1 戻り値型 inline → alias 形に sync、§3.1 checklist signature も alias 形に sync、§8 OQ #3 推奨 row を Resolved (option α' 採用) 化 (impl 選択と矛盾解消)、§1.4 G1 contract sample `build_dirty_rects_aggregate(scope, dirty_rect_stream) -> ...` から `scope` 引数除去 (S1 unified pattern と整合) |
 
 ---
 
-END OF ADR-008 D2-E0 sub-plan (Drafted v0.3)。
+END OF ADR-008 D2-E0 sub-plan (Drafted v0.4)。
