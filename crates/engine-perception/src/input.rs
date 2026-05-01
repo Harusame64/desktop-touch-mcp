@@ -527,16 +527,18 @@ pub fn spawn_perception_worker() -> (
     // the closure is statically rejected by timely's lifetime model
     // (Codex v2 P2-9, sub-plan §2.5).
     //
-    // Why capacity 1 rather than 0 (rendezvous): rendezvous would
-    // block the worker's `view_tx.send` until the parent's
-    // `view_rx.recv` runs, but the parent only reaches `recv` after
-    // the worker thread has already started executing
-    // `timely::execute_directly` (which is on the worker thread, not
-    // the parent). With capacity 1 the worker's `send` returns
-    // immediately, the dataflow event loop starts as soon as the
-    // closure returns, and the parent observes the published view
-    // handles via `recv` once it gets there — a cleaner two-phase
-    // initialisation.
+    // Why capacity 1 rather than 0 (rendezvous): both are deadlock-free
+    // (parent calls `view_rx.recv` blockingly right after `thread::spawn`
+    // returns, so a rendezvous send would also unblock as soon as parent
+    // reaches recv). The actual win of capacity 1 is **decoupling
+    // worker startup from parent recv timing**: with rendezvous the
+    // worker would block on `view_tx.send` until the parent gets to
+    // recv, delaying the start of `timely::execute_directly`'s event
+    // loop. With capacity 1 the worker's `send` returns immediately,
+    // the dataflow event loop starts as soon as the closure returns,
+    // and the parent observes the published view handles via `recv`
+    // once it gets there — a cleaner two-phase initialisation where
+    // worker dataflow setup is independent of parent recv ordering.
     let (view_tx, view_rx) = bounded::<(CurrentFocusedElementView, LatestFocusView)>(1);
 
     let join = thread::Builder::new()
@@ -671,10 +673,13 @@ fn worker_loop(
                 // **S2 entrypoint marker** — when D2-C impl PR adds
                 // `dirty_rects_aggregate`, this `let _ =` line is the
                 // exact site to remove and replace with the
-                // arrangement-borrowing call:
+                // arrangement-borrowing call (S1 unified signature
+                // pattern: `build_*(focus_stream)` takes no `scope`
+                // argument because `VecCollection<'scope, ...>` carries
+                // the scope lifetime):
                 //   let (_dirty_arranged, dirty_view) =
                 //       dirty_rects_aggregate::build_dirty_rects_aggregate(
-                //           scope, &cfe_arranged, &dirty_rect_stream);
+                //           &cfe_arranged, &dirty_rect_stream);
                 // (Or however D2-C's call site shape lands; the point
                 // is `cfe_arranged` flows from a dropped binding into
                 // a borrow into the next subgraph.)

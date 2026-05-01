@@ -11,11 +11,14 @@
 //!   `&VecCollection<'scope, LogicalTime, FocusEvent, isize>` (i.e.
 //!   `differential_dataflow::collection::vec::Collection`, not the
 //!   bare `Collection<G, ...>` from older DD versions). The function
-//!   constructs the view internally and returns either
-//!   `(Arranged<'scope, TraceAgent<ValSpine<K, V, T, R>>>, View)`
-//!   (when the per-key arrangement needs to be reused by other
-//!   subgraphs in the **same** `worker.dataflow` closure, e.g.
-//!   `current_focused_element`) or just `View` (when no in-scope
+//!   constructs the view internally and returns either a
+//!   `(<View>Arranged<'scope>, View)` pair where `<View>Arranged<'scope>`
+//!   is a per-view module-local type alias (e.g.
+//!   `CurrentFocusedElementArranged<'scope> = Arranged<'scope,
+//!   TraceAgent<ValSpine<K, V, LogicalTime, isize>>>`) when the
+//!   per-key arrangement needs to be reused by other subgraphs in the
+//!   **same** `worker.dataflow` closure (e.g.
+//!   `current_focused_element`), or just `View` (when no in-scope
 //!   downstream import is planned, e.g. `latest_focus`).
 //! - The returned `Arranged` is bound to the scope's `'scope`
 //!   lifetime — storing it in an outside struct is statically rejected
