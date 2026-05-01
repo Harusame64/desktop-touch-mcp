@@ -98,7 +98,40 @@ Operator note: `latest_focus` populates only after `focus_pump` receives at leas
 #### Acceptance interpretation (D2-B view-replacement, OQ #16)
 
 - **Steady-state read** (focus stable, no view hits during run): MCP round-trip p99 = 6.22 ms vs. with-point baseline p99 = 9.58 ms → ~**1.5× faster**, dominated by `desktop_state`'s leaner non-Chromium focus path (`uiaGetFocusedAndPoint(0,0)` is heavier than `desktop_state`'s actual cursor-position query in this run's environment).
-- **D2 view-replacement gain** (operator-induced focus change): not auto-measured here. When the operator alt+tabs once during warmup the view path hits and the round-trip should drop further (view fetch ≈ ~145 ns vs. UIA ≈ ~9 ms in-process). OQ #16 — whether SLO acceptance is "TS p99 / 5" or "TS p99 / 10" — is judged after the operator-induced number is on file (D2-B-5 closure).
+- **D2 view-replacement gain** (operator-induced focus change): D2-B-5 lands automated alt+tab induction (see below) so this number is no longer manual-only.
+
+#### D2-B-5 view-hit MCP round-trip (auto-induce mode, `--induce-focus-change` default ON)
+
+D2-B-4 measures the steady-state path (focus held in bench terminal, view path 0% hit). The same bench runs in **auto-induce mode by default** as of D2-B-5: warmup phase emits two `alt+tab` keystrokes via `@nut-tree-fork/nut-js` at iter 30 + 50, populating `latest_focus` view through `focus_pump`. Subsequent measure-phase iterations exercise the view path (`focusedElementSource === "view"`), which is the production hot path right after a focus change.
+
+Output is **3-decomposed**: `overall` (D2-B-4 互換、regression 0 確認), `view-hit` (the numbers OQ #2 / #16 needs), and `non-view` (uia / cdp fallback — should match D2-B-4 steady-state).
+
+Modes:
+
+| flag | behaviour |
+|---|---|
+| (default) | auto-induce ON, `view-hit counter > 0` enforced (exit 1 on miss) |
+| `--manual` / `--no-induce` | D2-B-4 reproduction, `view-hit counter == 0` tolerated |
+
+D2-B-5 measured numbers (local run, Windows 11 / Ryzen, release build, YYYY-MM-DD — fill in after first run):
+
+| Slice | N | p50 | p95 | **p99** |
+|---|---|---|---|---|
+| overall | 1000 | _TBD_ | _TBD_ | _TBD_ |
+| view-hit (`focusedElementSource = "view"`) | _TBD_ | _TBD_ | _TBD_ | **_TBD_** |
+| non-view (`uia` / `cdp` fallback) | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
+
+Acceptance interpretation (Opus 諮問判断 2026-05-02 §3 留保事項 R1, feeds SLO 4-種分解 PR-2):
+
+- **view-hit p99 ≤ 2ms** → SLO `MCP round-trip p99 < TS p99 / 5 (~2ms)` で確定 (view-replacement の効果 high)
+- **view-hit p99 2-5ms** → SLO `< TS p99 / 1.5 (~6ms)` で確定 (steady-state と同水準)
+- **view-hit p99 ≥ 5ms** → SLO `< 10ms` で確定 (view-replacement marginal、option C 永久 defer の根拠強化)
+
+Failure modes (auto-induce):
+
+- nutjs import / `pressKey` failure → warning + degrade to manual (view-hit counter likely 0 → exit 1 unless `--manual` is passed)
+- RDP / locked-down policy / UAC-elevated foreground app blocks programmatic alt+tab → same degradation
+- 200ms post-induce wait insufficient for `shift_ms` floor + idle-advance cycle → raise `POST_INDUCE_WAIT_MS` constant
 
 ### 2.4 L4 Envelope Assembly (`benches/l4_envelope.rs`)
 
