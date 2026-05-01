@@ -112,7 +112,7 @@ impl LatestFocusView {
     }
 
     /// Apply a diff observation. Internal — called from the timely
-    /// worker's inspect closure inside [`build`]. `pub(crate)` so
+    /// worker's inspect closure inside [`build_latest_focus`]. `pub(crate)` so
     /// tests inside the crate can exercise the bookkeeping directly.
     pub(crate) fn apply_diff(&self, ts: LogicalTime, value: UiElementRef, diff: i64) {
         let mut g = self.inner.write().expect("LatestFocusView RwLock poisoned");

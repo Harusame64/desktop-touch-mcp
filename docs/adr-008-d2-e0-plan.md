@@ -100,16 +100,15 @@ use differential_dataflow::trace::implementations::ord_neu::OrdValSpine;
 /// it inside the same closure (or `_` it). Storing it in an outside
 /// struct is **statically rejected by timely's lifetime model**
 /// (Codex v2 P2-9, see `docs/adr-008-d2-plan.md` §D2-E0-1).
-pub fn build_current_focused_element<G>(
-    scope: &mut G,
-    focus_stream: &Collection<G, FocusEvent, isize>,
+// Note: DD 0.23 actual API uses lifetime-parameterised
+// `VecCollection<'scope, T, D, R>`, not the older `Collection<G: Scope, D, R>`
+// (impl PR sync 2026-05-01、Opus round 1 P1-1 反映)
+pub fn build_current_focused_element<'scope>(
+    focus_stream: &VecCollection<'scope, LogicalTime, FocusEvent, isize>,
 ) -> (
-    Arranged<G, TraceAgent<OrdValSpine<u64, UiElementRef, G::Timestamp, isize>>>,
+    Arranged<'scope, TraceAgent<ValSpine<u64, UiElementRef, LogicalTime, isize>>>,
     CurrentFocusedElementView,
-)
-where
-    G: Scope<Timestamp = LogicalTime>,
-{
+) {
     let view = CurrentFocusedElementView::new();
     let view_for_inspect = view.clone();
 
@@ -180,13 +179,10 @@ pub fn build<'scope>(
 /// the read-side handle only — singleton-key reduce produces 1 row,
 /// no `arrange_by_key` exposure for downstream import (no D2-E
 /// consumer planned, see `docs/adr-008-d2-e0-plan.md` §1.3).
-pub fn build_latest_focus<G>(
-    scope: &mut G,
-    focus_stream: &Collection<G, FocusEvent, isize>,
-) -> LatestFocusView
-where
-    G: Scope<Timestamp = LogicalTime>,
-{
+// DD 0.23 actual API (impl PR sync 2026-05-01、Opus round 1 P1-1 反映)
+pub fn build_latest_focus<'scope>(
+    focus_stream: &VecCollection<'scope, LogicalTime, FocusEvent, isize>,
+) -> LatestFocusView {
     let view = LatestFocusView::new();
     let view_for_inspect = view.clone();
 
@@ -337,18 +333,18 @@ caller は **`spawn_perception_worker` の closure 1 箇所のみ**。本 PR で
 
 - [ ] `crates/engine-perception/src/views/current_focused_element.rs`:
   - [ ] 旧 `pub fn build<'scope>(events: VecCollection<...>, view: View)` を削除
-  - [ ] 新 `pub fn build_current_focused_element<G: Scope<Timestamp = LogicalTime>>(scope: &mut G, focus_stream: &Collection<G, FocusEvent, isize>) -> (Arranged<G, TraceAgent<OrdValSpine<u64, UiElementRef, G::Timestamp, isize>>>, CurrentFocusedElementView)` を新設 (§2.1)
+  - [ ] 新 `pub fn build_current_focused_element<'scope>(focus_stream: &VecCollection<'scope, LogicalTime, FocusEvent, isize>) -> (Arranged<'scope, TraceAgent<ValSpine<u64, UiElementRef, LogicalTime, isize>>>, CurrentFocusedElementView)` を新設 (§2.1、DD 0.23 actual API)
   - [ ] 関数内で `let view = CurrentFocusedElementView::new()` を生成 (caller の重複行を削除する shape)
   - [ ] `arrange_by_key()` 経由で arrangement を組み、`(arranged, view)` を return
   - [ ] inspect closure 内 logic は不変
-- [ ] `differential_dataflow::trace::implementations::ord_neu::OrdValSpine` import 追加 (TraceAgent 経路)
+- [ ] `differential_dataflow::operators::arrange::{Arranged, TraceAgent}` + `differential_dataflow::trace::implementations::ValSpine` import 追加 (DD 0.23 public re-export 経由)
 - [ ] doc comment に Codex v2 P2-9 / lifetime 制約説明を追加 (§2.1 docstring template 採用)
 
 ### 3.2 D2-E0-2: `latest_focus::build_latest_focus` signature 変更 (~50 line) [S1 trunk]
 
 - [ ] `crates/engine-perception/src/views/latest_focus.rs`:
   - [ ] 旧 `pub fn build<'scope>(events: VecCollection<...>, view: View)` を削除
-  - [ ] 新 `pub fn build_latest_focus<G: Scope<Timestamp = LogicalTime>>(scope: &mut G, focus_stream: &Collection<G, FocusEvent, isize>) -> LatestFocusView` を新設 (§2.2)
+  - [ ] 新 `pub fn build_latest_focus<'scope>(focus_stream: &VecCollection<'scope, LogicalTime, FocusEvent, isize>) -> LatestFocusView` を新設 (§2.2、DD 0.23 actual API、`Arranged` 返却なし simplify)
   - [ ] 関数内で `let view = LatestFocusView::new()` 生成
   - [ ] `Arranged` 返却なし (singleton key、import 用途無し、§2.2 / OQ #2)
   - [ ] inspect closure 内 logic は不変
@@ -357,13 +353,12 @@ caller は **`spawn_perception_worker` の closure 1 箇所のみ**。本 PR で
 
 - [ ] `crates/engine-perception/src/input.rs::spawn_perception_worker`:
   - [ ] parent 側 `let view = CurrentFocusedElementView::new(); let latest_view = LatestFocusView::new(); let view_for_worker = view.clone(); let latest_view_for_worker = latest_view.clone();` を削除 (build_* 関数内で生成する shape に統一)
-  - [ ] closure 内を §2.3 option α (3-tuple 返却) shape に変更:
-    - `let (input, focus_stream) = scope.new_collection::<FocusEvent, isize>();`
-    - `let (cfe_arranged, cfe_view) = current_focused_element::build_current_focused_element(scope, &focus_stream);`
-    - `let latest_view = latest_focus::build_latest_focus(scope, &focus_stream);`
-    - `let _ = cfe_arranged;` (S2/D2-E consumer 不在の warning 抑制)
-    - closure 戻り値: `(input, cfe_view, latest_view)`
-  - [ ] closure 外で 3-tuple を destructure (`let (mut input, cfe_view, latest_view) = worker.dataflow(...);`)、`view_for_worker = cfe_view.clone()` / `latest_view_for_worker = latest_view.clone()` を作成
+  - [ ] closure 内を build_* 経由 shape に変更:
+    - `let (input, stream) = scope.new_collection::<FocusEvent, isize>();`
+    - `let (cfe_arranged, cfe_view) = current_focused_element::build_current_focused_element(&stream);`
+    - `let latest_view = latest_focus::build_latest_focus(&stream);`
+    - `let _ = cfe_arranged;` (S2/D2-E consumer 不在の warning 抑制、S2 着手時に `cfe_arranged` を borrow する形に書き換え)
+    - 戻り値選択 (Opus round 1 P1-2 反映、impl 採用は **option α'**): closure return は既存通り `input` の `InputSession` 単独、view handle の parent 受領は `crossbeam_channel::bounded(1)` 経由で `view_tx.send` → 親 `view_rx.recv()`。option α (closure return 3-tuple `(input, cfe_view, latest_view)`) も型 system 上成立するが、**closure は worker thread 上で実行**され、view handle は parent thread (`spawn_perception_worker` の caller) 側で必要なため、いずれの選択でも channel が必要 (option α では channel 経由 + 3-tuple destructure と冗長になる)。capacity 1 (vs rendezvous 0): worker `view_tx.send` を timely event loop 起動前に non-blocking で完了させるため
   - [ ] `spawn_perception_worker` 戻り値 4-tuple は不変 (`(PerceptionWorker, FocusInputHandle, View, LatestView)`)
 
 ### 3.4 D2-E0-4: docstring / mod.rs export 整合 (~10 line) [S1 trunk]
@@ -573,7 +568,8 @@ production-pipeline lifecycle test 8 件 → spawn_perception_worker 4-tuple des
 |---|---|---|---|
 | Drafted v0.1 | 2026-05-01 | Claude (Sonnet) | 初稿起草、walking skeleton S1 sub-plan、build_*(scope, stream) -> (Arranged, View) signature 統一 + Arranged closure 内閉込 + spawn_perception_worker closure wiring 変更 + G1 ゲート判定 |
 | Drafted v0.2 | 2026-05-01 | Claude (Sonnet) | Opus round 1 + Codex round 1 review 反映: P1-1 (D2-C sub-plan §6 line 410 と本 §1.1 A/B の S1 scope 解釈不一致) → 案 A 採用で D2-C sub-plan 側を D1 view 両方 S1 で signature 統一に sync 修正 / Codex P2 + Opus P2-4 (§2.3 closure return が `input` のみで §3.3 3-tuple 要求と矛盾、命名揺れ `latest_view_built` vs `latest_view`) → §2.3 wiring 全面書き直し + 3-tuple destructure を type-annotated 形で明示 / Opus P2-1 (§5 表 column header 即読性) / P2-2 (§7 R9 追加: `reduced` 2-borrow risk、Codex P2 と同源) / P2-3 (§10 References に signature SSOT 注釈追加) / P3-1 (walking-skeleton-trunk-selection.md line 492 末尾 `(Proposed v0.3)` → `(Proposed v0.4)` 同梱修正) / §4.4 numeric count 更新 (Risks 9 件に bump) |
+| Drafted v0.3 | 2026-05-01 | Claude (Sonnet) | impl PR #105 sync (Opus round 1 P1-1 反映): §2.1 / §2.2 build_* signature を DD 0.23 actual API に書き換え (`<G: Scope>(scope: &mut G, focus_stream: &Collection<G, ...>)` → `<'scope>(focus_stream: &VecCollection<'scope, LogicalTime, ...>)`、`OrdValSpine` → `ValSpine` 統一)、§3.1 / §3.2 / §3.3 checklist signature も同じく sync。§3.3 D2-E0-3 戻り値選択を **option α' (channel 経由) 採用** に明記 (Opus P1-2 反映: closure は worker thread 上で実行、view handle は parent thread 必要 → option α/α' いずれも channel 必須、option α' が冗長性最小、capacity 1 vs rendezvous 0 trade-off も注釈) |
 
 ---
 
-END OF ADR-008 D2-E0 sub-plan (Drafted v0.1)。
+END OF ADR-008 D2-E0 sub-plan (Drafted v0.3)。

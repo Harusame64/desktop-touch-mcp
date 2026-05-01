@@ -506,27 +506,37 @@ pub fn spawn_perception_worker() -> (
     let processed_count = Arc::new(AtomicU64::new(0));
     let processed_clone = Arc::clone(&processed_count);
 
-    // D2-E0: views are created inside the `worker.dataflow` closure by
-    // `build_*` and returned through a (sender, view, latest_view)
-    // bundle out of the worker thread (see `worker_loop` for the
-    // `oneshot`-style channel). The parent-side `View::new()` +
-    // `view.clone()` duplication that the pre-D2-E0 wiring did is
-    // now removed — `build_current_focused_element` /
-    // `build_latest_focus` are the single source of view construction
-    // (`docs/adr-008-d2-e0-plan.md` §2.3, §3.3).
+    // D2-E0 (`docs/adr-008-d2-e0-plan.md` §2.3, §3.3): views are
+    // created inside the `worker.dataflow` closure by `build_*` and
+    // returned out via a `crossbeam_channel::bounded(1)` so the
+    // parent thread can receive the view handles after the worker's
+    // dataflow has built. This is **option α' adaptation** of
+    // sub-plan §8 OQ #3 — `worker.dataflow`'s closure-return value
+    // `R` is generic and could in principle return a 3-tuple
+    // `(InputSession, View, LatestView)` directly (option α), but
+    // `R` lives at the timely worker thread's scope, not the calling
+    // (parent) thread. We need the view handles in the parent thread
+    // (where `spawn_perception_worker` is called) so the channel
+    // is necessary regardless.
     //
-    // Why a oneshot channel instead of changing `worker.dataflow`'s
-    // closure return type to a 3-tuple: timely's `worker.dataflow`
-    // takes a `FnOnce(&mut Child<Worker, T>) -> R` and the closure's
-    // return value `R` is the dataflow handle (typed as
-    // `InputSession` in the existing shape). Adding view handles to
-    // `R` would require us to pin a custom return shape that crosses
-    // the timely API surface; instead we ship the view handles via a
-    // `crossbeam_channel::bounded(1)` *inside* the spawned worker
-    // thread, then receive them on the parent before returning.
-    // (D2-E0 sub-plan §8 OQ #3 option α' adaptation — Opus +
-    // Codex review explicitly authorised this fallback if option α
-    // direct return failed.)
+    // The view handles themselves (`Arc<RwLock<...>>` based) are
+    // 'static and Send, so the channel transports them safely. The
+    // `Arranged<'scope, ...>` returned by `build_current_focused_element`
+    // is bound to the dataflow scope's lifetime and is `let _`-dropped
+    // inside the closure — storing it in any container that escapes
+    // the closure is statically rejected by timely's lifetime model
+    // (Codex v2 P2-9, sub-plan §2.5).
+    //
+    // Why capacity 1 rather than 0 (rendezvous): rendezvous would
+    // block the worker's `view_tx.send` until the parent's
+    // `view_rx.recv` runs, but the parent only reaches `recv` after
+    // the worker thread has already started executing
+    // `timely::execute_directly` (which is on the worker thread, not
+    // the parent). With capacity 1 the worker's `send` returns
+    // immediately, the dataflow event loop starts as soon as the
+    // closure returns, and the parent observes the published view
+    // handles via `recv` once it gets there — a cleaner two-phase
+    // initialisation.
     let (view_tx, view_rx) = bounded::<(CurrentFocusedElementView, LatestFocusView)>(1);
 
     let join = thread::Builder::new()
@@ -657,6 +667,17 @@ fn worker_loop(
                 // has no consumer yet, so we silence the unused
                 // binding warning. Storing it in an outside struct
                 // is statically rejected by timely's lifetime model.
+                //
+                // **S2 entrypoint marker** — when D2-C impl PR adds
+                // `dirty_rects_aggregate`, this `let _ =` line is the
+                // exact site to remove and replace with the
+                // arrangement-borrowing call:
+                //   let (_dirty_arranged, dirty_view) =
+                //       dirty_rects_aggregate::build_dirty_rects_aggregate(
+                //           scope, &cfe_arranged, &dirty_rect_stream);
+                // (Or however D2-C's call site shape lands; the point
+                // is `cfe_arranged` flows from a dropped binding into
+                // a borrow into the next subgraph.)
                 let _ = cfe_arranged;
                 // Ship the view read handles to the parent thread.
                 // The parent's `view_rx.recv()` blocks until this

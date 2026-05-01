@@ -5,14 +5,18 @@
 //!
 //! - A typed `*View` handle (cheap to clone, `Arc<RwLock<...>>` inside)
 //!   exposes the read-only API consumers use to query the latest state.
-//! - A `build_<view>(focus_stream: &Collection)` function wires the
-//!   view's operator graph onto the supplied input stream. The
-//!   function constructs the view internally and returns either
-//!   `(Arranged<'scope, ...>, View)` (when the per-key arrangement
-//!   needs to be reused by other subgraphs in the **same**
-//!   `worker.dataflow` closure, e.g. `current_focused_element`) or
-//!   just `View` (when no in-scope downstream import is planned, e.g.
-//!   `latest_focus`).
+//! - A `build_<view>(focus_stream)` function wires the view's
+//!   operator graph onto the supplied input stream. In DD 0.23 the
+//!   actual stream type is
+//!   `&VecCollection<'scope, LogicalTime, FocusEvent, isize>` (i.e.
+//!   `differential_dataflow::collection::vec::Collection`, not the
+//!   bare `Collection<G, ...>` from older DD versions). The function
+//!   constructs the view internally and returns either
+//!   `(Arranged<'scope, TraceAgent<ValSpine<K, V, T, R>>>, View)`
+//!   (when the per-key arrangement needs to be reused by other
+//!   subgraphs in the **same** `worker.dataflow` closure, e.g.
+//!   `current_focused_element`) or just `View` (when no in-scope
+//!   downstream import is planned, e.g. `latest_focus`).
 //! - The returned `Arranged` is bound to the scope's `'scope`
 //!   lifetime — storing it in an outside struct is statically rejected
 //!   by timely's lifetime model (Codex v2 P2-9).

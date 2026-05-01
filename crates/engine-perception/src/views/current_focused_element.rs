@@ -155,7 +155,7 @@ impl CurrentFocusedElementView {
     }
 
     /// Apply a diff observation. Internal — called from the timely
-    /// worker's inspect closure inside [`build`]. Public visibility is
+    /// worker's inspect closure inside [`build_current_focused_element`]. Public visibility is
     /// `pub(crate)` so tests inside the crate can drive the view
     /// directly without spinning a dataflow.
     pub(crate) fn apply_diff(&self, hwnd: u64, value: UiElementRef, diff: i64) {
