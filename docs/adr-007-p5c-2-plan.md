@@ -100,16 +100,28 @@ fn acquire_dirty_rects(ctx, timeout_ms, ring: &Arc<EventRing>, enable_l1_emit: &
 
 ### 3.1 P5c-2-1: payload + thread 内 emit fork (中核)
 
-- [ ] `src/duplication/thread.rs::DuplicationContext` に `enable_l1_emit: Arc<AtomicBool>` + `frame_index: Arc<AtomicU64>` + `ring: Arc<EventRing>` を追加 (`spawn` で `crate::l1_capture::ensure_l1().ring.clone()` 経由初期化、`enable_l1_emit` は `AtomicBool::new(true)` でデフォルト ON)
-- [ ] `acquire_dirty_rects` を §2.2 擬似コード通りに改修、`Vec<DirtyRect>` 構築完了後 emit fork 実行
-- [ ] `DuplicationHandle` API 拡張: `set_l1_emit_enabled(bool)` (graceful disable / test 用、AtomicBool 直書き)
-- [ ] `src/duplication/mod.rs` の napi `DirtyRectSubscription` は **API 改修不要** (TS pull 経路は無干渉)
+**実装パターン明示**: P5c-1 (passive event-driven、UIA event handler が register された瞬間から push) と異なり、本 PR は **既存 `acquire_dirty_rects` 内に emit を fork する pull-driven 経路**。`UiaEventHandlerOwner` 同型 owner pattern は採らない。
+
+**設計原則 (P0-1 構造的整合)**: `DuplicationContext` 構造体は **無改修** (`device.rs::create_context` signature 影響なし、R6 整合)。L1 emit 用の `ring` / `enable_l1_emit` / `frame_index` 3 個の `Arc` は `run_loop` の引数として追加し、duplication thread のローカル変数として保持する。
+
+- [ ] `src/duplication/thread.rs::run_loop` signature 拡張: `run_loop(ctx: &mut DuplicationContext, rx: Receiver<DuplicationCmd>, output_index: u32, ring: Arc<EventRing>, enable_l1_emit: Arc<AtomicBool>, frame_index: Arc<AtomicU64>)` (`DuplicationContext` 無改修、§6 R6 整合)
+- [ ] `acquire_dirty_rects` も同 3 引数追加 (`ring: &Arc<EventRing>`, `enable_l1_emit: &Arc<AtomicBool>`, `frame_index: &Arc<AtomicU64>`)、`Vec<DirtyRect>` 構築完了後 §2.2 擬似コード通りに emit fork 実行
+- [ ] `frame_index` 仕様: **duplication thread ローカル `Arc<AtomicU64>`、frame ごとに 1 ずつ increment、同 frame 内の N rect は同 `frame_index` を共有** (OQ #4 確定、views-catalog §3.2 の `summary { count, total_area }` aggregation が frame 単位 grouping を要求するため、event_id (event 単位) では代替不可)
+- [ ] `spawn(output_index)`: `crate::l1_capture::ensure_l1().ring.clone()` を取得、`enable_l1_emit = Arc::new(AtomicBool::new(true))` で初期化、`frame_index = Arc::new(AtomicU64::new(0))` で初期化、これら 3 つを `run_loop` に move 渡し、`enable_l1_emit` の clone を `DuplicationHandle` にも 1 本持たせる
+- [ ] `DuplicationHandle` (mod.rs) API 拡張: `enable_l1_emit: Arc<AtomicBool>` field 追加 + `set_l1_emit_enabled(bool)` method 追加 (graceful disable / test 用、AtomicBool 直書き)
+- [ ] `src/duplication/mod.rs` の napi `DirtyRectSubscription` は **napi expose は変えない** (TS pull 経路無干渉)、`set_l1_emit_enabled` は internal API (Rust unit test から触れる、TS expose 不要)
 - [ ] `src/l1_capture/payload.rs:50` の `#[allow(dead_code)] // P5c-2 emit` marker を削除 (P5c-2 emit が landing したため dead_code 警告が解消されることを compile-time で確認)
 
 ### 3.2 P5c-2-2: graceful disable + AccessLost 復旧
 
-- [ ] **DXGI 利用不可時** (`create_context` Err 経路、boot_tx で boot_rx に Err 返却): 既存 graceful disable 経路維持、追加で `make_failure_event("duplication", "create_context", ...)` を **L1 ring に 1 度だけ** push (`Failure` event variant 利用、payload は `FailurePayload`)
-- [ ] **AccessLost 復旧経路**: 既存 `run_loop` で `Err(DuplicationError::AccessLost) → create_context → 新 ctx 採用 → reply には Err を返す` フロー維持。emit 側は AccessLost のフレームでは 0 rect 扱いで emit せず、context recreate 後の次フレームから emit 再開。**Failure event は重複 push しない** (`AccessLost_count: AtomicU32` を `DuplicationContext` に持たせ、5 連続失敗で 1 度だけ Failure push、成功時 reset)
+- [ ] **DXGI 利用不可時** (`create_context` Err 経路、boot_tx で boot_rx に Err 返却): 既存 graceful disable 経路維持、追加で **L1 ring に 1 度だけ** Failure event を push:
+  ```rust
+  // 4 引数: layer / op / reason / panic_payload (worker.rs:54 同型)
+  let event = make_failure_event("duplication", "create_context", reason_str, None);
+  ring.push(event);
+  ```
+  ※ `make_failure_event` の戻り値は push 可能な envelope、`worker.rs:54` 参照 (P5a 完了)
+- [ ] **AccessLost 復旧経路**: 既存 `run_loop` で `Err(DuplicationError::AccessLost) → create_context → 新 ctx 採用 → reply には Err を返す` フロー維持。emit 側は AccessLost のフレームでは 0 rect 扱いで emit せず、context recreate 後の次フレームから emit 再開。**Failure event は重複 push しない** (`access_lost_count: AtomicU32` を duplication thread のローカル変数として持たせ、`run_loop` 内で update、**5 連続失敗で 1 度だけ Failure push、成功時 reset**)
 - [ ] **AtomicBool 経由 disable test**: `set_l1_emit_enabled(false)` 後 `acquire_dirty_rects` 呼出で `EventKind::DirtyRect` event が ring に push されないことを unit test で pin
 
 ### 3.3 P5c-2-3: integration test
@@ -121,11 +133,11 @@ fn acquire_dirty_rects(ctx, timeout_ms, ring: &Arc<EventRing>, enable_l1_emit: &
 - [ ] vitest 経由の live test は P5c-1 と同様に **別 fixture window** で frame 変化を induce する必要あり、本 PR scope では Rust unit + integration test に限定 (vitest live integration は §5 follow-up)
 - [ ] integration test は `#[cfg(all(test, target_os = "windows"))]` で gate (P5c-1 と同型)、CI on Windows runner で実行
 
-### 3.4 P5c-2-4: bench (任意、carry-over 候補)
+### 3.4 P5c-2-4: bench (carry-over 確定、別 PR)
 
-- [ ] `benches/l1_capture.rs::bench_dirty_rect_60hz` (既存 skeleton in `benches/README.md` §2.1) を本 PR で **enable** または P5c-2-α で carry-over
-- [ ] 60Hz emit が ring 飽和を引き起こさないこと (drop_count = 0) を bench で pin
-- [ ] **判断**: 本 PR で enable する (skeleton から最小実装に上げる) vs carry-over (bench 専用 PR で着手) は parent plan §11.4 acceptance 「画面変化で `EventKind::DirtyRect` event が ring push」のみ満たせば OK なので、carry-over 寄りで OK。**§10 OQ #2 で記録**、Opus 判断委譲
+**Opus 判断 (2026-05-01)**: 別 PR (`P5c-2-bench`) で carry-over 採用、本 PR scope 外。理由: 親 §11.4 acceptance に bench 含まれず、本 PR scope を「emit + integration test」に絞る方が PR #94/#95 の Codex round 多発教訓 (sub-batch 切り効果) と整合。
+
+- (carry-over) `benches/l1_capture.rs::bench_dirty_rect_60hz` (既存 skeleton in `benches/README.md` §2.1) を別 PR で本実装、60Hz emit が ring 飽和を引き起こさないこと (drop_count = 0) を pin。`§5 follow-up` 参照
 
 ---
 
@@ -159,6 +171,7 @@ fn acquire_dirty_rects(ctx, timeout_ms, ring: &Arc<EventRing>, enable_l1_emit: &
 | R5 | `acquire_dirty_rects` 内 emit が新規所要時間で TS pull latency 悪化 | 中 | emit 部分は 60 rect × `ring.push` (lock-free atomic) で µs オーダ、TS pull (DXGI Acquire 自体 ~1ms) と比べ無視可能。bench で pin (§3.4 carry-over) |
 | R6 | `ring`/`enable_l1_emit`/`frame_index` を `DuplicationContext` 拡張で渡すと既存 `device.rs::create_context` signature に影響 | 低 | `DuplicationContext` を拡張せず、`run_loop` の引数に `ring: &Arc<EventRing>`、`enable_l1_emit: &Arc<AtomicBool>`、`frame_index: &Arc<AtomicU64>` を追加するパターンで実装、既存 `create_context` 無干渉 |
 | R7 | DXGI duplication thread の COM apartment (MTA) と L1 ring (Send + Sync) の互換性 | 低 | `EventRing` は既に `Send + Sync` (P5a 完了)、push は lock-free atomic、COM apartment 制約に抵触せず |
+| R8 | `DirtyRectRouter` の `tickMs` 設定が将来変更され emit cadence が劣化 (default 16ms から拡大されると view fidelity 低下) | 低 (現状 16ms 固定で問題なし) | `tickMs` 変更時は ADR-008 D2-C view bench で emit cadence への影響を確認、必要なら option B pivot を OQ #1 で trigger。本 R8 は §2.2 Cons の structural mitigation |
 
 ---
 
@@ -187,9 +200,9 @@ fn acquire_dirty_rects(ctx, timeout_ms, ring: &Arc<EventRing>, enable_l1_emit: &
 | # | OQ | 決定タイミング |
 |---|---|---|
 | 1 | option B (always-on consumer thread) への pivot 是非 — v2 kill switch 状態で emit 不在が production 課題化するか | P5c-2 merge 後、ADR-008 D2-C `dirty_rects_aggregate` view の bench 結果を踏まえ Opus 判断 |
-| 2 | `benches/l1_capture.rs::bench_dirty_rect_60hz` を本 PR で enable するか別 PR (P5c-2-bench) で carry-over するか | 実装中の §3.4 判断、Opus に委譲 |
+| ~~2~~ | ~~`benches/l1_capture.rs::bench_dirty_rect_60hz` を本 PR で enable するか別 PR (P5c-2-bench) で carry-over するか~~ | **Resolved (Opus 判断、2026-05-01)**: 別 PR (`P5c-2-bench`) で carry-over 採用。理由: 親 §11.4 acceptance に bench 含まれず、本 PR scope を「emit + integration test」に絞る方が PR #94/#95 の Codex round 多発教訓 (sub-batch 切り効果) と整合 |
 | 3 | secondary monitor 対応 (親 plan §10 OQ #3) | 別 phase、production 需要があれば着手 |
-| 4 | `frame_index` を duplication thread ローカル AtomicU64 にするか、L1 ring 全体共通の monotonic counter にするか | §3.1 着手時、frame ベースの aggregation で view 側が global ordering を要求するなら ring 共通 counter (ADR-007 §4 の `event_id` 流用が現実的) |
+| ~~4~~ | ~~`frame_index` を duplication thread ローカル AtomicU64 にするか、L1 ring 全体共通の monotonic counter にするか~~ | **Resolved (Opus 判断、2026-05-01、§3.1 反映済)**: duplication thread ローカル `Arc<AtomicU64>` を採用、frame 単位採番 (1 frame で N rect が同 `frame_index` を共有)。理由: views-catalog §3.2 が `summary { count, total_area }` を frame 単位で aggregate する仕様で、`frame_index` は「同 frame の rect を束ねるキー」として必須、event_id (event 単位、ring 全体共通) では役割が違うため代替不可 |
 
 ---
 
