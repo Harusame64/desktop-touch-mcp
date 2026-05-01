@@ -45,14 +45,22 @@ pub struct UiaFocusChangedPayload {
     pub window_title: String,
 }
 
-/// Payload for `EventKind::DirtyRect` (=0). Emitted by P5c-2.
+/// Payload for `EventKind::DirtyRect` (=0). Emitted by P5c-2 from
+/// `src/duplication/thread.rs::acquire_dirty_rects`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)] // P5c-2 emit
 pub struct DirtyRectPayload {
     /// `[x, y, w, h]`, virtual-screen pixels.
     pub rect: [i32; 4],
     pub monitor_index: u32,
-    /// DXGI frame counter.
+    /// Frame counter shared by all rects emitted from the same DXGI frame.
+    /// Incremented only when the emit fork runs (i.e. `enable_l1_emit`
+    /// is on **and** the frame produced at least one dirty rect), so
+    /// gaps are expected: disabled emit, empty frames, and frames whose
+    /// rects landed via the napi pull path while emit was off all skip
+    /// the counter. Use this strictly for grouping rects from the same
+    /// DXGI frame (D2-C `dirty_rects_aggregate` view's per-frame
+    /// `summary { count, total_area }` key) — not as a count of total
+    /// DXGI frames produced by the duplication thread.
     pub frame_index: u64,
 }
 
