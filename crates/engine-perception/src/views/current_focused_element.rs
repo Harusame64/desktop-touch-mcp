@@ -46,9 +46,26 @@ use std::sync::{Arc, RwLock};
 use serde::{Deserialize, Serialize};
 
 use differential_dataflow::collection::vec::Collection as VecCollection;
+use differential_dataflow::operators::arrange::{Arranged, TraceAgent};
+use differential_dataflow::trace::implementations::ValSpine;
 
 use crate::input::FocusEvent;
 use crate::time::LogicalTime;
+
+/// Per-hwnd arrangement of `current_focused_element`'s reduce output.
+/// Other subgraphs in the same `worker.dataflow` closure (D2-E
+/// `predicted_post_state`) can borrow this to join against the focused
+/// element. The trace is built by `arrange_by_key` on the
+/// `Collection<'scope, LogicalTime, (hwnd, UiElementRef), isize>`
+/// produced by the per-hwnd reduce, so the spine key is `u64` and the
+/// value is `UiElementRef`.
+///
+/// `'scope` is the timely worker's scope lifetime; the `Arranged` value
+/// MUST stay inside the `worker.dataflow` closure that built it. Storing
+/// it in an outside struct is statically rejected by timely's lifetime
+/// model (Codex v2 P2-9, see `docs/adr-008-d2-e0-plan.md` §2.5).
+pub type CurrentFocusedElementArranged<'scope> =
+    Arranged<'scope, TraceAgent<ValSpine<u64, UiElementRef, LogicalTime, isize>>>;
 
 /// Output row of `current_focused_element`. Mirrors
 /// `docs/views-catalog.md` §3.1. The string mapping for
@@ -138,7 +155,7 @@ impl CurrentFocusedElementView {
     }
 
     /// Apply a diff observation. Internal — called from the timely
-    /// worker's inspect closure inside [`build`]. Public visibility is
+    /// worker's inspect closure inside [`build_current_focused_element`]. Public visibility is
     /// `pub(crate)` so tests inside the crate can drive the view
     /// directly without spinning a dataflow.
     pub(crate) fn apply_diff(&self, hwnd: u64, value: UiElementRef, diff: i64) {
@@ -168,22 +185,40 @@ impl CurrentFocusedElementView {
     }
 }
 
-/// Wire the `current_focused_element` operator graph onto `events`,
-/// updating the supplied [`CurrentFocusedElementView`] handle as the
-/// dataflow processes events.
+/// Wire the `current_focused_element` operator graph onto
+/// `focus_stream`, returning the per-hwnd arrangement and the
+/// reader-side view handle.
 ///
-/// Caller creates the view ahead of `worker.dataflow(...)` so the same
-/// handle can be returned out of the worker thread alongside the
-/// `InputSession`. `events` is consumed by the chained operator graph
-/// — DD's `Collection` is `Clone`, so callers who need it elsewhere
-/// should clone before passing it here.
-pub fn build<'scope>(
-    events: VecCollection<'scope, LogicalTime, FocusEvent, isize>,
-    view: CurrentFocusedElementView,
-) {
-    let view_for_inspect = view;
+/// Returns `(arranged, view)`:
+///   - `arranged` is the per-hwnd `Arranged` over the reduce output,
+///     bound to the `worker.dataflow` closure's `'scope` lifetime.
+///     Other subgraphs in the **same closure** (D2-E
+///     `predicted_post_state`) can borrow it; storing it in an outside
+///     struct is statically rejected by timely's lifetime model
+///     (Codex v2 P2-9, `docs/adr-008-d2-e0-plan.md` §2.5).
+///   - `view` is the `Arc<RwLock<...>>`-backed read handle; cloneable
+///     and returnable from the worker thread to outside callers.
+///
+/// The view handle is created **inside** this function (not passed in
+/// from the caller) so that `spawn_perception_worker`'s closure does
+/// not need to instantiate a `View::new()` ahead of time and clone it
+/// (D2-E0 sub-plan §2.1 / §2.3 wiring).
+///
+/// `focus_stream` is borrowed; the function clones internally to drive
+/// the reduce twice (once for inspect, once for `arrange_by_key`).
+/// DD's `Collection` is cheap to clone — it's a stream handle plus
+/// reference counts, not the underlying data.
+pub fn build_current_focused_element<'scope>(
+    focus_stream: &VecCollection<'scope, LogicalTime, FocusEvent, isize>,
+) -> (CurrentFocusedElementArranged<'scope>, CurrentFocusedElementView) {
+    let view = CurrentFocusedElementView::new();
+    let view_for_inspect = view.clone();
 
-    events
+    // Per-hwnd reduce: pick the (ts, ui_ref) with the largest ts among
+    // values whose accumulated diff is positive. Output is keyed by
+    // hwnd, value is `UiElementRef`. (D1-3 logic 不変)
+    let reduced = focus_stream
+        .clone()
         .map(|ev: FocusEvent| {
             let key = ev.hwnd;
             let ts: (u64, u32) = (ev.wallclock_ms, ev.sub_ordinal);
@@ -212,10 +247,20 @@ pub fn build<'scope>(
             if let Some((_, ui_ref)) = best {
                 output.push((ui_ref.clone(), 1));
             }
-        })
+        });
+
+    // 2-borrow shape: clone `reduced` for the inspect side; the
+    // original `reduced` flows into `arrange_by_key`. DD's Collection
+    // is Clone (cheap stream-handle clone). (D2-E0 sub-plan §7 R9
+    // mitigation, R3 option α verified compile-time.)
+    reduced
+        .clone()
         .inspect(move |((hwnd, ui_ref), _time, diff)| {
             view_for_inspect.apply_diff(*hwnd, ui_ref.clone(), *diff as i64);
         });
+
+    let arranged = reduced.arrange_by_key();
+    (arranged, view)
 }
 
 #[cfg(test)]

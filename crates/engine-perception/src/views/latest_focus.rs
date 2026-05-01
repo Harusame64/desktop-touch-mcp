@@ -112,7 +112,7 @@ impl LatestFocusView {
     }
 
     /// Apply a diff observation. Internal — called from the timely
-    /// worker's inspect closure inside [`build`]. `pub(crate)` so
+    /// worker's inspect closure inside [`build_latest_focus`]. `pub(crate)` so
     /// tests inside the crate can exercise the bookkeeping directly.
     pub(crate) fn apply_diff(&self, ts: LogicalTime, value: UiElementRef, diff: i64) {
         let mut g = self.inner.write().expect("LatestFocusView RwLock poisoned");
@@ -132,15 +132,27 @@ impl LatestFocusView {
     }
 }
 
-/// Wire the `latest_focus` operator graph onto `events`. Same
-/// caller-creates-view-ahead pattern as `current_focused_element::build`.
-pub fn build<'scope>(
-    events: VecCollection<'scope, LogicalTime, FocusEvent, isize>,
-    view: LatestFocusView,
-) {
-    let view_for_inspect = view;
+/// Wire the `latest_focus` operator graph onto `focus_stream`.
+/// Returns the read-side handle only — singleton-key reduce produces
+/// 1 row globally, no `arrange_by_key` exposure for downstream import
+/// (no D2-E consumer planned, see `docs/adr-008-d2-e0-plan.md` §1.3 +
+/// §2.2 + OQ #2 simplify decision).
+///
+/// The view handle is created **inside** this function (D2-E0 sub-plan
+/// §2.2 / §2.3 wiring), unlike the pre-D2-E0 `build(stream, view)`
+/// shape that took the view as a parameter.
+///
+/// `focus_stream` is borrowed; the function clones internally so that
+/// `current_focused_element` and `latest_focus` can share one input
+/// collection and fan out their reduces (D2-B §5.bis).
+pub fn build_latest_focus<'scope>(
+    focus_stream: &VecCollection<'scope, LogicalTime, FocusEvent, isize>,
+) -> LatestFocusView {
+    let view = LatestFocusView::new();
+    let view_for_inspect = view.clone();
 
-    events
+    focus_stream
+        .clone()
         .map(|ev: FocusEvent| {
             let ts = ev.logical_time();
             let value = UiElementRef::from_event(&ev);
@@ -171,6 +183,8 @@ pub fn build<'scope>(
             let (_unit, (ts, ui_ref)) = unit_and_value;
             view_for_inspect.apply_diff(ts.clone(), ui_ref.clone(), *diff as i64);
         });
+
+    view
 }
 
 #[cfg(test)]

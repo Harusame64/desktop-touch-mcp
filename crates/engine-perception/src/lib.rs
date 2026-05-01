@@ -18,6 +18,10 @@ pub mod input;
 pub mod time;
 
 /// Materialised views over the L1 input stream. D1-3 lands
-/// `current_focused_element`; D2 onwards adds more views.
-/// See `docs/views-catalog.md`.
+/// `current_focused_element`; D2-B-1 adds `latest_focus`; D2-E0
+/// (this PR) unifies the build API to
+/// `build_<view>(&focus_stream) -> (Arranged, View)` so subgraphs in
+/// the same `worker.dataflow` closure can borrow per-key arrangements
+/// (D2-E `predicted_post_state`, S2 `dirty_rects_aggregate`).
+/// See `docs/views-catalog.md` + `docs/adr-008-d2-e0-plan.md`.
 pub mod views;
