@@ -216,7 +216,10 @@ L2 (timely + DD) と L1 capture worker は **dedicated thread**。Node.js libuv 
 
 | KPI | 目標 |
 |---|---|
-| view 更新 latency p99 | < 1ms |
+| view operator step latency (DD reduce → inspect → RwLock write、純計算下限) p99 | < 1ms |
+| view lookup latency (steady-state read) p99 | < 1ms |
+| view release-to-view latency (event push → caller observable view fetch) p99 | ≈ `shift_ms` + idle-advance cycle (構造的下限、N3 partial-order contract の必然帰結、views-catalog §3.1 PR-2 SLO 4 種分解、Opus 諮問判断 2026-05-02 §5) |
+| desktop_state MCP round-trip latency (production 観測 SLO) p99 | < 10ms |
 | dry-run preview latency p99 | < 50ms |
 | GPU op throughput (Tier 3 動作時) | change_fraction で 13.4x 以上 (現行 PoC ベース) |
 | cyclic max iter | 100 (default、超過時 abort + warning) |
@@ -439,7 +442,10 @@ L1 から L5 へエラーが伝播する経路が **typed event として明示*
 | L2 | materialize p99 < 100μs | 本書 §3.4 |
 | L2 | `state_at(t)` p99 < 5ms | 本書 §3.4 (ADR-008 D3) |
 | L2 | arrangement memory < 512MB (default) | 本書 §3.4 |
-| L3 | view 更新 p99 < 1ms | 本書 §4.4 (ADR-008 D1) |
+| L3 | view operator step p99 < 1ms (DD 純計算下限) | 本書 §4.4 (ADR-008 D1) + views-catalog §3.1 (PR-2 SLO 4 種分解) |
+| L3 | view lookup p99 < 1ms (steady-state read) | views-catalog §3.1 (PR-2 SLO 4 種分解) |
+| L3 | view release-to-view p99 ≈ shift_ms + idle-advance cycle (N3 partial-order contract の構造的下限) | views-catalog §3.1 (PR-2 SLO 4 種分解、Opus 諮問判断 2026-05-02) |
+| L3 | desktop_state MCP round-trip p99 < 10ms (production 観測 SLO) | views-catalog §3.1 (PR-2 SLO 4 種分解) + benches/README.md §2.3 D2-B-4/5 |
 | L3 | dry-run latency p99 < 50ms | 本書 §4.4 (ADR-008 D5) |
 | L3 | cyclic 無限ループ自動検出 | 本書 §4.4 (ADR-008 D4) |
 | L4 | envelope assembly p99 < 5ms | 本書 §5.4 |
