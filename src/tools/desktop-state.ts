@@ -16,7 +16,7 @@ import { listRecentTargetKeys } from "../engine/perception/target-timeline.js";
 import { evaluateInTab } from "../engine/cdp-bridge.js";
 import { getCdpPort } from "../utils/desktop-config.js";
 import { getFocusedAndPointInfo } from "../engine/uia-bridge.js";
-import { nativeViewFocus } from "../engine/native-engine.js";
+import { nativeViewFocus, nativeL1 } from "../engine/native-engine.js";
 import type {
   NativeFocusedElement,
   NativeUiaFocusInfo,
@@ -24,7 +24,15 @@ import type {
 import { CHROMIUM_TITLE_RE } from "./workspace.js";
 import { getSlotSnapshot } from "../engine/perception/hot-target-cache.js";
 import type { AttentionState } from "../engine/perception/types.js";
-import { makeEnvelopeAware, withEnvelopeIncludeSchema } from "./_envelope.js";
+import {
+  makeQueryWrapper,
+  withEnvelopeIncludeSchema,
+  buildCausedBy,
+  buildBasedOn,
+  type CausedByShape,
+  type BasedOnShape,
+  type ViewSnapshot,
+} from "./_envelope.js";
 
 const _defaultPort = getCdpPort();
 
@@ -609,15 +617,144 @@ const fetchEnvelopeMeta = async () => {
 export const desktopStateRegistrationSchema = withEnvelopeIncludeSchema(desktopStateSchema);
 
 /**
- * Envelope-aware `desktop_state` handler. Wraps `desktopStateHandler`
- * with `makeEnvelopeAware` (always-envelope SSOT + post-flatten compat
- * hoist + L1 event wallclock `as_of` source). Used by both
- * `server.tool` and `run_macro` registration sites (PR #112 Opus P1-1).
+ * S5 caused_by + based_on projector for `desktop_state` (sub-plan §2.5
+ * production wiring). Triggered only when `include=["causal"]` opt-in.
+ *
+ * Sentinel guard runtime path (Round 3 P1 Opus + Codex 重複 fix): when
+ * `getSessionId` returns `"multi:disabled"` (multi-LLM-client detected),
+ * immediately return `undefined` — cross-session caused_by leak prevented
+ * before history buffer lookup.
+ *
+ * ViewSnapshot build:
+ *   - focus = `viewGetFocused()` (S3-2 既存) → name + hwnd
+ *   - dirtyRectsByMonitor = `viewGetDirtyRects(monitor_index)` per known
+ *     monitor (S2 既存); single-monitor-only fallback when monitor enum
+ *     unavailable (best-effort)
+ *   - latestEventId = `l1GetCaptureStats().eventIdHighWater` (既存 OQ #5
+ *     resolve、新 binding 不要)
+ *   - queryWallclockMs = `Date.now()` at projector invocation
  */
-export const desktopStateRegistrationHandler = makeEnvelopeAware(
+const desktopStateCausedByProjector = async (
+  _args: unknown,
+  sessionId: string,
+): Promise<{ causedBy?: CausedByShape; basedOn?: BasedOnShape } | undefined> => {
+  // Round 3 P1 (Opus + Codex 重複) sentinel guard: multi-session detect → skip
+  if (sessionId === "multi:disabled") return undefined;
+
+  // L3 latest_focus view → focus delta projection input
+  let focus: { hwnd: bigint | null; elementName: string | null } | null = null;
+  try {
+    if (nativeViewFocus && typeof nativeViewFocus.viewGetFocused === "function") {
+      const f = nativeViewFocus.viewGetFocused();
+      if (f) {
+        focus = { hwnd: null, elementName: f.name ?? null };
+      }
+    }
+  } catch {
+    // view unavailable — caused_by reflects "no focus observed" via produced_changes
+  }
+
+  // L3 dirty_rects_aggregate per-monitor count, monitor_index 維持 (PR #102 同型)
+  const dirtyRectsByMonitor = new Map<number, number>();
+  try {
+    if (nativeViewFocus && typeof nativeViewFocus.viewGetDirtyRects === "function") {
+      // Best-effort: enumerate primary + secondary monitors via enumMonitors,
+      // fall back to single primary (monitor_index=0) when enumeration fails.
+      let monitorIndices: number[] = [0];
+      try {
+        const monitors = enumMonitors();
+        if (monitors && monitors.length > 0) {
+          monitorIndices = monitors.map((_, i) => i);
+        }
+      } catch {
+        // enumMonitors failed — keep [0] fallback
+      }
+      for (const monitorIdx of monitorIndices) {
+        try {
+          const rects = nativeViewFocus.viewGetDirtyRects(monitorIdx);
+          if (rects && rects.latest && rects.latest.count !== undefined) {
+            dirtyRectsByMonitor.set(monitorIdx, Number(rects.latest.count));
+          }
+        } catch {
+          // per-monitor lookup failed — skip this monitor
+        }
+      }
+    }
+  } catch {
+    // dirty rect view unavailable — caused_by produced_changes will lack dirty_rects entries
+  }
+
+  // L1 ring 末尾 event_id (OQ #5 既存 binding reuse、新規不要)
+  let latestEventId: bigint | undefined;
+  try {
+    if (nativeL1 && typeof nativeL1.l1GetCaptureStats === "function") {
+      const stats = nativeL1.l1GetCaptureStats();
+      latestEventId = stats.eventIdHighWater;
+    }
+  } catch {
+    // L1 stats unavailable — frontier check skipped, history buffer wallclock
+    // alone determines window (degraded mode)
+  }
+
+  const snapshot: ViewSnapshot = {
+    focus,
+    dirtyRectsByMonitor,
+    latestEventId,
+    queryWallclockMs: Date.now(),
+  };
+  return {
+    causedBy: buildCausedBy(sessionId, snapshot),
+    basedOn: buildBasedOn(sessionId, snapshot),
+  };
+};
+
+/**
+ * S5 sessionId resolver for `desktop_state` (sub-plan §1.1 E-2 + §2.5).
+ *
+ * Stub helpers `getMcpTransportSessionId()` returns `undefined` and
+ * `isSingleSessionPrototype()` returns `true` — these are pin-points for
+ * ADR-011 to finalize. Current S5 trunk skeleton ships single-LLM-client
+ * prototype only; multi-LLM-client deploy requires ADR-011 transport
+ * context wiring before the `getMcpTransportSessionId()` stub is replaced.
+ */
+const getMcpTransportSessionId = (): string | undefined => undefined;
+const isSingleSessionPrototype = (): boolean => true;
+
+const desktopStateGetSessionId = (_args: unknown): string => {
+  const transportSessionId = getMcpTransportSessionId();
+  if (transportSessionId !== undefined) return transportSessionId;
+  if (!isSingleSessionPrototype()) {
+    // Multi-session detected → sentinel disables caused_by injection
+    return "multi:disabled";
+  }
+  return "default"; // single-LLM-client prototype (S5 trunk scope)
+};
+
+/**
+ * Envelope-aware `desktop_state` handler. Wraps `desktopStateHandler`
+ * with `makeQueryWrapper` (S4 query-axis wrapper extended for S5 with
+ * `include=["causal"]` opt-in causedByProjector). Used by both
+ * `server.tool` and `run_macro` registration sites (PR #112 Opus P1-1).
+ *
+ * S5 wiring (sub-plan §2.5):
+ *   - `getSessionId` resolves transport session → `"default"` fallback or
+ *     `"multi:disabled"` sentinel (sub-plan §1.1 E-2)
+ *   - `causedByProjector` builds ViewSnapshot from existing napi bindings
+ *     (no new binding per OQ #5 resolve), invokes `buildCausedBy` +
+ *     `buildBasedOn` in parallel, returns `{ causedBy, basedOn }` (or
+ *     `undefined` on sentinel guard)
+ *   - When `include` does NOT contain `"causal"`, the projector is not
+ *     invoked — existing raw client compat default opt-out (sub-plan §3.6
+ *     G5-S5-7)
+ */
+export const desktopStateRegistrationHandler = makeQueryWrapper(
   desktopStateHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
   "desktop_state",
-  { fetchMeta: fetchEnvelopeMeta }
+  {
+    fetchMeta: fetchEnvelopeMeta,
+    getSessionId: desktopStateGetSessionId,
+    causedByProjector: desktopStateCausedByProjector,
+  }
 );
 
 export function registerDesktopStateTools(server: McpServer): void {

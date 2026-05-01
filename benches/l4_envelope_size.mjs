@@ -216,10 +216,93 @@ for (const { label, envelope } of FAILURE_SCENARIOS) {
   console.log(`  ${pad(label, 16)} ${fmt(size)} bytes   ${ok ? "ok" : "OVER"}`);
 }
 
+// ── S5 causal include envelope (sub-plan §3.7 G5 #3 + ADR-010 §5.6.1 +1KB) ──
+const ENVELOPE_CAUSAL_SIZE_THRESHOLD_BYTES = 2 * 1024;
+console.log();
+console.log(`Causal envelope (S5 caused_by + based_on, SLO ≤ ${ENVELOPE_CAUSAL_SIZE_THRESHOLD_BYTES} bytes — ADR-010 §5.6.1 causal include +1KB):`);
+
+// 3 causal scenarios per sub-plan §3.7 S5-7
+const CAUSAL_MINIMAL_CAUSED_BY = {
+  your_last_action: "desktop_act({})",
+  tool_call_id: "default:1",
+  elapsed_ms: 50,
+  produced_changes: [],
+};
+const CAUSAL_MINIMAL_BASED_ON = {
+  events: [],
+  sources: [],
+};
+
+const CAUSAL_TYPICAL_CAUSED_BY = {
+  your_last_action: "desktop_act({\"action\":\"click\",\"x\":540,\"y\":320})",
+  tool_call_id: "session-abc-123:7",
+  elapsed_ms: 87,
+  produced_changes: [
+    "focus: → input-name",
+    "dirty_rects[monitor=0]: 3",
+    "dirty_rects[monitor=1]: 1",
+  ],
+};
+const CAUSAL_TYPICAL_BASED_ON = {
+  events: ["100", "101"],
+  sources: ["UIA", "DXGI"],
+};
+
+// Max scenario: args_summary at the 512-byte truncation cap
+const CAUSAL_MAX_ARGS = "x".repeat(509) + "…";
+const CAUSAL_MAX_CAUSED_BY = {
+  your_last_action: `desktop_act(${CAUSAL_MAX_ARGS})`,
+  tool_call_id: "long-session-id-with-uuid-prefix:99999",
+  elapsed_ms: 1234,
+  produced_changes: [
+    "focus: → very-long-element-name-that-exceeds-typical-bounds",
+    "dirty_rects[monitor=0]: 47",
+    "dirty_rects[monitor=1]: 12",
+  ],
+};
+const CAUSAL_MAX_BASED_ON = {
+  events: ["18446744073709551610", "18446744073709551611"], // u64 max-ish decimal strings
+  sources: ["UIA", "DXGI"],
+};
+
+const CAUSAL_SCENARIOS = [
+  {
+    label: "causal_minimal",
+    envelope: buildEnvelope(SCENARIO_TYPICAL, {
+      asOfWallclockMs: FRESH_WALLCLOCK,
+      causedBy: CAUSAL_MINIMAL_CAUSED_BY,
+      basedOn: CAUSAL_MINIMAL_BASED_ON,
+    }),
+  },
+  {
+    label: "causal_typical",
+    envelope: buildEnvelope(SCENARIO_TYPICAL, {
+      asOfWallclockMs: FRESH_WALLCLOCK,
+      causedBy: CAUSAL_TYPICAL_CAUSED_BY,
+      basedOn: CAUSAL_TYPICAL_BASED_ON,
+    }),
+  },
+  {
+    label: "causal_max",
+    envelope: buildEnvelope(SCENARIO_TYPICAL, {
+      asOfWallclockMs: FRESH_WALLCLOCK,
+      causedBy: CAUSAL_MAX_CAUSED_BY,
+      basedOn: CAUSAL_MAX_BASED_ON,
+    }),
+  },
+];
+let causalSloOk = true;
+for (const { label, envelope } of CAUSAL_SCENARIOS) {
+  const size = envelopePayloadSizeBytes(envelope);
+  const ok = size <= ENVELOPE_CAUSAL_SIZE_THRESHOLD_BYTES;
+  if (!ok) causalSloOk = false;
+  console.log(`  ${pad(label, 16)} ${fmt(size)} bytes   ${ok ? "ok" : "OVER"}   confidence=${envelope.confidence}`);
+}
+
 console.log();
 const overSlo = results.filter((r) => !r.sloOk);
-if (overSlo.length === 0 && failureSloOk) {
-  console.log(`✓ All ${SCENARIOS.length} scenarios within ${ENVELOPE_MINIMAL_SIZE_THRESHOLD_BYTES}-byte SLO + failure envelope ≤ ${ENVELOPE_FAILURE_SIZE_THRESHOLD_BYTES} bytes (S4 G3 #4).`);
+if (overSlo.length === 0 && failureSloOk && causalSloOk) {
+  console.log(`✓ All ${SCENARIOS.length} scenarios within ${ENVELOPE_MINIMAL_SIZE_THRESHOLD_BYTES}-byte SLO + failure envelope ≤ ${ENVELOPE_FAILURE_SIZE_THRESHOLD_BYTES} bytes (S4 G3 #4) + causal envelope ≤ ${ENVELOPE_CAUSAL_SIZE_THRESHOLD_BYTES} bytes (S5 G5 #3).`);
   process.exit(0);
 }
 if (overSlo.length > 0) {
@@ -230,6 +313,9 @@ if (overSlo.length > 0) {
 }
 if (!failureSloOk) {
   console.log(`✗ Failure envelope exceeded the ${ENVELOPE_FAILURE_SIZE_THRESHOLD_BYTES}-byte SLO (ADR-010 §5.6.1, sub-plan §3.7 G3 #4).`);
+}
+if (!causalSloOk) {
+  console.log(`✗ Causal envelope exceeded the ${ENVELOPE_CAUSAL_SIZE_THRESHOLD_BYTES}-byte SLO (ADR-010 §5.6.1 causal include +1KB, sub-plan §3.7 S5-7 G5 #3).`);
 }
 console.log();
 console.log("These shapes will trigger `confidence: degraded` at runtime.");
