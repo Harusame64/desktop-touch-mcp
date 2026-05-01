@@ -506,17 +506,39 @@ pub fn spawn_perception_worker() -> (
     let processed_count = Arc::new(AtomicU64::new(0));
     let processed_clone = Arc::clone(&processed_count);
 
-    let view = CurrentFocusedElementView::new();
-    let latest_view = LatestFocusView::new();
-    let view_for_worker = view.clone();
-    let latest_view_for_worker = latest_view.clone();
+    // D2-E0: views are created inside the `worker.dataflow` closure by
+    // `build_*` and returned through a (sender, view, latest_view)
+    // bundle out of the worker thread (see `worker_loop` for the
+    // `oneshot`-style channel). The parent-side `View::new()` +
+    // `view.clone()` duplication that the pre-D2-E0 wiring did is
+    // now removed — `build_current_focused_element` /
+    // `build_latest_focus` are the single source of view construction
+    // (`docs/adr-008-d2-e0-plan.md` §2.3, §3.3).
+    //
+    // Why a oneshot channel instead of changing `worker.dataflow`'s
+    // closure return type to a 3-tuple: timely's `worker.dataflow`
+    // takes a `FnOnce(&mut Child<Worker, T>) -> R` and the closure's
+    // return value `R` is the dataflow handle (typed as
+    // `InputSession` in the existing shape). Adding view handles to
+    // `R` would require us to pin a custom return shape that crosses
+    // the timely API surface; instead we ship the view handles via a
+    // `crossbeam_channel::bounded(1)` *inside* the spawned worker
+    // thread, then receive them on the parent before returning.
+    // (D2-E0 sub-plan §8 OQ #3 option α' adaptation — Opus +
+    // Codex review explicitly authorised this fallback if option α
+    // direct return failed.)
+    let (view_tx, view_rx) = bounded::<(CurrentFocusedElementView, LatestFocusView)>(1);
 
     let join = thread::Builder::new()
         .name("l3-perception".into())
         .spawn(move || {
-            worker_loop(rx, processed_clone, view_for_worker, latest_view_for_worker)
+            worker_loop(rx, processed_clone, view_tx)
         })
         .expect("spawn l3-perception thread");
+
+    let (view, latest_view) = view_rx
+        .recv()
+        .expect("perception worker must publish view handles before processing cmds");
 
     let worker = PerceptionWorker {
         join: Mutex::new(Some(join)),
@@ -596,8 +618,7 @@ pub fn spawn_perception_worker() -> (
 fn worker_loop(
     rx: Receiver<Cmd>,
     processed: Arc<AtomicU64>,
-    view: CurrentFocusedElementView,
-    latest_view: LatestFocusView,
+    view_tx: crossbeam_channel::Sender<(CurrentFocusedElementView, LatestFocusView)>,
 ) {
     let shift_ms = watermark_shift_ms();
     let idle_timeout = Duration::from_millis(idle_recv_timeout_ms());
@@ -610,19 +631,40 @@ fn worker_loop(
     use timely::order::PartialOrder;
 
     timely::execute_directly(move |worker| {
-        // D1-3: build the dataflow with the input collection +
-        // `current_focused_element` view wired in. The InputSession
-        // returned out of the closure is the seam through which the
-        // cmd loop below feeds events.
+        // D2-E0: views are constructed inside the `worker.dataflow`
+        // closure by `build_*` and shipped out via `view_tx` to the
+        // parent thread. The `Arranged<'scope, ...>` returned by
+        // `build_current_focused_element` is `_`-dropped inside the
+        // closure — its `'scope` lifetime is bound to the dataflow
+        // and cannot escape (Codex v2 P2-9 / sub-plan §2.5).
+        // S2 (D2-C) and D2-E will consume the arranged inside the
+        // **same** closure for `dirty_rects_aggregate` /
+        // `predicted_post_state` subgraphs.
         let mut input: InputSession<LogicalTime, FocusEvent, isize> =
             worker.dataflow::<LogicalTime, _, _>(|scope| {
                 let (input, stream) = scope.new_collection::<FocusEvent, isize>();
-                // Both views consume the same input stream — DD's
-                // `Collection` is `Clone`, so each `build` call
-                // chains its own operator path off the same source
-                // (D2-B §5.bis: shared input, fanned-out reduces).
-                current_focused_element::build(stream.clone(), view.clone());
-                latest_focus::build(stream, latest_view.clone());
+                // Both views borrow the same input stream — DD's
+                // `Collection` is `Clone`, and each `build_*`
+                // function clones internally to fan out its own
+                // operator path off the source (D2-B §5.bis: shared
+                // input, fanned-out reduces).
+                let (cfe_arranged, cfe_view) =
+                    current_focused_element::build_current_focused_element(&stream);
+                let latest_view = latest_focus::build_latest_focus(&stream);
+                // `cfe_arranged` is held inside the closure for S2
+                // (`dirty_rects_aggregate`) and D2-E
+                // (`predicted_post_state`) consumers; this S1 land
+                // has no consumer yet, so we silence the unused
+                // binding warning. Storing it in an outside struct
+                // is statically rejected by timely's lifetime model.
+                let _ = cfe_arranged;
+                // Ship the view read handles to the parent thread.
+                // The parent's `view_rx.recv()` blocks until this
+                // send lands, so callers of `spawn_perception_worker`
+                // observe an initialised pipeline.
+                view_tx
+                    .send((cfe_view, latest_view))
+                    .expect("parent must hold view_rx until spawn returns");
                 input
             });
 
