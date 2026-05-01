@@ -86,6 +86,7 @@ use differential_dataflow::input::{Input, InputSession};
 
 use crate::time::LogicalTime;
 use crate::views::current_focused_element::{self, CurrentFocusedElementView};
+use crate::views::dirty_rects_aggregate::{self, DirtyRectsAggregateView};
 use crate::views::latest_focus::{self, LatestFocusView};
 
 /// Default per-worker command-channel capacity. Sized for UIA focus
@@ -165,6 +166,75 @@ impl FocusEvent {
     }
 }
 
+/// A single dirty rectangle from a DXGI frame (S2 D2-C input shape).
+///
+/// `[x, y, width, height]` in virtual-screen pixels — same coordinate
+/// space as `DirtyRectPayload.rect: [i32; 4]` (`src/l1_capture/payload.rs:53`).
+/// The S2 trunk view (`dirty_rects_aggregate`) only counts rects per
+/// frame and does NOT aggregate the geometry; the struct is preserved
+/// so expansion-phase work can compute area / union without an input
+/// shape change.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct Rect {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+impl Rect {
+    /// Build a `Rect` from the L1 `DirtyRectPayload.rect: [i32; 4]`
+    /// shape (`[x, y, w, h]`). Used by the bridge's `dirty_rect_pump`
+    /// after bincode-decoding the payload.
+    pub fn from_array(arr: [i32; 4]) -> Self {
+        Self {
+            x: arr[0],
+            y: arr[1],
+            width: arr[2],
+            height: arr[3],
+        }
+    }
+}
+
+/// A dirty-rect event received from the root-side bridge after
+/// decoding an L1 `DirtyRectPayload` (S2 D2-C, `docs/adr-008-d2-c-plan.md`
+/// §2.1).
+///
+/// **`source_event_id` is the L1 ring's `event_id`** (北極星 N1) and
+/// must never be dropped on the L1→L3 path, same invariant as
+/// `FocusEvent.source_event_id`.
+///
+/// `wallclock_ms` / `sub_ordinal` are **event-time as data** (北極星 N2);
+/// the worker's frontier advances on a watermark derived from the
+/// largest seen wallclock minus a shift, identical to `FocusEvent`.
+///
+/// `monitor_index` is preserved through the entire path (CLAUDE.md §3.2,
+/// PR #102 教訓): the per-output `DuplicationHandle::spawn(output_index)`
+/// emit fork stamps the index, and the S2 view keys `(monitor_index,
+/// frame_index) -> count` to avoid the same-frame-index collision across
+/// monitors.
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct DirtyRectEvent {
+    /// L1 `event_id` of the originating push (北極星 N1).
+    pub source_event_id: u64,
+    pub wallclock_ms: u64,
+    pub sub_ordinal: u32,
+    pub timestamp_source: u8,
+    pub monitor_index: u32,
+    pub frame_index: u64,
+    /// Trunk: kept for future expansion of the view; not aggregated yet
+    /// (count-only contract spike). Expansion phase will use this for
+    /// `Vec<Rect>` aggregation + union / total_area summary.
+    pub rect: Rect,
+}
+
+impl DirtyRectEvent {
+    /// Convenience: build the dataflow logical time for this event.
+    pub fn logical_time(&self) -> LogicalTime {
+        LogicalTime::new(self.wallclock_ms, self.sub_ordinal)
+    }
+}
+
 /// The seam through which the root-side bridge pushes decoded L1
 /// events into this crate.
 ///
@@ -178,15 +248,29 @@ pub trait L1Sink: Send + Sync {
     /// Push a focus-changed event.
     fn push_focus(&self, event: FocusEvent);
 
-    // P5c-2 / P5c-3 / P5c-4 will extend this trait with
-    // `push_dirty_rect`, `push_window_change`, `push_scroll`. They
-    // are deliberately omitted in P5c-0b/D1-2 to keep the contract
-    // small until the corresponding L1 emitters exist.
+    /// Push a dirty-rect event (S2 D2-C count-only contract spike,
+    /// `docs/adr-008-d2-c-plan.md` §3.2).
+    ///
+    /// Default impl is a no-op so existing test-only L1Sink
+    /// implementations (`CaptureSink`, `TeeSink`) keep compiling
+    /// without churn — only production wiring (`FocusInputHandle`) and
+    /// dedicated dirty-rect tests need to override.
+    fn push_dirty_rect(&self, _event: DirtyRectEvent) {}
+
+    // P5c-3 / P5c-4 will extend this trait with `push_window_change`,
+    // `push_scroll`. They remain omitted until the corresponding L1
+    // emitters exist (§3.bis ledger L2/L3/L4 carry-over).
 }
 
 /// Internal command sent from `FocusInputHandle` to the worker.
 enum Cmd {
     PushFocus(FocusEvent),
+    /// S2 D2-C: dirty rect event from `dirty_rect_pump`. Variant
+    /// preserves the same Cmd channel so worker_loop's batch drain +
+    /// max-time release tuning (D2-A v3.8) covers both event types
+    /// without per-source channels (`docs/adr-008-d2-c-plan.md` §2.6
+    /// "single-worker / multi-cmd" model).
+    PushDirtyRect(DirtyRectEvent),
     Shutdown,
     /// Test-only: block the worker thread for the given duration
     /// before processing the next cmd. Used by the production
@@ -219,6 +303,15 @@ impl L1Sink for FocusInputHandle {
         //   means this should never happen in practice; if it did,
         //   blocking is correct (we'd lose ordering otherwise).
         let _ = self.tx.send(Cmd::PushFocus(event));
+    }
+
+    fn push_dirty_rect(&self, event: DirtyRectEvent) {
+        // S2 D2-C: same channel as PushFocus, same failure modes.
+        // Worker_loop drains the unified `Cmd` queue with the D2-A
+        // batch-drain + watermark-shift release tuning so dirty-rect
+        // events get the same partial-order / latency treatment as
+        // focus events.
+        let _ = self.tx.send(Cmd::PushDirtyRect(event));
     }
 }
 
@@ -501,6 +594,7 @@ pub fn spawn_perception_worker() -> (
     FocusInputHandle,
     CurrentFocusedElementView,
     LatestFocusView,
+    DirtyRectsAggregateView,
 ) {
     let (tx, rx) = bounded::<Cmd>(CMD_CHANNEL_CAPACITY);
     let processed_count = Arc::new(AtomicU64::new(0));
@@ -539,7 +633,11 @@ pub fn spawn_perception_worker() -> (
     // and the parent observes the published view handles via `recv`
     // once it gets there — a cleaner two-phase initialisation where
     // worker dataflow setup is independent of parent recv ordering.
-    let (view_tx, view_rx) = bounded::<(CurrentFocusedElementView, LatestFocusView)>(1);
+    let (view_tx, view_rx) = bounded::<(
+        CurrentFocusedElementView,
+        LatestFocusView,
+        DirtyRectsAggregateView,
+    )>(1);
 
     let join = thread::Builder::new()
         .name("l3-perception".into())
@@ -548,7 +646,7 @@ pub fn spawn_perception_worker() -> (
         })
         .expect("spawn l3-perception thread");
 
-    let (view, latest_view) = view_rx
+    let (view, latest_view, dirty_rects_view) = view_rx
         .recv()
         .expect("perception worker must publish view handles before processing cmds");
 
@@ -558,7 +656,7 @@ pub fn spawn_perception_worker() -> (
         processed_count,
     };
     let handle = FocusInputHandle { tx };
-    (worker, handle, view, latest_view)
+    (worker, handle, view, latest_view, dirty_rects_view)
 }
 
 /// Body of the timely worker thread (D2-A revised tuning).
@@ -630,7 +728,11 @@ pub fn spawn_perception_worker() -> (
 fn worker_loop(
     rx: Receiver<Cmd>,
     processed: Arc<AtomicU64>,
-    view_tx: crossbeam_channel::Sender<(CurrentFocusedElementView, LatestFocusView)>,
+    view_tx: crossbeam_channel::Sender<(
+        CurrentFocusedElementView,
+        LatestFocusView,
+        DirtyRectsAggregateView,
+    )>,
 ) {
     let shift_ms = watermark_shift_ms();
     let idle_timeout = Duration::from_millis(idle_recv_timeout_ms());
@@ -643,56 +745,47 @@ fn worker_loop(
     use timely::order::PartialOrder;
 
     timely::execute_directly(move |worker| {
-        // D2-E0: views are constructed inside the `worker.dataflow`
-        // closure by `build_*` and shipped out via `view_tx` to the
-        // parent thread. The `Arranged<'scope, ...>` returned by
-        // `build_current_focused_element` is `_`-dropped inside the
-        // closure — its `'scope` lifetime is bound to the dataflow
-        // and cannot escape (Codex v2 P2-9 / sub-plan §2.5).
-        // S2 (D2-C) and D2-E will consume the arranged inside the
-        // **same** closure for `dirty_rects_aggregate` /
-        // `predicted_post_state` subgraphs.
-        let mut input: InputSession<LogicalTime, FocusEvent, isize> =
-            worker.dataflow::<LogicalTime, _, _>(|scope| {
-                let (input, stream) = scope.new_collection::<FocusEvent, isize>();
-                // Both views borrow the same input stream — DD's
-                // `Collection` is `Clone`, and each `build_*`
-                // function clones internally to fan out its own
-                // operator path off the source (D2-B §5.bis: shared
-                // input, fanned-out reduces).
-                let (cfe_arranged, cfe_view) =
-                    current_focused_element::build_current_focused_element(&stream);
-                let latest_view = latest_focus::build_latest_focus(&stream);
-                // `cfe_arranged` is held inside the closure for S2
-                // (`dirty_rects_aggregate`) and D2-E
-                // (`predicted_post_state`) consumers; this S1 land
-                // has no consumer yet, so we silence the unused
-                // binding warning. Storing it in an outside struct
-                // is statically rejected by timely's lifetime model.
-                //
-                // **S2 entrypoint marker** — when D2-C impl PR adds
-                // `dirty_rects_aggregate`, this `let _ =` line is the
-                // exact site to remove and replace with the
-                // arrangement-borrowing call (S1 unified signature
-                // pattern: `build_*(focus_stream)` takes no `scope`
-                // argument because `VecCollection<'scope, ...>` carries
-                // the scope lifetime):
-                //   let (_dirty_arranged, dirty_view) =
-                //       dirty_rects_aggregate::build_dirty_rects_aggregate(
-                //           &cfe_arranged, &dirty_rect_stream);
-                // (Or however D2-C's call site shape lands; the point
-                // is `cfe_arranged` flows from a dropped binding into
-                // a borrow into the next subgraph.)
-                let _ = cfe_arranged;
-                // Ship the view read handles to the parent thread.
-                // The parent's `view_rx.recv()` blocks until this
-                // send lands, so callers of `spawn_perception_worker`
-                // observe an initialised pipeline.
-                view_tx
-                    .send((cfe_view, latest_view))
-                    .expect("parent must hold view_rx until spawn returns");
-                input
-            });
+        // D2-E0 + S2 D2-C: views are constructed inside the
+        // `worker.dataflow` closure by `build_*` and shipped out via
+        // `view_tx` to the parent thread. The `Arranged<'scope, ...>`
+        // returned by `build_*` is `_`-dropped inside the closure —
+        // its `'scope` lifetime is bound to the dataflow and cannot
+        // escape (Codex v2 P2-9 / S1 sub-plan §2.5).
+        //
+        // Two `InputSession`s share this dataflow: one for
+        // `FocusEvent` (D1-3 + D2-B-1 views) and one for
+        // `DirtyRectEvent` (S2 D2-C view). They share the cmd loop
+        // outside the closure but feed independent collections.
+        let (mut input, mut dirty_input): (
+            InputSession<LogicalTime, FocusEvent, isize>,
+            InputSession<LogicalTime, DirtyRectEvent, isize>,
+        ) = worker.dataflow::<LogicalTime, _, _>(|scope| {
+            let (input, focus_stream) = scope.new_collection::<FocusEvent, isize>();
+            let (dirty_input, dirty_rect_stream) =
+                scope.new_collection::<DirtyRectEvent, isize>();
+            // Focus views (D1-3 + D2-B-1) — share `focus_stream`.
+            let (cfe_arranged, cfe_view) =
+                current_focused_element::build_current_focused_element(&focus_stream);
+            let latest_view = latest_focus::build_latest_focus(&focus_stream);
+            // Dirty rect aggregate (S2 D2-C count-only) — feeds off
+            // `dirty_rect_stream`, S1 unified signature pattern
+            // mechanical copy.
+            let (dirty_arranged, dirty_view) =
+                dirty_rects_aggregate::build_dirty_rects_aggregate(&dirty_rect_stream);
+            // Both arrangeds drop at scope exit. D2-E
+            // `predicted_post_state` will consume `cfe_arranged` here
+            // when added.
+            let _ = cfe_arranged;
+            let _ = dirty_arranged;
+            // Ship the three view read handles to the parent thread.
+            // The parent's `view_rx.recv()` blocks until this send
+            // lands, so callers of `spawn_perception_worker` observe
+            // an initialised pipeline.
+            view_tx
+                .send((cfe_view, latest_view, dirty_view))
+                .expect("parent must hold view_rx until spawn returns");
+            (input, dirty_input)
+        });
 
         let mut latest_wallclock_ms: u64 = 0;
         let mut current_watermark: LogicalTime = LogicalTime::new(0, 0);
@@ -711,6 +804,11 @@ fn worker_loop(
                 Ok(cmd) => batch.push(cmd),
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                     // Idle frontier advance (PR #91 P2 semantics).
+                    // S2 D2-C: advance BOTH input sessions in lockstep
+                    // so the focus and dirty-rect dataflows share one
+                    // monotone watermark — N3 partial-order contract
+                    // doesn't admit per-source frontiers without a
+                    // bigger redesign.
                     if let Some((anchor_wc, anchor_inst)) = last_event_anchor {
                         let elapsed = anchor_inst.elapsed().as_millis() as u64;
                         let projected = anchor_wc.saturating_add(elapsed);
@@ -721,8 +819,10 @@ fn worker_loop(
                                 && current_watermark != new_wm
                             {
                                 current_watermark = new_wm.clone();
-                                input.advance_to(new_wm);
+                                input.advance_to(new_wm.clone());
                                 input.flush();
+                                dirty_input.advance_to(new_wm);
+                                dirty_input.flush();
                             }
                         }
                     }
@@ -796,6 +896,35 @@ fn worker_loop(
                             Some(prev) => prev,
                         });
                     }
+                    Cmd::PushDirtyRect(ev) => {
+                        // S2 D2-C: same partial-order contract as
+                        // PushFocus — drop events whose `event_time`
+                        // is below the current watermark; otherwise
+                        // post to `dirty_input` and update the shared
+                        // wallclock anchor.
+                        let event_time = ev.logical_time();
+                        if !current_watermark.less_equal(&event_time) {
+                            eprintln!(
+                                "[perception-worker] out-of-order dirty rect dropped: \
+                                 event_time={:?} watermark={:?} source_event_id={}",
+                                event_time, current_watermark, ev.source_event_id
+                            );
+                            continue;
+                        }
+                        dirty_input.update_at(ev.clone(), event_time.clone(), 1);
+                        event_count += 1;
+
+                        if ev.wallclock_ms > latest_wallclock_ms {
+                            latest_wallclock_ms = ev.wallclock_ms;
+                            last_event_anchor = Some((ev.wallclock_ms, Instant::now()));
+                        }
+
+                        max_observed = Some(match max_observed {
+                            None => event_time,
+                            Some(prev) if prev.less_equal(&event_time) => event_time,
+                            Some(prev) => prev,
+                        });
+                    }
                     Cmd::Shutdown => {
                         shutdown_requested = true;
                     }
@@ -851,10 +980,15 @@ fn worker_loop(
                         && current_watermark != new_wm
                     {
                         current_watermark = new_wm.clone();
-                        input.advance_to(new_wm);
+                        // S2 D2-C: advance both input sessions in
+                        // lockstep so the shared watermark applies to
+                        // both focus and dirty-rect collections.
+                        input.advance_to(new_wm.clone());
+                        dirty_input.advance_to(new_wm);
                     }
                 }
                 input.flush();
+                dirty_input.flush();
                 processed.fetch_add(event_count, Ordering::Relaxed);
 
                 // Step until idle (capped) so the operator chain
@@ -901,7 +1035,7 @@ mod tests {
 
     #[test]
     fn spawn_and_shutdown_clean() {
-        let (worker, _handle, _view, _latest_view) = spawn_perception_worker();
+        let (worker, _handle, _view, _latest_view, _dirty_rects_view) = spawn_perception_worker();
         worker
             .shutdown(Duration::from_secs(2))
             .expect("shutdown clean");
@@ -909,7 +1043,7 @@ mod tests {
 
     #[test]
     fn push_focus_roundtrip_smoke() {
-        let (worker, handle, _view, _latest_view) = spawn_perception_worker();
+        let (worker, handle, _view, _latest_view, _dirty_rects_view) = spawn_perception_worker();
         for i in 0..3 {
             handle.push_focus(make_event(i, 1_000_000 + i, 0));
         }
@@ -924,7 +1058,7 @@ mod tests {
         // Cmd::PushFocus from the channel, not just acknowledges
         // shutdown. Without this assertion the lifecycle test
         // could regress silently if the worker_loop body is gutted.
-        let (worker, handle, _view, _latest_view) = spawn_perception_worker();
+        let (worker, handle, _view, _latest_view, _dirty_rects_view) = spawn_perception_worker();
         for i in 0..5 {
             handle.push_focus(make_event(i, 5_000_000 + i, 0));
         }
@@ -946,7 +1080,7 @@ mod tests {
     #[test]
     fn five_cycle_spawn_shutdown() {
         for cycle in 0..5 {
-            let (worker, handle, _view, _latest_view) = spawn_perception_worker();
+            let (worker, handle, _view, _latest_view, _dirty_rects_view) = spawn_perception_worker();
             handle.push_focus(make_event(cycle, 2_000_000 + cycle, 0));
             worker
                 .shutdown(Duration::from_secs(2))
@@ -956,7 +1090,7 @@ mod tests {
 
     #[test]
     fn push_after_shutdown_silently_drops() {
-        let (worker, handle, _view, _latest_view) = spawn_perception_worker();
+        let (worker, handle, _view, _latest_view, _dirty_rects_view) = spawn_perception_worker();
         worker.shutdown(Duration::from_secs(2)).expect("shutdown");
         // After worker is gone, the receiver is dropped and the
         // channel disconnects. push_focus must NOT panic.
@@ -967,7 +1101,7 @@ mod tests {
     fn l1sink_object_safety() {
         // Trait must be object-safe so the bridge can hold
         // `Arc<dyn L1Sink>` without naming the concrete type.
-        let (worker, handle, _view, _latest_view) = spawn_perception_worker();
+        let (worker, handle, _view, _latest_view, _dirty_rects_view) = spawn_perception_worker();
         let _h: Arc<dyn L1Sink> = Arc::new(handle);
         worker.shutdown(Duration::from_secs(2)).expect("shutdown");
     }
@@ -1000,7 +1134,7 @@ mod tests {
         //
         // We can't observe the dataflow output yet (D1-3), but we
         // can confirm the worker doesn't crash on a back-dated push.
-        let (worker, handle, _view, _latest_view) = spawn_perception_worker();
+        let (worker, handle, _view, _latest_view, _dirty_rects_view) = spawn_perception_worker();
         // First push sets latest_wallclock_ms = 1_000_000
         handle.push_focus(make_event(1, 1_000_000, 0));
         // Sleep so the worker definitely processed the first push
@@ -1028,7 +1162,7 @@ mod tests {
         // is independent of frontier), so this test only guards
         // against a regression that breaks the idle branch entirely
         // (e.g. an early `break` or a panic in the projection code).
-        let (worker, handle, _view, _latest_view) = spawn_perception_worker();
+        let (worker, handle, _view, _latest_view, _dirty_rects_view) = spawn_perception_worker();
         handle.push_focus(make_event(1, 1_700_000_000_000, 0));
         let deadline = Instant::now() + Duration::from_millis(500);
         while worker.processed_count() < 1 {
@@ -1054,7 +1188,7 @@ mod tests {
         // event_time = (T - 500ms, 0) when latest = T, shift = 100ms
         // → watermark = (T - 100ms, 0), and event_time < watermark
         // → dropped with log. Test verifies the worker survives.
-        let (worker, handle, _view, _latest_view) = spawn_perception_worker();
+        let (worker, handle, _view, _latest_view, _dirty_rects_view) = spawn_perception_worker();
         handle.push_focus(make_event(1, 2_000_000, 0));
         thread::sleep(Duration::from_millis(50));
         // 500ms back-dated — way outside the 100ms watermark default
@@ -1104,7 +1238,7 @@ mod tests {
         // max_sub_ord + 1)) does not drop the larger-sub_ord events
         // as back-dated.
         use crate::views::current_focused_element::CurrentFocusedElementView;
-        let (worker, handle, view, _latest_view) = spawn_perception_worker();
+        let (worker, handle, view, _latest_view, _dirty_rects_view) = spawn_perception_worker();
         let _: &CurrentFocusedElementView = &view; // type assertion
 
         // wallclock far enough from 0 that the watermark shift
@@ -1165,7 +1299,7 @@ mod tests {
         // wins regardless of arrival order. This is the partial-
         // order acceptance test (北極星 N3).
         use crate::views::current_focused_element::CurrentFocusedElementView;
-        let (worker, handle, view, _latest_view) = spawn_perception_worker();
+        let (worker, handle, view, _latest_view, _dirty_rects_view) = spawn_perception_worker();
         let _: &CurrentFocusedElementView = &view;
 
         let w = 1_700_000_500_000_u64;
@@ -1219,7 +1353,7 @@ mod tests {
         // frontier, then push an old event (wc = T1, T1 < T2 - 100ms
         // shift). The old event must be dropped (eprintln only),
         // and the worker must remain healthy.
-        let (worker, handle, _view, _latest_view) = spawn_perception_worker();
+        let (worker, handle, _view, _latest_view, _dirty_rects_view) = spawn_perception_worker();
 
         // T2 = 2_000_000, T1 = 2_000_000 - 500 (way past the 100ms
         // default shift, so the watermark guard rejects it).
@@ -1254,7 +1388,7 @@ mod tests {
         // the watermark; we observe this indirectly by verifying
         // the worker remains healthy and processed_count stays at 1
         // (no spurious additional processing).
-        let (worker, handle, _view, _latest_view) = spawn_perception_worker();
+        let (worker, handle, _view, _latest_view, _dirty_rects_view) = spawn_perception_worker();
 
         handle.push_focus(make_focus_event_at(1, 1_800_000_000_000, 0, 0xB002, "anchor"));
 
@@ -1289,7 +1423,7 @@ mod tests {
         // We can't observe the frontier directly from here, but
         // processed_count is a clean proxy: spawn-and-shutdown
         // without any PushFocus must leave processed_count = 0.
-        let (worker, _handle, _view, _latest_view) = spawn_perception_worker();
+        let (worker, _handle, _view, _latest_view, _dirty_rects_view) = spawn_perception_worker();
         // No pushes — straight to shutdown. The shutdown signal
         // arrives as a single Shutdown-only batch.
         let pre_shutdown_count = worker.processed_count();

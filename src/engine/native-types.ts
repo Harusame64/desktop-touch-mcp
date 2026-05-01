@@ -74,6 +74,24 @@ export interface NativeViewFocusedPipelineStatus {
   processedCount: bigint
 }
 
+// ─── L3 perception dirty_rects_aggregate view (S2 D2-C) ──────────────────────
+// Returned by `viewGetDirtyRects(monitorIndex)`. Count-only contract spike
+// per `docs/adr-008-d2-c-plan.md` §2.3 / §3.7 — no rect geometry, just a
+// per-`(monitor, frame)` count and the latest frame for the queried monitor.
+
+export interface NativeDirtyRectFrame {
+  frameIndex: bigint
+  count: bigint
+}
+
+export interface NativeDirtyRectsResult {
+  /** The `monitor_index` the caller asked for, echoed back so the TS
+   * layer can confirm round-trip integrity (CLAUDE.md §3.2 PR #102 教訓). */
+  monitorIndex: number
+  liveFrameCount: number
+  latest: NativeDirtyRectFrame | null
+}
+
 export interface NativeFocusAndPointResult {
   focused?: NativeUiaFocusInfo | null
   atPoint?: NativeUiaFocusInfo | null

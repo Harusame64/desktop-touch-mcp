@@ -32,6 +32,7 @@
 
 #![allow(dead_code)]
 
+pub(crate) mod dirty_rect_pump;
 pub(crate) mod focus_pump;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -49,10 +50,12 @@ use crate::win32::safety::napi_safe_call;
 
 use engine_perception::input::{spawn_perception_worker, FocusInputHandle, L1Sink, PerceptionWorker};
 use engine_perception::views::current_focused_element::CurrentFocusedElementView;
+use engine_perception::views::dirty_rects_aggregate::DirtyRectsAggregateView;
 use engine_perception::views::latest_focus::LatestFocusView;
 
 use crate::l1_capture::ensure_l1;
 
+use self::dirty_rect_pump::DirtyRectPump;
 use self::focus_pump::FocusPump;
 
 /// Test helper: spawn the full perception pipeline on the existing
@@ -75,11 +78,12 @@ pub(crate) fn spawn_perception_pipeline_for_test() -> (
     CurrentFocusedElementView,
     FocusPump,
 ) {
-    // D2-B-1: spawn_perception_worker now returns 4 elements
-    // (latest_focus_view added). Existing test callers don't need
-    // the latest_focus_view, so we drop it here. Production
-    // `spawn_pipeline_inner` keeps it on `PerceptionPipeline`.
-    let (worker, handle, view, _latest_view) = spawn_perception_worker();
+    // D2-B-1 → S2 D2-C: spawn_perception_worker now returns 5 elements
+    // (latest_focus_view added in D2-B-1, dirty_rects_view added in
+    // S2 D2-C). Existing test callers don't need the latest/dirty
+    // views, so we drop them here. Production `spawn_pipeline_inner`
+    // keeps them on `PerceptionPipeline`.
+    let (worker, handle, view, _latest_view, _dirty_rects_view) = spawn_perception_worker();
     let ring = ensure_l1().ring.clone();
     let sink: Arc<dyn L1Sink> = Arc::new(handle.clone());
     let pump = FocusPump::spawn(ring, sink);
@@ -173,9 +177,19 @@ pub struct PerceptionPipeline {
     /// this one because the focused element's HWND is not always
     /// the foreground-window HWND (Codex v3 P1-4).
     pub latest_focus_view: LatestFocusView,
+    /// Per-`(monitor_index, frame_index)` count view of DXGI dirty
+    /// rects (S2 D2-C count-only contract spike,
+    /// `docs/adr-008-d2-c-plan.md`). Read via the napi binding
+    /// `view_get_dirty_rects(monitor_index)`.
+    pub dirty_rects_view: DirtyRectsAggregateView,
     pub handle: FocusInputHandle,
     worker: PerceptionWorker,
     pump: FocusPump,
+    /// Dirty-rect pump: `EventKind::DirtyRect` → engine-perception
+    /// `DirtyRectEvent` (S2 D2-C, `docs/adr-008-d2-c-plan.md` §3.5).
+    /// Mirrors `FocusPump`'s shape so the lifecycle (5-cycle restart,
+    /// retain-on-timeout shutdown, slot poisoning) is identical.
+    dirty_rect_pump: DirtyRectPump,
     /// Set when `shutdown_with_timeout` returns `Err` from either leg
     /// (Codex review v8 P2-16). A poisoned pipeline has lost the
     /// retain-on-timeout safety: at minimum the pump has signalled
@@ -210,25 +224,60 @@ impl PerceptionPipeline {
     /// `ensure_perception_pipeline()` checks it and evicts the slot
     /// instead of handing out a half-stopped pipeline.
     pub fn shutdown_with_timeout(&self, timeout: Duration) -> Result<(), &'static str> {
-        let half = timeout / 2;
-        let pump_result = self.pump.shutdown_with_timeout(half);
-        // Attempt the worker leg even if the pump failed — its
-        // JoinHandle is retained on Err either way, so a retry
-        // path can still complete it.
-        let worker_result = self.worker.shutdown_with_timeout(half);
+        // S2 D2-C: 3 legs (focus_pump, dirty_rect_pump, worker). Each
+        // leg's `shutdown_with_timeout` first sets its `AtomicBool`
+        // shutdown flag synchronously, then polls `is_finished()` until
+        // its deadline. To prevent the 3-leg total wall time from
+        // ballooning past the caller's `timeout` (the
+        // `ensure_perception_pipeline` poison-eviction retry only
+        // budgets 100ms), we **pre-signal all 3 legs with timeout=0**
+        // (each call sets the flag in microseconds and returns Err on
+        // the immediate deadline) so all 3 worker threads start
+        // winding down at roughly the same wall-clock instant. Then
+        // we poll all 3 concurrently with a shared deadline,
+        // returning Ok the moment all 3 report finished.
+        //
+        // Why this matters: `FocusPump` and `DirtyRectPump` use
+        // `recv_timeout(100ms)` so a pump can be mid-recv when signal
+        // fires and must wait up to 100ms to wake. With 3 sequential
+        // polls of timeout/3, neither pump can reliably exit in 33ms
+        // and the pipeline gets falsely poisoned (test
+        // `shutdown_timeout_failure_poisons_slot_and_evicts_on_next_ensure`).
+        // Concurrent polling lets all 3 threads race against one
+        // shared 100ms deadline, matching pre-D2-C 2-leg semantics.
+        let _ = self.pump.shutdown_with_timeout(Duration::ZERO);
+        let _ = self.dirty_rect_pump.shutdown_with_timeout(Duration::ZERO);
+        let _ = self.worker.shutdown_with_timeout(Duration::ZERO);
 
-        match (pump_result, worker_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(e), _) | (_, Err(e)) => {
-                // Either leg's failure means the pipeline is no
-                // longer fully live: pump.shutdown stored `true` on
-                // its own shutdown AtomicBool before polling, so
-                // even if the pump's JoinHandle was retained, its
-                // forwarder thread is winding down. Mark poisoned
-                // so `ensure_perception_pipeline()` can evict.
-                self.poisoned.store(true, Ordering::SeqCst);
-                Err(e)
+        let deadline = std::time::Instant::now() + timeout;
+        let poll_interval = Duration::from_millis(10);
+        loop {
+            // Each leg's `shutdown_with_timeout(Duration::ZERO)` is a
+            // poll: it returns Ok if the JoinHandle has been taken
+            // (already joined, or finished and just-joined inside
+            // the call), Err otherwise. Idempotent — repeated calls
+            // are cheap.
+            let p_done = self.pump.shutdown_with_timeout(Duration::ZERO).is_ok();
+            let d_done = self.dirty_rect_pump.shutdown_with_timeout(Duration::ZERO).is_ok();
+            let w_done = self.worker.shutdown_with_timeout(Duration::ZERO).is_ok();
+            if p_done && d_done && w_done {
+                return Ok(());
             }
+            if std::time::Instant::now() >= deadline {
+                // Any leg still alive → poison. Mark and return the
+                // first reason in priority order (pump, dirty_pump,
+                // worker) for diagnostic clarity.
+                self.poisoned.store(true, Ordering::SeqCst);
+                let reason = if !p_done {
+                    "focus pump join timed out"
+                } else if !d_done {
+                    "dirty rect pump join timed out"
+                } else {
+                    "worker join timed out"
+                };
+                return Err(reason);
+            }
+            std::thread::sleep(poll_interval);
         }
     }
 
@@ -265,7 +314,12 @@ static PERCEPTION_SLOT: OnceLock<Mutex<Option<Arc<PerceptionPipeline>>>> = OnceL
 /// pipeline is marked poisoned (one or both legs are no longer
 /// live, see `PerceptionPipeline::is_poisoned`). On the next
 /// `ensure_perception_pipeline()` call we attempt **one best-effort
-/// short-timeout retry** (100ms). The slot is then handled by the
+/// short-timeout retry** (250ms — enlarged from the pre-S2 100ms to
+/// accommodate the 3-leg shutdown introduced in S2 D2-C; pumps use
+/// `recv_timeout(100ms)` so a worst-case wakeup adds up to 100ms per
+/// pump, and the concurrent-poll shape in
+/// `PerceptionPipeline::shutdown_with_timeout` lets all 3 race
+/// against the shared deadline). The slot is then handled by the
 /// outcome of that retry:
 ///
 ///   - **Retry succeeded** → both threads have joined, the slot can
@@ -300,7 +354,7 @@ pub fn ensure_perception_pipeline() -> Arc<PerceptionPipeline> {
             // previous attempt. The leg(s) still holding handles
             // resume polling.
             if existing
-                .shutdown_with_timeout(Duration::from_millis(100))
+                .shutdown_with_timeout(Duration::from_millis(250))
                 .is_ok()
             {
                 // Clean — both legs are gone. Clear the slot; the
@@ -391,16 +445,20 @@ pub(crate) fn shutdown_perception_pipeline_for_test(
 /// pump in the same order as `spawn_perception_pipeline_for_test` so
 /// the parent-side `subscribe(...)` runs synchronously (Codex v3 P1).
 fn spawn_pipeline_inner() -> PerceptionPipeline {
-    let (worker, handle, view, latest_focus_view) = spawn_perception_worker();
+    let (worker, handle, view, latest_focus_view, dirty_rects_view) =
+        spawn_perception_worker();
     let ring = ensure_l1().ring.clone();
     let sink: Arc<dyn L1Sink> = Arc::new(handle.clone());
-    let pump = FocusPump::spawn(ring, sink);
+    let pump = FocusPump::spawn(ring.clone(), sink.clone());
+    let dirty_rect_pump = DirtyRectPump::spawn(ring, sink);
     PerceptionPipeline {
         view,
         latest_focus_view,
+        dirty_rects_view,
         handle,
         worker,
         pump,
+        dirty_rect_pump,
         poisoned: AtomicBool::new(false),
     }
 }
@@ -522,6 +580,83 @@ pub fn view_focused_pipeline_status() -> napi::Result<NativeViewFocusedPipelineS
             }
         };
         Ok(status)
+    })
+}
+
+// ─── napi-exposed dirty_rects_aggregate read API (S2 D2-C) ────────────────
+//
+// `view_get_dirty_rects(monitor_index)` is the S2 D2-C trunk's count-only
+// getter (`docs/adr-008-d2-c-plan.md` §3.7 D2-C-6). The shape matches
+// the sub-plan §2.3 minimal getter spec: `(live_frame_count, latest)`
+// where `latest` is `Option<(frame_index, count)>`. **`monitor_index`
+// is preserved on the response** as a sanity field so callers can
+// confirm the index they asked for round-trips correctly (CLAUDE.md
+// §3.2 PR #102 教訓 + sub-plan §1.4 北極星整合).
+
+/// Read shape returned to napi callers from [`view_get_dirty_rects`].
+/// Matches `docs/adr-008-d2-c-plan.md` §2.3 minimal getter spec.
+#[napi(object)]
+pub struct NativeDirtyRectsResult {
+    /// The `monitor_index` the caller asked for, echoed back so the
+    /// TS layer can confirm round-trip integrity (CLAUDE.md §3.2 PR
+    /// #102 教訓: never drop / hard-code monitor_index).
+    pub monitor_index: u32,
+    /// Number of currently-retained frames for this monitor (after
+    /// the per-monitor FIFO cap eviction in
+    /// `DirtyRectsAggregateView`).
+    pub live_frame_count: u32,
+    /// Most recent `(frame_index, count)` for this monitor, if any.
+    /// `None` when no dirty rect has been observed (or all retained
+    /// frames evicted).
+    pub latest: Option<NativeDirtyRectFrame>,
+}
+
+#[napi(object)]
+pub struct NativeDirtyRectFrame {
+    pub frame_index: BigInt,
+    pub count: BigInt,
+}
+
+/// Read the count-only `dirty_rects_aggregate` view for a given
+/// monitor (S2 D2-C count-only contract spike). Returns the per-
+/// monitor live-frame count and the latest `(frame_index, count)`.
+///
+/// First call lazily spawns the perception pipeline
+/// (`ensure_perception_pipeline`). Returns an empty result
+/// (`live_frame_count = 0`, `latest = None`) when:
+///
+///   - the perception pipeline has never received a dirty rect event,
+///   - the slot is poisoned (a previous shutdown attempt failed),
+///     in which case the caller should rely on the UIA / Tier 0
+///     fallback path,
+///   - or no rect has been emitted for the requested `monitor_index`.
+///
+/// Wrapped in `napi_safe_call` per ADR-007 §3.4 — any panic in the
+/// pipeline init / view read path turns into a typed napi error.
+#[napi]
+pub fn view_get_dirty_rects(monitor_index: u32) -> napi::Result<NativeDirtyRectsResult> {
+    napi_safe_call("view_get_dirty_rects", || {
+        let pipeline = ensure_perception_pipeline();
+        if pipeline.is_poisoned() {
+            return Ok(NativeDirtyRectsResult {
+                monitor_index,
+                live_frame_count: 0,
+                latest: None,
+            });
+        }
+        let live_frame_count = pipeline.dirty_rects_view.live_frame_count(monitor_index) as u32;
+        let latest = pipeline
+            .dirty_rects_view
+            .latest(monitor_index)
+            .map(|(frame_index, count)| NativeDirtyRectFrame {
+                frame_index: BigInt::from(frame_index),
+                count: BigInt::from(count),
+            });
+        Ok(NativeDirtyRectsResult {
+            monitor_index,
+            live_frame_count,
+            latest,
+        })
     })
 }
 
@@ -703,7 +838,7 @@ mod lifecycle_tests {
             // InputSession; we'll observe its processed_count to
             // confirm cmds crossed into the dataflow path; the view
             // exposes the materialised current_focused_element state).
-            let (worker, handle, view, _latest_view) =
+            let (worker, handle, view, _latest_view, _dirty_rects_view) =
                 engine_perception::input::spawn_perception_worker();
 
             // (2) spawn pump wired to a TeeSink that BOTH forwards

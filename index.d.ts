@@ -308,3 +308,28 @@ export interface NativeViewFocusedPipelineStatus {
  * is uninitialised, or the slot is poisoned (caller should use UIA fallback). */
 export declare function viewGetFocused(): NativeFocusedElement | null
 export declare function viewFocusedPipelineStatus(): NativeViewFocusedPipelineStatus
+
+// ─── L3 perception dirty_rects_aggregate view (S2 D2-C) ──────────────────────
+
+export interface NativeDirtyRectFrame {
+  frameIndex: bigint
+  count: bigint
+}
+
+export interface NativeDirtyRectsResult {
+  /** The `monitor_index` the caller asked for, echoed back so the TS
+   * layer can confirm round-trip integrity (CLAUDE.md §3.2 PR #102 教訓). */
+  monitorIndex: number
+  /** Number of currently-retained frames for this monitor (after the
+   * per-monitor FIFO cap eviction). */
+  liveFrameCount: number
+  /** Most recent `(frame_index, count)` for this monitor, if any. */
+  latest: NativeDirtyRectFrame | null
+}
+
+/** Read the count-only `dirty_rects_aggregate` view for a given monitor
+ * (S2 D2-C count-only contract spike, `docs/adr-008-d2-c-plan.md`).
+ * Returns the per-monitor live-frame count and the latest
+ * `(frame_index, count)`; empty result when the pipeline has no rect
+ * yet, the slot is poisoned, or no rect for the requested monitor. */
+export declare function viewGetDirtyRects(monitorIndex: number): NativeDirtyRectsResult
