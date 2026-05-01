@@ -26,9 +26,13 @@
 
 import {
   buildEnvelope,
+  buildFailureEnvelope,
   envelopePayloadSizeBytes,
   ENVELOPE_MINIMAL_SIZE_THRESHOLD_BYTES,
 } from "../dist/tools/_envelope.js";
+
+/** ADR-010 §5.6.1 failure envelope SLO (sub-plan §3.7 G3 #4: ≤ 5KB). */
+const ENVELOPE_FAILURE_SIZE_THRESHOLD_BYTES = 5 * 1024;
 
 // ─── Scenario fixtures (representative shapes for desktop_state) ─────────────
 
@@ -179,15 +183,53 @@ console.log(`  fresh    envelope size = ${fresh.envSize}    confidence=${fresh.c
 console.log(`  poisoned envelope size = ${poisoned.envSize}    confidence=${poisoned.confidence}`);
 console.log(`  delta = ${poisoned.envSize - fresh.envSize} bytes (+${poisoned.envSize - fresh.envSize >= 0 ? "0" : ""}; degraded path adds 'fresh'→'degraded' rename only)`);
 
+// ── S4 failure envelope (sub-plan §2.4 + §3.7 G3 #4) ──
+console.log();
+console.log(`Failure envelope (S4 commit wrapper, SLO ≤ ${ENVELOPE_FAILURE_SIZE_THRESHOLD_BYTES} bytes — ADR-010 §5.6.1):`);
+const FAILURE_SCENARIOS = [
+  {
+    label: "lease_expired",
+    envelope: buildFailureEnvelope(
+      "LeaseExpired",
+      [{ action: "desktop_discover", args: {}, confidence: "high" }],
+      { asOfWallclockMs: FRESH_WALLCLOCK },
+    ),
+  },
+  {
+    label: "lease_residual",
+    envelope: buildFailureEnvelope("Unknown", [], { asOfWallclockMs: FRESH_WALLCLOCK }),
+  },
+  {
+    label: "handler_threw",
+    envelope: buildFailureEnvelope(
+      "Unknown",
+      [],
+      { asOfWallclockMs: FRESH_WALLCLOCK },
+    ),
+  },
+];
+let failureSloOk = true;
+for (const { label, envelope } of FAILURE_SCENARIOS) {
+  const size = envelopePayloadSizeBytes(envelope);
+  const ok = size <= ENVELOPE_FAILURE_SIZE_THRESHOLD_BYTES;
+  if (!ok) failureSloOk = false;
+  console.log(`  ${pad(label, 16)} ${fmt(size)} bytes   ${ok ? "ok" : "OVER"}`);
+}
+
 console.log();
 const overSlo = results.filter((r) => !r.sloOk);
-if (overSlo.length === 0) {
-  console.log(`✓ All ${SCENARIOS.length} scenarios within ${ENVELOPE_MINIMAL_SIZE_THRESHOLD_BYTES}-byte SLO.`);
+if (overSlo.length === 0 && failureSloOk) {
+  console.log(`✓ All ${SCENARIOS.length} scenarios within ${ENVELOPE_MINIMAL_SIZE_THRESHOLD_BYTES}-byte SLO + failure envelope ≤ ${ENVELOPE_FAILURE_SIZE_THRESHOLD_BYTES} bytes (S4 G3 #4).`);
   process.exit(0);
 }
-console.log(`✗ ${overSlo.length} / ${SCENARIOS.length} scenarios exceeded the ${ENVELOPE_MINIMAL_SIZE_THRESHOLD_BYTES}-byte SLO:`);
-for (const r of overSlo) {
-  console.log(`    ${r.label}: ${r.envSize} bytes`);
+if (overSlo.length > 0) {
+  console.log(`✗ ${overSlo.length} / ${SCENARIOS.length} scenarios exceeded the ${ENVELOPE_MINIMAL_SIZE_THRESHOLD_BYTES}-byte SLO:`);
+  for (const r of overSlo) {
+    console.log(`    ${r.label}: ${r.envSize} bytes`);
+  }
+}
+if (!failureSloOk) {
+  console.log(`✗ Failure envelope exceeded the ${ENVELOPE_FAILURE_SIZE_THRESHOLD_BYTES}-byte SLO (ADR-010 §5.6.1, sub-plan §3.7 G3 #4).`);
 }
 console.log();
 console.log("These shapes will trigger `confidence: degraded` at runtime.");

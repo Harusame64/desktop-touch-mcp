@@ -8,8 +8,8 @@ use std::sync::atomic::Ordering;
 
 use super::envelope::EventEnvelope;
 use super::payload::{
-    encode_payload, FailurePayload, HwInputPostMessagePayload, ToolCallCompletedPayload,
-    ToolCallStartedPayload,
+    encode_payload, FailurePayload, HwInputPostMessagePayload, LeaseTokenSummary,
+    ToolCallCompletedPayload, ToolCallStartedPayload,
 };
 use super::worker::{build_event, ensure_l1, make_failure_event, shutdown_l1_for_test};
 use super::EventKind;
@@ -26,19 +26,53 @@ pub struct NativeCaptureStats {
     pub event_id_high_water: BigInt,
 }
 
+// ─── NativeLeaseTokenSummary ──────────────────────────────────────────────────
+
+/// napi marshal type for the lease 4-tuple summary attached to
+/// `l1_push_tool_call_started` (sub-plan §1.1 E + §2.3). Mirrors the
+/// internal `LeaseTokenSummary` struct in `payload.rs`. **Tail-only
+/// Optional** at the binding signature so existing 4-arg positional
+/// callers (`tests/unit/l1-capture-panic-fuzz.test.ts:122,128` +
+/// `tests/unit/l1-capture.test.ts:163`) keep compiling without change
+/// (Round 1 P1-1).
+#[napi(object)]
+pub struct NativeLeaseTokenSummary {
+    pub entity_id: String,
+    pub view_id: String,
+    pub target_generation: String,
+    pub evidence_digest_prefix8: String,
+}
+
 // ─── Typed push helpers ───────────────────────────────────────────────────────
 
 /// `EventKind::ToolCallStarted` を push する。L5 wrapper が tool 受信時に呼ぶ。
+///
+/// `lease_token` is the **tail-only Optional 5th parameter** added in S4
+/// (sub-plan `docs/adr-010-p1-s4-plan.md` §2.3). Existing 4-arg positional
+/// callers stay valid because TypeScript / napi-rs treat trailing
+/// `Option` as omittable (Round 1 P1-1). Pass `None` for query-axis
+/// tools, lease-less commits, and pre-S4 callers.
 #[napi]
 pub fn l1_push_tool_call_started(
     tool: String,
     args_json: String,
     session_id: Option<String>,
     tool_call_id: Option<String>,
+    lease_token: Option<NativeLeaseTokenSummary>,
 ) -> napi::Result<BigInt> {
     napi_safe_call("l1_push_tool_call_started", || {
         let ring_inner = ensure_l1();
-        let payload = encode_payload(&ToolCallStartedPayload { tool, args_json });
+        let lease_token_internal = lease_token.map(|t| LeaseTokenSummary {
+            entity_id: t.entity_id,
+            view_id: t.view_id,
+            target_generation: t.target_generation,
+            evidence_digest_prefix8: t.evidence_digest_prefix8,
+        });
+        let payload = encode_payload(&ToolCallStartedPayload {
+            tool,
+            args_json,
+            lease_token: lease_token_internal,
+        });
         let event = build_event(
             EventKind::ToolCallStarted as u16,
             payload,
