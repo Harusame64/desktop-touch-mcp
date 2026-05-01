@@ -450,7 +450,7 @@ Walking skeleton trunk:
 - 上位戦略: `docs/walking-skeleton-trunk-selection.md` (Proposed v0.4) §4 S6 (line 280-296) + §4.1 line 307 + §5 完了基準 (line 322-333) + §5.1 中間見直しゲート + §5.2 永続化 + §6 Expansion 並列化計画 (line 354-390) + Appendix C ゲート判定ログ
 - 概念設計: CLAUDE.md §3.4 (Max 20x 並走) + §7 (仕組みで対応) + §3.1 (複数表 fact 整合)
 - 並走依存: PR #115 (S5 impl merged 2026-05-01、commit `40ceadf`) で確立した 5 構造的 contract
-- 既存実装: `src/tools/_envelope.ts` (S3-S5 で確立した L5 wrapper) + `src/tools/click-element.ts` (本 S6 で wrap)
+- 既存実装: `src/tools/_envelope.ts` (S3-S5 で確立した L5 wrapper) + `src/tools/ui-elements.ts` (`clickElementHandler` line 90 + `registerClickElementTool` line 361、本 S6 で wrap、Round 2 P2-1 fix で `src/tools/click-element.ts` 単独 file 不在を訂正)
 - governance: CLAUDE.md 強制命令 3 + 3.3 + 3.4 + 7 + 8 + 9
 - 同型先例:
   - sub-plan 構造: PR #103 (S2) + PR #104 (S1) + PR #110 (S3) + PR #111 (S4) + PR #114 (S5) — 3 分類 trunk/expansion/carry-over
@@ -463,8 +463,9 @@ Walking skeleton trunk:
 | version | date | author | summary |
 |---|---|---|---|
 | Drafted v0.1 | 2026-05-01 | Claude (Sonnet) | 初稿起草、walking skeleton S6 sub-plan、trunk completion 判定 + expansion-pr-guard.yml CI assert + check-expansion-disjoint.mjs ローカル equivalent + walking-skeleton-expansion-plan.md 起草 + ADR-008 D2-G 部分着手 + click_element wrap PoC + Appendix C G6 entry。S5 sub-plan PR #114 同型 structure (3 分類 trunk/expansion/carry-over タグ + §0-§10 + Appendix A 改訂履歴 + Lesson 1-4 sweep)、Opus 1 round 想定 (walking-skeleton §4.1 line 307)、Codex 補助 review |
+| Drafted v0.3 | 2026-05-01 | Claude (Sonnet) | **Opus Round 2 review 反映** (Conditionally Approved + 新規 P2-N1 のみ): **P2-N1** §10 References line 453 で `src/tools/click-element.ts` 古表記残存、Round 1 P2-1 fix の取りこぼし → Round 3 で `src/tools/ui-elements.ts` (clickElementHandler line 90 + registerClickElementTool line 361) に訂正。Round 1 P1×1 + P2×2 + P3×1 全件は Round 2 で正しく反映済 (5 SSOT bit-equal sync 確認、§3.1 sweep clean、新規 P1 ゼロ)。**Round 2 review iteration ledger**: 本 v0.3 で Opus Round 2 P2-N1 を 1 commit に反映、累積 P1×1 + P2×3 + P3×1、Round 3 Opus 再 review で指摘ゼロ → merge へ |
 | Drafted v0.2 | 2026-05-01 | Claude (Sonnet) | **Opus Round 1 review 反映** (Conditionally Approved + P1×1 + P2×2 + P3×1): **P1-1 (致命的)** TRUNK_LOCK_PATHS の 4 箇所 fact 食違い (§1.1 B 4 path / §2.1 yaml + 列挙 3 path / §2.2 script 3 path)、かつ実 repo 構造と不一致 (`src/perception/**`、`src/l3`、`src/l4_envelope` 不在、Rust dataflow 実体は `src/l3_bridge/`、TS perception は `src/engine/perception/`)、結果 CI guard が **常に空 diff = 常時 PASS = silent broken** で trunk 完了判定の北極星 (CLAUDE.md §7) が機能しない致命違反 → Round 2 で **4 path bit-equal sync**: `crates/engine-perception/**/*.rs` + `src/l1_capture/**/*.rs` + `src/l3_bridge/**/*.rs` + `src/engine/perception/**/*.ts`、§1.1 B + §2.1 yaml + §2.1 列挙 + §2.2 script の 4 箇所統一 (PR #99 同型 fact divergence 防止)。**P2-1** `src/tools/click-element.ts` 不在、実体は `src/tools/ui-elements.ts:90 clickElementHandler` + `:361 registerClickElementTool` → §2.3 + §3.1 で訂正、`withRichNarration` (内側) + `makeCommitWrapper` (外側) 合成順序明記、`run_macro` 経路 (`TOOL_REGISTRY.click_element`) shared instance 維持。**P2-2** Appendix C G6 entry に trunk lock paths 4 件明記で trace 永続化。**P3-1** `docs/walking-skeleton-expansion-plan.md` は **新規起草** (事前 fork 不在を実 repo 確認、walking-skeleton §6.3 line 381 「事前起草」想定だが本 PR 着手時点で main 不在のため初稿)。**Round 1 review iteration ledger**: 本 v0.2 で Opus Round 1 P1×1 + P2×2 + P3×1 を 1 commit に反映、Round 2 Opus 再 review 待ち |
 
 ---
 
-END OF S6 sub-plan (Drafted v0.2)。
+END OF S6 sub-plan (Drafted v0.3)。
