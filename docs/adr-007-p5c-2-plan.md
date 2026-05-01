@@ -16,7 +16,7 @@ A. **DXGI duplication thread に L1 ring emit fork 追加** (`src/duplication/th
 B. **`enable_l1_emit: AtomicBool` flag** (graceful disable / 既存 napi `DirtyRectSubscription` 単独使用ケースとの両立)
 C. **DXGI 利用不可時 graceful disable** (capability detect 失敗 → Failure event 1 度のみ + emit 永続停止)
 D. **AccessLost 系 graceful 復旧** (既存の context recreate 経路と同居、Failure event 重複 spam 防止)
-E. **integration test** (Notepad / 簡易 UI 操作で frame 変化を induce、ring に `EventKind::DirtyRect` 1 件以上が push されることを pin)
+E. **integration test** (frame 取得経路の Rust integration test で `EventKind::DirtyRect` の `ring.push` を pin、本 PR では mock context-based / `spawn(0)` + `Next` cmd の Rust 経由のみ。Notepad/Edge fixture で実 UIA 操作経由 induce する live test は §5 follow-up へ carry-over)
 F. **payload `DirtyRectPayload` 充足** (既に `src/l1_capture/payload.rs:48` に定義済、`#[allow(dead_code)] // P5c-2 emit` marker を本 PR で削除可能)
 
 ### 1.2 本 sub-plan で扱わない (carry-over)
@@ -221,7 +221,7 @@ src/duplication/thread.rs ─push─→  src/l3_bridge/dirty_rect_pump.rs ─pus
                                                                             Arc<RwLock<DirtyRectsAggregateState>>
                                                                                        │
                                                                                        ▼
-                                                                            napi `view_get_dirty_rects()` (D2-D で TS expose)
+                                                                            napi `view_get_dirty_rects()` (PR-ε D2-C で TS expose、D2-B-1 PR #96 先例同型)
 ```
 
 - 本 PR が emit 配線、view 実装は ADR-008 PR-ε (D2-C) で着手
