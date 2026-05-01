@@ -51,16 +51,22 @@ A. **`click_element` を `makeCommitWrapper` で wrap** (lease 不在 commit バ
   - L1 ToolCallStarted/Completed event は `lease_token: undefined` で push される (S4 既存 contract 通り)
 
 B. **`.github/workflows/expansion-pr-guard.yml` 新設** (CI assert 化、CLAUDE.md §7 仕組みで対応):
-  - PR title or label に `expansion` 含有検出時、`git diff --stat origin/main -- crates/engine-perception src/l1_capture src/l3 src/l4_envelope` を実行
+  - PR title or label に `expansion` 含有検出時、**TRUNK_LOCK_PATHS = 4 path** に対する diff を実行 (§2.1 yaml + §2.2 script で **bit-equal sync** 必須):
+    1. `crates/engine-perception/**/*.rs` (Rust dataflow + view + worker)
+    2. `src/l1_capture/**/*.rs` (Rust L1 ring buffer + payload + napi)
+    3. `src/l3_bridge/**/*.rs` (Rust L3 bridge: focus_pump / dirty_rect_pump / mod)
+    4. `src/engine/perception/**/*.ts` (TS perception envelope、ADR-008 D2 で確定済)
   - 上記 path に **non-doc 行 (Rust + TS)** が 1 行でも含まれていれば CI fail (= trunk 違反 = engine-perception 層 wrap で済まない expansion はバグ)
-  - `--ignore-comment-lines` for Rust、`*.md` exclude
+  - `*.md` exclude
   - workflow は本 PR で起草、main merge 後 expansion 着手時点で運用開始
+  - **重要 (Round 2 P1 反映)**: §1.1 B / §2.1 yaml / §2.1 列挙 / §2.2 script の 4 箇所で path 列挙を **bit-equal sync** (Round 1 Opus P1-1 で 4 箇所 fact 食違い + 実 repo 不在 path 検出、PR #99 同型 fact divergence 防止)
 
 C. **`scripts/check-expansion-disjoint.mjs` 新設** (ローカル equivalent、push 前 6-guard 拡張):
   - workflow と同 logic、ローカルで pre-push hook (`scripts/install-hooks.mjs` 経由) または手動 `npm run check:expansion-disjoint` で実行可能
   - workflow + ローカル双方で重複 enforce、CI assert を main 経路の最終防衛とし、ローカル check が早期 detect
 
-D. **`docs/walking-skeleton-expansion-plan.md` 起草** (本書の続編、tool ごとの worktree 並走計画):
+D. **`docs/walking-skeleton-expansion-plan.md` 新規起草** (本書の続編、tool ごとの worktree 並走計画):
+  - **Round 2 P3-1 fix (Opus Round 1)**: walking-skeleton §6.3 line 381 に「trunk 直系で Sonnet を遊ばせず、別 Sonnet session を並走で動かす」「`docs/walking-skeleton-expansion-plan.md` の事前起草」と書かれているが、**現時点 main に file 不在** (実 repo 確認: `Glob docs/walking-skeleton-expansion-plan.md` → No files)。本 S6 PR は **新規起草** (事前起草 fork が存在しないため finalize ではなく初稿)、別 Sonnet 並走 fork は今回未利用
   - 7 swimlane (L1 emit / L3 view / L5 commit / L5 query / L4 envelope / typed reason / L1 secondary monitor) と 3-5 worktree 並走戦略 (`docs/walking-skeleton-trunk-selection.md` §6.1)
   - tool ごとの 1 PR / 30 分タイムアタック template (本 S6 PoC を pattern として記述)
   - merge conflict 防止: `_envelope.ts` (trunk で確定) を expansion で touch する PR は同時 1 件のみ rebase 順守 (sub-plan §6.2)
@@ -118,7 +124,11 @@ jobs:
           fetch-depth: 0
       - name: Check engine-perception layer is untouched
         run: |
-          DIFF=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- 'crates/engine-perception/**/*.rs' 'src/l1_capture/**/*.rs' 'src/perception/**')
+          DIFF=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- \
+            'crates/engine-perception/**/*.rs' \
+            'src/l1_capture/**/*.rs' \
+            'src/l3_bridge/**/*.rs' \
+            'src/engine/perception/**/*.ts')
           if [ -n "$DIFF" ]; then
             echo "::error::expansion PR modified engine-perception layer (trunk violation):"
             echo "$DIFF"
@@ -127,10 +137,11 @@ jobs:
           echo "engine-perception layer untouched (trunk contract preserved)"
 ```
 
-**判定 path** (trunk lock layer = expansion で touch 禁止):
-- `crates/engine-perception/**/*.rs` (Rust dataflow + view + worker)
-- `src/l1_capture/**/*.rs` (Rust L1 ring buffer + payload + napi)
-- `src/perception/**` (TS perception envelope、ADR-008 D2 で確定済)
+**判定 path** (trunk lock layer = expansion で touch 禁止、Round 2 P1 fix で実 repo 構造と整合):
+- `crates/engine-perception/**/*.rs` (Rust dataflow + view + worker、ADR-008 D1〜D2 で確定)
+- `src/l1_capture/**/*.rs` (Rust L1 ring buffer + payload + napi、ADR-007 P5a〜P5c で確定)
+- `src/l3_bridge/**/*.rs` (Rust L3 bridge: focus_pump / dirty_rect_pump / mod、ADR-008 D1-2 + D2-C で確定)
+- `src/engine/perception/**/*.ts` (TS perception envelope + hot-target-cache + target-timeline 等、ADR-008 D2-B-2 で確定)
 
 **判定 path 外** (expansion で touch OK):
 - `src/tools/**` (L5 wrapper、各 tool individual implementation)
@@ -148,10 +159,14 @@ jobs:
 
 import { execSync } from "node:child_process";
 
+// Round 2 P1 fix (Opus Round 1 P1-1): bit-equal sync with §1.1 B + §2.1 yaml.
+// Path list 4 件は実 repo 構造と整合 (`Glob` で存在確認済、PR #99 同型
+// fact divergence 防止)。
 const TRUNK_LOCK_PATHS = [
   "crates/engine-perception/",
   "src/l1_capture/",
-  "src/perception/",
+  "src/l3_bridge/",
+  "src/engine/perception/",
 ];
 
 function isExpansionPr() {
@@ -191,12 +206,19 @@ console.log(`[check-expansion-disjoint] OK — expansion PR untouched ${TRUNK_LO
 
 ### 2.3 `click_element` wrap PoC (lease 不在 commit、30 分タイムアタック)
 
+**Round 2 P2-1 fix (Opus Round 1)**: 実際の `click_element` handler 場所は `src/tools/ui-elements.ts` (`registerClickElementTool` line 361 + `clickElementHandler` line 90)、`src/tools/click-element.ts` 単独 file は不在。本 PoC は **既存 `src/tools/ui-elements.ts` の registration site で wrap** する。
+
 ```typescript
-// src/tools/click-element.ts (registration site、handler 内部 logic 不変)
+// src/tools/ui-elements.ts (line 361 周辺、registration site)
+// 既存:
+//   server.tool("click_element", desc, schema,
+//     withRichNarration("click_element", clickElementHandler, { windowTitleKey: "windowTitle" }))
+// 本 S6 で wrap:
 import { makeCommitWrapper } from "./_envelope.js";
 
+// module-scope export で run_macro 経路 (`TOOL_REGISTRY.click_element`) と shared instance
 export const clickElementRegistrationHandler = makeCommitWrapper(
-  clickElementRawHandler,
+  withRichNarration("click_element", clickElementHandler, { windowTitleKey: "windowTitle" }),
   "click_element",
   {
     // leaseValidator omitted = lease-less commit variant (sub-plan §1.1 G、
@@ -204,7 +226,11 @@ export const clickElementRegistrationHandler = makeCommitWrapper(
     // getSessionId / argsSummary / clock も default 利用 = mechanical コピー最小
   },
 );
+
+// server.tool("click_element", desc, schema, clickElementRegistrationHandler);
 ```
+
+**withRichNarration との合成順序**: `withRichNarration` は handler の **戻り値拡張** (`hints.diff` 等)、`makeCommitWrapper` は **lifecycle 管理** (L1 push + envelope wrap)。順序は **`withRichNarration` 内側 → `makeCommitWrapper` 外側** で、commit wrapper が `withRichNarration` 拡張済 ToolResult を envelope 化する形。`run_macro` 経路 (`TOOL_REGISTRY.click_element`) も同 instance 共有 (PR #112 shared registration handler pattern 整合)。
 
 **完了基準**: 既存 e2e test 無修正 pass + envelope shape return + L1 ToolCallStarted/Completed event 記録 + `caused_by.your_last_action = "click_element(...)"` を `desktop_state(include=causal)` で確認 (= 30 分タイムアタックの定量目標)。
 
@@ -270,10 +296,13 @@ trunk で確立した 5 構造的 contract:
 
 ### 3.1 S6-1: click_element wrap PoC (~30 line) [S6 trunk]
 
-- [ ] `src/tools/click-element.ts` (実際の click_element handler 場所、要 grep 確認):
-  - [ ] module-scope `clickElementRegistrationHandler = makeCommitWrapper(...)` export
+**Round 2 P2-1 fix (Opus Round 1)**: 実際の click_element handler 場所は `src/tools/ui-elements.ts` (`clickElementHandler` line 90 + `registerClickElementTool` line 361)、`src/tools/click-element.ts` 単独 file は不在。本 sub-batch は `ui-elements.ts` を編集する。
+
+- [ ] `src/tools/ui-elements.ts` (実際の click_element handler / registration 場所):
+  - [ ] module-scope `clickElementRegistrationHandler = makeCommitWrapper(withRichNarration(...), "click_element", { /* leaseValidator omitted */ })` export
   - [ ] handler internal logic + Zod schema + 戻り値 shape **不変** (ADR-010 §1.5)
-  - [ ] registration site (`server.tool` + `TOOL_REGISTRY.click_element`) で同 instance 共有
+  - [ ] `registerClickElementTool` 内の `server.tool` 呼出を `clickElementRegistrationHandler` 経由化
+- [ ] `src/tools/macro.ts`: `TOOL_REGISTRY.click_element` を module-scope wrapped instance に切替 (PR #112 shared registration handler pattern、strip risk 防止)
 
 ### 3.2 S6-2: expansion-pr-guard.yml + check-expansion-disjoint.mjs (~80 line) [S6 trunk]
 
@@ -308,9 +337,9 @@ trunk で確立した 5 構造的 contract:
 
 ### 3.7 S6-7: G6 ゲート判定 + Appendix C append (~5 line) [S6 trunk]
 
-- [ ] `docs/walking-skeleton-trunk-selection.md` Appendix C 末尾に G6 entry append (本 PR で同梱):
+- [ ] `docs/walking-skeleton-trunk-selection.md` Appendix C 末尾に G6 entry append (本 PR で同梱、Round 2 P2-2 fix で trunk lock paths 4 件明記):
   ```markdown
-  | G6 | 2026-05-XX | 完了 | walking skeleton trunk completion: click_element lease 不在 commit wrap PoC + expansion-pr-guard.yml + check-expansion-disjoint.mjs ローカル equivalent + walking-skeleton-expansion-plan.md 起草 + ADR-008 D2-G 部分着手 (trunk 確定 5 view status update)。trunk 完了判定 = expansion tool 追加が L5 wrapper 修正のみで完了することの仕組み的強制を CI + local 2 重 pin、worktree 並走 expansion phase 着手の根拠確定 | (なし、expansion phase へ進行) |
+  | G6 | 2026-05-XX | 完了 | walking skeleton trunk completion: click_element lease 不在 commit wrap PoC (`src/tools/ui-elements.ts`) + expansion-pr-guard.yml + check-expansion-disjoint.mjs ローカル equivalent (TRUNK_LOCK_PATHS = `crates/engine-perception/` + `src/l1_capture/` + `src/l3_bridge/` + `src/engine/perception/` の 4 path、bit-equal sync) + walking-skeleton-expansion-plan.md 起草 + ADR-008 D2-G 部分着手 (trunk 確定 5 view status update)。trunk 完了判定 = expansion tool 追加が L5 wrapper 修正のみで完了することの仕組み的強制を CI + local 2 重 pin、worktree 並走 expansion phase 着手の根拠確定 | (なし、expansion phase へ進行) |
   ```
 
 ### 3.8 S6-8: PR 起票 + Opus + Codex review loop [S6 trunk]
@@ -434,7 +463,8 @@ Walking skeleton trunk:
 | version | date | author | summary |
 |---|---|---|---|
 | Drafted v0.1 | 2026-05-01 | Claude (Sonnet) | 初稿起草、walking skeleton S6 sub-plan、trunk completion 判定 + expansion-pr-guard.yml CI assert + check-expansion-disjoint.mjs ローカル equivalent + walking-skeleton-expansion-plan.md 起草 + ADR-008 D2-G 部分着手 + click_element wrap PoC + Appendix C G6 entry。S5 sub-plan PR #114 同型 structure (3 分類 trunk/expansion/carry-over タグ + §0-§10 + Appendix A 改訂履歴 + Lesson 1-4 sweep)、Opus 1 round 想定 (walking-skeleton §4.1 line 307)、Codex 補助 review |
+| Drafted v0.2 | 2026-05-01 | Claude (Sonnet) | **Opus Round 1 review 反映** (Conditionally Approved + P1×1 + P2×2 + P3×1): **P1-1 (致命的)** TRUNK_LOCK_PATHS の 4 箇所 fact 食違い (§1.1 B 4 path / §2.1 yaml + 列挙 3 path / §2.2 script 3 path)、かつ実 repo 構造と不一致 (`src/perception/**`、`src/l3`、`src/l4_envelope` 不在、Rust dataflow 実体は `src/l3_bridge/`、TS perception は `src/engine/perception/`)、結果 CI guard が **常に空 diff = 常時 PASS = silent broken** で trunk 完了判定の北極星 (CLAUDE.md §7) が機能しない致命違反 → Round 2 で **4 path bit-equal sync**: `crates/engine-perception/**/*.rs` + `src/l1_capture/**/*.rs` + `src/l3_bridge/**/*.rs` + `src/engine/perception/**/*.ts`、§1.1 B + §2.1 yaml + §2.1 列挙 + §2.2 script の 4 箇所統一 (PR #99 同型 fact divergence 防止)。**P2-1** `src/tools/click-element.ts` 不在、実体は `src/tools/ui-elements.ts:90 clickElementHandler` + `:361 registerClickElementTool` → §2.3 + §3.1 で訂正、`withRichNarration` (内側) + `makeCommitWrapper` (外側) 合成順序明記、`run_macro` 経路 (`TOOL_REGISTRY.click_element`) shared instance 維持。**P2-2** Appendix C G6 entry に trunk lock paths 4 件明記で trace 永続化。**P3-1** `docs/walking-skeleton-expansion-plan.md` は **新規起草** (事前 fork 不在を実 repo 確認、walking-skeleton §6.3 line 381 「事前起草」想定だが本 PR 着手時点で main 不在のため初稿)。**Round 1 review iteration ledger**: 本 v0.2 で Opus Round 1 P1×1 + P2×2 + P3×1 を 1 commit に反映、Round 2 Opus 再 review 待ち |
 
 ---
 
-END OF S6 sub-plan (Drafted v0.1)。
+END OF S6 sub-plan (Drafted v0.2)。
