@@ -148,6 +148,19 @@ export interface EnvelopeMinimalShape<T = unknown> {
    * `buildFailureEnvelope` on commit-axis failure paths; absent on
    * successful envelopes from `buildEnvelope`. */
   if_unexpected?: IfUnexpectedShape;
+  /** S5 caused_by linkage (ADR-010 §5.2 `include=causal`、sub-plan §2.2).
+   * 4 field projection from per-session history buffer. Optional —
+   * present only when `include=["causal"]` opt-in + per-session history
+   * has a recent commit event in the causal window. */
+  caused_by?: CausedByShape;
+  /** S5 envelope-top-level `based_on` (architecture §8.2 line 355-356
+   * 責務マトリクス、sub-plan §2.2 Round 3 P1 Opus #1 反映で CausedByShape
+   * から分離)。L1 event_id range + observation source list. `events` is
+   * `string[]` (u64 decimal) so `JSON.stringify` is safe even when L1
+   * event_id exceeds 2^53 (Round 3 P1 Codex line 370 反映、`node -e
+   * "JSON.stringify({events:[1n]})"` で TypeError 実証済)。Optional —
+   * same `include=["causal"]` opt-in trigger as `caused_by`. */
+  based_on?: BasedOnShape;
 }
 
 /**
@@ -181,6 +194,81 @@ export interface TryNextAction {
   confidence?: "high" | "medium" | "low";
 }
 
+// ─── S5 caused_by linkage shapes (sub-plan §2.2) ─────────────────────────────
+
+/**
+ * `caused_by` 4 field projection (ADR-010 §5.2 `include=causal` opt-in、
+ * sub-plan §2.2 Round 3 P1 Opus #1 反映で 5 field → 4 field 縮小).
+ *
+ * SSOT 整合: architecture §6 worked example (line 213-215) +
+ * architecture §8.2 各層責務マトリクス (`based_on` は envelope トップ
+ * レベル、L1 start / L2 end 担当) と整合。`based_on` は `CausedByShape`
+ * から分離して envelope トップレベル `BasedOnShape` に移動。
+ *
+ * Triggered: `desktop_state(include=["causal"])` on a session that has a
+ * recent commit event (ToolCallStarted + ToolCallCompleted) in the
+ * causal window (sub-plan §2.6).
+ *
+ * `session_id` は ADR-010 §4 識別子ヒエラルキーで envelope 全体に共通する
+ * pivot のため CausedBy field 内には重複させず、`tool_call_id` の prefix
+ * (`${sessionId}:${seq}`) から逆引可能で十分。ADR-010 §5 example の
+ * `session_id` field 採用検討は §6 OQ #6 carry-over。
+ */
+export interface CausedByShape {
+  /** Direct preceding commit summary, e.g. `"desktop_act({...})"` (sub-plan §1.3
+   * carry-over OQ #2 finalize: 直前任意 commit tool 採用). */
+  your_last_action: string;
+  /** Per-session monotone ID (S4 既存採番、`${sessionId}:${seq}` 形式). */
+  tool_call_id: string;
+  /** ToolCallStarted ↔ ToolCallCompleted wallclock 差。`Date.now()` 由来
+   *  (`monotonicStartMs` は causal window timeout 用、別軸)。 */
+  elapsed_ms: number;
+  /** L3 view diff projection (focus delta + dirty_rect per-monitor count、
+   *  sub-plan §1.1 C / §2.3 buildProducedChanges)。`monitor_index` field 維持
+   *  (CLAUDE.md §3.2 PR #102 同型 regression 防止)。 */
+  produced_changes: string[];
+}
+
+/**
+ * Envelope-top-level `based_on` field (architecture §8.2 line 355-356
+ * 責務マトリクス整合、sub-plan §2.2 Round 3 P1 Opus #1 反映で
+ * CausedByShape から分離).
+ *
+ * Round 3 P1 Codex line 370 反映: `events` は **`string[]` (u64 decimal)**
+ * — internal bigint・wire string で JSON.stringify TypeError 完全回避。
+ * `node -e "JSON.stringify({events:[1n]})"` で TypeError 実証済 (Codex
+ * 2026-05-01)。precision loss 0 (u64 → decimal string で full 64-bit) +
+ * LLM client 互換 (Claude CLI bigint 直接扱えず) を兼備。
+ */
+export interface BasedOnShape {
+  /** L1 event_id range (start: ToolCallStarted, end: ToolCallCompleted).
+   *  u64 を decimal string で表現。 */
+  events: string[];
+  /** Observation source 由来 (UIA = focus delta / DXGI = dirty_rect)、
+   *  observation 駆動で動的 build (sub-plan §2.2 Round 2 P2 Opus #3 反映)。 */
+  sources: string[];
+}
+
+/**
+ * View snapshot consumed by `buildCausedBy` / `buildBasedOn` (sub-plan §2.2).
+ *
+ * Production wiring (`src/tools/desktop-state.ts` `defaultCausedByProjector`):
+ *   - focus = `viewGetFocused()` (S3-2 既存 napi binding) → name + hwnd
+ *   - dirtyRectsByMonitor = `viewGetDirtyRects(monitor_index)` (S2 既存) per-monitor
+ *   - latestEventId = `l1GetCaptureStats().eventIdHighWater` (既存 OQ #5 reuse、新 binding 不要)
+ *   - queryWallclockMs = `Date.now()` at projector invocation
+ */
+export interface ViewSnapshot {
+  /** L3 latest_focus 値 (focus_view → element name/hwnd)、null = focus 不在 */
+  focus: { hwnd: bigint | null; elementName: string | null } | null;
+  /** L3 dirty_rects_aggregate per-monitor count (monitor_index → aggregate count) */
+  dirtyRectsByMonitor: Map<number, number>;
+  /** L1 ring 末尾 event_id (`l1GetCaptureStats().eventIdHighWater` 由来、causal window 右端 (a)) */
+  latestEventId: bigint | undefined;
+  /** Query 時点の wallclock (causal window timeout は monotonic 軸別計算、本 field は表示用) */
+  queryWallclockMs: number;
+}
+
 export interface EnvelopeOptions {
   /**
    * Pre-computed view-poisoned signal (caller passes
@@ -196,6 +284,18 @@ export interface EnvelopeOptions {
    * approximation.
    */
   asOfWallclockMs?: number | null;
+  /**
+   * S5 caused_by linkage (sub-plan §2.4 + §3.3 makeQueryWrapper flow).
+   * Optional — set by `makeQueryWrapper` when `include=["causal"]` opt-in
+   * + `causedByProjector` returns a non-undefined projection.
+   */
+  causedBy?: CausedByShape;
+  /**
+   * S5 envelope-top-level `based_on` (sub-plan §2.2 Round 3 P1 Opus #1
+   * 反映で envelope top-level に分離、architecture §8.2 line 355-356
+   * 責務マトリクス整合). Optional — set together with `causedBy`.
+   */
+  basedOn?: BasedOnShape;
 }
 
 // ─── Schema injection helper (PR #112 Round 1 P1 fix) ─────────────────────────
@@ -341,6 +441,9 @@ export function buildEnvelope<T>(
     data,
     as_of: { wallclock_ms: wallclock },
     confidence: "fresh",
+    // S5: causal include opt-in fields (caller wires via makeQueryWrapper)
+    ...(options?.causedBy !== undefined ? { caused_by: options.causedBy } : {}),
+    ...(options?.basedOn !== undefined ? { based_on: options.basedOn } : {}),
   };
 
   let confidence: "fresh" | "degraded" = "fresh";
@@ -749,6 +852,310 @@ export function _resetToolCallSeqForTest(): void {
   _toolCallSeq.clear();
 }
 
+// ─── S5 per-session history buffer (sub-plan §1.1 A + §2.1) ─────────────────
+
+/**
+ * History entry per commit invocation. `defaultL1Emitter.pushStarted/Completed`
+ * push entries here in addition to the L1 ring (best-effort fail-safe — L1
+ * binding failure does NOT block history record so causal window
+ * computation still works).
+ *
+ * `monotonicStartMs` (sub-plan §2.1 Round 2 P2 Opus #5 反映) is the
+ * `performance.now()` reading at push time. Used by `buildCausedBy` for
+ * causal window timeout calculation — system clock drift / NTP sync
+ * cannot expire windows falsely (wallclock-based timeout was the Round 2
+ * Opus P2 #5 finding).
+ *
+ * `wallclockStartMs` (`Date.now()` 由来) is kept separately for display-
+ * only `caused_by.elapsed_ms` (= `wallclockEndMs - wallclockStartMs`).
+ */
+export interface ToolCallEvent {
+  toolCallId: string;
+  toolName: string;
+  argsSummary: string;
+  /** L1 event_id from `l1PushToolCallStarted()` return; `undefined` when
+   *  the napi push failed (telemetry best-effort). */
+  eventIdStarted: bigint | undefined;
+  /** L1 event_id from `l1PushToolCallCompleted()` return; `undefined` when
+   *  napi push failed OR completion hasn't been recorded yet (commit
+   *  in-flight). `buildCausedBy` requires this set (= `wallclockEndMs`
+   *  defined) to project — in-flight events return `undefined` envelope. */
+  eventIdCompleted: bigint | undefined;
+  wallclockStartMs: number;
+  /** `undefined` while commit is in-flight; set on `pushCompleted` hook. */
+  wallclockEndMs: number | undefined;
+  /** `performance.now()` at push time; used by `buildCausedBy` for
+   *  monotonic causal window timeout (Round 2 P2 Opus #5 反映). */
+  monotonicStartMs: number;
+  /** `undefined` until completion; `true | false` from L1 emitter. */
+  ok: boolean | undefined;
+  /** Optional lease 4-tuple summary (sub-plan §2.3 S4 既存)、commit-axis
+   *  with lease validation 経由のみ設定。 */
+  leaseToken: NativeLeaseTokenSummary | undefined;
+}
+
+interface ToolCallEventRingBuffer {
+  capacity: number;
+  events: ToolCallEvent[];
+  /** LRU `lastAccessMs` for eviction (sub-plan §3.1 S5-1 + §6 OQ #1).
+   *  Updated on every read AND write (`buildCausedBy` + `buildBasedOn`
+   *  + `pushHistory*` all bump this). */
+  lastAccessMs: number;
+}
+
+/** Max events per session (sub-plan §1.1 A-1 ring capacity). */
+const HISTORY_BUFFER_CAPACITY = 8;
+/** Max sessions in `_historyBuffers` (sub-plan §6 OQ #1 LRU eviction). */
+const HISTORY_BUFFERS_MAX = 1000;
+/** Per-session TTL — entries older than this are evicted on access (24 h). */
+const HISTORY_BUFFER_TTL_MS = 24 * 3600 * 1000;
+
+const _historyBuffers = new Map<string, ToolCallEventRingBuffer>();
+
+/** @internal Test-only — clear per-session history buffers between cases. */
+export function _resetHistoryBuffersForTest(): void {
+  _historyBuffers.clear();
+}
+
+/** @internal Test-only — inject a fully-formed history entry directly,
+ *  bypassing the L1 emitter path. Used by Round 2 P2 (Opus #4) to pin
+ *  the bigint→string projection at runtime when `nativeL1` is null in
+ *  test environments and the production emitter would otherwise leave
+ *  `eventIdStarted` / `eventIdCompleted` undefined. */
+export function _seedHistoryForTest(
+  sessionId: string,
+  entry: ToolCallEvent,
+): void {
+  const ring = _historyBuffers.get(sessionId) ?? {
+    capacity: HISTORY_BUFFER_CAPACITY,
+    events: [],
+    lastAccessMs: _historyClock(),
+  };
+  ring.events.push(entry);
+  while (ring.events.length > ring.capacity) ring.events.shift();
+  ring.lastAccessMs = _historyClock();
+  _historyBuffers.set(sessionId, ring);
+}
+
+/** @internal Test seam — pin Date.now() for LRU eviction tests. */
+let _historyClock: () => number = () => Date.now();
+export function _setHistoryClockForTest(clock: () => number): void {
+  _historyClock = clock;
+}
+export function _resetHistoryClockForTest(): void {
+  _historyClock = () => Date.now();
+}
+
+function evictHistoryIfNeeded(): void {
+  // TTL eviction (cheap on each set, bounded by Map size)
+  const now = _historyClock();
+  for (const [key, ring] of _historyBuffers) {
+    if (now - ring.lastAccessMs > HISTORY_BUFFER_TTL_MS) {
+      _historyBuffers.delete(key);
+    }
+  }
+  // LRU eviction when capacity exceeded
+  if (_historyBuffers.size <= HISTORY_BUFFERS_MAX) return;
+  const sorted = [...(_historyBuffers.entries())].sort(
+    (a, b) => a[1].lastAccessMs - b[1].lastAccessMs,
+  );
+  while (_historyBuffers.size > HISTORY_BUFFERS_MAX && sorted.length > 0) {
+    const [oldestKey] = sorted.shift()!;
+    _historyBuffers.delete(oldestKey);
+  }
+}
+
+function pushHistoryStarted(args: {
+  sessionId: string;
+  toolCallId: string;
+  toolName: string;
+  argsSummary: string;
+  eventIdStarted: bigint | undefined;
+  wallclockStartMs: number;
+  monotonicStartMs: number;
+  leaseToken: NativeLeaseTokenSummary | undefined;
+}): void {
+  const now = _historyClock();
+  let ring = _historyBuffers.get(args.sessionId);
+  if (!ring) {
+    ring = { capacity: HISTORY_BUFFER_CAPACITY, events: [], lastAccessMs: now };
+    _historyBuffers.set(args.sessionId, ring);
+    evictHistoryIfNeeded();
+  }
+  ring.events.push({
+    toolCallId: args.toolCallId,
+    toolName: args.toolName,
+    argsSummary: args.argsSummary,
+    eventIdStarted: args.eventIdStarted,
+    eventIdCompleted: undefined,
+    wallclockStartMs: args.wallclockStartMs,
+    wallclockEndMs: undefined,
+    monotonicStartMs: args.monotonicStartMs,
+    ok: undefined,
+    leaseToken: args.leaseToken,
+  });
+  while (ring.events.length > ring.capacity) ring.events.shift();
+  ring.lastAccessMs = now;
+}
+
+function pushHistoryCompleted(args: {
+  sessionId: string;
+  toolCallId: string;
+  eventIdCompleted: bigint | undefined;
+  wallclockEndMs: number;
+  ok: boolean;
+}): void {
+  const ring = _historyBuffers.get(args.sessionId);
+  if (!ring) return; // unmatched (race or eviction) — best-effort silent
+  const entry = ring.events.find((e) => e.toolCallId === args.toolCallId);
+  if (!entry) return; // entry already evicted by ring overflow
+  entry.eventIdCompleted = args.eventIdCompleted;
+  entry.wallclockEndMs = args.wallclockEndMs;
+  entry.ok = args.ok;
+  ring.lastAccessMs = _historyClock();
+}
+
+// ─── S5 caused_by + based_on + produced_changes projection (sub-plan §2.2-§2.3) ──
+
+/**
+ * Build `caused_by` 4 field projection from per-session history buffer.
+ *
+ * sub-plan §2.2 Round 3 P1 Opus #1 反映で 4 field 構成 (based_on は envelope
+ * top-level `BasedOnShape` で別途、`buildBasedOn` 並列呼出)。
+ *
+ * Causal window:
+ *   - 左端: ToolCallStarted event_id (history entry の `eventIdStarted`)
+ *   - 右端 (a) frontier: `viewSnapshot.latestEventId` (Round 2 Codex P1 #2 反映で
+ *     `eventIdCompleted > latestEventId` で undefined return = unrelated UI
+ *     change の attribution 防止)
+ *   - 右端 (b) timeout: monotonic 200ms (Round 2 Opus P2 #5 反映、Round 3 で
+ *     `performance.now()` 軸 confirm)
+ *   - 右端 (c) first stable observation: carry-over (sub-plan §6 OQ #2)
+ *
+ * 戻り値: `undefined` when (history empty / commit in-flight / window expired
+ * / frontier 未到達) — caller (makeQueryWrapper) 受領時 envelope.caused_by
+ * field を omit (raw client 互換)。
+ */
+export function buildCausedBy(
+  sessionId: string,
+  viewSnapshot: ViewSnapshot,
+  options?: { causalWindowTimeoutMs?: number; monotonicNowMs?: () => number },
+): CausedByShape | undefined {
+  const ring = _historyBuffers.get(sessionId);
+  if (!ring || ring.events.length === 0) return undefined;
+  ring.lastAccessMs = _historyClock();
+  const lastEvent = ring.events[ring.events.length - 1];
+  if (lastEvent.wallclockEndMs === undefined) return undefined; // commit in-flight
+
+  // Round 2 P2 Opus #5: monotonic 軸 timeout (system clock drift 非依存)
+  const timeoutMs = options?.causalWindowTimeoutMs ?? 200;
+  const nowMonotonic = options?.monotonicNowMs?.() ?? performance.now();
+  if (nowMonotonic - lastEvent.monotonicStartMs > timeoutMs) {
+    return undefined; // window expired (右端 (b) safety net)
+  }
+
+  // Round 2 P1 Codex: latestEventId frontier check (右端 (a) runtime enforce)
+  if (
+    viewSnapshot.latestEventId !== undefined &&
+    lastEvent.eventIdCompleted !== undefined &&
+    lastEvent.eventIdCompleted > viewSnapshot.latestEventId
+  ) {
+    return undefined; // frontier がまだ commit completion に追いついていない
+  }
+
+  return {
+    your_last_action: `${lastEvent.toolName}(${lastEvent.argsSummary})`,
+    tool_call_id: lastEvent.toolCallId,
+    elapsed_ms: lastEvent.wallclockEndMs - lastEvent.wallclockStartMs,
+    produced_changes: buildProducedChanges(viewSnapshot),
+  };
+}
+
+/**
+ * Build envelope top-level `based_on` from per-session history buffer
+ * (architecture §8.2 line 355-356 L1 start / L2 end 責務マトリクス整合、
+ * sub-plan §2.2 Round 3 P1 Opus #1 反映で `CausedByShape` から分離).
+ *
+ * `events` は u64 decimal `string[]` で表現 (Round 3 P1 Codex line 370
+ * 反映、bigint JSON.stringify TypeError 完全回避)。
+ *
+ * **Round 2 P2 (Codex line 1073) fix**: Apply the same causal window
+ * guards as `buildCausedBy` (frontier check + monotonic timeout) so
+ * `based_on` cannot outlive `caused_by`. Without this, `caused_by`
+ * would correctly disappear after window expiry but `based_on` would
+ * keep returning the latest history entry, leaving the envelope in an
+ * inconsistent state where the LLM sees event references with no
+ * causal context.
+ *
+ * 戻り値: `undefined` when (history empty / commit in-flight / window
+ * expired / frontier 未到達) — caller が envelope.based_on field を omit。
+ */
+export function buildBasedOn(
+  sessionId: string,
+  viewSnapshot: ViewSnapshot,
+  options?: { causalWindowTimeoutMs?: number; monotonicNowMs?: () => number },
+): BasedOnShape | undefined {
+  const ring = _historyBuffers.get(sessionId);
+  if (!ring || ring.events.length === 0) return undefined;
+  ring.lastAccessMs = _historyClock();
+  const lastEvent = ring.events[ring.events.length - 1];
+  if (lastEvent.wallclockEndMs === undefined) return undefined;
+
+  // Round 2 P2 (Codex line 1073) fix: same causal window guards as
+  // `buildCausedBy` so `based_on` / `caused_by` never diverge.
+  const timeoutMs = options?.causalWindowTimeoutMs ?? 200;
+  const nowMonotonic = options?.monotonicNowMs?.() ?? performance.now();
+  if (nowMonotonic - lastEvent.monotonicStartMs > timeoutMs) {
+    return undefined;
+  }
+  if (
+    viewSnapshot.latestEventId !== undefined &&
+    lastEvent.eventIdCompleted !== undefined &&
+    lastEvent.eventIdCompleted > viewSnapshot.latestEventId
+  ) {
+    return undefined;
+  }
+
+  const events: string[] = [];
+  if (lastEvent.eventIdStarted !== undefined) events.push(String(lastEvent.eventIdStarted));
+  if (lastEvent.eventIdCompleted !== undefined) events.push(String(lastEvent.eventIdCompleted));
+
+  // sources: produced_changes 由来動的 build (Round 2 P2 Opus #3、UIA = focus,
+  // DXGI = dirty_rect 観測駆動)
+  const producedChanges = buildProducedChanges(viewSnapshot);
+  const sources: string[] = [];
+  if (producedChanges.some((c) => c.startsWith("focus:"))) sources.push("UIA");
+  if (producedChanges.some((c) => c.startsWith("dirty_rects["))) sources.push("DXGI");
+
+  return { events, sources };
+}
+
+/**
+ * Project `produced_changes` from current ViewSnapshot (sub-plan §1.1 C +
+ * §2.3 trunk 近似実装、focus before-state は §6 OQ #4 carry-over).
+ *
+ * Format:
+ *   - focus delta: `"focus: → <elementName | hwnd=N>"` (focus 不在時 entry 省略、
+ *     before/after deep-diff は OQ #4 carry-over)
+ *   - dirty_rect: `"dirty_rects[monitor=N]: count"` (count > 0 monitor のみ
+ *     entry、`monitor_index` 維持 = CLAUDE.md §3.2 PR #102 同型 regression 防止)
+ */
+export function buildProducedChanges(viewSnapshot: ViewSnapshot): string[] {
+  const changes: string[] = [];
+  if (viewSnapshot.focus !== null) {
+    const label = viewSnapshot.focus.elementName ?? `hwnd=${viewSnapshot.focus.hwnd}`;
+    changes.push(`focus: → ${label}`);
+  }
+  // Sort monitor_index for deterministic output across Map iteration order
+  const sorted = [...viewSnapshot.dirtyRectsByMonitor.entries()].sort((a, b) => a[0] - b[0]);
+  for (const [monitorIndex, count] of sorted) {
+    if (count > 0) {
+      changes.push(`dirty_rects[monitor=${monitorIndex}]: ${count}`);
+    }
+  }
+  return changes;
+}
+
 // ─── L1 push helpers (commit-axis ToolCall events) ───────────────────────────
 //
 // The wrapper isolates the napi calls so tests can inject a fake L1
@@ -784,11 +1191,19 @@ export interface CommitL1Emitter {
  *  are never blocked by L1 telemetry failure. `nativeL1` is `null` on
  *  pre-P5a binaries / non-Windows dev environments — calls become
  *  no-ops there (matches the rest of `native-engine.ts`'s defensive
- *  fallback pattern). */
+ *  fallback pattern).
+ *
+ *  S5: `pushStarted` / `pushCompleted` also record into the per-session
+ *  history buffer (sub-plan §2.1 + §3.1 S5-1) so `buildCausedBy` /
+ *  `buildBasedOn` can project from `desktop_state(include=causal)`. The
+ *  history record is best-effort fail-safe — L1 napi failure does NOT
+ *  block history record (causal window calculation still works on the
+ *  TS-side ring even if L1 ring binding is broken). */
 export const defaultL1Emitter: CommitL1Emitter = {
   pushStarted({ tool, argsJson, sessionId, toolCallId, leaseToken }) {
+    let eventIdStarted: bigint | undefined;
     try {
-      nativeL1?.l1PushToolCallStarted?.(
+      eventIdStarted = nativeL1?.l1PushToolCallStarted?.(
         tool,
         argsJson,
         sessionId,
@@ -798,10 +1213,22 @@ export const defaultL1Emitter: CommitL1Emitter = {
     } catch {
       // L1 binding unavailable / threw — telemetry best-effort.
     }
+    // S5: history buffer 二重記録 (best-effort fail-safe)
+    pushHistoryStarted({
+      sessionId,
+      toolCallId,
+      toolName: tool,
+      argsSummary: argsJson,
+      eventIdStarted,
+      wallclockStartMs: Date.now(),
+      monotonicStartMs: performance.now(),
+      leaseToken,
+    });
   },
   pushCompleted({ tool, elapsedMs, ok, errorCode, sessionId, toolCallId }) {
+    let eventIdCompleted: bigint | undefined;
     try {
-      nativeL1?.l1PushToolCallCompleted?.(
+      eventIdCompleted = nativeL1?.l1PushToolCallCompleted?.(
         tool,
         elapsedMs,
         ok,
@@ -812,6 +1239,14 @@ export const defaultL1Emitter: CommitL1Emitter = {
     } catch {
       // L1 binding unavailable / threw — telemetry best-effort.
     }
+    // S5: history buffer entry を completion marker で update
+    pushHistoryCompleted({
+      sessionId,
+      toolCallId,
+      eventIdCompleted,
+      wallclockEndMs: Date.now(),
+      ok,
+    });
   },
 };
 
@@ -1033,21 +1468,160 @@ export function makeCommitWrapper<TArgs extends Record<string, unknown>>(
  * potential lease-issue tracking events).
  */
 /**
- * Query-axis wrapper options. S4 trunk: alias for `MakeEnvelopeAwareOptions`
- * — no new fields. The named alias is reserved as an expansion seam for
- * query-side telemetry (e.g. lease-issue events, query history) which
- * is **carry-over** for S5+ (sub-plan §1.2). Defined as a `type` rather
- * than an empty `interface` so eslint's `no-empty-object-type` rule
- * stays happy while keeping the symmetric commit / query naming.
+ * Query-axis wrapper options (sub-plan §2.4 Round 3 P1 Opus + Codex 重複 fix
+ * で sentinel runtime path closed loop 化).
+ *
+ * `causedByProjector` signature is `(args, sessionId)` so the wrapper
+ * can pass the resolved sessionId to the projector — without this the
+ * projector would re-resolve and the sentinel guard (`"multi:disabled"`)
+ * would be bypassed (Round 2 → Round 3 dead-loop fix).
  */
-export type QueryWrapperOptions = MakeEnvelopeAwareOptions;
+export interface QueryWrapperOptions extends MakeEnvelopeAwareOptions {
+  /**
+   * S5 caused_by + based_on projection (`include=["causal"]` opt-in only).
+   *
+   * Returns `{ causedBy?, basedOn? }` (both optional — a projector may
+   * return only one or `undefined` to skip envelope inject entirely).
+   *
+   * Production wiring (`src/tools/desktop-state.ts`): the closure builds
+   * a `ViewSnapshot` from `viewGetFocused()` + `viewGetDirtyRects()` +
+   * `l1GetCaptureStats().eventIdHighWater` (existing napi bindings, no
+   * new binding needed per OQ #5 resolve), then calls `buildCausedBy`
+   * and `buildBasedOn` in parallel.
+   *
+   * Sentinel guard runtime path (Round 3 P1 Opus + Codex 重複 fix):
+   * when `getSessionId` returns `"multi:disabled"` (multi-LLM-client
+   * detected), the projector should immediately `return undefined` to
+   * skip envelope.caused_by + envelope.based_on entirely (cross-session
+   * leak prevention).
+   */
+  causedByProjector?: (
+    args: unknown,
+    sessionId: string,
+  ) => Promise<{
+    causedBy?: CausedByShape;
+    basedOn?: BasedOnShape;
+    /**
+     * Round 3 P2 fix (Codex line 655): when the projector cannot run
+     * (e.g. `nativeL1` null = telemetry binding unavailable), surface
+     * the impaired observability via `confidence: degraded` so LLM
+     * clients distinguish "include=causal asked, projection
+     * unavailable" from "include not asked". Defaults to false.
+     */
+    forceDegraded?: boolean;
+  } | undefined>;
+  /**
+   * S5 sessionId source (sub-plan §2.4 Round 3 P1 Opus + Codex 重複 fix).
+   *
+   * `makeQueryWrapper` flow always resolves via this getter when
+   * `include=["causal"]` is opt-in, then passes the result to
+   * `causedByProjector` (closed-loop sentinel runtime path).
+   *
+   * Default `() => "default"` — single-LLM-client prototype fallback
+   * (sub-plan §1.1 E-2). Production wiring uses
+   * `getMcpTransportSessionId()` first, falls back to
+   * `"multi:disabled"` sentinel when multi-session detected, and
+   * `"default"` for single-LLM-client deploy (ADR-011 で完全 finalize).
+   */
+  getSessionId?: (args: unknown) => string;
+}
 
 export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
   handler: (args: TArgs) => Promise<McpToolResult>,
   toolName: string,
   options: QueryWrapperOptions = {},
 ): (rawArgs: TArgs & { include?: string[] }) => Promise<McpToolResult> {
-  return makeEnvelopeAware(handler, toolName, options);
+  // S4 fast path: when no S5 features are wired (causedByProjector +
+  // getSessionId both omitted), reuse the bare S3 makeEnvelopeAware
+  // wrapper unchanged. Existing query-axis callers (e.g.
+  // `desktop_discover` from S4) hit this branch with no behaviour
+  // change — sub-plan §4.5 既存 caller 破壊なし sweep。
+  if (options.causedByProjector === undefined && options.getSessionId === undefined) {
+    return makeEnvelopeAware(handler, toolName, options);
+  }
+
+  // S5 path: include peek + getSessionId resolve + causedByProjector
+  // 並列 inject + buildEnvelope({ causedBy, basedOn }).
+  const fetchMeta =
+    options.fetchMeta ??
+    (async () => ({ viewPoisoned: false, asOfWallclockMs: null }));
+  const getEnvValue =
+    options.getEnvValue ?? (() => process.env.DESKTOP_TOUCH_ENVELOPE);
+  const getSessionId = options.getSessionId ?? (() => "default");
+  const causedByProjector = options.causedByProjector;
+
+  return async (rawArgs) => {
+    const { include, ...handlerArgs } = rawArgs as { include?: string[] } & TArgs;
+    const includeCausal = include?.includes("causal") === true;
+    const includeRaw = include?.includes("raw") === true;
+    // Round 2 P1 fix (Codex line 1501): `include=["causal"]` is an
+    // implicit envelope opt-in — causal projection (`caused_by` +
+    // `based_on`) only exists inside the envelope shape. Without this
+    // bump, `include=["causal"]` alone would hit `optIn=false` (since
+    // it contains neither "raw" nor "envelope"), the compat hoist
+    // would flatten `envelope.data` to top-level, and the projected
+    // `caused_by` / `based_on` fields would be silently dropped — the
+    // S5 cross-layer contract would not actually take effect at
+    // runtime. Treating `causal` as an envelope opt-in is the natural
+    // resolution: callers asking for causal context implicitly want
+    // the envelope shape that carries it.
+    //
+    // Round 3 P2 fix (Codex line 1556): preserve the explicit `raw`
+    // override priority. `resolveEnvelopeOptIn` already returns false
+    // when `include` contains `"raw"`, so we only auto-promote to
+    // envelope mode for `causal` when `raw` is NOT explicitly
+    // requested. This keeps the per-call opt-out path that lets
+    // legacy callers force raw shape even while asking for causal
+    // context (degraded UX, but contract-preserving).
+    const optIn = (includeCausal && !includeRaw) || resolveEnvelopeOptIn(include, getEnvValue());
+    const meta = await fetchMeta();
+    const result = await handler(handlerArgs as TArgs);
+
+    // Round 3 P1 (Opus + Codex 重複) closed loop: getSessionId resolve
+    // → projector へ伝播。projector 内で sentinel detect → undefined.
+    let causedBy: CausedByShape | undefined;
+    let basedOn: BasedOnShape | undefined;
+    let projectionForceDegraded = false;
+    if (includeCausal && causedByProjector) {
+      const sessionId = getSessionId(handlerArgs);
+      const projection = await causedByProjector(handlerArgs, sessionId);
+      causedBy = projection?.causedBy;
+      basedOn = projection?.basedOn;
+      // Round 3 P2 fix (Codex line 655): surface impaired observability
+      // (e.g. nativeL1 null) via `confidence: degraded` so LLM clients
+      // can distinguish "causal asked, unavailable" from healthy raw.
+      projectionForceDegraded = projection?.forceDegraded === true;
+    }
+
+    const block = result.content?.[0];
+    if (!block || block.type !== "text" || typeof block.text !== "string") {
+      return result;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(block.text);
+    } catch {
+      return result;
+    }
+
+    const envelope = buildEnvelope(parsed, {
+      // Round 3 P2 fix (Codex line 655): merge meta.viewPoisoned with
+      // the projector's `forceDegraded` flag so impaired observability
+      // (nativeL1 null / projection unavailable while causal opted in)
+      // surfaces as `confidence: degraded` even when meta itself is
+      // healthy.
+      viewPoisoned: meta.viewPoisoned || projectionForceDegraded,
+      asOfWallclockMs: meta.asOfWallclockMs,
+      causedBy,
+      basedOn,
+    });
+    const final = compatHoist(envelope, optIn);
+
+    return {
+      ...result,
+      content: [{ ...block, text: JSON.stringify(final) }, ...result.content.slice(1)],
+    };
+  };
 }
 
 // ─── Internal helpers (commit wrapper completion event details) ──────────────
