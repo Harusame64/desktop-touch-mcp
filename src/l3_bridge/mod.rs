@@ -537,6 +537,74 @@ pub fn view_get_focused() -> napi::Result<Option<NativeFocusedElement>> {
     })
 }
 
+// ─── napi-exposed L4 envelope helper (S3 D2-E0 P1) ────────────────────────────
+//
+// `view_get_focused_with_wallclock` returns the focused element + the
+// wallclock_ms of the latest L1 event that updated the view + the
+// pipeline-poisoned flag, in a single round-trip. Used by the L4
+// envelope wrapper (`src/tools/_envelope.ts::makeEnvelopeAware`) to
+// build `as_of.wallclock_ms` from L1 event time (NOT server-side
+// `Date.now()`) — see ADR-010 §5 + §4.1 Provenance, PR #110 Round 1
+// P1-4 反映 (semantic 反転回避、`freshness_ms = now - as_of.wallclock_ms`
+// が後続 P3 で意味論不変).
+//
+// Falls back gracefully when no event has been observed:
+//   - `latest_event_wallclock_ms == None` → caller uses `Date.now()`
+//     fallback + `confidence: degraded` (see `_envelope.ts::buildEnvelope`).
+//   - `view_poisoned == true` → caller falls back to UIA path
+//     entirely (`viewGetFocused` already returns `None` in this case).
+
+#[napi(object)]
+pub struct NativeFocusedElementWithWallclock {
+    /// Same `NativeFocusedElement` shape as `view_get_focused`, or
+    /// `None` when no live focus is observed (or pipeline is poisoned).
+    pub focused: Option<NativeFocusedElement>,
+    /// Wallclock_ms of the latest live focus event. `None` when no
+    /// event has been observed yet (initial spawn / all retractions
+    /// settled). Caller falls back to `Date.now()` + `confidence:
+    /// degraded` when `None`.
+    pub latest_event_wallclock_ms: Option<BigInt>,
+    /// `true` when the pipeline's slot is poisoned (Codex v9 P2-17,
+    /// see `PerceptionPipeline::is_poisoned`). Caller falls back to
+    /// UIA path entirely.
+    pub view_poisoned: bool,
+}
+
+#[napi]
+pub fn view_get_focused_with_wallclock() -> napi::Result<NativeFocusedElementWithWallclock> {
+    napi_safe_call("view_get_focused_with_wallclock", || {
+        let pipeline = ensure_perception_pipeline();
+        if pipeline.is_poisoned() {
+            return Ok(NativeFocusedElementWithWallclock {
+                focused: None,
+                latest_event_wallclock_ms: None,
+                view_poisoned: true,
+            });
+        }
+        let focused = pipeline
+            .latest_focus_view
+            .snapshot()
+            .map(|ui_ref| NativeFocusedElement {
+                name: ui_ref.name,
+                automation_id: ui_ref.automation_id,
+                control_type: crate::uia::control_type_name(UIA_CONTROLTYPE_ID(
+                    ui_ref.control_type as i32,
+                ))
+                .to_string(),
+                window_title: ui_ref.window_title,
+            });
+        let latest_event_wallclock_ms = pipeline
+            .latest_focus_view
+            .latest_event_wallclock_ms()
+            .map(BigInt::from);
+        Ok(NativeFocusedElementWithWallclock {
+            focused,
+            latest_event_wallclock_ms,
+            view_poisoned: false,
+        })
+    })
+}
+
 /// Diagnostic snapshot of the perception pipeline's runtime state.
 /// `desktop_state.ts` and `server_status` use this to surface when
 /// the view path is unavailable (so the UIA fallback isn't silent).

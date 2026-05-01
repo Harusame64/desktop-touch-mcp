@@ -84,6 +84,15 @@ jobs:
       - name: Type check & build
         run: npm run build
 
+      - name: Envelope size SLO bench (ADR-010 P1 §5.6.1)
+        # Pure pure-JS bench (no napi) measuring `desktop_state` envelope
+        # serialised payload size for 5 representative scenarios. Exits 1
+        # when any scenario exceeds ENVELOPE_MINIMAL_SIZE_THRESHOLD_BYTES
+        # (1024 bytes), which would silently force `confidence: degraded`
+        # at runtime. CI fails on SLO regression so the threshold is held
+        # bit-equal with `src/tools/_envelope.ts` and ADR-010 §5.6.1.
+        run: npm run bench:envelope-size
+
       # NOTE: full unit suite execution on windows-latest 2-core runners is
       # currently unreliable (every attempt — default maxForks:4, single
       # fork via --maxWorkers=1, threads pool, vmThreads pool — terminates

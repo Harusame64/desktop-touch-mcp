@@ -316,6 +316,33 @@ export interface NativeViewFocusedPipelineStatus {
 export declare function viewGetFocused(): NativeFocusedElement | null
 export declare function viewFocusedPipelineStatus(): NativeViewFocusedPipelineStatus
 
+// ─── L4 envelope helper (S3 D2-E0 P1, ADR-010) ───────────────────────────────
+
+export interface NativeFocusedElementWithWallclock {
+  /** Focused element shape; **omitted** by napi-rs (NOT set to `null`)
+   * when no live focus / pipeline poisoned (PR #112 Round 1 P2-B/P1-3).
+   * Same `Option::None` omission semantic as PR #108
+   * `NativeDirtyRectsResult.latest` — see `native-types.ts` for the
+   * full memory `feedback_napi_default_export.md` reference. Use
+   * `result.focused != null` (covers both `undefined` from omission
+   * and a hypothetical future explicit `null`). */
+  focused?: NativeFocusedElement | null
+  /** Wallclock_ms of the latest live focus event; **omitted** by napi-rs
+   * when no event observed yet (same `Option::None` omission semantic
+   * as `focused`). Caller uses `Date.now()` + `confidence: degraded`
+   * fallback. */
+  latestEventWallclockMs?: bigint | null
+  /** True when pipeline slot is poisoned (Codex v9 P2-17). Caller
+   * falls back to UIA path entirely. */
+  viewPoisoned: boolean
+}
+
+/** Single-round-trip read of focused element + L1 event wallclock +
+ * pipeline-poisoned flag. Used by the L4 envelope wrapper to build
+ * `as_of.wallclock_ms` from L1 event time (NOT server-side `Date.now()`,
+ * ADR-010 §5 + §4.1 Provenance, PR #110 Round 1 P1-4). */
+export declare function viewGetFocusedWithWallclock(): NativeFocusedElementWithWallclock
+
 // ─── L3 perception dirty_rects_aggregate view (S2 D2-C) ──────────────────────
 
 export interface NativeDirtyRectFrame {
