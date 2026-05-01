@@ -80,21 +80,54 @@ const POST_INDUCE_WAIT_MS = 200;
 
 // ─── Arg parsing ─────────────────────────────────────────────────────────────
 // `--manual` / `--no-induce` disables auto-induction (= D2-B-4 mode).
-// `--induce-focus-change` is the explicit form of the default ON behaviour;
-// kept for documentation symmetry. First arg that parses as a finite number
-// is the iteration count.
+// `--induce-focus-change` is the explicit form of the default ON behaviour
+// (parsed for symmetry, no-op semantically). The first numeric token is the
+// iteration count. Unknown flags or non-numeric tokens are rejected with
+// exit 2 — Codex round 1 P2 (`--manul` typo / `1000x` malformed must not
+// silently fall through to default 1000 iters) + Opus round 1 P2-4
+// (parser must validate `--induce-focus-change`).
 const rawArgs = process.argv.slice(2);
-const manualMode = rawArgs.some((a) => a === "--manual" || a === "--no-induce");
-const numericArg = rawArgs.find((a) => Number.isFinite(Number(a)));
-const iterations = numericArg !== undefined ? Number(numericArg) : DEFAULT_ITERATIONS;
-if (!Number.isFinite(iterations) || iterations < 100) {
-  console.error(
-    "usage: node d2_desktop_state_roundtrip.mjs [iterations >= 100] [--manual | --induce-focus-change]"
-  );
+const KNOWN_FLAGS = new Set(["--manual", "--no-induce", "--induce-focus-change"]);
+const usage =
+  "usage: node d2_desktop_state_roundtrip.mjs [iterations >= 100] [--manual | --induce-focus-change]";
+
+let parsedNumeric;
+const unknownArgs = [];
+for (const a of rawArgs) {
+  if (a.startsWith("--")) {
+    if (!KNOWN_FLAGS.has(a)) unknownArgs.push(a);
+  } else if (Number.isFinite(Number(a))) {
+    if (parsedNumeric !== undefined) {
+      console.error(
+        `error: multiple iteration counts (${parsedNumeric}, ${a}) — pass exactly one numeric token`
+      );
+      console.error(usage);
+      process.exit(2);
+    }
+    parsedNumeric = Number(a);
+  } else {
+    unknownArgs.push(a);
+  }
+}
+if (unknownArgs.length > 0) {
+  console.error(`error: unrecognised arguments: ${unknownArgs.join(", ")}`);
+  console.error(usage);
   process.exit(2);
 }
 
-const induceEnabled = !manualMode;
+const manualMode = rawArgs.some((a) => a === "--manual" || a === "--no-induce");
+const iterations = parsedNumeric !== undefined ? parsedNumeric : DEFAULT_ITERATIONS;
+if (!Number.isFinite(iterations) || iterations < 100) {
+  console.error(usage);
+  process.exit(2);
+}
+
+// `induceEnabled` is `let` (not `const`) because nutjs import failure
+// degrades the bench to manual mode (Opus round 1 P1-1). Without
+// reassignment here, the acceptance gate at the end fires `exit 1` even
+// though the operator note already explained the degrade — sub-plan
+// §3.3 step 1 promises "graceful degrade" which requires this.
+let induceEnabled = !manualMode;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -126,10 +159,17 @@ if (induceEnabled) {
     }
   } catch (e) {
     console.warn(
-      `# WARNING: nutjs import failed (${e?.message ?? e}). Falling back to manual mode.`
+      `# WARNING: nutjs import failed (${e?.message ?? e}). Falling back to manual mode (graceful degrade).`
     );
     nutKeyboard = null;
     nutKey = null;
+    // Opus round 1 P1-1: degrade to manual mode on nutjs failure so the
+    // acceptance gate (line ~330) doesn't fire `exit 1` despite the
+    // operator note already explaining the degradation. This honours
+    // sub-plan §3.3 step 1 ("nutjs failure → --manual 相当に degrade")
+    // and matches sub-plan §3.3 step 4 (manual mode tolerates view-hit
+    // counter == 0 with exit 0).
+    induceEnabled = false;
   }
 }
 

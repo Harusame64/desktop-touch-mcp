@@ -110,14 +110,16 @@ view-hit iter が 0 件の場合は acceptance fail (operator note + exit code 1
 
 | flag | default | 効果 |
 |---|---|---|
-| `--induce-focus-change` | **default ON** (新 mode) | warmup phase 内で alt+tab 2 回送信 |
-| `--manual` | OFF | 自動 induction を skip、operator-induced (D2-B-4 既存挙動) |
+| `--induce-focus-change` | (alias of default ON) | default ON の symmetric explicit form、parser で認識 + warn 防止 |
+| `--manual` | OFF | 自動 induction を skip、operator-induced (D2-B-4 既存 semantic) |
 | `--no-induce` | OFF | エイリアス of `--manual` |
 
 既存:
 - `[iterations >= 100]` (位置引数、互換維持)
 
-D2-B-4 互換性: 既存呼出 `node benches/d2_desktop_state_roundtrip.mjs 1000` は `--induce-focus-change` 暗黙 ON で view-hit measure するが、`--manual` を渡せば D2-B-4 完全互換 (D2-B-4 数値の再現確認用、§6 OQ #2 で再検討)。
+**未知 flag / non-numeric token は parser で reject** (exit 2、usage error と同じ扱い、Codex round 1 P2 + Opus round 1 P2-4)。typo (`--manul`、`--induce-focus-cange`) や malformed count (`1000x`) を silent ignore せず fail-fast。複数 numeric token も reject。
+
+D2-B-4 互換性: 既存呼出 `node benches/d2_desktop_state_roundtrip.mjs 1000` は default ON で view-hit measure する。**output schema は本 PR で進化** (overall + view-hit + non-view の 3 分解、§3.2 R6 参照)、bit-equal reproduction が必要なら `git checkout f79e9ec -- benches/d2_desktop_state_roundtrip.mjs` で旧 bench を回す。
 
 ---
 
@@ -147,10 +149,12 @@ nutjs alt+tab 送信が以下の env で失敗する可能性:
 - group policy で alt+tab disabled
 - bench 実行 user に input 権限なし (UAC 上昇 process が前面、低優先 process は input block)
 
-対応:
-1. nutjs `keyboard.pressKey` が throw → catch + warning + `--manual` 相当の挙動に degrade
-2. measure phase 終了時 view-hit counter == 0 → operator note 表示 + exit code 1 (acceptance fail)
-3. `--manual` flag 明示時は auto induction を完全 skip、view-hit counter == 0 でも exit code 0 (operator 判断)
+対応 (失敗 path 4 段階、Opus round 1 P1-1 で graceful degrade contract を確定):
+
+1. **nutjs import 段階で throw** (動的 `await import(...)` が module load 失敗、native binding 不在等) → catch ブロックで warning + `induceEnabled = false` に再代入 → manual mode 相当に **graceful degrade** (= step 4 と同 exit 0 path)。impl は `let induceEnabled` で再代入可、sub-plan §1.1 mitigation R1 と整合
+2. **import OK + pressKey 試行で runtime throw** (induction 中に input block 等) → counter (`inductionFailures`) 記録のみ、`induceEnabled` は変えず、bench 継続。view-hit counter は措定的に 0 になるが、別経路で focus event が発生していれば view path hit が観測され得る (acceptance gate は view-hit count で判定)
+3. **auto-induce mode (`induceEnabled === true`) で view-hit counter == 0** → operator note 表示 + exit code 1 (**acceptance fail**)。原因: induction 全失敗 + 別経路でも focus event なし、または `POST_INDUCE_WAIT_MS` (200ms) が `shift_ms` floor に対し不足
+4. **`--manual` flag 明示時 / step 1 後の degrade 後** (`induceEnabled === false`) → auto induction を完全 skip、view-hit counter == 0 でも exit code 0 (D2-B-4 semantic 維持、operator 判断)
 
 ### 3.4 review 軸
 
@@ -197,7 +201,7 @@ CLAUDE.md §3.3 Step 0 の PR 種別判断:
 | R3 | focus 変化 induction 後、`latest_focus` view の populate が遅延 (frontier release が `shift_ms` floor 律速) | 低 | warmup 200ms wait × 2 回で `shift_ms = 100ms` を 2 cycle 含む十分な余裕 |
 | R4 | `focusedElementSource: view` が observed されても、実態は `current_focused_element` view 経由の別 hit (sentinel 拡張前の cdp/uia と判別できない可能性) | 低 | `desktop-state.ts:shouldAcceptViewFocus` の 3 ゲートラダー (empty-name / Chromium-Pane / foreground-match) で view sentinel が立つのは確実、PR #97 D2-B-2 で contract test pin 済 |
 | R5 | view-hit p99 と non-view p99 が逆転 (view path がむしろ遅い) | 中 | 実測値で評価、逆転していれば views-catalog §3.1 SLO 文言で「view-replacement の効果 marginal」を historical note に明記して PR-2 で finalize。本 PR 自体は数値取得のみで判断は PR-2 で |
-| R6 | bench script の改修で D2-B-4 invocation (`--manual` 経路) に regression が入る | 高 | `--manual` flag 経路を D2-B-4 と完全 bit-equal 維持、unit test (vitest) で `--manual` 出力が D2-B-4 既存出力 schema と互換であることを pin。ただし vitest で外部 process spawn は重いので、bench script の pure parser 関数を切り出して unit test、main flow は smoke test 1 件のみ |
+| R6 | bench script の改修で D2-B-4 invocation (`--manual` 経路) に regression が入る | 中 | **D2-B-5 では metric 3 分解 (overall / view-hit / non-view) という output schema の進化を採択**、bit-equal は意図的に捨てる (Opus round 1 P2-3 反映、判断: 3 分解は本 PR の core delta であり、`--manual` で出力 schema を分岐させる complexity は acceptance fail 経路を増やす)。`--manual` mode は D2-B-4 と同じ「auto-induction 無し」semantic を維持しつつ、output は 3 分解 schema (view-hit セクションは 0 件時 "0 iters observed" 表示) で統一。D2-B-4 完全 bit-equal 互換 reproduction が必要な場合は `git checkout f79e9ec -- benches/d2_desktop_state_roundtrip.mjs` で旧 bench を回す手順を §2.4 で明記。production code 不変なので公開 API contract 破壊はなし、CLAUDE.md §3.2 carry-over scope shrink 違反にも該当しない |
 | R7 | bench measure phase 中に operator が手動で focus 変化を起こす (= ノイズ) | 低 | bench 実行中は terminal 操作禁止を operator note で明示、CI / 一発計測前提 |
 | R8 | nutjs import が ESM でコケる (project は `type: module`) | 低 | nutjs は dual ESM/CJS export、import で動作確認済 (production の MCP tool で利用中)。bench は既に ESM `.mjs` |
 
@@ -208,9 +212,11 @@ CLAUDE.md §3.3 Step 0 の PR 種別判断:
 | # | OQ | 決定タイミング |
 |---|---|---|
 | 1 | nutjs 経由 alt+tab vs Win32 `keybd_event` 直叩き (native addon に bench-only export 新設) | impl 時、nutjs で動作不安定なら addon export を別 PR carry-over (本 PR scope 外) |
-| 2 | `--induce-focus-change` を default ON にするか OFF にするか — default ON だと既存 D2-B-4 invocation の挙動が変わる | impl 時、user feedback (本 sub-plan review) で確定 |
+| ~~2~~ | ~~`--induce-focus-change` を default ON にするか OFF にするか~~ | **Resolved (impl 確認、default ON 採択、2026-05-02、Opus round 1 P2-1)**: 本 PR §1.1 A / §2.4 / §4.1 / impl `benches/d2_desktop_state_roundtrip.mjs` arg parser で default ON 確定。`--manual` で auto-induction skip semantic を提供、`--induce-focus-change` は default ON の symmetric explicit form として parser で認識 (no-op、warn 防止用) |
 | 3 | bench を CI で動かすか manual のみか — alt+tab は GUI session 必須、GitHub Actions windows-latest は GUI 制約あり | 本 PR では manual 専用、CI 化は future enhancement |
-| 4 | view-hit p99 の sample 数下限 (例: view-hit 件数が 50 件未満なら p99 信頼性低) | impl 時、acceptance gate に「view-hit count >= 50 (1000 iter の 5%)」を追加するか判断 |
+| ~~4~~ | ~~view-hit p99 の sample 数下限 (例: view-hit 件数が 50 件未満なら p99 信頼性低)~~ | **Resolved (impl 採択、`> 0` lower bound、2026-05-02、Opus round 1 P2-2)**: 本 PR の acceptance gate (impl `benches/d2_desktop_state_roundtrip.mjs` 304 行付近) は `> 0` を採択。視点: **本 PR は数値取得自体が目的**、precision (statistical noise の caveat threshold) は **PR-2 (views-catalog SLO 4 種分解)** の判断分岐 thresholds (≤2ms / 2-5ms / ≥5ms) 確定時に再検討。N が極端に少ない場合の caveat 警告は OQ #6 (新規) で別 PR 実施 |
+| 5 (新規) | `POST_INDUCE_WAIT_MS = 200ms` を env override に追従させるか (`max(200, env_shift_ms * 2)` 動的計算) | **別 PR carry-over (Opus round 1 P3-1 記録)**: 本 PR は production default `WATERMARK_SHIFT_MS = 100ms` 前提で 200ms 固定、operator が `WATERMARK_SHIFT_MS=500` 等を override して bench 回す場合は 200ms wait 不足。bench 起動時に env override を warn する案も併記。判断は views-catalog SLO 4 種分解 PR-2 完了後 |
+| 6 (新規) | view-hit N < 50 時の statistical noise caveat 警告を bench output に出すか | **別 PR carry-over (Opus round 1 P3-2 記録)**: N=1 時 p99 = max でノイズ、operator が信頼性判断できない。OQ #4 lower bound `> 0` 採択と整合する形で「N < 50: noisy」caveat を output に追加する方針、判断は PR-2 thresholds 確定時 |
 
 ---
 
@@ -244,6 +250,7 @@ merge 後の後続 PR (本 sub-plan scope 外):
 | version | date | author | summary |
 |---|---|---|---|
 | Drafted v0.1 | 2026-05-02 | Claude (Sonnet) | 初稿起草、Opus 諮問判断 (2026-05-02) §3 留保事項 R1 解消のための bench 拡張 plan、nutjs alt+tab 自動 induction + metric 3 分解 + acceptance gate (view-hit counter > 0) + fallback (operator-induced manual) |
+| Drafted v0.2 | 2026-05-02 | Claude (Sonnet) | **Opus + Codex round 1 review 反映** (PR #118): P1×1 + P2×4 + P3×2 (Opus) + P2×1 (Codex 同根) を Round 2 で全件解決。impl: `let induceEnabled` + nutjs catch で false 設定 (Opus P1-1 graceful degrade)、arg parser strict 化 (unknown flag / non-numeric / multiple numeric reject、Codex P2 + Opus P2-4)。docs: §2.4 flag 表 + §3.2 R6 mitigation 書き直し (output schema 進化として明文化、Opus P2-3)、§3.3 fallback step 1-4 詳細化 (Opus P1-1 整合)、§6 OQ #2 + #4 Resolved 化 (Opus P2-1, P2-2)、§6 OQ #5/#6 新規追加 (Opus P3-1/P3-2 記録、別 PR carry-over) |
 
 ---
 

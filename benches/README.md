@@ -129,9 +129,11 @@ Acceptance interpretation (Opus 諮問判断 2026-05-02 §3 留保事項 R1, fee
 
 Failure modes (auto-induce):
 
-- nutjs import / `pressKey` failure → warning + degrade to manual (view-hit counter likely 0 → exit 1 unless `--manual` is passed)
-- RDP / locked-down policy / UAC-elevated foreground app blocks programmatic alt+tab → same degradation
-- 200ms post-induce wait insufficient for `shift_ms` floor + idle-advance cycle → raise `POST_INDUCE_WAIT_MS` constant
+- **nutjs import failure** (module load / native binding 不在等) → warning + **graceful degrade to manual mode** (`induceEnabled = false`、acceptance gate skip、view-hit counter 0 でも exit 0)。RDP / sandboxed env で nutjs 前提が満たせない場合の自動降格経路 (sub-plan §3.3 step 1)
+- **pressKey runtime failure** (induction 中に input block、UAC-elevated foreground app 等) → counter 記録のみ、bench 継続。view-hit が別経路で発生していれば acceptance gate pass、全失敗時のみ exit 1 (sub-plan §3.3 step 2-3)
+- **auto-induce mode で view-hit counter 0** (induction 全失敗 + 別経路でも focus event なし) → operator note + exit 1 (acceptance fail)。原因切り分けは output の `induction: alt+tab × N attempted, M failed` 行で
+- **200ms post-induce wait insufficient** for `shift_ms` floor + idle-advance cycle (operator が `WATERMARK_SHIFT_MS` env を override した場合) → `POST_INDUCE_WAIT_MS` 定数を上げる、または env 追従動的計算 (sub-plan §6 OQ #5 carry-over)
+- **不明 CLI flag / malformed numeric** (`--manul` typo / `1000x` 等) → arg parser で reject (exit 2)、silent ignore せず fail-fast
 
 ### 2.4 L4 Envelope Assembly (`benches/l4_envelope.rs`)
 
