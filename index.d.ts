@@ -316,6 +316,25 @@ export interface NativeViewFocusedPipelineStatus {
 export declare function viewGetFocused(): NativeFocusedElement | null
 export declare function viewFocusedPipelineStatus(): NativeViewFocusedPipelineStatus
 
+// ─── L4 envelope helper (S3 D2-E0 P1, ADR-010) ───────────────────────────────
+
+export interface NativeFocusedElementWithWallclock {
+  /** Focused element shape, or null when no live focus / pipeline poisoned. */
+  focused: NativeFocusedElement | null
+  /** Wallclock_ms of the latest live focus event. null when no event
+   * observed yet. Caller uses Date.now() + confidence: degraded fallback. */
+  latestEventWallclockMs: bigint | null
+  /** True when pipeline slot is poisoned (Codex v9 P2-17). Caller
+   * falls back to UIA path entirely. */
+  viewPoisoned: boolean
+}
+
+/** Single-round-trip read of focused element + L1 event wallclock +
+ * pipeline-poisoned flag. Used by the L4 envelope wrapper to build
+ * `as_of.wallclock_ms` from L1 event time (NOT server-side `Date.now()`,
+ * ADR-010 §5 + §4.1 Provenance, PR #110 Round 1 P1-4). */
+export declare function viewGetFocusedWithWallclock(): NativeFocusedElementWithWallclock
+
 // ─── L3 perception dirty_rects_aggregate view (S2 D2-C) ──────────────────────
 
 export interface NativeDirtyRectFrame {

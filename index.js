@@ -119,6 +119,9 @@ export const l1ShutdownForTest          = nativeBinding.l1ShutdownForTest;
 export const viewGetFocused             = nativeBinding.viewGetFocused;
 export const viewFocusedPipelineStatus  = nativeBinding.viewFocusedPipelineStatus;
 
+// ─── L4 envelope helper (S3 D2-E0 P1, ADR-010) ───────────────────────────────
+export const viewGetFocusedWithWallclock = nativeBinding.viewGetFocusedWithWallclock;
+
 // ─── L3 perception dirty_rects_aggregate view (S2 D2-C) ──────────────────────
 export const viewGetDirtyRects          = nativeBinding.viewGetDirtyRects;
 
