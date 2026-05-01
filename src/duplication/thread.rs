@@ -174,7 +174,22 @@ fn run_loop(
                         access_lost_count = 0;
                         Ok(rects)
                     }
-                    other => other,
+                    other => {
+                        // Codex P2-Codex-1: a non-AccessLost error
+                        // (e.g. `DuplicationError::Other(_)` from a
+                        // transient device/driver hiccup) breaks the
+                        // "consecutive AccessLost" chain just as much
+                        // as a successful frame does. If we left the
+                        // counter alone, an `Err(Other)` between two
+                        // AccessLost runs could trip the threshold on
+                        // the second AccessLost even though the failures
+                        // weren't consecutive — false Failure events,
+                        // contract violation. Reset on every
+                        // non-AccessLost outcome so the counter only
+                        // tracks unbroken AccessLost streaks.
+                        access_lost_count = 0;
+                        other
+                    }
                 };
                 let _ = reply.send(result);
             }
@@ -397,6 +412,13 @@ mod tests {
                 // returns errors (TIMEOUT, ACCESS_LOST). Don't fail
                 // the test on these; just skip.
                 eprintln!("skipping enable-half: DXGI Next returned Err");
+                // Codex P2-Codex-2: `DuplicationHandle` has no `Drop`
+                // cleanup, so an early return without sending `Stop`
+                // leaves the duplication thread alive for the rest of
+                // the test process — subsequent DXGI tests can hit
+                // resource contention. Send Stop here so the thread
+                // tears down before we exit.
+                let _ = handle.tx.send(DuplicationCmd::Stop);
                 return;
             }
         };
