@@ -58,10 +58,10 @@ C. **query 軸 wrapper の責務** (1 helper で template 化):
   - **`tool_call_id` は採番しない** (query は副作用なし、トレース観点で start/completed event 不要、ただし将来の query history は S5 OQ)
 D. **`desktop_discover` / `desktop_act` 既存実装は維持** (Round 1 P1-3 教訓、ADR-010 §1.5 「L5 wrapper が一元解釈、tool 個別実装は修正不要」)、wrapper 経由化のみ — handler 内部 logic、Zod schema、戻り値 shape 不変、MCP server 登録 site で `makeQueryWrapper(desktopDiscoverHandler, "desktop_discover")` / `makeCommitWrapper(desktopActHandler, "desktop_act")` で wrap
 E. **L1 既存 `EventKind::ToolCallStarted (=100)` / `ToolCallCompleted (=101)` の payload schema 確定** (新規 EventKind 追加なし、CLAUDE.md §3.2 既存 public API 破壊禁止):
-  - 既存 `ToolCallStartedPayload { tool: String, args_json: String }` を **本 PR で expand**: `{ tool: String, args_summary: String, lease_token: Option<LeaseTokenSummary> }` (semantically rich、args_json → args_summary に rename + lease 4-tuple 入れる、既存 callers は napi binding 引数 shape は不変)
+  - 既存 `ToolCallStartedPayload { tool: String, args_json: String }` を **本 PR で expand**: 既存 `args_json` field 不変 + `lease_token: Option<LeaseTokenSummary>` 末尾 optional 追加 (Round 1 P1-2 反映: `args_json` rename は npm public type signature breakage で却下、CLAUDE.md §3.2 既存 API 破壊禁止)
   - 既存 `ToolCallCompletedPayload { tool, elapsed_ms, ok, error_code }` 不変 (S4 で追加 field 不要)
   - `LeaseTokenSummary { entityId, viewId, targetGeneration, evidenceDigest_prefix8 }` 新型 (full evidenceDigest は size 圧縮、prefix のみ)
-  - 既存 `l1_push_tool_call_started` napi binding signature: `args_json` 引数を `args_summary` に rename + 新 optional `lease_token` 引数追加 (既存 caller は `lease_token=undefined` で呼出し可、backward compat)
+  - 既存 `l1_push_tool_call_started` napi binding signature: 既存 4 引数 (`tool, args_json, session_id, tool_call_id`) 順序 + 名前不変 + 末尾 5th `lease_token: Option<NativeLeaseTokenSummary>` 追加 (Round 1 P1-1 反映: 3rd 挿入は既存 4-arg positional callers を silent breakage、5th 末尾追加で TypeScript optional trailing semantic で既存 callers 無修正動作)
 F. **失敗時 envelope: `most_likely_cause: "LeaseExpired"` 1 種実装** + `try_next: [{action: "desktop_discover", ...}]` 1 path 実装 — 残 36 typed reason codes (ADR-010 §5.4) は expansion P2 で carry-over
 G. **`click_element` は本 trunk では wrapper 経由しない** (expansion で「lease 不在 commit」バリエーションとしてコピー、walking-skeleton §4 line 244)
 H. **G3 ゲート判定 + Appendix C append** — `docs/walking-skeleton-trunk-selection.md` Appendix C 末尾に `| G3 | 2026-05-XX | (継続/shrink) | (...) | (...) |` を append (本 sub-plan §3.8、impl PR merge 後)
@@ -80,7 +80,7 @@ trunk 完了 (G3 通過) 後の expansion phase で実装:
 ### 1.3 [carry-over] §3.bis ledger / OQ で永続化 (別 phase)
 
 - **OQ #1 — `tool_call_id` 採番 source** (Round 1 P1-4 同型 risk 軸): 本 trunk で **session_id + per-session monotone counter** を採用 (例: `"sess_abc-123:42"`)、cross-server-restart で uniqueness を絶対保証する schema は expansion (永続 store 必要)。本 sub-plan §8 OQ #1 で carry-over
-- **OQ #2 — `caused_by.your_last_action` の semantic 解釈** (S5 で finalize): `your_last_action` field は **直前 desktop_act の `tool_name + args_summary`** とするか、**直前任意 commit tool** とするか? 本 S4 では `_post.ts::recordHistory` の延長で per-session ring buffer を仕込む base のみ、解釈は S5 caused_by linkage 実装時に確定。本 sub-plan §8 OQ #2 で carry-over
+- **OQ #2 — `caused_by.your_last_action` の semantic 解釈** (S5 で finalize、Opus PR #111 Round 1 P1-5 反映): `your_last_action` field は **直前 desktop_act の `tool_name + args_json`** とするか、**直前任意 commit tool** とするか? 本 trunk では **`_post.ts::recordHistory` への touch なし** (`recordHistory` は既に存在し action tools から呼ばれている)、per-session ring buffer の新設または `_post.ts` 統合判断は **S5 着手時に finalize** に純粋 carry-over (本 S4 scope 外)。S5 で per-session ring buffer 仕組み (新設 vs `_post.ts` 統合) + `caused_by.your_last_action` semantic 解釈 (任意 commit tool / desktop_act 限定) を同時 finalize
 - **OQ #3 — `args_summary` の生成 logic** (Round 2 P2-3 軸延長): 本 S4 では JSON.stringify の truncate (~512 byte 上限) を採用、PII / secret redaction は expansion P2 work (`_errors.ts::SUGGESTS` の args_redacted 拡張と統合)。本 sub-plan §8 OQ #3 で carry-over
 - **`click_element` lease 不在 commit バリエーション**: §1.1 G + §1.2 expansion で確定済 (本 S4 では wrapper 経由しない)
 - **既存 LLM client 破壊禁止 (CLAUDE.md §3.2 PR #102 教訓延長)**: S3 と同じ compat mode (server 常に envelope assembly + post-flatten で raw shape return) で担保、`desktop_discover` / `desktop_act` の e2e test 無修正 pass を §3.7 で pin
@@ -89,7 +89,7 @@ trunk 完了 (G3 通過) 後の expansion phase で実装:
 
 - **N1 (pivot 必ず保持)**: `tool_call_id` は session 内 unique pivot、`session_id` + `tool_call_id` の 2 軸で commit event を traceable に。L1 既存 EventEnvelope の `session_id` / `tool_call_id` field (`src/l1_capture/envelope.rs` line 60-84) を本 PR で **payload 経由ではなく envelope 経由で carry** (新規 EventKind 追加なし、§1.1 E)
 - **N2 (watermark で frontier 進行)**: ToolCall event は副作用 commit、`UiaFocusChanged` / `DirtyRect` 等の観測 event と同 L1 ring に push、L2/L3 frontier は両者を統合した watermark で進行 (S3 で確立済)
-- **CLAUDE.md 強制命令 3.1 (ADR/plan 複数表 fact 整合)**: 本 PR では sub-plan / 親戦略 walking-skeleton §4 S4 / ADR-010 §5.3 (失敗 envelope) + §5.4 (LeaseExpired typed reason) / 統合書 §4 (lease 4-tuple) + §6 (1 event の旅) / 既存 `LeaseStore.validate()` reason 4 種 / 既存 `EventKind::ToolCallStarted/Completed` の 5 SSOT を bit-equal に揃える
+- **CLAUDE.md 強制命令 3.1 (ADR/plan 複数表 fact 整合)**: 本 PR では sub-plan / 親戦略 walking-skeleton §4 S4 / ADR-010 §5.3 (失敗 envelope) + §5.4 (LeaseExpired typed reason、4 LeaseStore reason → 4 typed codes 1:1 + 1 別経路 typed code = `EntityOutsideViewport`) / 統合書 §4 (lease 4-tuple) + §6 (1 event の旅) / 既存 `LeaseStore.validate()` reason 4 種 / 既存 `EventKind::ToolCallStarted/Completed` の 5 SSOT を bit-equal に揃える (Round 1 P1-4 反映: 旧 "1:1" 主張は 4 reason → 4 typed codes 1:1 + 1 別経路 に修正)
 - **CLAUDE.md 強制命令 3.2 (carry-over scope shrink、PR #102 教訓延長)**: 既存 EventKind 番号 (100, 101) **不変**、新規 EventKind 追加禁止 (walking-skeleton §4 line 240、Opus P1-4 教訓と整合)。既存 napi binding `l1_push_tool_call_started/completed` の signature 拡張は **新 optional 引数追加のみ** (backward compat、既存 caller は影響なし)
 - **walking skeleton G3 contract**: `LeaseStore.validate()` の reason 4 種 → ADR-010 §5.4 typed enum 5 種 (lease 関連) の 1:1 マッピングを本 trunk で確立、S5 で caused_by linkage 経由の `if_unexpected.try_next` 配線が mechanical コピーで進められる base が固まること
 
@@ -163,46 +163,59 @@ function nextToolCallId(sessionId: string): string {
 
 OQ #1 (§8) で永続化 schema を carry-over。
 
-### 2.2 lease validation chain (LeaseStore reason → typed enum mapping)
+### 2.2 lease validation chain (LeaseStore reason → typed enum mapping、Opus PR #111 Round 1 P1-4 反映)
 
-`LeaseStore.validate()` (`src/engine/world-graph/lease-store.ts` 既存) の reason 4 種 → ADR-010 §5.4 typed enum 5 種 (lease 関連):
+`LeaseStore.validate()` (`src/engine/world-graph/lease-store.ts` 既存 line 64-83) の reason **4 種** → ADR-010 §5.4 lease-related typed enum **4 codes** の **1:1 mapping**:
 
 | LeaseStore reason | ADR-010 typed enum (§5.4) | try_next (S4 trunk: 1 path のみ) |
 |---|---|---|
 | `expired` | `LeaseExpired` | `[{action: "desktop_discover", confidence: "high"}]` |
-| `generation_mismatch` | `LeaseGenerationMismatch` | (S4 carry-over、expansion で実装、`try_next: [{action: "desktop_discover", ...}]` 同型) |
+| `generation_mismatch` | `LeaseGenerationMismatch` | (S4 carry-over、expansion で mechanical コピー追加) |
 | `entity_not_found` | `EntityNotFound` | (S4 carry-over) |
 | `digest_mismatch` | `LeaseDigestMismatch` | (S4 carry-over) |
-| (no entity in viewport) | `EntityOutsideViewport` | (S4 carry-over、別経路 via WindowChanged event) |
 
-**S4 trunk 範囲**: `expired` → `LeaseExpired` の 1 mapping 完全実装 (Walking skeleton §4 line 242 「`LeaseExpired` 第一候補」)。残 4 mapping (`generation_mismatch` / `entity_not_found` / `digest_mismatch` / `EntityOutsideViewport`) は expansion で mechanical コピーで追加。
+**+ 5 番目の lease-related typed code は別経路** (LeaseStore.validate() の reason ではない):
 
-### 2.3 L1 既存 EventKind payload schema 確定 (§1.1 E、新規 EventKind 追加なし)
+| 発生経路 | ADR-010 typed enum (§5.4) | trunk 配線 |
+|---|---|---|
+| WindowChanged event 等 (entity が viewport 外に出た時の検出) | `EntityOutsideViewport` | **本 S4 trunk scope 外** (carry-over、expansion で配線) |
 
-#### [S4 trunk] payload schema 拡張
+**S4 trunk 範囲**: `expired` → `LeaseExpired` の 1 mapping 完全実装 (Walking skeleton §4 line 242 「`LeaseExpired` 第一候補」)。残 3 LeaseStore mapping (`generation_mismatch` / `entity_not_found` / `digest_mismatch`) は expansion で mechanical コピーで追加。`EntityOutsideViewport` は別経路 (WindowChanged event 等) で発生する 5 番目の lease-related typed code、本 trunk 範囲外。
 
-既存 `src/l1_capture/payload.rs` の `ToolCallStartedPayload` 拡張 (Round 2 で言及済の方針通り):
+**修正前後の差** (Round 1 P1-4): 旧版 §1.4 line 94 / §2.2 line 168 で「reason 4 種 → typed enum 5 種 (lease 関連) の **1:1 マッピング**」と書いていたが、4 reason → 4 typed codes の 1:1 + 1 別経路 typed code が事実、Round 2 で表を 2 つに分離して修正。
+
+### 2.3 L1 既存 EventKind payload schema 確定 (§1.1 E、新規 EventKind 追加なし、Opus PR #111 Round 1 P1-1 + P1-2 反映)
+
+#### [S4 trunk] payload schema 拡張 — 既存 field 不変 + optional 末尾追加
+
+**Round 1 P1-2 反映** (`args_json` rename 中止): `index.d.ts:280` の `argsJson: string` + `src/engine/native-engine.ts:282` の `NativeL1` interface は **npm package public type signature**、rename = breaking change (semver MAJOR bump 相当)。CLAUDE.md §3.2 PR #102 教訓「既存 public API 破壊禁止」直接該当のため **rename しない**。Walking skeleton §4 line 239 の表現「`{tool_name, args_summary, lease_token?}`」は概念的 summary 化を意味、実際の field 名は既存の `args_json` を維持。
+
+**Round 1 P1-1 反映** (napi signature 引数 position): `lease_token` は **末尾 5th optional 引数**として追加 (3rd 挿入は既存 4-arg positional callers を silent breakage させる、tests/unit/l1-capture-panic-fuzz.test.ts:122,128 + tests/unit/l1-capture.test.ts:163 計 6 callsite が `null`/`undefined` 渡しで position shift 危険)。
 
 ```rust
-// Before (PR #105 で landed)
+// Before (PR #105 で landed、変更なし)
 pub struct ToolCallStartedPayload {
     pub tool: String,
     pub args_json: String,
 }
 
-// After (本 S4 で fix)
+// After (本 S4 で fix、既存 field 不変、末尾 optional 追加)
 pub struct ToolCallStartedPayload {
     /// Tool name (commit-axis: "desktop_act" / query-axis:
     /// "desktop_discover" 等)
     pub tool: String,
-    /// args_summary: handler invocation args の summary (JSON.stringify
-    /// 上 512 byte truncate、PII/secret redaction は expansion P2)。
-    /// **renamed from `args_json`** — 旧 caller が `args_json` を読んで
-    /// いたら破壊するが、現状 napi binding 経由の external caller は
-    /// 0 件 (`grep -rn "args_json"` 確認)、internal-only なので rename 安全
-    pub args_summary: String,
-    /// Lease 4-tuple summary (commit-axis with lease validation 経由のみ
-    /// 設定、query-axis や lease 不在 commit では None)
+    /// **既存 field 名不変** (`args_json`、`index.d.ts:280` で公開済の
+    /// npm public type signature 維持、Round 1 P1-2 反映)。caller は
+    /// truncate (~512 byte 上限) + JSON.stringify 加工した文字列を渡す
+    /// semantic、field 名は `args_json` のまま (内部的には summary
+    /// content だが breaking change 回避のため rename しない)
+    pub args_json: String,
+    /// **NEW**: Lease 4-tuple summary (commit-axis with lease validation
+    /// 経由のみ設定、query-axis や lease 不在 commit では None)。
+    /// `Option` 末尾追加 — bincode の in-memory ring 内 single-server-
+    /// lifetime では既存 caller の encode/decode 互換維持 (ring 内 events
+    /// は server 起動毎に空、cross-server replay は expansion で binary
+    /// compat 確認、本 trunk 範囲外、§7 R5 mitigation)
     pub lease_token: Option<LeaseTokenSummary>,
 }
 
@@ -223,23 +236,23 @@ pub struct ToolCallCompletedPayload {
 }
 ```
 
-`l1_push_tool_call_started` napi binding signature 拡張:
+`l1_push_tool_call_started` napi binding signature 拡張 — **既存 4 引数 順序不変** + **末尾 5th optional 追加**:
 ```rust
-// Before
+// Before (既存、変更なし)
 pub fn l1_push_tool_call_started(
     tool: String,
-    args_json: String,
+    args_json: String,                                  // 既存 field 名維持
     session_id: Option<String>,
     tool_call_id: Option<String>,
 ) -> napi::Result<BigInt>;
 
-// After (S4 trunk)
+// After (S4 trunk、既存 4 引数の順序維持 + 末尾 optional 追加)
 pub fn l1_push_tool_call_started(
     tool: String,
-    args_summary: String,        // renamed from args_json
-    lease_token: Option<NativeLeaseTokenSummary>,  // NEW optional
+    args_json: String,                                  // 既存 field 名維持 (P1-2)
     session_id: Option<String>,
     tool_call_id: Option<String>,
+    lease_token: Option<NativeLeaseTokenSummary>,       // NEW、末尾 optional (P1-1)
 ) -> napi::Result<BigInt>;
 
 #[napi(object)]
@@ -251,7 +264,9 @@ pub struct NativeLeaseTokenSummary {
 }
 ```
 
-`args_json` → `args_summary` rename: production code 全 caller を grep して update (~3-5 callers)、既存外部 caller (e.g., 別 process / napi 経由 external script) は 0 件 (internal-only)。
+**重要 (Round 1 P1-1 silent breakage 回避)**: 既存 4-arg callers (tests/unit/l1-capture-panic-fuzz.test.ts:122,128 + tests/unit/l1-capture.test.ts:163 + 他 production callers 計 ~6-10 callsite) は **無修正で pass** — TypeScript optional 引数の trailing semantic で `lease_token` 省略時 `undefined` が渡され、既存 4-arg positional 呼出が無修正動作。第 3/4 引数の `session_id` / `tool_call_id` の position も不変、`l1PushToolCallStarted!("test_tool", "{}", undefined, undefined)` 等の既存 positional 呼出は壊れない。
+
+**`args_json` field 名維持** (P1-2): production / test 全 caller (~6-10 callsite + npm external consumer) 無修正で pass、CLAUDE.md §3.2 既存 public API 破壊禁止に整合。「summary」semantic は handler / wrapper の **caller 側で truncate 加工** (`truncateJson(args, 512)` helper) し、L1 push 引数として渡す形 — field 名は `args_json` のまま意味的に "summarized JSON" として運用。
 
 ### 2.4 失敗時 envelope (LeaseExpired typed reason、try_next: desktop_discover 1 path)
 
@@ -272,9 +287,13 @@ ADR-010 §5.3 失敗時 envelope shape:
 }
 ```
 
-**注意**: ADR-010 §5.3 で **失敗時 confidence は "stale" 固定**、S3 trunk 2 値分岐 (`fresh` / `degraded`) を **3 値拡張** (`stale` 追加) する必要あり。本 S4 で `EnvelopeMinimalShape.confidence` を `"fresh" | "degraded" | "stale"` に bump、`buildEnvelope` 内で `data === null` で `stale` 固定。
+**注意** (Opus PR #111 Round 1 P1-3 反映): ADR-010 §5.3 で **失敗時 confidence は "stale" 固定**、S3 trunk 2 値分岐 (`fresh` / `degraded`) を **3 値拡張** (`stale` 追加) する必要あり。本 S4 で `EnvelopeMinimalShape.confidence` を `"fresh" | "degraded" | "stale"` に bump、`buildEnvelope` 内で `data === null` で `stale` 固定。
+
+**S3 並走依存 contract** (Round 1 P1-3): 本 S4 impl PR は **S3 impl PR merged 後** に着手 (§0 line 8 既明示の直列順序)、`EnvelopeMinimalShape<T>` 型 import は S3 impl で確定した型シグネチャ (S3 trunk 2 値) を base に S4 impl で 3 値 bump (新 value 追加で既存 2 値 enum value 不変、TypeScript discriminated union の **subset → superset 拡張** で existing test mock の type narrow は影響なし、ただし mock setup で `confidence: "stale"` を返す test を追加するのは S3 contract test 側ではなく **本 S4 contract test (§3.6 G3-S4-2 等)** で扱う)。S3 contract test (G3-7) は `fresh`/`degraded` を `expect(...).toEqual(...)` 等で pin する mock 形なら、`stale` 追加で assertion 範囲外保証 (Round 2 で **S3 contract test の assertion 形式が確定後** に再確認、impl PR 着手 timing で final check)。
 
 → `_envelope.ts` の `EnvelopeMinimalShape<T>` interface は本 S4 で **3 値に拡張** (S3 で 2 値のみだったが、`stale` failure case 用に bump)。残 `cached` / `inferred` 2 値は expansion (ADR-010 §17.6.1 値域 SSOT 完全網羅は P2 work)。
+
+**ADR-010 §5.3 example の表記揺れ note** (Round 1 P3-1): ADR-010 §5.3 example line 270 が snake_case `lease_expired` と書かれているが、§5.4 SSOT は PascalCase `LeaseExpired` で typed enum を定義。本 sub-plan §2.4 example は **§5.4 SSOT に従い PascalCase 採用**、ADR-010 §5.3 の snake_case 表記は ADR-010 既存揺れで本 PR scope 外 (ADR-010 後追い更新候補、§10 References で note 済)。
 
 ### 2.5 `desktop_discover` / `desktop_act` 既存実装は維持 (ADR-010 §1.5 SSOT 準拠)
 
@@ -324,14 +343,14 @@ function truncateJson(args: unknown, maxBytes: number = 512): string {
 ### 3.1 S4-1: L1 既存 payload schema 拡張 + napi binding signature 拡張 (~80 line Rust + 30 line TS) [S4 trunk、Rust touch]
 
 - [ ] `src/l1_capture/payload.rs`:
-  - [ ] `ToolCallStartedPayload` を `{ tool, args_summary, lease_token: Option<LeaseTokenSummary> }` に拡張 (rename `args_json` → `args_summary`、新 field `lease_token`)
+  - [ ] `ToolCallStartedPayload` を `{ tool, args_json, lease_token: Option<LeaseTokenSummary> }` に拡張 (**既存 `args_json` field 名不変** Round 1 P1-2、末尾 optional `lease_token` 追加)
   - [ ] `LeaseTokenSummary { entity_id, view_id, target_generation, evidence_digest_prefix8 }` 新型
   - [ ] `ToolCallCompletedPayload` 不変 (S4 で field 追加不要、Round 2 で言及済)
 - [ ] `src/l1_capture/napi.rs`:
   - [ ] `l1_push_tool_call_started` signature 拡張 (rename + lease_token optional 追加)
   - [ ] `NativeLeaseTokenSummary` napi struct 新設
-- [ ] `index.d.ts` + `src/engine/native-types.ts` 更新 (47 → 48 napi exports は S3 で消化、本 S4 で type 拡張 + signature update のみ、export 数不変)
-- [ ] 全 caller (`grep -rn "l1PushToolCallStarted\|args_json" src/`) を新 signature に update (~3-5 callers)
+- [ ] `index.d.ts` + `src/engine/native-types.ts` 更新: `NativeLeaseTokenSummary` 型追加 + `l1PushToolCallStarted` signature update (5th optional 引数追加)、top-level function export 数 **不変** (47 → 48 は S3 で `viewGetFocusedWithWallclock` 追加で消化済、本 S4 は既存 binding signature 拡張のみで新 export なし)
+- [ ] 全 caller (`grep -rn "l1PushToolCallStarted" src/ tests/`) を確認 (~6-10 callsite、includes `tests/unit/l1-capture-panic-fuzz.test.ts:122,128` + `tests/unit/l1-capture.test.ts:163` + production callers)、**既存 4-arg 呼出は無修正で pass** (Round 1 P1-1 反映、TypeScript optional trailing semantic)
 
 ### 3.2 S4-2: `_envelope.ts` 拡張 — `makeCommitWrapper` + `makeQueryWrapper` (~150 line) [S4 trunk]
 
@@ -390,7 +409,7 @@ function truncateJson(args: unknown, maxBytes: number = 512): string {
 - [ ] `npm test` (vitest unit): 既存 + 新 G3-S4-1〜G3-S4-8 全 pass
 - [ ] `npm run e2e:test` (or 等価 e2e suite): `desktop_discover` / `desktop_act` 既存 e2e test 無修正 pass (compat mode default で raw shape 維持、G3 #1 必須)
 - [ ] `npm run bench:envelope-size`: S3 で確立した bench harness に **failure envelope シナリオ** 追加 → < 5KB 確認 (G3 #4 必須、ADR-010 §5.6.1)
-- [ ] `npm run check:napi-safe` / `check:native-types` (47 → 48 napi exports、S4-1 で `NativeLeaseTokenSummary` + 拡張 binding) / `check:stub-catalog` / `npm run build`: 全 pass
+- [ ] `npm run check:napi-safe` / `check:native-types` (top-level export 数 **48 不変**、S4-1 で `NativeLeaseTokenSummary` 型追加 + 既存 `l1PushToolCallStarted` binding signature 5th 引数拡張、新 top-level export なし) / `check:stub-catalog` / `npm run build`: 全 pass
 
 ### 3.8 S4-8: G3 ゲート判定 + Appendix C append (~5 line、impl PR merge 後) [S4 trunk]
 
@@ -416,7 +435,7 @@ memory `project_adr008_d2_c_plan_done.md` Lesson 1-4 + `feedback_autonomous_phas
 
 - [ ] `makeCommitWrapper` 7 step flow が **既存 desktop_act の e2e behavior を破壊せず** envelope wrap できるか? handler 内 logic / Zod schema / 戻り値 shape 不変が runtime で実証可能か?
 - [ ] `LeaseStore.validate()` の reason 4 種 → ADR-010 §5.4 typed enum 5 種 mapping が 1:1 で完全か? S5 caused_by linkage 着手時に同 mapping を試行した時 contract integral か?
-- [ ] `args_summary` rename (`args_json` → `args_summary`) が **既存外部 caller を破壊しない** か? `grep -rn "args_json"` で internal-only 確認、external script (npm package consumer / 別 process from rs) 0 件確認
+- [ ] **`args_json` field 名不変** (Round 1 P1-2 反映): rename しない方針、`index.d.ts:280` + `src/engine/native-engine.ts:282` の npm public type signature 維持、production / test 全 caller (~6-10 callsite + npm external consumer) 無修正で pass か? `grep -rn "args_json" src/ tests/ index.d.ts` で「rename 不要」と「summary semantic は caller 側 truncate」の両軸を確認
 - [ ] `EnvelopeMinimalShape.confidence` 2 値 → 3 値 bump (`stale` 追加) が S3 で確立した 2 値分岐 contract test (G3-7 等) を破壊しないか?
 - [ ] `tool_call_id` の in-process monotone counter が server-restart 跨ぎで衝突しないか? OQ #1 carry-over で expansion 永続化 schema 必要、本 trunk skeleton 段階で十分か?
 
@@ -432,14 +451,14 @@ memory `project_adr008_d2_c_plan_done.md` Lesson 1-4 + `feedback_autonomous_phas
 
 ### 4.4 restore 後 numeric count sync 漏れ (carry-over → restore で件数表記更新)
 
-- [ ] §3 sub-batch 数 (S4-1〜S4-9 = **9 件**)、§7 Risks 数、§8 OQ 件数 (3 件)、size 想定 (~400-600 line / 4-5 日 = walking-skeleton §4.1 line 305 整合) が本 sub-plan 内で bit-equal か?
-- [ ] `Grep "400-600 line\|4-5 日\|9 件\|3 件\|G3-S4-1.*G3-S4-8|47.*48 napi exports"` で本 sub-plan 内 numeric counts が bit-equal か?
+- [ ] §3 sub-batch 数 (S4-1〜S4-9 = **9 件**)、§7 Risks 数 (**8 件**、R1-R8)、§8 OQ 件数 (**3 件**)、size 想定 (~400-600 line / 4-5 日 = walking-skeleton §4.1 line 305 整合) が本 sub-plan 内で bit-equal か?
+- [ ] `Grep "400-600 line\|4-5 日\|9 件\|3 件\|8 件 Risks\|R1-R8\|G3-S4-1.*G3-S4-8\|top-level export 48 不変"` で本 sub-plan 内 numeric counts が bit-equal か? (Round 1 P2-2 反映、Risks 8 件 + OQ 3 件 + napi 48 不変 を grep target に追加)
 
 ### 4.5 既存 public API 破壊禁止 (CLAUDE.md §3.2 PR #102 教訓延長)
 
 - [ ] **既存 EventKind 番号 100/101 不変** (§1.1 E + §1.4)、新規 EventKind 追加なし — Walking skeleton §4 line 240 + Opus PR-η P1-4 教訓と整合
 - [ ] 既存 `l1_push_tool_call_started/completed` napi binding signature 拡張は **新 optional 引数追加のみ** (`lease_token: Option<...>`)、既存 caller (`l1_push_tool_call_started(tool, args, sessionId, toolCallId)` 4 引数) を破壊しないか? Rust napi `Option<NativeLeaseTokenSummary>` で undefined を許容、既存 caller は無修正で pass
-- [ ] `args_json` → `args_summary` rename が internal-only であること grep 確認 (Round 1 P1-3 PR #110 教訓: 「前例あり」factually incorrect 同型 risk 軸延長で慎重 review)
+- [ ] `args_json` field 名は **本 PR で rename しない** こと `grep` で確認 (Round 1 P1-2 反映: `index.d.ts:280` + `native-engine.ts:282` の npm public type signature 維持、PR #110 Round 1 P1-3 「前例あり」factually incorrect 同型 risk 軸延長で慎重 review)
 - [ ] `desktop_discover` / `desktop_act` の handler internal logic + Zod schema + 戻り値 shape **不変** (§1.1 D + §2.5)、ADR-010 §1.5 SSOT 整合
 - [ ] `EnvelopeMinimalShape.confidence` 3 値 bump (`stale` 追加) が S3 trunk の 2 値分岐 contract test を破壊しないか? S3 contract test (G3-7) は `fresh`/`degraded` 2 値 only mock、`stale` 追加でも assertion 範囲外なので backward compat 保証
 
@@ -476,11 +495,11 @@ trunk + expansion 完了後の別 phase で carry-over:
 
 | # | Risk | 影響 | Mitigation |
 |---|---|---|---|
-| R1 | `args_json` → `args_summary` rename で既存外部 caller 破壊 | **High** | §4.5 で `grep -rn "args_json"` internal-only 確認必須、external script (npm consumer) 0 件確認後に rename。Round 1 P1-3 PR #110 教訓 (「前例あり」factually incorrect 同型 risk) で **慎重 review 必須** |
+| R1 | `args_json` field 名維持 (rename 中止、Round 1 P1-2 反映) で外部 caller 互換、ただし Optional 末尾追加 `lease_token` の bincode binary compat (R5 と並列軸) | 中 | Round 2 で rename 中止確定、`index.d.ts:280` + `native-engine.ts:282` 維持、production / test 全 caller (~6-10 callsite + npm external consumer) 無修正 pass。`lease_token` 末尾 optional 追加の bincode 互換は §7 R5 で別途 mitigation (in-memory ring 単一 server lifetime 限定) |
 | R2 | `EnvelopeMinimalShape.confidence` 3 値 bump で S3 trunk contract test 破壊 | 中 | §4.5 で S3 G3-7 test (`fresh`/`degraded` mock) は `stale` 追加で assertion 範囲外、backward compat 保証。新 G3-S4-2 で `stale` failure case を pin |
 | R3 | `tool_call_id` in-process counter が server-restart 跨ぎで衝突、L1 ring 経由 history buffer の uniqueness 破壊 | 中 | OQ #1 carry-over、本 trunk では `session_id:counter` 形式で session 内 unique 保証、cross-server-restart 永続化は expansion ADR-011 work |
 | R4 | `LeaseStore.validate()` reason 4 種 → typed enum mapping 後の `try_next` 1 path のみ実装で残 4 mapping が runtime で発生 → `Unknown` typed enum 落ち | 中 | S4 trunk は `expired` 1 path 完全実装 + 残 4 reason は `Unknown` fallback (ADR-010 §5.4 既存 25 codes に Unknown 含む)、expansion で残 4 mapping を mechanical コピー追加 |
-| R5 | bincode encode/decode で `ToolCallStartedPayload` 拡張前後の binary compat 破壊 (既存 L1 ring data 読取り不能) | **High** | §3.7 S4-7 で encode_payload round-trip pin test 必須、S4 で payload 拡張は **新 field を Optional で追加 のみ** (rename `args_json` → `args_summary` も internal-only なら影響なし)、bincode は struct field 順序依存なので order 維持 |
+| R5 | bincode encode/decode で `ToolCallStartedPayload` 拡張前後の binary compat 破壊 (既存 L1 ring data 読取り不能) | 中 | L1 ring は **in-memory ring buffer** (永続化なし、server 起動毎に空)、cross-server-restart の binary compat は trunk scope 外。本 trunk 内では single-server-lifetime での encode/decode 整合のみ確保、§3.7 S4-7 で encode_payload round-trip pin test (新 field `lease_token` Optional 末尾追加 + 既存 `args_json` field 不変)、bincode struct field 順序維持。Cross-server replay のための binary versioning は ADR-011 expansion で着手 |
 | R6 | `makeCommitWrapper` の 7 step flow で example DesktopAct logic と integration error (lease validator 呼出 timing、handler invoke の async 順序、L1 push の error swallow) | 中 | §3.6 G3-S4-1〜G3-S4-6 で各 step の order を pin、handler 内 throw → ToolCallCompleted (ok: false) の経路を G3-S4-4 で test |
 | R7 | failure envelope size > 5KB (`if_unexpected.try_next` の各 action shape 膨張) | 中 | §3.7 で bench harness failure envelope シナリオ追加 (G3 #4)、5KB 超過時は ADR-010 §5.6.1 を bit-equal sync で expansion 調整、本 trunk では `try_next` 1 path のみで size 抑制 |
 | R8 | Round 2 で導入する `LeaseTokenSummary.evidence_digest_prefix8` (8 文字 prefix) の uniqueness が同 view 内で衝突 | 低 | evidence_digest は full hash (32-64 char SHA-256 等)、prefix 8 char で衝突 risk = 1/2^32 ≈ 4.3 億分の 1。同 view 内 entity 数 < 1000 で衝突確率 << 1%、production で実用十分。完全 uniqueness 必要ならexpansion で full digest expose に bump 可能 |
@@ -608,7 +627,8 @@ S5 caused_by linkage 着手時 (★ 最重要 contract):
 | version | date | author | summary |
 |---|---|---|---|
 | Drafted v0.1 | 2026-05-01 | Claude (Sonnet) | 初稿起草、walking skeleton S4 sub-plan、commit 軸 (`makeCommitWrapper`) + query 軸 (`makeQueryWrapper`) wrapper template + lease 4-tuple validation `LeaseExpired` typed reason 1 path 実装 + L1 既存 `EventKind::ToolCallStarted/Completed` payload schema 確定 (新規 EventKind 追加なし) + `desktop_discover/act` wrapper 経由化 + envelope failure size < 5KB bench + G3 ゲート判定。Codex re-review 必須 1 round (既存 EventKind payload 確定軸) |
+| Drafted v0.2 | 2026-05-01 | Claude (Sonnet) | **Opus PR #111 Round 1 review 反映** (Not approved、P1×5 + P2×6 + P3×2): **P1-1** napi binding signature 拡張で `lease_token` 3rd 挿入 → silent breakage 6 callsite → Round 2 で **末尾 5th optional 追加** に修正、既存 4-arg positional callers (`tests/unit/l1-capture-panic-fuzz.test.ts:122,128` + `tests/unit/l1-capture.test.ts:163`) 無修正 pass 担保。**P1-2** `args_json` → `args_summary` rename = npm public type signature breakage (`index.d.ts:280` + `native-engine.ts:282` 公開済) → Round 2 で **rename 中止**、既存 `args_json` field 名維持、CLAUDE.md §3.2 既存 API 破壊禁止に整合。**P1-3** `EnvelopeMinimalShape.confidence` 3 値 bump の S3 並走依存明示 → §2.4 で「S3 contract test (G3-7) assertion 形式が確定後 final check」note 追記、ADR-010 §5.3 snake_case vs §5.4 PascalCase 表記揺れも Round 1 P3-1 同箇所で note。**P1-4** "1:1 mapping" 事実誤認 (4 reason → 5 typed = 1:1 ではない) → §1.4 + §2.2 を **4 reason → 4 typed codes 1:1 + `EntityOutsideViewport` 別経路 5th typed code** に修正、§2.2 を 2 つの table に分離。**P1-5** `_post.ts::recordHistory` への touch が S4 trunk scope 超え → §1.3 OQ #2 から「base 仕込む」削除、純粋 carry-over (S5 着手時 finalize) に変更。**P2-1** §3.1 caller grep scope を `src/ tests/` に拡張、callsite count `~3-5` → `~6-10`。**P2-2** §4.4 grep keyword に `8 件 Risks` + `R1-R8` + `top-level export 48 不変` 追加。**P2-3** 47 → 48 napi exports 矛盾を「S3 で消化済 48、本 S4 は signature 拡張のみで top-level export 数不変」に統一。**R1** mitigation 全面書き直し (rename 中止 → 既存 field 名維持 + bincode binary compat 別軸を R5 に分離)、**R5** mitigation 「in-memory ring single-server-lifetime 限定」と明示 |
 
 ---
 
-END OF walking skeleton S4 sub-plan (Drafted v0.1)。
+END OF walking skeleton S4 sub-plan (Drafted v0.2)。
