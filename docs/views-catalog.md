@@ -111,7 +111,7 @@ ADR-008 D2 は「主要 view 4 つを declarative に実装」を完了基準に
 | view 名 | category | input | output | consumer | SLO | phase |
 |---|---|---|---|---|---|---|
 | `current_focused_element` | state | (D1 と同じ) | (D1 と同じ) | (D1 と同じ) | (D1 と同じ) | D1 (carry-over) |
-| `dirty_rects_aggregate` | aggregate | `DirtyRect` events (DXGI) | `Vec<Rect> + summary { count, total_area }` | L4 envelope.invariants_held + screenshot diff 判定 | p99 < 2ms | D2 |
+| `dirty_rects_aggregate` | aggregate | `DirtyRect` events (DXGI) | `{ monitor_index, frame_index, count }` (walking skeleton S2 trunk、count-only) → `Vec<Rect> + summary { count, total_area }` (expansion で完成形に拡張、`docs/adr-008-d2-c-plan.md` §1.2 / §2.1) | L4 envelope.invariants_held + screenshot diff 判定 (consumer wiring は walking skeleton S5 caused_by linkage で配線、ADR-010 連携) | p99 < 2ms (※ walking skeleton S2 trunk は regression guard bench のみ、SLO 達成は trunk 完了後 expansion で別 PR `D2-C-bench`) | D2 |
 | `semantic_event_stream` | event-stream | `UiaFocusChanged`, `WindowChanged`, `DirtyRect`, `ScrollChanged` | `SemanticEvent { kind: ModalAppeared/FocusMoved/ScrollSettled/..., ts, context }` | L4 envelope.caused_by + subscribe 配信 | p99 < 3ms | D2 |
 | `predicted_post_state` | dry-run subgraph | tool_call (仮想) + 現 state | `StateDelta { focus, modal, dirty_rect_estimate, confidence }` | L4 envelope.if_you_did | p99 < 50ms | D2 (subgraph 構造、計算の本格化は D5) |
 
