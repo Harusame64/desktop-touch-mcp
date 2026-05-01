@@ -310,9 +310,10 @@ SetValueAllChannelsFailed
 #### 本 ADR で追加する codes (PascalCase 統一)
 
 ```
-// RPG lease (lease-store の validate 結果と 1:1 対応)
-LeaseExpired | LeaseGenerationMismatch | LeaseDigestMismatch |
-EntityNotFound | EntityOutsideViewport
+// RPG lease 4-tuple validation (LeaseStore.validate() の 4 reason と 1:1)
+LeaseExpired | LeaseGenerationMismatch | EntityNotFound | LeaseDigestMismatch
+// + 上記とは別経路の lease-relevant code (viewport 外 commit gate、WindowChanged 等で発生)
+EntityOutsideViewport
 
 // 状態遷移
 ModalBlocking | Settling
@@ -336,7 +337,10 @@ AccessDenied | Unknown
 
 1. **SSOT は `src/tools/_errors.ts`** の `SUGGESTS` map。`try_next` は SUGGESTS の各値を **typed action 化** したものに移行 (P2 で実装)
 2. 既存 SUGGESTS の **`suggest: string[]`** を envelope の **`try_next: TypedAction[]`** に進化させる際、最初は string をそのまま `try_next[].action_hint` に格納し、徐々に `{action, args, confidence}` に typed 化
-3. lease 関連 5 codes は `LeaseStore.validate()` の `reason` (`expired` / `generation_mismatch` / `entity_not_found` / `digest_mismatch`) を PascalCase に変換した値と 1:1
+3. lease 関連 typed codes の整理 (sub-plan `docs/adr-010-p1-s4-plan.md` §2.2 Round 2 P1-4 / `EntityOutsideViewport` 別経路整理と bit-equal sync):
+   - **4 LeaseStore reason → 4 lease-direct codes の 1:1 mapping**: `expired` → `LeaseExpired` / `generation_mismatch` → `LeaseGenerationMismatch` / `entity_not_found` → `EntityNotFound` / `digest_mismatch` → `LeaseDigestMismatch`
+   - **+ 5 番目の lease-relevant code `EntityOutsideViewport` は別経路** (LeaseStore.validate() の reason ではない、viewport 外 commit gate / WindowChanged event 等で発生する独立検出経路)
+   - 旧記述「lease 関連 5 codes は LeaseStore.validate() の reason と 1:1」は 4-vs-5 の数字混同で factually incorrect、**4 codes 1:1 + 1 別経路** が正しい整理 (S4 sub-plan PR #111 Round 5 P2-6 反映)
 4. `Unknown` は coverage 改善の対象 — 発生時に必ず log し、SSOT に追記する運用
 
 #### LLM への露出
