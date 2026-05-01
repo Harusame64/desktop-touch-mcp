@@ -210,19 +210,39 @@ impl DirtyRectsAggregateView {
 
         // ── Step 1: update the per-(key, count_value) diff sum ────
         let counts = g.by_key.entry(key).or_default();
-        let new_diff = counts.get(&count_value).copied().unwrap_or(0) + diff;
-        // Defensive: a negative diff sum shouldn't occur under DD's
-        // diff invariants (every retraction matches a prior
+        let prior = counts.get(&count_value).copied().unwrap_or(0);
+        let new_diff = prior + diff;
+
+        // **Late retraction for evicted/never-asserted (key, count_value)**
+        // (Opus PR #108 Round 2 P2-A): the cap eviction in Step 3
+        // can remove `(monitor, frame)` from `by_key` after a prior
+        // assertion landed (late-older-arrival path). A subsequent
+        // DD reduce retraction for the same key/value then lands on
+        // an empty BTreeMap, with `prior == 0` and `diff < 0` ⇒
+        // `new_diff == -1`. The pre-Round 4 shape panicked in debug
+        // builds on this `debug_assert!` even though the retraction
+        // is semantically a no-op (the data is gone). Drop silently
+        // and clean up the BTreeMap entry created by `entry().or_default()`.
+        if prior == 0 && diff < 0 {
+            if counts.is_empty() {
+                g.by_key.remove(&key);
+            }
+            return;
+        }
+        // Defensive: any other negative diff sum shouldn't occur under
+        // DD's diff invariants (every retraction matches a prior
         // assertion, even if observed out-of-order). Surface the bug
         // in debug builds without panicking — same posture as
         // `current_focused_element::apply_diff`.
         debug_assert!(
             new_diff >= 0,
-            "negative diff sum at (monitor={}, frame={}, count_value={}): {}",
+            "negative diff sum at (monitor={}, frame={}, count_value={}): {} (prior={}, diff={})",
             monitor_index,
             frame_index,
             count_value,
             new_diff,
+            prior,
+            diff,
         );
         if new_diff <= 0 {
             counts.remove(&count_value);
@@ -463,6 +483,39 @@ mod tests {
         v.apply_count(0, 1, 5, 1);
         assert_eq!(v.get(0, 1), Some(5));
         assert_eq!(v.live_frame_count(0), 1);
+    }
+
+    #[test]
+    fn apply_count_late_older_arrival_followed_by_retraction_does_not_panic() {
+        // **Opus PR #108 Round 2 P2-A regression**: late-older arrival
+        // path evicts `(monitor, frame)` from `by_key` after a prior
+        // assertion (cap full + new frame is the new min). A subsequent
+        // DD reduce retraction for the same `(key, count_value)` then
+        // lands on an empty BTreeMap, with `prior == 0` and `diff < 0`
+        // ⇒ `new_diff == -1`. Pre-Round 4 shape panicked in debug builds
+        // on `debug_assert!(new_diff >= 0)`. Round 4 fix drops such
+        // retractions silently (the data is already gone via eviction).
+        let v = DirtyRectsAggregateView::new();
+        // Fill the per-monitor live cap with frames 1..=CAP.
+        for fi in 1..=(PER_MONITOR_FRAME_CAP as u64) {
+            v.apply_count(0, fi, 1, 1);
+        }
+        assert_eq!(v.live_frame_count(0), PER_MONITOR_FRAME_CAP);
+        // Late older arrival = frame 0. Cap eviction picks min = 0
+        // (the just-inserted frame), removes it from both
+        // live_frames_by_monitor and by_key.
+        v.apply_count(0, 0, 1, 1);
+        assert!(v.get(0, 0).is_none(), "frame 0 evicted (late-older drop)");
+        // Now DD reduce fires retraction for the just-evicted (0, 0,
+        // count_value=1). Pre-Round 4: panic. Round 4: silent drop.
+        v.apply_count(0, 0, 1, -1);
+        // View state unchanged — the retraction is a no-op for an
+        // already-evicted key. Surviving frames 1..=CAP intact.
+        assert!(v.get(0, 0).is_none());
+        assert_eq!(v.live_frame_count(0), PER_MONITOR_FRAME_CAP);
+        for fi in 1..=(PER_MONITOR_FRAME_CAP as u64) {
+            assert_eq!(v.get(0, fi), Some(1), "frame {} survived eviction sequence", fi);
+        }
     }
 
     #[test]

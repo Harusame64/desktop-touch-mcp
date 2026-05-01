@@ -1189,8 +1189,25 @@ mod tests {
         // to advance past 0xCC's wallclock so 0xCC also materialises
         // in the per-hwnd view (otherwise 0xCC sits at the frontier
         // and only idle-advance projects past it via real-time elapsed).
-        // 5_000ms-jump ensures watermark covers all earlier events
-        // even with shift_ms=100 default and idle-advance latency.
+        //
+        // **Why +5_000ms specifically** (Opus PR #108 Round 2 P3-B):
+        //   - default WATERMARK_SHIFT_MS = 100ms → watermark = max_wc - 100
+        //   - DD's reduce + arrange_by_key + inspect chain over the
+        //     5-tuple operator graph (focus_view + latest_focus +
+        //     dirty_rects shared scope) needs several `worker.step()`
+        //     activations to settle for the latest events
+        //   - lifecycle test uses 200ms spacing without an explicit
+        //     pump because L1 ring → focus_pump → handle latency
+        //     naturally spaces events out (~50ms+ recv_timeout cycle);
+        //     the in-crate test pushes via `handle.push_focus` directly
+        //     so events arrive in a single batch, requiring an explicit
+        //     pump to drive watermark forward
+        //   - +5_000ms gives ~25× margin over the 200ms event spacing,
+        //     comfortable against jitter from `step_until_idle` cap (32)
+        //     and idle-advance recv_timeout cycle (1ms default)
+        //   - 1_000ms or smaller observed flaky on slower CI runners
+        //     during pre-Round 2 iteration; 5_000ms eliminated all
+        //     flake without inflating test wall time
         handle.push_focus(make_focus_event_with_hwnd(0xDD, wc_base + 5_000, 0));
 
         // Counter 分離確認 (Codex P2-B): focus 4 件、dirty rect 2 件
