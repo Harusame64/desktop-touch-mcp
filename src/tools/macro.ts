@@ -15,7 +15,7 @@ import { assertKeyComboSafe } from "../utils/key-safety.js";
 // Screenshot
 import { screenshotHandler, screenshotSchema } from "./screenshot.js";
 // Mouse
-import { mouseClickHandler, mouseClickSchema, mouseDragHandler, mouseDragSchema } from "./mouse.js";
+import { mouseClickHandler, mouseClickSchema, mouseClickRegistrationHandler, mouseDragHandler, mouseDragSchema } from "./mouse.js";
 // Keyboard dispatcher (Phase 2)
 import { keyboardHandler, keyboardSchema } from "./keyboard.js";
 // Clipboard dispatcher (Phase 2)
@@ -131,7 +131,7 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   desktop_state:        { schema: z.object(desktopStateRegistrationSchema), handler: desktopStateRegistrationHandler as any },
   screenshot:           { schema: z.object(screenshotSchema),          handler: screenshotHandler },
   // Action — native
-  mouse_click:          { schema: z.object(mouseClickSchema),          handler: mouseClickHandler },
+  mouse_click:          { schema: z.object(mouseClickSchema),          handler: mouseClickRegistrationHandler as typeof mouseClickHandler },
   mouse_drag:           { schema: z.object(mouseDragSchema),           handler: mouseDragHandler },
   click_element:        { schema: z.object(clickElementSchema),        handler: clickElementRegistrationHandler as typeof clickElementHandler },
   focus_window:         { schema: z.object(focusWindowSchema),         handler: focusWindowHandler },
