@@ -374,7 +374,7 @@ caller は **`spawn_perception_worker` の closure 1 箇所のみ**。本 PR で
 - [ ] `cargo test -p engine-perception`: 全 pass (`current_focused_element` 6 unit test + `latest_focus` 5 unit test + `input` ~30 test + integration test 11 件、無修正で pass)
 - [ ] `cargo test -p desktop-touch-engine --no-default-features --lib l3_bridge`: 全 pass (production-pipeline lifecycle test 8 件 / 5-cycle test / helper-pair test、`spawn_perception_worker` 戻り値 shape 不変なので無修正で pass)
 - [ ] **`view_get_hit` p99 regression 0**: `cargo bench -p engine-perception --bench d1_view_latency -- --quick` で `view_get_hit` p99 が D2-A baseline (~145ns、`docs/views-catalog.md` §3.1 line 73) と同等を確認 (`arrange_by_key` 追加で operator chain が 1 段増えるが、read 経路は `Arc<RwLock<HashMap>>` 直 lookup なので影響なし — 想定)
-- [ ] **`view_update_latency` regression 0**: 同 bench で D2-A v3.8 baseline (`shift_ms`-bound、~127ms p99) と同等を確認 (arrangement 1 段追加分は worker step が吸収、`shift_ms` 律速なので影響なし — 想定)
+- [ ] **`view_update_latency` regression 0**: 同 bench で D2-A v3.8 baseline (`shift_ms`-bound、~127ms p99) と同等を確認 (arrangement 1 段追加分は worker step が吸収、`shift_ms` 律速なので影響なし — 想定)。**Note (PR-2 SLO 4 種分解整合、Opus 諮問判断 2026-05-02 §5)**: `view_update_latency` は release-to-view 経路の数値 (= `shift_ms` 律速の構造的下限)、本 SLO 文言は views-catalog §3.1 で 4 種分解 (operator step / lookup / release-to-view / MCP round-trip) に正確化済
 - [ ] **`cargo doc --no-deps` で Arranged lifetime escape が static error**: `Arranged` を closure 外に出す pseudo code を `cargo check` で意図的に試行 (本 PR では追加 test なし、実装中の 1 度の手動確認で十分、§1.2 expansion で compile_fail test 追加候補)
 
 ### 3.6 D2-E0-6: G1 ゲート判定 + Appendix C append (~5 line、impl PR merge 後) [S1 trunk]

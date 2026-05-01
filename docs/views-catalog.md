@@ -68,9 +68,9 @@ ADR-008 D2 は「主要 view 4 つを declarative に実装」を完了基準に
 
 ### 3.1 D1: 最小成立 (1 view)
 
-| view 名 | category | input | output (Rust struct) | consumer | SLO | phase | status |
+| view 名 | category | input | output (Rust struct) | consumer | SLO (PR-2 で 4 種分解、ADR-008 D2 plan §10 OQ #2 / #16 Resolved) | phase | status |
 |---|---|---|---|---|---|---|---|
-| `current_focused_element` | state | `UiaFocusChanged` events from L1 | `UiElementRef { name, automation_id, control_type, window_title }` | L4 envelope.data (desktop_state) | **lookup** p99 < 1ms (達成、D1: ~145ns / D2-A v3.8: 300ns)<br>**update** p99 < 1ms (**setup-dependent**: D1-5 旧 baseline `shift=0` ~4.7ms / v3.7 暫定 `shift=0`+max+1 release 3.04ms = N2 違反で**撤回** / **D2-A v3.8 production 相当 `shift=default` ~127ms** = release が `shift_ms` に律速される構造的下限)、engine-perception 単独 SLO 比較は本 D2-A で結論を出さず D2-B-4 MCP round-trip 計測で再評価 (ADR-008 D2 plan §10 OQ #16) | D1 / D2-A | **Implemented + Benched (D1-3 + D1-5 + D2-A v3.8 watermark-shift restored)** |
+| `current_focused_element` | state | `UiaFocusChanged` events from L1 | `UiElementRef { name, automation_id, control_type, window_title }` | L4 envelope.data (desktop_state) | **lookup** (steady-state read) p99 < 1ms (達成: D1-5 ~145ns / D2-A v3.8 200-300ns、~3000-7000× margin)<br>**operator step** (DD reduce → inspect → RwLock write、純計算下限) p99 < 1ms (達成: µs オーダ)<br>**release-to-view** (event push → caller observable view fetch) p99 ≈ `shift_ms` + idle-advance cycle (**構造的下限**、N3 partial-order contract により `shift_ms` 律速、production default 100ms 設定下で D2-A v3.8 ~127ms p99)<br>**MCP round-trip** (`desktop_state` JSON-RPC tools/call) p99 < 10ms (達成: D2-B-4 6.22ms steady-state / 9.58ms with-point baseline 比 1.5×、view-hit 経路は D2-B-5 で確定) | D1 / D2-A | **Implemented + Benched (D1-3 + D1-5 + D2-A v3.8 watermark-shift restored、PR-2 SLO 4 種分解で OQ #2/#16 Resolved)** |
 
 > **D1-3 実装完了 (2026-04-30)**: operator graph 本体を `crates/engine-perception/src/views/current_focused_element.rs` に新設。`map(FocusEvent → (hwnd, ((wallclock, sub), UiElementRef)))` → `reduce(per-hwnd last-by-time)` → `inspect(diff bookkeeping)` → `Arc<RwLock<HashMap<u64, BTreeMap<UiElementRef, i64>>>>` 読み取り API (`get(hwnd)` / `snapshot()` / `len()` / `is_empty()`)。pivot 4 フィールド (`source_event_id` / `wallclock_ms` / `sub_ordinal` / `timestamp_source`) は output から除外し L4 envelope 側で別途搬送。
 >
@@ -79,7 +79,7 @@ ADR-008 D2 は「主要 view 4 つを declarative に実装」を完了基準に
 > **D1-5 bench 完了 (2026-04-30)**: `crates/engine-perception/benches/d1_view_latency.rs` (criterion、3 fn) + `benches/d1_ts_baseline.mjs` (Node)。
 >
 > - **steady-state lookup**: `view_get_hit` ~145ns / `view_get_miss` ~21ns。TS baseline (`uiaGetFocusedElement`) p99 ≈ 11.2ms → **ratio ~75,000×** で「lookup 1/10」acceptance を大幅クリア。
-> - **update latency** (engine-perception ingestion): `view_update_latency` ~4.7ms (`handle.push_focus → view.get` 反映、`WATERMARK_SHIFT_MS=0` 設定下)。TS p99 の **2.4× faster にとどまり、`update p99 < 1ms` SLO は未達**。worker_loop の 1ms idle sleep がボトルネック、tuning は D2 carry-over (`docs/adr-008-d1-followups.md` §2.5)。
+> - **update latency** (engine-perception ingestion): `view_update_latency` ~4.7ms (`handle.push_focus → view.get` 反映、`WATERMARK_SHIFT_MS=0` 設定下)。SLO 文言は **PR-2 で 4 種分解** に正確化、release-to-view は `shift_ms` 律速の構造的下限と判明、`< 1ms` 単一 SLO は本来 operator step の純計算下限を指していたものであり、release-to-view と MCP round-trip は別 SLO で評価する形に finalize (`docs/adr-008-d1-followups.md` §2.5、Opus 諮問判断 2026-05-02 §5)。
 > - **「real L1 input ベース」 (L1 EventRing 込み全経路) bench は未実施**: `FocusInputHandle::push_focus` 直接呼び出しから計測 (engine-perception 境界、cdylib 制約のため)。D2 で `desktop_state` を view 経由置換時に MCP transport 込み bench と同時実装、followups §2.3。
 >
 > 詳細: `benches/README.md` §2.3 D1-5 measured numbers。
@@ -92,8 +92,8 @@ ADR-008 D2 は「主要 view 4 つを declarative に実装」を完了基準に
 >   - `shift_ms = 0` + 大増分: ~32ms (idle-advance race の artefact、production と無関係)
 >   - D2-A v3.7 暫定 (max+1 release、N2 違反、Codex v10 撤回): 3.04ms ← この数値は **N2 contract 違反下** での値、retain 不可
 >   - D1 baseline (`shift=0`、bench old): 4.7ms ← 同様に N2 acceptance window 0 設定下の値
-> - **engine-perception 単独 SLO 比較は本 D2-A で結論を出さない**: production caller (MCP tool) から見た実質 latency は napi + JSON-RPC + L1 ring + focus_pump + view を含む別物。**D2-B-4 の `d2_desktop_state_roundtrip.mjs` (MCP transport 込み) が SLO の本来の指標**。option C (parking_lot::Condvar 等 signal-driven) は MCP 数値を見てから判断 (ADR-008 D2 plan §10 OQ #16、ユーザー判断 2026-04-30)
-> - SLO `< 1ms` の表記は **緩和しない** (ユーザー判断)、bench harness は production-相当条件 (`shift=default`、wc 200ms 増分) に確定済 (`crates/engine-perception/benches/d1_view_latency.rs`)
+> - **engine-perception 単独 SLO 比較は PR-2 で 4 種分解により正確化**: production caller (MCP tool) から見た実質 latency は napi + JSON-RPC + L1 ring + focus_pump + view を含む別物。**D2-B-4 の `d2_desktop_state_roundtrip.mjs` (MCP transport 込み) が production 観測 SLO の本来の指標**。option C (parking_lot::Condvar 等 signal-driven) は **永久 defer** (Opus 諮問判断 2026-05-02、release semantics 再設計の投資効率低、N2 violation 同型再発リスク高)、ADR-008 D2 plan §10 OQ #2 / #16 Resolved
+> - SLO 文言は **本 PR-2 で 4 種分解** に正確化 (operator step / lookup / release-to-view / MCP round-trip)、`< 1ms` 単一表記は 3 種類の latency を曖昧に包含していた SSOT 自体の不正確さ。release-to-view が `shift_ms` 律速なのは N3 partial-order contract の必然帰結であり、緩和ではなく **物理的真実の認識**。bench harness は production-相当条件 (`shift=default`、wc 200ms 増分) に確定済 (`crates/engine-perception/benches/d1_view_latency.rs`)
 > - partial-order test 5 件 (`same_wallclock_different_sub_ordinal_all_observed` 等) で N3 acceptance を直接 pin、stuck-worker fixture (`Cmd::BlockForTest`) で OQ #15 (Codex v9 P2-17 retry-fail branch) も Resolved
 
 #### 3.1.bis `latest_focus` view (D2-B-1、PR-γ 着手)
@@ -306,7 +306,7 @@ let dirty = dirty_rects_aggregate.read_at(cap);
 
 | view | KPI | 目標 |
 |---|---|---|
-| current_focused_element | 更新 latency | p99 < 1ms |
+| current_focused_element | 4 種分解 SLO (PR-2、Opus 諮問判断 §5) | lookup p99 < 1ms / operator step p99 < 1ms / release-to-view p99 ≈ shift_ms (構造的下限) / MCP round-trip p99 < 10ms |
 | dirty_rects_aggregate | 更新 latency + memory | p99 < 2ms / < 50MB |
 | semantic_event_stream | delta 配信遅延 | p99 < 3ms |
 | predicted_post_state | dry-run latency | p99 < 50ms |

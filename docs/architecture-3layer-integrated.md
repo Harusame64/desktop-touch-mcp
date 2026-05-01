@@ -455,7 +455,7 @@ Tier dispatch の **fallback コストを op 単位 SLO とは独立に計測** 
 | 観点 | 規約 |
 |---|---|
 | Tier N 失敗検出 + Tier N-1 cascade 開始 overhead | **p99 < 500μs** |
-| 個別 op の SLO (例: `view 更新 p99 < 1ms`) | fallback overhead を **含めない**。Tier 3 動作時間のみを測る |
+| 個別 op の SLO (例: `view operator step p99 < 1ms` / `view lookup p99 < 1ms` 等、§17.3 4 種分解参照) | fallback overhead を **含めない**。Tier 3 動作時間のみを測る |
 | 5 連続 Tier 3 失敗時 | 強制 Tier 2 pin、5 分後に Tier 3 復帰試行 |
 | `tier_fallback_overhead_p99` 超過時 | `server_status` で warning event emit (§17.6) |
 
@@ -723,7 +723,10 @@ LLM が trouble shoot 時にこれを見て、tier の使い方や lag を判断
 | L1 | dirty rect detect | DXGI 60Hz 同期 |
 | L2 | materialize | p99 < 100μs/event |
 | L2 | `state_at(t)` | p99 < 5ms |
-| L3 | view 更新 | p99 < 1ms |
+| L3 | view operator step (DD reduce → inspect → RwLock write、純計算下限) | p99 < 1ms |
+| L3 | view lookup (steady-state read) | p99 < 1ms |
+| L3 | view release-to-view (event push → caller observable view fetch) | p99 ≈ `shift_ms` + idle-advance cycle (構造的下限、N3 partial-order contract の必然帰結) |
+| L3 | desktop_state MCP round-trip (production 観測 SLO) | p99 < 10ms |
 | L3 | dry-run preview | p99 < 50ms |
 | L4 | envelope assembly (include 最大) | p99 < 5ms |
 | L5 | query round-trip | p99 < 50ms |

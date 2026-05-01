@@ -57,7 +57,7 @@
 - 識別子ヒエラルキー (event_id / lease_token 等) → 統合書 §4
 - 時刻モデル (wallclock_ms canonical、sub_ordinal、Reflex 等の優先順) → 統合書 §5
 - L2 Storage 制約 (materialize p99 < 100μs、`state_at(t)` p99 < 5ms 等) → layer-constraints §3
-- L3 Compute 制約 (view 更新 p99 < 1ms、cyclic max iter 100 等) → layer-constraints §4
+- L3 Compute 制約 (view 4 種分解 SLO: operator step p99 < 1ms / lookup p99 < 1ms / release-to-view p99 ≈ shift_ms / MCP round-trip p99 < 10ms、cyclic max iter 100 等) → layer-constraints §4 + views-catalog §3.1 (PR-2 で正確化、Opus 諮問判断 2026-05-02)
 - Tier 0-3 dispatch (op 単位独立、`server_status` で集約) → 統合書 §9
 
 ---
@@ -314,7 +314,7 @@ pub trait DataflowAccelerator: Send + Sync {
 
 | Phase | 完了基準 |
 |---|---|
-| D1 | **完了 (2026-04-30)**: 1 view が incremental に更新 (PR #91 `2288333` `current_focused_element`)、bench で TS 版より latency 1/10 — **steady-state lookup で達成** (PR #92 D1-5、view ~145ns vs TS p99 11.2ms = 75,000× 比)。**update latency (~4.7ms) は TS の 2.4× にとどまり 1/10 未達**、real L1 ring 込み bench も未実施 (cdylib 制約)、worker idle sleep tuning + ring 全経路 bench は D2 carry-over: `docs/adr-008-d1-followups.md` §2.3, §2.5 |
+| D1 | **完了 (2026-04-30)**: 1 view が incremental に更新 (PR #91 `2288333` `current_focused_element`)、bench で TS 版より latency 1/10 — **steady-state lookup で達成** (PR #92 D1-5、view ~145ns vs TS p99 11.2ms = 75,000× 比)。当初「update latency 1/10 未達」表記は **PR-2 で SLO 文言正確化** により closure: views-catalog §3.1 4 種分解 (operator step / lookup / release-to-view / MCP round-trip) で release-to-view が `shift_ms` 律速の構造的下限と明示、production 観測 SLO は MCP round-trip で 1.5× 既達 (D2-B-4 6.22ms)、TS / 10 acceptance は steady-state lookup (75,000×) で達成済 (Opus 諮問判断 2026-05-02、option C 永久 defer)。real L1 ring 込み bench は D2-B-4/5 で MCP transport 込み計測完了: `docs/adr-008-d1-followups.md` §2.5 (Resolved) |
 | D2 | **focus path のみ** view 経由化 (bit-equal 回帰 0)、`current_focused_element` (D1 完了) + `dirty_rects_aggregate` (D2-C、§3.bis ledger L1 復帰、`docs/adr-008-d2-c-plan.md` sub-plan land) + `semantic_event_stream` skeleton (FocusMoved seed) + `predicted_post_state` subgraph (D5 で本格化) を declarative に。modal/attention は D4 carry-over、`semantic_event_stream` の他 variant 拡張は P5c-3/4 後の D2 後継 phase (D2-D-α、§3.bis ledger L2-L4)。詳細は `docs/adr-008-d2-plan.md` §1.3 / §11.1 |
 | D3 | `state_at(now-2s)` で過去 state が引ける、p95 latency < 5ms |
 | D4 | lens 再計算が fixed-point で settle、無限ループ自動検出 (max iter cap) |
