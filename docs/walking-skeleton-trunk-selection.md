@@ -156,7 +156,15 @@ L1 UIA Focus event → l1-capture ring → L2 focus_pump
 - modal / animation / debounce など、caused_by の判定を曖昧にする挙動を入れない。
 - lease 発行 → desktop_act までの間に lease の `targetGeneration` が変動しない (lease validation を成功 path で踏める)。
 
-「UIA + DXGI 同 logical_time」は、wallclock が同一という意味ではない。UIA event と DXGI dirty rect は自然には別 wallclock で到着するため、L2 で同一 tool_call causal window (= 直前の `ToolCallStarted` event_id 以降、対応する `ToolCallCompleted` event_id まで) に属する event 群として materialize され、同じ query envelope の `based_on.events` / `caused_by.produced_changes` に入ることを contract とする。実装時にこの causal window の境界を明文化する (OQ #5)。
+「UIA + DXGI 同 logical_time」は、wallclock が同一という意味ではない。UIA event と DXGI dirty rect は自然には別 wallclock で到着するため、L2 で同一 tool_call causal window に属する event 群として materialize され、同じ query envelope の `based_on.events` / `caused_by.produced_changes` に入ることを contract とする。
+
+**causal window 境界 (Proposed v0.4、user feedback 2026-05-01 反映)**: window 左端は `ToolCallStarted` event_id、右端は `ToolCallCompleted` で閉じず、**次のいずれかが先に成立した時点**:
+
+- (a) 次 query (= 次の `desktop_state`) が呼ばれた時点の event frontier
+- (b) timeout 経過 (デフォルト 200ms、tunable)
+- (c) first stable observation 成立 (focus が 50ms 以上同 element / dirty rect が 50ms 以上 0 件)
+
+trunk では (a) を優先採用、(b) は安全網、(c) は §8 R7 の fixture 不安定対策。Proposed v0.3 まで「`ToolCallCompleted` で閉じる」と書いていたが、`desktop_act` の UIA Invoke 呼出 return 後に **非同期で届く** UIA Focus / DXGI DirtyRect event を取り逃がし、focus delta + dirty rect count が空のまま G5 が失敗する設計バグ → user feedback で v0.4 で修正。実装時の最終境界決定は OQ #5 で。
 
 ---
 
@@ -252,7 +260,13 @@ L1 UIA Focus event → l1-capture ring → L2 focus_pump
 - envelope 組立て時、`caused_by.your_last_action` (= 直前 desktop_act の tool_name + args_summary) / `tool_call_id` / `elapsed_ms` (ToolCallStarted ↔ ToolCallCompleted の wallclock 差) / `produced_changes` を埋める
 - `produced_changes` は L3 view diff (focus_view と dirty_rects_aggregate の delta) から組立て。trunk では focus delta (A→B 表記) + dirty rect count (`monitor_index` 別) までに限定する
 - session_id は MCP request id にマッピング (OQ #1 を S5 着手前に決定 — trunk のスコープ内で確定する)
-- causal window 境界: 直前 `ToolCallStarted` event_id 以降、対応する `ToolCallCompleted` event_id まで (§3.4 + OQ #5 で確定)
+- causal window 境界 (User feedback 2026-05-01 反映、Proposed v0.4): **`ToolCallStarted` event_id を window の左端、右端は `ToolCallCompleted` で閉じない**。`desktop_act` の UIA Invoke 呼出が return した後に **非同期で届く** UIA Focus event / DXGI DirtyRect event を取り逃がさないため、右端は以下のいずれかが先に成立した時点とする:
+  - (a) **次 query (= 次の `desktop_state`) が呼ばれた時点の event frontier** (commit から query までのギャップ全てが causal window に入る、最も自然な境界)
+  - (b) **timeout 経過** (デフォルト 200ms、tunable、commit 後 long-tail event を取り逃がさず無限延長を防ぐ)
+  - (c) **first stable observation 成立** (focus が 50ms 以上同 element / dirty rect が 50ms 以上 0 件、stability 検出は L4 envelope 組立て側)
+  - 設計判断: trunk では (a) を優先採用、(b) は安全網、(c) は §8 R7 の fixture 不安定対策。`ToolCallCompleted` で window を閉じる v0.3 の設計は user feedback で覆し、§3.4 + OQ #5 で再確定した
+
+  ※ Proposed v0.3 では「`ToolCallCompleted` で閉じる」と書いていたが、user feedback で「commit return 後の async event を取り逃がす設計バグ」と指摘 → focus delta + dirty rect count が空のまま G5 が失敗する重大問題。本 v0.4 で window 右端の三択 ((a)/(b)/(c)) に修正
 
 **完了基準**:
 - `desktop_act` → `desktop_state` シーケンスで `caused_by` が正しく埋まる integration test
@@ -387,7 +401,7 @@ expansion フェーズ:
 | 2 | `caused_by` を L4 で組立てる場所 (Rust 側 or TS L5 wrapper 側) | S5 着手前。production gap bench (#98) の MCP transport 数値を見て判断 |
 | 3 | trunk の typed reason 1 種類は **`LeaseExpired` を第一候補** (Opus P1-5 (a) 採用に伴い確定方向)、`LeaseStore.validate()` の `expired` reason → typed enum 経路を踏む。最終確定は S4 着手前 | S4 着手前 |
 | 4 | D2-C 簡易版 `dirty_rects_aggregate` の最小定義: count のみ。**ただし `monitor_index` field は payload / view output から落とさない** (PR #102 同型 regression 防止、CLAUDE.md §3.2)。RectId list / union 計算は expansion | S2 着手前 |
-| 5 | UIA Focus event と DXGI dirty rect を同一 causal window に束ねる境界: 直前 `ToolCallStarted` event_id 以降、対応する `ToolCallCompleted` event_id まで (§3.4 で先行記述、最終確定は S5 着手前)。`同 logical_time` を wallclock 同一と誤解しないよう contract 化する | S2 完了後、S5 着手前 |
+| 5 | UIA Focus event と DXGI dirty rect を同一 causal window に束ねる境界: window 左端 = `ToolCallStarted` event_id、**右端 = (a) 次 query frontier / (b) timeout 200ms / (c) first stable observation のいずれか先 (Proposed v0.4、user feedback 2026-05-01)**。trunk 採用は (a)、(b)/(c) は安全網。最終確定は S5 着手前。`同 logical_time` を wallclock 同一と誤解しないよう contract 化する | S2 完了後、S5 着手前 |
 | 6 | trunk e2e fixture をどう固定するか: lease 発行対象 entity が安定 discover でき、`desktop_act` で focus A→B + primary monitor dirty rect が確実に発火する対象。modal/animation/debounce を含まない | S4 着手前 |
 | 7 | `src/tools/_post.ts` (perception envelope + history ring buffer) と新 `src/tools/_envelope.ts` の役割境界 — 統合するか、両者共存で responsibility を分けるか (ADR-010 §5.6.2 が要求する size 比較 bench も含む) | S3 着手前に方向性、最終確定は S6 |
 
@@ -471,6 +485,7 @@ expansion フェーズ:
 | Proposed v0.1 | 2026-05-01 | Claude (Sonnet) | 初稿起草、候補 C (click_element → desktop_state) を採用 |
 | Proposed v0.2 | 2026-05-01 | Claude (Sonnet) | user 補正反映: §3.2 contract spike 方針補正、§3.4 fixture / causality 前提、Gate G1/G2/G3、§5.1 中間見直しゲート、OQ #5 / #6、R7 / R8 追加 |
 | Proposed v0.3 | 2026-05-01 | Claude (Sonnet) | **Opus review round 1 反映**: P1-5 (a) 採用 = trunk tool を `desktop_discover → desktop_act → desktop_state` に切替、`click_element` を expansion 降格、S4 typed reason `LeaseExpired` 第一候補化、L1 既存 `ToolCallStarted/Completed` 活用、§9 OQ 件数 7 件同期、`monitor_index` payload 維持明記 (S2/R3)、envelope compat mode 追加 (S3)、confidence 2 値分岐 (S3)、`_post.ts` 境界 OQ #7 追加、CI assert 化 (S6)、envelope size SLO bench harness (S3)、§6.3 trunk 中 Sonnet 振り向け先追記、§5.2 ゲート判定永続化、§8 R9/R10/R11 追加、Appendix A 表を C 採用後の contract list に更新、Appendix C ゲート判定ログ枠新設 |
+| Proposed v0.4 | 2026-05-01 | Claude (Sonnet) | **User feedback 反映 (PR #103 review)**: causal window 右端を `ToolCallCompleted` から「(a) 次 query frontier / (b) timeout 200ms / (c) first stable observation のいずれか先」に修正 (§3.4 + §5 S5 + §7 OQ #5)。`desktop_act` UIA Invoke return 後に async で届く UIA Focus / DXGI DirtyRect event を取り逃がす設計バグを fix、focus delta + dirty rect count の commit-after-async-event capture を保証 |
 
 ---
 

@@ -790,18 +790,20 @@ D1 `current_focused_element` view は `hwnd` を key にした per-hwnd state (f
 
 ## 3. PR 切り方 (v3、10 PR、Codex v2 おすすめ順序反映)
 
-着手順序 = PR-α → PR-β → PR-γ proof → PR-δ gate → ... の Codex 推奨パス。
+着手順序 (`docs/walking-skeleton-trunk-selection.md` Proposed v0.4 採用後): walking skeleton trunk = **S1 (D2-E0) → S2 (D2-C) → S3 (ADR-010 P1) → S4 (desktop_act wrapper) → S5 (caused_by) → S6 (CI assert)** の直列、S2 (D2-C) は S1 (D2-E0) で確立した同 dataflow scope を前提とする (User feedback PR #103 review 2026-05-01)。
 
-| PR | 範囲 | risk | size 想定 |
-|---|---|---|---|
-| **PR-α (D2-0)** | production pipeline lifecycle (既存 `L1_SLOT` パターン踏襲) | 中 (lazy init / shutdown ordering / 5-cycle test) | ~200-300 line |
-| **PR-β (D2-A)** | worker tuning revised (batch drain + max-time release + event_count guard) + true p99 bench | 中 (batch drain semantics、N3 維持確認) | ~250-350 line |
-| **PR-γ (D2-B)** | desktop_state focus-only replacement (latest_focus view + controlType 文字列変換) + MCP transport bench | 中-大 (napi binding + tool 改修 + bench、bit-equal 回帰 0) | ~500-600 line |
-| **PR-δ (D2-C0)** | L1 emitter readiness gate (research-only PR、go/no-go 判断) | 低 (調査 + 判断記録) | ~100 line (docs only) — **PR #99 (2026-05-01) で D2-C carry-over / D2-D `FocusMoved`-only 確定** |
-| **PR-ε (D2-C)** | dirty_rects_aggregate count-only view (walking skeleton S2 contract spike、sub-plan: `docs/adr-008-d2-c-plan.md`、§3.bis ledger L1 復帰 PR、P5c-2 PR #102 trigger 完了、`docs/walking-skeleton-trunk-selection.md` §4 S2) | 中 | 200-300 line (sub-plan §4 で再見積、count-only に絞り当初 300-450 line から縮小、view + pump + spawn + napi + G2 contract test 3 件 + bench) — **本 D2-C plan PR (sub-plan land) → impl PR は本 plan merge 後の翌 PR、完成形は trunk 完了後 expansion** |
-| **PR-ζ (D2-D)** | semantic_event_stream (`FocusMoved` 単独 variant、D2-C0 結果反映) | 中 | ~300-400 line (variant 縮小で当初想定 ~400-500 から減) |
-| **PR-η (D2-E0)** | dataflow scope refactor (build_* signature 変更、`Arranged` を外部に持ち出さない設計) | 中 (D1 build 関数 shape 変更、view 内部のみ、外部 API 不変) | ~200-300 line |
-| **PR-θ (D2-E)** | predicted_post_state subgraph (D2-E0 と同 scope 配線) | 中 (timely subgraph 経験少) | ~200-300 line |
+walking skeleton 採用前の Codex 推奨パス (PR-α → PR-β → PR-γ → PR-δ → PR-ε → PR-ζ → PR-η → PR-θ) は、`PR-α` 〜 `PR-δ` の D2-0 / D2-A / D2-B / D2-C0 phase ですでに完了済。walking skeleton trunk 開始は **S1 = PR-η (D2-E0) が次**、続いて **S2 = PR-ε (D2-C) が S1 完了を前提に着手**。
+
+| PR | 範囲 | risk | size 想定 | walking skeleton |
+|---|---|---|---|---|
+| **PR-α (D2-0)** | production pipeline lifecycle (既存 `L1_SLOT` パターン踏襲) | 中 (lazy init / shutdown ordering / 5-cycle test) | ~200-300 line | (pre-trunk、merged) |
+| **PR-β (D2-A)** | worker tuning revised (batch drain + max-time release + event_count guard) + true p99 bench | 中 (batch drain semantics、N3 維持確認) | ~250-350 line | (pre-trunk、merged) |
+| **PR-γ (D2-B)** | desktop_state focus-only replacement (latest_focus view + controlType 文字列変換) + MCP transport bench | 中-大 (napi binding + tool 改修 + bench、bit-equal 回帰 0) | ~500-600 line | (pre-trunk、merged) |
+| **PR-δ (D2-C0)** | L1 emitter readiness gate (research-only PR、go/no-go 判断) | 低 (調査 + 判断記録) | ~100 line (docs only) — **PR #99 (2026-05-01) で D2-C carry-over / D2-D `FocusMoved`-only 確定** | (pre-trunk、merged) |
+| **PR-η (D2-E0)** | dataflow scope refactor (build_* signature 変更、`Arranged` を外部に持ち出さない設計) | 中 (D1 build 関数 shape 変更、view 内部のみ、外部 API 不変) | ~200-300 line | **S1 (trunk start)** — User feedback PR #103 で S2 (D2-C) より先行を直列順整合 |
+| **PR-ε (D2-C)** | dirty_rects_aggregate count-only view (walking skeleton S2 contract spike、sub-plan: `docs/adr-008-d2-c-plan.md`、§3.bis ledger L1 復帰 PR、P5c-2 PR #102 trigger 完了、`docs/walking-skeleton-trunk-selection.md` §4 S2) | 中 | 200-300 line (sub-plan §4 で再見積、count-only に絞り当初 300-450 line から縮小、view + pump + spawn + napi + G2 contract test 3 件 + Node smoke + bench) — **本 D2-C plan PR (sub-plan land) → impl PR は本 plan merge 後の翌 PR、ただし S1 (PR-η) が impl PR 着手前に merged されている必要あり、完成形は trunk 完了後 expansion** | **S2** — S1 (PR-η D2-E0) 完了が前提 |
+| **PR-ζ (D2-D)** | semantic_event_stream (`FocusMoved` 単独 variant、D2-C0 結果反映) | 中 | ~300-400 line (variant 縮小で当初想定 ~400-500 から減) | (S2 と並走可、両方とも S1 PR-η に依存) |
+| **PR-θ (D2-E)** | predicted_post_state subgraph (D2-E0 と同 scope 配線) | 中 (timely subgraph 経験少) | ~200-300 line | (trunk 後 expansion 範囲、walking skeleton では S5 envelope 系完了後) |
 | **PR-ι (D2-F)** | D1-3 残 follow-up | 低-中 | ~300-400 line |
 | **PR-κ (D2-G)** | docs / memory 最終整合 | 低 | ~150 line |
 
