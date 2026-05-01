@@ -434,7 +434,9 @@ memory `project_adr008_d2_c_plan_done.md` Lesson 1-4 + `feedback_autonomous_phas
 ### 4.1 contract 自体の妥当性 review
 
 - [ ] `makeCommitWrapper` 7 step flow が **既存 desktop_act の e2e behavior を破壊せず** envelope wrap できるか? handler 内 logic / Zod schema / 戻り値 shape 不変が runtime で実証可能か?
-- [ ] `LeaseStore.validate()` の reason 4 種 → ADR-010 §5.4 typed enum **4 種 lease-direct codes** (`LeaseExpired` / `LeaseGenerationMismatch` / `EntityNotFound` / `LeaseDigestMismatch`) の **1:1 mapping が完全** か? **`EntityOutsideViewport` は本 mapping 外 (別経路 carry-over)** で別途確認。S5 caused_by linkage 着手時に同 mapping を試行した時 contract integral か?
+- [ ] **S4 trunk runtime 配線 = `expired → LeaseExpired` 1 path のみ完全実装** (try_next 配線含む)。残 3 LeaseStore reason (`generation_mismatch` / `entity_not_found` / `digest_mismatch`) は **typed code 名 (`LeaseGenerationMismatch` / `EntityNotFound` / `LeaseDigestMismatch`) の contract pin のみ** (= 名前を §2.2 mapping table と sub-plan に明示固定 / runtime 配線は `Unknown` fallback で expansion mechanical コピー追加可能な状態を確立) — Round 5 P2-5 反映: 旧 acceptance 「reason 4 種 → typed 4 種 1:1 mapping が完全」は S4 scope 越えて全 4 path 実装を要求と読めた、§1.1 F / §2.2 / §7 R4 の「expired 1 path 完全 + 残 3 carry-over」と整合に修正
+- [ ] **`EntityOutsideViewport`** は LeaseStore.validate() の reason ではない別経路 typed code、本 S4 trunk 範囲外 (carry-over、WindowChanged event 等の viewport 外 detect で発生、expansion work)
+- [ ] S5 caused_by linkage 着手時に `expired → LeaseExpired → try_next: [{action: "desktop_discover"}]` 1 path が caused_by.last_action と integral か (残 3 mapping + EntityOutsideViewport 別経路 は別 PR で同型 contract 確認)?
 - [ ] **`args_json` field 名不変** (Round 1 P1-2 反映): rename しない方針、`index.d.ts:280` + `src/engine/native-engine.ts:282` の npm public type signature 維持、production / test 全 caller (~6-10 callsite + npm external consumer) 無修正で pass か? `grep -rn "args_json" src/ tests/ index.d.ts` で「rename 不要」と「summary semantic は caller 側 truncate」の両軸を確認
 - [ ] `EnvelopeMinimalShape.confidence` 2 値 → 3 値 bump (`stale` 追加) が S3 で確立した 2 値分岐 contract test (G3-7 等) を破壊しないか?
 - [ ] `tool_call_id` の in-process monotone counter が server-restart 跨ぎで衝突しないか? OQ #1 carry-over で expansion 永続化 schema 必要、本 trunk skeleton 段階で十分か?
