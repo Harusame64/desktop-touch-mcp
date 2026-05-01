@@ -365,16 +365,47 @@ pub struct PerceptionWorker {
     /// `flush()`. Exposed as a test/D2-metrics observation hook so
     /// the L1 → focus_pump → handle → worker round-trip can be
     /// asserted end-to-end (Codex review on PR #90 P2).
-    processed_count: Arc<AtomicU64>,
+    ///
+    /// **Focus-only since S2 D2-C** (Codex round 1 P2-B): pre-S2
+    /// this counter incremented on every Cmd; in S2 with dirty rect
+    /// events flowing through the same worker, mixing the two would
+    /// contaminate `view_focused_pipeline_status.processedCount` —
+    /// dirty-rect traffic would make the focus telemetry rise even
+    /// when focus forwarding is unhealthy. Now `processed_focus_count`
+    /// counts only `Cmd::PushFocus`, and `processed_dirty_rect_count`
+    /// counts `Cmd::PushDirtyRect` separately.
+    processed_focus_count: Arc<AtomicU64>,
+    /// Total `Cmd::PushDirtyRect` commands processed (post-`flush()`).
+    /// Mirrors `processed_focus_count` for the S2 D2-C dirty-rect
+    /// pipeline (Codex round 1 P2-B).
+    processed_dirty_rect_count: Arc<AtomicU64>,
 }
 
 impl PerceptionWorker {
     /// Number of `Cmd::PushFocus` commands the worker has fully
     /// processed (post-`flush()`). Available on the live worker so
     /// callers can wait for the InputSession path to drain before
-    /// shutting down.
+    /// shutting down. **Focus-only since S2 D2-C** — see field doc on
+    /// `processed_focus_count`.
     pub fn processed_count(&self) -> u64 {
-        self.processed_count.load(Ordering::Relaxed)
+        self.processed_focus_count.load(Ordering::Relaxed)
+    }
+
+    /// Number of `Cmd::PushFocus` commands processed (post-`flush()`).
+    /// Same as `processed_count` for backward compatibility — kept
+    /// as a separate method so future call sites can opt into the
+    /// more explicit name.
+    pub fn processed_focus_count(&self) -> u64 {
+        self.processed_focus_count.load(Ordering::Relaxed)
+    }
+
+    /// Number of `Cmd::PushDirtyRect` commands processed (post-
+    /// `flush()`, S2 D2-C). Use this for dirty-rect pipeline
+    /// telemetry — do NOT add it to `processed_focus_count` because
+    /// that contaminates focus-pipeline health observation
+    /// (Codex round 1 P2-B).
+    pub fn processed_dirty_rect_count(&self) -> u64 {
+        self.processed_dirty_rect_count.load(Ordering::Relaxed)
     }
 
     /// Signal shutdown and poll the worker's `JoinHandle::is_finished()`
@@ -597,8 +628,10 @@ pub fn spawn_perception_worker() -> (
     DirtyRectsAggregateView,
 ) {
     let (tx, rx) = bounded::<Cmd>(CMD_CHANNEL_CAPACITY);
-    let processed_count = Arc::new(AtomicU64::new(0));
-    let processed_clone = Arc::clone(&processed_count);
+    let processed_focus_count = Arc::new(AtomicU64::new(0));
+    let processed_dirty_rect_count = Arc::new(AtomicU64::new(0));
+    let processed_focus_clone = Arc::clone(&processed_focus_count);
+    let processed_dirty_clone = Arc::clone(&processed_dirty_rect_count);
 
     // D2-E0 (`docs/adr-008-d2-e0-plan.md` §2.3, §3.3): views are
     // created inside the `worker.dataflow` closure by `build_*` and
@@ -642,7 +675,7 @@ pub fn spawn_perception_worker() -> (
     let join = thread::Builder::new()
         .name("l3-perception".into())
         .spawn(move || {
-            worker_loop(rx, processed_clone, view_tx)
+            worker_loop(rx, processed_focus_clone, processed_dirty_clone, view_tx)
         })
         .expect("spawn l3-perception thread");
 
@@ -653,7 +686,8 @@ pub fn spawn_perception_worker() -> (
     let worker = PerceptionWorker {
         join: Mutex::new(Some(join)),
         tx: tx.clone(),
-        processed_count,
+        processed_focus_count,
+        processed_dirty_rect_count,
     };
     let handle = FocusInputHandle { tx };
     (worker, handle, view, latest_view, dirty_rects_view)
@@ -727,7 +761,8 @@ pub fn spawn_perception_worker() -> (
 /// `recv_timeout` cycle instead of `try_recv` + `sleep`.
 fn worker_loop(
     rx: Receiver<Cmd>,
-    processed: Arc<AtomicU64>,
+    processed_focus: Arc<AtomicU64>,
+    processed_dirty_rect: Arc<AtomicU64>,
     view_tx: crossbeam_channel::Sender<(
         CurrentFocusedElementView,
         LatestFocusView,
@@ -846,8 +881,16 @@ fn worker_loop(
                 }
             }
 
-            // ─── Phase 3: apply each PushFocus, track max time ──
+            // ─── Phase 3: apply each PushFocus / PushDirtyRect, track max time ──
+            // S2 D2-C: separate per-cmd counters so the focus
+            // pipeline telemetry stays isolated from dirty-rect
+            // traffic (Codex round 1 P2-B). `event_count` (sum) gates
+            // the frontier advance + watermark release; the per-cmd
+            // counters drive `processed_focus_count` /
+            // `processed_dirty_rect_count` exposed via napi.
             let mut event_count: u64 = 0;
+            let mut focus_count: u64 = 0;
+            let mut dirty_count: u64 = 0;
             let mut max_observed: Option<LogicalTime> = None;
 
             for cmd in batch.drain(..) {
@@ -876,6 +919,7 @@ fn worker_loop(
                         }
                         input.update_at(ev.clone(), event_time.clone(), 1);
                         event_count += 1;
+                        focus_count += 1;
 
                         // Update anchor for idle frontier advance —
                         // only when wallclock genuinely advances, so
@@ -913,6 +957,7 @@ fn worker_loop(
                         }
                         dirty_input.update_at(ev.clone(), event_time.clone(), 1);
                         event_count += 1;
+                        dirty_count += 1;
 
                         if ev.wallclock_ms > latest_wallclock_ms {
                             latest_wallclock_ms = ev.wallclock_ms;
@@ -989,7 +1034,16 @@ fn worker_loop(
                 }
                 input.flush();
                 dirty_input.flush();
-                processed.fetch_add(event_count, Ordering::Relaxed);
+                // S2 D2-C: per-cmd counter increments — focus and
+                // dirty-rect counts kept separate so `view_focused_pipeline_status`
+                // doesn't get contaminated by dirty-rect traffic
+                // (Codex round 1 P2-B).
+                if focus_count > 0 {
+                    processed_focus.fetch_add(focus_count, Ordering::Relaxed);
+                }
+                if dirty_count > 0 {
+                    processed_dirty_rect.fetch_add(dirty_count, Ordering::Relaxed);
+                }
 
                 // Step until idle (capped) so the operator chain
                 // makes progress on whatever the new watermark
@@ -1050,6 +1104,171 @@ mod tests {
         worker
             .shutdown(Duration::from_secs(2))
             .expect("shutdown after push");
+    }
+
+    fn make_dirty_rect(monitor: u32, frame: u64, wallclock_ms: u64) -> DirtyRectEvent {
+        DirtyRectEvent {
+            source_event_id: 1000 + frame,
+            wallclock_ms,
+            sub_ordinal: 0,
+            timestamp_source: 2, // Dxgi
+            monitor_index: monitor,
+            frame_index: frame,
+            rect: Rect {
+                x: 0,
+                y: 0,
+                width: 100,
+                height: 100,
+            },
+        }
+    }
+
+    /// Build a `FocusEvent` with explicit hwnd (for G2-3 multi-hwnd
+    /// test). The shared `make_event` helper hard-codes `hwnd=0x1234`
+    /// because pre-S2 tests didn't need per-hwnd diversity; the per-
+    /// hwnd reduce in `current_focused_element` keys by `hwnd`, so
+    /// G2-3's "focus + dirty independent updates" assertion needs
+    /// distinct hwnds.
+    fn make_focus_event_with_hwnd(
+        hwnd: u64,
+        wallclock_ms: u64,
+        sub_ordinal: u32,
+    ) -> FocusEvent {
+        FocusEvent {
+            source_event_id: hwnd,
+            hwnd,
+            name: "test".into(),
+            automation_id: Some("auto-id".into()),
+            control_type: 50000,
+            window_title: "Test Window".into(),
+            wallclock_ms,
+            sub_ordinal,
+            timestamp_source: 0,
+        }
+    }
+
+    /// **G2 contract Test G2-3** (sub-plan §3.8 + Opus PR #108 Round 1
+    /// P1-1 + walking-skeleton-trunk-selection.md §4 S2 完了基準 #2):
+    /// focus view + dirty_rects_aggregate view が同 dataflow scope で
+    /// 共存し、focus event push と dirty rect event push を交互に発行
+    /// しても両 view が独立に正しく更新される。S2 trunk の最重要 contract
+    /// (sub-plan §1.4)。
+    ///
+    /// 検証手順:
+    ///   1. 5-tuple `spawn_perception_worker` で focus_view + latest_view +
+    ///      dirty_rects_view を取得 (S2 D2-C 5-tuple shape)
+    ///   2. handle.push_focus() を 3 回発行、wallclock 200ms 間隔で前進
+    ///      (D1-3 lifecycle test と同 pump pattern)
+    ///   3. handle.push_dirty_rect() を 2 回発行、focus event 間に挟む
+    ///   4. processed_focus_count + processed_dirty_rect_count を待機
+    ///      (Codex round 1 P2-B: counter 分離確認)
+    ///   5. focus view から `current_focused_element` で hwnd lookup
+    ///      latest_view から `snapshot()` で global latest
+    ///      dirty_rects_view から `get(monitor, frame)` で count
+    ///   6. 両 view が干渉せず正しい値を返すこと assert
+    #[test]
+    fn focus_and_dirty_rect_views_coexist_in_same_scope() {
+        let (worker, handle, view, latest_view, dirty_rects_view) =
+            spawn_perception_worker();
+
+        // wallclock を十分に進めて watermark-shift release window を超える
+        // (DESKTOP_TOUCH_WATERMARK_SHIFT_MS=100ms default、wallclock 間隔 200ms)。
+        let wc_base: u64 = 6_000_000;
+
+        // (1) focus event hwnd=0xAA at wc_base
+        handle.push_focus(make_focus_event_with_hwnd(0xAA, wc_base, 0));
+        // (2) dirty rect (monitor=0, frame=1) at wc_base+200
+        handle.push_dirty_rect(make_dirty_rect(0, 1, wc_base + 200));
+        // (3) focus event hwnd=0xBB at wc_base+400
+        handle.push_focus(make_focus_event_with_hwnd(0xBB, wc_base + 400, 0));
+        // (4) dirty rect (monitor=1, frame=2) at wc_base+600 (per-monitor isolation)
+        handle.push_dirty_rect(make_dirty_rect(1, 2, wc_base + 600));
+        // (5) focus event hwnd=0xCC at wc_base+800 (pump for watermark)
+        handle.push_focus(make_focus_event_with_hwnd(0xCC, wc_base + 800, 0));
+        // (6) Pump event with much later wallclock — forces watermark
+        // to advance past 0xCC's wallclock so 0xCC also materialises
+        // in the per-hwnd view (otherwise 0xCC sits at the frontier
+        // and only idle-advance projects past it via real-time elapsed).
+        // 5_000ms-jump ensures watermark covers all earlier events
+        // even with shift_ms=100 default and idle-advance latency.
+        handle.push_focus(make_focus_event_with_hwnd(0xDD, wc_base + 5_000, 0));
+
+        // Counter 分離確認 (Codex P2-B): focus 4 件、dirty rect 2 件
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while worker.processed_focus_count() < 4 || worker.processed_dirty_rect_count() < 2 {
+            if Instant::now() >= deadline {
+                panic!(
+                    "events not fully processed: focus={} dirty={}",
+                    worker.processed_focus_count(),
+                    worker.processed_dirty_rect_count()
+                );
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(worker.processed_focus_count(), 4, "focus counter only");
+        assert_eq!(
+            worker.processed_dirty_rect_count(),
+            2,
+            "dirty rect counter only"
+        );
+
+        // View materialisation: idle frontier advance projects
+        // wallclock forward, releasing events past the
+        // watermark-shift window. Wait for both views to settle.
+        // 3000ms is generous to absorb DD operator chain latency
+        // when both focus + dirty rect dataflows process events
+        // (5-tuple shape adds operator graph depth).
+        let view_deadline = Instant::now() + Duration::from_millis(3000);
+        loop {
+            // focus view: hwnd 0xAA, 0xBB, 0xCC visible (CC may sit
+            // at the frontier; 0xAA + 0xBB at minimum)
+            let aa_seen = view.get(0xAA).is_some();
+            let bb_seen = view.get(0xBB).is_some();
+            // latest_focus: any non-None
+            let latest_seen = latest_view.snapshot().is_some();
+            // dirty_rects: monitor 0 frame 1 + monitor 1 frame 2
+            let dr_0_1 = dirty_rects_view.get(0, 1).is_some();
+            let dr_1_2 = dirty_rects_view.get(1, 2).is_some();
+            if aa_seen && bb_seen && latest_seen && dr_0_1 && dr_1_2 {
+                break;
+            }
+            if Instant::now() >= view_deadline {
+                panic!(
+                    "views did not settle: aa={} bb={} latest={} dr(0,1)={} dr(1,2)={}",
+                    aa_seen, bb_seen, latest_seen, dr_0_1, dr_1_2
+                );
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        // Independent updates assertion: focus view contains 0xAA/0xBB
+        // names from event push, dirty_rects view contains 1 rect
+        // each at (0,1) and (1,2). Cross-talk would manifest as
+        // focus view containing dirty rect data or vice versa.
+        let aa = view.get(0xAA).expect("hwnd 0xAA in focus view");
+        assert_eq!(aa.name, "test", "focus event name preserved");
+        let bb = view.get(0xBB).expect("hwnd 0xBB in focus view");
+        assert_eq!(bb.name, "test");
+
+        assert_eq!(
+            dirty_rects_view.get(0, 1),
+            Some(1),
+            "monitor 0 frame 1 has 1 rect"
+        );
+        assert_eq!(
+            dirty_rects_view.get(1, 2),
+            Some(1),
+            "monitor 1 frame 2 has 1 rect, per-monitor isolated"
+        );
+        // Cross-monitor non-collision: monitor 0 frame 2 must be None.
+        assert!(
+            dirty_rects_view.get(0, 2).is_none(),
+            "no false-positive cross-monitor frame collision"
+        );
+        // monitor_count = 2 (per-monitor isolation maintained).
+        assert_eq!(dirty_rects_view.monitor_count(), 2);
+
+        worker.shutdown(Duration::from_secs(2)).expect("shutdown");
     }
 
     #[test]
@@ -1479,7 +1698,8 @@ mod tests {
         let worker = PerceptionWorker {
             join: Mutex::new(Some(join)),
             tx,
-            processed_count: Arc::new(AtomicU64::new(0)),
+            processed_focus_count: Arc::new(AtomicU64::new(0)),
+            processed_dirty_rect_count: Arc::new(AtomicU64::new(0)),
         };
 
         // Generous timeout: the worker drains after 50ms, then we
@@ -1547,7 +1767,8 @@ mod tests {
         let worker = PerceptionWorker {
             join: Mutex::new(Some(join)),
             tx,
-            processed_count: Arc::new(AtomicU64::new(0)),
+            processed_focus_count: Arc::new(AtomicU64::new(0)),
+            processed_dirty_rect_count: Arc::new(AtomicU64::new(0)),
         };
 
         let start = Instant::now();

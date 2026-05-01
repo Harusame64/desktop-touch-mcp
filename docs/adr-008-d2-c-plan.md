@@ -170,6 +170,19 @@ impl DirtyRectsAggregateView {
     /// monitor_index 別の "live frames" の count (= view が現在 hold している
     /// frame の数)。napi `view_get_dirty_rects(monitor_index)` の返り値構築用。
     pub fn live_frame_count(&self, monitor_index: u32) -> usize;
+
+    /// 最新 (highest frame_index) の `(frame_index, count)` for monitor_index。
+    /// napi `view_get_dirty_rects.latest` 構築用 (Opus PR #108 Round 1 P2-4
+    /// で trunk getter として確定)。
+    pub fn latest(&self, monitor_index: u32) -> Option<(u64, u64)>;
+
+    /// view 全体で live frame を持つ monitor 数 (Opus PR #108 Round 1
+    /// P2-4 sync)。
+    pub fn monitor_count(&self) -> usize;
+
+    /// view 全体に live frame が 1 つもないか (Opus PR #108 Round 1
+    /// P2-4 sync)。
+    pub fn is_empty(&self) -> bool;
 }
 ```
 
