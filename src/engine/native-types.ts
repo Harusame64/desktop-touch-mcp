@@ -71,6 +71,12 @@ export interface NativeViewFocusedPipelineStatus {
   /** `true` when the slot's pipeline has had a failed shutdown
    * (Codex review v9 P2-17). Callers should fall back to UIA. */
   poisoned: boolean
+  /** Cumulative `Cmd::PushFocus` count. **Focus-only since S2 D2-C**
+   * (Codex PR #108 round 1 P2-B): dirty-rect traffic uses a separate
+   * Rust-side counter (`PerceptionWorker::processed_dirty_rect_count`).
+   * Do NOT use this as overall pipeline activity gauge — it explicitly
+   * excludes dirty-rect events to keep focus-pipeline telemetry
+   * isolated. */
   processedCount: bigint
 }
 
