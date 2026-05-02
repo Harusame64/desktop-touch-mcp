@@ -83,7 +83,9 @@ import {
   browserEvalRegistrationSchema,
   browserEvalRegistrationHandler,
   browserSearchHandler, browserSearchSchema,
-  browserGetInteractiveHandler, browserGetInteractiveSchema,
+  browserGetInteractiveHandler,
+  browserOverviewRegistrationSchema,
+  browserOverviewRegistrationHandler,
   browserFindElementHandler, browserFindElementSchema,
   browserClickElementHandler,
   browserClickRegistrationSchema,
@@ -229,7 +231,11 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   // handler pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
   browser_eval:         { schema: browserEvalRegistrationSchema,         handler: browserEvalRegistrationHandler as typeof browserEvalHandler },
   browser_search:       { schema: z.object(browserSearchSchema),       handler: browserSearchHandler },
-  browser_overview:     { schema: z.object(browserGetInteractiveSchema), handler: browserGetInteractiveHandler },
+  // Walking skeleton expansion swimlane 2 (L5 query wrapper): use the
+  // module-scope wrapped handler from browser.ts so run_macro 経路は
+  // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
+  // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
+  browser_overview:     { schema: z.object(browserOverviewRegistrationSchema), handler: browserOverviewRegistrationHandler as typeof browserGetInteractiveHandler },
   browser_locate:       { schema: z.object(browserFindElementSchema),  handler: browserFindElementHandler },
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from browser.ts so run_macro 経路は
