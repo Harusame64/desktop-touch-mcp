@@ -4,6 +4,8 @@ import { buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { coercedBoolean } from "./_coerce.js";
 import { getCdpPort } from "../utils/desktop-config.js";
+import { withRichNarration } from "./_narration.js";
+import { makeCommitWrapper, withEnvelopeIncludeForUnion } from "./_envelope.js";
 
 // Internal handlers imported from existing files (retained as internal exports)
 import { scrollHandler as rawScrollHandler } from "./mouse.js";
@@ -202,6 +204,43 @@ export const scrollDispatchHandler = async (args: ScrollArgs): Promise<ToolResul
 // Registration
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Walking skeleton expansion phase swimlane 1 (L5 commit tool wrapper):
+ * `scroll` is wrapped via `makeCommitWrapper` (lease-less commit variant —
+ * `leaseValidator` omitted; scroll dispatches to wheel/UIA/CDP/OCR
+ * actions without a lease 4-tuple, mirroring PR #123 keyboard / PR #126
+ * clipboard discriminatedUnion (3b) family pattern).
+ *
+ * `withRichNarration` (inner) → `makeCommitWrapper` (outer):
+ *   - withRichNarration enriches the handler's ToolResult with post.* state
+ *     (rich-narrate UIA-diff path is unreachable since `narrate` isn't in
+ *     the scroll schema — falls through to withPostState only)
+ *   - makeCommitWrapper handles L1 ToolCallStarted/Completed push +
+ *     envelope assembly + compat hoist + tool_call_id seq
+ *
+ * Module-scope export so `run_macro` (`TOOL_REGISTRY.scroll` in
+ * `macro.ts`) shares the same wrapped instance (PR #112 shared
+ * registration handler pattern, strip risk prevention).
+ *
+ * Trunk pattern conformance: engine-perception layer 改変ゼロ
+ * (expansion-pr-guard.yml + check-expansion-disjoint.mjs)、handler internal
+ * logic + Zod schema + 戻り値 shape 不変 (ADR-010 §1.5)。
+ */
+export const scrollRegistrationSchema = withEnvelopeIncludeForUnion(scrollSchema);
+
+export const scrollRegistrationHandler = makeCommitWrapper(
+  withRichNarration(
+    "scroll",
+    scrollDispatchHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
+    { windowTitleKey: "windowTitle" },
+  ) as (args: Record<string, unknown>) => Promise<ToolResult>,
+  "scroll",
+  {
+    // leaseValidator omitted = lease-less commit variant
+    // getSessionId / argsSummary / clock も default 利用 = mechanical コピー最小
+  },
+);
+
 export function registerScrollTools(server: McpServer): void {
   server.registerTool(
     "scroll",
@@ -219,8 +258,8 @@ export function registerScrollTools(server: McpServer): void {
           "scroll({action:'read', windowTitle:'Acrobat', maxPages:15}) // OCR + dedupe long PDF",
         ],
       }),
-      inputSchema: scrollSchema,
+      inputSchema: scrollRegistrationSchema,
     },
-    scrollDispatchHandler as (args: Record<string, unknown>) => Promise<ToolResult>
+    scrollRegistrationHandler as (args: Record<string, unknown>) => Promise<ToolResult>
   );
 }
