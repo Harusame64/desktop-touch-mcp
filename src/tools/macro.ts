@@ -19,7 +19,10 @@ import {
   screenshotRegistrationSchema,
 } from "./screenshot.js";
 // Mouse
-import { mouseClickHandler, mouseClickRegistrationSchema, mouseClickRegistrationHandler, mouseDragHandler, mouseDragSchema } from "./mouse.js";
+import {
+  mouseClickHandler, mouseClickRegistrationSchema, mouseClickRegistrationHandler,
+  mouseDragHandler, mouseDragRegistrationSchema, mouseDragRegistrationHandler,
+} from "./mouse.js";
 // Keyboard dispatcher (Phase 2)
 import { keyboardHandler, keyboardRegistrationSchema, keyboardRegistrationHandler } from "./keyboard.js";
 // Clipboard dispatcher (Phase 2)
@@ -145,7 +148,11 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   screenshot:           { schema: z.object(screenshotRegistrationSchema), handler: screenshotRegistrationHandler as typeof screenshotHandler },
   // Action — native
   mouse_click:          { schema: z.object(mouseClickRegistrationSchema), handler: mouseClickRegistrationHandler as typeof mouseClickHandler },
-  mouse_drag:           { schema: z.object(mouseDragSchema),           handler: mouseDragHandler },
+  // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
+  // module-scope wrapped handler from mouse.ts so run_macro 経路は
+  // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
+  // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
+  mouse_drag:           { schema: z.object(mouseDragRegistrationSchema), handler: mouseDragRegistrationHandler as typeof mouseDragHandler },
   click_element:        { schema: z.object(clickElementRegistrationSchema), handler: clickElementRegistrationHandler as typeof clickElementHandler },
   focus_window:         { schema: z.object(focusWindowSchema),         handler: focusWindowHandler },
   // Action — text/clipboard dispatchers (Phase 2)
