@@ -2229,6 +2229,19 @@ export const browserOverviewRegistrationHandler = makeQueryWrapper(
   "browser_overview",
 );
 
+/**
+ * Walking skeleton expansion phase swimlane 2 (L5 query tool wrapper):
+ * `browser_locate` is wrapped via `makeQueryWrapper`. PR #122 screenshot /
+ * PR #140 browser_overview 同型 pattern (read-only DOM lookup、coordinate
+ * extraction、L1 events 不発、causedByProjector 省略 fast path)。
+ */
+export const browserLocateRegistrationSchema = withEnvelopeIncludeSchema(browserFindElementSchema);
+
+export const browserLocateRegistrationHandler = makeQueryWrapper(
+  browserFindElementHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
+  "browser_locate",
+);
+
 export function registerBrowserTools(server: McpServer): void {
   // Wire wait_until(element_matches) — resolve top result for callers that just need selector + text.
   setBrowserSearchHook(async ({ port, tabId, by, pattern, scope }) => {
@@ -2274,8 +2287,8 @@ export function registerBrowserTools(server: McpServer): void {
   server.tool(
     "browser_locate",
     "Find a DOM element by CSS selector and return its physical screen coordinates — compatible directly with mouse_click. Prefer browser_click to find+click in one step. Prefer browser_overview to discover selectors. Caveats: Coordinates are captured at call time; if the page reflows before mouse_click, coords may be stale.",
-    browserFindElementSchema,
-    browserFindElementHandler
+    browserLocateRegistrationSchema,
+    browserLocateRegistrationHandler as typeof browserFindElementHandler
   );
 
   server.tool(
