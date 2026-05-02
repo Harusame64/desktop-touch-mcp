@@ -23,7 +23,7 @@ import { mouseClickHandler, mouseClickRegistrationSchema, mouseClickRegistration
 // Keyboard dispatcher (Phase 2)
 import { keyboardHandler, keyboardRegistrationSchema, keyboardRegistrationHandler } from "./keyboard.js";
 // Clipboard dispatcher (Phase 2)
-import { clipboardHandler, clipboardSchema } from "./clipboard.js";
+import { clipboardHandler, clipboardRegistrationSchema, clipboardRegistrationHandler } from "./clipboard.js";
 // Window
 import {
   focusWindowHandler, focusWindowSchema,
@@ -150,7 +150,11 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
   keyboard:             { schema: keyboardRegistrationSchema,          handler: keyboardRegistrationHandler as typeof keyboardHandler },
-  clipboard:            { schema: clipboardSchema,                     handler: clipboardHandler },
+  // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
+  // module-scope wrapped handler from clipboard.ts so run_macro 経路は
+  // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
+  // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
+  clipboard:            { schema: clipboardRegistrationSchema,         handler: clipboardRegistrationHandler as typeof clipboardHandler },
   // Action — window/scroll/terminal dispatchers (Phase 2)
   window_dock:          { schema: windowDockSchema,                    handler: windowDockHandler },
   scroll:               { schema: scrollSchema,                        handler: scrollDispatchHandler },
