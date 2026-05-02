@@ -50,7 +50,9 @@ import {
 } from "./ui-elements.js";
 // Workspace
 import {
-  workspaceSnapshotHandler, workspaceSnapshotSchema,
+  workspaceSnapshotHandler,
+  workspaceSnapshotRegistrationSchema,
+  workspaceSnapshotRegistrationHandler,
   workspaceLaunchHandler,
   workspaceLaunchRegistrationSchema,
   workspaceLaunchRegistrationHandler,
@@ -262,7 +264,11 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
   browser_form:         { schema: z.object(browserFormRegistrationSchema), handler: browserFormRegistrationHandler as typeof browserGetFormHandler },
   // Workspace / wait / notification
-  workspace_snapshot:   { schema: z.object(workspaceSnapshotSchema),   handler: workspaceSnapshotHandler },
+  // Walking skeleton expansion swimlane 2 (L5 query wrapper): use the
+  // module-scope wrapped handler from workspace.ts so run_macro 経路は
+  // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
+  // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
+  workspace_snapshot:   { schema: z.object(workspaceSnapshotRegistrationSchema), handler: workspaceSnapshotRegistrationHandler as typeof workspaceSnapshotHandler },
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from workspace.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
