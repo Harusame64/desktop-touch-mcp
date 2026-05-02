@@ -13,7 +13,11 @@ import { assertKeyComboSafe } from "../utils/key-safety.js";
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Screenshot
-import { screenshotHandler, screenshotSchema } from "./screenshot.js";
+import {
+  screenshotHandler,
+  screenshotRegistrationHandler,
+  screenshotRegistrationSchema,
+} from "./screenshot.js";
 // Mouse
 import { mouseClickHandler, mouseClickRegistrationSchema, mouseClickRegistrationHandler, mouseDragHandler, mouseDragSchema } from "./mouse.js";
 // Keyboard dispatcher (Phase 2)
@@ -129,7 +133,12 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   // include — same-pattern bug as the server.tool registration path.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   desktop_state:        { schema: z.object(desktopStateRegistrationSchema), handler: desktopStateRegistrationHandler as any },
-  screenshot:           { schema: z.object(screenshotSchema),          handler: screenshotHandler },
+  // Walking skeleton expansion swimlane 2 (L5 query wrapper): use the
+  // module-scope schema + handler from screenshot.ts so `include` survives
+  // this dispatcher's `z.object(schema).parse(args)` call. Without this,
+  // `run_macro({tool:"screenshot", args:{include:["envelope"]}})` would
+  // silently strip include — same-pattern bug as PR #112 desktop_state path.
+  screenshot:           { schema: z.object(screenshotRegistrationSchema), handler: screenshotRegistrationHandler as typeof screenshotHandler },
   // Action — native
   mouse_click:          { schema: z.object(mouseClickRegistrationSchema), handler: mouseClickRegistrationHandler as typeof mouseClickHandler },
   mouse_drag:           { schema: z.object(mouseDragSchema),           handler: mouseDragHandler },

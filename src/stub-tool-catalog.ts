@@ -1269,6 +1269,13 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "description": "When true, apply Sauvola adaptive binarization after contrast stretch. Improves recognition of thin text on low-contrast or gradient backgrounds. Automatically enabled when preprocessPolicy='aggressive'. Requires Rust native engine; silently skipped otherwise.",
           "type": "boolean",
           "default": false
+        },
+        "include": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
         }
       },
       "additionalProperties": false
