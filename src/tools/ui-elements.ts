@@ -11,7 +11,7 @@ import { buildHintsForTitle } from "../engine/identity-tracker.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
 import { resolveWindowTarget } from "./_resolve-window.js";
-import { makeCommitWrapper } from "./_envelope.js";
+import { makeCommitWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -378,6 +378,22 @@ export const clickElementRegistrationHandler = makeCommitWrapper(
   },
 );
 
+/**
+ * Registration-time schema with `include?: string[]` injected via
+ * `withEnvelopeIncludeSchema` so per-call envelope opt-in
+ * (`include:["envelope"]` / `include:["causal"]` / `include:["raw"]`)
+ * survives the MCP SDK's `z.object(schema).parse(args)` step.
+ *
+ * Without injection, Zod's default object parse strips unknown keys and
+ * `include` is removed before `makeCommitWrapper` can peek it
+ * (PR #112 P1-1 / Codex PR #121 P2 同型 risk pattern). PR #117 で land
+ * された click_element wrap が schema injection を欠いていたため、
+ * `run_macro({tool:"click_element", args:{include:["causal"]}})` が
+ * silently raw fallback する production bug を内包していた。本 PR で
+ * mouse_click 同梱 fix として解消 (Opus PR #121 Round 1 P1-2 反映)。
+ */
+export const clickElementRegistrationSchema = withEnvelopeIncludeSchema(clickElementSchema);
+
 export function registerUiElementTools(server: McpServer): void {
   // Phase 4: get_ui_elements privatized — handler retained as internal export.
   // desktop_discover returns the actionable[] entity list (with name / role /
@@ -387,7 +403,7 @@ export function registerUiElementTools(server: McpServer): void {
   server.tool(
     "click_element",
     "Invoke a UI element by name or automationId via UIA InvokePattern — no screen coordinates needed. The server auto-guards using windowTitle (verifies identity, foreground, modal) and returns post.perception.status. Prefer over mouse_click for buttons, menu items, and links in native Windows apps. Use desktop_discover first to discover automationIds. Pass fixId from a suggestedFix to re-target after window identity drift. lensId is optional for advanced pinned-lens use. Caveats: Requires InvokePattern — some custom controls do not expose it; fall back to mouse_click in that case.",
-    clickElementSchema,
+    clickElementRegistrationSchema,
     clickElementRegistrationHandler as typeof clickElementHandler
   );
 
