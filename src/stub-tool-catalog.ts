@@ -812,6 +812,13 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
             "abortOnFocusLoss": {
               "description": "Focus Leash Phase B: when true, the foreground keystroke send is split into chunks (default 8 chars; override via DTM_LEASH_CHUNK_SIZE env) and the target window's foreground state is verified between chunks. If the user grabs focus mid-stream, the call aborts and returns FocusLostDuringType with context.typed (chars delivered to target) and context.remaining (unsent tail) so the caller can re-focus and retry the unsent portion. Default: true when windowTitle is provided, false otherwise. Has no effect on the clipboard path (atomic Ctrl+V) or the BG (WM_CHAR) path (HWND-targeted, foreground-independent).",
               "type": "boolean"
+            },
+            "include": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
             }
           },
           "additionalProperties": false,
@@ -877,6 +884,13 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
             "lensId": {
               "description": "Optional perception lens ID. Guards (safe.keyboardTarget) are evaluated before the key press.",
               "type": "string"
+            },
+            "include": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
             }
           },
           "additionalProperties": false,

@@ -17,7 +17,7 @@ import { screenshotHandler, screenshotSchema } from "./screenshot.js";
 // Mouse
 import { mouseClickHandler, mouseClickRegistrationSchema, mouseClickRegistrationHandler, mouseDragHandler, mouseDragSchema } from "./mouse.js";
 // Keyboard dispatcher (Phase 2)
-import { keyboardHandler, keyboardSchema, keyboardRegistrationHandler } from "./keyboard.js";
+import { keyboardHandler, keyboardRegistrationSchema, keyboardRegistrationHandler } from "./keyboard.js";
 // Clipboard dispatcher (Phase 2)
 import { clipboardHandler, clipboardSchema } from "./clipboard.js";
 // Window
@@ -140,7 +140,7 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   // module-scope wrapped handler from keyboard.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
-  keyboard:             { schema: keyboardSchema,                      handler: keyboardRegistrationHandler as typeof keyboardHandler },
+  keyboard:             { schema: keyboardRegistrationSchema,          handler: keyboardRegistrationHandler as typeof keyboardHandler },
   clipboard:            { schema: clipboardSchema,                     handler: clipboardHandler },
   // Action — window/scroll/terminal dispatchers (Phase 2)
   window_dock:          { schema: windowDockSchema,                    handler: windowDockHandler },

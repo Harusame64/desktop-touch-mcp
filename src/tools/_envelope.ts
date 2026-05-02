@@ -341,15 +341,63 @@ export function withEnvelopeIncludeSchema<T extends Record<string, ZodTypeAny>>(
     include: z
       .array(z.string())
       .optional()
-      .describe(
-        "Optional response-shape opt-in. " +
-        "`['envelope']` returns the self-documenting envelope " +
-        "(`_version` / `data` / `as_of` / `confidence`). " +
-        "`['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). " +
-        "Default behaviour is raw shape (compat with existing clients).",
-      ),
+      .describe(ENVELOPE_INCLUDE_FIELD_DESCRIPTION),
   } as T & { include: ZodOptional<ZodArray<ZodString>> };
 }
+
+/**
+ * Inject `include?: string[]` into a `z.discriminatedUnion(...)` schema
+ * by extending each variant's object shape and rebuilding the union.
+ *
+ * **Why a separate helper** (Opus PR #123 keyboard worktree report):
+ * `withEnvelopeIncludeSchema` requires a `Record<string, ZodTypeAny>`
+ * (= raw object shape) input, but several tool families
+ * (keyboard / clipboard / window_dock / scroll / terminal / browser_eval)
+ * use `z.discriminatedUnion` to dispatch on an `action` literal. Direct
+ * application of `withEnvelopeIncludeSchema` is impossible — the union
+ * has no flat shape to spread into. This helper extends each variant
+ * object with the same `include` field and rebuilds the discriminator,
+ * preserving the dispatch semantic while making `args.include` survive
+ * the MCP SDK's `z.parse()` step.
+ *
+ * Usage at registration site (sub-plan §3.1 step 3、discriminatedUnion
+ * 系 schema 用):
+ *
+ * ```ts
+ * server.registerTool("keyboard", {
+ *   description,
+ *   inputSchema: withEnvelopeIncludeForUnion(keyboardSchema),
+ * }, makeCommitWrapper(handler, "keyboard", { ... }));
+ * ```
+ *
+ * Type signature is intentionally widened to `ZodTypeAny` because Zod 3.x
+ * does not export the variant tuple type publicly (`ZodDiscriminatedUnion`
+ * has private `options` field with non-exported `ZodObject` element type).
+ * Runtime behaviour is bit-equal with `withEnvelopeIncludeSchema` per
+ * variant: each `z.object` gains `include?: string[]`, the discriminator
+ * is preserved, and the union still dispatches by the same field.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function withEnvelopeIncludeForUnion(union: any): any {
+  const includeField = z
+    .array(z.string())
+    .optional()
+    .describe(ENVELOPE_INCLUDE_FIELD_DESCRIPTION);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const newOptions = (union.options as readonly z.ZodObject<z.ZodRawShape>[]).map(
+    (opt) => opt.extend({ include: includeField }),
+  );
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return z.discriminatedUnion(union.discriminator as string, newOptions as any);
+}
+
+/** Shared description for `include` field across raw-shape and discriminatedUnion injection. */
+const ENVELOPE_INCLUDE_FIELD_DESCRIPTION =
+  "Optional response-shape opt-in. " +
+  "`['envelope']` returns the self-documenting envelope " +
+  "(`_version` / `data` / `as_of` / `confidence`). " +
+  "`['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). " +
+  "Default behaviour is raw shape (compat with existing clients).";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 

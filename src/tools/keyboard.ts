@@ -24,7 +24,7 @@ import { detectFocusLoss, checkForegroundOnce } from "./_focus.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
 import { resolveWindowTarget } from "./_resolve-window.js";
-import { makeCommitWrapper } from "./_envelope.js";
+import { makeCommitWrapper, withEnvelopeIncludeForUnion } from "./_envelope.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -1015,6 +1015,26 @@ export const keyboardHandler = async (args: KeyboardArgs): Promise<import("./_ty
  * handler internal logic + Zod schema + 戻り値 shape 不変
  * (ADR-010 §1.5)。
  */
+/**
+ * Registration-time schema with `include?: string[]` injected into each
+ * variant of the `z.discriminatedUnion("action", [...])` so per-call
+ * envelope opt-in (`include:["envelope"]` / `include:["causal"]` /
+ * `include:["raw"]`) survives the MCP SDK's `z.parse()` step on both
+ * `server.registerTool` and `run_macro` paths.
+ *
+ * `withEnvelopeIncludeSchema` (raw shape only) is unusable for
+ * discriminatedUnion families (keyboard / clipboard / window_dock /
+ * scroll / terminal / browser_eval). `withEnvelopeIncludeForUnion`
+ * extends every variant object with the `include` field and rebuilds
+ * the discriminator while preserving dispatch semantics.
+ *
+ * Without injection, Zod's default object parse strips unknown keys and
+ * `include` is removed before `makeCommitWrapper` can peek it
+ * (Codex PR #123 P2 + PR #112 P1-1 同型 risk pattern, discriminatedUnion
+ * 系の延長線).
+ */
+export const keyboardRegistrationSchema = withEnvelopeIncludeForUnion(keyboardSchema);
+
 export const keyboardRegistrationHandler = makeCommitWrapper(
   withRichNarration(
     "keyboard",
@@ -1044,8 +1064,8 @@ export function registerKeyboardTools(server: McpServer): void {
           "keyboard({action:'press', keys:'escape', windowTitle:'Dialog'}) → dismiss dialog",
         ],
       }),
-      inputSchema: keyboardSchema,
+      inputSchema: keyboardRegistrationSchema,
     },
-    keyboardRegistrationHandler as (args: Record<string, unknown>) => Promise<import("./_types.js").ToolResult>,
+    keyboardRegistrationHandler as typeof keyboardHandler,
   );
 }
