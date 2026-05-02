@@ -83,12 +83,19 @@ trunk lock layer 改変なしで mechanical コピーで進められるのは sw
    **Why**: MCP SDK の `server.tool` + `run_macro` 内 `entry.schema.parse(args)` は両方 Zod 経由、Zod object parse は unknown key を strip する。`include` field は base schema に存在しないため、injection なしでは `include:["causal"]` / `include:["envelope"]` が消失し `makeCommitWrapper` の peek+strip が空振りして per-call envelope opt-in が **silently raw fallback** する (PR #112 P1-1 / PR #117 click_element 既存 bug / PR #121 mouse_click Codex P2 と全て同型)。
 4. **module-scope export** (`{tool}RegistrationHandler` 命名)、`run_macro` 経路 (`TOOL_REGISTRY.{tool}` in `macro.ts`) も同 instance に切替 (PR #112 shared registration handler pattern、strip risk 防止)
 5. **unit test 1 件追加** (envelope shape return + L1 ToolCallStarted/Completed event 確認)
-6. **push + PR 起票**:
+6. **stub catalog 再生成 必須** (★ Opus PR #121 Round 2 P2-NEW-1 反映、CLAUDE.md §7 仕組みで対応):
+   ```bash
+   npm run check:stub-catalog
+   ```
+   `withEnvelopeIncludeSchema` で `include` field が schema に追加されると `src/stub-tool-catalog.ts` の generated entry にも `include` property が追加される。`check:stub-catalog` は `node scripts/generate-stub-tool-catalog.mjs && git diff --exit-code src/stub-tool-catalog.ts` で diff があれば exit 1。
+
+   diff があれば `src/stub-tool-catalog.ts` を本 PR に commit する (CI build job が同 check を Linux 環境で実行するため、ローカル forget は CI で機械的に検出されるが、push 前にローカル確認すれば 1 回の round 短縮)。
+7. **push + PR 起票**:
    - PR title に "expansion" 含有 (例: "expansion: mouse_click commit wrapper")
    - label に `expansion` 付与 (workflow trigger 用)
    - `expansion-pr-guard.yml` が trunk lock layer 改変なしを enforce
-7. **Opus 1 round** (trunk pattern conformance 軸) + **Codex 補助 review**
-8. **merge** (Opus 指摘ゼロ + Codex P1 ゼロ)
+8. **Opus 1 round** (trunk pattern conformance 軸) + **Codex 補助 review**
+9. **merge** (Opus 指摘ゼロ + Codex P1 ゼロ)
 
 ### 3.2 PR description template
 
@@ -102,6 +109,7 @@ trunk lock layer 改変なしで mechanical コピーで進められるのは sw
 - `src/tools/{file}.ts`: module-scope `{tool}RegistrationHandler` + `{tool}RegistrationSchema = withEnvelopeIncludeSchema({tool}Schema)` export、`server.tool` 3rd arg を `{tool}RegistrationSchema` に切替
 - `src/tools/macro.ts`: `TOOL_REGISTRY.{tool}.schema` を `z.object({tool}RegistrationSchema)` に切替 + handler を shared instance に切替
 - `tests/unit/{tool}-wrapper.test.ts`: envelope shape return + L1 event 確認 (1 件)
+- `src/stub-tool-catalog.ts`: `npm run check:stub-catalog` で再生成された差分 (`include` field 追加分)
 
 ## trunk contract conformance check
 
