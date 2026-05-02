@@ -16,6 +16,10 @@ import { ok, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith, failArgs } from "./_errors.js";
 import {
+  makeQueryWrapper,
+  withEnvelopeIncludeSchema,
+} from "./_envelope.js";
+import {
   observeTarget,
   buildCacheStateHints,
   toTargetHints,
@@ -1149,6 +1153,45 @@ export const getScreenInfoHandler = async (): Promise<ToolResult> => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Envelope-aware registration (walking skeleton expansion swimlane 2 / L5 query)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * `screenshot` registration schema with `include?: string[]` injected
+ * (PR #112 pattern). Tool source files don't declare `include` themselves
+ * (ADR-010 §1.5 spirit) — the L5 wrapper helper owns both schema injection
+ * and runtime peek+strip. Used by both `registerScreenshotTools` and
+ * `./macro.ts` `TOOL_REGISTRY.screenshot` so `run_macro` dispatcher reuses
+ * the SAME wrapped instance (Opus P1-1 同型 strip risk for macro path).
+ */
+export const screenshotRegistrationSchema = withEnvelopeIncludeSchema(screenshotSchema);
+
+/**
+ * Envelope-aware `screenshot` handler. Wraps `screenshotHandler` with
+ * `makeQueryWrapper` (S4 query-axis wrapper). screenshot is a read-only
+ * observation (screen / window / region capture, no side effects), so the
+ * query axis is correct — L1 ToolCallStarted / ToolCallCompleted events
+ * are commit-axis only and are NOT emitted here.
+ *
+ * S5 caused_by linkage is intentionally NOT wired in this expansion PR:
+ *   - `causedByProjector` omitted → makeQueryWrapper takes the S4 fast path
+ *     (`makeEnvelopeAware`-only branch, sub-plan §4.5 既存 caller 破壊なし)
+ *   - per-call `include=["envelope"]` opt-in + env `DESKTOP_TOUCH_ENVELOPE=1`
+ *     server default still take effect (G3-1 〜 G3-8 contracts)
+ *   - `include=["causal"]` callers see the envelope shape WITHOUT
+ *     `caused_by` / `based_on` projection — this matches the S4-default
+ *     behaviour for tools that have not opted into S5 wiring yet
+ *
+ * Used by both `server.tool("screenshot", …)` (this file) and
+ * `./macro.ts` `TOOL_REGISTRY.screenshot` (PR #112 shared registration
+ * handler pattern, prevents `args.include` strip on the macro path).
+ */
+export const screenshotRegistrationHandler = makeQueryWrapper(
+  screenshotHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
+  "screenshot",
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Registration
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1189,8 +1232,8 @@ export function registerScreenshotTools(server: McpServer): void {
         "screenshot({windowTitle:'Notepad', region:{x:0,y:120,width:600,height:400}}) → cropped sub-region (zoom into element after desktop_discover)",
       ],
     }),
-    screenshotSchema,
-    screenshotHandler
+    screenshotRegistrationSchema,
+    screenshotRegistrationHandler as typeof screenshotHandler
   );
 
   // Phase 4: screenshot_background / screenshot_ocr / scope_element privatized
