@@ -5,6 +5,8 @@ import { promisify } from "node:util";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
+import { withRichNarration } from "./_narration.js";
+import { makeCommitWrapper, withEnvelopeIncludeForUnion } from "./_envelope.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -93,13 +95,57 @@ export const clipboardHandler = async (args: ClipboardArgs): Promise<import("./_
 // Registration
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Walking skeleton expansion phase swimlane 1 (L5 commit tool wrapper):
+ * `clipboard` is wrapped via `makeCommitWrapper` (lease-less commit variant
+ * — `leaseValidator` omitted; clipboard read/write are OS-level idempotent
+ * actions without a lease 4-tuple, mirroring the S6 `click_element` PoC and
+ * the PR #123 `keyboard` wrap pattern).
+ *
+ * `withRichNarration` (inner) → `makeCommitWrapper` (outer) composition
+ * matches `keyboardRegistrationHandler` (`keyboard.ts:1038`) and
+ * `clickElementRegistrationHandler` (`ui-elements.ts:372`):
+ *   - withRichNarration enriches the handler's ToolResult (post.* hooks)
+ *   - makeCommitWrapper handles L1 ToolCallStarted/Completed push +
+ *     envelope assembly + compat hoist + tool_call_id seq
+ *
+ * `windowTitleKey` is omitted because clipboard has no window-scoped target
+ * (read/write hit the OS clipboard regardless of foreground window). This
+ * mirrors the same omission in the click_element/keyboard families when a
+ * tool has no positional/window target — withRichNarration falls through
+ * to `withPostState` only (the rich-narrate UIA-diff path is unreachable
+ * since narrate isn't in the clipboard schema).
+ *
+ * Module-scope export so `run_macro` (`TOOL_REGISTRY.clipboard` in
+ * `macro.ts`) shares the same wrapped instance (PR #112 shared
+ * registration handler pattern, strip risk prevention).
+ *
+ * Trunk pattern conformance: engine-perception layer 改変ゼロ
+ * (expansion-pr-guard.yml + check-expansion-disjoint.mjs)、handler internal
+ * logic + Zod schema + 戻り値 shape 不変 (ADR-010 §1.5)。
+ */
+export const clipboardRegistrationSchema = withEnvelopeIncludeForUnion(clipboardSchema);
+
+export const clipboardRegistrationHandler = makeCommitWrapper(
+  withRichNarration(
+    "clipboard",
+    clipboardHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
+    {},
+  ) as (args: Record<string, unknown>) => Promise<ToolResult>,
+  "clipboard",
+  {
+    // leaseValidator omitted = lease-less commit variant
+    // getSessionId / argsSummary / clock も default 利用 = mechanical コピー最小
+  },
+);
+
 export function registerClipboardTools(server: McpServer): void {
   server.registerTool(
     "clipboard",
     {
       description: "Read or write the Windows clipboard. action='read' returns current text content (empty string if non-text). action='write' replaces clipboard with given text. Caveats: Non-text clipboard payloads (images, files) return empty string on read. Overwrites existing clipboard content on write.",
-      inputSchema: clipboardSchema,
+      inputSchema: clipboardRegistrationSchema,
     },
-    clipboardHandler
+    clipboardRegistrationHandler as typeof clipboardHandler
   );
 }
