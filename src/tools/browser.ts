@@ -23,6 +23,8 @@ import { getCdpPort } from "../utils/desktop-config.js";
 import { fail } from "./_types.js";
 import { setBrowserSearchHook } from "./wait-until.js";
 import { withPostState } from "./_post.js";
+import { withRichNarration } from "./_narration.js";
+import { makeCommitWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
 import { narrateParam } from "./_narration.js";
 import type { RichBlock } from "../engine/uia-diff.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
@@ -2060,6 +2062,37 @@ export const browserEvalHandler = async (args: BrowserEvalArgs): Promise<ToolRes
 // Registration
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Walking skeleton expansion phase swimlane 1 (L5 commit tool wrapper):
+ * `browser_open` is wrapped via `makeCommitWrapper` (lease-less commit
+ * variant — `leaseValidator` omitted; CDP connect / optional browser spawn
+ * without a lease 4-tuple, mirroring PR #130 notification_show / PR #133
+ * workspace_launch pattern for OS-level commits).
+ *
+ * `windowTitleKey` is omitted because browser_open has no pre-existing
+ * window-scoped target (the browser may not yet exist when launch:{} is
+ * passed). `withRichNarration` falls through to `withPostState` only since
+ * `narrate` isn't in the schema.
+ *
+ * Module-scope export so `run_macro` (`TOOL_REGISTRY.browser_open` in
+ * `macro.ts`) shares the same wrapped instance (PR #112 shared
+ * registration handler pattern, strip risk prevention).
+ */
+export const browserOpenRegistrationSchema = withEnvelopeIncludeSchema(browserOpenSchema);
+
+export const browserOpenRegistrationHandler = makeCommitWrapper(
+  withRichNarration(
+    "browser_open",
+    browserOpenHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
+    {},
+  ) as (args: Record<string, unknown>) => Promise<ToolResult>,
+  "browser_open",
+  {
+    // leaseValidator omitted = lease-less commit variant
+    // getSessionId / argsSummary / clock も default 利用 = mechanical コピー最小
+  },
+);
+
 export function registerBrowserTools(server: McpServer): void {
   // Wire wait_until(element_matches) — resolve top result for callers that just need selector + text.
   setBrowserSearchHook(async ({ port, tabId, by, pattern, scope }) => {
@@ -2098,8 +2131,8 @@ export function registerBrowserTools(server: McpServer): void {
     "Returns tabs[] with id, url, title, active — pass tabId to browser_* tools to target a specific tab. " +
     "Caveats: CDP connection is per-process; if Chrome restarts, call browser_open again to get fresh tab IDs. " +
     "A Chrome session started without --remote-debugging-port cannot be taken over — close it first or use a separate userDataDir.",
-    browserOpenSchema,
-    browserOpenHandler
+    browserOpenRegistrationSchema,
+    browserOpenRegistrationHandler as typeof browserOpenHandler
   );
 
   server.tool(

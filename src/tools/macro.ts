@@ -76,7 +76,9 @@ import {
 } from "./terminal.js";
 // Browser tools (Phase 3)
 import {
-  browserOpenHandler, browserOpenSchema,
+  browserOpenHandler,
+  browserOpenRegistrationSchema,
+  browserOpenRegistrationHandler,
   browserEvalHandler, browserEvalSchema,
   browserSearchHandler, browserSearchSchema,
   browserGetInteractiveHandler, browserGetInteractiveSchema,
@@ -206,7 +208,11 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   // handler pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
   terminal:             { schema: terminalRegistrationSchema,           handler: terminalRegistrationHandler as typeof terminalDispatchHandler },
   // Action — browser (Phase 3)
-  browser_open:         { schema: z.object(browserOpenSchema),         handler: browserOpenHandler },
+  // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
+  // module-scope wrapped handler from browser.ts so run_macro 経路は
+  // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
+  // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
+  browser_open:         { schema: z.object(browserOpenRegistrationSchema), handler: browserOpenRegistrationHandler as typeof browserOpenHandler },
   browser_eval:         { schema: browserEvalSchema,                   handler: browserEvalHandler },
   browser_search:       { schema: z.object(browserSearchSchema),       handler: browserSearchHandler },
   browser_overview:     { schema: z.object(browserGetInteractiveSchema), handler: browserGetInteractiveHandler },
