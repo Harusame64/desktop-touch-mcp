@@ -2159,6 +2159,31 @@ export const browserFillRegistrationHandler = makeCommitWrapper(
   },
 );
 
+/**
+ * Walking skeleton expansion phase swimlane 1 (L5 commit tool wrapper):
+ * `browser_form` is wrapped via `makeCommitWrapper` (lease-less commit
+ * variant). Per `docs/walking-skeleton-expansion-plan.md` §2.1 line 38、
+ * browser_form は swimlane 1 (commit) に分類される (form inspection は
+ * read-only だが、L1 ToolCall event 記録 + envelope hoist の対象として
+ * commit pipeline に乗せる方針)。PR #134 browser_open / PR #135 browser_navigate
+ * / PR #136 browser_click / PR #137 browser_fill 同型 pattern (raw shape 3a
+ * family、windowTitleKey 省略 — browser targets a CDP tab not a Win32 window)。
+ */
+export const browserFormRegistrationSchema = withEnvelopeIncludeSchema(browserGetFormSchema);
+
+export const browserFormRegistrationHandler = makeCommitWrapper(
+  withRichNarration(
+    "browser_form",
+    browserGetFormHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
+    {},
+  ) as (args: Record<string, unknown>) => Promise<ToolResult>,
+  "browser_form",
+  {
+    // leaseValidator omitted = lease-less commit variant
+    // getSessionId / argsSummary / clock も default 利用 = mechanical コピー最小
+  },
+);
+
 export function registerBrowserTools(server: McpServer): void {
   // Wire wait_until(element_matches) — resolve top result for callers that just need selector + text.
   setBrowserSearchHook(async ({ port, tabId, by, pattern, scope }) => {
@@ -2260,7 +2285,7 @@ export function registerBrowserTools(server: McpServer): void {
   server.tool(
     "browser_form",
     "Inspect all form fields (input, select, textarea, button) within a CSS-selector-specified container and return their name, type, id, current value, hint text, disabled/readOnly state, and associated label text (resolved via for[id], ancestor LABEL, aria-labelledby, aria-label in that order). Use this before browser_fill to discover exact field selectors and avoid accidentally targeting the wrong input (e.g. a global search bar). Caveats: Requires browser_open (CDP active). Hidden inputs (type=hidden) are excluded by default — set includeHidden:true if needed. Value text is truncated at 200 chars.",
-    browserGetFormSchema,
-    browserGetFormHandler
+    browserFormRegistrationSchema,
+    browserFormRegistrationHandler as typeof browserGetFormHandler
   );
 }
