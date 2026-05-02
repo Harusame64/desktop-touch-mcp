@@ -702,9 +702,15 @@ const desktopStateCausedByProjector = async (
   }
 
   // L1 ring 末尾 event_id (OQ #5 既存 binding reuse、新規不要)
+  // Note: line 657 early return guarantees `nativeL1 != null` here, so the
+  // outer `nativeL1 &&` check is omitted (CodeQL alert #108
+  // `js/trivial-conditional` 構造的修正, PR fix/codeql-108-trivial-conditional).
+  // The `typeof` check on the optional `l1GetCaptureStats` method is retained
+  // as defence against binding shape drift (e.g. partial native binding
+  // loaded on non-Windows / pre-P5a binary).
   let latestEventId: bigint | undefined;
   try {
-    if (nativeL1 && typeof nativeL1.l1GetCaptureStats === "function") {
+    if (typeof nativeL1.l1GetCaptureStats === "function") {
       const stats = nativeL1.l1GetCaptureStats();
       latestEventId = stats.eventIdHighWater;
     }
