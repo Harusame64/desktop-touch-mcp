@@ -36,7 +36,11 @@ import {
   getWindowsHandler, getWindowsSchema,
 } from "./window.js";
 // Window dock dispatcher (Phase 2)
-import { windowDockHandler, windowDockSchema } from "./window-dock.js";
+import {
+  windowDockHandler,
+  windowDockRegistrationSchema,
+  windowDockRegistrationHandler,
+} from "./window-dock.js";
 // UI elements (click_element always public after Phase 4; the next two are
 // V1 fallbacks only reachable when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1).
 import {
@@ -177,7 +181,11 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
   clipboard:            { schema: clipboardRegistrationSchema,         handler: clipboardRegistrationHandler as typeof clipboardHandler },
   // Action — window/scroll/terminal dispatchers (Phase 2)
-  window_dock:          { schema: windowDockSchema,                    handler: windowDockHandler },
+  // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
+  // module-scope wrapped handler from window-dock.ts so run_macro 経路は
+  // server.registerTool 経路と同 instance を共有 (PR #112 shared registration
+  // handler pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
+  window_dock:          { schema: windowDockRegistrationSchema,         handler: windowDockRegistrationHandler as typeof windowDockHandler },
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from scroll.ts so run_macro 経路は
   // server.registerTool 経路と同 instance を共有 (PR #112 shared registration

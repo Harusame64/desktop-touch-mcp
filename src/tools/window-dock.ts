@@ -4,6 +4,8 @@ import { buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { pinWindowHandler, unpinWindowHandler } from "./pin.js";
 import { dockWindowHandler } from "./dock.js";
+import { withRichNarration } from "./_narration.js";
+import { makeCommitWrapper, withEnvelopeIncludeForUnion } from "./_envelope.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Dispatcher schema (discriminated union)
@@ -61,6 +63,40 @@ export const windowDockHandler = async (args: WindowDockArgs): Promise<ToolResul
 // Registration
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Walking skeleton expansion phase swimlane 1 (L5 commit tool wrapper):
+ * `window_dock` is wrapped via `makeCommitWrapper` (lease-less commit
+ * variant — `leaseValidator` omitted; window_dock dispatches to pin/unpin/dock
+ * actions without a lease 4-tuple, mirroring PR #123 keyboard / PR #126
+ * clipboard discriminatedUnion (3b) family pattern).
+ *
+ * `withRichNarration` (inner, windowTitleKey: "title" — all 3 variants share
+ * the `title` field) → `makeCommitWrapper` (outer):
+ *   - withRichNarration enriches the handler's ToolResult with post.* state
+ *     (rich-narrate UIA-diff path is unreachable since `narrate` isn't in
+ *     the schema — falls through to withPostState only)
+ *   - makeCommitWrapper handles L1 ToolCallStarted/Completed push +
+ *     envelope assembly + compat hoist + tool_call_id seq
+ *
+ * Module-scope export so `run_macro` (`TOOL_REGISTRY.window_dock` in
+ * `macro.ts`) shares the same wrapped instance (PR #112 shared
+ * registration handler pattern, strip risk prevention).
+ */
+export const windowDockRegistrationSchema = withEnvelopeIncludeForUnion(windowDockSchema);
+
+export const windowDockRegistrationHandler = makeCommitWrapper(
+  withRichNarration(
+    "window_dock",
+    windowDockHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
+    { windowTitleKey: "title" },
+  ) as (args: Record<string, unknown>) => Promise<ToolResult>,
+  "window_dock",
+  {
+    // leaseValidator omitted = lease-less commit variant
+    // getSessionId / argsSummary / clock も default 利用 = mechanical コピー最小
+  },
+);
+
 export function registerWindowDockTools(server: McpServer): void {
   server.registerTool(
     "window_dock",
@@ -76,8 +112,8 @@ export function registerWindowDockTools(server: McpServer): void {
           "window_dock({action:'unpin', title:'Settings'})",
         ],
       }),
-      inputSchema: windowDockSchema,
+      inputSchema: windowDockRegistrationSchema,
     },
-    windowDockHandler
+    windowDockRegistrationHandler as typeof windowDockHandler
   );
 }
