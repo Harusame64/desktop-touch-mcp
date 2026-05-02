@@ -30,7 +30,7 @@
 // a useful signal.
 
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -81,6 +81,85 @@ function detectHostTriple() {
   return pieces.slice(-4).join("-");
 }
 
+// On Windows MSVC, `build.rs` emits `cargo:rustc-link-search=<repo root>` +
+// `cargo:rustc-link-lib=node` so the linker looks for `node.lib` at the repo
+// root — but napi-build does NOT download the lib itself, and the @napi-rs/cli
+// download path can silently no-op on a fresh clone (empty
+// %LOCALAPPDATA%\node-gyp\Cache, no `node.lib` in repo root). The result is
+// `LNK1181: 入力ファイル 'node.lib' を開けません` deep inside the link stage.
+// Populate `node.lib` from the node-gyp cache, running `npx node-gyp install`
+// first if the cache is empty.
+//
+// GNU / GNU-LLVM hosts are intentionally skipped: `build.rs` requires
+// `libnode.a` (generated from node.exe exports via dlltool) on those targets,
+// not `node.lib`. Auto-populating `node.lib` there would produce a "silent
+// miss-rescue" — file appears, but link still fails. `gnullvm` is the LLVM
+// MinGW toolchain (rustc reports `CARGO_CFG_TARGET_ENV=gnu` for it, so
+// `build.rs` routes it to the libnode.a branch correctly); we mirror that
+// here. CI/release flows are MSVC-only; gnu/gnullvm is a developer preference
+// and out of scope.
+function ensureNodeLibOnWindows(triple) {
+  if (process.platform !== "win32") return;
+  if (triple?.endsWith("-gnu") || triple?.endsWith("-gnullvm")) {
+    console.warn(
+      `[build-rs] ${triple} host detected; preflight handles MSVC node.lib only. ` +
+        "GNU/GNU-LLVM target needs libnode.a generated separately (see build.rs).",
+    );
+    return;
+  }
+  const repoNodeLib = join(ROOT, "node.lib");
+  if (existsSync(repoNodeLib)) return;
+  const localAppData = process.env.LOCALAPPDATA;
+  if (!localAppData) {
+    console.error("[build-rs] LOCALAPPDATA env not set; cannot locate node-gyp cache.");
+    process.exit(1);
+  }
+  const arch = archFromTriple(triple);
+  const nodeVer = process.versions.node;
+  const cachedNodeLib = join(
+    localAppData,
+    "node-gyp",
+    "Cache",
+    nodeVer,
+    arch,
+    "node.lib",
+  );
+  if (!existsSync(cachedNodeLib)) {
+    console.log(
+      `[build-rs] node.lib missing from repo root and node-gyp cache; running 'npx --yes node-gyp install --target=${nodeVer}'`,
+    );
+    const npx = process.platform === "win32" ? "npx.cmd" : "npx";
+    // `--target=<ver>` pins the download to the running Node's version so the
+    // post-install lookup at `<ver>/<arch>/node.lib` finds it. Without it,
+    // node-gyp picks its own default (often a different version), the cache
+    // path mismatches, and we'd false-positive the "did not produce" branch.
+    // CI does the same (.github/workflows/ci.yml).
+    const r = spawnSync(npx, ["--yes", "node-gyp", "install", `--target=${nodeVer}`], {
+      stdio: "inherit",
+      cwd: ROOT,
+    });
+    if (r.status !== 0 || !existsSync(cachedNodeLib)) {
+      console.error(`[build-rs] node-gyp install did not produce ${cachedNodeLib}`);
+      process.exit(1);
+    }
+  }
+  copyFileSync(cachedNodeLib, repoNodeLib);
+  console.log(`[build-rs] populated ${repoNodeLib} from node-gyp cache`);
+}
+
+// node-gyp Cache layout: <ver>/<arch>/node.lib where arch ∈ {x64, ia32, arm64}.
+// Prefer the rustup target triple (cross-compile aware); fall back to host arch.
+// Only meaningful when the caller has already confirmed Windows + non-gnu;
+// `ensureNodeLibOnWindows` is the only caller and gates both checks.
+function archFromTriple(triple) {
+  if (triple?.startsWith("x86_64")) return "x64";
+  if (triple?.startsWith("aarch64")) return "arm64";
+  if (triple?.startsWith("i686")) return "ia32";
+  if (process.arch === "arm64") return "arm64";
+  if (process.arch === "ia32") return "ia32";
+  return "x64";
+}
+
 const args = process.argv.slice(2);
 const release = args.includes("--release");
 const passthrough = args.filter((a) => a !== "--release" && a !== "--debug");
@@ -105,13 +184,16 @@ function restore() {
   }
 }
 
-// ── 2. Run `napi build` ─────────────────────────────────────────────────────
+// ── 2. Preflight (Windows only) ─────────────────────────────────────────────
+const triple = detectHostTriple();
+ensureNodeLibOnWindows(triple);
+
+// ── 3. Run `napi build` ─────────────────────────────────────────────────────
 // Invoke the napi CLI's JS entry directly with `node`. Going through
 // `npx`/`npx.cmd` requires `shell: true` (DEP0190 on Node ≥ 22), and the
 // shell lookup is brittle across MSYS bash / pwsh / cmd / GitHub Actions
 // runners. Calling node with an absolute path is portable and explicit.
 const napiCli = join(ROOT, "node_modules", "@napi-rs", "cli", "dist", "cli.js");
-const triple = detectHostTriple();
 const targetArgs = triple ? ["--target", triple] : [];
 if (triple) {
   console.log(`[build-rs] detected rustup toolchain triple: ${triple}`);

@@ -39,8 +39,8 @@
 
 ### ビルド環境補記
 
-- Rust napi ビルド（`npm run build:rs`）には `node.lib` が必要。
-  初回は `npx node-gyp install` でダウンロードし `C:\Users\<user>\AppData\Local\node-gyp\Cache\<version>\x64\node.lib` をプロジェクトルートにコピーしてから実行。
+- Rust napi ビルド（`npm run build:rs`）には `node.lib` が必要。Windows MSVC host では `scripts/build-rs.mjs` の preflight が `%LOCALAPPDATA%\node-gyp\Cache\<version>\<arch>\node.lib` から repo root へ自動コピーする（cache が空なら `npx --yes node-gyp install --target=<version>` を先に発火）。
+- 手動の `npx node-gyp install` + `cp` は不要（PR #125 で自動化）。GNU host だけは `libnode.a` 別経路が必要なため preflight が skip + warn する。
 - `node.lib` は `.gitignore` 対象なのでリポジトリには含まれない。
 
 ### フェーズ 2 完了判定（実績）
