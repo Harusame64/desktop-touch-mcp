@@ -2135,6 +2135,30 @@ export const browserClickRegistrationHandler = makeCommitWrapper(
   },
 );
 
+/**
+ * Walking skeleton expansion phase swimlane 1 (L5 commit tool wrapper):
+ * `browser_fill` is wrapped via `makeCommitWrapper` (lease-less commit
+ * variant). PR #134 browser_open / PR #135 browser_navigate / PR #136
+ * browser_click 同型 pattern (raw shape 3a family、windowTitleKey 省略 —
+ * browser targets a CDP tab not a Win32 window). pre-expansion では bare
+ * `browserFillInputHandler` 直接渡しだったため post.* block も追加される
+ * behavior 変化あり (additive、互換維持)。
+ */
+export const browserFillRegistrationSchema = withEnvelopeIncludeSchema(browserFillInputSchema);
+
+export const browserFillRegistrationHandler = makeCommitWrapper(
+  withRichNarration(
+    "browser_fill",
+    browserFillInputHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
+    {},
+  ) as (args: Record<string, unknown>) => Promise<ToolResult>,
+  "browser_fill",
+  {
+    // leaseValidator omitted = lease-less commit variant
+    // getSessionId / argsSummary / clock も default 利用 = mechanical コピー最小
+  },
+);
+
 export function registerBrowserTools(server: McpServer): void {
   // Wire wait_until(element_matches) — resolve top result for callers that just need selector + text.
   setBrowserSearchHook(async ({ port, tabId, by, pattern, scope }) => {
@@ -2229,8 +2253,8 @@ export function registerBrowserTools(server: McpServer): void {
   server.tool(
     "browser_fill",
     "Fill a form input with a value via CDP — works on React/Vue/Svelte controlled inputs that reject browser_eval value assignment. Use browser_overview or browser_locate first to obtain a stable selector. Use this over browser_eval when setting a controlled input's value via JS does not update the framework state. Caveats: Requires browser_open (CDP active). Does not work on contenteditable rich-text editors — use keyboard(action='type') for those. actual in response shows what the element's value property reads after fill; verify it matches the intended value.",
-    browserFillInputSchema,
-    browserFillInputHandler
+    browserFillRegistrationSchema,
+    browserFillRegistrationHandler as typeof browserFillInputHandler
   );
 
   server.tool(
