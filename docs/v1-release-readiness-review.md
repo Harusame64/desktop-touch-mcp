@@ -82,7 +82,7 @@ V2 は Phase 4b dogfood で main merge 済 (PR #34、`072b1db`) ですが、Phas
 - **`native-rs-engine`** UIA bindings — koffi 削除済み (napi-rs に統合)? それとも残留? (Phase 1 §1.5 引継ぎで言及あり)
 - **`native-rs-engine`** perception sensors (Rust 側) — TS 側 sensor 群との重複・整合性
 - **`src/engine/vision-gpu/backend.ts`** ↔ Rust 接続 — Vulkan / CUDA / DirectML の lane warmup race、`PocVisualBackend` のフェイルセーフ動作 (Tier ∞)
-- **`build.rs`** — node.lib 取得 (windows-latest CI で `node-gyp install` 必要、memory `feedback_ci_node_lib.md` 引継ぎ)
+- **`build.rs`** — node.lib 取得 (windows-latest CI で `node-gyp install` 必要、memory `feedback_ci_node_lib.md` 引継ぎ。dev side は PR #125 で `scripts/build-rs.mjs` preflight に自動化済)
 - **Rust テスト** — `cargo check` / `cargo test` / `cargo clippy` の状況、CI 統合
 
 ### 3.5. D — TS↔Rust 境界観点
