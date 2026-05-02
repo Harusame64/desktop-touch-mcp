@@ -2114,6 +2114,27 @@ export const browserNavigateRegistrationHandler = makeCommitWrapper(
   },
 );
 
+/**
+ * Walking skeleton expansion phase swimlane 1 (L5 commit tool wrapper):
+ * `browser_click` is wrapped via `makeCommitWrapper` (lease-less commit
+ * variant). Replaces the pre-expansion `withPostState("browser_click", ...)`
+ * direct wrap. PR #134 browser_open / PR #135 browser_navigate 同型 pattern.
+ */
+export const browserClickRegistrationSchema = withEnvelopeIncludeSchema(browserClickElementSchema);
+
+export const browserClickRegistrationHandler = makeCommitWrapper(
+  withRichNarration(
+    "browser_click",
+    browserClickElementHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
+    {},
+  ) as (args: Record<string, unknown>) => Promise<ToolResult>,
+  "browser_click",
+  {
+    // leaseValidator omitted = lease-less commit variant
+    // getSessionId / argsSummary / clock も default 利用 = mechanical コピー最小
+  },
+);
+
 export function registerBrowserTools(server: McpServer): void {
   // Wire wait_until(element_matches) — resolve top result for callers that just need selector + text.
   setBrowserSearchHook(async ({ port, tabId, by, pattern, scope }) => {
@@ -2166,8 +2187,8 @@ export function registerBrowserTools(server: McpServer): void {
   server.tool(
     "browser_click",
     "Find a DOM element by CSS selector and click it (combines browser_locate + mouse_click in one step). Prefer over mouse_click for Chrome — selector-based clicking is stable across repaints. Pass tabId+port so the server auto-guards (verifies tab readyState and identity) and returns post.perception.status. lensId is optional for advanced pinned-tab workflows. Caveats: Fails if the element is outside the visible viewport — scroll it into view with browser_eval(\"document.querySelector('sel').scrollIntoView()\") first.",
-    browserClickElementSchema,
-    withPostState("browser_click", browserClickElementHandler)
+    browserClickRegistrationSchema,
+    browserClickRegistrationHandler as typeof browserClickElementHandler
   );
 
   server.registerTool(
