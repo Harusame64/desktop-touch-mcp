@@ -90,17 +90,20 @@ function detectHostTriple() {
 // Populate `node.lib` from the node-gyp cache, running `npx node-gyp install`
 // first if the cache is empty.
 //
-// GNU host is intentionally skipped: `build.rs` requires `libnode.a` (generated
-// from node.exe exports via dlltool) on gnu, not `node.lib`. Auto-populating
-// `node.lib` there would produce a "silent miss-rescue" — file appears, but
-// link still fails. CI/release flows are MSVC-only; gnu is a developer
-// preference and out of scope here.
+// GNU / GNU-LLVM hosts are intentionally skipped: `build.rs` requires
+// `libnode.a` (generated from node.exe exports via dlltool) on those targets,
+// not `node.lib`. Auto-populating `node.lib` there would produce a "silent
+// miss-rescue" — file appears, but link still fails. `gnullvm` is the LLVM
+// MinGW toolchain (rustc reports `CARGO_CFG_TARGET_ENV=gnu` for it, so
+// `build.rs` routes it to the libnode.a branch correctly); we mirror that
+// here. CI/release flows are MSVC-only; gnu/gnullvm is a developer preference
+// and out of scope.
 function ensureNodeLibOnWindows(triple) {
   if (process.platform !== "win32") return;
-  if (triple?.endsWith("-gnu")) {
+  if (triple?.endsWith("-gnu") || triple?.endsWith("-gnullvm")) {
     console.warn(
-      "[build-rs] gnu host detected; preflight handles MSVC node.lib only. " +
-        "GNU target needs libnode.a generated separately (see build.rs).",
+      `[build-rs] ${triple} host detected; preflight handles MSVC node.lib only. ` +
+        "GNU/GNU-LLVM target needs libnode.a generated separately (see build.rs).",
     );
     return;
   }
