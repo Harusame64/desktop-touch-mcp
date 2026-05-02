@@ -81,15 +81,29 @@ function detectHostTriple() {
   return pieces.slice(-4).join("-");
 }
 
-// On Windows, `napi-build` emits `cargo:rustc-link-search=<repo root>` so the
-// linker looks for `node.lib` there — but napi-build does NOT download the lib
-// itself. The @napi-rs/cli download path can silently no-op on a fresh clone
-// (empty %LOCALAPPDATA%\node-gyp\Cache, no `node.lib` in repo root), which
-// surfaces as `LNK1181: 入力ファイル 'node.lib' を開けません` deep inside the
-// link stage. Populate `node.lib` from the node-gyp cache here, running
-// `npx node-gyp install` first if the cache is empty.
+// On Windows MSVC, `build.rs` emits `cargo:rustc-link-search=<repo root>` +
+// `cargo:rustc-link-lib=node` so the linker looks for `node.lib` at the repo
+// root — but napi-build does NOT download the lib itself, and the @napi-rs/cli
+// download path can silently no-op on a fresh clone (empty
+// %LOCALAPPDATA%\node-gyp\Cache, no `node.lib` in repo root). The result is
+// `LNK1181: 入力ファイル 'node.lib' を開けません` deep inside the link stage.
+// Populate `node.lib` from the node-gyp cache, running `npx node-gyp install`
+// first if the cache is empty.
+//
+// GNU host is intentionally skipped: `build.rs` requires `libnode.a` (generated
+// from node.exe exports via dlltool) on gnu, not `node.lib`. Auto-populating
+// `node.lib` there would produce a "silent miss-rescue" — file appears, but
+// link still fails. CI/release flows are MSVC-only; gnu is a developer
+// preference and out of scope here.
 function ensureNodeLibOnWindows(triple) {
   if (process.platform !== "win32") return;
+  if (triple?.endsWith("-gnu")) {
+    console.warn(
+      "[build-rs] gnu host detected; preflight handles MSVC node.lib only. " +
+        "GNU target needs libnode.a generated separately (see build.rs).",
+    );
+    return;
+  }
   const repoNodeLib = join(ROOT, "node.lib");
   if (existsSync(repoNodeLib)) return;
   const localAppData = process.env.LOCALAPPDATA;
@@ -98,20 +112,26 @@ function ensureNodeLibOnWindows(triple) {
     process.exit(1);
   }
   const arch = archFromTriple(triple);
+  const nodeVer = process.versions.node;
   const cachedNodeLib = join(
     localAppData,
     "node-gyp",
     "Cache",
-    process.versions.node,
+    nodeVer,
     arch,
     "node.lib",
   );
   if (!existsSync(cachedNodeLib)) {
     console.log(
-      `[build-rs] node.lib missing from repo root and node-gyp cache; running 'npx node-gyp install'`,
+      `[build-rs] node.lib missing from repo root and node-gyp cache; running 'npx --yes node-gyp install --target=${nodeVer}'`,
     );
     const npx = process.platform === "win32" ? "npx.cmd" : "npx";
-    const r = spawnSync(npx, ["node-gyp", "install"], {
+    // `--target=<ver>` pins the download to the running Node's version so the
+    // post-install lookup at `<ver>/<arch>/node.lib` finds it. Without it,
+    // node-gyp picks its own default (often a different version), the cache
+    // path mismatches, and we'd false-positive the "did not produce" branch.
+    // CI does the same (.github/workflows/ci.yml).
+    const r = spawnSync(npx, ["--yes", "node-gyp", "install", `--target=${nodeVer}`], {
       stdio: "inherit",
       cwd: ROOT,
     });
@@ -126,6 +146,8 @@ function ensureNodeLibOnWindows(triple) {
 
 // node-gyp Cache layout: <ver>/<arch>/node.lib where arch ∈ {x64, ia32, arm64}.
 // Prefer the rustup target triple (cross-compile aware); fall back to host arch.
+// Only meaningful when the caller has already confirmed Windows + non-gnu;
+// `ensureNodeLibOnWindows` is the only caller and gates both checks.
 function archFromTriple(triple) {
   if (triple?.startsWith("x86_64")) return "x64";
   if (triple?.startsWith("aarch64")) return "arm64";
