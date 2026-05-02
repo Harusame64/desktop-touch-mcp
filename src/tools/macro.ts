@@ -74,7 +74,11 @@ import {
   browserGetFormHandler, browserGetFormSchema,
 } from "./browser.js";
 // Notification (server_status not callable from macros — diagnostic)
-import { notificationShowHandler, notificationShowSchema } from "./notification.js";
+import {
+  notificationShowHandler,
+  notificationShowRegistrationSchema,
+  notificationShowRegistrationHandler,
+} from "./notification.js";
 // v2 World-Graph dispatchers (Phase 4 / Codex PR #41 P1): the public surface
 // for discovery and lease-based action; macros need access to use the
 // action='setValue' / 'click' / 'type' flow advertised in the schema.
@@ -194,7 +198,11 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   workspace_snapshot:   { schema: z.object(workspaceSnapshotSchema),   handler: workspaceSnapshotHandler },
   workspace_launch:     { schema: z.object(workspaceLaunchSchema),     handler: workspaceLaunchHandler },
   wait_until:           { schema: z.object(waitUntilSchema),           handler: waitUntilHandler },
-  notification_show:    { schema: z.object(notificationShowSchema),    handler: notificationShowHandler },
+  // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
+  // module-scope wrapped handler from notification.ts so run_macro 経路は
+  // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
+  // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
+  notification_show:    { schema: z.object(notificationShowRegistrationSchema), handler: notificationShowRegistrationHandler as typeof notificationShowHandler },
   // v2 World-Graph (default-on; kill switch DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1).
   // Both handlers re-check the kill switch on every call so run_macro cannot
   // bypass the operator's opt-out. (Codex PR #41 round 3 P1.)
