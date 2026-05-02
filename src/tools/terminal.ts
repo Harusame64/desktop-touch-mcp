@@ -33,6 +33,8 @@ import { keyboard } from "../engine/nutjs.js";
 import { parseKeys } from "../utils/key-map.js";
 import { typeViaClipboard } from "./keyboard.js";
 import { setTerminalReadHook } from "./wait-until.js";
+import { withRichNarration } from "./_narration.js";
+import { makeCommitWrapper, withEnvelopeIncludeForUnion } from "./_envelope.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -953,6 +955,40 @@ async function readForHook(windowTitle: string): Promise<{ text: string; marker:
 
 export { TERMINAL_PROCESS_RE };
 
+/**
+ * Walking skeleton expansion phase swimlane 1 (L5 commit tool wrapper):
+ * `terminal` is wrapped via `makeCommitWrapper` (lease-less commit variant —
+ * `leaseValidator` omitted; terminal dispatches to read/send/run actions
+ * without a lease 4-tuple, mirroring PR #123 keyboard / PR #126 clipboard /
+ * PR #127 scroll / PR #131 window_dock discriminatedUnion (3b) family pattern).
+ *
+ * `withRichNarration` (inner, windowTitleKey: "windowTitle" — all 3 variants
+ * share the `windowTitle` field) → `makeCommitWrapper` (outer):
+ *   - withRichNarration enriches the handler's ToolResult with post.* state
+ *     (rich-narrate UIA-diff path is unreachable since `narrate` isn't in
+ *     the schema — falls through to withPostState only)
+ *   - makeCommitWrapper handles L1 ToolCallStarted/Completed push +
+ *     envelope assembly + compat hoist + tool_call_id seq
+ *
+ * Module-scope export so `run_macro` (`TOOL_REGISTRY.terminal` in
+ * `macro.ts`) shares the same wrapped instance (PR #112 shared
+ * registration handler pattern, strip risk prevention).
+ */
+export const terminalRegistrationSchema = withEnvelopeIncludeForUnion(terminalSchema);
+
+export const terminalRegistrationHandler = makeCommitWrapper(
+  withRichNarration(
+    "terminal",
+    terminalDispatchHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
+    { windowTitleKey: "windowTitle" },
+  ) as (args: Record<string, unknown>) => Promise<ToolResult>,
+  "terminal",
+  {
+    // leaseValidator omitted = lease-less commit variant
+    // getSessionId / argsSummary / clock も default 利用 = mechanical コピー最小
+  },
+);
+
 export function registerTerminalTools(server: McpServer): void {
   setTerminalReadHook(readForHook);
 
@@ -971,8 +1007,8 @@ export function registerTerminalTools(server: McpServer): void {
           "terminal({action:'send', windowTitle:'PowerShell', input:'echo hello'}) → sends text + Enter",
         ],
       }),
-      inputSchema: terminalSchema,
+      inputSchema: terminalRegistrationSchema,
     },
-    terminalDispatchHandler as (args: Record<string, unknown>) => Promise<ToolResult>
+    terminalRegistrationHandler as (args: Record<string, unknown>) => Promise<ToolResult>
   );
 }
