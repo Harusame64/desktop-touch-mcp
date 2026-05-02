@@ -13,6 +13,7 @@ import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
 import { withRichNarration, narrateParam } from "./_narration.js";
+import { makeCommitWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
 import { detectFocusLoss } from "./_focus.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled } from "./_action-guard.js";
@@ -688,6 +689,48 @@ export const getCursorPositionHandler = async (): Promise<ToolResult> => {
 // Registration
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Walking skeleton expansion phase swimlane 1 (L5 commit tool wrapper):
+ * `mouse_click` is wrapped via `makeCommitWrapper` (lease-less commit
+ * variant — no lease 4-tuple validation, fixed-coordinate click).
+ * Mechanical copy of PR #117 `clickElementRegistrationHandler` pattern
+ * (`docs/walking-skeleton-expansion-plan.md` §3 30-minute time-attack
+ * template, sub-plan §1.1 G).
+ *
+ * `withRichNarration` (inner) → `makeCommitWrapper` (outer):
+ *   - withRichNarration enriches the handler's ToolResult (`hints.diff` 等)
+ *   - makeCommitWrapper handles L1 ToolCallStarted/Completed push +
+ *     envelope assembly + compat hoist + tool_call_id seq
+ *
+ * Module-scope export so `run_macro` (`TOOL_REGISTRY.mouse_click` in
+ * `macro.ts`) shares the same wrapped instance (PR #112 shared
+ * registration handler pattern, strip risk prevention).
+ */
+export const mouseClickRegistrationHandler = makeCommitWrapper(
+  withRichNarration("mouse_click", mouseClickHandler, { windowTitleKey: "windowTitle" }) as (args: Record<string, unknown>) => Promise<ToolResult>,
+  "mouse_click",
+  {
+    // leaseValidator omitted = lease-less commit variant
+    // getSessionId / argsSummary / clock も default 利用 = mechanical コピー最小
+  },
+);
+
+/**
+ * Registration-time schema with `include?: string[]` injected via
+ * `withEnvelopeIncludeSchema` so per-call envelope opt-in
+ * (`include:["envelope"]` / `include:["causal"]` / `include:["raw"]`)
+ * survives the MCP SDK's `z.object(schema).parse(args)` step.
+ *
+ * Both registration paths must use this injected schema:
+ *   1. `server.tool("mouse_click", desc, mouseClickRegistrationSchema, ...)`
+ *   2. `TOOL_REGISTRY.mouse_click = { schema: z.object(mouseClickRegistrationSchema), ... }`
+ *
+ * Without injection, Zod's default object parse strips unknown keys and
+ * `include` is removed before `makeCommitWrapper` can peek it
+ * (Codex PR #121 P2 + PR #112 / PR #117 同型 risk pattern).
+ */
+export const mouseClickRegistrationSchema = withEnvelopeIncludeSchema(mouseClickSchema);
+
 export function registerMouseTools(server: McpServer): void {
   // Phase 4: mouse_move privatized — hover-trigger UIs are rare in practice.
   // mouseMoveHandler retained as internal export for tests / future facade.
@@ -695,8 +738,8 @@ export function registerMouseTools(server: McpServer): void {
   server.tool(
     "mouse_click",
     "Click at screen coordinates. Normally pass windowTitle so the server auto-guards the click (verifies target identity, foreground, coordinate is inside the target rect) and returns post.perception without a confirmation screenshot. origin+scale from dotByDot=true screenshots are converted to screen coords before guarding. doubleClick:true for double-click; tripleClick:true for triple-click (selects a full line of text). Prefer click_element (UIA) for native apps, prefer browser_click for Chrome. Examples: mouse_click({windowTitle:'Notepad', x:200, y:150}) // guarded — post.perception.status='ok'. mouse_click({x:100, y:100}) // unguarded — post.perception.status='unguarded'. If a guard failure returns a suggestedFix, pass its fixId to approve the fix: mouse_click({fixId:'fix-...'}) // one-shot, expires in 15s. lensId is optional and only for advanced pinned-target workflows; omit it for normal use. Caveats: origin+scale are meaningful ONLY with dotByDot=true screenshot responses.",
-    mouseClickSchema,
-    withRichNarration("mouse_click", mouseClickHandler, { windowTitleKey: "windowTitle" })
+    mouseClickRegistrationSchema,
+    mouseClickRegistrationHandler as typeof mouseClickHandler
   );
   server.tool("mouse_drag", "Click and drag from (startX, startY) to (endX, endY) holding the left mouse button — for sliders, drag-and-drop, canvas drawing, and window resizing. Pass windowTitle so the server auto-guards the start coordinate and returns post.perception. Examples: mouse_drag({windowTitle:'Notepad', startX:50, startY:50, endX:200, endY:200}). lensId is optional and only for advanced pinned-target workflows. Caveats: Left button only. Both start and endpoint are guarded. Cross-window and desktop drags are blocked by default — pass allowCrossWindowDrag:true to confirm intent.", mouseDragSchema, withRichNarration("mouse_drag", mouseDragHandler, { windowTitleKey: "windowTitle" }));
   // scroll tool removed in Phase 2b (family merge) — registered via scroll(action='raw') in scroll.ts
