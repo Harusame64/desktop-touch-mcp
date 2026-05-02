@@ -26,7 +26,9 @@ import { keyboardHandler, keyboardRegistrationSchema, keyboardRegistrationHandle
 import { clipboardHandler, clipboardRegistrationSchema, clipboardRegistrationHandler } from "./clipboard.js";
 // Window
 import {
-  focusWindowHandler, focusWindowSchema,
+  focusWindowHandler,
+  focusWindowRegistrationSchema,
+  focusWindowRegistrationHandler,
   // V1 fallback (only reachable when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1).
   getWindowsHandler, getWindowsSchema,
 } from "./window.js";
@@ -147,7 +149,11 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   mouse_click:          { schema: z.object(mouseClickRegistrationSchema), handler: mouseClickRegistrationHandler as typeof mouseClickHandler },
   mouse_drag:           { schema: z.object(mouseDragSchema),           handler: mouseDragHandler },
   click_element:        { schema: z.object(clickElementRegistrationSchema), handler: clickElementRegistrationHandler as typeof clickElementHandler },
-  focus_window:         { schema: z.object(focusWindowSchema),         handler: focusWindowHandler },
+  // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
+  // module-scope wrapped handler from window.ts so run_macro 経路は
+  // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
+  // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
+  focus_window:         { schema: z.object(focusWindowRegistrationSchema), handler: focusWindowRegistrationHandler as typeof focusWindowHandler },
   // Action — text/clipboard dispatchers (Phase 2)
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from keyboard.ts so run_macro 経路は

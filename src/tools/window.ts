@@ -7,6 +7,8 @@ import { updateWindowCache } from "../engine/window-cache.js";
 import { listTabs, activateTab, DEFAULT_CDP_PORT } from "../engine/cdp-bridge.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
+import { withRichNarration } from "./_narration.js";
+import { makeCommitWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -146,6 +148,43 @@ export const focusWindowHandler = async ({
 // Registration
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Walking skeleton expansion phase swimlane 1 (L5 commit tool wrapper):
+ * `focus_window` is wrapped via `makeCommitWrapper` (lease-less commit
+ * variant — `leaseValidator` omitted; focus_window is title-driven without
+ * a lease 4-tuple, mirroring PR #121 mouse_click raw shape pattern).
+ *
+ * `withRichNarration` (inner) → `makeCommitWrapper` (outer):
+ *   - withRichNarration enriches the handler's ToolResult with post.* state
+ *     (rich-narrate UIA-diff path is unreachable since `narrate` isn't in
+ *     the focus_window schema — falls through to withPostState only)
+ *   - makeCommitWrapper handles L1 ToolCallStarted/Completed push +
+ *     envelope assembly + compat hoist + tool_call_id seq
+ *
+ * `windowTitleKey: "title"` mirrors the focus_window arg shape (the partial
+ * window title is passed as `title`, not `windowTitle`, unique among the
+ * commit family — sub-plan §3.1 step 4 "windowTitleKey is the literal field
+ * name of the target window title in this tool's schema").
+ *
+ * Module-scope export so `run_macro` (`TOOL_REGISTRY.focus_window` in
+ * `macro.ts`) shares the same wrapped instance (PR #112 shared
+ * registration handler pattern, strip risk prevention).
+ *
+ * Trunk pattern conformance: engine-perception layer 改変ゼロ
+ * (expansion-pr-guard.yml + check-expansion-disjoint.mjs)、handler internal
+ * logic + Zod schema + 戻り値 shape 不変 (ADR-010 §1.5)。
+ */
+export const focusWindowRegistrationSchema = withEnvelopeIncludeSchema(focusWindowSchema);
+
+export const focusWindowRegistrationHandler = makeCommitWrapper(
+  withRichNarration("focus_window", focusWindowHandler, { windowTitleKey: "title" }) as (args: Record<string, unknown>) => Promise<ToolResult>,
+  "focus_window",
+  {
+    // leaseValidator omitted = lease-less commit variant
+    // getSessionId / argsSummary / clock も default 利用 = mechanical コピー最小
+  },
+);
+
 export function registerWindowTools(server: McpServer): void {
   // Phase 4: get_windows / get_active_window privatized — handlers retained
   // as internal exports. desktop_discover returns the windows list (with
@@ -156,7 +195,7 @@ export function registerWindowTools(server: McpServer): void {
   server.tool(
     "focus_window",
     "Bring a window to the foreground by partial title match (case-insensitive). Use when a tool does not accept a windowTitle param, or when you need to switch focus before a sequence of actions. Use chromeTabUrlContains to activate a specific Chrome/Edge tab by URL substring before focusing — only the active tab's title appears in the windows list. If CDP is unavailable, chromeTabUrlContains is silently skipped — check response.hints.warnings. Returns WindowNotFound if no match exists; call desktop_discover to see available titles. Caveats: On some apps focus may be immediately stolen back (modal dialogs, UAC prompts) — verify with desktop_state after focusing.",
-    focusWindowSchema,
-    focusWindowHandler
+    focusWindowRegistrationSchema,
+    focusWindowRegistrationHandler as typeof focusWindowHandler
   );
 }
