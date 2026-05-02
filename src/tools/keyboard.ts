@@ -24,6 +24,7 @@ import { detectFocusLoss, checkForegroundOnce } from "./_focus.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
 import { resolveWindowTarget } from "./_resolve-window.js";
+import { makeCommitWrapper } from "./_envelope.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -995,6 +996,38 @@ export const keyboardHandler = async (args: KeyboardArgs): Promise<import("./_ty
 // Registration
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Walking skeleton expansion phase swimlane 1 (L5 commit tool wrapper):
+ * `keyboard` is wrapped via `makeCommitWrapper` (lease 不在 commit variant —
+ * `leaseValidator` omitted since the public `keyboard` tool is name/keys
+ * driven without a lease 4-tuple, mirroring the S6 `click_element` PoC).
+ * `withRichNarration` (inner) → `makeCommitWrapper` (outer) composition
+ * matches `clickElementRegistrationHandler` (`ui-elements.ts:372`):
+ *   - withRichNarration enriches the handler's ToolResult (`hints.diff` 等)
+ *   - makeCommitWrapper handles L1 ToolCallStarted/Completed push +
+ *     envelope assembly + compat hoist + tool_call_id seq
+ * Module-scope export so `run_macro` (`TOOL_REGISTRY.keyboard` in
+ * `macro.ts`) shares the same wrapped instance (PR #112 shared
+ * registration handler pattern, strip risk prevention).
+ *
+ * Trunk pattern conformance: engine-perception layer 改変ゼロ
+ * (expansion-pr-guard.yml + check-expansion-disjoint.mjs)、
+ * handler internal logic + Zod schema + 戻り値 shape 不変
+ * (ADR-010 §1.5)。
+ */
+export const keyboardRegistrationHandler = makeCommitWrapper(
+  withRichNarration(
+    "keyboard",
+    keyboardHandler as (args: Record<string, unknown>) => Promise<import("./_types.js").ToolResult>,
+    { windowTitleKey: "windowTitle" },
+  ) as (args: Record<string, unknown>) => Promise<import("./_types.js").ToolResult>,
+  "keyboard",
+  {
+    // leaseValidator omitted = lease-less commit variant
+    // getSessionId / argsSummary / clock も default 利用 = mechanical コピー最小
+  },
+);
+
 export function registerKeyboardTools(server: McpServer): void {
   server.registerTool(
     "keyboard",
@@ -1013,6 +1046,6 @@ export function registerKeyboardTools(server: McpServer): void {
       }),
       inputSchema: keyboardSchema,
     },
-    withRichNarration("keyboard", keyboardHandler as (args: Record<string, unknown>) => Promise<import("./_types.js").ToolResult>, { windowTitleKey: "windowTitle" })
+    keyboardRegistrationHandler as (args: Record<string, unknown>) => Promise<import("./_types.js").ToolResult>,
   );
 }
