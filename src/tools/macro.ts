@@ -42,7 +42,11 @@ import {
 // Workspace
 import { workspaceSnapshotHandler, workspaceSnapshotSchema, workspaceLaunchHandler, workspaceLaunchSchema } from "./workspace.js";
 // Scroll dispatcher (Phase 2)
-import { scrollDispatchHandler, scrollSchema } from "./scroll.js";
+import {
+  scrollDispatchHandler,
+  scrollRegistrationSchema,
+  scrollRegistrationHandler,
+} from "./scroll.js";
 // Wait until
 import { waitUntilHandler, waitUntilSchema } from "./wait-until.js";
 // Desktop state
@@ -157,7 +161,11 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   clipboard:            { schema: clipboardRegistrationSchema,         handler: clipboardRegistrationHandler as typeof clipboardHandler },
   // Action — window/scroll/terminal dispatchers (Phase 2)
   window_dock:          { schema: windowDockSchema,                    handler: windowDockHandler },
-  scroll:               { schema: scrollSchema,                        handler: scrollDispatchHandler },
+  // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
+  // module-scope wrapped handler from scroll.ts so run_macro 経路は
+  // server.registerTool 経路と同 instance を共有 (PR #112 shared registration
+  // handler pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
+  scroll:               { schema: scrollRegistrationSchema,             handler: scrollRegistrationHandler as typeof scrollDispatchHandler },
   terminal:             { schema: terminalSchema,                      handler: terminalDispatchHandler },
   // Action — browser (Phase 3)
   browser_open:         { schema: z.object(browserOpenSchema),         handler: browserOpenHandler },
