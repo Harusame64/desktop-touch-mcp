@@ -23,9 +23,8 @@ import { getCdpPort } from "../utils/desktop-config.js";
 import { fail } from "./_types.js";
 import { setBrowserSearchHook } from "./wait-until.js";
 import { withPostState } from "./_post.js";
-import { withRichNarration } from "./_narration.js";
+import { narrateParam, withRichNarration } from "./_narration.js";
 import { makeCommitWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
-import { narrateParam } from "./_narration.js";
 import type { RichBlock } from "../engine/uia-diff.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
@@ -2093,6 +2092,28 @@ export const browserOpenRegistrationHandler = makeCommitWrapper(
   },
 );
 
+/**
+ * Walking skeleton expansion phase swimlane 1 (L5 commit tool wrapper):
+ * `browser_navigate` is wrapped via `makeCommitWrapper` (lease-less commit
+ * variant). Replaces the pre-expansion `withPostState("browser_navigate", ...)`
+ * direct wrap. PR #134 browser_open 同型 pattern (raw shape 3a family、
+ * windowTitleKey 省略 — browser targets a CDP tab not a Win32 window).
+ */
+export const browserNavigateRegistrationSchema = withEnvelopeIncludeSchema(browserNavigateSchema);
+
+export const browserNavigateRegistrationHandler = makeCommitWrapper(
+  withRichNarration(
+    "browser_navigate",
+    browserNavigateHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
+    {},
+  ) as (args: Record<string, unknown>) => Promise<ToolResult>,
+  "browser_navigate",
+  {
+    // leaseValidator omitted = lease-less commit variant
+    // getSessionId / argsSummary / clock も default 利用 = mechanical コピー最小
+  },
+);
+
 export function registerBrowserTools(server: McpServer): void {
   // Wire wait_until(element_matches) — resolve top result for callers that just need selector + text.
   setBrowserSearchHook(async ({ port, tabId, by, pattern, scope }) => {
@@ -2180,8 +2201,8 @@ export function registerBrowserTools(server: McpServer): void {
   server.tool(
     "browser_navigate",
     "Navigate a browser tab to a URL via CDP Page.navigate — more reliable than clicking the address bar. Pass tabId+port so the server auto-guards (verifies tab readyState) and returns post.perception.status. lensId is optional for advanced pinned-tab workflows. Caveats: Does not block until page load completes — follow with wait_until(element_matches) or repeated browser_eval polling for slow pages.",
-    browserNavigateSchema,
-    withPostState("browser_navigate", browserNavigateHandler)
+    browserNavigateRegistrationSchema,
+    browserNavigateRegistrationHandler as typeof browserNavigateHandler
   );
 
   server.tool(
