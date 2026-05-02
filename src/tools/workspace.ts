@@ -12,6 +12,8 @@ import { ok, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
 import { pollUntil } from "../engine/poll.js";
+import { withRichNarration } from "./_narration.js";
+import { makeCommitWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
 
 /** Chromium-based browser windows — UIA traversal is prohibitively slow on these */
 export const CHROMIUM_TITLE_RE = /- (?:Google Chrome|Microsoft Edge|Brave|Opera|Vivaldi|Arc|Chromium)$/;
@@ -257,6 +259,37 @@ export const workspaceLaunchHandler = async ({
 // Registration
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Walking skeleton expansion phase swimlane 1 (L5 commit tool wrapper):
+ * `workspace_launch` is wrapped via `makeCommitWrapper` (lease-less commit
+ * variant — `leaseValidator` omitted; spawns a process without a lease
+ * 4-tuple, mirroring PR #126 clipboard / PR #130 notification_show pattern
+ * for OS-level commits).
+ *
+ * `windowTitleKey` is omitted because workspace_launch has no pre-existing
+ * window-scoped target (the new window appears after the spawn).
+ * `withRichNarration` falls through to `withPostState` only since `narrate`
+ * isn't in the schema.
+ *
+ * Module-scope export so `run_macro` (`TOOL_REGISTRY.workspace_launch` in
+ * `macro.ts`) shares the same wrapped instance (PR #112 shared
+ * registration handler pattern, strip risk prevention).
+ */
+export const workspaceLaunchRegistrationSchema = withEnvelopeIncludeSchema(workspaceLaunchSchema);
+
+export const workspaceLaunchRegistrationHandler = makeCommitWrapper(
+  withRichNarration(
+    "workspace_launch",
+    workspaceLaunchHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
+    {},
+  ) as (args: Record<string, unknown>) => Promise<ToolResult>,
+  "workspace_launch",
+  {
+    // leaseValidator omitted = lease-less commit variant
+    // getSessionId / argsSummary / clock も default 利用 = mechanical コピー最小
+  },
+);
+
 export function registerWorkspaceTools(server: McpServer): void {
   server.tool(
     "workspace_snapshot",
@@ -282,7 +315,7 @@ export function registerWorkspaceTools(server: McpServer): void {
         "workspace_launch({command:'calc.exe', timeoutMs:15000})",
       ],
     }),
-    workspaceLaunchSchema,
-    workspaceLaunchHandler
+    workspaceLaunchRegistrationSchema,
+    workspaceLaunchRegistrationHandler as typeof workspaceLaunchHandler
   );
 }
