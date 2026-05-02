@@ -1974,6 +1974,13 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "default": 2000,
           "minimum": 0,
           "maximum": 30000
+        },
+        "include": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
         }
       },
       "additionalProperties": false,
