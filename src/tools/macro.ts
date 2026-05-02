@@ -89,7 +89,9 @@ import {
   browserNavigateHandler,
   browserNavigateRegistrationSchema,
   browserNavigateRegistrationHandler,
-  browserFillInputHandler, browserFillInputSchema,
+  browserFillInputHandler,
+  browserFillRegistrationSchema,
+  browserFillRegistrationHandler,
   browserGetFormHandler, browserGetFormSchema,
 } from "./browser.js";
 // Notification (server_status not callable from macros — diagnostic)
@@ -227,7 +229,11 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
   browser_click:        { schema: z.object(browserClickRegistrationSchema), handler: browserClickRegistrationHandler as typeof browserClickElementHandler },
   browser_navigate:     { schema: z.object(browserNavigateRegistrationSchema), handler: browserNavigateRegistrationHandler as typeof browserNavigateHandler },
-  browser_fill:         { schema: z.object(browserFillInputSchema),    handler: browserFillInputHandler },
+  // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
+  // module-scope wrapped handler from browser.ts so run_macro 経路は
+  // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
+  // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
+  browser_fill:         { schema: z.object(browserFillRegistrationSchema), handler: browserFillRegistrationHandler as typeof browserFillInputHandler },
   browser_form:         { schema: z.object(browserGetFormSchema),      handler: browserGetFormHandler },
   // Workspace / wait / notification
   workspace_snapshot:   { schema: z.object(workspaceSnapshotSchema),   handler: workspaceSnapshotHandler },
