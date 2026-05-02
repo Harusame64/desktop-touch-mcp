@@ -24,7 +24,7 @@ import { fail } from "./_types.js";
 import { setBrowserSearchHook } from "./wait-until.js";
 import { withPostState } from "./_post.js";
 import { narrateParam, withRichNarration } from "./_narration.js";
-import { makeCommitWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
+import { makeCommitWrapper, withEnvelopeIncludeSchema, withEnvelopeIncludeForUnion } from "./_envelope.js";
 import type { RichBlock } from "../engine/uia-diff.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
@@ -2184,6 +2184,32 @@ export const browserFormRegistrationHandler = makeCommitWrapper(
   },
 );
 
+/**
+ * Walking skeleton expansion phase swimlane 1 (L5 commit tool wrapper):
+ * `browser_eval` is wrapped via `makeCommitWrapper` (lease-less commit
+ * variant、discriminatedUnion 3b family — actions: js / dom / appState)。
+ * 'js' / 'dom' は side-effecting でない読み取り、'appState' は SPA 状態
+ * extraction で commit pipeline 適用 (form inspection 同様 read-only でも
+ * L1 event 記録目的)。expansion plan §2.1 line 38 で commit (dual) 分類。
+ * PR #126 clipboard / PR #127 scroll / PR #131 window_dock / PR #132
+ * terminal の discriminatedUnion 3b family 同型 (windowTitleKey 省略 —
+ * browser CDP tab; pre-expansion `withPostState` 直 wrap を置換)。
+ */
+export const browserEvalRegistrationSchema = withEnvelopeIncludeForUnion(browserEvalSchema);
+
+export const browserEvalRegistrationHandler = makeCommitWrapper(
+  withRichNarration(
+    "browser_eval",
+    browserEvalHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
+    {},
+  ) as (args: Record<string, unknown>) => Promise<ToolResult>,
+  "browser_eval",
+  {
+    // leaseValidator omitted = lease-less commit variant
+    // getSessionId / argsSummary / clock も default 利用 = mechanical コピー最小
+  },
+);
+
 export function registerBrowserTools(server: McpServer): void {
   // Wire wait_until(element_matches) — resolve top result for callers that just need selector + text.
   setBrowserSearchHook(async ({ port, tabId, by, pattern, scope }) => {
@@ -2263,9 +2289,9 @@ export function registerBrowserTools(server: McpServer): void {
           "browser_eval({action:'appState'}) → default SPA state probes",
         ],
       }),
-      inputSchema: browserEvalSchema,
+      inputSchema: browserEvalRegistrationSchema,
     },
-    withPostState("browser_eval", browserEvalHandler as (args: Record<string, unknown>) => Promise<ToolResult>)
+    browserEvalRegistrationHandler as (args: Record<string, unknown>) => Promise<ToolResult>
   );
 
   server.tool(
