@@ -601,6 +601,13 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "fixId": {
           "description": "Approve a pending suggestedFix (one-shot, 15s TTL).",
           "type": "string"
+        },
+        "include": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
         }
       },
       "additionalProperties": false,
@@ -996,6 +1003,13 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "fixId": {
           "description": "One-shot fix approval ID. If a previous mouse_click returned a suggestedFix, pass that fixId here to approve it. The server revalidates the fix and executes with corrected args. fixId expires in 15 seconds and can only be used once.",
           "type": "string"
+        },
+        "include": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
         }
       },
       "additionalProperties": false,

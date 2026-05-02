@@ -15,7 +15,7 @@ import { assertKeyComboSafe } from "../utils/key-safety.js";
 // Screenshot
 import { screenshotHandler, screenshotSchema } from "./screenshot.js";
 // Mouse
-import { mouseClickHandler, mouseClickSchema, mouseDragHandler, mouseDragSchema } from "./mouse.js";
+import { mouseClickHandler, mouseClickRegistrationSchema, mouseClickRegistrationHandler, mouseDragHandler, mouseDragSchema } from "./mouse.js";
 // Keyboard dispatcher (Phase 2)
 import { keyboardHandler, keyboardSchema } from "./keyboard.js";
 // Clipboard dispatcher (Phase 2)
@@ -31,7 +31,7 @@ import { windowDockHandler, windowDockSchema } from "./window-dock.js";
 // UI elements (click_element always public after Phase 4; the next two are
 // V1 fallbacks only reachable when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1).
 import {
-  clickElementHandler, clickElementSchema, clickElementRegistrationHandler,
+  clickElementHandler, clickElementRegistrationSchema, clickElementRegistrationHandler,
   getUiElementsHandler, getUiElementsSchema,
   setElementValueHandler, setElementValueSchema,
 } from "./ui-elements.js";
@@ -131,9 +131,9 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   desktop_state:        { schema: z.object(desktopStateRegistrationSchema), handler: desktopStateRegistrationHandler as any },
   screenshot:           { schema: z.object(screenshotSchema),          handler: screenshotHandler },
   // Action — native
-  mouse_click:          { schema: z.object(mouseClickSchema),          handler: mouseClickHandler },
+  mouse_click:          { schema: z.object(mouseClickRegistrationSchema), handler: mouseClickRegistrationHandler as typeof mouseClickHandler },
   mouse_drag:           { schema: z.object(mouseDragSchema),           handler: mouseDragHandler },
-  click_element:        { schema: z.object(clickElementSchema),        handler: clickElementRegistrationHandler as typeof clickElementHandler },
+  click_element:        { schema: z.object(clickElementRegistrationSchema), handler: clickElementRegistrationHandler as typeof clickElementHandler },
   focus_window:         { schema: z.object(focusWindowSchema),         handler: focusWindowHandler },
   // Action — text/clipboard dispatchers (Phase 2)
   keyboard:             { schema: keyboardSchema,                      handler: keyboardHandler },
