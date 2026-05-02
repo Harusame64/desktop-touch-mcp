@@ -30,7 +30,7 @@
 // a useful signal.
 
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -81,6 +81,60 @@ function detectHostTriple() {
   return pieces.slice(-4).join("-");
 }
 
+// On Windows, `napi-build` emits `cargo:rustc-link-search=<repo root>` so the
+// linker looks for `node.lib` there — but napi-build does NOT download the lib
+// itself. The @napi-rs/cli download path can silently no-op on a fresh clone
+// (empty %LOCALAPPDATA%\node-gyp\Cache, no `node.lib` in repo root), which
+// surfaces as `LNK1181: 入力ファイル 'node.lib' を開けません` deep inside the
+// link stage. Populate `node.lib` from the node-gyp cache here, running
+// `npx node-gyp install` first if the cache is empty.
+function ensureNodeLibOnWindows(triple) {
+  if (process.platform !== "win32") return;
+  const repoNodeLib = join(ROOT, "node.lib");
+  if (existsSync(repoNodeLib)) return;
+  const localAppData = process.env.LOCALAPPDATA;
+  if (!localAppData) {
+    console.error("[build-rs] LOCALAPPDATA env not set; cannot locate node-gyp cache.");
+    process.exit(1);
+  }
+  const arch = archFromTriple(triple);
+  const cachedNodeLib = join(
+    localAppData,
+    "node-gyp",
+    "Cache",
+    process.versions.node,
+    arch,
+    "node.lib",
+  );
+  if (!existsSync(cachedNodeLib)) {
+    console.log(
+      `[build-rs] node.lib missing from repo root and node-gyp cache; running 'npx node-gyp install'`,
+    );
+    const npx = process.platform === "win32" ? "npx.cmd" : "npx";
+    const r = spawnSync(npx, ["node-gyp", "install"], {
+      stdio: "inherit",
+      cwd: ROOT,
+    });
+    if (r.status !== 0 || !existsSync(cachedNodeLib)) {
+      console.error(`[build-rs] node-gyp install did not produce ${cachedNodeLib}`);
+      process.exit(1);
+    }
+  }
+  copyFileSync(cachedNodeLib, repoNodeLib);
+  console.log(`[build-rs] populated ${repoNodeLib} from node-gyp cache`);
+}
+
+// node-gyp Cache layout: <ver>/<arch>/node.lib where arch ∈ {x64, ia32, arm64}.
+// Prefer the rustup target triple (cross-compile aware); fall back to host arch.
+function archFromTriple(triple) {
+  if (triple?.startsWith("x86_64")) return "x64";
+  if (triple?.startsWith("aarch64")) return "arm64";
+  if (triple?.startsWith("i686")) return "ia32";
+  if (process.arch === "arm64") return "arm64";
+  if (process.arch === "ia32") return "ia32";
+  return "x64";
+}
+
 const args = process.argv.slice(2);
 const release = args.includes("--release");
 const passthrough = args.filter((a) => a !== "--release" && a !== "--debug");
@@ -105,13 +159,16 @@ function restore() {
   }
 }
 
-// ── 2. Run `napi build` ─────────────────────────────────────────────────────
+// ── 2. Preflight (Windows only) ─────────────────────────────────────────────
+const triple = detectHostTriple();
+ensureNodeLibOnWindows(triple);
+
+// ── 3. Run `napi build` ─────────────────────────────────────────────────────
 // Invoke the napi CLI's JS entry directly with `node`. Going through
 // `npx`/`npx.cmd` requires `shell: true` (DEP0190 on Node ≥ 22), and the
 // shell lookup is brittle across MSYS bash / pwsh / cmd / GitHub Actions
 // runners. Calling node with an absolute path is portable and explicit.
 const napiCli = join(ROOT, "node_modules", "@napi-rs", "cli", "dist", "cli.js");
-const triple = detectHostTriple();
 const targetArgs = triple ? ["--target", triple] : [];
 if (triple) {
   console.log(`[build-rs] detected rustup toolchain triple: ${triple}`);
