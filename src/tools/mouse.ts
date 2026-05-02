@@ -731,6 +731,35 @@ export const mouseClickRegistrationHandler = makeCommitWrapper(
  */
 export const mouseClickRegistrationSchema = withEnvelopeIncludeSchema(mouseClickSchema);
 
+/**
+ * Walking skeleton expansion phase swimlane 1 (L5 commit tool wrapper):
+ * `mouse_drag` is wrapped via `makeCommitWrapper` (lease-less commit
+ * variant — no lease 4-tuple validation, fixed-coordinate drag).
+ * Mechanical copy of PR #121 `mouseClickRegistrationHandler` pattern
+ * (`docs/walking-skeleton-expansion-plan.md` §3 30-minute time-attack
+ * template, raw shape 3a family).
+ *
+ * `withRichNarration` (inner) → `makeCommitWrapper` (outer):
+ *   - withRichNarration enriches the handler's ToolResult with post.* state
+ *     (this composition was already in use prior to this PR — preserved)
+ *   - makeCommitWrapper handles L1 ToolCallStarted/Completed push +
+ *     envelope assembly + compat hoist + tool_call_id seq
+ *
+ * Module-scope export so `run_macro` (`TOOL_REGISTRY.mouse_drag` in
+ * `macro.ts`) shares the same wrapped instance (PR #112 shared
+ * registration handler pattern, strip risk prevention).
+ */
+export const mouseDragRegistrationSchema = withEnvelopeIncludeSchema(mouseDragSchema);
+
+export const mouseDragRegistrationHandler = makeCommitWrapper(
+  withRichNarration("mouse_drag", mouseDragHandler, { windowTitleKey: "windowTitle" }) as (args: Record<string, unknown>) => Promise<ToolResult>,
+  "mouse_drag",
+  {
+    // leaseValidator omitted = lease-less commit variant
+    // getSessionId / argsSummary / clock も default 利用 = mechanical コピー最小
+  },
+);
+
 export function registerMouseTools(server: McpServer): void {
   // Phase 4: mouse_move privatized — hover-trigger UIs are rare in practice.
   // mouseMoveHandler retained as internal export for tests / future facade.
@@ -741,7 +770,12 @@ export function registerMouseTools(server: McpServer): void {
     mouseClickRegistrationSchema,
     mouseClickRegistrationHandler as typeof mouseClickHandler
   );
-  server.tool("mouse_drag", "Click and drag from (startX, startY) to (endX, endY) holding the left mouse button — for sliders, drag-and-drop, canvas drawing, and window resizing. Pass windowTitle so the server auto-guards the start coordinate and returns post.perception. Examples: mouse_drag({windowTitle:'Notepad', startX:50, startY:50, endX:200, endY:200}). lensId is optional and only for advanced pinned-target workflows. Caveats: Left button only. Both start and endpoint are guarded. Cross-window and desktop drags are blocked by default — pass allowCrossWindowDrag:true to confirm intent.", mouseDragSchema, withRichNarration("mouse_drag", mouseDragHandler, { windowTitleKey: "windowTitle" }));
+  server.tool(
+    "mouse_drag",
+    "Click and drag from (startX, startY) to (endX, endY) holding the left mouse button — for sliders, drag-and-drop, canvas drawing, and window resizing. Pass windowTitle so the server auto-guards the start coordinate and returns post.perception. Examples: mouse_drag({windowTitle:'Notepad', startX:50, startY:50, endX:200, endY:200}). lensId is optional and only for advanced pinned-target workflows. Caveats: Left button only. Both start and endpoint are guarded. Cross-window and desktop drags are blocked by default — pass allowCrossWindowDrag:true to confirm intent.",
+    mouseDragRegistrationSchema,
+    mouseDragRegistrationHandler as typeof mouseDragHandler
+  );
   // scroll tool removed in Phase 2b (family merge) — registered via scroll(action='raw') in scroll.ts
   // Phase 4: get_cursor_position privatized — handler retained as internal export.
   // Use desktop_state for cursorPos (always present) or desktop_state({includeCursor:true})
