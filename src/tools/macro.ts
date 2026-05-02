@@ -4,6 +4,7 @@ import { buildDesc } from "./_types.js";
 import type { ToolHandler, ToolResult } from "./_types.js";
 import { checkFailsafe } from "../utils/failsafe.js";
 import { assertKeyComboSafe } from "../utils/key-safety.js";
+import { makeCommitWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Phase 4: TOOL_REGISTRY mirrors the v1.0.0 public surface — privatized tools
@@ -487,6 +488,31 @@ export const runMacroHandler = async ({
 // Registration
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Walking skeleton expansion phase swimlane 1 (L5 commit tool wrapper):
+ * `run_macro` is wrapped via `makeCommitWrapper` (lease-less commit variant)。
+ * Macro orchestration 自体を一つの commit event として L1 に記録 (各 step は
+ * 個別の wrapped tool が L1 event を発行するため、run_macro level の event
+ * は orchestration-level の boundary marker としてのみ機能)。
+ *
+ * windowTitleKey 省略 (run_macro は steps[].params.windowTitle を見ないため
+ * orchestration level では window target なし)。
+ *
+ * Module-scope export — run_macro 自体は `TOOL_REGISTRY` から除外
+ * (recursion 防止、macro.ts 内 line 「run_macro is intentionally excluded →
+ * prevents recursion」参照) のため、shared instance 共有は不要。
+ */
+export const runMacroRegistrationSchema = withEnvelopeIncludeSchema(runMacroSchema);
+
+export const runMacroRegistrationHandler = makeCommitWrapper(
+  runMacroHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
+  "run_macro",
+  {
+    // leaseValidator omitted = lease-less commit variant
+    // getSessionId / argsSummary / clock も default 利用 = mechanical コピー最小
+  },
+);
+
 export function registerMacroTools(server: McpServer): void {
   server.tool(
     "run_macro",
@@ -500,7 +526,7 @@ export function registerMacroTools(server: McpServer): void {
         "[{tool:'browser_navigate',params:{url:'https://example.com'}},{tool:'wait_until',params:{condition:'element_matches',target:{by:'text',pattern:'Example Domain'}}}]",
       ],
     }),
-    runMacroSchema,
-    runMacroHandler
+    runMacroRegistrationSchema,
+    runMacroRegistrationHandler as typeof runMacroHandler
   );
 }
