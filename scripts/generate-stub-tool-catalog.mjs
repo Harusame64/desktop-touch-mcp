@@ -693,6 +693,40 @@ function parseSchema(src, schemaName) {
     expr = findConstExpression(src, innerName) ?? '';
   }
 
+  // PR #123 follow-up: discriminatedUnion variant injection
+  // `withEnvelopeIncludeForUnion(baseUnion)` — recurse into the
+  // bare-identifier base union, parse each variant's `z.object({...})`,
+  // and append `include?: string[]` to each variant's properties.
+  // Pattern: `withEnvelopeIncludeForUnion(<identifier>)` (single arg, bare name).
+  const unionWrapperMatch = expr.trim().match(
+    /^withEnvelopeIncludeForUnion\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*;?\s*$/,
+  );
+  if (unionWrapperMatch) {
+    const innerName = unionWrapperMatch[1];
+    const innerExpr = findConstExpression(src, innerName) ?? '';
+    const unionSchema = parseDiscriminatedUnionSchema(innerExpr);
+    if (unionSchema && Array.isArray(unionSchema.oneOf)) {
+      const includeField = {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          "Optional response-shape opt-in. " +
+          "`['envelope']` returns the self-documenting envelope " +
+          "(`_version` / `data` / `as_of` / `confidence`). " +
+          "`['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). " +
+          "Default behaviour is raw shape (compat with existing clients).",
+      };
+      for (const variant of unionSchema.oneOf) {
+        if (variant && typeof variant === 'object' && variant.properties) {
+          variant.properties.include = includeField;
+          // include は optional — variant.required に追加しない
+        }
+      }
+      return unionSchema;
+    }
+    return { type: 'object', properties: {}, additionalProperties: true };
+  }
+
   if (!expr.trim().startsWith('{')) return { type: 'object', properties: {}, additionalProperties: true };
   const properties = {};
   const required = [];

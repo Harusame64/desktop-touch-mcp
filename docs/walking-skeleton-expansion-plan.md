@@ -70,17 +70,28 @@ trunk lock layer 改変なしで mechanical コピーで進められるのは sw
    - query tool: `makeQueryWrapper(handler, "tool_name", { /* options */ })`
    - lease 必須 commit: `leaseValidator` + `extractLeaseToken` を渡す (S4 desktop_act 先例)
    - lease 不在 commit: `leaseValidator` 省略 (S6 click_element 先例)
-3. **`{tool}RegistrationSchema` 必須 export** (★ Codex PR #121 P2 + Opus PR #121 P2-1 反映、PR #117 land 後の同型 production bug を仕組みで防止):
+3. **`{tool}RegistrationSchema` 必須 export** (★ Codex PR #121 P2 + Opus PR #121 P2-1 + Opus PR #123 keyboard discriminatedUnion 教訓 反映、PR #117 land 後の同型 production bug を仕組みで防止):
+
+   **3a. raw object shape 系** (例: mouse_click / click_element / desktop_state / desktop_act / screenshot):
    ```typescript
    import { makeCommitWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
 
    export const {tool}RegistrationSchema = withEnvelopeIncludeSchema({tool}Schema);
    ```
-   この `{tool}RegistrationSchema` を **以下 2 経路の両方で参照する** (片方だけ忘れると `include` arg が silently strip される):
-   - `server.tool("{tool}", desc, {tool}RegistrationSchema, {tool}RegistrationHandler)` (MCP server 直接登録)
-   - `TOOL_REGISTRY.{tool} = { schema: z.object({tool}RegistrationSchema), handler: {tool}RegistrationHandler ... }` (macro.ts、`run_macro` 経路)
 
-   **Why**: MCP SDK の `server.tool` + `run_macro` 内 `entry.schema.parse(args)` は両方 Zod 経由、Zod object parse は unknown key を strip する。`include` field は base schema に存在しないため、injection なしでは `include:["causal"]` / `include:["envelope"]` が消失し `makeCommitWrapper` の peek+strip が空振りして per-call envelope opt-in が **silently raw fallback** する (PR #112 P1-1 / PR #117 click_element 既存 bug / PR #121 mouse_click Codex P2 と全て同型)。
+   **3b. discriminatedUnion 系** (例: keyboard / clipboard / window_dock / scroll / terminal / browser_eval、`z.discriminatedUnion("action", [...])` で dispatch する family、★ PR #123 教訓):
+   ```typescript
+   import { makeCommitWrapper, withEnvelopeIncludeForUnion } from "./_envelope.js";
+
+   export const {tool}RegistrationSchema = withEnvelopeIncludeForUnion({tool}Schema);
+   ```
+   `withEnvelopeIncludeSchema` は raw shape (`Record<string, ZodTypeAny>`) のみ受け付け、discriminatedUnion 直適用不可。`withEnvelopeIncludeForUnion` は各 variant の `z.object` に `include` field を merge して新 discriminatedUnion を rebuild する (`src/tools/_envelope.ts` 内定義、ADR-010 P1 expansion phase で導入)。
+
+   どちらの方式でも、`{tool}RegistrationSchema` を **以下 2 経路の両方で参照する** (片方だけ忘れると `include` arg が silently strip される):
+   - `server.tool("{tool}", desc, {tool}RegistrationSchema, {tool}RegistrationHandler)` または `server.registerTool("{tool}", { ..., inputSchema: {tool}RegistrationSchema }, {tool}RegistrationHandler)` (MCP server 直接登録)
+   - `TOOL_REGISTRY.{tool} = { schema: z.object({tool}RegistrationSchema), handler: {tool}RegistrationHandler ... }` (raw shape 系) **または** `{ schema: {tool}RegistrationSchema, handler: ... }` (discriminatedUnion 系、`z.object()` ラップ不要 — union 自体が `ZodTypeAny`) (macro.ts、`run_macro` 経路)
+
+   **Why**: MCP SDK の `server.tool` / `server.registerTool` + `run_macro` 内 `entry.schema.parse(args)` は両方 Zod 経由、Zod object parse は unknown key を strip する。`include` field は base schema に存在しないため、injection なしでは `include:["causal"]` / `include:["envelope"]` が消失し `makeCommitWrapper` の peek+strip が空振りして per-call envelope opt-in が **silently raw fallback** する (PR #112 P1-1 / PR #117 click_element 既存 bug / PR #121 mouse_click Codex P2 / PR #123 keyboard Codex P2 と全て同型、family は raw shape vs discriminatedUnion で helper が分岐するだけ)。
 4. **module-scope export** (`{tool}RegistrationHandler` 命名)、`run_macro` 経路 (`TOOL_REGISTRY.{tool}` in `macro.ts`) も同 instance に切替 (PR #112 shared registration handler pattern、strip risk 防止)
 5. **unit test 1 件追加** (envelope shape return + L1 ToolCallStarted/Completed event 確認)
 6. **stub catalog 再生成 必須** (★ Opus PR #121 Round 2 P2-NEW-1 反映、CLAUDE.md §7 仕組みで対応):
