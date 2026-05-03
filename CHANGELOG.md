@@ -1,5 +1,52 @@
 # Changelog
 
+## [1.2.0] - 2026-05-03 — Walking skeleton expansion phase: 28 public tools unified under L5 self-documenting envelope (ADR-010)
+
+Walking skeleton expansion phase complete (PR #126-#147, 22 PRs merged). All
+28 public tools are now wrapped through the unified L5 envelope helper
+(`makeCommitWrapper` / `makeQueryWrapper`), giving every tool the same
+`include=["envelope"]` opt-in shape: `{ _version, data, as_of, confidence }`
+plus optional `caused_by` linkage on commit-axis tools. The new behaviour is
+fully additive — `include` is omitted by default and existing callers see the
+same raw shapes they always have.
+
+### Added
+
+- **L5 envelope wrappers across all 28 tools (ADR-010 P1 acceptance).** Commit
+  axis (19 tools): mouse_click / mouse_drag / keyboard / clipboard / scroll /
+  focus_window / window_dock / notification_show / terminal / workspace_launch /
+  click_element / desktop_act / browser_open / browser_navigate / browser_click /
+  browser_fill / browser_form / browser_eval / run_macro. Query axis (9 tools):
+  desktop_state / desktop_discover / screenshot / browser_overview /
+  browser_locate / browser_search / wait_until / workspace_snapshot /
+  server_status. Each tool gains an `include?: string[]` field on its input
+  schema; passing `["envelope"]` returns the self-documenting shape, passing
+  `["raw"]` (or omitting `include` with the default server config) preserves
+  backward-compatible output.
+- **`caused_by` linkage on `desktop_state(include=causal)`.** When a recent
+  commit-axis tool emits L1 `ToolCallStarted/Completed` events,
+  `desktop_state(include=causal)` now returns `your_last_action` + `events`
+  (BasedOnShape) so callers can correlate the current state with the action
+  that produced it. Other 8 query tools accept `include=causal` for forward
+  compatibility but currently omit `causedByProjector` (S4 fast path) — full
+  wiring is queued for ADR-011.
+- **`run_macro` orchestration boundary L1 events.** A macro run with N steps
+  now emits N+1 L1 events (1 outer `run_macro` boundary marker + N inner
+  per-step events), enabling causal envelope to distinguish the orchestration
+  call from individual steps.
+
+### Notes
+
+- Discriminated-union tools (`keyboard` / `clipboard` / `scroll` /
+  `window_dock` / `terminal` / `browser_eval`) use the `withEnvelopeIncludeForUnion`
+  helper to inject `include` into every variant; non-union tools use
+  `withEnvelopeIncludeSchema` against their raw shape.
+- `run_macro` is intentionally excluded from `TOOL_REGISTRY` (recursion guard);
+  `server_status` is also excluded (diagnostic tool not callable from macros).
+- Carry-over items recorded in `docs/walking-skeleton-expansion-plan.md` §6.1
+  and `docs/adr-010-presentation-layer-self-documenting-envelope.md` §10.1 /
+  §11 OQ #8/#9 — wired in ADR-011.
+
 ## [1.1.3] - 2026-04-28 — `browser_launch` killExisting + `scroll(action='read')` + stub catalog fixes
 
 Two v1.1 enhancements ship together with a stub-catalog generator fix that
