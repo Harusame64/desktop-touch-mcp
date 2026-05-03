@@ -491,9 +491,17 @@ export const runMacroHandler = async ({
 /**
  * Walking skeleton expansion phase swimlane 1 (L5 commit tool wrapper):
  * `run_macro` is wrapped via `makeCommitWrapper` (lease-less commit variant)。
- * Macro orchestration 自体を一つの commit event として L1 に記録 (各 step は
- * 個別の wrapped tool が L1 event を発行するため、run_macro level の event
- * は orchestration-level の boundary marker としてのみ機能)。
+ * Macro orchestration 自体を一つの commit event として L1 に記録 — 結果として
+ * N step macro 1 回で **N+1 個** の L1 event が発行される (outer = run_macro
+ * orchestration boundary marker、inner = 各 step の wrapped handler が発行)。
+ * outer event は「run_macro が呼ばれて完了した」事実 + summary を保持し、
+ * step 単位の詳細は inner event 群に委ねる重畳構造。
+ *
+ * Caveat: causal envelope の `your_last_action` は最新 1 件のみ参照する
+ * (history ring capacity = `_envelope.ts:HISTORY_BUFFER_CAPACITY`)。Step 数が
+ * capacity を超えると outer run_macro event が ring から evict され、後続
+ * `desktop_state(include=causal)` は最終 step を `your_last_action` として
+ * 返す (orchestration boundary としての run_macro 識別は失われる)。
  *
  * windowTitleKey 省略 (run_macro は steps[].params.windowTitle を見ないため
  * orchestration level では window target なし)。
