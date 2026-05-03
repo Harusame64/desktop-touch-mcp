@@ -1,6 +1,6 @@
 # Walking skeleton expansion plan (post-trunk worktree 並走戦略)
 
-- Status: **Drafted (2026-05-01)**
+- Status: **Completed (2026-05-03、PR #126-#146 全 21 PR merged)**
 - Trigger: walking-skeleton trunk completion (S6 G6 通過、PR #?)
 - 上位戦略: `docs/walking-skeleton-trunk-selection.md` (Proposed v0.4) §6 Expansion 並列化計画 (line 354-390) + CLAUDE.md §3.4 (Max 20x 並走戦略)
 - 親 base: trunk 5 構造的 contract (CausedByShape 4 field + envelope top-level BasedOnShape + sentinel runtime closed loop + monotonic timeout + desktop-state.ts wiring) を mechanical コピーで全 expansion tool に波及
@@ -156,12 +156,16 @@ CLAUDE.md §3.4 (Max 20x 並走戦略) に従い、Sonnet 並列 worktree sessio
 
 S6 trunk completion 後、expansion phase 着手前に以下を確認:
 
-- [ ] S6 PR (本書 + click_element PoC + expansion-pr-guard.yml + check-expansion-disjoint.mjs + ADR-008 D2-G 部分着手) が main merge 済み
-- [ ] expansion-pr-guard.yml が main で 1 度起動確認 (test PR 1 件で expansion label + crates/engine-perception 改変 → fail を確認)
-- [ ] check-expansion-disjoint.mjs を `npm run check:expansion-disjoint` で動作確認 (本 PR で実証済)
-- [ ] swimlane 1 (L5 commit) で 1 件目の expansion PR (例: mouse_click) を起票、30 分タイムアタック template 通り進行
-- [ ] Opus 1 round + Codex 補助で merge、pattern conformance 確認
-- [ ] swimlane 1 で 2-3 件 merge 後、worktree 3-5 並走に移行 (Sonnet sessions 立ち上げ)
+- [x] S6 PR (本書 + click_element PoC + expansion-pr-guard.yml + check-expansion-disjoint.mjs + ADR-008 D2-G 部分着手) が main merge 済み
+- [x] expansion-pr-guard.yml が main で 1 度起動確認 (test PR 1 件で expansion label + crates/engine-perception 改変 → fail を確認)
+- [x] check-expansion-disjoint.mjs を `npm run check:expansion-disjoint` で動作確認 (本 PR で実証済)
+- [x] swimlane 1 (L5 commit) で 1 件目の expansion PR (例: mouse_click) を起票、30 分タイムアタック template 通り進行
+- [x] Opus 1 round + Codex 補助で merge、pattern conformance 確認
+- [x] swimlane 1 で 2-3 件 merge 後、worktree 3-5 並走に移行 (Sonnet sessions 立ち上げ)
+
+### 5.1 expansion phase 完了状態 (2026-05-03)
+
+PR #126-#146 全 21 PR merged。28 public tool 全てが L5 envelope (commit 19 + query 9) に統一適用。Opus phase 境界 review (2026-05-03) で 3 者一致 (concept × plan × impl) 構造的核 PASS、§6 carry-over 4 項目を ADR-011 wire 対象として永続化 (本書 §6 + ADR-010 §11 / §10 acceptance に記録)。
 
 ---
 
@@ -171,6 +175,19 @@ S6 trunk completion 後、expansion phase 着手前に以下を確認:
 - **ADR-011 Cognitive Memory Taxonomy**: working/episodic/semantic/procedural memory + multi-session session_id source finalize + history buffer 永続化
 - **ADR-009 HW Acceleration Plane**: Tier 0-3 dispatch 統一規約の expansion 適用
 
+### 6.1 expansion phase 完了時点 carry-over (2026-05-03 phase 境界 review 由来)
+
+Opus phase 境界 review (2026-05-03、agent a5dc69bc15133a67b) で **3 者一致 PARTIAL** 判定の根拠となった 4 項目。いずれも production code 改修不要、後続 phase で wire 対象。
+
+| # | 項目 | 検出 line | wire 予定 phase | 備考 |
+|---|---|---|---|---|
+| 1 | **8 query tool caused_by 省略 fast path** — `desktop_state` 1 件を除き query 軸 8 tool (browser_overview / browser_locate / browser_search / screenshot / server_status / wait_until / workspace_snapshot / desktop_discover) で `causedByProjector + getSessionId` 両 omit、`include=causal` 受付しても caused_by 空返し | `src/tools/browser.ts:2236, 2249`、`src/tools/workspace.ts:297`、`src/tools/screenshot.ts:1177`、`src/tools/wait-until.ts:390`、`src/tools/server-status.ts:34`、`src/engine/perception/registry.ts` (desktop_discover) | **ADR-011** Cognitive Memory Taxonomy で wire | S4 fast path (`_envelope.ts:1587-1589`) は intentional 設計、`include=causal` の挙動が tool ごとに異なる residual contract gap として ADR-010 §11 OQ #8 に追記 |
+| 2 | **PR #141-#146 Codex review gap** — browser_locate / browser_search / wait_until / workspace_snapshot / server_status / run_macro の 6 PR が Codex usage limit で Opus 単独 review、CLAUDE.md §3.3 Step 2「production code 改修 PR は Codex 必須」を満たしていない | PR #141-#146 | **ADR-011 着手前** に再 review 機会の判断 | Codex usage 復帰後、production code 改修系の振り返り review として 1 round 実施するか user 判断 |
+| 3 | **HISTORY_BUFFER_CAPACITY=8 + run_macro 長 macro evict 挙動** — Step 数が capacity 超過時、outer run_macro event が ring から evict され `desktop_state(include=causal).your_last_action` は最終 step に collapse | `src/tools/macro.ts:498-505` (caveat 記述済)、`src/tools/_envelope.ts:955` (HISTORY_BUFFER_CAPACITY=8 SSOT) | **ADR-011** で compound commit 概念の必要性判断 | ADR-010 §1.5 「causal continuity」原則 + ADR-011 wire 着手前に compound commit semantic 設計 |
+| 4 | **multi-session sessionId source finalize** — `getMcpTransportSessionId` stub が undefined 返却、`_envelope.ts:1570` で「ADR-011 で完全 finalize」と明記、現状 `multi:disabled` sentinel runtime closed loop で動作 | `src/tools/_envelope.ts:1570`、`src/tools/desktop-state.ts:753` | **ADR-011** wire 必須 | trunk 5 構造的 contract #3 (sentinel runtime closed loop) を ADR-011 で実 transport binding に置換 |
+
+これら 4 項目は memory ではなく本書 §6.1 + `docs/adr-010-presentation-layer-self-documenting-envelope.md` §10 / §11 に永続化 (CLAUDE.md 強制命令 §9 整合)。
+
 ---
 
 ## Appendix A: 改訂履歴
@@ -178,3 +195,4 @@ S6 trunk completion 後、expansion phase 着手前に以下を確認:
 | version | date | author | summary |
 |---|---|---|---|
 | Drafted v0.1 | 2026-05-01 | Claude (Sonnet) | 初稿起草、walking skeleton expansion phase の worktree 並走戦略 + 7 swimlane priority + 30 分タイムアタック template + merge conflict 防止 + expansion phase 着手 checklist。S6 sub-plan PR #116 §1.1 D + walking-skeleton §6 整合 (新規起草、事前 fork 不在を実 repo 確認) |
+| Completed v1.0 | 2026-05-03 | Claude (Sonnet) | expansion phase 完了 (PR #126-#146 全 21 PR merged、28 public tool L5 envelope 統一)。Status flip Drafted → Completed、§5 着手 checklist 全 6 項目 [x] flip + §5.1 完了状態追記、§6.1 carry-over 4 項目 (caused_by query fast path / Codex review gap / HISTORY_BUFFER_CAPACITY + run_macro / sessionId source finalize) を ADR-011 wire 対象として永続化 (CLAUDE.md 強制命令 §9 整合)。Opus phase 境界 review (2026-05-03、agent a5dc69bc15133a67b) で 3 者一致 PARTIAL → docs 修正後 PASS の判定根拠 |
