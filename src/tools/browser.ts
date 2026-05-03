@@ -23,7 +23,7 @@ import { getCdpPort } from "../utils/desktop-config.js";
 import { fail } from "./_types.js";
 import { setBrowserSearchHook } from "./wait-until.js";
 import { narrateParam, withRichNarration } from "./_narration.js";
-import { makeCommitWrapper, withEnvelopeIncludeSchema, withEnvelopeIncludeForUnion } from "./_envelope.js";
+import { makeCommitWrapper, makeQueryWrapper, withEnvelopeIncludeSchema, withEnvelopeIncludeForUnion } from "./_envelope.js";
 import type { RichBlock } from "../engine/uia-diff.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
@@ -2209,6 +2209,26 @@ export const browserEvalRegistrationHandler = makeCommitWrapper(
   },
 );
 
+/**
+ * Walking skeleton expansion phase swimlane 2 (L5 query tool wrapper):
+ * `browser_overview` is wrapped via `makeQueryWrapper` (S4 query-axis wrapper).
+ * browser_overview は read-only (interactive elements list) のため query 軸が
+ * 正しい — L1 ToolCallStarted/Completed events は commit-axis 専用で本 PR では
+ * 発行しない。S5 caused_by linkage は本 PR で wire しない (causedByProjector
+ * 省略 → makeQueryWrapper の S4 fast path、PR #122 screenshot 同型)。
+ *
+ * `include=["envelope"]` per-call opt-in + env `DESKTOP_TOUCH_ENVELOPE=1`
+ * server default は機能、`include=["causal"]` は envelope shape を返すが
+ * `caused_by` projection なし (S4-default behaviour for tools not yet wired
+ * with causedByProjector)。
+ */
+export const browserOverviewRegistrationSchema = withEnvelopeIncludeSchema(browserGetInteractiveSchema);
+
+export const browserOverviewRegistrationHandler = makeQueryWrapper(
+  browserGetInteractiveHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
+  "browser_overview",
+);
+
 export function registerBrowserTools(server: McpServer): void {
   // Wire wait_until(element_matches) — resolve top result for callers that just need selector + text.
   setBrowserSearchHook(async ({ port, tabId, by, pattern, scope }) => {
@@ -2236,8 +2256,8 @@ export function registerBrowserTools(server: McpServer): void {
   server.tool(
     "browser_overview",
     "List all interactive elements (links, buttons, inputs, ARIA controls) on the current page with CSS selectors, visible text or value for inputs, and viewport status — use before browser_click to discover stable selectors, and prefer this over screenshot when verifying button/toggle state after submission (no image tokens, structured output). scope limits to a CSS subsection (e.g. '.sidebar'). Returns state (checked/pressed/selected/expanded) for ARIA custom controls. Caveats: Selectors are CDP-generated snapshots — re-call after page navigates or re-renders. Input text reflects the empty-field hint text when defined (takes priority over typed value) — use browser_eval('document.querySelector(sel).value') to read actual typed content.",
-    browserGetInteractiveSchema,
-    browserGetInteractiveHandler
+    browserOverviewRegistrationSchema,
+    browserOverviewRegistrationHandler as typeof browserGetInteractiveHandler
   );
 
   server.tool(
