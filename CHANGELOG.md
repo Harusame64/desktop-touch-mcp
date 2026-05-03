@@ -1,6 +1,11 @@
 # Changelog
 
-## [1.2.0] - 2026-05-03 — Walking skeleton expansion phase: 28 public tools unified under L5 self-documenting envelope (ADR-010)
+## [1.2.1] - 2026-05-03 — Walking skeleton expansion phase: 28 public tools unified under L5 self-documenting envelope (ADR-010)
+
+Note: v1.2.0 was tagged but its CI build failed (release workflow still
+referenced the long-removed `koffi` runtime dependency, ADR-007 P4 retired
+the FFI surface in PR #78). v1.2.1 ships the same feature set as the
+intended v1.2.0 plus the release.yml fix.
 
 Walking skeleton expansion phase complete (PR #126-#147, 22 PRs merged). All
 28 public tools are now wrapped through the unified L5 envelope helper
@@ -46,6 +51,16 @@ same raw shapes they always have.
 - Carry-over items recorded in `docs/walking-skeleton-expansion-plan.md` §6.1
   and `docs/adr-010-presentation-layer-self-documenting-envelope.md` §10.1 /
   §11 OQ #8/#9 — wired in ADR-011.
+
+### Release infra
+
+- **fix(release.yml): drop stale `koffi` entry from runtime dependency
+  copy list.** Koffi was retired by ADR-007 P4 / PR #78, but the release
+  workflow still copied `pkg.devDependencies["koffi"]` into the isolated
+  install, producing `"koffi": null` in the temp `package.json` and
+  failing `npm install` with `must provide string spec`. Drop the entry;
+  remaining 5 runtime deps (`@modelcontextprotocol/sdk` / `@nut-tree-fork/nut-js` /
+  `sharp` / `ws` / `zod`) match `package.json` devDependencies exactly.
 
 ## [1.1.3] - 2026-04-28 — `browser_launch` killExisting + `scroll(action='read')` + stub catalog fixes
 

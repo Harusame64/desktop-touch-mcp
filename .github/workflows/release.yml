@@ -99,7 +99,6 @@ jobs:
           foreach ($name in @(
             "@modelcontextprotocol/sdk",
             "@nut-tree-fork/nut-js",
-            "koffi",
             "sharp",
             "ws",
             "zod"

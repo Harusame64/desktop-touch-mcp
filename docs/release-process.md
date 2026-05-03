@@ -428,7 +428,7 @@ cat "$RELEASE_DIR/dist/version.js"
 # Expected: export const SERVER_VERSION = "X.Y.Z";
 
 # Verify runtime dependencies are present
-for pkg in "@modelcontextprotocol/sdk" "@nut-tree-fork/nut-js" "koffi" "sharp" "ws" "zod"; do
+for pkg in "@modelcontextprotocol/sdk" "@nut-tree-fork/nut-js" "sharp" "ws" "zod"; do
   test -d "$RELEASE_DIR/node_modules/$pkg" && echo "OK: $pkg" || echo "MISSING: $pkg"
 done
 
