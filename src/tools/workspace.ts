@@ -13,7 +13,7 @@ import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
 import { pollUntil } from "../engine/poll.js";
 import { withRichNarration } from "./_narration.js";
-import { makeCommitWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
+import { makeCommitWrapper, makeQueryWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
 
 /** Chromium-based browser windows — UIA traversal is prohibitively slow on these */
 export const CHROMIUM_TITLE_RE = /- (?:Google Chrome|Microsoft Edge|Brave|Opera|Vivaldi|Arc|Chromium)$/;
@@ -290,6 +290,19 @@ export const workspaceLaunchRegistrationHandler = makeCommitWrapper(
   },
 );
 
+/**
+ * Walking skeleton expansion phase swimlane 2 (L5 query tool wrapper):
+ * `workspace_snapshot` is wrapped via `makeQueryWrapper`. PR #122 screenshot
+ * 同型 pattern (read-only orientation snapshot、L1 events 不発、
+ * causedByProjector 省略 fast path)。
+ */
+export const workspaceSnapshotRegistrationSchema = withEnvelopeIncludeSchema(workspaceSnapshotSchema);
+
+export const workspaceSnapshotRegistrationHandler = makeQueryWrapper(
+  workspaceSnapshotHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
+  "workspace_snapshot",
+);
+
 export function registerWorkspaceTools(server: McpServer): void {
   server.tool(
     "workspace_snapshot",
@@ -299,8 +312,8 @@ export function registerWorkspaceTools(server: McpServer): void {
       prefer: "Use at session start or after major workspace changes. Use screenshot(detail='meta') for cheap re-orientation within a session. Use screenshot(detail='text', windowTitle=X) for a single-window update.",
       caveats: "Thumbnails are scaled, not 1:1 — use screenshot(dotByDot=true, windowTitle=X) for pixel-accurate coords on a specific window after snapshot.",
     }),
-    workspaceSnapshotSchema,
-    workspaceSnapshotHandler
+    workspaceSnapshotRegistrationSchema,
+    workspaceSnapshotRegistrationHandler as typeof workspaceSnapshotHandler
   );
 
   server.tool(
