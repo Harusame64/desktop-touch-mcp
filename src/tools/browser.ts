@@ -22,7 +22,6 @@ import { resolveWellKnownPath, spawnDetached, killProcessesByName } from "../uti
 import { getCdpPort } from "../utils/desktop-config.js";
 import { fail } from "./_types.js";
 import { setBrowserSearchHook } from "./wait-until.js";
-import { withPostState } from "./_post.js";
 import { narrateParam, withRichNarration } from "./_narration.js";
 import { makeCommitWrapper, withEnvelopeIncludeSchema, withEnvelopeIncludeForUnion } from "./_envelope.js";
 import type { RichBlock } from "../engine/uia-diff.js";
