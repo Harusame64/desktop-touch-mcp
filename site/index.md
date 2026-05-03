@@ -98,6 +98,10 @@ It is trying to document an active line of engineering and research.
 
 As the project evolves, we document major architectural shifts and milestones here.
 
+### v1.2: Putting Meaning Into the Response
+The same 28 tools, but every response can now carry its own sense of time (`as_of`), engine confidence, and causal context (`your_last_action`, `events`) — opt-in via the new `include` argument. Existing callers stay byte-for-byte compatible; agents that opt in stop guessing and start observing.
+- [Read the v1.2 Milestone Article](./articles/v1.2-milestone.html)
+
 ### v1.0: Less Surface, More Meaning
 A significant consolidation of the tool surface (65 → 28 tools) and the transition to World-Graph and Auto-Perception as the default interaction model.
 - [Read the v1.0 Milestone Article](./articles/v1.0-milestone.html)

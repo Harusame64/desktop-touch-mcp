@@ -1,66 +1,24 @@
 # Changelog
 
-## [1.2.1] - 2026-05-03 — Walking skeleton expansion phase: 28 public tools unified under L5 self-documenting envelope (ADR-010)
+## [1.2.1] - 2026-05-03 — オプションで envelope / 因果情報を返せるようになった (互換維持)
 
-Note: v1.2.0 was tagged but its CI build failed (release workflow still
-referenced the long-removed `koffi` runtime dependency, ADR-007 P4 retired
-the FFI surface in PR #78). v1.2.1 ships the same feature set as the
-intended v1.2.0 plus the release.yml fix.
+全 28 tool に **オプション引数 `include`** が追加され、応答に構造化メタデータ (envelope) や直前操作との因果関係 (causal) を載せられるようになった。**`include` を渡さない既存呼び出しは従来とまったく同じ応答** が返るため、利用者の既存設定・既存マクロ・既存 tool 呼び出しには互換影響なし。LLM 側で「この情報はいつ取得したか」「直前の自分の操作との関係はあるか」を 1 call で判定したい場合の opt-in 機能。
 
-Walking skeleton expansion phase complete (PR #126-#147, 22 PRs merged). All
-28 public tools are now wrapped through the unified L5 envelope helper
-(`makeCommitWrapper` / `makeQueryWrapper`), giving every tool the same
-`include=["envelope"]` opt-in shape: `{ _version, data, as_of, confidence }`
-plus optional `caused_by` linkage on commit-axis tools. The new behaviour is
-fully additive — `include` is omitted by default and existing callers see the
-same raw shapes they always have.
+Note: v1.2.0 を tag した時点で CI ビルドが失敗し (release workflow が削除済の `koffi` ランタイム依存を参照していた)、v1.2.0 は npm publish も GitHub Release も生成されていない。**npm から `@harusame64/desktop-touch-mcp@1.2.0` を直接指定すると 404 になる** ので、v1.1 系から上げる場合は v1.2.1 を使うこと。v1.2.1 は v1.2.0 と同じ機能セット + リリースワークフロー修正。
 
 ### Added
 
-- **L5 envelope wrappers across all 28 tools (ADR-010 P1 acceptance).** Commit
-  axis (19 tools): mouse_click / mouse_drag / keyboard / clipboard / scroll /
-  focus_window / window_dock / notification_show / terminal / workspace_launch /
-  click_element / desktop_act / browser_open / browser_navigate / browser_click /
-  browser_fill / browser_form / browser_eval / run_macro. Query axis (9 tools):
-  desktop_state / desktop_discover / screenshot / browser_overview /
-  browser_locate / browser_search / wait_until / workspace_snapshot /
-  server_status. Each tool gains an `include?: string[]` field on its input
-  schema; passing `["envelope"]` returns the self-documenting shape, passing
-  `["raw"]` (or omitting `include` with the default server config) preserves
-  backward-compatible output.
-- **`caused_by` linkage on `desktop_state(include=causal)`.** When a recent
-  commit-axis tool emits L1 `ToolCallStarted/Completed` events,
-  `desktop_state(include=causal)` now returns `your_last_action` + `events`
-  (BasedOnShape) so callers can correlate the current state with the action
-  that produced it. Other 8 query tools accept `include=causal` for forward
-  compatibility but currently omit `causedByProjector` (S4 fast path) — full
-  wiring is queued for ADR-011.
-- **`run_macro` orchestration boundary L1 events.** A macro run with N steps
-  now emits N+1 L1 events (1 outer `run_macro` boundary marker + N inner
-  per-step events), enabling causal envelope to distinguish the orchestration
-  call from individual steps.
+- **feat(all 28 tools): 応答に envelope を要求できる `include` オプション (#126-#147).**
+  全 tool の入力に `include?: string[]` フィールドが追加された。`include: ["envelope"]` を渡すと従来の応答が `{ _version, data, as_of, confidence }` の形に包まれて返り、応答が「いつ時点の情報か (`as_of`)」「engine 側の確信度 (`confidence`)」を含む。`include` 省略 / `include: ["raw"]` は従来通りの生応答 (`_version` などの追加 field なし) で、既存呼び出しは完全に互換。対象 tool は副作用のある操作系 (mouse_click / mouse_drag / keyboard / clipboard / scroll / focus_window / window_dock / notification_show / terminal / workspace_launch / click_element / desktop_act / browser_open / browser_navigate / browser_click / browser_fill / browser_form / browser_eval / run_macro) と読み取り系 (desktop_state / desktop_discover / screenshot / browser_overview / browser_locate / browser_search / wait_until / workspace_snapshot / server_status) の 28 tool 全部。
+- **feat(desktop_state): `include: ["causal"]` で直前の操作との因果関係を取得 (#126-#147).**
+  `desktop_state({ include: ["causal"] })` を呼ぶと、応答に「直前にどの tool を呼んだか (`your_last_action`)」と「その後 UI 側でどんなイベントが起きたか (`events`)」が載る。旧来は screenshot や desktop_state の差分から推測していた「自分の click が効いたか」「click 後にダイアログが出たか」が 1 call で確認できる。他の query tool (desktop_discover / screenshot 等) も `include: ["causal"]` を受け取るが現時点では `your_last_action` 等を返さない (将来拡張用に schema だけ受け付ける)。
+- **feat(run_macro): macro 実行を 1 つの境界として記録 (#147).**
+  `run_macro` で N step の macro を実行すると、内部イベントログに「macro 全体の境界マーカー 1 件 + 各 step ごとに 1 件」の合計 N+1 件が記録される。これにより `desktop_state(include=causal)` が「直前は run_macro 全体だった」と「直前は macro 内のどの step だったか」を区別できる。caveat: イベントログは内部的に ring buffer で、step 数が 8 を超える長い macro では古い step の記録が押し出される可能性あり (causal 応答にその step が出てこない)。
 
-### Notes
+### Fixed
 
-- Discriminated-union tools (`keyboard` / `clipboard` / `scroll` /
-  `window_dock` / `terminal` / `browser_eval`) use the `withEnvelopeIncludeForUnion`
-  helper to inject `include` into every variant; non-union tools use
-  `withEnvelopeIncludeSchema` against their raw shape.
-- `run_macro` is intentionally excluded from `TOOL_REGISTRY` (recursion guard);
-  `server_status` is also excluded (diagnostic tool not callable from macros).
-- Carry-over items recorded in `docs/walking-skeleton-expansion-plan.md` §6.1
-  and `docs/adr-010-presentation-layer-self-documenting-envelope.md` §10.1 /
-  §11 OQ #8/#9 — wired in ADR-011.
-
-### Release infra
-
-- **fix(release.yml): drop stale `koffi` entry from runtime dependency
-  copy list.** Koffi was retired by ADR-007 P4 / PR #78, but the release
-  workflow still copied `pkg.devDependencies["koffi"]` into the isolated
-  install, producing `"koffi": null` in the temp `package.json` and
-  failing `npm install` with `must provide string spec`. Drop the entry;
-  remaining 5 runtime deps (`@modelcontextprotocol/sdk` / `@nut-tree-fork/nut-js` /
-  `sharp` / `ws` / `zod`) match `package.json` devDependencies exactly.
+- **fix(release.yml): v1.2.0 リリース失敗 (古い `koffi` 依存参照) を修正.**
+  v1.0 系で削除済の `koffi` ランタイム依存を release workflow の依存コピーリストが参照し続けており、v1.2.0 を tag した時点で `npm install` が `must provide string spec` で失敗 (`package.json` 一時ファイルに `"koffi": null` が書かれた)。`koffi` エントリを除去し、ランタイム依存リストを `package.json` の実依存 5 件 (`@modelcontextprotocol/sdk` / `@nut-tree-fork/nut-js` / `sharp` / `ws` / `zod`) に揃えた。v1.2.1 はこの修正込みで再 release した版。
 
 ## [1.1.3] - 2026-04-28 — `browser_launch` killExisting + `scroll(action='read')` + stub catalog fixes
 
