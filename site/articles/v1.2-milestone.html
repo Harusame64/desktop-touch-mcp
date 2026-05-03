@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>v1.2 Milestone: Putting Meaning Into the Response</title>
+    <meta name="description" content="The v1.2 release adds opt-in envelope and causal context to every tool response, so agents can stop guessing and start observing." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@500;700;800&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="../assets/styles.css" />
+    <script defer src="../assets/site.js"></script>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({ startOnLoad: true, theme: "base", securityLevel: "loose", themeVariables: { primaryColor: "#e8f1ff", primaryTextColor: "#1d2433", primaryBorderColor: "#3141b7", lineColor: "#58657d", secondaryColor: "#f8dfd4", tertiaryColor: "#d7f2ed", fontFamily: "Manrope" } });
+    </script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="site-shell">
+        <a class="brand" href="../index.html">
+          <span class="brand-kicker">Milestone</span>
+          <span class="brand-title">v1.2: Putting Meaning Into the Response</span>
+        </a>
+        <nav class="nav-links" aria-label="Main">
+          <a href="../index.html">Home</a>
+          <a href="./reactive-perception-graph.html">RPG</a>
+          <a href="./beyond-coordinate-roulette.html">B-C-R</a>
+          <a href="./planned-evaluation.html">Evaluation</a>
+          <a href="./client-setup.html">Setup</a>
+          <a href="./v1.2-milestone.html">Milestones</a>
+          <a href="https://github.com/Harusame64/desktop-touch-mcp">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="page">
+      <div class="site-shell">
+        <section class="hero-card">
+          <div class="article-hero">
+            <a class="breadcrumb" href="../index.html">← Back to project top</a>
+            <span class="eyebrow">Project Evolution</span>
+            <h1>The v1.2 Milestone</h1>
+            <p class="lead">v1.0 was about narrowing the tool surface. v1.2 is about widening what each response means — every tool can now carry its own sense of time, engine confidence, and causal context, on demand and without breaking existing callers.</p>
+          </div>
+          <div class="hero-visual" style="padding-top: 0;">
+            <div class="mermaid-wrap" style="width: 100%;">
+              <pre class="mermaid">graph LR
+    subgraph v100["v1.0: Surface narrowed"]
+        A[28 unified tools]
+        B[Raw response shapes]
+        C[Agent infers state diffs]
+    end
+
+    subgraph v120["v1.2: Response deepened"]
+        D[Same 28 tools]
+        E[Opt-in envelope: as_of, confidence]
+        F[Opt-in causal: caused_by, based_on]
+    end
+
+    v100 --&gt; v120
+
+    classDef old fill:#fde2e2,stroke:#c0392b,color:#5c1f1f;
+    classDef new fill:#e8f1ff,stroke:#3b6db3,color:#183257;
+    class A,B,C old;
+    class D,E,F new;</pre>
+            </div>
+          </div>
+        </section>
+
+        <div class="article-layout">
+          <div class="article-main">
+            <section class="article-card">
+              <span class="label warm">The shift</span>
+              <h2>From inferred state to observed state.</h2>
+              <p>In v1.0 the agent could reach the right control by meaning instead of by pixels. But the response itself was still a raw struct: nothing said how fresh the data was, how confident the engine felt, or whether the change in the UI was actually caused by the agent's last call. v1.2 puts that information into the response itself — opt-in, on every tool, without disturbing existing callers.</p>
+            </section>
+
+            <section class="article-card">
+              <span class="label">Key Evolution: Envelope responses</span>
+              <h2>Time and confidence on every call.</h2>
+              <p>Pass <code>include: ["envelope"]</code> to any tool and the response comes back wrapped:</p>
+              <pre><code>{
+  "_version": 1,
+  "data": { /* the original tool result, unchanged */ },
+  "as_of": "2026-05-03T09:14:22.481Z",
+  "confidence": "fresh"
+}</code></pre>
+              <div class="two-up">
+                <div class="mini-card"><h3><code>as_of</code></h3><p>The timestamp of the actual observation, not of serialization. The agent can decide for itself whether 800 ms-old data is fresh enough.</p></div>
+                <div class="mini-card"><h3><code>confidence</code></h3><p>A small enum: <code>"fresh"</code>, <code>"degraded"</code>, or <code>"stale"</code>. Partial fallbacks no longer hide behind the same shape as a clean read.</p></div>
+              </div>
+            </section>
+
+            <section class="article-card">
+              <span class="label">Key Evolution: Causal context</span>
+              <h2>Observing your own effect.</h2>
+              <p>Pass <code>include: ["causal"]</code> to <code>desktop_state</code> and the envelope grows two more siblings of <code>data</code>:</p>
+              <pre><code>{
+  "data": { /* normal desktop state */ },
+  "caused_by": {
+    "your_last_action": "mouse_click({\"x\":412,\"y\":287})",
+    "tool_call_id": "session-abc:42",
+    "elapsed_ms": 87,
+    "produced_changes": ["focus:Notepad", "dirty_rect:monitor_0:1"]
+  },
+  "based_on": {
+    "events": ["1849", "1850"],
+    "sources": ["uia", "dxgi"]
+  }
+}</code></pre>
+              <p><code>caused_by.your_last_action</code> echoes the agent's own previous tool call. <code>caused_by.produced_changes</code> is what the engine observed actually changing as a direct consequence. <code>based_on.events</code> is the L1 event-id range covered by this observation, encoded as decimal strings so 64-bit IDs survive JSON serialization. The agent no longer has to <em>infer</em> whether its click landed — it can read the receipt.</p>
+              <p><code>run_macro</code> participates in the same record as a single boundary, so a macro execution shows up as one observable unit rather than dissolving into its constituent steps.</p>
+            </section>
+
+            <section class="article-card">
+              <span class="label warm">Compatibility</span>
+              <h2>Existing callers stay byte-for-byte the same.</h2>
+              <p>If you don't pass <code>include</code>, nothing changes. Same response shape, same fields, same defaults as v1.0. Existing configs, scripts, and macros all keep working without modification. The new capability is paid for only by callers who ask for it.</p>
+              <div class="hero-actions">
+                <a class="button primary" href="https://github.com/Harusame64/desktop-touch-mcp/blob/main/CHANGELOG.md">View Full Changelog</a>
+                <a class="button secondary" href="./v1.0-milestone.html">Read the v1.0 Milestone</a>
+              </div>
+            </section>
+          </div>
+
+          <aside class="article-aside">
+            <div class="aside-card">
+              <h3>Why this matters</h3>
+              <p>The shift v1.2 enables is small to describe and large in practice: <strong>agents move from inferred state to observed state.</strong> Fewer tool calls per decision. Fewer tokens spent on speculative comparison. Fewer decisions made on guesses that the agent had no way of validating.</p>
+              <h3>Related pages</h3>
+              <ul>
+                <li><a href="../index.html">Project top</a></li>
+                <li><a href="./v1.0-milestone.html">v1.0 milestone</a></li>
+                <li><a href="./reactive-perception-graph.html">RPG explainer</a></li>
+                <li><a href="./beyond-coordinate-roulette.html">Beyond Coordinate Roulette</a></li>
+              </ul>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <div class="site-shell">
+        <span>v1.2 Milestone Article</span>
+        <span>&copy; <span data-year></span> experimental interface work</span>
+      </div>
+    </footer>
+  </body>
+</html>

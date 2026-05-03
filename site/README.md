@@ -30,6 +30,10 @@ site/
     planned-evaluation.md
     reactive-perception-graph.html
     reactive-perception-graph.md
+    v1.0-milestone.html
+    v1.0-milestone.md
+    v1.2-milestone.html
+    v1.2-milestone.md
   assets/
     figures/
     eval/
@@ -59,6 +63,14 @@ site/
   - evaluation page draft
 - `articles/planned-evaluation.html`
   - published evaluation page
+- `articles/v1.0-milestone.md`
+  - v1.0 milestone draft
+- `articles/v1.0-milestone.html`
+  - published v1.0 milestone page
+- `articles/v1.2-milestone.md`
+  - v1.2 milestone draft
+- `articles/v1.2-milestone.html`
+  - published v1.2 milestone page
 - `assets/figures/`
   - visual drafts and diagrams
 - `assets/eval/`
