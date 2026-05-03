@@ -5,6 +5,7 @@ import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
 import { coercedBoolean, coercedJsonObject } from "./_coerce.js";
 import { pollUntil } from "../engine/poll.js";
+import { makeQueryWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
 import {
   enumWindowsInZOrder,
   getWindowProcessId,
@@ -383,6 +384,19 @@ export const waitUntilHandler = async ({ condition, target, timeoutMs, intervalM
 // Registration
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Walking skeleton expansion phase swimlane 2 (L5 query tool wrapper):
+ * `wait_until` is wrapped via `makeQueryWrapper`. PR #122 screenshot 同型
+ * pattern (read-only condition polling、L1 events 不発、causedByProjector
+ * 省略 fast path)。
+ */
+export const waitUntilRegistrationSchema = withEnvelopeIncludeSchema(waitUntilSchema);
+
+export const waitUntilRegistrationHandler = makeQueryWrapper(
+  waitUntilHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
+  "wait_until",
+);
+
 export function registerWaitUntilTool(server: McpServer): void {
   server.tool(
     "wait_until",
@@ -399,7 +413,7 @@ export function registerWaitUntilTool(server: McpServer): void {
         "wait_until({condition:'url_matches', target:{pattern:'^https://app\\\\.example\\\\.com/orders/[0-9]+$', regex:true}})",
       ],
     }),
-    waitUntilSchema,
-    waitUntilHandler
+    waitUntilRegistrationSchema,
+    waitUntilRegistrationHandler as typeof waitUntilHandler
   );
 }
