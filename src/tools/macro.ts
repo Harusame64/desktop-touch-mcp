@@ -62,7 +62,11 @@ import {
   scrollRegistrationHandler,
 } from "./scroll.js";
 // Wait until
-import { waitUntilHandler, waitUntilSchema } from "./wait-until.js";
+import {
+  waitUntilHandler,
+  waitUntilRegistrationSchema,
+  waitUntilRegistrationHandler,
+} from "./wait-until.js";
 // Desktop state
 import {
   desktopStateRegistrationHandler,
@@ -264,7 +268,11 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
   // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
   workspace_launch:     { schema: z.object(workspaceLaunchRegistrationSchema), handler: workspaceLaunchRegistrationHandler as typeof workspaceLaunchHandler },
-  wait_until:           { schema: z.object(waitUntilSchema),           handler: waitUntilHandler },
+  // Walking skeleton expansion swimlane 2 (L5 query wrapper): use the
+  // module-scope wrapped handler from wait-until.ts so run_macro 経路は
+  // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
+  // pattern, strip risk 防止)。`include` per-call envelope opt-in も自動波及。
+  wait_until:           { schema: z.object(waitUntilRegistrationSchema), handler: waitUntilRegistrationHandler as typeof waitUntilHandler },
   // Walking skeleton expansion swimlane 1 (L5 commit wrapper): use the
   // module-scope wrapped handler from notification.ts so run_macro 経路は
   // server.tool 経路と同 instance を共有 (PR #112 shared registration handler
