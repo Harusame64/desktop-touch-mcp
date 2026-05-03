@@ -4,6 +4,7 @@ import { buildDesc } from "./_types.js";
 import type { ToolHandler, ToolResult } from "./_types.js";
 import { checkFailsafe } from "../utils/failsafe.js";
 import { assertKeyComboSafe } from "../utils/key-safety.js";
+import { makeCommitWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Phase 4: TOOL_REGISTRY mirrors the v1.0.0 public surface — privatized tools
@@ -487,6 +488,39 @@ export const runMacroHandler = async ({
 // Registration
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Walking skeleton expansion phase swimlane 1 (L5 commit tool wrapper):
+ * `run_macro` is wrapped via `makeCommitWrapper` (lease-less commit variant)。
+ * Macro orchestration 自体を一つの commit event として L1 に記録 — 結果として
+ * N step macro 1 回で **N+1 個** の L1 event が発行される (outer = run_macro
+ * orchestration boundary marker、inner = 各 step の wrapped handler が発行)。
+ * outer event は「run_macro が呼ばれて完了した」事実 + summary を保持し、
+ * step 単位の詳細は inner event 群に委ねる重畳構造。
+ *
+ * Caveat: causal envelope の `your_last_action` は最新 1 件のみ参照する
+ * (history ring capacity = `_envelope.ts:HISTORY_BUFFER_CAPACITY`)。Step 数が
+ * capacity を超えると outer run_macro event が ring から evict され、後続
+ * `desktop_state(include=causal)` は最終 step を `your_last_action` として
+ * 返す (orchestration boundary としての run_macro 識別は失われる)。
+ *
+ * windowTitleKey 省略 (run_macro は steps[].params.windowTitle を見ないため
+ * orchestration level では window target なし)。
+ *
+ * Module-scope export — run_macro 自体は `TOOL_REGISTRY` から除外
+ * (recursion 防止、macro.ts 内 line 「run_macro is intentionally excluded →
+ * prevents recursion」参照) のため、shared instance 共有は不要。
+ */
+export const runMacroRegistrationSchema = withEnvelopeIncludeSchema(runMacroSchema);
+
+export const runMacroRegistrationHandler = makeCommitWrapper(
+  runMacroHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
+  "run_macro",
+  {
+    // leaseValidator omitted = lease-less commit variant
+    // getSessionId / argsSummary / clock も default 利用 = mechanical コピー最小
+  },
+);
+
 export function registerMacroTools(server: McpServer): void {
   server.tool(
     "run_macro",
@@ -500,7 +534,7 @@ export function registerMacroTools(server: McpServer): void {
         "[{tool:'browser_navigate',params:{url:'https://example.com'}},{tool:'wait_until',params:{condition:'element_matches',target:{by:'text',pattern:'Example Domain'}}}]",
       ],
     }),
-    runMacroSchema,
-    runMacroHandler
+    runMacroRegistrationSchema,
+    runMacroRegistrationHandler as typeof runMacroHandler
   );
 }
