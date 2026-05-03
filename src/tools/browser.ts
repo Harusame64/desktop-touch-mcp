@@ -2242,6 +2242,19 @@ export const browserLocateRegistrationHandler = makeQueryWrapper(
   "browser_locate",
 );
 
+/**
+ * Walking skeleton expansion phase swimlane 2 (L5 query tool wrapper):
+ * `browser_search` is wrapped via `makeQueryWrapper`. PR #122 screenshot /
+ * PR #140 browser_overview / PR #141 browser_locate 同型 pattern (read-only
+ * grep-like element lookup、L1 events 不発、causedByProjector 省略 fast path)。
+ */
+export const browserSearchRegistrationSchema = withEnvelopeIncludeSchema(browserSearchSchema);
+
+export const browserSearchRegistrationHandler = makeQueryWrapper(
+  browserSearchHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
+  "browser_search",
+);
+
 export function registerBrowserTools(server: McpServer): void {
   // Wire wait_until(element_matches) — resolve top result for callers that just need selector + text.
   setBrowserSearchHook(async ({ port, tabId, by, pattern, scope }) => {
@@ -2262,8 +2275,8 @@ export function registerBrowserTools(server: McpServer): void {
   server.tool(
     "browser_search",
     "Grep-like element search across the current page. by: 'text' (literal substring), 'regex', 'role', 'ariaLabel', 'selector' (CSS). Returns results[] sorted by confidence descending — pass results[0].selector to browser_click. Pagination via offset/maxResults. Caveats: Use browser_overview for broad discovery; use browser_search when you know specific text or role to target.",
-    browserSearchSchema,
-    browserSearchHandler
+    browserSearchRegistrationSchema,
+    browserSearchRegistrationHandler as typeof browserSearchHandler
   );
 
   server.tool(
