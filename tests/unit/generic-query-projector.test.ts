@@ -23,6 +23,7 @@ import {
   defaultQuerySessionId,
   _setDefaultQuerySingleSessionForTest,
   _resetDefaultQuerySingleSessionForTest,
+  __getQueryWrapperOptionsForTest,
 } from "../../src/tools/_envelope.js";
 
 // ── A-1: genericQueryCausedByProjector — sentinel guard ─────────────────────
@@ -107,17 +108,18 @@ describe("A-1: desktop-state.ts delegating fn integrity", () => {
   });
 });
 
-// ── A-1: 8 query tool wire 完了 pin (Round 1 P2-1 反映) ─────────────────────
+// ── A-1: 8 query tool wire 完了 pin (Round 1 Codex P2 反映) ─────────────────
 
-describe("A-1: 8 query tool RegistrationHandler wire completeness", () => {
-  // Lesson 2 (compile-time guard 過信) 同型 pin: 8 tool 全てで
-  // makeQueryWrapper S5 path に opt-in している (causedByProjector +
-  // getSessionId 両 wire) ことを runtime で確認。type 通過 + handler
-  // export だけだと、wire option ペアの片方忘れ (例: causedByProjector
-  // だけ wire、getSessionId 忘却) が runtime まで気付けない盲点を防ぐ。
+describe("A-1: 8 query tool wrapper options carry causal-path wire", () => {
+  // Round 1 Codex P2 反映: typeof === "function" だけでは wire 漏れを
+  // 検出できない (makeQueryWrapper は wire 不在でも function を返す)。
+  // observable behavior path = wrapper の internal config (WeakMap で
+  // 記録) を inspect して `causedByProjector` / `getSessionId` の
+  // identity を pin する。wire option ペアの片方忘却 (例: projector
+  // だけ wire、sessionId 忘れ) を runtime で検出 (Lesson 2 同型盲点防止)。
   // Lesson 4 (numeric count sync) も同時担保 — 8 tool numeric が
   // mechanical コピー pattern に固定。
-  it("all 8 wired query tools export RegistrationHandler as function", async () => {
+  it("all 8 wired query tools have genericQueryCausedByProjector + defaultQuerySessionId in wrapper options", async () => {
     const [
       { browserOverviewRegistrationHandler, browserLocateRegistrationHandler, browserSearchRegistrationHandler },
       { screenshotRegistrationHandler },
@@ -133,19 +135,23 @@ describe("A-1: 8 query tool RegistrationHandler wire completeness", () => {
       import("../../src/tools/workspace.js"),
       import("../../src/tools/desktop-register.js"),
     ]);
-    const handlers = [
-      browserOverviewRegistrationHandler,
-      browserLocateRegistrationHandler,
-      browserSearchRegistrationHandler,
-      screenshotRegistrationHandler,
-      serverStatusRegistrationHandler,
-      waitUntilRegistrationHandler,
-      workspaceSnapshotRegistrationHandler,
-      desktopDiscoverRegistrationHandler,
+    const wired: ReadonlyArray<readonly [string, (rawArgs: Record<string, unknown> & { include?: string[] }) => Promise<unknown>]> = [
+      ["browser_overview", browserOverviewRegistrationHandler as never],
+      ["browser_locate", browserLocateRegistrationHandler as never],
+      ["browser_search", browserSearchRegistrationHandler as never],
+      ["screenshot", screenshotRegistrationHandler as never],
+      ["server_status", serverStatusRegistrationHandler as never],
+      ["wait_until", waitUntilRegistrationHandler as never],
+      ["workspace_snapshot", workspaceSnapshotRegistrationHandler as never],
+      ["desktop_discover", desktopDiscoverRegistrationHandler as never],
     ];
-    expect(handlers).toHaveLength(8);
-    for (const h of handlers) {
-      expect(typeof h).toBe("function");
+    expect(wired).toHaveLength(8);
+    for (const [toolName, handler] of wired) {
+      const opts = __getQueryWrapperOptionsForTest(handler);
+      expect(opts, `${toolName} options should be registered`).toBeDefined();
+      // identity check — wire 漏れを runtime 検出
+      expect(opts?.causedByProjector, `${toolName} should wire genericQueryCausedByProjector`).toBe(genericQueryCausedByProjector);
+      expect(opts?.getSessionId, `${toolName} should wire defaultQuerySessionId`).toBe(defaultQuerySessionId);
     }
   });
 });

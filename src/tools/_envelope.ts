@@ -1734,6 +1734,36 @@ export interface QueryWrapperOptions extends MakeEnvelopeAwareOptions {
   getSessionId?: (args: unknown) => string;
 }
 
+/**
+ * @internal Test-only — wire pin registry for `__getQueryWrapperOptionsForTest`.
+ *
+ * Records the resolved `QueryWrapperOptions` used by each `makeQueryWrapper`
+ * call so unit tests can assert that 8 query tools wired in ADR-011 A-1
+ * actually carry `causedByProjector + getSessionId` references (Round 1
+ * Codex P2 反映: `typeof handler === "function"` だけでは wire 漏れを
+ * 検出できないため、wrapper の internal config を WeakMap で保持して
+ * test 側で identity を pin する observable behavior path)。
+ *
+ * Production overhead: WeakMap insert per registration (1 回限り、N=28 tool)。
+ * GC: handler が解放されると entry も自動 GC、leak なし。
+ */
+const _queryWrapperOptionsRegistry = new WeakMap<
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (...args: any[]) => Promise<McpToolResult>,
+  QueryWrapperOptions
+>();
+
+/** @internal Test-only — inspect resolved options of a registered query
+ *  wrapper (Round 1 Codex P2 wire pin observable behavior). Returns
+ *  `undefined` when the handler was not produced by `makeQueryWrapper`
+ *  (e.g. raw handler) or when the test seam was reset. */
+export function __getQueryWrapperOptionsForTest<TArgs extends Record<string, unknown>>(
+  wrapped: (rawArgs: TArgs & { include?: string[] }) => Promise<McpToolResult>,
+): QueryWrapperOptions | undefined {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return _queryWrapperOptionsRegistry.get(wrapped as any);
+}
+
 export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
   handler: (args: TArgs) => Promise<McpToolResult>,
   toolName: string,
@@ -1745,7 +1775,10 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
   // `desktop_discover` from S4) hit this branch with no behaviour
   // change — sub-plan §4.5 既存 caller 破壊なし sweep。
   if (options.causedByProjector === undefined && options.getSessionId === undefined) {
-    return makeEnvelopeAware(handler, toolName, options);
+    const wrapped = makeEnvelopeAware(handler, toolName, options);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    _queryWrapperOptionsRegistry.set(wrapped as any, options);
+    return wrapped;
   }
 
   // S5 path: include peek + getSessionId resolve + causedByProjector
@@ -1758,7 +1791,7 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
   const getSessionId = options.getSessionId ?? (() => "default");
   const causedByProjector = options.causedByProjector;
 
-  return async (rawArgs) => {
+  const s5Wrapper = async (rawArgs: TArgs & { include?: string[] }): Promise<McpToolResult> => {
     const { include, ...handlerArgs } = rawArgs as { include?: string[] } & TArgs;
     const includeCausal = include?.includes("causal") === true;
     const includeRaw = include?.includes("raw") === true;
@@ -1830,7 +1863,13 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
       content: [{ ...block, text: JSON.stringify(final) }, ...result.content.slice(1)],
     };
   };
+  // S5 path wrapper も registry に記録 (wire pin test seam、本 file 上部の
+  // `_queryWrapperOptionsRegistry` doc 参照)。
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  _queryWrapperOptionsRegistry.set(s5Wrapper as any, options);
+  return s5Wrapper;
 }
+
 
 // ─── Internal helpers (commit wrapper completion event details) ──────────────
 
