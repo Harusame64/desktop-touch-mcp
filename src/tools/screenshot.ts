@@ -18,6 +18,8 @@ import { failWith, failArgs } from "./_errors.js";
 import {
   makeQueryWrapper,
   withEnvelopeIncludeSchema,
+  genericQueryCausedByProjector,
+  defaultQuerySessionId,
 } from "./_envelope.js";
 import {
   observeTarget,
@@ -1189,6 +1191,10 @@ export const screenshotRegistrationSchema = withEnvelopeIncludeSchema(screenshot
 export const screenshotRegistrationHandler = makeQueryWrapper(
   screenshotHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
   "screenshot",
+  {
+    causedByProjector: genericQueryCausedByProjector,
+    getSessionId: defaultQuerySessionId,
+  },
 );
 
 // ─────────────────────────────────────────────────────────────────────────────

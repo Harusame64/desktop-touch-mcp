@@ -26,6 +26,8 @@ import {
   makeCommitWrapper,
   makeQueryWrapper,
   withEnvelopeIncludeSchema,
+  genericQueryCausedByProjector,
+  defaultQuerySessionId,
   type CommitWrapperOptions,
 } from "./_envelope.js";
 import { nativeViewFocus } from "../engine/native-engine.js";
@@ -601,7 +603,11 @@ export const desktopActRegistrationSchema = withEnvelopeIncludeSchema(desktopTou
 export const desktopDiscoverRegistrationHandler = makeQueryWrapper(
   desktopDiscoverRawHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
   "desktop_discover",
-  { fetchMeta: fetchEnvelopeMeta },
+  {
+    fetchMeta: fetchEnvelopeMeta,
+    causedByProjector: genericQueryCausedByProjector,
+    getSessionId: defaultQuerySessionId,
+  },
 );
 
 export const desktopActRegistrationHandler = makeCommitWrapper(
