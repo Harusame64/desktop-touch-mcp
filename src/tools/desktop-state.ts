@@ -704,7 +704,7 @@ export function _resetSingleSessionPrototypeForTest(): void {
 export const desktopStateGetSessionId = (_args: unknown): string => {
   // CodeQL alert #109 (`js/unneeded-defensive-code`) flags the
   // `transportSessionId !== undefined` guard below as dead at runtime
-  // because the `getMcpTransportSessionId` stub on line 747 returns
+  // because the `getMcpTransportSessionId` stub on line 673 returns
   // `undefined` unconditionally. The alert is **dismissed** as
   // "Won't fix" via GitHub Code Scanning API (PR #120). Inline
   // suppress comments (e.g. `// codeql[...]`) are NOT recognised by

@@ -106,3 +106,46 @@ describe("A-1: desktop-state.ts delegating fn integrity", () => {
     expect(genericQueryCausedByProjector.length).toBe(2); // (args, sessionId)
   });
 });
+
+// ── A-1: 8 query tool wire 完了 pin (Round 1 P2-1 反映) ─────────────────────
+
+describe("A-1: 8 query tool RegistrationHandler wire completeness", () => {
+  // Lesson 2 (compile-time guard 過信) 同型 pin: 8 tool 全てで
+  // makeQueryWrapper S5 path に opt-in している (causedByProjector +
+  // getSessionId 両 wire) ことを runtime で確認。type 通過 + handler
+  // export だけだと、wire option ペアの片方忘れ (例: causedByProjector
+  // だけ wire、getSessionId 忘却) が runtime まで気付けない盲点を防ぐ。
+  // Lesson 4 (numeric count sync) も同時担保 — 8 tool numeric が
+  // mechanical コピー pattern に固定。
+  it("all 8 wired query tools export RegistrationHandler as function", async () => {
+    const [
+      { browserOverviewRegistrationHandler, browserLocateRegistrationHandler, browserSearchRegistrationHandler },
+      { screenshotRegistrationHandler },
+      { serverStatusRegistrationHandler },
+      { waitUntilRegistrationHandler },
+      { workspaceSnapshotRegistrationHandler },
+      { desktopDiscoverRegistrationHandler },
+    ] = await Promise.all([
+      import("../../src/tools/browser.js"),
+      import("../../src/tools/screenshot.js"),
+      import("../../src/tools/server-status.js"),
+      import("../../src/tools/wait-until.js"),
+      import("../../src/tools/workspace.js"),
+      import("../../src/tools/desktop-register.js"),
+    ]);
+    const handlers = [
+      browserOverviewRegistrationHandler,
+      browserLocateRegistrationHandler,
+      browserSearchRegistrationHandler,
+      screenshotRegistrationHandler,
+      serverStatusRegistrationHandler,
+      waitUntilRegistrationHandler,
+      workspaceSnapshotRegistrationHandler,
+      desktopDiscoverRegistrationHandler,
+    ];
+    expect(handlers).toHaveLength(8);
+    for (const h of handlers) {
+      expect(typeof h).toBe("function");
+    }
+  });
+});

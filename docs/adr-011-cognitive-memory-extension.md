@@ -74,6 +74,11 @@ Phase B は CoALA 全体設計 (4 memory layer + L4 view 設計 + envelope proje
 
 本 plan で記述された規約と SSOT の間に齟齬が生じた場合、SSOT を優先し、本 plan は後追い更新する (統合書 §16.1 整合)。
 
+**Line ref drift 注記** (Round 1 A-1 PR #156 P2-3 反映): 本 plan の `file.ts:NNN` 形式の line refs は **drafting 時点の indicative 値**。本 plan land 後の改修で line drift が発生する (例: A-1 で `genericQueryCausedByProjector` 追加により `_envelope.ts` の S4 fast path / `getSessionId` default 等の line 数が +160 程度ずれる)。**実 line を grep keyword で検索**することを推奨:
+- `desktopStateCausedByProjector` / `desktopStateGetSessionId` / `getMcpTransportSessionId` / `genericQueryCausedByProjector` / `defaultQuerySessionId` / `_isSingleSessionPrototype` / `HISTORY_BUFFER_CAPACITY` / `isCompoundBoundary` / `evictOldestNonBoundary` / `buildCausedBy` / `buildBasedOn` / `ToolCallEvent` / `pushHistoryStarted` / `evictHistoryIfNeeded`
+
+実 line ref の sync は本 plan の各 phase land 時に follow-up commit で更新するか、本注記により grep 経路を維持する (CLAUDE.md §3.1 fact 整合 sweep 整合)。
+
 ---
 
 ## 2. Decision

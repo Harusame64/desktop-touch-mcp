@@ -1211,7 +1211,7 @@ export function buildProducedChanges(viewSnapshot: ViewSnapshot): string[] {
  * MCP transport session id stub (ADR-011 A-1 stub, A-2 で実装置換).
  *
  * Mirrors the existing `desktop-state.ts:getMcpTransportSessionId` stub
- * (line 753) used by `desktopStateGetSessionId`. This duplicate stub
+ * (line 673) used by `desktopStateGetSessionId` (line 704). This duplicate stub
  * exists so A-1 can wire 8 query tools without forcing them to import
  * from `desktop-state.ts` (which would create a circular dependency
  * with `workspace.ts` — `desktop-state.ts` already imports
@@ -1223,7 +1223,7 @@ export function buildProducedChanges(viewSnapshot: ViewSnapshot): string[] {
  */
 const _defaultQueryTransportSessionId = (): string | undefined => undefined;
 
-/** Mirrors `desktop-state.ts:_isSingleSessionPrototype` (line 751) — see
+/** Mirrors `desktop-state.ts:_isSingleSessionPrototype` (line 671) — see
  *  the doc comment on `_defaultQueryTransportSessionId` above for why a
  *  duplicate stub exists during A-1 → A-2 transit. */
 let _defaultQuerySingleSessionPrototype: () => boolean = () => true;
