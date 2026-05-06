@@ -214,7 +214,7 @@ ring buffer 状態 (capacity = 8):
 | 5 | server_status | server-status.ts | 同上 |
 | 6 | wait_until | wait-until.ts | 同上 |
 | 7 | workspace_snapshot | workspace.ts | 同上 |
-| 8 | desktop_discover | desktop-register.ts | 既存 `getSessionId: desktopActSessionId` 残しつつ projector 追加 |
+| 8 | desktop_discover | desktop-register.ts | 既存 `fetchMeta: fetchEnvelopeMeta` (S4 でも配線済) を保持しつつ `causedByProjector: genericQueryCausedByProjector` + `getSessionId: defaultQuerySessionId` を追加 (plan 起草時の `desktopActSessionId` 言及は誤記、`desktopActSessionId` は `desktop_act` commit-axis の lease.viewId base resolver。`desktop_discover` は query で lease を持たないため `defaultQuerySessionId` 経路が正しい — A-1 PR #156 Round 2 P2-1 NEW 反映 2026-05-07) |
 
 #### 4.1.2 共通 projector 抽出
 
