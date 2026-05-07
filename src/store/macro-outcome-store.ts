@@ -180,6 +180,10 @@ export class MacroOutcomeStore {
    * `success_count >= minSuccessCount` + `failure_count == 0` +
    * `contains_destructive == false` の 3 条件全 pass 件のみ返す。
    *
+   * 同 `last_seen_at_ms` tie 時の sort 順は **V8 stable sort** で Map
+   * insertion order = LRU touch 順を保つ (recordOutcome 経路で必ず Map
+   * touch 済、insertion order ≈ recency-then-LRU の bounded order)。
+   *
    * **重要**: 本 method は suggest 用 filter 済 read API。filter 前 raw
    * は `_allRecordsForTest` でしか参照不可 (production code は filter 経由
    * しか触らせない、destructive 流出 fail-safe)。

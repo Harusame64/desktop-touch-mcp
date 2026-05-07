@@ -2039,9 +2039,15 @@ export interface MacroOutcomeSummary {
 }
 
 /** Procedural memory projection 戻り値 (suggest 候補 macro 配列 + 任意
- *  `_truncation` notation)。 */
+ *  `_truncation` notation)。
+ *
+ *  field 名 `suggestions` は **ADR-010 §6 line 409** documented contract
+ *  `successful_macros.suggestions` 整合 (Round 1 Opus P1-1 反映: B-1
+ *  `current_state.recent_events` / B-2 `tool_call_history.episodes` /
+ *  B-3 `learned_ui_pattern.patterns` と同型 axis、envelope field 名 ≠
+ *  inner list 名 の design)。 */
 export interface ProceduralMemoryProjection {
-  successful_macros: MacroOutcomeSummary[];
+  suggestions: MacroOutcomeSummary[];
   _truncation?: TruncationNotation;
 }
 
@@ -2073,35 +2079,42 @@ export function projectProceduralMemory(
 ): ProceduralMemoryProjection | undefined {
   if (sessionId === "multi:disabled") return undefined;
   const ring = _historyBuffers.get(sessionId);
-  if (!ring) return { successful_macros: [] };
+  if (!ring) return { suggestions: [] };
   ring.lastAccessMs = _historyClock();
 
   const cappedK = Math.min(k, store.capacity);
   const records = store.getTopKForSuggest(cappedK);
-  const successful_macros: MacroOutcomeSummary[] = records.map((r) => ({
+  const suggestions: MacroOutcomeSummary[] = records.map((r) => ({
     macro_id: r.macro_id,
     tools: [...r.tools],
     success_count: r.success_count,
     last_seen_at_ms: r.last_seen_at_ms,
   }));
 
+  // Round 1 P2-3 fix: `_truncation.reason: "ring_underflow"` は B-1/B-2/B-3
+  // 同型の TruncationNotation enum を踏襲 (新 reason `filter_underflow` 追加
+  // しない)。Procedural の場合は ring + filter (success>=3 + failure==0 +
+  // no destructive) 経由で K に届かなかった全ケースを包含、LLM client は
+  // 「候補数が K 未満」とだけ読めば良い (filter 詳細は projection 経由で expose
+  // しない privacy 設計、destructive macro 数を expose すると pattern leak
+  // surface 増)。
   let truncation: TruncationNotation | undefined;
   if (k > store.capacity) {
     truncation = {
       requested: k,
-      returned: successful_macros.length,
+      returned: suggestions.length,
       reason: "capacity_cap",
     };
-  } else if (successful_macros.length < k) {
+  } else if (suggestions.length < k) {
     truncation = {
       requested: k,
-      returned: successful_macros.length,
+      returned: suggestions.length,
       reason: "ring_underflow",
     };
   }
   return truncation === undefined
-    ? { successful_macros }
-    : { successful_macros, _truncation: truncation };
+    ? { suggestions }
+    : { suggestions, _truncation: truncation };
 }
 
 /**

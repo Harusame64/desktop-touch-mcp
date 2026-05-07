@@ -29,6 +29,12 @@
  * Phase B B-4 着手時 user 諮問 2026-05-07 で確定。`scroll` / `focus_window` /
  * `window_dock` は **destructive 扱い** (UI state を変化、実 user input
  * stream に近い)、当面 suggest 対象外。
+ *
+ * **`sleep` pseudo-command も intentionally allowlist 外** (registry entry
+ * 不在 → fail-safe destructive 扱い): timing-aware safe macro (e.g.
+ * "focus_window → sleep → screenshot") も suggest 対象外になるが、これは
+ * Phase B では over-conservative 設計 (sleep 用途は debug / 観察 / timing
+ * tuning が混在、将来必要に応じて allowlist 追加検討)。
  */
 const QUERY_SAFE_TOOLS = new Set<string>([
   // Pure observation
