@@ -30,7 +30,6 @@ import {
   projectEpisodicMemory,
   defaultL1Emitter,
   makeQueryWrapper,
-  genericQueryCausedByProjector,
   EPISODIC_MEMORY_DEFAULT_N,
   EPISODIC_MEMORY_N_MAX,
   _resetHistoryBuffersForTest,
