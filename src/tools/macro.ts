@@ -497,11 +497,21 @@ export const runMacroHandler = async ({
  * outer event は「run_macro が呼ばれて完了した」事実 + summary を保持し、
  * step 単位の詳細は inner event 群に委ねる重畳構造。
  *
- * Caveat: causal envelope の `your_last_action` は最新 1 件のみ参照する
- * (history ring capacity = `_envelope.ts:HISTORY_BUFFER_CAPACITY`)。Step 数が
- * capacity を超えると outer run_macro event が ring から evict され、後続
- * `desktop_state(include=causal)` は最終 step を `your_last_action` として
- * 返す (orchestration boundary としての run_macro 識別は失われる)。
+ * ADR-011 A-3 (compound commit boundary): `isCompoundBoundary: true` で
+ * 配線済 — outer run_macro event は history ring の `evictOldestNonBoundary`
+ * で FIFO eviction 対象外、長 macro でも orchestration boundary が ring 内
+ * preserved され、`desktop_state(include=causal).caused_by.your_last_action`
+ * は outer run_macro event を anchor として返す (最終 step に collapse
+ * しない)。`buildBasedOn.events` も同型で outer event_id を anchor とする
+ * (helper `selectLastEventForCausalProjection` 共有、`_envelope.ts`)。
+ *
+ * 注意: `HISTORY_BUFFER_CAPACITY = 8` 維持下で boundary 1 件保護分の
+ * effective capacity = 7 (= 9-step macro で outer 1 + step 7 = 8 ring 充填、
+ * 後続 step が乗り切らない場合は **古い step が FIFO evict**、boundary は
+ * skip)。複数同時 outer (本 plan non-goal、現行 `TOOL_REGISTRY` から
+ * run_macro 除外で発生不可、line 「run_macro is intentionally excluded」+
+ * runtime guard 参照) では `evictOldestNonBoundary` の degraded fallback
+ * (旧 FIFO) で動作。
  *
  * windowTitleKey 省略 (run_macro は steps[].params.windowTitle を見ないため
  * orchestration level では window target なし)。
@@ -518,6 +528,8 @@ export const runMacroRegistrationHandler = makeCommitWrapper(
   {
     // leaseValidator omitted = lease-less commit variant
     // getSessionId / argsSummary / clock も default 利用 = mechanical コピー最小
+    // ADR-011 A-3: outer orchestration event を boundary preserved にする
+    isCompoundBoundary: true,
   },
 );
 

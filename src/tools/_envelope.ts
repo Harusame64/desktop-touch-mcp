@@ -941,6 +941,13 @@ export interface ToolCallEvent {
   /** Optional lease 4-tuple summary (sub-plan §2.3 S4 既存)、commit-axis
    *  with lease validation 経由のみ設定。 */
   leaseToken: NativeLeaseTokenSummary | undefined;
+  /** ADR-011 A-3: compound commit boundary marker (e.g. `run_macro` outer
+   *  event)。`true` の entry は `evictOldestNonBoundary` で FIFO eviction
+   *  対象外、長 macro でも orchestration boundary が ring 内 preserve
+   *  される (causal projection の anchor として `your_last_action` /
+   *  `based_on.events` で参照)。`false` または `undefined` は通常 commit
+   *  (FIFO eviction 対象)。default `undefined` (= 非 boundary)。 */
+  isCompoundBoundary?: boolean;
 }
 
 interface ToolCallEventRingBuffer {
@@ -1014,6 +1021,35 @@ function evictHistoryIfNeeded(): void {
   }
 }
 
+/**
+ * ADR-011 A-3: ring overflow 時の eviction で boundary entry を skip。
+ *
+ * 通常 FIFO は ring 先頭 (= 最古) の `isCompoundBoundary` entry を巻き込み、
+ * 長 macro で outer run_macro event が消失 → `your_last_action` が最終 step
+ * に collapse する (ADR-010 §11 OQ #9 / walking-skeleton-expansion-plan §6.1
+ * #3 で記述された不整合)。
+ *
+ * 本 helper は events 配列の先頭から **最古の非 boundary entry** を 1 件
+ * 削除する。全 entry が boundary の degraded ケース (本 plan non-goal、
+ * `TOOL_REGISTRY` で run_macro recursion 防止済 — `macro.ts:354` 除外定義
+ * + `macro.ts:404-409` runtime guard) では fallback で旧 FIFO に戻す
+ * (panic 回避、causal projection は最古 boundary を失うが degraded UX は
+ * 受容可能)。
+ *
+ * 呼び出し側は `while (ring.events.length > ring.capacity)` ループで使う —
+ * 1 回呼び出しで 1 件削除のため、複数 overflow 時はループで連続呼出する。
+ */
+function evictOldestNonBoundary(events: ToolCallEvent[]): void {
+  const idx = events.findIndex((e) => e.isCompoundBoundary !== true);
+  if (idx >= 0) {
+    events.splice(idx, 1);
+    return;
+  }
+  // Degraded fallback: 全 entry が boundary (= 非常稀、現行 recursion 防止下では
+  // 発生不可)。infinite loop を避けるため旧 FIFO で先頭 1 件 evict。
+  events.shift();
+}
+
 function pushHistoryStarted(args: {
   sessionId: string;
   toolCallId: string;
@@ -1023,6 +1059,10 @@ function pushHistoryStarted(args: {
   wallclockStartMs: number;
   monotonicStartMs: number;
   leaseToken: NativeLeaseTokenSummary | undefined;
+  /** ADR-011 A-3: mark this entry as a compound commit boundary —
+   *  protected from FIFO eviction so long macros preserve orchestration
+   *  boundary in causal projection. */
+  isCompoundBoundary?: boolean;
 }): void {
   const now = _historyClock();
   let ring = _historyBuffers.get(args.sessionId);
@@ -1042,8 +1082,12 @@ function pushHistoryStarted(args: {
     monotonicStartMs: args.monotonicStartMs,
     ok: undefined,
     leaseToken: args.leaseToken,
+    isCompoundBoundary: args.isCompoundBoundary,
   });
-  while (ring.events.length > ring.capacity) ring.events.shift();
+  // ADR-011 A-3: ring overflow は `evictOldestNonBoundary` 経由で boundary
+  // entry を skip。`_seedHistoryForTest` は test-only seam で boundary
+  // なし前提のため旧 `events.shift()` を維持 (plan §4.3.1)。
+  while (ring.events.length > ring.capacity) evictOldestNonBoundary(ring.events);
   ring.lastAccessMs = now;
 }
 
@@ -1062,6 +1106,48 @@ function pushHistoryCompleted(args: {
   entry.wallclockEndMs = args.wallclockEndMs;
   entry.ok = args.ok;
   ring.lastAccessMs = _historyClock();
+}
+
+/**
+ * ADR-011 A-3: causal projection の anchor 選択ロジック。
+ *
+ * `buildCausedBy` / `buildBasedOn` 共有 — eviction skip だけでは
+ * acceptance (`your_last_action = outer run_macro event`) は達成不可。
+ * ring 先頭に boundary preserved outer event が居て、末尾に最終 step
+ * が居るケースで、既存「ring 末尾 1 件参照」では `lastEvent = 最終 step`
+ * となり causal anchor が orchestration boundary を失う。
+ *
+ * 本 helper は以下の優先順位で anchor entry を選択:
+ *
+ *   (1) ring 内に **完了済 boundary entry** が存在 → 末尾 (LIFO) を採用。
+ *       複数 boundary 同時 (本 plan non-goal、現行 recursion 防止下では
+ *       発生不可) では最新の orchestration が causal continuity を最も
+ *       表現する。`wallclockEndMs` 未確定 (long-running outer 中、step
+ *       後続未発火) の boundary は skip — outer 完了済 + step 後続のみ
+ *       projection 対象 (plan §6 acceptance「compound boundary 完了
+ *       invariant」)。
+ *
+ *   (2) 完了済 boundary 不在 (= 通常の commit のみ、boundary 未注入) →
+ *       既存挙動維持で **ring 末尾 1 件** を採用。step ≤ capacity
+ *       ケースで挙動完全不変 (regression 防止)。
+ *
+ * 呼び出し側 (`buildCausedBy` / `buildBasedOn`) は本 helper の戻り値を
+ * 受領後に既存の `wallclockEndMs === undefined` skip / monotonic timeout
+ * (右端 (b)) / frontier check (右端 (a)) を順に適用する。
+ */
+function selectLastEventForCausalProjection(
+  events: ToolCallEvent[],
+): ToolCallEvent | undefined {
+  if (events.length === 0) return undefined;
+  // (1) 完了済 boundary entry を末尾優先 (LIFO) で探索
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.isCompoundBoundary === true && e.wallclockEndMs !== undefined) {
+      return e;
+    }
+  }
+  // (2) 完了済 boundary 不在 → 末尾 fallback (既存挙動維持)
+  return events[events.length - 1];
 }
 
 // ─── S5 caused_by + based_on + produced_changes projection (sub-plan §2.2-§2.3) ──
@@ -1093,8 +1179,11 @@ export function buildCausedBy(
   const ring = _historyBuffers.get(sessionId);
   if (!ring || ring.events.length === 0) return undefined;
   ring.lastAccessMs = _historyClock();
-  const lastEvent = ring.events[ring.events.length - 1];
-  if (lastEvent.wallclockEndMs === undefined) return undefined; // commit in-flight
+  // ADR-011 A-3: boundary 優先 + 完了済 + 末尾 fallback で causal anchor
+  // を選択 (long macro で outer run_macro が ring 内 preserved されている
+  // 場合は orchestration boundary を anchor、boundary 不在は既存挙動維持)
+  const lastEvent = selectLastEventForCausalProjection(ring.events);
+  if (!lastEvent || lastEvent.wallclockEndMs === undefined) return undefined; // commit in-flight
 
   // Round 2 P2 Opus #5: monotonic 軸 timeout (system clock drift 非依存)
   const timeoutMs = options?.causalWindowTimeoutMs ?? 200;
@@ -1147,8 +1236,13 @@ export function buildBasedOn(
   const ring = _historyBuffers.get(sessionId);
   if (!ring || ring.events.length === 0) return undefined;
   ring.lastAccessMs = _historyClock();
-  const lastEvent = ring.events[ring.events.length - 1];
-  if (lastEvent.wallclockEndMs === undefined) return undefined;
+  // ADR-011 A-3: `buildCausedBy` と同型 anchor 選択 (boundary 優先 + 完了済 +
+  // 末尾 fallback)。`buildCausedBy` / `buildBasedOn` で divergence が起きると
+  // envelope 上で `your_last_action` (= boundary outer event) と
+  // `based_on.events` (= 最終 step event_id) が指し示す trail が別物になり
+  // LLM の causal trail 解釈が壊れるため、helper を共有する (DRY + bit-equal).
+  const lastEvent = selectLastEventForCausalProjection(ring.events);
+  if (!lastEvent || lastEvent.wallclockEndMs === undefined) return undefined;
 
   // Round 2 P2 (Codex line 1073) fix: same causal window guards as
   // `buildCausedBy` so `based_on` / `caused_by` never diverge.
@@ -1378,6 +1472,12 @@ export interface L1ToolCallStartedArgs {
   sessionId: string;
   toolCallId: string;
   leaseToken?: NativeLeaseTokenSummary;
+  /** ADR-011 A-3: compound commit boundary marker propagated to the
+   *  per-session history buffer (does NOT flow into the L1 napi binding —
+   *  L1 ring shape is unchanged). `true` causes the history entry to
+   *  survive `evictOldestNonBoundary` so long macros preserve
+   *  orchestration boundary in causal projection. */
+  isCompoundBoundary?: boolean;
 }
 
 export interface L1ToolCallCompletedArgs {
@@ -1408,7 +1508,7 @@ export interface CommitL1Emitter {
  *  block history record (causal window calculation still works on the
  *  TS-side ring even if L1 ring binding is broken). */
 export const defaultL1Emitter: CommitL1Emitter = {
-  pushStarted({ tool, argsJson, sessionId, toolCallId, leaseToken }) {
+  pushStarted({ tool, argsJson, sessionId, toolCallId, leaseToken, isCompoundBoundary }) {
     let eventIdStarted: bigint | undefined;
     try {
       eventIdStarted = nativeL1?.l1PushToolCallStarted?.(
@@ -1421,7 +1521,9 @@ export const defaultL1Emitter: CommitL1Emitter = {
     } catch {
       // L1 binding unavailable / threw — telemetry best-effort.
     }
-    // S5: history buffer 二重記録 (best-effort fail-safe)
+    // S5: history buffer 二重記録 (best-effort fail-safe)。ADR-011 A-3:
+    // `isCompoundBoundary` を伝播 (L1 napi binding には流れない、history
+    // entry の eviction skip flag としてのみ機能)。
     pushHistoryStarted({
       sessionId,
       toolCallId,
@@ -1431,6 +1533,7 @@ export const defaultL1Emitter: CommitL1Emitter = {
       wallclockStartMs: Date.now(),
       monotonicStartMs: performance.now(),
       leaseToken,
+      isCompoundBoundary,
     });
   },
   pushCompleted({ tool, elapsedMs, ok, errorCode, sessionId, toolCallId }) {
@@ -1506,6 +1609,16 @@ export interface CommitWrapperOptions<TArgs> extends MakeEnvelopeAwareOptions {
    * pins `elapsed_ms` on the ToolCallCompleted event without flake.
    */
   clock?: () => number;
+  /**
+   * ADR-011 A-3: mark commits wrapped by this wrapper as compound
+   * commit boundaries (e.g. `run_macro`). When `true`, the per-session
+   * history entry gets `isCompoundBoundary: true` and is protected
+   * from FIFO eviction so long macros preserve orchestration boundary
+   * in causal projection (`buildCausedBy.your_last_action` /
+   * `buildBasedOn.events` anchor on the outer event instead of the
+   * latest inner step). Default `false` — only `run_macro` opts in.
+   */
+  isCompoundBoundary?: boolean;
 }
 
 /**
@@ -1588,6 +1701,7 @@ export function makeCommitWrapper<TArgs extends Record<string, unknown>>(
       sessionId,
       toolCallId,
       leaseToken,
+      isCompoundBoundary: options.isCompoundBoundary,
     });
 
     // Step 5: invoke handler (raw side effect). Step 6: completion event.
