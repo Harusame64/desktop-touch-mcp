@@ -4,7 +4,13 @@ import { buildDesc } from "./_types.js";
 import type { ToolHandler, ToolResult } from "./_types.js";
 import { checkFailsafe } from "../utils/failsafe.js";
 import { assertKeyComboSafe } from "../utils/key-safety.js";
-import { makeCommitWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
+import {
+  makeCommitWrapper,
+  withEnvelopeIncludeSchema,
+  defaultQuerySessionId,
+} from "./_envelope.js";
+import { isToolDestructive } from "./_tool-flags.js";
+import { macroOutcomeStore } from "../store/macro-outcome-store.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Phase 4: TOOL_REGISTRY mirrors the v1.0.0 public surface — privatized tools
@@ -458,6 +464,33 @@ export const runMacroHandler = async ({
       results.push({ step: i, tool, ok: false, error: String(err) });
       if (stop_on_error) break;
     }
+  }
+
+  // ADR-011 Phase B B-4: record macro outcome (Phase B plan §10 OQ #8 (a)
+  // tool registry flag 採用、`isToolDestructive` で軽量走査、suggest filter
+  // (success>=3 + failure==0 + no destructive) で安全候補のみ後続 query で
+  // expose)。inner step が 1 つでも destructive なら `containsDestructive=true`
+  // で記録、`projectProceduralMemory` 経路で expose 対象から構造的に skip。
+  // sleep 等の pseudo-command は destructive 扱い (registry に entry 無い
+  // → `isToolDestructive` 戻り値 true、fail-safe inversion)。
+  //
+  // **Round 2 P2-1 fix (sentinel session guard)**: A-4 hotfix と同型 regression
+  // 防止。multi-session deploy で `multi:disabled` sentinel が active な場合は
+  // store 汚染 (cross-session leak via global LRU) を避けるため recordOutcome
+  // skip。store は Plan §10 OQ #3 Resolved per design = global cross-session
+  // shared だが、sentinel session の operator action は LLM expose 経路で
+  // sentinel skip 対象なので、record する意味も無い。
+  const sessionIdForRecord = defaultQuerySessionId(undefined);
+  if (sessionIdForRecord !== "multi:disabled") {
+    const stepTools = steps.map((s) => s.tool);
+    const allOk =
+      results.length === steps.length && results.every((r) => r.ok);
+    const containsDestructive = stepTools.some((t) => isToolDestructive(t));
+    macroOutcomeStore.recordOutcome({
+      tools: stepTools,
+      success: allOk,
+      containsDestructive,
+    });
   }
 
   // Build final content

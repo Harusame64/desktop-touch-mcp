@@ -159,6 +159,15 @@ const SUGGESTS: Record<string, string[]> = {
     "Semantic memory surfaces top-K learned UI patterns (rule-based: same windowTitle + 3+ successful commits)",
     "If you want recent commits instead of patterns, use include=[\"episodic:N\"] (rich shape) or [\"working:N\"] (compact)",
   ],
+  // ADR-011 Phase B B-4: Procedural memory K upper bound
+  // (PROCEDURAL_MEMORY_K_MAX = 10) を超える要求の typed reason。
+  // suggest filter (success>=3 + failure==0 + no destructive) で expose
+  // 候補は構造的に少なく、K 大幅増加に意味は薄い。
+  ProceduralMemoryKUpperBoundExceeded: [
+    "Reduce procedural:K — upper bound is PROCEDURAL_MEMORY_K_MAX (= 10)",
+    "Procedural memory surfaces top-K successful repeated workflows (success>=3 + 0 failures + no destructive tools)",
+    "Suggest candidates are limited by design — destructive macro suggest is non-goal in Phase B (consider Phase B follow-up for explicit consent UX)",
+  ],
 };
 
 /**
