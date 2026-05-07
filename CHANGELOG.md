@@ -1,5 +1,92 @@
 # Changelog
 
+## [1.3.0] - 2026-05-07 — LLM の認知メモリ拡張 (CoALA 4 layer + per-call security tier)
+
+`include` オプションに **4 つの新しい memory keyword** が追加され、LLM が
+「直近の自分の操作」「過去の操作履歴の rich shape」「過去成功した UI 操作
+パターン」「過去成功した repeated workflow 候補」を 1 call で受け取れるよう
+になった。**既存呼び出しは完全に互換**: `include` 不在 / `include: ["raw"]` /
+`include: ["envelope"]` / `include: ["causal"]` の既存挙動は不変、新 keyword
+は **opt-in** のみ動作。
+
+LLM 側のユースケース:
+- 「今 macro を実行する前に、自分が直近何をしたかおさらいしたい」 → `include: ["working:5"]`
+- 「失敗 step を fix する前に過去の同型 step の lease/timing 詳細を見たい」 → `include: ["episodic:3"]`
+- 「この window で過去どんな commit pattern が成功してたか hint を欲しい」 → `include: ["semantic:3"]`
+- 「同じ workflow を再実行したい、suggest 出して」 → `include: ["procedural:3"]`
+- 「この call は機密扱い、redact 強制」 → `include: ["semantic:3", "memory_strict"]`
+
+### Added
+
+- **feat(memory): `include: ["working:N"]` で直近 N 件の commit summary (#162).**
+  応答に `current_state.recent_events` (最大 N=50、default 10) を載せる。compact
+  shape (tool_call_id / tool / args 64 char / ok / is_compound)、in-flight commit
+  含む。LLM が「macro 直前に何をしたか」をおさらいする用途。
+
+- **feat(memory): `include: ["episodic:N"]` で過去 commit の rich shape (#164).**
+  応答に `tool_call_history.episodes` (最大 N=100、default 5) を載せる。rich
+  shape (lease_token_summary / event_id_started/completed / elapsed_ms / args 512
+  char) で、Working との差別化 = compact vs rich。completed only (in-flight skip)。
+  LLM が「失敗時 fixup 前に類似 step の timing/lease 詳細を確認」する用途。
+
+- **feat(memory): `include: ["semantic:K"]` で過去成功した UI 操作パターン (#165).**
+  応答に `learned_ui_pattern.patterns` (最大 K=10、default 3) を載せる。**rule-based
+  抽出** = 同 windowTitle で連続 3+ commit 全成功 → 1 pattern (FNV-1a hash で
+  fingerprint)、in-memory LRU 100 patterns + JSON 永続化 (env opt-in、#167)。
+  LLM が「この window で過去に成功した commit 列を hint 化」する用途。
+
+- **feat(memory): `include: ["procedural:K"]` で過去成功した repeated workflow (#168).**
+  応答に `successful_macros.suggestions` (最大 K=10、default 3) を載せる。
+  `run_macro` 完了時に outcome (tool sequence + success/failure + destructive flag)
+  を集計、suggest filter は **strict** (success>=3 + failure==0 + no destructive)。
+  destructive 候補は `mouse_click` / `keyboard` / `terminal` / `clipboard` /
+  `browser_click` / `browser_fill` / `browser_eval` / `workspace_launch` /
+  `notification_show` 等 (entry 不在 = default destructive、query allowlist 11 件
+  のみ explicit safe)。**destructive macro suggest は意図的に non-goal** で
+  構造的に出ない設計、in-memory LRU 100 outcomes + JSON 永続化 (env opt-in)。
+
+- **feat(memory): per-call security tier `include: ["memory_strict|balanced|open"]` (#169).**
+  応答に `security_tier_active` (~50-100B) を載せる。env (operator ceiling) +
+  LLM include axis (per-call request) の二重 axis。3 tier:
+  - `memory_strict`: redact ON + persist 表示 OFF + procedural expose OFF (env 設定無視で max security 強制)
+  - `memory_balanced` (default): env 既定値踏襲
+  - `memory_open`: env ceiling 範囲内で max expose
+  
+  **Security floor 原則**: LLM は env を **open 側へ超えられない**
+  (env=redact_ON は include=open で OFF にできない、env=persist_OFF は
+  include=open で ON にできない)、strict 方向のみ env を超えられる。
+
+- **feat(memory): JSON 永続化 (env opt-in、#167).**
+  `DESKTOP_TOUCH_MEMORY_PERSIST=1` で `%USERPROFILE%\.desktop-touch-mcp\memory\`
+  配下に `ui-patterns.json` (B-3) / `macro-outcomes.json` (B-4) を atomic write
+  (`<file>.tmp` → `fs.rename`)、起動時 load + 5s debounced flush + shutdown 時
+  immediate flush。`DESKTOP_TOUCH_MEMORY_REDACT_TITLES=1` で window_title を
+  hash 化 (irreversible)、tool 名は PII でないため redact 影響なし。
+
+### Compatibility
+
+- **既存呼び出し全件互換** — `include` 不在 / `include: ["raw"]` / `include: ["envelope"]` /
+  `include: ["causal"]` は v1.2.1 と完全同じ応答。
+- **環境変数は default OFF** (`DESKTOP_TOUCH_MEMORY_PERSIST=0` /
+  `DESKTOP_TOUCH_MEMORY_REDACT_TITLES=0`)、env 不在で永続化ゼロ + redact ゼロ。
+
+### Caveats
+
+- B-3/B-4 の永続化先は **cross-LLM-client global** (session_id key 不使用)。
+  user A の使用 pattern が user B の suggest に出る可能性あり (filter 経由 safe
+  pattern のみ expose で軽減)。multi-LLM-client deploy で privacy 重視なら
+  env を OFF のまま運用、または `include: ["memory_strict"]` で per-call
+  redact + procedural suppress。
+- **destructive macro 自動 suggest は Phase B では non-goal**。`run_macro` で
+  destructive tool (mouse_click 等) を含む macro が成功しても `procedural:K`
+  に出てこない。これは fail-safe inversion 設計、将来 explicit consent UX で
+  別 PR 検討。
+- B-3 semantic memory の **同 run 続き re-extraction trade-off**: 1 度 pattern 化
+  された run に同 windowTitle で commit を重ねても、追加 success_count としては
+  カウントされない (cursor 経路の意図された副次効果、polling-heavy client での
+  pattern 認識精度低下)。実害は通常の「macro 完了 → 1 度 query」用途では発生
+  しない。
+
 ## [1.2.1] - 2026-05-03 — オプションで envelope / 因果情報を返せるようになった (互換維持)
 
 全 28 tool に **オプション引数 `include`** が追加され、応答に構造化メタデータ (envelope) や直前操作との因果関係 (causal) を載せられるようになった。**`include` を渡さない既存呼び出しは従来とまったく同じ応答** が返るため、利用者の既存設定・既存マクロ・既存 tool 呼び出しには互換影響なし。LLM 側で「この情報はいつ取得したか」「直前の自分の操作との関係はあるか」を 1 call で判定したい場合の opt-in 機能。
