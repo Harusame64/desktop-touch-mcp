@@ -279,6 +279,8 @@ L2 (timely + DD) と L1 capture worker は **dedicated thread**。Node.js libuv 
 | envelope assembly p99 | < 5ms (include 最大時) |
 | working memory N 上限 | default 50 (調整可) |
 | episodic memory N 上限 | default 100 (調整可) |
+| semantic memory K 上限 | default 10 (Phase B B-3 land、Phase B plan §6.3) |
+| semantic pattern store capacity | default 100 (LRU、Phase B plan §6.2) |
 
 ### 5.5 失敗モード
 

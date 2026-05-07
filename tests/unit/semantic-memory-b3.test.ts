@@ -303,7 +303,8 @@ describe("B-3-12: K=0 で patterns 空配列 (skip ではない、valid request)
       failure_count: 0,
       example_actions: ["keyboard"],
     });
-    // ring を作るために 1 entry seed (projectSemanticMemory が ring 不在で early return しないように)
+    // ring を作るために 1 entry seed (projectSemanticMemory は ring 不在で
+    // `{patterns: []}` 即返、ring ありで store top-K を読む)
     defaultL1Emitter.pushStarted({
       tool: "test",
       argsJson: "{}",
@@ -390,8 +391,8 @@ describe("B-3-14: makeQueryWrapper 経由 envelope.learned_ui_pattern inject", (
 
 // ── B-3-15: cross-session ────────────────────────────────────────────────────
 
-describe("B-3-15: cross-session sessionA / sessionB 並走 (pattern_id は windowTitle ベース、session 跨ぎ dedupe)", () => {
-  it("session A + B 同 windowTitle で 3+ 成功 → store の同 pattern を共有 (success_count merge)", () => {
+describe("B-3-15: cross-session sessionA / sessionB 並走 (pattern_id は windowTitle ベース、session 跨ぎ dedupe — intentional、§10 OQ #10 security tier framework follow-up で per-session-key option 検討)", () => {
+  it("session A + B 同 windowTitle で 3+ 成功 → store の同 pattern を共有 (success_count merge — intentional cross-session merge、redact env で window_title plaintext leak は P1-2 fix で防御)", () => {
     // session A: Notepad 3 件
     const eventsA = [
       makeEvent("a:1", "focus_window", "Notepad"),
@@ -436,5 +437,166 @@ describe("B-3-16: parseMemoryPersistMode / parseMemoryRedactMode pure parser", (
     ["", false],
   ])("parseMemoryRedactMode(%j) === %j", (input, expected) => {
     expect(parseMemoryRedactMode(input)).toBe(expected);
+  });
+});
+
+// ── B-3-17: cursor advances on wrapper query (P1-1 regression) ──────────────
+
+describe("B-3-17: wrapper の semantic extraction cursor advance (Round 2 P1-1 fix regression)", () => {
+  it("同 ring を 2 回 query → 同 events の re-extract で success_count 累積しない", async () => {
+    const sid = "sessP1";
+    // 3 件 push (Notepad ok=true 連続) → 1 query で 1 pattern 抽出される
+    for (let i = 1; i <= 3; i++) {
+      defaultL1Emitter.pushStarted({
+        tool: i === 1 ? "focus_window" : "keyboard",
+        argsJson: `{"i":${i}}`,
+        sessionId: sid,
+        toolCallId: `${sid}:${i}`,
+        windowTitle: "Notepad",
+      });
+      defaultL1Emitter.pushCompleted({
+        tool: i === 1 ? "focus_window" : "keyboard",
+        elapsedMs: 1,
+        ok: true,
+        sessionId: sid,
+        toolCallId: `${sid}:${i}`,
+      });
+    }
+    const handler = async () => ({
+      content: [{ type: "text" as const, text: '{"ok":true}' }],
+    });
+    const wrapped = makeQueryWrapper(handler, "test_query", {
+      causedByProjector: async () => undefined,
+      getSessionId: () => sid,
+    });
+    // Query 1: 3 events → 1 pattern (success_count = 3)
+    await wrapped({ include: ["semantic:3"] } as Record<string, unknown>);
+    // Query 2: cursor が末尾に進んでいるので新規 events ゼロ → 再 extract せず
+    await wrapped({ include: ["semantic:3"] } as Record<string, unknown>);
+    // Query 3: 同上
+    const result3 = await wrapped({ include: ["semantic:3"] } as Record<string, unknown>);
+    const block3 = result3.content?.[0];
+    const parsed3 = JSON.parse((block3 as { type: "text"; text: string }).text);
+    // success_rate は 1.0 (success_count / (success_count + failure_count) = 3/3)
+    // 累積 bug があれば success_count は 3+3+3 = 9 になるが、cursor で構造的解消
+    expect(parsed3?.learned_ui_pattern?.patterns?.[0]?.success_rate).toBe(1);
+    // store top-1 で success_count = 3 を直接 pin
+    const top = uiPatternStore.getTopK(1);
+    expect(top[0]?.success_count).toBe(3);
+  });
+});
+
+// ── B-3-18: env redact (P1-2 regression) ────────────────────────────────────
+
+describe("B-3-18: DESKTOP_TOUCH_MEMORY_REDACT_TITLES=1 で window_title hash redact (Round 2 P1-2 fix regression)", () => {
+  it("env on で projection 出力の window_title が plaintext でなく hash 表記になる", async () => {
+    const sid = "sessP2";
+    process.env.DESKTOP_TOUCH_MEMORY_REDACT_TITLES = "1";
+    try {
+      for (let i = 1; i <= 3; i++) {
+        defaultL1Emitter.pushStarted({
+          tool: i === 1 ? "focus_window" : "keyboard",
+          argsJson: `{"i":${i}}`,
+          sessionId: sid,
+          toolCallId: `${sid}:${i}`,
+          windowTitle: "Sensitive Document.txt - Notepad",
+        });
+        defaultL1Emitter.pushCompleted({
+          tool: i === 1 ? "focus_window" : "keyboard",
+          elapsedMs: 1,
+          ok: true,
+          sessionId: sid,
+          toolCallId: `${sid}:${i}`,
+        });
+      }
+      const handler = async () => ({
+        content: [{ type: "text" as const, text: '{"ok":true}' }],
+      });
+      const wrapped = makeQueryWrapper(handler, "test_query", {
+        causedByProjector: async () => undefined,
+        getSessionId: () => sid,
+      });
+      const result = await wrapped({ include: ["semantic:3"] } as Record<string, unknown>);
+      const block = result.content?.[0];
+      const parsed = JSON.parse((block as { type: "text"; text: string }).text);
+      const wt = parsed?.learned_ui_pattern?.patterns?.[0]?.window_title;
+      // plaintext を含まない、`redacted:` プレフィックス + hex8 hash
+      expect(wt).toMatch(/^redacted:[0-9a-f]{8}$/);
+      expect(wt).not.toContain("Sensitive");
+      expect(wt).not.toContain("Notepad");
+    } finally {
+      delete process.env.DESKTOP_TOUCH_MEMORY_REDACT_TITLES;
+    }
+  });
+
+  it("env off で projection 出力の window_title は plaintext のまま (default)", async () => {
+    const sid = "sessP2off";
+    delete process.env.DESKTOP_TOUCH_MEMORY_REDACT_TITLES;
+    for (let i = 1; i <= 3; i++) {
+      defaultL1Emitter.pushStarted({
+        tool: i === 1 ? "focus_window" : "keyboard",
+        argsJson: `{"i":${i}}`,
+        sessionId: sid,
+        toolCallId: `${sid}:${i}`,
+        windowTitle: "Notepad",
+      });
+      defaultL1Emitter.pushCompleted({
+        tool: i === 1 ? "focus_window" : "keyboard",
+        elapsedMs: 1,
+        ok: true,
+        sessionId: sid,
+        toolCallId: `${sid}:${i}`,
+      });
+    }
+    const handler = async () => ({
+      content: [{ type: "text" as const, text: '{"ok":true}' }],
+    });
+    const wrapped = makeQueryWrapper(handler, "test_query", {
+      causedByProjector: async () => undefined,
+      getSessionId: () => sid,
+    });
+    const result = await wrapped({ include: ["semantic:3"] } as Record<string, unknown>);
+    const block = result.content?.[0];
+    const parsed = JSON.parse((block as { type: "text"; text: string }).text);
+    expect(parsed?.learned_ui_pattern?.patterns?.[0]?.window_title).toBe("Notepad");
+  });
+});
+
+// ── B-3-19: parseIncludeMemoryN edge for semantic axis (Round 2 P2-1 fix) ───
+
+describe("B-3-19: include=[\"semantic:<edge>\"] empty / negative / non-numeric K", () => {
+  it.each<[string, number | undefined]>([
+    ["semantic:", SEMANTIC_MEMORY_DEFAULT_K], // empty K → default
+    ["semantic:abc", SEMANTIC_MEMORY_DEFAULT_K], // non-numeric → default
+    ["semantic:-1", SEMANTIC_MEMORY_DEFAULT_K], // negative → default (Number is parsed but parseIncludeMemoryN clamps)
+  ])("parseIncludeMemoryN([%j], 'semantic') 戻り値が default fallback", (token, expected) => {
+    const k = parseIncludeMemoryN([token], "semantic", SEMANTIC_MEMORY_DEFAULT_K);
+    expect(k).toBe(expected);
+  });
+});
+
+// ── B-3-20: pattern_id collision avoidance for long titles (Round 2 P2-4 fix) ─
+
+describe("B-3-20: 長 path 同 prefix で異なる windowTitle が誤 merge しない (Round 2 P2-4 fix regression)", () => {
+  it("先頭 32 char 一致の長 path 2 件 + 同 tool seq → pattern_id 別 → 別 entry", () => {
+    // 先頭 32 char 一致の 2 件 windowTitle
+    const wt1 = "C:\\Users\\harus\\Documents\\very-long-filename-1.txt - Notepad";
+    const wt2 = "C:\\Users\\harus\\Documents\\very-long-filename-2.txt - Notepad";
+    const events1 = [
+      makeEvent("a:1", "focus_window", wt1),
+      makeEvent("a:2", "keyboard", wt1),
+      makeEvent("a:3", "keyboard", wt1),
+    ];
+    const events2 = [
+      makeEvent("b:1", "focus_window", wt2),
+      makeEvent("b:2", "keyboard", wt2),
+      makeEvent("b:3", "keyboard", wt2),
+    ];
+    const r1 = extractSemanticPatterns(events1);
+    const r2 = extractSemanticPatterns(events2);
+    expect(r1).toHaveLength(1);
+    expect(r2).toHaveLength(1);
+    // FNV-1a hash で full title を比較するので、別 file の title は別 fingerprint
+    expect(r1[0].pattern_id).not.toBe(r2[0].pattern_id);
   });
 });

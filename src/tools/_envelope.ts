@@ -117,7 +117,7 @@ import {
   _resetSingleSessionPinForTest,
 } from "./_session-context.js";
 import { getSuggestsForCode } from "./_errors.js";
-import { uiPatternStore } from "../store/ui-pattern-store.js";
+import { uiPatternStore, parseMemoryRedactMode } from "../store/ui-pattern-store.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1078,9 +1078,22 @@ const HISTORY_BUFFER_TTL_MS = 24 * 3600 * 1000;
 
 const _historyBuffers = new Map<string, ToolCallEventRingBuffer>();
 
+/**
+ * ADR-011 Phase B B-3 Round 2 P1-1 fix: per-session "last extracted toolCallId"
+ * cursor for Semantic memory pattern extraction。同 events を query ごとに
+ * 再 extract する pre-fix の bug (= `recordPattern` の `success_count +=`
+ * で無限累積) を、cursor 越え events のみ slice して防ぐ。
+ *
+ * cursor 不在 / cursor event が ring eviction で消えた場合は best-effort
+ * で ring start から scan (再 emit risk あるが fallback として許容、ring
+ * capacity 50 + cursor advance 頻度から実害は限定的)。
+ */
+const _semanticExtractionCursors = new Map<string, string>();
+
 /** @internal Test-only — clear per-session history buffers between cases. */
 export function _resetHistoryBuffersForTest(): void {
   _historyBuffers.clear();
+  _semanticExtractionCursors.clear();
 }
 
 /** @internal Test-only — inject a fully-formed history entry directly,
@@ -1766,12 +1779,31 @@ export interface UiPatternRecord {
 }
 
 /**
- * Compute pattern fingerprint for dedupe (window_title + tool sequence
- * signature)。簡易 hash で衝突許容 (LRU 100 規模では確率十分低)。
+ * 32-bit FNV-1a hash (collision-tolerant deterministic、no crypto import 不要)。
+ * windowTitle fingerprint / redact 両用、LRU 100 規模では衝突確率十分低
+ * (1 - exp(-100²/2³³) ≈ 1.16e-6)。
  *
- * 形式: `${window_title.slice(0, 32)}::${tools.slice(0, 8).join("→")}`
- *   - window_title 先頭 32 char で windowTitle drift (e.g. tab number 等)
- *     を緩和
+ * Round 2 P2-4 fix: pre-fix の `windowTitle.slice(0, 32)` は長 path window
+ * (e.g. `C:\Users\.../very-long-filename-N.txt - Notepad`) で先頭 32 char
+ * 一致による誤 merge risk があったため、full string を hash 化して衝突空間を
+ * 32-bit に拡大 (`step_count` 上書き隠蔽 risk 構造的解消)。
+ */
+function fnv1aHash16(input: string): string {
+  let hash = 0x811c9dc5; // FNV offset basis (32-bit)
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = (hash * 0x01000193) >>> 0; // FNV prime: 16777619
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+/**
+ * Compute pattern fingerprint for dedupe (window_title hash + tool sequence
+ * signature)。
+ *
+ * 形式: `${fnv1aHash16(windowTitle)}::${tools.slice(0, 8).join("→")}`
+ *   - windowTitle は full string FNV-1a hash → 長 path window 先頭一致による
+ *     誤 merge を構造的に解消 (Round 2 P2-4 fix)
  *   - tool sequence は最大 8 commit まで signature に使用 (それ以上は
  *     pattern boundary が異なると判定)
  */
@@ -1779,9 +1811,9 @@ function computePatternFingerprint(
   windowTitle: string,
   tools: string[],
 ): string {
-  const wtPrefix = windowTitle.slice(0, 32);
+  const wtHash = fnv1aHash16(windowTitle);
   const toolSeq = tools.slice(0, 8).join("→");
-  return `${wtPrefix}::${toolSeq}`;
+  return `${wtHash}::${toolSeq}`;
 }
 
 /**
@@ -1883,6 +1915,14 @@ export function projectSemanticMemory(
   sessionId: string,
   k: number,
   store: { getTopK: (n: number) => UiPatternRecord[]; capacity: number },
+  options?: {
+    /** Round 2 P1-2 fix: env `DESKTOP_TOUCH_MEMORY_REDACT_TITLES=1` 連動。
+     *  true 時 window_title を FNV-1a hash で置換 + pattern_id の
+     *  windowTitle 部分も hash 化 (= projection 出力上の plaintext leak
+     *  ゼロ化)。store 自体は raw を保持し、env を session 中に flip しても
+     *  挙動が即時切り替わる semantics。 */
+    redactWindowTitles?: boolean;
+  },
 ): SemanticMemoryProjection | undefined {
   if (sessionId === "multi:disabled") return undefined;
   const ring = _historyBuffers.get(sessionId);
@@ -1893,17 +1933,37 @@ export function projectSemanticMemory(
   const cappedK = Math.min(k, store.capacity);
   const records = store.getTopK(cappedK);
 
-  const patterns: UiPatternSummary[] = records.map((r) => ({
-    pattern_id: r.pattern_id,
-    window_title: r.window_title,
-    step_count: r.step_count,
-    last_seen_at_ms: r.last_seen_at_ms,
-    success_rate:
-      r.success_count + r.failure_count === 0
-        ? 0
-        : r.success_count / (r.success_count + r.failure_count),
-    example_actions: r.example_actions,
-  }));
+  const redact = options?.redactWindowTitles === true;
+  const patterns: UiPatternSummary[] = records.map((r) => {
+    if (redact) {
+      const titleHash = fnv1aHash16(r.window_title);
+      // pattern_id の `<wt-hash>::<tool-seq>` の wt-hash 側はもともと
+      // hash (computePatternFingerprint)、redact mode では window_title 側を
+      // hash 表現で揃えて出力する (LLM expose で plaintext 漏洩ゼロ)。
+      return {
+        pattern_id: r.pattern_id,
+        window_title: `redacted:${titleHash}`,
+        step_count: r.step_count,
+        last_seen_at_ms: r.last_seen_at_ms,
+        success_rate:
+          r.success_count + r.failure_count === 0
+            ? 0
+            : r.success_count / (r.success_count + r.failure_count),
+        example_actions: r.example_actions,
+      };
+    }
+    return {
+      pattern_id: r.pattern_id,
+      window_title: r.window_title,
+      step_count: r.step_count,
+      last_seen_at_ms: r.last_seen_at_ms,
+      success_rate:
+        r.success_count + r.failure_count === 0
+          ? 0
+          : r.success_count / (r.success_count + r.failure_count),
+      example_actions: r.example_actions,
+    };
+  });
 
   // _truncation 判定 (B-1/B-2 同型 logic)
   let truncation: TruncationNotation | undefined;
@@ -2754,23 +2814,56 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
       }
       // ADR-011 Phase B B-3: Semantic memory projection (rule-based 抽出 +
       // pattern store top-K、sentinel skip 一貫性 + cross-session isolation)。
-      // **on-demand pattern 抽出**: query 時に history ring を scan して新規
-      // pattern を pattern store に merge、その後 top-K read。sentinel session
-      // では projectSemanticMemory が undefined return + pattern store update
-      // も skip する (sentinel ring 不在で extractSemanticPatterns 結果空)。
+      // **on-demand pattern 抽出 (Round 2 P1-1 fix)**: query 時に cursor 越え
+      // 新規 events のみ scan し、`extractSemanticPatterns` の戻り値を pattern
+      // store に merge。pre-fix では同 events を毎 query 再 extract → success_count
+      // 無限累積 → API contract regression、cursor で構造的に解消。
+      // sentinel session では projectSemanticMemory が undefined return + pattern
+      // store update も skip (`isSentinelSession === true` ガード)。
       if (includeSemanticOptIn && sessionId !== "multi:disabled") {
         const ring = _historyBuffers.get(sessionId);
         if (ring && ring.events.length > 0) {
-          // ring 末尾を scan、新規 pattern を抽出 + store に merge
-          const patterns = extractSemanticPatterns(ring.events);
-          for (const p of patterns) {
-            uiPatternStore.recordPattern(p, /* success */ true);
+          // cursor 越え events だけを抽出対象に絞る (P1-1 fix)
+          const cursorTcId = _semanticExtractionCursors.get(sessionId);
+          let startIndex = 0;
+          if (cursorTcId !== undefined) {
+            const idx = ring.events.findIndex(
+              (e) => e.toolCallId === cursorTcId,
+            );
+            if (idx >= 0) {
+              startIndex = idx + 1;
+            }
+            // idx < 0: cursor event が ring eviction で消えた → fallback で
+            // ring start から scan (再 emit risk 容認、ring capacity 50 で
+            // 実害限定)
+          }
+          const newEvents = ring.events.slice(startIndex);
+          if (newEvents.length > 0) {
+            const patterns = extractSemanticPatterns(newEvents);
+            for (const p of patterns) {
+              uiPatternStore.recordPattern(p, /* success */ true);
+            }
+            // cursor を ring 末尾の toolCallId に進める (次 query 以降は
+            // この event 以降だけを extract 対象に)
+            _semanticExtractionCursors.set(
+              sessionId,
+              ring.events[ring.events.length - 1].toolCallId,
+            );
           }
         }
+        // Round 2 P1-2 fix: env DESKTOP_TOUCH_MEMORY_REDACT_TITLES=1 で
+        // window_title + pattern_id を hash redact (privacy leak 防止、
+        // Phase B plan §6.3 acceptance「env で redact」と整合)。env-only
+        // 制御 = operator ceiling、`include` axis 経由の per-call floor は
+        // §10 OQ #10 follow-up で導入。
+        const redactTitles = parseMemoryRedactMode(
+          process.env.DESKTOP_TOUCH_MEMORY_REDACT_TITLES,
+        );
         learnedUiPattern = projectSemanticMemory(
           sessionId,
           includeSemanticK!,
           uiPatternStore,
+          { redactWindowTitles: redactTitles },
         );
       }
     }
