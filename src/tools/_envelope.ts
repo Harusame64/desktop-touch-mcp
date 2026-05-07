@@ -106,8 +106,9 @@
 import { z, type ZodArray, type ZodOptional, type ZodString, type ZodTypeAny } from "zod";
 
 import type { LeaseValidationResult } from "../engine/world-graph/types.js";
-import { nativeL1 } from "../engine/native-engine.js";
+import { nativeL1, nativeViewFocus } from "../engine/native-engine.js";
 import type { NativeLeaseTokenSummary } from "../engine/native-types.js";
+import { enumMonitors } from "../engine/win32.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1204,6 +1205,165 @@ export function buildProducedChanges(viewSnapshot: ViewSnapshot): string[] {
   return changes;
 }
 
+// ─── ADR-011 A-1: Default query-axis sessionId resolver ─────────────────────
+
+/**
+ * MCP transport session id stub (ADR-011 A-1 stub, A-2 で実装置換).
+ *
+ * Mirrors the existing `desktop-state.ts:getMcpTransportSessionId` stub
+ * (line 673) used by `desktopStateGetSessionId` (line 704). This duplicate stub
+ * exists so A-1 can wire 8 query tools without forcing them to import
+ * from `desktop-state.ts` (which would create a circular dependency
+ * with `workspace.ts` — `desktop-state.ts` already imports
+ * `CHROMIUM_TITLE_RE` from `workspace.js`).
+ *
+ * **A-2 will unify both stubs** into a single AsyncLocalStorage-backed
+ * resolver (plan §4.2.2 option (b)). The 2-stub state during A-1 → A-2
+ * transit is intentional and tracked in ADR-011 plan §4.2.4.
+ */
+const _defaultQueryTransportSessionId = (): string | undefined => undefined;
+
+/** Mirrors `desktop-state.ts:_isSingleSessionPrototype` (line 671) — see
+ *  the doc comment on `_defaultQueryTransportSessionId` above for why a
+ *  duplicate stub exists during A-1 → A-2 transit. */
+let _defaultQuerySingleSessionPrototype: () => boolean = () => true;
+
+/** @internal Test-only — pin the single-session prototype gate for the
+ *  `multi:disabled` sentinel branch coverage (mirrors
+ *  `desktop-state.ts:_setSingleSessionPrototypeForTest`). */
+export function _setDefaultQuerySingleSessionForTest(value: boolean): void {
+  _defaultQuerySingleSessionPrototype = () => value;
+}
+
+/** @internal Test-only — restore the production stub. */
+export function _resetDefaultQuerySingleSessionForTest(): void {
+  _defaultQuerySingleSessionPrototype = () => true;
+}
+
+/**
+ * Default sessionId resolver for query-axis tools wired in ADR-011 A-1
+ * (browser_overview / browser_locate / browser_search / screenshot /
+ * server_status / wait_until / workspace_snapshot / desktop_discover).
+ *
+ * Behaviour mirrors `desktop-state.ts:desktopStateGetSessionId` bit-for-bit:
+ *   - `transportSessionId` defined → return it
+ *   - prototype gate → `"multi:disabled"` sentinel (skips caused_by injection)
+ *   - default → `"default"` (single-LLM-client prototype fallback)
+ *
+ * `desktop_state` retains its own `desktopStateGetSessionId` for backward
+ * compat — A-2 will unify both via AsyncLocalStorage (plan §4.2.4).
+ */
+export const defaultQuerySessionId = (_args: unknown): string => {
+  const transportSessionId = _defaultQueryTransportSessionId();
+  if (transportSessionId !== undefined) return transportSessionId;
+  if (!_defaultQuerySingleSessionPrototype()) {
+    return "multi:disabled";
+  }
+  return "default";
+};
+
+// ─── ADR-011 A-1: Generic query-axis causedByProjector ───────────────────────
+
+/**
+ * Shared causedByProjector for query-axis tools (ADR-011 Phase A A-1).
+ *
+ * Extracted from `desktop-state.ts:desktopStateCausedByProjector` so all
+ * 9 query tools (desktop_state + 8 wired in A-1) share the same 4-axis
+ * `ViewSnapshot` construction (focus / dirtyRectsByMonitor / latestEventId
+ * / queryWallclockMs). Tool-specific args are not consumed — the snapshot
+ * is purely L3-view-derived and uniform across query tools.
+ *
+ * Behaviour mirrors the original `desktopStateCausedByProjector` bit-for-bit
+ * (ADR-011 plan §4.1.5 bit-equal sync sweep):
+ *   - sentinel `multi:disabled` → `undefined` (skip caused_by + based_on)
+ *   - `nativeL1` unavailable → `{ forceDegraded: true }` (Round 3 P2 fix
+ *     `confidence: degraded` for "causal asked but binding null")
+ *   - focus / dirty rect view fetch failures swallowed silently (best-effort
+ *     produced_changes population)
+ *   - per-monitor dirty rect enumeration with `enumMonitors` fallback to
+ *     `[0]` (PR #102 同型 monitor_index 維持)
+ *   - `latestEventId` from `l1GetCaptureStats().eventIdHighWater` (existing
+ *     binding reuse, OQ #5 resolve)
+ *
+ * `desktop-state.ts:desktopStateCausedByProjector` is a delegating fn to
+ * this projector after A-1 land — backward compat maintained, future
+ * tool-specific enrichment (OQ #4 in plan §8) can layer atop this base.
+ */
+export const genericQueryCausedByProjector = async (
+  _args: unknown,
+  sessionId: string,
+): Promise<{ causedBy?: CausedByShape; basedOn?: BasedOnShape; forceDegraded?: boolean } | undefined> => {
+  // Sentinel guard: multi-session detect → skip caused_by/based_on entirely
+  if (sessionId === "multi:disabled") return undefined;
+  // `nativeL1` unavailable (non-Windows dev / pre-P5a binary) → degraded
+  if (!nativeL1 || typeof nativeL1.l1GetCaptureStats !== "function") {
+    return { forceDegraded: true };
+  }
+
+  // L3 latest_focus view → focus delta projection input
+  let focus: { hwnd: bigint | null; elementName: string | null } | null = null;
+  try {
+    if (nativeViewFocus && typeof nativeViewFocus.viewGetFocused === "function") {
+      const f = nativeViewFocus.viewGetFocused();
+      if (f) {
+        focus = { hwnd: null, elementName: f.name ?? null };
+      }
+    }
+  } catch {
+    // view unavailable — caused_by reflects "no focus observed" via produced_changes
+  }
+
+  // L3 dirty_rects_aggregate per-monitor count (monitor_index 維持、PR #102 同型)
+  const dirtyRectsByMonitor = new Map<number, number>();
+  try {
+    if (nativeViewFocus && typeof nativeViewFocus.viewGetDirtyRects === "function") {
+      let monitorIndices: number[] = [0];
+      try {
+        const monitors = enumMonitors();
+        if (monitors && monitors.length > 0) {
+          monitorIndices = monitors.map((_, i) => i);
+        }
+      } catch {
+        // enumMonitors failed — keep [0] fallback
+      }
+      for (const monitorIdx of monitorIndices) {
+        try {
+          const rects = nativeViewFocus.viewGetDirtyRects(monitorIdx);
+          if (rects && rects.latest && rects.latest.count !== undefined) {
+            dirtyRectsByMonitor.set(monitorIdx, Number(rects.latest.count));
+          }
+        } catch {
+          // per-monitor lookup failed — skip this monitor
+        }
+      }
+    }
+  } catch {
+    // dirty rect view unavailable — produced_changes lacks dirty_rects entries
+  }
+
+  // L1 ring 末尾 event_id (OQ #5 既存 binding reuse、新規不要)
+  let latestEventId: bigint | undefined;
+  try {
+    if (typeof nativeL1.l1GetCaptureStats === "function") {
+      const stats = nativeL1.l1GetCaptureStats();
+      latestEventId = stats.eventIdHighWater;
+    }
+  } catch {
+    // L1 stats unavailable — frontier check skipped, monotonic timeout fallback
+  }
+
+  const snapshot: ViewSnapshot = {
+    focus,
+    dirtyRectsByMonitor,
+    latestEventId,
+    queryWallclockMs: Date.now(),
+  };
+  return {
+    causedBy: buildCausedBy(sessionId, snapshot),
+    basedOn: buildBasedOn(sessionId, snapshot),
+  };
+};
+
 // ─── L1 push helpers (commit-axis ToolCall events) ───────────────────────────
 //
 // The wrapper isolates the napi calls so tests can inject a fake L1
@@ -1574,6 +1734,36 @@ export interface QueryWrapperOptions extends MakeEnvelopeAwareOptions {
   getSessionId?: (args: unknown) => string;
 }
 
+/**
+ * @internal Test-only — wire pin registry for `__getQueryWrapperOptionsForTest`.
+ *
+ * Records the resolved `QueryWrapperOptions` used by each `makeQueryWrapper`
+ * call so unit tests can assert that 8 query tools wired in ADR-011 A-1
+ * actually carry `causedByProjector + getSessionId` references (Round 1
+ * Codex P2 反映: `typeof handler === "function"` だけでは wire 漏れを
+ * 検出できないため、wrapper の internal config を WeakMap で保持して
+ * test 側で identity を pin する observable behavior path)。
+ *
+ * Production overhead: WeakMap insert per registration (1 回限り、N=28 tool)。
+ * GC: handler が解放されると entry も自動 GC、leak なし。
+ */
+const _queryWrapperOptionsRegistry = new WeakMap<
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (...args: any[]) => Promise<McpToolResult>,
+  QueryWrapperOptions
+>();
+
+/** @internal Test-only — inspect resolved options of a registered query
+ *  wrapper (Round 1 Codex P2 wire pin observable behavior). Returns
+ *  `undefined` when the handler was not produced by `makeQueryWrapper`
+ *  (e.g. raw handler) or when the test seam was reset. */
+export function __getQueryWrapperOptionsForTest<TArgs extends Record<string, unknown>>(
+  wrapped: (rawArgs: TArgs & { include?: string[] }) => Promise<McpToolResult>,
+): QueryWrapperOptions | undefined {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return _queryWrapperOptionsRegistry.get(wrapped as any);
+}
+
 export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
   handler: (args: TArgs) => Promise<McpToolResult>,
   toolName: string,
@@ -1585,7 +1775,10 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
   // `desktop_discover` from S4) hit this branch with no behaviour
   // change — sub-plan §4.5 既存 caller 破壊なし sweep。
   if (options.causedByProjector === undefined && options.getSessionId === undefined) {
-    return makeEnvelopeAware(handler, toolName, options);
+    const wrapped = makeEnvelopeAware(handler, toolName, options);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    _queryWrapperOptionsRegistry.set(wrapped as any, options);
+    return wrapped;
   }
 
   // S5 path: include peek + getSessionId resolve + causedByProjector
@@ -1598,7 +1791,7 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
   const getSessionId = options.getSessionId ?? (() => "default");
   const causedByProjector = options.causedByProjector;
 
-  return async (rawArgs) => {
+  const s5Wrapper = async (rawArgs: TArgs & { include?: string[] }): Promise<McpToolResult> => {
     const { include, ...handlerArgs } = rawArgs as { include?: string[] } & TArgs;
     const includeCausal = include?.includes("causal") === true;
     const includeRaw = include?.includes("raw") === true;
@@ -1670,7 +1863,13 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
       content: [{ ...block, text: JSON.stringify(final) }, ...result.content.slice(1)],
     };
   };
+  // S5 path wrapper も registry に記録 (wire pin test seam、本 file 上部の
+  // `_queryWrapperOptionsRegistry` doc 参照)。
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  _queryWrapperOptionsRegistry.set(s5Wrapper as any, options);
+  return s5Wrapper;
 }
+
 
 // ─── Internal helpers (commit wrapper completion event details) ──────────────
 

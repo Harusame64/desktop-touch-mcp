@@ -13,7 +13,7 @@ import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
 import { pollUntil } from "../engine/poll.js";
 import { withRichNarration } from "./_narration.js";
-import { makeCommitWrapper, makeQueryWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
+import { makeCommitWrapper, makeQueryWrapper, withEnvelopeIncludeSchema, genericQueryCausedByProjector, defaultQuerySessionId } from "./_envelope.js";
 
 /** Chromium-based browser windows — UIA traversal is prohibitively slow on these */
 export const CHROMIUM_TITLE_RE = /- (?:Google Chrome|Microsoft Edge|Brave|Opera|Vivaldi|Arc|Chromium)$/;
@@ -301,6 +301,10 @@ export const workspaceSnapshotRegistrationSchema = withEnvelopeIncludeSchema(wor
 export const workspaceSnapshotRegistrationHandler = makeQueryWrapper(
   workspaceSnapshotHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
   "workspace_snapshot",
+  {
+    causedByProjector: genericQueryCausedByProjector,
+    getSessionId: defaultQuerySessionId,
+  },
 );
 
 export function registerWorkspaceTools(server: McpServer): void {

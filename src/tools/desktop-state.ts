@@ -16,7 +16,7 @@ import { listRecentTargetKeys } from "../engine/perception/target-timeline.js";
 import { evaluateInTab } from "../engine/cdp-bridge.js";
 import { getCdpPort } from "../utils/desktop-config.js";
 import { getFocusedAndPointInfo } from "../engine/uia-bridge.js";
-import { nativeViewFocus, nativeL1 } from "../engine/native-engine.js";
+import { nativeViewFocus } from "../engine/native-engine.js";
 import type {
   NativeFocusedElement,
   NativeUiaFocusInfo,
@@ -27,11 +27,9 @@ import type { AttentionState } from "../engine/perception/types.js";
 import {
   makeQueryWrapper,
   withEnvelopeIncludeSchema,
-  buildCausedBy,
-  buildBasedOn,
+  genericQueryCausedByProjector,
   type CausedByShape,
   type BasedOnShape,
-  type ViewSnapshot,
 } from "./_envelope.js";
 
 const _defaultPort = getCdpPort();
@@ -634,101 +632,23 @@ export const desktopStateRegistrationSchema = withEnvelopeIncludeSchema(desktopS
  *     resolve、新 binding 不要)
  *   - queryWallclockMs = `Date.now()` at projector invocation
  */
+/**
+ * `desktop_state` causedByProjector — delegating fn to
+ * `genericQueryCausedByProjector` (ADR-011 A-1 land 後の backward compat
+ * 維持、`_envelope.ts` extract に伴い 4-axis ViewSnapshot 構築ロジック
+ * を共通 projector に集約)。
+ *
+ * Tool-specific enrichment (e.g. desktop_state 固有の focus/cursor 詳細
+ * を causal projection に追加する case) が将来必要になったら、本 fn
+ * 内で `genericQueryCausedByProjector` の結果を post-process する形で
+ * 拡張可能 (ADR-011 plan §8 OQ #4 carry-over)。現時点では generic と
+ * 完全同一挙動 (bit-equal sync sweep、plan §4.1.5)。
+ */
 const desktopStateCausedByProjector = async (
-  _args: unknown,
+  args: unknown,
   sessionId: string,
 ): Promise<{ causedBy?: CausedByShape; basedOn?: BasedOnShape; forceDegraded?: boolean } | undefined> => {
-  // Round 3 P1 (Opus + Codex 重複) sentinel guard: multi-session detect → skip
-  if (sessionId === "multi:disabled") return undefined;
-  // Round 2 P2 (Opus #2) fix: when `nativeL1` is unavailable (non-Windows
-  // dev / pre-P5a binary), `latestEventId` would be `undefined` and the
-  // causal window's frontier check (a) would silently skip — falling
-  // back to the monotonic timeout (b) alone.
-  //
-  // Round 3 P2 fix (Codex line 655): also surface this via
-  // `confidence: degraded` so LLM clients can distinguish "causal
-  // requested but unavailable" from "causal not requested". Without
-  // forceDegraded, an `include=["causal"]` request when nativeL1 is
-  // null would return a fresh-confidence envelope with neither
-  // caused_by nor based_on, indistinguishable from a healthy
-  // raw-shape response that just happens to have no commits in the
-  // causal window — masking the missing telemetry binding from the
-  // LLM.
-  if (!nativeL1 || typeof nativeL1.l1GetCaptureStats !== "function") {
-    return { forceDegraded: true };
-  }
-
-  // L3 latest_focus view → focus delta projection input
-  let focus: { hwnd: bigint | null; elementName: string | null } | null = null;
-  try {
-    if (nativeViewFocus && typeof nativeViewFocus.viewGetFocused === "function") {
-      const f = nativeViewFocus.viewGetFocused();
-      if (f) {
-        focus = { hwnd: null, elementName: f.name ?? null };
-      }
-    }
-  } catch {
-    // view unavailable — caused_by reflects "no focus observed" via produced_changes
-  }
-
-  // L3 dirty_rects_aggregate per-monitor count, monitor_index 維持 (PR #102 同型)
-  const dirtyRectsByMonitor = new Map<number, number>();
-  try {
-    if (nativeViewFocus && typeof nativeViewFocus.viewGetDirtyRects === "function") {
-      // Best-effort: enumerate primary + secondary monitors via enumMonitors,
-      // fall back to single primary (monitor_index=0) when enumeration fails.
-      let monitorIndices: number[] = [0];
-      try {
-        const monitors = enumMonitors();
-        if (monitors && monitors.length > 0) {
-          monitorIndices = monitors.map((_, i) => i);
-        }
-      } catch {
-        // enumMonitors failed — keep [0] fallback
-      }
-      for (const monitorIdx of monitorIndices) {
-        try {
-          const rects = nativeViewFocus.viewGetDirtyRects(monitorIdx);
-          if (rects && rects.latest && rects.latest.count !== undefined) {
-            dirtyRectsByMonitor.set(monitorIdx, Number(rects.latest.count));
-          }
-        } catch {
-          // per-monitor lookup failed — skip this monitor
-        }
-      }
-    }
-  } catch {
-    // dirty rect view unavailable — caused_by produced_changes will lack dirty_rects entries
-  }
-
-  // L1 ring 末尾 event_id (OQ #5 既存 binding reuse、新規不要)
-  // Note: line 657 early return guarantees `nativeL1 != null` here, so the
-  // outer `nativeL1 &&` check is omitted (CodeQL alert #108
-  // `js/trivial-conditional` 構造的修正, PR fix/codeql-108-trivial-conditional).
-  // The `typeof` check on the optional `l1GetCaptureStats` method is retained
-  // as defence against binding shape drift (e.g. partial native binding
-  // loaded on non-Windows / pre-P5a binary).
-  let latestEventId: bigint | undefined;
-  try {
-    if (typeof nativeL1.l1GetCaptureStats === "function") {
-      const stats = nativeL1.l1GetCaptureStats();
-      latestEventId = stats.eventIdHighWater;
-    }
-  } catch {
-    // L1 stats unavailable — frontier check skipped, history buffer wallclock
-    // alone determines window (degraded mode)
-  }
-
-  const snapshot: ViewSnapshot = {
-    focus,
-    dirtyRectsByMonitor,
-    latestEventId,
-    queryWallclockMs: Date.now(),
-  };
-  return {
-    causedBy: buildCausedBy(sessionId, snapshot),
-    basedOn: buildBasedOn(sessionId, snapshot),
-  };
+  return await genericQueryCausedByProjector(args, sessionId);
 };
 
 /**
@@ -765,10 +685,26 @@ export function _resetSingleSessionPrototypeForTest(): void {
   _isSingleSessionPrototype = () => true;
 }
 
-const desktopStateGetSessionId = (_args: unknown): string => {
+/**
+ * Default query-axis sessionId resolver (ADR-011 A-1: shared by all 9 query
+ * tools after wire — desktop_state + 8 wired in A-1). The stub
+ * `getMcpTransportSessionId()` returns `undefined` until ADR-011 A-2 lands
+ * the real MCP transport binding (AsyncLocalStorage 経路、plan §4.2.2 option
+ * (b))。`_isSingleSessionPrototype()` gates the `multi:disabled` sentinel
+ * branch. Test seams `_setSingleSessionPrototypeForTest` /
+ * `_resetSingleSessionPrototypeForTest` are preserved so unit tests can
+ * pin the sentinel branch coverage (`feedback_pr_review_loop_merge_criteria.md`
+ * + Round 2 P3 Opus #2 test seam).
+ *
+ * Naming kept as `desktopStateGetSessionId` (rather than e.g.
+ * `defaultQuerySessionId`) — A-2 finalize will replace the stub
+ * transparently without renaming, keeping mechanical-copy churn minimal
+ * (ADR-011 plan §4.2.4 "stub 置換が透過").
+ */
+export const desktopStateGetSessionId = (_args: unknown): string => {
   // CodeQL alert #109 (`js/unneeded-defensive-code`) flags the
   // `transportSessionId !== undefined` guard below as dead at runtime
-  // because the `getMcpTransportSessionId` stub on line 747 returns
+  // because the `getMcpTransportSessionId` stub on line 673 returns
   // `undefined` unconditionally. The alert is **dismissed** as
   // "Won't fix" via GitHub Code Scanning API (PR #120). Inline
   // suppress comments (e.g. `// codeql[...]`) are NOT recognised by
