@@ -187,8 +187,10 @@ try {
   const b = await newClient(port, "B");
 
   // Each client commits its own notification, then queries causal.
-  const ca = await commitNotification(a.client, "A");
-  const cb = await commitNotification(b.client, "B");
+  // commit return value is ignored — only the post-commit causal projection
+  // (queried via desktop_state include=["causal"]) is the bench observable.
+  await commitNotification(a.client, "A");
+  await commitNotification(b.client, "B");
   await sleep(50); // pushHistoryCompleted settle
   const qa = await queryDesktopStateWithCausal(a.client);
   const qb = await queryDesktopStateWithCausal(b.client);
