@@ -223,7 +223,8 @@ try {
   //     client B の操作を「自分がやった」と誤認知する runtime regression。
   //   - 旧 strict 不足 (`notification_show` substring のみ) は last-writer-wins
   //     の実害が pin できなかった問題 (Round 1 Codex P2 #4 反映)。
-  let analysis = "indeterminate";
+  // CodeQL #114 fix: 全分岐で unconditionally 代入されるので initial value は dead
+  let analysis;
   let pass = false;
   if (idA && idB) {
     const sidA = idA.split(":")[0];
