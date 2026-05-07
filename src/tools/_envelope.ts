@@ -366,8 +366,11 @@ export interface EnvelopeOptions {
   learnedUiPattern?: SemanticMemoryProjection;
   /**
    * ADR-011 Phase B B-4 Procedural memory projection
-   * (`envelope.successful_macros.successful_macros`、ADR-010 §6 line 409
-   * view name `successful_macros` 整合)。Optional — set by
+   * (`envelope.successful_macros.suggestions`、ADR-010 §6 line 409
+   * view name `successful_macros.suggestions` 整合、Round 2 P1-1 fix で
+   * inner field 名を `suggestions` に rename: B-1 `current_state.recent_events` /
+   * B-2 `tool_call_history.episodes` / B-3 `learned_ui_pattern.patterns` と
+   * 同型 axis = envelope field 名 ≠ inner list 名)。Optional — set by
    * `makeQueryWrapper` when `include=["procedural"]` or `["procedural:K"]`
    * opt-in。`run_macro` 完了時 outcome store に記録、suggest filter
    * (success>=3 + failure==0 + no destructive) 経由のみ expose。
@@ -2057,7 +2060,7 @@ export interface ProceduralMemoryProjection {
  *
  * - sentinel `multi:disabled` → undefined return (cross-session leak 防止、
  *   B-3 と同 axis)
- * - history ring 不在 / 0 件 → `{ successful_macros: [] }` (empty projection、
+ * - history ring 不在 / 0 件 → `{ suggestions: [] }` (empty projection、
  *   B-3 と同 fail-safe)
  * - filter 済み top-K (`store.getTopKForSuggest(k)` 経由) を expose、
  *   destructive を含む macro / 失敗 macro は構造的に出ない
