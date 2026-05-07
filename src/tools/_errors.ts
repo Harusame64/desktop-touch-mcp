@@ -142,6 +142,14 @@ const SUGGESTS: Record<string, string[]> = {
     "If you need more recent events, use include=[\"episodic:N\"] for richer rich-shape projection (B-2 land 後に有効)",
     "Working memory is a compact summary of recent commits — N typically ≤ 10 is sufficient for context",
   ],
+  // ADR-011 Phase B B-2: Episodic memory N upper bound
+  // (EPISODIC_MEMORY_N_MAX = 100, layer-constraints §5 SSOT 整合) を超える要求の typed reason。
+  // Working との使い分けを suggest で誘導 (compact = working、rich = episodic)。
+  EpisodicMemoryNUpperBoundExceeded: [
+    "Reduce episodic:N — upper bound is EPISODIC_MEMORY_N_MAX (= 100, layer-constraints §5)",
+    "Use include=[\"working:N\"] (compact summary) when the rich shape (lease_token / event_id / elapsed_ms) is unnecessary",
+    "Episodic memory exposes the full ToolCallEvent shape — N typically ≤ 5 is sufficient for causal context recovery",
+  ],
 };
 
 /**
