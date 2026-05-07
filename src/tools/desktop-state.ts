@@ -31,6 +31,12 @@ import {
   type CausedByShape,
   type BasedOnShape,
 } from "./_envelope.js";
+import {
+  getMcpTransportSessionIdFromContext,
+  isSingleSessionPrototype,
+  _setSingleSessionPinForTest,
+  _resetSingleSessionPinForTest,
+} from "./_session-context.js";
 
 const _defaultPort = getCdpPort();
 
@@ -654,79 +660,46 @@ const desktopStateCausedByProjector = async (
 /**
  * S5 sessionId resolver for `desktop_state` (sub-plan §1.1 E-2 + §2.5).
  *
- * Stub helpers `getMcpTransportSessionId()` returns `undefined` and
- * `isSingleSessionPrototype()` returns `true` — these are pin-points for
- * ADR-011 to finalize. Current S5 trunk skeleton ships single-LLM-client
- * prototype only; multi-LLM-client deploy requires ADR-011 transport
- * context wiring before the `getMcpTransportSessionId()` stub is replaced.
+ * **ADR-011 A-2 finalize**: A-1 で導入した stub
+ * (`getMcpTransportSessionId` / `_isSingleSessionPrototype`) を
+ * `_session-context.ts` の AsyncLocalStorage 経路に delegate 統合 (plan
+ * §4.2.4 unification)。stub 置換が透過のため `desktopStateGetSessionId`
+ * の name + 戻り値 contract は不変、A-1 で配線済の 9 query tool は
+ * regression なし。
  *
- * Round 2 P3 (Opus #2) test seam: `_setSingleSessionPrototypeForTest`
- * lets unit tests pin the `multi:disabled` sentinel branch without
- * patching module internals. CodeQL line 725 dead-code alert
- * (`if (!isSingleSessionPrototype())` always false in current stub
- * impl) is **intentional** — the stub returns `true` to gate the
- * sentinel branch off until ADR-011 wires real multi-session
- * detection. The test seam exposes the branch for runtime coverage.
- */
-let _isSingleSessionPrototype: () => boolean = () => true;
-
-const getMcpTransportSessionId = (): string | undefined => undefined;
-
-/** @internal Test-only — pin the single-session prototype gate for the
- *  `multi:disabled` sentinel branch (sub-plan §1.1 E-2). Round 3 P3 fix
- *  (CodeQL line 745): unused `isSingleSessionPrototype` wrapper removed,
- *  callers go directly through the module-private `_isSingleSessionPrototype`
- *  closure (used by `desktopStateGetSessionId` below). */
-export function _setSingleSessionPrototypeForTest(value: boolean): void {
-  _isSingleSessionPrototype = () => value;
-}
-/** @internal Test-only — restore the production stub. */
-export function _resetSingleSessionPrototypeForTest(): void {
-  _isSingleSessionPrototype = () => true;
-}
-
-/**
- * Default query-axis sessionId resolver (ADR-011 A-1: shared by all 9 query
- * tools after wire — desktop_state + 8 wired in A-1). The stub
- * `getMcpTransportSessionId()` returns `undefined` until ADR-011 A-2 lands
- * the real MCP transport binding (AsyncLocalStorage 経路、plan §4.2.2 option
- * (b))。`_isSingleSessionPrototype()` gates the `multi:disabled` sentinel
- * branch. Test seams `_setSingleSessionPrototypeForTest` /
- * `_resetSingleSessionPrototypeForTest` are preserved so unit tests can
- * pin the sentinel branch coverage (`feedback_pr_review_loop_merge_criteria.md`
- * + Round 2 P3 Opus #2 test seam).
+ * 挙動 (ADR-011 plan §3.2 識別子フロー):
+ *   - SDK の `RequestHandlerExtra.sessionId` (ALS 注入) 定義あり →
+ *     transportSessionId として返す (multi-session transport の
+ *     per-request 識別子、HTTP StreamableHTTP 等)
+ *   - prototype gate (env mode + ALS 検出) で multi-session detect →
+ *     `"multi:disabled"` sentinel (cross-session causal trail leak 防止)
+ *   - default → `"default"` (single-LLM-client prototype、stdio default)
  *
- * Naming kept as `desktopStateGetSessionId` (rather than e.g.
- * `defaultQuerySessionId`) — A-2 finalize will replace the stub
- * transparently without renaming, keeping mechanical-copy churn minimal
- * (ADR-011 plan §4.2.4 "stub 置換が透過").
+ * Test seam `_setSingleSessionPrototypeForTest` /
+ * `_resetSingleSessionPrototypeForTest` は backward compat alias として
+ * 保持 — 内部で共有 `_setSingleSessionPinForTest` に forward する
+ * (plan §4.2.4 unification + 既存 21 unit test の rewrites 不要)。
  */
 export const desktopStateGetSessionId = (_args: unknown): string => {
-  // CodeQL alert #109 (`js/unneeded-defensive-code`) flags the
-  // `transportSessionId !== undefined` guard below as dead at runtime
-  // because the `getMcpTransportSessionId` stub on line 673 returns
-  // `undefined` unconditionally. The alert is **dismissed** as
-  // "Won't fix" via GitHub Code Scanning API (PR #120). Inline
-  // suppress comments (e.g. `// codeql[...]`) are NOT recognised by
-  // GitHub's CodeQL action — that syntax was a legacy LGTM platform
-  // feature, sunset in 2022-12. The runtime guard is preserved as
-  // an **ADR-011-scope-protected** future-ready stub: ADR-011
-  // (cognitive memory taxonomy + multi-session session_id source
-  // finalize) will replace the stub with a real resolver that
-  // returns the MCP transport's session id, at which point this
-  // branch becomes live. Removing the guard now would require
-  // re-introducing it in ADR-011 and re-validating the closed-loop
-  // sentinel runtime path pinned by PR #115 across 3 review rounds
-  // (see `docs/adr-010-p1-s5-plan.md` §1.1 E-2 for the sentinel
-  // contract definition).
-  const transportSessionId = getMcpTransportSessionId();
+  const transportSessionId = getMcpTransportSessionIdFromContext();
   if (transportSessionId !== undefined) return transportSessionId;
-  if (!_isSingleSessionPrototype()) {
-    // Multi-session detected → sentinel disables caused_by injection
+  if (!isSingleSessionPrototype()) {
     return "multi:disabled";
   }
-  return "default"; // single-LLM-client prototype (S5 trunk scope)
+  return "default";
 };
+
+/** @internal Test-only — backward-compat alias for A-1 callers. Forwards
+ *  to the shared `_session-context.ts` test seam (plan §4.2.4 unification).
+ *  Existing 21 unit tests using this exact name continue to work without rewrites. */
+export function _setSingleSessionPrototypeForTest(value: boolean): void {
+  _setSingleSessionPinForTest(value);
+}
+
+/** @internal Test-only — same forwarding pattern. */
+export function _resetSingleSessionPrototypeForTest(): void {
+  _resetSingleSessionPinForTest();
+}
 
 /**
  * Envelope-aware `desktop_state` handler. Wraps `desktopStateHandler`
