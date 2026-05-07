@@ -391,7 +391,6 @@ export function withEnvelopeIncludeForUnion(union: any): any {
     .array(z.string())
     .optional()
     .describe(ENVELOPE_INCLUDE_FIELD_DESCRIPTION);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const newOptions = (union.options as readonly z.ZodObject<z.ZodRawShape>[]).map(
     (opt) => opt.extend({ include: includeField }),
   );
