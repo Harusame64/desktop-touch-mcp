@@ -15,6 +15,18 @@
 
 ---
 
+> **【B-1 land (PR #B-1、2026-05-07) 後の数値変更注記】** (Phase B B-1 land 時 follow-up sync、CLAUDE.md §3.1 「主要表 fact 整合」教訓):
+>
+> 本 plan §1.3 line 47 / §1.5 line 70 / §2.1 / §3.3 worked example / §4.5 / §6 acceptance 内の `HISTORY_BUFFER_CAPACITY = 8` / `effective = 7` / `step ≤ 8` 等の表記は **Phase A land 時点の historical record**。B-1 PR で `HISTORY_BUFFER_CAPACITY = 8 → 50` に拡張採用済 (Phase B plan §10 OQ #1 Resolved)、現在の SSOT 値:
+>
+> - `HISTORY_BUFFER_CAPACITY = 50` (`src/tools/_envelope.ts`)
+> - `WORKING_MEMORY_DEFAULT_N = 10` / `WORKING_MEMORY_N_MAX = 50` (B-1 で SSOT 化、`layer-constraints §5 line 280` 既定値踏襲)
+> - effective capacity = capacity - boundary 件数 (boundary 1 件保護時 effective = 49)
+>
+> A-3 boundary 保護 logic (`evictOldestNonBoundary` / `selectLastEventForCausalProjection`) は capacity 50 でも同一動作 (capacity-agnostic 設計)、本 plan §3.3 9-step macro worked example の数値 (outer 1 + step 7 = 8 ring 充填) も「Phase A 当時の例示」として保持、現状 capacity 50 では 9-step macro でも overflow しない。
+
+---
+
 ## 1. Context
 
 ### 1.1 起源

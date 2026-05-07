@@ -4,7 +4,7 @@
  * Pins the bit-equal contract for `include=["working"]` / `["working:N"]`
  * envelope projection (`current_state.recent_events`) per Phase B plan §4。
  *
- * Coverage (10 case):
+ * Coverage (Round 1 Opus 反映後 = 13 describe / 28+ case):
  *   - B-1-1 sentinel skip: sessionId === "multi:disabled" → projection undefined
  *     (cross-session leak 防止、Phase A sentinel runtime closed loop と整合)
  *   - B-1-2 default N: include=["working"] → default N=10 で projection
@@ -14,15 +14,20 @@
  *   - B-1-5 ring underflow: ring 内件数 < N で _truncation: ring_underflow
  *   - B-1-6 capacity_cap: N > HISTORY_BUFFER_CAPACITY (= 50) で
  *     _truncation: capacity_cap (上限超え error path とは別、N <= N_MAX 内)
- *   - B-1-7 N upper bound: N > WORKING_MEMORY_N_MAX (= 50) で typed error
- *     `WorkingMemoryNUpperBoundExceeded`
+ *   - B-1-7 N upper bound: WORKING_MEMORY_N_MAX SSOT pin
  *   - B-1-8 N=0 edge: include=["working:0"] で events 空配列 (skip ではない、
  *     N=0 は valid request、_truncation なし)
  *   - B-1-9 args_summary truncation: 64 char 超 args が 64 char に truncate
  *   - B-1-10 parseIncludeMemoryN: 4 形式 (layer 名のみ / layer:N / layer:invalid /
- *     不在) で正しい return value pure parser test
- *   - B-1-N regression: A-1 (causal include) + A-3 (boundary) test 全 pass
- *     (本 file 内 sanity check として 1 case)
+ *     不在) で正しい return value pure parser test (Round 1 P2-1 反映で
+ *     NaN / Infinity edge 追加)
+ *   - B-1-N regression sanity (ring 不在 sessionId)
+ *   - **B-1-Wrapper-1**: makeQueryWrapper 経由で envelope.current_state
+ *     inject 観測 end-to-end test (Round 1 Opus P2-2 + P3-2 反映)
+ *   - **B-1-Wrapper-2**: N > WORKING_MEMORY_N_MAX で wrapper が typed error
+ *     short-circuit、try_next に SUGGESTS 3 行 wired (Round 1 P1-3 反映)
+ *   - **B-1-Cross-session**: sessionA / sessionB 並走 isolation
+ *     (Round 1 Opus P2-3 反映)
  */
 
 import { describe, expect, it, afterEach } from "vitest";
@@ -30,6 +35,7 @@ import {
   parseIncludeMemoryN,
   projectWorkingMemory,
   defaultL1Emitter,
+  makeQueryWrapper,
   WORKING_MEMORY_DEFAULT_N,
   WORKING_MEMORY_N_MAX,
   _resetHistoryBuffersForTest,
@@ -231,8 +237,113 @@ describe("B-1-10: parseIncludeMemoryN 4 形式 (pure parser、env mutation race 
     [["episodic:5"], "working", 10, undefined], // (8) 別 layer → undefined
     [["working:10", "episodic:5"], "working", 10, 10], // (9) 複数 layer → working を return
     [["raw"], "working", 10, undefined],       // (10) 関係ない entry → undefined
+    // Round 1 Opus P2-1 反映: numeric edge cases (Lesson 2 compile-time guard 過信 防御)
+    [["working:NaN"], "working", 10, 10],      // (11) "NaN" string parse → NaN → !isFinite → defaultN
+    [["working:Infinity"], "working", 10, 10], // (12) "Infinity" parseInt は NaN → defaultN
+    [["working:1e308"], "working", 10, 1],     // (13) parseInt("1e308", 10) は "1" 部分のみ整数 parse して 1 を返す (e308 を捨てる)、N=1 valid
+    [["working:"], "working", 10, 10],         // (14) コロンのみ N 部空 → parseInt("") = NaN → defaultN
   ])("parseIncludeMemoryN(%j, %j, %d) === %j", (include, layer, defaultN, expected) => {
     expect(parseIncludeMemoryN(include, layer, defaultN)).toBe(expected);
+  });
+});
+
+// ── B-1-Wrapper-1: makeQueryWrapper end-to-end (Round 1 Opus P2-2 + P3-2 反映) ─
+
+describe("B-1-Wrapper-1: makeQueryWrapper 経由 envelope.current_state inject end-to-end", () => {
+  it("include=[\"working:5\"] → envelope.current_state.recent_events に 5 件 inject (wrapper 統合層 pin)", async () => {
+    _resetHistoryBuffersForTest();
+    _resetToolCallSeqForTest();
+    const sid = "sessW";
+    // commit を 5 件 push (Working memory に表示される素材)
+    for (let i = 1; i <= 5; i++) pushCommit(sid, i);
+    // dummy query handler (raw shape return) + S5 path opt-in (causedByProjector + getSessionId 必須)
+    const handler = async () => ({
+      content: [{ type: "text" as const, text: '{"ok":true}' }],
+    });
+    const wrapped = makeQueryWrapper(handler, "test_query", {
+      causedByProjector: async () => undefined, // sentinel-skip 等価、causal は本 case 対象外
+      getSessionId: () => sid,
+    });
+    const result = await wrapped({ include: ["working:5"] } as Record<string, unknown>);
+    const block = result.content?.[0];
+    expect(block?.type).toBe("text");
+    const parsed = JSON.parse((block as { type: "text"; text: string }).text);
+    // envelope opt-in (working は implicit promotion)、envelope.current_state が inject される
+    expect(parsed?.current_state).toBeDefined();
+    expect(parsed?.current_state?.events).toHaveLength(5);
+    expect(parsed?.current_state?.events?.[0]?.tool).toBe("tool_5"); // LIFO
+    // _truncation なし (5 件 ring + 5 件要求)
+    expect(parsed?.current_state?._truncation).toBeUndefined();
+  });
+
+  it("include 不在 → envelope.current_state は inject されない (skip projection)", async () => {
+    _resetHistoryBuffersForTest();
+    _resetToolCallSeqForTest();
+    const sid = "sessWX";
+    pushCommit(sid, 1);
+    const handler = async () => ({
+      content: [{ type: "text" as const, text: '{"ok":true}' }],
+    });
+    const wrapped = makeQueryWrapper(handler, "test_query", {
+      causedByProjector: async () => undefined,
+      getSessionId: () => sid,
+      // include なしで呼び出し、envelope opt-in 不発火 → raw hoist で current_state 消失
+      getEnvValue: () => undefined,
+    });
+    const result = await wrapped({} as Record<string, unknown>);
+    const block = result.content?.[0];
+    const parsed = JSON.parse((block as { type: "text"; text: string }).text);
+    // raw shape (envelope opt-in なし) で current_state 不在
+    expect(parsed?.current_state).toBeUndefined();
+  });
+});
+
+// ── B-1-Wrapper-2: typed error path で try_next に SUGGESTS wired (P1-3) ─────
+
+describe("B-1-Wrapper-2: N > WORKING_MEMORY_N_MAX で typed error + try_next に SUGGESTS 3 行", () => {
+  it("include=[\"working:51\"] → WorkingMemoryNUpperBoundExceeded + try_next 3 件 (Round 1 Opus P1-3 反映)", async () => {
+    _resetHistoryBuffersForTest();
+    const handler = async () => ({
+      content: [{ type: "text" as const, text: '{"ok":true}' }],
+    });
+    const wrapped = makeQueryWrapper(handler, "test_query", {
+      causedByProjector: async () => undefined,
+      getSessionId: () => "sessE",
+    });
+    const result = await wrapped({ include: ["working:51"] } as Record<string, unknown>);
+    const block = result.content?.[0];
+    const parsed = JSON.parse((block as { type: "text"; text: string }).text);
+    // envelope shape (working 含むため opt-in 自動 promotion、failure path も同経路)
+    expect(parsed?.if_unexpected?.most_likely_cause).toBe("WorkingMemoryNUpperBoundExceeded");
+    expect(Array.isArray(parsed?.if_unexpected?.try_next)).toBe(true);
+    expect(parsed?.if_unexpected?.try_next).toHaveLength(3);
+    // 各 try_next entry が { action: string } shape
+    for (const tn of parsed.if_unexpected.try_next) {
+      expect(typeof tn?.action).toBe("string");
+      expect(tn.action.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+// ── B-1-Cross-session: sessionA / sessionB 並走 isolation (P2-3) ────────────
+
+describe("B-1-Cross-session: sessionA / sessionB 並走で Working projection が leak しない", () => {
+  it("2 session の commits を独立 ring で保持、projection が混ざらない", () => {
+    _resetHistoryBuffersForTest();
+    _resetToolCallSeqForTest();
+    // sessionA: 3 commits、sessionB: 5 commits
+    for (let i = 1; i <= 3; i++) pushCommit("sessA", i);
+    for (let i = 1; i <= 5; i++) pushCommit("sessB", i);
+    const a = projectWorkingMemory("sessA", 10)!;
+    const b = projectWorkingMemory("sessB", 10)!;
+    expect(a.events).toHaveLength(3);
+    expect(b.events).toHaveLength(5);
+    // tool_call_id prefix で session 別であることを runtime 検証
+    for (const e of a.events) expect(e.tool_call_id.startsWith("sessA:")).toBe(true);
+    for (const e of b.events) expect(e.tool_call_id.startsWith("sessB:")).toBe(true);
+    // sessionA からは sessionB の commits が見えない、逆も同じ
+    const aTcids = new Set(a.events.map((e) => e.tool_call_id));
+    for (const e of b.events) expect(aTcids.has(e.tool_call_id)).toBe(false);
   });
 });
 

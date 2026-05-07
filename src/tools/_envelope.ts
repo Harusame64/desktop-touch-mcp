@@ -116,6 +116,7 @@ import {
   _setSingleSessionPinForTest,
   _resetSingleSessionPinForTest,
 } from "./_session-context.js";
+import { getSuggestsForCode } from "./_errors.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1440,9 +1441,15 @@ export function projectWorkingMemory(
   }
 
   // _truncation notation 判定 (Phase B plan §4.3 acceptance)
+  // 注意: B-1 land 時点では `WORKING_MEMORY_N_MAX === HISTORY_BUFFER_CAPACITY === 50`
+  // のため、makeQueryWrapper s5 path で N > N_MAX を typed error short-circuit
+  // するロジックが先に発火 (Round 1 Opus P2-4 関連)。本 helper の `n > ring.capacity`
+  // 経路は **wrapper 経由では unreachable** (typed error path に吸収)、
+  // `_seedHistoryForTest` 経由 / `projectWorkingMemory` 直接呼出 / 将来 N_MAX >
+  // capacity に拡張する場合の **forward-compatible safety net** として保持。
+  // 意図的 dead-code-near (test pin あり、B-1-6 で 60 件 push synthetic 経路)。
   let truncation: TruncationNotation | undefined;
   if (n > ring.capacity) {
-    // capacity_cap が優先 — N=100 要求で ring capacity=50 なら returned ≤ 50
     truncation = { requested: n, returned: events.length, reason: "capacity_cap" };
   } else if (returnedCount < n) {
     // ring 内件数 < N (ring underflow)
@@ -2125,13 +2132,19 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
       ((includeCausal || includeWorkingOptIn) && !includeRaw) ||
       resolveEnvelopeOptIn(include, getEnvValue());
 
-    // ADR-011 Phase B B-1: N upper bound check (silently truncate せず error)
+    // ADR-011 Phase B B-1: N upper bound check (silently truncate せず error)。
+    // Round 1 Opus P1-3 反映: try_next に SUGGESTS 3 行を typed action として
+    // 配線、runtime hint delivery を保証 (`_errors.ts:getSuggestsForCode` 経由、
+    // SUGGESTS 文字列 → `{action: string}` minimal wiring、ADR-010 P2 acceptance
+    // の本格 typed action 設計は別 phase の責務だが本 PR で string content は
+    // LLM に届ける)。
     if (includeWorkingOptIn && includeWorkingN! > WORKING_MEMORY_N_MAX) {
+      const tryNext: TryNextAction[] = getSuggestsForCode(
+        "WorkingMemoryNUpperBoundExceeded",
+      ).map((suggest) => ({ action: suggest }));
       const failure = buildFailureEnvelope(
         "WorkingMemoryNUpperBoundExceeded",
-        // try_next: SUGGESTS から取得 (suggest 文字列を typed action に直接変換は
-        // ADR-010 P2 acceptance の責務、本 PR は code 設置のみ)
-        [],
+        tryNext,
         { viewPoisoned: false, asOfWallclockMs: null },
       );
       const finalShape = optIn ? failure : compatFailureRaw(failure);

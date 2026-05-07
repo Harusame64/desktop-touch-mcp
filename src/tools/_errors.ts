@@ -144,6 +144,19 @@ const SUGGESTS: Record<string, string[]> = {
   ],
 };
 
+/**
+ * @internal Read-only access to the SUGGESTS dictionary for typed-error
+ * envelope wiring (Round 1 Opus P1-3 反映). `makeQueryWrapper` uses this
+ * to populate `if_unexpected.try_next` with `{action: string}` entries
+ * derived from SUGGESTS string lines, ensuring runtime hint delivery
+ * for Phase B B-1 `WorkingMemoryNUpperBoundExceeded` and any future
+ * code that needs `buildFailureEnvelope` direct call (rather than
+ * `failWith`-based path).
+ */
+export function getSuggestsForCode(code: string): string[] {
+  return SUGGESTS[code] ?? [];
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Error classification
 // ─────────────────────────────────────────────────────────────────────────────

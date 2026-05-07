@@ -375,11 +375,24 @@ describe("G5-S5-7: makeQueryWrapper default opt-out (include 未指定時 caused
   });
 });
 
-// ── G5-S5-8: history buffer ring overflow ────────────────────────────────────
+// ── G5-S5-8: history buffer (capacity 50、B-1 land で 8 → 50 拡張) ──────────
 
-describe("G5-S5-8: history buffer ring overflow (capacity 8)", () => {
-  it("9 件 commit → 最古 1 件 head drop、最新 8 件保持", () => {
+describe("G5-S5-8: history buffer ring (capacity 50、9 件 push で overflow なし、最新 anchor 維持)", () => {
+  it("9 件 commit → ring 全保持、最新 sessA:9 が causal anchor (capacity 50 内 = overflow なし契約)", () => {
     resetAll();
+    // ADR-011 Phase B B-1 (PR #B-1、2026-05-07) で HISTORY_BUFFER_CAPACITY を
+    // 8 → 50 に拡張。capacity 50 では 9 件 push で overflow しない (旧 capacity
+    // 8 時代は overflow 発生していた) — 本 test は **新 capacity (50) で 9 件
+    // push が ring 全保持される契約** を pin、最新 push が causal anchor に
+    // なる挙動が capacity 拡張後も維持されることを runtime 検証。
+    //
+    // **capacity 50 ring overflow 自体の契約 pin** は本 test scope 外、
+    // `tests/unit/working-memory-b1.test.ts` B-1-6 (60 件 push → 50 件保持
+    // + `_truncation: capacity_cap` notation) で機械的 pin 済 (Round 1 Opus
+    // P1-2 反映)。本 test を 51 件 push に変更すると nativeL1 production
+    // binding 経由で eventIdHighWater が進み、後続 test の `latestEventId
+    // = 100n` frontier check が発火する副作用が出るため、9 件 push 維持で
+    // capacity 50 「overflow なし契約」を別軸で pin する設計。
     for (let i = 1; i <= 9; i++) {
       defaultL1Emitter.pushStarted({
         tool: "desktop_act",
@@ -395,11 +408,11 @@ describe("G5-S5-8: history buffer ring overflow (capacity 8)", () => {
         toolCallId: `sessA:${i}`,
       });
     }
-    // Latest entry should be sessA:9
+    // capacity 50 内のため overflow なし、ring に 9 件全保持、最新は sessA:9
     const causedBy = buildCausedBy("sessA", makeViewSnapshot());
     expect(causedBy?.tool_call_id).toBe("sessA:9");
-    // Note: we can't easily inspect ring contents from outside, but the
-    // latest projection covers the contract intent.
+    // Note: ring 内件数の直接 inspect は外部から不能、上記 anchor 検証 +
+    // B-1-6 (capacity_cap test) で overflow contract は別 test pin。
   });
 });
 
