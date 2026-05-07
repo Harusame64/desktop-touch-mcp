@@ -35,6 +35,7 @@ import {
   _resetHistoryBuffersForTest,
   _resetToolCallSeqForTest,
   _resetHistoryClockForTest,
+  _setHistoryClockForTest,
   type ToolCallEvent,
   type UiPatternRecord,
 } from "../../src/tools/_envelope.js";
@@ -572,6 +573,89 @@ describe("B-3-19: include=[\"semantic:<edge>\"] empty / negative / non-numeric K
   ])("parseIncludeMemoryN([%j], 'semantic') 戻り値が default fallback", (token, expected) => {
     const k = parseIncludeMemoryN([token], "semantic", SEMANTIC_MEMORY_DEFAULT_K);
     expect(k).toBe(expected);
+  });
+});
+
+// ── B-3-21: cursor lifecycle eviction (Round 2 Codex P2 fix) ────────────────
+
+describe("B-3-21: ring TTL/LRU eviction で _semanticExtractionCursors も clean (Codex P2 fix regression)", () => {
+  it("TTL 経過で ring 消滅 → 同 sessionId の cursor も削除、短命 session 大量発生で Map unbounded growth しない", async () => {
+    const sid = "sessTTL";
+    let mockNow = 1000;
+    _setHistoryClockForTest(() => mockNow);
+    try {
+      // 3 件 push (Notepad ok=true) + query で cursor 生成
+      for (let i = 1; i <= 3; i++) {
+        defaultL1Emitter.pushStarted({
+          tool: i === 1 ? "focus_window" : "keyboard",
+          argsJson: `{"i":${i}}`,
+          sessionId: sid,
+          toolCallId: `${sid}:${i}`,
+          windowTitle: "Notepad",
+        });
+        defaultL1Emitter.pushCompleted({
+          tool: i === 1 ? "focus_window" : "keyboard",
+          elapsedMs: 1,
+          ok: true,
+          sessionId: sid,
+          toolCallId: `${sid}:${i}`,
+        });
+      }
+      const handler = async () => ({
+        content: [{ type: "text" as const, text: '{"ok":true}' }],
+      });
+      const wrapped = makeQueryWrapper(handler, "test_query", {
+        causedByProjector: async () => undefined,
+        getSessionId: () => sid,
+      });
+      // Query で cursor 設定
+      await wrapped({ include: ["semantic:3"] } as Record<string, unknown>);
+      // pattern store には 1 件、cursor も 1 件
+      expect(uiPatternStore._sizeForTest()).toBe(1);
+
+      // TTL 経過 (24h + 1ms) を mock 時刻で進める
+      mockNow += 24 * 3600 * 1000 + 1;
+
+      // 別 session の push を trigger (= evictHistoryIfNeeded 走る)
+      defaultL1Emitter.pushStarted({
+        tool: "focus_window",
+        argsJson: "{}",
+        sessionId: "sessTTLOther",
+        toolCallId: "sessTTLOther:1",
+        windowTitle: "Other",
+      });
+
+      // 同 sessionId で再度 push → 新規 ring (前回 cursor は eviction で消滅
+      // しているはず、stale cursor で fallback rescan が走らない)
+      for (let i = 1; i <= 3; i++) {
+        defaultL1Emitter.pushStarted({
+          tool: i === 1 ? "focus_window" : "keyboard",
+          argsJson: `{"j":${i}}`,
+          sessionId: sid,
+          toolCallId: `${sid}:revived:${i}`,
+          windowTitle: "Notepad",
+        });
+        defaultL1Emitter.pushCompleted({
+          tool: i === 1 ? "focus_window" : "keyboard",
+          elapsedMs: 1,
+          ok: true,
+          sessionId: sid,
+          toolCallId: `${sid}:revived:${i}`,
+        });
+      }
+      // Query → 復活 ring に対し正しく fresh extraction (stale cursor で
+      // 全 events を再 extract する fallback と違い、正しく 1 pattern として merge)
+      const result = await wrapped({ include: ["semantic:3"] } as Record<string, unknown>);
+      const block = result.content?.[0];
+      const parsed = JSON.parse((block as { type: "text"; text: string }).text);
+      // 同 windowTitle + tool seq なので同 pattern_id、merge 済 (1 pattern entry)
+      expect(parsed?.learned_ui_pattern?.patterns).toHaveLength(1);
+      // success_count = 3 (初回) + 3 (復活時) = 6 が intentional cross-eviction merge
+      const top = uiPatternStore.getTopK(1);
+      expect(top[0]?.success_count).toBe(6);
+    } finally {
+      _resetHistoryClockForTest();
+    }
   });
 });
 

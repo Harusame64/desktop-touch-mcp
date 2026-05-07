@@ -1131,6 +1131,11 @@ function evictHistoryIfNeeded(): void {
   for (const [key, ring] of _historyBuffers) {
     if (now - ring.lastAccessMs > HISTORY_BUFFER_TTL_MS) {
       _historyBuffers.delete(key);
+      // Round 2 Codex P2 fix: cursor lifecycle を ring eviction に同期。
+      // pre-fix では `_semanticExtractionCursors` が ring 消滅後も残存 → 短命
+      // session が大量発生する production deploy で Map が unbounded growth、
+      // 同 sessionId 再出現時に stale cursor が fallback rescan を引き起こす。
+      _semanticExtractionCursors.delete(key);
     }
   }
   // LRU eviction when capacity exceeded
@@ -1141,6 +1146,7 @@ function evictHistoryIfNeeded(): void {
   while (_historyBuffers.size > HISTORY_BUFFERS_MAX && sorted.length > 0) {
     const [oldestKey] = sorted.shift()!;
     _historyBuffers.delete(oldestKey);
+    _semanticExtractionCursors.delete(oldestKey);
   }
 }
 
