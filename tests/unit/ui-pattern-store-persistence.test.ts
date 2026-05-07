@@ -35,6 +35,7 @@ beforeEach(async () => {
 afterEach(async () => {
   uiPatternStore._resetForTest();
   uiPatternStore._resetStorageFilePathForTest();
+  uiPatternStore._resetDebounceMsForTest();
   delete process.env.DESKTOP_TOUCH_MEMORY_PERSIST;
   delete process.env.DESKTOP_TOUCH_MEMORY_REDACT_TITLES;
   await fs.rm(tmpDir, { recursive: true, force: true });
@@ -228,5 +229,106 @@ describe("PERSIST-11: flushImmediateForShutdown — pending cancel + 即時 flus
     const raw = await fs.readFile(tmpFile, "utf8");
     const parsed = JSON.parse(raw);
     expect(parsed.patterns).toHaveLength(1);
+  });
+});
+
+// ── PERSIST-12: redact load 後 二重 hash 防止 (Round 2 P2-1 fix) ────────────
+
+describe("PERSIST-12: redact disk load 後 flush で 二重 hash 化されない (P2-1 regression)", () => {
+  it("redact env on で flush → disk hash → load → 再 flush で `redacted:redacted:...` にならない", async () => {
+    process.env.DESKTOP_TOUCH_MEMORY_PERSIST = "1";
+    process.env.DESKTOP_TOUCH_MEMORY_REDACT_TITLES = "1";
+    seedRecord("pat-A", "Sensitive Doc.txt - Notepad");
+    await uiPatternStore.flushToDisk();
+    let raw = await fs.readFile(tmpFile, "utf8");
+    let parsed = JSON.parse(raw);
+    const firstHash = parsed.patterns[0].window_title;
+    expect(firstHash).toMatch(/^redacted:[0-9a-f]{8}$/);
+
+    // reset + load (in-memory に redacted 文字列が固着)
+    uiPatternStore._resetForTest();
+    await uiPatternStore.loadFromDisk();
+    expect(uiPatternStore.getTopK(1)[0]?.window_title).toBe(firstHash);
+
+    // 再 flush で redacted:redacted:... に二重 hash されないこと
+    await uiPatternStore.flushToDisk();
+    raw = await fs.readFile(tmpFile, "utf8");
+    parsed = JSON.parse(raw);
+    expect(parsed.patterns[0].window_title).toBe(firstHash); // 同 hash で安定
+    expect(parsed.patterns[0].window_title).not.toMatch(/redacted:redacted:/);
+  });
+});
+
+// ── PERSIST-13: prototype pollution 防御 (Round 2 P2-2 fix) ─────────────────
+
+describe("PERSIST-13: load 時 disk file の extra field を field allowlist で排除 (P2-2 regression)", () => {
+  it("disk file に __proto__ 等の extra field があっても in-memory record に流入しない", async () => {
+    process.env.DESKTOP_TOUCH_MEMORY_PERSIST = "1";
+    // 攻撃者風の extra field を含む disk payload
+    await fs.writeFile(
+      tmpFile,
+      JSON.stringify({
+        version: 1,
+        patterns: [
+          {
+            pattern_id: "pat-A",
+            window_title: "Notepad",
+            step_count: 3,
+            last_seen_at_ms: 1000,
+            success_count: 3,
+            failure_count: 0,
+            example_actions: ["focus_window", "keyboard"],
+            // extra fields (field allowlist で drop されるべき)
+            malicious_field: "leak-attempt",
+            another_unexpected: { nested: "data" },
+          },
+        ],
+      }),
+    );
+    await uiPatternStore.loadFromDisk();
+    const top = uiPatternStore.getTopK(1)[0];
+    expect(top).toBeDefined();
+    expect(top?.pattern_id).toBe("pat-A");
+    expect(top?.window_title).toBe("Notepad");
+    // extra field は in-memory record に存在しないこと
+    expect((top as Record<string, unknown>)?.malicious_field).toBeUndefined();
+    expect(
+      (top as Record<string, unknown>)?.another_unexpected,
+    ).toBeUndefined();
+  });
+});
+
+// ── PERSIST-14: env race closure capture (Round 2 P2-4 fix) ────────────────
+
+describe("PERSIST-14: scheduleFlushDebounced で env を closure capture (P2-4 regression)", () => {
+  it("schedule 時 env on → mid-flight env off → 予定通り flush (closure snapshot)", async () => {
+    process.env.DESKTOP_TOUCH_MEMORY_PERSIST = "1";
+    uiPatternStore._setDebounceMsForTest(50);
+    seedRecord("pat-A", "Notepad");
+    expect(uiPatternStore._hasPendingFlushForTest()).toBe(true);
+
+    // 5s 中途で env を off に flip (race window simulation)
+    delete process.env.DESKTOP_TOUCH_MEMORY_PERSIST;
+
+    // debounce 経過待ち
+    await new Promise((r) => setTimeout(r, 100));
+    expect(uiPatternStore._hasPendingFlushForTest()).toBe(false);
+
+    // closure capture により schedule 時点 on で commit 済 → 予定通り flush 完了
+    const raw = await fs.readFile(tmpFile, "utf8");
+    const parsed = JSON.parse(raw);
+    expect(parsed.patterns).toHaveLength(1);
+    expect(parsed.patterns[0].pattern_id).toBe("pat-A");
+  });
+
+  it("schedule 時 env off → schedule そのものが skip (timer 走らない)", async () => {
+    delete process.env.DESKTOP_TOUCH_MEMORY_PERSIST;
+    uiPatternStore._setDebounceMsForTest(50);
+    seedRecord("pat-A", "Notepad");
+    expect(uiPatternStore._hasPendingFlushForTest()).toBe(false);
+    // 後で env on にしても schedule が走っていないので flush しない
+    process.env.DESKTOP_TOUCH_MEMORY_PERSIST = "1";
+    await new Promise((r) => setTimeout(r, 100));
+    await expect(fs.access(tmpFile)).rejects.toThrow();
   });
 });

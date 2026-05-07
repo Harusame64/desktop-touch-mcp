@@ -185,9 +185,12 @@ export class UiPatternStore {
       raw = await fs.readFile(this.storageFilePath, "utf8");
     } catch (err) {
       // ENOENT (file 不在) は無視、その他 I/O error は warn して続行
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-        console.error(
-          `[ui-pattern-store] loadFromDisk failed: ${(err as Error).message}`,
+      const e = err as NodeJS.ErrnoException;
+      if (e.code !== "ENOENT") {
+        // Round 2 P2-3 fix: err.code を log に含める (ops 解析で
+        // disk full / permission / read-only filesystem を判別)
+        console.warn(
+          `[ui-pattern-store] loadFromDisk failed: code=${e.code ?? "unknown"} message=${e.message}`,
         );
       }
       return;
@@ -196,19 +199,21 @@ export class UiPatternStore {
     try {
       parsed = JSON.parse(raw);
     } catch {
-      console.error(
+      // Round 2 P3-3 fix: graceful degrade は warn level、ops monitoring
+      // で error filter から外して noise を減らす
+      console.warn(
         `[ui-pattern-store] loadFromDisk: corrupt JSON at ${this.storageFilePath}, ignoring`,
       );
       return;
     }
     if (!isPersistedShape(parsed)) {
-      console.error(
+      console.warn(
         `[ui-pattern-store] loadFromDisk: schema mismatch at ${this.storageFilePath}, ignoring`,
       );
       return;
     }
     if (parsed.version !== PERSIST_SCHEMA_VERSION) {
-      console.error(
+      console.warn(
         `[ui-pattern-store] loadFromDisk: schema version ${parsed.version} != ${PERSIST_SCHEMA_VERSION}, ignoring`,
       );
       return;
@@ -217,7 +222,18 @@ export class UiPatternStore {
     // 超過時は eviction (loaded data が古い場合の defensive)
     this.records.clear();
     for (const r of parsed.patterns) {
-      this.records.set(r.pattern_id, { ...r });
+      // Round 2 P2-2 fix: field allowlist で copy (`{...r}` だと __proto__
+      // 等の disk 由来 extra field が in-memory に流入する prototype
+      // pollution risk あり、明示 7 field のみ narrow して防御)
+      this.records.set(r.pattern_id, {
+        pattern_id: r.pattern_id,
+        window_title: r.window_title,
+        step_count: r.step_count,
+        last_seen_at_ms: r.last_seen_at_ms,
+        success_count: r.success_count,
+        failure_count: r.failure_count,
+        example_actions: [...r.example_actions],
+      });
       while (this.records.size > this.capacity) {
         const oldestKey = this.records.keys().next().value;
         if (oldestKey === undefined) break;
@@ -239,24 +255,45 @@ export class UiPatternStore {
    * - 書き込み failure は warn して続行 (memory layer best-effort)
    */
   async flushToDisk(): Promise<void> {
-    const persistOn = parseMemoryPersistMode(
-      process.env.DESKTOP_TOUCH_MEMORY_PERSIST,
-    );
-    if (!persistOn) return;
-    const redactOn = parseMemoryRedactMode(
-      process.env.DESKTOP_TOUCH_MEMORY_REDACT_TITLES,
-    );
+    return this._flushInternal({
+      persist: parseMemoryPersistMode(process.env.DESKTOP_TOUCH_MEMORY_PERSIST),
+      redact: parseMemoryRedactMode(
+        process.env.DESKTOP_TOUCH_MEMORY_REDACT_TITLES,
+      ),
+    });
+  }
+
+  /**
+   * @internal Internal flush impl (env を caller が snapshot として渡す)。
+   * `flushToDisk` (env 再 read) と `scheduleFlushDebounced` の setTimeout
+   * callback (schedule 時点 env snapshot で commit) で reuse する hot path。
+   * Round 2 P2-4 fix: env mid-flight mutation race を closure capture で構造解消。
+   */
+  private async _flushInternal(opts: {
+    persist: boolean;
+    redact: boolean;
+  }): Promise<void> {
+    if (!opts.persist) return;
+    const redactOn = opts.redact;
     const dir = path.dirname(this.storageFilePath);
     try {
       await fs.mkdir(dir, { recursive: true });
     } catch (err) {
-      console.error(
-        `[ui-pattern-store] flushToDisk mkdir failed: ${(err as Error).message}`,
+      // Round 2 P2-3 fix: err.code を log に含める
+      const e = err as NodeJS.ErrnoException;
+      console.warn(
+        `[ui-pattern-store] flushToDisk mkdir failed: code=${e.code ?? "unknown"} message=${e.message}`,
       );
       return;
     }
     const patterns = [...this.records.values()].map((r) => {
       if (redactOn) {
+        // Round 2 P2-1 fix sub-step: 既に `redacted:` 始まりなら再 hash しない
+        // (load 後 redacted in-memory + flush で `redacted:redacted:xxx` に
+        // なる二重 hash 防止)
+        if (r.window_title.startsWith("redacted:")) {
+          return r;
+        }
         return {
           ...r,
           window_title: `redacted:${fnv1aHash16(r.window_title)}`,
@@ -273,8 +310,10 @@ export class UiPatternStore {
       await fs.writeFile(tmpPath, JSON.stringify(payload), "utf8");
       await fs.rename(tmpPath, this.storageFilePath);
     } catch (err) {
-      console.error(
-        `[ui-pattern-store] flushToDisk failed: ${(err as Error).message}`,
+      // Round 2 P2-3 fix: err.code を log に含める
+      const e = err as NodeJS.ErrnoException;
+      console.warn(
+        `[ui-pattern-store] flushToDisk failed: code=${e.code ?? "unknown"} message=${e.message}`,
       );
       // tmp 残存時 best-effort cleanup
       try {
@@ -294,14 +333,24 @@ export class UiPatternStore {
    * `flushImmediateForShutdown` で確実に最終 flush)。
    */
   scheduleFlushDebounced(): void {
-    const persistOn = parseMemoryPersistMode(
+    // Round 2 P2-4 fix: env を schedule 時点で snapshot capture して closure
+    // で持ち回す。setTimeout 内で env 再 read しない → mid-flight mutation
+    // race を構造的解消 (schedule 時 on / 5s 後 fire 時 off のような race
+    // を closure で固定化)。
+    const persistSnapshot = parseMemoryPersistMode(
       process.env.DESKTOP_TOUCH_MEMORY_PERSIST,
     );
-    if (!persistOn) return;
+    if (!persistSnapshot) return;
+    const redactSnapshot = parseMemoryRedactMode(
+      process.env.DESKTOP_TOUCH_MEMORY_REDACT_TITLES,
+    );
     if (this.pendingFlushTimer) clearTimeout(this.pendingFlushTimer);
     this.pendingFlushTimer = setTimeout(() => {
       this.pendingFlushTimer = null;
-      void this.flushToDisk();
+      void this._flushInternal({
+        persist: persistSnapshot,
+        redact: redactSnapshot,
+      });
     }, this.debounceMs);
     this.pendingFlushTimer.unref();
   }
@@ -352,6 +401,11 @@ export class UiPatternStore {
   /** @internal Test-only — debounce window 上書き (test で短縮) */
   _setDebounceMsForTest(ms: number): void {
     this.debounceMs = ms;
+  }
+
+  /** @internal Test-only — debounce window default リセット (test 間 leak 防止) */
+  _resetDebounceMsForTest(): void {
+    this.debounceMs = PERSIST_DEBOUNCE_MS;
   }
 
   /** @internal Test-only — pending flush timer の生存確認 */
