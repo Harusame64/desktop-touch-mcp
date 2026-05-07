@@ -40,6 +40,7 @@ import { checkFailsafe, FailsafeError } from "./utils/failsafe.js";
 import { wrapHandlerArg } from "./utils/failsafe-wrap.js";
 import { SERVER_VERSION } from "./version.js";
 import { resolveV2Activation } from "./tools/desktop-activation.js";
+import { uiPatternStore } from "./store/ui-pattern-store.js";
 
 // Resolve assets/icons directory (works both in dev: dist/ and release: dist/)
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -288,8 +289,17 @@ function shutdown(): void {
   stopNativeRuntime();
   stopTray();
   httpServerRef?.close();
-  // In-flight requests clean up their own server/transport instances via res.on("close").
-  process.exit(0);
+  // ADR-011 Phase B B-3 follow-up: pending pattern store flush を確実に
+  // 完了させてから exit。env off / pending なし時は即時 resolve、env on で
+  // pending あれば disk write 完了後 exit (data loss 防止)。
+  // best-effort: error も resolve、即時 exit を遅延させない。
+  uiPatternStore
+    .flushImmediateForShutdown()
+    .catch(() => {})
+    .finally(() => {
+      // In-flight requests clean up their own server/transport instances via res.on("close").
+      process.exit(0);
+    });
 }
 
 // Issue #68: defer shutdown until in-flight tool calls drain. Used by stdin EOF /
@@ -361,6 +371,12 @@ const httpUrl = useHttp ? `http://127.0.0.1:${httpPort}/mcp` : undefined;
 
 // ─── Log auto-guard startup status ───────────────────────────────────────────
 logAutoGuardStartup();
+
+// ─── ADR-011 Phase B B-3 follow-up: load semantic memory from disk ───────────
+// env `DESKTOP_TOUCH_MEMORY_PERSIST=1` 時のみ disk から復元、disabled / file
+// 不在 / corruption 時は no-op (initial 状態で起動)。await で server.connect
+// 前に確実に load 完了させ、初回 query で stale empty store が返らないように。
+await uiPatternStore.loadFromDisk();
 
 // ─── Start tray icon ─────────────────────────────────────────────────────────
 const trayOptions: TrayOptions = {
