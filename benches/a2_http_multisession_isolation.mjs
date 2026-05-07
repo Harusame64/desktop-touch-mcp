@@ -103,10 +103,31 @@ async function spawnServer({ port }) {
   return proc;
 }
 
+// Round 1 Opus P2-1: Windows では proc.kill("SIGTERM") は実装されず
+// TerminateProcess 強制終了になり、server の `process.on("SIGTERM", shutdown)`
+// graceful path は発火しない。さらに `proc.once("exit", r)` 単独では子が
+// hang した場合 bench 全体が hang する (timeout 不在)。本 helper は
+// (i) escalate kill (SIGTERM → 5s timeout → SIGKILL) で hang detection、
+// (ii) graceful shutdown 経路の exercise は本 bench scope 外と明示する。
 async function killServer(proc) {
-  if (!proc.killed) {
-    proc.kill("SIGTERM");
-    await new Promise((r) => proc.once("exit", r)).catch(() => {});
+  if (proc.killed) return;
+  proc.kill("SIGTERM");
+  const exited = await Promise.race([
+    new Promise((r) => proc.once("exit", () => r(true))),
+    new Promise((r) => setTimeout(() => r(false), 5000)),
+  ]);
+  if (!exited) {
+    // SIGKILL escalate (Windows でも TerminateProcess は同経路、ただし
+    // SIGTERM 後 5s 待っても exit しない場合の safety net)
+    try {
+      proc.kill("SIGKILL");
+      await Promise.race([
+        new Promise((r) => proc.once("exit", () => r(true))),
+        new Promise((r) => setTimeout(() => r(false), 2000)),
+      ]);
+    } catch {
+      // already exited
+    }
   }
 }
 
@@ -139,11 +160,14 @@ async function queryDesktopStateWithCausal(client) {
 
 function extractCausedBy(result) {
   // SDK returns content[0].text as JSON string of the tool result envelope.
+  // SSOT: ADR-010 §8.2 + PR #115 architecture lock で `caused_by` は **envelope
+  // 内 top-level** 配置 (compatHoist の strip 対象外、env opt-in / raw でも同位置)、
+  // `envelope.caused_by` のような入れ子 shape は存在しない (Round 1 Opus P3-1)。
   try {
     const block = result?.content?.[0];
     if (!block || block.type !== "text" || typeof block.text !== "string") return null;
     const parsed = JSON.parse(block.text);
-    return parsed?.caused_by ?? parsed?.envelope?.caused_by ?? null;
+    return parsed?.caused_by ?? null;
   } catch {
     return null;
   }

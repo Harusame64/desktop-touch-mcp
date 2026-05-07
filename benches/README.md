@@ -168,8 +168,8 @@ ADR-011 Phase A A-2 (PR #158) follow-up — production HTTP server を spawn し
 | 検証項目 | 期待値 (現状 stateless 固定) |
 |---|---|
 | caused_by.tool_call_id session prefix | `default:N` 共有 (= 全 client が "default" session ring を参照) |
-| your_last_action | 両 client で `notification_show` 参照 (history ring 後勝ち) |
-| acceptance | session prefix が "default" + your_last_action が notification_show で **PASS** |
+| your_last_action | 両 client で `notification_show` を参照 (race tolerated — A→B / B→A 順序や同時 commit の race で「どちらの session の commit が末尾か」は決定しない、両方が notification_show を含めば pass) |
+| acceptance | session prefix が "default" + 両 client の your_last_action が notification_show を含む → **PASS** |
 
 #### 結果が示すもの
 
@@ -190,7 +190,10 @@ per-session causal trail isolation を production で活性化するには、HTT
 node benches/a2_http_multisession_isolation.mjs
 ```
 
-要件: `npm run build` (TS) + `dist/index.js` 存在 + Windows session (notification_show が tray balloon 発火、抑制環境では失敗)。
+要件:
+- `npm run build` (TS) + `dist/index.js` 存在
+- Windows desktop session 必須 (notification_show が tray balloon 発火、Focus Assist / 抑制環境では失敗)
+- **CI 自動実行対象外** — operator local 手動実行 only (RDP / locked-down session で挙動が決定しないため)。`d2_desktop_state_roundtrip.mjs` と同型の local-only bench、CI matrix には含めない
 
 ### 2.6 HW Tier 別 (`benches/tier_dispatch.rs`)
 
