@@ -14,7 +14,9 @@
  *     when test seam pins single-session = false → "multi:disabled"
  *   - delegating fn 整合: desktop-state.ts:desktopStateCausedByProjector が
  *     bit-equal で genericQueryCausedByProjector に delegate (A-1 plan §4.1.5
- *     bit-equal sync sweep)
+ *     bit-equal sync sweep) — Round 2 Codex P2 反映で `__getQueryWrapperOptionsForTest`
+ *     経由の observable output deep-equal pin に強化、delegate 停止 / args
+ *     mutation / post-process regression を runtime で検出
  */
 
 import { describe, expect, it } from "vitest";
@@ -90,21 +92,54 @@ describe("A-1: defaultQuerySessionId sentinel branch", () => {
 
 // ── A-1: delegating fn 整合 — desktopStateCausedByProjector ────────────────
 
-describe("A-1: desktop-state.ts delegating fn integrity", () => {
-  it("desktopStateCausedByProjector returns bit-equal output to genericQueryCausedByProjector", async () => {
-    // After A-1 land, desktop-state.ts:desktopStateCausedByProjector is a
-    // delegating fn to genericQueryCausedByProjector (plan §4.1.5 bit-equal
-    // sync sweep). We can't import the private const directly, but we can
-    // exercise both via desktop_state's registration handler and assert
-    // the projector output matches what genericQueryCausedByProjector
-    // produces for the same sessionId. For this test scope, asserting
-    // that the generic projector exists with expected signature is
-    // sufficient — full integration is covered by
-    // tests/unit/desktop-state-causal-include.test.ts after A-1 land
-    // (which exercises desktop_state's delegating projector through the
-    // makeQueryWrapper S5 path).
-    expect(typeof genericQueryCausedByProjector).toBe("function");
-    expect(genericQueryCausedByProjector.length).toBe(2); // (args, sessionId)
+describe("A-1: desktop-state.ts delegating fn integrity (Round 2 Codex P2)", () => {
+  // Round 2 Codex P2 反映: 旧 test は `typeof` + `.length` の shape 確認のみで、
+  // `desktopStateCausedByProjector` が実際に `genericQueryCausedByProjector` に
+  // delegate しているか観測できなかった (delegate 停止 / args 改変 / 結果の
+  // post-process 等の regression を pass させてしまう false confidence)。
+  //
+  // 本 test は `_queryWrapperOptionsRegistry` test seam 経由で
+  // `desktopStateRegistrationHandler` に wire された projector を取り出し、
+  // 代表 sessionId 入力で generic projector と deep-equal output を pin する。
+  // delegate 停止 / args 改変 / 結果 post-process はいずれも shape diff として
+  // 検出される observable behavior path。
+  it("desktopStateCausedByProjector returns deep-equal output to genericQueryCausedByProjector across representative sessionIds", async () => {
+    const { desktopStateRegistrationHandler } = await import("../../src/tools/desktop-state.js");
+    const opts = __getQueryWrapperOptionsForTest(desktopStateRegistrationHandler as never);
+    expect(opts, "desktop_state wrapper options should be registered").toBeDefined();
+    expect(typeof opts?.causedByProjector).toBe("function");
+    const delegated = opts!.causedByProjector!;
+
+    // identity check 不可: `desktopStateCausedByProjector` は plan §4.1.5 で
+    // delegating fn (`return await genericQueryCausedByProjector(...)`) の
+    // 形を取るため reference-equal にはならない。よって observable output
+    // の deep-equal で integrity を pin する。
+
+    // Probe 1: sentinel guard `multi:disabled` → 双方 undefined。
+    // delegate 停止 (forceDegraded など別値返却) や post-process 由来の
+    // 非 undefined regression を検出。
+    expect(await delegated({}, "multi:disabled")).toEqual(
+      await genericQueryCausedByProjector({}, "multi:disabled"),
+    );
+
+    // Probe 2: 複数 non-sentinel sessionId — test env では `nativeL1` が
+    // null のため双方 `{ forceDegraded: true }` で deterministic。
+    // ─ delegate 停止 → undefined になり diff
+    // ─ args mutation (例: `args.sessionInjected = sid`) → frozen で throw
+    // ─ post-process (extra/missing field、value 改変) → object shape diff
+    const sessions = ["sessA", "sessB", "default"] as const;
+    for (const sid of sessions) {
+      const probeArgs = Object.freeze({ probe: sid });
+      const dResult = await delegated(probeArgs, sid);
+      const gResult = await genericQueryCausedByProjector(probeArgs, sid);
+      expect(dResult, `desktop_state delegate output mismatch for sessionId=${sid}`).toEqual(gResult);
+    }
+
+    // Probe 3: frozen arg object — delegate が args を mutate しないこと
+    // (forwarding 前に metadata 追加するような regression を runtime で検出)。
+    const frozenArgs = Object.freeze({ test: "frozen" });
+    await expect(delegated(frozenArgs, "sessC")).resolves.toBeDefined();
+    expect(frozenArgs).toEqual({ test: "frozen" });
   });
 });
 
