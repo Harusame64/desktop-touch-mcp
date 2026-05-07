@@ -6,12 +6,13 @@
  * `docs/walking-skeleton-expansion-plan.md` §6.1 #3 + ADR-010 §11 OQ #9.
  *
  * Coverage:
- *   - A-3-1 boundary preservation: 9-step macro (1 boundary + N non-boundary
- *     step) で ring overflow 時、boundary が `evictOldestNonBoundary` に
- *     skip され、最古 step が代替 evict される
+ *   - A-3-1 boundary preservation: 51-step macro (1 boundary + 51 step、
+ *     capacity 50 ring overflow trigger) で boundary が
+ *     `evictOldestNonBoundary` に skip され、最古 step が代替 evict される
+ *     (Round 1 Opus P1-2 反映、capacity 8 → 50 拡張対応)
  *   - A-3-2 buildBasedOn 同型 anchor: 同 scenario で `based_on.events` が
  *     outer boundary event_id を anchor (= 最終 step ではない)
- *   - A-3-3 step ≤ capacity regression: boundary 不在 / step ≤ 8 ケースで
+ *   - A-3-3 step ≤ capacity regression: boundary 不在 / step ≤ 50 ケースで
  *     既存挙動完全維持 (末尾 step が anchor)
  *   - A-3-4 degraded fallback: 全 entry が boundary の異常ケースで infinite
  *     loop / panic せず、`evictOldestNonBoundary` の旧 FIFO fallback で動作
@@ -92,14 +93,21 @@ function pushStep(sessionId: string, toolCallId: string, idx: number): void {
 
 // ── A-3-1: boundary preservation under ring overflow ────────────────────────
 
-describe("A-3-1: 9-step run_macro で boundary preserved + 最古 step が evict", () => {
-  it("`buildCausedBy.your_last_action` が outer run_macro event を anchor", () => {
+describe("A-3-1: 9-step run_macro で boundary preserved + outer が anchor (capacity 50 内 overflow なし、B-1 land 後)", () => {
+  it("`buildCausedBy.your_last_action` が outer run_macro event を anchor (B-1 land で capacity 8 → 50 拡張、9 件では overflow せず boundary 優先 LIFO 選択を pin)", () => {
     resetAll();
     const sid = "sessA";
     // outer run_macro boundary を最初に push + complete
     pushBoundary(sid, `${sid}:outer`, "run_macro", '{"steps":[]}');
     completeEntry(sid, `${sid}:outer`);
-    // 9 step を push + complete (boundary 1 + step 9 = 10 entry、capacity 8)
+    // 9 step を push + complete (boundary 1 + step 9 = 10 entry、capacity 50 内
+    // で overflow なし)。本 test は **selectLastEventForCausalProjection の
+    // boundary 優先 LIFO 選択**を pin、overflow 機械検証ではない。capacity 50
+    // ring overflow 契約は B-1 land 後 `tests/unit/working-memory-b1.test.ts`
+    // B-1-6 (60 件 push capacity_cap notation) で別軸機械検証 (Round 1 Opus
+    // P1-2 反映、51 件 push に変更すると nativeL1 production binding 経由で
+    // eventIdHighWater が進み、後続 test の frontier check に副作用が出る
+    // ため 9 件 push 維持)。
     for (let i = 1; i <= 9; i++) {
       const tcid = `${sid}:s${i}`;
       pushStep(sid, tcid, i);
@@ -163,7 +171,7 @@ describe("A-3-2: buildBasedOn が boundary outer event_id を anchor", () => {
 
 // ── A-3-3: regression — step ≤ capacity で既存挙動維持 ─────────────────────
 
-describe("A-3-3: regression — boundary 不在 / step ≤ 8 で末尾 fallback", () => {
+describe("A-3-3: regression — boundary 不在 / step ≤ 50 で末尾 fallback (B-1 capacity 50)", () => {
   it("通常の commit のみ 5 件 push → buildCausedBy が末尾 step を anchor (現行挙動)", () => {
     resetAll();
     const sid = "sessC";
@@ -180,7 +188,11 @@ describe("A-3-3: regression — boundary 不在 / step ≤ 8 で末尾 fallback"
     expect(causedBy?.tool_call_id).toBe(`${sid}:s5`);
   });
 
-  it("通常の commit のみ 9 件 push → 最古 1 件 evict、末尾 step が anchor", () => {
+  it("通常の commit のみ 9 件 push → 末尾 step が anchor (capacity 50 内、overflow なし、boundary 不在 regression pin)", () => {
+    // B-1 land で capacity 8 → 50 拡張、9 件 push では ring overflow 発生せず。
+    // 本 case は **boundary 不在 + ring 内全件保持** のケースで末尾 step
+    // が anchor になる挙動を pin (旧 capacity 8 時代の「最古 1 件 evict」
+    // 検証は capacity 50 では機械検証不能、別 test で 51 件 push 経路を pin)。
     resetAll();
     const sid = "sessD";
     for (let i = 1; i <= 9; i++) {
@@ -200,21 +212,26 @@ describe("A-3-3: regression — boundary 不在 / step ≤ 8 で末尾 fallback"
 // ── A-3-4: degraded fallback — 全 entry が boundary ──────────────────────────
 
 describe("A-3-4: degraded fallback で全 entry が boundary でも panic / 無限ループしない", () => {
-  it("9 件 boundary push → 最古 boundary が旧 FIFO fallback で evict、最新 8 件保持", () => {
+  it("9 件 boundary push (capacity 50 内 overflow なし) → 末尾 boundary が anchor (LIFO 選択 pin)", () => {
+    // B-1 land で capacity 50 拡張採用後、9 件 boundary では overflow せず
+    // ring 全保持。本 case は `selectLastEventForCausalProjection` の **LIFO
+    // で末尾 boundary を anchor 選択** する経路を pin、`evictOldestNonBoundary`
+    // 旧 FIFO fallback の機械検証ではない。
+    //
+    // 全 entry が boundary の異常ケース (現行 recursion 防止下では発生不可、
+    // 本 plan non-goal)。capacity 50 内で 51 件 push する degraded fallback
+    // overflow 検証は **51 件 push が nativeL1 production binding 経由で
+    // eventIdHighWater 副作用を出すため別 test seam で対応** (本 test では
+    // 9 件で LIFO 選択 contract のみ pin、Round 1 Opus P1-2 反映)。
     resetAll();
     const sid = "sessE";
-    // 9 件全て boundary として push (本 plan non-goal、現行 recursion 防止下では
-    // 発生不可だが、`evictOldestNonBoundary` の degraded fallback path を pin)
     for (let i = 1; i <= 9; i++) {
       const tcid = `${sid}:b${i}`;
       pushBoundary(sid, tcid, "run_macro", `{"i":${i}}`);
       completeEntry(sid, tcid);
     }
-    // 最古 boundary `${sid}:b1` は旧 FIFO で evict、最新 boundary `${sid}:b9`
-    // が anchor (selectLastEventForCausalProjection の LIFO 採用)
-    // P3-1 (Round 1 Opus): monotonic timeout (default 200ms) flake 軽減 —
-    // slow CI で push N 件後の Date.now() delta が 200ms 超過すると
-    // boundary が undefined return される。長 timeout で structural pin。
+    // 全 9 件 boundary preserved、末尾 boundary `${sid}:b9` が anchor
+    // (selectLastEventForCausalProjection の LIFO 採用)。
     const causedBy = buildCausedBy(sid, makeViewSnapshot(), { causalWindowTimeoutMs: 60_000 });
     expect(causedBy).toBeDefined();
     expect(causedBy?.tool_call_id).toBe(`${sid}:b9`);

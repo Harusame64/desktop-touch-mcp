@@ -132,7 +132,30 @@ const SUGGESTS: Record<string, string[]> = {
     "Try click_element + keyboard({action:'type'}) manually",
     "Check context.attempts for per-channel error codes",
   ],
+  // ADR-011 Phase B B-1: Working memory N upper bound (WORKING_MEMORY_N_MAX
+  // = 50, layer-constraints §5 SSOT 整合) を超える要求が来た場合の typed
+  // reason。silently truncate せず error を返す設計 (Phase B plan §4.3
+  // acceptance、ADR-010 §5.6.1 truncation 規約と整合 — capacity 内 truncate
+  // は `_truncation` notation で expose、上限超えは error)。
+  WorkingMemoryNUpperBoundExceeded: [
+    "Reduce working:N — upper bound is WORKING_MEMORY_N_MAX (= 50, layer-constraints §5)",
+    "If you need more recent events, use include=[\"episodic:N\"] for richer rich-shape projection (B-2 land 後に有効)",
+    "Working memory is a compact summary of recent commits — N typically ≤ 10 is sufficient for context",
+  ],
 };
+
+/**
+ * @internal Read-only access to the SUGGESTS dictionary for typed-error
+ * envelope wiring (Round 1 Opus P1-3 反映). `makeQueryWrapper` uses this
+ * to populate `if_unexpected.try_next` with `{action: string}` entries
+ * derived from SUGGESTS string lines, ensuring runtime hint delivery
+ * for Phase B B-1 `WorkingMemoryNUpperBoundExceeded` and any future
+ * code that needs `buildFailureEnvelope` direct call (rather than
+ * `failWith`-based path).
+ */
+export function getSuggestsForCode(code: string): string[] {
+  return SUGGESTS[code] ?? [];
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Error classification

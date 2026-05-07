@@ -116,6 +116,7 @@ import {
   _setSingleSessionPinForTest,
   _resetSingleSessionPinForTest,
 } from "./_session-context.js";
+import { getSuggestsForCode } from "./_errors.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -169,6 +170,12 @@ export interface EnvelopeMinimalShape<T = unknown> {
    * "JSON.stringify({events:[1n]})"` で TypeError 実証済)。Optional —
    * same `include=["causal"]` opt-in trigger as `caused_by`. */
   based_on?: BasedOnShape;
+  /** ADR-011 Phase B B-1 Working memory projection (recent N event compact、
+   *  ADR-010 §6 line 406 view name `current_state` 整合)。Optional — present
+   *  only when `include=["working"]` or `["working:N"]` opt-in。
+   *  `_truncation` notation 付きで silently truncate 防止 (Phase B plan §4.3
+   *  acceptance、ADR-010 §5.6.1 truncation 規約)。 */
+  current_state?: WorkingMemoryProjection;
 }
 
 /**
@@ -304,6 +311,17 @@ export interface EnvelopeOptions {
    * 責務マトリクス整合). Optional — set together with `causedBy`.
    */
   basedOn?: BasedOnShape;
+  /**
+   * ADR-011 Phase B B-1 Working memory projection
+   * (`envelope.current_state.recent_events`、ADR-010 §6 line 406 view name
+   * `current_state` 整合)。Optional — set by `makeQueryWrapper` when
+   * `include=["working"]` or `["working:N"]` opt-in。
+   *
+   * `_truncation` notation は ring underflow / capacity_cap で N 要求未満
+   * しか返せない場合に付与 (silently truncate 防止、Phase B plan §4.3
+   * acceptance + ADR-010 §5.6.1 truncation 規約)。
+   */
+  currentState?: WorkingMemoryProjection;
 }
 
 // ─── Schema injection helper (PR #112 Round 1 P1 fix) ─────────────────────────
@@ -499,6 +517,8 @@ export function buildEnvelope<T>(
     // S5: causal include opt-in fields (caller wires via makeQueryWrapper)
     ...(options?.causedBy !== undefined ? { caused_by: options.causedBy } : {}),
     ...(options?.basedOn !== undefined ? { based_on: options.basedOn } : {}),
+    // ADR-011 Phase B B-1: Working memory projection
+    ...(options?.currentState !== undefined ? { current_state: options.currentState } : {}),
   };
 
   let confidence: "fresh" | "degraded" = "fresh";
@@ -965,8 +985,25 @@ interface ToolCallEventRingBuffer {
   lastAccessMs: number;
 }
 
-/** Max events per session (sub-plan §1.1 A-1 ring capacity). */
-const HISTORY_BUFFER_CAPACITY = 8;
+/**
+ * Max events per session (ADR-011 Phase B B-1 land で 8 → 50 拡張、§10 OQ #1
+ * 「(a) capacity 50 拡張」採用)。`layer-constraints.md §5 line 280` SSOT 既定値
+ * (working memory N 上限 default 50) と整合、ADR-010 §5.6.1 既存 default
+ * `working:N (N=10 default)` / `episodic:N (N=5 default)` を Phase A の causal
+ * trail / boundary 保護下で安定動作させる十分余裕。
+ *
+ * 影響: A-3 boundary 保護下で effective capacity = 50 - boundary 件数 = 49+、
+ * `evictOldestNonBoundary` 計算量 O(N) で N=50 でも許容範囲、causal trail
+ * latency への影響は無視できるレベル。
+ */
+const HISTORY_BUFFER_CAPACITY = 50;
+/** ADR-011 Phase B B-1: Working memory `include=working:N` の default 値。
+ *  ADR-010 §5.6.1 P6 行 (line 383) 既定値 N=10 と整合。 */
+export const WORKING_MEMORY_DEFAULT_N = 10;
+/** ADR-011 Phase B B-1: Working memory N 上限。`layer-constraints §5 line 280`
+ *  SSOT 既定値 50 と sync、`HISTORY_BUFFER_CAPACITY` と同値で
+ *  ring overflow による silent truncate を構造的に防ぐ。 */
+export const WORKING_MEMORY_N_MAX = 50;
 /** Max sessions in `_historyBuffers` (sub-plan §6 OQ #1 LRU eviction). */
 const HISTORY_BUFFERS_MAX = 1000;
 /** Per-session TTL — entries older than this are evicted on access (24 h). */
@@ -1277,6 +1314,156 @@ export function buildBasedOn(
   if (producedChanges.some((c) => c.startsWith("dirty_rects["))) sources.push("DXGI");
 
   return { events, sources };
+}
+
+// ─── ADR-011 Phase B: include memory layer parsing helper ──────────────────
+
+/**
+ * Parse `include` array for memory layer requests (B-1 working、B-2 episodic、
+ * B-3 semantic、B-4 procedural)。
+ *
+ * 形式 (Phase B plan §4.1 / §5.1 / §6.1 / §7.1):
+ *   - `"<layer>"` (N 省略) → `defaultN` 採用
+ *   - `"<layer>:N"` (explicit) → parseInt(N)、parse 失敗時 / N < 0 で `defaultN` fallback
+ *   - layer 名 不在 → `undefined` (skip projection、layer expose しない)
+ *
+ * ADR-010 §6 line 414 example `desktop_state(include=["working:10","episodic:5","causal","invariants"])`
+ * と整合、layer ごとに独立 N axis を許容。
+ */
+export function parseIncludeMemoryN(
+  include: string[] | undefined,
+  layerName: string,
+  defaultN: number,
+): number | undefined {
+  if (!include) return undefined;
+  for (const entry of include) {
+    if (entry === layerName) return defaultN;
+    if (entry.startsWith(`${layerName}:`)) {
+      const nStr = entry.slice(layerName.length + 1);
+      const n = Number.parseInt(nStr, 10);
+      if (Number.isFinite(n) && n >= 0) return n;
+      return defaultN;
+    }
+  }
+  return undefined;
+}
+
+// ─── ADR-011 Phase B B-1: Working memory projection ─────────────────────────
+
+/**
+ * Compact summary of a `ToolCallEvent` for Working memory projection
+ * (`current_state.recent_events`、ADR-011 Phase B B-1 view 構造)。
+ *
+ * Episodic memory (B-2) は `_envelope.ts:ToolCallEvent` の rich shape を
+ * そのまま expose する設計のため、本 interface は **意図的に薄い**
+ * (Working = compact、Episodic = rich の差別化、Phase B plan §4.1)。
+ *
+ *   - tool_call_id: sessionId:seq 形式 (`nextToolCallId`)
+ *   - tool: tool name
+ *   - args_summary: 64 char truncated (Episodic の 512 char より短い)
+ *   - ok: completed only / undefined for in-flight
+ *   - is_compound: A-3 boundary flag (true なら inner step は集約表示)
+ */
+export interface ToolCallEventSummary {
+  tool_call_id: string;
+  tool: string;
+  args_summary: string;
+  ok: boolean | undefined;
+  is_compound: boolean;
+}
+
+/**
+ * Truncation notation (Phase B plan §4.3 acceptance、ADR-010 §5.6.1
+ * truncation 規約整合)。`projectWorkingMemory` が ring underflow / capacity
+ * cap で N 要求未満の件数しか返せない場合、`_truncation` field を envelope
+ * に付与して silently truncate を防ぐ (truth-in-API 維持)。
+ */
+export interface TruncationNotation {
+  requested: number;
+  returned: number;
+  reason: "ring_underflow" | "capacity_cap";
+}
+
+/** Working memory projection 戻り値 (recent_events + 任意 _truncation)。
+ *  field 名 `recent_events` は ADR-010 §6 line 406 view name `current_state`
+ *  + Phase B plan §4 の documented contract `current_state.recent_events`
+ *  と sync (Round 1 Codex P1 反映: 旧 field 名 `events` は API contract
+ *  違反で LLM client が受信できない盲点を解消、Phase A PR #158 同型
+ *  pattern = Codex 単独 API contract regression 検出)。 */
+export interface WorkingMemoryProjection {
+  recent_events: ToolCallEventSummary[];
+  _truncation?: TruncationNotation;
+}
+
+/**
+ * Project Working memory (recent N event compact) from per-session history
+ * buffer (ADR-011 Phase B B-1).
+ *
+ * 戻り値:
+ *   - sentinel `multi:disabled` → `undefined` (skip working memory expose、
+ *     A-2 sentinel runtime closed loop と整合)
+ *   - history ring 不在 / 0 件 → `{ recent_events: [] }` (empty projection、
+ *     `_truncation` なし、ring underflow とは区別)
+ *   - 通常: ring 末尾から **最大 N 件** の events を新しい順で抽出 (LIFO)、
+ *     ring 内件数 < N の場合は全件 + `_truncation: { reason: "ring_underflow" }`、
+ *     N > capacity の場合は capacity 件 + `_truncation: { reason: "capacity_cap" }`
+ *
+ * 注意点:
+ *   - causal trail (`buildCausedBy`) の boundary 優先 LIFO anchor とは
+ *     **独立**、Working memory は ring 末尾 N 件を素直に新しい順で出す
+ *     (boundary 保護は eviction 段階で既に効いている)
+ *   - Episodic memory (B-2) と同 ring を共有、projection shape のみ
+ *     異なる (Phase B plan §3.3 storage 表)
+ */
+export function projectWorkingMemory(
+  sessionId: string,
+  n: number,
+): WorkingMemoryProjection | undefined {
+  if (sessionId === "multi:disabled") return undefined;
+  const ring = _historyBuffers.get(sessionId);
+  if (!ring) return { recent_events: [] };
+  ring.lastAccessMs = _historyClock();
+
+  const ringSize = ring.events.length;
+  if (ringSize === 0) return { recent_events: [] };
+
+  // capacity_cap: N が ring capacity を超える要求 (silently truncate 防止)
+  const cappedN = Math.min(n, ring.capacity);
+  // 実際に返せる件数: min(要求 N, ring 内件数)
+  const returnedCount = Math.min(cappedN, ringSize);
+
+  // ring 末尾から returnedCount 件を **新しい順** (LIFO) で抽出
+  const recentEvents: ToolCallEventSummary[] = [];
+  for (let i = ringSize - 1; i >= ringSize - returnedCount; i--) {
+    const e = ring.events[i];
+    recentEvents.push({
+      tool_call_id: e.toolCallId,
+      tool: e.toolName,
+      args_summary: e.argsSummary.length > 64 ? e.argsSummary.slice(0, 64) : e.argsSummary,
+      ok: e.ok,
+      is_compound: e.isCompoundBoundary === true,
+    });
+  }
+
+  // _truncation notation 判定 (Phase B plan §4.3 acceptance)
+  // 注意: B-1 land 時点では `WORKING_MEMORY_N_MAX === HISTORY_BUFFER_CAPACITY === 50`
+  // のため、makeQueryWrapper s5 path で N > N_MAX を typed error short-circuit
+  // するロジックが先に発火 (Round 1 Opus P2-4 関連)。本 helper の `n > ring.capacity`
+  // 経路は **wrapper 経由では unreachable** (typed error path に吸収)、
+  // `_seedHistoryForTest` 経由 / `projectWorkingMemory` 直接呼出 / 将来 N_MAX >
+  // capacity に拡張する場合の **forward-compatible safety net** として保持。
+  // 意図的 dead-code-near (test pin あり、B-1-6 で 60 件 push synthetic 経路)。
+  let truncation: TruncationNotation | undefined;
+  if (n > ring.capacity) {
+    truncation = { requested: n, returned: recentEvents.length, reason: "capacity_cap" };
+  } else if (returnedCount < n) {
+    // ring 内件数 < N (ring underflow)
+    truncation = { requested: n, returned: recentEvents.length, reason: "ring_underflow" };
+  }
+
+  return truncation === undefined
+    ? { recent_events: recentEvents }
+    : { recent_events: recentEvents, _truncation: truncation };
 }
 
 /**
@@ -1921,6 +2108,11 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
     const { include, ...handlerArgs } = rawArgs as { include?: string[] } & TArgs;
     const includeCausal = include?.includes("causal") === true;
     const includeRaw = include?.includes("raw") === true;
+    // ADR-011 Phase B B-1: Working memory `include=["working"]` or
+    // `include=["working:N"]` parsing。N <= WORKING_MEMORY_N_MAX で
+    // typed error、include 不在 / layer 不在 → undefined (skip projection)。
+    const includeWorkingN = parseIncludeMemoryN(include, "working", WORKING_MEMORY_DEFAULT_N);
+    const includeWorkingOptIn = includeWorkingN !== undefined;
     // Round 2 P1 fix (Codex line 1501): `include=["causal"]` is an
     // implicit envelope opt-in — causal projection (`caused_by` +
     // `based_on`) only exists inside the envelope shape. Without this
@@ -1940,7 +2132,34 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
     // requested. This keeps the per-call opt-out path that lets
     // legacy callers force raw shape even while asking for causal
     // context (degraded UX, but contract-preserving).
-    const optIn = (includeCausal && !includeRaw) || resolveEnvelopeOptIn(include, getEnvValue());
+    // ADR-011 Phase B B-1: `include=["working"]` も causal と同型で envelope
+    // opt-in の implicit promotion (raw override 維持)。current_state は
+    // envelope 内 top-level field、raw 互換 hoist では消失するため。
+    const optIn =
+      ((includeCausal || includeWorkingOptIn) && !includeRaw) ||
+      resolveEnvelopeOptIn(include, getEnvValue());
+
+    // ADR-011 Phase B B-1: N upper bound check (silently truncate せず error)。
+    // Round 1 Opus P1-3 反映: try_next に SUGGESTS 3 行を typed action として
+    // 配線、runtime hint delivery を保証 (`_errors.ts:getSuggestsForCode` 経由、
+    // SUGGESTS 文字列 → `{action: string}` minimal wiring、ADR-010 P2 acceptance
+    // の本格 typed action 設計は別 phase の責務だが本 PR で string content は
+    // LLM に届ける)。
+    if (includeWorkingOptIn && includeWorkingN! > WORKING_MEMORY_N_MAX) {
+      const tryNext: TryNextAction[] = getSuggestsForCode(
+        "WorkingMemoryNUpperBoundExceeded",
+      ).map((suggest) => ({ action: suggest }));
+      const failure = buildFailureEnvelope(
+        "WorkingMemoryNUpperBoundExceeded",
+        tryNext,
+        { viewPoisoned: false, asOfWallclockMs: null },
+      );
+      const finalShape = optIn ? failure : compatFailureRaw(failure);
+      return {
+        content: [{ type: "text", text: JSON.stringify(finalShape) }],
+      };
+    }
+
     const meta = await fetchMeta();
     const result = await handler(handlerArgs as TArgs);
 
@@ -1949,15 +2168,25 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
     let causedBy: CausedByShape | undefined;
     let basedOn: BasedOnShape | undefined;
     let projectionForceDegraded = false;
-    if (includeCausal && causedByProjector) {
+    let currentState: WorkingMemoryProjection | undefined;
+    if ((includeCausal && causedByProjector) || includeWorkingOptIn) {
       const sessionId = getSessionId(handlerArgs);
-      const projection = await causedByProjector(handlerArgs, sessionId);
-      causedBy = projection?.causedBy;
-      basedOn = projection?.basedOn;
-      // Round 3 P2 fix (Codex line 655): surface impaired observability
-      // (e.g. nativeL1 null) via `confidence: degraded` so LLM clients
-      // can distinguish "causal asked, unavailable" from healthy raw.
-      projectionForceDegraded = projection?.forceDegraded === true;
+      // causal projection (A-1 wire)
+      if (includeCausal && causedByProjector) {
+        const projection = await causedByProjector(handlerArgs, sessionId);
+        causedBy = projection?.causedBy;
+        basedOn = projection?.basedOn;
+        // Round 3 P2 fix (Codex line 655): surface impaired observability
+        // (e.g. nativeL1 null) via `confidence: degraded` so LLM clients
+        // can distinguish "causal asked, unavailable" from healthy raw.
+        projectionForceDegraded = projection?.forceDegraded === true;
+      }
+      // ADR-011 Phase B B-1: Working memory projection
+      if (includeWorkingOptIn) {
+        currentState = projectWorkingMemory(sessionId, includeWorkingN!);
+        // sentinel `multi:disabled` → undefined return、cross-session leak 防止
+        // (Phase A sentinel runtime closed loop と整合)
+      }
     }
 
     const block = result.content?.[0];
@@ -1981,6 +2210,8 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
       asOfWallclockMs: meta.asOfWallclockMs,
       causedBy,
       basedOn,
+      // ADR-011 Phase B B-1: Working memory projection
+      currentState,
     });
     const final = compatHoist(envelope, optIn);
 
