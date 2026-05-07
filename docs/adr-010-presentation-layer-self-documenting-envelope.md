@@ -405,7 +405,7 @@ LLM context window 経済性を保証するため、envelope payload size に **
 |---|---|---|---|
 | Working | ✓ ADR-011 Phase B (B-1、PR #162 land 2026-05-07) | `current_state.recent_events` (recent N event compact) | `include=working:N` (default N=10、上限 N=50 / `WORKING_MEMORY_N_MAX`) |
 | Episodic | ✓ ADR-011 Phase B (B-2、PR #B-2 land 2026-05-07) | `tool_call_history.episodes` (自分の過去の呼び出し + outcome rich shape: lease_token / event_id / elapsed_ms 等) | `include=episodic:N` (default N=5、上限 N=100 / `EPISODIC_MEMORY_N_MAX`) |
-| Semantic | ✓ ADR-011 Phase B (B-3、未着手) | `learned_ui_pattern.patterns` (page graph 風) | `include=semantic:K` (default K=3) |
+| Semantic | ✓ ADR-011 Phase B (B-3、PR #B-3 land 2026-05-07) | `learned_ui_pattern.patterns` (rule-based: 同 windowTitle 連続 3+ 成功 → 1 pattern) | `include=semantic:K` (default K=3、上限 K=10 / `SEMANTIC_MEMORY_K_MAX`、in-memory LRU 100、永続化 framework は env opt-in skeleton、実 disk I/O は B-3 follow-up) |
 | Procedural | ✓ ADR-011 Phase B (B-4、未着手) | `successful_macros.suggestions` (fused action) | `include=procedural:K` (default K=3) |
 
 LLM は include 引数で **「今欲しい memory layer」を select** できる:

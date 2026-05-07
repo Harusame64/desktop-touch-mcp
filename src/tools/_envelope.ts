@@ -117,6 +117,7 @@ import {
   _resetSingleSessionPinForTest,
 } from "./_session-context.js";
 import { getSuggestsForCode } from "./_errors.js";
+import { uiPatternStore, parseMemoryRedactMode } from "../store/ui-pattern-store.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -182,6 +183,14 @@ export interface EnvelopeMinimalShape<T = unknown> {
    *  `["episodic:N"]` opt-in。Working memory と同 ring 共有、projection
    *  shape のみ rich (lease_token / event_id / elapsed)。 */
   tool_call_history?: EpisodicMemoryProjection;
+  /** ADR-011 Phase B B-3 Semantic memory projection (learned UI patterns、
+   *  ADR-010 §6 line 408 view name `learned_ui_pattern` 整合)。Optional —
+   *  present only when `include=["semantic"]` or `["semantic:K"]` opt-in。
+   *  Working/Episodic と同 ring 共有 (`_historyBuffers`)、抽出は rule-based
+   *  (同 windowTitle で連続 N=3+ commit 成功 → 1 pattern) + LRU 100 cap、
+   *  在メモリのみ (永続化は B-3 follow-up PR で carry-over、env var parser
+   *  のみ設置済)。 */
+  learned_ui_pattern?: SemanticMemoryProjection;
 }
 
 /**
@@ -338,6 +347,15 @@ export interface EnvelopeOptions {
    * elapsed_ms)、in-flight skip (completed only)。
    */
   toolCallHistory?: EpisodicMemoryProjection;
+  /**
+   * ADR-011 Phase B B-3 Semantic memory projection
+   * (`envelope.learned_ui_pattern.patterns`、ADR-010 §6 line 408 view name
+   * `learned_ui_pattern` 整合)。Optional — set by `makeQueryWrapper` when
+   * `include=["semantic"]` or `["semantic:K"]` opt-in。rule-based 抽出
+   * (同 windowTitle 連続 N+ commit 成功 → 1 pattern)、in-memory LRU 100
+   * (永続化は B-3 follow-up PR で carry-over、env var parser のみ設置済)。
+   */
+  learnedUiPattern?: SemanticMemoryProjection;
 }
 
 // ─── Schema injection helper (PR #112 Round 1 P1 fix) ─────────────────────────
@@ -537,6 +555,8 @@ export function buildEnvelope<T>(
     ...(options?.currentState !== undefined ? { current_state: options.currentState } : {}),
     // ADR-011 Phase B B-2: Episodic memory projection
     ...(options?.toolCallHistory !== undefined ? { tool_call_history: options.toolCallHistory } : {}),
+    // ADR-011 Phase B B-3: Semantic memory projection
+    ...(options?.learnedUiPattern !== undefined ? { learned_ui_pattern: options.learnedUiPattern } : {}),
   };
 
   let confidence: "fresh" | "degraded" = "fresh";
@@ -992,6 +1012,14 @@ export interface ToolCallEvent {
    *  `based_on.events` で参照)。`false` または `undefined` は通常 commit
    *  (FIFO eviction 対象)。default `undefined` (= 非 boundary)。 */
   isCompoundBoundary?: boolean;
+  /** ADR-011 Phase B B-3: foreground window title at push time
+   *  (best-effort、`pushHistoryStarted` で `nativeViewFocus.viewGetFocused()`
+   *  経由で取得、null/失敗時 undefined)。Phase B plan §6.1 rule-based 抽出の
+   *  pattern context として使用 (同 windowTitle で連続 N+ commit 成功 →
+   *  pattern 化)。`undefined` の entry は pattern 抽出で skip (window context
+   *  不明)。redact 設定 (`DESKTOP_TOUCH_MEMORY_REDACT_TITLES=1`) で永続化時
+   *  に hash 化される対象 field。 */
+  windowTitle?: string;
 }
 
 interface ToolCallEventRingBuffer {
@@ -1032,6 +1060,17 @@ export const EPISODIC_MEMORY_DEFAULT_N = 5;
  *  notation で expose、N <= 100 で typed error は発火せず ring overflow
  *  notation 経路で対応 (Working と同型 truth-in-API)。 */
 export const EPISODIC_MEMORY_N_MAX = 100;
+/** ADR-011 Phase B B-3: Semantic memory `include=semantic:K` の default 値
+ *  (Phase B plan §6.2 整合)。LLM が「過去類似 UI pattern を再利用」する用途、
+ *  K=3 は recency / frequency 上位 3 pattern を expose、context 経済性
+ *  優先 (rich shape ではないが pattern_id + window_title + success_rate 等
+ *  で per-pattern ~400B、K=3 で +1.2KB 以内目標、Phase B plan §6.3 acceptance)。 */
+export const SEMANTIC_MEMORY_DEFAULT_K = 3;
+/** ADR-011 Phase B B-3: Semantic memory K 上限 (Phase B plan §6 + §10 OQ #1
+ *  整合、layer-constraints §5 SSOT は B-3 着手時に Semantic 行追加予定)。
+ *  pattern store 容量 (default 100 patterns) より小さい上限で envelope size
+ *  budget +1.2KB 以内を構造的に保証。 */
+export const SEMANTIC_MEMORY_K_MAX = 10;
 /** Max sessions in `_historyBuffers` (sub-plan §6 OQ #1 LRU eviction). */
 const HISTORY_BUFFERS_MAX = 1000;
 /** Per-session TTL — entries older than this are evicted on access (24 h). */
@@ -1039,9 +1078,22 @@ const HISTORY_BUFFER_TTL_MS = 24 * 3600 * 1000;
 
 const _historyBuffers = new Map<string, ToolCallEventRingBuffer>();
 
+/**
+ * ADR-011 Phase B B-3 Round 2 P1-1 fix: per-session "last extracted toolCallId"
+ * cursor for Semantic memory pattern extraction。同 events を query ごとに
+ * 再 extract する pre-fix の bug (= `recordPattern` の `success_count +=`
+ * で無限累積) を、cursor 越え events のみ slice して防ぐ。
+ *
+ * cursor 不在 / cursor event が ring eviction で消えた場合は best-effort
+ * で ring start から scan (再 emit risk あるが fallback として許容、ring
+ * capacity 50 + cursor advance 頻度から実害は限定的)。
+ */
+const _semanticExtractionCursors = new Map<string, string>();
+
 /** @internal Test-only — clear per-session history buffers between cases. */
 export function _resetHistoryBuffersForTest(): void {
   _historyBuffers.clear();
+  _semanticExtractionCursors.clear();
 }
 
 /** @internal Test-only — inject a fully-formed history entry directly,
@@ -1079,6 +1131,11 @@ function evictHistoryIfNeeded(): void {
   for (const [key, ring] of _historyBuffers) {
     if (now - ring.lastAccessMs > HISTORY_BUFFER_TTL_MS) {
       _historyBuffers.delete(key);
+      // Round 2 Codex P2 fix: cursor lifecycle を ring eviction に同期。
+      // pre-fix では `_semanticExtractionCursors` が ring 消滅後も残存 → 短命
+      // session が大量発生する production deploy で Map が unbounded growth、
+      // 同 sessionId 再出現時に stale cursor が fallback rescan を引き起こす。
+      _semanticExtractionCursors.delete(key);
     }
   }
   // LRU eviction when capacity exceeded
@@ -1089,6 +1146,7 @@ function evictHistoryIfNeeded(): void {
   while (_historyBuffers.size > HISTORY_BUFFERS_MAX && sorted.length > 0) {
     const [oldestKey] = sorted.shift()!;
     _historyBuffers.delete(oldestKey);
+    _semanticExtractionCursors.delete(oldestKey);
   }
 }
 
@@ -1134,6 +1192,10 @@ function pushHistoryStarted(args: {
    *  protected from FIFO eviction so long macros preserve orchestration
    *  boundary in causal projection. */
   isCompoundBoundary?: boolean;
+  /** ADR-011 Phase B B-3: foreground window title at push time
+   *  (best-effort、Phase B sub-plan §6.1 rule-based pattern 抽出 context、
+   *  undefined 時 pattern 抽出で run 中断 = window 不明 entry は skip)。 */
+  windowTitle?: string;
 }): void {
   const now = _historyClock();
   let ring = _historyBuffers.get(args.sessionId);
@@ -1154,6 +1216,7 @@ function pushHistoryStarted(args: {
     ok: undefined,
     leaseToken: args.leaseToken,
     isCompoundBoundary: args.isCompoundBoundary,
+    windowTitle: args.windowTitle,
   });
   // ADR-011 A-3: ring overflow は `evictOldestNonBoundary` 経由で boundary
   // entry を skip。`_seedHistoryForTest` は test-only seam で boundary
@@ -1672,6 +1735,255 @@ export function projectEpisodicMemory(
     : { episodes, _truncation: truncation };
 }
 
+// ─── ADR-011 Phase B B-3: Semantic memory projection ───────────────────────
+
+/**
+ * Pattern summary projection for Semantic memory
+ * (`learned_ui_pattern.patterns`、Phase B plan §6.2 整合)。
+ *
+ * 抽出: rule-based — 同 `windowTitle` で連続 N=3+ commit `ok=true` を
+ * 1 pattern として記録、tool sequence (上位 3 件) を `example_actions` に
+ * 集約。LLM が「過去類似 UI を操作した経験」を hint 化する用途。
+ *
+ *   - pattern_id: hash(windowTitle + tool_sequence_signature)、dedupe key
+ *   - window_title: foreground window 名 (raw、redact env で hash 化、永続化
+ *     時のみ実害、in-memory only では generic safe)
+ *   - step_count: pattern 内 commit 数
+ *   - last_seen_at_ms: 最終観測時刻 (LRU 用)
+ *   - success_rate: 過去観測 success_count / total observations
+ *   - example_actions: tool name 上位 3 件 (frequency 順)
+ */
+export interface UiPatternSummary {
+  pattern_id: string;
+  window_title: string;
+  step_count: number;
+  last_seen_at_ms: number;
+  success_rate: number;
+  example_actions: string[];
+}
+
+/** Semantic memory projection 戻り値 (`patterns` field、Phase B plan §6.2
+ *  documented contract `learned_ui_pattern.patterns` 整合)。 */
+export interface SemanticMemoryProjection {
+  patterns: UiPatternSummary[];
+  _truncation?: TruncationNotation;
+}
+
+/**
+ * Internal pattern record (in-memory store unit、`src/store/ui-pattern-store.ts`
+ * で LRU 管理)。`UiPatternSummary` の **拡張**: success_count / failure_count
+ * を内部保持して success_rate を runtime computed (新 observation で update)。
+ */
+export interface UiPatternRecord {
+  pattern_id: string;
+  window_title: string;
+  step_count: number;
+  last_seen_at_ms: number;
+  success_count: number;
+  failure_count: number;
+  example_actions: string[];
+}
+
+/**
+ * 32-bit FNV-1a hash (collision-tolerant deterministic、no crypto import 不要)。
+ * windowTitle fingerprint / redact 両用、LRU 100 規模では衝突確率十分低
+ * (1 - exp(-100²/2³³) ≈ 1.16e-6)。
+ *
+ * Round 2 P2-4 fix: pre-fix の `windowTitle.slice(0, 32)` は長 path window
+ * (e.g. `C:\Users\.../very-long-filename-N.txt - Notepad`) で先頭 32 char
+ * 一致による誤 merge risk があったため、full string を hash 化して衝突空間を
+ * 32-bit に拡大 (`step_count` 上書き隠蔽 risk 構造的解消)。
+ */
+function fnv1aHash16(input: string): string {
+  let hash = 0x811c9dc5; // FNV offset basis (32-bit)
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = (hash * 0x01000193) >>> 0; // FNV prime: 16777619
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+/**
+ * Compute pattern fingerprint for dedupe (window_title hash + tool sequence
+ * signature)。
+ *
+ * 形式: `${fnv1aHash16(windowTitle)}::${tools.slice(0, 8).join("→")}`
+ *   - windowTitle は full string FNV-1a hash → 長 path window 先頭一致による
+ *     誤 merge を構造的に解消 (Round 2 P2-4 fix)
+ *   - tool sequence は最大 8 commit まで signature に使用 (それ以上は
+ *     pattern boundary が異なると判定)
+ */
+function computePatternFingerprint(
+  windowTitle: string,
+  tools: string[],
+): string {
+  const wtHash = fnv1aHash16(windowTitle);
+  const toolSeq = tools.slice(0, 8).join("→");
+  return `${wtHash}::${toolSeq}`;
+}
+
+/**
+ * Extract `UiPatternRecord[]` from history ring by rule-based detection
+ * (Phase B plan §6.1)。
+ *
+ * Rule: ring 内で **同 `windowTitle` で連続 N=3+ commit `ok=true`** を
+ * 1 pattern として記録。run 中断 (windowTitle 変化、ok=false、windowTitle
+ * undefined) で run reset、ring 末尾の run も拾う。
+ *
+ * 抽出は **on-demand** (query 時 scan)、commit-time の overhead 増を
+ * 回避。pattern store 側で dedupe + success/failure count update を行う
+ * (本 helper は pattern record を生成するのみ、store 更新は呼び出し側責務)。
+ */
+export function extractSemanticPatterns(
+  events: ToolCallEvent[],
+  options?: { minStepCount?: number; nowMs?: number },
+): UiPatternRecord[] {
+  const minStepCount = options?.minStepCount ?? 3;
+  const nowMs = options?.nowMs ?? Date.now();
+  const records: UiPatternRecord[] = [];
+
+  let runStart = -1;
+  let runWindow: string | undefined = undefined;
+
+  const flushRun = (start: number, end: number, window: string): void => {
+    const run = events.slice(start, end);
+    if (run.length < minStepCount) return;
+    // pattern_id は windowTitle + tool seq signature
+    const tools = run.map((e) => e.toolName);
+    const fingerprint = computePatternFingerprint(window, tools);
+    // example_actions: tool name frequency 上位 3 件 (順序保持)
+    const toolFreq = new Map<string, number>();
+    for (const t of tools) toolFreq.set(t, (toolFreq.get(t) ?? 0) + 1);
+    const exampleActions = [...toolFreq.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([name]) => name);
+    records.push({
+      pattern_id: fingerprint,
+      window_title: window,
+      step_count: run.length,
+      last_seen_at_ms: run[run.length - 1].wallclockEndMs ?? nowMs,
+      success_count: run.length, // run 内全 commit ok=true 前提 (run 中断条件で flush)
+      failure_count: 0,
+      example_actions: exampleActions,
+    });
+  };
+
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i];
+    // run 中断条件: windowTitle 不在 / ok != true / windowTitle 変化
+    if (e.windowTitle === undefined || e.ok !== true) {
+      if (runStart >= 0 && runWindow !== undefined) {
+        flushRun(runStart, i, runWindow);
+      }
+      runStart = -1;
+      runWindow = undefined;
+      continue;
+    }
+    if (e.windowTitle !== runWindow) {
+      // 新 window で run リセット (前 run があれば flush)
+      if (runStart >= 0 && runWindow !== undefined) {
+        flushRun(runStart, i, runWindow);
+      }
+      runStart = i;
+      runWindow = e.windowTitle;
+    }
+    // 同 window で run 継続
+  }
+  // ring 末尾の run も拾う
+  if (runStart >= 0 && runWindow !== undefined) {
+    flushRun(runStart, events.length, runWindow);
+  }
+  return records;
+}
+
+/**
+ * Project Semantic memory (top-K patterns by recency) from pattern store。
+ *
+ * Working/Episodic と同 ring 共有、`_historyBuffers` 内 events を on-demand
+ * scan + pattern store (in-memory LRU 100) と merge して top-K を expose。
+ *
+ * 戻り値:
+ *   - sentinel `multi:disabled` → undefined (A-2 closed loop 整合)
+ *   - history ring 不在 / 0 件 → `{ patterns: [] }` (empty projection)
+ *   - 通常: pattern store top-K (last_seen_at_ms 降順) を `UiPatternSummary[]`
+ *     に projection、`success_rate = success_count / (success_count + failure_count)`
+ *     に runtime compute
+ *   - K > store size → `_truncation: ring_underflow`
+ *   - K > store capacity (100) → `_truncation: capacity_cap`
+ *
+ * 注意: 本 helper は pattern store の **read** のみ。store 更新 (新 record
+ * の merge) は呼び出し側 (typically `makeCommitWrapper` の completion hook)
+ * 責務、本 PR scope では query 時 on-demand 抽出 + 1 度だけ store 更新の
+ * シンプル経路を採用 (cross-session 永続化は B-3 follow-up PR carry-over)。
+ */
+export function projectSemanticMemory(
+  sessionId: string,
+  k: number,
+  store: { getTopK: (n: number) => UiPatternRecord[]; capacity: number },
+  options?: {
+    /** Round 2 P1-2 fix: env `DESKTOP_TOUCH_MEMORY_REDACT_TITLES=1` 連動。
+     *  true 時 window_title を FNV-1a hash で置換 + pattern_id の
+     *  windowTitle 部分も hash 化 (= projection 出力上の plaintext leak
+     *  ゼロ化)。store 自体は raw を保持し、env を session 中に flip しても
+     *  挙動が即時切り替わる semantics。 */
+    redactWindowTitles?: boolean;
+  },
+): SemanticMemoryProjection | undefined {
+  if (sessionId === "multi:disabled") return undefined;
+  const ring = _historyBuffers.get(sessionId);
+  if (!ring) return { patterns: [] };
+  ring.lastAccessMs = _historyClock();
+
+  // capacity_cap: K > store.capacity (default 100)
+  const cappedK = Math.min(k, store.capacity);
+  const records = store.getTopK(cappedK);
+
+  const redact = options?.redactWindowTitles === true;
+  const patterns: UiPatternSummary[] = records.map((r) => {
+    if (redact) {
+      const titleHash = fnv1aHash16(r.window_title);
+      // pattern_id の `<wt-hash>::<tool-seq>` の wt-hash 側はもともと
+      // hash (computePatternFingerprint)、redact mode では window_title 側を
+      // hash 表現で揃えて出力する (LLM expose で plaintext 漏洩ゼロ)。
+      return {
+        pattern_id: r.pattern_id,
+        window_title: `redacted:${titleHash}`,
+        step_count: r.step_count,
+        last_seen_at_ms: r.last_seen_at_ms,
+        success_rate:
+          r.success_count + r.failure_count === 0
+            ? 0
+            : r.success_count / (r.success_count + r.failure_count),
+        example_actions: r.example_actions,
+      };
+    }
+    return {
+      pattern_id: r.pattern_id,
+      window_title: r.window_title,
+      step_count: r.step_count,
+      last_seen_at_ms: r.last_seen_at_ms,
+      success_rate:
+        r.success_count + r.failure_count === 0
+          ? 0
+          : r.success_count / (r.success_count + r.failure_count),
+      example_actions: r.example_actions,
+    };
+  });
+
+  // _truncation 判定 (B-1/B-2 同型 logic)
+  let truncation: TruncationNotation | undefined;
+  if (k > store.capacity) {
+    truncation = { requested: k, returned: patterns.length, reason: "capacity_cap" };
+  } else if (patterns.length < k) {
+    truncation = { requested: k, returned: patterns.length, reason: "ring_underflow" };
+  }
+
+  return truncation === undefined
+    ? { patterns }
+    : { patterns, _truncation: truncation };
+}
+
 /**
  * Project `produced_changes` from current ViewSnapshot (sub-plan §1.1 C +
  * §2.3 trunk 近似実装、focus before-state は §6 OQ #4 carry-over).
@@ -1865,6 +2177,11 @@ export interface L1ToolCallStartedArgs {
    *  survive `evictOldestNonBoundary` so long macros preserve
    *  orchestration boundary in causal projection. */
   isCompoundBoundary?: boolean;
+  /** ADR-011 Phase B B-3: foreground window title at push time
+   *  (best-effort、Phase B sub-plan §6.1 rule-based pattern 抽出 context)。
+   *  L1 napi binding には流さない (L1 ring shape 不変)、history record
+   *  経路にのみ伝播。`undefined` の場合 pattern 抽出で run 中断扱い。 */
+  windowTitle?: string;
 }
 
 export interface L1ToolCallCompletedArgs {
@@ -1895,7 +2212,7 @@ export interface CommitL1Emitter {
  *  block history record (causal window calculation still works on the
  *  TS-side ring even if L1 ring binding is broken). */
 export const defaultL1Emitter: CommitL1Emitter = {
-  pushStarted({ tool, argsJson, sessionId, toolCallId, leaseToken, isCompoundBoundary }) {
+  pushStarted({ tool, argsJson, sessionId, toolCallId, leaseToken, isCompoundBoundary, windowTitle }) {
     let eventIdStarted: bigint | undefined;
     try {
       eventIdStarted = nativeL1?.l1PushToolCallStarted?.(
@@ -1908,9 +2225,27 @@ export const defaultL1Emitter: CommitL1Emitter = {
     } catch {
       // L1 binding unavailable / threw — telemetry best-effort.
     }
+    // ADR-011 Phase B B-3: foreground window title best-effort 取得
+    // (callers が明示渡してこなかった場合のみ `nativeViewFocus` 経由で
+    // 解決を試みる)。L3 view 失敗時 undefined のまま、pattern 抽出で
+    // run 中断扱い。
+    let resolvedWindowTitle = windowTitle;
+    if (resolvedWindowTitle === undefined) {
+      try {
+        const focused = nativeViewFocus?.viewGetFocused?.();
+        // viewGetFocused 戻り値の `name` field を window title 代理として使用
+        // (B-3 minimum scope、本来は windowTitle 専用 API or hwnd→title 解決
+        // が望ましいが、本 PR では既存 view を流用、follow-up で精緻化)
+        resolvedWindowTitle = focused?.name ?? undefined;
+      } catch {
+        // view binding unavailable / threw — pattern 抽出時 skip
+      }
+    }
     // S5: history buffer 二重記録 (best-effort fail-safe)。ADR-011 A-3:
     // `isCompoundBoundary` を伝播 (L1 napi binding には流れない、history
     // entry の eviction skip flag としてのみ機能)。
+    // ADR-011 Phase B B-3: `windowTitle` を伝播 (Semantic memory pattern
+    // 抽出 context、L1 napi binding には流れない、history record 経路のみ)。
     pushHistoryStarted({
       sessionId,
       toolCallId,
@@ -1921,6 +2256,7 @@ export const defaultL1Emitter: CommitL1Emitter = {
       monotonicStartMs: performance.now(),
       leaseToken,
       isCompoundBoundary,
+      windowTitle: resolvedWindowTitle,
     });
   },
   pushCompleted({ tool, elapsedMs, ok, errorCode, sessionId, toolCallId }) {
@@ -2360,6 +2696,11 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
     // Working と同 ring 共有、projection shape のみ rich。
     const includeEpisodicN = parseIncludeMemoryN(include, "episodic", EPISODIC_MEMORY_DEFAULT_N);
     const includeEpisodicOptIn = includeEpisodicN !== undefined;
+    // ADR-011 Phase B B-3: Semantic memory `include=["semantic"]` or
+    // `include=["semantic:K"]` parsing。K <= SEMANTIC_MEMORY_K_MAX で typed error、
+    // include 不在 / layer 不在 → undefined (skip projection)。
+    const includeSemanticK = parseIncludeMemoryN(include, "semantic", SEMANTIC_MEMORY_DEFAULT_K);
+    const includeSemanticOptIn = includeSemanticK !== undefined;
     // Round 2 P1 fix (Codex line 1501): `include=["causal"]` is an
     // implicit envelope opt-in — causal projection (`caused_by` +
     // `based_on`) only exists inside the envelope shape. Without this
@@ -2384,7 +2725,7 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
     // current_state / tool_call_history は envelope 内 top-level field、raw
     // 互換 hoist では消失するため。
     const optIn =
-      ((includeCausal || includeWorkingOptIn || includeEpisodicOptIn) && !includeRaw) ||
+      ((includeCausal || includeWorkingOptIn || includeEpisodicOptIn || includeSemanticOptIn) && !includeRaw) ||
       resolveEnvelopeOptIn(include, getEnvValue());
 
     // ADR-011 Phase B B-1: N upper bound check (silently truncate せず error)。
@@ -2422,6 +2763,21 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
         content: [{ type: "text", text: JSON.stringify(finalShape) }],
       };
     }
+    // ADR-011 Phase B B-3: Semantic memory K upper bound check (B-1/B-2 同型)。
+    if (includeSemanticOptIn && includeSemanticK! > SEMANTIC_MEMORY_K_MAX) {
+      const tryNext: TryNextAction[] = getSuggestsForCode(
+        "SemanticMemoryKUpperBoundExceeded",
+      ).map((suggest) => ({ action: suggest }));
+      const failure = buildFailureEnvelope(
+        "SemanticMemoryKUpperBoundExceeded",
+        tryNext,
+        { viewPoisoned: false, asOfWallclockMs: null },
+      );
+      const finalShape = optIn ? failure : compatFailureRaw(failure);
+      return {
+        content: [{ type: "text", text: JSON.stringify(finalShape) }],
+      };
+    }
 
     const meta = await fetchMeta();
     const result = await handler(handlerArgs as TArgs);
@@ -2433,10 +2789,12 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
     let projectionForceDegraded = false;
     let currentState: WorkingMemoryProjection | undefined;
     let toolCallHistory: EpisodicMemoryProjection | undefined;
+    let learnedUiPattern: SemanticMemoryProjection | undefined;
     if (
       (includeCausal && causedByProjector) ||
       includeWorkingOptIn ||
-      includeEpisodicOptIn
+      includeEpisodicOptIn ||
+      includeSemanticOptIn
     ) {
       const sessionId = getSessionId(handlerArgs);
       // causal projection (A-1 wire)
@@ -2459,6 +2817,60 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
       // 共有、sentinel skip 一貫性、projection shape のみ rich)
       if (includeEpisodicOptIn) {
         toolCallHistory = projectEpisodicMemory(sessionId, includeEpisodicN!);
+      }
+      // ADR-011 Phase B B-3: Semantic memory projection (rule-based 抽出 +
+      // pattern store top-K、sentinel skip 一貫性 + cross-session isolation)。
+      // **on-demand pattern 抽出 (Round 2 P1-1 fix)**: query 時に cursor 越え
+      // 新規 events のみ scan し、`extractSemanticPatterns` の戻り値を pattern
+      // store に merge。pre-fix では同 events を毎 query 再 extract → success_count
+      // 無限累積 → API contract regression、cursor で構造的に解消。
+      // sentinel session では projectSemanticMemory が undefined return + pattern
+      // store update も skip (`isSentinelSession === true` ガード)。
+      if (includeSemanticOptIn && sessionId !== "multi:disabled") {
+        const ring = _historyBuffers.get(sessionId);
+        if (ring && ring.events.length > 0) {
+          // cursor 越え events だけを抽出対象に絞る (P1-1 fix)
+          const cursorTcId = _semanticExtractionCursors.get(sessionId);
+          let startIndex = 0;
+          if (cursorTcId !== undefined) {
+            const idx = ring.events.findIndex(
+              (e) => e.toolCallId === cursorTcId,
+            );
+            if (idx >= 0) {
+              startIndex = idx + 1;
+            }
+            // idx < 0: cursor event が ring eviction で消えた → fallback で
+            // ring start から scan (再 emit risk 容認、ring capacity 50 で
+            // 実害限定)
+          }
+          const newEvents = ring.events.slice(startIndex);
+          if (newEvents.length > 0) {
+            const patterns = extractSemanticPatterns(newEvents);
+            for (const p of patterns) {
+              uiPatternStore.recordPattern(p, /* success */ true);
+            }
+            // cursor を ring 末尾の toolCallId に進める (次 query 以降は
+            // この event 以降だけを extract 対象に)
+            _semanticExtractionCursors.set(
+              sessionId,
+              ring.events[ring.events.length - 1].toolCallId,
+            );
+          }
+        }
+        // Round 2 P1-2 fix: env DESKTOP_TOUCH_MEMORY_REDACT_TITLES=1 で
+        // window_title + pattern_id を hash redact (privacy leak 防止、
+        // Phase B plan §6.3 acceptance「env で redact」と整合)。env-only
+        // 制御 = operator ceiling、`include` axis 経由の per-call floor は
+        // §10 OQ #10 follow-up で導入。
+        const redactTitles = parseMemoryRedactMode(
+          process.env.DESKTOP_TOUCH_MEMORY_REDACT_TITLES,
+        );
+        learnedUiPattern = projectSemanticMemory(
+          sessionId,
+          includeSemanticK!,
+          uiPatternStore,
+          { redactWindowTitles: redactTitles },
+        );
       }
     }
 
@@ -2487,6 +2899,8 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
       currentState,
       // ADR-011 Phase B B-2: Episodic memory projection
       toolCallHistory,
+      // ADR-011 Phase B B-3: Semantic memory projection
+      learnedUiPattern,
     });
     const final = compatHoist(envelope, optIn);
 
