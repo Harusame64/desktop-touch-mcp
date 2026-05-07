@@ -204,6 +204,67 @@ describe("A-2-8: A-1 test seam が共有 store に forward (rewrites 不要)", (
   });
 });
 
+// ── A-2-Codex-P1: nested wrapper で outer context 継承 (run_macro simulation) ─
+
+describe("A-2-Codex-P1: extra 不在の nested wrapper 呼出で outer ALS sessionId を inherit", () => {
+  // Round 1 Codex P1 fix: `runWithSessionContext(undefined, ...)` が既存 ALS
+  // context を `undefined` で上書きしていた regression。run_macro 内 step が
+  // `entry.handler(validated)` (extra なし) で呼ばれるとき、parent HTTP
+  // request の sessionId が消失して per-session causal isolation を破壊。
+  // 修正後は outer sessionId を inherit、parent → child で causal trail 維持。
+  it("outer 'parent-xyz' で wrap 後、inner extra 不在 wrap で parent-xyz が inherit される", () => {
+    runWithSessionContext("parent-xyz", () => {
+      // simulate: run_macro wrapper が outer scope を確立、step wrapper が
+      // 内側で extra なしの呼出をする (TOOL_REGISTRY 経由 entry.handler)
+      runWithSessionContext(undefined, () => {
+        // inner step wrapper が ALS context を観測 — overwrite されず inherit
+        expect(getMcpTransportSessionIdFromContext()).toBe("parent-xyz");
+      });
+      // outer scope に戻ったら parent-xyz のまま
+      expect(getMcpTransportSessionIdFromContext()).toBe("parent-xyz");
+    });
+  });
+
+  it("outer なし + inner extra 不在 → undefined のまま (top-level wrapper、stdio default)", () => {
+    runWithSessionContext(undefined, () => {
+      expect(getMcpTransportSessionIdFromContext()).toBeUndefined();
+    });
+  });
+
+  it("outer 'parent-xyz' + inner explicit 'child-abc' → child-abc が override (SDK extra.sessionId 優先)", () => {
+    runWithSessionContext("parent-xyz", () => {
+      runWithSessionContext("child-abc", () => {
+        // explicit sessionId は SDK の per-request attribution として override
+        expect(getMcpTransportSessionIdFromContext()).toBe("child-abc");
+      });
+      expect(getMcpTransportSessionIdFromContext()).toBe("parent-xyz");
+    });
+  });
+
+  it("nested wrapper 経由 getSessionId が parent transport id を返却 (run_macro full simulation)", async () => {
+    // simulated run_macro: outer wrap (HTTP request) → inner step wrap (TOOL_REGISTRY)
+    let observed: string | undefined;
+    const stepWrapper = makeQueryWrapper(
+      async () => ({ content: [{ type: "text" as const, text: '{"ok":true}' }] }),
+      "inner_step",
+      {
+        causedByProjector: genericQueryCausedByProjector,
+        getSessionId: () => {
+          observed = defaultQuerySessionId({});
+          return observed;
+        },
+      },
+    );
+    // outer scope = HTTP request handler simulation
+    await runWithSessionContext("http-parent-1", async () => {
+      // inner step呼出: extra なし (= run_macro の entry.handler(validated) 呼出)
+      await stepWrapper({ include: ["causal"] } as Record<string, unknown>);
+    });
+    // step wrapper の getSessionId は parent context を inherit して http-parent-1 を返却
+    expect(observed).toBe("http-parent-1");
+  });
+});
+
 // ── A-2-N: 多重 transport 並走 ALS isolation (Round 1 Opus P3-1) ───────────
 
 describe("A-2-N: 多重 transport 並走で ALS context が per-async-task isolated", () => {

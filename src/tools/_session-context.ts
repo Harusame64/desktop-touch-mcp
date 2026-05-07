@@ -42,16 +42,36 @@ const _sessionAls = new AsyncLocalStorage<SessionContext>();
 /**
  * Run `fn` under a session context populated from the SDK's `extra.sessionId`.
  *
- * Wrappers (`makeCommitWrapper` / `makeQueryWrapper`) call this at the
- * outermost handler entry so all downstream `getSessionId` resolvers see
- * the same transport-supplied sessionId. `undefined` is forwarded
- * faithfully — single-session deployments (stdio) keep prototype fallback.
+ * Wrappers (`makeCommitWrapper` / `makeQueryWrapper`) call this at every
+ * handler entry so downstream `getSessionId` resolvers see the
+ * transport-supplied sessionId.
+ *
+ * **Inheritance rule (Round 1 Codex P1 fix)**: When `sessionId === undefined`
+ * (caller has no transport-supplied id, e.g. `run_macro` invokes inner
+ * step handlers via `entry.handler(validated)` without forwarding the
+ * `extra` arg), the **already-active ALS sessionId is inherited** rather
+ * than being overwritten with `undefined`. This preserves per-session
+ * causal isolation across nested wrapper calls within the same
+ * MCP-request scope:
+ *
+ *   - outer HTTP request (sessionId = "xyz") → run_macro wrapper → ALS = "xyz"
+ *   - macro inner step (mouse_click wrapper) → runWithSessionContext(undefined, ...)
+ *     → inherits "xyz", history record + caused_by attribution stay scoped
+ *
+ * For top-level wrapper invocations (no parent ALS scope), inheritance
+ * resolves to `undefined` exactly as before — single-session stdio
+ * default unchanged.
+ *
+ * Explicit `string` sessionIds (transport-supplied) ALWAYS override —
+ * the SDK is the source of truth for per-request session attribution.
  */
 export function runWithSessionContext<T>(
   sessionId: string | undefined,
   fn: () => T,
 ): T {
-  return _sessionAls.run({ sessionId }, fn);
+  const inherited = _sessionAls.getStore()?.sessionId;
+  const effective = sessionId ?? inherited;
+  return _sessionAls.run({ sessionId: effective }, fn);
 }
 
 /**
