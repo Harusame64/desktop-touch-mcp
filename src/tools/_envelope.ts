@@ -109,6 +109,13 @@ import type { LeaseValidationResult } from "../engine/world-graph/types.js";
 import { nativeL1, nativeViewFocus } from "../engine/native-engine.js";
 import type { NativeLeaseTokenSummary } from "../engine/native-types.js";
 import { enumMonitors } from "../engine/win32.js";
+import {
+  runWithSessionContext,
+  getMcpTransportSessionIdFromContext,
+  isSingleSessionPrototype,
+  _setSingleSessionPinForTest,
+  _resetSingleSessionPinForTest,
+} from "./_session-context.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1299,62 +1306,50 @@ export function buildProducedChanges(viewSnapshot: ViewSnapshot): string[] {
   return changes;
 }
 
-// ─── ADR-011 A-1: Default query-axis sessionId resolver ─────────────────────
-
-/**
- * MCP transport session id stub (ADR-011 A-1 stub, A-2 で実装置換).
- *
- * Mirrors the existing `desktop-state.ts:getMcpTransportSessionId` stub
- * (line 673) used by `desktopStateGetSessionId` (line 704). This duplicate stub
- * exists so A-1 can wire 8 query tools without forcing them to import
- * from `desktop-state.ts` (which would create a circular dependency
- * with `workspace.ts` — `desktop-state.ts` already imports
- * `CHROMIUM_TITLE_RE` from `workspace.js`).
- *
- * **A-2 will unify both stubs** into a single AsyncLocalStorage-backed
- * resolver (plan §4.2.2 option (b)). The 2-stub state during A-1 → A-2
- * transit is intentional and tracked in ADR-011 plan §4.2.4.
- */
-const _defaultQueryTransportSessionId = (): string | undefined => undefined;
-
-/** Mirrors `desktop-state.ts:_isSingleSessionPrototype` (line 671) — see
- *  the doc comment on `_defaultQueryTransportSessionId` above for why a
- *  duplicate stub exists during A-1 → A-2 transit. */
-let _defaultQuerySingleSessionPrototype: () => boolean = () => true;
-
-/** @internal Test-only — pin the single-session prototype gate for the
- *  `multi:disabled` sentinel branch coverage (mirrors
- *  `desktop-state.ts:_setSingleSessionPrototypeForTest`). */
-export function _setDefaultQuerySingleSessionForTest(value: boolean): void {
-  _defaultQuerySingleSessionPrototype = () => value;
-}
-
-/** @internal Test-only — restore the production stub. */
-export function _resetDefaultQuerySingleSessionForTest(): void {
-  _defaultQuerySingleSessionPrototype = () => true;
-}
+// ─── ADR-011 A-1/A-2: Default query-axis sessionId resolver ─────────────────
 
 /**
  * Default sessionId resolver for query-axis tools wired in ADR-011 A-1
  * (browser_overview / browser_locate / browser_search / screenshot /
  * server_status / wait_until / workspace_snapshot / desktop_discover).
  *
- * Behaviour mirrors `desktop-state.ts:desktopStateGetSessionId` bit-for-bit:
- *   - `transportSessionId` defined → return it
- *   - prototype gate → `"multi:disabled"` sentinel (skips caused_by injection)
- *   - default → `"default"` (single-LLM-client prototype fallback)
+ * **A-2 finalize (PR #157 後継)**: A-1 で導入した duplicate stub
+ * (`_defaultQueryTransportSessionId` / `_defaultQuerySingleSessionPrototype`)
+ * を `_session-context.ts` の AsyncLocalStorage 経路に delegate 統合
+ * (plan §4.2.4 unification)。`desktop-state.ts:desktopStateGetSessionId`
+ * とも同じ shared resolver を経由するため、現実的には bit-equal sync が
+ * structural に保証される (両 site で異なる stub 実装が drift する回路
+ * は閉じる)。
  *
- * `desktop_state` retains its own `desktopStateGetSessionId` for backward
- * compat — A-2 will unify both via AsyncLocalStorage (plan §4.2.4).
+ * Behaviour:
+ *   - `extra.sessionId` ALS 注入されていれば return それ (multi-session
+ *     transport の per-request 識別子、HTTP StreamableHTTP 等)
+ *   - prototype gate (env mode + ALS 検出) で multi-session detect →
+ *     `"multi:disabled"` sentinel (caused_by injection skip、cross-session
+ *     causal trail leak 防止)
+ *   - default → `"default"` (single-LLM-client prototype、stdio default)
  */
 export const defaultQuerySessionId = (_args: unknown): string => {
-  const transportSessionId = _defaultQueryTransportSessionId();
+  const transportSessionId = getMcpTransportSessionIdFromContext();
   if (transportSessionId !== undefined) return transportSessionId;
-  if (!_defaultQuerySingleSessionPrototype()) {
+  if (!isSingleSessionPrototype()) {
     return "multi:disabled";
   }
   return "default";
 };
+
+/** @internal Test-only — backward-compat alias for A-1 callers. Forwards
+ *  to the shared `_session-context.ts` test seam (plan §4.2.4 unification).
+ *  Existing tests using this exact name continue to work without rewrites.
+ */
+export function _setDefaultQuerySingleSessionForTest(value: boolean): void {
+  _setSingleSessionPinForTest(value);
+}
+
+/** @internal Test-only — same forwarding pattern. */
+export function _resetDefaultQuerySingleSessionForTest(): void {
+  _resetSingleSessionPinForTest();
+}
 
 // ─── ADR-011 A-1: Generic query-axis causedByProjector ───────────────────────
 
@@ -1643,7 +1638,10 @@ export function makeCommitWrapper<TArgs extends Record<string, unknown>>(
   handler: (args: TArgs) => Promise<McpToolResult>,
   toolName: string,
   options: CommitWrapperOptions<TArgs> = {},
-): (rawArgs: TArgs & { include?: string[] }) => Promise<McpToolResult> {
+): (
+  rawArgs: TArgs & { include?: string[] },
+  extra?: { sessionId?: string },
+) => Promise<McpToolResult> {
   const fetchMeta =
     options.fetchMeta ??
     (async () => ({ viewPoisoned: false, asOfWallclockMs: null }));
@@ -1654,7 +1652,11 @@ export function makeCommitWrapper<TArgs extends Record<string, unknown>>(
   const l1 = options.l1Emitter ?? defaultL1Emitter;
   const clock = options.clock ?? Date.now;
 
-  return async (rawArgs) => {
+  return async (rawArgs, extra) => runWithSessionContext(extra?.sessionId, async () => {
+    // ADR-011 A-2: ALS context populated from SDK's RequestHandlerExtra.sessionId
+    // (`@modelcontextprotocol/sdk/shared/protocol.d.ts:185`)。downstream
+    // `getSessionId` resolvers (defaultQuerySessionId / desktopStateGetSessionId)
+    // read transport sessionId via `getMcpTransportSessionIdFromContext()`。
     // Step 1: peek + strip `include` (S3 inherit).
     const { include, ...handlerArgsRaw } = rawArgs as { include?: string[] } & TArgs;
     const handlerArgs = handlerArgsRaw as TArgs;
@@ -1776,7 +1778,7 @@ export function makeCommitWrapper<TArgs extends Record<string, unknown>>(
       ...result,
       content: [{ ...block, text: JSON.stringify(final) }, ...result.content.slice(1)],
     };
-  };
+  });
 }
 
 /**
@@ -1882,12 +1884,17 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
   handler: (args: TArgs) => Promise<McpToolResult>,
   toolName: string,
   options: QueryWrapperOptions = {},
-): (rawArgs: TArgs & { include?: string[] }) => Promise<McpToolResult> {
+): (
+  rawArgs: TArgs & { include?: string[] },
+  extra?: { sessionId?: string },
+) => Promise<McpToolResult> {
   // S4 fast path: when no S5 features are wired (causedByProjector +
   // getSessionId both omitted), reuse the bare S3 makeEnvelopeAware
   // wrapper unchanged. Existing query-axis callers (e.g.
   // `desktop_discover` from S4) hit this branch with no behaviour
-  // change — sub-plan §4.5 既存 caller 破壊なし sweep。
+  // change — sub-plan §4.5 既存 caller 破壊なし sweep。ADR-011 A-2
+  // でも S4 fast path は session context 不要 (causedByProjector 不在
+  // で sentinel sessionId は不要)、ALS wrap 省略で no-op overhead 回避。
   if (options.causedByProjector === undefined && options.getSessionId === undefined) {
     const wrapped = makeEnvelopeAware(handler, toolName, options);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1905,7 +1912,13 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
   const getSessionId = options.getSessionId ?? (() => "default");
   const causedByProjector = options.causedByProjector;
 
-  const s5Wrapper = async (rawArgs: TArgs & { include?: string[] }): Promise<McpToolResult> => {
+  // ADR-011 A-2: ALS context populated from SDK's RequestHandlerExtra.sessionId
+  // wraps the entire S5 flow so getSessionId / causedByProjector see the
+  // transport sessionId via getMcpTransportSessionIdFromContext().
+  const s5Wrapper = async (
+    rawArgs: TArgs & { include?: string[] },
+    extra?: { sessionId?: string },
+  ): Promise<McpToolResult> => runWithSessionContext(extra?.sessionId, async () => {
     const { include, ...handlerArgs } = rawArgs as { include?: string[] } & TArgs;
     const includeCausal = include?.includes("causal") === true;
     const includeRaw = include?.includes("raw") === true;
@@ -1976,7 +1989,7 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
       ...result,
       content: [{ ...block, text: JSON.stringify(final) }, ...result.content.slice(1)],
     };
-  };
+  });
   // S5 path wrapper も registry に記録 (wire pin test seam、本 file 上部の
   // `_queryWrapperOptionsRegistry` doc 参照)。
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
