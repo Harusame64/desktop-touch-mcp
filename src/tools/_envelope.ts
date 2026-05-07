@@ -1941,7 +1941,17 @@ export function projectSemanticMemory(
 
   const redact = options?.redactWindowTitles === true;
   const patterns: UiPatternSummary[] = records.map((r) => {
-    if (redact) {
+    // B-3 follow-up Round 2 P2-1 fix: persistence redact-on で disk へ
+    // hash 化された window_title (`redacted:[hex8]`) が次回起動時 load で
+    // in-memory に固着する。env mid-session で flip しても in-memory は
+    // raw 維持の design 前提が **再起動跨ぎでは成立しない** ため、redact-off
+    // branch でも `redacted:` 始まりの window_title は **そのまま expose**
+    // する (recursive hash 防止 + LLM に対し literal `redacted:` prefix で
+    // redaction 状態が明示)。env on で書いた redact データを再読込みした
+    // 場合の semantics: 「disk へ書いた瞬間に redact 状態が永久 fix」
+    // (irreversible)、env off に戻しても plaintext 復元はしない設計。
+    const isAlreadyRedacted = r.window_title.startsWith("redacted:");
+    if (redact && !isAlreadyRedacted) {
       const titleHash = fnv1aHash16(r.window_title);
       // pattern_id の `<wt-hash>::<tool-seq>` の wt-hash 側はもともと
       // hash (computePatternFingerprint)、redact mode では window_title 側を
