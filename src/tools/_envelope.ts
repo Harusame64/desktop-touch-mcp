@@ -1180,16 +1180,42 @@ function pushHistoryCompleted(args: {
  */
 function selectLastEventForCausalProjection(
   events: ToolCallEvent[],
+  options?: { causalWindowTimeoutMs?: number; nowMonotonic?: number },
 ): ToolCallEvent | undefined {
   if (events.length === 0) return undefined;
+  const timeoutMs = options?.causalWindowTimeoutMs ?? 200;
+  const nowMonotonic = options?.nowMonotonic ?? performance.now();
+
   // (1) 完了済 boundary entry を末尾優先 (LIFO) で探索
+  let latestCompletedBoundary: ToolCallEvent | undefined;
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i];
     if (e.isCompoundBoundary === true && e.wallclockEndMs !== undefined) {
-      return e;
+      latestCompletedBoundary = e;
+      break;
     }
   }
-  // (2) 完了済 boundary 不在 → 末尾 fallback (既存挙動維持)
+
+  // (2) A-4 retrospective fix (Codex P1 #1、PR #157 follow-up): 完了済
+  //     boundary が causal window 内なら採用、timeout 切れなら **boundary
+  //     を anchor から外して末尾 fallback** (旧挙動: timeout 切れ boundary
+  //     を anchor 採用 → buildCausedBy が undefined return → ring 末尾の
+  //     新しい通常 commit が **shadow されて消失** する runtime regression)。
+  //
+  //     具体シナリオ: run_macro 完了直後 250ms 経過後の通常 mouse_click 発火 →
+  //     - 旧: boundary B (250ms 古い) を anchor、buildCausedBy が timeout 切れで undefined
+  //     - 新: B が timeout 切れ → 末尾 mouse_click を anchor、causal projection 維持
+  //
+  //     boundary が causal window 内に居る間は LIFO 優先選択を維持
+  //     (orchestration boundary anchor 設計、A-3 plan §4.3.5 整合)。
+  if (
+    latestCompletedBoundary !== undefined &&
+    nowMonotonic - latestCompletedBoundary.monotonicStartMs <= timeoutMs
+  ) {
+    return latestCompletedBoundary;
+  }
+
+  // (3) boundary 不在 / boundary timeout 切れ → 末尾 fallback (既存挙動維持)
   return events[events.length - 1];
 }
 
@@ -1222,17 +1248,24 @@ export function buildCausedBy(
   const ring = _historyBuffers.get(sessionId);
   if (!ring || ring.events.length === 0) return undefined;
   ring.lastAccessMs = _historyClock();
-  // ADR-011 A-3: boundary 優先 + 完了済 + 末尾 fallback で causal anchor
-  // を選択 (long macro で outer run_macro が ring 内 preserved されている
-  // 場合は orchestration boundary を anchor、boundary 不在は既存挙動維持)
-  const lastEvent = selectLastEventForCausalProjection(ring.events);
-  if (!lastEvent || lastEvent.wallclockEndMs === undefined) return undefined; // commit in-flight
-
   // Round 2 P2 Opus #5: monotonic 軸 timeout (system clock drift 非依存)
+  // A-4 retrospective fix (Codex P1 #1、PR #157 follow-up): timeout を helper
+  // に渡して boundary が timeout 切れの場合は末尾 fallback、stale boundary
+  // shadow を構造的解消。
   const timeoutMs = options?.causalWindowTimeoutMs ?? 200;
   const nowMonotonic = options?.monotonicNowMs?.() ?? performance.now();
+  // ADR-011 A-3 + A-4 fix: boundary 優先 + 完了済 + timeout 内 + 末尾 fallback
+  // で causal anchor を選択 (long macro で outer run_macro が ring 内
+  // preserved されている間は orchestration boundary を anchor、timeout 切れ
+  // boundary は ring 末尾の新しい commit に shadow されないよう fallback)
+  const lastEvent = selectLastEventForCausalProjection(ring.events, {
+    causalWindowTimeoutMs: timeoutMs,
+    nowMonotonic,
+  });
+  if (!lastEvent || lastEvent.wallclockEndMs === undefined) return undefined; // commit in-flight
+
   if (nowMonotonic - lastEvent.monotonicStartMs > timeoutMs) {
-    return undefined; // window expired (右端 (b) safety net)
+    return undefined; // window expired (右端 (b) safety net、selected lastEvent も timeout 内であることを再確認)
   }
 
   // Round 2 P1 Codex: latestEventId frontier check (右端 (a) runtime enforce)
@@ -1279,18 +1312,24 @@ export function buildBasedOn(
   const ring = _historyBuffers.get(sessionId);
   if (!ring || ring.events.length === 0) return undefined;
   ring.lastAccessMs = _historyClock();
-  // ADR-011 A-3: `buildCausedBy` と同型 anchor 選択 (boundary 優先 + 完了済 +
-  // 末尾 fallback)。`buildCausedBy` / `buildBasedOn` で divergence が起きると
-  // envelope 上で `your_last_action` (= boundary outer event) と
-  // `based_on.events` (= 最終 step event_id) が指し示す trail が別物になり
-  // LLM の causal trail 解釈が壊れるため、helper を共有する (DRY + bit-equal).
-  const lastEvent = selectLastEventForCausalProjection(ring.events);
-  if (!lastEvent || lastEvent.wallclockEndMs === undefined) return undefined;
-
   // Round 2 P2 (Codex line 1073) fix: same causal window guards as
   // `buildCausedBy` so `based_on` / `caused_by` never diverge.
+  // A-4 retrospective fix (Codex P1 #1 同型): timeout を helper に渡して
+  // boundary が timeout 切れの場合は末尾 fallback、`buildCausedBy` と
+  // bit-equal 動作 (helper DRY 共有原則維持)。
   const timeoutMs = options?.causalWindowTimeoutMs ?? 200;
   const nowMonotonic = options?.monotonicNowMs?.() ?? performance.now();
+  // ADR-011 A-3 + A-4 fix: `buildCausedBy` と同型 anchor 選択 (boundary 優先 +
+  // 完了済 + timeout 内 + 末尾 fallback)。`buildCausedBy` / `buildBasedOn`
+  // で divergence が起きると envelope 上で `your_last_action` と
+  // `based_on.events` が指し示す trail が別物になるため、helper を共有
+  // (DRY + bit-equal、A-4 timeout 引数も同 contract で渡す)。
+  const lastEvent = selectLastEventForCausalProjection(ring.events, {
+    causalWindowTimeoutMs: timeoutMs,
+    nowMonotonic,
+  });
+  if (!lastEvent || lastEvent.wallclockEndMs === undefined) return undefined;
+
   if (nowMonotonic - lastEvent.monotonicStartMs > timeoutMs) {
     return undefined;
   }
@@ -1834,7 +1873,14 @@ export function makeCommitWrapper<TArgs extends Record<string, unknown>>(
   const getEnvValue =
     options.getEnvValue ?? (() => process.env.DESKTOP_TOUCH_ENVELOPE);
   const argsSummary = options.argsSummary ?? ((a: TArgs) => truncateJson(a, 512));
-  const getSessionId = options.getSessionId ?? (() => "default");
+  // A-4 retrospective fix (Codex P1 #2、PR #158 follow-up): default
+  // `getSessionId` を `defaultQuerySessionId` 同等の ALS-aware resolver に
+  // 切替。旧 `() => "default"` 固定は HTTP transport で `extra.sessionId =
+  // "abc"` 配下でも commit history が `"default"` ring に記録され、query
+  // 側 (`defaultQuerySessionId` 経由で `"abc"` 読取) と key 分裂、per-session
+  // causal trail が absent になる runtime regression (Codex 単独検出)。
+  // commit/query 同 ring 共有で session-scoped causal trail isolation を達成。
+  const getSessionId = options.getSessionId ?? defaultQuerySessionId;
   const l1 = options.l1Emitter ?? defaultL1Emitter;
   const clock = options.clock ?? Date.now;
 
@@ -2095,7 +2141,13 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
     (async () => ({ viewPoisoned: false, asOfWallclockMs: null }));
   const getEnvValue =
     options.getEnvValue ?? (() => process.env.DESKTOP_TOUCH_ENVELOPE);
-  const getSessionId = options.getSessionId ?? (() => "default");
+  // A-4 retrospective fix (Codex P1 #2 同型): commit wrapper と同じく
+  // `defaultQuerySessionId` 共有で ALS-aware resolver に統一。本来 A-1 で
+  // 全 query tool に明示 wire 済 (causedByProjector を opt-in する registration
+  // site は `getSessionId: defaultQuerySessionId` を渡す) のため runtime 影響は
+  // 軽微だが、registration 漏れに対する safety net として default も同 logic
+  // に揃える (commit/query 一貫性 + session ring 分裂 risk 構造的解消)。
+  const getSessionId = options.getSessionId ?? defaultQuerySessionId;
   const causedByProjector = options.causedByProjector;
 
   // ADR-011 A-2: ALS context populated from SDK's RequestHandlerExtra.sessionId

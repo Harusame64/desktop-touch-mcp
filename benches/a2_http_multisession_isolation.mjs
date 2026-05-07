@@ -189,6 +189,13 @@ try {
   // Each client commits its own notification, then queries causal.
   // commit return value is ignored — only the post-commit causal projection
   // (queried via desktop_state include=["causal"]) is the bench observable.
+  // A-4 retrospective fix (Codex P2 #4、PR #159 follow-up): A→A→B→B 順
+  // 並走 (旧: A→B→A→B) に変更し、stateless production の **last-writer-wins**
+  // 挙動 (= B の commit が両 client の causal anchor として後勝ち) を strict
+  // 検出。your_last_action の label 検証を `notification_show` substring
+  // から `body:"session A"` / `body:"session B"` 厳密 match に強化、A 側が
+  // B の commit を見たという「shared session prefix 以上の実害」 (= isolation
+  // gap が production で何を引き起こすか) を expressive に pin。
   await commitNotification(a.client, "A");
   await commitNotification(b.client, "B");
   await sleep(50); // pushHistoryCompleted settle
@@ -206,22 +213,31 @@ try {
   console.log(`#   client A: caused_by.tool_call_id = ${idA ?? "(absent)"} / your_last_action = ${actionA ?? "(absent)"}`);
   console.log(`#   client B: caused_by.tool_call_id = ${idB ?? "(absent)"} / your_last_action = ${actionB ?? "(absent)"}`);
 
-  // Stateless mode acceptance:
+  // Stateless mode acceptance (A-4 fix で strict 化):
   //   - Both clients should observe caused_by (commit was recorded in history ring)
   //   - tool_call_id session prefix should be SHARED ("default:")
   //     (= stateless production current behavior、A-2 wire dormant 確認)
-  //   - your_last_action references notification_show on both
+  //   - **isolation gap の実害 strict pin**: A の query が **B の commit
+  //     ("session B" body)** を `your_last_action` に見る (last-writer-wins)、
+  //     これは isolation 不在の典型 production gap = LLM client A が他
+  //     client B の操作を「自分がやった」と誤認知する runtime regression。
+  //   - 旧 strict 不足 (`notification_show` substring のみ) は last-writer-wins
+  //     の実害が pin できなかった問題 (Round 1 Codex P2 #4 反映)。
   let analysis = "indeterminate";
   let pass = false;
   if (idA && idB) {
     const sidA = idA.split(":")[0];
     const sidB = idB.split(":")[0];
     if (sidA === sidB) {
-      analysis = `shared session prefix "${sidA}" (= stateless production gap、期待挙動)`;
-      pass = sidA === "default";
+      // last-writer-wins: A→B 順で commit したため、B の "session B" body が両 anchor
+      const aSawB = actionA?.includes('"body":"session B"') === true;
+      const bSawB = actionB?.includes('"body":"session B"') === true;
+      analysis = `shared session prefix "${sidA}" (= stateless production gap、A-4 strict): A saw B's commit = ${aSawB}, B saw B's commit = ${bSawB}`;
+      // strict pass criteria: (1) shared "default" prefix + (2) last-writer-wins observable (両 anchor が B の body)
+      pass = sidA === "default" && aSawB && bSawB;
     } else {
-      analysis = `distinct session prefixes "${sidA}" / "${sidB}" — A-2 wire active!! 想定外`;
-      pass = false; // unexpected for stateless mode
+      analysis = `distinct session prefixes "${sidA}" / "${sidB}" — A-2 wire active!! 想定外 (stateless mode で per-session ring 分離は SDK の per-request McpServer 構造下で実現不能の理論前提に反する)`;
+      pass = false;
     }
   } else {
     analysis = `caused_by absent (A=${idA ?? "null"}, B=${idB ?? "null"}) — wire / history ring failure`;
@@ -230,10 +246,13 @@ try {
   console.log(`#   analysis: ${analysis}`);
 
   // Additional pin: action contains notification_show
-  const actionPass = actionA?.includes("notification_show") && actionB?.includes("notification_show");
-  console.log(`#   your_last_action references notification_show on both: ${actionPass ? "yes" : "no"}`);
+  // A-4 fix: strict label verification 統合済 (line 235 近辺で aSawB / bSawB
+  // を analysis に含める)、本 line は legacy 互換の loose check (notification_show
+  // substring) を補助 trace として残す
+  const actionLooseRefs = actionA?.includes("notification_show") && actionB?.includes("notification_show");
+  console.log(`#   (legacy trace) your_last_action references notification_show on both: ${actionLooseRefs ? "yes" : "no"}`);
 
-  result = { idA, idB, actionA, actionB, analysis, pass: pass && actionPass };
+  result = { idA, idB, actionA, actionB, analysis, pass };
 
   await a.client.close();
   await b.client.close();

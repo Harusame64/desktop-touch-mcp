@@ -43,7 +43,12 @@ import {
 import {
   defaultQuerySessionId,
   makeQueryWrapper,
+  makeCommitWrapper,
   genericQueryCausedByProjector,
+  buildCausedBy,
+  defaultL1Emitter,
+  _resetHistoryBuffersForTest,
+  _resetToolCallSeqForTest,
   _setDefaultQuerySingleSessionForTest,
   _resetDefaultQuerySingleSessionForTest,
 } from "../../src/tools/_envelope.js";
@@ -347,5 +352,81 @@ describe("A-2-9: makeQueryWrapper で extra.sessionId が ALS 経由 getSessionI
     await wrapped({ include: ["causal"] } as Record<string, unknown>);
 
     expect(captured).toEqual(["default"]);
+  });
+});
+
+// ── A-2-A4-commit-query-key: A-4 retrospective fix (Codex P1 #2、PR #158 follow-up) ─
+
+describe("A-2-A4-commit-query-key: makeCommitWrapper default getSessionId が ALS-aware で commit/query 同 ring 共有", () => {
+  // Codex Round 1 P1 (A-4 retrospective、PR #158 follow-up):
+  // 旧 makeCommitWrapper の default `getSessionId` が `() => "default"` 固定で、
+  // HTTP transport で `extra.sessionId = "abc"` 配下でも commit history が
+  // `"default"` ring に記録される一方、query 側は `defaultQuerySessionId` 経由
+  // で `"abc"` ring を読む → ring key 分裂、per-session causal trail absent。
+  //
+  // 修正後: makeCommitWrapper の default `getSessionId` を `defaultQuerySessionId`
+  // 共有に変更、commit/query 同 ring に session-scoped 記録。
+
+  it("HTTP transport extra.sessionId 配下で commit が transport ring に記録、同 session の query で commit が見える", async () => {
+    _resetHistoryBuffersForTest();
+    _resetToolCallSeqForTest();
+    _resetSingleSessionPinForTest();
+
+    // commit wrapper (getSessionId 省略 = default 経路、A-4 fix で defaultQuerySessionId 共有)
+    const commitHandler = async () => ({
+      content: [{ type: "text" as const, text: '{"ok":true}' }],
+    });
+    const wrappedCommit = makeCommitWrapper(commitHandler, "test_commit");
+
+    // query wrapper (defaultQuerySessionId 明示 wire = A-1 同型)
+    const queryHandler = async () => ({
+      content: [{ type: "text" as const, text: '{"ok":true}' }],
+    });
+    const wrappedQuery = makeQueryWrapper(queryHandler, "test_query", {
+      causedByProjector: genericQueryCausedByProjector,
+      getSessionId: defaultQuerySessionId,
+    });
+
+    // HTTP transport simulation: extra.sessionId="http-abc" 注入
+    await wrappedCommit({} as Record<string, unknown>, { sessionId: "http-abc" });
+    await wrappedQuery({ include: ["causal"] } as Record<string, unknown>, {
+      sessionId: "http-abc",
+    });
+
+    // commit が "http-abc" ring に記録されているか直接 buildCausedBy で検証
+    const causedBy = buildCausedBy("http-abc", {
+      focus: null,
+      dirtyRectsByMonitor: new Map(),
+      latestEventId: undefined,
+      queryWallclockMs: Date.now(),
+    }, { causalWindowTimeoutMs: 60_000 });
+    // 修正前 (旧 default `() => "default"`) では "http-abc" ring 不在 → undefined
+    // 修正後 (defaultQuerySessionId 共有) では "http-abc" ring に commit 記録 → causedBy 定義
+    expect(causedBy).toBeDefined();
+    expect(causedBy?.your_last_action).toContain("test_commit");
+  });
+
+  it("stdio transport (extra なし) でも default ring に統一記録、commit/query 一致", async () => {
+    _resetHistoryBuffersForTest();
+    _resetToolCallSeqForTest();
+    _setSingleSessionPinForTest(true); // single-session pin
+
+    const commitHandler = async () => ({
+      content: [{ type: "text" as const, text: '{"ok":true}' }],
+    });
+    const wrappedCommit = makeCommitWrapper(commitHandler, "test_commit_stdio");
+
+    // extra なしで stdio simulation
+    await wrappedCommit({} as Record<string, unknown>);
+
+    // default ring に記録されることを直接検証 (A-2 既存挙動維持)
+    const causedBy = buildCausedBy("default", {
+      focus: null,
+      dirtyRectsByMonitor: new Map(),
+      latestEventId: undefined,
+      queryWallclockMs: Date.now(),
+    }, { causalWindowTimeoutMs: 60_000 });
+    expect(causedBy).toBeDefined();
+    expect(causedBy?.your_last_action).toContain("test_commit_stdio");
   });
 });

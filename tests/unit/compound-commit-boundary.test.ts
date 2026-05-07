@@ -394,3 +394,101 @@ describe("A-3-7: 複数完了 boundary 同時存在で末尾 (= 最新) boundary
     expect(causedBy?.tool_call_id).toBe(`${sid}:b2`);
   });
 });
+
+// ── A-3-A4-stale-shadow: A-4 retrospective fix (Codex P1 #1、PR #157 follow-up) ─
+
+describe("A-3-A4-stale-shadow: timeout 切れ boundary が末尾通常 commit を shadow しない", () => {
+  // Codex Round 1 P1 (A-4 retrospective、PR #157 follow-up):
+  // selectLastEventForCausalProjection が完了済 boundary を常に LIFO 優先採用
+  // していたため、boundary が causal window timeout (200ms) を超えた状態で
+  // ring 末尾に新しい通常 commit が居ても、buildCausedBy が boundary を
+  // anchor にして timeout 切れで undefined return → **末尾 commit の causal
+  // projection が shadow されて消失** する runtime regression。
+  //
+  // 修正後挙動: boundary が timeout 切れの場合は末尾 fallback、通常 commit
+  // が causal window 内なら projection 維持。
+  it("timeout 切れ boundary + ring 末尾の新しい通常 commit → 通常 commit を anchor、causal projection 維持", () => {
+    _resetHistoryBuffersForTest();
+    _resetToolCallSeqForTest();
+    const sid = "sessStaleA4";
+    // boundary B (timeout 切れ): monotonicStartMs を現在から 5000ms 過去に設定
+    const staleBoundary: ToolCallEvent = {
+      toolCallId: `${sid}:outer`,
+      toolName: "run_macro",
+      argsSummary: '{"steps":[]}',
+      eventIdStarted: 1n,
+      eventIdCompleted: 2n,
+      wallclockStartMs: Date.now() - 5000,
+      wallclockEndMs: Date.now() - 4900,
+      monotonicStartMs: performance.now() - 5000,
+      ok: true,
+      leaseToken: undefined,
+      isCompoundBoundary: true,
+    };
+    // 通常 commit C (causal window 内): monotonicStartMs を現在に近く
+    const freshCommit: ToolCallEvent = {
+      toolCallId: `${sid}:c1`,
+      toolName: "mouse_click",
+      argsSummary: '{"x":100}',
+      eventIdStarted: 3n,
+      eventIdCompleted: 4n,
+      wallclockStartMs: Date.now() - 10,
+      wallclockEndMs: Date.now() - 5,
+      monotonicStartMs: performance.now() - 10,
+      ok: true,
+      leaseToken: undefined,
+    };
+    _seedHistoryForTest(sid, staleBoundary);
+    _seedHistoryForTest(sid, freshCommit);
+
+    // default timeout 200ms で実行
+    const causedBy = buildCausedBy(sid, makeViewSnapshot());
+    // boundary は timeout 切れで anchor から外れ、末尾通常 commit C が anchor
+    expect(causedBy).toBeDefined();
+    expect(causedBy?.tool_call_id).toBe(`${sid}:c1`);
+    expect(causedBy?.your_last_action).toContain("mouse_click");
+
+    // buildBasedOn も同型 (helper DRY 共有、divergence なし)
+    const basedOn = buildBasedOn(sid, makeViewSnapshot());
+    expect(basedOn).toBeDefined();
+    expect(basedOn?.events).toEqual(["3", "4"]); // C の event_id
+  });
+
+  it("boundary が timeout 内 → boundary 優先 LIFO 維持 (regression 防止、A-3-1/A-3-2 既存挙動)", () => {
+    _resetHistoryBuffersForTest();
+    _resetToolCallSeqForTest();
+    const sid = "sessFreshA4";
+    const freshBoundary: ToolCallEvent = {
+      toolCallId: `${sid}:outer`,
+      toolName: "run_macro",
+      argsSummary: '{"steps":[]}',
+      eventIdStarted: 1n,
+      eventIdCompleted: 2n,
+      wallclockStartMs: Date.now() - 50,
+      wallclockEndMs: Date.now() - 30,
+      monotonicStartMs: performance.now() - 50, // timeout 内
+      ok: true,
+      leaseToken: undefined,
+      isCompoundBoundary: true,
+    };
+    const trailingStep: ToolCallEvent = {
+      toolCallId: `${sid}:s1`,
+      toolName: "mouse_click",
+      argsSummary: '{"x":100}',
+      eventIdStarted: 3n,
+      eventIdCompleted: 4n,
+      wallclockStartMs: Date.now() - 10,
+      wallclockEndMs: Date.now() - 5,
+      monotonicStartMs: performance.now() - 10,
+      ok: true,
+      leaseToken: undefined,
+    };
+    _seedHistoryForTest(sid, freshBoundary);
+    _seedHistoryForTest(sid, trailingStep);
+
+    const causedBy = buildCausedBy(sid, makeViewSnapshot());
+    // boundary timeout 内 → LIFO 優先で boundary を anchor (A-3 既存挙動維持)
+    expect(causedBy).toBeDefined();
+    expect(causedBy?.tool_call_id).toBe(`${sid}:outer`);
+  });
+});
