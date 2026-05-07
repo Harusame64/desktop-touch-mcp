@@ -381,7 +381,7 @@ LLM context window 経済性を保証するため、envelope payload size に **
 | `query_past` リンク (P4 default-on) | +0.1KB | (差分 KPI) |
 | `dry_run=true` の `if_you_did` (P5) | +2KB 以内 | (差分 KPI) |
 | `include=working:N` (N=10 default、上限 N=50、ADR-011 B-1 land) | +N×0.05KB 以内 (ToolCallEventSummary compact、N=10 で +500B 以内) | (差分 KPI) |
-| `include=episodic:N` (N=5 default、上限 N=100、ADR-011 B-2 未着手) | +N×0.3KB 以内 (rich shape、N=5 で +1.5KB 以内) | (差分 KPI) |
+| `include=episodic:N` (N=5 default、上限 N=100、ADR-011 B-2 land) | +N×0.3KB 以内 (rich shape: lease_token + event_id + elapsed_ms、N=5 で +1.5KB 以内) | (差分 KPI) |
 | **フル (causal+invariants+working:10+episodic:5+time_travel)** | **< 10KB** | `envelope_size_full_p99` |
 
 #### 5.6.2 計測
@@ -403,8 +403,8 @@ LLM context window 経済性を保証するため、envelope payload size に **
 
 | memory type | 本 ADR で対応 | 提供 view | 取得方法 |
 |---|---|---|---|
-| Working | ✓ ADR-011 Phase B (B-1、PR #B-1 land 2026-05-07) | `current_state.recent_events` (recent N event compact) | `include=working:N` (default N=10、上限 N=50 / `WORKING_MEMORY_N_MAX`) |
-| Episodic | ✓ ADR-011 Phase B (B-2、未着手) | `tool_call_history.episodes` (自分の過去の呼び出し + outcome rich shape) | `include=episodic:N` (default N=5) |
+| Working | ✓ ADR-011 Phase B (B-1、PR #162 land 2026-05-07) | `current_state.recent_events` (recent N event compact) | `include=working:N` (default N=10、上限 N=50 / `WORKING_MEMORY_N_MAX`) |
+| Episodic | ✓ ADR-011 Phase B (B-2、PR #B-2 land 2026-05-07) | `tool_call_history.episodes` (自分の過去の呼び出し + outcome rich shape: lease_token / event_id / elapsed_ms 等) | `include=episodic:N` (default N=5、上限 N=100 / `EPISODIC_MEMORY_N_MAX`) |
 | Semantic | ✓ ADR-011 Phase B (B-3、未着手) | `learned_ui_pattern.patterns` (page graph 風) | `include=semantic:K` (default K=3) |
 | Procedural | ✓ ADR-011 Phase B (B-4、未着手) | `successful_macros.suggestions` (fused action) | `include=procedural:K` (default K=3) |
 
