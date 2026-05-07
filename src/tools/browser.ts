@@ -23,7 +23,7 @@ import { getCdpPort } from "../utils/desktop-config.js";
 import { fail } from "./_types.js";
 import { setBrowserSearchHook } from "./wait-until.js";
 import { narrateParam, withRichNarration } from "./_narration.js";
-import { makeCommitWrapper, makeQueryWrapper, withEnvelopeIncludeSchema, withEnvelopeIncludeForUnion } from "./_envelope.js";
+import { makeCommitWrapper, makeQueryWrapper, withEnvelopeIncludeSchema, withEnvelopeIncludeForUnion, genericQueryCausedByProjector, defaultQuerySessionId } from "./_envelope.js";
 import type { RichBlock } from "../engine/uia-diff.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
@@ -2227,6 +2227,10 @@ export const browserOverviewRegistrationSchema = withEnvelopeIncludeSchema(brows
 export const browserOverviewRegistrationHandler = makeQueryWrapper(
   browserGetInteractiveHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
   "browser_overview",
+  {
+    causedByProjector: genericQueryCausedByProjector,
+    getSessionId: defaultQuerySessionId,
+  },
 );
 
 /**
@@ -2240,6 +2244,10 @@ export const browserLocateRegistrationSchema = withEnvelopeIncludeSchema(browser
 export const browserLocateRegistrationHandler = makeQueryWrapper(
   browserFindElementHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
   "browser_locate",
+  {
+    causedByProjector: genericQueryCausedByProjector,
+    getSessionId: defaultQuerySessionId,
+  },
 );
 
 /**
@@ -2253,6 +2261,10 @@ export const browserSearchRegistrationSchema = withEnvelopeIncludeSchema(browser
 export const browserSearchRegistrationHandler = makeQueryWrapper(
   browserSearchHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
   "browser_search",
+  {
+    causedByProjector: genericQueryCausedByProjector,
+    getSessionId: defaultQuerySessionId,
+  },
 );
 
 export function registerBrowserTools(server: McpServer): void {

@@ -3,7 +3,7 @@ import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
 import { getEngineStatus } from "../engine/status.js";
-import { makeQueryWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
+import { makeQueryWrapper, withEnvelopeIncludeSchema, genericQueryCausedByProjector, defaultQuerySessionId } from "./_envelope.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schema
@@ -41,6 +41,10 @@ export const serverStatusRegistrationSchema = withEnvelopeIncludeSchema(serverSt
 export const serverStatusRegistrationHandler = makeQueryWrapper(
   (serverStatusHandler as unknown as (args: Record<string, unknown>) => Promise<ToolResult>),
   "server_status",
+  {
+    causedByProjector: genericQueryCausedByProjector,
+    getSessionId: defaultQuerySessionId,
+  },
 );
 
 export function registerServerStatusTool(server: McpServer): void {

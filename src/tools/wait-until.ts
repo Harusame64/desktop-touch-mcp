@@ -5,7 +5,7 @@ import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
 import { coercedBoolean, coercedJsonObject } from "./_coerce.js";
 import { pollUntil } from "../engine/poll.js";
-import { makeQueryWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
+import { makeQueryWrapper, withEnvelopeIncludeSchema, genericQueryCausedByProjector, defaultQuerySessionId } from "./_envelope.js";
 import {
   enumWindowsInZOrder,
   getWindowProcessId,
@@ -395,6 +395,10 @@ export const waitUntilRegistrationSchema = withEnvelopeIncludeSchema(waitUntilSc
 export const waitUntilRegistrationHandler = makeQueryWrapper(
   waitUntilHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
   "wait_until",
+  {
+    causedByProjector: genericQueryCausedByProjector,
+    getSessionId: defaultQuerySessionId,
+  },
 );
 
 export function registerWaitUntilTool(server: McpServer): void {
