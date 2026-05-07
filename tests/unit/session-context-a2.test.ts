@@ -46,7 +46,6 @@ import {
   makeCommitWrapper,
   genericQueryCausedByProjector,
   buildCausedBy,
-  defaultL1Emitter,
   _resetHistoryBuffersForTest,
   _resetToolCallSeqForTest,
   _setDefaultQuerySingleSessionForTest,
