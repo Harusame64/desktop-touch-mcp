@@ -409,8 +409,23 @@ if (useHttp) {
 
     if (req.url?.startsWith("/mcp")) {
       const reqServer = createMcpServer();
+      // Stateless mode (`sessionIdGenerator: undefined`):
+      // per-request McpServer 構造 (上の comment 参照) と SDK の stateful 設計
+      // (sessionIdGenerator が UUID 発行する mode) は両立不能 — stateful mode は
+      // persistent McpServer を要求するが、本 server は request ごとに
+      // createMcpServer/connect する per-request 構造。
+      //
+      // ADR-011 A-2 land (PR #158) で session_id source を `extra.sessionId` から
+      // ALS 経由で取得する wrapper wire は完成済、ただし本 production HTTP 経路は
+      // 現状 dormant (全 client が共有 "default" session に fallback、
+      // benchmark `benches/a2_http_multisession_isolation.mjs` で実証)。
+      //
+      // 真の per-session causal isolation を有効化するには (a) HTTP server を
+      // persistent McpServer + session middleware に再設計、または (b) MCP SDK
+      // の stateless + session_id 同居 mode を待つ — どちらも別 ADR / 別 PR で扱う。
+      // 本 server は backward compat 維持で stateless 固定。
       const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: undefined, // Stateless — no session management
+        sessionIdGenerator: undefined,
         enableJsonResponse: true,
       });
       // Clean up when the HTTP response closes.
