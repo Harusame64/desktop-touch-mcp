@@ -204,6 +204,41 @@ describe("A-2-8: A-1 test seam が共有 store に forward (rewrites 不要)", (
   });
 });
 
+// ── A-2-N: 多重 transport 並走 ALS isolation (Round 1 Opus P3-1) ───────────
+
+describe("A-2-N: 多重 transport 並走で ALS context が per-async-task isolated", () => {
+  it("Promise.all で 2 sessionId 並列実行、context leak なし (HTTP transport multi-request simulation)", async () => {
+    // Node.js AsyncLocalStorage は async_hooks で per-async-task isolation を
+    // 保証する設計。本 test は将来 ALS resolver を refactor する際の
+    // structural pin — 並走 transport request 同士の sessionId leak を構造的に
+    // 検出する (CLAUDE.md §3.2 carry-over scope shrink 防御層、Round 1 P3-1)。
+    const taskA = (async () => {
+      return runWithSessionContext("session-A", async () => {
+        // 微小 await で event loop 回し、別 task との interleaving を強制
+        await Promise.resolve();
+        const idMid = getMcpTransportSessionIdFromContext();
+        await new Promise((r) => setTimeout(r, 0));
+        const idEnd = getMcpTransportSessionIdFromContext();
+        return { idMid, idEnd };
+      });
+    })();
+    const taskB = (async () => {
+      return runWithSessionContext("session-B", async () => {
+        await Promise.resolve();
+        const idMid = getMcpTransportSessionIdFromContext();
+        await new Promise((r) => setTimeout(r, 0));
+        const idEnd = getMcpTransportSessionIdFromContext();
+        return { idMid, idEnd };
+      });
+    })();
+    const [a, b] = await Promise.all([taskA, taskB]);
+    expect(a.idMid).toBe("session-A");
+    expect(a.idEnd).toBe("session-A");
+    expect(b.idMid).toBe("session-B");
+    expect(b.idEnd).toBe("session-B");
+  });
+});
+
 // ── A-2-9: wrapper extra.sessionId 取込み (multi-session HTTP simulation) ──
 
 describe("A-2-9: makeQueryWrapper で extra.sessionId が ALS 経由 getSessionId に伝播", () => {
