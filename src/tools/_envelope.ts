@@ -1402,7 +1402,7 @@ export interface WorkingMemoryProjection {
  * 戻り値:
  *   - sentinel `multi:disabled` → `undefined` (skip working memory expose、
  *     A-2 sentinel runtime closed loop と整合)
- *   - history ring 不在 / 0 件 → `{ events: [] }` (empty projection、
+ *   - history ring 不在 / 0 件 → `{ recent_events: [] }` (empty projection、
  *     `_truncation` なし、ring underflow とは区別)
  *   - 通常: ring 末尾から **最大 N 件** の events を新しい順で抽出 (LIFO)、
  *     ring 内件数 < N の場合は全件 + `_truncation: { reason: "ring_underflow" }`、
