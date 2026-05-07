@@ -5,6 +5,8 @@ import type { ToolHandler, ToolResult } from "./_types.js";
 import { checkFailsafe } from "../utils/failsafe.js";
 import { assertKeyComboSafe } from "../utils/key-safety.js";
 import { makeCommitWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
+import { isToolDestructive } from "./_tool-flags.js";
+import { macroOutcomeStore } from "../store/macro-outcome-store.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Phase 4: TOOL_REGISTRY mirrors the v1.0.0 public surface — privatized tools
@@ -459,6 +461,23 @@ export const runMacroHandler = async ({
       if (stop_on_error) break;
     }
   }
+
+  // ADR-011 Phase B B-4: record macro outcome (Phase B plan §10 OQ #8 (a)
+  // tool registry flag 採用、`isToolDestructive` で軽量走査、suggest filter
+  // (success>=3 + failure==0 + no destructive) で安全候補のみ後続 query で
+  // expose)。inner step が 1 つでも destructive なら `containsDestructive=true`
+  // で記録、`projectProceduralMemory` 経路で expose 対象から構造的に skip。
+  // sleep 等の pseudo-command は destructive 扱い (registry に entry 無い
+  // → `isToolDestructive` 戻り値 true、fail-safe inversion)。
+  const stepTools = steps.map((s) => s.tool);
+  const allOk =
+    results.length === steps.length && results.every((r) => r.ok);
+  const containsDestructive = stepTools.some((t) => isToolDestructive(t));
+  macroOutcomeStore.recordOutcome({
+    tools: stepTools,
+    success: allOk,
+    containsDestructive,
+  });
 
   // Build final content
   const content: ToolResult["content"] = [];

@@ -118,6 +118,7 @@ import {
 } from "./_session-context.js";
 import { getSuggestsForCode } from "./_errors.js";
 import { uiPatternStore, parseMemoryRedactMode } from "../store/ui-pattern-store.js";
+import { macroOutcomeStore } from "../store/macro-outcome-store.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -191,6 +192,13 @@ export interface EnvelopeMinimalShape<T = unknown> {
    *  在メモリのみ (永続化は B-3 follow-up PR で carry-over、env var parser
    *  のみ設置済)。 */
   learned_ui_pattern?: SemanticMemoryProjection;
+  /** ADR-011 Phase B B-4 Procedural memory projection (successful repeated
+   *  workflows、ADR-010 §6 line 409 view name `successful_macros` 整合)。
+   *  Optional — present only when `include=["procedural"]` or
+   *  `["procedural:K"]` opt-in。`run_macro` 完了時 outcome store に記録、
+   *  suggest filter (success>=3 + failure==0 + no destructive) 経由のみ
+   *  expose、destructive macro suggest は **non-goal** で構造的に skip。 */
+  successful_macros?: ProceduralMemoryProjection;
 }
 
 /**
@@ -356,6 +364,15 @@ export interface EnvelopeOptions {
    * (永続化は B-3 follow-up PR で carry-over、env var parser のみ設置済)。
    */
   learnedUiPattern?: SemanticMemoryProjection;
+  /**
+   * ADR-011 Phase B B-4 Procedural memory projection
+   * (`envelope.successful_macros.successful_macros`、ADR-010 §6 line 409
+   * view name `successful_macros` 整合)。Optional — set by
+   * `makeQueryWrapper` when `include=["procedural"]` or `["procedural:K"]`
+   * opt-in。`run_macro` 完了時 outcome store に記録、suggest filter
+   * (success>=3 + failure==0 + no destructive) 経由のみ expose。
+   */
+  successfulMacros?: ProceduralMemoryProjection;
 }
 
 // ─── Schema injection helper (PR #112 Round 1 P1 fix) ─────────────────────────
@@ -557,6 +574,8 @@ export function buildEnvelope<T>(
     ...(options?.toolCallHistory !== undefined ? { tool_call_history: options.toolCallHistory } : {}),
     // ADR-011 Phase B B-3: Semantic memory projection
     ...(options?.learnedUiPattern !== undefined ? { learned_ui_pattern: options.learnedUiPattern } : {}),
+    // ADR-011 Phase B B-4: Procedural memory projection
+    ...(options?.successfulMacros !== undefined ? { successful_macros: options.successfulMacros } : {}),
   };
 
   let confidence: "fresh" | "degraded" = "fresh";
@@ -1071,6 +1090,13 @@ export const SEMANTIC_MEMORY_DEFAULT_K = 3;
  *  pattern store 容量 (default 100 patterns) より小さい上限で envelope size
  *  budget +1.2KB 以内を構造的に保証。 */
 export const SEMANTIC_MEMORY_K_MAX = 10;
+/** ADR-011 Phase B B-4: Procedural memory `include=procedural:K` の default 値。
+ *  少なめ (K=3) で suggest noise 抑制、用途は「最近成功した repeated workflow
+ *  3 件を hint」前提。 */
+export const PROCEDURAL_MEMORY_DEFAULT_K = 3;
+/** ADR-011 Phase B B-4: Procedural memory K 上限 (Semantic と同 axis、
+ *  outcome store 容量 100 より小さい上限で envelope size を抑制)。 */
+export const PROCEDURAL_MEMORY_K_MAX = 10;
 /** Max sessions in `_historyBuffers` (sub-plan §6 OQ #1 LRU eviction). */
 const HISTORY_BUFFERS_MAX = 1000;
 /** Per-session TTL — entries older than this are evicted on access (24 h). */
@@ -1995,6 +2021,90 @@ export function projectSemanticMemory(
 }
 
 /**
+ * ADR-011 Phase B B-4: Procedural memory summary for envelope expose
+ * (suggest target = "過去成功した repeated workflow")。
+ *
+ * Phase B plan §10 OQ #8 + B-4 着手時 user 諮問 2026-05-07 で確定:
+ *   - **MVP scope は query/observation 系 safe repeated workflow 限定**
+ *   - destructive/side-effecting macro suggest は **non-goal** (将来別 PR)
+ *
+ * `getTopKForSuggest` 経由 filter 済みのみ expose、`success_count >= 3` +
+ * `failure_count == 0` + `contains_destructive == false` の 3 条件全 pass。
+ */
+export interface MacroOutcomeSummary {
+  macro_id: string;
+  tools: string[];
+  success_count: number;
+  last_seen_at_ms: number;
+}
+
+/** Procedural memory projection 戻り値 (suggest 候補 macro 配列 + 任意
+ *  `_truncation` notation)。 */
+export interface ProceduralMemoryProjection {
+  successful_macros: MacroOutcomeSummary[];
+  _truncation?: TruncationNotation;
+}
+
+/**
+ * Project Procedural memory (top-K successful macros by recency) from
+ * outcome store。
+ *
+ * - sentinel `multi:disabled` → undefined return (cross-session leak 防止、
+ *   B-3 と同 axis)
+ * - history ring 不在 / 0 件 → `{ successful_macros: [] }` (empty projection、
+ *   B-3 と同 fail-safe)
+ * - filter 済み top-K (`store.getTopKForSuggest(k)` 経由) を expose、
+ *   destructive を含む macro / 失敗 macro は構造的に出ない
+ * - K > store size → `_truncation: ring_underflow`
+ * - K > store capacity (100) → `_truncation: capacity_cap`
+ */
+export function projectProceduralMemory(
+  sessionId: string,
+  k: number,
+  store: {
+    getTopKForSuggest: (n: number, minSuccessCount?: number) => Array<{
+      macro_id: string;
+      tools: string[];
+      success_count: number;
+      last_seen_at_ms: number;
+    }>;
+    capacity: number;
+  },
+): ProceduralMemoryProjection | undefined {
+  if (sessionId === "multi:disabled") return undefined;
+  const ring = _historyBuffers.get(sessionId);
+  if (!ring) return { successful_macros: [] };
+  ring.lastAccessMs = _historyClock();
+
+  const cappedK = Math.min(k, store.capacity);
+  const records = store.getTopKForSuggest(cappedK);
+  const successful_macros: MacroOutcomeSummary[] = records.map((r) => ({
+    macro_id: r.macro_id,
+    tools: [...r.tools],
+    success_count: r.success_count,
+    last_seen_at_ms: r.last_seen_at_ms,
+  }));
+
+  let truncation: TruncationNotation | undefined;
+  if (k > store.capacity) {
+    truncation = {
+      requested: k,
+      returned: successful_macros.length,
+      reason: "capacity_cap",
+    };
+  } else if (successful_macros.length < k) {
+    truncation = {
+      requested: k,
+      returned: successful_macros.length,
+      reason: "ring_underflow",
+    };
+  }
+  return truncation === undefined
+    ? { successful_macros }
+    : { successful_macros, _truncation: truncation };
+}
+
+/**
  * Project `produced_changes` from current ViewSnapshot (sub-plan §1.1 C +
  * §2.3 trunk 近似実装、focus before-state は §6 OQ #4 carry-over).
  *
@@ -2711,6 +2821,11 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
     // include 不在 / layer 不在 → undefined (skip projection)。
     const includeSemanticK = parseIncludeMemoryN(include, "semantic", SEMANTIC_MEMORY_DEFAULT_K);
     const includeSemanticOptIn = includeSemanticK !== undefined;
+    // ADR-011 Phase B B-4: Procedural memory `include=["procedural"]` or
+    // `include=["procedural:K"]` parsing。K <= PROCEDURAL_MEMORY_K_MAX で
+    // typed error、include 不在 / layer 不在 → undefined (skip projection)。
+    const includeProceduralK = parseIncludeMemoryN(include, "procedural", PROCEDURAL_MEMORY_DEFAULT_K);
+    const includeProceduralOptIn = includeProceduralK !== undefined;
     // Round 2 P1 fix (Codex line 1501): `include=["causal"]` is an
     // implicit envelope opt-in — causal projection (`caused_by` +
     // `based_on`) only exists inside the envelope shape. Without this
@@ -2735,7 +2850,7 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
     // current_state / tool_call_history は envelope 内 top-level field、raw
     // 互換 hoist では消失するため。
     const optIn =
-      ((includeCausal || includeWorkingOptIn || includeEpisodicOptIn || includeSemanticOptIn) && !includeRaw) ||
+      ((includeCausal || includeWorkingOptIn || includeEpisodicOptIn || includeSemanticOptIn || includeProceduralOptIn) && !includeRaw) ||
       resolveEnvelopeOptIn(include, getEnvValue());
 
     // ADR-011 Phase B B-1: N upper bound check (silently truncate せず error)。
@@ -2788,6 +2903,21 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
         content: [{ type: "text", text: JSON.stringify(finalShape) }],
       };
     }
+    // ADR-011 Phase B B-4: Procedural memory K upper bound check (B-3 同型)。
+    if (includeProceduralOptIn && includeProceduralK! > PROCEDURAL_MEMORY_K_MAX) {
+      const tryNext: TryNextAction[] = getSuggestsForCode(
+        "ProceduralMemoryKUpperBoundExceeded",
+      ).map((suggest) => ({ action: suggest }));
+      const failure = buildFailureEnvelope(
+        "ProceduralMemoryKUpperBoundExceeded",
+        tryNext,
+        { viewPoisoned: false, asOfWallclockMs: null },
+      );
+      const finalShape = optIn ? failure : compatFailureRaw(failure);
+      return {
+        content: [{ type: "text", text: JSON.stringify(finalShape) }],
+      };
+    }
 
     const meta = await fetchMeta();
     const result = await handler(handlerArgs as TArgs);
@@ -2800,11 +2930,13 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
     let currentState: WorkingMemoryProjection | undefined;
     let toolCallHistory: EpisodicMemoryProjection | undefined;
     let learnedUiPattern: SemanticMemoryProjection | undefined;
+    let successfulMacros: ProceduralMemoryProjection | undefined;
     if (
       (includeCausal && causedByProjector) ||
       includeWorkingOptIn ||
       includeEpisodicOptIn ||
-      includeSemanticOptIn
+      includeSemanticOptIn ||
+      includeProceduralOptIn
     ) {
       const sessionId = getSessionId(handlerArgs);
       // causal projection (A-1 wire)
@@ -2882,6 +3014,18 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
           { redactWindowTitles: redactTitles },
         );
       }
+      // ADR-011 Phase B B-4: Procedural memory projection (suggest 候補
+      // = 過去成功した repeated workflow、`run_macro` 完了時 outcome store
+      // 直接 record、`getTopKForSuggest` filter (success>=3 + failure==0
+      // + no destructive) で構造的に safe 候補のみ expose、destructive
+      // macro suggest は Phase B では non-goal で出ない設計)。
+      if (includeProceduralOptIn && sessionId !== "multi:disabled") {
+        successfulMacros = projectProceduralMemory(
+          sessionId,
+          includeProceduralK!,
+          macroOutcomeStore,
+        );
+      }
     }
 
     const block = result.content?.[0];
@@ -2911,6 +3055,8 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
       toolCallHistory,
       // ADR-011 Phase B B-3: Semantic memory projection
       learnedUiPattern,
+      // ADR-011 Phase B B-4: Procedural memory projection
+      successfulMacros,
     });
     const final = compatHoist(envelope, optIn);
 

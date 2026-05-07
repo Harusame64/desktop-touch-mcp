@@ -41,6 +41,7 @@ import { wrapHandlerArg } from "./utils/failsafe-wrap.js";
 import { SERVER_VERSION } from "./version.js";
 import { resolveV2Activation } from "./tools/desktop-activation.js";
 import { uiPatternStore } from "./store/ui-pattern-store.js";
+import { macroOutcomeStore } from "./store/macro-outcome-store.js";
 
 // Resolve assets/icons directory (works both in dev: dist/ and release: dist/)
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -289,12 +290,15 @@ function shutdown(): void {
   stopNativeRuntime();
   stopTray();
   httpServerRef?.close();
-  // ADR-011 Phase B B-3 follow-up: pending pattern store flush を確実に
+  // ADR-011 Phase B B-3/B-4 follow-up: pending memory store flush を確実に
   // 完了させてから exit。env off / pending なし時は即時 resolve、env on で
   // pending あれば disk write 完了後 exit (data loss 防止)。
   // best-effort: error も resolve、即時 exit を遅延させない。
-  uiPatternStore
-    .flushImmediateForShutdown()
+  // 並列 flush で B-3 / B-4 両 store を 1 度に flush。
+  Promise.all([
+    uiPatternStore.flushImmediateForShutdown(),
+    macroOutcomeStore.flushImmediateForShutdown(),
+  ])
     .catch(() => {})
     .finally(() => {
       // In-flight requests clean up their own server/transport instances via res.on("close").
@@ -372,11 +376,15 @@ const httpUrl = useHttp ? `http://127.0.0.1:${httpPort}/mcp` : undefined;
 // ─── Log auto-guard startup status ───────────────────────────────────────────
 logAutoGuardStartup();
 
-// ─── ADR-011 Phase B B-3 follow-up: load semantic memory from disk ───────────
+// ─── ADR-011 Phase B B-3/B-4 follow-up: load memory stores from disk ─────────
 // env `DESKTOP_TOUCH_MEMORY_PERSIST=1` 時のみ disk から復元、disabled / file
 // 不在 / corruption 時は no-op (initial 状態で起動)。await で server.connect
 // 前に確実に load 完了させ、初回 query で stale empty store が返らないように。
-await uiPatternStore.loadFromDisk();
+// 並列 await で B-3 (semantic) / B-4 (procedural) 両 store を 1 度に load。
+await Promise.all([
+  uiPatternStore.loadFromDisk(),
+  macroOutcomeStore.loadFromDisk(),
+]);
 
 // ─── Start tray icon ─────────────────────────────────────────────────────────
 const trayOptions: TrayOptions = {
