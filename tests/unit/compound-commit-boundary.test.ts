@@ -105,7 +105,10 @@ describe("A-3-1: 9-step run_macro で boundary preserved + 最古 step が evict
       pushStep(sid, tcid, i);
       completeEntry(sid, tcid);
     }
-    const causedBy = buildCausedBy(sid, makeViewSnapshot());
+    // P3-1 (Round 1 Opus): monotonic timeout (default 200ms) flake 軽減 —
+    // slow CI で push N 件後の Date.now() delta が 200ms 超過すると
+    // boundary が undefined return される。長 timeout で structural pin。
+    const causedBy = buildCausedBy(sid, makeViewSnapshot(), { causalWindowTimeoutMs: 60_000 });
     expect(causedBy).toBeDefined();
     // boundary 優先選択で your_last_action が outer run_macro
     expect(causedBy?.your_last_action).toContain("run_macro");
@@ -150,7 +153,7 @@ describe("A-3-2: buildBasedOn が boundary outer event_id を anchor", () => {
     };
     _seedHistoryForTest(sid, stepEntry);
 
-    const basedOn = buildBasedOn(sid, makeViewSnapshot());
+    const basedOn = buildBasedOn(sid, makeViewSnapshot(), { causalWindowTimeoutMs: 60_000 });
     expect(basedOn).toBeDefined();
     // helper 共有で causedBy / basedOn divergence 防止 — outer の eventId
     // 4242 / 4243 が anchor、最終 step の 9000 / 9001 ではない
@@ -169,7 +172,10 @@ describe("A-3-3: regression — boundary 不在 / step ≤ 8 で末尾 fallback"
       pushStep(sid, tcid, i);
       completeEntry(sid, tcid);
     }
-    const causedBy = buildCausedBy(sid, makeViewSnapshot());
+    // P3-1 (Round 1 Opus): monotonic timeout (default 200ms) flake 軽減 —
+    // slow CI で push N 件後の Date.now() delta が 200ms 超過すると
+    // boundary が undefined return される。長 timeout で structural pin。
+    const causedBy = buildCausedBy(sid, makeViewSnapshot(), { causalWindowTimeoutMs: 60_000 });
     expect(causedBy).toBeDefined();
     expect(causedBy?.tool_call_id).toBe(`${sid}:s5`);
   });
@@ -182,7 +188,10 @@ describe("A-3-3: regression — boundary 不在 / step ≤ 8 で末尾 fallback"
       pushStep(sid, tcid, i);
       completeEntry(sid, tcid);
     }
-    const causedBy = buildCausedBy(sid, makeViewSnapshot());
+    // P3-1 (Round 1 Opus): monotonic timeout (default 200ms) flake 軽減 —
+    // slow CI で push N 件後の Date.now() delta が 200ms 超過すると
+    // boundary が undefined return される。長 timeout で structural pin。
+    const causedBy = buildCausedBy(sid, makeViewSnapshot(), { causalWindowTimeoutMs: 60_000 });
     expect(causedBy).toBeDefined();
     expect(causedBy?.tool_call_id).toBe(`${sid}:s9`);
   });
@@ -203,7 +212,10 @@ describe("A-3-4: degraded fallback で全 entry が boundary でも panic / 無�
     }
     // 最古 boundary `${sid}:b1` は旧 FIFO で evict、最新 boundary `${sid}:b9`
     // が anchor (selectLastEventForCausalProjection の LIFO 採用)
-    const causedBy = buildCausedBy(sid, makeViewSnapshot());
+    // P3-1 (Round 1 Opus): monotonic timeout (default 200ms) flake 軽減 —
+    // slow CI で push N 件後の Date.now() delta が 200ms 超過すると
+    // boundary が undefined return される。長 timeout で structural pin。
+    const causedBy = buildCausedBy(sid, makeViewSnapshot(), { causalWindowTimeoutMs: 60_000 });
     expect(causedBy).toBeDefined();
     expect(causedBy?.tool_call_id).toBe(`${sid}:b9`);
   });
@@ -298,7 +310,10 @@ describe("A-3-6: outer boundary 未完了 + step 後続で完了済 step に fal
     };
     _seedHistoryForTest(sid, completedStep);
 
-    const causedBy = buildCausedBy(sid, makeViewSnapshot());
+    // P3-1 (Round 1 Opus): monotonic timeout (default 200ms) flake 軽減 —
+    // slow CI で push N 件後の Date.now() delta が 200ms 超過すると
+    // boundary が undefined return される。長 timeout で structural pin。
+    const causedBy = buildCausedBy(sid, makeViewSnapshot(), { causalWindowTimeoutMs: 60_000 });
     expect(causedBy).toBeDefined();
     // 完了済 boundary が無い → 末尾 fallback (= 完了済 step)
     expect(causedBy?.tool_call_id).toBe(`${sid}:s1`);
@@ -353,7 +368,10 @@ describe("A-3-7: 複数完了 boundary 同時存在で末尾 (= 最新) boundary
     _seedHistoryForTest(sid, newerBoundary);
     _seedHistoryForTest(sid, trailingStep);
 
-    const causedBy = buildCausedBy(sid, makeViewSnapshot());
+    // P3-1 (Round 1 Opus): monotonic timeout (default 200ms) flake 軽減 —
+    // slow CI で push N 件後の Date.now() delta が 200ms 超過すると
+    // boundary が undefined return される。長 timeout で structural pin。
+    const causedBy = buildCausedBy(sid, makeViewSnapshot(), { causalWindowTimeoutMs: 60_000 });
     expect(causedBy).toBeDefined();
     // LIFO: 末尾 boundary (b2) が anchor、b1 ではない、trailing step でもない
     expect(causedBy?.tool_call_id).toBe(`${sid}:b2`);
