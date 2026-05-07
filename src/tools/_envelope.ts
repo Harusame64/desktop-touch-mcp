@@ -1384,9 +1384,14 @@ export interface TruncationNotation {
   reason: "ring_underflow" | "capacity_cap";
 }
 
-/** Working memory projection 戻り値 (events + 任意 _truncation)。 */
+/** Working memory projection 戻り値 (recent_events + 任意 _truncation)。
+ *  field 名 `recent_events` は ADR-010 §6 line 406 view name `current_state`
+ *  + Phase B plan §4 の documented contract `current_state.recent_events`
+ *  と sync (Round 1 Codex P1 反映: 旧 field 名 `events` は API contract
+ *  違反で LLM client が受信できない盲点を解消、Phase A PR #158 同型
+ *  pattern = Codex 単独 API contract regression 検出)。 */
 export interface WorkingMemoryProjection {
-  events: ToolCallEventSummary[];
+  recent_events: ToolCallEventSummary[];
   _truncation?: TruncationNotation;
 }
 
@@ -1416,11 +1421,11 @@ export function projectWorkingMemory(
 ): WorkingMemoryProjection | undefined {
   if (sessionId === "multi:disabled") return undefined;
   const ring = _historyBuffers.get(sessionId);
-  if (!ring) return { events: [] };
+  if (!ring) return { recent_events: [] };
   ring.lastAccessMs = _historyClock();
 
   const ringSize = ring.events.length;
-  if (ringSize === 0) return { events: [] };
+  if (ringSize === 0) return { recent_events: [] };
 
   // capacity_cap: N が ring capacity を超える要求 (silently truncate 防止)
   const cappedN = Math.min(n, ring.capacity);
@@ -1428,10 +1433,10 @@ export function projectWorkingMemory(
   const returnedCount = Math.min(cappedN, ringSize);
 
   // ring 末尾から returnedCount 件を **新しい順** (LIFO) で抽出
-  const events: ToolCallEventSummary[] = [];
+  const recentEvents: ToolCallEventSummary[] = [];
   for (let i = ringSize - 1; i >= ringSize - returnedCount; i--) {
     const e = ring.events[i];
-    events.push({
+    recentEvents.push({
       tool_call_id: e.toolCallId,
       tool: e.toolName,
       args_summary: e.argsSummary.length > 64 ? e.argsSummary.slice(0, 64) : e.argsSummary,
@@ -1450,13 +1455,15 @@ export function projectWorkingMemory(
   // 意図的 dead-code-near (test pin あり、B-1-6 で 60 件 push synthetic 経路)。
   let truncation: TruncationNotation | undefined;
   if (n > ring.capacity) {
-    truncation = { requested: n, returned: events.length, reason: "capacity_cap" };
+    truncation = { requested: n, returned: recentEvents.length, reason: "capacity_cap" };
   } else if (returnedCount < n) {
     // ring 内件数 < N (ring underflow)
-    truncation = { requested: n, returned: events.length, reason: "ring_underflow" };
+    truncation = { requested: n, returned: recentEvents.length, reason: "ring_underflow" };
   }
 
-  return truncation === undefined ? { events } : { events, _truncation: truncation };
+  return truncation === undefined
+    ? { recent_events: recentEvents }
+    : { recent_events: recentEvents, _truncation: truncation };
 }
 
 /**

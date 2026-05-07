@@ -96,12 +96,12 @@ describe("B-1-3: include=[\"working:5\"] で 5 件 LIFO projection", () => {
     const sid = "sessA";
     for (let i = 1; i <= 8; i++) pushCommit(sid, i);
     const result = projectWorkingMemory(sid, 5)!;
-    expect(result.events).toHaveLength(5);
+    expect(result.recent_events).toHaveLength(5);
     // LIFO 順 (新しい順) — 末尾 push (i=8) が events[0]
-    expect(result.events[0]?.tool).toBe("tool_8");
-    expect(result.events[0]?.tool_call_id).toBe(`${sid}:s8`);
-    expect(result.events[1]?.tool).toBe("tool_7");
-    expect(result.events[4]?.tool).toBe("tool_4");
+    expect(result.recent_events[0]?.tool).toBe("tool_8");
+    expect(result.recent_events[0]?.tool_call_id).toBe(`${sid}:s8`);
+    expect(result.recent_events[1]?.tool).toBe("tool_7");
+    expect(result.recent_events[4]?.tool).toBe("tool_4");
     expect(result._truncation).toBeUndefined();
   });
 });
@@ -115,11 +115,11 @@ describe("B-1-4: A-3 isCompoundBoundary が is_compound field として expose",
     pushCommit(sid, 2, false); // 通常
     pushCommit(sid, 3, false);
     const result = projectWorkingMemory(sid, 3)!;
-    expect(result.events).toHaveLength(3);
+    expect(result.recent_events).toHaveLength(3);
     // LIFO: events[0] = s3 (通常)、events[2] = s1 (boundary)
-    expect(result.events[2]?.is_compound).toBe(true);
-    expect(result.events[0]?.is_compound).toBe(false);
-    expect(result.events[1]?.is_compound).toBe(false);
+    expect(result.recent_events[2]?.is_compound).toBe(true);
+    expect(result.recent_events[0]?.is_compound).toBe(false);
+    expect(result.recent_events[1]?.is_compound).toBe(false);
   });
 });
 
@@ -130,7 +130,7 @@ describe("B-1-5: ring 内件数 < N で _truncation: ring_underflow", () => {
     const sid = "sessC";
     for (let i = 1; i <= 3; i++) pushCommit(sid, i);
     const result = projectWorkingMemory(sid, 10)!;
-    expect(result.events).toHaveLength(3);
+    expect(result.recent_events).toHaveLength(3);
     expect(result._truncation).toEqual({
       requested: 10,
       returned: 3,
@@ -150,15 +150,15 @@ describe("B-1-6: capacity_cap edge (test seam で synthetic ring 用意)", () =>
     for (let i = 1; i <= 60; i++) pushCommit(sid, i);
     // ring overflow eviction で oldest 10 件が evict される、ring には末尾 50 件
     const result = projectWorkingMemory(sid, 60)!;
-    expect(result.events).toHaveLength(50); // capacity cap
+    expect(result.recent_events).toHaveLength(50); // capacity cap
     expect(result._truncation).toEqual({
       requested: 60,
       returned: 50,
       reason: "capacity_cap",
     });
     // events[0] = 末尾 push (i=60、最新)、events[49] = 古い (i=11)
-    expect(result.events[0]?.tool).toBe("tool_60");
-    expect(result.events[49]?.tool).toBe("tool_11");
+    expect(result.recent_events[0]?.tool).toBe("tool_60");
+    expect(result.recent_events[49]?.tool).toBe("tool_11");
   });
 });
 
@@ -181,7 +181,7 @@ describe("B-1-8: include=[\"working:0\"] で events 空配列 (skip ではない
     const sid = "sessE";
     for (let i = 1; i <= 5; i++) pushCommit(sid, i);
     const result = projectWorkingMemory(sid, 0)!;
-    expect(result.events).toEqual([]);
+    expect(result.recent_events).toEqual([]);
     expect(result._truncation).toBeUndefined();
   });
 
@@ -211,15 +211,15 @@ describe("B-1-9: args_summary が 64 char に truncate", () => {
     };
     _seedHistoryForTest(sid, entry);
     const result = projectWorkingMemory(sid, 1)!;
-    expect(result.events[0]?.args_summary).toHaveLength(64);
-    expect(result.events[0]?.args_summary).toBe("a".repeat(64));
+    expect(result.recent_events[0]?.args_summary).toHaveLength(64);
+    expect(result.recent_events[0]?.args_summary).toBe("a".repeat(64));
   });
 
   it("短い args (10 char) はそのまま expose", () => {
     const sid = "sessG";
     pushCommit(sid, 7);
     const result = projectWorkingMemory(sid, 1)!;
-    expect(result.events[0]?.args_summary).toBe('{"i":7}');
+    expect(result.recent_events[0]?.args_summary).toBe('{"i":7}');
   });
 });
 
@@ -270,8 +270,8 @@ describe("B-1-Wrapper-1: makeQueryWrapper 経由 envelope.current_state inject e
     const parsed = JSON.parse((block as { type: "text"; text: string }).text);
     // envelope opt-in (working は implicit promotion)、envelope.current_state が inject される
     expect(parsed?.current_state).toBeDefined();
-    expect(parsed?.current_state?.events).toHaveLength(5);
-    expect(parsed?.current_state?.events?.[0]?.tool).toBe("tool_5"); // LIFO
+    expect(parsed?.current_state?.recent_events).toHaveLength(5);
+    expect(parsed?.current_state?.recent_events?.[0]?.tool).toBe("tool_5"); // LIFO
     // _truncation なし (5 件 ring + 5 件要求)
     expect(parsed?.current_state?._truncation).toBeUndefined();
   });
@@ -336,22 +336,22 @@ describe("B-1-Cross-session: sessionA / sessionB 並走で Working projection �
     for (let i = 1; i <= 5; i++) pushCommit("sessB", i);
     const a = projectWorkingMemory("sessA", 10)!;
     const b = projectWorkingMemory("sessB", 10)!;
-    expect(a.events).toHaveLength(3);
-    expect(b.events).toHaveLength(5);
+    expect(a.recent_events).toHaveLength(3);
+    expect(b.recent_events).toHaveLength(5);
     // tool_call_id prefix で session 別であることを runtime 検証
-    for (const e of a.events) expect(e.tool_call_id.startsWith("sessA:")).toBe(true);
-    for (const e of b.events) expect(e.tool_call_id.startsWith("sessB:")).toBe(true);
+    for (const e of a.recent_events) expect(e.tool_call_id.startsWith("sessA:")).toBe(true);
+    for (const e of b.recent_events) expect(e.tool_call_id.startsWith("sessB:")).toBe(true);
     // sessionA からは sessionB の commits が見えない、逆も同じ
-    const aTcids = new Set(a.events.map((e) => e.tool_call_id));
-    for (const e of b.events) expect(aTcids.has(e.tool_call_id)).toBe(false);
+    const aTcids = new Set(a.recent_events.map((e) => e.tool_call_id));
+    for (const e of b.recent_events) expect(aTcids.has(e.tool_call_id)).toBe(false);
   });
 });
 
 // ── B-1-N: regression sanity (no leak into other contexts) ──────────────────
 
 describe("B-1-N: ring 不在 sessionId で projection 空配列 (regression sanity)", () => {
-  it("history ring 不在 sessionId → { events: [] } (undefined ではない、distinct from sentinel)", () => {
+  it("history ring 不在 sessionId → { recent_events: [] } (undefined ではない、distinct from sentinel)", () => {
     const result = projectWorkingMemory("non-existent-session", 5);
-    expect(result).toEqual({ events: [] });
+    expect(result).toEqual({ recent_events: [] });
   });
 });
