@@ -161,6 +161,40 @@ regression policy: 前回 main から **5% 増で warning、20% 増で fail**。
 | commit tool round-trip p99 | < 200ms | `bench_commit_round_trip` |
 | subscribe push 遅延 p99 | < 10ms | `bench_subscribe_push_latency` |
 
+### 2.5.1 ADR-011 A-2 HTTP multi-session causal trail (`benches/a2_http_multisession_isolation.mjs`)
+
+ADR-011 Phase A A-2 (PR #158) follow-up — production HTTP server を spawn し 2 並走 SDK Client から `notification_show` (commit) → `desktop_state(include=["causal"])` (query) を発火、`caused_by.tool_call_id` の **session prefix** を観測する実機 bench。
+
+| 検証項目 | 期待値 (現状 stateless 固定) |
+|---|---|
+| caused_by.tool_call_id session prefix | `default:N` 共有 (= 全 client が "default" session ring を参照) |
+| your_last_action | 両 client で `notification_show` を参照 (race tolerated — A→B / B→A 順序や同時 commit の race で「どちらの session の commit が末尾か」は決定しない、両方が notification_show を含めば pass) |
+| acceptance | session prefix が "default" + 両 client の your_last_action が notification_show を含む → **PASS** |
+
+#### 結果が示すもの
+
+A-2 wire (`makeCommitWrapper` / `makeQueryWrapper` の ALS 経由 `extra.sessionId` 取込み) は **unit test (28 case) で wire correctness 確証済**。本 bench は production HTTP server 構成下では wire が **dormant** (= 実 production で per-session causal trail isolation は active 化していない) ことを runtime で pin し、production gap を構造的に記録する役割。
+
+#### Production gap (本 bench scope 外)
+
+per-session causal trail isolation を production で活性化するには、HTTP server 構造の変更が必要:
+
+- **(a) HTTP server を persistent McpServer + session middleware に再設計**: 現状 `server-windows.ts` は per-request `createMcpServer/connect` 構造で SDK の stateful mode (`sessionIdGenerator: () => randomUUID()`) と両立不能。persistent 化 + session lifecycle 管理 + DNS rebinding / CORS 等の現行 hardening 維持が必要
+- **(b) MCP SDK の stateless + session_id 同居 mode 待ち**: SDK が「per-request McpServer + session_id surface」を支援する mode を追加すれば本 server 構造のまま wire 活性化可能
+
+どちらも別 ADR (Phase B 候補 or 独立 phase) で扱う scope。
+
+#### 実行
+
+```bash
+node benches/a2_http_multisession_isolation.mjs
+```
+
+要件:
+- `npm run build` (TS) + `dist/index.js` 存在
+- Windows desktop session 必須 (notification_show が tray balloon 発火、Focus Assist / 抑制環境では失敗)
+- **CI 自動実行対象外** — operator local 手動実行 only (RDP / locked-down session で挙動が決定しないため)。`d2_desktop_state_roundtrip.mjs` と同型の local-only bench、CI matrix には含めない
+
 ### 2.6 HW Tier 別 (`benches/tier_dispatch.rs`)
 
 各 op を Tier 0-3 全パターンで計測、cascade 動作を確認。
