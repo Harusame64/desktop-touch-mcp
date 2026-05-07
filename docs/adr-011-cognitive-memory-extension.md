@@ -409,34 +409,42 @@ export function buildCausedBy(sessionId, viewSnapshot, options): CausedByShape |
 #### 4.3.5.2 新ロジック: boundary 優先 + 完了済 entry 探索 + 末尾 fallback
 
 ```typescript
-// 改修後の lastEvent 選択
+// 改修後の lastEvent 選択 (A-3 land + A-4 retrospective fix 反映、PR #163 land 後)
 let lastEvent: ToolCallEvent | undefined;
 
-// (1) 完了済 boundary entry を優先選択 (LIFO: ring 内に複数 boundary が居る場合は末尾)
+// (1) 完了済 boundary entry を末尾優先 (LIFO) で探索
 //     wallclockEndMs 未確定 boundary は skip (long-running outer 中、step 後続未発火)
+let latestCompletedBoundary: ToolCallEvent | undefined;
 for (let i = ring.events.length - 1; i >= 0; i--) {
   const e = ring.events[i];
   if (e.isCompoundBoundary === true && e.wallclockEndMs !== undefined) {
-    lastEvent = e;
+    latestCompletedBoundary = e;
     break;
   }
 }
 
-// (2) 完了済 boundary 不在: 既存挙動 (末尾 1 件参照) で backward compat
-if (lastEvent === undefined) {
+// (2) A-4 retrospective fix (Codex P1 #1、PR #157 → PR #163): boundary が
+//     causal window timeout 内なら採用、timeout 切れなら末尾 fallback で
+//     stale boundary が後続 commit を shadow する regression を解消
+if (latestCompletedBoundary !== undefined &&
+    nowMonotonic - latestCompletedBoundary.monotonicStartMs <= timeoutMs) {
+  lastEvent = latestCompletedBoundary;
+} else {
+  // (3) boundary 不在 / boundary timeout 切れ → 末尾 fallback (既存挙動維持)
   lastEvent = ring.events[ring.events.length - 1];
 }
 
-// (3) wallclockEndMs 未確定 → commit in-flight skip (既存挙動維持)
+// (4) wallclockEndMs 未確定 → commit in-flight skip (既存挙動維持)
 if (lastEvent.wallclockEndMs === undefined) return undefined;
 ```
 
-#### 4.3.5.3 ロジック解説
+#### 4.3.5.3 ロジック解説 (A-4 PR #163 反映後)
 
-- **(1) 完了済 boundary 優先**: ring 内に複数 boundary が居る場合 (本 plan non-goal だが degraded fallback として) は **末尾 boundary (LIFO)** を選択 — 最新の orchestration が anchor として最も causal continuity を表現する
-- **(2) backward compat**: boundary 不在 (= 通常の commit のみ) では既存挙動維持、step ≤ 8 ケースで挙動不変 (regression なし)
-- **(3) commit in-flight skip**: 既存 line 1096 の `wallclockEndMs === undefined` skip は維持、選択された lastEvent が完了済かを確認
-- **monotonic timeout (b) + frontier check (a) は変更不要**: 既存 `_envelope.ts:1099-1102` + `1105-1112` の guard は selected `lastEvent` に対して同じ semantics で適用される
+- **(1) 完了済 boundary 優先 (LIFO)**: ring 内に複数 boundary が居る場合 (本 plan non-goal だが degraded fallback として) は **末尾 boundary (LIFO)** を選択 — 最新の orchestration が anchor として最も causal continuity を表現する
+- **(2) A-4 timeout 内 boundary のみ採用**: boundary が causal window timeout (default 200ms) 内なら anchor として採用、**timeout 切れなら boundary を anchor から外して末尾 fallback** (Codex P1 #1 検出 stale boundary shadow を解消、`run_macro` 完了 250ms 後の通常 mouse_click が causal projection 維持される)
+- **(3) backward compat 末尾 fallback**: boundary 不在 (通常 commit のみ) または boundary timeout 切れで **ring 末尾 1 件参照**、step ≤ capacity ケースで挙動不変 (regression なし)
+- **(4) commit in-flight skip**: 選択された `lastEvent.wallclockEndMs === undefined` で skip、commit 進行中は anchor 採用しない
+- **monotonic timeout (b) + frontier check (a) は selected `lastEvent` に同じ semantics で適用**: helper 内 timeout は anchor 選択時の boundary フィルタ、`buildCausedBy` 内の既存 timeout check は **selected lastEvent も timeout 内であることを再確認** する safety net (helper 内 timeout 通過後の lastEvent が末尾 fallback なら timeout 内、boundary なら timeout 内 = 二重 check で structural sound)
 
 #### 4.3.5.4 `buildBasedOn` の整合 (Round 2 P2 Codex line 1073 反映済の同型 sweep)
 
@@ -453,8 +461,8 @@ if (lastEvent.wallclockEndMs === undefined) return undefined;
 A-3 は **1 PR で完結**:
 - `_envelope.ts` の `ToolCallEvent` + `pushHistoryStarted` + `evictHistoryIfNeeded` 拡張
 - `_envelope.ts` の `CommitWrapperOptions.isCompoundBoundary` API 追加
-- **`_envelope.ts:1095` の `buildCausedBy` 内 lastEvent 選択ロジック拡張** (boundary 優先 + 完了済 entry 探索 + 末尾 fallback、§4.3.5)
-- **`_envelope.ts:1122-` 周辺の `buildBasedOn` 同型 lastEvent 選択拡張** (§4.3.5.4、`buildCausedBy` と共有ヘルパ)
+- **`_envelope.ts:1095` の `buildCausedBy` 内 lastEvent 選択ロジック拡張** (boundary 優先 + 完了済 entry 探索 + **timeout 内** + 末尾 fallback、§4.3.5、A-4 PR #163 で「timeout 内」追加 = stale boundary shadow 解消)
+- **`_envelope.ts:1122-` 周辺の `buildBasedOn` 同型 lastEvent 選択拡張** (§4.3.5.4、`buildCausedBy` と共有ヘルパ + A-4 PR #163 で timeout/nowMonotonic 引数も DRY 共有、divergence 構造的不能)
 - `macro.ts:515-522` の `runMacroRegistrationHandler` で flag 設定
 - unit test: 9-step macro で outer event が ring に preserved + step は FIFO evict、`buildCausedBy` / `buildBasedOn` の `your_last_action` / `events` が outer event を anchor として返すことを pin
 

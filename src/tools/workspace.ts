@@ -295,6 +295,25 @@ export const workspaceLaunchRegistrationHandler = makeCommitWrapper(
  * `workspace_snapshot` is wrapped via `makeQueryWrapper`. PR #122 screenshot
  * 同型 pattern (read-only orientation snapshot、L1 events 不発、
  * causedByProjector 省略 fast path)。
+ *
+ * **A-4 retrospective caveat (Codex P2 #3、PR #144 follow-up)**:
+ * `workspace_snapshot` は query 分類だが、handler 内で `clearLayers()` /
+ * `noteInvalidation("workspace_snapshot")` を呼んで **screenshot diff baseline
+ * (I-frame) と identity tracker を update する副作用** を持つ。読み取り専用に
+ * 見えるが causal/working memory 観点では「baseline reset した操作」が
+ * **不可視** で、後続の `screenshot(diffMode=true)` の挙動が `workspace_snapshot`
+ * 直前と直後で変わる事実が causal trail に記録されない。
+ *
+ * 既知制約として **ADR-010 §11 OQ に carry-over** (本 hotfix では caveat
+ * 強化のみ、本格 fix の選択肢は将来別 PR で議論):
+ *   - (a) `makeCommitWrapper` 化 — Tool Surface 不変原則 (read-only orientation)
+ *     を破る、scope creep
+ *   - (b) `clearLayers` / `noteInvalidation` を別 explicit reset tool に分離 →
+ *     workspace_snapshot は純 read-only 化
+ *   - (c) Phase B Working memory に「side effect: baseline_reset」field を追加 →
+ *     causal trail に副作用が visible 化
+ *
+ * caveat docstring (line 317 参照) も同 fact を caller (LLM) に明示済。
  */
 export const workspaceSnapshotRegistrationSchema = withEnvelopeIncludeSchema(workspaceSnapshotSchema);
 
@@ -314,7 +333,7 @@ export function registerWorkspaceTools(server: McpServer): void {
       purpose: "Orient fully in one call — returns display layouts, all window thumbnails (WebP), and per-window actionable element lists with clickAt coords.",
       details: "uiSummary.actionable[] per window includes: action ('click'|'type'|'expand'|'select'), clickAt {x,y} (pass directly to mouse_click), value (current text for editable fields). Runs parallel internally; latency ≈ max(single screenshot), not N×screenshots. Also resets the diffMode buffer so subsequent screenshot(diffMode=true) returns only changes (P-frame).",
       prefer: "Use at session start or after major workspace changes. Use screenshot(detail='meta') for cheap re-orientation within a session. Use screenshot(detail='text', windowTitle=X) for a single-window update.",
-      caveats: "Thumbnails are scaled, not 1:1 — use screenshot(dotByDot=true, windowTitle=X) for pixel-accurate coords on a specific window after snapshot.",
+      caveats: "Thumbnails are scaled, not 1:1 — use screenshot(dotByDot=true, windowTitle=X) for pixel-accurate coords on a specific window after snapshot. Also: this call resets the screenshot diff baseline (I-frame) and identity tracker as a side effect, so subsequent screenshot(diffMode=true) starts fresh from this snapshot. The reset is not currently exposed in causal/working memory — record an explicit 'workspace_snapshot' step if you need to track the reset point in your causal trail (ADR-010 §11 OQ carry-over for full visibility).",
     }),
     workspaceSnapshotRegistrationSchema,
     workspaceSnapshotRegistrationHandler as typeof workspaceSnapshotHandler
