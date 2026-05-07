@@ -267,7 +267,10 @@ describe("B-2-11: lease_token_summary が `entityId/viewId@gen#digest8` compact 
     _seedHistoryForTest(sid, noLease);
     const result = projectEpisodicMemory(sid, 2)!;
     expect(result.episodes).toHaveLength(2);
-    // LIFO: episodes[0] = noLease (末尾)、episodes[1] = withLease
+    // LIFO (= 挿入順逆走): `_seedHistoryForTest` は events.push(entry) 順で
+    // ring 末尾保存、`projectEpisodicMemory` の i=ringSize-1→0 探索で末尾
+    // (= 後挿入 = noLease) が episodes[0]、先挿入 (= withLease) が episodes[1]
+    // (Round 1 Opus P3-2 反映 — 動作問題なし、docstring 明瞭化)
     expect(result.episodes[0]?.lease_token_summary).toBeUndefined();
     expect(result.episodes[1]?.lease_token_summary).toBe("elem-123/view-abc@42#deadbeef");
   });

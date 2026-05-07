@@ -1607,7 +1607,7 @@ function formatLeaseTokenSummary(
  *     in-flight 許容)。
  *   - ring 内完了済件数 < N → `_truncation: ring_underflow`
  *   - N > capacity → `_truncation: capacity_cap` (forward-compat、現状
- *     N_MAX (= 100) > capacity (= 50) なので発火する経路、本 hotfix では
+ *     N_MAX (= 100) > capacity (= 50) なので発火しうる経路、B-2 land では
  *     truncation notation で truth-in-API 維持)
  */
 export function projectEpisodicMemory(
@@ -1622,15 +1622,18 @@ export function projectEpisodicMemory(
   const ringSize = ring.events.length;
   if (ringSize === 0) return { episodes: [] };
 
-  // 完了済 entry のみ抽出 (in-flight skip、Working との差別化)
-  // ring 末尾から探索、LIFO で returnedCount 件まで集める
+  // 完了済 entry のみ抽出 (in-flight skip、Working との差別化)。
+  // ring 末尾から探索、LIFO で returnedCount 件まで集める。
+  // Round 1 Opus P2-1 反映: 旧 `inflightSkipped` counter は **dead intent**
+  // (戻り値 / truncation / log いずれにも反映されない) で削除。
+  // Phase B plan §5.3 acceptance に「in-flight skip 件数 expose」要件なし、
+  // `ring_underflow` notation で件数差分は既に検出可能 (将来 in-flight 件数
+  // expose を追加する場合は別 OQ で議論)。
   const cappedN = Math.min(n, ring.capacity);
   const episodes: EpisodeSummary[] = [];
-  let inflightSkipped = 0;
   for (let i = ringSize - 1; i >= 0 && episodes.length < cappedN; i--) {
     const e = ring.events[i];
     if (e.wallclockEndMs === undefined || e.ok === undefined) {
-      inflightSkipped++;
       continue;
     }
     episodes.push({
