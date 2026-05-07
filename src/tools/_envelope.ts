@@ -117,7 +117,11 @@ import {
   _resetSingleSessionPinForTest,
 } from "./_session-context.js";
 import { getSuggestsForCode } from "./_errors.js";
-import { uiPatternStore, parseMemoryRedactMode } from "../store/ui-pattern-store.js";
+import {
+  uiPatternStore,
+  parseMemoryRedactMode,
+  parseMemoryPersistMode,
+} from "../store/ui-pattern-store.js";
 import { macroOutcomeStore } from "../store/macro-outcome-store.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -199,6 +203,12 @@ export interface EnvelopeMinimalShape<T = unknown> {
    *  suggest filter (success>=3 + failure==0 + no destructive) 経由のみ
    *  expose、destructive macro suggest は **non-goal** で構造的に skip。 */
   successful_macros?: ProceduralMemoryProjection;
+  /** ADR-011 Phase B Security tier framework (§10 OQ #10 Resolved)。Optional
+   *  — present only when any memory layer (causal/working/episodic/semantic/
+   *  procedural) opted in OR `memory_*` keyword explicit 指定時。LLM が
+   *  「この call で どの tier が active か」を観測できるよう envelope に
+   *  expose、~50-100 B 程度。 */
+  security_tier_active?: SecurityTierActive;
 }
 
 /**
@@ -376,6 +386,13 @@ export interface EnvelopeOptions {
    * (success>=3 + failure==0 + no destructive) 経由のみ expose。
    */
   successfulMacros?: ProceduralMemoryProjection;
+  /**
+   * ADR-011 Phase B Security tier framework (§10 OQ #10 Resolved)。
+   * `envelope.security_tier_active` field expose、LLM が effective tier
+   * を観測可。`makeQueryWrapper` が memory layer 1 つ以上 opt-in or
+   * `memory_*` keyword 指定時に set。
+   */
+  securityTierActive?: SecurityTierActive;
 }
 
 // ─── Schema injection helper (PR #112 Round 1 P1 fix) ─────────────────────────
@@ -579,6 +596,8 @@ export function buildEnvelope<T>(
     ...(options?.learnedUiPattern !== undefined ? { learned_ui_pattern: options.learnedUiPattern } : {}),
     // ADR-011 Phase B B-4: Procedural memory projection
     ...(options?.successfulMacros !== undefined ? { successful_macros: options.successfulMacros } : {}),
+    // ADR-011 Phase B Security tier framework (§10 OQ #10 Resolved)
+    ...(options?.securityTierActive !== undefined ? { security_tier_active: options.securityTierActive } : {}),
   };
 
   let confidence: "fresh" | "degraded" = "fresh";
@@ -1505,6 +1524,120 @@ export function parseIncludeMemoryN(
     }
   }
   return undefined;
+}
+
+// ─── ADR-011 Phase B Security tier framework (§10 OQ #10 Resolved) ──────────
+//
+// **設計**: env (operator ceiling) + LLM `include` axis (per-call request) の
+// 二重 axis、effective = security floor 原則 (より strict 側へだけ動かせる)。
+// LLM は env を **open 側へ超えられない** = security-fail-safe。
+//
+// **実装範囲 (本 PR scope per user 諮問 2026-05-07)**: tier resolver +
+// `envelope.security_tier_active` field + B-3 semantic redact gate + B-4
+// procedural expose gate のみ。JSON persistence / storage backend は touch
+// しない (env-controlled at write time、include は per-query expose mask)。
+
+/**
+ * Memory security tier ID (LLM 観測可、`envelope.security_tier_active.tier`
+ * field で expose)。
+ */
+export type SecurityTier = "strict" | "balanced" | "open";
+
+/** Effective security knobs (本 query call で実際に適用される値)。 */
+export interface SecurityTierEffective {
+  /** B-3 semantic projection で window_title を hash redact するか */
+  redact_window_titles: boolean;
+  /** disk persist が active か (env-controlled、include で関係なし、display 用) */
+  persist: boolean;
+  /** B-4 procedural projection が expose されるか */
+  procedural: "expose" | "off";
+}
+
+/** envelope.security_tier_active field shape (LLM expose 用)。 */
+export interface SecurityTierActive {
+  tier: SecurityTier;
+  effective: SecurityTierEffective;
+}
+
+/**
+ * Parse `include` array for `memory_strict` / `memory_balanced` / `memory_open`
+ * keyword (per-call security tier request)。`parseIncludeMemoryN` は N 値解析
+ * 専用、本 helper は keyword 解析専用 (B-4 着手時 user 諮問 2026-05-07 で
+ * helper 分離 = option (b) 採用)。
+ *
+ * 形式: `include: ["memory_strict"]` → "strict" / `["memory_balanced"]` →
+ * "balanced" / `["memory_open"]` → "open" / 不在 → undefined (= balanced
+ * default で resolve)。複数 keyword 並走時は **最初の match を採用** (LLM
+ * 側で混在 request しない前提、最初に書いた方を尊重)。
+ */
+export function parseIncludeMemorySecurity(
+  include: string[] | undefined,
+): SecurityTier | undefined {
+  if (!include) return undefined;
+  for (const entry of include) {
+    if (entry === "memory_strict") return "strict";
+    if (entry === "memory_balanced") return "balanced";
+    if (entry === "memory_open") return "open";
+  }
+  return undefined;
+}
+
+/**
+ * Resolve effective security tier from per-call request + env ceiling。
+ *
+ * **原則** (security floor):
+ *   - `strict` = LLM 側 explicit 最大 security 要求 → env 設定無視で
+ *     redact ON / persist OFF (display) / procedural OFF 強制
+ *   - `balanced` (default) = env 設定踏襲、env 既定値が effective
+ *   - `open` = env ceiling 範囲内で最大 expose、binary axes (redact/persist)
+ *     では balanced と同等 (env=ON は env=OFF にできない、env=OFF は env=ON
+ *     にできない、LLM は env を open 側へ超えられない fail-safe)
+ *
+ * **scope (本 PR、JSON persistence は touch しない)**:
+ *   - `redact_window_titles`: B-3 projection で window_title hash redact
+ *   - `persist`: env_persist の display (env-controlled、include で実際に
+ *     OFF にできない、strict 時は LLM への report のみ false)
+ *   - `procedural`: B-4 projection が `successful_macros` を expose するか
+ *
+ * `request === undefined` (= include に memory_* keyword なし) は
+ * "balanced" 既定として扱う、`balanced.effective` = env 既定値踏襲。
+ */
+export function resolveEffectiveSecurityTier(
+  request: SecurityTier | undefined,
+  env: { persist: boolean; redact: boolean },
+): SecurityTierActive {
+  const tier: SecurityTier = request ?? "balanced";
+  let redact: boolean;
+  let persist: boolean;
+  let procedural: "expose" | "off";
+  switch (tier) {
+    case "strict":
+      // strict = LLM が「この call は最大 security」と explicit 要求、env 設定
+      // 無視で max 化 (より strict 側へは常に動かせる、security 原則)
+      redact = true;
+      persist = false;
+      procedural = "off";
+      break;
+    case "balanced":
+    case "open":
+      // balanced/open = env 既定値踏襲、env を open 側へ超えられない原則
+      // (env=redact_ON は include=open で OFF にできない、env=persist_OFF は
+      // include=open で ON にできない)。binary axes では現状 balanced と open
+      // が effective 同等、tier 名は LLM 観測値として保持 (将来 graduated
+      // axis 追加時に diverge 余地)。
+      redact = env.redact;
+      persist = env.persist;
+      procedural = "expose";
+      break;
+  }
+  return {
+    tier,
+    effective: {
+      redact_window_titles: redact,
+      persist,
+      procedural,
+    },
+  };
 }
 
 // ─── ADR-011 Phase B B-1: Working memory projection ─────────────────────────
@@ -2842,6 +2975,11 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
     // typed error、include 不在 / layer 不在 → undefined (skip projection)。
     const includeProceduralK = parseIncludeMemoryN(include, "procedural", PROCEDURAL_MEMORY_DEFAULT_K);
     const includeProceduralOptIn = includeProceduralK !== undefined;
+    // ADR-011 Phase B Security tier framework (§10 OQ #10 Resolved):
+    // `include=["memory_strict"]` / `["memory_balanced"]` / `["memory_open"]`
+    // で per-call security tier request。env (operator ceiling) と組み合わせて
+    // effective tier を resolve、B-3 redact + B-4 expose gate に接続。
+    const includeMemorySecurityRequest = parseIncludeMemorySecurity(include);
     // Round 2 P1 fix (Codex line 1501): `include=["causal"]` is an
     // implicit envelope opt-in — causal projection (`caused_by` +
     // `based_on`) only exists inside the envelope shape. Without this
@@ -2865,8 +3003,10 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
     // と同型で envelope opt-in の implicit promotion (raw override 維持)。
     // current_state / tool_call_history は envelope 内 top-level field、raw
     // 互換 hoist では消失するため。
+    // §10 OQ #10 Resolved: `memory_*` keyword 単独 (memory layer 不在) でも
+    // tier_active 観測のため envelope opt-in promotion (raw override 維持)。
     const optIn =
-      ((includeCausal || includeWorkingOptIn || includeEpisodicOptIn || includeSemanticOptIn || includeProceduralOptIn) && !includeRaw) ||
+      ((includeCausal || includeWorkingOptIn || includeEpisodicOptIn || includeSemanticOptIn || includeProceduralOptIn || includeMemorySecurityRequest !== undefined) && !includeRaw) ||
       resolveEnvelopeOptIn(include, getEnvValue());
 
     // ADR-011 Phase B B-1: N upper bound check (silently truncate せず error)。
@@ -2947,13 +3087,34 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
     let toolCallHistory: EpisodicMemoryProjection | undefined;
     let learnedUiPattern: SemanticMemoryProjection | undefined;
     let successfulMacros: ProceduralMemoryProjection | undefined;
-    if (
+    let securityTierActive: SecurityTierActive | undefined;
+    const includeAnyMemoryLayer =
       (includeCausal && causedByProjector) ||
       includeWorkingOptIn ||
       includeEpisodicOptIn ||
       includeSemanticOptIn ||
-      includeProceduralOptIn
-    ) {
+      includeProceduralOptIn;
+    if (includeAnyMemoryLayer || includeMemorySecurityRequest !== undefined) {
+      // ADR-011 Phase B Security tier framework (§10 OQ #10 Resolved):
+      // env を snapshot で読んで `resolveEffectiveSecurityTier` で effective
+      // を resolve、B-3 redact / B-4 expose gate + envelope expose に flow。
+      // env-only (= memory layer なし + memory_* keyword あり) でも tier 計算は
+      // 行うが、envelope 自体は memory layer 不在で minimal shape のまま、
+      // tier_active field のみ追加する設計 (operator が tier 確認する用途)。
+      const envSnapshot = {
+        persist: parseMemoryPersistMode(
+          process.env.DESKTOP_TOUCH_MEMORY_PERSIST,
+        ),
+        redact: parseMemoryRedactMode(
+          process.env.DESKTOP_TOUCH_MEMORY_REDACT_TITLES,
+        ),
+      };
+      securityTierActive = resolveEffectiveSecurityTier(
+        includeMemorySecurityRequest,
+        envSnapshot,
+      );
+    }
+    if (includeAnyMemoryLayer) {
       const sessionId = getSessionId(handlerArgs);
       // causal projection (A-1 wire)
       if (includeCausal && causedByProjector) {
@@ -3015,19 +3176,20 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
             );
           }
         }
-        // Round 2 P1-2 fix: env DESKTOP_TOUCH_MEMORY_REDACT_TITLES=1 で
-        // window_title + pattern_id を hash redact (privacy leak 防止、
-        // Phase B plan §6.3 acceptance「env で redact」と整合)。env-only
-        // 制御 = operator ceiling、`include` axis 経由の per-call floor は
-        // §10 OQ #10 follow-up で導入。
-        const redactTitles = parseMemoryRedactMode(
-          process.env.DESKTOP_TOUCH_MEMORY_REDACT_TITLES,
-        );
+        // Phase B Security tier framework §10 OQ #10 Resolved:
+        // effective.redact_window_titles は env_redact (operator ceiling)
+        // と include_tier (per-call request) の resolve 結果を使う。
+        // - tier=strict: redact 強制 ON (env=OFF でも ON)
+        // - tier=balanced/open: env_redact 踏襲 (env=ON は OFF にできない、
+        //   security floor 原則)
         learnedUiPattern = projectSemanticMemory(
           sessionId,
           includeSemanticK!,
           uiPatternStore,
-          { redactWindowTitles: redactTitles },
+          {
+            redactWindowTitles:
+              securityTierActive?.effective.redact_window_titles ?? false,
+          },
         );
       }
       // ADR-011 Phase B B-4: Procedural memory projection (suggest 候補
@@ -3035,7 +3197,14 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
       // 直接 record、`getTopKForSuggest` filter (success>=3 + failure==0
       // + no destructive) で構造的に safe 候補のみ expose、destructive
       // macro suggest は Phase B では non-goal で出ない設計)。
-      if (includeProceduralOptIn && sessionId !== "multi:disabled") {
+      // §10 OQ #10 Resolved: tier=strict なら projection を skip
+      // (`effective.procedural === "off"` で suppress、LLM 側で
+      // `memory_strict` を request した時の per-call expose-floor 適用)。
+      if (
+        includeProceduralOptIn &&
+        sessionId !== "multi:disabled" &&
+        securityTierActive?.effective.procedural === "expose"
+      ) {
         successfulMacros = projectProceduralMemory(
           sessionId,
           includeProceduralK!,
@@ -3073,6 +3242,8 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
       learnedUiPattern,
       // ADR-011 Phase B B-4: Procedural memory projection
       successfulMacros,
+      // ADR-011 Phase B Security tier framework (§10 OQ #10 Resolved)
+      securityTierActive,
     });
     const final = compatHoist(envelope, optIn);
 
