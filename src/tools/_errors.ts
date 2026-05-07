@@ -150,6 +150,15 @@ const SUGGESTS: Record<string, string[]> = {
     "Use include=[\"working:N\"] (compact summary) when the rich shape (lease_token / event_id / elapsed_ms) is unnecessary",
     "Episodic memory exposes the full ToolCallEvent shape — N typically ≤ 5 is sufficient for causal context recovery",
   ],
+  // ADR-011 Phase B B-3: Semantic memory K upper bound
+  // (SEMANTIC_MEMORY_K_MAX = 10) を超える要求の typed reason。
+  // Working/Episodic との使い分けを suggest で誘導 (compact = working、
+  // rich = episodic、pattern reuse = semantic)。
+  SemanticMemoryKUpperBoundExceeded: [
+    "Reduce semantic:K — upper bound is SEMANTIC_MEMORY_K_MAX (= 10)",
+    "Semantic memory surfaces top-K learned UI patterns (rule-based: same windowTitle + 3+ successful commits)",
+    "If you want recent commits instead of patterns, use include=[\"episodic:N\"] (rich shape) or [\"working:N\"] (compact)",
+  ],
 };
 
 /**

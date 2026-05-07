@@ -67,7 +67,7 @@ ADR-010 §6 (CoALA memory mapping) + ADR-010 P6 acceptance:
 |---|---|---|
 | Working memory (`include=working:N`) | ✓ ADR-011 Phase B B-1 (PR #B-1、2026-05-07 land) | ~~scope 外~~ → **Resolved** (Phase B sub-plan §4 + B-1 PR で `current_state.recent_events` view + `WORKING_MEMORY_N_MAX=50` SSOT 確定) |
 | Episodic memory (`include=episodic:N`、history buffer expose) | ✓ ADR-011 Phase B B-2 (PR #B-2、2026-05-07 land) | ~~scope 外~~ → **Resolved** (Phase B sub-plan §5 + B-2 PR で `tool_call_history.episodes` rich shape view + `EpisodicMemoryProjection` interface + `EPISODIC_MEMORY_N_MAX = 100` SSOT 確定、Working と同 ring 共有 + projection shape のみ rich) |
-| Semantic memory (`learned_ui_pattern`) | ADR-011 Phase B B-3 (未着手) | scope 外 |
+| Semantic memory (`learned_ui_pattern`) | ✓ ADR-011 Phase B B-3 (PR #B-3、2026-05-07 land) | ~~scope 外~~ → **Resolved** (Phase B sub-plan §6 + B-3 PR で `learned_ui_pattern.patterns` view + `UiPatternSummary` interface + `SEMANTIC_MEMORY_K_MAX = 10` SSOT 確定、rule-based 抽出 (同 windowTitle 連続 3+ 成功)、in-memory LRU 100、永続化 framework skeleton は env opt-in 設置済 (実 disk I/O は B-3 follow-up PR で carry-over)) |
 | Procedural memory (`successful_macros`) | ADR-011 Phase B B-4 (未着手) | scope 外 |
 
 Phase B は CoALA 全体設計 (4 memory layer + L4 view 設計 + envelope projection + bench) で大規模、本 plan の Phase A wire 完了後に別 sub-plan として起草する。
