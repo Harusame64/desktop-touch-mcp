@@ -176,6 +176,12 @@ export interface EnvelopeMinimalShape<T = unknown> {
    *  `_truncation` notation 付きで silently truncate 防止 (Phase B plan §4.3
    *  acceptance、ADR-010 §5.6.1 truncation 規約)。 */
   current_state?: WorkingMemoryProjection;
+  /** ADR-011 Phase B B-2 Episodic memory projection (recent N completed
+   *  event rich shape、ADR-010 §6 line 407 view name `tool_call_history`
+   *  整合)。Optional — present only when `include=["episodic"]` or
+   *  `["episodic:N"]` opt-in。Working memory と同 ring 共有、projection
+   *  shape のみ rich (lease_token / event_id / elapsed)。 */
+  tool_call_history?: EpisodicMemoryProjection;
 }
 
 /**
@@ -322,6 +328,16 @@ export interface EnvelopeOptions {
    * acceptance + ADR-010 §5.6.1 truncation 規約)。
    */
   currentState?: WorkingMemoryProjection;
+  /**
+   * ADR-011 Phase B B-2 Episodic memory projection
+   * (`envelope.tool_call_history.episodes`、ADR-010 §6 line 407 view name
+   * `tool_call_history` 整合)。Optional — set by `makeQueryWrapper` when
+   * `include=["episodic"]` or `["episodic:N"]` opt-in。Working memory と
+   * 同 ring 共有 (`_historyBuffers`)、projection shape のみ rich
+   * (lease_token_summary / event_id_started / event_id_completed /
+   * elapsed_ms)、in-flight skip (completed only)。
+   */
+  toolCallHistory?: EpisodicMemoryProjection;
 }
 
 // ─── Schema injection helper (PR #112 Round 1 P1 fix) ─────────────────────────
@@ -519,6 +535,8 @@ export function buildEnvelope<T>(
     ...(options?.basedOn !== undefined ? { based_on: options.basedOn } : {}),
     // ADR-011 Phase B B-1: Working memory projection
     ...(options?.currentState !== undefined ? { current_state: options.currentState } : {}),
+    // ADR-011 Phase B B-2: Episodic memory projection
+    ...(options?.toolCallHistory !== undefined ? { tool_call_history: options.toolCallHistory } : {}),
   };
 
   let confidence: "fresh" | "degraded" = "fresh";
@@ -1004,6 +1022,16 @@ export const WORKING_MEMORY_DEFAULT_N = 10;
  *  SSOT 既定値 50 と sync、`HISTORY_BUFFER_CAPACITY` と同値で
  *  ring overflow による silent truncate を構造的に防ぐ。 */
 export const WORKING_MEMORY_N_MAX = 50;
+/** ADR-011 Phase B B-2: Episodic memory `include=episodic:N` の default 値。
+ *  ADR-010 §5.6.1 P6 行 (line 384) 既定値 N=5 と整合。Working (compact) と
+ *  差別化、rich shape (lease_token / event_id / elapsed 等) を expose する
+ *  ため per-episode size ~300B、N=5 で +1.5KB 目標 (Phase B plan §5.3)。 */
+export const EPISODIC_MEMORY_DEFAULT_N = 5;
+/** ADR-011 Phase B B-2: Episodic memory N 上限。`layer-constraints §5 line 281`
+ *  SSOT 既定値 100 と sync。capacity 50 を超える要求は `_truncation: capacity_cap`
+ *  notation で expose、N <= 100 で typed error は発火せず ring overflow
+ *  notation 経路で対応 (Working と同型 truth-in-API)。 */
+export const EPISODIC_MEMORY_N_MAX = 100;
 /** Max sessions in `_historyBuffers` (sub-plan §6 OQ #1 LRU eviction). */
 const HISTORY_BUFFERS_MAX = 1000;
 /** Per-session TTL — entries older than this are evicted on access (24 h). */
@@ -1503,6 +1531,145 @@ export function projectWorkingMemory(
   return truncation === undefined
     ? { recent_events: recentEvents }
     : { recent_events: recentEvents, _truncation: truncation };
+}
+
+// ─── ADR-011 Phase B B-2: Episodic memory projection ────────────────────────
+
+/**
+ * Rich shape projection of a `ToolCallEvent` for Episodic memory
+ * (`tool_call_history.episodes`、ADR-011 Phase B B-2 view 構造、Phase B
+ * plan §5.2)。
+ *
+ * Working memory (`ToolCallEventSummary`、5 field compact) と差別化、
+ * `ToolCallEvent` の **完全 shape** を expose:
+ *   - tool_call_id / tool / args_summary 512 char (B-1 64 char より rich)
+ *   - ok: completed only (in-flight skip、Working は ok undefined 許容)
+ *   - started_at_ms / elapsed_ms (wallclock 可視化、LLM の causal trail
+ *     再現に有用)
+ *   - is_compound: A-3 boundary flag
+ *   - lease_token_summary: `${entityId}/${viewId}@${targetGeneration}#${digest8}`
+ *     compact format (PII safe redact、機密 field 不在の internal id のみ)
+ *   - event_id_started / event_id_completed: u64 decimal string (Phase A
+ *     bigint→string SSOT 整合、ADR-010 §8.2 + PR #115 architecture lock)
+ */
+export interface EpisodeSummary {
+  tool_call_id: string;
+  tool: string;
+  args_summary: string;
+  ok: boolean;
+  started_at_ms: number;
+  elapsed_ms: number;
+  is_compound: boolean;
+  lease_token_summary?: string;
+  event_id_started?: string;
+  event_id_completed?: string;
+}
+
+/** Episodic memory projection 戻り値 (`episodes` field、Phase B plan §5.2
+ *  documented contract `tool_call_history.episodes` 整合)。 */
+export interface EpisodicMemoryProjection {
+  episodes: EpisodeSummary[];
+  _truncation?: TruncationNotation;
+}
+
+/**
+ * Format `NativeLeaseTokenSummary` 4 field as a compact PII-safe string
+ * (Phase B plan §5.2)。
+ *
+ * 形式: `${entityId}/${viewId}@${targetGeneration}#${digestPrefix8}`
+ *   - 全 field は internal id (`entityId` / `viewId`) または derived hash
+ *     (`digestPrefix8`) で機密情報なし
+ *   - 空 lease token は `undefined` return (Working との並列で field 省略)
+ *
+ * Phase A の `mapLeaseValidationToTypedReason` (`_envelope.ts:710-729`) と
+ * 同型な safe redact pattern。
+ */
+function formatLeaseTokenSummary(
+  token: NativeLeaseTokenSummary | undefined,
+): string | undefined {
+  if (!token) return undefined;
+  return `${token.entityId}/${token.viewId}@${token.targetGeneration}#${token.evidenceDigestPrefix8}`;
+}
+
+/**
+ * Project Episodic memory (recent N completed event rich shape) from
+ * per-session history buffer (ADR-011 Phase B B-2)。
+ *
+ * Working memory と **同 ring を共有** (`_historyBuffers`)、projection shape
+ * のみ rich 化 (Phase B plan §3.3 storage 表)。
+ *
+ * 戻り値:
+ *   - sentinel `multi:disabled` → `undefined` (skip、A-2 closed loop 整合)
+ *   - history ring 不在 / 0 件 → `{ episodes: [] }` (empty projection)
+ *   - 通常: 完了済 entry (`wallclockEndMs !== undefined && ok !== undefined`) を
+ *     ring 末尾から **新しい順** (LIFO) で抽出、in-flight (commit 進行中)
+ *     entry は skip。Working との差別化 (Working は ok undefined 含む =
+ *     in-flight 許容)。
+ *   - ring 内完了済件数 < N → `_truncation: ring_underflow`
+ *   - N > capacity → `_truncation: capacity_cap` (forward-compat、現状
+ *     N_MAX (= 100) > capacity (= 50) なので発火しうる経路、B-2 land では
+ *     truncation notation で truth-in-API 維持)
+ */
+export function projectEpisodicMemory(
+  sessionId: string,
+  n: number,
+): EpisodicMemoryProjection | undefined {
+  if (sessionId === "multi:disabled") return undefined;
+  const ring = _historyBuffers.get(sessionId);
+  if (!ring) return { episodes: [] };
+  ring.lastAccessMs = _historyClock();
+
+  const ringSize = ring.events.length;
+  if (ringSize === 0) return { episodes: [] };
+
+  // 完了済 entry のみ抽出 (in-flight skip、Working との差別化)。
+  // ring 末尾から探索、LIFO で returnedCount 件まで集める。
+  // Round 1 Opus P2-1 反映: 旧 `inflightSkipped` counter は **dead intent**
+  // (戻り値 / truncation / log いずれにも反映されない) で削除。
+  // Phase B plan §5.3 acceptance に「in-flight skip 件数 expose」要件なし、
+  // `ring_underflow` notation で件数差分は既に検出可能 (将来 in-flight 件数
+  // expose を追加する場合は別 OQ で議論)。
+  const cappedN = Math.min(n, ring.capacity);
+  const episodes: EpisodeSummary[] = [];
+  for (let i = ringSize - 1; i >= 0 && episodes.length < cappedN; i--) {
+    const e = ring.events[i];
+    if (e.wallclockEndMs === undefined || e.ok === undefined) {
+      continue;
+    }
+    episodes.push({
+      tool_call_id: e.toolCallId,
+      tool: e.toolName,
+      args_summary: e.argsSummary.length > 512 ? e.argsSummary.slice(0, 512) : e.argsSummary,
+      ok: e.ok,
+      started_at_ms: e.wallclockStartMs,
+      elapsed_ms: e.wallclockEndMs - e.wallclockStartMs,
+      is_compound: e.isCompoundBoundary === true,
+      ...(e.leaseToken !== undefined
+        ? { lease_token_summary: formatLeaseTokenSummary(e.leaseToken) }
+        : {}),
+      ...(e.eventIdStarted !== undefined ? { event_id_started: String(e.eventIdStarted) } : {}),
+      ...(e.eventIdCompleted !== undefined
+        ? { event_id_completed: String(e.eventIdCompleted) }
+        : {}),
+    });
+  }
+
+  // _truncation notation 判定 (Phase B plan §5.3 acceptance、B-1 と同型ロジック)
+  // 注意: 完了済 entry のみ抽出のため、`returned < requested` には ring 内
+  // **完了済件数不足** (in-flight 含む) と **capacity_cap** の両 case がある。
+  // 本実装は capacity_cap (n > ring.capacity) を優先判定、それ以外で
+  // ring_underflow (実件数 < 要求 N、in-flight skip 含む) として明示。
+  let truncation: TruncationNotation | undefined;
+  if (n > ring.capacity) {
+    truncation = { requested: n, returned: episodes.length, reason: "capacity_cap" };
+  } else if (episodes.length < n) {
+    // ring 内に完了済 N 件が揃わなかった (in-flight skip / ring 件数不足)
+    truncation = { requested: n, returned: episodes.length, reason: "ring_underflow" };
+  }
+
+  return truncation === undefined
+    ? { episodes }
+    : { episodes, _truncation: truncation };
 }
 
 /**
@@ -2187,6 +2354,12 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
     // typed error、include 不在 / layer 不在 → undefined (skip projection)。
     const includeWorkingN = parseIncludeMemoryN(include, "working", WORKING_MEMORY_DEFAULT_N);
     const includeWorkingOptIn = includeWorkingN !== undefined;
+    // ADR-011 Phase B B-2: Episodic memory `include=["episodic"]` or
+    // `include=["episodic:N"]` parsing。N <= EPISODIC_MEMORY_N_MAX で
+    // typed error、include 不在 / layer 不在 → undefined (skip projection)。
+    // Working と同 ring 共有、projection shape のみ rich。
+    const includeEpisodicN = parseIncludeMemoryN(include, "episodic", EPISODIC_MEMORY_DEFAULT_N);
+    const includeEpisodicOptIn = includeEpisodicN !== undefined;
     // Round 2 P1 fix (Codex line 1501): `include=["causal"]` is an
     // implicit envelope opt-in — causal projection (`caused_by` +
     // `based_on`) only exists inside the envelope shape. Without this
@@ -2206,11 +2379,12 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
     // requested. This keeps the per-call opt-out path that lets
     // legacy callers force raw shape even while asking for causal
     // context (degraded UX, but contract-preserving).
-    // ADR-011 Phase B B-1: `include=["working"]` も causal と同型で envelope
-    // opt-in の implicit promotion (raw override 維持)。current_state は
-    // envelope 内 top-level field、raw 互換 hoist では消失するため。
+    // ADR-011 Phase B B-1/B-2: `include=["working"]` / `["episodic"]` も causal
+    // と同型で envelope opt-in の implicit promotion (raw override 維持)。
+    // current_state / tool_call_history は envelope 内 top-level field、raw
+    // 互換 hoist では消失するため。
     const optIn =
-      ((includeCausal || includeWorkingOptIn) && !includeRaw) ||
+      ((includeCausal || includeWorkingOptIn || includeEpisodicOptIn) && !includeRaw) ||
       resolveEnvelopeOptIn(include, getEnvValue());
 
     // ADR-011 Phase B B-1: N upper bound check (silently truncate せず error)。
@@ -2233,6 +2407,21 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
         content: [{ type: "text", text: JSON.stringify(finalShape) }],
       };
     }
+    // ADR-011 Phase B B-2: Episodic memory N upper bound check (B-1 同型)。
+    if (includeEpisodicOptIn && includeEpisodicN! > EPISODIC_MEMORY_N_MAX) {
+      const tryNext: TryNextAction[] = getSuggestsForCode(
+        "EpisodicMemoryNUpperBoundExceeded",
+      ).map((suggest) => ({ action: suggest }));
+      const failure = buildFailureEnvelope(
+        "EpisodicMemoryNUpperBoundExceeded",
+        tryNext,
+        { viewPoisoned: false, asOfWallclockMs: null },
+      );
+      const finalShape = optIn ? failure : compatFailureRaw(failure);
+      return {
+        content: [{ type: "text", text: JSON.stringify(finalShape) }],
+      };
+    }
 
     const meta = await fetchMeta();
     const result = await handler(handlerArgs as TArgs);
@@ -2243,7 +2432,12 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
     let basedOn: BasedOnShape | undefined;
     let projectionForceDegraded = false;
     let currentState: WorkingMemoryProjection | undefined;
-    if ((includeCausal && causedByProjector) || includeWorkingOptIn) {
+    let toolCallHistory: EpisodicMemoryProjection | undefined;
+    if (
+      (includeCausal && causedByProjector) ||
+      includeWorkingOptIn ||
+      includeEpisodicOptIn
+    ) {
       const sessionId = getSessionId(handlerArgs);
       // causal projection (A-1 wire)
       if (includeCausal && causedByProjector) {
@@ -2260,6 +2454,11 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
         currentState = projectWorkingMemory(sessionId, includeWorkingN!);
         // sentinel `multi:disabled` → undefined return、cross-session leak 防止
         // (Phase A sentinel runtime closed loop と整合)
+      }
+      // ADR-011 Phase B B-2: Episodic memory projection (Working と同 sessionId
+      // 共有、sentinel skip 一貫性、projection shape のみ rich)
+      if (includeEpisodicOptIn) {
+        toolCallHistory = projectEpisodicMemory(sessionId, includeEpisodicN!);
       }
     }
 
@@ -2286,6 +2485,8 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
       basedOn,
       // ADR-011 Phase B B-1: Working memory projection
       currentState,
+      // ADR-011 Phase B B-2: Episodic memory projection
+      toolCallHistory,
     });
     const final = compatHoist(envelope, optIn);
 
