@@ -53,10 +53,10 @@ ADR-010 §6 (CoALA memory mapping) + ADR-010 P6 acceptance:
 
 | memory type | 対応 phase | 本 plan |
 |---|---|---|
-| Working memory (`include=working:N`) | ADR-011 Phase B / ADR-010 P6 | scope 外 |
-| Episodic memory (`include=episodic:N`、history buffer expose) | ADR-011 Phase B / ADR-010 P6 | scope 外 (既存 history buffer は A-3 で boundary preserve のみ) |
-| Semantic memory (`learned_ui_pattern`) | ADR-011 Phase B | scope 外 |
-| Procedural memory (`successful_macros`) | ADR-011 Phase B | scope 外 |
+| Working memory (`include=working:N`) | ✓ ADR-011 Phase B B-1 (PR #B-1、2026-05-07 land) | ~~scope 外~~ → **Resolved** (Phase B sub-plan §4 + B-1 PR で `current_state.recent_events` view + `WORKING_MEMORY_N_MAX=50` SSOT 確定) |
+| Episodic memory (`include=episodic:N`、history buffer expose) | ADR-011 Phase B B-2 (未着手) | scope 外 (既存 history buffer は A-3 で boundary preserve のみ、B-2 で rich shape projection 追加) |
+| Semantic memory (`learned_ui_pattern`) | ADR-011 Phase B B-3 (未着手) | scope 外 |
+| Procedural memory (`successful_macros`) | ADR-011 Phase B B-4 (未着手) | scope 外 |
 
 Phase B は CoALA 全体設計 (4 memory layer + L4 view 設計 + envelope projection + bench) で大規模、本 plan の Phase A wire 完了後に別 sub-plan として起草する。
 

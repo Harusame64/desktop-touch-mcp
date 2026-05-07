@@ -624,7 +624,7 @@ LLM が trouble shoot 時にこれを見て、tier の使い方や lag を判断
 | 4 | Subscribe API transport (MCP notification / WebSocket / 内部 callback) | ADR-008 D2 + ADR-010 P4 整合 | 両方 |
 | 5 | `query_past` リンクの URI 形式 (string call: vs structured ref) | ADR-010 P4 着手時 | ADR-010 |
 | 6 | dry-run の精度許容ライン (50/80/95%) | ADR-010 P5 着手時 | ADR-010 |
-| 7 | working memory の N 上限推奨 default | ADR-010 P6 着手後 bench で | ADR-010 |
+| 7 | ~~working memory の N 上限推奨 default~~ → **Resolved** (ADR-011 Phase B B-1 で `WORKING_MEMORY_N_MAX = 50` / `WORKING_MEMORY_DEFAULT_N = 10` 確定、`HISTORY_BUFFER_CAPACITY = 50` 拡張採用、`layer-constraints §5` SSOT 既定値踏襲、land 2026-05-07) | ~~ADR-010 P6 着手後 bench で~~ | ADR-010 + ADR-011 Phase B |
 | 8 | arrangement snapshot の disk format (bincode/capnproto/自前) | ADR-008 D6 着手時 | ADR-008 |
 | 9 | Intel PT 記録は全 session か bug 時のみか | ADR-008 D6 + 運用後 | ADR-008 |
 | 10 | HIP Graph on Windows の本番投入時期 | ADR-008 D5 完了後 re-check | ADR-008 |
