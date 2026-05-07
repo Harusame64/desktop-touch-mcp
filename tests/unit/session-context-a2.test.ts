@@ -51,6 +51,7 @@ import {
   _resetToolCallSeqForTest,
   _setDefaultQuerySingleSessionForTest,
   _resetDefaultQuerySingleSessionForTest,
+  type CommitL1Emitter,
 } from "../../src/tools/_envelope.js";
 import {
   desktopStateGetSessionId,
@@ -428,5 +429,46 @@ describe("A-2-A4-commit-query-key: makeCommitWrapper default getSessionId が AL
     }, { causalWindowTimeoutMs: 60_000 });
     expect(causedBy).toBeDefined();
     expect(causedBy?.your_last_action).toContain("test_commit_stdio");
+  });
+
+  // A-4 Round 1 Opus P2-2 反映: sentinel commit ring 副作用閉じ込め
+  it("sentinel sessionId (\"multi:disabled\") 配下で commit 実行 → L1 emit + history record skip (sentinel ring pollution 防止)", async () => {
+    _resetHistoryBuffersForTest();
+    _resetToolCallSeqForTest();
+    _setSingleSessionPinForTest(false); // multi-session pin → defaultQuerySessionId が "multi:disabled" 返却
+
+    let handlerInvoked = false;
+    const captured: Array<{ sessionId: string; toolCallId: string }> = [];
+    const fakeEmitter: CommitL1Emitter = {
+      pushStarted(args) {
+        captured.push({ sessionId: args.sessionId, toolCallId: args.toolCallId });
+      },
+      pushCompleted(args) {
+        captured.push({ sessionId: args.sessionId, toolCallId: args.toolCallId });
+      },
+    };
+    const handler = async () => {
+      handlerInvoked = true;
+      return { content: [{ type: "text" as const, text: '{"ok":true}' }] };
+    };
+    const wrapped = makeCommitWrapper(handler, "sentinel_test", {
+      l1Emitter: fakeEmitter,
+    });
+
+    // extra なし (ALS undefined) + multi-session pin → sentinel "multi:disabled"
+    await wrapped({} as Record<string, unknown>);
+
+    // commit body は実行 (sentinel = "do nothing telemetry" だが side effect は実行)
+    expect(handlerInvoked).toBe(true);
+    // L1 emit (pushStarted / pushCompleted) は skip (sentinel ring pollution 防止)
+    expect(captured).toEqual([]);
+    // history ring (`_historyBuffers.get("multi:disabled")`) も unset
+    const causedBy = buildCausedBy("multi:disabled", {
+      focus: null,
+      dirtyRectsByMonitor: new Map(),
+      latestEventId: undefined,
+      queryWallclockMs: Date.now(),
+    }, { causalWindowTimeoutMs: 60_000 });
+    expect(causedBy).toBeUndefined(); // sentinel ring 不在
   });
 });

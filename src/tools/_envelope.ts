@@ -1922,21 +1922,37 @@ export function makeCommitWrapper<TArgs extends Record<string, unknown>>(
 
     // Step 3: tool_call_id seq採番.
     const sessionId = getSessionId(handlerArgs);
-    const toolCallId = nextToolCallId(sessionId);
+    // A-4 retrospective fix (Round 1 Opus P2-2、PR #163 Round 2 反映):
+    // `multi:disabled` sentinel sessionId は **L1 emit + history record を
+    // skip** する明示分岐。query 側 (genericQueryCausedByProjector / projectWorkingMemory)
+    // は既に sentinel で undefined return する closed loop だが、commit 側
+    // default を `defaultQuerySessionId` 共有に変更したことで sentinel sessionId
+    // が L1 ring + `_historyBuffers["multi:disabled"]` 共有 sentinel ring に
+    // **多 session の commit を混入させる** 構造的副作用が発生 (Phase B B-2
+    // Episodic memory expose 時に sentinel ring が誤って読まれる risk)。
+    // sentinel = "do nothing (no per-session attribution)" semantics を保持
+    // するため、commit body は実行 (handler invoke + raw return) するが
+    // telemetry / history record を完全 skip する分岐を追加。
+    const isSentinelSession = sessionId === "multi:disabled";
+    const toolCallId = isSentinelSession ? "multi:disabled:0" : nextToolCallId(sessionId);
 
-    // Step 4: l1PushToolCallStarted (with optional lease_token summary).
+    // Step 4: l1PushToolCallStarted (with optional lease_token summary)。
+    // sentinel sessionId は L1 ring に session label を emit しない (ring
+    // pollution 防止)、history record も skip。
     const summary = argsSummary(handlerArgs);
     const leaseToken = options.extractLeaseToken
       ? options.extractLeaseToken(handlerArgs)
       : undefined;
-    l1.pushStarted({
-      tool: toolName,
-      argsJson: summary,
-      sessionId,
-      toolCallId,
-      leaseToken,
-      isCompoundBoundary: options.isCompoundBoundary,
-    });
+    if (!isSentinelSession) {
+      l1.pushStarted({
+        tool: toolName,
+        argsJson: summary,
+        sessionId,
+        toolCallId,
+        leaseToken,
+        isCompoundBoundary: options.isCompoundBoundary,
+      });
+    }
 
     // Step 5: invoke handler (raw side effect). Step 6: completion event.
     const startedAt = clock();
@@ -1958,14 +1974,17 @@ export function makeCommitWrapper<TArgs extends Record<string, unknown>>(
     const elapsedMs = Math.max(0, Math.floor(clock() - startedAt));
 
     if (handlerThrew) {
-      l1.pushCompleted({
-        tool: toolName,
-        elapsedMs,
-        ok: false,
-        errorCode: extractErrorCode(handlerError),
-        sessionId,
-        toolCallId,
-      });
+      // sentinel sessionId 経路は L1 emit skip (上記 sentinel 分岐と整合)
+      if (!isSentinelSession) {
+        l1.pushCompleted({
+          tool: toolName,
+          elapsedMs,
+          ok: false,
+          errorCode: extractErrorCode(handlerError),
+          sessionId,
+          toolCallId,
+        });
+      }
       const failure = buildFailureEnvelope(
         "Unknown",
         [],
@@ -1986,14 +2005,17 @@ export function makeCommitWrapper<TArgs extends Record<string, unknown>>(
     // Step 7: buildEnvelope (S3 inherit) + compatHoist (S3 inherit).
     const block = result.content?.[0];
     const ok = inferOkFromResult(block);
-    l1.pushCompleted({
-      tool: toolName,
-      elapsedMs,
-      ok,
-      errorCode: ok ? undefined : extractErrorCodeFromBlock(block),
-      sessionId,
-      toolCallId,
-    });
+    // sentinel sessionId 経路は L1 emit skip (上記 sentinel 分岐と整合)
+    if (!isSentinelSession) {
+      l1.pushCompleted({
+        tool: toolName,
+        elapsedMs,
+        ok,
+        errorCode: ok ? undefined : extractErrorCodeFromBlock(block),
+        sessionId,
+        toolCallId,
+      });
+    }
 
     if (!block || block.type !== "text" || typeof block.text !== "string") {
       return result;
