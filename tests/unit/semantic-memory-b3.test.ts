@@ -568,7 +568,7 @@ describe("B-3-19: include=[\"semantic:<edge>\"] empty / negative / non-numeric K
   it.each<[string, number | undefined]>([
     ["semantic:", SEMANTIC_MEMORY_DEFAULT_K], // empty K → default
     ["semantic:abc", SEMANTIC_MEMORY_DEFAULT_K], // non-numeric → default
-    ["semantic:-1", SEMANTIC_MEMORY_DEFAULT_K], // negative → default (Number is parsed but parseIncludeMemoryN clamps)
+    ["semantic:-1", SEMANTIC_MEMORY_DEFAULT_K], // negative → default (parseIncludeMemoryN は `n >= 0` で reject して default fallback)
   ])("parseIncludeMemoryN([%j], 'semantic') 戻り値が default fallback", (token, expected) => {
     const k = parseIncludeMemoryN([token], "semantic", SEMANTIC_MEMORY_DEFAULT_K);
     expect(k).toBe(expected);
