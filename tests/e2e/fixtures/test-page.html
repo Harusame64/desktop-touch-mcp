@@ -109,6 +109,36 @@
       <button type="button" aria-pressed="true" id="aria-pressed-on">Pressed button</button>
       <button type="button" aria-expanded="false" id="aria-expanded-off">Expand</button>
     </div>
+
+    <!-- ──────────────────────────────────────────────────────────────── -->
+    <!-- Issue #181 fixtures — CDP click/fill delivery verification        -->
+    <!-- ──────────────────────────────────────────────────────────────── -->
+    <div id="verify-fixtures" style="position:absolute;left:100px;top:780px;width:600px;">
+      <h2>Verification Fixtures (#181)</h2>
+
+      <!-- Bound button: the click adds a child node to its sibling so the
+           MutationObserver fires on document.body subtree -->
+      <button id="btn-verify-bound" type="button" style="margin:4px;">Bound</button>
+      <div id="btn-verify-bound-target" style="margin:4px;font-family:monospace;"></div>
+
+      <!-- Silent SPA button: rendered but with NO event listener at all.
+           A click here must NOT mutate the DOM, change activeElement, or
+           change location.href. The verification path should report
+           hints.verifyDelivery.status='unverifiable' for this element. -->
+      <button id="btn-verify-silent" type="button" style="margin:4px;">Silent (no listener)</button>
+
+      <!-- Plain input: fill round-trips byte-for-byte. -->
+      <input id="input-verify-plain" type="text" placeholder="Plain input" style="margin:4px;">
+
+      <!-- "React controlled-input" simulator: an input element that filters
+           non-digit characters out of its own value on each input event.
+           This is the smallest possible reproduction of the false-positive
+           that matrix doc §5.2 calls out: a fill arrives intact, the
+           framework rewrites it, element.value mismatches the request,
+           and the verification has to surface a sub-reason rather than
+           hide-or-fail the call. -->
+      <input id="input-verify-numbersonly" type="text" placeholder="numbers only" style="margin:4px;">
+    </div>
   </div>
 
   <!-- SPA state fixtures for browser_get_app_state -->
@@ -129,6 +159,33 @@
     document.getElementById('input-name').addEventListener('input', function(e) {
       window._clickLog.push({ id: 'input-name', value: e.target.value, time: Date.now() });
     });
+
+    // ── Issue #181: verification fixture wiring ──
+    // Bound button mutates the DOM on click — verification should observe it.
+    document.getElementById('btn-verify-bound').addEventListener('click', function() {
+      var t = document.getElementById('btn-verify-bound-target');
+      var span = document.createElement('span');
+      span.textContent = 'clicked@' + Date.now() + ' ';
+      t.appendChild(span);
+    });
+
+    // Silent button: NO listener, NO href, NO form submit. A click here
+    // produces zero observable side effect — exactly the SPA silent-fail
+    // signature that #181 catches.
+
+    // Numbers-only filter — the smallest controlled-input reproduction.
+    // After every input event we strip non-digits and write the cleaned
+    // value back via the React-style native setter so element.value reflects
+    // the framework's transformation.
+    (function() {
+      var input = document.getElementById('input-verify-numbersonly');
+      if (!input) return;
+      var setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      input.addEventListener('input', function() {
+        var cleaned = (input.value || '').replace(/[^0-9]/g, '');
+        if (cleaned !== input.value) setter.call(input, cleaned);
+      });
+    })();
   </script>
 </body>
 </html>
