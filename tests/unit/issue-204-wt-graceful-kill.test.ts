@@ -21,6 +21,13 @@
 import { describe, it, expect } from "vitest";
 import { evaluateGracefulKillState } from "../e2e/helpers/powershell-launcher.js";
 
+// The fixture numbers in this file (e.g. 1_500 / 2_500 for `now` and
+// `deadline`) are illustrative; the actual launcher uses
+// GRACE_BUDGET_MS=1500 + POLL_INTERVAL_MS=100 (powershell-launcher.ts).
+// `evaluateGracefulKillState` is value-agnostic — it only compares
+// `now` against `deadline` and reads `isAlive` — so test fixtures
+// pick whatever numbers make the transitions easy to read. If the
+// launcher constants change, this file does not need to follow.
 describe("issue #204: evaluateGracefulKillState — graceful-kill polling state machine", () => {
   it("returns 'exited' immediately when the process is gone (ESRCH)", () => {
     // First poll iteration: graceful taskkill landed, ESRCH already.

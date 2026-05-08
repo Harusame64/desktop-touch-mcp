@@ -39,18 +39,8 @@ import {
   enumWindowsInZOrder,
   clearWindowTopmost,
   postMessageToHwnd,
+  WM_CLOSE,
 } from "../../../src/engine/win32.js";
-
-/**
- * `WM_CLOSE` (0x0010): Posting this to a WT window asks Windows Terminal to
- * close the window. WT then disconnects the ConPTY, which delivers a console
- * close signal to the hosted PowerShell — PS unwinds with exit code 0, and
- * WT's `closeOnExit: graceful` (default) auto-closes the window. Using
- * `WM_CLOSE` on the host PowerShell PID via `taskkill` (no /F) does NOT
- * work for WT-hosted PS because the PS process owns no top-level window —
- * WT does. Issue #204.
- */
-const WM_CLOSE = 0x0010;
 import { sleep } from "./wait.js";
 
 const execFileAsync = promisify(execFile);
@@ -388,6 +378,13 @@ export async function launchPowerShell(opts?: {
     hwnd: captured.hwnd,
     host,
     kill() {
+      // DO NOT reorder: the host==='wt' graceful path below posts WM_CLOSE
+      // to the SAME `captured.hwnd`. clearWindowTopmost is a SetWindowPos
+      // (HWND_NOTOPMOST) call that does NOT invalidate the hwnd, so the
+      // ordering is safe today; but moving the WM_CLOSE post BEFORE this
+      // line would flip the contract — once WT receives WM_CLOSE the
+      // window starts disappearing and the topmost-clear becomes a
+      // race against window destruction. Keep this call first.
       try { clearWindowTopmost(captured.hwnd); } catch { /* ignore */ }
 
       // Kill by PowerShell PID only — NEVER use /T (descendant-tree) flag.
@@ -435,11 +432,32 @@ export async function launchPowerShell(opts?: {
           //                    unique `-w` window auto-closes via graceful.
           //   - other hosts  → existing `taskkill /PID <pid>` path, which
           //                    posts WM_CLOSE to conhost / cmd / etc.
+          //
+          // Side effect note (Codex / Opus review on PR #205, P2-2):
+          // `postMessageToHwnd` records every successful PostMessage call
+          // into the L1 input ring (`engine/win32.ts:592-594`) so the
+          // perception pipeline can replay/inspect input. This means the
+          // cleanup path of an `host:'wt'` test posts WM_CLOSE = 0x0010
+          // to the ring. Today's e2e suites do not assert on the ring,
+          // so no test is affected; but if a future ring-asserting suite
+          // is added, it MUST whitelist the cleanup-induced WM_CLOSE
+          // event to avoid a spurious "unexpected ring entry" failure.
           let exitedGracefully = false;
           try {
+            // Two-stage graceful (Opus PR #205 P1-1):
+            // postMessageToHwnd returns false on hwnd-not-bigint / native
+            // throw / PostMessageW failure. Without this guard, a failed
+            // post left the loop polling for the full 1500ms budget before
+            // /F escalation — i.e. WT residue still leaked whenever the
+            // hwnd happened to be invalidated mid-cleanup. Falling back to
+            // `taskkill /PID <pid>` here gives conhost-style graceful close
+            // a second chance before /F. Combined cost is at most one
+            // taskkill call; no extra polling time.
+            let postSucceeded = false;
             if (host === "wt") {
-              postMessageToHwnd(captured.hwnd, WM_CLOSE, 0, 0);
-            } else {
+              postSucceeded = postMessageToHwnd(captured.hwnd, WM_CLOSE, 0, 0);
+            }
+            if (!postSucceeded) {
               execSync(`taskkill /PID ${pid}`, { stdio: "ignore" });
             }
             const POLL_INTERVAL_MS = 100;

@@ -570,6 +570,15 @@ export function readScrollInfo(
 export const WM_CHAR    = 0x0102;
 export const WM_KEYDOWN = 0x0100;
 export const WM_KEYUP   = 0x0101;
+/**
+ * WM_CLOSE — request that a window close. Used by `tests/e2e/helpers/
+ * powershell-launcher.ts` (issue #204) to gracefully shut down the WT
+ * window we own; WT then disconnects the ConPTY, the hosted PowerShell
+ * exits with code 0, and WT's `closeOnExit:graceful` (default) auto-
+ * closes the window. Exported as a single source of truth so any future
+ * caller that posts WM_CLOSE shares the same constant.
+ */
+export const WM_CLOSE   = 0x0010;
 export const VK_RETURN  = 0x0D;
 export const VK_BACK    = 0x08;
 export const VK_DELETE  = 0x2E;
