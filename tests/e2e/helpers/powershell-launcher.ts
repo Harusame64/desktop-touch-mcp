@@ -69,11 +69,19 @@ export async function launchPowerShell(opts?: {
   const psafePidFile = pidFile.replace(/'/g, "''");
 
   // Set title first, write PID, then echo banner. -NoExit keeps the window alive.
+  // The script is encoded as UTF-16LE Base64 and passed via PowerShell's
+  // -EncodedCommand. This sidesteps cmd-level / shell-level quoting entirely
+  // (no `"`, `\`, or `;` in the command line that cmd has to interpret) and
+  // also clears CodeQL #117 "Incomplete string escaping or encoding" on the
+  // legacy `replace(/"/g, '\\"')` path — a Base64 alphabet has no characters
+  // that need escaping in a Windows command line. -File was tried first but
+  // conhost.exe -hosted powershell did not pick the script up reliably.
   const psScript = [
     `$Host.UI.RawUI.WindowTitle = '${tag}'`,
     `[string]$PID | Set-Content -Path '${psafePidFile}'`,
     banner ? `Write-Host '${banner.replace(/'/g, "''")}'` : "",
   ].filter(Boolean).join("; ");
+  const encodedScript = Buffer.from(psScript, "utf16le").toString("base64");
 
   // Build the launch command depending on the requested host. We always
   // prepend `start ""` so the child runs detached in its own process group
@@ -93,7 +101,7 @@ export async function launchPowerShell(opts?: {
   // unquoted tag would be parsed as the program name, and on JP locale the
   // shell renders "<tag> が見つかりません" in the opened window. Always quote.
   // shell:true so cmd parses the quoted title correctly.
-  const psArgs = `-NoExit -NoProfile -Command "${psScript.replace(/"/g, '\\"')}"`;
+  const psArgs = `-NoExit -NoProfile -EncodedCommand ${encodedScript}`;
   let startCmd: string;
   if (host === "conhost") {
     startCmd = `start "" conhost.exe "${exe}" ${psArgs}`;
