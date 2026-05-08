@@ -1056,13 +1056,9 @@ export const browserClickElementHandler = async ({
     // Ensure browser window is focused so click events reach the page
     await ensureBrowserFocused(port);
 
-    // ── Issue #181: pre-click MutationObserver probe (matrix doc §3.1) ──
-    // Best-effort install. If install fails (page navigated mid-call, CDP
-    // detached, etc.) we still attempt the click and emit an `unverifiable`
-    // hint downstream — never fail the click on a verification setup error.
-    const probe = await installClickProbe(effectiveSelector, effectiveTabId ?? null, port);
-
-    // Perform the actual mouse click using nut-js
+    // Perform the cursor move FIRST (hover effects on the path between the
+    // current cursor position and the target can fire mutations / focus
+    // changes — these must NOT count as click-delivery signals). Codex P1.
     const speed = DEFAULT_MOUSE_SPEED;
     if (speed === 0) {
       await mouse.setPosition(new Point(coords.x, coords.y));
@@ -1075,6 +1071,15 @@ export const browserClickElementHandler = async ({
         mouse.config.mouseSpeed = prev;
       }
     }
+
+    // ── Issue #181: pre-click MutationObserver probe (matrix doc §3.1) ──
+    // Installed AFTER the cursor move so any hover-driven DOM updates land in
+    // the baseline rather than being counted as post-click signals (Codex P1).
+    // Best-effort install: if install fails (page navigated mid-call, CDP
+    // detached, etc.) we still attempt the click and emit an `unverifiable`
+    // hint downstream — never fail the click on a verification setup error.
+    const probe = await installClickProbe(effectiveSelector, effectiveTabId ?? null, port);
+
     await mouse.click(Button.LEFT);
 
     // ── Issue #181: settle window then read the probe ──
@@ -1083,7 +1088,15 @@ export const browserClickElementHandler = async ({
     // microtask after click; the 500ms is the *upper bound* for SPA effects
     // (re-render after async state update) and we are happy to wait the
     // full window before deciding `unverifiable`.
-    let verifyDelivery: VerifyDeliveryHint | undefined;
+    //
+    // Initialise with the install-failed unverifiable hint so the value is
+    // always defined (CodeQL: avoids the useless `verifyDelivery && …`
+    // narrowing at the response site). The branches below override.
+    let verifyDelivery: VerifyDeliveryHint = {
+      status: "unverifiable",
+      channel: "cdp",
+      reason: "probe_install_failed",
+    };
     if (probe.installed) {
       await new Promise<void>((r) => setTimeout(r, 500));
       const reading = await readClickProbe(effectiveTabId ?? null, port);
@@ -1091,7 +1104,14 @@ export const browserClickElementHandler = async ({
         const mutationCount = reading.mutationCount ?? 0;
         const urlChanged = !!reading.urlChanged;
         const activeElementChanged = !!reading.activeElementChanged;
-        const anySignal = mutationCount > 0 || urlChanged || activeElementChanged;
+        // `activeElementChanged` is reported in observedSignals for caller
+        // diagnosis but is intentionally NOT part of `anySignal`: a plain
+        // click on a focusable control (button, input) updates focus even
+        // when no app handler ran or no state changed. Treating focus-only
+        // changes as "delivered" would mask the silent-fail regression the
+        // PR is built to catch (Codex P1). Require at least one of:
+        // mutation event, URL navigation.
+        const anySignal = mutationCount > 0 || urlChanged;
         if (reading.inIframe) {
           // Selector resolved inside an iframe — Runtime.evaluate runs in the
           // top frame, so our MutationObserver could not observe events
@@ -1133,14 +1153,9 @@ export const browserClickElementHandler = async ({
           reason: "probe_read_failed",
         };
       }
-    } else {
-      // Probe install itself failed.
-      verifyDelivery = {
-        status: "unverifiable",
-        channel: "cdp",
-        reason: "probe_install_failed",
-      };
     }
+    // No `else` for !probe.installed: the default initial value of
+    // verifyDelivery already carries reason: "probe_install_failed".
 
     const tabCtx = await getTabContext(effectiveTabId ?? null, port);
 
@@ -1169,7 +1184,7 @@ export const browserClickElementHandler = async ({
       at: { x: coords.x, y: coords.y },
       activeTab: { id: tabCtx.id, title: tabCtx.title, url: tabCtx.url },
       readyState: tabCtx.readyState,
-      ...(verifyDelivery && { hints: { verifyDelivery } }),
+      hints: { verifyDelivery },
       ...(richBlock ? { _richForPost: richBlock } : {}),
       ...(perceptionEnvBrowser && { _perceptionForPost: perceptionEnvBrowser }),
     });
