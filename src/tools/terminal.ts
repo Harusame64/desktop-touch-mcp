@@ -134,6 +134,73 @@ function makeMarker(text: string): string {
   return createHash("sha256").update(slice).digest("hex").slice(0, 16);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Hidden-input prompt detection (issue #183)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// When the terminal is sitting at a prompt that suppresses echo (sudo password,
+// PowerShell `Read-Host -AsSecureString`, ssh passphrase, …), the post-send
+// UIA read-back will see an empty diff regardless of whether WM_CHAR was
+// delivered, and the verifier would mis-fire `BackgroundInputNotDelivered`.
+// docs/operation-verification-matrix.md §3.1 (terminal action:send BG row)
+// designates this as a known false-positive source and §4.3 reserves the
+// `hidden_input_prompt` reason in the verifyDelivery hint enum for it.
+//
+// Detection runs against the LAST non-empty line of the pre-send UIA snapshot
+// (`baselineRaw`). The line is the cursor row, i.e. where the next character
+// would echo (or NOT echo, for hidden-input prompts). Earlier scrollback lines
+// are ignored because they describe completed work, not the current prompt.
+//
+// Initial regex set is intentionally STRICT to avoid false positives on
+// scrollback that happens to mention "password" mid-sentence:
+//   1. `/(password|passphrase|secret|sudo)[\s:]*$/i` — common credential
+//      prompts that end the line with the keyword + optional `:` / whitespace
+//      (e.g. `Password:` / `[sudo] password for user:` / `Enter passphrase:`).
+//   2. `/Password for /` — sudo-on-Linux/macOS exact phrasing
+//      (`Password for jdoe:`); kept separate from #1 so the english "for"
+//      noise does not slip through #1's anchor.
+//   3. `/^>\s*$/` — PowerShell `Read-Host` continuation prompt that draws
+//      `>>` / `>` on its own row when reading hidden input. Anchored both
+//      ends so a stray `>` in command output cannot match.
+//
+// All three patterns require an end-of-line anchor (or the literal phrase
+// match for sudo) so partial mentions in earlier output do not trigger.
+// Future expansion (e.g. ssh-keygen "Enter passphrase (empty for no
+// passphrase):") should follow the same anchored-strict rule.
+const HIDDEN_INPUT_PROMPT_PATTERNS: readonly RegExp[] = [
+  /(password|passphrase|secret|sudo)[\s:]*$/i,
+  /Password for /,
+  /^>\s*$/,
+];
+
+/**
+ * Return true when the baseline text's cursor row matches a known
+ * hidden-input prompt pattern. `baselineRaw` is the raw UIA TextPattern
+ * snapshot taken just before send (ANSI strip is performed here so callers
+ * can pass either ANSI-laden or pre-cleaned text).
+ *
+ * Returns false on null / empty input — verification continues normally
+ * for unreadable buffers.
+ */
+export function isHiddenInputPrompt(baselineRaw: string | null): boolean {
+  if (!baselineRaw) return false;
+  const cleaned = stripAnsi(baselineRaw).replace(/\r\n/g, "\n");
+  // Take the last non-empty line — the cursor row. Trailing blank lines are
+  // padding from Windows Terminal's row-padding behaviour (see
+  // normalizeForMarker docstring).
+  const lines = cleaned.split("\n");
+  let lastNonEmpty = "";
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const trimmed = lines[i]!.replace(/[ \t]+$/, "");
+    if (trimmed.length > 0) {
+      lastNonEmpty = trimmed;
+      break;
+    }
+  }
+  if (lastNonEmpty.length === 0) return false;
+  return HIDDEN_INPUT_PROMPT_PATTERNS.some((re) => re.test(lastNonEmpty));
+}
+
 function applySinceMarker(text: string, marker: string): { text: string; matched: boolean } {
   // Search for any tail window whose hash matches `marker`. Walk from the tail
   // backward — a recent terminal will hit within a few chars. Capped at 32k
@@ -420,13 +487,39 @@ export const terminalSendHandler = async ({
       //     the WT regression that motivated this change.
       const checkText = input.replace(/[\r\n]+$/, "");
       const hasEmbeddedNewline = /[\r\n]/.test(checkText);
-      const verifiable =
+      let verifiable =
         verificationNeeded &&
         baselineMarker !== null &&
         checkText.length > 0 &&
         !hasEmbeddedNewline;
+      // Issue #183: hidden-input prompt detection.
+      //
+      // When the cursor row of `baselineRaw` is a known echo-suppressing prompt
+      // (password / passphrase / sudo / PowerShell Read-Host …), the post-send
+      // UIA read-back can NOT see the input regardless of whether it was
+      // delivered. Continuing into Phase 4 would mis-fire
+      // BackgroundInputNotDelivered on a perfectly good password keystroke.
+      //
+      // Instead: skip Phase 4, return ok:true with hints.verifyDelivery in the
+      // §4.2 regular shape so the caller (LLM) can decide whether to retry on
+      // foreground or continue. The reason `hidden_input_prompt` is reserved
+      // in matrix doc §4.3.
+      //
+      // Detection runs only when verification would have run (verifiable=true);
+      // for non-verified BG sends (e.g. conhost auto-route) the cost of an
+      // extra regex check is meaningful but the upside is nil — the caller
+      // would see a normal ok with no verifyDelivery hint either way.
+      let verifyReason: "hidden_input_prompt" | null = null;
+      if (verifiable && isHiddenInputPrompt(baselineRaw)) {
+        verifyReason = "hidden_input_prompt";
+        verifiable = false;
+      }
       let verifiedDelivery: boolean | "unverifiable" = "unverifiable";
-      if (verifiable) {
+      if (verifiable && baselineMarker !== null) {
+        // `baselineMarker !== null` repeats the gate above so TypeScript narrows
+        // `baselineMarker` to `string` inside the block. (The construction of
+        // `verifiable` already required it non-null, but #183 made `verifiable`
+        // a `let` and the dataflow narrowing no longer survives the let.)
         // Let the terminal render before reading back. ~150ms is enough for
         // conhost; if the input was silently dropped the diff stays empty.
         await new Promise<void>((r) => setTimeout(r, 150));
@@ -474,6 +567,21 @@ export const terminalSendHandler = async ({
 
       if (effectivePressEnter) postEnterToHwnd(win.hwnd);
 
+      // Issue #183: surface hidden-input detection via the §4.2 verifyDelivery
+      // hint shape so callers can react (skip retry, switch to foreground).
+      // Caveat: even when verification was passed normally we don't currently
+      // emit a `delivered` hint — keeping that as opt-out is consistent with
+      // the rest of the BG path which only attaches hints on degradation.
+      const verifyDeliveryHint =
+        verifyReason === "hidden_input_prompt"
+          ? {
+              status: "unverifiable" as const,
+              reason: "hidden_input_prompt" as const,
+              channel: "wm_char" as const,
+              fallback: "method:'foreground'",
+            }
+          : null;
+
       return ok({
         ok: true,
         sent: input.slice(0, totalSent),
@@ -491,6 +599,7 @@ export const terminalSendHandler = async ({
         hints: {
           target: {},
           ...(bgWarnings.length > 0 && { warnings: bgWarnings }),
+          ...(verifyDeliveryHint ? { verifyDelivery: verifyDeliveryHint } : {}),
         },
       });
     }

@@ -4,6 +4,8 @@
 
 ### Changed
 
+- **feat(terminal): `terminal({action:'send', method:'background'})` に hidden-input prompt 自動検出を追加 (issue #183, Phase 3).**
+  `docs/operation-verification-matrix.md` §3.1 (terminal action:send BG row) で「将来 detect」と予約されていた挙動の本実装。post-send UIA read-back の直前に baseline UIA 末尾行を検査し、`/(password|passphrase|secret|sudo)[\s:]*$/i` / `/Password for /` / `/^>\s*$/` のいずれかにマッチする echo 抑制 prompt なら verification を skip し、`hints.verifyDelivery: {status:"unverifiable", reason:"hidden_input_prompt", channel:"wm_char", fallback:"method:'foreground'"}` (matrix doc §4.2 規範 shape, §4.3 reason enum) を付けて `ok:true` を返す。これにより `Read-Host -AsSecureString` / `sudo` / `ssh` パスワード入力 BG 送信が `BackgroundInputNotDelivered` の false-positive で失敗していた既知問題を解消。regex set は意図的に narrow（end-anchor 必須）で start するため、scrollback 中に password と書かれていても誤検出しない設計。
 - **feat(browser): CDP `browser_click` / `browser_fill` に DOM 配信検証を追加 (issue #181, Phase 3).**
   `docs/operation-verification-matrix.md` §3.1 規範実装。
   - `browser_click`: クリック直前に `Runtime.evaluate` 経由で `MutationObserver(document.body, {subtree, childList, attributes})` を install → mouse click → 500ms 経過後に observer + URL + `document.activeElement` の差分を読み戻し。いずれかの signal が観測できれば `hints.verifyDelivery.status = "delivered"`、500ms で 0 signal なら `unverifiable` (reason: `no_dom_mutation`)。SPA ボタンに event listener が attach されていない silent-fail を catch する目的。selector が iframe 内 element だった場合は top-frame の Runtime.evaluate scope では観測不能なので `unverifiable` (reason: `iframe_context_mismatch`) を返す。
