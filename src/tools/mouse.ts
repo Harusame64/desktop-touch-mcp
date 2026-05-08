@@ -681,14 +681,23 @@ export const mouseDragHandler = async ({
     // mouse_click pre-snapshot (matrix doc §3.1).
     await moveTo(tsx, tsy, speed);
 
-    // Issue #178 — Phase 1: pre-drag snapshot at the START point.
-    // Per matrix doc §3.1 row mouse_drag: "drag start/end 周囲の
-    // ElementFromPoint diff、または target window scroll/move の鏡映観測".
-    // We snapshot at the start now (before drag begins) and again at the
-    // end (after the up-event) below.
+    // Issue #178 — Phase 1: pre-drag snapshot at the END point.
+    //
+    // Codex P1: snapshotting pre at start and post at end means
+    // `elementAtPoint` will *always* differ (start vs end usually land on
+    // different UIA elements even when the drag is silently dropped), so
+    // `classifyDelivery()` would mark every drag as `delivered` and miss
+    // the regression. Capture both pre and post at the destination coord
+    // (the same place we read post) so the diff isolates drag side-effects
+    // — drop highlights, target scroll, selection-rect repaint — from the
+    // unrelated source/destination geometry difference.
+    //
+    // ElementFromPoint takes pixel coords, not the cursor's current
+    // position, so the cursor can still sit at (tsx, tsy) when we sample
+    // the destination element here.
     let preSnapshot: MouseVerifySnapshot | null = null;
     if (verifyDelivery) {
-      preSnapshot = await snapshotForVerify(tsx, tsy);
+      preSnapshot = await snapshotForVerify(tex, tey);
     }
 
     const s = speed ?? DEFAULT_MOUSE_SPEED;
