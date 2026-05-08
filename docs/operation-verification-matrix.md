@@ -134,7 +134,7 @@ Phase 5: 判定
 
 | Tool | API レイヤ | 現在の post-verification | 期待される verification | 失敗時 signal | 関連 child issue / PR |
 |---|---|---|---|---|---|
-| `terminal` (action:`send` BG) | PostMessage WM_CHAR | **Strict** — pre-send baseline + UIA TextPattern read-back (exact + tail-N fallback、150ms settle) | (現状で SSOT 規範) hidden-input prompt は将来 detect (#183) | code: `BackgroundInputNotDelivered` ✅ (既存) | (PR #174 完了) |
+| `terminal` (action:`send` BG) | PostMessage WM_CHAR | **Strict** — pre-send baseline + UIA TextPattern read-back (exact + tail-N fallback、150ms settle) | (現状で SSOT 規範) hidden-input prompt detect 済 (#183 完了): baseline 末尾行が password / passphrase / secret / sudo / `Password for ` / `^>$` パターンならverificationを skipし `hints.verifyDelivery: {status:"unverifiable", reason:"hidden_input_prompt", channel:"wm_char", fallback:"method:'foreground'"}` を返す | code: `BackgroundInputNotDelivered` ✅ (既存) / hint: `verifyDelivery.reason='hidden_input_prompt'` (#183) | (PR #174 完了 / #183 完了) |
 | `terminal` (action:`send` FG) | SetForegroundWindow + SendInput / clipboard paste | **Indirect** — `detectFocusLoss` で焦点維持確認、ForegroundNotTransferred 警告化 | (現状維持) FG path は SendInput が射出時に focus 必要、focus が取れていれば届く前提が成立 | warning: `ForegroundNotTransferred` (現行) | — |
 | `terminal` (action:`run`) | send → wait → read 合成 | **Strict** — completion.reason = `quiet`/`pattern_matched`/`timeout`/`window_closed`/`window_not_found`/`send_failed` を区別、`send_failed` は send 側 code を warnings に surface | (現状で SSOT 規範) | reason: `completion.reason='send_failed'` + nested send code (warnings 配列) | (PR #174 完了) |
 | `keyboard` (action:`type` BG) | PostMessage WM_CHAR | **None** — `postCharsToHwnd.full=true` の ack のみ | **Strict** — terminal({action:'send'}) BG と同型: pre-send focused-element value 採取 → WM_CHAR 送信 → UIA TextPattern / ValuePattern read-back で input substring 確認 | code: `BackgroundInputNotDelivered` (terminal と共有、同 channel WM_CHAR / 同症状 silent drop) | #177 |
@@ -317,7 +317,7 @@ issue #176 の Acceptance Criteria に対する本書の対応:
 
 - **各 tool の実コード変更** — 本 PR は doc 起草のみ。実装は #177-#181
 - **既存 silent-success の retroactive fix** — 各 child issue で個別対応
-- **hidden-input prompt 自動 detect** — 別 issue (#183、Codex P2 本格対応)
+- **hidden-input prompt 自動 detect** — #183 で完了。`isHiddenInputPrompt(baselineRaw)` が src/tools/terminal.ts に export される
 - **E2E skip path 分類** — 別 issue (#182、Phase 3 残作業)
 - **Windows Terminal への信頼性ある BG 入力経路** — Phase 4 (#185、ConPTY ADR)、本 SSOT の verification 契約とは独立
 
