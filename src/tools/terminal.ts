@@ -422,6 +422,53 @@ export const terminalSendHandler = async ({
         && canInjectViaPostMessage(win.hwnd).supported);
 
     if (useBg) {
+      // ── Issue #195: WT explicit BG early reject ─────────────────────────
+      // The `useBg` gate above only consults `canInjectViaPostMessage` for
+      // the `auto` branch; explicit `method:'background'` reaches BG path
+      // even when the platform check would have rejected. We split the
+      // rejection by reason so the resulting code preserves each reason's
+      // existing contract:
+      //
+      //   - `wt_xaml_pipeline` → `BackgroundInputNotDelivered` (matrix §4.3
+      //     SSOT). WT's WinUI/XAML pipeline silently swallows WM_CHAR; the
+      //     post-send UIA read-back at line ~528 can land on a noisy buffer
+      //     where the 256-char baseline hash fails to match
+      //     (`sliced.matched === false`), leaving `verifiedDelivery ===
+      //     "unverifiable"` and falling through to a silent `ok:true`.
+      //     Pre-empting here gives us the same code the post-send path
+      //     would have returned with a clean buffer.
+      //
+      //   - `chromium` / `uwp_sandboxed` / `class_unknown` →
+      //     `BackgroundInputUnsupported` (matches keyboard.ts:815-826
+      //     existing contract). These reasons are decided by call-site
+      //     class/process introspection (not by post-send read-back), so
+      //     the suggest dictionary registered for `BackgroundInputUnsupported`
+      //     in `_errors.ts` (e.g. "For Chrome/Edge: use browser_fill
+      //     instead") is the right caller-recovery hint. Returning
+      //     `BackgroundInputNotDelivered` here would replace that hint with
+      //     the WT-silent-drop suggest list, breaking the existing chromium
+      //     recovery path (PR #174 round 2 P1-1: "same code → same suggest").
+      if (inputMethod === "background") {
+        const injectCheck = canInjectViaPostMessage(win.hwnd);
+        if (!injectCheck.supported) {
+          const errorCode = injectCheck.reason === "wt_xaml_pipeline"
+            ? "BackgroundInputNotDelivered"
+            : "BackgroundInputUnsupported";
+          return failWith(
+            new Error(errorCode),
+            "terminal:send",
+            {
+              context: {
+                hint: "target rejects PostMessage (WM_CHAR) channel — explicit method:'background' cannot proceed",
+                reason: injectCheck.reason,
+                ...(injectCheck.className !== undefined && { className: injectCheck.className }),
+                ...(injectCheck.processName !== undefined && { processName: injectCheck.processName }),
+              },
+            }
+          );
+        }
+      }
+
       const bgWarnings: string[] = [];
       if (preferClipboard) bgWarnings.push("BackgroundClipboardDowngraded");
       if (focusFirst) bgWarnings.push("BackgroundIgnoresFocusFirst");
