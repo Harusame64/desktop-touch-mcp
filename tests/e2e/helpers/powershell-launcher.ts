@@ -35,7 +35,22 @@ import { promisify } from "util";
 import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { enumWindowsInZOrder, clearWindowTopmost } from "../../../src/engine/win32.js";
+import {
+  enumWindowsInZOrder,
+  clearWindowTopmost,
+  postMessageToHwnd,
+} from "../../../src/engine/win32.js";
+
+/**
+ * `WM_CLOSE` (0x0010): Posting this to a WT window asks Windows Terminal to
+ * close the window. WT then disconnects the ConPTY, which delivers a console
+ * close signal to the hosted PowerShell — PS unwinds with exit code 0, and
+ * WT's `closeOnExit: graceful` (default) auto-closes the window. Using
+ * `WM_CLOSE` on the host PowerShell PID via `taskkill` (no /F) does NOT
+ * work for WT-hosted PS because the PS process owns no top-level window —
+ * WT does. Issue #204.
+ */
+const WM_CLOSE = 0x0010;
 import { sleep } from "./wait.js";
 
 const execFileAsync = promisify(execFile);
@@ -405,9 +420,28 @@ export async function launchPowerShell(opts?: {
           // unique window, each residual tab becomes a leaked top-level
           // window. Sending CTRL_CLOSE_EVENT via plain `taskkill` lets PS
           // exit 0 and WT auto-close the window before we move on.
+          //
+          // Initial implementation used `taskkill /PID <pid>` (no /F) which
+          // posts WM_CLOSE to the **process's main window**. That works for
+          // conhost (the conhost.exe process owns the console window), but
+          // is a no-op for WT-hosted PowerShell because the PS process
+          // itself has no top-level window — WT.exe does. Real-machine
+          // verification on 2026-05-08 showed WT residue persisted with
+          // taskkill-based graceful first. The fix splits by host:
+          //
+          //   - host:'wt'    → WM_CLOSE direct to the WT window hwnd
+          //                    (postMessageToHwnd, captured.hwnd). WT
+          //                    disconnects the ConPTY, PS exits 0, and the
+          //                    unique `-w` window auto-closes via graceful.
+          //   - other hosts  → existing `taskkill /PID <pid>` path, which
+          //                    posts WM_CLOSE to conhost / cmd / etc.
           let exitedGracefully = false;
           try {
-            execSync(`taskkill /PID ${pid}`, { stdio: "ignore" });
+            if (host === "wt") {
+              postMessageToHwnd(captured.hwnd, WM_CLOSE, 0, 0);
+            } else {
+              execSync(`taskkill /PID ${pid}`, { stdio: "ignore" });
+            }
             const POLL_INTERVAL_MS = 100;
             const GRACE_BUDGET_MS = 1500;
             const deadline = Date.now() + GRACE_BUDGET_MS;
