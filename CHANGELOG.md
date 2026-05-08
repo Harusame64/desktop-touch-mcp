@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **fix(terminal,keyboard): WT explicit BG (`method:'background'`) を Strict fail に揃える (issue #195).**
+  `terminal({action:'send'})` と `keyboard({action:'type'})` の `method:'background'` で、Windows Terminal を target にしたときの silent ok:true / 不整合な error code を解消。matrix doc §3.1 line 140 + §4.3 (`wt_xaml_pipeline → BackgroundInputNotDelivered` Strict fail) 整合。
+  - **`src/tools/terminal.ts`**: `useBg` 分岐の入口で `canInjectViaPostMessage` を確認、`reason === "wt_xaml_pipeline"` のとき `BackgroundInputNotDelivered` を early return。post-send UIA read-back が WT XAML buffer の noise で `sliced.matched=false` → `verifiedDelivery="unverifiable"` ですり抜け silent ok:true を返していた既存 regression を解消。`chromium` / `uwp_sandboxed` / `class_unknown` reason は既存 `BackgroundInputUnsupported` 契約 (`browser_fill` 案内 suggest) を維持。
+  - **`src/tools/keyboard.ts`**: 既存 `BackgroundInputUnsupported` early reject を reason 分岐化。`wt_xaml_pipeline` のみ `BackgroundInputNotDelivered` で `keyboard:type BG WT` を terminal:send BG WT と同 code に揃える (matrix §3.1 SSOT)。他 reason は既存 suggest contract 維持。
+  - **`tests/e2e/keyboard-bg-verification.test.ts:88`**: `[Windows Terminal] type BG > returns BackgroundInputNotDelivered` の expected が **PR #174 land 後の現挙動と乖離**していた問題を解消 (PR #188 land 時の同期漏れ、PR #192 launcher fix で顕在化)。
+  - 影響範囲: caller-facing で WT 経路の error code が `BackgroundInputUnsupported` → `BackgroundInputNotDelivered` に変わる (matrix doc §3.1 SSOT 通り)。`browser_fill` recovery が必要な chromium 経路は既存 `BackgroundInputUnsupported` のまま。
+
 ### Changed
 
 - **feat(terminal): `terminal({action:'send', method:'background'})` に hidden-input prompt 自動検出を追加 (issue #183, Phase 3).**

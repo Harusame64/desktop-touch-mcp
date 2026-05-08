@@ -72,7 +72,16 @@ describe("keyboard({action:'type', method:'background'}) — issue #177 verifica
     }, 15_000);
     afterAll(() => { ps?.kill(); });
 
-    it("returns BackgroundInputNotDelivered (post-send UIA read-back catches WT silent drop)", async () => {
+    // Issue #195: matrix doc §3.1 (line 140) prescribes
+    // BackgroundInputNotDelivered for keyboard:type BG WT (same channel
+    // WM_CHAR / same silent-drop symptom as terminal:send BG WT). The
+    // production code in keyboard.ts:815-846 splits the
+    // canInjectViaPostMessage rejection by reason: `wt_xaml_pipeline` →
+    // BackgroundInputNotDelivered (matrix §4.3 SSOT), other reasons
+    // (chromium / uwp_sandboxed / class_unknown) keep the existing
+    // BackgroundInputUnsupported with their own suggest contract.
+    // terminal.ts:439-470 mirrors this split symmetrically.
+    it("returns BackgroundInputNotDelivered (matrix §4.3 wt_xaml_pipeline → Strict fail)", async () => {
       const tag = `bg-type-wt-${Date.now().toString(36)}`;
       const r = parsePayload(await keyboardTypeHandler({
         text: tag,
