@@ -27,24 +27,30 @@ interface HostScenario {
   expectedClassPattern: RegExp;
 }
 
-// Issue #173: the WT host scenario is OPT-IN via `DTM_E2E_WT=1`. Spawning a
-// PowerShell into Windows Terminal can entangle with the user's existing WT
-// instance — on 2026-05-08 a launcher cleanup mishap (taskkill /T against a
-// PS hosted in shared WT) escalated to the user's whole WT tree and closed
-// every tab. The kill path was hardened (single-PID kill, no /T) but we keep
-// WT off by default until the launcher has independent isolation guarantees.
-// The conhost scenario is the canonical regression coverage and runs always.
-const WT_E2E_ENABLED = process.env["DTM_E2E_WT"] === "1";
-
+// Issue #175: WT host scenario is now default-on. Background:
+//
+// On 2026-05-08 a launcher cleanup mishap (taskkill /T against a PS hosted
+// in the shared WT instance) escalated to the user's whole WT tree and
+// closed every tab. As an immediate mitigation issue #173 demoted the WT
+// matrix entry to opt-in via `DTM_E2E_WT=1`. Issue #175 brings it back to
+// default-on once the launcher had independent isolation guarantees.
+//
+// Isolation guarantees provided by `tests/e2e/helpers/powershell-launcher.ts`
+// (host:'wt' branch) — keep these in sync if you touch the launcher:
+//   1. `-w <unique>`: each launch forces a brand-new, uniquely-named WT
+//      top-level window. Our WT window is therefore disjoint from every
+//      window the user already has open.
+//   2. `-p __dtm_e2e__`: profile name reserved for E2E. WT falls back to
+//      the default profile if it does not exist, without writing settings.
+//   3. Single-PID kill (NEVER `/T`): cleanup targets the spawned PS PID
+//      only. /T is forbidden — see launcher kill() comment.
+//
+// If you re-introduce a process-tree-wide kill (taskkill /T, similar) the
+// gate must come back. This regression would not be caught in CI; protect
+// it with a code review check.
 const SCENARIOS: HostScenario[] = [
   { host: "conhost", label: "conhost", expectedClassPattern: /^ConsoleWindowClass$/ },
-  ...(WT_E2E_ENABLED
-    ? [{
-        host: "wt" as const,
-        label: "Windows Terminal",
-        expectedClassPattern: /^CASCADIA_HOSTING_WINDOW_CLASS$/,
-      }]
-    : []),
+  { host: "wt", label: "Windows Terminal", expectedClassPattern: /^CASCADIA_HOSTING_WINDOW_CLASS$/ },
 ];
 
 /**

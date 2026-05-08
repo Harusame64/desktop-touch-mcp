@@ -16,6 +16,14 @@
  * WindowsTerminal.exe, which silently changes the window class under test
  * (ConsoleWindowClass vs CASCADIA_HOSTING_WINDOW_CLASS). Pass `host` to pin
  * the test to one explicit host so coverage is deterministic across machines.
+ *
+ * Issue #175 WT host isolation: the `host:'wt'` path forces a brand-new
+ * top-level Windows Terminal window per launch via `-w <unique>` and a
+ * dedicated profile name `__dtm_e2e__` via `-p`. This decouples our spawned
+ * PowerShell from any pre-existing WT windows the user has open, so an
+ * accidental window-level operation cannot bleed into the user's session.
+ * The kill path remains single-PID (NEVER `/T`) — see kill() comment for
+ * the 2026-05-08 incident that motivated this defence-in-depth.
  */
 
 import { spawn, type ChildProcess } from "child_process";
@@ -93,9 +101,10 @@ export async function launchPowerShell(opts?: {
   //     terminal app hosts it (DefTerm setting on Win11).
   //   - "conhost": start "" conhost.exe powershell.exe ... — explicitly
   //     spawning conhost.exe pins ConsoleWindowClass and bypasses DefTerm.
-  //   - "wt": start "" wt.exe new-tab -- powershell.exe ... — pins
-  //     CASCADIA_HOSTING_WINDOW_CLASS via Windows Terminal. The `--`
-  //     separator isolates wt's argument parser from the powershell args.
+  //   - "wt": start "" wt.exe -w <unique> -p __dtm_e2e__ new-tab -- ...
+  //     pins CASCADIA_HOSTING_WINDOW_CLASS via Windows Terminal AND
+  //     isolates the spawned PS from the user's existing WT windows
+  //     (issue #175). Details below in WT-specific block.
   //
   // IMPORTANT: `start` treats the first quoted arg as the window title. An
   // unquoted tag would be parsed as the program name, and on JP locale the
@@ -106,7 +115,49 @@ export async function launchPowerShell(opts?: {
   if (host === "conhost") {
     startCmd = `start "" conhost.exe "${exe}" ${psArgs}`;
   } else if (host === "wt") {
-    startCmd = `start "" wt.exe new-tab -- "${exe}" ${psArgs}`;
+    // Issue #175: isolate the spawned PS from the user's existing WT.
+    //
+    // WT is a single-process / multi-window application: by default
+    // `wt.exe new-tab ...` attaches the new tab to the user's currently
+    // active WT window (or whichever one Windows considers "current"),
+    // which is exactly the entanglement that caused the 2026-05-08
+    // taskkill-/T accident.
+    //
+    // We avoid that by pinning **window** and **profile** explicitly:
+    //
+    //   -w <unique-tag>
+    //     Force a brand-new top-level WT window for this launcher
+    //     instance. `<tag>` is generated above and is unique per call,
+    //     so even if another test or process happened to be using the
+    //     name space, our window is its own. WT semantics: when -w is
+    //     given a name that does not match any existing window, it
+    //     creates a NEW window with that name. Crucially, passing a
+    //     name we know does not exist is the documented way to force
+    //     a new window without using `-w new` (which has historically
+    //     been less reliable across WT versions).
+    //
+    //   -p __dtm_e2e__
+    //     Request an isolated profile name. If the user does not have
+    //     a profile by that name (which they almost certainly do not —
+    //     leading double underscores are reserved-looking), WT falls
+    //     back to the default profile WITHOUT mutating settings.json.
+    //     This is intentional: we never want to write user config from
+    //     a test. The flag is a best-effort isolation hint; the real
+    //     blast-radius guarantee comes from the unique -w window above.
+    //
+    //   new-tab --suppressApplicationTitle
+    //     Hold our PS-set window title (`$Host.UI.RawUI.WindowTitle`)
+    //     against WT's default behaviour of letting the shell title
+    //     win. We rely on the title for findByTag.
+    //
+    // Cleanup contract (kill() below): single-PID kill of the PS child.
+    // NEVER use `/T` — see kill() comment for the full rationale and
+    // the 2026-05-08 incident reference.
+    const wtWindowName = `__dtm_e2e_${tag}__`;
+    const wtProfile = "__dtm_e2e__";
+    startCmd =
+      `start "" wt.exe -w "${wtWindowName}" -p "${wtProfile}" ` +
+      `new-tab --suppressApplicationTitle -- "${exe}" ${psArgs}`;
   } else {
     startCmd = `start "" "${exe}" ${psArgs}`;
   }
@@ -149,6 +200,16 @@ export async function launchPowerShell(opts?: {
       // windows. This was observed on 2026-05-08 — see memory file
       // feedback_e2e_wt_host_taskkill_risk.md. Single-PID kill is enough to
       // close our spawned PS, and WT then closes the now-empty tab cleanly.
+      //
+      // Issue #175 isolation contract: even if /T were re-introduced by
+      // mistake, the spawn site above pins a UNIQUE -w window per launch
+      // (`__dtm_e2e_${tag}__`), so the WT window we own is distinct from
+      // the user's existing windows. /T is still forbidden because the
+      // PS child's parent is the shared `WindowsTerminal.exe` process —
+      // the descendant tree from there fans out across every WT window
+      // including the user's. The unique -w window narrows blast radius
+      // for accidental window-level operations; the kill path stays
+      // PID-scoped regardless. DO NOT add /T here under any circumstance.
       let killedByPid = false;
       try {
         const { execSync } = require("child_process");
