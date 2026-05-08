@@ -213,6 +213,22 @@ const SUGGESTS: Record<string, string[]> = {
     "For inputs guarded by React's synthetic-event proxy, try keyboard(action='type') against the focused element as a fallback (slower but framework-agnostic)",
     "Verify the selector targets an <input> / <textarea> — contenteditable div uses different setters (use browser_eval instead)",
   ],
+  // Issue #179 / matrix doc §3.1+§5.2: scroll(action:'raw') wheel SendInput was
+  // ack'd by the OS but post-state Win32 GetScrollInfo (or UIA ScrollPattern, or
+  // image-hash diff) observed no movement on the requested axis with pre off-
+  // boundary, so the wheel was silently swallowed (overlay window above target,
+  // non-scrollable container, UIPI from low-IL into elevated app, etc).
+  // Distinct from `ScrollbarUnavailable` (no scrollbar at all — caller redirected
+  // to image strategy) and `OverflowHiddenAncestor` (CSS overflow:hidden detected
+  // up-front in scroll(action:'smart')); ScrollNotDelivered is reserved for the
+  // post-ack silent-drop case the other two cannot catch.
+  ScrollNotDelivered: [
+    "Retry with scroll({action:'smart', target:'<selector>'}) — multi-strategy fallback (CDP / UIA ScrollPattern / image binary-search) often delivers where wheel SendInput is swallowed",
+    "Use scroll({action:'to_element', name|selector}) when you know the target — bypasses the wheel channel entirely via UIA ScrollItemPattern or CDP scrollIntoView",
+    "Verify the target is actually scrollable: run desktop_state or screenshot(detail='text') first to confirm the focused element under the cursor accepts wheel input — overlay windows above the target intercept wheel events",
+    "If the target runs elevated (admin) and the caller does not, wheel events are blocked by UIPI — re-run the caller with matching integrity level",
+    "If the target uses overlay/Chromium scrollbars (no Win32 scrollbar), pass coords inside the actual scrollable region — the cursor must be over a scroll-receiving element",
+  ],
   SetValueAllChannelsFailed: [
     "Verify the element supports text input",
     "Try click_element + keyboard({action:'type'}) manually",
@@ -366,6 +382,10 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   if (m.includes("browserfillnotdelivered") || m.includes("browser fill not delivered")) {
     return { code: "BrowserFillNotDelivered", suggest: SUGGESTS.BrowserFillNotDelivered };
+  }
+  // Issue #179: scroll(raw) wheel SendInput silently dropped (matrix doc §3.1).
+  if (m.includes("scrollnotdelivered") || m.includes("scroll not delivered")) {
+    return { code: "ScrollNotDelivered", suggest: SUGGESTS.ScrollNotDelivered };
   }
   if (m.includes("setvalueallchannelsfailed") || m.includes("all channels failed")) {
     return { code: "SetValueAllChannelsFailed", suggest: SUGGESTS.SetValueAllChannelsFailed };
