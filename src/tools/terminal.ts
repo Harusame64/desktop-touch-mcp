@@ -799,6 +799,142 @@ interface TerminalRunResponse {
   readError?: ReadFailurePayload;
   warnings?: string[];
   hwnd?: string;
+  // Issue #196: machine-readable integrity signal so callers can branch on
+  // `output` validity without parsing readError. "baseline_lost" indicates
+  // the final read could not match the pre-send marker, so `output` was
+  // forced to "" rather than returning scrollback that may include
+  // pre-baseline (previous-session) text.
+  outputIntegrity?: "ok" | "baseline_lost";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pure helpers — quiet state + read integrity (issue #196)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// These helpers exist so the run-handler's polling decisions and final-read
+// integrity check are testable without driving a real terminal. The handler
+// otherwise calls `readTerminalRaw` / `terminalReadHandler` in-module, which
+// makes fixture injection difficult. By isolating the *decision* into pure
+// functions, unit tests can pin behaviour by passing payload-shaped inputs
+// directly.
+
+/**
+ * Quiet polling state machine for `terminal({action:'run'})` (issue #196 (a)).
+ *
+ * The pre-fix code fired `completion.reason:"quiet"` whenever `quietMs`
+ * elapsed since the last text change — including when output had **never**
+ * changed at all (echo not yet rendered to UIA TextPattern). That race
+ * caused short-elapsedMs returns where the buffer still held only
+ * pre-send scrollback.
+ *
+ * The fix: do not even start the quiet timer until we have observed at
+ * least one text change. A `null` `firstChangeAt` keeps the state in
+ * `"still"`, which is treated as "do not break out of the loop" by the
+ * caller. The hard timeout (`timeoutMs`) remains the upper bound, so
+ * silent scripts cannot hang forever.
+ *
+ * Returned states:
+ *   - "still":  no text change observed yet; quiet timer not started.
+ *   - "active": change observed but quietMs has not elapsed since the
+ *     last change.
+ *   - "quiet":  change observed AND quietMs has elapsed since the last
+ *     change → the caller should mark `completion.reason:"quiet"`.
+ */
+export type QuietState = "still" | "active" | "quiet";
+export interface QuietGateInput {
+  now: number;
+  /** Last time we saw the buffer change (= lastTextTime in the loop). */
+  lastTextChangedAt: number;
+  /** First time we saw any change; null means no change yet. */
+  firstChangeAt: number | null;
+  quietMs: number;
+}
+export function evaluateQuietState(input: QuietGateInput): QuietState {
+  if (input.firstChangeAt === null) return "still";
+  if (input.now - input.lastTextChangedAt >= input.quietMs) return "quiet";
+  return "active";
+}
+
+/**
+ * Final-read integrity gate for `terminal({action:'run'})` (issue #196 (c)).
+ *
+ * When the run handler's final call to `terminal_read` could not match
+ * the pre-send baseline marker, the read returns the **entire** UIA
+ * buffer — which can include scrollback from previous sessions
+ * (e.g. last test run's output). Bubbling that text up as `output`
+ * silently lies about what the current command produced.
+ *
+ * This gate decides whether the run handler should suppress `output`.
+ * 3-condition AND ensures we only fire when:
+ *   1. We actually had a baseline marker to start with (`sinceMarker`
+ *      defined). Without one, `previousMatched:false` is the read
+ *      handler's default and means nothing.
+ *   2. The read handler explicitly reported `previousMatched:false`
+ *      (marker present in the request but not located in the buffer).
+ *   3. The read handler did NOT report `invalidatedBy` (process restart,
+ *      hwnd reuse) — those are separate failure modes with their own
+ *      reporting paths and should not be conflated with marker drift.
+ *
+ * Test contract: callers pass payload-shaped input directly so unit
+ * tests do not need to drive a real `terminal_read` to exercise the
+ * 4 cases (sinceMarker undefined / hints undefined / invalidatedBy
+ * present / true marker lost).
+ */
+export type RunOutputIntegrity = "ok" | "baseline_lost";
+export interface ReadPayloadIntegrityInput {
+  sinceMarker: string | undefined;
+  hints?: {
+    terminalMarker?: {
+      previousMatched?: boolean;
+      invalidatedBy?: string;
+    };
+  };
+}
+export function evaluateRunReadIntegrity(
+  input: ReadPayloadIntegrityInput,
+): RunOutputIntegrity {
+  if (input.sinceMarker === undefined) return "ok";
+  const tm = input.hints?.terminalMarker;
+  if (!tm) return "ok";
+  if (tm.invalidatedBy !== undefined) return "ok";
+  if (tm.previousMatched === false) return "baseline_lost";
+  return "ok";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Defensive JSON-string preprocessor (issue #196 symptom 1)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Some MCP clients / LLM tool-call serialisers send nested object arguments
+// as JSON-encoded strings (observed: `until: '{"mode":"pattern",...}'` on
+// `terminal({action:'run'})`). The reported error "expected object,
+// received string" was rooted there, not in the server-side zod —
+// `terminalRegistrationSchema.safeParse(...)` accepts the object literal
+// fine (see `tests/unit/issue-196-terminal-run-until-schema.test.ts`).
+//
+// This wrapper accepts both shapes by trying `JSON.parse` first when the
+// value comes in as a string. Non-object parse results (e.g. `"42"` →
+// 42, `"null"` → null) and parse failures fall through unchanged so
+// downstream zod still surfaces a typed error rather than a coerced
+// nonsense object.
+
+/** Parse a possible JSON-encoded object string into an object. Pass through otherwise. */
+function tryParseJsonObject(val: unknown): unknown {
+  if (typeof val !== "string") return val;
+  // Heuristic: only attempt parse when the trimmed string looks like a JSON
+  // object/array. Avoids `JSON.parse` succeeding on bare strings like `"x"`
+  // (which would return the string `"x"`) — those are not objects so the
+  // post-parse `typeof === "object"` check would reject them, but skipping
+  // the parse attempt entirely is cheaper and reduces noise.
+  const trimmed = val.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return val;
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (typeof parsed === "object" && parsed !== null) return parsed;
+    return val;
+  } catch {
+    return val;
+  }
 }
 
 // Forwarded-option whitelists derived from the public terminal_send / _read schemas.
@@ -1013,16 +1149,25 @@ export const terminalRunHandler = async ({
   }
 
   // ── Phase 2: Wait ──────────────────────────────────────────────────────────
-  // Quiet detection starts from the pre-send baseline. The first poll iteration
-  // will observe the new prompt + command echo + early output as a diff and
-  // reset the quiet timer — this is correct: we want to wait quietMs from the
-  // moment output actually starts appearing, not from the send completion.
+  // Quiet detection: do NOT start the quietMs timer until we have observed at
+  // least one buffer change (issue #196 (a)). Pre-fix code fired
+  // `completion.reason:"quiet"` whenever quietMs elapsed since `lastTextTime`,
+  // which on a buffer that never changed (e.g. echo not yet rendered to UIA
+  // TextPattern) collapsed to "fire after quietMs from send" and returned
+  // pre-send scrollback. The `firstChangeTime` gate is consulted via
+  // `evaluateQuietState`; while it is null, the loop waits for either the
+  // hard timeout, a window-closed event, or a real change.
   const POLL_INTERVAL_MS = 200;
   let completionReason: CompletionReason | null = null;
   let matchedPattern: string | undefined;
   let lastText = baselineRead?.text ?? "";
   let lastTextTime = Date.now();
-  const quietMs = until.mode === "quiet" ? until.quietMs : 800;
+  let firstChangeTime: number | null = null;
+  // Pattern-mode fallback (when patternRe compile fails — see warnings) uses
+  // the same updated default. Issue #196 (b) raised 800 → 1500 on the schema
+  // side; this immediate value must stay in sync so the fallback path is not
+  // a hidden short-default outlier.
+  const quietMs = until.mode === "quiet" ? until.quietMs : 1500;
 
   // Compile pattern if pattern mode
   let patternRe: RegExp | null = null;
@@ -1109,13 +1254,26 @@ export const terminalRunHandler = async ({
         break;
       }
     } else {
-      // quiet mode: check if text has changed
+      // quiet mode: track changes and consult the pure helper. The helper
+      // returns "still" until the first change is observed; this prevents
+      // quiet from firing on a buffer that has not moved since send (issue
+      // #196 (a)). After the first change, "active" / "quiet" decisions
+      // follow the usual lastTextTime-based countdown.
       if (currentText !== lastText) {
         lastText = currentText;
         lastTextTime = Date.now();
-      } else if (Date.now() - lastTextTime >= quietMs) {
-        completionReason = "quiet";
-        break;
+        firstChangeTime ??= lastTextTime;
+      } else {
+        const state = evaluateQuietState({
+          now: Date.now(),
+          lastTextChangedAt: lastTextTime,
+          firstChangeAt: firstChangeTime,
+          quietMs,
+        });
+        if (state === "quiet") {
+          completionReason = "quiet";
+          break;
+        }
       }
     }
   }
@@ -1135,6 +1293,12 @@ export const terminalRunHandler = async ({
   let output = "";
   let finalMarker: string | undefined;
   let readError: ReadFailurePayload | undefined;
+  // Issue #196 (c): default "ok" — only set to "baseline_lost" when the
+  // 3-condition gate in `evaluateRunReadIntegrity` fires. The field is
+  // emitted on every successful run so callers can rely on its presence
+  // when checking integrity, while suppressing it would conflate "ok"
+  // with "field missing because integrity check did not run".
+  let outputIntegrity: RunOutputIntegrity = "ok";
   try {
     const block = readResult.content[0];
     if (block?.type === "text") {
@@ -1145,7 +1309,12 @@ export const terminalRunHandler = async ({
         code?: string;
         error?: string;
         suggest?: string[];
-        hints?: unknown;
+        hints?: {
+          terminalMarker?: {
+            previousMatched?: boolean;
+            invalidatedBy?: string;
+          };
+        };
       };
       if (parsed.ok === false) {
         // Surface read-handler failures (e.g. source:'uia' on a terminal
@@ -1158,8 +1327,37 @@ export const terminalRunHandler = async ({
         };
         warnings.push("Final read failed — output may be unavailable. See readError for details.");
       } else {
-        output = parsed.text ?? "";
-        finalMarker = parsed.marker;
+        // Issue #196 (c): when baselineRead succeeded (sinceMarker present)
+        // but the read handler could not match the marker in the post-run
+        // buffer, we are looking at scrollback that may include text from
+        // before the run. Suppress `output` and surface `BaselineMarkerLost`
+        // instead of returning a misleading "ok:true with stale text" mix.
+        const integrity = evaluateRunReadIntegrity({
+          sinceMarker,
+          hints: parsed.hints,
+        });
+        if (integrity === "baseline_lost") {
+          outputIntegrity = "baseline_lost";
+          output = "";
+          readError = {
+            code: "BaselineMarkerLost",
+            error:
+              "baseline marker lost beyond 32k scan window — scrollback may contain pre-baseline output (previous-session residue)",
+            suggest: [
+              "Use until:{mode:'pattern', pattern:'<expected output>'} for long-running commands so the run can match without falling back to a marker scan",
+              "Increase timeoutMs and ensure the command produces output before quiet detection elapses",
+              "If the command genuinely produces no diff, call terminal({action:'send'}) followed by terminal({action:'read', sinceMarker:...}) for explicit incremental fetches",
+            ],
+          };
+          warnings.push(
+            "BaselineMarkerLost: scrollback may contain pre-baseline output — output suppressed. Use pattern mode for long-running commands.",
+          );
+          // finalMarker stays undefined; the buffer we read is not a trusted
+          // anchor for a follow-up sinceMarker call.
+        } else {
+          output = parsed.text ?? "";
+          finalMarker = parsed.marker;
+        }
       }
     }
   } catch { /* output stays empty */ }
@@ -1175,6 +1373,7 @@ export const terminalRunHandler = async ({
       elapsedMs: Date.now() - startedAt,
       ...(matchedPattern !== undefined ? { matchedPattern } : {}),
     },
+    outputIntegrity,
     ...(finalMarker ? { marker: finalMarker } : {}),
     ...(readError ? { readError } : {}),
     hwnd: String(hwnd),
@@ -1201,20 +1400,32 @@ export const terminalSchema = z.discriminatedUnion("action", [
     action: z.literal("run"),
     windowTitle: z.string().max(200).describe("Partial title of the terminal window (e.g. 'PowerShell', 'pwsh', 'WindowsTerminal')."),
     input: z.string().max(10000).describe("Command to send (Enter is appended automatically)"),
-    until: z.discriminatedUnion("mode", [
+    // Issue #196: `until` / `sendOptions` / `readOptions` are wrapped with
+    // `z.preprocess(tryParseJsonObject, ...)` so callers that send these as
+    // JSON-encoded strings (some LLM tool-call serialisers do — see helper
+    // docstring above) are handled the same as object literals. Object
+    // literals pass through unchanged.
+    //
+    // Default `quietMs` raised 800 → 1500: short-interactive command timing
+    // is unchanged in practice (most prompts return well within the new
+    // ceiling) but the most common 800ms-silent-gap-then-quiet false-fire
+    // (e.g. test runner startup) is materially reduced. Long-running
+    // commands should still use `until:{mode:"pattern",...}` (see tool
+    // description caveats).
+    until: z.preprocess(tryParseJsonObject, z.discriminatedUnion("mode", [
       z.object({
         mode: z.literal("quiet"),
-        quietMs: z.coerce.number().int().min(50).max(30000).default(800).describe("Stop when output is silent for this many ms"),
+        quietMs: z.coerce.number().int().min(50).max(30000).default(1500).describe("Stop when output is silent for this many ms (default 1500)."),
       }),
       z.object({
         mode: z.literal("pattern"),
         pattern: z.string().describe("Stop when output matches this string (or regex if regex:true)"),
         regex: z.boolean().default(false).describe("If true, treat pattern as a regex"),
       }),
-    ]).default({ mode: "quiet", quietMs: 800 }),
+    ])).default({ mode: "quiet", quietMs: 1500 }),
     timeoutMs: z.coerce.number().int().min(500).max(600_000).default(30_000).describe("Hard timeout in ms (default 30s)"),
-    sendOptions: z.record(z.string(), z.unknown()).optional().describe("Extra options forwarded to terminal send (method, chunkSize, etc.)"),
-    readOptions: z.record(z.string(), z.unknown()).optional().describe("Extra options forwarded to terminal read (lines, source, ocrLanguage, etc.)"),
+    sendOptions: z.preprocess(tryParseJsonObject, z.record(z.string(), z.unknown())).optional().describe("Extra options forwarded to terminal send (method, chunkSize, etc.)"),
+    readOptions: z.preprocess(tryParseJsonObject, z.record(z.string(), z.unknown())).optional().describe("Extra options forwarded to terminal read (lines, source, ocrLanguage, etc.)"),
   }),
 ]);
 
@@ -1284,12 +1495,12 @@ export function registerTerminalTools(server: McpServer): void {
     {
       description: buildDesc({
         purpose: "Interact with a terminal window: read output, send input, or run+wait+read in one call.",
-        details: "action='run' is the recommended high-level workflow: send command → wait until quiet/pattern/timeout → read output. Returns completion={reason, elapsedMs} first-class. action='read' reads current text via UIA TextPattern (falls back to OCR); use sinceMarker for incremental diff. action='send' sends a command with focus management.",
-        prefer: "action='run' for command execution + result. Use action='read'/'send' for fine-grained control or when you need to interleave other actions.",
-        caveats: "Do not screenshot the terminal — terminal(action='read') is cheaper and structured. action='run' supports completion reasons: quiet | pattern_matched | timeout | window_closed | window_not_found | send_failed (send rejected on a live window — see warnings for the underlying error code). preferClipboard=true (send default) overwrites user clipboard.",
+        details: "action='run' is the recommended high-level workflow: send command → wait until quiet/pattern/timeout → read output. Returns completion={reason, elapsedMs} first-class plus outputIntegrity:'ok'|'baseline_lost' so callers can detect when scrollback could not be anchored to the pre-send buffer. action='read' reads current text via UIA TextPattern (falls back to OCR); use sinceMarker for incremental diff. action='send' sends a command with focus management.",
+        prefer: "action='run' for command execution + result. For long-running commands (test runners, builds, deploys) use until:{mode:'pattern', pattern:'<final marker>'} — the default quiet mode is tuned for short interactive commands and may complete prematurely on multi-second silent gaps mid-run. Use action='read'/'send' for fine-grained control or when you need to interleave other actions.",
+        caveats: "Do not screenshot the terminal — terminal(action='read') is cheaper and structured. action='run' supports completion reasons: quiet | pattern_matched | timeout | window_closed | window_not_found | send_failed (send rejected on a live window — see warnings for the underlying error code). When outputIntegrity:'baseline_lost' is returned, output is forced to '' and readError.code='BaselineMarkerLost' is set: rerun with until:{mode:'pattern',...} or longer timeoutMs. Default quiet mode quietMs=1500 (issue #196 raised from 800 to reduce premature completion on startup gaps); long silent intervals during the command body still require pattern mode. preferClipboard=true (send default) overwrites user clipboard.",
         examples: [
-          "terminal({action:'run', windowTitle:'PowerShell', input:'npm test', until:{mode:'pattern', pattern:'npm test:'}}) → {output, completion:{reason:'pattern_matched'}}",
-          "terminal({action:'run', windowTitle:'pwsh', input:'ls'}) → quiet 800ms wait, returns output",
+          "terminal({action:'run', windowTitle:'PowerShell', input:'npm test', until:{mode:'pattern', pattern:'Test Files'}}) → recommended for test runners; matches when vitest summary appears",
+          "terminal({action:'run', windowTitle:'pwsh', input:'ls'}) → quiet 1500ms wait, returns output (short interactive)",
           "terminal({action:'read', windowTitle:'PowerShell', sinceMarker:'...'}) → incremental diff",
           "terminal({action:'send', windowTitle:'PowerShell', input:'echo hello'}) → sends text + Enter",
         ],
