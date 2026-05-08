@@ -206,7 +206,13 @@ describe("C3: hasModal real dialog detection", () => {
     if (dialogTitles.length === 0) {
       // Dismiss any opened dialog and skip
       await keyboardPressHandler({ keys: "escape", trackFocus: false, settleMs: 200 });
-      skip("Save-As dialog did not appear (file may have auto-saved) — skipping C3 dialog test");
+      // envOnly (issue #182): C3 needs a Save-As dialog with a locale-
+      // specific title ("名前を付けて保存" / "Save As"). Some Notepad
+      // builds auto-save instead of opening a dialog when ctrl+s is hit
+      // on a dirty buffer that already has a path. Premise unmet =>
+      // skip is correct; matrix doc §3.2 lists get_context as query-axis
+      // so there is no Strict/Indirect contract to violate.
+      skip("envOnly: Save-As dialog did not appear (file may have auto-saved or locale title differs) — C3 dialog premise unmet");
       return;
     }
 

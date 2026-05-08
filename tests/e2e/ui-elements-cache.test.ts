@@ -142,7 +142,14 @@ describe("F1-dialog: stale automationId after dialog closes → ElementNotFound"
 
   it("stale dialog automationId → ElementNotFound on Notepad window (if dialog opened)", async ({ skip }) => {
     if (!dialogAutomationId) {
-      skip("Save-As dialog did not appear or had no automationId — skipping F1-dialog stale test");
+      // envOnly (issue #182): F1-dialog needs the Save-As dialog to expose
+      // an automationId-bearing element. Some Notepad builds open a dialog
+      // with no stable automationIds on its descendants; others auto-save
+      // without ever opening the dialog (locale + version dependent).
+      // Without an id captured during setup, the "stale id after dialog
+      // closed" assertion has nothing to feed in. matrix doc §3.2 lists
+      // get_ui_elements as query-axis (no Strict/Indirect contract).
+      skip("envOnly: Save-As dialog did not appear or had no automationId — F1-dialog premise unmet");
       return;
     }
 
@@ -158,8 +165,13 @@ describe("F1-dialog: stale automationId after dialog closes → ElementNotFound"
     // Either ElementNotFound (element was in dialog, not in Notepad) or
     // the automationId happens to exist in Notepad too — log and accept both cases
     if (p.code !== "ElementNotFound") {
-      // automationId coincidentally exists in Notepad — this is valid, test is inconclusive
-      skip(`automationId "${dialogAutomationId}" coincidentally exists in Notepad — skip stale check`);
+      // envOnly (issue #182): the captured automationId from the Save-As
+      // dialog happens to also exist in the main Notepad window tree
+      // (e.g. shared common-control id). The "stale" check premise (id
+      // present in dialog, absent in window) is broken by coincidence,
+      // not by the product. Notepad's UIA tree composition is locale /
+      // version dependent. Not a click_element invariant violation.
+      skip(`envOnly: automationId "${dialogAutomationId}" coincidentally exists in Notepad too — stale-check premise unmet`);
       return;
     }
     expect(p.code).toBe("ElementNotFound");

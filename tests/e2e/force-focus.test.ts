@@ -98,11 +98,15 @@ describe("forceFocus param — structural tests", () => {
     expect(warnings2).not.toContain("ForceFocusRefused");
   });
 
-  it.skip("foreground-stealing test — requires pinned CLI window to reproduce", async () => {
-    // This test requires a pinned CLI that steals focus.
-    // Without that setup, ForceFocusRefused will not appear.
-    // Skipped: would require dock_window pinned CLI setup.
-    //
+  // envOnly (issue #182): reliably reproducing Windows foreground-stealing
+  // protection requires a pinned CLI window racing focus mid-test, which
+  // depends on dock_window setup that isn't present in CI. Per matrix doc
+  // §3.1 mouse_click row, the Indirect verification (focus_only /
+  // delivered / unverifiable hint) covers the contract; this test would
+  // only pin a specific OS-side degradation case (ForceFocusRefused
+  // warning suppression when forceFocus=true). No product invariant is
+  // silently passed — it.skip is documenting an unreachable branch.
+  it.skip("foreground-stealing test — requires pinned CLI window to reproduce (envOnly)", async () => {
     // If we could reproduce: mouse_click with forceFocus=true on a target window
     // should NOT have ForceFocusRefused in warnings.
   });
