@@ -128,9 +128,10 @@ const SUGGESTS: Record<string, string[]> = {
     "Check context.sent vs context.total",
   ],
   BackgroundInputNotDelivered: [
-    "Retry with method:'foreground' — WM_CHAR was queued by the OS but not consumed by the terminal.",
-    "Common cause: Windows Terminal (WinUI/XAML host) does not read WM_CHAR; use foreground SendInput.",
+    "Retry with method:'foreground' — post-send UIA read-back could not find the input echoed in the terminal buffer.",
+    "Common cause: Windows Terminal (WinUI/XAML host) silently drops WM_CHAR; use foreground SendInput.",
     "Common cause: terminal runs elevated (admin) while caller does not — UIPI blocks PostMessage.",
+    "False-positive cause: hidden-input prompts (password / sudo / ssh / Read-Host -AsSecureString) accept WM_CHAR but suppress echo, so this check cannot distinguish delivery from drop. Use method:'foreground' for credential entry.",
   ],
   SetValueAllChannelsFailed: [
     "Verify the element supports text input",

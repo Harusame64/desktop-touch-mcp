@@ -36,6 +36,17 @@ pass していたため CI で検知されなかった。
   するようになる（旧来は嘘の `ok:true` を返していた）。caller は
   `method:'foreground'` または `method:'auto'` に切り替えるか、conhost を既定
   ターミナルにすること。
+
+### Known limitations
+
+- **`method:'background'` で **echo 抑制 prompt** に送ると false-positive する.**
+  `sudo` / `ssh` のパスワード入力、`Read-Host -AsSecureString` 等は WM_CHAR を
+  受信してもターミナルに表示しない。post-send UIA read-back は echo を見て
+  delivery を判定する設計のため、このようなケースは正常な BG 送信でも
+  `BackgroundInputNotDelivered` を返す。`SUGGESTS.BackgroundInputNotDelivered`
+  の最終行で false-positive 原因として明記、回避策は `method:'foreground'`
+  への切替（SendInput はキー event を直接注入するので echo の有無に依存しない）。
+  自動検出は別 issue (Phase 3 の operation-verification-matrix) で扱う。
 - **public schema: `terminal({action:'run'})` の `completion.reason` enum に
   `send_failed` を追加.** alive な window で send 自体が失敗した時（典型例:
   `method:'background'` 強制で `BackgroundInputNotDelivered` を引いた case）
