@@ -5,8 +5,9 @@
  *
  * Coverage:
  *  1. type BG to Windows Terminal (WT) → BackgroundInputNotDelivered
- *     (`DTM_E2E_WT=1` opt-in; same channel/code as terminal({action:'send'})
- *     because WM_CHAR + WT XAML pipeline silently drops the message).
+ *     (default-on as of issue #175; same channel/code as
+ *     terminal({action:'send'}) because WM_CHAR + WT XAML pipeline silently
+ *     drops the message).
  *  2. type BG to conhost-hosted PowerShell → ok:true with
  *     hints.verifyDelivery: { status: "delivered", channel: "wm_char" }
  *     (regression guard for the well-tested path).
@@ -23,53 +24,72 @@
  *  5. press BG (enter) on conhost → ok:true with verifyDelivery:delivered
  *     (read-back-verifiable combo per allow-list).
  *
- * Skip policy: WT scenario is opt-in via `DTM_E2E_WT=1` — WT-launcher cleanup
- * has been hardened to single-PID kill (no /T) but the env-var gate prevents
- * accidental WT-tree damage for casual `npm test` runs (memory:
- * feedback_e2e_wt_host_taskkill_risk.md). conhost / Notepad cases run always.
+ * Skip policy (issue #175): WT scenario is now DEFAULT-ON. The launcher
+ * (`tests/e2e/helpers/powershell-launcher.ts`, host:'wt' branch) pins a
+ * unique `-w <name>` window per launch and uses a single-PID kill (no /T)
+ * so the spawned WT window is disjoint from any user-existing windows.
+ * Earlier opt-in via `DTM_E2E_WT=1` was a temporary mitigation for the
+ * 2026-05-08 incident — see launcher header for the full isolation
+ * contract and the comment block in tests/e2e/terminal.test.ts.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { keyboardTypeHandler, keyboardPressHandler } from "../../src/tools/keyboard.js";
+import { execSync } from "node:child_process";
 import { launchPowerShell, type PsInstance } from "./helpers/powershell-launcher.js";
+
+// Codex P2 (#175): module-level WT availability check.
+// See tests/e2e/terminal.test.ts WT_AVAILABLE for the rationale (Vitest 4
+// dropped fixture-style skip() from plain beforeAll, so we filter at load).
+const WT_AVAILABLE: boolean = (() => {
+  if (process.platform !== "win32") return false;
+  try {
+    execSync("where wt.exe", { stdio: "ignore", timeout: 2000, windowsHide: true });
+    return true;
+  } catch {
+    return false;
+  }
+})();
 import { launchNotepad, type NpInstance } from "./helpers/notepad-launcher.js";
 import { parsePayload } from "./helpers/wait.js";
-
-const WT_E2E_ENABLED = process.env["DTM_E2E_WT"] === "1";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // type BG verification
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("keyboard({action:'type', method:'background'}) — issue #177 verification", () => {
-  // 1. Windows Terminal — opt-in; surfaces BackgroundInputNotDelivered.
-  if (WT_E2E_ENABLED) {
-    describe("[Windows Terminal] type BG", () => {
-      let ps: PsInstance;
-      beforeAll(async () => {
-        ps = await launchPowerShell({ host: "wt", banner: "ready-bg-type-wt" });
-      }, 15_000);
-      afterAll(() => { ps?.kill(); });
+  // 1. Windows Terminal — default-on (issue #175); surfaces
+  //    BackgroundInputNotDelivered. Launcher isolates the spawned WT window
+  //    via `-w <unique>` so cleanup cannot touch the user's WT instance.
+  // Codex P2 (#175): wrap the WT block with describe.skipIf so the entire
+  // suite is skipped on hosts without wt.exe (Linux CI, stripped images),
+  // avoiding the launcher timeout that the previous unconditional describe
+  // would have produced.
+  describe.skipIf(!WT_AVAILABLE)("[Windows Terminal] type BG", () => {
+    let ps: PsInstance;
+    beforeAll(async () => {
+      ps = await launchPowerShell({ host: "wt", banner: "ready-bg-type-wt" });
+    }, 15_000);
+    afterAll(() => { ps?.kill(); });
 
-      it("returns BackgroundInputNotDelivered (post-send UIA read-back catches WT silent drop)", async () => {
-        const tag = `bg-type-wt-${Date.now().toString(36)}`;
-        const r = parsePayload(await keyboardTypeHandler({
-          text: tag,
-          method: "background",
-          use_clipboard: false,
-          replaceAll: false,
-          forceKeystrokes: false,
-          windowTitle: ps.title,
-          trackFocus: false,
-          settleMs: 0,
-        }));
-        expect(r.ok, JSON.stringify(r)).toBe(false);
-        expect(r.code).toBe("BackgroundInputNotDelivered");
-        expect(Array.isArray(r.suggest)).toBe(true);
-        expect(r.suggest.some((s: string) => /foreground/i.test(s))).toBe(true);
-      }, 10_000);
-    });
-  }
+    it("returns BackgroundInputNotDelivered (post-send UIA read-back catches WT silent drop)", async () => {
+      const tag = `bg-type-wt-${Date.now().toString(36)}`;
+      const r = parsePayload(await keyboardTypeHandler({
+        text: tag,
+        method: "background",
+        use_clipboard: false,
+        replaceAll: false,
+        forceKeystrokes: false,
+        windowTitle: ps.title,
+        trackFocus: false,
+        settleMs: 0,
+      }));
+      expect(r.ok, JSON.stringify(r)).toBe(false);
+      expect(r.code).toBe("BackgroundInputNotDelivered");
+      expect(Array.isArray(r.suggest)).toBe(true);
+      expect(r.suggest.some((s: string) => /foreground/i.test(s))).toBe(true);
+    }, 10_000);
+  });
 
   // 2. conhost — BG path is well-tested, must succeed with delivered hint.
   describe("[conhost] type BG", () => {
