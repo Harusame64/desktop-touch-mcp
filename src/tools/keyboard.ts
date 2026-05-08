@@ -881,13 +881,24 @@ export const keyboardTypeHandler = async ({
         // can read post.perception.status the same way Step 2 guard failures
         // do (line 894-906). Pre-fix this early-return dropped the envelope.
         const earlyEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "keyboard:type" }) : null;
+        // P2-1 (Opus PR #206 Round 2): hint文言は force=true / force=false
+        // で正確に分岐。focusWindowForKeyboard は force=true caller には
+        // initial AttachThreadInput のみ試行 (default ladder skip)、
+        // force=false caller には default → escalate force ladder。
+        const hint = force
+          ? "Win11 refused the AttachThreadInput escalation"
+          : "Win11 refused both default SetForegroundWindow and the AttachThreadInput escalation";
         return failWith(
           new Error("ForegroundRestricted"),
           "keyboard:type",
           {
             windowTitle: effectiveWindowTitle,
-            hint: "Win11 refused both default SetForegroundWindow and the AttachThreadInput escalation",
+            hint,
             attemptedForce: force,
+            // P3-1 (Opus PR #206 Round 2): autoEscalated は force=false
+            // 経路で focusWindowForKeyboard が ladder を踏んだか否か。
+            // focus_window の semantic と整合。
+            autoEscalated: !force,
             ...(earlyEnv && { _perceptionForPost: earlyEnv }),
           }
         );
@@ -1272,13 +1283,19 @@ export const keyboardPressHandler = async ({
         // lensId-tagged calls so run_macro chains can branch on
         // post.perception.status here too — mirrors keyboard:type fix above.
         const earlyEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "keyboard:press" }) : null;
+        // P2-1 (Opus PR #206 Round 2): hint / autoEscalated を force 分岐
+        // (keyboard:type と同型、focus_window と整合)。
+        const hint = force
+          ? "Win11 refused the AttachThreadInput escalation"
+          : "Win11 refused both default SetForegroundWindow and the AttachThreadInput escalation";
         return failWith(
           new Error("ForegroundRestricted"),
           "keyboard:press",
           {
             windowTitle: effectiveWindowTitle,
-            hint: "Win11 refused both default SetForegroundWindow and the AttachThreadInput escalation",
+            hint,
             attemptedForce: force,
+            autoEscalated: !force,
             ...(earlyEnv && { _perceptionForPost: earlyEnv }),
           }
         );

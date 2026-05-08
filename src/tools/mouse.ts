@@ -117,6 +117,13 @@ async function applyHoming(
         //   - default refused → force escalate → re-enum
         //   - both refused → push "ForceFocusRefused" → caller's early
         //     return surfaces ForegroundRestricted ok:false
+        //
+        // Latency contract (Opus PR #206 Round 2 P3-2): single 100ms wait
+        // between default and escalate; mouse_click is one-shot (one
+        // SendInput per call) so a single retry is enough for fast
+        // race-tolerance. Compare with terminal_send which uses 5×100ms
+        // because keystrokes are streamed and a single missed retry
+        // would silently drop characters mid-string.
         restoreAndFocusWindow(target.hwnd, { force: !!force });
         await new Promise<void>((r) => setTimeout(r, 100));
         let postWindows = enumWindowsInZOrder();
@@ -499,13 +506,25 @@ export const mouseClickHandler = async ({
         // (line 507-513) does. Pre-fix this early-return dropped the
         // envelope, which left run_macro readers without a signal.
         const earlyEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "mouse_click" }) : null;
+        // P2-1 (Opus PR #206 Round 2): hint文言は force=true / force=false
+        // で正確に分岐。force=true caller は applyHoming 内 default ladder
+        // を skip するため、"default + escalation 両方 refused" は誤り。
+        // terminal.ts:729-731 と同型分岐。
+        const hint = force
+          ? "Win11 refused the AttachThreadInput escalation; click suppressed to avoid landing on the wrong target"
+          : "Win11 refused both default SetForegroundWindow and the AttachThreadInput escalation; click suppressed to avoid landing on the wrong target";
         return failWith(
           new Error("ForegroundRestricted"),
           "mouse_click",
           {
             ...(effectiveTitle && { windowTitle: effectiveTitle }),
-            hint: "Win11 refused both default SetForegroundWindow and the AttachThreadInput escalation; click suppressed to avoid landing on the wrong target",
+            hint,
             attemptedForce: !!force,
+            // P3-1 (Opus PR #206 Round 2): autoEscalated は applyHoming が
+            // default → force escalate ladder を実行したか否か。force=false
+            // 経路では実行 (true)、force=true 経路では caller が初手 force
+            // 指定済 → ladder skip (false)。focus_window の semantic と整合。
+            autoEscalated: !force,
             ...(earlyEnv && { _perceptionForPost: earlyEnv }),
           }
         );

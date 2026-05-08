@@ -730,7 +730,12 @@ export const terminalSendHandler = async ({
               ? "Win11 refused AttachThreadInput escalation; subsequent keystrokes would have missed the terminal"
               : "Win11 refused 5 SetForegroundWindow retries AND the AttachThreadInput auto-escalation; subsequent keystrokes would have missed the terminal",
             attemptedForce: force,
-            autoEscalated,
+            // P3-1 (Opus PR #206 Round 2): success path で true、refusal path
+            // は ladder を踏んだか否かで決まる。force=false 経路では 5-retry
+            // 後に escalate を試行 (autoEscalated 既に false→true 遷移)、
+            // force=true 経路では caller が初手 force 指定済みで ladder skip
+            // (autoEscalated false 維持)。focus_window の semantic と整合。
+            autoEscalated: force ? false : true,
           }
         );
       }
