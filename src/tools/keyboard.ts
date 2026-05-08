@@ -728,7 +728,14 @@ export const keyboardTypeHandler = async ({
               const postCleaned = stripAnsi(postRaw);
               const sliced = applyKeyboardSinceMarker(postCleaned, baselineMarker!);
               if (sliced.matched) {
-                const exact = sliced.text.includes(checkText);
+                // sliced.text is already normalised (normalizeForMarker strips
+                // trailing whitespace per line + trailing newlines), so
+                // checkText must be normalised the same way before exact
+                // matching — otherwise inputs ending in spaces (e.g. "cd ")
+                // would false-fail because the post-buffer had the trailing
+                // space stripped during marker normalisation. Codex P1.
+                const checkTextNormalized = normalizeForMarker(checkText);
+                const exact = sliced.text.includes(checkTextNormalized);
                 const tail = checkText.replace(/\s+/g, "").slice(-8);
                 const slicedNoWs = sliced.text.replace(/\s+/g, "");
                 const tailMatch = tail.length >= 4 && slicedNoWs.includes(tail);
@@ -1119,8 +1126,20 @@ export const keyboardPressHandler = async ({
               const diffNoWs = sliced.text.replace(/\s+/g, "");
               if (trimmed === "enter") {
                 verifiedDelivery = sliced.text.includes("\n") || diffNoWs.length > 0;
-              } else {
+              } else if (trimmed === "tab") {
+                // Tab inserts whitespace (or completion text) at the cursor;
+                // any non-empty diff in the slice = delivered.
                 verifiedDelivery = sliced.text.length > 0;
+              } else {
+                // Arrow keys (left/right/up/down): cursor moves but UIA
+                // TextPattern frequently does NOT expose cursor-position
+                // changes in the diff slice. An empty diff is therefore
+                // undetermined, NOT a failure: report `unverifiable` so a
+                // legitimate arrow press is not classified as
+                // BackgroundKeyNotDelivered (Codex P1). Non-empty diff (e.g.
+                // a host that does repaint cursor row into the buffer) is
+                // still accepted as `delivered`.
+                verifiedDelivery = sliced.text.length > 0 ? true : "unverifiable";
               }
             }
             if (verifiedDelivery === "unverifiable") {
