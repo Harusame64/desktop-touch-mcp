@@ -98,11 +98,21 @@ export async function typeViaClipboard(text: string, pasteCombo: "ctrl+v" | "ctr
 //     target-specific observation channels we can't generalise
 // See docs/operation-verification-matrix.md §3.1 (keyboard rows) and §4.
 
-/** Normalise text the same way terminal.ts marker logic does. */
+/**
+ * Normalise text the same way terminal.ts marker logic does.
+ *
+ * Removed the per-line `[ \t]+$/gm` strip after Codex P1 v2: stripping
+ * trailing whitespace from every line in the read-back snapshot caused
+ * legitimate inputs that end in spaces (`"cd "`, indentation tokens) to
+ * silently lose those spaces in the diff and false-fail exact matching as
+ * BackgroundInputNotDelivered. Trailing-newline collapse and CRLF→LF
+ * normalisation are kept because the input side already strips
+ * `[\r\n]+$` and we don't want to compare a shell prompt's terminator
+ * against an input boundary.
+ */
 function normalizeForMarker(text: string): string {
   return text
     .replace(/\r\n/g, "\n")
-    .replace(/[ \t]+$/gm, "")
     .replace(/\n+$/, "");
 }
 
@@ -728,14 +738,10 @@ export const keyboardTypeHandler = async ({
               const postCleaned = stripAnsi(postRaw);
               const sliced = applyKeyboardSinceMarker(postCleaned, baselineMarker!);
               if (sliced.matched) {
-                // sliced.text is already normalised (normalizeForMarker strips
-                // trailing whitespace per line + trailing newlines), so
-                // checkText must be normalised the same way before exact
-                // matching — otherwise inputs ending in spaces (e.g. "cd ")
-                // would false-fail because the post-buffer had the trailing
-                // space stripped during marker normalisation. Codex P1.
-                const checkTextNormalized = normalizeForMarker(checkText);
-                const exact = sliced.text.includes(checkTextNormalized);
+                // normalizeForMarker no longer strips trailing whitespace
+                // per line (Codex P1), so sliced.text preserves the input's
+                // trailing spaces — compare raw checkText directly.
+                const exact = sliced.text.includes(checkText);
                 const tail = checkText.replace(/\s+/g, "").slice(-8);
                 const slicedNoWs = sliced.text.replace(/\s+/g, "");
                 const tailMatch = tail.length >= 4 && slicedNoWs.includes(tail);
