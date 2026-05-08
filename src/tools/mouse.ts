@@ -681,23 +681,24 @@ export const mouseDragHandler = async ({
     // mouse_click pre-snapshot (matrix doc §3.1).
     await moveTo(tsx, tsy, speed);
 
-    // Issue #178 — Phase 1: pre-drag snapshot at the END point.
-    //
-    // Codex P1: snapshotting pre at start and post at end means
-    // `elementAtPoint` will *always* differ (start vs end usually land on
-    // different UIA elements even when the drag is silently dropped), so
-    // `classifyDelivery()` would mark every drag as `delivered` and miss
-    // the regression. Capture both pre and post at the destination coord
-    // (the same place we read post) so the diff isolates drag side-effects
-    // — drop highlights, target scroll, selection-rect repaint — from the
-    // unrelated source/destination geometry difference.
+    // Issue #178 / Codex P1: capture BOTH pre and post snapshots at the
+    // SAME destination coordinate. Snapshotting pre at start and post at
+    // end made `elementAtPoint` always differ (start vs end usually land
+    // on different UIA elements even when the drag was silently dropped)
+    // and classifyDelivery() would mark every drag as `delivered`.
+    // Sharing the same `dragVerifyCoord` for both samples makes the diff
+    // isolate drag side-effects (drop highlights, target scroll,
+    // selection-rect repaint) from the unrelated source/destination
+    // geometry difference — and makes the coord identity textually obvious
+    // for future review (no implicit start-vs-end ambiguity).
     //
     // ElementFromPoint takes pixel coords, not the cursor's current
     // position, so the cursor can still sit at (tsx, tsy) when we sample
     // the destination element here.
+    const dragVerifyCoord: readonly [number, number] = [tex, tey];
     let preSnapshot: MouseVerifySnapshot | null = null;
     if (verifyDelivery) {
-      preSnapshot = await snapshotForVerify(tex, tey);
+      preSnapshot = await snapshotForVerify(dragVerifyCoord[0], dragVerifyCoord[1]);
     }
 
     const s = speed ?? DEFAULT_MOUSE_SPEED;
@@ -715,14 +716,13 @@ export const mouseDragHandler = async ({
       }
     }
 
-    // Issue #178 — Phase 4: post-drag snapshot at the END point.
-    // Drag side effects (drop highlight, scroll, selection rect) typically
-    // register at the destination — read there. Same 150ms settle as
-    // mouse_click for consistency with the matrix doc §2.3 contract.
+    // Issue #178 — Phase 4: post-drag snapshot at the SAME destination
+    // coord as pre (see `dragVerifyCoord` declared above for rationale).
+    // 150ms settle matches mouse_click for matrix doc §2.3 consistency.
     let verifyDeliveryHint: VerifyDeliveryHint | undefined;
     if (verifyDelivery && preSnapshot) {
       await new Promise<void>((r) => setTimeout(r, 150));
-      const postSnapshot = await snapshotForVerify(tex, tey);
+      const postSnapshot = await snapshotForVerify(dragVerifyCoord[0], dragVerifyCoord[1]);
       verifyDeliveryHint = classifyDelivery(preSnapshot, postSnapshot, "send_input");
     }
 
