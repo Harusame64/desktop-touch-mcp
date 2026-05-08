@@ -6,7 +6,7 @@
  */
 
 import { spawn, type ChildProcess } from "child_process";
-import { writeFileSync, unlinkSync } from "fs";
+import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { enumWindowsInZOrder } from "../../../src/engine/win32.js";
@@ -34,7 +34,15 @@ function findNotepadByTag(tag: string): { hwnd: bigint; title: string } | null {
 
 export async function launchNotepad(): Promise<NpInstance> {
   const tag = `np-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-  const tempFile = join(tmpdir(), `${tag}.txt`);
+  // mkdtempSync allocates a fresh, kernel-randomised directory under tmpdir()
+  // (the suffix is process-private and unpredictable to other users on the
+  // box), so writing `<tag>.txt` inside it cannot race with a pre-existing
+  // file at a guessable path. The dir + its file are both removed in kill()
+  // below. Using a fixed `tmpdir()/<tag>.txt` would trip the
+  // `js/insecure-temporary-file` CodeQL rule (alert #119, same pattern as
+  // PR #192 powershell-launcher fix).
+  const tempDir = mkdtempSync(join(tmpdir(), "dtm-np-"));
+  const tempFile = join(tempDir, `${tag}.txt`);
   writeFileSync(tempFile, "", "utf8");
   const proc = spawn("notepad.exe", [tempFile], { detached: true, stdio: "ignore" });
 
@@ -48,6 +56,7 @@ export async function launchNotepad(): Promise<NpInstance> {
   if (!found) {
     try { proc.kill(); } catch { /* ignore */ }
     try { unlinkSync(tempFile); } catch { /* ignore */ }
+    try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
     throw new Error(`Notepad window with tag "${tag}" did not appear within 20s`);
   }
 
@@ -69,7 +78,10 @@ export async function launchNotepad(): Promise<NpInstance> {
       if (!proc.killed) {
         try { proc.kill(); } catch { /* ignore */ }
       }
+      // Remove the file first, then the now-empty per-launch directory.
+      // Best-effort so a leftover never blocks a future test run.
       try { unlinkSync(tempFile); } catch { /* ignore */ }
+      try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
     },
   };
 }
