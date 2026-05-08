@@ -71,6 +71,58 @@ export async function isWindowsTerminalAvailable(): Promise<boolean> {
 
 export type TerminalHost = "default" | "conhost" | "wt";
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Graceful-kill state machine (issue #204)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// kill() does graceful-first to avoid leaving WT (Windows Terminal) tabs
+// behind. Background:
+//   - `taskkill /F /PID <pid>` calls TerminateProcess → exit code 1
+//   - WT default `closeOnExit: graceful` keeps the tab open on non-zero exit
+//   - launcher uses `-w dtm_e2e_<tag>` (per-launch unique window), so each
+//     residue accumulates as a top-level window, not just a tab
+// Net effect prior to this fix: every `host:'wt'` test run leaked a WT
+// window with the "[プロセスはコード 1 で終了しました]" prompt.
+//
+// The new flow:
+//   1. `taskkill /PID <pid>` (no /F) sends CTRL_CLOSE_EVENT → PS exits 0 →
+//      WT `closeOnExit:graceful` auto-closes the tab AND the unique window.
+//   2. Poll process existence with `process.kill(pid, 0)` (the standard
+//      Unix-style "is this PID alive" probe — Node maps it to OpenProcess
+//      on Windows). ESRCH means the process is gone.
+//   3. If the budget elapses without ESRCH, fall through to `/F` so test
+//      cleanup never hangs on a misbehaving PS.
+//
+// `/T` is still forbidden across both paths — see kill() comment.
+
+/**
+ * Pure decision helper for the graceful-kill polling loop. Isolates the
+ * scheduling logic from real process / clock so unit tests can pin all
+ * three transitions (`wait` / `exited` / `force`) without driving a real
+ * PowerShell. (Codex P2 / P3 follow-up pattern from PR #203 — fixture
+ * injection difficulty was the original blocker on testing kill paths.)
+ */
+export type GracefulKillState = "wait" | "exited" | "force";
+export interface GracefulKillInput {
+  /** Whether the target process is currently alive (i.e. `process.kill(pid, 0)` did not throw ESRCH). */
+  isAlive: boolean;
+  /** Current wall-clock time (ms). Allows the test to inject a deterministic clock. */
+  now: number;
+  /** Wall-clock deadline (ms). Once `now >= deadline`, the helper returns "force". */
+  deadline: number;
+}
+export function evaluateGracefulKillState(input: GracefulKillInput): GracefulKillState {
+  // ESRCH took effect — the graceful taskkill landed and PS unwound cleanly.
+  // No further action; /F fallback is unnecessary.
+  if (!input.isAlive) return "exited";
+  // Past the budget — PS is still alive. Stop polling and force-kill.
+  // The boundary is `>=` so a deadline of `now+0` immediately escalates,
+  // matching the polling loop's "check before sleep" structure.
+  if (input.now >= input.deadline) return "force";
+  // Inside the budget and PS is alive — sleep one tick and re-check.
+  return "wait";
+}
+
 export interface PsInstance {
   proc: ChildProcess;
   tag: string;
@@ -346,7 +398,55 @@ export async function launchPowerShell(opts?: {
         const pidStr = readFileSync(pidFile, "utf-8").trim();
         const pid = parseInt(pidStr, 10);
         if (pid > 0 && !isNaN(pid)) {
-          execSync(`taskkill /F /PID ${pid}`, { stdio: "ignore" });
+          // === Issue #204: graceful first ===
+          // Why: `taskkill /F /PID <pid>` ends PS with exit code 1
+          // (TerminateProcess), and WT default closeOnExit:graceful keeps the
+          // tab open on non-zero exit. With our per-launch `-w dtm_e2e_<tag>`
+          // unique window, each residual tab becomes a leaked top-level
+          // window. Sending CTRL_CLOSE_EVENT via plain `taskkill` lets PS
+          // exit 0 and WT auto-close the window before we move on.
+          let exitedGracefully = false;
+          try {
+            execSync(`taskkill /PID ${pid}`, { stdio: "ignore" });
+            const POLL_INTERVAL_MS = 100;
+            const GRACE_BUDGET_MS = 1500;
+            const deadline = Date.now() + GRACE_BUDGET_MS;
+            // Polling loop: check liveness, sleep, re-check until exit or
+            // deadline. `process.kill(pid, 0)` is Node's idiom for "does
+            // this PID exist" — it throws ESRCH when the OS no longer holds
+            // the handle, which is exactly our "graceful exit landed" signal.
+            while (true) {
+              let isAlive = true;
+              try {
+                process.kill(pid, 0);
+              } catch (e) {
+                if ((e as NodeJS.ErrnoException).code === "ESRCH") isAlive = false;
+                // Other errors (EPERM, EINVAL) leave isAlive=true so the
+                // helper falls back to /F rather than declaring graceful
+                // success on a probe we could not interpret.
+              }
+              const state = evaluateGracefulKillState({
+                isAlive,
+                now: Date.now(),
+                deadline,
+              });
+              if (state === "exited") { exitedGracefully = true; break; }
+              if (state === "force") break;
+              // state === "wait" — sync sleep so the kill() contract
+              // (used from afterAll without await) stays unchanged.
+              // Atomics.wait on a SharedArrayBuffer is the standard
+              // CPU-friendly sync sleep pattern in Node.
+              const sab = new SharedArrayBuffer(4);
+              Atomics.wait(new Int32Array(sab), 0, 0, POLL_INTERVAL_MS);
+            }
+          } catch { /* graceful path failed — fall through to /F */ }
+          // === /F fallback ===
+          // Reached when graceful taskkill returned non-zero, the polling
+          // loop hit the budget, or the liveness probe errored on something
+          // other than ESRCH. /T remains forbidden — single-PID only.
+          if (!exitedGracefully) {
+            try { execSync(`taskkill /F /PID ${pid}`, { stdio: "ignore" }); } catch { /* gave up */ }
+          }
           killedByPid = true;
         }
       } catch { /* best-effort */ }
