@@ -35,7 +35,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { keyboardTypeHandler, keyboardPressHandler } from "../../src/tools/keyboard.js";
-import { launchPowerShell, type PsInstance } from "./helpers/powershell-launcher.js";
+import { launchPowerShell, isWindowsTerminalAvailable, type PsInstance } from "./helpers/powershell-launcher.js";
 import { launchNotepad, type NpInstance } from "./helpers/notepad-launcher.js";
 import { parsePayload } from "./helpers/wait.js";
 
@@ -49,7 +49,12 @@ describe("keyboard({action:'type', method:'background'}) — issue #177 verifica
   //    via `-w <unique>` so cleanup cannot touch the user's WT instance.
   describe("[Windows Terminal] type BG", () => {
     let ps: PsInstance;
-    beforeAll(async () => {
+    beforeAll(async (ctx) => {
+      // Codex P2 (#175): skip cleanly when wt.exe is absent (env constraint).
+      if (!(await isWindowsTerminalAvailable())) {
+        ctx.skip();
+        return;
+      }
       ps = await launchPowerShell({ host: "wt", banner: "ready-bg-type-wt" });
     }, 15_000);
     afterAll(() => { ps?.kill(); });

@@ -26,12 +26,44 @@
  * the 2026-05-08 incident that motivated this defence-in-depth.
  */
 
-import { spawn, type ChildProcess } from "child_process";
+import { spawn, execFile, type ChildProcess } from "child_process";
+import { promisify } from "util";
 import { readFileSync, unlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { enumWindowsInZOrder, clearWindowTopmost } from "../../../src/engine/win32.js";
 import { sleep } from "./wait.js";
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Codex P2 (#175): when the env-gate `DTM_E2E_WT` was removed, WT-host
+ * scenarios began running unconditionally. On a host without `wt.exe`
+ * (Linux CI, Windows images with WT removed/disabled), `launchPowerShell`
+ * times out waiting for the tagged window and fails the entire test file.
+ * That is an environmental constraint, not a product bug, so callers should
+ * skip cleanly. Use this from a test's `beforeAll` (or guard a `describe`
+ * conditionally) when WT is required.
+ *
+ * Detects via `where wt.exe` (Windows shell builtin); short timeout so a
+ * non-Windows host returns quickly. Result is cached per process for cheap
+ * re-checks.
+ */
+let cachedWtAvailable: boolean | null = null;
+export async function isWindowsTerminalAvailable(): Promise<boolean> {
+  if (cachedWtAvailable !== null) return cachedWtAvailable;
+  if (process.platform !== "win32") {
+    cachedWtAvailable = false;
+    return false;
+  }
+  try {
+    await execFileAsync("where", ["wt.exe"], { timeout: 2000, windowsHide: true });
+    cachedWtAvailable = true;
+  } catch {
+    cachedWtAvailable = false;
+  }
+  return cachedWtAvailable;
+}
 
 export type TerminalHost = "default" | "conhost" | "wt";
 

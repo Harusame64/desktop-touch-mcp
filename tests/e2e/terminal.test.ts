@@ -17,7 +17,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { terminalReadHandler, terminalSendHandler } from "../../src/tools/terminal.js";
-import { launchPowerShell, type PsInstance, type TerminalHost } from "./helpers/powershell-launcher.js";
+import { launchPowerShell, isWindowsTerminalAvailable, type PsInstance, type TerminalHost } from "./helpers/powershell-launcher.js";
 import { sleep, parsePayload } from "./helpers/wait.js";
 
 interface HostScenario {
@@ -67,7 +67,15 @@ describe.each(SCENARIOS)("[$label] terminal", ({ host, label, expectedClassPatte
   let ps: PsInstance;
   const BANNER_TAG = `pstest-${host}-${Date.now().toString(36)}`;
 
-  beforeAll(async () => {
+  beforeAll(async (ctx) => {
+    // Codex P2 (#175): WT scenarios are now default-on (no DTM_E2E_WT gate),
+    // so on hosts without wt.exe (Linux CI, stripped Windows images) the
+    // launcher would time out and fail the file. Skip cleanly when the
+    // dependency is absent — this is environmental, not a product bug.
+    if (host === "wt" && !(await isWindowsTerminalAvailable())) {
+      ctx.skip();
+      return;
+    }
     ps = await launchPowerShell({ host, banner: `ready-${BANNER_TAG}` });
   }, 15_000);
 
