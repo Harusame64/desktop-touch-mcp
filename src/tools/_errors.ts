@@ -127,6 +127,12 @@ const SUGGESTS: Record<string, string[]> = {
     "Input sent partially - retry with method:'foreground' for full input",
     "Check context.sent vs context.total",
   ],
+  BackgroundInputNotDelivered: [
+    "Retry with method:'foreground' — post-send UIA read-back could not find the input echoed in the terminal buffer.",
+    "Common cause: Windows Terminal (WinUI/XAML host) silently drops WM_CHAR; use foreground SendInput.",
+    "Common cause: terminal runs elevated (admin) while caller does not — UIPI blocks PostMessage.",
+    "False-positive cause: hidden-input prompts (password / sudo / ssh / Read-Host -AsSecureString) accept WM_CHAR but suppress echo, so this check cannot distinguish delivery from drop. Use method:'foreground' for credential entry.",
+  ],
   SetValueAllChannelsFailed: [
     "Verify the element supports text input",
     "Try click_element + keyboard({action:'type'}) manually",
@@ -255,6 +261,9 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   if (m.includes("backgroundinputincomplete") || m.includes("background input incomplete")) {
     return { code: "BackgroundInputIncomplete", suggest: SUGGESTS.BackgroundInputIncomplete };
+  }
+  if (m.includes("backgroundinputnotdelivered") || m.includes("background input not delivered")) {
+    return { code: "BackgroundInputNotDelivered", suggest: SUGGESTS.BackgroundInputNotDelivered };
   }
   if (m.includes("setvalueallchannelsfailed") || m.includes("all channels failed")) {
     return { code: "SetValueAllChannelsFailed", suggest: SUGGESTS.SetValueAllChannelsFailed };

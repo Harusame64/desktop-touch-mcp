@@ -1,294 +1,368 @@
 /**
  * terminal.test.ts — E2E tests for terminal_read / terminal_send.
  *
- * Launches a PowerShell window with a unique tag banner and verifies:
- *  - UIA TextPattern path reads the terminal buffer (not just the tab title)
- *  - sinceMarker returns an empty / shorter diff on second read
- *  - ANSI stripping works end-to-end
- *  - terminal_send delivers a unique string that terminal_read can observe
- *  - error classifier returns TerminalWindowNotFound for missing windows
+ * Issue #173 — parameterized over [conhost, WindowsTerminal] hosts:
+ *  - conhost: ConsoleWindowClass — WM_CHAR friendly. terminal_send takes the
+ *    BG (WM_CHAR) path with post-send UIA read-back verification.
+ *  - wt: CASCADIA_HOSTING_WINDOW_CLASS — WinUI/XAML pipeline silently swallows
+ *    WM_CHAR. terminal_send falls through to the foreground (clipboard paste)
+ *    path. Explicit method:'background' must surface BackgroundInputNotDelivered.
+ *
+ * Skip policy (issue #173 §S-2): the only env condition that may skip a
+ * delivery assertion is foreground-stealing protection (warning
+ * "ForegroundNotTransferred"). Anything else — silent send/read mismatch,
+ * tag missing without that warning — is a product invariant violation and
+ * MUST fail. Generic skip-on-failure paths are removed.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { terminalReadHandler, terminalSendHandler } from "../../src/tools/terminal.js";
-import { launchPowerShell, type PsInstance } from "./helpers/powershell-launcher.js";
+import { launchPowerShell, type PsInstance, type TerminalHost } from "./helpers/powershell-launcher.js";
 import { sleep, parsePayload } from "./helpers/wait.js";
 
-let ps: PsInstance;
-const BANNER_TAG = `pstest-${Date.now().toString(36)}`;
+interface HostScenario {
+  host: TerminalHost;
+  label: string;
+  /** Expected window class for sanity assertion. */
+  expectedClassPattern: RegExp;
+}
 
-beforeAll(async () => {
-  ps = await launchPowerShell({ banner: `ready-${BANNER_TAG}` });
-}, 15_000);
+// Issue #173: the WT host scenario is OPT-IN via `DTM_E2E_WT=1`. Spawning a
+// PowerShell into Windows Terminal can entangle with the user's existing WT
+// instance — on 2026-05-08 a launcher cleanup mishap (taskkill /T against a
+// PS hosted in shared WT) escalated to the user's whole WT tree and closed
+// every tab. The kill path was hardened (single-PID kill, no /T) but we keep
+// WT off by default until the launcher has independent isolation guarantees.
+// The conhost scenario is the canonical regression coverage and runs always.
+const WT_E2E_ENABLED = process.env["DTM_E2E_WT"] === "1";
 
-afterAll(() => {
-  ps?.kill();
-});
+const SCENARIOS: HostScenario[] = [
+  { host: "conhost", label: "conhost", expectedClassPattern: /^ConsoleWindowClass$/ },
+  ...(WT_E2E_ENABLED
+    ? [{
+        host: "wt" as const,
+        label: "Windows Terminal",
+        expectedClassPattern: /^CASCADIA_HOSTING_WINDOW_CLASS$/,
+      }]
+    : []),
+];
 
-describe("terminal_read", () => {
-  it("reads the PowerShell buffer (UIA TextPattern or OCR fallback)", async () => {
-    const res = await terminalReadHandler({
-      windowTitle: ps.title,
-      lines: 100,
-      stripAnsi: true,
-      source: "auto",
-      ocrLanguage: "ja",
+/**
+ * Returns true when the response carries a "ForegroundNotTransferred" warning,
+ * i.e. Windows foreground-stealing protection refused the focus shift. That is
+ * the only env-dependent outcome we permit a test to skip on.
+ */
+function hasForegroundNotTransferred(payload: { hints?: { warnings?: string[] } }): boolean {
+  const warnings = payload.hints?.warnings;
+  return Array.isArray(warnings) && warnings.some((w) => w.startsWith("ForegroundNotTransferred"));
+}
+
+describe.each(SCENARIOS)("[$label] terminal", ({ host, label, expectedClassPattern }) => {
+  let ps: PsInstance;
+  const BANNER_TAG = `pstest-${host}-${Date.now().toString(36)}`;
+
+  beforeAll(async () => {
+    ps = await launchPowerShell({ host, banner: `ready-${BANNER_TAG}` });
+  }, 15_000);
+
+  afterAll(() => {
+    ps?.kill();
+  });
+
+  describe(`terminal_read [${label}]`, () => {
+    it("reads the PowerShell buffer (UIA TextPattern or OCR fallback)", async () => {
+      const res = await terminalReadHandler({
+        windowTitle: ps.title,
+        lines: 100,
+        stripAnsi: true,
+        source: "auto",
+        ocrLanguage: "ja",
+      });
+      const p = parsePayload(res);
+      expect(p.ok).toBe(true);
+      expect(["uia", "ocr"]).toContain(p.source);
+      expect(p.text).toContain(`ready-${BANNER_TAG}`);
+      expect(p.marker).toMatch(/^[a-f0-9]{16}$/);
+      expect(p.hints.target.hwnd).toBe(String(ps.hwnd));
+      expect(p.hints.target.processName.toLowerCase()).toMatch(/powershell|pwsh|windowsterminal|conhost/);
     });
-    const p = parsePayload(res);
-    expect(p.ok).toBe(true);
-    // Accept either UIA (Windows Terminal host) or OCR (legacy conhost).
-    expect(["uia", "ocr"]).toContain(p.source);
-    // The banner text must appear regardless of source.
-    expect(p.text).toContain(`ready-${BANNER_TAG}`);
-    expect(p.marker).toMatch(/^[a-f0-9]{16}$/);
-    expect(p.hints.target.hwnd).toBe(String(ps.hwnd));
-    expect(p.hints.target.processName.toLowerCase()).toMatch(/powershell|pwsh|windowsterminal|conhost/);
+
+    it("sinceMarker returns an empty (or shorter) diff on immediate re-read", async () => {
+      const r1 = parsePayload(await terminalReadHandler({
+        windowTitle: ps.title, lines: 100, stripAnsi: true, source: "auto", ocrLanguage: "ja",
+      }));
+      const r2 = parsePayload(await terminalReadHandler({
+        windowTitle: ps.title, lines: 100, stripAnsi: true, source: "auto", ocrLanguage: "ja",
+        sinceMarker: r1.marker,
+      }));
+      expect(r2.ok).toBe(true);
+      if (r2.hints.terminalMarker.previousMatched) {
+        expect(r2.text.length).toBeLessThan(r1.text.length);
+      }
+      expect(r2.hints.terminalMarker.current).toMatch(/^[a-f0-9]{16}$/);
+      expect(r2.hints.target.hwnd).toBe(r1.hints.target.hwnd);
+    });
+
+    it("fails cleanly for an unknown window with suggest[]", async () => {
+      const r = parsePayload(await terminalReadHandler({
+        windowTitle: "__no_such_terminal_xyz_12345__",
+        lines: 50, stripAnsi: true, source: "auto", ocrLanguage: "ja",
+      }));
+      expect(r.ok).toBe(false);
+      expect(r.code).toBe("TerminalWindowNotFound");
+      expect(Array.isArray(r.suggest)).toBe(true);
+      expect(r.suggest.some((s: string) => /desktop_discover/.test(s))).toBe(true);
+    });
+
+    it("returns hints.target and hints.caches", async () => {
+      const r = parsePayload(await terminalReadHandler({
+        windowTitle: ps.title, lines: 10, stripAnsi: true, source: "auto", ocrLanguage: "ja",
+      }));
+      expect(r.hints.target).toEqual(expect.objectContaining({
+        hwnd: expect.any(String),
+        pid: expect.any(Number),
+        processName: expect.any(String),
+        processStartTimeMs: expect.any(Number),
+        titleResolved: expect.any(String),
+      }));
+      expect(r.hints.caches).toBeDefined();
+    });
   });
 
-  it("sinceMarker returns an empty (or shorter) diff on immediate re-read", async () => {
-    const r1 = parsePayload(await terminalReadHandler({
-      windowTitle: ps.title, lines: 100, stripAnsi: true, source: "auto", ocrLanguage: "ja",
-    }));
-    const r2 = parsePayload(await terminalReadHandler({
-      windowTitle: ps.title, lines: 100, stripAnsi: true, source: "auto", ocrLanguage: "ja",
-      sinceMarker: r1.marker,
-    }));
-    expect(r2.ok).toBe(true);
-    // Conhost can re-render the buffer between the two reads (cursor blink,
-    // prompt redraw under JP locale). Accept either a successful diff
-    // (previousMatched=true → text shorter) OR a benign miss (false → full
-    // text returned). The structural contract under test is just that the
-    // marker field round-trips and identity stays consistent.
-    if (r2.hints.terminalMarker.previousMatched) {
-      expect(r2.text.length).toBeLessThan(r1.text.length);
-    }
-    expect(r2.hints.terminalMarker.current).toMatch(/^[a-f0-9]{16}$/);
-    expect(r2.hints.target.hwnd).toBe(r1.hints.target.hwnd);
-  });
+  describe(`terminal_send [${label}]`, () => {
+    it("delivers a unique line that terminal_read observes", async ({ skip }) => {
+      const sentTag = `sent-${host}-${Date.now().toString(36)}`;
+      const sendRes = parsePayload(await terminalSendHandler({
+        windowTitle: ps.title,
+        input: `echo ${sentTag}`,
+        pressEnter: true,
+        focusFirst: true,
+        restoreFocus: true,
+        preferClipboard: true,
+        pasteKey: "auto",
+      }));
 
-  it("fails cleanly for an unknown window with suggest[]", async () => {
-    const r = parsePayload(await terminalReadHandler({
-      windowTitle: "__no_such_terminal_xyz_12345__",
-      lines: 50, stripAnsi: true, source: "auto", ocrLanguage: "ja",
-    }));
-    expect(r.ok).toBe(false);
-    expect(r.code).toBe("TerminalWindowNotFound");
-    expect(Array.isArray(r.suggest)).toBe(true);
-    // Phase 4: get_windows privatized → TerminalWindowNotFound suggest points at desktop_discover.
-    expect(r.suggest.some((s: string) => /desktop_discover/.test(s))).toBe(true);
-  });
+      // Issue #173 §S-2: skip ONLY when Windows refused the foreground shift.
+      // Any other failure is a product invariant violation and MUST fail.
+      if (!sendRes.ok) {
+        if (hasForegroundNotTransferred(sendRes)) {
+          skip(`terminal_send foreground transfer refused — env condition. payload=${JSON.stringify(sendRes)}`);
+        }
+        // Treat all other failures as real bugs.
+      }
+      expect(sendRes.ok).toBe(true);
+      expect(sendRes.post).toBeDefined();
+      expect(sendRes.post.elapsedMs).toBeGreaterThan(0);
 
-  it("returns hints.target and hints.caches", async () => {
-    const r = parsePayload(await terminalReadHandler({
-      windowTitle: ps.title, lines: 10, stripAnsi: true, source: "auto", ocrLanguage: "ja",
-    }));
-    expect(r.hints.target).toEqual(expect.objectContaining({
-      hwnd: expect.any(String),
-      pid: expect.any(Number),
-      processName: expect.any(String),
-      processStartTimeMs: expect.any(Number),
-      titleResolved: expect.any(String),
-    }));
-    expect(r.hints.caches).toBeDefined();
-  });
-});
+      // Let PowerShell render the output
+      await sleep(1500);
 
-describe("terminal_send", () => {
-  it("delivers a unique line that terminal_read observes", async ({ skip }) => {
-    const sentTag = `sent-${Date.now().toString(36)}`;
-    const sendRes = parsePayload(await terminalSendHandler({
-      windowTitle: ps.title,
-      input: `echo ${sentTag}`,
-      pressEnter: true,
-      focusFirst: true,
-      restoreFocus: true,
-      preferClipboard: true,
-      pasteKey: "auto",
-    }));
-    expect(sendRes.ok).toBe(true);
-    expect(sendRes.post).toBeDefined();
-    expect(sendRes.post.elapsedMs).toBeGreaterThan(0);
+      const readRes = parsePayload(await terminalReadHandler({
+        windowTitle: ps.title, lines: 200, stripAnsi: true, source: "auto", ocrLanguage: "ja",
+      }));
+      expect(readRes.ok, JSON.stringify(readRes)).toBe(true);
 
-    // Let PowerShell render the output
-    await sleep(1500);
+      // If the send response carried ForegroundNotTransferred, the keystrokes
+      // landed on the previously-focused window — env condition, skip the
+      // strict read-back. Otherwise the tag MUST be in the buffer.
+      if (!readRes.text.includes(sentTag) && hasForegroundNotTransferred(sendRes)) {
+        skip(
+          `terminal_send focus did not transfer — read-back skipped. ` +
+          `Buffer tail: ${readRes.text.slice(-200)}`
+        );
+      }
+      expect(readRes.text).toContain(sentTag);
+    }, 20_000);
 
-    const readRes = parsePayload(await terminalReadHandler({
-      windowTitle: ps.title, lines: 200, stripAnsi: true, source: "auto", ocrLanguage: "ja",
-    }));
-    expect(readRes.ok, JSON.stringify(readRes)).toBe(true);
+    it("reports TerminalWindowNotFound for an unknown window", async () => {
+      const r = parsePayload(await terminalSendHandler({
+        windowTitle: "__no_such_terminal_xyz_9876__",
+        input: "noop",
+        pressEnter: false,
+        focusFirst: true,
+        restoreFocus: true,
+        preferClipboard: true,
+        pasteKey: "auto",
+      }));
+      expect(r.ok).toBe(false);
+      expect(r.code).toBe("TerminalWindowNotFound");
+    });
 
-    // Windows enforces foreground-stealing protection: if a long-running test
-    // suite has been jockeying focus, SetForegroundWindow may silently fail
-    // and the keystrokes land on the previously-focused window. We can't
-    // reliably override that from a non-interactive test runner, so skip the
-    // read-back assertion when focus failed to transfer (the send itself
-    // returned ok — only the side-effect verification is unreliable).
-    if (!readRes.text.includes(sentTag)) {
-      skip(
-        `terminal_send focus did not transfer (Windows foreground-stealing ` +
-        `protection) — read-back skipped. Buffer tail: ${readRes.text.slice(-200)}`
-      );
-    }
-    expect(readRes.text).toContain(sentTag);
-  }, 20_000);
+    it("D2: immediate terminal_read after slow command may be empty — not an error", async ({ skip }) => {
+      const tag = `d2-${host}-${Date.now().toString(36)}`;
+      const sendRes = parsePayload(await terminalSendHandler({
+        windowTitle: ps.title,
+        input: `Start-Sleep -Milliseconds 800; echo ${tag}`,
+        pressEnter: true,
+        focusFirst: true,
+        restoreFocus: true,
+        preferClipboard: true,
+        pasteKey: "auto",
+      }));
+      if (!sendRes.ok) {
+        if (hasForegroundNotTransferred(sendRes)) {
+          skip(`terminal_send foreground transfer refused — env condition`);
+        }
+      }
+      expect(sendRes.ok).toBe(true);
 
-  it("reports TerminalWindowNotFound for an unknown window", async () => {
-    const r = parsePayload(await terminalSendHandler({
-      windowTitle: "__no_such_terminal_xyz_9876__",
-      input: "noop",
-      pressEnter: false,
-      focusFirst: true,
-      restoreFocus: true,
-      preferClipboard: true,
-      pasteKey: "auto",
-    }));
-    expect(r.ok).toBe(false);
-    expect(r.code).toBe("TerminalWindowNotFound");
-  });
+      const r1 = parsePayload(await terminalReadHandler({
+        windowTitle: ps.title, lines: 50, stripAnsi: true, source: "auto", ocrLanguage: "ja",
+      }));
+      expect(r1.ok).toBe(true);
+      expect(r1.marker).toMatch(/^[a-f0-9]{16}$/);
+      const immediateHasOutput = r1.text.includes(tag);
 
-  // D2: terminal_send direct output timing
-  it("D2: immediate terminal_read after slow command may be empty — not an error", async ({ skip }) => {
-    const tag = `d2-${Date.now().toString(36)}`;
-    const sendRes = parsePayload(await terminalSendHandler({
-      windowTitle: ps.title,
-      input: `Start-Sleep -Milliseconds 800; echo ${tag}`,
-      pressEnter: true,
-      focusFirst: true,
-      restoreFocus: true,
-      preferClipboard: true,
-      pasteKey: "auto",
-    }));
-    if (!sendRes.ok) {
-      skip("terminal_send failed (focus protection) — skipping D2");
-    }
-    expect(sendRes.ok).toBe(true);
-
-    // Read IMMEDIATELY — output likely not available yet
-    const r1 = parsePayload(await terminalReadHandler({
-      windowTitle: ps.title, lines: 50, stripAnsi: true, source: "auto", ocrLanguage: "ja",
-    }));
-    // Must not error — empty/partial output is acceptable
-    expect(r1.ok).toBe(true);
-    expect(r1.marker).toMatch(/^[a-f0-9]{16}$/);
-    // tag may or may not be present depending on timing
-    const immediateHasOutput = r1.text.includes(tag);
-
-    // Wait for completion then confirm output is present
-    await sleep(1500);
-    const r2 = parsePayload(await terminalReadHandler({
-      windowTitle: ps.title, lines: 50, stripAnsi: true, source: "auto", ocrLanguage: "ja",
-    }));
-    expect(r2.ok).toBe(true);
-    if (!r2.text.includes(tag)) {
-      skip(`D2: output tag not found after wait — focus issue. Buffer: ${r2.text.slice(-200)}`);
-    }
-    expect(r2.text).toContain(tag);
-    // If tag appeared only in r2, the immediate read was indeed early
-    if (!immediateHasOutput) {
-      // This is the expected case: demonstrates D2's "not yet ready" scenario
+      await sleep(1500);
+      const r2 = parsePayload(await terminalReadHandler({
+        windowTitle: ps.title, lines: 50, stripAnsi: true, source: "auto", ocrLanguage: "ja",
+      }));
+      expect(r2.ok).toBe(true);
+      if (!r2.text.includes(tag) && hasForegroundNotTransferred(sendRes)) {
+        skip(`D2: output tag not found — focus did not transfer (env).`);
+      }
       expect(r2.text).toContain(tag);
-    }
-  }, 20_000);
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// D1: sinceMarker after new command (normalizeForMarker regression guard)
-// ─────────────────────────────────────────────────────────────────────────────
-
-describe("D1: sinceMarker after new command output", () => {
-  it("previousMatched:true and diff contains new output after a command runs", async ({ skip }) => {
-    // Baseline read
-    const r1 = parsePayload(await terminalReadHandler({
-      windowTitle: ps.title, lines: 2000, stripAnsi: true, source: "auto", ocrLanguage: "ja",
-    }));
-    expect(r1.ok).toBe(true);
-    const marker1 = r1.marker;
-
-    // Send a command with a unique tag
-    const tag = `d1-${Date.now().toString(36)}`;
-    const sendRes = parsePayload(await terminalSendHandler({
-      windowTitle: ps.title,
-      input: `echo ${tag}`,
-      pressEnter: true,
-      focusFirst: true,
-      restoreFocus: true,
-      preferClipboard: true,
-      pasteKey: "auto",
-    }));
-    if (!sendRes.ok) {
-      skip("terminal_send failed (focus protection) — skipping D1");
-    }
-
-    // Wait for shell to render output
-    await sleep(1000);
-
-    // Read with sinceMarker — should find the new output
-    const r2 = parsePayload(await terminalReadHandler({
-      windowTitle: ps.title,
-      lines: 2000,
-      stripAnsi: true,
-      source: "auto",
-      ocrLanguage: "ja",
-      sinceMarker: marker1,
-    }));
-    expect(r2.ok).toBe(true);
-
-    if (!r2.hints.terminalMarker.previousMatched) {
-      skip(
-        `D1: sinceMarker did not match — possible focus issue or conhost rendering variance. ` +
-        `tail: ${r2.text.slice(-300)}`
-      );
-    }
-
-    // Core assertion: sinceMarker matched and the diff contains the new output
-    expect(r2.hints.terminalMarker.previousMatched).toBe(true);
-    if (!r2.text.includes(tag)) {
-      skip(`D1: tag not in diff — focus issue. diff: ${r2.text.slice(-300)}`);
-    }
-    expect(r2.text).toContain(tag);
-    // Diff must be shorter than the full buffer (not full re-send)
-    expect(r2.text.length).toBeLessThan(r1.text.length);
-  }, 25_000);
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// D3: UIA TextPattern tab-title contamination regression guard
-//     Commit bec8721 fixed "TextPattern selection picks terminal buffer, not
-//     tab title". This describe block guards against regression.
-// ─────────────────────────────────────────────────────────────────────────────
-
-describe("D3: terminal_read returns actual buffer — not tab title (regression guard)", () => {
-  it("returned text is multi-line (a tab title is a single line)", async () => {
-    const r = parsePayload(await terminalReadHandler({
-      windowTitle: ps.title, lines: 100, stripAnsi: true, source: "auto", ocrLanguage: "ja",
-    }));
-    expect(r.ok).toBe(true);
-
-    // A tab title would be a single line ("PowerShell" or similar).
-    // The actual terminal buffer always has multiple lines (prompt + history).
-    const lineCount = r.text.split("\n").filter((l: string) => l.trim()).length;
-    expect(lineCount).toBeGreaterThan(1);
+      if (!immediateHasOutput) {
+        expect(r2.text).toContain(tag);
+      }
+    }, 20_000);
   });
 
-  it("returned text contains the banner (not just window title)", async () => {
-    const r = parsePayload(await terminalReadHandler({
-      windowTitle: ps.title, lines: 200, stripAnsi: true, source: "auto", ocrLanguage: "ja",
-    }));
-    expect(r.ok).toBe(true);
+  describe(`D1: sinceMarker after new command output [${label}]`, () => {
+    it("previousMatched:true and diff contains new output after a command runs", async ({ skip }) => {
+      const r1 = parsePayload(await terminalReadHandler({
+        windowTitle: ps.title, lines: 2000, stripAnsi: true, source: "auto", ocrLanguage: "ja",
+      }));
+      expect(r1.ok).toBe(true);
+      const marker1 = r1.marker;
 
-    // If TextPattern had returned the tab title, the banner would not be present.
-    expect(r.text).toContain(`ready-${BANNER_TAG}`);
+      const tag = `d1-${host}-${Date.now().toString(36)}`;
+      const sendRes = parsePayload(await terminalSendHandler({
+        windowTitle: ps.title,
+        input: `echo ${tag}`,
+        pressEnter: true,
+        focusFirst: true,
+        restoreFocus: true,
+        preferClipboard: true,
+        pasteKey: "auto",
+      }));
+      if (!sendRes.ok) {
+        if (hasForegroundNotTransferred(sendRes)) {
+          skip(`terminal_send foreground transfer refused — env condition`);
+        }
+      }
+      expect(sendRes.ok).toBe(true);
 
-    // Buffer must be substantially longer than the window title.
-    // Tab title ≈ 20–40 chars; real PS session buffer ≫ that.
-    expect(r.text.length).toBeGreaterThan(ps.title.length * 3);
+      await sleep(1000);
+
+      const r2 = parsePayload(await terminalReadHandler({
+        windowTitle: ps.title,
+        lines: 2000,
+        stripAnsi: true,
+        source: "auto",
+        ocrLanguage: "ja",
+        sinceMarker: marker1,
+      }));
+      expect(r2.ok).toBe(true);
+
+      if (!r2.hints.terminalMarker.previousMatched) {
+        if (hasForegroundNotTransferred(sendRes)) {
+          skip(`D1: sinceMarker did not match — focus did not transfer (env).`);
+        }
+        // Otherwise: marker miss is a product bug (rendering churn we should
+        // have absorbed via normalizeForMarker). Fall through to fail.
+      }
+      expect(r2.hints.terminalMarker.previousMatched).toBe(true);
+      if (!r2.text.includes(tag) && hasForegroundNotTransferred(sendRes)) {
+        skip(`D1: tag not in diff — focus did not transfer (env).`);
+      }
+      expect(r2.text).toContain(tag);
+      expect(r2.text.length).toBeLessThan(r1.text.length);
+    }, 25_000);
   });
 
-  it("text does NOT equal window title (direct tab-title match guard)", async () => {
-    const r = parsePayload(await terminalReadHandler({
-      windowTitle: ps.title, lines: 10, stripAnsi: true, source: "auto", ocrLanguage: "ja",
-    }));
-    expect(r.ok).toBe(true);
-    expect(r.text.trim()).not.toBe(ps.title.trim());
+  describe(`D3: terminal_read returns actual buffer — not tab title (regression guard) [${label}]`, () => {
+    it("returned text is multi-line (a tab title is a single line)", async () => {
+      const r = parsePayload(await terminalReadHandler({
+        windowTitle: ps.title, lines: 100, stripAnsi: true, source: "auto", ocrLanguage: "ja",
+      }));
+      expect(r.ok).toBe(true);
+      const lineCount = r.text.split("\n").filter((l: string) => l.trim()).length;
+      expect(lineCount).toBeGreaterThan(1);
+    });
+
+    it("returned text contains the banner (not just window title)", async () => {
+      const r = parsePayload(await terminalReadHandler({
+        windowTitle: ps.title, lines: 200, stripAnsi: true, source: "auto", ocrLanguage: "ja",
+      }));
+      expect(r.ok).toBe(true);
+      expect(r.text).toContain(`ready-${BANNER_TAG}`);
+      expect(r.text.length).toBeGreaterThan(ps.title.length * 3);
+    });
+
+    it("text does NOT equal window title (direct tab-title match guard)", async () => {
+      const r = parsePayload(await terminalReadHandler({
+        windowTitle: ps.title, lines: 10, stripAnsi: true, source: "auto", ocrLanguage: "ja",
+      }));
+      expect(r.ok).toBe(true);
+      expect(r.text.trim()).not.toBe(ps.title.trim());
+    });
+  });
+
+  // Issue #173: explicit method:'background' on Windows Terminal must surface
+  // BackgroundInputNotDelivered (post-send UIA read-back catches the silent
+  // swallow). On conhost the BG path is the default and must succeed.
+  describe(`issue #173: BG path delivery [${label}]`, () => {
+    it("class sanity check (host produced the expected window class)", async () => {
+      const { getWindowClassName } = await import("../../src/engine/win32.js");
+      const cls = getWindowClassName(ps.hwnd);
+      expect(cls).toMatch(expectedClassPattern);
+    });
+
+    if (host === "wt") {
+      it("method:'background' on Windows Terminal returns BackgroundInputNotDelivered", async () => {
+        const tag = `bg-wt-${Date.now().toString(36)}`;
+        const sendRes = parsePayload(await terminalSendHandler({
+          windowTitle: ps.title,
+          input: `echo ${tag}`,
+          method: "background",
+          pressEnter: true,
+          focusFirst: false,
+          restoreFocus: false,
+          preferClipboard: false,
+          pasteKey: "auto",
+        }));
+        expect(sendRes.ok, JSON.stringify(sendRes)).toBe(false);
+        expect(sendRes.code).toBe("BackgroundInputNotDelivered");
+        expect(Array.isArray(sendRes.suggest)).toBe(true);
+        expect(sendRes.suggest.some((s: string) => /foreground/i.test(s))).toBe(true);
+      }, 10_000);
+    }
+
+    if (host === "conhost") {
+      it("method:'background' on conhost succeeds and the line shows up", async () => {
+        const tag = `bg-conhost-${Date.now().toString(36)}`;
+        const sendRes = parsePayload(await terminalSendHandler({
+          windowTitle: ps.title,
+          input: `echo ${tag}`,
+          method: "background",
+          pressEnter: true,
+          focusFirst: false,
+          restoreFocus: false,
+          preferClipboard: false,
+          pasteKey: "auto",
+        }));
+        expect(sendRes.ok, JSON.stringify(sendRes)).toBe(true);
+        expect(sendRes.method).toBe("background");
+        expect(sendRes.channel).toBe("wm_char");
+
+        await sleep(1000);
+        const readRes = parsePayload(await terminalReadHandler({
+          windowTitle: ps.title, lines: 100, stripAnsi: true, source: "auto", ocrLanguage: "ja",
+        }));
+        expect(readRes.ok).toBe(true);
+        expect(readRes.text).toContain(tag);
+      }, 15_000);
+    }
   });
 });

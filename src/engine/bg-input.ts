@@ -23,9 +23,16 @@ import {
 // Known-compatible terminal window classes (fast-path supported:true)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Terminal window classes that reliably accept WM_CHAR injection. */
+/**
+ * Terminal window classes that reliably accept WM_CHAR injection.
+ *
+ * NOTE: `CASCADIA_HOSTING_WINDOW_CLASS` (Windows Terminal, wt.exe) is **NOT**
+ * in this set. WT is built on WinUI/XAML/TerminalControl; input is consumed
+ * via XAML `KeyEventArgs`, not the legacy WM_CHAR pipeline. PostMessage to a
+ * WT HWND succeeds at the OS message-queue layer but TerminalControl never
+ * reads the message, so the keystroke is silently dropped. See issue #173.
+ */
 export const TERMINAL_WINDOW_CLASSES = new Set([
-  "CASCADIA_HOSTING_WINDOW_CLASS", // Windows Terminal (wt.exe)
   "ConsoleWindowClass",             // conhost.exe (cmd, PowerShell, pwsh)
 ]);
 
@@ -47,6 +54,16 @@ const UWP_CLASSES = new Set([
   "Windows.UI.Input.InputSite.WindowClass",
 ]);
 
+/**
+ * Windows Terminal classes / processes — WinUI/XAML pipeline silently swallows
+ * WM_CHAR. Marked non-supported so the BG path falls through to foreground
+ * instead of returning a false ok:true. See issue #173.
+ */
+const WT_CLASSES = new Set([
+  "CASCADIA_HOSTING_WINDOW_CLASS",
+]);
+const WT_PROCESS_RE = /^WindowsTerminal(\.exe)?$/i;
+
 const CHROMIUM_PROCESS_RE = /^(chrome|msedge|brave|opera|firefox|vivaldi|electron)$/i;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -55,7 +72,7 @@ const CHROMIUM_PROCESS_RE = /^(chrome|msedge|brave|opera|firefox|vivaldi|electro
 
 export interface InjectCheckResult {
   supported: boolean;
-  reason?: "chromium" | "uwp_sandboxed" | "class_unknown";
+  reason?: "chromium" | "uwp_sandboxed" | "wt_xaml_pipeline" | "class_unknown";
   className?: string;
   processName?: string;
 }
@@ -91,6 +108,9 @@ function _check(hwnd: unknown): InjectCheckResult {
     if (UWP_CLASSES.has(cls)) {
       return { supported: false, reason: "uwp_sandboxed", className: cls };
     }
+    if (WT_CLASSES.has(cls)) {
+      return { supported: false, reason: "wt_xaml_pipeline", className: cls };
+    }
 
     const pid = getWindowProcessId(hwnd);
     const identity = getProcessIdentityByPid(pid);
@@ -98,6 +118,9 @@ function _check(hwnd: unknown): InjectCheckResult {
 
     if (CHROMIUM_PROCESS_RE.test(procName)) {
       return { supported: false, reason: "chromium", className: cls, processName: procName };
+    }
+    if (WT_PROCESS_RE.test(procName)) {
+      return { supported: false, reason: "wt_xaml_pipeline", className: cls, processName: procName };
     }
 
     return { supported: true, className: cls, processName: procName };

@@ -169,14 +169,30 @@ describe("postKeyComboToHwnd", () => {
   });
 });
 
-describe("canInjectViaPostMessage — terminal fast-path", () => {
+describe("canInjectViaPostMessage — terminal classification", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("returns supported:true for CASCADIA_HOSTING_WINDOW_CLASS (Windows Terminal)", () => {
+  it("returns supported:false with reason 'wt_xaml_pipeline' for CASCADIA_HOSTING_WINDOW_CLASS (Windows Terminal)", () => {
+    // Issue #173: WT's WinUI/XAML pipeline silently swallows WM_CHAR.
+    // The fast-path that previously marked WT as supported was retracted.
     vi.mocked(getWindowClassName).mockReturnValue("CASCADIA_HOSTING_WINDOW_CLASS");
     const result = canInjectViaPostMessage(10n);
-    expect(result.supported).toBe(true);
+    expect(result.supported).toBe(false);
+    expect(result.reason).toBe("wt_xaml_pipeline");
     expect(result.className).toBe("CASCADIA_HOSTING_WINDOW_CLASS");
+  });
+
+  it("returns supported:false for WindowsTerminal.exe process (class fallback)", () => {
+    // Even when the class is not the documented WT class (e.g. WT updated and
+    // exposes a new class name), the process-name guard catches it.
+    vi.mocked(getWindowClassName).mockReturnValue("UnknownClass");
+    vi.mocked(getProcessIdentityByPid).mockReturnValue({
+      pid: 9, processName: "WindowsTerminal.exe", processStartTimeMs: 0,
+    });
+    const result = canInjectViaPostMessage(99n);
+    expect(result.supported).toBe(false);
+    expect(result.reason).toBe("wt_xaml_pipeline");
+    expect(result.processName).toBe("WindowsTerminal.exe");
   });
 
   it("returns supported:true for ConsoleWindowClass (conhost/cmd)", () => {

@@ -327,6 +327,13 @@ export const terminalSendHandler = async ({
     // even without DTM_BG_AUTO=1 — terminal_send by definition operates on
     // terminals, and HWND-targeted delivery prevents user-side foreground
     // changes from diverting keystrokes mid-stream.
+    //
+    // Issue #173: Windows Terminal (CASCADIA_HOSTING_WINDOW_CLASS) was removed
+    // from TERMINAL_WINDOW_CLASSES because its WinUI/XAML pipeline silently
+    // swallows WM_CHAR. canInjectViaPostMessage now also rejects WT by class
+    // and process name, so the BG path no longer auto-fires for WT and any
+    // explicit `method:'background'` on WT will be additionally caught by the
+    // post-send UIA read-back verification below.
     const targetClass = (() => {
       try { return getWindowClassName(win.hwnd); } catch { return ""; }
     })();
@@ -344,6 +351,28 @@ export const terminalSendHandler = async ({
       // Avoid duplicate Enter if input already ends with CR/LF
       const inputEndsWithNewline = /[\r\n]$/.test(input);
       const effectivePressEnter = pressEnter && !inputEndsWithNewline;
+
+      // Verification scope (issue #173 P2-4 review feedback):
+      // The post-send UIA read-back is meant to catch silent BG failures on
+      // unknown / WinUI hosts. When the auto-router picked BG because the
+      // target is in `TERMINAL_WINDOW_CLASSES` (currently only
+      // `ConsoleWindowClass`, the conhost case), the channel is well-tested
+      // and the read-back would just add ~150ms with no realistic catch.
+      // Verify only when:
+      //   - the caller explicitly forced `method:'background'` (covers WT
+      //     and any other handle the auto path would have rejected), or
+      //   - we entered BG via `DTM_BG_AUTO=1` on a non-terminal class (the
+      //     global env override can route input to unknown apps).
+      const verificationNeeded =
+        inputMethod === "background" || (isBgAutoEnabled() && !isTerminalTarget);
+
+      // Capture pre-send UIA snapshot for post-send delivery verification.
+      // If TextPattern is unavailable on this terminal, baselineMarker stays
+      // null and the verification step is skipped (we can't tell if the input
+      // landed without a way to read the buffer back).
+      const baselineRaw = verificationNeeded ? await getTextViaTextPattern(win.title) : null;
+      const baselineMarker =
+        baselineRaw !== null ? makeMarker(stripAnsi(baselineRaw)) : null;
 
       // Send in chunks to avoid saturating the terminal input queue
       let totalSent = 0;
@@ -372,6 +401,75 @@ export const terminalSendHandler = async ({
             }
           );
         }
+      }
+
+      // ── Issue #173 P2: post-send UIA read-back delivery verification ────
+      // PostMessage(WM_CHAR) returns true when the message is queued, even if
+      // the target never consumes it (e.g. Windows Terminal's XAML pipeline,
+      // see issue #173). Without this check, ok:true would silently lie about
+      // delivery. The check is gated by `verificationNeeded` above; here we
+      // additionally skip when:
+      //   - baseline could not be read (no way to verify),
+      //   - input has no echo-able content (only trailing newlines), or
+      //   - input contains embedded newlines. conhost commits each line at
+      //     the CR and inserts a fresh prompt before the next line, so the
+      //     buffer interleaves prompts between the input lines and a plain
+      //     substring includes() check would false-positive as "missing".
+      //     Multi-line silent fail is uncommon and out of scope for this
+      //     patch; single-line substring detection is sufficient to catch
+      //     the WT regression that motivated this change.
+      const checkText = input.replace(/[\r\n]+$/, "");
+      const hasEmbeddedNewline = /[\r\n]/.test(checkText);
+      const verifiable =
+        verificationNeeded &&
+        baselineMarker !== null &&
+        checkText.length > 0 &&
+        !hasEmbeddedNewline;
+      let verifiedDelivery: boolean | "unverifiable" = "unverifiable";
+      if (verifiable) {
+        // Let the terminal render before reading back. ~150ms is enough for
+        // conhost; if the input was silently dropped the diff stays empty.
+        await new Promise<void>((r) => setTimeout(r, 150));
+        const postRaw = await getTextViaTextPattern(win.title);
+        if (postRaw !== null) {
+          const postCleaned = stripAnsi(postRaw);
+          const sliced = applySinceMarker(postCleaned, baselineMarker);
+          // Only judge "not delivered" when we located the baseline boundary;
+          // a lost baseline (matched:false) is undetermined, not a failure.
+          if (sliced.matched) {
+            // Two-tier match (Codex P1 review feedback, refined in round 2):
+            //   1. Exact substring — fast path, works for short / unwrapped
+            //      single-line input echoed by the prompt as-is.
+            //   2. Tail signature — the last 8 non-whitespace chars of the
+            //      input must appear in the diff after both sides are stripped
+            //      of whitespace. The strip is symmetric (Codex round 2 P2):
+            //      stripping only the needle but not the haystack misses the
+            //      soft-wrap case it was meant to catch (a console-width line
+            //      break inserts whitespace into the haystack the input never
+            //      had). The WT silent-fail target still fails this check
+            //      because the buffer is empty of input characters when
+            //      WM_CHAR is swallowed.
+            const exact = sliced.text.includes(checkText);
+            const tail = checkText.replace(/\s+/g, "").slice(-8);
+            const slicedNoWs = sliced.text.replace(/\s+/g, "");
+            const tailMatch = tail.length >= 4 && slicedNoWs.includes(tail);
+            verifiedDelivery = exact || tailMatch;
+          }
+        }
+      }
+      if (verifiedDelivery === false) {
+        // suggest[] is provided by classify() via SUGGESTS.BackgroundInputNotDelivered
+        // — keep this call site free of duplicated copy so the dictionary stays SSOT.
+        return failWith(
+          new Error("BackgroundInputNotDelivered"),
+          "terminal:send",
+          {
+            context: {
+              hint: "post-send UIA read-back did not contain the input substring",
+              targetClass,
+            },
+          }
+        );
       }
 
       if (effectivePressEnter) postEnterToHwnd(win.hwnd);
@@ -506,7 +604,15 @@ export const terminalSendHandler = async ({
 // terminal run handler — send → wait → read in one call
 // ─────────────────────────────────────────────────────────────────────────────
 
-type CompletionReason = "quiet" | "pattern_matched" | "timeout" | "window_closed" | "window_not_found";
+type CompletionReason =
+  | "quiet"
+  | "pattern_matched"
+  | "timeout"
+  | "window_closed"
+  | "window_not_found"
+  | "send_failed"; // issue #173 P2-2: BG path delivery verification (or any
+                   // other terminal_send failure) on a still-alive window.
+                   // The window is fine; the send itself was rejected.
 
 interface ReadFailurePayload {
   code?: string;
@@ -700,27 +806,41 @@ export const terminalRunHandler = async ({
   };
 
   const sendResult = await terminalSendHandler(sendArgs);
-  // Check send result — if send failed, detect window state
+  // Check send result — if send failed, classify by code + window state.
   const sendPayload = (() => {
     try {
       const block = sendResult.content[0];
-      if (block?.type === "text") return JSON.parse(block.text) as { ok?: boolean };
+      if (block?.type === "text") {
+        return JSON.parse(block.text) as { ok?: boolean; code?: string };
+      }
     } catch { /* fall through */ }
     return null;
   })();
 
   if (sendPayload && sendPayload.ok === false) {
-    // Window disappeared after we found it (race)
+    // Issue #173 P2-2: when the window is still alive but send failed, the
+    // most accurate completion reason is "send_failed" — the window IS found,
+    // the SEND was rejected. Older code split alive into "window_not_found",
+    // but `findTerminalWindow` above already early-returns "window_not_found"
+    // when the window is missing, so any send failure that reaches here on a
+    // live HWND is a send-side failure (BackgroundInputNotDelivered, focus
+    // retry exhausted, etc.). Surface the code in warnings so callers can
+    // branch on the underlying cause without parsing the message.
     const alive = isWindowStillAlive(hwnd);
+    const sendCode = sendPayload.code;
     const res: TerminalRunResponse = {
       ok: false,
       output: "",
       completion: {
-        reason: alive ? "window_not_found" : "window_closed",
+        reason: alive ? "send_failed" : "window_closed",
         elapsedMs: Date.now() - startedAt,
       },
       hwnd: String(hwnd),
-      warnings: [`terminal(action='send') failed`],
+      warnings: [
+        sendCode
+          ? `terminal(action='send') failed: ${sendCode}`
+          : `terminal(action='send') failed`,
+      ],
     };
     return ok(res);
   }
@@ -999,7 +1119,7 @@ export function registerTerminalTools(server: McpServer): void {
         purpose: "Interact with a terminal window: read output, send input, or run+wait+read in one call.",
         details: "action='run' is the recommended high-level workflow: send command → wait until quiet/pattern/timeout → read output. Returns completion={reason, elapsedMs} first-class. action='read' reads current text via UIA TextPattern (falls back to OCR); use sinceMarker for incremental diff. action='send' sends a command with focus management.",
         prefer: "action='run' for command execution + result. Use action='read'/'send' for fine-grained control or when you need to interleave other actions.",
-        caveats: "Do not screenshot the terminal — terminal(action='read') is cheaper and structured. action='run' supports completion reasons: quiet | pattern_matched | timeout | window_closed | window_not_found. preferClipboard=true (send default) overwrites user clipboard.",
+        caveats: "Do not screenshot the terminal — terminal(action='read') is cheaper and structured. action='run' supports completion reasons: quiet | pattern_matched | timeout | window_closed | window_not_found | send_failed (send rejected on a live window — see warnings for the underlying error code). preferClipboard=true (send default) overwrites user clipboard.",
         examples: [
           "terminal({action:'run', windowTitle:'PowerShell', input:'npm test', until:{mode:'pattern', pattern:'npm test:'}}) → {output, completion:{reason:'pattern_matched'}}",
           "terminal({action:'run', windowTitle:'pwsh', input:'ls'}) → quiet 800ms wait, returns output",
