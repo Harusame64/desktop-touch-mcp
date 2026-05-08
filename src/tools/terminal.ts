@@ -671,14 +671,13 @@ export const terminalSendHandler = async ({
     const homingNotes: string[] = [];
 
     let foregrounded = !focusFirst; // when not requested, treat as success
+    let autoEscalated = false;
     if (focusFirst) {
       // Windows SetForegroundWindow is racy under load — retry until the target
       // really is in the foreground (or give up after 5 tries).
       const targetHwnd = String(win.hwnd);
       if (force) {
         // AttachThreadInput path: single attempt is usually sufficient.
-        // `foregrounded` is not read on this branch — the typed code below
-        // is the observable effect when refusal happens.
         restoreAndFocusWindow(win.hwnd, { force: true });
         await new Promise<void>((r) => setTimeout(r, 100));
         const fg = enumWindowsInZOrder().find((w) => w.isActive);
@@ -692,6 +691,22 @@ export const terminalSendHandler = async ({
           await new Promise<void>((r) => setTimeout(r, 100));
           const fg = enumWindowsInZOrder().find((w) => w.isActive);
           if (fg && String(fg.hwnd) === targetHwnd) { foregrounded = true; break; }
+        }
+        if (!foregrounded) {
+          // Issue #202 P1-2 (Opus Round 1): auto-escalate to force=true
+          // (AttachThreadInput bypass) when the 5-retry default loop
+          // exhausts. Mirrors window.ts:162-168 / keyboard.ts:372-380 —
+          // caller expressed intent by passing windowTitle/focusFirst, so
+          // we must try the strongest path before giving up. Without this
+          // ladder terminal_send was the only tool in the family that
+          // skipped the recovery escalation.
+          restoreAndFocusWindow(win.hwnd, { force: true });
+          await new Promise<void>((r) => setTimeout(r, 100));
+          const fg = enumWindowsInZOrder().find((w) => w.isActive);
+          if (fg && String(fg.hwnd) === targetHwnd) {
+            foregrounded = true;
+            autoEscalated = true;
+          }
         }
         if (foregrounded) {
           homingNotes.push(`brought "${win.title}" to front`);
@@ -713,8 +728,9 @@ export const terminalSendHandler = async ({
             windowTitle,
             hint: force
               ? "Win11 refused AttachThreadInput escalation; subsequent keystrokes would have missed the terminal"
-              : "Win11 refused 5 SetForegroundWindow retries; subsequent keystrokes would have missed the terminal",
+              : "Win11 refused 5 SetForegroundWindow retries AND the AttachThreadInput auto-escalation; subsequent keystrokes would have missed the terminal",
             attemptedForce: force,
+            autoEscalated,
           }
         );
       }
@@ -747,7 +763,10 @@ export const terminalSendHandler = async ({
       } catch { /* best-effort */ }
     }
 
-    // Detect focus loss after sending (separate from ForegroundNotTransferred)
+    // Detect focus loss after sending (separate from the
+    // ForegroundRestricted early-return: that fires before the keystrokes
+    // are committed, this fires when focus drifts AFTER a successful send
+    // — issue #202 dropped the ForegroundNotTransferred warning shape).
     let focusLost = undefined;
     if (trackFocus && !focusRestored) {
       const fl = await detectFocusLoss({

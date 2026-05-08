@@ -876,6 +876,11 @@ export const keyboardTypeHandler = async ({
       // a silent regression — keystrokes would land on the wrong window
       // and callers had no machine-readable signal to abort.
       if (fw.forceRefused) {
+        // P2-1 (Opus PR #206 Round 1): when lensId was supplied, inject the
+        // perception envelope into the failure payload so run_macro chains
+        // can read post.perception.status the same way Step 2 guard failures
+        // do (line 894-906). Pre-fix this early-return dropped the envelope.
+        const earlyEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "keyboard:type" }) : null;
         return failWith(
           new Error("ForegroundRestricted"),
           "keyboard:type",
@@ -883,6 +888,7 @@ export const keyboardTypeHandler = async ({
             windowTitle: effectiveWindowTitle,
             hint: "Win11 refused both default SetForegroundWindow and the AttachThreadInput escalation",
             attemptedForce: force,
+            ...(earlyEnv && { _perceptionForPost: earlyEnv }),
           }
         );
       }
@@ -1262,6 +1268,10 @@ export const keyboardPressHandler = async ({
       // Issue #202: same contract as keyboard:type above — typed
       // ForegroundRestricted on dual refusal (mirror window.ts:170-185).
       if (fw.forceRefused) {
+        // P2-2 (Opus PR #206 Round 1): inject perception envelope on
+        // lensId-tagged calls so run_macro chains can branch on
+        // post.perception.status here too — mirrors keyboard:type fix above.
+        const earlyEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "keyboard:press" }) : null;
         return failWith(
           new Error("ForegroundRestricted"),
           "keyboard:press",
@@ -1269,6 +1279,7 @@ export const keyboardPressHandler = async ({
             windowTitle: effectiveWindowTitle,
             hint: "Win11 refused both default SetForegroundWindow and the AttachThreadInput escalation",
             attemptedForce: force,
+            ...(earlyEnv && { _perceptionForPost: earlyEnv }),
           }
         );
       }
