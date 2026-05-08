@@ -813,6 +813,35 @@ export const keyboardTypeHandler = async ({
             ...(bgPerception && { _perceptionForPost: bgPerception }),
           });
         } else if (effectiveMethod === "background") {
+          // Issue #195 / matrix doc §3.1 + §4.3 alignment:
+          //   - `wt_xaml_pipeline` reason → `BackgroundInputNotDelivered`
+          //     (Strict fail per matrix §4.3; the BG-path post-send
+          //     read-back at line 770-783 returns the same code for
+          //     supported channels that fail to land — so explicit BG to
+          //     a target the engine knows it cannot deliver to should
+          //     return the same code, mirroring terminal.ts:439-470).
+          //   - other reasons (`chromium` / `uwp_sandboxed` /
+          //     `class_unknown`) → `BackgroundInputUnsupported` with the
+          //     existing call-site suggest ("For Chrome/Edge: use
+          //     browser_fill instead"). Splitting by reason preserves
+          //     each reason's existing recovery hint contract (PR #174
+          //     round 2 P1-1: same code → same suggest).
+          if (check.reason === "wt_xaml_pipeline") {
+            return failWith(
+              new Error("BackgroundInputNotDelivered"),
+              "keyboard:type",
+              {
+                // suggest[] from SUGGESTS dictionary (matrix §2.3 SSOT) —
+                // keep this call site free of duplicated copy.
+                context: {
+                  hint: "target's WinUI/XAML pipeline silently swallows WM_CHAR — use method:'foreground'",
+                  reason: check.reason,
+                  ...(check.className !== undefined && { className: check.className }),
+                  ...(check.processName !== undefined && { processName: check.processName }),
+                },
+              }
+            );
+          }
           return failWith(
             new Error("BackgroundInputUnsupported"),
             "keyboard:type",

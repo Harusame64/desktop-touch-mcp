@@ -72,17 +72,16 @@ describe("keyboard({action:'type', method:'background'}) — issue #177 verifica
     }, 15_000);
     afterAll(() => { ps?.kill(); });
 
-    // Issue #195: keyboard.ts currently rejects WT explicit BG via
-    // canInjectViaPostMessage (reason: 'wt_xaml_pipeline') and returns
-    // BackgroundInputUnsupported BEFORE the BG path runs. This is asymmetric
-    // with terminal.ts which (as of this PR) has been changed to fail with
-    // BackgroundInputNotDelivered for the same target. matrix doc §3.1
-    // (line 140) prescribes BackgroundInputNotDelivered for BOTH tools.
-    // Closing the asymmetry needs a refactor of keyboard.ts to either rename
-    // the early-reject code or actually implement BG-path read-back
-    // verification. That is tracked as a separate follow-up; here the test
-    // expected value is aligned with current keyboard.ts behaviour.
-    it("returns BackgroundInputUnsupported (canInjectViaPostMessage rejects WT WM_CHAR channel)", async () => {
+    // Issue #195: matrix doc §3.1 (line 140) prescribes
+    // BackgroundInputNotDelivered for keyboard:type BG WT (same channel
+    // WM_CHAR / same silent-drop symptom as terminal:send BG WT). The
+    // production code in keyboard.ts:815-846 splits the
+    // canInjectViaPostMessage rejection by reason: `wt_xaml_pipeline` →
+    // BackgroundInputNotDelivered (matrix §4.3 SSOT), other reasons
+    // (chromium / uwp_sandboxed / class_unknown) keep the existing
+    // BackgroundInputUnsupported with their own suggest contract.
+    // terminal.ts:439-470 mirrors this split symmetrically.
+    it("returns BackgroundInputNotDelivered (matrix §4.3 wt_xaml_pipeline → Strict fail)", async () => {
       const tag = `bg-type-wt-${Date.now().toString(36)}`;
       const r = parsePayload(await keyboardTypeHandler({
         text: tag,
@@ -95,7 +94,7 @@ describe("keyboard({action:'type', method:'background'}) — issue #177 verifica
         settleMs: 0,
       }));
       expect(r.ok, JSON.stringify(r)).toBe(false);
-      expect(r.code).toBe("BackgroundInputUnsupported");
+      expect(r.code).toBe("BackgroundInputNotDelivered");
       expect(Array.isArray(r.suggest)).toBe(true);
       expect(r.suggest.some((s: string) => /foreground/i.test(s))).toBe(true);
     }, 10_000);
