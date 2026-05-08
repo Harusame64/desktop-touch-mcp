@@ -106,14 +106,52 @@ async function applyHoming(
         w.title.toLowerCase().includes(windowTitle.toLowerCase())
       );
       if (target) {
-        const rf = restoreAndFocusWindow(target.hwnd, { force: !!force });
-        if (force && rf.forceFocusOk === false) {
+        // Issue #202 P1-1 (Opus Round 1): default → 100ms wait → re-enum →
+        // not-foreground → force escalate → re-enum ladder (mirror
+        // window.ts:156-168 and keyboard.ts:367-380). Pre-fix the
+        // `force=false` branch dropped restoreAndFocusWindow and immediately
+        // continued without checking whether the focus actually transferred,
+        // so a refused default attempt let the click land on the wrong
+        // window with no signal at all. The new ladder catches both cases:
+        //   - default succeeds → foreground reached, single push to notes
+        //   - default refused → force escalate → re-enum
+        //   - both refused → push "ForceFocusRefused" → caller's early
+        //     return surfaces ForegroundRestricted ok:false
+        //
+        // Latency contract (Opus PR #206 Round 2 P3-2): single 100ms wait
+        // between default and escalate; mouse_click is one-shot (one
+        // SendInput per call) so a single retry is enough for fast
+        // race-tolerance. Compare with terminal_send which uses 5×100ms
+        // because keystrokes are streamed and a single missed retry
+        // would silently drop characters mid-string.
+        restoreAndFocusWindow(target.hwnd, { force: !!force });
+        await new Promise<void>((r) => setTimeout(r, 100));
+        let postWindows = enumWindowsInZOrder();
+        let postActive = postWindows.find((w) => w.isActive);
+        let reached = !!postActive && postActive.title.toLowerCase().includes(windowTitle.toLowerCase());
+
+        if (!reached && !force) {
+          // Auto-escalate to force=true (AttachThreadInput bypass) — caller
+          // expressed intent by passing windowTitle, so we must try the
+          // strongest path before giving up. Same escalate semantics as
+          // focus_window / keyboard.
+          restoreAndFocusWindow(target.hwnd, { force: true });
+          await new Promise<void>((r) => setTimeout(r, 100));
+          postWindows = enumWindowsInZOrder();
+          postActive = postWindows.find((w) => w.isActive);
+          reached = !!postActive && postActive.title.toLowerCase().includes(windowTitle.toLowerCase());
+        }
+
+        // Refresh cache after restore + escalation; the window may have
+        // moved / unminimized in the process even when foreground transfer
+        // ultimately failed, so the cache update is unconditional.
+        updateWindowCache(postWindows);
+
+        if (reached) {
+          notes.push(`brought "${target.title}" to front`);
+        } else {
           notes.push(`ForceFocusRefused`);
         }
-        await new Promise<void>((r) => setTimeout(r, 100));
-        // Refresh cache again after restore: window may have moved/unminimized
-        updateWindowCache(enumWindowsInZOrder());
-        notes.push(`brought "${target.title}" to front`);
       }
     }
   }
@@ -443,6 +481,54 @@ export const mouseClickHandler = async ({
       const result = await applyHoming(screenX, screenY, effectiveTitle, elementName, elementId, force);
       tx = result.x; ty = result.y;
       notes.push(...result.notes);
+
+      // Issue #202: applyHoming pushes "ForceFocusRefused" into notes ONLY
+      // after the post-wait foreground re-enumeration confirms refusal
+      // (Codex PR #206 Round 1 P1 — pre-Round-2 path used the synchronous
+      // forceFocusOk return value, which could false-positive when
+      // SetForegroundWindow completes asynchronously and the window
+      // becomes foreground during the 100ms settle). With the new ladder
+      // (applyHoming:108-148) the note appears only when both default
+      // and AttachThreadInput escalation failed.
+      //
+      // Pre-#202 path promoted that note to a warning AFTER the click had
+      // already executed — so the click landed on whichever window happened
+      // to hold focus, and the caller only saw a soft warning. Returning a
+      // typed ForegroundRestricted ok:false BEFORE the click fires gives
+      // callers the same machine-readable contract as focus_window /
+      // keyboard (mirror window.ts:170-185 / keyboard.ts:874-887).
+      // Recovery: call focus_window first (auto-escalate ladder lands on
+      // ForegroundRestricted on its own when refusal is genuine).
+      if (notes.indexOf("ForceFocusRefused") >= 0) {
+        // P2-1 (Opus PR #206 Round 1): inject perception envelope on
+        // lensId-tagged calls so run_macro chains can branch on
+        // post.perception.status the same way the Step 3 guard fail path
+        // (line 507-513) does. Pre-fix this early-return dropped the
+        // envelope, which left run_macro readers without a signal.
+        const earlyEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "mouse_click" }) : null;
+        // P2-1 (Opus PR #206 Round 2): hint文言は force=true / force=false
+        // で正確に分岐。force=true caller は applyHoming 内 default ladder
+        // を skip するため、"default + escalation 両方 refused" は誤り。
+        // terminal.ts:729-731 と同型分岐。
+        const hint = force
+          ? "Win11 refused the AttachThreadInput escalation; click suppressed to avoid landing on the wrong target"
+          : "Win11 refused both default SetForegroundWindow and the AttachThreadInput escalation; click suppressed to avoid landing on the wrong target";
+        return failWith(
+          new Error("ForegroundRestricted"),
+          "mouse_click",
+          {
+            ...(effectiveTitle && { windowTitle: effectiveTitle }),
+            hint,
+            attemptedForce: !!force,
+            // P3-1 (Opus PR #206 Round 2): autoEscalated は applyHoming が
+            // default → force escalate ladder を実行したか否か。force=false
+            // 経路では実行 (true)、force=true 経路では caller が初手 force
+            // 指定済 → ladder skip (false)。focus_window の semantic と整合。
+            autoEscalated: !force,
+            ...(earlyEnv && { _perceptionForPost: earlyEnv }),
+          }
+        );
+      }
     }
 
     // Step 3: Guard evaluation on FINAL coordinates (after conversion + homing).
@@ -512,12 +598,10 @@ export const mouseClickHandler = async ({
     let focusLost = undefined;
     const warnings: string[] = [...(resolvedWin?.warnings ?? [])];
 
-    // Promote ForceFocusRefused from homing notes to warnings
-    const idx = notes.indexOf("ForceFocusRefused");
-    if (idx >= 0) {
-      warnings.push("ForceFocusRefused");
-      notes.splice(idx, 1);
-    }
+    // Issue #202: ForceFocusRefused early-return moved up to the homing block
+    // (above) so the click never fires when foreground transfer was refused.
+    // No notes splice here anymore — applyHoming's notes pass through to the
+    // homing-notes field for diagnostic narration.
     const filteredNotes = notes;
 
     if (trackFocus) {

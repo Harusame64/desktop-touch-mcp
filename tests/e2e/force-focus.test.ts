@@ -40,7 +40,12 @@ describe("forceFocus param — structural tests", () => {
     });
     const payload = JSON.parse((result.content[0] as { text: string }).text);
     expect(payload.ok).toBe(true);
-    // ForceFocusRefused should NOT appear when no homing was attempted
+    // Issue #202: ForceFocusRefused warning was retired in favour of the
+    // typed ok:false code:"ForegroundRestricted" early-return. The string
+    // should never appear in warnings under either contract — pre-fix
+    // because no homing was attempted, post-fix because the warning shape
+    // itself is dead. Pinning absence here guards against accidental
+    // re-introduction.
     const warnings: string[] = payload.hints?.warnings ?? [];
     expect(warnings).not.toContain("ForceFocusRefused");
   });
@@ -93,7 +98,9 @@ describe("forceFocus param — structural tests", () => {
     });
     const payload = JSON.parse((result.content[0] as { text: string }).text);
     expect(payload.ok).toBe(true);
-    // ForceFocusRefused should NOT appear without homing
+    // Issue #202: same invariant as line 43-45 — the legacy
+    // ForceFocusRefused warning shape is retired (typed ok:false now), so
+    // its absence is unconditional under the new contract.
     const warnings2: string[] = payload.hints?.warnings ?? [];
     expect(warnings2).not.toContain("ForceFocusRefused");
   });

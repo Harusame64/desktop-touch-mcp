@@ -118,9 +118,15 @@ describe.each(SCENARIOS)("[$label] terminal hidden-input detection (#183)", ({ h
     }));
 
     if (!armRes.ok) {
+      // Issue #202: terminal_send now returns ok:false code:"ForegroundRestricted"
+      // when Win11 refuses the foreground transfer (was: ok:true + warning).
+      // Both shapes are accepted here for the legacy migration window.
+      if (armRes.code === "ForegroundRestricted") {
+        skip(`arm step refused foreground transfer — env condition (#202 typed code)`);
+      }
       const warnings = armRes.hints?.warnings ?? [];
       if (warnings.some((w: string) => w.startsWith("ForegroundNotTransferred"))) {
-        skip(`arm step refused foreground transfer — env condition`);
+        skip(`arm step refused foreground transfer — env condition (legacy warning)`);
       }
       throw new Error(`arm Read-Host failed: ${JSON.stringify(armRes)}`);
     }

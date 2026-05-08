@@ -469,7 +469,7 @@ Windows foreground-stealing protection can prevent `SetForegroundWindow` from su
 }
 ```
 
-If the force attempt is refused despite `AttachThreadInput`, the response includes `hints.warnings: ["ForceFocusRefused"]`.
+If the force attempt is refused despite `AttachThreadInput`, the response is `ok:false` with `code: "ForegroundRestricted"` (issue #202 unification — same shape as `focus_window`, `keyboard`, `terminal_send`, `mouse_click`). The action itself is **suppressed** so the keystrokes / click never land on the wrong window. Recover via `focus_window`'s auto-escalate ladder before retrying. The legacy `hints.warnings: ["ForceFocusRefused"]` shape is no longer emitted.
 
 **Global default via environment variable:**
 
