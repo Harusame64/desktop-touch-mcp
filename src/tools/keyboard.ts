@@ -870,6 +870,22 @@ export const keyboardTypeHandler = async ({
       warnings.push(...fw.warnings);
       homingNotes.push(...fw.homingNotes);
       foregroundVerified = fw.foregroundVerified;
+      // Issue #202: when both default and force escalation refused, surface
+      // ForegroundRestricted typed code + ok:false (mirror window.ts:170-185
+      // contract from PR #201). Returning ok:true with just a warning was
+      // a silent regression — keystrokes would land on the wrong window
+      // and callers had no machine-readable signal to abort.
+      if (fw.forceRefused) {
+        return failWith(
+          new Error("ForegroundRestricted"),
+          "keyboard:type",
+          {
+            windowTitle: effectiveWindowTitle,
+            hint: "Win11 refused both default SetForegroundWindow and the AttachThreadInput escalation",
+            attemptedForce: force,
+          }
+        );
+      }
     }
 
     // Step 2: Guard evaluation (on already-focused window).
@@ -1243,6 +1259,19 @@ export const keyboardPressHandler = async ({
       warnings.push(...fw.warnings);
       homingNotes.push(...fw.homingNotes);
       foregroundVerified = fw.foregroundVerified;
+      // Issue #202: same contract as keyboard:type above — typed
+      // ForegroundRestricted on dual refusal (mirror window.ts:170-185).
+      if (fw.forceRefused) {
+        return failWith(
+          new Error("ForegroundRestricted"),
+          "keyboard:press",
+          {
+            windowTitle: effectiveWindowTitle,
+            hint: "Win11 refused both default SetForegroundWindow and the AttachThreadInput escalation",
+            attemptedForce: force,
+          }
+        );
+      }
     }
 
     // Step 2: Guard evaluation (on already-focused window).

@@ -677,15 +677,14 @@ export const terminalSendHandler = async ({
       const targetHwnd = String(win.hwnd);
       if (force) {
         // AttachThreadInput path: single attempt is usually sufficient.
-        // `foregrounded` is not read on this branch — the warning/homing note
-        // below is the only observable effect.
+        // `foregrounded` is not read on this branch — the typed code below
+        // is the observable effect when refusal happens.
         restoreAndFocusWindow(win.hwnd, { force: true });
         await new Promise<void>((r) => setTimeout(r, 100));
         const fg = enumWindowsInZOrder().find((w) => w.isActive);
         if (fg && String(fg.hwnd) === targetHwnd) {
           homingNotes.push(`brought "${win.title}" to front`);
-        } else {
-          warnings.push("ForceFocusRefused");
+          foregrounded = true;
         }
       } else {
         for (let attempt = 0; attempt < 5; attempt++) {
@@ -694,14 +693,30 @@ export const terminalSendHandler = async ({
           const fg = enumWindowsInZOrder().find((w) => w.isActive);
           if (fg && String(fg.hwnd) === targetHwnd) { foregrounded = true; break; }
         }
-        if (!foregrounded) {
-          // Windows foreground-stealing protection refused the focus shift.
-          // Surface this as a warning so callers (LLM / tests) can detect that
-          // subsequent keystrokes may have landed on the wrong window.
-          warnings.push("ForegroundNotTransferred: Windows refused SetForegroundWindow; keystrokes may have missed the target. Retry after focus_window or click on the terminal.");
-        } else {
+        if (foregrounded) {
           homingNotes.push(`brought "${win.title}" to front`);
         }
+      }
+      // Issue #202: pre-fix paths emitted `warnings:["ForceFocusRefused"]` /
+      // `warnings:["ForegroundNotTransferred: ..."]` and continued with
+      // `ok:true`, which let `terminal_send` write keystrokes to whichever
+      // window happened to be foreground at the time. Returning a typed
+      // ForegroundRestricted ok:false aligns with focus_window / keyboard
+      // (mirror window.ts:170-185 / keyboard.ts:874-887). Callers can
+      // branch mechanically on `code === "ForegroundRestricted"` and
+      // recover via focus_window's auto-escalate ladder before retrying.
+      if (!foregrounded) {
+        return failWith(
+          new Error("ForegroundRestricted"),
+          "terminal:send",
+          {
+            windowTitle,
+            hint: force
+              ? "Win11 refused AttachThreadInput escalation; subsequent keystrokes would have missed the terminal"
+              : "Win11 refused 5 SetForegroundWindow retries; subsequent keystrokes would have missed the terminal",
+            attemptedForce: force,
+          }
+        );
       }
     }
 

@@ -443,6 +443,29 @@ export const mouseClickHandler = async ({
       const result = await applyHoming(screenX, screenY, effectiveTitle, elementName, elementId, force);
       tx = result.x; ty = result.y;
       notes.push(...result.notes);
+
+      // Issue #202: applyHoming pushes "ForceFocusRefused" into notes when
+      // the foreground transfer was refused by Win11 even with force=true.
+      // Pre-fix path promoted that note to a warning AFTER the click had
+      // already executed (see git blame on the pre-fix block) — so the
+      // click landed on whichever window happened to hold focus, and the
+      // caller only saw a soft warning. Returning a typed
+      // ForegroundRestricted ok:false BEFORE the click fires gives callers
+      // the same machine-readable contract as focus_window / keyboard
+      // (mirror window.ts:170-185 / keyboard.ts:874-887). Recovery: call
+      // focus_window first (auto-escalate ladder lands on
+      // ForegroundRestricted on its own when refusal is genuine).
+      if (notes.indexOf("ForceFocusRefused") >= 0) {
+        return failWith(
+          new Error("ForegroundRestricted"),
+          "mouse_click",
+          {
+            ...(effectiveTitle && { windowTitle: effectiveTitle }),
+            hint: "Win11 refused both default SetForegroundWindow and the AttachThreadInput escalation; click suppressed to avoid landing on the wrong target",
+            attemptedForce: !!force,
+          }
+        );
+      }
     }
 
     // Step 3: Guard evaluation on FINAL coordinates (after conversion + homing).
@@ -512,12 +535,10 @@ export const mouseClickHandler = async ({
     let focusLost = undefined;
     const warnings: string[] = [...(resolvedWin?.warnings ?? [])];
 
-    // Promote ForceFocusRefused from homing notes to warnings
-    const idx = notes.indexOf("ForceFocusRefused");
-    if (idx >= 0) {
-      warnings.push("ForceFocusRefused");
-      notes.splice(idx, 1);
-    }
+    // Issue #202: ForceFocusRefused early-return moved up to the homing block
+    // (above) so the click never fires when foreground transfer was refused.
+    // No notes splice here anymore — applyHoming's notes pass through to the
+    // homing-notes field for diagnostic narration.
     const filteredNotes = notes;
 
     if (trackFocus) {
