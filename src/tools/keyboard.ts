@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { createHash } from "node:crypto";
 import { buildDesc } from "./_types.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -15,6 +16,8 @@ import {
   isBgAutoEnabled,
   TERMINAL_WINDOW_CLASSES,
 } from "../engine/bg-input.js";
+import { getTextViaTextPattern } from "../engine/uia-bridge.js";
+import { stripAnsi } from "../engine/ansi.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
@@ -78,6 +81,135 @@ export async function typeViaClipboard(text: string, pasteCombo: "ctrl+v" | "ctr
       // Restore is best-effort — don't fail the overall operation
     }
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #177 — BG path post-send delivery verification helpers
+// ─────────────────────────────────────────────────────────────────────────────
+// Mirrors `src/tools/terminal.ts` (PR #174 v1.3.2 規範): pre-send UIA
+// TextPattern baseline → WM_CHAR / WM_KEYDOWN send → 150ms settle → post-send
+// read-back. Embedded-newline gate (conhost prompt interleaving) and
+// SHA-256 marker boundary are kept identical. The only divergence from
+// terminal.ts is keyboard.ts targets a wider class of windows (not just
+// terminals), so the verification gate adds:
+//   - TextPattern unavailability → "unverifiable" (status hint), not fail
+//   - press(non-arrow / non-enter / non-tab) → "unverifiable" by design,
+//     because semantic effects (selection change, menu open) need
+//     target-specific observation channels we can't generalise
+// See docs/operation-verification-matrix.md §3.1 (keyboard rows) and §4.
+
+/**
+ * Normalise text the same way terminal.ts marker logic does.
+ *
+ * Removed the per-line `[ \t]+$/gm` strip after Codex P1 v2: stripping
+ * trailing whitespace from every line in the read-back snapshot caused
+ * legitimate inputs that end in spaces (`"cd "`, indentation tokens) to
+ * silently lose those spaces in the diff and false-fail exact matching as
+ * BackgroundInputNotDelivered. Trailing-newline collapse and CRLF→LF
+ * normalisation are kept because the input side already strips
+ * `[\r\n]+$` and we don't want to compare a shell prompt's terminator
+ * against an input boundary.
+ */
+function normalizeForMarker(text: string): string {
+  return text
+    .replace(/\r\n/g, "\n")
+    .replace(/\n+$/, "");
+}
+
+/** SHA-256 (hex, 16 chars) of the last 256 normalised chars. */
+function makeKeyboardBaselineMarker(text: string): string {
+  const norm = normalizeForMarker(text);
+  const slice = norm.slice(-256);
+  return createHash("sha256").update(slice).digest("hex").slice(0, 16);
+}
+
+/**
+ * Slice `text` after a previously-recorded marker. Returns matched:false when
+ * the baseline boundary cannot be relocated (caller treats that as
+ * "verification undetermined", not "delivery failed").
+ */
+function applyKeyboardSinceMarker(
+  text: string,
+  marker: string,
+): { text: string; matched: boolean } {
+  const norm = normalizeForMarker(text);
+  const WINDOW = 256;
+  const tailFromNormEnd = (normEnd: number): string =>
+    norm.slice(normEnd).replace(/^\n/, "");
+
+  if (norm.length >= WINDOW) {
+    const maxScan = Math.min(norm.length, WINDOW + 32_000);
+    for (let end = norm.length; end >= norm.length - maxScan && end >= WINDOW; end--) {
+      const slice = norm.slice(end - WINDOW, end);
+      if (createHash("sha256").update(slice).digest("hex").slice(0, 16) === marker) {
+        return { text: tailFromNormEnd(end), matched: true };
+      }
+    }
+    return { text, matched: false };
+  }
+
+  for (let end = norm.length; end >= 0; end--) {
+    if (createHash("sha256").update(norm.slice(0, end)).digest("hex").slice(0, 16) === marker) {
+      return { text: tailFromNormEnd(end), matched: true };
+    }
+  }
+  return { text, matched: false };
+}
+
+/**
+ * Issue #177: shape for `hints.verifyDelivery` per matrix doc §4.2.
+ *
+ * - `delivered`: Strict / Indirect verification passed.
+ * - `unverifiable`: no observation channel available — caller should not
+ *   assume delivery from `ok:true` alone. `reason` is a typed enum from
+ *   matrix doc §4.3.
+ *
+ * `focus_only` is reserved for the FG path (mouse_click / keyboard FG) and
+ * is not used here — BG is HWND-targeted, focus is irrelevant.
+ */
+type VerifyDeliveryStatus = "delivered" | "unverifiable";
+interface VerifyDeliveryHint {
+  status: VerifyDeliveryStatus;
+  /**
+   * Typed reason from matrix doc §4.3. Intentionally typed loose (string)
+   * because the enum is documented in the matrix doc, not in code — adding
+   * new reasons is a doc-only PR (matrix §4.3 last paragraph).
+   */
+  reason?: string;
+  /** Send channel (matrix doc §4.2). */
+  channel?: "wm_char" | "wm_keydown";
+  /** Suggested next path the caller can try. */
+  fallback?: string;
+}
+
+/**
+ * Keys that produce a buffer mutation visible to UIA TextPattern read-back
+ * on terminal-class targets:
+ *   - enter / "\r": appends a new line → cursor advance + new prompt.
+ *   - tab: inserts whitespace at cursor → trailing-content diff visible
+ *     when the prompt does not consume it as completion.
+ *   - arrows: move cursor → may alter the rendered cursor row in the
+ *     TextPattern snapshot (best-effort; some hosts repaint without diff).
+ *
+ * The check is intentionally narrow — broader combos (ctrl+c interrupting a
+ * running command, ctrl+l clearing the screen) DO mutate the buffer but the
+ * *direction* of the change differs per target, so a generic "post.length >
+ * pre.length" check would false-positive on ctrl+l (clears) and false-negative
+ * on ctrl+c at a clean prompt.
+ */
+function isReadBackVerifiableCombo(keys: string): boolean {
+  const trimmed = keys.toLowerCase().trim();
+  // No modifiers (the read-back signal is only reliable for plain navigation /
+  // line-commit keys; modified combos take semantic actions we can't generalise).
+  if (trimmed.includes("+")) return false;
+  return (
+    trimmed === "enter" ||
+    trimmed === "tab" ||
+    trimmed === "left" ||
+    trimmed === "right" ||
+    trimmed === "up" ||
+    trimmed === "down"
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -518,6 +650,44 @@ export const keyboardTypeHandler = async ({
           if (use_clipboard && !forceKeystrokes) {
             bgWarnings.push("BackgroundClipboardDowngraded");
           }
+
+          // Issue #177 — post-send delivery verification (matrix doc §3.1
+          // "keyboard (action:type BG)": Strict). Mirrors terminal.ts:299-496:
+          //   Phase 1: pre-send TextPattern baseline + SHA-256 marker.
+          //   Phase 2: side-effect injection (postCharsToHwnd).
+          //   Phase 3: 150ms settle.
+          //   Phase 4: post-send TextPattern read-back, exact substring +
+          //            tail-N (>=4 non-whitespace chars) fallback.
+          //   Phase 5: judge → BackgroundInputNotDelivered (shared with
+          //            terminal — same WM_CHAR channel, same silent-drop
+          //            symptom, matrix doc §3.1 row "code shared").
+          //
+          // Verification gate (matches terminal.ts verificationNeeded scope):
+          //   - method:'background' explicit → always verify (covers WT and
+          //     other auto-rejected handles the caller forced through).
+          //   - DTM_BG_AUTO=1 + non-terminal class → verify (env override can
+          //     route input to unknown apps).
+          //   - terminal-class auto-route → skip (well-tested conhost case,
+          //     150ms read-back wouldn't catch anything).
+          const targetClass = (() => {
+            try { return getWindowClassName(target.hwnd); } catch { return ""; }
+          })();
+          const isTerminalTarget = !!targetClass && TERMINAL_WINDOW_CLASSES.has(targetClass);
+          const verificationNeeded =
+            inputMethod === "background" || (isBgAutoEnabled() && !isTerminalTarget);
+
+          // Skip the baseline read for unverifiable inputs to save the
+          // ~PowerShell-UIA round-trip cost (no TextPattern call when we
+          // already know we can't compare).
+          const checkText = effectiveText.replace(/[\r\n]+$/, "");
+          const hasEmbeddedNewline = /[\r\n]/.test(checkText);
+          const baselineRaw =
+            verificationNeeded && checkText.length > 0 && !hasEmbeddedNewline
+              ? await getTextViaTextPattern(target.title)
+              : null;
+          const baselineMarker =
+            baselineRaw !== null ? makeKeyboardBaselineMarker(stripAnsi(baselineRaw)) : null;
+
           if (replaceAll) postKeyComboToHwnd(target.hwnd, "ctrl+a");
           const result = postCharsToHwnd(target.hwnd, effectiveText);
           if (!result.full) {
@@ -535,17 +705,113 @@ export const keyboardTypeHandler = async ({
                 ...(bgPerception && { _perceptionForPost: bgPerception }),
               }
             );
-          } else {
-            return ok({
-              ok: true,
-              typed: result.sent,
-              method: "background",
-              channel: "wm_char",
-              foregroundChanged: false,
-              ...(bgWarnings.length > 0 && { hints: { warnings: bgWarnings } }),
-              ...(bgPerception && { _perceptionForPost: bgPerception }),
-            });
           }
+
+          // ── Issue #177: post-send UIA read-back delivery verification ──
+          //
+          // PostMessage(WM_CHAR) returns true when the message is queued, even
+          // if the target never consumes it. Without this check, ok:true would
+          // silently lie about delivery on Windows Terminal (XAML pipeline
+          // swallow) and other WinUI hosts. See terminal.ts:406-460 for the
+          // canonical comment thread that motivated this design.
+          //
+          // The check is gated by `verificationNeeded` above; here we
+          // additionally skip when:
+          //   - baseline could not be read (no TextPattern provider) → produce
+          //     a `verifyDelivery: unverifiable` hint instead of failing,
+          //   - input has no echo-able content (only trailing newlines), or
+          //   - input contains embedded newlines. conhost commits each line at
+          //     the CR and inserts a fresh prompt before the next line, so the
+          //     buffer interleaves prompts between input lines and a plain
+          //     substring includes() would false-fail.
+          let verifiedDelivery: boolean | "unverifiable" = "unverifiable";
+          let verifyReason: string | undefined;
+          const verifiable =
+            verificationNeeded &&
+            baselineMarker !== null &&
+            checkText.length > 0 &&
+            !hasEmbeddedNewline;
+          if (verifiable) {
+            await new Promise<void>((r) => setTimeout(r, 150));
+            const postRaw = await getTextViaTextPattern(target.title);
+            if (postRaw !== null) {
+              const postCleaned = stripAnsi(postRaw);
+              const sliced = applyKeyboardSinceMarker(postCleaned, baselineMarker!);
+              if (sliced.matched) {
+                // normalizeForMarker no longer strips trailing whitespace
+                // per line (Codex P1), so sliced.text preserves the input's
+                // trailing spaces — compare raw checkText directly.
+                const exact = sliced.text.includes(checkText);
+                const tail = checkText.replace(/\s+/g, "").slice(-8);
+                const slicedNoWs = sliced.text.replace(/\s+/g, "");
+                const tailMatch = tail.length >= 4 && slicedNoWs.includes(tail);
+                verifiedDelivery = exact || tailMatch;
+              }
+              // Marker miss (matched:false): undetermined — keep "unverifiable"
+              // and fall through to ok with verifyDelivery hint.
+              if (verifiedDelivery === "unverifiable") {
+                verifyReason = "read_back_unsupported";
+              }
+            } else {
+              verifyReason = "read_back_unsupported";
+            }
+          } else if (verificationNeeded) {
+            // verifiable=false reasons (matrix §4.3 enum): TextPattern
+            // baseline missing → read_back_unsupported; embedded newline →
+            // embedded_newline. Empty checkText falls through silently.
+            if (baselineMarker === null && checkText.length > 0) {
+              verifyReason = "read_back_unsupported";
+            } else if (hasEmbeddedNewline) {
+              verifyReason = "embedded_newline";
+            }
+          }
+
+          if (verifiedDelivery === false) {
+            // suggest[] is provided by classify() via SUGGESTS.BackgroundInputNotDelivered
+            // — keep this call site free of duplicated copy so the dictionary stays SSOT.
+            return failWith(
+              new Error("BackgroundInputNotDelivered"),
+              "keyboard:type",
+              {
+                context: {
+                  hint: "post-send UIA read-back did not contain the input substring",
+                  targetClass,
+                },
+                ...(bgPerception && { _perceptionForPost: bgPerception }),
+              }
+            );
+          }
+
+          // Build hints.verifyDelivery (matrix doc §4.2). Always include the
+          // hint when verification was attempted so callers can tell apart
+          // "delivered (passed Strict check)" from "ok:true (no observation
+          // path)" — the latter is the silent-success category we're hardening
+          // against in issue #173.
+          const verifyDelivery: VerifyDeliveryHint | null = verificationNeeded
+            ? verifiedDelivery === true
+              ? { status: "delivered", channel: "wm_char" }
+              : {
+                  status: "unverifiable",
+                  ...(verifyReason && { reason: verifyReason }),
+                  channel: "wm_char",
+                  fallback: "method:'foreground'",
+                }
+            : null;
+
+          return ok({
+            ok: true,
+            typed: result.sent,
+            method: "background",
+            channel: "wm_char",
+            foregroundChanged: false,
+            ...((bgWarnings.length > 0 || verifyDelivery) && {
+              hints: {
+                ...(bgWarnings.length > 0 && { warnings: bgWarnings }),
+                ...(verifyDelivery && { verifyDelivery }),
+              },
+            }),
+            ...(bgPerception && { _perceptionForPost: bgPerception }),
+          });
         } else if (effectiveMethod === "background") {
           return failWith(
             new Error("BackgroundInputUnsupported"),
@@ -788,37 +1054,151 @@ export const keyboardPressHandler = async ({
         if (!bgGuard.ok) return bgGuard.errorResult;
         const bgPerception = bgGuard.perceptionEnv;
 
+          // Issue #177 — post-send delivery verification (matrix doc §3.1
+          // "keyboard (action:press BG)": Indirect). Most key combos take
+          // semantic actions (selection change, menu open, app shortcut) that
+          // need target-specific observation channels, so the default outcome
+          // is `verifyDelivery: { status: "unverifiable" }` to be honest about
+          // not having checked.
+          //
+          // **Exception**: enter / tab / arrow on terminal-class targets
+          // produce a buffer mutation that UIA TextPattern read-back can
+          // detect (cursor advance, new line). See `isReadBackVerifiableCombo`
+          // for the explicit allow-list and matrix doc §3.1 row "press BG"
+          // for the rationale.
+          const targetClass = (() => {
+            try { return getWindowClassName(target.hwnd); } catch { return ""; }
+          })();
+          const isTerminalTarget = !!targetClass && TERMINAL_WINDOW_CLASSES.has(targetClass);
+          const verificationNeeded =
+            inputMethod === "background" || (isBgAutoEnabled() && !isTerminalTarget);
+          const readBackVerifiable =
+            verificationNeeded && isTerminalTarget && isReadBackVerifiableCombo(keys);
+
         const isEnter = keys.toLowerCase() === "enter";
+
+        // Pre-send baseline (only when read-back will be attempted).
+        const baselineRaw = readBackVerifiable
+          ? await getTextViaTextPattern(target.title)
+          : null;
+        const baselineMarker =
+          baselineRaw !== null ? makeKeyboardBaselineMarker(stripAnsi(baselineRaw)) : null;
+
         const ok2 = isEnter
           ? postEnterToHwnd(target.hwnd)
           : postKeyComboToHwnd(target.hwnd, keys);
-        if (ok2) {
-          return ok({
-            ok: true,
-            pressed: keys,
-            method: "background",
-            channel: "wm_char",
-            foregroundChanged: false,
-            ...(bgPerception && { _perceptionForPost: bgPerception }),
-          });
+        if (!ok2) {
+          // postKeyComboToHwnd may fail after partially sending a combo (e.g.,
+          // modifier WM_KEYDOWN succeeded but the next message failed), leaving
+          // modifier state inconsistent in the target. Falling through to the
+          // foreground path would replay the combo and double-input or leave
+          // dangling modifiers — fail regardless of method (PR #64 Codex P1).
+          return failWith(
+            new Error("BackgroundInputIncomplete"),
+            "keyboard:press",
+            {
+              suggest: [
+                "Key press failed in background mode - retry with method:'foreground'",
+                "If terminal runs elevated (admin) and caller does not, foreground delivery may be required (UIPI blocks WM_CHAR)",
+              ],
+              context: { keys },
+              ...(bgPerception && { _perceptionForPost: bgPerception }),
+            }
+          );
         }
-        // postKeyComboToHwnd may fail after partially sending a combo (e.g.,
-        // modifier WM_KEYDOWN succeeded but the next message failed), leaving
-        // modifier state inconsistent in the target. Falling through to the
-        // foreground path would replay the combo and double-input or leave
-        // dangling modifiers — fail regardless of method (PR #64 Codex P1).
-        return failWith(
-          new Error("BackgroundInputIncomplete"),
-          "keyboard:press",
-          {
-            suggest: [
-              "Key press failed in background mode - retry with method:'foreground'",
-              "If terminal runs elevated (admin) and caller does not, foreground delivery may be required (UIPI blocks WM_CHAR)",
-            ],
-            context: { keys },
-            ...(bgPerception && { _perceptionForPost: bgPerception }),
+
+        // ── Post-send read-back (terminal-class enter/tab/arrow only) ──
+        let verifiedDelivery: boolean | "unverifiable" = "unverifiable";
+        let verifyReason: string | undefined;
+        if (readBackVerifiable && baselineMarker !== null) {
+          await new Promise<void>((r) => setTimeout(r, 150));
+          const postRaw = await getTextViaTextPattern(target.title);
+          if (postRaw !== null) {
+            const postCleaned = stripAnsi(postRaw);
+            const sliced = applyKeyboardSinceMarker(postCleaned, baselineMarker);
+            // Detection rule per key:
+            //   - enter: a new line appeared in the diff (the prompt printed
+            //     after the line commit), so sliced.text contains '\n' OR
+            //     non-empty new content.
+            //   - tab: cursor moved → diff is non-empty (whitespace insertion
+            //     OR completion suggestion rendered into the buffer).
+            //   - arrows: cursor row may shift; we accept any non-whitespace
+            //     diff as evidence of repaint. False-negatives are possible
+            //     when the host repaints in place — that's why this is gated
+            //     to terminal-class targets where the prompt + cursor model
+            //     is well-defined.
+            if (sliced.matched) {
+              const trimmed = keys.toLowerCase().trim();
+              const diffNoWs = sliced.text.replace(/\s+/g, "");
+              if (trimmed === "enter") {
+                verifiedDelivery = sliced.text.includes("\n") || diffNoWs.length > 0;
+              } else if (trimmed === "tab") {
+                // Tab inserts whitespace (or completion text) at the cursor;
+                // any non-empty diff in the slice = delivered.
+                verifiedDelivery = sliced.text.length > 0;
+              } else {
+                // Arrow keys (left/right/up/down): cursor moves but UIA
+                // TextPattern frequently does NOT expose cursor-position
+                // changes in the diff slice. An empty diff is therefore
+                // undetermined, NOT a failure: report `unverifiable` so a
+                // legitimate arrow press is not classified as
+                // BackgroundKeyNotDelivered (Codex P1). Non-empty diff (e.g.
+                // a host that does repaint cursor row into the buffer) is
+                // still accepted as `delivered`.
+                verifiedDelivery = sliced.text.length > 0 ? true : "unverifiable";
+              }
+            }
+            if (verifiedDelivery === "unverifiable") {
+              verifyReason = "read_back_unsupported";
+            }
+          } else {
+            verifyReason = "read_back_unsupported";
           }
-        );
+        } else if (verificationNeeded) {
+          // Most combos: no observation channel → unverifiable by design.
+          // matrix doc §3.1 explicitly lists this as the regular outcome.
+          verifyReason = "read_back_unsupported";
+        }
+
+        if (verifiedDelivery === false) {
+          return failWith(
+            new Error("BackgroundKeyNotDelivered"),
+            "keyboard:press",
+            {
+              context: {
+                hint: "post-send UIA read-back did not observe the expected buffer mutation",
+                keys,
+                targetClass,
+              },
+              ...(bgPerception && { _perceptionForPost: bgPerception }),
+            }
+          );
+        }
+
+        // Channel for hints (matrix §4.2): enter uses postEnterToHwnd which
+        // sends WM_CHAR '\r' (terminals normalise it as a line commit), all
+        // other combos use postKeyComboToHwnd / WM_KEYDOWN+WM_KEYUP.
+        const pressChannel: "wm_char" | "wm_keydown" = isEnter ? "wm_char" : "wm_keydown";
+        const verifyDelivery: VerifyDeliveryHint | null = verificationNeeded
+          ? verifiedDelivery === true
+            ? { status: "delivered", channel: pressChannel }
+            : {
+                status: "unverifiable",
+                ...(verifyReason && { reason: verifyReason }),
+                channel: pressChannel,
+                fallback: "method:'foreground'",
+              }
+          : null;
+
+        return ok({
+          ok: true,
+          pressed: keys,
+          method: "background",
+          channel: "wm_char",
+          foregroundChanged: false,
+          ...(verifyDelivery && { hints: { verifyDelivery } }),
+          ...(bgPerception && { _perceptionForPost: bgPerception }),
+        });
       } else if (effectiveMethod === "background") {
         return failWith(
           new Error("BackgroundInputUnsupported"),
