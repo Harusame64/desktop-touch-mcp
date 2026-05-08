@@ -772,8 +772,16 @@ const RAW_SCROLL_HASH_MOVE_THRESHOLD = 5;
  * Floating-point tolerance for "scroll percent unchanged". GetScrollInfo
  * exposes integer steps but pageRatio is a derived float, so we allow a tiny
  * epsilon to avoid reading rounding noise as movement.
+ *
+ * Codex P1: 0.001 (= 0.1%) was too coarse — long scroll ranges (e.g. lists
+ * with thousands of items) take real per-step deltas of pageRatio < 0.001,
+ * so legitimately-delivered raw scrolls were being misclassified as
+ * `ScrollNotDelivered`. 1e-6 is well below FP rounding noise (typical
+ * (curr - min) / (max - min) integer-derived floats have ~7-digit
+ * precision) yet small enough to catch single-step scrolls in scroll
+ * ranges up to ~1M positions.
  */
-const SCROLL_PERCENT_EPSILON = 0.001;
+const SCROLL_PERCENT_EPSILON = 1e-6;
 
 /** Boundary tolerance for page-end detection (0% / 100%). */
 const SCROLL_PERCENT_BOUNDARY_TOL = 0.005;
