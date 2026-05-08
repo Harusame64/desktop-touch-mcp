@@ -1,7 +1,14 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { mouse, Button, Point, straightTo, DEFAULT_MOUSE_SPEED } from "../engine/nutjs.js";
-import { enumWindowsInZOrder, restoreAndFocusWindow, getWindowIdentity } from "../engine/win32.js";
+import {
+  enumWindowsInZOrder,
+  restoreAndFocusWindow,
+  getWindowIdentity,
+  readScrollInfo,
+  getForegroundHwnd,
+  getWindowRectByHwnd,
+} from "../engine/win32.js";
 import {
   updateWindowCache,
   findContainingWindow,
@@ -9,6 +16,8 @@ import {
   computeWindowDelta,
 } from "../engine/window-cache.js";
 import { getElementBounds } from "../engine/uia-bridge.js";
+import { captureWindowRawAndHash } from "../engine/layer-buffer.js";
+import { hammingDistance } from "../engine/image.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
@@ -743,6 +752,182 @@ export const mouseDragHandler = async ({
   }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// scroll(action:'raw') — wheel SendInput delivery verification
+// (issue #179, matrix doc §3.1: pre/post Win32 GetScrollInfo + page-end
+//  disambiguation; image-hash fallback when scrollbar is unavailable.)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** ms to wait after wheel SendInput for the target to render the new scroll position. */
+const SCROLL_VERIFY_SETTLE_MS = 150;
+
+/**
+ * Hamming distance threshold for "did the viewport change" via dHash.
+ * Mirrors HASH_MOVE_THRESHOLD in smart-scroll.ts (kept independent so a tweak
+ * there does not silently change raw-scroll verification semantics).
+ */
+const RAW_SCROLL_HASH_MOVE_THRESHOLD = 5;
+
+/**
+ * Floating-point tolerance for "scroll percent unchanged". GetScrollInfo
+ * exposes integer steps but pageRatio is a derived float, so we allow a tiny
+ * epsilon to avoid reading rounding noise as movement.
+ *
+ * Codex P1: 0.001 (= 0.1%) was too coarse — long scroll ranges (e.g. lists
+ * with thousands of items) take real per-step deltas of pageRatio < 0.001,
+ * so legitimately-delivered raw scrolls were being misclassified as
+ * `ScrollNotDelivered`. 1e-6 is well below FP rounding noise (typical
+ * (curr - min) / (max - min) integer-derived floats have ~7-digit
+ * precision) yet small enough to catch single-step scrolls in scroll
+ * ranges up to ~1M positions.
+ */
+const SCROLL_PERCENT_EPSILON = 1e-6;
+
+/** Boundary tolerance for page-end detection (0% / 100%). */
+const SCROLL_PERCENT_BOUNDARY_TOL = 0.005;
+
+/**
+ * @internal Exported for unit testing of the pure verification math
+ * (tests/unit/scroll-raw-verify.test.ts). Not part of the public tool surface.
+ */
+export interface ScrollSnapshot {
+  /** 0..1 from Win32 GetScrollInfo, or null when no Win32 scrollbar / unavailable. */
+  vertical: number | null;
+  horizontal: number | null;
+  /** Image hash captured for the window (fallback when both Win32 axes are null). */
+  dHash: bigint | null;
+}
+
+async function captureScrollSnapshot(
+  hwnd: bigint | null,
+  region: { x: number; y: number; width: number; height: number } | null,
+): Promise<ScrollSnapshot> {
+  if (hwnd === null) return { vertical: null, horizontal: null, dHash: null };
+  const v = readScrollInfo(hwnd, "vertical");
+  const h = readScrollInfo(hwnd, "horizontal");
+  let dHash: bigint | null = null;
+  // Only spend time on dHash when at least one Win32 axis is missing — otherwise
+  // the percent diff alone is authoritative and dHash adds only image-capture cost.
+  if ((v === null || h === null) && region !== null) {
+    try {
+      const cap = await captureWindowRawAndHash(hwnd, region);
+      dHash = cap?.dHash ?? null;
+    } catch {
+      dHash = null;
+    }
+  }
+  return {
+    vertical: v?.pageRatio ?? null,
+    horizontal: h?.pageRatio ?? null,
+    dHash,
+  };
+}
+
+/**
+ * @internal Exported for unit testing — see `evaluateScrollDelivery` below.
+ */
+export interface ScrollVerifyOutcome {
+  status: "delivered" | "unverifiable" | "not_delivered";
+  /** Observed scroll-percent delta when measurable (Win32 path). */
+  delta: { x: number | null; y: number | null } | "unverifiable";
+  /** Matrix doc §4 reason enum when status is unverifiable. */
+  reason?:
+    | "read_back_unsupported"
+    | "page_end_inferred"
+    | "scrollbar_unavailable"
+    | "no_target_window";
+  /** Axis on which silent drop / unverifiable was detected (for context). */
+  axis?: "vertical" | "horizontal";
+}
+
+/**
+ * Page-end disambiguation per matrix doc §3.1:
+ *   - pre.percent at boundary AND post.percent equal     → page-end success (no fail)
+ *   - pre.percent NOT at boundary AND post.percent equal → silent drop (ScrollNotDelivered)
+ *
+ * Returns:
+ *   - status:"delivered" — at least one axis moved, OR the requested axis was at
+ *     its directional page-end boundary (pre at 0% scrolling up, etc.)
+ *   - status:"not_delivered" — pre off-boundary AND post equal → silent drop
+ *   - status:"unverifiable" — no Win32 axis on the requested direction AND no
+ *     conclusive image-hash diff (matrix doc §3.1: page-end rule requires a
+ *     boundary signal; without it we cannot distinguish page-end from drop)
+ *
+ * @internal Exported for unit testing — see `ScrollVerifyOutcome` above.
+ */
+export function evaluateScrollDelivery(
+  pre: ScrollSnapshot,
+  post: ScrollSnapshot,
+  direction: "up" | "down" | "left" | "right",
+): ScrollVerifyOutcome {
+  const dx = pre.horizontal !== null && post.horizontal !== null
+    ? post.horizontal - pre.horizontal
+    : null;
+  const dy = pre.vertical !== null && post.vertical !== null
+    ? post.vertical - pre.vertical
+    : null;
+
+  const axisOfInterest: "vertical" | "horizontal" =
+    direction === "up" || direction === "down" ? "vertical" : "horizontal";
+  const preOnAxis = axisOfInterest === "vertical" ? pre.vertical : pre.horizontal;
+  const postOnAxis = axisOfInterest === "vertical" ? post.vertical : post.horizontal;
+  const deltaOnAxis = axisOfInterest === "vertical" ? dy : dx;
+
+  // No Win32 scrollbar on the axis of interest — fall back to image hash.
+  if (preOnAxis === null || postOnAxis === null) {
+    if (pre.dHash !== null && post.dHash !== null) {
+      const dist = hammingDistance(pre.dHash, post.dHash);
+      if (dist >= RAW_SCROLL_HASH_MOVE_THRESHOLD) {
+        return { status: "delivered", delta: { x: dx, y: dy } };
+      }
+      // Image hash unchanged — could be page-end OR silent drop. Without a
+      // boundary signal we cannot disambiguate, so degrade to unverifiable
+      // rather than risk a false positive (matrix doc §3.1 page-end rule
+      // explicitly requires pre.percent boundary detection).
+      return {
+        status: "unverifiable",
+        delta: { x: dx, y: dy },
+        reason: "page_end_inferred",
+        axis: axisOfInterest,
+      };
+    }
+    // No observation channel at all (e.g. resolved hwnd but capture failed).
+    return {
+      status: "unverifiable",
+      delta: "unverifiable",
+      reason: "scrollbar_unavailable",
+      axis: axisOfInterest,
+    };
+  }
+
+  // Win32 axis available — apply page-end disambiguation.
+  const moved = Math.abs(deltaOnAxis ?? 0) > SCROLL_PERCENT_EPSILON;
+  if (moved) {
+    return { status: "delivered", delta: { x: dx, y: dy } };
+  }
+
+  // No movement detected. Check if pre was at the boundary appropriate to the
+  // scroll direction. Scrolling up at 0% or scrolling down at 100% (etc.) is a
+  // legitimate no-op and must not surface as fail.
+  const atUpperBoundary = preOnAxis >= 1 - SCROLL_PERCENT_BOUNDARY_TOL;
+  const atLowerBoundary = preOnAxis <= SCROLL_PERCENT_BOUNDARY_TOL;
+  const atDirectionalBoundary =
+    (direction === "up" && atLowerBoundary) ||
+    (direction === "down" && atUpperBoundary) ||
+    (direction === "left" && atLowerBoundary) ||
+    (direction === "right" && atUpperBoundary);
+  if (atDirectionalBoundary) {
+    return { status: "delivered", delta: { x: dx, y: dy } };
+  }
+
+  // pre off-boundary AND post equal → silent drop confirmed.
+  return {
+    status: "not_delivered",
+    delta: { x: dx, y: dy },
+    axis: axisOfInterest,
+  };
+}
+
 export const scrollHandler = async ({
   direction, amount, x, y, speed, homing, windowTitle, hwnd,
 }: {
@@ -764,6 +949,35 @@ export const scrollHandler = async ({
     if (tx !== undefined && ty !== undefined) {
       await moveTo(tx, ty, speed);
     }
+
+    // Resolve the hwnd we will observe. Order:
+    //   1. resolveWindowTarget result (explicit hwnd / @active / dialog walk)
+    //   2. plain windowTitle → enumerate (resolveWindowTarget returns null in this case)
+    //   3. cursor location (best effort) so coord-based scroll still gets verification
+    //   4. foreground (last resort)
+    let observedHwnd: bigint | null = resolvedWin?.hwnd ?? null;
+    if (observedHwnd === null && windowTitle && windowTitle !== "@active") {
+      try {
+        const wantTitle = windowTitle.toLowerCase();
+        const win = enumWindowsInZOrder().find(
+          (w) => !w.isMinimized && w.title.toLowerCase().includes(wantTitle),
+        );
+        if (win) observedHwnd = win.hwnd;
+      } catch { /* best effort */ }
+    }
+    if (observedHwnd === null && tx !== undefined && ty !== undefined) {
+      const containing = findContainingWindow(tx, ty);
+      if (containing) observedHwnd = containing.hwnd;
+    }
+    if (observedHwnd === null) {
+      observedHwnd = getForegroundHwnd();
+    }
+    const observedRect = observedHwnd !== null ? getWindowRectByHwnd(observedHwnd) : null;
+
+    // Phase 1: pre-scroll snapshot (matrix doc §3.1 + terminal regimen §2.1 phase 1).
+    const pre = await captureScrollSnapshot(observedHwnd, observedRect);
+
+    // Phase 2: side-effect injection — the existing wheel SendInput path.
     const SCROLL_MULTIPLIER = 3;
     switch (direction) {
       case "down":  await mouse.scrollDown(amount * SCROLL_MULTIPLIER); break;
@@ -775,10 +989,75 @@ export const scrollHandler = async ({
         for (let i = 0; i < amount; i++) await mouse.scrollLeft(SCROLL_MULTIPLIER);
         break;
     }
+
+    // Phase 3: settle render.
+    await new Promise<void>((r) => setTimeout(r, SCROLL_VERIFY_SETTLE_MS));
+
+    // Phase 4: post-scroll snapshot + delivery evaluation.
+    const post = await captureScrollSnapshot(observedHwnd, observedRect);
+    const outcome: ScrollVerifyOutcome = observedHwnd === null
+      ? { status: "unverifiable", delta: "unverifiable", reason: "no_target_window" }
+      : evaluateScrollDelivery(pre, post, direction);
+
+    // hints.scrollObserved (issue #179 body shape) carries the raw delta values
+    // for caller introspection; hints.verifyDelivery (matrix doc §4 shape) carries
+    // the typed status/reason envelope. The two are kept side-by-side: scrollObserved
+    // is scroll-specific (delta on each axis), verifyDelivery is the cross-tool SSOT
+    // shape that other operation tools (#177-#181) also produce. Callers reading
+    // either key see consistent answers; integration tests pin both.
+    const scrollObserved = outcome.delta === "unverifiable"
+      ? { delta: "unverifiable" as const }
+      : {
+          delta: {
+            x: outcome.delta.x !== null ? outcome.delta.x : null,
+            y: outcome.delta.y !== null ? outcome.delta.y : null,
+          },
+        };
+
+    if (outcome.status === "not_delivered") {
+      // Silent drop: pre off-boundary, post unchanged. ScrollNotDelivered with
+      // suggestions sourced from the SSOT _errors.ts dictionary.
+      return failWith(
+        new Error("ScrollNotDelivered"),
+        "scroll",
+        {
+          context: {
+            hint: "post-state observation found no scroll movement on the requested axis (pre was off-boundary)",
+            axis: outcome.axis,
+            preVerticalPercent: pre.vertical,
+            preHorizontalPercent: pre.horizontal,
+            postVerticalPercent: post.vertical,
+            postHorizontalPercent: post.horizontal,
+            direction,
+          },
+        },
+      );
+    }
+
+    const verifyDelivery = outcome.status === "delivered"
+      ? {
+          status: "delivered" as const,
+          channel: "wheel_send_input" as const,
+        }
+      : {
+          status: "unverifiable" as const,
+          channel: "wheel_send_input" as const,
+          reason: outcome.reason ?? "read_back_unsupported",
+          ...(outcome.axis ? { axis: outcome.axis } : {}),
+        };
+
+    const hints: Record<string, unknown> = {
+      scrollObserved,
+      verifyDelivery,
+    };
+    if (scrollWarnings.length > 0) hints.warnings = scrollWarnings;
+
     return ok({
-      ok: true, scrolled: direction, steps: amount,
+      ok: true,
+      scrolled: direction,
+      steps: amount,
       ...(notes.length && { homing: notes.join(", ") }),
-      ...(scrollWarnings.length > 0 && { hints: { warnings: scrollWarnings } }),
+      hints,
     });
   } catch (err) {
     return failWith(err, "scroll");
