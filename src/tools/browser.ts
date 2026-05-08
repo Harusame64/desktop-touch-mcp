@@ -396,6 +396,178 @@ async function ensureBrowserFocused(port: number): Promise<void> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Issue #181 — CDP delivery verification helpers
+// matrix doc §3.1 規範観測経路: MutationObserver via Runtime.evaluate, 500ms timeout.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Probe shape emitted by `installClickProbeExpr` and read by `readClickProbeExpr`. */
+type ClickProbeReading = {
+  // ok=false means we could not install / read the probe (frame mismatch, page navigated mid-probe, etc.)
+  ok: boolean;
+  reason?: string;
+  // signals captured between install and read
+  mutationCount?: number;
+  urlChanged?: boolean;
+  activeElementChanged?: boolean;
+  // diagnostic context
+  selectorFound?: boolean;
+  inIframe?: boolean;
+  beforeUrl?: string;
+  afterUrl?: string;
+};
+
+/**
+ * Install a MutationObserver on document.body + capture URL / activeElement
+ * baseline. Stored on `window.__dtmClickProbe` so the post-click read can
+ * pick up the result without re-installing. Idempotent within a single tab
+ * — re-installing replaces the previous probe.
+ *
+ * matrix doc §3.1 規範: subtree:true, childList:true, attributes:true.
+ * `characterData:true` is intentionally omitted — it produces high-noise
+ * matches on text-content tickers (clocks, live regions) that fire
+ * independently of the click and would mask silent-fail.
+ */
+function buildInstallClickProbeExpr(selector: string): string {
+  return `
+(function() {
+  try {
+    var sel = ${JSON.stringify(selector)};
+    var el = document.querySelector(sel);
+    var inIframe = false;
+    if (!el) {
+      // Selector might resolve inside an iframe — best-effort probe so we can
+      // surface the frame mismatch as 'unverifiable' rather than asserting
+      // delivered=false on a click we can't observe.
+      try {
+        var frames = document.querySelectorAll('iframe');
+        for (var i = 0; i < frames.length; i++) {
+          var f = frames[i];
+          try {
+            if (f.contentDocument && f.contentDocument.querySelector(sel)) {
+              inIframe = true;
+              break;
+            }
+          } catch (_e) { /* cross-origin — same-origin policy blocks read */ }
+        }
+      } catch (_e) { /* ignore */ }
+    }
+    // Reset any prior probe before creating a new one.
+    if (window.__dtmClickProbe && window.__dtmClickProbe.observer) {
+      try { window.__dtmClickProbe.observer.disconnect(); } catch (_e) { /* ignore */ }
+    }
+    var probe = {
+      mutationCount: 0,
+      beforeUrl: location.href,
+      beforeActive: document.activeElement,
+      selectorFound: !!el,
+      inIframe: inIframe,
+      observer: null
+    };
+    var obs = new MutationObserver(function(records) {
+      // Aggregate count is sufficient — we only need to know "did anything happen".
+      probe.mutationCount += records.length;
+    });
+    obs.observe(document.body, { subtree: true, childList: true, attributes: true });
+    probe.observer = obs;
+    window.__dtmClickProbe = probe;
+    return { ok: true, selectorFound: !!el, inIframe: inIframe };
+  } catch (e) {
+    return { ok: false, reason: 'install_failed: ' + (e && e.message ? e.message : String(e)) };
+  }
+})()`;
+}
+
+/**
+ * Read out the probe state, disconnect the observer, and clear the slot.
+ * After this call the page state is back to baseline (no observer leak).
+ */
+function buildReadClickProbeExpr(): string {
+  return `
+(function() {
+  try {
+    var probe = window.__dtmClickProbe;
+    if (!probe) return { ok: false, reason: 'probe_missing' };
+    try { if (probe.observer) probe.observer.disconnect(); } catch (_e) { /* ignore */ }
+    var afterUrl = location.href;
+    var afterActive = document.activeElement;
+    var result = {
+      ok: true,
+      mutationCount: probe.mutationCount,
+      urlChanged: probe.beforeUrl !== afterUrl,
+      activeElementChanged: probe.beforeActive !== afterActive,
+      selectorFound: probe.selectorFound,
+      inIframe: !!probe.inIframe,
+      beforeUrl: probe.beforeUrl,
+      afterUrl: afterUrl
+    };
+    delete window.__dtmClickProbe;
+    return result;
+  } catch (e) {
+    return { ok: false, reason: 'read_failed: ' + (e && e.message ? e.message : String(e)) };
+  }
+})()`;
+}
+
+/**
+ * Pre-click: install the MutationObserver probe. Best-effort — if install
+ * fails (e.g. page just navigated, CDP detached), we return false and skip
+ * the verification step rather than masking the click attempt with a
+ * verification error.
+ */
+async function installClickProbe(
+  selector: string,
+  tabId: string | null,
+  port: number,
+): Promise<{ installed: boolean; selectorFound?: boolean; inIframe?: boolean; reason?: string }> {
+  try {
+    const r = (await evaluateInTab(buildInstallClickProbeExpr(selector), tabId, port)) as
+      | { ok: true; selectorFound: boolean; inIframe: boolean }
+      | { ok: false; reason: string };
+    if (!r.ok) return { installed: false, reason: r.reason };
+    return { installed: true, selectorFound: r.selectorFound, inIframe: r.inIframe };
+  } catch (e) {
+    return { installed: false, reason: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * Post-click: read out the MutationObserver probe and disconnect. Returns
+ * `null` when the probe is unreadable (page navigated, frame swap, etc.),
+ * which the caller should treat as `unverifiable`.
+ */
+async function readClickProbe(
+  tabId: string | null,
+  port: number,
+): Promise<ClickProbeReading | null> {
+  try {
+    const r = (await evaluateInTab(buildReadClickProbeExpr(), tabId, port)) as ClickProbeReading;
+    return r;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Issue #181 hint shape (matrix doc §4.2):
+ *   hints.verifyDelivery = {
+ *     status: "delivered" | "unverifiable",
+ *     reason?: string,           // §4.3 enum
+ *     channel: "cdp",
+ *     observedSignals?: { mutationCount, urlChanged, activeElementChanged }
+ *   }
+ */
+type VerifyDeliveryHint = {
+  status: "delivered" | "unverifiable";
+  channel: "cdp";
+  reason?: string;
+  observedSignals?: {
+    mutationCount: number;
+    urlChanged: boolean;
+    activeElementChanged: boolean;
+  };
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Handlers
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -434,6 +606,12 @@ export const browserFillInputHandler = async ({
     //   focus → select all → use native prototype setter (bypasses React's proxy) +
     //   dispatch InputEvent so React fiber intercepts the synthetic event.
     // This is more reliable than execCommand('insertText') which is deprecated.
+    //
+    // Issue #181 / matrix doc §3.1: we now read back the *full* element.value
+    // after dispatch (not a truncated slice) so the caller side can perform
+    // exact equality. The previous 100-char truncation was a token-saving
+    // measure — we keep a truncated `actual` in the response for display, but
+    // the verification verdict uses the full string.
     const fillExpr = `
 (function() {
   const el = document.querySelector(${JSON.stringify(selector)});
@@ -458,16 +636,94 @@ export const browserFillInputHandler = async ({
   // Dispatch native InputEvent — React 16+ intercepts 'input' for onChange
   el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: ${JSON.stringify(value)} }));
   el.dispatchEvent(new Event('change', { bubbles: true }));
-  const actual = el.value !== undefined ? el.value : el.textContent;
-  return { ok: true, actual: (actual || '').slice(0, 100) };
+  // Read back AFTER the synthetic events fire so React/Vue controlled inputs
+  // get a chance to write the (possibly transformed) value back into the DOM
+  // node. Comparing this against the requested value is the post-fill
+  // verification (matrix doc §3.1 browser_fill).
+  const fullActual = el.value !== undefined ? el.value : (el.textContent || '');
+  return {
+    ok: true,
+    actual: (fullActual || '').slice(0, 100),
+    fullActualLen: fullActual.length,
+    fullMatches: fullActual === ${JSON.stringify(value)}
+  };
 })()`;
-    const fillResult = await evaluateInTab(fillExpr, tabId ?? null, port) as { ok: boolean; error?: string; actual?: string };
+    const fillResult = await evaluateInTab(fillExpr, tabId ?? null, port) as
+      { ok: boolean; error?: string; actual?: string; fullActualLen?: number; fullMatches?: boolean };
     if (!fillResult.ok) {
       return failWith(fillResult.error ?? "browser_fill: fill failed", "browser_fill");
     }
 
+    // ── Issue #181: post-fill element.value verification (matrix doc §3.1) ──
+    // fullMatches=false means the DOM did not retain the value we sent.
+    // matrix doc §5.2 flags React controlled inputs as a known false-positive
+    // source: the value was *delivered*, but the framework's onChange handler
+    // rewrote it (numbers-only filter, max-length, format mask). We surface
+    // this as a typed failure (BrowserFillNotDelivered) with a sub-reason on
+    // the hint so the caller can disambiguate without resorting to retry.
+    if (fillResult.fullMatches === false) {
+      const requestedLen = value.length;
+      const actualLen = fillResult.fullActualLen ?? 0;
+      // Heuristic: if the actual length is *non-zero and shorter than
+      // requested*, the framework most likely transformed the value
+      // (truncation, character-class filter, format mask). Length ≥ requested
+      // suggests the framework rejected the value entirely (e.g. type=email
+      // with sanitization that prepends a default). Either way the value did
+      // not land cleanly.
+      const subReason =
+        actualLen > 0 && actualLen <= requestedLen
+          ? "controlled_input_transform"
+          : "value_not_retained";
+      // failWith treats every key in the third arg as a context entry except
+      // those listed in ROOT_HOISTED_KEYS (`hints`, etc.). The diagnostic
+      // fields below land under failure.context.* and `hints` lands at the
+      // failure root — matching the success-path envelope shape (matrix doc
+      // §4.2) so callers can read failure.hints.verifyDelivery and
+      // success.hints.verifyDelivery from the same path.
+      return failWith(
+        new Error("BrowserFillNotDelivered"),
+        "browser_fill",
+        {
+          selector,
+          requested: value.slice(0, 100),
+          requestedLen,
+          actual: fillResult.actual,
+          actualLen,
+          subReason,
+          note:
+            subReason === "controlled_input_transform"
+              ? "False-positive watch: React/Vue controlled inputs may rewrite the value in onChange (numbers-only filter, max-length, format mask). The bytes reached the page but the framework chose not to keep them. Treat actual as authoritative."
+              : "The DOM did not retain the requested value after fill — input may be readOnly, disabled, or guarded by a synthetic-event proxy that rejects programmatic writes.",
+          hints: {
+            verifyDelivery: {
+              status: "unverifiable",
+              channel: "cdp",
+              reason: "value_mismatch",
+              subReason,
+              actualLen,
+              requestedLen,
+            },
+          },
+        }
+      );
+    }
+
     const lines = [
-      JSON.stringify({ ok: true, selector, value, actual: fillResult.actual }),
+      JSON.stringify({
+        ok: true,
+        selector,
+        value,
+        actual: fillResult.actual,
+        // matrix doc §4.2 規範 hint shape — always emit `delivered` on success
+        // path so callers can pin verification end-to-end without conditionally
+        // checking `hints` presence.
+        hints: {
+          verifyDelivery: {
+            status: "delivered",
+            channel: "cdp",
+          },
+        },
+      }),
     ];
     if (includeContext) {
       const tabCtx = await getCachedTabContext(tabId ?? null, port);
@@ -799,6 +1055,13 @@ export const browserClickElementHandler = async ({
     }
     // Ensure browser window is focused so click events reach the page
     await ensureBrowserFocused(port);
+
+    // ── Issue #181: pre-click MutationObserver probe (matrix doc §3.1) ──
+    // Best-effort install. If install fails (page navigated mid-call, CDP
+    // detached, etc.) we still attempt the click and emit an `unverifiable`
+    // hint downstream — never fail the click on a verification setup error.
+    const probe = await installClickProbe(effectiveSelector, effectiveTabId ?? null, port);
+
     // Perform the actual mouse click using nut-js
     const speed = DEFAULT_MOUSE_SPEED;
     if (speed === 0) {
@@ -813,15 +1076,79 @@ export const browserClickElementHandler = async ({
       }
     }
     await mouse.click(Button.LEFT);
+
+    // ── Issue #181: settle window then read the probe ──
+    // matrix doc §3.1 規範: 500ms timeout. We use a flat sleep rather than a
+    // poll loop because most legitimate DOM mutations land within the first
+    // microtask after click; the 500ms is the *upper bound* for SPA effects
+    // (re-render after async state update) and we are happy to wait the
+    // full window before deciding `unverifiable`.
+    let verifyDelivery: VerifyDeliveryHint | undefined;
+    if (probe.installed) {
+      await new Promise<void>((r) => setTimeout(r, 500));
+      const reading = await readClickProbe(effectiveTabId ?? null, port);
+      if (reading && reading.ok) {
+        const mutationCount = reading.mutationCount ?? 0;
+        const urlChanged = !!reading.urlChanged;
+        const activeElementChanged = !!reading.activeElementChanged;
+        const anySignal = mutationCount > 0 || urlChanged || activeElementChanged;
+        if (reading.inIframe) {
+          // Selector resolved inside an iframe — Runtime.evaluate runs in the
+          // top frame, so our MutationObserver could not observe events
+          // dispatched on iframe-internal nodes. Surface as unverifiable
+          // rather than declaring not-delivered.
+          verifyDelivery = {
+            status: "unverifiable",
+            channel: "cdp",
+            reason: "iframe_context_mismatch",
+            observedSignals: { mutationCount, urlChanged, activeElementChanged },
+          };
+        } else if (anySignal) {
+          verifyDelivery = {
+            status: "delivered",
+            channel: "cdp",
+            observedSignals: { mutationCount, urlChanged, activeElementChanged },
+          };
+        } else {
+          // No mutation, no URL change, no activeElement change in 500ms.
+          // Most likely the SPA button has no listener attached — the click
+          // hit empty markup. Surface as `unverifiable` per matrix doc §3.1
+          // (we don't escalate to BrowserClickNotDelivered fail because the
+          // click *did* dispatch at the OS level — only the page response is
+          // missing, which is ambiguous between "no handler" and "handler
+          // ran but produced no observable side effect").
+          verifyDelivery = {
+            status: "unverifiable",
+            channel: "cdp",
+            reason: "no_dom_mutation",
+            observedSignals: { mutationCount, urlChanged, activeElementChanged },
+          };
+        }
+      } else {
+        // Probe installed but read failed — likely a navigation between
+        // install and read.
+        verifyDelivery = {
+          status: "unverifiable",
+          channel: "cdp",
+          reason: "probe_read_failed",
+        };
+      }
+    } else {
+      // Probe install itself failed.
+      verifyDelivery = {
+        status: "unverifiable",
+        channel: "cdp",
+        reason: "probe_install_failed",
+      };
+    }
+
     const tabCtx = await getTabContext(effectiveTabId ?? null, port);
 
     // Build rich block for CDP diff
     let richBlock: RichBlock | undefined;
     if (narrate === "rich" && beforeUrl !== null) {
-      await new Promise<void>((r) => setTimeout(r, 150));
       try {
-        const afterCtx = await getTabContext(effectiveTabId ?? null, port);
-        const afterUrl = afterCtx.url ?? null;
+        const afterUrl = tabCtx.url ?? null;
         richBlock = {
           appeared: [],
           disappeared: [],
@@ -842,6 +1169,7 @@ export const browserClickElementHandler = async ({
       at: { x: coords.x, y: coords.y },
       activeTab: { id: tabCtx.id, title: tabCtx.title, url: tabCtx.url },
       readyState: tabCtx.readyState,
+      ...(verifyDelivery && { hints: { verifyDelivery } }),
       ...(richBlock ? { _richForPost: richBlock } : {}),
       ...(perceptionEnvBrowser && { _perceptionForPost: perceptionEnvBrowser }),
     });
