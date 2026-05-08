@@ -16,9 +16,26 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { execSync } from "node:child_process";
 import { terminalReadHandler, terminalSendHandler } from "../../src/tools/terminal.js";
-import { launchPowerShell, isWindowsTerminalAvailable, type PsInstance, type TerminalHost } from "./helpers/powershell-launcher.js";
+import { launchPowerShell, type PsInstance, type TerminalHost } from "./helpers/powershell-launcher.js";
 import { sleep, parsePayload } from "./helpers/wait.js";
+
+// Codex P2 (#175): module-level WT availability check.
+// Vitest 4 removed fixture-style `skip()` access from plain `beforeAll`, so
+// the runtime async detection we attempted earlier failed at hook parse time.
+// Sync `where wt.exe` at module load is good enough for filtering SCENARIOS:
+// it covers both non-Windows hosts (process.platform short-circuit) and
+// Windows hosts where wt.exe is uninstalled / its execution alias is disabled.
+const WT_AVAILABLE: boolean = (() => {
+  if (process.platform !== "win32") return false;
+  try {
+    execSync("where wt.exe", { stdio: "ignore", timeout: 2000, windowsHide: true });
+    return true;
+  } catch {
+    return false;
+  }
+})();
 
 interface HostScenario {
   host: TerminalHost;
@@ -51,7 +68,7 @@ interface HostScenario {
 const SCENARIOS: HostScenario[] = [
   { host: "conhost", label: "conhost", expectedClassPattern: /^ConsoleWindowClass$/ },
   { host: "wt", label: "Windows Terminal", expectedClassPattern: /^CASCADIA_HOSTING_WINDOW_CLASS$/ },
-];
+].filter((s) => s.host !== "wt" || WT_AVAILABLE);
 
 /**
  * Returns true when the response carries a "ForegroundNotTransferred" warning,
@@ -67,15 +84,9 @@ describe.each(SCENARIOS)("[$label] terminal", ({ host, label, expectedClassPatte
   let ps: PsInstance;
   const BANNER_TAG = `pstest-${host}-${Date.now().toString(36)}`;
 
-  beforeAll(async (ctx) => {
-    // Codex P2 (#175): WT scenarios are now default-on (no DTM_E2E_WT gate),
-    // so on hosts without wt.exe (Linux CI, stripped Windows images) the
-    // launcher would time out and fail the file. Skip cleanly when the
-    // dependency is absent — this is environmental, not a product bug.
-    if (host === "wt" && !(await isWindowsTerminalAvailable())) {
-      ctx.skip();
-      return;
-    }
+  beforeAll(async () => {
+    // wt scenario is filtered out at module load when WT_AVAILABLE is false,
+    // so by the time we get here the host is launchable.
     ps = await launchPowerShell({ host, banner: `ready-${BANNER_TAG}` });
   }, 15_000);
 

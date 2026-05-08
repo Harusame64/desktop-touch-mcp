@@ -35,7 +35,21 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { keyboardTypeHandler, keyboardPressHandler } from "../../src/tools/keyboard.js";
-import { launchPowerShell, isWindowsTerminalAvailable, type PsInstance } from "./helpers/powershell-launcher.js";
+import { execSync } from "node:child_process";
+import { launchPowerShell, type PsInstance } from "./helpers/powershell-launcher.js";
+
+// Codex P2 (#175): module-level WT availability check.
+// See tests/e2e/terminal.test.ts WT_AVAILABLE for the rationale (Vitest 4
+// dropped fixture-style skip() from plain beforeAll, so we filter at load).
+const WT_AVAILABLE: boolean = (() => {
+  if (process.platform !== "win32") return false;
+  try {
+    execSync("where wt.exe", { stdio: "ignore", timeout: 2000, windowsHide: true });
+    return true;
+  } catch {
+    return false;
+  }
+})();
 import { launchNotepad, type NpInstance } from "./helpers/notepad-launcher.js";
 import { parsePayload } from "./helpers/wait.js";
 
@@ -47,14 +61,13 @@ describe("keyboard({action:'type', method:'background'}) — issue #177 verifica
   // 1. Windows Terminal — default-on (issue #175); surfaces
   //    BackgroundInputNotDelivered. Launcher isolates the spawned WT window
   //    via `-w <unique>` so cleanup cannot touch the user's WT instance.
-  describe("[Windows Terminal] type BG", () => {
+  // Codex P2 (#175): wrap the WT block with describe.skipIf so the entire
+  // suite is skipped on hosts without wt.exe (Linux CI, stripped images),
+  // avoiding the launcher timeout that the previous unconditional describe
+  // would have produced.
+  describe.skipIf(!WT_AVAILABLE)("[Windows Terminal] type BG", () => {
     let ps: PsInstance;
-    beforeAll(async (ctx) => {
-      // Codex P2 (#175): skip cleanly when wt.exe is absent (env constraint).
-      if (!(await isWindowsTerminalAvailable())) {
-        ctx.skip();
-        return;
-      }
+    beforeAll(async () => {
       ps = await launchPowerShell({ host: "wt", banner: "ready-bg-type-wt" });
     }, 15_000);
     afterAll(() => { ps?.kill(); });

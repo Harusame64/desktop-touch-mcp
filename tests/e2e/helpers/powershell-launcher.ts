@@ -116,8 +116,15 @@ export async function launchPowerShell(opts?: {
   // legacy `replace(/"/g, '\\"')` path — a Base64 alphabet has no characters
   // that need escaping in a Windows command line. -File was tried first but
   // conhost.exe -hosted powershell did not pick the script up reliably.
+  // Use [Console]::Title (.NET → SetConsoleTitleW) instead of
+  // $Host.UI.RawUI.WindowTitle. The PowerShell-host API is unreliable on
+  // Windows Terminal (sets an internal value that does not propagate to
+  // the WT window's title bar, breaking findByTag with a 10s timeout —
+  // observed during PR #192 manual verification 2026-05-08). [Console]::Title
+  // calls SetConsoleTitleW directly which both conhost and WT honour
+  // (WT picks it up via VT or the console API).
   const psScript = [
-    `$Host.UI.RawUI.WindowTitle = '${tag}'`,
+    `[Console]::Title = '${tag}'`,
     `[string]$PID | Set-Content -Path '${psafePidFile}'`,
     banner ? `Write-Host '${banner.replace(/'/g, "''")}'` : "",
   ].filter(Boolean).join("; ");
@@ -177,10 +184,15 @@ export async function launchPowerShell(opts?: {
     //     a test. The flag is a best-effort isolation hint; the real
     //     blast-radius guarantee comes from the unique -w window above.
     //
-    //   new-tab --suppressApplicationTitle
-    //     Hold our PS-set window title (`$Host.UI.RawUI.WindowTitle`)
-    //     against WT's default behaviour of letting the shell title
-    //     win. We rely on the title for findByTag.
+    //   new-tab (NO --suppressApplicationTitle)
+    //     The original PR-192 commit added `--suppressApplicationTitle` on
+    //     the assumption that it would PRESERVE our PS-set window title.
+    //     The actual WT semantics are the opposite: that flag tells WT to
+    //     IGNORE application-set titles and use the profile name. With it
+    //     enabled, `findByTag` could never see our `$Host.UI.RawUI.WindowTitle`
+    //     and timed out at 10s waiting for the tagged window. WT's default
+    //     (no flag) honours the application title, which is exactly what
+    //     findByTag needs.
     //
     // Cleanup contract (kill() below): single-PID kill of the PS child.
     // NEVER use `/T` — see kill() comment for the full rationale and
@@ -189,7 +201,7 @@ export async function launchPowerShell(opts?: {
     const wtProfile = "__dtm_e2e__";
     startCmd =
       `start "" wt.exe -w "${wtWindowName}" -p "${wtProfile}" ` +
-      `new-tab --suppressApplicationTitle -- "${exe}" ${psArgs}`;
+      `new-tab -- "${exe}" ${psArgs}`;
   } else {
     startCmd = `start "" "${exe}" ${psArgs}`;
   }
