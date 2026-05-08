@@ -98,11 +98,12 @@ export const clipboardWriteHandler = async ({
     const actualBytes = readBackB64 ? Buffer.from(readBackB64, "base64") : Buffer.alloc(0);
 
     if (!expectedBytes.equals(actualBytes)) {
-      // Truncate the actual payload echoed back to the caller to avoid
-      // leaking a large clipboard manager / DLP payload into the envelope.
-      // 64 chars is enough for diagnosis (clipboard format / language) without
-      // bloat.
-      const actualPreview = actualBytes.toString("utf16le").slice(0, 64);
+      // Do NOT echo the actual clipboard contents into the envelope: a racing
+      // app may have placed sensitive data on the clipboard (passwords from
+      // a clipboard manager, API keys from another tool) and we'd be leaking
+      // it into the failure envelope (and downstream logs / LLM context).
+      // Lengths are sufficient for diagnosis ("0 vs N" → cleared,
+      // "N vs M, M≠N" → replaced).
       return failWith(
         new Error("ClipboardWriteNotDelivered"),
         "clipboard:write",
@@ -111,7 +112,6 @@ export const clipboardWriteHandler = async ({
             hint: "post-write Get-Clipboard -Raw did not match the requested bytes (UTF-16LE)",
             expectedBytes: expectedBytes.length,
             actualBytes: actualBytes.length,
-            actualPreview,
           },
         }
       );
