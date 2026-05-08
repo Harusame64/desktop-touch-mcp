@@ -36,6 +36,13 @@ pass していたため CI で検知されなかった。
   するようになる（旧来は嘘の `ok:true` を返していた）。caller は
   `method:'foreground'` または `method:'auto'` に切り替えるか、conhost を既定
   ターミナルにすること。
+- **public schema: `terminal({action:'run'})` の `completion.reason` enum に
+  `send_failed` を追加.** alive な window で send 自体が失敗した時（典型例:
+  `method:'background'` 強制で `BackgroundInputNotDelivered` を引いた case）
+  に返る。旧コードは同状況を `window_not_found` に誤分類していた。`warnings`
+  には基底 error code が付随する (`terminal(action='send') failed: <code>`)
+  ので caller はそこで分岐できる。tool description (caveats) と
+  `stub-tool-catalog.ts` も同期。
 
 ### Tests
 

@@ -127,6 +127,11 @@ const SUGGESTS: Record<string, string[]> = {
     "Input sent partially - retry with method:'foreground' for full input",
     "Check context.sent vs context.total",
   ],
+  BackgroundInputNotDelivered: [
+    "Retry with method:'foreground' — WM_CHAR was queued by the OS but not consumed by the terminal.",
+    "Common cause: Windows Terminal (WinUI/XAML host) does not read WM_CHAR; use foreground SendInput.",
+    "Common cause: terminal runs elevated (admin) while caller does not — UIPI blocks PostMessage.",
+  ],
   SetValueAllChannelsFailed: [
     "Verify the element supports text input",
     "Try click_element + keyboard({action:'type'}) manually",
@@ -255,6 +260,9 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   if (m.includes("backgroundinputincomplete") || m.includes("background input incomplete")) {
     return { code: "BackgroundInputIncomplete", suggest: SUGGESTS.BackgroundInputIncomplete };
+  }
+  if (m.includes("backgroundinputnotdelivered") || m.includes("background input not delivered")) {
+    return { code: "BackgroundInputNotDelivered", suggest: SUGGESTS.BackgroundInputNotDelivered };
   }
   if (m.includes("setvalueallchannelsfailed") || m.includes("all channels failed")) {
     return { code: "SetValueAllChannelsFailed", suggest: SUGGESTS.SetValueAllChannelsFailed };

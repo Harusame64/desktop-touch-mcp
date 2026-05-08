@@ -442,15 +442,12 @@ export const terminalSendHandler = async ({
         }
       }
       if (verifiedDelivery === false) {
+        // suggest[] is provided by classify() via SUGGESTS.BackgroundInputNotDelivered
+        // — keep this call site free of duplicated copy so the dictionary stays SSOT.
         return failWith(
           new Error("BackgroundInputNotDelivered"),
           "terminal:send",
           {
-            suggest: [
-              "Retry with method:'foreground' — WM_CHAR was queued by the OS but not consumed by the terminal.",
-              "Common cause: Windows Terminal (WinUI/XAML host) does not read WM_CHAR; use foreground SendInput.",
-              "Common cause: terminal runs elevated (admin) while caller does not — UIPI blocks PostMessage.",
-            ],
             context: {
               hint: "post-send UIA read-back did not contain the input substring",
               targetClass,
@@ -477,9 +474,6 @@ export const terminalSendHandler = async ({
         },
         hints: {
           target: {},
-          ...(verifiedDelivery === "unverifiable" && {
-            verifyDelivery: "unverifiable",
-          }),
           ...(bgWarnings.length > 0 && { warnings: bgWarnings }),
         },
       });
@@ -808,26 +802,23 @@ export const terminalRunHandler = async ({
   })();
 
   if (sendPayload && sendPayload.ok === false) {
-    // Issue #173 P2-2: when the window is still alive but send returned a
-    // specific error code (e.g. BackgroundInputNotDelivered on Windows
-    // Terminal under method:'background'), reporting "window_not_found" is
-    // misleading — the window IS found, the SEND failed. Use a dedicated
-    // "send_failed" completion reason and surface the code in warnings so
-    // callers can branch on the underlying cause.
+    // Issue #173 P2-2: when the window is still alive but send failed, the
+    // most accurate completion reason is "send_failed" — the window IS found,
+    // the SEND was rejected. Older code split alive into "window_not_found",
+    // but `findTerminalWindow` above already early-returns "window_not_found"
+    // when the window is missing, so any send failure that reaches here on a
+    // live HWND is a send-side failure (BackgroundInputNotDelivered, focus
+    // retry exhausted, etc.). Surface the code in warnings so callers can
+    // branch on the underlying cause without parsing the message.
     const alive = isWindowStillAlive(hwnd);
     const sendCode = sendPayload.code;
-    let reason: CompletionReason;
-    if (alive && sendCode) {
-      reason = "send_failed";
-    } else if (alive) {
-      reason = "window_not_found";
-    } else {
-      reason = "window_closed";
-    }
     const res: TerminalRunResponse = {
       ok: false,
       output: "",
-      completion: { reason, elapsedMs: Date.now() - startedAt },
+      completion: {
+        reason: alive ? "send_failed" : "window_closed",
+        elapsedMs: Date.now() - startedAt,
+      },
       hwnd: String(hwnd),
       warnings: [
         sendCode
@@ -1112,7 +1103,7 @@ export function registerTerminalTools(server: McpServer): void {
         purpose: "Interact with a terminal window: read output, send input, or run+wait+read in one call.",
         details: "action='run' is the recommended high-level workflow: send command → wait until quiet/pattern/timeout → read output. Returns completion={reason, elapsedMs} first-class. action='read' reads current text via UIA TextPattern (falls back to OCR); use sinceMarker for incremental diff. action='send' sends a command with focus management.",
         prefer: "action='run' for command execution + result. Use action='read'/'send' for fine-grained control or when you need to interleave other actions.",
-        caveats: "Do not screenshot the terminal — terminal(action='read') is cheaper and structured. action='run' supports completion reasons: quiet | pattern_matched | timeout | window_closed | window_not_found. preferClipboard=true (send default) overwrites user clipboard.",
+        caveats: "Do not screenshot the terminal — terminal(action='read') is cheaper and structured. action='run' supports completion reasons: quiet | pattern_matched | timeout | window_closed | window_not_found | send_failed (send rejected on a live window — see warnings for the underlying error code). preferClipboard=true (send default) overwrites user clipboard.",
         examples: [
           "terminal({action:'run', windowTitle:'PowerShell', input:'npm test', until:{mode:'pattern', pattern:'npm test:'}}) → {output, completion:{reason:'pattern_matched'}}",
           "terminal({action:'run', windowTitle:'pwsh', input:'ls'}) → quiet 800ms wait, returns output",
