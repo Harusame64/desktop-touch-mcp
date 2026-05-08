@@ -473,6 +473,12 @@ export function withEnvelopeIncludeSchema<T extends Record<string, ZodTypeAny>>(
  * Runtime behaviour is bit-equal with `withEnvelopeIncludeSchema` per
  * variant: each `z.object` gains `include?: string[]`, the discriminator
  * is preserved, and the union still dispatches by the same field.
+ *
+ * Discriminator access: Zod v3 exposed `union.discriminator` on the public
+ * surface, but Zod v4 moved it under `_def.discriminator`. We read both so
+ * the helper survives the v3↔v4 transition (PR #153 bumped to zod 4.4.x —
+ * the v3 path returned `undefined`, breaking every variant's parse with
+ * "Invalid discriminated union option" until this fix landed).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function withEnvelopeIncludeForUnion(union: any): any {
@@ -483,8 +489,15 @@ export function withEnvelopeIncludeForUnion(union: any): any {
   const newOptions = (union.options as readonly z.ZodObject<z.ZodRawShape>[]).map(
     (opt) => opt.extend({ include: includeField }),
   );
+  const discriminator = (union._def?.discriminator ?? union.discriminator) as string | undefined;
+  if (typeof discriminator !== "string" || discriminator.length === 0) {
+    throw new Error(
+      "withEnvelopeIncludeForUnion: failed to resolve discriminator field from input union " +
+        "(checked union._def.discriminator and union.discriminator). Zod major-version drift?",
+    );
+  }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return z.discriminatedUnion(union.discriminator as string, newOptions as any);
+  return z.discriminatedUnion(discriminator, newOptions as any);
 }
 
 /** Shared description for `include` field across raw-shape and discriminatedUnion injection. */
