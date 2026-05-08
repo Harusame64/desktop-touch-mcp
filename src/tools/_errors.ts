@@ -4,7 +4,14 @@ import { fail, type ToolFailure, type ToolResult } from "./_types.js";
 // _post.ts (withPostState) can find them. `_post.ts` reads obj._perceptionForPost /
 // obj._richForPost from the root of the parsed response body; if we let failWith
 // put them under `context`, the failure path never attaches post.perception.
-const ROOT_HOISTED_KEYS = new Set<string>(["_perceptionForPost", "_richForPost"]);
+//
+// Issue #181: `hints` is also hoisted so that typed delivery codes
+// (BrowserClickNotDelivered / BrowserFillNotDelivered) can carry a
+// verifyDelivery hint at the same envelope position as the success path
+// (matrix doc §4.2 規範 shape). Without hoisting, the hint would be buried
+// under `context.hints.verifyDelivery` on failures and `hints.verifyDelivery`
+// on success — an asymmetry that would force callers to look in two places.
+const ROOT_HOISTED_KEYS = new Set<string>(["_perceptionForPost", "_richForPost", "hints"]);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Error code → suggest dictionary
@@ -179,6 +186,33 @@ const SUGGESTS: Record<string, string[]> = {
     "Common cause: terminal runs elevated (admin) while caller does not — UIPI blocks PostMessage.",
     "Verification scope: only enter / tab / arrow keys are read-back-verified on terminal-class targets. Other combos return hints.verifyDelivery:'unverifiable' rather than this error — caller should observe the semantic effect (e.g. menu open, selection change) directly.",
   ],
+  // Issue #181 / matrix doc §3.1 §5.2: post-click DOM mutation verification
+  // failed to observe ANY signal (MutationObserver event, URL change, or
+  // document.activeElement change) within the verification window. The click
+  // dispatch itself succeeded at the OS level — the page simply did not respond.
+  // Most common cause: SPA button rendered without an event listener attached
+  // (silent-fail signature isolated by issue #181).
+  BrowserClickNotDelivered: [
+    "The element rendered, but no DOM mutation, URL change, or focus change followed the click — the page may have no handler attached.",
+    "Verify the selector targets the actual interactive element (a button label / icon span often forwards clicks to a parent button)",
+    "If the page uses delayed handlers (>500ms), retry then immediately read state with browser_eval to confirm the action took effect",
+    "For canvas / WebGL apps, DOM mutations are not produced — switch to browser_eval to assert against the app's own state, or use mouse_click against the same coords",
+    "If the target is inside a cross-origin iframe, the verification scope is the top frame only — pin the iframe with a frame selector before clicking",
+  ],
+  // Issue #181 / matrix doc §3.1 §5.2: post-fill element.value read-back did
+  // not match the requested value. False-positive watch (matrix doc §5.2):
+  // React/Vue controlled inputs may transform the value in onChange (e.g.
+  // numbers-only filter strips letters, max-length truncates), in which case
+  // the value was delivered but stored as transformed. The hint surfaces a
+  // sub-reason `controlled_input_transform` so the caller can disambiguate
+  // without resorting to a generic retry.
+  BrowserFillNotDelivered: [
+    "The input rejected or transformed the value — element.value after fill did not match the requested string.",
+    "If hints.verifyDelivery.subReason is 'controlled_input_transform', the value reached the page but the framework rewrote it (e.g. numbers-only filter, max-length truncation, format mask). Treat the actual value (echoed in context) as authoritative.",
+    "If the input has a pattern / inputmode / type=number constraint, try sending an already-canonical value (digits only, lowercased, etc.)",
+    "For inputs guarded by React's synthetic-event proxy, try keyboard(action='type') against the focused element as a fallback (slower but framework-agnostic)",
+    "Verify the selector targets an <input> / <textarea> — contenteditable div uses different setters (use browser_eval instead)",
+  ],
   SetValueAllChannelsFailed: [
     "Verify the element supports text input",
     "Try click_element + keyboard({action:'type'}) manually",
@@ -325,6 +359,13 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   if (m.includes("mouseclicknotdelivered") || m.includes("mouse click not delivered")) {
     return { code: "MouseClickNotDelivered", suggest: SUGGESTS.MouseClickNotDelivered };
+  }
+  // Issue #181: typed CDP delivery codes — substring match in lowercase.
+  if (m.includes("browserclicknotdelivered") || m.includes("browser click not delivered")) {
+    return { code: "BrowserClickNotDelivered", suggest: SUGGESTS.BrowserClickNotDelivered };
+  }
+  if (m.includes("browserfillnotdelivered") || m.includes("browser fill not delivered")) {
+    return { code: "BrowserFillNotDelivered", suggest: SUGGESTS.BrowserFillNotDelivered };
   }
   if (m.includes("setvalueallchannelsfailed") || m.includes("all channels failed")) {
     return { code: "SetValueAllChannelsFailed", suggest: SUGGESTS.SetValueAllChannelsFailed };

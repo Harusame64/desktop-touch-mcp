@@ -1,5 +1,24 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **feat(browser): CDP `browser_click` / `browser_fill` に DOM 配信検証を追加 (issue #181, Phase 3).**
+  `docs/operation-verification-matrix.md` §3.1 規範実装。
+  - `browser_click`: クリック直前に `Runtime.evaluate` 経由で `MutationObserver(document.body, {subtree, childList, attributes})` を install → mouse click → 500ms 経過後に observer + URL + `document.activeElement` の差分を読み戻し。いずれかの signal が観測できれば `hints.verifyDelivery.status = "delivered"`、500ms で 0 signal なら `unverifiable` (reason: `no_dom_mutation`)。SPA ボタンに event listener が attach されていない silent-fail を catch する目的。selector が iframe 内 element だった場合は top-frame の Runtime.evaluate scope では観測不能なので `unverifiable` (reason: `iframe_context_mismatch`) を返す。
+  - `browser_fill`: fill dispatch 後に `el.value` を read-back して要求値と完全一致するか確認。不一致時は `BrowserFillNotDelivered` で fail。React/Vue controlled input が onChange で値を変換した場合（numbers-only filter / max-length / format mask 等）は false-positive 候補なので、actual length が requested length 以下なら `subReason: "controlled_input_transform"`、そうでなければ `value_not_retained` を `hints.verifyDelivery.subReason` で明示。caller は actual を authoritative として読めば retry 不要なケースを区別できる。
+
+### Added
+
+- **新 typed error code: `BrowserClickNotDelivered` / `BrowserFillNotDelivered` (`src/tools/_errors.ts` SUGGESTS + classify()).**
+  `docs/operation-verification-matrix.md` §5.2 の命名規則に従う。`BrowserClickNotDelivered` は現行実装では fail として返さず `unverifiable` hint で表現するが（OS 層では click が dispatch 済 = ack 成功なので fail に escalate しない方針）、SUGGESTS dictionary は将来の strict 化に備えて登録。`BrowserFillNotDelivered` は read-back 不一致で確実に fail を返す。
+- **`hints` を `_errors.ts:ROOT_HOISTED_KEYS` に追加.** typed delivery code でも success path と同じ位置に `hints.verifyDelivery` を配置するため。
+- **e2e: `tests/e2e/browser-cdp-verification.test.ts` 新規.**
+  - probe primitive (install + read) は headless で動く。
+  - `browser_click` 完全 path は nut-js 物理マウス必須なので `HEADED=1` gate で skip 可。
+  - `browser_fill` は CDP のみで完結するので headless でも regression guard 可能。
+
 ## [1.3.2] - 2026-05-08 — Windows Terminal silent fail in terminal/keyboard BG path
 
 v1.1.0 以降 約 11 日間 production にあった regression の修正。Windows
