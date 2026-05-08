@@ -186,9 +186,15 @@ describe("H3: mouse_click → get_context focus propagates within 300ms", () => 
       clickX = firstClickable.clickAt.x;
       clickY = firstClickable.clickAt.y;
     } else {
-      // Fallback: use Notepad window center region
-      // (If no UIA elements, we can't get coords from screenshot without OCR)
-      skip("No UIA actionable elements in Notepad — cannot derive click coords without OCR");
+      // envOnly (issue #182): a fresh Notepad with no text content has no
+      // UIA actionable elements, so screenshot(detail:'text', ocrFallback:'never')
+      // returns actionable=[]. Without OCR enabled we can't derive click
+      // coords from the screenshot. The mouse_click → desktop_state chain
+      // contract (matrix doc §3.1 mouse_click row, Indirect verification
+      // via focus / element diff) is unaffected — we just lack a click
+      // target on this fixture. envOnly because Notepad-content state is
+      // a fixture concern, not a product invariant.
+      skip("envOnly: No UIA actionable elements in fresh Notepad — cannot derive click coords without OCR");
       return;
     }
 

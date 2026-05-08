@@ -44,15 +44,27 @@ describe("G1: click_element on non-InvokePattern element → InvokePatternNotSup
       const p = parsePayload(result);
 
       if (p.ok === false && p.code === "ElementNotFound") {
+        // envOnly (issue #182): G1 needs a specific Win11 Notepad fixture
+        // (status-bar Text controls with automationId="ContentTextBlock").
+        // Older Notepad versions / non-jp locales don't expose this id.
+        // Without the fixture the InvokePatternNotSupported error path
+        // can't be reached. Matrix doc §3.1 click_element row pins the
+        // contract; this test just can't access the inputs.
         skip(
-          "ContentTextBlock not found — Notepad version or locale differs. " +
+          "envOnly: ContentTextBlock not found — Notepad version or locale differs. " +
           "This element exists in Win11 Notepad status bar."
         );
       }
 
       if (p.ok) {
-        // Unexpectedly supports InvokePattern — not a failure, skip error-path assertions.
-        skip("click_element succeeded (ContentTextBlock supports InvokePattern) — G1 error path not triggered");
+        // envOnly (issue #182): on this host, ContentTextBlock unexpectedly
+        // exposes InvokePattern (theme/locale variant — Win11 Notepad has
+        // shifted UIA exposure between feature updates). The error path
+        // we want to test isn't reachable here. NOT a product bug:
+        // InvokePatternNotSupported is one branch of click_element's error
+        // surface; if this Notepad build supports invoke on the status
+        // bar, that's a fixture mismatch, not an invariant violation.
+        skip("envOnly: click_element succeeded (ContentTextBlock supports InvokePattern on this Notepad build) — G1 error path not triggered");
       }
 
       expect(p.ok).toBe(false);

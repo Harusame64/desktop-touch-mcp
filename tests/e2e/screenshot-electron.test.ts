@@ -77,11 +77,18 @@ beforeAll(async () => {
 describe("F2: screenshot(detail:'text') on VS Code → OCR fallback for Electron", () => {
 
   it("returns OCR-sourced actionable elements (UIA Electron path)", async ({ skip }) => {
-    if (!vscTitle) { skip("VS Code not open — skipping F2"); return; }
+    // envOnly (issue #182): F2 needs VS Code open as a sparse-UIA Electron
+    // fixture. Per matrix doc §3.2, screenshot is a query-axis tool with no
+    // verification contract, so missing fixture is purely environmental.
+    if (!vscTitle) { skip("envOnly: VS Code not open — F2 sparse-UIA Electron fixture unavailable"); return; }
     if (accessibilityModeActive) {
+      // envOnly (issue #182): when accessibility mode is on, UIA exposes a
+      // rich actionable tree, breaking F2's actionable=[] premise. Real env
+      // (user setting / screen reader). The OCR fallback contract still
+      // holds — this test just can't exercise the specific branch.
       skip(
-        "VS Code accessibility mode appears to be active (UIA returned actionable elements). " +
-        "F2 tests the actionable=[] fallback path — not applicable in this configuration."
+        "envOnly: VS Code accessibility mode active (UIA returned actionable elements). " +
+        "F2 tests the actionable=[] fallback path — premise not met in this configuration."
       );
       return;
     }
@@ -143,9 +150,12 @@ describe("F2: screenshot(detail:'text') on VS Code → OCR fallback for Electron
 
 
   it("ocrFallback:'never' returns empty actionable for VS Code (LLM risk scenario)", async ({ skip }) => {
-    if (!vscTitle) { skip("VS Code not open"); return; }
+    // envOnly (issue #182): VS Code Electron fixture missing — query-axis tool, no contract violated.
+    if (!vscTitle) { skip("envOnly: VS Code not open — F2 fixture unavailable"); return; }
     if (accessibilityModeActive) {
-      skip("VS Code accessibility mode active — actionable≠[] premise not met"); return;
+      // envOnly (issue #182): accessibility-mode UIA tree breaks the
+      // actionable=[] premise (user / screen-reader setting).
+      skip("envOnly: VS Code accessibility mode active — actionable=[] premise not met"); return;
     }
 
     const result = await screenshotHandler({
@@ -170,7 +180,8 @@ describe("F2: screenshot(detail:'text') on VS Code → OCR fallback for Electron
 
 
   it("ocrFallback:'always' forces OCR even when called redundantly", async ({ skip }) => {
-    if (!vscTitle) { skip("VS Code not open"); return; }
+    // envOnly (issue #182): VS Code Electron fixture missing — query-axis tool, no contract violated.
+    if (!vscTitle) { skip("envOnly: VS Code not open — F2 fixture unavailable"); return; }
 
     const result = await screenshotHandler({
       ...BASE_ARGS,
@@ -188,9 +199,12 @@ describe("F2: screenshot(detail:'text') on VS Code → OCR fallback for Electron
 
 
   it("ocrFallback default (omitted = auto) behaves the same as auto for VS Code", async ({ skip }) => {
-    if (!vscTitle) { skip("VS Code not open"); return; }
+    // envOnly (issue #182): VS Code Electron fixture missing — query-axis tool, no contract violated.
+    if (!vscTitle) { skip("envOnly: VS Code not open — F2 fixture unavailable"); return; }
     if (accessibilityModeActive) {
-      skip("Accessibility mode active — default-auto path not testable"); return;
+      // envOnly (issue #182): accessibility-mode UIA tree breaks the
+      // default-auto path's actionable=[] premise.
+      skip("envOnly: VS Code accessibility mode active — default-auto path actionable=[] premise not met"); return;
     }
 
     // Schema default for ocrFallback is 'auto'.
@@ -210,7 +224,10 @@ describe("F2: screenshot(detail:'text') on VS Code → OCR fallback for Electron
 
 
   it("hints.target is populated (identity tracking works for Electron)", async ({ skip }) => {
-    if (!vscTitle) { skip("VS Code not open"); return; }
+    // envOnly (issue #182): VS Code Electron fixture missing — identity
+    // tracking contract is generic, only the Electron-specific case needs
+    // VS Code to be open.
+    if (!vscTitle) { skip("envOnly: VS Code not open — F2 Electron fixture unavailable"); return; }
 
     const result = await screenshotHandler({
       ...BASE_ARGS,
