@@ -71,11 +71,27 @@ const SCENARIOS: HostScenario[] = [
 ].filter((s) => s.host !== "wt" || WT_AVAILABLE);
 
 /**
- * Returns true when the response carries a "ForegroundNotTransferred" warning,
- * i.e. Windows foreground-stealing protection refused the focus shift. That is
- * the only env-dependent outcome we permit a test to skip on.
+ * Returns true when the response indicates Windows foreground-stealing
+ * protection refused the focus shift. That is the only env-dependent
+ * outcome we permit a test to skip on.
+ *
+ * Issue #202 changed the wire shape: pre-fix this was a soft warning
+ * (`hints.warnings:["ForegroundNotTransferred: ..."]` with `ok:true`),
+ * post-fix it is a typed `ok:false code:"ForegroundRestricted"` so
+ * callers can branch mechanically. The helper accepts both shapes for
+ * the duration of the migration window — once every code path has
+ * been audited the legacy warnings branch can be removed.
  */
-function hasForegroundNotTransferred(payload: { hints?: { warnings?: string[] } }): boolean {
+function hasForegroundNotTransferred(payload: {
+  ok?: boolean;
+  code?: string;
+  hints?: { warnings?: string[] };
+}): boolean {
+  // New contract (Issue #202): typed code on the ok:false envelope.
+  if (payload.ok === false && payload.code === "ForegroundRestricted") return true;
+  // Legacy warnings shape — kept for any pre-#202 emitter we haven't
+  // migrated yet. Safe to remove once a full sweep confirms nothing
+  // else still pushes this warning string.
   const warnings = payload.hints?.warnings;
   return Array.isArray(warnings) && warnings.some((w) => w.startsWith("ForegroundNotTransferred"));
 }

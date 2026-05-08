@@ -870,6 +870,39 @@ export const keyboardTypeHandler = async ({
       warnings.push(...fw.warnings);
       homingNotes.push(...fw.homingNotes);
       foregroundVerified = fw.foregroundVerified;
+      // Issue #202: when both default and force escalation refused, surface
+      // ForegroundRestricted typed code + ok:false (mirror window.ts:170-185
+      // contract from PR #201). Returning ok:true with just a warning was
+      // a silent regression — keystrokes would land on the wrong window
+      // and callers had no machine-readable signal to abort.
+      if (fw.forceRefused) {
+        // P2-1 (Opus PR #206 Round 1): when lensId was supplied, inject the
+        // perception envelope into the failure payload so run_macro chains
+        // can read post.perception.status the same way Step 2 guard failures
+        // do (line 894-906). Pre-fix this early-return dropped the envelope.
+        const earlyEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "keyboard:type" }) : null;
+        // P2-1 (Opus PR #206 Round 2): hint文言は force=true / force=false
+        // で正確に分岐。focusWindowForKeyboard は force=true caller には
+        // initial AttachThreadInput のみ試行 (default ladder skip)、
+        // force=false caller には default → escalate force ladder。
+        const hint = force
+          ? "Win11 refused the AttachThreadInput escalation"
+          : "Win11 refused both default SetForegroundWindow and the AttachThreadInput escalation";
+        return failWith(
+          new Error("ForegroundRestricted"),
+          "keyboard:type",
+          {
+            windowTitle: effectiveWindowTitle,
+            hint,
+            attemptedForce: force,
+            // P3-1 (Opus PR #206 Round 2): autoEscalated は force=false
+            // 経路で focusWindowForKeyboard が ladder を踏んだか否か。
+            // focus_window の semantic と整合。
+            autoEscalated: !force,
+            ...(earlyEnv && { _perceptionForPost: earlyEnv }),
+          }
+        );
+      }
     }
 
     // Step 2: Guard evaluation (on already-focused window).
@@ -1243,6 +1276,30 @@ export const keyboardPressHandler = async ({
       warnings.push(...fw.warnings);
       homingNotes.push(...fw.homingNotes);
       foregroundVerified = fw.foregroundVerified;
+      // Issue #202: same contract as keyboard:type above — typed
+      // ForegroundRestricted on dual refusal (mirror window.ts:170-185).
+      if (fw.forceRefused) {
+        // P2-2 (Opus PR #206 Round 1): inject perception envelope on
+        // lensId-tagged calls so run_macro chains can branch on
+        // post.perception.status here too — mirrors keyboard:type fix above.
+        const earlyEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "keyboard:press" }) : null;
+        // P2-1 (Opus PR #206 Round 2): hint / autoEscalated を force 分岐
+        // (keyboard:type と同型、focus_window と整合)。
+        const hint = force
+          ? "Win11 refused the AttachThreadInput escalation"
+          : "Win11 refused both default SetForegroundWindow and the AttachThreadInput escalation";
+        return failWith(
+          new Error("ForegroundRestricted"),
+          "keyboard:press",
+          {
+            windowTitle: effectiveWindowTitle,
+            hint,
+            attemptedForce: force,
+            autoEscalated: !force,
+            ...(earlyEnv && { _perceptionForPost: earlyEnv }),
+          }
+        );
+      }
     }
 
     // Step 2: Guard evaluation (on already-focused window).

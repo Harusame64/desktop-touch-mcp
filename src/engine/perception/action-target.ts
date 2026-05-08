@@ -154,8 +154,9 @@ function deriveGuards(actionKind: ActionKind): GuardKind[] {
       // fluent reads false even after a verified focus attempt. That made
       // safe.keyboardTarget return needs_escalation and rendered keyboard_type
       // unusable end-to-end. The server still delegates foreground best-effort
-      // to focusWindowForKeyboard (which emits ForceFocusRefused in hints.warnings),
-      // and target.identityStable keeps us from typing into the wrong process.
+      // to focusWindowForKeyboard (which now returns ok:false code:"ForegroundRestricted"
+      // when refused — issue #202 unified shape), and target.identityStable
+      // keeps us from typing into the wrong process.
       return ["target.identityStable", "modal.notBlocking" as GuardKind];
     case "mouseClick":
     case "mouseDrag":
