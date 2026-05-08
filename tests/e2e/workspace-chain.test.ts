@@ -150,11 +150,22 @@ describe("H1-chain: workspace_launch + wait_until + focus_window happy path", ()
       p.code,
       `focus_window returned WindowNotFound for "${np.tag}" right after wait_until succeeded — invariant violation per matrix §3.1`
     ).not.toBe("WindowNotFound");
-    // ok:true or ok:false for other reasons (focus-stealing blocked, e.g.
-    // ForceFocusRefused) are both acceptable — only WindowNotFound is the
-    // contract violation surfaced above. The remainder of the contract
-    // (focused title contains tag) is asserted next.
-    expect(p.ok).toBe(true);
-    expect(p.focused).toContain(np.tag);
+    // Issue #197 auto-escalate ladder: focus_window now returns either
+    //   - ok:true with the foreground transferred to the target, or
+    //   - ok:false code:"ForegroundRestricted" when Win11 refused both the
+    //     default SetForegroundWindow and the AttachThreadInput escalation
+    //     (typed code instead of the previous silent ok:true).
+    // WindowNotFound is the only outcome the surrounding test prohibits
+    // (asserted above). Both other branches are valid product behaviour:
+    // ForegroundRestricted on a Win11 host where another app holds focus
+    // is a legitimate refusal, not a silent failure.
+    const acceptable = p.ok === true || p.code === "ForegroundRestricted";
+    expect(
+      acceptable,
+      `focus_window must succeed or surface typed ForegroundRestricted (#197), got ${JSON.stringify(p)}`
+    ).toBe(true);
+    if (p.ok === true) {
+      expect(p.focused).toContain(np.tag);
+    }
   }, 10_000);
 });

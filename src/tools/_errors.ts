@@ -130,6 +130,19 @@ const SUGGESTS: Record<string, string[]> = {
     "Target app does not accept background input - use method:'foreground' or omit",
     "For Chrome/Edge: use browser_fill instead",
   ],
+  // Issue #197: focus_window auto-escalation (default SetForegroundWindow →
+  // 100ms wait → re-enum → AttachThreadInput force-focus → re-enum) failed to
+  // bring the target window to the foreground. Win11 enforces tight foreground
+  // transfer rules (UIPI cross-elevation, calling-thread-not-foreground rule,
+  // admin/non-admin asymmetry); when both the default and force paths are
+  // refused we surface this typed code so callers stop trusting a silent
+  // ok:true and choose a fallback path explicitly.
+  ForegroundRestricted: [
+    "Windows blocked SetForegroundWindow even after AttachThreadInput escalation — UIPI cross-elevation barrier or admin-only target.",
+    "Run the MCP server elevated (admin) if the target is elevated, or match elevation levels on both sides.",
+    "If the call originates from a background process or service, the OS suppresses foreground transfers — proxy the focus request via the foreground app.",
+    "Skip explicit focus_window: tools that accept windowTitle directly (keyboard / desktop_act / browser_click) handle focus internally and may succeed where focus_window cannot.",
+  ],
   BackgroundInputIncomplete: [
     "Input sent partially - retry with method:'foreground' for full input",
     "Check context.sent vs context.total",
@@ -354,6 +367,9 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   if (m.includes("backgroundinputunsupported") || m.includes("background input unsupported")) {
     return { code: "BackgroundInputUnsupported", suggest: SUGGESTS.BackgroundInputUnsupported };
+  }
+  if (m.includes("foregroundrestricted") || m.includes("foreground restricted")) {
+    return { code: "ForegroundRestricted", suggest: SUGGESTS.ForegroundRestricted ?? [] };
   }
   if (m.includes("backgroundinputincomplete") || m.includes("background input incomplete")) {
     return { code: "BackgroundInputIncomplete", suggest: SUGGESTS.BackgroundInputIncomplete };
