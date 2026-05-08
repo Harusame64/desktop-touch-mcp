@@ -47,7 +47,11 @@ async function powershellAvailable(): Promise<boolean> {
 describe("clipboard write read-back verification (#180)", () => {
   it("normal write succeeds and round-trips through Get-Clipboard -Raw", async ({ skip }) => {
     if (!(await powershellAvailable())) {
-      skip("powershell.exe unavailable on this host");
+      // envOnly (issue #182): clipboard tool wraps Set/Get-Clipboard via
+      // powershell.exe; without it on PATH (non-Windows host or stripped
+      // image) the Strict read-back contract from matrix doc §3.1 can't
+      // be exercised at all. Skipping is correct — no contract violated.
+      skip("envOnly: powershell.exe unavailable on this host");
     }
 
     const payload = `dtm-issue-180-${Date.now().toString(36)}-いろはにほへと`;
@@ -64,7 +68,14 @@ describe("clipboard write read-back verification (#180)", () => {
 
   it("returns ClipboardWriteNotDelivered when post-write bytes do not match", async ({ skip }) => {
     if (!(await powershellAvailable())) {
-      skip("powershell.exe unavailable on this host (productBugCandidate: read-back verification cannot be exercised)");
+      // envOnly (issue #182): the simulation that proves the
+      // ClipboardWriteNotDelivered branch is wired correctly is itself a
+      // PowerShell pipeline. Without powershell.exe we can't run it.
+      // (The original comment labelled this "productBugCandidate" because
+      // the underlying contract IS Strict per matrix doc §3.1, but the
+      // skip itself is purely environmental — PS missing is not a product
+      // bug, it's a host-shape constraint.)
+      skip("envOnly: powershell.exe unavailable on this host — cannot run the read-back mismatch simulation");
     }
 
     // We cannot deterministically race two clipboard:write calls inside the
@@ -126,7 +137,9 @@ describe("clipboard write read-back verification (#180)", () => {
 
   it("read-back overhead stays within budget (informational)", async ({ skip }) => {
     if (!(await powershellAvailable())) {
-      skip("powershell.exe unavailable on this host");
+      // envOnly (issue #182): perf measurement requires the same PS
+      // pipeline as the handler itself.
+      skip("envOnly: powershell.exe unavailable on this host");
     }
 
     // Warm the PowerShell startup cost before measuring.

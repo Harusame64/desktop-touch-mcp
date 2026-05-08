@@ -37,7 +37,14 @@ describe("B1: Chromium narrate:rich → chromium_sparse", () => {
     // Chrome がアクティブ foreground かつ可視 (非最小化) のときだけ run。それ以外は title 変動で
     // focus 失敗 → ok=false の flaky を生むため skip。カバレッジは Chrome アクティブ環境でのみ取得。
     if (!chromeWin || chromeWin.isMinimized || !chromeWin.isActive) {
-      skip("No active foreground Chromium window — skipping B1 (avoid flaky)");
+      // envOnly (issue #182): B1 requires Chrome (or another Chromium
+      // variant) to be the active foreground window. Without that the
+      // chromium guard doesn't engage end-to-end (post-state read-back
+      // can't fire on a minimized window). Premise unmet ⇒ skip is
+      // correct. This is NOT a verification gap: rich-narration's
+      // chromium_sparse degradation contract is unit-tested in
+      // tests/unit/* — this E2E only pins the live integration path.
+      skip("envOnly: No active foreground Chromium window — B1 chromium_sparse premise unmet");
     }
 
     const result = await richKeyboardPress({

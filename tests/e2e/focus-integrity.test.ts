@@ -96,8 +96,14 @@ describe("A1-armed: keyboard_type with windowTitle arms focusLost detection", ()
         expect(typeof p.focusLost.stolenByTitle).toBe("string");
       }
     } else {
-      // If no focusLost returned, that's acceptable in this edge case
-      skip("focusLost not triggered with mismatched windowTitle — environment-dependent");
+      // envOnly (issue #182): mismatched windowTitle is intended to provoke
+      // focusLost, but on hosts where another foreground window happens to
+      // include the fake substring, detectFocusLoss won't fire. The
+      // contract under test is the SHAPE of focusLost when it triggers,
+      // not whether it triggers — without a foreground steal we can't
+      // exercise that branch. Per matrix doc §3.1 keyboard(type FG) Indirect
+      // verification, this is a documented Indirect-limit case.
+      skip("envOnly: focusLost not triggered with mismatched windowTitle (foreground state dependent)");
     }
   });
 });
@@ -222,7 +228,14 @@ describe("A2: terminal_send(restoreFocus:true) restores caller's focus", () => {
     const { enumWindowsInZOrder } = await import("../../src/engine/win32.js");
     const active = enumWindowsInZOrder().find(w => w.isActive);
     if (!active?.title.includes(np.tag)) {
-      skip("Could not transfer focus to Notepad (foreground-stealing protection) — skipping A2");
+      // envOnly (issue #182): Windows foreground-stealing protection refused
+      // to hand focus to Notepad before the terminal_send call. The A2
+      // contract (focusRestored:true after restoreFocus:true) requires that
+      // Notepad WAS the previous foreground; without that precondition,
+      // the test premise is unmet. Not a product invariant violation —
+      // matrix doc §3.1 documents focus_window's ForceFocusRefused as
+      // expected OS-side degradation.
+      skip("envOnly: foreground-stealing protection refused focus to Notepad — A2 precondition unmet");
       return;
     }
 
@@ -253,7 +266,10 @@ describe("A2: terminal_send(restoreFocus:true) restores caller's focus", () => {
     const { enumWindowsInZOrder } = await import("../../src/engine/win32.js");
     const active = enumWindowsInZOrder().find(w => w.isActive);
     if (!active?.title.includes(np.tag)) {
-      skip("Could not transfer focus to Notepad — skipping A2 restoreFocus:false test");
+      // envOnly (issue #182): same precondition as the previous case —
+      // foreground-stealing protection blocked focus transfer to Notepad.
+      // restoreFocus:false branch can't be exercised without that setup.
+      skip("envOnly: foreground-stealing protection refused focus to Notepad — A2 restoreFocus:false precondition unmet");
       return;
     }
 

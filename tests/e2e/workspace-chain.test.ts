@@ -127,19 +127,33 @@ describe("H1-chain: workspace_launch + wait_until + focus_window happy path", ()
   }, 30_000);
 
   it("focus_window succeeds after wait_until confirms window is present", async ({ skip }) => {
-    if (!np) { skip("Notepad not launched in previous test"); return; }
+    // envOnly: the test setup (`wait_until` happy-path) failed before this
+    // case ran. We can't run the contract assertion at all without a
+    // launched Notepad, so skipping here is correct.
+    if (!np) { skip("envOnly: Notepad not launched in previous test (setup precondition unmet)"); return; }
 
     const result = await focusWindowHandler({ title: np.tag });
     const p = parsePayload(result);
 
-    // If focus-stealing is blocked by OS, focused may fail but window exists.
-    // The key assertion is that it doesn't return WindowNotFound (window IS present).
-    if (p.ok === false && p.code === "WindowNotFound") {
-      // This means the window somehow disappeared — unusual but possible on slow CI
-      skip(`focus_window returned WindowNotFound for "${np.tag}" — window may have closed`);
-      return;
-    }
-    // ok:true or ok:false for other reasons (focus-stealing blocked) are both acceptable
+    // productBugCandidate (issue #182):
+    // The previous test (`wait_until(window_appears)`) just succeeded with
+    // ok:true at line 126 against the same `np.tag`. Per
+    // docs/operation-verification-matrix.md §3.1, focus_window is "Indirect
+    // verification — post enum `isActive` 確認". Returning WindowNotFound
+    // immediately after wait_until acknowledged the window's presence
+    // contradicts that contract: either wait_until lied (silent-success in a
+    // pure-observation tool) or focus_window's enum lost the window in
+    // <5ms. Both are product invariants we want surfaced as failures —
+    // matrix doc §1.1 / issue #173 §S-1 is exactly the silent-success
+    // failure mode this PR (#182) is removing. Hard fail instead of skip.
+    expect(
+      p.code,
+      `focus_window returned WindowNotFound for "${np.tag}" right after wait_until succeeded — invariant violation per matrix §3.1`
+    ).not.toBe("WindowNotFound");
+    // ok:true or ok:false for other reasons (focus-stealing blocked, e.g.
+    // ForceFocusRefused) are both acceptable — only WindowNotFound is the
+    // contract violation surfaced above. The remainder of the contract
+    // (focused title contains tag) is asserted next.
     expect(p.ok).toBe(true);
     expect(p.focused).toContain(np.tag);
   }, 10_000);
