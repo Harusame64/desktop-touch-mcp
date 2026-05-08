@@ -248,6 +248,32 @@ describe("issue #196 symptom 1: terminal action='run' until field accepts object
       expect(r2.success).toBe(false);
     });
 
+    it("empty string until passes through to typed error (Codex P2-1)", () => {
+      // `""` does not start with `{` or `[` so the preprocess heuristic
+      // bypasses JSON.parse; the inner zod then rejects the string.
+      const result = terminalRegistrationSchema.safeParse({
+        action: "run",
+        windowTitle: "PowerShell",
+        input: "echo hi",
+        until: "",
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("array JSON value parses through and zod surfaces 'expected object, received array'", () => {
+      // Arrays satisfy `typeof === "object"` so the preprocessor returns the
+      // parsed array; the inner discriminatedUnion then rejects with a
+      // typed error that *names the array shape* — more useful than the
+      // legacy 'received string' message. (Codex P2-4 docstring follow-up.)
+      const result = terminalRegistrationSchema.safeParse({
+        action: "run",
+        windowTitle: "PowerShell",
+        input: "echo hi",
+        until: "[1,2,3]",
+      });
+      expect(result.success).toBe(false);
+    });
+
     it("default quietMs is now 1500 (issue #196 raised from 800)", () => {
       const result = terminalSchema.safeParse({
         action: "run",

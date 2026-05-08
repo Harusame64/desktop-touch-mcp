@@ -875,10 +875,17 @@ export function evaluateQuietState(input: QuietGateInput): QuietState {
  *      hwnd reuse) — those are separate failure modes with their own
  *      reporting paths and should not be conflated with marker drift.
  *
+ * Defensive defaults (Codex review on PR #203, P2 follow-up):
+ *   - `previousMatched: undefined` falls through to "ok". A future read
+ *     handler that omits the field should not silently fire baseline_lost
+ *     on the absence of evidence — only an explicit `false` triggers
+ *     suppression.
+ *   - `previousMatched: true` is also "ok" (marker located normally).
+ *
  * Test contract: callers pass payload-shaped input directly so unit
  * tests do not need to drive a real `terminal_read` to exercise the
- * 4 cases (sinceMarker undefined / hints undefined / invalidatedBy
- * present / true marker lost).
+ * 4 main cases (sinceMarker undefined / hints undefined / invalidatedBy
+ * present / true marker lost) plus the 2 defensive cases above.
  */
 export type RunOutputIntegrity = "ok" | "baseline_lost";
 export interface ReadPayloadIntegrityInput {
@@ -918,14 +925,24 @@ export function evaluateRunReadIntegrity(
 // downstream zod still surfaces a typed error rather than a coerced
 // nonsense object.
 
-/** Parse a possible JSON-encoded object string into an object. Pass through otherwise. */
+/** Parse a possible JSON-encoded object string into an object. Pass through otherwise.
+ *
+ * Heuristic: only attempt parse when the trimmed string looks like a JSON
+ * object/array (`{...}` / `[...]`). Bare strings like `"x"`, the empty
+ * string `""`, and primitive literals `"42"` / `"null"` do not start with
+ * `{` or `[`, so we leave them untouched and let the inner zod surface a
+ * typed error rather than coerce nonsense into the schema (Codex review on
+ * PR #203, P2 follow-up).
+ *
+ * Arrays parse successfully (`typeof [...] === "object"`) and are returned
+ * as-is. The inner zod for `until` / `sendOptions` / `readOptions` rejects
+ * arrays with a typed error, but bubbling up the parsed array gives the
+ * caller a more accurate "expected object, received array" message than
+ * the legacy "expected object, received string" — which had obscured the
+ * actual shape sent by the caller.
+ */
 function tryParseJsonObject(val: unknown): unknown {
   if (typeof val !== "string") return val;
-  // Heuristic: only attempt parse when the trimmed string looks like a JSON
-  // object/array. Avoids `JSON.parse` succeeding on bare strings like `"x"`
-  // (which would return the string `"x"`) — those are not objects so the
-  // post-parse `typeof === "object"` check would reject them, but skipping
-  // the parse attempt entirely is cheaper and reduces noise.
   const trimmed = val.trim();
   if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return val;
   try {
@@ -1293,12 +1310,14 @@ export const terminalRunHandler = async ({
   let output = "";
   let finalMarker: string | undefined;
   let readError: ReadFailurePayload | undefined;
-  // Issue #196 (c): default "ok" — only set to "baseline_lost" when the
-  // 3-condition gate in `evaluateRunReadIntegrity` fires. The field is
-  // emitted on every successful run so callers can rely on its presence
-  // when checking integrity, while suppressing it would conflate "ok"
-  // with "field missing because integrity check did not run".
-  let outputIntegrity: RunOutputIntegrity = "ok";
+  // Issue #196 (c): emit `outputIntegrity` ONLY when the integrity gate has
+  // actually been evaluated (i.e. final read succeeded). Read-handler
+  // failures (parsed.ok === false) and JSON-parse exceptions reach the
+  // bottom of this block with `outputIntegrity === undefined`, and the
+  // response object below omits the field in those cases — emitting
+  // `outputIntegrity:"ok"` on a failed read would be misleading because
+  // the gate never ran (Codex review on PR #203, P2 follow-up).
+  let outputIntegrity: RunOutputIntegrity | undefined;
   try {
     const block = readResult.content[0];
     if (block?.type === "text") {
@@ -1319,7 +1338,8 @@ export const terminalRunHandler = async ({
       if (parsed.ok === false) {
         // Surface read-handler failures (e.g. source:'uia' on a terminal
         // without TextPattern) instead of silently returning ok:true with
-        // empty output.
+        // empty output. `outputIntegrity` stays undefined here because the
+        // gate cannot run without a successful read payload.
         readError = {
           ...(parsed.code ? { code: parsed.code } : {}),
           ...(parsed.error ? { error: parsed.error } : {}),
@@ -1336,8 +1356,8 @@ export const terminalRunHandler = async ({
           sinceMarker,
           hints: parsed.hints,
         });
+        outputIntegrity = integrity;
         if (integrity === "baseline_lost") {
-          outputIntegrity = "baseline_lost";
           output = "";
           readError = {
             code: "BaselineMarkerLost",
@@ -1360,7 +1380,7 @@ export const terminalRunHandler = async ({
         }
       }
     }
-  } catch { /* output stays empty */ }
+  } catch { /* output stays empty; outputIntegrity stays undefined */ }
 
   const response: TerminalRunResponse = {
     ok: readError === undefined,
@@ -1373,7 +1393,7 @@ export const terminalRunHandler = async ({
       elapsedMs: Date.now() - startedAt,
       ...(matchedPattern !== undefined ? { matchedPattern } : {}),
     },
-    outputIntegrity,
+    ...(outputIntegrity !== undefined ? { outputIntegrity } : {}),
     ...(finalMarker ? { marker: finalMarker } : {}),
     ...(readError ? { readError } : {}),
     hwnd: String(hwnd),

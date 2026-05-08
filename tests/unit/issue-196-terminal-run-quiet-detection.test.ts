@@ -30,7 +30,7 @@ describe("issue #196 (a): evaluateQuietState gates quiet timer behind first chan
       now: 5_000,
       lastTextChangedAt: 0,
       firstChangeAt: null,
-      quietMs: 800,
+      quietMs: 1_500,
     });
     expect(state).toBe("still");
   });

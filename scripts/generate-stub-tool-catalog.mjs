@@ -426,6 +426,30 @@ function extractDefault(valueExpr) {
 function inferProperty(valueExpr) {
   const v = valueExpr.trim();
   if (commonParams[v]) return { ...commonParams[v] };
+  // `z.preprocess(transform, inner)` — the inner schema is what callers see
+  // in the JSON schema. The transform is server-only behaviour (e.g.
+  // defensive string→object parsing for tool-call serialisers that send
+  // nested objects as JSON-encoded strings, issue #196) and is not part of
+  // the Linux stub contract. Splice out the inner argument and recurse so
+  // nested schemas (e.g. preprocess(parser, z.discriminatedUnion(...)))
+  // appear in the catalog with their full structure.
+  if (hasTopLevelZCall(v, 'preprocess')) {
+    const m = /^z\s*\.\s*preprocess\s*\(/.exec(v);
+    if (m) {
+      const argsStart = m[0].length;
+      const argsEnd = scanBalanced(v, argsStart, '(', ')');
+      const argsBody = v.slice(argsStart, argsEnd - 1);
+      const args = splitTopLevelArgs(argsBody);
+      if (args.length >= 2) {
+        // Preserve chained modifiers after the preprocess() call (e.g.
+        // .optional() / .default(...)) by splicing them onto the inner —
+        // otherwise we lose the schema-level default `quietMs:1500` etc.
+        const tail = v.slice(argsEnd).trim();
+        const innerWithTail = tail.length > 0 ? args[1] + tail : args[1];
+        return inferProperty(innerWithTail);
+      }
+    }
+  }
   const prop = {};
   const description = extractDescribe(v);
   if (description) prop.description = description;
