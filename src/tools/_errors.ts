@@ -133,6 +133,18 @@ const SUGGESTS: Record<string, string[]> = {
     "Common cause: terminal runs elevated (admin) while caller does not — UIPI blocks PostMessage.",
     "False-positive cause: hidden-input prompts (password / sudo / ssh / Read-Host -AsSecureString) accept WM_CHAR but suppress echo, so this check cannot distinguish delivery from drop. Use method:'foreground' for credential entry.",
   ],
+  // Issue #180 (Phase 3, matrix doc §3.1 / §5.2): clipboard(action:'write') の
+  // post-write read-back verification で書込み内容と Get-Clipboard -Raw 結果が
+  // UTF-16LE byte 単位で一致しないとき返す typed code。Set-Clipboard 自体は
+  // 成功 (powershell.exe exit 0) しているのに clipboard 上の値が異なる
+  // silent-failure を catch する目的。
+  ClipboardWriteNotDelivered: [
+    "Another application replaced the clipboard contents between Set-Clipboard and the verification read — retry, ideally without a clipboard manager intercepting writes.",
+    "DLP / endpoint security may sanitize or block clipboard writes; check organisation policy or test on an unmanaged session.",
+    "RDP / Citrix / ChromeBook clipboard sharing can drop or transcode UTF-16 payloads — verify on the local console session.",
+    "Clipboard format conversion (CF_UNICODETEXT vs CF_TEXT) lost characters; try shorter ASCII text to isolate, then file an issue with the original payload's hex dump.",
+    "Treat the clipboard as un-written on this failure: do not assume a paste downstream will see the requested value.",
+  ],
   SetValueAllChannelsFailed: [
     "Verify the element supports text input",
     "Try click_element + keyboard({action:'type'}) manually",
@@ -264,6 +276,9 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   if (m.includes("backgroundinputnotdelivered") || m.includes("background input not delivered")) {
     return { code: "BackgroundInputNotDelivered", suggest: SUGGESTS.BackgroundInputNotDelivered };
+  }
+  if (m.includes("clipboardwritenotdelivered") || m.includes("clipboard write not delivered")) {
+    return { code: "ClipboardWriteNotDelivered", suggest: SUGGESTS.ClipboardWriteNotDelivered };
   }
   if (m.includes("setvalueallchannelsfailed") || m.includes("all channels failed")) {
     return { code: "SetValueAllChannelsFailed", suggest: SUGGESTS.SetValueAllChannelsFailed };
