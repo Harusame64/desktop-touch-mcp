@@ -169,7 +169,18 @@ function makeMarker(text: string): string {
 // passphrase):") should follow the same anchored-strict rule.
 const HIDDEN_INPUT_PROMPT_PATTERNS: readonly RegExp[] = [
   /(password|passphrase|secret|sudo)[\s:]*$/i,
-  /Password for /,
+  // Codex P1+P2: original `/Password for /` was case-sensitive AND unanchored.
+  // - Case-sensitive: missed `[sudo] password for alice:` (lowercase "password")
+  //   so legitimate hidden-input sends still mis-fired BackgroundInputNotDelivered.
+  // - Unanchored: matched any cursor-row text containing "Password for ", which
+  //   could bypass verification on non-prompt lines (e.g. an executed command
+  //   string mentioning the phrase).
+  // Fix: case-insensitive (`/i`) + require trailing username + colon, which is
+  //   the canonical sudo prompt shape. Strict-first: configurations that omit
+  //   the trailing colon (rare) are not detected here and fall through to the
+  //   normal verification path. Future expansion should keep the trailing-anchor
+  //   discipline.
+  /password for \S+:\s*$/i,
   /^>\s*$/,
 ];
 
