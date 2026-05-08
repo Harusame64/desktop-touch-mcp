@@ -1,5 +1,61 @@
 # Changelog
 
+## [Unreleased] — v1.3.2: Windows Terminal silent fail in terminal/keyboard BG path
+
+v1.1.0 以降 約 11 日間 production にあった regression の修正。Windows
+Terminal を「既定のターミナルアプリ」にしている環境で `terminal({action:'send'})`
+が **silent fail** していた（PostMessage は OS 層で成功するが Windows Terminal
+の WinUI/XAML 入力 pipeline が `WM_CHAR` を消化せず、ハンドラは `ok:true` を
+返すが実際には何も入力されない）。E2E test は skip-on-failure path で silent
+pass していたため CI で検知されなかった。
+
+### Fixed
+
+- **fix(bg-input): Windows Terminal を `WM_CHAR` fast-path から除外（issue #173）.**
+  `TERMINAL_WINDOW_CLASSES` から `CASCADIA_HOSTING_WINDOW_CLASS` を削除し、
+  `canInjectViaPostMessage` で WT クラスと `WindowsTerminal.exe` プロセス名を
+  非対応扱い (`reason:"wt_xaml_pipeline"`) に分類。これにより
+  `terminal({action:'send', method:'auto'})` および
+  `keyboard({action:'type'/'press', method:'auto'})` で WT を target にした
+  場合は自動的に foreground (clipboard paste) 経路にフォールバックする。
+- **fix(terminal): BG path に post-send UIA read-back delivery 検証を追加.**
+  WM_CHAR 送出後に少 delay → UIA TextPattern で再読 → diff (since baseline) に
+  入力文字列が含まれていない場合 `BackgroundInputNotDelivered` で fail。
+  `method:'background'` を明示要求した場合（auto-route から外れた未知の terminal
+  でも）silent ok:true は返さない構造に変更。Enter は delivery 検証後にのみ
+  送る。
+- **fix(changelog): v1.1.0 Phase A の "terminal-class auto-route to HWND-targeted
+  WM_CHAR" 記述に補正を追加** — Windows Terminal はこの auto-route から外れる
+  旨を明記。
+
+### Changed
+
+- **behaviour: `terminal({action:'send'})` が WT 環境で foreground 経路に変わる.**
+  これは bug fix だが behavior change でもある。`method:'background'` を強制指定
+  していた呼び出しは、target が WT の場合 `BackgroundInputNotDelivered` で失敗
+  するようになる（旧来は嘘の `ok:true` を返していた）。caller は
+  `method:'foreground'` または `method:'auto'` に切り替えるか、conhost を既定
+  ターミナルにすること。
+
+### Tests
+
+- **test(e2e): `[conhost, WindowsTerminal]` parameterized matrix を `tests/e2e/terminal.test.ts` に追加.**
+  既存の skip-on-failure path を product invariant 違反では fail させる構造に
+  変更し、env 起因 skip は `ForegroundNotTransferred` warning に限定。WT 専用
+  ケースとして `method:'background'` 強制 → `BackgroundInputNotDelivered` を
+  pin、conhost 専用ケースとして BG path の正常成功を pin。
+  - **WT host scenario は `DTM_E2E_WT=1` 指定時のみ実行（opt-in）.** デフォルト
+    で WT host を回さない理由: launcher 経由で spawn された PowerShell が
+    既存 WT インスタンスにタブ attach され、cleanup の `taskkill /T` が
+    ユーザの WT process tree 全体を巻き込んだ事故が発生（2026-05-08）。
+    launcher の kill path は `/T` を外して PID 単発に hardening 済みだが、
+    WT 単一プロセス・複数ウィンドウ仕様への独立した isolation 整備までは
+    opt-in に留める。WT の非対応化自体は unit test (`canInjectViaPostMessage`
+    の `wt_xaml_pipeline` 分類 + `keyboard-method-resolution.test.ts`)
+    と conhost 側 E2E でカバー。
+- **test(unit): bg-input.test.ts と keyboard-method-resolution.test.ts の
+  WT 期待値を反転.**
+
 ## [1.3.1] - 2026-05-08 — discriminatedUnion ツール 6 件の parse 全失敗を修正
 
 v1.3.0 で **`keyboard` / `clipboard` / `window_dock` / `scroll` / `terminal` /
@@ -263,6 +319,15 @@ clipboard path are unchanged.
   other windows when the user grabs focus mid-stream. Existing `DTM_BG_AUTO=1`
   env flag continues to enable BG input globally for non-terminal apps; other
   apps still default to the foreground path.
+  - **2026-05-08 correction (issue #173):** the `CASCADIA_HOSTING_WINDOW_CLASS`
+    half of this claim was wrong. Windows Terminal is built on WinUI/XAML and
+    consumes input via `KeyEventArgs`; `PostMessage(WM_CHAR)` is queued at the
+    OS layer but `TerminalControl` never reads it, so input is silently dropped.
+    The auto-route quietly broke `terminal(action:'send')` for any user whose
+    default terminal app was Windows Terminal, while CI (which runs under
+    conhost) saw green. Fixed in v1.3.2 — WT is removed from the BG fast-path
+    and a post-send UIA read-back surfaces `BackgroundInputNotDelivered` if the
+    BG path is still requested explicitly.
 
 ## [1.0.5] - 2026-04-27 — Security and stability patch
 

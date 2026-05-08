@@ -327,6 +327,13 @@ export const terminalSendHandler = async ({
     // even without DTM_BG_AUTO=1 — terminal_send by definition operates on
     // terminals, and HWND-targeted delivery prevents user-side foreground
     // changes from diverting keystrokes mid-stream.
+    //
+    // Issue #173: Windows Terminal (CASCADIA_HOSTING_WINDOW_CLASS) was removed
+    // from TERMINAL_WINDOW_CLASSES because its WinUI/XAML pipeline silently
+    // swallows WM_CHAR. canInjectViaPostMessage now also rejects WT by class
+    // and process name, so the BG path no longer auto-fires for WT and any
+    // explicit `method:'background'` on WT will be additionally caught by the
+    // post-send UIA read-back verification below.
     const targetClass = (() => {
       try { return getWindowClassName(win.hwnd); } catch { return ""; }
     })();
@@ -344,6 +351,14 @@ export const terminalSendHandler = async ({
       // Avoid duplicate Enter if input already ends with CR/LF
       const inputEndsWithNewline = /[\r\n]$/.test(input);
       const effectivePressEnter = pressEnter && !inputEndsWithNewline;
+
+      // Capture pre-send UIA snapshot for post-send delivery verification.
+      // If TextPattern is unavailable on this terminal, baselineMarker stays
+      // null and the verification step is skipped (we can't tell if the input
+      // landed without a way to read the buffer back).
+      const baselineRaw = await getTextViaTextPattern(win.title);
+      const baselineMarker =
+        baselineRaw !== null ? makeMarker(stripAnsi(baselineRaw)) : null;
 
       // Send in chunks to avoid saturating the terminal input queue
       let totalSent = 0;
@@ -374,6 +389,48 @@ export const terminalSendHandler = async ({
         }
       }
 
+      // ── Issue #173 P2: post-send UIA read-back delivery verification ────
+      // PostMessage(WM_CHAR) returns true when the message is queued, even if
+      // the target never consumes it (e.g. Windows Terminal's XAML pipeline,
+      // see issue #173). Without this check, ok:true would silently lie about
+      // delivery. Skip when baseline could not be read (no way to verify) or
+      // when input has no echo-able content (e.g. only trailing newlines).
+      const checkText = input.replace(/[\r\n]+$/, "");
+      const verifiable = baselineMarker !== null && checkText.length > 0;
+      let verifiedDelivery: boolean | "unverifiable" = "unverifiable";
+      if (verifiable) {
+        // Let the terminal render before reading back. ~150ms is enough for
+        // conhost; if the input was silently dropped the diff stays empty.
+        await new Promise<void>((r) => setTimeout(r, 150));
+        const postRaw = await getTextViaTextPattern(win.title);
+        if (postRaw !== null) {
+          const postCleaned = stripAnsi(postRaw);
+          const sliced = applySinceMarker(postCleaned, baselineMarker);
+          // Only judge "not delivered" when we located the baseline boundary;
+          // a lost baseline (matched:false) is undetermined, not a failure.
+          if (sliced.matched) {
+            verifiedDelivery = sliced.text.includes(checkText);
+          }
+        }
+      }
+      if (verifiedDelivery === false) {
+        return failWith(
+          new Error("BackgroundInputNotDelivered"),
+          "terminal:send",
+          {
+            suggest: [
+              "Retry with method:'foreground' — WM_CHAR was queued by the OS but not consumed by the terminal.",
+              "Common cause: Windows Terminal (WinUI/XAML host) does not read WM_CHAR; use foreground SendInput.",
+              "Common cause: terminal runs elevated (admin) while caller does not — UIPI blocks PostMessage.",
+            ],
+            context: {
+              hint: "post-send UIA read-back did not contain the input substring",
+              targetClass,
+            },
+          }
+        );
+      }
+
       if (effectivePressEnter) postEnterToHwnd(win.hwnd);
 
       return ok({
@@ -392,6 +449,9 @@ export const terminalSendHandler = async ({
         },
         hints: {
           target: {},
+          ...(verifiedDelivery === "unverifiable" && {
+            verifyDelivery: "unverifiable",
+          }),
           ...(bgWarnings.length > 0 && { warnings: bgWarnings }),
         },
       });

@@ -120,16 +120,17 @@ describe("resolveEffectiveInputMethod (Focus Leash Phase A)", () => {
   });
 
   describe("auto + class-aware auto-pick (Phase A)", () => {
-    it("Windows Terminal (CASCADIA_HOSTING_WINDOW_CLASS) → 'background-auto'", () => {
+    it("Windows Terminal (CASCADIA_HOSTING_WINDOW_CLASS) → 'auto' (issue #173: WT removed from BG fast-path)", () => {
+      // Issue #173: WT's WinUI/XAML pipeline silently swallows WM_CHAR. The
+      // class is no longer in TERMINAL_WINDOW_CLASSES, so auto-routing falls
+      // through to foreground for WT instead of producing silent failures.
       vi.mocked(enumWindowsInZOrder).mockReturnValue([
         fakeWindow("PowerShell - Windows Terminal"),
       ]);
       vi.mocked(getWindowClassName).mockReturnValue(
         "CASCADIA_HOSTING_WINDOW_CLASS",
       );
-      expect(resolveEffectiveInputMethod("auto", "PowerShell")).toBe(
-        "background-auto",
-      );
+      expect(resolveEffectiveInputMethod("auto", "PowerShell")).toBe("auto");
     });
 
     it("conhost / cmd / pwsh (ConsoleWindowClass) → 'background-auto'", () => {
@@ -148,13 +149,11 @@ describe("resolveEffectiveInputMethod (Focus Leash Phase A)", () => {
       expect(resolveEffectiveInputMethod("auto", "Notepad")).toBe("auto");
     });
 
-    it("windowTitle case-insensitive match still works", () => {
+    it("windowTitle case-insensitive match still works (ConsoleWindowClass)", () => {
       vi.mocked(enumWindowsInZOrder).mockReturnValue([
         fakeWindow("Windows PowerShell - 7.3"),
       ]);
-      vi.mocked(getWindowClassName).mockReturnValue(
-        "CASCADIA_HOSTING_WINDOW_CLASS",
-      );
+      vi.mocked(getWindowClassName).mockReturnValue("ConsoleWindowClass");
       expect(resolveEffectiveInputMethod("auto", "powershell")).toBe(
         "background-auto",
       );
