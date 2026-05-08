@@ -1108,6 +1108,9 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "default": 300,
           "description": "Milliseconds to wait before checking post-action state."
         },
+        "verifyDelivery": {
+          "description": "Parameter 'verifyDeliveryParam' from the Windows server schema."
+        },
         "lensId": {
           "description": "Optional perception lens ID for advanced pinned-target workflows. When provided, guards are evaluated before clicking (safe.clickCoordinates, target.identityStable) and a perception envelope is attached to post.perception in the response. For normal use, omit lensId and pass windowTitle directly — Auto Perception handles tracking.",
           "type": "string"
@@ -1127,7 +1130,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       "additionalProperties": false,
       "required": [
         "x",
-        "y"
+        "y",
+        "verifyDelivery"
       ]
     }
   },
@@ -1190,6 +1194,9 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "type": "boolean",
           "default": false
         },
+        "verifyDelivery": {
+          "description": "Parameter 'verifyDeliveryParam' from the Windows server schema."
+        },
         "include": {
           "type": "array",
           "items": {
@@ -1203,7 +1210,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "startX",
         "startY",
         "endX",
-        "endY"
+        "endY",
+        "verifyDelivery"
       ]
     }
   },

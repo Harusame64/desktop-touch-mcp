@@ -133,17 +133,37 @@ const SUGGESTS: Record<string, string[]> = {
     "Common cause: terminal runs elevated (admin) while caller does not — UIPI blocks PostMessage.",
     "False-positive cause: hidden-input prompts (password / sudo / ssh / Read-Host -AsSecureString) accept WM_CHAR but suppress echo, so this check cannot distinguish delivery from drop. Use method:'foreground' for credential entry.",
   ],
-  // Issue #180 (Phase 3, matrix doc §3.1 / §5.2): clipboard(action:'write') の
-  // post-write read-back verification で書込み内容と Get-Clipboard -Raw 結果が
-  // UTF-16LE byte 単位で一致しないとき返す typed code。Set-Clipboard 自体は
-  // 成功 (powershell.exe exit 0) しているのに clipboard 上の値が異なる
-  // silent-failure を catch する目的。
+  // Issue #180 (matrix doc §3.1 / §5.2): clipboard(action:'write') post-write
+  // read-back returned bytes that disagree with the requested UTF-16LE payload.
   ClipboardWriteNotDelivered: [
     "Another application replaced the clipboard contents between Set-Clipboard and the verification read — retry, ideally without a clipboard manager intercepting writes.",
     "DLP / endpoint security may sanitize or block clipboard writes; check organisation policy or test on an unmanaged session.",
     "RDP / Citrix / ChromeBook clipboard sharing can drop or transcode UTF-16 payloads — verify on the local console session.",
     "Clipboard format conversion (CF_UNICODETEXT vs CF_TEXT) lost characters; try shorter ASCII text to isolate, then file an issue with the original payload's hex dump.",
     "Treat the clipboard as un-written on this failure: do not assume a paste downstream will see the requested value.",
+  ],
+  // Issue #178: SendInput-based mouse_click delivered nothing observable.
+  // Pre/post ElementFromPoint + foregroundWindow + focusedElement diff was empty.
+  // matrix doc §3.1 row mouse_click; suggest[] follows §5.2 click-specific advice.
+  MouseClickNotDelivered: [
+    "Retry with elementName + windowTitle to use UIA InvokePattern via click_element (more reliable than pixel click)",
+    "Use desktop_act(lease, action='click') with a freshly-discovered lease — entity-based click survives layout shifts",
+    "Verify the click coordinate is inside the target window rect — homing may have stale window bounds; refresh via screenshot or desktop_state first",
+    "If the target runs elevated (admin) and the MCP server does not, UIPI silently blocks SendInput at the cursor — relaunch the server elevated or use a non-elevated target",
+    "For Chrome/Edge: prefer browser_click (CDP) over pixel mouse_click — CDP click survives repaints and reports DOM ack",
+  ],
+  // Issue #178: SendInput drag sequence delivered nothing observable.
+  // mouse_drag failure modes are qualitatively different from mouse_click: the
+  // sequence (down → moves → up) can break partway, modifier-key state can drop
+  // mid-drag, and dragdrop API targets need DROPEFFECT inspection. Keep suggest[]
+  // separate from MouseClickNotDelivered (matrix doc §5.2 justify).
+  MouseDragNotDelivered: [
+    "Retry the drag at a slower speed — fast drags can outpace the target's drop-target hit testing",
+    "If the drag is meant to scroll, use scroll(action='raw' or 'smart') instead — scroll has a dedicated delivery contract",
+    "For tab rearrangement: pass allowTabDrag:true if the drag intentionally starts in a tab strip",
+    "For cross-window drops: pass allowCrossWindowDrag:true — endpoint-window mismatch is blocked by default",
+    "If a modifier key (Shift / Ctrl) must be held during the drag, send it via keyboard({action:'press'}) before the drag and release after — modifier state is not preserved across the SendInput sequence",
+    "If the drop target is a dragdrop API consumer (Explorer, IDE file tabs), pixel SendInput cannot signal DROPEFFECT — use desktop_act(lease, action='drag') if the target is UIA-discoverable",
   ],
   SetValueAllChannelsFailed: [
     "Verify the element supports text input",
@@ -279,6 +299,15 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   if (m.includes("clipboardwritenotdelivered") || m.includes("clipboard write not delivered")) {
     return { code: "ClipboardWriteNotDelivered", suggest: SUGGESTS.ClipboardWriteNotDelivered };
+  }
+  // Issue #178: keep mouse_drag check BEFORE mouse_click — "mouseclicknotdelivered"
+  // would otherwise substring-match a longer string like "mousedragnotdelivered" (it
+  // does not today, but matching the more specific code first is the safe ordering).
+  if (m.includes("mousedragnotdelivered") || m.includes("mouse drag not delivered")) {
+    return { code: "MouseDragNotDelivered", suggest: SUGGESTS.MouseDragNotDelivered };
+  }
+  if (m.includes("mouseclicknotdelivered") || m.includes("mouse click not delivered")) {
+    return { code: "MouseClickNotDelivered", suggest: SUGGESTS.MouseClickNotDelivered };
   }
   if (m.includes("setvalueallchannelsfailed") || m.includes("all channels failed")) {
     return { code: "SetValueAllChannelsFailed", suggest: SUGGESTS.SetValueAllChannelsFailed };
