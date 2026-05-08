@@ -810,6 +810,10 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "minimum": 1,
           "maximum": 65535
         },
+        "forceFocus": {
+          "description": "When set, use AttachThreadInput-based foreground escalation on the first attempt. When omitted (default), focus_window first tries the standard SetForegroundWindow path and auto-escalates to force-focus only if Win11 refused the default attempt (issue #197). Override env: DESKTOP_TOUCH_FORCE_FOCUS=1 sets the implicit default to true. If both default and force paths fail, focus_window now returns ok:false code:'ForegroundRestricted' instead of the previous silent ok:true with windowChanged:false.",
+          "type": "boolean"
+        },
         "include": {
           "type": "array",
           "items": {

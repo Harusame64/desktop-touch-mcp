@@ -29,6 +29,14 @@ export const focusWindowSchema = {
   cdpPort: z.coerce.number().int().min(1).max(65535).default(DEFAULT_CDP_PORT).describe(
     `CDP port for chromeTabUrlContains (default ${DEFAULT_CDP_PORT})`
   ),
+  forceFocus: z.boolean().optional().describe(
+    "When set, use AttachThreadInput-based foreground escalation on the first attempt. " +
+    "When omitted (default), focus_window first tries the standard SetForegroundWindow path " +
+    "and auto-escalates to force-focus only if Win11 refused the default attempt (issue #197). " +
+    "Override env: DESKTOP_TOUCH_FORCE_FOCUS=1 sets the implicit default to true. " +
+    "If both default and force paths fail, focus_window now returns ok:false code:'ForegroundRestricted' " +
+    "instead of the previous silent ok:true with windowChanged:false."
+  ),
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -85,11 +93,16 @@ export const focusWindowHandler = async ({
   title,
   chromeTabUrlContains,
   cdpPort,
+  forceFocus,
 }: {
   title: string;
   chromeTabUrlContains?: string;
   cdpPort: number;
+  forceFocus?: boolean;
 }): Promise<ToolResult> => {
+  // Issue #197: caller-explicit forceFocus wins; otherwise honor the env
+  // override (same convention as keyboard / mouse_click / terminal_send).
+  const force = forceFocus ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
   try {
     // If chromeTabUrlContains is set, activate the matching Chrome tab first via CDP
     let activatedTab: string | undefined;
@@ -120,9 +133,57 @@ export const focusWindowHandler = async ({
     for (const win of windows) {
       if (!win.title.toLowerCase().includes(query)) continue;
 
-      // SW_RESTORE is a no-op for non-minimized windows, so this is safe to call unconditionally.
-      // Returns the actual rect after restoration (important for previously-minimized windows).
-      const region = restoreAndFocusWindow(win.hwnd);
+      // ── Issue #197: foreground-transfer auto-escalation ─────────────────
+      // Pre-fix behaviour was: call SetForegroundWindow once and return
+      // ok:true regardless of whether Win11 actually transferred the
+      // foreground. Win11 silently refuses SetForegroundWindow when the
+      // calling thread is not foreground (a regular condition for an MCP
+      // server proxied by another process), so callers got ok:true +
+      // windowChanged:false and acted on the wrong target.
+      //
+      // New contract (mirrors keyboard.ts:344-395 focusWindowForKeyboard):
+      //   1. Try restoreAndFocusWindow(hwnd, { force }) — honors caller
+      //      flag (or DESKTOP_TOUCH_FORCE_FOCUS env). SW_RESTORE is a
+      //      no-op for non-minimized windows.
+      //   2. Wait 100ms for the window manager to settle.
+      //   3. Re-enum and check whether the target hwnd is now isActive.
+      //   4. If not, and the first attempt was NOT force, escalate to
+      //      restoreAndFocusWindow(hwnd, { force:true }) (AttachThreadInput
+      //      bypass) and retry steps 2-3.
+      //   5. If still not foreground, return ok:false with
+      //      `ForegroundRestricted` (typed via _errors.ts:SUGGESTS) —
+      //      callers stop trusting a silent ok:true and choose a fallback.
+      let region = restoreAndFocusWindow(win.hwnd, { force });
+      await new Promise<void>((r) => setTimeout(r, 100));
+      let active = enumWindowsInZOrder().find((w) => w.isActive);
+      let reachedForeground = !!active && active.hwnd === win.hwnd;
+      let escalated = false;
+
+      if (!reachedForeground && !force) {
+        region = restoreAndFocusWindow(win.hwnd, { force: true });
+        await new Promise<void>((r) => setTimeout(r, 100));
+        active = enumWindowsInZOrder().find((w) => w.isActive);
+        reachedForeground = !!active && active.hwnd === win.hwnd;
+        escalated = true;
+      }
+
+      if (!reachedForeground) {
+        // suggest[] from _errors.ts:SUGGESTS.ForegroundRestricted (SSOT).
+        // failWith treats the 3rd arg as flat: only ROOT_HOISTED_KEYS
+        // (_perceptionForPost / _richForPost / hints) are lifted to the
+        // root, everything else goes into `context: {...}` automatically.
+        return failWith(
+          new Error("ForegroundRestricted"),
+          "focus_window",
+          {
+            title,
+            hint: "Win11 refused both default SetForegroundWindow and the AttachThreadInput escalation",
+            attemptedForce: force,
+            autoEscalated: escalated,
+            ...(active && { actualForeground: active.title }),
+          }
+        );
+      }
 
       return {
         content: [{
@@ -132,7 +193,12 @@ export const focusWindowHandler = async ({
             focused: win.title,
             region,
             ...(activatedTab && { activatedTab }),
-            ...(cdpUnavailable && { hints: { warnings: ["cdpUnavailable — chromeTabUrlContains was ignored; use browser_open first"] } }),
+            ...((cdpUnavailable || escalated) && {
+              hints: {
+                ...(cdpUnavailable && { warnings: ["cdpUnavailable — chromeTabUrlContains was ignored; use browser_open first"] }),
+                ...(escalated && { forceFocusEscalated: true }),
+              },
+            }),
           }),
         }],
       };
