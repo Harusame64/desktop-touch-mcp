@@ -15,6 +15,12 @@ import { failWith } from "./_errors.js";
 import { withRichNarration, narrateParam } from "./_narration.js";
 import { makeCommitWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
 import { detectFocusLoss } from "./_focus.js";
+import {
+  snapshotForVerify,
+  classifyDelivery,
+  type VerifyDeliveryHint,
+  type MouseVerifySnapshot,
+} from "./_mouse-verify.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled } from "./_action-guard.js";
 import { detectTabDragRisk } from "../engine/perception/tab-drag-heuristic.js";
@@ -206,6 +212,19 @@ const settleMsParam = z.coerce.number().int().min(0).max(2000).default(300).desc
   "Only used when trackFocus=true."
 );
 
+// Issue #178 — `hints.verifyDelivery` opt-out for callers that have their own
+// post-state observation (run_macro chains, workflows that immediately
+// screenshot, etc.). Default true: matrix doc §3.1 expects the strengthened
+// pre/post snapshot on every commit-axis click. Pass false to skip the two
+// extra UIA round-trips (~50-150 ms via the Rust native path on a healthy
+// host, up to 2× UIA timeout on a hung target).
+const verifyDeliveryParam = z.boolean().default(true).describe(
+  "When true (default), capture pre/post snapshots of element-under-cursor + " +
+  "focusedElement + foregroundWindow + scrollPos to populate hints.verifyDelivery " +
+  "with status='delivered' | 'focus_only' | 'unverifiable' (issue #178). " +
+  "Set false to skip the extra UIA work when the caller will read post state itself."
+);
+
 export const mouseClickSchema = {
   x: z.coerce.number().describe(
     "X coordinate. Screen-absolute by default. When 'origin' is provided, treated as image-local " +
@@ -247,6 +266,7 @@ export const mouseClickSchema = {
   forceFocus: forceFocusParam,
   trackFocus: trackFocusParam,
   settleMs: settleMsParam,
+  verifyDelivery: verifyDeliveryParam,
   lensId: z.string().optional().describe(
     "Optional perception lens ID for advanced pinned-target workflows. " +
     "When provided, guards are evaluated before clicking (safe.clickCoordinates, target.identityStable) " +
@@ -285,6 +305,7 @@ export const mouseDragSchema = {
     "Pass true only when you intentionally want to rearrange or detach a tab. " +
     "Note: active only when auto-guard is enabled (same scope as allowCrossWindowDrag)."
   ),
+  verifyDelivery: verifyDeliveryParam,
 };
 
 export const scrollSchema = {
@@ -333,16 +354,20 @@ export const mouseMoveHandler = async ({
 
 export const mouseClickHandler = async ({
   x: xIn, y: yIn, origin, scale, button, doubleClick, tripleClick, speed, homing, windowTitle: windowTitleIn, elementName, elementId,
-  forceFocus: forceFocusArg, trackFocus, settleMs, lensId, fixId, hwnd: hwndIn,
+  forceFocus: forceFocusArg, trackFocus, settleMs, verifyDelivery: verifyDeliveryArg, lensId, fixId, hwnd: hwndIn,
 }: {
   x: number; y: number;
   origin?: { x: number; y: number };
   scale?: number;
   button: "left" | "right" | "middle"; doubleClick: boolean; tripleClick: boolean;
   speed?: number; homing: boolean; windowTitle?: string; elementName?: string; elementId?: string;
-  forceFocus?: boolean; trackFocus: boolean; settleMs: number; lensId?: string; fixId?: string;
+  forceFocus?: boolean; trackFocus: boolean; settleMs: number; verifyDelivery?: boolean; lensId?: string; fixId?: string;
   hwnd?: string;
 }): Promise<ToolResult> => {
+  // Issue #178: verifyDelivery defaults to true (matrix doc §3.1).
+  // Param is `?: boolean` so undefined falls back to the default — keep call
+  // sites that omit it (older internal callers) on the new default.
+  const verifyDelivery = verifyDeliveryArg ?? true;
   const force = forceFocusArg ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
 
   // fixId path: resolve the suggested fix and override args
@@ -441,8 +466,24 @@ export const mouseClickHandler = async ({
       perceptionEnv = ag.summary;
     }
 
-    // Step 4: Execute click.
+    // Move cursor to (tx, ty) BEFORE the pre-click snapshot so that
+    // `pre.elementAtPoint` reflects the actual click target — without this,
+    // ElementFromPoint would read whatever sits under the *current* cursor
+    // (could be a stale location from the previous tool call).
     await moveTo(tx, ty, speed);
+
+    // Issue #178 — Phase 1: pre-click snapshot for delivery verification.
+    // Mirrors `terminal({action:'send'})` BG path (`src/tools/terminal.ts`
+    // §369-375 baseline marker): we capture the observable state *before*
+    // the side effect so that the post snapshot can produce a meaningful
+    // diff. Skipping the snapshot when `verifyDelivery` is off keeps the
+    // ~50-150 ms UIA cost off the hot path for callers that opt out.
+    let preSnapshot: MouseVerifySnapshot | null = null;
+    if (verifyDelivery) {
+      preSnapshot = await snapshotForVerify(tx, ty);
+    }
+
+    // Step 4: Execute click.
     const btn = toButton(button);
     let action: string;
     if (tripleClick) {
@@ -479,12 +520,32 @@ export const mouseClickHandler = async ({
       if (fl) focusLost = fl;
     }
 
+    // Issue #178 — Phase 4: post-click read-back for delivery verification.
+    // detectFocusLoss already waits `settleMs` when trackFocus is on; we add
+    // a small extra settle when trackFocus is off so the receiver has time
+    // to update its UIA tree before we read it. Same magnitude as the
+    // terminal BG path (`terminal.ts` §432 conhost render budget); both
+    // bounded by the L5 commit p99 SLO.
+    let verifyDeliveryHint: VerifyDeliveryHint | undefined;
+    if (verifyDelivery && preSnapshot) {
+      if (!trackFocus) {
+        await new Promise<void>((r) => setTimeout(r, 150));
+      }
+      const postSnapshot = await snapshotForVerify(tx, ty);
+      verifyDeliveryHint = classifyDelivery(preSnapshot, postSnapshot, "send_input");
+    }
+
     return ok({
       ok: true, action, button, at: { x: tx, y: ty },
       ...(conversionNotes.length && { conversion: conversionNotes.join("; ") }),
       ...(filteredNotes.length && { homing: filteredNotes.join(", ") }),
       ...(focusLost && { focusLost }),
-      ...(warnings.length > 0 && { hints: { warnings } }),
+      ...((warnings.length > 0 || verifyDeliveryHint) && {
+        hints: {
+          ...(warnings.length > 0 && { warnings }),
+          ...(verifyDeliveryHint && { verifyDelivery: verifyDeliveryHint }),
+        },
+      }),
       ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
     });
   } catch (err) {
@@ -494,11 +555,19 @@ export const mouseClickHandler = async ({
 
 export const mouseDragHandler = async ({
   startX, startY, endX, endY, speed, homing, windowTitle, hwnd, lensId, allowCrossWindowDrag, allowTabDrag,
+  verifyDelivery: verifyDeliveryArg,
 }: {
   startX: number; startY: number; endX: number; endY: number;
   speed?: number; homing: boolean; windowTitle?: string; hwnd?: string; lensId?: string;
   allowCrossWindowDrag?: boolean; allowTabDrag?: boolean;
+  verifyDelivery?: boolean;
 }): Promise<ToolResult> => {
+  // Issue #178: matrix doc §3.1 row mouse_drag — same default-on contract
+  // as mouse_click. The drag pre-snapshot is captured at the START point
+  // (where the down-event lands) and the post-snapshot at the END point
+  // (where the up-event releases) — drag-induced scroll / drop side effects
+  // typically register at the destination, not the source.
+  const verifyDelivery = verifyDeliveryArg ?? true;
   try {
     const resolvedWin = await resolveWindowTarget({ hwnd, windowTitle });
     const effectiveTitle = resolvedWin?.title ?? windowTitle;
@@ -607,7 +676,21 @@ export const mouseDragHandler = async ({
     }
 
     // Step 3: Execute drag.
+    // Move to start before pre-snapshot so `pre.elementAtPoint` reflects the
+    // actual drag origin (not stale cursor position). Same rationale as the
+    // mouse_click pre-snapshot (matrix doc §3.1).
     await moveTo(tsx, tsy, speed);
+
+    // Issue #178 — Phase 1: pre-drag snapshot at the START point.
+    // Per matrix doc §3.1 row mouse_drag: "drag start/end 周囲の
+    // ElementFromPoint diff、または target window scroll/move の鏡映観測".
+    // We snapshot at the start now (before drag begins) and again at the
+    // end (after the up-event) below.
+    let preSnapshot: MouseVerifySnapshot | null = null;
+    if (verifyDelivery) {
+      preSnapshot = await snapshotForVerify(tsx, tsy);
+    }
+
     const s = speed ?? DEFAULT_MOUSE_SPEED;
     if (s === 0) {
       await mouse.pressButton(Button.LEFT);
@@ -622,11 +705,28 @@ export const mouseDragHandler = async ({
         mouse.config.mouseSpeed = prev;
       }
     }
+
+    // Issue #178 — Phase 4: post-drag snapshot at the END point.
+    // Drag side effects (drop highlight, scroll, selection rect) typically
+    // register at the destination — read there. Same 150ms settle as
+    // mouse_click for consistency with the matrix doc §2.3 contract.
+    let verifyDeliveryHint: VerifyDeliveryHint | undefined;
+    if (verifyDelivery && preSnapshot) {
+      await new Promise<void>((r) => setTimeout(r, 150));
+      const postSnapshot = await snapshotForVerify(tex, tey);
+      verifyDeliveryHint = classifyDelivery(preSnapshot, postSnapshot, "send_input");
+    }
+
     return ok({
       ok: true, action: "drag",
       from: { x: tsx, y: tsy }, to: { x: tex, y: tey },
       ...(notes.length && { homing: notes.join(", ") }),
-      ...(dragWarnings.length > 0 && { hints: { warnings: dragWarnings } }),
+      ...((dragWarnings.length > 0 || verifyDeliveryHint) && {
+        hints: {
+          ...(dragWarnings.length > 0 && { warnings: dragWarnings }),
+          ...(verifyDeliveryHint && { verifyDelivery: verifyDeliveryHint }),
+        },
+      }),
       ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
     });
   } catch (err) {

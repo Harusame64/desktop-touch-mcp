@@ -97,9 +97,14 @@ describe("mouse_click focusLost", () => {
       y: 540,
       button: "left",
       doubleClick: false,
+      tripleClick: false,
       homing: false,
       trackFocus: false,
       settleMs: 300, // settleMs is ignored when trackFocus=false
+      // Issue #178: verifyDelivery defaults to true and adds ~150ms settle +
+      // two UIA round-trips. Disable here so the budget-vs-trackFocus test
+      // measures only the trackFocus cost.
+      verifyDelivery: false,
     });
     const elapsed = Date.now() - before;
     // Without the settle wait, should complete well under 300ms
