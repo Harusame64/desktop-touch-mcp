@@ -352,11 +352,25 @@ export const terminalSendHandler = async ({
       const inputEndsWithNewline = /[\r\n]$/.test(input);
       const effectivePressEnter = pressEnter && !inputEndsWithNewline;
 
+      // Verification scope (issue #173 P2-4 review feedback):
+      // The post-send UIA read-back is meant to catch silent BG failures on
+      // unknown / WinUI hosts. When the auto-router picked BG because the
+      // target is in `TERMINAL_WINDOW_CLASSES` (currently only
+      // `ConsoleWindowClass`, the conhost case), the channel is well-tested
+      // and the read-back would just add ~150ms with no realistic catch.
+      // Verify only when:
+      //   - the caller explicitly forced `method:'background'` (covers WT
+      //     and any other handle the auto path would have rejected), or
+      //   - we entered BG via `DTM_BG_AUTO=1` on a non-terminal class (the
+      //     global env override can route input to unknown apps).
+      const verificationNeeded =
+        inputMethod === "background" || (isBgAutoEnabled() && !isTerminalTarget);
+
       // Capture pre-send UIA snapshot for post-send delivery verification.
       // If TextPattern is unavailable on this terminal, baselineMarker stays
       // null and the verification step is skipped (we can't tell if the input
       // landed without a way to read the buffer back).
-      const baselineRaw = await getTextViaTextPattern(win.title);
+      const baselineRaw = verificationNeeded ? await getTextViaTextPattern(win.title) : null;
       const baselineMarker =
         baselineRaw !== null ? makeMarker(stripAnsi(baselineRaw)) : null;
 
@@ -393,10 +407,24 @@ export const terminalSendHandler = async ({
       // PostMessage(WM_CHAR) returns true when the message is queued, even if
       // the target never consumes it (e.g. Windows Terminal's XAML pipeline,
       // see issue #173). Without this check, ok:true would silently lie about
-      // delivery. Skip when baseline could not be read (no way to verify) or
-      // when input has no echo-able content (e.g. only trailing newlines).
+      // delivery. The check is gated by `verificationNeeded` above; here we
+      // additionally skip when:
+      //   - baseline could not be read (no way to verify),
+      //   - input has no echo-able content (only trailing newlines), or
+      //   - input contains embedded newlines. conhost commits each line at
+      //     the CR and inserts a fresh prompt before the next line, so the
+      //     buffer interleaves prompts between the input lines and a plain
+      //     substring includes() check would false-positive as "missing".
+      //     Multi-line silent fail is uncommon and out of scope for this
+      //     patch; single-line substring detection is sufficient to catch
+      //     the WT regression that motivated this change.
       const checkText = input.replace(/[\r\n]+$/, "");
-      const verifiable = baselineMarker !== null && checkText.length > 0;
+      const hasEmbeddedNewline = /[\r\n]/.test(checkText);
+      const verifiable =
+        verificationNeeded &&
+        baselineMarker !== null &&
+        checkText.length > 0 &&
+        !hasEmbeddedNewline;
       let verifiedDelivery: boolean | "unverifiable" = "unverifiable";
       if (verifiable) {
         // Let the terminal render before reading back. ~150ms is enough for
@@ -566,7 +594,15 @@ export const terminalSendHandler = async ({
 // terminal run handler — send → wait → read in one call
 // ─────────────────────────────────────────────────────────────────────────────
 
-type CompletionReason = "quiet" | "pattern_matched" | "timeout" | "window_closed" | "window_not_found";
+type CompletionReason =
+  | "quiet"
+  | "pattern_matched"
+  | "timeout"
+  | "window_closed"
+  | "window_not_found"
+  | "send_failed"; // issue #173 P2-2: BG path delivery verification (or any
+                   // other terminal_send failure) on a still-alive window.
+                   // The window is fine; the send itself was rejected.
 
 interface ReadFailurePayload {
   code?: string;
@@ -760,27 +796,44 @@ export const terminalRunHandler = async ({
   };
 
   const sendResult = await terminalSendHandler(sendArgs);
-  // Check send result — if send failed, detect window state
+  // Check send result — if send failed, classify by code + window state.
   const sendPayload = (() => {
     try {
       const block = sendResult.content[0];
-      if (block?.type === "text") return JSON.parse(block.text) as { ok?: boolean };
+      if (block?.type === "text") {
+        return JSON.parse(block.text) as { ok?: boolean; code?: string };
+      }
     } catch { /* fall through */ }
     return null;
   })();
 
   if (sendPayload && sendPayload.ok === false) {
-    // Window disappeared after we found it (race)
+    // Issue #173 P2-2: when the window is still alive but send returned a
+    // specific error code (e.g. BackgroundInputNotDelivered on Windows
+    // Terminal under method:'background'), reporting "window_not_found" is
+    // misleading — the window IS found, the SEND failed. Use a dedicated
+    // "send_failed" completion reason and surface the code in warnings so
+    // callers can branch on the underlying cause.
     const alive = isWindowStillAlive(hwnd);
+    const sendCode = sendPayload.code;
+    let reason: CompletionReason;
+    if (alive && sendCode) {
+      reason = "send_failed";
+    } else if (alive) {
+      reason = "window_not_found";
+    } else {
+      reason = "window_closed";
+    }
     const res: TerminalRunResponse = {
       ok: false,
       output: "",
-      completion: {
-        reason: alive ? "window_not_found" : "window_closed",
-        elapsedMs: Date.now() - startedAt,
-      },
+      completion: { reason, elapsedMs: Date.now() - startedAt },
       hwnd: String(hwnd),
-      warnings: [`terminal(action='send') failed`],
+      warnings: [
+        sendCode
+          ? `terminal(action='send') failed: ${sendCode}`
+          : `terminal(action='send') failed`,
+      ],
     };
     return ok(res);
   }
