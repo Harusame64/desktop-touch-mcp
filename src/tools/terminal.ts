@@ -437,19 +437,22 @@ export const terminalSendHandler = async ({
           // Only judge "not delivered" when we located the baseline boundary;
           // a lost baseline (matched:false) is undetermined, not a failure.
           if (sliced.matched) {
-            // Two-tier match (Codex P1 review feedback):
+            // Two-tier match (Codex P1 review feedback, refined in round 2):
             //   1. Exact substring — fast path, works for short / unwrapped
             //      single-line input echoed by the prompt as-is.
             //   2. Tail signature — the last 8 non-whitespace chars of the
-            //      input must appear in the diff. Forgives soft-wrap (when
-            //      TextPattern reports a line break at the console width
-            //      that the input itself didn't contain) and prompt/output
-            //      interleaving for long input. The WT silent-fail target
-            //      still fails this check because the buffer is empty of
-            //      input characters when WM_CHAR is swallowed.
+            //      input must appear in the diff after both sides are stripped
+            //      of whitespace. The strip is symmetric (Codex round 2 P2):
+            //      stripping only the needle but not the haystack misses the
+            //      soft-wrap case it was meant to catch (a console-width line
+            //      break inserts whitespace into the haystack the input never
+            //      had). The WT silent-fail target still fails this check
+            //      because the buffer is empty of input characters when
+            //      WM_CHAR is swallowed.
             const exact = sliced.text.includes(checkText);
             const tail = checkText.replace(/\s+/g, "").slice(-8);
-            const tailMatch = tail.length >= 4 && sliced.text.includes(tail);
+            const slicedNoWs = sliced.text.replace(/\s+/g, "");
+            const tailMatch = tail.length >= 4 && slicedNoWs.includes(tail);
             verifiedDelivery = exact || tailMatch;
           }
         }
