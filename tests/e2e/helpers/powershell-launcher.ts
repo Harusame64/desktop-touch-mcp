@@ -32,7 +32,7 @@
 
 import { spawn, execFile, type ChildProcess } from "child_process";
 import { promisify } from "util";
-import { readFileSync, unlinkSync, writeFileSync } from "fs";
+import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { enumWindowsInZOrder, clearWindowTopmost } from "../../../src/engine/win32.js";
@@ -156,10 +156,16 @@ export async function launchPowerShell(opts?: {
   const psArgs = `-NoExit -NoProfile -EncodedCommand ${encodedScript}`;
   let proc: ChildProcess;
   let startCmd: string | null = null;
-  // Tempscript path captured here so kill() can clean it up. Only the
-  // wt-host branch writes a tempfile (see below); other hosts leave this
-  // null and the kill() unlink becomes a no-op.
+  // Tempscript + tempdir paths captured here so kill() can clean both up.
+  // Only the wt-host branch creates the tempdir + writes a tempfile (see
+  // below); other hosts leave both null and the kill() unlink/rmSync
+  // become no-ops. Using `mkdtempSync` per launch (rather than a fixed
+  // `tmpdir()/<name>.ps1`) prevents the `js/insecure-temporary-file`
+  // CodeQL warning — the kernel-allocated suffix on the directory is
+  // unpredictable, so a symlink-attack on the path before we write is
+  // structurally impossible.
   let scriptToCleanup: string | null = null;
+  let scriptDirToCleanup: string | null = null;
   if (host === "conhost") {
     startCmd = `start "" conhost.exe "${exe}" ${psArgs}`;
   } else if (host === "wt") {
@@ -237,7 +243,13 @@ export async function launchPowerShell(opts?: {
     // (default on Windows 11) requires the BOM to recognise non-ASCII
     // content; PS 7+ tolerates either form. Cleanup of the tempfile is
     // hooked into kill() below alongside the existing pidFile unlink.
-    const wtScript = join(tmpdir(), `${tag}-launch.ps1`);
+    // mkdtempSync allocates a fresh, kernel-randomised directory under
+    // tmpdir() (the suffix is process-private and unpredictable to other
+    // users on the box), so writing `launch.ps1` inside it cannot race
+    // with a pre-existing file at a guessable path. The dir + its file
+    // are both removed in kill() below.
+    const wtTempDir = mkdtempSync(join(tmpdir(), "dtm-e2e-"));
+    const wtScript = join(wtTempDir, "launch.ps1");
     // UTF-8 BOM (EF BB BF) prefix: PowerShell 5.1 — the default on Windows
     // 11 — refuses to parse non-ASCII script content without the BOM.
     // Written as an explicit byte-array Buffer rather than the U+FEFF
@@ -245,6 +257,7 @@ export async function launchPowerShell(opts?: {
     const utf8Bom = Buffer.from([0xef, 0xbb, 0xbf]);
     writeFileSync(wtScript, Buffer.concat([utf8Bom, Buffer.from(psScript, "utf8")]));
     scriptToCleanup = wtScript;
+    scriptDirToCleanup = wtTempDir;
     // Spawn wt.exe directly with an argv array (shell:false) instead of
     // building a shell command string. Background: `spawn(string, {shell:true})`
     // wraps the string as `cmd.exe /d /s /c "<startCmd>"` on Windows. When
@@ -338,10 +351,15 @@ export async function launchPowerShell(opts?: {
         }
       } catch { /* best-effort */ }
       try { unlinkSync(pidFile); } catch { /* ignore */ }
-      // wt-host branch writes a `-File` tempscript (see spawn site above).
-      // Best-effort cleanup so /tmp does not accumulate per-test ps1 files.
+      // wt-host branch writes a `-File` tempscript inside a per-launch
+      // mkdtempSync directory (see spawn site above). Remove the file
+      // first, then the now-empty directory. Best-effort so a leftover
+      // never blocks a future test run.
       if (scriptToCleanup) {
         try { unlinkSync(scriptToCleanup); } catch { /* ignore */ }
+      }
+      if (scriptDirToCleanup) {
+        try { rmSync(scriptDirToCleanup, { recursive: true, force: true }); } catch { /* ignore */ }
       }
 
       // Fallback: kill the cmd.exe proc we directly spawned
