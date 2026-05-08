@@ -422,6 +422,38 @@ export const terminalSendHandler = async ({
         && canInjectViaPostMessage(win.hwnd).supported);
 
     if (useBg) {
+      // ── Issue #195: WT explicit BG early reject ─────────────────────────
+      // The `useBg` gate above only consults `canInjectViaPostMessage` for
+      // the `auto` branch; explicit `method:'background'` reaches BG path
+      // even when the platform check would have rejected. WT's WinUI/XAML
+      // pipeline silently swallows WM_CHAR, and the post-send UIA read-back
+      // can land on a noisy buffer where the 256-char baseline hash fails
+      // to match (`sliced.matched === false`) — leaving `verifiedDelivery
+      // === "unverifiable"` and falling through to a silent `ok:true`.
+      // matrix doc §4.3 specifies `wt_xaml_pipeline` reason →
+      // `BackgroundInputNotDelivered` (Strict fail). Pre-empt the read-back
+      // race by failing here directly with the same code the post-send path
+      // would have produced. Other reject reasons (chromium / uwp_sandboxed
+      // / class_unknown) are treated identically — explicit BG to a target
+      // that the engine knows it cannot deliver to is always a Strict fail.
+      if (inputMethod === "background") {
+        const injectCheck = canInjectViaPostMessage(win.hwnd);
+        if (!injectCheck.supported) {
+          return failWith(
+            new Error("BackgroundInputNotDelivered"),
+            "terminal:send",
+            {
+              context: {
+                hint: "target rejects PostMessage (WM_CHAR) channel — explicit method:'background' cannot proceed",
+                reason: injectCheck.reason,
+                ...(injectCheck.className !== undefined && { className: injectCheck.className }),
+                ...(injectCheck.processName !== undefined && { processName: injectCheck.processName }),
+              },
+            }
+          );
+        }
+      }
+
       const bgWarnings: string[] = [];
       if (preferClipboard) bgWarnings.push("BackgroundClipboardDowngraded");
       if (focusFirst) bgWarnings.push("BackgroundIgnoresFocusFirst");
