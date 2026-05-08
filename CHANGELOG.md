@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased] — v1.3.2: Windows Terminal silent fail in terminal/keyboard BG path
+## [1.3.2] - 2026-05-08 — Windows Terminal silent fail in terminal/keyboard BG path
 
 v1.1.0 以降 約 11 日間 production にあった regression の修正。Windows
 Terminal を「既定のターミナルアプリ」にしている環境で `terminal({action:'send'})`
