@@ -165,6 +165,20 @@ const SUGGESTS: Record<string, string[]> = {
     "If a modifier key (Shift / Ctrl) must be held during the drag, send it via keyboard({action:'press'}) before the drag and release after — modifier state is not preserved across the SendInput sequence",
     "If the drop target is a dragdrop API consumer (Explorer, IDE file tabs), pixel SendInput cannot signal DROPEFFECT — use desktop_act(lease, action='drag') if the target is UIA-discoverable",
   ],
+  // Issue #177: keyboard({action:'press', method:'background'}) WM_KEYDOWN/UP
+  // delivery verification (terminal-class targets only). Distinct from
+  // BackgroundInputNotDelivered because the channel is WM_KEYDOWN/UP (key combo)
+  // not WM_CHAR (text), and the verification scope is narrower (only enter /
+  // tab / arrow keys produce a buffer mutation that UIA TextPattern read-back
+  // can detect — other combos return hints.verifyDelivery: 'unverifiable'
+  // instead of failing). Suggest copy is keyboard-press specific so classify()
+  // is 1:1 with SUGGESTS dictionary (PR #174 Codex round 2 P1-1 SSOT pattern).
+  BackgroundKeyNotDelivered: [
+    "Retry with method:'foreground' — post-send UIA read-back did not observe the expected buffer mutation (cursor advance / new line / tab insertion).",
+    "Common cause: Windows Terminal (WinUI/XAML host) silently drops WM_KEYDOWN; use foreground SendInput which dispatches via the system input queue.",
+    "Common cause: terminal runs elevated (admin) while caller does not — UIPI blocks PostMessage.",
+    "Verification scope: only enter / tab / arrow keys are read-back-verified on terminal-class targets. Other combos return hints.verifyDelivery:'unverifiable' rather than this error — caller should observe the semantic effect (e.g. menu open, selection change) directly.",
+  ],
   SetValueAllChannelsFailed: [
     "Verify the element supports text input",
     "Try click_element + keyboard({action:'type'}) manually",
@@ -299,6 +313,9 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   if (m.includes("clipboardwritenotdelivered") || m.includes("clipboard write not delivered")) {
     return { code: "ClipboardWriteNotDelivered", suggest: SUGGESTS.ClipboardWriteNotDelivered };
+  }
+  if (m.includes("backgroundkeynotdelivered") || m.includes("background key not delivered")) {
+    return { code: "BackgroundKeyNotDelivered", suggest: SUGGESTS.BackgroundKeyNotDelivered };
   }
   // Issue #178: keep mouse_drag check BEFORE mouse_click — "mouseclicknotdelivered"
   // would otherwise substring-match a longer string like "mousedragnotdelivered" (it
