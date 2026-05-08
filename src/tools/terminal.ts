@@ -671,7 +671,6 @@ export const terminalSendHandler = async ({
     const homingNotes: string[] = [];
 
     let foregrounded = !focusFirst; // when not requested, treat as success
-    let autoEscalated = false;
     if (focusFirst) {
       // Windows SetForegroundWindow is racy under load — retry until the target
       // really is in the foreground (or give up after 5 tries).
@@ -705,7 +704,6 @@ export const terminalSendHandler = async ({
           const fg = enumWindowsInZOrder().find((w) => w.isActive);
           if (fg && String(fg.hwnd) === targetHwnd) {
             foregrounded = true;
-            autoEscalated = true;
           }
         }
         if (foregrounded) {
