@@ -1,5 +1,42 @@
 # Changelog
 
+## [1.3.1] - 2026-05-08 — discriminatedUnion ツール 6 件の parse 全失敗を修正
+
+v1.3.0 で **`keyboard` / `clipboard` / `window_dock` / `scroll` / `terminal` /
+`browser_eval` の 6 tool が引数の中身に関わらず "Invalid discriminated union
+option at index 0" で全失敗** していた production bug を修正する patch
+リリース。`include` API 自体や CoALA 4 layer memory には影響なし、それ以外の
+22 tool は v1.3.0 と同じ挙動。
+
+### Fixed
+
+- **fix(envelope): resolve discriminator via `_def` for Zod v4 (#171, #172).**
+  v1.3.0 直前の dependabot PR #153 が `zod` を 4.3.6 → 4.4.3 に bump した結果、
+  `ZodDiscriminatedUnion.discriminator` の public field が `_def.discriminator`
+  配下に移動した。`src/tools/_envelope.ts` の `withEnvelopeIncludeForUnion` が
+  旧 path のまま `union.discriminator` を読み続け、v4 では `undefined` を
+  `z.discriminatedUnion(undefined, options)` に渡してしまう結果、6 tool 全部の
+  registration schema が parse 時に discriminator を解決できず、どの variant に
+  も dispatch できなくなっていた。`_def.discriminator ?? union.discriminator` の
+  二段アクセスに変更し、Zod v3 / v4 両対応かつ将来の major bump で同型 silent
+  breakage が再発した場合は明示的に throw する。
+- **test: registration-schema parse の回帰テストを 6 tool 分追加.**
+  `tests/unit/envelope-discriminated-union.test.ts` を新設、
+  `keyboard` / `clipboard` / `window_dock` / `scroll` / `terminal` /
+  `browser_eval` の registration schema を直接 parse して valid input + 別
+  variant + `include:["envelope"]` opt-in 維持 + invalid discriminator → typed
+  Zod error の 4 軸を pin する (20 件)。既存 unit test は wrap 後 schema を
+  parse する経路がカバーされていなかったため bug を見逃していた。
+
+### Migration
+
+v1.3.0 から v1.3.1 への upgrade で **挙動変更は「壊れていた 6 tool が動くように
+なる」のみ**。`include` keyword (raw / envelope / causal / working:N / episodic:N
+/ semantic:K / procedural:K / memory_strict|balanced|open) の semantics、env
+変数 (`DESKTOP_TOUCH_MEMORY_PERSIST` / `DESKTOP_TOUCH_MEMORY_REDACT_TITLES`)、
+permanent storage path (`%USERPROFILE%\.desktop-touch-mcp\memory\`) は v1.3.0
+と完全同一。
+
 ## [1.3.0] - 2026-05-07 — LLM の認知メモリ拡張 (CoALA 4 layer + per-call security tier)
 
 `include` オプションに **4 つの新しい memory keyword** が追加され、LLM が
