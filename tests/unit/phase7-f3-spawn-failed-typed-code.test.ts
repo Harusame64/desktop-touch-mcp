@@ -63,11 +63,14 @@ describe("Phase 7 F3: SpawnFailed typed code", () => {
   });
 
   it("SpawnFailed classify has higher priority than generic 'not found' classify cascades", () => {
-    // SpawnFailed message contains "not found" substring that could collide
-    // with WindowNotFound branch ("window not found" / "no window") today
-    // — in practice no collision because the literal substrings differ —
-    // but verify the SpawnFailed branch wins for any message containing
-    // both "spawnfailed" and "not found".
+    // Pin the classify branch ordering: when a synthesized message contains
+    // BOTH "spawnfailed" (SpawnFailed substring) AND "window not found"
+    // (WindowNotFound substring), branch ordering ensures the more-specific
+    // match wins (SpawnFailed branch placed before WindowNotFound in
+    // `src/tools/_errors.ts::classify()`). This is the only defense layer
+    // — there is no test-time guard against a future refactor accidentally
+    // moving SpawnFailed below WindowNotFound. This test fails immediately
+    // if the ordering invariant is violated.
     const err = new Error(`SpawnFailed: Command "x.exe" not found. some window not found context appended`);
     const result = failWith(err, "workspace_launch");
     const body = JSON.parse(result.content[0]!.text);

@@ -377,10 +377,15 @@ function classify(message: string): { code: string; suggest: string[] } {
     return { code: "InvokePatternNotSupported", suggest: SUGGESTS.InvokePatternNotSupported };
   }
   // Phase 7 F3: workspace_launch spawnDetached rejection (ENOENT / EACCES /
-  // EPERM 等). Place before WindowNotFound because the SpawnFailed message
-  // shape is "spawnfailed: command \"x\" not found" — the trailing "not found"
-  // string would not collide with WindowNotFound branch ("window not found"
-  // / "no window") today, but the more-specific match should win regardless.
+  // EPERM 等). MUST stay BEFORE WindowNotFound — branch ordering is the
+  // only defense layer (no test-time guard) for the case where a SpawnFailed
+  // message tail accidentally contains "window not found" substring. Today
+  // the literal SpawnFailed messages emitted by `src/utils/launch.ts:153-157`
+  // do not contain that substring, but messages can grow over time (extra
+  // context appended by `failWith(err, ...)` callers). The Phase 7 F3 unit
+  // test (`tests/unit/phase7-f3-spawn-failed-typed-code.test.ts` case #6)
+  // pins this ordering by feeding a synthesized message with both substrings
+  // and asserting SpawnFailed wins.
   if (m.includes("spawnfailed") || m.includes("spawn failed:")) {
     return { code: "SpawnFailed", suggest: SUGGESTS.SpawnFailed };
   }
