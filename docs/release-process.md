@@ -95,6 +95,42 @@ npm run build
 npm publish --dry-run
 ```
 
+### Dogfood Pass (Required, v1.3 lesson)
+
+Automated tests + doc audits cannot catch every silent-success / contract
+drift — `run_macro({stop_on_error:true})` was returning step-level
+`ok:true` even when an inner step's envelope was `ok:false`, silently
+running destructive subsequent steps. The bug existed since the v1.0.0
+era and survived every Phase 5 / Phase 6 production-fix audit because no
+automated test exercised the inner-failure halt path. Phase 6 dogfood
+(real-world manual scenario execution, post-PR-A/B closure) caught it
+end-to-end (`docs/llm-audit/phase6-dogfood-findings.md` §F1).
+
+Going forward, each release MUST execute the dogfood scenarios in
+`docs/llm-audit/dogfood-scenarios/` before `npm publish`:
+
+1. **Step 1 smoke test** (~5 min): MCP rebuild + reload, confirm
+   `tools/list` description text reflects the latest code, sanity-check
+   one error-path emission.
+2. **Step 2 Phase-5-fix path verification** (~20 min): exercise every
+   real-world recovery path that Phase 5 / Phase 6 fixes touched (E1
+   typeViaClipboard, E3 mouse_drag ForegroundRestricted, E4
+   scroll:to_element ElementNotFound, AutoGuardBlocked emission).
+3. **Step 3 Tier-1 north-star verification** (~30-60 min): keyboard /
+   mouse / terminal / clipboard / scroll silent-success contract
+   scenarios.
+4. **Step 4 Tier-2 carry-over** (~15 min): workspace_launch / run_macro
+   / notification_show / browser_form error path scenarios.
+
+Document any new finding in `docs/llm-audit/phase{N}-dogfood-findings.md`,
+fix P1 (north-star violation) before release, defer P2/P3 to a follow-up
+release with explicit carry-over note.
+
+The `run_macro` F1 / F2 fix (PR #229) is the canonical case study: a P1
+silent-success drift discovered post-Phase-6-closure, fixed before
+v1.4.0 release. Every future release should treat dogfood as a release
+gate, not an optional polish step.
+
 ### HTTP Transport Verification (Required)
 
 Before publishing, verify HTTP mode works correctly by running the built server locally:
