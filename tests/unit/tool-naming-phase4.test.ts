@@ -848,6 +848,15 @@ describe("Phase 4 — run_macro honours DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2 at ru
     return JSON.parse(first!.text!) as ReturnType<typeof summaryOf>;
   }
 
+  // Note (Phase 6 F1 fix, dogfood-finding): these tests previously asserted
+  // step.ok === true for kill-switch / v1-fallback responses. That assertion
+  // captured the pre-fix bug — `runMacroHandler` returned step-level ok:true
+  // even when the inner content was an ok:false envelope, which silently
+  // defeated `stop_on_error: true`. The fix surfaces inner envelope ok:false
+  // as step-level ok:false, matching the matrix §3.1 line 157 contract. The
+  // payload assertions still verify the kill-switch / v1-fallback message
+  // landed in the inner envelope.
+
   it("kill-switch ON → run_macro({tool:'desktop_discover'}) returns kill-switch error without invoking the facade", async () => {
     const { runMacroHandler } = await import("../../src/tools/macro.js");
     await withKillSwitch("1", async () => {
@@ -859,7 +868,8 @@ describe("Phase 4 — run_macro honours DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2 at ru
       expect(summary.results).toHaveLength(1);
       const step = summary.results[0]!;
       expect(step.tool).toBe("desktop_discover");
-      expect(step.ok).toBe(true);
+      // F1 fix: kill-switch envelope is ok:false → step-level ok:false.
+      expect(step.ok).toBe(false);
       const payload = step.text!.join("\n");
       expect(payload).toContain("DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1");
       expect(payload).toContain("\"ok\": false");
@@ -886,7 +896,8 @@ describe("Phase 4 — run_macro honours DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2 at ru
         stop_on_error: true,
       });
       const summary = summaryOf(out);
-      expect(summary.results[0]!.ok).toBe(true);
+      // F1 fix: kill-switch envelope is ok:false → step-level ok:false.
+      expect(summary.results[0]!.ok).toBe(false);
       expect(summary.results[0]!.text!.join("\n")).toContain("DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1");
     });
   });
@@ -902,7 +913,8 @@ describe("Phase 4 — run_macro honours DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2 at ru
         stop_on_error: true,
       });
       const summary = summaryOf(out);
-      expect(summary.results[0]!.ok).toBe(true);
+      // F1 fix: v1-fallback envelope is ok:false → step-level ok:false.
+      expect(summary.results[0]!.ok).toBe(false);
       const payload = summary.results[0]!.text!.join("\n");
       expect(payload).toContain("V1 fallback only available when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1");
       expect(payload).toContain("desktop_act({action:'setValue'");
@@ -917,7 +929,8 @@ describe("Phase 4 — run_macro honours DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2 at ru
         stop_on_error: true,
       });
       const summary = summaryOf(out);
-      expect(summary.results[0]!.ok).toBe(true);
+      // F1 fix: v1-fallback envelope is ok:false → step-level ok:false.
+      expect(summary.results[0]!.ok).toBe(false);
       expect(summary.results[0]!.text!.join("\n")).toContain("desktop_discover.windows[]");
     });
   });
