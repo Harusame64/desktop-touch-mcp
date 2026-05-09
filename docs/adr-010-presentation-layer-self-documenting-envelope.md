@@ -56,7 +56,7 @@ LLM の不安は 7 つに分解できる。
 - lease_token は単一 ID ではなく 4-tuple (`entityId` / `viewId` / `targetGeneration` / `evidenceDigest`)、envelope 内で展開 → 統合書 §4 / `LeaseStore` 既存実装
 - L4 envelope assembly 制約 (p99 < 5ms 等) → layer-constraints §5
 - L5 tool surface 制約 (query/commit/subscribe SLO) → layer-constraints §6
-- typed reason 37 codes (PascalCase、Codex/Gemini review 経由で拡張) → §5.4
+- typed reason 34 codes (PascalCase、Codex/Gemini review 経由で拡張、Phase 6 cleanup 後) → §5.4
 
 ### 1.5 Tool Surface 不変原則 (重要、誤読防止、統合書 P7 / §7.4 と同期)
 
@@ -276,9 +276,9 @@ tool 呼び出しは isolated event ではなく、**直前の自分の行動の
 
 ### 5.4 typed enum 一覧 — 既存 `_errors.ts` SUGGESTS を SSOT として吸収
 
-既存 `src/tools/_errors.ts` の `SUGGESTS` には **25 個の PascalCase code** が運用済 (現行 main で classify ロジックも完備)。本 ADR の `most_likely_cause` は **これを SSOT として吸収** し、新規追加分のみ拡張する。
+既存 `src/tools/_errors.ts` の `SUGGESTS` には **22 個の PascalCase code** が運用済 (Phase 6 cleanup 後、現行 main で classify ロジックも完備)。本 ADR の `most_likely_cause` は **これを SSOT として吸収** し、新規追加分のみ拡張する。
 
-#### 既存 25 codes (現行 main、PascalCase 維持)
+#### 既存 22 codes (Phase 6 cleanup 後、PascalCase 維持)
 
 ```
 // 引数・基本
@@ -293,14 +293,14 @@ BrowserNotConnected | BrowserSearchNoResults | BrowserSearchTimeout |
 ScopeNotFound
 
 // Terminal
-TerminalWindowNotFound | TerminalTextPatternUnavailable | TerminalMarkerStale
+TerminalWindowNotFound | TerminalTextPatternUnavailable
 
 // Wait / scroll
 WaitTimeout | ScrollbarUnavailable | OverflowHiddenAncestor |
-VirtualScrollExhausted | MaxDepthExceeded
+VirtualScrollExhausted
 
 // RPG
-GuardFailed | LensNotFound | LensBudgetExceeded
+GuardFailed | LensNotFound
 
 // 入力チャネル
 BackgroundInputUnsupported | BackgroundInputIncomplete |
@@ -331,7 +331,7 @@ EnvelopeSizeExceeded
 AccessDenied | Unknown
 ```
 
-合計 25 + 12 = **37 codes**。
+合計 22 + 12 = **34 codes** (Phase 6 cleanup 後)。
 
 #### 運用ルール
 

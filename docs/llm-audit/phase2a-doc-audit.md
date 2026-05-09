@@ -161,10 +161,10 @@
 
 ### F9: scroll:smart description に typed code recovery path 略記
 
-- **matrix §3.1 line 148 規範**: `OverflowHiddenAncestor` / `VirtualScrollExhausted` / `MaxDepthExceeded` typed code を strategy 別失敗時に emit
+- **matrix §3.1 line 148 規範**: `OverflowHiddenAncestor` / `VirtualScrollExhausted` typed code を strategy 別失敗時に emit (Phase 6 cleanup 後、`MaxDepthExceeded` は producer 不在のため classify+SUGGESTS から削除)
 - **production 実装事実**: 上記 typed codes の SUGGESTS / classify は完備、actionable な recovery path 提供
 - **description fact**: scroll.ts line 248-260 で 多 strategy explanation あるが typed code 名の direct 言及なし
-- **推奨 fix**: caveats に typed code 列挙 (`OverflowHiddenAncestor` → `expandHidden:true` 試行 / `VirtualScrollExhausted` → `virtualIndex` 提供 / `MaxDepthExceeded` → `maxDepth` 拡張) を追記
+- **推奨 fix**: caveats に typed code 列挙 (`OverflowHiddenAncestor` → `expandHidden:true` 試行 / `VirtualScrollExhausted` → `virtualIndex` 提供) を追記
 
 ### F10: clipboard description が 1 行で ClipboardWriteNotDelivered + verification 不在
 

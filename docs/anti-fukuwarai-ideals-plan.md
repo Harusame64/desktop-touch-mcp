@@ -107,7 +107,7 @@ pollUntil<T>(
   - `UiaTimeout` → `["Retry with cached=true", "Try screenshot(detail='image') for visual fallback"]`
   - `TerminalWindowNotFound` → `["Call get_windows", "Try partial title match", "Filter by processName pwsh/cmd/bash"]` *(from `terminal-integration-plan.md`)*
   - `TerminalTextPatternUnavailable` → `["Retry with source:'ocr'", "Or source:'auto' to auto-fallback"]` *(from `terminal-integration-plan.md`)*
-  - `TerminalMarkerStale` → `["Omit sinceMarker for full text", "Check hints.terminalMarker.invalidatedBy"]` *(from `terminal-integration-plan.md`)*
+  - `TerminalMarkerStale` → `["Omit sinceMarker for full text", "Check hints.terminalMarker.invalidatedBy"]` *(from `terminal-integration-plan.md`、Phase 6 cleanup で classify+SUGGESTS から削除、stale signal は `hints.terminalMarker.previousMatched:false` で代替 — 詳細 `docs/llm-audit/phase4-query-audit.md` §4.bis)*
   - `BrowserSearchNoResults` → `["Try different 'by' axis", "Remove scope", "Set visibleOnly:false"]` *(from `cdp-search-plan.md`)*
   - `BrowserSearchTimeout` → `["Reduce maxResults", "Narrow scope via CSS selector"]` *(from `cdp-search-plan.md`)*
 - Replace all handler catch blocks with `failWith(err)` → auto-normalizes to ToolError

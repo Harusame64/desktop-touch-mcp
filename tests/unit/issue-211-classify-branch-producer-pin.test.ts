@@ -7,11 +7,11 @@
  * Why this test exists:
  *   PR #219 review (epic #211 Phase 5 closure) uncovered three "dead
  *   typed codes" — entries registered in classify() + SUGGESTS dictionary
- *   but with no producer in `src/`:
- *     - AutoGuardBlocked: classify branch missing entirely (different
- *       defect class — not detected by this test, see §4.bis)
- *     - TerminalMarkerStale: classify branch + SUGGESTS exist, no producer
- *     - MaxDepthExceeded: classify branch + SUGGESTS exist, no producer
+ *   but with no producer in `src/` (TerminalMarkerStale / MaxDepthExceeded
+ *   / LensBudgetExceeded — the third one was discovered by THIS test on
+ *   first CI run, recorded in §4.bis Round 2 addendum). All three were
+ *   removed from classify+SUGGESTS in Phase 6 cleanup; `DEAD_ALLOW_LIST`
+ *   remains as an empty-by-default mechanism for any future carry-over.
  *
  *   The pattern is the same as E1 (typeViaClipboard read-back, PR #224)
  *   and E3 (mouse_drag ForegroundRestricted, PR #223): when a unify PR
@@ -35,10 +35,11 @@
  *         (MouseClickNotDelivered / MouseDragNotDelivered /
  *         BrowserClickNotDelivered — classify-only by design, hint-level
  *         degradation is the contract)
- *       * DEAD_ALLOW_LIST: §4.bis-documented dead codes still in the
- *         dictionary (TerminalMarkerStale / MaxDepthExceeded — kept for
- *         documentation reference + future producer wiring; see Phase 6
- *         cleanup carry-over)
+ *       * DEAD_ALLOW_LIST: empty by default after Phase 6 cleanup. The
+ *         mechanism is preserved so a future audit can grandfather a
+ *         newly-discovered dead code with §4.bis-style documentation
+ *         while a follow-up PR wires the producer or removes the
+ *         classify branch.
  *
  *   Any other classify branch with no producer fails this test → forces
  *   the next PR to either add a producer, allow-list with rationale, or
@@ -54,8 +55,8 @@
  *     non-standard emit path slips through — caught by the next manual
  *     audit cycle, not this CI guard.
  *   - The parser handles multi-line `if (...)` conditions via brace
- *     counting; verified against current classify() shape (32 branches as
- *     of Phase 5 closure 2026-05-10; sanity-bounded `>= 20 && < 60` to
+ *     counting; verified against current classify() shape (29 branches
+ *     after Phase 6 dead-code removal; sanity-bounded `>= 20 && < 60` to
  *     accommodate future additions).
  */
 
@@ -78,16 +79,16 @@ const RESERVED_ALLOW_LIST = new Set<string>([
   "BrowserClickNotDelivered",
 ]);
 
-/** §4.bis: classify-registered codes documented as currently producer-less. */
-const DEAD_ALLOW_LIST = new Set<string>([
-  "TerminalMarkerStale",   // stale marker signaled via hints.terminalMarker.previousMatched
-  "MaxDepthExceeded",      // smart-scroll caps via `while (depth < MAXDEPTH)`, no failWith
-  "LensBudgetExceeded",    // discovered by THIS test on first run — classify+SUGGESTS
-                           //   registered (perception/registry lens count cap concept)
-                           //   but no producer in src/. Documented in §4.bis Round 2
-                           //   addendum. TODO: Phase 6 — either wire a producer when
-                           //   the lens cap is enforced, or remove the classify entry.
-]);
+/**
+ * §4.bis: classify-registered codes documented as currently producer-less.
+ *
+ * Empty after Phase 6 cleanup (PR removed TerminalMarkerStale /
+ * MaxDepthExceeded / LensBudgetExceeded from classify+SUGGESTS). The Set
+ * is retained as a typed mechanism so a future audit can grandfather a
+ * newly-discovered dead code with §4.bis-style documentation while the
+ * follow-up cleanup is staged.
+ */
+const DEAD_ALLOW_LIST = new Set<string>([]);
 
 // ── Parser ───────────────────────────────────────────────────────────────────
 
@@ -244,10 +245,11 @@ describe("Phase 5 §4.bis (epic #211): classify() branch producer pin", () => {
     const errorsContent = readFileSync(ERRORS_FILE, "utf8");
     const branches = parseClassifyBranches(errorsContent);
 
-    // Sanity: parser should find ~30 branches today (currently 32 at
-    // _errors.ts:316-428 as of Phase 5 closure 2026-05-10). If the count
-    // drops drastically the parser is miss-matching the regex (e.g., due
-    // to a refactor of the if-chain shape).
+    // Sanity: parser should find ~30 branches today (currently 29 after
+    // Phase 6 dead-code removal — TerminalMarkerStale / MaxDepthExceeded
+    // / LensBudgetExceeded). If the count drops drastically the parser is
+    // miss-matching the regex (e.g., due to a refactor of the if-chain
+    // shape).
     expect(branches.length).toBeGreaterThanOrEqual(20);
     expect(branches.length).toBeLessThan(60);
 
