@@ -293,14 +293,14 @@ BrowserNotConnected | BrowserSearchNoResults | BrowserSearchTimeout |
 ScopeNotFound
 
 // Terminal
-TerminalWindowNotFound | TerminalTextPatternUnavailable | TerminalMarkerStale
+TerminalWindowNotFound | TerminalTextPatternUnavailable
 
 // Wait / scroll
 WaitTimeout | ScrollbarUnavailable | OverflowHiddenAncestor |
-VirtualScrollExhausted | MaxDepthExceeded
+VirtualScrollExhausted
 
 // RPG
-GuardFailed | LensNotFound | LensBudgetExceeded
+GuardFailed | LensNotFound
 
 // 入力チャネル
 BackgroundInputUnsupported | BackgroundInputIncomplete |

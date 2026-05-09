@@ -68,11 +68,6 @@ const SUGGESTS: Record<string, string[]> = {
     "Or source:'auto' to auto-fallback when TextPattern is missing",
     "Some terminal apps (e.g. WSL inside vt100) do not implement TextPattern",
   ],
-  TerminalMarkerStale: [
-    "Omit sinceMarker to fetch full text",
-    "Check hints.terminalMarker.invalidatedBy — pid_changed/process_restarted means a new shell instance",
-    "After process_restarted, treat prior history as invalid",
-  ],
   BrowserSearchNoResults: [
     "Try a different 'by' axis (text → ariaLabel, regex → role)",
     "Remove the scope parameter to search the full document",
@@ -108,11 +103,6 @@ const SUGGESTS: Record<string, string[]> = {
     "Provide virtualIndex + virtualTotal for direct proportional seeking",
     "Increase retryCount (default 3) or narrow search with hint:'above'|'below'",
   ],
-  MaxDepthExceeded: [
-    "The scroll ancestor chain is deeper than maxDepth (default 3)",
-    "Increase maxDepth to walk more layers",
-    "Or scroll an outer container first via a separate scroll({action:'smart'}) call",
-  ],
   GuardFailed: [
     "Read the perception envelope for attention/guard details",
     "Call desktop_state to force a fresh observation before retrying",
@@ -121,10 +111,6 @@ const SUGGESTS: Record<string, string[]> = {
   LensNotFound: [
     "Drop the lensId — Auto Perception tracks state when you pass windowTitle / tabId directly",
     "If you cached a lensId from a prior session, treat it as expired",
-  ],
-  LensBudgetExceeded: [
-    "Drop lensId — Auto Perception keeps envelope cost bounded automatically",
-    "Or call desktop_state for a lightweight status check without the envelope",
   ],
   BackgroundInputUnsupported: [
     "Target app does not accept background input - use method:'foreground' or omit",
@@ -324,18 +310,12 @@ function classify(message: string): { code: string; suggest: string[] } {
   if (m.includes("lens not found") || m.includes("unknownlens")) {
     return { code: "LensNotFound", suggest: SUGGESTS.LensNotFound };
   }
-  if (m.includes("lens budget") || m.includes("lensbudget")) {
-    return { code: "LensBudgetExceeded", suggest: SUGGESTS.LensBudgetExceeded };
-  }
   // "Terminal window not found" must match BEFORE "window not found" (substring).
   if (m.includes("terminal window not found") || m.includes("terminal not found")) {
     return { code: "TerminalWindowNotFound", suggest: SUGGESTS.TerminalWindowNotFound };
   }
   if (m.includes("textpattern") || m.includes("text pattern")) {
     return { code: "TerminalTextPatternUnavailable", suggest: SUGGESTS.TerminalTextPatternUnavailable };
-  }
-  if (m.includes("marker stale") || m.includes("sincemarker")) {
-    return { code: "TerminalMarkerStale", suggest: SUGGESTS.TerminalMarkerStale };
   }
   if (m.includes("scope not found") || m.includes("scopenotfound")) {
     return { code: "ScopeNotFound", suggest: SUGGESTS.ScopeNotFound };
@@ -372,9 +352,6 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   if (m.includes("virtual scroll exhausted") || m.includes("virtualscrollexhausted")) {
     return { code: "VirtualScrollExhausted", suggest: SUGGESTS.VirtualScrollExhausted ?? [] };
-  }
-  if (m.includes("max depth") || m.includes("maxdepth exceeded")) {
-    return { code: "MaxDepthExceeded", suggest: SUGGESTS.MaxDepthExceeded ?? [] };
   }
   if (m.includes("backgroundinputunsupported") || m.includes("background input unsupported")) {
     return { code: "BackgroundInputUnsupported", suggest: SUGGESTS.BackgroundInputUnsupported };

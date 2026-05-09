@@ -67,7 +67,7 @@
 - **UIA path**: VS Code (Electron だが UIA 経由可) で同 → CDP 不可達 → UIA ScrollItemPattern → response.strategy='uia'
 - **image path**: ScreenSettings (UWP / WinUI) で同 → UIA も部分対応 → image hash diff fallback → response.strategy='image' or warning で degradation
 
-**期待**: 各 strategy で適切に fall-through、最終 fallback で `OverflowHiddenAncestor` / `VirtualScrollExhausted` / `MaxDepthExceeded` typed code emit。
+**期待**: 各 strategy で適切に fall-through、最終 fallback で `OverflowHiddenAncestor` / `VirtualScrollExhausted` typed code emit。
 **Anti-pattern**: CDP 不可達で即 fail、UIA fallback 動作しない (`tests/unit/scroll-ancestors.test.ts` の strategy 切替が production 経路で動作してない)。
 
 ### 4.6 scroll:capture — Edge 縦長 page capture frame seam (E5 dogfood SoT)
