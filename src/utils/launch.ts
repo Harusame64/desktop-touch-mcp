@@ -142,16 +142,20 @@ export function spawnDetached(
 
     child.on("error", (err: NodeJS.ErrnoException) => {
       cleanup();
-      // Build a helpful error message based on the error code
-      let hint: string;
+      // Phase 7 F3: prefix all spawnDetached rejection messages with
+      // "SpawnFailed:" so `_errors.ts::classify()` upgrades them to the
+      // typed `SpawnFailed` code (instead of fall-through to generic
+      // `ToolError`). Inline `new Error(\`SpawnFailed: ...\`)` so the
+      // §4.bis classify-branch producer pin (issue-211 test) can match
+      // the literal call site as a producer (variable-indirected
+      // `new Error(hint)` does not match the keyword regex set).
       if (err.code === "ENOENT") {
-        hint = `Command "${command}" not found. Provide the full path (e.g. "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe").`;
+        reject(new Error(`SpawnFailed: Command "${command}" not found. Provide the full path (e.g. "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe").`));
       } else if (err.code === "EACCES" || err.code === "EPERM") {
-        hint = `Permission denied for "${command}". Check that the file is executable and not blocked by policy.`;
+        reject(new Error(`SpawnFailed: Permission denied for "${command}". Check that the file is executable and not blocked by policy.`));
       } else {
-        hint = `spawn failed for "${command}": ${err.message}`;
+        reject(new Error(`SpawnFailed: spawn failed for "${command}": ${err.message}`));
       }
-      reject(new Error(hint));
     });
   });
 }

@@ -81,6 +81,8 @@ line 279 「現行 main で classify ロジックも完備」を削除 or 「ADR
 
 合計 sync: **catalog 49 - LeaseExpired 1 (S4 trunk 実装) = 残 48 expansion P2** が cascade 全 numeric ref に反映 (PR #231 Round 1 P2-1 反映で walking-skeleton-trunk-selection.md + walking-skeleton-expansion-plan.md の cascade sweep miss も解消)。
 
+**Phase 7 F3 fix (本 doc Resolved 後の派生)**: F3 PR で SpawnFailed typed code が live `_errors.ts` に追加され、catalog 49 → **50 codes** / 残 48 → **49 codes** に更新。F3 PR 内で cascade 全 numeric ref を 1 commit で同期 sweep し、Phase 7 reconcile invariant を維持。
+
 ---
 
 ## 4. 優先度 (Resolved 後)
