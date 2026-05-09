@@ -105,7 +105,9 @@ Phase 5 closure では北極星「silent-success / contract drift = 0」を **au
 
 ---
 
-## F5 (doc only): scenario doc が Win11 Notepad multi-instance を反映していない
+## F5 (doc only, **FIXED Phase 7**): scenario doc が Win11 Notepad multi-instance を反映していない
+
+**Status**: **Fixed** (Phase 7 patch、対象 app を `chrome.exe` に変更 + Win11 Notepad multi-instance note 追加)
 
 **Location**: `docs/llm-audit/dogfood-scenarios/launcher-macro.md` §1.1
 
@@ -117,6 +119,11 @@ Phase 5 closure では北極星「silent-success / contract drift = 0」を **au
 **修正方針**:
 - §1.1 の対象 app を `chrome.exe` / `outlook.exe` / `vscode.exe` 等 truly single-instance app に変更
 - または Win11 Notepad multi-instance に合わせて scenario rewrite
+
+**修正反映** (Phase 7 v1.4.1 patch、本 PR):
+- §1.1 対象 app を `notepad.exe` → `chrome.exe` に変更 (line 136 共通 note 整合)
+- §1.1 に「対象 app の選定」subsection を追加し truly single-instance / multi-instance の区別を明示
+- 「Win11 New Notepad は multi-instance、本 scenario の対象外」note を追加 (将来の dogfood 担当が同じ罠を踏まないため)
 
 ---
 
