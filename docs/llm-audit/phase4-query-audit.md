@@ -113,13 +113,14 @@ doc 軸 11 件:
 
 #### Cell-level (88 cells、`(gap: ...)` admission count)
 
-- `file:line` 単位で automated pin 固定 + doc 4 cells で SUGGESTS/classify/matrix が pass: **83 cells**
-- `(gap: ...)` 明示 admission cells: **5 cells**
+- `file:line` 単位で automated pin 固定 + doc 4 cells で SUGGESTS/classify/matrix が pass: **82 cells**
+- `(gap: ...)` 明示 admission cells: **6 cells**
+  - cell Q5 error (1 cell、clipboard:read read-path dedicated typed-error pin 不在 — non-text payload で empty string return が production fact、design constraint 由来)
   - cell Q7 error / edge / chain (3 cells、server_status diagnostic-only design constraint 由来 — fixed response schema、init failure process-fatal、no downstream feed)
-  - cell Q11 error (1 cell、workspace_snapshot generic exception のため typed error 不在 — design constraint 由来)
   - cell Q10 error (1 cell、browser_locate ElementNotFound dedicated pin 不在 — `tests/e2e/browser-search.test.ts` で family-level 共有可)
+  - cell Q11 error (1 cell、workspace_snapshot generic exception のため typed error 不在 — design constraint 由来)
 
-合計: 88 = 83 pinned + 5 admission。design constraint 由来 (diagnostic-only / generic exception / family-level shared) で automated pin 化の cost-benefit 低、Phase 5 release readiness 判定外し候補 (E5 / H1 と同型 defer cluster K6)。
+合計: 88 = 82 pinned + 6 admission。design constraint 由来 (diagnostic-only / generic exception / family-level shared / non-text payload empty return) で automated pin 化の cost-benefit 低、Phase 5 release readiness 判定外し候補 (E5 / H1 と同型 defer cluster K6)。
 
 ## 4. Findings 詳細 (issue 起票候補)
 
@@ -169,7 +170,7 @@ doc 軸 11 件:
 | **J3** (Phase 3a G9+G11) | description minor enrichment | Low | docs only |
 | **E5** (Phase 2b) | scroll:capture frame seam | **Defer** | optional |
 | **H1** (Phase 3b) | design-constraint error path automated pin | **Defer** | optional |
-| **K6** (Phase 4) | Q7/Q10/Q11 design-constraint cell-level (gap:) admission (server_status / browser_locate / workspace_snapshot) | **Defer** | optional |
+| **K6** (Phase 4) | Q5/Q7/Q10/Q11 design-constraint cell-level (gap:) admission (clipboard:read / server_status / browser_locate / workspace_snapshot) | **Defer** | optional |
 
 I1 + J1 が production contract drift で Phase 5 closure における highest priority。description 補強 (I2+J2+K1-K5) は 統合 1 PR で land 可、Medium priority。design-constraint defer (E5 + H1 + K6) は automated pin 化の cost-benefit が低く、dogfood scenario doc が代替 SoT。
 
@@ -179,7 +180,7 @@ I1 + J1 が production contract drift で Phase 5 closure における highest p
 - [x] doc 4 + 实机 4 columns 各 cell に判定値記入
 - [x] 既存 pin file:line 引用 / production code line / matrix § 引用残置
 - [x] Issue 起票候補リスト (K1-K5 doc gap + K6 defer) 作成 + Phase 2a/2b/3a/3b 統合管理表 (I1-J4 + E1-E5 + H1 + K1-K6)
-- [x] Plan §6 acceptance 「scenario の永続化を 2 経路に分離」 — 既存 automated pins は本 doc 内 file:line 引用、5 cell の design-constraint admission は本 doc §3.3 cell-level 内訳で永続化 (新規 dogfood scenario 不要、E5/H1 と同型 defer)
+- [x] Plan §6 acceptance 「scenario の永続化を 2 経路に分離」 — 既存 automated pins は本 doc 内 file:line 引用、6 cell の design-constraint admission は本 doc §3.3 cell-level 内訳で永続化 (新規 dogfood scenario 不要、E5/H1 と同型 defer)
 - [x] CLAUDE.md §3.1 multi-table fact 整合 sweep — 各 fact を 5 view で bit-equal 確認:
   1. matrix §3.2 規範 (line 176-186)
   2. production code 実装事実 (`src/tools/{screenshot,desktop-state,desktop-register,wait-until,clipboard,terminal,server-status,browser,workspace}.ts`)
