@@ -247,6 +247,17 @@ const SUGGESTS: Record<string, string[]> = {
     "Try click_element + keyboard({action:'type'}) manually",
     "Check context.attempts for per-channel error codes",
   ],
+  // Phase 2a F4 / Phase 5 I1: keyboard({action:'type'}) Focus Leash Phase B
+  // mid-stream focus theft. matrix §3.1 line 141 規範:
+  // foreground-stealing protection が caller の send 中に他 window へ focus
+  // を奪った場合、SendInput が誤窓に landing するのを防ぐため send を中断し
+  // typed/remaining を返す。caller は context.remaining を text として
+  // re-focus + retry することで full delivery を完了できる。
+  FocusLostDuringType: [
+    "User stole foreground mid-type — re-focus the target window then call keyboard(action:'type') again with context.remaining as text",
+    "For terminals, prefer method:'auto' so input routes through HWND-targeted WM_CHAR (Phase A — foreground-independent)",
+    "Pass abortOnFocusLoss:false to disable the leash and fall back to single-shot send (post-action focusLost detection still runs)",
+  ],
   // ADR-011 Phase B B-1: Working memory N upper bound (WORKING_MEMORY_N_MAX
   // = 50, layer-constraints §5 SSOT 整合) を超える要求が来た場合の typed
   // reason。silently truncate せず error を返す設計 (Phase B plan §4.3
@@ -376,6 +387,12 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   if (m.includes("backgroundinputnotdelivered") || m.includes("background input not delivered")) {
     return { code: "BackgroundInputNotDelivered", suggest: SUGGESTS.BackgroundInputNotDelivered };
+  }
+  // Phase 5 I1 (Phase 2a F4): keyboard({action:'type'}) Focus Leash mid-stream
+  // focus theft typed code. SUGGESTS dictionary entry above provides the SSOT
+  // for recovery hints (re-focus + retry with context.remaining).
+  if (m.includes("focuslostduringtype") || m.includes("focus lost during type")) {
+    return { code: "FocusLostDuringType", suggest: SUGGESTS.FocusLostDuringType };
   }
   if (m.includes("clipboardwritenotdelivered") || m.includes("clipboard write not delivered")) {
     return { code: "ClipboardWriteNotDelivered", suggest: SUGGESTS.ClipboardWriteNotDelivered };

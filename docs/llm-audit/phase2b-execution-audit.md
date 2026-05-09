@@ -60,7 +60,7 @@
 | # | Action | 正常 path | error path | edge case | chain | 判定 |
 |---|---|---|---|---|---|---|
 | 4 | keyboard:type BG | `tests/e2e/keyboard-bg-verification.test.ts:60-183` (issue #177 verification: `BackgroundInputNotDelivered` round-trip + verifyDelivery hint、real Notepad PostMessage WM_CHAR) | `tests/e2e/keyboard-bg-verification.test.ts:60-183` (BG path silent-drop → `BackgroundInputNotDelivered` typed code) | `tests/unit/keyboard-method-resolution.test.ts:122-167` (auto-pick class allowlist: WT excluded #173 / ConsoleWindowClass allowed)、`tests/unit/keyboard-leash-guard.test.ts:320-359` (surrogate pair / emoji-heavy text、UTF-16 typed/remaining) | `tests/unit/keyboard-leash-guard.test.ts:280-318` (chunkSize 4 で 8-char text → 2 chunks、focus theft mid-stream → typed=4/remaining=`efgh` retry chain) | **pass** |
-| 5 | keyboard:type FG | `tests/unit/issue-184-foreground-refusal-pin.test.ts:228-255` (success path: target reaches foreground after default → no early-return) | `tests/unit/issue-184-foreground-refusal-pin.test.ts:142-226` (default+force escalation refusal、forceFocus:true skip default ladder)、**F4 contract drift**: `tests/unit/keyboard-leash-guard.test.ts:263-298` (現状 `error` 文字列 / `context.context.suggest` nest shape、SSOT 期待形 `code:"FocusLostDuringType"` top-level でない) | `tests/unit/keyboard-leash-guard.test.ts:171-209` (`getLeashChunkSize` env clamp [1,1024])、`tests/unit/keyboard-leash-guard.test.ts:382-444` (modifier release safety valve 6 calls on theft) | `tests/unit/keyboard-leash-guard.test.ts:280-359` (typed/remaining + surrogate pair retry chain、`tests/e2e/keyboard-focus-lost.test.ts:17-66` (focusLost FG E2E)) | **fix carry-over (contract drift)** — F4 (Phase 2a 既出、I1 issue 起票候補) |
+| 5 | keyboard:type FG | `tests/unit/issue-184-foreground-refusal-pin.test.ts:228-255` (success path: target reaches foreground after default → no early-return) | `tests/unit/issue-184-foreground-refusal-pin.test.ts:142-226` (default+force escalation refusal、forceFocus:true skip default ladder)、`tests/unit/keyboard-leash-guard.test.ts:263-298` (PR #218 / I1 land 後 SSOT envelope shape: `code:"FocusLostDuringType"` top-level + `suggest` top-level + `context.{typed,remaining,total,chunkSize,focusLost}` single-nest) | `tests/unit/keyboard-leash-guard.test.ts:171-209` (`getLeashChunkSize` env clamp [1,1024])、`tests/unit/keyboard-leash-guard.test.ts:382-444` (modifier release safety valve 6 calls on theft) | `tests/unit/keyboard-leash-guard.test.ts:280-359` (typed/remaining + surrogate pair retry chain、`tests/e2e/keyboard-focus-lost.test.ts:17-66` (focusLost FG E2E)) | **pass** (PR #218 land 後、F4 contract drift 解消) |
 | 6 | keyboard:press BG | `tests/e2e/keyboard-bg-verification.test.ts:184-` (issue #177 verification: enter/tab/arrow → terminal-class read-back、その他 combo → `verifyDelivery:'unverifiable'`)、`tests/unit/keyboard-method-resolution.test.ts:74-103` (explicit method passthrough) | `tests/e2e/keyboard-bg-verification.test.ts:184-` (verification 失敗時 `BackgroundKeyNotDelivered`)、Phase 2a F5 (description で typed code 言及不在 doc gap、I2 issue 起票候補) | `tests/unit/keyboard-method-resolution.test.ts:169-213` (degraded inputs: 空 title / window not found / class throw / enum throw → `auto` graceful fall-through) | (gap: combo `ctrl+a` semantic verification — UIA SelectionPattern read 観測経路は matrix §3.1 line 142 規範のみ、automated pin 不在) — `docs/llm-audit/dogfood-scenarios/keyboard.md` §2.4 で manual scenario | **pass** (F5 doc gap は I2 で別 PR、test 軸は covered) |
 | 7 | keyboard:press FG | `tests/unit/issue-207-foreground-refusal-press.test.ts:158-177` (success path: target reaches foreground after default) | `tests/unit/issue-207-foreground-refusal-press.test.ts:99-156` (default+force refusal + forceFocus:true skip default ladder) | (gap: combo specific edge — modifier ordering / Ctrl+Shift+Tab focus shift detection) — `docs/llm-audit/dogfood-scenarios/keyboard.md` §2.5 で manual | `tests/e2e/keyboard-focus-lost.test.ts:67-` (keyboard_press focusLost contract、retry chain は scenario `keyboard.md` §2.6) | **fix carry-over (scenario gap)** — E2 (combo edge automated pin) |
 
@@ -93,9 +93,9 @@
 
 #### Action-level (15 actions、Plan §4.3 整合)
 
-- `pass`: **9 actions** — 1 (terminal:send BG)、3 (terminal:run)、4 (keyboard:type BG)、6 (keyboard:press BG)、8 (mouse_click)、10 (scroll:raw)、12 (scroll:smart)、14 (scroll:read)、15 (clipboard:write)
+- `pass`: **10 actions** — 1 (terminal:send BG)、3 (terminal:run)、4 (keyboard:type BG)、5 (keyboard:type FG、PR #218 / I1 land 後 F4 contract drift 解消)、6 (keyboard:press BG)、8 (mouse_click)、10 (scroll:raw)、12 (scroll:smart)、14 (scroll:read)、15 (clipboard:write)
 - `fix carry-over (scenario gap)`: **5 actions** — 2 (terminal:send FG = E1)、7 (keyboard:press FG = E2)、9 (mouse_drag = E3)、11 (scroll:to_element = E4)、13 (scroll:capture = E5)
-- `fix carry-over (contract drift)`: **1 action** — 5 (keyboard:type FG = F4、Phase 2a 既出、I1 issue 起票候補で再掲)
+- `fix carry-over (contract drift)`: **0 actions** (Phase 2a F4 / Phase 5 I1 = PR #218 で解消、本 phase で carry-over なし)
 - `breaking change candidate`: 0
 - `unverifiable accepted`: 0
 
@@ -175,13 +175,13 @@ Phase 2a 既出 (I1-I3) との統合管理:
 
 | # | Phase 2a / 2b 由来 | 優先度 |
 |---|---|---|
-| **I1** | F4 fix — `FocusLostDuringType` SSOT 登録 (production code 改修、Codex 必須) | **High** |
+| **I1** | F4 fix — `FocusLostDuringType` SSOT 登録 (production code 改修、Codex 必須) — **Resolved (PR #218 land 後)** | High → **Resolved** |
 | **I2** | F1 + F3 + F5 + F6 + F7 + F8 + F9 + F10 description 補強 (docs only) | Medium |
 | **I3** | F2 cross-tool ForegroundRestricted recovery path 統一 wording (docs only) | Medium |
 | **E1-E4** | Phase 2b 由来 automated pin gap (test only、production fact / matrix 規範 OK) | E1/E3/E4=Medium、E2=Low |
 | **E5** | scroll:capture frame seam automated pin | Defer |
 
-I1 が依然 highest priority (production contract drift)、E1/E3/E4 は test coverage gap (regression detection 強化、breaking regression の future protection)、E2 / E5 は **defer 妥当**。
+I1 は **PR #218 で resolved** (Phase 5 closure 進捗)、E1/E3/E4 は test coverage gap (regression detection 強化、breaking regression の future protection)、E2 / E5 は **defer 妥当**。
 
 ## 6. Phase 2b closure conditions (本 PR スコープ)
 
@@ -204,7 +204,7 @@ I1 が依然 highest priority (production contract drift)、E1/E3/E4 は test co
 
 ## 7. Out of scope (本 PR)
 
-- production code 改修 (F4 / I1 SSOT fix も別 PR)
+- production code 改修 (F4 / I1 SSOT fix は **PR #218 (本 phase 後の closure PR) で resolved**、本 phase 自身は docs only)
 - 新規 automated pin 実装 (E1-E5 は別 PR で起票 → 実装)
 - 28 tool 残 13 actions の commit 軸 audit (Phase 3、Plan §5)
 - 11 tool query 軸 audit (Phase 4、Plan §5)
@@ -219,7 +219,7 @@ Phase 2a で発見した 9 distinct findings (F1-F10、F2 は 2 actions) と本 
 | F1 (terminal:send BG hidden_input doc gap) | Cell 1 desc/examples 軸は I2 で別 PR、本 phase 実機 cell は **pass** (existing pin coverage、`tests/unit/terminal-hidden-input.test.ts` で `isHiddenInputPrompt` 完備) |
 | F2 (terminal/keyboard/mouse FG ForegroundRestricted recovery path 不在) | I3 で別 PR、本 phase の error path cell は **pass** (existing pin coverage、issue-184/207 family で structural pin 完備) |
 | F3 (keyboard:type BG description recovery example 不在) | I2 で別 PR、本 phase は **pass** (`tests/e2e/keyboard-bg-verification.test.ts` で round-trip 完備) |
-| F4 (FocusLostDuringType SSOT 未登録、contract drift) | I1 で別 PR、**本 phase cell 5 (keyboard:type FG) で contract drift 判定継承**、production code 改修必須 |
+| F4 (FocusLostDuringType SSOT 未登録、contract drift) | I1 = **PR #218 で resolved (Phase 5 closure)**、本 phase cell 5 (keyboard:type FG) は PR #218 land 後 **pass 判定継承** |
 | F5 (keyboard:press BG description scope 言及不在) | I2 で別 PR、本 phase は **pass** |
 | F6/F7 (mouse_click / mouse_drag description verifyDelivery 言及不在) | I2 で別 PR、cell 8 = **pass**、cell 9 = **fix carry-over (scenario gap)** で別軸 (E3) |
 | F8 (scroll:raw description ScrollNotDelivered 言及不在) | I2 で別 PR、本 phase cell 10 は **pass** |

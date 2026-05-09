@@ -269,11 +269,18 @@ describe("keyboardTypeHandler — Phase B leash-enabled foreground send", () => 
     });
     const result = await keyboardTypeHandler(baseArgs);
     const parsed = JSON.parse(result.content[0]?.text ?? "{}");
+    // Phase 5 I1 (Phase 2a F4): SSOT envelope shape — code top-level,
+    // suggest top-level (auto-resolved by classify from SUGGESTS dictionary),
+    // context fields single-nest (no double-nested context.context).
     expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("FocusLostDuringType");
     expect(parsed.error).toContain("FocusLostDuringType");
-    expect(parsed.context.context.typed).toBe(0);
-    expect(parsed.context.context.remaining).toBe("abcdefgh");
-    expect(parsed.context.context.focusLost.stolenBy).toBe("Chrome");
+    expect(Array.isArray(parsed.suggest)).toBe(true);
+    expect(parsed.suggest.length).toBeGreaterThan(0);
+    expect(parsed.suggest[0]).toMatch(/re-focus the target window/);
+    expect(parsed.context.typed).toBe(0);
+    expect(parsed.context.remaining).toBe("abcdefgh");
+    expect(parsed.context.focusLost.stolenBy).toBe("Chrome");
     expect(mockTypeFn).not.toHaveBeenCalled();
   });
 
@@ -289,9 +296,10 @@ describe("keyboardTypeHandler — Phase B leash-enabled foreground send", () => 
     const result = await keyboardTypeHandler(baseArgs);
     const parsed = JSON.parse(result.content[0]?.text ?? "{}");
     expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("FocusLostDuringType");
     expect(parsed.error).toContain("FocusLostDuringType");
-    expect(parsed.context.context.typed).toBe(4);
-    expect(parsed.context.context.remaining).toBe("efgh");
+    expect(parsed.context.typed).toBe(4);
+    expect(parsed.context.remaining).toBe("efgh");
     // First chunk was sent before theft
     expect(mockTypeFn).toHaveBeenCalledTimes(1);
     expect(mockTypeFn).toHaveBeenCalledWith("abcd");
@@ -306,8 +314,8 @@ describe("keyboardTypeHandler — Phase B leash-enabled foreground send", () => 
     });
     const result = await keyboardTypeHandler(baseArgs);
     const parsed = JSON.parse(result.content[0]?.text ?? "{}");
-    expect(parsed.context.context.total).toBe(8);
-    expect(parsed.context.context.chunkSize).toBe(4);
+    expect(parsed.context.total).toBe(8);
+    expect(parsed.context.chunkSize).toBe(4);
   });
 
   it("text length not a multiple of chunkSize is handled (5 chars / 4 = 2 chunks: 4 + 1)", async () => {
@@ -352,8 +360,8 @@ describe("keyboardTypeHandler — Phase B leash-enabled foreground send", () => 
       });
     const result = await keyboardTypeHandler({ ...baseArgs, text: "😀hello" });
     const parsed = JSON.parse(result.content[0]?.text ?? "{}");
-    expect(parsed.context.context.typed).toBe(5);
-    expect(parsed.context.context.remaining).toBe("lo");
+    expect(parsed.context.typed).toBe(5);
+    expect(parsed.context.remaining).toBe("lo");
     // First chunk delivered with intact surrogate pair
     expect(mockTypeFn).toHaveBeenCalledWith("😀hel");
   });
