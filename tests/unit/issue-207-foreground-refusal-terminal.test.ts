@@ -11,11 +11,15 @@
  *
  *   - keyboard:type pin: `enumWindowsInZOrder` + `restoreAndFocusWindow`
  *     + focusWindowForKeyboard (helper) sequencing
- *   - terminal:send pin (this file): `enumWindowsInZOrder` ×6 mocks
- *     (1 initial findTerminalWindow + 5 retry × 1 + 1 post-escalate),
- *     `restoreAndFocusWindow` for default + force, plus identity-tracker
- *     and BG-input subsystem stubs so the FG path is exercised in
- *     isolation.
+ *   - terminal:send pin (this file): `enumWindowsInZOrder` is invoked
+ *     8 times across the FG path (1 initial findTerminalWindow + 1
+ *     allBefore restoreFocus capture + 5 retry default + 1 escalate
+ *     re-enum) — the test uses `mockReturnValue(constant)` so any
+ *     count drift is caught explicitly via
+ *     `expect(mockEnum).toHaveBeenCalledTimes(8)` (Opus PR #209
+ *     Round 2 docstring sync). `restoreAndFocusWindow` for default +
+ *     force, plus identity-tracker and BG-input subsystem stubs so
+ *     the FG path is exercised in isolation.
  *
  * Two cases pinned (the success path is structurally identical to
  * keyboard:type's success pin and is documented as not duplicated):
