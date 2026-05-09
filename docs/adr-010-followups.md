@@ -14,10 +14,11 @@ Phase 6 PR-A の Round 3 Opus review で **ADR-010 §5.4 catalog と現行 `src/
 
 ### 2.1 事実
 
-- **ADR-010 §5.4 catalog 主張**: 「既存 22 codes」 (Phase 6 cleanup 後、line 279 / 281、Phase 6 削除 3 件反映済)
-- **現行 main HEAD `925ce8b` 時点 `_errors.ts` SUGGESTS**: 39 entries
-- **Phase 6 PR-A `af8479a` 時点**: 36 entries (-3 で Phase 6 削除完了)
-- **乖離**: 14 entries が ADR-010 §5.4 catalog に未反映 (`_errors.ts` だけ後追いで追加され、ADR catalog 全面 reconcile が怠られた累積)
+- **ADR-010 §5.4 catalog 主張**: 「既存 23 codes」 (ADR baseline 25 - PR-A 3 + PR-B 1、line 279 / 281、live `_errors.ts` 全 entries とは異なる subset)
+- **PR-A merge 前 main HEAD `925ce8b` 時点 `_errors.ts` SUGGESTS**: 39 entries (Phase 5 closure 直後)
+- **PR-A merged 時点 (現行 main HEAD `8629de9`)**: 36 entries (-3 で Phase 6 削除完了)
+- **PR-B merged 後の見込み**: 37 entries (+1 で AutoGuardBlocked 追加)
+- **乖離**: 14 entries が ADR-010 §5.4 catalog に未反映 (`_errors.ts` だけ後追いで追加され、ADR catalog 全面 reconcile が怠られた累積、PR-B AutoGuardBlocked 追加以前から存在)
 
 ### 2.2 14 entries の起源 (推定)
 
