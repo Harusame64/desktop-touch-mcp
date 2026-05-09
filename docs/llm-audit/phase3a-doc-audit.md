@@ -77,7 +77,7 @@ Phase 2a / 2b で扱った Tier 1 (15 actions、過去 issue 多発) 以外の T
 - `breaking change candidate`: 0
 - `unverifiable accepted`: 0
 
-合計 13 actions。distinct findings 8 件 (G1/G2/G3/G7/G8/G9/G11/G12/G13、G7+G13 は同 cell)。
+合計 13 actions。distinct findings **9 件** (G1/G2/G3/G7/G8/G9/G11/G12/G13、G7 (description gap) + G13 (matrix narrowing) は cell 23 を共有するが軸が独立した distinct finding)。
 
 ## 3. Findings 詳細 (issue 起票候補)
 
