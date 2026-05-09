@@ -2636,7 +2636,7 @@ export function registerBrowserTools(server: McpServer): void {
 
   server.tool(
     "browser_overview",
-    "List all interactive elements (links, buttons, inputs, ARIA controls) on the current page with CSS selectors, visible text or value for inputs, and viewport status — use before browser_click to discover stable selectors, and prefer this over screenshot when verifying button/toggle state after submission (no image tokens, structured output). scope limits to a CSS subsection (e.g. '.sidebar'). Returns state (checked/pressed/selected/expanded) for ARIA custom controls. Caveats: Selectors are CDP-generated snapshots — re-call after page navigates or re-renders. Input text reflects the empty-field hint text when defined (takes priority over typed value) — use browser_eval('document.querySelector(sel).value') to read actual typed content. Typed errors: code:'BrowserNotConnected' (CDP not attached — call browser_open or browser_open({launch:{}})), code:'ScopeNotFound' (the scope CSS selector did not match — verify the selector or omit scope to search the whole document).",
+    "List all interactive elements (links, buttons, inputs, ARIA controls) on the current page with CSS selectors, visible text or value for inputs, and viewport status — use before browser_click to discover stable selectors, and prefer this over screenshot when verifying button/toggle state after submission (no image tokens, structured output). scope limits to a CSS subsection (e.g. '.sidebar'). Returns state (checked/pressed/selected/expanded) for ARIA custom controls. Caveats: Selectors are CDP-generated snapshots — re-call after page navigates or re-renders. Input text reflects the empty-field hint text when defined (takes priority over typed value) — use browser_eval('document.querySelector(sel).value') to read actual typed content. Typed errors: code:'BrowserNotConnected' (CDP not attached — call browser_open or browser_open({launch:{}})). Note: a non-matching scope CSS selector silently falls back to the full document (does not raise an error) — verify the selector via browser_eval if scoped enumeration is required.",
     browserOverviewRegistrationSchema,
     browserOverviewRegistrationHandler as typeof browserGetInteractiveHandler
   );
@@ -2648,7 +2648,7 @@ export function registerBrowserTools(server: McpServer): void {
     "Returns tabs[] with id, url, title, active — pass tabId to browser_* tools to target a specific tab. " +
     "Caveats: CDP connection is per-process; if Chrome restarts, call browser_open again to get fresh tab IDs. " +
     "A Chrome session started without --remote-debugging-port cannot be taken over — close it first or use a separate userDataDir. " +
-    "If the CDP endpoint is unreachable and launch is omitted, returns code:'BrowserNotConnected' — re-call with launch:{} (idempotent) to auto-spawn or start Chrome manually with --remote-debugging-port=9222.",
+    "If the CDP endpoint is unreachable and launch is omitted, returns ok:false (typically code:'BrowserNotConnected' when the fetch surfaces ECONNREFUSED, otherwise code:'ToolError' with error 'Cannot reach Chrome/Edge CDP...'); re-call with launch:{} (idempotent) to auto-spawn or start Chrome manually with --remote-debugging-port=9222.",
     browserOpenRegistrationSchema,
     browserOpenRegistrationHandler as typeof browserOpenHandler
   );
