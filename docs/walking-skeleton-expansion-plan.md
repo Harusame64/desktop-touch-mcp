@@ -38,7 +38,7 @@ trunk lock layer (= expansion で touch 禁止):
 | 1 | **L5 commit tool wrapper** | mouse_click / keyboard / clipboard / scroll / focus_window / browser_click / browser_fill / browser_form / browser_open / browser_navigate / window_dock / notification_show / terminal_send / workspace_launch / run_macro / mouse_drag / browser_eval (commit dual) / 残 7 commit | **1 (最高)** | 8-10 | ✓ 完全並走可 | なし |
 | 2 | **L5 query tool wrapper** | screenshot / browser_overview / browser_locate / browser_search / desktop_discover (S4 既存) / wait_until / workspace_snapshot / server_status / 残 2 query | **2** | 5-7 | ✓ 完全並走可 | なし |
 | 3 | **L4 envelope 拡張** | invariants_held (P3) / query_past (P4 link only) / dry-run (P5、predicted_post_state 依存) / working memory (P6) / `confidence` 残 3 値 (`cached` / `inferred` / `stale`) | **3** | 4-5 | △ 順次 (依存関係あり) | なし |
-| 4 | **typed reason 残 48 codes** | `_errors.ts::SUGGESTS` を `try_next: TypedAction[]` に進化、ADR-010 P2 acceptance 100% mapping。残 48 codes のうち lease 経路 4 codes (`LeaseGenerationMismatch` / `EntityNotFound` / `LeaseDigestMismatch` / `EntityOutsideViewport`) は trunk pattern コピー | **4** | 4-5 | ✓ 並走可 (code ごと独立) | なし |
+| 4 | **typed reason 残 49 codes** | `_errors.ts::SUGGESTS` を `try_next: TypedAction[]` に進化、ADR-010 P2 acceptance 100% mapping。残 49 codes のうち lease 経路 4 codes (`LeaseGenerationMismatch` / `EntityNotFound` / `LeaseDigestMismatch` / `EntityOutsideViewport`) は trunk pattern コピー | **4** | 4-5 | ✓ 並走可 (code ごと独立) | なし |
 | 5 | **L1 secondary monitor** | DXGI dirty rect の secondary monitor subscription / per-monitor aggregate 分離 | **5** | 1-2 | ✓ 並走可 (L1 単独) | あり (`crates/dxgi-bridge` 等、trunk lock 外) |
 | 6 | **L1 emit sites** | P5c-3 Window event / P5c-4 Scroll event / P5d timestamp 多重化 | **6** | 3-4 | ✓ 並走可 (L1 内 disjoint) | あり (`src/l1_capture` = trunk lock layer、本来 expansion 範囲外、別 ADR) |
 | 7 | **L3 view 拡充** | semantic_event_stream / predicted_post_state | **7** | 2-3 | △ D2-E0 scope は共有 | あり (`crates/engine-perception` = trunk lock layer、別 ADR) |
@@ -52,7 +52,7 @@ trunk lock layer 改変なしで mechanical コピーで進められるのは sw
 - **swimlane 1 (L5 commit)**: 最大波及効果、worktree 3-5 並走で 1-2 週間想定
 - **swimlane 2 (L5 query)**: swimlane 1 と同型、worktree 並走で同期間
 - **swimlane 3 (L4 envelope)**: 順次 (P3 → P4 → P5 → P6 + confidence 拡張)、約 2 週間
-- **swimlane 4 (typed reason)**: 残 48 codes mechanical、worktree 並走で 1 週間
+- **swimlane 4 (typed reason)**: 残 49 codes mechanical、worktree 並走で 1 週間
 
 合計工数 (sequential 換算): 4-6 週間、worktree 3-5 並走で 1-2 週間圧縮可能。
 

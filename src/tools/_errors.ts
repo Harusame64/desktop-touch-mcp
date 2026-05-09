@@ -263,6 +263,21 @@ const SUGGESTS: Record<string, string[]> = {
     "For terminals, prefer method:'auto' so input routes through HWND-targeted WM_CHAR (Phase A — foreground-independent)",
     "Pass abortOnFocusLoss:false to disable the leash and fall back to single-shot send (post-action focusLost detection still runs)",
   ],
+  // Phase 7 F3: workspace_launch spawnDetached rejection (ENOENT / EACCES /
+  // EPERM 等) の typed reason。production handler は `failWith(err)` 経由で
+  // generic `ToolError` に流れていた (Phase 6 dogfood で発見)、agent が typed
+  // code 経由 retry pattern を組めない silent fall-through だった。
+  // launch.ts:148-152 の hint message を `SpawnFailed:` prefix 化して
+  // classify() で typed enum に昇格、SUGGESTS で recovery hint を提示する。
+  // matrix doc §3.1 line 156 の workspace_launch error path 規範整合
+  // (`docs/llm-audit/dogfood-scenarios/launcher-macro.md` §1.2 expectation)。
+  SpawnFailed: [
+    "The OS rejected the process spawn — verify the executable exists and is accessible from the MCP server's working directory.",
+    "If the command is not in PATH, provide the full path (e.g. \"C:\\\\Program Files\\\\App\\\\app.exe\"). Common ENOENT cause is unqualified executable name.",
+    "EACCES / EPERM (permission denied): verify the file is executable and not blocked by Windows policy / AV / `Unblock-File` (right-click → properties → Unblock).",
+    "If the target requires admin elevation, the MCP server must run elevated to spawn it (UAC blocks cross-elevation spawn from non-admin parents).",
+    "For built-in commands (cmd.exe / powershell.exe / etc.), the executable lives under %SystemRoot%\\\\System32 — pass the full path or rely on PATH env var.",
+  ],
   // ADR-011 Phase B B-1: Working memory N upper bound (WORKING_MEMORY_N_MAX
   // = 50, layer-constraints §5 SSOT 整合) を超える要求が来た場合の typed
   // reason。silently truncate せず error を返す設計 (Phase B plan §4.3
@@ -360,6 +375,19 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   if (m.includes("invokepattern") || m.includes("invoke pattern")) {
     return { code: "InvokePatternNotSupported", suggest: SUGGESTS.InvokePatternNotSupported };
+  }
+  // Phase 7 F3: workspace_launch spawnDetached rejection (ENOENT / EACCES /
+  // EPERM 等). MUST stay BEFORE WindowNotFound — branch ordering is the
+  // only defense layer (no test-time guard) for the case where a SpawnFailed
+  // message tail accidentally contains "window not found" substring. Today
+  // the literal SpawnFailed messages emitted by `src/utils/launch.ts:153-157`
+  // do not contain that substring, but messages can grow over time (extra
+  // context appended by `failWith(err, ...)` callers). The Phase 7 F3 unit
+  // test (`tests/unit/phase7-f3-spawn-failed-typed-code.test.ts` case #6)
+  // pins this ordering by feeding a synthesized message with both substrings
+  // and asserting SpawnFailed wins.
+  if (m.includes("spawnfailed") || m.includes("spawn failed:")) {
+    return { code: "SpawnFailed", suggest: SUGGESTS.SpawnFailed };
   }
   if (m.includes("window not found") || m.includes("no window")) {
     return { code: "WindowNotFound", suggest: SUGGESTS.WindowNotFound };

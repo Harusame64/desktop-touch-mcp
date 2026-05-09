@@ -78,7 +78,7 @@ Phase B は CoALA 全体設計 (4 memory layer + L4 view 設計 + envelope proje
 - 識別子ヒエラルキー (session_id) → 統合書 §4
 - L4 envelope assembly 制約 (p99 < 5ms) → layer-constraints §5
 - L5 tool surface 制約 (query/commit SLO) → layer-constraints §6
-- typed reason 49 codes (live `_errors.ts` 37 codes + ADR-added 12 codes、Phase 7 reconcile 反映済) → ADR-010 §5.4 + `src/tools/_errors.ts`
+- typed reason 50 codes (live `_errors.ts` 38 codes + ADR-added 12 codes、Phase 7 reconcile + F3 SpawnFailed 反映済) → ADR-010 §5.4 + `src/tools/_errors.ts`
 - HISTORY_BUFFER_CAPACITY SSOT → `src/tools/_envelope.ts` (`const HISTORY_BUFFER_CAPACITY = 8`、grep keyword で正確 line を取得)
 - causedByProjector 既存 reference impl → `src/tools/desktop-state.ts` `desktopStateCausedByProjector` (grep keyword)
 - sessionId stub SSOT → `src/tools/desktop-state.ts` `getMcpTransportSessionId` / `desktopStateGetSessionId` (grep keyword)

@@ -56,7 +56,7 @@ LLM の不安は 7 つに分解できる。
 - lease_token は単一 ID ではなく 4-tuple (`entityId` / `viewId` / `targetGeneration` / `evidenceDigest`)、envelope 内で展開 → 統合書 §4 / `LeaseStore` 既存実装
 - L4 envelope assembly 制約 (p99 < 5ms 等) → layer-constraints §5
 - L5 tool surface 制約 (query/commit/subscribe SLO) → layer-constraints §6
-- typed reason 49 codes (PascalCase、live `_errors.ts` SUGGESTS 37 codes + ADR-added 12 codes、Phase 7 catalog reconcile で full sync) → §5.4
+- typed reason 50 codes (PascalCase、live `_errors.ts` SUGGESTS 38 codes + ADR-added 12 codes、Phase 7 reconcile + F3 SpawnFailed 追加) → §5.4
 
 ### 1.5 Tool Surface 不変原則 (重要、誤読防止、統合書 P7 / §7.4 と同期)
 
@@ -276,9 +276,9 @@ tool 呼び出しは isolated event ではなく、**直前の自分の行動の
 
 ### 5.4 typed enum 一覧 — 既存 `_errors.ts` SUGGESTS を SSOT として吸収
 
-本 §5.4 catalog は live `src/tools/_errors.ts` SUGGESTS dictionary (**37 codes**、Phase 6 cleanup 後 = PR-A 削除 3 件 + PR-B AutoGuardBlocked 追加 1 件 + post-issue #178/#179/#180/#181/#197/#207 + Phase 5 I1 + Phase B B-1〜B-4 累積) を **bit-equal で全反映** + 本 ADR で追加する 12 codes を列挙して、**合計 49 codes** を定義する。Phase 7 catalog reconcile (`docs/adr-010-followups.md` §3) で従来 ADR baseline 視点 subset (23 codes) と live (37 codes) の数値乖離を解消、live SSOT を直接吸収した。
+本 §5.4 catalog は live `src/tools/_errors.ts` SUGGESTS dictionary (**38 codes**、Phase 6 cleanup 後 = PR-A 削除 3 件 + PR-B AutoGuardBlocked 追加 1 件 + post-issue #178/#179/#180/#181/#197/#207 + Phase 5 I1 + Phase B B-1〜B-4 + Phase 7 F3 SpawnFailed 累積) を **bit-equal で全反映** + 本 ADR で追加する 12 codes を列挙して、**合計 50 codes** を定義する。Phase 7 catalog reconcile (`docs/adr-010-followups.md` §3) で従来 ADR baseline 視点 subset (23 codes) と live (37 codes) の数値乖離を解消、live SSOT を直接吸収した。Phase 7 F3 fix (Phase 6 dogfood で発見) で workspace_launch spawnDetached 失敗が typed `SpawnFailed` enum に昇格、+1 code 反映。
 
-#### live `_errors.ts` SUGGESTS 全 37 codes (PascalCase 維持、SSOT)
+#### live `_errors.ts` SUGGESTS 全 38 codes (PascalCase 維持、SSOT)
 
 ```
 // 引数・基本
@@ -309,6 +309,9 @@ ForegroundRestricted | ClipboardWriteNotDelivered |
 MouseClickNotDelivered | MouseDragNotDelivered |
 SetValueAllChannelsFailed | FocusLostDuringType
 
+// Workspace / launch (Phase 7 F3、launch.ts spawnDetached rejection)
+SpawnFailed
+
 // Cognitive memory (ADR-011 Phase B B-1〜B-4)
 WorkingMemoryNUpperBoundExceeded | EpisodicMemoryNUpperBoundExceeded |
 SemanticMemoryKUpperBoundExceeded | ProceduralMemoryKUpperBoundExceeded
@@ -338,7 +341,7 @@ EnvelopeSizeExceeded
 AccessDenied | Unknown
 ```
 
-合計 37 + 12 = **49 codes** (live `_errors.ts` SUGGESTS 全 37 codes + 本 ADR ADR-added 12 codes、Phase 7 reconcile で full sync 達成)。
+合計 38 + 12 = **50 codes** (live `_errors.ts` SUGGESTS 全 38 codes + 本 ADR ADR-added 12 codes、Phase 7 reconcile + F3 SpawnFailed 追加で full sync 達成)。
 
 #### 運用ルール
 
