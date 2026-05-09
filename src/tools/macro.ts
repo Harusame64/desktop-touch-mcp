@@ -455,15 +455,16 @@ export const runMacroHandler = async ({
       }
 
       // Phase 7 F1 fix (matrix §3.1 line 157 規範整合): parse the first text
-      // block to detect inner failure envelopes. Tools normalize their
-      // response to JSON `{ok: boolean, ...}` (see `_types.ts` ToolFailure /
-      // ToolSuccess shapes). When a step's handler returns an ok:false
-      // envelope without throwing, the macro must surface that failure at
-      // the step level so `stop_on_error: true` can halt as documented.
-      // Without this, `run_macro({stop_on_error:true})` would silently
-      // continue past a failed tool — silent-success regression caught by
-      // Phase 6 dogfood (`docs/llm-audit/phase6-dogfood-findings.md` F1,
-      // `dogfood-scenarios/launcher-macro.md` §2.1).
+      // block (= the immediately preceding `entry.handler` call's first
+      // content block) to detect inner failure envelopes. Tools normalize
+      // their response to JSON `{ok: boolean, ...}` (see `_types.ts`
+      // ToolFailure / ToolSuccess shapes). When a step's handler returns an
+      // ok:false envelope without throwing, the macro must surface that
+      // failure at the step level so `stop_on_error: true` can halt as
+      // documented. Without this, `run_macro({stop_on_error:true})` would
+      // silently continue past a failed tool — silent-success regression
+      // caught by Phase 6 dogfood (`docs/llm-audit/phase6-dogfood-findings.md`
+      // F1, `dogfood-scenarios/launcher-macro.md` §2.1).
       let stepOk = true;
       let innerCode: string | undefined;
       let innerError: string | undefined;
@@ -482,6 +483,16 @@ export const runMacroHandler = async ({
         }
       }
 
+      // Round 1 P2-2 fix: when inner envelope lacks both `error` and `code`
+      // string fields (regulation-violating tool, defensive only), point the
+      // caller at `text[0]` so they can recover useful info rather than
+      // surfacing a hollow `"inner ok:false"`.
+      const fallbackError = (() => {
+        if (innerError) return innerError;
+        if (innerCode) return innerCode;
+        return "inner ok:false (no error/code fields, see step.text[0])";
+      })();
+
       results.push({
         step: i,
         tool,
@@ -490,7 +501,7 @@ export const runMacroHandler = async ({
         ...(stepOk
           ? {}
           : {
-              error: innerError ?? innerCode ?? "inner ok:false",
+              error: fallbackError,
               ...(innerCode ? { code: innerCode } : {}),
             }),
         ...(images.length > 0 ? { _images: images } : {}),
@@ -537,7 +548,15 @@ export const runMacroHandler = async ({
   // nested step failures at the macro top level so callers using
   // `stop_on_error: false` can detect partial failures without parsing each
   // `text[0]` block. `warnings[]` aggregates {step, tool, code?, error?}
-  // for every step where ok:false (either inner envelope or thrown).
+  // for every step where ok:false.
+  //
+  // Shape contract (Round 1 P2-3 明文化): `error` is always present (catch
+  // path emits `String(err)`; inner path uses `parsed.error ?? parsed.code
+  // ?? fallback`). `code` is only present when the inner envelope carried
+  // a `code: string` field — recursion / unknown-tool / Zod-throw / catch
+  // paths produce `code`-less warning entries. Callers should treat
+  // `warning.code` as optional and rely on `warning.error` (always
+  // present) for messaging.
   const warnings = results
     .filter((r) => !r.ok)
     .map((r) => ({

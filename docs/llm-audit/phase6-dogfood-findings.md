@@ -34,11 +34,11 @@ Phase 5 closure では北極星「silent-success / contract drift = 0」を **au
 - agent flow が `stop_on_error: true` に依存して destructive sequence を中断する設計の場合、prereq 失敗でも全 step run → silent state corruption / 誤入力が wrong app に landing
 - Phase 5 closure 北極星 (silent-success / contract drift = 0) が **dogfood scope では未達成**
 
-**修正方針**:
-1. `entry.handler(validated)` 後、`textLines[0]` を `JSON.parse` で安全に parse
-2. parse 成功 + `parsed.ok === false` の場合: step-level `ok:false` + `error: parsed.error ?? parsed.code` を push
-3. step-level `ok:false` の場合 `stop_on_error: true` で halt
-4. Unit test `tests/unit/run-macro-stop-on-error-inner-envelope.test.ts` 新規追加で contract pin
+**修正方針** (実装反映済 PR #229):
+1. `entry.handler(validated)` 後、`textLines[0]` を `JSON.parse` で safely parse (`try/catch` で non-JSON 吸収、`parsed && typeof parsed === "object"` で primitive guard、`parsed.ok === false` strict equality)
+2. parse 成功 + `parsed.ok === false` の場合: step-level に `ok:false` + `error: parsed.error ?? parsed.code ?? "inner ok:false (no error/code fields, see step.text[0])"` + (`parsed.code` が string なら別 field `code: parsed.code` も保持) を push
+3. step-level `ok:false` の場合 `stop_on_error: true` で `break`
+4. Unit test `tests/unit/run-macro-stop-on-error-inner-envelope.test.ts` 新規追加で contract pin (halt + surface + no-failure + throw + non-JSON safe + warnings shape + partial-success summary 7 case)
 
 **北極星整合**: 修正後、`stop_on_error: true` が「tool throw」「tool inner ok:false」両方で halt → silent-success 経路解消。
 
