@@ -998,22 +998,22 @@ export const keyboardTypeHandler = async ({
               // doesn't get a stuck Shift/Ctrl/Alt (Gemini PR #65 review —
               // 'release safety valve'). KeyUp is idempotent at the OS level.
               await releaseDanglingModifiers();
+              // Phase 5 I1 (Phase 2a F4): pass typed/remaining/etc. as flat
+              // context fields so failWith's classify() resolves the code to
+              // "FocusLostDuringType" (SSOT registered in _errors.ts), suggest
+              // is hoisted to top-level from SUGGESTS dictionary (no handler
+              // hard-code), and inner fields land at single-nest
+              // `context.{typed,remaining,total,chunkSize,focusLost}` (not the
+              // pre-fix double-nested `context.context.{typed,...}` shape).
               return failWith(
                 new Error("FocusLostDuringType"),
                 "keyboard:type",
                 {
-                  suggest: [
-                    "User stole foreground mid-type — re-focus the target window then call keyboard(action:'type') again with context.remaining as text",
-                    "For terminals, prefer method:'auto' so input routes through HWND-targeted WM_CHAR (Phase A — foreground-independent)",
-                    "Pass abortOnFocusLoss:false to disable the leash and fall back to single-shot send (post-action focusLost detection still runs)",
-                  ],
-                  context: {
-                    typed,
-                    remaining: effectiveText.slice(typed),
-                    total: effectiveText.length,
-                    chunkSize,
-                    focusLost: fl,
-                  },
+                  typed,
+                  remaining: effectiveText.slice(typed),
+                  total: effectiveText.length,
+                  chunkSize,
+                  focusLost: fl,
                   ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
                   ...(warnings.length > 0 && { hints: { warnings } }),
                 }
