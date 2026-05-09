@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-05-09 — Phase 7 carry-over (F3 SpawnFailed + F4 ValuePattern fallback + ADR-010 §5.4 catalog reconcile + F5 scenario doc)
+
+epic #211 Phase 6 dogfood で発見した carry-over findings 4 件を patch release で全消化。Phase 6 PR-A/PR-B が typed code dictionary を整理した直後の dogfood 実機検証で見つかった silent-success / contract drift / docs SoT divergence を解消し、production code の typed code 体系を 38 codes (live) + 12 ADR-added = **50 codes** で完全 sync。
+
+### Added
+
+- **`SpawnFailed` typed code (Phase 7 F3、PR #232).** `workspace_launch` (および `browser_open` 等他の `spawnDetached` caller) で OS 拒否 (ENOENT / EACCES / EPERM / 他) が generic `ToolError` に fall through していた silent typed-code gap を解消。`src/utils/launch.ts` で `new Error(\`SpawnFailed: ...\`)` を inline literal で投げ、`_errors.ts::classify()` が typed enum に昇格 + 5 SUGGESTS hints (full path / permission / elevation / built-in commands / Windows policy) を提供。agent flow が typed code 経由 retry pattern を構成可能。`tests/unit/issue-211-classify-branch-producer-pin.test.ts` (§4.bis CI sweep) が新 branch の producer を機械検出。
+- **`getTextViaValuePattern` UIA helper + keyboard:type BG ValuePattern fallback (Phase 7 F4、PR #233).** Win11 New Notepad の RichEditD2DPT 等 ValuePattern-only な focused element で TextPattern 失敗時に `verifyDelivery: 'unverifiable / read_back_unsupported'` で degrade していた contract 弱点を解消。`src/engine/uia-bridge.ts` に新 helper、focused element の `ValuePattern.Value` を返す PowerShell-backed 関数 (TreeWalker scoping で focused が target window 内に居ることを確認)。`src/tools/keyboard.ts` BG type path で TextPattern + ValuePattern baseline を `Promise.all` で並列取得し、cold path causal window を sum → max に短縮。delta 比較 (`postValue.includes(checkText)` AND (`delta > 0` OR `!baseline.includes(checkText)`)) で delivered 判定、両者一致+長さ不変は false-positive 防御で `unverifiable` 維持。matrix doc §3.1 line 140 の forward-looking 記述 "TextPattern / ValuePattern read-back" が initial alignment 達成。
+
+### Changed
+
+- **ADR-010 §5.4 typed enum catalog full reconcile (Phase 7、PR #231).** Phase 6 PR-A Round 3 で発見された ADR catalog (subset 23 codes baseline) と live `_errors.ts` SUGGESTS dictionary の数値乖離を解消、live SSOT を bit-equal で吸収。累積 14 entries (post-issue #178/#179/#180/#181/#197/#207 + Phase 5 I1 + Phase B B-1〜B-4) を `// Browser` / `// Wait scroll` / `// 入力チャネル` 既存 section + `// Cognitive memory` 新 section に配置。本 v1.4.1 land 時点で **catalog 38 + ADR 12 = 50 codes**。cascade 8 docs (adr-007 / adr-011 main+phase-b / adr-010-p1-s3/s4/s6 / walking-skeleton trunk-selection+expansion-plan) で `35→50 codes` / `残 36→残 49` を全 17 occurrences sync、catalog drift invariant 維持の仕組み確立 (CLAUDE.md §3.1 fact 整合 sweep の lesson 反映)。
+- **launcher-macro.md §1.1 dogfood scenario doc fix (Phase 7 F5、PR #230).** `notepad.exe` (Win11 New Notepad は multi-instance) → `chrome.exe` (truly single-instance) に変更。`§3` 末尾共通 note との fact 整合 + 「対象 app の選定」subsection 新設で truly single-instance / multi-instance の区別を明示、§1.3 にも multi-instance Notepad 適合 note を追加 (順読時の見かけ矛盾解消)。production behavior は不変、scenario doc の SoT outdated を解消。
+
+### docs
+
+- `docs/llm-audit/phase6-dogfood-findings.md` の F1〜F5 全 entries を **Status: Fixed** で履歴 lock。F1/F2 は v1.4.0 release 内 (PR #229)、F3/F4/F5 は本 v1.4.1 release で消化、F3 + F4 は production code 改修 + 10/6 unit case で contract pin。
+- `docs/adr-010-followups.md` を **Status: Resolved** に更新、§3 各 subsection に **✓ Done** mark + Phase 7 fix narrative + cascade 9 docs sync 履歴 (catalog SSOT 本体 1 doc + cascade 8 docs)。
+
 ## [1.4.0] - 2026-05-09 — Phase 6 closure + run_macro silent-success fix + dogfood release gate
 
 epic #211 Phase 6 closure を release に lift up。Phase 5 で達成した北極星 (silent-success / contract drift = 0) を Phase 6 で **typed code 体系の整理 + dogfood で発見した run_macro contract drift fix** で完全達成。**dogfood pass を release gate に格上げ** (v1.3 教訓、強制命令 7 仕組み化)。
