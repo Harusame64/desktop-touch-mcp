@@ -14,10 +14,14 @@
 
 **目的**: matrix §3.1 line 156 の "single-instance apps that reuse an existing window will not register as a new HWND" が実機で完全に再現されることを確認。description caveats に既に明示されているが、LLM が回避手順 (`desktop_discover` で既存検出) を実行する flow を end-to-end 観測。
 
+**対象 app の選定**:
+- **truly single-instance**: `chrome.exe` / `outlook.exe` / `vscode.exe` (§3 末尾の「共通操作上の note」参照)。本 scenario は chrome.exe を例に記述。
+- **multi-instance (本 scenario 対象外)**: Win11 New Notepad は毎起動で新 HWND 採番、本 scenario の reuse 期待を満たさない (production は新 HWND を正しく検出、silent ok:true regression なし — Phase 6 dogfood F5 検証で確認済)。`notepad.exe` を本シナリオの対象に使うと multi-instance 採番で「reuse 失敗 → 新 HWND 検出成功」の正常 path に流れ、reuse 観測ができない。
+
 **手順**:
-1. 既に Notepad が開いている状態で `workspace_launch({command: 'notepad.exe', windowTitle: 'Notepad'})` 呼出
-2. response 観測: 内部 enum スナップショット で既存 Notepad HWND が前から存在 → 新 HWND 検出されず → `code:'WaitTimeout'` (wait_until 経由) または empty foundWindow
-3. **回避**: `desktop_discover` で既存 Notepad を先に発見 → 既存 HWND を target にして次 tool
+1. 既に Chrome (or vscode / outlook) が開いている状態で `workspace_launch({command: 'chrome.exe', windowTitle: 'Chrome'})` 呼出
+2. response 観測: 内部 enum スナップショット で既存 Chrome HWND が前から存在 → 新 HWND 検出されず → `code:'WaitTimeout'` (wait_until 経由) または empty foundWindow
+3. **回避**: `desktop_discover` で既存 Chrome を先に発見 → 既存 HWND を target にして次 tool
 
 **期待**: timeout/error path で actionable suggest (例: "Call desktop_discover first to check if the window is already open")。
 **Anti-pattern**: silent ok:true で foundWindow に古い HWND を返す → caller が新規プロセスと誤認 → focus / state stale。
@@ -37,6 +41,8 @@
 ### 1.3 workspace_launch → focus_window chain (Tier 2 inter-tool)
 
 **目的**: matrix §3.1 line 156 の prefer pattern "Follow with focus_window(windowTitle) to interact with the launched app" を実機 chain で確認。
+
+**対象 app の note**: 本 scenario は **新規 HWND 採番 path** のテストなので、§1.1 で対象外とした multi-instance Win11 New Notepad は逆に適合する (毎起動で新 HWND 採番)。chain 観測の対象として標準的に使用可能。
 
 **手順**:
 1. `workspace_launch({command: 'notepad.exe', windowTitle: 'Notepad'})` で新規 Notepad 起動
