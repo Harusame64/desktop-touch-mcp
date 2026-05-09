@@ -129,7 +129,7 @@ Audit scope (commit 軸 28 actions × 8 項目 = 224 item + query 軸 11 tool ×
 ### Phase 1: Plan + template land (本 doc)
 本 doc を `docs/llm-operation-audit.md` に永続化、user 合意で epic issue 起票。
 
-### Phase 2: Tier 1 commit 軸 (1 session 内、過去 issue 多発 tool 優先)
+### Phase 2: Tier 1 commit 軸 (過去 issue 多発 tool 優先)
 
 合計 **15 actions** (commit 軸 28 actions の過半):
 - `terminal:send` BG / `terminal:send` FG / `terminal:run` (3 actions、#173 #196 #202 #204)
@@ -138,7 +138,17 @@ Audit scope (commit 軸 28 actions × 8 項目 = 224 item + query 軸 11 tool ×
 - `scroll:raw` / `scroll:to_element` / `scroll:smart` / `scroll:capture` / `scroll:read` (5 actions、#179)
 - `clipboard:write` (1 action、#180)
 
-実機 + doc 同時 audit、検出した不整合を新 issue 起票。
+User 方針 (epic #211 着手時 2026-05-09 確認): doc audit 先行で 2 sub-phase に分割、検出した不整合を新 issue 起票。
+
+#### Phase 2a: Doc audit 机上 sweep (15 actions × 4 doc 項目 = 60 cell)
+
+description / examples / SUGGESTS dictionary / classify pattern / matrix doc row の bit-equal sweep。production fact と doc の差分検出、contract drift 候補を Phase 5 issue 起票候補としてリストアップ。結果を `docs/llm-audit/phase2a-doc-audit.md` に永続化。
+
+#### Phase 2b: 実機 scenario audit (15 actions × 4 実機項目 = 60 cell、別 session)
+
+正常 path / error path / edge case / chain scenario を実機検証。Plan §6 acceptance に従い:
+- automated regression pins → `tests/integration/llm-audit/` or `tests/unit/`
+- manual / dogfood scenarios → `docs/llm-audit/dogfood-scenarios/`
 
 ### Phase 3: Tier 2 commit 軸 (別 session、残 13 actions)
 
@@ -180,7 +190,7 @@ doc audit 4 項目は commit 軸と同一。
 
 ## 8. 起動条件
 
-本 doc が main に land + user 合意で issue 起票後、Phase 2 着手。Phase 2 は 1 session 内で完遂目標 (5-6 tool × 6 項目 = 30-36 item、密度高い実機検証含むため 1 session 上限)。
+本 doc が main に land + user 合意で issue 起票後、Phase 2 着手。Phase 2 は 2a (doc audit 机上 sweep、60 cell) / 2b (実機 scenario、60 cell) に分割し、各 sub-phase を 1 session 内で完遂目標とする (実機検証含む 2b は密度高、1 session 上限)。
 
 ## 9. Related Files
 
