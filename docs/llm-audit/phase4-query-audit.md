@@ -194,12 +194,15 @@ PR #226 で `tests/unit/issue-211-classify-branch-producer-pin.test.ts` を land
 | **I2** + **J2** + **K1-K5** + **J3** | description 補強 (Phase 2a F1+F3+F5+F6+F7+F8+F9+F10 + Phase 3a G2+G3+G7+G8+G9+G11+G12 + Phase 4 K1-K5) | Medium | docs only | **Resolved** PR #219 |
 | **I3** | Phase 2a F2 cross-tool ForegroundRestricted unified wording | Medium | docs only | open |
 | **J4** (Phase 3a G13) | matrix §3.1 line 159/162 browser_click verifyDelivery status enum narrowing | Medium | docs only (matrix update) | **Resolved** PR #221 |
-| **E1-E4** (Phase 2b) | automated-pin gap | Medium / Low | new test only | open |
+| **E1** (Phase 2b) | terminal:send FG typeViaClipboard read-back verification (production silent-fail bug fix + test pin) | High (北極星違反) → **Resolved** | production code + new test | **Resolved** PR #224 |
+| **E3** (Phase 2b) | mouse_drag ForegroundRestricted refusal (production silent-fail bug fix + test pin) | High (北極星違反) → **Resolved** | production code + new test | **Resolved** PR #223 |
+| **E4** (Phase 2b) | scroll:to_element ElementNotFound automated pin (test only、production fact 一致) | Medium → **Resolved** | new test only | **Resolved** PR #225 |
+| **E2** (Phase 2b) | keyboard:press FG combo edge — defer 確定 (structural family が `issue-207-foreground-refusal-press` + `key-map.test.ts` で covered、追加 case は real Win32 dispatch 必要) | Low → **Defer** | new test only | **Defer** PR #226 (E5/H1/K6 同型 cluster 入り) |
 | **E5** (Phase 2b) | scroll:capture frame seam | **Defer** | optional | defer |
 | **H1** (Phase 3b) | design-constraint error path automated pin | **Defer** | optional | defer |
 | **K6** (Phase 4) | Q5/Q7/Q10/Q11 design-constraint cell-level (gap:) admission (clipboard:read / server_status / browser_locate / workspace_snapshot) | **Defer** | optional | defer |
 
-I1 + J1 で production contract drift 解消済 (Phase 5 closure 北極星 = silent-success / contract drift 0 達成)。I2+J2+K1-K5+J3 統合 PR #219 で LLM-perspective description enrichment 完了。残 carry-over (I3 / J4 / E1-E4) は Phase 5 closure 別 PR、design-constraint defer (E5 + H1 + K6) は automated pin 化の cost-benefit が低く dogfood scenario doc が代替 SoT。
+I1 + J1 で production contract drift 解消済 (Phase 5 closure 北極星 = silent-success / contract drift 0 達成)。I2+J2+K1-K5+J3 統合 PR #219 で LLM-perspective description enrichment 完了。**Phase 5 follow-up land 後 (Round 2 update)**: I3 (PR #220) + J4 (PR #221) + E3 (PR #223) + E1 (PR #224) + E4 (PR #225) + §4.bis CI sweep + E2 defer (PR #226) 全 Resolved/Defer。Phase 5 follow-up 完了、design-constraint defer cluster (E2 + E5 + H1 + K6) は automated pin 化の cost-benefit が低く dogfood scenario doc が代替 SoT。
 
 ## 6. Phase 4 closure conditions (本 PR スコープ)
 
