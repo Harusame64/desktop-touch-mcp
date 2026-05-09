@@ -399,6 +399,7 @@ export const runMacroHandler = async ({
     ok: boolean;
     text?: string[];
     error?: string;
+    code?: string;
     _images?: Array<{ data: string; mimeType: string }>;
   };
 
@@ -453,13 +454,49 @@ export const runMacroHandler = async ({
         else if (block.type === "image") images.push({ data: block.data, mimeType: block.mimeType });
       }
 
+      // Phase 7 F1 fix (matrix §3.1 line 157 規範整合): parse the first text
+      // block to detect inner failure envelopes. Tools normalize their
+      // response to JSON `{ok: boolean, ...}` (see `_types.ts` ToolFailure /
+      // ToolSuccess shapes). When a step's handler returns an ok:false
+      // envelope without throwing, the macro must surface that failure at
+      // the step level so `stop_on_error: true` can halt as documented.
+      // Without this, `run_macro({stop_on_error:true})` would silently
+      // continue past a failed tool — silent-success regression caught by
+      // Phase 6 dogfood (`docs/llm-audit/phase6-dogfood-findings.md` F1,
+      // `dogfood-scenarios/launcher-macro.md` §2.1).
+      let stepOk = true;
+      let innerCode: string | undefined;
+      let innerError: string | undefined;
+      if (textLines.length > 0) {
+        try {
+          const parsed = JSON.parse(textLines[0]!);
+          if (parsed && typeof parsed === "object" && parsed.ok === false) {
+            stepOk = false;
+            innerCode = typeof parsed.code === "string" ? parsed.code : undefined;
+            innerError = typeof parsed.error === "string" ? parsed.error : undefined;
+          }
+        } catch {
+          // Non-JSON text block (e.g. screenshot detail='text' raw output) —
+          // treat as success. Failure paths always emit JSON envelopes per
+          // _types.ts contract.
+        }
+      }
+
       results.push({
         step: i,
         tool,
-        ok: true,
+        ok: stepOk,
         text: textLines,
+        ...(stepOk
+          ? {}
+          : {
+              error: innerError ?? innerCode ?? "inner ok:false",
+              ...(innerCode ? { code: innerCode } : {}),
+            }),
         ...(images.length > 0 ? { _images: images } : {}),
       });
+
+      if (!stepOk && stop_on_error) break;
     } catch (err) {
       results.push({ step: i, tool, ok: false, error: String(err) });
       if (stop_on_error) break;
@@ -496,11 +533,26 @@ export const runMacroHandler = async ({
   // Build final content
   const content: ToolResult["content"] = [];
 
+  // Phase 7 F2 fix (`docs/llm-audit/phase6-dogfood-findings.md`): surface
+  // nested step failures at the macro top level so callers using
+  // `stop_on_error: false` can detect partial failures without parsing each
+  // `text[0]` block. `warnings[]` aggregates {step, tool, code?, error?}
+  // for every step where ok:false (either inner envelope or thrown).
+  const warnings = results
+    .filter((r) => !r.ok)
+    .map((r) => ({
+      step: r.step,
+      tool: r.tool,
+      ...(r.code ? { code: r.code } : {}),
+      ...(r.error ? { error: r.error } : {}),
+    }));
+
   // Summary JSON (no base64 blobs in the text block)
   const summary = {
     steps_total: steps.length,
     steps_completed: results.length,
     results: results.map(({ _images: _img, ...r }) => r),
+    ...(warnings.length > 0 ? { warnings } : {}),
   };
   content.push({ type: "text", text: JSON.stringify(summary, null, 2) });
 
