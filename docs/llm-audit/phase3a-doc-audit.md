@@ -169,21 +169,21 @@ Phase 2a / 2b で扱った Tier 1 (15 actions、過去 issue 多発) 以外の T
 | **J3** | G9 + G11 — description minor enrichment (browser_fill typed code 名直接言及 / browser_navigate verification 経路明示) | Low | docs only | J2 と同 PR or defer |
 | **J4** | G13 — matrix §3.1 line 159 (browser_click) status enum 3 値 → 2 値 narrowing + line 162 family inheritance 注記 sync | Medium | docs only (matrix update) | 単独 PR、Opus 1+ round (Codex 推奨で matrix bit-equal 確認)。production code 改修なし、matrix narrowing で SSOT bit-equal 復帰 |
 
-統合 carry-over 整理 (Phase 2a I1-I3 + Phase 2b E1-E5 + Phase 3a J1-J3):
+統合 carry-over 整理 (Phase 2a I1-I3 + Phase 2b E1-E5 + Phase 3a J1-J4):
 
-| # | Source | Priority | Type |
-|---|---|---|---|
-| **I1** (Phase 2a F4) | `FocusLostDuringType` SSOT register | **High** | production code (Codex 必須) |
-| **J1** (Phase 3a G1) | `notification_show` `hints.verifyDelivery` emit | **High** | production code (Codex 必須) |
-| **I2** (Phase 2a F1+F3+F5+F6+F7+F8+F9+F10) | description 補強 | Medium | docs only |
-| **J2** (Phase 3a G2+G3+G7+G8+G12) | description 補強 | Medium | docs only |
-| **I3** (Phase 2a F2) | cross-tool ForegroundRestricted 統一 wording | Medium | docs only |
-| **E1-E4** (Phase 2b) | automated pin gap | Medium / Low | new test only |
-| **J3** (Phase 3a G9+G11) | description minor enrichment | Low | docs only |
-| **J4** (Phase 3a G13) | matrix §3.1 line 159/162 browser_click verifyDelivery status enum narrowing | Medium | docs only (matrix update) |
-| **E5** (Phase 2b) | scroll:capture frame seam | **Defer** | optional |
+| # | Source | Priority | Type | Status |
+|---|---|---|---|---|
+| **I1** (Phase 2a F4) | `FocusLostDuringType` SSOT register | **High** | production code (Codex 必須) | **Resolved** PR #218 |
+| **J1** (Phase 3a G1) | `notification_show` `hints.verifyDelivery` emit | **High** | production code (Codex 必須) | **Resolved** PR #217 |
+| **I2** (Phase 2a F1+F3+F5+F6+F7+F8+F9+F10) | description 補強 | Medium | docs only | **Resolved** PR #219 |
+| **J2** (Phase 3a G2+G3+G7+G8+G12) | description 補強 | Medium | docs only | **Resolved** PR #219 |
+| **I3** (Phase 2a F2) | cross-tool ForegroundRestricted 統一 wording | Medium | docs only | open |
+| **E1-E4** (Phase 2b) | automated pin gap | Medium / Low | new test only | open |
+| **J3** (Phase 3a G9+G11) | description minor enrichment | Low | docs only | **Resolved** PR #219 |
+| **J4** (Phase 3a G13) | matrix §3.1 line 159/162 browser_click verifyDelivery status enum narrowing | Medium | docs only (matrix update) | open |
+| **E5** (Phase 2b) | scroll:capture frame seam | **Defer** | optional | defer |
 
-I1 + J1 が production contract drift で Phase 5 closure における highest priority、I2 + J2 + I3 + J3 は docs 補強で release readiness 判定材料。
+I1 + J1 production contract drift 解消 (PR #218 / #217、Phase 5 closure 北極星達成)、I2 + J2 + J3 description enrichment 解消 (PR #219 統合 land)、残 I3 + J4 + E1-E4 は Phase 5 follow-up PR。
 
 ## 5. Phase 3a closure conditions (本 PR スコープ)
 
