@@ -120,7 +120,7 @@ export const notificationShowRegistrationHandler = makeCommitWrapper(
 export function registerNotificationTools(server: McpServer): void {
   server.tool(
     "notification_show",
-    "Show a Windows system tray balloon notification to alert the user. Use at the end of a long-running task so the user knows it finished without watching the screen. Caveats: toast の user reach は原理的に観測不能 (matrix §3.1 line 158 規範整合)。Focus Assist (Do Not Disturb) / Notifications-off setting / consent UI sink いずれも tool 側からは判別不能のため、successful response は常に `hints.verifyDelivery: {status: 'unverifiable', reason: 'user_visible_side_effect_uninspectable', channel: 'win32_balloon_tip'}` を含む。caller は user 側の post-notification behavior (例: `wait_until(focus_changes)`) で間接観測することが望ましい。Uses System.Windows.Forms — no external modules needed.",
+    'Show a Windows system tray balloon notification to alert the user. Use at the end of a long-running task so the user knows it finished without watching the screen. Caveats: toast の user reach は原理的に観測不能 (matrix §3.1 line 158 規範整合)。Focus Assist (Do Not Disturb) / Notifications-off setting / consent UI sink いずれも tool 側からは判別不能のため、successful response は常に hints.verifyDelivery を含む (status="unverifiable", reason="user_visible_side_effect_uninspectable", channel="win32_balloon_tip" — 全 double-quoted JSON literal)。caller は user 側の post-notification behavior (例: wait_until(focus_changes)) で間接観測することが望ましい。Uses System.Windows.Forms — no external modules needed.',
     notificationShowRegistrationSchema,
     notificationShowRegistrationHandler as typeof notificationShowHandler
   );

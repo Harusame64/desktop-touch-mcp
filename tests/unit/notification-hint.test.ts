@@ -93,6 +93,17 @@ describe("J1: notification_show verifyDelivery hint contract pin (matrix §3.1 l
     // Both successful responses carry the same hint shape — caller cannot
     // suppress / customise the verifyDelivery degradation.
     expect(r1.hints?.verifyDelivery).toEqual(r2.hints?.verifyDelivery);
+
+    // Field set lock — future field-additions must update this assertion
+    // explicitly (Round 1 Opus P3-1).
+    expect(Object.keys(r1.hints!.verifyDelivery!).sort()).toEqual([
+      "channel",
+      "reason",
+      "status",
+    ]);
+    // hints contains ONLY verifyDelivery on success — future additions
+    // should be deliberate, not silent (Round 1 Opus P3-2).
+    expect(Object.keys(r1.hints!).sort()).toEqual(["verifyDelivery"]);
   });
 
   it("hint absent on spawn failure (failWith path emits ok:false envelope, not silent ok:true)", async () => {
