@@ -2698,7 +2698,7 @@ export function registerBrowserTools(server: McpServer): void {
 
   server.tool(
     "browser_navigate",
-    "Navigate a browser tab to a URL via CDP Page.navigate — more reliable than clicking the address bar. Pass tabId+port so the server auto-guards (verifies tab readyState) and returns post.perception.status. lensId is optional for advanced pinned-tab workflows. Caveats: Does not block until page load completes — the Page.navigate ack confirms only that the navigation request was accepted (frameStoppedLoading / loaderId observation is internal). Follow with wait_until({condition:'ready_state' or 'element_matches'}) or repeated browser_eval polling for slow pages.",
+    "Navigate a browser tab to a URL via CDP Page.navigate — more reliable than clicking the address bar. Pass tabId+port so the server auto-guards (verifies tab readyState) and returns post.perception.status. lensId is optional for advanced pinned-tab workflows. Caveats: Does not block until page load completes — the Page.navigate ack confirms only that the navigation request was accepted (frameStoppedLoading / loaderId observation is internal). Follow with wait_until({condition:'ready_state' or 'element_matches'}) or repeated browser_eval polling for slow pages. Typed errors: code:'NavigateFailed' (Page.navigate rejected — DNS failure, malformed URL, network unreachable; check URL + connectivity), code:'BrowserNotConnected' (CDP disconnect — re-attach via browser_open). Auto-guard blocks on a still-loading page surface as ok:false with the error message starting 'AutoGuardBlocked: ...' — wait_until({condition:'ready_state'}) then retry.",
     browserNavigateRegistrationSchema,
     browserNavigateRegistrationHandler as typeof browserNavigateHandler
   );
