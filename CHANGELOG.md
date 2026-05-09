@@ -2,7 +2,30 @@
 
 ## [Unreleased]
 
-### Fixed
+## [1.4.0] - 2026-05-09 — Phase 6 closure + run_macro silent-success fix + dogfood release gate
+
+epic #211 Phase 6 closure を release に lift up。Phase 5 で達成した北極星 (silent-success / contract drift = 0) を Phase 6 で **typed code 体系の整理 + dogfood で発見した run_macro contract drift fix** で完全達成。**dogfood pass を release gate に格上げ** (v1.3 教訓、強制命令 7 仕組み化)。
+
+### Added
+
+- **AutoGuardBlocked typed code (epic #211 Phase 6 PR-B 6-4、PR #228).**
+  14 emit sites (browser_click / browser_eval / browser_navigate / mouse_click / mouse_drag / keyboard / click_element / set_element_value / withActionGuard 共通 wrapper) で envelope `code` 値が `"ToolError"` → `"AutoGuardBlocked"` に昇格。`AutoGuardStatus` enum 9 値 (ambiguous_target / target_not_found / blocked_by_modal / browser_not_ready / needs_escalation / identity_changed / unsafe_coordinates / ok / unguarded) に応じた SUGGESTS 7 entries を提供、LLM agent が auto-guard refusal の status enum と 1:1 で recovery action を選択可能。`error.message.startsWith("AutoGuardBlocked:")` への依存は format 不変で継続動作。
+- **`run_macro` `warnings[]` top-level field (Phase 6 F2、PR #229).**
+  `stop_on_error: false` で全 step 実行時、nested step ok:false の `{step, tool, code?, error}` を summary 直下に集約。LLM caller が `text[0]` を JSON.parse せずに partial failure を catch 可能。failure ゼロ時は field 不在で backward compat 維持。
+- **dogfood scenarios (`docs/llm-audit/dogfood-scenarios/*.md`).** 7 scenario file (browser-tier2 / clipboard / keyboard / launcher-macro / mouse / scroll / terminal) を Tier 1/2 軸で永続化、release gate として `docs/release-process.md` Preflight section に組込。
+
+### Changed
+
+- **`run_macro` `stop_on_error: true` が tool inner ok:false envelope で halt するよう契約 honor (Phase 6 F1 北極星違反 fix、PR #229).**
+  Before: handler が exception を投げない限り step-level `ok:true`、`text[0]` 内 `ok:false` envelope を parse する path 不在 → silent-success drift。After: `JSON.parse(textLines[0])` で safely parse、`parsed.ok === false` で step-level に伝播 + `stop_on_error: true` で `break`。silent state corruption (e.g. focus_window 失敗後の keyboard:type 誤入力) 解消。matrix §3.1 line 157 規範整合。
+- **browser_eval / browser_navigate description sync (PR #228).** typed code direct 言及形に更新、旧 `envelope code は ToolError` 記述廃止、`code:'AutoGuardBlocked'` を recovery hint と共に明示。
+- **dogfood pass を release gate に格上げ (`docs/release-process.md` Preflight、v1.3 教訓).** Step 1 smoke (~5min) / Step 2 Phase-N-fix path (~20min) / Step 3 Tier-1 north-star (~30-60min) / Step 4 Tier-2 carry-over (~15min) を release 必須プロトコルとして codify。F1 (run_macro silent-success drift) を canonical case study として位置付け、「automated test + doc audit では catch 不能」教訓を仕組み化。
+
+### Removed
+
+- **3 dead typed codes from `_errors.ts` (epic #211 Phase 6 PR-A、PR #227).** `LensBudgetExceeded` / `TerminalMarkerStale` / `MaxDepthExceeded` を classify+SUGGESTS dictionary から削除 (production producer 不在を Phase 5 §4.bis CI sweep で確認済、Phase 6 で structural cleanup)。`tests/unit/issue-211-classify-branch-producer-pin.test.ts` `DEAD_ALLOW_LIST` は空 Set 化、今後同型 dead code drift は CI で構造的に block。
+
+### Fixed (carry over from accumulated [Unreleased])
 
 - **fix(terminal,keyboard): WT explicit BG (`method:'background'`) を Strict fail に揃える (issue #195).**
   `terminal({action:'send'})` と `keyboard({action:'type'})` の `method:'background'` で、Windows Terminal を target にしたときの silent ok:true / 不整合な error code を解消。matrix doc §3.1 line 140 + §4.3 (`wt_xaml_pipeline → BackgroundInputNotDelivered` Strict fail) 整合。
@@ -11,7 +34,7 @@
   - **`tests/e2e/keyboard-bg-verification.test.ts:88`**: `[Windows Terminal] type BG > returns BackgroundInputNotDelivered` の expected が **PR #174 land 後の現挙動と乖離**していた問題を解消 (PR #188 land 時の同期漏れ、PR #192 launcher fix で顕在化)。
   - 影響範囲: caller-facing で WT 経路の error code が `BackgroundInputUnsupported` → `BackgroundInputNotDelivered` に変わる (matrix doc §3.1 SSOT 通り)。`browser_fill` recovery が必要な chromium 経路は既存 `BackgroundInputUnsupported` のまま。
 
-### Changed
+### Changed (carry over from accumulated [Unreleased])
 
 - **feat(terminal): `terminal({action:'send', method:'background'})` に hidden-input prompt 自動検出を追加 (issue #183, Phase 3).**
   `docs/operation-verification-matrix.md` §3.1 (terminal action:send BG row) で「将来 detect」と予約されていた挙動の本実装。post-send UIA read-back の直前に baseline UIA 末尾行を検査し、`/(password|passphrase|secret|sudo)[\s:]*$/i` / `/Password for /` / `/^>\s*$/` のいずれかにマッチする echo 抑制 prompt なら verification を skip し、`hints.verifyDelivery: {status:"unverifiable", reason:"hidden_input_prompt", channel:"wm_char", fallback:"method:'foreground'"}` (matrix doc §4.2 規範 shape, §4.3 reason enum) を付けて `ok:true` を返す。これにより `Read-Host -AsSecureString` / `sudo` / `ssh` パスワード入力 BG 送信が `BackgroundInputNotDelivered` の false-positive で失敗していた既知問題を解消。regex set は意図的に narrow（end-anchor 必須）で start するため、scrollback 中に password と書かれていても誤検出しない設計。
@@ -20,7 +43,7 @@
   - `browser_click`: クリック直前に `Runtime.evaluate` 経由で `MutationObserver(document.body, {subtree, childList, attributes})` を install → mouse click → 500ms 経過後に observer + URL + `document.activeElement` の差分を読み戻し。いずれかの signal が観測できれば `hints.verifyDelivery.status = "delivered"`、500ms で 0 signal なら `unverifiable` (reason: `no_dom_mutation`)。SPA ボタンに event listener が attach されていない silent-fail を catch する目的。selector が iframe 内 element だった場合は top-frame の Runtime.evaluate scope では観測不能なので `unverifiable` (reason: `iframe_context_mismatch`) を返す。
   - `browser_fill`: fill dispatch 後に `el.value` を read-back して要求値と完全一致するか確認。不一致時は `BrowserFillNotDelivered` で fail。React/Vue controlled input が onChange で値を変換した場合（numbers-only filter / max-length / format mask 等）は false-positive 候補なので、actual length が requested length 以下なら `subReason: "controlled_input_transform"`、そうでなければ `value_not_retained` を `hints.verifyDelivery.subReason` で明示。caller は actual を authoritative として読めば retry 不要なケースを区別できる。
 
-### Added
+### Added (carry over from accumulated [Unreleased])
 
 - **新 typed error code: `BrowserClickNotDelivered` / `BrowserFillNotDelivered` (`src/tools/_errors.ts` SUGGESTS + classify()).**
   `docs/operation-verification-matrix.md` §5.2 の命名規則に従う。`BrowserClickNotDelivered` は現行実装では fail として返さず `unverifiable` hint で表現するが（OS 層では click が dispatch 済 = ack 成功なので fail に escalate しない方針）、SUGGESTS dictionary は将来の strict 化に備えて登録。`BrowserFillNotDelivered` は read-back 不一致で確実に fail を返す。
