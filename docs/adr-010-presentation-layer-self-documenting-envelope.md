@@ -276,9 +276,9 @@ tool 呼び出しは isolated event ではなく、**直前の自分の行動の
 
 ### 5.4 typed enum 一覧 — 既存 `_errors.ts` SUGGESTS を SSOT として吸収
 
-既存 `src/tools/_errors.ts` の `SUGGESTS` には **25 個の PascalCase code** が運用済 (現行 main で classify ロジックも完備)。本 ADR の `most_likely_cause` は **これを SSOT として吸収** し、新規追加分のみ拡張する。
+既存 `src/tools/_errors.ts` の `SUGGESTS` には **22 個の PascalCase code** が運用済 (Phase 6 cleanup 後、現行 main で classify ロジックも完備)。本 ADR の `most_likely_cause` は **これを SSOT として吸収** し、新規追加分のみ拡張する。
 
-#### 既存 25 codes (現行 main、PascalCase 維持)
+#### 既存 22 codes (Phase 6 cleanup 後、PascalCase 維持)
 
 ```
 // 引数・基本

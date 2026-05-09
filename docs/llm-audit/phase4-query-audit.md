@@ -81,7 +81,7 @@ doc 4 columns:
 | # | Tool | desc/examples | SUGGESTS | classify | matrix row | doc 判定 |
 |---|---|---|---|---|---|---|
 | Q4 | wait_until | partial (条件名 / target shape 詳細あり、`WaitTimeout error with suggest hints` mention あるが typed code shape direct 言及不在) | pass (`WaitTimeout` SUGGESTS at `_errors.ts:91-95`) | pass (line 332 keyword "wait timeout") | pass | fix carry-over (doc gap) — K1 |
-| Q6 | terminal:read | gap (typed code 名 `TerminalWindowNotFound` / `TerminalTextPatternUnavailable` direct 言及不在、source:'auto' OCR fallback は説明あり。Phase 6 cleanup で `TerminalMarkerStale` は classify+SUGGESTS から削除、stale signal は `hints.terminalMarker.previousMatched` で代替) | pass (Phase 6 cleanup 後、`TerminalWindowNotFound` / `TerminalTextPatternUnavailable` の 2 typed codes が SUGGESTS at `_errors.ts:60-69`) | pass (Phase 6 cleanup 後、classify branch は `TerminalWindowNotFound` / `TerminalTextPatternUnavailable` の 2 件のみ) | pass | fix carry-over (doc gap) — K2 |
+| Q6 | terminal:read | gap (typed code 名 `TerminalWindowNotFound` / `TerminalTextPatternUnavailable` direct 言及不在、source:'auto' OCR fallback は説明あり。Phase 6 cleanup で `TerminalMarkerStale` は classify+SUGGESTS から削除、stale signal は `hints.terminalMarker.previousMatched` で代替) | pass (Phase 6 cleanup 後、`TerminalWindowNotFound` / `TerminalTextPatternUnavailable` の 2 typed codes が SUGGESTS at `_errors.ts:61-70`) | pass (Phase 6 cleanup 後、classify branch は `TerminalWindowNotFound` / `TerminalTextPatternUnavailable` の 2 件のみ) | pass | fix carry-over (doc gap) — K2 |
 | Q8 | browser_overview | gap (typed code 名 `BrowserNotConnected` / `ScopeNotFound` direct 言及不在) | pass (`_errors.ts:56-60` + `:87-90`) | pass (line 335 + 329) | pass | fix carry-over (doc gap) — K3 |
 | Q9 | browser_search | gap (典型 typed code 名 `BrowserSearchNoResults` / `BrowserSearchTimeout` / `BrowserNotConnected` direct 言及不在) | pass (`_errors.ts:76-86`) | pass (line 335-336) | pass | fix carry-over (doc gap) — K4 |
 | Q10 | browser_locate | partial (selector → coords 整合 + reflow caveat あり、typed code 名 `BrowserNotConnected` / `ElementNotFound` direct 言及不在) | pass (`_errors.ts:32-37` + 56-60) | pass (line 350 + 335) | pass | fix carry-over (doc gap) — K5 |
@@ -134,7 +134,7 @@ doc 軸 11 件:
 ### K2 (Medium): terminal:read description で 2 typed codes 名 direct 言及不在 (Phase 6 cleanup 後)
 
 - **production 実装事実**: `terminal.ts:279` で generic `failWith("Terminal window not found: " + windowTitle)` (string error)、`terminal.ts:308` で direct `code:'TerminalTextPatternUnavailable'` emit。`TerminalWindowNotFound` は `terminal.ts` 内 string error として emit、typed code 解決は `_errors.ts` の classify 経由
-- **SUGGESTS**: Phase 6 cleanup 後、`TerminalWindowNotFound` / `TerminalTextPatternUnavailable` の 2 typed codes が `_errors.ts:60-69` で完備 (`TerminalMarkerStale` は producer 不在のため削除済、stale signal は `hints.terminalMarker.previousMatched` で代替)
+- **SUGGESTS**: Phase 6 cleanup 後、`TerminalWindowNotFound` / `TerminalTextPatternUnavailable` の 2 typed codes が `_errors.ts:61-70` で完備 (`TerminalMarkerStale` は producer 不在のため削除済、stale signal は `hints.terminalMarker.previousMatched` で代替)
 - **classify**: Phase 6 cleanup 後、TerminalWindowNotFound / TerminalTextPatternUnavailable の 2 branch のみ — substring 一致経由
 - **description fact (`terminal.ts:1547-1569`)**: action='read' の説明で source:'auto' OCR fallback 言及あるが typed code 名 direct 言及不在
 - **推奨 fix**: caveats を 2 行追加「action='read' で `code:'TerminalWindowNotFound'`/`'TerminalTextPatternUnavailable'` のいずれかが ok:false envelope で返る、各 SUGGESTS で recovery path (`source:'ocr'` 強制 / desktop_discover で title 確認) を提示。stale sinceMarker は `hints.terminalMarker.previousMatched:false` (ok:true) signal で表現」
@@ -179,9 +179,9 @@ PR #226 で `tests/unit/issue-211-classify-branch-producer-pin.test.ts` を land
 
 **仕組み化の意義**: §4.bis 当初の 3 件 (AutoGuardBlocked / TerminalMarkerStale / MaxDepthExceeded) は **手動 audit で発見**した。LensBudgetExceeded は **CI sweep が初実行時に検出**した。今後同型の family inheritance miss が classify に紛れ込んだ瞬間、この CI test が fail することで再発を構造的に防止する (CLAUDE.md 強制命令 7「仕組みで対応する」整合)。
 
-**allow-list categories** (`tests/unit/issue-211-classify-branch-producer-pin.test.ts`、Phase 6 cleanup 後):
+**allow-list categories** (`tests/unit/issue-211-classify-branch-producer-pin.test.ts`):
 - `RESERVED_ALLOW_LIST`: matrix §5.2 reserved-only typed codes (MouseClickNotDelivered / MouseDragNotDelivered / BrowserClickNotDelivered) — false-positive risk のため hint level で degradation 表現する設計判断、classify-only by design
-- `DEAD_ALLOW_LIST`: 空 (Phase 6 cleanup で TerminalMarkerStale / MaxDepthExceeded / LensBudgetExceeded を classify+SUGGESTS から削除済)。Set 機構自体は将来の audit が新規 dead code を §4.bis-style documentation で grandfather できるよう保持
+- `DEAD_ALLOW_LIST`: PR #226 (本 §4.bis CI sweep land) では TerminalMarkerStale / MaxDepthExceeded / LensBudgetExceeded の 3 件を grandfather した。**Phase 6 PR-A (本 closure 注記が指す PR) で 3 件すべてを `_errors.ts` classify+SUGGESTS から削除し、`DEAD_ALLOW_LIST` は空 Set にした**。Set 機構自体は将来の audit が新規 dead code を §4.bis-style documentation で grandfather できるよう保持
 
 ---
 
