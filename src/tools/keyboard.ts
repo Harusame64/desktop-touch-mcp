@@ -49,15 +49,43 @@ export async function typeViaClipboard(text: string, pasteCombo: "ctrl+v" | "ctr
     // Clipboard may be empty or locked — proceed without saving
   }
 
-  // Encode as UTF-16LE (PowerShell's native string encoding)
+  // Phase 5 E1 (epic #211): combine Set-Clipboard + Get-Clipboard -Raw inside
+  // a single PowerShell invocation and compare base64-encoded UTF-16LE bytes
+  // for byte-equality. Mirrors the clipboard:write contract at
+  // src/tools/clipboard.ts:60-118 — the audit's E1 finding caught that
+  // typeViaClipboard (used by terminal:send FG / keyboard:type FG clipboard
+  // paths) was missing the read-back verification that clipboard:write
+  // landed in PR #180. Without verification, DLP / clipboard manager
+  // intercepts on Set-Clipboard would silently leave stale clipboard
+  // contents and the paste would inject wrong text into the target window
+  // (silent-fail violating Phase 5 north-star).
   const b64 = Buffer.from(text, "utf16le").toString("base64");
   const script =
     `$b=[System.Convert]::FromBase64String('${b64}');` +
     `$t=[System.Text.Encoding]::Unicode.GetString($b);` +
-    `Set-Clipboard -Value $t`;
-  await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+    `Set-Clipboard -Value $t;` +
+    `$r=Get-Clipboard -Raw;` +
+    `if($r -eq $null){Write-Output ''}else{` +
+    `[Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($r))` +
+    `}`;
+  const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
     timeout: 5000,
   });
+
+  // Byte-equal compare (UTF-16LE, the native Windows clipboard format).
+  // Buffer.equals avoids any normalization (NFC/NFD), BOM, or trailing-
+  // newline coercion that string comparison could introduce. Mirror the
+  // clipboard.ts:96-118 mismatch path: throw a typed Error so classify()
+  // routes it to code:'ClipboardWriteNotDelivered' (auto-classify via
+  // _errors.ts:397-398). Do NOT include actual clipboard contents in
+  // the message — a racing app may have placed sensitive data on the
+  // clipboard.
+  const expectedBytes = Buffer.from(text, "utf16le");
+  const readBackB64 = stdout.trim();
+  const actualBytes = readBackB64 ? Buffer.from(readBackB64, "base64") : Buffer.alloc(0);
+  if (!expectedBytes.equals(actualBytes)) {
+    throw new Error("ClipboardWriteNotDelivered");
+  }
 
   const combo = parseKeys(pasteCombo);
   await keyboard.pressKey(...combo);
