@@ -61,10 +61,10 @@ Phase 2a / 2b で扱った Tier 1 (15 actions、過去 issue 多発) 以外の T
 
 | # | Action | desc/examples | SUGGESTS | classify | matrix row | 判定 |
 |---|---|---|---|---|---|---|
-| 23 | browser_click | gap | pass | pass | **drift** (status enum 3値↔2値) | fix carry-over (doc gap + matrix narrowing) — G7 + G13 |
+| 23 | browser_click | gap | pass | pass | **pass** (matrix narrowed 2 値 PR #N) | fix carry-over (doc gap) — G7 (G13 matrix narrow Resolved PR #N) |
 | 24 | browser_eval | partial | pass | pass | pass | fix carry-over (doc gap) — G8 |
 | 25 | browser_navigate | partial | (uses BrowserNotConnected via classify) | (via classify) | pass | fix carry-over (doc gap) — G11 |
-| 26 | browser_fill | partial | pass | pass | partial (family inheritance) | fix carry-over (doc gap) — G9 (G13 family inheritance note) |
+| 26 | browser_fill | partial | pass | pass | **pass** (family inheritance synced PR #N) | fix carry-over (doc gap) — G9 (G13 family inheritance note Resolved PR #N) |
 | 27 | browser_form | pass | (per-step delegation) | (delegates) | pass | **pass** |
 | 28 | browser_open | gap | pass | pass | pass | fix carry-over (doc gap) — G12 |
 
@@ -180,7 +180,7 @@ Phase 2a / 2b で扱った Tier 1 (15 actions、過去 issue 多発) 以外の T
 | **I3** (Phase 2a F2) | cross-tool ForegroundRestricted 統一 wording | Medium | docs only | open |
 | **E1-E4** (Phase 2b) | automated pin gap | Medium / Low | new test only | open |
 | **J3** (Phase 3a G9+G11) | description minor enrichment | Low | docs only | **Resolved** PR #219 |
-| **J4** (Phase 3a G13) | matrix §3.1 line 159/162 browser_click verifyDelivery status enum narrowing | Medium | docs only (matrix update) | open |
+| **J4** (Phase 3a G13) | matrix §3.1 line 159/162 browser_click verifyDelivery status enum narrowing | Medium | docs only (matrix update) | **Resolved** PR #N |
 | **E5** (Phase 2b) | scroll:capture frame seam | **Defer** | optional | defer |
 
 I1 + J1 production contract drift 解消 (PR #218 / #217、Phase 5 closure 北極星達成)、I2 + J2 + J3 description enrichment 解消 (PR #219 統合 land)、残 I3 + J4 + E1-E4 は Phase 5 follow-up PR。
