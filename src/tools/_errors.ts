@@ -111,16 +111,21 @@ const SUGGESTS: Record<string, string[]> = {
   // Phase 6 PR-B (epic #211 6-4): AutoGuard pre-action gate refused the
   // operation because the target's perception envelope is unsafe for an
   // immediate action. The error message preserves the guard's 1-sentence
-  // `summary.next` suggestion (one of 6 AutoGuardStatus enum values:
-  // settling / focus_changed / mid_animation / unsafe_coordinates /
-  // browser_not_ready / needs_escalation, see action-target.ts).
+  // `summary.next` (`AutoGuardEnvelope.next`) which encodes a tailored
+  // recovery for the specific block reason. Block-reason space is the
+  // `AutoGuardStatus` enum at `src/engine/perception/action-target.ts:53`
+  // (9 values: ok / unguarded / ambiguous_target / target_not_found /
+  // identity_changed / blocked_by_modal / unsafe_coordinates /
+  // browser_not_ready / needs_escalation; only the latter 7 surface as
+  // blocks since `ok` / `unguarded` allow the action through).
   AutoGuardBlocked: [
-    "Read the error message — it contains the auto-guard's 1-sentence recommended next step (focus_window / wait_until / dismiss modal / desktop_state).",
-    "Call desktop_state to inspect attention.signal and recent changed[] events that triggered the block.",
-    "If the UI is settling or mid-animation, retry after wait_until({condition:'value_changes'}) or a brief delay.",
-    "If focus was stolen by another window, focus_window the target before retrying.",
-    "If the browser tab is not ready, call browser_open or wait_until({condition:'ready_state'}) on the target tab.",
-    "If the guard reports `needs_escalation`, the target may require admin elevation — re-run the MCP server as administrator.",
+    "Read the error message — its tail preserves the auto-guard's 1-sentence recommended next step (refreshed each call from `summary.next`).",
+    "If the descriptor matched multiple targets (ambiguous_target), narrow windowTitle / name / automationId until a single target resolves.",
+    "If the target was not found (target_not_found), run desktop_discover — the window or element no longer matches the current desktop state.",
+    "If a modal is blocking the action (blocked_by_modal), dismiss it (Escape, or click the appropriate button) before retrying.",
+    "If the browser tab is not ready (browser_not_ready), call browser_open or wait_until({condition:'ready_state'}) on the target tab.",
+    "If the target requires admin elevation (needs_escalation), re-run the MCP server elevated, or match elevation levels on both sides.",
+    "If app state shifted under the lens (identity_changed) or coords look stale (unsafe_coordinates), refresh via desktop_state or screenshot before retrying.",
   ],
   LensNotFound: [
     "Drop the lensId — Auto Perception tracks state when you pass windowTitle / tabId directly",
@@ -322,8 +327,9 @@ function classify(message: string): { code: string; suggest: string[] } {
     return { code: "GuardFailed", suggest: SUGGESTS.GuardFailed };
   }
   // Phase 6 PR-B: AutoGuardBlocked — `failWith(new Error("AutoGuardBlocked: ${ag.summary.next}"))`
-  // 14 producers across browser.ts / mouse.ts / keyboard.ts / ui-elements.ts / _action-guard.ts.
-  // Substring is unique within classify cascade (no overlap with "guard failed" / "lens budget" / etc).
+  // 12 producers across browser.ts (3) / mouse.ts (3、L746 `AutoGuardBlocked[endpoint]:` 変種) /
+  // keyboard.ts (3) / ui-elements.ts (2) / _action-guard.ts (1)。
+  // Substring is unique within classify cascade (no overlap with "guard failed" / etc).
   if (m.includes("autoguardblocked") || m.includes("auto guard blocked")) {
     return { code: "AutoGuardBlocked", suggest: SUGGESTS.AutoGuardBlocked };
   }

@@ -276,9 +276,9 @@ tool 呼び出しは isolated event ではなく、**直前の自分の行動の
 
 ### 5.4 typed enum 一覧 — 既存 `_errors.ts` SUGGESTS を SSOT として吸収
 
-既存 `src/tools/_errors.ts` の `SUGGESTS` には **23 個の PascalCase code** が運用済 (Phase 6 cleanup 後 = PR-A 削除 3 件 + PR-B AutoGuardBlocked 追加 1 件、ADR-010 起草時 25 codes baseline からの差分)。本 ADR の `most_likely_cause` は **これを SSOT として吸収** し、新規追加分のみ拡張する (catalog 全面 reconcile = `_errors.ts` の post-issue/Phase B 累積 +14 codes 含めた catalog 整合は `docs/adr-010-followups.md` §3 で別 PR carry-over)。
+本 §5.4 catalog は ADR-010 起草時 SSOT (25 codes baseline) を出発点とし、Phase 6 cleanup (PR-A 削除 3 件 + PR-B AutoGuardBlocked 追加 1 件) を適用した結果として **23 codes** を列挙する。注意: live `src/tools/_errors.ts` SUGGESTS には post-issue (#178/#179/#180/#181/#197) + Phase B B-1〜B-4 で累積 +14 codes が後追いで追加済で、現行 production の SUGGESTS 数は **23 ではない** (本 catalog は ADR baseline 視点の subset で、catalog 全面 reconcile は `docs/adr-010-followups.md` §3 で別 PR carry-over)。本 ADR の `most_likely_cause` は **本 catalog を SSOT として吸収** し、新規追加分は §5.4 末尾 + followups doc で拡張する。
 
-#### 既存 23 codes (Phase 6 cleanup 後、PascalCase 維持)
+#### 既存 23 codes (ADR baseline 25 - PR-A 3 + PR-B 1、PascalCase 維持、live `_errors.ts` 全 entries とは異なる subset)
 
 ```
 // 引数・基本
@@ -300,7 +300,7 @@ WaitTimeout | ScrollbarUnavailable | OverflowHiddenAncestor |
 VirtualScrollExhausted
 
 // RPG
-GuardFailed | LensNotFound | AutoGuardBlocked
+GuardFailed | AutoGuardBlocked | LensNotFound
 
 // 入力チャネル
 BackgroundInputUnsupported | BackgroundInputIncomplete |
