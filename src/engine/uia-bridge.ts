@@ -1236,6 +1236,13 @@ try {
  * delivers WM_CHAR to the focused HWND/element (matrix doc §3.1 line 140
  * + §4.2 verifyDelivery 規範). The TreeWalker scoping guards against
  * reading an unrelated app's value when focus is elsewhere.
+ *
+ * Best-effort caveat (Phase 7 F4 P2-2): focus race during the read is not
+ * detected. If the focus moves away → reads → moves back during the
+ * `runPS` round-trip, the Value returned is whichever element was focused
+ * at the instant `vp.Current.Value` evaluated. Callers (keyboard.ts BG
+ * type path) compose this with a post-injection comparison, so a transient
+ * focus race produces an `unverifiable` hint rather than a false delivered.
  */
 export async function getTextViaValuePattern(windowTitle: string, timeoutMs = 6000): Promise<string | null> {
   const safeTitle = escapeLike(windowTitle);
@@ -1290,7 +1297,13 @@ try {
     $payload = @{ ok=$true; text=$val } | ConvertTo-Json -Compress
     Write-Output $payload
 } catch {
-    Write-Output ('{"ok":false,"error":"' + ($_.Exception.Message -replace '"','\\"') + '"}')
+    # Phase 7 F4 P2-4 (Round 1 review): normalize CR/LF in the exception
+    # message before splicing into a JSON string literal. Multi-line
+    # InvalidOperationException messages (e.g. disposed AutomationElement)
+    # would otherwise emit raw newlines into the JSON body and break
+    # JSON.parse on the TS side, masking the real error as a generic null.
+    $msg = $_.Exception.Message -replace '"','\\"' -replace "[\r\n]+",' '
+    Write-Output ('{"ok":false,"error":"' + $msg + '"}')
 }
 `;
   try {

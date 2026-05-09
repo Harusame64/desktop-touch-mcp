@@ -709,27 +709,29 @@ export const keyboardTypeHandler = async ({
           // already know we can't compare).
           const checkText = effectiveText.replace(/[\r\n]+$/, "");
           const hasEmbeddedNewline = /[\r\n]/.test(checkText);
-          const baselineRaw =
-            verificationNeeded && checkText.length > 0 && !hasEmbeddedNewline
-              ? await getTextViaTextPattern(target.title)
-              : null;
+          // Phase 7 F4 P2-1 (Round 1 review): run TextPattern + ValuePattern
+          // baseline reads in parallel via Promise.all, so the causal window
+          // between baseline capture and injection stays close to
+          // max(textPattern, valuePattern) ms instead of summing both PowerShell
+          // round-trips on the cold path. The hot path (TextPattern succeeds)
+          // pays an extra parallel ValuePattern PS spawn cost which is wasted,
+          // but the total wall-clock latency does not increase. Win11 New
+          // Notepad RichEditD2DPT (the F4 target) only has ValuePattern, so
+          // the cold path is where users actually live.
+          const shouldReadBaselines =
+            verificationNeeded && checkText.length > 0 && !hasEmbeddedNewline;
+          const [baselineRaw, valueBaselineRaw] = shouldReadBaselines
+            ? await Promise.all([
+                getTextViaTextPattern(target.title),
+                getTextViaValuePattern(target.title),
+              ])
+            : [null, null];
           const baselineMarker =
             baselineRaw !== null ? makeKeyboardBaselineMarker(stripAnsi(baselineRaw)) : null;
-
-          // Phase 7 F4 fallback: when TextPattern is unavailable on the focused
-          // element (e.g. Win11 New Notepad RichEditD2DPT control implements
-          // ValuePattern but not TextPattern), capture the focused element's
-          // ValuePattern.Value as a baseline so we can do post-injection delta
-          // comparison. Only collected when the TextPattern path is missing
-          // (avoids paying double UIA round-trip cost on the common path).
-          // Phase 6 dogfood F4 finding (`docs/llm-audit/phase6-dogfood-findings.md`).
-          const valueBaseline =
-            verificationNeeded &&
-            baselineMarker === null &&
-            checkText.length > 0 &&
-            !hasEmbeddedNewline
-              ? await getTextViaValuePattern(target.title)
-              : null;
+          // valueBaseline is only consulted when the TextPattern path is
+          // unavailable (baselineMarker === null). When TextPattern works,
+          // the parallel-fetched ValuePattern baseline is discarded.
+          const valueBaseline = baselineMarker === null ? valueBaselineRaw : null;
 
           if (replaceAll) postKeyComboToHwnd(target.hwnd, "ctrl+a");
           const result = postCharsToHwnd(target.hwnd, effectiveText);
@@ -817,8 +819,12 @@ export const keyboardTypeHandler = async ({
                 if (containsText) {
                   // Delivered if length grew (text appended) OR baseline did
                   // not previously contain checkText (replaceAll / focus-fresh
-                  // shape). Otherwise both sides contain checkText with no
-                  // length change — undetermined, fall back to unverifiable.
+                  // shape; e.g. ctrl+a then type replaces the buffer so post
+                  // length can shrink yet the typed text is what landed).
+                  // Otherwise both sides contain checkText with no length
+                  // change — undetermined (could be a re-type of identical
+                  // content), fall back to unverifiable rather than
+                  // false-positive delivered.
                   if (delta > 0 || !valueBaseline.includes(checkText)) {
                     verifiedDelivery = true;
                   } else {

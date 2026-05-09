@@ -13,6 +13,14 @@
  * is heavy (mocks for spawn, win32, bg-input, perception) — these tests
  * cover the **decision logic** that the integration glue implements.
  *
+ * **Bit-equal invariant (Phase 7 F4 P3-1 Round 1 review)**: the
+ * `classifyValuePatternDelivery` helper below MUST stay bit-equal to
+ * `keyboard.ts:817-832` (BG type path verifiable=false branch). This
+ * file is a copy-test by design (avoids exporting the helper from
+ * keyboard.ts and growing the public API surface for a P3-tier
+ * verification path). If the keyboard.ts logic is touched, mirror the
+ * change here in the same PR.
+ *
  * matrix doc §3.1 line 140 (BG path delivery verification) + §4.2
  * (verifyDelivery hint shape), `docs/llm-audit/phase6-dogfood-findings.md` §F4.
  */
