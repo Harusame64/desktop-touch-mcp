@@ -81,7 +81,7 @@
 1. Notepad focus 状態
 2. **side-channel**: 別 PowerShell で `Start-Sleep 1; Start-Process notepad` を起動 → 1 秒後に新 Notepad が foreground 奪取
 3. 同時に `keyboard({action:'type', method:'foreground', windowTitle:'(元 Notepad)', text:'long text that takes time to type', abortOnFocusLoss:true, chunkSize:8})` 呼出
-4. response 観測: `ok:false`、`error: ".*FocusLostDuringType.*"`、`context.context.typed` に部分送信文字数、`context.context.remaining` に未送信文字列
+4. response 観測: `ok:false`、`code:"FocusLostDuringType"` (top-level、PR #218 / I1 fix 後)、`suggest:[...3 strings...]` (top-level、`_errors.ts` SUGGESTS 自動解決)、`context.typed` に部分送信文字数、`context.remaining` に未送信文字列、`context.total / context.chunkSize / context.focusLost` も single-nest
 5. element re-locate 後、`keyboard({action:'type', method:'foreground', windowTitle:'(元 Notepad)', text: <step4 remaining>})` で retry chain
 6. 文書全体が結合された姿で landing
 
