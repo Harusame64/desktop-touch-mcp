@@ -81,8 +81,8 @@
 
 ### 2.6 集計
 
-- `pass`: **5 cells** (terminal:run, scroll:to_element, scroll:capture, scroll:read, + 内 cell 単位の partial pass を除く)
-- `fix carry-over (doc gap)`: **9 actions** (F1, F2 ×2, F3, F5, F6, F7, F8, F9, F10)
+- `pass`: **4 actions** (全 4 column が pass: terminal:run, scroll:to_element, scroll:capture, scroll:read)。cell 単位の partial pass は §2.1-2.5 表を参照
+- `fix carry-over (doc gap)`: **10 actions / 9 distinct findings** (F1, F2 ×2 actions [terminal:send FG + keyboard:press FG], F3, F5, F6, F7, F8, F9, F10)
 - `fix carry-over (contract drift)`: **1 action** (F4)
 - `breaking change candidate`: 0
 - `unverifiable accepted`: 0
@@ -92,19 +92,19 @@
 ### F1: terminal description に hidden_input_prompt verifyDelivery hint 言及不在
 
 - **matrix §3.1 line 137 規範 (terminal:send BG)**: `hints.verifyDelivery: {status:"unverifiable", reason:"hidden_input_prompt", channel:"wm_char", fallback:"method:'foreground'"}` を hidden-input prompt 検出時に返す
-- **production 実装事実**: `src/tools/terminal.ts` line 553-637 で baseline 末尾行 password / passphrase / sudo / `Password for ` / `^>$` パターン検出 → `verifyReason = "hidden_input_prompt"` → line 633-640 で SSOT shape の hint emit
+- **production 実装事実**: `src/tools/terminal.ts` line 553-574 で baseline 末尾行 password / passphrase / sudo / `Password for ` / `^>$` パターン検出 → `verifyReason = "hidden_input_prompt"` 設定、line 633-640 で SSOT shape の hint emit (検出 + emit の 2 範囲)
 - **terminal description fact (`src/tools/terminal.ts` line 1553-1564 buildDesc)**: caveats / examples いずれにも `hidden_input_prompt` / `verifyDelivery: unverifiable` 言及なし
 - **LLM 視点 impact**: `ok:true + hints.verifyDelivery: unverifiable` envelope を読み取って `method:'foreground'` fallback すべき判断材料が description / examples から得られない
 - **推奨 fix**: caveats に「password / sudo / Read-Host -AsSecureString 等の hidden-input prompt 入力では `hints.verifyDelivery` が `{status:'unverifiable', reason:'hidden_input_prompt'}` を返す。credential entry は `method:'foreground'` で送信」を追記
 
-### F2: terminal / keyboard / focus_window description に ForegroundRestricted recovery path 不在
+### F2: terminal / keyboard / mouse description に ForegroundRestricted recovery path 不在
 
-- **matrix §3.1 line 138, 141, 143, 152 規範**: `code: ForegroundRestricted` を Win11 foreground refusal 2 段 ladder 共拒否時に emit
+- **matrix §3.1 line 138, 141, 143, 144 規範**: `code: ForegroundRestricted` を Win11 foreground refusal 2 段 ladder 共拒否時に emit (本 PR Tier 1 scope の 4 emit 箇所、4 row と 1:1 一致)
 - **production 実装事実**: `terminal.ts` line 723 / `keyboard.ts` line 892, 1292 / `mouse.ts` line 517 で `new Error("ForegroundRestricted")` failWith
 - **description fact**: terminal / keyboard / mouse_click いずれの description にも typed code 名 `ForegroundRestricted` の direct 言及なし。recovery path は `_errors.ts` SUGGESTS 経由でのみ提供 (4 actionable suggest 完備)
 - **LLM 視点 impact**: failure envelope を見れば SUGGESTS は読めるが、tool 仕様の段階で「Win11 foreground refusal 時に typed code が返る」予告がない → 計画段階で fallback path を組めない
 - **推奨 fix**: terminal / keyboard / mouse description の caveats に「Win11 foreground refusal (UIPI cross-elevation / admin-only target / from background process / service) 時は `code:'ForegroundRestricted'` ok:false で early return、recovery は windowTitle 直接受ける tool 経路に切替」を追記
-- **横展開**: focus_window description (matrix §3.1 line 152、別 audit phase で扱う) にも同型 fact があるため統一 wording
+- **横展開 note**: `focus_window` description (matrix §3.1 line 152) も同型 fact (`ForegroundRestricted` recovery path) を持つが本 PR Tier 1 scope 外、Phase 3 (Tier 2 commit 軸 audit) で同型 sweep 予定
 
 ### F3: keyboard:type description に BackgroundInputNotDelivered recovery example 不在
 
@@ -155,7 +155,7 @@
 ### F8: scroll:raw description に ScrollNotDelivered + page-end disambiguation 不在
 
 - **matrix §3.1 line 146 規範**: `ScrollNotDelivered` typed code、page-end disambiguation (`pre.percent at boundary, post equal → page-end success` vs `pre off-boundary, post equal → silent drop`)
-- **production 実装事実**: `mouse.ts` line 1102 で page-end disambiguation logic、line 1105 で `new Error("ScrollNotDelivered")` failWith
+- **production 実装事実**: `mouse.ts` line 1084 で `evaluateScrollDelivery()` 呼出 (page-end disambiguation logic 内包、line 930 規範 doc comment と整合)、line 1104-1118 で `new Error("ScrollNotDelivered")` failWith
 - **description fact (`scroll.ts` line 248-260)**: typed code 直接言及なし
 - **推奨 fix**: caveats に「`action:'raw'` 後 wheel が silently swallowed (overlay window above target / non-scrollable container / UIPI low-IL → elevated app) 時は `code:'ScrollNotDelivered'`、page boundary 既到達は success として扱う disambiguation あり」を追記
 
@@ -178,8 +178,8 @@
 | # | 内容 | 優先度 | 性質 | 推奨 PR 単位 |
 |---|---|---|---|---|
 | **I1** | F4 fix — `FocusLostDuringType` SSOT 登録 (SUGGESTS + classify、handler hard-coded suggest 削除、envelope shape contract pin 追加) | **High** | production code 改修 | 単独 PR、Opus + **Codex 必須** (CLAUDE.md §3.3 Step 0) |
-| **I2** | F1 + F5 + F6 + F7 + F8 + F9 + F10 — description / caveats / examples 補強 (各 tool description 内 typed code 名 + verifyDelivery hint shape + recovery path の LLM 教育材料化) | Medium | docs only | 1 PR にまとめる、Opus 1+ round (Codex 推奨) |
-| **I3** | F2 + F3 — cross-tool `ForegroundRestricted` recovery path 統一 wording (terminal / keyboard / mouse / focus_window 横断) | Medium | docs only | I2 と同 PR or 別 PR、cross-file consistency 軸 |
+| **I2** | F1 + F3 + F5 + F6 + F7 + F8 + F9 + F10 — description / caveats / examples 補強 (各 tool description 内 typed code 名 + verifyDelivery hint shape + recovery path の LLM 教育材料化、F3 は keyboard:type BG path failure recovery example chain 追加) | Medium | docs only | 1 PR にまとめる、Opus 1+ round (Codex 推奨) |
+| **I3** | F2 — cross-tool `ForegroundRestricted` recovery path 統一 wording (terminal / keyboard / mouse 横断、本 PR Tier 1 scope の 3 tool に絞る、focus_window への横展開は Phase 3 で同型 sweep) | Medium | docs only | I2 と同 PR or 別 PR、cross-file consistency 軸 |
 
 I1 のみ contract drift fix で immediate priority、I2 / I3 は v1.4 milestone の release readiness 判定材料として doc enrichment。
 
