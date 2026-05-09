@@ -402,7 +402,7 @@ export function registerUiElementTools(server: McpServer): void {
 
   server.tool(
     "click_element",
-    "Invoke a UI element by name or automationId via UIA InvokePattern — no screen coordinates needed. The server auto-guards using windowTitle (verifies identity, foreground, modal) and returns post.perception.status. Prefer over mouse_click for buttons, menu items, and links in native Windows apps. Use desktop_discover first to discover automationIds. Pass fixId from a suggestedFix to re-target after window identity drift. lensId is optional for advanced pinned-lens use. Caveats: Requires InvokePattern — some custom controls do not expose it; fall back to mouse_click in that case.",
+    "Invoke a UI element by name or automationId via UIA InvokePattern — no screen coordinates needed. The server auto-guards using windowTitle (verifies identity, foreground, modal) and returns post.perception.status. Prefer over mouse_click for buttons, menu items, and links in native Windows apps. Use desktop_discover first to discover automationIds. Pass fixId from a suggestedFix to re-target after window identity drift. lensId is optional for advanced pinned-lens use. Caveats: Typed errors: code:'InvokePatternNotSupported' — the control does not expose InvokePattern, fall back to mouse_click; code:'ElementDisabled' — the element is in a disabled state, re-check preconditions before retry; code:'GuardFailed' — read the perception envelope (attention / guard fields) and choose recovery (re-focus, wait, or pass the suggestedFix.fixId on the next call). Some custom controls do not expose InvokePattern at all; fall back to mouse_click for those.",
     clickElementRegistrationSchema,
     clickElementRegistrationHandler as typeof clickElementHandler
   );
