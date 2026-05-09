@@ -169,9 +169,9 @@ PR #219 Codex Round 1 で **既存 SUGGESTS+classify 登録済だが production 
 
 **Phase 5 follow-up candidate** (production fix axis、本 PR scope 外): `_errors.ts` SUGGESTS+classify 登録は完備でも production producer がない dead typed code を検出する CI/test 追加 (例: classify pattern 各 branch に対して real-world emit producer の存在を grep で pin)。
 
-### 4.bis Round 2 addendum — CI sweep land (PR #N で structural guard 化)
+### 4.bis Round 2 addendum — CI sweep land (PR #226 で structural guard 化)
 
-PR #N で `tests/unit/issue-211-classify-branch-producer-pin.test.ts` を land し、`_errors.ts` classify branches を parse して各 typed code の production producer 存在を grep-based に確認する vitest test を CI 化。本 sweep が **本 §4.bis 起票時には未発見だった 4 件目の dead typed code を実行時に検出**:
+PR #226 で `tests/unit/issue-211-classify-branch-producer-pin.test.ts` を land し、`_errors.ts` classify branches を parse して各 typed code の production producer 存在を grep-based に確認する vitest test を CI 化。本 sweep が **本 §4.bis 起票時には未発見だった 4 件目の dead typed code を実行時に検出**:
 
 | 死んだ typed code (Round 2 addendum) | 登録 | 実態 | 訂正先 |
 |---|---|---|---|
