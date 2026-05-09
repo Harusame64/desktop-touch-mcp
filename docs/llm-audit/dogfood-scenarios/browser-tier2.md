@@ -7,6 +7,8 @@
 - Parent audit section: 本 doc は `phase3b-execution-audit.md` §3.3 (cell 23-28) の carry-over scenario。current scope は browser_form (cell 27) に限定、他 5 actions の error/edge/chain は automated pin で完全カバー
 - Cross-link: Phase 2b の browser-related dogfood は scope 外 (Tier 1 軸でない)、本 doc は Tier 2 軸の唯一の browser dogfood
 
+**Section numbering note**: 本 doc は §6.x で開始 (§1-§5 不在)。これは将来的に browser_click / browser_eval / browser_navigate / browser_fill / browser_open の 5 actions 専用 dogfood scenario が必要となった場合の予約 (§1-§5)。現在 Phase 3b では automated pin で完全カバー済のため empty。Phase 4 query 軸 audit / Phase 5 closure で追加判断。
+
 ---
 
 ## 6. browser_form (cell 27 error path SoT)
