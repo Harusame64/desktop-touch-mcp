@@ -56,7 +56,7 @@ LLM の不安は 7 つに分解できる。
 - lease_token は単一 ID ではなく 4-tuple (`entityId` / `viewId` / `targetGeneration` / `evidenceDigest`)、envelope 内で展開 → 統合書 §4 / `LeaseStore` 既存実装
 - L4 envelope assembly 制約 (p99 < 5ms 等) → layer-constraints §5
 - L5 tool surface 制約 (query/commit/subscribe SLO) → layer-constraints §6
-- typed reason 37 codes (PascalCase、Codex/Gemini review 経由で拡張) → §5.4
+- typed reason 34 codes (PascalCase、Codex/Gemini review 経由で拡張、Phase 6 cleanup 後) → §5.4
 
 ### 1.5 Tool Surface 不変原則 (重要、誤読防止、統合書 P7 / §7.4 と同期)
 
@@ -331,7 +331,7 @@ EnvelopeSizeExceeded
 AccessDenied | Unknown
 ```
 
-合計 25 + 12 = **37 codes**。
+合計 22 + 12 = **34 codes** (Phase 6 cleanup 後)。
 
 #### 運用ルール
 

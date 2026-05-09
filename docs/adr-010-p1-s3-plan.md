@@ -534,7 +534,7 @@ trunk + expansion 完了後の別 phase で carry-over:
 - **expansion**: 残 ~25 tool への envelope rollout (L5 swimlane で worktree 並走、`docs/walking-skeleton-trunk-selection.md` §6.1 line 363)、本 S3 で確立した `makeEnvelopeAware` L5 wrapper helper を mechanical コピーで全 tool に適用
 - **S5 finalize**: `_post.ts` (existing) と `_envelope.ts` (new) の役割境界判断 (OQ #1、Round 2 で `desktop_state` 経路では withPostState 不使用のため本 trunk 判断不要、`desktop_act` action tool wrapper 化時に S5 で finalize)
 - **expansion**: `confidence` 残 3 値 (`cached` / `inferred` / `stale`) 判定 logic、ADR-010 §17.6.1 値域 SSOT 完全実装
-- **expansion**: ADR-010 §5.4 typed reason 37 codes 全網羅 (P2 expansion work)、`if_unexpected.most_likely_cause: "EnvelopeSizeExceeded"` typed enum stamp 等
+- **expansion**: ADR-010 §5.4 typed reason 34 codes (Phase 6 cleanup 後) 全網羅 (P2 expansion work)、`if_unexpected.most_likely_cause: "EnvelopeSizeExceeded"` typed enum stamp 等
 
 ---
 
