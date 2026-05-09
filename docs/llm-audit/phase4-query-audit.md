@@ -157,6 +157,20 @@ doc 軸 11 件:
 - **description fact (`browser.ts:2655-2660`)**: reflow caveat あり、typed code 名 direct 言及不在 (browser_click 経由 prefer の説明はあり)
 - **推奨 fix**: caveats に「element selector 不一致 `code:'ElementNotFound'`、CDP 切断 `code:'BrowserNotConnected'` (recovery path 同 G8/G12)」を追記
 
+## 4.bis Round 2 correction — dead typed codes (PR #219 Codex P2 反映)
+
+PR #219 Codex Round 1 で **既存 SUGGESTS+classify 登録済だが production producer 不在の typed code** が複数発見された。Phase 2a F9 / Phase 3a G8 / Phase 4 K2 audit 文中で「emit される typed code」と扱われていたが実態は dead code:
+
+| 死んだ typed code | 登録 (SUGGESTS+classify) | producer 実態 | 訂正先 description |
+|---|---|---|---|
+| `AutoGuardBlocked` | SUGGESTS なし、classify branch なし | `failWith(new Error("AutoGuardBlocked: ..."))` 多数だが classify が match せず envelope code は `"ToolError"` | browser_eval description は「error message が 'AutoGuardBlocked: ...' で始まる」と訂正 |
+| `TerminalMarkerStale` | SUGGESTS L71 / classify L337-338 | `terminalReadHandler` 内に producer なし、stale sinceMarker は `hints.terminalMarker.previousMatched:false` (ok:true) で signal | terminal action='read' description は hints 経由 signal に訂正 |
+| `MaxDepthExceeded` | SUGGESTS L111 / classify L376-377 | smart-scroll は cdp-bridge.ts:573 の `while (cur && depth < MAXDEPTH)` で walking を止めるのみ、failWith で typed code は emit しない | scroll action='smart' description から `MaxDepthExceeded` 削除 |
+
+**Phase 5 follow-up candidate** (production fix axis、本 PR scope 外): `_errors.ts` SUGGESTS+classify 登録は完備でも production producer がない dead typed code を検出する CI/test 追加 (例: classify pattern 各 branch に対して real-world emit producer の存在を grep で pin)。
+
+---
+
 ## 5. Issue 起票候補 (Phase 5 closure に向けて、Phase 2a/2b/3a/3b 統合管理)
 
 | # | Source | Priority | Type | Status |

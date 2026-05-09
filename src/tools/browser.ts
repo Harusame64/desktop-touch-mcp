@@ -2684,7 +2684,7 @@ export function registerBrowserTools(server: McpServer): void {
           "DOM nodes cannot be returned from action='js' directly (circular refs are serialized safely). " +
           "React/Vue/Svelte controlled inputs cannot be set via element.value — use keyboard(action='type') / browser_fill instead. " +
           "readyState is strictly checked; guard blocks if page is still loading. " +
-          "Typed errors: code:'BrowserNotConnected' on CDP disconnect (re-attach via browser_open), code:'AutoGuardBlocked' when the page is still loading (call wait_until({condition:'ready_state'}) or poll readyState via browser_eval, then retry).",
+          "Typed errors: code:'BrowserNotConnected' on CDP disconnect (re-attach via browser_open). Auto-guard blocks on a still-loading page surface as ok:false with the error message starting 'AutoGuardBlocked: ...' — recover via wait_until({condition:'ready_state'}) or browser_eval readyState polling, then retry.",
         examples: [
           "browser_eval({action:'js', expression:'document.title'}) → page title",
           "browser_eval({action:'dom', selector:'#main', maxLength:5000}) → outerHTML",
