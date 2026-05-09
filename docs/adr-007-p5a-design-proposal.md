@@ -210,7 +210,7 @@ pub struct HwInputPostMessagePayload {
 pub struct FailurePayload {
     pub layer: String,                 // "L1" / "L5"
     pub op: String,                    // 関数名
-    pub reason: String,                // typed enum (ADR-010 §5.4 の 34 codes と互換、Phase 6 cleanup 後)
+    pub reason: String,                // typed enum (ADR-010 §5.4 の 35 codes と互換、Phase 6 cleanup 後 = PR-A -3 + PR-B +1)
     pub panic_payload: Option<String>, // catch_unwind の payload string
 }
 

@@ -108,6 +108,20 @@ const SUGGESTS: Record<string, string[]> = {
     "Call desktop_state to force a fresh observation before retrying",
     "Consider a corrective action: focus_window, dismiss modal, or wait_until",
   ],
+  // Phase 6 PR-B (epic #211 6-4): AutoGuard pre-action gate refused the
+  // operation because the target's perception envelope is unsafe for an
+  // immediate action. The error message preserves the guard's 1-sentence
+  // `summary.next` suggestion (one of 6 AutoGuardStatus enum values:
+  // settling / focus_changed / mid_animation / unsafe_coordinates /
+  // browser_not_ready / needs_escalation, see action-target.ts).
+  AutoGuardBlocked: [
+    "Read the error message — it contains the auto-guard's 1-sentence recommended next step (focus_window / wait_until / dismiss modal / desktop_state).",
+    "Call desktop_state to inspect attention.signal and recent changed[] events that triggered the block.",
+    "If the UI is settling or mid-animation, retry after wait_until({condition:'value_changes'}) or a brief delay.",
+    "If focus was stolen by another window, focus_window the target before retrying.",
+    "If the browser tab is not ready, call browser_open or wait_until({condition:'ready_state'}) on the target tab.",
+    "If the guard reports `needs_escalation`, the target may require admin elevation — re-run the MCP server as administrator.",
+  ],
   LensNotFound: [
     "Drop the lensId — Auto Perception tracks state when you pass windowTitle / tabId directly",
     "If you cached a lensId from a prior session, treat it as expired",
@@ -306,6 +320,12 @@ function classify(message: string): { code: string; suggest: string[] } {
   // Perception guards and lens errors — check before generic "not found" patterns
   if (m.includes("guardfailed") || m.startsWith("guard failed") || m.includes("guard failed:")) {
     return { code: "GuardFailed", suggest: SUGGESTS.GuardFailed };
+  }
+  // Phase 6 PR-B: AutoGuardBlocked — `failWith(new Error("AutoGuardBlocked: ${ag.summary.next}"))`
+  // 14 producers across browser.ts / mouse.ts / keyboard.ts / ui-elements.ts / _action-guard.ts.
+  // Substring is unique within classify cascade (no overlap with "guard failed" / "lens budget" / etc).
+  if (m.includes("autoguardblocked") || m.includes("auto guard blocked")) {
+    return { code: "AutoGuardBlocked", suggest: SUGGESTS.AutoGuardBlocked };
   }
   if (m.includes("lens not found") || m.includes("unknownlens")) {
     return { code: "LensNotFound", suggest: SUGGESTS.LensNotFound };

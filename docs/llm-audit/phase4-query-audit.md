@@ -163,7 +163,7 @@ PR #219 Codex Round 1 で **既存 SUGGESTS+classify 登録済だが production 
 
 | 死んだ typed code | 登録 (SUGGESTS+classify) | producer 実態 | 訂正先 description / Phase 6 closure 状態 |
 |---|---|---|---|
-| `AutoGuardBlocked` | SUGGESTS なし、classify branch なし | `failWith(new Error("AutoGuardBlocked: ..."))` 多数だが classify が match せず envelope code は `"ToolError"` | browser_eval description は「error message が 'AutoGuardBlocked: ...' で始まる」と訂正。Phase 6 PR-B (6-4) で classify branch 追加予定 (production-perceived contract change) |
+| `AutoGuardBlocked` | SUGGESTS なし、classify branch なし | `failWith(new Error("AutoGuardBlocked: ..."))` 多数だが classify が match せず envelope code は `"ToolError"` | browser_eval description は「error message が 'AutoGuardBlocked: ...' で始まる」と訂正。**Phase 6 PR-B (6-4) で classify branch + SUGGESTS 追加済**、envelope `code: "AutoGuardBlocked"` で 14 producers が一貫 emit、browser_eval / browser_navigate description も typed code 言及形に sync |
 | `TerminalMarkerStale` | SUGGESTS L71 / classify L337-338 | `terminalReadHandler` 内に producer なし、stale sinceMarker は `hints.terminalMarker.previousMatched:false` (ok:true) で signal | terminal action='read' description は hints 経由 signal に訂正済。**Phase 6 PR-A (6-2) で classify+SUGGESTS から削除済** |
 | `MaxDepthExceeded` | SUGGESTS L111 / classify L376-377 | smart-scroll は cdp-bridge.ts:573 の `while (cur && depth < MAXDEPTH)` で walking を止めるのみ、failWith で typed code は emit しない | scroll action='smart' description から `MaxDepthExceeded` 削除済。**Phase 6 PR-A (6-3) で classify+SUGGESTS から削除済** |
 
