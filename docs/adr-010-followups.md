@@ -83,6 +83,8 @@ line 279 「現行 main で classify ロジックも完備」を削除 or 「ADR
 
 **Phase 7 F3 fix (本 doc Resolved 後の派生)**: F3 PR で SpawnFailed typed code が live `_errors.ts` に追加され、catalog 49 → **50 codes** / 残 48 → **49 codes** に更新。F3 PR 内で cascade 全 numeric ref を 1 commit で同期 sweep し、Phase 7 reconcile invariant を維持。
 
+**Phase 7 F4 fix の再評価 (2026-05-10、本 doc Resolved 後の派生)**: F4 production fix (PR #233 ValuePattern fallback) は v1.4.1 dogfood Step 1 で gate 条件不足が判明 = Win11 New Notepad で実機 `delivered` 返却に至らず、§F4-bis として `docs/llm-audit/phase6-dogfood-findings.md` で re-opened (PR #234)。本 §3 reconcile の typed code catalog 自体には影響なし (新 typed code は追加されない、`baselineMarker !== null` 分岐の gate 修正のみ)、catalog 50 codes 数値は v1.4.2 hotfix 後も不変見込。
+
 ---
 
 ## 4. 優先度 (Resolved 後)
