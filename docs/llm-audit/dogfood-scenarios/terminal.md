@@ -102,6 +102,20 @@ CI で安定的に再現できない実機 GUI 依存シナリオを永続化。
 **期待**: send 失敗が ok:false + completion.reason='send_failed' + warnings nested code、partial output は `output` field に維持。
 **Anti-pattern**: send 失敗 → silent ok:true、warnings 空、completion.reason='quiet' 偽装。
 
+### 1.8 terminal:send FG — success path (正常 path manual SoT)
+
+**目的**: terminal:send FG の **success path** には direct automated pin が不在 (handler は inline 5-retry + auto-escalate ladder で `focusWindowForKeyboard` shared helper を使わないため、`issue-184-foreground-refusal-pin.test.ts` の success case は terminal handler を直接 exercise しない)。本 scenario は real PowerShell session で foreground 取得 + keystroke 配信 + post-send focus retain を end-to-end 観測する dogfood SoT、`phase2b-execution-audit.md` cell 2 normal の admission gap を補完。
+
+**手順**:
+1. PowerShell 起動 (`Start-Process pwsh`、admin 化しない)、フォーカス可能な状態に
+2. `terminal({action:'send', method:'foreground', windowTitle:'PowerShell', input:'echo fg-success', preferClipboard:false, focusFirst:true, restoreFocus:false, trackFocus:true})` 呼出
+3. response 観測: `ok:true`、`hints.method` が "foreground" で動作、`completion` 不在 (send は run と異なり send-only)、focus 維持 + keystroke 全 char landing
+4. terminal 内に `echo fg-success` が visible、Enter 押下なしで prompt 復帰なし
+5. `terminal({action:'read', windowTitle:'PowerShell'})` で baseline buffer に "echo fg-success" present 確認
+
+**期待**: foreground 取得成功 → keystroke 全 char landing → post-send focus 維持 (`detectFocusLoss` で steal 検出なし)。
+**Anti-pattern**: silent ok:true で `restoreAndFocusWindow` 呼出回数だけ増えて keystroke landing 0 文字 (#202 同型 reactivated)、または focus retain 失敗で完了直後 focus が別 window に漂流。
+
 ---
 
 ## 2. 共通操作上の note
