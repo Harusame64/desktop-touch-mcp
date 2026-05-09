@@ -34,8 +34,14 @@ vi.mock(import("../../src/engine/win32.js"), async (importOriginal) => {
     ...actual,
     enumWindowsInZOrder: vi.fn(),
     restoreAndFocusWindow: vi.fn(),
-    getProcessIdentityByPid: vi.fn(() => ({ processName: "test.exe", pid: 1234 })),
-    getWindowProcessId: vi.fn(() => 1234),
+    // findTerminalWindow's first try (title-substring match on enum
+    // result) hits the target directly when test setup uses
+    // `target.title === windowTitle`. The process-identity fallback
+    // (getProcessIdentityByPid / getWindowProcessId) is therefore not
+    // exercised here — kept unmocked to avoid dead mock surface (Opus
+    // PR #209 Round 1 P2-3); if a future test exercises an alias-style
+    // `windowTitle: 'pwsh'` against a target titled differently, those
+    // mocks will need to be re-added explicitly.
     getWindowClassName: vi.fn(() => ""),
   };
 });
@@ -106,18 +112,16 @@ beforeEach(() => {
 
 describe("issue #207: terminal:send foreground-refusal contract pin", () => {
   it("returns ok:false ForegroundRestricted when 5-retry default + AttachThreadInput auto-escalate both refused", async () => {
-    // findTerminalWindow uses enumWindowsInZOrder() to locate the target.
-    // Then the FG path enters the 5-retry default loop (5 enums) and on
-    // failure auto-escalates via AttachThreadInput once more (1 enum).
-    // We mock 7 enum returns total: 1 (find) + 5 (retry) + 1 (escalate
-    // re-enum) — all return the sticky window as foreground so refusal
-    // sticks across the entire ladder.
+    // Production enum sequence (Opus PR #209 Round 1 P3-1): findTerminalWindow
+    // (1) + allBefore capture for restoreFocus tracking (1) + 5-retry default
+    // loop (5) + auto-escalate re-enum (1) = 8 total. We use mockReturnValue
+    // (constant) and additionally pin the count below so a future ladder
+    // change (e.g. retry count drift) is caught structurally — Opus PR #209
+    // Round 1 P2-1 (test brittleness avoidance).
     const target = fakeWindow("PowerShell", false, 100n);
     const sticky = fakeWindow("Sticky Foreground", true, 200n);
     const refusalEnum = [target, sticky];
 
-    // mockReturnValue (not Once) — every call returns the same refusal
-    // state, sidestepping the need to count exact enum invocations.
     mockEnum.mockReturnValue(refusalEnum);
 
     const r = parseResult(await terminalSendHandler({
@@ -146,6 +150,11 @@ describe("issue #207: terminal:send foreground-refusal contract pin", () => {
     expect(mockRestore).toHaveBeenCalledTimes(6);
     // Last call must be the auto-escalate with force:true.
     expect(mockRestore).toHaveBeenLastCalledWith(100n, { force: true });
+    // Opus PR #209 Round 1 P2-1: pin enum call count too — 1 find +
+    // 1 allBefore (restoreFocus capture) + 5 retry + 1 escalate = 8.
+    // A future ladder change (e.g. retry count drift) breaks this
+    // structural pin, not just a vague "still refusing" mock.
+    expect(mockEnum).toHaveBeenCalledTimes(8);
   });
 
   it("hint文言が force:true caller では 5-retry skip を反映", async () => {
