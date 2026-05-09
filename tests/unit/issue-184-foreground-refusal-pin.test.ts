@@ -9,17 +9,28 @@
  * Win11 foreground-stealing protection refuses BOTH the default
  * SetForegroundWindow and the AttachThreadInput escalation.
  *
- * Scope (PR #202 / issue #184): this file contributes the
- * keyboard:type representative pin. The remaining three tools
- * (keyboard:press / mouse_click / terminal:send) follow the same
- * mocking pattern (see issue #207 for the carry-over) — they share
- * the same window-enumeration / restoreAndFocusWindow drivers, and
- * once the keyboard:type pin holds, the structural pattern is
- * proven for the family. Pinning all four with handler-level mocks
- * would require duplicating ~80 lines of mock scaffolding per tool
- * for very little additional contract coverage; carrying the
- * remaining three to a focused follow-up issue keeps the present PR
- * scope narrow (CLAUDE.md "scope discipline").
+ * Scope (PR #208 / issue #184): this file contributes the
+ * keyboard:type pin. The remaining three tools differ in how
+ * tightly the keyboard:type pattern transfers (Opus PR #208 Round
+ * 1 P2-1 — "representative" claim精度):
+ *
+ *   - keyboard:press shares the SAME helper (`focusWindowForKeyboard`)
+ *     so the structural pattern (vi.mock + restoreAndFocusWindow
+ *     ladder + ForegroundRestricted assertions) is reusable as-is —
+ *     a near-mechanical copy of the cases below.
+ *   - mouse_click uses a DIFFERENT helper (`applyHoming`) inside the
+ *     homing block, so the test needs an additional cache + position
+ *     mock surface — the assertion shape transfers but the scaffolding
+ *     does not.
+ *   - terminal:send has an INLINE 5-retry + auto-escalate ladder
+ *     (no shared helper), and needs `findTerminalWindow` mocking on
+ *     top of the foreground enum mocks — assertion shape transfers,
+ *     scaffolding is handler-specific.
+ *
+ * Issue #207 carries the remaining three with their per-handler
+ * scaffolding scopes documented row by row. Pinning all four in this
+ * PR would inflate scope without commensurate contract coverage gain
+ * (CLAUDE.md "scope discipline").
  *
  * Mocking mirrors `tests/unit/focus-window-handler.test.ts` —
  * `enumWindowsInZOrder` returns a deterministic window list, the
