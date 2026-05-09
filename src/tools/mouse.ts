@@ -679,6 +679,30 @@ export const mouseDragHandler = async ({
       tsx = result.x; tsy = result.y;
       tex = endX + dx; tey = endY + dy;
       notes.push(...result.notes);
+
+      // Issue #202 / Phase 5 E3 (epic #211): mouse_drag was missing the
+      // ForegroundRestricted early-return that mouse_click got via PR #206.
+      // applyHoming pushes "ForceFocusRefused" into notes when both default
+      // SetForegroundWindow and the AttachThreadInput escalation are refused
+      // (applyHoming:108-154). Without the early return below the drag
+      // executed on whichever window held foreground — the same silent-fail
+      // pattern PR #202 fixed for mouse_click. The handler now mirrors
+      // mouseClickHandler:502-531 — drag suppressed before nutjs.mouse.drag
+      // fires when foreground transfer was refused.
+      if (notes.indexOf("ForceFocusRefused") >= 0) {
+        const earlyEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "mouse_drag" }) : null;
+        return failWith(
+          new Error("ForegroundRestricted"),
+          "mouse_drag",
+          {
+            ...(effectiveTitle && { windowTitle: effectiveTitle }),
+            hint: "Win11 refused both default SetForegroundWindow and the AttachThreadInput escalation; drag suppressed to avoid landing on the wrong target",
+            attemptedForce: false,
+            autoEscalated: true,
+            ...(earlyEnv && { _perceptionForPost: earlyEnv }),
+          }
+        );
+      }
     }
 
     // Step 2: Guard evaluation on FINAL start coordinates (after homing).
