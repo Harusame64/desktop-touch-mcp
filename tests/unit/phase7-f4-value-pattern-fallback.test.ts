@@ -13,10 +13,22 @@
  * is heavy (mocks for spawn, win32, bg-input, perception) — these tests
  * cover the **decision logic** that the integration glue implements.
  *
- * **Bit-equal invariant (Phase 7 F4 P3-1 Round 1 review)**: the
- * `classifyValuePatternDelivery` helper below MUST stay bit-equal to
- * `keyboard.ts:817-832` (BG type path verifiable=false branch). This
- * file is a copy-test by design (avoids exporting the helper from
+ * **Semantic-equivalent invariant (Phase 7 F4 P3-1 Round 1 / P3-2 Round 2
+ * review)**: the `classifyValuePatternDelivery` helper below MUST stay
+ * semantically equivalent to `keyboard.ts:817-838` (BG type path
+ * verifiable=false branch's outer if/else). The mapping is:
+ *   keyboard.ts side                     → test helper return
+ *   ─────────────────────────────────── → ──────────────────
+ *   `verifiedDelivery = true`            → `true`
+ *   `verifyReason = "read_back_unsupported"` (verifiedDelivery stays at
+ *     function-default `"unverifiable"`)  → `"unverifiable"`
+ *   `verifiedDelivery = false`           → `false`
+ * Strictly speaking the source side mutates two variables while the test
+ * helper returns a single discriminated value, so the wording "bit-equal"
+ * is not literally true. Behavior at the caller boundary is identical
+ * (the wrapping handler observes the same `verifiedDelivery` /
+ * `verifyDelivery.reason` pair).
+ * This file is a copy-test by design (avoids exporting the helper from
  * keyboard.ts and growing the public API surface for a P3-tier
  * verification path). If the keyboard.ts logic is touched, mirror the
  * change here in the same PR.

@@ -713,11 +713,18 @@ export const keyboardTypeHandler = async ({
           // baseline reads in parallel via Promise.all, so the causal window
           // between baseline capture and injection stays close to
           // max(textPattern, valuePattern) ms instead of summing both PowerShell
-          // round-trips on the cold path. The hot path (TextPattern succeeds)
-          // pays an extra parallel ValuePattern PS spawn cost which is wasted,
-          // but the total wall-clock latency does not increase. Win11 New
-          // Notepad RichEditD2DPT (the F4 target) only has ValuePattern, so
-          // the cold path is where users actually live.
+          // round-trips on the cold path. Win11 New Notepad RichEditD2DPT
+          // (the F4 target) only has ValuePattern, so the cold path is where
+          // users actually live.
+          //
+          // Wall-clock trade-off (Round 2 P3-1):
+          //   * Both legs PS (no nativeUia)  → max ≈ either ≈ baseline cost
+          //   * nativeUia loaded for TextPattern only (current state, line 1118
+          //     of uia-bridge.ts) → max = ValuePattern PS spawn ≈ +PS wall-clock
+          //     on the hot path. The cold-path improvement (Win11 Notepad) and
+          //     reduced false-negative rate on the F4 target outweigh the hot-
+          //     path PS cost. Future work: native ValuePattern binding to
+          //     close the gap.
           const shouldReadBaselines =
             verificationNeeded && checkText.length > 0 && !hasEmbeddedNewline;
           const [baselineRaw, valueBaselineRaw] = shouldReadBaselines
