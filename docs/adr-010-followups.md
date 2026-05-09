@@ -1,9 +1,9 @@
 # ADR-010 Follow-ups (post-Phase-6 cleanup)
 
-- Status: **Resolved** (起票 2026-05-09、Phase 7 catalog reconcile PR で fix、live `_errors.ts` 37 codes + ADR-added 12 codes = **49 codes** 全反映、cascade 6 docs sync 完了)
+- Status: **Resolved** (起票 2026-05-09、Phase 7 catalog reconcile PR で fix、live `_errors.ts` 37 codes + ADR-added 12 codes = **49 codes** 全反映、catalog SSOT 本体 1 doc + cascade 8 docs sync 完了)
 - 親 ADR: `docs/adr-010-presentation-layer-self-documenting-envelope.md`
 - 起票元 PR: #227 (Phase 6 PR-A 6-1/6-2/6-3 dead code dictionary cleanup)
-- 解決 PR: #?? (Phase 7 catalog reconcile、本 doc と同 PR で land)
+- 解決 PR: #231 (Phase 7 catalog reconcile、本 doc と同 PR で land)
 
 ## 1. 趣旨
 
@@ -62,17 +62,24 @@ line 279 「現行 main で classify ロジックも完備」を削除 or 「ADR
 
 **反映**: line 277-279 narrative を全面 rewrite。「subset (23 codes)」前提を解消し、「live SSOT bit-equal で全反映 + ADR-added 12 codes = 49 codes」に書き換え。
 
-### 3.4 cascade docs (本 PR-A で `(Phase 6 cleanup 後)` 注記済 8 docs) の sync **✓ Done**
+### 3.4 cascade docs sync (catalog SSOT 本体 1 doc + cascade 8 docs = 計 9 docs 反映) **✓ Done**
 
-3.1〜3.3 の reconcile 後、本 PR-A で `(Phase 6 cleanup 後)` 注記を追加した以下 8 docs を全数値更新:
-- `docs/adr-010-presentation-layer-self-documenting-envelope.md` line 59 (typed reason 数) — **35 → 49**
+3.1〜3.3 の reconcile 後、catalog SSOT 本体 (§5.4 を含む adr-010 main) と numeric ref を持つ cascade 8 docs を全数値更新:
+
+**catalog SSOT 本体 (1 doc)**:
+- `docs/adr-010-presentation-layer-self-documenting-envelope.md` line 59 (narrative typed reason 数) — **35 → 49** + §5.4 line 277-341 全面 rewrite (catalog 本体)
+
+**cascade 8 docs (典 reason ref / 残 N codes ref)**:
 - `docs/adr-007-p5a-design-proposal.md` line 213 (FailurePayload reason comment) — **35 → 49**
 - `docs/adr-011-cognitive-memory-extension.md` line 81 (typed reason SSOT 参照) — **35 → 49**
 - `docs/adr-011-phase-b-coala-plan.md` line 78 (同型 SSOT 参照) — **35 → 49**
 - `docs/adr-010-p1-s3-plan.md` line 537 (expansion work 列挙) — **35 → 49**
-- `docs/adr-010-p1-s4-plan.md` line 7 / 518 / 623 (概念設計参照 + Unknown 含む statement + 概念設計参照) — **35 → 49**
+- `docs/adr-010-p1-s4-plan.md` line 7 / 518 / 623 (概念設計参照 + Unknown 含む statement + 概念設計参照) — **35 → 49** + 残 36 → 48 (5 occurrences、line 38/65/76/282/503)
+- `docs/adr-010-p1-s6-plan.md` 残 36 → 48 (6 occurrences、line 13/73/83/264/390/441 ASCII art)
+- `docs/walking-skeleton-trunk-selection.md` 残 36 → 48 (3 occurrences、line 144 §3 trunk vs expansion 表 + line 366 §6.1 swimlane 並走戦略表 + line 383 §6.3 MAX 20x Sonnet 並走 todo)
+- `docs/walking-skeleton-expansion-plan.md` 残 36 → 48 (2 occurrences、line 41 §2.1 swimlane 4 typed reason 表 + line 55 §2.2 swimlane 4 工数記述)
 
-加えて plan docs の "残 36 codes" → "残 48 codes" を `adr-010-p1-s4-plan.md` (5 occurrences) と `adr-010-p1-s6-plan.md` (6 occurrences) で全同期 (catalog 49 - LeaseExpired 1 = remaining 48 expansion P2)。
+合計 sync: **catalog 49 - LeaseExpired 1 (S4 trunk 実装) = 残 48 expansion P2** が cascade 全 numeric ref に反映 (PR #231 Round 1 P2-1 反映で walking-skeleton-trunk-selection.md + walking-skeleton-expansion-plan.md の cascade sweep miss も解消)。
 
 ---
 
