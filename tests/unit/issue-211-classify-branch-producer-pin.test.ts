@@ -55,9 +55,9 @@
  *     non-standard emit path slips through — caught by the next manual
  *     audit cycle, not this CI guard.
  *   - The parser handles multi-line `if (...)` conditions via brace
- *     counting; verified against current classify() shape (29 branches
- *     after Phase 6 dead-code removal; sanity-bounded `>= 20 && < 60` to
- *     accommodate future additions).
+ *     counting; verified against current classify() shape (30 branches
+ *     after Phase 6 PR-B AutoGuardBlocked classify branch addition;
+ *     sanity-bounded `>= 20 && < 60` to accommodate future additions).
  */
 
 import { describe, it, expect } from "vitest";
@@ -245,11 +245,11 @@ describe("Phase 5 §4.bis (epic #211): classify() branch producer pin", () => {
     const errorsContent = readFileSync(ERRORS_FILE, "utf8");
     const branches = parseClassifyBranches(errorsContent);
 
-    // Sanity: parser should find ~30 branches today (currently 29 after
-    // Phase 6 dead-code removal — TerminalMarkerStale / MaxDepthExceeded
-    // / LensBudgetExceeded). If the count drops drastically the parser is
-    // miss-matching the regex (e.g., due to a refactor of the if-chain
-    // shape).
+    // Sanity: parser should find ~30 branches today (currently 30 after
+    // Phase 6 PR-B AutoGuardBlocked classify branch addition; PR-A removed
+    // 3 dead codes, PR-B added 1 → net 32→29→30). If the count drops
+    // drastically the parser is miss-matching the regex (e.g., due to a
+    // refactor of the if-chain shape).
     expect(branches.length).toBeGreaterThanOrEqual(20);
     expect(branches.length).toBeLessThan(60);
 
