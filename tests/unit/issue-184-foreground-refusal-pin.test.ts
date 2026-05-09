@@ -32,6 +32,23 @@
  * PR would inflate scope without commensurate contract coverage gain
  * (CLAUDE.md "scope discipline").
  *
+ * Coverage gap (Opus PR #209 Round 1 P2-2 — visualised here as the
+ * SSOT for the family): the success-path case below (case 3, "does
+ * NOT early-return when the target reaches foreground after the
+ * default attempt") only exercises `focusWindowForKeyboard`'s
+ * success branch. It does NOT cover:
+ *   - mouse_click's `applyHoming` success branch — different helper,
+ *     different post-wait re-enum logic
+ *   - terminal:send's inline 5-retry + `break` on first success —
+ *     no shared helper, the break-on-success path is structurally
+ *     unique
+ * If a future regression makes one of those success paths
+ * incorrectly emit `ForegroundRestricted`, only the refusal cases in
+ * `tests/unit/issue-207-foreground-refusal-{press,mouse,terminal}.test.ts`
+ * would still pass (they assert `ok:false`). A targeted success-path
+ * pin per tool (currently undone) is the natural follow-up and
+ * should be filed as a new issue if the gap becomes a real concern.
+ *
  * Mocking mirrors `tests/unit/focus-window-handler.test.ts` —
  * `enumWindowsInZOrder` returns a deterministic window list, the
  * post-wait re-enumeration keeps the target out of the foreground
