@@ -84,7 +84,9 @@ Phase 5 closure では北極星「silent-success / contract drift = 0」を **au
 
 ---
 
-## F4 (P3): keyboard:type BG on Notepad が `verifyDelivery: 'unverifiable'` 返却
+## F4 (P3, **FIXED Phase 7**): keyboard:type BG on Notepad が `verifyDelivery: 'unverifiable'` 返却
+
+**Status**: **Fixed** (Phase 7 patch、`getTextViaValuePattern` helper 新設 + keyboard.ts BG type path で TextPattern 失敗時 ValuePattern delta 比較 fallback 追加)
 
 **Location**: `src/tools/keyboard.ts` BG path 内 verifyDelivery hint 構築
 
@@ -102,6 +104,12 @@ Phase 5 closure では北極星「silent-success / contract drift = 0」を **au
 **修正方針** (Phase 7 candidate):
 - verifyDelivery 内で TextPattern read-back 失敗時 → ValuePattern read-back を試行 → match なら `delivered` 返却
 - ValuePattern も読めない場合のみ `unverifiable + read_back_unsupported` 返却
+
+**修正反映** (Phase 7 patch、本 PR):
+- `src/engine/uia-bridge.ts` に `getTextViaValuePattern(windowTitle)` helper 新設。focused element の ValuePattern.Value を返す PowerShell-backed 関数、TreeWalker で focused 要素が target window の toplevel HWND 内に居ることを scoping (focus が外部に逃げた場合は null で無視)。
+- `src/tools/keyboard.ts` BG type path で TextPattern baseline / post-read が両方 null の case に ValuePattern delta 比較 fallback 追加。`postValue.includes(checkText)` AND (`delta > 0` OR `!baseline.includes(checkText)`) で delivered 判定、両者一致で length 不変は `unverifiable` 維持 (false-positive 防止)。
+- 10 unit case (`tests/unit/phase7-f4-value-pattern-fallback.test.ts`) で classify decision logic を pin: empty baseline / non-empty baseline / replaceAll / partial / 不変 / 重複 baseline + 拡大 / multi-line などの shape を網羅。
+- contract 強化により Win11 New Notepad / RichEdit / TextBox / Edit など ValuePattern-only な control での北極星整合 hint surface が向上 (旧: unverifiable → 新: delivered when ValuePattern fallback succeeds)。
 
 ---
 

@@ -16,7 +16,7 @@ import {
   isBgAutoEnabled,
   TERMINAL_WINDOW_CLASSES,
 } from "../engine/bg-input.js";
-import { getTextViaTextPattern } from "../engine/uia-bridge.js";
+import { getTextViaTextPattern, getTextViaValuePattern } from "../engine/uia-bridge.js";
 import { stripAnsi } from "../engine/ansi.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
@@ -709,12 +709,36 @@ export const keyboardTypeHandler = async ({
           // already know we can't compare).
           const checkText = effectiveText.replace(/[\r\n]+$/, "");
           const hasEmbeddedNewline = /[\r\n]/.test(checkText);
-          const baselineRaw =
-            verificationNeeded && checkText.length > 0 && !hasEmbeddedNewline
-              ? await getTextViaTextPattern(target.title)
-              : null;
+          // Phase 7 F4 P2-1 (Round 1 review): run TextPattern + ValuePattern
+          // baseline reads in parallel via Promise.all, so the causal window
+          // between baseline capture and injection stays close to
+          // max(textPattern, valuePattern) ms instead of summing both PowerShell
+          // round-trips on the cold path. Win11 New Notepad RichEditD2DPT
+          // (the F4 target) only has ValuePattern, so the cold path is where
+          // users actually live.
+          //
+          // Wall-clock trade-off (Round 2 P3-1):
+          //   * Both legs PS (no nativeUia)  → max ≈ either ≈ baseline cost
+          //   * nativeUia loaded for TextPattern only (current state, line 1118
+          //     of uia-bridge.ts) → max = ValuePattern PS spawn ≈ +PS wall-clock
+          //     on the hot path. The cold-path improvement (Win11 Notepad) and
+          //     reduced false-negative rate on the F4 target outweigh the hot-
+          //     path PS cost. Future work: native ValuePattern binding to
+          //     close the gap.
+          const shouldReadBaselines =
+            verificationNeeded && checkText.length > 0 && !hasEmbeddedNewline;
+          const [baselineRaw, valueBaselineRaw] = shouldReadBaselines
+            ? await Promise.all([
+                getTextViaTextPattern(target.title),
+                getTextViaValuePattern(target.title),
+              ])
+            : [null, null];
           const baselineMarker =
             baselineRaw !== null ? makeKeyboardBaselineMarker(stripAnsi(baselineRaw)) : null;
+          // valueBaseline is only consulted when the TextPattern path is
+          // unavailable (baselineMarker === null). When TextPattern works,
+          // the parallel-fetched ValuePattern baseline is discarded.
+          const valueBaseline = baselineMarker === null ? valueBaselineRaw : null;
 
           if (replaceAll) postKeyComboToHwnd(target.hwnd, "ctrl+a");
           const result = postCharsToHwnd(target.hwnd, effectiveText);
@@ -784,10 +808,47 @@ export const keyboardTypeHandler = async ({
               verifyReason = "read_back_unsupported";
             }
           } else if (verificationNeeded) {
-            // verifiable=false reasons (matrix §4.3 enum): TextPattern
-            // baseline missing → read_back_unsupported; embedded newline →
-            // embedded_newline. Empty checkText falls through silently.
-            if (baselineMarker === null && checkText.length > 0) {
+            // Phase 7 F4 fallback: TextPattern baseline missing → try
+            // ValuePattern delta comparison on the focused element. This
+            // catches Win11 New Notepad / RichEdit / other ValuePattern-only
+            // controls that the TextPattern path cannot read.
+            if (
+              baselineMarker === null &&
+              checkText.length > 0 &&
+              !hasEmbeddedNewline &&
+              valueBaseline !== null
+            ) {
+              await new Promise<void>((r) => setTimeout(r, 150));
+              const postValue = await getTextViaValuePattern(target.title);
+              if (postValue !== null) {
+                const containsText = postValue.includes(checkText);
+                const delta = postValue.length - valueBaseline.length;
+                if (containsText) {
+                  // Delivered if length grew (text appended) OR baseline did
+                  // not previously contain checkText (replaceAll / focus-fresh
+                  // shape; e.g. ctrl+a then type replaces the buffer so post
+                  // length can shrink yet the typed text is what landed).
+                  // Otherwise both sides contain checkText with no length
+                  // change — undetermined (could be a re-type of identical
+                  // content), fall back to unverifiable rather than
+                  // false-positive delivered.
+                  if (delta > 0 || !valueBaseline.includes(checkText)) {
+                    verifiedDelivery = true;
+                  } else {
+                    verifyReason = "read_back_unsupported";
+                  }
+                } else {
+                  // postValue does not contain checkText → injection did not
+                  // land in the focused ValuePattern element. Treat as
+                  // not-delivered so caller surfaces BackgroundInputNotDelivered.
+                  verifiedDelivery = false;
+                }
+              } else {
+                verifyReason = "read_back_unsupported";
+              }
+            } else if (baselineMarker === null && checkText.length > 0) {
+              // Both TextPattern and ValuePattern paths unavailable, OR fallback
+              // disabled by guard above (empty checkText / embedded newline).
               verifyReason = "read_back_unsupported";
             } else if (hasEmbeddedNewline) {
               verifyReason = "embedded_newline";

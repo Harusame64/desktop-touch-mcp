@@ -1215,6 +1215,108 @@ try {
 }
 
 /**
+ * Read the focused element's ValuePattern.Value.
+ *
+ * Phase 7 F4 fallback for `getTextViaTextPattern` (Phase 6 dogfood F4):
+ * Win11 New Notepad's RichEditD2DPT control implements ValuePattern but
+ * not TextPattern, so the existing TextPattern read-back returns
+ * `unverifiable / read_back_unsupported` even though delivery actually
+ * succeeded. ValuePattern is supported by Edit / RichEdit / TextBox /
+ * standard Win32 input controls, complementing TextPattern coverage.
+ *
+ * Returns the focused element's `ValuePattern.Value` string, or null
+ * when:
+ * - The window cannot be located by title
+ * - No focused element exists
+ * - The focused element lives outside the target window's toplevel HWND
+ *   (focus moved away — caller should rely on FocusLostDuringType detection)
+ * - The focused element does not implement ValuePattern
+ *
+ * Targets the FOCUSED element specifically because BG WM_CHAR injection
+ * delivers WM_CHAR to the focused HWND/element (matrix doc §3.1 line 140
+ * + §4.2 verifyDelivery 規範). The TreeWalker scoping guards against
+ * reading an unrelated app's value when focus is elsewhere.
+ *
+ * Best-effort caveat (Phase 7 F4 P2-2): focus race during the read is not
+ * detected. If the focus moves away → reads → moves back during the
+ * `runPS` round-trip, the Value returned is whichever element was focused
+ * at the instant `vp.Current.Value` evaluated. Callers (keyboard.ts BG
+ * type path) compose this with a post-injection comparison, so a transient
+ * focus race produces an `unverifiable` hint rather than a false delivered.
+ */
+export async function getTextViaValuePattern(windowTitle: string, timeoutMs = 6000): Promise<string | null> {
+  const safeTitle = escapeLike(windowTitle);
+  const script = `
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+
+$root = [System.Windows.Automation.AutomationElement]::RootElement
+$trueC = [System.Windows.Automation.Condition]::TrueCondition
+
+# Find the target toplevel window by title substring.
+$target = $null
+$allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
+foreach ($w in $allWins) {
+    if ($w.Current.Name -like '*${safeTitle}*') { $target = $w; break }
+}
+if (-not $target) { Write-Output '{"ok":false,"error":"Window not found"}'; exit }
+
+# Get the system focused element. If none, nothing to read back.
+$focused = [System.Windows.Automation.AutomationElement]::FocusedElement
+if (-not $focused) { Write-Output '{"ok":false,"error":"No focused element"}'; exit }
+
+# Walk up from focused via ControlViewWalker, recording the last non-zero
+# NativeWindowHandle — this is the toplevel HWND of the focused element.
+# Compare against $target.NativeWindowHandle so we only read back when the
+# focused element belongs to our target window (defends against reading an
+# unrelated app's ValuePattern when focus moved during BG injection).
+$walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+$probe = $focused
+$focusedTopHwnd = 0
+$guard = 0
+while ($probe -and $guard -lt 64) {
+    $hwnd = $probe.Current.NativeWindowHandle
+    if ($hwnd -ne 0 -and $null -ne $hwnd) { $focusedTopHwnd = $hwnd }
+    $probe = $walker.GetParent($probe)
+    $guard = $guard + 1
+}
+$targetHwnd = $target.Current.NativeWindowHandle
+if ($focusedTopHwnd -ne $targetHwnd) {
+    Write-Output '{"ok":false,"error":"Focused element outside target window"}'; exit
+}
+
+# Try ValuePattern on the focused element. Edit / RichEdit / TextBox
+# typically support this; complex hosts that only expose TextPattern
+# (e.g. console buffers) will fail here and the caller falls back.
+try {
+    $vp = $focused.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+    if ($null -eq $vp) { Write-Output '{"ok":false,"error":"ValuePattern not available"}'; exit }
+    $val = $vp.Current.Value
+    if ($null -eq $val) { $val = '' }
+    $payload = @{ ok=$true; text=$val } | ConvertTo-Json -Compress
+    Write-Output $payload
+} catch {
+    # Phase 7 F4 P2-4 (Round 1 review): normalize CR/LF in the exception
+    # message before splicing into a JSON string literal. Multi-line
+    # InvalidOperationException messages (e.g. disposed AutomationElement)
+    # would otherwise emit raw newlines into the JSON body and break
+    # JSON.parse on the TS side, masking the real error as a generic null.
+    $msg = $_.Exception.Message -replace '"','\\"' -replace "[\r\n]+",' '
+    Write-Output ('{"ok":false,"error":"' + $msg + '"}')
+}
+`;
+  try {
+    const out = await runPS(script, timeoutMs);
+    const parsed = JSON.parse(out) as { ok: boolean; text?: string; error?: string };
+    if (!parsed.ok) return null;
+    return parsed.text ?? "";
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Find a UI element and return its bounding rectangle + basic properties.
  * Used by scope_element to know which screen region to screenshot.
  */
