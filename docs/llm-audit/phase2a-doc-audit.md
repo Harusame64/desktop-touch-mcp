@@ -175,13 +175,13 @@
 
 ## 4. Issue 起票候補 (Phase 5 closure に向けて)
 
-| # | 内容 | 優先度 | 性質 | 推奨 PR 単位 |
-|---|---|---|---|---|
-| **I1** | F4 fix — `FocusLostDuringType` SSOT 登録 (SUGGESTS + classify、handler hard-coded suggest 削除、envelope shape contract pin 追加) | **High** | production code 改修 | 単独 PR、Opus + **Codex 必須** (CLAUDE.md §3.3 Step 0) |
-| **I2** | F1 + F3 + F5 + F6 + F7 + F8 + F9 + F10 — description / caveats / examples 補強 (各 tool description 内 typed code 名 + verifyDelivery hint shape + recovery path の LLM 教育材料化、F3 は keyboard:type BG path failure recovery example chain 追加) | Medium | docs only | 1 PR にまとめる、Opus 1+ round (Codex 推奨) |
-| **I3** | F2 — cross-tool `ForegroundRestricted` recovery path 統一 wording (terminal / keyboard / mouse 横断、本 PR Tier 1 scope の 3 tool に絞る、focus_window への横展開は Phase 3 で同型 sweep) | Medium | docs only | I2 と同 PR or 別 PR、cross-file consistency 軸 |
+| # | 内容 | 優先度 | 性質 | 推奨 PR 単位 | Status |
+|---|---|---|---|---|---|
+| **I1** | F4 fix — `FocusLostDuringType` SSOT 登録 (SUGGESTS + classify、handler hard-coded suggest 削除、envelope shape contract pin 追加) | **High** | production code 改修 | 単独 PR、Opus + **Codex 必須** (CLAUDE.md §3.3 Step 0) | **Resolved** PR #218 |
+| **I2** | F1 + F3 + F5 + F6 + F7 + F8 + F9 + F10 — description / caveats / examples 補強 (各 tool description 内 typed code 名 + verifyDelivery hint shape + recovery path の LLM 教育材料化) | Medium | docs only | 1 PR にまとめる、Opus 1+ round (Codex 推奨) | **Resolved** PR #219 (J2/J3/K1-K5 統合) |
+| **I3** | F2 — cross-tool `ForegroundRestricted` recovery path 統一 wording (terminal / keyboard / mouse 横断、本 PR Tier 1 scope の 3 tool に絞る、focus_window への横展開は Phase 3 で同型 sweep) | Medium | docs only | I2 と同 PR or 別 PR、cross-file consistency 軸 | open |
 
-I1 のみ contract drift fix で immediate priority、I2 / I3 は v1.4 milestone の release readiness 判定材料として doc enrichment。
+I1 contract drift fix 解消 (PR #218)、I2 description enrichment 解消 (PR #219、J2/J3/K1-K5 統合)、I3 のみ Phase 5 closure 残 (cross-file consistency 軸)。
 
 ## 5. Phase 2a closure conditions (本 PR スコープ)
 

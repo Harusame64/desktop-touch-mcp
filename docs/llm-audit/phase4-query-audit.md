@@ -159,20 +159,19 @@ doc 軸 11 件:
 
 ## 5. Issue 起票候補 (Phase 5 closure に向けて、Phase 2a/2b/3a/3b 統合管理)
 
-| # | Source | Priority | Type |
-|---|---|---|---|
-| **I1** (Phase 2a F4) | `FocusLostDuringType` SSOT register | **High** | production code (Codex 必須) |
-| **J1** (Phase 3a G1) | `notification_show` `hints.verifyDelivery` emit | **High** | production code (Codex 必須) |
-| **I2** + **J2** + **K1-K5** | description 補強 (Phase 2a F1+F3+F5+F6+F7+F8+F9+F10 + Phase 3a G2+G3+G7+G8+G12 + Phase 4 K1-K5) | Medium | docs only |
-| **I3** | Phase 2a F2 cross-tool ForegroundRestricted unified wording | Medium | docs only |
-| **J4** (Phase 3a G13) | matrix §3.1 line 159/162 browser_click verifyDelivery status enum narrowing | Medium | docs only (matrix update) |
-| **E1-E4** (Phase 2b) | automated-pin gap | Medium / Low | new test only |
-| **J3** (Phase 3a G9+G11) | description minor enrichment | Low | docs only |
-| **E5** (Phase 2b) | scroll:capture frame seam | **Defer** | optional |
-| **H1** (Phase 3b) | design-constraint error path automated pin | **Defer** | optional |
-| **K6** (Phase 4) | Q5/Q7/Q10/Q11 design-constraint cell-level (gap:) admission (clipboard:read / server_status / browser_locate / workspace_snapshot) | **Defer** | optional |
+| # | Source | Priority | Type | Status |
+|---|---|---|---|---|
+| **I1** (Phase 2a F4) | `FocusLostDuringType` SSOT register | **High** | production code (Codex 必須) | **Resolved** PR #218 |
+| **J1** (Phase 3a G1) | `notification_show` `hints.verifyDelivery` emit | **High** | production code (Codex 必須) | **Resolved** PR #217 |
+| **I2** + **J2** + **K1-K5** + **J3** | description 補強 (Phase 2a F1+F3+F5+F6+F7+F8+F9+F10 + Phase 3a G2+G3+G7+G8+G9+G11+G12 + Phase 4 K1-K5) | Medium | docs only | **Resolved** PR #219 |
+| **I3** | Phase 2a F2 cross-tool ForegroundRestricted unified wording | Medium | docs only | open |
+| **J4** (Phase 3a G13) | matrix §3.1 line 159/162 browser_click verifyDelivery status enum narrowing | Medium | docs only (matrix update) | open |
+| **E1-E4** (Phase 2b) | automated-pin gap | Medium / Low | new test only | open |
+| **E5** (Phase 2b) | scroll:capture frame seam | **Defer** | optional | defer |
+| **H1** (Phase 3b) | design-constraint error path automated pin | **Defer** | optional | defer |
+| **K6** (Phase 4) | Q5/Q7/Q10/Q11 design-constraint cell-level (gap:) admission (clipboard:read / server_status / browser_locate / workspace_snapshot) | **Defer** | optional | defer |
 
-I1 + J1 が production contract drift で Phase 5 closure における highest priority。description 補強 (I2+J2+K1-K5) は 統合 1 PR で land 可、Medium priority。design-constraint defer (E5 + H1 + K6) は automated pin 化の cost-benefit が低く、dogfood scenario doc が代替 SoT。
+I1 + J1 で production contract drift 解消済 (Phase 5 closure 北極星 = silent-success / contract drift 0 達成)。I2+J2+K1-K5+J3 統合 PR #219 で LLM-perspective description enrichment 完了。残 carry-over (I3 / J4 / E1-E4) は Phase 5 closure 別 PR、design-constraint defer (E5 + H1 + K6) は automated pin 化の cost-benefit が低く dogfood scenario doc が代替 SoT。
 
 ## 6. Phase 4 closure conditions (本 PR スコープ)
 
