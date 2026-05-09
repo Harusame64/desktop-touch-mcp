@@ -4,6 +4,7 @@
 - Date: 2026-05-09
 - Origin: `docs/llm-audit/phase2b-execution-audit.md` §3.4 carry-over
 - Scope: scroll 5 actions の実機 GUI 依存シナリオ (特に scroll:to_element / scroll:capture は automated 軸薄、本 doc が SoT)
+- Parent audit section: 本 doc §4.x は `phase2b-execution-audit.md` §3.4 (scroll、cell 10-14) の carry-over scenario。各シナリオは parent table の cell 内 `dogfood-scenarios/scroll.md §4.x` 参照と相互リンク
 
 ---
 
@@ -44,14 +45,14 @@
 
 **期待**: 多段 container / shadow DOM で scroll chain が正しく動作、または未対応なら typed code 明示 + suggest。
 
-### 4.4 scroll:to_element → 次 tool chain (focus_window 等)
+### 4.4 scroll:to_element → 次 tool chain (mouse_click 等)
 
-**目的**: matrix §3.1 line 147 「entity_outside_viewport 復帰の代理指標として既に厚い」を element 表示 → 次 click_element / mouse_click chain の前提条件として確認。
+**目的**: matrix §3.1 line 147 「entity_outside_viewport 復帰の代理指標として既に厚い」を element 表示 → 次 mouse_click chain の前提条件として確認。
 
 **手順**:
 1. Chrome で長 page (Wikipedia 任意) を開く
 2. `scroll({action:'to_element', target:'#section-id', windowTitle:'Chrome'})` で section 表示
-3. `click_element({name:'View source', windowTitle:'Chrome'})` または `mouse_click` で section 内 button 操作
+3. `mouse_click(x, y, windowTitle:'Chrome')` で section 内 button 操作 (Tier 1 commit-axis scope 内 tool)。`click_element` (Tier 2 scope) は Phase 3 audit で扱うため本 phase chain 例から除外
 4. button 押下が成功すること
 
 **期待**: scroll:to_element 後の element bounds が viewport 内にあり次 tool が直接 operable。

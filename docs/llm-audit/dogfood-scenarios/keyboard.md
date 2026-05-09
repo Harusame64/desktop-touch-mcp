@@ -4,6 +4,7 @@
 - Date: 2026-05-09
 - Origin: `docs/llm-audit/phase2b-execution-audit.md` §3.2 carry-over
 - Scope: keyboard:type BG / FG / keyboard:press BG / FG の実機 GUI 依存シナリオ
+- Parent audit section: 本 doc §2.x は `phase2b-execution-audit.md` §3.2 (keyboard、cell 4-7) の carry-over scenario。各シナリオは parent table の cell 内 `dogfood-scenarios/keyboard.md §2.x` 参照と相互リンク
 
 ---
 

@@ -4,6 +4,7 @@
 - Date: 2026-05-09
 - Origin: `docs/llm-audit/phase2b-execution-audit.md` §3.3 carry-over
 - Scope: mouse_click / mouse_drag の実機 GUI 依存シナリオ
+- Parent audit section: 本 doc §3.x は `phase2b-execution-audit.md` §3.3 (mouse、cell 8-9) の carry-over scenario。各シナリオは parent table の cell 内 `dogfood-scenarios/mouse.md §3.x` 参照と相互リンク
 
 ---
 

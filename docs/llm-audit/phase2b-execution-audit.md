@@ -23,7 +23,7 @@
 | 7 | `keyboard:press` FG | `src/tools/keyboard.ts` | 143 |
 | 8 | `mouse_click` | `src/tools/mouse.ts` | 144 |
 | 9 | `mouse_drag` | `src/tools/mouse.ts` | 145 |
-| 10 | `scroll:raw` | `src/tools/scroll.ts` (delivery: `mouse.ts`) | 146 |
+| 10 | `scroll:raw` | `src/tools/scroll.ts` (delivery 実装は `mouse.ts` の `evaluateScrollDelivery` — 本 audit doc 内 cross-ref、matrix §3.1 line 146 自体は `SendInput WHEEL_DELTA` のみ列挙) | 146 |
 | 11 | `scroll:to_element` | `src/tools/scroll-to-element.ts` | 147 |
 | 12 | `scroll:smart` | `src/tools/scroll.ts` | 148 |
 | 13 | `scroll:capture` | `src/tools/scroll-capture.ts` | 149 |
@@ -52,7 +52,7 @@
 | # | Action | 正常 path | error path | edge case | chain | 判定 |
 |---|---|---|---|---|---|---|
 | 1 | terminal:send BG | `tests/unit/terminal-hidden-input.test.ts:21-72` (10 positive cases、`isHiddenInputPrompt` 検出 ladder) + `tests/e2e/terminal-hidden-input.test.ts` (E2E 1 case、real PowerShell `Read-Host`) | `tests/unit/issue-207-foreground-refusal-terminal.test.ts:118-194` (5-retry + AttachThreadInput escalate refusal、`ForegroundRestricted`) — BG 経路は別 (`canInjectViaPostMessage`) だが share 一段の foreground ladder で gate; `tests/unit/terminal-run-validation.test.ts:36-92` (InvalidArgs sendOptions sweep 4 case) | `tests/unit/terminal-hidden-input.test.ts:74-119` (9 negative + ANSI/CRLF/blank-line)、`tests/unit/terminal-marker.test.ts:62-86` (normalizeForMarker padding/CRLF/whitespace) | `tests/unit/terminal-marker.test.ts:124-234` (sinceMarker scenario 8 case で incremental read chain — 次 tool への marker feed contract pin) | **pass** |
-| 2 | terminal:send FG | `tests/unit/issue-207-foreground-refusal-terminal.test.ts:163-194` (force=true caller success path 該当 = autoEscalated:false case) — direct 「FG path success」 pin は keyboard:type 代表 (`tests/unit/issue-184-foreground-refusal-pin.test.ts:228-255`) で family-level 共有 | `tests/unit/issue-207-foreground-refusal-terminal.test.ts:118-162` (5-retry default + AttachThreadInput escalate 共拒否、`mockEnum:8 calls`/`mockRestore:6 calls` で ladder 構造 pin) | (gap: `preferClipboard` 切替 / clipboard paste fallback の structural pin) — `docs/llm-audit/dogfood-scenarios/terminal.md` §1.2 で manual scenario 化 | (gap: marker chain to terminal:read after FG send) — terminal-marker pin は BG/FG 共有 helper のため structural 同等、dogfood scenario `terminal.md` §1.4 で chain 検証 | **fix carry-over (scenario gap)** — E1 (preferClipboard / clipboard paste edge automated pin) |
+| 2 | terminal:send FG | (gap: terminal:send FG 専用 success path automated pin 不在 — direct success pin は handler 経路が異なる: terminal.ts は inline 5-retry + auto-escalate ladder、keyboard:type の `focusWindowForKeyboard` shared helper 代表 `tests/unit/issue-184-foreground-refusal-pin.test.ts:228-255` は **family-level structural reference のみ**で terminal handler を直接 exercise しない、`tests/unit/issue-207-foreground-refusal-terminal.test.ts:163-194` は force=true refusal scenario)、success path は `dogfood-scenarios/terminal.md` §1.3 で manual | `tests/unit/issue-207-foreground-refusal-terminal.test.ts:118-162` (5-retry default + AttachThreadInput escalate 共拒否、`mockEnum:8 calls`/`mockRestore:6 calls` で ladder 構造 pin) | (gap: `preferClipboard` 切替 / clipboard paste fallback の structural pin) — `docs/llm-audit/dogfood-scenarios/terminal.md` §1.2 で manual scenario 化 | (gap: marker chain to terminal:read after FG send) — terminal-marker pin は BG/FG 共有 helper のため structural 同等、dogfood scenario `terminal.md` §1.4 で chain 検証 | **fix carry-over (scenario gap)** — E1 (preferClipboard / clipboard paste edge automated pin) |
 | 3 | terminal:run | `tests/unit/terminal-run-validation.test.ts:124-139` (valid options → `completion.reason='window_not_found'` shape pin) + e2e (manual: `dogfood-scenarios/terminal.md` §1.5) | `tests/unit/terminal-run-validation.test.ts:36-122` (6 InvalidArgs cases: chunkSize:0 / unknown keys / windowTitle override / method:'invalid' / lines:999_999 / source:'invalid') | `tests/unit/terminal-run-validation.test.ts:142-209` (Zod default-leak guard、empty regex `^$` / `''` truthiness gate)、`docs/llm-audit/dogfood-scenarios/terminal.md` §1.6 (until-mode pattern) | (warnings 配列 send_failed nested code surface — code review confirmed (`terminal.ts` §3.1 規範), automated chain pin gap) — dogfood scenario `terminal.md` §1.7 で manual chain | **pass** |
 
 ### 3.2 keyboard (4 actions)
@@ -76,7 +76,7 @@
 | # | Action | 正常 path | error path | edge case | chain | 判定 |
 |---|---|---|---|---|---|---|
 | 10 | scroll:raw | `tests/unit/scroll-raw-verify.test.ts:23-60` (delivered + page-end 6 case)、`tests/e2e/scroll-raw-verify.test.ts:56-` (E2E real Notepad/Chrome scroll roundtrip) | `tests/unit/scroll-raw-verify.test.ts:61-100` (silent drop → `not_delivered` + axis pin)、`tests/unit/scroll-raw-verify.test.ts:120-127` (no-axis + no-hash → unverifiable scrollbar_unavailable) | `tests/unit/scroll-raw-verify.test.ts:95-118` (epsilon noise / image hash fallback / vertical-only window) | `tests/unit/scroll-raw-verify.test.ts:129-147` (delta numerics shape pin、次 tool への percent feed) | **pass** |
-| 11 | scroll:to_element | `tests/e2e/scroll-raw-verify.test.ts` 関連 (entity_outside_viewport recovery 既存 chain) | (gap: `ElementNotFound` after scrollIntoView 不可達 typed code pin) — `dogfood-scenarios/scroll.md` §4.2 で manual | (gap: viewport edge / scroll container nesting / iframe boundary) — `dogfood-scenarios/scroll.md` §4.3 | matrix §3.1 line 147「entity_outside_viewport 復帰の代理指標として既に厚い」(現状維持) — `dogfood-scenarios/scroll.md` §4.4 manual | **fix carry-over (scenario gap)** — E4 (scroll:to_element ElementNotFound automated pin) |
+| 11 | scroll:to_element | (gap: scroll:to_element 専用 success path automated pin 不在 — entity_outside_viewport recovery は scroll:raw 経由代理 cite で `tests/e2e/scroll-raw-verify.test.ts` を参照可能だが、scroll:to_element handler を直接 exercise する pin は不在)、`dogfood-scenarios/scroll.md` §4.4 で manual chain 観測 | (gap: `ElementNotFound` after scrollIntoView 不可達 typed code pin) — `dogfood-scenarios/scroll.md` §4.2 で manual | (gap: viewport edge / scroll container nesting / iframe boundary) — `dogfood-scenarios/scroll.md` §4.3 | (gap: matrix §3.1 line 147「entity_outside_viewport 復帰の代理指標として既に厚い」を pin する scroll:to_element-direct chain pin は不在、現状維持判定) — `dogfood-scenarios/scroll.md` §4.4 manual | **fix carry-over (scenario gap)** — E4 (scroll:to_element ElementNotFound automated pin) |
 | 12 | scroll:smart | `tests/unit/scroll-ancestors.test.ts:45-53` (selector-like detection + UIA name)、`tests/unit/scroll-ancestors.test.ts:131-167` (innermostPageRatio clamp / null guard) | `tests/unit/scroll-ancestors.test.ts:72-112` (hidden / virtualized / maxDepth filtering — `OverflowHiddenAncestor` / `VirtualScrollExhausted` / `MaxDepthExceeded` typed code 算定 source) | `tests/unit/scroll-ancestors.test.ts:131-167` (innermostPageRatio clamp / verticalPercent 範囲外) | (gap: 多経路 strategy 切替 chain — CDP→UIA→image fallback structural pin) — `dogfood-scenarios/scroll.md` §4.5 manual | **pass** |
 | 13 | scroll:capture | (gap: frame seam + sizeReduced flag automated pin) — `dogfood-scenarios/scroll.md` §4.6 で manual scenario (real Edge / VS Code 縦長 capture)、Phase 2a で description は **pass** 判定 | (gap: capture 失敗 / OOM / 巨大 viewport edge) — `dogfood-scenarios/scroll.md` §4.7 manual | (gap: HiDPI / 縦長 200+ row / Chrome native scroll) — `dogfood-scenarios/scroll.md` §4.8 manual | (gap: capture → screenshot → OCR chain) — `dogfood-scenarios/scroll.md` §4.9 manual | **fix carry-over (scenario gap)** — E5 (scroll:capture frame seam automated pin、ただし image diff 軸は実機 GUI 依存高、Phase 5 release readiness 判定外し候補) |
 | 14 | scroll:read | `tests/unit/scroll-read.test.ts:223-282` (3-page stitching with dedup、`stoppedReason: max_pages`) | `tests/unit/scroll-read.test.ts:437-489` (no-hwnd → ok:false `Window not found`)、`tests/unit/scroll-read.test.ts:724-772` (OCR throw on page 1 / partial output preserved on later page throw) | `tests/unit/scroll-read.test.ts:42-47` (29-line overlap dedup、ArrowDown line-by-line regression)、`tests/unit/scroll-read.test.ts:54-104` (locale → OCR language) | `tests/unit/scroll-read.test.ts:284-335` (no_change stop after 2 streak → next tool へ pages/text feed)、`tests/unit/scroll-read.test.ts:491-541` (BG path → focus path fallback chain) | **pass** |
@@ -89,13 +89,37 @@
 
 ### 3.6 集計
 
-- `pass`: **9 actions** (60 cell 中 36 cell が完全 pin、24 cell は実機 scenario / 既存 pin 拡張で carry-over)
-  - 1 (terminal:send BG)、3 (terminal:run)、4 (keyboard:type BG)、6 (keyboard:press BG、F5 doc gap は別軸 I2)、8 (mouse_click)、10 (scroll:raw)、12 (scroll:smart)、14 (scroll:read)、15 (clipboard:write)
-- `fix carry-over (scenario gap)`: **5 actions** (E1-E5、各 dogfood scenario doc で永続化済 + automated pin 候補は別 PR)
-  - 2 (terminal:send FG)、7 (keyboard:press FG)、9 (mouse_drag)、11 (scroll:to_element)、13 (scroll:capture)
-- `fix carry-over (contract drift)`: **1 action** (5 keyboard:type FG = F4、Phase 2a 既出、I1 issue 起票候補で再掲)
+判定値の集計は **action-level** (Plan §4.3 規範) と **cell-level** (本 phase 60 cell の `file:line` pin 単位) を別々に提示する。Action-level 判定は overall scenario 結論、cell-level は `(gap: ...)` 明示 admission の累計で、両者は粒度が異なる (Lesson 4 numeric count sync 教訓、CLAUDE.md §3.1 適用)。
+
+#### Action-level (15 actions、Plan §4.3 整合)
+
+- `pass`: **9 actions** — 1 (terminal:send BG)、3 (terminal:run)、4 (keyboard:type BG)、6 (keyboard:press BG)、8 (mouse_click)、10 (scroll:raw)、12 (scroll:smart)、14 (scroll:read)、15 (clipboard:write)
+- `fix carry-over (scenario gap)`: **5 actions** — 2 (terminal:send FG = E1)、7 (keyboard:press FG = E2)、9 (mouse_drag = E3)、11 (scroll:to_element = E4)、13 (scroll:capture = E5)
+- `fix carry-over (contract drift)`: **1 action** — 5 (keyboard:type FG = F4、Phase 2a 既出、I1 issue 起票候補で再掲)
 - `breaking change candidate`: 0
-- `unverifiable accepted`: 0 (全 cell は automated pin or dogfood scenario で永続化、`verifyDelivery` の degradation hint は production-side で既出済 — 本 phase で追加判定なし)
+- `unverifiable accepted`: 0
+
+Phase 2a 由来の doc gap (F5/F6/F7 等) は **doc 軸 I2 で別 PR**、本 phase の cell 判定は実機 / pin 軸のため重複しない (§8 sweep 整合)。
+
+#### Cell-level (60 cells、`(gap: ...)` admission count)
+
+- `file:line` 単位で automated pin 固定 (`(gap:` admission なし): **41 cells**
+- `(gap: ...)` 明示 admission (dogfood scenario doc で永続化、別 PR で pin 候補): **19 cells**
+
+Cell-level 内訳 (`(gap: ...)` admission の所在):
+- 行 cell 2 normal / edge / chain (3 cell、E1)
+- 行 cell 3 chain (1 cell、warnings nested code chain — automated pin gap)
+- 行 cell 6 chain (1 cell、combo unverifiable semantic — automated pin gap)
+- 行 cell 7 edge (1 cell、E2)
+- 行 cell 9 error / edge / chain (3 cell、E3)
+- 行 cell 11 normal / error / edge / chain (4 cell、E4)
+- 行 cell 12 chain (1 cell、多経路 strategy 切替 chain — automated pin gap)
+- 行 cell 13 normal / error / edge / chain (4 cell、E5)
+- 行 cell 15 chain (1 cell、UTF-16LE byte-equal full chain — automated pin gap)
+
+Cell-level admission 19 cells のうち E1-E5 が **15 cell** (issue 起票候補)、残 4 cell (cell 3 chain / cell 6 chain / cell 12 chain / cell 15 chain) は pass-judged action 内の chain-only gap で、**Phase 5 release readiness 判定に影響しない degradation hint で代替** (matrix §1.3 北極星整合)。
+
+`verifyDelivery` の degradation hint は production-side で既出済 — 本 phase で追加判定なし、cell-level admission は automated pin gap 軸のみ。
 
 ## 4. Findings 詳細 (issue 起票候補、Phase 2a I1-I3 と独立)
 
@@ -137,6 +161,8 @@
 
 ## 5. Issue 起票候補 (Phase 5 closure に向けて、Phase 2a I1-I3 と統合管理)
 
+優先度の意味: **High** = production contract drift で fix が SSOT 整合に必須 / **Medium** = test coverage gap で regression detection 強化 / **Low** = edge case pin で marginal coverage gain / **Defer** = automated pin 化の cost-benefit が低く dogfood scenario doc が代替 SoT。
+
 | # | 内容 | 優先度 | 性質 | 推奨 PR 単位 |
 |---|---|---|---|---|
 | **E1** | terminal:send FG path preferClipboard / clipboard paste fallback automated pin (warnings nested code shape) | Medium | new test only | 単独 PR、Opus 1+ round (Codex 推奨) |
@@ -164,7 +190,17 @@ I1 が依然 highest priority (production contract drift)、E1/E3/E4 は test co
 - [x] 判定値 (pass / fix carry-over (test gap) / fix carry-over (scenario gap) / contract drift / breaking change candidate / unverifiable accepted) 記入
 - [x] Issue 起票候補リスト (E1-E5) 作成 + PR 単位 / 優先度提案
 - [x] Plan §6 acceptance 「scenario の永続化を 2 経路に分離」 — 既存 automated pins (`tests/unit/`、`tests/e2e/`) は本 doc 内 file:line 引用で永続化、新規 manual / dogfood scenarios は `docs/llm-audit/dogfood-scenarios/{terminal,keyboard,mouse,scroll,clipboard}.md` で永続化
-- [x] CLAUDE.md §3.1 multi-table fact 整合 sweep — 「`ForegroundRestricted` ladder 構造」/「`verifyDelivery` 3 値 hint」/「`BackgroundInputNotDelivered` family contract」 各 fact を matrix §3.1 / production code / 既存 unit pin / Phase 2a description 判定 / 本 phase cell 判定 で 5 view 整合確認
+- [x] CLAUDE.md §3.1 multi-table fact 整合 sweep — 各 fact を 5 view で bit-equal 確認:
+  1. **matrix §3.1 規範** (`docs/operation-verification-matrix.md` line 137-151)
+  2. **production code 実装事実** (`src/tools/{terminal,keyboard,mouse,scroll,scroll-*,clipboard}.ts`)
+  3. **既存 automated unit / e2e pin** (本 doc 内 file:line 引用)
+  4. **Phase 2a doc audit 判定** (`docs/llm-audit/phase2a-doc-audit.md` §2.1-2.5)
+  5. **本 phase cell 判定** (本 doc §3.1-3.5 cell)
+
+  確認した 3 fact:
+  - 「`ForegroundRestricted` ladder 構造」 (default + force escalate / 5-retry / focus refusal early-return)
+  - 「`verifyDelivery` 3 値 hint」 (`delivered` / `focus_only` / `unverifiable`)
+  - 「`BackgroundInputNotDelivered` family contract」 (terminal:send BG / keyboard:type BG 共有 silent-drop fail mode)
 
 ## 7. Out of scope (本 PR)
 

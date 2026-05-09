@@ -4,6 +4,9 @@
 - Date: 2026-05-09
 - Origin: `docs/llm-audit/phase2b-execution-audit.md` §3.5 carry-over
 - Scope: clipboard:write の実機 GUI 依存シナリオ
+- Parent audit section: 本 doc §5.x は `phase2b-execution-audit.md` §3.5 (clipboard、cell 15) の carry-over scenario。各シナリオは parent table の cell 内 `dogfood-scenarios/clipboard.md §5.x` 参照と相互リンク
+
+**Cross-link**: clipboard:write 経路の cause / anti-pattern は terminal:send FG `preferClipboard:true` (`terminal.md` §1.2) と chain 関係。Both docs は同 root cause (clipboard manager intercept、DLP、RDP transcoding) を扱う。
 
 ---
 

@@ -4,8 +4,11 @@
 - Date: 2026-05-09
 - Origin: `docs/llm-audit/phase2b-execution-audit.md` §3.1 carry-over (Plan §6 acceptance 2 経路目)
 - Scope: terminal:send BG / terminal:send FG / terminal:run の実機 GUI 依存シナリオ
+- Parent audit section: 本 doc §1.x は `phase2b-execution-audit.md` §3.1 (terminal、cell 1-3) の carry-over scenario。各シナリオは parent table の cell 内 `dogfood-scenarios/terminal.md §1.x` 参照と相互リンク
 
 CI で安定的に再現できない実機 GUI 依存シナリオを永続化。Claude session 都度の手動 trial で audit reference として使う。production-side regression を疑った時に最初に当たる SSOT。
+
+**Cross-link**: clipboard 経路の cause / anti-pattern (clipboard manager intercept、DLP、RDP transcoding) は `clipboard.md` §5.2-5.3 を併読。terminal:send FG `preferClipboard:true` (本 doc §1.2) は clipboard.md と chain 関係にある。
 
 ---
 
