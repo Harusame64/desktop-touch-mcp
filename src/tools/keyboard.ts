@@ -16,7 +16,7 @@ import {
   isBgAutoEnabled,
   TERMINAL_WINDOW_CLASSES,
 } from "../engine/bg-input.js";
-import { getTextViaTextPattern } from "../engine/uia-bridge.js";
+import { getTextViaTextPattern, getTextViaValuePattern } from "../engine/uia-bridge.js";
 import { stripAnsi } from "../engine/ansi.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
@@ -716,6 +716,21 @@ export const keyboardTypeHandler = async ({
           const baselineMarker =
             baselineRaw !== null ? makeKeyboardBaselineMarker(stripAnsi(baselineRaw)) : null;
 
+          // Phase 7 F4 fallback: when TextPattern is unavailable on the focused
+          // element (e.g. Win11 New Notepad RichEditD2DPT control implements
+          // ValuePattern but not TextPattern), capture the focused element's
+          // ValuePattern.Value as a baseline so we can do post-injection delta
+          // comparison. Only collected when the TextPattern path is missing
+          // (avoids paying double UIA round-trip cost on the common path).
+          // Phase 6 dogfood F4 finding (`docs/llm-audit/phase6-dogfood-findings.md`).
+          const valueBaseline =
+            verificationNeeded &&
+            baselineMarker === null &&
+            checkText.length > 0 &&
+            !hasEmbeddedNewline
+              ? await getTextViaValuePattern(target.title)
+              : null;
+
           if (replaceAll) postKeyComboToHwnd(target.hwnd, "ctrl+a");
           const result = postCharsToHwnd(target.hwnd, effectiveText);
           if (!result.full) {
@@ -784,10 +799,43 @@ export const keyboardTypeHandler = async ({
               verifyReason = "read_back_unsupported";
             }
           } else if (verificationNeeded) {
-            // verifiable=false reasons (matrix §4.3 enum): TextPattern
-            // baseline missing → read_back_unsupported; embedded newline →
-            // embedded_newline. Empty checkText falls through silently.
-            if (baselineMarker === null && checkText.length > 0) {
+            // Phase 7 F4 fallback: TextPattern baseline missing → try
+            // ValuePattern delta comparison on the focused element. This
+            // catches Win11 New Notepad / RichEdit / other ValuePattern-only
+            // controls that the TextPattern path cannot read.
+            if (
+              baselineMarker === null &&
+              checkText.length > 0 &&
+              !hasEmbeddedNewline &&
+              valueBaseline !== null
+            ) {
+              await new Promise<void>((r) => setTimeout(r, 150));
+              const postValue = await getTextViaValuePattern(target.title);
+              if (postValue !== null) {
+                const containsText = postValue.includes(checkText);
+                const delta = postValue.length - valueBaseline.length;
+                if (containsText) {
+                  // Delivered if length grew (text appended) OR baseline did
+                  // not previously contain checkText (replaceAll / focus-fresh
+                  // shape). Otherwise both sides contain checkText with no
+                  // length change — undetermined, fall back to unverifiable.
+                  if (delta > 0 || !valueBaseline.includes(checkText)) {
+                    verifiedDelivery = true;
+                  } else {
+                    verifyReason = "read_back_unsupported";
+                  }
+                } else {
+                  // postValue does not contain checkText → injection did not
+                  // land in the focused ValuePattern element. Treat as
+                  // not-delivered so caller surfaces BackgroundInputNotDelivered.
+                  verifiedDelivery = false;
+                }
+              } else {
+                verifyReason = "read_back_unsupported";
+              }
+            } else if (baselineMarker === null && checkText.length > 0) {
+              // Both TextPattern and ValuePattern paths unavailable, OR fallback
+              // disabled by guard above (empty checkText / embedded newline).
               verifyReason = "read_back_unsupported";
             } else if (hasEmbeddedNewline) {
               verifyReason = "embedded_newline";
