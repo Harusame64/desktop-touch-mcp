@@ -169,6 +169,20 @@ PR #219 Codex Round 1 で **既存 SUGGESTS+classify 登録済だが production 
 
 **Phase 5 follow-up candidate** (production fix axis、本 PR scope 外): `_errors.ts` SUGGESTS+classify 登録は完備でも production producer がない dead typed code を検出する CI/test 追加 (例: classify pattern 各 branch に対して real-world emit producer の存在を grep で pin)。
 
+### 4.bis Round 2 addendum — CI sweep land (PR #N で structural guard 化)
+
+PR #N で `tests/unit/issue-211-classify-branch-producer-pin.test.ts` を land し、`_errors.ts` classify branches を parse して各 typed code の production producer 存在を grep-based に確認する vitest test を CI 化。本 sweep が **本 §4.bis 起票時には未発見だった 4 件目の dead typed code を実行時に検出**:
+
+| 死んだ typed code (Round 2 addendum) | 登録 | 実態 | 訂正先 |
+|---|---|---|---|
+| `LensBudgetExceeded` | SUGGESTS L125 / classify L327-328 | `_errors.ts` には lens 登録ありだが production code に producer なし。perception lens budget cap の概念は `engine/perception/hot-target-cache.ts:11` 等の comment に存在するが、typed code は emit されない | 本 PR では DEAD_ALLOW_LIST 入りで grandfathered、Phase 6 で producer wiring or classify 削除いずれかを判断 |
+
+**仕組み化の意義**: §4.bis 当初の 3 件 (AutoGuardBlocked / TerminalMarkerStale / MaxDepthExceeded) は **手動 audit で発見**した。LensBudgetExceeded は **CI sweep が初実行時に検出**した。今後同型の family inheritance miss が classify に紛れ込んだ瞬間、この CI test が fail することで再発を構造的に防止する (CLAUDE.md 強制命令 7「仕組みで対応する」整合)。
+
+**allow-list categories** (`tests/unit/issue-211-classify-branch-producer-pin.test.ts`):
+- `RESERVED_ALLOW_LIST`: matrix §5.2 reserved-only typed codes (MouseClickNotDelivered / MouseDragNotDelivered / BrowserClickNotDelivered) — false-positive risk のため hint level で degradation 表現する設計判断、classify-only by design
+- `DEAD_ALLOW_LIST`: §4.bis-documented dead codes (TerminalMarkerStale / MaxDepthExceeded / LensBudgetExceeded) — Phase 6 cleanup carry-over candidates
+
 ---
 
 ## 5. Issue 起票候補 (Phase 5 closure に向けて、Phase 2a/2b/3a/3b 統合管理)
