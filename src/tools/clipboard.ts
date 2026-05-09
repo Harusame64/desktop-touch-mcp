@@ -196,7 +196,7 @@ export function registerClipboardTools(server: McpServer): void {
   server.registerTool(
     "clipboard",
     {
-      description: "Read or write the Windows clipboard. action='read' returns current text content (empty string if non-text). action='write' replaces clipboard with given text. Caveats: Non-text clipboard payloads (images, files) return empty string on read. Overwrites existing clipboard content on write.",
+      description: "Read or write the Windows clipboard. action='read' returns current text content (empty string if non-text). action='write' replaces clipboard with given text and verifies delivery via Get-Clipboard -Raw read-back, comparing the bytes (UTF-16LE) for exact equality. Caveats: Non-text clipboard payloads (images, files) return empty string on read. Overwrites existing clipboard content on write. action='write' delivery-verification failure returns code:'ClipboardWriteNotDelivered' — typical causes: a third-party clipboard manager intercepts SetClipboardData, DLP / endpoint protection blocks the payload, RDP / Citrix clipboard transcoding strips the text, or another process clears the clipboard between Set and the read-back. Recovery: retry the write, or fall back to keyboard(action='type', use_clipboard=false) for short text. Examples: clipboard({action:'write', text:'hello'}) → write+verify; clipboard({action:'read'}) → returns current text.",
       inputSchema: clipboardRegistrationSchema,
     },
     clipboardRegistrationHandler as typeof clipboardHandler

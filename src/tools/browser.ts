@@ -2629,14 +2629,14 @@ export function registerBrowserTools(server: McpServer): void {
 
   server.tool(
     "browser_search",
-    "Grep-like element search across the current page. by: 'text' (literal substring), 'regex', 'role', 'ariaLabel', 'selector' (CSS). Returns results[] sorted by confidence descending — pass results[0].selector to browser_click. Pagination via offset/maxResults. Caveats: Use browser_overview for broad discovery; use browser_search when you know specific text or role to target.",
+    "Grep-like element search across the current page. by: 'text' (literal substring), 'regex', 'role', 'ariaLabel', 'selector' (CSS). Returns results[] sorted by confidence descending — pass results[0].selector to browser_click. Pagination via offset/maxResults. Caveats: Use browser_overview for broad discovery; use browser_search when you know specific text or role to target. Typed errors: code:'BrowserSearchNoResults' (broaden the by:'text' substring or relax the by:'regex' pattern; switch to browser_overview to enumerate selectors), code:'BrowserSearchTimeout' (reduce maxResults / narrow scope), code:'ScopeNotFound' (the scope CSS selector did not match — verify the selector or omit scope), code:'BrowserNotConnected' (call browser_open first, or browser_open({launch:{}}) to auto-spawn).",
     browserSearchRegistrationSchema,
     browserSearchRegistrationHandler as typeof browserSearchHandler
   );
 
   server.tool(
     "browser_overview",
-    "List all interactive elements (links, buttons, inputs, ARIA controls) on the current page with CSS selectors, visible text or value for inputs, and viewport status — use before browser_click to discover stable selectors, and prefer this over screenshot when verifying button/toggle state after submission (no image tokens, structured output). scope limits to a CSS subsection (e.g. '.sidebar'). Returns state (checked/pressed/selected/expanded) for ARIA custom controls. Caveats: Selectors are CDP-generated snapshots — re-call after page navigates or re-renders. Input text reflects the empty-field hint text when defined (takes priority over typed value) — use browser_eval('document.querySelector(sel).value') to read actual typed content.",
+    "List all interactive elements (links, buttons, inputs, ARIA controls) on the current page with CSS selectors, visible text or value for inputs, and viewport status — use before browser_click to discover stable selectors, and prefer this over screenshot when verifying button/toggle state after submission (no image tokens, structured output). scope limits to a CSS subsection (e.g. '.sidebar'). Returns state (checked/pressed/selected/expanded) for ARIA custom controls. Caveats: Selectors are CDP-generated snapshots — re-call after page navigates or re-renders. Input text reflects the empty-field hint text when defined (takes priority over typed value) — use browser_eval('document.querySelector(sel).value') to read actual typed content. Typed errors: code:'BrowserNotConnected' (CDP not attached — call browser_open or browser_open({launch:{}})). Note: a non-matching scope CSS selector silently falls back to the full document (does not raise an error) — verify the selector via browser_eval if scoped enumeration is required.",
     browserOverviewRegistrationSchema,
     browserOverviewRegistrationHandler as typeof browserGetInteractiveHandler
   );
@@ -2647,21 +2647,22 @@ export function registerBrowserTools(server: McpServer): void {
     "Pass launch:{} (or with overrides) to auto-spawn a debug-mode browser when no CDP endpoint is live (idempotent: an already-running endpoint is preferred). " +
     "Returns tabs[] with id, url, title, active — pass tabId to browser_* tools to target a specific tab. " +
     "Caveats: CDP connection is per-process; if Chrome restarts, call browser_open again to get fresh tab IDs. " +
-    "A Chrome session started without --remote-debugging-port cannot be taken over — close it first or use a separate userDataDir.",
+    "A Chrome session started without --remote-debugging-port cannot be taken over — close it first or use a separate userDataDir. " +
+    "If the CDP endpoint is unreachable and launch is omitted, returns ok:false (typically code:'BrowserNotConnected' when the fetch surfaces ECONNREFUSED, otherwise code:'ToolError' with error 'Cannot reach Chrome/Edge CDP...'); re-call with launch:{} (idempotent) to auto-spawn or start Chrome manually with --remote-debugging-port=9222.",
     browserOpenRegistrationSchema,
     browserOpenRegistrationHandler as typeof browserOpenHandler
   );
 
   server.tool(
     "browser_locate",
-    "Find a DOM element by CSS selector and return its physical screen coordinates — compatible directly with mouse_click. Prefer browser_click to find+click in one step. Prefer browser_overview to discover selectors. Caveats: Coordinates are captured at call time; if the page reflows before mouse_click, coords may be stale.",
+    "Find a DOM element by CSS selector and return its physical screen coordinates — compatible directly with mouse_click. Prefer browser_click to find+click in one step. Prefer browser_overview to discover selectors. Caveats: Coordinates are captured at call time; if the page reflows before mouse_click, coords may be stale. Typed errors: code:'BrowserNotConnected' (call browser_open first), code:'ElementNotFound' (selector did not match — re-discover via browser_overview / browser_search).",
     browserLocateRegistrationSchema,
     browserLocateRegistrationHandler as typeof browserFindElementHandler
   );
 
   server.tool(
     "browser_click",
-    "Find a DOM element by CSS selector and click it (combines browser_locate + mouse_click in one step). Prefer over mouse_click for Chrome — selector-based clicking is stable across repaints. Pass tabId+port so the server auto-guards (verifies tab readyState and identity) and returns post.perception.status. lensId is optional for advanced pinned-tab workflows. Caveats: Fails if the element is outside the visible viewport — scroll it into view with browser_eval(\"document.querySelector('sel').scrollIntoView()\") first.",
+    "Find a DOM element by CSS selector and click it (combines browser_locate + mouse_click in one step). Prefer over mouse_click for Chrome — selector-based clicking is stable across repaints. Pass tabId+port so the server auto-guards (verifies tab readyState and identity) and returns post.perception.status. lensId is optional for advanced pinned-tab workflows. Caveats: Fails if the element is outside the visible viewport — scroll it into view with browser_eval(\"document.querySelector('sel').scrollIntoView()\") first. hints.verifyDelivery:{status:'delivered'|'unverifiable', reason, observedSignals:{mutationCount,urlChanged,activeElementChanged}} reports the post-click observation in 2 values: 'delivered' fires only when mutationCount>0 OR urlChanged (activeElementChanged is recorded in observedSignals but intentionally NOT a delivery signal — plain clicks on focusable controls always update focus, treating that as 'delivered' would mask silent-fail regressions); 'unverifiable' reason ∈ {'iframe_context_mismatch','no_dom_mutation','probe_install_failed','probe_read_failed'}. CDP emits 2 values only (focus_only is a UIA-path concept, N/A here). BrowserClickNotDelivered is reserved-only (false-positive risk too high to emit) — degradation reads from 'unverifiable' status.",
     browserClickRegistrationSchema,
     browserClickRegistrationHandler as typeof browserClickElementHandler
   );
@@ -2682,7 +2683,8 @@ export function registerBrowserTools(server: McpServer): void {
         caveats:
           "DOM nodes cannot be returned from action='js' directly (circular refs are serialized safely). " +
           "React/Vue/Svelte controlled inputs cannot be set via element.value — use keyboard(action='type') / browser_fill instead. " +
-          "readyState is strictly checked; guard blocks if page is still loading.",
+          "readyState is strictly checked; guard blocks if page is still loading. " +
+          "Typed errors: code:'BrowserNotConnected' on CDP disconnect (re-attach via browser_open). Auto-guard blocks on a still-loading page surface as ok:false with the error message starting 'AutoGuardBlocked: ...' — recover via wait_until({condition:'ready_state'}) or browser_eval readyState polling, then retry.",
         examples: [
           "browser_eval({action:'js', expression:'document.title'}) → page title",
           "browser_eval({action:'dom', selector:'#main', maxLength:5000}) → outerHTML",
@@ -2696,14 +2698,14 @@ export function registerBrowserTools(server: McpServer): void {
 
   server.tool(
     "browser_navigate",
-    "Navigate a browser tab to a URL via CDP Page.navigate — more reliable than clicking the address bar. Pass tabId+port so the server auto-guards (verifies tab readyState) and returns post.perception.status. lensId is optional for advanced pinned-tab workflows. Caveats: Does not block until page load completes — follow with wait_until(element_matches) or repeated browser_eval polling for slow pages.",
+    "Navigate a browser tab to a URL via CDP Page.navigate — more reliable than clicking the address bar. Pass tabId+port so the server auto-guards (verifies tab readyState) and returns post.perception.status. lensId is optional for advanced pinned-tab workflows. Caveats: Does not block until page load completes — the Page.navigate ack confirms only that the navigation request was accepted (frameStoppedLoading / loaderId observation is internal). Follow with wait_until({condition:'ready_state' or 'element_matches'}) or repeated browser_eval polling for slow pages. Typed errors: code:'NavigateFailed' (Page.navigate rejected — DNS failure, malformed URL, network unreachable; check URL + connectivity), code:'BrowserNotConnected' (CDP disconnect — re-attach via browser_open). Auto-guard blocks on a still-loading page surface as ok:false with the error message starting 'AutoGuardBlocked: ...' — wait_until({condition:'ready_state'}) then retry.",
     browserNavigateRegistrationSchema,
     browserNavigateRegistrationHandler as typeof browserNavigateHandler
   );
 
   server.tool(
     "browser_fill",
-    "Fill a form input with a value via CDP — works on React/Vue/Svelte controlled inputs that reject browser_eval value assignment. Use browser_overview or browser_locate first to obtain a stable selector. Use this over browser_eval when setting a controlled input's value via JS does not update the framework state. Caveats: Requires browser_open (CDP active). Does not work on contenteditable rich-text editors — use keyboard(action='type') for those. actual in response shows what the element's value property reads after fill; verify it matches the intended value.",
+    "Fill a form input with a value via CDP — works on React/Vue/Svelte controlled inputs that reject browser_eval value assignment. Use browser_overview or browser_locate first to obtain a stable selector. Use this over browser_eval when setting a controlled input's value via JS does not update the framework state. Caveats: Requires browser_open (CDP active). Does not work on contenteditable rich-text editors — use keyboard(action='type') for those. actual in response shows what the element's value property reads after fill; verify it matches the intended value. Typed errors: code:'BrowserFillNotDelivered' on post-fill value mismatch — note the false-positive case where a React controlled input's onChange transforms the value (delivery actually succeeded; SUGGESTS context surfaces hints.verifyDelivery.subReason:'controlled_input_transform' for that case). When detected, the actual value in the response is authoritative.",
     browserFillRegistrationSchema,
     browserFillRegistrationHandler as typeof browserFillInputHandler
   );
