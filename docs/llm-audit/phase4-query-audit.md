@@ -90,7 +90,7 @@ doc 4 columns:
 
 | # | Tool | 正常 path | error path | edge case | chain | 实机 判定 |
 |---|---|---|---|---|---|---|
-| Q4 | wait_until | `tests/e2e/wait-until.test.ts:34-45` (WaitTimeout + suggest pinning) | `tests/e2e/wait-until.test.ts:51-87` (window_appears/disappears actual transitions) | `tests/unit/wait-until-url-matches.test.ts` (URL pattern regex + SPA route matching) | `tests/e2e/wait-until.test.ts` (wait_until 出力 → 次 action 判断 chain) | **pass** |
+| Q4 | wait_until | `tests/e2e/wait-until.test.ts:47-89` (window_appears / window_disappears actual transitions、success path schema) | `tests/e2e/wait-until.test.ts:34-45` (WaitTimeout describe + suggest array pinning、error path) | `tests/unit/wait-until-url-matches.test.ts` (URL pattern regex + SPA route matching) | `tests/e2e/wait-until.test.ts` (wait_until 出力 → 次 action 判断 chain) | **pass** |
 | Q6 | terminal:read | `tests/e2e/terminal.test.ts:33-120` (action:'run' + until:'pattern' integration、内部で read 経由) | `tests/unit/terminal-run-validation.test.ts` (until schema validation + completion reason enum) | `tests/e2e/terminal-hidden-input.test.ts` (password prompt hidden input、no echo detection) | `tests/unit/issue-196-terminal-run-quiet-detection.test.ts` (quiet mode detection vs premature completion 1500ms SLO) | **pass** |
 | Q8 | browser_overview | `tests/e2e/browser-search.test.ts:71-98` (search-text integration + state field for toggles) | `tests/unit/expansion-browser-overview-wrapper.test.ts` (ScopeNotFound classification) | `tests/e2e/browser-search.test.ts:72-79` (confidence scoring + selector stability) | `tests/e2e/tool-chain.test.ts` (browser_overview scope → browser_click selector chain) | **pass** |
 | Q9 | browser_search | `tests/e2e/browser-search.test.ts:71-98` (by:'text' exact match + caseSensitive toggle) | `tests/e2e/browser-search.test.ts:92-97` (BrowserSearchNoResults code + suggest) | `tests/e2e/browser-search.test.ts:100-140` (by:'regex' / 'role' / 'ariaLabel' coverage) | `tests/e2e/browser-search.test.ts:150-160` (scope + pagination offset/maxResults + confidence sorting) | **pass** |
@@ -107,7 +107,7 @@ doc 軸 11 件:
 - `fix carry-over (doc gap)`: 5 件 — Q4 (K1 wait_until) / Q6 (K2 terminal:read) / Q8 (K3 browser_overview) / Q9 (K4 browser_search) / Q10 (K5 browser_locate)
 
 实机 軸 11 件:
-- `pass`: 11 件 (全 11 tools 实机軸 pass、scenario gap は cell-level admission として 5 cells のみ)
+- `pass`: 11 件 (全 11 tools 实机軸 pass、scenario gap は cell-level admission として 6 cells のみ)
 
 合計 22 judgement: **17 pass + 5 doc gap = 22**。0 contract drift / 0 breaking change candidate。
 
