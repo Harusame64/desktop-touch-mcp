@@ -4,7 +4,7 @@
 - 上位戦略: `docs/walking-skeleton-trunk-selection.md` (Proposed v0.4) §4 **S4** (line 232-251) + §5 **G3 ゲート** (line 343) の最小実装。本 sub-plan は trunk S4 PR の scope を確定する
 - Trigger: walking skeleton S3 (PR #110 envelope minimal wrapper sub-plan、Round 2 反映済) merged 後の翌 PR で着手、S5 (caused_by linkage cross-layer、最重要 contract) は本 S4 merged が前提条件
 - 親 plan: `docs/walking-skeleton-trunk-selection.md` §4 S4 (line 232-251) + §4.1 line 305 (S4 工数 4-5 日 / Opus 2-3 round / Codex ✓) + §5 G3 ゲート (line 343)
-- 概念設計: `docs/adr-010-presentation-layer-self-documenting-envelope.md` §5.3 (失敗時 envelope) + §5.4 (typed reason 35 codes、Phase 6 cleanup 後 = PR-A -3 + PR-B +1、LeaseExpired は 5 lease codes の 1 つ) + 統合書 §4 (4-tuple lease) + 統合書 §6 (1 event の旅) + 統合書 §11.2 (compat mode)
+- 概念設計: `docs/adr-010-presentation-layer-self-documenting-envelope.md` §5.3 (失敗時 envelope) + §5.4 (typed reason 49 codes、Phase 7 reconcile 後 = live 37 + ADR-added 12、LeaseExpired は 5 lease codes の 1 つ) + 統合書 §4 (4-tuple lease) + 統合書 §6 (1 event の旅) + 統合書 §11.2 (compat mode)
 - 並走依存: **S3 sub-plan PR #110** (review 中、本 sub-plan は S3 で確立する `_envelope.ts::makeEnvelopeAware` L5 wrapper helper + envelope SSOT shape を前提に commit 軸 template を建てる、impl 順序は S3 impl merged → 本 S4 impl)
 - 対象 sub-batch: walking skeleton **S4 (PR ?)** — commit 軸 wrapper template + query 軸 wrapper template + L1 既存 `EventKind::ToolCallStarted/Completed` payload schema 確定 + `LeaseStore.validate()` typed reason mapping + `desktop_discover` / `desktop_act` を wrapper 経由化
 - 後続: **S5** (caused_by linkage cross-layer、★ trunk 最重要 contract) は **本 S4 merged が前提条件**、ToolCall event の payload schema が S5 で `caused_by` の構造に展開される
@@ -35,7 +35,7 @@ S4 は **TypeScript + Rust touch あり PR** (commit 軸 wrapper TS layer + L1 E
 | 5 | `EventKind::ToolCallStarted/Completed` payload schema が `crates/.../envelope.rs` で確定 | §3.1 既存 `ToolCallStartedPayload` / `ToolCallCompletedPayload` Rust struct (= `src/l1_capture/payload.rs`) に S4 で必要な field を追加固定 (新 EventKind 追加なし、既存 struct のみ拡張)、wrapper 側の field name と bit-equal sync |
 | 6 | **G3 ゲート判定**: commit wrapper と既存 `ToolCallStarted/Completed` event payload 確定が `desktop_discover/act` の挙動を壊していない、`LeaseExpired` typed reason が 1 path 動作 | §3.8 G3 判定 + Appendix C append (impl PR merge 後) |
 
-**review 観点の再定義**: 本 PR は「commit 軸 wrapper の完成度」ではなく **「S4/G3 contract が最短で検証できるか + S5 caused_by linkage で mechanical コピーで進められる base が固まっているか」** で評価する。typed reason 残 36 codes 全網羅 / `try_next` 多 path 実装 / dry-run integration 等は S5-S6 + expansion で carry-over、本 S4 では `LeaseExpired` 1 種 + `try_next: desktop_discover` 1 path のみ。
+**review 観点の再定義**: 本 PR は「commit 軸 wrapper の完成度」ではなく **「S4/G3 contract が最短で検証できるか + S5 caused_by linkage で mechanical コピーで進められる base が固まっているか」** で評価する。typed reason 残 48 codes 全網羅 / `try_next` 多 path 実装 / dry-run integration 等は S5-S6 + expansion で carry-over、本 S4 では `LeaseExpired` 1 種 + `try_next: desktop_discover` 1 path のみ。
 
 ---
 
@@ -62,7 +62,7 @@ E. **L1 既存 `EventKind::ToolCallStarted (=100)` / `ToolCallCompleted (=101)` 
   - 既存 `ToolCallCompletedPayload { tool, elapsed_ms, ok, error_code }` 不変 (S4 で追加 field 不要)
   - `LeaseTokenSummary { entityId, viewId, targetGeneration, evidenceDigest_prefix8 }` 新型 (full evidenceDigest は size 圧縮、prefix のみ)
   - 既存 `l1_push_tool_call_started` napi binding signature: 既存 4 引数 (`tool, args_json, session_id, tool_call_id`) 順序 + 名前不変 + 末尾 5th `lease_token: Option<NativeLeaseTokenSummary>` 追加 (Round 1 P1-1 反映: 3rd 挿入は既存 4-arg positional callers を silent breakage、5th 末尾追加で TypeScript optional trailing semantic で既存 callers 無修正動作)
-F. **失敗時 envelope: `most_likely_cause: "LeaseExpired"` 1 種実装** + `try_next: [{action: "desktop_discover", ...}]` 1 path 実装 — 残 36 typed reason codes (ADR-010 §5.4) は expansion P2 で carry-over
+F. **失敗時 envelope: `most_likely_cause: "LeaseExpired"` 1 種実装** + `try_next: [{action: "desktop_discover", ...}]` 1 path 実装 — 残 48 typed reason codes (ADR-010 §5.4) は expansion P2 で carry-over
 G. **`click_element` は本 trunk では wrapper 経由しない** (expansion で「lease 不在 commit」バリエーションとしてコピー、walking-skeleton §4 line 244)
 H. **G3 ゲート判定 + Appendix C append** — `docs/walking-skeleton-trunk-selection.md` Appendix C 末尾に `| G3 | 2026-05-XX | (継続/shrink) | (...) | (...) |` を append (本 sub-plan §3.8、impl PR merge 後)
 
@@ -73,7 +73,7 @@ trunk 完了 (G3 通過) 後の expansion phase で実装:
 - **残 ~24 commit tool wrapper 化** (mouse_click / keyboard / clipboard / scroll / focus_window / browser_click / 等): L5 commit swimlane で worktree 並走 (`docs/walking-skeleton-trunk-selection.md` §6.1 line 363)、本 S4 で確立した `makeCommitWrapper` を mechanical コピー
 - **残 ~10 query tool wrapper 化** (screenshot / browser_overview / browser_locate 等): L5 query swimlane で並走、`makeQueryWrapper` mechanical コピー
 - **`click_element` (lease 不在 commit バリエーション)**: 本 S4 で wrapper 経由しない判断 (§1.1 G)、expansion で `makeCommitWrapper` の lease validation を skip option で適用
-- **typed reason 残 36 codes** (ADR-010 §5.4): `_errors.ts::SUGGESTS` を `try_next: TypedAction[]` に進化、ADR-010 §10 P2 acceptance criteria 100% mapping
+- **typed reason 残 48 codes** (ADR-010 §5.4): `_errors.ts::SUGGESTS` を `try_next: TypedAction[]` に進化、ADR-010 §10 P2 acceptance criteria 100% mapping
 - **dry-run integration** (`if_you_did` field): ADR-010 P5 work、副作用大の tool に `dry_run=true` 引数経由で `predicted_post_state` view 経由 preview return
 - **`tool_call_id` の persistent session management**: 本 S4 では in-process counter (server lifetime 内 unique)、永続化 (cross-server-restart) は expansion ADR-011 work
 
@@ -279,7 +279,7 @@ ADR-010 §5.3 失敗時 envelope shape:
   "as_of": { "wallclock_ms": ... },             // S3 で確立、L1 event wallclock or fallback
   "confidence": "stale",                        // 失敗時 stale 固定 (ADR-010 §5.3、S3 trunk 2 値分岐外)
   "if_unexpected": {                            // 必須
-    "most_likely_cause": "LeaseExpired",        // S4 で 1 種実装、残 36 codes は expansion
+    "most_likely_cause": "LeaseExpired",        // S4 で 1 種実装、残 48 codes は expansion
     "try_next": [
       { "action": "desktop_discover", "args": { /* lease 再発行用 */ }, "confidence": "high" }
     ]
@@ -500,7 +500,7 @@ trunk + expansion 完了後の別 phase で carry-over:
 - **expansion**: 残 ~24 commit tool wrapper 化 (mouse_click / keyboard / clipboard / scroll / focus_window / browser_click / 等) — `makeCommitWrapper` mechanical コピー
 - **expansion**: 残 ~10 query tool wrapper 化 — `makeQueryWrapper` mechanical コピー
 - **expansion**: `click_element` lease 不在 commit バリエーション — `makeCommitWrapper` の lease validation skip option 追加で対応
-- **expansion**: typed reason 残 36 codes (ADR-010 §5.4) 全網羅 + `try_next: TypedAction[]` 進化
+- **expansion**: typed reason 残 48 codes (ADR-010 §5.4) 全網羅 + `try_next: TypedAction[]` 進化
 - **expansion**: dry-run integration (ADR-010 P5)
 - **OQ #1 (S5 finalize)**: `tool_call_id` cross-server-restart unique 永続化 schema
 - **OQ #2 (S5 finalize)**: `caused_by.your_last_action` semantic 解釈
@@ -515,7 +515,7 @@ trunk + expansion 完了後の別 phase で carry-over:
 | R1 | `args_json` field 名維持 (rename 中止、Round 1 P1-2 反映) で外部 caller 互換、ただし Optional 末尾追加 `lease_token` の bincode binary compat (R5 と並列軸) | 中 | Round 2 で rename 中止確定、`index.d.ts:280` + `native-engine.ts:282` 維持、production / test 全 caller (~6-10 callsite + npm external consumer) 無修正 pass。`lease_token` 末尾 optional 追加の bincode 互換は §7 R5 で別途 mitigation (in-memory ring 単一 server lifetime 限定) |
 | R2 | `EnvelopeMinimalShape.confidence` 3 値 bump で S3 trunk contract test 破壊 | 中 | §4.5 で S3 G3-7 test (`fresh`/`degraded` mock) は `stale` 追加で assertion 範囲外、backward compat 保証。新 G3-S4-2 で `stale` failure case を pin |
 | R3 | `tool_call_id` in-process counter が server-restart 跨ぎで衝突、L1 ring 経由 history buffer の uniqueness 破壊 | 中 | OQ #1 carry-over、本 trunk では `session_id:counter` 形式で session 内 unique 保証、cross-server-restart 永続化は expansion ADR-011 work |
-| R4 | `LeaseStore.validate()` reason 4 種 → typed enum 4 lease-direct codes (1:1 mapping) のうち `expired` 1 path のみ S4 trunk 配線で残 3 LeaseStore mapping (`generation_mismatch` / `entity_not_found` / `digest_mismatch`) + 別経路 `EntityOutsideViewport` が runtime で発生 → `Unknown` typed enum 落ち (Round 3 P2-4 反映: 旧版「残 4 mapping」は 4 reason → 5 typed code 混同の残骸、正しくは 残 3 LeaseStore mapping + EntityOutsideViewport は LeaseStore.validate() reason ではなく別経路 = WindowChanged event 等での viewport 外 detect で発生) | 中 | S4 trunk は `expired → LeaseExpired` 1 path 完全実装 + 残 3 LeaseStore reason は `Unknown` fallback (ADR-010 §5.4 既存 23 codes、Phase 6 cleanup 後 = PR-A -3 + PR-B +1、に Unknown 含む)、`EntityOutsideViewport` 別経路は本 trunk 範囲外 carry-over (WindowChanged event 配線は expansion work)、expansion で残 3 LeaseStore mapping + EntityOutsideViewport 別経路 配線を mechanical コピー追加 |
+| R4 | `LeaseStore.validate()` reason 4 種 → typed enum 4 lease-direct codes (1:1 mapping) のうち `expired` 1 path のみ S4 trunk 配線で残 3 LeaseStore mapping (`generation_mismatch` / `entity_not_found` / `digest_mismatch`) + 別経路 `EntityOutsideViewport` が runtime で発生 → `Unknown` typed enum 落ち (Round 3 P2-4 反映: 旧版「残 4 mapping」は 4 reason → 5 typed code 混同の残骸、正しくは 残 3 LeaseStore mapping + EntityOutsideViewport は LeaseStore.validate() reason ではなく別経路 = WindowChanged event 等での viewport 外 detect で発生) | 中 | S4 trunk は `expired → LeaseExpired` 1 path 完全実装 + 残 3 LeaseStore reason は `Unknown` fallback (ADR-010 §5.4 全 49 codes、Phase 7 reconcile 後 = live 37 + ADR-added 12、ADR-added 12 に Unknown 含む)、`EntityOutsideViewport` 別経路は本 trunk 範囲外 carry-over (WindowChanged event 配線は expansion work)、expansion で残 3 LeaseStore mapping + EntityOutsideViewport 別経路 配線を mechanical コピー追加 |
 | R5 | bincode encode/decode で `ToolCallStartedPayload` 拡張前後の binary compat 破壊 (既存 L1 ring data 読取り不能) | 中 | L1 ring は **in-memory ring buffer** (永続化なし、server 起動毎に空)、cross-server-restart の binary compat は trunk scope 外。本 trunk 内では single-server-lifetime での encode/decode 整合のみ確保、§3.7 S4-7 で encode_payload round-trip pin test (新 field `lease_token` Optional 末尾追加 + 既存 `args_json` field 不変)、bincode struct field 順序維持。Cross-server replay のための binary versioning は ADR-011 expansion で着手 |
 | R6 | `makeCommitWrapper` の 7 step flow で example DesktopAct logic と integration error (lease validator 呼出 timing、handler invoke の async 順序、L1 push の error swallow) | 中 | §3.6 G3-S4-1〜G3-S4-6 で各 step の order を pin、handler 内 throw → ToolCallCompleted (ok: false) の経路を G3-S4-4 で test |
 | R7 | failure envelope size > 5KB (`if_unexpected.try_next` の各 action shape 膨張) | 中 | §3.7 で bench harness failure envelope シナリオ追加 (G3 #4)、5KB 超過時は ADR-010 §5.6.1 を bit-equal sync で expansion 調整、本 trunk では `try_next` 1 path のみで size 抑制 |
@@ -620,7 +620,7 @@ S5 caused_by linkage 着手時 (★ 最重要 contract):
 ## 10. References
 
 - 上位戦略: `docs/walking-skeleton-trunk-selection.md` (Proposed v0.4) §4 S4 (line 232-251) + §4.1 line 305 + §5 G3 ゲート (line 343)
-- 概念設計: `docs/adr-010-presentation-layer-self-documenting-envelope.md` §5.3 (失敗時 envelope) + §5.4 (typed reason 35 codes、Phase 6 cleanup 後 = PR-A -3 + PR-B +1、LeaseExpired 第一候補) + §5.6 (envelope size SLO、failure < 5KB)
+- 概念設計: `docs/adr-010-presentation-layer-self-documenting-envelope.md` §5.3 (失敗時 envelope) + §5.4 (typed reason 49 codes、Phase 7 reconcile 後 = live 37 + ADR-added 12、LeaseExpired 第一候補) + §5.6 (envelope size SLO、failure < 5KB)
 - 統合書 (SSOT): `docs/architecture-3layer-integrated.md` §4 (4-tuple lease: entityId / viewId / targetGeneration / evidenceDigest) + §6 (1 event の旅 worked example) + §11.2 (compat mode SSOT、S3 で確立)
 - 並走依存 sub-plan: `docs/adr-010-p1-s3-plan.md` (PR #110 review 中、本 sub-plan は S3 で確立する `_envelope.ts::makeEnvelopeAware` + envelope SSOT shape を base に commit/query 軸 wrapper を建てる、impl 順序は S3 impl merged → 本 S4 impl)
 - 既存実装:

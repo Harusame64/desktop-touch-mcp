@@ -56,7 +56,7 @@ LLM の不安は 7 つに分解できる。
 - lease_token は単一 ID ではなく 4-tuple (`entityId` / `viewId` / `targetGeneration` / `evidenceDigest`)、envelope 内で展開 → 統合書 §4 / `LeaseStore` 既存実装
 - L4 envelope assembly 制約 (p99 < 5ms 等) → layer-constraints §5
 - L5 tool surface 制約 (query/commit/subscribe SLO) → layer-constraints §6
-- typed reason 35 codes (PascalCase、Codex/Gemini review 経由で拡張、Phase 6 cleanup 後 = PR-A -3 + PR-B +1) → §5.4
+- typed reason 49 codes (PascalCase、live `_errors.ts` SUGGESTS 37 codes + ADR-added 12 codes、Phase 7 catalog reconcile で full sync) → §5.4
 
 ### 1.5 Tool Surface 不変原則 (重要、誤読防止、統合書 P7 / §7.4 と同期)
 
@@ -276,9 +276,9 @@ tool 呼び出しは isolated event ではなく、**直前の自分の行動の
 
 ### 5.4 typed enum 一覧 — 既存 `_errors.ts` SUGGESTS を SSOT として吸収
 
-本 §5.4 catalog は ADR-010 起草時 SSOT (25 codes baseline) を出発点とし、Phase 6 cleanup (PR-A 削除 3 件 + PR-B AutoGuardBlocked 追加 1 件) を適用した結果として **23 codes** を列挙する。注意: live `src/tools/_errors.ts` SUGGESTS には post-issue (#178/#179/#180/#181/#197) + Phase B B-1〜B-4 で累積 +14 codes が後追いで追加済で、現行 production の SUGGESTS 数は **23 ではない** (本 catalog は ADR baseline 視点の subset で、catalog 全面 reconcile は `docs/adr-010-followups.md` §3 で別 PR carry-over)。本 ADR の `most_likely_cause` は **本 catalog を SSOT として吸収** し、新規追加分は §5.4 末尾 + followups doc で拡張する。
+本 §5.4 catalog は live `src/tools/_errors.ts` SUGGESTS dictionary (**37 codes**、Phase 6 cleanup 後 = PR-A 削除 3 件 + PR-B AutoGuardBlocked 追加 1 件 + post-issue #178/#179/#180/#181/#197/#207 + Phase 5 I1 + Phase B B-1〜B-4 累積) を **bit-equal で全反映** + 本 ADR で追加する 12 codes を列挙して、**合計 49 codes** を定義する。Phase 7 catalog reconcile (`docs/adr-010-followups.md` §3) で従来 ADR baseline 視点 subset (23 codes) と live (37 codes) の数値乖離を解消、live SSOT を直接吸収した。
 
-#### 既存 23 codes (ADR baseline 25 - PR-A 3 + PR-B 1、PascalCase 維持、live `_errors.ts` 全 entries とは異なる subset)
+#### live `_errors.ts` SUGGESTS 全 37 codes (PascalCase 維持、SSOT)
 
 ```
 // 引数・基本
@@ -290,21 +290,28 @@ ElementDisabled | UiaTimeout | BlockedKeyCombo
 
 // Browser
 BrowserNotConnected | BrowserSearchNoResults | BrowserSearchTimeout |
-ScopeNotFound
+ScopeNotFound | BrowserClickNotDelivered | BrowserFillNotDelivered
 
 // Terminal
 TerminalWindowNotFound | TerminalTextPatternUnavailable
 
 // Wait / scroll
 WaitTimeout | ScrollbarUnavailable | OverflowHiddenAncestor |
-VirtualScrollExhausted
+VirtualScrollExhausted | ScrollNotDelivered
 
 // RPG
 GuardFailed | AutoGuardBlocked | LensNotFound
 
 // 入力チャネル
 BackgroundInputUnsupported | BackgroundInputIncomplete |
-SetValueAllChannelsFailed
+BackgroundInputNotDelivered | BackgroundKeyNotDelivered |
+ForegroundRestricted | ClipboardWriteNotDelivered |
+MouseClickNotDelivered | MouseDragNotDelivered |
+SetValueAllChannelsFailed | FocusLostDuringType
+
+// Cognitive memory (ADR-011 Phase B B-1〜B-4)
+WorkingMemoryNUpperBoundExceeded | EpisodicMemoryNUpperBoundExceeded |
+SemanticMemoryKUpperBoundExceeded | ProceduralMemoryKUpperBoundExceeded
 ```
 
 #### 本 ADR で追加する codes (PascalCase 統一)
@@ -331,7 +338,7 @@ EnvelopeSizeExceeded
 AccessDenied | Unknown
 ```
 
-合計 23 + 12 = **35 codes** (Phase 6 cleanup 後 = PR-A 削除 3 件 + PR-B AutoGuardBlocked 追加 1 件、catalog 全面 reconcile は `docs/adr-010-followups.md` §3 carry-over)。
+合計 37 + 12 = **49 codes** (live `_errors.ts` SUGGESTS 全 37 codes + 本 ADR ADR-added 12 codes、Phase 7 reconcile で full sync 達成)。
 
 #### 運用ルール
 
