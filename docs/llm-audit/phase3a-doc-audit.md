@@ -61,20 +61,23 @@ Phase 2a / 2b で扱った Tier 1 (15 actions、過去 issue 多発) 以外の T
 
 | # | Action | desc/examples | SUGGESTS | classify | matrix row | 判定 |
 |---|---|---|---|---|---|---|
-| 23 | browser_click | gap | pass | pass | pass | fix carry-over (doc gap) — G7 |
-| 24 | browser_eval | gap | pass | pass | pass | fix carry-over (doc gap) — G8 |
+| 23 | browser_click | gap | pass | pass | **drift** (status enum 3値↔2値) | fix carry-over (doc gap + matrix narrowing) — G7 + G13 |
+| 24 | browser_eval | partial | pass | pass | pass | fix carry-over (doc gap) — G8 |
 | 25 | browser_navigate | partial | (uses BrowserNotConnected via classify) | (via classify) | pass | fix carry-over (doc gap) — G11 |
-| 26 | browser_fill | partial | pass | pass | pass | fix carry-over (doc gap) — G9 |
+| 26 | browser_fill | partial | pass | pass | partial (family inheritance) | fix carry-over (doc gap) — G9 (G13 family inheritance note) |
 | 27 | browser_form | pass | (per-step delegation) | (delegates) | pass | **pass** |
 | 28 | browser_open | gap | pass | pass | pass | fix carry-over (doc gap) — G12 |
 
 ### 2.4 集計
 
 - `pass`: **5 actions** — 17 (desktop_act)、19 (window_dock)、20 (workspace_launch)、21 (run_macro)、27 (browser_form)
-- `fix carry-over (doc gap)`: **7 actions** — G2 / G3 / G7 / G8 / G9 / G11 / G12 (各 distinct、focus_window / click_element / browser_click / browser_eval / browser_fill / browser_navigate / browser_open)
+- `fix carry-over (doc gap)`: **6 actions** (purely doc gap、matrix も bit-equal) — G2 / G3 / G8 / G9 / G11 / G12 (focus_window / click_element / browser_eval / browser_fill / browser_navigate / browser_open)
+- `fix carry-over (doc gap + matrix narrowing)`: **1 action** — G7 + G13 (browser_click、description gap + matrix line 159 「3 値」 ↔ production 2 値 drift)
 - `fix carry-over (contract drift)`: **1 action** — G1 (notification_show、production fact ≠ matrix §3.1 line 158 規範)
 - `breaking change candidate`: 0
 - `unverifiable accepted`: 0
+
+合計 13 actions。distinct findings 8 件 (G1/G2/G3/G7/G8/G9/G11/G12/G13、G7+G13 は同 cell)。
 
 ## 3. Findings 詳細 (issue 起票候補)
 
@@ -138,6 +141,18 @@ Phase 2a / 2b で扱った Tier 1 (15 actions、過去 issue 多発) 以外の T
 - **推奨 fix**: caveats に「navigate API は `Page.navigate` ack のみ確認 (frameStoppedLoading / loaderId 内部観測で navigate 自身の delivery は確認済)、page load 完了は `wait_until(ready_state)` で別途確認」を追記
 - **note**: wait_until follow-up は明示済のため Low priority、recovery path に空白なし
 
+### G13 (重要、matrix narrowing): browser_click `verifyDelivery.status` matrix「3 値」↔ production「2 値」 drift
+
+- **matrix §3.1 line 159 規範**: 「`verifyDelivery.status` 3 値 (#181)」 — `delivered` / `focus_only` / `unverifiable` の 3 値を mouse_click family と並列で記載
+- **production 実装事実**: `src/tools/browser.ts:560` で TypeScript 型定義 `status: "delivered" | "unverifiable"` (2 値のみ)、`browser.ts:1095-1158` で `delivered` / `unverifiable` のみ emit (grep `focus_only` in `browser.ts` returns 0 hits)。CDP 経路では `focus_only` (UIA 観測経路の "focus 変化のみで他観測なし" 区別) は semantic に N/A
+- **family inheritance impact**: browser_fill (matrix §3.1 line 162) は `BrowserClickNotDelivered 同系` と family inheritance 言及あり、production `browser.ts:699/722` も同 2 値 pattern。matrix 162 自体は明示的 3 値 言及なしだが family contract で同 drift
+- **LLM 視点 impact**: matrix を読んだ LLM は browser_click の verifyDelivery hint shape を 3 値 (focus_only 含む) で expect、production envelope は 2 値 のみ → schema unexpected (LLM serialiser reject) / fallback path 設計 mismatch
+- **推奨 fix** (docs only、matrix narrow):
+  1. `docs/operation-verification-matrix.md` line 159 を 「`verifyDelivery.status` 2 値 (`delivered` / `unverifiable`、`focus_only` は CDP 経路 semantic N/A のため emit せず — UIA 経路 mouse_click family でのみ 3 値)」 に narrow
+  2. line 162 (browser_fill) の family inheritance 注記を line 159 narrowing と同期
+  3. `phase3a-doc-audit.md` cell 23 / 26 matrix column を `pass` に更新 (matrix narrowed 後 bit-equal 復帰)
+- **教訓**: matrix line 159 は #181 issue 起票時点で mouse_click family の文言を CDP 経路に流用、CDP 経路独自の semantic narrowing を未反映。matrix row 自身の family inheritance pattern が drift 温床になりうる pattern (Lesson 4 numeric count sync の matrix-row 軸版)
+
 ### G12: browser_open description で BrowserNotConnected typed code 名 direct 言及不在
 
 - **matrix §3.1 line 164 規範**: `BrowserNotConnected` (既存) typed code、Indirect (attach 後 target list rebuild)
@@ -152,6 +167,7 @@ Phase 2a / 2b で扱った Tier 1 (15 actions、過去 issue 多発) 以外の T
 | **J1** | G1 fix — notification_show `hints.verifyDelivery: 'unverifiable'` emit 追加 + description sync + tests/unit/notification-hint.test.ts new pin | **High** | production code 改修 | 単独 PR、Opus + **Codex 必須** (CLAUDE.md §3.3 Step 0、F4/I1 と同型 production code改修 PR 規律) |
 | **J2** | G2 + G3 + G7 + G8 + G12 — typed code description 補強 (focus_window / click_element / browser_click / browser_eval / browser_open) | Medium | docs only | 1 PR にまとめる、Opus 1+ round (Codex 推奨)、Phase 2a I2 と統合可 |
 | **J3** | G9 + G11 — description minor enrichment (browser_fill typed code 名直接言及 / browser_navigate verification 経路明示) | Low | docs only | J2 と同 PR or defer |
+| **J4** | G13 — matrix §3.1 line 159 (browser_click) status enum 3 値 → 2 値 narrowing + line 162 family inheritance 注記 sync | Medium | docs only (matrix update) | 単独 PR、Opus 1+ round (Codex 推奨で matrix bit-equal 確認)。production code 改修なし、matrix narrowing で SSOT bit-equal 復帰 |
 
 統合 carry-over 整理 (Phase 2a I1-I3 + Phase 2b E1-E5 + Phase 3a J1-J3):
 
@@ -164,6 +180,7 @@ Phase 2a / 2b で扱った Tier 1 (15 actions、過去 issue 多発) 以外の T
 | **I3** (Phase 2a F2) | cross-tool ForegroundRestricted 統一 wording | Medium | docs only |
 | **E1-E4** (Phase 2b) | automated pin gap | Medium / Low | new test only |
 | **J3** (Phase 3a G9+G11) | description minor enrichment | Low | docs only |
+| **J4** (Phase 3a G13) | matrix §3.1 line 159/162 browser_click verifyDelivery status enum narrowing | Medium | docs only (matrix update) |
 | **E5** (Phase 2b) | scroll:capture frame seam | **Defer** | optional |
 
 I1 + J1 が production contract drift で Phase 5 closure における highest priority、I2 + J2 + I3 + J3 は docs 補強で release readiness 判定材料。
@@ -176,8 +193,9 @@ I1 + J1 が production contract drift で Phase 5 closure における highest p
 - [x] Issue 起票候補リスト (J1-J3) 作成 + Phase 2a/2b 統合管理表
 - [x] CLAUDE.md §3.1 multi-table fact 整合 sweep — 各 fact を 5 view (matrix §3.1 / production code / 既存 unit pin / Phase 2a 判定 / 本 phase cell 判定) で bit-equal 確認:
   - 「`ForegroundRestricted` typed code family contract」 (G2 = focus_window が Phase 2a F2 family と同型 fact、I3 統合 candidate)
-  - 「`BrowserClickNotDelivered` 予約状態 + verifyDelivery 3 値 hint」 (G7 = Phase 2a F6/F7 mouse 軸 と同型 fact)
+  - 「`BrowserClickNotDelivered` 予約状態」 (G7 = Phase 2a F6/F7 mouse 軸 と同型 fact、production line 1192 catch-block は generic err propagation で direct emit なし)
   - 「`hints.verifyDelivery: 'unverifiable'` 規範 emit」 (G1 = matrix §3.1 line 158 規範を production 未実装、F4 同型 contract drift fact pattern)
+  - 「`verifyDelivery.status` enum 3 値 vs 2 値」 (G13 = matrix §3.1 line 159 「3 値」 ↔ production browser.ts:560 type 定義 2 値、family inheritance pattern drift で line 162 browser_fill にも同型 sync 影響、matrix narrow recommendation)
 
 ## 6. Out of scope (本 PR)
 
