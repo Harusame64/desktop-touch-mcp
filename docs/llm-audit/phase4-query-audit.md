@@ -179,7 +179,7 @@ PR #219 Codex Round 1 で **既存 SUGGESTS+classify 登録済だが production 
 | **J1** (Phase 3a G1) | `notification_show` `hints.verifyDelivery` emit | **High** | production code (Codex 必須) | **Resolved** PR #217 |
 | **I2** + **J2** + **K1-K5** + **J3** | description 補強 (Phase 2a F1+F3+F5+F6+F7+F8+F9+F10 + Phase 3a G2+G3+G7+G8+G9+G11+G12 + Phase 4 K1-K5) | Medium | docs only | **Resolved** PR #219 |
 | **I3** | Phase 2a F2 cross-tool ForegroundRestricted unified wording | Medium | docs only | open |
-| **J4** (Phase 3a G13) | matrix §3.1 line 159/162 browser_click verifyDelivery status enum narrowing | Medium | docs only (matrix update) | **Resolved** PR #N |
+| **J4** (Phase 3a G13) | matrix §3.1 line 159/162 browser_click verifyDelivery status enum narrowing | Medium | docs only (matrix update) | **Resolved** PR #221 |
 | **E1-E4** (Phase 2b) | automated-pin gap | Medium / Low | new test only | open |
 | **E5** (Phase 2b) | scroll:capture frame seam | **Defer** | optional | defer |
 | **H1** (Phase 3b) | design-constraint error path automated pin | **Defer** | optional | defer |
