@@ -946,6 +946,75 @@ export function evaluateRunReadIntegrity(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Issue #236: file-lock collision detector for action='run' output
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Common pitfall the helper guards against: shell `>` redirect collides with
+// the script's own `createWriteStream` on the same path. Concrete trigger
+// observed 2026-05-10: `node scripts/test-capture.mjs --force > .vitest-out.txt
+// 2>&1` — `>` had already opened `.vitest-out.txt` for write, then the
+// script internally `createWriteStream(.vitest-out.txt)` and Node threw
+// `EBUSY: resource busy or locked, open '...\\.vitest-out.txt'`. Without
+// surfacing this as a warning, the run wraps to `ok:true,
+// completion:{reason:"pattern_matched"}` (the marker echo stays intact) and
+// the calling agent treats it as success when the actual command died at
+// the file-system layer — a textbook silent-success contract drift.
+//
+// The helper lives next to evaluateRunReadIntegrity above so the run handler
+// can call it after the final read populates `output`. Returns null on no
+// signal so the caller's `if (...)` is cheap; returns a single ready-to-push
+// warning string (with `FileLockCollision:` prefix matching the existing
+// `BaselineMarkerLost:` warning style) when a signal IS detected. The
+// helper is pure (string in, string-or-null out) for unit testability.
+
+const NODE_EBUSY_PATTERN = /EBUSY:\s*resource busy or locked,\s*\w+\s+'([^']+)'/;
+const WINDOWS_FILE_LOCK_PATTERN =
+  /cannot access the file because it is being used by another process/i;
+const POSIX_ADVISORY_LOCK_PATTERN =
+  /\b(?:EAGAIN|EDEADLK)\b[^]*?Resource temporarily unavailable/i;
+
+export function detectFileLockCollision(output: string): string | null {
+  if (!output) return null;
+
+  // Node.js EBUSY: most common in script + redirect collision (the trigger
+  // case). Path extraction lets the caller see WHICH file collided so the
+  // fix is actionable (drop the redirect, or pipe to a different target).
+  const nodeMatch = output.match(NODE_EBUSY_PATTERN);
+  if (nodeMatch) {
+    return (
+      `FileLockCollision: Node EBUSY on '${nodeMatch[1]}' — common cause: ` +
+      `shell '>' redirect collided with the script's own write of the same ` +
+      `file. Run without redirect, or pipe to a different target.`
+    );
+  }
+
+  // Windows native: "The process cannot access the file because it is being
+  // used by another process." emitted by tools that use Win32 CreateFile
+  // without FILE_SHARE_* flags (e.g. `type`, `move`, some PowerShell cmdlets).
+  if (WINDOWS_FILE_LOCK_PATTERN.test(output)) {
+    return (
+      "FileLockCollision: Windows file-lock detected in output — another " +
+      "process holds the target file open. Check for orphan handles or " +
+      "redirect conflicts."
+    );
+  }
+
+  // POSIX advisory locks: flock / lockf / fcntl can return EAGAIN /
+  // EDEADLK paired with "Resource temporarily unavailable". Less common
+  // on Win32 hosts but the tool runs cross-platform and shells like git-bash
+  // / WSL surface POSIX-shape errors.
+  if (POSIX_ADVISORY_LOCK_PATTERN.test(output)) {
+    return (
+      "FileLockCollision: POSIX advisory lock collision (EAGAIN/EDEADLK) " +
+      "detected in output. Another process holds an advisory lock on a " +
+      "resource the command needs."
+    );
+  }
+
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Defensive JSON-string preprocessor (issue #196 symptom 1)
 // ─────────────────────────────────────────────────────────────────────────────
 //
@@ -1419,6 +1488,18 @@ export const terminalRunHandler = async ({
     }
   } catch { /* output stays empty; outputIntegrity stays undefined */ }
 
+  // Issue #236: post-process EBUSY-family file-lock collision detection.
+  // Surfaces a `FileLockCollision:` warning when the captured output
+  // contains the Node EBUSY / Windows / POSIX lock signatures. Runs only
+  // when output is non-empty (skips baseline_lost path which forces output
+  // to "" on purpose). The check is pure-string match, microsecond cost.
+  if (output) {
+    const lockHint = detectFileLockCollision(output);
+    if (lockHint !== null) {
+      warnings.push(lockHint);
+    }
+  }
+
   const response: TerminalRunResponse = {
     ok: readError === undefined,
     output,
@@ -1554,7 +1635,7 @@ export function registerTerminalTools(server: McpServer): void {
         purpose: "Interact with a terminal window: read output, send input, or run+wait+read in one call.",
         details: "action='run' is the recommended high-level workflow: send command → wait until quiet/pattern/timeout → read output. Returns completion={reason, elapsedMs} first-class plus outputIntegrity:'ok'|'baseline_lost' so callers can detect when scrollback could not be anchored to the pre-send buffer. action='read' reads current text via UIA TextPattern (falls back to OCR); use sinceMarker for incremental diff. action='send' sends a command with focus management.",
         prefer: "action='run' for command execution + result. For long-running commands (test runners, builds, deploys) use until:{mode:'pattern', pattern:'<final marker>'} — the default quiet mode is tuned for short interactive commands and may complete prematurely on multi-second silent gaps mid-run. Use action='read'/'send' for fine-grained control or when you need to interleave other actions.",
-        caveats: "Do not screenshot the terminal — terminal(action='read') is cheaper and structured. action='run' supports completion reasons: quiet | pattern_matched | timeout | window_closed | window_not_found | send_failed (send rejected on a live window — see warnings for the underlying error code). When outputIntegrity:'baseline_lost' is returned, output is forced to '' and readError.code='BaselineMarkerLost' is set: rerun with until:{mode:'pattern',...} or longer timeoutMs. Default quietMs=1500 (issue #196); long silences require pattern mode. preferClipboard=true (send default) overwrites clipboard. Hidden-input prompts emit verifyDelivery.unverifiable (reason:'hidden_input_prompt') — use method:'foreground'. action='read' typed errors: TerminalWindowNotFound, TerminalTextPatternUnavailable (force source:'ocr'); stale sinceMarker → hints.terminalMarker.previousMatched:false on ok:true (omit sinceMarker). FG-path Win11 foreground refusal returns code:'ForegroundRestricted' — switch to method:'background' or DTM_BG_AUTO=1.",
+        caveats: "Do not screenshot the terminal — terminal(action='read') is cheaper and structured. action='run' supports completion reasons: quiet | pattern_matched | timeout | window_closed | window_not_found | send_failed (send rejected on a live window — see warnings for the underlying error code). When outputIntegrity:'baseline_lost' is returned, output is forced to '' and readError.code='BaselineMarkerLost' is set: rerun with until:{mode:'pattern',...} or longer timeoutMs. action='run' may also emit warnings prefixed FileLockCollision: when output reveals an EBUSY/Windows-lock/EAGAIN-EDEADLK file collision (e.g. shell '>' redirect colliding with the script's own writer — issue #236). Default quietMs=1500 (issue #196); long silences require pattern mode. preferClipboard=true (send default) overwrites clipboard. Hidden-input prompts emit verifyDelivery.unverifiable (reason:'hidden_input_prompt') — use method:'foreground'. action='read' typed errors: TerminalWindowNotFound, TerminalTextPatternUnavailable (force source:'ocr'); stale sinceMarker → hints.terminalMarker.previousMatched:false on ok:true (omit sinceMarker). FG-path Win11 foreground refusal returns code:'ForegroundRestricted' — switch to method:'background' or DTM_BG_AUTO=1.",
         examples: [
           "terminal({action:'run', windowTitle:'PowerShell', input:'npm test', until:{mode:'pattern', pattern:'Test Files'}}) → recommended for test runners; matches when vitest summary appears",
           "terminal({action:'run', windowTitle:'pwsh', input:'ls'}) → quiet 1500ms wait, returns output (short interactive)",
