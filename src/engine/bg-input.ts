@@ -377,9 +377,11 @@ export function injectViaForegroundFlash(
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     // napi::Error::from_reason は message にそのまま typed reason (snake_case) を入れる。
-    // panic guard (`napi_safe_call`) は失敗時 `panic in <fn>: <detail>` 形式で wrap、
-    // wrap 名が将来増減 (`napi_safe_call panic in ...` 等) しても剥がせるよう
-    // `panic in <fn>:` 全 fn 名を吸う pattern に拡張 (Opus Round 1 P2-5)。
+    // 現在の panic guard (`src/win32/safety.rs::napi_safe_call`) は失敗時に
+    // `panic in <fn>: <detail>` 形式で wrap (= line 53 の format!)。本 regex は
+    // **その固定 format に依存**、将来 `napi_safe_call` の prefix 名が変わったら
+    // 同期して update が必要 (Round 2 P2-2 narrative integrity 反映)。`[^:]+` で
+    // fn 名 segment のみを greedy 一致、最初の `:` 以前を削除する shape。
     const cleaned = msg
       .replace(/^panic in [^:]+:\s*/, "")
       .trim();

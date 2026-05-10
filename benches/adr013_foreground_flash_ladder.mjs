@@ -105,6 +105,20 @@ if (!existsSync(serverPath)) {
   process.exit(2);
 }
 
+// ─── Validate --window-title BEFORE MCP server spawn (Round 1 P2-2 + Round 2 P3-1)
+// connect 前に check することで無駄な MCP server spawn を回避。WT の HWND
+// title は active tab title (PowerShell / pwsh / etc) で変動するため明示必須化。
+if (!windowTitle) {
+  console.error(
+    "error: --window-title is required.\n" +
+      "  WT の HWND title は active tab title (PowerShell / pwsh / etc) で変動するため、\n" +
+      "  bench 実行前に WT を起動 + active tab を確認し、その partial title を渡すこと。\n" +
+      "  例: --window-title=\"PowerShell\" や --window-title=\"pwsh\" など。",
+  );
+  console.error(usage);
+  process.exit(2);
+}
+
 // ─── MCP client setup ────────────────────────────────────────────────────────
 
 const transport = new StdioClientTransport({
@@ -118,22 +132,6 @@ const client = new Client(
   { capabilities: {} },
 );
 await client.connect(transport);
-
-// ─── Validate --window-title (Opus Round 1 P2-2 反映) ──────────────────────
-// WT の HWND title は active tab の title (PowerShell / pwsh / etc) に変動する
-// ため、default "Windows Terminal" では 50 連続 WindowNotFound で全 fail し
-// R1 acceptance gate を operator が誤判定する risk がある。明示必須化。
-if (!windowTitle) {
-  console.error(
-    "error: --window-title is required.\n" +
-      "  WT の HWND title は active tab title (PowerShell / pwsh / etc) で変動するため、\n" +
-      "  bench 実行前に WT を起動 + active tab を確認し、その partial title を渡すこと。\n" +
-      "  例: --window-title=\"PowerShell\" や --window-title=\"pwsh\" など。",
-  );
-  console.error(usage);
-  await client.close();
-  process.exit(2);
-}
 
 console.log(
   `# adr013_foreground_flash_ladder — ${iters} iters against windowTitle="${windowTitle}", pressEnter=${pressEnter}`,

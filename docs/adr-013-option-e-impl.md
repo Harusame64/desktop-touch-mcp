@@ -162,7 +162,9 @@ User 提案: OLE `OleGetClipboard` / `OleSetClipboard` で `IDataObject` snapsho
 
 - **Single-line only**: clipboard text に **改行を含まない** (改行は paste warning の主 trigger)
 - **5KiB 未満** (UTF-16 で 2500 chars 程度) — `largePasteWarning` の閾値 (1KiB default、user 設定で変動可) より余裕を取る
-- 制限超過は channel fail (`reason: "input_exceeds_paste_warning_threshold"`)、caller に分割 inject or `method: 'foreground'` を suggest
+- **Implementation update (Round 1 P1-3)**: 改行と 5KiB 超の reason を分離:
+  - `reason: "input_contains_newline"` (改行 LF / CR 含、caller suggest = 改行除去 + 分割 inject)
+  - `reason: "input_exceeds_paste_warning_threshold"` (UTF-16 >= 5KiB、caller suggest = 分割 inject or `method: 'foreground'`)
 
 #### 3.3.2 Enter は別 SendInput で送る (text に含めない)
 
@@ -252,7 +254,7 @@ fn alt_unlock_then_set_foreground(target: HWND) -> bool { ... }
 ```
 [external process (desktop-touch-mcp engine)]
   // Pre-flight
-  1. Validate inputText: NO newlines + < 5KiB → 失敗時 fail("input_exceeds_paste_warning_threshold")
+  1. Validate inputText: NO newlines (fail "input_contains_newline") + < 5KiB UTF-16 (fail "input_exceeds_paste_warning_threshold")
   2. Resolve channel via resolveBackgroundInputChannel(wtHwnd) → confirm "clipboard_flash"
 
   // Save state (rigorous)
@@ -363,11 +365,11 @@ function resolveBackgroundInputChannel(
 - `#[napi] pub fn win32_foreground_flash_inject(target_hwnd, target_pid, text, options) -> napi::Result<ForegroundFlashResult>`
 - internal `fn alt_unlock_then_set_foreground(target: HWND) -> bool` (§3.1 ladder 段 2 新規)
 - `ForegroundFlashOptions { max_focus_wait_ms, foreground_restore_retries, block_keyboard_during_flash, scan_paste_warning_dialog, press_enter }`
-- `ForegroundFlashError` (napi error variant): `input_exceeds_paste_warning_threshold` / `foreground_steal_denied` / `focus_wait_timeout` / `clipboard_lock_contention` / `foreground_restore_failed` / `wt_paste_warning_intercepted` / `send_input_failed`
+- `ForegroundFlashError` (napi error variant、Round 1 P1-3 で 7 → 8 種): `input_contains_newline` / `input_exceeds_paste_warning_threshold` / `foreground_steal_denied` / `focus_wait_timeout` / `clipboard_lock_contention` / `foreground_restore_failed` / `wt_paste_warning_intercepted` / `send_input_failed`
 - 既存 `win32_force_set_foreground_window` (`input.rs:53`) を ladder 段 1 として呼び出し (Rust 内部 function call、TS 経由しない)
 
 **新 file**: `src/win32/clipboard_snapshot.rs` — Clipboard rigorous handling (§3.2)
-- `ensure_clipboard_owner_thread() -> &'static ClipboardOwnerThread` — engine 起動時 lazy init、専用 thread + message loop + 専用 window class (`DTM_ClipboardOwner`)
+- `with_hidden_owner(f) -> Result<R, ClipboardError>` — per-call lifecycle で hidden owner window を create + closure 実行 + destroy (§3.2.1 deviation note 参照、Round 1 P2-1 で plan 起草時の lazy + dedicated thread + message loop 要件から縮小)
 - `save_clipboard_supported_formats(owner) -> Result<ClipboardSnapshot, ClipboardError>` — HGLOBAL 系のみ save、非 HGLOBAL は skipped_formats に
 - `restore_clipboard_supported_formats(snapshot, owner) -> Result<RestoreOutcome, ClipboardError>` — 3 point sequence check 込み
 - `ClipboardSnapshot` (§3.2.3 構造)
@@ -451,7 +453,7 @@ R1 (foreground steal 成功率) mitigation。Phase 1 native 完了 → TS engine
 - 100 連続 inject で flaky < 1%
 - foreground 復帰失敗 fixture (Win11 lock simulation) で typed reason 観測
 - clipboard race fixture: flash 中に別 process が `SetClipboardData` → 3 point sequence で skip 観測 + hints 確認
-- input 制限超過 fixture: 6KiB / 改行ありで `input_exceeds_paste_warning_threshold` 観測
+- input 制限超過 fixture: 改行ありで `input_contains_newline` / 6KiB で `input_exceeds_paste_warning_threshold` 観測 (Round 1 P1-3 で reason 分離)
 - WT paste warning dialog scan: dialog 出る大きい input で `wt_paste_warning_intercepted` 観測 (scan default ON)
 - HGLOBAL 系 format round-trip (text の clipboard が flash 後に復元される)
 - 非 HGLOBAL format (画像 etc) が clipboard にあるとき、save snapshot で skipped_formats に記録、restore 後画像 clipboard が消える事実を観測 + hints `clipboardRestoreSkippedFormats` 確認
@@ -478,7 +480,7 @@ R1 (foreground steal 成功率) mitigation。Phase 1 native 完了 → TS engine
 
 `docs/operation-verification-matrix.md` §3.1 / §4.3:
 - 新 `foreground_flash` channel 規範追加
-- 新 typed reasons (`foreground_steal_denied` / `focus_wait_timeout` / `clipboard_lock_contention` / `foreground_restore_failed` / `wt_paste_warning_intercepted` / `input_exceeds_paste_warning_threshold` / `send_input_failed`) 追加
+- 新 typed reasons (Round 1 P1-3 で 7 → 8 種): `input_contains_newline` / `input_exceeds_paste_warning_threshold` / `foreground_steal_denied` / `focus_wait_timeout` / `clipboard_lock_contention` / `foreground_restore_failed` / `wt_paste_warning_intercepted` / `send_input_failed` 追加
 
 **実装規模**: ~120 line docs
 
@@ -502,7 +504,7 @@ R1 (foreground steal 成功率) mitigation。Phase 1 native 完了 → TS engine
 - [ ] **clipboard HGLOBAL format round-trip** (text / RTF / unicode 各 format で round-trip 成功、controlled fixture)
 - [ ] **clipboard 非 HGLOBAL format** (画像) 検出 → save skip + skipped_formats に記録、restore で消える事実 observable
 - [ ] **3 point sequence check** で race detection: flash 中の別 process `SetClipboardData` 後 `seq_before_restore != seq_after_inject_clipboard` を観測 → restore skip + `clipboardRestoreSkipped: true` hints
-- [ ] **input 制限**: 改行含む input or 5KiB 超で `input_exceeds_paste_warning_threshold`
+- [ ] **input 制限**: 改行含む input で `input_contains_newline` / 5KiB 超で `input_exceeds_paste_warning_threshold` (Round 1 P1-3 で typed reason 分離)
 - [ ] **WT paste warning dialog scan** が enabled なら ContentDialog 検出 → Esc + `wt_paste_warning_intercepted`
 - [ ] LowLevel keyboard hook lifecycle が leak-free (HookGuard Drop 検証)
 - [ ] **HWND signature**: BigInt 経由で x64 64-bit hwnd 値が truncate されないこと
@@ -526,7 +528,7 @@ R1 (foreground steal 成功率) mitigation。Phase 1 native 完了 → TS engine
 - [ ] 既存 `keyboard-bg-verification.test.ts` の WT negative test は **変更なし** (= `method: 'background'` 契約維持)
 - [ ] foreground lock simulation で `foreground_restore_failed` typed reason 観測
 - [ ] clipboard race fixture で `clipboardRestoreSkipped: true` hints 観測
-- [ ] input 6KiB / 改行ありで `input_exceeds_paste_warning_threshold` 観測
+- [ ] input 6KiB ASCII で `input_exceeds_paste_warning_threshold` 観測 / 改行を含む text で `input_contains_newline` 観測 (Round 1 P1-3 で reason 分離)
 - [ ] WT paste warning dialog fixture で `wt_paste_warning_intercepted` 観測
 - [ ] 画像 clipboard 状態で flash → 画像が消える事実 + hints `clipboardRestoreSkippedFormats` 観測
 

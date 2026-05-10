@@ -755,14 +755,19 @@ export const keyboardTypeHandler = async ({
           { context: { kind: channel.kind, windowTitle: effectiveWindowTitle } }
         );
       }
-      // Codex Round 1 P2-A 反映: clipboard_flash 経路でも replaceAll を honor。
-      // clipboard inject 前に Ctrl+A を SendInput で送る (foreground steal は
-      // injectViaForegroundFlash 内で行うため、ここでは pre-flash の WM_KEYDOWN
-      // 経路で送る)。replaceAll 失敗は warning 化。
+      // Opus Round 2 P1-3 反映: Codex Round 1 P2-A の clipboard_flash 経路
+      // replaceAll honor 案 (`postKeyComboToHwnd(channel.hwnd, "ctrl+a")`) は
+      // **WT XAML pipeline で silent drop される dead path**。WT が WM_CHAR を
+      // sink する根拠 (issue #173) は WM_KEYDOWN/UP (= postKeyComboToHwnd の
+      // 出力) にも同様に適用、PostMessage 経路の Ctrl+A は届かない。
+      // 正しくは native `win32_foreground_flash_inject` に `select_all_first`
+      // option を追加し、foreground steal 後に `SendInput(Ctrl+A)` → 30ms 待 →
+      // `SendInput(Ctrl+V)` で送るべき (native scope の改修、別 follow-up PR)。
+      // 当面 (本 PR scope): clipboard_flash 経路では replaceAll を **silent
+      // ignore せず warning で caller に明示** (`ReplaceAllNotSupportedOnClipboardFlash`)。
       const ffWarnings = [...warnings];
       if (replaceAll) {
-        const okSelectAll = postKeyComboToHwnd(channel.hwnd, "ctrl+a");
-        if (!okSelectAll) ffWarnings.push("ReplaceAllFailed");
+        ffWarnings.push("ReplaceAllNotSupportedOnClipboardFlash");
       }
       const flashResult = injectViaForegroundFlash(
         channel.hwnd,

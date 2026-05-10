@@ -131,6 +131,11 @@ describe.skipIf(!WT_AVAILABLE)("foreground_flash — WT clipboard_flash channel 
       r.hints?.foregroundStealMethod
     );
     expect(typeof r.hints?.foregroundRestored).toBe("boolean");
+    // Round 2 P2-3 反映: foregroundRestoreMethod field を contract pin
+    // (steal 側と対称、"none" は already_foreground 経路)
+    expect(["AttachThreadInput", "alt_unlock", "none"]).toContain(
+      r.hints?.foregroundRestoreMethod
+    );
     expect(typeof r.hints?.clipboardRestored).toBe("boolean");
     expect(Array.isArray(r.hints?.clipboardSkippedFormats)).toBe(true);
   }, 15_000);
