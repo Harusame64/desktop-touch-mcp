@@ -1177,10 +1177,14 @@ foreach ($el in $all) {
     } catch {}
 }
 # Also consider the root window itself, but only when no scored descendant
-# qualified — the root is typically Window-typed (score 0) and would lose
-# the score-tiebreak anyway. Scoping it to "no descendants" preserves the
-# degenerate-case fallback (e.g. Edit hosted directly as toplevel) while
-# avoiding root-vs-descendant noise where the root has no input echo.
+# qualified — the root is typically Window-typed (score 0) and would otherwise
+# fail the (c)-light score>0 filter applied above. Score-0 root is **intentionally**
+# accepted as a last-resort fallback when no scored descendant exists: this preserves
+# the degenerate-case path (e.g. Edit hosted directly as toplevel) while avoiding
+# root-vs-descendant noise where the root has no input echo. The score>0 filter
+# above does NOT apply here because we explicitly want the Window-typed root in
+# the empty-candidates case; otherwise getTextViaTextPattern would return null
+# even when the toplevel itself exposes TextPattern.
 try {
     $rootTp = $target.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
     if ($null -ne $rootTp -and $candidates.Count -eq 0) {

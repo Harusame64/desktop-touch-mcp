@@ -113,9 +113,9 @@ Phase 5 closure では北極星「silent-success / contract drift = 0」を **au
 
 ---
 
-## F4-bis (P3, **OPEN**): PR #233 ValuePattern fallback gate が Win11 New Notepad で発火しない
+## F4-bis (P3, **Resolved by PR #235**, pending v1.4.2 release closeout): PR #233 ValuePattern fallback gate が Win11 New Notepad で発火しない
 
-**Status**: **Open** (起票 2026-05-10、v1.4.1 dogfood gate Step 1 = `keyboard:type method:'background'` Win11 Notepad で再現)
+**Status**: **Resolved** (PR #235 で Hybrid (b)+(c)-light land、起票 2026-05-10 → land 2026-05-10、v1.4.1 dogfood gate Step 1 = `keyboard:type method:'background'` Win11 Notepad で再現していた gate dead path を解消)。本 §F4-bis は permanent record として保持、Status を v1.4.2 release 時に **Closed** へ昇格予定 (実機 dogfood Step 1 で `delivered` 確認後)。
 
 **Location** (source TS、`main` `d979579` 時点): `src/tools/keyboard.ts:728-856` (BG type baseline 判定 + ValuePattern fallback 分岐) ↔ `src/engine/uia-bridge.ts:1116-1215` (`getTextViaTextPattern` PowerShell descendant 走査) ↔ `src/engine/uia-bridge.ts:1247-1317` (`getTextViaValuePattern` focused element scoping)
 
