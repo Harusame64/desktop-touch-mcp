@@ -60,6 +60,15 @@ public static class ConsoleApi {
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern bool CloseHandle(IntPtr hObject);
 
+    // Round 2: proper VK + scan code encoding
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern short VkKeyScanW(char ch);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern uint MapVirtualKeyW(uint uCode, uint uMapType);
+
+    public const uint MAPVK_VK_TO_VSC = 0;
+
     // Win32 KEY_EVENT_RECORD: 16 bytes total
     //   BOOL bKeyDown            (4 bytes, 4-byte BOOL via MarshalAs(UnmanagedType.Bool))
     //   WORD wRepeatCount        (2)
@@ -164,50 +173,80 @@ if ($hConin.ToInt64() -eq -1) {
 # Step 6: build INPUT_RECORD[] for sentinel chars + Enter
 $records = New-Object 'System.Collections.Generic.List[ConsoleApi+INPUT_RECORD]'
 
-function New-CharRecord {
-    param([bool]$KeyDown, [ushort]$Char)
-    $rec = New-Object 'ConsoleApi+INPUT_RECORD'
-    $rec.EventType = [ConsoleApi]::KEY_EVENT
-    $rec.KeyEvent.KeyDown = $KeyDown
-    $rec.KeyEvent.RepeatCount = [ushort]1
-    $rec.KeyEvent.VirtualKeyCode = [ushort]0
-    $rec.KeyEvent.VirtualScanCode = [ushort]0
-    $rec.KeyEvent.UnicodeChar = $Char
-    $rec.KeyEvent.ControlKeyState = [uint32]0
-    return $rec
-}
-
-function New-VkRecord {
-    param([bool]$KeyDown, [ushort]$VK, [ushort]$Char)
+function New-FullKeyRecord {
+    # Round 2: proper VirtualKeyCode + scan code + ControlKeyState. For ASCII
+    # characters this resolves to the same VK an OS keyboard event would
+    # produce; the input subsystem (cooked-mode line reader in cmd / PSReadLine
+    # in PowerShell) typically requires VK metadata, not just UnicodeChar.
+    param(
+        [bool]$KeyDown,
+        [ushort]$VK,
+        [ushort]$ScanCode,
+        [ushort]$Char,
+        [uint32]$ControlKeyState
+    )
     $rec = New-Object 'ConsoleApi+INPUT_RECORD'
     $rec.EventType = [ConsoleApi]::KEY_EVENT
     $rec.KeyEvent.KeyDown = $KeyDown
     $rec.KeyEvent.RepeatCount = [ushort]1
     $rec.KeyEvent.VirtualKeyCode = $VK
-    $rec.KeyEvent.VirtualScanCode = [ushort]0
+    $rec.KeyEvent.VirtualScanCode = $ScanCode
     $rec.KeyEvent.UnicodeChar = $Char
-    $rec.KeyEvent.ControlKeyState = [uint32]0
+    $rec.KeyEvent.ControlKeyState = $ControlKeyState
     return $rec
 }
 
+# ControlKeyState flags (winuser.h)
+$SHIFT_PRESSED = [uint32]0x10
+$VK_SHIFT = [ushort]0x10
+$VK_RETURN = [ushort]0x0D
+
+# Pre-compute SHIFT scan code (used for shifted chars)
+$shiftScan = [ushort][ConsoleApi]::MapVirtualKeyW([uint32]$VK_SHIFT, [ConsoleApi]::MAPVK_VK_TO_VSC)
+$enterScan = [ushort][ConsoleApi]::MapVirtualKeyW([uint32]$VK_RETURN, [ConsoleApi]::MAPVK_VK_TO_VSC)
+
 foreach ($ch in $Sentinel.ToCharArray()) {
     $cInt = [ushort][int]$ch
-    if ($KeyEncoding -eq 'keydown_keyup') {
-        $records.Add((New-CharRecord -KeyDown $true -Char $cInt))
-        $records.Add((New-CharRecord -KeyDown $false -Char $cInt))
+    $vkScan = [int][ConsoleApi]::VkKeyScanW([char]$ch)
+    if ($vkScan -eq -1) {
+        # Char not on default keyboard layout — fall back to UnicodeChar-only
+        $vk = [ushort]0
+        $scanCode = [ushort]0
+        $needShift = $false
     } else {
-        $records.Add((New-CharRecord -KeyDown $true -Char $cInt))
+        $vk = [ushort]($vkScan -band 0xFF)
+        $shiftState = ($vkScan -shr 8) -band 0xFF
+        $needShift = ($shiftState -band 0x01) -ne 0
+        $scanCode = [ushort][ConsoleApi]::MapVirtualKeyW([uint32]$vk, [ConsoleApi]::MAPVK_VK_TO_VSC)
+    }
+
+    $cks = if ($needShift) { $SHIFT_PRESSED } else { [uint32]0 }
+
+    if ($needShift) {
+        # SHIFT key down before the char
+        $records.Add((New-FullKeyRecord -KeyDown $true -VK $VK_SHIFT -ScanCode $shiftScan -Char ([ushort]0) -ControlKeyState $SHIFT_PRESSED))
+    }
+
+    if ($KeyEncoding -eq 'keydown_keyup') {
+        $records.Add((New-FullKeyRecord -KeyDown $true -VK $vk -ScanCode $scanCode -Char $cInt -ControlKeyState $cks))
+        $records.Add((New-FullKeyRecord -KeyDown $false -VK $vk -ScanCode $scanCode -Char $cInt -ControlKeyState $cks))
+    } else {
+        $records.Add((New-FullKeyRecord -KeyDown $true -VK $vk -ScanCode $scanCode -Char $cInt -ControlKeyState $cks))
+    }
+
+    if ($needShift) {
+        # SHIFT key up after the char
+        $records.Add((New-FullKeyRecord -KeyDown $false -VK $VK_SHIFT -ScanCode $shiftScan -Char ([ushort]0) -ControlKeyState ([uint32]0)))
     }
 }
 
-# Append Enter (VK_RETURN = 0x0D) so the shell processes the sentinel as a command
-$VK_RETURN = [ushort]0x0D
+# Append Enter (VK_RETURN = 0x0D)
 $CR = [ushort]0x0D
 if ($KeyEncoding -eq 'keydown_keyup') {
-    $records.Add((New-VkRecord -KeyDown $true -VK $VK_RETURN -Char $CR))
-    $records.Add((New-VkRecord -KeyDown $false -VK $VK_RETURN -Char $CR))
+    $records.Add((New-FullKeyRecord -KeyDown $true -VK $VK_RETURN -ScanCode $enterScan -Char $CR -ControlKeyState ([uint32]0)))
+    $records.Add((New-FullKeyRecord -KeyDown $false -VK $VK_RETURN -ScanCode $enterScan -Char $CR -ControlKeyState ([uint32]0)))
 } else {
-    $records.Add((New-VkRecord -KeyDown $true -VK $VK_RETURN -Char $CR))
+    $records.Add((New-FullKeyRecord -KeyDown $true -VK $VK_RETURN -ScanCode $enterScan -Char $CR -ControlKeyState ([uint32]0)))
 }
 
 $arr = $records.ToArray()
