@@ -2,7 +2,8 @@
 
 - Status: **Draft (Open question — 着手時期 v1.5.0+ stretch)**
 - Date: 2026-05-10
-- Authors: Claude (Sonnet draft + Opus review、project `desktop-touch-mcp`)
+- **Re-review trigger date**: 2026-11-10 (= 2026-05-10 + 6mo、本日付までに着手判断 / Reject 判断のいずれもなければ ADR を再 review し、Roadmap を更新するか Status: Rejected で close する)
+- Authors: Claude (Sonnet draft、pending Opus review、project `desktop-touch-mcp`)
 - Related:
   - issue #173 (parent、Audit: terminal/keyboard BG silent fail on WT)
   - issue #185 (本 ADR の起票対象、Phase 4 stretch tracking)
@@ -95,10 +96,10 @@ Windows 10 1809+ で導入された Pseudo Console API。WT は内部で ConPTY 
 - 既存 child process の ConPTY ハンドル再 attach は **公式 API 非対応** — ただし WT 自身が起動した child の ConPTY ハンドルへの書込みは ConPTY を **proxy** する形で可能性あり (POC で要検証、Microsoft TerminalApi の `ITerminalConnection::WriteInput` 相当)
 - TerminalApi.WriteInput が COM 経由で公開されているかは未確認、要 winrt metadata 調査
 
-**Pros**:
-- Microsoft 公式 API、stable contract、Windows version migration で壊れにくい
-- ConPTY 内部経路で送るので XAML 入力 pipeline を bypass、TerminalControl が想定する経路で hosted process に届く
-- 並列 BG 性能達成 (複数 tab に同時投入可能、それぞれ ConPTY proxy 経由)
+**Pros (POC 成功時に成立する利点、OQ #1 が解決した場合のみ)**:
+- Microsoft 公式 API、stable contract、Windows version migration で壊れにくい (`CreatePseudoConsole` 自体は Windows 10 1809+ stable、ただし「**既存 WT tab の ConPTY** への外部 write proxy 経路」が公式 API として提供されるかは OQ #1 の調査結果次第)
+- ConPTY 内部経路で送るので XAML 入力 pipeline を bypass、TerminalControl が想定する経路で hosted process に届く (proxy 経路が確立した場合)
+- 並列 BG 性能達成 (複数 tab に同時投入可能、それぞれ ConPTY proxy 経由) — 本 Pros 全項は OQ #1 が **公式 API 存在を確認** しないと成立しない
 
 **Cons**:
 - `CreatePseudoConsole` は **新 ConPTY 作成** 用 API、既存 WT tab の ConPTY ハンドルへの **write 専用 API は公式に存在しない**
@@ -196,7 +197,10 @@ DLL を WT process に inject して TerminalControl 内部経路を直接呼出
 | 並列 BG 性能 | 高 | 中 | 高 | 高 |
 | 採用順位 | **第 1 候補** | 第 2 候補 (POC 軽い) | 別 case (scope 違) | **Rejected** |
 
-**Tentative recommendation**: **POC を Option B (UIA TextPattern SetValue/Insert) で 1-3 日で先行**、TermControl の UIA 対応有無を確定。失敗なら Option A (ConPTY proxy) に進む。Option C は本 ADR scope 外 (別 issue で議論)、Option D は Rejected。
+**Tentative ranking (no decision in this ADR; subject to §2 Phase 2 Opus 諮問 + competitor research)**:
+- **Option B (UIA TextPattern SetValue/Insert)** を POC 軽い候補として優先評価 — POC 検証 1-3 日 (動作可否のみ)、本実装 3-5 日見込 (`getTextViaTextPattern` 既存 ~100 行 + 新 `setTextViaTextPattern` の同程度 + native binding mirror + 失敗 path test)
+- TermControl の UIA SetValue が動かない場合は **Option A (ConPTY proxy)** に進む — POC + 本実装で 1-3 週間、OQ #1 の公式 API 存在確認が前提
+- Option C は本 ADR scope 外 (別 issue で議論)、Option D は Rejected
 
 ---
 
@@ -211,10 +215,12 @@ DLL を WT process に inject して TerminalControl 内部経路を直接呼出
 
 ### 5.2 本実装 acceptance
 
-- [ ] **`DTM_E2E_WT=1` E2E 安定 pass**: WT 既定環境で 100 連続 BG injection 全 success (flaky < 1%)
-- [ ] **`canInjectViaPostMessage` が WT を再 supported に昇格**: `wt_xaml_pipeline` reason 削除、TERMINAL_WINDOW_CLASSES allowlist 復帰 (要件: 復帰後の silent-success 検出が impossible である構造的証明)
-- [ ] **CHANGELOG 記載**: `method:'background'` が WT で再使用可能、breaking change なし (caller 視点で transparent)
-- [ ] **operation-verification-matrix.md §3.1 update**: WT BG path 規範を「ConPTY (or UIA) 経由 verifyDelivery」に拡張
+- [ ] **`DTM_E2E_WT=1` E2E 安定 pass**: WT 既定環境で 100 連続 BG injection 全 success (flaky < 1%、`tests/e2e/terminal-hidden-input.test.ts:40` の WT_E2E_ENABLED gate と同 flag 共有)
+- [ ] **`canInjectViaPostMessage` が WT を再 supported に昇格**: `wt_xaml_pipeline` reason 削除、TERMINAL_WINDOW_CLASSES allowlist 復帰
+  - **SSOT 同期 (single PR で必須、operation-verification-matrix.md:229 の規範に準拠)**: (a) `docs/operation-verification-matrix.md` §4.3 reason enum 表から `wt_xaml_pipeline` 行削除 / (b) `src/engine/bg-input.ts:75` の `InjectCheckResult.reason` union から `"wt_xaml_pipeline"` 削除 / (c) (a)(b) と allowlist 復帰を **同 PR commit** に同梱、reason enum drift を構造的に impossible 化 (CLAUDE.md §3.1 fact-sync sweep + matrix doc の "reason enum 追加は本書 §4.3 を直接更新する PR を切る" 規範の削除側 mirror)
+  - **silent-success 構造的証明**: 復帰の前提として §3.1 既存規範 (BG path で post-injection UIA TextPattern read-back が injected substring を T ms 以内に観測できなければ `BackgroundInputNotDelivered` を返す) を **採用 path (A or B) でも担保**。Option A は ConPTY proxy 経由 write 後に既存 `getTextViaTextPattern` で post-read、Option B は SetValue 後に同 read-back で確認。`ok:true` で post-read fail の path は existing `verifiedDelivery=false` 経路で fail surface (構造的に silent-success 不可能)
+- [ ] **CHANGELOG 記載**: `method:'background'` が WT で再使用可能、breaking change なし (caller 視点で transparent、issue #173 が指摘した v1.1.0 → v1.3.2 → v1.5.0+ の history narrative も併記)
+- [ ] **operation-verification-matrix.md §3.1 / §4.3 update**: WT BG path 規範を「ConPTY (or UIA) 経由 verifyDelivery」に拡張、§4.3 reason enum 削除 (上記 SSOT 同期項目の (a) と統合)
 
 ### 5.3 Out-of-scope
 
@@ -240,7 +246,8 @@ DLL を WT process に inject して TerminalControl 内部経路を直接呼出
 - **Anti-virus 誤判定 (Option A)**: ConPTY proxy 経由の write が「terminal injection」と誤判定される可能性
 - **User permission**: WT process への書込み権限が user/admin で異なる、UIPI 同型問題が再発する risk
 - **POC 失敗時の sunk cost**: Option B が 1-3 日試して動かない場合、A に切り替える際に共通 infrastructure (UIA bridge 拡張) が無駄になる risk
-- **release timing**: v1.5.0+ stretch とすると、間に他 feature が入って ADR が stale 化する risk (本 ADR は **半年以上着手しない場合は再 review** マーカー必要)
+- **release timing**: v1.5.0+ stretch とすると、間に他 feature が入って ADR が stale 化する risk → **header の「Re-review trigger date: 2026-11-10」が binding marker、本日付に達した時点で着手判断 / Reject のいずれかに decision flip 必須**
+- **Microsoft.Terminal licensing**: `microsoft/terminal` は **MIT-licensed**、Option A の ConPTY proxy 経路で IDL header / metadata を vendoring 必要になっても MIT 互換でクリア (本 repo は MIT licensed、§9 References の Microsoft repo link 参照)
 
 ---
 
@@ -249,7 +256,7 @@ DLL を WT process に inject して TerminalControl 内部経路を直接呼出
 1. **WT `ITerminalConnection::WriteInput` 相当の公式 API は存在するか?** TerminalApi metadata 調査必要 (POC 前段で 1 日以内)
 2. **Option B の TextPattern.SetValue/Insert は TermControl で実装済か?** PowerShell-backed UIA 試行で実機検証 (POC 1 日目に判明)
 3. **elevated WT への injection は scope 内 / 外?** UIPI restriction が same-process 内では緩和、別 ADR が良いか本 ADR で扱うか
-4. **複数 WT window (PR #237 で見たように) への BG injection は対応するか?** 単一 WT 内複数 tab + 複数 window の組合せ
+4. **複数 WT window への BG injection は対応するか?** 単一 WT process が複数 top-level window + 各 window 内複数 tab を持つ構造 (本 session 2026-05-10 の dogfood で screenshot 観測)、targeting policy (windowTitle 優先 / hwnd 必須化 / process+tab 階層 ID) を別途設計
 5. **WT 以外の TerminalControl ベース app (将来の preview build, Codespaces local 等) は同経路で対応可能?** Microsoft.Terminal.Core を使う app は理論上同経路
 6. **POC 失敗時の Option C への pivot は妥当か?** PowerShell Remoting は scope 違いだが「WT 内 process 制御」というメタ目的は満たす、ADR 範囲拡張判断
 
@@ -263,14 +270,23 @@ DLL を WT process に inject して TerminalControl 内部経路を直接呼出
 | 2. 候補絞り込み | 1-2 日 | Opus 諮問 + competitor research note | OQ #1, #2 が初期回答済 |
 | 3. POC 実装 (Option B 先行) | 1-3 日 | draft PR、UIA SetValue 試行コード + 実機動作 log | OQ #2 が「動く」or「動かない」確定 |
 | 4. POC 実装 (Option A、B 失敗時) | 1-2 週間 | draft PR、ConPTY proxy 経路 prototype | §5.1 POC acceptance 全 ✓ |
-| 5. 本実装 + E2E | 1 週間 | feature PR、`DTM_E2E_WT=1` 安定 pass | §5.2 本実装 acceptance 全 ✓ |
+| 5. 本実装 + E2E | 1-2 週間 | feature PR、`DTM_E2E_WT=1` 安定 pass | §5.2 本実装 acceptance 全 ✓ (PR #235 keyboard E2E 経験で flake 安定化 1-2 日見込込) |
 | 6. ADR Status 昇格 | 1 PR | `Status: Draft` → `Status: Accepted` + `Decision:` 節更新 | 本 PR closure |
 
 合計: 採用案次第で **2-4 週間** (Option B 動けば短縮、A まで進むと最大)。
 
 ---
 
-## 9. References
+## 9. Decision History
+
+| Date | Status | Author | Rationale |
+|---|---|---|---|
+| 2026-05-10 | Draft (v1) | Claude (Sonnet draft) | issue #185 Phase 4 stretch tracking、4 option (A/B/C/D) 起草 |
+| 2026-05-10 | Draft (v1.1、Round 1 review apply) | Claude (Sonnet) + Opus (Round 1 review) | P1×2 (PR #237 mis-citation / wt_xaml_pipeline SSOT cross-ref) + P2×5 (Option A Pros hedging / Option B 工数 / 再 review 日付 / §4 directive tone / silent-success 構造的証明) + P3×3 (Authors 表記 / Phase 5 工数 / Decision History / licensing) を反映、本表自体が P3-3 反映 |
+| (future) | Draft → Accepted/Rejected | (TBD) | Phase 2 諮問結果 + POC 結果に応じて昇格 / Reject |
+| (future) | Re-review trigger | 2026-11-10 | header の binding marker、本日に達した時点で必須 |
+
+## 10. References
 
 - issue #173 (parent audit、WT silent fail discovery)
 - issue #185 (本 ADR の起票対象、Phase 4 stretch tracking)
