@@ -2,13 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **F4-bis ValuePattern fallback gate hybrid (b)+(c)-light land (PR #235).** §F4-bis Resolved 化。`src/tools/keyboard.ts:741` で `valueBaseline` 常時保持 + `if (verifiable)` 内 2nd-defense VP delta layer 追加 (TP slicing が `unverifiable` 確定時に valueBaseline + post-VP delta で `delivered` 判定)。`src/engine/uia-bridge.ts` `getTextViaTextPattern` で score-0 候補 strict drop (Window/MenuItem/Title/Button 等を除外、Custom score 2 は WT/conhost 温存で regression なし)。`tests/unit/phase7-f4-value-pattern-fallback.test.ts` に dual-stage flow 9 case 追加 (合計 19/全 pass)。v1.4.2 release で Win11 New Notepad の `keyboard:type method:'background'` が `delivered` を返却するようになる予定 (実機 dogfood Step 1 で確認後 Closed 昇格)。
+
 ### docs
 
-- **Phase 6 dogfood F4 re-open + §F4-bis 起票 (PR #234).** v1.4.1 dogfood Step 1 (Win11 New Notepad、`keyboard:type method:'background'`) で `hints.verifyDelivery.status === "unverifiable"` が再現、PR #233 の ValuePattern fallback path が gate 条件不足で実機 dead path 化していることが判明。`docs/llm-audit/phase6-dogfood-findings.md` の F4 を **Re-opened** に更新、§F4-bis に実機証拠 + 7 step root cause + 4 候補 (a/b/c/d) + Opus 諮問結果 (推奨 Hybrid (b) + (c)-light) + 9 verification gate + 8 unit test pin + 4 carry-over OQ を永続化。**v1.4.1 リリース時の F4 Fixed claim は実機未達成、本 hotfix が land するまで Win11 Notepad の BG type は `unverifiable` を返す**。Phase 5 北極星「silent-success / contract drift = 0」の F4 entry は v1.4.2 hotfix まで部分達成扱い。
+- **Phase 6 dogfood F4 re-open + §F4-bis 起票 (PR #234).** v1.4.1 dogfood Step 1 (Win11 New Notepad、`keyboard:type method:'background'`) で `hints.verifyDelivery.status === "unverifiable"` が再現、PR #233 の ValuePattern fallback path が gate 条件不足で実機 dead path 化していることが判明。`docs/llm-audit/phase6-dogfood-findings.md` の F4 を **Re-opened** に更新、§F4-bis に実機証拠 + 7 step root cause + 4 候補 (a/b/c/d) + Opus 諮問結果 (推奨 Hybrid (b) + (c)-light) + 9 verification gate + 8 unit test pin + 4 carry-over OQ を永続化。**v1.4.1 リリース時の F4 Fixed claim は実機未達成、本 hotfix が land するまで Win11 Notepad の BG type は `unverifiable` を返していた → 本 [Unreleased] PR #235 で `main` 上は解消済**。Phase 5 北極星「silent-success / contract drift = 0」の F4 entry は v1.4.2 release で完全達成扱い。
 
 ## [1.4.1] - 2026-05-09 — Phase 7 carry-over (F3 SpawnFailed + F4 ValuePattern fallback + ADR-010 §5.4 catalog reconcile + F5 scenario doc)
 
-> **2026-05-10 追補**: 本 release で `delivered` 返却を claim した F4 ValuePattern fallback (PR #233) は v1.4.1 dogfood Step 1 で gate 条件不足が露呈、Win11 New Notepad の実機経路では発火せず `unverifiable` を維持することが判明。詳細・修正方針は `docs/llm-audit/phase6-dogfood-findings.md` §F4-bis (PR #234)、hotfix は v1.4.2 candidate。本 release の F3 / F5 / catalog reconcile は影響なし。
+> **2026-05-10 追補**: 本 release で `delivered` 返却を claim した F4 ValuePattern fallback (PR #233) は v1.4.1 dogfood Step 1 で gate 条件不足が露呈、Win11 New Notepad の実機経路では発火せず `unverifiable` を維持することが判明。詳細・修正方針は `docs/llm-audit/phase6-dogfood-findings.md` §F4-bis (PR #234)、hotfix は **v1.4.2 candidate (PR #235 main land 済、release 待ち)**。本 release の F3 / F5 / catalog reconcile は影響なし。
 
 epic #211 Phase 6 dogfood で発見した carry-over findings 4 件を patch release で全消化。Phase 6 PR-A/PR-B が typed code dictionary を整理した直後の dogfood 実機検証で見つかった silent-success / contract drift / docs SoT divergence を解消し、production code の typed code 体系を 38 codes (live) + 12 ADR-added = **50 codes** で完全 sync。
 
