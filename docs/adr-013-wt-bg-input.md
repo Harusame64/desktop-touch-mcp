@@ -323,7 +323,7 @@ v1.4 (2026-05-10): Phase 0 結果 + Round 1 NO-GO + Round 2 spike + 新 Option E
 | 観点 | A. ConPTY | B. UIA writable | C. PSRemoting | D. laffo16 PR | **E. foreground_flash** | F. cooperative bridge |
 |---|---|---|---|---|---|---|
 | 公式 API | Day 0 gate 次第 | ✓ (UIA itself) | ✓ | ✗ (Microsoft Reject) | ✓ (Win32 + UIA、新 binding はなし) | ✓ (named pipe 完全公式) |
-| 実装規模 | 大 (1-3 週間) | 中 (4-8 日) | 小 | (採用不可) | 中 (~830 line + test、本 PR 完了) | 大 (4-8 週間、別 PR) |
+| 実装規模 | 大 (1-3 週間) | 中 (4-8 日) | 小 | (採用不可) | 中 (~830 line + test、本 PR 完了) | 中-大 (4-7 週間、最大 8 週間、ADR-014 別 PR) |
 | WT 内表示更新 | ✓ | ✓ | ✗ | (採用不可) | ✓ (paste 反映) | ✓ |
 | foreground 奪取 | ✗ (本物 BG) | ✗ (本物 BG) | ✗ | (採用不可) | **✓ ~50-80ms (妥協 BG)** | ✗ (本物 BG) |
 | user opt-in 要 | ✗ | ✗ | ✓ | (採用不可) | **✓ method:'foreground_flash' 明示** | ✓ (helper 起動) |
