@@ -98,6 +98,10 @@ It is trying to document an active line of engineering and research.
 
 As the project evolves, we document major architectural shifts and milestones here.
 
+### v1.4: From Observation to Memory and Trustworthy Delivery
+The v1.3 and v1.4 series add two things on top of v1.2's per-response context: four cognitive memory layers the agent can re-query (`working`, `episodic`, `semantic`, `procedural`), and delivery verification that closes the silent-failure paths in browser, terminal, and keyboard sends. Plus typed error codes for refusals and a new opt-in `foreground_flash` channel for Windows Terminal.
+- [Read the v1.4 Milestone Article](./articles/v1.4-milestone.html)
+
 ### v1.2: Putting Meaning Into the Response
 The same 28 tools, but every response can now carry its own sense of time (`as_of`), engine confidence, and causal context (`your_last_action`, `events`) — opt-in via the new `include` argument. Existing callers stay byte-for-byte compatible; agents that opt in stop guessing and start observing.
 - [Read the v1.2 Milestone Article](./articles/v1.2-milestone.html)

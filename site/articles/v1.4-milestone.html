@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>v1.4 Milestone: From Observation to Memory and Trustworthy Delivery</title>
+    <meta name="description" content="The v1.3 and v1.4 series add four cognitive memory layers and close the silent-failure gaps in delivery, so agents can both re-query their past calls and trust the verdict on whether each one worked." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@500;700;800&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="../assets/styles.css" />
+    <script defer src="../assets/site.js"></script>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({ startOnLoad: true, theme: "base", securityLevel: "loose", themeVariables: { primaryColor: "#e8f1ff", primaryTextColor: "#1d2433", primaryBorderColor: "#3141b7", lineColor: "#58657d", secondaryColor: "#f8dfd4", tertiaryColor: "#d7f2ed", fontFamily: "Manrope" } });
+    </script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="site-shell">
+        <a class="brand" href="../index.html">
+          <span class="brand-kicker">Milestone</span>
+          <span class="brand-title">v1.4: From Observation to Memory and Trustworthy Delivery</span>
+        </a>
+        <nav class="nav-links" aria-label="Main">
+          <a href="../index.html">Home</a>
+          <a href="./reactive-perception-graph.html">RPG</a>
+          <a href="./beyond-coordinate-roulette.html">B-C-R</a>
+          <a href="./planned-evaluation.html">Evaluation</a>
+          <a href="./client-setup.html">Setup</a>
+          <a href="./v1.4-milestone.html">Milestones</a>
+          <a href="https://github.com/Harusame64/desktop-touch-mcp">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="page">
+      <div class="site-shell">
+        <section class="hero-card">
+          <div class="article-hero">
+            <a class="breadcrumb" href="../index.html">← Back to project top</a>
+            <span class="eyebrow">Project Evolution</span>
+            <h1>The v1.4 Milestone</h1>
+            <p class="lead">v1.0 narrowed the surface. v1.2 deepened each response. The v1.3 and v1.4 series go two more steps: they give the agent a memory of its past calls, and they close the gaps where a call could appear to succeed while doing nothing.</p>
+          </div>
+          <div class="hero-visual" style="padding-top: 0;">
+            <div class="mermaid-wrap" style="width: 100%;">
+              <pre class="mermaid">graph LR
+    subgraph v100["v1.0: Surface narrowed"]
+        A[28 unified tools]
+    end
+
+    subgraph v120["v1.2: Response deepened"]
+        B[as_of, confidence]
+        C[caused_by, based_on]
+    end
+
+    subgraph v130["v1.3: Memory added"]
+        D[working / episodic]
+        E[semantic / procedural]
+        F[per-call security tier]
+    end
+
+    subgraph v140["v1.4: Delivery verified"]
+        G[Typed error codes]
+        H[Partial-failure warnings]
+        I[Delivery verification]
+    end
+
+    v100 --&gt; v120 --&gt; v130 --&gt; v140
+
+    classDef old fill:#fde2e2,stroke:#c0392b,color:#5c1f1f;
+    classDef stable fill:#e8f1ff,stroke:#3b6db3,color:#183257;
+    classDef fresh fill:#d7f2ed,stroke:#1f8a70,color:#0e3b30;
+    class A old;
+    class B,C stable;
+    class D,E,F,G,H,I fresh;</pre>
+            </div>
+          </div>
+        </section>
+
+        <div class="article-layout">
+          <div class="article-main">
+            <section class="article-card">
+              <span class="label warm">The shift</span>
+              <h2>From a single observed call to a re-queryable history of calls.</h2>
+              <p>v1.2 answered the question "what is true now, in reference to my last action?" in a single round-trip. It still left two questions open: what about the call <em>before</em> that, and did the call I just made actually do anything? The v1.3 and v1.4 series answer those two directly — one by adding a memory the agent can re-query, the other by closing the silent-failure paths in delivery.</p>
+            </section>
+
+            <section class="article-card">
+              <span class="label">Key Evolution: Cognitive memory (v1.3)</span>
+              <h2>Four queryable memory layers, all opt-in.</h2>
+              <p>v1.3 turns the implicit "the agent has just made a tool call" into four explicit layers, each retrievable via the existing <code>include</code> argument:</p>
+              <pre><code>desktop_state({ include: ["envelope", "causal", "working:5"] })</code></pre>
+              <div class="two-up">
+                <div class="mini-card"><h3><code>working:N</code></h3><p>The most recent N tool calls in compact form (default 10, max 50), including in-flight calls. The "what did I just do?" layer.</p></div>
+                <div class="mini-card"><h3><code>episodic:N</code></h3><p>Completed calls in rich form — lease summary, event ids, elapsed time (default 5, max 100). The "show me how the similar successful call was timed" layer.</p></div>
+                <div class="mini-card"><h3><code>semantic:K</code></h3><p>Successful interaction patterns mined per window title (default 3, max 10). Conservative by design — only fully successful sequences become patterns.</p></div>
+                <div class="mini-card"><h3><code>procedural:K</code></h3><p>Repeated <code>run_macro</code> outcomes that have succeeded ≥3 times, never failed, and contain no destructive tools. Auto-suggesting destructive workflows is intentionally out of scope.</p></div>
+              </div>
+              <p>A per-call security tier (<code>memory_strict</code> / <code>memory_balanced</code> / <code>memory_open</code>) adds one more axis. The rule is one-directional: the LLM can ask for <em>more</em> security than the operator's environment ceiling, but never less.</p>
+            </section>
+
+            <section class="article-card">
+              <span class="label">Key Evolution: Delivery verification (v1.4)</span>
+              <h2>"Did my call actually do anything?" — answered in the response.</h2>
+              <p>v1.4 closes the silent-failure gaps where a call could return <code>ok:true</code> without observable effect:</p>
+              <ul>
+                <li><strong><code>browser_click</code></strong> installs a <code>MutationObserver</code> before the click and inspects DOM mutations, URL changes, and <code>document.activeElement</code> shifts over a 500 ms window. SPA buttons with no listener attached used to silently absorb the click; they now report <code>unverifiable</code> with a typed reason.</li>
+                <li><strong><code>browser_fill</code></strong> reads the input's <code>value</code> back after dispatch. Mismatches surface as <code>BrowserFillNotDelivered</code>, with controlled-input transforms distinguished from outright rejection.</li>
+                <li><strong><code>terminal({action:'send', method:'background'})</code></strong> auto-detects hidden-input prompts (such as <code>password:</code>, <code>sudo</code>, <code>Read-Host -AsSecureString</code>) and reports <code>unverifiable</code> instead of a false <code>BackgroundInputNotDelivered</code>.</li>
+                <li><strong><code>keyboard({action:'type', method:'background'})</code></strong> to Windows 11 New Notepad now reports <code>delivered</code> via a <code>ValuePattern</code> fallback when <code>TextPattern</code> is unavailable.</li>
+              </ul>
+            </section>
+
+            <section class="article-card">
+              <span class="label">Key Evolution: Typed error codes</span>
+              <h2>Refusals carry their own enum.</h2>
+              <p>Auto-guard refusals (ambiguous target, target not found, blocked by modal, browser not ready, identity changed, …) used to surface as a generic <code>ToolError</code>. Callers had to parse the message string to decide what to do next. v1.4 introduces <code>code: "AutoGuardBlocked"</code> with a status enum and matching recovery hints, so agents can branch on the typed code directly.</p>
+              <p>Spawn-time refusals from <code>workspace_launch</code> and <code>browser_open</code> get the same treatment: <code>code: "SpawnFailed"</code>, with hints covering the common <code>ENOENT</code> / <code>EACCES</code> / <code>EPERM</code> cases.</p>
+              <p><code>run_macro</code> with <code>stop_on_error: false</code> now reports nested step failures via a top-level <code>warnings[]</code> array — no more JSON-parsing each step to find them.</p>
+            </section>
+
+            <section class="article-card">
+              <span class="label">Key Evolution: A new channel for Windows Terminal</span>
+              <h2><code>method: 'foreground_flash'</code> — opt-in, additive, explicit.</h2>
+              <p><code>method: 'background'</code> had been refused on Windows Terminal since v1.3.2 because the WinUI/XAML pipeline silently drops <code>WM_CHAR</code>. v1.4.2 introduces an opt-in alternative: <code>method: 'foreground_flash'</code> briefly steals foreground, pastes the text via the clipboard, and restores the previous foreground in roughly 50–200 ms.</p>
+              <p>The clipboard is saved and restored across the operation. The response carries explicit hints about the typing-leak risk during the flash window. The default <code>method: 'background'</code> continues to refuse Windows Terminal targets — the silent-fail guarantee from v1.3.2 is unchanged.</p>
+            </section>
+
+            <section class="article-card">
+              <span class="label warm">Compatibility</span>
+              <h2>Existing callers stay untouched.</h2>
+              <p>If you do not pass any of the new <code>include</code> keywords, nothing changes. Memory persistence and redaction default off. Delivery verification surfaces as opt-in <code>hints.verifyDelivery</code> on existing responses, and the new typed codes preserve the previous error-message prefix so legacy string matching still works. The new capabilities are paid for only by callers who ask for them.</p>
+              <div class="hero-actions">
+                <a class="button primary" href="https://github.com/Harusame64/desktop-touch-mcp/blob/main/CHANGELOG.md">View Full Changelog</a>
+                <a class="button secondary" href="./v1.2-milestone.html">Read the v1.2 Milestone</a>
+              </div>
+            </section>
+          </div>
+
+          <aside class="article-aside">
+            <div class="aside-card">
+              <h3>Why these two together</h3>
+              <p>v1.3 gives the agent a memory of its own past calls. v1.4 gives the agent confidence that those past calls actually did what they reported. Each is independently useful; together they close the same loop from two ends. The agent can both look back at what it did <em>and</em> trust the verdict on whether it worked.</p>
+              <h3>Patch series</h3>
+              <p>The work landed across v1.4.0, v1.4.1, and v1.4.2 — plus v1.3.1 and v1.3.2 for earlier patches. The full sequence is in the changelog.</p>
+              <h3>Related pages</h3>
+              <ul>
+                <li><a href="../index.html">Project top</a></li>
+                <li><a href="./v1.2-milestone.html">v1.2 milestone</a></li>
+                <li><a href="./v1.0-milestone.html">v1.0 milestone</a></li>
+                <li><a href="./reactive-perception-graph.html">RPG explainer</a></li>
+                <li><a href="./beyond-coordinate-roulette.html">Beyond Coordinate Roulette</a></li>
+              </ul>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <div class="site-shell">
+        <span>v1.4 Milestone Article</span>
+        <span>&copy; <span data-year></span> experimental interface work</span>
+      </div>
+    </footer>
+  </body>
+</html>

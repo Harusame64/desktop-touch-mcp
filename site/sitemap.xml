@@ -20,4 +20,16 @@
     <loc>https://harusame64.github.io/desktop-touch-mcp/articles/reactive-perception-graph.html</loc>
     <priority>0.8</priority>
   </url>
+  <url>
+    <loc>https://harusame64.github.io/desktop-touch-mcp/articles/v1.0-milestone.html</loc>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://harusame64.github.io/desktop-touch-mcp/articles/v1.2-milestone.html</loc>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://harusame64.github.io/desktop-touch-mcp/articles/v1.4-milestone.html</loc>
+    <priority>0.8</priority>
+  </url>
 </urlset>
