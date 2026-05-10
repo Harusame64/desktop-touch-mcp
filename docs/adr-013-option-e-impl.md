@@ -559,7 +559,7 @@ R1 (foreground steal 成功率) mitigation。Phase 1 native 完了 → TS engine
 | 2 | Phase 2.5 production-like 実機検証 | **Resolved**: **mandatory gate として挿入** (R1 mitigation、§5.3 Phase 2) |
 | 3 | Keyboard block default | **Resolved**: default OFF + **dogfood / GitHub issue report / hints 集計** で flip 判断 (telemetry → dogfood に表現修正) |
 | 4 | Paste warning dialog scan default | **Resolved**: default ON、ただし **本命は「単一行 + 5KiB 未満 + Enter 別送信」で warning 発生させない**、scan は保険 (§3.3.1-§3.3.3) |
-| 5 | Hidden owner HWND lifecycle | **Resolved**: engine 起動時 lazy + shutdown dispose、**`STATIC` ではなく専用 window class + WndProc** + clipboard 操作 thread の **message loop** 必要 (§3.2.1) |
+| 5 | Hidden owner HWND lifecycle | **Resolved (PR #240 Round 1 P2-1 で deviation 反映)**: 専用 window class (`DTM_ClipboardOwner`) + `DefWindowProcW` WndProc。当初 plan の "engine 起動時 lazy + dedicated thread + message loop pumping" 要件は **per-call create + destroy (calling thread)** に縮小、~80ms の短い session で OS 内部 message を受取り不要 + thread lifecycle 管理 cost 回避という trade-off で MVP 採用。詳細は §3.2.1 deviation note + §5.1 native file 構造 + `docs/adr-013-followups.md` §2.5 (将来 dogfood で performance 顕在化したら dedicated thread refactor 候補) |
 | 6 | Channel resolver migration | **Resolved**: **一気に移行** (`canInjectViaPostMessage` はそのまま残す、resolver 導入 PR 内で caller 全揃え、§4.3) |
 
 ### 8.1 残 OQ (本 plan v3 で新規)
