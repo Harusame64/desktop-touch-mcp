@@ -946,6 +946,75 @@ export function evaluateRunReadIntegrity(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Issue #236: file-lock collision detector for action='run' output
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Common pitfall the helper guards against: shell `>` redirect collides with
+// the script's own `createWriteStream` on the same path. Concrete trigger
+// observed 2026-05-10: `node scripts/test-capture.mjs --force > .vitest-out.txt
+// 2>&1` — `>` had already opened `.vitest-out.txt` for write, then the
+// script internally `createWriteStream(.vitest-out.txt)` and Node threw
+// `EBUSY: resource busy or locked, open '...\\.vitest-out.txt'`. Without
+// surfacing this as a warning, the run wraps to `ok:true,
+// completion:{reason:"pattern_matched"}` (the marker echo stays intact) and
+// the calling agent treats it as success when the actual command died at
+// the file-system layer — a textbook silent-success contract drift.
+//
+// The helper lives next to evaluateRunReadIntegrity above so the run handler
+// can call it after the final read populates `output`. Returns null on no
+// signal so the caller's `if (...)` is cheap; returns a single ready-to-push
+// warning string (with `FileLockCollision:` prefix matching the existing
+// `BaselineMarkerLost:` warning style) when a signal IS detected. The
+// helper is pure (string in, string-or-null out) for unit testability.
+
+const NODE_EBUSY_PATTERN = /EBUSY:\s*resource busy or locked,\s*\w+\s+'([^']+)'/;
+const WINDOWS_FILE_LOCK_PATTERN =
+  /cannot access the file because it is being used by another process/i;
+const POSIX_ADVISORY_LOCK_PATTERN =
+  /\b(?:EAGAIN|EDEADLK)\b[^]*?Resource temporarily unavailable/i;
+
+export function detectFileLockCollision(output: string): string | null {
+  if (!output) return null;
+
+  // Node.js EBUSY: most common in script + redirect collision (the trigger
+  // case). Path extraction lets the caller see WHICH file collided so the
+  // fix is actionable (drop the redirect, or pipe to a different target).
+  const nodeMatch = output.match(NODE_EBUSY_PATTERN);
+  if (nodeMatch) {
+    return (
+      `FileLockCollision: Node EBUSY on '${nodeMatch[1]}' — common cause: ` +
+      `shell '>' redirect collided with the script's own write of the same ` +
+      `file. Run without redirect, or pipe to a different target.`
+    );
+  }
+
+  // Windows native: "The process cannot access the file because it is being
+  // used by another process." emitted by tools that use Win32 CreateFile
+  // without FILE_SHARE_* flags (e.g. `type`, `move`, some PowerShell cmdlets).
+  if (WINDOWS_FILE_LOCK_PATTERN.test(output)) {
+    return (
+      "FileLockCollision: Windows file-lock detected in output — another " +
+      "process holds the target file open. Check for orphan handles or " +
+      "redirect conflicts."
+    );
+  }
+
+  // POSIX advisory locks: flock / lockf / fcntl can return EAGAIN /
+  // EDEADLK paired with "Resource temporarily unavailable". Less common
+  // on Win32 hosts but the tool runs cross-platform and shells like git-bash
+  // / WSL surface POSIX-shape errors.
+  if (POSIX_ADVISORY_LOCK_PATTERN.test(output)) {
+    return (
+      "FileLockCollision: POSIX advisory lock collision (EAGAIN/EDEADLK) " +
+      "detected in output. Another process holds an advisory lock on a " +
+      "resource the command needs."
+    );
+  }
+
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Defensive JSON-string preprocessor (issue #196 symptom 1)
 // ─────────────────────────────────────────────────────────────────────────────
 //
@@ -1418,6 +1487,18 @@ export const terminalRunHandler = async ({
       }
     }
   } catch { /* output stays empty; outputIntegrity stays undefined */ }
+
+  // Issue #236: post-process EBUSY-family file-lock collision detection.
+  // Surfaces a `FileLockCollision:` warning when the captured output
+  // contains the Node EBUSY / Windows / POSIX lock signatures. Runs only
+  // when output is non-empty (skips baseline_lost path which forces output
+  // to "" on purpose). The check is pure-string match, microsecond cost.
+  if (output) {
+    const lockHint = detectFileLockCollision(output);
+    if (lockHint !== null) {
+      warnings.push(lockHint);
+    }
+  }
 
   const response: TerminalRunResponse = {
     ok: readError === undefined,
