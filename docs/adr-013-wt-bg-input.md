@@ -281,7 +281,9 @@ keyboard:type / terminal:send caller の method param:
 
 ### 3.6 Option F: Cooperative in-pane bridge (長期本命候補、本 ADR scope 外、別 PR / 別 plan)
 
-**位置付け**: 本物 BG (= foreground を一切奪わない) を実現する長期 stable な候補。Option E の妥協 BG (foreground_flash) を「短期解」、Option F を「長期解」と位置付け。本 ADR では outline のみ追加、本実装は別 PR / 別 plan。
+> **2026-05-10 update**: 本実装 plan は **ADR-014 Draft** として独立起草 (`docs/adr-014-cooperative-bridge.md`)、scope = named pipe + helper module baseline 確定型。本節は ADR-013 内の outline (= Option E との trade-off 整理 + 長期解 narrative の起源) として保持、design 詳細 (transport / 配布方式 / protocol / nonce / fallback ladder) は ADR-014 §3 / §5 / §7 を参照。
+
+**位置付け**: 本物 BG (= foreground を一切奪わない) を実現する長期 stable な候補。Option E の妥協 BG (foreground_flash) を「短期解」、Option F を「長期解」と位置付け。本 ADR では outline のみ追加、本実装は別 PR / 別 plan (= ADR-014)。
 
 **仕組み概要**:
 
@@ -308,7 +310,7 @@ keyboard:type / terminal:send caller の method param:
 **本 ADR との position**:
 
 - 本 ADR Option E (`foreground_flash`) = 短期解 (妥協 BG)、明示 opt-in、issue #185 Phase 4 stretch の "WT で BG 動かしたい" 要件を MVP で満たす
-- Option F = 長期解 (本物 BG)、別 PR / 別 ADR で本実装 (cooperative bridge protocol 設計 + helper 配布方式 + auto-discovery + nonce 管理 を含む大型 plan、推定 4-8 週間)
+- Option F = 長期解 (本物 BG)、別 PR / 別 ADR で本実装 (cooperative bridge protocol 設計 + helper 配布方式 + auto-discovery + nonce 管理 を含む大型 plan、ADR-014 §8 で **4-7 週間 (最大 8 週間)** に refined)
 
 ADR-013 §3.6 で Option F section を追加しておくことで、Option E land 後に Option F 別 PR を起票する path を docs に永続化。`channel resolver` の `cooperative_bridge` variant は将来形のみ予約 (resolver は現在返さない、narrow reject)。
 
@@ -321,7 +323,7 @@ v1.4 (2026-05-10): Phase 0 結果 + Round 1 NO-GO + Round 2 spike + 新 Option E
 | 観点 | A. ConPTY | B. UIA writable | C. PSRemoting | D. laffo16 PR | **E. foreground_flash** | F. cooperative bridge |
 |---|---|---|---|---|---|---|
 | 公式 API | Day 0 gate 次第 | ✓ (UIA itself) | ✓ | ✗ (Microsoft Reject) | ✓ (Win32 + UIA、新 binding はなし) | ✓ (named pipe 完全公式) |
-| 実装規模 | 大 (1-3 週間) | 中 (4-8 日) | 小 | (採用不可) | 中 (~830 line + test、本 PR 完了) | 大 (4-8 週間、別 PR) |
+| 実装規模 | 大 (1-3 週間) | 中 (4-8 日) | 小 | (採用不可) | 中 (~830 line + test、本 PR 完了) | 中-大 (4-7 週間、最大 8 週間、ADR-014 別 PR) |
 | WT 内表示更新 | ✓ | ✓ | ✗ | (採用不可) | ✓ (paste 反映) | ✓ |
 | foreground 奪取 | ✗ (本物 BG) | ✗ (本物 BG) | ✗ | (採用不可) | **✓ ~50-80ms (妥協 BG)** | ✗ (本物 BG) |
 | user opt-in 要 | ✗ | ✗ | ✓ | (採用不可) | **✓ method:'foreground_flash' 明示** | ✓ (helper 起動) |
@@ -465,7 +467,7 @@ v1.4 (2026-05-10): Phase 0 結果 + Round 1 NO-GO + Round 2 spike + 新 Option E
 6. **WT 以外の TerminalControl ベース app (将来の preview build, Codespaces local 等) は同経路で対応可能?** Microsoft.Terminal.Core を使う app は理論上同経路
 7. **POC 失敗時の Option C への pivot は妥当か?** Option C は「WT 内表示更新」要件を満たさないため scope 違だが、メタ目的「WT 内 process 制御」は満たす、ADR 範囲拡張判断
 8. **`backgroundChannel` discriminator の wire format 設計**: `hints.backgroundChannel: "wm_char" | "uia" | "conpty" | "clipboard_flash" | ...` の enum 値選定、既存 `hints.verifyDelivery.channel` (`wm_char`) との整合、breaking change 影響評価。**v1.4 で `clipboard_flash` 値を追加** (Option E 本実装、本 PR で `keyboard:type` / `terminal:send` の hints に wire 済)
-9. **Option F (cooperative bridge) opt-in design**: helper 配布方式 (auto-start / discoverability) / pipe protocol design / nonce 管理 / version compat / helper 未起動時 fallback (= `method: 'foreground_flash'` に degrade?) — 本 ADR scope 外、別 PR / 別 ADR で本実装
+9. **Option F (cooperative bridge) opt-in design**: helper 配布方式 (auto-start / discoverability) / pipe protocol design / nonce 管理 / version compat / helper 未起動時 fallback (= `method: 'foreground_flash'` に degrade?) — 本 ADR scope 外、**ADR-014 Draft で本実装** (`docs/adr-014-cooperative-bridge.md`、scope = named pipe + helper module baseline 確定型)
 10. **Phase 1.5 OLE IDataObject snapshot**: HGLOBAL MVP の限界 (画像 / メタファイル復元不可) が production dogfood で顕在化したら別 PR で OLE `OleGetClipboard` / `OleSetClipboard` snapshot を評価。COM apartment threading (STA 必要) の cost と HGLOBAL skip の頻度を比較して採否判断、現状 `clipboardSkippedFormats` hints で observable
 
 ---
@@ -499,6 +501,7 @@ v1.4 (2026-05-10): Phase 0 結果 + Round 1 NO-GO + Round 2 spike + 新 Option E
 | 2026-05-10 | Draft (v1.4.3、PR #240 Round 3 review apply: SSOT 同型 drift 完全解消) | Claude (Sonnet) + Opus Round 3 | Opus P1×3 (matrix §3.1 hints 列挙に `foregroundRestoreMethod` 漏れ / ADR §5.4.1 Phase 1f acceptance line で改行 reason 分離未反映 / plan v3 §8 OQ #5 Resolved table が deviation 前の古い記述のまま) + P2×1 (本 entry の defer 残列挙 と followups §2.x の 1:1 cross-ref 不完全、§2.3 + §2.8 を ADR entry に追記) を全件反映。CLAUDE.md §3.1 sweep の同型再発 (PR #99 Round 2/3 + PR #240 Round 1 P1-2 / Round 2 P1-1 と連続 4 回目) を本 entry で closure。Round 3 で merge 候補へ |
 | 2026-05-10 | Draft (v1.4.4、PR #240 Round 4 review apply: plan v3 hints schema sync で連続 5 回目 closure) | Claude (Sonnet) + Opus Round 4 | Opus P2×1 (plan v3 §3.4 line 192 nested `hints.foregroundFlash: { typingLeakRisk, mitigation }` 表記 + §5.4 line 444 / §6.1 / §6.3 / §6.4 acceptance の hints schema 列挙不完全 = matrix §3.1 + ADR §3.5/§5.4 + CHANGELOG + native-types.ts + src/win32 + src/tools + E2E test の flat schema 8 field と乖離) を反映。plan v3 §3.4 nested 表記を flat narrative に書き換え、§5.4 / §6.1 / §6.3 / §6.4 acceptance に full hints field 列挙 (8 field: backgroundChannel / typingLeakRisk / typingLeakMitigation / flashDurationMs / foregroundStealMethod / foregroundRestored / foregroundRestoreMethod / clipboardRestored / clipboardSkippedFormats[])。CLAUDE.md §3.1 sweep の連続 5 回目同型再発を本 entry で打ち止め closure。Round 4 で **Approved 候補**、次 round で P+P+P ゼロ確認 → User 指示「Opus 判定 merge」適用 |
 | 2026-05-10 | Draft (v1.4.5、Phase 2 mandatory gate PASS + bench wire fix follow-up land) | Claude (Sonnet) + user 実機検証 | PR #241 で bench tool name (`keyboard:type` → `keyboard` + `action: "type"`) + index.d.ts (`win32ForegroundFlashInject` + `NativeForegroundFlash{Options,Result,SkippedFormat}` interface 同期漏れ) + lint cleanup (3 errors) を fix 後、bench `benches/adr013_foreground_flash_ladder.mjs --iters=50 --window-title="<unique-WT-title>"` で **Stage 1 (AttachThreadInput) 50/50 = 100.0% で R1 ladder success gate PASS** (ADR §5.4.2 acceptance 達成、`docs/adr-013-followups.md` §3.1 で永続化)。flash_duration_ms は scan OFF mean 97ms / scan ON mean 203ms で plan §6.1 `<= 80ms` 未達、followups §2.10 で flash duration optimization を carry-over (= performance polish、本来の最重要 acceptance ではない)。Status: Draft → Accepted prerequisite 達成、release (v1.5.0+) 時に user 判断で実機 dogfood 1-2 週間期間後に flip 予定。関連 issue close plan は followups §3.5 (#185 = 本 PR set merge 後 close 可、#173 = release narrative 後 close) |
+| 2026-05-10 | Draft (v1.4.6、ADR-014 起草で Option F outline 本実装化、§3.6 + §7 OQ #9 cross-link 更新) | Claude (Sonnet) | v1.4.2 release land 後、Option F (cooperative in-pane bridge) を本格 design 化するため **ADR-014 Draft** (`docs/adr-014-cooperative-bridge.md`) を独立起草、scope = named pipe + helper module baseline 確定型 (Option F-B/C/D は §3 で reject 理由明記)。本 ADR §3.6 と §7 OQ #9 に ADR-014 への cross-link を追加、design 詳細 (transport / 配布方式 / protocol / nonce / fallback ladder) は ADR-014 §3 / §5 / §7 を参照。本 ADR-013 の Option F outline は 起源 narrative として保持、ADR-014 land 後も削除しない |
 | (future) | Draft → Accepted | (TBD) | Phase 2 mandatory gate (実機 50 連続 ladder success rate >= 80%) pass + R1 mitigation 評価 docs 反映後に user 判断で Accepted へ昇格 |
 | (future) | Re-review trigger | 2026-11-10 | header の binding marker、本日に達した時点で必須 |
 
