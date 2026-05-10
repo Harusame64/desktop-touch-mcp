@@ -35,3 +35,8 @@ pub(crate) mod dwm;
 // `docs/adr-013-option-e-impl.md` v3 + `src/win32/foreground_flash.rs`。
 #[cfg(windows)]
 pub(crate) mod foreground_flash;
+// Clipboard rigorous handling (HGLOBAL save/restore + 3 point sequence) for
+// foreground_flash channel. 詳細は `docs/adr-013-option-e-impl.md` v3 §3.2 +
+// `src/win32/clipboard_snapshot.rs`。
+#[cfg(windows)]
+pub(crate) mod clipboard_snapshot;
