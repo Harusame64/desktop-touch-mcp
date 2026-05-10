@@ -735,10 +735,17 @@ export const keyboardTypeHandler = async ({
             : [null, null];
           const baselineMarker =
             baselineRaw !== null ? makeKeyboardBaselineMarker(stripAnsi(baselineRaw)) : null;
-          // valueBaseline is only consulted when the TextPattern path is
-          // unavailable (baselineMarker === null). When TextPattern works,
-          // the parallel-fetched ValuePattern baseline is discarded.
-          const valueBaseline = baselineMarker === null ? valueBaselineRaw : null;
+          // F4-bis fix (PR #234 follow-up): always retain `valueBaselineRaw`,
+          // independent of whether `baselineMarker` was successfully built
+          // from the TextPattern path. Originally this was discarded when
+          // baselineMarker !== null on the assumption that "TP non-null →
+          // TP path is reliable" — but PR #234 §F4-bis showed that
+          // getTextViaTextPattern can return non-null junk text from
+          // unrelated descendants (Notepad menu / title bar) even when the
+          // focused control does not implement TextPattern. Retaining
+          // valueBaseline lets the verifiable branch run a 2nd-defense VP
+          // delta comparison when TP slicing yields "unverifiable".
+          const valueBaseline = valueBaselineRaw;
 
           if (replaceAll) postKeyComboToHwnd(target.hwnd, "ctrl+a");
           const result = postCharsToHwnd(target.hwnd, effectiveText);
@@ -799,12 +806,37 @@ export const keyboardTypeHandler = async ({
                 const tailMatch = tail.length >= 4 && slicedNoWs.includes(tail);
                 verifiedDelivery = exact || tailMatch;
               }
-              // Marker miss (matched:false): undetermined — keep "unverifiable"
-              // and fall through to ok with verifyDelivery hint.
-              if (verifiedDelivery === "unverifiable") {
-                verifyReason = "read_back_unsupported";
+              // Marker miss (matched:false): undetermined — keep "unverifiable".
+            }
+            // F4-bis 2nd-defense VP delta layer: TP path was inconclusive
+            // (postRaw=null OR sliced.matched=false). Re-uses the parallel-
+            // fetched valueBaseline (always-retained per F4-bis fix above).
+            // Only consulted when TP did not authoritatively decide
+            // delivered/false — TP-confirmed outcomes stay authoritative
+            // for WT/conhost where TP is the canonical channel. Mirrors the
+            // VP delta logic in the `else if (verificationNeeded)` branch
+            // below; keep the two sites in sync if either is touched.
+            if (verifiedDelivery === "unverifiable" && valueBaseline !== null) {
+              const postValue = await getTextViaValuePattern(target.title);
+              if (postValue !== null) {
+                const containsText = postValue.includes(checkText);
+                const delta = postValue.length - valueBaseline.length;
+                if (containsText) {
+                  if (delta > 0 || !valueBaseline.includes(checkText)) {
+                    verifiedDelivery = true;
+                  }
+                  // else: re-type with no length growth → keep unverifiable
+                  // (false-positive guard, e.g. user re-typed identical text).
+                } else {
+                  // VP shows checkText not landed in focused element →
+                  // not delivered. Caller surfaces BackgroundInputNotDelivered.
+                  verifiedDelivery = false;
+                }
               }
-            } else {
+              // postValue === null (focus race / VP unavailable) → keep
+              // unverifiable, verifyReason set below.
+            }
+            if (verifiedDelivery === "unverifiable") {
               verifyReason = "read_back_unsupported";
             }
           } else if (verificationNeeded) {
