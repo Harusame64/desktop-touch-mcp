@@ -103,6 +103,23 @@ public static class ConsoleApi {
         uint nLength,
         out uint lpNumberOfEventsWritten);
 
+    // Round 3 diagnostic (Opus-mandated, vestigial-buffer hypothesis verification):
+    // PeekConsoleInputW reads without removing — distinguishes between
+    //   (A) records live in CONIN$ (read-back returns our records)
+    //   (B) records were drained immediately (read-back returns 0)
+    //   (C) handle is decoupled from real input source (ReadFile-style failure)
+    [DllImport("kernel32.dll", SetLastError = true, EntryPoint = "PeekConsoleInputW")]
+    public static extern bool PeekConsoleInputW(
+        IntPtr hConsoleInput,
+        [Out] INPUT_RECORD[] lpBuffer,
+        uint nLength,
+        out uint lpNumberOfEventsRead);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool GetNumberOfConsoleInputEvents(
+        IntPtr hConsoleInput,
+        out uint lpcNumberOfEvents);
+
     public const uint GENERIC_READ = 0x80000000;
     public const uint GENERIC_WRITE = 0x40000000;
     public const uint FILE_SHARE_READ = 0x00000001;
@@ -256,6 +273,50 @@ $arr = $records.ToArray()
 $writeOk = [ConsoleApi]::WriteConsoleInputW($hConin, $arr, [uint32]$arr.Length, [ref]$written)
 $writeErr = if (-not $writeOk) { [System.Runtime.InteropServices.Marshal]::GetLastWin32Error() } else { 0 }
 
+# Step 7.5 (Round 3 diagnostic): peek the input buffer immediately after write
+# to verify whether the records actually land in CONIN$. Three outcomes:
+#   live  — records still in buffer (vestigial / not consumed)
+#   drained — buffer empty / fewer (consumer drained, but consumer != shell)
+#   peek_failed — handle is decoupled from real input source
+$peekErr = 0
+$pendingCount = 0
+$peekOk = $false
+$peekedRecords = 0
+$pendingOk = [ConsoleApi]::GetNumberOfConsoleInputEvents($hConin, [ref]$pendingCount)
+if (-not $pendingOk) {
+    $peekErr = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+}
+$peekBuf = New-Object 'ConsoleApi+INPUT_RECORD[]' 256
+[uint32]$peeked = 0
+$peekOk = [ConsoleApi]::PeekConsoleInputW($hConin, $peekBuf, [uint32]256, [ref]$peeked)
+if (-not $peekOk -and $peekErr -eq 0) {
+    $peekErr = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+}
+$peekedRecords = [int]$peeked
+
+# Capture first few peeked records' EventType + UnicodeChar for evidence
+$peekedSummary = @()
+$dumpN = [Math]::Min($peekedRecords, 8)
+for ($i = 0; $i -lt $dumpN; $i++) {
+    $r = $peekBuf[$i]
+    $et = [int]$r.EventType
+    $kd = $false
+    $vk = 0
+    $ch = 0
+    if ($et -eq [int][ConsoleApi]::KEY_EVENT) {
+        $kd = $r.KeyEvent.KeyDown
+        $vk = [int]$r.KeyEvent.VirtualKeyCode
+        $ch = [int]$r.KeyEvent.UnicodeChar
+    }
+    $peekedSummary += @{
+        idx = $i
+        event_type = $et
+        key_down = $kd
+        vk = $vk
+        unicode_char = $ch
+    }
+}
+
 # Step 8: cleanup
 [ConsoleApi]::CloseHandle($hConin) | Out-Null
 [ConsoleApi]::FreeConsole() | Out-Null
@@ -274,4 +335,11 @@ Write-Result @{
     target_pid = $TargetPid
     sentinel = $Sentinel
     key_encoding = $KeyEncoding
+    # Round 3 diagnostic
+    peek_ok = $peekOk
+    pending_events = [int]$pendingCount
+    peeked_records = $peekedRecords
+    peek_win32_error = $peekErr
+    peek_win32_error_hex = ('0x{0:X8}' -f $peekErr)
+    peeked_summary = $peekedSummary
 } -ExitCode $resultExit

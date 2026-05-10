@@ -153,6 +153,14 @@ pub fn wt_close(handle: TerminalHandle) -> Result<(), WtError>;
 
 参考: <https://learn.microsoft.com/en-us/windows/console/createpseudoconsole> — `CreatePseudoConsole` は新規 console 作成専用、既存への write は別途 API 探索が必要。
 
+**Phase 0 preliminary findings (issue #185 spike `AttachConsole + WriteConsoleInputW`、2026-05-10、commit `d8b3c07` + Round 3 PeekConsoleInputW 裏取り)**:
+
+- conhost.exe を直接 invoke した cmd.exe (Win11 25H2 build 26200、DefTerm CLSID `{00000000-0000-0000-0000-000000000000}` "Let Windows decide") でも legacy `WriteConsoleInputW` 経路は consumer に届かず:
+  - Round 1 (UnicodeChar only): `records_written=64/64`, sentinel 不在
+  - Round 2 (proper VK + scan code、両 encoding): `records_written=92/92` (keydown_keyup) / `60/60` (keydown)、両者 sentinel 不在
+  - Round 3 (PeekConsoleInputW 裏取り、Opus 判定 (C)): `records_written=92/92` で API success だが直後 `pending_events=0` / `peeked_records=0` (書込直後即 drained、consumer 未到達を構造的に証明)
+- 結論: `AttachConsole + CONIN$ + WriteConsoleInputW` は WT BG input 候補として **NO-GO 確定**。Day 0 gate 探索は (1) `ITerminalConnection::WriteInput` 相当の WinRT 公式 API、(2) Microsoft.Terminal.Core の attach surface に絞り込む。詳細は `docs/wt-attachconsole-spike-results.md`
+
 ### 3.2 Option B: UIA writable pattern inventory POC
 
 **重要な API 訂正**: UIA `TextPattern` は **基本的に読み取り系** (`GetText` / `RangeFromPoint` 等)、書き込み系は **`ValuePattern.SetValue`** が canonical。Microsoft docs でも複数行 / Document 系コントロールは ValuePattern 非対応になる傾向 (TerminalControl のような complex control では特に該当)。
@@ -312,6 +320,7 @@ Phase 0 (Option D 検証) 完了後に本表を re-ranking。現時点 (Phase 0 
 ## 7. Open Questions
 
 1. **Option A Day 0 gate**: `microsoft/terminal` repo / WinRT metadata で「既存 WT tab への公式 write 経路」(`ITerminalConnection::WriteInput` 相当) は存在するか? 不在なら Option A は即 Rejected
+   - 本 OQ の探索範囲から legacy `WriteConsoleInputW` 経路を **除外** (Phase 0 preliminary findings、2026-05-10 spike `docs/wt-attachconsole-spike-results.md` で NO-GO 確定済)
 2. **Option B Phase 1 inventory**: TerminalControl で writable UIA pattern (`ValuePattern` / `TextEditPattern` / `SynchronizedInputPattern` / その他) は実装されているか? 実機 inspect.exe / UIA Spy で確認
 3. **Option D Phase 0 evidence matrix**: m13v 提案の crash / AV / 署名 / 権限 / WT 更新の 5 軸検証結果は採用判断にどう寄与する? 「許容できる」閾値を §5.0 で具体化必要 (例: AV 警告ゼロ / WT 1 minor 更新 5 回連続でも broken なし / etc.)
 4. **複数 WT window への BG injection は対応するか?** 単一 WT process が複数 top-level window + 各 window 内複数 tab を持つ構造 (本 session 2026-05-10 の dogfood で screenshot 観測)、targeting policy (windowTitle 優先 / hwnd 必須化 / process+tab 階層 ID) を別途設計
@@ -344,6 +353,7 @@ Phase 0 (Option D 検証) 完了後に本表を re-ranking。現時点 (Phase 0 
 | 2026-05-10 | Draft (v1) | Claude (Sonnet draft) | issue #185 Phase 4 stretch tracking、4 option (A/B/C/D) 起草 |
 | 2026-05-10 | Draft (v1.1、Round 1 Opus review apply) | Claude (Sonnet) + Opus (Round 1 review) | P1×2 (PR #237 mis-citation / wt_xaml_pipeline SSOT cross-ref) + P2×5 (Option A Pros hedging / Option B 工数 / 再 review 日付 / §4 directive tone / silent-success 構造的証明) + P3×3 (Authors / Phase 5 工数 / Decision History / licensing) を反映 |
 | 2026-05-10 | Draft (v1.2、user review apply) | Claude (Sonnet) + user review | P1×2 (Option A の `WritePseudoConsole` 公式 API 不在訂正 + Option D を Rejected → Phase 0 m13v validation POC へ position 変更) + P2×3 (DTM_E2E_WT default-on 化 issue #175 反映 / TextPattern.SetValue → ValuePattern.SetValue API 訂正 + UIA writable pattern inventory POC 化 / canInjectViaPostMessage 復帰ではなく `backgroundChannel` discriminator field) を反映、Roadmap を 4 phase (Phase 0 D 検証 → Phase 1 A/B/C 再ランキング → Phase 2 選定 POC → Phase 3 本実装) に restructure。提案者 m13v 氏に敬意を払い、Phase 0 を「採用ではなく実験で評価」と明示 |
+| 2026-05-10 | Draft (v1.3、Option A spike preliminary findings embed) | Claude (Sonnet) + Opus reviewer | spike `AttachConsole + WriteConsoleInputW` (`spike/wt-attachconsole-input` branch、commit `d8b3c07` + Round 3) で NO-GO 確定。§3.1 末尾に preliminary findings embed + §7 OQ #1 に「legacy 経路除外」追記。詳細 `docs/wt-attachconsole-spike-results.md`。Option B/C/D の ranking には影響なし |
 | (future) | Draft → Accepted/Rejected | (TBD) | Phase 0 evidence + Phase 1 ranking 結果に応じて昇格 / Reject |
 | (future) | Re-review trigger | 2026-11-10 | header の binding marker、本日に達した時点で必須 |
 
