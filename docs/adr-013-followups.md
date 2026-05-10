@@ -77,19 +77,89 @@ PR #240 で land した Option E (`foreground_flash` channel) 本実装の **pos
 
 **Follow-up**: 別 PR で worker thread 内側を `catch_unwind` で wrap、panic 時も最低限 `UnhookWindowsHookEx` を呼ぶ + L1 panic counter に加算。
 
+### 2.10 [P2] flash_duration_ms 最適化 (Phase 2 bench で plan §6.1 acceptance 未達)
+
+**背景**: §3.1 実機計測 (2026-05-10) で `flash_duration_ms` が plan §6.1 acceptance `<= 80ms` を超過:
+- scan OFF: mean 96.65ms / p99 122ms (target 80ms に対し +17ms)
+- scan ON (default): mean 202.94ms / p99 281ms (target 80ms に対し +123ms)
+
+**原因 breakdown**:
+
+| 構成要素 | cost | 区分 |
+|---|---|---|
+| `PASTE_WARNING_SCAN_TIMEOUT_MS = 100ms` polling (scan ON のみ) | ~100ms | 構造的固定 |
+| `PASTE_REFLECT_DELAY_MS = 30ms` Sleep (Ctrl+V 後の WT XAML 反映待ち) | 30ms | 構造的固定 |
+| `wait_focus_ready` polling (max 30ms / interval 2ms) | 5-15ms | 半構造的 |
+| `verify_foreground_returned` (max 10ms × 2 retry) | 5-10ms | 半構造的 |
+| Hidden owner window create + destroy (per-call lifecycle) | 2-5ms | 環境依存 (§2.5 と統合候補) |
+| Clipboard save (`OpenClipboard` retry + `EnumClipboardFormats` + `GetClipboardData`×N) | 5-15ms | 環境依存 (clipboard 内容次第) |
+| Clipboard set + restore (`OpenClipboard` + `EmptyClipboard` + `GlobalAlloc` + `SetClipboardData`) | 8-20ms | 環境依存 |
+| Foreground steal ladder 段 1 (`AttachThreadInput` + `SetForegroundWindow` + `BringWindowToTop`) | 5-15ms | 環境依存 |
+| `SendInput(Ctrl+V)` | 1-3ms | 環境依存 |
+
+→ scan OFF の構造的下限 ~50-80ms (paste reflect + focus polling + verify + Win32 syscall stack)、scan ON では +100ms。
+
+**Follow-up 候補** (推定削減 / trade-off):
+
+1. **paste reflect Sleep(30ms) を UIA polling 化**: -10〜20ms / WT TextPattern access cost で逆に重い可能性、要 profile (ADR-007 P5c-2 知見では WT TextPattern は重い側)
+2. **`scan_paste_warning_dialog` を UIA event hook 化**: -80〜100ms (scan ON path) / UIA event 登録 cost + WT 専用 hook 設計、別 ADR scope 候補
+3. **Dedicated owner thread + lazy init refactor**: -5〜10ms / §2.5 と統合、`RegisterClassExW`/`CreateWindowExW` を 1 回で済ませる
+4. **`PASTE_REFLECT_DELAY_MS` 30ms → 15ms 短縮**: -15ms / WT 反映 race risk、50 連続 stress test で安全性確認必要
+
+**Trigger**: dogfood で「flash visible すぎる」「latency 体感不快」report 集まったら別 PR で着手。**Phase 2 R1 ladder gate (本来の最重要 acceptance) は §3.1 で達成済**のため、本 item は performance polish 性質。
+
 ---
 
 ## 3. Phase 2 mandatory gate (実機検証、本 ADR §5.4.2 acceptance)
 
-PR #240 の `benches/adr013_foreground_flash_ladder.mjs` を user が実機で実行し、以下を判断:
+### 3.1 実行結果 (2026-05-10、PR #240 + PR #241 land 後)
 
-- [ ] **段 1 + 段 2 + already_foreground 合計成功率 >= 80%** → ADR §9 Decision History の v1.4 → Accepted 昇格判断
-- [ ] **未達の場合**: 以下の design review:
-  - (a) `block_keyboard_during_flash` default ON 化 (`DESKTOP_TOUCH_FOREGROUND_FLASH_BLOCK_KEYBOARD=1` を engine 標準 env に)
-  - (b) Option F (cooperative bridge) priority shift (= Option E は短期解として残し、長期解 Option F を別 PR で着手)
-  - (c) Option E ROI 悪い判定で本 PR を revert / Status: Rejected 化
+**環境**:
+- Windows 11、target = 別 WT window (`BenchTarget-Unique-12345` ユニーク title) を起動
+- caller (Bash 経由 spawn された node + MCP server child) は非 foreground、Claude Code WT が foreground
+- target ≠ foreground 条件で foreground steal ladder を確実に試行できる状態
 
-実機計測結果を本 doc §3 末尾に append、ADR §9 にも v1.5 行で embed。
+**実行コマンド**: `node benches/adr013_foreground_flash_ladder.mjs --iters=50 --window-title="BenchTarget-Unique-12345"`
+
+**ladder success counts**:
+
+| iter 数 | Stage 1 (AttachThreadInput) | Stage 2 (alt_unlock) | already_foreground | total ladder success |
+|---|---|---|---|---|
+| 50 | **50** | 0 | 0 | **50/50 = 100.0%** ✅ (>= 80% gate) |
+| 20 (warmup) | 20 | 0 | 0 | 20/20 = 100.0% ✅ |
+
+→ 段 1 (`AttachThreadInput` dance) で全件成功、段 2 (`alt_unlock`) は fallback として未発火。production-like 環境 (caller 非 foreground、target 非 foreground) で AttachThreadInput が確実に動作することを実証。
+
+**flash_duration_ms (success-only)**:
+
+| 構成 | n | mean | p50 | p95 | p99 |
+|---|---|---|---|---|---|
+| default (paste warning scan ON) | 50 | 202.94 | 202 | 211 | 281 |
+| `DESKTOP_TOUCH_FOREGROUND_FLASH_DISABLE_DIALOG_SCAN=1` | 20 | 96.65 | 95 | 122 | 122 |
+
+差分 ~100ms = `PASTE_WARNING_SCAN_TIMEOUT_MS = 100ms` 固定 polling cost (§2.10 参照)。
+
+### 3.2 acceptance gate 判定
+
+- [x] **R1 ladder success rate >= 80%**: 100.0% で **PASS**、Phase 2 mandatory gate 達成 (ADR §5.4.2 acceptance)
+- [ ] flash_duration_ms <= 80ms (plan §6.1): mean 97ms (scan OFF) / 203ms (scan ON) で **未達**、§2.10 (flash duration optimization) で別 PR 扱い (= performance polish、本来の最重要 acceptance ではない)
+
+### 3.3 ADR-013 Status 昇格判断
+
+R1 ladder gate PASS で Status: Draft → Accepted の **prerequisite** は満たした。実 release (v1.5.0+) 時に user 判断で実機 dogfood 期間 (BG 入力 path の degraded report 不在確認) を経て flip する想定。本 PR では Status は Draft のまま、ADR §9 に v1.4.5 entry で本 gate PASS narrative を embed。
+
+### 3.4 design review fallback (gate 未達の場合の original 候補、本 PR では発火せず)
+
+- (a) `block_keyboard_during_flash` default ON 化 (`DESKTOP_TOUCH_FOREGROUND_FLASH_BLOCK_KEYBOARD=1` を engine 標準 env に) — **不要** (R1 100% PASS)
+- (b) Option F (cooperative bridge) priority shift (= Option E は短期解として残し、長期解 Option F を別 PR で着手) — **長期方針として継続検討**、本 R1 PASS とは独立 (ADR §3.6 outline 維持)
+- (c) Option E ROI 悪い判定で本 PR を revert / Status: Rejected 化 — **不要** (R1 100% PASS で Implementation Land 妥当性確認済)
+
+### 3.5 関連 issue close plan
+
+| Issue | Close timing | Action |
+|---|---|---|
+| **#185** (ADR-013 Phase 4 stretch tracking) | 本 PR set (#240 + #241) merge 済の現時点で close 可 | 「ADR §3.5 fully landed + Phase 2 R1 PASS」comment で明記してから close |
+| **#173** (parent audit、WT silent fail discovery) | v1.5.0 release narrative 後 (dogfood 1-2 週間で degraded report 不在 → Status: Accepted flip → release CHANGELOG narrative → close) | parent audit issue として long-tail 性格、release narrative で正式 closure narrative を embed してから close する方が history 整合性高い |
 
 ---
 

@@ -13,6 +13,7 @@
   - **Files**: native (`src/win32/foreground_flash.rs` + `clipboard_snapshot.rs` + `kbd_hook.rs` + `wt_dialog_scan.rs`、Phase 1f unit test 14 pass + 4 ignored 副作用 manual)、TS engine (`src/engine/background-channel-resolver.ts` + `bg-input.ts::injectViaForegroundFlash`)、tools (`src/tools/keyboard.ts` / `terminal.ts` で Zod schema + handler branch)、E2E (`tests/e2e/foreground-flash-verification.test.ts`、6 case + 5 todo)、bench (`benches/adr013_foreground_flash_ladder.mjs`、Phase 2 mandatory gate 用 50 連続 ladder success rate 計測)。
   - **Breaking change なし**: 既存 `method: 'background'` の WT 不対応は維持、`method: 'foreground'` も touch せず、新 channel は明示 opt-in のみ。silent-success 構造的回避 (issue #173 が motivate した invariant) は不変。
   - **plan**: `docs/adr-013-option-e-impl.md` v3 (実装 plan 全 phase 詳細)、ADR-013 v1.4 §3.5 (本 channel) / §3.6 (Option F cooperative bridge outline、長期本命候補、別 PR / 別 ADR)。
+  - **Phase 2 R1 mitigation gate PASS** (PR #241 bench wire fix 後、2026-05-10 実機検証): `node benches/adr013_foreground_flash_ladder.mjs --iters=50 --window-title="<unique-WT-title>"` で **Stage 1 AttachThreadInput 50/50 = 100.0%** (ADR-013 §5.4.2 acceptance 達成、`docs/adr-013-followups.md` §3.1 で永続化)。flash_duration_ms は scan OFF mean 97ms / scan ON mean 203ms で plan §6.1 `<= 80ms` 未達、followups §2.10 で performance polish 別 PR 扱い。Status: Draft → Accepted は v1.5.0 release narrative 時に user 判断で flip 予定 (dogfood 1-2 週間 + degraded report 不在確認)。
 
 ### Fixed
 
