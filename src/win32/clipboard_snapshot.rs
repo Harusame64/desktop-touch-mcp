@@ -481,3 +481,167 @@ const _UNUSED_FORMATS: &[u32] = &[
 fn _suppress_unused_imports(_w: WPARAM, _l: LPARAM) -> LRESULT {
     LRESULT(0)
 }
+
+// ── Unit tests (Phase 1f) ───────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Pure-logic tests: SkippedFormatReason / ClipboardError reason 文字列、
+    // ClipboardSnapshot::skipped_summary 抽出ロジック。clipboard / hidden owner
+    // を実際に触る test は副作用ありで `#[ignore]`、CI 既定では skip。
+
+    #[test]
+    fn skipped_format_reason_as_str() {
+        assert_eq!(SkippedFormatReason::NonHglobal.as_str(), "non_hglobal");
+        assert_eq!(SkippedFormatReason::DeferredRender.as_str(), "deferred_render");
+        assert_eq!(SkippedFormatReason::GetDataFailed.as_str(), "get_data_failed");
+    }
+
+    #[test]
+    fn clipboard_error_reason_strings_are_snake_case() {
+        assert_eq!(ClipboardError::OpenContention.as_reason(), "clipboard_lock_contention");
+        assert_eq!(
+            ClipboardError::EmptyFailed { win32_error: 0 }.as_reason(),
+            "clipboard_empty_failed"
+        );
+        assert_eq!(ClipboardError::AllocFailed.as_reason(), "clipboard_alloc_failed");
+        assert_eq!(
+            ClipboardError::SetDataFailed {
+                format_id: 13,
+                win32_error: 5
+            }
+            .as_reason(),
+            "clipboard_set_data_failed"
+        );
+        assert_eq!(
+            ClipboardError::HiddenOwnerCreateFailed { win32_error: 1 }.as_reason(),
+            "hidden_owner_create_failed"
+        );
+    }
+
+    #[test]
+    fn snapshot_skipped_summary_filters_only_skipped_entries() {
+        let snapshot = ClipboardSnapshot {
+            sequence_number: 42,
+            entries: vec![
+                FormatEntry::Saved {
+                    format_id: 13,
+                    bytes: vec![0u8; 4],
+                },
+                FormatEntry::Skipped {
+                    format_id: 2,
+                    reason: SkippedFormatReason::NonHglobal,
+                },
+                FormatEntry::Saved {
+                    format_id: 1,
+                    bytes: vec![0u8; 8],
+                },
+                FormatEntry::Skipped {
+                    format_id: 8,
+                    reason: SkippedFormatReason::GetDataFailed,
+                },
+                FormatEntry::Skipped {
+                    format_id: 14,
+                    reason: SkippedFormatReason::DeferredRender,
+                },
+            ],
+        };
+        let summary = snapshot.skipped_summary();
+        assert_eq!(summary.len(), 3);
+        assert_eq!(summary[0], (2, "non_hglobal"));
+        assert_eq!(summary[1], (8, "get_data_failed"));
+        assert_eq!(summary[2], (14, "deferred_render"));
+    }
+
+    #[test]
+    fn snapshot_with_no_skipped_entries_returns_empty_summary() {
+        let snapshot = ClipboardSnapshot {
+            sequence_number: 0,
+            entries: vec![
+                FormatEntry::Saved {
+                    format_id: 13,
+                    bytes: vec![0u8; 4],
+                },
+            ],
+        };
+        assert!(snapshot.skipped_summary().is_empty());
+    }
+
+    // ── Win32 副作用 tests (default `#[ignore]`、manual run only) ───────────
+
+    /// Hidden owner window class 登録 + create + destroy が leak-free。
+    /// 副作用なし (window class が process 単位で残るが idempotent)、ただし
+    /// 短期間 message-only window が見えるため CI 環境次第で flaky。
+    /// CI default では skip、manual で `cargo test -- --ignored hidden_owner` 実行。
+    #[test]
+    #[ignore = "Win32 副作用 (hidden owner window create/destroy)"]
+    fn hidden_owner_create_and_destroy_no_leak() {
+        let result = with_hidden_owner(|hwnd| {
+            assert!(!hwnd.0.is_null(), "hidden owner HWND should not be null");
+        });
+        assert!(result.is_ok(), "with_hidden_owner failed: {:?}", result);
+    }
+
+    /// Clipboard HGLOBAL CF_UNICODETEXT round-trip。
+    /// **副作用**: user clipboard を書き換える。CI default では skip、
+    /// manual で `cargo test -- --ignored clipboard_unicode_round_trip` 実行。
+    /// (実機で復元される事実は §6.1 acceptance 確認、Phase 4 E2E で再検証)
+    #[test]
+    #[ignore = "副作用: user clipboard 書き換え"]
+    fn clipboard_unicode_round_trip_via_hidden_owner() {
+        let result = with_hidden_owner(|owner| -> Result<(), String> {
+            // 1. Set initial sentinel text
+            let initial = "phase1f_initial_sentinel";
+            set_clipboard_unicode_text(owner, initial)
+                .map_err(|e| format!("initial set failed: {:?}", e))?;
+
+            // 2. Save snapshot (should capture initial)
+            let snapshot = save_clipboard_supported_formats(owner)
+                .map_err(|e| format!("save failed: {:?}", e))?;
+
+            // 3. Inject our text
+            let new_text = "phase1f_injected_payload";
+            let seq_after = set_clipboard_unicode_text(owner, new_text)
+                .map_err(|e| format!("inject failed: {:?}", e))?;
+
+            // 4. Restore (no race) → should succeed
+            let restore_outcome =
+                restore_clipboard_supported_formats(&snapshot, owner, seq_after);
+            match restore_outcome {
+                RestoreOutcome::Restored => Ok(()),
+                other => Err(format!("expected Restored, got {:?}", other)),
+            }
+        });
+        assert!(result.is_ok(), "{:?}", result);
+        assert!(result.unwrap().is_ok(), "round-trip failed");
+    }
+
+    /// 3 point sequence race detection: inject 後に他者が clipboard を変更すると
+    /// restore は SkippedDueToRace を返す。
+    /// **副作用**: user clipboard 書き換え。
+    #[test]
+    #[ignore = "副作用: user clipboard 書き換え"]
+    fn race_detection_skips_restore() {
+        let result = with_hidden_owner(|owner| -> Result<(), String> {
+            set_clipboard_unicode_text(owner, "phase1f_race_initial")
+                .map_err(|e| format!("initial: {:?}", e))?;
+            let snapshot = save_clipboard_supported_formats(owner)
+                .map_err(|e| format!("save: {:?}", e))?;
+            let seq_after = set_clipboard_unicode_text(owner, "phase1f_race_ours")
+                .map_err(|e| format!("ours: {:?}", e))?;
+            // Simulate race: another writer mutates clipboard between inject and restore.
+            set_clipboard_unicode_text(owner, "phase1f_race_intruder")
+                .map_err(|e| format!("intruder: {:?}", e))?;
+
+            let outcome = restore_clipboard_supported_formats(&snapshot, owner, seq_after);
+            match outcome {
+                RestoreOutcome::SkippedDueToRace { .. } => Ok(()),
+                other => Err(format!("expected SkippedDueToRace, got {:?}", other)),
+            }
+        });
+        assert!(result.is_ok(), "{:?}", result);
+        assert!(result.unwrap().is_ok(), "race detection failed");
+    }
+}

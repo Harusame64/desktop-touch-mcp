@@ -517,3 +517,116 @@ pub fn win32_foreground_flash_inject(
         result
     })
 }
+
+// ── Unit tests (Phase 1f) ───────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // validate_input (§3.3.1 single-line + 5KiB limit) は pure logic、
+    // 副作用なしで CI default 実行可能。
+
+    #[test]
+    fn validate_input_accepts_short_single_line() {
+        assert!(validate_input("hello world").is_ok());
+        assert!(validate_input("echo HELLO").is_ok());
+        assert!(validate_input("").is_ok());
+        assert!(validate_input("a").is_ok());
+    }
+
+    #[test]
+    fn validate_input_rejects_lf() {
+        let r = validate_input("hello\nworld");
+        assert!(matches!(
+            r,
+            Err(ForegroundFlashErrorReason::InputExceedsPasteWarningThreshold)
+        ));
+    }
+
+    #[test]
+    fn validate_input_rejects_cr() {
+        let r = validate_input("hello\rworld");
+        assert!(matches!(
+            r,
+            Err(ForegroundFlashErrorReason::InputExceedsPasteWarningThreshold)
+        ));
+    }
+
+    #[test]
+    fn validate_input_rejects_crlf() {
+        let r = validate_input("hello\r\nworld");
+        assert!(matches!(
+            r,
+            Err(ForegroundFlashErrorReason::InputExceedsPasteWarningThreshold)
+        ));
+    }
+
+    #[test]
+    fn validate_input_accepts_just_under_5kib_threshold() {
+        // 2559 ASCII chars = 5118 bytes UTF-16, < 5120
+        let s = "a".repeat(2559);
+        assert!(validate_input(&s).is_ok());
+    }
+
+    #[test]
+    fn validate_input_rejects_at_5kib_threshold() {
+        // 2560 ASCII chars = 5120 bytes UTF-16, >= 5120
+        let s = "a".repeat(2560);
+        let r = validate_input(&s);
+        assert!(matches!(
+            r,
+            Err(ForegroundFlashErrorReason::InputExceedsPasteWarningThreshold)
+        ));
+    }
+
+    #[test]
+    fn validate_input_rejects_above_5kib_threshold() {
+        let s = "a".repeat(10_000);
+        let r = validate_input(&s);
+        assert!(matches!(
+            r,
+            Err(ForegroundFlashErrorReason::InputExceedsPasteWarningThreshold)
+        ));
+    }
+
+    #[test]
+    fn validate_input_counts_utf16_not_utf8() {
+        // 日本語 1 char = UTF-16 2 bytes (BMP) but UTF-8 3 bytes.
+        // 2559 文字 = 5118 UTF-16 bytes, < 5120 → OK
+        let s = "あ".repeat(2559);
+        assert!(validate_input(&s).is_ok());
+        // 2560 文字 = 5120 UTF-16 bytes → reject
+        let s = "あ".repeat(2560);
+        let r = validate_input(&s);
+        assert!(matches!(
+            r,
+            Err(ForegroundFlashErrorReason::InputExceedsPasteWarningThreshold)
+        ));
+    }
+
+    #[test]
+    fn error_reason_strings_are_snake_case() {
+        use ForegroundFlashErrorReason::*;
+        assert_eq!(
+            InputExceedsPasteWarningThreshold.as_str(),
+            "input_exceeds_paste_warning_threshold"
+        );
+        assert_eq!(ForegroundStealDenied.as_str(), "foreground_steal_denied");
+        assert_eq!(FocusWaitTimeout.as_str(), "focus_wait_timeout");
+        assert_eq!(ClipboardLockContention.as_str(), "clipboard_lock_contention");
+        assert_eq!(ForegroundRestoreFailed.as_str(), "foreground_restore_failed");
+        assert_eq!(
+            WtPasteWarningIntercepted.as_str(),
+            "wt_paste_warning_intercepted"
+        );
+        assert_eq!(SendInputFailed.as_str(), "send_input_failed");
+    }
+
+    #[test]
+    fn err_helper_wraps_reason_into_napi_error_message() {
+        let e = err(ForegroundFlashErrorReason::FocusWaitTimeout);
+        assert_eq!(e.reason, "focus_wait_timeout");
+    }
+}
+

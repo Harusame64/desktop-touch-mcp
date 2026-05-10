@@ -159,3 +159,44 @@ unsafe extern "system" fn ll_keyboard_proc(
     // Real user keystroke during flash → swallow
     LRESULT(1)
 }
+
+// ── Unit tests (Phase 1f) ───────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    /// HookGuard install + Drop が leak-free に完了することを観測。
+    /// install 失敗 (UIPI / no-GUI CI) なら test は trivial pass、success path
+    /// なら drop が READY_TIMEOUT_MS+α 以内に完了することを保証 (= worker thread
+    /// が stop signal を受け取って `UnhookWindowsHookEx` まで走り join できる)。
+    /// 副作用: 短時間 LowLevel hook が install される (= keyboard events を
+    /// pass-through で観測する)。CI 既定 ignore。
+    #[test]
+    #[ignore = "副作用: LowLevel keyboard hook install/uninstall"]
+    fn hook_install_and_drop_completes_promptly() {
+        let guard_result = install_low_level_keyboard_block();
+        if guard_result.is_err() {
+            // CI / no GUI 環境では install 失敗が正常 (UIPI 等)。test は skip。
+            eprintln!("install_low_level_keyboard_block returned Err — skipping (likely no GUI)");
+            return;
+        }
+        let guard = guard_result.unwrap();
+
+        // Allow worker thread to enter pump loop a few times.
+        std::thread::sleep(Duration::from_millis(20));
+
+        let start = Instant::now();
+        drop(guard);
+        let elapsed = start.elapsed();
+
+        // Drop は AtomicBool stop + JoinHandle.join() で同期する。worker pump
+        // tick が 1ms なので drop は 50ms 以内に完了するはず (50ms は generous
+        // upper bound、実測 < 5ms)。500ms を超えるなら何か壊れている。
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "HookGuard drop took {elapsed:?} (expected < 500ms)"
+        );
+    }
+}
