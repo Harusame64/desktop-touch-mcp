@@ -235,10 +235,25 @@ helper / MCP server の version mismatch を構造的回避:
 
 ### 3.8 Nonce 管理 lifecycle (Option F-A 内 sub-decision)
 
-- **生成**: helper 起動時に 16-byte cryptographically random nonce を生成、**hex encode (32 hex chars baseline、P2-3 Round 1 fix)** で file 名に使用、`%USERPROFILE%\.desktop-touch-mcp\bridges\<nonce-hex>.json` に discovery file 書き出し (`{nonce, helperPid, pipeName, startedAt, version}`)。代替案として `<helperPid>-<nonce-hex-prefix-8chars>.json` (human-debuggable) も Phase 0 で評価候補
+- **生成**: helper 起動時に 16-byte cryptographically random nonce を生成、**hex encode (32 hex chars baseline、P2-3 Round 1 fix)** で file 名に使用、`%USERPROFILE%\.desktop-touch-mcp\bridges\<nonce-hex>.json` に discovery file 書き出し。代替案として `<helperPid>-<nonce-hex-prefix-8chars>.json` (human-debuggable) も Phase 0 で評価候補
+- **discovery payload schema** (Codex P1 Round 1 fix、pane identity 必須化):
+  ```jsonc
+  {
+    "nonce": "<32 hex chars>",                    // 16-byte hex encoded、認証 token
+    "helperPid": <number>,                         // helper process PID、live check 用
+    "pipeName": "\\\\.\\pipe\\dtm-bridge-<nonce>", // named pipe full name
+    "startedAt": "<ISO 8601>",                    // helper 起動時刻、24h expire 判定用
+    "version": "<SemVer>",                        // helper version、handshake compat 確認
+    "windowHwnd": <bigint string>,                // 必須: helper が居る pane の WT window HWND (BigInt → string)、resolver disambiguation
+    "windowTitle": "<string>",                    // 必須: WT window title (caller `windowTitle` matcher 用、human-readable)
+    "paneId": "<string>",                         // optional: WT GUID-based pane identifier (将来 WT が公開すれば、現状 ""/null)
+    "hostShell": "pwsh" | "cmd" | "wsl" | "..."   // 必須: helper が host する shell type、agent flow に hint
+  }
+  ```
+  multiple helpers 起動時の wrong-pane routing 防止 (Codex Round 1 P1 = pane identity 不在 → resolver disambiguation 不能 risk 解消)
 - **生存期間**: helper process 生存中のみ (`per-process` lifetime)、helper exit 時に discovery file 削除 + named pipe close
-- **discovery**: MCP server は `~\.desktop-touch-mcp\bridges\` を `fs.readdir` で scan、`helperPid` が live (`process.kill(pid, 0)` で TRUE) かつ `version` が compatible なものを candidate list、user が `windowTitle` / `hwnd` で specifier 与えれば該当 helper の pipe で接続
-- **rotation**: helper 再起動時に新 nonce 生成、旧 discovery file は helper graceful shutdown で削除 / 異常終了時は MCP server scan で `pid not alive` → discovery file expire (24h 以上 / `pid not alive` のいずれかで cleanup)
+- **discovery**: MCP server は `~\.desktop-touch-mcp\bridges\` を `fs.readdir` で scan、`helperPid` が live (`process.kill(pid, 0)` で TRUE) かつ `version` が compatible なものを candidate list、user が `windowTitle` / `hwnd` で specifier 与えれば該当 helper の pipe で接続 (新 schema の `windowHwnd` / `windowTitle` で正確 match)
+- **rotation**: helper 再起動時に新 nonce 生成、旧 discovery file は helper graceful shutdown で削除 / 異常終了時は MCP server scan で **`pid not alive` OR `startedAt` から 24h 以上経過 (= OR 条件、いずれか満たせば cleanup)** で discovery file expire。dead entry を 24h 待たずに即時 sweep 可能 (Codex P2 Round 1 fix、§5.2 acceptance との AND/OR drift 解消)
 - **leak 防止**: `~\.desktop-touch-mcp\bridges\` cleanup utility (`scripts/cleanup-stale-bridges.mjs`) を Phase 1 で同梱、`npm run cleanup-stale-bridges` で manual sweep 可能
 
 ### 3.9 Fallback ladder (Option F-A + Option E + foreground 既存)
@@ -334,7 +349,7 @@ OQ #5 で Phase 1 確定、本 ADR では default は (β) strict-default が北
 - [ ] **WT default-on E2E pass**: `tests/e2e/cooperative-bridge-verification.test.ts` で 100 連続 BG injection 全 success (flaky < 1%、helper 起動済 pane 限定で実行)。**実行環境**: §5.0 Phase 0 で起動成功した環境のうち **standard user baseline で必須**、enterprise 環境 (WDAC / AppLocker / Group Policy 干渉) は §6.2 / OQ #10 で future PR carry-over (P2-5 Round 1 fix)
 - [ ] **stress test**: 連続 1000+ injection は別 env / 別 flag で実施、`benches/adr014_cooperative_bridge_throughput.mjs` で latency / throughput 計測 (standard user baseline、enterprise 環境は別 PR scope)
 - [ ] **helper version compat test**: helper old version + MCP server new version の handshake test (major mismatch で `CooperativeBridgeProtocolMismatch`、minor mismatch で graceful)
-- [ ] **discovery file leak test**: helper 異常終了 (kill -9) 後の discovery file が MCP server scan で `pid not alive` 判定 + 24h 以上経過で expire、`scripts/cleanup-stale-bridges.mjs` で manual sweep 可能
+- [ ] **discovery file leak test**: helper 異常終了 (kill -9) 後の discovery file が MCP server scan で **`pid not alive` OR `startedAt` から 24h 以上経過** (= OR 条件、いずれか満たせば即 cleanup) で expire、`scripts/cleanup-stale-bridges.mjs` で manual sweep 可能。dead entry を 24h 待たずに sweep する semantics を §3.8 と sync (Codex P2 Round 1 fix)
 - [ ] **ADR Status flip**: §1.3 三つの decision driver (security / stability / Microsoft 意思整合) が実機検証で confirm、§9 Decision History に "Status: Draft → Accepted" 記録
 
 ### 5.3 Out-of-scope
@@ -407,6 +422,7 @@ OQ #5 で Phase 1 確定、本 ADR では default は (β) strict-default が北
 |---|---|---|---|
 | 2026-05-10 | Draft (v1) | Claude (Sonnet draft) | ADR-013 §3.6 Option F outline + §7 OQ #9 の inline、Option E v1.4.2 release land 後の長期本命候補として起草。scope = named pipe baseline 確定型 (Option F-A)、F-B/C/D は §3 で reject 理由明記 |
 | 2026-05-10 | Draft (v1.1、Round 1 Opus phase-boundary review apply) | Claude (Sonnet) + Opus Round 1 review | P1×3 (ADR-013 version reference v1.4.5→v1.4.6 / Phase 期間 numeric drift §1.2 §4 4-6→4-7 sync / §3.9 fallback ladder silent degrade typed surface 必須化 + §6.2 silent contract drift risk 追加 + OQ #5 strict-default 推奨 narrative) + P2×6 (§5.1 helper 配布方式 narrowing 飛び carry-over scope shrink fix / §3.7 handshake timeout 5s causal window narrow 検討 / §3.8 nonce hex encode 32 chars / ADR-013 §3.6 4-8→4-7 cross-doc drift sync / §5.2 stress test standard user baseline narrow / §5.1 carry-over narrative narrow reject 現状明示) + P3×4 (`docs/adr-014-phase0-spike.md` 前方参照 注記 / §1.2 ✓✗ inconsistency flip / `microsoft/terminal#9368` URL 直 link / §10 MIT 引用根拠注記) を全件反映。北極星 (silent-success 構造的回避) 整合観点で `method:'cooperative_bridge'` strict-default (β) を §6.2 / OQ #5 で推奨 baseline narrative 確定、Phase 1 spec 確定で Resolved 化 |
+| 2026-05-10 | Draft (v1.2、Round 1 Codex API contract surface review apply) | Claude (Sonnet) + Codex Round 1 review | P1×1 (§3.8 discovery payload schema に pane identity 必須化 = `windowHwnd` / `windowTitle` / `paneId?` / `hostShell` 追加、multiple helpers 起動時の wrong-pane routing 防止、resolver disambiguation 不能 risk 解消) + P2×1 (§5.2 acceptance の "pid not alive AND 24h" ↔ §3.8 "24h OR pid not alive" AND/OR drift 解消、両者 OR 条件で sync、dead entry 即時 sweep 可能 semantics 明示) を全件反映。Opus + Codex 補完性: Opus = アーキテクチャ整合 / 文書 fact / 北極星整合 (Round 1 で 13 finding)、Codex = API contract surface / schema (Round 1 で 2 finding)、両者 disjoint で sweep 軸が drift しない再確認 (memory `feedback_ai_multi_reviewer.md` 整合) |
 | (future) | Draft → Accepted | (TBD) | Phase 2 acceptance 全 ✓ + 実機検証で §1.3 三つの decision driver (security / stability / Microsoft 意思整合) が confirm、helper 配布の enterprise 環境 dogfood pass 後に user 判断で Accepted へ昇格 |
 | (future) | Re-review trigger | 2026-11-10 | header の binding marker、本日に達した時点で必須 |
 
