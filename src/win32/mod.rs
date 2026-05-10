@@ -40,3 +40,7 @@ pub(crate) mod foreground_flash;
 // `src/win32/clipboard_snapshot.rs`。
 #[cfg(windows)]
 pub(crate) mod clipboard_snapshot;
+// LowLevel keyboard hook (option, default OFF) for `foreground_flash` channel
+// typing-leak mitigation (§3.4)。
+#[cfg(windows)]
+pub(crate) mod kbd_hook;

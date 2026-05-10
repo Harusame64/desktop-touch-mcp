@@ -34,6 +34,7 @@ use super::clipboard_snapshot::{
     restore_clipboard_supported_formats, save_clipboard_supported_formats,
     set_clipboard_unicode_text, with_hidden_owner, ClipboardSnapshot, RestoreOutcome,
 };
+use super::kbd_hook::{install_low_level_keyboard_block, HookGuard};
 use super::safety::napi_safe_call;
 
 // ── Constants ───────────────────────────────────────────────────────────────
@@ -353,7 +354,20 @@ pub fn win32_foreground_flash_inject(
             .foreground_restore_retries
             .unwrap_or(DEFAULT_FOREGROUND_RESTORE_RETRIES);
         let press_enter = options.press_enter.unwrap_or(false);
-        // block_keyboard_during_flash / scan_paste_warning_dialog: Phase 1d / 1e
+        // block_keyboard_during_flash: option > env > default false
+        let block_keyboard = options.block_keyboard_during_flash.unwrap_or(false)
+            || std::env::var("DESKTOP_TOUCH_FOREGROUND_FLASH_BLOCK_KEYBOARD")
+                .as_deref()
+                == Ok("1");
+        // scan_paste_warning_dialog: Phase 1e で wire
+
+        // Hook is best-effort: install fail でも flash 続行。`HookGuard` は
+        // closure 末尾まで保持され、Drop で worker thread join + uninstall。
+        let _hook_guard: Option<HookGuard> = if block_keyboard {
+            install_low_level_keyboard_block().ok()
+        } else {
+            None
+        };
 
         let start = Instant::now();
 
