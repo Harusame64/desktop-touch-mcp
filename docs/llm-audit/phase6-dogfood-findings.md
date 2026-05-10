@@ -86,7 +86,7 @@ Phase 5 closure では北極星「silent-success / contract drift = 0」を **au
 
 ## F4 (P3, **RE-OPENED 2026-05-10 dogfood**): keyboard:type BG on Notepad が `verifyDelivery: 'unverifiable'` 返却
 
-**Status**: **Re-opened** (PR #233 ValuePattern fallback gate に regression、2026-05-10 v1.4.1 dogfood Step 1 で再現 — 詳細は §F4-bis)。元 Phase 7 patch (`getTextViaValuePattern` helper 新設 + keyboard.ts BG type path で TextPattern 失敗時 ValuePattern delta 比較 fallback 追加) は **gate 条件不足** で Win11 New Notepad の実機 path に到達しない。
+**Status**: **Re-opened by PR #234 → Resolved by PR #235** (PR #233 ValuePattern fallback gate に regression、2026-05-10 v1.4.1 dogfood Step 1 で再現 — 詳細は §F4-bis)。元 Phase 7 patch (`getTextViaValuePattern` helper 新設 + keyboard.ts BG type path で TextPattern 失敗時 ValuePattern delta 比較 fallback 追加) は **gate 条件不足** で Win11 New Notepad の実機 path に到達しなかったが、PR #235 Hybrid (b)+(c)-light で gate 補強済 (v1.4.2 release で Closed 昇格予定、実機 dogfood Step 1 で `delivered` 確認後)。
 
 **Location**: `src/tools/keyboard.ts` BG path 内 verifyDelivery hint 構築
 
@@ -109,13 +109,13 @@ Phase 5 closure では北極星「silent-success / contract drift = 0」を **au
 - `src/engine/uia-bridge.ts` に `getTextViaValuePattern(windowTitle)` helper 新設。focused element の ValuePattern.Value を返す PowerShell-backed 関数、TreeWalker で focused 要素が target window の toplevel HWND 内に居ることを scoping (focus が外部に逃げた場合は null で無視)。
 - `src/tools/keyboard.ts` BG type path で TextPattern baseline / post-read が両方 null の case に ValuePattern delta 比較 fallback 追加。`postValue.includes(checkText)` AND (`delta > 0` OR `!baseline.includes(checkText)`) で delivered 判定、両者一致で length 不変は `unverifiable` 維持 (false-positive 防止)。
 - 10 unit case (`tests/unit/phase7-f4-value-pattern-fallback.test.ts`) で classify decision logic を pin: empty baseline / non-empty baseline / replaceAll / partial / 不変 / 重複 baseline + 拡大 / multi-line などの shape を網羅。
-- contract 強化により Win11 New Notepad / RichEdit / TextBox / Edit など ValuePattern-only な control での北極星整合 hint surface が向上 (旧: unverifiable → 新: delivered when ValuePattern fallback succeeds)。**ただし §F4-bis で gate 不足が露呈、Win11 New Notepad では実発火せず、F4 は v1.4.1 dogfood Step 1 で re-opened (本 §F4-bis 参照)。**
+- contract 強化により Win11 New Notepad / RichEdit / TextBox / Edit など ValuePattern-only な control での北極星整合 hint surface が向上 (旧: unverifiable → 新: delivered when ValuePattern fallback succeeds)。**ただし §F4-bis で gate 不足が露呈、Win11 New Notepad では実発火せず、F4 は v1.4.1 dogfood Step 1 で re-opened (本 §F4-bis 参照)。→ PR #235 で Hybrid (b)+(c)-light land、v1.4.2 release で Closed 昇格予定。**
 
 ---
 
-## F4-bis (P3, **OPEN**): PR #233 ValuePattern fallback gate が Win11 New Notepad で発火しない
+## F4-bis (P3, **Resolved by PR #235**, pending v1.4.2 release closeout): PR #233 ValuePattern fallback gate が Win11 New Notepad で発火しない
 
-**Status**: **Open** (起票 2026-05-10、v1.4.1 dogfood gate Step 1 = `keyboard:type method:'background'` Win11 Notepad で再現)
+**Status**: **Resolved** (PR #235 で Hybrid (b)+(c)-light land、起票 2026-05-10 → land 2026-05-10、v1.4.1 dogfood gate Step 1 = `keyboard:type method:'background'` Win11 Notepad で再現していた gate dead path を解消)。本 §F4-bis は permanent record として保持、Status を v1.4.2 release 時に **Closed** へ昇格予定 (実機 dogfood Step 1 で `delivered` 確認後)。
 
 **Location** (source TS、`main` `d979579` 時点): `src/tools/keyboard.ts:728-856` (BG type baseline 判定 + ValuePattern fallback 分岐) ↔ `src/engine/uia-bridge.ts:1116-1215` (`getTextViaTextPattern` PowerShell descendant 走査) ↔ `src/engine/uia-bridge.ts:1247-1317` (`getTextViaValuePattern` focused element scoping)
 
@@ -269,8 +269,8 @@ trade-off:
 1. **F1 fix (P1, 本 doc 起票 PR と同時 land 推奨)** — release blocking 候補、`fix/run-macro-stop-on-error-inner-envelope` branch で fix + unit test pin
 2. **F2 fix** — F1 と同 commit が望ましい (warnings[] surface も同 macro.ts handler 内編集)
 3. **F3 fix** — Phase 7、別 PR (`_errors.ts` に SpawnFailed typed code 追加 + workspace.ts emit + classify branch)
-4. **F4 fix** — Phase 7、別 PR (keyboard.ts verifyDelivery 内 ValuePattern fallback) — PR #233 で land したが §F4-bis で gate 不足が露呈、別 hotfix 必要
+4. **F4 fix** — Phase 7、別 PR (keyboard.ts verifyDelivery 内 ValuePattern fallback) — PR #233 で land したが §F4-bis で gate 不足が露呈、別 hotfix 必要 → **PR #235 で land 完了**
 5. **F5 doc fix** — scenario doc rewrite、F1 fix PR と同梱可 (small change)
-6. **F4-bis fix** — v1.4.2 candidate、別 PR (gate 修正 + Win11 New Notepad 実機 `delivered` pin)。修正方針 (a)/(b)/(c) の選択は Opus 諮問後
+6. **F4-bis fix** — **PR #235 で land 完了** (Hybrid (b)+(c)-light、修正方針は Opus 諮問結果準拠)。`main` 反映済、v1.4.2 release で Closed 昇格予定 (実機 dogfood Step 1 で `delivered` 確認後)
 
-**北極星整合**: F1 fix が最優先 — Phase 5 closure 北極星 (silent-success = 0) が dogfood scope で再達成、v1.4.0 release readiness 復活。F4-bis は P3 で北極星違反ではないが、PR #233 contract claim の未達成 = silent contract drift として hotfix 候補。
+**北極星整合**: F1 fix が最優先 — Phase 5 closure 北極星 (silent-success = 0) が dogfood scope で再達成、v1.4.0 release readiness 復活。F4-bis は P3 で北極星違反ではないが、PR #233 contract claim の未達成 = silent contract drift だった、PR #235 land で `main` 上では解消、v1.4.2 release 後に北極星 F4 entry 完全達成扱い。

@@ -1145,26 +1145,14 @@ if (-not $target) { Write-Output '{"ok":false,"error":"Window not found"}'; exit
 # (Document/Custom/Edit favored — these host the real terminal buffer) and
 # fall back to the largest GetText payload. A naive "first match" picks the
 # tab-title label in Windows Terminal and returns one line.
-$candidates = [System.Collections.Generic.List[object]]::new()
-$all = $target.FindAll($desc, $trueC)
-foreach ($el in $all) {
-    try {
-        $tp = $el.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
-        if ($null -ne $tp) {
-            $ctName = ''
-            try { $ctName = $el.Current.ControlType.ProgrammaticName -replace 'ControlType\\.','' } catch {}
-            $candidates.Add(@{ tp=$tp; controlType=$ctName })
-        }
-    } catch {}
-}
-# Also consider the root window itself
-try {
-    $rootTp = $target.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
-    if ($null -ne $rootTp) { $candidates.Add(@{ tp=$rootTp; controlType='Window' }) }
-} catch {}
-
-if ($candidates.Count -eq 0) { Write-Output '{"ok":false,"error":"TextPattern not available"}'; exit }
-
+#
+# F4-bis (c)-light: only score>0 control types qualify as candidates.
+# Win11 New Notepad's auxiliary descendants (TitleBar / MenuBar / MenuItem /
+# Button / etc.) implement TextPattern but score 0, and previously polluted
+# the candidate set — making getTextViaTextPattern return non-null junk
+# text from unrelated controls and preventing the Phase 7 ValuePattern
+# fallback gate from firing. Custom (score 2) is preserved so WT/conhost
+# Custom-typed pane descendants still qualify (regression guard).
 function ControlTypeScore($ct) {
     switch -Regex ($ct) {
         '^(Document|Edit)$' { return 3 }
@@ -1173,6 +1161,38 @@ function ControlTypeScore($ct) {
         default             { return 0 }
     }
 }
+
+$candidates = [System.Collections.Generic.List[object]]::new()
+$all = $target.FindAll($desc, $trueC)
+foreach ($el in $all) {
+    try {
+        $tp = $el.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
+        if ($null -ne $tp) {
+            $ctName = ''
+            try { $ctName = $el.Current.ControlType.ProgrammaticName -replace 'ControlType\\.','' } catch {}
+            if ((ControlTypeScore $ctName) -gt 0) {
+                $candidates.Add(@{ tp=$tp; controlType=$ctName })
+            }
+        }
+    } catch {}
+}
+# Also consider the root window itself, but only when no scored descendant
+# qualified — the root is typically Window-typed (score 0) and would otherwise
+# fail the (c)-light score>0 filter applied above. Score-0 root is **intentionally**
+# accepted as a last-resort fallback when no scored descendant exists: this preserves
+# the degenerate-case path (e.g. Edit hosted directly as toplevel) while avoiding
+# root-vs-descendant noise where the root has no input echo. The score>0 filter
+# above does NOT apply here because we explicitly want the Window-typed root in
+# the empty-candidates case; otherwise getTextViaTextPattern would return null
+# even when the toplevel itself exposes TextPattern.
+try {
+    $rootTp = $target.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
+    if ($null -ne $rootTp -and $candidates.Count -eq 0) {
+        $candidates.Add(@{ tp=$rootTp; controlType='Window' })
+    }
+} catch {}
+
+if ($candidates.Count -eq 0) { Write-Output '{"ok":false,"error":"TextPattern not available"}'; exit }
 
 $best = $null
 $bestScore = -1
