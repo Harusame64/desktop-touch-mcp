@@ -250,6 +250,61 @@ export interface NativeForceFocusResult {
   fgAfter: bigint
 }
 
+// ── ADR-013 Option E (`foreground_flash` channel、Phase 1c-1f) ──────────────
+
+/** Caller-supplied options for `win32ForegroundFlashInject`.
+ *  All fields optional with defaults documented in
+ *  `src/win32/foreground_flash.rs` constants. */
+export interface NativeForegroundFlashOptions {
+  /** Focus-ready 判定 polling 上限 (default 30ms)。 */
+  maxFocusWaitMs?: number
+  /** Foreground 復帰 retry 回数 (default 2)。 */
+  foregroundRestoreRetries?: number
+  /** LowLevel keyboard hook で flash 中の keystroke を block する (default false)。
+   *  env `DESKTOP_TOUCH_FOREGROUND_FLASH_BLOCK_KEYBOARD=1` で global ON。 */
+  blockKeyboardDuringFlash?: boolean
+  /** WT paste warning ContentDialog scan を有効化 (default true)。
+   *  env `DESKTOP_TOUCH_FOREGROUND_FLASH_DISABLE_DIALOG_SCAN=1` で OFF。 */
+  scanPasteWarningDialog?: boolean
+  /** Paste 完了後に SendInput(VK_RETURN) を別送信 (default false)。 */
+  pressEnter?: boolean
+}
+
+/** One entry in `ForegroundFlashResult.clipboardSkippedFormats`. */
+export interface NativeForegroundFlashSkippedFormat {
+  formatId: number
+  /** Skip 理由: `"non_hglobal"` / `"deferred_render"` / `"get_data_failed"`。 */
+  reason: string
+}
+
+/** Successful return of `win32ForegroundFlashInject`. Failure paths throw
+ *  `Error` whose `message` carries the typed reason string (snake_case):
+ *  - `input_exceeds_paste_warning_threshold`
+ *  - `foreground_steal_denied`
+ *  - `focus_wait_timeout`
+ *  - `clipboard_lock_contention`
+ *  - `foreground_restore_failed`
+ *  - `wt_paste_warning_intercepted`
+ *  - `send_input_failed`
+ */
+export interface NativeForegroundFlashResult {
+  /** Flash 全体所要時間 (ms、ladder + paste + restore + dialog scan 含む)。 */
+  flashDurationMs: number
+  /** `"AttachThreadInput"` (段 1) / `"alt_unlock"` (段 2) /
+   *  `"already_foreground"` (skip)。 */
+  foregroundStealMethod: string
+  /** Foreground 復帰確認済 (`GetForegroundWindow == originalForegroundHwnd`)。 */
+  foregroundRestored: boolean
+  /** Foreground 復帰までに要した retry 回数 (0 = 1 回目で成功)。 */
+  foregroundRestoreRetriesUsed: number
+  /** Clipboard 復元実施 (false = race detected / restore 中 fail で skip)。 */
+  clipboardRestored: boolean
+  /** Clipboard save 時 skip された format (非 HGLOBAL / 遅延 rendering)。 */
+  clipboardSkippedFormats: Array<NativeForegroundFlashSkippedFormat>
+  /** Paste warning dialog が検出されたか (検出時は別途 fail → throw)。 */
+  pasteWarningDetected: boolean
+}
+
 /** One Toolhelp32 row. The TS wrapper builds a Map<number, number>. */
 export interface NativeProcessParentEntry {
   pid: number

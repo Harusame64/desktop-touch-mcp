@@ -35,6 +35,8 @@ import type {
   NativePrintWindowResult,
   NativeMonitorInfo,
   NativeForceFocusResult,
+  NativeForegroundFlashOptions,
+  NativeForegroundFlashResult,
   NativeProcessParentEntry,
   NativeProcessIdentity,
   NativeScrollInfo,
@@ -129,6 +131,17 @@ export interface NativeWin32 {
   win32IsWindowEnabled?(hwnd: bigint): boolean;
   win32GetLastActivePopup?(hwnd: bigint): bigint | null;
   win32IsWindowCloaked?(hwnd: bigint): boolean;
+
+  // ADR-013 Option E (`foreground_flash` channel)。`background` 契約とは
+  // 分離した妥協 BG path (Clipboard + foreground flash + paste + restore)。
+  // `method: 'foreground_flash'` 明示 opt-in でのみ TS engine 側から到達。
+  // Failure は `Error` を throw、message に typed reason (snake_case)。
+  win32ForegroundFlashInject?(
+    targetHwnd: bigint,
+    targetPid: number,
+    text: string,
+    options: NativeForegroundFlashOptions,
+  ): NativeForegroundFlashResult;
 }
 
 // ─── UIA surface (used by uia-bridge.ts) ─────────────────────────────────────
