@@ -177,8 +177,9 @@ for (let i = 0; i < iters; i++) {
   try {
     const t0 = performance.now();
     result = await client.callTool({
-      name: "keyboard:type",
+      name: "keyboard",
       arguments: {
+        action: "type",
         text: tag,
         method: "foreground_flash",
         windowTitle,
@@ -267,6 +268,13 @@ if (flashStats) {
   console.log(`p99  : ${flashStats.p99.toFixed(2)} ms`);
   console.log("");
 }
+
+// ─── Sanity totals (operator integrity check) ──────────────────────────────
+console.log("## sanity totals");
+console.log(`success : ${successTotal} / ${iters}`);
+console.log(`failure : ${failureTotal} / ${iters}`);
+console.log(`(success + failure should equal iters)`);
+console.log("");
 
 if (parseErrors > 0) {
   console.log(`# WARNING: ${parseErrors} payload(s) failed to parse`);

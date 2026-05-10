@@ -130,6 +130,32 @@ export interface NativeForceFocusResult {
   fgAfter: bigint
 }
 
+// ─── ADR-013 Option E (`foreground_flash` channel、Phase 1c-1f) ──────────────
+
+export interface NativeForegroundFlashOptions {
+  maxFocusWaitMs?: number
+  foregroundRestoreRetries?: number
+  blockKeyboardDuringFlash?: boolean
+  scanPasteWarningDialog?: boolean
+  pressEnter?: boolean
+}
+
+export interface NativeForegroundFlashSkippedFormat {
+  formatId: number
+  reason: string
+}
+
+export interface NativeForegroundFlashResult {
+  flashDurationMs: number
+  foregroundStealMethod: string
+  foregroundRestored: boolean
+  foregroundRestoreRetriesUsed: number
+  foregroundRestoreMethod: string
+  clipboardRestored: boolean
+  clipboardSkippedFormats: Array<NativeForegroundFlashSkippedFormat>
+  pasteWarningDetected: boolean
+}
+
 export interface NativeProcessParentEntry {
   pid: number
   parentPid: number
@@ -239,6 +265,7 @@ export declare function win32SetWindowTopmost(hwnd: bigint): boolean
 export declare function win32ClearWindowTopmost(hwnd: bigint): boolean
 export declare function win32SetWindowBounds(hwnd: bigint, x: number, y: number, cx: number, cy: number): boolean
 export declare function win32ForceSetForegroundWindow(hwnd: bigint): NativeForceFocusResult
+export declare function win32ForegroundFlashInject(targetHwnd: bigint, targetPid: number, text: string, options: NativeForegroundFlashOptions): NativeForegroundFlashResult
 export declare function win32GetFocusedChildHwnd(targetHwnd: bigint): bigint | null
 export declare function win32BuildProcessParentMap(): NativeProcessParentEntry[]
 export declare function win32GetProcessIdentity(pid: number): NativeProcessIdentity
