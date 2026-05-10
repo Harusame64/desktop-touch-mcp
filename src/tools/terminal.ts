@@ -17,8 +17,10 @@ import {
   postCharsToHwnd,
   postEnterToHwnd,
   isBgAutoEnabled,
+  injectViaForegroundFlash,
   TERMINAL_WINDOW_CLASSES,
 } from "../engine/bg-input.js";
+import { resolveBackgroundInputChannel } from "../engine/background-channel-resolver.js";
 import { detectFocusLoss } from "./_focus.js";
 import { getTextViaTextPattern } from "../engine/uia-bridge.js";
 import { recognizeWindow, ocrWordsToLines } from "../engine/ocr-bridge.js";
@@ -52,7 +54,7 @@ export const terminalReadSchema = {
 export const terminalSendSchema = {
   windowTitle: z.string().max(200).describe("Partial title of the terminal window."),
   input: z.string().max(10000).describe("Text to send (max 10,000 chars)."),
-  method: z.enum(["auto", "background", "foreground"]).default("auto").describe(
+  method: z.enum(["auto", "background", "foreground", "foreground_flash"]).default("auto").describe(
     "Input routing channel. " +
     "'auto' defaults to background (WM_CHAR) when the target is a known terminal class " +
     "(Windows Terminal / cmd / PowerShell / conhost) so user-side focus changes mid-stream " +
@@ -60,6 +62,10 @@ export const terminalSendSchema = {
     "foreground for non-terminal targets. " +
     "'background' forces WM_CHAR injection (no focus change). " +
     "'foreground' forces the current behavior (SetForegroundWindow + clipboard paste). " +
+    "'foreground_flash' (ADR-013 Option E) is an explicit opt-in 妥協 BG path for Windows " +
+    "Terminal: temporarily steals foreground (~50-80ms), pastes via clipboard, sends Ctrl+V " +
+    "+ Enter (when pressEnter=true), restores foreground + clipboard. Single-line + < 5KiB " +
+    "only. `typingLeakRisk: true` in hints. " +
     "Default 'auto'."
   ),
   chunkSize: z.number().int().min(1).max(10000).default(100).describe(
@@ -381,7 +387,7 @@ export const terminalSendHandler = async ({
 }: {
   windowTitle: string;
   input: string;
-  method?: "auto" | "background" | "foreground";
+  method?: "auto" | "background" | "foreground" | "foreground_flash";
   chunkSize?: number;
   pressEnter: boolean;
   focusFirst: boolean;
@@ -398,6 +404,105 @@ export const terminalSendHandler = async ({
     const win = findTerminalWindow(windowTitle);
     if (!win) {
       return failWith("Terminal window not found: " + windowTitle, "terminal:send", { windowTitle });
+    }
+
+    // ── ADR-013 Option E: foreground_flash 明示 opt-in path ─────────────────
+    // method:'foreground_flash' は WT 等 WM_CHAR 不対応 terminal 用、Clipboard
+    // + foreground steal + paste + restore の 50-80ms 妥協 BG path。caller が
+    // typing leak risk + foreground 一時占有を許容した上での opt-in。
+    if (inputMethod === "foreground_flash") {
+      const channel = resolveBackgroundInputChannel(win.hwnd, {
+        allowedChannels: ["wm_char", "clipboard_flash"],
+      });
+
+      if (channel.kind === "unsupported") {
+        return failWith(
+          new Error("ForegroundFlashUnsupported"),
+          "terminal:send",
+          {
+            context: { reason: channel.reason, windowTitle: win.title },
+            suggest: [
+              "method:'foreground_flash' resolved to unsupported channel",
+              "Try method:'foreground' for non-terminal targets",
+            ],
+          }
+        );
+      }
+
+      if (channel.kind === "wm_char") {
+        // Resolver picked wm_char (= ConsoleWindowClass)。foreground_flash semantics
+        // を「foreground を奪わずに paste したい」と解釈し、wm_char で済ませる。
+        // 簡易 BG path、Phase 3 MVP scope (UIA verify は省略)。
+        const r = postCharsToHwnd(win.hwnd, input);
+        if (!r.full) {
+          return failWith(
+            new Error("BackgroundInputIncomplete"),
+            "terminal:send",
+            { context: { sent: r.sent, total: input.length } }
+          );
+        }
+        // Codex Round 1 P2-B 反映: input が CR/LF 終端なら Enter 重複送信を回避
+        // (= 既存 BG path の newline guard と同 contract、conhost で blank command
+        //  実行を防ぐ)。
+        if (pressEnter && !/[\r\n]$/.test(input)) {
+          postEnterToHwnd(win.hwnd);
+        }
+        return ok({
+          ok: true,
+          method: "foreground_flash",
+          hints: { backgroundChannel: "wm_char" },
+        });
+      }
+
+      // channel.kind === "clipboard_flash" — WT XAML、ADR-013 Option E 本流
+      // (cooperative_bridge は Option F、Phase 3 MVP scope 外、narrow reject)
+      if (channel.kind !== "clipboard_flash") {
+        return failWith(
+          new Error("ForegroundFlashChannelNotImplemented"),
+          "terminal:send",
+          { context: { kind: channel.kind, windowTitle: win.title } }
+        );
+      }
+      // Codex Round 1 P2-B 同型対応: input 末尾改行で Enter 重複送信を回避。
+      // text には改行を入れない構造的回避なので native validate_input が
+      // input_contains_newline で reject、ここに到達した時点で input は改行ゼロ。
+      // ただし caller が pressEnter 明示し、かつ将来 native side で改行許容に
+      // 変わる可能性に備えて防御的に guard も書いておく。
+      const flashPressEnter = pressEnter && !/[\r\n]$/.test(input);
+      const flashResult = injectViaForegroundFlash(
+        channel.hwnd,
+        channel.pid,
+        input,
+        { pressEnter: flashPressEnter }, // terminal:send default true、改行終端なら抑止
+      );
+      if (!flashResult.ok) {
+        return failWith(
+          new Error(flashResult.reason ?? "ForegroundFlashFailed"),
+          "terminal:send",
+          {
+            context: {
+              reason: flashResult.reason,
+              rawError: flashResult.rawError,
+              windowTitle: win.title,
+            },
+          }
+        );
+      }
+      return ok({
+        ok: true,
+        method: "foreground_flash",
+        hints: {
+          backgroundChannel: "clipboard_flash",
+          typingLeakRisk: true,
+          typingLeakMitigation: "userTypingDuringFlashMayLeakToWT",
+          flashDurationMs: flashResult.result?.flashDurationMs,
+          foregroundStealMethod: flashResult.result?.foregroundStealMethod,
+          foregroundRestored: flashResult.result?.foregroundRestored,
+          foregroundRestoreMethod: flashResult.result?.foregroundRestoreMethod,
+          clipboardRestored: flashResult.result?.clipboardRestored,
+          clipboardSkippedFormats: flashResult.result?.clipboardSkippedFormats ?? [],
+        },
+      });
     }
 
     // ── Background input path (WM_CHAR) ────────────────────────────────────

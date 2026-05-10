@@ -136,6 +136,22 @@ windows = { version = "0.62", features = [
     # GetFocus / MapVirtualKeyW (KeyboardAndMouse re-exports these despite
     # their "input" semantics — verified against windows-rs 0.62 docs).
     "Win32_UI_Input_KeyboardAndMouse",
+    # ── ADR-013 Option E (foreground_flash) ──────────────────────────────
+    # Clipboard API: OpenClipboard / EmptyClipboard / SetClipboardData /
+    # GetClipboardData / EnumClipboardFormats / GetClipboardSequenceNumber /
+    # CloseClipboard
+    "Win32_System_DataExchange",
+    # HGLOBAL: GlobalAlloc / GlobalLock / GlobalUnlock / GlobalSize / GlobalFree
+    "Win32_System_Memory",
+    # GetModuleHandleW (used by RegisterClassExW for hidden owner window)
+    "Win32_System_LibraryLoader",
+    # ── ADR-013 Phase 1e (wt_dialog_scan) ────────────────────────────────
+    # VARIANT used by IUIAutomation::CreatePropertyCondition for class name
+    # property filter (Microsoft.UI.Xaml.Controls.ContentDialog). VARIANT
+    # struct is gated by both Win32_System_Com (already enabled above) and
+    # Win32_System_Ole.
+    "Win32_System_Variant",
+    "Win32_System_Ole",
 ] }
 
 [build-dependencies]

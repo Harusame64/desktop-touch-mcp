@@ -7,6 +7,12 @@
  * apps — use `canInjectViaPostMessage` to check before calling.
  *
  * All functions are synchronous (PostMessageW is non-blocking by design).
+ *
+ * **ADR-013 Option E (`foreground_flash` channel)**: WT を含む WM_CHAR 不対応
+ * window に対する妥協 BG path として `injectViaForegroundFlash` を提供。
+ * `method: 'foreground_flash'` 明示 opt-in でのみ使用、`background` 契約とは
+ * 分離。Channel 判定は `background-channel-resolver.ts::resolveBackgroundInputChannel`
+ * 経由。
  */
 
 import {
@@ -18,6 +24,11 @@ import {
   vkToScanCode,
   WM_CHAR, WM_KEYDOWN, WM_KEYUP, VK_RETURN, VK_CONTROL, VK_SHIFT, VK_MENU,
 } from "./win32.js";
+import { nativeWin32 } from "./native-engine.js";
+import type {
+  NativeForegroundFlashOptions,
+  NativeForegroundFlashResult,
+} from "./native-types.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Known-compatible terminal window classes (fast-path supported:true)
@@ -286,4 +297,97 @@ export function postKeyComboToHwnd(hwnd: unknown, combo: string): boolean {
  */
 export function isBgAutoEnabled(): boolean {
   return process.env["DTM_BG_AUTO"] === "1";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR-013 Option E — `foreground_flash` channel
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Typed reason returned by native `win32_foreground_flash_inject` failure. */
+export type ForegroundFlashFailureReason =
+  /** Input が改行 (LF / CR) を含む (Opus Round 1 P1-3 で size と分離)。 */
+  | "input_contains_newline"
+  /** Input が UTF-16 で 5KiB 超 (size threshold)。 */
+  | "input_exceeds_paste_warning_threshold"
+  | "foreground_steal_denied"
+  | "focus_wait_timeout"
+  | "clipboard_lock_contention"
+  | "foreground_restore_failed"
+  | "wt_paste_warning_intercepted"
+  | "send_input_failed";
+
+const KNOWN_FLASH_REASONS: ReadonlySet<string> = new Set<ForegroundFlashFailureReason>([
+  "input_contains_newline",
+  "input_exceeds_paste_warning_threshold",
+  "foreground_steal_denied",
+  "focus_wait_timeout",
+  "clipboard_lock_contention",
+  "foreground_restore_failed",
+  "wt_paste_warning_intercepted",
+  "send_input_failed",
+]);
+
+/** Result envelope for `injectViaForegroundFlash`. ok=false 時は reason 必須。 */
+export interface ForegroundFlashOutcome {
+  ok: boolean;
+  /** snake_case typed reason、ok=false 時のみ存在。
+   *  unknown reason は undefined にせず raw string でそのまま透過 (caller 側で
+   *  `error.message` 確認可能、observability)。 */
+  reason?: ForegroundFlashFailureReason | string;
+  /** 成功時のみ存在。flash duration / steal method / clipboard 状態 hints。 */
+  result?: NativeForegroundFlashResult;
+  /** unknown 型 native error の raw `error.message` (observability)。 */
+  rawError?: string;
+}
+
+/**
+ * `foreground_flash` channel 経由で text を inject。
+ *
+ * Native `win32_foreground_flash_inject` を呼び出す薄い wrapper:
+ * - 成功時は `{ ok: true, result }` を返す (typed reason / hints は result 内)
+ * - 失敗時は `Error` を try/catch して `{ ok: false, reason }` に variant 化
+ *
+ * **本 fn は `method: 'foreground_flash'` 明示 opt-in path 専用** — `background`
+ * 契約 caller (`canInjectViaPostMessage` 経由) からは到達しない (silent contract
+ * violation 防止)。
+ *
+ * @param hwnd target HWND (`bigint`)
+ * @param pid target process ID
+ * @param text inject 対象 text (single-line + UTF-16 < 5KiB、native 側 validate)
+ * @param options native options (default で `scan_paste_warning_dialog: true`、
+ *                `block_keyboard_during_flash: false` 等)
+ */
+export function injectViaForegroundFlash(
+  hwnd: bigint,
+  pid: number,
+  text: string,
+  options: NativeForegroundFlashOptions = {},
+): ForegroundFlashOutcome {
+  if (!nativeWin32 || typeof nativeWin32.win32ForegroundFlashInject !== "function") {
+    return {
+      ok: false,
+      reason: "send_input_failed",
+      rawError:
+        "[bg-input] desktop-touch-engine native addon missing win32_foreground_flash_inject (rebuild with `npm run build:rs`)",
+    };
+  }
+  try {
+    const result = nativeWin32.win32ForegroundFlashInject(hwnd, pid, text, options);
+    return { ok: true, result };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    // napi::Error::from_reason は message にそのまま typed reason (snake_case) を入れる。
+    // 現在の panic guard (`src/win32/safety.rs::napi_safe_call`) は失敗時に
+    // `panic in <fn>: <detail>` 形式で wrap (= line 53 の format!)。本 regex は
+    // **その固定 format に依存**、将来 `napi_safe_call` の prefix 名が変わったら
+    // 同期して update が必要 (Round 2 P2-2 narrative integrity 反映)。`[^:]+` で
+    // fn 名 segment のみを greedy 一致、最初の `:` 以前を削除する shape。
+    const cleaned = msg
+      .replace(/^panic in [^:]+:\s*/, "")
+      .trim();
+    if (KNOWN_FLASH_REASONS.has(cleaned)) {
+      return { ok: false, reason: cleaned as ForegroundFlashFailureReason, rawError: msg };
+    }
+    return { ok: false, reason: cleaned, rawError: msg };
+  }
 }

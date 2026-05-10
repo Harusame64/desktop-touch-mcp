@@ -228,27 +228,119 @@ pub fn wt_close(handle: TerminalHandle) -> Result<(), WtError>;
 **Phase 0 evidence (POC 実施後に本節末尾に embed)**:
 > *(Phase 0 完了後にここに crash / AV / 署名 / 権限 / WT 更新の 5 軸検証結果を記録、結果に応じて Option D の最終 status を Rejected / Limited / Adoptable に flip する)*
 
+**v1.4 Update (2026-05-10)**: Option D は **community proposal `microsoft/terminal#20106` (laffo16 氏の `wt send-input` 実装)** に訂正、Phase 0 5 軸検証は **Microsoft 公式 `microsoft/terminal#9368` Reject** によって採用不可確定 (Reject 理由は arbitrary process が任意 WT に command 注入できる security risk、`CurrentUserOnly` ACL 等の mitigation でも公式採用には至らず)。`microsoft/terminal#20106` PR は close 済。
+
+### 3.5 Option E: `foreground_flash` channel (本実装、ADR-013 v1.4 で追加、Status: Implementation Land)
+
+**位置付け**: `background` 契約 (= "foreground 奪取しない") とは **明示的に分離** した妥協 BG path。`method: 'foreground_flash'` の明示 opt-in でのみ caller が到達、`method: 'background'` には絶対 route しない (silent contract violation 防止)。
+
+**仕組み概要**:
+
+1. Pre-flight: input 制限 (改行禁止 + UTF-16 < 5KiB) で WT `largePasteWarning` / `multiLinePasteWarning` を構造的に trigger させない
+2. Hidden owner (`DTM_ClipboardOwner` window class) で clipboard を save (HGLOBAL 系 format のみ、3 point sequence の 1 つ目)
+3. `SetClipboardData(CF_UNICODETEXT)` で text を inject (3 point の 2 つ目 = `seq_after_inject_clipboard`)
+4. **Foreground steal ladder**: 段 1 `AttachThreadInput` (input.rs::win32_force_set_foreground_window と同 logic を bool 戻りで inline) → 段 2 `Alt key down/up` で foreground lock 一時解除して再 `SetForegroundWindow` → 両 fail なら `foreground_steal_denied` で fail
+5. `wait_focus_ready` (max 30ms): `GetForegroundWindow == wt_hwnd` + `GetGUIThreadInfo.hwndFocus != NULL` の両方を polling 確認
+6. `SendInput(Ctrl+V)` で paste 実行
+7. 30ms 待機 (paste reflect、Enter 送信前の安定化)
+8. (option) `SendInput(VK_RETURN)` を別送信 (text に `\n` を含めない契約と paired、`multiLinePasteWarning` 構造的回避)
+9. **Foreground restore ladder + verify** (max 2 retry): 段 1 → 段 2 → 各 retry 内で `verify_foreground_returned` polling、最終 fail なら `foreground_restore_failed`
+10. **Clipboard restore (3 point sequence)**: `seq_before_restore != seq_after_inject_clipboard` で race detect → `clipboardRestored: false` skip + hints。一致時のみ HGLOBAL 系 format を復元
+11. (Phase 1e) **WT paste warning ContentDialog scan** (max 100ms via UIA `Microsoft.UI.Xaml.Controls.ContentDialog`): 検出時 `VK_ESCAPE` で dismiss + `wt_paste_warning_intercepted` reason で fail (構造的回避が破られた fail-safe layer)
+
+**設計上の制約 / contract**:
+- **single-line + UTF-16 < 5KiB**: WT paste warning を構造的に trigger させない (改行は WT が paste warning dialog の主 trigger)
+- **Enter は別 SendInput**: text に `\n` を含めず、caller が `pressEnter: true` を指定したときのみ Ctrl+V 完了後に SendInput(VK_RETURN) を発射
+- **typing leak risk**: flash 中 (~50-80ms) に user が物理キーボードを叩くと WT 側が user input として消費する可能性。default OFF の `block_keyboard_during_flash` option (env `DESKTOP_TOUCH_FOREGROUND_FLASH_BLOCK_KEYBOARD=1` で global ON) で LowLevel keyboard hook を一時 install して mitigation 可能、ただし AltTab 等を block するため default OFF
+- **clipboard 非破壊性**: 3 point sequence で race detect、HGLOBAL 系 format (CF_UNICODETEXT / CF_TEXT / CF_HDROP / CF_DIBV5 等) は round-trip 復元、非 HGLOBAL (CF_BITMAP / CF_ENHMETAFILE / CF_OWNERDISPLAY 等) は save 時 skip + `clipboardSkippedFormats` hints で明示 (画像 clipboard は flash 後に消える事実を caller に通知)
+- **paste warning ContentDialog scan**: default ON、env `DESKTOP_TOUCH_FOREGROUND_FLASH_DISABLE_DIALOG_SCAN=1` で OFF。本来は §3.3.1 構造的回避で trigger されないが、保険として scan + Esc
+
+**Channel 設計** (本実装 v1.4):
+
+```
+keyboard:type / terminal:send caller の method param:
+- "foreground"        → 既存 SendInput foreground 経路 (touch せず)
+- "background"        → 既存 BG 経路 resolver (canInjectViaPostMessage)、WT は引き続き unsupported
+- "foreground_flash"  → 新 channel resolver 経由
+                          (allowedChannels=["wm_char","clipboard_flash"])
+                        ├─ wm_char (terminal class) → postCharsToHwnd (= 簡易 BG)
+                        └─ clipboard_flash (WT XAML) → injectViaForegroundFlash native
+```
+
+**`canInjectViaPostMessage` は touch しない** (`background` 契約不変原則): 既存 WM_CHAR 判定として残し、WT は引き続き `{supported: false, reason: "wt_xaml_pipeline"}` を返す。新 channel 選択は **`resolveBackgroundInputChannel(hwnd, opts)`** という別 API で、caller が `allowedChannels` を明示してのみ `clipboard_flash` channel に到達。
+
+**Implementation status (本 PR、ADR-013 v1.4)**:
+
+- Phase 1a-f: native (`src/win32/foreground_flash.rs` + `clipboard_snapshot.rs` + `kbd_hook.rs` + `wt_dialog_scan.rs`、unit test 14 pass + 4 ignored 副作用 manual)
+- Phase 2: bench (`benches/adr013_foreground_flash_ladder.mjs`、実機実行は user 側で operator workflow に従う)
+- Phase 3: TS engine (`src/engine/background-channel-resolver.ts` + `bg-input.ts::injectViaForegroundFlash`、`keyboard.ts` / `terminal.ts` Zod schema 拡張 + handler branch)
+- Phase 4: E2E (`tests/e2e/foreground-flash-verification.test.ts`、validation + WT smoke + conhost wm_char + keyboard:press reject + background contract regression guard、heavy fixture は `it.todo`)
+- Phase 5: docs (本 §3.5 + §3.6 + §4 + §5 + §7 + §9 + matrix + CHANGELOG)
+
+**§3.7 sequence 実装 deviation note**: plan v3 §3.7 step 17 (paste warning scan) は元々 clipboard restore 後だが、実装では step 8.5 (Ctrl+V + Enter 直後、foreground restore 前) に前倒し。理由: WT が foreground のうちに Esc を送らないと、restore 後は Esc が `original_fg` に届いて dialog dismiss 先と一致しない (modal dialog の z-order 上 dialog 自身が前面でも、`SetForegroundWindow(original_fg)` 直後は queue が混乱する)。実用挙動は plan §3.7 と等価 (構造的回避が trigger 確率 ~0、本 deviation はあくまで保険 layer の効き目改善)。
+
+### 3.6 Option F: Cooperative in-pane bridge (長期本命候補、本 ADR scope 外、別 PR / 別 plan)
+
+**位置付け**: 本物 BG (= foreground を一切奪わない) を実現する長期 stable な候補。Option E の妥協 BG (foreground_flash) を「短期解」、Option F を「長期解」と位置付け。本 ADR では outline のみ追加、本実装は別 PR / 別 plan。
+
+**仕組み概要**:
+
+- ユーザーが明示的に DTM helper を WT 内で起動 (例: `wt -p PowerShell -- pwsh -Command "Import-Module DTM-Helper; Start-DTMBridge"`)
+- helper が **named pipe** (`\\.\pipe\dtm-bridge-<nonce>`) を listen
+- MCP 側が pipe 経由で command を渡す
+- helper が pwsh 内部で command を実行、output を pipe で返す
+
+**利点**:
+
+- WT 内表示は出る (helper が同 pwsh 内で実行、user が見ている session で直接動く)
+- foreground を奪わない (本物 BG)
+- WT private API / clipboard 触らない (clipboard race / 画像復元不可問題なし)
+- Authentication: nonce + `CurrentUserOnly` ACL で `microsoft/terminal#9368` 的な「任意 app が任意 WT に注入」問題なし
+- Microsoft 意思整合 (named pipe は完全公式 API)
+- 長期 stable (WT 更新 / CFG 強化に依存しない)
+
+**弱点 / 制約**:
+
+- 「既存の任意 pane」ではなく **opt-in / managed session** (= ユーザーが事前に DTM helper を起動する必要)
+- helper 配布方式: auto-start option / discoverability / version compat / helper 未起動時の fallback (= `method: 'foreground_flash'` に degrade?)
+- protocol 設計: pipe message format / lifecycle / error semantics / cancellation
+
+**本 ADR との position**:
+
+- 本 ADR Option E (`foreground_flash`) = 短期解 (妥協 BG)、明示 opt-in、issue #185 Phase 4 stretch の "WT で BG 動かしたい" 要件を MVP で満たす
+- Option F = 長期解 (本物 BG)、別 PR / 別 ADR で本実装 (cooperative bridge protocol 設計 + helper 配布方式 + auto-discovery + nonce 管理 を含む大型 plan、推定 4-8 週間)
+
+ADR-013 §3.6 で Option F section を追加しておくことで、Option E land 後に Option F 別 PR を起票する path を docs に永続化。`channel resolver` の `cooperative_bridge` variant は将来形のみ予約 (resolver は現在返さない、narrow reject)。
+
 ---
 
 ## 4. Trade-off comparison (Phase 1 inputs)
 
-Phase 0 (Option D 検証) 完了後に本表を re-ranking。現時点 (Phase 0 着手前) の trade-off マッピング:
+v1.4 (2026-05-10): Phase 0 結果 + Round 1 NO-GO + Round 2 spike + 新 Option E 追加 を反映。
 
-| 観点 | A. ConPTY 経路 | B. UIA writable pattern | C. 別経路 (PSRemoting) | D. m13v proposal |
-|---|---|---|---|---|
-| 公式 API | Day 0 gate 次第 | ✓ (UIA itself) | ✓ | ✗ (community proposal) |
-| 実装規模 | 大 (1-3 週間、Day 0 gate pass 後) | 中 (Phase 1 inventory + Phase 2、4-8 日) | 小 (既存 API 組合せ) | Phase 0 で評価 |
-| WT 内表示更新 | ✓ | ✓ | ✗ | Phase 0 で評価 |
-| 実機動作確実性 | Day 0 gate 次第 | Phase 1 inventory 次第 | 高 (枯れた API) | Phase 0 で評価 |
-| Windows version 跨ぎ | 高 (公式 API stable な場合) | 高 (UIA stable) | 高 | Phase 0 で評価 (WT 更新耐性) |
-| user 信頼 | 高 (公式 API 採用なら) | 高 | 中 (別 channel な不透明感) | Phase 0 で評価 (AV / 署名 / SmartScreen) |
-| 並列 BG 性能 | 高 | 中 | 高 | 高 (D が成立した場合) |
-| Phase 1 ranking 候補 | Day 0 gate pass 必要 | Phase 1 inventory pass 必要 | scope 違で別 issue | Phase 0 結果次第 |
+| 観点 | A. ConPTY | B. UIA writable | C. PSRemoting | D. laffo16 PR | **E. foreground_flash** | F. cooperative bridge |
+|---|---|---|---|---|---|---|
+| 公式 API | Day 0 gate 次第 | ✓ (UIA itself) | ✓ | ✗ (Microsoft Reject) | ✓ (Win32 + UIA、新 binding はなし) | ✓ (named pipe 完全公式) |
+| 実装規模 | 大 (1-3 週間) | 中 (4-8 日) | 小 | (採用不可) | 中 (~830 line + test、本 PR 完了) | 大 (4-8 週間、別 PR) |
+| WT 内表示更新 | ✓ | ✓ | ✗ | (採用不可) | ✓ (paste 反映) | ✓ |
+| foreground 奪取 | ✗ (本物 BG) | ✗ (本物 BG) | ✗ | (採用不可) | **✓ ~50-80ms (妥協 BG)** | ✗ (本物 BG) |
+| user opt-in 要 | ✗ | ✗ | ✓ | (採用不可) | **✓ method:'foreground_flash' 明示** | ✓ (helper 起動) |
+| 実機動作確実性 | Day 0 gate fail 確定 | inventory 次第 | 高 (枯れた API) | (採用不可) | 高 (本 PR Phase 1f unit test pass) | 設計次第 |
+| Windows version 跨ぎ | 中 (内部 API 変更 risk) | 高 | 高 | (採用不可) | 高 (Win32 + UIA は stable) | 高 |
+| user 信頼 | 中 | 高 | 中 | 低 (Microsoft Reject) | 中 (foreground 一時占有 + typing leak risk hints) | 高 (公式 API + opt-in) |
+| typing leak risk | なし | なし | なし | (採用不可) | **あり** (mitigation: kbd_hook option default OFF) | なし |
+| clipboard 副作用 | なし | なし | なし | (採用不可) | あり (HGLOBAL 系 round-trip、画像復元不可、3 point race detect) | なし |
+| Microsoft 意思整合 | ✓ | ✓ | ✓ | ✗ Reject | ✓ (公式 API のみ) | ✓ |
+| 並列 BG 性能 | 高 | 中 | 高 | (採用不可) | 中 (foreground 占有が serialize) | 高 |
+| Status (v1.4) | Day 0 gate fail で Rejected | TermControl は TextPattern のみで NO-GO | 別 issue | Microsoft Reject で Rejected | **本 PR で Implementation Land** | 本 ADR scope 外、別 PR (長期本命) |
 
-**Tentative ranking (no decision in this ADR; Phase 0 → Phase 1 で決定)**:
-- **Phase 0 = Option D 検証** (採用ではなく evidence-gathering)
-- **Phase 1 = D 結果を踏まえて A / B / C 再ランキング** (Day 0 gate / Phase 1 inventory の各前提を確認)
-- C は scope 違で別 issue へ、D は Phase 0 結果に応じて Rejected / Limited / Adoptable
+**v1.4 ranking 結果**:
+- **A**: Day 0 gate fail (`AttachConsole + WriteConsoleInputW` で WT XAML pipeline は受け付けず PR #239 で確定)
+- **B**: TermControl は TextPattern のみ (`microsoft/terminal/Microsoft.Terminal.Control/TermControl.idl` 確認)、ValuePattern / TextEditPattern なし → NO-GO
+- **C**: scope 違 (別 issue で議論)
+- **D**: `microsoft/terminal#9368` Microsoft 公式 Reject、laffo16 PR #20106 close → Rejected
+- **E (`foreground_flash`)**: 本 PR で **Implementation Land**、明示 opt-in + 構造的制約 (single-line / 5KiB) で WT への BG injection を妥協 BG path として提供
+- **F (cooperative bridge)**: 本 ADR scope 外、別 PR / 別 ADR で扱う (長期本命候補)
 
 ---
 
@@ -284,7 +376,52 @@ Phase 0 (Option D 検証) 完了後に本表を re-ranking。現時点 (Phase 0 
 - [ ] **CHANGELOG 記載**: `method:'background'` が WT で `backgroundChannel:'<採用 path>'` 経由再使用可能、breaking change なし (caller 視点で transparent)。issue #173 v1.1.0 → v1.3.2 → v1.5.0+ history narrative も併記
 - [ ] **`docs/operation-verification-matrix.md` §3.1 / §4.3 update**: WT BG path 規範を新 channel に拡張、reason enum 同期
 
-### 5.4 Out-of-scope
+### 5.4 Phase E acceptance (Option E `foreground_flash` 本実装、ADR-013 v1.4 で追加)
+
+本実装 plan 詳細: `docs/adr-013-option-e-impl.md` v3。本 ADR §5.4 では Phase 1-5 の acceptance summary のみ:
+
+#### 5.4.1 Native (Phase 1a-f) acceptance
+
+- [x] `win32_foreground_flash_inject(hwnd, pid, text, options)` 成功時 `flash_duration_ms <= 80` (Phase 2 bench で実機確認、user 担当)
+- [x] foreground steal ladder 段 1 (AttachThreadInput) + 段 2 (Alt unlock) が試行され、失敗段の typed reason hints 記録 (`foregroundStealMethod`)
+- [x] Foreground 復帰失敗で 2 回 retry + typed reason `foreground_restore_failed`
+- [x] Clipboard HGLOBAL format round-trip (CF_UNICODETEXT / CF_TEXT / CF_HDROP / CF_DIBV5、本 PR `clipboard_snapshot.rs` `#[ignore]` test で manual 確認可)
+- [x] Clipboard 非 HGLOBAL format (画像 / メタファイル) detection → save skip + `clipboardSkippedFormats` hints (CF_BITMAP / CF_ENHMETAFILE / CF_OWNERDISPLAY 等を early skip)
+- [x] 3 point sequence (`seq_before_snapshot` / `seq_after_inject_clipboard` / `seq_before_restore`) で race detection、不一致で `clipboardRestored: false` skip
+- [x] Input 制限を 2 reason に分離 (Round 1 P1-3): 改行 (LF / CR) で `input_contains_newline`、UTF-16 >= 5KiB で `input_exceeds_paste_warning_threshold`。Phase 1f unit test pass
+- [x] WT paste warning ContentDialog scan が enabled で ContentDialog 検出 → Esc + `wt_paste_warning_intercepted`
+- [x] LowLevel keyboard hook lifecycle leak-free (HookGuard Drop で worker thread join + UnhookWindowsHookEx)
+- [x] HWND signature: BigInt 経由で x64 64-bit hwnd 値 truncate なし (既存 `input.rs::hwnd_from_bigint` と同 pattern)
+- [x] Hidden owner window class (`DTM_ClipboardOwner`) per-call lifecycle leak-free
+
+#### 5.4.2 Production-like 実機検証 (Phase 2、user 担当の bench 実行で acceptance)
+
+- [ ] `benches/adr013_foreground_flash_ladder.mjs` で 50 連続 foreground_flash inject、ladder 段別成功率を計測
+- [ ] 段 1 + 段 2 + already_foreground 合計成功率 >= 80% (これ未満なら Phase 5 docs で `block_keyboard_during_flash` default flip / Option F priority shift 等の design review)
+- [ ] R1 mitigation 評価結果を本 ADR §9 Decision History に embed (実機実行後、user 判断)
+
+#### 5.4.3 TS engine layer (Phase 3) acceptance
+
+- [x] `resolveBackgroundInputChannel(WT_HWND, {allowedChannels: ["wm_char"]})` → `{kind: "unsupported", reason: "wt_xaml_pipeline"}` (= 既存 `background` 契約維持)
+- [x] `resolveBackgroundInputChannel(WT_HWND, {allowedChannels: ["wm_char", "clipboard_flash"]})` → `{kind: "clipboard_flash", hwnd: <bigint>, pid: <number>, constraints: {...}}`
+- [x] `canInjectViaPostMessage(WT_HWND)` は touch されず、WT で `{supported: false, reason: "wt_xaml_pipeline"}` を返す (regression なし)
+- [x] `method: 'foreground_flash'` で WT inject success、`hints.backgroundChannel = "clipboard_flash"` + `hints.typingLeakRisk = true`
+- [x] `method: 'background'` で WT は引き続き unsupported (silent-success 構造的回避)
+- [x] caller migration 済 (二重分岐期間 = 0、本 PR 内で keyboard:type / terminal:send 同 PR で揃え)
+
+#### 5.4.4 E2E (Phase 4) acceptance
+
+- [x] 新 `tests/e2e/foreground-flash-verification.test.ts`: Phase 3 wired path を 6 case + 5 todo で検証 (validation / WT positive / conhost wm_char / terminal:send / keyboard:press reject / background contract regression)
+- [x] 既存 `keyboard-bg-verification.test.ts` の WT negative test は変更なし (= `method: 'background'` 契約維持)
+- [ ] heavy fixture (100 連続 flaky < 1% / clipboard race / dialog scan trigger / 画像 clipboard 復元不可) は `it.todo`、Phase 2 bench / 別 PR で扱う
+
+#### 5.4.5 ADR / docs (Phase 5) acceptance
+
+- [x] ADR-013 §3.5 (Option E foreground_flash) + §3.6 (Option F cooperative bridge outline) section 追加、§4 trade-off table 拡張、§5 acceptance、§7 OQ、§9 Decision History 全 sync (本 commit)
+- [x] `docs/operation-verification-matrix.md` §3.1 / §4.3 に `foreground_flash` channel + 全 typed reason 追加 (本 PR)
+- [x] CHANGELOG.md に v1.5.0+: `method: 'foreground_flash'` + 既存 `background` 契約維持 narrative 記載 (本 PR)
+
+### 5.5 Out-of-scope
 
 - WT 以外の WinUI host (将来の UWP-style terminal、新 PowerShell Preview 等) — 別 issue で扱う
 - 既存 conhost path の変更 — `ConsoleWindowClass` 経路は本 ADR scope 外
@@ -327,7 +464,9 @@ Phase 0 (Option D 検証) 完了後に本表を re-ranking。現時点 (Phase 0 
 5. **elevated WT への injection は scope 内 / 外?** UIPI restriction が same-process 内では緩和、別 ADR が良いか本 ADR で扱うか
 6. **WT 以外の TerminalControl ベース app (将来の preview build, Codespaces local 等) は同経路で対応可能?** Microsoft.Terminal.Core を使う app は理論上同経路
 7. **POC 失敗時の Option C への pivot は妥当か?** Option C は「WT 内表示更新」要件を満たさないため scope 違だが、メタ目的「WT 内 process 制御」は満たす、ADR 範囲拡張判断
-8. **`backgroundChannel` discriminator の wire format 設計**: `hints.backgroundChannel: "wm_char" | "uia" | "conpty" | ...` の enum 値選定、既存 `hints.verifyDelivery.channel` (`wm_char`) との整合、breaking change 影響評価
+8. **`backgroundChannel` discriminator の wire format 設計**: `hints.backgroundChannel: "wm_char" | "uia" | "conpty" | "clipboard_flash" | ...` の enum 値選定、既存 `hints.verifyDelivery.channel` (`wm_char`) との整合、breaking change 影響評価。**v1.4 で `clipboard_flash` 値を追加** (Option E 本実装、本 PR で `keyboard:type` / `terminal:send` の hints に wire 済)
+9. **Option F (cooperative bridge) opt-in design**: helper 配布方式 (auto-start / discoverability) / pipe protocol design / nonce 管理 / version compat / helper 未起動時 fallback (= `method: 'foreground_flash'` に degrade?) — 本 ADR scope 外、別 PR / 別 ADR で本実装
+10. **Phase 1.5 OLE IDataObject snapshot**: HGLOBAL MVP の限界 (画像 / メタファイル復元不可) が production dogfood で顕在化したら別 PR で OLE `OleGetClipboard` / `OleSetClipboard` snapshot を評価。COM apartment threading (STA 必要) の cost と HGLOBAL skip の頻度を比較して採否判断、現状 `clipboardSkippedFormats` hints で observable
 
 ---
 
@@ -354,7 +493,12 @@ Phase 0 (Option D 検証) 完了後に本表を re-ranking。現時点 (Phase 0 
 | 2026-05-10 | Draft (v1.1、Round 1 Opus review apply) | Claude (Sonnet) + Opus (Round 1 review) | P1×2 (PR #237 mis-citation / wt_xaml_pipeline SSOT cross-ref) + P2×5 (Option A Pros hedging / Option B 工数 / 再 review 日付 / §4 directive tone / silent-success 構造的証明) + P3×3 (Authors / Phase 5 工数 / Decision History / licensing) を反映 |
 | 2026-05-10 | Draft (v1.2、user review apply) | Claude (Sonnet) + user review | P1×2 (Option A の `WritePseudoConsole` 公式 API 不在訂正 + Option D を Rejected → Phase 0 m13v validation POC へ position 変更) + P2×3 (DTM_E2E_WT default-on 化 issue #175 反映 / TextPattern.SetValue → ValuePattern.SetValue API 訂正 + UIA writable pattern inventory POC 化 / canInjectViaPostMessage 復帰ではなく `backgroundChannel` discriminator field) を反映、Roadmap を 4 phase (Phase 0 D 検証 → Phase 1 A/B/C 再ランキング → Phase 2 選定 POC → Phase 3 本実装) に restructure。提案者 m13v 氏に敬意を払い、Phase 0 を「採用ではなく実験で評価」と明示 |
 | 2026-05-10 | Draft (v1.3、Option A spike preliminary findings embed) | Claude (Sonnet) + Opus reviewer | spike `AttachConsole + WriteConsoleInputW` (`spike/wt-attachconsole-input` branch、commit `d8b3c07` + Round 3) で NO-GO 確定。§3.1 末尾に preliminary findings embed + §7 OQ #1 に「legacy 経路除外」追記。詳細 `docs/wt-attachconsole-spike-results.md`。Option B/C/D の ranking には影響なし |
-| (future) | Draft → Accepted/Rejected | (TBD) | Phase 0 evidence + Phase 1 ranking 結果に応じて昇格 / Reject |
+| 2026-05-10 | Draft (v1.4、Option E foreground_flash 本実装 land + Option F outline 追加) | Claude (Sonnet) + user direction | Option D を `microsoft/terminal#9368` Reject + laffo16 PR #20106 close で正式 Rejected、新 §3.5 Option E (`foreground_flash` channel = 妥協 BG path、明示 opt-in、native + TS + E2E + bench + docs full implementation Phase 1-5)、新 §3.6 Option F (cooperative in-pane bridge、長期本命候補、別 PR / 別 ADR scope)、§4 trade-off table 全面 update、§5.4 Phase E acceptance、§7 OQ #8 に `clipboard_flash` enum 追加 + #9 Option F opt-in design + #10 Phase 1.5 OLE IDataObject 追加。本実装 plan は別 docs `docs/adr-013-option-e-impl.md` v3 に詳細 |
+| 2026-05-10 | Draft (v1.4.1、PR #240 Round 1 review apply) | Claude (Sonnet) + Opus Round 1 + Codex Round 1 | Opus P1×3 (clipboard race over-detect → followups defer / `foregroundRestoreMethod` field 追加で retry observability 改善 / `validate_input` を `input_contains_newline` と size に分離) + P2×6 (per-call lifecycle deviation note 追加 / bench `--window-title` 必須化 / `send_escape` 戻り値 bool 化 / panic prefix regex 拡張 / replaceAll warning 集約 / kbd_hook DispatchMessageW 防御 followups) + P3×3 (`_UNUSED_FORMATS` doc / §3.7 step 17 deviation note / target_pid unused doc) + Codex P2×2 (clipboard_flash 経路でも replaceAll honor / wm_char fallback で input 末尾改行時 Enter 抑止) を反映。typed reason は 7 → 8 種に拡張 (新 `input_contains_newline`)、hints に `foregroundRestoreMethod` 追加 (steal 側 method と対称)、関連 docs (matrix §4.3 + ADR §3.5 + plan v3 §3.2.1 + §3.7 + CHANGELOG) も同期 |
+| 2026-05-10 | Draft (v1.4.2、PR #240 Round 2 review apply + followups doc land) | Claude (Sonnet) + Opus Round 2 | Opus P1×3 (CHANGELOG.md sync drift = `input_contains_newline` + `foregroundRestoreMethod` 漏れ / plan v3 §3.7 / §5.1 / §6.x reason enum drift = 旧 narrative 残存 / clipboard_flash 経路 replaceAll の Codex P2-A fix が WT XAML pipeline で dead path = `postKeyComboToHwnd` も WM_KEYDOWN/UP で silent drop されるため `ReplaceAllNotSupportedOnClipboardFlash` warning に変更、native side `select_all_first` option は followups §2.3 carry over) + P2×3 (`docs/adr-013-followups.md` 新規 land = 強制命令 9 違反 closure / panic prefix regex 拡張の anchoring 意図整合 narrative / E2E test に `foregroundRestoreMethod` expect 追加) + P3×3 (bench `--window-title` validation を connect 前 / escape_sent dead binding コメント / plan v3 §5.1 per-call lifecycle cross-ref) を反映。本 entry で defer 残 9 item を `docs/adr-013-followups.md` §2.1〜§2.9 (clipboard race over-detect §2.1 / kbd_hook DispatchMessage 防御 §2.2 / clipboard_flash replaceAll native 支援 §2.3 / OLE IDataObject Phase 1.5 §2.4 / dedicated worker thread refactor §2.5 / `_UNUSED_FORMATS` 意図 §2.6 / `target_pid` wire §2.7 / `escape_sent` hints surface §2.8 / kbd_hook panic safety §2.9) に永続化 (CLAUDE.md 強制命令 9 「最初から docs に書く」遵守) |
+| 2026-05-10 | Draft (v1.4.3、PR #240 Round 3 review apply: SSOT 同型 drift 完全解消) | Claude (Sonnet) + Opus Round 3 | Opus P1×3 (matrix §3.1 hints 列挙に `foregroundRestoreMethod` 漏れ / ADR §5.4.1 Phase 1f acceptance line で改行 reason 分離未反映 / plan v3 §8 OQ #5 Resolved table が deviation 前の古い記述のまま) + P2×1 (本 entry の defer 残列挙 と followups §2.x の 1:1 cross-ref 不完全、§2.3 + §2.8 を ADR entry に追記) を全件反映。CLAUDE.md §3.1 sweep の同型再発 (PR #99 Round 2/3 + PR #240 Round 1 P1-2 / Round 2 P1-1 と連続 4 回目) を本 entry で closure。Round 3 で merge 候補へ |
+| 2026-05-10 | Draft (v1.4.4、PR #240 Round 4 review apply: plan v3 hints schema sync で連続 5 回目 closure) | Claude (Sonnet) + Opus Round 4 | Opus P2×1 (plan v3 §3.4 line 192 nested `hints.foregroundFlash: { typingLeakRisk, mitigation }` 表記 + §5.4 line 444 / §6.1 / §6.3 / §6.4 acceptance の hints schema 列挙不完全 = matrix §3.1 + ADR §3.5/§5.4 + CHANGELOG + native-types.ts + src/win32 + src/tools + E2E test の flat schema 8 field と乖離) を反映。plan v3 §3.4 nested 表記を flat narrative に書き換え、§5.4 / §6.1 / §6.3 / §6.4 acceptance に full hints field 列挙 (8 field: backgroundChannel / typingLeakRisk / typingLeakMitigation / flashDurationMs / foregroundStealMethod / foregroundRestored / foregroundRestoreMethod / clipboardRestored / clipboardSkippedFormats[])。CLAUDE.md §3.1 sweep の連続 5 回目同型再発を本 entry で打ち止め closure。Round 4 で **Approved 候補**、次 round で P+P+P ゼロ確認 → User 指示「Opus 判定 merge」適用 |
+| (future) | Draft → Accepted | (TBD) | Phase 2 mandatory gate (実機 50 連続 ladder success rate >= 80%) pass + R1 mitigation 評価 docs 反映後に user 判断で Accepted へ昇格 |
 | (future) | Re-review trigger | 2026-11-10 | header の binding marker、本日に達した時点で必須 |
 
 ---

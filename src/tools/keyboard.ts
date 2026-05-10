@@ -14,8 +14,10 @@ import {
   postKeyComboToHwnd,
   postEnterToHwnd,
   isBgAutoEnabled,
+  injectViaForegroundFlash,
   TERMINAL_WINDOW_CLASSES,
 } from "../engine/bg-input.js";
+import { resolveBackgroundInputChannel } from "../engine/background-channel-resolver.js";
 import { getTextViaTextPattern, getTextViaValuePattern } from "../engine/uia-bridge.js";
 import { stripAnsi } from "../engine/ansi.js";
 import { ok } from "./_types.js";
@@ -273,13 +275,17 @@ const hwndFocusParam = z.string().optional().describe(
 /** Non-ASCII punctuation that can be hijacked as Chrome/Edge keyboard accelerators */
 const NON_ASCII_SYMBOL_RE = /[\u2013\u2014\u2018\u2019\u201C\u201D\u2026\u00A0]/;
 
-const methodParam = z.enum(["auto", "background", "foreground"]).default("auto").describe(
+const methodParam = z.enum(["auto", "background", "foreground", "foreground_flash"]).default("auto").describe(
   "Input routing channel. " +
   "'auto' uses background (PostMessage) when the target window is a known terminal class " +
   "(Windows Terminal / cmd / PowerShell) OR DTM_BG_AUTO=1 is set; else foreground. Terminal " +
   "auto-detect is HWND-targeted so user-side focus changes mid-stream cannot divert keystrokes. " +
   "'background' forces PostMessage-only (no focus change, fails on Chromium/IME). " +
   "'foreground' forces the current behavior (SetForegroundWindow + keystrokes). " +
+  "'foreground_flash' (ADR-013 Option E) is an explicit opt-in 妥協 BG path for Windows " +
+  "Terminal: temporarily steals foreground (~50-80ms), pastes via clipboard, sends Ctrl+V, " +
+  "restores foreground + clipboard. Single-line + < 5KiB only. Carries `typingLeakRisk: true` " +
+  "in hints because user keystrokes during the flash window can leak to WT. " +
   "Default 'auto'."
 );
 
@@ -570,9 +576,11 @@ export async function evaluateKeyboardGuards(opts: {
 }
 
 export function resolveEffectiveInputMethod(
-  inputMethod: "auto" | "background" | "foreground",
+  inputMethod: "auto" | "background" | "foreground" | "foreground_flash",
   effectiveWindowTitle: string | undefined,
-): "auto" | "background" | "foreground" | "background-auto" {
+): "auto" | "background" | "foreground" | "foreground_flash" | "background-auto" {
+  // 'foreground_flash' は明示 opt-in、auto-resolve せずそのまま返す。
+  if (inputMethod === "foreground_flash") return inputMethod;
   if (inputMethod !== "auto") return inputMethod;
   if (isBgAutoEnabled()) return "background-auto";
   if (effectiveWindowTitle) {
@@ -610,7 +618,7 @@ export const keyboardTypeHandler = async ({
   _skipAutoGuard = false,
 }: {
   text: string;
-  method?: "auto" | "background" | "foreground";
+  method?: "auto" | "background" | "foreground" | "foreground_flash";
   /** Internal flag: skip auto-guard evaluation (used by set_element_value keyboard fallback). */
   _skipAutoGuard?: boolean;
   use_clipboard: boolean;
@@ -645,6 +653,160 @@ export const keyboardTypeHandler = async ({
     const warnings: string[] = [...(resolvedWin?.warnings ?? [])];
     const homingNotes: string[] = [];
     let foregroundVerified = false;
+
+    // ── ADR-013 Option E: foreground_flash 明示 opt-in path ────────────────
+    // method:'foreground_flash' は `background` 契約とは分離した妥協 BG path
+    // (Clipboard + foreground flash + paste + restore)。WT 等 WM_CHAR 不対応
+    // window 用、single-line + < 5KiB 制約、typing leak risk hints あり。
+    if (inputMethod === "foreground_flash") {
+      if (!effectiveWindowTitle) {
+        return failWith(
+          new Error("ForegroundFlashRequiresTarget"),
+          "keyboard:type",
+          {
+            suggest: ["method:'foreground_flash' requires windowTitle or hwnd"],
+            context: {},
+          }
+        );
+      }
+      const wins = enumWindowsInZOrder();
+      const target = wins.find((w) =>
+        w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase())
+      );
+      if (!target) {
+        return failWith(
+          new Error("WindowNotFound"),
+          "keyboard:type",
+          { context: { windowTitle: effectiveWindowTitle } }
+        );
+      }
+      // Lens / auto-guard: foregroundVerified=false because flash will steal
+      // foreground, but it returns to original within ~80ms; downstream guards
+      // (modal/identity/dirty/focusedElement) still run.
+      const ffGuard = await evaluateKeyboardGuards({
+        toolName: "keyboard:type",
+        lensId,
+        skipAutoGuard: _skipAutoGuard,
+        effectiveWindowTitle,
+        foregroundVerified: false,
+        warnings,
+      });
+      if (!ffGuard.ok) return ffGuard.errorResult;
+      const ffPerception = ffGuard.perceptionEnv;
+
+      const channel = resolveBackgroundInputChannel(target.hwnd, {
+        allowedChannels: ["wm_char", "clipboard_flash"],
+      });
+
+      if (channel.kind === "unsupported") {
+        return failWith(
+          new Error("ForegroundFlashUnsupported"),
+          "keyboard:type",
+          {
+            context: { reason: channel.reason, windowTitle: effectiveWindowTitle },
+            suggest: [
+              "method:'foreground_flash' resolved to unsupported channel",
+              "Try method:'foreground' for Chromium / UWP / unknown classes",
+            ],
+            ...(ffPerception && { _perceptionForPost: ffPerception }),
+          }
+        );
+      }
+
+      if (channel.kind === "wm_char") {
+        // Terminal-class target — wm_char path is preferable (no foreground steal).
+        // Resolver picked wm_char via allowedChannels; honour it without UIA
+        // post-send verification (= simplified BG path、Phase 3 MVP scope)。
+        // Opus Round 1 P2-6 反映: replaceAll 失敗 → warning 集約。
+        const ffWarnings = [...warnings];
+        if (replaceAll) {
+          const okSelectAll = postKeyComboToHwnd(target.hwnd, "ctrl+a");
+          if (!okSelectAll) ffWarnings.push("ReplaceAllFailed");
+        }
+        const r = postCharsToHwnd(target.hwnd, effectiveText);
+        if (!r.full) {
+          return failWith(
+            new Error("BackgroundInputIncomplete"),
+            "keyboard:type",
+            {
+              context: { sent: r.sent, total: effectiveText.length },
+              ...(ffPerception && { _perceptionForPost: ffPerception }),
+            }
+          );
+        }
+        return ok({
+          ok: true,
+          method: "foreground_flash",
+          hints: {
+            backgroundChannel: "wm_char",
+            warnings: ffWarnings,
+          },
+          ...(ffPerception && { perception: ffPerception }),
+        });
+      }
+
+      // channel.kind === "clipboard_flash" — WT XAML、ADR-013 Option E 本流
+      // (cooperative_bridge は Option F、Phase 3 MVP scope 外で resolver も
+      //  返さない、ここで narrow に reject)
+      if (channel.kind !== "clipboard_flash") {
+        return failWith(
+          new Error("ForegroundFlashChannelNotImplemented"),
+          "keyboard:type",
+          { context: { kind: channel.kind, windowTitle: effectiveWindowTitle } }
+        );
+      }
+      // Opus Round 2 P1-3 反映: Codex Round 1 P2-A の clipboard_flash 経路
+      // replaceAll honor 案 (`postKeyComboToHwnd(channel.hwnd, "ctrl+a")`) は
+      // **WT XAML pipeline で silent drop される dead path**。WT が WM_CHAR を
+      // sink する根拠 (issue #173) は WM_KEYDOWN/UP (= postKeyComboToHwnd の
+      // 出力) にも同様に適用、PostMessage 経路の Ctrl+A は届かない。
+      // 正しくは native `win32_foreground_flash_inject` に `select_all_first`
+      // option を追加し、foreground steal 後に `SendInput(Ctrl+A)` → 30ms 待 →
+      // `SendInput(Ctrl+V)` で送るべき (native scope の改修、別 follow-up PR)。
+      // 当面 (本 PR scope): clipboard_flash 経路では replaceAll を **silent
+      // ignore せず warning で caller に明示** (`ReplaceAllNotSupportedOnClipboardFlash`)。
+      const ffWarnings = [...warnings];
+      if (replaceAll) {
+        ffWarnings.push("ReplaceAllNotSupportedOnClipboardFlash");
+      }
+      const flashResult = injectViaForegroundFlash(
+        channel.hwnd,
+        channel.pid,
+        effectiveText,
+        { pressEnter: false }, // keyboard:type は Enter 自動押下しない
+      );
+      if (!flashResult.ok) {
+        return failWith(
+          new Error(flashResult.reason ?? "ForegroundFlashFailed"),
+          "keyboard:type",
+          {
+            context: {
+              reason: flashResult.reason,
+              rawError: flashResult.rawError,
+              windowTitle: effectiveWindowTitle,
+            },
+            ...(ffPerception && { _perceptionForPost: ffPerception }),
+          }
+        );
+      }
+      return ok({
+        ok: true,
+        method: "foreground_flash",
+        hints: {
+          backgroundChannel: "clipboard_flash",
+          typingLeakRisk: true,
+          typingLeakMitigation: "userTypingDuringFlashMayLeakToWT",
+          flashDurationMs: flashResult.result?.flashDurationMs,
+          foregroundStealMethod: flashResult.result?.foregroundStealMethod,
+          foregroundRestored: flashResult.result?.foregroundRestored,
+          foregroundRestoreMethod: flashResult.result?.foregroundRestoreMethod,
+          clipboardRestored: flashResult.result?.clipboardRestored,
+          clipboardSkippedFormats: flashResult.result?.clipboardSkippedFormats ?? [],
+          warnings: ffWarnings,
+        },
+        ...(ffPerception && { perception: ffPerception }),
+      });
+    }
 
     // ── Background input path ──────────────────────────────────────────────
     // Resolve effective method: "auto" + (DTM_BG_AUTO=1 OR target is a known
@@ -1196,7 +1358,7 @@ export const keyboardPressHandler = async ({
   lensId,
 }: {
   keys: string;
-  method?: "auto" | "background" | "foreground";
+  method?: "auto" | "background" | "foreground" | "foreground_flash";
   windowTitle?: string;
   hwnd?: string;
   forceFocus?: boolean;
@@ -1208,6 +1370,22 @@ export const keyboardPressHandler = async ({
   try {
     // assertKeyComboSafe before focus — invalid keys fail immediately.
     assertKeyComboSafe(keys);
+
+    // ADR-013 Option E: foreground_flash は keyboard:press の semantics に合わない
+    // (= clipboard 経由 paste は単一 key combo に意味なし)。明示拒否。
+    if (inputMethod === "foreground_flash") {
+      return failWith(
+        new Error("ForegroundFlashNotApplicableToKeyPress"),
+        "keyboard:press",
+        {
+          suggest: [
+            "method:'foreground_flash' is for keyboard:type / terminal:send only",
+            "Use method:'foreground' or method:'background' for keyboard:press",
+          ],
+          context: { keys },
+        }
+      );
+    }
 
     // Resolve hwnd / @active → effective window title
     const resolvedWin = await resolveWindowTarget({ hwnd, windowTitle });
