@@ -36,6 +36,7 @@ use super::clipboard_snapshot::{
 };
 use super::kbd_hook::{install_low_level_keyboard_block, HookGuard};
 use super::safety::napi_safe_call;
+use super::wt_dialog_scan::scan_and_dismiss_paste_warning;
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -48,6 +49,9 @@ const FOREGROUND_RESTORE_VERIFY_TIMEOUT_MS: u32 = 10;
 /// Ctrl+V 後 WT が paste reflect するのを待つ delay (Enter 送信 / restore より前)。
 const PASTE_REFLECT_DELAY_MS: u64 = 30;
 const POLL_INTERVAL_MS: u64 = 2;
+/// WT paste warning ContentDialog scan timeout (Phase 1e、§3.3.3 保険)。
+/// 構造的回避 (§3.3.1) で trigger 確率は ~0、保険として short window で polling。
+const PASTE_WARNING_SCAN_TIMEOUT_MS: u32 = 100;
 
 // ── Type definitions ────────────────────────────────────────────────────────
 
@@ -122,8 +126,7 @@ pub enum ForegroundFlashErrorReason {
     ClipboardLockContention,
     /// Foreground 復帰 retry 上限超過。
     ForegroundRestoreFailed,
-    /// Paste warning ContentDialog を検出 → Esc 送信 + fail (Phase 1e 後)。
-    #[allow(dead_code)]
+    /// Paste warning ContentDialog を検出 → Esc 送信 + fail (§3.3.3)。
     WtPasteWarningIntercepted,
     /// `SendInput` が想定より少ない数しか inject できなかった (Win11 input restriction 等)。
     SendInputFailed,
@@ -359,7 +362,12 @@ pub fn win32_foreground_flash_inject(
             || std::env::var("DESKTOP_TOUCH_FOREGROUND_FLASH_BLOCK_KEYBOARD")
                 .as_deref()
                 == Ok("1");
-        // scan_paste_warning_dialog: Phase 1e で wire
+        // scan_paste_warning_dialog: option > env (disable) > default true
+        // env `DESKTOP_TOUCH_FOREGROUND_FLASH_DISABLE_DIALOG_SCAN=1` で OFF
+        let scan_paste_warning = options.scan_paste_warning_dialog.unwrap_or(true)
+            && std::env::var("DESKTOP_TOUCH_FOREGROUND_FLASH_DISABLE_DIALOG_SCAN")
+                .as_deref()
+                != Ok("1");
 
         // Hook is best-effort: install fail でも flash 続行。`HookGuard` は
         // closure 末尾まで保持され、Drop で worker thread join + uninstall。
@@ -387,6 +395,12 @@ pub fn win32_foreground_flash_inject(
 
             // ここから先の inner 処理は **必ず clipboard restore を試みる**。
             // 4-10 を IIFE に閉じて Result を返し、後段で restore + propagate。
+            //
+            // `paste_warning_detected` は IIFE 内で set される、IIFE 完了後
+            // (foreground restore 込み) に reason 化判定 (§3.7 step 17 を
+            // step 12.5 へ前倒し: WT が foreground のうちに Esc が dismiss
+            // 先と一致するため。Phase 5 docs で deviation 言及予定)。
+            let mut paste_warning_detected = false;
             let inner: napi::Result<(&'static str, u32)> = (|| {
                 // 4. Foreground steal ladder
                 let steal_method = if already_foreground {
@@ -415,6 +429,20 @@ pub fn win32_foreground_flash_inject(
                 // 8. Optional Enter (text に \n を含めない構造的回避と paired)
                 if press_enter && !send_enter() {
                     return Err(err(ForegroundFlashErrorReason::SendInputFailed));
+                }
+
+                // 8.5. WT paste warning ContentDialog scan (Phase 1e、§3.3.3
+                //      保険)。WT が foreground のうちに UIA scan + Esc を実行、
+                //      検出したら detected フラグだけ立てて foreground restore
+                //      には進む (cleanup 整合)。
+                if scan_paste_warning {
+                    let target_raw = target.0 as isize;
+                    if scan_and_dismiss_paste_warning(
+                        target_raw,
+                        PASTE_WARNING_SCAN_TIMEOUT_MS,
+                    ) {
+                        paste_warning_detected = true;
+                    }
                 }
 
                 // 9-10. Foreground restore (ladder + verify) with retries
@@ -461,6 +489,12 @@ pub fn win32_foreground_flash_inject(
 
             // Propagate inner error AFTER restore attempt
             let (steal_method, restore_retries_used) = inner?;
+
+            // Paste warning が detected なら全 cleanup 後に typed reason で fail。
+            // 構造的回避が破られた fail-safe path (§3.3.3)。
+            if paste_warning_detected {
+                return Err(err(ForegroundFlashErrorReason::WtPasteWarningIntercepted));
+            }
 
             // u32 saturation: flash > ~49 day になるはずないが念のため
             let flash_duration_ms = start

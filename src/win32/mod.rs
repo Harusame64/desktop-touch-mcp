@@ -44,3 +44,7 @@ pub(crate) mod clipboard_snapshot;
 // typing-leak mitigation (§3.4)。
 #[cfg(windows)]
 pub(crate) mod kbd_hook;
+// WT paste warning ContentDialog scan (option, default ON) — fail-safe for
+// `largePasteWarning` / `multiLinePasteWarning` (§3.3.3)。
+#[cfg(windows)]
+pub(crate) mod wt_dialog_scan;

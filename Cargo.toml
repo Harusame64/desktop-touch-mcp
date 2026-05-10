@@ -145,6 +145,13 @@ windows = { version = "0.62", features = [
     "Win32_System_Memory",
     # GetModuleHandleW (used by RegisterClassExW for hidden owner window)
     "Win32_System_LibraryLoader",
+    # ── ADR-013 Phase 1e (wt_dialog_scan) ────────────────────────────────
+    # VARIANT used by IUIAutomation::CreatePropertyCondition for class name
+    # property filter (Microsoft.UI.Xaml.Controls.ContentDialog). VARIANT
+    # struct is gated by both Win32_System_Com (already enabled above) and
+    # Win32_System_Ole.
+    "Win32_System_Variant",
+    "Win32_System_Ole",
 ] }
 
 [build-dependencies]
