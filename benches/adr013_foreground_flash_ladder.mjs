@@ -177,8 +177,9 @@ for (let i = 0; i < iters; i++) {
   try {
     const t0 = performance.now();
     result = await client.callTool({
-      name: "keyboard:type",
+      name: "keyboard",
       arguments: {
+        action: "type",
         text: tag,
         method: "foreground_flash",
         windowTitle,
