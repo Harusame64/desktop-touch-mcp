@@ -189,7 +189,7 @@ User 提案: OLE `OleGetClipboard` / `OleSetClipboard` で `IDataObject` snapsho
 - **caller が明示的に `method: 'foreground_flash'` を指定** することで「foreground を奪う妥協を許容」を契約
 - keyboard block (LowLevel hook) は **default OFF**、env opt-in (`DESKTOP_TOUCH_FOREGROUND_FLASH_BLOCK_KEYBOARD=1`)
   - 「telemetry で漏れ報告」ではなく「**dogfood + GitHub issue report + hints 集計**」で default flip 判断する
-- **typing 漏れ risk を hints で明示**: `hints.foregroundFlash: { typingLeakRisk: true, mitigation: "userTypingDuringFlashMayLeakToWT" }` を毎 inject で返す
+- **typing 漏れ risk を hints で明示** (実装は flat schema、PR #240 Round 4 P2-1 で本 plan を実装 SSOT に sync): `hints.typingLeakRisk: true` + `hints.typingLeakMitigation: "userTypingDuringFlashMayLeakToWT"` を毎 inject で返す。完全 hints schema は §5.4 acceptance + matrix §3.1 規範参照
 
 ### 3.5 Focus-ready 判定
 
@@ -441,7 +441,7 @@ R1 (foreground steal 成功率) mitigation。Phase 1 native 完了 → TS engine
 
 **修正**: `src/tools/keyboard.ts` / `src/tools/terminal.ts`
 - `method: 'foreground_flash'` を accept、`resolveBackgroundInputChannel(hwnd, {allowedChannels: ["wm_char", "clipboard_flash"]})` で channel 取得
-- response hints に `backgroundChannel: "clipboard_flash"` と `typingLeakRisk: true` を追加
+- response hints (flat schema、本 PR Round 4 P2-1 で plan を実装 sync): `backgroundChannel: "clipboard_flash"` + `typingLeakRisk: true` + `typingLeakMitigation: "userTypingDuringFlashMayLeakToWT"` + `flashDurationMs` + `foregroundStealMethod` (`"AttachThreadInput"` / `"alt_unlock"` / `"already_foreground"`) + `foregroundRestored: bool` + `foregroundRestoreMethod` (`"AttachThreadInput"` / `"alt_unlock"` / `"none"`、Round 1 P1-2 で steal 側と対称) + `clipboardRestored: bool` + `clipboardSkippedFormats: Array<{formatId, reason}>`
 - Zod schema 拡張 (`method` enum に `"foreground_flash"` 追加)
 
 **実装規模**: ~150 line resolver + ~100 line bg-input.ts + ~80 line tool 修正 + ~80 line Zod schema 拡張
@@ -499,16 +499,17 @@ R1 (foreground steal 成功率) mitigation。Phase 1 native 完了 → TS engine
 
 ### 6.1 Native layer (Phase 1)
 - [ ] `foreground_flash_inject(hwnd, pid, text, options)` 成功時 `flash_duration_ms <= 80` (clipboard save + steal ladder + focus wait + SendInput + restore + clipboard restore 含む実測)
-- [ ] foreground steal ladder の各段 (既存 + Alt unlock 新規) が試行され、失敗段の typed reason が hints に記録
-- [ ] foreground 復帰失敗時に 2 回 retry + typed reason `foreground_restore_failed`
+- [ ] foreground steal ladder の各段 (既存 + Alt unlock 新規) が試行され、成功段が hints `foregroundStealMethod` に記録 (`"AttachThreadInput"` / `"alt_unlock"` / `"already_foreground"`)
+- [ ] foreground 復帰 ladder + retry: 成功段が hints `foregroundRestoreMethod` に記録 (`"AttachThreadInput"` / `"alt_unlock"` / `"none"` = already_foreground 経路、Round 1 P1-2 で steal 側と対称化)、復帰失敗時 2 回 retry + typed reason `foreground_restore_failed`
 - [ ] **clipboard HGLOBAL format round-trip** (text / RTF / unicode 各 format で round-trip 成功、controlled fixture)
-- [ ] **clipboard 非 HGLOBAL format** (画像) 検出 → save skip + skipped_formats に記録、restore で消える事実 observable
-- [ ] **3 point sequence check** で race detection: flash 中の別 process `SetClipboardData` 後 `seq_before_restore != seq_after_inject_clipboard` を観測 → restore skip + `clipboardRestoreSkipped: true` hints
+- [ ] **clipboard 非 HGLOBAL format** (画像) 検出 → save skip + `clipboardSkippedFormats` hints (CF_BITMAP / CF_ENHMETAFILE / CF_OWNERDISPLAY 等) に記録、restore で消える事実 observable
+- [ ] **3 point sequence check** で race detection: flash 中の別 process `SetClipboardData` 後 `seq_before_restore != seq_after_inject_clipboard` を観測 → restore skip + `clipboardRestored: false` hints
 - [ ] **input 制限**: 改行含む input で `input_contains_newline` / 5KiB 超で `input_exceeds_paste_warning_threshold` (Round 1 P1-3 で typed reason 分離)
 - [ ] **WT paste warning dialog scan** が enabled なら ContentDialog 検出 → Esc + `wt_paste_warning_intercepted`
 - [ ] LowLevel keyboard hook lifecycle が leak-free (HookGuard Drop 検証)
 - [ ] **HWND signature**: BigInt 経由で x64 64-bit hwnd 値が truncate されないこと
-- [ ] **Hidden owner thread**: 専用 window class 登録 + message loop + clipboard ownership lifecycle leak-free (engine shutdown で thread join + window dispose)
+- [ ] **Hidden owner window**: per-call create + destroy で leak-free (Round 1 P2-1 で deviation 反映、§3.2.1 + §5.1 + followups §2.5 cross-ref)
+- [ ] **hints schema 完全列挙** (Round 4 P2-1 で plan を実装 sync): `flashDurationMs` (number) + `foregroundStealMethod` (string) + `foregroundRestored` (bool) + `foregroundRestoreMethod` (string) + `clipboardRestored` (bool) + `clipboardSkippedFormats: Array<{formatId, reason}>` + `pasteWarningDetected` (bool、success path 常に false) + caller wrap で `backgroundChannel: "clipboard_flash"` + `typingLeakRisk: true` + `typingLeakMitigation: "userTypingDuringFlashMayLeakToWT"` を付加
 
 ### 6.2 production-like 実機検証 (Phase 2)
 - [ ] Node.js MCP server 実機環境 (= caller が foreground 権を持たない typical condition) で foreground steal ladder の各段成否を 50 回連続計測
@@ -519,18 +520,19 @@ R1 (foreground steal 成功率) mitigation。Phase 1 native 完了 → TS engine
 - [ ] `resolveBackgroundInputChannel(WT_HWND, {allowedChannels: ["wm_char"]})` が `{kind: "unsupported", reason: "wt_xaml_pipeline"}` (= 既存 `background` 契約維持)
 - [ ] `resolveBackgroundInputChannel(WT_HWND, {allowedChannels: ["wm_char", "clipboard_flash"]})` が `{kind: "clipboard_flash", hwnd: <bigint>, pid: <number>, constraints: {...}}`
 - [ ] `canInjectViaPostMessage(WT_HWND)` は touch されず、WT で `{supported: false, reason: "wt_xaml_pipeline"}` を返す (regression なし)
-- [ ] `method: 'foreground_flash'` で WT inject success、`hints.backgroundChannel = "clipboard_flash"` + `hints.typingLeakRisk = true`
+- [ ] `method: 'foreground_flash'` で WT inject success、上記 §6.1 完全 hints schema を全 emit (`backgroundChannel` / `typingLeakRisk` / `typingLeakMitigation` / `flashDurationMs` / `foregroundStealMethod` / `foregroundRestored` / `foregroundRestoreMethod` / `clipboardRestored` / `clipboardSkippedFormats[]`)
 - [ ] `method: 'background'` で WT は引き続き unsupported (silent-success 構造的回避)
 - [ ] caller migration 済 = 既存 `bg-input.ts` 内 caller が新 resolver 経由に揃う (二重分岐期間 ゼロ)
 
 ### 6.4 E2E (Phase 4)
-- [ ] 新 `foreground-flash-verification.test.ts`: WT 100 連続 inject で flaky < 1%
+- [ ] 新 `foreground-flash-verification.test.ts`: WT 100 連続 inject で flaky < 1% (heavy fixture、Phase 4 MVP では `it.todo`、Phase 2 bench で計測)
 - [ ] 既存 `keyboard-bg-verification.test.ts` の WT negative test は **変更なし** (= `method: 'background'` 契約維持)
-- [ ] foreground lock simulation で `foreground_restore_failed` typed reason 観測
-- [ ] clipboard race fixture で `clipboardRestoreSkipped: true` hints 観測
+- [ ] foreground lock simulation で `foreground_restore_failed` typed reason 観測 (Phase 4 todo、followups で扱う)
+- [ ] clipboard race fixture で `clipboardRestored: false` hints 観測 (Phase 4 todo)
 - [ ] input 6KiB ASCII で `input_exceeds_paste_warning_threshold` 観測 / 改行を含む text で `input_contains_newline` 観測 (Round 1 P1-3 で reason 分離)
-- [ ] WT paste warning dialog fixture で `wt_paste_warning_intercepted` 観測
-- [ ] 画像 clipboard 状態で flash → 画像が消える事実 + hints `clipboardRestoreSkippedFormats` 観測
+- [ ] WT paste warning dialog fixture で `wt_paste_warning_intercepted` 観測 (Phase 4 todo、構造的回避で trigger 困難)
+- [ ] 画像 clipboard 状態で flash → 画像が消える事実 + hints `clipboardSkippedFormats` 観測 (Phase 4 todo)
+- [x] **hints contract pin** (Round 3 P2-3 で追加): `expect(["AttachThreadInput","alt_unlock","none"]).toContain(r.hints?.foregroundRestoreMethod)` で API 拡張を機械検証
 
 ### 6.5 ADR / docs (Phase 5)
 - [ ] ADR-013 §3 に Option E (`foreground_flash`) + Option F (cooperative bridge) section 追加、§4 trade-off table、§5 acceptance、§7 OQ、§9 Decision History 全 sync
