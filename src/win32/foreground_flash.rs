@@ -7,18 +7,46 @@
 //! 設計詳細: `docs/adr-013-option-e-impl.md` v3。
 //! 関連 spike: `spike/wt-attachconsole-input` branch + `docs/wt-bg-spike-round2-findings.md`。
 //!
-//! 本 file は Phase 1a skeleton。後続 sub-phase で本実装:
-//! - Phase 1b: clipboard_snapshot module 追加 (HGLOBAL save/restore + 3 point sequence)
-//! - Phase 1c: foreground_flash main impl (steal ladder + Alt unlock + SendInput + verify)
+//! Phase 進行:
+//! - Phase 1a: skeleton (signature + types) ✅
+//! - Phase 1b: clipboard_snapshot module (HGLOBAL save/restore + 3 point sequence) ✅
+//! - **Phase 1c**: foreground_flash main impl (steal ladder + Alt unlock + SendInput + verify) ← 本 file
 //! - Phase 1d: kbd_hook module (option, default OFF)
 //! - Phase 1e: wt_dialog_scan module (option, default ON for paste warning fail-safe)
 //! - Phase 1f: unit test
 
+use std::time::{Duration, Instant};
+
 use napi::bindgen_prelude::BigInt;
 use napi_derive::napi;
 use windows::Win32::Foundation::HWND;
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    SendInput, INPUT, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
+    VIRTUAL_KEY, VK_CONTROL, VK_MENU, VK_RETURN, VK_V,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    BringWindowToTop, GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId,
+    SetForegroundWindow, GUITHREADINFO,
+};
 
+use super::clipboard_snapshot::{
+    restore_clipboard_supported_formats, save_clipboard_supported_formats,
+    set_clipboard_unicode_text, with_hidden_owner, ClipboardSnapshot, RestoreOutcome,
+};
 use super::safety::napi_safe_call;
+
+// ── Constants ───────────────────────────────────────────────────────────────
+
+/// 5KiB threshold for `largePasteWarning` 構造的回避 (UTF-16 byte count、
+/// `>= 5120` で fail)。WT default 1KiB より余裕、user 設定で変動可なので 5KiB。
+const MAX_TEXT_UTF16_BYTES: usize = 5120;
+const DEFAULT_FOCUS_WAIT_MS: u32 = 30;
+const DEFAULT_FOREGROUND_RESTORE_RETRIES: u32 = 2;
+const FOREGROUND_RESTORE_VERIFY_TIMEOUT_MS: u32 = 10;
+/// Ctrl+V 後 WT が paste reflect するのを待つ delay (Enter 送信 / restore より前)。
+const PASTE_REFLECT_DELAY_MS: u64 = 30;
+const POLL_INTERVAL_MS: u64 = 2;
 
 // ── Type definitions ────────────────────────────────────────────────────────
 
@@ -32,9 +60,11 @@ pub struct ForegroundFlashOptions {
     pub foreground_restore_retries: Option<u32>,
     /// LowLevel keyboard hook で flash 期間中の keystroke を block する (default false)。
     /// env `DESKTOP_TOUCH_FOREGROUND_FLASH_BLOCK_KEYBOARD=1` で global ON 切替可。
+    /// **本 phase (1c) では未配線、Phase 1d で実装**。
     pub block_keyboard_during_flash: Option<bool>,
     /// WT paste warning ContentDialog を flash 後 scan + Esc 拒否する (default true)。
     /// env `DESKTOP_TOUCH_FOREGROUND_FLASH_DISABLE_DIALOG_SCAN=1` で OFF 切替可。
+    /// **本 phase (1c) では未配線、Phase 1e で実装**。
     pub scan_paste_warning_dialog: Option<bool>,
     /// Paste 完了後に SendInput(VK_RETURN) を別送信する (default false)。
     /// caller が明示的に Enter を送りたい場合に true。
@@ -53,12 +83,13 @@ pub struct ForegroundFlashResult {
     pub foreground_restored: bool,
     /// Foreground 復帰までに要した retry 回数 (0 = 1 回目で成功)。
     pub foreground_restore_retries_used: u32,
-    /// Clipboard 復元が実施されたか (false = race detected で skip)。
+    /// Clipboard 復元が実施されたか (false = race detected で skip、または restore 中 fail)。
     pub clipboard_restored: bool,
     /// Clipboard save 時に skip された format (非 HGLOBAL / deferred render)。
     /// JS 側に hints として渡す用、各 entry は `(format_id, reason)`。
     pub clipboard_skipped_formats: Vec<ForegroundFlashSkippedFormat>,
     /// Paste warning dialog が検出されたか (検出時は別途 fail で error path に乗る)。
+    /// **本 phase (1c) では常に false、Phase 1e で実装**。
     pub paste_warning_detected: bool,
 }
 
@@ -66,14 +97,15 @@ pub struct ForegroundFlashResult {
 #[napi(object)]
 pub struct ForegroundFlashSkippedFormat {
     pub format_id: u32,
-    /// Skip 理由: `"non_hglobal"` / `"deferred_render"` / `"unknown_private"`。
+    /// Skip 理由: `"non_hglobal"` / `"deferred_render"` / `"get_data_failed"`。
     pub reason: String,
 }
 
-/// Typed error reason. JS 側は `error.code` で受け取り、`reason` enum として扱う。
-/// (本 skeleton では String で表現、Phase 1c 本実装で typed error 化検討)
-#[derive(Debug)]
-#[allow(dead_code)]
+/// Typed error reason. JS 側は `error.message` で受け取り、Phase 3 TS engine
+/// 層で parse して typed reason として扱う (Zod schema 拡張 §5.4)。
+///
+/// 各 variant の string 形は `as_str()` で取得 (snake_case)。
+#[derive(Debug, Clone, Copy)]
 pub enum ForegroundFlashErrorReason {
     /// Input が改行を含む or 5KiB 超 = WT paste warning trigger 範囲。
     InputExceedsPasteWarningThreshold,
@@ -83,30 +115,219 @@ pub enum ForegroundFlashErrorReason {
     /// `wait_focus_ready` polling timeout (default 30ms 以内に WT が focus を取れず)。
     FocusWaitTimeout,
     /// `OpenClipboard` retry 上限 (100ms / 10 retry) を超えた race。
+    /// (現状は ClipboardError::OpenContention から `clipboard_lock_contention`
+    /// 文字列として伝播、本 enum variant は将来 typed 化のための placeholder)
+    #[allow(dead_code)]
     ClipboardLockContention,
     /// Foreground 復帰 retry 上限超過。
     ForegroundRestoreFailed,
-    /// Paste warning ContentDialog を検出 → Esc 送信 + fail。
+    /// Paste warning ContentDialog を検出 → Esc 送信 + fail (Phase 1e 後)。
+    #[allow(dead_code)]
     WtPasteWarningIntercepted,
-    /// `SendInput` 0 件 inject (Win11 input restriction 等)。
+    /// `SendInput` が想定より少ない数しか inject できなかった (Win11 input restriction 等)。
     SendInputFailed,
 }
 
-// ── Public napi binding (Phase 1a skeleton、本実装は Phase 1c) ──────────────
+impl ForegroundFlashErrorReason {
+    pub fn as_str(self) -> &'static str {
+        use ForegroundFlashErrorReason::*;
+        match self {
+            InputExceedsPasteWarningThreshold => "input_exceeds_paste_warning_threshold",
+            ForegroundStealDenied => "foreground_steal_denied",
+            FocusWaitTimeout => "focus_wait_timeout",
+            ClipboardLockContention => "clipboard_lock_contention",
+            ForegroundRestoreFailed => "foreground_restore_failed",
+            WtPasteWarningIntercepted => "wt_paste_warning_intercepted",
+            SendInputFailed => "send_input_failed",
+        }
+    }
+}
+
+fn err(reason: ForegroundFlashErrorReason) -> napi::Error {
+    napi::Error::from_reason(reason.as_str().to_string())
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn hwnd_from_bigint(b: BigInt) -> HWND {
     let (_sign, val, _lossless) = b.get_u64();
     HWND(val as isize as *mut std::ffi::c_void)
 }
 
+/// Pre-flight input validation (§3.3.1: single-line + < 5KiB UTF-16).
+/// 改行 (LF / CR) が混入すると WT `multiLinePasteWarning` の trigger になるため
+/// 構造的に拒否、5KiB 超は `largePasteWarning` の閾値に余裕を見て拒否。
+fn validate_input(text: &str) -> Result<(), ForegroundFlashErrorReason> {
+    if text.contains('\n') || text.contains('\r') {
+        return Err(ForegroundFlashErrorReason::InputExceedsPasteWarningThreshold);
+    }
+    let utf16_byte_count = text.encode_utf16().count() * 2;
+    if utf16_byte_count >= MAX_TEXT_UTF16_BYTES {
+        return Err(ForegroundFlashErrorReason::InputExceedsPasteWarningThreshold);
+    }
+    Ok(())
+}
+
+/// Foreground steal ladder 段 1: `AttachThreadInput` で foreground thread に
+/// 自分の input queue を結合してから `SetForegroundWindow` を呼ぶ既存 trick。
+///
+/// 既存 `input.rs::win32_force_set_foreground_window` (PR #74 ADR-007 P3) と
+/// 同じ logic を bool 戻り値版で inline。理由: 同 PR 内で input.rs の
+/// 公開 napi 関数 signature を変更しないため (Tool surface 不変原則 §2 P7)。
+fn force_set_foreground_inner(target: HWND) -> bool {
+    unsafe {
+        let fg_before = GetForegroundWindow();
+        if fg_before.0 == target.0 {
+            // 既に foreground、attach dance 不要
+            return true;
+        }
+        let fg_thread = GetWindowThreadProcessId(fg_before, None);
+        let my_thread = GetCurrentThreadId();
+        let mut attached = false;
+        if fg_thread != 0 && fg_thread != my_thread {
+            attached = AttachThreadInput(my_thread, fg_thread, true).as_bool();
+        }
+        // BringWindowToTop は AttachThreadInput が fail しても効く secondary hint。
+        let _ = SetForegroundWindow(target);
+        let _ = BringWindowToTop(target);
+        if attached {
+            let _ = AttachThreadInput(my_thread, fg_thread, false);
+        }
+        let fg_after = GetForegroundWindow();
+        fg_after.0 == target.0
+    }
+}
+
+/// Foreground steal ladder 段 2: Alt key down/up で foreground lock を一時解除し、
+/// 再度 `SetForegroundWindow(target)` を試行する well-known trick。
+///
+/// Microsoft docs 的には「user input 直後の foreground 取得は許可される」性質を利用する。
+/// `SendInput` の Alt down/up が calling thread の last-input-time を更新することで
+/// `LockSetForegroundWindow` の制約が一時的に解除される。
+fn alt_unlock_then_set_foreground(target: HWND) -> bool {
+    unsafe {
+        let mut inputs: [INPUT; 2] = std::mem::zeroed();
+        inputs[0].r#type = INPUT_KEYBOARD;
+        inputs[0].Anonymous.ki.wVk = VK_MENU;
+        inputs[0].Anonymous.ki.dwFlags = KEYBD_EVENT_FLAGS(0);
+        inputs[1].r#type = INPUT_KEYBOARD;
+        inputs[1].Anonymous.ki.wVk = VK_MENU;
+        inputs[1].Anonymous.ki.dwFlags = KEYEVENTF_KEYUP;
+        let sent = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+        if sent < 2 {
+            return false;
+        }
+        // last-input-time が反映されるのを 1 tick 待つ
+        std::thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
+        force_set_foreground_inner(target)
+    }
+}
+
+/// `GetForegroundWindow == wt_hwnd` + `GetGUIThreadInfo.hwndFocus != NULL` の
+/// 両方が成立するまで polling (上限 `timeout_ms`、interval 2ms)。
+///
+/// `wt_hwnd` の thread が foreground かつ何らかの child element に focus を
+/// 持っている状態を「paste 受け取り可」とみなす (§3.5)。
+fn wait_focus_ready(wt_hwnd: HWND, timeout_ms: u32) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_millis(timeout_ms as u64) {
+        unsafe {
+            if GetForegroundWindow().0 == wt_hwnd.0 {
+                let mut info: GUITHREADINFO = std::mem::zeroed();
+                info.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
+                let wt_tid = GetWindowThreadProcessId(wt_hwnd, None);
+                if wt_tid != 0
+                    && GetGUIThreadInfo(wt_tid, &mut info).is_ok()
+                    && !info.hwndFocus.0.is_null()
+                {
+                    return true;
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
+    }
+    false
+}
+
+/// Compose `[(VIRTUAL_KEY, is_keyup)]` → SendInput batch。
+/// 全 event が accept された (= `SendInput` 戻り値 == seq.len()) なら true。
+fn send_keys(seq: &[(VIRTUAL_KEY, bool)]) -> bool {
+    unsafe {
+        let mut inputs: Vec<INPUT> = vec![std::mem::zeroed(); seq.len()];
+        for (i, (vk, is_up)) in seq.iter().enumerate() {
+            inputs[i].r#type = INPUT_KEYBOARD;
+            inputs[i].Anonymous.ki.wVk = *vk;
+            if *is_up {
+                inputs[i].Anonymous.ki.dwFlags = KEYEVENTF_KEYUP;
+            }
+        }
+        let sent = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+        sent as usize == seq.len()
+    }
+}
+
+fn send_ctrl_v() -> bool {
+    send_keys(&[
+        (VK_CONTROL, false),
+        (VK_V, false),
+        (VK_V, true),
+        (VK_CONTROL, true),
+    ])
+}
+
+fn send_enter() -> bool {
+    send_keys(&[
+        (VK_RETURN, false),
+        (VK_RETURN, true),
+    ])
+}
+
+/// `GetForegroundWindow == original` を polling で確認 (上限 `timeout_ms`、
+/// interval 2ms)。foreground 復帰が反映されるまで多少 lag するため short loop。
+fn verify_foreground_returned(original: HWND, timeout_ms: u32) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_millis(timeout_ms as u64) {
+        unsafe {
+            if GetForegroundWindow().0 == original.0 {
+                return true;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
+    }
+    false
+}
+
+fn build_skipped_formats(snapshot: &ClipboardSnapshot) -> Vec<ForegroundFlashSkippedFormat> {
+    snapshot
+        .skipped_summary()
+        .into_iter()
+        .map(|(format_id, reason)| ForegroundFlashSkippedFormat {
+            format_id,
+            reason: reason.to_string(),
+        })
+        .collect()
+}
+
+// ── Public napi binding (Phase 1c 本実装) ──────────────────────────────────
+
 /// `method: 'foreground_flash'` channel の native entry point。
 ///
-/// 詳細 sequence は `docs/adr-013-option-e-impl.md` §3.7 参照。
+/// 詳細 sequence は `docs/adr-013-option-e-impl.md` §3.7 参照。本 fn は:
 ///
-/// **本 fn は Phase 1a skeleton**: signature と Result/Options shape のみ確定、
-/// body は Phase 1c で本実装。現状は `unimplemented!()` を返さず、
-/// 「未実装」typed error で fail する形に留める (skeleton 段階で caller 側に
-/// schema mismatch を起こさないため)。
+/// 1. Pre-flight validate (改行禁止 + 5KiB 未満)
+/// 2. `with_hidden_owner` scope 内で hidden owner HWND を確保
+/// 3. Clipboard snapshot 取得 (HGLOBAL 系のみ、3 point sequence の 1 つ目)
+/// 4. Set our text via `set_clipboard_unicode_text` (3 point の 2 つ目)
+/// 5. Foreground steal ladder (段 1 AttachThreadInput → 段 2 Alt unlock)
+/// 6. `wait_focus_ready` で focus 確認
+/// 7. SendInput(Ctrl+V)
+/// 8. Sleep 30ms (paste reflect 待ち)
+/// 9. (option) SendInput(VK_RETURN)
+/// 10. Foreground restore ladder + verify (retry 込み)
+/// 11. Clipboard restore (3 point sequence 3 つ目で race 検出 → skip)
+/// 12. (Phase 1e) WT paste warning dialog scan
+///
+/// 各 fail は typed reason を `error.message` 経由で JS に渡す。
 #[napi]
 pub fn win32_foreground_flash_inject(
     target_hwnd: BigInt,
@@ -115,31 +336,136 @@ pub fn win32_foreground_flash_inject(
     options: ForegroundFlashOptions,
 ) -> napi::Result<ForegroundFlashResult> {
     napi_safe_call("win32_foreground_flash_inject", || {
-        // Phase 1a skeleton: 引数を一応 touch しておく (unused warning 回避)
-        let _ = hwnd_from_bigint(target_hwnd);
+        // `target_pid` は `AllowSetForegroundWindow(targetPid)` 呼び出しの将来予約。
+        // 現状: §3.1 の通り caller 自身の SetForegroundWindow 制限は bypass しない
+        // (target 側が pre-allowed になるだけで、caller が thief になる場面では
+        //  AttachThreadInput / Alt unlock の方が本質)。よって本 phase では未使用。
         let _ = target_pid;
-        let _ = text;
-        let _ = options;
+        let target = hwnd_from_bigint(target_hwnd);
 
-        // 本実装は Phase 1c。現状は明示的に "not yet implemented" を返す。
-        Err(napi::Error::from_reason(
-            "win32_foreground_flash_inject: not yet implemented (Phase 1a skeleton)".to_string(),
-        ))
+        // 1. Pre-flight validate
+        validate_input(&text).map_err(err)?;
+
+        let max_focus_wait_ms = options
+            .max_focus_wait_ms
+            .unwrap_or(DEFAULT_FOCUS_WAIT_MS);
+        let foreground_restore_retries = options
+            .foreground_restore_retries
+            .unwrap_or(DEFAULT_FOREGROUND_RESTORE_RETRIES);
+        let press_enter = options.press_enter.unwrap_or(false);
+        // block_keyboard_during_flash / scan_paste_warning_dialog: Phase 1d / 1e
+
+        let start = Instant::now();
+
+        // `with_hidden_owner` 全体で hidden owner HWND を保持 → save / set / restore
+        // 全 phase に渡って同じ owner を使う (per-call lifecycle)。
+        let result: napi::Result<ForegroundFlashResult> = with_hidden_owner(|owner| -> napi::Result<ForegroundFlashResult> {
+            let original_fg = unsafe { GetForegroundWindow() };
+            let already_foreground = !target.0.is_null() && original_fg.0 == target.0;
+
+            // 2. Save clipboard (3 point の 1 つ目)
+            let snapshot = save_clipboard_supported_formats(owner)
+                .map_err(|e| napi::Error::from_reason(e.as_reason().to_string()))?;
+
+            // 3. Inject our text (3 point の 2 つ目 = seq_after_inject_clipboard)
+            let seq_after_inject = set_clipboard_unicode_text(owner, &text)
+                .map_err(|e| napi::Error::from_reason(e.as_reason().to_string()))?;
+
+            // ここから先の inner 処理は **必ず clipboard restore を試みる**。
+            // 4-10 を IIFE に閉じて Result を返し、後段で restore + propagate。
+            let inner: napi::Result<(&'static str, u32)> = (|| {
+                // 4. Foreground steal ladder
+                let steal_method = if already_foreground {
+                    "already_foreground"
+                } else if force_set_foreground_inner(target) {
+                    "AttachThreadInput"
+                } else if alt_unlock_then_set_foreground(target) {
+                    "alt_unlock"
+                } else {
+                    return Err(err(ForegroundFlashErrorReason::ForegroundStealDenied));
+                };
+
+                // 5. Wait focus ready
+                if !wait_focus_ready(target, max_focus_wait_ms) {
+                    return Err(err(ForegroundFlashErrorReason::FocusWaitTimeout));
+                }
+
+                // 6. SendInput Ctrl+V
+                if !send_ctrl_v() {
+                    return Err(err(ForegroundFlashErrorReason::SendInputFailed));
+                }
+
+                // 7. Paste reflect delay
+                std::thread::sleep(Duration::from_millis(PASTE_REFLECT_DELAY_MS));
+
+                // 8. Optional Enter (text に \n を含めない構造的回避と paired)
+                if press_enter && !send_enter() {
+                    return Err(err(ForegroundFlashErrorReason::SendInputFailed));
+                }
+
+                // 9-10. Foreground restore (ladder + verify) with retries
+                // already_foreground なら restore 不要 (= original == target、現在も target)
+                if already_foreground {
+                    return Ok((steal_method, 0));
+                }
+                let mut restore_retries_used = 0u32;
+                let mut foreground_restored = false;
+                for attempt in 0..=foreground_restore_retries {
+                    if force_set_foreground_inner(original_fg)
+                        && verify_foreground_returned(
+                            original_fg,
+                            FOREGROUND_RESTORE_VERIFY_TIMEOUT_MS,
+                        )
+                    {
+                        foreground_restored = true;
+                        restore_retries_used = attempt;
+                        break;
+                    }
+                    if alt_unlock_then_set_foreground(original_fg)
+                        && verify_foreground_returned(
+                            original_fg,
+                            FOREGROUND_RESTORE_VERIFY_TIMEOUT_MS,
+                        )
+                    {
+                        foreground_restored = true;
+                        restore_retries_used = attempt;
+                        break;
+                    }
+                }
+                if !foreground_restored {
+                    return Err(err(ForegroundFlashErrorReason::ForegroundRestoreFailed));
+                }
+                Ok((steal_method, restore_retries_used))
+            })();
+
+            // 11. Always attempt clipboard restore (3 point sequence inside checks
+            //     `seq_before_restore == seq_after_inject_clipboard`)
+            let restore_outcome =
+                restore_clipboard_supported_formats(&snapshot, owner, seq_after_inject);
+            let clipboard_restored = matches!(restore_outcome, RestoreOutcome::Restored);
+            let clipboard_skipped_formats = build_skipped_formats(&snapshot);
+
+            // Propagate inner error AFTER restore attempt
+            let (steal_method, restore_retries_used) = inner?;
+
+            // u32 saturation: flash > ~49 day になるはずないが念のため
+            let flash_duration_ms = start
+                .elapsed()
+                .as_millis()
+                .min(u32::MAX as u128) as u32;
+
+            Ok(ForegroundFlashResult {
+                flash_duration_ms,
+                foreground_steal_method: steal_method.to_string(),
+                foreground_restored: true,
+                foreground_restore_retries_used: restore_retries_used,
+                clipboard_restored,
+                clipboard_skipped_formats,
+                paste_warning_detected: false,
+            })
+        })
+        .map_err(|e| napi::Error::from_reason(e.as_reason().to_string()))?;
+
+        result
     })
-}
-
-// ── Internal helpers (Phase 1c で実装、Phase 1a では skeleton のみ) ────────
-
-/// Foreground steal ladder 段 2: Alt key down/up で foreground lock を一時解除し、
-/// 再度 `SetForegroundWindow(target)` を試行する。
-///
-/// 段 1 (`win32_force_set_foreground_window` = 既存 `input.rs::win32_force_set_foreground_window`)
-/// が fail したときの fallback。Microsoft docs 的には「user input 直後の
-/// foreground 取得は許可される」性質を利用する well-known trick。
-///
-/// **Phase 1a skeleton**: signature のみ。本実装 Phase 1c。
-#[allow(dead_code)]
-fn alt_unlock_then_set_foreground(_target: HWND) -> bool {
-    // Phase 1c で実装。skeleton では false を返す = ladder 段 2 fail とみなされる。
-    false
 }
