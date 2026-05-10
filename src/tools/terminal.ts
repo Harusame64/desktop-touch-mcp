@@ -441,7 +441,10 @@ export const terminalSendHandler = async ({
             { context: { sent: r.sent, total: input.length } }
           );
         }
-        if (pressEnter) {
+        // Codex Round 1 P2-B 反映: input が CR/LF 終端なら Enter 重複送信を回避
+        // (= 既存 BG path の newline guard と同 contract、conhost で blank command
+        //  実行を防ぐ)。
+        if (pressEnter && !/[\r\n]$/.test(input)) {
           postEnterToHwnd(win.hwnd);
         }
         return ok({
@@ -460,11 +463,17 @@ export const terminalSendHandler = async ({
           { context: { kind: channel.kind, windowTitle: win.title } }
         );
       }
+      // Codex Round 1 P2-B 同型対応: input 末尾改行で Enter 重複送信を回避。
+      // text には改行を入れない構造的回避なので native validate_input が
+      // input_contains_newline で reject、ここに到達した時点で input は改行ゼロ。
+      // ただし caller が pressEnter 明示し、かつ将来 native side で改行許容に
+      // 変わる可能性に備えて防御的に guard も書いておく。
+      const flashPressEnter = pressEnter && !/[\r\n]$/.test(input);
       const flashResult = injectViaForegroundFlash(
         channel.hwnd,
         channel.pid,
         input,
-        { pressEnter }, // terminal:send は default true (Enter 自動押下)
+        { pressEnter: flashPressEnter }, // terminal:send default true、改行終端なら抑止
       );
       if (!flashResult.ok) {
         return failWith(
@@ -489,6 +498,7 @@ export const terminalSendHandler = async ({
           flashDurationMs: flashResult.result?.flashDurationMs,
           foregroundStealMethod: flashResult.result?.foregroundStealMethod,
           foregroundRestored: flashResult.result?.foregroundRestored,
+          foregroundRestoreMethod: flashResult.result?.foregroundRestoreMethod,
           clipboardRestored: flashResult.result?.clipboardRestored,
           clipboardSkippedFormats: flashResult.result?.clipboardSkippedFormats ?? [],
         },

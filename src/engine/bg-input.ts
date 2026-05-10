@@ -305,6 +305,9 @@ export function isBgAutoEnabled(): boolean {
 
 /** Typed reason returned by native `win32_foreground_flash_inject` failure. */
 export type ForegroundFlashFailureReason =
+  /** Input が改行 (LF / CR) を含む (Opus Round 1 P1-3 で size と分離)。 */
+  | "input_contains_newline"
+  /** Input が UTF-16 で 5KiB 超 (size threshold)。 */
   | "input_exceeds_paste_warning_threshold"
   | "foreground_steal_denied"
   | "focus_wait_timeout"
@@ -314,6 +317,7 @@ export type ForegroundFlashFailureReason =
   | "send_input_failed";
 
 const KNOWN_FLASH_REASONS: ReadonlySet<string> = new Set<ForegroundFlashFailureReason>([
+  "input_contains_newline",
   "input_exceeds_paste_warning_threshold",
   "foreground_steal_denied",
   "focus_wait_timeout",
@@ -373,8 +377,12 @@ export function injectViaForegroundFlash(
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     // napi::Error::from_reason は message にそのまま typed reason (snake_case) を入れる。
-    // panic in <fn>: ... 形式の panic prefix も剥いて reason だけ取り出す。
-    const cleaned = msg.replace(/^panic in win32_foreground_flash_inject:\s*/, "").trim();
+    // panic guard (`napi_safe_call`) は失敗時 `panic in <fn>: <detail>` 形式で wrap、
+    // wrap 名が将来増減 (`napi_safe_call panic in ...` 等) しても剥がせるよう
+    // `panic in <fn>:` 全 fn 名を吸う pattern に拡張 (Opus Round 1 P2-5)。
+    const cleaned = msg
+      .replace(/^panic in [^:]+:\s*/, "")
+      .trim();
     if (KNOWN_FLASH_REASONS.has(cleaned)) {
       return { ok: false, reason: cleaned as ForegroundFlashFailureReason, rawError: msg };
     }

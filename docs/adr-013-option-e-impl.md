@@ -86,9 +86,15 @@ ladder 各段の成否を hints に記録 (`hints.foregroundSteal: { method: "At
 `OpenClipboard(hiddenOwner)` で使う message-only window:
 
 - **専用 window class** (`STATIC` 流用ではなく、`DTM_ClipboardOwner` のような専用 class を `RegisterClassExW` で登録)
-- **WndProc 実装**: clipboard 関連 message (`WM_DESTROYCLIPBOARD` / `WM_RENDERFORMAT` / `WM_RENDERALLFORMATS`) を最低限 handle (我々は遅延 rendering 提供しないので NULL response でも安全)
-- **message loop 要件**: clipboard 操作 thread は message loop を持つ必要あり、本 plan では engine 起動時に **dedicated thread で window 作成 + message loop 動かす**、clipboard 操作はこの thread に dispatch
-- **lifecycle**: engine 起動時 lazy init (`ensure_clipboard_owner_thread()`)、engine shutdown 時 `WM_QUIT` 送信して thread join + window dispose
+- **WndProc 実装**: `DefWindowProcW` 呼出のみ (我々は遅延 rendering 提供しないので NULL response でも安全)
+- **lifecycle**: per-call create + destroy (calling thread で `with_hidden_owner` scope 内、~80ms の flash 中のみ存続)
+
+**Implementation deviation (PR #240 Round 1 P2-1 反映)**: 本 plan 起草時は engine 起動時 lazy init + dedicated thread + message loop pumping を要求していたが、実装は **per-call lifecycle (calling thread)** に縮小。理由:
+- clipboard 操作は ~80ms の短い session、`OpenClipboard` 〜 `CloseClipboard` 間で他 process 由来の `WM_RENDERFORMAT` を受け取る必要がない (我々は HGLOBAL 系のみ書込み、遅延 rendering 提供しない)
+- dedicated thread + message loop は engine lifecycle 管理が必要で複雑度高、MVP scope 外
+- per-call の overhead は `RegisterClassExW` + `CreateWindowExW` で ~1ms 以下 (`CLASS_REGISTERED` AtomicBool で 2 回目以降 register skip)
+
+将来 dogfood で performance 顕在化 (= 1 秒に複数 inject など) したら別 PR / Phase 1.5 で dedicated thread に refactor 予定 (`docs/adr-013-followups.md` に永続化候補)。
 
 #### 3.2.2 Sequence number 比較 (3 point)
 
@@ -293,6 +299,8 @@ fn alt_unlock_then_set_foreground(target: HWND) -> bool { ... }
   // Caller-side readback (既存 terminal:read 契約)
  18. ReadbackVerify(SLO p99 < 200ms)
 ```
+
+**Implementation deviation (PR #240 Round 1 P3-2 反映)**: 上記 step 17 (paste warning scan) は本実装で **step 8.5 (Ctrl+V + 必要な Enter 直後、foreground restore より前)** に前倒し。理由: WT が foreground のうちに `VK_ESCAPE` を SendInput で送らないと、step 13 後 (`SetForegroundWindow(originalForegroundHwnd)` 後) は Esc が `originalForegroundHwnd` に届いて dialog dismiss 先と一致しない (modal dialog の z-order 上 dialog 自身が前面でも、`SetForegroundWindow` で original を取り戻した直後は queue が混乱する)。実用挙動は本 sequence と等価 (構造的回避 §3.3.1 で trigger 確率 ~0、本 deviation は保険 layer の効き目改善のみ)。本 deviation は ADR-013 v1.4 §3.5 末尾でも言及。
 
 ---
 

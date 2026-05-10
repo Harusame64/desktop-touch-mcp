@@ -717,7 +717,12 @@ export const keyboardTypeHandler = async ({
         // Terminal-class target — wm_char path is preferable (no foreground steal).
         // Resolver picked wm_char via allowedChannels; honour it without UIA
         // post-send verification (= simplified BG path、Phase 3 MVP scope)。
-        if (replaceAll) postKeyComboToHwnd(target.hwnd, "ctrl+a");
+        // Opus Round 1 P2-6 反映: replaceAll 失敗 → warning 集約。
+        const ffWarnings = [...warnings];
+        if (replaceAll) {
+          const okSelectAll = postKeyComboToHwnd(target.hwnd, "ctrl+a");
+          if (!okSelectAll) ffWarnings.push("ReplaceAllFailed");
+        }
         const r = postCharsToHwnd(target.hwnd, effectiveText);
         if (!r.full) {
           return failWith(
@@ -734,7 +739,7 @@ export const keyboardTypeHandler = async ({
           method: "foreground_flash",
           hints: {
             backgroundChannel: "wm_char",
-            warnings,
+            warnings: ffWarnings,
           },
           ...(ffPerception && { perception: ffPerception }),
         });
@@ -749,6 +754,15 @@ export const keyboardTypeHandler = async ({
           "keyboard:type",
           { context: { kind: channel.kind, windowTitle: effectiveWindowTitle } }
         );
+      }
+      // Codex Round 1 P2-A 反映: clipboard_flash 経路でも replaceAll を honor。
+      // clipboard inject 前に Ctrl+A を SendInput で送る (foreground steal は
+      // injectViaForegroundFlash 内で行うため、ここでは pre-flash の WM_KEYDOWN
+      // 経路で送る)。replaceAll 失敗は warning 化。
+      const ffWarnings = [...warnings];
+      if (replaceAll) {
+        const okSelectAll = postKeyComboToHwnd(channel.hwnd, "ctrl+a");
+        if (!okSelectAll) ffWarnings.push("ReplaceAllFailed");
       }
       const flashResult = injectViaForegroundFlash(
         channel.hwnd,
@@ -780,9 +794,10 @@ export const keyboardTypeHandler = async ({
           flashDurationMs: flashResult.result?.flashDurationMs,
           foregroundStealMethod: flashResult.result?.foregroundStealMethod,
           foregroundRestored: flashResult.result?.foregroundRestored,
+          foregroundRestoreMethod: flashResult.result?.foregroundRestoreMethod,
           clipboardRestored: flashResult.result?.clipboardRestored,
           clipboardSkippedFormats: flashResult.result?.clipboardSkippedFormats ?? [],
-          warnings,
+          warnings: ffWarnings,
         },
         ...(ffPerception && { perception: ffPerception }),
       });

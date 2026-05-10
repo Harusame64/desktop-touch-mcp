@@ -279,6 +279,7 @@ export interface NativeForegroundFlashSkippedFormat {
 
 /** Successful return of `win32ForegroundFlashInject`. Failure paths throw
  *  `Error` whose `message` carries the typed reason string (snake_case):
+ *  - `input_contains_newline`
  *  - `input_exceeds_paste_warning_threshold`
  *  - `foreground_steal_denied`
  *  - `focus_wait_timeout`
@@ -295,8 +296,14 @@ export interface NativeForegroundFlashResult {
   foregroundStealMethod: string
   /** Foreground 復帰確認済 (`GetForegroundWindow == originalForegroundHwnd`)。 */
   foregroundRestored: boolean
-  /** Foreground 復帰までに要した retry 回数 (0 = 1 回目で成功)。 */
+  /** Foreground 復帰の retry 回数 (0 = 1 回目で成功; 1 attempt 内で 段 1 →
+   *  段 2 fallback も "0" 扱い、ladder 段 1/2 区別は `foregroundRestoreMethod`
+   *  側で記録、Opus Round 1 P1-2 反映)。 */
   foregroundRestoreRetriesUsed: number
+  /** Foreground 復帰時に成功した ladder 段。
+   *  `"AttachThreadInput"` / `"alt_unlock"` / `"none"` (already_foreground)。
+   *  retry observability を steal 側と対称化 (Opus Round 1 P1-2)。 */
+  foregroundRestoreMethod: string
   /** Clipboard 復元実施 (false = race detected / restore 中 fail で skip)。 */
   clipboardRestored: boolean
   /** Clipboard save 時 skip された format (非 HGLOBAL / 遅延 rendering)。 */

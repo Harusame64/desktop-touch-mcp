@@ -50,9 +50,10 @@ const WT_AVAILABLE: boolean = (() => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("foreground_flash — input validation (native validate_input、§3.3.1)", () => {
-  it.skipIf(!WT_AVAILABLE)("rejects text containing LF with input_exceeds_paste_warning_threshold", async () => {
-    // WT instance を立ち上げ、native flash の validate_input を経由するため
-    // method:'foreground_flash' 経路を使う (Phase 3 wiring 済)。
+  it.skipIf(!WT_AVAILABLE)("rejects text containing LF with input_contains_newline", async () => {
+    // Opus Round 1 P1-3 反映: 改行は size と区別された typed reason
+    // (input_contains_newline)、caller の suggest 分岐で
+    // 「改行除去 vs 分割 inject」を差別化可能。
     const ps = await launchPowerShell({ host: "wt", banner: "ready-ff-validate-lf" });
     try {
       const r = parsePayload(await keyboardTypeHandler({
@@ -66,9 +67,7 @@ describe("foreground_flash — input validation (native validate_input、§3.3.1
         settleMs: 0,
       }));
       expect(r.ok, JSON.stringify(r)).toBe(false);
-      // Native validate_input は input_exceeds_paste_warning_threshold で fail
-      // → handler が context.reason に snake_case で透過。
-      expect(r.context?.reason).toBe("input_exceeds_paste_warning_threshold");
+      expect(r.context?.reason).toBe("input_contains_newline");
     } finally {
       ps?.kill();
     }

@@ -41,13 +41,30 @@ const PASTE_WARNING_CLASS_NAME: &str = "Microsoft.UI.Xaml.Controls.ContentDialog
 const SCAN_INTERVAL_MS: u64 = 10;
 const UIA_THREAD_BUFFER_MS: u32 = 200;
 
+/// `scan_and_dismiss_paste_warning` の outcome。
+/// **Opus Round 1 P2-3 反映**: 旧 bool 戻りでは「dialog detected but escape send
+/// failed」が caller 側 silent drift する盲点を解消、escape 送信成否を separate field
+/// として propagate。
+#[derive(Debug, Clone, Copy)]
+pub struct PasteWarningScanOutcome {
+    /// ContentDialog が UIA scan で検出されたか。
+    pub detected: bool,
+    /// 検出時 `SendInput(VK_ESCAPE)` が想定通り 2 events inject に成功したか。
+    /// `detected = false` のとき意味なし (`escape_sent` も false)。
+    pub escape_sent: bool,
+}
+
 /// Scan for a paste-warning ContentDialog under `target_hwnd_raw` (BigInt
-/// から変換済の `isize`)。検出時は `VK_ESCAPE` を SendInput で送信、`true`
-/// を返す。検出されないまま `timeout_ms` 経過なら `false`。
+/// から変換済の `isize`)。検出時は `VK_ESCAPE` を SendInput で送信、outcome に
+/// detected + escape_sent を返す。検出されないまま `timeout_ms` 経過なら
+/// `detected = false`。
 ///
 /// **Best-effort**: UIA singleton COM thread が unavailable / timeout の場合は
-/// `false` で返す (= scan 機能なしで flash 続行)。
-pub fn scan_and_dismiss_paste_warning(target_hwnd_raw: isize, timeout_ms: u32) -> bool {
+/// `detected = false` で返す (= scan 機能なしで flash 続行)。
+pub fn scan_and_dismiss_paste_warning(
+    target_hwnd_raw: isize,
+    timeout_ms: u32,
+) -> PasteWarningScanOutcome {
     let detected = thread::execute_with_timeout(
         move |ctx: &UiaContext| -> napi::Result<bool> {
             Ok(scan_inner(ctx, target_hwnd_raw, timeout_ms))
@@ -56,10 +73,11 @@ pub fn scan_and_dismiss_paste_warning(target_hwnd_raw: isize, timeout_ms: u32) -
     )
     .unwrap_or(false);
 
+    let mut escape_sent = false;
     if detected {
-        send_escape();
+        escape_sent = send_escape();
     }
-    detected
+    PasteWarningScanOutcome { detected, escape_sent }
 }
 
 fn scan_inner(ctx: &UiaContext, target_hwnd_raw: isize, timeout_ms: u32) -> bool {
@@ -95,8 +113,11 @@ fn check_dialog_present(automation: &IUIAutomation, target: HWND) -> bool {
     }
 }
 
-/// `VK_ESCAPE` down + up を SendInput で 1 batch 送信。
-fn send_escape() {
+/// `VK_ESCAPE` down + up を SendInput で 1 batch 送信。返却 = 2 events 全 inject
+/// 成功なら true、Win11 input restriction / UIPI 等で 0-1 件 inject なら false。
+/// **Opus Round 1 P2-3 反映**: 戻り値で送信成否を caller (foreground_flash.rs) に
+/// 伝播、`paste_warning_detected = true` を実際の dismiss 成否と整合化。
+fn send_escape() -> bool {
     unsafe {
         let mut inputs: [INPUT; 2] = std::mem::zeroed();
         inputs[0].r#type = INPUT_KEYBOARD;
@@ -104,6 +125,7 @@ fn send_escape() {
         inputs[1].r#type = INPUT_KEYBOARD;
         inputs[1].Anonymous.ki.wVk = VK_ESCAPE;
         inputs[1].Anonymous.ki.dwFlags = KEYEVENTF_KEYUP;
-        let _ = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+        let sent = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+        sent == 2
     }
 }

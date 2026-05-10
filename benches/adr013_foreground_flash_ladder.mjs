@@ -119,13 +119,20 @@ const client = new Client(
 );
 await client.connect(transport);
 
-// ─── Discover WT window if --window-title not specified ─────────────────────
-
+// ─── Validate --window-title (Opus Round 1 P2-2 反映) ──────────────────────
+// WT の HWND title は active tab の title (PowerShell / pwsh / etc) に変動する
+// ため、default "Windows Terminal" では 50 連続 WindowNotFound で全 fail し
+// R1 acceptance gate を operator が誤判定する risk がある。明示必須化。
 if (!windowTitle) {
-  // We rely on the production stub catalog window enumeration via desktop_state.
-  // For Phase 2 MVP, use a sentinel "WindowsTerminal" / "Windows Terminal"
-  // partial match. Operator can override with --window-title.
-  windowTitle = "Windows Terminal";
+  console.error(
+    "error: --window-title is required.\n" +
+      "  WT の HWND title は active tab title (PowerShell / pwsh / etc) で変動するため、\n" +
+      "  bench 実行前に WT を起動 + active tab を確認し、その partial title を渡すこと。\n" +
+      "  例: --window-title=\"PowerShell\" や --window-title=\"pwsh\" など。",
+  );
+  console.error(usage);
+  await client.close();
+  process.exit(2);
 }
 
 console.log(

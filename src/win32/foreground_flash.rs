@@ -86,8 +86,14 @@ pub struct ForegroundFlashResult {
     pub foreground_steal_method: String,
     /// Foreground 復帰が確認できたか (`GetForegroundWindow == originalForegroundHwnd`)。
     pub foreground_restored: bool,
-    /// Foreground 復帰までに要した retry 回数 (0 = 1 回目で成功)。
+    /// Foreground 復帰の retry 回数 (0 = 1 回目で成功)。**1 attempt 内で 段 1 →
+    /// 段 2 fallback も "0" 扱い**、ladder 段 1/2 区別は `foreground_restore_method`
+    /// 側で記録 (Opus Round 1 P1-2 反映)。
     pub foreground_restore_retries_used: u32,
+    /// Foreground 復帰時に成功した ladder 段。
+    /// `"AttachThreadInput"` / `"alt_unlock"` / `"none"` (already_foreground で
+    /// restore 不要 case)。retry observability を steal 側と対称化 (Opus P1-2)。
+    pub foreground_restore_method: String,
     /// Clipboard 復元が実施されたか (false = race detected で skip、または restore 中 fail)。
     pub clipboard_restored: bool,
     /// Clipboard save 時に skip された format (非 HGLOBAL / deferred render)。
@@ -112,7 +118,13 @@ pub struct ForegroundFlashSkippedFormat {
 /// 各 variant の string 形は `as_str()` で取得 (snake_case)。
 #[derive(Debug, Clone, Copy)]
 pub enum ForegroundFlashErrorReason {
-    /// Input が改行を含む or 5KiB 超 = WT paste warning trigger 範囲。
+    /// Input が改行 (LF / CR) を含む = WT `multiLinePasteWarning` trigger 範囲。
+    /// caller は改行除去 + 各行を別 inject に分割すれば retry 可能。
+    /// (Opus Round 1 P1-3 で size と区別、suggest 分岐の差別化)
+    InputContainsNewline,
+    /// Input が UTF-16 で 5KiB 超 = WT `largePasteWarning` trigger 範囲。
+    /// caller は分割 inject すれば retry 可能。後方互換のため文字列表現は
+    /// `input_exceeds_paste_warning_threshold` を維持 (Opus Round 1 P1-3)。
     InputExceedsPasteWarningThreshold,
     /// Foreground steal ladder 全段 fail (= caller 自身が foreground 権を持たない、
     /// AttachThreadInput でも Alt unlock でも盗めない)。
@@ -136,6 +148,7 @@ impl ForegroundFlashErrorReason {
     pub fn as_str(self) -> &'static str {
         use ForegroundFlashErrorReason::*;
         match self {
+            InputContainsNewline => "input_contains_newline",
             InputExceedsPasteWarningThreshold => "input_exceeds_paste_warning_threshold",
             ForegroundStealDenied => "foreground_steal_denied",
             FocusWaitTimeout => "focus_wait_timeout",
@@ -161,9 +174,12 @@ fn hwnd_from_bigint(b: BigInt) -> HWND {
 /// Pre-flight input validation (§3.3.1: single-line + < 5KiB UTF-16).
 /// 改行 (LF / CR) が混入すると WT `multiLinePasteWarning` の trigger になるため
 /// 構造的に拒否、5KiB 超は `largePasteWarning` の閾値に余裕を見て拒否。
+///
+/// **Opus Round 1 P1-3 反映**: 改行と size 超過で typed reason を分離、caller の
+/// suggest 分岐 (改行除去 vs 分割 inject) を可能化。
 fn validate_input(text: &str) -> Result<(), ForegroundFlashErrorReason> {
     if text.contains('\n') || text.contains('\r') {
-        return Err(ForegroundFlashErrorReason::InputExceedsPasteWarningThreshold);
+        return Err(ForegroundFlashErrorReason::InputContainsNewline);
     }
     let utf16_byte_count = text.encode_utf16().count() * 2;
     if utf16_byte_count >= MAX_TEXT_UTF16_BYTES {
@@ -401,7 +417,9 @@ pub fn win32_foreground_flash_inject(
             // step 12.5 へ前倒し: WT が foreground のうちに Esc が dismiss
             // 先と一致するため。Phase 5 docs で deviation 言及予定)。
             let mut paste_warning_detected = false;
-            let inner: napi::Result<(&'static str, u32)> = (|| {
+            // Returns: (steal_method, restore_retries_used, restore_method) — Opus Round 1
+            // P1-2 反映で restore 側 ladder 段別を hints に出す対称化。
+            let inner: napi::Result<(&'static str, u32, &'static str)> = (|| {
                 // 4. Foreground steal ladder
                 let steal_method = if already_foreground {
                     "already_foreground"
@@ -433,25 +451,33 @@ pub fn win32_foreground_flash_inject(
 
                 // 8.5. WT paste warning ContentDialog scan (Phase 1e、§3.3.3
                 //      保険)。WT が foreground のうちに UIA scan + Esc を実行、
-                //      検出したら detected フラグだけ立てて foreground restore
-                //      には進む (cleanup 整合)。
+                //      detected + escape_sent を outcome として観測、cleanup は
+                //      共通 (Opus Round 1 P2-3 反映: escape_sent も設計に組込み)。
                 if scan_paste_warning {
                     let target_raw = target.0 as isize;
-                    if scan_and_dismiss_paste_warning(
+                    let outcome = scan_and_dismiss_paste_warning(
                         target_raw,
                         PASTE_WARNING_SCAN_TIMEOUT_MS,
-                    ) {
+                    );
+                    if outcome.detected {
                         paste_warning_detected = true;
+                        // escape_sent = false なら dialog 残置 risk、しかし caller
+                        // は wt_paste_warning_intercepted で fail を受け取るので
+                        // 「intercept したが Esc 失敗」という区別は当面 hint で
+                        // surface しない (将来 docs follow-up、§5.4.1 acceptance
+                        // hot path 既に detected で typed reason fail)。
+                        let _ = outcome.escape_sent;
                     }
                 }
 
                 // 9-10. Foreground restore (ladder + verify) with retries
                 // already_foreground なら restore 不要 (= original == target、現在も target)
                 if already_foreground {
-                    return Ok((steal_method, 0));
+                    return Ok((steal_method, 0, "none"));
                 }
                 let mut restore_retries_used = 0u32;
                 let mut foreground_restored = false;
+                let mut restore_method: &'static str = "none";
                 for attempt in 0..=foreground_restore_retries {
                     if force_set_foreground_inner(original_fg)
                         && verify_foreground_returned(
@@ -461,6 +487,7 @@ pub fn win32_foreground_flash_inject(
                     {
                         foreground_restored = true;
                         restore_retries_used = attempt;
+                        restore_method = "AttachThreadInput";
                         break;
                     }
                     if alt_unlock_then_set_foreground(original_fg)
@@ -471,13 +498,14 @@ pub fn win32_foreground_flash_inject(
                     {
                         foreground_restored = true;
                         restore_retries_used = attempt;
+                        restore_method = "alt_unlock";
                         break;
                     }
                 }
                 if !foreground_restored {
                     return Err(err(ForegroundFlashErrorReason::ForegroundRestoreFailed));
                 }
-                Ok((steal_method, restore_retries_used))
+                Ok((steal_method, restore_retries_used, restore_method))
             })();
 
             // 11. Always attempt clipboard restore (3 point sequence inside checks
@@ -488,7 +516,7 @@ pub fn win32_foreground_flash_inject(
             let clipboard_skipped_formats = build_skipped_formats(&snapshot);
 
             // Propagate inner error AFTER restore attempt
-            let (steal_method, restore_retries_used) = inner?;
+            let (steal_method, restore_retries_used, restore_method) = inner?;
 
             // Paste warning が detected なら全 cleanup 後に typed reason で fail。
             // 構造的回避が破られた fail-safe path (§3.3.3)。
@@ -507,6 +535,7 @@ pub fn win32_foreground_flash_inject(
                 foreground_steal_method: steal_method.to_string(),
                 foreground_restored: true,
                 foreground_restore_retries_used: restore_retries_used,
+                foreground_restore_method: restore_method.to_string(),
                 clipboard_restored,
                 clipboard_skipped_formats,
                 paste_warning_detected: false,
@@ -536,29 +565,30 @@ mod tests {
     }
 
     #[test]
-    fn validate_input_rejects_lf() {
+    fn validate_input_rejects_lf_with_newline_reason() {
+        // Opus Round 1 P1-3 fix: 改行は size と区別された typed reason
         let r = validate_input("hello\nworld");
         assert!(matches!(
             r,
-            Err(ForegroundFlashErrorReason::InputExceedsPasteWarningThreshold)
+            Err(ForegroundFlashErrorReason::InputContainsNewline)
         ));
     }
 
     #[test]
-    fn validate_input_rejects_cr() {
+    fn validate_input_rejects_cr_with_newline_reason() {
         let r = validate_input("hello\rworld");
         assert!(matches!(
             r,
-            Err(ForegroundFlashErrorReason::InputExceedsPasteWarningThreshold)
+            Err(ForegroundFlashErrorReason::InputContainsNewline)
         ));
     }
 
     #[test]
-    fn validate_input_rejects_crlf() {
+    fn validate_input_rejects_crlf_with_newline_reason() {
         let r = validate_input("hello\r\nworld");
         assert!(matches!(
             r,
-            Err(ForegroundFlashErrorReason::InputExceedsPasteWarningThreshold)
+            Err(ForegroundFlashErrorReason::InputContainsNewline)
         ));
     }
 
@@ -608,6 +638,7 @@ mod tests {
     #[test]
     fn error_reason_strings_are_snake_case() {
         use ForegroundFlashErrorReason::*;
+        assert_eq!(InputContainsNewline.as_str(), "input_contains_newline");
         assert_eq!(
             InputExceedsPasteWarningThreshold.as_str(),
             "input_exceeds_paste_warning_threshold"
