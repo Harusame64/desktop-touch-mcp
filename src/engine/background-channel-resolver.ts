@@ -111,7 +111,7 @@ export function resolveBackgroundInputChannel(
 }
 
 function makeClipboardFlashChannel(hwnd: bigint): BackgroundInputChannel {
-  let pid = 0;
+  let pid: number;
   try {
     pid = getWindowProcessId(hwnd);
   } catch {
