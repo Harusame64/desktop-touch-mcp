@@ -310,7 +310,7 @@ keyboard:type / terminal:send caller の method param:
 **本 ADR との position**:
 
 - 本 ADR Option E (`foreground_flash`) = 短期解 (妥協 BG)、明示 opt-in、issue #185 Phase 4 stretch の "WT で BG 動かしたい" 要件を MVP で満たす
-- Option F = 長期解 (本物 BG)、別 PR / 別 ADR で本実装 (cooperative bridge protocol 設計 + helper 配布方式 + auto-discovery + nonce 管理 を含む大型 plan、推定 4-8 週間)
+- Option F = 長期解 (本物 BG)、別 PR / 別 ADR で本実装 (cooperative bridge protocol 設計 + helper 配布方式 + auto-discovery + nonce 管理 を含む大型 plan、ADR-014 §8 で **4-7 週間 (最大 8 週間)** に refined)
 
 ADR-013 §3.6 で Option F section を追加しておくことで、Option E land 後に Option F 別 PR を起票する path を docs に永続化。`channel resolver` の `cooperative_bridge` variant は将来形のみ予約 (resolver は現在返さない、narrow reject)。
 
