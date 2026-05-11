@@ -201,9 +201,177 @@ export async function captureWindowBackground(
 ): Promise<CaptureResult> {
   const opts: CaptureOptions =
     typeof optsOrMaxDim === "number" ? { maxDimension: optsOrMaxDim } : optsOrMaxDim;
-  const { data, width, height } = printWindowToBuffer(hwnd, printWindowFlags);
-  // data is already RGBA (converted in win32.ts)
-  return encode(data, width, height, 4, opts);
+  // Use the raw helper for consistency with the fallback path. We pass the
+  // explicit flags through so callers selecting PW_CLIENTONLY (flag=3) keep
+  // their current semantics.
+  const raw = captureWindowRawPrintWindow(hwnd, printWindowFlags);
+  if (!raw) {
+    throw new Error("printWindowToBuffer returned no data");
+  }
+  return encode(raw.rawPixels, raw.width, raw.height, raw.channels, opts);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Raw capture helpers (PrintWindow + BitBlt fallback)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Raw PrintWindow capture. Returns null on any failure (exception, missing
+ * buffer, zero-size). The null signal is the only definite trigger for
+ * fallback in captureWindowRawWithFallback — `null` means we got no image at
+ * all, distinct from "we got a legitimately black image".
+ */
+export function captureWindowRawPrintWindow(
+  hwnd: unknown,
+  flags = 2,
+): { rawPixels: Buffer; width: number; height: number; channels: 4 } | null {
+  try {
+    const { data, width, height } = printWindowToBuffer(hwnd, flags);
+    if (!data || width <= 0 || height <= 0) return null;
+    return { rawPixels: data, width, height, channels: 4 };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Conservative blank-capture detector. Returns `isBlank: true` only for an
+ * all-black frame with zero variance — a pattern produced by PrintWindow on
+ * GPU-only / RDP-occluded windows. Normal images that happen to be all-white
+ * (empty Notepad, empty browser tab, blank dialog) MUST NOT be flagged blank
+ * here; flagging them would cause silent fallback to BitBlt which on hidden
+ * windows would return the wrong window's pixels.
+ *
+ * Even for all-black we still emit a warning at the caller because terminal
+ * windows, dark editors, and video frames can legitimately be all-black.
+ *
+ * Sampling: walks the buffer with a fixed stride to keep this O(1) per call,
+ * regardless of resolution.
+ */
+export function isLikelyBlankCapture(
+  rawPixels: Buffer,
+  width: number,
+  height: number,
+  channels: 3 | 4,
+): { isBlank: boolean; reason: "printwindow-all-black" | null } {
+  if (width <= 0 || height <= 0 || rawPixels.length < channels) {
+    return { isBlank: false, reason: null };
+  }
+  const pixelCount = width * height;
+  // Sample at most ~4096 pixels regardless of frame size (O(1) per call).
+  const sampleCount = Math.min(4096, pixelCount);
+  const step = Math.max(1, Math.floor(pixelCount / sampleCount));
+  // Threshold: average luminance < 2/255. Strict enough to avoid flagging
+  // dark-but-not-black UI (dark mode editors with subpixel anti-aliasing).
+  const MAX_AVG_LUMA = 2;
+  let sumLuma = 0;
+  let firstPixelLuma = -1;
+  let allSame = true;
+  let sampled = 0;
+  for (let p = 0; p < pixelCount; p += step) {
+    const off = p * channels;
+    // RGBA / RGB: take BT.601 luma (R*0.299 + G*0.587 + B*0.114), integer-ish.
+    const r = rawPixels[off] ?? 0;
+    const g = rawPixels[off + 1] ?? 0;
+    const b = rawPixels[off + 2] ?? 0;
+    const luma = (r * 299 + g * 587 + b * 114) / 1000;
+    sumLuma += luma;
+    if (firstPixelLuma < 0) {
+      firstPixelLuma = luma;
+    } else if (luma !== firstPixelLuma) {
+      allSame = false;
+    }
+    sampled++;
+    if (sampled >= sampleCount) break;
+  }
+  if (sampled === 0) return { isBlank: false, reason: null };
+  const avgLuma = sumLuma / sampled;
+  // Require BOTH conditions to flag: very low average luminance AND zero
+  // variance across samples. This excludes dark-mode editor windows with
+  // subtle pixel variation from being treated as blank.
+  if (avgLuma < MAX_AVG_LUMA && allSame) {
+    return { isBlank: true, reason: "printwindow-all-black" };
+  }
+  return { isBlank: false, reason: null };
+}
+
+export type CaptureSource = "printwindow" | "bitblt-fallback";
+export type CaptureFallbackReason = "printwindow-failed" | "printwindow-all-black" | null;
+
+export interface CaptureWindowRawResult {
+  rawPixels: Buffer;
+  width: number;
+  height: number;
+  channels: 3 | 4;
+  source: CaptureSource;
+  fallbackReason: CaptureFallbackReason;
+}
+
+/**
+ * Window-targeted raw capture with PrintWindow as the primary route and
+ * BitBlt-of-screen-then-crop as the fallback. The fallback fires only when:
+ *   1. PrintWindow returns no data at all (null / exception / zero-size), or
+ *   2. PrintWindow returned an all-black + zero-variance frame.
+ *
+ * BitBlt fallback uses the supplied `region` (virtual screen coordinates).
+ * Callers must pass the window's screen rect — if the window is occluded or
+ * off-screen the fallback will capture whatever is at that screen region,
+ * which is why the `fallbackReason` is surfaced to the user via hints.
+ */
+export async function captureWindowRawWithFallback(
+  hwnd: unknown,
+  region: { x: number; y: number; width: number; height: number },
+  flags = 2,
+): Promise<CaptureWindowRawResult> {
+  const raw = captureWindowRawPrintWindow(hwnd, flags);
+  let fallbackReason: CaptureFallbackReason = null;
+  if (!raw) {
+    fallbackReason = "printwindow-failed";
+  } else {
+    const blank = isLikelyBlankCapture(raw.rawPixels, raw.width, raw.height, raw.channels);
+    if (blank.isBlank) {
+      fallbackReason = blank.reason;
+    } else {
+      return {
+        rawPixels: raw.rawPixels,
+        width: raw.width,
+        height: raw.height,
+        channels: raw.channels,
+        source: "printwindow",
+        fallbackReason: null,
+      };
+    }
+  }
+  // BitBlt fallback via nutjs grabRegion of the window's screen rect.
+  const grabRegion = new Region(region.x, region.y, region.width, region.height);
+  const image = await screen.grabRegion(grabRegion);
+  const rgbImage = await image.toRGB();
+  const channels = (rgbImage.hasAlphaChannel ? 4 : 3) as 3 | 4;
+  return {
+    rawPixels: rgbImage.data,
+    width: rgbImage.width,
+    height: rgbImage.height,
+    channels,
+    source: "bitblt-fallback",
+    fallbackReason,
+  };
+}
+
+/**
+ * Encode wrapper for `captureWindowRawWithFallback`. Returns the standard
+ * `CaptureResult` plus the capture source / fallback reason for hint reporting.
+ */
+export async function captureWindowWithFallback(
+  hwnd: unknown,
+  region: { x: number; y: number; width: number; height: number },
+  optsOrMaxDim: CaptureOptions | number = 1280,
+  flags = 2,
+): Promise<CaptureResult & { source: CaptureSource; fallbackReason: CaptureFallbackReason }> {
+  const opts: CaptureOptions =
+    typeof optsOrMaxDim === "number" ? { maxDimension: optsOrMaxDim } : optsOrMaxDim;
+  const raw = await captureWindowRawWithFallback(hwnd, region, flags);
+  const encoded = await encode(raw.rawPixels, raw.width, raw.height, raw.channels, opts);
+  return { ...encoded, source: raw.source, fallbackReason: raw.fallbackReason };
 }
 
 /** Convert a raw RGBA buffer to base64 image. */
