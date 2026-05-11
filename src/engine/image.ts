@@ -332,14 +332,15 @@ export async function captureWindowRawWithFallback(
   flags = 2,
 ): Promise<CaptureWindowRawResult> {
   const raw = captureWindowRawPrintWindow(hwnd, flags);
-  let fallbackReason: CaptureFallbackReason = null;
+  // Definite-assignment analysis: every path through this block either
+  // assigns fallbackReason or returns, so no initializer is needed (and an
+  // initial `null` would be dead code per eslint no-useless-assignment).
+  let fallbackReason: CaptureFallbackReason;
   if (!raw) {
     fallbackReason = "printwindow-failed";
   } else {
     const blank = isLikelyBlankCapture(raw.rawPixels, raw.width, raw.height, raw.channels);
-    if (blank.isBlank) {
-      fallbackReason = blank.reason;
-    } else {
+    if (!blank.isBlank) {
       return {
         rawPixels: raw.rawPixels,
         width: raw.width,
@@ -349,6 +350,7 @@ export async function captureWindowRawWithFallback(
         fallbackReason: null,
       };
     }
+    fallbackReason = blank.reason;
   }
   // BitBlt fallback grabs the full window rect, NOT a sub-region. Sub-region
   // crops are applied uniformly at encode time via opts.crop (window-local
