@@ -11,6 +11,7 @@ import {
 } from "./_envelope.js";
 import { isToolDestructive } from "./_tool-flags.js";
 import { macroOutcomeStore } from "../store/macro-outcome-store.js";
+import { coercedBoolean } from "./_coerce.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Phase 4: TOOL_REGISTRY mirrors the v1.0.0 public surface — privatized tools
@@ -380,8 +381,7 @@ export const runMacroSchema = {
     .min(1)
     .max(50)
     .describe("Ordered list of tool calls to execute sequentially (max 50 steps)."),
-  stop_on_error: z
-    .boolean()
+  stop_on_error: coercedBoolean()
     .default(true)
     .describe("Stop execution on the first error (default true). Set false to collect all results."),
 };

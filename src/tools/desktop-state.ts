@@ -3,6 +3,7 @@ import { z } from "zod";
 import { ok, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
+import { coercedBoolean } from "./_coerce.js";
 import { mouse } from "../engine/nutjs.js";
 import {
   enumWindowsInZOrder,
@@ -225,24 +226,21 @@ export const desktopStateSchema = {
   // Phase 4: optional response-field expansion absorbing get_cursor_position /
   // get_screen_info / get_document_state. Default off — keeps the cheap
   // baseline observation cost at ~1 UIA + 1 EnumWindows. Enable on demand.
-  includeCursor: z
-    .boolean()
+  includeCursor: coercedBoolean()
     .optional()
     .default(false)
     .describe(
       "When true, add a richer `cursor` field with monitor index alongside the lightweight `cursorPos`. " +
       "Phase 4: absorbs former get_cursor_position. Default false."
     ),
-  includeScreen: z
-    .boolean()
+  includeScreen: coercedBoolean()
     .optional()
     .default(false)
     .describe(
       "When true, add a `screen` field with all connected display info (resolution, position, DPI, scale). " +
       "Phase 4: absorbs former get_screen_info. Default false. Use the displayId values returned here in screenshot / window_dock(action='dock')."
     ),
-  includeDocument: z
-    .boolean()
+  includeDocument: coercedBoolean()
     .optional()
     .default(false)
     .describe(

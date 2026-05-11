@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { ok, fail, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
+import { coercedBoolean } from "./_coerce.js";
 import {
   enumWindowsInZOrder,
   restoreAndFocusWindow,
@@ -46,7 +47,7 @@ export const terminalReadSchema = {
   windowTitle: z.string().max(200).describe("Partial title of the terminal window (e.g. 'PowerShell', 'pwsh', 'WindowsTerminal')."),
   lines: z.coerce.number().int().min(1).max(2000).default(50).describe("Tail N lines (default 50)."),
   sinceMarker: z.string().max(64).optional().describe("Marker returned from a previous call. If found in current text, only the diff is returned."),
-  stripAnsi: z.boolean().default(true).describe("Strip ANSI escape sequences (default true)."),
+  stripAnsi: coercedBoolean().default(true).describe("Strip ANSI escape sequences (default true)."),
   source: z.enum(["auto", "uia", "ocr"]).default("auto").describe("'auto' = UIA TextPattern then OCR fallback; 'uia' = TextPattern only (fail on miss); 'ocr' = OCR only."),
   ocrLanguage: z.string().max(20).default("ja").describe("BCP-47 language tag for OCR fallback (default 'ja')."),
 };
@@ -72,16 +73,16 @@ export const terminalSendSchema = {
     "Split long input into chunks of this many characters in background mode to prevent " +
     "terminal input queue saturation. Default 100. Only applies when method results in background."
   ),
-  pressEnter: z.boolean().default(true).describe("Press Enter after typing (default true)."),
-  focusFirst: z.boolean().default(true).describe("Focus the terminal before sending (default true)."),
-  restoreFocus: z.boolean().default(true).describe("Restore the previously-focused window after sending (default true)."),
-  preferClipboard: z.boolean().default(true).describe("Use clipboard paste (typeViaClipboard) — IME/long-text safe (default true)."),
+  pressEnter: coercedBoolean().default(true).describe("Press Enter after typing (default true)."),
+  focusFirst: coercedBoolean().default(true).describe("Focus the terminal before sending (default true)."),
+  restoreFocus: coercedBoolean().default(true).describe("Restore the previously-focused window after sending (default true)."),
+  preferClipboard: coercedBoolean().default(true).describe("Use clipboard paste (typeViaClipboard) — IME/long-text safe (default true)."),
   pasteKey: z.enum(["auto", "ctrl+v", "ctrl+shift+v"]).default("auto").describe("Paste key combo. 'auto' picks ctrl+shift+v for WSL/bash/mintty/wezterm/alacritty, ctrl+v elsewhere. Only used when preferClipboard=true."),
-  forceFocus: z.boolean().optional().describe(
+  forceFocus: coercedBoolean().optional().describe(
     "When true, bypass Windows foreground-stealing protection via AttachThreadInput " +
     "before focusing the terminal window. Default: follows env DESKTOP_TOUCH_FORCE_FOCUS (default false)."
   ),
-  trackFocus: z.boolean().default(true).describe(
+  trackFocus: coercedBoolean().default(true).describe(
     "When true (default), detect if focus was stolen after sending. Reports focusLost in the response."
   ),
   settleMs: z.coerce.number().int().min(0).max(2000).default(300).describe(
@@ -1664,7 +1665,7 @@ export const terminalSchema = z.discriminatedUnion("action", [
       z.object({
         mode: z.literal("pattern"),
         pattern: z.string().describe("Stop when output matches this string (or regex if regex:true)"),
-        regex: z.boolean().default(false).describe("If true, treat pattern as a regex"),
+        regex: coercedBoolean().default(false).describe("If true, treat pattern as a regex"),
       }),
     ])).default({ mode: "quiet", quietMs: 1500 }),
     timeoutMs: z.coerce.number().int().min(500).max(600_000).default(30_000).describe("Hard timeout in ms (default 30s)"),

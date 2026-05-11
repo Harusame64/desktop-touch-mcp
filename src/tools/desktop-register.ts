@@ -16,6 +16,7 @@
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { coercedBoolean } from "./_coerce.js";
 import { DesktopFacade, type CandidateProvider, type DesktopSeeInput, type DesktopWindowMeta } from "./desktop.js";
 import type {
   EntityLease,
@@ -428,7 +429,7 @@ export const desktopSeeSchema = {
   view:        z.enum(["action", "explore", "debug"]).optional().describe("action (default, ≤20 entities), explore (≤50), debug (includes raw rect)"),
   query:       z.string().optional().describe("Filter entities by label substring (case-insensitive)"),
   maxEntities: z.number().int().min(1).max(200).optional().describe("Override entity count limit"),
-  debug:       z.boolean().optional().describe("Include raw screen coordinates in response (debug only — never relay to end-users)"),
+  debug:       coercedBoolean().optional().describe("Include raw screen coordinates in response (debug only — never relay to end-users)"),
 };
 
 export const desktopTouchSchema = {

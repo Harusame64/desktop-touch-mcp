@@ -7,6 +7,7 @@ import { updateWindowCache } from "../engine/window-cache.js";
 import { listTabs, activateTab, DEFAULT_CDP_PORT } from "../engine/cdp-bridge.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
+import { coercedBoolean } from "./_coerce.js";
 import { withRichNarration } from "./_narration.js";
 import { makeCommitWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
 
@@ -29,7 +30,7 @@ export const focusWindowSchema = {
   cdpPort: z.coerce.number().int().min(1).max(65535).default(DEFAULT_CDP_PORT).describe(
     `CDP port for chromeTabUrlContains (default ${DEFAULT_CDP_PORT})`
   ),
-  forceFocus: z.boolean().optional().describe(
+  forceFocus: coercedBoolean().optional().describe(
     "When set, use AttachThreadInput-based foreground escalation on the first attempt. " +
     "When omitted (default), focus_window first tries the standard SetForegroundWindow path " +
     "and auto-escalates to force-focus only if Win11 refused the default attempt (issue #197). " +
