@@ -29,7 +29,7 @@ export const scrollSchema = z.discriminatedUnion("action", [
     x: z.coerce.number().optional().describe("X coordinate to scroll at (moves cursor there first)"),
     y: z.coerce.number().optional().describe("Y coordinate to scroll at"),
     speed: z.coerce.number().optional().describe("Cursor movement speed in px/sec (0=teleport, omit=default)"),
-    homing: z.coerce.boolean().default(true).describe("Apply window-movement homing correction to (x,y) before scrolling. Default true."),
+    homing: coercedBoolean().default(true).describe("Apply window-movement homing correction to (x,y) before scrolling. Default true."),
     windowTitle: z.string().optional().describe("Partial window title. When provided, the server focuses this window first."),
     hwnd: z.string().optional().describe("Direct window handle ID (takes precedence over windowTitle)."),
   }),

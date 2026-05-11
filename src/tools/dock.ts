@@ -13,6 +13,7 @@ import type { WindowZInfo, MonitorInfo } from "../engine/win32.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
+import { coercedBoolean } from "./_coerce.js";
 import { pollUntil } from "../engine/poll.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -95,8 +96,7 @@ export const dockWindowSchema = {
     .positive()
     .default(360)
     .describe("Window height in pixels after docking. Default 360."),
-  pin: z
-    .boolean()
+  pin: coercedBoolean()
     .default(true)
     .describe(
       "If true, set always-on-top so the docked window stays visible on top of other windows. " +

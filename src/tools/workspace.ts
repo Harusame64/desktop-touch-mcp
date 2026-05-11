@@ -11,6 +11,7 @@ import { updateWindowCache } from "../engine/window-cache.js";
 import { ok, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
+import { coercedBoolean } from "./_coerce.js";
 import { pollUntil } from "../engine/poll.js";
 import { withRichNarration } from "./_narration.js";
 import { makeCommitWrapper, makeQueryWrapper, withEnvelopeIncludeSchema, genericQueryCausedByProjector, defaultQuerySessionId } from "./_envelope.js";
@@ -86,7 +87,7 @@ async function buildWindowSnapshot(
 
 export const workspaceSnapshotSchema = {
   thumbnailMaxDimension: z.coerce.number().int().positive().default(400).describe("Max size of per-window thumbnail images (default 400px)"),
-  includeUiSummary: z.boolean().default(true).describe("Whether to include UI element summaries for each window"),
+  includeUiSummary: coercedBoolean().default(true).describe("Whether to include UI element summaries for each window"),
 };
 
 export const workspaceLaunchSchema = {

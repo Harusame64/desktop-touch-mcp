@@ -18,6 +18,7 @@ import {
 import { getElementBounds } from "../engine/uia-bridge.js";
 import { captureWindowRawAndHash } from "../engine/layer-buffer.js";
 import { hammingDistance } from "../engine/image.js";
+import { coercedBoolean } from "./_coerce.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
@@ -203,7 +204,7 @@ const speedParam = z.coerce.number().int().min(0).optional().describe(
   "Omit to use the configured default (DESKTOP_TOUCH_MOUSE_SPEED env var, default 3000)."
 );
 
-const homingParam = z.boolean().default(true).describe(
+const homingParam = coercedBoolean().default(true).describe(
   "Enable homing correction (default true). " +
   "When enabled, the MCP server corrects stale coordinates if the target window moved " +
   "since the last screenshot. Set false to disable all correction (like traction control OFF)."
@@ -241,14 +242,14 @@ export const mouseMoveSchema = {
   hwnd: hwndParam,
 };
 
-const forceFocusParam = z.boolean().optional().describe(
+const forceFocusParam = coercedBoolean().optional().describe(
   "When true, bypass Windows foreground-stealing protection via AttachThreadInput " +
   "before focusing the target window. Required when a pinned window (e.g. Claude CLI) " +
   "keeps stealing focus. Default: follows env DESKTOP_TOUCH_FORCE_FOCUS (default false). " +
   "Set DESKTOP_TOUCH_FORCE_FOCUS=1 to make true the global default."
 );
 
-const trackFocusParam = z.boolean().default(true).describe(
+const trackFocusParam = coercedBoolean().default(true).describe(
   "When true (default), detect if focus was stolen from the target window after the action. " +
   "Reports focusLost:{afterMs,expected,stolenBy,stolenByProcessName} in the response. " +
   "Set false to skip the settle wait and focus check."
@@ -265,7 +266,7 @@ const settleMsParam = z.coerce.number().int().min(0).max(2000).default(300).desc
 // pre/post snapshot on every commit-axis click. Pass false to skip the two
 // extra UIA round-trips (~50-150 ms via the Rust native path on a healthy
 // host, up to 2× UIA timeout on a hung target).
-const verifyDeliveryParam = z.boolean().default(true).describe(
+const verifyDeliveryParam = coercedBoolean().default(true).describe(
   "When true (default), capture pre/post snapshots of element-under-cursor + " +
   "focusedElement + foregroundWindow + scrollPos to populate hints.verifyDelivery " +
   "with status='delivered' | 'focus_only' | 'unverifiable' (issue #178). " +
@@ -301,8 +302,8 @@ export const mouseClickSchema = {
       "Omit if the screenshot was 1:1. Only used when 'origin' is also provided."
     ),
   button: z.enum(["left", "right", "middle"]).default("left").describe("Mouse button to click"),
-  doubleClick: z.boolean().default(false).describe("Whether to double-click"),
-  tripleClick: z.boolean().default(false).describe("Whether to triple-click (select a line of text). Takes precedence over doubleClick when both are true."),
+  doubleClick: coercedBoolean().default(false).describe("Whether to double-click"),
+  tripleClick: coercedBoolean().default(false).describe("Whether to triple-click (select a line of text). Takes precedence over doubleClick when both are true."),
   narrate: narrateParam,
   speed: speedParam,
   homing: homingParam,
@@ -340,12 +341,12 @@ export const mouseDragSchema = {
   lensId: z.string().optional().describe(
     "Optional perception lens ID. Guards and envelope same as mouse_click."
   ),
-  allowCrossWindowDrag: z.boolean().optional().default(false).describe(
+  allowCrossWindowDrag: coercedBoolean().optional().default(false).describe(
     "When true, allow dragging the endpoint into a different window or the desktop background. " +
     "Default false — cross-window drags (including desktop/wallpaper) are blocked to prevent accidents. " +
     "Pass true to confirm intent for deliberate cross-window or desktop-area drags."
   ),
-  allowTabDrag: z.boolean().optional().default(false).describe(
+  allowTabDrag: coercedBoolean().optional().default(false).describe(
     "When true, allow drags that start in the title-bar / tab-strip area of a tabbed app " +
     "(Notepad, Terminal, Edge, Chrome, etc.). Default false — such drags are blocked because " +
     "they detach the tab into a new window rather than moving the window. " +

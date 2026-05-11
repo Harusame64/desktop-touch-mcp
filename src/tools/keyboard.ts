@@ -294,8 +294,7 @@ export const keyboardTypeSchema = {
   text: z.string().max(10000).describe("The text to type (max 10,000 characters)"),
   method: methodParam,
   narrate: narrateParam,
-  use_clipboard: z
-    .boolean()
+  use_clipboard: coercedBoolean()
     .optional()
     .default(false)
     .describe(
@@ -303,11 +302,11 @@ export const keyboardTypeSchema = {
       "Use this when typing URLs, paths, or ASCII text into apps with Japanese IME active — " +
       "prevents IME from converting characters. Default false."
     ),
-  replaceAll: z.boolean().optional().default(false).describe(
+  replaceAll: coercedBoolean().optional().default(false).describe(
     "When true, send Ctrl+A to select all existing text before typing. " +
     "Equivalent to Ctrl+A → keyboard(action='type') in one call (requires field already focused). Default false."
   ),
-  forceKeystrokes: z.boolean().optional().default(false).describe(
+  forceKeystrokes: coercedBoolean().optional().default(false).describe(
     "When true, always use keystroke mode even if text contains non-ASCII symbols " +
     "(em-dash, en-dash, smart quotes, etc.) that would normally trigger auto-clipboard. " +
     "Default false — auto-clipboard is enabled."
@@ -325,7 +324,7 @@ export const keyboardTypeSchema = {
     "Approve a pending suggestedFix (one-shot, 15s TTL). Pass the fixId returned by a previous " +
     "failed keyboard(action='type') to re-attempt with guard-validated args."
   ),
-  abortOnFocusLoss: z.boolean().optional().describe(
+  abortOnFocusLoss: coercedBoolean().optional().describe(
     "Focus Leash Phase B: when true, the foreground keystroke send is split into " +
     "chunks (default 8 chars; override via DTM_LEASH_CHUNK_SIZE env) and the target " +
     "window's foreground state is verified between chunks. If the user grabs focus " +
@@ -336,7 +335,7 @@ export const keyboardTypeSchema = {
     "Has no effect on the clipboard path (atomic Ctrl+V) or the BG (WM_CHAR) path " +
     "(HWND-targeted, foreground-independent)."
   ),
-  forceImeOff: z.boolean().optional().default(false).describe(
+  forceImeOff: coercedBoolean().optional().default(false).describe(
     "Issue #245 系統②: when true, query the target window's IME open-status via " +
     "Imm32 before typing; if ON, switch OFF for the duration of this call and " +
     "restore the prior state in `finally`. Prevents silent romaji conversion when " +
@@ -1760,8 +1759,7 @@ export const keyboardSchema = z.discriminatedUnion("action", [
     text: z.string().max(10000).describe("The text to type (max 10,000 characters)"),
     method: methodParam,
     narrate: narrateParam,
-    use_clipboard: z
-      .boolean()
+    use_clipboard: coercedBoolean()
       .optional()
       .default(false)
       .describe(
@@ -1769,11 +1767,11 @@ export const keyboardSchema = z.discriminatedUnion("action", [
         "Use this when typing URLs, paths, or ASCII text into apps with Japanese IME active — " +
         "prevents IME from converting characters. Default false."
       ),
-    replaceAll: z.boolean().optional().default(false).describe(
+    replaceAll: coercedBoolean().optional().default(false).describe(
       "When true, send Ctrl+A to select all existing text before typing. " +
       "Equivalent to Ctrl+A → keyboard(action='type') in one call (requires field already focused). Default false."
     ),
-    forceKeystrokes: z.boolean().optional().default(false).describe(
+    forceKeystrokes: coercedBoolean().optional().default(false).describe(
       "When true, always use keystroke mode even if text contains non-ASCII symbols " +
       "(em-dash, en-dash, smart quotes, etc.) that would normally trigger auto-clipboard. " +
       "Default false — auto-clipboard is enabled."
@@ -1791,7 +1789,7 @@ export const keyboardSchema = z.discriminatedUnion("action", [
       "Approve a pending suggestedFix (one-shot, 15s TTL). Pass the fixId returned by a previous " +
       "failed keyboard(action='type') to re-attempt with guard-validated args."
     ),
-    abortOnFocusLoss: z.boolean().optional().describe(
+    abortOnFocusLoss: coercedBoolean().optional().describe(
       "Focus Leash Phase B: when true, the foreground keystroke send is split into " +
       "chunks (default 8 chars; override via DTM_LEASH_CHUNK_SIZE env) and the target " +
       "window's foreground state is verified between chunks. If the user grabs focus " +
@@ -1802,7 +1800,7 @@ export const keyboardSchema = z.discriminatedUnion("action", [
       "Has no effect on the clipboard path (atomic Ctrl+V) or the BG (WM_CHAR) path " +
       "(HWND-targeted, foreground-independent)."
     ),
-    forceImeOff: z.boolean().optional().default(false).describe(
+    forceImeOff: coercedBoolean().optional().default(false).describe(
       "Issue #245 系統②: when true, query the target window's IME open-status via " +
       "Imm32 before typing; if ON, switch OFF for the duration of this call and " +
       "restore the prior state in `finally`. Prevents silent romaji conversion when " +

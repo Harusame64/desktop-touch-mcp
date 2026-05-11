@@ -6,6 +6,7 @@ import { pinWindowHandler, unpinWindowHandler } from "./pin.js";
 import { dockWindowHandler } from "./dock.js";
 import { withRichNarration } from "./_narration.js";
 import { makeCommitWrapper, withEnvelopeIncludeForUnion } from "./_envelope.js";
+import { coercedBoolean } from "./_coerce.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Dispatcher schema (discriminated union)
@@ -37,8 +38,7 @@ export const windowDockSchema = z.discriminatedUnion("action", [
       .describe("Screen corner to snap the window to. Default 'bottom-right'."),
     width: z.coerce.number().int().positive().default(480).describe("Window width in pixels after docking. Default 480."),
     height: z.coerce.number().int().positive().default(360).describe("Window height in pixels after docking. Default 360."),
-    pin: z
-      .boolean()
+    pin: coercedBoolean()
       .default(true)
       .describe(
         "If true, set always-on-top so the docked window stays visible on top of other windows. " +
