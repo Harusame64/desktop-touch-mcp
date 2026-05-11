@@ -685,8 +685,10 @@ export const keyboardTypeHandler = async ({
         // ON, and they did not pass forceImeOff. There is no safe path — the
         // keystrokes would be IME-composed and the resulting text would not
         // match `text`. Surface a typed error with actionable suggestions.
+        // `failWith` itself nests non-hoisted keys under `context`; pass them
+        // flat so the LLM-facing shape is `context.imeOpen` (not `context.context.imeOpen`).
         return failWith(new Error("ImeOnDuringType"), "keyboard:type", {
-          context: { windowTitle, imeOpen: true, forceKeystrokes: true, useClipboard: false },
+          windowTitle, imeOpen: true, forceKeystrokes: true, useClipboard: false,
         });
       }
     }
@@ -1799,6 +1801,16 @@ export const keyboardSchema = z.discriminatedUnion("action", [
       "Default: true when windowTitle is provided, false otherwise. " +
       "Has no effect on the clipboard path (atomic Ctrl+V) or the BG (WM_CHAR) path " +
       "(HWND-targeted, foreground-independent)."
+    ),
+    forceImeOff: z.boolean().optional().default(false).describe(
+      "Issue #245 系統②: when true, query the target window's IME open-status via " +
+      "Imm32 before typing; if ON, switch OFF for the duration of this call and " +
+      "restore the prior state in `finally`. Prevents silent romaji conversion when " +
+      "the user's Japanese IME is active but the LLM is typing ASCII commands. " +
+      "Requires `windowTitle` or `hwnd` (otherwise no target to query). Default false " +
+      "— existing use_clipboard auto-promotion still handles non-ASCII symbols " +
+      "transparently. No-op when the addon predates the IMM bridge (call proceeds " +
+      "with whatever IME state is in effect)."
     ),
   }),
   z.object({

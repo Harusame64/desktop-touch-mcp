@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { terminalSchema, terminalRegistrationSchema } from "../../src/tools/terminal.js";
+import { terminalSchema, terminalRegistrationSchema, terminalDispatchHandler } from "../../src/tools/terminal.js";
 
 describe("issue #245 系統③: terminal(action='run') accepts `command` as alias of `input`", () => {
   const base = {
@@ -89,5 +89,62 @@ describe("issue #245 系統③: terminal(action='run') accepts `command` as alia
       command: "echo via-registration",
     });
     expect(r.success).toBe(true);
+  });
+});
+
+describe("issue #245 系統③: terminalDispatchHandler normalises `command` → `input`", () => {
+  // Opus review P2: pin the dispatcher-level normalisation directly. The
+  // schema-level tests above can't catch a regression where the dispatcher
+  // shim is removed — they only verify the schema accepts both shapes.
+  //
+  // Strategy: invoke the dispatcher with a deliberately non-existent
+  // windowTitle and only `command` set. The dispatcher must normalise to
+  // `input` before calling `terminalRunHandler`; the run handler then fails
+  // with `code:'TerminalWindowNotFound'`. We assert on the typed code rather
+  // than the error string so a future error-shape refactor doesn't false-fail
+  // this test.
+
+  const parseToolResult = (result: { content?: Array<{ text?: string }> }) => {
+    const text = result.content?.[0]?.text;
+    if (typeof text !== "string") throw new Error("no text content");
+    return JSON.parse(text) as { ok: boolean; code?: string; completion?: { reason?: string }; error?: string };
+  };
+
+  // The run handler reports window-resolution failure via
+  // `completion.reason='window_not_found'` (the documented schema for
+  // action='run' completion). If the dispatcher fails to normalise, the
+  // defensive `throw new Error("...neither `input` nor `command`...")` is
+  // routed through `classify` and surfaces as a typed code on the result.
+  const reachedRunHandler = (parsed: ReturnType<typeof parseToolResult>): boolean => {
+    return parsed.completion?.reason === "window_not_found" || parsed.code === "TerminalWindowNotFound";
+  };
+
+  it("normalises `command` (no `input`) → run handler sees `input`", async () => {
+    const result = await terminalDispatchHandler({
+      action: "run",
+      windowTitle: "no_such_window_issue_245_dispatcher_test",
+      command: "echo dispatcher",
+      until: { mode: "quiet", quietMs: 100 },
+      timeoutMs: 1_000,
+    } as unknown as Parameters<typeof terminalDispatchHandler>[0]);
+    const parsed = parseToolResult(result);
+    expect(parsed.ok).toBe(false);
+    expect(reachedRunHandler(parsed)).toBe(true);
+    // Negative pin: the defensive normalisation guard must NOT fire here.
+    expect(parsed.error ?? "").not.toMatch(/neither.*input.*nor.*command/i);
+  });
+
+  it("prefers `input` when both are set (dispatcher does not stomp)", async () => {
+    const result = await terminalDispatchHandler({
+      action: "run",
+      windowTitle: "no_such_window_issue_245_dispatcher_test_both",
+      input: "echo from-input",
+      command: "echo from-command",
+      until: { mode: "quiet", quietMs: 100 },
+      timeoutMs: 1_000,
+    } as unknown as Parameters<typeof terminalDispatchHandler>[0]);
+    const parsed = parseToolResult(result);
+    expect(parsed.ok).toBe(false);
+    expect(reachedRunHandler(parsed)).toBe(true);
   });
 });
