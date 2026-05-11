@@ -16,7 +16,7 @@ import { listRecentTargetKeys } from "../engine/perception/target-timeline.js";
 import { evaluateInTab } from "../engine/cdp-bridge.js";
 import { getCdpPort } from "../utils/desktop-config.js";
 import { getFocusedAndPointInfo } from "../engine/uia-bridge.js";
-import { nativeViewFocus } from "../engine/native-engine.js";
+import { nativeViewFocus, nativeWin32 } from "../engine/native-engine.js";
 import type {
   NativeFocusedElement,
   NativeUiaFocusInfo,
@@ -343,6 +343,23 @@ export const desktopStateHandler = async (args: {
     let focusedElement: ElementInfo | null = null;
     let cursorOverElement: ElementInfo | null = null;
     const hints: Record<string, unknown> = {};
+
+    // Issue #245 系統②a: surface IME open-status on the focused window so
+    // LLMs can detect "IME ON" before `keyboard(action='type')` and avoid
+    // the silent-romaji-conversion failure. The IMM bridge returns `false`
+    // when the target has no associated IME (ASCII layout / non-IME thread),
+    // which matches the user-visible "no IME composition" state, so callers
+    // can treat the boolean as a clean ON/OFF signal. The hint is omitted
+    // (rather than set to `false`) when the addon predates the IMM bridge
+    // — pairs cleanly with `nativeWin32`'s optional surface.
+    if (fg && typeof nativeWin32?.win32GetImeOpenStatus === "function") {
+      try {
+        hints.imeOpen = nativeWin32.win32GetImeOpenStatus(BigInt(fg.hwnd));
+      } catch {
+        // IMM call failed (rare — e.g. window torn down mid-call). Leave
+        // imeOpen unset rather than synthesising a false reading.
+      }
+    }
 
     // D2-B-2: try the engine-perception `latest_focus` view first
     // (`view_get_focused` napi binding from PR #96). The view returns
