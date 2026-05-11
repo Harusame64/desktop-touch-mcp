@@ -142,6 +142,14 @@ export interface NativeWin32 {
     text: string,
     options: NativeForegroundFlashOptions,
   ): NativeForegroundFlashResult;
+
+  // Issue #245 系統②: IME open-status query / control via Imm32.dll +
+  // WM_IME_CONTROL. Returns `false` when the target HWND has no associated
+  // IME (e.g. ASCII layout) — both read and write surface the same "no IME"
+  // signal so callers can branch safely. Used by `desktop_state.hints.imeOpen`
+  // and `keyboard(action='type', forceImeOff:true)`.
+  win32GetImeOpenStatus?(hwnd: bigint): boolean;
+  win32SetImeOpenStatus?(hwnd: bigint, open: boolean): boolean;
 }
 
 // ─── UIA surface (used by uia-bridge.ts) ─────────────────────────────────────

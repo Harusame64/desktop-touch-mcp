@@ -48,3 +48,8 @@ pub(crate) mod kbd_hook;
 // `largePasteWarning` / `multiLinePasteWarning` (§3.3.3)。
 #[cfg(windows)]
 pub(crate) mod wt_dialog_scan;
+// Issue #245 系統②: IME open-status query / control (ImmGetDefaultIMEWnd +
+// WM_IME_CONTROL). Used by `desktop_state.hints.imeOpen` and
+// `keyboard(action='type', forceImeOff:true)`.
+#[cfg(windows)]
+pub(crate) mod imm;

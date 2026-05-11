@@ -152,6 +152,10 @@ windows = { version = "0.62", features = [
     # Win32_System_Ole.
     "Win32_System_Variant",
     "Win32_System_Ole",
+    # ── Issue #245 系統②: IME open-status query / control ──────────────────
+    # ImmGetDefaultIMEWnd lives under UI_Input_Ime; SendMessageW + the
+    # WM_IME_CONTROL message are already covered by WindowsAndMessaging.
+    "Win32_UI_Input_Ime",
 ] }
 
 [build-dependencies]
