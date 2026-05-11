@@ -141,7 +141,7 @@ export const browserEvalJsSchema = {
     "Optional perception lens ID. Guards (target.identityStable) are evaluated before eval. " +
     "Note: action='js' returns raw text by default; pass withPerception:true to receive a structured envelope."
   ),
-  withPerception: z.boolean().optional().default(false).describe(
+  withPerception: coercedBoolean().optional().default(false).describe(
     "When true, return structured JSON { ok, result, post } instead of raw text. " +
     "Enables post.perception attachment so the LLM can see guard status. " +
     "Default false preserves the raw-text return for backwards compatibility. " +
@@ -2348,7 +2348,7 @@ export const browserEvalSchema = z.discriminatedUnion("action", [
       "For multi-statement snippets, use an explicit final return value. " +
       "Declarations (const/let/var) are scoped per snippet — use window.* / globalThis.* for persistence."
     ),
-    withPerception: z.boolean().optional().default(false).describe(
+    withPerception: coercedBoolean().optional().default(false).describe(
       "When true, return structured JSON {ok, result, post} with post.perception attached. Default false preserves raw-text return."
     ),
     lensId: z.string().optional().describe(

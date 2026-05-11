@@ -1472,6 +1472,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
             },
             "homing": {
               "description": "Apply window-movement homing correction to (x,y) before scrolling. Default true.",
+              "type": "boolean",
               "default": true
             },
             "windowTitle": {
