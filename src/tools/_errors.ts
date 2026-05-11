@@ -158,6 +158,19 @@ const SUGGESTS: Record<string, string[]> = {
     "Common cause: terminal runs elevated (admin) while caller does not — UIPI blocks PostMessage.",
     "False-positive cause: hidden-input prompts (password / sudo / ssh / Read-Host -AsSecureString) accept WM_CHAR but suppress echo, so this check cannot distinguish delivery from drop. Use method:'foreground' for credential entry.",
   ],
+  // Issue #245 系統②b: keyboard({action:'type', forceKeystrokes:true, use_clipboard:false})
+  // refused to inject when the target window's IME is currently ON. Without
+  // this guard the keystrokes would feed the IME composition pipeline and the
+  // resulting text would not match the requested `text` (silent romaji
+  // conversion). The handler reads IME open-status via the Imm32 bridge
+  // (`ImmGetDefaultIMEWnd` + `WM_IME_CONTROL`) before the inner pipeline,
+  // so the failure is fast and lossless — no characters have been sent yet.
+  ImeOnDuringType: [
+    "Pass forceImeOff:true to flip the IME OFF for the duration of this call (and restore in finally).",
+    "Pass use_clipboard:true to bypass the keystroke pipeline — the clipboard route is IME-immune.",
+    "Drop forceKeystrokes (default false) so auto-clipboard promotion handles non-ASCII / IME-active windows transparently.",
+    "Diagnose live state via desktop_state — hints.imeOpen reports the focused window's IME composition mode.",
+  ],
   // Issue #180 (matrix doc §3.1 / §5.2): clipboard(action:'write') post-write
   // read-back returned bytes that disagree with the requested UTF-16LE payload.
   ClipboardWriteNotDelivered: [
@@ -418,6 +431,13 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   if (m.includes("backgroundinputnotdelivered") || m.includes("background input not delivered")) {
     return { code: "BackgroundInputNotDelivered", suggest: SUGGESTS.BackgroundInputNotDelivered };
+  }
+  // Issue #245 系統②b: typed error emitted by keyboard({action:'type'}) when
+  // forceKeystrokes && !use_clipboard meets an IME-ON target. Pre-injection
+  // refusal — no characters have been sent — so the suggest[] focuses on
+  // toggling the safe paths (forceImeOff / use_clipboard / drop forceKeystrokes).
+  if (m.includes("imeonduringtype") || m.includes("ime on during type")) {
+    return { code: "ImeOnDuringType", suggest: SUGGESTS.ImeOnDuringType };
   }
   // Phase 5 I1 (Phase 2a F4): keyboard({action:'type'}) Focus Leash mid-stream
   // focus theft typed code. SUGGESTS dictionary entry above provides the SSOT
