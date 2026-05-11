@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Window-targeted screenshots now use Win32 PrintWindow by default, which
+  captures GPU-composited apps (Chrome, Electron, WinUI3) and content shown
+  inside an RDP session that the legacy BitBlt path returned as black or
+  empty.** This affects every `screenshot(detail='image', windowTitle=...)`
+  / `screenshot(detail='image', hwnd=...)` call as well as
+  `screenshot(diffMode=true)` layer captures. Fullscreen / `displayId`
+  captures are unchanged and still use BitBlt.
+
+  When PrintWindow returns no data at all (driver / DRM-protected surface)
+  or an all-black + zero-variance frame, the capture falls back to a BitBlt
+  of the window's on-screen rect automatically. The route used and the
+  reason for any fallback are surfaced on the response so callers can spot
+  ambiguous captures:
+
+  ```jsonc
+  {
+    "hints": {
+      "captureSource": "printwindow" | "bitblt-fallback",
+      "captureFallbackReason": "printwindow-failed" | "printwindow-all-black",
+      "warnings": ["…fixed-string explanation…"]
+    }
+  }
+  ```
+
+  A fallback warning means the on-screen pixels may include overlapping
+  windows that happened to be in front of the target. If the target window
+  is legitimately all-black (terminal, dark editor, video frame), pass
+  `mode='background'` to force the PrintWindow result without the BitBlt
+  fallback layer.
+
+- **`mode='background'` is retained and unchanged.** It is no longer the
+  only way to reach the PrintWindow path (it now matches the `mode='normal'`
+  default for window-targeted captures) but it is still useful for
+  explicit selection — for example to force PrintWindow over BitBlt
+  fallback when the target window is legitimately black.
+
 ## [1.4.3] - 2026-05-11 — LLM UX: terminal `command` alias, IME observe/control, and string-boolean parameter coercion
 
 ### Added

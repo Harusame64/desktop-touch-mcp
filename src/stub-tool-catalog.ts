@@ -1372,7 +1372,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           ]
         },
         "mode": {
-          "description": "Capture mode (Phase 4: absorbs former screenshot_background).\n  'normal'     — standard foreground capture (default).\n  'background' — Win32 PrintWindow capture for hidden / minimised / occluded windows. Requires windowTitle (or hwnd). Pair with fullContent for GPU-rendered apps.",
+          "description": "Capture mode.\n  'normal'     — default. Window-targeted captures (windowTitle / hwnd) use Win32 PrintWindow with automatic BitBlt fallback when PrintWindow returns no data or an all-black frame; the route used is reported in hints.captureSource. Fullscreen / displayId captures use BitBlt.\n  'background' — explicit Win32 PrintWindow capture, retained for back-compat and explicit selection. Requires windowTitle (or hwnd). Pair with fullContent for GPU-rendered apps.",
           "type": "string",
           "enum": [
             "normal",
