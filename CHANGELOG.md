@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.4.4] - 2026-05-11 — Window-targeted screenshots use PrintWindow by default (recovers RDP + GPU-composited captures)
+
 ### Changed
 
 - **Window-targeted screenshots now use Win32 PrintWindow by default, which
