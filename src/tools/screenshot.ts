@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { captureScreen, captureDisplay, captureWindowBackground } from "../engine/image.js";
+import { captureScreen, captureDisplay, captureWindowBackground, captureWindowWithFallback } from "../engine/image.js";
+import type { CaptureSource, CaptureFallbackReason } from "../engine/image.js";
 import { captureAndDiff, captureAllLayers, hasBuffer } from "../engine/layer-buffer.js";
 import type { WindowInfo } from "../engine/layer-buffer.js";
 import { getWindows } from "../engine/nutjs.js";
@@ -131,9 +132,9 @@ export const screenshotSchema = {
     .default("normal")
     .optional()
     .describe(
-      "Capture mode (Phase 4: absorbs former screenshot_background).\n" +
-      "  'normal'     — standard foreground capture (default).\n" +
-      "  'background' — Win32 PrintWindow capture for hidden / minimised / occluded windows. Requires windowTitle (or hwnd). Pair with fullContent for GPU-rendered apps."
+      "Capture mode.\n" +
+      "  'normal'     — default. Window-targeted captures (windowTitle / hwnd) use Win32 PrintWindow with automatic BitBlt fallback when PrintWindow returns no data or an all-black frame; the route used is reported in hints.captureSource. Fullscreen / displayId captures use BitBlt.\n" +
+      "  'background' — explicit Win32 PrintWindow capture, retained for back-compat and explicit selection. Requires windowTitle (or hwnd). Pair with fullContent for GPU-rendered apps."
     ),
   fullContent: coercedBoolean()
     .default(true)
@@ -817,29 +818,42 @@ export const screenshotHandler = async (args: {
       : { maxDimension, grayscale };
 
     if (effectiveTitle) {
-      const windows = await getWindows();
+      // hwnd-first resolution: prefer resolvedWin.hwnd (from resolveWindowTarget,
+      // case 1 hwnd / case 2 @active / case 4 dialog-via-owner), else find the
+      // window by title via enumWindowsInZOrder so we get a real bigint hwnd
+      // (nutjs getWindows returns an opaque `windowHandle` that we cannot
+      // reliably pass to PrintWindow). Same-name windows are an inherent
+      // ambiguity here — resolvedWin already disambiguates when caller passed
+      // an explicit hwnd.
+      let targetHwnd: bigint | null = resolvedWin?.hwnd ?? null;
       let windowRegion: { x: number; y: number; width: number; height: number } | undefined;
-      let originX = 0, originY = 0;
-
-      for (const win of windows) {
-        const h = (win as unknown as { windowHandle: unknown }).windowHandle;
-        const title = h ? getWindowTitleW(h) : await win.title;
-        if (title.toLowerCase().includes(effectiveTitle.toLowerCase())) {
-          const reg = await win.region;
-          windowRegion = { x: reg.left, y: reg.top, width: reg.width, height: reg.height };
-          originX = reg.left;
-          originY = reg.top;
-          break;
+      if (targetHwnd !== null && resolvedWin) {
+        const wins = enumWindowsInZOrder();
+        const match = wins.find((w) => w.hwnd === targetHwnd);
+        if (match) {
+          windowRegion = { x: match.region.x, y: match.region.y, width: match.region.width, height: match.region.height };
         }
       }
-
       if (!windowRegion) {
+        const wins = enumWindowsInZOrder();
+        const q = effectiveTitle.toLowerCase();
+        const match = wins.find((w) => w.title.toLowerCase().includes(q));
+        if (match) {
+          targetHwnd = match.hwnd;
+          windowRegion = { x: match.region.x, y: match.region.y, width: match.region.width, height: match.region.height };
+        }
+      }
+      if (!windowRegion || targetHwnd === null) {
         return failWith(`Window not found: "${effectiveTitle}"`, "screenshot", { windowTitle: effectiveTitle });
       }
+
+      let originX = windowRegion.x;
+      let originY = windowRegion.y;
 
       // Sub-crop: treat region as window-local screen coordinates.
       // Clamp to window bounds and compute absolute capture region.
       let captureRegion: { x: number; y: number; width: number; height: number };
+      let cropForCapture: { x: number; y: number; width: number; height: number } | undefined;
       if (region) {
         const clampedX = Math.max(0, Math.min(region.x, windowRegion.width - 1));
         const clampedY = Math.max(0, Math.min(region.y, windowRegion.height - 1));
@@ -853,14 +867,48 @@ export const screenshotHandler = async (args: {
         };
         originX = captureRegion.x;
         originY = captureRegion.y;
-        if (clampedW !== region.width || clampedH !== region.height) {
-          // Region was clamped — note this in the response below
-        }
+        // For PrintWindow we capture the full window then crop in encode; for
+        // BitBlt fallback we capture the absolute screen region. The encode
+        // path handles both via opts.crop in window-local coords.
+        cropForCapture = { x: clampedX, y: clampedY, width: clampedW, height: clampedH };
       } else {
         captureRegion = windowRegion;
       }
 
-      const result = await captureScreen(captureRegion, captureOpts);
+      // PrintWindow primary + BitBlt fallback. Pass the FULL window rect to
+      // both branches — sub-region crops are applied uniformly at encode time
+      // via opts.crop (window-local coords). Passing the sub-region rect to
+      // the helper would break the BitBlt branch: it would grab a sub-region
+      // sized buffer and then opts.crop would either crash or pick the wrong
+      // pixels. See captureWindowRawWithFallback docstring.
+      const result = await captureWindowWithFallback(
+        targetHwnd,
+        windowRegion,
+        cropForCapture ? { ...captureOpts, crop: cropForCapture } : captureOpts,
+      );
+
+      // hints: surface capture source + fallback reason for downstream
+      // diagnostics. Only emit warnings[] when a fallback actually fired.
+      const captureHints: {
+        captureSource: CaptureSource;
+        captureFallbackReason?: CaptureFallbackReason;
+        warnings?: string[];
+      } = { captureSource: result.source };
+      const localWarnings: string[] = [...screenshotWarnings];
+      if (result.fallbackReason !== null) {
+        captureHints.captureFallbackReason = result.fallbackReason;
+        // Fixed strings only (no variable interpolation — CWE-94 guidance).
+        if (result.fallbackReason === "printwindow-failed") {
+          localWarnings.push(
+            "PrintWindow returned no data; capture fell back to a BitBlt of the on-screen region. The image may show overlapping windows if any sit on top of the target."
+          );
+        } else if (result.fallbackReason === "printwindow-all-black") {
+          localWarnings.push(
+            "PrintWindow returned an all-black frame; capture fell back to a BitBlt of the on-screen region. If the target window is legitimately black (terminal, dark editor, video), pass mode='background' to force the PrintWindow result."
+          );
+        }
+      }
+      if (localWarnings.length > 0) captureHints.warnings = localWarnings;
 
       let dimensionText: string;
       if (dotByDot) {
@@ -876,7 +924,7 @@ export const screenshotHandler = async (args: {
         content: [
           { type: "image" as const, data: result.base64, mimeType: result.mimeType },
           { type: "text" as const, text: dimensionText },
-          ...(screenshotWarnings.length > 0 ? [{ type: "text" as const, text: JSON.stringify({ hints: { warnings: screenshotWarnings } }) }] : []),
+          { type: "text" as const, text: JSON.stringify({ hints: captureHints }) },
         ],
       };
     } else if (displayId !== undefined) {

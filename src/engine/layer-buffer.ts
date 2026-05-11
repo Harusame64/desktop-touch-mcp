@@ -6,8 +6,7 @@
  * Only changed layers are re-sent on subsequent captures (MPEG P-frame style).
  */
 
-import { screen, Region } from "./nutjs.js";
-import { encodeToWebPFromRaw, dHashFromRaw } from "./image.js";
+import { encodeToWebPFromRaw, dHashFromRaw, captureWindowRawWithFallback } from "./image.js";
 import { nativeEngine } from "./native-engine.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -124,18 +123,22 @@ function computeChangeFraction(
 // Layer capture helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function captureWindowRaw(region: { x: number; y: number; width: number; height: number }): Promise<{
+async function captureWindowRaw(
+  hwnd: bigint,
+  region: { x: number; y: number; width: number; height: number },
+): Promise<{
   rawPixels: Buffer; channels: 3 | 4; width: number; height: number;
 } | null> {
   try {
-    const grabRegion = new Region(region.x, region.y, region.width, region.height);
-    const image = await screen.grabRegion(grabRegion);
-    const rgbImage = await image.toRGB();
+    // PrintWindow primary + BitBlt fallback. Each captured layer is now sourced
+    // the same way as `screenshot(detail='image', windowTitle=…)` — important
+    // so diff/layer captures stay readable on RDP and GPU-composited apps.
+    const raw = await captureWindowRawWithFallback(hwnd, region);
     return {
-      rawPixels: rgbImage.data,
-      channels: (rgbImage.hasAlphaChannel ? 4 : 3) as 3 | 4,
-      width: rgbImage.width,
-      height: rgbImage.height,
+      rawPixels: raw.rawPixels,
+      channels: raw.channels,
+      width: raw.width,
+      height: raw.height,
     };
   } catch {
     return null;
@@ -190,7 +193,7 @@ export async function captureAndDiff(
 
     if (!prev) {
       // New window — capture and buffer
-      const raw = await captureWindowRaw(win.region);
+      const raw = await captureWindowRaw(win.hwnd, win.region);
       if (!raw) continue;
 
       const newLayer: WindowLayer = {
@@ -222,7 +225,7 @@ export async function captureAndDiff(
 
     if (regionChanged) {
       // Size change → must recapture content
-      const raw = await captureWindowRaw(win.region);
+      const raw = await captureWindowRaw(win.hwnd, win.region);
       if (!raw) {
         results.push({ type: "moved", title: win.title, hwnd: win.hwnd, region: win.region, previousRegion: prev.region });
         continue;
@@ -252,7 +255,7 @@ export async function captureAndDiff(
     }
 
     // Same region — compare pixels
-    const raw = await captureWindowRaw(win.region);
+    const raw = await captureWindowRaw(win.hwnd, win.region);
     if (!raw) {
       results.push({ type: "unchanged", title: win.title, hwnd: win.hwnd, region: win.region });
       continue;
@@ -401,7 +404,7 @@ export async function captureWindowRawAndHash(
   hwnd: bigint,
   region: { x: number; y: number; width: number; height: number }
 ): Promise<{ rawPixels: Buffer; channels: 3 | 4; width: number; height: number; dHash: bigint } | null> {
-  const raw = await captureWindowRaw(region);
+  const raw = await captureWindowRaw(hwnd, region);
   if (!raw) return null;
   const dHash = await dHashFromRaw(raw.rawPixels, raw.width, raw.height, raw.channels);
   // Update layer cache if present
