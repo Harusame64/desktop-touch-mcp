@@ -2,6 +2,78 @@
 
 ## [Unreleased]
 
+## [1.4.3] - 2026-05-11 — LLM UX: terminal `command` alias, IME observe/control, and string-boolean parameter coercion
+
+### Added
+
+- **`desktop_state.hints.imeOpen` — read IME ON/OFF on the focused window.**
+  Wraps Imm32's `ImmGetDefaultIMEWnd` + `WM_IME_CONTROL`. `true` means the
+  focused window's IME is in composition mode (Japanese / Chinese / Korean
+  active); `false` means OFF or no IME associated (ASCII layout). The hint
+  is omitted entirely on older addon builds that predate the bridge, so a
+  missing field can be distinguished from "definitely off". (issue #245)
+
+- **`keyboard({action:'type', forceImeOff:true})` — flip IME OFF for the
+  duration of one type call, then restore.** Solves the silent
+  romaji-conversion failure where an LLM types ASCII while the user's
+  Japanese IME is active. Before the inner pipeline runs, the handler
+  queries the target window's IME via Imm32; if currently ON, it flips
+  OFF, records the original state, types, and restores the prior IME mode
+  in `finally` regardless of how the inner call returns. Round-trip
+  verified end-to-end on a live IME-ON terminal: `method: "keystroke"` for
+  26 ASCII characters, IME restored to ON afterwards. (issue #245)
+
+- **New typed error `ImeOnDuringType`.** Emitted by
+  `keyboard({action:'type'})` when `forceKeystrokes:true` + `use_clipboard:false`
+  meet an IME-ON target without `forceImeOff:true`. The handler refuses
+  early so no characters are sent — recovery is lossless. Suggestions
+  point to the three escape paths: `forceImeOff:true`, `use_clipboard:true`,
+  or drop `forceKeystrokes` (default auto-clipboard handles non-ASCII
+  transparently). (issue #245)
+
+### Changed
+
+- **`terminal({action:'run', command:'…'})` is now accepted as a
+  deprecated alias of `input`.** Pre-Phase-4 callers (and LLMs that
+  remember the older surface) frequently send `command:'…'` because it
+  reads more naturally than `input`; the schema now accepts either, with
+  the dispatcher normalising `command` → `input` before
+  `terminalRunHandler` sees it. `input` wins if both are set. The
+  `terminal_read` / `terminal_send` Phase 4 absorption is now mentioned
+  in the tool description's leading sentence so a text search for the
+  old names lands on this tool. (issue #245)
+
+- **`terminal` `caveats` now spells out the BG path auto-engage rule.**
+  BG auto-engages only when (a) target window class is
+  `ConsoleWindowClass` (conhost: cmd / PowerShell / pwsh classic hosts)
+  OR (b) `DTM_BG_AUTO=1` is set. Windows Terminal
+  (`CASCADIA_HOSTING_WINDOW_CLASS`) is intentionally excluded
+  (issue #173) — without this note, LLMs saw `windowChanged:true` on a
+  WT target and assumed a bug. (issue #245)
+
+### Fixed
+
+- **All boolean tool parameters now accept the LLM-friendly string
+  spellings `"true"` / `"false"`.** Anthropic Claude (and some other MCP
+  clients) serialise tool arguments by spelling booleans as strings;
+  raw `z.boolean()` then rejected the call with `expected boolean,
+  received string`. `src/tools/_coerce.ts` already shipped a strict-safe
+  `coercedBoolean()` (accepts `"true"`/`"false"` case-insensitively + 0/1;
+  ambiguous strings like `"yes"` still reject so typos cannot silently
+  flip flags), and 5 schema files had already adopted it. This release
+  finishes the migration mechanically across the remaining 13 schema
+  files — `keyboard.use_clipboard`, `forceImeOff`, `forceKeystrokes`,
+  `replaceAll`, plus boolean fields on `terminal` / `mouse` / `browser`
+  / `screenshot` / `scroll` / `window` / `window-dock` / `workspace` /
+  `dock` / `macro` / `desktop-state` / `desktop-register`. Literal
+  `true` / `false` continue to pass through unchanged. (issue #247)
+
+- **`scroll.ts` `homing` parameter no longer uses unsafe coercion.**
+  The previous `z.coerce.boolean()` treated the string `"false"` as
+  truthy (because non-empty strings are truthy in JavaScript), silently
+  flipping the flag. Replaced with the strict `coercedBoolean()` helper.
+  Issue scope drift caught during the issue #247 migration sweep.
+
 ## [1.4.2] - 2026-05-10 — Background input to Windows Terminal, plus reliable delivery verification on Notepad
 
 ### Added
