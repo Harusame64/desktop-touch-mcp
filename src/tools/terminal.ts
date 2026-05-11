@@ -1642,7 +1642,8 @@ export const terminalSchema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("run"),
     windowTitle: z.string().max(200).describe("Partial title of the terminal window (e.g. 'PowerShell', 'pwsh', 'WindowsTerminal')."),
-    input: z.string().max(10000).describe("Command to send (Enter is appended automatically)"),
+    input: z.string().max(10000).optional().describe("Command to send (Enter is appended automatically). Either `input` or its deprecated alias `command` is required."),
+    command: z.string().max(10000).optional().describe("[Deprecated alias of `input`] Accepted for callers that mis-remember the parameter name; new code should use `input`. If both are set, `input` wins."),
     // Issue #196: `until` / `sendOptions` / `readOptions` are wrapped with
     // `z.preprocess(tryParseJsonObject, ...)` so callers that send these as
     // JSON-encoded strings (some LLM tool-call serialisers do — see helper
@@ -1669,7 +1670,10 @@ export const terminalSchema = z.discriminatedUnion("action", [
     timeoutMs: z.coerce.number().int().min(500).max(600_000).default(30_000).describe("Hard timeout in ms (default 30s)"),
     sendOptions: z.preprocess(tryParseJsonObject, z.record(z.string(), z.unknown())).optional().describe("Extra options forwarded to terminal send (method, chunkSize, etc.)"),
     readOptions: z.preprocess(tryParseJsonObject, z.record(z.string(), z.unknown())).optional().describe("Extra options forwarded to terminal read (lines, source, ocrLanguage, etc.)"),
-  }),
+  }).refine(
+    (obj) => typeof obj.input === "string" || typeof obj.command === "string",
+    { message: "terminal(action='run') requires `input` (or its deprecated alias `command`)", path: ["input"] },
+  ),
 ]);
 
 export type TerminalArgs = z.infer<typeof terminalSchema>;
@@ -1678,7 +1682,18 @@ export const terminalDispatchHandler = async (args: TerminalArgs): Promise<ToolR
   switch (args.action) {
     case "read": return terminalReadHandler(args);
     case "send": return terminalSendHandler(args);
-    case "run": return terminalRunHandler(args);
+    case "run": {
+      // Issue #245 系統③: `command` is a deprecated alias of `input` for LLMs
+      // that mis-remember the parameter name. Resolve to `input` here so the
+      // handler signature stays `input: string`.
+      const resolvedInput = typeof args.input === "string" ? args.input : args.command;
+      if (typeof resolvedInput !== "string") {
+        // Should be unreachable thanks to the schema-level refine, but guard
+        // anyway so TS can narrow `resolvedInput` to `string`.
+        throw new Error("terminal(action='run'): neither `input` nor `command` provided");
+      }
+      return terminalRunHandler({ ...args, input: resolvedInput });
+    }
   }
 };
 
@@ -1737,15 +1752,16 @@ export function registerTerminalTools(server: McpServer): void {
     "terminal",
     {
       description: buildDesc({
-        purpose: "Interact with a terminal window: read output, send input, or run+wait+read in one call.",
-        details: "action='run' is the recommended high-level workflow: send command → wait until quiet/pattern/timeout → read output. Returns completion={reason, elapsedMs} first-class plus outputIntegrity:'ok'|'baseline_lost' so callers can detect when scrollback could not be anchored to the pre-send buffer. action='read' reads current text via UIA TextPattern (falls back to OCR); use sinceMarker for incremental diff. action='send' sends a command with focus management.",
+        purpose: "Interact with a terminal window: read output, send input, or run+wait+read in one call. Phase 4: the former `terminal_read` / `terminal_send` standalone tools are absorbed into action='read' / action='send' here — search 'terminal_read' / 'terminal_send' to land on this tool.",
+        details: "action='run' is the recommended high-level workflow: send command → wait until quiet/pattern/timeout → read output. The command text is passed as `input` (the legacy parameter name `command` is also accepted as a deprecated alias — see issue #245). Returns completion={reason, elapsedMs} first-class plus outputIntegrity:'ok'|'baseline_lost' so callers can detect when scrollback could not be anchored to the pre-send buffer. action='read' reads current text via UIA TextPattern (falls back to OCR); use sinceMarker for incremental diff. action='send' sends a command with focus management.",
         prefer: "action='run' for command execution + result. For long-running commands (test runners, builds, deploys) use until:{mode:'pattern', pattern:'<final marker>'} — the default quiet mode is tuned for short interactive commands and may complete prematurely on multi-second silent gaps mid-run. Use action='read'/'send' for fine-grained control or when you need to interleave other actions.",
-        caveats: "Do not screenshot the terminal — terminal(action='read') is cheaper and structured. action='run' supports completion reasons: quiet | pattern_matched | timeout | window_closed | window_not_found | send_failed (send rejected on a live window — see warnings for the underlying error code). When outputIntegrity:'baseline_lost' is returned, output is forced to '' and readError.code='BaselineMarkerLost' is set: rerun with until:{mode:'pattern',...} or longer timeoutMs. action='run' may also emit warnings prefixed FileLockCollision: when output reveals an EBUSY/Windows-lock/EAGAIN-EDEADLK file collision (e.g. shell '>' redirect colliding with the script's own writer — issue #236). Default quietMs=1500 (issue #196); long silences require pattern mode. preferClipboard=true (send default) overwrites clipboard. Hidden-input prompts emit verifyDelivery.unverifiable (reason:'hidden_input_prompt') — use method:'foreground'. action='read' typed errors: TerminalWindowNotFound, TerminalTextPatternUnavailable (force source:'ocr'); stale sinceMarker → hints.terminalMarker.previousMatched:false on ok:true (omit sinceMarker). FG-path Win11 foreground refusal returns code:'ForegroundRestricted' — switch to method:'background' or DTM_BG_AUTO=1.",
+        caveats: "Do not screenshot the terminal — terminal(action='read') is cheaper and structured. action='run' supports completion reasons: quiet | pattern_matched | timeout | window_closed | window_not_found | send_failed (send rejected on a live window — see warnings for the underlying error code). When outputIntegrity:'baseline_lost' is returned, output is forced to '' and readError.code='BaselineMarkerLost' is set: rerun with until:{mode:'pattern',...} or longer timeoutMs. action='run' may also emit warnings prefixed FileLockCollision: when output reveals an EBUSY/Windows-lock/EAGAIN-EDEADLK file collision (e.g. shell '>' redirect colliding with the script's own writer — issue #236). Default quietMs=1500 (issue #196); long silences require pattern mode. preferClipboard=true (send default) overwrites clipboard. Hidden-input prompts emit verifyDelivery.unverifiable (reason:'hidden_input_prompt') — use method:'foreground'. action='read' typed errors: TerminalWindowNotFound, TerminalTextPatternUnavailable (force source:'ocr'); stale sinceMarker → hints.terminalMarker.previousMatched:false on ok:true (omit sinceMarker). FG-path Win11 foreground refusal returns code:'ForegroundRestricted' — switch to method:'background' or DTM_BG_AUTO=1. BG path auto-engages only when (a) the target window class is `ConsoleWindowClass` (conhost: cmd / PowerShell / pwsh classic hosts) OR (b) env DTM_BG_AUTO=1 is set globally. Windows Terminal (`CASCADIA_HOSTING_WINDOW_CLASS`) is intentionally EXCLUDED from auto-engage (issue #173): WT runs on WinUI/XAML and silently drops WM_CHAR posted to its HWND, so the FG path is used by default — pass sendOptions:{method:'background'} only if you have verified your WT build accepts BG input.",
         examples: [
           "terminal({action:'run', windowTitle:'PowerShell', input:'npm test', until:{mode:'pattern', pattern:'Test Files'}}) → recommended for test runners; matches when vitest summary appears",
           "terminal({action:'run', windowTitle:'pwsh', input:'ls'}) → quiet 1500ms wait, returns output (short interactive)",
-          "terminal({action:'read', windowTitle:'PowerShell', sinceMarker:'...'}) → incremental diff",
-          "terminal({action:'send', windowTitle:'PowerShell', input:'echo hello'}) → sends text + Enter",
+          "terminal({action:'run', windowTitle:'pwsh', command:'ls'}) → identical to the above; `command` is a deprecated alias of `input` (issue #245)",
+          "terminal({action:'read', windowTitle:'PowerShell', sinceMarker:'...'}) → incremental diff (the former standalone tool `terminal_read` is reached via this action)",
+          "terminal({action:'send', windowTitle:'PowerShell', input:'echo hello'}) → sends text + Enter (the former standalone tool `terminal_send` is reached via this action)",
         ],
       }),
       inputSchema: terminalRegistrationSchema,
