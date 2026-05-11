@@ -109,6 +109,26 @@ These scenarios run before each release that touches `src/engine/image.ts`, `src
 
 ---
 
+## 6. 高 DPI 環境での寸法不一致 (`diffMode=true`)
+
+**目的**: PrintWindow と BitBlt fallback では、高 DPI モニター上で同じ window でも返却 buffer の寸法が異なる場合があることをドキュメント化する (PrintWindow は window の drawn surface = device pixel、`screen.grabRegion` は logical pixel)。`captureAndDiff` で同一 window の source が PrintWindow と BitBlt fallback を行き来すると、`sizeChanged === true` が一度だけ立ち、full re-encode が走る。
+
+これは **既知の挙動 (バグではない)** で、本番側で問題が顕在化するシナリオは限定的:
+- 高 DPI 表示 (150% / 175% 等) を有効にしているモニター
+- かつ、対象 window が PrintWindow 失敗 / all-black 検出 → BitBlt fallback、を交互に踏むケース (動画再生開始 / 停止、DRM-protected 再生開始など)
+
+**手順** (再現確認のみ、release blocker ではない):
+1. 150% scaling を有効にした monitor で動画プレイヤー (例: VLC) を起動
+2. `screenshot({ diffMode: true })` を I-frame
+3. 動画再生開始 → `screenshot({ diffMode: true })` で `sizeChanged` を含む diff が返ることを確認
+4. 動画停止 → 再度 `screenshot({ diffMode: true })` → 再び `sizeChanged` を含む diff が返ることを確認
+
+**期待**: それぞれの transition で 1 回だけ `sizeChanged === true` の content_changed が返り、それ以降は通常の diff (`fraction < 0.02` で unchanged) に戻る。
+
+**Anti-pattern**: 静止画なのに毎回 `sizeChanged` が立ち続けるなら、PrintWindow / BitBlt の source 選択が毎回ぶれているシグナル。`hints.captureSource` を見て原因を切り分ける。
+
+---
+
 ## Release gate
 
 これら 5 シナリオ全てが期待通りに通ることを確認するまで、`src/engine/image.ts` の capture pipeline を触った release は publish しない。手順は `docs/release-process.md` の smoke test 節と並走で実施。

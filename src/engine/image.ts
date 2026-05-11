@@ -201,14 +201,14 @@ export async function captureWindowBackground(
 ): Promise<CaptureResult> {
   const opts: CaptureOptions =
     typeof optsOrMaxDim === "number" ? { maxDimension: optsOrMaxDim } : optsOrMaxDim;
-  // Use the raw helper for consistency with the fallback path. We pass the
-  // explicit flags through so callers selecting PW_CLIENTONLY (flag=3) keep
-  // their current semantics.
-  const raw = captureWindowRawPrintWindow(hwnd, printWindowFlags);
-  if (!raw) {
-    throw new Error("printWindowToBuffer returned no data");
-  }
-  return encode(raw.rawPixels, raw.width, raw.height, raw.channels, opts);
+  // Call printWindowToBuffer directly so the original native error (driver
+  // failure, DRM-protected surface, etc.) propagates to OCR / SoM callers
+  // verbatim. The raw helper that backs the fallback path deliberately
+  // converts exceptions into a `null` signal — that shape is wrong for the
+  // back-compat entry, which should fail loudly when PrintWindow can't run.
+  const { data, width, height } = printWindowToBuffer(hwnd, printWindowFlags);
+  // data is already RGBA (converted in win32.ts)
+  return encode(data, width, height, 4, opts);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -309,18 +309,26 @@ export interface CaptureWindowRawResult {
 
 /**
  * Window-targeted raw capture with PrintWindow as the primary route and
- * BitBlt-of-screen-then-crop as the fallback. The fallback fires only when:
+ * BitBlt-of-window-rect as the fallback. The fallback fires only when:
  *   1. PrintWindow returns no data at all (null / exception / zero-size), or
  *   2. PrintWindow returned an all-black + zero-variance frame.
  *
- * BitBlt fallback uses the supplied `region` (virtual screen coordinates).
- * Callers must pass the window's screen rect — if the window is occluded or
- * off-screen the fallback will capture whatever is at that screen region,
- * which is why the `fallbackReason` is surfaced to the user via hints.
+ * **`windowRect` MUST be the window's full screen rect, not a sub-region.**
+ * Both branches return a buffer dimensioned to the window's drawn surface so
+ * downstream `opts.crop` (window-local coords) applies uniformly to either
+ * source. Passing a sub-region here would silently shift the crop origin on
+ * the BitBlt branch and crash sharp's `extract()` when offsets are non-zero.
+ *
+ * Note on dimension parity: on high-DPI monitors PrintWindow returns the
+ * window's drawn surface in device pixels, and `screen.grabRegion` of the
+ * same screen rect returns logical pixels — the two branches may therefore
+ * differ in dimensions. Callers (e.g. `captureAndDiff`) that compare frames
+ * across captures must tolerate a one-time `sizeChanged` when the source
+ * alternates between PrintWindow and BitBlt for the same window.
  */
 export async function captureWindowRawWithFallback(
   hwnd: unknown,
-  region: { x: number; y: number; width: number; height: number },
+  windowRect: { x: number; y: number; width: number; height: number },
   flags = 2,
 ): Promise<CaptureWindowRawResult> {
   const raw = captureWindowRawPrintWindow(hwnd, flags);
@@ -342,8 +350,10 @@ export async function captureWindowRawWithFallback(
       };
     }
   }
-  // BitBlt fallback via nutjs grabRegion of the window's screen rect.
-  const grabRegion = new Region(region.x, region.y, region.width, region.height);
+  // BitBlt fallback grabs the full window rect, NOT a sub-region. Sub-region
+  // crops are applied uniformly at encode time via opts.crop (window-local
+  // coordinates) so both source branches share the same crop semantics.
+  const grabRegion = new Region(windowRect.x, windowRect.y, windowRect.width, windowRect.height);
   const image = await screen.grabRegion(grabRegion);
   const rgbImage = await image.toRGB();
   const channels = (rgbImage.hasAlphaChannel ? 4 : 3) as 3 | 4;
@@ -360,16 +370,19 @@ export async function captureWindowRawWithFallback(
 /**
  * Encode wrapper for `captureWindowRawWithFallback`. Returns the standard
  * `CaptureResult` plus the capture source / fallback reason for hint reporting.
+ *
+ * `windowRect` MUST be the window's full screen rect — see the helper docstring.
+ * Sub-region capture is expressed via `opts.crop` in window-local coordinates.
  */
 export async function captureWindowWithFallback(
   hwnd: unknown,
-  region: { x: number; y: number; width: number; height: number },
+  windowRect: { x: number; y: number; width: number; height: number },
   optsOrMaxDim: CaptureOptions | number = 1280,
   flags = 2,
 ): Promise<CaptureResult & { source: CaptureSource; fallbackReason: CaptureFallbackReason }> {
   const opts: CaptureOptions =
     typeof optsOrMaxDim === "number" ? { maxDimension: optsOrMaxDim } : optsOrMaxDim;
-  const raw = await captureWindowRawWithFallback(hwnd, region, flags);
+  const raw = await captureWindowRawWithFallback(hwnd, windowRect, flags);
   const encoded = await encode(raw.rawPixels, raw.width, raw.height, raw.channels, opts);
   return { ...encoded, source: raw.source, fallbackReason: raw.fallbackReason };
 }

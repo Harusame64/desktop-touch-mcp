@@ -875,12 +875,15 @@ export const screenshotHandler = async (args: {
         captureRegion = windowRegion;
       }
 
-      // PrintWindow primary + BitBlt fallback. captureRegion is the absolute
-      // screen rect used by the BitBlt fallback path. The PrintWindow path
-      // captures the whole window; sub-region crop is applied at encode time.
+      // PrintWindow primary + BitBlt fallback. Pass the FULL window rect to
+      // both branches — sub-region crops are applied uniformly at encode time
+      // via opts.crop (window-local coords). Passing the sub-region rect to
+      // the helper would break the BitBlt branch: it would grab a sub-region
+      // sized buffer and then opts.crop would either crash or pick the wrong
+      // pixels. See captureWindowRawWithFallback docstring.
       const result = await captureWindowWithFallback(
         targetHwnd,
-        captureRegion,
+        windowRegion,
         cropForCapture ? { ...captureOpts, crop: cropForCapture } : captureOpts,
       );
 

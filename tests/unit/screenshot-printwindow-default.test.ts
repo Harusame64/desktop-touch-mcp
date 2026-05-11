@@ -44,7 +44,7 @@ vi.mock("../../src/engine/nutjs.js", async (importOriginal) => {
 });
 
 // Import the SUT after the mocks so the module picks up the mocked deps.
-const { isLikelyBlankCapture, captureWindowRawWithFallback } = await import("../../src/engine/image.js");
+const { isLikelyBlankCapture, captureWindowRawWithFallback, captureWindowWithFallback } = await import("../../src/engine/image.js");
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -217,6 +217,88 @@ describe("captureWindowRawWithFallback", () => {
     const result = await captureWindowRawWithFallback(hwnd, region);
     expect(result.source).toBe("bitblt-fallback");
     expect(result.fallbackReason).toBe("printwindow-all-black");
+    expect(mockGrabRegion).toHaveBeenCalledTimes(1);
+  });
+
+  it("BitBlt fallback grabs the FULL window rect, not a sub-region", async () => {
+    // P1.1 regression pin: callers must pass the window's full screen rect as
+    // windowRect, and the BitBlt fallback must grab that full rect — NOT the
+    // caller's sub-region. Sub-region cropping happens at encode time via
+    // opts.crop in window-local coords. If this branch grabbed a sub-region
+    // sized buffer, opts.crop would either crash or pick the wrong pixels.
+    const fullWindow = { x: 100, y: 200, width: 800, height: 600 };
+    mockPrintWindowToBuffer.mockImplementation(() => {
+      throw new Error("forced failure to exercise fallback");
+    });
+    mockGrabRegion.mockResolvedValue(makeNutjsImage(800, 600, { r: 1, g: 2, b: 3 }));
+
+    const result = await captureWindowRawWithFallback(hwnd, fullWindow);
+    expect(result.source).toBe("bitblt-fallback");
+    // Buffer dimensions must match the full window rect, not any sub-region.
+    expect(result.width).toBe(800);
+    expect(result.height).toBe(600);
+    // Verify grabRegion was called with the full window rect.
+    expect(mockGrabRegion).toHaveBeenCalledTimes(1);
+    const grabArg = mockGrabRegion.mock.calls[0]?.[0];
+    expect(grabArg).toMatchObject({ left: 100, top: 200, width: 800, height: 600 });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// captureWindowWithFallback — encode wrapper, exercise sub-region crop path
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("captureWindowWithFallback — sub-region crop", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const fullWindow = { x: 0, y: 0, width: 200, height: 150 };
+  const hwnd = 12345n;
+
+  it("PrintWindow + opts.crop → encode crops to sub-region without sharp throwing", async () => {
+    // P3.1 regression pin: window-local sub-region crop applied uniformly to
+    // the PrintWindow path. The full-window buffer enters encode and the
+    // sub-region is extracted at encode time, so non-zero crop offsets are
+    // safe (the buffer is large enough to contain the crop window).
+    mockPrintWindowToBuffer.mockReturnValue({
+      data: makeGradientRgba(200, 150),
+      width: 200,
+      height: 150,
+    });
+
+    const result = await captureWindowWithFallback(
+      hwnd,
+      fullWindow,
+      { maxDimension: 200, crop: { x: 50, y: 30, width: 100, height: 60 } },
+    );
+    expect(result.source).toBe("printwindow");
+    expect(result.fallbackReason).toBeNull();
+    expect(result.width).toBe(100);
+    expect(result.height).toBe(60);
+    expect(mockGrabRegion).not.toHaveBeenCalled();
+  });
+
+  it("BitBlt fallback + opts.crop → encode crops to sub-region without sharp throwing", async () => {
+    // P1.1 regression pin: when PrintWindow fails and the BitBlt fallback
+    // grabs the FULL window rect, opts.crop still applies correctly because
+    // both source branches return same-sized buffers. If the helper
+    // accidentally grabbed only the sub-region, sharp's extract() with
+    // non-zero offsets would throw "bad extract area".
+    mockPrintWindowToBuffer.mockImplementation(() => {
+      throw new Error("forced failure to exercise fallback");
+    });
+    mockGrabRegion.mockResolvedValue(makeNutjsImage(200, 150, { r: 100, g: 100, b: 100 }));
+
+    const result = await captureWindowWithFallback(
+      hwnd,
+      fullWindow,
+      { maxDimension: 200, crop: { x: 50, y: 30, width: 100, height: 60 } },
+    );
+    expect(result.source).toBe("bitblt-fallback");
+    expect(result.fallbackReason).toBe("printwindow-failed");
+    expect(result.width).toBe(100);
+    expect(result.height).toBe(60);
     expect(mockGrabRegion).toHaveBeenCalledTimes(1);
   });
 });

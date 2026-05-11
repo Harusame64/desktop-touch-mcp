@@ -230,10 +230,10 @@ screenshot(diffMode=true)                → only the windows that changed (~160
 screenshot(dotByDot=true, windowTitle=X) → 1:1 WebP, no coord conversion
 ```
 
-#### `screenshot_background`
-Captures a window even when it is behind another (PrintWindow API).
+#### `screenshot(mode='background')`
+Explicit Win32 PrintWindow capture, retained for back-compat and explicit selection. As of v1.4.4 the default `mode='normal'` window-targeted route already uses PrintWindow (with automatic BitBlt fallback when PrintWindow returns no data / an all-black frame), so most callers no longer need this flag. Use it to force the PrintWindow result without the BitBlt fallback layer when the target window is legitimately all-black (terminal / dark editor / video frame).
 - `dotByDot=true` emits 1:1 WebP.
-- Known limitation: GPU-rendered apps (Chrome / WinUI3) come back black.
+- `PW_RENDERFULLCONTENT` is the default flag (set `fullContent=false` for the legacy flag-0 mode when a GPU game / video window hangs PrintWindow).
 
 #### `screenshot_ocr`
 Word-level text with on-screen coords via Windows OCR (`Windows.Media.Ocr`). Fallback for apps where UIA is sparse.
@@ -902,7 +902,7 @@ screenshot(diffMode=true)
 | UIA focus latency | **2.2 ms** (Rust) vs ~366 ms (PowerShell) |
 | UIA tree latency | **~100 ms** (Rust, Explorer ~60 elements) vs ~346 ms (PowerShell) |
 | Image diff engine | Rust SSE2 SIMD: `computeChangeFraction` 0.26 ms, `dHash` 0.09 ms (1080p) |
-| PrintWindow flag | `0` — GPU / DX windows come back black (known limitation) |
+| PrintWindow flag | `2` (`PW_RENDERFULLCONTENT`) — captures GPU / Chrome / Electron / WinUI3 surfaces. Window-targeted `screenshot(detail='image')` calls fall back to BitBlt automatically when PrintWindow returns no data or an all-black + zero-variance frame; the route and fallback reason are surfaced via `hints.captureSource` / `hints.captureFallbackReason` |
 | Default WebP quality | `60` — the lowest quality at which text stays readable |
 | Layer-buffer TTL | Auto-cleared after 90 s |
 | focus_window filter | Skips helper windows with width < 50 or height < 50 |
