@@ -8,6 +8,7 @@ import { keyboard } from "../engine/nutjs.js";
 import { parseKeys } from "../utils/key-map.js";
 import { assertKeyComboSafe } from "../utils/key-safety.js";
 import { enumWindowsInZOrder, getWindowClassName, restoreAndFocusWindow } from "../engine/win32.js";
+import { nativeWin32 } from "../engine/native-engine.js";
 import {
   canInjectViaPostMessage,
   postCharsToHwnd,
@@ -335,6 +336,16 @@ export const keyboardTypeSchema = {
     "Has no effect on the clipboard path (atomic Ctrl+V) or the BG (WM_CHAR) path " +
     "(HWND-targeted, foreground-independent)."
   ),
+  forceImeOff: z.boolean().optional().default(false).describe(
+    "Issue #245 系統②: when true, query the target window's IME open-status via " +
+    "Imm32 before typing; if ON, switch OFF for the duration of this call and " +
+    "restore the prior state in `finally`. Prevents silent romaji conversion when " +
+    "the user's Japanese IME is active but the LLM is typing ASCII commands. " +
+    "Requires `windowTitle` or `hwnd` (otherwise no target to query). Default false " +
+    "— existing use_clipboard auto-promotion still handles non-ASCII symbols " +
+    "transparently. No-op when the addon predates the IMM bridge (call proceeds " +
+    "with whatever IME state is in effect)."
+  ),
 };
 
 export const keyboardPressSchema = {
@@ -615,6 +626,7 @@ export const keyboardTypeHandler = async ({
   lensId,
   fixId,
   abortOnFocusLoss,
+  forceImeOff = false,
   _skipAutoGuard = false,
 }: {
   text: string;
@@ -632,7 +644,57 @@ export const keyboardTypeHandler = async ({
   lensId?: string;
   fixId?: string;
   abortOnFocusLoss?: boolean;
+  forceImeOff?: boolean;
 }): Promise<ToolResult> => {
+  // Issue #245 系統②: IME state inspection. We need the IME open-status when
+  // either (a) forceImeOff is requested or (b) the caller intends to use the
+  // keystroke pipeline without clipboard escape (forceKeystrokes && !use_clipboard).
+  // The IMM query is best-effort: skipped silently when the addon predates the
+  // bridge or the target HWND has no associated IME.
+  let imeOpenOnEntry = false;
+  let imeRestoreHwnd: bigint | null = null;
+  if ((forceImeOff || (forceKeystrokes && !use_clipboard)) && (windowTitle || hwnd)) {
+    let resolvedHwndForIme: bigint | null = null;
+    try {
+      if (hwnd) {
+        resolvedHwndForIme = BigInt(hwnd);
+      } else if (windowTitle) {
+        const needle = windowTitle.toLowerCase();
+        const w = enumWindowsInZOrder().find((x) => x.title.toLowerCase().includes(needle));
+        if (w) resolvedHwndForIme = BigInt(w.hwnd);
+      }
+      if (resolvedHwndForIme != null && typeof nativeWin32?.win32GetImeOpenStatus === "function") {
+        imeOpenOnEntry = nativeWin32.win32GetImeOpenStatus(resolvedHwndForIme) === true;
+      }
+    } catch {
+      // IMM bridge unavailable — proceed as if IME were off.
+    }
+
+    if (imeOpenOnEntry) {
+      if (forceImeOff && resolvedHwndForIme != null) {
+        // Flip OFF for the duration of this call; restore in the outer finally.
+        try {
+          nativeWin32?.win32SetImeOpenStatus?.(resolvedHwndForIme, false);
+          imeRestoreHwnd = resolvedHwndForIme;
+        } catch {
+          // best-effort
+        }
+      } else if (forceKeystrokes && !use_clipboard) {
+        // Fast-fail before the silent romaji-conversion failure: the caller
+        // explicitly opted out of clipboard auto-promotion, the target has IME
+        // ON, and they did not pass forceImeOff. There is no safe path — the
+        // keystrokes would be IME-composed and the resulting text would not
+        // match `text`. Surface a typed error with actionable suggestions.
+        // `failWith` itself nests non-hoisted keys under `context`; pass them
+        // flat so the LLM-facing shape is `context.imeOpen` (not `context.context.imeOpen`).
+        return failWith(new Error("ImeOnDuringType"), "keyboard:type", {
+          windowTitle, imeOpen: true, forceKeystrokes: true, useClipboard: false,
+        });
+      }
+    }
+  }
+
+  try {
   const force = forceFocusArg ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
   try {
     // Phase G: fixId approval prologue
@@ -1345,6 +1407,18 @@ export const keyboardTypeHandler = async ({
   } catch (err) {
     return failWith(err, "keyboard:type");
   }
+  } finally {
+    // Issue #245 系統②b: restore the prior IME state. Wrap in try/catch so a
+    // late failure (e.g. window destroyed mid-call) does not mask the
+    // handler's actual return value.
+    if (imeRestoreHwnd !== null) {
+      try {
+        nativeWin32?.win32SetImeOpenStatus?.(imeRestoreHwnd, true);
+      } catch {
+        // best-effort restore; ignore
+      }
+    }
+  }
 };
 
 export const keyboardPressHandler = async ({
@@ -1727,6 +1801,16 @@ export const keyboardSchema = z.discriminatedUnion("action", [
       "Default: true when windowTitle is provided, false otherwise. " +
       "Has no effect on the clipboard path (atomic Ctrl+V) or the BG (WM_CHAR) path " +
       "(HWND-targeted, foreground-independent)."
+    ),
+    forceImeOff: z.boolean().optional().default(false).describe(
+      "Issue #245 系統②: when true, query the target window's IME open-status via " +
+      "Imm32 before typing; if ON, switch OFF for the duration of this call and " +
+      "restore the prior state in `finally`. Prevents silent romaji conversion when " +
+      "the user's Japanese IME is active but the LLM is typing ASCII commands. " +
+      "Requires `windowTitle` or `hwnd` (otherwise no target to query). Default false " +
+      "— existing use_clipboard auto-promotion still handles non-ASCII symbols " +
+      "transparently. No-op when the addon predates the IMM bridge (call proceeds " +
+      "with whatever IME state is in effect)."
     ),
   }),
   z.object({

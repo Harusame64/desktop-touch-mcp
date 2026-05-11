@@ -281,6 +281,15 @@ export declare function win32IsWindowEnabled(hwnd: bigint): boolean
 export declare function win32GetLastActivePopup(hwnd: bigint): bigint | null
 export declare function win32IsWindowCloaked(hwnd: bigint): boolean
 
+// ─── IME open-status query / control (issue #245 系統②) ─────────────────────
+//
+// Wraps Imm32 `ImmGetDefaultIMEWnd` + the legacy `WM_IME_CONTROL` message
+// (`IMC_GETOPENSTATUS` / `IMC_SETOPENSTATUS`). Both return `false` cleanly
+// when the target HWND has no associated default-IME window (ASCII layout /
+// non-IME thread); callers can treat the boolean as a definitive ON/OFF.
+export declare function win32GetImeOpenStatus(hwnd: bigint): boolean
+export declare function win32SetImeOpenStatus(hwnd: bigint, open: boolean): boolean
+
 // ─── L1 capture ring buffer (ADR-007 P5a) ────────────────────────────────────
 
 export interface NativeEventEnvelope {
