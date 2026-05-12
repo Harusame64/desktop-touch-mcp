@@ -253,10 +253,11 @@ The existing L1→L3 bridge for focus events lives at `src/l3_bridge/focus_pump.
    - `env` metadata fields (`source_event_id = env.event_id`, `timestamp_source`, `wallclock_ms`, `sub_ordinal`) — see doc-comment 28-32
 7. Calls `sink.push_focus(ev)` (line 32 of doc-comment)
 
-Today, the dataflow operator graph keys local state purely by native identifiers from the **payload** side:
+Today, the dataflow operator graph keys local state purely by native identifiers from the **payload** side or by a singleton key:
 
-- `current_focused_element` view keys on `hwnd` (a 64-bit native handle, locally unique on a single machine)
+- `current_focused_element` view (`crates/engine-perception/src/views/current_focused_element.rs`) keys on `hwnd` (a 64-bit native handle, locally unique on a single machine)
 - `dirty_rects_aggregate` view keys on `(monitor_index, frame_index)` (locally unique on a single monitor)
+- `latest_focus` view (`crates/engine-perception/src/views/latest_focus.rs`) reduces under the **singleton key `()`**, producing 0 or 1 globally-latest-focused row regardless of which `hwnd` carried the event. This view backs the production `view_get_focused()` API used by `desktop_state.ts`
 
 The `env` metadata that today carries `event_id` / `timestamp_source` / etc. **does not yet carry an origin field**.
 
@@ -266,6 +267,7 @@ If Phase 3 were to merge a remote agent's stream into the local graph with origi
 
 - Two different machines can present a same-valued `hwnd` (handles are not globally unique). A remote `hwnd=0x1234` and a local `hwnd=0x1234` would alias into the same `current_focused_element` row, with later-arrival overwriting earlier
 - The same applies to `(monitor_index, frame_index)` if Phase 3 ever surfaces dirty-rect events from the remote
+- **`latest_focus` is the most severe case** — its singleton `()` key means any remote focus event would overwrite the locally-latest-focused row outright, breaking the documented `Origin::Local` default for `view_get_focused()` (Codex Round 2 P1)
 - Operators performing per-key reductions would silently produce nonsense
 
 ### 6.3 Required propagation (3-layer change)
@@ -290,10 +292,11 @@ Add an `origin: Origin` field to every dataflow event struct that flows into the
 
 **Layer C — view key space:**
 
-Every view that today keys on a native identifier becomes keyed on `(origin, native_id)`. For example:
+Every view's key is extended to include `origin`. The exact mapping depends on the view's current key shape:
 
-- `current_focused_element` becomes a `HashMap<(Origin, Hwnd), FocusRow>`, not `HashMap<Hwnd, FocusRow>`
-- `dirty_rects_aggregate` becomes keyed on `(Origin, MonitorIndex, FrameIndex)`
+- `current_focused_element` (per-hwnd) becomes `HashMap<(Origin, Hwnd), FocusRow>`, not `HashMap<Hwnd, FocusRow>`
+- `dirty_rects_aggregate` (per `(monitor_index, frame_index)`) becomes keyed on `(Origin, MonitorIndex, FrameIndex)`
+- **`latest_focus` (singleton)** is promoted from `Option<FocusRow>` / single-key reduce to a per-origin reduce: `HashMap<Origin, FocusRow>` (or equivalently, the timely reduce switches from singleton key `()` to key `Origin`). The view materialization tracks one latest-focused row **per origin**, so the local origin's row is never overwritten by a remote focus event. The shared input collection from the bridge is still single (origin-tagged events flow into one reduce that partitions by `Origin` internally), preserving the "process the event stream once, fan into two reduces" property that the current implementation relies on for bounded memory growth (`latest_focus.rs:19-24`)
 
 ### 6.4 Backward compatibility — public surface
 
@@ -302,6 +305,8 @@ Query APIs (`view_get_focused` etc.) accept an `origin` filter and default to `O
 ```rust
 fn view_get_focused(origin: Origin = Origin::Local) -> Option<FocusRow>
 ```
+
+Concretely: `view_get_focused()` (no arg) returns the latest focus row from the **local** origin's per-origin partition of `latest_focus`. Existing `desktop_state.ts` code paths continue to receive only local focus events; a remote origin's latest-focus row is queryable only when the caller explicitly passes `origin: Origin::Rdp { … }`. The Codex Round 2 P1 concern (newest remote event overwriting the documented `Origin::Local` default) is structurally eliminated by the per-origin reduce partitioning in Layer C.
 
 Existing callers see no behavioural change; the new origin filter is opt-in.
 
@@ -393,6 +398,12 @@ Author: Claude (Sonnet) reflecting Opus + Codex Round 1.
 - §5.1 added exact PAD agent filenames + DVC plugin name from Power Automate docs verification
 - §6 rewritten to require origin propagation into dataflow event structs and view key space (not only envelope) per Codex P1; Phase 3 estimate raised from 3-4 weeks to 4-6 weeks
 - §10 References URL existence verified per Opus P2-7
+
+### 2026-05-12 — Draft (Proposed, Round 4)
+
+Author: Claude (Sonnet) reflecting Codex Round 2 P1 (the Codex review arrived after the Round 3 Opus review prompt was fired and so was processed in this Round 4).
+
+- **Codex Round 2 P1 (`latest_focus` origin partitioning)** — Round 3 §6 named `current_focused_element` and `dirty_rects_aggregate` but missed the singleton `latest_focus` view that backs the production `view_get_focused()` API. The singleton key `()` means any remote focus event would overwrite the locally-latest row, breaking the documented `Origin::Local` default. §6.1 now enumerates `latest_focus` explicitly with `crates/engine-perception/src/views/latest_focus.rs` reference; §6.2 calls out this view as "the most severe case" of the aliasing problem; §6.3 Layer C promotes `latest_focus` from singleton-key reduce to per-origin reduce so the local origin's row is never overwritten; §6.4 explicitly states the backward-compatibility behavior for `view_get_focused()` (no arg) — returns the local-origin partition.
 
 ### 2026-05-12 — Draft (Proposed, Round 3)
 
