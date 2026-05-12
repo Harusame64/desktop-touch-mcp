@@ -26,6 +26,7 @@
 #![cfg_attr(not(windows), allow(unused))]
 
 pub mod errors;
+pub mod registry;
 pub mod variant;
 
 #[cfg(windows)]
