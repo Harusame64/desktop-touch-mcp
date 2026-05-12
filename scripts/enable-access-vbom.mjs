@@ -510,7 +510,7 @@ function main() {
 
   // Trusted Location status check (Phase 2e). Read-only; ensureTrustedLocation
   // is what writes.
-  let trustedLocationStatus = "unknown";
+  let trustedLocationStatus;
   let trustedLocationDir = null;
   try {
     trustedLocationDir = getDefaultTrustedDir();
