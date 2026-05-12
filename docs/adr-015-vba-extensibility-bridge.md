@@ -297,8 +297,8 @@ Acceptance:
 - Standard `check:native-types` / `check:stub-catalog` CI checks green
 
 Acceptance:
-- `npm run build` produces a `.node` that exports the 8 functions + `checkAccessVbom` (no `setAccessVbom` — CLI-only)
-- `src/engine/native-types.ts` matches `cargo build --bin generate-types` output bit-equal
+- `npm run build:rs` produces a `.node` that exports **11 functions**: the 8 §3.6 Phase-2c/d/e wrappers (`excelSetVisible` / `excelSetDisplayAlerts` / `excelWorkbookAddNew` / `excelVbaModuleAdd` / `excelWorkbookSaveAs` / `excelMacroRun` / `excelWorkbookClose` + `excelCheckAccessVbom`) **plus** 3 session-lifecycle helpers ergonomically required by the napi handle-ID pattern (`excelSessionSpawn` / `excelSessionClose` / `excelSessionIsAlive`). The 3 lifecycle helpers are NOT in §3.6 because `ExcelSession` cannot cross the napi FFI boundary by value — JS must address it through an integer handle. No `setAccessVbom` — CLI-only.
+- `index.d.ts` declares all 11 functions; `src/engine/native-types.ts` declares the `NativeExcelAccessVbomStatus` interface; `npm run check:native-types` enforces the drift gate (Rust `#[napi] pub fn` vs `index.d.ts` `export declare function` parity)
 
 ### 4.4 Phase 4 — MCP tool surface (½ day) — single `excel` tool with action dispatcher
 

@@ -74,9 +74,17 @@ use crate::win32::safety::napi_safe_call;
 /// returns to 1.
 static SESSIONS: OnceLock<Mutex<HashMap<u32, Arc<apartment::ExcelSession>>>> = OnceLock::new();
 
-/// Monotonic ID allocator. Never reuses an ID even after `close` so a
-/// caller holding a stale ID gets a clean "session not found" error
-/// rather than silently hitting a different session.
+/// Monotonic ID allocator. Reserved ID `0` is never issued so the
+/// initial fetch returns `1`.
+///
+/// **Wraparound semantics** (Opus Round 1 P2-1): `AtomicU32::fetch_add`
+/// wraps without panic. At `2^32` spawns the counter would return `0`
+/// (the reserved sentinel), then `1` which could collide with a still-
+/// alive session. To prevent silent collision, [`excel_session_spawn`]
+/// fails with `SessionIdExhausted` once the counter reaches `u32::MAX`;
+/// restarting the MCP server resets it. At one spawn per second this
+/// is reachable after ~136 years, so practically a documentation /
+/// invariant-enforcement gesture rather than an operational concern.
 static NEXT_ID: AtomicU32 = AtomicU32::new(1);
 
 fn sessions() -> &'static Mutex<HashMap<u32, Arc<apartment::ExcelSession>>> {
@@ -85,13 +93,24 @@ fn sessions() -> &'static Mutex<HashMap<u32, Arc<apartment::ExcelSession>>> {
 
 /// Resolve a session ID to its `Arc<ExcelSession>`, cloning the Arc so
 /// the caller can drop the registry lock before the COM call.
+///
+/// Error message uses the bare `SessionNotFound:` prefix (Opus Round 1
+/// P2-3 — earlier `VbaBridgeError::SessionNotFound:` double prefix was
+/// inconsistent with the bare-PascalCase convention used by every other
+/// error path via `VbaBridgeError::Display`). Phase 4's TS parser
+/// pattern-matches `e.message.startsWith("SessionNotFound:")` so the
+/// prefix must be the bare PascalCase code, NOT the full Rust path.
+/// `SessionNotFound` is a napi-binding-level error (no Rust variant in
+/// `engine_vba_bridge::errors`) because the crate is session-handle-
+/// agnostic; Phase 4 catalogues it in `_errors.ts` SUGGESTS alongside
+/// the crate-level `VbaBridgeError` codes.
 fn get_session(id: u32) -> Result<Arc<apartment::ExcelSession>> {
     let map = sessions().lock().map_err(|_| {
         Error::from_reason("vba_bridge: session registry mutex poisoned")
     })?;
     map.get(&id).cloned().ok_or_else(|| {
         Error::from_reason(format!(
-            "VbaBridgeError::SessionNotFound: no Excel session with id={id} \
+            "SessionNotFound: no Excel session with id={id} \
              (already closed or never opened)"
         ))
     })
@@ -118,9 +137,25 @@ fn map_bridge<T>(r: VbaBridgeResult<T>) -> Result<T> {
 /// to address the session. The caller MUST call [`excel_session_close`]
 /// when done to release the COM resources; relying on GC will
 /// eventually clean up but leaves Excel.exe running in the meantime.
+///
+/// **Exhaustion safety** (Opus Round 1 P2-1): returns `SessionIdExhausted`
+/// when the u32 monotonic counter saturates at `u32::MAX`. Restart the
+/// MCP server to reset. Practically unreachable but pins the
+/// "never-reuse" invariant the surrounding comments promise.
 #[napi]
 pub fn excel_session_spawn() -> Result<u32> {
     napi_safe_call("excel_session_spawn", || {
+        // Check BEFORE spawning Excel so we don't leak a session
+        // immediately. The check is on the next ID we'd issue, not the
+        // one being returned: if `NEXT_ID` is already at MAX, the next
+        // fetch_add wraps to 0 (reserved sentinel) and then to 1
+        // (potential collision), so we refuse to issue further IDs.
+        if NEXT_ID.load(Ordering::SeqCst) == u32::MAX {
+            return Err(Error::from_reason(
+                "SessionIdExhausted: the u32 monotonic session counter has saturated \
+                 at 2^32 spawns. Restart the MCP server to reset.",
+            ));
+        }
         let session = map_bridge(apartment::ExcelSession::spawn())?;
         let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
         let mut map = sessions().lock().map_err(|_| {
@@ -135,6 +170,17 @@ pub fn excel_session_spawn() -> Result<u32> {
 /// + Excel.Application. Idempotent: closing an unknown / already-closed
 /// ID returns Ok with no effect (matches the `try_take_session` semantic
 /// the TS layer expects).
+///
+/// **Concurrent-call semantics** (Opus Round 1 P3-2): when another
+/// thread holds an `Arc<ExcelSession>` clone (mid-call via
+/// [`get_session`]), `drop(removed)` here only decrements the Arc
+/// strong count. The actual `ExcelSession::drop` (which joins the
+/// STA worker thread) runs when the last in-flight call completes
+/// and releases its clone. This is intentional — concurrent in-flight
+/// calls are NOT truncated by a close. The registry slot is freed
+/// immediately so the ID becomes "not found" on subsequent lookups
+/// (matching the user's mental model that close completes
+/// instantly).
 #[napi]
 pub fn excel_session_close(session_id: u32) -> Result<()> {
     napi_safe_call("excel_session_close", || {
@@ -144,9 +190,10 @@ pub fn excel_session_close(session_id: u32) -> Result<()> {
             })?;
             map.remove(&session_id)
         };
-        // Drop the Arc outside the lock so the `ExcelSession::drop`
-        // (which joins the STA worker thread, briefly blocking) does
-        // not hold the registry lock while waiting for COM teardown.
+        // Drop the Arc outside the lock so any STA-worker-thread join
+        // triggered by the final-Arc drop does not hold the registry
+        // lock. See the per-strong-count comment above for what
+        // actually happens at this drop site.
         drop(removed);
         Ok(())
     })
@@ -223,12 +270,29 @@ pub fn excel_workbook_save_as(
         // The Rust enum is `#[repr(i32)]` so a runtime numeric match
         // is straightforward. We deliberately do NOT add a "default"
         // arm — unknown formats return a typed error so the TS layer
-        // can map to `VbaUnsupportedArgumentType` cleanly.
+        // can map to a dedicated `VbaUnsupportedFileFormat` typed code.
+        //
+        // **Why a dedicated code (not `VbaUnsupportedArgumentType`)**
+        // (Opus Round 1 P2-4): `VbaUnsupportedArgumentType` is reserved
+        // for the VARIANT bridge's JSON-type rejection (`errors.rs:65`
+        // documents this) — an object/array passed where v1 only
+        // supports null/boolean/number/string. File-format mismatch is
+        // a distinct concept (the bridge supports VARIANT-side .xlsm
+        // but rejects other Excel file formats in v1). Phase 4 catalogs
+        // both in `_errors.ts` SUGGESTS separately so the remediation
+        // text can be specific (file_format → "use 52"; argument_type
+        // → "serialize into a worksheet cell").
+        //
+        // `VbaUnsupportedFileFormat` is a napi-binding-level error
+        // (lives in this shim, not in `engine_vba_bridge::errors`)
+        // because the crate's `excel::workbook_save_as` accepts an
+        // `XlFileFormat` enum — the runtime validation of caller-
+        // supplied integers happens here.
         let format = match file_format {
             52 => excel::XlFileFormat::OpenXmlWorkbookMacroEnabled,
             other => {
                 return Err(Error::from_reason(format!(
-                    "VbaUnsupportedArgumentType: file_format={other} not supported in v1. \
+                    "VbaUnsupportedFileFormat: file_format={other} not supported in v1. \
                      The only supported value is 52 (xlOpenXMLWorkbookMacroEnabled, .xlsm)."
                 )));
             }
@@ -276,6 +340,15 @@ pub fn excel_vba_module_add(
 /// HRESULT `0x800a03ec`. Phase 2e adds [`excel_workbook_save_as`] +
 /// the managed Trusted Location so callers can anchor the workbook
 /// before invoking `macro_run`.
+///
+/// **TODO (Phase 4 reconsideration)**: this function is synchronous —
+/// the libuv main thread blocks for the full macro duration. User-
+/// authored VBA macros can run arbitrarily long; a long macro freezes
+/// the Node event loop including MCP stdin reads. If Phase 4 caller
+/// patterns expose this hazard, migrate to `AsyncTask` (matches the
+/// UIA-side pattern in `lib.rs`). The migration is non-breaking
+/// because the napi return type changes from `Result<()>` to
+/// `Promise<void>` which the TS layer already awaits anyway.
 #[napi]
 pub fn excel_macro_run(session_id: u32, macro_name: String) -> Result<()> {
     napi_safe_call("excel_macro_run", || {
