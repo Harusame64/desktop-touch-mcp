@@ -1,17 +1,17 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.Harusame64/desktop-touch-mcp",
-  "description": "Computer-use MCP server for Windows 10/11. Lets Claude, Cursor, or any MCP client take screenshots, read UI Automation trees, drive Chrome via CDP, type / click / scroll, and run terminal commands — with semantic discover-then-act targeting and per-action perception guards that beat raw pixel-coordinate guessing. 28 tools, npx install.",
+  "description": "Computer-use MCP for Windows 10/11: 29 tools — screenshot, UIA, Chrome CDP, type/click/scroll, VBA.",
   "repository": {
     "url": "https://github.com/Harusame64/desktop-touch-mcp",
     "source": "github"
   },
-  "version": "1.4.4",
+  "version": "1.5.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@harusame64/desktop-touch-mcp",
-      "version": "1.4.4",
+      "version": "1.5.0",
       "transport": {
         "type": "stdio"
       },
