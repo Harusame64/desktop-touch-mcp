@@ -502,3 +502,22 @@ export interface NativeLeaseTokenSummary {
   targetGeneration: string
   evidenceDigestPrefix8: string
 }
+
+// ── ADR-015 Phase 3: VBA Extensibility bridge ────────────────────────────────
+//
+// Mirror types for the napi-rs binding in `src/vba_bridge.rs`. Session
+// lifecycle uses integer handle IDs; the TS layer in Phase 4 will wrap
+// these into the single `excel` MCP tool action dispatcher.
+
+/** Read-only HKCU / HKLM `AccessVBOM` registry inspection result.
+ * Returned by `excelCheckAccessVbom`. Mirrors
+ * `engine_vba_bridge::registry::AccessVbomStatus` with `scope` as a
+ * String (napi cannot marshal `&'static str` for an object field). */
+export interface NativeExcelAccessVbomStatus {
+  /** Effective trust state. `true` when either HKCU is 1 or HKLM forces 1. */
+  trusted: boolean
+  /** `true` only when HKLM is set to 0 (group policy forces denial). */
+  lockedByPolicy: boolean
+  /** `"hklm-policy"` (HKLM dictates), `"hkcu"` (HKLM unset, HKCU is 1), or `"default"` (neither set). */
+  scope: string
+}

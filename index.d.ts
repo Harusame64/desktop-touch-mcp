@@ -422,3 +422,76 @@ export interface NativeDirtyRectsResult {
  * `(frame_index, count)`; empty result when the pipeline has no rect
  * yet, the slot is poisoned, or no rect for the requested monitor. */
 export declare function viewGetDirtyRects(monitorIndex: number): NativeDirtyRectsResult
+
+// ─── VBA Extensibility bridge (ADR-015 Phase 3) ──────────────────────────────
+//
+// napi-rs binding for `engine-vba-bridge::excel::*`. Session lifecycle
+// is handled via integer handle IDs stored in a process-global
+// `Mutex<HashMap<u32, Arc<ExcelSession>>>` inside `src/vba_bridge.rs`.
+// Phase 4 wraps these into the single MCP tool surface `excel` (per
+// ADR-015 §4.4) with a Zod discriminated union on `action`.
+
+export interface ExcelAccessVbomStatus {
+  trusted: boolean
+  lockedByPolicy: boolean
+  /** One of `"hklm-policy"` (HKLM dictates the value), `"hkcu"` (HKLM
+   * unset, HKCU is 1), or `"default"` (neither set). */
+  scope: string
+}
+
+/** Spawn an STA worker + create `Excel.Application`. Returns an integer
+ * session ID for subsequent calls. The caller MUST call
+ * `excelSessionClose(id)` when done; relying on GC will eventually
+ * clean up but leaves Excel.exe running in the meantime. */
+export declare function excelSessionSpawn(): number
+
+/** Close the session: removes from the registry, joins the STA worker
+ * thread, releases the IDispatch pointer + Excel.Application. Idempotent. */
+export declare function excelSessionClose(sessionId: number): void
+
+/** True if the session ID is still in the registry (not yet closed). */
+export declare function excelSessionIsAlive(sessionId: number): boolean
+
+/** Set `Application.Visible`. */
+export declare function excelSetVisible(sessionId: number, visible: boolean): void
+
+/** Set `Application.DisplayAlerts`. The Phase 2e demo path does NOT need
+ * to call this — `excelWorkbookSaveAs` manages it internally via a
+ * save-restore guard (ADR-015 §7 R9). Exposed for manual control. */
+export declare function excelSetDisplayAlerts(sessionId: number, enabled: boolean): void
+
+/** Create a fresh blank workbook on the active session. */
+export declare function excelWorkbookAddNew(sessionId: number): void
+
+/** Save the active workbook. `fileFormat` is the numeric `XlFileFormat`
+ * value; v1 supports `52` (xlOpenXMLWorkbookMacroEnabled / `.xlsm`) only —
+ * passing other values throws `VbaUnsupportedArgumentType`. Internally
+ * manages `DisplayAlerts` via a save-restore guard. */
+export declare function excelWorkbookSaveAs(
+  sessionId: number,
+  path: string,
+  fileFormat: number,
+): void
+
+/** Close the active workbook. Does not close `Excel.Application` —
+ * use `excelSessionClose` for that. */
+export declare function excelWorkbookClose(sessionId: number, saveChanges: boolean): void
+
+/** Add a VBA module to the active workbook + write source into it.
+ * Requires `AccessVBOM = 1` (HKCU or HKLM); otherwise throws
+ * `VbaAccessNotTrusted`. */
+export declare function excelVbaModuleAdd(
+  sessionId: number,
+  moduleName: string,
+  code: string,
+): void
+
+/** Run a previously-added macro by name. Calls `Application.Run`.
+ * Requires the workbook to be anchored in a Trusted Location (see
+ * ADR-015 §3.6 / Phase 2e); otherwise throws `VbaMacroExecutionFailed`
+ * with HRESULT `0x800a03ec`. */
+export declare function excelMacroRun(sessionId: number, macroName: string): void
+
+/** Read HKCU / HKLM `AccessVBOM` state without modifying the registry.
+ * Used by the Phase 4 MCP tool's `check_access_vbom` action. */
+export declare function excelCheckAccessVbom(): ExcelAccessVbomStatus

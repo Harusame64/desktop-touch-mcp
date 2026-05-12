@@ -125,4 +125,19 @@ export const viewGetFocusedWithWallclock = nativeBinding.viewGetFocusedWithWallc
 // ─── L3 perception dirty_rects_aggregate view (S2 D2-C) ──────────────────────
 export const viewGetDirtyRects          = nativeBinding.viewGetDirtyRects;
 
+// ─── VBA Extensibility bridge (ADR-015 Phase 3) ──────────────────────────────
+// Session-handle based bindings around engine-vba-bridge::excel. Phase 4
+// wraps these into the single `excel` MCP tool action dispatcher.
+export const excelSessionSpawn          = nativeBinding.excelSessionSpawn;
+export const excelSessionClose          = nativeBinding.excelSessionClose;
+export const excelSessionIsAlive        = nativeBinding.excelSessionIsAlive;
+export const excelSetVisible            = nativeBinding.excelSetVisible;
+export const excelSetDisplayAlerts      = nativeBinding.excelSetDisplayAlerts;
+export const excelWorkbookAddNew        = nativeBinding.excelWorkbookAddNew;
+export const excelWorkbookSaveAs        = nativeBinding.excelWorkbookSaveAs;
+export const excelWorkbookClose         = nativeBinding.excelWorkbookClose;
+export const excelVbaModuleAdd          = nativeBinding.excelVbaModuleAdd;
+export const excelMacroRun              = nativeBinding.excelMacroRun;
+export const excelCheckAccessVbom       = nativeBinding.excelCheckAccessVbom;
+
 export default nativeBinding;
