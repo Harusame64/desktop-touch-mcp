@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { mouse } from "../engine/nutjs.js";
-import { validateLaunchCommand, resolveWellKnownPath, spawnDetached } from "../utils/launch.js";
+import { validateLaunchCommand, resolveLaunchExecutable, spawnDetached } from "../utils/launch.js";
 import { enumMonitors, getVirtualScreen, enumWindowsInZOrder, type WindowZInfo } from "../engine/win32.js";
 import { captureScreen } from "../engine/image.js";
 import { clearLayers } from "../engine/layer-buffer.js";
@@ -182,14 +182,20 @@ export const workspaceLaunchHandler = async ({
   command, args, waitMs,
 }: { command: string; args: string[]; waitMs: number }): Promise<ToolResult> => {
   try {
-    // ── 1. Security validation (unchanged) ──────────────────────────────
+    // ── 1. Security validation (basename / extension / shell metachar) ──
     validateLaunchCommand(command, args);
 
-    // ── 2. Resolve well-known paths (chrome.exe → full path) ────────────
-    const { resolved, wasResolved } = resolveWellKnownPath(command);
-    // If we resolved to a full path, re-validate with that path
-    // (validateLaunchCommand checks basename, so the resolved path is safe)
+    // ── 2. Resolve well-known + App Paths registry (chrome.exe / excel.exe /
+    //      winword.exe → full path; issue #258) ─────────────────────────
+    const { resolved, source } = resolveLaunchExecutable(command);
     const actualCommand = resolved;
+    // Re-validate the resolved path: App Paths is user-writable, so a
+    // tampered entry could otherwise smuggle a blocked shell interpreter
+    // (cmd.exe, powershell.exe, ...) past the basename guard in step 1.
+    // Re-running validateLaunchCommand on the resolved path catches that.
+    if (source !== "identity") {
+      validateLaunchCommand(actualCommand, args);
+    }
 
     // ── 3. Pre-launch window snapshot ───────────────────────────────────
     const beforeWindows = enumWindowsInZOrder();
@@ -241,8 +247,9 @@ export const workspaceLaunchHandler = async ({
       foundWindow: foundTitle || null,
       region: foundRegion,
     };
-    if (wasResolved) {
-      result.note = `Resolved "${command}" → "${actualCommand}"`;
+    if (source !== "identity") {
+      const via = source === "app-paths" ? " via App Paths registry" : "";
+      result.note = `Resolved "${command}" → "${actualCommand}"${via}`;
     }
     if (!foundTitle && waitMs > 0) {
       result.hint =
