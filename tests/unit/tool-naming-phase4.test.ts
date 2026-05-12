@@ -288,13 +288,14 @@ describe("Phase 4 — desktop_state include* flags + 5 get_* tools privatized", 
   });
 });
 
-// ─── 6. Stub catalog integrity (26 entries) ───────────────────────────────────
+// ─── 6. Stub catalog integrity (27 entries — Phase 4 reduction + ADR-015 `excel`) ───
 
-describe("Phase 4 — stub-tool-catalog drops 20 tools, retains 26 entries", () => {
+describe("Phase 4 — stub-tool-catalog drops 20 tools, retains 26 + 1 (excel) = 27 entries", () => {
   const catalogNames = new Set(STUB_TOOL_CATALOG.map((e) => e.name));
 
-  it("catalog has exactly 26 entries", () => {
-    expect(STUB_TOOL_CATALOG.length).toBe(26);
+  it("catalog has exactly 27 entries", () => {
+    // 26 from Phase 4 reduction + 1 from ADR-015 v1.5.0 (`excel`).
+    expect(STUB_TOOL_CATALOG.length).toBe(27);
   });
 
   const REMOVED = [
@@ -321,6 +322,8 @@ describe("Phase 4 — stub-tool-catalog drops 20 tools, retains 26 entries", () 
     "browser_locate", "browser_click", "browser_navigate", "browser_fill",
     "browser_form",
     "wait_until", "server_status", "notification_show",
+    // ADR-015 v1.5.0 addition (invariant 6 explicit carve-out, §2.3).
+    "excel",
   ];
 
   for (const name of RETAINED) {

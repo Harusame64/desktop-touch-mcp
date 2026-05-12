@@ -790,6 +790,15 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
     }
   },
   {
+    "name": "excel",
+    "description": "Purpose: Author and run VBA macros against Excel via COM late binding (ADR-015). Headline differentiator against Claude for Excel which writes formulas but cannot run VBA.\nDetails: action='run_vba' authors a Sub in a fresh workbook, saves into the managed Trusted Location (%LOCALAPPDATA%\\desktop-touch-mcp\\trusted-vba), and Application.Run the macro. Requires HKCU AccessVBOM=1 + VBAWarnings=1 + a registered Trusted Location (all configured by `node scripts/enable-access-vbom.mjs`). Trust setup: Excel must restart after the CLI runs (values cached at process start). action='check_access_vbom' is a read-only preflight returning {trusted, lockedByPolicy, scope}.\nPrefer: Run check_access_vbom first when a workflow depends on macro execution; the remediation hint pre-empts an opaque HRESULT 0x800a03ec failure inside run_vba.\nCaveats: macroName MUST appear as `Sub <name>(...)` in `code` (else VbaMacroNotFound). VBA Editor UI is structurally bypassed — no UIA tree walk needed. Excel COM is STA: each call serialises through the bridge's worker thread, so long-running macros block subsequent excel() calls on the same MCP server.\nExamples:\n  excel({action:'check_access_vbom'}) → {trusted:true, scope:'hkcu'}\n  excel({action:'run_vba', code:'Sub DesktopTouchAdHoc()\\n  Range(\"A1\").Value = \"Hello\"\\nEnd Sub'}) → {ok:true, workbookPath:'...\\\\trusted-vba\\\\dt_vba_<ts>.xlsm'}\n  excel({action:'run_vba', code:'Sub Demo()\\n  MsgBox \"hi\"\\nEnd Sub', macroName:'Demo', visible:true}) → demo recording path",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": true
+    }
+  },
+  {
     "name": "focus_window",
     "description": "Bring a window to the foreground by partial title match (case-insensitive). Use when a tool does not accept a windowTitle param, or when you need to switch focus before a sequence of actions. Use chromeTabUrlContains to activate a specific Chrome/Edge tab by URL substring before focusing — only the active tab's title appears in the windows list. If CDP is unavailable, chromeTabUrlContains is silently skipped — check response.hints.warnings. Returns WindowNotFound if no match exists; call desktop_discover to see available titles. Caveats: On some apps focus may be immediately stolen back (modal dialogs, UAC prompts) — verify with desktop_state after focusing. Win11 foreground refusal (UIPI cross-elevation / admin-only target / call from a background process or service) returns code:'ForegroundRestricted' ok:false instead of silently failing — recover by switching to a tool that does not require foreground transfer: desktop_act / click_element use UIA InvokePattern (no foreground needed); keyboard BG path bypasses foreground for terminal-class targets only (Windows Terminal / cmd / PowerShell — keyboard with windowTitle on non-terminal apps still hits the same ForegroundRestricted refusal). browser_* tools target by tabId/selector, not windowTitle.",
     "inputSchema": {

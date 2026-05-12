@@ -58,7 +58,7 @@ P3 (Whole-System Dataflow) と P7 (Tool Surface 不変原則) は本書で初出
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │ L5: MCP Tool Surface                                              │
-│     既存 28 tool が envelope wrap。query / subscribe / commit の  │
+│     既存 29 tool が envelope wrap。query / subscribe / commit の  │
 │     3 軸にマッピング (§7)                                         │
 ├──────────────────────────────────────────────────────────────────┤
 │ L4: Cognitive Projection + Envelope Assembly                      │
@@ -237,7 +237,7 @@ WAL に記録された #87/#88/#89 を replay worker に再注入。**logical_ti
 
 ---
 
-## 7. API 3 軸 — 全 28 tool のマッピング
+## 7. API 3 軸 — 全 29 tool のマッピング
 
 ### 7.1 軸定義
 
@@ -295,7 +295,7 @@ WAL に記録された #87/#88/#89 を replay worker に再注入。**logical_ti
 
 | 観点 | 規約 |
 |---|---|
-| 既存 ~28 tool の応答 shape | envelope に進化 (L5 wrapper で一元 wrap) |
+| 既存 ~29 tool の応答 shape | envelope に進化 (L5 wrapper で一元 wrap; 28 baseline + 1 ADR-015 `excel` carve-out) |
 | 新規 tool 追加 | **しない** (本設計のスコープ外、別 ADR で個別判断) |
 | tool 関数シグネチャ (positional args) | **変更しない** |
 | 既存 tool 名 | **リネームしない** |

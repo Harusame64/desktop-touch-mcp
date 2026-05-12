@@ -329,6 +329,15 @@ L2 (timely + DD) と L1 capture worker は **dedicated thread**。Node.js libuv 
 | 5 | `include` 引数は string array のみ受付 (struct 化しない) | schema 過剰複雑化 |
 | 6 | **既存 tool 名 / 関数シグネチャ / positional args は不変、新規 tool 追加なし、リネームなし** (統合書 P7 / §7.4) | tool surface の互換性破綻、LLM 学習無効化 |
 
+> **Note (recognised carve-out)**: invariant 6 admits explicit ADR-level
+> exceptions. **ADR-015 (VBA Extensibility Bridge)** carves out the addition
+> of a single `excel` tool for the v1.5.0 demo path; see ADR-015 §2.3. The
+> rule text above is **literal-preserved**; only the derivative numeric
+> refs (28 → 29) in `operation-verification-matrix.md` / `architecture-3layer-integrated.md`
+> / `system-overview.md` / `tool-surface-known-issues.md` / `llm-operation-audit.md`
+> are swept. Future single-tool ADRs (Word / PowerPoint / Outlook) follow
+> the same pattern: each is a one-tool carve-out with its own ADR.
+
 ### 6.4 性能制約
 
 | KPI | 目標 |

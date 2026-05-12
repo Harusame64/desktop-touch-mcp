@@ -30,6 +30,7 @@ import { registerTerminalTools } from "./tools/terminal.js";
 import { registerEventTools } from "./tools/events.js";
 import { registerClipboardTools } from "./tools/clipboard.js";
 import { registerNotificationTools } from "./tools/notification.js";
+import { registerExcelTools } from "./tools/excel.js";
 import { registerPerceptionTools } from "./tools/perception.js";
 import { registerPerceptionResources } from "./tools/perception-resources.js";
 import { registerServerStatusTool } from "./tools/server-status.js";
@@ -198,6 +199,7 @@ function createMcpServer(): McpServer {
   registerEventTools(s);
   registerClipboardTools(s);
   registerNotificationTools(s);
+  registerExcelTools(s);
   registerPerceptionTools(s);
   registerServerStatusTool(s);
 

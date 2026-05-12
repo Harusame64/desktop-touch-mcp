@@ -3,7 +3,7 @@
 - Status: **Draft (起草、Phase 3 SSOT)**
 - Date: 2026-05-08
 - Authors: Claude (Opus, max effort)
-- Scope: 28 tool 中 side-effect を起こす全 tool に対し「送り → 観測 → ok 判定」の規範を SSOT 化
+- Scope: 29 tool 中 side-effect を起こす全 tool に対し「送り → 観測 → ok 判定」の規範を SSOT 化 (28 → 29 by ADR-015 invariant 6 carve-out: `excel` tool, action='run_vba' commit-axis + action='check_access_vbom' query-axis per ADR-015 §4.4)
 - 役割: issue #173 §S-1 の silent-success 監査を進める Phase 3 child issues (#177-#181) の実装規範
 - 関連:
   - 親 issue: #173 (audit) / #184 (Phase 3 epic)
@@ -30,7 +30,7 @@ issue #173 で Windows Terminal silent fail が 11 日間 production で `ok:tru
 
 | 観点 | 意味 |
 |---|---|
-| **Tool** | MCP に register された tool 名 (28 tool 不変原則 / `docs/layer-constraints.md` §6.3 invariant 6) |
+| **Tool** | MCP に register された tool 名 (29 tool / `docs/layer-constraints.md` §6.3 invariant 6 + ADR-015 §2.3 single-tool carve-out for `excel`) |
 | **API レイヤ** | side-effect を発射する OS / プロトコル境界 (PostMessage WM_CHAR / SendInput / SetClipboardData / CDP / SetForegroundWindow / UIA InvokePattern など) |
 | **現在の post-verification** | v1.3.2 時点で実装されている事後検証。「なし」は ack 値だけで `ok` を判定している silent-success 候補 |
 | **期待される verification** | 送信後に観測すべき副作用と判定方法。terminal の post-send UIA read-back と同じ厚みを目標 |
@@ -47,9 +47,9 @@ issue #173 で Windows Terminal silent fail が 11 日間 production で `ok:tru
 
 `ok:true` を返してよいのは「Strict / Indirect で確認できた」または「Unverifiable と明示した」のいずれかに限る。**ack だけで `ok:true` は禁止**。
 
-### 1.4 28 tool 中 verification 対象の境界
+### 1.4 29 tool 中 verification 対象の境界
 
-L5 MCP Tool Surface (§6) は 28 tool 不変。本書の対象は **side-effect を起こす tool** に限り、pure-observation tool (screenshot / desktop_state / desktop_discover / wait_until / clipboard:read / terminal:read / server_status / browser_overview / browser_search / browser_locate / workspace_snapshot) は §3 で **side-effect: none → verification: N/A** として一括 justify する。
+L5 MCP Tool Surface (§6) は 29 tool (28 baseline + 1 ADR-015 carve-out for `excel`)。本書の対象は **side-effect を起こす tool** に限り、pure-observation tool (screenshot / desktop_state / desktop_discover / wait_until / clipboard:read / terminal:read / server_status / browser_overview / browser_search / browser_locate / workspace_snapshot / **excel:check_access_vbom** (per-action query-axis, tool overall is commit-axis per ADR-015 §4.4)) は §3 で **side-effect: none → verification: N/A** として一括 justify する。
 
 Justify の理由: query 軸 tool は L5 invariant 2 (副作用ゼロ、event_id を新規発行しない、`docs/layer-constraints.md` §6.3) に縛られるため、本書が要求する「送り → 観測 → ok 判定」契約はそもそも構文的に存在しない。silent-success という failure mode は副作用 commit 軸 tool 限定の概念。
 
@@ -123,10 +123,10 @@ Phase 5: 判定
 
 ## 3. Tool 別 verification 契約
 
-28 tool 中、側面別の整理:
+29 tool 中、側面別の整理:
 
-- **§3.1 commit 軸 (verification 対象)**: 17 tool / 28 — 本書の主対象
-- **§3.2 query 軸 (verification: N/A)**: 11 tool / 28 — side-effect なしのため対象外、justify のみ
+- **§3.1 commit 軸 (verification 対象)**: 18 tool / 29 — 本書の主対象 (17 baseline + `excel` per ADR-015 §4.4)
+- **§3.2 query 軸 (verification: N/A)**: 11 tool / 29 — side-effect なしのため対象外、justify のみ (`excel:check_access_vbom` is per-action query-axis; the `excel` tool overall is commit-axis-classified per ADR-015 §4.4)
 
 ### 3.1 Commit 軸 — verification 契約あり
 
@@ -309,7 +309,7 @@ issue #176 の Acceptance Criteria に対する本書の対応:
 | AC | 対応箇所 | status |
 |---|---|---|
 | `docs/operation-verification-matrix.md` が main にマージされている | 本書 | (PR merge 待ち) |
-| 28 tool 中 "side-effect を起こす" 全 tool の行が表に存在 | §3.1 (17 行) + §3.2 で justify (11 行)、合計 28 一致 | ✅ |
+| 29 tool 中 "side-effect を起こす" 全 tool の行が表に存在 | §3.1 (18 行) + §3.2 で justify (11 行)、合計 29 一致 (`excel` Phase 4 land) | ✅ |
 | 各 tool の「失敗時に返すべき code」が明記 | §3.1 各行 "失敗時 error code" 列、新 code 6 件は §5 で justify | ✅ |
 | `unverifiable` (検証不能) ケースの hint shape も規範化 | §4 全体 (shape / reason enum / status 3 値) | ✅ |
 
