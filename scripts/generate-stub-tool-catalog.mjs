@@ -14,6 +14,8 @@ const TOOL_FILES = [
   // Phase 2 dispatchers
   'window-dock.ts',
   'scroll.ts',
+  // ADR-015 Phase 4 (v1.5.0): VBA Extensibility bridge
+  'excel.ts',
 ];
 
 function buildDesc(d) {

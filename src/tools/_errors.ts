@@ -327,6 +327,69 @@ const SUGGESTS: Record<string, string[]> = {
     "Procedural memory surfaces top-K successful repeated workflows (success>=3 + 0 failures + no destructive tools)",
     "Suggest candidates are limited by design — destructive macro suggest is non-goal in Phase B (consider Phase B follow-up for explicit consent UX)",
   ],
+  // ─── ADR-015 Phase 4: VBA Extensibility bridge typed errors (11 codes) ─────
+  // Crate-level (8): emitted by engine_vba_bridge::errors::VbaBridgeError via
+  // `Display` impl with bare PascalCase prefix; surfaced through the napi
+  // shim's `Error::from_reason`. Binding-level (3): emitted directly by
+  // `src/vba_bridge.rs` for session-handle and napi-shim concerns the crate
+  // is intentionally agnostic about.
+  //
+  // ADR-015 §4.4 typed errors table is the SSOT for the catalog; this dict
+  // is the runtime SUGGESTS surface that `failWith` populates into envelopes.
+  VbaAccessNotTrusted: [
+    "HKCU AccessVBOM is 0 (or never set). Run `node scripts/enable-access-vbom.mjs` to set it to 1.",
+    "Close any running Excel.exe BEFORE retrying — Excel caches the AccessVBOM value at process start.",
+    "If a fresh terminal is fine, run the CLI with --check-only first to see the current trust state.",
+  ],
+  VbaAccessLockedByPolicy: [
+    "HKLM group policy forces AccessVBOM=0. No MCP-side workaround exists; contact your IT department.",
+    "The setting `Software\\Microsoft\\Office\\16.0\\Excel\\Security\\AccessVBOM` under HKLM cannot be overridden by HKCU.",
+  ],
+  ExcelNotInstalled: [
+    "Excel.Application COM class is not registered. Install Microsoft Excel 365 / 2019 / 2021 / 2024.",
+    "If Excel IS installed but unregistered, repair the install via Control Panel → Programs → Office → Change → Quick Repair.",
+  ],
+  VbaModuleAuthoringFailed: [
+    "VBA AddFromString rejected the source. Common cause: syntax error in the `code` argument.",
+    "ALTERNATIVELY: SaveAs to the Trusted Location failed. Verify the directory exists and is writable, and that AV is not blocking the file.",
+    "ALTERNATIVELY: the DisplayAlerts save-restore guard failed during SaveAs — typically means the COM apartment is being torn down concurrently. Retry with a fresh excel() call.",
+  ],
+  VbaMacroExecutionFailed: [
+    "Application.Run rejected the macro. Most common cause is HRESULT 0x800a03ec: macros disabled by Trust Center.",
+    "Ensure the workbook is in a registered Trusted Location (the bridge does this automatically via SaveAs to %LOCALAPPDATA%\\desktop-touch-mcp\\trusted-vba).",
+    "Verify HKCU VBAWarnings=1 — otherwise dynamically-authored macros are blocked even from Trusted Locations.",
+    "Close all running Excel.exe BEFORE retrying — Excel caches Trusted Locations at process start.",
+  ],
+  VbaMacroNotFound: [
+    "Your `code` argument does not declare a Sub matching `macroName`. Add `Sub <macroName>()` at the start of `code`.",
+    "Default macroName is `DesktopTouchAdHoc`; rename to that OR pass an explicit `macroName` parameter that matches your Sub.",
+    "The check is a regex scan for `Sub <name>(...)` with optional Public/Private modifier — no Function support in v1.",
+  ],
+  VbaUnsupportedArgumentType: [
+    "VBA macro args support null / boolean / number / string only in v1. For complex types, serialise into a worksheet cell from the macro side.",
+    "Date arguments need an explicit `{__type: 'date', value: '<ISO>'}` wrapper because MCP/JSON transport does not preserve native Date objects.",
+  ],
+  VbaWorkbookProtected: [
+    "The workbook has a VBA project password set. Manually unlock the workbook before authoring (Tools → VBAProject Properties → Protection in the VBA Editor).",
+    "Alternative: author the macro into a fresh unprotected workbook instead.",
+  ],
+  SessionNotFound: [
+    "The Excel session ID is no longer valid (already closed or never opened). Retry the operation — the run_vba tool spawns a fresh session per call.",
+    "If this fires during a single run_vba invocation, the addon's session registry was reset (e.g. MCP server restart). Re-run the tool.",
+  ],
+  SessionIdExhausted: [
+    "The u32 monotonic session counter has saturated at 2^32 spawns. Practically only reachable after ~136 years of continuous 1-spawn-per-second use.",
+    "Restart the MCP server to reset the counter.",
+  ],
+  VbaUnsupportedFileFormat: [
+    "The Phase 4 v1 bridge only supports `.xlsm` (xlOpenXMLWorkbookMacroEnabled = 52). Saving as `.xlsx` would silently drop the VBA module, so it is rejected up front.",
+    "If you need a different format, the future ADR-015 expansion (`eval_cell` / `refresh_query` phase) will surface additional XlFileFormat variants.",
+  ],
+  VbaBridgeUnavailable: [
+    "The native VBA bridge (`vba_bridge.rs`) is not loaded — likely a pre-v1.5.0 addon build or non-Windows host.",
+    "Upgrade to a v1.5.0+ desktop-touch-mcp build (or run on Windows where the addon is included).",
+    "If the addon IS present, verify it loaded successfully: check the stderr for `[native-engine] Rust VBA bridge loaded`.",
+  ],
 };
 
 /**
@@ -473,6 +536,55 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   if (m.includes("setvalueallchannelsfailed") || m.includes("all channels failed")) {
     return { code: "SetValueAllChannelsFailed", suggest: SUGGESTS.SetValueAllChannelsFailed };
+  }
+
+  // ─── ADR-015 Phase 4: VBA Extensibility bridge typed codes ─────────────
+  // Pattern: napi shim emits `"<PascalCaseCode>: <prose>"` (ADR §4.4 +
+  // src/vba_bridge.rs module doc-block). Match in lowercase as the
+  // existing codes do.
+  //
+  // Ordering: longer-prefix codes BEFORE shorter ones so substring matches
+  // are not accidentally swallowed. e.g. `VbaAccessLockedByPolicy` MUST
+  // appear before `VbaAccessNotTrusted` would be false here (neither is
+  // a substring of the other) but `VbaUnsupportedFileFormat` MUST appear
+  // before `VbaUnsupportedArgumentType` would be false (different stems).
+  // Currently no overlap exists, but the ordering below pins safe-by-default
+  // for future code additions.
+  if (m.includes("vbaaccesslockedbypolicy")) {
+    return { code: "VbaAccessLockedByPolicy", suggest: SUGGESTS.VbaAccessLockedByPolicy };
+  }
+  if (m.includes("vbaaccessnottrusted")) {
+    return { code: "VbaAccessNotTrusted", suggest: SUGGESTS.VbaAccessNotTrusted };
+  }
+  if (m.includes("excelnotinstalled")) {
+    return { code: "ExcelNotInstalled", suggest: SUGGESTS.ExcelNotInstalled };
+  }
+  if (m.includes("vbamoduleauthoringfailed")) {
+    return { code: "VbaModuleAuthoringFailed", suggest: SUGGESTS.VbaModuleAuthoringFailed };
+  }
+  if (m.includes("vbamacroexecutionfailed")) {
+    return { code: "VbaMacroExecutionFailed", suggest: SUGGESTS.VbaMacroExecutionFailed };
+  }
+  if (m.includes("vbamacronotfound")) {
+    return { code: "VbaMacroNotFound", suggest: SUGGESTS.VbaMacroNotFound };
+  }
+  if (m.includes("vbaunsupportedfileformat")) {
+    return { code: "VbaUnsupportedFileFormat", suggest: SUGGESTS.VbaUnsupportedFileFormat };
+  }
+  if (m.includes("vbaunsupportedargumenttype")) {
+    return { code: "VbaUnsupportedArgumentType", suggest: SUGGESTS.VbaUnsupportedArgumentType };
+  }
+  if (m.includes("vbaworkbookprotected")) {
+    return { code: "VbaWorkbookProtected", suggest: SUGGESTS.VbaWorkbookProtected };
+  }
+  if (m.includes("vbabridgeunavailable")) {
+    return { code: "VbaBridgeUnavailable", suggest: SUGGESTS.VbaBridgeUnavailable };
+  }
+  if (m.includes("sessionidexhausted")) {
+    return { code: "SessionIdExhausted", suggest: SUGGESTS.SessionIdExhausted };
+  }
+  if (m.includes("sessionnotfound")) {
+    return { code: "SessionNotFound", suggest: SUGGESTS.SessionNotFound };
   }
 
   return { code: "ToolError", suggest: [] };
