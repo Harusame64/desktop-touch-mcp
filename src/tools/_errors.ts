@@ -543,13 +543,16 @@ function classify(message: string): { code: string; suggest: string[] } {
   // src/vba_bridge.rs module doc-block). Match in lowercase as the
   // existing codes do.
   //
-  // Ordering: longer-prefix codes BEFORE shorter ones so substring matches
-  // are not accidentally swallowed. e.g. `VbaAccessLockedByPolicy` MUST
-  // appear before `VbaAccessNotTrusted` would be false here (neither is
-  // a substring of the other) but `VbaUnsupportedFileFormat` MUST appear
-  // before `VbaUnsupportedArgumentType` would be false (different stems).
-  // Currently no overlap exists, but the ordering below pins safe-by-default
-  // for future code additions.
+  // Ordering: no two PascalCase codes in this group are substrings of each
+  // other today, so order doesn't affect correctness. We still place
+  // `VbaMacroNotFound` AFTER `VbaMacroExecutionFailed` for a defensive
+  // reason — if a future error message ever chains both (e.g. "got
+  // VbaMacroNotFound during preflight, retried as VbaMacroExecutionFailed
+  // at runtime"), the chain semantically resolves to the latter. The
+  // pre-COM regex pre-flight in `src/tools/excel.ts::handleRunVba`
+  // (`codeDeclaresMacro`) already returns VbaMacroNotFound BEFORE any
+  // COM call, so the chain scenario is structurally impossible — this
+  // ordering is belt-and-suspenders documentation (Opus Round 1 P2-3).
   if (m.includes("vbaaccesslockedbypolicy")) {
     return { code: "VbaAccessLockedByPolicy", suggest: SUGGESTS.VbaAccessLockedByPolicy };
   }

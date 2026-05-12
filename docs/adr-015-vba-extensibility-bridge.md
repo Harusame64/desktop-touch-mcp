@@ -302,7 +302,9 @@ Acceptance:
 
 ### 4.4 Phase 4 — MCP tool surface (½ day) — single `excel` tool with action dispatcher
 
-One new MCP tool: `excel`. All operations dispatched by a Zod discriminated union on `action`:
+One new MCP tool: `excel`. All operations dispatched by a Zod discriminated union on `action`.
+
+**v1.5.0 ships 2 of 4 variants**: Phase 4 ships `run_vba` + `check_access_vbom` only — the headline demo path + its preflight. `eval_cell` and `refresh_query` are v1.5.x carry-over because Phase 2 / §3.6 left their Rust counterparts (`excel::eval_cell` / `excel::refresh_power_query`) tagged "Future phases" with no `#[napi]` export. The TS-side discriminated union grows non-breakingly when those land, so no schema breakage either way. The full 4-variant schema below documents the **eventual** v1.5.x surface; the implementation in `src/tools/excel.ts` ships the 2-variant subset until the Rust functions land.
 
 ```ts
 const excelInput = z.discriminatedUnion("action", [
@@ -364,6 +366,7 @@ Typed errors (added to `src/tools/_errors.ts`, **PascalCase single-cap acronym p
 | `SessionNotFound` | the supplied session ID is not in the registry (already closed or never opened) | `session_not_found` |
 | `SessionIdExhausted` | the u32 monotonic session counter saturated at `2^32` spawns (practically unreachable) | `session_id_exhausted` |
 | `VbaUnsupportedFileFormat` | `excel_workbook_save_as` received a `file_format` numeric value other than `52` (xlOpenXMLWorkbookMacroEnabled) — v1 only accepts `.xlsm` | `vba_unsupported_file_format` |
+| `VbaBridgeUnavailable` | The TS-side `nativeExcel` surface is null — either the host is non-Windows or the addon is a pre-v1.5.0 build that lacks the `vba_bridge` module. Emitted ONLY from `src/tools/excel.ts` (TS-binding-only; no crate or napi-shim Producer) so non-Windows callers get a clean fast-fail before any Trust-Center checks | `vba_bridge_unavailable` |
 
 Acceptance:
 - Single `excel` tool registered in `src/tools/_registry.ts` and visible in `tools/list` as one tool
@@ -419,7 +422,7 @@ Invariant 6 receives an explicit ADR-level carve-out (see §2.3). The invariant'
 - [ ] Issue #256 (F2 VBE UIA-blind) Resolved by structural bypass (not by improving UIA inspection of VBE)
 - [ ] `engine-vba-bridge` crate exists with the 8 functions from §3.6, all behind a single thread-local STA worker
 - [ ] `excel` tool succeeds end-to-end on a clean Win11 + Excel 365 install with `AccessVBOM=1` set by the bundled CLI script
-- [ ] All 8 crate-level + 3 binding-level = **11 typed errors** are catalogued in `_errors.ts` and surveyed in ADR-010 §5.4 (CLAUDE.md §3.1 cascade sweep) — crate-level: `VbaAccessNotTrusted` / `VbaAccessLockedByPolicy` / `ExcelNotInstalled` / `VbaModuleAuthoringFailed` / `VbaMacroExecutionFailed` / `VbaMacroNotFound` / `VbaUnsupportedArgumentType` / `VbaWorkbookProtected`; binding-level: `SessionNotFound` / `SessionIdExhausted` / `VbaUnsupportedFileFormat`
+- [ ] All 8 crate-level + 3 napi-binding-level + 1 TS-binding-only = **12 typed errors** are catalogued in `_errors.ts` and surveyed in ADR-010 §5.4 (CLAUDE.md §3.1 cascade sweep) — crate-level: `VbaAccessNotTrusted` / `VbaAccessLockedByPolicy` / `ExcelNotInstalled` / `VbaModuleAuthoringFailed` / `VbaMacroExecutionFailed` / `VbaMacroNotFound` / `VbaUnsupportedArgumentType` / `VbaWorkbookProtected`; napi-binding-level (Rust shim): `SessionNotFound` / `SessionIdExhausted` / `VbaUnsupportedFileFormat`; TS-binding-only (`src/tools/excel.ts`, no Rust Producer): `VbaBridgeUnavailable`
 - [ ] The new typed-error names pass the `pascalToSnake` round-trip used by `src/tools/_envelope.ts` (Codex Round 1 P2)
 - [ ] Cascade sweep landed per §4.5 table in a single atomic commit — invariant 6 rule text in `layer-constraints.md:330` literal-preserved; derivative numeric refs updated 28 → 29
 - [ ] No regression in `vitest run` or `cargo test --workspace`

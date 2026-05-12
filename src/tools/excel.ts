@@ -51,9 +51,11 @@ function getTrustedDir(): string {
   if (userProfile) {
     return join(userProfile, "AppData", "Local", "desktop-touch-mcp", "trusted-vba");
   }
+  // Single-line message so the envelope `error` field stays render-clean
+  // for LLM agents that don't unwrap `\n`-separated prose (Opus Round 1
+  // P2-4 — `failWith` template literal preserves embedded newlines).
   throw new Error(
-    "VbaBridgeUnavailable: cannot resolve Trusted Location — neither LOCALAPPDATA nor USERPROFILE is set. \n" +
-      "This MCP tool is Windows-only; run on the machine where Excel + the CLI setup are installed."
+    "VbaBridgeUnavailable: cannot resolve Trusted Location — neither LOCALAPPDATA nor USERPROFILE is set. Run on Windows where Excel and the desktop-touch-mcp CLI are installed."
   );
 }
 
@@ -152,6 +154,15 @@ async function handleRunVba(args: z.infer<typeof runVbaSchema>): Promise<ToolRes
 
   // AccessVBOM preflight: cheap registry read; surfaces a clean remediation
   // hint before we spawn Excel.exe for the common "user has not run the CLI" case.
+  //
+  // Why not redundant with the crate's COM-level 0x800AC472 detection
+  // (Opus Round 1 P2-5): the bridge crate maps the HRESULT inside
+  // `excel::vba_module_add`, but ONLY after a successful session spawn
+  // (Excel.exe starts + STA worker init, ~200-500ms). Pre-spawning the
+  // preflight avoids that cost AND the R3 zombie-process risk (an STA
+  // worker that started but never released its IDispatch cleanly).
+  // The preflight is therefore a structural defense layer, not duplicate
+  // work — ADR-015 §7 R3 + §3.5 confirm this is the intended layering.
   const status = nativeExcel.excelCheckAccessVbom?.();
   if (status && !status.trusted) {
     const code = status.lockedByPolicy ? "VbaAccessLockedByPolicy" : "VbaAccessNotTrusted";
