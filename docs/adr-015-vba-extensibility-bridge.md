@@ -359,20 +359,25 @@ Typed errors (added to `src/tools/_errors.ts`, **PascalCase single-cap acronym p
 | `VbaUnsupportedArgumentType` | caller passed object / array / dispatch into `args` | `vba_unsupported_argument_type` |
 | `VbaWorkbookProtected` | `VBProject` access blocked by workbook-level password | `vba_workbook_protected` |
 
-**Binding-level typed codes** (Phase 3 napi shim — live in `src/vba_bridge.rs`, not in `engine_vba_bridge::errors`. The crate stays session-handle-agnostic; these surface only when the handle layer is in the call path):
+**napi-binding-level typed codes** (Phase 3 napi shim — live in `src/vba_bridge.rs`, not in `engine_vba_bridge::errors`. The crate stays session-handle-agnostic; these surface only when the handle layer is in the call path):
 
 | Code | Meaning | snake_case form |
 |---|---|---|
 | `SessionNotFound` | the supplied session ID is not in the registry (already closed or never opened) | `session_not_found` |
 | `SessionIdExhausted` | the u32 monotonic session counter saturated at `2^32` spawns (practically unreachable) | `session_id_exhausted` |
 | `VbaUnsupportedFileFormat` | `excel_workbook_save_as` received a `file_format` numeric value other than `52` (xlOpenXMLWorkbookMacroEnabled) — v1 only accepts `.xlsm` | `vba_unsupported_file_format` |
-| `VbaBridgeUnavailable` | The TS-side `nativeExcel` surface is null — either the host is non-Windows or the addon is a pre-v1.5.0 build that lacks the `vba_bridge` module. Emitted ONLY from `src/tools/excel.ts` (TS-binding-only; no crate or napi-shim Producer) so non-Windows callers get a clean fast-fail before any Trust-Center checks | `vba_bridge_unavailable` |
+
+**TS-binding-only typed codes** (Phase 4 TS-side dispatcher — live in `src/tools/excel.ts`, no Rust crate or napi-shim Producer. Emitted before the napi boundary is crossed so non-Windows callers and pre-v1.5.0 builds get a clean fast-fail without an OS-level COM trip):
+
+| Code | Meaning | snake_case form |
+|---|---|---|
+| `VbaBridgeUnavailable` | The TS-side `nativeExcel` surface is null — either the host is non-Windows or the addon is a pre-v1.5.0 build that lacks the `vba_bridge` module. Caller should upgrade or relocate to a Windows host with the v1.5.0+ build | `vba_bridge_unavailable` |
 
 Acceptance:
 - Single `excel` tool registered in `src/tools/_registry.ts` and visible in `tools/list` as one tool
 - `tests/unit/excel-tool.test.ts` covers schema validation per action variant + `VbaMacroNotFound` regression case
-- Naming convention check (`pascalToSnake` round-trip) passes for all 8 new typed errors
-- The 8 new typed errors are catalogued in `src/tools/_errors.ts` SUGGESTS and surveyed in ADR-010 §5.4
+- Naming convention check (`pascalToSnake` round-trip) passes for all 12 new typed errors (8 crate-level + 3 napi-binding-level + 1 TS-binding-only)
+- The 12 new typed errors are catalogued in `src/tools/_errors.ts` SUGGESTS and surveyed in ADR-010 §5.4
 - E2e test gated like §4.2 verifies a full round trip
 
 ### 4.5 Phase 5 — Invariant 6 cascade sweep + release (½ day; demo recording is a separate non-blocking step)
@@ -544,6 +549,16 @@ Author: Claude (Sonnet) reflecting Opus Round 1 on Phase 3 PR.
 
 - **§4.3 acceptance fixed** — Round 1 referenced a `cargo build --bin generate-types` that never existed; replaced with the actual `check:native-types` drift gate. Also corrected the function count from "8 + checkAccessVbom" (=9) to "11 functions" with explicit itemization of the 8 §3.6 wrappers + 3 session-lifecycle helpers (`excelSessionSpawn` / `excelSessionClose` / `excelSessionIsAlive`). Lifecycle helpers are NOT in §3.6 because `ExcelSession` cannot cross the napi FFI boundary by value
 - **§4.4 binding-level codes table added** — Round 2 introduced 3 new typed-error codes that live in the napi shim (`src/vba_bridge.rs`), not in the `engine_vba_bridge::errors` enum: `SessionNotFound`, `SessionIdExhausted`, `VbaUnsupportedFileFormat`. They are listed in a sub-table alongside the 8 crate-level codes so Phase 4's `_errors.ts` SUGGESTS catalog has the full set
-- **§6 acceptance** — typed-error count updated "8 new typed errors" → "8 crate-level + 3 binding-level = 11 typed errors"
+- **§6 acceptance** — typed-error count updated "8 new typed errors" → "8 crate-level + 3 binding-level = 11 typed errors" (subsequently bumped to **12** in Phase 4 Round 2 — see entry below for the `VbaBridgeUnavailable` TS-binding-only addition)
 - **§8 OQ #10 / OQ #11 added** — Phase 4 carry-overs persisted in docs per CLAUDE.md §9 (commit-message-only deferral was insufficient)
 - **`src/vba_bridge.rs` `NEXT_ID` race-free** — Round 2's `load+fetch_add` check-then-act window replaced with `fetch_update` CAS loop. Even if Phase 4 introduces `AsyncTask` and removes the libuv-single-threaded property, the saturation check + increment are now a single atomic transition
+
+### 2026-05-12 — Implementation update (Phase 4 Round 2 reflecting Opus Round 1)
+
+Author: Claude (Sonnet) reflecting Opus Round 1 on Phase 4 PR.
+
+- **§4.4 binding-level table split into two sub-tables** — Opus Round 2 P2-1 flagged a categorisation contradiction: the original sub-table header said "live in `src/vba_bridge.rs`" but the new `VbaBridgeUnavailable` row was TS-only. Split into "napi-binding-level" (3 rows: SessionNotFound / SessionIdExhausted / VbaUnsupportedFileFormat) + "TS-binding-only" (1 row: VbaBridgeUnavailable). The latter sub-table header now explicitly states "live in `src/tools/excel.ts`, no Rust crate or napi-shim Producer"
+- **§6 acceptance — typed-error count bumped 11 → 12** — Phase 4 `_errors.ts` ships `VbaBridgeUnavailable` for the non-Windows / pre-v1.5.0 build path (TS-binding-only, emitted before the napi boundary). 12 = 8 crate + 3 napi-binding + 1 TS-binding-only. **All 4 sibling acceptance lines** (line 372/374/375/425 — naming convention check / catalog / TS rounds) updated bit-equal so future archeology doesn't see "11" / "8" stale refs
+- **ADR-010 §5.4 cascade sweep** — §6 acceptance explicitly requires "surveyed in ADR-010 §5.4". Added the 12 ADR-015 Phase 4 typed codes to ADR-010 §5.4 catalog. ADR-010 §1 TOC summary line bumped 50 → 62 codes (live 38 → 50, total 50 → 62). Same cascade rigour as ADR-010 §5.4 body + §1 TOC sync
+- **§4.4 schema example prologue** — added explicit "v1.5.0 ships 2 of 4 variants" note explaining the `eval_cell` / `refresh_query` deferral and non-breaking forward compatibility. Future readers will not need git archaeology to understand why the ADR schema lists 4 variants while the impl ships 2
+- **`excel.ts` polish** — classify ordering rationale documents the pre-COM regex pre-flight (`codeDeclaresMacro`) short-circuit that makes chain scenarios structurally impossible; AccessVBOM preflight rationale cites ADR §7 R3 + §3.5 (200-500ms Excel.exe spawn + STA worker init saving, R3 zombie-process risk avoidance); `getTrustedDir()` error message stripped of embedded `\n` so envelope render stays clean for LLM agents

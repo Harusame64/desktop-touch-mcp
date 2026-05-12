@@ -56,7 +56,7 @@ LLM の不安は 7 つに分解できる。
 - lease_token は単一 ID ではなく 4-tuple (`entityId` / `viewId` / `targetGeneration` / `evidenceDigest`)、envelope 内で展開 → 統合書 §4 / `LeaseStore` 既存実装
 - L4 envelope assembly 制約 (p99 < 5ms 等) → layer-constraints §5
 - L5 tool surface 制約 (query/commit/subscribe SLO) → layer-constraints §6
-- typed reason 50 codes (PascalCase、live `_errors.ts` SUGGESTS 38 codes + ADR-added 12 codes、Phase 7 reconcile + F3 SpawnFailed 追加) → §5.4
+- typed reason 62 codes (PascalCase、live `_errors.ts` SUGGESTS 50 codes [38 baseline + 12 ADR-015 Phase 4] + ADR-added 12 codes、Phase 7 reconcile + F3 SpawnFailed + ADR-015 Phase 4 VBA bridge 累積) → §5.4
 
 ### 1.5 Tool Surface 不変原則 (重要、誤読防止、統合書 P7 / §7.4 と同期)
 
