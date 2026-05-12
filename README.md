@@ -4,9 +4,13 @@
 
 [日本語](README.ja.md)
 
-> **Beyond Coordinate Roulette: LLM-native Windows automation with a Semantic World-Graph and Auto-Perception.**
+> **Computer-use MCP server for Windows.** Lets Claude, Cursor, or any MCP client see and operate your Windows 10/11 desktop — screenshots, UI Automation, Chrome CDP, keyboard / mouse, terminal — with **semantic discover-then-act targeting** that avoids pixel-coordinate guessing, and **per-action perception guards** that catch wrong-window typing before it happens.
 
-An MCP server that gives Claude eyes and hands on Windows. It moves beyond pixel-guessing by grounding all interactions in a **Semantic World-Graph** (`desktop_discover`) and verifying every action with **Auto-Perception** guards. Optimized into 28 high-signal tools covering screenshots, background input (WM_CHAR), UIA, Chrome CDP, terminal, and token-efficient P-frame diffing.
+```bash
+npx -y @harusame64/desktop-touch-mcp
+```
+
+28 tools, native Rust engine (UIA in 2 ms), zero-config PowerShell fallback, full CJK support, MIT licensed. Add the snippet above to your Claude / Cursor / VS Code Copilot config and Claude can drive Notepad, Excel, Chrome, Windows Terminal, and any other app on your machine.
 
 > *v0.15: **82× average speedup** via Rust native engine — UIA focus queries in 2 ms, SSE2-accelerated image diffing at 13–15× native speed. Zero-config: the engine auto-loads when present, with transparent PowerShell fallback.*
 > *v0.15.5: **Pinned release verification** — the npm launcher now fetches only the matching GitHub Release tag and verifies the Windows runtime zip before extraction.*

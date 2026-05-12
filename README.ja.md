@@ -4,9 +4,13 @@
 
 [English](README.md)
 
-> **「座標ルーレット」はもう不要。セマンティック・ワールドグラフと自動認識ガードによる、LLMネイティブなWindows自動化。**
+> **Windows 用 computer-use MCP サーバー。** Claude / Cursor / VS Code Copilot などの MCP クライアントから、あなたの Windows 10/11 デスクトップを「見て」「操作」させられます — スクリーンショット、UI Automation、Chrome CDP、キーボード / マウス、ターミナル。座標ルーレットではない **セマンティックな discover-then-act 設計** と、誤ウィンドウへの入力を未然に防ぐ **action 毎の perception guard** が特徴です。
 
-ClaudeがWindowsを直接「見て」「操作する」ためのMCPサーバー。単なるピクセル指定の座標当てゲームを卒業し、**セマンティック・ワールドグラフ** (`desktop_discover`) による確実なエンティティ特定と、**自動認識（Auto-Perception）ガード**による安全な実行を実現します。28個の最適化されたツール群が、バックグラウンド入力、UIA、Chrome CDP、ターミナル、そしてトークン効率に優れたP-frame差分転送をサポートします。
+```bash
+npx -y @harusame64/desktop-touch-mcp
+```
+
+28 ツール、Rust ネイティブエンジン (UIA 2ms)、PowerShell 透過フォールバック、日本語/CJK 完全対応、MIT。上記 1 行を Claude / Cursor / VS Code Copilot の MCP 設定に追加するだけで、Notepad、Excel、Chrome、Windows Terminal、その他あらゆるアプリを Claude が操作できるようになります。
 
 > *v0.15: Rust ネイティブエンジンにより**平均 82 倍高速化** — UIA フォーカス取得 2ms、SSE2 SIMD 画像差分 13〜15 倍速。設定不要：エンジンは自動ロード、不在時は PowerShell に透過フォールバック。*
 > *v0.15.5: **固定リリース検証** — npm ランチャーは対応する GitHub Release tag だけを取得し、Windows runtime zip を検証してから展開します。*
