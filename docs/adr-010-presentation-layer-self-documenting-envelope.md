@@ -56,7 +56,7 @@ LLM の不安は 7 つに分解できる。
 - lease_token は単一 ID ではなく 4-tuple (`entityId` / `viewId` / `targetGeneration` / `evidenceDigest`)、envelope 内で展開 → 統合書 §4 / `LeaseStore` 既存実装
 - L4 envelope assembly 制約 (p99 < 5ms 等) → layer-constraints §5
 - L5 tool surface 制約 (query/commit/subscribe SLO) → layer-constraints §6
-- typed reason 62 codes (PascalCase、live `_errors.ts` SUGGESTS 50 codes [38 baseline + 12 ADR-015 Phase 4] + ADR-added 12 codes、Phase 7 reconcile + F3 SpawnFailed + ADR-015 Phase 4 VBA bridge 累積) → §5.4
+- typed reason 63 codes (PascalCase、live `_errors.ts` SUGGESTS 51 codes [39 baseline + 12 ADR-015 Phase 4] + ADR-added 12 codes、Phase 7 reconcile + F3 SpawnFailed + Issue #245 ImeOnDuringType + ADR-015 Phase 4 VBA bridge 累積) → §5.4
 
 ### 1.5 Tool Surface 不変原則 (重要、誤読防止、統合書 P7 / §7.4 と同期)
 
@@ -276,9 +276,9 @@ tool 呼び出しは isolated event ではなく、**直前の自分の行動の
 
 ### 5.4 typed enum 一覧 — 既存 `_errors.ts` SUGGESTS を SSOT として吸収
 
-本 §5.4 catalog は live `src/tools/_errors.ts` SUGGESTS dictionary (**50 codes**、Phase 6 cleanup 後 = PR-A 削除 3 件 + PR-B AutoGuardBlocked 追加 1 件 + post-issue #178/#179/#180/#181/#197/#207 + Phase 5 I1 + Phase B B-1〜B-4 + Phase 7 F3 SpawnFailed + ADR-015 Phase 4 12 codes 累積) を **bit-equal で全反映** + 本 ADR で追加する 12 codes を列挙して、**合計 62 codes** を定義する。Phase 7 catalog reconcile (`docs/adr-010-followups.md` §3) で従来 ADR baseline 視点 subset (23 codes) と live (37 codes) の数値乖離を解消、live SSOT を直接吸収した。Phase 7 F3 fix (Phase 6 dogfood で発見) で workspace_launch spawnDetached 失敗が typed `SpawnFailed` enum に昇格、+1 code。ADR-015 Phase 4 (v1.5.0) で VBA Extensibility bridge 12 typed errors (8 crate-level + 3 napi-binding-level + 1 TS-binding-only) 追加、+12 codes。
+本 §5.4 catalog は live `src/tools/_errors.ts` SUGGESTS dictionary (**51 codes**、Phase 6 cleanup 後 = PR-A 削除 3 件 + PR-B AutoGuardBlocked 追加 1 件 + post-issue #178/#179/#180/#181/#197/#207 + Phase 5 I1 + Phase B B-1〜B-4 + Phase 7 F3 SpawnFailed + Issue #245 ImeOnDuringType + ADR-015 Phase 4 12 codes 累積) を **bit-equal で全反映** + 本 ADR で追加する 12 codes を列挙して、**合計 63 codes** を定義する。Phase 7 catalog reconcile (`docs/adr-010-followups.md` §3) で従来 ADR baseline 視点 subset (23 codes) と live (37 codes) の数値乖離を解消、live SSOT を直接吸収した。Phase 7 F3 fix (Phase 6 dogfood で発見) で workspace_launch spawnDetached 失敗が typed `SpawnFailed` enum に昇格、+1 code。Issue #245 (keyboard type IME-on detection) で `ImeOnDuringType` 追加、+1 code。ADR-015 Phase 4 (v1.5.0) で VBA Extensibility bridge 12 typed errors (8 crate-level + 3 napi-binding-level + 1 TS-binding-only) 追加、+12 codes。
 
-#### live `_errors.ts` SUGGESTS 全 50 codes (PascalCase 維持、SSOT — 38 baseline + 12 ADR-015 Phase 4)
+#### live `_errors.ts` SUGGESTS 全 51 codes (PascalCase 維持、SSOT — 39 baseline + 12 ADR-015 Phase 4)
 
 ```
 // 引数・基本
@@ -308,6 +308,9 @@ BackgroundInputNotDelivered | BackgroundKeyNotDelivered |
 ForegroundRestricted | ClipboardWriteNotDelivered |
 MouseClickNotDelivered | MouseDragNotDelivered |
 SetValueAllChannelsFailed | FocusLostDuringType
+
+// IME (Issue #245 — keyboard({action:'type'}) forceKeystrokes against IME-on target)
+ImeOnDuringType
 
 // Workspace / launch (Phase 7 F3、launch.ts spawnDetached rejection)
 SpawnFailed
@@ -358,7 +361,7 @@ EnvelopeSizeExceeded
 AccessDenied | Unknown
 ```
 
-合計 38 + 12 (ADR-added) + 12 (ADR-015 Phase 4) = **62 codes** (live `_errors.ts` SUGGESTS 50 codes + 本 ADR-added 12 codes、Phase 7 reconcile + F3 SpawnFailed + ADR-015 Phase 4 12 typed errors で full sync 達成)。
+合計 39 + 12 (ADR-added) + 12 (ADR-015 Phase 4) = **63 codes** (live `_errors.ts` SUGGESTS 51 codes + 本 ADR-added 12 codes、Phase 7 reconcile + F3 SpawnFailed + Issue #245 ImeOnDuringType + ADR-015 Phase 4 12 typed errors で full sync 達成)。
 
 #### 運用ルール
 

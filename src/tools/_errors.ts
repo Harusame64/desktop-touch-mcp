@@ -327,12 +327,15 @@ const SUGGESTS: Record<string, string[]> = {
     "Procedural memory surfaces top-K successful repeated workflows (success>=3 + 0 failures + no destructive tools)",
     "Suggest candidates are limited by design — destructive macro suggest is non-goal in Phase B (consider Phase B follow-up for explicit consent UX)",
   ],
-  // ─── ADR-015 Phase 4: VBA Extensibility bridge typed errors (11 codes) ─────
+  // ─── ADR-015 Phase 4: VBA Extensibility bridge typed errors (12 codes) ─────
   // Crate-level (8): emitted by engine_vba_bridge::errors::VbaBridgeError via
   // `Display` impl with bare PascalCase prefix; surfaced through the napi
-  // shim's `Error::from_reason`. Binding-level (3): emitted directly by
+  // shim's `Error::from_reason`. napi-binding-level (3): emitted directly by
   // `src/vba_bridge.rs` for session-handle and napi-shim concerns the crate
-  // is intentionally agnostic about.
+  // is intentionally agnostic about (SessionNotFound / SessionIdExhausted /
+  // VbaUnsupportedFileFormat). TS-binding-only (1): emitted by
+  // `src/tools/excel.ts` BEFORE the napi boundary is crossed (non-Windows
+  // or pre-v1.5.0 build, no Rust Producer; VbaBridgeUnavailable).
   //
   // ADR-015 §4.4 typed errors table is the SSOT for the catalog; this dict
   // is the runtime SUGGESTS surface that `failWith` populates into envelopes.
