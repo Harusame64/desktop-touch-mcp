@@ -194,18 +194,59 @@ Out of scope for v1: `VT_ARRAY`, `VT_DISPATCH`, `VT_UNKNOWN`, `VT_CY`, `VT_DECIM
 Public Rust functions (each translates to one action variant of the single `excel` MCP tool):
 
 ```rust
-fn excel_open() -> Result<ExcelSession>
-fn excel_open_workbook(s: &ExcelSession, path: Option<&Path>) -> Result<WorkbookHandle>
-fn excel_set_visible(s: &ExcelSession, visible: bool) -> Result<()>
-fn excel_add_vba_module(wb: &WorkbookHandle, name: &str, code: &str) -> Result<()>
-fn excel_run_macro(s: &ExcelSession, name: &str, args: &[serde_json::Value]) -> Result<serde_json::Value>
-fn excel_eval_cell(wb: &WorkbookHandle, sheet: &str, addr: &str) -> Result<serde_json::Value>
-fn excel_refresh_power_query(wb: &WorkbookHandle, connection: Option<&str>) -> Result<()>
-fn excel_save_as(wb: &WorkbookHandle, path: &Path, format: SaveFormat) -> Result<()>
-fn excel_close(s: ExcelSession, save: bool) -> Result<()>
+// Phase 2c (shipped)
+fn ExcelSession::spawn() -> Result<ExcelSession>
+
+// Phase 2d (shipped, PR #261)
+fn set_visible(session: &ExcelSession, visible: bool) -> Result<()>
+fn workbook_add_new(session: &ExcelSession) -> Result<()>
+fn vba_module_add(session: &ExcelSession, module_name: String, code: String) -> Result<()>
+fn macro_run(session: &ExcelSession, macro_name: String) -> Result<()>
+
+// Phase 2e (this round)
+fn set_display_alerts(session: &ExcelSession, enabled: bool) -> Result<()>
+fn workbook_save_as(session: &ExcelSession, path: String, format: XlFileFormat) -> Result<()>
+fn workbook_close(session: &ExcelSession, save_changes: bool) -> Result<()>
+
+// Future phases
+fn excel_eval_cell(session: &ExcelSession, sheet: &str, addr: &str) -> Result<serde_json::Value>
+fn excel_refresh_power_query(session: &ExcelSession, connection: Option<&str>) -> Result<()>
 ```
 
-Each is a thin wrapper around `invoke_*` helpers on the appropriate `IDispatch` pointer. The handles (`ExcelSession`, `WorkbookHandle`) hold their respective COM pointers and the STA worker channel.
+Implementation choices (Round 3 → Phase 2 impl):
+
+- **No separate `WorkbookHandle`.** Round 1 / Round 2 of the ADR
+  proposed a typed `WorkbookHandle` parameter for workbook-scoped
+  operations (`vba_module_add` / `workbook_save_as` / `workbook_close`).
+  The Phase 2 implementation consolidated these around
+  `Application.ActiveWorkbook` because the bridge currently only
+  manages one workbook per session; introducing `WorkbookHandle`
+  would require modelling COM cross-apartment Send/Sync that the
+  STA channel already enforces. A future ADR revision may
+  reintroduce `WorkbookHandle` if Phase 3+ needs multi-workbook
+  authoring.
+
+- **`workbook_close` borrows the session (not consumes).** Round 1
+  signature was `excel_close(s: ExcelSession, save: bool)` (consuming).
+  Phase 2e implementation uses `workbook_close(&ExcelSession, save_changes: bool)`
+  because the call closes the *workbook* (not the *session* / not the
+  Excel.Application). The application itself is released only when
+  the `ExcelSession` itself is dropped.
+
+- **`XlFileFormat` enum, single variant in v1.** Round 1 used
+  `SaveFormat`; Phase 2e renamed to `XlFileFormat` to match the
+  Excel COM type-library name (`XlFileFormat` enum in
+  Microsoft.Office.Interop.Excel). The v1 implementation exposes
+  only `OpenXmlWorkbookMacroEnabled = 52` (`.xlsm`) because the
+  Phase 2e demo path requires macro persistence and saving as
+  `.xlsx` (`51`) would silently drop the VBA module. Additional
+  variants (`OpenXmlWorkbook = 51` / `OpenXmlBinary = 50` / `Xls = 56`)
+  are deferred until a caller needs them; the `#[repr(i32)]` value
+  layout is forward-compatible.
+
+Each function is a thin wrapper around `invoke_*` helpers on the
+appropriate `IDispatch` pointer. The `ExcelSession` handle holds the
+COM pointer for `Excel.Application` and the STA worker channel.
 
 ### 3.7 AccessVBOM precondition (`registry.rs` — read-only)
 
@@ -389,6 +430,7 @@ Invariant 6 receives an explicit ADR-level carve-out (see §2.3). The invariant'
 | R6 | Office build drift breaks late-binding (very unlikely — the COM interface is contractually stable since Excel 97) | Very low | Pin the integration test in CI when Excel is available; `CLSIDFromProgID("Excel.Application")` for version independence |
 | R7 | Anti-malware flags an unsigned `.node` that calls `Excel.Application` COM as suspicious | Medium | Same exposure as existing native bridges; document in `README` troubleshooting |
 | R8 | Auto-registry-mutation social engineering — an attacker who can prompt an MCP client could silently lower Office trust via a write-access tool | Was Medium (Round 1 design) → **structurally eliminated in Round 2** | The setup path is CLI-only (`scripts/enable-access-vbom.mjs`). The MCP tool surface exposes only read-only `check_access_vbom` plus a `suggest` field pointing at the CLI |
+| R9 | **`DisplayAlerts = false` leaked past `workbook_save_as`** — caller forgets to reset, subsequent flows silently lose data (e.g. close-without-save prompt suppressed) | Was Medium (Phase 2e Round 1 design) → **structurally eliminated in Phase 2e Round 2** | `workbook_save_as` internally takes a save-restore snapshot of `DisplayAlerts` and always restores it on exit (success OR error). Standalone [`set_display_alerts`] still exists for callers who explicitly want manual control; the demo / Phase 4 MCP tool path NEVER needs to call it directly |
 
 ---
 
@@ -400,6 +442,7 @@ Invariant 6 receives an explicit ADR-level carve-out (see §2.3). The invariant'
 - **OQ #4** — Should `run_vba` save the workbook before running (so the macro can reference `ThisWorkbook.Path`)? **Lean: only save when caller passes `save: true`**.
 - **OQ #5** — How aggressive should the `MsgBox` / `InputBox` string scan in §7 R5 be? **Lean: regex on the start of a line and only when `visible: false`**.
 - **OQ #6** — Should MSAA fallback be tackled in this ADR's follow-up or deferred? **Lean: deferred** — close issue #256 with this ADR shipping.
+- **OQ #7** — Should the Phase 4 MCP tool surface expose `set_display_alerts` as a public action, or only `workbook_save_as`-internal management? **Lean: only the internal guard in v1.** Rationale: Phase 4's `excel` MCP tool wraps the high-level demo path, not raw COM. Exposing `set_display_alerts` would re-introduce the R9 leak hazard at the MCP envelope layer. If Phase 4 review identifies a concrete caller need (e.g. a long-running session interleaving SaveAs with user-visible interactions), reintroduce as a manual toggle with a matching `excel.reset_display_alerts` cleanup action documented in `_errors.ts` suggestions.
 
 ---
 
@@ -469,3 +512,11 @@ Author: Claude (Sonnet) reflecting Opus Round 2.
 - **P2-7** §11 Decision history reformatted from single-row long entries to bulleted sub-lists per round for legibility
 - **P3-B** §3.5 JSON Date type clarified — caller must tag date-typed arguments explicitly via `{__type: "date", value: "<ISO>"}` since MCP/JSON transport does not preserve native Date objects
 - Added `VbaMacroNotFound` typed error per Codex Round 2 axis (macro authoring contract)
+
+### 2026-05-12 — Implementation update (Phase 2e Round 2 reflecting Opus Round 1)
+
+Author: Claude (Sonnet) reflecting Opus Round 1 on Phase 2e PR.
+
+- **§3.6 signature alignment** — Round 1 / 2 listed `SaveFormat` enum, `WorkbookHandle` type, `excel_close(s: ExcelSession, save: bool)` consuming session. Phase 2 implementation consolidated around `ExcelSession::ActiveWorkbook` (no `WorkbookHandle`), renamed enum to `XlFileFormat` (Excel COM type-library parity), changed close to borrowing `&ExcelSession` (closes workbook, not session). §3.6 prose updated to document each implementation choice with rationale; signature table now matches Phase 2 / Phase 2e crate surface
+- **§7 R9** added — "`DisplayAlerts = false` leaked past `workbook_save_as`" — structurally eliminated by the save-restore guard inside `workbook_save_as` (preserves the prior `DisplayAlerts` value, sets `false` for the SaveAs window, restores on exit including error paths)
+- **§8 OQ #7** added — whether Phase 4 should expose `set_display_alerts` as a public MCP tool action. Lean: only the internal guard in v1 (avoids re-introducing the R9 leak at MCP envelope layer)

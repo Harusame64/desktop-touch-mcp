@@ -8,8 +8,10 @@
 //! ## Phase 2d / 2e scope
 //!
 //! - [`set_visible`] — toggles `Application.Visible`
-//! - [`set_display_alerts`] — toggles `Application.DisplayAlerts` (Phase 2e:
-//!   needed before `workbook_save_as` to suppress overwrite prompts)
+//! - [`set_display_alerts`] — toggles `Application.DisplayAlerts` for
+//!   callers who want manual control. The Phase 2e demo path does NOT
+//!   call this directly; [`workbook_save_as`] manages DisplayAlerts
+//!   internally via a save-restore guard (see Call sequence below)
 //! - [`workbook_add_new`] — creates a fresh Workbook on the active session
 //! - [`vba_module_add`] — adds a VBA module via `VBProject.VBComponents.Add`
 //!   and writes source via `CodeModule.AddFromString`
@@ -24,6 +26,38 @@
 //!
 //! Functions for `eval_cell` / `refresh_power_query` listed in
 //! ADR §3.6 are still planned for a later commit.
+//!
+//! ## Call sequence for the Phase 2e demo path (sequencing contract)
+//!
+//! Phase 2e Lesson-3 (順序矛盾) sweep: the demo flow has a strict
+//! ordering that callers MUST follow because some steps depend on
+//! state established earlier. The sequence is:
+//!
+//! 1. `ExcelSession::spawn()` — start the STA worker + create Excel.Application
+//! 2. `set_visible(session, false)` — keep the demo hidden
+//! 3. `workbook_add_new(session)` — fresh in-memory workbook
+//! 4. `vba_module_add(session, name, code)` — author the macro
+//! 5. `workbook_save_as(session, path_in_trusted_loc, OpenXmlWorkbookMacroEnabled)`
+//!    — anchor to disk in a Trusted Location (the function internally
+//!    suppresses `DisplayAlerts` for the duration of the SaveAs call,
+//!    so the caller does NOT need to call [`set_display_alerts`])
+//! 6. `macro_run(session, macro_name)` — succeeds because (5) anchored
+//!    the workbook in a Trusted Location and Trust Center allows
+//!    `Application.Run`
+//! 7. `workbook_close(session, false)` — release the workbook handle
+//!    inside Excel without re-saving
+//! 8. `drop(session)` — releases `IDispatch` on the STA thread,
+//!    `Excel.Application` terminates, file handle on disk is released
+//! 9. (caller's choice) `fs::remove_file(path)` — best-effort cleanup
+//!
+//! Sequence-violation failure modes:
+//! - Skipping (5) and going straight to (6) → HRESULT `0x800a03ec`
+//!   (Trust Center policy block)
+//! - Setting `Application.Visible = true` before (5) → SaveAs prompts
+//!   the user for an overwrite confirmation; with the bridge running
+//!   non-interactively the prompt is invisible-and-blocking. The
+//!   internal `DisplayAlerts` guard in [`workbook_save_as`] mitigates
+//!   this even under unusual `visible: true` configurations
 
 use windows::Win32::System::Com::IDispatch;
 use windows::Win32::System::Variant::VARIANT;
@@ -71,18 +105,14 @@ pub fn set_visible(session: &ExcelSession, visible: bool) -> VbaBridgeResult<()>
 
 /// Set `Excel.Application.DisplayAlerts = enabled`.
 ///
-/// Excel defaults `DisplayAlerts` to `true`, which means COM callers
-/// invoking `Workbook.SaveAs` against an existing file path receive
-/// a modal "Do you want to replace?" prompt. With `visible: false`,
-/// that modal is invisible — the COM thread blocks forever waiting
-/// for a click. Phase 2e callers (the demo path) flip this to
-/// `false` once at session start, since the bridge always overwrites
-/// its managed `.xlsm` in the Trusted Location.
-///
-/// Set back to `true` before handing control back to the user if
-/// they are going to interact with Excel afterwards; otherwise the
-/// suppressed alerts (e.g. "Workbook has changes, save?") may leak
-/// data loss into manual workflows.
+/// Excel defaults `DisplayAlerts` to `true`. This function exists for
+/// callers who want **manual** control over the setting (Phase 4 MCP
+/// tool may expose it as an `excel.set_display_alerts` action). The
+/// Phase 2e demo path does NOT call this directly — see
+/// [`workbook_save_as`] which manages the setting internally via a
+/// save-restore guard so callers cannot accidentally leak
+/// `DisplayAlerts = false` past the SaveAs call (data-loss risk on
+/// subsequent user-visible workflows, see ADR-015 §7 R9).
 pub fn set_display_alerts(session: &ExcelSession, enabled: bool) -> VbaBridgeResult<()> {
     session.with_app(move |app| {
         let value: VARIANT = enabled.into();
@@ -210,11 +240,26 @@ pub fn vba_module_add(
 /// `format` is the matching `XlFileFormat`. The path's parent
 /// directory MUST already exist; Excel does not create it.
 ///
-/// **Overwrite behaviour**: SaveAs against an existing file would
-/// normally prompt "Do you want to replace?" — Phase 2e callers
-/// must call [`set_display_alerts`]`(false)` once at session start
-/// to suppress the prompt (which otherwise blocks the COM call when
-/// `Application.Visible == false`).
+/// **DisplayAlerts handling (Phase 2e safety guard)**: SaveAs against
+/// an existing file would normally prompt "Do you want to replace?".
+/// With `Application.Visible == false`, that modal is invisible and
+/// the COM call hangs forever. To eliminate the hazard structurally,
+/// this function takes a **save-restore guard** internally:
+///
+/// 1. Reads current `Application.DisplayAlerts` (preserved as `prev`)
+/// 2. Sets `Application.DisplayAlerts = False`
+/// 3. Invokes `Workbook.SaveAs`
+/// 4. Restores `Application.DisplayAlerts = prev` regardless of
+///    SaveAs outcome (success OR failure)
+///
+/// The restore is best-effort — if it itself fails (extremely rare;
+/// would mean COM teardown is in progress), the original SaveAs
+/// result still propagates and `DisplayAlerts` may be left disabled.
+/// Callers MUST treat the session as poisoned after such a failure.
+///
+/// This design preempts ADR-015 §7 R9 (callers forgetting to restore
+/// `DisplayAlerts` after manual `set_display_alerts(false)` would
+/// leak silent data-loss behaviour into subsequent flows).
 ///
 /// On disk-level failure (path inside a directory the user cannot
 /// write to, antivirus lock, etc.) Excel returns a generic HRESULT
@@ -233,10 +278,33 @@ pub fn workbook_save_as(
         let wb_disp = variant_to_dispatch(&active_wb)
             .ok_or_else(|| make_unexpected("ActiveWorkbook did not return IDispatch"))?;
 
+        // Save-restore guard: snapshot the current DisplayAlerts state,
+        // suppress for the SaveAs, and always restore. We do NOT use
+        // `?` on the restore path so it runs even when SaveAs failed.
+        // The snapshot read is best-effort too: if Excel refuses the
+        // get (very unusual), we fall back to "true" (Excel default)
+        // for the restore, which is the safer fallback because it
+        // preserves user-visible alerts.
+        let prev_display_alerts = dispatch::invoke_get(app, "DisplayAlerts", &[])
+            .unwrap_or_else(|_| true.into());
+        let false_v: VARIANT = false.into();
+        // If the suppress itself fails, abort early — the SaveAs would
+        // otherwise hang on the modal. Return the typed error so the
+        // caller knows the apartment is healthy but Excel is uncooperative.
+        dispatch::invoke_put(app, "DisplayAlerts", false_v).map_err(|e| match e {
+            VbaBridgeError::ComCallFailed { context, hresult } => {
+                VbaBridgeError::VbaModuleAuthoringFailed(format!(
+                    "Could not suppress DisplayAlerts before SaveAs \
+                     (HRESULT=0x{hresult:08x}): {context}"
+                ))
+            }
+            other => other,
+        })?;
+
         let path_v: VARIANT = BSTR::from(path).into();
         let fmt_v: VARIANT = (format as i32).into();
 
-        dispatch::invoke_call(&wb_disp, "SaveAs", &[path_v, fmt_v])
+        let save_result = dispatch::invoke_call(&wb_disp, "SaveAs", &[path_v, fmt_v])
             .map_err(|e| match e {
                 VbaBridgeError::ComCallFailed { context, hresult } => {
                     VbaBridgeError::VbaModuleAuthoringFailed(format!(
@@ -244,8 +312,16 @@ pub fn workbook_save_as(
                     ))
                 }
                 other => other,
-            })?;
-        Ok(())
+            });
+
+        // Always restore. Failure here is logged via the discarded
+        // result; we do not mask the SaveAs result with a restore
+        // error (the caller cares about whether the workbook landed
+        // on disk far more than whether DisplayAlerts is back to its
+        // original value).
+        let _ = dispatch::invoke_put(app, "DisplayAlerts", prev_display_alerts);
+
+        save_result.map(|_| ())
     })
 }
 
@@ -447,12 +523,11 @@ mod tests {
 
         let session = ExcelSession::spawn().expect("Excel must be installed");
 
-        // Phase 2e: suppress DisplayAlerts BEFORE SaveAs because Excel
-        // would otherwise raise a modal "do you want to replace?"
-        // prompt against any pre-existing file at the path — and with
-        // visible:false, the modal is invisible and the COM call hangs.
+        // Phase 2e contract: `workbook_save_as` manages DisplayAlerts
+        // internally via a save-restore guard, so the test does NOT
+        // call `set_display_alerts(false)` directly. See module doc
+        // "Call sequence" section + workbook_save_as doc.
         set_visible(&session, false).expect("set_visible(false) must succeed");
-        set_display_alerts(&session, false).expect("set_display_alerts(false) must succeed");
 
         workbook_add_new(&session).expect("workbook_add_new must succeed");
 
@@ -509,11 +584,30 @@ mod tests {
         // STA thread, which closes Excel and releases the handle.
         drop(session);
 
-        // Best-effort cleanup; failure is non-fatal because we may
-        // not have admin / AV-scanning may briefly lock the file.
-        if let Err(e) = std::fs::remove_file(&workbook_path) {
+        // Best-effort cleanup with a small retry loop. Excel.exe is
+        // documented to hold the .xlsm `FILE_SHARE_DELETE` handle for
+        // a brief window after the IDispatch release (KB / Office
+        // forums report 10-50ms on average; antivirus scanning can
+        // extend it further). 3 retries × 100ms covers the practical
+        // range; failures after that are logged but not fatal.
+        let mut last_err: Option<std::io::Error> = None;
+        for attempt in 0..3 {
+            match std::fs::remove_file(&workbook_path) {
+                Ok(()) => {
+                    last_err = None;
+                    break;
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    if attempt < 2 {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                }
+            }
+        }
+        if let Some(e) = last_err {
             eprintln!(
-                "[engine-vba-bridge] non-fatal: failed to remove test workbook {}: {e}",
+                "[engine-vba-bridge] non-fatal: failed to remove test workbook {} after 3 retries: {e}",
                 workbook_path.display()
             );
         }

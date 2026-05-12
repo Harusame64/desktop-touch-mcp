@@ -160,14 +160,33 @@ function getDefaultTrustedDir() {
   return join(root, TRUSTED_LOCATION_LEAF);
 }
 
+// Expand `%VAR%` tokens in a Windows-style path string. Excel's Trust
+// Center UI writes Path values as REG_EXPAND_SZ containing literal
+// `%LOCALAPPDATA%\desktop-touch-mcp\...` rather than the expanded
+// absolute form — `reg query` returns the unexpanded raw bytes for
+// REG_EXPAND_SZ values, so direct string comparison against our own
+// `getDefaultTrustedDir()` (which returns the expanded absolute path)
+// would miss the match and falsely produce a duplicate Location<N>.
+// This helper expands the tokens before comparison so the idempotency
+// check matches both UI-written and CLI-written entries.
+function expandEnvVars(s) {
+  return s.replace(/%([^%]+)%/g, (whole, name) => env[name] ?? whole);
+}
+
 // Normalise a Windows directory path for the registry value. We want
 // backslashes (Excel matches with `\` separators) and a trailing slash
-// (Excel's "match this exact directory" semantics depend on trailing
-// slash presence — Trust Center treats trailing-slash and no-trailing
-// as functionally equivalent in practice, but the Office UI canonicalises
-// to trailing slash so we mirror that to keep the registry tidy).
+// (Excel's "match this exact directory" semantics depend on the
+// `AllowSubFolders` flag; with `AllowSubFolders=1` trailing-slash and
+// no-trailing are functionally equivalent in Trust Center matching,
+// with `AllowSubFolders=0` only the exact directory matches and Excel
+// is strict about the slash. Since the CLI always writes
+// `AllowSubFolders=1` for our managed location, trailing-slash
+// tolerance is safe; we still canonicalise to trailing-slash to keep
+// the registry diff tidy).
 function normaliseTrustedPath(p) {
-  let out = p.replace(/\//g, sep);
+  // Expand env vars first so REG_EXPAND_SZ values match the expanded
+  // absolute path we compute via getDefaultTrustedDir().
+  let out = expandEnvVars(p).replace(/\//g, sep);
   if (!out.endsWith(sep)) out += sep;
   return out;
 }
@@ -227,10 +246,31 @@ function nextAvailableLocationIndex() {
   return idx;
 }
 
+// Best-effort rollback: delete an entire Location<N> subkey. Used when
+// `ensureTrustedLocation` writes some-but-not-all values and needs to
+// undo a partial registration so the next run's idempotency check
+// sees the slot as missing rather than half-populated (which would
+// cause AllowSubFolders=0 / Date-missing silent-correctness drift).
+function deleteTrustedLocationSlot(slotKey) {
+  const result = spawnSync("reg", ["delete", slotKey, "/f"], {
+    encoding: "utf8",
+  });
+  if (result.status !== 0) {
+    logWarn(
+      `Rollback failed: could not delete ${slotKey} (stderr: ${
+        result.stderr || "(empty)"
+      }). Manual cleanup required via regedit or 'reg delete'.`,
+    );
+    return false;
+  }
+  return true;
+}
+
 // Register the desktop-touch-managed Trusted Location. Idempotent — if a
 // Location<N> already points at our directory (case-insensitive match,
-// trailing-slash tolerant), the function reports success without writing.
-// Returns true on success, false on any write failure.
+// trailing-slash tolerant, REG_EXPAND_SZ-aware), the function reports
+// success without writing. Returns true on success, false on any write
+// failure (with rollback to avoid half-registered slots).
 function ensureTrustedLocation(targetDir) {
   const target = normaliseTrustedPath(targetDir).toLowerCase();
   // Idempotency check: does any existing LocationN already match?
@@ -249,11 +289,23 @@ function ensureTrustedLocation(targetDir) {
   // Not yet registered. Allocate a fresh slot.
   const idx = nextAvailableLocationIndex();
   const slotKey = `${KEY_HKCU_TRUSTED_LOCATIONS}\\Location${idx}`;
+
+  // **Write Path LAST** so partial-failure rollback works without an
+  // explicit rollback step: if a non-Path write fails, the next run's
+  // idempotency check (which keys off Path) sees the slot as missing
+  // and retries cleanly. We ALSO add explicit rollback (delete the
+  // partial subkey) for belt-and-suspenders.
+  //
+  // Reordering rationale (Opus Round 1 P1-3): the original order
+  // (Path → Description → AllowSubFolders → Date) left a half-
+  // registered slot with Path-only on partial failure; idempotency
+  // would then `return true` because Path matched, masking the
+  // AllowSubFolders=0 / Date-missing drift.
   const writes = [
     {
-      valueName: "Path",
-      type: "REG_SZ",
-      data: normaliseTrustedPath(targetDir),
+      valueName: "AllowSubFolders",
+      type: "REG_DWORD",
+      data: "1",
     },
     {
       valueName: "Description",
@@ -261,14 +313,15 @@ function ensureTrustedLocation(targetDir) {
       data: "desktop-touch-mcp managed trusted location (Phase 2e)",
     },
     {
-      valueName: "AllowSubFolders",
-      type: "REG_DWORD",
-      data: "1",
-    },
-    {
       valueName: "Date",
       type: "REG_SZ",
       data: new Date().toISOString().slice(0, 10),
+    },
+    // Path MUST be last — see comment above.
+    {
+      valueName: "Path",
+      type: "REG_SZ",
+      data: normaliseTrustedPath(targetDir),
     },
   ];
   for (const w of writes) {
@@ -292,12 +345,42 @@ function ensureTrustedLocation(targetDir) {
         "VbaAccessNotTrusted",
         `Failed to register Trusted Location at ${slotKey}\\${w.valueName}. \n` +
           `  stderr: ${result.stderr || "(empty)"}\n` +
-          `  This usually means the user can't write to HKCU (rare). \n` +
-          `  Try running this script from a non-elevated terminal in the user's own session.`,
+          `  Rolling back the partial slot to keep registry idempotency intact.\n` +
+          `  Re-run the CLI after fixing the underlying issue.`,
       );
+      // Rollback the partial registration.
+      deleteTrustedLocationSlot(slotKey);
       return false;
     }
   }
+
+  // Readback verification (Opus Round 1 P2-3): confirm the Path we
+  // just wrote matches what we expected, catching concurrent-write
+  // races (e.g. Excel Trust Center UI claiming the same Location<N>
+  // index between our list+choose+write window).
+  const readback = readTrustedLocationPath(`Location${idx}`);
+  if (!readback) {
+    logErr(
+      "VbaAccessNotTrusted",
+      `Post-write readback failed for ${slotKey}: Path value missing.\n` +
+        `  Likely a concurrent write claimed Location${idx}. Rolling back.`,
+    );
+    deleteTrustedLocationSlot(slotKey);
+    return false;
+  }
+  const readbackNorm = normaliseTrustedPath(readback).toLowerCase();
+  if (readbackNorm !== target) {
+    logErr(
+      "VbaAccessNotTrusted",
+      `Post-write readback mismatch for ${slotKey}: \n` +
+        `  expected ${target} \n` +
+        `  got      ${readbackNorm}\n` +
+        `  Likely a concurrent write claimed Location${idx}. Re-running this CLI \n` +
+        `  is safe (it will allocate the next free slot).`,
+    );
+    return false;
+  }
+
   logInfo(`Trusted Location registered as Location${idx}: ${targetDir}`);
   return true;
 }
@@ -412,6 +495,7 @@ function main() {
       logInfo(
         "All three trust axes configured (AccessVBOM, VBAWarnings, Trusted Location). The `excel` MCP tool can author AND run macros.",
       );
+      exit(0);
     } else {
       const missing = [];
       if (!accessOk) missing.push("AccessVBOM=1");
@@ -420,8 +504,11 @@ function main() {
       logInfo(
         `Missing trust axes: ${missing.join(", ")}. Re-run without --check-only to configure.`,
       );
+      // Exit code 1 so CI / scripted callers can distinguish "trust
+      // fully configured" from "trust incomplete" without parsing
+      // log lines (Opus Round 1 P2-4).
+      exit(1);
     }
-    exit(0);
   }
 
   // ── AccessVBOM ─────────────────────────────────────────────────────
