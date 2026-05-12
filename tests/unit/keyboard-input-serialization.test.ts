@@ -1,178 +1,142 @@
 /**
  * tests/unit/keyboard-input-serialization.test.ts
  *
- * Regression for issue #255 — concurrent `keyboard` tool calls crashed the
- * MCP server because libnut's SendInput backend is not safe for interleaved
+ * Regression for issue #255 — concurrent keyboard input crashed the MCP
+ * server because libnut's SendInput backend is not safe for interleaved
  * press/release sequences.
  *
- * The keyboardHandler entry serializes calls through a module-local FIFO
- * (`withInputLock` in src/tools/keyboard.ts). These tests verify:
+ * The lock lives at the engine layer (`src/engine/nutjs.ts`) so it covers
+ * every native-input caller: the `keyboard` tool, scroll PageDown / PageUp
+ * keystrokes, `terminal:send` fallback, and any future tool that reaches
+ * into the same libnut backend. These tests mock `@nut-tree-fork/nut-js`
+ * (the raw library) and exercise the wrapper directly so they verify the
+ * production lock — not a per-handler one.
  *
- *   1. parallel keyboardHandler({action:'press'}) invocations are serialized
- *      — call N+1's first native send does not start until call N's last
- *      native send has completed.
- *   2. a rejection inside one call does not poison the queue — the next
- *      queued call still runs.
+ *   1. Parallel pressKey / releaseKey / type calls — even across different
+ *      methods — are serialized: the next native call does not start until
+ *      the previous one has resolved.
+ *   2. A rejection inside one call does not poison the queue.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Mocks
+// Mock the raw library so the production engine wrap is exercised
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Records `{ id, phase, t }` events. We deliberately use a shared `events`
-// array (not vi.fn().mock.calls) so press / release of two calls can be
-// compared on a single timeline.
-type Phase = "press-start" | "press-end" | "release-start" | "release-end";
-const events: Array<{ id: string; phase: Phase; t: number }> = [];
-let _activeId: string | null = null;
+type Phase = "press-start" | "press-end" | "release-start" | "release-end" | "type-start" | "type-end";
+const events: Phase[] = [];
 
-function record(phase: Phase) {
-  // _activeId is set by the test driver immediately before each handler
-  // invocation. We use it to attribute the mock-fired event back to its
-  // originating call, since nutjs mocks have no per-call identity.
-  events.push({ id: _activeId ?? "?", phase, t: performance.now() });
-}
-
-vi.mock("../../src/engine/nutjs.js", () => ({
+vi.mock("@nut-tree-fork/nut-js", () => ({
+  mouse: {
+    config: { autoDelayMs: 0, mouseSpeed: 0 },
+  },
   keyboard: {
+    config: { autoDelayMs: 0 },
     pressKey: vi.fn(async () => {
-      record("press-start");
-      // Yield to the event loop so an interleaved call would have an
-      // opportunity to start its own pressKey before this one resolves.
+      events.push("press-start");
       await new Promise((r) => setTimeout(r, 10));
-      record("press-end");
+      events.push("press-end");
     }),
     releaseKey: vi.fn(async () => {
-      record("release-start");
+      events.push("release-start");
       await new Promise((r) => setTimeout(r, 10));
-      record("release-end");
+      events.push("release-end");
     }),
-    type: vi.fn(),
+    type: vi.fn(async () => {
+      events.push("type-start");
+      await new Promise((r) => setTimeout(r, 10));
+      events.push("type-end");
+    }),
   },
+  screen: {},
+  getWindows: vi.fn(),
+  getActiveWindow: vi.fn(),
+  Key: {},
+  Button: {},
+  Point: class {},
+  Region: class {},
+  Size: class {},
+  straightTo: vi.fn(),
+  up: vi.fn(),
+  down: vi.fn(),
+  left: vi.fn(),
+  right: vi.fn(),
 }));
 
-vi.mock("../../src/tools/_focus.js", async () => {
-  const actual = await vi.importActual<
-    typeof import("../../src/tools/_focus.js")
-  >("../../src/tools/_focus.js");
-  return {
-    ...actual,
-    detectFocusLoss: vi.fn().mockResolvedValue(null),
-    checkForegroundOnce: vi.fn().mockResolvedValue(null),
-  };
-});
-
-vi.mock("../../src/tools/_action-guard.js", async () => {
-  const actual = await vi.importActual<
-    typeof import("../../src/tools/_action-guard.js")
-  >("../../src/tools/_action-guard.js");
-  return {
-    ...actual,
-    runActionGuard: vi.fn().mockResolvedValue({
-      block: false,
-      summary: { kind: "ag-summary" },
-    }),
-    isAutoGuardEnabled: vi.fn().mockReturnValue(false),
-  };
-});
-
 // ─────────────────────────────────────────────────────────────────────────────
-// Import after mocks
+// Import after mocks. Use the engine-wrapped `keyboard` export — the
+// production object that real tools call into.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { keyboardHandler } from "../../src/tools/keyboard.js";
-import { keyboard as mockKeyboard } from "../../src/engine/nutjs.js";
+import { keyboard, _resetInputQueueForTests } from "../../src/engine/nutjs.js";
+import { keyboard as _rawKeyboard } from "@nut-tree-fork/nut-js";
 
 beforeEach(() => {
   events.length = 0;
-  _activeId = null;
-  vi.mocked(mockKeyboard.pressKey).mockClear();
-  vi.mocked(mockKeyboard.releaseKey).mockClear();
+  _resetInputQueueForTests();
 });
 
-async function fire(id: string, keys: string): Promise<unknown> {
-  _activeId = id;
-  // The handler awaits enqueueing synchronously, so by the time it returns
-  // its first microtask, the lock has been taken. Recording _activeId before
-  // the call is sufficient for serial workloads; for the parallel test we
-  // re-set _activeId from inside the press mock by attribution via the
-  // first press event of each unique window.
-  return keyboardHandler({ action: "press", keys } as never);
-}
-
-describe("keyboard input serialization (issue #255)", () => {
-  it("serializes parallel press calls — no interleaving between calls", async () => {
-    // Drive three calls in flight at once. Use distinct ids so we can verify
-    // ordering on the event timeline.
-    const p1 = (async () => {
-      _activeId = "a";
-      return keyboardHandler({ action: "press", keys: "a" } as never);
-    })();
-    const p2 = (async () => {
-      _activeId = "b";
-      return keyboardHandler({ action: "press", keys: "b" } as never);
-    })();
-    const p3 = (async () => {
-      _activeId = "c";
-      return keyboardHandler({ action: "press", keys: "c" } as never);
-    })();
+describe("engine-layer keyboard input serialization (issue #255)", () => {
+  it("serializes parallel pressKey calls — no interleaving", async () => {
+    // Three keyboard.pressKey calls in flight at once. With the lock,
+    // every press-end must precede the next press-start.
+    const p1 = keyboard.pressKey();
+    const p2 = keyboard.pressKey();
+    const p3 = keyboard.pressKey();
 
     await Promise.all([p1, p2, p3]);
 
-    // The mock attributes events to whatever `_activeId` was at the time the
-    // mock fired — which mid-flight gets overwritten as later calls reach
-    // the handler entry. So we cannot rely on per-call labels for ordering.
-    // Instead, assert structural serialization: every press-end is followed
-    // by a release-start (same call's release) before the next press-start
-    // begins.
-    //
-    // Expected sequence for 3 serialized press calls:
-    //   press-start, press-end, release-start, release-end,  <- call 1
-    //   press-start, press-end, release-start, release-end,  <- call 2
-    //   press-start, press-end, release-start, release-end   <- call 3
-    const phases = events.map((e) => e.phase);
-    expect(phases).toEqual([
-      "press-start", "press-end", "release-start", "release-end",
-      "press-start", "press-end", "release-start", "release-end",
-      "press-start", "press-end", "release-start", "release-end",
+    expect(events).toEqual([
+      "press-start", "press-end",
+      "press-start", "press-end",
+      "press-start", "press-end",
     ]);
+  });
 
-    expect(vi.mocked(mockKeyboard.pressKey)).toHaveBeenCalledTimes(3);
-    expect(vi.mocked(mockKeyboard.releaseKey)).toHaveBeenCalledTimes(3);
+  it("serializes interleaved press / type from different callers", async () => {
+    // Simulates the scenario from issue #255: an LLM fires keyboard.press,
+    // a scroll PageDown (keyboard.pressKey internally), and a terminal:send
+    // (keyboard.type) all in the same Claude turn. All three must serialize
+    // through the engine-layer queue.
+    const a = keyboard.pressKey();   // stand-in for keyboard tool
+    const b = keyboard.pressKey();   // stand-in for scroll PageDown
+    const c = keyboard.type("hi");   // stand-in for terminal:send
+
+    await Promise.all([a, b, c]);
+
+    // Whatever the exact arrival order, every *-end must precede the next
+    // *-start. The simplest assertion: no two -start events are adjacent.
+    const startOrEnd = (e: Phase) => (e.endsWith("-start") ? "S" : "E");
+    const compact = events.map(startOrEnd).join("");
+    expect(compact).toBe("SESESE");
+    expect(events).toHaveLength(6);
   });
 
   it("does not poison the queue when one call rejects", async () => {
-    // Make the first pressKey throw. The second call must still execute.
-    vi.mocked(mockKeyboard.pressKey)
+    // Make the first pressKey throw. Subsequent calls must still execute.
+    // Adjust the underlying raw mock (the engine wraps it; replacing the
+    // wrapper would bypass the lock under test).
+    vi.mocked(_rawKeyboard.pressKey)
       .mockImplementationOnce(async () => {
-        record("press-start");
+        events.push("press-start");
         throw new Error("simulated libnut crash");
       })
       .mockImplementationOnce(async () => {
-        record("press-start");
+        events.push("press-start");
         await new Promise((r) => setTimeout(r, 10));
-        record("press-end");
+        events.push("press-end");
       });
 
-    const p1 = keyboardHandler({ action: "press", keys: "a" } as never);
-    const p2 = keyboardHandler({ action: "press", keys: "b" } as never);
+    const p1 = keyboard.pressKey().catch(() => undefined);
+    const p2 = keyboard.pressKey();
 
-    const [r1, r2] = await Promise.allSettled([p1, p2]);
+    await Promise.all([p1, p2]);
 
-    // The handler converts internal errors via `failWith`, so the outer
-    // promise resolves (status === 'fulfilled') with an isError ToolResult,
-    // not a rejection. What we really care about is: did call 2 still run?
-    expect(r1.status).toBe("fulfilled");
-    expect(r2.status).toBe("fulfilled");
-
-    // Call 1 made its pressKey attempt (and threw); call 2 made its
-    // pressKey AND its pressEnd. Total = at least 2 press-starts and 1
-    // press-end, proving the queue did not deadlock.
-    const pressStarts = events.filter((e) => e.phase === "press-start").length;
-    const pressEnds = events.filter((e) => e.phase === "press-end").length;
-    expect(pressStarts).toBeGreaterThanOrEqual(2);
-    expect(pressEnds).toBeGreaterThanOrEqual(1);
+    // Call 1 emitted press-start (and threw). Call 2 ran fully.
+    expect(events).toEqual([
+      "press-start",                 // call 1 (threw immediately after this)
+      "press-start", "press-end",    // call 2 (queue advanced past the failure)
+    ]);
   });
 });
