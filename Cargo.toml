@@ -1,6 +1,6 @@
 [workspace]
-members = [".", "crates/engine-perception"]
-default-members = [".", "crates/engine-perception"]
+members = [".", "crates/engine-perception", "crates/engine-vba-bridge"]
+default-members = [".", "crates/engine-perception", "crates/engine-vba-bridge"]
 resolver = "3"
 
 [package]
