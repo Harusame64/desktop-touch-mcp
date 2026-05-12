@@ -50,14 +50,28 @@
 //!    `Excel.Application` terminates, file handle on disk is released
 //! 9. (caller's choice) `fs::remove_file(path)` — best-effort cleanup
 //!
-//! Sequence-violation failure modes:
-//! - Skipping (5) and going straight to (6) → HRESULT `0x800a03ec`
-//!   (Trust Center policy block)
-//! - Setting `Application.Visible = true` before (5) → SaveAs prompts
-//!   the user for an overwrite confirmation; with the bridge running
-//!   non-interactively the prompt is invisible-and-blocking. The
-//!   internal `DisplayAlerts` guard in [`workbook_save_as`] mitigates
-//!   this even under unusual `visible: true` configurations
+//! Sequence-violation failure modes for each step:
+//! - Skipping (2) (`set_visible`): default-hidden Excel still works,
+//!   but a stale visible window from a prior session can show through
+//! - Skipping (3) (`workbook_add_new`): (4) raises a COM error because
+//!   `ActiveWorkbook` returns null; surfaced as `ComCallFailed`
+//! - Skipping (4) (`vba_module_add`): (6) raises `VbaMacroNotFound`
+//!   because the Sub the caller passes does not exist
+//! - Skipping (5) (`workbook_save_as`): (6) returns HRESULT
+//!   `0x800a03ec` (Trust Center policy block — in-memory unsaved
+//!   workbook cannot run macros regardless of `VBAWarnings`)
+//! - Setting `Application.Visible = true` before (5): SaveAs would
+//!   prompt the user for an overwrite confirmation; the internal
+//!   `DisplayAlerts` guard in [`workbook_save_as`] mitigates this
+//!   even under unusual `visible: true` configurations
+//! - Skipping (7) (`workbook_close`): the workbook remains open
+//!   inside the alive `Excel.Application`; subsequent operations on
+//!   the same session see it as `ActiveWorkbook`. Tolerable for
+//!   chained authoring; cleanup is delayed until session drop
+//! - Skipping (8) (`drop(session)`) and immediately calling (9)
+//!   (`fs::remove_file`): Excel.exe still holds the file handle;
+//!   `remove_file` returns `ERROR_SHARING_VIOLATION`. The Phase 2e
+//!   test retries 3× × 100ms to absorb this
 
 use windows::Win32::System::Com::IDispatch;
 use windows::Win32::System::Variant::VARIANT;

@@ -266,6 +266,29 @@ function deleteTrustedLocationSlot(slotKey) {
   return true;
 }
 
+// Read the AllowSubFolders DWORD of a Location<N> subkey. Returns
+// null when the value is missing or unreadable. Used by the
+// idempotency early-return path to verify that a Path-matching slot
+// also has AllowSubFolders=1; without that flag, Excel would only
+// trust the exact directory and not its sub-folders, which silently
+// breaks Phase 4 workflows that may write per-session sub-directories.
+function readTrustedLocationAllowSubFolders(locationName) {
+  const keyPath = `${KEY_HKCU_TRUSTED_LOCATIONS}\\${locationName}`;
+  const result = spawnSync(
+    "reg",
+    ["query", keyPath, "/v", "AllowSubFolders"],
+    { encoding: "utf8" },
+  );
+  if (result.status !== 0) return null;
+  for (const line of result.stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("AllowSubFolders")) continue;
+    const m = trimmed.match(/REG_DWORD\s+0x([0-9a-fA-F]+)/);
+    if (m) return parseInt(m[1], 16);
+  }
+  return null;
+}
+
 // Register the desktop-touch-managed Trusted Location. Idempotent — if a
 // Location<N> already points at our directory (case-insensitive match,
 // trailing-slash tolerant, REG_EXPAND_SZ-aware), the function reports
@@ -279,9 +302,29 @@ function ensureTrustedLocation(targetDir) {
     if (!existing) continue;
     const normalised = normaliseTrustedPath(existing).toLowerCase();
     if (normalised === target) {
-      logInfo(
-        `Trusted Location already registered as ${name}: ${existing}`,
-      );
+      // Path matches; also verify AllowSubFolders=1 so a stale UI-edit
+      // that disabled subfolders does not silently break sub-directory
+      // workflows (Opus Round 2 P2-3). A mismatch logs a warning but
+      // continues — fixing requires user intervention via Excel Trust
+      // Center UI (we don't overwrite UI-managed slots).
+      const subFolders = readTrustedLocationAllowSubFolders(name);
+      if (subFolders === 1) {
+        logInfo(
+          `Trusted Location already registered as ${name}: ${existing} (AllowSubFolders=1)`,
+        );
+      } else {
+        logWarn(
+          `Trusted Location ${name}: ${existing} matches our target path but has \n` +
+            `  AllowSubFolders=${subFolders === null ? "(unset)" : subFolders} \n` +
+            `  (expected 1). The bridge will still work for files saved directly into \n` +
+            `  the trusted directory, but per-session sub-directories will NOT inherit \n` +
+            `  trust. To fix: open Excel → File → Options → Trust Center → \n` +
+            `  Trust Center Settings → Trusted Locations → edit this location, \n` +
+            `  check "Subfolders of this location are also trusted". \n` +
+            `  (We do not overwrite this slot because it may have been edited by you \n` +
+            `  through the Trust Center UI.)`,
+        );
+      }
       return true;
     }
   }

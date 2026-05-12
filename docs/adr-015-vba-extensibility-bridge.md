@@ -208,9 +208,11 @@ fn set_display_alerts(session: &ExcelSession, enabled: bool) -> Result<()>
 fn workbook_save_as(session: &ExcelSession, path: String, format: XlFileFormat) -> Result<()>
 fn workbook_close(session: &ExcelSession, save_changes: bool) -> Result<()>
 
-// Future phases
-fn excel_eval_cell(session: &ExcelSession, sheet: &str, addr: &str) -> Result<serde_json::Value>
-fn excel_refresh_power_query(session: &ExcelSession, connection: Option<&str>) -> Result<()>
+// Future phases (naming follows the Phase 2c/d/e convention — no
+// `excel_` prefix because the surrounding `excel` module path already
+// scopes them; cf. `excel::set_visible`, `excel::workbook_save_as`)
+fn eval_cell(session: &ExcelSession, sheet: &str, addr: &str) -> Result<serde_json::Value>
+fn refresh_power_query(session: &ExcelSession, connection: Option<&str>) -> Result<()>
 ```
 
 Implementation choices (Round 3 → Phase 2 impl):
@@ -349,7 +351,7 @@ Typed errors (added to `src/tools/_errors.ts`, **PascalCase single-cap acronym p
 | `VbaAccessNotTrusted` | HKCU AccessVBOM is 0; suggest the setup script | `vba_access_not_trusted` |
 | `VbaAccessLockedByPolicy` | HKLM forces 0; user must contact IT | `vba_access_locked_by_policy` |
 | `ExcelNotInstalled` | `CLSIDFromProgID` returned `REGDB_E_CLASSNOTREG` | `excel_not_installed` |
-| `VbaModuleAuthoringFailed` | `AddFromString` returned HRESULT | `vba_module_authoring_failed` |
+| `VbaModuleAuthoringFailed` | `AddFromString` returned HRESULT, **OR** `Workbook.SaveAs` failed (rare-path reuse — both are "could not persist macro-bearing workbook" events), **OR** the save-restore guard's `DisplayAlerts` suppress failed before SaveAs (rare-path reuse — the typed error is the only signal the caller has that the SaveAs precondition stage broke) | `vba_module_authoring_failed` |
 | `VbaMacroExecutionFailed` | `Application.Run` returned non-zero HRESULT | `vba_macro_execution_failed` |
 | `VbaMacroNotFound` | `code` does not declare a Sub matching `macroName` | `vba_macro_not_found` |
 | `VbaUnsupportedArgumentType` | caller passed object / array / dispatch into `args` | `vba_unsupported_argument_type` |
@@ -430,7 +432,7 @@ Invariant 6 receives an explicit ADR-level carve-out (see §2.3). The invariant'
 | R6 | Office build drift breaks late-binding (very unlikely — the COM interface is contractually stable since Excel 97) | Very low | Pin the integration test in CI when Excel is available; `CLSIDFromProgID("Excel.Application")` for version independence |
 | R7 | Anti-malware flags an unsigned `.node` that calls `Excel.Application` COM as suspicious | Medium | Same exposure as existing native bridges; document in `README` troubleshooting |
 | R8 | Auto-registry-mutation social engineering — an attacker who can prompt an MCP client could silently lower Office trust via a write-access tool | Was Medium (Round 1 design) → **structurally eliminated in Round 2** | The setup path is CLI-only (`scripts/enable-access-vbom.mjs`). The MCP tool surface exposes only read-only `check_access_vbom` plus a `suggest` field pointing at the CLI |
-| R9 | **`DisplayAlerts = false` leaked past `workbook_save_as`** — caller forgets to reset, subsequent flows silently lose data (e.g. close-without-save prompt suppressed) | Was Medium (Phase 2e Round 1 design) → **structurally eliminated in Phase 2e Round 2** | `workbook_save_as` internally takes a save-restore snapshot of `DisplayAlerts` and always restores it on exit (success OR error). Standalone [`set_display_alerts`] still exists for callers who explicitly want manual control; the demo / Phase 4 MCP tool path NEVER needs to call it directly |
+| R9 | **`DisplayAlerts = false` leaked past `workbook_save_as`** — caller forgets to reset, subsequent flows silently lose data (e.g. close-without-save prompt suppressed) | Was Medium (Phase 2e Round 1 design) → **structurally eliminated in Phase 2e Round 2** | `workbook_save_as` internally takes a save-restore snapshot of `DisplayAlerts` and always restores it on exit (success OR error). Standalone [`set_display_alerts`] still exists for callers who explicitly want manual control; the demo / Phase 4 MCP tool path NEVER needs to call it directly. **Snapshot read failure fallback**: if the COM `get DisplayAlerts` call itself fails (extremely rare, would indicate apartment teardown in progress), the guard falls back to `true` for the restore, which is the safer default (Excel's installed default, never suppresses alerts) but may slightly diverge from a user's prior explicit `false` setting. Net safety wins over fidelity for this edge case |
 
 ---
 
