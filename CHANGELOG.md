@@ -22,6 +22,26 @@
   still take priority and are unchanged. Fixes
   [#258](https://github.com/Harusame64/desktop-touch-mcp/issues/258).
 
+### Fixed
+
+- **Native keyboard input no longer crashes the MCP server when
+  fired from concurrent tool calls.** Two `keyboard` tool calls in
+  the same Claude turn (e.g. the menu chord `alt+i` then `m`),
+  or a `keyboard` call racing a `scroll` PageDown / `terminal:send`
+  keystroke fallback, could interleave inside the shared
+  key-injection backend (libnut) and segfault the Node process.
+  When that happened, the whole `mcp__desktop-touch__*` tool
+  namespace vanished from the session and the CLI had to be
+  restarted. Every keyboard injection path (`keyboard`, `scroll`
+  arrow / page keys, `terminal:send` text + Enter) now drains
+  through a single FIFO inside the engine layer, so the
+  press/release window of one call always completes before the
+  next begins. Sequential calls and `run_macro` batches behave
+  exactly as before — only true cross-request concurrency is held
+  back, and only when it would otherwise share the native input
+  backend. Mouse / clipboard tools are unaffected. Fixes
+  [#255](https://github.com/Harusame64/desktop-touch-mcp/issues/255).
+
 ## [1.5.0] - 2026-05-12 — New `excel` tool: author and run VBA macros against Excel via COM (no VBA Editor UI needed)
 
 ### Added
