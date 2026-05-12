@@ -2,7 +2,9 @@
 // ADR-015 §3.7 — one-shot CLI that sets HKCU
 // Software\Microsoft\Office\16.0\Excel\Security\AccessVBOM = 1
 // so the `excel` MCP tool can access Excel.Application.VBE.VBProjects
-// via COM late binding.
+// via COM late binding. **Phase 2e** also registers a desktop-touch-managed
+// Trusted Location so Application.Run is no longer Trust-Center-gated for
+// dynamically-authored workbooks.
 //
 // Why a CLI (not an MCP tool action)?
 //
@@ -10,7 +12,8 @@
 // Opus Round 1 P2-1 + R8 concluded that any MCP client should not be able
 // to silently lower Office trust for the user. The CLI runs in an explicit
 // user context where execution intent is unambiguous (the user typed the
-// command on a terminal); MCP tool calls do not carry that guarantee.
+// command on a terminal); MCP tool calls do not carry that guarantee. The
+// same reasoning applies to the Trusted Location addition (Phase 2e).
 //
 // The matching MCP tool action `excel({action: "check_access_vbom"})` is
 // read-only and exposes a `suggest` field pointing at THIS script when
@@ -23,15 +26,22 @@
 //    with a typed error message and a "contact your IT department" hint.
 //  - Otherwise, writes HKCU AccessVBOM=1 (DWORD) using `reg add`.
 //    The script does NOT touch HKLM under any circumstance.
+//  - Sets HKCU VBAWarnings=1 unless `--skip-macros` is passed.
+//  - Registers `%LOCALAPPDATA%\desktop-touch-mcp\trusted-vba\` as a
+//    Trusted Location under HKCU unless `--skip-trusted-location` is
+//    passed. Idempotent: a re-run does not duplicate the entry.
 //  - Reports whether Excel is currently running (so the caller knows
 //    that the setting takes effect only after Excel restart).
 
 import { execSync, spawnSync } from "node:child_process";
-import { argv, platform, exit } from "node:process";
+import { mkdirSync } from "node:fs";
+import { join, sep } from "node:path";
+import { argv, env, platform, exit } from "node:process";
 
 const OFFICE_VERSION_KEY = "16.0"; // Office 365 / 2019 / 2021 / 2024
 const KEY_HKCU = `HKCU\\Software\\Microsoft\\Office\\${OFFICE_VERSION_KEY}\\Excel\\Security`;
 const KEY_HKLM = `HKLM\\Software\\Microsoft\\Office\\${OFFICE_VERSION_KEY}\\Excel\\Security`;
+const KEY_HKCU_TRUSTED_LOCATIONS = `${KEY_HKCU}\\Trusted Locations`;
 const VALUE_NAME = "AccessVBOM";
 
 // VBAWarnings (Trust Center > Macro Settings):
@@ -113,6 +123,185 @@ function writeHkcuDword(valueName, value) {
   return true;
 }
 
+// ── Trusted Location helpers (Phase 2e) ──────────────────────────────
+//
+// Excel keeps user-managed trusted directories under HKCU at
+// `Software\Microsoft\Office\<ver>\Excel\Security\Trusted Locations\
+// LocationN`. Each LocationN subkey has:
+//   - Path              REG_SZ / REG_EXPAND_SZ  — directory path
+//   - Description       REG_SZ                  — free text (optional)
+//   - AllowSubFolders   REG_DWORD               — 0 or 1
+//   - Date              REG_SZ                  — free text date (optional)
+//
+// HKLM-side `Trusted Locations` keys exist too but require admin to write
+// and are governed by group policy; the CLI only touches HKCU (matching
+// the §3.7 / R8 design constraint that the bridge cannot escalate trust
+// beyond the user's own scope).
+//
+// The "managed" directory the bridge writes to is
+// `%LOCALAPPDATA%\desktop-touch-mcp\trusted-vba`. The Rust integration
+// test mirrors this exact path; if you change it here, change it there
+// (excel.rs::end_to_end_vba_macro_authoring_and_execution).
+const TRUSTED_LOCATION_LEAF = "desktop-touch-mcp\\trusted-vba";
+
+function getDefaultTrustedDir() {
+  const root = env.LOCALAPPDATA;
+  if (!root) {
+    // LOCALAPPDATA should always be set on Windows in normal shells.
+    // If it isn't, fall back to USERPROFILE\AppData\Local — this is the
+    // canonical layout the OS itself uses.
+    if (!env.USERPROFILE) {
+      throw new Error(
+        "Neither LOCALAPPDATA nor USERPROFILE is set; cannot resolve the Trusted Location root",
+      );
+    }
+    return join(env.USERPROFILE, "AppData", "Local", TRUSTED_LOCATION_LEAF);
+  }
+  return join(root, TRUSTED_LOCATION_LEAF);
+}
+
+// Normalise a Windows directory path for the registry value. We want
+// backslashes (Excel matches with `\` separators) and a trailing slash
+// (Excel's "match this exact directory" semantics depend on trailing
+// slash presence — Trust Center treats trailing-slash and no-trailing
+// as functionally equivalent in practice, but the Office UI canonicalises
+// to trailing slash so we mirror that to keep the registry tidy).
+function normaliseTrustedPath(p) {
+  let out = p.replace(/\//g, sep);
+  if (!out.endsWith(sep)) out += sep;
+  return out;
+}
+
+// Read all current Location<N> subkey names under HKCU Trusted Locations.
+// Returns an array like ["Location0", "Location1", ...] (order not
+// guaranteed). Returns [] when the parent key does not exist (fresh
+// Excel install never opened, etc.).
+function listTrustedLocationSubkeys() {
+  // `reg query <key>` lists immediate subkeys on stdout when no /v is given.
+  const result = spawnSync("reg", ["query", KEY_HKCU_TRUSTED_LOCATIONS], {
+    encoding: "utf8",
+  });
+  if (result.status !== 0) return [];
+  const out = [];
+  for (const line of result.stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    // Subkey lines look like:
+    //   "HKEY_CURRENT_USER\Software\...\Trusted Locations\Location0"
+    const m = trimmed.match(/\\(Location\d+)$/);
+    if (m) out.push(m[1]);
+  }
+  return out;
+}
+
+// Read the `Path` value of a single Location<N> subkey. Returns null when
+// the value is missing or unreadable. We accept BOTH `REG_SZ` and
+// `REG_EXPAND_SZ` — Excel writes either depending on whether the path
+// contains environment variables.
+function readTrustedLocationPath(locationName) {
+  const keyPath = `${KEY_HKCU_TRUSTED_LOCATIONS}\\${locationName}`;
+  const result = spawnSync("reg", ["query", keyPath, "/v", "Path"], {
+    encoding: "utf8",
+  });
+  if (result.status !== 0) return null;
+  for (const line of result.stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("Path")) continue;
+    const m = trimmed.match(/REG_(?:SZ|EXPAND_SZ)\s+(.+?)\s*$/);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+// Find the lowest unused Location<N> index. Excel itself assigns slot
+// numbers as users add trusted locations through the Trust Center UI; we
+// pick the smallest non-conflicting index so the registry stays compact.
+function nextAvailableLocationIndex() {
+  const taken = new Set(
+    listTrustedLocationSubkeys().map((name) => {
+      const m = name.match(/Location(\d+)/);
+      return m ? parseInt(m[1], 10) : -1;
+    }),
+  );
+  let idx = 0;
+  while (taken.has(idx)) idx += 1;
+  return idx;
+}
+
+// Register the desktop-touch-managed Trusted Location. Idempotent — if a
+// Location<N> already points at our directory (case-insensitive match,
+// trailing-slash tolerant), the function reports success without writing.
+// Returns true on success, false on any write failure.
+function ensureTrustedLocation(targetDir) {
+  const target = normaliseTrustedPath(targetDir).toLowerCase();
+  // Idempotency check: does any existing LocationN already match?
+  for (const name of listTrustedLocationSubkeys()) {
+    const existing = readTrustedLocationPath(name);
+    if (!existing) continue;
+    const normalised = normaliseTrustedPath(existing).toLowerCase();
+    if (normalised === target) {
+      logInfo(
+        `Trusted Location already registered as ${name}: ${existing}`,
+      );
+      return true;
+    }
+  }
+
+  // Not yet registered. Allocate a fresh slot.
+  const idx = nextAvailableLocationIndex();
+  const slotKey = `${KEY_HKCU_TRUSTED_LOCATIONS}\\Location${idx}`;
+  const writes = [
+    {
+      valueName: "Path",
+      type: "REG_SZ",
+      data: normaliseTrustedPath(targetDir),
+    },
+    {
+      valueName: "Description",
+      type: "REG_SZ",
+      data: "desktop-touch-mcp managed trusted location (Phase 2e)",
+    },
+    {
+      valueName: "AllowSubFolders",
+      type: "REG_DWORD",
+      data: "1",
+    },
+    {
+      valueName: "Date",
+      type: "REG_SZ",
+      data: new Date().toISOString().slice(0, 10),
+    },
+  ];
+  for (const w of writes) {
+    const result = spawnSync(
+      "reg",
+      [
+        "add",
+        slotKey,
+        "/v",
+        w.valueName,
+        "/t",
+        w.type,
+        "/d",
+        w.data,
+        "/f",
+      ],
+      { encoding: "utf8" },
+    );
+    if (result.status !== 0) {
+      logErr(
+        "VbaAccessNotTrusted",
+        `Failed to register Trusted Location at ${slotKey}\\${w.valueName}. \n` +
+          `  stderr: ${result.stderr || "(empty)"}\n` +
+          `  This usually means the user can't write to HKCU (rare). \n` +
+          `  Try running this script from a non-elevated terminal in the user's own session.`,
+      );
+      return false;
+    }
+  }
+  logInfo(`Trusted Location registered as Location${idx}: ${targetDir}`);
+  return true;
+}
+
 // Is Excel running right now? The setting only takes effect after Excel
 // restarts (Excel reads the value at process startup and caches it).
 function isExcelRunning() {
@@ -137,18 +326,27 @@ function main() {
 
   if (argv.includes("--help") || argv.includes("-h")) {
     console.log(
-      `enable-access-vbom — set HKCU AccessVBOM=1 (and optionally VBAWarnings=1) for Excel ${OFFICE_VERSION_KEY}\n` +
+      `enable-access-vbom — set HKCU AccessVBOM=1 (and optionally VBAWarnings=1 \n` +
+        `+ Trusted Location) for Excel ${OFFICE_VERSION_KEY}\n` +
         `\n` +
         `Usage: node scripts/enable-access-vbom.mjs [flags]\n` +
         `\n` +
-        `  --check-only    print the current HKCU + HKLM state and exit 0\n` +
-        `  --skip-macros   set ONLY AccessVBOM=1; leave VBAWarnings at the\n` +
-        `                  Excel default (macros disabled-with-notification).\n` +
-        `                  Use this if you do not want the bridge to RUN macros\n` +
-        `                  automatically; the bridge will still AUTHOR them.\n` +
-        `  -h / --help     show this help\n` +
+        `  --check-only             print the current HKCU + HKLM state and exit 0\n` +
+        `  --skip-macros            set ONLY AccessVBOM=1; leave VBAWarnings at the\n` +
+        `                           Excel default (macros disabled-with-notification).\n` +
+        `                           Use this if you do not want the bridge to RUN macros\n` +
+        `                           automatically; the bridge will still AUTHOR them.\n` +
+        `  --skip-trusted-location  do NOT register the desktop-touch managed\n` +
+        `                           Trusted Location. Application.Run against\n` +
+        `                           dynamically-authored workbooks will fail with\n` +
+        `                           HRESULT 0x800a03ec (Trust Center policy block) —\n` +
+        `                           only use this flag if you intend to point Excel\n` +
+        `                           at workbooks in a different Trusted Location you\n` +
+        `                           manage yourself.\n` +
+        `  -h / --help              show this help\n` +
         `\n` +
-        `By default both AccessVBOM=1 AND VBAWarnings=1 are set so the\n` +
+        `By default all three are configured (AccessVBOM=1, VBAWarnings=1, and the\n` +
+        `Trusted Location at %LOCALAPPDATA%\\desktop-touch-mcp\\trusted-vba) so the\n` +
         `\`excel\` MCP tool can author AND run VBA macros end-to-end.`,
     );
     exit(0);
@@ -156,6 +354,7 @@ function main() {
 
   const checkOnly = argv.includes("--check-only");
   const skipMacros = argv.includes("--skip-macros");
+  const skipTrustedLocation = argv.includes("--skip-trusted-location");
 
   const hklm = readDword(KEY_HKLM, VALUE_NAME);
   if (hklm === 0) {
@@ -183,21 +382,43 @@ function main() {
     }${vbaWarningsHklm !== null ? ` (HKLM also sets ${vbaWarningsHklm})` : ""}`,
   );
 
+  // Trusted Location status check (Phase 2e). Read-only; ensureTrustedLocation
+  // is what writes.
+  let trustedLocationStatus = "unknown";
+  let trustedLocationDir = null;
+  try {
+    trustedLocationDir = getDefaultTrustedDir();
+    const target = normaliseTrustedPath(trustedLocationDir).toLowerCase();
+    const found = listTrustedLocationSubkeys().some((name) => {
+      const existing = readTrustedLocationPath(name);
+      return (
+        existing &&
+        normaliseTrustedPath(existing).toLowerCase() === target
+      );
+    });
+    trustedLocationStatus = found ? "registered" : "missing";
+  } catch (e) {
+    trustedLocationStatus = `error: ${e.message}`;
+  }
+  logInfo(
+    `Trusted Location ${trustedLocationDir ?? "(unknown)"}: ${trustedLocationStatus}`,
+  );
+
   if (checkOnly) {
     const accessOk = hkcuBefore === 1 || hklm === 1;
     const macrosOk = vbaWarningsHkcu === 1 || vbaWarningsHklm === 1;
-    if (accessOk && macrosOk) {
+    const trustedOk = trustedLocationStatus === "registered";
+    if (accessOk && macrosOk && trustedOk) {
       logInfo(
-        "AccessVBOM AND VBAWarnings are both trusted. The `excel` MCP tool can author AND run macros.",
-      );
-    } else if (accessOk) {
-      logInfo(
-        "AccessVBOM is trusted but VBAWarnings is NOT 1. The `excel` MCP tool can AUTHOR macros but will fail to RUN them.\n" +
-          "  Re-run without --check-only (default sets both).",
+        "All three trust axes configured (AccessVBOM, VBAWarnings, Trusted Location). The `excel` MCP tool can author AND run macros.",
       );
     } else {
+      const missing = [];
+      if (!accessOk) missing.push("AccessVBOM=1");
+      if (!macrosOk) missing.push("VBAWarnings=1");
+      if (!trustedOk) missing.push("Trusted Location");
       logInfo(
-        "Neither AccessVBOM nor VBAWarnings is trusted. Re-run without --check-only to enable both (or with --skip-macros to only enable authoring).",
+        `Missing trust axes: ${missing.join(", ")}. Re-run without --check-only to configure.`,
       );
     }
     exit(0);
@@ -252,15 +473,51 @@ function main() {
     }
   }
 
+  // ── Trusted Location (skipped under --skip-trusted-location) ─────
+  //
+  // Application.Run against a dynamically-authored workbook fails with
+  // HRESULT 0x800a03ec under any Trust Center policy when the workbook
+  // is in-memory only. The bridge resolves this by SaveAs'ing into a
+  // registered Trusted Location before invoking the macro; that
+  // Trusted Location is the directory this CLI registers here.
+  if (skipTrustedLocation) {
+    logInfo(
+      "--skip-trusted-location given: NOT registering the managed Trusted Location. " +
+        "Application.Run against dynamically-authored workbooks will fail with " +
+        "HRESULT 0x800a03ec unless you save them into your own Trusted Location first.",
+    );
+  } else {
+    const targetDir = getDefaultTrustedDir();
+    // Create the directory unconditionally. Excel's Trust Center check
+    // requires the path to exist; pointing at a non-existent directory
+    // silently fails (no error from Excel) when SaveAs writes to it.
+    try {
+      mkdirSync(targetDir, { recursive: true });
+    } catch (e) {
+      logErr(
+        "VbaAccessNotTrusted",
+        `Failed to create Trusted Location directory ${targetDir}: ${e.message}. \n` +
+          `  Without the directory present, the bridge cannot save workbooks for macro execution.`,
+      );
+      exit(1);
+    }
+    const ok = ensureTrustedLocation(targetDir);
+    if (!ok) exit(1);
+  }
+
   if (isExcelRunning()) {
     logWarn(
-      "Excel is currently running. The new AccessVBOM value takes effect only AFTER Excel restarts. \n" +
-        "  Close all Excel windows before running the `excel` MCP tool, or it will continue to use the cached \n" +
-        "  (old) trust state and return VbaAccessNotTrusted.",
+      "Excel is currently running. The new AccessVBOM / Trusted Location values take effect \n" +
+        "  only AFTER Excel restarts. Close all Excel windows before running the `excel` MCP tool, \n" +
+        "  or it will continue to use the cached (old) trust state and return VbaAccessNotTrusted \n" +
+        "  / VbaMacroExecutionFailed.",
     );
   }
 
-  logInfo("Done. The `excel` MCP tool can now access Excel.Application.VBE.VBProjects.");
+  logInfo(
+    "Done. The `excel` MCP tool can now access Excel.Application.VBE.VBProjects " +
+      "AND run VBA macros from Trusted-Location workbooks.",
+  );
   exit(0);
 }
 
