@@ -452,6 +452,7 @@ dependencies = [
  "crossbeam-channel",
  "crossbeam-queue",
  "engine-perception",
+ "engine-vba-bridge",
  "image",
  "napi",
  "napi-build",

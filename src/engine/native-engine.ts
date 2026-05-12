@@ -47,6 +47,7 @@ import type {
   NativeFocusedElementWithWallclock,
   NativeLeaseTokenSummary,
   NativeDirtyRectsResult,
+  NativeExcelAccessVbomStatus,
 } from "./native-types.js";
 
 export type * from "./native-types.js";
@@ -380,6 +381,53 @@ export const nativeViewFocus: NativeViewFocus | null =
     ? (nativeBinding as unknown as NativeViewFocus)
     : null;
 
+// ─── VBA Extensibility bridge (ADR-015 Phase 3) ──────────────────────────────
+//
+// napi-rs binding around `engine-vba-bridge`. Session-handle based (integer
+// IDs). Phase 4 wraps these into the single `excel` MCP tool surface.
+//
+// Methods are optional so a pre-Phase-3 addon build cleanly falls back to
+// null; the Phase 4 TS wrapper throws `VbaBridgeUnavailable` rather than
+// silently proceeding when the addon doesn't expose this surface.
+export interface NativeExcel {
+  // Session lifecycle
+  excelSessionSpawn?(): number;
+  excelSessionClose?(sessionId: number): void;
+  excelSessionIsAlive?(sessionId: number): boolean;
+
+  // Application property setters
+  excelSetVisible?(sessionId: number, visible: boolean): void;
+  excelSetDisplayAlerts?(sessionId: number, enabled: boolean): void;
+
+  // Workbook lifecycle
+  excelWorkbookAddNew?(sessionId: number): void;
+  excelWorkbookSaveAs?(
+    sessionId: number,
+    path: string,
+    fileFormat: number,
+  ): void;
+  excelWorkbookClose?(sessionId: number, saveChanges: boolean): void;
+
+  // VBA authoring + execution
+  excelVbaModuleAdd?(
+    sessionId: number,
+    moduleName: string,
+    code: string,
+  ): void;
+  excelMacroRun?(sessionId: number, macroName: string): void;
+
+  // Registry inspection (read-only)
+  excelCheckAccessVbom?(): NativeExcelAccessVbomStatus;
+}
+
+// Probe key: `excelSessionSpawn` is the entry point for any Excel work —
+// if the addon exposes it, the rest of the surface is also expected to
+// be present (they all live in the same Rust module `vba_bridge.rs`).
+export const nativeExcel: NativeExcel | null =
+  nativeBinding && typeof nativeBinding.excelSessionSpawn === "function"
+    ? (nativeBinding as unknown as NativeExcel)
+    : null;
+
 if (nativeEngine) {
   console.error("[native-engine] Rust image-diff engine loaded (SSE2 SIMD)");
 }
@@ -394,4 +442,7 @@ if (nativeWin32) {
 }
 if (nativeL1) {
   console.error("[native-engine] Rust L1 capture loaded (ADR-007 P5a)");
+}
+if (nativeExcel) {
+  console.error("[native-engine] Rust VBA bridge loaded (ADR-015 Phase 3)");
 }

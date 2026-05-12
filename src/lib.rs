@@ -23,6 +23,12 @@ mod l1_capture;
 // See `src/l3_bridge/mod.rs` for the rationale on direction-of-dep.
 #[cfg(windows)]
 mod l3_bridge;
+// ADR-015 Phase 3: VBA Extensibility bridge napi binding (Windows only).
+// Thin shim around `engine-vba-bridge::excel::*` that manages session
+// handle IDs and maps `VbaBridgeError` to napi typed errors. See
+// `src/vba_bridge.rs` for the full design rationale.
+#[cfg(windows)]
+mod vba_bridge;
 
 // Visual GPU Phase 4 backend (ADR-005). The module always compiles so that
 // `detect_capability()` can report `backend_built=false` cleanly when the

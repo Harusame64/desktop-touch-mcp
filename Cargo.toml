@@ -29,6 +29,14 @@ serde = { version = "1", features = ["derive"] }
 # compile graph and break its "pure timely+DD compute crate" contract.
 engine-perception = { path = "crates/engine-perception" }
 
+# ADR-015 Phase 3: VBA Extensibility bridge — the root crate exposes
+# engine-vba-bridge's IDispatch-based Excel wrapper through napi-rs
+# (`src/vba_bridge.rs`). The bridge crate itself stays pure-COM with
+# no napi dependency so it can be reused outside the MCP host
+# (Phase 4 MCP tool / future Word/PowerPoint bridges) without
+# dragging the napi compile graph.
+engine-vba-bridge = { path = "crates/engine-vba-bridge" }
+
 # ── Visual GPU Phase 4 (ADR-005) ────────────────────────────────────────────
 # ORT 2.0.0-rc.12 (2026-03), pykeio/ort. directml feature で AMD/NVIDIA/Intel 全 DX12 GPU 対応。
 # WinML, ROCm/MIGraphX, CUDA, TensorRT, WebGPU, CoreML は build feature で opt-in。
