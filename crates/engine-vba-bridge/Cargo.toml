@@ -1,0 +1,44 @@
+[package]
+name = "engine-vba-bridge"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "VBA Extensibility COM bridge (Excel.Application IDispatch late-binding) for desktop-touch-mcp (ADR-015)"
+publish = false
+
+# ADR-015 §3.2: this crate exposes Rust API surface only. The napi
+# binding lives in the root `desktop-touch-engine` cdylib, which wires
+# the public functions of this crate to JS via napi-derive (mirrors the
+# `engine-perception` integration pattern).
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# ADR-015 §3.3: IDispatch late-binding requires COM + VARIANT + (for
+# `Excel.Application` ProgID resolution) the Ole feature for VARIANT
+# struct exposure. windows-rs is pinned at the workspace's 0.62 (matches
+# the root crate's pin). Registry features are required for the HKCU
+# AccessVBOM read in `registry.rs` (§3.7, Phase 2 — listed now so the
+# Phase 2 PR doesn't need to bump features).
+[target.'cfg(windows)'.dependencies]
+windows-core = "0.62"
+windows = { version = "0.62", features = [
+    "Win32_System_Com",
+    "Win32_System_Variant",
+    "Win32_System_Ole",
+    "Win32_System_Registry",
+    "Win32_Foundation",
+] }
+
+[dev-dependencies]
+# Unit-test fixtures for VARIANT round-trip + JSON conversion (no Excel
+# required). Phase 2 integration tests gate Excel-required code behind a
+# feature flag (see [features] below).
+serde_json = "1"
+
+[features]
+# Phase 2 integration tests are gated behind `excel-installed`. CI does
+# not enable this feature; local dev / release-machine tests enable it
+# explicitly when Excel is available.
+excel-installed = []
