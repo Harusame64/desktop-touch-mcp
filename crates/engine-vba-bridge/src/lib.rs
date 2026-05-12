@@ -35,4 +35,7 @@ pub mod dispatch;
 #[cfg(windows)]
 pub mod apartment;
 
+#[cfg(windows)]
+pub mod excel;
+
 pub use errors::{VbaBridgeError, VbaBridgeResult};

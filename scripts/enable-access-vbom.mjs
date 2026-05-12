@@ -34,6 +34,23 @@ const KEY_HKCU = `HKCU\\Software\\Microsoft\\Office\\${OFFICE_VERSION_KEY}\\Exce
 const KEY_HKLM = `HKLM\\Software\\Microsoft\\Office\\${OFFICE_VERSION_KEY}\\Excel\\Security`;
 const VALUE_NAME = "AccessVBOM";
 
+// VBAWarnings (Trust Center > Macro Settings):
+//   1 = Enable all VBA macros (least restrictive)
+//   2 = Disable VBA macros with notification (Excel default)
+//   3 = Disable except digitally signed
+//   4 = Disable all without notification
+//
+// AccessVBOM alone allows our COM bridge to AUTHOR a VBA module
+// (Excel.Application.VBE.VBProjects.Add). RUNNING the module via
+// Application.Run requires VBAWarnings = 1 — otherwise Excel returns
+// HRESULT 0x800a03ec ("マクロを実行できません. このブックでマクロが
+// 使用できないか、またはすべてのマクロが無効になっている可能性があります。").
+//
+// The CLI sets both together by default (--enable-macros). The user
+// can keep VBAWarnings at the Excel default and skip macro execution
+// by passing --skip-macros, in which case only AccessVBOM is touched.
+const VALUE_NAME_VBA_WARNINGS = "VBAWarnings";
+
 function logInfo(msg) {
   console.log(`[enable-access-vbom] ${msg}`);
 }
@@ -66,15 +83,16 @@ function readDword(keyPath, valueName) {
   return null;
 }
 
-// Write HKCU AccessVBOM=1 via `reg add`. Returns true on success.
-function writeHkcuDword(value) {
+// Write HKCU `<valueName>` = `value` (DWORD) via `reg add`. Returns
+// true on success. Used for both AccessVBOM and VBAWarnings.
+function writeHkcuDword(valueName, value) {
   const result = spawnSync(
     "reg",
     [
       "add",
       KEY_HKCU,
       "/v",
-      VALUE_NAME,
+      valueName,
       "/t",
       "REG_DWORD",
       "/d",
@@ -86,7 +104,7 @@ function writeHkcuDword(value) {
   if (result.status !== 0) {
     logErr(
       "VbaAccessNotTrusted",
-      `Failed to write ${KEY_HKCU}\\${VALUE_NAME} = ${value}. \n` +
+      `Failed to write ${KEY_HKCU}\\${valueName} = ${value}. \n` +
         `  stderr: ${result.stderr || "(empty)"}\n` +
         `  Try running this script from an elevated terminal if the failure mentions access denied.`,
     );
@@ -119,17 +137,25 @@ function main() {
 
   if (argv.includes("--help") || argv.includes("-h")) {
     console.log(
-      `enable-access-vbom — set HKCU AccessVBOM=1 for Excel ${OFFICE_VERSION_KEY}\n` +
+      `enable-access-vbom — set HKCU AccessVBOM=1 (and optionally VBAWarnings=1) for Excel ${OFFICE_VERSION_KEY}\n` +
         `\n` +
-        `Usage: node scripts/enable-access-vbom.mjs [--check-only]\n` +
+        `Usage: node scripts/enable-access-vbom.mjs [flags]\n` +
         `\n` +
-        `  --check-only   print the current HKCU + HKLM state and exit 0\n` +
-        `  -h / --help    show this help`,
+        `  --check-only    print the current HKCU + HKLM state and exit 0\n` +
+        `  --skip-macros   set ONLY AccessVBOM=1; leave VBAWarnings at the\n` +
+        `                  Excel default (macros disabled-with-notification).\n` +
+        `                  Use this if you do not want the bridge to RUN macros\n` +
+        `                  automatically; the bridge will still AUTHOR them.\n` +
+        `  -h / --help     show this help\n` +
+        `\n` +
+        `By default both AccessVBOM=1 AND VBAWarnings=1 are set so the\n` +
+        `\`excel\` MCP tool can author AND run VBA macros end-to-end.`,
     );
     exit(0);
   }
 
   const checkOnly = argv.includes("--check-only");
+  const skipMacros = argv.includes("--skip-macros");
 
   const hklm = readDword(KEY_HKLM, VALUE_NAME);
   if (hklm === 0) {
@@ -148,38 +174,83 @@ function main() {
     }${hklm === 1 ? " (HKLM also forces 1)" : ""}`,
   );
 
+  // Also inspect VBAWarnings (macro-execution Trust Center setting).
+  const vbaWarningsHkcu = readDword(KEY_HKCU, VALUE_NAME_VBA_WARNINGS);
+  const vbaWarningsHklm = readDword(KEY_HKLM, VALUE_NAME_VBA_WARNINGS);
+  logInfo(
+    `Current HKCU VBAWarnings: ${
+      vbaWarningsHkcu === null ? "(not set, Excel default = 2 = disable with notification)" : vbaWarningsHkcu
+    }${vbaWarningsHklm !== null ? ` (HKLM also sets ${vbaWarningsHklm})` : ""}`,
+  );
+
   if (checkOnly) {
-    if (hkcuBefore === 1 || hklm === 1) {
-      logInfo("AccessVBOM is trusted. The `excel` MCP tool will work.");
-      exit(0);
+    const accessOk = hkcuBefore === 1 || hklm === 1;
+    const macrosOk = vbaWarningsHkcu === 1 || vbaWarningsHklm === 1;
+    if (accessOk && macrosOk) {
+      logInfo(
+        "AccessVBOM AND VBAWarnings are both trusted. The `excel` MCP tool can author AND run macros.",
+      );
+    } else if (accessOk) {
+      logInfo(
+        "AccessVBOM is trusted but VBAWarnings is NOT 1. The `excel` MCP tool can AUTHOR macros but will fail to RUN them.\n" +
+          "  Re-run without --check-only (default sets both).",
+      );
+    } else {
+      logInfo(
+        "Neither AccessVBOM nor VBAWarnings is trusted. Re-run without --check-only to enable both (or with --skip-macros to only enable authoring).",
+      );
     }
-    logInfo(
-      "AccessVBOM is NOT trusted. Re-run without --check-only to enable HKCU=1.",
-    );
     exit(0);
   }
 
+  // ── AccessVBOM ─────────────────────────────────────────────────────
   if (hkcuBefore === 1) {
     logInfo("HKCU AccessVBOM is already 1. No change needed.");
-    exit(0);
+  } else {
+    const ok = writeHkcuDword(VALUE_NAME, 1);
+    if (!ok) exit(1);
+
+    const hkcuAfter = readDword(KEY_HKCU, VALUE_NAME);
+    if (hkcuAfter !== 1) {
+      logErr(
+        "VbaAccessNotTrusted",
+        `Post-write read returned ${
+          hkcuAfter === null ? "(not set)" : hkcuAfter
+        }, expected 1.`,
+      );
+      exit(1);
+    }
+    logInfo(`HKCU AccessVBOM set to 1.`);
   }
 
-  const ok = writeHkcuDword(1);
-  if (!ok) exit(1);
-
-  const hkcuAfter = readDword(KEY_HKCU, VALUE_NAME);
-  if (hkcuAfter !== 1) {
-    logErr(
-      "VbaAccessNotTrusted",
-      `Post-write read returned ${
-        hkcuAfter === null ? "(not set)" : hkcuAfter
-      }, expected 1. \n` +
-        `  Check whether group policy is reverting the value, or run this script as Administrator.`,
+  // ── VBAWarnings (skipped under --skip-macros) ─────────────────────
+  if (skipMacros) {
+    logInfo(
+      "--skip-macros given: leaving HKCU VBAWarnings at the current value. " +
+        "Macro authoring will work; Application.Run will FAIL with HRESULT 0x800a03ec.",
     );
-    exit(1);
+  } else {
+    if (vbaWarningsHkcu === 1) {
+      logInfo("HKCU VBAWarnings is already 1. No change needed.");
+    } else {
+      const ok = writeHkcuDword(VALUE_NAME_VBA_WARNINGS, 1);
+      if (!ok) exit(1);
+      const after = readDword(KEY_HKCU, VALUE_NAME_VBA_WARNINGS);
+      if (after !== 1) {
+        logErr(
+          "VbaAccessNotTrusted",
+          `Post-write read of VBAWarnings returned ${
+            after === null ? "(not set)" : after
+          }, expected 1.`,
+        );
+        exit(1);
+      }
+      logInfo(
+        `HKCU VBAWarnings set to 1 (Enable all macros). ` +
+          `The bridge can now run macros it authors via Application.Run.`,
+      );
+    }
   }
-
-  logInfo(`HKCU AccessVBOM set to 1.`);
 
   if (isExcelRunning()) {
     logWarn(
