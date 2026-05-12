@@ -273,20 +273,10 @@ function deleteTrustedLocationSlot(slotKey) {
 // trust the exact directory and not its sub-folders, which silently
 // breaks Phase 4 workflows that may write per-session sub-directories.
 function readTrustedLocationAllowSubFolders(locationName) {
-  const keyPath = `${KEY_HKCU_TRUSTED_LOCATIONS}\\${locationName}`;
-  const result = spawnSync(
-    "reg",
-    ["query", keyPath, "/v", "AllowSubFolders"],
-    { encoding: "utf8" },
+  return readDword(
+    `${KEY_HKCU_TRUSTED_LOCATIONS}\\${locationName}`,
+    "AllowSubFolders",
   );
-  if (result.status !== 0) return null;
-  for (const line of result.stdout.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith("AllowSubFolders")) continue;
-    const m = trimmed.match(/REG_DWORD\s+0x([0-9a-fA-F]+)/);
-    if (m) return parseInt(m[1], 16);
-  }
-  return null;
 }
 
 // Register the desktop-touch-managed Trusted Location. Idempotent — if a
