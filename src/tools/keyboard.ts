@@ -34,6 +34,12 @@ import { makeCommitWrapper, withEnvelopeIncludeForUnion } from "./_envelope.js";
 
 const execFileAsync = promisify(execFile);
 
+// Note: keyboard input serialization (issue #255) lives at the engine layer
+// in `src/engine/nutjs.ts` so it applies to every caller — the keyboard
+// tool here, scroll PageDown / PageUp keystrokes, terminal:send fallback,
+// and any future tool that reaches into the same libnut backend. See the
+// design rationale block at the top of nutjs.ts.
+
 /**
  * Set the Windows clipboard via PowerShell, using Base64 to handle any Unicode text.
  * Then paste with Ctrl+V to bypass IME conversion.
