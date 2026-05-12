@@ -90,6 +90,41 @@ const RESERVED_ALLOW_LIST = new Set<string>([
  */
 const DEAD_ALLOW_LIST = new Set<string>([]);
 
+/**
+ * ADR-015 Phase 4: typed codes emitted by the **Rust napi shim**
+ * (`crates/engine-vba-bridge/src/errors.rs::VbaBridgeError::Display`
+ * + `src/vba_bridge.rs` binding-level errors).
+ *
+ * The Rust `Display` impl writes `"<PascalCase>: <prose>"` strings that
+ * napi-rs surfaces as `napi::Error::from_reason(...)` — TS callers see
+ * them as `Error.message` from a throw inside the COM call site, not as
+ * a TS-side `new Error(...)` literal. The classify branch in `_errors.ts`
+ * pattern-matches the prefix; the TS layer never CONSTRUCTS the string,
+ * so this producer-pin test (which only scans `src/*.ts`) cannot find a
+ * literal producer.
+ *
+ * Rationale for treating these as "allow-listed with producer documented
+ * outside the TS scan range" rather than `DEAD_ALLOW_LIST`:
+ * - DEAD_ALLOW_LIST semantically means "no producer anywhere"
+ * - These codes DO have producers, just in Rust source — the producer
+ *   is verified by `cargo test -p engine-vba-bridge` covering the
+ *   `Display` impl + the napi shim emission paths (16/16 PASS).
+ */
+const NAPI_ORIGINATED_ALLOW_LIST = new Set<string>([
+  // Crate-level (engine_vba_bridge::errors::VbaBridgeError variants):
+  "VbaAccessNotTrusted",
+  "VbaAccessLockedByPolicy",
+  "ExcelNotInstalled",
+  "VbaModuleAuthoringFailed",
+  "VbaMacroExecutionFailed",
+  "VbaUnsupportedArgumentType",
+  "VbaWorkbookProtected",
+  // Binding-level (src/vba_bridge.rs string-prefixed errors):
+  "SessionNotFound",
+  "SessionIdExhausted",
+  "VbaUnsupportedFileFormat",
+]);
+
 // ── Parser ───────────────────────────────────────────────────────────────────
 
 interface ClassifyBranch {
@@ -261,6 +296,7 @@ describe("Phase 5 §4.bis (epic #211): classify() branch producer pin", () => {
     for (const branch of branches) {
       if (RESERVED_ALLOW_LIST.has(branch.code)) continue;
       if (DEAD_ALLOW_LIST.has(branch.code)) continue;
+      if (NAPI_ORIGINATED_ALLOW_LIST.has(branch.code)) continue;
       const producer = findFirstProducer(branch, srcFiles);
       if (producer === null) {
         newDeadCodes.push({ code: branch.code, keywords: branch.keywords });
@@ -286,7 +322,7 @@ describe("Phase 5 §4.bis (epic #211): classify() branch producer pin", () => {
     const branches = parseClassifyBranches(errorsContent);
     const knownCodes = new Set(branches.map((b) => b.code));
 
-    for (const code of [...RESERVED_ALLOW_LIST, ...DEAD_ALLOW_LIST]) {
+    for (const code of [...RESERVED_ALLOW_LIST, ...DEAD_ALLOW_LIST, ...NAPI_ORIGINATED_ALLOW_LIST]) {
       expect(knownCodes.has(code)).toBe(true);
     }
   });
