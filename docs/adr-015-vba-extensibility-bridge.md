@@ -357,6 +357,14 @@ Typed errors (added to `src/tools/_errors.ts`, **PascalCase single-cap acronym p
 | `VbaUnsupportedArgumentType` | caller passed object / array / dispatch into `args` | `vba_unsupported_argument_type` |
 | `VbaWorkbookProtected` | `VBProject` access blocked by workbook-level password | `vba_workbook_protected` |
 
+**Binding-level typed codes** (Phase 3 napi shim — live in `src/vba_bridge.rs`, not in `engine_vba_bridge::errors`. The crate stays session-handle-agnostic; these surface only when the handle layer is in the call path):
+
+| Code | Meaning | snake_case form |
+|---|---|---|
+| `SessionNotFound` | the supplied session ID is not in the registry (already closed or never opened) | `session_not_found` |
+| `SessionIdExhausted` | the u32 monotonic session counter saturated at `2^32` spawns (practically unreachable) | `session_id_exhausted` |
+| `VbaUnsupportedFileFormat` | `excel_workbook_save_as` received a `file_format` numeric value other than `52` (xlOpenXMLWorkbookMacroEnabled) — v1 only accepts `.xlsm` | `vba_unsupported_file_format` |
+
 Acceptance:
 - Single `excel` tool registered in `src/tools/_registry.ts` and visible in `tools/list` as one tool
 - `tests/unit/excel-tool.test.ts` covers schema validation per action variant + `VbaMacroNotFound` regression case
@@ -411,7 +419,7 @@ Invariant 6 receives an explicit ADR-level carve-out (see §2.3). The invariant'
 - [ ] Issue #256 (F2 VBE UIA-blind) Resolved by structural bypass (not by improving UIA inspection of VBE)
 - [ ] `engine-vba-bridge` crate exists with the 8 functions from §3.6, all behind a single thread-local STA worker
 - [ ] `excel` tool succeeds end-to-end on a clean Win11 + Excel 365 install with `AccessVBOM=1` set by the bundled CLI script
-- [ ] All 8 new typed errors are catalogued in `_errors.ts` and surveyed in ADR-010 §5.4 (CLAUDE.md §3.1 cascade sweep)
+- [ ] All 8 crate-level + 3 binding-level = **11 typed errors** are catalogued in `_errors.ts` and surveyed in ADR-010 §5.4 (CLAUDE.md §3.1 cascade sweep) — crate-level: `VbaAccessNotTrusted` / `VbaAccessLockedByPolicy` / `ExcelNotInstalled` / `VbaModuleAuthoringFailed` / `VbaMacroExecutionFailed` / `VbaMacroNotFound` / `VbaUnsupportedArgumentType` / `VbaWorkbookProtected`; binding-level: `SessionNotFound` / `SessionIdExhausted` / `VbaUnsupportedFileFormat`
 - [ ] The new typed-error names pass the `pascalToSnake` round-trip used by `src/tools/_envelope.ts` (Codex Round 1 P2)
 - [ ] Cascade sweep landed per §4.5 table in a single atomic commit — invariant 6 rule text in `layer-constraints.md:330` literal-preserved; derivative numeric refs updated 28 → 29
 - [ ] No regression in `vitest run` or `cargo test --workspace`
@@ -447,6 +455,8 @@ Invariant 6 receives an explicit ADR-level carve-out (see §2.3). The invariant'
 - **OQ #7** — Should the Phase 4 MCP tool surface expose `set_display_alerts` as a public action, or only `workbook_save_as`-internal management? **Lean: only the internal guard in v1.** Rationale: Phase 4's `excel` MCP tool wraps the high-level demo path, not raw COM. Exposing `set_display_alerts` would re-introduce the R9 leak hazard at the MCP envelope layer. If Phase 4 review identifies a concrete caller need (e.g. a long-running session interleaving SaveAs with user-visible interactions), reintroduce as a manual toggle with a matching `excel.reset_display_alerts` cleanup action documented in `_errors.ts` suggestions.
 - **OQ #8** *(opened by Opus Round 3 P3 review; defer-recommended)* — `readTrustedLocationAllowSubFolders` in `scripts/enable-access-vbom.mjs` duplicates the REG_DWORD parse logic of the existing `readDword`. DRY opportunity: factor the helper to call `readDword(keyPath, "AllowSubFolders")` instead. Defer to a follow-up sweep (Phase 3 binding work touches the same script).
 - **OQ #9** *(opened by Opus Round 3 P3 review; defer-recommended)* — `workbook_save_as` doc-block says "Callers MUST treat the session as poisoned after restore failure" but the restore failure path silently discards the error (`let _ = invoke_put(...)`). The caller has no programmatic signal to detect poisoning. Either (a) remove the MUST and rely on subsequent operations failing organically, or (b) add a poisoning tracking field to `ExcelSession` and surface it via a `is_poisoned()` query. Defer to Phase 4 (when concrete caller patterns clarify the cost/benefit of (b)).
+- **OQ #10** *(opened by Phase 3 Round 2 review; defer to Phase 4)* — typed-envelope structured error fields for the napi shim. Currently `VbaBridgeError::Display` produces flat prose strings like `"ComCallFailed: HRESULT=0x800ac472 at CodeModule.AddFromString"` and the Phase 4 TS layer must regex-extract HRESULT / context. napi-rs exposes `Error::new(Status, reason)` with a separate `Status` field that could carry structured data, OR a `code` JSON field could be added to the typed-error mapping. Phase 4 typed envelope design absorbs the trade-off; v1 prefix parsing is sufficient for the demo path.
+- **OQ #11** *(opened by Phase 3 Round 2 review; defer to Phase 4)* — `excelSessionIsAlive` napi export use case. Phase 3 ships it for completeness (the binding may need a non-throwing existence check before issuing a cleanup) but Phase 4 has not yet specified a consumer. If Phase 4 confirms it is unused, either (a) remove it pre-v1.5.0, or (b) keep as a defensive surface for future tools. Lean: keep — pre-Phase-4 removal would force a re-publish if Phase 4 then needs it.
 
 ---
 
@@ -524,3 +534,13 @@ Author: Claude (Sonnet) reflecting Opus Round 1 on Phase 2e PR.
 - **§3.6 signature alignment** — Round 1 / 2 listed `SaveFormat` enum, `WorkbookHandle` type, `excel_close(s: ExcelSession, save: bool)` consuming session. Phase 2 implementation consolidated around `ExcelSession::ActiveWorkbook` (no `WorkbookHandle`), renamed enum to `XlFileFormat` (Excel COM type-library parity), changed close to borrowing `&ExcelSession` (closes workbook, not session). §3.6 prose updated to document each implementation choice with rationale; signature table now matches Phase 2 / Phase 2e crate surface
 - **§7 R9** added — "`DisplayAlerts = false` leaked past `workbook_save_as`" — structurally eliminated by the save-restore guard inside `workbook_save_as` (preserves the prior `DisplayAlerts` value, sets `false` for the SaveAs window, restores on exit including error paths)
 - **§8 OQ #7** added — whether Phase 4 should expose `set_display_alerts` as a public MCP tool action. Lean: only the internal guard in v1 (avoids re-introducing the R9 leak at MCP envelope layer)
+
+### 2026-05-12 — Implementation update (Phase 3 Round 2 reflecting Opus Round 1)
+
+Author: Claude (Sonnet) reflecting Opus Round 1 on Phase 3 PR.
+
+- **§4.3 acceptance fixed** — Round 1 referenced a `cargo build --bin generate-types` that never existed; replaced with the actual `check:native-types` drift gate. Also corrected the function count from "8 + checkAccessVbom" (=9) to "11 functions" with explicit itemization of the 8 §3.6 wrappers + 3 session-lifecycle helpers (`excelSessionSpawn` / `excelSessionClose` / `excelSessionIsAlive`). Lifecycle helpers are NOT in §3.6 because `ExcelSession` cannot cross the napi FFI boundary by value
+- **§4.4 binding-level codes table added** — Round 2 introduced 3 new typed-error codes that live in the napi shim (`src/vba_bridge.rs`), not in the `engine_vba_bridge::errors` enum: `SessionNotFound`, `SessionIdExhausted`, `VbaUnsupportedFileFormat`. They are listed in a sub-table alongside the 8 crate-level codes so Phase 4's `_errors.ts` SUGGESTS catalog has the full set
+- **§6 acceptance** — typed-error count updated "8 new typed errors" → "8 crate-level + 3 binding-level = 11 typed errors"
+- **§8 OQ #10 / OQ #11 added** — Phase 4 carry-overs persisted in docs per CLAUDE.md §9 (commit-message-only deferral was insufficient)
+- **`src/vba_bridge.rs` `NEXT_ID` race-free** — Round 2's `load+fetch_add` check-then-act window replaced with `fetch_update` CAS loop. Even if Phase 4 introduces `AsyncTask` and removes the libuv-single-threaded property, the saturation check + increment are now a single atomic transition

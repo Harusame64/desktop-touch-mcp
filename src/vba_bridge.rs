@@ -75,16 +75,15 @@ use crate::win32::safety::napi_safe_call;
 static SESSIONS: OnceLock<Mutex<HashMap<u32, Arc<apartment::ExcelSession>>>> = OnceLock::new();
 
 /// Monotonic ID allocator. Reserved ID `0` is never issued so the
-/// initial fetch returns `1`.
+/// first CAS loop yields `1`.
 ///
-/// **Wraparound semantics** (Opus Round 1 P2-1): `AtomicU32::fetch_add`
-/// wraps without panic. At `2^32` spawns the counter would return `0`
-/// (the reserved sentinel), then `1` which could collide with a still-
-/// alive session. To prevent silent collision, [`excel_session_spawn`]
-/// fails with `SessionIdExhausted` once the counter reaches `u32::MAX`;
-/// restarting the MCP server resets it. At one spawn per second this
-/// is reachable after ~136 years, so practically a documentation /
-/// invariant-enforcement gesture rather than an operational concern.
+/// **Wraparound semantics** (Opus Round 1 P2-1 / Round 2 P2-NEW1):
+/// [`excel_session_spawn`] uses [`AtomicU32::fetch_update`] with a CAS
+/// loop that refuses to advance past `u32::MAX`, surfacing
+/// `SessionIdExhausted` instead. This is structurally race-free even
+/// under concurrent callers (Phase 4 may introduce `AsyncTask` and
+/// remove the libuv-single-threaded property earlier rounds relied
+/// on). Practically unreachable (~136 years at 1 spawn/sec).
 static NEXT_ID: AtomicU32 = AtomicU32::new(1);
 
 fn sessions() -> &'static Mutex<HashMap<u32, Arc<apartment::ExcelSession>>> {
@@ -138,26 +137,51 @@ fn map_bridge<T>(r: VbaBridgeResult<T>) -> Result<T> {
 /// when done to release the COM resources; relying on GC will
 /// eventually clean up but leaves Excel.exe running in the meantime.
 ///
-/// **Exhaustion safety** (Opus Round 1 P2-1): returns `SessionIdExhausted`
-/// when the u32 monotonic counter saturates at `u32::MAX`. Restart the
-/// MCP server to reset. Practically unreachable but pins the
-/// "never-reuse" invariant the surrounding comments promise.
+/// **Exhaustion safety** (Opus Round 1 P2-1 / Round 2 P2-NEW1): the
+/// ID allocation uses [`AtomicU32::fetch_update`] with a CAS loop so
+/// the saturation check and the increment are a single atomic
+/// transition — no check-then-act race window even if multiple
+/// threads ever call `excel_session_spawn` concurrently. When the
+/// counter reaches `u32::MAX`, `fetch_update` returns `Err` and the
+/// shim surfaces `SessionIdExhausted` rather than wrapping to `0`
+/// (reserved sentinel) or colliding with a still-alive ID. Practically
+/// unreachable (136 years at 1 spawn/sec) but pins the "never-reuse"
+/// invariant structurally regardless of the napi caller's threading
+/// model — Phase 4 may introduce `AsyncTask`, removing the libuv-
+/// single-threaded assumption that earlier rounds relied on.
 #[napi]
 pub fn excel_session_spawn() -> Result<u32> {
     napi_safe_call("excel_session_spawn", || {
-        // Check BEFORE spawning Excel so we don't leak a session
-        // immediately. The check is on the next ID we'd issue, not the
-        // one being returned: if `NEXT_ID` is already at MAX, the next
-        // fetch_add wraps to 0 (reserved sentinel) and then to 1
-        // (potential collision), so we refuse to issue further IDs.
-        if NEXT_ID.load(Ordering::SeqCst) == u32::MAX {
-            return Err(Error::from_reason(
-                "SessionIdExhausted: the u32 monotonic session counter has saturated \
-                 at 2^32 spawns. Restart the MCP server to reset.",
-            ));
-        }
-        let session = map_bridge(apartment::ExcelSession::spawn())?;
-        let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
+        // Allocate the ID FIRST via a race-free CAS loop. If
+        // saturation triggers, we never start Excel — preventing the
+        // "spawn succeeded but ID assignment failed" leak window.
+        let id = NEXT_ID
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                if current == u32::MAX {
+                    None // signal saturation; fetch_update returns Err
+                } else {
+                    Some(current + 1)
+                }
+            })
+            .map_err(|_| {
+                Error::from_reason(
+                    "SessionIdExhausted: the u32 monotonic session counter has saturated \
+                     at 2^32 spawns. Restart the MCP server to reset.",
+                )
+            })?;
+
+        // Spawn Excel only after we hold a guaranteed-unique ID.
+        let session = match map_bridge(apartment::ExcelSession::spawn()) {
+            Ok(s) => s,
+            Err(e) => {
+                // ID was allocated but the spawn failed — the slot
+                // for `id` is permanently skipped. This is fine
+                // (monotonic semantics allow gaps) and prevents
+                // the ID from being reused by a later spawn.
+                return Err(e);
+            }
+        };
+
         let mut map = sessions().lock().map_err(|_| {
             Error::from_reason("vba_bridge: session registry mutex poisoned")
         })?;
