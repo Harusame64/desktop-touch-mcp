@@ -137,6 +137,19 @@ const APP_PATHS_HIVES: Array<string> = [
 ];
 
 /**
+ * Absolute path to the trusted System32 reg.exe. Matches the TASKKILL_EXE
+ * pattern further down in this file (PATH-hijack defense): a malicious
+ * `reg.exe` planted earlier in the search order could otherwise return
+ * crafted stdout that smuggles an attacker-controlled path through this
+ * function. Always invoke the System32 copy directly.
+ */
+const REG_EXE = path.join(
+  process.env["SystemRoot"] ?? process.env["WINDIR"] ?? "C:\\Windows",
+  "System32",
+  "reg.exe",
+);
+
+/**
  * Query the App Paths registry for `command`. Returns the resolved absolute
  * path (with %VAR% tokens expanded against `process.env`) on the first hit,
  * or null if no key exists in any hive. Uses synchronous `reg query` — same
@@ -155,7 +168,12 @@ export function resolveAppPathsRegistry(command: string): string | null {
 
   for (const hive of APP_PATHS_HIVES) {
     const keyPath = `${hive}\\${exeName}`;
-    const result = spawnSync("reg", ["query", keyPath, "/ve"], {
+    // Use the absolute System32 reg.exe path (defense against PATH hijack,
+    // matches the TASKKILL_EXE pattern below). The `(Default)` token in the
+    // output is locale-stable: `reg.exe` does not localize value-type / key
+    // markers even on Japanese / Chinese MUI installs (verified on ja-JP
+    // Win11). The regex below therefore needs no locale-specific variants.
+    const result = spawnSync(REG_EXE, ["query", keyPath, "/ve"], {
       encoding: "utf8",
       windowsHide: true,
     });
@@ -178,6 +196,16 @@ export function resolveAppPathsRegistry(command: string): string | null {
       const unquoted = expanded.startsWith('"') && expanded.endsWith('"')
         ? expanded.slice(1, -1)
         : expanded;
+      // Verify the resolved path actually exists — App Paths sometimes
+      // outlives the install it points at (uninstaller bugs, half-removed
+      // Office side-by-side installs, etc). Falling through to the next
+      // hive on a stale entry mirrors how `resolveWellKnownPath` already
+      // checks `fs.existsSync` before returning a candidate.
+      try {
+        if (!fs.existsSync(unquoted)) continue;
+      } catch {
+        continue;
+      }
       return unquoted;
     }
   }

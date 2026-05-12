@@ -59,7 +59,11 @@ function regMiss() {
 beforeEach(() => {
   spawnSyncMock.mockReset();
   existsSyncMock.mockClear();
-  existsSyncMock.mockReturnValue(false);
+  // Default: every path "exists" so the new App Paths existsSync gate
+  // (post-resolve verification) doesn't reject hits in tests that don't
+  // care about that axis. Tests that exercise the stale-entry path
+  // override this with a tailored implementation.
+  existsSyncMock.mockReturnValue(true);
 });
 
 describe("resolveAppPathsRegistry (issue #258)", () => {
@@ -113,6 +117,30 @@ describe("resolveAppPathsRegistry (issue #258)", () => {
     expect(resolveAppPathsRegistry("C:\\full\\path.exe")).toBeNull();
     expect(resolveAppPathsRegistry("./relative.exe")).toBeNull();
     expect(spawnSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("falls through to the next hive when the registry entry is stale (path no longer exists)", () => {
+    // HKCU returns a registered path that's no longer on disk (Office
+    // uninstalled, App Paths key not cleaned up); HKLM returns the live
+    // install. The function must skip the stale entry, not surface it.
+    spawnSyncMock
+      .mockReturnValueOnce(regHit("C:\\stale\\old.exe"))
+      .mockReturnValueOnce(regHit("C:\\live\\app.exe"));
+    existsSyncMock.mockImplementation((p: string) =>
+      typeof p === "string" && p === "C:\\live\\app.exe",
+    );
+    const r = resolveAppPathsRegistry("app.exe");
+    expect(r).toBe("C:\\live\\app.exe");
+    expect(spawnSyncMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses the absolute System32 reg.exe path (PATH-hijack defense)", () => {
+    // Don't care about the result — only that we invoked the absolute path.
+    spawnSyncMock.mockReturnValue(regMiss());
+    resolveAppPathsRegistry("anything.exe");
+    const firstCallCmd = spawnSyncMock.mock.calls[0]?.[0];
+    expect(firstCallCmd).toMatch(/[\\/]System32[\\/]reg\.exe$/i);
+    expect(firstCallCmd).not.toBe("reg");
   });
 
   it("adds .exe suffix if the caller omits it", () => {
