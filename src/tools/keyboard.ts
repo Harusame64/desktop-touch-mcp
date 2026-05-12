@@ -34,6 +34,37 @@ import { makeCommitWrapper, withEnvelopeIncludeForUnion } from "./_envelope.js";
 
 const execFileAsync = promisify(execFile);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Input serialization (Issue #255 fix)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// libnut (the native key-injection backend wrapped by @nut-tree-fork/nut-js)
+// is not safe for concurrent SendInput invocations. Two `keyboard` tool calls
+// fired in parallel from the MCP client — the natural agent pattern for
+// chord-style menu navigation like `alt+i` then `m` — crashed the server,
+// causing every `mcp__desktop-touch__*` tool to become unavailable mid-session
+// (issue #255). Modifier press/release windows can interleave when nutjs
+// yields between pressKey and releaseKey on the same key list, leaving libnut
+// in an undefined state that segfaults the Node process.
+//
+// The fix is a single-writer FIFO at the handler entry. The tail tracks the
+// completion *point* (success or failure) of the currently-queued call so a
+// rejection does not poison the queue. Serialization is keyboard-local and
+// does not extend to mouse / scroll; cross-tool input contention has not been
+// reported.
+let _inputQueueTail: Promise<unknown> = Promise.resolve();
+
+async function withInputLock<T>(fn: () => Promise<T>): Promise<T> {
+  const myResult = _inputQueueTail.then(fn, fn);
+  // Swallow the result so the next caller sees a clean resolved tail; the
+  // original promise is returned to the current caller intact.
+  _inputQueueTail = myResult.then(
+    () => undefined,
+    () => undefined,
+  );
+  return myResult;
+}
+
 /**
  * Set the Windows clipboard via PowerShell, using Base64 to handle any Unicode text.
  * Then paste with Ctrl+V to bypass IME conversion.
@@ -1833,10 +1864,12 @@ export const keyboardSchema = z.discriminatedUnion("action", [
 export type KeyboardArgs = z.infer<typeof keyboardSchema>;
 
 export const keyboardHandler = async (args: KeyboardArgs): Promise<import("./_types.js").ToolResult> => {
-  if (args.action === "type") {
-    return keyboardTypeHandler(args);
-  }
-  return keyboardPressHandler(args);
+  return withInputLock(async () => {
+    if (args.action === "type") {
+      return keyboardTypeHandler(args);
+    }
+    return keyboardPressHandler(args);
+  });
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

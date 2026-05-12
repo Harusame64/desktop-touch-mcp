@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`keyboard` tool no longer crashes the MCP server when called in
+  parallel.** Two `keyboard` tool calls fired in the same Claude turn
+  (the natural pattern for menu chords like `alt+i` then `m`) could
+  interleave inside the native key-injection backend (libnut) and
+  segfault the Node process. The whole `mcp__desktop-touch__*`
+  namespace then disappeared from the session, requiring a CLI
+  restart. The handler now serializes calls through an internal
+  FIFO so the press/release windows of one call always finish
+  before the next one starts. Sequential `keyboard` calls and
+  `run_macro` batches behave exactly as before — only true cross-
+  request concurrency is held back, and only at the keyboard tool
+  boundary (mouse / scroll / clipboard are unaffected). Fixes
+  [#255](https://github.com/Harusame64/desktop-touch-mcp/issues/255).
+
 ## [1.5.0] - 2026-05-12 — New `excel` tool: author and run VBA macros against Excel via COM (no VBA Editor UI needed)
 
 ### Added
