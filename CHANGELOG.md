@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`workspace_launch` now resolves common app names from the Windows
+  App Paths registry.** Calls like
+  `workspace_launch({command:'excel.exe'})`,
+  `workspace_launch({command:'winword.exe'})`, or
+  `workspace_launch({command:'outlook.exe'})` previously failed with
+  `SpawnFailed: Command "excel.exe" not found` because Node's `spawn`
+  only searches `PATH`, not the App Paths key Windows itself uses for
+  Win+R and the Explorer address bar. The launch path now consults
+  `HKCU` then `HKLM` (incl. `WOW6432Node`) for an `App Paths\<exe>`
+  entry, expands `%VAR%` tokens in REG_EXPAND_SZ values, and re-runs
+  the existing security validation on the resolved path so a tampered
+  registry entry cannot smuggle a blocked shell interpreter through.
+  The successful result surfaces the resolution in `note`, e.g.
+  `Resolved "excel.exe" → "C:\\...\\EXCEL.EXE" via App Paths registry`.
+  The existing built-in path lookups (chrome / edge / brave / VS Code)
+  still take priority and are unchanged. Fixes
+  [#258](https://github.com/Harusame64/desktop-touch-mcp/issues/258).
+
 ## [1.5.0] - 2026-05-12 — New `excel` tool: author and run VBA macros against Excel via COM (no VBA Editor UI needed)
 
 ### Added

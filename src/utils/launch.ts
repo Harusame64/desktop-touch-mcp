@@ -109,6 +109,110 @@ export function resolveWellKnownPath(command: string): { resolved: string; wasRe
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// App Paths registry resolution (issue #258)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Windows resolves bare executable names like `excel.exe`, `winword.exe`,
+// `chrome.exe` through the App Paths registry — the same mechanism that
+// makes them runnable from Win+R and the Explorer address bar. Apps that
+// install via MSI typically register their canonical install path under
+// `Software\Microsoft\Windows\CurrentVersion\App Paths\<exe>` so callers
+// do not need to know where they live.
+//
+// `CreateProcess` (which Node's `spawn` ultimately calls) does NOT consult
+// App Paths — it only searches PATH. That gap is why
+// `workspace_launch(command='excel.exe')` returned ENOENT for users who had
+// Office installed normally. This helper adds the missing lookup as a
+// secondary resolution after `resolveWellKnownPath` so common Office /
+// browser / IDE names "just work" from the LLM prompt.
+//
+// Security: the resolved path is run through `validateLaunchCommand` again
+// by the caller, so a malicious App Paths entry pointing at a blocked
+// shell interpreter (cmd.exe, powershell.exe, etc.) is still rejected.
+
+const APP_PATHS_HIVES: Array<string> = [
+  "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths",
+  "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths",
+  "HKLM\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\App Paths",
+];
+
+/**
+ * Query the App Paths registry for `command`. Returns the resolved absolute
+ * path (with %VAR% tokens expanded against `process.env`) on the first hit,
+ * or null if no key exists in any hive. Uses synchronous `reg query` — same
+ * shape as the rest of the project's registry probes (see
+ * `scripts/enable-access-vbom.mjs::readDword`).
+ *
+ * Only resolves bare executable names: anything with a path separator is
+ * passed through unchanged because the caller has already specified an
+ * absolute or relative path that we should not second-guess.
+ */
+export function resolveAppPathsRegistry(command: string): string | null {
+  if (command.includes("\\") || command.includes("/")) return null;
+  // Normalise to `<name>.exe` so callers can pass either form. App Paths keys
+  // are stored with the `.exe` suffix verbatim.
+  const exeName = /\.exe$/i.test(command) ? command : `${command}.exe`;
+
+  for (const hive of APP_PATHS_HIVES) {
+    const keyPath = `${hive}\\${exeName}`;
+    const result = spawnSync("reg", ["query", keyPath, "/ve"], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    if (result.status !== 0) continue;
+    // `reg query <key> /ve` produces (locale-stable on Windows):
+    //   <key full path>
+    //       (Default)    REG_SZ           C:\Path\To\App.exe
+    // or REG_EXPAND_SZ with a `%VAR%`-bearing value.
+    for (const line of result.stdout.split(/\r?\n/)) {
+      const m = line.match(/\(Default\)\s+REG_(?:EXPAND_)?SZ\s+(.+?)\s*$/);
+      if (!m || !m[1]) continue;
+      const raw = m[1].trim();
+      if (!raw) continue;
+      // Expand %VAR% tokens for REG_EXPAND_SZ values; leave plain REG_SZ
+      // untouched (the regex captures both — expansion is a no-op when no
+      // tokens are present).
+      const expanded = raw.replace(/%([^%]+)%/g, (whole, name) => process.env[name] ?? whole);
+      // The App Paths value is sometimes a quoted path; strip surrounding
+      // quotes so spawn() does not pass a literal `"..."` string to Win32.
+      const unquoted = expanded.startsWith('"') && expanded.endsWith('"')
+        ? expanded.slice(1, -1)
+        : expanded;
+      return unquoted;
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolve a launch command through the full chain:
+ *   1. Path separator present → trust the caller's path (no resolution)
+ *   2. `WELL_KNOWN_PATHS` table (browsers / VS Code)
+ *   3. App Paths registry (issue #258 — common Office / Windows apps)
+ *   4. Otherwise return unchanged (will fall through to ENOENT on spawn)
+ *
+ * Returns `{ resolved, source }` so the caller can log / hint the path
+ * came from. `source: 'identity'` means no resolution was performed.
+ *
+ * The caller is responsible for re-running `validateLaunchCommand` on the
+ * resolved path — App Paths values are user-writable and could otherwise
+ * smuggle a blocked shell interpreter through.
+ */
+export function resolveLaunchExecutable(command: string): {
+  resolved: string;
+  source: "identity" | "well-known" | "app-paths";
+} {
+  if (command.includes("\\") || command.includes("/")) {
+    return { resolved: command, source: "identity" };
+  }
+  const wk = resolveWellKnownPath(command);
+  if (wk.wasResolved) return { resolved: wk.resolved, source: "well-known" };
+  const ap = resolveAppPathsRegistry(command);
+  if (ap !== null) return { resolved: ap, source: "app-paths" };
+  return { resolved: command, source: "identity" };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Spawn with reliable error detection
 // ─────────────────────────────────────────────────────────────────────────────
 
