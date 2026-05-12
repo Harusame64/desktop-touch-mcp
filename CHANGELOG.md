@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.5.1] - 2026-05-12 — `workspace_launch` App Paths registry resolution + concurrent `keyboard` crash fix
 
 ### Added
 
