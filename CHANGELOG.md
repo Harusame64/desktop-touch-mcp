@@ -2,6 +2,102 @@
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-05-12 — New `excel` tool: author and run VBA macros against Excel via COM (no VBA Editor UI needed)
+
+### Added
+
+- **New `excel` tool — author and run VBA macros against a live Excel
+  instance via COM late binding. The headline differentiator against
+  `Claude for Excel` (which writes formulas but cannot run VBA).** The
+  tool is a single dispatcher with two actions in v1.5.0:
+
+  ```ts
+  // Headline path: author a Sub, save into the managed Trusted Location,
+  // and Application.Run it. The Sub name MUST appear in `code` as
+  // `Sub <macroName>(...)` — checked by a regex pre-flight before any
+  // COM call so a typo fails fast with VbaMacroNotFound.
+  excel({
+    action: "run_vba",
+    code: 'Sub DesktopTouchAdHoc()\n  Range("A1").Value = "Hello"\nEnd Sub',
+    macroName: "DesktopTouchAdHoc", // default; override to match your Sub
+    visible: false,                  // true to surface the Excel window for demo recording
+  })
+  // → { ok: true, workbookPath: "...\\trusted-vba\\dt_vba_<ts>.xlsm",
+  //     hints: { verifyDelivery: { status: "delivered", ... } } }
+
+  // Preflight: read-only HKCU/HKLM AccessVBOM inspection so callers
+  // can surface a clean remediation hint before the workflow.
+  excel({ action: "check_access_vbom" })
+  // → { ok: true, trusted: true|false, lockedByPolicy: false, scope: "hkcu"|"hklm-policy"|"default" }
+  ```
+
+  The bridge structurally bypasses the VBA Editor UI — no UIA tree walk,
+  no menu navigation, no coordinate clicks. It uses
+  `Excel.Application.VBE.VBProjects` COM, which is the same API
+  UiPath / Power Automate Desktop use. Authoring works against in-memory
+  workbooks; execution requires the workbook to live in a registered
+  Trusted Location, which the setup CLI handles automatically (see
+  Setup below).
+
+- **CLI setup script `scripts/enable-access-vbom.mjs` — one-shot
+  configuration of all three trust axes Excel needs:**
+  HKCU `AccessVBOM = 1` (allow programmatic VBA project access),
+  HKCU `VBAWarnings = 1` (allow macro execution from trusted files), and
+  registration of `%LOCALAPPDATA%\desktop-touch-mcp\trusted-vba` as
+  a Trusted Location so dynamically-authored workbooks can run macros
+  without an `0x800a03ec` Trust Center block.
+
+  ```powershell
+  node scripts/enable-access-vbom.mjs
+  # Flags: --check-only (read state, exit 1 if any axis missing),
+  #        --skip-macros (set AccessVBOM only, leave VBAWarnings),
+  #        --skip-trusted-location (don't register the managed directory).
+  ```
+
+  Idempotent: re-running detects existing matching registry entries
+  (case-insensitive, trailing-slash tolerant, `%LOCALAPPDATA%` literal
+  vs expanded path tolerant) and reports them without writing
+  duplicates. If any of the four LocationN values fails partway
+  through registration, the partial slot is rolled back so the next
+  run starts clean.
+
+  Excel caches all three trust values at process start, so **close any
+  running Excel.exe before retrying** when the CLI reports a successful
+  write but the tool still fails with a trust-related error.
+
+- **12 new typed error codes for VBA-bridge failures, so LLMs can
+  pattern-match recovery paths instead of parsing English prose:**
+  `VbaAccessNotTrusted` (run the CLI), `VbaAccessLockedByPolicy`
+  (contact IT), `ExcelNotInstalled`, `VbaModuleAuthoringFailed`,
+  `VbaMacroExecutionFailed` (typically HRESULT `0x800a03ec` —
+  workbook outside Trusted Location), `VbaMacroNotFound` (Sub name
+  doesn't appear in `code`), `VbaUnsupportedArgumentType`,
+  `VbaWorkbookProtected` (workbook-level VBA password set),
+  `SessionNotFound`, `SessionIdExhausted` (practically unreachable),
+  `VbaUnsupportedFileFormat` (v1 only accepts `.xlsm`),
+  `VbaBridgeUnavailable` (non-Windows or pre-v1.5.0 build).
+
+### Requirements
+
+- Excel 365 / 2019 / 2021 / 2024 installed (other Office versions
+  use a different registry path and are not supported in v1.5.0).
+- Run `node scripts/enable-access-vbom.mjs` once on each machine before
+  first use. The script writes to `HKCU` only — no admin rights needed.
+- v1.5.0+ build of `@harusame64/desktop-touch-mcp` (the native addon
+  must include the VBA bridge module).
+
+### Limitations (v1.5.0 known)
+
+- `eval_cell` and `refresh_query` action variants are deferred to a
+  later v1.5.x release. The discriminator schema is designed so they
+  can be added without breaking callers.
+- Macro arguments accept only null / boolean / number / string in v1.
+  Complex types pass `VbaUnsupportedArgumentType`; serialise into a
+  worksheet cell from the macro side instead.
+- `Application.Run` blocks the COM thread for the macro's full
+  duration. Long-running macros freeze subsequent `excel` calls on
+  the same MCP server until they return.
+
 ## [1.4.4] - 2026-05-11 — Window-targeted screenshots use PrintWindow by default (recovers RDP + GPU-composited captures)
 
 ### Changed
