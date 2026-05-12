@@ -103,13 +103,28 @@ pub fn vba_module_add(
         let module_disp = variant_to_dispatch(&module)
             .ok_or_else(|| make_unexpected("VBComponents.Add did not return IDispatch"))?;
 
-        // Set Name = module_name
+        // Set Name = module_name. This rename is **decorative** for
+        // our caller pattern: `Application.Run(macro_name)` resolves
+        // by the Sub name declared in the VBA source, not by the
+        // module name. If rename fails (some VBA project states
+        // reject it), `Application.Run` still works because it walks
+        // all modules looking for a Sub with the given name. The
+        // rename is attempted so the module appears under a
+        // discoverable name in the VBA Editor UI when the user opens
+        // it; failure is logged for diagnostics but not propagated.
+        //
+        // Opus Round 1 P1-5 justification: this is documented silent
+        // swallow, not a hidden regression. The `Application.Run`
+        // call site (excel.rs::macro_run) does not depend on the
+        // module name; it uses the Sub name argument supplied by the
+        // caller, which matches what is declared in the `code`
+        // string. If the demo flow ever changes to call
+        // `module_name + "." + sub_name` (fully-qualified), this
+        // rename failure becomes a hard error and the eprintln below
+        // must be replaced with `return Err(...)`.
         let name_v: VARIANT = BSTR::from(module_name).into();
         if let Err(e) = dispatch::invoke_put(&module_disp, "Name", name_v) {
-            // Some VBA project states reject renaming silently; non-
-            // fatal because we can still run the macro via its
-            // declared Sub name.
-            eprintln!("[engine-vba-bridge] note: failed to rename module: {e}");
+            eprintln!("[engine-vba-bridge] note: module rename failed (non-fatal, Sub-name-based Run still works): {e}");
         }
 
         // CodeModule
@@ -163,17 +178,42 @@ pub fn macro_run(
 ///
 /// Returns `None` if the VARIANT does not contain a non-null IDispatch.
 /// Used to walk the Excel COM object graph (Workbook → VBProject → ...).
+///
+/// # SAFETY (Opus Round 1 P1-2)
+///
+/// The unsafe block accesses the VARIANT's anonymous union via raw
+/// field projection. This is safe under the following invariants:
+///
+/// - **Tag check first**: `inner.vt == VT_DISPATCH` is checked before
+///   reading `pdispVal`. windows-rs 0.62's `VARIANT_0_0_0` union
+///   guarantees that the `pdispVal` arm is the active member iff
+///   `vt == VT_DISPATCH` (or one of the related dispatch variants);
+///   reading it under a different tag is undefined behavior, which
+///   the tag check prevents.
+/// - **`ManuallyDrop` deref + clone semantic**: `pdispVal` is
+///   `ManuallyDrop<Option<IDispatch>>` in windows-rs 0.62. The `*`
+///   deref invokes `ManuallyDrop::deref` → `&Option<IDispatch>`, then
+///   `.clone()` invokes `Option::clone` which (for `Some(IDispatch)`)
+///   calls `IDispatch::clone` which calls `AddRef`. The returned
+///   `Option<IDispatch>` is therefore independently refcount-managed
+///   and `Drop`-safe across the caller's scope.
+/// - **Apartment affinity**: the caller (only call site is
+///   `excel.rs`) invokes this function from inside a `with_app`
+///   closure that runs on the STA worker thread. The cloned
+///   `IDispatch` therefore lives on the same apartment that created
+///   the source VARIANT, satisfying COM apartment rules.
+///
+/// **Structural hazard guard**: callers must not pass the returned
+/// `IDispatch` out of the `with_app` closure (e.g. by smuggling it
+/// through `usize` or `Result<Self>`). Current callers in `excel.rs`
+/// consume it within the same closure body and drop it before the
+/// closure returns, satisfying this constraint by inspection. If
+/// future code violates this, COM ref-count management will go wrong
+/// in subtle ways — add a regression test before such a change.
 fn variant_to_dispatch(v: &VARIANT) -> Option<IDispatch> {
-    // The windows-rs 0.62 VARIANT API exposes a `to_dispatch()` /
-    // `as_dispatch()` style accessor on some types but not directly
-    // on VARIANT. We use the union access pattern that matches the
-    // Win32 documentation for VARIANT layout.
     unsafe {
         let inner = &v.Anonymous.Anonymous;
         if inner.vt == windows::Win32::System::Variant::VT_DISPATCH {
-            // pdispVal in windows-rs 0.62 is `ManuallyDrop<Option<IDispatch>>`.
-            // Dereference via `*` to read the inner `Option<IDispatch>`,
-            // then clone (Option<IDispatch>: Clone via IDispatch: Clone).
             (*inner.Anonymous.pdispVal).clone()
         } else {
             None

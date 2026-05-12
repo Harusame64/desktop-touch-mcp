@@ -133,7 +133,29 @@ impl ExcelSession {
     {
         let (reply_tx, reply_rx) = bounded::<VbaBridgeResult<R>>(1);
         let task: ExcelTask = Box::new(move |disp: &IDispatch| {
-            let result = f(disp);
+            // Wrap f(disp) in catch_unwind so a panic inside the
+            // user closure does not kill the STA worker thread
+            // (which would leak the apartment + Excel.exe). On
+            // panic we translate to a typed error so the caller
+            // can recover. (Opus Round 1 P1-3 / P1-4.)
+            let panic_result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(disp)));
+            let result: VbaBridgeResult<R> = match panic_result {
+                Ok(r) => r,
+                Err(panic_payload) => {
+                    let info = if let Some(s) = panic_payload.downcast_ref::<&'static str>() {
+                        (*s).to_string()
+                    } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "<non-string panic payload>".to_string()
+                    };
+                    Err(VbaBridgeError::ComCallFailed {
+                        hresult: -1,
+                        context: format!("with_app closure panicked: {info}"),
+                    })
+                }
+            };
             // Best-effort: if the caller has dropped the reply
             // receiver, swallow the send error.
             let _ = reply_tx.send(result);
@@ -246,7 +268,18 @@ fn worker_loop(
         crossbeam_channel::select! {
             recv(receiver) -> task => {
                 match task {
-                    Ok(task) => task(&app),
+                    Ok(task) => {
+                        // catch_unwind belt-and-suspenders: the inner
+                        // with_app closure already wraps the user
+                        // closure, but we also catch here so any panic
+                        // in the ExcelTask boxed closure itself
+                        // (signal sending, type conversion, etc.) does
+                        // not skip the apartment teardown below.
+                        // (Opus Round 1 P1-3.)
+                        let _ = std::panic::catch_unwind(
+                            std::panic::AssertUnwindSafe(|| task(&app))
+                        );
+                    }
                     Err(_) => break, // sender dropped — implicit shutdown
                 }
             }

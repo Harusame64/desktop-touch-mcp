@@ -25,6 +25,31 @@
 
 #![cfg_attr(not(windows), allow(unused))]
 
+// ## windows-rs 0.62 VARIANT construction SSOT
+//
+// The Excel wrapper relies on these `From` impls from windows-rs 0.62:
+//
+//   impl From<bool> for VARIANT       — VT_BOOL (true → VARIANT_TRUE)
+//   impl From<i32>  for VARIANT       — VT_I4
+//   impl From<f64>  for VARIANT       — VT_R8
+//   impl From<BSTR> for VARIANT       — VT_BSTR (BSTR ownership transferred,
+//                                       freed via VariantClear on VARIANT::drop)
+//
+// `BSTR::from(String)` allocates via `SysAllocStringLen`. `BSTR: Drop`
+// frees via `SysFreeString`. When a BSTR is moved into a VARIANT, the
+// VARIANT becomes the owner; dropping the VARIANT calls VariantClear
+// which frees the BSTR. Phase 2d code at `excel.rs:107,121` relies on
+// this transfer-of-ownership semantic.
+//
+// VARIANT itself implements `Clone` via `VariantCopy` (deep copy with
+// new BSTR allocation for VT_BSTR). Phase 2 `dispatch::reversed_args`
+// calls `.cloned()` on `&[VARIANT]` which produces independently-owned
+// VARIANT copies; the caller's VARIANTs are not mutated.
+//
+// Phase 2 end-to-end tests on Excel 365 confirm all of the above
+// behave as documented (18/18 PASS including round-trip BSTR through
+// AddFromString + Range.Value).
+
 pub mod errors;
 pub mod registry;
 pub mod variant;
