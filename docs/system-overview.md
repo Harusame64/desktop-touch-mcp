@@ -64,13 +64,13 @@ desktop-touch-mcp (Node.js / TypeScript)
     │       ├── envelope.ts         — projectEnvelope: attention derivation + token-budget trimming
     │       ├── sensors-win32.ts    — only impure module; piggybacks event-bus 500 ms tick
     │       └── registry.ts         — central coordinator; max 16 lenses (LRU evict)
-    └── Layer 2: 28 public MCP tools (26 stub catalog + 2 dynamic v2)
-        See [CHANGELOG.md](D:/git/desktop-touch-mcp/CHANGELOG.md) Phase 1+2+3+4 sections for the per-phase mapping.
+    └── Layer 2: 29 public MCP tools (27 stub catalog + 2 dynamic v2)
+        See [CHANGELOG.md](D:/git/desktop-touch-mcp/CHANGELOG.md) Phase 1+2+3+4 sections for the per-phase mapping. ADR-015 v1.5.0 adds the `excel` tool (invariant 6 explicit carve-out, see `docs/layer-constraints.md` §6.3 Note).
 ```
 
 ### Surface status
 
-- **Current public surface (v1.0.0)**: 28 tools — 26 stub catalog + 2 dynamic v2 (`desktop_discover` / `desktop_act`)
+- **Current public surface (v1.5.0)**: 29 tools — 27 stub catalog + 2 dynamic v2 (`desktop_discover` / `desktop_act`)
 - **Tool surface reduction (Phase 1–4) — shipped**: naming redesign, family merge dispatchers, browser rearrangement, privatize/absorb. Pre-Phase-1 surface was 65 tools.
 - Phase design references (all Implemented):
   - [tool-surface-phase1-naming-design.md](D:/git/desktop-touch-mcp/docs/tool-surface-phase1-naming-design.md)
