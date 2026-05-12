@@ -35,7 +35,11 @@ pub fn invoke_get(
     // so the call site is exercised end-to-end against a real
     // Excel.Application IDispatch.
     Err(VbaBridgeError::ComCallFailed {
-        hresult: 0,
+        // E_NOTIMPL = 0x80004001 (= -2147467263 as i32). Phase 1 stub
+        // returns E_NOTIMPL deliberately so future diagnostic paths
+        // cannot misinterpret hresult=0 (= S_OK = success). Phase 2
+        // replaces this entirely with real Invoke() calls.
+        hresult: -2147467263,
         context: format!("invoke_get({name}): Phase 1 stub — implementation lands in Phase 2"),
     })
 }
@@ -51,7 +55,11 @@ pub fn invoke_call(
     _args: &[VARIANT],
 ) -> VbaBridgeResult<VARIANT> {
     Err(VbaBridgeError::ComCallFailed {
-        hresult: 0,
+        // E_NOTIMPL = 0x80004001 (= -2147467263 as i32). Phase 1 stub
+        // returns E_NOTIMPL deliberately so future diagnostic paths
+        // cannot misinterpret hresult=0 (= S_OK = success). Phase 2
+        // replaces this entirely with real Invoke() calls.
+        hresult: -2147467263,
         context: format!("invoke_call({name}): Phase 1 stub — implementation lands in Phase 2"),
     })
 }
@@ -62,7 +70,11 @@ pub fn invoke_call(
 /// Phase 2 will use this for `Application.Visible = true`, etc.
 pub fn invoke_put(_disp: &IDispatch, name: &str, _value: VARIANT) -> VbaBridgeResult<()> {
     Err(VbaBridgeError::ComCallFailed {
-        hresult: 0,
+        // E_NOTIMPL = 0x80004001 (= -2147467263 as i32). Phase 1 stub
+        // returns E_NOTIMPL deliberately so future diagnostic paths
+        // cannot misinterpret hresult=0 (= S_OK = success). Phase 2
+        // replaces this entirely with real Invoke() calls.
+        hresult: -2147467263,
         context: format!("invoke_put({name}): Phase 1 stub — implementation lands in Phase 2"),
     })
 }

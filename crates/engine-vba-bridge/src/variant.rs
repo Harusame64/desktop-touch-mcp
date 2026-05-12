@@ -137,7 +137,7 @@ mod win {
     //! surface (`json_to_variant` / `variant_to_json`) can be referenced
     //! by future Phase 2 code without further crate-level wiring.
 
-    use super::{VariantKind, VbaBridgeError, VbaBridgeResult, Value};
+    use super::{VariantKind, VbaBridgeResult, Value};
 
     /// Construct a `VARIANT` from a JSON value.
     ///
@@ -168,10 +168,6 @@ mod win {
         }
     }
 
-    #[allow(dead_code)]
-    fn _phase2_placeholder(_: &VbaBridgeError) {
-        // Suppresses unused-import warnings on Phase 1 cdylib builds.
-    }
 }
 
 #[cfg(windows)]
