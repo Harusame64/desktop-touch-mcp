@@ -1027,7 +1027,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
               "const": "sequence"
             },
             "steps": {
-              "description": "Ordered list of key-press steps. Min 1, max 16. Total duration must not exceed 5000ms (excludes settleMs and focus acquisition).",
+              "description": "Ordered list of key-press steps. Min 1, max 16. Total duration must not exceed 5000ms (excludes settleMs and focus acquisition). N=1 is allowed but inherits the sequence verification contract (hints.verifyDelivery.status='focus_only'); if you want the stricter keyboard:press contract, call keyboard({action:'press', keys}) directly (issue #278, matrix doc §3.1).",
               "type": "array",
               "items": {
                 "type": "object",
