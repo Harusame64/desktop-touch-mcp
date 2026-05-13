@@ -325,28 +325,35 @@ describe("keyboardTypeHandler — Phase B leash-enabled foreground send", () => 
     expect(mockTypeFn).toHaveBeenNthCalledWith(2, "e");
   });
 
-  it("surrogate pair (emoji) is never split across chunks (Codex P2)", async () => {
+  // ADR-018 Phase 2b-2: emoji input now auto-upgrades to clipboard by default
+  // (isNonAscii detector). The chunked-keystroke + surrogate-pair-aware path
+  // still must work for callers who opt out via `forceKeystrokes: true` (the
+  // emoji-keystroke tests below pin that fallback). A new test verifies the
+  // default path routes emoji to clipboard, completing AC3 of ADR-018.
+
+  it("surrogate pair (emoji) is never split across chunks (Codex P2) — forceKeystrokes opt-out", async () => {
     // 😀 = U+1F600 = surrogate pair "😀" (2 UTF-16 code units = 1 codepoint).
     // With chunkSize=4 (4 code points), 5 codepoints "abc😀d" should produce 2 chunks:
     //   chunk 0: "abc😀" (3 ASCII + 1 emoji = 4 codepoints, 5 UTF-16 units)
     //   chunk 1: "d" (1 codepoint, 1 UTF-16 unit)
     // Without code-point-aware chunking, slice(0,4) of "abc😀d" returns "abc\uD83D"
-    // (a lone high surrogate) — broken character.
-    await keyboardTypeHandler({ ...baseArgs, text: "abc😀d" });
+    // (a lone high surrogate) — broken character. forceKeystrokes:true is the
+    // ADR-018 §2.4 / Phase 2b-2 opt-out for callers that need keystroke routing.
+    await keyboardTypeHandler({ ...baseArgs, text: "abc😀d", forceKeystrokes: true });
     expect(mockTypeFn).toHaveBeenCalledTimes(2);
     expect(mockTypeFn).toHaveBeenNthCalledWith(1, "abc😀");
     expect(mockTypeFn).toHaveBeenNthCalledWith(2, "d");
   });
 
-  it("emoji-heavy text: surrogate pairs preserved across chunk boundaries", async () => {
+  it("emoji-heavy text: surrogate pairs preserved across chunk boundaries — forceKeystrokes opt-out", async () => {
     // 4 emojis with chunkSize=4 codepoints → 1 chunk with all 4 emojis intact.
     const fourEmojis = "😀😁😂😃";
-    await keyboardTypeHandler({ ...baseArgs, text: fourEmojis });
+    await keyboardTypeHandler({ ...baseArgs, text: fourEmojis, forceKeystrokes: true });
     expect(mockTypeFn).toHaveBeenCalledTimes(1);
     expect(mockTypeFn).toHaveBeenCalledWith(fourEmojis);
   });
 
-  it("partial 'typed' on emoji theft is UTF-16 code unit count (consistent with remaining slice)", async () => {
+  it("partial 'typed' on emoji theft is UTF-16 code unit count — forceKeystrokes opt-out", async () => {
     // text = "😀hello" = 1 emoji (2 UTF-16 units) + 5 ASCII = 7 code units, 6 codepoints.
     // chunkSize=4 codepoints → chunk 0: "😀hel" (4 codepoints, 5 UTF-16 units), chunk 1: "lo".
     // Theft on second check: typed=5 (UTF-16 units of chunk 0), remaining="lo".
@@ -358,12 +365,32 @@ describe("keyboardTypeHandler — Phase B leash-enabled foreground send", () => 
         stolenBy: "Chrome",
         stolenByProcessName: "chrome",
       });
-    const result = await keyboardTypeHandler({ ...baseArgs, text: "😀hello" });
+    const result = await keyboardTypeHandler({
+      ...baseArgs,
+      text: "😀hello",
+      forceKeystrokes: true,
+    });
     const parsed = JSON.parse(result.content[0]?.text ?? "{}");
     expect(parsed.context.typed).toBe(5);
     expect(parsed.context.remaining).toBe("lo");
     // First chunk delivered with intact surrogate pair
     expect(mockTypeFn).toHaveBeenCalledWith("😀hel");
+  });
+
+  it("ADR-018 §2.4 D4: default path auto-upgrades emoji to clipboard (no keystroke calls)", async () => {
+    // Phase 2b-2 wiring: NON_ASCII_RE matches the emoji surrogate pair → the
+    // auto-clipboard upgrade fires → no mockTypeFn calls (clipboard handler
+    // path is separate from nutjs.keyboard.type). Confirms AC3 of ADR-018:
+    // CJK / emoji / surrogate pairs route to clipboard reliably.
+    await keyboardTypeHandler({ ...baseArgs, text: "abc😀d" });
+    expect(mockTypeFn).not.toHaveBeenCalled();
+  });
+
+  it("ADR-018 §2.4 D4: default path auto-upgrades CJK to clipboard (no keystroke calls)", async () => {
+    // Same AC3 pin for Japanese — the original ADR-018 motivating case
+    // (user-reported `keyboard(action='type', text='日本語')` silent drop).
+    await keyboardTypeHandler({ ...baseArgs, text: "日本語テスト" });
+    expect(mockTypeFn).not.toHaveBeenCalled();
   });
 
   it("clipboard path is unaffected by the leash (single-shot Ctrl+V is atomic)", async () => {

@@ -1368,24 +1368,32 @@ export const keyboardTypeHandler = async ({
       await keyboard.releaseKey(...selectAll);
     }
 
-    // Auto-clipboard: upgrade to clipboard mode when non-ASCII symbols are present
-    // (unless the caller opted out via forceKeystrokes).
+    // Auto-clipboard: upgrade to clipboard mode when non-ASCII content is present
+    // (unless the caller opted out via forceKeystrokes). Two detectors cover two
+    // distinct motivations:
     //
-    // ADR-018 Phase 2b-1: NON_ASCII_RE is declared at the top of this file as the
-    // contract-lock detector for CJK / emoji / diacritics, but is NOT yet wired
-    // into the auto-clipboard upgrade below. Wiring it in here would route emoji
-    // through clipboard and bypass the Focus Leash chunked-keystroke path
-    // pinned by `tests/unit/keyboard-leash-guard.test.ts` surrogate-pair cases.
-    // ADR-018 §5 R7 mitigation calls for splitting the regex addition
-    // (Phase 2b-1, this PR) from the auto-upgrade flip (Phase 2b-2, after the
-    // leash tests adopt clipboard-path assertions). Phase 2b-2 lands when callers
-    // opt-in via use_clipboard=true and the leash regression tests can be updated
-    // to assert the clipboard routing rather than chunked keystroke.
+    //   - NON_ASCII_SYMBOL_RE: 5 specific symbols that Chrome / Edge intercept as
+    //     keyboard accelerators (em-dash / smart quotes / ellipsis / NBSP).
+    //     Pre-dates ADR-018; retained for that targeted defense.
+    //
+    //   - isNonAscii (NON_ASCII_RE wrapper): ANY code point outside U+0000..U+007F
+    //     (CJK, emoji, surrogate pairs, Latin diacritics, etc.) that the Win32
+    //     keystroke channel cannot deliver reliably across keyboard layouts.
+    //     Wired in ADR-018 Phase 2b-2 — see `docs/adr-018-input-pipeline-3tier.md` §2.4 D4.
+    //
+    // Callers needing keystroke semantics for non-ASCII text (e.g. Focus Leash
+    // surrogate-pair chunked-keystroke regression coverage) opt out with
+    // `forceKeystrokes: true`.
     let effectiveClipboard = use_clipboard;
     let autoClipboardReason: string | undefined;
-    if (!use_clipboard && !forceKeystrokes && NON_ASCII_SYMBOL_RE.test(effectiveText)) {
-      effectiveClipboard = true;
-      autoClipboardReason = "non-ASCII symbol detected";
+    if (!use_clipboard && !forceKeystrokes) {
+      if (NON_ASCII_SYMBOL_RE.test(effectiveText)) {
+        effectiveClipboard = true;
+        autoClipboardReason = "non-ASCII symbol detected";
+      } else if (isNonAscii(effectiveText)) {
+        effectiveClipboard = true;
+        autoClipboardReason = "non-ASCII character detected (CJK / emoji / diacritic)";
+      }
     }
 
     if (effectiveClipboard) {
