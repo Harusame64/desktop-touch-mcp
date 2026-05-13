@@ -942,7 +942,8 @@ export interface ScrollVerifyOutcome {
   /**
    * Typed reason context. The union mixes two generations:
    *
-   * The 4-value "matrix doc §4" enum (current emitters at line ~999/1007/1108):
+   * The 4-value "matrix doc §4" enum (current emitters in `evaluateScrollDelivery`
+   * boundary-fallback paths and `scrollHandler` post-snapshot block):
    *   - `read_back_unsupported`, `page_end_inferred`, `scrollbar_unavailable`,
    *     `no_target_window`. These are emitted today and pinned by
    *     `tests/unit/scroll-raw-verify.test.ts`. They are **scheduled for removal**
