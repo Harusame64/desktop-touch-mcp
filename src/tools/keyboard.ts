@@ -286,6 +286,39 @@ const hwndFocusParam = z.string().optional().describe(
 /** Non-ASCII punctuation that can be hijacked as Chrome/Edge keyboard accelerators */
 const NON_ASCII_SYMBOL_RE = /[\u2013\u2014\u2018\u2019\u201C\u201D\u2026\u00A0]/;
 
+/**
+ * Non-ASCII character detection (ADR-018 \u00A72.4 D4 \u2014 Phase 2b).
+ *
+ * Any code point outside U+0000..U+007F. Covers CJK (Japanese / Korean / Chinese),
+ * emoji and supplementary-plane code points (matched via the high surrogate range
+ * in the `u` flag form), Latin diacritics (r\u00E9sum\u00E9), Greek, Cyrillic, Arabic,
+ * Hebrew, IPA, math symbols \u2014 i.e. any text the Win32 keystroke channel
+ * (`SendInput` with virtual-key codes) cannot deliver reliably across keyboard
+ * layouts.
+ *
+ * When matched, the auto-clipboard upgrade routes through `typeViaClipboard`,
+ * which preserves the exact Unicode bytes regardless of IME state or layout.
+ * The `keystroke` path is still selected for pure ASCII text (fastest path).
+ *
+ * Wired into the auto-clipboard upgrade in ADR-018 Phase 2b-2 (separate PR);
+ * Phase 2b-1 only declares the constant + pins the contract via the public
+ * `isNonAscii()` helper so the rest of the codebase (and tests) can already
+ * use it. See `tests/unit/keyboard-cjk.test.ts`.
+ */
+const NON_ASCII_RE = /[\u0080-\u{10FFFF}]/u;
+
+/**
+ * Public predicate for callers that need ADR-018 \u00A72.4 non-ASCII detection
+ * without depending on the private regex literal. Phase 2b-2 wires this
+ * into the auto-clipboard upgrade in `keyboardTypeHandler`.
+ *
+ * @internal \u2014 also used by `tests/unit/keyboard-cjk.test.ts` to pin the
+ *             contract bit-equally against the regex declaration above.
+ */
+export function isNonAscii(text: string): boolean {
+  return NON_ASCII_RE.test(text);
+}
+
 const methodParam = z.enum(["auto", "background", "foreground", "foreground_flash"]).default("auto").describe(
   "Input routing channel. " +
   "'auto' uses background (PostMessage) when the target window is a known terminal class " +
@@ -1336,7 +1369,18 @@ export const keyboardTypeHandler = async ({
     }
 
     // Auto-clipboard: upgrade to clipboard mode when non-ASCII symbols are present
-    // (unless the caller opted out via forceKeystrokes)
+    // (unless the caller opted out via forceKeystrokes).
+    //
+    // ADR-018 Phase 2b-1: NON_ASCII_RE is declared at the top of this file as the
+    // contract-lock detector for CJK / emoji / diacritics, but is NOT yet wired
+    // into the auto-clipboard upgrade below. Wiring it in here would route emoji
+    // through clipboard and bypass the Focus Leash chunked-keystroke path
+    // pinned by `tests/unit/keyboard-leash-guard.test.ts` surrogate-pair cases.
+    // ADR-018 §5 R7 mitigation calls for splitting the regex addition
+    // (Phase 2b-1, this PR) from the auto-upgrade flip (Phase 2b-2, after the
+    // leash tests adopt clipboard-path assertions). Phase 2b-2 lands when callers
+    // opt-in via use_clipboard=true and the leash regression tests can be updated
+    // to assert the clipboard routing rather than chunked keystroke.
     let effectiveClipboard = use_clipboard;
     let autoClipboardReason: string | undefined;
     if (!use_clipboard && !forceKeystrokes && NON_ASCII_SYMBOL_RE.test(effectiveText)) {
