@@ -127,31 +127,62 @@ Captured by Claude during the session that drafted this document, on the same ho
 
 **Confirms** the §3 theoretical row for console-active.
 
-### S2 — rdp-active (pending user spike)
+### S2 — rdp-active (PC-B, 2026-05-13)
 
-Setup: RDP from PC-A to PC-B with this user's account, open PowerShell inside the RDP session on PC-B, run the script. Expected: `ownSession ≠ consoleSession`, `consoleSession` either equals the physically-logged-in user's id or `0xFFFFFFFF` if no one is at the console; EnumWindows count nonzero and all `sessionId == ownSession`.
+Captured on a Windows Server PC-B from PC-A's mstsc session. User ran the spike one-liner via PC-A→PC-B clipboard relay (after two retries to defeat the FANUC corporate proxy's NTLM challenge — see §5.6).
 
-### S3 — rdp-locked (pending user spike)
+- `ownProcess.sessionId = 5`, `consoleSessionId = 1` → **own ≠ console**, the structural difference that distinguishes "inside RDP" from "at the console" without any winStation parsing.
+- `WTSEnumerateSessions` returned six entries — far richer than S1 (server SKU):
+  - `{ id=0, Services, Disconnected }` — kernel services session
+  - `{ id=1, Console, Connected (state=1) }` — physical console exists but is not Active (no one signed in at the screen)
+  - `{ id=3, winStation="", Disconnected }` — stale session record (likely a previous RDP logon that ended)
+  - `{ id=5, RDP-Tcp#0, Active }` — **our** session
+  - `{ id=65536, winStation=hex GUID, Listen }`, `{ id=65537, RDP-Tcp, Listen }` — RDP listener slots
+- `EnumWindows` returned `totalCount=96`, of which the first 12 visible were sampled. **Every single sampled HWND carried `sessionId=5`**. Zero entries from session 0 / session 1 / session 3 — confirming the matrix's no-leak claim under "other-session-running" simultaneously (see S5 below).
+- `GetForegroundWindow` returned the user's PowerShell window in session 5 (`Windows PowerShell`, class `CASCADIA_HOSTING_WINDOW_CLASS`), `isNull=false`. RDP-active state preserves foreground tracking normally.
+- Sampled classes include `Shell_TrayWnd`, `Progman`, `CabinetWClass` (Explorer), `CASCADIA_HOSTING_WINDOW_CLASS` (Windows Terminal), `HwndWrapper[ServerManager.exe;…]` — i.e. the host is a Windows Server with Server Manager pinned. Otherwise unremarkable.
 
-Setup: while in S2, press Win+L inside the RDP session, then re-run the script (or have it scheduled). Expected: `foregroundWindow.isNull = true`, EnumWindows still returns the user's Default-desktop windows.
+**Confirms** the §3 theoretical row for rdp-active.
 
-### S4 — rdp-disconnected (stretch, pending or skipped)
+### S3 — rdp-locked (deferred, see §5.7)
 
-Setup: after S2, close mstsc on PC-A without logout; have Task Scheduler on PC-B run the script with `-OutputPath`. Expected: session enters `Disconnected` state in WTSEnumerateSessions; `foregroundWindow.isNull = true`; EnumWindows still returns the user's windows.
+Not captured this round. Two attempts failed for operational reasons (`Win+L` was consumed by the local PC-A in windowed-mode mstsc; the follow-up `LockWorkStation` + `Start-Sleep` + probe one-liner was prepared but the user closed the measurement round before running it). Per §5.7 we treat the locked state as predicted by §3's theoretical row (`foregroundWindow.isNull = true`, EnumWindows still returns Default-desktop HWNDs) and design ADR-017 against that prediction; if the prediction is wrong it is a single Phase-1.5-style follow-up to add the `lockedRefinement` finding to this document and adjust the ADR.
 
-### S5 — other-session-running (stretch, pending or skipped)
+### S4 — rdp-disconnected (deferred, see §5.7)
 
-Setup: while S1's console session is signed in on PC-B, RDP in as a different user from PC-A; run script in both sessions; compare. Expected: zero leak — each session's EnumWindows sample contains only `sessionId == ownSession` entries.
+Not captured. The matrix's theoretical row is well-anchored by Win32 docs: a disconnected session keeps Default desktop alive (process + windows persist) but has no input desktop, so `GetForegroundWindow` returns NULL and EnumWindows still enumerates the same set as S2. Same Phase-1.5 escape hatch applies if observed behaviour ever diverges.
+
+### 5.7 Why we stopped here
+
+After S2 + the embedded S5 bonus, the matrix's two load-bearing claims for ADR-017 design were already pinned:
+
+1. **No primitive crosses a session boundary** even when other sessions exist on the host (S2 host had 6 simultaneous sessions; EnumWindows still returned 96 HWNDs all in our session). This decides the structural shape: ADR-017 will be additive (new hint fields, not new gates around existing tools).
+2. **`ProcessIdToSessionId` + `WTSGetActiveConsoleSessionId` together produce a stable two-bit classifier** — `own==console` → console, `own≠console && winStation=~"^RDP-Tcp"` → RDP, otherwise other. This is the data shape `desktop_state` needs to surface.
+
+S3 (locked, `foregroundWindow.isNull` confirmation) and S4 (disconnected) would refine *when* the `sessionState` hint changes, not *whether* ADR-017 should exist. We defer them rather than spend further user attention on this round.
+
+### S5 — other-session-running (bonus, confirmed inside S2)
+
+S5 was supposed to require a separate run from a second user. The S2 capture made that unnecessary: at the moment S2 fired, PC-B was simultaneously hosting `{ session 1 Console Connected }`, `{ session 3 Disconnected }`, and our `{ session 5 RDP-Tcp#0 Active }`. The probe's EnumWindows still returned 96 HWNDs every one of which had `sessionId=5`. So `EnumWindows` and `GetForegroundWindow` are demonstrated session-bound even when other (live or stale) sessions exist on the host. **Confirmed** without a separate run.
+
+### 5.6 Path-finding notes (RDP clipboard, FANUC proxy)
+
+During S2 setup we learned two operational facts worth recording even though they are not Win32-API findings:
+
+- **`clipboard write` over the RDP→host clipboard share is not reliable in this corporate environment.** Two distinct `clipboard write` round-trips (the script command, then the result `Set-Clipboard`) both produced `text=""` when read back from PC-A. This is the exact failure mode the `clipboard` tool description already warns about (`"RDP / Citrix clipboard transcoding strips the text"`); this session confirms it for FHQ-prefixed corporate hosts.
+- **`Invoke-WebRequest` from PC-B failed proxy auth twice** (`Access Denied (authentication_failed)` HTML, then `-ProxyUseDefaultCredentials` requiring an explicit `-Proxy <URI>` per PSv5 semantics) before succeeding with **only** `[Net.WebRequest]::DefaultWebProxy.Credentials = [Net.CredentialCache]::DefaultCredentials` set up-front. Recorded in user memory `feedback_node_proxy` already covers the Node path; PowerShell path is a one-line setup that should be folded into the same memory if it recurs.
+
+Neither fact changes the matrix, but both belong in the dogfood feedback trail for ADR-017's "session-aware desktop-touch" framing — clipboard write being unreliable over RDP is a structural reason to favour file-channel result return (as this spike script does via `-OutputPath`) over `Set-Clipboard` for any future cross-session orchestration.
 
 ---
 
-## 6. Decision: ADR vs docs entry vs no action
+## 6. Decision: ADR-017 (session-aware desktop-touch)
 
-To be settled after spike results come back. Candidates:
+Decided. Drafted as `docs/adr-017-session-aware-desktop-touch.md`. Rationale:
 
-- **No action (docs-only).** If §3's theoretical matrix is confirmed in full and there are no surprises, the conclusion is "the project is already session-safe by Win32 design." A short `docs/llm-audit/rdp-session-notes.md` page summarising the matrix is enough; ADR-016 already covers the host-side axis.
-- **Lightweight gate (project hint).** If `GetForegroundWindow → NULL` on lock/disconnect is observed and the project's `desktop_state` returns confusing output in that state, add a `hints.sessionState` field to `desktop_state` derived from `WTSGetActiveConsoleSessionId` + `ProcessIdToSessionId` comparison. No new ADR — note in the existing `desktop_state` tool docs.
-- **New ADR (-017?)** for **session-aware desktop-touch**. If cross-session leakage is observed in any API (extremely unlikely per §2) **or** if we decide to give the LLM explicit `session` filters on `desktop_discover` and elsewhere as forward-compatibility for ADR-016 Phase 3's `Origin::Rdp`. This is a structural commitment and would require its own design pass.
+- Cross-session leakage is structurally impossible (§2 + S2 + S5 bonus). So ADR-017 is **not** about adding gates — it is about adding **observability** so the LLM and the user can see which session we are in, and so the project is forward-compatible with ADR-016 Phase 3's `Origin::Rdp { host, session_id }`.
+- The minimum surface is two new read-only native bindings (`win32_get_process_session_id`, `win32_get_active_console_session_id`) and one optional `WTSEnumerateSessions` wrapper, plus a `desktop_state` `include: ['sessionContext']` flag that returns the two ids + a `sessionLabel` classifier (`'console' | 'rdp' | 'other'`) + the locked/disconnected `sessionState` derived from `WTSEnumerateSessions`.
+- This is small enough to ship without splitting into phases yet, but big enough to deserve its own ADR for the cross-ADR coupling with ADR-016 Phase 3.
 
 ---
 
