@@ -34,6 +34,14 @@ const TOOL_FILES = [
 const MIN_CHARS = 20;
 const MAX_CHARS = 2500;
 
+// Per-tool overrides for tools whose description legitimately exceeds the global cap.
+// `terminal` is a multi-action dispatcher (send/read/run + flags) whose description doubles
+// as the LLM-facing usage guide, so it needs more room. Adding a tool here is deliberate —
+// keep the global cap tight so unrelated tools can't silently bloat past 2500.
+const MAX_CHARS_OVERRIDES: Record<string, number> = {
+  terminal: 4000,
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Minimal parser (mirrors scripts/measure-tools-list-tokens.ts)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -229,8 +237,9 @@ describe("tool descriptions — contract", () => {
         expect(tool.description.length).toBeGreaterThanOrEqual(MIN_CHARS);
       });
 
-      it(`does not exceed ${MAX_CHARS} characters`, () => {
-        expect(tool.description.length).toBeLessThanOrEqual(MAX_CHARS);
+      const cap = MAX_CHARS_OVERRIDES[tool.name] ?? MAX_CHARS;
+      it(`does not exceed ${cap} characters`, () => {
+        expect(tool.description.length).toBeLessThanOrEqual(cap);
       });
 
       it("contains no placeholder text", () => {
