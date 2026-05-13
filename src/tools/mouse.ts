@@ -35,6 +35,11 @@ import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/re
 import { runActionGuard, isAutoGuardEnabled } from "./_action-guard.js";
 import { detectTabDragRisk } from "../engine/perception/tab-drag-heuristic.js";
 import { resolveWindowTarget } from "./_resolve-window.js";
+import {
+  resolveInputDestination,
+  dispatchScrollWheel,
+  assertTier4Reachable,
+} from "./_input-pipeline.js";
 
 /**
  * Move cursor to (x, y) at the given speed.
@@ -1089,44 +1094,42 @@ export const scrollHandler = async ({
       await moveTo(tx, ty, speed);
     }
 
-    // Resolve the hwnd we will observe. Order:
-    //   1. resolveWindowTarget result (explicit hwnd / @active / dialog walk)
-    //   2. plain windowTitle → enumerate (resolveWindowTarget returns null in this case)
-    //   3. cursor location (best effort) so coord-based scroll still gets verification
-    //   4. foreground (last resort)
-    let observedHwnd: bigint | null = resolvedWin?.hwnd ?? null;
-    if (observedHwnd === null && windowTitle && windowTitle !== "@active") {
-      try {
-        const wantTitle = windowTitle.toLowerCase();
-        const win = enumWindowsInZOrder().find(
-          (w) => !w.isMinimized && w.title.toLowerCase().includes(wantTitle),
-        );
-        if (win) observedHwnd = win.hwnd;
-      } catch { /* best effort */ }
-    }
-    if (observedHwnd === null && tx !== undefined && ty !== undefined) {
-      const containing = findContainingWindow(tx, ty);
-      if (containing) observedHwnd = containing.hwnd;
-    }
-    if (observedHwnd === null) {
-      observedHwnd = getForegroundHwnd();
-    }
+    // ADR-018 Phase 1b — destination-explicit dispatch.
+    // Resolve InputDestination first; the dispatcher decides whether Tier 1 UIA
+    // can handle this HWND, otherwise the caller falls through to Tier 4 SendInput
+    // (the legacy nutjs path, preserved unchanged until Phase 4 Tier 3 lands).
+    const dest = await resolveInputDestination({
+      hwnd,
+      windowTitle,
+      cursor: tx !== undefined && ty !== undefined ? { x: tx, y: ty } : undefined,
+    });
+    // 'cdp' variant has no HWND (tabId-based); Phase 1b resolver never emits 'cdp'
+    // so this narrowing is exhaustive in practice. Phase 3 will replace the
+    // observation source for 'cdp' destinations with CDP `scrollTop` queries.
+    const observedHwnd: bigint | null =
+      dest.kind === "uia" || dest.kind === "hwnd" ? dest.hwnd : null;
     const observedRect = observedHwnd !== null ? getWindowRectByHwnd(observedHwnd) : null;
 
     // Phase 1: pre-scroll snapshot (matrix doc §3.1 + terminal regimen §2.1 phase 1).
     const pre = await captureScrollSnapshot(observedHwnd, observedRect);
 
-    // Phase 2: side-effect injection — the existing wheel SendInput path.
-    const SCROLL_MULTIPLIER = 3;
-    switch (direction) {
-      case "down":  await mouse.scrollDown(amount * SCROLL_MULTIPLIER); break;
-      case "up":    await mouse.scrollUp(amount * SCROLL_MULTIPLIER); break;
-      case "right":
-        for (let i = 0; i < amount; i++) await mouse.scrollRight(SCROLL_MULTIPLIER);
-        break;
-      case "left":
-        for (let i = 0; i < amount; i++) await mouse.scrollLeft(SCROLL_MULTIPLIER);
-        break;
+    // Phase 2: side-effect injection. Try Tier 1 (UIA) first; if dispatcher returns
+    // null, fall through to the legacy nutjs SendInput path (Phase 1b lenient guard).
+    const tier1 = await dispatchScrollWheel(dest, { direction, notch: amount });
+
+    if (tier1 === null) {
+      assertTier4Reachable(dest);
+      const SCROLL_MULTIPLIER = 3;
+      switch (direction) {
+        case "down":  await mouse.scrollDown(amount * SCROLL_MULTIPLIER); break;
+        case "up":    await mouse.scrollUp(amount * SCROLL_MULTIPLIER); break;
+        case "right":
+          for (let i = 0; i < amount; i++) await mouse.scrollRight(SCROLL_MULTIPLIER);
+          break;
+        case "left":
+          for (let i = 0; i < amount; i++) await mouse.scrollLeft(SCROLL_MULTIPLIER);
+          break;
+      }
     }
 
     // Phase 3: settle render.
@@ -1134,9 +1137,16 @@ export const scrollHandler = async ({
 
     // Phase 4: post-scroll snapshot + delivery evaluation.
     const post = await captureScrollSnapshot(observedHwnd, observedRect);
-    const outcome: ScrollVerifyOutcome = observedHwnd === null
-      ? { status: "unverifiable", delta: "unverifiable", reason: "no_target_window" }
-      : evaluateScrollDelivery(pre, post, direction);
+
+    // When Tier 1 UIA succeeded (`tier1 !== null && tier1.scrolled`), the dispatcher
+    // already established delivery. We still capture a Win32 snapshot diff so
+    // `scrollObserved.delta` carries a numeric value for callers that inspect it,
+    // but we trust the dispatcher's success signal for `status`/`channel`/`reason`.
+    const outcome: ScrollVerifyOutcome = tier1 !== null && tier1.scrolled
+      ? { status: "delivered", delta: evaluateScrollDelivery(pre, post, direction).delta }
+      : observedHwnd === null
+        ? { status: "unverifiable", delta: "unverifiable", reason: "no_target_window" }
+        : evaluateScrollDelivery(pre, post, direction);
 
     // hints.scrollObserved (issue #179 body shape) carries the raw delta values
     // for caller introspection; hints.verifyDelivery (matrix doc §4 shape) carries
@@ -1173,10 +1183,17 @@ export const scrollHandler = async ({
       );
     }
 
+    // ADR-018 §2.6.1 — channel is the transport identifier (always populated).
+    // Phase 1b emits 'uia' when the dispatcher's Tier 1 path succeeded; legacy
+    // path retains the existing 'wheel_send_input' channel for back-compat. The
+    // Phase 4 §2.6.3 migration renames 'wheel_send_input' → 'send_input'.
+    const effectiveChannel: "uia" | "wheel_send_input" =
+      tier1 !== null && tier1.scrolled ? "uia" : "wheel_send_input";
     const verifyDelivery = outcome.status === "delivered"
       ? {
           status: "delivered" as const,
-          channel: "wheel_send_input" as const,
+          channel: effectiveChannel,
+          ...(tier1 !== null && tier1.reason !== null ? { reason: tier1.reason } : {}),
         }
       : {
           status: "unverifiable" as const,

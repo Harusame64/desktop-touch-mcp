@@ -54,6 +54,7 @@ export const uiaGetFocusedElement = nativeBinding.uiaGetFocusedElement;
 export const uiaScrollIntoView = nativeBinding.uiaScrollIntoView;
 export const uiaGetScrollAncestors = nativeBinding.uiaGetScrollAncestors;
 export const uiaScrollByPercent = nativeBinding.uiaScrollByPercent;
+export const uiaScrollByWheelAtHwnd = nativeBinding.uiaScrollByWheelAtHwnd;
 export const uiaGetVirtualDesktopStatus = nativeBinding.uiaGetVirtualDesktopStatus;
 export const uiaClickElement = nativeBinding.uiaClickElement;
 export const uiaSetValue = nativeBinding.uiaSetValue;

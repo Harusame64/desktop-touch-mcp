@@ -241,6 +241,17 @@ export interface NativeUia {
     verticalPercent: number;
     horizontalPercent: number;
   }): Promise<NativeScrollResult>;
+  /**
+   * ADR-018 Phase 1b — Tier 1 destination-explicit wheel dispatch. Resolves
+   * the UIA element from `hwnd` and calls `SetScrollPercent` on the first
+   * ScrollPattern ancestor. `wheelDeltaY` / `wheelDeltaX` use Win32
+   * `WHEEL_DELTA = 120` units per notch (down/right positive).
+   */
+  uiaScrollByWheelAtHwnd?(opts: {
+    hwnd: string;
+    wheelDeltaY: number;
+    wheelDeltaX: number;
+  }): Promise<NativeScrollResult>;
   uiaGetVirtualDesktopStatus?(
     hwndIntegers: string[],
   ): Promise<Record<string, boolean>>;

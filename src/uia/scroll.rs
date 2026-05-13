@@ -3,6 +3,7 @@
 //! Mirrors `scrollElementIntoView`, `getScrollAncestors`, and `scrollByPercent`
 //! from `uia-bridge.ts`.
 
+use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Accessibility::*;
 use windows::core::Interface;
 
@@ -40,6 +41,18 @@ pub struct ScrollByPercentOptions {
     pub horizontal_percent: f64,
 }
 
+/// ADR-018 Phase 1b — destination-explicit Tier 1 wheel options. The HWND is
+/// passed as a string (BigInt-safe across the napi boundary) and converted to
+/// `i64` inside `scroll_by_wheel_at_hwnd_impl`. Wheel deltas use the Win32
+/// `WHEEL_DELTA = 120` units-per-notch convention (down/right positive).
+#[napi_derive::napi(object)]
+#[derive(Debug, Clone)]
+pub struct ScrollByWheelAtHwndOptions {
+    pub hwnd: String,
+    pub wheel_delta_y: i32,
+    pub wheel_delta_x: i32,
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 pub fn scroll_into_view(opts: ScrollIntoViewOptions) -> napi::Result<ScrollResult> {
@@ -59,6 +72,18 @@ pub fn get_scroll_ancestors(opts: ScrollAncestorsOptions) -> napi::Result<Vec<Sc
 pub fn scroll_by_percent(opts: ScrollByPercentOptions) -> napi::Result<ScrollResult> {
     thread::execute_with_timeout(
         move |ctx| scroll_by_percent_impl(ctx, &opts),
+        DEFAULT_TIMEOUT_MS,
+    )
+}
+
+/// ADR-018 Phase 1b — Tier 1 dispatch: resolve element via `ElementFromHandle`
+/// and call `SetScrollPercent` on the first ScrollPattern ancestor (or the
+/// element itself). Returns `ScrollResult { scrolled: false }` when no
+/// ScrollPattern is reachable; the caller (TS dispatcher) interprets this as
+/// "fall through to Tier 4 SendInput" until Phase 4 Tier 3 lands.
+pub fn scroll_by_wheel_at_hwnd(opts: ScrollByWheelAtHwndOptions) -> napi::Result<ScrollResult> {
+    thread::execute_with_timeout(
+        move |ctx| scroll_by_wheel_at_hwnd_impl(ctx, &opts),
         DEFAULT_TIMEOUT_MS,
     )
 }
@@ -214,6 +239,108 @@ fn scroll_by_percent_impl(
         }
 
         current = unsafe { ctx.walker.GetParentElement(&parent).ok() };
+    }
+
+    Ok(ScrollResult {
+        ok: false,
+        scrolled: false,
+        error: Some("No ScrollPattern ancestor found".into()),
+    })
+}
+
+/// ADR-018 Phase 1b — resolve HWND → IUIAutomationElement, walk ancestors to
+/// find ScrollPattern, scroll by wheel delta (converted to percent step via
+/// `view_size / 10` per notch).
+fn scroll_by_wheel_at_hwnd_impl(
+    ctx: &UiaContext,
+    opts: &ScrollByWheelAtHwndOptions,
+) -> napi::Result<ScrollResult> {
+    let hwnd_i64: i64 = opts.hwnd.parse().map_err(|e| {
+        napi::Error::from_reason(format!("ScrollByWheelAtHwndOptions.hwnd parse error: {e}"))
+    })?;
+    if hwnd_i64 == 0 {
+        return Ok(ScrollResult {
+            ok: false,
+            scrolled: false,
+            error: Some("hwnd is 0 (null)".into()),
+        });
+    }
+    let hwnd = HWND(hwnd_i64 as *mut std::ffi::c_void);
+
+    // Resolve element from HWND. On failure (invalid hwnd / element not in UIA
+    // tree) we return ok:false so the TS dispatcher falls through to legacy.
+    let elem: IUIAutomationElement = match unsafe { ctx.automation.ElementFromHandle(hwnd) } {
+        Ok(e) => e,
+        Err(e) => {
+            return Ok(ScrollResult {
+                ok: false,
+                scrolled: false,
+                error: Some(format!("ElementFromHandle failed: {e}")),
+            });
+        }
+    };
+
+    // Walk from the element itself up through parents looking for the first
+    // ScrollPattern. Stop at the desktop root (CompareElements true) so we
+    // don't probe the root element (which has no useful ScrollPattern).
+    let root: IUIAutomationElement = unsafe { ctx.automation.GetRootElement().map_err(win_err)? };
+    let mut current: Option<IUIAutomationElement> = Some(elem);
+
+    while let Some(e) = current {
+        let is_root = unsafe {
+            ctx.automation
+                .CompareElements(&e, &root)
+                .unwrap_or_default()
+        };
+        if is_root == true {
+            break;
+        }
+
+        unsafe {
+            if let Ok(pat) = e.GetCurrentPattern(UIA_ScrollPatternId)
+                && let Ok(scroll) = pat.cast::<IUIAutomationScrollPattern>()
+            {
+                let cur_v = scroll.CurrentVerticalScrollPercent().unwrap_or(0.0);
+                let cur_h = scroll.CurrentHorizontalScrollPercent().unwrap_or(0.0);
+                let view_v = scroll.CurrentVerticalViewSize().unwrap_or(10.0);
+                let view_h = scroll.CurrentHorizontalViewSize().unwrap_or(10.0);
+
+                // 1 notch (WHEEL_DELTA=120) ≈ one-tenth of the visible view.
+                // Empirically this matches Windows' default wheel scroll lines (3)
+                // for typical apps without making cursors swerve violently in
+                // small viewports.
+                let step_v = (opts.wheel_delta_y as f64 / 120.0) * (view_v / 10.0) * 100.0;
+                let step_h = (opts.wheel_delta_x as f64 / 120.0) * (view_h / 10.0) * 100.0;
+
+                // UIA convention: -1.0 means "no scroll on this axis".
+                let target_v = if opts.wheel_delta_y == 0 {
+                    -1.0
+                } else {
+                    (cur_v + step_v).clamp(0.0, 100.0)
+                };
+                let target_h = if opts.wheel_delta_x == 0 {
+                    -1.0
+                } else {
+                    (cur_h + step_h).clamp(0.0, 100.0)
+                };
+
+                // UIA convention: horizontal first, vertical second.
+                return match scroll.SetScrollPercent(target_h, target_v) {
+                    Ok(()) => Ok(ScrollResult {
+                        ok: true,
+                        scrolled: true,
+                        error: None,
+                    }),
+                    Err(e) => Ok(ScrollResult {
+                        ok: false,
+                        scrolled: false,
+                        error: Some(format!("SetScrollPercent failed: {e}")),
+                    }),
+                };
+            }
+        }
+
+        current = unsafe { ctx.walker.GetParentElement(&e).ok() };
     }
 
     Ok(ScrollResult {

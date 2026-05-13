@@ -227,6 +227,23 @@ impl Task for UiaScrollByPercentTask {
 }
 
 #[cfg(windows)]
+pub struct UiaScrollByWheelAtHwndTask(uia::scroll::ScrollByWheelAtHwndOptions);
+
+#[cfg(windows)]
+impl Task for UiaScrollByWheelAtHwndTask {
+    type Output = uia::types::ScrollResult;
+    type JsValue = uia::types::ScrollResult;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        uia::scroll::scroll_by_wheel_at_hwnd(self.0.clone())
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+#[cfg(windows)]
 pub struct UiaGetVirtualDesktopStatusTask(Vec<String>);
 
 #[cfg(windows)]
@@ -268,6 +285,21 @@ pub fn uia_scroll_by_percent(
     opts: uia::scroll::ScrollByPercentOptions,
 ) -> AsyncTask<UiaScrollByPercentTask> {
     AsyncTask::new(UiaScrollByPercentTask(opts))
+}
+
+/// ADR-018 Phase 1b — Tier 1 destination-explicit wheel dispatch. Resolves
+/// the UIA element from the given HWND and calls `SetScrollPercent` on the
+/// first ScrollPattern ancestor (or the element itself). The TS dispatcher
+/// (`src/tools/_input-pipeline.ts::dispatchScrollWheel`) interprets
+/// `{ ok: false }` or `{ scrolled: false }` as "fall through to Tier 4
+/// SendInput" until Phase 4 Tier 3 PostMessage covers resolved-but-non-UIA
+/// destinations.
+#[cfg(windows)]
+#[napi]
+pub fn uia_scroll_by_wheel_at_hwnd(
+    opts: uia::scroll::ScrollByWheelAtHwndOptions,
+) -> AsyncTask<UiaScrollByWheelAtHwndTask> {
+    AsyncTask::new(UiaScrollByWheelAtHwndTask(opts))
 }
 
 /// Query which HWNDs are on the current virtual desktop.
