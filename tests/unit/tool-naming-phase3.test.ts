@@ -300,7 +300,8 @@ describe("Phase 3 — stub-tool-catalog drops absorbed/privatized 4 names", () =
 
   // Cover all six dispatchers (Phase 2 carry-over plus Phase 3 browser_eval).
   it.each([
-    ["keyboard", ["press", "type"]],
+    // Issue #257: 'sequence' added in v1.6.0 for atomic Alt-menu mnemonic chords.
+    ["keyboard", ["press", "sequence", "type"]],
     ["clipboard", ["read", "write"]],
     ["window_dock", ["dock", "pin", "unpin"]],
     ["scroll", ["capture", "raw", "read", "smart", "to_element"]],

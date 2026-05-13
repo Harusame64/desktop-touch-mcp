@@ -27,7 +27,12 @@ export interface FocusLost {
  * Detect focus loss after an action.
  *
  * @param opts.target        Expected title substring of the focused window.
- *                           If null/empty and homingNotes is empty, returns null (no-op).
+ *                           If null/empty and homingNotes is empty (and hwnd is absent),
+ *                           returns null (no-op).
+ * @param opts.hwnd          Expected foreground HWND. When provided takes precedence
+ *                           over `target` substring matching — issue #257 sequence
+ *                           handlers need title-rename-immune mid-sequence focus
+ *                           verification.
  * @param opts.homingNotes   Notes from applyHoming — if a "brought X to front" note exists,
  *                           the target was explicitly restored and focus detection is active.
  * @param opts.settleMs      Wait this many ms before measuring foreground. Default 300.
@@ -35,18 +40,21 @@ export interface FocusLost {
  */
 export async function detectFocusLoss(opts: {
   target?: string;
+  hwnd?: bigint;
   homingNotes?: string[];
   settleMs: number;
 }): Promise<FocusLost | null> {
-  const { target, homingNotes = [], settleMs } = opts;
+  const { target, hwnd, homingNotes = [], settleMs } = opts;
 
   // Determine if we should track focus.
   // We track when:
   //   (a) homing brought a window to front (explicit homing note), OR
-  //   (b) windowTitle was provided (caller knows the target window)
+  //   (b) windowTitle was provided (caller knows the target window), OR
+  //   (c) an expected hwnd was provided (issue #257 sequence path).
   const homingBrought = homingNotes.some((n) => n.startsWith("brought "));
   const hasTarget = !!target && target.length > 0;
-  if (!homingBrought && !hasTarget) {
+  const hasHwnd = hwnd !== undefined && hwnd !== null;
+  if (!homingBrought && !hasTarget && !hasHwnd) {
     return null; // no-op path
   }
 
@@ -68,6 +76,17 @@ export async function detectFocusLoss(opts: {
 
   if (!fg) return null;
 
+  // HWND-based check takes precedence — title rename / Excel-style document
+  // suffix changes mid-sequence must not be misread as focus loss (issue #257).
+  if (hasHwnd) {
+    if (fg.hwnd === hwnd) {
+      return null;
+    }
+    // hwnd mismatch — fall through to "focus stolen" branch below, but
+    // compute `expected` from the supplied target/homing as best-effort so
+    // the diagnostic still names something useful.
+  }
+
   // Determine effective target to compare against
   let effectiveTarget = target ?? "";
   if (!effectiveTarget && homingBrought) {
@@ -79,11 +98,21 @@ export async function detectFocusLoss(opts: {
     }
   }
 
-  if (!effectiveTarget.trim()) return null;
+  if (hasHwnd) {
+    // HWND-driven path: skip title-substring branch entirely. The fg ≠ hwnd
+    // check above already decided "stolen"; we just need to populate the
+    // diagnostic record. `expected` falls back to the hwnd literal when no
+    // human-readable target was supplied.
+    if (!effectiveTarget.trim()) {
+      effectiveTarget = `hwnd=${hwnd!.toString()}`;
+    }
+  } else {
+    if (!effectiveTarget.trim()) return null;
 
-  // If foreground contains the expected target substring, no focus loss
-  if (fg.title.toLowerCase().includes(effectiveTarget.toLowerCase())) {
-    return null;
+    // If foreground contains the expected target substring, no focus loss
+    if (fg.title.toLowerCase().includes(effectiveTarget.toLowerCase())) {
+      return null;
+    }
   }
 
   // Focus was stolen — gather info about the thief
@@ -119,6 +148,7 @@ export async function detectFocusLoss(opts: {
  */
 export async function checkForegroundOnce(opts: {
   target?: string;
+  hwnd?: bigint;
   homingNotes?: string[];
 }): Promise<FocusLost | null> {
   return detectFocusLoss({ ...opts, settleMs: 0 });

@@ -443,6 +443,24 @@ export const runMacroHandler = async ({
       ) {
         assertKeyComboSafe(params["keys"]);
       }
+      // Issue #257: keyboard(action='sequence') stores keys inside
+      // params.steps[].keys — extend the macro-level safety scan so blocked
+      // combos cannot slip in via the sequence schema. Iterate defensively
+      // (the Zod parse one line below will reject malformed shapes, but the
+      // assertKeyComboSafe SUGGESTS recovery hint is more actionable than
+      // a raw Zod error when the LLM tried to wedge a `win+r` into a step).
+      if (
+        tool === "keyboard" &&
+        params["action"] === "sequence" &&
+        Array.isArray(params["steps"])
+      ) {
+        for (const rawStep of params["steps"] as Array<unknown>) {
+          const keys = (rawStep as { keys?: unknown } | null)?.keys;
+          if (typeof keys === "string") {
+            assertKeyComboSafe(keys);
+          }
+        }
+      }
 
       const validated = entry.schema.parse(params);
       const result = await entry.handler(validated);

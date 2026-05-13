@@ -76,6 +76,62 @@ export function _resetInputQueueForTests(): void {
   _inputQueueTail = Promise.resolve();
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Atomic-sequence engine API (issue #257)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `keyboard(action='sequence')` needs to execute N steps without letting any
+// other keyboard caller splice between a step's press and release. The
+// per-call locking applied to `keyboard.pressKey/releaseKey` above is
+// insufficient: it only protects each call individually, so a concurrent
+// caller can still grab the lock between this sequence's step boundaries
+// (and especially during the `holdMs` window of a held step), producing
+// a phantom chord against the wrong target.
+//
+// The fix is an *outer* lock that the sequence handler takes around the
+// whole step loop. Inside that lock the handler MUST NOT call the wrapped
+// `keyboard.pressKey/releaseKey` (they would deadlock on the same
+// `_inputQueueTail` chain). The `rawKeyboard` primitives below bypass the
+// wrapper for use *inside* `withKeyboardLock(...)` only.
+
+/**
+ * Take the keyboard input lock for an arbitrary async block.
+ *
+ * Used by `keyboard(action='sequence')` (issue #257) to wrap the entire
+ * step loop in one lock acquisition, so concurrent `keyboard` / `scroll` /
+ * `terminal` callers cannot splice between steps. The block MUST use the
+ * `rawKeyboard.*` primitives below — calling the wrapped `keyboard.pressKey`
+ * here would deadlock on the same `_inputQueueTail` chain.
+ *
+ * Failure-safe: same `.then(fn, fn)` pattern as `withInputLock`, so an
+ * exception inside `fn` does not poison the queue for subsequent callers.
+ */
+export function withKeyboardLock<T>(fn: () => Promise<T>): Promise<T> {
+  return withInputLock(fn);
+}
+
+/**
+ * Raw libnut press / release primitives.
+ *
+ * **CONTRACT**: MUST be called only inside `withKeyboardLock(...)`.
+ * Calling outside loses serialization (the libnut SendInput race that
+ * issue #255 was created to fix). Calling the wrapped
+ * `keyboard.pressKey / releaseKey` inside `withKeyboardLock` deadlocks
+ * on the same `_inputQueueTail` chain.
+ *
+ * `releaseDanglingModifiers` (if present elsewhere) uses the *wrapped*
+ * variant, so call it OUTSIDE the lock (e.g. from a sequence handler's
+ * `catch` block that sits outside `withKeyboardLock`).
+ */
+// Note: libnut's pressKey/releaseKey actually return Promise<KeyboardClass>
+// (fluent chainable). Callers in sequence handler discard the return; typing
+// as Promise<unknown> avoids forcing an awkward .then(()=>void) wrap while
+// preserving the variadic key signature.
+export const rawKeyboard = {
+  pressKeyDown: _rawKeyboard.pressKey.bind(_rawKeyboard) as (...keys: Key[]) => Promise<unknown>,
+  pressKeyUp: _rawKeyboard.releaseKey.bind(_rawKeyboard) as (...keys: Key[]) => Promise<unknown>,
+};
+
 /**
  * Default mouse movement speed in px/sec.
  * Override permanently via DESKTOP_TOUCH_MOUSE_SPEED env var:
@@ -108,3 +164,6 @@ export {
   left,
   right,
 };
+// withKeyboardLock / rawKeyboard are exported at their declaration above
+// (named `export function` / `export const`), so they do not need to be
+// listed again in this re-export block.
