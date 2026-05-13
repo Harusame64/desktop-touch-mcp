@@ -221,9 +221,10 @@ export function shouldAcceptViewFocus(
 //
 // `desktop_state({ includeSessionContext: true })` (or the equivalent
 // `include: ['sessionContext']` keyword route — translated at the registration
-// site, see `desktopStateRegistrationHandler` below) surfaces a 5-field block
-// derived from three native bindings (`win32GetProcessSessionId` /
-// `win32GetActiveConsoleSessionId` / `wtsEnumerateSessions`).
+// site by `desktopStateRegistrationHandlerWithIncludeRoute` below) surfaces a
+// 5-field block derived from three native bindings
+// (`win32GetProcessSessionId` / `win32GetActiveConsoleSessionId` /
+// `wtsEnumerateSessions`).
 //
 // ADR-017 §3.2 — the `'locked'` heuristic is **derived in the TS layer**, not
 // in Win32: there is no admin-free, event-free way to read `LockWorkStation`
@@ -461,7 +462,9 @@ export const desktopStateSchema = {
       "sessionState: 'active'|'connected'|'disconnected'|'locked'|'unknown', ownWinStation). " +
       "Default false. Equivalent to `include: ['sessionContext']`. " +
       "Per ADR-017: observability-only — does not gate input. " +
-      "`sessionState: 'locked'` is a heuristic (active + foreground=null + previous sample within 60s saw a non-null foreground)."
+      "`sessionState: 'locked'` is a heuristic (active + foreground=null + previous sample within 60s saw a non-null foreground); " +
+      "treat it as a generic input-pause signal — it can also fire on secure-desktop transitions (UAC prompt, Credential UI), " +
+      "where the user-visible state is not strictly 'locked' but input is equally unavailable to this session."
     ),
   port: z.coerce.number().int().min(1).max(65535).default(_defaultPort).describe(`CDP port for includeDocument (default ${_defaultPort}).`),
   tabId: z.string().optional().describe("Optional CDP tab id for includeDocument; omit for the focused tab."),

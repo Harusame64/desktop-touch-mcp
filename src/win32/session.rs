@@ -59,6 +59,34 @@ pub fn win32_get_active_console_session_id() -> napi::Result<u32> {
     })
 }
 
+/// RAII guard that calls `WTSFreeMemory` on `Drop`. Required because the
+/// `for entry in entries` loop allocates `String`s (via
+/// `decode_pwstr_to_string`) and pushes them into a `Vec` — either
+/// allocation can panic on OOM, and a panic inside `napi_safe_call` is
+/// converted into a napi error by `catch_unwind` without running the
+/// (manual) deferred WTSFreeMemory call. Using `Drop` instead ensures the
+/// wtsapi32-allocated memory is reclaimed even on the panic path.
+/// (PR #281 Opus review P2-1.)
+struct WtsMemoryGuard(*mut WTS_SESSION_INFOW);
+impl Drop for WtsMemoryGuard {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // Safety: pointer was produced by WTSEnumerateSessionsW and
+            // has not been freed by anyone else (we are the only owner).
+            unsafe { WTSFreeMemory(self.0 as *mut _) };
+        }
+    }
+}
+
+/// Defensive upper bound for `WTSEnumerateSessionsW`'s `count` out-param.
+/// `slice::from_raw_parts` requires `len * size_of::<T>() <= isize::MAX`;
+/// `count: u32` (max 4G) × `WTS_SESSION_INFOW` size (~24 B) is comfortably
+/// below that on x64, but a corrupted call could in principle return a
+/// huge count. 4096 is ~50× the worst-case realistic session count and
+/// keeps the slice firmly inside `isize::MAX` regardless of host arch.
+/// (PR #281 Opus review P2-2.)
+const MAX_WTS_SESSION_ROWS: u32 = 4096;
+
 /// Wrap `WTSEnumerateSessionsW`. Returns one entry per Terminal
 /// Services session on the local host, or an empty `Vec` when the call
 /// fails (locked-down corporate token, low-resource state, etc.). The
@@ -66,9 +94,8 @@ pub fn win32_get_active_console_session_id() -> napi::Result<u32> {
 /// so a failure mode of "empty list → `sessionState='unknown'` in the
 /// TS classifier" is acceptable.
 ///
-/// Internally calls `WTSFreeMemory` before returning so the napi-owned
-/// `Vec` does not hold any `wtsapi32`-allocated memory across the
-/// boundary.
+/// `WTSFreeMemory` is invoked via `WtsMemoryGuard::drop` so it runs on
+/// every exit path (including OOM panic inside the row-copy loop).
 #[napi]
 pub fn wts_enumerate_sessions() -> napi::Result<Vec<NativeWtsSessionInfo>> {
     napi_safe_call("wts_enumerate_sessions", || {
@@ -76,7 +103,7 @@ pub fn wts_enumerate_sessions() -> napi::Result<Vec<NativeWtsSessionInfo>> {
         let mut count: u32 = 0;
 
         // Safety: WTSEnumerateSessionsW writes a count + a heap-allocated
-        // array pointer that we free via WTSFreeMemory below. The
+        // array pointer that we free via the RAII guard below. The
         // null HANDLE is the documented `WTS_CURRENT_SERVER_HANDLE`
         // sentinel — targets the local host. `Reserved` MUST be 0
         // (documented requirement). Version 1 is the documented
@@ -93,18 +120,27 @@ pub fn wts_enumerate_sessions() -> napi::Result<Vec<NativeWtsSessionInfo>> {
 
         // Failure path: return empty Vec without touching the pointer.
         // `call_result` is windows::core::Result<()>; if Err we never
-        // got a populated pointer.
+        // got a populated pointer (no guard needed).
         if call_result.is_err() || session_info_ptr.is_null() || count == 0 {
             return Ok(Vec::new());
         }
 
-        // Build the result Vec by copying out fields. We do NOT keep
-        // references to the WTS-allocated memory past the WTSFreeMemory
-        // call below.
+        // Take ownership of the WTS-allocated memory NOW so that any
+        // panic in the row-copy loop below still frees it via `Drop`.
+        let _guard = WtsMemoryGuard(session_info_ptr);
+
+        // Defensive cap (P2-2). On a sane host this is unreachable; on a
+        // pathological one we'd rather report nothing than feed a
+        // gargantuan `count` into `slice::from_raw_parts`.
+        let safe_count = count.min(MAX_WTS_SESSION_ROWS) as usize;
+
         // Safety: WTSEnumerateSessionsW promises `count` valid
-        // `WTS_SESSION_INFOW` entries at `session_info_ptr`.
-        let entries = unsafe { slice::from_raw_parts(session_info_ptr, count as usize) };
-        let mut result: Vec<NativeWtsSessionInfo> = Vec::with_capacity(count as usize);
+        // `WTS_SESSION_INFOW` entries at `session_info_ptr`, and
+        // `safe_count <= count` so reading `safe_count` entries is in-bounds.
+        // `safe_count * size_of::<WTS_SESSION_INFOW>()` fits in `isize::MAX`
+        // by construction (MAX_WTS_SESSION_ROWS is small).
+        let entries = unsafe { slice::from_raw_parts(session_info_ptr, safe_count) };
+        let mut result: Vec<NativeWtsSessionInfo> = Vec::with_capacity(safe_count);
 
         for entry in entries {
             let win_station = decode_pwstr_to_string(entry.pWinStationName.0);
@@ -118,12 +154,7 @@ pub fn wts_enumerate_sessions() -> napi::Result<Vec<NativeWtsSessionInfo>> {
             });
         }
 
-        // Free the WTS-allocated memory. Must happen even on partial
-        // population — `result` already owns its own String allocations.
-        // Safety: pointer was produced by WTSEnumerateSessionsW above
-        // and we have not freed it yet.
-        unsafe { WTSFreeMemory(session_info_ptr as *mut _) };
-
+        // `_guard` is dropped here, calling WTSFreeMemory.
         Ok(result)
     })
 }

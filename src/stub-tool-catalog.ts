@@ -768,7 +768,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "default": false
         },
         "includeSessionContext": {
-          "description": "When true, add a `sessionContext` field with the Terminal Services session classification (origin, consoleSessionId, sessionLabel: 'console'|'rdp'|'other', sessionState: 'active'|'connected'|'disconnected'|'locked'|'unknown', ownWinStation). Default false. Equivalent to `include: ['sessionContext']`. Per ADR-017: observability-only — does not gate input. `sessionState: 'locked'` is a heuristic (active + foreground=null + previous sample within 60s saw a non-null foreground).",
+          "description": "When true, add a `sessionContext` field with the Terminal Services session classification (origin, consoleSessionId, sessionLabel: 'console'|'rdp'|'other', sessionState: 'active'|'connected'|'disconnected'|'locked'|'unknown', ownWinStation). Default false. Equivalent to `include: ['sessionContext']`. Per ADR-017: observability-only — does not gate input. `sessionState: 'locked'` is a heuristic (active + foreground=null + previous sample within 60s saw a non-null foreground); treat it as a generic input-pause signal — it can also fire on secure-desktop transitions (UAC prompt, Credential UI), where the user-visible state is not strictly 'locked' but input is equally unavailable to this session.",
           "type": "boolean",
           "default": false
         },
