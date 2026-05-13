@@ -291,8 +291,8 @@ const NON_ASCII_SYMBOL_RE = /[\u2013\u2014\u2018\u2019\u201C\u201D\u2026\u00A0]/
  *
  * Any code point outside U+0000..U+007F. Covers CJK (Japanese / Korean / Chinese),
  * emoji and supplementary-plane code points (matched via the high surrogate range
- * U+D800..U+DBFF in `[^\x00-\x7F]`), Latin diacritics (r\u00E9sum\u00E9), Greek, Cyrillic,
- * Arabic, Hebrew, IPA, math symbols \u2014 i.e. any text the Win32 keystroke channel
+ * in the `u` flag form), Latin diacritics (r\u00E9sum\u00E9), Greek, Cyrillic, Arabic,
+ * Hebrew, IPA, math symbols \u2014 i.e. any text the Win32 keystroke channel
  * (`SendInput` with virtual-key codes) cannot deliver reliably across keyboard
  * layouts.
  *
@@ -300,9 +300,24 @@ const NON_ASCII_SYMBOL_RE = /[\u2013\u2014\u2018\u2019\u201C\u201D\u2026\u00A0]/
  * which preserves the exact Unicode bytes regardless of IME state or layout.
  * The `keystroke` path is still selected for pure ASCII text (fastest path).
  *
- * See `docs/adr-018-input-pipeline-3tier.md` \u00A72.4 + `tests/unit/keyboard-cjk.test.ts`.
+ * Wired into the auto-clipboard upgrade in ADR-018 Phase 2b-2 (separate PR);
+ * Phase 2b-1 only declares the constant + pins the contract via the public
+ * `isNonAscii()` helper so the rest of the codebase (and tests) can already
+ * use it. See `tests/unit/keyboard-cjk.test.ts`.
  */
-const NON_ASCII_RE = /[^\x00-\x7F]/;
+const NON_ASCII_RE = /[\u0080-\u{10FFFF}]/u;
+
+/**
+ * Public predicate for callers that need ADR-018 \u00A72.4 non-ASCII detection
+ * without depending on the private regex literal. Phase 2b-2 wires this
+ * into the auto-clipboard upgrade in `keyboardTypeHandler`.
+ *
+ * @internal \u2014 also used by `tests/unit/keyboard-cjk.test.ts` to pin the
+ *             contract bit-equally against the regex declaration above.
+ */
+export function isNonAscii(text: string): boolean {
+  return NON_ASCII_RE.test(text);
+}
 
 const methodParam = z.enum(["auto", "background", "foreground", "foreground_flash"]).default("auto").describe(
   "Input routing channel. " +
