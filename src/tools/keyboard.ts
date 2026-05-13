@@ -1882,6 +1882,12 @@ export const keyboardSequenceHandler = async ({
       } catch {
         // best-effort
       }
+    } else if (forceImeOff && targetHwnd == null) {
+      // Opus PR #270 round 1 P3-1: forceImeOff:true with neither windowTitle
+      // nor hwnd was a silent no-op — the Alt-mnemonic hijack the option was
+      // added to prevent could still fire. Surface a warning so the LLM
+      // notices its IME mitigation did nothing.
+      warnings.push("ImeOffIgnoredNoTarget");
     }
 
     try {
@@ -1927,16 +1933,24 @@ export const keyboardSequenceHandler = async ({
       // Atomic sequence loop — single outer lock so concurrent keyboard
       // callers cannot splice between this sequence's steps. rawKeyboard
       // primitives bypass the wrapped per-call lock (which would deadlock).
+      //
+      // `failedIndex` carries the index of the step that *was being attempted*
+      // when the loop threw. Set at the top of each iteration so any throw
+      // below (focus check, assertKeyComboSafe, raw libnut press/release)
+      // carries the index for context.completedSteps / context.remaining.
+      // (Opus PR #270 round 1 P3-2: previously only MenuFocusLost attached
+      // this context — BlockedKeyCombo and libnut throws lost it and the LLM
+      // could not tell which steps had already fired.)
       let failedIndex = -1;
       try {
         await withKeyboardLock(async () => {
           for (let i = 0; i < steps.length; i++) {
+            failedIndex = i;
             // Mid-sequence hwnd-based focus check (skip step 0 — focus
             // just verified). Issue #257 P2-2: hwnd is title-rename-immune.
             if (i > 0 && targetHwnd !== null) {
               const fl = await checkForegroundOnce({ hwnd: targetHwnd });
               if (fl !== null) {
-                failedIndex = i;
                 const stolen = fl.stolenByProcessName || fl.stolenBy || "unknown";
                 throw new Error(
                   `MenuFocusLostMidSequence: focus left target before step ${i} (stolen by ${stolen})`
@@ -1966,28 +1980,32 @@ export const keyboardSequenceHandler = async ({
               }
             }
           }
+          // Sentinel: full sequence completed without throwing.
+          failedIndex = -1;
         });
       } catch (loopErr) {
         // Outside the lock — releaseDanglingModifiers uses the wrapped
         // variant which would deadlock if called inside withKeyboardLock.
         await releaseDanglingModifiers();
 
-        const msg = loopErr instanceof Error ? loopErr.message : String(loopErr);
-        if (msg.includes("MenuFocusLostMidSequence")) {
-          const idx = failedIndex >= 0 ? failedIndex : 0;
+        // Any in-loop throw carries an index ≥ 0 (set at the top of every
+        // iteration). Attach completedSteps / remaining so the LLM can
+        // recover regardless of the typed code — classify() still derives
+        // the code from the message (MenuFocusLostMidSequence, BlockedKeyCombo,
+        // or generic ToolError for an unknown libnut throw).
+        if (failedIndex >= 0) {
           return failWith(
-            loopErr instanceof Error ? loopErr : new Error(msg),
+            loopErr instanceof Error ? loopErr : new Error(String(loopErr)),
             "keyboard:sequence",
             {
               ...(effectiveWindowTitle && { windowTitle: effectiveWindowTitle }),
-              completedSteps: steps.slice(0, idx),
-              remaining: steps.slice(idx),
+              completedSteps: steps.slice(0, failedIndex),
+              remaining: steps.slice(failedIndex),
               ...(warnings.length > 0 && { hints: { warnings } }),
             }
           );
         }
-        // Other in-loop errors (e.g. BlockedKeyCombo from assertKeyComboSafe,
-        // libnut throw, etc.) — bubble to outer catch for generic classify.
+        // Outside-loop throw (no failedIndex set) — bubble to outer catch.
         throw loopErr;
       }
 
