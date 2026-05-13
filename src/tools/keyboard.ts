@@ -2001,6 +2001,13 @@ export const keyboardSequenceHandler = async ({
             }
           }
           // Sentinel: full sequence completed without throwing.
+          //
+          // IMPORTANT: this MUST stay as the last statement inside the
+          // withKeyboardLock callback. Any logic added below it that throws
+          // would set failedIndex=-1 just before, leaving the outer catch
+          // with no step index to attach — the catch then rethrows past the
+          // failWith branch and the LLM loses completedSteps/remaining.
+          // (Opus PR #270 round 2 P3-6.)
           failedIndex = -1;
         });
       } catch (loopErr) {
