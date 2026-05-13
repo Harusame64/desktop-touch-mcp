@@ -411,6 +411,14 @@ interface FocusForKeyboardResult {
 async function focusWindowForKeyboard(
   windowTitle: string,
   force: boolean,
+  /**
+   * Issue #257 Codex P2: when the caller resolved a specific HWND
+   * (e.g. via `resolveWindowTarget` from an explicit `hwnd` arg), pin
+   * matching to that handle so a duplicate-title sibling cannot win.
+   * When undefined, fall back to the legacy title-substring match
+   * (existing keyboardTypeHandler / keyboardPressHandler behaviour).
+   */
+  explicitHwnd?: bigint,
 ): Promise<FocusForKeyboardResult> {
   const warnings: string[] = [];
   const homingNotes: string[] = [];
@@ -418,15 +426,20 @@ async function focusWindowForKeyboard(
   let forceRefused = false;
   let targetHwnd: bigint | null = null;
   const needle = windowTitle.toLowerCase();
+  // Match by hwnd when supplied, else fall back to title-substring.
+  const matches = (w: { title: string; hwnd: bigint }): boolean =>
+    explicitHwnd !== undefined
+      ? w.hwnd === explicitHwnd
+      : w.title.toLowerCase().includes(needle);
   try {
     const windows = enumWindowsInZOrder();
     const active = windows.find((w) => w.isActive);
-    if (active && active.title.toLowerCase().includes(needle)) {
+    if (active && matches(active)) {
       // Target is already in the foreground — nothing to do.
       foregroundVerified = true;
       targetHwnd = active.hwnd;
     } else {
-      const target = windows.find((w) => w.title.toLowerCase().includes(needle));
+      const target = windows.find(matches);
       if (target) {
         // Always verify foreground after focus so the auto-guard does not block
         // on a stale/foreground-steal-prevented SetForegroundWindow. If the first
@@ -436,7 +449,7 @@ async function focusWindowForKeyboard(
         restoreAndFocusWindow(target.hwnd, { force });
         await new Promise<void>((r) => setTimeout(r, 100));
         let after = enumWindowsInZOrder().find((w) => w.isActive);
-        let reachedForeground = !!after && after.title.toLowerCase().includes(needle);
+        let reachedForeground = !!after && matches(after);
 
         if (!reachedForeground && !force) {
           // Auto-escalate to force focus (AttachThreadInput bypass) — the caller
@@ -445,7 +458,7 @@ async function focusWindowForKeyboard(
           restoreAndFocusWindow(target.hwnd, { force: true });
           await new Promise<void>((r) => setTimeout(r, 100));
           after = enumWindowsInZOrder().find((w) => w.isActive);
-          reachedForeground = !!after && after.title.toLowerCase().includes(needle);
+          reachedForeground = !!after && matches(after);
         }
 
         if (reachedForeground) {
@@ -1845,7 +1858,14 @@ export const keyboardSequenceHandler = async ({
     let targetHwnd: bigint | null = null;
 
     if (effectiveWindowTitle) {
-      const fw = await focusWindowForKeyboard(effectiveWindowTitle, force);
+      // Codex PR #270 P2: when the caller passed an explicit hwnd,
+      // resolveWindowTarget already pinned it. Pass that hwnd through so
+      // focusWindowForKeyboard matches by handle instead of title substring
+      // (duplicate-title siblings can no longer win the focus race).
+      const explicitHwndForFocus = (hwnd !== undefined && resolvedWin)
+        ? resolvedWin.hwnd
+        : undefined;
+      const fw = await focusWindowForKeyboard(effectiveWindowTitle, force, explicitHwndForFocus);
       warnings.push(...fw.warnings);
       homingNotes.push(...fw.homingNotes);
       foregroundVerified = fw.foregroundVerified;
