@@ -115,23 +115,65 @@ Auto-clipboard upgrade triggers on the OR of both regexes. CJK, emoji, surrogate
 
 ### 2.5 D5 — MCP schema collapse workaround
 
-MCP SDK Issue #1643 will eventually be fixed upstream. Until then, add `materializeUnionJsonSchema()` to `src/tools/_envelope.ts` as a sibling of `withEnvelopeIncludeForUnion`. It returns a hand-rolled JSON Schema with `oneOf` over the discriminator variants, suitable for direct use in `server.registerTool({ inputSchema })`. Apply to `scroll`, `keyboard`, `excel` (the three tools using `discriminatedUnion`).
+MCP SDK Issue #1643 will eventually be fixed upstream. Until then, add `materializeUnionJsonSchema()` to `src/tools/_envelope.ts`. The two helpers operate at different layers and are **not** sibling/parent in the sense of producing the same kind of object:
 
-When upstream lands the fix, deprecate the helper and remove the hand-rolled schemas — tracked in §7 OQ4.
+- `withEnvelopeIncludeForUnion` (`src/tools/_envelope.ts:484-501`) takes a `z.discriminatedUnion`, mutates each variant by injecting the `include` field, and returns a **new `z.discriminatedUnion`** (a Zod type, used for input validation and TS inference).
+- `materializeUnionJsonSchema()` (new) takes the **output** of `withEnvelopeIncludeForUnion` (or the original union if no envelope extension is needed) and produces a **JSON Schema** object (a plain JS object with `oneOf` over the discriminator branches, suitable for direct use in `server.registerTool({ inputSchema })`).
+
+So the call sequence in `scroll.ts` / `keyboard.ts` / `excel.ts` becomes: `schema = withEnvelopeIncludeForUnion(union); inputSchema = materializeUnionJsonSchema(schema); server.registerTool({ inputSchema, ... });`. The new helper does **not** replace `withEnvelopeIncludeForUnion` — both run.
+
+Implementation strategy for `materializeUnionJsonSchema`: walk the Zod schema with `zod._def` introspection (the same path Zod's own `toJSONSchema` uses), emit `{ oneOf: [<per-variant object schema>], discriminator: { propertyName: <discriminator>, mapping: {...} } }`. Reference: the SDK's `normalizeObjectSchema()` that drops the discriminator today does so by checking `def.type === 'union'`; the new helper short-circuits that path by producing a fully materialized object schema before the SDK sees it.
+
+When upstream lands the fix (MCP TypeScript SDK Issue #1643), deprecate the helper and remove the hand-rolled schemas — tracked in §7 OQ4.
 
 ### 2.6 D6 — Typed reason taxonomy
 
-Delete `page_end_inferred` from `_errors.ts SUGGESTS` and replace `verifyDelivery.reason` with this enum:
+The existing `ScrollVerifyOutcome` (`src/tools/mouse.ts:938-950`) has two orthogonal fields that must stay orthogonal under the new pipeline:
 
-| Reason | When | Action recovery |
+- `status: "delivered" | "unverifiable" | "not_delivered"` — 3-value outcome (unchanged)
+- `reason?:` — context for non-`delivered` outcomes (currently 4 values, replaced below)
+- `channel:` — transport identifier (currently `"wheel_send_input"`); ADR-018 extends to 4 values
+
+#### 2.6.1 `verifyDelivery.channel` (transport identifier, 4 values)
+
+| Channel | Tier | Meaning |
 |---|---|---|
-| `delivered_via_uia` | Tier 1 succeeded, UIA observation confirmed numeric `deltaPercent` | continue |
-| `delivered_via_cdp` | Tier 2 succeeded, CDP observation confirmed numeric `deltaY` | continue |
-| `delivered_via_postmessage` | Tier 3 succeeded, GetScrollInfo or dHash confirmed change | continue |
-| `wheel_overlay_intercepted` | `WindowFromPoint(cursor)` ≠ focused HWND AND a layered transparent window detected on top | warn user, suggest disabling overlay; auto-fall-through to Tier 1/2/3 already attempted |
-| `target_unreachable` | Tier 4 (SendInput) executed and no observation channel confirmed any delta | hard failure, return suggest list with three recovery options |
+| `uia` | Tier 1 | `IUIAutomationScrollPattern::SetScrollPercent` issued |
+| `cdp` | Tier 2 | `Input.dispatchMouseEvent({type:'mouseWheel'})` issued |
+| `postmessage` | Tier 3 | `PostMessage(hwnd, WM_MOUSEWHEEL, …)` issued |
+| `send_input` | Tier 4 | `SendInput(MOUSEEVENTF_WHEEL)` issued (cursor-position fallback) |
 
-This is the **only** SSOT for typed reasons; `_errors.ts SUGGESTS`, `ADR-010` typed-reason table, and per-tool description caveats must stay synchronized (CLAUDE.md §3.1 multi-table fact sweep applies).
+`channel` is always set, regardless of `status`. It tells the LLM which physical channel made the attempt, decoupled from whether the attempt succeeded.
+
+#### 2.6.2 `verifyDelivery.reason` (new 5-value enum, replaces existing 4)
+
+| Reason | Emitted when | `status` |
+|---|---|---|
+| `delivered_via_uia` | Tier 1 succeeded, UIA `CurrentVerticalScrollPercent` pre/post differed by ≥ `SCROLL_PERCENT_EPSILON` | `delivered` |
+| `delivered_via_cdp` | Tier 2 succeeded, CDP `document.scrollingElement.scrollTop` pre/post differed | `delivered` |
+| `delivered_via_postmessage` | Tier 3 succeeded, `GetScrollInfo` or dHash confirmed change | `delivered` |
+| `wheel_overlay_intercepted` | Cursor-pixel HWND ≠ focused HWND AND a `WS_EX_LAYERED \| WS_EX_TRANSPARENT` window detected on top, after all destination-explicit tiers were tried and reported no movement | `unverifiable` |
+| `target_unreachable` | `InputDestination.kind === 'unresolved'` AND Tier 4 SendInput also produced no observable delta | `not_delivered` |
+
+#### 2.6.3 Migration from the existing 4-value `reason`
+
+| Old reason (mouse.ts:943-947) | New reason | Mapping rationale |
+|---|---|---|
+| `page_end_inferred` | **deleted** | Old "I have no observer channel" shrug. Under ADR-018 every tier carries its own observer (UIA percent / CDP scrollTop / PostMessage + GetScrollInfo), so this state is unreachable. |
+| `read_back_unsupported` | `wheel_overlay_intercepted` (if overlay detected) or `target_unreachable` (otherwise) | Old "Win32 GetScrollInfo unsupported" → split into the two real cases the new taxonomy distinguishes. |
+| `scrollbar_unavailable` | `delivered_via_cdp` / `delivered_via_uia` (success cases, since they don't need a scrollbar) or `target_unreachable` | The condition itself disappears — only Tier 4 still depends on Win32 scrollbar observation, and Tier 4 only fires when destination is unresolved. |
+| `no_target_window` | `target_unreachable` | Direct semantic equivalent; the new name aligns with destination-explicit terminology. |
+
+**Public API contract** (CLAUDE.md §3.2 carry-over scope shrink): callers that pass `scroll({action:'raw', direction:'down', amount:N})` with no destination today receive `status:'delivered'` on the happy path. Under ADR-018 they still receive `status:'delivered'`, but `reason` is now one of `delivered_via_*` (Tier 1/2/3 attached automatically by `resolveWindowTarget(@active)`) — the **happy-path `status` string does not change**. Only the `reason` enum values change; the existing field shape is preserved. Existing tests in `tests/unit/expansion-scroll-wrapper.test.ts:83, 109, 135, 167` (which mock the handler and don't inspect `reason`) continue to pass without modification.
+
+This is the **only** SSOT for `verifyDelivery.reason`. The synchronization surfaces are:
+- `src/tools/mouse.ts:943-947` (`ScrollVerifyOutcome.reason` union type — single source of truth in code)
+- `tests/unit/scroll-raw-verify.test.ts:114-130` (existing test pin — rewritten in Phase 1)
+- `src/tools/_errors.ts:256-262` (`ScrollNotDelivered` suggest list — surface 2, updated to reference new reasons)
+- per-tool description in `src/tools/scroll.ts:249-256` (surface 3, updated in Phase 1)
+- CHANGELOG entry for the eventual user-facing release (surface 4, written at release time per CLAUDE.md §10)
+
+CLAUDE.md §3.1 multi-table fact sweep applies across these 5 surfaces. ADR-010 is **not** in the sync set — its typed-reason taxonomy is the typed-error catalog (`WindowNotFound` class), not `verifyDelivery.reason`.
 
 ---
 
@@ -148,9 +190,11 @@ This is the **only** SSOT for typed reasons; `_errors.ts SUGGESTS`, `ADR-010` ty
 | `src/tools/_envelope.ts` | 484-501 | Add `materializeUnionJsonSchema` sibling helper (Phase 2a) |
 | `src/uia/scroll.rs` | adjacent to 142-224 | New napi export `uia_scroll_by_wheel_at_hwnd` calling existing `scroll_by_percent_impl` (Phase 1) |
 | `src/engine/cdp-bridge.ts` | adjacent to 284 | New `dispatchMouseEvent({type:'mouseWheel'})` wrapper (Phase 3) |
-| `src/tools/_errors.ts` | SUGGESTS table | Remove `page_end_inferred`, add 5 new typed reasons (Phase 1, multi-table sweep) |
-| `docs/adr-010-presentation-layer-self-documenting-envelope.md` | typed reason table | Synchronize new 5-value enum (Phase 1, CLAUDE.md §3.1) |
-| `.github/workflows/input-pipeline-guard.yml` | **new** | CI assert: zero `getWindows` in `src/tools/`, zero `page_end_inferred` anywhere (Phase 5) |
+| `src/tools/mouse.ts` | 943-947 (`ScrollVerifyOutcome.reason` union) + 999 (emission site) | Replace 4-value reason union with 5-value enum per §2.6.2; add `channel: "uia" \| "cdp" \| "postmessage" \| "send_input"` field per §2.6.1 (Phase 1, single source of truth) |
+| `tests/unit/scroll-raw-verify.test.ts` | 114-130 | Rewrite the `page_end_inferred` test case to assert the new mapping per §2.6.3 (Phase 1) |
+| `src/tools/_errors.ts` | 256-262 (`ScrollNotDelivered` suggest list) | Update suggest copy to reference new reason names (`wheel_overlay_intercepted`, `target_unreachable`); typed-error code unchanged (Phase 1) |
+| `src/tools/scroll.ts` | 249-256 (tool description `Caveats:` section) | Update `action='raw' typed errors:` paragraph to list new reasons (Phase 1) |
+| `.github/workflows/input-pipeline-guard.yml` | **new** | CI assert: zero `getWindows` in `src/tools/`, zero `page_end_inferred` in `src/` and `tests/` (Phase 5) |
 | `__test__/smoke/scroll-5app.smoke.test.ts` | **new** | 5-app × 4-direction smoke (Phase 5, `workflow_dispatch` Windows runner) |
 | `__test__/fixtures/overlay-window.ts` | **new** | `WS_EX_LAYERED | WS_EX_TRANSPARENT` fake overlay child process for DDPM repro (Phase 1) |
 | `__test__/unit/keyboard-cjk.test.ts` | **new** | NON_ASCII_RE + clipboard-route integration assertions (Phase 2b) |
@@ -165,14 +209,19 @@ This is the **only** SSOT for typed reasons; `_errors.ts SUGGESTS`, `ADR-010` ty
 **Scope minimum / contract maximum** per `docs/walking-skeleton-trunk-selection.md` §3.2.
 
 Deliverables:
-- New `_input-pipeline.ts` with dispatcher skeleton + `InputDestination` type + 5-value typed-reason enum
+- New `_input-pipeline.ts` with dispatcher skeleton + `InputDestination` discriminated union (type per §2.3) + 5-value `reason` enum + 4-value `channel` enum (per §2.6)
 - New napi export `uia_scroll_by_wheel_at_hwnd` (wraps existing `scroll_by_percent_impl` with wheel-delta → percent conversion)
-- `scrollHandler` refactored to call dispatcher; `resolveWindowTarget` required as first step
-- `page_end_inferred` removed from `_errors.ts`, replaced by 5-value enum
-- `_errors.ts` / ADR-010 typed-reason table / `scroll` tool description synchronized (CLAUDE.md §3.1 sweep)
-- `overlay-window.ts` fixture for DDPM repro under unit test
+- `scrollHandler` (`src/tools/mouse.ts:1040-1174`) refactored to call dispatcher; `resolveWindowTarget` required as first step (with `@active` default when no `windowTitle` / `hwnd` supplied, preserving cursor-only happy path per §2.6.3)
+- **Runtime guard**: `assert(dest.kind === 'unresolved', 'Tier 4 SendInput requires unresolved destination')` immediately before any `MOUSEEVENTF_WHEEL` SendInput call. Failure throws a typed error caught at the handler and reported as `status: 'not_delivered', reason: 'target_unreachable'` (covers L2 compile-time-guard overreliance)
+- `ScrollVerifyOutcome.reason` union (`src/tools/mouse.ts:943-947`) extended to the new 5-value enum; old 4 reasons mapped per §2.6.3
+- `tests/unit/scroll-raw-verify.test.ts:114-130` `page_end_inferred` test case rewritten to assert the new 5-value mapping (one test per reason)
+- `src/tools/_errors.ts:256-262` `ScrollNotDelivered` suggest list updated to reference the new reason names; typed-error code unchanged
+- `src/tools/scroll.ts:249-256` tool description `Caveats:` section updated to list the new reasons
+- `__test__/fixtures/overlay-window.ts` fixture (Win32 `WS_EX_LAYERED \| WS_EX_TRANSPARENT` child process) for DDPM repro under unit test
 
-**G1 acceptance**: `scroll(action='raw', windowTitle:'メモ帳', direction:'down')` returns `verifyDelivery.channel='delivered_via_uia'` with numeric `delta`, and continues to do so when the `overlay-window` fixture is running. Tier 4 SendInput must not fire.
+CLAUDE.md §3.1 sweep covers the 5 surfaces listed in §2.6 (`mouse.ts:943-947` / `scroll-raw-verify.test.ts` / `_errors.ts:256-262` / `scroll.ts:249-256` / CHANGELOG).
+
+**G1 acceptance**: `scroll(action='raw', windowTitle:'メモ帳', direction:'down')` returns `verifyDelivery.status='delivered'`, `verifyDelivery.channel='uia'`, `verifyDelivery.reason='delivered_via_uia'`, with numeric `scrollObserved.delta`, and continues to do so when the `overlay-window` fixture is running. Tier 4 SendInput must not fire (asserted via a Phase 1 unit-test spy on the SendInput call site).
 
 **Review loop**: Opus 3+ rounds, Codex 1+ round (production code, native binding surface — CLAUDE.md §3.2 PR #102 regression-prevention axis).
 
@@ -211,9 +260,10 @@ Deliverables:
 - `postWheelToHwnd(hwnd, delta, modifiers)` helper (new in `_input-pipeline.ts`)
 - `WM_MOUSEWHEEL` encoding: `wParam = MAKEWPARAM(modifiers, delta)`, `lParam = MAKELPARAM(screenX, screenY)`
 - Tier 3 selection when destination HWND is known but ScrollPattern is absent
+- **Word HWND class enumeration sub-deliverable**: Word's document body is a custom-painted MFC surface (`_WwG` / `_WwO` class), and `WM_MOUSEWHEEL` PostMessage to the document HWND is known to be flaky — the ribbon and host frame frequently intercept. Phase 4 enumerates Word's HWND class hierarchy via `EnumChildWindows`, identifies the receiver class empirically (likely `_WwG`), and adds a fixture `__test__/fixtures/word-class-enumerate.test.ts` that pins the class name. If `_WwG` does not receive `WM_MOUSEWHEEL` reliably, Word falls back to Tier 4 SendInput with `channel='send_input'` and `reason='target_unreachable'` (carry-over recorded in §7 OQ8)
 - Word / Excel / Explorer smoke cases (stubbed Phase 1, finalized here)
 
-**G4 acceptance**: Word document body / Excel cell area / Explorer ListView scroll returns `delivered_via_postmessage`; Tier 4 SendInput never fires across the 3 apps.
+**G4 acceptance**: Excel cell area / Explorer ListView scroll returns `delivered_via_postmessage`; Tier 4 SendInput never fires for those 2 apps. Word: either `delivered_via_postmessage` OR documented Tier 4 fallback with the typed reason `target_unreachable` and the class enumeration recorded in `word-class-enumerate.test.ts`.
 
 **Review loop**: Opus 2-3 rounds, Codex 1 round (Win32 API contract axis — PR #102 same regression class).
 
@@ -224,7 +274,7 @@ Deliverables:
 - `input-pipeline-guard.yml`: grep `getWindows src/tools/` returns 0 lines, grep `page_end_inferred` returns 0 lines
 - `scroll-5app.smoke.test.ts` finalized for all 5 apps × 4 directions (`workflow_dispatch`, Windows runner)
 
-**G5 acceptance** (= AC1+AC2+AC5): All 5 apps return numeric delta + `delivered_via_*`; no `page_end_inferred` survives; no `getWindows` in scroll path.
+**G5 acceptance** (= AC1+AC2+AC5): All 5 apps return numeric delta + the expected `(status, channel, reason)` triple per AC1; no `page_end_inferred` survives in `src/` or `tests/`; no `getWindows` in `src/tools/`.
 
 **Total**: 6 PRs, 12–19 days. Phase 2a and 2b parallel-OK, reducing wall-clock to ~10-15 days with background-agent parallelism (CLAUDE.md §3.4).
 
@@ -236,19 +286,19 @@ Deliverables:
 - **R2** — UIA ScrollPattern support varies. Word document body is UIA-blind. Mitigation: dispatcher falls through Tier 1 → Tier 3 when `IsScrollPatternAvailable` is false; tier-selection logic centralized in `_input-pipeline.ts::pickActionTier`.
 - **R3** — CDP `target='body'` scrollTop=0 bug. Mitigation: Phase 3 replaces single `document.body.scrollIntoView` with `document.scrollingElement || document.documentElement` two-step query.
 - **R4** — MCP SDK Issue #1643 timing. Mitigation: §7 OQ4 documents 3 candidate strategies (vendored patch / fork / hand-rolled helper). Default to hand-rolled until upstream lands; the helper has a clear deprecation path.
-- **R5** (CLAUDE.md §3.2) — Tier 4 SendInput retained as fallback may be misread as carry-over scope shrink that breaks existing API. Mitigation: ADR-level contract that Tier 4 is reachable only when `InputDestination.kind === 'unresolved'`, and its outcome is always reported as `target_unreachable`, never as success.
-- **R6** (CLAUDE.md §3.1) — 5-value typed-reason taxonomy spreads across 4 tables (`_errors.ts SUGGESTS`, ADR-010, per-tool description caveats, CHANGELOG). Mitigation: Opus review prompt for each phase includes a mandatory grep sweep of these 4 surfaces.
+- **R5** (CLAUDE.md §3.2) — Tier 4 SendInput retained as fallback may be misread as carry-over scope shrink that breaks existing API. Mitigation: ADR-level contract pinned in §2.6.3 ("Public API contract") that Tier 4 is reachable only when `InputDestination.kind === 'unresolved'`, and its outcome is always reported as `status:'not_delivered', reason:'target_unreachable'`, never as success. Existing cursor-only callers (`tests/unit/expansion-scroll-wrapper.test.ts:83, 109, 135, 167`, hypothetical end-users typing `scroll({action:'raw', direction:'down', amount:N})` with no destination) preserve their happy-path `status:'delivered'` because `resolveWindowTarget(@active)` (the existing default destination in `_resolve-window.ts`) successfully resolves to the foreground HWND and routes through Tier 1/2/3. The runtime guard in Phase 1 deliverables (assert before SendInput) is the structural enforcement of this contract.
+- **R6** (CLAUDE.md §3.1) — 5-value `verifyDelivery.reason` and 4-value `verifyDelivery.channel` taxonomies spread across 5 surfaces (`src/tools/mouse.ts:943-947`, `tests/unit/scroll-raw-verify.test.ts:114-130`, `src/tools/_errors.ts:256-262` `ScrollNotDelivered` suggest list, `src/tools/scroll.ts:249-256` tool description caveats, CHANGELOG entry at release time). Mitigation: Opus review prompt for each phase includes a mandatory grep sweep of these 5 surfaces; the Phase 5 CI guard (`input-pipeline-guard.yml`) automates the `page_end_inferred` 0-hit assertion across `src/` and `tests/`.
 - **R7** — Keyboard CJK keystroke path may currently work in some IME configurations (composition mode + active IME). Phase 2b regex change must not break these. Mitigation: integration test 1 case (IME ON, CJK typing) added before regex flip; if test fails, regex change is reverted and Phase 2b is split into "detector only" + "auto-clipboard upgrade" sub-PRs.
 
 ---
 
 ## 6. Acceptance criteria
 
-- **AC1**: All 5 tested apps (Chrome / Notepad / Word / Excel / File Explorer) return `verifyDelivery.status='delivered_via_*'` with numeric `scrollObserved.delta` for `scroll(action='raw', direction='down')`
-- **AC2**: `grep -r "page_end_inferred" src/` returns 0 hits; every `verifyDelivery.reason` is one of the 5-value enum
+- **AC1**: All 5 tested apps (Chrome / Notepad / Word / Excel / File Explorer) return `verifyDelivery.status='delivered'`, `verifyDelivery.channel` ∈ {`uia`, `cdp`, `postmessage`}, and `verifyDelivery.reason` ∈ {`delivered_via_uia`, `delivered_via_cdp`, `delivered_via_postmessage`}, with numeric `scrollObserved.delta` for `scroll(action='raw', direction='down')`. **Word may instead emit `channel='send_input'`, `reason='target_unreachable'` per Phase 4 G4** (documented Tier 4 fallback)
+- **AC2**: `grep -rn "page_end_inferred" src/ tests/` returns 0 hits; every emitted `verifyDelivery.reason` value matches the 5-value enum in §2.6.2
 - **AC3**: `keyboard(action='type', text='日本語テスト')` succeeds with `typed:7` and Notepad's `ValuePattern.Value` reads back `'日本語テスト'`
-- **AC4**: MCP `tools/list` for `scroll`, `keyboard`, `excel` returns `inputSchema` with non-empty `properties` or `oneOf` reflecting the action discriminator
-- **AC5**: `grep -r "getWindows" src/tools/` returns 0 hits; all `windowTitle` resolution in scroll path goes through `resolveWindowTarget`
+- **AC4**: MCP `tools/list` for `scroll`, `keyboard`, `excel` returns `inputSchema` with **both** non-empty `properties` (or top-level `oneOf` with discriminator-bearing branches) **AND** the action discriminator value enumerated. A schema with `properties:{}` but non-empty `oneOf` does **not** satisfy AC4 (SDK collapse symptom). Asserted via `__test__/integration/tools-list-schema.test.ts` (Phase 2a)
+- **AC5**: `grep -rn "getWindows" src/tools/` returns 0 hits; all `windowTitle` resolution in scroll path goes through `resolveWindowTarget`
 
 ---
 
@@ -258,9 +308,10 @@ Deliverables:
 2. **OQ2** — DDPM overlay handling: (a) README adds "consider disabling DDPM if scroll feels sticky" / (b) tool-side `WindowFromPoint` detector emits warning in `hints.environmentNotes` / (c) both. **Default**: (b) only, surface in production telemetry; (a) added if user reports recur. Decide at Phase 1 PR creation.
 3. **OQ3** — Tier 1 UIA inside Chromium (`--force-renderer-accessibility` required): try in Phase 3 as a Tier 1.5 between CDP and PostMessage? **Default**: skip; CDP is the canonical Chrome path. Reopen if Phase 3 dogfood reveals CDP latency outliers.
 4. **OQ4** — MCP SDK Issue #1643 adoption: (a) `patches/` vendored / (b) fork & npm alias / (c) maintain `materializeUnionJsonSchema` until upstream merges. **Default**: (c); revisit when upstream PR lands.
-5. **OQ5** — Tier 4 SendInput: remove entirely vs retain as `target_unreachable` reporter. **Default**: retain; removal would constitute breaking change to the `scroll` action surface for cursor-only callers (unlikely but unverified).
-6. **OQ6** — CDP wheel injection: (a) `Input.dispatchMouseEvent` new wrapper / (b) `evaluateInTab` JS injection `element.scrollBy()`. **Default**: (a); CDP-native is lower-latency and matches Playwright convention. (b) becomes a per-element override in `scroll(action='to_element', selector=...)`.
-7. **OQ7** — Excel COM scroll as Tier 0 (`Application.ActiveWindow.SmallScroll`)? **Default**: defer to a separate ADR if needed; current 3 tiers already cover Excel cell area via Tier 1 UIA on the ListView pattern.
+5. **OQ5** — Tier 4 SendInput: remove entirely vs retain as `target_unreachable` reporter. **Default**: retain. **Reopen trigger**: any of (a) a user report of a removed cursor-only `scroll({action:'raw'})` happy path, (b) Phase 4 G4 Word fallback proving impractical and the team chooses to remove the dead path instead of documenting it, (c) Phase 5 telemetry showing zero production `channel='send_input'` emissions over 30 days.
+6. **OQ6** — CDP wheel injection: (a) `Input.dispatchMouseEvent` new wrapper / (b) `evaluateInTab` JS injection `element.scrollBy()`. **Default**: (a); CDP-native is lower-latency and matches Playwright convention. (b) becomes a per-element override in `scroll(action='to_element', selector=...)`. **Reopen trigger**: Phase 3 dogfood reveals `Input.dispatchMouseEvent` latency p99 > 200 ms or routing failures on Chromium-based apps that are not Chrome / Edge (e.g. Slack, VS Code).
+7. **OQ7** — Excel COM scroll as Tier 0 (`Application.ActiveWindow.SmallScroll`)? **Default**: defer to a separate ADR if needed; current 3 tiers already cover Excel cell area via Tier 1 UIA on the ListView pattern. **Reopen trigger**: Phase 4 G4 reveals Excel Tier 1 UIA path fails on frozen panes, formula bar focus, or other non-grid Excel regions.
+8. **OQ8** — Word document body (`_WwG` MFC class) PostMessage(WM_MOUSEWHEEL) reception: per Phase 4 sub-deliverable, Word may need Tier 4 fallback with `reason='target_unreachable'` if the class enumeration confirms `WM_MOUSEWHEEL` is intercepted by the frame. **Reopen trigger**: an alternative path (e.g. Word automation via COM `Application.ActiveDocument.Application.CommandBars`, or via the Office UIA provider's `LegacyIAccessible` pattern) lands in scope.
 
 ---
 
@@ -292,7 +343,7 @@ Implementations that already exist and are called from new tier paths without mo
 - `src/win32/scroll.rs:23-69` `win32_get_scroll_info` — Tier 3 observation fallback
 - `src/engine/cdp-bridge.ts:284` `evaluateInTab` — Tier 2 dispatcher base (wraps `Runtime.evaluate`)
 - `src/tools/_resolve-window.ts:94-178` `resolveWindowTarget` — destination resolution SSOT
-- `src/tools/_envelope.ts:484-501` `withEnvelopeIncludeForUnion` — Zod-v3/v4 union extension (parent of new `materializeUnionJsonSchema`)
+- `src/tools/_envelope.ts:484-501` `withEnvelopeIncludeForUnion` — Zod-v3/v4 union extension, **upstream** of new `materializeUnionJsonSchema` in the call sequence (the union output of the former is the input to the latter; see §2.5 for the exact sequence)
 - `src/tools/mouse.ts:910-933` `captureScrollSnapshot` — dHash + GetScrollInfo observation (preserved as Tier 3)
 
 → **Phase 1 trunk PR introduces zero new Rust code**; all native paths are reused from existing crates.
