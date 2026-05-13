@@ -253,12 +253,20 @@ const SUGGESTS: Record<string, string[]> = {
   // to image strategy) and `OverflowHiddenAncestor` (CSS overflow:hidden detected
   // up-front in scroll(action:'smart')); ScrollNotDelivered is reserved for the
   // post-ack silent-drop case the other two cannot catch.
+  //
+  // ADR-018 Phase 1b will replace the 4-value `hints.verifyDelivery.reason` enum
+  // with a 5-value tier-based enum (delivered_via_uia / delivered_via_cdp /
+  // delivered_via_postmessage / wheel_overlay_intercepted / target_unreachable).
+  // The suggest copy below references the new names where appropriate so callers
+  // reading suggestions today are already pointed at the destination-explicit
+  // recovery strategies (UIA ScrollPattern / CDP / PostMessage) that ADR-018
+  // landings will make first-class.
   ScrollNotDelivered: [
     "Retry with scroll({action:'smart', target:'<selector>'}) — multi-strategy fallback (CDP / UIA ScrollPattern / image binary-search) often delivers where wheel SendInput is swallowed",
-    "Use scroll({action:'to_element', name|selector}) when you know the target — bypasses the wheel channel entirely via UIA ScrollItemPattern or CDP scrollIntoView",
-    "Verify the target is actually scrollable: run desktop_state or screenshot(detail='text') first to confirm the focused element under the cursor accepts wheel input — overlay windows above the target intercept wheel events",
+    "Use scroll({action:'to_element', name|selector}) when you know the target — bypasses the wheel channel entirely via UIA ScrollItemPattern or CDP scrollIntoView (the same Tier 1 / Tier 2 destination-explicit channels ADR-018 Phase 1b/3 wire into action='raw')",
+    "Verify the target is actually scrollable: run desktop_state or screenshot(detail='text') first to confirm the focused element under the cursor accepts wheel input — transparent layered overlays (Dell DDPM, Logitech Options+, etc.) intercept wheel events and produce reason='wheel_overlay_intercepted' once ADR-018 Phase 4 detection ships",
     "If the target runs elevated (admin) and the caller does not, wheel events are blocked by UIPI — re-run the caller with matching integrity level",
-    "If the target uses overlay/Chromium scrollbars (no Win32 scrollbar), pass coords inside the actual scrollable region — the cursor must be over a scroll-receiving element",
+    "If the target uses overlay/Chromium scrollbars (no Win32 scrollbar), pass coords inside the actual scrollable region — the cursor must be over a scroll-receiving element. For Chrome/Edge tabs prefer scroll(action:'smart') which uses CDP (the same path ADR-018 Phase 3 wires into action='raw' as Tier 2)",
   ],
   SetValueAllChannelsFailed: [
     "Verify the element supports text input",

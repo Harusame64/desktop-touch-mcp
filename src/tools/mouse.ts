@@ -939,12 +939,41 @@ export interface ScrollVerifyOutcome {
   status: "delivered" | "unverifiable" | "not_delivered";
   /** Observed scroll-percent delta when measurable (Win32 path). */
   delta: { x: number | null; y: number | null } | "unverifiable";
-  /** Matrix doc §4 reason enum when status is unverifiable. */
+  /**
+   * Typed reason context. The union mixes two generations:
+   *
+   * The 4-value "matrix doc §4" enum (current emitters at line ~999/1007/1108):
+   *   - `read_back_unsupported`, `page_end_inferred`, `scrollbar_unavailable`,
+   *     `no_target_window`. These are emitted today and pinned by
+   *     `tests/unit/scroll-raw-verify.test.ts`. They are **scheduled for removal**
+   *     by ADR-018 Phase 1b once the tier dispatcher lands.
+   *
+   * The 5-value ADR-018 §2.6.2 enum (no current emitters):
+   *   - `delivered_via_uia` / `delivered_via_cdp` / `delivered_via_postmessage`:
+   *     emitted under `status='delivered'` once Tier 1/2/3 dispatchers ship
+   *     (Phase 1b / 3 / 4).
+   *   - `wheel_overlay_intercepted`: emitted under `status='unverifiable'` when
+   *     a transparent layered overlay is detected and observation fails (Phase 4).
+   *   - `target_unreachable`: emitted under `status='not_delivered'` when either
+   *     destination resolution failed (path-a) or every applicable tier was
+   *     exhausted without observable delta (path-b, e.g. Word _WwG).
+   *
+   * See `docs/adr-018-input-pipeline-3tier.md` §2.6.3 for the full migration
+   * table; CLAUDE.md §3.1 multi-table fact sweep across `_errors.ts` /
+   * `scroll.ts` description / this union / `scroll-raw-verify.test.ts`.
+   */
   reason?:
+    // 4-value "matrix doc §4" enum (Phase 1b removes after dispatcher lands)
     | "read_back_unsupported"
     | "page_end_inferred"
     | "scrollbar_unavailable"
-    | "no_target_window";
+    | "no_target_window"
+    // 5-value ADR-018 §2.6.2 enum (added Phase 1a as contract lock)
+    | "delivered_via_uia"
+    | "delivered_via_cdp"
+    | "delivered_via_postmessage"
+    | "wheel_overlay_intercepted"
+    | "target_unreachable";
   /** Axis on which silent drop / unverifiable was detected (for context). */
   axis?: "vertical" | "horizontal";
 }

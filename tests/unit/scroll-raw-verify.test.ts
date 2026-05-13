@@ -129,6 +129,49 @@ describe("evaluateScrollDelivery — image hash fallback", () => {
   });
 });
 
+// ADR-018 Phase 1a contract lock: pin that the new 5-value reason enum is
+// type-assignable to ScrollVerifyOutcome.reason. This is the trunk-stage
+// guarantee that Phase 1b / 3 / 4 can emit these values without further
+// type changes. The 4 legacy reasons (read_back_unsupported /
+// page_end_inferred / scrollbar_unavailable / no_target_window) are still
+// emittable by the current dispatcher; Phase 1b will remove them once the
+// 3-tier pipeline lands.
+describe("evaluateScrollDelivery — ADR-018 §2.6.2 5-value reason enum (type-level lock)", () => {
+  it("ScrollVerifyOutcome.reason accepts all 5 ADR-018 reason values", () => {
+    // The cast-and-assign pattern below fails to compile if any member is
+    // missing from the union, which is the trunk contract.
+    const reasons = [
+      "delivered_via_uia",
+      "delivered_via_cdp",
+      "delivered_via_postmessage",
+      "wheel_overlay_intercepted",
+      "target_unreachable",
+    ] as const;
+    type ReasonField = NonNullable<
+      import("../../src/tools/mouse.js").ScrollVerifyOutcome["reason"]
+    >;
+    // Per-member type assignment forces TS to verify each literal is in the union.
+    const _u1: ReasonField = "delivered_via_uia";
+    const _u2: ReasonField = "delivered_via_cdp";
+    const _u3: ReasonField = "delivered_via_postmessage";
+    const _u4: ReasonField = "wheel_overlay_intercepted";
+    const _u5: ReasonField = "target_unreachable";
+    expect(reasons).toHaveLength(5);
+    expect([_u1, _u2, _u3, _u4, _u5].sort()).toEqual([...reasons].sort());
+  });
+
+  it("ScrollVerifyOutcome.reason still accepts all 4 legacy reason values (Phase 1b will remove)", () => {
+    type ReasonField = NonNullable<
+      import("../../src/tools/mouse.js").ScrollVerifyOutcome["reason"]
+    >;
+    const _l1: ReasonField = "read_back_unsupported";
+    const _l2: ReasonField = "page_end_inferred";
+    const _l3: ReasonField = "scrollbar_unavailable";
+    const _l4: ReasonField = "no_target_window";
+    expect([_l1, _l2, _l3, _l4]).toHaveLength(4);
+  });
+});
+
 describe("evaluateScrollDelivery — delta shape", () => {
   it("delta exposes both axes when both Win32 axes are present", () => {
     const r = evaluateScrollDelivery(snap(0.10, 0.20), snap(0.25, 0.30), "down");
