@@ -293,22 +293,32 @@ describe.skipIf(!nativeWin32)("ADR-007 P1: native win32 panic-safety", () => {
       },
     );
 
-    it("win32GetProcessIdentity stays consistent across 100 PIDs", () => {
+    it("win32GetProcessIdentity stays consistent across the whole process map", () => {
       const map = native.win32BuildProcessParentMap!();
-      // Sample 100 PIDs (or all of them if fewer).
-      const sample = map.slice(0, 100).map((e) => e.pid);
+      // Walk the entire snapshot rather than slice(0, 100). Toolhelp32 returns
+      // processes in a system-defined order whose first ~100 entries on a
+      // typical Windows box are protected session-0 services (Idle, System,
+      // Registry, smss, csrss, services, lsass, …) that PROCESS_QUERY_LIMITED
+      // _INFORMATION cannot open from a user-mode process. Sampling only the
+      // head therefore can legitimately yield 0/N identified, which masks the
+      // very regression this gauntlet is designed to catch.
+      //
+      // Looping over the full map keeps the test's original intent intact —
+      // a sizeof bug in PROCESSENTRY32W or a mangled OpenProcess handle would
+      // push identifiedCount toward zero — while making the sample robust to
+      // wherever the user-session processes happen to land in the snapshot.
       let identifiedCount = 0;
-      for (const pid of sample) {
-        const id = native.win32GetProcessIdentity!(pid);
-        expect(id.pid).toBe(pid);
+      for (const e of map) {
+        const id = native.win32GetProcessIdentity!(e.pid);
+        expect(id.pid).toBe(e.pid);
         expect(typeof id.processName).toBe("string");
         expect(typeof id.processStartTimeMs).toBe("number");
         if (id.processName.length > 0) identifiedCount++;
       }
-      // We expect to resolve a non-trivial fraction of process names.
-      // A regression that mangled the OpenProcess handle would push this
-      // toward zero, while a sizeof bug in PROCESSENTRY32W would feed
-      // garbage PIDs that would all fail to resolve.
+      // Any healthy Windows session contains at least a handful of user-mode
+      // processes (the test runner itself, its shell, the desktop shell, …).
+      // If zero processes in the entire snapshot resolved, OpenProcess or the
+      // surrounding identity path is genuinely broken.
       expect(identifiedCount).toBeGreaterThan(0);
     });
   });
