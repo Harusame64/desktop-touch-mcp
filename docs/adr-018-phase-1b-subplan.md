@@ -32,11 +32,11 @@ ADR §B Reuse map says **Phase 1 introduces zero new Rust code**, but `src/uia/s
 
 3. **scrollHandler refactor** (`src/tools/mouse.ts:1070-1204`):
    - `resolveWindowTarget` already called first — preserve
-   - Add `resolveInputDestination` call after window resolution
+   - Add `resolveInputDestination` call after window resolution. `dest` is the dispatch destination (resolveWindowTarget-only, no cursor/foreground fallback per Opus Round 1 P1-1); observation HWND for snapshot uses a separate enum/cursor/foreground ladder kept in `scrollHandler` (snapshot is read-only, dispatcher routing never touches cursor coords).
    - Branch on `dest.kind`:
-     - `'uia'` → call `uia_scroll_by_wheel_at_hwnd`, emit `channel='uia'`, `reason='delivered_via_uia'` on success
-     - `'hwnd' | 'unresolved'` → existing nutjs SendInput path (preserved unchanged), emit `channel='send_input'`, `reason` from existing `evaluateScrollDelivery` taxonomy
-   - **Tier 1 UIA failure** (UIA call returned `ok:false`) falls through to nutjs (graceful degrade); a hint records the attempted-but-failed UIA channel
+     - `'uia' | 'hwnd'` → dispatcher attempts `uia_scroll_by_wheel_at_hwnd`. If Rust path returns `scrolled:true` (UIA pre/post percent differ per ADR §2.6.2), emit `channel='uia'`, `reason='delivered_via_uia'`.
+     - Else (Tier 1 returned null, or kind === 'unresolved'): legacy nutjs SendInput path preserved, emits `channel='wheel_send_input'` (the legacy literal — Phase 4 §2.6.3 migration renames to `'send_input'` along with the 4 legacy reason values), `reason` from existing `evaluateScrollDelivery` taxonomy.
+   - **Tier 1 UIA failure** (UIA call returned `ok:false` or `scrolled:false`) falls through to nutjs (graceful degrade) without emitting any ADR-018 reason on that call.
 
 4. **5-value reason `delivered_via_uia` emission**:
    - Only `delivered_via_uia` is emitted in Phase 1b; the other 4 ADR-018 reasons (`delivered_via_cdp`, `delivered_via_postmessage`, `wheel_overlay_intercepted`, `target_unreachable`) remain type-level only until Phase 3 / 4

@@ -3,42 +3,34 @@
  *
  * Pins the Phase 1b contract:
  *   1. `resolveInputDestination` returns `{kind:'hwnd'}` when resolveWindowTarget
- *      resolves the window, and `{kind:'unresolved'}` when every fallback fails.
+ *      resolves the window, and `{kind:'unresolved'}` when resolveWindowTarget
+ *      returns null. The resolver is the SINGLE SSOT for dispatch destination
+ *      (ADR §2.3 D3) — cursor / foreground / enum fallbacks live in
+ *      scrollHandler for OBSERVATION HWND only, never for dispatch.
  *   2. `dispatchScrollWheel({kind:'hwnd'}, ...)` returns
  *      `{scrolled:true, channel:'uia', reason:'delivered_via_uia'}` when the
  *      native `uiaScrollByWheelAtHwnd` returns `ok:true, scrolled:true`.
  *   3. `dispatchScrollWheel` returns `null` when the native call returns
  *      `ok:false` or `scrolled:false`, or when the native binding is missing
  *      (so the caller falls through to Tier 4 SendInput).
- *   4. `assertTier4Reachable` throws for `'uia'` and `'cdp'`, accepts `'hwnd'`
- *      (Phase 1b lenient form) and `'unresolved'`.
+ *   4. `assertTier4Reachable` throws for `'uia'` and `'cdp'`. Phase 1b accepts
+ *      both `'hwnd'` (lenient form, see Phase 4 BREAKING CHANGE marker on the
+ *      function) and `'unresolved'`.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Mock the native loader before importing the SUT so the dispatcher's
-// `await import('../../index.js')` resolves to our stub.
+// static import of `../../index.js` resolves to our stub.
 const uiaScrollByWheelAtHwndMock = vi.fn();
 vi.mock("../../index.js", () => ({
   uiaScrollByWheelAtHwnd: uiaScrollByWheelAtHwndMock,
 }));
 
-// Mock window resolution dependencies.
+// Mock window resolution dependency.
 const resolveWindowTargetMock = vi.fn();
 vi.mock("../../src/tools/_resolve-window.js", () => ({
   resolveWindowTarget: resolveWindowTargetMock,
-}));
-
-const getForegroundHwndMock = vi.fn();
-const enumWindowsInZOrderMock = vi.fn();
-vi.mock("../../src/engine/win32.js", () => ({
-  getForegroundHwnd: getForegroundHwndMock,
-  enumWindowsInZOrder: enumWindowsInZOrderMock,
-}));
-
-const findContainingWindowMock = vi.fn();
-vi.mock("../../src/engine/window-cache.js", () => ({
-  findContainingWindow: findContainingWindowMock,
 }));
 
 // Import after mocks are registered.
@@ -48,12 +40,9 @@ const {
   assertTier4Reachable,
 } = await import("../../src/tools/_input-pipeline.js");
 
-describe("ADR-018 §2.3 — resolveInputDestination", () => {
+describe("ADR-018 §2.3 — resolveInputDestination (single SSOT via resolveWindowTarget)", () => {
   beforeEach(() => {
     resolveWindowTargetMock.mockReset();
-    getForegroundHwndMock.mockReset();
-    enumWindowsInZOrderMock.mockReset();
-    findContainingWindowMock.mockReset();
   });
 
   it("returns {kind:'hwnd'} when resolveWindowTarget resolves", async () => {
@@ -66,37 +55,19 @@ describe("ADR-018 §2.3 — resolveInputDestination", () => {
     expect(dest).toEqual({ kind: "hwnd", hwnd: 0xABCDn });
   });
 
-  it("falls back to enumWindowsInZOrder when resolveWindowTarget returns null with plain title", async () => {
+  it("returns {kind:'unresolved'} when resolveWindowTarget returns null", async () => {
+    // Case 3 (plain windowTitle top-level match): resolveWindowTarget returns
+    // null to signal "caller handles". Phase 1b dispatcher reads that as
+    // 'unresolved' so the caller falls through to Tier 4. The legacy nutjs
+    // path then dispatches via cursor — this is the only place cursor-pixel
+    // routing reaches the wheel, confined to Tier 4 per ADR §1.2.
     resolveWindowTargetMock.mockResolvedValue(null);
-    enumWindowsInZOrderMock.mockReturnValue([
-      { hwnd: 0xFEEDn, title: "MyApp - Notepad", isMinimized: false, className: "Notepad", ownerHwnd: null },
-    ]);
     const dest = await resolveInputDestination({ windowTitle: "Notepad" });
-    expect(dest).toEqual({ kind: "hwnd", hwnd: 0xFEEDn });
+    expect(dest).toEqual({ kind: "unresolved", reason: "no_target_window" });
   });
 
-  it("falls back to findContainingWindow when cursor coords supplied", async () => {
+  it("returns {kind:'unresolved'} when neither hwnd nor windowTitle is given", async () => {
     resolveWindowTargetMock.mockResolvedValue(null);
-    enumWindowsInZOrderMock.mockReturnValue([]);
-    findContainingWindowMock.mockReturnValue({ hwnd: 0xC0DEn });
-    const dest = await resolveInputDestination({ cursor: { x: 100, y: 200 } });
-    expect(dest).toEqual({ kind: "hwnd", hwnd: 0xC0DEn });
-  });
-
-  it("falls back to getForegroundHwnd as last resort", async () => {
-    resolveWindowTargetMock.mockResolvedValue(null);
-    enumWindowsInZOrderMock.mockReturnValue([]);
-    findContainingWindowMock.mockReturnValue(null);
-    getForegroundHwndMock.mockReturnValue(0xFEAFn);
-    const dest = await resolveInputDestination({});
-    expect(dest).toEqual({ kind: "hwnd", hwnd: 0xFEAFn });
-  });
-
-  it("returns {kind:'unresolved'} when every fallback yields null", async () => {
-    resolveWindowTargetMock.mockResolvedValue(null);
-    enumWindowsInZOrderMock.mockReturnValue([]);
-    findContainingWindowMock.mockReturnValue(null);
-    getForegroundHwndMock.mockReturnValue(null);
     const dest = await resolveInputDestination({});
     expect(dest).toEqual({ kind: "unresolved", reason: "no_target_window" });
   });
@@ -125,8 +96,16 @@ describe("ADR-018 §2.6 — dispatchScrollWheel (Tier 1 UIA path)", () => {
     });
   });
 
-  it("UIA call returns scrolled:false → null (caller falls through)", async () => {
-    uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: false, error: "No ScrollPattern ancestor found" });
+  it("UIA call returns scrolled:false (no pre/post diff) → null (caller falls through)", async () => {
+    // ADR §2.6.2: `delivered_via_uia` requires pre/post UIA percent to differ.
+    // Rust returns `scrolled:false` when SetScrollPercent succeeded but
+    // CurrentVerticalScrollPercent did not move (e.g. already at boundary, or
+    // the element rejected the percent silently).
+    uiaScrollByWheelAtHwndMock.mockResolvedValue({
+      ok: true,
+      scrolled: false,
+      error: "SetScrollPercent returned Ok but pre/post percent unchanged",
+    });
     const result = await dispatchScrollWheel(
       { kind: "hwnd", hwnd: 0x1234n },
       { direction: "down", notch: 1 },
@@ -134,8 +113,12 @@ describe("ADR-018 §2.6 — dispatchScrollWheel (Tier 1 UIA path)", () => {
     expect(result).toBeNull();
   });
 
-  it("UIA call returns ok:false → null (caller falls through)", async () => {
-    uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: false, scrolled: false });
+  it("UIA call returns ok:false (view size unavailable / SetScrollPercent failed) → null", async () => {
+    uiaScrollByWheelAtHwndMock.mockResolvedValue({
+      ok: false,
+      scrolled: false,
+      error: "CurrentVerticalViewSize unavailable: …",
+    });
     const result = await dispatchScrollWheel(
       { kind: "hwnd", hwnd: 0x1234n },
       { direction: "up", notch: 2 },
@@ -170,7 +153,7 @@ describe("ADR-018 §2.6 — dispatchScrollWheel (Tier 1 UIA path)", () => {
     expect(uiaScrollByWheelAtHwndMock).not.toHaveBeenCalled();
   });
 
-  it("wheel delta sign convention: down=positive, up=negative, right=positive, left=negative", async () => {
+  it("wheel delta sign convention (UIA-internal): down/right positive, up/left negative — Tier 4/PostMessage MUST flip for Phase 4", async () => {
     uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: true });
 
     await dispatchScrollWheel({ kind: "hwnd", hwnd: 1n }, { direction: "down", notch: 1 });
@@ -194,7 +177,12 @@ describe("ADR-018 §4 Phase 1 runtime guard — assertTier4Reachable", () => {
     ).not.toThrow();
   });
 
-  it("kind='hwnd' → no throw (Phase 1b lenient form)", () => {
+  it("kind='hwnd' → no throw (Phase 1b LENIENT FORM — Phase 4 inverts this assertion to .toThrow when Tier 3 PostMessage lands)", () => {
+    // ⚠ Phase 4 BREAKING CHANGE marker ⚠
+    // When Tier 3 PostMessage lands, this assertion inverts: resolved HWNDs
+    // that exhausted Tiers 1/2/3 must NOT reach Tier 4 SendInput per
+    // ADR §2.6.2 path-(b). The same PR that lands Tier 3 must update this
+    // case to `.toThrow(/Tier 4 SendInput must not be reached/)`.
     expect(() => assertTier4Reachable({ kind: "hwnd", hwnd: 0n })).not.toThrow();
   });
 

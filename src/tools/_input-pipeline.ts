@@ -21,8 +21,7 @@
  */
 
 import { resolveWindowTarget, type ResolvedWindow } from "./_resolve-window.js";
-import { getForegroundHwnd, enumWindowsInZOrder } from "../engine/win32.js";
-import { findContainingWindow } from "../engine/window-cache.js";
+import { uiaScrollByWheelAtHwnd } from "../../index.js";
 
 // ─── Public types ────────────────────────────────────────────────────────────
 
@@ -49,14 +48,22 @@ export type InputDestination =
 export type Channel = "uia" | "cdp" | "postmessage" | "send_input";
 
 /**
- * Wheel parameters in raw notch deltas. Positive `deltaY` scrolls down (matches
- * `WM_MOUSEWHEEL` lParam sign convention reversed: ADR §2.4 will revisit if
- * Phase 4 PostMessage encoding requires sign flip).
+ * Wheel parameters in raw notch deltas.
+ *
+ * **Sign convention (UIA-internal, NOT Win32 WM_MOUSEWHEEL-compatible)**: this
+ * interface uses the UIA `SetScrollPercent` direction sense — down/right is
+ * positive (percent increases toward the bottom/right of content). The Win32
+ * `WM_MOUSEWHEEL` `wParam` high word uses the opposite convention (positive
+ * = wheel rotated forward, scroll **up**). Phase 4 PostMessage encoding
+ * (ADR-018 §4 Phase 4) MUST flip the sign at the `postWheelToHwnd` napi
+ * boundary — `WheelParams.notch` carries UIA-direction signed values
+ * throughout the TS layer.
  *
  * `notch` is the integer count of mouse-wheel detents (1 notch = 120 raw
  * `WHEEL_DELTA` units). The dispatcher converts this to a percent step
- * inside the Rust UIA path; CDP / PostMessage tiers (Phase 3 / 4) accept
- * the same notch count and convert at their boundary.
+ * inside the Rust UIA path. CDP `dispatchMouseEvent({type:'mouseWheel'})`
+ * (Phase 3) uses positive-down convention too (same as UIA / CSS), so no
+ * sign flip is needed at the Tier 2 boundary — only Tier 3 PostMessage flips.
  */
 export interface WheelParams {
   direction: "up" | "down" | "left" | "right";
@@ -84,20 +91,28 @@ export interface DispatchOutcome {
 // ─── Resolver ────────────────────────────────────────────────────────────────
 
 /**
- * Resolve the input destination using `resolveWindowTarget` (D3 SSOT), with
- * fallbacks for the cursor-position-routing legacy callers (ADR §2.6.3 Public
- * API contract: `scroll({action:'raw', amount:N})` with no destination must
- * still resolve to a foreground HWND so the happy path is preserved).
+ * Resolve the input destination using `resolveWindowTarget` (ADR §2.3 D3 SSOT).
  *
- * Phase 1b resolver returns only `'hwnd'` or `'unresolved'`. The 'uia' kind
- * is reserved for a future phase that probes ScrollPattern at resolve time;
- * Phase 1b checks pattern availability inside `dispatchScrollWheel` instead
- * to avoid a redundant native crossing.
+ * **Single source for dispatcher destination resolution** — when
+ * `resolveWindowTarget` returns null (Case 3 plain-windowTitle match, or no
+ * resolvable target), the dispatcher emits `{ kind: 'unresolved' }` so the
+ * caller falls through to Tier 4 SendInput (legacy nutjs in Phase 1b). This
+ * preserves the cursor-only / no-destination happy path (`scroll({action:'raw',
+ * direction:'down'})` with no windowTitle) via Tier 4 while ensuring that
+ * **dispatcher routing never touches cursor coordinates** — the cursor-pixel
+ * routing that ADR-018 §1.2 identified as the root cause of the 11 reported
+ * symptoms is confined to Tier 4 (which only fires when destination is
+ * unresolved or when Tier 3 PostMessage is exhausted in Phase 4).
+ *
+ * Callers that need a *snapshot* HWND for Win32 GetScrollInfo observation
+ * (when the dispatcher falls through to Tier 4) compute that separately —
+ * see `mouse.ts:scrollHandler` for the legacy enum/cursor/foreground ladder
+ * used for observation only. That ladder is **never** consulted for dispatch
+ * routing.
  */
 export async function resolveInputDestination(params: {
   hwnd?: string;
   windowTitle?: string;
-  cursor?: { x: number; y: number };
 }): Promise<InputDestination> {
   const resolved: ResolvedWindow | null = await resolveWindowTarget({
     hwnd: params.hwnd,
@@ -106,43 +121,6 @@ export async function resolveInputDestination(params: {
   if (resolved !== null) {
     return { kind: "hwnd", hwnd: resolved.hwnd };
   }
-
-  // Case 3 from _resolve-window.ts: plain windowTitle that matches a top-level
-  // window returns null. Re-enumerate with the same ordering used by the
-  // legacy scrollHandler to keep parity (this is a parity step — Phase 5 may
-  // collapse this back into resolveWindowTarget once `scroll-read.ts` migrates).
-  if (params.windowTitle && params.windowTitle !== "@active") {
-    try {
-      const wantTitle = params.windowTitle.toLowerCase();
-      const win = enumWindowsInZOrder().find(
-        (w) => !w.isMinimized && w.title.toLowerCase().includes(wantTitle),
-      );
-      if (win) return { kind: "hwnd", hwnd: win.hwnd };
-    } catch {
-      /* best effort */
-    }
-  }
-
-  // Cursor-position fallback (preserves legacy scroll(action='raw', x, y) callers).
-  if (params.cursor !== undefined) {
-    try {
-      const containing = findContainingWindow(params.cursor.x, params.cursor.y);
-      if (containing) return { kind: "hwnd", hwnd: containing.hwnd };
-    } catch {
-      /* best effort */
-    }
-  }
-
-  // Foreground last-resort. resolveWindowTarget('@active') would have caught
-  // this case if windowTitle was '@active'; here we cover the no-destination
-  // legacy path explicitly.
-  try {
-    const fg = getForegroundHwnd();
-    if (fg !== null) return { kind: "hwnd", hwnd: fg };
-  } catch {
-    /* best effort */
-  }
-
   return { kind: "unresolved", reason: "no_target_window" };
 }
 
@@ -150,13 +128,25 @@ export async function resolveInputDestination(params: {
 
 /**
  * Asserts that the caller is allowed to invoke Tier 4 (legacy SendInput
- * nutjs path) for the given destination. Phase 1b adopts a **lenient** form
+ * nutjs path) for the given destination. **Phase 1b adopts a LENIENT form**
  * (`'hwnd'` and `'unresolved'` are both allowed) so resolved-but-non-UIA
  * destinations (Word / Chrome / Excel under the dispatcher's view) preserve
  * the legacy happy path until Tier 3 PostMessage lands in Phase 4.
  *
- * Phase 4 tightens this to `dest.kind === 'unresolved'` only — see
- * `docs/adr-018-phase-1b-subplan.md` §2.2 carry-over.
+ * ## ⚠ Phase 4 BREAKING CHANGE marker ⚠
+ *
+ * Phase 4 (when Tier 3 PostMessage lands) **MUST** tighten this guard to
+ * `dest.kind === 'unresolved'` only. The Phase 4 tightening will:
+ *
+ * 1. Throw on `dest.kind === 'hwnd'` (resolved-but-Tier-3-exhausted) instead
+ *    of allowing fall-through to SendInput
+ * 2. Caller must catch and emit `{status:'not_delivered', channel:'postmessage',
+ *    reason:'target_unreachable'}` per ADR §2.6.2 path-(b)
+ * 3. The corresponding unit test (currently named "kind='hwnd' → no throw
+ *    (Phase 1b lenient form)") must invert to `.toThrow(...)` in the same PR
+ *
+ * Carry-over: `docs/adr-018-phase-1b-subplan.md` §2.2 "Strict Tier 4 guard
+ * (`kind === 'unresolved'` only)" tracks this.
  *
  * @throws Error if `dest.kind` is `'uia'` or `'cdp'` (those tiers must
  *   dispatch through their own transport — invoking SendInput would
@@ -181,9 +171,12 @@ export function assertTier4Reachable(dest: InputDestination): void {
  * dispatch, or `null` when the caller should fall through to the next tier
  * (Tier 4 SendInput in Phase 1b).
  *
- * - `kind === 'hwnd'`: probes Tier 1 UIA via the native `uiaScrollByWheelAtHwnd`
- *   call. If the HWND exposes a ScrollPattern ancestor and the call succeeds,
- *   returns `{ scrolled: true, channel: 'uia', reason: 'delivered_via_uia' }`.
+ * - `kind === 'hwnd'`: probes Tier 1 UIA via the static-imported
+ *   `uiaScrollByWheelAtHwnd` native call. If the HWND exposes a
+ *   ScrollPattern ancestor AND the Rust path observes
+ *   `|post_percent - pre_percent| >= SCROLL_PERCENT_EPSILON` (ADR §2.6.2
+ *   emission condition for `delivered_via_uia`), returns
+ *   `{ scrolled: true, channel: 'uia', reason: 'delivered_via_uia' }`.
  *   Otherwise returns `null` (caller falls through to legacy nutjs).
  * - `kind === 'uia'`: future-reserved (Phase 3 or later). Currently treated
  *   identically to `'hwnd'` since the resolver does not emit `'uia'` in Phase 1b.
@@ -192,10 +185,8 @@ export function assertTier4Reachable(dest: InputDestination): void {
  * - `kind === 'unresolved'`: returns `null` (caller invokes Tier 4 SendInput
  *   after `assertTier4Reachable(dest)` passes).
  *
- * Native call is performed via a dynamic import of `index.js` so non-Windows
- * test environments (or builds without the new napi export) cleanly degrade
- * to legacy behaviour: any thrown native error from a missing export causes
- * dispatch to return `null` and the caller falls through.
+ * Any thrown native error causes dispatch to return `null` and the caller
+ * falls through to legacy.
  */
 export async function dispatchScrollWheel(
   dest: InputDestination,
@@ -203,17 +194,13 @@ export async function dispatchScrollWheel(
 ): Promise<DispatchOutcome | null> {
   if (dest.kind === "hwnd" || dest.kind === "uia") {
     try {
-      const native = await import("../../index.js");
-      const fn = (native as Record<string, unknown>).uiaScrollByWheelAtHwnd;
-      if (typeof fn !== "function") return null; // native binding not available → legacy fall-through
+      // Static-imported native binding. When the addon is missing or the
+      // symbol is undefined (older builds without the Phase 1b napi export),
+      // `uiaScrollByWheelAtHwnd` itself is undefined; the typeof check below
+      // makes the dispatcher gracefully fall through to legacy nutjs.
+      if (typeof uiaScrollByWheelAtHwnd !== "function") return null;
       const wheelDelta = wheelDeltaForNotch(params);
-      const result = (await (
-        fn as (opts: {
-          hwnd: string;
-          wheelDeltaY: number;
-          wheelDeltaX: number;
-        }) => Promise<{ ok: boolean; scrolled: boolean; error?: string | null }>
-      )({
+      const result = (await uiaScrollByWheelAtHwnd({
         hwnd: dest.hwnd.toString(),
         wheelDeltaY: wheelDelta.y,
         wheelDeltaX: wheelDelta.x,

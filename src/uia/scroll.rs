@@ -300,10 +300,40 @@ fn scroll_by_wheel_at_hwnd_impl(
             if let Ok(pat) = e.GetCurrentPattern(UIA_ScrollPatternId)
                 && let Ok(scroll) = pat.cast::<IUIAutomationScrollPattern>()
             {
+                // ADR §2.6.2 — `delivered_via_uia` requires UIA pre/post
+                // percent to differ. Capture pre-state first, perform
+                // SetScrollPercent, re-read post-state, compare.
                 let cur_v = scroll.CurrentVerticalScrollPercent().unwrap_or(0.0);
                 let cur_h = scroll.CurrentHorizontalScrollPercent().unwrap_or(0.0);
-                let view_v = scroll.CurrentVerticalViewSize().unwrap_or(10.0);
-                let view_h = scroll.CurrentHorizontalViewSize().unwrap_or(10.0);
+
+                // P2-5 fix: when view size queries fail, return ok:false so the
+                // TS dispatcher falls through to legacy nutjs (instead of
+                // computing a step against a fallback that may swing the
+                // scroll position to 0% / 100% with a single notch).
+                let view_v = match scroll.CurrentVerticalViewSize() {
+                    Ok(v) => v,
+                    Err(err) => {
+                        return Ok(ScrollResult {
+                            ok: false,
+                            scrolled: false,
+                            error: Some(format!(
+                                "CurrentVerticalViewSize unavailable: {err}"
+                            )),
+                        });
+                    }
+                };
+                let view_h = match scroll.CurrentHorizontalViewSize() {
+                    Ok(v) => v,
+                    Err(err) => {
+                        return Ok(ScrollResult {
+                            ok: false,
+                            scrolled: false,
+                            error: Some(format!(
+                                "CurrentHorizontalViewSize unavailable: {err}"
+                            )),
+                        });
+                    }
+                };
 
                 // 1 notch (WHEEL_DELTA=120) ≈ one-tenth of the visible view.
                 // Empirically this matches Windows' default wheel scroll lines (3)
@@ -325,18 +355,37 @@ fn scroll_by_wheel_at_hwnd_impl(
                 };
 
                 // UIA convention: horizontal first, vertical second.
-                return match scroll.SetScrollPercent(target_h, target_v) {
-                    Ok(()) => Ok(ScrollResult {
-                        ok: true,
-                        scrolled: true,
-                        error: None,
-                    }),
-                    Err(e) => Ok(ScrollResult {
+                if let Err(err) = scroll.SetScrollPercent(target_h, target_v) {
+                    return Ok(ScrollResult {
                         ok: false,
                         scrolled: false,
-                        error: Some(format!("SetScrollPercent failed: {e}")),
-                    }),
-                };
+                        error: Some(format!("SetScrollPercent failed: {err}")),
+                    });
+                }
+
+                // ADR §2.6.2 emission gate — pre/post must differ to claim
+                // `delivered_via_uia`. SCROLL_PERCENT_EPSILON here is 1e-3 in
+                // percent units (0..100 range). The TS-side mouse.ts epsilon
+                // (1e-6) targets Win32 GetScrollInfo pageRatio (0..1 range)
+                // and is not applicable to UIA percent semantics.
+                const SCROLL_PERCENT_EPSILON: f64 = 1e-3;
+                let post_v = scroll.CurrentVerticalScrollPercent().unwrap_or(cur_v);
+                let post_h = scroll.CurrentHorizontalScrollPercent().unwrap_or(cur_h);
+                let moved = (post_v - cur_v).abs() >= SCROLL_PERCENT_EPSILON
+                    || (post_h - cur_h).abs() >= SCROLL_PERCENT_EPSILON;
+
+                return Ok(ScrollResult {
+                    ok: true,
+                    scrolled: moved,
+                    error: if moved {
+                        None
+                    } else {
+                        Some(
+                            "SetScrollPercent returned Ok but pre/post percent unchanged"
+                                .into(),
+                        )
+                    },
+                });
             }
         }
 

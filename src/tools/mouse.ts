@@ -1094,20 +1094,35 @@ export const scrollHandler = async ({
       await moveTo(tx, ty, speed);
     }
 
-    // ADR-018 Phase 1b — destination-explicit dispatch.
-    // Resolve InputDestination first; the dispatcher decides whether Tier 1 UIA
-    // can handle this HWND, otherwise the caller falls through to Tier 4 SendInput
-    // (the legacy nutjs path, preserved unchanged until Phase 4 Tier 3 lands).
-    const dest = await resolveInputDestination({
-      hwnd,
-      windowTitle,
-      cursor: tx !== undefined && ty !== undefined ? { x: tx, y: ty } : undefined,
-    });
-    // 'cdp' variant has no HWND (tabId-based); Phase 1b resolver never emits 'cdp'
-    // so this narrowing is exhaustive in practice. Phase 3 will replace the
-    // observation source for 'cdp' destinations with CDP `scrollTop` queries.
-    const observedHwnd: bigint | null =
-      dest.kind === "uia" || dest.kind === "hwnd" ? dest.hwnd : null;
+    // ADR-018 Phase 1b — destination-explicit dispatch. The dispatcher
+    // destination (`dest`) is resolved through resolveWindowTarget ONLY
+    // (single SSOT per ADR §2.3 D3); cursor-pixel routing is confined to
+    // Tier 4 (legacy nutjs path below) so the ADR-018 §1.2 root-cause
+    // (cursor coordinates as the destination) cannot re-enter the dispatcher.
+    const dest = await resolveInputDestination({ hwnd, windowTitle });
+
+    // Observation HWND for snapshot verification. This is a SEPARATE ladder
+    // from `dest` — it can fall back to cursor / foreground because Win32
+    // GetScrollInfo observation is read-only and benefits from any HWND that
+    // happens to be at the scroll point. The cursor/foreground fallback here
+    // does NOT route dispatch — dispatch always uses `dest`.
+    let observedHwnd: bigint | null = resolvedWin?.hwnd ?? null;
+    if (observedHwnd === null && windowTitle && windowTitle !== "@active") {
+      try {
+        const wantTitle = windowTitle.toLowerCase();
+        const win = enumWindowsInZOrder().find(
+          (w) => !w.isMinimized && w.title.toLowerCase().includes(wantTitle),
+        );
+        if (win) observedHwnd = win.hwnd;
+      } catch { /* best effort */ }
+    }
+    if (observedHwnd === null && tx !== undefined && ty !== undefined) {
+      const containing = findContainingWindow(tx, ty);
+      if (containing) observedHwnd = containing.hwnd;
+    }
+    if (observedHwnd === null) {
+      observedHwnd = getForegroundHwnd();
+    }
     const observedRect = observedHwnd !== null ? getWindowRectByHwnd(observedHwnd) : null;
 
     // Phase 1: pre-scroll snapshot (matrix doc §3.1 + terminal regimen §2.1 phase 1).
@@ -1163,9 +1178,20 @@ export const scrollHandler = async ({
           },
         };
 
+    // ADR-018 §2.6.1 — channel is the transport identifier (always populated,
+    // including for `status:'not_delivered'`). Phase 1b emits 'uia' when the
+    // dispatcher's Tier 1 path succeeded; legacy path retains the existing
+    // 'wheel_send_input' channel for back-compat. The Phase 4 §2.6.3 migration
+    // renames 'wheel_send_input' → 'send_input'.
+    const effectiveChannel: "uia" | "wheel_send_input" =
+      tier1 !== null && tier1.scrolled ? "uia" : "wheel_send_input";
+
     if (outcome.status === "not_delivered") {
       // Silent drop: pre off-boundary, post unchanged. ScrollNotDelivered with
-      // suggestions sourced from the SSOT _errors.ts dictionary.
+      // suggestions sourced from the SSOT _errors.ts dictionary. ADR §2.6.1
+      // requires channel to survive in the failure envelope — thread it
+      // through context.verifyDelivery so callers reading the error envelope
+      // (issue #179) see the consistent shape with success envelopes.
       return failWith(
         new Error("ScrollNotDelivered"),
         "scroll",
@@ -1178,17 +1204,16 @@ export const scrollHandler = async ({
             postVerticalPercent: post.vertical,
             postHorizontalPercent: post.horizontal,
             direction,
+            verifyDelivery: {
+              status: "not_delivered" as const,
+              channel: effectiveChannel,
+              ...(outcome.axis ? { axis: outcome.axis } : {}),
+            },
           },
         },
       );
     }
 
-    // ADR-018 §2.6.1 — channel is the transport identifier (always populated).
-    // Phase 1b emits 'uia' when the dispatcher's Tier 1 path succeeded; legacy
-    // path retains the existing 'wheel_send_input' channel for back-compat. The
-    // Phase 4 §2.6.3 migration renames 'wheel_send_input' → 'send_input'.
-    const effectiveChannel: "uia" | "wheel_send_input" =
-      tier1 !== null && tier1.scrolled ? "uia" : "wheel_send_input";
     const verifyDelivery = outcome.status === "delivered"
       ? {
           status: "delivered" as const,
