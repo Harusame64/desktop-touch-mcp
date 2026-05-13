@@ -14,11 +14,13 @@
 
 import { describe, it, expect } from "vitest";
 
-// Mirror the regex declared in `src/tools/keyboard.ts` for the same pattern.
-// Both tests verify the regex contract (text classification) rather than the
-// runtime auto-clipboard branching (which would require mocking nutjs keyboard
-// + clipboard side effects and is exercised by integration tests).
-const NON_ASCII_RE = /[^\x00-\x7F]/;
+// Use the public isNonAscii helper (which wraps the private NON_ASCII_RE
+// regex declared in src/tools/keyboard.ts) so this test pins the actual
+// production contract bit-equally. The legacy NON_ASCII_SYMBOL_RE is private
+// to keyboard.ts; we recreate its pattern locally below for the
+// subset / superset relation tests.
+import { isNonAscii } from "../../src/tools/keyboard.js";
+const NON_ASCII_RE = { test: isNonAscii };
 const NON_ASCII_SYMBOL_RE = /[–—‘’“”… ]/;
 
 describe("ADR-018 §2.4 D4 — NON_ASCII_RE matches all non-ASCII categories", () => {

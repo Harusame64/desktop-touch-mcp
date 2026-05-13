@@ -1375,12 +1375,12 @@ export const keyboardTypeHandler = async ({
     // contract-lock detector for CJK / emoji / diacritics, but is NOT yet wired
     // into the auto-clipboard upgrade below. Wiring it in here would route emoji
     // through clipboard and bypass the Focus Leash chunked-keystroke path
-    // (PR #270) that surrogate-pair-aware tests pin. ADR-018 §5 R7 mitigation
-    // calls for splitting the regex addition (Phase 2b-1, this PR) from the
-    // auto-upgrade flip (Phase 2b-2, after leash tests adopt clipboard-path
-    // assertions). Phase 2b-2 lands when callers opt-in via use_clipboard=true
-    // and the leash regression tests can be updated to assert the clipboard
-    // routing rather than chunked keystroke.
+    // pinned by `tests/unit/keyboard-leash-guard.test.ts` surrogate-pair cases.
+    // ADR-018 §5 R7 mitigation calls for splitting the regex addition
+    // (Phase 2b-1, this PR) from the auto-upgrade flip (Phase 2b-2, after the
+    // leash tests adopt clipboard-path assertions). Phase 2b-2 lands when callers
+    // opt-in via use_clipboard=true and the leash regression tests can be updated
+    // to assert the clipboard routing rather than chunked keystroke.
     let effectiveClipboard = use_clipboard;
     let autoClipboardReason: string | undefined;
     if (!use_clipboard && !forceKeystrokes && NON_ASCII_SYMBOL_RE.test(effectiveText)) {
