@@ -1749,11 +1749,6 @@ export const terminalRegistrationHandler = makeCommitWrapper(
 export function registerTerminalTools(server: McpServer): void {
   setTerminalReadHook(readForHook);
 
-  // grep-anchors: terminal_read, terminal_send
-  // (Phase 4 absorbed the former standalone `terminal_read` / `terminal_send`
-  // tools into action='read' / action='send' of this dispatcher. The anchors
-  // above keep grep-on-old-name landing here without leaking the legacy names
-  // back into the tool description — see tests/unit/tool-naming-phase2.test.ts.)
   server.registerTool(
     "terminal",
     {
