@@ -93,8 +93,11 @@ describe("evaluateScrollDelivery — Win32 axis present", () => {
   });
 
   it("epsilon-level noise (rounding) → not_delivered when below epsilon", () => {
-    // 1e-5 of percent jitter must be treated as no-movement (epsilon eats it).
-    const r = evaluateScrollDelivery(snap(0.50000, 0.0), snap(0.50001, 0.0), "down");
+    // SCROLL_PERCENT_EPSILON in mouse.ts is 1e-6 (intentionally low so single-step
+    // scrolls in ~1M-position ranges register as movement — see Codex P1 fix in
+    // PR #191). Any jitter below 1e-6 must be eaten by the epsilon. Use 1e-7
+    // here so the test stays valid for the current threshold.
+    const r = evaluateScrollDelivery(snap(0.5, 0.0), snap(0.5 + 1e-7, 0.0), "down");
     expect(r.status).toBe("not_delivered");
   });
 });
