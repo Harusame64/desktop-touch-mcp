@@ -2206,7 +2206,7 @@ export const keyboardSchema = z.discriminatedUnion("action", [
                 + (xs[xs.length - 1]!.holdMs ?? 0) <= 5000,
         { message: "total step duration (sum of holdMs + gapMs, last step's gap ignored) must be ≤ 5000ms" }
       )
-      .describe("Ordered list of key-press steps. Min 1, max 16. Total duration must not exceed 5000ms (excludes settleMs and focus acquisition)."),
+      .describe("Ordered list of key-press steps. Min 1, max 16. Total duration must not exceed 5000ms (excludes settleMs and focus acquisition). N=1 is allowed but inherits the sequence verification contract (hints.verifyDelivery.status='focus_only'); if you want the stricter keyboard:press contract, call keyboard({action:'press', keys}) directly (issue #278, matrix doc §3.1)."),
     method: z.literal("foreground").optional().describe(
       "Sequence is foreground-only by design — Alt-menu mnemonics need real SendInput. " +
       "Omit, or pass 'foreground'. method:'background' / 'foreground_flash' are " +
