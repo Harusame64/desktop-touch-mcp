@@ -296,6 +296,16 @@ const SUGGESTS: Record<string, string[]> = {
     "Sequence is foreground-only. Use keyboard(action:'press') with method:'foreground_flash' for individual key combos that need the ADR-013 妥協 path.",
     "If you need to chord Alt-mnemonics in a terminal, split the sequence into per-step keyboard(action:'press') calls.",
   ],
+  // Issue #279: keyboard(action:'press') rejects method:'foreground_flash'
+  // because clipboard-paste cannot deliver a key combo (would require Ctrl+V
+  // to inject Ctrl+V — circular). ADR-013 Option E targets text injection
+  // (keyboard:type / terminal:send) only. Producer: keyboard.ts:1490.
+  ForegroundFlashNotApplicableToKeyPress: [
+    "method:'foreground_flash' is for text injection (keyboard:type / terminal:send) only — clipboard paste cannot carry a key combo.",
+    "For the key combo, call keyboard({action:'press', keys, method:'foreground', windowTitle}) instead (default FG SendInput).",
+    "If the target supports background injection (WM_KEYDOWN-class hosts), keyboard({action:'press', keys, method:'background', windowTitle}) also works.",
+    "If you actually wanted to paste text (not chord keys), switch to keyboard({action:'type', text, method:'foreground_flash', windowTitle}) or terminal({action:'send', input, method:'foreground_flash'}).",
+  ],
   BackgroundNotApplicableToSequence: [
     "Sequence does not support the background path — Alt-menu mnemonics require real SendInput which only the foreground path provides.",
     "Use foreground (default) and target via windowTitle/hwnd, or split into separate keyboard(action:'press') calls if BG delivery is essential.",
@@ -545,6 +555,13 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   if (m.includes("foregroundflashnotapplicabletosequence")) {
     return { code: "ForegroundFlashNotApplicableToSequence", suggest: SUGGESTS.ForegroundFlashNotApplicableToSequence };
+  }
+  // Issue #279: keyboard(action:'press') with method:'foreground_flash' early
+  // reject (keyboard.ts:1490). Placed AFTER Sequence so neither substring
+  // poaches the other — the codes share the "ForegroundFlashNotApplicableTo"
+  // prefix, but the suffixes (Sequence / KeyPress) are mutually exclusive.
+  if (m.includes("foregroundflashnotapplicabletokeypress")) {
+    return { code: "ForegroundFlashNotApplicableToKeyPress", suggest: SUGGESTS.ForegroundFlashNotApplicableToKeyPress };
   }
   if (m.includes("backgroundnotapplicabletosequence")) {
     return { code: "BackgroundNotApplicableToSequence", suggest: SUGGESTS.BackgroundNotApplicableToSequence };
