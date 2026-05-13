@@ -123,13 +123,16 @@ export function withKeyboardLock<T>(fn: () => Promise<T>): Promise<T> {
  * variant, so call it OUTSIDE the lock (e.g. from a sequence handler's
  * `catch` block that sits outside `withKeyboardLock`).
  */
-// Note: libnut's pressKey/releaseKey actually return Promise<KeyboardClass>
-// (fluent chainable). Callers in sequence handler discard the return; typing
-// as Promise<unknown> avoids forcing an awkward .then(()=>void) wrap while
-// preserving the variadic key signature.
+// Note: libnut's pressKey/releaseKey return Promise<KeyboardClass> (fluent
+// chainable). All known callers in the sequence handler `await` and discard
+// the return, so collapse it to Promise<void> at the boundary — keeps the
+// type discipline tight without forcing every caller to `await ... .then(()
+// => undefined)` themselves (Opus PR #270 P3-4).
 export const rawKeyboard = {
-  pressKeyDown: _rawKeyboard.pressKey.bind(_rawKeyboard) as (...keys: Key[]) => Promise<unknown>,
-  pressKeyUp: _rawKeyboard.releaseKey.bind(_rawKeyboard) as (...keys: Key[]) => Promise<unknown>,
+  pressKeyDown: (...keys: Key[]): Promise<void> =>
+    _rawKeyboard.pressKey(...keys).then(() => undefined),
+  pressKeyUp: (...keys: Key[]): Promise<void> =>
+    _rawKeyboard.releaseKey(...keys).then(() => undefined),
 };
 
 /**
