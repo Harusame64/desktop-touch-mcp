@@ -839,7 +839,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "keyboard",
-    "description": "Purpose: Send keyboard input to a window: 'type' for text, 'press' for key combos.\nDetails: action='type' inserts text (auto-clipboard for non-ASCII / IME-safe). action='press' sends key combos like 'ctrl+c'/'alt+tab'. Pass windowTitle to auto-focus and auto-guard (verifies identity, foreground, modal) before input. Omitting windowTitle acts on the active window (unguarded).\nPrefer: Use windowTitle to auto-focus before injection. Set lensId to enable perception guards. Use desktop_act({action:'setValue'}) for form fields backed by UIA ValuePattern.\nCaveats: win+r/win+x/win+s/win+l blocked for security. action='type' does not handle IME composition for CJK — use use_clipboard=true or desktop_act({action:'setValue'}) instead. Non-ASCII punctuation (em-dash etc.) auto-routes via clipboard to prevent Chrome address-bar hijack; pass forceKeystrokes:true to disable. Background mode (PostMessage/WM_CHAR) auto-engages for known terminal windows (Windows Terminal / cmd / PowerShell) so keystrokes survive user-side foreground changes; DTM_BG_AUTO=1 enables it globally. Foreground-path keystrokes for non-terminal apps run with a per-chunk foreground guard (Phase B) — when the user grabs focus mid-stream, the call aborts with FocusLostDuringType and returns context.typed/context.remaining so the caller can re-focus and resume; pass abortOnFocusLoss:false to disable. BG path verification: action='type' BG verifies WM_CHAR delivery via UIA TextPattern/ValuePattern read-back; on mismatch returns code:'BackgroundInputNotDelivered' (note: hidden-input prompts can produce a benign false-positive — see _errors.ts SUGGESTS for the full list; recover by retrying via the foreground path: omit windowTitle, or call focus_window first). action='press' BG read-back is scoped to terminal-class targets and only enter/tab/arrow keys — other combos return hints.verifyDelivery:'unverifiable', and verification failure returns code:'BackgroundKeyNotDelivered'. Win11 foreground refusal on the FG path returns code:'ForegroundRestricted' — terminal-class targets auto-engage BG; for non-terminal apps switch to desktop_act / click_element (UIA, no foreground requirement).\nExamples:\n  keyboard({action:'type', text:'hello', windowTitle:'Notepad'}) → text injected (guarded)\n  keyboard({action:'type', text:'hello'}) → text injected (unguarded)\n  keyboard({action:'press', keys:'ctrl+c'}) → copy\n  keyboard({action:'press', keys:'escape', windowTitle:'Dialog'}) → dismiss dialog",
+    "description": "Purpose: Send keyboard input to a window: 'type' for text, 'press' for key combos, 'sequence' for atomic multi-step chords.\nDetails: action='type' inserts text (auto-clipboard for non-ASCII / IME-safe). action='press' sends key combos like 'ctrl+c'/'alt+tab'. action='sequence' runs ordered steps in one keyboard lock — use for Alt+letter, letter mnemonic chains where intermediate tool calls would close the menu. Pass windowTitle to auto-focus and auto-guard (identity, foreground, modal) before input. Omitting windowTitle acts on the active window (unguarded).\nPrefer: Use windowTitle to auto-focus before injection. Set lensId for perception guards. Use desktop_act({action:'setValue'}) for UIA ValuePattern text fields.\nCaveats: win+r/win+x/win+s/win+l blocked. action='type' does not handle CJK IME composition — use use_clipboard=true or desktop_act({action:'setValue'}). Non-ASCII punctuation auto-clipboards to prevent Chrome accelerator hijack; pass forceKeystrokes:true to disable. Background (PostMessage/WM_CHAR) auto-engages for terminal-class windows (Windows Terminal / cmd / PowerShell); DTM_BG_AUTO=1 enables globally. Foreground non-terminal type runs a per-chunk leash; user focus-steal mid-stream aborts with FocusLostDuringType + context.typed/remaining; pass abortOnFocusLoss:false to disable. BG type verifies WM_CHAR via UIA TextPattern read-back; mismatch returns BackgroundInputNotDelivered (see SUGGESTS for false-positive notes). BG press read-back is scoped to terminal-class + enter/tab/arrow; other combos return verifyDelivery:'unverifiable', failure returns BackgroundKeyNotDelivered. action='sequence' is FG-only (BG/foreground_flash schema-rejected); emits verifyDelivery:'focus_only'; mid-loop focus theft returns MenuFocusLostMidSequence + context.remaining: Step[]. Win11 FG refusal returns ForegroundRestricted — terminal-class targets auto-engage BG; non-terminal switch to desktop_act / click_element.\nExamples:\n  keyboard({action:'type', text:'hello', windowTitle:'Notepad'}) → text injected (guarded)\n  keyboard({action:'type', text:'hello'}) → text injected (unguarded)\n  keyboard({action:'press', keys:'ctrl+c'}) → copy\n  keyboard({action:'press', keys:'escape', windowTitle:'Dialog'}) → dismiss dialog\n  keyboard({action:'sequence', steps:[{keys:'alt+i', gapMs:100},{keys:'m'}], windowTitle:'Microsoft Visual Basic'}) → Insert > Module (atomic)",
     "inputSchema": {
       "type": "object",
       "oneOf": [
@@ -1013,6 +1013,109 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "required": [
             "action",
             "keys"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "sequence"
+            },
+            "steps": {
+              "description": "Ordered list of key-press steps. Min 1, max 16. Total duration must not exceed 5000ms (excludes settleMs and focus acquisition).",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "keys": {
+                    "description": "Key combo for this step (e.g. 'alt+i' then 'm'). Same syntax as keyboard(action='press'). Blocked combos (win+r, win+x, win+s, win+l) are rejected per-step.",
+                    "type": "string",
+                    "maxLength": 100
+                  },
+                  "holdMs": {
+                    "description": "Hold time within this step (key-down → wait holdMs → key-up). Default 0 = tap. Use a positive value when the target requires a long press (rare for menu nav; useful for some games / accessibility apps).",
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 500
+                  },
+                  "gapMs": {
+                    "description": "Wait between this step's release and the next step's press. Default 80ms — chosen to give Windows menu pump time to register the previous mnemonic before the next letter. The last step's gapMs is ignored.",
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 2000
+                  }
+                },
+                "required": [
+                  "keys"
+                ]
+              },
+              "minItems": 1,
+              "maxItems": 16
+            },
+            "method": {
+              "description": "Sequence is foreground-only by design — Alt-menu mnemonics need real SendInput. Omit, or pass 'foreground'. method:'background' / 'foreground_flash' are rejected at schema parse time (typed codes BackgroundNotApplicableToSequence / ForegroundFlashNotApplicableToSequence document the rationale for LLMs).",
+              "const": "foreground",
+              "type": "string"
+            },
+            "narrate": {
+              "type": "string",
+              "enum": [
+                "minimal",
+                "rich"
+              ],
+              "default": "minimal",
+              "description": "Narration level. rich includes UIA or browser state diff when supported."
+            },
+            "windowTitle": {
+              "type": "string",
+              "description": "Partial title of the window that should receive keyboard input."
+            },
+            "hwnd": {
+              "type": "string",
+              "description": "Direct window handle ID (takes precedence over windowTitle). Obtain from get_windows response (hwnd field). String type to avoid 64-bit precision issues."
+            },
+            "forceFocus": {
+              "type": "boolean",
+              "description": "Bypass Windows foreground-stealing protection before focusing."
+            },
+            "trackFocus": {
+              "type": "boolean",
+              "default": true,
+              "description": "Detect if focus was stolen after the action."
+            },
+            "settleMs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 2000,
+              "default": 300,
+              "description": "Milliseconds to wait before checking post-action state."
+            },
+            "lensId": {
+              "description": "Optional perception lens ID. Guards (safe.keyboardTarget) are evaluated once before the first step.",
+              "type": "string"
+            },
+            "fixId": {
+              "description": "Approve a pending suggestedFix (one-shot, 15s TTL). Only meaningful for GUARD-pre-loop rejections (e.g. unsafe.keyboardTarget). Mid-loop MenuFocusLostMidSequence does NOT issue fixIds — recover by re-calling with context.remaining.",
+              "type": "string"
+            },
+            "forceImeOff": {
+              "description": "Issue #245 系統②: query the target's IME open-status before the first step; if ON, switch OFF for the whole sequence and restore in finally. Prevents Alt-mnemonic hijack when 日本語 IME is active (the OS routes Alt+letter to IME composition instead of the menu). Requires windowTitle or hwnd. Default false.",
+              "type": "boolean",
+              "default": false
+            },
+            "include": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "steps"
           ]
         }
       ]
@@ -1273,6 +1376,22 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "steps": {
           "description": "Ordered list of tool calls to execute sequentially (max 50 steps).",
           "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "tool": {
+                "type": "string"
+              },
+              "params": {
+                "description": "Parameters for the tool (same as calling it directly). Omit for tools with no params.",
+                "type": "object"
+              }
+            },
+            "required": [
+              "tool"
+            ]
+          },
           "minItems": 1,
           "maxItems": 50
         },

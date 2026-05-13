@@ -140,3 +140,224 @@ describe("engine-layer keyboard input serialization (issue #255)", () => {
     ]);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #257 — keyboard(action='sequence') 6-pin contract
+// ─────────────────────────────────────────────────────────────────────────────
+
+import { withKeyboardLock, rawKeyboard } from "../../src/engine/nutjs.js";
+import { keyboardSchema } from "../../src/tools/keyboard.js";
+import { STUB_TOOL_CATALOG } from "../../src/stub-tool-catalog.js";
+import { failWith, getSuggestsForCode } from "../../src/tools/_errors.js";
+import { assertKeyComboSafe } from "../../src/utils/key-safety.js";
+
+describe("keyboard(action='sequence') — issue #257 contract pins", () => {
+  beforeEach(() => {
+    events.length = 0;
+    _resetInputQueueForTests();
+  });
+
+  // ── Pin 1: outer-lock serialization ────────────────────────────────────────
+  it("withKeyboardLock blocks concurrent keyboard.pressKey callers", async () => {
+    // Open the lock, hold it across two raw key-down/up pairs, and confirm
+    // that an external keyboard.pressKey() call queued during the hold waits
+    // until the lock body completes. This is the structural pin behind issue
+    // #257's atomic-sequence guarantee.
+    //
+    // Note: rawKeyboard.pressKeyDown is bound to _rawKeyboard.pressKey so it
+    // produces the same "press-start"/"press-end" events as keyboard.pressKey.
+    // The seq-start / seq-end markers around the lock body let us distinguish
+    // in-lock vs out-of-lock events purely by index.
+    const sequenceDone = withKeyboardLock(async () => {
+      events.push("seq-start");
+      await rawKeyboard.pressKeyDown();
+      await rawKeyboard.pressKeyUp();
+      await rawKeyboard.pressKeyDown();
+      await rawKeyboard.pressKeyUp();
+      events.push("seq-end");
+    });
+
+    // External caller fires after the lock has been claimed.
+    const external = keyboard.pressKey();
+
+    await Promise.all([sequenceDone, external]);
+
+    const seqEndIdx = events.indexOf("seq-end");
+    expect(seqEndIdx).toBeGreaterThanOrEqual(0);
+
+    // Every event AFTER seq-end must belong to the external pressKey call —
+    // press-start → press-end with no interleaving. The lock kept the
+    // external caller out until the sequence completed.
+    const tail = events.slice(seqEndIdx + 1);
+    expect(tail).toEqual(["press-start", "press-end"]);
+
+    // BEFORE seq-end, we should see seq-start + the lock body's own
+    // press/release pairs but NO external pressKey completion. Equivalently:
+    // press-end count before seq-end equals press-start count before seq-end
+    // (every started in-lock press finished before the next started).
+    const head = events.slice(0, seqEndIdx + 1);
+    const headPressStarts = head.filter((e) => e === "press-start").length;
+    const headPressEnds = head.filter((e) => e === "press-end").length;
+    expect(headPressStarts).toBe(2); // 2 pressKeyDown calls inside the lock
+    expect(headPressEnds).toBe(2);   // each finished inside the lock
+  });
+
+  // ── Pin 2: classify() routes typed codes BEFORE generic arms ────────────────
+  it("classify() routes MenuFocusLostMidSequence to its typed code, not ToolError", () => {
+    const failure = failWith(
+      new Error("MenuFocusLostMidSequence: focus left target before step 1 (stolen by Notepad)"),
+      "keyboard:sequence",
+    );
+    // failWith returns a ToolResult whose first content block carries the JSON
+    // envelope; rather than re-parse, we rely on the SUGGESTS dict being
+    // populated for the typed code — proof that the cascade matched.
+    const suggests = getSuggestsForCode("MenuFocusLostMidSequence");
+    expect(suggests.length).toBeGreaterThan(0);
+    expect(suggests.join(" ")).toMatch(/context\.remaining/);
+
+    // Also verify the failure envelope text encodes the typed code, not the
+    // generic ToolError. ToolFailure shape: content[0].text is a JSON string.
+    const text = (failure.content?.[0] as { text?: string })?.text ?? "";
+    expect(text).toMatch(/"code":\s*"MenuFocusLostMidSequence"/);
+  });
+
+  // ── Pin 3: macro pre-validate scans steps[].keys ────────────────────────────
+  // macro.ts pre-loop should iterate params.steps[] and call assertKeyComboSafe
+  // on each .keys before Zod parse. Reproduce that loop logic here (the macro
+  // doesn't expose its pre-validate function; this pin asserts the contract a
+  // future change must keep — see `src/tools/macro.ts` action==='sequence' branch).
+  it("macro-style pre-validate rejects win+r inside a sequence step", () => {
+    const params = {
+      action: "sequence",
+      steps: [{ keys: "alt+i" }, { keys: "win+r" }, { keys: "m" }],
+    };
+    expect(() => {
+      if (
+        params.action === "sequence" &&
+        Array.isArray(params.steps)
+      ) {
+        for (const rawStep of params.steps as Array<unknown>) {
+          const keys = (rawStep as { keys?: unknown } | null)?.keys;
+          if (typeof keys === "string") {
+            assertKeyComboSafe(keys);
+          }
+        }
+      }
+    }).toThrow(/win\+r|shell|allowed/i);
+  });
+
+  // ── Pin 4: stub-catalog emits sequence variant with per-item shape ──────────
+  it("stub-tool-catalog includes the sequence variant with full items shape", () => {
+    const kb = STUB_TOOL_CATALOG.find((t) => t.name === "keyboard");
+    expect(kb).toBeDefined();
+    const variants = kb!.inputSchema.oneOf;
+    expect(Array.isArray(variants)).toBe(true);
+    const seq = variants!.find(
+      (v) => (v.properties?.action as { const?: unknown })?.const === "sequence",
+    );
+    expect(seq).toBeDefined();
+
+    // The steps array must surface its inner item shape; if regen drops the
+    // recursion, Linux stub callers lose all per-step contract info.
+    const steps = seq!.properties!.steps as {
+      type?: string;
+      items?: { properties?: Record<string, unknown>; required?: string[]; additionalProperties?: boolean };
+    };
+    expect(steps.type).toBe("array");
+    expect(steps.items).toBeDefined();
+    expect(steps.items!.properties).toMatchObject({
+      keys: expect.any(Object),
+      holdMs: expect.any(Object),
+      gapMs: expect.any(Object),
+    });
+    expect(steps.items!.required).toContain("keys");
+    expect(steps.items!.additionalProperties).toBe(false);
+
+    // Variant-level required must list steps (regression pin for the
+    // optional-scan-scope fix in generate-stub-tool-catalog.mjs).
+    expect(seq!.required).toContain("action");
+    expect(seq!.required).toContain("steps");
+
+    // method literal "foreground" const should evaluate, not stay as undefined.
+    const method = seq!.properties!.method as { const?: unknown };
+    expect(method.const).toBe("foreground");
+  });
+
+  // ── Pin 5: context.remaining is directly re-invocable via the same schema ──
+  it("MenuFocusLostMidSequence context.remaining round-trips through keyboardSchema", () => {
+    // Simulate a sequence where step 0 succeeded and step 1+2 are the
+    // unsent tail. The handler's catch path returns Step[] objects (with
+    // optional holdMs/gapMs); the caller must be able to re-call sequence
+    // with those steps as-is.
+    const original = [
+      { keys: "alt+i" },
+      { keys: "m" },
+      { keys: "enter", holdMs: 50, gapMs: 100 },
+    ];
+    const remaining = original.slice(1); // step 0 done, [m, enter] remain
+
+    const reinvoke = {
+      action: "sequence" as const,
+      steps: remaining,
+      windowTitle: "VBE",
+    };
+    const result = keyboardSchema.safeParse(reinvoke);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      // After parse, all fields must survive (esp. holdMs/gapMs).
+      if (result.data.action !== "sequence") throw new Error("variant mismatch");
+      expect(result.data.steps).toHaveLength(2);
+      expect(result.data.steps[1]).toMatchObject({ keys: "enter", holdMs: 50, gapMs: 100 });
+    }
+  });
+
+  // ── Pin 6: schema rejects method:'background' and 'foreground_flash' ────────
+  it("keyboardSchema rejects method:'background' on sequence variant", () => {
+    const bg = keyboardSchema.safeParse({
+      action: "sequence",
+      steps: [{ keys: "alt+i" }],
+      method: "background",
+    });
+    expect(bg.success).toBe(false);
+
+    const ff = keyboardSchema.safeParse({
+      action: "sequence",
+      steps: [{ keys: "alt+i" }],
+      method: "foreground_flash",
+    });
+    expect(ff.success).toBe(false);
+
+    // foreground and omitted both pass.
+    const fg = keyboardSchema.safeParse({
+      action: "sequence",
+      steps: [{ keys: "alt+i" }],
+      method: "foreground",
+    });
+    expect(fg.success).toBe(true);
+
+    const omitted = keyboardSchema.safeParse({
+      action: "sequence",
+      steps: [{ keys: "alt+i" }],
+    });
+    expect(omitted.success).toBe(true);
+  });
+
+  // ── Bonus pin: refine() rejects total > 5000ms across step boundaries ──────
+  it("keyboardSchema refine rejects total duration > 5000ms", () => {
+    // 11 steps × (holdMs=500 + gapMs=0 default 80) ≈ 5000ms+ headroom.
+    // Push past 5000 with two big holds.
+    const tooLong = {
+      action: "sequence" as const,
+      steps: [
+        { keys: "a", holdMs: 500, gapMs: 500 },
+        { keys: "b", holdMs: 500, gapMs: 500 },
+        { keys: "c", holdMs: 500, gapMs: 500 },
+        { keys: "d", holdMs: 500, gapMs: 500 },
+        { keys: "e", holdMs: 500, gapMs: 500 },
+        { keys: "f", holdMs: 500 }, // total: 6000ms - last gap ignored
+      ],
+    };
+    const result = keyboardSchema.safeParse(tooLong);
+    expect(result.success).toBe(false);
+  });
+});

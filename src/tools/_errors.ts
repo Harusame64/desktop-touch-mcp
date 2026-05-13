@@ -276,6 +276,30 @@ const SUGGESTS: Record<string, string[]> = {
     "For terminals, prefer method:'auto' so input routes through HWND-targeted WM_CHAR (Phase A — foreground-independent)",
     "Pass abortOnFocusLoss:false to disable the leash and fall back to single-shot send (post-action focusLost detection still runs)",
   ],
+  // Issue #257: keyboard(action:'sequence') mid-loop focus loss.
+  // The first step opened a menu (or asserted FG); a later step's pre-check
+  // saw foreground change to a different hwnd, so the remaining keystrokes
+  // would land on the wrong target. context.remaining echoes the un-issued
+  // Step[] so the caller can re-focus and re-invoke without re-deriving the
+  // suffix.
+  MenuFocusLostMidSequence: [
+    "Focus left the target between steps — re-focus the window then call keyboard({action:'sequence', steps: context.remaining, windowTitle, ...}) to continue.",
+    "If the menu state is unrecoverable (auto-closed by the OS), pivot to desktop_act / click_element for the remaining action.",
+    "For long sequences, reduce step count or rely on UIA targeting instead of Alt-mnemonic chord navigation.",
+  ],
+  // Issue #257: keyboard(action:'sequence') is FG-only by construction
+  // (Alt-menu mnemonic activation requires real SendInput; WM_KEYDOWN does
+  // not open menus on non-terminal windows). The Zod schema only accepts
+  // method:'foreground'|undefined, so this typed code surfaces when the
+  // schema-level check is somehow bypassed (defensive only).
+  ForegroundFlashNotApplicableToSequence: [
+    "Sequence is foreground-only. Use keyboard(action:'press') with method:'foreground_flash' for individual key combos that need the ADR-013 妥協 path.",
+    "If you need to chord Alt-mnemonics in a terminal, split the sequence into per-step keyboard(action:'press') calls.",
+  ],
+  BackgroundNotApplicableToSequence: [
+    "Sequence does not support the background path — Alt-menu mnemonics require real SendInput which only the foreground path provides.",
+    "Use foreground (default) and target via windowTitle/hwnd, or split into separate keyboard(action:'press') calls if BG delivery is essential.",
+  ],
   // Phase 7 F3: workspace_launch spawnDetached rejection (ENOENT / EACCES /
   // EPERM 等) の typed reason。production handler は `failWith(err)` 経由で
   // generic `ToolError` に流れていた (Phase 6 dogfood で発見)、agent が typed
@@ -510,6 +534,20 @@ function classify(message: string): { code: string; suggest: string[] } {
   // for recovery hints (re-focus + retry with context.remaining).
   if (m.includes("focuslostduringtype") || m.includes("focus lost during type")) {
     return { code: "FocusLostDuringType", suggest: SUGGESTS.FocusLostDuringType };
+  }
+  // Issue #257: keyboard(action:'sequence') typed codes. Substrings are
+  // long and unique enough that subsequent generic arms (timeout / window
+  // not found) cannot poach the match, but the test pin in
+  // tests/unit/keyboard-input-serialization.test.ts asserts the ordering
+  // so future SUGGESTS additions cannot regress it silently.
+  if (m.includes("menufocuslostmidsequence") || m.includes("menu focus lost mid sequence")) {
+    return { code: "MenuFocusLostMidSequence", suggest: SUGGESTS.MenuFocusLostMidSequence };
+  }
+  if (m.includes("foregroundflashnotapplicabletosequence")) {
+    return { code: "ForegroundFlashNotApplicableToSequence", suggest: SUGGESTS.ForegroundFlashNotApplicableToSequence };
+  }
+  if (m.includes("backgroundnotapplicabletosequence")) {
+    return { code: "BackgroundNotApplicableToSequence", suggest: SUGGESTS.BackgroundNotApplicableToSequence };
   }
   if (m.includes("clipboardwritenotdelivered") || m.includes("clipboard write not delivered")) {
     return { code: "ClipboardWriteNotDelivered", suggest: SUGGESTS.ClipboardWriteNotDelivered };

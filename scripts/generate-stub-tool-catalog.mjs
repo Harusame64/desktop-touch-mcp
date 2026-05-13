@@ -399,6 +399,35 @@ function extractArrayEnum(valueExpr) {
   return extractEnum(inner);
 }
 
+// Issue #257: return the raw inner argument of a top-level z.array(...) call
+// so the caller can recurse into nested item shapes (e.g. z.array(z.object(...)).
+// Without this, z.array(z.object({...})) collapsed to a bare `{type:'array'}`
+// in the cross-platform stub, hiding the per-item property contract from
+// non-Windows tool discovery (Opus v5 P2-1).
+function extractArrayInnerArg(valueExpr) {
+  const v = valueExpr.trim();
+  const m = topLevelZCallMatch(v, 'array');
+  if (!m) return undefined;
+  const start = m[0].length;
+  const end = scanBalanced(v, start, '(', ')');
+  return v.slice(start, end - 1).trim();
+}
+
+// Issue #257: extract the first argument of a top-level z.literal(...) call.
+// Pre-fix, inferProperty emitted `prop.const = undefined` because
+// `evalExpr` was never invoked on the literal's payload. New variants like
+// `method: z.literal("foreground").optional()` would land in the catalog
+// with `{const: undefined}` instead of `{const: "foreground"}`.
+function extractLiteralValue(valueExpr) {
+  const v = valueExpr.trim();
+  const m = topLevelZCallMatch(v, 'literal');
+  if (!m) return undefined;
+  const start = m[0].length;
+  const end = scanBalanced(v, start, '(', ')');
+  const arg = v.slice(start, end - 1).trim();
+  try { return evalExpr(arg); } catch { return undefined; }
+}
+
 // Extract the body inside the outermost z.object(...) call so the caller can
 // recurse into the nested shape literal. Returns undefined when the value is
 // not a top-level z.object expression (e.g. z.record, z.union, primitives).
@@ -457,11 +486,39 @@ function inferProperty(valueExpr) {
   if (description) prop.description = description;
   const enumValues = extractEnum(v);
   if (enumValues) { prop.type = 'string'; prop.enum = enumValues; }
-  else if (hasTopLevelZCall(v, 'literal')) { prop.const = undefined; }
+  else if (hasTopLevelZCall(v, 'literal')) {
+    // Issue #257: actually evaluate the literal value. Pre-fix this was
+    // `prop.const = undefined`, which surfaced as `{const: undefined}` in
+    // the cross-platform stub for any single-value literal variant.
+    const literalValue = extractLiteralValue(v);
+    if (literalValue !== undefined) {
+      prop.const = literalValue;
+      if (typeof literalValue === 'string') prop.type = 'string';
+      else if (typeof literalValue === 'number') prop.type = 'number';
+      else if (typeof literalValue === 'boolean') prop.type = 'boolean';
+    }
+  }
   else if (hasTopLevelZCall(v, 'array') || /^\[/.test(v)) {
     prop.type = 'array';
     const itemEnum = extractArrayEnum(v);
-    if (itemEnum) prop.items = { type: 'string', enum: itemEnum };
+    if (itemEnum) {
+      prop.items = { type: 'string', enum: itemEnum };
+    } else {
+      // Issue #257: recurse into z.array(z.object({...})) so per-item
+      // shape (keys / holdMs / gapMs for keyboard sequence) surfaces in
+      // the cross-platform stub catalog. inferProperty already handles
+      // the z.object branch with full properties / required /
+      // additionalProperties:false emission, so we just forward the
+      // inner arg through it.
+      const innerArg = extractArrayInnerArg(v);
+      if (innerArg && hasTopLevelZCall(innerArg, 'object')) {
+        const innerProp = inferProperty(innerArg);
+        // Strip helper-only fields (__optional) — items have no concept
+        // of "is this property optional at the array slot level".
+        delete innerProp.__optional;
+        prop.items = innerProp;
+      }
+    }
   }
   else if (hasTopLevelZCall(v, 'object')) {
     // Recursively expand the inner shape literal so nested schemas (e.g.
@@ -483,9 +540,16 @@ function inferProperty(valueExpr) {
         const key = rawKey[0] === '"' || rawKey[0] === "'" ? rawKey.slice(1, -1) : rawKey;
         const innerValueExpr = fm[2].trim();
         const innerProp = inferProperty(innerValueExpr);
+        // Issue #257 fix: scan optional/default ONLY on the top-level call
+        // suffix, not the full expression. Otherwise a required field like
+        // `steps: z.array(z.object({holdMs: ...optional()})).min(1)` would
+        // be misclassified as optional because the flat-substring check
+        // matched the *inner* item's optional() — silently dropping `steps`
+        // from `required` and breaking LLM-side discovery.
+        const optionalScanScope = primaryCallSuffix(innerValueExpr);
         const innerOptional = innerProp.__optional === true ||
-          innerValueExpr.includes('.optional()') ||
-          innerValueExpr.includes('.default(');
+          optionalScanScope.includes('.optional()') ||
+          optionalScanScope.includes('.default(');
         delete innerProp.__optional;
         innerProperties[key] = innerProp;
         if (!innerOptional) innerRequired.push(key);
@@ -651,10 +715,17 @@ function parseZObjectVariant(variantExprRaw, discriminator) {
     }
 
     const prop = inferProperty(valueExpr);
+    // Issue #257 fix: scan optional/default ONLY on the top-level call
+    // suffix. Otherwise a required field like
+    // `steps: z.array(z.object({holdMs: ...optional()})).min(1)` is
+    // misclassified as optional because the flat-substring check matches
+    // the inner item's `.optional()`. Mirrors the same fix in inferProperty's
+    // object branch (~line 550).
+    const optionalScanScope = primaryCallSuffix(valueExpr);
     const optional =
       prop.__optional === true ||
-      valueExpr.includes('.optional()') ||
-      valueExpr.includes('.default(');
+      optionalScanScope.includes('.optional()') ||
+      optionalScanScope.includes('.default(');
     delete prop.__optional;
     properties[key] = prop;
     if (!optional) required.push(key);

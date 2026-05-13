@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { buildDesc } from "./_types.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { keyboard } from "../engine/nutjs.js";
+import { keyboard, withKeyboardLock, rawKeyboard } from "../engine/nutjs.js";
 import { parseKeys } from "../utils/key-map.js";
 import { assertKeyComboSafe } from "../utils/key-safety.js";
 import { enumWindowsInZOrder, getWindowClassName, restoreAndFocusWindow } from "../engine/win32.js";
@@ -201,10 +201,14 @@ function applyKeyboardSinceMarker(
  *   assume delivery from `ok:true` alone. `reason` is a typed enum from
  *   matrix doc §4.3.
  *
- * `focus_only` is reserved for the FG path (mouse_click / keyboard FG) and
- * is not used here — BG is HWND-targeted, focus is irrelevant.
+ * Issue #257: widened to include `focus_only` so the keyboard(action:'sequence')
+ * FG path can report "all steps issued via SendInput, foreground held, but the
+ * menu state itself cannot be directly observed". This mirrors the
+ * `_mouse-verify.ts` canonical `VerifyDeliveryStatus` enum (matrix doc §4.4)
+ * while keeping the keyboard-specific `channel` / `fallback` fields that
+ * canonical does not carry.
  */
-type VerifyDeliveryStatus = "delivered" | "unverifiable";
+type VerifyDeliveryStatus = "delivered" | "focus_only" | "unverifiable";
 interface VerifyDeliveryHint {
   status: VerifyDeliveryStatus;
   /**
@@ -213,8 +217,8 @@ interface VerifyDeliveryHint {
    * new reasons is a doc-only PR (matrix §4.3 last paragraph).
    */
   reason?: string;
-  /** Send channel (matrix doc §4.2). */
-  channel?: "wm_char" | "wm_keydown";
+  /** Send channel (matrix doc §4.2). `sendinput` is the FG sequence channel. */
+  channel?: "wm_char" | "wm_keydown" | "sendinput";
   /** Suggested next path the caller can try. */
   fallback?: string;
 }
@@ -389,25 +393,53 @@ interface FocusForKeyboardResult {
   foregroundVerified: boolean;
   /** true when SetForegroundWindow was refused even after force-escalation. */
   forceRefused: boolean;
+  /**
+   * Final foreground HWND after focusWindowForKeyboard returns.
+   *
+   * Populated when the target window was found AND foreground was verified
+   * (case 1 or 2 above). null when the target could not be found at all
+   * (enumWindowsInZOrder did not return a matching window) or when an
+   * exception was swallowed.
+   *
+   * Issue #257 sequence handler uses this for hwnd-based mid-sequence focus
+   * verification so a title rename mid-flight (e.g. Excel appending an
+   * unsaved marker) is not misclassified as focus loss.
+   */
+  targetHwnd: bigint | null;
 }
 
 async function focusWindowForKeyboard(
   windowTitle: string,
   force: boolean,
+  /**
+   * Issue #257 Codex P2: when the caller resolved a specific HWND
+   * (e.g. via `resolveWindowTarget` from an explicit `hwnd` arg), pin
+   * matching to that handle so a duplicate-title sibling cannot win.
+   * When undefined, fall back to the legacy title-substring match
+   * (existing keyboardTypeHandler / keyboardPressHandler behaviour).
+   */
+  explicitHwnd?: bigint,
 ): Promise<FocusForKeyboardResult> {
   const warnings: string[] = [];
   const homingNotes: string[] = [];
   let foregroundVerified = false;
   let forceRefused = false;
+  let targetHwnd: bigint | null = null;
   const needle = windowTitle.toLowerCase();
+  // Match by hwnd when supplied, else fall back to title-substring.
+  const matches = (w: { title: string; hwnd: bigint }): boolean =>
+    explicitHwnd !== undefined
+      ? w.hwnd === explicitHwnd
+      : w.title.toLowerCase().includes(needle);
   try {
     const windows = enumWindowsInZOrder();
     const active = windows.find((w) => w.isActive);
-    if (active && active.title.toLowerCase().includes(needle)) {
+    if (active && matches(active)) {
       // Target is already in the foreground — nothing to do.
       foregroundVerified = true;
+      targetHwnd = active.hwnd;
     } else {
-      const target = windows.find((w) => w.title.toLowerCase().includes(needle));
+      const target = windows.find(matches);
       if (target) {
         // Always verify foreground after focus so the auto-guard does not block
         // on a stale/foreground-steal-prevented SetForegroundWindow. If the first
@@ -417,7 +449,7 @@ async function focusWindowForKeyboard(
         restoreAndFocusWindow(target.hwnd, { force });
         await new Promise<void>((r) => setTimeout(r, 100));
         let after = enumWindowsInZOrder().find((w) => w.isActive);
-        let reachedForeground = !!after && after.title.toLowerCase().includes(needle);
+        let reachedForeground = !!after && matches(after);
 
         if (!reachedForeground && !force) {
           // Auto-escalate to force focus (AttachThreadInput bypass) — the caller
@@ -426,12 +458,13 @@ async function focusWindowForKeyboard(
           restoreAndFocusWindow(target.hwnd, { force: true });
           await new Promise<void>((r) => setTimeout(r, 100));
           after = enumWindowsInZOrder().find((w) => w.isActive);
-          reachedForeground = !!after && after.title.toLowerCase().includes(needle);
+          reachedForeground = !!after && matches(after);
         }
 
         if (reachedForeground) {
           homingNotes.push(`brought "${target.title}" to front`);
           foregroundVerified = true;
+          targetHwnd = after?.hwnd ?? target.hwnd;
         } else {
           warnings.push("ForceFocusRefused");
           forceRefused = true;
@@ -441,7 +474,7 @@ async function focusWindowForKeyboard(
   } catch {
     // best-effort
   }
-  return { warnings, homingNotes, foregroundVerified, forceRefused };
+  return { warnings, homingNotes, foregroundVerified, forceRefused, targetHwnd };
 }
 
 /**
@@ -1746,6 +1779,299 @@ export const keyboardPressHandler = async ({
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// keyboard(action='sequence') — atomic menu-navigation handler (issue #257)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface KeyboardSequenceStep {
+  keys: string;
+  holdMs?: number;
+  gapMs?: number;
+}
+
+export const keyboardSequenceHandler = async ({
+  steps,
+  method: inputMethod,
+  windowTitle,
+  hwnd,
+  forceFocus: forceFocusArg,
+  trackFocus,
+  settleMs,
+  lensId,
+  fixId,
+  forceImeOff = false,
+}: {
+  steps: KeyboardSequenceStep[];
+  method?: "foreground";
+  windowTitle?: string;
+  hwnd?: string;
+  forceFocus?: boolean;
+  trackFocus: boolean;
+  settleMs: number;
+  lensId?: string;
+  fixId?: string;
+  forceImeOff?: boolean;
+}): Promise<ToolResult> => {
+  const force = forceFocusArg ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
+
+  // Defensive arms: the schema only admits `method:"foreground"|undefined`,
+  // so these can only fire when the handler is invoked outside the
+  // registered tool path (e.g. direct unit test). Keep them anyway as
+  // defense-in-depth — the SUGGESTS entries for these typed codes are
+  // the LLM-facing reference for "why your method choice was rejected".
+  // (NB: we never receive these values from Zod parse, but the type
+  // signature is widened to string at runtime by the dispatcher.)
+  const rawMethod = inputMethod as string | undefined;
+  if (rawMethod === "background" || rawMethod === "background-auto") {
+    return failWith(
+      new Error("BackgroundNotApplicableToSequence"),
+      "keyboard:sequence",
+      { suggest: ["sequence is foreground-only; omit method or pass 'foreground'"] }
+    );
+  }
+  if (rawMethod === "foreground_flash") {
+    return failWith(
+      new Error("ForegroundFlashNotApplicableToSequence"),
+      "keyboard:sequence",
+      { suggest: ["sequence is foreground-only; omit method or pass 'foreground'"] }
+    );
+  }
+
+  try {
+    // Phase G: fixId approval prologue. Sequence only uses fixId for
+    // GUARD-pre-loop rejection retry (e.g. unsafe.keyboardTarget) — the
+    // mid-loop MenuFocusLostMidSequence path returns context.remaining
+    // directly (FocusLostDuringType convention).
+    let effectiveWindowTitle = windowTitle;
+    if (fixId) {
+      const vr = validateAndPrepareFix(fixId, "keyboard");
+      if (!vr.ok || !vr.fix) return failWith(new Error(vr.errorCode!), "keyboard:sequence");
+      if (typeof vr.fix.args.windowTitle === "string") effectiveWindowTitle = vr.fix.args.windowTitle;
+      consumeFix(fixId);
+    }
+
+    const resolvedWin = !fixId ? await resolveWindowTarget({ hwnd, windowTitle: effectiveWindowTitle }) : null;
+    if (resolvedWin) effectiveWindowTitle = resolvedWin.title;
+
+    const warnings: string[] = [...(resolvedWin?.warnings ?? [])];
+    const homingNotes: string[] = [];
+    let foregroundVerified = false;
+    let targetHwnd: bigint | null = null;
+
+    if (effectiveWindowTitle) {
+      // Codex PR #270 P2: when the caller passed an explicit hwnd,
+      // resolveWindowTarget already pinned it. Pass that hwnd through so
+      // focusWindowForKeyboard matches by handle instead of title substring
+      // (duplicate-title siblings can no longer win the focus race).
+      const explicitHwndForFocus = (hwnd !== undefined && resolvedWin)
+        ? resolvedWin.hwnd
+        : undefined;
+      const fw = await focusWindowForKeyboard(effectiveWindowTitle, force, explicitHwndForFocus);
+      warnings.push(...fw.warnings);
+      homingNotes.push(...fw.homingNotes);
+      foregroundVerified = fw.foregroundVerified;
+      targetHwnd = fw.targetHwnd;
+      if (fw.forceRefused) {
+        const earlyEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "keyboard:sequence" }) : null;
+        const hint = force
+          ? "Win11 refused the AttachThreadInput escalation"
+          : "Win11 refused both default SetForegroundWindow and the AttachThreadInput escalation";
+        return failWith(
+          new Error("ForegroundRestricted"),
+          "keyboard:sequence",
+          {
+            windowTitle: effectiveWindowTitle,
+            hint,
+            attemptedForce: force,
+            autoEscalated: !force,
+            ...(earlyEnv && { _perceptionForPost: earlyEnv }),
+          }
+        );
+      }
+    }
+
+    // IME OFF before the lock; restore in finally. Only meaningful when we
+    // have a target HWND — the IMM bridge needs one to query/flip.
+    let imeRestoreHwnd: bigint | null = null;
+    if (forceImeOff && targetHwnd != null && typeof nativeWin32?.win32GetImeOpenStatus === "function") {
+      try {
+        const wasOpen = nativeWin32.win32GetImeOpenStatus(targetHwnd) === true;
+        if (wasOpen) {
+          nativeWin32.win32SetImeOpenStatus?.(targetHwnd, false);
+          imeRestoreHwnd = targetHwnd;
+        }
+      } catch {
+        // best-effort
+      }
+    } else if (forceImeOff && targetHwnd == null) {
+      // Opus PR #270 round 1 P3-1: forceImeOff:true with neither windowTitle
+      // nor hwnd was a silent no-op — the Alt-mnemonic hijack the option was
+      // added to prevent could still fire. Surface a warning so the LLM
+      // notices its IME mitigation did nothing.
+      warnings.push("ImeOffIgnoredNoTarget");
+    }
+
+    try {
+      // Guard evaluation (lensId perception OR auto-guard).
+      let perceptionEnv: import("../engine/perception/types.js").PostPerception | undefined;
+      if (lensId) {
+        const guardResult = await evaluatePreToolGuards(lensId, "keyboard:sequence", {});
+        if (!guardResult.ok && guardResult.policy === "block") {
+          const env = buildEnvelopeFor(lensId, { toolName: "keyboard:sequence" });
+          return failWith(
+            new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
+            "keyboard:sequence",
+            {
+              lensId,
+              guard: guardResult.failedGuard,
+              _perceptionForPost: env,
+              ...(warnings.length > 0 && { hints: { warnings } }),
+            }
+          );
+        }
+        perceptionEnv = buildEnvelopeFor(lensId, { toolName: "keyboard:sequence" }) ?? undefined;
+      } else if (isAutoGuardEnabled()) {
+        const descriptor = effectiveWindowTitle
+          ? { kind: "window" as const, titleIncludes: effectiveWindowTitle }
+          : null;
+        const ag = await runActionGuard({
+          toolName: "keyboard:sequence", actionKind: "keyboard", descriptor,
+          ...(foregroundVerified && { foregroundVerified: true }),
+        });
+        if (ag.block) {
+          return failWith(
+            new Error(`AutoGuardBlocked: ${ag.summary.next}`),
+            "keyboard:sequence",
+            {
+              _perceptionForPost: ag.summary,
+              ...(warnings.length > 0 && { hints: { warnings } }),
+            }
+          );
+        }
+        perceptionEnv = ag.summary;
+      }
+
+      // Atomic sequence loop — single outer lock so concurrent keyboard
+      // callers cannot splice between this sequence's steps. rawKeyboard
+      // primitives bypass the wrapped per-call lock (which would deadlock).
+      //
+      // `failedIndex` carries the index of the step that *was being attempted*
+      // when the loop threw. Set at the top of each iteration so any throw
+      // below (focus check, assertKeyComboSafe, raw libnut press/release)
+      // carries the index for context.completedSteps / context.remaining.
+      // (Opus PR #270 round 1 P3-2: previously only MenuFocusLost attached
+      // this context — BlockedKeyCombo and libnut throws lost it and the LLM
+      // could not tell which steps had already fired.)
+      let failedIndex = -1;
+      try {
+        await withKeyboardLock(async () => {
+          for (let i = 0; i < steps.length; i++) {
+            failedIndex = i;
+            // Mid-sequence hwnd-based focus check (skip step 0 — focus
+            // just verified). Issue #257 P2-2: hwnd is title-rename-immune.
+            if (i > 0 && targetHwnd !== null) {
+              const fl = await checkForegroundOnce({ hwnd: targetHwnd });
+              if (fl !== null) {
+                const stolen = fl.stolenByProcessName || fl.stolenBy || "unknown";
+                throw new Error(
+                  `MenuFocusLostMidSequence: focus left target before step ${i} (stolen by ${stolen})`
+                );
+              }
+            }
+
+            const step = steps[i]!;
+            // Defense-in-depth: macro.ts pre-validates, but direct keyboard
+            // tool path also passes through here.
+            assertKeyComboSafe(step.keys);
+            const downKeys = parseKeys(step.keys);
+            await rawKeyboard.pressKeyDown(...downKeys);
+            const hold = step.holdMs ?? 0;
+            if (hold > 0) {
+              await new Promise<void>((r) => setTimeout(r, hold));
+            }
+            // Release in reverse order, explicit slice() to avoid mutating
+            // parseKeys's return value (would surprise other call sites).
+            await rawKeyboard.pressKeyUp(...downKeys.slice().reverse());
+
+            // Inter-step gap (skip after last step).
+            if (i < steps.length - 1) {
+              const gap = step.gapMs ?? 80;
+              if (gap > 0) {
+                await new Promise<void>((r) => setTimeout(r, gap));
+              }
+            }
+          }
+          // Sentinel: full sequence completed without throwing.
+          failedIndex = -1;
+        });
+      } catch (loopErr) {
+        // Outside the lock — releaseDanglingModifiers uses the wrapped
+        // variant which would deadlock if called inside withKeyboardLock.
+        await releaseDanglingModifiers();
+
+        // Any in-loop throw carries an index ≥ 0 (set at the top of every
+        // iteration). Attach completedSteps / remaining so the LLM can
+        // recover regardless of the typed code — classify() still derives
+        // the code from the message (MenuFocusLostMidSequence, BlockedKeyCombo,
+        // or generic ToolError for an unknown libnut throw).
+        if (failedIndex >= 0) {
+          return failWith(
+            loopErr instanceof Error ? loopErr : new Error(String(loopErr)),
+            "keyboard:sequence",
+            {
+              ...(effectiveWindowTitle && { windowTitle: effectiveWindowTitle }),
+              completedSteps: steps.slice(0, failedIndex),
+              remaining: steps.slice(failedIndex),
+              ...(warnings.length > 0 && { hints: { warnings } }),
+            }
+          );
+        }
+        // Outside-loop throw (no failedIndex set) — bubble to outer catch.
+        throw loopErr;
+      }
+
+      // Post-action focus check (matches keyboard:press).
+      let focusLost = undefined;
+      if (trackFocus) {
+        const fl = await detectFocusLoss({
+          target: effectiveWindowTitle,
+          ...(targetHwnd !== null ? { hwnd: targetHwnd } : {}),
+          homingNotes,
+          settleMs,
+        });
+        if (fl) focusLost = fl;
+      }
+
+      const verifyDelivery: VerifyDeliveryHint = {
+        status: "focus_only",
+        reason: "menu_state_not_observable",
+        channel: "sendinput",
+      };
+
+      return ok({
+        ok: true,
+        executed: steps.length,
+        ...(focusLost && { focusLost }),
+        hints: {
+          verifyDelivery,
+          ...(warnings.length > 0 && { warnings }),
+        },
+        ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
+      });
+    } finally {
+      if (imeRestoreHwnd !== null) {
+        try {
+          nativeWin32?.win32SetImeOpenStatus?.(imeRestoreHwnd, true);
+        } catch {
+          // best-effort
+        }
+      }
+    }
+  } catch (err) {
+    return failWith(err, "keyboard:sequence");
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Dispatcher schema (discriminated union)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1834,6 +2160,73 @@ export const keyboardSchema = z.discriminatedUnion("action", [
       "Optional perception lens ID. Guards (safe.keyboardTarget) are evaluated before the key press."
     ),
   }),
+  // Issue #257: atomic multi-step key sequence for menu-navigation chords
+  // (Alt+<letter>, <letter>) and similar patterns where intermediate
+  // observation tool calls would close the menu. Foreground-only by
+  // construction (Alt-menu mnemonics require real SendInput). All steps
+  // execute inside ONE withKeyboardLock so concurrent keyboard / scroll /
+  // terminal callers cannot splice between them.
+  //
+  // KEEP STEP-ITEM SHAPE INLINE: scripts/generate-stub-tool-catalog.mjs
+  // statically parses each variant. The inner `z.object({keys,holdMs,gapMs}).strict()`
+  // expression must remain literal here so the regen can emit
+  // `items.properties` + `additionalProperties:false` for the Linux stub
+  // catalog (v5 P2-1).
+  z.object({
+    action: z.literal("sequence"),
+    steps: z.array(
+      z.object({
+        keys: z.string().max(100).describe(
+          "Key combo for this step (e.g. 'alt+i' then 'm'). Same syntax as keyboard(action='press'). " +
+          "Blocked combos (win+r, win+x, win+s, win+l) are rejected per-step."
+        ),
+        holdMs: z.number().int().min(0).max(500).optional().describe(
+          "Hold time within this step (key-down → wait holdMs → key-up). " +
+          "Default 0 = tap. Use a positive value when the target requires a long press " +
+          "(rare for menu nav; useful for some games / accessibility apps)."
+        ),
+        gapMs: z.number().int().min(0).max(2000).optional().describe(
+          "Wait between this step's release and the next step's press. " +
+          "Default 80ms — chosen to give Windows menu pump time to register the " +
+          "previous mnemonic before the next letter. The last step's gapMs is ignored."
+        ),
+      }).strict()
+    )
+      .min(1)
+      .max(16)
+      .refine(
+        (xs) => xs.slice(0, -1).reduce((s, x) => s + (x.holdMs ?? 0) + (x.gapMs ?? 80), 0)
+                + (xs[xs.length - 1]!.holdMs ?? 0) <= 5000,
+        { message: "total step duration (sum of holdMs + gapMs, last step's gap ignored) must be ≤ 5000ms" }
+      )
+      .describe("Ordered list of key-press steps. Min 1, max 16. Total duration must not exceed 5000ms (excludes settleMs and focus acquisition)."),
+    method: z.literal("foreground").optional().describe(
+      "Sequence is foreground-only by design — Alt-menu mnemonics need real SendInput. " +
+      "Omit, or pass 'foreground'. method:'background' / 'foreground_flash' are " +
+      "rejected at schema parse time (typed codes BackgroundNotApplicableToSequence / " +
+      "ForegroundFlashNotApplicableToSequence document the rationale for LLMs)."
+    ),
+    narrate: narrateParam,
+    windowTitle: windowTitleFocusParam,
+    hwnd: hwndFocusParam,
+    forceFocus: forceFocusParam,
+    trackFocus: trackFocusParam,
+    settleMs: settleMsParam,
+    lensId: z.string().optional().describe(
+      "Optional perception lens ID. Guards (safe.keyboardTarget) are evaluated once before the first step."
+    ),
+    fixId: z.string().optional().describe(
+      "Approve a pending suggestedFix (one-shot, 15s TTL). Only meaningful for GUARD-pre-loop " +
+      "rejections (e.g. unsafe.keyboardTarget). Mid-loop MenuFocusLostMidSequence does NOT " +
+      "issue fixIds — recover by re-calling with context.remaining."
+    ),
+    forceImeOff: coercedBoolean().optional().default(false).describe(
+      "Issue #245 系統②: query the target's IME open-status before the first step; " +
+      "if ON, switch OFF for the whole sequence and restore in finally. Prevents Alt-mnemonic " +
+      "hijack when 日本語 IME is active (the OS routes Alt+letter to IME composition instead " +
+      "of the menu). Requires windowTitle or hwnd. Default false."
+    ),
+  }),
 ]);
 
 export type KeyboardArgs = z.infer<typeof keyboardSchema>;
@@ -1841,6 +2234,9 @@ export type KeyboardArgs = z.infer<typeof keyboardSchema>;
 export const keyboardHandler = async (args: KeyboardArgs): Promise<import("./_types.js").ToolResult> => {
   if (args.action === "type") {
     return keyboardTypeHandler(args);
+  }
+  if (args.action === "sequence") {
+    return keyboardSequenceHandler(args);
   }
   return keyboardPressHandler(args);
 };
@@ -1906,15 +2302,16 @@ export function registerKeyboardTools(server: McpServer): void {
     "keyboard",
     {
       description: buildDesc({
-        purpose: "Send keyboard input to a window: 'type' for text, 'press' for key combos.",
-        details: "action='type' inserts text (auto-clipboard for non-ASCII / IME-safe). action='press' sends key combos like 'ctrl+c'/'alt+tab'. Pass windowTitle to auto-focus and auto-guard (verifies identity, foreground, modal) before input. Omitting windowTitle acts on the active window (unguarded).",
-        prefer: "Use windowTitle to auto-focus before injection. Set lensId to enable perception guards. Use desktop_act({action:'setValue'}) for form fields backed by UIA ValuePattern.",
-        caveats: "win+r/win+x/win+s/win+l blocked for security. action='type' does not handle IME composition for CJK — use use_clipboard=true or desktop_act({action:'setValue'}) instead. Non-ASCII punctuation (em-dash etc.) auto-routes via clipboard to prevent Chrome address-bar hijack; pass forceKeystrokes:true to disable. Background mode (PostMessage/WM_CHAR) auto-engages for known terminal windows (Windows Terminal / cmd / PowerShell) so keystrokes survive user-side foreground changes; DTM_BG_AUTO=1 enables it globally. Foreground-path keystrokes for non-terminal apps run with a per-chunk foreground guard (Phase B) — when the user grabs focus mid-stream, the call aborts with FocusLostDuringType and returns context.typed/context.remaining so the caller can re-focus and resume; pass abortOnFocusLoss:false to disable. BG path verification: action='type' BG verifies WM_CHAR delivery via UIA TextPattern/ValuePattern read-back; on mismatch returns code:'BackgroundInputNotDelivered' (note: hidden-input prompts can produce a benign false-positive — see _errors.ts SUGGESTS for the full list; recover by retrying via the foreground path: omit windowTitle, or call focus_window first). action='press' BG read-back is scoped to terminal-class targets and only enter/tab/arrow keys — other combos return hints.verifyDelivery:'unverifiable', and verification failure returns code:'BackgroundKeyNotDelivered'. Win11 foreground refusal on the FG path returns code:'ForegroundRestricted' — terminal-class targets auto-engage BG; for non-terminal apps switch to desktop_act / click_element (UIA, no foreground requirement).",
+        purpose: "Send keyboard input to a window: 'type' for text, 'press' for key combos, 'sequence' for atomic multi-step chords.",
+        details: "action='type' inserts text (auto-clipboard for non-ASCII / IME-safe). action='press' sends key combos like 'ctrl+c'/'alt+tab'. action='sequence' runs ordered steps in one keyboard lock — use for Alt+letter, letter mnemonic chains where intermediate tool calls would close the menu. Pass windowTitle to auto-focus and auto-guard (identity, foreground, modal) before input. Omitting windowTitle acts on the active window (unguarded).",
+        prefer: "Use windowTitle to auto-focus before injection. Set lensId for perception guards. Use desktop_act({action:'setValue'}) for UIA ValuePattern text fields.",
+        caveats: "win+r/win+x/win+s/win+l blocked. action='type' does not handle CJK IME composition — use use_clipboard=true or desktop_act({action:'setValue'}). Non-ASCII punctuation auto-clipboards to prevent Chrome accelerator hijack; pass forceKeystrokes:true to disable. Background (PostMessage/WM_CHAR) auto-engages for terminal-class windows (Windows Terminal / cmd / PowerShell); DTM_BG_AUTO=1 enables globally. Foreground non-terminal type runs a per-chunk leash; user focus-steal mid-stream aborts with FocusLostDuringType + context.typed/remaining; pass abortOnFocusLoss:false to disable. BG type verifies WM_CHAR via UIA TextPattern read-back; mismatch returns BackgroundInputNotDelivered (see SUGGESTS for false-positive notes). BG press read-back is scoped to terminal-class + enter/tab/arrow; other combos return verifyDelivery:'unverifiable', failure returns BackgroundKeyNotDelivered. action='sequence' is FG-only (BG/foreground_flash schema-rejected); emits verifyDelivery:'focus_only'; mid-loop focus theft returns MenuFocusLostMidSequence + context.remaining: Step[]. Win11 FG refusal returns ForegroundRestricted — terminal-class targets auto-engage BG; non-terminal switch to desktop_act / click_element.",
         examples: [
           "keyboard({action:'type', text:'hello', windowTitle:'Notepad'}) → text injected (guarded)",
           "keyboard({action:'type', text:'hello'}) → text injected (unguarded)",
           "keyboard({action:'press', keys:'ctrl+c'}) → copy",
           "keyboard({action:'press', keys:'escape', windowTitle:'Dialog'}) → dismiss dialog",
+          "keyboard({action:'sequence', steps:[{keys:'alt+i', gapMs:100},{keys:'m'}], windowTitle:'Microsoft Visual Basic'}) → Insert > Module (atomic)",
         ],
       }),
       inputSchema: keyboardRegistrationSchema,
