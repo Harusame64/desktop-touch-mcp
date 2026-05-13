@@ -1,6 +1,6 @@
 # ADR-017: Session-aware desktop-touch — exposing the Terminal Services session context to the LLM
 
-- Status: **Draft (Proposed, Round 1)** — paired with `docs/rdp-session-window-behavior.md` investigation
+- Status: **Accepted (Round 2, implementation landed)** — paired with `docs/rdp-session-window-behavior.md` investigation
 - Date: 2026-05-13
 - Authors: Claude (Opus 4.7) reflecting user-led RDP investigation 2026-05-13
 - Related:
@@ -218,3 +218,55 @@ Author: Claude (Opus 4.7) reflecting user-led RDP investigation.
 - Drafted after spike S1 (console, self-run) + S2 (RDP-active, user PC-B run) + S5 (other-session-running, confirmed inside S2 capture) in `docs/rdp-session-window-behavior.md`.
 - Scoped tightly to observability (three native bindings + one `include` field). Cross-session control and `WTSRegisterSessionNotification` event subscription deferred to a future ADR if telemetry demands it.
 - `Origin` discriminated-union shape locked in at draft time to be forward-compatible with ADR-016 Phase 3.
+
+### 2026-05-13 — Round 2 (Accepted, implementation landed)
+
+Author: Claude (Opus 4.7).
+
+Implemented in the same session as the Round 1 draft. The three `#[napi]`
+bindings, the TS classifier, and the `desktop_state` `includeSessionContext` /
+`include: ['sessionContext']` opt-in all match the §2.1 contract; the Round 2
+addendum in `docs/rdp-session-window-behavior.md` §8 records the live S1
+re-verification (console session: classifier emits `sessionLabel: 'console'`
++ `sessionState: 'active'`, matches predicted matrix row).
+
+Implementation deviations from the Round 1 draft, with rationale:
+
+- §2.1.2 advertised `include: ['sessionContext']` as the sole opt-in keyword;
+  the implementation accepts both that **and** an equivalent
+  `includeSessionContext: true` boolean schema field. Reason: the existing
+  `desktop_state` schema already uses `includeCursor` / `includeScreen` /
+  `includeDocument` booleans for analogous opt-ins, and the envelope wrapper
+  (`makeEnvelopeAware`) destructures `include` off `args` before the handler
+  sees it. Rather than thread the keyword through the wrapper, a thin
+  registration shim (`desktopStateRegistrationHandlerWithIncludeRoute`)
+  translates `include: ['sessionContext']` → `includeSessionContext: true`
+  before forwarding. Both forms produce the same on-wire shape; the
+  description string in the registered schema documents both for LLM
+  clients.
+- §3.2's locked heuristic is implemented exactly as specified (3-of-3
+  conditions: native `active` + `GetForegroundWindow → null` + previous
+  sample within 60s observed a non-null foreground). The 60s window is
+  measured inclusively (`<= 60_000`), pinned by
+  `tests/unit/session-context.test.ts`. The cache lives in
+  `src/tools/desktop-state.ts` module scope rather than the
+  `latest_focus` cache the ADR text gestured at — keeping the heuristic
+  state local to its only consumer keeps the L3 view's existing surface
+  unchanged.
+
+Acceptance criteria coverage:
+
+- [x] ADR moved Draft → Accepted in the implementation PR.
+- [x] `src/win32/session.rs` adds three `#[napi]` bindings with
+      `napi_safe_call` panic-safety wrappers matching `src/win32/window.rs`
+      style.
+- [x] `desktop_state` accepts the opt-in and returns the §2.1.2 schema.
+- [x] `tests/unit/session-context.test.ts` covers the classifier and the
+      locked heuristic; `tests/unit/native-win32-panic-fuzz.test.ts` adds
+      adversarial fuzz over the three new bindings.
+- [x] `docs/rdp-session-window-behavior.md` §8 carries the Round 2
+      cross-reference back.
+- [ ] S3 (locked) live verification — deferred per §5.7; the
+      implementation will run the matrix-defined script in a follow-up
+      session and append the result either to this ADR (as a Round 3
+      note) or to the RDP behaviour doc §5.3.

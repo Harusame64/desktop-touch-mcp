@@ -336,6 +336,29 @@ export interface NativeScrollInfo {
   pageRatio: number
 }
 
+// ── ADR-017: read-only Terminal Services session row ────────────────────────
+//
+// Returned by `wtsEnumerateSessions()`. One entry per session known to the
+// local Win32 `WTSEnumerateSessionsW` API. Used by the TS classifier in
+// `desktop-state.ts` to derive `sessionLabel` / `sessionState` for the
+// optional `sessionContext` block on `desktop_state` responses.
+
+export interface NativeWtsSessionInfo {
+  /** Terminal Services session id (mirrors `WTS_SESSION_INFOW.SessionId`). */
+  sessionId: number
+  /** Win-station name (e.g. `"Console"`, `"RDP-Tcp#0"`, `"Services"`). May
+   *  be `""` when the WTS layer hands us a null pointer (rare). */
+  winStation: string
+  /** Raw `WTS_CONNECTSTATE_CLASS` numeric. 0=Active, 1=Connected,
+   *  2=ConnectQuery, 3=Shadow, 4=Disconnected, 5=Idle, 6=Listen,
+   *  7=Reset, 8=Down, 9=Init. */
+  state: number
+  /** Pre-stringified state label (`"active"` / `"connected"` /
+   *  `"disconnected"` / `"listen"` / etc.). Unknown values surface as
+   *  `"state_<numeric>"` so future Windows releases can be diagnosed. */
+  stateLabel: string
+}
+
 // ── Desktop Duplication (Phase 3) ────────────────────────────────────────────
 
 export interface NativeDirtyRect {

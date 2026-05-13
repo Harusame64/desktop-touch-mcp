@@ -99,3 +99,31 @@ pub struct NativeScrollInfo {
     pub n_pos: i32,
     pub page_ratio: f64,
 }
+
+// ── ADR-017: session-aware desktop_state (WTS enumeration row) ───────────────
+
+/// One row of `WTSEnumerateSessionsW` exposed through napi. Mirrors
+/// `WTS_SESSION_INFOW` with the win-station pointer materialised to a
+/// Rust `String` (UTF-16 → UTF-8) so the napi marshal layer doesn't have
+/// to deal with raw pointers, plus a pre-stringified `state_label` so
+/// the TS classifier doesn't have to repeat the `WTS_CONNECTSTATE_CLASS`
+/// numeric → label mapping. The TS layer (`desktop_state` handler)
+/// derives the higher-level `sessionLabel` / `sessionState` fields from
+/// these rows + `win32_get_active_console_session_id`.
+#[napi(object)]
+pub struct NativeWtsSessionInfo {
+    pub session_id: u32,
+    /// Win-station name — `"Console"`, `"RDP-Tcp#N"`, `"Services"`, etc.
+    /// Empty string when the WTS layer hands us a null pointer (rare —
+    /// listener slots can have empty names on some SKUs).
+    pub win_station: String,
+    /// Raw `WTS_CONNECTSTATE_CLASS` numeric (0=Active, 1=Connected,
+    /// 2=ConnectQuery, 3=Shadow, 4=Disconnected, 5=Idle, 6=Listen,
+    /// 7=Reset, 8=Down, 9=Init).
+    pub state: u32,
+    /// Pre-stringified state label (`"active"` / `"connected"` /
+    /// `"disconnected"` / `"listen"` / etc.). Unknown values surface as
+    /// the decimal representation (`"state_42"`) so callers can still
+    /// see what came back from a future Windows release.
+    pub state_label: String,
+}

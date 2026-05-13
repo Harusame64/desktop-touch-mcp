@@ -379,4 +379,89 @@ describe.skipIf(!nativeWin32)("ADR-007 P1: native win32 panic-safety", () => {
       expect(typeof native.win32IsWindowCloaked!(fg)).toBe("boolean");
     });
   });
+
+  // ── ADR-017: session-aware desktop_state native bindings ──────────────────
+  describe("ADR-017: session observability bindings panic safety", () => {
+    // Pid 0 is reserved (the System Idle Process); pid 0xFFFFFFFF is the
+    // canonical adversarial sentinel; 2^31-1 is almost certainly not a live
+    // pid on the runner. None of these should crash the process — the worst
+    // case is `null` (process gone / API failure).
+    const adversarialPids: Array<[label: string, pid: number]> = [
+      ["pid 0 (idle)", 0],
+      ["pid 2147483647 (likely-absent)", 2_147_483_647],
+      ["pid 0xFFFFFFFF", 0xffff_ffff],
+    ];
+
+    for (const [label, pid] of adversarialPids) {
+      it(`win32GetProcessSessionId(${label}) returns number|null, no panic`, () => {
+        const r = native.win32GetProcessSessionId!(pid);
+        if (r !== null) expect(typeof r).toBe("number");
+      });
+    }
+
+    it("win32GetProcessSessionId(process.pid) returns own session id", () => {
+      // We must be able to read our own session id — the calling process
+      // is alive by definition. The exact numeric value depends on the host
+      // (console session id is host-specific, see ADR-017 §1.1) so we only
+      // assert "non-null number".
+      const r = native.win32GetProcessSessionId!(process.pid);
+      expect(r).not.toBeNull();
+      expect(typeof r).toBe("number");
+      expect(r as number).toBeGreaterThanOrEqual(0);
+    });
+
+    it("win32GetActiveConsoleSessionId returns a number", () => {
+      // Either a real console session id, or u32::MAX (0xFFFFFFFF) when no
+      // user is signed in at the physical console. Both are valid; we only
+      // assert "no panic, type is number".
+      const r = native.win32GetActiveConsoleSessionId!();
+      expect(typeof r).toBe("number");
+      expect(r).toBeGreaterThanOrEqual(0);
+    });
+
+    it("wtsEnumerateSessions returns an array with valid shape", () => {
+      const rows = native.wtsEnumerateSessions!();
+      expect(Array.isArray(rows)).toBe(true);
+      // Empty Vec is acceptable (locked-down corporate token). Otherwise
+      // each row's shape must match `NativeWtsSessionInfo`.
+      for (const row of rows) {
+        expect(typeof row.sessionId).toBe("number");
+        expect(typeof row.winStation).toBe("string");
+        expect(typeof row.state).toBe("number");
+        expect(typeof row.stateLabel).toBe("string");
+        // stateLabel is non-empty (either a known label like "active" or
+        // the "state_<n>" fallback for forward-compat with new enums).
+        expect(row.stateLabel.length).toBeGreaterThan(0);
+      }
+    });
+
+    it("wtsEnumerateSessions contains the calling process's session", () => {
+      // We can only assert this when WTS enumeration actually returned
+      // rows — a locked-down corporate token may return an empty Vec
+      // (per ADR-017 R2 mitigation), in which case skip.
+      const rows = native.wtsEnumerateSessions!();
+      if (rows.length === 0) return;
+      const ownSession = native.win32GetProcessSessionId!(process.pid);
+      if (ownSession === null) return;
+      const ownRow = rows.find((r) => r.sessionId === ownSession);
+      // The calling process's session MUST be present in the enumeration
+      // (we exist, our session exists). If this fails on a real host it
+      // is a structural bug in the binding, not flake.
+      expect(ownRow).toBeDefined();
+    });
+
+    it("100 wtsEnumerateSessions iterations do not balloon RSS", () => {
+      // Mirrors the existing P1/P2 RSS guard. Each call allocates a small
+      // Vec + a couple of Strings per session row — 5MB headroom is plenty.
+      native.wtsEnumerateSessions!();
+      const before = process.memoryUsage().rss;
+      for (let i = 0; i < 100; i++) {
+        const rows = native.wtsEnumerateSessions!();
+        expect(Array.isArray(rows)).toBe(true);
+      }
+      const after = process.memoryUsage().rss;
+      const deltaMB = (after - before) / (1024 * 1024);
+      expect(deltaMB).toBeLessThan(5);
+    });
+  });
 });

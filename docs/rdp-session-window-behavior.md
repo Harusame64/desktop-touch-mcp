@@ -203,3 +203,47 @@ Author: Claude (Opus).
 - §1–§3 written from Win32 doc reading; matrix theoretical column complete.
 - §4 spike script committed at `scripts/spikes/rdp-session-window-probe.ps1`.
 - §5–§6 left empty pending user-driven spike execution across S1–S3 (S4 / S5 stretch).
+
+### 2026-05-13 — Round 2 (ADR-017 v1 implementation landed)
+
+Author: Claude (Opus 4.7).
+
+ADR-017 v1 implemented in the same-day session: `src/win32/session.rs` exposes
+three read-only `#[napi]` bindings (`win32GetProcessSessionId`,
+`win32GetActiveConsoleSessionId`, `wtsEnumerateSessions`) backed by
+`ProcessIdToSessionId` / `WTSGetActiveConsoleSessionId` /
+`WTSEnumerateSessionsW`, and `desktop_state` now accepts
+`includeSessionContext: true` (or the equivalent `include: ['sessionContext']`
+keyword) to surface the 5-field block defined in ADR-017 §2.1.2.
+
+Behaviour confirmed against the matrix on this host's console session (S1
+re-run inside the implementation PR's verification round):
+
+- `win32GetProcessSessionId(process.pid)` returns the calling session id
+  matching `win32GetActiveConsoleSessionId()` — so the classifier emits
+  `sessionLabel: 'console'`.
+- `wtsEnumerateSessions()` returns 2 entries (`Services` Disconnected +
+  `Console` Active), exactly matching the S1 capture documented in §5.1.
+- The TS classifier maps the WTS row's `stateLabel: 'active'` to
+  `sessionState: 'active'` and the locked heuristic stays inactive
+  (foreground is non-null, prior sample matches).
+- On a non-Windows runner (CI), `buildSessionContext()` returns `null` and
+  the handler surfaces `hints.sessionContextUnavailable: 'non-windows-host'`
+  per ADR-017 R3 — the on-wire shape stays additive (`sessionContext: null`
+  vs. an absent key) so LLM clients can distinguish "not requested" from
+  "asked but unavailable".
+
+S3 (locked) and S4 (disconnected) remain deferred per §5.7. The locked
+heuristic in ADR-017 §3.2 is now wired through the implementation
+(`classifySessionContext` in `src/tools/desktop-state.ts`) and unit-pinned by
+`tests/unit/session-context.test.ts` against all four conditions (3-of-3
+satisfied → 'locked'; any condition missing → 'active' fallback). The first
+S3 capture taken on a real host will either confirm the prediction or drive
+a `lockedRefinement` Round-3 entry here — but the on-wire shape does not
+change either way (only the derivation does).
+
+Round 2 also pins one operational note from §5.6 into a memory entry
+(`memory/feedback_rdp_clipboard_relay_unreliable.md`): the host↔guest
+clipboard relay is unreliable for **result return** in this corporate
+environment, so future spike rounds should default to `-OutputPath` file
+return rather than `Set-Clipboard` for any cross-PC orchestration.

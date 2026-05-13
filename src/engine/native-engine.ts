@@ -48,6 +48,7 @@ import type {
   NativeLeaseTokenSummary,
   NativeDirtyRectsResult,
   NativeExcelAccessVbomStatus,
+  NativeWtsSessionInfo,
 } from "./native-types.js";
 
 export type * from "./native-types.js";
@@ -151,6 +152,21 @@ export interface NativeWin32 {
   // and `keyboard(action='type', forceImeOff:true)`.
   win32GetImeOpenStatus?(hwnd: bigint): boolean;
   win32SetImeOpenStatus?(hwnd: bigint, open: boolean): boolean;
+
+  // ADR-017: read-only Terminal Services session observability.
+  //
+  // Used by `desktop_state` `include:['sessionContext']` opt-in to compute
+  // `sessionLabel` (`'console'|'rdp'|'other'`) + `sessionState`
+  // (`'active'|'connected'|'disconnected'|'locked'|'unknown'`) without any
+  // cross-session control surface. All three bindings are sync, panic-safe
+  // via `napi_safe_call`, and follow the existing "missing-method falls back
+  // to safe default" optional-method convention so older `.node` binaries
+  // (e.g. a dev environment that hasn't rebuilt after the ADR-017 binding
+  // landed) degrade cleanly to `sessionContext.sessionLabel: 'other'` /
+  // `sessionState: 'unknown'` rather than throwing.
+  win32GetProcessSessionId?(pid: number): number | null;
+  win32GetActiveConsoleSessionId?(): number;
+  wtsEnumerateSessions?(): NativeWtsSessionInfo[];
 }
 
 // ─── UIA surface (used by uia-bridge.ts) ─────────────────────────────────────

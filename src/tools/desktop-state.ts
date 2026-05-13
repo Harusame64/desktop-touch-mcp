@@ -217,6 +217,209 @@ export function shouldAcceptViewFocus(
 }
 
 
+// ─── ADR-017: sessionContext classifier + locked heuristic ───────────────────
+//
+// `desktop_state({ includeSessionContext: true })` (or the equivalent
+// `include: ['sessionContext']` keyword route — translated at the registration
+// site by `desktopStateRegistrationHandlerWithIncludeRoute` below) surfaces a
+// 5-field block derived from three native bindings
+// (`win32GetProcessSessionId` / `win32GetActiveConsoleSessionId` /
+// `wtsEnumerateSessions`).
+//
+// ADR-017 §3.2 — the `'locked'` heuristic is **derived in the TS layer**, not
+// in Win32: there is no admin-free, event-free way to read `LockWorkStation`
+// state. We require all three:
+//
+//   1. Native `sessionState === 'active'`  (rules out disconnected etc.)
+//   2. `GetForegroundWindow() === null`     (no input desktop is ours)
+//   3. The previous `desktop_state` call within the last 60s observed a
+//      non-null foreground — i.e. we transitioned NULL, we are not "always
+//      NULL" (which would more likely indicate a session-start race than a
+//      lock).
+//
+// Conservative-by-default: a false-negative (missing a lock) just yields
+// `sessionState: 'active'` and the LLM keeps treating input as live; a
+// false-positive would mislead it into deferring input. We err on
+// false-negative.
+
+/** ADR-017 §2.1.2 on-wire shape. Discriminated-union from day one so
+ *  ADR-016 Phase 3 can extend variants additively. */
+export type SessionContextOrigin = { kind: "local"; sessionId: number };
+
+export interface SessionContext {
+  origin: SessionContextOrigin;
+  /** Active console session id, or null when `WTSGetActiveConsoleSessionId`
+   *  returned `0xFFFFFFFF` (no user signed in at the physical console). */
+  consoleSessionId: number | null;
+  sessionLabel: "console" | "rdp" | "other";
+  sessionState:
+    | "active"
+    | "connected"
+    | "disconnected"
+    | "locked"
+    | "unknown";
+  /** Win-station name reported by `WTSEnumerateSessions` for the calling
+   *  session — e.g. `"Console"` / `"RDP-Tcp#0"`. Empty when WTS enumeration
+   *  failed (locked-down corporate token, low-resource). */
+  ownWinStation: string;
+}
+
+/** Module-scoped cache that the locked heuristic uses to detect the
+ *  NULL-foreground transition. Reset before every call so consumers see a
+ *  consistent value, and updated AFTER reading so the *previous* sample is
+ *  what feeds the heuristic. */
+interface SessionLockCache {
+  wallclockMs: number;
+  foregroundHwnd: bigint | null;
+}
+let _sessionLockCache: SessionLockCache | null = null;
+
+/** @internal Test seam — clears the locked-heuristic cache so unit tests
+ *  can pin the "first call, no prior sample" branch deterministically. */
+export function _resetSessionLockCacheForTest(): void {
+  _sessionLockCache = null;
+}
+
+/** @internal Test seam — primes the locked-heuristic cache to simulate a
+ *  prior `desktop_state` call N ms ago that saw a non-null foreground. */
+export function _setSessionLockCacheForTest(
+  wallclockMs: number,
+  foregroundHwnd: bigint | null,
+): void {
+  _sessionLockCache = { wallclockMs, foregroundHwnd };
+}
+
+/** Map a `wtsEnumerateSessions` row's `stateLabel` to the public
+ *  `SessionContext.sessionState` discrete union. Maps `'connect_query'` and
+ *  the more exotic states (shadow / idle / listen / reset / down / init /
+ *  unknown `state_<n>`) to `'unknown'` because they have no useful
+ *  interpretation in an LLM input-pause decision. The mapping is pinned by
+ *  the unit test rather than hard-coded comments because the WTS enum
+ *  could in principle gain new values. */
+export function mapWtsStateToSessionState(
+  stateLabel: string,
+): Exclude<SessionContext["sessionState"], "locked"> {
+  switch (stateLabel) {
+    case "active":
+      return "active";
+    case "connected":
+      return "connected";
+    case "disconnected":
+      return "disconnected";
+    default:
+      return "unknown";
+  }
+}
+
+/** Pure classifier — given the three native readings plus the foreground
+ *  HWND, return the full `SessionContext` shape with the locked heuristic
+ *  applied. Splits cleanly from `buildSessionContext` so the unit test can
+ *  drive every branch without spying on `nativeWin32` calls. The
+ *  `previousSample` arg lets the test pin the locked heuristic's third
+ *  condition independently of process state. */
+export function classifySessionContext(input: {
+  ownSessionId: number;
+  consoleSessionIdRaw: number;
+  ownWtsRow: { winStation: string; stateLabel: string } | null;
+  foregroundHwnd: bigint | null;
+  nowMs: number;
+  previousSample: SessionLockCache | null;
+}): SessionContext {
+  const { ownSessionId, consoleSessionIdRaw, ownWtsRow, foregroundHwnd, nowMs, previousSample } =
+    input;
+
+  // 0xFFFFFFFF (`u32::MAX`) — Win32 sentinel for "no user at the console".
+  // We surface it as `null` so it can never satisfy an equality test against
+  // `ownSessionId`.
+  const consoleSessionId =
+    consoleSessionIdRaw === 0xffff_ffff ? null : consoleSessionIdRaw;
+
+  // `sessionLabel` — three buckets per ADR-017 §2.1.2:
+  let sessionLabel: SessionContext["sessionLabel"];
+  if (consoleSessionId !== null && ownSessionId === consoleSessionId) {
+    sessionLabel = "console";
+  } else if (ownWtsRow && /^RDP-Tcp/.test(ownWtsRow.winStation)) {
+    sessionLabel = "rdp";
+  } else {
+    sessionLabel = "other";
+  }
+
+  // `sessionState` from native, then maybe override to `'locked'`.
+  const baseState: Exclude<SessionContext["sessionState"], "locked"> = ownWtsRow
+    ? mapWtsStateToSessionState(ownWtsRow.stateLabel)
+    : "unknown";
+
+  // ADR-017 §3.2 — locked heuristic (3-of-3):
+  //   1. native state is 'active'
+  //   2. current foreground is null
+  //   3. the previous sample within 60s observed a non-null foreground
+  // The 60s window is generous so an idle LLM that calls `desktop_state` only
+  // every ~30s still sees the transition.
+  let sessionState: SessionContext["sessionState"] = baseState;
+  if (
+    baseState === "active" &&
+    foregroundHwnd === null &&
+    previousSample !== null &&
+    previousSample.foregroundHwnd !== null &&
+    nowMs - previousSample.wallclockMs <= 60_000
+  ) {
+    sessionState = "locked";
+  }
+
+  return {
+    origin: { kind: "local", sessionId: ownSessionId },
+    consoleSessionId,
+    sessionLabel,
+    sessionState,
+    ownWinStation: ownWtsRow?.winStation ?? "",
+  };
+}
+
+/** Read the three native session APIs + foreground HWND, fold into
+ *  `SessionContext`, and update the locked-heuristic cache. Returns
+ *  `null` when the native session bindings are unavailable (older `.node`
+ *  build / non-Windows host) — caller surfaces a hint to that effect. */
+export function buildSessionContext(): SessionContext | null {
+  if (
+    !nativeWin32 ||
+    typeof nativeWin32.win32GetProcessSessionId !== "function" ||
+    typeof nativeWin32.win32GetActiveConsoleSessionId !== "function" ||
+    typeof nativeWin32.wtsEnumerateSessions !== "function" ||
+    typeof nativeWin32.win32GetForegroundWindow !== "function"
+  ) {
+    return null;
+  }
+  const ownSessionIdRaw = nativeWin32.win32GetProcessSessionId(process.pid);
+  if (ownSessionIdRaw == null) {
+    return null;
+  }
+  const consoleSessionIdRaw = nativeWin32.win32GetActiveConsoleSessionId();
+  const wtsRows = nativeWin32.wtsEnumerateSessions();
+  const ownRow =
+    wtsRows.find((r) => r.sessionId === ownSessionIdRaw) ?? null;
+  const ownWtsRow = ownRow
+    ? { winStation: ownRow.winStation, stateLabel: ownRow.stateLabel }
+    : null;
+  const foregroundHwnd = nativeWin32.win32GetForegroundWindow();
+  const nowMs = Date.now();
+  const previousSample = _sessionLockCache;
+
+  const sessionContext = classifySessionContext({
+    ownSessionId: ownSessionIdRaw,
+    consoleSessionIdRaw,
+    ownWtsRow,
+    foregroundHwnd,
+    nowMs,
+    previousSample,
+  });
+
+  // Update the cache AFTER classification so the next call sees this sample
+  // as its `previousSample`.
+  _sessionLockCache = { wallclockMs: nowMs, foregroundHwnd };
+
+  return sessionContext;
+}
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -247,6 +450,22 @@ export const desktopStateSchema = {
       "When true, add a `document` field with the focused Chrome tab's url, title, readyState, selection, and scroll position via CDP. " +
       "Phase 4: absorbs former get_document_state. Default false. Requires browser_open (CDP active); silently omitted on non-Chromium foreground."
     ),
+  // ADR-017 — the boolean form. The equivalent `include: ['sessionContext']`
+  // keyword route is translated into this flag by a thin registration shim,
+  // so both forms surface the same `sessionContext` block.
+  includeSessionContext: coercedBoolean()
+    .optional()
+    .default(false)
+    .describe(
+      "When true, add a `sessionContext` field with the Terminal Services session classification " +
+      "(origin, consoleSessionId, sessionLabel: 'console'|'rdp'|'other', " +
+      "sessionState: 'active'|'connected'|'disconnected'|'locked'|'unknown', ownWinStation). " +
+      "Default false. Equivalent to `include: ['sessionContext']`. " +
+      "Per ADR-017: observability-only — does not gate input. " +
+      "`sessionState: 'locked'` is a heuristic (active + foreground=null + previous sample within 60s saw a non-null foreground); " +
+      "treat it as a generic input-pause signal — it can also fire on secure-desktop transitions (UAC prompt, Credential UI), " +
+      "where the user-visible state is not strictly 'locked' but input is equally unavailable to this session."
+    ),
   port: z.coerce.number().int().min(1).max(65535).default(_defaultPort).describe(`CDP port for includeDocument (default ${_defaultPort}).`),
   tabId: z.string().optional().describe("Optional CDP tab id for includeDocument; omit for the focused tab."),
 };
@@ -268,6 +487,7 @@ export const desktopStateHandler = async (args: {
   includeCursor?: boolean;
   includeScreen?: boolean;
   includeDocument?: boolean;
+  includeSessionContext?: boolean;
   port?: number;
   tabId?: string;
 } = {}): Promise<ToolResult> => {
@@ -520,6 +740,24 @@ export const desktopStateHandler = async (args: {
       }
     }
 
+    // ADR-017 — session-aware desktop_state. The native session bindings
+    // are #[cfg(windows)]-gated; on a non-Windows host (or an older `.node`
+    // build without the ADR-017 surface) `buildSessionContext` returns null
+    // and we surface a hint per ADR-017 R3 so the LLM knows the field is
+    // absent for a structural reason, not a transient failure.
+    if (args.includeSessionContext) {
+      const ctx = buildSessionContext();
+      if (ctx) {
+        extra.sessionContext = ctx;
+      } else {
+        extra.sessionContext = null;
+        hints.sessionContextUnavailable =
+          process.platform === "win32"
+            ? "addon-out-of-date"
+            : "non-windows-host";
+      }
+    }
+
     return ok({
       focusedWindow,
       cursorPos: { x: cursor.x, y: cursor.y },
@@ -743,6 +981,33 @@ export const desktopStateRegistrationHandler = makeQueryWrapper(
   }
 );
 
+/**
+ * ADR-017 — `include: ['sessionContext']` ↔ `includeSessionContext: true`
+ * translation shim. The envelope wrapper (`makeEnvelopeAware`) strips
+ * `include` before it reaches `desktopStateHandler`, which is the correct
+ * behaviour for the envelope/raw/causal/memory keywords it owns. But
+ * ADR-017 specifies the `sessionContext` keyword on the same array as the
+ * advertised API surface, so we peek `args.include` BEFORE the envelope
+ * wrapper sees it and translate the keyword into the boolean schema field
+ * the handler already understands. Both forms remain valid and produce the
+ * same `sessionContext` block.
+ *
+ * The shim leaves `args.include` itself untouched so the envelope wrapper
+ * can still resolve envelope opt-in / raw override against it.
+ */
+export const desktopStateRegistrationHandlerWithIncludeRoute = (
+  rawArgs: Record<string, unknown>,
+): ReturnType<typeof desktopStateRegistrationHandler> => {
+  const include = rawArgs.include;
+  const wantsSessionContext =
+    rawArgs.includeSessionContext === true ||
+    (Array.isArray(include) && include.includes("sessionContext"));
+  return desktopStateRegistrationHandler({
+    ...rawArgs,
+    includeSessionContext: wantsSessionContext,
+  });
+};
+
 export function registerDesktopStateTools(server: McpServer): void {
   // PR #112 Round 1 P1 (Codex + Opus + user review): pass the module-scope
   // `desktopStateRegistrationSchema` (`include` injected via
@@ -763,6 +1028,7 @@ export function registerDesktopStateTools(server: McpServer): void {
         "includeCursor:true → cursor {x,y,monitorId} (richer than cursorPos). " +
         "includeScreen:true → screen {virtualScreen, displays[], displayCount, primaryIndex}. " +
         "includeDocument:true → document {url, title, readyState, selection, scroll, viewport} via CDP (silently omitted on non-Chromium foreground). " +
+        "includeSessionContext:true (or include:['sessionContext']) → sessionContext {origin, consoleSessionId, sessionLabel, sessionState, ownWinStation} for Terminal Services session classification (ADR-017, observability-only). " +
         "Chromium: cursorOverElement is null (UIA sparse); focusedElement may fall back to CDP document.activeElement; hints.focusedElementSource reports which path produced the row ('view' = engine-perception latest_focus, 'uia' = direct UIA query, 'cdp' = document.activeElement). " +
         "Does NOT enumerate descendants — use desktop_discover for actionable entity list and window list.",
       prefer:
@@ -774,7 +1040,7 @@ export function registerDesktopStateTools(server: McpServer): void {
         "includeDocument requires browser_open (CDP active); silently omitted otherwise with hints.documentUnavailable.",
     }),
     desktopStateRegistrationSchema,
-    desktopStateRegistrationHandler as typeof desktopStateHandler
+    desktopStateRegistrationHandlerWithIncludeRoute as typeof desktopStateHandler
   );
 
   // Phase 4: get_history / get_document_state privatized — handlers retained

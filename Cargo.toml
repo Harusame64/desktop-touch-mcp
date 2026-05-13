@@ -164,6 +164,11 @@ windows = { version = "0.62", features = [
     # ImmGetDefaultIMEWnd lives under UI_Input_Ime; SendMessageW + the
     # WM_IME_CONTROL message are already covered by WindowsAndMessaging.
     "Win32_UI_Input_Ime",
+    # ── ADR-017: session-aware desktop_state (read-only observability) ───
+    # ProcessIdToSessionId / WTSGetActiveConsoleSessionId /
+    # WTSEnumerateSessionsW / WTSFreeMemory / WTS_CONNECTSTATE_CLASS /
+    # WTS_SESSION_INFOW (windows-rs groups them under RemoteDesktop).
+    "Win32_System_RemoteDesktop",
 ] }
 
 [build-dependencies]

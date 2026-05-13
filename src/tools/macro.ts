@@ -79,7 +79,7 @@ import {
 } from "./wait-until.js";
 // Desktop state
 import {
-  desktopStateRegistrationHandler,
+  desktopStateRegistrationHandlerWithIncludeRoute,
   desktopStateRegistrationSchema,
 } from "./desktop-state.js";
 // Terminal dispatcher (Phase 2)
@@ -190,7 +190,7 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
   // "desktop_state", args:{include:["envelope"]}})` would silently strip
   // include — same-pattern bug as the server.tool registration path.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  desktop_state:        { schema: z.object(desktopStateRegistrationSchema), handler: desktopStateRegistrationHandler as any },
+  desktop_state:        { schema: z.object(desktopStateRegistrationSchema), handler: desktopStateRegistrationHandlerWithIncludeRoute as any },
   // Walking skeleton expansion swimlane 2 (L5 query wrapper): use the
   // module-scope schema + handler from screenshot.ts so `include` survives
   // this dispatcher's `z.object(schema).parse(args)` call. Without this,
