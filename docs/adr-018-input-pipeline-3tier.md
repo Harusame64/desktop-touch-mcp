@@ -153,7 +153,7 @@ The existing `ScrollVerifyOutcome` (`src/tools/mouse.ts:938-950`) has two orthog
 | `delivered_via_cdp` | Tier 2 succeeded, CDP `document.scrollingElement.scrollTop` pre/post differed | `delivered` |
 | `delivered_via_postmessage` | Tier 3 succeeded, `GetScrollInfo` or dHash confirmed change | `delivered` |
 | `wheel_overlay_intercepted` | Cursor-pixel HWND ≠ focused HWND AND a `WS_EX_LAYERED \| WS_EX_TRANSPARENT` window detected on top, after all destination-explicit tiers were tried and reported no movement | `unverifiable` |
-| `target_unreachable` | `InputDestination.kind === 'unresolved'` AND Tier 4 SendInput also produced no observable delta | `not_delivered` |
+| `target_unreachable` | Either (a) `InputDestination.kind === 'unresolved'` AND Tier 4 SendInput produced no observable delta, **OR** (b) destination resolved but every applicable tier (1/2/3) was exhausted without observable delta (e.g. Word `_WwG` does not consume `WM_MOUSEWHEEL`, Phase 4 OQ8) | `not_delivered` |
 
 #### 2.6.3 Migration from the existing 4-value `reason`
 
@@ -271,7 +271,8 @@ Deliverables:
 
 Deliverables:
 - `scroll-read.ts:96` `getWindows()` → `resolveWindowTarget`
-- `input-pipeline-guard.yml`: grep `getWindows src/tools/` returns 0 lines, grep `page_end_inferred` returns 0 lines
+- `input-pipeline-guard.yml` (negative assertions): grep `getWindows src/tools/` returns 0 lines, grep `page_end_inferred src/ tests/` returns 0 lines
+- **Positive assertion** (`__test__/integration/reason-enum-coverage.test.ts` new): every code path in `mouse.ts` `scrollHandler` that emits `status='not_delivered'` populates `reason` from the 5-value enum (no `undefined`, no string outside the enum). Asserted via a vitest case that exercises each tier failure mode through the dispatcher
 - `scroll-5app.smoke.test.ts` finalized for all 5 apps × 4 directions (`workflow_dispatch`, Windows runner)
 
 **G5 acceptance** (= AC1+AC2+AC5): All 5 apps return numeric delta + the expected `(status, channel, reason)` triple per AC1; no `page_end_inferred` survives in `src/` or `tests/`; no `getWindows` in `src/tools/`.
@@ -294,7 +295,7 @@ Deliverables:
 
 ## 6. Acceptance criteria
 
-- **AC1**: All 5 tested apps (Chrome / Notepad / Word / Excel / File Explorer) return `verifyDelivery.status='delivered'`, `verifyDelivery.channel` ∈ {`uia`, `cdp`, `postmessage`}, and `verifyDelivery.reason` ∈ {`delivered_via_uia`, `delivered_via_cdp`, `delivered_via_postmessage`}, with numeric `scrollObserved.delta` for `scroll(action='raw', direction='down')`. **Word may instead emit `channel='send_input'`, `reason='target_unreachable'` per Phase 4 G4** (documented Tier 4 fallback)
+- **AC1**: All 5 tested apps (Chrome / Notepad / Word / Excel / File Explorer) return `verifyDelivery.status='delivered'`, `verifyDelivery.channel` ∈ {`uia`, `cdp`, `postmessage`}, and `verifyDelivery.reason` ∈ {`delivered_via_uia`, `delivered_via_cdp`, `delivered_via_postmessage`}, with numeric `scrollObserved.delta` for `scroll(action='raw', direction='down')`. **For Word, AC1 is satisfied by either (a) `status='delivered'` via Tier 3 PostMessage to `_WwG`, OR (b) `status='not_delivered', reason='target_unreachable'` (per §2.6.2 path-(b) "every applicable tier exhausted") with the class-enumeration fixture `__test__/fixtures/word-class-enumerate.test.ts` pinning the rationale** (Phase 4 OQ8 documented fallback)
 - **AC2**: `grep -rn "page_end_inferred" src/ tests/` returns 0 hits; every emitted `verifyDelivery.reason` value matches the 5-value enum in §2.6.2
 - **AC3**: `keyboard(action='type', text='日本語テスト')` succeeds with `typed:7` and Notepad's `ValuePattern.Value` reads back `'日本語テスト'`
 - **AC4**: MCP `tools/list` for `scroll`, `keyboard`, `excel` returns `inputSchema` with **both** non-empty `properties` (or top-level `oneOf` with discriminator-bearing branches) **AND** the action discriminator value enumerated. A schema with `properties:{}` but non-empty `oneOf` does **not** satisfy AC4 (SDK collapse symptom). Asserted via `__test__/integration/tools-list-schema.test.ts` (Phase 2a)
