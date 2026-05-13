@@ -290,6 +290,40 @@ export declare function win32IsWindowCloaked(hwnd: bigint): boolean
 export declare function win32GetImeOpenStatus(hwnd: bigint): boolean
 export declare function win32SetImeOpenStatus(hwnd: bigint, open: boolean): boolean
 
+// ─── ADR-017: Terminal Services session observability ───────────────────────
+//
+// `ProcessIdToSessionId` / `WTSGetActiveConsoleSessionId` /
+// `WTSEnumerateSessionsW` wrappers backing `desktop_state`'s opt-in
+// `sessionContext` block. All three are read-only, sync, panic-safe via
+// `napi_safe_call`; cross-session control APIs are explicitly out of scope.
+// The TS classifier (`src/tools/desktop-state.ts`) derives `sessionLabel`
+// + `sessionState` from these three calls — native returns raw values only.
+
+export interface NativeWtsSessionInfo {
+  sessionId: number
+  /** `"Console"`, `"RDP-Tcp#N"`, `"Services"`, etc. `""` when the WTS
+   *  layer hands us a null pointer (some listener slots on certain SKUs). */
+  winStation: string
+  /** Raw `WTS_CONNECTSTATE_CLASS` value: 0=Active, 1=Connected, 2=ConnectQuery,
+   *  3=Shadow, 4=Disconnected, 5=Idle, 6=Listen, 7=Reset, 8=Down, 9=Init. */
+  state: number
+  /** Pre-stringified state label (`"active"` / `"connected"` /
+   *  `"disconnected"` / `"listen"` / etc.). Unknown values surface as
+   *  `"state_<numeric>"` so a future enum addition is observable. */
+  stateLabel: string
+}
+
+/** Map a process id to its TS session id. Returns `null` when the pid is
+ *  invalid, the process is gone, or the API call failed. */
+export declare function win32GetProcessSessionId(pid: number): number | null
+/** Returns the active console session id, or `0xFFFFFFFF` when no user is
+ *  signed in at the physical console. Caller treats `0xFFFFFFFF` as
+ *  "no console". */
+export declare function win32GetActiveConsoleSessionId(): number
+/** One row per Terminal Services session on the local host. Returns an
+ *  empty array when the underlying API fails (best-effort diagnostic). */
+export declare function wtsEnumerateSessions(): Array<NativeWtsSessionInfo>
+
 // ─── L1 capture ring buffer (ADR-007 P5a) ────────────────────────────────────
 
 export interface NativeEventEnvelope {

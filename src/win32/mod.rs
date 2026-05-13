@@ -53,3 +53,10 @@ pub(crate) mod wt_dialog_scan;
 // `keyboard(action='type', forceImeOff:true)`.
 #[cfg(windows)]
 pub(crate) mod imm;
+// ADR-017: read-only Terminal Services session observability.
+// `desktop_state(include:[sessionContext])` opt-in surfaces own session id,
+// console session id, sessionLabel ('console'|'rdp'|'other'), and sessionState
+// ('active'|'connected'|'disconnected'|'locked'|'unknown') without any
+// cross-session control surface (out of scope per ADR-017 v1 §2.2).
+#[cfg(windows)]
+pub(crate) mod session;
