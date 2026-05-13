@@ -188,18 +188,33 @@ $wts = Get-WtsSessions
 $allHwnds = [RdpProbeNative]::EnumerateAllTopLevel()
 $totalCount = $allHwnds.Count
 
-# Sample: first 20 visible + first 20 by raw order, deduped by hwnd
+# Sample up to 20 HWNDs, deduped. First pass takes visible windows (the
+# common case in active sessions); second pass back-fills with non-visible
+# HWNDs in raw EnumWindows order so that locked / disconnected scenarios —
+# where IsWindowVisible may be false for every HWND — still produce a
+# non-empty sample with full per-HWND metadata (Codex P1 on PR #275).
 $sample = @()
 $seen = @{}
-$visibleAdded = 0
+$visibleSampled = 0
+$rawFallbackSampled = 0
 foreach ($h in $allHwnds) {
-  if ($visibleAdded -ge 20) { break }
+  if ($sample.Count -ge 20) { break }
   if (-not [RdpProbeNative]::IsWindowVisible($h)) { continue }
   $key = "0x{0:X}" -f ([Int64]$h)
   if ($seen.ContainsKey($key)) { continue }
   $seen[$key] = $true
   $sample += Get-HwndInfo $h
-  $visibleAdded++
+  $visibleSampled++
+}
+if ($sample.Count -lt 20) {
+  foreach ($h in $allHwnds) {
+    if ($sample.Count -ge 20) { break }
+    $key = "0x{0:X}" -f ([Int64]$h)
+    if ($seen.ContainsKey($key)) { continue }
+    $seen[$key] = $true
+    $sample += Get-HwndInfo $h
+    $rawFallbackSampled++
+  }
 }
 
 $fgHwnd = [RdpProbeNative]::GetForegroundWindow()
@@ -217,9 +232,11 @@ $snapshot = [pscustomobject]@{
   consoleSessionId  = [int]$consoleSid
   wtsEnumeration    = $wts
   enumWindows       = @{
-    totalCount        = $totalCount
-    visibleSampled    = $sample.Count
-    sample            = $sample
+    totalCount         = $totalCount
+    sampledCount       = $sample.Count
+    visibleSampled     = $visibleSampled
+    rawFallbackSampled = $rawFallbackSampled
+    sample             = $sample
   }
   foregroundWindow  = @{
     isNull           = ($fgHwnd -eq [IntPtr]::Zero)
