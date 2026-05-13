@@ -32,7 +32,7 @@ const TOOL_FILES = [
 ];
 
 const MIN_CHARS = 20;
-const MAX_CHARS = 2500;
+const MAX_CHARS = 4000;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Minimal parser (mirrors scripts/measure-tools-list-tokens.ts)
