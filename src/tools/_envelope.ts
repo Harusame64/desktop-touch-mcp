@@ -116,7 +116,8 @@ import {
   _setSingleSessionPinForTest,
   _resetSingleSessionPinForTest,
 } from "./_session-context.js";
-import { getSuggestsForCode } from "./_errors.js";
+import { getSuggestsForCode, failArgs } from "./_errors.js";
+import type { ToolResult } from "./_types.js";
 import {
   uiPatternStore,
   parseMemoryRedactMode,
@@ -498,6 +499,222 @@ export function withEnvelopeIncludeForUnion(union: any): any {
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return z.discriminatedUnion(discriminator, newOptions as any);
+}
+
+// ─── ADR-018 Phase 2a — discriminatedUnion flatten + strict re-parse ─────────
+
+/**
+ * ADR-018 Phase 2a §2.5.2 — flatten a `z.discriminatedUnion` into a single flat
+ * `z.object` for use as a tool's `registerTool` `inputSchema` (the WIRE schema).
+ *
+ * The MCP SDK's `normalizeObjectSchema` returns `undefined` for a top-level
+ * union → `tools/list` falls back to empty `properties`. A flat `z.object` is
+ * recognized and produces real `properties`. Top-level `oneOf` is NOT an
+ * option — the Anthropic API rejects it (HTTP 400, "not planned").
+ *
+ * **Input** is the `withEnvelopeIncludeForUnion(...)`-injected union (so every
+ * variant carries `include`). Pass that SAME value to `parseActionArgsOrFail`.
+ *
+ * The flat schema is intentionally LOOSE: the discriminator becomes a required
+ * `z.enum` of all variant literals; every other field becomes `.optional()`.
+ * It is NOT the validation gate — `parseActionArgsOrFail` (below), called
+ * inside each `*DispatchHandler`, re-parses against the real union and is the
+ * strict per-action gate. A field appearing in multiple variants with
+ * structurally-different schemas is widened: all-`z.enum` collisions merge to
+ * one `z.enum` of the value union; otherwise to a `z.union` (renders as a
+ * property-level `anyOf` — accepted by the Anthropic API; only *top-level*
+ * `oneOf`/`anyOf` is rejected).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function flattenUnionToObjectSchema(union: any): z.ZodObject<z.ZodRawShape> {
+  const discriminator = (union._def?.discriminator ?? union.discriminator) as
+    | string
+    | undefined;
+  if (typeof discriminator !== "string" || discriminator.length === 0) {
+    throw new Error(
+      "flattenUnionToObjectSchema: failed to resolve discriminator field from input union " +
+        "(checked union._def.discriminator and union.discriminator). Zod major-version drift?",
+    );
+  }
+  const variants = union.options as readonly z.ZodObject<z.ZodRawShape>[];
+  const literals = new Set<string>();
+  const fieldVariants = new Map<string, z.ZodTypeAny[]>();
+  for (const variant of variants) {
+    // zod 4.3.6: a `.refine()`-wrapped variant is still a `ZodObject` —
+    // `.shape` is directly accessible, no unwrap needed (verified).
+    const shape = variant.shape as Record<string, z.ZodTypeAny>;
+    for (const [key, fieldSchema] of Object.entries(shape)) {
+      if (key === discriminator) {
+        // zod 4: a literal field's `_def.values` is the array of literal values.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const fdef = (fieldSchema as any)._def;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const values = (fdef?.values as unknown[] | undefined) ?? [(fieldSchema as any).value];
+        for (const v of values) {
+          if (v !== undefined && v !== null) literals.add(String(v));
+        }
+        continue;
+      }
+      const list = fieldVariants.get(key) ?? [];
+      list.push(fieldSchema);
+      fieldVariants.set(key, list);
+    }
+  }
+  const literalList = [...literals];
+  if (literalList.length === 0) {
+    throw new Error(
+      `flattenUnionToObjectSchema: no discriminator literal values found for "${discriminator}".`,
+    );
+  }
+  const mergedShape: Record<string, z.ZodTypeAny> = {
+    [discriminator]: z
+      .enum(literalList as [string, ...string[]])
+      .describe(
+        `Action selector — one of: ${literalList.join(", ")}. ` +
+          "Per-action required fields are enforced at call time (see the tool description); " +
+          "this flat schema lists every action's fields as optional.",
+      ),
+  };
+  for (const [key, schemas] of fieldVariants) {
+    mergedShape[key] = mergeFlatField(schemas);
+  }
+  return z.object(mergedShape);
+}
+
+/** Strip outer ZodOptional / ZodDefault / ZodNullable wrappers to the base. */
+function stripFieldWrappers(schema: z.ZodTypeAny): z.ZodTypeAny {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let cur: any = schema;
+  for (let guard = 0; guard < 12; guard++) {
+    const t = cur?._def?.type;
+    if (t !== "optional" && t !== "default" && t !== "nullable") break;
+    const inner = cur._def.innerType;
+    if (!inner || inner === cur) break;
+    cur = inner;
+  }
+  return cur as z.ZodTypeAny;
+}
+
+/**
+ * Merge the per-variant schemas for one field name into a single optional
+ * schema for the flat wire object. Structurally-identical variants (ignoring
+ * description text) collapse to one; genuinely-different ones widen — all-enum
+ * collisions to one `z.enum` of the value union, otherwise to a `z.union`.
+ *
+ * Each merged field is `.optional()` — **not** `.catch(undefined)`. A `.catch`
+ * was considered (Codex PR #290 Round 2 P2: make the wire schema tolerate a
+ * wrong-typed off-action field the way `z.discriminatedUnion` strips an
+ * off-variant key) and **rejected** (Opus adjudication): `.catch` would
+ * silently *drop* a malformed value, and for a field whose real-union schema
+ * carries a `.default()` (`terminal`'s `until` =
+ * `z.preprocess(...).default({mode:"quiet"})`) the subsequent
+ * `parseActionArgsOrFail` re-parse would then substitute that default — a
+ * malformed polling spec runs as quiet-mode with **no error surfaced**
+ * (issue #196 regression). A wrong-typed off-action field being rejected with
+ * a typed `InvalidArgs` error is the contract working, not a silent failure;
+ * the discriminatedUnion's key-strip tolerance was a Zod mechanic, not a
+ * designed contract. NOTE: `stripFieldWrappers` strips `optional`/`default`/
+ * `nullable` but **not** `preprocess` — a preprocess-wrapped field keeps its
+ * inner `.default()` reachable through the union re-parse, which is why
+ * `.catch` here would be actively harmful. Do not reintroduce it.
+ */
+function mergeFlatField(schemas: z.ZodTypeAny[]): z.ZodTypeAny {
+  const uniqueBySig = new Map<string, z.ZodTypeAny>();
+  schemas.forEach((schema, i) => {
+    const base = stripFieldWrappers(schema);
+    let sig: string;
+    try {
+      // `z.toJSONSchema` is the structural signature. In practice colliding
+      // keys across the 7 tools are simple types (string / number / enum /
+      // literal / bool) which serialize cleanly; the `catch` below is the real
+      // guarantee — a field `z.toJSONSchema` cannot serialize (e.g. a future
+      // shared `z.preprocess` field) is simply treated as a distinct shape and
+      // falls through to the `z.union` widening, which is still correct.
+      const js = z.toJSONSchema(base) as Record<string, unknown>;
+      delete js.$schema;
+      delete js.description; // structural identity ignores description text
+      sig = JSON.stringify(js);
+    } catch {
+      sig = `__unserializable_${i}__`; // treat as a distinct shape
+    }
+    if (!uniqueBySig.has(sig)) uniqueBySig.set(sig, base);
+  });
+  const bases = [...uniqueBySig.values()];
+  if (bases.length === 1) return bases[0].optional();
+  // All-`z.enum` collision → merge to one `z.enum` of the value union. Carry
+  // over the first variant's description (the per-variant `.describe()` is
+  // otherwise lost; per-action specifics live in the tool's Caveats block).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const asEnum = (b: any): string[] | null =>
+    b?._def?.type === "enum" && Array.isArray(b.options) ? (b.options as string[]) : null;
+  const enumValueSets = bases.map(asEnum);
+  if (enumValueSets.every((v) => v !== null)) {
+    const merged = [...new Set(enumValueSets.flat() as string[])];
+    let mergedEnum = z.enum(merged as [string, ...string[]]);
+    const firstDesc = bases.find((b) => typeof b.description === "string")?.description;
+    if (firstDesc) mergedEnum = mergedEnum.describe(firstDesc);
+    return mergedEnum.optional();
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return z.union(bases as [z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]]).optional();
+}
+
+/**
+ * ADR-018 Phase 2a §2.5.2 — discriminated result of `parseActionArgsOrFail`.
+ * Explicit wrapper (NOT `T | ToolResult`): `ToolResult` and a parsed union
+ * value share no safe top-level discriminant and no `isToolResult` predicate
+ * exists, so callers narrow on `.ok`.
+ */
+export type ParsedOrFail<T> =
+  | { ok: true; value: T }
+  | { ok: false; result: ToolResult };
+
+/**
+ * ADR-018 Phase 2a §2.5.2 — the strict per-action validation gate that the
+ * flat wire schema (`flattenUnionToObjectSchema`) deliberately does NOT
+ * provide. Each of the 7 flattened tools' `*DispatchHandler` calls this as its
+ * first statement, before the `switch (action)`:
+ *
+ * ```ts
+ * const parsed = parseActionArgsOrFail(scrollUnionWithInclude, args, "scroll");
+ * if (!parsed.ok) return parsed.result;
+ * switch (parsed.value.action) { ... }
+ * ```
+ *
+ * `unionWithInclude` MUST be the `withEnvelopeIncludeForUnion(...)`-injected
+ * union — NOT the bare `scrollSchema`. The bare union has no `include` field,
+ * so `.parse()` against it would strip `include`. The include-injected union
+ * carries `include` AND every `.refine()` / `z.literal()` / per-action
+ * `required` constraint (`withEnvelopeIncludeForUnion` only `.extend()`s).
+ *
+ * On failure: returns `{ ok: false, result }` where `result` is built via
+ * `failArgs` (the dedicated `code:"InvalidArgs"` path — NOT `failWith`, which
+ * would mislabel a per-action schema violation as a generic tool error). It
+ * does NOT throw — the `ToolResult` flows out through the handler's normal
+ * return path (the `makeCommitWrapper` / `withRichNarration` wrappers have
+ * already seen the raw `args`).
+ */
+export function parseActionArgsOrFail<T>(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  unionWithInclude: any,
+  args: unknown,
+  toolName: string,
+): ParsedOrFail<T> {
+  const parsed = unionWithInclude.safeParse(args);
+  if (parsed.success) {
+    return { ok: true, value: parsed.data as T };
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rawIssues = (parsed.error?.issues ?? []) as Array<any>;
+  const issues = rawIssues.map((iss) => ({
+    path: Array.isArray(iss.path) ? iss.path.join(".") : String(iss.path ?? ""),
+    message: String(iss.message ?? "invalid"),
+  }));
+  const first = issues[0];
+  const summary = first
+    ? `${first.message}${first.path ? ` (at "${first.path}")` : ""}`
+    : "invalid arguments";
+  return { ok: false, result: failArgs(summary, toolName, { issues }) };
 }
 
 /** Shared description for `include` field across raw-shape and discriminatedUnion injection. */

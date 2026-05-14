@@ -246,20 +246,26 @@ describe("keyboard(action='sequence') — issue #257 contract pins", () => {
     }).toThrow(/win\+r|shell|allowed/i);
   });
 
-  // ── Pin 4: stub-catalog emits sequence variant with per-item shape ──────────
-  it("stub-tool-catalog includes the sequence variant with full items shape", () => {
+  // ── Pin 4: stub-catalog (flat, Phase 2a) still surfaces the sequence steps.items shape ──
+  it("stub-tool-catalog keyboard is a FLAT schema that still surfaces the sequence steps.items shape", () => {
+    // ADR-018 Phase 2a: `keyboard` registers a FLAT `z.object` wire schema
+    // (`flattenUnionToObjectSchema`), not a top-level `oneOf`. The per-step
+    // contract of the `sequence` action's `steps` array must still survive
+    // regen — if the generator dropped the `z.array(z.object(...))` recursion,
+    // Linux stub callers would lose all per-step contract info.
     const kb = STUB_TOOL_CATALOG.find((t) => t.name === "keyboard");
     expect(kb).toBeDefined();
-    const variants = kb!.inputSchema.oneOf;
-    expect(Array.isArray(variants)).toBe(true);
-    const seq = variants!.find(
-      (v) => (v.properties?.action as { const?: unknown })?.const === "sequence",
-    );
-    expect(seq).toBeDefined();
+    const schema = kb!.inputSchema as {
+      oneOf?: unknown;
+      properties?: Record<string, unknown>;
+    };
+    expect(schema.oneOf, "Phase 2a: flat object, no top-level oneOf").toBeUndefined();
+    const action = schema.properties!.action as { enum?: string[] };
+    expect(action.enum).toContain("sequence");
 
-    // The steps array must surface its inner item shape; if regen drops the
-    // recursion, Linux stub callers lose all per-step contract info.
-    const steps = seq!.properties!.steps as {
+    // `steps` (a `sequence`-only field) is merged into the flat `properties`
+    // map — still carrying its inner `z.array(z.object(...))` item shape.
+    const steps = schema.properties!.steps as {
       type?: string;
       items?: { properties?: Record<string, unknown>; required?: string[]; additionalProperties?: boolean };
     };
@@ -272,15 +278,26 @@ describe("keyboard(action='sequence') — issue #257 contract pins", () => {
     });
     expect(steps.items!.required).toContain("keys");
     expect(steps.items!.additionalProperties).toBe(false);
+  });
 
-    // Variant-level required must list steps (regression pin for the
-    // optional-scan-scope fix in generate-stub-tool-catalog.mjs).
-    expect(seq!.required).toContain("action");
-    expect(seq!.required).toContain("steps");
-
-    // method literal "foreground" const should evaluate, not stay as undefined.
-    const method = seq!.properties!.method as { const?: unknown };
-    expect(method.const).toBe("foreground");
+  // ── Pin 4b: per-action contract moved to the real union (re-parsed in-handler) ──
+  it("the real keyboardSchema union still pins the sequence variant's per-action contract", () => {
+    // The flat wire schema is intentionally loose (all fields optional, `method`
+    // widened to the union of every variant's enum) — the strict per-action
+    // contract moved to the real `keyboardSchema` union, re-parsed in-handler
+    // by `parseActionArgsOrFail`. Pin it here against the bare union
+    // (unchanged by Phase 2a).
+    expect(
+      keyboardSchema.safeParse({ action: "sequence" }).success,
+      "sequence without steps must be rejected by the real union",
+    ).toBe(false);
+    expect(
+      keyboardSchema.safeParse({ action: "sequence", steps: [{ keys: "alt+i" }] }).success,
+      "sequence with valid steps is accepted",
+    ).toBe(true);
+    expect(
+      keyboardSchema.safeParse({ action: "sequence", steps: [{ keys: "m" }], method: "foreground" }).success,
+    ).toBe(true);
   });
 
   // ── Pin 5: context.remaining is directly re-invocable via the same schema ──

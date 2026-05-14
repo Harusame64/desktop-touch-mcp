@@ -6,7 +6,12 @@ import { ok, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
 import { withRichNarration } from "./_narration.js";
-import { makeCommitWrapper, withEnvelopeIncludeForUnion } from "./_envelope.js";
+import {
+  makeCommitWrapper,
+  withEnvelopeIncludeForUnion,
+  flattenUnionToObjectSchema,
+  parseActionArgsOrFail,
+} from "./_envelope.js";
 import { nativeExcel } from "../engine/native-engine.js";
 import type { NativeExcelAccessVbomStatus } from "../engine/native-types.js";
 
@@ -272,9 +277,15 @@ async function handleCheckAccessVbom(): Promise<ToolResult> {
 }
 
 export const excelHandler = async (args: ExcelArgs): Promise<ToolResult> => {
-  switch (args.action) {
+  // ADR-018 Phase 2a — strict per-action gate (see §2.5.2). The registered wire
+  // schema is the flat `flattenUnionToObjectSchema` output; re-parse against the
+  // real (include-injected) union here.
+  const parsed = parseActionArgsOrFail<ExcelArgs>(excelUnionWithInclude, args, "excel");
+  if (!parsed.ok) return parsed.result;
+  const a = parsed.value;
+  switch (a.action) {
     case "run_vba":
-      return handleRunVba(args);
+      return handleRunVba(a);
     case "check_access_vbom":
       return handleCheckAccessVbom();
   }
@@ -298,7 +309,10 @@ export const excelHandler = async (args: ExcelArgs): Promise<ToolResult> => {
  * shares the same wrapped instance (PR #112 shared registration handler
  * pattern, strip risk prevention).
  */
-export const excelRegistrationSchema = withEnvelopeIncludeForUnion(excelSchema);
+// ADR-018 Phase 2a — `excelUnionWithInclude` (include-injected union) feeds BOTH
+// the flat wire schema AND the in-handler `parseActionArgsOrFail` strict gate.
+const excelUnionWithInclude = withEnvelopeIncludeForUnion(excelSchema);
+export const excelRegistrationSchema = flattenUnionToObjectSchema(excelUnionWithInclude);
 
 export const excelRegistrationHandler = makeCommitWrapper(
   withRichNarration(
@@ -345,6 +359,6 @@ export function registerExcelTools(server: McpServer): void {
       }),
       inputSchema: excelRegistrationSchema,
     },
-    excelRegistrationHandler as typeof excelHandler
+    excelRegistrationHandler as (args: Record<string, unknown>) => Promise<ToolResult>
   );
 }

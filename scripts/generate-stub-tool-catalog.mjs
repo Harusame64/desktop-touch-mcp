@@ -769,10 +769,126 @@ function parseDiscriminatedUnionSchema(rawExpr) {
   return { type: 'object', oneOf };
 }
 
+// Shared `include?: string[]` field definition — injected by both the
+// `withEnvelopeIncludeForUnion` recursion and the ADR-018 Phase 2a
+// `flattenUnionToObjectSchema` recursion below.
+const STUB_INCLUDE_FIELD_DEF = {
+  type: 'array',
+  items: { type: 'string' },
+  description:
+    "Optional response-shape opt-in. " +
+    "`['envelope']` returns the self-documenting envelope " +
+    "(`_version` / `data` / `as_of` / `confidence`). " +
+    "`['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). " +
+    "Default behaviour is raw shape (compat with existing clients).",
+};
+
+// ADR-018 Phase 2a — extract the discriminator field name from a raw
+// `z.discriminatedUnion("action", [...])` expression (its first arg).
+function extractDiscriminatorName(unionRawExpr) {
+  const raw = unionRawExpr.trim();
+  const m = /^z\s*\.\s*discriminatedUnion\s*\(/.exec(raw);
+  if (!m) return undefined;
+  const argsEnd = scanBalanced(raw, m[0].length, '(', ')');
+  const args = splitTopLevelArgs(raw.slice(m[0].length, argsEnd - 1));
+  if (args.length < 1) return undefined;
+  try { return String(evalExpr(args[0])); } catch { return undefined; }
+}
+
+// ADR-018 Phase 2a — static flatten of a discriminatedUnion `{ oneOf: [...] }`
+// (the output of `parseDiscriminatedUnionSchema`) into a single flat object.
+// Mirrors `src/tools/_envelope.ts::flattenUnionToObjectSchema` for the
+// cross-platform stub catalog: the discriminator becomes a required `enum` of
+// every variant's literal; every other field is optional; same-named `enum`
+// collisions merge their value sets; other collisions keep the first variant's
+// shape (the stub catalog is for non-Windows tool DISCOVERY — runtime
+// `parseActionArgsOrFail` does the real strict per-action validation).
+function flattenOneOfToObject(unionSchema, discriminatorKey) {
+  const mergedProps = {};
+  const literals = [];
+  for (const variant of unionSchema.oneOf) {
+    if (!variant || !variant.properties) continue;
+    for (const [key, prop] of Object.entries(variant.properties)) {
+      if (key === discriminatorKey) {
+        // parseZObjectVariant renders the discriminator as `{ const: <lit> }`.
+        if (prop && typeof prop === 'object' && 'const' in prop) {
+          if (!literals.includes(prop.const)) literals.push(prop.const);
+        }
+        continue;
+      }
+      if (!(key in mergedProps)) {
+        mergedProps[key] = prop;
+      } else {
+        const existing = mergedProps[key];
+        if (Array.isArray(existing?.enum) && Array.isArray(prop?.enum)) {
+          mergedProps[key] = {
+            ...existing,
+            enum: [...new Set([...existing.enum, ...prop.enum])],
+          };
+        }
+        // else: keep the first variant's shape (discovery stub — acceptable).
+      }
+    }
+  }
+  const properties = {
+    [discriminatorKey]: {
+      type: 'string',
+      enum: literals,
+      description:
+        `Action selector — one of: ${literals.join(', ')}. ` +
+        'Per-action required fields are enforced at call time (see the tool ' +
+        "description); this flat schema lists every action's fields as optional.",
+    },
+    ...mergedProps,
+  };
+  return {
+    type: 'object',
+    properties,
+    required: [discriminatorKey],
+    additionalProperties: false,
+  };
+}
+
 function parseSchema(src, schemaName) {
   if (!schemaName) return { type: 'object', properties: {}, additionalProperties: false };
   let expr = findConstExpression(src, schemaName);
   if (!expr) return { type: 'object', properties: {}, additionalProperties: true };
+
+  // ADR-018 Phase 2a — `flattenUnionToObjectSchema(<identifier>)`: the 7
+  // multi-action tools register a FLAT wire schema produced by
+  // `flattenUnionToObjectSchema(<tool>UnionWithInclude)`, where
+  // `<tool>UnionWithInclude = withEnvelopeIncludeForUnion(<bareUnion>)`.
+  // The generator cannot run that function call, so resolve the chain
+  // statically: flatten(...) → withEnvelopeIncludeForUnion(...) →
+  // z.discriminatedUnion(...), parse the variants, inject `include` into each
+  // (mirroring the runtime helper's input), then flatten to one flat object.
+  const flattenWrapperMatch = expr.trim().match(
+    /^flattenUnionToObjectSchema\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*;?\s*$/,
+  );
+  if (flattenWrapperMatch) {
+    const uwiName = flattenWrapperMatch[1];
+    const uwiExpr = (findConstExpression(src, uwiName) ?? '').trim();
+    const uwiMatch = uwiExpr.match(
+      /^withEnvelopeIncludeForUnion\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*;?\s*$/,
+    );
+    if (uwiMatch) {
+      const bareExpr = (findConstExpression(src, uwiMatch[1]) ?? '').trim();
+      const discriminator = extractDiscriminatorName(bareExpr);
+      const unionSchema = parseDiscriminatedUnionSchema(bareExpr);
+      if (unionSchema && Array.isArray(unionSchema.oneOf) && discriminator) {
+        // The runtime `flattenUnionToObjectSchema` input is the
+        // include-injected union — inject `include` into each variant first,
+        // so it lands as one of the flat object's optional fields.
+        for (const variant of unionSchema.oneOf) {
+          if (variant && variant.properties) {
+            variant.properties.include = STUB_INCLUDE_FIELD_DEF;
+          }
+        }
+        return flattenOneOfToObject(unionSchema, discriminator);
+      }
+    }
+    return { type: 'object', properties: {}, additionalProperties: true };
+  }
 
   // PR #112 Round 1 P1 follow-up: when a schema is wrapped via the
   // L5 envelope helper `withEnvelopeIncludeSchema(baseShape)`, recurse

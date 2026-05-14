@@ -5,7 +5,12 @@ import type { ToolResult } from "./_types.js";
 import { coercedBoolean } from "./_coerce.js";
 import { getCdpPort } from "../utils/desktop-config.js";
 import { withRichNarration } from "./_narration.js";
-import { makeCommitWrapper, withEnvelopeIncludeForUnion } from "./_envelope.js";
+import {
+  makeCommitWrapper,
+  withEnvelopeIncludeForUnion,
+  flattenUnionToObjectSchema,
+  parseActionArgsOrFail,
+} from "./_envelope.js";
 
 // Internal handlers imported from existing files (retained as internal exports)
 import { scrollHandler as rawScrollHandler } from "./mouse.js";
@@ -186,17 +191,23 @@ export const scrollSchema = z.discriminatedUnion("action", [
 export type ScrollArgs = z.infer<typeof scrollSchema>;
 
 export const scrollDispatchHandler = async (args: ScrollArgs): Promise<ToolResult> => {
-  switch (args.action) {
+  // ADR-018 Phase 2a — strict per-action gate (§2.5.2). The registered wire
+  // schema is the flat `flattenUnionToObjectSchema` output; re-parse against
+  // the real (include-injected) union so per-action constraints still apply.
+  const parsed = parseActionArgsOrFail<ScrollArgs>(scrollUnionWithInclude, args, "scroll");
+  if (!parsed.ok) return parsed.result;
+  const a = parsed.value;
+  switch (a.action) {
     case "raw":
-      return rawScrollHandler(args);
+      return rawScrollHandler(a);
     case "to_element":
-      return scrollToElementHandler(args);
+      return scrollToElementHandler(a);
     case "smart":
-      return smartScrollHandler(args);
+      return smartScrollHandler(a);
     case "capture":
-      return scrollCaptureHandler(args);
+      return scrollCaptureHandler(a);
     case "read":
-      return scrollReadHandler(args);
+      return scrollReadHandler(a);
   }
 };
 
@@ -226,7 +237,11 @@ export const scrollDispatchHandler = async (args: ScrollArgs): Promise<ToolResul
  * (expansion-pr-guard.yml + check-expansion-disjoint.mjs)、handler internal
  * logic + Zod schema + 戻り値 shape 不変 (ADR-010 §1.5)。
  */
-export const scrollRegistrationSchema = withEnvelopeIncludeForUnion(scrollSchema);
+// ADR-018 Phase 2a — `scrollUnionWithInclude` (include-injected union) feeds
+// BOTH the flat wire schema (`registerTool` inputSchema) AND the in-handler
+// `parseActionArgsOrFail` strict gate. Do not pass the bare `scrollSchema`.
+const scrollUnionWithInclude = withEnvelopeIncludeForUnion(scrollSchema);
+export const scrollRegistrationSchema = flattenUnionToObjectSchema(scrollUnionWithInclude);
 
 export const scrollRegistrationHandler = makeCommitWrapper(
   withRichNarration(
