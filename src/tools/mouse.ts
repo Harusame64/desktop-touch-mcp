@@ -35,6 +35,11 @@ import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/re
 import { runActionGuard, isAutoGuardEnabled } from "./_action-guard.js";
 import { detectTabDragRisk } from "../engine/perception/tab-drag-heuristic.js";
 import { resolveWindowTarget } from "./_resolve-window.js";
+import {
+  resolveInputDestination,
+  dispatchScrollWheel,
+  assertTier4Reachable,
+} from "./_input-pipeline.js";
 
 /**
  * Move cursor to (x, y) at the given speed.
@@ -1089,12 +1094,23 @@ export const scrollHandler = async ({
       await moveTo(tx, ty, speed);
     }
 
-    // Resolve the hwnd we will observe. Order:
-    //   1. resolveWindowTarget result (explicit hwnd / @active / dialog walk)
-    //   2. plain windowTitle → enumerate (resolveWindowTarget returns null in this case)
-    //   3. cursor location (best effort) so coord-based scroll still gets verification
-    //   4. foreground (last resort)
-    let observedHwnd: bigint | null = resolvedWin?.hwnd ?? null;
+    // ADR-018 Phase 1b — destination-explicit dispatch. The dispatcher
+    // destination (`dest`) is resolved through resolveWindowTarget ONLY
+    // (single SSOT per ADR §2.3 D3); cursor-pixel routing is confined to
+    // Tier 4 (legacy nutjs path below) so the ADR-018 §1.2 root-cause
+    // (cursor coordinates as the destination) cannot re-enter the dispatcher.
+    const dest = await resolveInputDestination({ hwnd, windowTitle });
+
+    // Observation HWND for snapshot verification. ADR §2.2 invariant:
+    // observation must use the SAME destination the dispatcher acted on. When
+    // `dest.kind === 'hwnd'` (Tier 1 candidate) seed it from `dest.hwnd`
+    // directly so a successful UIA scroll on window A can never report a delta
+    // measured on window B. The enum / cursor / foreground ladder below only
+    // fills in for an `'unresolved'` destination (Tier 4 nutjs path), where
+    // observation is read-only and may legitimately use any HWND at the
+    // scroll point. The cursor/foreground fallback never routes dispatch.
+    let observedHwnd: bigint | null =
+      dest.kind === "hwnd" ? dest.hwnd : (resolvedWin?.hwnd ?? null);
     if (observedHwnd === null && windowTitle && windowTitle !== "@active") {
       try {
         const wantTitle = windowTitle.toLowerCase();
@@ -1116,17 +1132,23 @@ export const scrollHandler = async ({
     // Phase 1: pre-scroll snapshot (matrix doc §3.1 + terminal regimen §2.1 phase 1).
     const pre = await captureScrollSnapshot(observedHwnd, observedRect);
 
-    // Phase 2: side-effect injection — the existing wheel SendInput path.
-    const SCROLL_MULTIPLIER = 3;
-    switch (direction) {
-      case "down":  await mouse.scrollDown(amount * SCROLL_MULTIPLIER); break;
-      case "up":    await mouse.scrollUp(amount * SCROLL_MULTIPLIER); break;
-      case "right":
-        for (let i = 0; i < amount; i++) await mouse.scrollRight(SCROLL_MULTIPLIER);
-        break;
-      case "left":
-        for (let i = 0; i < amount; i++) await mouse.scrollLeft(SCROLL_MULTIPLIER);
-        break;
+    // Phase 2: side-effect injection. Try Tier 1 (UIA) first; if dispatcher returns
+    // null, fall through to the legacy nutjs SendInput path (Phase 1b lenient guard).
+    const tier1 = await dispatchScrollWheel(dest, { direction, notch: amount });
+
+    if (tier1 === null) {
+      assertTier4Reachable(dest);
+      const SCROLL_MULTIPLIER = 3;
+      switch (direction) {
+        case "down":  await mouse.scrollDown(amount * SCROLL_MULTIPLIER); break;
+        case "up":    await mouse.scrollUp(amount * SCROLL_MULTIPLIER); break;
+        case "right":
+          for (let i = 0; i < amount; i++) await mouse.scrollRight(SCROLL_MULTIPLIER);
+          break;
+        case "left":
+          for (let i = 0; i < amount; i++) await mouse.scrollLeft(SCROLL_MULTIPLIER);
+          break;
+      }
     }
 
     // Phase 3: settle render.
@@ -1134,9 +1156,16 @@ export const scrollHandler = async ({
 
     // Phase 4: post-scroll snapshot + delivery evaluation.
     const post = await captureScrollSnapshot(observedHwnd, observedRect);
-    const outcome: ScrollVerifyOutcome = observedHwnd === null
-      ? { status: "unverifiable", delta: "unverifiable", reason: "no_target_window" }
-      : evaluateScrollDelivery(pre, post, direction);
+
+    // When Tier 1 UIA succeeded (`tier1 !== null && tier1.scrolled`), the dispatcher
+    // already established delivery. We still capture a Win32 snapshot diff so
+    // `scrollObserved.delta` carries a numeric value for callers that inspect it,
+    // but we trust the dispatcher's success signal for `status`/`channel`/`reason`.
+    const outcome: ScrollVerifyOutcome = tier1 !== null && tier1.scrolled
+      ? { status: "delivered", delta: evaluateScrollDelivery(pre, post, direction).delta }
+      : observedHwnd === null
+        ? { status: "unverifiable", delta: "unverifiable", reason: "no_target_window" }
+        : evaluateScrollDelivery(pre, post, direction);
 
     // hints.scrollObserved (issue #179 body shape) carries the raw delta values
     // for caller introspection; hints.verifyDelivery (matrix doc §4 shape) carries
@@ -1153,9 +1182,20 @@ export const scrollHandler = async ({
           },
         };
 
+    // ADR-018 §2.6.1 — channel is the transport identifier (always populated,
+    // including for `status:'not_delivered'`). Phase 1b emits 'uia' when the
+    // dispatcher's Tier 1 path succeeded; legacy path retains the existing
+    // 'wheel_send_input' channel for back-compat. The Phase 4 §2.6.3 migration
+    // renames 'wheel_send_input' → 'send_input'.
+    const effectiveChannel: "uia" | "wheel_send_input" =
+      tier1 !== null && tier1.scrolled ? "uia" : "wheel_send_input";
+
     if (outcome.status === "not_delivered") {
       // Silent drop: pre off-boundary, post unchanged. ScrollNotDelivered with
-      // suggestions sourced from the SSOT _errors.ts dictionary.
+      // suggestions sourced from the SSOT _errors.ts dictionary. ADR §2.6.1
+      // requires channel to survive in the failure envelope — thread it
+      // through context.verifyDelivery so callers reading the error envelope
+      // (issue #179) see the consistent shape with success envelopes.
       return failWith(
         new Error("ScrollNotDelivered"),
         "scroll",
@@ -1168,6 +1208,11 @@ export const scrollHandler = async ({
             postVerticalPercent: post.vertical,
             postHorizontalPercent: post.horizontal,
             direction,
+            verifyDelivery: {
+              status: "not_delivered" as const,
+              channel: effectiveChannel,
+              ...(outcome.axis ? { axis: outcome.axis } : {}),
+            },
           },
         },
       );
@@ -1176,7 +1221,8 @@ export const scrollHandler = async ({
     const verifyDelivery = outcome.status === "delivered"
       ? {
           status: "delivered" as const,
-          channel: "wheel_send_input" as const,
+          channel: effectiveChannel,
+          ...(tier1 !== null && tier1.reason !== null ? { reason: tier1.reason } : {}),
         }
       : {
           status: "unverifiable" as const,

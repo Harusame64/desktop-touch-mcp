@@ -22,7 +22,10 @@ import {
 
 // Standard Win32 dialog class. Used as primary signal for common dialog detection.
 // ownerHwnd is the secondary signal for non-#32770 common dialogs (IFileDialog, etc.)
-const DIALOG_CLASSNAMES = new Set(["#32770"]);
+// Exported so `_input-pipeline.ts` can mirror Case 3's "plain top-level" predicate
+// (non-dialog class + no owner) when recovering the HWND Case 3 deliberately
+// discards — one dialog-class SSOT, no drift (CLAUDE.md §3.1).
+export const DIALOG_CLASSNAMES = new Set(["#32770"]);
 
 interface DialogCandidate { hwnd: bigint; title: string; }
 

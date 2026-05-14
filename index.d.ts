@@ -235,6 +235,7 @@ export declare function uiaGetTextViaTextPattern(opts: { windowTitle: string; ti
 export declare function uiaScrollIntoView(opts: { windowTitle: string; name?: string; automationId?: string }): Promise<NativeScrollResult>
 export declare function uiaGetScrollAncestors(opts: { windowTitle: string; elementName: string }): Promise<Array<NativeScrollAncestor>>
 export declare function uiaScrollByPercent(opts: { windowTitle: string; elementName: string; verticalPercent: number; horizontalPercent: number }): Promise<NativeScrollResult>
+export declare function uiaScrollByWheelAtHwnd(opts: { hwnd: string; wheelDeltaY: number; wheelDeltaX: number }): Promise<NativeScrollResult>
 export declare function uiaGetVirtualDesktopStatus(hwndIntegers: Array<string>): Promise<Record<string, boolean>>
 
 export declare function preprocessImage(opts: NativePreprocessOptions): Promise<NativeImageProcessingResult>
