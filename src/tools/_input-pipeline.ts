@@ -25,7 +25,11 @@
  * by the Phase 4 §2.6.3 migration. Any rename must sweep all surfaces.
  */
 
-import { resolveWindowTarget, type ResolvedWindow } from "./_resolve-window.js";
+import {
+  resolveWindowTarget,
+  DIALOG_CLASSNAMES,
+  type ResolvedWindow,
+} from "./_resolve-window.js";
 import { enumWindowsInZOrder } from "../engine/win32.js";
 import { uiaScrollByWheelAtHwnd } from "../../index.js";
 
@@ -92,10 +96,11 @@ export interface DispatchOutcome {
   channel: Channel;
   /**
    * ADR §2.6.2 reason value. Phase 1b emits only `'delivered_via_uia'`; the
-   * remaining 4 ADR-018 reasons (`delivered_via_cdp` / `delivered_via_postmessage`
-   * / `wheel_overlay_intercepted` / `target_unreachable`) are emitted by later
-   * phases. `null` indicates no ADR-018 reason applies (caller picks the
-   * legacy `evaluateScrollDelivery` reason from `mouse.ts`).
+   * remaining 4 of the 5-value ADR §2.6.2 enum (`delivered_via_cdp` /
+   * `delivered_via_postmessage` / `wheel_overlay_intercepted` /
+   * `target_unreachable`) are emitted by later phases. `null` indicates no
+   * ADR-018 reason applies (caller picks the legacy `evaluateScrollDelivery`
+   * reason from `mouse.ts`).
    */
   reason: "delivered_via_uia" | null;
 }
@@ -115,8 +120,10 @@ export interface DispatchOutcome {
  *      that HWND so Tier 1 UIA is reachable for the common windowTitle-only
  *      scroll call (ADR §4 Phase 1 G1 acceptance — otherwise
  *      `scroll(windowTitle:'メモ帳')` could never report `channel:'uia'`). We
- *      re-run the same top-level `enumWindowsInZOrder` lookup here to recover
- *      it → `{ kind: 'hwnd' }`. This is still title-based, not cursor/foreground.
+ *      re-run the same top-level `enumWindowsInZOrder` lookup here — with the
+ *      *exact* Case 3 predicate (non-dialog class, no owner window) — to
+ *      recover it → `{ kind: 'hwnd' }`. This is still title-based, not
+ *      cursor/foreground.
  *   3. No resolvable target → `{ kind: 'unresolved' }` so the caller falls
  *      through to Tier 4 SendInput (legacy nutjs in Phase 1b). This preserves
  *      the cursor-only / no-destination happy path (`scroll({action:'raw',
@@ -144,15 +151,24 @@ export async function resolveInputDestination(params: {
     return { kind: "hwnd", hwnd: resolved.hwnd };
   }
   // Case 3 recovery (see docstring): `resolveWindowTarget` returns null for a
-  // plain `windowTitle` that matches a top-level window — re-run the same
-  // top-level enumeration to recover the HWND so Tier 1 UIA stays reachable.
+  // plain `windowTitle` that matches a top-level window — recover that HWND so
+  // Tier 1 UIA stays reachable. The predicate below MUST mirror
+  // `_resolve-window.ts` Case 3's `plainMatch` exactly — non-dialog class
+  // (`#32770` excluded) AND no owner window — so we recover the SAME window
+  // Case 3 matched-and-discarded, never an owned/modal dialog with a
+  // coincidentally-overlapping title substring (Codex PR #288 Round 3 P2).
   // `@active` is excluded: `resolveWindowTarget` owns that shorthand and a
   // null return there means foreground resolution genuinely failed.
+  // Phase 4 carry-over: extract a shared `findPlainTopLevelWindowByTitle`
+  // helper so this predicate cannot drift from Case 3 — sub-plan §2.2.
   if (params.windowTitle && params.windowTitle !== "@active") {
     try {
       const want = params.windowTitle.toLowerCase();
       const match = enumWindowsInZOrder().find(
-        (w) => !w.isMinimized && w.title.toLowerCase().includes(want),
+        (w) =>
+          w.title.toLowerCase().includes(want) &&
+          !DIALOG_CLASSNAMES.has(w.className ?? "") &&
+          w.ownerHwnd == null,
       );
       if (match) {
         return { kind: "hwnd", hwnd: match.hwnd };

@@ -46,7 +46,7 @@ ADR §B Reuse map says **Phase 1 introduces zero new Rust code**, but `src/uia/s
    - Add `tests/unit/input-pipeline-dispatch.test.ts`: mock `uiaScrollByWheelAtHwnd` + `resolveWindowTarget` + `enumWindowsInZOrder`, assert `resolveInputDestination` (incl. Case 3 recovery) and `dispatchScrollWheel` branch deterministically per `dest.kind` — **done**
    - `scroll.rs` math: pure `wheel_step_percent` helper pinned by `#[cfg(test)] mod tests` (no-extra-`*100` regression guard) — **done**
    - `tests/unit/scroll-raw-verify.test.ts`: 5-value reason enum type-assignability lock — **already present** (added Phase 1a, still passes post-refactor; the `ScrollVerifyOutcome.reason` union was not changed by Phase 1b)
-   - `tests/unit/scroll-raw-verify-tier1.test.ts` (`scrollHandler` envelope integration: `verifyDelivery.channel='uia'` / `reason='delivered_via_uia'` end-to-end): **OPEN — Round 2 review item**, see §2.2 carry-over row. Not yet created; the dispatcher-level contract is pinned by `input-pipeline-dispatch.test.ts`, but the `scrollHandler` envelope-emission path (`effectiveChannel` ternary, `observedHwnd` seeding, `verifyDelivery` construction) is not yet integration-tested.
+   - `tests/unit/scroll-raw-verify-tier1.test.ts` (`scrollHandler` envelope integration: `verifyDelivery.channel='uia'` / `reason='delivered_via_uia'` end-to-end): **Phase 5 carry-over** (Opus Round 3 decision — see §2.2 carry-over row + ADR-018 §4 Phase 5). Not created in the trunk PR; the dispatcher-level contract is pinned by `input-pipeline-dispatch.test.ts`, but the `scrollHandler` envelope-emission path (`effectiveChannel` ternary, `observedHwnd` seeding, `verifyDelivery` construction) is folded into the Phase 5 5-app smoke harness, which builds the full `scrollHandler` wiring this test needs.
    - Add `__test__/fixtures/overlay-window.ts` skeleton: stubs the `WS_EX_LAYERED | WS_EX_TRANSPARENT` Win32 child process; integration assertion runs only in Phase 4 / Phase 5 smoke (Phase 1b lands the file so Phase 4 can reuse without churn) — **done**
 
 ### 2.2 Out of scope (carry-over to later phases)
@@ -60,7 +60,8 @@ ADR §B Reuse map says **Phase 1 introduces zero new Rust code**, but `src/uia/s
 | `getWindows()` → `resolveWindowTarget` in `scroll-read.ts` | Phase 5 | ADR §4 |
 | `input-pipeline-guard.yml` CI gate | Phase 5 | Depends on Phase 4 legacy deletion |
 | 5-app smoke | Phase 5 | Depends on Phase 3/4 transport coverage |
-| `scroll-raw-verify-tier1.test.ts` (`scrollHandler` envelope integration test) | **OPEN — Round 2 review item** | Sub-plan §2.1#5 deliverable not created in the trunk PR. Opus Round 3 to decide: Phase 1b-required (add before merge) vs Phase 5 carry-over (fold into the 5-app smoke harness, which already needs full `scrollHandler` wiring). Dispatcher-level contract is covered by `input-pipeline-dispatch.test.ts`; the gap is the `scrollHandler` envelope path. |
+| `scroll-raw-verify-tier1.test.ts` (`scrollHandler` envelope integration test) | Phase 5 | Sub-plan §2.1#5 deliverable not created in the trunk PR. **Opus Round 3 decision: Phase 5 carry-over** — the dispatcher-level contract is fully pinned by `input-pipeline-dispatch.test.ts`; the gap is only the `scrollHandler` envelope-assembly path, and a meaningful end-to-end assertion needs the same full `scrollHandler` wiring the Phase 5 5-app smoke harness builds. Recorded as a Phase 5 deliverable in ADR-018 §4 (sibling of `reason-enum-coverage.test.ts`). |
+| Shared `findPlainTopLevelWindowByTitle` helper (de-dup the Case 3 title→HWND predicate) | Phase 4 | `resolveInputDestination` (Round 3) mirrors `_resolve-window.ts` Case 3's `plainMatch` predicate inline (non-dialog class + no owner), and `scrollHandler` keeps a separate looser observation-ladder predicate. Two/three copies of one "title → HWND" rule — Codex Round 3 P2 + Opus Round 3 P2-1. Phase 4 extracts a shared `findPlainTopLevelWindowByTitle` in `_resolve-window.ts` so the predicate has one SSOT and cannot drift. Not a correctness bug today (the inline copy is byte-identical to Case 3). |
 
 ## 3. G1 acceptance (Phase 1b only)
 
@@ -73,7 +74,7 @@ ADR §B Reuse map says **Phase 1 introduces zero new Rust code**, but `src/uia/s
 ## 4. CLAUDE.md sweep checklist (mandatory per §3.3 Step 1)
 
 - **§3.1 multi-table fact sweep**: `Grep "delivered_via_uia|verifyDelivery.channel|InputDestination|uia_scroll_by_wheel_at_hwnd"` across `src/` `tests/` `docs/`. Synchronized surfaces:
-  - `src/tools/mouse.ts:943-977` ScrollVerifyOutcome union — adds `channel` field at emission sites (already declared in `verifyDelivery` shape at `:1176-1187`)
+  - `src/tools/mouse.ts:943-985` `ScrollVerifyOutcome` interface (the `reason?:` union is `971-982`) — adds `channel` field at the `verifyDelivery` construction in `scrollHandler`
   - `src/tools/_input-pipeline.ts` (new) dispatcher
   - `src/tools/_errors.ts:256-262` SUGGESTS — Phase 1b adds `delivered_via_uia` to neighbouring docs only (Phase 4 rewrites for migration)
   - `src/tools/scroll.ts:249-256` caveats — Phase 1b adds 1 line "Tier 1 UIA path enabled for UIA-aware apps (Notepad, native ListView). Other apps continue via SendInput."
@@ -99,7 +100,7 @@ Per ADR §4 Phase 1 + CLAUDE.md §3.3 Step 0 (production code + native binding):
 | `src/tools/mouse.ts:1070-1204` | refactor `scrollHandler` to call dispatcher; UIA branch emits new channel/reason; nutjs branch preserved |
 | `src/tools/scroll.ts:249-256` | add 1 caveat line |
 | `tests/unit/input-pipeline-dispatch.test.ts` | **new** |
-| `tests/unit/scroll-raw-verify-tier1.test.ts` | **new** |
+| `tests/unit/scroll-raw-verify-tier1.test.ts` | ~~new~~ **Phase 5 carry-over** (Opus Round 3 — see §2.2) |
 | `tests/unit/scroll-raw-verify.test.ts:130-159` | append type-level pin (no rewrite) |
 | `__test__/fixtures/overlay-window.ts` | **new** (skeleton, no live behaviour) |
 | `index.js` / `index.d.ts` (napi loader) | re-export new napi function |

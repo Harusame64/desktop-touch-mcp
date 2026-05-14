@@ -11,7 +11,7 @@
   - ADR-014 (`docs/adr-014-cooperative-bridge.md`) — native bridge plumbing reused for Tier 1 / Tier 3
   - ADR-017 (`docs/adr-017-session-aware-desktop-touch.md`) — envelope-evolution cousin (session-aware `desktop_state` fields). ADR-018 reuses ADR-017's "envelope extension via opt-in field" pattern for `verifyDelivery.channel`. No code-path overlap; both can ship in parallel.
   - `docs/walking-skeleton-trunk-selection.md` §3.2 — contract spike pattern this ADR's Phase 1 follows
-  - Existing 4-value `verifyDelivery.reason` enum in `src/tools/mouse.ts:943-947` (`read_back_unsupported` / `page_end_inferred` / `scrollbar_unavailable` / `no_target_window`) — superseded by the new 5-value tier-based taxonomy (D6); the existing test pin in `tests/unit/scroll-raw-verify.test.ts:114-121` will be rewritten in Phase 1
+  - Existing 4-value `verifyDelivery.reason` enum in `src/tools/mouse.ts:971-982` (`read_back_unsupported` / `page_end_inferred` / `scrollbar_unavailable` / `no_target_window`) — superseded by the new 5-value tier-based taxonomy (D6); the existing test pin in `tests/unit/scroll-raw-verify.test.ts:114-129` will be rewritten in Phase 1
 - Blocks: none
 - Blocked by: this ADR's review and acceptance (Phase 1 trunk PR is the first downstream artefact)
 
@@ -128,7 +128,7 @@ When upstream lands the fix (MCP TypeScript SDK Issue #1643), deprecate the help
 
 ### 2.6 D6 — Typed reason taxonomy
 
-The existing `ScrollVerifyOutcome` (`src/tools/mouse.ts:938-950`) has two orthogonal fields that must stay orthogonal under the new pipeline:
+The existing `ScrollVerifyOutcome` (`src/tools/mouse.ts:943-985`) has two orthogonal fields that must stay orthogonal under the new pipeline:
 
 - `status: "delivered" | "unverifiable" | "not_delivered"` — 3-value outcome (unchanged)
 - `reason?:` — context for non-`delivered` outcomes (currently 4 values, replaced below)
@@ -157,7 +157,7 @@ The existing `ScrollVerifyOutcome` (`src/tools/mouse.ts:938-950`) has two orthog
 
 #### 2.6.3 Migration from the existing 4-value `reason`
 
-| Old reason (mouse.ts:943-947) | New reason | Mapping rationale |
+| Old reason (mouse.ts:971-982) | New reason | Mapping rationale |
 |---|---|---|
 | `page_end_inferred` | **deleted** | Old "I have no observer channel" shrug. Under ADR-018 every tier carries its own observer (UIA percent / CDP scrollTop / PostMessage + GetScrollInfo), so this state is unreachable. |
 | `read_back_unsupported` | `wheel_overlay_intercepted` (if overlay detected) or `target_unreachable` (otherwise) | Old "Win32 GetScrollInfo unsupported" → split into the two real cases the new taxonomy distinguishes. |
@@ -167,7 +167,7 @@ The existing `ScrollVerifyOutcome` (`src/tools/mouse.ts:938-950`) has two orthog
 **Public API contract** (CLAUDE.md §3.2 carry-over scope shrink): callers that pass `scroll({action:'raw', direction:'down', amount:N})` with no destination today receive `status:'delivered'` on the happy path. Under ADR-018 they still receive `status:'delivered'`, but `reason` is now one of `delivered_via_*` (Tier 1/2/3 attached automatically by `resolveWindowTarget(@active)`) — the **happy-path `status` string does not change**. Only the `reason` enum values change; the existing field shape is preserved. Existing tests in `tests/unit/expansion-scroll-wrapper.test.ts:83, 109, 135, 167` (which mock the handler and don't inspect `reason`) continue to pass without modification.
 
 This is the **only** SSOT for `verifyDelivery.reason`. The synchronization surfaces are:
-- `src/tools/mouse.ts:943-947` (`ScrollVerifyOutcome.reason` union type — single source of truth in code)
+- `src/tools/mouse.ts:971-982` (`ScrollVerifyOutcome.reason` union type — single source of truth in code)
 - `tests/unit/scroll-raw-verify.test.ts:114-130` (existing test pin — rewritten in Phase 1)
 - `src/tools/_errors.ts:256-262` (`ScrollNotDelivered` suggest list — surface 2, updated to reference new reasons)
 - per-tool description in `src/tools/scroll.ts:249-256` (surface 3, updated in Phase 1)
@@ -190,7 +190,7 @@ CLAUDE.md §3.1 multi-table fact sweep applies across these 5 surfaces. ADR-010 
 | `src/tools/_envelope.ts` | 484-501 | Add `materializeUnionJsonSchema` sibling helper (Phase 2a) |
 | `src/uia/scroll.rs` | adjacent to 142-224 | New napi export `uia_scroll_by_wheel_at_hwnd` calling existing `scroll_by_percent_impl` (Phase 1) |
 | `src/engine/cdp-bridge.ts` | adjacent to 284 | New `dispatchMouseEvent({type:'mouseWheel'})` wrapper (Phase 3) |
-| `src/tools/mouse.ts` | 943-947 (`ScrollVerifyOutcome.reason` union) + 999 (emission site) | Replace 4-value reason union with 5-value enum per §2.6.2; add `channel: "uia" \| "cdp" \| "postmessage" \| "send_input"` field per §2.6.1 (Phase 1, single source of truth) |
+| `src/tools/mouse.ts` | 971-982 (`ScrollVerifyOutcome.reason` union) + `scrollHandler` `verifyDelivery` emission | Replace 4-value reason union with 5-value enum per §2.6.2; add `channel: "uia" \| "cdp" \| "postmessage" \| "send_input"` field per §2.6.1 (Phase 1, single source of truth) |
 | `tests/unit/scroll-raw-verify.test.ts` | 114-130 | Rewrite the `page_end_inferred` test case to assert the new mapping per §2.6.3 (Phase 1) |
 | `src/tools/_errors.ts` | 256-262 (`ScrollNotDelivered` suggest list) | Update suggest copy to reference new reason names (`wheel_overlay_intercepted`, `target_unreachable`); typed-error code unchanged (Phase 1) |
 | `src/tools/scroll.ts` | 249-256 (tool description `Caveats:` section) | Update `action='raw' typed errors:` paragraph to list new reasons (Phase 1) |
@@ -213,13 +213,13 @@ Deliverables:
 - New napi export `uia_scroll_by_wheel_at_hwnd` (wraps existing `scroll_by_percent_impl` with wheel-delta → percent conversion)
 - `scrollHandler` (`src/tools/mouse.ts:1040-1174`) refactored to call dispatcher; `resolveWindowTarget` required as first step (with `@active` default when no `windowTitle` / `hwnd` supplied, preserving cursor-only happy path per §2.6.3)
 - **Runtime guard**: `assert(dest.kind === 'unresolved', 'Tier 4 SendInput requires unresolved destination')` immediately before any `MOUSEEVENTF_WHEEL` SendInput call. Failure throws a typed error caught at the handler and reported as `status: 'not_delivered', reason: 'target_unreachable'` (covers L2 compile-time-guard overreliance)
-- `ScrollVerifyOutcome.reason` union (`src/tools/mouse.ts:943-947`) extended to the new 5-value enum; old 4 reasons mapped per §2.6.3
+- `ScrollVerifyOutcome.reason` union (`src/tools/mouse.ts:971-982`) extended to the new 5-value enum; old 4 reasons mapped per §2.6.3
 - `tests/unit/scroll-raw-verify.test.ts:114-130` `page_end_inferred` test case rewritten to assert the new 5-value mapping (one test per reason)
 - `src/tools/_errors.ts:256-262` `ScrollNotDelivered` suggest list updated to reference the new reason names; typed-error code unchanged
 - `src/tools/scroll.ts:249-256` tool description `Caveats:` section updated to list the new reasons
 - `__test__/fixtures/overlay-window.ts` fixture (Win32 `WS_EX_LAYERED \| WS_EX_TRANSPARENT` child process) for DDPM repro under unit test
 
-CLAUDE.md §3.1 sweep covers the 5 surfaces listed in §2.6 (`mouse.ts:943-947` / `scroll-raw-verify.test.ts` / `_errors.ts:256-262` / `scroll.ts:249-256` / CHANGELOG).
+CLAUDE.md §3.1 sweep covers the 5 surfaces listed in §2.6 (`mouse.ts:971-982` / `scroll-raw-verify.test.ts` / `_errors.ts:256-262` / `scroll.ts:249-256` / CHANGELOG).
 
 **G1 acceptance**: `scroll(action='raw', windowTitle:'メモ帳', direction:'down')` returns `verifyDelivery.status='delivered'`, `verifyDelivery.channel='uia'`, `verifyDelivery.reason='delivered_via_uia'`, with numeric `scrollObserved.delta`, and continues to do so when the `overlay-window` fixture is running. Tier 4 SendInput must not fire (asserted via a Phase 1 unit-test spy on the SendInput call site).
 
@@ -273,6 +273,7 @@ Deliverables:
 - `scroll-read.ts:96` `getWindows()` → `resolveWindowTarget`
 - `input-pipeline-guard.yml` (negative assertions): grep `getWindows src/tools/` returns 0 lines, grep `page_end_inferred src/ tests/` returns 0 lines
 - **Positive assertion** (`__test__/integration/reason-enum-coverage.test.ts` new): every code path in `mouse.ts` `scrollHandler` that emits `status='not_delivered'` populates `reason` from the 5-value enum (no `undefined`, no string outside the enum). Asserted via a vitest case that exercises each tier failure mode through the dispatcher
+- `tests/unit/scroll-raw-verify-tier1.test.ts` (new): `scrollHandler` envelope-assembly integration test — asserts `verifyDelivery.channel='uia'` / `reason='delivered_via_uia'` end-to-end when the Tier 1 UIA dispatcher succeeds, and that `observedHwnd` is seeded from `dest.hwnd` for resolved destinations. **Carried over from Phase 1b** (sub-plan §2.1#5): the dispatcher-level contract is pinned by `input-pipeline-dispatch.test.ts`; this test covers the `scrollHandler` envelope path and is folded in here because a meaningful end-to-end assertion needs the same full `scrollHandler` wiring the 5-app smoke harness builds. Natural sibling of `reason-enum-coverage.test.ts`.
 - `scroll-5app.smoke.test.ts` finalized for all 5 apps × 4 directions (`workflow_dispatch`, Windows runner)
 
 **G5 acceptance** (= AC1+AC2+AC5): All 5 apps return numeric delta + the expected `(status, channel, reason)` triple per AC1; no `page_end_inferred` survives in `src/` or `tests/`; no `getWindows` in `src/tools/`.
@@ -288,7 +289,7 @@ Deliverables:
 - **R3** — CDP `target='body'` scrollTop=0 bug. Mitigation: Phase 3 replaces single `document.body.scrollIntoView` with `document.scrollingElement || document.documentElement` two-step query.
 - **R4** — MCP SDK Issue #1643 timing. Mitigation: §7 OQ4 documents 3 candidate strategies (vendored patch / fork / hand-rolled helper). Default to hand-rolled until upstream lands; the helper has a clear deprecation path.
 - **R5** (CLAUDE.md §3.2) — Tier 4 SendInput retained as fallback may be misread as carry-over scope shrink that breaks existing API. Mitigation: ADR-level contract pinned in §2.6.3 ("Public API contract") that Tier 4 is reachable only when `InputDestination.kind === 'unresolved'`, and its outcome is always reported as `status:'not_delivered', reason:'target_unreachable'`, never as success. Existing cursor-only callers (`tests/unit/expansion-scroll-wrapper.test.ts:83, 109, 135, 167`, hypothetical end-users typing `scroll({action:'raw', direction:'down', amount:N})` with no destination) preserve their happy-path `status:'delivered'` because `resolveWindowTarget(@active)` (the existing default destination in `_resolve-window.ts`) successfully resolves to the foreground HWND and routes through Tier 1/2/3. The runtime guard in Phase 1 deliverables (assert before SendInput) is the structural enforcement of this contract.
-- **R6** (CLAUDE.md §3.1) — 5-value `verifyDelivery.reason` and 4-value `verifyDelivery.channel` taxonomies spread across 5 surfaces (`src/tools/mouse.ts:943-947`, `tests/unit/scroll-raw-verify.test.ts:114-130`, `src/tools/_errors.ts:256-262` `ScrollNotDelivered` suggest list, `src/tools/scroll.ts:249-256` tool description caveats, CHANGELOG entry at release time). Mitigation: Opus review prompt for each phase includes a mandatory grep sweep of these 5 surfaces; the Phase 5 CI guard (`input-pipeline-guard.yml`) automates the `page_end_inferred` 0-hit assertion across `src/` and `tests/`.
+- **R6** (CLAUDE.md §3.1) — 5-value `verifyDelivery.reason` and 4-value `verifyDelivery.channel` taxonomies spread across 5 surfaces (`src/tools/mouse.ts:971-982`, `tests/unit/scroll-raw-verify.test.ts:114-130`, `src/tools/_errors.ts:256-262` `ScrollNotDelivered` suggest list, `src/tools/scroll.ts:249-256` tool description caveats, CHANGELOG entry at release time). Mitigation: Opus review prompt for each phase includes a mandatory grep sweep of these 5 surfaces; the Phase 5 CI guard (`input-pipeline-guard.yml`) automates the `page_end_inferred` 0-hit assertion across `src/` and `tests/`.
 - **R7** — Keyboard CJK keystroke path may currently work in some IME configurations (composition mode + active IME). Phase 2b regex change must not break these. Mitigation: integration test 1 case (IME ON, CJK typing) added before regex flip; if test fails, regex change is reverted and Phase 2b is split into "detector only" + "auto-clipboard upgrade" sub-PRs.
 
 ---
