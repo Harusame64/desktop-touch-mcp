@@ -30,7 +30,12 @@ import { detectFocusLoss, checkForegroundOnce } from "./_focus.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
 import { resolveWindowTarget } from "./_resolve-window.js";
-import { makeCommitWrapper, withEnvelopeIncludeForUnion } from "./_envelope.js";
+import {
+  makeCommitWrapper,
+  withEnvelopeIncludeForUnion,
+  flattenUnionToObjectSchema,
+  parseActionArgsOrFail,
+} from "./_envelope.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -2290,13 +2295,20 @@ export const keyboardSchema = z.discriminatedUnion("action", [
 export type KeyboardArgs = z.infer<typeof keyboardSchema>;
 
 export const keyboardHandler = async (args: KeyboardArgs): Promise<import("./_types.js").ToolResult> => {
-  if (args.action === "type") {
-    return keyboardTypeHandler(args);
+  // ADR-018 Phase 2a — strict per-action gate (§2.5.2). The registered wire
+  // schema is the flat `flattenUnionToObjectSchema` output; re-parse against
+  // the real (include-injected) union so per-action constraints — incl. the
+  // `sequence` variant's `method: z.literal("foreground")` — still apply.
+  const parsed = parseActionArgsOrFail<KeyboardArgs>(keyboardUnionWithInclude, args, "keyboard");
+  if (!parsed.ok) return parsed.result;
+  const a = parsed.value;
+  if (a.action === "type") {
+    return keyboardTypeHandler(a);
   }
-  if (args.action === "sequence") {
-    return keyboardSequenceHandler(args);
+  if (a.action === "sequence") {
+    return keyboardSequenceHandler(a);
   }
-  return keyboardPressHandler(args);
+  return keyboardPressHandler(a);
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2340,7 +2352,10 @@ export const keyboardHandler = async (args: KeyboardArgs): Promise<import("./_ty
  * (Codex PR #123 P2 + PR #112 P1-1 同型 risk pattern, discriminatedUnion
  * 系の延長線).
  */
-export const keyboardRegistrationSchema = withEnvelopeIncludeForUnion(keyboardSchema);
+// ADR-018 Phase 2a — `keyboardUnionWithInclude` (include-injected union) feeds
+// BOTH the flat wire schema AND the in-handler `parseActionArgsOrFail` gate.
+const keyboardUnionWithInclude = withEnvelopeIncludeForUnion(keyboardSchema);
+export const keyboardRegistrationSchema = flattenUnionToObjectSchema(keyboardUnionWithInclude);
 
 export const keyboardRegistrationHandler = makeCommitWrapper(
   withRichNarration(
@@ -2374,6 +2389,6 @@ export function registerKeyboardTools(server: McpServer): void {
       }),
       inputSchema: keyboardRegistrationSchema,
     },
-    keyboardRegistrationHandler as typeof keyboardHandler,
+    keyboardRegistrationHandler as (args: Record<string, unknown>) => Promise<import("./_types.js").ToolResult>,
   );
 }

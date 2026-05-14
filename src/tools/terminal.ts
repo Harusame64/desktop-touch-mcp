@@ -37,7 +37,12 @@ import { parseKeys } from "../utils/key-map.js";
 import { typeViaClipboard } from "./keyboard.js";
 import { setTerminalReadHook } from "./wait-until.js";
 import { withRichNarration } from "./_narration.js";
-import { makeCommitWrapper, withEnvelopeIncludeForUnion } from "./_envelope.js";
+import {
+  makeCommitWrapper,
+  withEnvelopeIncludeForUnion,
+  flattenUnionToObjectSchema,
+  parseActionArgsOrFail,
+} from "./_envelope.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -1680,20 +1685,28 @@ export const terminalSchema = z.discriminatedUnion("action", [
 export type TerminalArgs = z.infer<typeof terminalSchema>;
 
 export const terminalDispatchHandler = async (args: TerminalArgs): Promise<ToolResult> => {
-  switch (args.action) {
-    case "read": return terminalReadHandler(args);
-    case "send": return terminalSendHandler(args);
+  // ADR-018 Phase 2a — strict per-action gate (§2.5.2). The registered wire
+  // schema is the flat `flattenUnionToObjectSchema` output; re-parse against
+  // the real (include-injected) union so the `run` variant's
+  // `.refine(input || command)` and the nested `until` union still apply.
+  const parsed = parseActionArgsOrFail<TerminalArgs>(terminalUnionWithInclude, args, "terminal");
+  if (!parsed.ok) return parsed.result;
+  const a = parsed.value;
+  switch (a.action) {
+    case "read": return terminalReadHandler(a);
+    case "send": return terminalSendHandler(a);
     case "run": {
       // Issue #245 系統③: `command` is a deprecated alias of `input` for LLMs
       // that mis-remember the parameter name. Resolve to `input` here so the
       // handler signature stays `input: string`.
-      const resolvedInput = typeof args.input === "string" ? args.input : args.command;
+      const resolvedInput = typeof a.input === "string" ? a.input : a.command;
       if (typeof resolvedInput !== "string") {
-        // Should be unreachable thanks to the schema-level refine, but guard
-        // anyway so TS can narrow `resolvedInput` to `string`.
+        // Unreachable: `parseActionArgsOrFail` above re-parsed `terminalSchema`,
+        // whose `run` variant `.refine(input || command)` already rejected this
+        // case as a typed InvalidArgs error. Kept so TS narrows `resolvedInput`.
         throw new Error("terminal(action='run'): neither `input` nor `command` provided");
       }
-      return terminalRunHandler({ ...args, input: resolvedInput });
+      return terminalRunHandler({ ...a, input: resolvedInput });
     }
   }
 };
@@ -1731,7 +1744,14 @@ export { TERMINAL_PROCESS_RE };
  * `macro.ts`) shares the same wrapped instance (PR #112 shared
  * registration handler pattern, strip risk prevention).
  */
-export const terminalRegistrationSchema = withEnvelopeIncludeForUnion(terminalSchema);
+// ADR-018 Phase 2a — `terminalUnionWithInclude` (include-injected union) feeds
+// BOTH the flat wire schema AND the in-handler `parseActionArgsOrFail` gate.
+// The flatten reads each variant's `.shape` directly — terminal's `run` variant
+// is `.refine()`-wrapped but in zod 4.3.6 that is still a `ZodObject`, so no
+// unwrap is needed; the nested `until` discriminatedUnion is left intact and
+// renders as a property-level `anyOf` (accepted by the Anthropic API).
+const terminalUnionWithInclude = withEnvelopeIncludeForUnion(terminalSchema);
+export const terminalRegistrationSchema = flattenUnionToObjectSchema(terminalUnionWithInclude);
 
 export const terminalRegistrationHandler = makeCommitWrapper(
   withRichNarration(

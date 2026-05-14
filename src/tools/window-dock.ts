@@ -5,7 +5,12 @@ import type { ToolResult } from "./_types.js";
 import { pinWindowHandler, unpinWindowHandler } from "./pin.js";
 import { dockWindowHandler } from "./dock.js";
 import { withRichNarration } from "./_narration.js";
-import { makeCommitWrapper, withEnvelopeIncludeForUnion } from "./_envelope.js";
+import {
+  makeCommitWrapper,
+  withEnvelopeIncludeForUnion,
+  flattenUnionToObjectSchema,
+  parseActionArgsOrFail,
+} from "./_envelope.js";
 import { coercedBoolean } from "./_coerce.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -52,10 +57,16 @@ export const windowDockSchema = z.discriminatedUnion("action", [
 export type WindowDockArgs = z.infer<typeof windowDockSchema>;
 
 export const windowDockHandler = async (args: WindowDockArgs): Promise<ToolResult> => {
-  switch (args.action) {
-    case "pin": return pinWindowHandler(args);
-    case "unpin": return unpinWindowHandler(args);
-    case "dock": return dockWindowHandler(args);
+  // ADR-018 Phase 2a — strict per-action gate (§2.5.2). Registered wire schema
+  // is the flat `flattenUnionToObjectSchema` output; re-parse against the real
+  // (include-injected) union here.
+  const parsed = parseActionArgsOrFail<WindowDockArgs>(windowDockUnionWithInclude, args, "window_dock");
+  if (!parsed.ok) return parsed.result;
+  const a = parsed.value;
+  switch (a.action) {
+    case "pin": return pinWindowHandler(a);
+    case "unpin": return unpinWindowHandler(a);
+    case "dock": return dockWindowHandler(a);
   }
 };
 
@@ -82,7 +93,10 @@ export const windowDockHandler = async (args: WindowDockArgs): Promise<ToolResul
  * `macro.ts`) shares the same wrapped instance (PR #112 shared
  * registration handler pattern, strip risk prevention).
  */
-export const windowDockRegistrationSchema = withEnvelopeIncludeForUnion(windowDockSchema);
+// ADR-018 Phase 2a — `windowDockUnionWithInclude` (include-injected union) feeds
+// BOTH the flat wire schema AND the in-handler `parseActionArgsOrFail` gate.
+const windowDockUnionWithInclude = withEnvelopeIncludeForUnion(windowDockSchema);
+export const windowDockRegistrationSchema = flattenUnionToObjectSchema(windowDockUnionWithInclude);
 
 export const windowDockRegistrationHandler = makeCommitWrapper(
   withRichNarration(
@@ -114,6 +128,6 @@ export function registerWindowDockTools(server: McpServer): void {
       }),
       inputSchema: windowDockRegistrationSchema,
     },
-    windowDockRegistrationHandler as typeof windowDockHandler
+    windowDockRegistrationHandler as (args: Record<string, unknown>) => Promise<ToolResult>
   );
 }
