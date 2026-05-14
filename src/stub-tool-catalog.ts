@@ -80,149 +80,79 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
     "description": "Purpose: Inspect or operate on a browser tab via 3 actions: 'js' (evaluate JS), 'dom' (get HTML), 'appState' (extract SSR-injected SPA state).\nDetails: action='js' — Run a JS expression. withPerception:true wraps in {ok, result, post}. action='dom' — Return outerHTML of selector (or document.body), truncated to maxLength. action='appState' — Scan Next/Nuxt/Remix/Apollo/GitHub/Redux SSR injected JSON; pass selectors to override defaults.\nPrefer: Use action='appState' BEFORE 'dom' or 'js' on SPAs where rendered HTML is sparse — single CDP call. Use 'dom' when 'appState' is empty and you need page structure. Use 'js' as the escape hatch for arbitrary scripting.\nCaveats: DOM nodes cannot be returned from action='js' directly (circular refs are serialized safely). React/Vue/Svelte controlled inputs cannot be set via element.value — use keyboard(action='type') / browser_fill instead. readyState is strictly checked; guard blocks if page is still loading. Typed errors: code:'BrowserNotConnected' on CDP disconnect (re-attach via browser_open); code:'AutoGuardBlocked' when the auto-guard refuses (e.g. page still loading) — the error message preserves the guard's 1-sentence recommended next step (most often wait_until({condition:'ready_state'}) or browser_eval readyState polling, then retry).\nExamples:\n  browser_eval({action:'js', expression:'document.title'}) → page title\n  browser_eval({action:'dom', selector:'#main', maxLength:5000}) → outerHTML\n  browser_eval({action:'appState'}) → default SPA state probes",
     "inputSchema": {
       "type": "object",
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "action": {
-              "const": "js"
-            },
-            "expression": {
-              "description": "JavaScript expression to evaluate. The server automatically wraps snippets in an async IIFE to avoid repeated const/let collisions. For multi-statement snippets, use an explicit final return value. Declarations (const/let/var) are scoped per snippet — use window.* / globalThis.* for persistence.",
-              "type": "string"
-            },
-            "withPerception": {
-              "description": "When true, return structured JSON {ok, result, post} with post.perception attached. Default false preserves raw-text return.",
-              "type": "boolean",
-              "default": false
-            },
-            "lensId": {
-              "description": "Optional perception lens ID. Guards (target.identityStable) are evaluated before eval.",
-              "type": "string"
-            },
-            "tabId": {
-              "type": "string",
-              "description": "Tab ID from browser_open. Omit to use the first page tab."
-            },
-            "port": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 65535,
-              "default": 9222,
-              "description": "Chrome/Edge CDP remote debugging port."
-            },
-            "includeContext": {
-              "type": "boolean",
-              "default": true,
-              "description": "When true, append activeTab and readyState context to the response."
-            },
-            "include": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "action",
-            "expression"
-          ]
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "js",
+            "dom",
+            "appState"
+          ],
+          "description": "Action selector — one of: js, dom, appState. Per-action required fields are enforced at call time (see the tool description); this flat schema lists every action's fields as optional."
         },
-        {
-          "type": "object",
-          "properties": {
-            "action": {
-              "const": "dom"
-            },
-            "selector": {
-              "description": "CSS selector for root element. Omit for document.body.",
-              "type": "string"
-            },
-            "maxLength": {
-              "description": "Max characters of HTML to return (default 10000).",
-              "type": "integer",
-              "default": 10000,
-              "minimum": 100,
-              "maximum": 100000
-            },
-            "tabId": {
-              "type": "string",
-              "description": "Tab ID from browser_open. Omit to use the first page tab."
-            },
-            "port": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 65535,
-              "default": 9222,
-              "description": "Chrome/Edge CDP remote debugging port."
-            },
-            "includeContext": {
-              "type": "boolean",
-              "default": true,
-              "description": "When true, append activeTab and readyState context to the response."
-            },
-            "include": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "action"
-          ]
+        "expression": {
+          "description": "JavaScript expression to evaluate. The server automatically wraps snippets in an async IIFE to avoid repeated const/let collisions. For multi-statement snippets, use an explicit final return value. Declarations (const/let/var) are scoped per snippet — use window.* / globalThis.* for persistence.",
+          "type": "string"
         },
-        {
-          "type": "object",
-          "properties": {
-            "action": {
-              "const": "appState"
-            },
-            "selectors": {
-              "description": "Custom probe selectors. Omit to use the default SPA framework set (__NEXT_DATA__ / __NUXT_DATA__ / __REMIX_CONTEXT__ / __APOLLO_STATE__ / window:__INITIAL_STATE__ etc.). Window globals must be prefixed with 'window:'.",
-              "type": "array"
-            },
-            "maxBytes": {
-              "description": "Max bytes per individual payload (default 4000). Larger payloads are truncated.",
-              "type": "integer",
-              "default": 4000,
-              "minimum": 256,
-              "maximum": 64000
-            },
-            "tabId": {
-              "type": "string",
-              "description": "Tab ID from browser_open. Omit to use the first page tab."
-            },
-            "port": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 65535,
-              "default": 9222,
-              "description": "Chrome/Edge CDP remote debugging port."
-            },
-            "includeContext": {
-              "type": "boolean",
-              "default": true,
-              "description": "When true, append activeTab and readyState context to the response."
-            },
-            "include": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
-            }
+        "withPerception": {
+          "description": "When true, return structured JSON {ok, result, post} with post.perception attached. Default false preserves raw-text return.",
+          "type": "boolean",
+          "default": false
+        },
+        "lensId": {
+          "description": "Optional perception lens ID. Guards (target.identityStable) are evaluated before eval.",
+          "type": "string"
+        },
+        "tabId": {
+          "type": "string",
+          "description": "Tab ID from browser_open. Omit to use the first page tab."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 9222,
+          "description": "Chrome/Edge CDP remote debugging port."
+        },
+        "includeContext": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true, append activeTab and readyState context to the response."
+        },
+        "include": {
+          "type": "array",
+          "items": {
+            "type": "string"
           },
-          "additionalProperties": false,
-          "required": [
-            "action"
-          ]
+          "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
+        },
+        "selector": {
+          "description": "CSS selector for root element. Omit for document.body.",
+          "type": "string"
+        },
+        "maxLength": {
+          "description": "Max characters of HTML to return (default 10000).",
+          "type": "integer",
+          "default": 10000,
+          "minimum": 100,
+          "maximum": 100000
+        },
+        "selectors": {
+          "description": "Custom probe selectors. Omit to use the default SPA framework set (__NEXT_DATA__ / __NUXT_DATA__ / __REMIX_CONTEXT__ / __APOLLO_STATE__ / window:__INITIAL_STATE__ etc.). Window globals must be prefixed with 'window:'.",
+          "type": "array"
+        },
+        "maxBytes": {
+          "description": "Max bytes per individual payload (default 4000). Larger payloads are truncated.",
+          "type": "integer",
+          "default": 4000,
+          "minimum": 256,
+          "maximum": 64000
         }
-      ]
+      },
+      "required": [
+        "action"
+      ],
+      "additionalProperties": false
     }
   },
   {
@@ -698,52 +628,32 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
     "description": "Read or write the Windows clipboard. action='read' returns current text content (empty string if non-text). action='write' replaces clipboard with given text and verifies delivery via Get-Clipboard -Raw read-back, comparing the bytes (UTF-16LE) for exact equality. Caveats: Non-text clipboard payloads (images, files) return empty string on read. Overwrites existing clipboard content on write. action='write' delivery-verification failure returns code:'ClipboardWriteNotDelivered' — typical causes: a third-party clipboard manager intercepts SetClipboardData, DLP / endpoint protection blocks the payload, RDP / Citrix clipboard transcoding strips the text, or another process clears the clipboard between Set and the read-back. Recovery: retry the write, or fall back to keyboard(action='type', use_clipboard=false) for short text. Examples: clipboard({action:'write', text:'hello'}) → write+verify; clipboard({action:'read'}) → returns current text.",
     "inputSchema": {
       "type": "object",
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "action": {
-              "const": "read"
-            },
-            "include": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "action"
-          ]
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "read",
+            "write"
+          ],
+          "description": "Action selector — one of: read, write. Per-action required fields are enforced at call time (see the tool description); this flat schema lists every action's fields as optional."
         },
-        {
-          "type": "object",
-          "properties": {
-            "action": {
-              "const": "write"
-            },
-            "text": {
-              "description": "Text to place on the clipboard",
-              "type": "string",
-              "maxLength": 100000
-            },
-            "include": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
-            }
+        "include": {
+          "type": "array",
+          "items": {
+            "type": "string"
           },
-          "additionalProperties": false,
-          "required": [
-            "action",
-            "text"
-          ]
+          "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
+        },
+        "text": {
+          "description": "Text to place on the clipboard",
+          "type": "string",
+          "maxLength": 100000
         }
-      ]
+      },
+      "required": [
+        "action"
+      ],
+      "additionalProperties": false
     }
   },
   {
@@ -847,283 +757,145 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
     "description": "Purpose: Send keyboard input to a window: 'type' for text, 'press' for key combos, 'sequence' for atomic multi-step chords.\nDetails: action='type' inserts text (auto-clipboard for non-ASCII / IME-safe). action='press' sends key combos like 'ctrl+c'/'alt+tab'. action='sequence' runs ordered steps in one keyboard lock — use for Alt+letter, letter mnemonic chains where intermediate tool calls would close the menu. Pass windowTitle to auto-focus and auto-guard (identity, foreground, modal) before input. Omitting windowTitle acts on the active window (unguarded).\nPrefer: Use windowTitle to auto-focus before injection. Set lensId for perception guards. Use desktop_act({action:'setValue'}) for UIA ValuePattern text fields.\nCaveats: win+r/win+x/win+s/win+l blocked. action='type' does not handle CJK IME composition — use use_clipboard=true or desktop_act({action:'setValue'}). Non-ASCII text (CJK / emoji / diacritics / smart-quote-class punctuation) auto-clipboards to prevent silent-drop and Chrome accelerator hijack; pass forceKeystrokes:true to disable. Background (PostMessage/WM_CHAR) auto-engages for terminal-class windows (Windows Terminal / cmd / PowerShell); DTM_BG_AUTO=1 enables globally. Foreground non-terminal type runs a per-chunk leash; user focus-steal mid-stream aborts with FocusLostDuringType + context.typed/remaining; pass abortOnFocusLoss:false to disable. BG type verifies WM_CHAR via UIA TextPattern read-back; mismatch returns BackgroundInputNotDelivered (see SUGGESTS for false-positive notes). BG press read-back is scoped to terminal-class + enter/tab/arrow; other combos return verifyDelivery:'unverifiable', failure returns BackgroundKeyNotDelivered. action='sequence' is FG-only (BG/foreground_flash schema-rejected); emits verifyDelivery:'focus_only'; mid-loop focus theft returns MenuFocusLostMidSequence + context.remaining: Step[]. Win11 FG refusal returns ForegroundRestricted — terminal-class targets auto-engage BG; non-terminal switch to desktop_act / click_element.\nExamples:\n  keyboard({action:'type', text:'hello', windowTitle:'Notepad'}) → text injected (guarded)\n  keyboard({action:'type', text:'hello'}) → text injected (unguarded)\n  keyboard({action:'press', keys:'ctrl+c'}) → copy\n  keyboard({action:'press', keys:'escape', windowTitle:'Dialog'}) → dismiss dialog\n  keyboard({action:'sequence', steps:[{keys:'alt+i', gapMs:100},{keys:'m'}], windowTitle:'Microsoft Visual Basic'}) → Insert > Module (atomic)",
     "inputSchema": {
       "type": "object",
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "action": {
-              "const": "type"
-            },
-            "text": {
-              "description": "The text to type (max 10,000 characters)",
-              "type": "string",
-              "maxLength": 10000
-            },
-            "method": {
-              "type": "string",
-              "enum": [
-                "auto",
-                "background",
-                "foreground"
-              ],
-              "default": "auto",
-              "description": "Input method. background = WM_CHAR PostMessage (no focus change); foreground = SendInput (current default); auto = pick automatically."
-            },
-            "narrate": {
-              "type": "string",
-              "enum": [
-                "minimal",
-                "rich"
-              ],
-              "default": "minimal",
-              "description": "Narration level. rich includes UIA or browser state diff when supported."
-            },
-            "use_clipboard": {
-              "description": "If true, copy text to clipboard and paste with Ctrl+V instead of simulating keystrokes. Use this when typing URLs, paths, or ASCII text into apps with Japanese IME active — prevents IME from converting characters. Default false.",
-              "type": "boolean",
-              "default": false
-            },
-            "replaceAll": {
-              "description": "When true, send Ctrl+A to select all existing text before typing. Equivalent to Ctrl+A → keyboard(action='type') in one call (requires field already focused). Default false.",
-              "type": "boolean",
-              "default": false
-            },
-            "forceKeystrokes": {
-              "description": "When true, always use keystroke mode even if text contains non-ASCII content (CJK, emoji, diacritics, em-dash, smart quotes, etc.) that would normally trigger auto-clipboard. Default false — auto-clipboard is enabled.",
-              "type": "boolean",
-              "default": false
-            },
-            "windowTitle": {
-              "type": "string",
-              "description": "Partial title of the window that should receive keyboard input."
-            },
-            "hwnd": {
-              "type": "string",
-              "description": "Direct window handle ID (takes precedence over windowTitle). Obtain from get_windows response (hwnd field). String type to avoid 64-bit precision issues."
-            },
-            "forceFocus": {
-              "type": "boolean",
-              "description": "Bypass Windows foreground-stealing protection before focusing."
-            },
-            "trackFocus": {
-              "type": "boolean",
-              "default": true,
-              "description": "Detect if focus was stolen after the action."
-            },
-            "settleMs": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 2000,
-              "default": 300,
-              "description": "Milliseconds to wait before checking post-action state."
-            },
-            "lensId": {
-              "description": "Optional perception lens ID. Guards (safe.keyboardTarget) are evaluated before typing, and a perception envelope is attached to post.perception on success.",
-              "type": "string"
-            },
-            "fixId": {
-              "description": "Approve a pending suggestedFix (one-shot, 15s TTL). Pass the fixId returned by a previous failed keyboard(action='type') to re-attempt with guard-validated args.",
-              "type": "string"
-            },
-            "abortOnFocusLoss": {
-              "description": "Focus Leash Phase B: when true, the foreground keystroke send is split into chunks (default 8 chars; override via DTM_LEASH_CHUNK_SIZE env) and the target window's foreground state is verified between chunks. If the user grabs focus mid-stream, the call aborts and returns FocusLostDuringType with context.typed (chars delivered to target) and context.remaining (unsent tail) so the caller can re-focus and retry the unsent portion. Default: true when windowTitle is provided, false otherwise. Has no effect on the clipboard path (atomic Ctrl+V) or the BG (WM_CHAR) path (HWND-targeted, foreground-independent).",
-              "type": "boolean"
-            },
-            "forceImeOff": {
-              "description": "Issue #245 系統②: when true, query the target window's IME open-status via Imm32 before typing; if ON, switch OFF for the duration of this call and restore the prior state in `finally`. Prevents silent romaji conversion when the user's Japanese IME is active but the LLM is typing ASCII commands. Requires `windowTitle` or `hwnd` (otherwise no target to query). Default false — existing use_clipboard auto-promotion still handles non-ASCII symbols transparently. No-op when the addon predates the IMM bridge (call proceeds with whatever IME state is in effect).",
-              "type": "boolean",
-              "default": false
-            },
-            "include": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "action",
-            "text"
-          ]
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "type",
+            "press",
+            "sequence"
+          ],
+          "description": "Action selector — one of: type, press, sequence. Per-action required fields are enforced at call time (see the tool description); this flat schema lists every action's fields as optional."
         },
-        {
-          "type": "object",
-          "properties": {
-            "action": {
-              "const": "press"
-            },
-            "keys": {
-              "description": "Key combo string, e.g. 'ctrl+c', 'alt+tab', 'enter', 'ctrl+shift+s'. Note: win+r, win+x, win+s, win+l are blocked for security.",
-              "type": "string",
-              "maxLength": 100
-            },
-            "method": {
-              "type": "string",
-              "enum": [
-                "auto",
-                "background",
-                "foreground"
-              ],
-              "default": "auto",
-              "description": "Input method. background = WM_CHAR PostMessage (no focus change); foreground = SendInput (current default); auto = pick automatically."
-            },
-            "narrate": {
-              "type": "string",
-              "enum": [
-                "minimal",
-                "rich"
-              ],
-              "default": "minimal",
-              "description": "Narration level. rich includes UIA or browser state diff when supported."
-            },
-            "windowTitle": {
-              "type": "string",
-              "description": "Partial title of the window that should receive keyboard input."
-            },
-            "hwnd": {
-              "type": "string",
-              "description": "Direct window handle ID (takes precedence over windowTitle). Obtain from get_windows response (hwnd field). String type to avoid 64-bit precision issues."
-            },
-            "forceFocus": {
-              "type": "boolean",
-              "description": "Bypass Windows foreground-stealing protection before focusing."
-            },
-            "trackFocus": {
-              "type": "boolean",
-              "default": true,
-              "description": "Detect if focus was stolen after the action."
-            },
-            "settleMs": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 2000,
-              "default": 300,
-              "description": "Milliseconds to wait before checking post-action state."
-            },
-            "lensId": {
-              "description": "Optional perception lens ID. Guards (safe.keyboardTarget) are evaluated before the key press.",
-              "type": "string"
-            },
-            "include": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "action",
-            "keys"
-          ]
+        "text": {
+          "description": "The text to type (max 10,000 characters)",
+          "type": "string",
+          "maxLength": 10000
         },
-        {
-          "type": "object",
-          "properties": {
-            "action": {
-              "const": "sequence"
-            },
-            "steps": {
-              "description": "Ordered list of key-press steps. Min 1, max 16. Total duration must not exceed 5000ms (excludes settleMs and focus acquisition). N=1 is allowed but inherits the sequence verification contract (hints.verifyDelivery.status='focus_only'); if you want the stricter keyboard:press contract, call keyboard({action:'press', keys}) directly (issue #278, matrix doc §3.1).",
-              "type": "array",
-              "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "keys": {
-                    "description": "Key combo for this step (e.g. 'alt+i' then 'm'). Same syntax as keyboard(action='press'). Blocked combos (win+r, win+x, win+s, win+l) are rejected per-step.",
-                    "type": "string",
-                    "maxLength": 100
-                  },
-                  "holdMs": {
-                    "description": "Hold time within this step (key-down → wait holdMs → key-up). Default 0 = tap. Use a positive value when the target requires a long press (rare for menu nav; useful for some games / accessibility apps).",
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 500
-                  },
-                  "gapMs": {
-                    "description": "Wait between this step's release and the next step's press. Default 80ms — chosen to give Windows menu pump time to register the previous mnemonic before the next letter. The last step's gapMs is ignored.",
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 2000
-                  }
-                },
-                "required": [
-                  "keys"
-                ]
-              },
-              "minItems": 1,
-              "maxItems": 16
-            },
-            "method": {
-              "description": "Sequence is foreground-only by design — Alt-menu mnemonics need real SendInput. Omit, or pass 'foreground'. method:'background' / 'foreground_flash' are rejected at schema parse time (typed codes BackgroundNotApplicableToSequence / ForegroundFlashNotApplicableToSequence document the rationale for LLMs).",
-              "const": "foreground",
-              "type": "string"
-            },
-            "narrate": {
-              "type": "string",
-              "enum": [
-                "minimal",
-                "rich"
-              ],
-              "default": "minimal",
-              "description": "Narration level. rich includes UIA or browser state diff when supported."
-            },
-            "windowTitle": {
-              "type": "string",
-              "description": "Partial title of the window that should receive keyboard input."
-            },
-            "hwnd": {
-              "type": "string",
-              "description": "Direct window handle ID (takes precedence over windowTitle). Obtain from get_windows response (hwnd field). String type to avoid 64-bit precision issues."
-            },
-            "forceFocus": {
-              "type": "boolean",
-              "description": "Bypass Windows foreground-stealing protection before focusing."
-            },
-            "trackFocus": {
-              "type": "boolean",
-              "default": true,
-              "description": "Detect if focus was stolen after the action."
-            },
-            "settleMs": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 2000,
-              "default": 300,
-              "description": "Milliseconds to wait before checking post-action state."
-            },
-            "lensId": {
-              "description": "Optional perception lens ID. Guards (safe.keyboardTarget) are evaluated once before the first step.",
-              "type": "string"
-            },
-            "fixId": {
-              "description": "Approve a pending suggestedFix (one-shot, 15s TTL). Only meaningful for GUARD-pre-loop rejections (e.g. unsafe.keyboardTarget). Mid-loop MenuFocusLostMidSequence does NOT issue fixIds — recover by re-calling with context.remaining.",
-              "type": "string"
-            },
-            "forceImeOff": {
-              "description": "Issue #245 系統②: query the target's IME open-status before the first step; if ON, switch OFF for the whole sequence and restore in finally. Prevents Alt-mnemonic hijack when 日本語 IME is active (the OS routes Alt+letter to IME composition instead of the menu). Requires windowTitle or hwnd. Default false.",
-              "type": "boolean",
-              "default": false
-            },
-            "include": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
-            }
+        "method": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "background",
+            "foreground"
+          ],
+          "default": "auto",
+          "description": "Input method. background = WM_CHAR PostMessage (no focus change); foreground = SendInput (current default); auto = pick automatically."
+        },
+        "narrate": {
+          "type": "string",
+          "enum": [
+            "minimal",
+            "rich"
+          ],
+          "default": "minimal",
+          "description": "Narration level. rich includes UIA or browser state diff when supported."
+        },
+        "use_clipboard": {
+          "description": "If true, copy text to clipboard and paste with Ctrl+V instead of simulating keystrokes. Use this when typing URLs, paths, or ASCII text into apps with Japanese IME active — prevents IME from converting characters. Default false.",
+          "type": "boolean",
+          "default": false
+        },
+        "replaceAll": {
+          "description": "When true, send Ctrl+A to select all existing text before typing. Equivalent to Ctrl+A → keyboard(action='type') in one call (requires field already focused). Default false.",
+          "type": "boolean",
+          "default": false
+        },
+        "forceKeystrokes": {
+          "description": "When true, always use keystroke mode even if text contains non-ASCII content (CJK, emoji, diacritics, em-dash, smart quotes, etc.) that would normally trigger auto-clipboard. Default false — auto-clipboard is enabled.",
+          "type": "boolean",
+          "default": false
+        },
+        "windowTitle": {
+          "type": "string",
+          "description": "Partial title of the window that should receive keyboard input."
+        },
+        "hwnd": {
+          "type": "string",
+          "description": "Direct window handle ID (takes precedence over windowTitle). Obtain from get_windows response (hwnd field). String type to avoid 64-bit precision issues."
+        },
+        "forceFocus": {
+          "type": "boolean",
+          "description": "Bypass Windows foreground-stealing protection before focusing."
+        },
+        "trackFocus": {
+          "type": "boolean",
+          "default": true,
+          "description": "Detect if focus was stolen after the action."
+        },
+        "settleMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2000,
+          "default": 300,
+          "description": "Milliseconds to wait before checking post-action state."
+        },
+        "lensId": {
+          "description": "Optional perception lens ID. Guards (safe.keyboardTarget) are evaluated before typing, and a perception envelope is attached to post.perception on success.",
+          "type": "string"
+        },
+        "fixId": {
+          "description": "Approve a pending suggestedFix (one-shot, 15s TTL). Pass the fixId returned by a previous failed keyboard(action='type') to re-attempt with guard-validated args.",
+          "type": "string"
+        },
+        "abortOnFocusLoss": {
+          "description": "Focus Leash Phase B: when true, the foreground keystroke send is split into chunks (default 8 chars; override via DTM_LEASH_CHUNK_SIZE env) and the target window's foreground state is verified between chunks. If the user grabs focus mid-stream, the call aborts and returns FocusLostDuringType with context.typed (chars delivered to target) and context.remaining (unsent tail) so the caller can re-focus and retry the unsent portion. Default: true when windowTitle is provided, false otherwise. Has no effect on the clipboard path (atomic Ctrl+V) or the BG (WM_CHAR) path (HWND-targeted, foreground-independent).",
+          "type": "boolean"
+        },
+        "forceImeOff": {
+          "description": "Issue #245 系統②: when true, query the target window's IME open-status via Imm32 before typing; if ON, switch OFF for the duration of this call and restore the prior state in `finally`. Prevents silent romaji conversion when the user's Japanese IME is active but the LLM is typing ASCII commands. Requires `windowTitle` or `hwnd` (otherwise no target to query). Default false — existing use_clipboard auto-promotion still handles non-ASCII symbols transparently. No-op when the addon predates the IMM bridge (call proceeds with whatever IME state is in effect).",
+          "type": "boolean",
+          "default": false
+        },
+        "include": {
+          "type": "array",
+          "items": {
+            "type": "string"
           },
-          "additionalProperties": false,
-          "required": [
-            "action",
-            "steps"
-          ]
+          "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
+        },
+        "keys": {
+          "description": "Key combo string, e.g. 'ctrl+c', 'alt+tab', 'enter', 'ctrl+shift+s'. Note: win+r, win+x, win+s, win+l are blocked for security.",
+          "type": "string",
+          "maxLength": 100
+        },
+        "steps": {
+          "description": "Ordered list of key-press steps. Min 1, max 16. Total duration must not exceed 5000ms (excludes settleMs and focus acquisition). N=1 is allowed but inherits the sequence verification contract (hints.verifyDelivery.status='focus_only'); if you want the stricter keyboard:press contract, call keyboard({action:'press', keys}) directly (issue #278, matrix doc §3.1).",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "keys": {
+                "description": "Key combo for this step (e.g. 'alt+i' then 'm'). Same syntax as keyboard(action='press'). Blocked combos (win+r, win+x, win+s, win+l) are rejected per-step.",
+                "type": "string",
+                "maxLength": 100
+              },
+              "holdMs": {
+                "description": "Hold time within this step (key-down → wait holdMs → key-up). Default 0 = tap. Use a positive value when the target requires a long press (rare for menu nav; useful for some games / accessibility apps).",
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 500
+              },
+              "gapMs": {
+                "description": "Wait between this step's release and the next step's press. Default 80ms — chosen to give Windows menu pump time to register the previous mnemonic before the next letter. The last step's gapMs is ignored.",
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 2000
+              }
+            },
+            "required": [
+              "keys"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 16
         }
-      ]
+      },
+      "required": [
+        "action"
+      ],
+      "additionalProperties": false
     }
   },
   {
@@ -1569,347 +1341,216 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
     "description": "Purpose: Scroll a window or page. 5 strategies via action: 'raw' (wheel notches), 'to_element' (UIA name/automationId or CSS selector), 'smart' (auto-detect target with multi-strategy fallback), 'capture' (full-page stitched image), 'read' (scroll+OCR+dedupe → stitched text).\nDetails: action='raw': send raw mouse-wheel notches at (x,y) or current cursor, optional window focus. action='to_element': scroll a named element into viewport (UIA or CDP). action='smart': handles nested scroll layers, virtualised lists, sticky-header occlusion. action='capture': stitches full-page images (caps at ~700KB raw); sizeReduced=true means downscaled. action='read': scrolls page-by-page, OCRs each viewport, deduplicates overlapping lines, returns stitched text; language auto-detected from OS locale if omitted.\nPrefer: Use action='to_element' or action='smart' for click target out-of-viewport recovery (entity_outside_viewport). Use action='capture' for reading long pages as images. Use action='read' for extracting text from long native-app documents (PDF readers, text editors, terminals) where copy-paste is unavailable. For simple scroll without target, use action='raw'.\nCaveats: action='capture' returns stitched image — pixels do NOT match screen coords when sizeReduced=true, use for reading only, not mouse_click. action='smart' CDP path requires browser_open. action='to_element' native path requires element to implement UIA ScrollItemPattern. action='read' uses OCR (imperfect accuracy) and requires the window to be visible; for browser pages prefer browser_eval or browser_overview for accurate DOM text. action='raw' typed errors: code:'ScrollNotDelivered' on silent drop (overlay / non-scrollable / UIPI low-IL); already-at-boundary is success via pre/post-percent disambiguation. hints.verifyDelivery.{channel,reason} per ADR-018 §2.6 (Phase 1b: Tier 1 UIA dispatch for HWNDs exposing ScrollPattern; other apps use legacy SendInput). action='smart' typed errors: code:'OverflowHiddenAncestor' (retry with expandHidden:true), code:'VirtualScrollExhausted' (provide virtualIndex).\nExamples:\n  scroll({action:'raw', direction:'down', amount:5, windowTitle:'Chrome'})\n  scroll({action:'to_element', name:'OK', windowTitle:'Dialog'})\n  scroll({action:'smart', target:'#create-release-btn'})\n  scroll({action:'capture', windowTitle:'Chrome', maxScrolls:10})\n  scroll({action:'read', windowTitle:'Acrobat', maxPages:15}) // OCR + dedupe long PDF",
     "inputSchema": {
       "type": "object",
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "action": {
-              "const": "raw"
-            },
-            "direction": {
-              "description": "Scroll direction",
-              "type": "string",
-              "enum": [
-                "up",
-                "down",
-                "left",
-                "right"
-              ]
-            },
-            "amount": {
-              "description": "Number of scroll steps (default 3)",
-              "type": "integer",
-              "default": 3
-            },
-            "x": {
-              "description": "X coordinate to scroll at (moves cursor there first)",
-              "type": "number"
-            },
-            "y": {
-              "description": "Y coordinate to scroll at",
-              "type": "number"
-            },
-            "speed": {
-              "description": "Cursor movement speed in px/sec (0=teleport, omit=default)",
-              "type": "number"
-            },
-            "homing": {
-              "description": "Apply window-movement homing correction to (x,y) before scrolling. Default true.",
-              "type": "boolean",
-              "default": true
-            },
-            "windowTitle": {
-              "description": "Partial window title. When provided, the server focuses this window first.",
-              "type": "string"
-            },
-            "hwnd": {
-              "description": "Direct window handle ID (takes precedence over windowTitle).",
-              "type": "string"
-            },
-            "include": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "action",
-            "direction"
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "raw",
+            "to_element",
+            "smart",
+            "capture",
+            "read"
+          ],
+          "description": "Action selector — one of: raw, to_element, smart, capture, read. Per-action required fields are enforced at call time (see the tool description); this flat schema lists every action's fields as optional."
+        },
+        "direction": {
+          "description": "Scroll direction",
+          "type": "string",
+          "enum": [
+            "up",
+            "down",
+            "left",
+            "right",
+            "into-view"
           ]
         },
-        {
-          "type": "object",
-          "properties": {
-            "action": {
-              "const": "to_element"
-            },
-            "name": {
-              "description": "Partial name/label of the element (UIA name match). Use for native app elements. At least one of name or selector must be provided.",
-              "type": "string"
-            },
-            "selector": {
-              "description": "CSS selector for the element (Chrome/Edge only). At least one of name or selector must be provided.",
-              "type": "string"
-            },
-            "windowTitle": {
-              "description": "Partial window title (required for native path when name is used)",
-              "type": "string"
-            },
-            "block": {
-              "description": "Vertical alignment after scroll — start/center/end/nearest (Chrome path only, default: center)",
-              "type": "string",
-              "enum": [
-                "start",
-                "center",
-                "end",
-                "nearest"
-              ],
-              "default": "center"
-            },
-            "tabId": {
-              "description": "Tab ID (Chrome path only). Omit for first page tab.",
-              "type": "string"
-            },
-            "port": {
-              "description": "CDP port for Chrome path (default 9222)",
-              "type": "integer",
-              "default": 9222,
-              "minimum": 1,
-              "maximum": 65535
-            },
-            "include": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
-            }
+        "amount": {
+          "description": "Number of scroll steps (default 3)",
+          "type": "integer",
+          "default": 3
+        },
+        "x": {
+          "description": "X coordinate to scroll at (moves cursor there first)",
+          "type": "number"
+        },
+        "y": {
+          "description": "Y coordinate to scroll at",
+          "type": "number"
+        },
+        "speed": {
+          "description": "Cursor movement speed in px/sec (0=teleport, omit=default)",
+          "type": "number"
+        },
+        "homing": {
+          "description": "Apply window-movement homing correction to (x,y) before scrolling. Default true.",
+          "type": "boolean",
+          "default": true
+        },
+        "windowTitle": {
+          "description": "Partial window title. When provided, the server focuses this window first.",
+          "type": "string"
+        },
+        "hwnd": {
+          "description": "Direct window handle ID (takes precedence over windowTitle).",
+          "type": "string"
+        },
+        "include": {
+          "type": "array",
+          "items": {
+            "type": "string"
           },
-          "additionalProperties": false,
-          "required": [
-            "action"
+          "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
+        },
+        "name": {
+          "description": "Partial name/label of the element (UIA name match). Use for native app elements. At least one of name or selector must be provided.",
+          "type": "string"
+        },
+        "selector": {
+          "description": "CSS selector for the element (Chrome/Edge only). At least one of name or selector must be provided.",
+          "type": "string"
+        },
+        "block": {
+          "description": "Vertical alignment after scroll — start/center/end/nearest (Chrome path only, default: center)",
+          "type": "string",
+          "enum": [
+            "start",
+            "center",
+            "end",
+            "nearest"
+          ],
+          "default": "center"
+        },
+        "tabId": {
+          "description": "Tab ID (Chrome path only). Omit for first page tab.",
+          "type": "string"
+        },
+        "port": {
+          "description": "CDP port for Chrome path (default 9222)",
+          "type": "integer",
+          "default": 9222,
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "target": {
+          "description": "CSS selector (Chrome/Edge) or partial UIA name (native apps). For CDP path, must be a valid CSS selector (starts with #, ., tag, or [ ). For UIA path, a partial name match against element Name property.",
+          "type": "string"
+        },
+        "strategy": {
+          "description": "auto (default): try CDP → UIA → image in order. cdp: Chrome/Edge only. uia: native Windows UIA. image: image + Win32 binary-search.",
+          "type": "string",
+          "enum": [
+            "auto",
+            "cdp",
+            "uia",
+            "image"
+          ],
+          "default": "auto"
+        },
+        "inline": {
+          "description": "Vertical alignment after scroll (CDP path). Default: center.",
+          "type": "string",
+          "enum": [
+            "start",
+            "center",
+            "end",
+            "nearest"
+          ],
+          "default": "center"
+        },
+        "maxDepth": {
+          "description": "Max number of ancestor scroll containers to walk. Default 3.",
+          "type": "integer",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 10
+        },
+        "retryCount": {
+          "description": "Max scroll attempts (image path binary-search). Default 3, cap 4.",
+          "type": "integer",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 4
+        },
+        "verifyWithHash": {
+          "description": "Verify scroll effectiveness via perceptual hash comparison. Automatically enabled for image path.",
+          "type": "boolean",
+          "default": false
+        },
+        "virtualIndex": {
+          "description": "Target row index in a virtualised list (0-based). Enables direct TanStack/data-index seeking.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "virtualTotal": {
+          "description": "Total row count in a virtualised list. Required when virtualIndex is set.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "expandHidden": {
+          "description": "Temporarily set overflow:hidden ancestors to overflow:auto to unlock scroll. Mutates live CSS.",
+          "type": "boolean",
+          "default": false
+        },
+        "hint": {
+          "description": "Scroll direction hint for binary-search (image path). Seeds lo/hi bounds to reduce attempts.",
+          "type": "string",
+          "enum": [
+            "above",
+            "below",
+            "left",
+            "right"
           ]
         },
-        {
-          "type": "object",
-          "properties": {
-            "action": {
-              "const": "smart"
-            },
-            "target": {
-              "description": "CSS selector (Chrome/Edge) or partial UIA name (native apps). For CDP path, must be a valid CSS selector (starts with #, ., tag, or [ ). For UIA path, a partial name match against element Name property.",
-              "type": "string"
-            },
-            "windowTitle": {
-              "description": "Partial window title. Required for UIA and image paths. For CDP path, optional.",
-              "type": "string"
-            },
-            "tabId": {
-              "description": "CDP tab ID (Chrome path only). Omit for first page tab.",
-              "type": "string"
-            },
-            "port": {
-              "description": "CDP port (default 9222)",
-              "type": "integer",
-              "default": 9222,
-              "minimum": 1,
-              "maximum": 65535
-            },
-            "strategy": {
-              "description": "auto (default): try CDP → UIA → image in order. cdp: Chrome/Edge only. uia: native Windows UIA. image: image + Win32 binary-search.",
-              "type": "string",
-              "enum": [
-                "auto",
-                "cdp",
-                "uia",
-                "image"
-              ],
-              "default": "auto"
-            },
-            "direction": {
-              "description": "Scroll direction. into-view: scroll until target element is visible (default). Other values scroll unconditionally.",
-              "type": "string",
-              "enum": [
-                "into-view",
-                "up",
-                "down",
-                "left",
-                "right"
-              ],
-              "default": "into-view"
-            },
-            "inline": {
-              "description": "Vertical alignment after scroll (CDP path). Default: center.",
-              "type": "string",
-              "enum": [
-                "start",
-                "center",
-                "end",
-                "nearest"
-              ],
-              "default": "center"
-            },
-            "maxDepth": {
-              "description": "Max number of ancestor scroll containers to walk. Default 3.",
-              "type": "integer",
-              "default": 3,
-              "minimum": 1,
-              "maximum": 10
-            },
-            "retryCount": {
-              "description": "Max scroll attempts (image path binary-search). Default 3, cap 4.",
-              "type": "integer",
-              "default": 3,
-              "minimum": 1,
-              "maximum": 4
-            },
-            "verifyWithHash": {
-              "description": "Verify scroll effectiveness via perceptual hash comparison. Automatically enabled for image path.",
-              "type": "boolean",
-              "default": false
-            },
-            "virtualIndex": {
-              "description": "Target row index in a virtualised list (0-based). Enables direct TanStack/data-index seeking.",
-              "type": "integer",
-              "minimum": 0
-            },
-            "virtualTotal": {
-              "description": "Total row count in a virtualised list. Required when virtualIndex is set.",
-              "type": "integer",
-              "minimum": 1
-            },
-            "expandHidden": {
-              "description": "Temporarily set overflow:hidden ancestors to overflow:auto to unlock scroll. Mutates live CSS.",
-              "type": "boolean",
-              "default": false
-            },
-            "hint": {
-              "description": "Scroll direction hint for binary-search (image path). Seeds lo/hi bounds to reduce attempts.",
-              "type": "string",
-              "enum": [
-                "above",
-                "below",
-                "left",
-                "right"
-              ]
-            },
-            "include": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "action",
-            "target"
-          ]
+        "maxScrolls": {
+          "description": "Maximum scroll iterations before stopping (default 10, max 30)",
+          "type": "integer",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 30
         },
-        {
-          "type": "object",
-          "properties": {
-            "action": {
-              "const": "capture"
-            },
-            "windowTitle": {
-              "description": "Partial title of the window to capture (case-insensitive match)",
-              "type": "string"
-            },
-            "direction": {
-              "description": "Scroll direction: 'down' (vertical, uses Page Down key) or 'right' (horizontal, uses mouse scroll). Default 'down'.",
-              "type": "string",
-              "enum": [
-                "down",
-                "right"
-              ],
-              "default": "down"
-            },
-            "maxScrolls": {
-              "description": "Maximum scroll iterations before stopping (default 10, max 30)",
-              "type": "integer",
-              "default": 10,
-              "minimum": 1,
-              "maximum": 30
-            },
-            "scrollDelayMs": {
-              "description": "Milliseconds to wait after each scroll for rendering to settle (default 400). Increase for slow/animated pages.",
-              "type": "integer",
-              "default": 400,
-              "minimum": 100,
-              "maximum": 3000
-            },
-            "maxWidth": {
-              "description": "Max size of the short edge of the final image (default 1280). For 'down': caps the image width; height is unconstrained. For 'right': caps the image height; width is unconstrained.",
-              "type": "integer",
-              "default": 1280
-            },
-            "include": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "action",
-            "windowTitle"
-          ]
+        "scrollDelayMs": {
+          "description": "Milliseconds to wait after each scroll for rendering to settle (default 400). Increase for slow/animated pages.",
+          "type": "integer",
+          "default": 400,
+          "minimum": 100,
+          "maximum": 3000
         },
-        {
-          "type": "object",
-          "properties": {
-            "action": {
-              "const": "read"
-            },
-            "windowTitle": {
-              "description": "Partial window title to focus and OCR (case-insensitive match).",
-              "type": "string"
-            },
-            "maxPages": {
-              "description": "Maximum number of scroll steps / OCR pages (default 20, max 50).",
-              "type": "integer",
-              "default": 20,
-              "minimum": 1,
-              "maximum": 50
-            },
-            "scrollKey": {
-              "description": "Key sent to scroll one page. PageDown (default): full-page scroll for most apps. Space: web/PDF readers. ArrowDown: line-by-line slow scroll.",
-              "type": "string",
-              "enum": [
-                "PageDown",
-                "Space",
-                "ArrowDown"
-              ],
-              "default": "PageDown"
-            },
-            "scrollDelayMs": {
-              "description": "Milliseconds to wait after each scroll for rendering to settle (default 400).",
-              "type": "integer",
-              "default": 400,
-              "minimum": 100,
-              "maximum": 3000
-            },
-            "stopWhenNoChange": {
-              "description": "Stop automatically when two consecutive pages yield no new lines after deduplication (page-end detection). Default true.",
-              "type": "boolean",
-              "default": true
-            },
-            "language": {
-              "description": "OCR language code (e.g. 'ja', 'en', 'zh'). Omit to auto-detect from Windows system locale via Intl.DateTimeFormat().resolvedOptions().locale. Default: auto.",
-              "type": "string"
-            },
-            "include": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "action",
-            "windowTitle"
-          ]
+        "maxWidth": {
+          "description": "Max size of the short edge of the final image (default 1280). For 'down': caps the image width; height is unconstrained. For 'right': caps the image height; width is unconstrained.",
+          "type": "integer",
+          "default": 1280
+        },
+        "maxPages": {
+          "description": "Maximum number of scroll steps / OCR pages (default 20, max 50).",
+          "type": "integer",
+          "default": 20,
+          "minimum": 1,
+          "maximum": 50
+        },
+        "scrollKey": {
+          "description": "Key sent to scroll one page. PageDown (default): full-page scroll for most apps. Space: web/PDF readers. ArrowDown: line-by-line slow scroll.",
+          "type": "string",
+          "enum": [
+            "PageDown",
+            "Space",
+            "ArrowDown"
+          ],
+          "default": "PageDown"
+        },
+        "stopWhenNoChange": {
+          "description": "Stop automatically when two consecutive pages yield no new lines after deduplication (page-end detection). Default true.",
+          "type": "boolean",
+          "default": true
+        },
+        "language": {
+          "description": "OCR language code (e.g. 'ja', 'en', 'zh'). Omit to auto-detect from Windows system locale via Intl.DateTimeFormat().resolvedOptions().locale. Default: auto.",
+          "type": "string"
         }
-      ]
+      },
+      "required": [
+        "action"
+      ],
+      "additionalProperties": false
     }
   },
   {
@@ -1934,99 +1575,61 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
     "description": "Purpose: Interact with a terminal window: read output, send input, or run+wait+read in one call. action='read' / action='send' absorb the formerly-standalone read/send tools (Phase 4).\nDetails: action='run' is the recommended high-level workflow: send command → wait until quiet/pattern/timeout → read output. The command text is passed as `input` (the legacy parameter name `command` is also accepted as a deprecated alias — see issue #245). Returns completion={reason, elapsedMs} first-class plus outputIntegrity:'ok'|'baseline_lost' so callers can detect when scrollback could not be anchored to the pre-send buffer. action='read' reads current text via UIA TextPattern (falls back to OCR); use sinceMarker for incremental diff. action='send' sends a command with focus management.\nPrefer: action='run' for command execution + result. For long-running commands (test runners, builds, deploys) use until:{mode:'pattern', pattern:'<final marker>'} — the default quiet mode is tuned for short interactive commands and may complete prematurely on multi-second silent gaps mid-run. Use action='read'/'send' for fine-grained control or when you need to interleave other actions.\nCaveats: Do not screenshot the terminal — action='read' is cheaper and structured. action='run' supports completion reasons: quiet | pattern_matched | timeout | window_closed | window_not_found | send_failed (send rejected on a live window — see warnings for the underlying error code). When outputIntegrity:'baseline_lost' is returned, output is forced to '' and readError.code='BaselineMarkerLost' is set: rerun with until:{mode:'pattern',...} or longer timeoutMs. action='run' may also emit warnings prefixed FileLockCollision: when output reveals an EBUSY/Windows-lock/EAGAIN-EDEADLK file collision (e.g. shell '>' redirect colliding with the script's own writer — issue #236). Default quietMs=1500 (issue #196); long silences require pattern mode. preferClipboard=true (send default) overwrites clipboard. Hidden-input prompts emit verifyDelivery.unverifiable (reason:'hidden_input_prompt') — use method:'foreground'. action='read' typed errors: TerminalWindowNotFound, TerminalTextPatternUnavailable (force source:'ocr'); stale sinceMarker → hints.terminalMarker.previousMatched:false on ok:true (omit sinceMarker). FG-path Win11 foreground refusal returns code:'ForegroundRestricted' — switch to method:'background' or DTM_BG_AUTO=1. BG path auto-engages only when (a) the target window class is `ConsoleWindowClass` (conhost: cmd / PowerShell / pwsh classic hosts) OR (b) env DTM_BG_AUTO=1 is set globally. Windows Terminal (`CASCADIA_HOSTING_WINDOW_CLASS`) is intentionally EXCLUDED from auto-engage (issue #173): WT runs on WinUI/XAML and silently drops WM_CHAR posted to its HWND, so the FG path is used by default — pass sendOptions:{method:'background'} only if you have verified your WT build accepts BG input.\nExamples:\n  terminal({action:'run', windowTitle:'PowerShell', input:'npm test', until:{mode:'pattern', pattern:'Test Files'}}) → recommended for test runners; matches when vitest summary appears\n  terminal({action:'run', windowTitle:'pwsh', input:'ls'}) → quiet 1500ms wait, returns output (short interactive)\n  terminal({action:'run', windowTitle:'pwsh', command:'ls'}) → identical to the above; `command` is a deprecated alias of `input` (issue #245)\n  terminal({action:'read', windowTitle:'PowerShell', sinceMarker:'...'}) → incremental diff using the read action\n  terminal({action:'send', windowTitle:'PowerShell', input:'echo hello'}) → sends text + Enter using the send action",
     "inputSchema": {
       "type": "object",
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "action": {
-              "const": "read"
-            },
-            "include": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "action"
-          ]
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "read",
+            "send",
+            "run"
+          ],
+          "description": "Action selector — one of: read, send, run. Per-action required fields are enforced at call time (see the tool description); this flat schema lists every action's fields as optional."
         },
-        {
-          "type": "object",
-          "properties": {
-            "action": {
-              "const": "send"
-            },
-            "include": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
-            }
+        "include": {
+          "type": "array",
+          "items": {
+            "type": "string"
           },
-          "additionalProperties": false,
-          "required": [
-            "action"
-          ]
+          "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
         },
-        {
-          "type": "object",
-          "properties": {
-            "action": {
-              "const": "run"
-            },
-            "windowTitle": {
-              "description": "Partial title of the terminal window (e.g. 'PowerShell', 'pwsh', 'WindowsTerminal').",
-              "type": "string",
-              "maxLength": 200
-            },
-            "input": {
-              "description": "Command to send (Enter is appended automatically). Either `input` or its deprecated alias `command` is required.",
-              "type": "string",
-              "maxLength": 10000
-            },
-            "command": {
-              "description": "[Deprecated alias of `input`] Accepted for callers that mis-remember the parameter name; new code should use `input`. If both are set, `input` wins.",
-              "type": "string",
-              "maxLength": 10000
-            },
-            "until": {
-              "type": "object"
-            },
-            "timeoutMs": {
-              "description": "Hard timeout in ms (default 30s)",
-              "type": "integer",
-              "default": 30000,
-              "minimum": 500,
-              "maximum": 600000
-            },
-            "sendOptions": {
-              "description": "Extra options forwarded to terminal send (method, chunkSize, etc.)",
-              "type": "object"
-            },
-            "readOptions": {
-              "description": "Extra options forwarded to terminal read (lines, source, ocrLanguage, etc.)",
-              "type": "object"
-            },
-            "include": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "action",
-            "windowTitle"
-          ]
+        "windowTitle": {
+          "description": "Partial title of the terminal window (e.g. 'PowerShell', 'pwsh', 'WindowsTerminal').",
+          "type": "string",
+          "maxLength": 200
+        },
+        "input": {
+          "description": "Command to send (Enter is appended automatically). Either `input` or its deprecated alias `command` is required.",
+          "type": "string",
+          "maxLength": 10000
+        },
+        "command": {
+          "description": "[Deprecated alias of `input`] Accepted for callers that mis-remember the parameter name; new code should use `input`. If both are set, `input` wins.",
+          "type": "string",
+          "maxLength": 10000
+        },
+        "until": {
+          "type": "object"
+        },
+        "timeoutMs": {
+          "description": "Hard timeout in ms (default 30s)",
+          "type": "integer",
+          "default": 30000,
+          "minimum": 500,
+          "maximum": 600000
+        },
+        "sendOptions": {
+          "description": "Extra options forwarded to terminal send (method, chunkSize, etc.)",
+          "type": "object"
+        },
+        "readOptions": {
+          "description": "Extra options forwarded to terminal read (lines, source, ocrLanguage, etc.)",
+          "type": "object"
         }
-      ]
+      },
+      "required": [
+        "action"
+      ],
+      "additionalProperties": false
     }
   },
   {
@@ -2086,123 +1689,75 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
     "description": "Purpose: Decorate a window: pin (always-on-top), unpin, or dock (move + resize + optional pin).\nDetails: action='pin' makes window always-on-top until unpin/duration_ms. action='unpin' removes always-on-top. action='dock' positions to corner with width/height (default 480×360 bottom-right) and optionally pins. Minimized windows are automatically restored before docking.\nPrefer: Use action='dock' for terminal/CLI window auto-positioning at session start. Use action='pin' alone when you only need always-on-top without moving or resizing.\nCaveats: Pin survives minimize/restore; explicit action='unpin' needed to release. Dock fails on elevated processes. Dock overrides any existing Win+Arrow snap arrangement.\nExamples:\n  window_dock({action:'dock', title:'PowerShell', corner:'bottom-right', width:480, height:360})\n  window_dock({action:'pin', title:'Settings', duration_ms:5000})\n  window_dock({action:'unpin', title:'Settings'})",
     "inputSchema": {
       "type": "object",
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "action": {
-              "const": "pin"
-            },
-            "title": {
-              "description": "Partial window title (case-insensitive)",
-              "type": "string"
-            },
-            "duration_ms": {
-              "description": "Auto-unpin after this many ms (0–60000). Omit to pin indefinitely.",
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 60000
-            },
-            "include": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "action",
-            "title"
-          ]
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "pin",
+            "unpin",
+            "dock"
+          ],
+          "description": "Action selector — one of: pin, unpin, dock. Per-action required fields are enforced at call time (see the tool description); this flat schema lists every action's fields as optional."
         },
-        {
-          "type": "object",
-          "properties": {
-            "action": {
-              "const": "unpin"
-            },
-            "title": {
-              "description": "Partial window title (case-insensitive)",
-              "type": "string"
-            },
-            "include": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "action",
-            "title"
-          ]
+        "title": {
+          "description": "Partial window title (case-insensitive)",
+          "type": "string"
         },
-        {
-          "type": "object",
-          "properties": {
-            "action": {
-              "const": "dock"
-            },
-            "title": {
-              "description": "Partial window title to dock (case-insensitive). Matches the first visible window containing this text. Example: 'Claude Code', 'メモ帳'.",
-              "type": "string"
-            },
-            "corner": {
-              "description": "Screen corner to snap the window to. Default 'bottom-right'.",
-              "type": "string",
-              "enum": [
-                "top-left",
-                "top-right",
-                "bottom-left",
-                "bottom-right"
-              ],
-              "default": "bottom-right"
-            },
-            "width": {
-              "description": "Window width in pixels after docking. Default 480.",
-              "type": "integer",
-              "default": 480
-            },
-            "height": {
-              "description": "Window height in pixels after docking. Default 360.",
-              "type": "integer",
-              "default": 360
-            },
-            "pin": {
-              "description": "If true, set always-on-top so the docked window stays visible on top of other windows. Use window_dock(action='unpin') to remove the topmost flag later. Default true.",
-              "type": "boolean",
-              "default": true
-            },
-            "monitorId": {
-              "description": "Monitor to dock on (from desktop_state({includeScreen:true})). Omit for primary monitor.",
-              "type": "integer",
-              "minimum": 0
-            },
-            "margin": {
-              "description": "Pixel padding between the window and the screen edge. Default 8.",
-              "type": "integer",
-              "default": 8,
-              "minimum": 0
-            },
-            "include": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
-            }
+        "duration_ms": {
+          "description": "Auto-unpin after this many ms (0–60000). Omit to pin indefinitely.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 60000
+        },
+        "include": {
+          "type": "array",
+          "items": {
+            "type": "string"
           },
-          "additionalProperties": false,
-          "required": [
-            "action",
-            "title"
-          ]
+          "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
+        },
+        "corner": {
+          "description": "Screen corner to snap the window to. Default 'bottom-right'.",
+          "type": "string",
+          "enum": [
+            "top-left",
+            "top-right",
+            "bottom-left",
+            "bottom-right"
+          ],
+          "default": "bottom-right"
+        },
+        "width": {
+          "description": "Window width in pixels after docking. Default 480.",
+          "type": "integer",
+          "default": 480
+        },
+        "height": {
+          "description": "Window height in pixels after docking. Default 360.",
+          "type": "integer",
+          "default": 360
+        },
+        "pin": {
+          "description": "If true, set always-on-top so the docked window stays visible on top of other windows. Use window_dock(action='unpin') to remove the topmost flag later. Default true.",
+          "type": "boolean",
+          "default": true
+        },
+        "monitorId": {
+          "description": "Monitor to dock on (from desktop_state({includeScreen:true})). Omit for primary monitor.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "margin": {
+          "description": "Pixel padding between the window and the screen edge. Default 8.",
+          "type": "integer",
+          "default": 8,
+          "minimum": 0
         }
-      ]
+      },
+      "required": [
+        "action"
+      ],
+      "additionalProperties": false
     }
   },
   {
