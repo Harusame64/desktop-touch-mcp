@@ -35,7 +35,7 @@ Real-world testing on a Windows 11 host running Dell Display Peripheral Manager 
 7. `keyboard(action='type', text='日本語')` reports `typed:1177` but the actual buffer holds only `L1: \r\nL2: \r\n…` — **CJK silently dropped** via `method:"keystroke"`
 
 **Schema path**
-8. MCP `tools/list` returns `inputSchema: { properties: {}, type: 'object' }` for `scroll` / `keyboard` / `excel`, forcing the LLM to discover param names via failing calls
+8. MCP `tools/list` returns `inputSchema: { properties: {}, type: 'object' }` for every tool registered with a top-level `z.discriminatedUnion`, forcing the LLM to discover param names via failing calls. **Scope correction (2026-05-14 full-server audit)**: the initial draft named only `scroll` / `keyboard` / `excel`, but an empirical `tools/list` dump of all 29 registered tools found **7 affected tools** — `scroll`, `keyboard`, `excel`, **`browser_eval`, `window_dock`, `terminal`, `clipboard`** — all sharing the identical root cause (top-level `z.discriminatedUnion("action", …)` → SDK `normalizeObjectSchema` returns `undefined` → `tools/list` falls back to `EMPTY_OBJECT_JSON_SCHEMA`). The other 22 tools register flat `z.object` schemas and convert cleanly (audit also confirmed: no nested `oneOf`/`anyOf`, no `$ref`, no untyped properties, `z.coerce` survives correctly, and no tool uses `outputSchema` — the bug is input-only).
 
 **Window resolution**
 9. `scroll(action='read')` uses `getWindows()` (nutjs flat enumeration) while every other tool uses `resolveWindowTarget` (`enumWindowsInZOrder` + dialog owner chain) — divergent semantics for the same `windowTitle` string
@@ -115,16 +115,44 @@ Auto-clipboard upgrade triggers on the OR of both regexes. CJK, emoji, surrogate
 
 ### 2.5 D5 — MCP schema collapse workaround
 
-MCP SDK Issue #1643 will eventually be fixed upstream. Until then, add `materializeUnionJsonSchema()` to `src/tools/_envelope.ts`. The two helpers operate at different layers and are **not** sibling/parent in the sense of producing the same kind of object:
+> **Round-0 → Round-1 redesign (2026-05-14)**: the original Round-0 draft of this
+> section proposed a `materializeUnionJsonSchema()` helper that produces a raw
+> JSON Schema object (`{ oneOf: [...] }`) "suitable for direct use in
+> `server.registerTool({ inputSchema })`". **Both halves of that premise are
+> false** and the design is replaced below. See the investigation record at the
+> end of this section.
 
-- `withEnvelopeIncludeForUnion` (`src/tools/_envelope.ts:484-501`) takes a `z.discriminatedUnion`, mutates each variant by injecting the `include` field, and returns a **new `z.discriminatedUnion`** (a Zod type, used for input validation and TS inference).
-- `materializeUnionJsonSchema()` (new) takes the **output** of `withEnvelopeIncludeForUnion` (or the original union if no envelope extension is needed) and produces a **JSON Schema** object (a plain JS object with `oneOf` over the discriminator branches, suitable for direct use in `server.registerTool({ inputSchema })`).
+#### 2.5.1 Why the Round-0 "produce a JSON Schema, emit `oneOf`" design does not work
 
-So the call sequence in `scroll.ts` / `keyboard.ts` / `excel.ts` becomes: `schema = withEnvelopeIncludeForUnion(union); inputSchema = materializeUnionJsonSchema(schema); server.registerTool({ inputSchema, ... });`. The new helper does **not** replace `withEnvelopeIncludeForUnion` — both run.
+Two independently fatal findings (verified empirically against `@modelcontextprotocol/sdk@1.29.0`, the latest published version, and the Anthropic API):
 
-Implementation strategy for `materializeUnionJsonSchema`: walk the Zod schema with `zod._def` introspection (the same path Zod's own `toJSONSchema` uses), emit `{ oneOf: [<per-variant object schema>], discriminator: { propertyName: <discriminator>, mapping: {...} } }`. Reference: the SDK's `normalizeObjectSchema()` that drops the discriminator today does so by checking `def.type === 'union'`; the new helper short-circuits that path by producing a fully materialized object schema before the SDK sees it.
+1. **`registerTool` does not accept a raw JSON Schema object.** The SDK's `getZodSchemaObject` (`server/mcp.js`) throws `"inputSchema must be a Zod schema or raw shape, received an unrecognized object"` for a plain `{ oneOf: [...] }`. And even for a Zod schema, `tools/list` *regenerates* the JSON Schema every call via `normalizeObjectSchema` + `toJsonSchemaCompat` — there is no hook to inject a pre-built schema. (The actual bug: `normalizeObjectSchema` only recognizes object schemas; for a `z.discriminatedUnion` it returns `undefined`, and `tools/list` then falls back to `EMPTY_OBJECT_JSON_SCHEMA`.)
+2. **The Anthropic API rejects top-level `oneOf`/`anyOf`/`allOf` outright** — `tools.N.custom.input_schema: input_schema does not support oneOf, allOf, or anyOf at the top level` (HTTP 400). Anthropic closed the support request as **"not planned"**. So *even if* a true `oneOf` schema reached `tools/list`, the LLM would never see it — the API rejects the tool before the model is invoked. Emitting `oneOf` is therefore a **north-star violation**: the goal (§1.3) is the LLM seeing the real input contract, and a 400-rejected schema delivers nothing.
 
-When upstream lands the fix (MCP TypeScript SDK Issue #1643), deprecate the helper and remove the hand-rolled schemas — tracked in §7 OQ4.
+The MCP ecosystem has already converged on the answer: official MCP servers, AWS Labs' `DESIGN_GUIDELINES`, and the SDK maintainers' own de-facto recommendation on Issue #1643 all say **flatten a multi-mode tool to a single `z.object` with an `action` enum discriminator** (the only conformant approach).
+
+#### 2.5.2 The replacement design — `flattenUnionToObjectSchema()`
+
+Add `flattenUnionToObjectSchema()` to `src/tools/_envelope.ts` (same module the Round-0 helper was slated for; the *name and output type* change, not the location).
+
+- `withEnvelopeIncludeForUnion` (`src/tools/_envelope.ts`, existing) is unchanged: takes a `z.discriminatedUnion`, injects the `include` field into each variant, returns a new `z.discriminatedUnion`.
+- `flattenUnionToObjectSchema()` (new) takes that union and returns a **`z.object`** (a Zod object, still a Zod schema — so `registerTool` accepts it and `normalizeObjectSchema` recognizes it → `tools/list` emits real `properties`). It merges every variant's shape into one flat object:
+  - the discriminator (`action`) becomes a required `z.enum([...all literals])`;
+  - every other field becomes `.optional()` (a field required by only some variants cannot be globally required);
+  - **collision strategy** — when a field name appears in multiple variants:
+    - identical Zod type across variants → keep one;
+    - same kind, different constraints (e.g. `direction` is `enum[up,down,left,right]` in `raw` but `enum[down,right]` in `capture`) → widen to the union of allowed values (`z.enum` of all), or `z.string()` when widening is lossy, with a description listing the per-action subset;
+    - genuinely different kinds (e.g. keyboard `method`: `methodParam` enum in `type`/`press` vs `z.literal("foreground")` in `sequence`) → take the wider type;
+    - the description of any widened/loosened field MUST state which `action` values accept which values.
+- The call sequence in each of the 7 tool files becomes: `union = withEnvelopeIncludeForUnion(<discriminatedUnion>); registrationSchema = flattenUnionToObjectSchema(union); server.registerTool({ inputSchema: registrationSchema, ... });`
+- **Strict validation is preserved** — the handler still parses the real `z.discriminatedUnion` internally (each tool already has a `*DispatchHandler` that `switch`es on `args.action`). A wrong action/field combination produces a **typed error**, never a silent acceptance — so flattening loses *schema-level* per-action `required` enforcement but not *runtime* enforcement, and the failure mode stays north-star-aligned (loud, typed, recoverable — not silent).
+- Per-action requirements that the flat schema cannot express are documented in (a) the `action` enum's own description, (b) per-field descriptions, and (c) the tool's existing rich `Purpose/Details/Prefer/Caveats` description blocks.
+
+**Nested-union note (`terminal`)**: `terminal`'s `until` field contains a nested `z.discriminatedUnion("mode", …)`. A nested union inside a property renders as `anyOf` *within that property*, which the Anthropic API accepts (only *top-level* `oneOf`/`anyOf` is rejected). `flattenUnionToObjectSchema` only flattens the **top-level** union; nested unions inside fields are left intact and pass through `z.toJSONSchema` as property-level `anyOf`. Phase 2a verifies the `terminal` `until` field still renders acceptably.
+
+#### 2.5.3 No SDK patch
+
+`patch-package` was considered (ADR §7 OQ4 option (a)) and **rejected**: its own maintainer states it is "not safe" to publish an npm package whose patch targets a non-dev dependency — the patch does not propagate to consumers of `@harusame64/desktop-touch-mcp`. The flatten approach needs no SDK modification at all. If the SDK ever merges the proper fix (PR #2017 — passes unions through *and* wraps with `type:"object"`), `flattenUnionToObjectSchema` can be revisited, but it is not a stopgap waiting on upstream — it is the conformant design (§7 OQ4 resolved).
 
 ### 2.6 D6 — Typed reason taxonomy
 
@@ -182,12 +210,13 @@ CLAUDE.md §3.1 multi-table fact sweep applies across these 5 surfaces. ADR-010 
 | File | Line range | Change |
 |---|---|---|
 | `src/tools/_input-pipeline.ts` | **new** | Tier dispatcher + `InputDestination` type + typed-reason enum |
-| `src/tools/scroll.ts` | 23-184 / 188-201 / 244-265 | `discriminatedUnion` retained; `registerTool` switched to `materializeUnionJsonSchema` (Phase 2a) |
+| `src/tools/scroll.ts` | 23-184 / 188-201 / 244-265 | `discriminatedUnion` retained for the handler; `registerTool` `inputSchema` switched to `flattenUnionToObjectSchema(...)` (Phase 2a) |
 | `src/tools/mouse.ts` | 910-1174 | `scrollHandler` refactored to call `_input-pipeline.ts::dispatch`; `SCROLL_MULTIPLIER=3` retired (tier-specific scaling) |
 | `src/tools/smart-scroll.ts` | 159-179 | Fix `target='body'` regression (`document.scrollingElement` double-query, Phase 3) |
 | `src/tools/scroll-read.ts` | 91-127 | `getWindows()` → `resolveWindowTarget` (Phase 5) |
 | `src/tools/keyboard.ts` | 283 / 1305-1311 | Add `NON_ASCII_RE`, OR with existing regex (Phase 2b) |
-| `src/tools/_envelope.ts` | 484-501 | Add `materializeUnionJsonSchema` sibling helper (Phase 2a) |
+| `src/tools/_envelope.ts` | adjacent to `withEnvelopeIncludeForUnion` | Add `flattenUnionToObjectSchema` helper — discriminatedUnion → flat `z.object` with `action` enum + optional merged fields (Phase 2a) |
+| `src/tools/keyboard.ts` / `excel.ts` / `browser.ts` (`browser_eval`) / `window-dock.ts` / `terminal.ts` / `clipboard.ts` | `registerTool` `inputSchema` arg | Switch `inputSchema` to `flattenUnionToObjectSchema(...)`; handler keeps the real `discriminatedUnion` for strict validation (Phase 2a — all 7 affected tools, not just `scroll`) |
 | `src/uia/scroll.rs` | adjacent to 142-224 | New napi export `uia_scroll_by_wheel_at_hwnd` calling existing `scroll_by_percent_impl` (Phase 1) |
 | `src/engine/cdp-bridge.ts` | adjacent to 284 | New `dispatchMouseEvent({type:'mouseWheel'})` wrapper (Phase 3) |
 | `src/tools/mouse.ts` | 971-982 (`ScrollVerifyOutcome.reason` union) + `scrollHandler` `verifyDelivery` emission | Replace 4-value reason union with 5-value enum per §2.6.2; add `channel: "uia" \| "cdp" \| "postmessage" \| "send_input"` field per §2.6.1 (Phase 1, single source of truth) |
@@ -198,7 +227,7 @@ CLAUDE.md §3.1 multi-table fact sweep applies across these 5 surfaces. ADR-010 
 | `__test__/smoke/scroll-5app.smoke.test.ts` | **new** | 5-app × 4-direction smoke (Phase 5, `workflow_dispatch` Windows runner) |
 | `__test__/fixtures/overlay-window.ts` | **new** | `WS_EX_LAYERED | WS_EX_TRANSPARENT` fake overlay child process for DDPM repro (Phase 1) |
 | `__test__/unit/keyboard-cjk.test.ts` | **new** | NON_ASCII_RE + clipboard-route integration assertions (Phase 2b) |
-| `__test__/integration/tools-list-schema.test.ts` | **new** | MCP `tools/list` inputSchema non-empty assertion (Phase 2a) |
+| `__test__/integration/tools-list-schema.test.ts` | **new** | MCP `tools/list` inputSchema assertion — all 7 flattened tools return non-empty `properties` + `action` enum; a server-wide "no tool has empty `properties`" guard so a future top-level-union regression is caught (Phase 2a) |
 
 ---
 
@@ -225,14 +254,20 @@ CLAUDE.md §3.1 sweep covers the 5 surfaces listed in §2.6 (`mouse.ts:971-982` 
 
 **Review loop**: Opus 3+ rounds, Codex 1+ round (production code, native binding surface — CLAUDE.md §3.2 PR #102 regression-prevention axis).
 
-### Phase 2a — MCP schema workaround (1 PR, 2-3 days, parallel-OK with 2b)
+### Phase 2a — MCP schema collapse fix (1 PR, 2-3 days, parallel-OK with 2b)
+
+> Phase 2b already landed (PR #286 / #287). Phase 2a is the remaining Phase-2 work.
+
+**Scope: 7 tools** (corrected from the Round-0 "3 tools" — see §1.1 symptom 8 scope correction). All 7 register a top-level `z.discriminatedUnion("action", …)` and currently emit empty `tools/list` `properties`: `scroll`, `keyboard`, `excel`, `browser_eval`, `window_dock`, `terminal`, `clipboard`.
 
 Deliverables:
-- `materializeUnionJsonSchema()` in `_envelope.ts`
-- `scroll` / `keyboard` / `excel` `registerTool` calls switched to hand-rolled `inputSchema`
-- `tools-list-schema.test.ts` CI gate
+- `flattenUnionToObjectSchema()` in `_envelope.ts` (per §2.5.2 — discriminatedUnion → flat `z.object` with `action` enum + merged optional fields + documented collision strategy). **No SDK patch** (§2.5.3).
+- All 7 tools' `registerTool` `inputSchema` switched to `flattenUnionToObjectSchema(withEnvelopeIncludeForUnion(<union>))`. Each tool's handler keeps the real `discriminatedUnion` for strict runtime validation (the existing `*DispatchHandler` `switch(args.action)` is unchanged).
+- Per-field/per-action descriptions updated where flattening loosens a field (collision fields, formerly-required fields).
+- `tools-list-schema.test.ts` CI gate — asserts the 7 flattened tools return non-empty `properties` + an `action` enum, AND a server-wide guard that **no** registered tool has empty `properties` (regression catch for any future top-level-union slip).
+- Verify `terminal`'s nested `until` union still renders as an acceptable property-level `anyOf` (§2.5.2 nested-union note).
 
-**G2a acceptance** (= AC4): `tools/list` for the 3 tools returns non-empty `inputSchema.properties` with action discriminator.
+**G2a acceptance** (= AC4): `tools/list` for all 7 tools returns non-empty `inputSchema.properties` including the `action` discriminator enumerated; the server-wide empty-`properties` guard passes for all 29 tools.
 
 ### Phase 2b — Non-ASCII regex extension (1 PR, 1-2 days, parallel-OK with 2a)
 
@@ -287,7 +322,7 @@ Deliverables:
 - **R1** — DDPM overlay detection is environment-specific. CI runners can't reproduce. Mitigation: `__test__/fixtures/overlay-window.ts` synthesizes the same `WS_EX_LAYERED | WS_EX_TRANSPARENT` topology via a Win32 child process; Tier 1.5 `WindowFromPoint`-based detector surfaces the warning in production.
 - **R2** — UIA ScrollPattern support varies. Word document body is UIA-blind. Mitigation: dispatcher falls through Tier 1 → Tier 3 when `IsScrollPatternAvailable` is false; tier-selection logic centralized in `_input-pipeline.ts::pickActionTier`.
 - **R3** — CDP `target='body'` scrollTop=0 bug. Mitigation: Phase 3 replaces single `document.body.scrollIntoView` with `document.scrollingElement || document.documentElement` two-step query.
-- **R4** — MCP SDK Issue #1643 timing. Mitigation: §7 OQ4 documents 3 candidate strategies (vendored patch / fork / hand-rolled helper). Default to hand-rolled until upstream lands; the helper has a clear deprecation path.
+- **R4** — MCP SDK Issue #1643. **Resolved by the §2.5 redesign**: the fix is `flattenUnionToObjectSchema` (a flat `z.object`, the conformant + ecosystem-standard form), not a stopgap waiting on upstream. It is independent of SDK Issue #1643's timeline — even the SDK's own pending fix (PR #2017) plus the Anthropic API's top-level-`oneOf` rejection mean a flat object is required regardless. No SDK patch, no fork. See §2.5.3 and §7 OQ4.
 - **R5** (CLAUDE.md §3.2) — Tier 4 SendInput retained as fallback may be misread as carry-over scope shrink that breaks existing API. Mitigation: ADR-level contract pinned in §2.6.3 ("Public API contract") that Tier 4 is reachable only when `InputDestination.kind === 'unresolved'`, and its outcome is always reported as `status:'not_delivered', reason:'target_unreachable'`, never as success. Existing cursor-only callers (`tests/unit/expansion-scroll-wrapper.test.ts:83, 109, 135, 167`, hypothetical end-users typing `scroll({action:'raw', direction:'down', amount:N})` with no destination) preserve their happy-path `status:'delivered'` because `resolveWindowTarget(@active)` (the existing default destination in `_resolve-window.ts`) successfully resolves to the foreground HWND and routes through Tier 1/2/3. The runtime guard in Phase 1 deliverables (assert before SendInput) is the structural enforcement of this contract.
 - **R6** (CLAUDE.md §3.1) — 5-value `verifyDelivery.reason` and 4-value `verifyDelivery.channel` taxonomies spread across 5 surfaces (`src/tools/mouse.ts:971-982`, `tests/unit/scroll-raw-verify.test.ts:114-130`, `src/tools/_errors.ts:256-262` `ScrollNotDelivered` suggest list, `src/tools/scroll.ts:249-256` tool description caveats, CHANGELOG entry at release time). Mitigation: Opus review prompt for each phase includes a mandatory grep sweep of these 5 surfaces; the Phase 5 CI guard (`input-pipeline-guard.yml`) automates the `page_end_inferred` 0-hit assertion across `src/` and `tests/`.
 - **R7** — Keyboard CJK keystroke path may currently work in some IME configurations (composition mode + active IME). Phase 2b regex change must not break these. Mitigation: integration test 1 case (IME ON, CJK typing) added before regex flip; if test fails, regex change is reverted and Phase 2b is split into "detector only" + "auto-clipboard upgrade" sub-PRs.
@@ -299,7 +334,7 @@ Deliverables:
 - **AC1**: All 5 tested apps (Chrome / Notepad / Word / Excel / File Explorer) return `verifyDelivery.status='delivered'`, `verifyDelivery.channel` ∈ {`uia`, `cdp`, `postmessage`}, and `verifyDelivery.reason` ∈ {`delivered_via_uia`, `delivered_via_cdp`, `delivered_via_postmessage`}, with numeric `scrollObserved.delta` for `scroll(action='raw', direction='down')`. **For Word, AC1 is satisfied by either (a) `status='delivered', channel='postmessage', reason='delivered_via_postmessage'` via Tier 3 PostMessage to `_WwG`, OR (b) `status='not_delivered', channel='postmessage', reason='target_unreachable'` per §2.6.2 path-(b) "every applicable tier exhausted" with the class-enumeration fixture `__test__/fixtures/word-class-enumerate.test.ts` pinning the rationale. Tier 4 SendInput (`channel='send_input'`) must not appear for Word — its destination is resolved.** (Phase 4 OQ8 documented fallback.)
 - **AC2**: `grep -rn "page_end_inferred" src/ tests/` returns 0 hits; every emitted `verifyDelivery.reason` value matches the 5-value enum in §2.6.2
 - **AC3**: `keyboard(action='type', text='日本語テスト')` succeeds with `typed:7` and Notepad's `ValuePattern.Value` reads back `'日本語テスト'`
-- **AC4**: MCP `tools/list` for `scroll`, `keyboard`, `excel` returns `inputSchema` with **both** non-empty `properties` (or top-level `oneOf` with discriminator-bearing branches) **AND** the action discriminator value enumerated. A schema with `properties:{}` but non-empty `oneOf` does **not** satisfy AC4 (SDK collapse symptom). Asserted via `__test__/integration/tools-list-schema.test.ts` (Phase 2a)
+- **AC4**: MCP `tools/list` for all **7** flattened tools (`scroll`, `keyboard`, `excel`, `browser_eval`, `window_dock`, `terminal`, `clipboard`) returns `inputSchema` with non-empty `properties` **AND** the `action` discriminator enumerated as a flat `z.enum`. **Top-level `oneOf`/`anyOf`/`allOf` does NOT satisfy AC4** — the Anthropic API rejects it (HTTP 400), so the LLM never receives it (§2.5.1). The conformant shape is a flat `{ type:"object", properties:{ action:{enum:[...]}, ... } }`. Additionally, a server-wide assertion that no registered tool has empty `properties`. Asserted via `__test__/integration/tools-list-schema.test.ts` (Phase 2a)
 - **AC5**: `grep -rn "getWindows" src/tools/` returns 0 hits; all `windowTitle` resolution in scroll path goes through `resolveWindowTarget`
 
 ---
@@ -309,7 +344,7 @@ Deliverables:
 1. **OQ1** — **Resolved**: ADR number is 018 (ADR-016 occupied by `adr-016-rdp-virtual-window.md`, ADR-017 occupied by `adr-017-session-aware-desktop-touch.md` which landed 2026-05-13)
 2. **OQ2** — DDPM overlay handling: (a) README adds "consider disabling DDPM if scroll feels sticky" / (b) tool-side `WindowFromPoint` detector emits warning in `hints.environmentNotes` / (c) both. **Default**: (b) only, surface in production telemetry; (a) added if user reports recur. Decide at Phase 1 PR creation.
 3. **OQ3** — Tier 1 UIA inside Chromium (`--force-renderer-accessibility` required): try in Phase 3 as a Tier 1.5 between CDP and PostMessage? **Default**: skip; CDP is the canonical Chrome path. Reopen if Phase 3 dogfood reveals CDP latency outliers.
-4. **OQ4** — MCP SDK Issue #1643 adoption: (a) `patches/` vendored / (b) fork & npm alias / (c) maintain `materializeUnionJsonSchema` until upstream merges. **Default**: (c); revisit when upstream PR lands.
+4. **OQ4** — **Resolved (2026-05-14)**. MCP SDK Issue #1643 workaround. The Round-0 options were (a) `patches/` vendored / (b) fork & npm alias / (c) maintain a `materializeUnionJsonSchema` helper. Investigation invalidated all three premises: (a) `patch-package` is unsafe for a published npm package — the patch does not reach consumers; (b) a fork is disproportionate maintenance; (c) the helper's planned output (raw JSON Schema with `oneOf`) is rejected both by `registerTool` (Zod-only) and by the Anthropic API (top-level `oneOf` → HTTP 400). **Resolution**: `flattenUnionToObjectSchema` (§2.5.2) — flatten to a single `z.object` with an `action` enum. This is not a stopgap; it is the conformant, ecosystem-standard design and is independent of SDK Issue #1643's resolution. If SDK PR #2017 ever merges, the helper can be reconsidered, but it is not blocked on upstream.
 5. **OQ5** — Tier 4 SendInput: remove entirely vs retain as `target_unreachable` reporter. **Default**: retain. **Reopen trigger**: any of (a) a user report of a removed cursor-only `scroll({action:'raw'})` happy path, (b) Phase 4 G4 Word fallback proving impractical and the team chooses to remove the dead path instead of documenting it, (c) Phase 5 telemetry showing zero production `channel='send_input'` emissions over 30 days.
 6. **OQ6** — CDP wheel injection: (a) `Input.dispatchMouseEvent` new wrapper / (b) `evaluateInTab` JS injection `element.scrollBy()`. **Default**: (a); CDP-native is lower-latency and matches Playwright convention. (b) becomes a per-element override in `scroll(action='to_element', selector=...)`. **Reopen trigger**: Phase 3 dogfood reveals `Input.dispatchMouseEvent` latency p99 > 200 ms or routing failures on Chromium-based apps that are not Chrome / Edge (e.g. Slack, VS Code).
 7. **OQ7** — Excel COM scroll as Tier 0 (`Application.ActiveWindow.SmallScroll`)? **Default**: defer to a separate ADR if needed; current 3 tiers already cover Excel cell area via Tier 1 UIA on the ListView pattern. **Reopen trigger**: Phase 4 G4 reveals Excel Tier 1 UIA path fails on frozen panes, formula bar focus, or other non-grid Excel regions.
@@ -345,7 +380,7 @@ Implementations that already exist and are called from new tier paths without mo
 - `src/win32/scroll.rs:23-69` `win32_get_scroll_info` — Tier 3 observation fallback
 - `src/engine/cdp-bridge.ts:284` `evaluateInTab` — Tier 2 dispatcher base (wraps `Runtime.evaluate`)
 - `src/tools/_resolve-window.ts:94-178` `resolveWindowTarget` — destination resolution SSOT
-- `src/tools/_envelope.ts:484-501` `withEnvelopeIncludeForUnion` — Zod-v3/v4 union extension, **upstream** of new `materializeUnionJsonSchema` in the call sequence (the union output of the former is the input to the latter; see §2.5 for the exact sequence)
+- `src/tools/_envelope.ts` `withEnvelopeIncludeForUnion` — Zod-v3/v4 union extension, **upstream** of new `flattenUnionToObjectSchema` in the call sequence (the union output of the former is the input to the latter; see §2.5.2 for the exact sequence)
 - `src/tools/mouse.ts:910-933` `captureScrollSnapshot` — dHash + GetScrollInfo observation (preserved as Tier 3)
 
 → **Phase 1 trunk PR introduces zero new Rust code**; all native paths are reused from existing crates.
