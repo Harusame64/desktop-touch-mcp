@@ -324,61 +324,96 @@ fn scroll_by_wheel_at_hwnd_impl(
                 && let Ok(scroll) = pat.cast::<IUIAutomationScrollPattern>()
             {
                 // ADR §2.6.2 — `delivered_via_uia` requires UIA pre/post
-                // percent to differ. Capture pre-state first, perform
+                // percent to differ. Capture pre-state, perform
                 // SetScrollPercent, re-read post-state, compare.
-                let cur_v = scroll.CurrentVerticalScrollPercent().unwrap_or(0.0);
-                let cur_h = scroll.CurrentHorizontalScrollPercent().unwrap_or(0.0);
-
-                // Compute each axis target ONLY for the axis actually being
-                // scrolled. The view size for the unused axis is never needed
-                // (`target_*` is forced to -1.0 = "no scroll on this axis"),
-                // so fetching it — and hard-failing on its error — would make
-                // Tier 1 UIA falsely unreachable for elements that scroll one
-                // axis but don't reliably expose the other's view size
-                // (Codex PR #288 Round 3 P1).
                 //
-                // When the NEEDED axis's view size query fails we return
-                // ok:false so the TS dispatcher falls through to legacy nutjs,
-                // instead of computing a step against a fallback that could
-                // swing the scroll position to 0% / 100% with a single notch
-                // (the original P2-5 fix). `view_size` is ALREADY a percentage
-                // (0..100, per UIA ViewSize semantics) so `wheel_step_percent`
-                // applies no extra `* 100` scaling.
-                let target_v = if opts.wheel_delta_y == 0 {
-                    -1.0
+                // Pre-state percent and target are computed per axis, ONLY for
+                // the axis actually being scrolled. A failed pre-state OR
+                // view-size read on the ACTIVE axis returns ok:false so the TS
+                // dispatcher falls through to legacy nutjs — NOT a silent
+                // `unwrap_or(0.0)`, which would compute the target from a fake
+                // baseline and jump toward the start of content (Codex PR #288
+                // Round 6 P2). The unused axis is never read — fetching (and
+                // hard-failing on) it would make Tier 1 falsely unreachable for
+                // elements that scroll one axis but don't reliably expose the
+                // other (Codex PR #288 Round 3 P1). `view_size` is ALREADY a
+                // percentage (0..100, per UIA ViewSize semantics) so
+                // `wheel_step_percent` applies no extra `* 100` scaling.
+                //
+                // `cur_v` / `cur_h` are `Some(pre_percent)` exactly when that
+                // axis is being scrolled — the post-state movement check below
+                // considers only those axes.
+                let cur_v: Option<f64> = if opts.wheel_delta_y == 0 {
+                    None
                 } else {
-                    let view_v = match scroll.CurrentVerticalViewSize() {
-                        Ok(v) => v,
+                    match scroll.CurrentVerticalScrollPercent() {
+                        Ok(v) => Some(v),
                         Err(err) => {
                             return Ok(ScrollResult {
                                 ok: false,
                                 scrolled: false,
                                 error: Some(format!(
-                                    "CurrentVerticalViewSize unavailable: {err}"
+                                    "CurrentVerticalScrollPercent unavailable: {err}"
                                 )),
                             });
                         }
-                    };
-                    (cur_v + wheel_step_percent(opts.wheel_delta_y, view_v))
-                        .clamp(0.0, 100.0)
+                    }
                 };
-                let target_h = if opts.wheel_delta_x == 0 {
-                    -1.0
+                let cur_h: Option<f64> = if opts.wheel_delta_x == 0 {
+                    None
                 } else {
-                    let view_h = match scroll.CurrentHorizontalViewSize() {
-                        Ok(v) => v,
+                    match scroll.CurrentHorizontalScrollPercent() {
+                        Ok(v) => Some(v),
                         Err(err) => {
                             return Ok(ScrollResult {
                                 ok: false,
                                 scrolled: false,
                                 error: Some(format!(
-                                    "CurrentHorizontalViewSize unavailable: {err}"
+                                    "CurrentHorizontalScrollPercent unavailable: {err}"
                                 )),
                             });
                         }
-                    };
-                    (cur_h + wheel_step_percent(opts.wheel_delta_x, view_h))
-                        .clamp(0.0, 100.0)
+                    }
+                };
+
+                // UIA convention: -1.0 means "no scroll on this axis".
+                let target_v = match cur_v {
+                    None => -1.0,
+                    Some(cv) => {
+                        let view_v = match scroll.CurrentVerticalViewSize() {
+                            Ok(v) => v,
+                            Err(err) => {
+                                return Ok(ScrollResult {
+                                    ok: false,
+                                    scrolled: false,
+                                    error: Some(format!(
+                                        "CurrentVerticalViewSize unavailable: {err}"
+                                    )),
+                                });
+                            }
+                        };
+                        (cv + wheel_step_percent(opts.wheel_delta_y, view_v))
+                            .clamp(0.0, 100.0)
+                    }
+                };
+                let target_h = match cur_h {
+                    None => -1.0,
+                    Some(ch) => {
+                        let view_h = match scroll.CurrentHorizontalViewSize() {
+                            Ok(v) => v,
+                            Err(err) => {
+                                return Ok(ScrollResult {
+                                    ok: false,
+                                    scrolled: false,
+                                    error: Some(format!(
+                                        "CurrentHorizontalViewSize unavailable: {err}"
+                                    )),
+                                });
+                            }
+                        };
+                        (ch + wheel_step_percent(opts.wheel_delta_x, view_h))
+                            .clamp(0.0, 100.0)
+                    }
                 };
 
                 // UIA convention: horizontal first, vertical second.
@@ -391,7 +426,7 @@ fn scroll_by_wheel_at_hwnd_impl(
                 }
 
                 // ADR §2.6.2 emission gate — pre/post must differ to claim
-                // `delivered_via_uia`. SCROLL_PERCENT_EPSILON here is 1e-3 in
+                // `delivered_via_uia`. SCROLL_PERCENT_EPSILON is 1e-3 in
                 // percent units (0..100 range). The TS-side mouse.ts epsilon
                 // (1e-6) targets Win32 GetScrollInfo pageRatio (0..1 range)
                 // and is not applicable to UIA percent semantics.
@@ -399,36 +434,49 @@ fn scroll_by_wheel_at_hwnd_impl(
                 // Some UIA providers update Current*ScrollPercent
                 // asynchronously — the value can still read stale for a few ms
                 // after `SetScrollPercent` returns Ok. A single immediate
-                // re-read would then mis-classify a successful scroll as
+                // re-read would mis-classify a successful scroll as
                 // `scrolled:false`, the TS dispatcher would fall through to
                 // Tier 4 SendInput, and the wheel would fire a SECOND time on
                 // the same call — over-scrolling or scrolling the wrong layer
                 // (Codex PR #288 Round 5 P1). Poll the post-state a few times
                 // with a short delay, breaking as soon as movement is observed
-                // (the synchronous-provider common case exits on attempt 0).
+                // (the synchronous-provider common case exits on attempt 1,
+                // before any sleep). Only the scrolled axes (`cur_* = Some`)
+                // participate in the movement check — a non-scrolled axis was
+                // sent -1.0 and must not influence the verdict. A failed
+                // post-read falls back to the pre-value (`unwrap_or(c*)`),
+                // i.e. "no movement observed" — the conservative verdict.
                 const SCROLL_PERCENT_EPSILON: f64 = 1e-3;
                 const POST_READ_RETRIES: u32 = 6;
                 const POST_READ_DELAY_MS: u64 = 5;
-                // First read has no delay — the synchronous-provider common
-                // case exits here with zero added latency.
-                let mut post_v =
-                    scroll.CurrentVerticalScrollPercent().unwrap_or(cur_v);
-                let mut post_h =
-                    scroll.CurrentHorizontalScrollPercent().unwrap_or(cur_h);
-                let mut moved = (post_v - cur_v).abs() >= SCROLL_PERCENT_EPSILON
-                    || (post_h - cur_h).abs() >= SCROLL_PERCENT_EPSILON;
-                let mut attempt: u32 = 1;
-                while !moved && attempt < POST_READ_RETRIES {
+                let mut moved = false;
+                let mut attempt: u32 = 0;
+                loop {
+                    if let Some(cv) = cur_v {
+                        let post_v = scroll
+                            .CurrentVerticalScrollPercent()
+                            .unwrap_or(cv);
+                        if (post_v - cv).abs() >= SCROLL_PERCENT_EPSILON {
+                            moved = true;
+                        }
+                    }
+                    if !moved {
+                        if let Some(ch) = cur_h {
+                            let post_h = scroll
+                                .CurrentHorizontalScrollPercent()
+                                .unwrap_or(ch);
+                            if (post_h - ch).abs() >= SCROLL_PERCENT_EPSILON {
+                                moved = true;
+                            }
+                        }
+                    }
+                    attempt += 1;
+                    if moved || attempt >= POST_READ_RETRIES {
+                        break;
+                    }
                     std::thread::sleep(std::time::Duration::from_millis(
                         POST_READ_DELAY_MS,
                     ));
-                    post_v =
-                        scroll.CurrentVerticalScrollPercent().unwrap_or(cur_v);
-                    post_h =
-                        scroll.CurrentHorizontalScrollPercent().unwrap_or(cur_h);
-                    moved = (post_v - cur_v).abs() >= SCROLL_PERCENT_EPSILON
-                        || (post_h - cur_h).abs() >= SCROLL_PERCENT_EPSILON;
-                    attempt += 1;
                 }
 
                 return Ok(ScrollResult {

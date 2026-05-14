@@ -25,11 +25,17 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// Mock the native loader before importing the SUT so the dispatcher's
-// static import of `../../index.js` resolves to our stub.
+// Mock the native loader before importing the SUT. The dispatcher reads the
+// Tier 1 native call via the tolerant `native-engine.ts` loader (NOT a direct
+// `index.js` import — Codex PR #288 Round 6 P1). `nativeUiaMock` is a mutable
+// holder so a test can simulate a missing native export by clearing the
+// `uiaScrollByWheelAtHwnd` property.
 const uiaScrollByWheelAtHwndMock = vi.fn();
-vi.mock("../../index.js", () => ({
+const nativeUiaMock: { uiaScrollByWheelAtHwnd?: unknown } = {
   uiaScrollByWheelAtHwnd: uiaScrollByWheelAtHwndMock,
+};
+vi.mock("../../src/engine/native-engine.js", () => ({
+  nativeUia: nativeUiaMock,
 }));
 
 // Mock window resolution dependency. `DIALOG_CLASSNAMES` is re-exported from
@@ -178,6 +184,22 @@ describe("ADR-018 §2.3 — resolveInputDestination (single SSOT via resolveWind
 describe("ADR-018 §2.6 — dispatchScrollWheel (Tier 1 UIA path)", () => {
   beforeEach(() => {
     uiaScrollByWheelAtHwndMock.mockReset();
+    // Restore the native export in case a prior test cleared it.
+    nativeUiaMock.uiaScrollByWheelAtHwnd = uiaScrollByWheelAtHwndMock;
+  });
+
+  it("native binding missing (nativeUia.uiaScrollByWheelAtHwnd undefined) → null (caller falls through to Tier 4)", async () => {
+    // Codex PR #288 Round 6 P1: when the addon is absent the tolerant
+    // native-engine loader yields `nativeUia === null` (or an older `.node`
+    // build leaves `uiaScrollByWheelAtHwnd` undefined). Either way the
+    // `typeof !== "function"` guard returns null so the caller falls through
+    // to Tier 4 SendInput — the dispatcher must NOT throw at import or call.
+    nativeUiaMock.uiaScrollByWheelAtHwnd = undefined;
+    const result = await dispatchScrollWheel(
+      { kind: "hwnd", hwnd: 0x1234n },
+      { direction: "down", notch: 1 },
+    );
+    expect(result).toBeNull();
   });
 
   it("UIA call returns scrolled:true → DispatchOutcome {channel:'uia', reason:'delivered_via_uia'}", async () => {

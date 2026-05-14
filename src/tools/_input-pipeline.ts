@@ -31,7 +31,7 @@ import {
   type ResolvedWindow,
 } from "./_resolve-window.js";
 import { enumWindowsInZOrder } from "../engine/win32.js";
-import { uiaScrollByWheelAtHwnd } from "../../index.js";
+import { nativeUia } from "../engine/native-engine.js";
 
 // ─── Public types ────────────────────────────────────────────────────────────
 
@@ -266,13 +266,17 @@ export async function dispatchScrollWheel(
 ): Promise<DispatchOutcome | null> {
   if (dest.kind === "hwnd" || dest.kind === "uia") {
     try {
-      // Static-imported native binding. When the addon is missing or the
-      // symbol is undefined (older builds without the Phase 1b napi export),
-      // `uiaScrollByWheelAtHwnd` itself is undefined; the typeof check below
-      // makes the dispatcher gracefully fall through to legacy nutjs.
-      if (typeof uiaScrollByWheelAtHwnd !== "function") return null;
+      // Resolve the Tier 1 native call through the tolerant `native-engine.ts`
+      // loader — NOT a direct `import from "../../index.js"`, which `throw`s at
+      // module-init time when the `.node` binary is missing (`index.js:35-43`),
+      // defeating the graceful-degradation intent of the guard below (Codex
+      // PR #288 Round 6 P1). `nativeUia` is `null` when the addon is absent,
+      // and `uiaScrollByWheelAtHwnd` is `undefined` on older `.node` builds
+      // without the Phase 1b export — both cases fall through to legacy nutjs.
+      const scrollByWheel = nativeUia?.uiaScrollByWheelAtHwnd;
+      if (typeof scrollByWheel !== "function") return null;
       const wheelDelta = wheelDeltaForNotch(params);
-      const result = (await uiaScrollByWheelAtHwnd({
+      const result = (await scrollByWheel({
         hwnd: dest.hwnd.toString(),
         wheelDeltaY: wheelDelta.y,
         wheelDeltaX: wheelDelta.x,
