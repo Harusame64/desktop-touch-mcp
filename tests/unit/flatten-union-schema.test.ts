@@ -105,7 +105,13 @@ describe("ADR-018 Phase 2a — flattenUnionToObjectSchema", () => {
     expect(js.required).not.toContain("onlyB");
   });
 
-  it("the flat wire schema is strictly LOOSER than the include-injected union — accepts every input the union accepts", () => {
+  it("the flat wire schema accepts every VALID input the include-injected union accepts (never rejects a valid call)", () => {
+    // The flat wire schema's looseness contract is: a *valid* call — one that
+    // the real union accepts — must also pass the wire schema. (It is NOT a
+    // claim that the wire schema swallows *invalid* input: a wrong-typed
+    // off-action field IS rejected, with a typed error — that is the contract
+    // working, not a regression. `.catch(undefined)` was considered for that
+    // case and rejected; see the `mergeFlatField` doc comment.)
     const validInputs: Record<string, unknown>[] = [
       { action: "a", windowTitle: "x", direction: "up", count: 1, onlyA: true },
       { action: "b", windowTitle: "y", direction: "left", count: "n", onlyB: "z" },

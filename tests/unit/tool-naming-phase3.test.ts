@@ -245,57 +245,38 @@ describe("Phase 3 — stub-tool-catalog drops absorbed/privatized 4 names", () =
     expect(entry!.description).toMatch(/launch/);
   });
 
-  // Codex PR #40 P2: stub catalog must preserve action-specific fields for
-  // discriminatedUnion dispatchers. Previous generator emitted only
-  // {action: string, additionalProperties: true} which dropped fields like
-  // expression/selector/maxLength, breaking cross-platform tool discovery.
-  it("browser_eval inputSchema is a oneOf with all 3 actions (js/dom/appState)", () => {
+  // ADR-018 Phase 2a: the 7 multi-action dispatchers register a FLAT
+  // `z.object` wire schema (`flattenUnionToObjectSchema`) instead of a
+  // top-level `oneOf` — `oneOf` at the top level is rejected by the Anthropic
+  // API (HTTP 400), and the SDK emitted empty `properties` for a top-level
+  // `z.discriminatedUnion`. The stub catalog mirrors that: `action` is a flat
+  // `enum` of every variant literal, and every action's fields are merged
+  // into the one `properties` map (all optional — runtime
+  // `parseActionArgsOrFail` is the strict per-action gate). The assertions
+  // below pin the new flat contract AND that every action-specific field is
+  // still reachable for cross-platform tool discovery.
+  it("browser_eval inputSchema is a FLAT object with the action enum (js/dom/appState), no top-level oneOf", () => {
     const entry = STUB_TOOL_CATALOG.find((e) => e.name === "browser_eval");
     expect(entry).toBeDefined();
-    const schema = entry!.inputSchema as { oneOf?: Array<{ properties?: Record<string, { const?: string }> }> };
-    expect(schema.oneOf).toBeDefined();
-    expect(schema.oneOf!.length).toBe(3);
-    const actions = schema.oneOf!.map((v) => v.properties?.action?.const).sort();
-    expect(actions).toEqual(["appState", "dom", "js"]);
+    const schema = entry!.inputSchema as {
+      oneOf?: unknown;
+      properties?: Record<string, { enum?: string[] }>;
+    };
+    expect(schema.oneOf, "Phase 2a: no top-level oneOf").toBeUndefined();
+    expect(schema.properties?.action?.enum?.slice().sort()).toEqual(["appState", "dom", "js"]);
   });
 
-  it("browser_eval js variant exposes the expression field", () => {
+  it("browser_eval flat schema exposes every action's fields (js: expression / dom: selector,maxLength / appState: selectors,maxBytes)", () => {
     const entry = STUB_TOOL_CATALOG.find((e) => e.name === "browser_eval");
-    const schema = entry!.inputSchema as {
-      oneOf: Array<{ properties: Record<string, unknown>; required?: string[] }>;
-    };
-    const jsVariant = schema.oneOf.find(
-      (v) => (v.properties.action as { const?: string })?.const === "js",
-    );
-    expect(jsVariant).toBeDefined();
-    expect(jsVariant!.properties.expression).toBeDefined();
-    expect(jsVariant!.required).toContain("expression");
-  });
-
-  it("browser_eval dom variant exposes selector and maxLength fields", () => {
-    const entry = STUB_TOOL_CATALOG.find((e) => e.name === "browser_eval");
-    const schema = entry!.inputSchema as {
-      oneOf: Array<{ properties: Record<string, unknown> }>;
-    };
-    const domVariant = schema.oneOf.find(
-      (v) => (v.properties.action as { const?: string })?.const === "dom",
-    );
-    expect(domVariant).toBeDefined();
-    expect(domVariant!.properties.selector).toBeDefined();
-    expect(domVariant!.properties.maxLength).toBeDefined();
-  });
-
-  it("browser_eval appState variant exposes selectors and maxBytes fields", () => {
-    const entry = STUB_TOOL_CATALOG.find((e) => e.name === "browser_eval");
-    const schema = entry!.inputSchema as {
-      oneOf: Array<{ properties: Record<string, unknown> }>;
-    };
-    const appStateVariant = schema.oneOf.find(
-      (v) => (v.properties.action as { const?: string })?.const === "appState",
-    );
-    expect(appStateVariant).toBeDefined();
-    expect(appStateVariant!.properties.selectors).toBeDefined();
-    expect(appStateVariant!.properties.maxBytes).toBeDefined();
+    const props = (entry!.inputSchema as { properties?: Record<string, unknown> }).properties ?? {};
+    // js
+    expect(props.expression).toBeDefined();
+    // dom
+    expect(props.selector).toBeDefined();
+    expect(props.maxLength).toBeDefined();
+    // appState
+    expect(props.selectors).toBeDefined();
+    expect(props.maxBytes).toBeDefined();
   });
 
   // Cover all six dispatchers (Phase 2 carry-over plus Phase 3 browser_eval).
@@ -308,19 +289,20 @@ describe("Phase 3 — stub-tool-catalog drops absorbed/privatized 4 names", () =
     ["terminal", ["read", "run", "send"]],
     ["browser_eval", ["appState", "dom", "js"]],
   ])(
-    "%s dispatcher has oneOf with action const values: %p",
+    "%s dispatcher is a flat object with an `action` enum: %p (ADR-018 Phase 2a)",
     (toolName, expectedActions) => {
       const entry = STUB_TOOL_CATALOG.find((e) => e.name === toolName);
       expect(entry, `${toolName} catalog entry`).toBeDefined();
       const schema = entry!.inputSchema as {
-        oneOf?: Array<{ properties?: Record<string, { const?: string }> }>;
+        oneOf?: unknown;
+        properties?: Record<string, { enum?: string[] }>;
       };
-      expect(schema.oneOf, `${toolName} should use oneOf, not opaque stub`).toBeDefined();
-      const actions = schema
-        .oneOf!.map((v) => v.properties?.action?.const)
+      expect(schema.oneOf, `${toolName}: Phase 2a uses a flat object, no top-level oneOf`).toBeUndefined();
+      const actions = (schema.properties?.action?.enum ?? [])
         .filter((a): a is string => typeof a === "string")
+        .slice()
         .sort();
-      expect(actions).toEqual(expectedActions);
+      expect(actions, `${toolName}.action enum`).toEqual(expectedActions);
     },
   );
 });

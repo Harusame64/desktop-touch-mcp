@@ -600,6 +600,23 @@ function stripFieldWrappers(schema: z.ZodTypeAny): z.ZodTypeAny {
  * schema for the flat wire object. Structurally-identical variants (ignoring
  * description text) collapse to one; genuinely-different ones widen — all-enum
  * collisions to one `z.enum` of the value union, otherwise to a `z.union`.
+ *
+ * Each merged field is `.optional()` — **not** `.catch(undefined)`. A `.catch`
+ * was considered (Codex PR #290 Round 2 P2: make the wire schema tolerate a
+ * wrong-typed off-action field the way `z.discriminatedUnion` strips an
+ * off-variant key) and **rejected** (Opus adjudication): `.catch` would
+ * silently *drop* a malformed value, and for a field whose real-union schema
+ * carries a `.default()` (`terminal`'s `until` =
+ * `z.preprocess(...).default({mode:"quiet"})`) the subsequent
+ * `parseActionArgsOrFail` re-parse would then substitute that default — a
+ * malformed polling spec runs as quiet-mode with **no error surfaced**
+ * (issue #196 regression). A wrong-typed off-action field being rejected with
+ * a typed `InvalidArgs` error is the contract working, not a silent failure;
+ * the discriminatedUnion's key-strip tolerance was a Zod mechanic, not a
+ * designed contract. NOTE: `stripFieldWrappers` strips `optional`/`default`/
+ * `nullable` but **not** `preprocess` — a preprocess-wrapped field keeps its
+ * inner `.default()` reachable through the union re-parse, which is why
+ * `.catch` here would be actively harmful. Do not reintroduce it.
  */
 function mergeFlatField(schemas: z.ZodTypeAny[]): z.ZodTypeAny {
   const uniqueBySig = new Map<string, z.ZodTypeAny>();
