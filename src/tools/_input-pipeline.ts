@@ -120,8 +120,9 @@ export interface DispatchOutcome {
  *      that HWND so Tier 1 UIA is reachable for the common windowTitle-only
  *      scroll call (ADR §4 Phase 1 G1 acceptance — otherwise
  *      `scroll(windowTitle:'メモ帳')` could never report `channel:'uia'`). We
- *      re-run the same top-level `enumWindowsInZOrder` lookup here — with the
- *      *exact* Case 3 predicate (non-dialog class, no owner window) — to
+ *      re-run an `enumWindowsInZOrder` lookup here with Case 3's predicate
+ *      (non-dialog class, no owner window) plus a minimized-window exclusion
+ *      (a minimized HWND is not a usable dispatch/observation target) to
  *      recover it → `{ kind: 'hwnd' }`. This is still title-based, not
  *      cursor/foreground.
  *   3. No resolvable target → `{ kind: 'unresolved' }` so the caller falls
@@ -152,20 +153,27 @@ export async function resolveInputDestination(params: {
   }
   // Case 3 recovery (see docstring): `resolveWindowTarget` returns null for a
   // plain `windowTitle` that matches a top-level window — recover that HWND so
-  // Tier 1 UIA stays reachable. The predicate below MUST mirror
-  // `_resolve-window.ts` Case 3's `plainMatch` exactly — non-dialog class
-  // (`#32770` excluded) AND no owner window — so we recover the SAME window
-  // Case 3 matched-and-discarded, never an owned/modal dialog with a
-  // coincidentally-overlapping title substring (Codex PR #288 Round 3 P2).
+  // Tier 1 UIA stays reachable. The predicate below applies `_resolve-window.ts`
+  // Case 3's `plainMatch` constraints — non-dialog class (`#32770` excluded)
+  // AND no owner window — so we recover a true top-level window, never an
+  // owned/modal dialog with a coincidentally-overlapping title substring
+  // (Codex PR #288 Round 3 P2). It additionally excludes MINIMIZED windows:
+  // a minimized HWND is not a usable dispatch target (UIA scroll on an
+  // off-screen window) and — because `mouse.ts:scrollHandler` seeds
+  // `observedHwnd` from `dest.hwnd` — would pin observation to a window that
+  // cannot be observed, producing false `not_delivered` / `unverifiable`
+  // results (Codex PR #288 Round 4 P1). The `mouse.ts` observation ladder
+  // filters minimized for the same reason.
   // `@active` is excluded: `resolveWindowTarget` owns that shorthand and a
   // null return there means foreground resolution genuinely failed.
   // Phase 4 carry-over: extract a shared `findPlainTopLevelWindowByTitle`
-  // helper so this predicate cannot drift from Case 3 — sub-plan §2.2.
+  // helper so the dialog/owner predicate cannot drift from Case 3 — sub-plan §2.2.
   if (params.windowTitle && params.windowTitle !== "@active") {
     try {
       const want = params.windowTitle.toLowerCase();
       const match = enumWindowsInZOrder().find(
         (w) =>
+          !w.isMinimized &&
           w.title.toLowerCase().includes(want) &&
           !DIALOG_CLASSNAMES.has(w.className ?? "") &&
           w.ownerHwnd == null,

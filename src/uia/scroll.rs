@@ -329,51 +329,56 @@ fn scroll_by_wheel_at_hwnd_impl(
                 let cur_v = scroll.CurrentVerticalScrollPercent().unwrap_or(0.0);
                 let cur_h = scroll.CurrentHorizontalScrollPercent().unwrap_or(0.0);
 
-                // P2-5 fix: when view size queries fail, return ok:false so the
-                // TS dispatcher falls through to legacy nutjs (instead of
-                // computing a step against a fallback that may swing the
-                // scroll position to 0% / 100% with a single notch).
-                let view_v = match scroll.CurrentVerticalViewSize() {
-                    Ok(v) => v,
-                    Err(err) => {
-                        return Ok(ScrollResult {
-                            ok: false,
-                            scrolled: false,
-                            error: Some(format!(
-                                "CurrentVerticalViewSize unavailable: {err}"
-                            )),
-                        });
-                    }
-                };
-                let view_h = match scroll.CurrentHorizontalViewSize() {
-                    Ok(v) => v,
-                    Err(err) => {
-                        return Ok(ScrollResult {
-                            ok: false,
-                            scrolled: false,
-                            error: Some(format!(
-                                "CurrentHorizontalViewSize unavailable: {err}"
-                            )),
-                        });
-                    }
-                };
-
-                // Convert wheel delta → UIA percent step. `view_v` / `view_h`
-                // are ALREADY percentages (0..100, per UIA ViewSize semantics),
-                // so `wheel_step_percent` applies no extra `* 100` scaling.
-                let step_v = wheel_step_percent(opts.wheel_delta_y, view_v);
-                let step_h = wheel_step_percent(opts.wheel_delta_x, view_h);
-
-                // UIA convention: -1.0 means "no scroll on this axis".
+                // Compute each axis target ONLY for the axis actually being
+                // scrolled. The view size for the unused axis is never needed
+                // (`target_*` is forced to -1.0 = "no scroll on this axis"),
+                // so fetching it — and hard-failing on its error — would make
+                // Tier 1 UIA falsely unreachable for elements that scroll one
+                // axis but don't reliably expose the other's view size
+                // (Codex PR #288 Round 3 P1).
+                //
+                // When the NEEDED axis's view size query fails we return
+                // ok:false so the TS dispatcher falls through to legacy nutjs,
+                // instead of computing a step against a fallback that could
+                // swing the scroll position to 0% / 100% with a single notch
+                // (the original P2-5 fix). `view_size` is ALREADY a percentage
+                // (0..100, per UIA ViewSize semantics) so `wheel_step_percent`
+                // applies no extra `* 100` scaling.
                 let target_v = if opts.wheel_delta_y == 0 {
                     -1.0
                 } else {
-                    (cur_v + step_v).clamp(0.0, 100.0)
+                    let view_v = match scroll.CurrentVerticalViewSize() {
+                        Ok(v) => v,
+                        Err(err) => {
+                            return Ok(ScrollResult {
+                                ok: false,
+                                scrolled: false,
+                                error: Some(format!(
+                                    "CurrentVerticalViewSize unavailable: {err}"
+                                )),
+                            });
+                        }
+                    };
+                    (cur_v + wheel_step_percent(opts.wheel_delta_y, view_v))
+                        .clamp(0.0, 100.0)
                 };
                 let target_h = if opts.wheel_delta_x == 0 {
                     -1.0
                 } else {
-                    (cur_h + step_h).clamp(0.0, 100.0)
+                    let view_h = match scroll.CurrentHorizontalViewSize() {
+                        Ok(v) => v,
+                        Err(err) => {
+                            return Ok(ScrollResult {
+                                ok: false,
+                                scrolled: false,
+                                error: Some(format!(
+                                    "CurrentHorizontalViewSize unavailable: {err}"
+                                )),
+                            });
+                        }
+                    };
+                    (cur_h + wheel_step_percent(opts.wheel_delta_x, view_h))
+                        .clamp(0.0, 100.0)
                 };
 
                 // UIA convention: horizontal first, vertical second.

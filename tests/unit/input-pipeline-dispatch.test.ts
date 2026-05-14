@@ -4,13 +4,14 @@
  * Pins the Phase 1b contract:
  *   1. `resolveInputDestination` returns `{kind:'hwnd'}` when resolveWindowTarget
  *      resolves the window. When resolveWindowTarget returns null but a plain
- *      *top-level* window (non-dialog class, no owner — the exact predicate
- *      `_resolve-window.ts` Case 3 uses) matches the `windowTitle`, it recovers
- *      that HWND via an `enumWindowsInZOrder` lookup (Case 3 recovery — keeps
- *      Tier 1 UIA reachable for windowTitle-only calls per ADR §4 G1). It
- *      returns `{kind:'unresolved'}` only when no plain top-level window
- *      matches. The recovery is title-based, NOT cursor/foreground — dispatch
- *      routing never touches cursor coordinates (ADR §1.2 root-cause confinement).
+ *      *top-level* window (non-dialog class, no owner — `_resolve-window.ts`
+ *      Case 3's constraints — plus a minimized-window exclusion: a minimized
+ *      HWND is not a usable dispatch/observation target) matches the
+ *      `windowTitle`, it recovers that HWND via an `enumWindowsInZOrder` lookup
+ *      (Case 3 recovery — keeps Tier 1 UIA reachable for windowTitle-only calls
+ *      per ADR §4 G1). It returns `{kind:'unresolved'}` only when no such
+ *      window matches. The recovery is title-based, NOT cursor/foreground —
+ *      dispatch routing never touches cursor coordinates (ADR §1.2 confinement).
  *   2. `dispatchScrollWheel({kind:'hwnd'}, ...)` returns
  *      `{scrolled:true, channel:'uia', reason:'delivered_via_uia'}` when the
  *      native `uiaScrollByWheelAtHwnd` returns `ok:true, scrolled:true`.
@@ -81,7 +82,7 @@ describe("ADR-018 §2.3 — resolveInputDestination (single SSOT via resolveWind
     // (scroll(windowTitle:'メモ帳') → channel:'uia') can never pass.
     resolveWindowTargetMock.mockResolvedValue(null);
     enumWindowsInZOrderMock.mockReturnValue([
-      { hwnd: 0x111n, title: "Untitled - Notepad", className: "Notepad", ownerHwnd: null },
+      { hwnd: 0x111n, title: "Untitled - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false },
     ]);
     const dest = await resolveInputDestination({ windowTitle: "Notepad" });
     expect(dest).toEqual({ kind: "hwnd", hwnd: 0x111n });
@@ -90,24 +91,45 @@ describe("ADR-018 §2.3 — resolveInputDestination (single SSOT via resolveWind
   it("Case 3 recovery matches case-insensitively on a title substring", async () => {
     resolveWindowTargetMock.mockResolvedValue(null);
     enumWindowsInZOrderMock.mockReturnValue([
-      { hwnd: 0x333n, title: "メモ帳", className: "Notepad", ownerHwnd: null },
+      { hwnd: 0x333n, title: "メモ帳", className: "Notepad", ownerHwnd: null, isMinimized: false },
     ]);
     const dest = await resolveInputDestination({ windowTitle: "メモ帳" });
     expect(dest).toEqual({ kind: "hwnd", hwnd: 0x333n });
   });
 
   it("Case 3 recovery EXCLUDES #32770 dialogs and owned windows — recovers the true top-level even when a dialog/owned window matches the same title (Codex Round 3 P2)", async () => {
-    // The predicate MUST mirror _resolve-window.ts Case 3 (`!#32770` + `ownerHwnd == null`)
-    // so dispatch targets the SAME window Case 3 matched-and-discarded, not an
-    // owned/modal dialog with a coincidentally-overlapping title substring.
+    // The predicate applies _resolve-window.ts Case 3's constraints (`!#32770`
+    // + `ownerHwnd == null`) so dispatch targets a true top-level window, not
+    // an owned/modal dialog with a coincidentally-overlapping title substring.
     resolveWindowTargetMock.mockResolvedValue(null);
     enumWindowsInZOrderMock.mockReturnValue([
-      { hwnd: 0x501n, title: "Notepad — Save As", className: "#32770", ownerHwnd: 0x999n },
-      { hwnd: 0x502n, title: "Notepad helper", className: "Tooltip", ownerHwnd: 0x999n },
-      { hwnd: 0x503n, title: "Untitled - Notepad", className: "Notepad", ownerHwnd: null },
+      { hwnd: 0x501n, title: "Notepad — Save As", className: "#32770", ownerHwnd: 0x999n, isMinimized: false },
+      { hwnd: 0x502n, title: "Notepad helper", className: "Tooltip", ownerHwnd: 0x999n, isMinimized: false },
+      { hwnd: 0x503n, title: "Untitled - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false },
     ]);
     const dest = await resolveInputDestination({ windowTitle: "Notepad" });
     expect(dest).toEqual({ kind: "hwnd", hwnd: 0x503n });
+  });
+
+  it("Case 3 recovery EXCLUDES minimized windows — recovers the non-minimized top-level match (Codex Round 4 P1)", async () => {
+    // A minimized HWND is not a usable dispatch target (UIA scroll on an
+    // off-screen window) and would pin observation to an unobservable window.
+    resolveWindowTargetMock.mockResolvedValue(null);
+    enumWindowsInZOrderMock.mockReturnValue([
+      { hwnd: 0x701n, title: "Untitled - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: true },
+      { hwnd: 0x702n, title: "Untitled - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false },
+    ]);
+    const dest = await resolveInputDestination({ windowTitle: "Notepad" });
+    expect(dest).toEqual({ kind: "hwnd", hwnd: 0x702n });
+  });
+
+  it("returns {kind:'unresolved'} when the only title match is minimized", async () => {
+    resolveWindowTargetMock.mockResolvedValue(null);
+    enumWindowsInZOrderMock.mockReturnValue([
+      { hwnd: 0x711n, title: "Untitled - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: true },
+    ]);
+    const dest = await resolveInputDestination({ windowTitle: "Notepad" });
+    expect(dest).toEqual({ kind: "unresolved", reason: "no_target_window" });
   });
 
   it("returns {kind:'unresolved'} when only a dialog / owned window matches the title (no true top-level)", async () => {
