@@ -607,8 +607,12 @@ function mergeFlatField(schemas: z.ZodTypeAny[]): z.ZodTypeAny {
     const base = stripFieldWrappers(schema);
     let sig: string;
     try {
-      // Colliding keys are simple types (string / number / enum / literal /
-      // bool) — `z.toJSONSchema` is a safe structural signature here.
+      // `z.toJSONSchema` is the structural signature. In practice colliding
+      // keys across the 7 tools are simple types (string / number / enum /
+      // literal / bool) which serialize cleanly; the `catch` below is the real
+      // guarantee — a field `z.toJSONSchema` cannot serialize (e.g. a future
+      // shared `z.preprocess` field) is simply treated as a distinct shape and
+      // falls through to the `z.union` widening, which is still correct.
       const js = z.toJSONSchema(base) as Record<string, unknown>;
       delete js.$schema;
       delete js.description; // structural identity ignores description text
