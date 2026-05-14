@@ -244,12 +244,14 @@ export function assertTier4Reachable(dest: InputDestination): void {
  *   Otherwise returns `null` (caller falls through to legacy nutjs).
  * - `kind === 'uia'`: future-reserved (Phase 3 or later). The resolver does
  *   not emit `'uia'` in Phase 1b, so this branch is dormant. It dispatches
- *   through the same Tier 1 native path as `'hwnd'`, but note the
- *   *failure-path* asymmetry: when the native call returns `null`, an `'hwnd'`
- *   destination falls through to legacy nutjs, whereas `'uia'` is rejected by
- *   `assertTier4Reachable` (an explicit-UIA destination must never silently
- *   fall to cursor-routed SendInput — that is the guard's purpose). The
- *   asymmetry is intentional and harmless while the branch is dormant.
+ *   through the same Tier 1 native path as `'hwnd'` and, like `'hwnd'`,
+ *   returns `null` on native failure — `dispatchScrollWheel` itself never
+ *   throws. The *failure-path* asymmetry is at the **caller**: `mouse.ts`
+ *   calls `assertTier4Reachable(dest)` before the nutjs fallback, which lets
+ *   an `'hwnd'` destination fall through but THROWS for `'uia'` (an
+ *   explicit-UIA destination must never silently fall to cursor-routed
+ *   SendInput — that is the guard's purpose). The asymmetry is intentional
+ *   and harmless while the branch is dormant.
  * - `kind === 'cdp'`: Phase 3 stub — returns `null` so caller falls through.
  *   The `assertTier4Reachable` guard prevents misuse — see signature note.
  * - `kind === 'unresolved'`: returns `null` (caller invokes Tier 4 SendInput

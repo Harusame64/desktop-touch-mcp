@@ -395,11 +395,41 @@ fn scroll_by_wheel_at_hwnd_impl(
                 // percent units (0..100 range). The TS-side mouse.ts epsilon
                 // (1e-6) targets Win32 GetScrollInfo pageRatio (0..1 range)
                 // and is not applicable to UIA percent semantics.
+                //
+                // Some UIA providers update Current*ScrollPercent
+                // asynchronously — the value can still read stale for a few ms
+                // after `SetScrollPercent` returns Ok. A single immediate
+                // re-read would then mis-classify a successful scroll as
+                // `scrolled:false`, the TS dispatcher would fall through to
+                // Tier 4 SendInput, and the wheel would fire a SECOND time on
+                // the same call — over-scrolling or scrolling the wrong layer
+                // (Codex PR #288 Round 5 P1). Poll the post-state a few times
+                // with a short delay, breaking as soon as movement is observed
+                // (the synchronous-provider common case exits on attempt 0).
                 const SCROLL_PERCENT_EPSILON: f64 = 1e-3;
-                let post_v = scroll.CurrentVerticalScrollPercent().unwrap_or(cur_v);
-                let post_h = scroll.CurrentHorizontalScrollPercent().unwrap_or(cur_h);
-                let moved = (post_v - cur_v).abs() >= SCROLL_PERCENT_EPSILON
+                const POST_READ_RETRIES: u32 = 6;
+                const POST_READ_DELAY_MS: u64 = 5;
+                // First read has no delay — the synchronous-provider common
+                // case exits here with zero added latency.
+                let mut post_v =
+                    scroll.CurrentVerticalScrollPercent().unwrap_or(cur_v);
+                let mut post_h =
+                    scroll.CurrentHorizontalScrollPercent().unwrap_or(cur_h);
+                let mut moved = (post_v - cur_v).abs() >= SCROLL_PERCENT_EPSILON
                     || (post_h - cur_h).abs() >= SCROLL_PERCENT_EPSILON;
+                let mut attempt: u32 = 1;
+                while !moved && attempt < POST_READ_RETRIES {
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        POST_READ_DELAY_MS,
+                    ));
+                    post_v =
+                        scroll.CurrentVerticalScrollPercent().unwrap_or(cur_v);
+                    post_h =
+                        scroll.CurrentHorizontalScrollPercent().unwrap_or(cur_h);
+                    moved = (post_v - cur_v).abs() >= SCROLL_PERCENT_EPSILON
+                        || (post_h - cur_h).abs() >= SCROLL_PERCENT_EPSILON;
+                    attempt += 1;
+                }
 
                 return Ok(ScrollResult {
                     ok: true,
@@ -591,9 +621,13 @@ mod tests {
         assert!((wheel_step_percent(120, 20.0) - 2.0).abs() < 1e-9);
         // 3 notches (360 units), viewport = 20% → 6.0% (stays well below 100).
         assert!((wheel_step_percent(360, 20.0) - 6.0).abs() < 1e-9);
-        // A single notch on ANY 0..100 viewport must never alone exceed 100%.
+        // With SCROLL_STEP_MULTIPLIER = 0.1, a single notch on any 0..100
+        // viewport yields at most 10% (view=100 → 1.0 * 100 * 0.1). This pins
+        // that the *current multiplier* keeps one notch incremental rather than
+        // a boundary jump — it is NOT a structural invariant of the formula
+        // (the hard 0..100 bound is the `clamp` at the call site, not here).
         for view in [1.0_f64, 25.0, 50.0, 100.0] {
-            assert!(wheel_step_percent(120, view).abs() <= 100.0);
+            assert!(wheel_step_percent(120, view).abs() <= 10.0);
         }
     }
 
