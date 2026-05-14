@@ -23,7 +23,7 @@ import { getCdpPort } from "../utils/desktop-config.js";
 import { fail } from "./_types.js";
 import { setBrowserSearchHook } from "./wait-until.js";
 import { narrateParam, withRichNarration } from "./_narration.js";
-import { makeCommitWrapper, makeQueryWrapper, withEnvelopeIncludeSchema, withEnvelopeIncludeForUnion, genericQueryCausedByProjector, defaultQuerySessionId } from "./_envelope.js";
+import { makeCommitWrapper, makeQueryWrapper, withEnvelopeIncludeSchema, withEnvelopeIncludeForUnion, flattenUnionToObjectSchema, parseActionArgsOrFail, genericQueryCausedByProjector, defaultQuerySessionId } from "./_envelope.js";
 import type { RichBlock } from "../engine/uia-diff.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
@@ -2389,13 +2389,21 @@ export const browserEvalSchema = z.discriminatedUnion("action", [
 export type BrowserEvalArgs = z.infer<typeof browserEvalSchema>;
 
 export const browserEvalHandler = async (args: BrowserEvalArgs): Promise<ToolResult> => {
-  switch (args.action) {
+  // ADR-018 Phase 2a — strict per-action gate (§2.5.2). The registered wire
+  // schema is the flat `flattenUnionToObjectSchema` output; re-parse against
+  // the real (include-injected) union here. Scope fence: this touches ONLY the
+  // `browser_eval` union — the flat-object browser tools in this file are not
+  // affected.
+  const parsed = parseActionArgsOrFail<BrowserEvalArgs>(browserEvalUnionWithInclude, args, "browser_eval");
+  if (!parsed.ok) return parsed.result;
+  const a = parsed.value;
+  switch (a.action) {
     case "js":
-      return browserEvalJsHandler(args);
+      return browserEvalJsHandler(a);
     case "dom":
-      return browserGetDomHandler(args);
+      return browserGetDomHandler(a);
     case "appState":
-      return browserGetAppStateHandler(args);
+      return browserGetAppStateHandler(a);
   }
 };
 
@@ -2537,7 +2545,11 @@ export const browserFormRegistrationHandler = makeCommitWrapper(
  * terminal の discriminatedUnion 3b family 同型 (windowTitleKey 省略 —
  * browser CDP tab; pre-expansion `withPostState` 直 wrap を置換)。
  */
-export const browserEvalRegistrationSchema = withEnvelopeIncludeForUnion(browserEvalSchema);
+// ADR-018 Phase 2a — `browserEvalUnionWithInclude` (include-injected union)
+// feeds BOTH the flat wire schema AND the in-handler `parseActionArgsOrFail`
+// gate. Scope fence: only the `browser_eval` union is flattened here.
+const browserEvalUnionWithInclude = withEnvelopeIncludeForUnion(browserEvalSchema);
+export const browserEvalRegistrationSchema = flattenUnionToObjectSchema(browserEvalUnionWithInclude);
 
 export const browserEvalRegistrationHandler = makeCommitWrapper(
   withRichNarration(

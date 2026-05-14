@@ -6,7 +6,12 @@ import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
 import { withRichNarration } from "./_narration.js";
-import { makeCommitWrapper, withEnvelopeIncludeForUnion } from "./_envelope.js";
+import {
+  makeCommitWrapper,
+  withEnvelopeIncludeForUnion,
+  flattenUnionToObjectSchema,
+  parseActionArgsOrFail,
+} from "./_envelope.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -140,8 +145,14 @@ export const clipboardSchema = z.discriminatedUnion("action", [
 export type ClipboardArgs = z.infer<typeof clipboardSchema>;
 
 export const clipboardHandler = async (args: ClipboardArgs): Promise<import("./_types.js").ToolResult> => {
-  if (args.action === "read") return clipboardReadHandler();
-  return clipboardWriteHandler(args);
+  // ADR-018 Phase 2a — strict per-action gate. The registered wire schema is
+  // the flat `flattenUnionToObjectSchema` output; re-parse against the real
+  // (include-injected) union so per-action constraints are still enforced.
+  const parsed = parseActionArgsOrFail<ClipboardArgs>(clipboardUnionWithInclude, args, "clipboard");
+  if (!parsed.ok) return parsed.result;
+  const a = parsed.value;
+  if (a.action === "read") return clipboardReadHandler();
+  return clipboardWriteHandler(a);
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -177,7 +188,11 @@ export const clipboardHandler = async (args: ClipboardArgs): Promise<import("./_
  * (expansion-pr-guard.yml + check-expansion-disjoint.mjs)、handler internal
  * logic + Zod schema + 戻り値 shape 不変 (ADR-010 §1.5)。
  */
-export const clipboardRegistrationSchema = withEnvelopeIncludeForUnion(clipboardSchema);
+// ADR-018 Phase 2a — `clipboardUnionWithInclude` (include-injected union) feeds
+// BOTH the flat wire schema (`registerTool` inputSchema) AND the in-handler
+// `parseActionArgsOrFail` strict gate. Do not pass the bare `clipboardSchema`.
+const clipboardUnionWithInclude = withEnvelopeIncludeForUnion(clipboardSchema);
+export const clipboardRegistrationSchema = flattenUnionToObjectSchema(clipboardUnionWithInclude);
 
 export const clipboardRegistrationHandler = makeCommitWrapper(
   withRichNarration(
@@ -199,6 +214,6 @@ export function registerClipboardTools(server: McpServer): void {
       description: "Read or write the Windows clipboard. action='read' returns current text content (empty string if non-text). action='write' replaces clipboard with given text and verifies delivery via Get-Clipboard -Raw read-back, comparing the bytes (UTF-16LE) for exact equality. Caveats: Non-text clipboard payloads (images, files) return empty string on read. Overwrites existing clipboard content on write. action='write' delivery-verification failure returns code:'ClipboardWriteNotDelivered' — typical causes: a third-party clipboard manager intercepts SetClipboardData, DLP / endpoint protection blocks the payload, RDP / Citrix clipboard transcoding strips the text, or another process clears the clipboard between Set and the read-back. Recovery: retry the write, or fall back to keyboard(action='type', use_clipboard=false) for short text. Examples: clipboard({action:'write', text:'hello'}) → write+verify; clipboard({action:'read'}) → returns current text.",
       inputSchema: clipboardRegistrationSchema,
     },
-    clipboardRegistrationHandler as typeof clipboardHandler
+    clipboardRegistrationHandler as (args: Record<string, unknown>) => Promise<ToolResult>
   );
 }
