@@ -1101,12 +1101,16 @@ export const scrollHandler = async ({
     // (cursor coordinates as the destination) cannot re-enter the dispatcher.
     const dest = await resolveInputDestination({ hwnd, windowTitle });
 
-    // Observation HWND for snapshot verification. This is a SEPARATE ladder
-    // from `dest` — it can fall back to cursor / foreground because Win32
-    // GetScrollInfo observation is read-only and benefits from any HWND that
-    // happens to be at the scroll point. The cursor/foreground fallback here
-    // does NOT route dispatch — dispatch always uses `dest`.
-    let observedHwnd: bigint | null = resolvedWin?.hwnd ?? null;
+    // Observation HWND for snapshot verification. ADR §2.2 invariant:
+    // observation must use the SAME destination the dispatcher acted on. When
+    // `dest.kind === 'hwnd'` (Tier 1 candidate) seed it from `dest.hwnd`
+    // directly so a successful UIA scroll on window A can never report a delta
+    // measured on window B. The enum / cursor / foreground ladder below only
+    // fills in for an `'unresolved'` destination (Tier 4 nutjs path), where
+    // observation is read-only and may legitimately use any HWND at the
+    // scroll point. The cursor/foreground fallback never routes dispatch.
+    let observedHwnd: bigint | null =
+      dest.kind === "hwnd" ? dest.hwnd : (resolvedWin?.hwnd ?? null);
     if (observedHwnd === null && windowTitle && windowTitle !== "@active") {
       try {
         const wantTitle = windowTitle.toLowerCase();

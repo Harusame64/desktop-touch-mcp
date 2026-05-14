@@ -248,9 +248,32 @@ fn scroll_by_percent_impl(
     })
 }
 
-/// ADR-018 Phase 1b — resolve HWND → IUIAutomationElement, walk ancestors to
-/// find ScrollPattern, scroll by wheel delta (converted to percent step via
-/// `view_size / 10` per notch).
+/// ADR-018 Phase 1b — convert a signed wheel delta into a UIA scroll-percent
+/// step.
+///
+/// **Units contract**: `view_size` is the UIA `Current{Vertical,Horizontal}ViewSize`
+/// value, which is ALREADY a percentage of the total content area (0..100).
+/// The returned step is in the same 0..100 percent units as
+/// `Current{Vertical,Horizontal}ScrollPercent`, so the caller adds it directly
+/// to the current percent — **no extra `* 100` scaling** (regression guard for
+/// PR #288 Round 2 P1: the old formula multiplied by an extra 100, turning a
+/// one-notch scroll on a typical 20%-viewport into a 200% step that clamped
+/// straight to the 0%/100% boundary).
+///
+/// 1 notch = `WHEEL_DELTA` (120) units. `SCROLL_STEP_MULTIPLIER` (0.1) makes
+/// one notch ≈ one-tenth of the visible viewport — empirically close to
+/// Windows' default 3-line wheel scroll for typical apps, without swinging
+/// small viewports straight to the boundary. Tunable per-app in Phase 4
+/// (sub-plan §2.1#2).
+fn wheel_step_percent(wheel_delta: i32, view_size: f64) -> f64 {
+    const SCROLL_STEP_MULTIPLIER: f64 = 0.1;
+    (wheel_delta as f64 / 120.0) * view_size * SCROLL_STEP_MULTIPLIER
+}
+
+/// ADR-018 Phase 1b — resolve HWND → IUIAutomationElement, walk from the
+/// element itself up through ancestors to find the first ScrollPattern, then
+/// scroll by wheel delta. The wheel delta is converted to a UIA percent step
+/// by `wheel_step_percent` (see that fn for the units contract).
 fn scroll_by_wheel_at_hwnd_impl(
     ctx: &UiaContext,
     opts: &ScrollByWheelAtHwndOptions,
@@ -335,12 +358,11 @@ fn scroll_by_wheel_at_hwnd_impl(
                     }
                 };
 
-                // 1 notch (WHEEL_DELTA=120) ≈ one-tenth of the visible view.
-                // Empirically this matches Windows' default wheel scroll lines (3)
-                // for typical apps without making cursors swerve violently in
-                // small viewports.
-                let step_v = (opts.wheel_delta_y as f64 / 120.0) * (view_v / 10.0) * 100.0;
-                let step_h = (opts.wheel_delta_x as f64 / 120.0) * (view_h / 10.0) * 100.0;
+                // Convert wheel delta → UIA percent step. `view_v` / `view_h`
+                // are ALREADY percentages (0..100, per UIA ViewSize semantics),
+                // so `wheel_step_percent` applies no extra `* 100` scaling.
+                let step_v = wheel_step_percent(opts.wheel_delta_y, view_v);
+                let step_h = wheel_step_percent(opts.wheel_delta_x, view_h);
 
                 // UIA convention: -1.0 means "no scroll on this axis".
                 let target_v = if opts.wheel_delta_y == 0 {
@@ -548,4 +570,32 @@ fn walk_scroll_ancestors(
     // Reverse to outer→inner (matching TS `[array]::Reverse($ancestors)`).
     ancestors.reverse();
     Ok(ancestors)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wheel_step_percent;
+
+    /// Regression guard for PR #288 Round 2 P1 (Codex + Opus consensus): the
+    /// old formula multiplied by an extra 100, turning a one-notch scroll on a
+    /// typical 20%-viewport into a 200% step that clamped straight to the
+    /// 0%/100% boundary instead of moving incrementally.
+    #[test]
+    fn wheel_step_percent_applies_no_extra_hundred() {
+        // 1 notch (120 units), viewport = 20% of content → 0.1 * 20 * 1 = 2.0%.
+        assert!((wheel_step_percent(120, 20.0) - 2.0).abs() < 1e-9);
+        // 3 notches (360 units), viewport = 20% → 6.0% (stays well below 100).
+        assert!((wheel_step_percent(360, 20.0) - 6.0).abs() < 1e-9);
+        // A single notch on ANY 0..100 viewport must never alone exceed 100%.
+        for view in [1.0_f64, 25.0, 50.0, 100.0] {
+            assert!(wheel_step_percent(120, view).abs() <= 100.0);
+        }
+    }
+
+    #[test]
+    fn wheel_step_percent_sign_follows_delta() {
+        assert!(wheel_step_percent(120, 30.0) > 0.0);
+        assert!(wheel_step_percent(-120, 30.0) < 0.0);
+        assert_eq!(wheel_step_percent(0, 30.0), 0.0);
+    }
 }

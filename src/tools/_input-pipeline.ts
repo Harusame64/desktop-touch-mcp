@@ -14,13 +14,19 @@
  * See `docs/adr-018-phase-1b-subplan.md` for the Phase 1b interpretation of
  * §2.6.2 path-(b) (lenient Tier 4 guard during 1b → strict in Phase 4).
  *
- * CLAUDE.md §3.1 (multi-table fact integrity): the channel / reason values
- * emitted here are mirrored at `src/tools/mouse.ts:943-977`
- * (`ScrollVerifyOutcome` union) and `docs/adr-018-input-pipeline-3tier.md`
- * §2.6.1 / §2.6.2. Any rename must sweep all three surfaces.
+ * CLAUDE.md §3.1 (multi-table fact integrity): the `reason` values emitted
+ * here mirror the `reason?:` union of `ScrollVerifyOutcome` in
+ * `src/tools/mouse.ts` and `docs/adr-018-input-pipeline-3tier.md` §2.6.2.
+ * The `Channel` type below is the ADR §2.6.1 canonical 4-value enum that the
+ * *dispatcher* emits via `DispatchOutcome.channel` (Phase 1b emits only
+ * `'uia'`). NOTE: `mouse.ts:scrollHandler` additionally emits the legacy
+ * literal `'wheel_send_input'` for its Tier 4 nutjs path — that literal is
+ * scrollHandler-local and is folded into this `Channel` enum as `'send_input'`
+ * by the Phase 4 §2.6.3 migration. Any rename must sweep all surfaces.
  */
 
 import { resolveWindowTarget, type ResolvedWindow } from "./_resolve-window.js";
+import { enumWindowsInZOrder } from "../engine/win32.js";
 import { uiaScrollByWheelAtHwnd } from "../../index.js";
 
 // ─── Public types ────────────────────────────────────────────────────────────
@@ -41,9 +47,15 @@ export type InputDestination =
   | { kind: "unresolved"; reason: string };
 
 /**
- * ADR §2.6.1 — Transport identifier. Always populated; orthogonal to delivery
- * status (caller may emit `channel:'uia'` with `status:'not_delivered'` if the
- * UIA call returned `scrolled:false` and observation confirmed no movement).
+ * ADR §2.6.1 — Transport identifier emitted by the dispatcher. Always
+ * populated; orthogonal to delivery status (caller may emit `channel:'uia'`
+ * with `status:'not_delivered'` if the UIA call returned `scrolled:false` and
+ * observation confirmed no movement).
+ *
+ * This is the canonical 4-value ADR §2.6.1 enum. The legacy Tier 4 literal
+ * `'wheel_send_input'` emitted by `mouse.ts:scrollHandler` is **not** part of
+ * this type — it is scrollHandler-local until the Phase 4 §2.6.3 migration
+ * renames it to `'send_input'` and routes it through `DispatchOutcome`.
  */
 export type Channel = "uia" | "cdp" | "postmessage" | "send_input";
 
@@ -93,22 +105,32 @@ export interface DispatchOutcome {
 /**
  * Resolve the input destination using `resolveWindowTarget` (ADR §2.3 D3 SSOT).
  *
- * **Single source for dispatcher destination resolution** — when
- * `resolveWindowTarget` returns null (Case 3 plain-windowTitle match, or no
- * resolvable target), the dispatcher emits `{ kind: 'unresolved' }` so the
- * caller falls through to Tier 4 SendInput (legacy nutjs in Phase 1b). This
- * preserves the cursor-only / no-destination happy path (`scroll({action:'raw',
- * direction:'down'})` with no windowTitle) via Tier 4 while ensuring that
- * **dispatcher routing never touches cursor coordinates** — the cursor-pixel
+ * Resolution order:
+ *   1. `resolveWindowTarget({hwnd, windowTitle})` — handles explicit `hwnd`,
+ *      `@active`, and the H3 dialog owner chain → `{ kind: 'hwnd' }`.
+ *   2. **Plain-windowTitle Case 3 recovery**: `resolveWindowTarget` returns
+ *      `null` for a plain `windowTitle` that DOES match a top-level window
+ *      (`_resolve-window.ts` Case 3 discards the matched HWND by design, to
+ *      keep legacy title-based callers unchanged). The dispatcher still needs
+ *      that HWND so Tier 1 UIA is reachable for the common windowTitle-only
+ *      scroll call (ADR §4 Phase 1 G1 acceptance — otherwise
+ *      `scroll(windowTitle:'メモ帳')` could never report `channel:'uia'`). We
+ *      re-run the same top-level `enumWindowsInZOrder` lookup here to recover
+ *      it → `{ kind: 'hwnd' }`. This is still title-based, not cursor/foreground.
+ *   3. No resolvable target → `{ kind: 'unresolved' }` so the caller falls
+ *      through to Tier 4 SendInput (legacy nutjs in Phase 1b). This preserves
+ *      the cursor-only / no-destination happy path (`scroll({action:'raw',
+ *      direction:'down'})` with no windowTitle).
+ *
+ * **Dispatcher routing never touches cursor coordinates** — the cursor-pixel
  * routing that ADR-018 §1.2 identified as the root cause of the 11 reported
- * symptoms is confined to Tier 4 (which only fires when destination is
- * unresolved or when Tier 3 PostMessage is exhausted in Phase 4).
+ * symptoms is confined to Tier 4 (which only fires when the destination is
+ * unresolved, or when Tier 3 PostMessage is exhausted in Phase 4).
  *
  * Callers that need a *snapshot* HWND for Win32 GetScrollInfo observation
- * (when the dispatcher falls through to Tier 4) compute that separately —
- * see `mouse.ts:scrollHandler` for the legacy enum/cursor/foreground ladder
- * used for observation only. That ladder is **never** consulted for dispatch
- * routing.
+ * compute that separately — see `mouse.ts:scrollHandler`, which seeds the
+ * observation HWND from `dest.hwnd` whenever `dest.kind === 'hwnd'` so
+ * observation and action share the same destination (ADR §2.2 invariant).
  */
 export async function resolveInputDestination(params: {
   hwnd?: string;
@@ -120,6 +142,24 @@ export async function resolveInputDestination(params: {
   });
   if (resolved !== null) {
     return { kind: "hwnd", hwnd: resolved.hwnd };
+  }
+  // Case 3 recovery (see docstring): `resolveWindowTarget` returns null for a
+  // plain `windowTitle` that matches a top-level window — re-run the same
+  // top-level enumeration to recover the HWND so Tier 1 UIA stays reachable.
+  // `@active` is excluded: `resolveWindowTarget` owns that shorthand and a
+  // null return there means foreground resolution genuinely failed.
+  if (params.windowTitle && params.windowTitle !== "@active") {
+    try {
+      const want = params.windowTitle.toLowerCase();
+      const match = enumWindowsInZOrder().find(
+        (w) => !w.isMinimized && w.title.toLowerCase().includes(want),
+      );
+      if (match) {
+        return { kind: "hwnd", hwnd: match.hwnd };
+      }
+    } catch {
+      /* enumWindowsInZOrder unavailable → fall through to unresolved */
+    }
   }
   return { kind: "unresolved", reason: "no_target_window" };
 }
@@ -178,8 +218,14 @@ export function assertTier4Reachable(dest: InputDestination): void {
  *   emission condition for `delivered_via_uia`), returns
  *   `{ scrolled: true, channel: 'uia', reason: 'delivered_via_uia' }`.
  *   Otherwise returns `null` (caller falls through to legacy nutjs).
- * - `kind === 'uia'`: future-reserved (Phase 3 or later). Currently treated
- *   identically to `'hwnd'` since the resolver does not emit `'uia'` in Phase 1b.
+ * - `kind === 'uia'`: future-reserved (Phase 3 or later). The resolver does
+ *   not emit `'uia'` in Phase 1b, so this branch is dormant. It dispatches
+ *   through the same Tier 1 native path as `'hwnd'`, but note the
+ *   *failure-path* asymmetry: when the native call returns `null`, an `'hwnd'`
+ *   destination falls through to legacy nutjs, whereas `'uia'` is rejected by
+ *   `assertTier4Reachable` (an explicit-UIA destination must never silently
+ *   fall to cursor-routed SendInput — that is the guard's purpose). The
+ *   asymmetry is intentional and harmless while the branch is dormant.
  * - `kind === 'cdp'`: Phase 3 stub — returns `null` so caller falls through.
  *   The `assertTier4Reachable` guard prevents misuse — see signature note.
  * - `kind === 'unresolved'`: returns `null` (caller invokes Tier 4 SendInput
@@ -222,11 +268,14 @@ export async function dispatchScrollWheel(
 }
 
 /**
- * Convert (direction, notch) into signed WHEEL_DELTA units. 1 notch = 120
+ * Convert (direction, notch) into signed wheel-delta units. 1 notch = 120
  * units (the value of `WHEEL_DELTA` since Windows 2000); the Rust UIA path
  * scales this against `ScrollPattern.VerticalViewSize` to derive a percent
- * step. Down / right are positive, up / left negative — this matches the
- * `WM_MOUSEWHEEL` lParam convention for Phase 4 reuse.
+ * step. Down / right are positive, up / left negative — the UIA-internal
+ * convention documented on `WheelParams` above. This is the **opposite** of
+ * the Win32 `WM_MOUSEWHEEL` wParam high-word convention (positive = wheel
+ * rotated forward = scroll up); Phase 4 PostMessage encoding MUST flip the
+ * sign at the `postWheelToHwnd` napi boundary.
  */
 function wheelDeltaForNotch(params: WheelParams): { x: number; y: number } {
   const unit = 120 * params.notch;

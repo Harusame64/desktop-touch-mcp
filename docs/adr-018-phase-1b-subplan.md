@@ -19,7 +19,7 @@ ADR §B Reuse map says **Phase 1 introduces zero new Rust code**, but `src/uia/s
 
 1. **New `src/tools/_input-pipeline.ts`** (TS):
    - `type InputDestination = { kind: 'uia' | 'cdp' | 'hwnd' | 'unresolved'; ... }` per ADR §2.3
-   - `async function resolveInputDestination(params: { hwnd?, windowTitle? })`: calls `resolveWindowTarget` first, then probes UIA ScrollPattern availability via existing UIA queries
+   - `async function resolveInputDestination(params: { hwnd?, windowTitle? })`: calls `resolveWindowTarget` first. **Case 3 recovery (Round 2 — Codex/Opus P1)**: `resolveWindowTarget` returns `null` for a plain `windowTitle` that *does* match a top-level window (it discards the matched HWND by design to keep legacy title-based callers unchanged). `resolveInputDestination` re-runs the same top-level `enumWindowsInZOrder` lookup to recover the HWND → `{ kind: 'hwnd' }`, so Tier 1 UIA stays reachable for the common windowTitle-only scroll call (otherwise G1 acceptance could never pass). `@active` is excluded from recovery (`resolveWindowTarget` owns that shorthand). Returns `{ kind: 'unresolved' }` only when no top-level window matches. ScrollPattern availability is **not** probed here — the dispatcher's native `uiaScrollByWheelAtHwnd` call probes it and returns `ok:false` for graceful fall-through.
    - `async function dispatchScroll(dest: InputDestination, params: WheelParams)`: routes Tier 1 / Tier 4 (Tier 2 / 3 stubs return `null` so callers fall through to legacy)
    - Runtime guard `assertTier4Reachable(dest)`: **lenient form for Phase 1b** — `kind === 'unresolved' || kind === 'hwnd'` is allowed (Phase 4 tightens to `'unresolved'` only when Tier 3 PostMessage lands)
    - **No exposure** to legacy callers — `scrollHandler` is the sole consumer in Phase 1b
@@ -27,12 +27,12 @@ ADR §B Reuse map says **Phase 1 introduces zero new Rust code**, but `src/uia/s
 2. **New Rust napi export `uia_scroll_by_wheel_at_hwnd`** (`src/uia/scroll.rs` + `src/lib.rs`):
    - Signature: `(hwnd: BigInt, wheel_delta_y: i32, wheel_delta_x: i32) -> ScrollResult`
    - Internal: `IUIAutomation::ElementFromHandle(HWND)` → walk to `IUIAutomationScrollPattern` → `SetScrollPercent(currentH + wheelXPct, currentV + wheelYPct)`
-   - Wheel-delta → percent conversion: ADR notes 1 notch = `WHEEL_DELTA=120` units. Use `vertical_view_size` / `horizontal_view_size` from ScrollPattern to derive percent step (`step_pct = view_size * (delta/120) * SCROLL_STEP_MULTIPLIER`); document the multiplier (default `1.0`, tunable per app in Phase 4).
+   - Wheel-delta → percent conversion via the pure `wheel_step_percent(wheel_delta, view_size)` helper. **Units contract (Round 2 — Codex/Opus P1)**: `Current{Vertical,Horizontal}ViewSize` is ALREADY a percentage of total content (0..100), so the step is `view_size * (delta/120) * SCROLL_STEP_MULTIPLIER` with **no extra `* 100`**. `SCROLL_STEP_MULTIPLIER = 0.1` (one notch ≈ one-tenth of the visible viewport), tunable per app in Phase 4. Pinned by `#[cfg(test)] mod tests` in `scroll.rs`.
    - Return shape unchanged from existing `ScrollResult { ok, scrolled, error }` to minimize napi surface churn
 
 3. **scrollHandler refactor** (`src/tools/mouse.ts:1070-1204`):
    - `resolveWindowTarget` already called first — preserve
-   - Add `resolveInputDestination` call after window resolution. `dest` is the dispatch destination (resolveWindowTarget-only, no cursor/foreground fallback per Opus Round 1 P1-1); observation HWND for snapshot uses a separate enum/cursor/foreground ladder kept in `scrollHandler` (snapshot is read-only, dispatcher routing never touches cursor coords).
+   - Add `resolveInputDestination` call after window resolution. `dest` is the dispatch destination (title-based only — explicit hwnd / `@active` / dialog chain / Case 3 enum recovery — never cursor/foreground, per Opus Round 1 P1-1). **Observation HWND (Round 2 — Opus P1-3)**: when `dest.kind === 'hwnd'` the observation HWND is seeded from `dest.hwnd` directly so observation and action share the same destination (ADR §2.2 invariant); the enum/cursor/foreground ladder in `scrollHandler` only fills in for an `'unresolved'` destination (Tier 4 nutjs path, read-only observation). Dispatcher routing never touches cursor coords.
    - Branch on `dest.kind`:
      - `'uia' | 'hwnd'` → dispatcher attempts `uia_scroll_by_wheel_at_hwnd`. If Rust path returns `scrolled:true` (UIA pre/post percent differ per ADR §2.6.2), emit `channel='uia'`, `reason='delivered_via_uia'`.
      - Else (Tier 1 returned null, or kind === 'unresolved'): legacy nutjs SendInput path preserved, emits `channel='wheel_send_input'` (the legacy literal — Phase 4 §2.6.3 migration renames to `'send_input'` along with the 4 legacy reason values), `reason` from existing `evaluateScrollDelivery` taxonomy.
@@ -43,10 +43,11 @@ ADR §B Reuse map says **Phase 1 introduces zero new Rust code**, but `src/uia/s
    - **Legacy 4 reasons are retained** (`read_back_unsupported`, `page_end_inferred`, `scrollbar_unavailable`, `no_target_window`) — they continue to emit from the nutjs fall-through path. Their removal is deferred to Phase 4 when Tier 3 PostMessage replaces nutjs fall-through entirely. The §2.6.3 migration table executes in Phase 4, not 1b.
 
 5. **Unit tests**:
-   - Add `tests/unit/input-pipeline-dispatch.test.ts`: mock `uia_scroll_by_wheel_at_hwnd` + `resolveWindowTarget`, assert dispatcher branches deterministically per `dest.kind`
-   - Add `tests/unit/scroll-raw-verify-tier1.test.ts`: assert `scrollHandler` emits `verifyDelivery.channel='uia'`, `reason='delivered_via_uia'` when UIA path returns `scrolled:true`
-   - Update `tests/unit/scroll-raw-verify.test.ts:114-129`: **no rewrite required** in Phase 1b (legacy 4 reasons still emit from nutjs path); add 1 new case at the bottom pinning the 5-value enum type-assignability is preserved post-refactor
-   - Add `__test__/fixtures/overlay-window.ts` skeleton: stubs the `WS_EX_LAYERED | WS_EX_TRANSPARENT` Win32 child process; integration assertion runs only in Phase 4 / Phase 5 smoke (Phase 1b lands the file so Phase 4 can reuse without churn)
+   - Add `tests/unit/input-pipeline-dispatch.test.ts`: mock `uiaScrollByWheelAtHwnd` + `resolveWindowTarget` + `enumWindowsInZOrder`, assert `resolveInputDestination` (incl. Case 3 recovery) and `dispatchScrollWheel` branch deterministically per `dest.kind` — **done**
+   - `scroll.rs` math: pure `wheel_step_percent` helper pinned by `#[cfg(test)] mod tests` (no-extra-`*100` regression guard) — **done**
+   - `tests/unit/scroll-raw-verify.test.ts`: 5-value reason enum type-assignability lock — **already present** (added Phase 1a, still passes post-refactor; the `ScrollVerifyOutcome.reason` union was not changed by Phase 1b)
+   - `tests/unit/scroll-raw-verify-tier1.test.ts` (`scrollHandler` envelope integration: `verifyDelivery.channel='uia'` / `reason='delivered_via_uia'` end-to-end): **OPEN — Round 2 review item**, see §2.2 carry-over row. Not yet created; the dispatcher-level contract is pinned by `input-pipeline-dispatch.test.ts`, but the `scrollHandler` envelope-emission path (`effectiveChannel` ternary, `observedHwnd` seeding, `verifyDelivery` construction) is not yet integration-tested.
+   - Add `__test__/fixtures/overlay-window.ts` skeleton: stubs the `WS_EX_LAYERED | WS_EX_TRANSPARENT` Win32 child process; integration assertion runs only in Phase 4 / Phase 5 smoke (Phase 1b lands the file so Phase 4 can reuse without churn) — **done**
 
 ### 2.2 Out of scope (carry-over to later phases)
 
@@ -59,6 +60,7 @@ ADR §B Reuse map says **Phase 1 introduces zero new Rust code**, but `src/uia/s
 | `getWindows()` → `resolveWindowTarget` in `scroll-read.ts` | Phase 5 | ADR §4 |
 | `input-pipeline-guard.yml` CI gate | Phase 5 | Depends on Phase 4 legacy deletion |
 | 5-app smoke | Phase 5 | Depends on Phase 3/4 transport coverage |
+| `scroll-raw-verify-tier1.test.ts` (`scrollHandler` envelope integration test) | **OPEN — Round 2 review item** | Sub-plan §2.1#5 deliverable not created in the trunk PR. Opus Round 3 to decide: Phase 1b-required (add before merge) vs Phase 5 carry-over (fold into the 5-app smoke harness, which already needs full `scrollHandler` wiring). Dispatcher-level contract is covered by `input-pipeline-dispatch.test.ts`; the gap is the `scrollHandler` envelope path. |
 
 ## 3. G1 acceptance (Phase 1b only)
 

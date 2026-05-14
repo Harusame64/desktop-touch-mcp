@@ -3,10 +3,13 @@
  *
  * Pins the Phase 1b contract:
  *   1. `resolveInputDestination` returns `{kind:'hwnd'}` when resolveWindowTarget
- *      resolves the window, and `{kind:'unresolved'}` when resolveWindowTarget
- *      returns null. The resolver is the SINGLE SSOT for dispatch destination
- *      (ADR §2.3 D3) — cursor / foreground / enum fallbacks live in
- *      scrollHandler for OBSERVATION HWND only, never for dispatch.
+ *      resolves the window. When resolveWindowTarget returns null but a plain
+ *      `windowTitle` matches a top-level window, it recovers the HWND via a
+ *      title-based `enumWindowsInZOrder` lookup (Case 3 recovery — keeps Tier 1
+ *      UIA reachable for windowTitle-only calls per ADR §4 G1). It returns
+ *      `{kind:'unresolved'}` only when no top-level window matches. The
+ *      recovery is title-based, NOT cursor/foreground — dispatch routing never
+ *      touches cursor coordinates (ADR §1.2 root-cause confinement).
  *   2. `dispatchScrollWheel({kind:'hwnd'}, ...)` returns
  *      `{scrolled:true, channel:'uia', reason:'delivered_via_uia'}` when the
  *      native `uiaScrollByWheelAtHwnd` returns `ok:true, scrolled:true`.
@@ -33,6 +36,14 @@ vi.mock("../../src/tools/_resolve-window.js", () => ({
   resolveWindowTarget: resolveWindowTargetMock,
 }));
 
+// Mock window enumeration — `resolveInputDestination` falls back to
+// `enumWindowsInZOrder` to recover the HWND for a plain-windowTitle Case 3
+// match (resolveWindowTarget returns null in that case by design).
+const enumWindowsInZOrderMock = vi.fn();
+vi.mock("../../src/engine/win32.js", () => ({
+  enumWindowsInZOrder: enumWindowsInZOrderMock,
+}));
+
 // Import after mocks are registered.
 const {
   resolveInputDestination,
@@ -43,9 +54,11 @@ const {
 describe("ADR-018 §2.3 — resolveInputDestination (single SSOT via resolveWindowTarget)", () => {
   beforeEach(() => {
     resolveWindowTargetMock.mockReset();
+    enumWindowsInZOrderMock.mockReset();
+    enumWindowsInZOrderMock.mockReturnValue([]);
   });
 
-  it("returns {kind:'hwnd'} when resolveWindowTarget resolves", async () => {
+  it("returns {kind:'hwnd'} when resolveWindowTarget resolves (no enumeration needed)", async () => {
     resolveWindowTargetMock.mockResolvedValue({
       title: "Test",
       hwnd: 0xABCDn,
@@ -53,22 +66,62 @@ describe("ADR-018 §2.3 — resolveInputDestination (single SSOT via resolveWind
     });
     const dest = await resolveInputDestination({ windowTitle: "Test" });
     expect(dest).toEqual({ kind: "hwnd", hwnd: 0xABCDn });
+    expect(enumWindowsInZOrderMock).not.toHaveBeenCalled();
   });
 
-  it("returns {kind:'unresolved'} when resolveWindowTarget returns null", async () => {
-    // Case 3 (plain windowTitle top-level match): resolveWindowTarget returns
-    // null to signal "caller handles". Phase 1b dispatcher reads that as
-    // 'unresolved' so the caller falls through to Tier 4. The legacy nutjs
-    // path then dispatches via cursor — this is the only place cursor-pixel
-    // routing reaches the wheel, confined to Tier 4 per ADR §1.2.
+  it("Case 3 recovery: resolveWindowTarget null + plain windowTitle matches a top-level window → {kind:'hwnd'} via enumWindowsInZOrder (keeps Tier 1 UIA reachable, ADR §4 G1)", async () => {
+    // resolveWindowTarget returns null for a plain-windowTitle top-level match
+    // BY DESIGN (_resolve-window.ts Case 3 discards the HWND to keep legacy
+    // title-based callers unchanged). resolveInputDestination must recover the
+    // HWND via the same top-level enumeration — otherwise G1 acceptance
+    // (scroll(windowTitle:'メモ帳') → channel:'uia') can never pass.
     resolveWindowTargetMock.mockResolvedValue(null);
+    enumWindowsInZOrderMock.mockReturnValue([
+      { hwnd: 0x111n, title: "Untitled - Notepad", isMinimized: false },
+    ]);
+    const dest = await resolveInputDestination({ windowTitle: "Notepad" });
+    expect(dest).toEqual({ kind: "hwnd", hwnd: 0x111n });
+  });
+
+  it("Case 3 recovery skips minimized windows and matches case-insensitively", async () => {
+    resolveWindowTargetMock.mockResolvedValue(null);
+    enumWindowsInZOrderMock.mockReturnValue([
+      { hwnd: 0x222n, title: "メモ帳 (minimized copy)", isMinimized: true },
+      { hwnd: 0x333n, title: "メモ帳", isMinimized: false },
+    ]);
+    const dest = await resolveInputDestination({ windowTitle: "メモ帳" });
+    expect(dest).toEqual({ kind: "hwnd", hwnd: 0x333n });
+  });
+
+  it("returns {kind:'unresolved'} when resolveWindowTarget null AND no enumeration match", async () => {
+    resolveWindowTargetMock.mockResolvedValue(null);
+    enumWindowsInZOrderMock.mockReturnValue([
+      { hwnd: 0x444n, title: "Some Other Window", isMinimized: false },
+    ]);
     const dest = await resolveInputDestination({ windowTitle: "Notepad" });
     expect(dest).toEqual({ kind: "unresolved", reason: "no_target_window" });
   });
 
-  it("returns {kind:'unresolved'} when neither hwnd nor windowTitle is given", async () => {
+  it("returns {kind:'unresolved'} when neither hwnd nor windowTitle is given (no enumeration attempted)", async () => {
     resolveWindowTargetMock.mockResolvedValue(null);
     const dest = await resolveInputDestination({});
+    expect(dest).toEqual({ kind: "unresolved", reason: "no_target_window" });
+    expect(enumWindowsInZOrderMock).not.toHaveBeenCalled();
+  });
+
+  it("does not attempt enumeration for windowTitle '@active' (resolveWindowTarget owns @active)", async () => {
+    resolveWindowTargetMock.mockResolvedValue(null);
+    const dest = await resolveInputDestination({ windowTitle: "@active" });
+    expect(dest).toEqual({ kind: "unresolved", reason: "no_target_window" });
+    expect(enumWindowsInZOrderMock).not.toHaveBeenCalled();
+  });
+
+  it("returns {kind:'unresolved'} when enumWindowsInZOrder throws (graceful fall-through)", async () => {
+    resolveWindowTargetMock.mockResolvedValue(null);
+    enumWindowsInZOrderMock.mockImplementation(() => {
+      throw new Error("enumeration unavailable");
+    });
+    const dest = await resolveInputDestination({ windowTitle: "Notepad" });
     expect(dest).toEqual({ kind: "unresolved", reason: "no_target_window" });
   });
 });
