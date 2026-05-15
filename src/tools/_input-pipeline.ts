@@ -30,8 +30,8 @@ import {
   DIALOG_CLASSNAMES,
   type ResolvedWindow,
 } from "./_resolve-window.js";
-import { enumWindowsInZOrder } from "../engine/win32.js";
-import { nativeUia } from "../engine/native-engine.js";
+import { enumWindowsInZOrder, getWindowRectByHwnd } from "../engine/win32.js";
+import { nativeUia, nativeWin32 } from "../engine/native-engine.js";
 import {
   listTabsLight,
   dispatchWheelInTab,
@@ -76,6 +76,31 @@ const CHROMIUM_TOP_LEVEL_CLASS = "Chrome_WidgetWin_1";
  * at least this many px.)
  */
 const CDP_SCROLL_DELIVERY_EPSILON_PX = 1;
+
+/**
+ * ADR-018 Phase 4 — Tier 3 PostMessage settle delay (ms) before reading
+ * `win32_get_scroll_info` post-snapshot. Wheel message handling on the
+ * receiver pump is synchronous, but the scrollbar position reflects the next
+ * paint. 16 ms ≈ one display frame at 60 Hz; same value Tier 2 CDP uses.
+ */
+const POSTMESSAGE_SETTLE_MS = 16;
+
+/**
+ * ADR-018 Phase 4 — Tier 3 PostMessage minimum observable `nPos` delta to
+ * classify the scroll as `delivered_via_postmessage`. Scrollbar position is
+ * reported in app-defined units (often pixels for a custom scrollbar, line
+ * count for a listbox); a 1-unit movement is the smallest physically
+ * observable change.
+ */
+const POSTMESSAGE_SCROLL_DELIVERY_EPSILON_NPOS = 1;
+
+/**
+ * Win32 wheel message constants. Verified against Microsoft Learn:
+ * - WM_MOUSEWHEEL  = 0x020A — vertical wheel, HIWORD positive = forward (scroll up)
+ * - WM_MOUSEHWHEEL = 0x020E — horizontal wheel, HIWORD positive = tilt right (scroll right)
+ */
+const WM_MOUSEWHEEL = 0x020a;
+const WM_MOUSEHWHEEL = 0x020e;
 
 // ─── Public types ────────────────────────────────────────────────────────────
 
@@ -152,12 +177,17 @@ export interface DispatchOutcome {
   channel: Channel;
   /**
    * ADR §2.6.2 reason value. Phase 1b emits `'delivered_via_uia'`, Phase 3
-   * adds `'delivered_via_cdp'`; `'delivered_via_postmessage'` /
-   * `'wheel_overlay_intercepted'` / `'target_unreachable'` arrive in later
-   * phases. `null` indicates no ADR-018 reason applies (caller picks the
-   * legacy `evaluateScrollDelivery` reason from `mouse.ts`).
+   * adds `'delivered_via_cdp'`, Phase 4 adds `'delivered_via_postmessage'`;
+   * `'wheel_overlay_intercepted'` / `'target_unreachable'` are surfaced by
+   * the caller via the typed envelope (see `mouse.ts:scrollHandler`). `null`
+   * indicates no ADR-018 reason applies (caller picks the legacy
+   * `evaluateScrollDelivery` reason from `mouse.ts`).
    */
-  reason: "delivered_via_uia" | "delivered_via_cdp" | null;
+  reason:
+    | "delivered_via_uia"
+    | "delivered_via_cdp"
+    | "delivered_via_postmessage"
+    | null;
 }
 
 // ─── Resolver ────────────────────────────────────────────────────────────────
@@ -304,39 +334,163 @@ export async function resolveCdpDestinationForHwnd(
 
 /**
  * Asserts that the caller is allowed to invoke Tier 4 (legacy SendInput
- * nutjs path) for the given destination. **Phase 1b adopts a LENIENT form**
- * (`'hwnd'` and `'unresolved'` are both allowed) so resolved-but-non-UIA
- * destinations (Word / Chrome / Excel under the dispatcher's view) preserve
- * the legacy happy path until Tier 3 PostMessage lands in Phase 4.
+ * nutjs path) for the given destination. **Phase 4 strict form** — only
+ * `dest.kind === 'unresolved'` is allowed; resolved destinations of any
+ * kind (`'uia' | 'cdp' | 'hwnd'`) MUST dispatch through their own transport
+ * and surface `target_unreachable` per ADR §2.6.2 path-(b) when every
+ * applicable tier (1/2/3) is exhausted. The dispatcher routes Tier 1 → Tier 3
+ * for `kind:'hwnd' | 'uia'` so by the time the caller would consider Tier 4
+ * the destination was already proven exhausted at the dispatcher layer.
  *
- * ## ⚠ Phase 4 BREAKING CHANGE marker ⚠
+ * History: Phase 1b adopted a lenient form (`'hwnd'` allowed) so the dispatcher
+ * could roll out Tier 1 without losing the legacy SendInput fallback for
+ * Word / Chrome / Excel before Tier 3 PostMessage landed. Phase 4 tightens
+ * to strict because Tier 3 PostMessage now covers those resolved-but-non-UIA
+ * destinations.
  *
- * Phase 4 (when Tier 3 PostMessage lands) **MUST** tighten this guard to
- * `dest.kind === 'unresolved'` only. The Phase 4 tightening will:
- *
- * 1. Throw on `dest.kind === 'hwnd'` (resolved-but-Tier-3-exhausted) instead
- *    of allowing fall-through to SendInput
- * 2. Caller must catch and emit `{status:'not_delivered', channel:'postmessage',
- *    reason:'target_unreachable'}` per ADR §2.6.2 path-(b)
- * 3. The corresponding unit test (currently named "kind='hwnd' → no throw
- *    (Phase 1b lenient form)") must invert to `.toThrow(...)` in the same PR
- *
- * Carry-over: `docs/adr-018-phase-1b-subplan.md` §2.2 "Strict Tier 4 guard
- * (`kind === 'unresolved'` only)" tracks this.
- *
- * @throws Error if `dest.kind` is `'uia'` or `'cdp'` (those tiers must
- *   dispatch through their own transport — invoking SendInput would
- *   bypass the destination-explicit contract).
+ * @throws Error if `dest.kind` is `'uia'`, `'cdp'`, or `'hwnd'` (those
+ *   destinations must dispatch through Tier 1/2/3 — invoking SendInput
+ *   would bypass the destination-explicit contract and re-introduce the
+ *   cursor-pixel routing that ADR §1.2 identifies as the root cause of
+ *   the 11 reported symptoms).
  */
 export function assertTier4Reachable(dest: InputDestination): void {
-  if (dest.kind === "uia" || dest.kind === "cdp") {
+  if (dest.kind !== "unresolved") {
     throw new Error(
       `Tier 4 SendInput must not be reached when destination kind is '${dest.kind}'. ` +
-        "Use Tier 1/2 dispatch instead. " +
-        "(ADR-018 §2.6.2: Tier 4 is reachable only when destination is unresolved or " +
-        "Tier 3 PostMessage was exhausted — Phase 1b lenient form allows 'hwnd' as well " +
-        "during the dispatcher rollout.)",
+        "Resolved destinations dispatch through Tier 1 (UIA) / Tier 2 (CDP) / Tier 3 (PostMessage) " +
+        "and surface 'target_unreachable' when every applicable tier is exhausted. " +
+        "(ADR-018 §2.6.2 path-(b): Tier 4 is reachable only when destination is unresolved.)",
     );
+  }
+}
+
+// ─── Tier 3 PostMessage helpers (ADR-018 §4 Phase 4) ─────────────────────────
+
+/**
+ * Convert (direction, notch) into the Win32-flipped wheel-delta units used in
+ * the `WM_MOUSEWHEEL` / `WM_MOUSEHWHEEL` `wParam` high word. UIA convention
+ * (down/right positive) → Win32 convention (forward = scroll up = positive
+ * for the **vertical** wheel only; horizontal wheel WM_MOUSEHWHEEL keeps
+ * UIA's right=positive). 1 notch = 120 raw `WHEEL_DELTA` units.
+ *
+ * See sub-plan `docs/adr-018-phase-4-subplan.md` §2.3 sign matrix for the
+ * load-bearing per-direction expectations. A second flip on the horizontal
+ * axis would silently reverse left/right scrolling.
+ */
+function win32WheelEncoding(params: WheelParams): {
+  message: number;
+  signedDelta: number;
+} {
+  const magnitude = 120 * Math.abs(params.notch);
+  switch (params.direction) {
+    case "down":
+      // UIA down=+ → Win32 vertical forward=- (scroll up=+ ⇒ scroll down=-).
+      return { message: WM_MOUSEWHEEL, signedDelta: -magnitude };
+    case "up":
+      return { message: WM_MOUSEWHEEL, signedDelta: magnitude };
+    case "right":
+      // UIA right=+ matches WM_MOUSEHWHEEL right=+ (Vista+ horizontal wheel).
+      return { message: WM_MOUSEHWHEEL, signedDelta: magnitude };
+    case "left":
+      return { message: WM_MOUSEHWHEEL, signedDelta: -magnitude };
+  }
+}
+
+/**
+ * Pack `MAKEWPARAM(modifiers, wheelDelta)` — Win32 macro that places the
+ * modifiers in LOWORD and the signed wheelDelta in HIWORD. Both halves are
+ * masked to 16 bits so a negative `wheelDelta` (e.g. -120 for vertical down)
+ * round-trips as the two's-complement bit pattern HIWORD would re-extract
+ * via `(short)HIWORD(wParam)`.
+ */
+function makeWheelWParam(modifiers: number, wheelDelta: number): bigint {
+  const lo = modifiers & 0xffff;
+  const hi = wheelDelta & 0xffff;
+  return BigInt((hi << 16) | lo) & 0xffffffffn;
+}
+
+/**
+ * Pack `MAKELPARAM(screenX, screenY)` — low word = X, high word = Y, both
+ * as **screen** coordinates. Negative coords (secondary monitor left of
+ * primary) are packed via `& 0xFFFF` so the sign bit survives for the
+ * receiver's `(short)HIWORD(lParam)` extraction.
+ */
+function makeScreenLParam(screenX: number, screenY: number): bigint {
+  const lo = screenX & 0xffff;
+  const hi = screenY & 0xffff;
+  return BigInt((hi << 16) | lo) & 0xffffffffn;
+}
+
+/**
+ * ADR-018 Phase 4 — Tier 3 PostMessage wheel dispatch.
+ *
+ * Encodes `WM_MOUSEWHEEL` (vertical) or `WM_MOUSEHWHEEL` (horizontal) via
+ * `win32_post_message` and verifies the scroll happened with pre/post
+ * `win32_get_scroll_info` snapshots on the axis of interest.
+ *
+ * Returns `DispatchOutcome` on observable delivery; `null` on any failure
+ * (missing native binding, no scrollbar to observe, message not consumed by
+ * the target HWND — Word `_WwG` MFC custom-paint case, etc.) so the caller
+ * can emit `target_unreachable` per ADR §2.6.2 path-(b). Never throws.
+ *
+ * lParam is `MAKELPARAM(rect.cx, rect.cy)` from `getWindowRectByHwnd` — the
+ * window-center screen coordinate. MFC apps frequently use lParam to find
+ * the receiving child via `ChildWindowFromPoint`; the window center is the
+ * safest neutral hit point. When the rect lookup fails the lParam falls
+ * back to 0 (apps that ignore lParam still scroll; apps that hit-test fail
+ * observably and emit `target_unreachable`).
+ *
+ * Exported for unit testing.
+ */
+export async function postWheelToHwnd(
+  hwnd: bigint,
+  params: WheelParams,
+): Promise<DispatchOutcome | null> {
+  const postMessage = nativeWin32?.win32PostMessage;
+  const getScrollInfo = nativeWin32?.win32GetScrollInfo;
+  if (typeof postMessage !== "function") return null;
+  try {
+    const { message, signedDelta } = win32WheelEncoding(params);
+    const wParam = makeWheelWParam(0, signedDelta);
+    const rect = getWindowRectByHwnd(hwnd);
+    const lParam = rect !== null
+      ? makeScreenLParam(
+          Math.round(rect.x + rect.width / 2),
+          Math.round(rect.y + rect.height / 2),
+        )
+      : 0n;
+
+    const axisIsVertical =
+      params.direction === "up" || params.direction === "down";
+    const axisName = axisIsVertical ? "vertical" : "horizontal";
+
+    // Pre-snapshot is best-effort: targets without an observable Win32 scrollbar
+    // (Word _WwG, modern UWP custom-paint controls) return null and route to
+    // the `target_unreachable` path below.
+    const pre = typeof getScrollInfo === "function"
+      ? getScrollInfo(hwnd, axisName)
+      : null;
+
+    const posted = postMessage(hwnd, message, wParam, lParam);
+    if (!posted) return null;
+
+    await new Promise((r) => setTimeout(r, POSTMESSAGE_SETTLE_MS));
+
+    if (pre === null || typeof getScrollInfo !== "function") return null;
+    const post = getScrollInfo(hwnd, axisName);
+    if (post === null) return null;
+
+    const delta = Math.abs(post.nPos - pre.nPos);
+    if (delta < POSTMESSAGE_SCROLL_DELIVERY_EPSILON_NPOS) return null;
+
+    return {
+      scrolled: true,
+      channel: "postmessage",
+      reason: "delivered_via_postmessage",
+    };
+  } catch {
+    return null;
   }
 }
 
@@ -377,6 +531,10 @@ export async function dispatchScrollWheel(
   params: WheelParams,
 ): Promise<DispatchOutcome | null> {
   if (dest.kind === "hwnd" || dest.kind === "uia") {
+    // ADR §2.1 D1 — try Tier 1 UIA first. The native call returns null /
+    // ok:false when the HWND lacks a ScrollPattern ancestor (Word document,
+    // modern UWP, accessibility-blind custom paint) so we fall through to
+    // Tier 3 PostMessage rather than returning null immediately (Phase 4).
     try {
       // Resolve the Tier 1 native call through the tolerant `native-engine.ts`
       // loader — NOT a direct `import from "../../index.js"`, which `throw`s at
@@ -384,26 +542,35 @@ export async function dispatchScrollWheel(
       // defeating the graceful-degradation intent of the guard below (Codex
       // PR #288 Round 6 P1). `nativeUia` is `null` when the addon is absent,
       // and `uiaScrollByWheelAtHwnd` is `undefined` on older `.node` builds
-      // without the Phase 1b export — both cases fall through to legacy nutjs.
+      // without the Phase 1b export — both cases fall through to Tier 3.
       const scrollByWheel = nativeUia?.uiaScrollByWheelAtHwnd;
-      if (typeof scrollByWheel !== "function") return null;
-      const wheelDelta = wheelDeltaForNotch(params);
-      const result = (await scrollByWheel({
-        hwnd: dest.hwnd.toString(),
-        wheelDeltaY: wheelDelta.y,
-        wheelDeltaX: wheelDelta.x,
-      })) ?? { ok: false, scrolled: false };
-      if (result.ok === true && result.scrolled === true) {
-        return {
-          scrolled: true,
-          channel: "uia",
-          reason: "delivered_via_uia",
-        };
+      if (typeof scrollByWheel === "function") {
+        const wheelDelta = wheelDeltaForNotch(params);
+        const result = (await scrollByWheel({
+          hwnd: dest.hwnd.toString(),
+          wheelDeltaY: wheelDelta.y,
+          wheelDeltaX: wheelDelta.x,
+        })) ?? { ok: false, scrolled: false };
+        if (result.ok === true && result.scrolled === true) {
+          return {
+            scrolled: true,
+            channel: "uia",
+            reason: "delivered_via_uia",
+          };
+        }
+        // ok:false or scrolled:false → fall through to Tier 3 PostMessage.
       }
-      return null;
     } catch {
-      return null;
+      // Tier 1 native crash → fall through to Tier 3 (best-effort).
     }
+    // ADR-018 Phase 4 — Tier 3 PostMessage fall-through. Covers Word `_WwG`,
+    // Excel cell area, Explorer ListView, and other destinations that have a
+    // resolvable HWND but no ScrollPattern. `postWheelToHwnd` returns null on
+    // either "message not consumed" or "no observable scrollbar diff"; the
+    // caller (`mouse.ts:scrollHandler`) reads `dest.kind === 'hwnd'` AND
+    // dispatcher null → emits `target_unreachable` per ADR §2.6.2 path-(b)
+    // and does NOT fall through to Tier 4 SendInput.
+    return await postWheelToHwnd(dest.hwnd, params);
   }
   if (dest.kind === "cdp") {
     // ADR-018 Phase 3 — Tier 2 CDP wheel dispatch. Pre/post observation via

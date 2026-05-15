@@ -1191,6 +1191,30 @@ export const scrollHandler = async ({
           },
         );
       }
+      // ADR-018 Phase 4 — when destination resolved to an HWND but every
+      // applicable tier (Tier 1 UIA + Tier 3 PostMessage) was exhausted
+      // without observable delta (Word `_WwG` MFC custom-paint case, etc.),
+      // emit `target_unreachable` per §2.6.2 path-(b). The `assertTier4Reachable`
+      // strict guard below would throw for `kind:'hwnd' | 'uia'` anyway — this
+      // branch surfaces the typed envelope explicitly with `channel:'postmessage'`
+      // (the last attempted tier) so callers see the proper transport identifier.
+      if (dest.kind === "hwnd" || dest.kind === "uia") {
+        return failWith(
+          new Error("ScrollNotDelivered"),
+          "scroll",
+          {
+            context: {
+              hint: "Tier 1 UIA + Tier 3 PostMessage both exhausted on the resolved destination (no ScrollPattern AND no observable scrollbar diff after WM_MOUSEWHEEL) — Tier 4 SendInput suppressed per ADR-018 §2.6.2 path-(b)",
+              direction,
+              verifyDelivery: {
+                status: "not_delivered" as const,
+                channel: "postmessage" as const,
+                reason: "target_unreachable" as const,
+              },
+            },
+          },
+        );
+      }
       assertTier4Reachable(dest);
       const SCROLL_MULTIPLIER = 3;
       switch (direction) {
@@ -1236,25 +1260,32 @@ export const scrollHandler = async ({
 
     // ADR-018 §2.6.1 — channel is the transport identifier (always populated,
     // including for `status:'not_delivered'`). Phase 1b emits 'uia' when Tier 1
-    // succeeded; Phase 3 adds 'cdp' for the Tier 2 CDP dispatch. The legacy
-    // SendInput path retains 'wheel_send_input' for back-compat — the Phase 4
-    // §2.6.3 migration renames it → 'send_input'.
+    // succeeded; Phase 3 adds 'cdp' for the Tier 2 CDP dispatch; Phase 4 adds
+    // 'postmessage' for Tier 3. The legacy SendInput path retains
+    // 'wheel_send_input' for back-compat — the ADR §2.6.3 rename to 'send_input'
+    // is deferred to a future cleanup PR (the Tier 4 `kind:'unresolved'` path
+    // is the only remaining emitter once Phase 4 lands).
     //
     // **Explicit narrowing**, not an `as` cast: `tier1.channel` carries the
     // broad `Channel` union ("uia" | "cdp" | "postmessage" | "send_input"),
     // and casting to the narrow union would silently leak the wrong channel
-    // into `verifyDelivery` the moment Phase 4 starts emitting
-    // `channel:'postmessage'`. The if-chain below forces Phase 4 to extend
-    // both the local type and this branch deliberately — otherwise a
-    // PostMessage-tier success degrades to `wheel_send_input`, loud enough to
-    // spot on the first failing dogfood scroll. (Opus Round 1 P2.)
-    let effectiveChannel: "uia" | "cdp" | "wheel_send_input" = "wheel_send_input";
+    // into `verifyDelivery` if a future tier is added without updating this
+    // branch. (Opus Round 1 P2.)
+    let effectiveChannel:
+      | "uia"
+      | "cdp"
+      | "postmessage"
+      | "wheel_send_input" = "wheel_send_input";
     if (tier1 !== null && tier1.scrolled) {
-      if (tier1.channel === "uia" || tier1.channel === "cdp") {
+      if (
+        tier1.channel === "uia" ||
+        tier1.channel === "cdp" ||
+        tier1.channel === "postmessage"
+      ) {
         effectiveChannel = tier1.channel;
       }
-      // else: a future tier (postmessage / send_input). Extend the local
-      // union and add the case when Phase 4+ wires those channels here.
+      // else: a future tier. Extend the local union and add the case when a
+      // new channel is added here.
     }
 
     if (outcome.status === "not_delivered") {

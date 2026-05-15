@@ -29,13 +29,27 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // Tier 1 native call via the tolerant `native-engine.ts` loader (NOT a direct
 // `index.js` import — Codex PR #288 Round 6 P1). `nativeUiaMock` is a mutable
 // holder so a test can simulate a missing native export by clearing the
-// `uiaScrollByWheelAtHwnd` property.
+// `uiaScrollByWheelAtHwnd` property. `nativeWin32Mock` is the Phase 4 Tier 3
+// PostMessage surface (`win32PostMessage` + `win32GetScrollInfo`).
 const uiaScrollByWheelAtHwndMock = vi.fn();
 const nativeUiaMock: { uiaScrollByWheelAtHwnd?: unknown } = {
   uiaScrollByWheelAtHwnd: uiaScrollByWheelAtHwndMock,
 };
+const win32PostMessageMock = vi.fn<[bigint, number, bigint, bigint], boolean>();
+const win32GetScrollInfoMock = vi.fn<
+  [bigint, string],
+  { nMin: number; nMax: number; nPage: number; nPos: number; pageRatio: number } | null
+>();
+const nativeWin32Mock: {
+  win32PostMessage?: unknown;
+  win32GetScrollInfo?: unknown;
+} = {
+  win32PostMessage: win32PostMessageMock,
+  win32GetScrollInfo: win32GetScrollInfoMock,
+};
 vi.mock("../../src/engine/native-engine.js", () => ({
   nativeUia: nativeUiaMock,
+  nativeWin32: nativeWin32Mock,
 }));
 
 // Mock window resolution dependency. `DIALOG_CLASSNAMES` is re-exported from
@@ -51,9 +65,16 @@ vi.mock("../../src/tools/_resolve-window.js", () => ({
 // `enumWindowsInZOrder` to recover the HWND for a plain-windowTitle Case 3
 // match (resolveWindowTarget returns null in that case by design), and Phase 3
 // also consults it for the Chromium-class gate in `resolveCdpDestinationForHwnd`.
+// `getWindowRectByHwnd` is mocked because Phase 4 Tier 3 `postWheelToHwnd`
+// uses it for `MAKELPARAM(screenCx, screenCy)` encoding.
 const enumWindowsInZOrderMock = vi.fn();
+const getWindowRectByHwndMock = vi.fn<
+  [bigint],
+  { x: number; y: number; width: number; height: number } | null
+>();
 vi.mock("../../src/engine/win32.js", () => ({
   enumWindowsInZOrder: enumWindowsInZOrderMock,
+  getWindowRectByHwnd: getWindowRectByHwndMock,
 }));
 
 // Phase 3 Tier 2 CDP — mock the cdp-bridge surface used by the dispatcher.
@@ -78,6 +99,7 @@ const {
   resolveCdpDestinationForHwnd,
   dispatchScrollWheel,
   assertTier4Reachable,
+  postWheelToHwnd,
 } = await import("../../src/tools/_input-pipeline.js");
 
 describe("ADR-018 §2.3 — resolveInputDestination (single SSOT via resolveWindowTarget)", () => {
@@ -210,8 +232,20 @@ describe("ADR-018 §2.3 — resolveInputDestination (single SSOT via resolveWind
 describe("ADR-018 §2.6 — dispatchScrollWheel (Tier 1 UIA path)", () => {
   beforeEach(() => {
     uiaScrollByWheelAtHwndMock.mockReset();
-    // Restore the native export in case a prior test cleared it.
+    win32PostMessageMock.mockReset();
+    win32GetScrollInfoMock.mockReset();
+    getWindowRectByHwndMock.mockReset();
+    // Restore the native exports in case a prior test cleared them.
     nativeUiaMock.uiaScrollByWheelAtHwnd = uiaScrollByWheelAtHwndMock;
+    nativeWin32Mock.win32PostMessage = win32PostMessageMock;
+    nativeWin32Mock.win32GetScrollInfo = win32GetScrollInfoMock;
+    // Phase 4 default: Tier 3 PostMessage returns null (no observable diff).
+    // Tier 1 UIA-only tests below leave these defaults so the dispatcher's
+    // Tier 1 → Tier 3 fall-through still produces null when Tier 1 returns
+    // null. Phase 4 Tier 3 tests override these per-case.
+    win32PostMessageMock.mockReturnValue(true);
+    win32GetScrollInfoMock.mockReturnValue(null);
+    getWindowRectByHwndMock.mockReturnValue({ x: 0, y: 0, width: 800, height: 600 });
   });
 
   it("native binding missing (nativeUia.uiaScrollByWheelAtHwnd undefined) → null (caller falls through to Tier 4)", async () => {
@@ -540,20 +574,21 @@ describe("ADR-018 Phase 3 — dispatchScrollWheel (Tier 2 CDP path)", () => {
   });
 });
 
-describe("ADR-018 §4 Phase 1 runtime guard — assertTier4Reachable", () => {
-  it("kind='unresolved' → no throw (canonical Tier 4 destination)", () => {
+describe("ADR-018 §4 Phase 4 runtime guard — assertTier4Reachable (strict form)", () => {
+  it("kind='unresolved' → no throw (the ONLY canonical Tier 4 destination after Phase 4)", () => {
     expect(() =>
       assertTier4Reachable({ kind: "unresolved", reason: "no_target_window" }),
     ).not.toThrow();
   });
 
-  it("kind='hwnd' → no throw (Phase 1b LENIENT FORM — Phase 4 inverts this assertion to .toThrow when Tier 3 PostMessage lands)", () => {
-    // ⚠ Phase 4 BREAKING CHANGE marker ⚠
-    // When Tier 3 PostMessage lands, this assertion inverts: resolved HWNDs
-    // that exhausted Tiers 1/2/3 must NOT reach Tier 4 SendInput per
-    // ADR §2.6.2 path-(b). The same PR that lands Tier 3 must update this
-    // case to `.toThrow(/Tier 4 SendInput must not be reached/)`.
-    expect(() => assertTier4Reachable({ kind: "hwnd", hwnd: 0n })).not.toThrow();
+  it("kind='hwnd' → throws (Phase 4 STRICT FORM — Tier 3 PostMessage covers resolved-but-non-UIA destinations; SendInput would re-introduce cursor-pixel routing per ADR §1.2)", () => {
+    // Phase 4 inverted from Phase 1b lenient form. Resolved HWNDs that exhaust
+    // Tier 1 UIA + Tier 3 PostMessage must surface `target_unreachable` via
+    // the typed envelope at the caller (mouse.ts:scrollHandler), NOT silently
+    // fall through to cursor-pixel SendInput.
+    expect(() => assertTier4Reachable({ kind: "hwnd", hwnd: 0n })).toThrow(
+      /Tier 4 SendInput must not be reached/,
+    );
   });
 
   it("kind='uia' → throws (Tier 1 must dispatch via UIA, never via SendInput)", () => {
@@ -566,5 +601,300 @@ describe("ADR-018 §4 Phase 1 runtime guard — assertTier4Reachable", () => {
     expect(() => assertTier4Reachable({ kind: "cdp", tabId: "x" })).toThrow(
       /Tier 4 SendInput must not be reached/,
     );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR-018 Phase 4 — Tier 3 PostMessage (WM_MOUSEWHEEL / WM_MOUSEHWHEEL)
+//
+// Pins the sub-plan `docs/adr-018-phase-4-subplan.md` §2.3 sign-convention
+// matrix (load-bearing — a second flip on the horizontal axis would silently
+// reverse left/right scrolling) and §2.4 lParam encoding (screen-center via
+// getWindowRectByHwnd, sign-bit-preserved packing for negative multi-monitor
+// coordinates).
+// ─────────────────────────────────────────────────────────────────────────────
+
+const WM_MOUSEWHEEL = 0x020a;
+const WM_MOUSEHWHEEL = 0x020e;
+
+describe("ADR-018 Phase 4 — postWheelToHwnd (Tier 3 PostMessage path)", () => {
+  beforeEach(() => {
+    win32PostMessageMock.mockReset();
+    win32GetScrollInfoMock.mockReset();
+    getWindowRectByHwndMock.mockReset();
+    nativeWin32Mock.win32PostMessage = win32PostMessageMock;
+    nativeWin32Mock.win32GetScrollInfo = win32GetScrollInfoMock;
+    win32PostMessageMock.mockReturnValue(true);
+    getWindowRectByHwndMock.mockReturnValue({ x: 100, y: 200, width: 800, height: 600 });
+  });
+
+  const scrollInfo = (nPos: number) => ({
+    nMin: 0,
+    nMax: 1000,
+    nPage: 100,
+    nPos,
+    pageRatio: nPos / 1000,
+  });
+
+  // Window rect (100,200,800,600) → center (500, 500).
+  const expectedLParam = BigInt((500 << 16) | 500);
+
+  // BigInt-safe pack of signed 16-bit wParam HIWORD with LOWORD=0. The impl
+  // masks to unsigned u32 (`& 0xffffffffn`) so the on-wire WPARAM bits match
+  // a real mouse driver (top 32 bits zero on x64). JS `<<` is signed 32-bit
+  // so we round-trip through `& 0xffff` then mask the BigInt to u32.
+  const wParamFromSignedHigh = (signedHigh: number): bigint => {
+    const hi = signedHigh & 0xffff;
+    return BigInt((hi << 16) | 0) & 0xffffffffn;
+  };
+
+  it("vertical DOWN: posts WM_MOUSEWHEEL with FLIPPED wParam HIWORD (UIA down=+ → Win32 -120 = scroll down), observable scrollbar diff → delivered_via_postmessage", async () => {
+    win32GetScrollInfoMock
+      .mockReturnValueOnce(scrollInfo(50))
+      .mockReturnValueOnce(scrollInfo(80));
+    const result = await postWheelToHwnd(0xABCDn, { direction: "down", notch: 1 });
+    expect(result).toEqual({
+      scrolled: true,
+      channel: "postmessage",
+      reason: "delivered_via_postmessage",
+    });
+    expect(win32PostMessageMock).toHaveBeenCalledWith(
+      0xABCDn,
+      WM_MOUSEWHEEL,
+      wParamFromSignedHigh(-120),
+      expectedLParam,
+    );
+  });
+
+  it("vertical UP: posts WM_MOUSEWHEEL with POSITIVE wParam HIWORD (+120 = scroll up per Win32 convention)", async () => {
+    win32GetScrollInfoMock
+      .mockReturnValueOnce(scrollInfo(80))
+      .mockReturnValueOnce(scrollInfo(50));
+    const result = await postWheelToHwnd(0x1234n, { direction: "up", notch: 1 });
+    expect(result).toEqual({
+      scrolled: true,
+      channel: "postmessage",
+      reason: "delivered_via_postmessage",
+    });
+    expect(win32PostMessageMock).toHaveBeenCalledWith(
+      0x1234n,
+      WM_MOUSEWHEEL,
+      wParamFromSignedHigh(120),
+      expectedLParam,
+    );
+  });
+
+  it("horizontal RIGHT: posts WM_MOUSEHWHEEL with POSITIVE wParam HIWORD (NO flip — UIA right=+ matches WM_MOUSEHWHEEL right=+)", async () => {
+    win32GetScrollInfoMock
+      .mockReturnValueOnce(scrollInfo(40))
+      .mockReturnValueOnce(scrollInfo(70));
+    const result = await postWheelToHwnd(0x5678n, { direction: "right", notch: 2 });
+    expect(result).toEqual({
+      scrolled: true,
+      channel: "postmessage",
+      reason: "delivered_via_postmessage",
+    });
+    expect(win32PostMessageMock).toHaveBeenCalledWith(
+      0x5678n,
+      WM_MOUSEHWHEEL,
+      wParamFromSignedHigh(240),
+      expectedLParam,
+    );
+  });
+
+  it("horizontal LEFT: posts WM_MOUSEHWHEEL with NEGATIVE wParam HIWORD (NO flip — UIA left=- matches WM_MOUSEHWHEEL left=-)", async () => {
+    win32GetScrollInfoMock
+      .mockReturnValueOnce(scrollInfo(70))
+      .mockReturnValueOnce(scrollInfo(40));
+    const result = await postWheelToHwnd(0x9ABCn, { direction: "left", notch: 2 });
+    expect(result).toEqual({
+      scrolled: true,
+      channel: "postmessage",
+      reason: "delivered_via_postmessage",
+    });
+    expect(win32PostMessageMock).toHaveBeenCalledWith(
+      0x9ABCn,
+      WM_MOUSEHWHEEL,
+      wParamFromSignedHigh(-240),
+      expectedLParam,
+    );
+  });
+
+  it("pre-snapshot is null (Word _WwG MFC custom-paint, no observable Win32 scrollbar) → null (caller emits target_unreachable)", async () => {
+    win32GetScrollInfoMock.mockReturnValueOnce(null);
+    const result = await postWheelToHwnd(0x1n, { direction: "down", notch: 1 });
+    expect(result).toBeNull();
+    // PostMessage WAS dispatched (best-effort) but the lack of observable
+    // diff means we cannot claim delivered_via_postmessage.
+    expect(win32PostMessageMock).toHaveBeenCalled();
+  });
+
+  it("post-snapshot returns null (race / scrollbar destroyed mid-scroll) → null", async () => {
+    win32GetScrollInfoMock
+      .mockReturnValueOnce(scrollInfo(50))
+      .mockReturnValueOnce(null);
+    const result = await postWheelToHwnd(0x2n, { direction: "down", notch: 1 });
+    expect(result).toBeNull();
+  });
+
+  it("pre/post nPos unchanged (message posted but no scroll happened) → null", async () => {
+    win32GetScrollInfoMock
+      .mockReturnValueOnce(scrollInfo(50))
+      .mockReturnValueOnce(scrollInfo(50));
+    const result = await postWheelToHwnd(0x3n, { direction: "down", notch: 1 });
+    expect(result).toBeNull();
+  });
+
+  it("win32PostMessage returns false (target HWND invalid / message pump rejected) → null (no observation attempted)", async () => {
+    win32PostMessageMock.mockReturnValue(false);
+    win32GetScrollInfoMock.mockReturnValue(scrollInfo(50));
+    const result = await postWheelToHwnd(0x4n, { direction: "down", notch: 1 });
+    expect(result).toBeNull();
+  });
+
+  it("getWindowRectByHwnd returns null → lParam falls back to 0 (best-effort; apps that ignore lParam still scroll)", async () => {
+    getWindowRectByHwndMock.mockReturnValue(null);
+    win32GetScrollInfoMock
+      .mockReturnValueOnce(scrollInfo(50))
+      .mockReturnValueOnce(scrollInfo(80));
+    const result = await postWheelToHwnd(0x5n, { direction: "down", notch: 1 });
+    expect(result).toEqual({
+      scrolled: true,
+      channel: "postmessage",
+      reason: "delivered_via_postmessage",
+    });
+    expect(win32PostMessageMock).toHaveBeenCalledWith(
+      0x5n,
+      WM_MOUSEWHEEL,
+      expect.any(BigInt),
+      0n, // lParam fallback when rect unavailable
+    );
+  });
+
+  it("multi-monitor secondary display (negative screen coords): lParam preserves sign bits via (& 0xFFFF) packing (sub-plan §2.4 / R2)", async () => {
+    // Window on a secondary monitor positioned left-of-primary: x=-1920, y=0.
+    // Center is (-1920 + 1920/2, 0 + 1080/2) = (-960, 540).
+    getWindowRectByHwndMock.mockReturnValue({ x: -1920, y: 0, width: 1920, height: 1080 });
+    win32GetScrollInfoMock
+      .mockReturnValueOnce(scrollInfo(50))
+      .mockReturnValueOnce(scrollInfo(80));
+    await postWheelToHwnd(0x6n, { direction: "down", notch: 1 });
+    // LOWORD = -960 & 0xFFFF, HIWORD = 540. Same u32-masked encoding as wParam.
+    const expectedLParamNeg = BigInt(((540 << 16) | ((-960) & 0xffff)) | 0) & 0xffffffffn;
+    expect(win32PostMessageMock).toHaveBeenCalledWith(
+      0x6n,
+      WM_MOUSEWHEEL,
+      expect.any(BigInt),
+      expectedLParamNeg,
+    );
+  });
+
+  it("win32PostMessage native binding missing → null (no throw)", async () => {
+    nativeWin32Mock.win32PostMessage = undefined;
+    const result = await postWheelToHwnd(0x7n, { direction: "down", notch: 1 });
+    expect(result).toBeNull();
+    expect(win32GetScrollInfoMock).not.toHaveBeenCalled();
+  });
+
+  it("win32PostMessage throws → null (graceful fall-through, no propagation)", async () => {
+    win32PostMessageMock.mockImplementation(() => {
+      throw new Error("native crash");
+    });
+    win32GetScrollInfoMock.mockReturnValue(scrollInfo(50));
+    const result = await postWheelToHwnd(0x8n, { direction: "down", notch: 1 });
+    expect(result).toBeNull();
+  });
+});
+
+describe("ADR-018 Phase 4 — dispatchScrollWheel (Tier 1 UIA → Tier 3 PostMessage fall-through)", () => {
+  beforeEach(() => {
+    uiaScrollByWheelAtHwndMock.mockReset();
+    win32PostMessageMock.mockReset();
+    win32GetScrollInfoMock.mockReset();
+    getWindowRectByHwndMock.mockReset();
+    nativeUiaMock.uiaScrollByWheelAtHwnd = uiaScrollByWheelAtHwndMock;
+    nativeWin32Mock.win32PostMessage = win32PostMessageMock;
+    nativeWin32Mock.win32GetScrollInfo = win32GetScrollInfoMock;
+    win32PostMessageMock.mockReturnValue(true);
+    getWindowRectByHwndMock.mockReturnValue({ x: 0, y: 0, width: 800, height: 600 });
+  });
+
+  const scrollInfo = (nPos: number) => ({
+    nMin: 0,
+    nMax: 1000,
+    nPage: 100,
+    nPos,
+    pageRatio: nPos / 1000,
+  });
+
+  it("Tier 1 UIA returns ok:false → dispatcher tries Tier 3 PostMessage; Tier 3 delivers → {channel:'postmessage', reason:'delivered_via_postmessage'}", async () => {
+    uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: false, scrolled: false });
+    win32GetScrollInfoMock
+      .mockReturnValueOnce(scrollInfo(50))
+      .mockReturnValueOnce(scrollInfo(80));
+    const result = await dispatchScrollWheel(
+      { kind: "hwnd", hwnd: 0x100n },
+      { direction: "down", notch: 1 },
+    );
+    expect(result).toEqual({
+      scrolled: true,
+      channel: "postmessage",
+      reason: "delivered_via_postmessage",
+    });
+    expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalled();
+    expect(win32PostMessageMock).toHaveBeenCalled();
+  });
+
+  it("Tier 1 UIA returns scrolled:false (already at boundary) → dispatcher tries Tier 3; Tier 3 also exhausts → null (caller emits target_unreachable)", async () => {
+    uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: false });
+    win32GetScrollInfoMock.mockReturnValue(null); // Word _WwG case
+    const result = await dispatchScrollWheel(
+      { kind: "hwnd", hwnd: 0x200n },
+      { direction: "down", notch: 1 },
+    );
+    expect(result).toBeNull();
+    expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalled();
+    expect(win32PostMessageMock).toHaveBeenCalled();
+  });
+
+  it("Tier 1 UIA succeeds → Tier 3 PostMessage is NOT invoked (short-circuit on success)", async () => {
+    uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: true });
+    const result = await dispatchScrollWheel(
+      { kind: "hwnd", hwnd: 0x300n },
+      { direction: "down", notch: 1 },
+    );
+    expect(result).toEqual({
+      scrolled: true,
+      channel: "uia",
+      reason: "delivered_via_uia",
+    });
+    expect(win32PostMessageMock).not.toHaveBeenCalled();
+  });
+
+  it("Tier 1 UIA throws → dispatcher still tries Tier 3 (graceful Tier 1 fall-through preserved)", async () => {
+    uiaScrollByWheelAtHwndMock.mockRejectedValue(new Error("UIA crash"));
+    win32GetScrollInfoMock
+      .mockReturnValueOnce(scrollInfo(50))
+      .mockReturnValueOnce(scrollInfo(80));
+    const result = await dispatchScrollWheel(
+      { kind: "hwnd", hwnd: 0x400n },
+      { direction: "down", notch: 1 },
+    );
+    expect(result).toEqual({
+      scrolled: true,
+      channel: "postmessage",
+      reason: "delivered_via_postmessage",
+    });
+    expect(win32PostMessageMock).toHaveBeenCalled();
+  });
+
+  it("kind='unresolved' → null (Tier 4 SendInput is caller's responsibility; Tier 3 NOT invoked because dest has no HWND)", async () => {
+    const result = await dispatchScrollWheel(
+      { kind: "unresolved", reason: "no_target_window" },
+      { direction: "down", notch: 1 },
+    );
+    expect(result).toBeNull();
+    expect(uiaScrollByWheelAtHwndMock).not.toHaveBeenCalled();
+    expect(win32PostMessageMock).not.toHaveBeenCalled();
   });
 });
