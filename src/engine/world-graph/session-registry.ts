@@ -15,17 +15,76 @@ import { resolveCandidates } from "./resolver.js";
 export type TargetSpec = { windowTitle?: string; hwnd?: string; tabId?: string };
 
 /**
+ * UI-chrome control types that UIA exposes with `role:"unknown"` but which
+ * are NEVER modal blockers (Issue #297). Without this exclusion list,
+ * `isModalCandidate` flagged a focused `MenuBar` / `TitleBar` / `StatusBar`
+ * on a non-modal main window as a positive `blockingElement` hit, telling
+ * the LLM to "dismiss" UI chrome it cannot dismiss.
+ *
+ * Conservative list — entries here must be UI chrome that is **always**
+ * non-modal, regardless of application state. Adding a control type should
+ * require a fresh dogfood report rather than speculation.
+ */
+const NON_MODAL_CHROME_CONTROL_TYPES = new Set([
+  "MenuBar",
+  "Menu",
+  "MenuItem",
+  "TitleBar",
+  "StatusBar",
+  "ToolBar",
+  "ScrollBar",
+  "Tab",
+]);
+
+/**
  * Shared predicate used by the default `isModalBlocking` and `findBlockingModal`
  * implementations so they cannot diverge. UIA exposes system dialogs and
  * overlays as `role: "unknown"` elements; the self-exclusion (entityId !==)
  * keeps a dialog from blocking actions on its own children. Issue #63.
+ *
+ * Issue #297: UI chrome (MenuBar / TitleBar / StatusBar / ToolBar) is also
+ * `role:"unknown"` in the UIA tree but is never a modal blocker. The
+ * `controlType` field carried through by Issue #296 lets the predicate
+ * distinguish dialog overlays (no `controlType` or `Pane` / `Window`) from
+ * UI chrome (`MenuBar` etc.). Entities lacking `controlType` (legacy /
+ * non-UIA-fronted producers) fall through to the prior behaviour for
+ * back-compat.
+ *
+ * Exported for direct unit testing of the truth table (the per-clause
+ * negation order is load-bearing — Codex / Opus reviewers historically
+ * read this code line-by-line).
+ *
+ * Cross-signal consistency note (Issue #297): the three modal-detection
+ * APIs in this codebase serve different layers and intentionally use
+ * different signals:
+ *
+ *   - `desktop-state.ts::MODAL_RE` — window-title regex; surface-level
+ *     "is there a window with 'dialog' / 'confirm' / '警告' in its title".
+ *     Cheap, top-of-window flag for orientation.
+ *   - `isModalCandidate` (this function) — UIA-tree based; resolves
+ *     `blockingElement` for `desktop_act` so the LLM can dismiss the
+ *     specific element. Requires Issue #296's `controlType` to exclude
+ *     UI chrome.
+ *   - `evaluateModalAbove` (`sensors-win32.ts`) — Win32-Z-order based
+ *     confidence score (owner chain + className `#32770` + target
+ *     disabled). Used for perception-layer attention scoring.
+ *
+ * The three are NOT expected to converge on every state — they answer
+ * different questions and target different layers. The chrome exclusion
+ * here is the minimum change needed so they no longer **disagree** in
+ * the common false-positive case (MenuBar on a non-modal main window).
  */
-function isModalCandidate(target: UiEntity, candidate: UiEntity): boolean {
-  return (
-    candidate.entityId !== target.entityId &&
-    candidate.sources.includes("uia") &&
-    candidate.role === "unknown"
-  );
+export function isModalCandidate(target: UiEntity, candidate: UiEntity): boolean {
+  if (candidate.entityId === target.entityId) return false;
+  if (!candidate.sources.includes("uia")) return false;
+  if (candidate.role !== "unknown") return false;
+  if (
+    candidate.controlType !== undefined &&
+    NON_MODAL_CHROME_CONTROL_TYPES.has(candidate.controlType)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 export type TargetSessionKey =
