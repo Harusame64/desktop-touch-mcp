@@ -5,6 +5,7 @@
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Accessibility::*;
+use windows::Win32::UI::WindowsAndMessaging::IsChild;
 use windows::core::Interface;
 
 use super::thread::{self, UiaContext, win_err};
@@ -14,6 +15,11 @@ use super::control_type_name;
 
 const DEFAULT_TIMEOUT_MS: u32 = 8_000;
 const MAX_SEARCH_DEPTH: u32 = 14;
+/// Maximum UIA nodes visited during Phase B DFS to bound COM RPC cost on wide
+/// trees (e.g. File Explorer list views with hundreds of item children). When
+/// the budget is exhausted the DFS returns `None` and the caller falls through
+/// to Tier 4 SendInput rather than blocking for the full 8 s timeout.
+const MAX_SCROLL_DFS_NODES: u32 = 512;
 
 // ─── Options from JS ─────────────────────────────────────────────────────────
 
@@ -370,9 +376,11 @@ fn scroll_by_wheel_at_hwnd_impl(
     // the root HWND element does not carry ScrollPattern but a child does).
     // DFS the subtree from the original elem, constrained to target_hwnd's
     // subtree and filtered by axis scrollability (Issue #291 P2-1/P2-2).
+    let mut dfs_budget = MAX_SCROLL_DFS_NODES;
     if let Some(scroll) = find_scroll_pattern_in_subtree(
         ctx, &elem_for_dfs, MAX_SEARCH_DEPTH,
         hwnd_i64 as isize, need_vertical, need_horizontal,
+        &mut dfs_budget,
     ) {
         return apply_scroll_with_pattern(&scroll, opts);
     }
@@ -532,21 +540,28 @@ fn apply_scroll_with_pattern(
 
 /// DFS over the UIA subtree rooted at `elem` to find the first element that
 /// exposes `IUIAutomationScrollPattern` AND is scrollable on the requested
-/// axes. Returns `None` when the subtree is exhausted or `depth` reaches 0.
-/// Silently skips COM errors on individual child queries so a broken child
-/// branch does not abort the whole search.
+/// axes. Returns `None` when the subtree is exhausted, `depth` reaches 0, or
+/// `node_budget` is depleted. Silently skips COM errors on individual child
+/// queries so a broken child branch does not abort the whole search.
 ///
 /// `target_hwnd`: HWND of the top-level window being scrolled (as isize).
-///   Children whose `CurrentNativeWindowHandle` returns a different non-zero
-///   HWND are skipped — they belong to an embedded child window and must not
-///   be crossed (P2-1 boundary guard, Issue #291). Elements with HWND == 0
-///   are pure UIA nodes with no native window and are always searched.
+///   Children whose `CurrentNativeWindowHandle` returns a non-zero HWND that
+///   is neither `target_hwnd` nor a Win32 child of it are skipped (P2-1
+///   boundary guard, Issue #291). This allows descent into embedded child
+///   windows like WinUI3's `DesktopChildSiteBridge` / `DirectUIHWND` that are
+///   children of the target window while still blocking descent into unrelated
+///   top-level windows. Elements with HWND == 0 are pure UIA nodes and are
+///   always searched.
 ///
 /// `need_vertical` / `need_horizontal`: which axes are being scrolled. An
 ///   element with ScrollPattern that reports not scrollable on the needed axis
 ///   is skipped so the DFS continues to the next candidate (P2-2 scrollable
-///   filter, Issue #291). Using `.map(|b| b.0 != 0).unwrap_or(false)` to
-///   check the BOOL without importing the type explicitly.
+///   filter, Issue #291).
+///
+/// `node_budget`: mutable counter decremented for every UIA node visited.
+///   When it reaches 0 the DFS stops immediately so a wide tree (e.g. File
+///   Explorer list view with hundreds of item children) does not exhaust the
+///   8 s COM timeout (P2-3, Issue #291).
 ///
 /// Used by `scroll_by_wheel_at_hwnd_impl` Phase B (Issue #291): when the
 /// upward ancestor walk finds nothing, the ScrollPattern is likely on a child
@@ -558,10 +573,12 @@ fn find_scroll_pattern_in_subtree(
     target_hwnd: isize,
     need_vertical: bool,
     need_horizontal: bool,
+    node_budget: &mut u32,
 ) -> Option<IUIAutomationScrollPattern> {
-    if depth == 0 {
+    if depth == 0 || *node_budget == 0 {
         return None;
     }
+    *node_budget = node_budget.saturating_sub(1);
     unsafe {
         // Check elem itself (P2-2: only accept if scrollable on needed axes).
         if let Ok(pat) = elem.GetCurrentPattern(UIA_ScrollPatternId)
@@ -577,24 +594,34 @@ fn find_scroll_pattern_in_subtree(
             // Has ScrollPattern but not scrollable on the needed axis —
             // keep searching (P2-2).
         }
-        // DFS into children (P2-1: stop at embedded child window boundaries).
+        // DFS into children (P2-1: stop at unrelated window boundaries).
         let first = ctx.walker.GetFirstChildElement(elem).ok()?;
         let mut child: Option<IUIAutomationElement> = Some(first);
         while let Some(c) = child {
-            // P2-1 boundary guard: if this child has a native HWND that
-            // differs from `target_hwnd`, it belongs to a different Win32
-            // window. Skip it to prevent the DFS from crossing into an
-            // unrelated window's subtree and grabbing its ScrollPattern.
-            // HWND == 0 means no native window (pure UIA node) — always search.
+            // P2-1 boundary guard: if this child carries a native HWND that
+            // is neither `target_hwnd` nor a Win32 child window of it, the
+            // child belongs to a completely different window hierarchy. Skip
+            // it to avoid crossing into an unrelated window. Win32 child
+            // windows of target_hwnd (e.g. WinUI3 DirectUIHWND, Electron
+            // chrome_widgetwin sub-windows) are allowed because they are part
+            // of the same logical app. HWND == 0 means no native window (pure
+            // UIA node) — always descend.
             let child_hwnd = c.CurrentNativeWindowHandle()
                 .map(|h| h.0 as isize)
                 .unwrap_or(0);
-            if child_hwnd != 0 && child_hwnd != target_hwnd {
+            if child_hwnd != 0
+                && child_hwnd != target_hwnd
+                && !IsChild(
+                    HWND(target_hwnd as *mut std::ffi::c_void),
+                    HWND(child_hwnd as *mut std::ffi::c_void),
+                ).as_bool()
+            {
                 child = ctx.walker.GetNextSiblingElement(&c).ok();
                 continue;
             }
             if let Some(found) = find_scroll_pattern_in_subtree(
                 ctx, &c, depth - 1, target_hwnd, need_vertical, need_horizontal,
+                node_budget,
             ) {
                 return Some(found);
             }
