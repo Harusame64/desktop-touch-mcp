@@ -10,14 +10,27 @@
  *
  * No I/O, no extra UIA round-trips — the pattern set was already collected
  * at discover time by `getUiElements`'s underlying `GetSupportedPatterns()`
- * call (Rust native path: `src/uia/thread.rs`; PowerShell fallback:
- * `makeGetElementsScript` in `uia-bridge.ts`). Both paths emit the same
- * `*Pattern`-suffixed string literals, so the rule table below matches
- * exactly without case-folding.
+ * call (Rust native path: `src/uia/tree.rs`; PowerShell fallback:
+ * `makeGetElementsScript` in `uia-bridge.ts`).
+ *
+ * **Pattern-name canonicalisation lives upstream** in
+ * `uia-provider.ts::normalizeUiaPatternNames` (Issue #296 / Opus R1 P1) —
+ * the Rust path emits the short form (`"Invoke"`) while the PowerShell path
+ * emits the suffixed form (`"InvokePattern"`). The provider normalises both
+ * to the `*Pattern`-suffixed form before they reach this module, so the rule
+ * table below can match by exact string equality without case-folding or
+ * suffix probing.
  */
 
 import type { UiEntity } from "../engine/world-graph/types.js";
 import type { EntityCapabilities, ViewConstraints } from "./desktop-constraints.js";
+
+// NB: `UiEntityCandidate.actionability` (set by `uia-provider.ts::uiaActionability`)
+// is a legacy controlType-based hint about what verbs the resolver may expand
+// into affordances. It is NOT the same signal as `EntityCapabilities` — when
+// the two disagree, `EntityCapabilities` is authoritative for executor
+// selection (it is derived from actual `GetSupportedPatterns()` data, not
+// just controlType heuristics). Future PR may collapse the two surfaces.
 
 /**
  * UIA pattern names this rule table recognises. Strings are the wire-form
