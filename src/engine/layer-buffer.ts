@@ -313,6 +313,15 @@ const UIA_CACHE_MAX = 64;
 function sweepUiaCache(): void {
   const now = Date.now();
   // Evict expired first.
+  //
+  // Invariant — keep this comparison STRICT `>` (do NOT change to `>=`):
+  // `isUiaCacheStale` (identity-tracker.ts) reports stale at `age >= TTL`,
+  // and the boundary case (`age === TTL`) is the only point at which a
+  // stale entry remains observable in this Map. The precedence tests in
+  // `tests/unit/desktop-facade.test.ts` (#295 carry-over) stamp at exactly
+  // that boundary to distinguish which HWND the facade interrogated;
+  // tightening the sweep to `>=` would silently make those tests pass for
+  // the wrong reason (the older entry would be evicted before assertion).
   for (const [k, v] of uiaCache) {
     if (now - v.timestamp > UIA_CACHE_TTL_MS) uiaCache.delete(k);
   }
@@ -368,6 +377,17 @@ export function getBaselineTimestamp(hwnd: bigint): number | null {
 /** Get the UIA-cache timestamp for a window, or null if no cached UIA. */
 export function getUiaCacheTimestamp(hwnd: bigint): number | null {
   return uiaCache.get(hwnd)?.timestamp ?? null;
+}
+
+/**
+ * Drop every UIA-cache entry (Opus PR #302 P2 #4). `clearLayers()` only clears
+ * the WindowLayer baseline map; the `uiaCache` Map is independent (line 308
+ * comment) and survives `clearLayers()`. Tests that depend on a clean UIA-
+ * cache state should call this helper alongside `clearLayers()` so cross-test
+ * bleed cannot mask a regression in stale-detection logic.
+ */
+export function clearUiaCache(): void {
+  uiaCache.clear();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

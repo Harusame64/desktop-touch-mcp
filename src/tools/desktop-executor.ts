@@ -127,8 +127,25 @@ export function createDesktopExecutor(
   return async (entity, action, text) => {
     const winTitle = resolveWindowTitle(target);
 
+    // Issue #296 Phase 2 — `desktop_discover` derives `unsupportedExecutors`
+    // from UIA `controlType` + `patterns` (e.g. `ListItem`/`TabItem` without
+    // `InvokePattern`, `TogglePattern`-only checkboxes, visual-only entities)
+    // and stashes the array on `UiEntity` so we can skip a route that the
+    // capability derivation already predicted would fail.
+    //
+    // `mouse` is honoured here too (Opus PR #302 P2 #1) — the type union allows
+    // it, so the executor must respect it rather than silently routing through
+    // the unconditional mouse fallback. In practice today nothing emits
+    // `'mouse'` in `unsupportedExecutors`, but treating the field as authoritative
+    // future-proofs against capability rules that flag e.g. unreliable rects.
+    const blocked = entity.unsupportedExecutors ?? [];
+    const uiaBlocked      = blocked.includes("uia");
+    const cdpBlocked      = blocked.includes("cdp");
+    const terminalBlocked = blocked.includes("terminal");
+    const mouseBlocked    = blocked.includes("mouse");
+
     // ── UIA route ────────────────────────────────────────────────────────────
-    if (entity.sources.includes("uia")) {
+    if (entity.sources.includes("uia") && !uiaBlocked) {
       // Prefer typed locator; fall back to sourceId (legacy bridge — remove in P3).
       const automationId = entity.locator?.uia?.automationId ?? entity.sourceId;
       const name         = entity.locator?.uia?.name ?? entity.label;
@@ -158,7 +175,7 @@ export function createDesktopExecutor(
     // ── CDP route ────────────────────────────────────────────────────────────
     // Prefer locator.cdp.selector; fall back to sourceId (legacy bridge).
     const cdpSelector = entity.locator?.cdp?.selector ?? (entity.sources.includes("cdp") ? entity.sourceId : undefined);
-    if (cdpSelector) {
+    if (cdpSelector && !cdpBlocked) {
       const cdpTabId = entity.locator?.cdp?.tabId ?? target?.tabId;
       // Phase 4: 'setValue' on a CDP entity uses cdpFill — equivalent to
       // browser_fill for controlled inputs (React/Vue/Svelte).
@@ -176,13 +193,32 @@ export function createDesktopExecutor(
     // text (action='type'/'setValue', or action='auto' with text). Otherwise
     // fall through to the mouse fallback so click/invoke on a terminal entity
     // doesn't silently send an empty string.
-    if (entity.sources.includes("terminal") && text !== undefined) {
+    if (entity.sources.includes("terminal") && !terminalBlocked && text !== undefined) {
       const termWin = entity.locator?.terminal?.windowTitle ?? winTitle;
       await d.terminalSend(termWin, text);
       return "terminal";
     }
 
     // ── Mouse fallback ───────────────────────────────────────────────────────
+    // Opus PR #302 P2 #2 — when the caller supplied `text` (action='type'/
+    // 'setValue', or action='auto' with text) and every text-capable executor
+    // (UIA / CDP / terminal) was skipped or blocked, the previous fall-through
+    // to a bare `mouseClick(rectCenter)` silently dropped the text payload —
+    // the LLM thinks it typed something, but only a focus click was issued.
+    // Throw a typed `executor_failed`-shaped error instead so the guarded-touch
+    // wrapper surfaces `ok:false reason:'executor_failed'` and the caller can
+    // diagnose the dropped payload rather than chasing a phantom-typed bug.
+    if (text !== undefined && (action === "type" || action === "setValue")) {
+      throw new Error(
+        `setValue/type requested for "${entity.label ?? entity.entityId}" but no text-capable executor available ` +
+        `(uia${uiaBlocked ? "=blocked" : "=no-source"}, cdp${cdpBlocked ? "=blocked" : "=no-selector"}, terminal${terminalBlocked ? "=blocked" : "=no-source-or-text"}) — mouse fallback would drop the text payload`
+      );
+    }
+    if (mouseBlocked) {
+      throw new Error(
+        `No executor available for entity "${entity.label ?? entity.entityId}": mouse fallback also blocked by unsupportedExecutors`
+      );
+    }
     if (!entity.rect) {
       throw new Error(
         `No executor available for entity "${entity.label ?? entity.entityId}": no rect for mouse fallback`

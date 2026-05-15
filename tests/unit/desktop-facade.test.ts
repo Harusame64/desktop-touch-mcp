@@ -1,6 +1,12 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { DesktopFacade, type CandidateProvider, type DesktopSeeInput, type CandidateIngress } from "../../src/tools/desktop.js";
 import type { UiEntityCandidate } from "../../src/engine/vision-gpu/types.js";
+import {
+  updateUiaCache,
+  clearLayers,
+  clearUiaCache,
+  UIA_CACHE_TTL_EXPORTED_MS,
+} from "../../src/engine/layer-buffer.js";
 
 const TARGET_GAME    = { windowTitle: "GameWindow" };
 const TARGET_CHROME  = { tabId: "tab-1" };
@@ -932,5 +938,149 @@ describe("DesktopFacade — automatic session eviction timer", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #295 carry-over — `desktop_discover` UIA-cache-stale → attention
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// PR #299 added the stale signal to `desktop_state.attention` only. This carry-over
+// extends the same freshness contract to `desktop_discover` so the LLM receives a
+// consistent signal regardless of which observation tool it used. The facade
+// reads `isUiaCacheStale(hwnd)` for the resolved target HWND and surfaces
+// `attention: 'stale'` when fully expired; otherwise `'ok'`. When no HWND can be
+// resolved the field is OMITTED (not synthesised to 'ok') — absent reads as "no
+// signal", not "fresh".
+
+describe("DesktopFacade — UIA-cache-stale → attention (#295 carry-over)", () => {
+  // The cache TTL is module-scoped state in layer-buffer.ts. Each test pins time
+  // deterministically and clears both the WindowLayer map AND the UIA cache so
+  // cross-test bleed cannot mask a real regression. Opus PR #302 P2 #4:
+  // `clearLayers()` only resets the `layers` Map; the independent `uiaCache`
+  // Map (layer-buffer.ts:308) needs the dedicated `clearUiaCache()` export.
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    clearLayers();
+    clearUiaCache();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    clearLayers();
+    clearUiaCache();
+  });
+
+  it("attention='stale' when target.hwnd resolves to a fully-expired UIA cache", async () => {
+    const HWND = 0xBEEF01n;
+    updateUiaCache(HWND, "<UIA tree>");
+    vi.setSystemTime(UIA_CACHE_TTL_EXPORTED_MS + 1);
+
+    const facade = new DesktopFacade(gameProvider);
+    const out = await facade.see({ target: { hwnd: String(HWND) } });
+    expect(out.attention).toBe("stale");
+  });
+
+  it("attention='ok' when target.hwnd resolves to a fresh UIA cache", async () => {
+    const HWND = 0xBEEF02n;
+    updateUiaCache(HWND, "<UIA tree>");
+    // Half the TTL — well within fresh window.
+    vi.setSystemTime(UIA_CACHE_TTL_EXPORTED_MS / 2);
+
+    const facade = new DesktopFacade(gameProvider);
+    const out = await facade.see({ target: { hwnd: String(HWND) } });
+    expect(out.attention).toBe("ok");
+  });
+
+  it("attention omitted when no target.hwnd and no getFocusedHwnd wired", async () => {
+    // Default facade construction (no getFocusedHwnd) — `desktop_discover` has
+    // no HWND it can interrogate, so the field must be absent rather than a
+    // synthesised 'ok'.
+    const facade = new DesktopFacade(gameProvider);
+    const out = await facade.see({ target: { windowTitle: "GameWindow" } });
+    expect(out.attention).toBeUndefined();
+  });
+
+  it("getFocusedHwnd resolves the HWND when target.hwnd is absent (stale path)", async () => {
+    const HWND = 0xBEEF03n;
+    updateUiaCache(HWND, "<UIA tree>");
+    vi.setSystemTime(UIA_CACHE_TTL_EXPORTED_MS + 1);
+
+    const facade = new DesktopFacade(gameProvider, { getFocusedHwnd: () => HWND });
+    const out = await facade.see();
+    expect(out.attention).toBe("stale");
+  });
+
+  it("target.hwnd takes precedence over getFocusedHwnd (focused stale, target fresh → 'ok')", async () => {
+    // Opus PR #302 P2 #3 — the previous version of this test wrote both
+    // HWNDs at time 0 and advanced to TTL/2, leaving both fresh; the
+    // assertion would pass regardless of which HWND `resolveTargetHwnd`
+    // chose. We stamp at the EXACT TTL boundary instead — the older entry
+    // is then `age === TTL`, which `isUiaCacheStale` reports as stale
+    // (boundary inclusive: `age >= TTL`) but `sweepUiaCache` does NOT evict
+    // (strict `age > TTL` test inside the sweep loop). So the older entry
+    // stays in the Map AND is observable as stale, which lets the
+    // assertion actually distinguish which HWND the facade interrogated.
+    const FOCUSED_HWND = 0xBEEF04n;
+    const TARGET_HWND = 0xBEEF05n;
+    updateUiaCache(FOCUSED_HWND, "<focused>"); // time 0
+    vi.setSystemTime(UIA_CACHE_TTL_EXPORTED_MS); // boundary
+    updateUiaCache(TARGET_HWND, "<target>"); // fresh (age 0); FOCUSED kept (sweep is strict >)
+    const facade = new DesktopFacade(gameProvider, {
+      getFocusedHwnd: () => FOCUSED_HWND,
+    });
+    const out = await facade.see({ target: { hwnd: String(TARGET_HWND) } });
+    // If precedence broke and the facade interrogated FOCUSED instead, this
+    // would be 'stale'. The 'ok' assertion proves target.hwnd wins.
+    expect(out.attention).toBe("ok");
+  });
+
+  it("target.hwnd takes precedence over getFocusedHwnd (focused fresh, target stale → 'stale')", async () => {
+    // Opus PR #302 P2 #3 — companion to the previous case. Swap the
+    // freshness so the explicit target.hwnd is stale while the focused
+    // HWND is fresh. `attention === 'stale'` proves precedence the other
+    // direction (facade reports on the entity the caller pinned, not the
+    // foreground). Same TTL-boundary trick to dodge the sweep.
+    const FOCUSED_HWND = 0xBEEF06n;
+    const TARGET_HWND = 0xBEEF07n;
+    updateUiaCache(TARGET_HWND, "<target>"); // time 0
+    vi.setSystemTime(UIA_CACHE_TTL_EXPORTED_MS); // boundary
+    updateUiaCache(FOCUSED_HWND, "<focused>"); // fresh (age 0); TARGET kept
+    const facade = new DesktopFacade(gameProvider, {
+      getFocusedHwnd: () => FOCUSED_HWND,
+    });
+    const out = await facade.see({ target: { hwnd: String(TARGET_HWND) } });
+    // If precedence broke and the facade interrogated FOCUSED, this would
+    // be 'ok'. The 'stale' assertion proves target.hwnd wins.
+    expect(out.attention).toBe("stale");
+  });
+
+  it("attention omitted when getFocusedHwnd returns null (no foreground)", async () => {
+    // Production case: enumeration succeeded but no active window. We must
+    // not surface a synthetic 'ok' because we genuinely have no signal.
+    const facade = new DesktopFacade(gameProvider, { getFocusedHwnd: () => null });
+    const out = await facade.see();
+    expect(out.attention).toBeUndefined();
+  });
+
+  it("attention omitted when getFocusedHwnd throws (defensive)", async () => {
+    // Production wiring calls into Win32; any throw must degrade to omitted
+    // rather than crash see().
+    const facade = new DesktopFacade(gameProvider, {
+      getFocusedHwnd: () => {
+        throw new Error("Win32 boom");
+      },
+    });
+    const out = await facade.see();
+    expect(out.attention).toBeUndefined();
+  });
+
+  it("malformed target.hwnd string → attention omitted (no false 'ok')", async () => {
+    // `BigInt("not-a-number")` throws — we treat that as "no HWND resolvable"
+    // rather than swallowing into a synthetic 'ok'. Same reasoning as the
+    // null / throw branches above.
+    const facade = new DesktopFacade(gameProvider, { getFocusedHwnd: () => null });
+    const out = await facade.see({ target: { hwnd: "not-a-bigint" } });
+    expect(out.attention).toBeUndefined();
   });
 });
