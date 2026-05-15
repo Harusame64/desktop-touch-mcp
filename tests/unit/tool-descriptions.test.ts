@@ -40,6 +40,13 @@ const MAX_CHARS = 2500;
 // keep the global cap tight so unrelated tools can't silently bloat past 2500.
 const MAX_CHARS_OVERRIDES: Record<string, number> = {
   terminal: 4000,
+  // `scroll` is the ADR-018 dispatcher (action='raw' / 'to_element' / 'smart' /
+  // 'capture' / 'read'); each action carries non-trivial usage guidance — most
+  // recently PR #293 expanded action='raw' with empirical amount-vs-scroll-
+  // distance data and Phase 3 adds Tier 2 CDP semantics. Future phases (4: Tier
+  // 3 PostMessage, 5: SSOT unification) will append more action notes, so the
+  // override sits at 3000 with a comfortable buffer above the current ~2741.
+  scroll: 3000,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
