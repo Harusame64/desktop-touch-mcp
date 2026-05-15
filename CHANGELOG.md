@@ -1,5 +1,23 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **`scroll(action:'raw', windowTitle:'Book1 - Excel')` now actually scrolls
+  the Excel cell grid.** Previously the call returned `ok:false code:'ScrollNotDelivered'`
+  with `verifyDelivery.reason:'target_unreachable'` because `WM_MOUSEWHEEL`
+  is delivered upward from a window to its parent, never downward to a
+  child — and Excel's cell grid lives in a deep child window (`XLMAIN →
+  XLDESK → EXCEL7`), not on the top-level frame. The new destination-explicit
+  scroll dispatcher now walks the known child-class chain for Excel and
+  Word (`OpusApp → _WwF → _WwG`), posts the wheel message to the actual
+  grid leaf, and observes the scrollbar there. Apps not in the chain
+  table are unaffected (behaviour is bit-equal to the previous release).
+  This restores cursor-only Excel scroll calls that worked before the
+  destination-explicit pipeline landed in v1.5.0 and surfaces the new
+  `verifyDelivery.reason:'delivered_via_postmessage'` for them.
+
 ## [1.5.1] - 2026-05-12 — `workspace_launch` App Paths registry resolution + concurrent `keyboard` crash fix
 
 ### Added

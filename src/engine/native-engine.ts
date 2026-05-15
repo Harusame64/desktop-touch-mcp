@@ -103,6 +103,14 @@ export interface NativeWin32 {
   win32IsIconic?(hwnd: bigint): boolean;
   win32IsZoomed?(hwnd: bigint): boolean;
   win32GetClassName?(hwnd: bigint): string;
+  /**
+   * ADR-018 Phase 5+N: resolve a top-level HWND to the descendant HWND that
+   * actually receives WM_MOUSEWHEEL for MDI / OLE apps (Excel:
+   * XLMAIN → XLDESK → EXCEL7; Word: OpusApp → _WwF → _WwG). Returns `null`
+   * when the top-level class is not in the chain table OR when any chain
+   * segment fails — caller treats `null` as "no retarget; use input HWND".
+   */
+  win32FindScrollLeafForTopLevel?(top: bigint): bigint | null;
   win32GetWindowThreadProcessId?(hwnd: bigint): NativeThreadProcessId;
   win32GetWindowLongPtrW?(hwnd: bigint, nIndex: number): number;
 

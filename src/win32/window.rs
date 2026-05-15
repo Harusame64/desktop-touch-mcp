@@ -9,12 +9,12 @@ use std::sync::atomic::Ordering;
 
 use napi::bindgen_prelude::BigInt;
 use napi_derive::napi;
-use windows::core::BOOL;
+use windows::core::{BOOL, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetAncestor, GetClassNameW, GetForegroundWindow, GetWindowLongPtrW,
-    GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
-    IsZoomed, GA_ROOT, WINDOW_LONG_PTR_INDEX,
+    EnumWindows, FindWindowExW, GetAncestor, GetClassNameW, GetForegroundWindow,
+    GetWindowLongPtrW, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
+    IsWindowVisible, IsZoomed, GA_ROOT, WINDOW_LONG_PTR_INDEX,
 };
 
 use super::safety::{napi_safe_call, PANIC_COUNTER};
@@ -238,5 +238,101 @@ pub(crate) fn get_root_hwnd(hwnd: HWND) -> HWND {
         hwnd
     } else {
         root
+    }
+}
+
+// ─── ADR-018 Phase 5+N: scroll-leaf walker for MDI apps ─────────────────────
+//
+// `WM_MOUSEWHEEL` propagation is **upward only** (Microsoft Learn / DefWindowProc).
+// `PostMessage(top_level, WM_MOUSEWHEEL, …)` therefore never trickles down to
+// the child HWND that actually owns the scrollbar. Multiple MDI / OLE apps
+// (Excel, Word) host their scrollable surface as a deep child window:
+//
+//   Excel:  XLMAIN (top) → XLDESK → EXCEL7 (workbook leaf, owns NUIScrollbar)
+//   Word:   OpusApp (top) → _WwF → _WwG (document leaf, MFC custom-paint)
+//
+// `win32_find_scroll_leaf_for_top_level` walks a small class-name chain table
+// using `FindWindowExW`. Any segment miss returns `None`, in which case the
+// caller falls back to top-level POST (current behaviour) — the helper never
+// mis-routes by guessing.
+//
+// The class table is intentionally small (covers only confirmed-regression
+// cases). Future MDI apps that exhibit the same regression are added as one
+// row each — no enumeration overhead is incurred for apps not in the table.
+//
+// See `docs/adr-018-phase-5-followup-leaf-walker-subplan.md` for the full design
+// rationale and the web research that establishes the chain shapes.
+
+/// Class chain table: each entry is `(top-level class, descending child
+/// classes from top to leaf)`. `FindWindowExW` walks the chain once per call;
+/// any miss returns `None`.
+///
+/// Add new MDI apps by appending a row. Order does not matter.
+static SCROLL_LEAF_CHAINS: &[(&str, &[&str])] = &[
+    ("XLMAIN", &["XLDESK", "EXCEL7"]),
+    ("OpusApp", &["_WwF", "_WwG"]),
+];
+
+/// Resolve a top-level HWND to the descendant HWND that actually receives
+/// `WM_MOUSEWHEEL` for MDI / OLE apps whose scrollable surface is a child
+/// window. Returns `None` when the top-level class is not in the chain table,
+/// or when any segment of the chain fails to resolve (defensive: a future
+/// app reorganisation falls back to top-level POST rather than mis-routing).
+///
+/// The caller treats `None` as "no retarget needed; use the input HWND".
+#[napi]
+pub fn win32_find_scroll_leaf_for_top_level(top: BigInt) -> napi::Result<Option<BigInt>> {
+    napi_safe_call("win32_find_scroll_leaf_for_top_level", || {
+        let top_hwnd = hwnd_from_bigint(top);
+        let top_class = get_class_name(top_hwnd);
+        if top_class.is_empty() {
+            return Ok(None);
+        }
+        let chain = match SCROLL_LEAF_CHAINS
+            .iter()
+            .find(|(cls, _)| *cls == top_class.as_str())
+        {
+            Some((_, chain)) => *chain,
+            None => return Ok(None),
+        };
+        let mut parent = top_hwnd;
+        for child_class in chain {
+            let wide: Vec<u16> = child_class
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            // Safety: FindWindowExW accepts any HWND values (including invalid)
+            // and returns Err on no-match / call failure. The PCWSTR points
+            // into `wide` whose lifetime spans the call. `hwndchildafter=None`
+            // requests the first matching child (per MSDN: pass NULL to start
+            // the search at the first child of `hwndparent`).
+            let child = unsafe {
+                FindWindowExW(
+                    Some(parent),
+                    None,
+                    PCWSTR(wide.as_ptr()),
+                    PCWSTR::null(),
+                )
+            };
+            match child {
+                Ok(h) if !h.0.is_null() => parent = h,
+                _ => return Ok(None),
+            }
+        }
+        Ok(Some(hwnd_to_bigint(parent)))
+    })
+}
+
+/// Read the class name of `hwnd` as a UTF-16 string. Returns an empty string
+/// on failure or when the window has no registered class — matching the
+/// public `win32_get_class_name` napi shape. Internal helper used by the
+/// scroll-leaf walker to avoid a napi BigInt round-trip per chain lookup.
+fn get_class_name(hwnd: HWND) -> String {
+    let mut buf = [0u16; 256]; // matches existing TS buffer size
+    let len = unsafe { GetClassNameW(hwnd, &mut buf) };
+    if len <= 0 {
+        String::new()
+    } else {
+        String::from_utf16_lossy(&buf[..len as usize])
     }
 }
