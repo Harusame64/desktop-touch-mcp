@@ -49,15 +49,33 @@ vi.mock("../../src/tools/_resolve-window.js", () => ({
 
 // Mock window enumeration — `resolveInputDestination` falls back to
 // `enumWindowsInZOrder` to recover the HWND for a plain-windowTitle Case 3
-// match (resolveWindowTarget returns null in that case by design).
+// match (resolveWindowTarget returns null in that case by design), and Phase 3
+// also consults it for the Chromium-class gate in `resolveCdpDestinationForHwnd`.
 const enumWindowsInZOrderMock = vi.fn();
 vi.mock("../../src/engine/win32.js", () => ({
   enumWindowsInZOrder: enumWindowsInZOrderMock,
 }));
 
+// Phase 3 Tier 2 CDP — mock the cdp-bridge surface used by the dispatcher.
+const listTabsLightMock = vi.fn();
+const dispatchWheelInTabMock = vi.fn();
+const readScrollPositionInTabMock = vi.fn();
+vi.mock("../../src/engine/cdp-bridge.js", () => ({
+  listTabsLight: listTabsLightMock,
+  dispatchWheelInTab: dispatchWheelInTabMock,
+  readScrollPositionInTab: readScrollPositionInTabMock,
+}));
+
+// Mock CDP port lookup — keeps `resolveCdpDestinationForHwnd` deterministic.
+const getCdpPortMock = vi.fn(() => 9222);
+vi.mock("../../src/utils/desktop-config.js", () => ({
+  getCdpPort: getCdpPortMock,
+}));
+
 // Import after mocks are registered.
 const {
   resolveInputDestination,
+  resolveCdpDestinationForHwnd,
   dispatchScrollWheel,
   assertTier4Reachable,
 } = await import("../../src/tools/_input-pipeline.js");
@@ -67,9 +85,17 @@ describe("ADR-018 §2.3 — resolveInputDestination (single SSOT via resolveWind
     resolveWindowTargetMock.mockReset();
     enumWindowsInZOrderMock.mockReset();
     enumWindowsInZOrderMock.mockReturnValue([]);
+    listTabsLightMock.mockReset();
+    dispatchWheelInTabMock.mockReset();
+    readScrollPositionInTabMock.mockReset();
+    getCdpPortMock.mockReturnValue(9222);
   });
 
-  it("returns {kind:'hwnd'} when resolveWindowTarget resolves (no enumeration needed)", async () => {
+  it("returns {kind:'hwnd'} when resolveWindowTarget resolves and the HWND is not Chromium (CDP gate misses, no CDP probe)", async () => {
+    // Phase 3 consults `enumWindowsInZOrder` for the Chromium-class gate. With
+    // the default empty enumeration the gate misses → no CDP promotion → the
+    // resolver returns `{kind:'hwnd'}`. `listTabsLight` is NOT called because
+    // the class gate fails before the HTTP probe.
     resolveWindowTargetMock.mockResolvedValue({
       title: "Test",
       hwnd: 0xABCDn,
@@ -77,7 +103,7 @@ describe("ADR-018 §2.3 — resolveInputDestination (single SSOT via resolveWind
     });
     const dest = await resolveInputDestination({ windowTitle: "Test" });
     expect(dest).toEqual({ kind: "hwnd", hwnd: 0xABCDn });
-    expect(enumWindowsInZOrderMock).not.toHaveBeenCalled();
+    expect(listTabsLightMock).not.toHaveBeenCalled();
   });
 
   it("Case 3 recovery: resolveWindowTarget null + plain windowTitle matches a top-level window → {kind:'hwnd'} via enumWindowsInZOrder (keeps Tier 1 UIA reachable, ADR §4 G1)", async () => {
@@ -268,7 +294,12 @@ describe("ADR-018 §2.6 — dispatchScrollWheel (Tier 1 UIA path)", () => {
     expect(uiaScrollByWheelAtHwndMock).not.toHaveBeenCalled();
   });
 
-  it("kind='cdp' → null (Phase 3 stub, caller falls through)", async () => {
+  it("kind='cdp' → does NOT invoke Tier 1 UIA (handled by Tier 2 CDP branch — see Phase 3 describe block below)", async () => {
+    // Phase 3 implemented the kind:'cdp' branch (Tier 2 CDP). The Phase 1b
+    // expectation "Tier 1 UIA is not invoked for CDP destinations" still
+    // stands; the actual CDP dispatch is exercised in the separate
+    // Phase 3 describe block which mocks `cdp-bridge.js`.
+    readScrollPositionInTabMock.mockResolvedValueOnce(null); // pre-snapshot fails → null
     const result = await dispatchScrollWheel(
       { kind: "cdp", tabId: "abc123" },
       { direction: "down", notch: 1 },
@@ -291,6 +322,221 @@ describe("ADR-018 §2.6 — dispatchScrollWheel (Tier 1 UIA path)", () => {
 
     await dispatchScrollWheel({ kind: "hwnd", hwnd: 1n }, { direction: "left", notch: 2 });
     expect(uiaScrollByWheelAtHwndMock).toHaveBeenLastCalledWith(expect.objectContaining({ wheelDeltaX: -240, wheelDeltaY: 0 }));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR-018 Phase 3 — Tier 2 CDP path + auto-promotion
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate + listTabsLight probe)", () => {
+  // Phase 3 R1 (Opus P2): the gate is now a strict class equality on
+  // `Chrome_WidgetWin_1` (the top-level class shared by Chrome and Edge),
+  // and the className is **passed in by the caller** (already known from
+  // ResolvedWindow.className / enumWindowsInZOrder), so this function does
+  // NOT re-enumerate windows. The mock setup reflects that — no
+  // enumWindowsInZOrderMock for these cases.
+  beforeEach(() => {
+    listTabsLightMock.mockReset();
+    getCdpPortMock.mockReturnValue(9222);
+  });
+
+  it("non-Chromium className ('Notepad'): null (gate misses, listTabsLight NOT called — zero CDP latency for native windows)", async () => {
+    const dest = await resolveCdpDestinationForHwnd(0x111n, "Notepad");
+    expect(dest).toBeNull();
+    expect(listTabsLightMock).not.toHaveBeenCalled();
+  });
+
+  it("Chromium top-level class + listTabsLight returns tabs: {kind:'cdp', tabId}", async () => {
+    listTabsLightMock.mockResolvedValue([
+      { id: "TAB-AAA", title: "Google", url: "https://google.com/" },
+      { id: "TAB-BBB", title: "Bing", url: "https://bing.com/" },
+    ]);
+    const dest = await resolveCdpDestinationForHwnd(0x222n, "Chrome_WidgetWin_1");
+    expect(dest).toEqual({ kind: "cdp", tabId: "TAB-AAA" });
+  });
+
+  it("Chromium top-level class + listTabsLight rejects (CDP unreachable): null (graceful fallback to Tier 1)", async () => {
+    listTabsLightMock.mockRejectedValue(new Error("CDP unreachable on 127.0.0.1:9222"));
+    const dest = await resolveCdpDestinationForHwnd(0x333n, "Chrome_WidgetWin_1");
+    expect(dest).toBeNull();
+  });
+
+  it("Chromium top-level class + listTabsLight returns empty array: null", async () => {
+    listTabsLightMock.mockResolvedValue([]);
+    const dest = await resolveCdpDestinationForHwnd(0x444n, "Chrome_WidgetWin_1");
+    expect(dest).toBeNull();
+  });
+
+  it("className null (race with window destruction): null (no CDP probe)", async () => {
+    const dest = await resolveCdpDestinationForHwnd(0x555n, null);
+    expect(dest).toBeNull();
+    expect(listTabsLightMock).not.toHaveBeenCalled();
+  });
+
+  it("Chromium SUB-window class ('Chrome_WidgetWin_0' — internal popups / dropdowns) is rejected by the strict gate (Phase 3 R1 Opus P2)", async () => {
+    // The earlier `startsWith("Chrome_WidgetWin")` shape over-matched the
+    // sub-window class which can never be a scroll destination. The strict
+    // equality on `Chrome_WidgetWin_1` rejects it.
+    const dest = await resolveCdpDestinationForHwnd(0x666n, "Chrome_WidgetWin_0");
+    expect(dest).toBeNull();
+    expect(listTabsLightMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("ADR-018 Phase 3 — resolveInputDestination CDP promotion integration", () => {
+  beforeEach(() => {
+    resolveWindowTargetMock.mockReset();
+    enumWindowsInZOrderMock.mockReset();
+    enumWindowsInZOrderMock.mockReturnValue([]);
+    listTabsLightMock.mockReset();
+    getCdpPortMock.mockReturnValue(9222);
+  });
+
+  it("resolveWindowTarget succeeds + Chromium HWND + CDP reachable: promotes to {kind:'cdp'} (G3 path)", async () => {
+    // Phase 3 R1: `ResolvedWindow.className` is what the gate consults — no
+    // longer a second `enumWindowsInZOrder` call inside the resolver.
+    resolveWindowTargetMock.mockResolvedValue({
+      title: "X - Chrome",
+      hwnd: 0xAAAn,
+      warnings: [],
+      className: "Chrome_WidgetWin_1",
+    });
+    listTabsLightMock.mockResolvedValue([
+      { id: "TAB-X", title: "X", url: "https://x.com/" },
+    ]);
+    const dest = await resolveInputDestination({ windowTitle: "Chrome" });
+    expect(dest).toEqual({ kind: "cdp", tabId: "TAB-X" });
+  });
+
+  it("Case 3 recovery for Chromium HWND also promotes to {kind:'cdp'} (plain windowTitle on Chrome)", async () => {
+    resolveWindowTargetMock.mockResolvedValue(null);
+    enumWindowsInZOrderMock.mockReturnValue([
+      { hwnd: 0xBBBn, title: "Google Chrome", className: "Chrome_WidgetWin_1", ownerHwnd: null, isMinimized: false },
+    ]);
+    listTabsLightMock.mockResolvedValue([
+      { id: "TAB-Y", title: "X", url: "https://x.com/" },
+    ]);
+    const dest = await resolveInputDestination({ windowTitle: "Chrome" });
+    expect(dest).toEqual({ kind: "cdp", tabId: "TAB-Y" });
+  });
+
+  it("Chromium HWND + CDP unreachable: falls back to {kind:'hwnd'} (Tier 1 UIA path remains available)", async () => {
+    resolveWindowTargetMock.mockResolvedValue({
+      title: "Chrome",
+      hwnd: 0xCCCn,
+      warnings: [],
+      className: "Chrome_WidgetWin_1",
+    });
+    listTabsLightMock.mockRejectedValue(new Error("Connection refused"));
+    const dest = await resolveInputDestination({ windowTitle: "Chrome" });
+    expect(dest).toEqual({ kind: "hwnd", hwnd: 0xCCCn });
+  });
+});
+
+describe("ADR-018 Phase 3 — dispatchScrollWheel (Tier 2 CDP path)", () => {
+  beforeEach(() => {
+    listTabsLightMock.mockReset();
+    dispatchWheelInTabMock.mockReset();
+    readScrollPositionInTabMock.mockReset();
+    getCdpPortMock.mockReturnValue(9222);
+  });
+
+  const cdpDest = { kind: "cdp" as const, tabId: "TAB-X" };
+  const snap = (top: number, left: number) => ({
+    scrollTop: top,
+    scrollLeft: left,
+    scrollHeight: 5000,
+    scrollWidth: 1280,
+    clientHeight: 800,
+    clientWidth: 1280,
+  });
+
+  it("vertical down: pre/post scrollTop differs by ≥ epsilon → {channel:'cdp', reason:'delivered_via_cdp'}", async () => {
+    readScrollPositionInTabMock
+      .mockResolvedValueOnce(snap(100, 0))
+      .mockResolvedValueOnce(snap(260, 0));
+    dispatchWheelInTabMock.mockResolvedValue(undefined);
+    const result = await dispatchScrollWheel(cdpDest, { direction: "down", notch: 3 });
+    expect(result).toEqual({
+      scrolled: true,
+      channel: "cdp",
+      reason: "delivered_via_cdp",
+    });
+    // 3 notches × 120 = 360, down direction = positive deltaY.
+    expect(dispatchWheelInTabMock).toHaveBeenCalledWith(
+      0, 360,
+      expect.any(Number), expect.any(Number),
+      "TAB-X", 9222,
+    );
+  });
+
+  it("vertical down: pre/post scrollTop unchanged → null (caller emits target_unreachable)", async () => {
+    readScrollPositionInTabMock
+      .mockResolvedValueOnce(snap(200, 0))
+      .mockResolvedValueOnce(snap(200, 0));
+    dispatchWheelInTabMock.mockResolvedValue(undefined);
+    const result = await dispatchScrollWheel(cdpDest, { direction: "down", notch: 1 });
+    expect(result).toBeNull();
+  });
+
+  it("pre-snapshot returns null (no CDP session): null (no wheel dispatched)", async () => {
+    readScrollPositionInTabMock.mockResolvedValueOnce(null);
+    const result = await dispatchScrollWheel(cdpDest, { direction: "down", notch: 1 });
+    expect(result).toBeNull();
+    expect(dispatchWheelInTabMock).not.toHaveBeenCalled();
+  });
+
+  it("dispatchWheelInTab throws → null (no propagation)", async () => {
+    readScrollPositionInTabMock.mockResolvedValueOnce(snap(0, 0));
+    dispatchWheelInTabMock.mockRejectedValue(new Error("CDP socket closed mid-dispatch"));
+    const result = await dispatchScrollWheel(cdpDest, { direction: "down", notch: 1 });
+    expect(result).toBeNull();
+  });
+
+  it("post-snapshot returns null after dispatch: null", async () => {
+    readScrollPositionInTabMock
+      .mockResolvedValueOnce(snap(0, 0))
+      .mockResolvedValueOnce(null);
+    dispatchWheelInTabMock.mockResolvedValue(undefined);
+    const result = await dispatchScrollWheel(cdpDest, { direction: "down", notch: 1 });
+    expect(result).toBeNull();
+  });
+
+  it("horizontal right: observes scrollLeft (not scrollTop) and dispatches deltaX positive", async () => {
+    readScrollPositionInTabMock
+      .mockResolvedValueOnce(snap(0, 50))
+      .mockResolvedValueOnce(snap(0, 290));
+    dispatchWheelInTabMock.mockResolvedValue(undefined);
+    const result = await dispatchScrollWheel(cdpDest, { direction: "right", notch: 2 });
+    expect(result).toEqual({
+      scrolled: true,
+      channel: "cdp",
+      reason: "delivered_via_cdp",
+    });
+    expect(dispatchWheelInTabMock).toHaveBeenCalledWith(
+      240, 0,
+      expect.any(Number), expect.any(Number),
+      "TAB-X", 9222,
+    );
+  });
+
+  it("vertical up: deltaY negative (UIA-internal sign convention — CDP/CSS positive-down matches)", async () => {
+    readScrollPositionInTabMock
+      .mockResolvedValueOnce(snap(500, 0))
+      .mockResolvedValueOnce(snap(380, 0));
+    dispatchWheelInTabMock.mockResolvedValue(undefined);
+    const result = await dispatchScrollWheel(cdpDest, { direction: "up", notch: 1 });
+    expect(result).toEqual({
+      scrolled: true,
+      channel: "cdp",
+      reason: "delivered_via_cdp",
+    });
+    expect(dispatchWheelInTabMock).toHaveBeenCalledWith(
+      0, -120,
+      expect.any(Number), expect.any(Number),
+      "TAB-X", 9222,
+    );
   });
 });
 

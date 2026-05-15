@@ -162,12 +162,29 @@ async function tryCdp(params: {
         const targetScrollTop = Math.max(0, ancestor.scrollTop + (ancestor.scrollHeight - ancestor.clientHeight) * 0.5);
         await setScrollPositionCdp(ancestor.cssSelectorPath, targetScrollTop, ancestor.scrollLeft, tabId ?? null, port);
       }
-      // Final scrollIntoView
+      // Final scrollIntoView.
+      //
+      // ADR-018 Phase 3 / §5 R3 — `target='body'` / `target='html'` regression
+      // fix: `document.querySelector('body').scrollIntoView({block:'instant'})`
+      // is interpreted by Chromium as "snap viewport to the body's top edge",
+      // which resets `scrollTop` to 0 even when the page was scrolled.
+      // ADR §1.1 symptom 4 reported this as a silent reverse-direction scroll.
+      // Use the two-step `document.scrollingElement || document.documentElement`
+      // query for the document root and skip `scrollIntoView` — the root is in
+      // view by definition; reading its bounding rect is sufficient for the
+      // viewportTop/Bottom response. Non-root selectors keep the existing
+      // `scrollIntoView({behavior:'instant'})` path unchanged.
       const scrollExpr = `
 (function() {
-  const el = document.querySelector(${JSON.stringify(target)});
-  if (!el) return { ok: false, error: 'Element not found' };
-  el.scrollIntoView({ block: ${JSON.stringify(inline)}, inline: 'nearest', behavior: 'instant' });
+  const target = ${JSON.stringify(target)};
+  const isRoot = target === 'body' || target === 'html';
+  const el = isRoot
+    ? (document.scrollingElement || document.documentElement)
+    : document.querySelector(target);
+  if (!el) return { ok: false, error: isRoot ? 'No scrolling element' : 'Element not found' };
+  if (!isRoot) {
+    el.scrollIntoView({ block: ${JSON.stringify(inline)}, inline: 'nearest', behavior: 'instant' });
+  }
   const r = el.getBoundingClientRect();
   return { ok: true, viewportTop: Math.round(r.top), viewportBottom: Math.round(r.bottom) };
 })()`;
