@@ -677,20 +677,30 @@ export async function postWheelToHwnd(
     // throw falls back to the bare chain-trust assertion (observation.source:
     // "chain_trust_unverified"). Only meaningful when retargetedByLeafWalker
     // is true; for non-MDI apps the Win32 SB_VERT pre-snapshot is the path.
+    // ADR-019 MVP-1 (Stage 1) — fire-and-forget pre-snapshot UIA read.
+    // Issued BEFORE the chunking loop, but **NOT awaited here**: the wheel
+    // dispatch must not block on the optional observation path. A slow UIA
+    // provider (e.g. an off-thread COM call that takes seconds) would
+    // otherwise delay sending wheel messages themselves (Codex PR #309
+    // Round 1 P2). The Promise is captured and `.catch`-converted to null
+    // so the later `await` in the chain-trust branch never throws.
     const readUiaPercent = nativeUia?.uiaReadScrollPercentAtHwnd;
-    let preUiaPercent: number | null = null;
-    let preUiaElapsedMs = 0;
+    let preUiaPromise: Promise<{ percent: number | null; elapsedMs: number }> =
+      Promise.resolve({ percent: null, elapsedMs: 0 });
     if (retargetedByLeafWalker && typeof readUiaPercent === "function") {
       const tPreStart = performance.now();
-      try {
-        preUiaPercent = await readUiaPercent({
-          hwnd: effectiveHwnd.toString(),
-          axis: axisName,
-        });
-      } catch {
-        preUiaPercent = null;
-      }
-      preUiaElapsedMs = performance.now() - tPreStart;
+      preUiaPromise = readUiaPercent({
+        hwnd: effectiveHwnd.toString(),
+        axis: axisName,
+      })
+        .then((percent) => ({
+          percent,
+          elapsedMs: performance.now() - tPreStart,
+        }))
+        .catch(() => ({
+          percent: null,
+          elapsedMs: performance.now() - tPreStart,
+        }));
     }
 
     // Chunk the wheel delta into ≤ 16-bit signed messages so the receiver's
@@ -783,6 +793,14 @@ export async function postWheelToHwnd(
         // numeric percent delta. Otherwise attach `observation.source:
         // "chain_trust_unverified"` so the caller knows the delivery is
         // unverified (Stage 1 honest signal; Stages 2-5 upgrade this).
+        // Await the pre-snapshot UIA read that was issued before the
+        // chunking loop (fire-and-forget pattern — Codex PR #309 Round 1
+        // P2). By now the chunks have all been posted + we waited the
+        // settle delay, so the UIA read has had its full duration to
+        // complete in parallel; in practice the await here returns
+        // immediately.
+        const { percent: preUiaPercent, elapsedMs: preUiaElapsedMs } =
+          await preUiaPromise;
         const observation = await observeViaUiaOrChainTrust(
           effectiveHwnd,
           axisName,

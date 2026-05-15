@@ -530,7 +530,20 @@ fn read_scroll_percent_from_pattern(
         unsafe { scroll.CurrentHorizontalScrollPercent() }
     };
     match result {
-        Ok(v) => Ok(Some(v)),
+        Ok(v) => {
+            // Microsoft UIA defines `UIA_ScrollPatternNoScroll = -1.0` as the
+            // sentinel returned when the axis is not scrollable / no valid
+            // position is available (transient provider state). Treat it as
+            // observation-unavailable so the TS layer falls back to
+            // chain-trust (Codex PR #309 Round 1 P1). The sentinel is exactly
+            // -1.0; allow a small numeric slack (negative below the legal
+            // 0.0..=100.0 range) so providers that round are also captured.
+            if !v.is_finite() || v < 0.0 || v > 100.0 {
+                Ok(None)
+            } else {
+                Ok(Some(v))
+            }
+        }
         Err(_) => Ok(None),
     }
 }
