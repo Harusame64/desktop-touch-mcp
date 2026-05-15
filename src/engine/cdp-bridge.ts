@@ -303,6 +303,88 @@ export async function evaluateInTab(
   return raw.result.value;
 }
 
+// ─── ADR-018 Phase 3 — Tier 2 wheel dispatch + observation ────────────────────
+
+/**
+ * ADR-018 §2.1 D1 — Tier 2 dispatch. Synthesize a `mouseWheel` event in the
+ * target tab via CDP `Input.dispatchMouseEvent`. Coordinates are viewport-
+ * relative CSS px; viewport center is a reasonable default for tab-routed
+ * wheels because the *tab* is the destination — per-element coords matter
+ * only for nested scrollers, which Phase 3 does NOT yet target (ADR §7 OQ6
+ * carry-over).
+ *
+ * `deltaX` / `deltaY` follow the CSS/UIA positive-down convention (down/right
+ * positive) — matching `WheelParams.notch` in `_input-pipeline.ts`. The Win32
+ * `WM_MOUSEWHEEL` sign convention is the opposite; only Phase 4 PostMessage
+ * has to flip.
+ */
+export async function dispatchWheelInTab(
+  deltaX: number,
+  deltaY: number,
+  x: number,
+  y: number,
+  tabId: string | null = null,
+  port = DEFAULT_CDP_PORT,
+): Promise<void> {
+  const tab = await resolveTab(tabId, port);
+  const session = await openSession(tab, port);
+  await session.send("Input.dispatchMouseEvent", {
+    type: "mouseWheel",
+    x,
+    y,
+    deltaX,
+    deltaY,
+  });
+}
+
+/**
+ * ADR-018 §2.2 — Tier 2 observation. Reads the document scrolling element's
+ * scroll position. Uses the `document.scrollingElement || document.documentElement`
+ * two-step query to avoid the `<body>` quirk that Phase 3 also fixes in
+ * `smart-scroll.ts` (ADR §5 R3).
+ *
+ * Returns `null` on any failure (no tab, no session, JS exception, evaluation
+ * timeout) so callers can downgrade to `target_unreachable` cleanly.
+ */
+export async function readScrollPositionInTab(
+  tabId: string | null = null,
+  port = DEFAULT_CDP_PORT,
+): Promise<{
+  scrollTop: number;
+  scrollLeft: number;
+  scrollHeight: number;
+  scrollWidth: number;
+  clientHeight: number;
+  clientWidth: number;
+} | null> {
+  const expr = `
+(function() {
+  const el = document.scrollingElement || document.documentElement;
+  if (!el) return null;
+  return {
+    scrollTop: el.scrollTop,
+    scrollLeft: el.scrollLeft,
+    scrollHeight: el.scrollHeight,
+    scrollWidth: el.scrollWidth,
+    clientHeight: el.clientHeight,
+    clientWidth: el.clientWidth,
+  };
+})()`;
+  try {
+    const result = (await evaluateInTab(expr, tabId, port)) as {
+      scrollTop: number;
+      scrollLeft: number;
+      scrollHeight: number;
+      scrollWidth: number;
+      clientHeight: number;
+      clientWidth: number;
+    } | null;
+    return result;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Get screen coordinates of a DOM element identified by a CSS selector.
  * Coordinates are in physical pixels, compatible with mouse_click.

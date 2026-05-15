@@ -12,7 +12,11 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { evaluateScrollDelivery, type ScrollSnapshot } from "../../src/tools/mouse.js";
+import {
+  collapseScrollObserved,
+  evaluateScrollDelivery,
+  type ScrollSnapshot,
+} from "../../src/tools/mouse.js";
 
 const snap = (
   v: number | null,
@@ -189,5 +193,57 @@ describe("evaluateScrollDelivery — delta shape", () => {
       expect(r.delta.y).toBeCloseTo(0.15, 5);
     }
     expect(r.status).toBe("delivered");
+  });
+});
+
+// ADR-018 Phase 3 — issue #294 envelope normalisation. `evaluateScrollDelivery`
+// keeps its internal `{x:null,y:null}` shape (Win32 percent observations) so
+// that the existing internal contract above is preserved; the public envelope
+// served at `hints.scrollObserved.delta` is normalised one level above by
+// `collapseScrollObserved` so callers see ONE shape for "observation channel
+// exhausted" — not the ambiguous `{x:null, y:null}` object reported in #294.
+describe("collapseScrollObserved — ADR-018 Phase 3 / issue #294 envelope normalisation", () => {
+  it("'unverifiable' string passes through unchanged", () => {
+    const r = collapseScrollObserved({ delta: "unverifiable" });
+    expect(r.delta).toBe("unverifiable");
+  });
+
+  it("both axes null collapses to 'unverifiable' (issue #294 — silent-drop ambiguity)", () => {
+    // The exact silent-drop shape reported in #294: Avalonia /
+    // DirectComposition / custom scrollbars cause GetScrollInfo to fail on
+    // BOTH axes, so the internal evaluateScrollDelivery emits
+    // {x:null, y:null}. The envelope collapse normalises to the dedicated
+    // 'unverifiable' string so the LLM sees one shape, not two, for
+    // "observation channel exhausted".
+    const r = collapseScrollObserved({ delta: { x: null, y: null } });
+    expect(r.delta).toBe("unverifiable");
+  });
+
+  it("vertical-only window (horizontal axis null) preserves the structured object", () => {
+    // Single-axis null carries real signal — that axis genuinely has no
+    // scrollbar. Issue #294's silent-drop ambiguity does NOT apply here, so
+    // the object is preserved (callers can detect "this axis has no observation
+    // channel" without losing the working axis's numeric value).
+    const r = collapseScrollObserved({ delta: { x: null, y: 0.15 } });
+    expect(r.delta).toEqual({ x: null, y: 0.15 });
+  });
+
+  it("horizontal-only window (vertical axis null) preserves the structured object", () => {
+    const r = collapseScrollObserved({ delta: { x: 0.10, y: null } });
+    expect(r.delta).toEqual({ x: 0.10, y: null });
+  });
+
+  it("both axes numeric pass through unchanged", () => {
+    const r = collapseScrollObserved({ delta: { x: 0.10, y: 0.20 } });
+    expect(r.delta).toEqual({ x: 0.10, y: 0.20 });
+  });
+
+  it("both axes zero (rounding noise / no movement) pass through unchanged — NOT collapsed", () => {
+    // Zero is an observable value (Win32 reported, scrollbar present, no
+    // movement); collapse is reserved for null-null. The `not_delivered`
+    // status comes from `evaluateScrollDelivery`'s page-end disambiguation,
+    // not from the envelope shape.
+    const r = collapseScrollObserved({ delta: { x: 0, y: 0 } });
+    expect(r.delta).toEqual({ x: 0, y: 0 });
   });
 });

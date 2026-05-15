@@ -32,6 +32,31 @@ import {
 } from "./_resolve-window.js";
 import { enumWindowsInZOrder } from "../engine/win32.js";
 import { nativeUia } from "../engine/native-engine.js";
+import {
+  listTabsLight,
+  dispatchWheelInTab,
+  readScrollPositionInTab,
+} from "../engine/cdp-bridge.js";
+import { getCdpPort } from "../utils/desktop-config.js";
+
+/**
+ * Window class prefix that identifies a Chromium-based top-level window
+ * (Chrome, Edge, and Electron apps that use the upstream Chromium chrome).
+ * Phase 3 uses this as the *gate* for CDP probing — only `Chrome_WidgetWin_*`
+ * HWNDs cost a `listTabsLight` HTTP round-trip in `resolveCdpDestinationForHwnd`,
+ * so non-browser windows pay zero CDP latency. (ADR §7 OQ3 carry-over: Tier 1
+ * UIA inside Chromium is opt-in and not in Phase 3 scope.)
+ */
+const CHROMIUM_CLASS_PREFIX = "Chrome_WidgetWin";
+
+/**
+ * Minimum pixel delta required to classify a CDP scroll as `delivered_via_cdp`.
+ * 1px is the smallest observable scroll in CSS px; below that, browser pixel
+ * snapping or sub-pixel rounding can produce noise on a no-op wheel. (ADR §2.6.2
+ * — Tier 2 boundary signal: pre/post `scrollingElement.scrollTop` differ by
+ * at least this many px.)
+ */
+const CDP_SCROLL_DELIVERY_EPSILON_PX = 1;
 
 // ─── Public types ────────────────────────────────────────────────────────────
 
@@ -84,6 +109,18 @@ export type Channel = "uia" | "cdp" | "postmessage" | "send_input";
 export interface WheelParams {
   direction: "up" | "down" | "left" | "right";
   notch: number;
+  /**
+   * Optional viewport-relative CSS px coordinates for Tier 2 CDP dispatch.
+   * CDP `Input.dispatchMouseEvent({type:'mouseWheel'})` requires `(x,y)` but
+   * routes the wheel to the tab (not the point) — so for Phase 3 these are
+   * a hint only; viewport center is used when omitted. Tier 1 (UIA) and
+   * Tier 4 (legacy SendInput) ignore both fields.
+   *
+   * Phase 3 / ADR §7 OQ6 carry-over: per-element CDP coords land in a future
+   * phase (e.g. `scroll(action='to_element', selector=...)` Tier 2 path).
+   */
+  x?: number;
+  y?: number;
 }
 
 /**
@@ -95,14 +132,13 @@ export interface DispatchOutcome {
   scrolled: boolean;
   channel: Channel;
   /**
-   * ADR §2.6.2 reason value. Phase 1b emits only `'delivered_via_uia'`; the
-   * remaining 4 of the 5-value ADR §2.6.2 enum (`delivered_via_cdp` /
-   * `delivered_via_postmessage` / `wheel_overlay_intercepted` /
-   * `target_unreachable`) are emitted by later phases. `null` indicates no
-   * ADR-018 reason applies (caller picks the legacy `evaluateScrollDelivery`
-   * reason from `mouse.ts`).
+   * ADR §2.6.2 reason value. Phase 1b emits `'delivered_via_uia'`, Phase 3
+   * adds `'delivered_via_cdp'`; `'delivered_via_postmessage'` /
+   * `'wheel_overlay_intercepted'` / `'target_unreachable'` arrive in later
+   * phases. `null` indicates no ADR-018 reason applies (caller picks the
+   * legacy `evaluateScrollDelivery` reason from `mouse.ts`).
    */
-  reason: "delivered_via_uia" | null;
+  reason: "delivered_via_uia" | "delivered_via_cdp" | null;
 }
 
 // ─── Resolver ────────────────────────────────────────────────────────────────
@@ -149,6 +185,14 @@ export async function resolveInputDestination(params: {
     windowTitle: params.windowTitle,
   });
   if (resolved !== null) {
+    // ADR §2.1 D1 Tier 2 — promote Chromium HWNDs to a CDP destination when
+    // a CDP session is reachable. This is the auto-detect the ADR specifies
+    // ("Tier 2: Target is a Chrome/Edge tab (CDP attached via browser_open)")
+    // — callers do NOT pass a tabId; the resolver gates by window class and
+    // probes only when the gate matches, so non-browser windows pay no CDP
+    // latency.
+    const cdp = await resolveCdpDestinationForHwnd(resolved.hwnd);
+    if (cdp !== null) return cdp;
     return { kind: "hwnd", hwnd: resolved.hwnd };
   }
   // Case 3 recovery (see docstring): `resolveWindowTarget` returns null for a
@@ -179,6 +223,11 @@ export async function resolveInputDestination(params: {
           w.ownerHwnd == null,
       );
       if (match) {
+        // Case 3 recovery also gets the CDP Tier 2 promotion — otherwise a
+        // plain-windowTitle scroll on Chrome (where resolveWindowTarget returns
+        // null by Case 3 design) would never see channel='cdp'.
+        const cdp = await resolveCdpDestinationForHwnd(match.hwnd);
+        if (cdp !== null) return cdp;
         return { kind: "hwnd", hwnd: match.hwnd };
       }
     } catch {
@@ -186,6 +235,47 @@ export async function resolveInputDestination(params: {
     }
   }
   return { kind: "unresolved", reason: "no_target_window" };
+}
+
+/**
+ * ADR §2.1 D1 Tier 2 — auto-promote a Chromium HWND to a CDP destination when
+ * a CDP session is reachable on the configured port. Returns `null` when the
+ * gate fails (non-Chromium class) OR when the CDP probe fails (browser not
+ * running with `--remote-debugging-port`, no tabs, network error) — caller
+ * then falls back to `{kind:'hwnd'}` and tries Tier 1 UIA.
+ *
+ * The window-class gate is cheap (already-enumerated `className`); only the
+ * gate match incurs a `listTabsLight` HTTP round-trip, so non-browser windows
+ * pay no CDP latency.
+ *
+ * Phase 3 picks the first listed tab as the destination — matching
+ * `resolveTab(null, port)` semantics in `cdp-bridge.ts`. A future phase may
+ * thread a focused-tab hint via the foreground HWND → tab mapping.
+ *
+ * Exported for unit testing.
+ */
+export async function resolveCdpDestinationForHwnd(
+  hwnd: bigint,
+): Promise<{ kind: "cdp"; tabId: string } | null> {
+  let className: string | null = null;
+  try {
+    const win = enumWindowsInZOrder().find((w) => w.hwnd === hwnd);
+    className = win?.className ?? null;
+  } catch {
+    return null;
+  }
+  if (className === null || !className.startsWith(CHROMIUM_CLASS_PREFIX)) {
+    return null;
+  }
+  try {
+    const port = getCdpPort();
+    const tabs = await listTabsLight(port);
+    const firstPage = tabs[0];
+    if (!firstPage) return null;
+    return { kind: "cdp", tabId: firstPage.id };
+  } catch {
+    return null;
+  }
 }
 
 // ─── Runtime guard (ADR §4 Phase 1 deliverable) ──────────────────────────────
@@ -293,7 +383,57 @@ export async function dispatchScrollWheel(
       return null;
     }
   }
-  // cdp / unresolved → caller handles (Phase 1b: SendInput fall-through)
+  if (dest.kind === "cdp") {
+    // ADR-018 Phase 3 — Tier 2 CDP wheel dispatch. Pre/post observation via
+    // `readScrollPositionInTab` (document.scrollingElement); we declare
+    // `delivered_via_cdp` only when both endpoints succeed AND scrollTop /
+    // scrollLeft moved by at least CDP_SCROLL_DELIVERY_EPSILON_PX on the
+    // axis of interest. Any failure (no session, JS exception, no observable
+    // delta) returns null — caller emits `target_unreachable` per §2.6.2
+    // path-(b) because Tier 4 SendInput must not be reached for a resolved
+    // CDP destination (assertTier4Reachable throws on kind:'cdp').
+    try {
+      const port = getCdpPort();
+      const pre = await readScrollPositionInTab(dest.tabId, port);
+      if (pre === null) return null;
+      const wheelDelta = wheelDeltaForNotch(params);
+      // CDP dispatchMouseEvent requires viewport coordinates. Phase 3 sends
+      // wheels at the viewport center; per-element coords (ADR §7 OQ6) are a
+      // future phase. The tab is the destination, not the point.
+      const cx = params.x ?? Math.floor(pre.clientWidth / 2);
+      const cy = params.y ?? Math.floor(pre.clientHeight / 2);
+      await dispatchWheelInTab(
+        wheelDelta.x,
+        wheelDelta.y,
+        cx,
+        cy,
+        dest.tabId,
+        port,
+      );
+      // Settle: CDP wheel handling is synchronous on the renderer side but
+      // scrollTop reflects the layout-flushed value. A tiny yield is enough
+      // to land on the post-frame state without burning latency.
+      await new Promise((r) => setTimeout(r, 16));
+      const post = await readScrollPositionInTab(dest.tabId, port);
+      if (post === null) return null;
+      const axisIsVertical =
+        params.direction === "up" || params.direction === "down";
+      const observedDelta = axisIsVertical
+        ? Math.abs(post.scrollTop - pre.scrollTop)
+        : Math.abs(post.scrollLeft - pre.scrollLeft);
+      if (observedDelta < CDP_SCROLL_DELIVERY_EPSILON_PX) {
+        return null;
+      }
+      return {
+        scrolled: true,
+        channel: "cdp",
+        reason: "delivered_via_cdp",
+      };
+    } catch {
+      return null;
+    }
+  }
+  // unresolved → caller handles (Tier 4 SendInput fall-through)
   return null;
 }
 

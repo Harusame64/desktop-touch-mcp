@@ -1072,6 +1072,37 @@ export function evaluateScrollDelivery(
   };
 }
 
+/**
+ * @internal Exported for unit testing of the Phase 3 issue-#294 envelope
+ * normalisation. Collapses the internal `ScrollVerifyOutcome.delta` into the
+ * shape advertised at `hints.scrollObserved.delta` on the public scroll
+ * response.
+ *
+ * Collapse rules:
+ *   - `'unverifiable'` string → unchanged
+ *   - both axes null         → `'unverifiable'` (issue #294 — silent-drop
+ *     ambiguity: the old shape `{x:null, y:null}` read as "observation
+ *     exhausted" indistinguishably from the dedicated string, doubling the
+ *     LLM-facing signal)
+ *   - any other shape        → preserved as-is
+ *
+ * Single-axis-null (e.g. `{x:null, y:0.15}` from a vertical-only window) is
+ * intentionally preserved: that null carries real signal ("this axis has no
+ * scrollbar / no observation channel"), not the silent-drop ambiguity #294
+ * reports.
+ */
+export function collapseScrollObserved(
+  outcome: Pick<ScrollVerifyOutcome, "delta">,
+): { delta: { x: number | null; y: number | null } | "unverifiable" } {
+  if (outcome.delta === "unverifiable") {
+    return { delta: "unverifiable" };
+  }
+  if (outcome.delta.x === null && outcome.delta.y === null) {
+    return { delta: "unverifiable" };
+  }
+  return { delta: { x: outcome.delta.x, y: outcome.delta.y } };
+}
+
 export const scrollHandler = async ({
   direction, amount, x, y, speed, homing, windowTitle, hwnd,
 }: {
@@ -1137,6 +1168,29 @@ export const scrollHandler = async ({
     const tier1 = await dispatchScrollWheel(dest, { direction, notch: amount });
 
     if (tier1 === null) {
+      // ADR-018 Phase 3 — when destination resolved to a CDP tab but Tier 2
+      // dispatch / observation failed, emit `target_unreachable` per §2.6.2
+      // path-(b) instead of falling through to Tier 4 SendInput.
+      // `assertTier4Reachable(dest)` would throw for `kind:'cdp'` anyway —
+      // we surface the typed envelope explicitly so callers see the proper
+      // status / channel / reason rather than catching a thrown guard.
+      if (dest.kind === "cdp") {
+        return failWith(
+          new Error("ScrollNotDelivered"),
+          "scroll",
+          {
+            context: {
+              hint: "CDP wheel dispatch or scroll observation returned no delta — Tier 4 SendInput suppressed for resolved CDP destinations",
+              direction,
+              verifyDelivery: {
+                status: "not_delivered" as const,
+                channel: "cdp" as const,
+                reason: "target_unreachable" as const,
+              },
+            },
+          },
+        );
+      }
       assertTier4Reachable(dest);
       const SCROLL_MULTIPLIER = 3;
       switch (direction) {
@@ -1173,22 +1227,26 @@ export const scrollHandler = async ({
     // is scroll-specific (delta on each axis), verifyDelivery is the cross-tool SSOT
     // shape that other operation tools (#177-#181) also produce. Callers reading
     // either key see consistent answers; integration tests pin both.
-    const scrollObserved = outcome.delta === "unverifiable"
-      ? { delta: "unverifiable" as const }
-      : {
-          delta: {
-            x: outcome.delta.x !== null ? outcome.delta.x : null,
-            y: outcome.delta.y !== null ? outcome.delta.y : null,
-          },
-        };
+    //
+    // Issue #294 fix: collapse the public delta envelope via the
+    // `collapseScrollObserved` helper — see that helper's docstring for the
+    // rules and the rationale (silent-drop ambiguity reported in #294 when
+    // both axes are null).
+    const scrollObserved = collapseScrollObserved(outcome);
 
     // ADR-018 §2.6.1 — channel is the transport identifier (always populated,
-    // including for `status:'not_delivered'`). Phase 1b emits 'uia' when the
-    // dispatcher's Tier 1 path succeeded; legacy path retains the existing
-    // 'wheel_send_input' channel for back-compat. The Phase 4 §2.6.3 migration
-    // renames 'wheel_send_input' → 'send_input'.
-    const effectiveChannel: "uia" | "wheel_send_input" =
-      tier1 !== null && tier1.scrolled ? "uia" : "wheel_send_input";
+    // including for `status:'not_delivered'`). Phase 1b emits 'uia' when Tier 1
+    // succeeded; Phase 3 adds 'cdp' for the Tier 2 CDP dispatch. The legacy
+    // SendInput path retains 'wheel_send_input' for back-compat — the Phase 4
+    // §2.6.3 migration renames it → 'send_input'.
+    //
+    // Phase 3 narrowing: the dispatcher only emits 'uia' or 'cdp' on a
+    // successful tier outcome (Tier 3 'postmessage' lands in Phase 4) so the
+    // cast below is total over the current dispatch surface.
+    const effectiveChannel: "uia" | "cdp" | "wheel_send_input" =
+      tier1 !== null && tier1.scrolled
+        ? (tier1.channel as "uia" | "cdp")
+        : "wheel_send_input";
 
     if (outcome.status === "not_delivered") {
       // Silent drop: pre off-boundary, post unchanged. ScrollNotDelivered with
