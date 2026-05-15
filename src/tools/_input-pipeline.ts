@@ -517,6 +517,12 @@ export async function postWheelToHwnd(
       remaining -= chunkMagnitude;
     }
 
+    // `notch=0` (or any zero-magnitude call) loops zero times → nothing was
+    // ever posted. Surface as null so the caller emits `target_unreachable`
+    // rather than claiming a false-positive delivery from the mixed-version
+    // observation-API-missing branch below (Opus PR #305 Round 3 P2-1).
+    if (!postedAny) return null;
+
     await new Promise((r) => setTimeout(r, POSTMESSAGE_SETTLE_MS));
 
     // Case 1 — observation API genuinely missing: presume delivered.

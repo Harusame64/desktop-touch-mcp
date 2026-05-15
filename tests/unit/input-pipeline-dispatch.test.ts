@@ -876,6 +876,17 @@ describe("ADR-018 Phase 4 — postWheelToHwnd (Tier 3 PostMessage path)", () => 
     await postWheelToHwnd(0xBn, { direction: "down", notch: 273 });
     expect(win32PostMessageMock).toHaveBeenCalledTimes(1);
   });
+
+  it("notch=0 (zero magnitude) → null with NO PostMessage dispatched, even when getScrollInfo is unavailable (Opus Round 3 P2-1 regression guard)", async () => {
+    // Without this guard, the post-Codex-fix mixed-version branch (Case 1
+    // "API genuinely missing → presume delivered") would falsely claim
+    // `delivered_via_postmessage` for a zero-magnitude call where no
+    // PostMessage was ever dispatched (the chunking loop runs 0 times).
+    nativeWin32Mock.win32GetScrollInfo = undefined;
+    const result = await postWheelToHwnd(0xCn, { direction: "down", notch: 0 });
+    expect(result).toBeNull();
+    expect(win32PostMessageMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("ADR-018 Phase 4 — dispatchScrollWheel (Tier 1 UIA → Tier 3 PostMessage fall-through)", () => {
