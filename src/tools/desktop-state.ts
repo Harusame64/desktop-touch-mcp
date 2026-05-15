@@ -25,6 +25,7 @@ import type {
 import { CHROMIUM_TITLE_RE } from "./workspace.js";
 import { getSlotSnapshot } from "../engine/perception/hot-target-cache.js";
 import type { AttentionState } from "../engine/perception/types.js";
+import { isUiaCacheStale } from "../engine/identity-tracker.js";
 import {
   makeQueryWrapper,
   withEnvelopeIncludeSchema,
@@ -528,6 +529,20 @@ export const desktopStateHandler = async (args: {
           // "ambiguous" → ok (conservative safe baseline)
           attention = "ok";
         }
+      }
+
+      // Issue #295 — UIA cache stale upgrade. When the cached UIA snapshot for
+      // this HWND has fully expired (`expiresInMs === 0`), the focused-element
+      // / actionable[] views built from it can be out of date. Upgrade
+      // `attention` to `'stale'` so the LLM does not act on the snapshot
+      // without re-fetching. We only upgrade FROM `'ok'` — other attention
+      // values already signal degradation and must not be downgraded.
+      if (attention === "ok") {
+        try {
+          if (isUiaCacheStale(fg.hwnd)) {
+            attention = "stale";
+          }
+        } catch { /* best effort — never block desktop_state on cache lookup */ }
       }
     }
 
