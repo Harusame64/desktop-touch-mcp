@@ -4,6 +4,7 @@ import type { UiEntityCandidate } from "../../src/engine/vision-gpu/types.js";
 import {
   updateUiaCache,
   clearLayers,
+  clearUiaCache,
   UIA_CACHE_TTL_EXPORTED_MS,
 } from "../../src/engine/layer-buffer.js";
 
@@ -954,16 +955,20 @@ describe("DesktopFacade — automatic session eviction timer", () => {
 
 describe("DesktopFacade — UIA-cache-stale → attention (#295 carry-over)", () => {
   // The cache TTL is module-scoped state in layer-buffer.ts. Each test pins time
-  // deterministically and clears the layers afterwards so cross-test bleed
-  // cannot mask a real regression.
+  // deterministically and clears both the WindowLayer map AND the UIA cache so
+  // cross-test bleed cannot mask a real regression. Opus PR #302 P2 #4:
+  // `clearLayers()` only resets the `layers` Map; the independent `uiaCache`
+  // Map (layer-buffer.ts:308) needs the dedicated `clearUiaCache()` export.
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
     clearLayers();
+    clearUiaCache();
   });
   afterEach(() => {
     vi.useRealTimers();
     clearLayers();
+    clearUiaCache();
   });
 
   it("attention='stale' when target.hwnd resolves to a fully-expired UIA cache", async () => {
@@ -1006,27 +1011,48 @@ describe("DesktopFacade — UIA-cache-stale → attention (#295 carry-over)", ()
     expect(out.attention).toBe("stale");
   });
 
-  it("target.hwnd takes precedence over getFocusedHwnd", async () => {
+  it("target.hwnd takes precedence over getFocusedHwnd (focused stale, target fresh → 'ok')", async () => {
+    // Opus PR #302 P2 #3 — the previous version of this test wrote both
+    // HWNDs at time 0 and advanced to TTL/2, leaving both fresh; the
+    // assertion would pass regardless of which HWND `resolveTargetHwnd`
+    // chose. We stamp at the EXACT TTL boundary instead — the older entry
+    // is then `age === TTL`, which `isUiaCacheStale` reports as stale
+    // (boundary inclusive: `age >= TTL`) but `sweepUiaCache` does NOT evict
+    // (strict `age > TTL` test inside the sweep loop). So the older entry
+    // stays in the Map AND is observable as stale, which lets the
+    // assertion actually distinguish which HWND the facade interrogated.
     const FOCUSED_HWND = 0xBEEF04n;
     const TARGET_HWND = 0xBEEF05n;
-    // The focused HWND is stale; the explicit target HWND is fresh. We expect
-    // the explicit HWND to win so `attention` reflects the entity the caller
-    // actually asked about, not the foreground.
-    updateUiaCache(FOCUSED_HWND, "<stale>");
-    updateUiaCache(TARGET_HWND, "<fresh>");
-    vi.setSystemTime(UIA_CACHE_TTL_EXPORTED_MS / 2);
-    // Re-stale the focused HWND by advancing past its TTL but keeping the
-    // target HWND fresh would require two separate timeline updates — instead
-    // we rely on `updateUiaCache` stamping the wallclock at call-time. Both
-    // entries are fresh at this point in the timeline, so explicitly age only
-    // the focused HWND's entry by rewriting it earlier.
-    // The simpler assertion is correctness of precedence: confirm
-    // attention === 'ok' (target.hwnd) regardless of focused state.
+    updateUiaCache(FOCUSED_HWND, "<focused>"); // time 0
+    vi.setSystemTime(UIA_CACHE_TTL_EXPORTED_MS); // boundary
+    updateUiaCache(TARGET_HWND, "<target>"); // fresh (age 0); FOCUSED kept (sweep is strict >)
     const facade = new DesktopFacade(gameProvider, {
       getFocusedHwnd: () => FOCUSED_HWND,
     });
     const out = await facade.see({ target: { hwnd: String(TARGET_HWND) } });
+    // If precedence broke and the facade interrogated FOCUSED instead, this
+    // would be 'stale'. The 'ok' assertion proves target.hwnd wins.
     expect(out.attention).toBe("ok");
+  });
+
+  it("target.hwnd takes precedence over getFocusedHwnd (focused fresh, target stale → 'stale')", async () => {
+    // Opus PR #302 P2 #3 — companion to the previous case. Swap the
+    // freshness so the explicit target.hwnd is stale while the focused
+    // HWND is fresh. `attention === 'stale'` proves precedence the other
+    // direction (facade reports on the entity the caller pinned, not the
+    // foreground). Same TTL-boundary trick to dodge the sweep.
+    const FOCUSED_HWND = 0xBEEF06n;
+    const TARGET_HWND = 0xBEEF07n;
+    updateUiaCache(TARGET_HWND, "<target>"); // time 0
+    vi.setSystemTime(UIA_CACHE_TTL_EXPORTED_MS); // boundary
+    updateUiaCache(FOCUSED_HWND, "<focused>"); // fresh (age 0); TARGET kept
+    const facade = new DesktopFacade(gameProvider, {
+      getFocusedHwnd: () => FOCUSED_HWND,
+    });
+    const out = await facade.see({ target: { hwnd: String(TARGET_HWND) } });
+    // If precedence broke and the facade interrogated FOCUSED, this would
+    // be 'ok'. The 'stale' assertion proves target.hwnd wins.
+    expect(out.attention).toBe("stale");
   });
 
   it("attention omitted when getFocusedHwnd returns null (no foreground)", async () => {

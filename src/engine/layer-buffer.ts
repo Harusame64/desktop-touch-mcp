@@ -370,6 +370,17 @@ export function getUiaCacheTimestamp(hwnd: bigint): number | null {
   return uiaCache.get(hwnd)?.timestamp ?? null;
 }
 
+/**
+ * Drop every UIA-cache entry (Opus PR #302 P2 #4). `clearLayers()` only clears
+ * the WindowLayer baseline map; the `uiaCache` Map is independent (line 308
+ * comment) and survives `clearLayers()`. Tests that depend on a clean UIA-
+ * cache state should call this helper alongside `clearLayers()` so cross-test
+ * bleed cannot mask a regression in stale-detection logic.
+ */
+export function clearUiaCache(): void {
+  uiaCache.clear();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SmartScroll raw-pixel + dHash access
 // ─────────────────────────────────────────────────────────────────────────────

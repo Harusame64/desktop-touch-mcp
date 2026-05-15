@@ -376,9 +376,13 @@ describe("createDesktopExecutor — unsupportedExecutors short-circuit (#296 Pha
     expect(deps.mouseClick).toHaveBeenCalledWith(110, 72);
   });
 
-  it("UIA-sourced + setValue with unsupportedExecutors:['uia'] → skip uiaSetValue, mouse fallback", async () => {
-    // setValue normally routes to uiaSetValue when sources includes 'uia';
-    // the short-circuit must apply to that branch too, not just the click path.
+  it("UIA-sourced + setValue with unsupportedExecutors:['uia'] → throw (text would be dropped)", async () => {
+    // Opus PR #302 P2 #2 — when every text-capable executor is skipped /
+    // blocked AND the caller supplied text, the executor must throw rather
+    // than fall through to mouseClick (which silently drops the text
+    // payload — phantom-typed bug). uiaSetValue must NOT be called either:
+    // the unsupportedExecutors short-circuit applies to both the click and
+    // setValue branches of the UIA route.
     const deps = mockDeps();
     const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
     const e = entity({
@@ -386,10 +390,27 @@ describe("createDesktopExecutor — unsupportedExecutors short-circuit (#296 Pha
       unsupportedExecutors: ["uia"],
       rect: { x: 100, y: 200, width: 80, height: 30 },
     });
-    const result = await exec(e, "setValue", "text");
-    expect(result).toBe("mouse");
+    await expect(exec(e, "setValue", "text")).rejects.toThrow(
+      /no text-capable executor available/i,
+    );
     expect(deps.uiaSetValue).not.toHaveBeenCalled();
-    expect(deps.mouseClick).toHaveBeenCalledOnce();
+    expect(deps.mouseClick).not.toHaveBeenCalled();
+  });
+
+  it("unsupportedExecutors:['mouse'] honoured by the residual fallback (Opus P2 #1)", async () => {
+    // The field's type union allows `'mouse'`; the executor must honour it
+    // rather than silently route through the unconditional mouse fallback.
+    // Source is visual_gpu so UIA/CDP/terminal all fall through, then the
+    // mouse fallback itself must throw because mouse is also blocked.
+    const deps = mockDeps();
+    const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
+    const e = entity({
+      sources: ["visual_gpu"],
+      unsupportedExecutors: ["mouse"],
+      rect: { x: 100, y: 200, width: 80, height: 30 },
+    });
+    await expect(exec(e, "click")).rejects.toThrow(/mouse fallback also blocked/i);
+    expect(deps.mouseClick).not.toHaveBeenCalled();
   });
 
   it("CDP-sourced entity with unsupportedExecutors:['cdp'] → skip CDP, mouse fallback", async () => {
@@ -407,7 +428,11 @@ describe("createDesktopExecutor — unsupportedExecutors short-circuit (#296 Pha
     expect(deps.mouseClick).toHaveBeenCalledOnce();
   });
 
-  it("terminal-sourced entity with unsupportedExecutors:['terminal'] → skip terminal, mouse fallback", async () => {
+  it("terminal-sourced + type with unsupportedExecutors:['terminal'] → throw (text would be dropped)", async () => {
+    // Opus PR #302 P2 #2 — same contract as the UIA/CDP-blocked text cases.
+    // A terminal entity with terminal blocked has no text-capable executor
+    // left, so falling through to mouse-click would silently drop the
+    // `text` payload — throw instead.
     const deps = mockDeps();
     const exec = createDesktopExecutor({ windowTitle: "PowerShell" }, deps);
     const e = entity({
@@ -415,7 +440,25 @@ describe("createDesktopExecutor — unsupportedExecutors short-circuit (#296 Pha
       unsupportedExecutors: ["terminal"],
       rect: { x: 5, y: 5, width: 200, height: 20 },
     });
-    const result = await exec(e, "type", "ls");
+    await expect(exec(e, "type", "ls")).rejects.toThrow(
+      /no text-capable executor available/i,
+    );
+    expect(deps.terminalSend).not.toHaveBeenCalled();
+    expect(deps.mouseClick).not.toHaveBeenCalled();
+  });
+
+  it("terminal-sourced + click with unsupportedExecutors:['terminal'] → mouse fallback (no text to drop)", async () => {
+    // `click` action carries no text payload, so the mouse fallback is safe
+    // here — verify the original (pre-P2-#2) routing semantics for the
+    // text-free case still hold.
+    const deps = mockDeps();
+    const exec = createDesktopExecutor({ windowTitle: "PowerShell" }, deps);
+    const e = entity({
+      sources: ["terminal"],
+      unsupportedExecutors: ["terminal"],
+      rect: { x: 5, y: 5, width: 200, height: 20 },
+    });
+    const result = await exec(e, "click");
     expect(result).toBe("mouse");
     expect(deps.terminalSend).not.toHaveBeenCalled();
     expect(deps.mouseClick).toHaveBeenCalledOnce();
