@@ -65,14 +65,6 @@ vi.mock("../../src/engine/native-engine.js", () => ({
   // The ADR-007 P5a observability contract is exercised by the L1 integration
   // tests; here we only need the dispatcher logic to remain pure.
   nativeL1: null,
-  // `nativeEngine` is read by `src/engine/image.ts::hammingDistance` (and
-  // `dhashFromRaw`); set to null so the JS-fallback path runs in tests
-  // rather than the Rust SIMD path. Without this export vitest throws on
-  // access ("No 'nativeEngine' export is defined on the mock"), which would
-  // propagate up through `hammingDistance` into `postWheelToHwnd`'s outer
-  // try/catch and silently turn into a null return — confounding any
-  // chain-trust dHash-diff verification test (PR #308 P1 follow-up).
-  nativeEngine: null,
 }));
 
 // Mock window resolution dependency. `DIALOG_CLASSNAMES` is re-exported from
@@ -103,25 +95,6 @@ vi.mock("../../src/engine/win32.js", () => ({
   enumWindowsInZOrder: enumWindowsInZOrderMock,
   getWindowRectByHwnd: getWindowRectByHwndMock,
 }));
-
-// ADR-018 Phase 5+N chain-trust verification — postWheelToHwnd captures
-// pre/post dHash on the leaf when getScrollInfo returns null AND the leaf
-// walker retargeted, to disambiguate "scrolled" from "boundary / no-op".
-// Default impl returns null (capture unavailable in unit-test environment),
-// which means the existing chain-trust assertion still applies — matching
-// the runtime contract on platforms that lack the layer-buffer native path.
-// The dedicated dHash describe overrides per-test.
-const captureWindowRawAndHashMock = vi.fn<
-  [bigint, { x: number; y: number; width: number; height: number }],
-  Promise<{ rawPixels: Buffer; channels: 3 | 4; width: number; height: number; dHash: bigint } | null>
->(async () => null);
-vi.mock("../../src/engine/layer-buffer.js", () => ({
-  captureWindowRawAndHash: captureWindowRawAndHashMock,
-}));
-
-// `hammingDistance` is a pure helper — use the real implementation so the
-// dHash diff threshold check inside `postWheelToHwnd` runs against the same
-// math as production. (No mock needed; importing the real module is safe.)
 
 // Phase 3 Tier 2 CDP — mock the cdp-bridge surface used by the dispatcher.
 const listTabsLightMock = vi.fn();
@@ -924,10 +897,6 @@ describe("ADR-018 Phase 5+N — postWheelToHwnd scroll-leaf walker (Excel / Word
     win32GetScrollInfoMock.mockReset();
     getWindowRectByHwndMock.mockReset();
     win32FindScrollLeafForTopLevelMock.mockReset();
-    captureWindowRawAndHashMock.mockReset();
-    // Default capture impl returns null (unavailable) — matches existing
-    // chain-trust assertion fall-through. dHash-aware tests override below.
-    captureWindowRawAndHashMock.mockImplementation(async () => null);
     nativeWin32Mock.win32PostMessage = win32PostMessageMock;
     nativeWin32Mock.win32GetScrollInfo = win32GetScrollInfoMock;
     nativeWin32Mock.win32FindScrollLeafForTopLevel =
@@ -941,20 +910,6 @@ describe("ADR-018 Phase 5+N — postWheelToHwnd scroll-leaf walker (Excel / Word
     nPage: 100,
     nPos,
     pageRatio: nPos / 1000,
-  });
-
-  /**
-   * Helper: build a `captureWindowRawAndHash` mock return value carrying a
-   * specific dHash for the leaf-walker chain-trust verification path. The
-   * other fields are filled with placeholder data; they are not read by the
-   * dispatcher's chain-trust branch.
-   */
-  const capWithHash = (dHash: bigint) => ({
-    rawPixels: Buffer.alloc(0),
-    channels: 4 as const,
-    width: 0,
-    height: 0,
-    dHash,
   });
 
   it("leaf returned → postMessage + getScrollInfo + L1 push all target the leaf HWND, NOT the input top-level", async () => {
@@ -1109,62 +1064,6 @@ describe("ADR-018 Phase 5+N — postWheelToHwnd scroll-leaf walker (Excel / Word
       expect.any(BigInt),
       expect.any(BigInt),
     );
-  });
-
-  it("leaf retargeted AND getScrollInfo null AND dHash diff SMALL (boundary / non-scrollable) → null (Codex PR #308 P1 — preserve no-delivery signal when chain-trust has no observable movement)", async () => {
-    // Same setup as the chain-trust-delivered case above, but the pre/post
-    // dHash differ by less than the 5-bit threshold (here: 0 bits / identical
-    // hashes — the canonical "no movement" signal).
-    const TOP = 0xACE5n;
-    const LEAF = 0xCE117n;
-    win32FindScrollLeafForTopLevelMock.mockReturnValue(LEAF);
-    getWindowRectByHwndMock.mockReturnValue({
-      x: 53,
-      y: 240,
-      width: 1424,
-      height: 598,
-    });
-    win32GetScrollInfoMock.mockReturnValue(null);
-    // Identical dHash pre/post → diff = 0 → below threshold (5) → boundary.
-    captureWindowRawAndHashMock.mockImplementation(async () =>
-      capWithHash(0xDEADBEEFCAFEBABEn),
-    );
-    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
-    expect(result).toBeNull();
-    // PostMessage still queued (we DID try); the null return signals
-    // observation-confirmed no-op, not "did not attempt".
-    expect(win32PostMessageMock).toHaveBeenCalledWith(
-      LEAF,
-      expect.any(Number),
-      expect.any(BigInt),
-      expect.any(BigInt),
-    );
-  });
-
-  it("leaf retargeted AND getScrollInfo null AND dHash diff LARGE → delivered_via_postmessage (chain-trust + dHash verification)", async () => {
-    const TOP = 0xACE5n;
-    const LEAF = 0xCE117n;
-    win32FindScrollLeafForTopLevelMock.mockReturnValue(LEAF);
-    getWindowRectByHwndMock.mockReturnValue({
-      x: 53,
-      y: 240,
-      width: 1424,
-      height: 598,
-    });
-    win32GetScrollInfoMock.mockReturnValue(null);
-    // dHash pre/post differ by all 64 bits → diff = 64 ≫ threshold (5) →
-    // strong "the content visibly moved" signal.
-    let captureCount = 0;
-    captureWindowRawAndHashMock.mockImplementation(async () => {
-      captureCount += 1;
-      return capWithHash(captureCount === 1 ? 0n : 0xFFFFFFFFFFFFFFFFn);
-    });
-    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
-    expect(result).toEqual({
-      scrolled: true,
-      channel: "postmessage",
-      reason: "delivered_via_postmessage",
-    });
   });
 
   it("NOT retargeted AND getScrollInfo returns null (input HWND is not in the chain table) → return null (Case 2b — caller emits target_unreachable)", async () => {

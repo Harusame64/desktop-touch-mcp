@@ -56,8 +56,8 @@ This sub-plan supersedes the original carry-over #6 framing and lands a **smalle
    - Mock leaf with a different rect from top; assert lParam high/low words match the leaf's centre.
    - Mock the walker to throw a native error (R4 — `GetClassNameW` on stale HWND, etc.); assert the throw is caught locally and the top-level POST proceeds.
    - **Chain-trust follow-up (Cases 6 / 7, added by PR #308)**: leaf retargeted AND `getScrollInfo(leaf, axis)` returns null → emit `delivered_via_postmessage` per the Case 2a chain-table trust path (the Excel `NUIScrollbar` / Word MFC custom-paint observation gap); AND not-retargeted AND `getScrollInfo` null → preserve Case 2b emit-null behaviour so the caller surfaces `target_unreachable`.
-   - **dHash verification (Cases 8 / 9, added by PR #308 Codex P1 follow-up)**: when the chain-trust path applies AND `captureWindowRawAndHash` succeeds for both pre- and post-snapshots, the dispatcher compares Hamming distance against `POSTMESSAGE_CHAIN_TRUST_HASH_THRESHOLD` (5 bits). dHash diff ≥ threshold → `delivered_via_postmessage` (visual movement confirmed); diff < threshold → null (boundary / non-scrollable — Codex's false-positive guard). Capture failure on either side falls back to the unverified chain-trust assertion (preserves original Phase 5+N intent on platforms without the dHash native path).
-   - Total: 9 new cases.
+   - **Reverted: dHash verification** (commit `ee364c4`, later commit reverted the gate). Codex Round 1 P1 raised a false-positive concern (chain-trust returning `delivered` on boundary / non-scrollable). The dHash gate was implemented and unit-tested but ran into a structural limit in dogfood: Excel's mostly-uniform cell grid + dark-gray row-label strip collapses to an essentially-constant 8×8 perceptual hash even when raw pixels show real change (empirical: 3-notch wheel post → 0.36 % of raw bytes change → 0 bits of dHash change → false negative). The gate would have demoted real Excel scrolls to `target_unreachable`. Per CLAUDE.md §3.2 carry-over scope shrink (existing public API must not break), the gate was reverted and Codex's boundary-case concern is accepted as a documented trade-off — the semantics match Tier 1 UIA's at-boundary handling (`mouse.ts::evaluateScrollDelivery`), which treats "wheel queued + receiver decided not to act" as delivered. Future verification work could pursue a higher-resolution hash, raw-byte-diff thresholding, or a UIA-cell-name observation; out of scope for PR #308.
+   - Total: 7 new cases.
 
 5. **Docs update**:
    - `docs/adr-018-input-pipeline-3tier.md`:
@@ -109,7 +109,7 @@ This sub-plan supersedes the original carry-over #6 framing and lands a **smalle
   - Causal window: the leaf-walker is a single lookup at function entry; subsequent reads of `effectiveHwnd` cannot diverge.
   - Compile-time guard overreliance: the FindWindowExW chain is runtime-validated (each segment can fail). Defensive null return on any miss prevents wrong-window POST.
   - Order matters: the chain walk is sequential (parent → child by class name); reversing would not match.
-  - Numeric counts: 2 entries in the chain table, 9 new test cases — pinned in §2.1 (5 from the initial PR; 2 added by the PR #308 chain-trust follow-up for Case 2a / 2b pin; 2 added by the PR #308 Codex P1 follow-up for the dHash-diff SMALL / LARGE verification path).
+  - Numeric counts: 2 entries in the chain table, 7 new test cases — pinned in §2.1 (5 from the initial PR; 2 added by the PR #308 chain-trust follow-up for Case 2a / 2b pin; the 2 dHash-diff verification cases originally added in PR #308 were reverted alongside the dHash gate — see §2.1 reverted-note).
 
 ---
 
@@ -136,7 +136,7 @@ This sub-plan supersedes the original carry-over #6 framing and lands a **smalle
 - **G1**: dogfood `scroll(action='raw', windowTitle:'Book1 - Excel', direction:'down')` returns `ok:true verifyDelivery:{status:'delivered', channel:'postmessage', reason:'delivered_via_postmessage'}` with numeric `scrollObserved.delta` (or `'unverifiable'` only if scrollbar API is missing — never `target_unreachable`).
 - **G2**: dogfood the same call on Notepad / Word / Explorer — all preserve current passing behaviour (`channel:'uia'` / `reason:'delivered_via_uia'`).
 - **G3**: dogfood on a non-MDI app (e.g. Chrome) — leaf-walker returns null, behaviour bit-equal to current main.
-- **G4**: full `npm test` green (no regression to existing 3100+ tests; 9 new cases pass — 5 initial + 2 chain-trust + 2 dHash verification).
+- **G4**: full `npm test` green (no regression to existing 3100+ tests; 7 new cases pass — 5 initial + 2 chain-trust; the 2 dHash-verification cases originally added in PR #308 were reverted with the gate per the §2.1 note).
 - **G5**: `npm run build:rs` succeeds (new napi exports cleanly).
 - **G6**: ADR §3 SSOT table + Phase 4/5 sub-plan §2.2 + CHANGELOG entry all reference `win32_find_scroll_leaf_for_top_level` consistently (no drift between docs).
 
