@@ -44,40 +44,49 @@ ADR §4 Phase 4 lists 5 deliverables across 2 files (`_input-pipeline.ts` + `mou
    - `assertTier4Reachable(dest)` is still called immediately before SendInput so the `'unresolved'`-only contract is structurally enforced at the call site.
    - `effectiveChannel` union extended: `"uia" | "cdp" | "postmessage" | "wheel_send_input"`. The if-chain that maps `tier1.channel → effectiveChannel` now accepts `'postmessage'`. The legacy `'wheel_send_input'` literal is preserved for Tier 4 (the `§2.6.3` rename to `'send_input'` is deferred — Tier 4 still emits the legacy literal until a future PR consolidates).
 
-5. **Unit tests** in `tests/unit/input-pipeline-dispatch.test.ts`:
+5. **Unit tests** in `tests/unit/input-pipeline-dispatch.test.ts` (canonical counts: **12** Tier 3 cases + **5** Tier 1 → Tier 3 fall-through cases + **4** `assertTier4Reachable` strict cases, total 56 in this file):
    - Mock `win32PostMessage` + `win32GetScrollInfo` + `getWindowRectByHwnd` (via mocking `../../src/engine/win32.js`) so the Tier 3 path is deterministic.
-   - New describe block: `"ADR-018 Phase 4 — postWheelToHwnd (Tier 3 PostMessage path)"`:
-     - vertical down: posts `WM_MOUSEWHEEL` (0x020A) with `wParam = (-120 << 16) | 0` (Win32-flipped: UIA down=+120 → Win32 = -120 for "forward = up" convention — see §2.3 matrix), lParam = MAKELPARAM(screenCx, screenCy).
-     - vertical up: posts `WM_MOUSEWHEEL` with positive HIWORD (`120 << 16`).
-     - horizontal right: posts `WM_MOUSEHWHEEL` (0x020E) with positive HIWORD (`120 << 16`) — no flip (UIA right=+ matches Win32 WM_MOUSEHWHEEL right=+).
+   - New describe block: `"ADR-018 Phase 4 — postWheelToHwnd (Tier 3 PostMessage path)"` — 12 cases:
+     - vertical down: posts `WM_MOUSEWHEEL` (0x020A) with `wParam` HIWORD = -120 packed via u32 mask (Win32-flipped: UIA down=+120 → Win32 = -120 for "forward = up" convention — see §2.3 matrix), lParam = MAKELPARAM(screenCx, screenCy).
+     - vertical up: posts `WM_MOUSEWHEEL` with positive HIWORD (+120).
+     - horizontal right: posts `WM_MOUSEHWHEEL` (0x020E) with positive HIWORD (+240 for notch=2) — no flip (UIA right=+ matches Win32 WM_MOUSEHWHEEL right=+).
      - horizontal left: posts `WM_MOUSEHWHEEL` with negative HIWORD.
-     - Observable scroll diff (pre.nPos=10, post.nPos=30) → returns `{channel:'postmessage', reason:'delivered_via_postmessage'}`.
-     - No observable diff → `null`.
-     - `win32GetScrollInfo` returns null (Word `_WwG` MFC custom-paint case) → `null` (dispatcher returns null; caller emits `target_unreachable`).
-     - `win32GetWindowRect` returns null → uses fallback lParam=0 (best-effort) and still posts; observation null path same as above.
-     - Native call throws → `null`.
-   - New describe block: `"ADR-018 Phase 4 — dispatchScrollWheel (Tier 1 → Tier 3 fall-through)"`:
-     - Tier 1 returns null, Tier 3 returns delivered → returns Tier 3 outcome.
-     - Tier 1 returns null, Tier 3 returns null → dispatcher returns null.
-     - Tier 1 returns delivered → Tier 3 NOT invoked (asserted via `win32PostMessage` not called).
-   - Updated `assertTier4Reachable` describe:
-     - `kind:'hwnd'` now `.toThrow(...)` (was `.not.toThrow()` in Phase 1b).
-     - `kind:'unresolved'` still passes.
+     - Observable scroll diff (pre.nPos=50, post.nPos=80) → returns `{channel:'postmessage', reason:'delivered_via_postmessage'}`.
+     - pre-snapshot null (Word `_WwG` MFC custom-paint case) → `null` (PostMessage still dispatched best-effort).
+     - post-snapshot null (race / scrollbar destroyed mid-scroll) → `null`.
+     - pre/post nPos unchanged → `null`.
+     - `win32PostMessage` returns false → `null` (no observation attempted).
+     - `getWindowRectByHwnd` returns null → uses fallback lParam=0 (best-effort) and still posts.
+     - Multi-monitor secondary-display negative-coord packing — lParam preserves sign bits (R2 / §2.4).
+     - `win32PostMessage` native binding undefined → `null` (no throw).
+     - `win32PostMessage` throws → `null` (graceful fall-through).
+   - New describe block: `"ADR-018 Phase 4 — dispatchScrollWheel (Tier 1 UIA → Tier 3 PostMessage fall-through)"` — 5 cases:
+     - Tier 1 ok:false → Tier 3 delivered → returns Tier 3 outcome.
+     - Tier 1 scrolled:false + Tier 3 null → dispatcher returns null.
+     - Tier 1 succeeded → Tier 3 NOT invoked (asserted via `win32PostMessage` not called).
+     - Tier 1 throws → Tier 3 still attempted (graceful Tier 1 fall-through preserved).
+     - `kind='unresolved'` → null (neither Tier 1 nor Tier 3 invoked).
+   - Updated `assertTier4Reachable` describe (4 cases):
+     - `kind:'hwnd'` now `.toThrow(...)` (was `.not.toThrow()` in Phase 1b lenient).
+     - `kind:'uia'` throws (unchanged).
+     - `kind:'cdp'` throws (unchanged).
+     - `kind:'unresolved'` passes (unchanged — the only canonical Tier 4 destination).
 
-6. **Word `_WwG` class enumeration fixture** (`tests/integration/word-class-enumerate.smoke.test.ts`):
+6. **Word `_WwG` class enumeration fixture skeleton** (`tests/integration/word-class-enumerate.smoke.test.ts`):
    - Locally-runnable smoke; CI-skipped (no Word installed on `windows-latest` runners).
-   - Skip condition: `process.env.WORD_E2E !== "1"` OR `winword.exe` not running.
-   - Enumerates `EnumChildWindows` for the first reachable `OpusApp` top-level (Word's main class) and logs the class hierarchy. Asserts `_WwG` (or `_WwO`) appears in the tree.
-   - Output is informational; Phase 4 records Word's PostMessage behaviour as documented unobserved-exhaust if `_WwG` does not respond — the Tier 3 `null` path handles it correctly without further code branching.
+   - Skip condition: `process.env.WORD_E2E !== "1"` OR no top-level `OpusApp` window present.
+   - **Phase 4 lands the SKELETON only**: logs the top-level Z-order siblings of `OpusApp` (Word's main class) via the existing `enumWindowsInZOrder()` API and soft-asserts `wordTop.className === "OpusApp"`. The full `EnumChildWindows`-based descendant tree dump that asserts `_WwG` / `_WwO` appears under `OpusApp` requires a new `win32_enum_child_windows` napi export, which is out of scope for Phase 4 (no Tier 3 contract depends on it). The fixture exists so Phase 5 can wire the descendant assertion without churn.
+   - Output is informational; Phase 4 records Word's PostMessage behaviour as documented unobserved-exhaust if `_WwG` does not respond — the Tier 3 `null` path handles it correctly without further code branching, independently of whether the descendant assertion lands.
 
 ### 2.2 Out of scope (carry-over to later phases)
 
 | Item | Carries to | Reason |
 |---|---|---|
-| Tier 4 reason / channel rename (`wheel_send_input` → `send_input`, legacy 4 reasons → unreachable) | A future cleanup PR | The legacy literals are still emitted from the `kind:'unresolved'` Tier 4 fall-through; renaming is mechanical but unrelated to the Tier 3 wire-up and would balloon the diff. ADR §2.6.3 migration is type-level satisfied by the existing 5-value enum lock in `mouse.ts:971-982`. |
-| Word real-app integration assertion (assert scroll actually moves Word document) | Phase 5 5-app smoke | Phase 5 covers 5-app × 4-direction; Phase 4 contributes the Tier 3 path + class fixture only. |
+| Tier 4 reason / channel rename (`wheel_send_input` → `send_input`, legacy 4 reasons → unreachable) + `effectiveChannel` local-union de-dup | A future cleanup PR | The legacy literals are still emitted from the `kind:'unresolved'` Tier 4 fall-through; renaming is mechanical but unrelated to the Tier 3 wire-up and would balloon the diff. ADR §2.6.3 migration is type-level satisfied by the existing 5-value enum lock in `mouse.ts:971-982`. The `effectiveChannel` local union (`uia|cdp|postmessage|wheel_send_input` in `mouse.ts`) duplicates the broader `Channel` type modulo the `send_input`/`wheel_send_input` legacy literal swap; deferring the rename is what keeps the duplication. (PR #305 Opus Round 1 P3-4.) |
+| Word `EnumChildWindows`-based descendant assertion (`_WwG` / `_WwO` confirmed under `OpusApp`) | Phase 5 | Requires new `win32_enum_child_windows` napi export. Phase 4 fixture lands as skeleton (top-level enumeration only); Phase 5 adds the native export + wires the descendant assertion. (PR #305 Opus Round 1 P1-1.) |
+| Word real-app integration assertion (scroll actually moves Word document via Tier 3) + Excel cell area Tier 3 real-app smoke + Explorer ListView Tier 3 real-app smoke | Phase 5 5-app smoke | Phase 5 covers 5-app × 4-direction; Phase 4 contributes the Tier 3 dispatcher wire-up + sub-plan §2.3/§2.4 contract pins + the Word fixture skeleton only. ADR §4 Phase 4 deliverable bullet 5 ("Word / Excel / Explorer smoke cases finalized here") is explicitly re-routed to Phase 5 because the 5-app harness already lives in Phase 5 scope. (PR #305 Opus Round 1 P2-2.) |
 | `wheel_overlay_intercepted` detection (DDPM-style invisible overlay sensor) | Future / OQ2 | ADR §7 OQ2; not gated on Phase 4. |
-| Shared `findPlainTopLevelWindowByTitle` helper | A future PR | Phase 1b §2.2 carry-over still open; not touched here. |
+| Shared `findPlainTopLevelWindowByTitle` helper | Phase 5 | Phase 1b §2.2 originally committed Phase 4 to extract; re-routed Phase 4 → Phase 5 (PR #305 Opus Round 1 P1-2). Phase 1b sub-plan §2.2 updated in the same PR to reflect. The predicate has 2-3 copies today (`_input-pipeline.ts:268-289` Case 3 recovery + `mouse.ts:1145-1153` observation-ladder fallback + the `_resolve-window.ts` Case 3 original) — not a correctness bug, but a §3.1 drift risk surface. |
 
 ### 2.3 Sign convention matrix (load-bearing — §1 point 2)
 

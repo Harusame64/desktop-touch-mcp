@@ -1,7 +1,7 @@
 /**
- * ADR-018 Phase 1b — input pipeline dispatcher tests.
+ * ADR-018 Phase 1b + Phase 3 + Phase 4 — input pipeline dispatcher tests.
  *
- * Pins the Phase 1b contract:
+ * Pins the cumulative dispatcher contract across phases:
  *   1. `resolveInputDestination` returns `{kind:'hwnd'}` when resolveWindowTarget
  *      resolves the window. When resolveWindowTarget returns null but a plain
  *      *top-level* window (non-dialog class, no owner — `_resolve-window.ts`
@@ -15,12 +15,16 @@
  *   2. `dispatchScrollWheel({kind:'hwnd'}, ...)` returns
  *      `{scrolled:true, channel:'uia', reason:'delivered_via_uia'}` when the
  *      native `uiaScrollByWheelAtHwnd` returns `ok:true, scrolled:true`.
- *   3. `dispatchScrollWheel` returns `null` when the native call returns
- *      `ok:false` or `scrolled:false`, or when the native binding is missing
- *      (so the caller falls through to Tier 4 SendInput).
- *   4. `assertTier4Reachable` throws for `'uia'` and `'cdp'`. Phase 1b accepts
- *      both `'hwnd'` (lenient form, see Phase 4 BREAKING CHANGE marker on the
- *      function) and `'unresolved'`.
+ *   3. Phase 4: when Tier 1 UIA returns null (no ScrollPattern, or scrolled:false),
+ *      dispatcher falls through to Tier 3 `postWheelToHwnd`. Tier 3 returns
+ *      `{channel:'postmessage', reason:'delivered_via_postmessage'}` on observable
+ *      `win32_get_scroll_info` pre/post diff; null on no observable diff
+ *      (Word `_WwG` MFC custom-paint case → caller emits `target_unreachable`).
+ *   4. `assertTier4Reachable` STRICT form (Phase 4): throws for `'uia' | 'cdp' | 'hwnd'`.
+ *      Only `'unresolved'` passes. The dispatcher covers resolved destinations
+ *      via Tier 1/2/3 so SendInput is unreachable for any resolved kind.
+ *
+ * Phase 4 changes are described in `docs/adr-018-phase-4-subplan.md`.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -50,6 +54,11 @@ const nativeWin32Mock: {
 vi.mock("../../src/engine/native-engine.js", () => ({
   nativeUia: nativeUiaMock,
   nativeWin32: nativeWin32Mock,
+  // `nativeL1` is set to null so `postWheelToHwnd`'s optional-chain L1 push
+  // (`nativeL1?.l1PushHwInputPostMessage?.(...)`) becomes a no-op in tests.
+  // The ADR-007 P5a observability contract is exercised by the L1 integration
+  // tests; here we only need the dispatcher logic to remain pure.
+  nativeL1: null,
 }));
 
 // Mock window resolution dependency. `DIALOG_CLASSNAMES` is re-exported from

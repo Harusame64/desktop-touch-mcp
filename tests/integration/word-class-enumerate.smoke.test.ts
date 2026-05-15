@@ -1,22 +1,29 @@
 /**
  * word-class-enumerate.smoke.test.ts — ADR-018 Phase 4 sub-plan §2.1#6
- * deliverable.
+ * deliverable (SKELETON only — see sub-plan §2.2 carry-over to Phase 5).
  *
- * Locally-runnable smoke that enumerates Microsoft Word's HWND class hierarchy
- * to confirm `_WwG` / `_WwO` (the MFC document body classes) appear in the
- * tree below `OpusApp` (Word's top-level class). CI runners do not have Word
- * installed, so this test self-skips unless `WORD_E2E=1` is set AND a
- * Word top-level window is reachable through `enumWindowsInZOrder()`.
+ * Locally-runnable smoke that logs Microsoft Word's top-level HWND neighbours
+ * (siblings + the `OpusApp` top-level itself) as a precursor to the full
+ * `EnumChildWindows`-based descendant assertion. CI runners do not have Word
+ * installed, so this test self-skips unless `WORD_E2E=1` is set AND a Word
+ * top-level window is reachable through `enumWindowsInZOrder()`.
+ *
+ * ## Scope (Phase 4 SKELETON vs Phase 5 FULL)
+ *
+ * Phase 4 lands ONLY the top-level enumeration + soft assertion (`OpusApp`
+ * exists). The full descendant assertion that pins `_WwG` / `_WwO` under
+ * `OpusApp` requires a new `win32_enum_child_windows` napi export, which is
+ * out of scope for Phase 4 (no Tier 3 contract depends on it — the
+ * `postWheelToHwnd` `null` path already handles Word's no-response case
+ * structurally). Phase 5 adds the native export + wires the descendant
+ * assertion. See `docs/adr-018-phase-4-subplan.md` §2.2.
  *
  * Manual invocation:
  *
  *   $env:WORD_E2E="1"; npx vitest run tests/integration/word-class-enumerate.smoke.test.ts
  *
- * The enumerated hierarchy is logged for manual review; the assertion only
- * requires `_WwG` OR `_WwO` to appear somewhere in the descendant tree so a
- * change in Word's child layout (e.g. ribbon redesign) does not break the
- * test. Phase 4 records Word's PostMessage behaviour as documented
- * unobserved-exhaust if `_WwG` does not respond — the Tier 3 `null` path in
+ * Phase 4 records Word's PostMessage behaviour as documented unobserved-exhaust
+ * if `_WwG` does not respond — the Tier 3 `null` path in
  * `_input-pipeline.ts::postWheelToHwnd` handles it correctly without further
  * code branching (the caller emits `target_unreachable` with
  * `channel:'postmessage'`).

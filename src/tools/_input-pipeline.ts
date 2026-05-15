@@ -31,7 +31,7 @@ import {
   type ResolvedWindow,
 } from "./_resolve-window.js";
 import { enumWindowsInZOrder, getWindowRectByHwnd } from "../engine/win32.js";
-import { nativeUia, nativeWin32 } from "../engine/native-engine.js";
+import { nativeUia, nativeWin32, nativeL1 } from "../engine/native-engine.js";
 import {
   listTabsLight,
   dispatchWheelInTab,
@@ -475,6 +475,13 @@ export async function postWheelToHwnd(
     const posted = postMessage(hwnd, message, wParam, lParam);
     if (!posted) return null;
 
+    // ADR-007 P5a L1 capture contract — record successful PostMessage sends to
+    // the L1 ring for replay-accurate observability. `postMessageToHwnd` in
+    // `src/engine/win32.ts:602` does this for the WM_CHAR/WM_KEY paths; Tier 3
+    // wheel posts must follow the same contract or the L1 stream loses an
+    // entire input class. (Opus PR #305 Round 1 P2-1.)
+    nativeL1?.l1PushHwInputPostMessage?.(hwnd, message >>> 0, wParam, lParam);
+
     await new Promise((r) => setTimeout(r, POSTMESSAGE_SETTLE_MS));
 
     if (pre === null || typeof getScrollInfo !== "function") return null;
@@ -535,6 +542,15 @@ export async function dispatchScrollWheel(
     // ok:false when the HWND lacks a ScrollPattern ancestor (Word document,
     // modern UWP, accessibility-blind custom paint) so we fall through to
     // Tier 3 PostMessage rather than returning null immediately (Phase 4).
+    //
+    // `'uia'` branch: today no resolver emits `'uia'` (Phase 1b sub-plan
+    // §2.1#1) so the kind is dormant. When a future resolver does emit it
+    // (e.g. an explicit-element resolver passing in a UIA AutomationElement),
+    // Tier 3 PostMessage on the same HWND is a SAFE escape hatch — the
+    // destination is still HWND-anchored, no cursor-pixel routing occurs.
+    // If a future design wants `'uia'` to be UIA-only (no Tier 3 fall-back),
+    // split this branch. As of Phase 4 the dormant branch matches `'hwnd'`
+    // semantics. (Opus PR #305 Round 1 P2-3.)
     try {
       // Resolve the Tier 1 native call through the tolerant `native-engine.ts`
       // loader — NOT a direct `import from "../../index.js"`, which `throw`s at
