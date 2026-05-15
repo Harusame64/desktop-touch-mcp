@@ -329,65 +329,58 @@ describe("ADR-018 §2.6 — dispatchScrollWheel (Tier 1 UIA path)", () => {
 // ADR-018 Phase 3 — Tier 2 CDP path + auto-promotion
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (Chromium-class gate + listTabsLight probe)", () => {
+describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate + listTabsLight probe)", () => {
+  // Phase 3 R1 (Opus P2): the gate is now a strict class equality on
+  // `Chrome_WidgetWin_1` (the top-level class shared by Chrome and Edge),
+  // and the className is **passed in by the caller** (already known from
+  // ResolvedWindow.className / enumWindowsInZOrder), so this function does
+  // NOT re-enumerate windows. The mock setup reflects that — no
+  // enumWindowsInZOrderMock for these cases.
   beforeEach(() => {
-    enumWindowsInZOrderMock.mockReset();
     listTabsLightMock.mockReset();
     getCdpPortMock.mockReturnValue(9222);
   });
 
-  it("non-Chromium HWND (className='Notepad'): null (gate misses, listTabsLight NOT called — zero CDP latency for native windows)", async () => {
-    enumWindowsInZOrderMock.mockReturnValue([
-      { hwnd: 0x111n, title: "Untitled - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false },
-    ]);
-    const dest = await resolveCdpDestinationForHwnd(0x111n);
+  it("non-Chromium className ('Notepad'): null (gate misses, listTabsLight NOT called — zero CDP latency for native windows)", async () => {
+    const dest = await resolveCdpDestinationForHwnd(0x111n, "Notepad");
     expect(dest).toBeNull();
     expect(listTabsLightMock).not.toHaveBeenCalled();
   });
 
-  it("Chromium HWND ('Chrome_WidgetWin_1') + listTabsLight returns tabs: {kind:'cdp', tabId}", async () => {
-    enumWindowsInZOrderMock.mockReturnValue([
-      { hwnd: 0x222n, title: "Google - Chrome", className: "Chrome_WidgetWin_1", ownerHwnd: null, isMinimized: false },
-    ]);
+  it("Chromium top-level class + listTabsLight returns tabs: {kind:'cdp', tabId}", async () => {
     listTabsLightMock.mockResolvedValue([
       { id: "TAB-AAA", title: "Google", url: "https://google.com/" },
       { id: "TAB-BBB", title: "Bing", url: "https://bing.com/" },
     ]);
-    const dest = await resolveCdpDestinationForHwnd(0x222n);
+    const dest = await resolveCdpDestinationForHwnd(0x222n, "Chrome_WidgetWin_1");
     expect(dest).toEqual({ kind: "cdp", tabId: "TAB-AAA" });
   });
 
-  it("Chromium HWND + listTabsLight rejects (CDP unreachable): null (graceful fallback to Tier 1)", async () => {
-    enumWindowsInZOrderMock.mockReturnValue([
-      { hwnd: 0x333n, title: "Edge", className: "Chrome_WidgetWin_1", ownerHwnd: null, isMinimized: false },
-    ]);
+  it("Chromium top-level class + listTabsLight rejects (CDP unreachable): null (graceful fallback to Tier 1)", async () => {
     listTabsLightMock.mockRejectedValue(new Error("CDP unreachable on 127.0.0.1:9222"));
-    const dest = await resolveCdpDestinationForHwnd(0x333n);
+    const dest = await resolveCdpDestinationForHwnd(0x333n, "Chrome_WidgetWin_1");
     expect(dest).toBeNull();
   });
 
-  it("Chromium HWND + listTabsLight returns empty array: null", async () => {
-    enumWindowsInZOrderMock.mockReturnValue([
-      { hwnd: 0x444n, title: "Edge", className: "Chrome_WidgetWin_1", ownerHwnd: null, isMinimized: false },
-    ]);
+  it("Chromium top-level class + listTabsLight returns empty array: null", async () => {
     listTabsLightMock.mockResolvedValue([]);
-    const dest = await resolveCdpDestinationForHwnd(0x444n);
+    const dest = await resolveCdpDestinationForHwnd(0x444n, "Chrome_WidgetWin_1");
     expect(dest).toBeNull();
   });
 
-  it("HWND not in enumeration: null", async () => {
-    enumWindowsInZOrderMock.mockReturnValue([]);
-    const dest = await resolveCdpDestinationForHwnd(0x555n);
+  it("className null (race with window destruction): null (no CDP probe)", async () => {
+    const dest = await resolveCdpDestinationForHwnd(0x555n, null);
     expect(dest).toBeNull();
     expect(listTabsLightMock).not.toHaveBeenCalled();
   });
 
-  it("enumWindowsInZOrder throws: null (graceful — no exception propagation)", async () => {
-    enumWindowsInZOrderMock.mockImplementation(() => {
-      throw new Error("win32 dlopen failed");
-    });
-    const dest = await resolveCdpDestinationForHwnd(0x666n);
+  it("Chromium SUB-window class ('Chrome_WidgetWin_0' — internal popups / dropdowns) is rejected by the strict gate (Phase 3 R1 Opus P2)", async () => {
+    // The earlier `startsWith("Chrome_WidgetWin")` shape over-matched the
+    // sub-window class which can never be a scroll destination. The strict
+    // equality on `Chrome_WidgetWin_1` rejects it.
+    const dest = await resolveCdpDestinationForHwnd(0x666n, "Chrome_WidgetWin_0");
     expect(dest).toBeNull();
+    expect(listTabsLightMock).not.toHaveBeenCalled();
   });
 });
 
@@ -401,14 +394,14 @@ describe("ADR-018 Phase 3 — resolveInputDestination CDP promotion integration"
   });
 
   it("resolveWindowTarget succeeds + Chromium HWND + CDP reachable: promotes to {kind:'cdp'} (G3 path)", async () => {
+    // Phase 3 R1: `ResolvedWindow.className` is what the gate consults — no
+    // longer a second `enumWindowsInZOrder` call inside the resolver.
     resolveWindowTargetMock.mockResolvedValue({
       title: "X - Chrome",
       hwnd: 0xAAAn,
       warnings: [],
+      className: "Chrome_WidgetWin_1",
     });
-    enumWindowsInZOrderMock.mockReturnValue([
-      { hwnd: 0xAAAn, title: "X - Chrome", className: "Chrome_WidgetWin_1", ownerHwnd: null, isMinimized: false },
-    ]);
     listTabsLightMock.mockResolvedValue([
       { id: "TAB-X", title: "X", url: "https://x.com/" },
     ]);
@@ -433,10 +426,8 @@ describe("ADR-018 Phase 3 — resolveInputDestination CDP promotion integration"
       title: "Chrome",
       hwnd: 0xCCCn,
       warnings: [],
+      className: "Chrome_WidgetWin_1",
     });
-    enumWindowsInZOrderMock.mockReturnValue([
-      { hwnd: 0xCCCn, title: "Chrome", className: "Chrome_WidgetWin_1", ownerHwnd: null, isMinimized: false },
-    ]);
     listTabsLightMock.mockRejectedValue(new Error("Connection refused"));
     const dest = await resolveInputDestination({ windowTitle: "Chrome" });
     expect(dest).toEqual({ kind: "hwnd", hwnd: 0xCCCn });

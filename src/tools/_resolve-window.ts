@@ -30,6 +30,20 @@ export const DIALOG_CLASSNAMES = new Set(["#32770"]);
 interface DialogCandidate { hwnd: bigint; title: string; }
 
 /**
+ * `getWindowClassName` wrapped in a try/catch so a momentary race
+ * (window destroyed between resolution and class read) degrades to `null`
+ * rather than throwing out of `resolveWindowTarget`.
+ */
+function safeGetClassName(hwnd: bigint): string | null {
+  try {
+    const cls = getWindowClassName(hwnd);
+    return cls === "" ? null : cls;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * (H3 case 4) Search for a common dialog window whose title partially matches `query`.
  * Prioritises #32770-classed windows, then owned popups.
  * Only considers non-minimised windows (minimised dialogs can't be interacted with).
@@ -80,6 +94,17 @@ export interface ResolvedWindow {
   title: string;
   hwnd: bigint;
   warnings: string[];
+  /**
+   * Win32 window class name. `null` when `GetClassNameW` fails on the
+   * resolved HWND (rare — typically race with window destruction); `undefined`
+   * tolerated for back-compat with the pre-Phase-3 shape (existing test mocks
+   * omit this field — production code always populates it). Carried through
+   * so callers that need to gate on class (ADR-018 Phase 3 CDP promotion:
+   * `Chrome_WidgetWin_1` only) do not have to re-call `enumWindowsInZOrder`
+   * / `getWindowClassName` themselves. Cheap to populate — one
+   * `GetClassNameW` syscall per resolution.
+   */
+  className?: string | null;
 }
 
 /** Value of DESKTOP_TOUCH_DOCK_TITLE env (resolved literal, not "@parent"). */
@@ -132,7 +157,7 @@ export async function resolveWindowTarget(params: {
     if (dockLiteral && title.toLowerCase().includes(dockLiteral.toLowerCase())) {
       warnings.push("HwndMatchesDockWindow: targeting the CLI host window — intended?");
     }
-    return { title, hwnd: hwndb, warnings };
+    return { title, hwnd: hwndb, warnings, className: safeGetClassName(hwndb) };
   }
 
   // ── Case 2: @active shorthand ─────────────────────────────────────────────
@@ -150,7 +175,7 @@ export async function resolveWindowTarget(params: {
         "Specify windowTitle explicitly if this is unintentional."
       );
     }
-    return { title, hwnd: hwndb, warnings };
+    return { title, hwnd: hwndb, warnings, className: safeGetClassName(hwndb) };
   }
 
   // ── Case 3 / 4: plain windowTitle ────────────────────────────────────────
@@ -172,7 +197,12 @@ export async function resolveWindowTarget(params: {
       const dialog = findCommonDialogByTitle(wins, params.windowTitle);
       if (dialog) {
         warnings.push("dialog_resolved_via_owner_chain");
-        return { title: dialog.title, hwnd: dialog.hwnd, warnings };
+        return {
+          title: dialog.title,
+          hwnd: dialog.hwnd,
+          warnings,
+          className: safeGetClassName(dialog.hwnd),
+        };
       }
     } catch { /* enumWindowsInZOrder unavailable → fall through */ }
   }

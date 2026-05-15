@@ -40,14 +40,33 @@ import {
 import { getCdpPort } from "../utils/desktop-config.js";
 
 /**
- * Window class prefix that identifies a Chromium-based top-level window
- * (Chrome, Edge, and Electron apps that use the upstream Chromium chrome).
- * Phase 3 uses this as the *gate* for CDP probing — only `Chrome_WidgetWin_*`
- * HWNDs cost a `listTabsLight` HTTP round-trip in `resolveCdpDestinationForHwnd`,
- * so non-browser windows pay zero CDP latency. (ADR §7 OQ3 carry-over: Tier 1
- * UIA inside Chromium is opt-in and not in Phase 3 scope.)
+ * Win32 class name of a Chrome / Edge **top-level** window. Used as the gate
+ * for CDP probing — only this exact class triggers a `listTabsLight` HTTP
+ * round-trip in `resolveCdpDestinationForHwnd`. The earlier `startsWith
+ * "Chrome_WidgetWin"` shape over-matched `Chrome_WidgetWin_0` (Chromium
+ * **sub-windows** — popup menus, dropdowns) which can never be a scroll
+ * destination, so the gate is now an equality on the top-level class only.
+ *
+ * **Known carry-over (Electron / multi-Chromium-app desktops)**: Chrome /
+ * Edge / Slack / VS Code / Discord / Teams all use the same class name for
+ * their top-level windows because they share the Chromium frame. When the
+ * user has Chrome running with `--remote-debugging-port=9222` AND scrolls a
+ * different Chromium-shell app (Slack, VS Code), the gate matches and the
+ * `listTabsLight` probe succeeds — the wheel then mis-routes to Chrome.
+ * Phase 3 accepts this risk because:
+ *   1. Other Chromium-shell apps rarely run with a public CDP port (they
+ *      don't expose `--remote-debugging-port` by default).
+ *   2. When they do, the user has opted into CDP control and the
+ *      destination ambiguity is theirs to manage (e.g. distinct ports).
+ *   3. Phase 5 will tighten by cross-checking the HWND's PID against the
+ *      `Target.getTargets()` window-owner PID via CDP — out of scope for
+ *      Phase 3 to avoid scope creep. ADR §7 OQ3 / OQ6 carry-over.
+ *
+ * Future: if Edge's top-level class diverges in a Windows update, extend
+ * this to a `new Set([...])` lookup. As of 2026-05 both Chrome and Edge
+ * stable channels emit `Chrome_WidgetWin_1`.
  */
-const CHROMIUM_CLASS_PREFIX = "Chrome_WidgetWin";
+const CHROMIUM_TOP_LEVEL_CLASS = "Chrome_WidgetWin_1";
 
 /**
  * Minimum pixel delta required to classify a CDP scroll as `delivered_via_cdp`.
@@ -185,13 +204,16 @@ export async function resolveInputDestination(params: {
     windowTitle: params.windowTitle,
   });
   if (resolved !== null) {
-    // ADR §2.1 D1 Tier 2 — promote Chromium HWNDs to a CDP destination when
-    // a CDP session is reachable. This is the auto-detect the ADR specifies
-    // ("Tier 2: Target is a Chrome/Edge tab (CDP attached via browser_open)")
-    // — callers do NOT pass a tabId; the resolver gates by window class and
-    // probes only when the gate matches, so non-browser windows pay no CDP
-    // latency.
-    const cdp = await resolveCdpDestinationForHwnd(resolved.hwnd);
+    // ADR §2.1 D1 Tier 2 — promote Chrome/Edge top-level HWNDs to a CDP
+    // destination when a CDP session is reachable. This is the auto-detect the
+    // ADR specifies ("Tier 2: Target is a Chrome/Edge tab (CDP attached via
+    // browser_open)") — callers do NOT pass a tabId; the resolver gates by
+    // window class and probes only when the gate matches, so non-browser
+    // windows pay no CDP latency. The class name is already known to
+    // `resolveWindowTarget` (filled in via `safeGetClassName` on the resolved
+    // HWND) so the gate does not require a second `enumWindowsInZOrder`
+    // syscall — pass it through directly.
+    const cdp = await resolveCdpDestinationForHwnd(resolved.hwnd, resolved.className ?? null);
     if (cdp !== null) return cdp;
     return { kind: "hwnd", hwnd: resolved.hwnd };
   }
@@ -225,8 +247,10 @@ export async function resolveInputDestination(params: {
       if (match) {
         // Case 3 recovery also gets the CDP Tier 2 promotion — otherwise a
         // plain-windowTitle scroll on Chrome (where resolveWindowTarget returns
-        // null by Case 3 design) would never see channel='cdp'.
-        const cdp = await resolveCdpDestinationForHwnd(match.hwnd);
+        // null by Case 3 design) would never see channel='cdp'. The class name
+        // is already on the `match` record (`enumWindowsInZOrder` returns it),
+        // so the gate inside `resolveCdpDestinationForHwnd` does not re-enumerate.
+        const cdp = await resolveCdpDestinationForHwnd(match.hwnd, match.className ?? null);
         if (cdp !== null) return cdp;
         return { kind: "hwnd", hwnd: match.hwnd };
       }
@@ -238,33 +262,31 @@ export async function resolveInputDestination(params: {
 }
 
 /**
- * ADR §2.1 D1 Tier 2 — auto-promote a Chromium HWND to a CDP destination when
- * a CDP session is reachable on the configured port. Returns `null` when the
- * gate fails (non-Chromium class) OR when the CDP probe fails (browser not
- * running with `--remote-debugging-port`, no tabs, network error) — caller
- * then falls back to `{kind:'hwnd'}` and tries Tier 1 UIA.
+ * ADR §2.1 D1 Tier 2 — auto-promote a Chrome/Edge HWND to a CDP destination
+ * when a CDP session is reachable on the configured port. Returns `null` when
+ * the gate fails (non-Chromium-top-level class) OR when the CDP probe fails
+ * (browser not running with `--remote-debugging-port`, no tabs, network error)
+ * — caller then falls back to `{kind:'hwnd'}` and tries Tier 1 UIA.
  *
- * The window-class gate is cheap (already-enumerated `className`); only the
- * gate match incurs a `listTabsLight` HTTP round-trip, so non-browser windows
- * pay no CDP latency.
+ * **The class name is passed in by the caller** (already known from
+ * `ResolvedWindow.className` or `enumWindowsInZOrder()`'s record) so this
+ * function does NOT re-enumerate windows. Total syscall budget per call is
+ * **zero on the gate-miss path** and **one HTTP round-trip** on the gate-hit
+ * path. (Opus Round 1 P2 — earlier shape redundantly called
+ * `enumWindowsInZOrder` here, doubling the syscall cost per scroll.)
  *
  * Phase 3 picks the first listed tab as the destination — matching
  * `resolveTab(null, port)` semantics in `cdp-bridge.ts`. A future phase may
- * thread a focused-tab hint via the foreground HWND → tab mapping.
+ * thread a focused-tab hint via the foreground HWND → tab mapping (ADR §7
+ * OQ-Electron carry-over).
  *
  * Exported for unit testing.
  */
 export async function resolveCdpDestinationForHwnd(
-  hwnd: bigint,
+  _hwnd: bigint,
+  className: string | null,
 ): Promise<{ kind: "cdp"; tabId: string } | null> {
-  let className: string | null = null;
-  try {
-    const win = enumWindowsInZOrder().find((w) => w.hwnd === hwnd);
-    className = win?.className ?? null;
-  } catch {
-    return null;
-  }
-  if (className === null || !className.startsWith(CHROMIUM_CLASS_PREFIX)) {
+  if (className !== CHROMIUM_TOP_LEVEL_CLASS) {
     return null;
   }
   try {

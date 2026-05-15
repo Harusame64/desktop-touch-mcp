@@ -1240,13 +1240,22 @@ export const scrollHandler = async ({
     // SendInput path retains 'wheel_send_input' for back-compat — the Phase 4
     // §2.6.3 migration renames it → 'send_input'.
     //
-    // Phase 3 narrowing: the dispatcher only emits 'uia' or 'cdp' on a
-    // successful tier outcome (Tier 3 'postmessage' lands in Phase 4) so the
-    // cast below is total over the current dispatch surface.
-    const effectiveChannel: "uia" | "cdp" | "wheel_send_input" =
-      tier1 !== null && tier1.scrolled
-        ? (tier1.channel as "uia" | "cdp")
-        : "wheel_send_input";
+    // **Explicit narrowing**, not an `as` cast: `tier1.channel` carries the
+    // broad `Channel` union ("uia" | "cdp" | "postmessage" | "send_input"),
+    // and casting to the narrow union would silently leak the wrong channel
+    // into `verifyDelivery` the moment Phase 4 starts emitting
+    // `channel:'postmessage'`. The if-chain below forces Phase 4 to extend
+    // both the local type and this branch deliberately — otherwise a
+    // PostMessage-tier success degrades to `wheel_send_input`, loud enough to
+    // spot on the first failing dogfood scroll. (Opus Round 1 P2.)
+    let effectiveChannel: "uia" | "cdp" | "wheel_send_input" = "wheel_send_input";
+    if (tier1 !== null && tier1.scrolled) {
+      if (tier1.channel === "uia" || tier1.channel === "cdp") {
+        effectiveChannel = tier1.channel;
+      }
+      // else: a future tier (postmessage / send_input). Extend the local
+      // union and add the case when Phase 4+ wires those channels here.
+    }
 
     if (outcome.status === "not_delivered") {
       // Silent drop: pre off-boundary, post unchanged. ScrollNotDelivered with
