@@ -243,6 +243,27 @@ impl Task for UiaScrollByWheelAtHwndTask {
     }
 }
 
+/// ADR-019 MVP-1 (Stage 1) — read-only ScrollPercent observation task.
+/// Read-only sibling of `UiaScrollByWheelAtHwndTask`; no `SetScrollPercent`
+/// side effect. Returns `Some(percent)` (0.0..=100.0) or `None` when no
+/// ScrollPattern is exposed on the leaf or its ancestors.
+#[cfg(windows)]
+pub struct UiaReadScrollPercentAtHwndTask(uia::scroll::ReadScrollPercentAtHwndOptions);
+
+#[cfg(windows)]
+impl Task for UiaReadScrollPercentAtHwndTask {
+    type Output = Option<f64>;
+    type JsValue = Option<f64>;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        uia::scroll::read_scroll_percent_at_hwnd(self.0.clone())
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
 #[cfg(windows)]
 pub struct UiaGetVirtualDesktopStatusTask(Vec<String>);
 
@@ -300,6 +321,25 @@ pub fn uia_scroll_by_wheel_at_hwnd(
     opts: uia::scroll::ScrollByWheelAtHwndOptions,
 ) -> AsyncTask<UiaScrollByWheelAtHwndTask> {
     AsyncTask::new(UiaScrollByWheelAtHwndTask(opts))
+}
+
+/// ADR-019 MVP-1 (Stage 1) — read-only `ScrollPercent` companion to
+/// `uia_scroll_by_wheel_at_hwnd`. Resolves HWND → IUIAutomationElement, walks
+/// ancestors then DFS subtree looking for a ScrollPattern whose requested
+/// axis is scrollable, then reads `CurrentVertical/HorizontalScrollPercent`.
+/// Returns `Some(percent)` (0.0..=100.0) on success, `None` otherwise.
+///
+/// Used by the TS dispatcher (`src/tools/_input-pipeline.ts::postWheelToHwnd`
+/// chain-trust branch) for pre/post percent snapshot verification when the
+/// receiver is in `SCROLL_LEAF_CHAINS` but `Win32 GetScrollInfo(SB_VERT)`
+/// returns null (Excel `NUIScrollbar`, Word MFC custom-paint). Pure
+/// observation; no `SetScrollPercent` side effect.
+#[cfg(windows)]
+#[napi]
+pub fn uia_read_scroll_percent_at_hwnd(
+    opts: uia::scroll::ReadScrollPercentAtHwndOptions,
+) -> AsyncTask<UiaReadScrollPercentAtHwndTask> {
+    AsyncTask::new(UiaReadScrollPercentAtHwndTask(opts))
 }
 
 /// Query which HWNDs are on the current virtual desktop.

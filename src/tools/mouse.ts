@@ -39,6 +39,7 @@ import {
   resolveInputDestination,
   dispatchScrollWheel,
   assertTier4Reachable,
+  type VisualMotionObservation,
 } from "./_input-pipeline.js";
 
 /**
@@ -982,6 +983,15 @@ export interface ScrollVerifyOutcome {
     | "target_unreachable";
   /** Axis on which silent drop / unverifiable was detected (for context). */
   axis?: "vertical" | "horizontal";
+  /**
+   * ADR-019 MVP-1 (Stage 1) — additive TMOL observation telemetry. Forwarded
+   * from `DispatchOutcome.observation` (set by Stage 1+ TMOL primitives such
+   * as UIA `ScrollPercent` reading). Existing callers that ignore the field
+   * are unaffected (CLAUDE.md §3.2 carry-over scope shrink). The canonical
+   * shape lives in `src/tools/_input-pipeline.ts::VisualMotionObservation`
+   * and is referenced by ADR-019 §2.1 / ADR-018 §2.6 envelope hint.
+   */
+  observation?: VisualMotionObservation;
 }
 
 /**
@@ -1318,17 +1328,27 @@ export const scrollHandler = async ({
       );
     }
 
+    // ADR-019 MVP-1 (Stage 1) — propagate `observation` from dispatcher
+    // outcome into the verifyDelivery envelope additively. Existing callers
+    // that ignore the field are unaffected (CLAUDE.md §3.2 carry-over scope
+    // shrink). The field is only attached when the dispatcher emitted one
+    // (today: chain-trust branch of `postWheelToHwnd` for Stage 1).
+    const dispatcherObservation: VisualMotionObservation | undefined =
+      tier1 !== null ? tier1.observation : undefined;
+
     const verifyDelivery = outcome.status === "delivered"
       ? {
           status: "delivered" as const,
           channel: effectiveChannel,
           ...(tier1 !== null && tier1.reason !== null ? { reason: tier1.reason } : {}),
+          ...(dispatcherObservation ? { observation: dispatcherObservation } : {}),
         }
       : {
           status: "unverifiable" as const,
           channel: "wheel_send_input" as const,
           reason: outcome.reason ?? "read_back_unsupported",
           ...(outcome.axis ? { axis: outcome.axis } : {}),
+          ...(dispatcherObservation ? { observation: dispatcherObservation } : {}),
         };
 
     const hints: Record<string, unknown> = {

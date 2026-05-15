@@ -86,6 +86,16 @@ const CDP_SCROLL_DELIVERY_EPSILON_PX = 1;
 const POSTMESSAGE_SETTLE_MS = 16;
 
 /**
+ * ADR-019 MVP-1 (Stage 1) — UIA `ScrollPercent` pre/post delta threshold for
+ * `observation.source: "uia_scroll_percent"`. Aligned with `mouse.ts`
+ * `SCROLL_PERCENT_EPSILON = 1e-6` baseline; the chain-trust observation
+ * needs a slightly larger floor because UIA percent reads on custom-paint
+ * receivers may exhibit sub-percent jitter on idle frames. 1e-3 (0.001 %)
+ * is empirically a safe gate.
+ */
+const SCROLL_PERCENT_EPSILON_OBSERVATION = 1e-3;
+
+/**
  * ADR-018 Phase 4 — Tier 3 PostMessage minimum observable `nPos` delta to
  * classify the scroll as `delivered_via_postmessage`. Scrollbar position is
  * reported in app-defined units (often pixels for a custom scrollbar, line
@@ -198,6 +208,62 @@ export interface DispatchOutcome {
     | "delivered_via_cdp"
     | "delivered_via_postmessage"
     | null;
+  /**
+   * ADR-019 MVP-1 (Stage 1) — additive observation telemetry. Populated
+   * when a TMOL primitive (UIA `ScrollPercent` for Stage 1; block motion /
+   * tiled phase correlation / SSIM / DXGI for Stages 2-5) produces a
+   * concrete observation; absent on legacy Tier 1 / 2 / 3 paths that have
+   * not yet been wired through TMOL. The `source` enum is canonically
+   * defined in `docs/adr-019-anti-fukuwarai-v3-temporal-motion-observation.md`
+   * §2.1; keep all surfaces (this type, `ScrollVerifyOutcome.observation`,
+   * the envelope hint, ADR-018 §2.6 reference, ADR-019 §2.1) bit-equal.
+   */
+  observation?: VisualMotionObservation;
+}
+
+/**
+ * ADR-019 §2.1 — `VisualMotionObservation`. Carried additively in
+ * `DispatchOutcome.observation` / `ScrollVerifyOutcome.observation` /
+ * `verifyDelivery.observation` envelope hint. Existing callers that ignore
+ * the field are unaffected (CLAUDE.md §3.2 carry-over scope shrink).
+ */
+export interface VisualMotionObservation {
+  motion: "translation" | "local_repaint" | "no_change" | "indeterminate";
+  /** present iff motion === "translation" */
+  shift?: { dx: number; dy: number; confidence: number };
+  /** present iff motion === "local_repaint" */
+  residual?: {
+    fractionChanged: number;
+    centroid?: { x: number; y: number };
+  };
+  /**
+   * Algorithm that produced this observation. Stage 1 emits
+   * `"uia_scroll_percent"` (success) or `"chain_trust_unverified"`
+   * (UIA pattern not exposed, chain-trust fall-through). Stages 2-5+
+   * add the remaining values.
+   */
+  source:
+    | "uia_scroll_percent"
+    | "block_motion_vectors"
+    | "tiled_phase_correlation"
+    | "ssim_residual"
+    | "dxgi_dirty_rect"
+    | "optical_flow"
+    | "temporal_ring_observation_only"
+    | "chain_trust_unverified";
+  /**
+   * Stage 2a multi-frame ring buffer telemetry (Stage 1 leaves undefined).
+   * Populated when the temporal observation layer captured a ring; carries
+   * the per-frame `computeChangeFraction` series for empirical calibration.
+   */
+  ringTelemetry?: {
+    framesSampled: number;
+    elapsedMsPerFrame: number[];
+    changedFractions: number[];
+    maxChangedFraction: number;
+  };
+  framesSampled: number;
+  totalElapsedMs: number;
 }
 
 // ─── Resolver ────────────────────────────────────────────────────────────────
@@ -363,6 +429,81 @@ export function assertTier4Reachable(dest: InputDestination): void {
   }
 }
 
+/**
+ * ADR-019 MVP-1 (Stage 1) — chain-trust observation gate. Called inside the
+ * `postWheelToHwnd` Case 2a branch (leaf walker retargeted + `GetScrollInfo`
+ * returns null) AFTER the PostMessage chunking loop has posted at least one
+ * chunk. Reads UIA `ScrollPercent` post-snapshot, compares with the supplied
+ * pre-snapshot, and returns the corresponding `VisualMotionObservation`.
+ *
+ *   - pre + post both non-null AND |delta| ≥ epsilon → translation observed
+ *     via UIA percent. Stage 1 doesn't convert the percent to a pixel shift
+ *     (different observers carry different units — block motion vectors will
+ *     carry pixels in Stage 2b); just record `source: "uia_scroll_percent"`
+ *     and let the caller trust the result.
+ *   - pre non-null + post non-null AND |delta| < epsilon → no_change. The
+ *     wheel reached the receiver but the receiver did not advance (boundary
+ *     case Codex PR #308 P1 honest signal).
+ *   - any failure (UIA pattern not exposed on either snapshot, post read
+ *     throws) → fall through to chain-trust assertion: `source:
+ *     "chain_trust_unverified"`.
+ *
+ * Stages 2-5 add additional observers (block motion vectors / phase
+ * correlation / SSIM / DXGI dirty-rect); this helper is the first one wired.
+ */
+async function observeViaUiaOrChainTrust(
+  effectiveHwnd: bigint,
+  axisName: string,
+  preUiaPercent: number | null,
+  readUiaPercent:
+    | ((opts: {
+        hwnd: string;
+        axis: "vertical" | "horizontal";
+      }) => Promise<number | null>)
+    | undefined,
+): Promise<VisualMotionObservation> {
+  if (preUiaPercent !== null && typeof readUiaPercent === "function") {
+    try {
+      const postUiaPercent = await readUiaPercent({
+        hwnd: effectiveHwnd.toString(),
+        axis: axisName as "vertical" | "horizontal",
+      });
+      if (postUiaPercent !== null) {
+        const delta = postUiaPercent - preUiaPercent;
+        if (Math.abs(delta) >= SCROLL_PERCENT_EPSILON_OBSERVATION) {
+          return {
+            motion: "translation",
+            source: "uia_scroll_percent",
+            framesSampled: 2,
+            totalElapsedMs: 0,
+          };
+        }
+        // pre and post both readable, but no meaningful delta. Honest "no
+        // movement" signal — the UIA observer says the receiver did not
+        // scroll (boundary / non-scrollable / receiver chose not to act).
+        return {
+          motion: "no_change",
+          source: "uia_scroll_percent",
+          framesSampled: 2,
+          totalElapsedMs: 0,
+        };
+      }
+    } catch {
+      // Any throw during post-snapshot falls through to chain-trust.
+    }
+  }
+  // Chain-trust fall-through: UIA pattern wasn't exposed on the leaf OR the
+  // post-snapshot failed. The dispatcher still emits delivered_via_postmessage
+  // (PR #308 chain-table trust), but the observation field signals that the
+  // delivery is unverified at the observation layer (LLM honest signal).
+  return {
+    motion: "indeterminate",
+    source: "chain_trust_unverified",
+    framesSampled: 0,
+    totalElapsedMs: 0,
+  };
+}
+
 // ─── Tier 3 PostMessage helpers (ADR-018 §4 Phase 4) ─────────────────────────
 
 /**
@@ -513,6 +654,26 @@ export async function postWheelToHwnd(
       ? getScrollInfo(effectiveHwnd, axisName)
       : null;
 
+    // ADR-019 MVP-1 (Stage 1) — read-only UIA `ScrollPercent` pre-snapshot.
+    // The dispatcher's chain-trust branch (Case 2a below) prefers UIA percent
+    // when available because it's the OS-canonical observation (TMOL
+    // `scroll_translation` fast path). Best-effort: null preUiaPercent or any
+    // throw falls back to the bare chain-trust assertion (observation.source:
+    // "chain_trust_unverified"). Only meaningful when retargetedByLeafWalker
+    // is true; for non-MDI apps the Win32 SB_VERT pre-snapshot is the path.
+    const readUiaPercent = nativeUia?.uiaReadScrollPercentAtHwnd;
+    let preUiaPercent: number | null = null;
+    if (retargetedByLeafWalker && typeof readUiaPercent === "function") {
+      try {
+        preUiaPercent = await readUiaPercent({
+          hwnd: effectiveHwnd.toString(),
+          axis: axisName as "vertical" | "horizontal",
+        });
+      } catch {
+        preUiaPercent = null;
+      }
+    }
+
     // Chunk the wheel delta into ≤ 16-bit signed messages so the receiver's
     // `GET_WHEEL_DELTA_WPARAM` (signed short) does not wrap. For typical
     // notch counts (1-10) this loops once. For `notch >= 274` the previous
@@ -595,10 +756,25 @@ export async function postWheelToHwnd(
     //       caller emits `target_unreachable` per ADR §2.6.2 path-(b).
     if (pre === null) {
       if (retargetedByLeafWalker) {
+        // ADR-019 MVP-1 Case 2a: try UIA `ScrollPercent` observation BEFORE
+        // emitting the bare chain-trust assertion. When the leaf (or one of
+        // its UIA ancestors / descendants) exposes a ScrollPattern whose
+        // pre/post percent differ by ≥ SCROLL_PERCENT_EPSILON_OBSERVATION,
+        // attach an `observation.source: "uia_scroll_percent"` with the
+        // numeric percent delta. Otherwise attach `observation.source:
+        // "chain_trust_unverified"` so the caller knows the delivery is
+        // unverified (Stage 1 honest signal; Stages 2-5 upgrade this).
+        const observation = await observeViaUiaOrChainTrust(
+          effectiveHwnd,
+          axisName,
+          preUiaPercent,
+          readUiaPercent,
+        );
         return {
           scrolled: true,
           channel: "postmessage",
           reason: "delivered_via_postmessage",
+          observation,
         };
       }
       return null;

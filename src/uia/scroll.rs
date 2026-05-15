@@ -59,6 +59,24 @@ pub struct ScrollByWheelAtHwndOptions {
     pub wheel_delta_x: i32,
 }
 
+/// ADR-019 MVP-1 (Stage 1) — read-only sibling of `ScrollByWheelAtHwndOptions`.
+/// Walks UIA ancestors then a bounded DFS subtree (mirroring the dispatch path's
+/// Phase A / Phase B walk) looking for the first `IUIAutomationScrollPattern`
+/// whose `CurrentVerticallyScrollable` / `CurrentHorizontallyScrollable` matches
+/// the requested axis. Returns the percent value when found, `None` otherwise
+/// (custom-paint receivers like Excel `NUIScrollbar` / Word `_WwG`).
+///
+/// Pure observation: never writes (no `SetScrollPercent` side effect). Used by
+/// the `postWheelToHwnd` chain-trust branch in `src/tools/_input-pipeline.ts`
+/// for pre/post percent snapshot verification (TMOL `scroll_translation`
+/// primitive, fast path).
+#[napi_derive::napi(object)]
+#[derive(Debug, Clone)]
+pub struct ReadScrollPercentAtHwndOptions {
+    pub hwnd: String,
+    pub axis: String, // "vertical" | "horizontal"
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 pub fn scroll_into_view(opts: ScrollIntoViewOptions) -> napi::Result<ScrollResult> {
@@ -90,6 +108,24 @@ pub fn scroll_by_percent(opts: ScrollByPercentOptions) -> napi::Result<ScrollRes
 pub fn scroll_by_wheel_at_hwnd(opts: ScrollByWheelAtHwndOptions) -> napi::Result<ScrollResult> {
     thread::execute_with_timeout(
         move |ctx| scroll_by_wheel_at_hwnd_impl(ctx, &opts),
+        DEFAULT_TIMEOUT_MS,
+    )
+}
+
+/// ADR-019 MVP-1 (Stage 1) — read-only `ScrollPercent` observation companion to
+/// `scroll_by_wheel_at_hwnd`. Returns `Some(percent)` (0.0..=100.0) when a
+/// ScrollPattern ancestor / descendant exposes the requested axis as scrollable
+/// AND `CurrentVerticalScrollPercent` / `CurrentHorizontalScrollPercent` returns
+/// Ok; `None` otherwise. Mirrors the Phase A ancestor walk + Phase B DFS
+/// subtree search in `scroll_by_wheel_at_hwnd_impl` but never writes. The TS
+/// dispatcher (`src/tools/_input-pipeline.ts::postWheelToHwnd`) calls this
+/// pre/post the PostMessage chunking loop; a meaningful diff witnesses
+/// `observation.source: "uia_scroll_percent"` per ADR-019 §2.1.
+pub fn read_scroll_percent_at_hwnd(
+    opts: ReadScrollPercentAtHwndOptions,
+) -> napi::Result<Option<f64>> {
+    thread::execute_with_timeout(
+        move |ctx| read_scroll_percent_at_hwnd_impl(ctx, &opts),
         DEFAULT_TIMEOUT_MS,
     )
 }
@@ -392,6 +428,111 @@ fn scroll_by_wheel_at_hwnd_impl(
             "No ScrollPattern found (ancestor walk + subtree DFS both exhausted)".into(),
         ),
     })
+}
+
+/// ADR-019 MVP-1 (Stage 1) — read-only `ScrollPercent` observation. Mirrors the
+/// Phase A ancestor walk + Phase B DFS subtree search in
+/// `scroll_by_wheel_at_hwnd_impl`, but never writes. Returns `Some(percent)`
+/// (0.0..=100.0) when a ScrollPattern element exposes the requested axis as
+/// scrollable AND `Current*ScrollPercent` returns Ok; `None` for any failure
+/// (invalid HWND, no pattern in tree, axis not scrollable, percent read error).
+fn read_scroll_percent_at_hwnd_impl(
+    ctx: &UiaContext,
+    opts: &ReadScrollPercentAtHwndOptions,
+) -> napi::Result<Option<f64>> {
+    let want_vertical = match opts.axis.as_str() {
+        "vertical" => true,
+        "horizontal" => false,
+        other => {
+            return Err(napi::Error::from_reason(format!(
+                "ReadScrollPercentAtHwndOptions.axis must be 'vertical' or 'horizontal', got: {other}"
+            )));
+        }
+    };
+    let hwnd_i64: i64 = opts.hwnd.parse().map_err(|e| {
+        napi::Error::from_reason(format!(
+            "ReadScrollPercentAtHwndOptions.hwnd parse error: {e}"
+        ))
+    })?;
+    if hwnd_i64 == 0 {
+        return Ok(None);
+    }
+    let hwnd = HWND(hwnd_i64 as *mut std::ffi::c_void);
+
+    let elem: IUIAutomationElement = match unsafe { ctx.automation.ElementFromHandle(hwnd) } {
+        Ok(e) => e,
+        Err(_) => return Ok(None),
+    };
+    let elem_for_dfs = elem.clone();
+
+    // Axis flags match the write path's gate logic (Phase A / Phase B) so a
+    // pattern is only accepted when it's scrollable on the requested axis.
+    let need_vertical = want_vertical;
+    let need_horizontal = !want_vertical;
+
+    // Phase A — walk from the element itself up through ancestors.
+    let root: IUIAutomationElement = unsafe { ctx.automation.GetRootElement().map_err(win_err)? };
+    let mut current: Option<IUIAutomationElement> = Some(elem);
+    while let Some(e) = current {
+        let is_root = unsafe {
+            ctx.automation
+                .CompareElements(&e, &root)
+                .unwrap_or_default()
+        };
+        if is_root == true {
+            break;
+        }
+        unsafe {
+            if let Ok(pat) = e.GetCurrentPattern(UIA_ScrollPatternId)
+                && let Ok(scroll) = pat.cast::<IUIAutomationScrollPattern>()
+            {
+                let v_ok = !need_vertical
+                    || scroll.CurrentVerticallyScrollable().map(|b| b.0 != 0).unwrap_or(false);
+                let h_ok = !need_horizontal
+                    || scroll.CurrentHorizontallyScrollable().map(|b| b.0 != 0).unwrap_or(false);
+                if v_ok && h_ok {
+                    return read_scroll_percent_from_pattern(&scroll, want_vertical);
+                }
+            }
+        }
+        current = unsafe { ctx.walker.GetParentElement(&e).ok() };
+    }
+
+    // Phase B — DFS subtree under the original element, constrained to
+    // `target_hwnd`'s Win32 child window family (per `find_scroll_pattern_in_subtree`).
+    let mut dfs_budget = MAX_SCROLL_DFS_NODES;
+    if let Some(scroll) = find_scroll_pattern_in_subtree(
+        ctx,
+        &elem_for_dfs,
+        MAX_SEARCH_DEPTH,
+        hwnd_i64 as isize,
+        need_vertical,
+        need_horizontal,
+        &mut dfs_budget,
+    ) {
+        return read_scroll_percent_from_pattern(&scroll, want_vertical);
+    }
+
+    Ok(None)
+}
+
+/// Read a single axis percent from an already-obtained `IUIAutomationScrollPattern`.
+/// Returns `None` when the COM call fails (some apps expose `IsScrollable=true`
+/// but reject `CurrentVerticalScrollPercent` reads when the document is in a
+/// transient state — better to fall through to chain-trust than to throw).
+fn read_scroll_percent_from_pattern(
+    scroll: &IUIAutomationScrollPattern,
+    want_vertical: bool,
+) -> napi::Result<Option<f64>> {
+    let result = if want_vertical {
+        unsafe { scroll.CurrentVerticalScrollPercent() }
+    } else {
+        unsafe { scroll.CurrentHorizontalScrollPercent() }
+    };
+    match result {
+        Ok(v) => Ok(Some(v)),
+        Err(_) => Ok(None),
+    }
 }
 
 /// Apply one scroll step using an already-obtained `IUIAutomationScrollPattern`.
