@@ -606,9 +606,17 @@ fn find_scroll_pattern_in_subtree(
             // chrome_widgetwin sub-windows) are allowed because they are part
             // of the same logical app. HWND == 0 means no native window (pure
             // UIA node) — always descend.
-            let child_hwnd = c.CurrentNativeWindowHandle()
-                .map(|h| h.0 as isize)
-                .unwrap_or(0);
+            // Err: COM failure means we cannot determine which window this
+            // child belongs to — skip it rather than treating it as a "pure
+            // UIA node" and descending into potentially the wrong hierarchy
+            // (Codex PR #292 P2).
+            let child_hwnd = match c.CurrentNativeWindowHandle() {
+                Err(_) => {
+                    child = ctx.walker.GetNextSiblingElement(&c).ok();
+                    continue;
+                }
+                Ok(h) => h.0 as isize,
+            };
             if child_hwnd != 0
                 && child_hwnd != target_hwnd
                 && !IsChild(
