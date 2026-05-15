@@ -45,7 +45,7 @@ jobs:
           #   2. `getWindows()`                  — call site, no await
           #   3. `import { ..., getWindows, ... } from "../engine/nutjs.js"`
           #      — import at any position in any import list naming nutjs
-          if grep -rnE 'await[[:space:]]+getWindows\b|\bgetWindows\(\)' src/tools/scroll-read.ts src/tools/scroll-capture.ts src/tools/_input-pipeline.ts; then
+          if grep -rnE 'await[[:space:]]+getWindows\b|\bgetWindows\(\)' src/tools/scroll-read.ts src/tools/scroll-capture.ts src/tools/_input-pipeline.ts src/tools/mouse.ts src/tools/_resolve-window.ts; then
             echo ""
             echo "::error::ADR-018 Phase 5 violation: scroll-family tool re-introduced nutjs getWindows() call site."
             echo "Use resolveWindowTarget + findPlainTopLevelWindowByTitle from _resolve-window.ts instead."
@@ -55,7 +55,7 @@ jobs:
           # Import-level guard: scan each scroll-family file for a multi-line
           # nutjs import that includes `getWindows`. We split per-file because
           # imports may span lines; `awk` keeps it shell-safe.
-          for f in src/tools/scroll-read.ts src/tools/scroll-capture.ts src/tools/_input-pipeline.ts; do
+          for f in src/tools/scroll-read.ts src/tools/scroll-capture.ts src/tools/_input-pipeline.ts src/tools/mouse.ts src/tools/_resolve-window.ts; do
             if awk '/import[[:space:]]*\{/,/\}[[:space:]]*from/' "$f" | grep -E 'nutjs' >/dev/null 2>&1; then
               # Found a nutjs import block; check if getWindows appears anywhere inside
               if awk '/import[[:space:]]*\{/,/\}[[:space:]]*from/' "$f" | awk '/from[[:space:]]*"[^"]*nutjs/{flag=1} flag{print} /^[[:space:]]*$/{flag=0}' | head -50 | grep -E '\bgetWindows\b' >/dev/null 2>&1; then
