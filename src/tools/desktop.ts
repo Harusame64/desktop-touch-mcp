@@ -16,6 +16,7 @@ import type { CandidateIngress } from "../engine/world-graph/candidate-ingress.j
 import { createDesktopExecutor, type ExecutorDeps } from "./desktop-executor.js";
 import type { TouchAction, TouchResult } from "../engine/world-graph/guarded-touch.js";
 import { deriveViewConstraints, type ViewConstraints, type EntityCapabilities } from "./desktop-constraints.js";
+import { deriveEntityCapabilities } from "./desktop-capabilities.js";
 
 export type { ViewConstraints, EntityCapabilities };
 
@@ -368,6 +369,18 @@ export class DesktopFacade {
     // H2: derive structured constraints from warnings for LLM fallback decisions.
     const constraints = deriveViewConstraints(rawResult.warnings, entityViews.length);
     if (constraints) output.constraints = constraints;
+
+    // Issue #296 — attach `capabilities` per entity, derived from the UIA
+    // `controlType` + `patterns` already carried through by the resolver.
+    // Pure derivation, no extra UIA round-trip. `constraints` is passed in
+    // so a UIA-blind view (`uia: 'provider_failed'`) can bias UIA-sourced
+    // entities toward mouse even when their pattern set looks fine.
+    for (let i = 0; i < entityViews.length; i++) {
+      const entity = resolved[i];
+      if (entity === undefined) continue;
+      const cap = deriveEntityCapabilities(entity, constraints);
+      if (cap) entityViews[i]!.capabilities = cap;
+    }
 
     // Codex PR #55 P2: refresh lastAccessMs at the END of see() too, in case
     // candidateProvider / ingress took longer than the eviction interval to

@@ -75,6 +75,23 @@ export interface UiEntityCandidate {
   rect?: Rect;
   /** Verbs the resolver can expand into full UiAffordance (e.g. "scrollTo"|"select" added at resolver). */
   actionability: Array<"click" | "invoke" | "type" | "read">;
+  /**
+   * UIA control type (e.g. "Button", "ListItem", "CheckBox"). Populated only
+   * by the UIA provider; absent for CDP / visual_gpu / OCR / SOM lanes.
+   * Issue #296: feeds `deriveEntityCapabilities` so the LLM sees up-front
+   * which executor (`uia` Invoke vs `mouse` click) will succeed.
+   */
+  controlType?: string;
+  /**
+   * UIA pattern names supported by this element ("InvokePattern",
+   * "ValuePattern", "TogglePattern", etc.). Populated by the UIA provider
+   * from `getUiElements` — already collected by the underlying
+   * `GetSupportedPatterns()` call, so no new round-trip is needed.
+   * Issue #296: feeds `deriveEntityCapabilities`. Empty array means UIA
+   * was consulted but found no patterns; `undefined` means UIA was not the
+   * source. Both shapes are passed through to `UiEntity.patterns`.
+   */
+  patterns?: string[];
   confidence: number;
   /** Unix ms when this observation was captured. Required for resolver freshness ranking. */
   observedAtMs: number;

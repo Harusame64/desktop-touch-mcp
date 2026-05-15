@@ -32,6 +32,28 @@ function uiaActionability(ct: string): Array<"click" | "invoke" | "type" | "read
   return ["read"];
 }
 
+/**
+ * Issue #296 (Opus R1 P1) — canonicalise the UIA pattern-name wire form.
+ *
+ * The Rust native path (`src/uia/tree.rs`) emits the short form
+ * (`"Invoke"` / `"Value"` / `"Toggle"` / `"SelectionItem"` /
+ * `"ExpandCollapse"` / `"Scroll"`) while the PowerShell fallback
+ * (`makeGetElementsScript` in `uia-bridge.ts`) emits the suffixed form
+ * (`"InvokePattern"` / `"ValuePattern"` / …). Without this normalisation,
+ * `deriveEntityCapabilities` would silently inverse-classify every Rust-path
+ * entity (matching `"InvokePattern"` against `"Invoke"` always misses).
+ *
+ * Canonicalisation target: the `*Pattern`-suffixed form, which matches the
+ * documented Microsoft UI Automation pattern names ("Invoke Pattern" →
+ * `InvokePattern`). Pre-suffixed strings pass through unchanged.
+ *
+ * Exported for unit testing.
+ */
+export function normalizeUiaPatternNames(patterns: string[] | undefined): string[] {
+  if (patterns === undefined) return [];
+  return patterns.map((p) => (p.endsWith("Pattern") ? p : `${p}Pattern`));
+}
+
 export async function fetchUiaCandidates(
   target: TargetSpec | undefined
 ): Promise<ProviderResult> {
@@ -61,6 +83,17 @@ export async function fetchUiaCandidates(
         value: el.value,
         rect: el.boundingRect ?? undefined,
         actionability: uiaActionability(el.controlType),
+        // Issue #296: carry the UIA-side `controlType` and `patterns` through
+        // so `deriveEntityCapabilities` can advertise executor preferences
+        // at discover time (no extra UIA round-trip — `getUiElements` already
+        // collected both via `GetSupportedPatterns()`). Patterns are normalised
+        // here because the Rust native path (`src/uia/tree.rs`) emits the
+        // short form (`"Invoke"`, `"Value"`, `"Toggle"`, …) while the
+        // PowerShell fallback (`makeGetElementsScript`) emits the suffixed
+        // form (`"InvokePattern"`, …). Downstream consumers (most importantly
+        // `deriveEntityCapabilities`) see a single canonical shape.
+        controlType: el.controlType,
+        patterns: normalizeUiaPatternNames(el.patterns),
         confidence: 1.0,
         observedAtMs: Date.now(),
         provisional: false,
