@@ -813,6 +813,69 @@ describe("ADR-018 Phase 4 — postWheelToHwnd (Tier 3 PostMessage path)", () => 
     const result = await postWheelToHwnd(0x8n, { direction: "down", notch: 1 });
     expect(result).toBeNull();
   });
+
+  it("win32GetScrollInfo native binding UNAVAILABLE → presumed delivered_via_postmessage (mixed-version regression guard, Codex P2-A)", async () => {
+    // When the .node binary lacks the win32GetScrollInfo export (older build,
+    // partial Phase 1 rollout), the dispatcher cannot distinguish "scrolled"
+    // from "target_unreachable" via Win32 observation. Returning null would
+    // make scrollHandler emit target_unreachable for every resolved scroll —
+    // a regression vs the legacy Tier 4 fall-back behaviour. Instead the
+    // dispatcher presumes delivered and lets the caller's own dHash + Win32
+    // observation (`captureScrollSnapshot` in mouse.ts) catch a true no-op.
+    nativeWin32Mock.win32GetScrollInfo = undefined;
+    const result = await postWheelToHwnd(0x9n, { direction: "down", notch: 1 });
+    expect(result).toEqual({
+      scrolled: true,
+      channel: "postmessage",
+      reason: "delivered_via_postmessage",
+    });
+    expect(win32PostMessageMock).toHaveBeenCalled();
+  });
+
+  it("large notch (>= 274) is chunked into multiple ≤ 16-bit signed messages — sign bit MUST NOT wrap (Codex P2-B)", async () => {
+    // notch=300 × WHEEL_DELTA(120) = 36000 raw units, exceeding the 16-bit
+    // signed maximum (0x7FFF = 32767). Without chunking, the single-message
+    // path packs HIWORD = (36000 & 0xFFFF) = 0x8CA0 = -29728 (signed short),
+    // which the receiver reads as "scroll UP by 29728" instead of "scroll DOWN
+    // by 36000". Chunking emits two PostMessages: 32767 + 3233 = 36000, each
+    // with a safely-in-range signed HIWORD.
+    win32GetScrollInfoMock
+      .mockReturnValueOnce(scrollInfo(50))
+      .mockReturnValueOnce(scrollInfo(200));
+    const result = await postWheelToHwnd(0xAn, { direction: "down", notch: 300 });
+    expect(result).toEqual({
+      scrolled: true,
+      channel: "postmessage",
+      reason: "delivered_via_postmessage",
+    });
+    // Expect 2 chunks for vertical down: -32767 (sign-flipped), -(36000-32767)=-3233.
+    expect(win32PostMessageMock).toHaveBeenCalledTimes(2);
+    const calls = win32PostMessageMock.mock.calls;
+    // Each wParam HIWORD must be in signed 16-bit range and negative (vertical
+    // down sign-flipped). Extract HIWORD via shift+mask, then sign-extend.
+    for (const [, , wParam] of calls) {
+      const hiword = Number((wParam >> 16n) & 0xffffn);
+      const signed = hiword >= 0x8000 ? hiword - 0x10000 : hiword;
+      expect(signed).toBeLessThan(0); // vertical down: scroll down = negative
+      expect(signed).toBeGreaterThanOrEqual(-0x8000); // within signed 16-bit
+      expect(signed).toBeLessThanOrEqual(0x7fff); // within signed 16-bit
+    }
+    // Total magnitude across chunks must equal requested 36000.
+    const totalMag = calls.reduce((sum, [, , wParam]) => {
+      const hiword = Number((wParam >> 16n) & 0xffffn);
+      const signed = hiword >= 0x8000 ? hiword - 0x10000 : hiword;
+      return sum + Math.abs(signed);
+    }, 0);
+    expect(totalMag).toBe(36000);
+  });
+
+  it("notch at the chunk boundary (notch=273 → magnitude=32760, single message) does NOT chunk", async () => {
+    win32GetScrollInfoMock
+      .mockReturnValueOnce(scrollInfo(50))
+      .mockReturnValueOnce(scrollInfo(200));
+    await postWheelToHwnd(0xBn, { direction: "down", notch: 273 });
+    expect(win32PostMessageMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("ADR-018 Phase 4 — dispatchScrollWheel (Tier 1 UIA → Tier 3 PostMessage fall-through)", () => {

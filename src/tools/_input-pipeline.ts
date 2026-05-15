@@ -102,6 +102,16 @@ const POSTMESSAGE_SCROLL_DELIVERY_EPSILON_NPOS = 1;
 const WM_MOUSEWHEEL = 0x020a;
 const WM_MOUSEHWHEEL = 0x020e;
 
+/**
+ * `WM_MOUSEWHEEL` / `WM_MOUSEHWHEEL` HIWORD is read as a signed 16-bit value
+ * via `GET_WHEEL_DELTA_WPARAM` on the receiver side. A single message can
+ * carry at most ±32767 raw units; large `notch` requests must be chunked so
+ * each emitted message stays within the signed 16-bit range (otherwise the
+ * sign bit wraps and a "scroll down" emerges as a "scroll up" on the
+ * receiver, per Codex PR #305 review).
+ */
+const WHEEL_DELTA_MAX_PER_MSG = 0x7fff;
+
 // ─── Public types ────────────────────────────────────────────────────────────
 
 /**
@@ -452,7 +462,6 @@ export async function postWheelToHwnd(
   if (typeof postMessage !== "function") return null;
   try {
     const { message, signedDelta } = win32WheelEncoding(params);
-    const wParam = makeWheelWParam(0, signedDelta);
     const rect = getWindowRectByHwnd(hwnd);
     const lParam = rect !== null
       ? makeScreenLParam(
@@ -465,27 +474,63 @@ export async function postWheelToHwnd(
       params.direction === "up" || params.direction === "down";
     const axisName = axisIsVertical ? "vertical" : "horizontal";
 
-    // Pre-snapshot is best-effort: targets without an observable Win32 scrollbar
-    // (Word _WwG, modern UWP custom-paint controls) return null and route to
-    // the `target_unreachable` path below.
-    const pre = typeof getScrollInfo === "function"
-      ? getScrollInfo(hwnd, axisName)
-      : null;
+    // Pre-snapshot is best-effort. Two distinct "no observation" cases must
+    // be kept apart (Codex PR #305 review P2-A):
+    //   1. `getScrollInfo` is genuinely missing (mixed-version `.node` build
+    //      without the Phase 1 GetScrollInfo binding) — caller cannot detect
+    //      `target_unreachable` either, so we presume the post is delivered
+    //      and let the caller's own observation (`captureScrollSnapshot`
+    //      dHash + Win32 in `mouse.ts`) catch a no-op.
+    //   2. `getScrollInfo` is present but returns null for THIS HWND (Word
+    //      `_WwG`, modern UWP custom-paint, no Win32 scrollbar) — that IS
+    //      the `target_unreachable` signal.
+    const getScrollInfoAvailable = typeof getScrollInfo === "function";
+    const pre = getScrollInfoAvailable ? getScrollInfo(hwnd, axisName) : null;
 
-    const posted = postMessage(hwnd, message, wParam, lParam);
-    if (!posted) return null;
-
-    // ADR-007 P5a L1 capture contract — record successful PostMessage sends to
-    // the L1 ring for replay-accurate observability. `postMessageToHwnd` in
-    // `src/engine/win32.ts:602` does this for the WM_CHAR/WM_KEY paths; Tier 3
-    // wheel posts must follow the same contract or the L1 stream loses an
-    // entire input class. (Opus PR #305 Round 1 P2-1.)
-    nativeL1?.l1PushHwInputPostMessage?.(hwnd, message >>> 0, wParam, lParam);
+    // Chunk the wheel delta into ≤ 16-bit signed messages so the receiver's
+    // `GET_WHEEL_DELTA_WPARAM` (signed short) does not wrap. For typical
+    // notch counts (1-10) this loops once. For `notch >= 274` the previous
+    // single-message implementation wrapped the sign bit and silently
+    // reversed scroll direction (Codex PR #305 review P2-B).
+    const sign = signedDelta < 0 ? -1 : 1;
+    let remaining = Math.abs(signedDelta);
+    let postedAny = false;
+    while (remaining > 0) {
+      const chunkMagnitude = Math.min(remaining, WHEEL_DELTA_MAX_PER_MSG);
+      const chunkSigned = sign * chunkMagnitude;
+      const wParam = makeWheelWParam(0, chunkSigned);
+      const posted = postMessage(hwnd, message, wParam, lParam);
+      if (!posted) {
+        // Receiver rejected this chunk. If at least one earlier chunk
+        // delivered, fall through to observation; if NOTHING posted, return
+        // null so the caller emits target_unreachable.
+        if (!postedAny) return null;
+        break;
+      }
+      postedAny = true;
+      // ADR-007 P5a L1 capture contract — record every successful chunk to
+      // the L1 ring for replay-accurate observability. `postMessageToHwnd`
+      // in `src/engine/win32.ts:602` does this for the WM_CHAR/WM_KEY
+      // paths; Tier 3 wheel posts must follow the same contract or the L1
+      // stream loses an entire input class. (Opus PR #305 Round 1 P2-1.)
+      nativeL1?.l1PushHwInputPostMessage?.(hwnd, message >>> 0, wParam, lParam);
+      remaining -= chunkMagnitude;
+    }
 
     await new Promise((r) => setTimeout(r, POSTMESSAGE_SETTLE_MS));
 
-    if (pre === null || typeof getScrollInfo !== "function") return null;
-    const post = getScrollInfo(hwnd, axisName);
+    // Case 1 — observation API genuinely missing: presume delivered.
+    if (!getScrollInfoAvailable) {
+      return {
+        scrolled: true,
+        channel: "postmessage",
+        reason: "delivered_via_postmessage",
+      };
+    }
+    // Case 2 — pre-snapshot null: this HWND has no Win32 scrollbar at all
+    // (Word `_WwG` etc.). Caller emits target_unreachable.
+    if (pre === null) return null;
+    const post = getScrollInfo!(hwnd, axisName);
     if (post === null) return null;
 
     const delta = Math.abs(post.nPos - pre.nPos);

@@ -24,12 +24,16 @@ ADR §4 Phase 4 lists 5 deliverables across 2 files (`_input-pipeline.ts` + `mou
 1. **New `postWheelToHwnd(hwnd, params)` helper** in `src/tools/_input-pipeline.ts`:
    - Encodes `WM_MOUSEWHEEL` (vertical, message id `0x020A`) or `WM_MOUSEHWHEEL` (horizontal, `0x020E`).
    - `wParam = MAKEWPARAM(modifiers=0, wheelDelta)` where `wheelDelta` is the Win32-flipped value (see §2.3 sign matrix).
+   - **Chunking** (Codex PR #305 review P2-B): the receiver reads `wheelDelta` as a signed 16-bit HIWORD (`GET_WHEEL_DELTA_WPARAM`). Magnitudes ≥ 32768 raw units (`notch >= 274` at `WHEEL_DELTA=120`) wrap the sign bit and silently reverse scroll direction. Helper loops emitting ≤ `0x7FFF`-magnitude chunks until the requested delta is exhausted; each chunk fits in signed 16-bit. Typical `notch=1..10` loops once.
    - `lParam = MAKELPARAM(screenX, screenY)` where coordinates point to the **window rect center in screen coordinates** (`getWindowRectByHwnd(hwnd)` → center). MFC/Win32 apps often use lParam to find the target child via `ChildWindowFromPoint`; the window center is the safest neutral hit point.
    - Pre/post observation: best-effort `win32_get_scroll_info(hwnd, axis)` on the axis of interest.
-     - `pre`/`post` present AND axis position changed by ≥ 1 → return `{ scrolled: true, channel: 'postmessage', reason: 'delivered_via_postmessage' }`.
-     - Either snapshot null OR no movement → return `null` (caller emits `target_unreachable`).
+     - `getScrollInfo` API genuinely missing (mixed-version `.node` build) → presume delivered, return `delivered_via_postmessage` (Codex PR #305 review P2-A — the caller's own `captureScrollSnapshot` dHash + Win32 observation will still detect a true no-op via dHash).
+     - `getScrollInfo` present + pre null (this HWND has no Win32 scrollbar — Word `_WwG`, modern UWP) → return `null` (caller emits `target_unreachable`).
+     - `getScrollInfo` present + pre/post position changed by ≥ 1 → return `{ scrolled: true, channel: 'postmessage', reason: 'delivered_via_postmessage' }`.
+     - `getScrollInfo` present + no movement → return `null` (caller emits `target_unreachable`).
    - Settle delay: 16 ms (one frame; same as Tier 2 CDP — wheel handling is synchronous on the message pump side but scrollbar position reflects the next paint).
    - All native call failures → `null` (graceful fall-through; the helper never throws — matches Tier 1/2 contract).
+   - ADR-007 P5a L1 capture: every successful chunk `PostMessage` is recorded to the L1 ring via `nativeL1?.l1PushHwInputPostMessage` for replay-accurate observability (matches `postMessageToHwnd` in `src/engine/win32.ts:602`).
 
 2. **`dispatchScrollWheel` extension** (same file):
    - For `dest.kind === 'hwnd' | 'uia'`: after Tier 1 UIA returns `null` (no ScrollPattern OR no observable percent diff), attempt Tier 3 `postWheelToHwnd(dest.hwnd, params)` before returning `null`.
@@ -44,7 +48,7 @@ ADR §4 Phase 4 lists 5 deliverables across 2 files (`_input-pipeline.ts` + `mou
    - `assertTier4Reachable(dest)` is still called immediately before SendInput so the `'unresolved'`-only contract is structurally enforced at the call site.
    - `effectiveChannel` union extended: `"uia" | "cdp" | "postmessage" | "wheel_send_input"`. The if-chain that maps `tier1.channel → effectiveChannel` now accepts `'postmessage'`. The legacy `'wheel_send_input'` literal is preserved for Tier 4 (the `§2.6.3` rename to `'send_input'` is deferred — Tier 4 still emits the legacy literal until a future PR consolidates).
 
-5. **Unit tests** in `tests/unit/input-pipeline-dispatch.test.ts` (canonical counts: **12** Tier 3 cases + **5** Tier 1 → Tier 3 fall-through cases + **4** `assertTier4Reachable` strict cases, total 56 in this file):
+5. **Unit tests** in `tests/unit/input-pipeline-dispatch.test.ts` (canonical counts: **14** Tier 3 cases (12 base + 2 Codex regression guards: `getScrollInfo` unavailable presumed-delivered + `notch=300` chunking) + 1 chunk-boundary case (`notch=273` no chunk) + **5** Tier 1 → Tier 3 fall-through cases + **4** `assertTier4Reachable` strict cases, total 59 in this file):
    - Mock `win32PostMessage` + `win32GetScrollInfo` + `getWindowRectByHwnd` (via mocking `../../src/engine/win32.js`) so the Tier 3 path is deterministic.
    - New describe block: `"ADR-018 Phase 4 — postWheelToHwnd (Tier 3 PostMessage path)"` — 12 cases:
      - vertical down: posts `WM_MOUSEWHEEL` (0x020A) with `wParam` HIWORD = -120 packed via u32 mask (Win32-flipped: UIA down=+120 → Win32 = -120 for "forward = up" convention — see §2.3 matrix), lParam = MAKELPARAM(screenCx, screenCy).
