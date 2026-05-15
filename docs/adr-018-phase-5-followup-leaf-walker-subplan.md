@@ -136,7 +136,7 @@ This sub-plan supersedes the original carry-over #6 framing and lands a **smalle
 - **G1**: dogfood `scroll(action='raw', windowTitle:'Book1 - Excel', direction:'down')` returns `ok:true verifyDelivery:{status:'delivered', channel:'postmessage', reason:'delivered_via_postmessage'}` with numeric `scrollObserved.delta` (or `'unverifiable'` only if scrollbar API is missing — never `target_unreachable`).
 - **G2**: dogfood the same call on Notepad / Word / Explorer — all preserve current passing behaviour (`channel:'uia'` / `reason:'delivered_via_uia'`).
 - **G3**: dogfood on a non-MDI app (e.g. Chrome) — leaf-walker returns null, behaviour bit-equal to current main.
-- **G4**: full `npm test` green (no regression to existing 3100+ tests; 4 new cases pass).
+- **G4**: full `npm test` green (no regression to existing 3100+ tests; 9 new cases pass — 5 initial + 2 chain-trust + 2 dHash verification).
 - **G5**: `npm run build:rs` succeeds (new napi exports cleanly).
 - **G6**: ADR §3 SSOT table + Phase 4/5 sub-plan §2.2 + CHANGELOG entry all reference `win32_find_scroll_leaf_for_top_level` consistently (no drift between docs).
 
