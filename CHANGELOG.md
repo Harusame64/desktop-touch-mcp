@@ -9,14 +9,17 @@
   with `verifyDelivery.reason:'target_unreachable'` because `WM_MOUSEWHEEL`
   is delivered upward from a window to its parent, never downward to a
   child — and Excel's cell grid lives in a deep child window (`XLMAIN →
-  XLDESK → EXCEL7`), not on the top-level frame. The new destination-explicit
-  scroll dispatcher now walks the known child-class chain for Excel and
-  Word (`OpusApp → _WwF → _WwG`), posts the wheel message to the actual
-  grid leaf, and observes the scrollbar there. Apps not in the chain
-  table are unaffected (behaviour is bit-equal to the previous release).
-  This restores cursor-only Excel scroll calls that worked before the
-  destination-explicit pipeline landed in v1.5.0 and surfaces the new
-  `verifyDelivery.reason:'delivered_via_postmessage'` for them.
+  XLDESK → EXCEL7`), not on the top-level frame. The scroll dispatcher
+  now walks the known child-class chain for Excel and Word (`OpusApp →
+  _WwF → _WwG`) and posts the wheel message to the actual grid leaf.
+  Excel's scrollbar is custom-painted (`NUIScrollbar`, not a Win32
+  `SB_VERT`), so the dispatcher trusts the documented receiver contract
+  rather than requiring a Win32-observable scrollbar delta — the cell
+  grid scrolls and `verifyDelivery.reason:'delivered_via_postmessage'`
+  is reported even when `GetScrollInfo` cannot see the move. Apps not
+  in the chain table are unaffected (behaviour is bit-equal to the
+  previous release). This restores cursor-only Excel scroll calls that
+  worked before the destination-explicit pipeline landed in v1.5.0.
 
 ## [1.5.1] - 2026-05-12 — `workspace_launch` App Paths registry resolution + concurrent `keyboard` crash fix
 

@@ -462,11 +462,13 @@ export async function postWheelToHwnd(
     // and dispatch share the same destination (ADR §2.2 invariant).
     const findLeaf = nativeWin32?.win32FindScrollLeafForTopLevel;
     let effectiveHwnd: bigint = hwnd;
+    let retargetedByLeafWalker = false;
     if (typeof findLeaf === "function") {
       try {
         const leaf = findLeaf(hwnd);
         if (leaf !== null && leaf !== undefined) {
           effectiveHwnd = leaf;
+          retargetedByLeafWalker = true;
         }
       } catch {
         // Defensive: any native throw → keep input HWND (top-level POST).
@@ -499,7 +501,13 @@ export async function postWheelToHwnd(
     //      dHash + Win32 in `mouse.ts`) catch a no-op.
     //   2. `getScrollInfo` is present but returns null for THIS HWND (Word
     //      `_WwG`, modern UWP custom-paint, no Win32 scrollbar) — that IS
-    //      the `target_unreachable` signal.
+    //      the `target_unreachable` signal — except when the leaf walker
+    //      retargeted to a `SCROLL_LEAF_CHAINS` member (Excel `NUIScrollbar`,
+    //      Word MFC), where chain-trust applies (Codex PR #308 P1 follow-up:
+    //      an attempt at 8×8 dHash verification was rejected during dogfood
+    //      because Excel's mostly-uniform cell grid + row-label strip
+    //      collapses to an essentially-constant perceptual hash even when
+    //      raw pixels show real change — see §2.6.2 row notes).
     const getScrollInfoAvailable = typeof getScrollInfo === "function";
     const pre = getScrollInfoAvailable
       ? getScrollInfo(effectiveHwnd, axisName)
@@ -558,9 +566,43 @@ export async function postWheelToHwnd(
         reason: "delivered_via_postmessage",
       };
     }
-    // Case 2 — pre-snapshot null: this HWND has no Win32 scrollbar at all
-    // (Word `_WwG` etc.). Caller emits target_unreachable.
-    if (pre === null) return null;
+    // Case 2 — pre-snapshot null splits two ways:
+    //   2a. Leaf walker retargeted (e.g. Excel `XLMAIN → XLDESK → EXCEL7`,
+    //       Word `OpusApp → _WwF → _WwG`): the leaf is in the
+    //       `SCROLL_LEAF_CHAINS` table that pins which HWND classes are
+    //       documented scroll receivers. These leaves use custom-painted
+    //       scrollbars (Excel `NUIScrollbar`, Word MFC custom paint) that
+    //       `GetScrollInfo(SB_VERT)` cannot observe. Trust the chain-table
+    //       assertion: PostMessage queued + leaf is a documented receiver
+    //       = `delivered_via_postmessage`. The semantics match Tier 1 UIA's
+    //       boundary handling (`mouse.ts::evaluateScrollDelivery`), which
+    //       treats "at-boundary, no movement" as a successful no-op
+    //       delivery — the wheel reached the receiver, which decided how
+    //       to act. PR #308 Codex P1 raised a false-positive concern; the
+    //       dogfood-evaluated dHash verification (commit ee364c4) was
+    //       reverted because 8×8 perceptual hashing of Excel's mostly-
+    //       uniform cell grid + dark-gray row-label strip yields
+    //       essentially-constant macro patterns regardless of which rows
+    //       are visible — empirical raw-byte diff after a 3-notch wheel
+    //       shows 0.36 % of bytes change (Excel actually scrolled) while
+    //       the 8×8 dHash is byte-identical (information lost in the
+    //       downsample). dHash is therefore structurally inadequate as a
+    //       chain-trust gate. Future work could plug a higher-resolution
+    //       hash or a UIA-cell-name observation; for now the chain-table
+    //       membership IS the trust signal.
+    //   2b. No retarget AND `pre === null`: the input HWND has no Win32
+    //       scrollbar and is not in any chain table → no trust signal →
+    //       caller emits `target_unreachable` per ADR §2.6.2 path-(b).
+    if (pre === null) {
+      if (retargetedByLeafWalker) {
+        return {
+          scrolled: true,
+          channel: "postmessage",
+          reason: "delivered_via_postmessage",
+        };
+      }
+      return null;
+    }
     const post = getScrollInfo!(effectiveHwnd, axisName);
     if (post === null) return null;
 
