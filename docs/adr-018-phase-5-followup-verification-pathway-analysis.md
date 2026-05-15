@@ -159,9 +159,9 @@ verifyVisualMotion(
   // present iff motion === "local_repaint"
   residual?: { fractionChanged: number; centroid?: { x: number; y: number } };
   // metadata
-  source: "uia_scroll_percent" | "block_motion" | "tiled_phase_correlation"
-         | "ssim_residual" | "optical_flow" | "dxgi_dirty_rect"
-         | "chain_trust_unverified";
+  source: "uia_scroll_percent" | "block_motion_vectors" | "tiled_phase_correlation"
+         | "ssim_residual" | "dxgi_dirty_rect" | "optical_flow"
+         | "temporal_ring_observation_only" | "chain_trust_unverified";
   framesSampled: number;
   totalElapsedMs: number;
 }
@@ -256,8 +256,9 @@ verifyDelivery: {
   channel: "uia" | "cdp" | "postmessage" | "send_input";
   reason: …;                       // existing
   observation?: {                  // additive, optional
-    source: "uia_scroll_percent" | "block_motion" | "tiled_phase_correlation"
-           | "ssim_residual" | "dxgi_dirty_rect" | "chain_trust_unverified";
+    source: "uia_scroll_percent" | "block_motion_vectors" | "tiled_phase_correlation"
+           | "ssim_residual" | "dxgi_dirty_rect" | "optical_flow"
+           | "temporal_ring_observation_only" | "chain_trust_unverified";
     shift?: { dx: number; dy: number; confidence: number };
     residual?: { fractionChanged: number };
     framesSampled?: number;
@@ -284,7 +285,7 @@ Existing callers that ignore `observation` are unaffected.
 
 - Add `captureMultiFrameRing(hwnd, region, schedule: number[])` in `src/engine/layer-buffer.ts` — captures `pre + post[]` at the requested ms offsets, returns the ring as a typed array.
 - Add `computeBlockMotion(pre, post, blockSize, searchRadius)` in `src/pixel_diff.rs` (Rust SSE2 extension of existing block-SAD). Returns per-block `(dx, dy)` + a global vote.
-- Wire into `postWheelToHwnd` chain-trust path: capture ring → for each post-frame, compute motion vs pre → return motion observed when (a) ≥ 1 post-frame shows coherent shift AND (b) the last post-frame is stable (within noise) → emit `delivered_via_postmessage` with `observation.source: "block_motion"` and `shift: { dx, dy }`.
+- Wire into `postWheelToHwnd` chain-trust path: capture ring → for each post-frame, compute motion vs pre → return motion observed when (a) ≥ 1 post-frame shows coherent shift AND (b) the last post-frame is stable (within noise) → emit `delivered_via_postmessage` with `observation.source: "block_motion_vectors"` and `shift: { dx, dy }`.
 - Excel periodic-grid case: 16×16 blocks each carry enough local structure for unambiguous `dy` register; majority vote across blocks gives the row count. Empirical bench required to confirm `0.36% byte change` translates to a non-zero majority vote.
 
 ### Stage 3 — Tiled phase correlation (1 PR, ~2-3 days)

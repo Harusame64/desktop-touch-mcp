@@ -1170,6 +1170,41 @@ describe("ADR-018 Phase 5+N — postWheelToHwnd scroll-leaf walker (Excel / Word
     expect(result?.observation?.totalElapsedMs).toBeGreaterThanOrEqual(0);
   });
 
+  it("ADR-019 MVP-1 (Stage 1) — pre-snapshot UIA read REJECTS (slow / hung provider, native crash) → chain_trust_unverified (Codex Round 1 P2 `.catch` shim regression guard)", async () => {
+    // The fire-and-forget `preUiaPromise` in `postWheelToHwnd` wraps the
+    // pre-read in `.catch(() => null)` so a rejection does not propagate
+    // through the dispatch path. Without this, a slow / hung UIA provider
+    // would unhandled-reject inside the chain-trust branch and break the
+    // delivered_via_postmessage contract silently. This test locks the
+    // shim in place — a future refactor that drops the `.catch` will fail
+    // this assertion before the contract regresses.
+    const TOP = 0xACE5n;
+    const LEAF = 0xCE117n;
+    win32FindScrollLeafForTopLevelMock.mockReturnValue(LEAF);
+    getWindowRectByHwndMock.mockReturnValue({
+      x: 53,
+      y: 240,
+      width: 1424,
+      height: 598,
+    });
+    win32GetScrollInfoMock.mockReturnValue(null);
+    uiaReadScrollPercentAtHwndMock.mockRejectedValueOnce(
+      new Error("simulated UIA provider crash"),
+    );
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
+    expect(result).toMatchObject({
+      scrolled: true,
+      channel: "postmessage",
+      reason: "delivered_via_postmessage",
+      observation: {
+        motion: "indeterminate",
+        source: "chain_trust_unverified",
+        framesSampled: 0,
+        totalElapsedMs: 0,
+      },
+    });
+  });
+
   it("NOT retargeted AND getScrollInfo returns null (input HWND is not in the chain table) → return null (Case 2b — caller emits target_unreachable)", async () => {
     const TOP = 0xBEEFn;
     win32FindScrollLeafForTopLevelMock.mockReturnValue(null); // no retarget
