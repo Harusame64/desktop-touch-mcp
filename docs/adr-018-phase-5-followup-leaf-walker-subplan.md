@@ -56,7 +56,8 @@ This sub-plan supersedes the original carry-over #6 framing and lands a **smalle
    - Mock leaf with a different rect from top; assert lParam high/low words match the leaf's centre.
    - Mock the walker to throw a native error (R4 — `GetClassNameW` on stale HWND, etc.); assert the throw is caught locally and the top-level POST proceeds.
    - **Chain-trust follow-up (Cases 6 / 7, added by PR #308)**: leaf retargeted AND `getScrollInfo(leaf, axis)` returns null → emit `delivered_via_postmessage` per the Case 2a chain-table trust path (the Excel `NUIScrollbar` / Word MFC custom-paint observation gap); AND not-retargeted AND `getScrollInfo` null → preserve Case 2b emit-null behaviour so the caller surfaces `target_unreachable`.
-   - Total: 7 new cases.
+   - **dHash verification (Cases 8 / 9, added by PR #308 Codex P1 follow-up)**: when the chain-trust path applies AND `captureWindowRawAndHash` succeeds for both pre- and post-snapshots, the dispatcher compares Hamming distance against `POSTMESSAGE_CHAIN_TRUST_HASH_THRESHOLD` (5 bits). dHash diff ≥ threshold → `delivered_via_postmessage` (visual movement confirmed); diff < threshold → null (boundary / non-scrollable — Codex's false-positive guard). Capture failure on either side falls back to the unverified chain-trust assertion (preserves original Phase 5+N intent on platforms without the dHash native path).
+   - Total: 9 new cases.
 
 5. **Docs update**:
    - `docs/adr-018-input-pipeline-3tier.md`:
@@ -108,7 +109,7 @@ This sub-plan supersedes the original carry-over #6 framing and lands a **smalle
   - Causal window: the leaf-walker is a single lookup at function entry; subsequent reads of `effectiveHwnd` cannot diverge.
   - Compile-time guard overreliance: the FindWindowExW chain is runtime-validated (each segment can fail). Defensive null return on any miss prevents wrong-window POST.
   - Order matters: the chain walk is sequential (parent → child by class name); reversing would not match.
-  - Numeric counts: 2 entries in the chain table, 7 new test cases — pinned in §2.1 (5 from the initial PR, 2 added by the PR #308 chain-trust follow-up for Case 2a / 2b pin).
+  - Numeric counts: 2 entries in the chain table, 9 new test cases — pinned in §2.1 (5 from the initial PR; 2 added by the PR #308 chain-trust follow-up for Case 2a / 2b pin; 2 added by the PR #308 Codex P1 follow-up for the dHash-diff SMALL / LARGE verification path).
 
 ---
 

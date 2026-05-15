@@ -31,6 +31,8 @@ import {
   type ResolvedWindow,
 } from "./_resolve-window.js";
 import { getWindowRectByHwnd } from "../engine/win32.js";
+import { captureWindowRawAndHash } from "../engine/layer-buffer.js";
+import { hammingDistance } from "../engine/image.js";
 import { nativeUia, nativeWin32, nativeL1 } from "../engine/native-engine.js";
 import {
   listTabsLight,
@@ -93,6 +95,21 @@ const POSTMESSAGE_SETTLE_MS = 16;
  * observable change.
  */
 const POSTMESSAGE_SCROLL_DELIVERY_EPSILON_NPOS = 1;
+
+/**
+ * ADR-018 Phase 5+N — Tier 3 chain-trust dHash diff threshold (Hamming
+ * distance over an 8×8 perceptual hash). Matches the value used by
+ * `mouse.ts` `RAW_SCROLL_HASH_MOVE_THRESHOLD` for the Tier 4 SendInput
+ * fallback observation. A 5-bit-difference threshold balances:
+ *   - false negative (real scroll missed) — sub-5-bit diffs are typical of
+ *     tiny sub-pixel re-paint noise on the same content.
+ *   - false positive (no-op scroll claimed as delivered) — anti-aliasing
+ *     drift on idle text rendering generally stays below 5 bits.
+ * Used only on the chain-trust path (`pre === null && retargetedByLeafWalker`)
+ * to disambiguate "leaf received wheel and scrolled" from "leaf at boundary
+ * / non-scrollable" (Codex PR #308 P1).
+ */
+const POSTMESSAGE_CHAIN_TRUST_HASH_THRESHOLD = 5;
 
 /**
  * Win32 wheel message constants. Verified against Microsoft Learn:
@@ -501,11 +518,29 @@ export async function postWheelToHwnd(
     //      dHash + Win32 in `mouse.ts`) catch a no-op.
     //   2. `getScrollInfo` is present but returns null for THIS HWND (Word
     //      `_WwG`, modern UWP custom-paint, no Win32 scrollbar) — that IS
-    //      the `target_unreachable` signal.
+    //      the `target_unreachable` signal — except when the leaf walker
+    //      retargeted to a `SCROLL_LEAF_CHAINS` member (Excel `NUIScrollbar`,
+    //      Word MFC), where chain-trust applies and is verified via dHash
+    //      below (Codex PR #308 P1 — chain-trust without observation could
+    //      false-positive on boundary / non-scrollable content).
     const getScrollInfoAvailable = typeof getScrollInfo === "function";
     const pre = getScrollInfoAvailable
       ? getScrollInfo(effectiveHwnd, axisName)
       : null;
+    // ADR-018 Phase 5+N chain-trust verification: capture pre-dHash on the
+    // leaf when the chain-trust path will apply, so we can disambiguate
+    // "wheel delivered → cell grid moved" from "wheel delivered → receiver
+    // at boundary / non-scrollable". Best-effort: capture failure (null) is
+    // tolerated and falls back to the chain-trust assertion (delivered).
+    let preDHash: bigint | null = null;
+    if (pre === null && retargetedByLeafWalker && rect !== null) {
+      try {
+        const cap = await captureWindowRawAndHash(effectiveHwnd, rect);
+        preDHash = cap?.dHash ?? null;
+      } catch {
+        preDHash = null;
+      }
+    }
 
     // Chunk the wheel delta into ≤ 16-bit signed messages so the receiver's
     // `GET_WHEEL_DELTA_WPARAM` (signed short) does not wrap. For typical
@@ -566,19 +601,45 @@ export async function postWheelToHwnd(
     //       `SCROLL_LEAF_CHAINS` table that pins which HWND classes are
     //       documented scroll receivers. These leaves use custom-painted
     //       scrollbars (Excel `NUIScrollbar`, Word MFC custom paint) that
-    //       `GetScrollInfo(SB_VERT)` cannot observe — `pre === null` here
-    //       does NOT mean "the wheel was rejected", it means "the receiver
-    //       uses a non-Win32 scrollbar widget". Trust the chain-table
-    //       assertion and emit `delivered_via_postmessage`; the user-visible
-    //       grid scrolls. Dogfood 2026-05-16 against `b1d6422`: Excel EXCEL7
-    //       (leaf rect 53,240,1424,598) returns `pre === null` for the
-    //       SB_VERT axis but the cell grid scrolls visually under
-    //       PostMessage(WM_MOUSEWHEEL).
+    //       `GetScrollInfo(SB_VERT)` cannot observe. Verify via dHash diff
+    //       on the leaf's window rect (Codex PR #308 P1):
+    //         - hash diff ≥ threshold → grid moved → delivered_via_postmessage
+    //         - hash diff < threshold → boundary / non-scrollable → null
+    //           (caller surfaces target_unreachable, matching the pre-PR-308
+    //           contract for "wheel queued but receiver did not act")
+    //         - dHash unavailable (capture failed, no rect, mixed-version
+    //           build) → fall back to the chain-table assertion (delivered).
+    //           This preserves the original Phase 5+N intent while opening
+    //           a verification window when capture is available.
     //   2b. No retarget AND `pre === null`: the input HWND has no Win32
     //       scrollbar and is not in any chain table → no trust signal →
     //       caller emits `target_unreachable` per ADR §2.6.2 path-(b).
     if (pre === null) {
       if (retargetedByLeafWalker) {
+        if (preDHash !== null && rect !== null) {
+          let postDHash: bigint | null = null;
+          try {
+            const postCap = await captureWindowRawAndHash(effectiveHwnd, rect);
+            postDHash = postCap?.dHash ?? null;
+          } catch {
+            postDHash = null;
+          }
+          if (postDHash !== null) {
+            const dist = hammingDistance(preDHash, postDHash);
+            if (dist >= POSTMESSAGE_CHAIN_TRUST_HASH_THRESHOLD) {
+              return {
+                scrolled: true,
+                channel: "postmessage",
+                reason: "delivered_via_postmessage",
+              };
+            }
+            // Hash unchanged → receiver did not move (boundary / non-scrollable).
+            // Codex PR #308 P1: do NOT claim delivered without movement.
+            return null;
+          }
+          // postDHash unavailable → fall through to chain-trust assertion.
+        }
+        // dHash verification unavailable → trust the chain-table membership.
         return {
           scrolled: true,
           channel: "postmessage",
