@@ -20,12 +20,15 @@ Phase 5 also picks up the Phase 4 §2.2 commitment to extract `findPlainTopLevel
 
 ## 2. Phase 5 scope (trunk PR)
 
-### 2.1 In-scope deliverables
+### 2.1 In-scope deliverables (Round 1 honest scope reduction)
 
-1. **`scroll-read.ts:96` `getWindows()` → `resolveWindowTarget` migration** (ADR §4 Phase 5 D1):
+> **Scope correction (PR #306 Opus Round 1 P1-1)**: the Round-0 draft listed 6 deliverables. Round 1 review confirmed only 3 land in this PR. The remaining 3 (`reason-enum-coverage.test.ts` / `scroll-handler-envelope.test.ts` integration tests / `scroll-5app.smoke.test.ts` 4-app expansion) are explicitly re-routed to §2.2 carry-over to keep the PR scope honest. They are not blocked by Phase 5 trunk and can land in a Phase 5+N follow-up PR without re-opening this PR.
+
+1. **`scroll-read.ts:91-127` + `scroll-capture.ts:340-380` `getWindows()` → `resolveWindowTarget` migration** (ADR §4 Phase 5 D1, scope **expanded** to include scroll-capture since the symptom #6 root cause applies symmetrically):
    - Replace the nutjs `getWindows()` flat enumeration with `resolveWindowTarget({ windowTitle })` from `_resolve-window.ts` — the destination-explicit SSOT per ADR §2.3 D3.
-   - `scroll-read` must additionally bind to the resolved HWND for `region` lookup; use `getWindowRectByHwnd` (already imported in adjacent tools) to derive the `{x, y, width, height}` region. Keep the same dimension floor (`< 10 px` reject) and the same `windowTitle` substring semantics by passing the user's string through `resolveWindowTarget`.
-   - The legacy `focusedWin: FocusableWin` object (used for `.focus()` later in the loop) is replaced by `focus_window`-style native focus call — `setForegroundHwnd(hwnd)` from `src/engine/win32.ts` (or equivalent existing export). Refactored to remove the nutjs `Window` object dependency.
+   - The resolved HWND is passed to `restoreAndFocusWindow(hwnd)` from `src/engine/win32.ts` which (a) restores from minimised via `SW_RESTORE`, (b) calls `SetForegroundWindow`, (c) returns the post-focus rect. This is a **deliberate behaviour improvement** over the legacy `Window.focus()` (nutjs) which did not restore minimised windows: OCR / scroll-capture cannot run on a minimised window anyway, so the auto-restore eliminates a silent failure mode.
+   - Keep the same dimension floor (`< 10 px` for scroll-read; `< 100 px` for scroll-capture — both preserved from legacy) and the same `windowTitle` substring semantics by passing the user's string through `resolveWindowTarget`.
+   - `focusedHwnd` type narrows from `unknown` to `bigint | null` for the loop body; type narrowing at the call sites for `recognizeWindowByHwnd` / `canInjectAtTarget` / `postKeyComboToHwnd` is **deferred** — those helpers still accept `unknown` (separate `bigint` tightening follow-up; PR #306 Round 1 P2-3 carry-over).
 
 2. **Shared `findPlainTopLevelWindowByTitle` helper extraction** (Phase 4 §2.2 carry-over):
    - Extract the Case 3 recovery predicate from `_input-pipeline.ts:268-289` (non-dialog class + no owner + non-minimized) into `_resolve-window.ts::findPlainTopLevelWindowByTitle(title: string, opts?: { excludeMinimized?: boolean }) → WindowZInfo | null`.
@@ -34,48 +37,35 @@ Phase 5 also picks up the Phase 4 §2.2 commitment to extract `findPlainTopLevel
    - `mouse.ts:1145-1153` observation-ladder fallback also migrates to the helper — but with `excludeMinimized: true` AND **without** the dialog/owner filter (the observation ladder explicitly tolerates dialog matches). To accommodate, the helper's `opts` extends to `{ excludeMinimized?: boolean; excludeDialogsAndOwned?: boolean }`. Default both `false` for `_resolve-window.ts` parity.
 
 3. **CI guard `.github/workflows/input-pipeline-guard.yml`** (ADR §4 Phase 5 D2, **partial**):
-   - Asserts `grep -rn "getWindows" src/tools/ | grep -v -E "(// |/\*)" | wc -l` returns **0** (no production-code reference to the legacy nutjs enumeration).
+   - Asserts `grep -rnE 'await getWindows\(\)|getWindows[[:space:]]*,.*nutjs' src/tools/scroll-read.ts src/tools/scroll-capture.ts src/tools/_input-pipeline.ts` returns **0** (no production-code reference to the legacy nutjs enumeration in scroll-family tools). Regex shape pinned in the workflow file; sub-plan §2.1#3 and workflow MUST be kept in bit-equal sync via `grep "await getWindows" docs/adr-018-phase-5-subplan.md .github/workflows/input-pipeline-guard.yml`.
+   - **Scope narrowed to scroll-family files** (`scroll-read.ts` / `scroll-capture.ts` / `_input-pipeline.ts`). `screenshot.ts` migration is §2.2 carry-over per Phase 5 sub-plan; ADR §6 AC5 "grep src/tools/ returns 0" is interpreted as "no nutjs `getWindows()` call in the scroll-family pipeline tools" since the symptom #6 root cause (`scroll(action='read')` divergent semantics) only applied to that family. **ADR §6 AC5 amendment** — see PR companion ADR update.
    - The `page_end_inferred` sub-assertion is **deferred** per Phase 4 §2.2 carry-over. CI workflow comment links the carry-over so a future PR enabling it is one-line.
-   - Runs on `pull_request` for any `src/tools/**` change. Lightweight ubuntu-latest job (no Windows runner needed).
-
-4. **`tests/integration/reason-enum-coverage.test.ts`** (ADR §4 Phase 5 D3, new):
-   - Exercises each `status='not_delivered'` emission path in `mouse.ts:scrollHandler` via mocked dispatcher returns and asserts `reason` ∈ the ADR-018 §2.6.2 5-value enum (`delivered_via_*` not applicable for `not_delivered`, so the assertion is `reason === 'target_unreachable'`).
-   - Covers: (a) `dest.kind === 'cdp'` Tier 2 exhaust → `target_unreachable` + `channel:'cdp'`; (b) `dest.kind === 'hwnd' | 'uia'` Tier 3 exhaust → `target_unreachable` + `channel:'postmessage'`; (c) `dest.kind === 'unresolved'` Tier 4 (SendInput path) with no observable diff → existing legacy reason path (NOT yet `target_unreachable` per Phase 4 §2.2 deferral — test asserts current behaviour and references the deferred migration).
-   - Path (c) uses the surviving legacy reason union (`evaluateScrollDelivery` emits `read_back_unsupported` etc.). Test pins current behaviour and **does not** assert ADR-018 §2.6.2 5-value; the §2.6.3 migration table converts those once the future cleanup PR lands.
-
-5. **`tests/integration/scroll-handler-envelope.test.ts`** (ADR §4 Phase 5 D4 — renamed from `scroll-raw-verify-tier1.test.ts` for clarity):
-   - `scrollHandler` envelope-assembly integration test. Mocks dispatcher to return `{channel:'uia', reason:'delivered_via_uia'}` and asserts the returned `hints.verifyDelivery.channel === 'uia'` / `hints.verifyDelivery.reason === 'delivered_via_uia'` end-to-end.
-   - Asserts `observedHwnd` is seeded from `dest.hwnd` when dispatcher returns `kind:'hwnd'` (ADR §2.2 invariant — observation HWND must match action destination).
-   - Pins the `effectiveChannel` ternary mapping (`'uia'` / `'cdp'` / `'postmessage'` / `'wheel_send_input'`) so a future Channel enum addition cannot silently degrade an actual Tier 1/2/3 success to `'wheel_send_input'` (Phase 4 effectiveChannel union extension regression guard).
-
-6. **`tests/integration/scroll-5app.smoke.test.ts` expansion** (ADR §4 Phase 5 D5, **partial**):
-   - Adds Notepad case (Tier 1 UIA path) to the existing `SCROLL_SMOKE=1` env-gated harness.
-   - Adds Excel cell-area case (Tier 3 PostMessage expected).
-   - Adds Explorer ListView case (Tier 3 expected).
-   - Word case is added with both outcomes accepted (`delivered_via_postmessage` OR `target_unreachable`) per ADR §6 AC1.
-   - **Word `_WwG` descendant assertion** in `word-class-enumerate.smoke.test.ts` is **NOT** added in this PR — Phase 4 §2.2 carry-over (requires new `win32_enum_child_windows` napi export). The skeleton lands in Phase 4; Phase 5 leaves it unchanged until the napi PR ships.
-   - All cases CI-skipped (`SCROLL_SMOKE=1`); Word case additionally requires Word installed locally.
+   - Runs on `pull_request` for `src/tools/scroll*.ts` / `src/tools/mouse.ts` / `src/tools/_input-pipeline.ts` / `src/tools/_resolve-window.ts` / the workflow file itself. Lightweight ubuntu-latest job (no Windows runner needed).
 
 ### 2.2 Out of scope (carry-over to future PRs)
 
 | Item | Carries to | Reason |
 |---|---|---|
+| **`tests/integration/reason-enum-coverage.test.ts`** (originally Phase 5 D3) | Phase 5+N follow-up PR | PR #306 Opus Round 1 P1-1 honest scope reduction. Pure-integration test, no Phase 5 contract dependency; can land independently. |
+| **`tests/integration/scroll-handler-envelope.test.ts`** (originally Phase 5 D4) | Phase 5+N follow-up PR | PR #306 Opus Round 1 P1-1 honest scope reduction. Pinning the `effectiveChannel` → `verifyDelivery` mapping requires mocking the full `scrollHandler` wire — separate PR. |
+| **`scroll-5app.smoke.test.ts` 4-app expansion** (originally Phase 5 D5 — Notepad / Word / Excel / Explorer cases) | Phase 5+N follow-up PR | PR #306 Opus Round 1 P1-1 honest scope reduction. Smoke harness is `SCROLL_SMOKE=1` env-gated and adds locally-validated assertions; can land independently. |
+| **`screenshot.ts` `getWindows()` migration** | Future PR | Different tool concern (image capture vs scroll dispatcher). ADR §6 AC5 amended to scope `getWindows` 0-hit to scroll-family tools only — see ADR amendment in this PR. |
 | `page_end_inferred` legacy reason deletion + CI grep guard for it | Future cleanup PR | Phase 4 §2.2 explicit deferral. Removing the emitter requires migrating each call site in `evaluateScrollDelivery` to one of the ADR-018 §2.6.2 5-value reasons (`wheel_overlay_intercepted` or `target_unreachable`); the migration is mechanical but cross-cuts the Tier 4 fallback path and is best done in a focused PR alongside the `effectiveChannel` rename. |
 | `effectiveChannel` local-union rename (`wheel_send_input` → `send_input`) + ADR §2.6.3 migration table execution | Future cleanup PR | Phase 4 §2.2 explicit deferral. Same scope as above. |
 | `win32_enum_child_windows` napi export + Word `_WwG` / `_WwO` descendant assertion in `word-class-enumerate.smoke.test.ts` | Follow-up PR (new Rust napi) | Phase 4 §2.2 explicit deferral. Phase 5 trunk does not introduce new Rust code. |
+| `bigint` tightening of `recognizeWindowByHwnd` / `canInjectAtTarget` / `postKeyComboToHwnd` signature (currently `hwnd: unknown`) | Future PR | PR #306 Opus Round 1 P2-3 carry-over. TS narrowing benefit at the helper layer requires sweep of the 6+ existing callers; out of scroll-family scope. |
 | `wheel_overlay_intercepted` detection (DDPM-style overlay sensor) | ADR §7 OQ2 | Not gated on Phase 5. |
 
 ---
 
-## 3. G5 acceptance (Phase 5 only)
+## 3. G5 acceptance (Phase 5 trunk PR — Round 1 honest scope: 3 items)
 
-1. **scroll-read migration**: `scroll(action='read', windowTitle:'メモ帳')` resolves the same HWND that other scroll actions resolve (via `resolveWindowTarget`), with the legacy `getWindows()` reference removed from `src/tools/`. ADR-018 symptom #6 ("`scroll(action='read', windowTitle:'メモ帳')` returns `Window not found`") is fully closed.
-2. **`findPlainTopLevelWindowByTitle` extraction**: `_input-pipeline.ts::resolveInputDestination`, `_resolve-window.ts::resolveWindowTarget` (Case 3 path), and `mouse.ts:scrollHandler` observation ladder all delegate to the single helper. The two-flag option object (`{excludeMinimized, excludeDialogsAndOwned}`) preserves each call site's behaviour bit-equal — pinned by 3+ unit tests in `tests/unit/find-plain-top-level-window.test.ts` (new).
-3. **CI guard**: `.github/workflows/input-pipeline-guard.yml` runs on `pull_request` for `src/tools/**`, fails the build if `grep -rn "getWindows" src/tools/` matches outside comments.
-4. **`reason-enum-coverage.test.ts`**: covers all three `dest.kind` exhaust paths and pins the current `target_unreachable` emission for Tier 2/3, plus the legacy reason for Tier 4 (deferred migration noted).
-5. **`scroll-handler-envelope.test.ts`**: pins the dispatcher → scrollHandler envelope assembly contract (channel/reason flow + observedHwnd seeding).
-6. **5-app smoke expansion**: 4 new app cases (Notepad / Word / Excel / Explorer) land in `scroll-5app.smoke.test.ts` behind the `SCROLL_SMOKE=1` env gate. Word case accepts both `delivered_via_postmessage` and `target_unreachable` per ADR §6 AC1.
-7. **Build + suite green**: `npm run build` + `npm run build:rs` succeed; full `npm test` adds the new unit/integration tests with no regression to the existing 3100+ tests.
+1. **scroll-read + scroll-capture migration**: `scroll(action='read', windowTitle:'メモ帳')` and `scroll(action='capture', windowTitle:'メモ帳')` both resolve the same HWND that other scroll actions resolve (via `resolveWindowTarget` + Case 3 recovery via the shared helper), with the legacy `getWindows()` reference removed from `scroll-read.ts` / `scroll-capture.ts` / `_input-pipeline.ts`. ADR-018 symptom #6 ("`scroll(action='read', windowTitle:'メモ帳')` returns `Window not found`") is fully closed for the scroll family.
+2. **`findPlainTopLevelWindowByTitle` extraction**: `_input-pipeline.ts::resolveInputDestination`, `_resolve-window.ts::resolveWindowTarget` (Case 3 path), and `mouse.ts:scrollHandler` observation ladder all delegate to the single helper. The two-flag option object (`{excludeMinimized, excludeDialogsAndOwned}`) preserves each call site's behaviour bit-equal — pinned by **9** unit cases in `tests/unit/find-plain-top-level-window.test.ts` (new).
+3. **CI guard**: `.github/workflows/input-pipeline-guard.yml` runs on `pull_request` for the scroll-family file globs, fails the build if `await getWindows()` or `getWindows[...].nutjs` reappears in any scroll-family tool.
+4. **Build + suite green**: `npm run build` + `npm run build:rs` succeed; full `npm test` adds the new unit tests with no regression to the existing 3100+ tests. Pre-existing flakes (`replay-backend` cold/warm timing + `ui-pattern-store-persistence` ENOENT race) remain pre-existing and unchanged by this PR.
+
+> **Carry-over G5 items** (originally 4-6 in Round 0): `reason-enum-coverage.test.ts` / `scroll-handler-envelope.test.ts` integration tests / `scroll-5app.smoke.test.ts` 4-app expansion → §2.2 carry-over. Their absence does not block Phase 5 trunk closure because they pin contracts that are already covered at unit level (dispatcher contract → `input-pipeline-dispatch.test.ts`, helper contract → `find-plain-top-level-window.test.ts`).
 
 ---
 
@@ -104,11 +94,11 @@ Phase 5 also picks up the Phase 4 §2.2 commitment to extract `findPlainTopLevel
 ## 5. Risks
 
 - **R1** — `findPlainTopLevelWindowByTitle` extraction missing one call site re-introduces predicate drift.  
-  **Mitigation**: 3-call-site enumeration in §2.1#2 is explicit. Phase 5 unit tests pin per-call-site flag combinations. CI grep guard catches new `enumWindowsInZOrder().find(...)` clones in `src/tools/`.
-- **R2** — `scroll-read.ts` migration changes the focused HWND semantics (legacy code stored the `Window` object for `.focus()`; new code uses `setForegroundHwnd`).  
-  **Mitigation**: focus-then-read happens once per `scroll-read` call. Loss of the `Window` object reference does not affect the OCR loop because OCR uses `focusedHwnd` (hwnd) not the `Window` object. Manual smoke before merge (`SCROLL_READ_SMOKE=1` env gated).
-- **R3** — 5-app smoke flakes on slow CI runners.  
-  **Mitigation**: smoke is `SCROLL_SMOKE=1` env-gated, NOT in regular CI. The expansion adds cases to the manual harness only.
+  **Mitigation**: 3-call-site enumeration in §2.1#2 is explicit. Phase 5 unit tests pin per-call-site flag combinations. CI grep guard catches new `enumWindowsInZOrder().find(...)` clones in scroll-family tools.
+- **R2** — `scroll-read.ts` + `scroll-capture.ts` migration changes the focused HWND semantics. Legacy code used nutjs `Window.focus()` which set foreground but did NOT restore minimised windows. New code uses `restoreAndFocusWindow(hwnd)` from `src/engine/win32.ts` which **additionally calls `ShowWindow(SW_RESTORE)` before `SetForegroundWindow`** — an intentional behaviour improvement, not bit-equal sync of the legacy. The improvement eliminates a silent failure mode where a minimised target was previously unreachable.  
+  **Mitigation**: focus-then-read happens once per call. The auto-restore is a strict superset of legacy behaviour for the OCR / capture use case (a minimised window cannot be captured anyway). Manual smoke before merge (`SCROLL_READ_SMOKE=1` env gated).
+- **R3** — CI guard regex scope mismatch with sub-plan §2.1#3 text leads to false-negative drift over time.  
+  **Mitigation**: §2.1#3 documents the exact regex shape so the workflow file and sub-plan stay bit-equal. Two-place fact (§3.1 multi-table) — Opus review prompt for any Phase 5+N PR touching the regex must grep both surfaces.
 
 ---
 
