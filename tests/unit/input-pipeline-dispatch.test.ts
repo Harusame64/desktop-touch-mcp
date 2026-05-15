@@ -1033,6 +1033,55 @@ describe("ADR-018 Phase 5+N — postWheelToHwnd scroll-leaf walker (Excel / Word
     );
   });
 
+  it("leaf retargeted AND getScrollInfo(leaf, axis) returns null (Excel NUIScrollbar / Word MFC custom paint) → trust the chain table and emit delivered_via_postmessage (Case 2a, dogfood 2026-05-16)", async () => {
+    // Excel EXCEL7 (and similar MDI scroll-leaves) use custom-painted
+    // scrollbars (`NUIScrollbar` etc.) that GetScrollInfo(SB_VERT) cannot
+    // observe — `pre === null` here is the "no SB_VERT" signal, NOT the
+    // "wheel was rejected" signal. The chain-table assertion (leaf is a
+    // documented scroll receiver) means we trust PostMessage success.
+    const TOP = 0xACE5n; // fake XLMAIN
+    const LEAF = 0xCE117n; // fake EXCEL7
+    win32FindScrollLeafForTopLevelMock.mockReturnValue(LEAF);
+    getWindowRectByHwndMock.mockReturnValue({
+      x: 53,
+      y: 240,
+      width: 1424,
+      height: 598,
+    });
+    // EXCEL7 has no SB_VERT → GetScrollInfo returns null for both pre and post.
+    win32GetScrollInfoMock.mockReturnValue(null);
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
+    // Chain-table trust: PostMessage succeeded to a documented scroll
+    // receiver → delivered, even though observation channel returned null.
+    expect(result).toEqual({
+      scrolled: true,
+      channel: "postmessage",
+      reason: "delivered_via_postmessage",
+    });
+    expect(win32PostMessageMock).toHaveBeenCalledWith(
+      LEAF,
+      expect.any(Number),
+      expect.any(BigInt),
+      expect.any(BigInt),
+    );
+  });
+
+  it("NOT retargeted AND getScrollInfo returns null (input HWND is not in the chain table) → return null (Case 2b — caller emits target_unreachable)", async () => {
+    const TOP = 0xBEEFn;
+    win32FindScrollLeafForTopLevelMock.mockReturnValue(null); // no retarget
+    getWindowRectByHwndMock.mockReturnValue({
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 600,
+    });
+    win32GetScrollInfoMock.mockReturnValue(null);
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
+    // Without retarget we have no trust signal — emit null so the caller
+    // surfaces target_unreachable per ADR §2.6.2 path-(b).
+    expect(result).toBeNull();
+  });
+
   it("leaf walker throws → graceful fall-through, top-level HWND used", async () => {
     const TOP = 0xDEAD_BEEFn;
     win32FindScrollLeafForTopLevelMock.mockImplementation(() => {

@@ -462,11 +462,13 @@ export async function postWheelToHwnd(
     // and dispatch share the same destination (ADR §2.2 invariant).
     const findLeaf = nativeWin32?.win32FindScrollLeafForTopLevel;
     let effectiveHwnd: bigint = hwnd;
+    let retargetedByLeafWalker = false;
     if (typeof findLeaf === "function") {
       try {
         const leaf = findLeaf(hwnd);
         if (leaf !== null && leaf !== undefined) {
           effectiveHwnd = leaf;
+          retargetedByLeafWalker = true;
         }
       } catch {
         // Defensive: any native throw → keep input HWND (top-level POST).
@@ -558,9 +560,33 @@ export async function postWheelToHwnd(
         reason: "delivered_via_postmessage",
       };
     }
-    // Case 2 — pre-snapshot null: this HWND has no Win32 scrollbar at all
-    // (Word `_WwG` etc.). Caller emits target_unreachable.
-    if (pre === null) return null;
+    // Case 2 — pre-snapshot null splits two ways:
+    //   2a. Leaf walker retargeted (e.g. Excel `XLMAIN → XLDESK → EXCEL7`,
+    //       Word `OpusApp → _WwF → _WwG`): the leaf is in the
+    //       `SCROLL_LEAF_CHAINS` table that pins which HWND classes are
+    //       documented scroll receivers. These leaves use custom-painted
+    //       scrollbars (Excel `NUIScrollbar`, Word MFC custom paint) that
+    //       `GetScrollInfo(SB_VERT)` cannot observe — `pre === null` here
+    //       does NOT mean "the wheel was rejected", it means "the receiver
+    //       uses a non-Win32 scrollbar widget". Trust the chain-table
+    //       assertion and emit `delivered_via_postmessage`; the user-visible
+    //       grid scrolls. Dogfood 2026-05-16 against `b1d6422`: Excel EXCEL7
+    //       (leaf rect 53,240,1424,598) returns `pre === null` for the
+    //       SB_VERT axis but the cell grid scrolls visually under
+    //       PostMessage(WM_MOUSEWHEEL).
+    //   2b. No retarget AND `pre === null`: the input HWND has no Win32
+    //       scrollbar and is not in any chain table → no trust signal →
+    //       caller emits `target_unreachable` per ADR §2.6.2 path-(b).
+    if (pre === null) {
+      if (retargetedByLeafWalker) {
+        return {
+          scrolled: true,
+          channel: "postmessage",
+          reason: "delivered_via_postmessage",
+        };
+      }
+      return null;
+    }
     const post = getScrollInfo!(effectiveHwnd, axisName);
     if (post === null) return null;
 
