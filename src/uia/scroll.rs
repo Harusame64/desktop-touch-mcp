@@ -5,6 +5,7 @@
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Accessibility::*;
+use windows::Win32::UI::WindowsAndMessaging::IsChild;
 use windows::core::Interface;
 
 use super::thread::{self, UiaContext, win_err};
@@ -14,6 +15,11 @@ use super::control_type_name;
 
 const DEFAULT_TIMEOUT_MS: u32 = 8_000;
 const MAX_SEARCH_DEPTH: u32 = 14;
+/// Maximum UIA nodes visited during Phase B DFS to bound COM RPC cost on wide
+/// trees (e.g. File Explorer list views with hundreds of item children). When
+/// the budget is exhausted the DFS returns `None` and the caller falls through
+/// to Tier 4 SendInput rather than blocking for the full 8 s timeout.
+const MAX_SCROLL_DFS_NODES: u32 = 512;
 
 // ─── Options from JS ─────────────────────────────────────────────────────────
 
@@ -222,19 +228,36 @@ fn scroll_by_percent_impl(
             if let Ok(pat) = parent.GetCurrentPattern(UIA_ScrollPatternId)
                 && let Ok(scroll) = pat.cast::<IUIAutomationScrollPattern>()
             {
-                // UIA convention: horizontal first, vertical second.
-                return match scroll.SetScrollPercent(hp, vp) {
-                    Ok(()) => Ok(ScrollResult {
-                        ok: true,
-                        scrolled: true,
-                        error: None,
-                    }),
-                    Err(e) => Ok(ScrollResult {
-                        ok: false,
-                        scrolled: false,
-                        error: Some(format!("{e}")),
-                    }),
-                };
+                // Issue #291 P2 (scroll_by_percent_impl): only accept this
+                // ancestor if it is actually scrollable on the needed axes —
+                // otherwise continue walking upward (same filter as
+                // scroll_by_wheel_at_hwnd_impl Phase A).
+                // `vp/hp >= 0.0` ↔ axis requested (clamped value); `-1.0` means
+                // no scroll on that axis. When both are -1.0 (caller requests
+                // no movement on either axis), need_v=false & need_h=false so
+                // the filter passes unconditionally — this matches pre-fix
+                // behaviour and is a caller-side concern, not a bug here.
+                let need_v = vp >= 0.0;
+                let need_h = hp >= 0.0;
+                let v_ok = !need_v
+                    || scroll.CurrentVerticallyScrollable().map(|b| b.0 != 0).unwrap_or(false);
+                let h_ok = !need_h
+                    || scroll.CurrentHorizontallyScrollable().map(|b| b.0 != 0).unwrap_or(false);
+                if v_ok && h_ok {
+                    // UIA convention: horizontal first, vertical second.
+                    return match scroll.SetScrollPercent(hp, vp) {
+                        Ok(()) => Ok(ScrollResult {
+                            ok: true,
+                            scrolled: true,
+                            error: None,
+                        }),
+                        Err(e) => Ok(ScrollResult {
+                            ok: false,
+                            scrolled: false,
+                            error: Some(format!("{e}")),
+                        }),
+                    };
+                }
             }
         }
 
@@ -303,9 +326,19 @@ fn scroll_by_wheel_at_hwnd_impl(
         }
     };
 
-    // Walk from the element itself up through parents looking for the first
-    // ScrollPattern. Stop at the desktop root (CompareElements true) so we
-    // don't probe the root element (which has no useful ScrollPattern).
+    // Clone for the DFS fallback (Phase B) — the while loop consumes `elem`
+    // via the Option<> wrapper. Issue #291.
+    let elem_for_dfs = elem.clone();
+
+    // Axis flags — hoisted before Phase A so both phases use the same filter
+    // (P2-A: Phase A must also skip ScrollPattern elements that are not
+    // scrollable on the needed axis, for symmetry with Phase B).
+    let need_vertical = opts.wheel_delta_y != 0;
+    let need_horizontal = opts.wheel_delta_x != 0;
+
+    // Phase A: walk from the element itself up through ancestors looking for
+    // the first ScrollPattern. Stop at the desktop root (CompareElements true)
+    // so we don't probe the root element (which has no useful ScrollPattern).
     let root: IUIAutomationElement = unsafe { ctx.automation.GetRootElement().map_err(win_err)? };
     let mut current: Option<IUIAutomationElement> = Some(elem);
 
@@ -323,185 +356,287 @@ fn scroll_by_wheel_at_hwnd_impl(
             if let Ok(pat) = e.GetCurrentPattern(UIA_ScrollPatternId)
                 && let Ok(scroll) = pat.cast::<IUIAutomationScrollPattern>()
             {
-                // ADR §2.6.2 — `delivered_via_uia` requires UIA pre/post
-                // percent to differ. Capture pre-state, perform
-                // SetScrollPercent, re-read post-state, compare.
-                //
-                // Pre-state percent and target are computed per axis, ONLY for
-                // the axis actually being scrolled. A failed pre-state OR
-                // view-size read on the ACTIVE axis returns ok:false so the TS
-                // dispatcher falls through to legacy nutjs — NOT a silent
-                // `unwrap_or(0.0)`, which would compute the target from a fake
-                // baseline and jump toward the start of content (Codex PR #288
-                // Round 6 P2). The unused axis is never read — fetching (and
-                // hard-failing on) it would make Tier 1 falsely unreachable for
-                // elements that scroll one axis but don't reliably expose the
-                // other (Codex PR #288 Round 3 P1). `view_size` is ALREADY a
-                // percentage (0..100, per UIA ViewSize semantics) so
-                // `wheel_step_percent` applies no extra `* 100` scaling.
-                //
-                // `cur_v` / `cur_h` are `Some(pre_percent)` exactly when that
-                // axis is being scrolled — the post-state movement check below
-                // considers only those axes.
-                let cur_v: Option<f64> = if opts.wheel_delta_y == 0 {
-                    None
-                } else {
-                    match scroll.CurrentVerticalScrollPercent() {
-                        Ok(v) => Some(v),
-                        Err(err) => {
-                            return Ok(ScrollResult {
-                                ok: false,
-                                scrolled: false,
-                                error: Some(format!(
-                                    "CurrentVerticalScrollPercent unavailable: {err}"
-                                )),
-                            });
-                        }
-                    }
-                };
-                let cur_h: Option<f64> = if opts.wheel_delta_x == 0 {
-                    None
-                } else {
-                    match scroll.CurrentHorizontalScrollPercent() {
-                        Ok(v) => Some(v),
-                        Err(err) => {
-                            return Ok(ScrollResult {
-                                ok: false,
-                                scrolled: false,
-                                error: Some(format!(
-                                    "CurrentHorizontalScrollPercent unavailable: {err}"
-                                )),
-                            });
-                        }
-                    }
-                };
-
-                // UIA convention: -1.0 means "no scroll on this axis".
-                let target_v = match cur_v {
-                    None => -1.0,
-                    Some(cv) => {
-                        let view_v = match scroll.CurrentVerticalViewSize() {
-                            Ok(v) => v,
-                            Err(err) => {
-                                return Ok(ScrollResult {
-                                    ok: false,
-                                    scrolled: false,
-                                    error: Some(format!(
-                                        "CurrentVerticalViewSize unavailable: {err}"
-                                    )),
-                                });
-                            }
-                        };
-                        (cv + wheel_step_percent(opts.wheel_delta_y, view_v))
-                            .clamp(0.0, 100.0)
-                    }
-                };
-                let target_h = match cur_h {
-                    None => -1.0,
-                    Some(ch) => {
-                        let view_h = match scroll.CurrentHorizontalViewSize() {
-                            Ok(v) => v,
-                            Err(err) => {
-                                return Ok(ScrollResult {
-                                    ok: false,
-                                    scrolled: false,
-                                    error: Some(format!(
-                                        "CurrentHorizontalViewSize unavailable: {err}"
-                                    )),
-                                });
-                            }
-                        };
-                        (ch + wheel_step_percent(opts.wheel_delta_x, view_h))
-                            .clamp(0.0, 100.0)
-                    }
-                };
-
-                // UIA convention: horizontal first, vertical second.
-                if let Err(err) = scroll.SetScrollPercent(target_h, target_v) {
-                    return Ok(ScrollResult {
-                        ok: false,
-                        scrolled: false,
-                        error: Some(format!("SetScrollPercent failed: {err}")),
-                    });
+                // P2-A: only accept this ancestor if it is actually scrollable
+                // on the needed axes — otherwise continue walking upward.
+                let v_ok = !need_vertical
+                    || scroll.CurrentVerticallyScrollable().map(|b| b.0 != 0).unwrap_or(false);
+                let h_ok = !need_horizontal
+                    || scroll.CurrentHorizontallyScrollable().map(|b| b.0 != 0).unwrap_or(false);
+                if v_ok && h_ok {
+                    return apply_scroll_with_pattern(&scroll, opts);
                 }
-
-                // ADR §2.6.2 emission gate — pre/post must differ to claim
-                // `delivered_via_uia`. SCROLL_PERCENT_EPSILON is 1e-3 in
-                // percent units (0..100 range). The TS-side mouse.ts epsilon
-                // (1e-6) targets Win32 GetScrollInfo pageRatio (0..1 range)
-                // and is not applicable to UIA percent semantics.
-                //
-                // Some UIA providers update Current*ScrollPercent
-                // asynchronously — the value can still read stale for a few ms
-                // after `SetScrollPercent` returns Ok. A single immediate
-                // re-read would mis-classify a successful scroll as
-                // `scrolled:false`, the TS dispatcher would fall through to
-                // Tier 4 SendInput, and the wheel would fire a SECOND time on
-                // the same call — over-scrolling or scrolling the wrong layer
-                // (Codex PR #288 Round 5 P1). Poll the post-state a few times
-                // with a short delay, breaking as soon as movement is observed
-                // (the synchronous-provider common case exits on attempt 1,
-                // before any sleep). Only the scrolled axes (`cur_* = Some`)
-                // participate in the movement check — a non-scrolled axis was
-                // sent -1.0 and must not influence the verdict. A failed
-                // post-read falls back to the pre-value (`unwrap_or(c*)`),
-                // i.e. "no movement observed" — the conservative verdict.
-                const SCROLL_PERCENT_EPSILON: f64 = 1e-3;
-                const POST_READ_RETRIES: u32 = 6;
-                const POST_READ_DELAY_MS: u64 = 5;
-                let mut moved = false;
-                let mut attempt: u32 = 0;
-                loop {
-                    if let Some(cv) = cur_v {
-                        let post_v = scroll
-                            .CurrentVerticalScrollPercent()
-                            .unwrap_or(cv);
-                        if (post_v - cv).abs() >= SCROLL_PERCENT_EPSILON {
-                            moved = true;
-                        }
-                    }
-                    if !moved {
-                        if let Some(ch) = cur_h {
-                            let post_h = scroll
-                                .CurrentHorizontalScrollPercent()
-                                .unwrap_or(ch);
-                            if (post_h - ch).abs() >= SCROLL_PERCENT_EPSILON {
-                                moved = true;
-                            }
-                        }
-                    }
-                    attempt += 1;
-                    if moved || attempt >= POST_READ_RETRIES {
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(
-                        POST_READ_DELAY_MS,
-                    ));
-                }
-
-                return Ok(ScrollResult {
-                    ok: true,
-                    scrolled: moved,
-                    error: if moved {
-                        None
-                    } else {
-                        Some(
-                            "SetScrollPercent returned Ok but pre/post percent unchanged"
-                                .into(),
-                        )
-                    },
-                });
             }
         }
 
         current = unsafe { ctx.walker.GetParentElement(&e).ok() };
     }
 
+    // Phase B: upward walk found nothing — the ScrollPattern is likely on a
+    // descendant (e.g. Windows 11 Notepad WinUI3, WPF, Electron apps where
+    // the root HWND element does not carry ScrollPattern but a child does).
+    // DFS the subtree from the original elem, constrained to target_hwnd's
+    // subtree and filtered by axis scrollability (Issue #291 P2-1/P2-2).
+    let mut dfs_budget = MAX_SCROLL_DFS_NODES;
+    if let Some(scroll) = find_scroll_pattern_in_subtree(
+        ctx, &elem_for_dfs, MAX_SEARCH_DEPTH,
+        hwnd_i64 as isize, need_vertical, need_horizontal,
+        &mut dfs_budget,
+    ) {
+        return apply_scroll_with_pattern(&scroll, opts);
+    }
+
     Ok(ScrollResult {
         ok: false,
         scrolled: false,
-        error: Some("No ScrollPattern ancestor found".into()),
+        error: Some(
+            "No ScrollPattern found (ancestor walk + subtree DFS both exhausted)".into(),
+        ),
     })
+}
+
+/// Apply one scroll step using an already-obtained `IUIAutomationScrollPattern`.
+/// Captures pre-state percents, computes targets, calls `SetScrollPercent`, then
+/// polls post-state to confirm movement (ADR-018 §2.6.2 emission gate).
+///
+/// Returns `ok:false` if any percent read or `SetScrollPercent` fails so the TS
+/// dispatcher can fall through to Tier 4 SendInput.
+fn apply_scroll_with_pattern(
+    scroll: &IUIAutomationScrollPattern,
+    opts: &ScrollByWheelAtHwndOptions,
+) -> napi::Result<ScrollResult> {
+    // ADR §2.6.2 — `delivered_via_uia` requires UIA pre/post percent to differ.
+    // Capture pre-state, perform SetScrollPercent, re-read post-state, compare.
+    //
+    // Per-axis: only the axis being scrolled is read — fetching (and failing on)
+    // the unused axis would make Tier 1 falsely unreachable for elements that
+    // scroll one axis but don't expose the other (Codex PR #288 Round 3 P1).
+    // `view_size` is already a percentage (0..100, UIA ViewSize semantics).
+    unsafe {
+        let cur_v: Option<f64> = if opts.wheel_delta_y == 0 {
+            None
+        } else {
+            match scroll.CurrentVerticalScrollPercent() {
+                Ok(v) => Some(v),
+                Err(err) => {
+                    return Ok(ScrollResult {
+                        ok: false,
+                        scrolled: false,
+                        error: Some(format!(
+                            "CurrentVerticalScrollPercent unavailable: {err}"
+                        )),
+                    });
+                }
+            }
+        };
+        let cur_h: Option<f64> = if opts.wheel_delta_x == 0 {
+            None
+        } else {
+            match scroll.CurrentHorizontalScrollPercent() {
+                Ok(v) => Some(v),
+                Err(err) => {
+                    return Ok(ScrollResult {
+                        ok: false,
+                        scrolled: false,
+                        error: Some(format!(
+                            "CurrentHorizontalScrollPercent unavailable: {err}"
+                        )),
+                    });
+                }
+            }
+        };
+
+        // UIA convention: -1.0 means "no scroll on this axis".
+        let target_v = match cur_v {
+            None => -1.0,
+            Some(cv) => {
+                let view_v = match scroll.CurrentVerticalViewSize() {
+                    Ok(v) => v,
+                    Err(err) => {
+                        return Ok(ScrollResult {
+                            ok: false,
+                            scrolled: false,
+                            error: Some(format!(
+                                "CurrentVerticalViewSize unavailable: {err}"
+                            )),
+                        });
+                    }
+                };
+                // NOT a silent unwrap_or(0.0) — a fake baseline would jump to
+                // start of content (Codex PR #288 Round 6 P2).
+                (cv + wheel_step_percent(opts.wheel_delta_y, view_v)).clamp(0.0, 100.0)
+            }
+        };
+        let target_h = match cur_h {
+            None => -1.0,
+            Some(ch) => {
+                let view_h = match scroll.CurrentHorizontalViewSize() {
+                    Ok(v) => v,
+                    Err(err) => {
+                        return Ok(ScrollResult {
+                            ok: false,
+                            scrolled: false,
+                            error: Some(format!(
+                                "CurrentHorizontalViewSize unavailable: {err}"
+                            )),
+                        });
+                    }
+                };
+                (ch + wheel_step_percent(opts.wheel_delta_x, view_h)).clamp(0.0, 100.0)
+            }
+        };
+
+        // UIA convention: horizontal first, vertical second.
+        if let Err(err) = scroll.SetScrollPercent(target_h, target_v) {
+            return Ok(ScrollResult {
+                ok: false,
+                scrolled: false,
+                error: Some(format!("SetScrollPercent failed: {err}")),
+            });
+        }
+
+        // ADR §2.6.2 emission gate — pre/post must differ by SCROLL_PERCENT_EPSILON
+        // (1e-3 in 0..100 percent units). Poll a few times because some UIA
+        // providers update ScrollPercent asynchronously (Codex PR #288 Round 5 P1).
+        const SCROLL_PERCENT_EPSILON: f64 = 1e-3;
+        const POST_READ_RETRIES: u32 = 6;
+        const POST_READ_DELAY_MS: u64 = 5;
+        let mut moved = false;
+        let mut attempt: u32 = 0;
+        loop {
+            if let Some(cv) = cur_v {
+                let post_v = scroll.CurrentVerticalScrollPercent().unwrap_or(cv);
+                if (post_v - cv).abs() >= SCROLL_PERCENT_EPSILON {
+                    moved = true;
+                }
+            }
+            if !moved {
+                if let Some(ch) = cur_h {
+                    let post_h = scroll.CurrentHorizontalScrollPercent().unwrap_or(ch);
+                    if (post_h - ch).abs() >= SCROLL_PERCENT_EPSILON {
+                        moved = true;
+                    }
+                }
+            }
+            attempt += 1;
+            if moved || attempt >= POST_READ_RETRIES {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(POST_READ_DELAY_MS));
+        }
+
+        Ok(ScrollResult {
+            ok: true,
+            scrolled: moved,
+            error: if moved {
+                None
+            } else {
+                Some(
+                    "SetScrollPercent returned Ok but pre/post percent unchanged".into(),
+                )
+            },
+        })
+    }
+}
+
+/// DFS over the UIA subtree rooted at `elem` to find the first element that
+/// exposes `IUIAutomationScrollPattern` AND is scrollable on the requested
+/// axes. Returns `None` when the subtree is exhausted, `depth` reaches 0, or
+/// `node_budget` is depleted. Silently skips COM errors on individual child
+/// queries so a broken child branch does not abort the whole search.
+///
+/// `target_hwnd`: HWND of the top-level window being scrolled (as isize).
+///   Children whose `CurrentNativeWindowHandle` returns a non-zero HWND that
+///   is neither `target_hwnd` nor a Win32 child of it are skipped (P2-1
+///   boundary guard, Issue #291). This allows descent into embedded child
+///   windows like WinUI3's `DesktopChildSiteBridge` / `DirectUIHWND` that are
+///   children of the target window while still blocking descent into unrelated
+///   top-level windows. Elements with HWND == 0 are pure UIA nodes and are
+///   always searched.
+///
+/// `need_vertical` / `need_horizontal`: which axes are being scrolled. An
+///   element with ScrollPattern that reports not scrollable on the needed axis
+///   is skipped so the DFS continues to the next candidate (P2-2 scrollable
+///   filter, Issue #291).
+///
+/// `node_budget`: mutable counter decremented for every UIA node visited.
+///   When it reaches 0 the DFS stops immediately so a wide tree (e.g. File
+///   Explorer list view with hundreds of item children) does not exhaust the
+///   8 s COM timeout (P2-3, Issue #291).
+///
+/// Used by `scroll_by_wheel_at_hwnd_impl` Phase B (Issue #291): when the
+/// upward ancestor walk finds nothing, the ScrollPattern is likely on a child
+/// (e.g. the text editor inside Windows 11 Notepad's WinUI3 root HWND).
+fn find_scroll_pattern_in_subtree(
+    ctx: &UiaContext,
+    elem: &IUIAutomationElement,
+    depth: u32,
+    target_hwnd: isize,
+    need_vertical: bool,
+    need_horizontal: bool,
+    node_budget: &mut u32,
+) -> Option<IUIAutomationScrollPattern> {
+    if depth == 0 || *node_budget == 0 {
+        return None;
+    }
+    *node_budget = node_budget.saturating_sub(1);
+    unsafe {
+        // Check elem itself (P2-2: only accept if scrollable on needed axes).
+        if let Ok(pat) = elem.GetCurrentPattern(UIA_ScrollPatternId)
+            && let Ok(scroll) = pat.cast::<IUIAutomationScrollPattern>()
+        {
+            let v_ok = !need_vertical
+                || scroll.CurrentVerticallyScrollable().map(|b| b.0 != 0).unwrap_or(false);
+            let h_ok = !need_horizontal
+                || scroll.CurrentHorizontallyScrollable().map(|b| b.0 != 0).unwrap_or(false);
+            if v_ok && h_ok {
+                return Some(scroll);
+            }
+            // Has ScrollPattern but not scrollable on the needed axis —
+            // keep searching (P2-2).
+        }
+        // DFS into children (P2-1: stop at unrelated window boundaries).
+        let first = ctx.walker.GetFirstChildElement(elem).ok()?;
+        let mut child: Option<IUIAutomationElement> = Some(first);
+        while let Some(c) = child {
+            // P2-1 boundary guard: if this child carries a native HWND that
+            // is neither `target_hwnd` nor a Win32 child window of it, the
+            // child belongs to a completely different window hierarchy. Skip
+            // it to avoid crossing into an unrelated window. Win32 child
+            // windows of target_hwnd (e.g. WinUI3 DirectUIHWND, Electron
+            // chrome_widgetwin sub-windows) are allowed because they are part
+            // of the same logical app. HWND == 0 means no native window (pure
+            // UIA node) — always descend.
+            // Err: COM failure means we cannot determine which window this
+            // child belongs to — skip it rather than treating it as a "pure
+            // UIA node" and descending into potentially the wrong hierarchy
+            // (Codex PR #292 P2).
+            let child_hwnd = match c.CurrentNativeWindowHandle() {
+                Err(_) => {
+                    child = ctx.walker.GetNextSiblingElement(&c).ok();
+                    continue;
+                }
+                Ok(h) => h.0 as isize,
+            };
+            if child_hwnd != 0
+                && child_hwnd != target_hwnd
+                && !IsChild(
+                    HWND(target_hwnd as *mut std::ffi::c_void),
+                    HWND(child_hwnd as *mut std::ffi::c_void),
+                ).as_bool()
+            {
+                child = ctx.walker.GetNextSiblingElement(&c).ok();
+                continue;
+            }
+            if let Some(found) = find_scroll_pattern_in_subtree(
+                ctx, &c, depth - 1, target_hwnd, need_vertical, need_horizontal,
+                node_budget,
+            ) {
+                return Some(found);
+            }
+            child = ctx.walker.GetNextSiblingElement(&c).ok();
+        }
+    }
+    None
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
