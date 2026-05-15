@@ -214,7 +214,9 @@ CLAUDE.md §3.1 multi-table fact sweep applies across these 5 surfaces. ADR-010 
 | `src/tools/scroll.ts` | 23-184 / 188-201 / 244-265 | `discriminatedUnion` retained for the handler; `registerTool` `inputSchema` switched to `flattenUnionToObjectSchema(...)` (Phase 2a) |
 | `src/tools/mouse.ts` | 910-1174 | `scrollHandler` refactored to call `_input-pipeline.ts::dispatch`; `SCROLL_MULTIPLIER=3` retired (tier-specific scaling) |
 | `src/tools/smart-scroll.ts` | 159-179 | Fix `target='body'` regression (`document.scrollingElement` double-query, Phase 3) |
-| `src/tools/scroll-read.ts` | 91-127 | `getWindows()` → `resolveWindowTarget` (Phase 5) |
+| `src/tools/scroll-read.ts` | 91-127 | `getWindows()` → `resolveWindowTarget` + `findPlainTopLevelWindowByTitle` helper (Phase 5) |
+| `src/tools/scroll-capture.ts` | 340-380 | Same migration as scroll-read.ts; symptom #1.2 root cause applies symmetrically (Phase 5 — scope expansion vs Round-0 ADR) |
+| `src/tools/_resolve-window.ts` | adjacent to Case 3 | `findPlainTopLevelWindowByTitle` shared helper + Case 3 delegates to it (Phase 5; Phase 1b/4 §2.2 carry-over consumed) |
 | `src/tools/keyboard.ts` | 283 / 1305-1311 | Add `NON_ASCII_RE`, OR with existing regex (Phase 2b) |
 | `src/tools/_envelope.ts` | adjacent to `withEnvelopeIncludeForUnion` | Add **two** helpers (Phase 2a): `flattenUnionToObjectSchema` (discriminatedUnion → flat `z.object` for the wire schema) and `parseActionArgsOrFail(unionWithInclude, args, toolName)` (in-handler `safeParse` against the include-injected union → typed error on failure — the strict gate, per §2.5.2) |
 | `src/tools/keyboard.ts` / `excel.ts` / `browser.ts` (`browser_eval`) / `window-dock.ts` / `terminal.ts` / `clipboard.ts` | `registerTool` `inputSchema` arg **+ each `*DispatchHandler`** | Switch `inputSchema` to `flattenUnionToObjectSchema(...)` (wire schema), **and** add `parseActionArgsOrFail(<unionWithInclude>, args, …)` at the top of each `*DispatchHandler` (strict gate — restores per-action validation that the flat wire schema drops; covers both `server.tool` and `run_macro` paths). Phase 2a — all 7 affected tools, not just `scroll` |
@@ -225,8 +227,8 @@ CLAUDE.md §3.1 multi-table fact sweep applies across these 5 surfaces. ADR-010 
 | `tests/unit/scroll-raw-verify.test.ts` | 114-130 | Rewrite the `page_end_inferred` test case to assert the new mapping per §2.6.3 (Phase 1) |
 | `src/tools/_errors.ts` | 256-262 (`ScrollNotDelivered` suggest list) | Update suggest copy to reference new reason names (`wheel_overlay_intercepted`, `target_unreachable`); typed-error code unchanged (Phase 1) |
 | `src/tools/scroll.ts` | 249-256 (tool description `Caveats:` section) | Update `action='raw' typed errors:` paragraph to list new reasons (Phase 1) |
-| `.github/workflows/input-pipeline-guard.yml` | **new** | CI assert: zero `getWindows` in `src/tools/`, zero `page_end_inferred` in `src/` and `tests/` (Phase 5) |
-| `__test__/smoke/scroll-5app.smoke.test.ts` | **new** | 5-app × 4-direction smoke (Phase 5, `workflow_dispatch` Windows runner) |
+| `.github/workflows/input-pipeline-guard.yml` | **new** | CI assert: zero nutjs `getWindows()` call or import in scroll-family tools (scroll-read / scroll-capture / _input-pipeline) per §6 AC5; `page_end_inferred` sub-assertion deferred to a future cleanup PR per Phase 4 §2.2 (Phase 5) |
+| `__test__/smoke/scroll-5app.smoke.test.ts` | **new** | Phase 3 lands Chrome stub; Phase 5+N follow-up PR adds the Notepad / Word / Excel / Explorer 4-app expansion per Phase 5 §2.2 carry-over (`workflow_dispatch` Windows runner) |
 | `__test__/fixtures/overlay-window.ts` | **new** | `WS_EX_LAYERED | WS_EX_TRANSPARENT` fake overlay child process for DDPM repro (Phase 1) |
 | `__test__/unit/keyboard-cjk.test.ts` | **new** | NON_ASCII_RE + clipboard-route integration assertions (Phase 2b) |
 | `tests/integration/tools-list-schema.test.ts` | **new** | MCP `tools/list` inputSchema assertion — all 7 flattened tools return non-empty `properties` + `action` enum; a server-wide "no tool has empty `properties`" guard so a future top-level-union regression is caught. Path is `tests/integration/` (the repo's Vitest `integration` project only includes `tests/integration/**/*.test.ts` — `__test__/` test files are not picked up) (Phase 2a) |
@@ -308,18 +310,27 @@ Deliverables:
 
 **Review loop**: Opus 2-3 rounds, Codex 1 round (Win32 API contract axis — PR #102 same regression class).
 
-### Phase 5 — Finalize: SSOT unification + CI assert + 5-app smoke (1 PR, 2 days)
+### Phase 5 — Finalize: SSOT unification + CI assert (1 PR + Phase 5+N follow-ups)
 
-Deliverables:
-- `scroll-read.ts:96` `getWindows()` → `resolveWindowTarget`
-- `input-pipeline-guard.yml` (negative assertions): grep `getWindows src/tools/` returns 0 lines, grep `page_end_inferred src/ tests/` returns 0 lines
-- **Positive assertion** (`__test__/integration/reason-enum-coverage.test.ts` new): every code path in `mouse.ts` `scrollHandler` that emits `status='not_delivered'` populates `reason` from the 5-value enum (no `undefined`, no string outside the enum). Asserted via a vitest case that exercises each tier failure mode through the dispatcher
-- `tests/unit/scroll-raw-verify-tier1.test.ts` (new): `scrollHandler` envelope-assembly integration test — asserts `verifyDelivery.channel='uia'` / `reason='delivered_via_uia'` end-to-end when the Tier 1 UIA dispatcher succeeds, and that `observedHwnd` is seeded from `dest.hwnd` for resolved destinations. **Carried over from Phase 1b** (sub-plan §2.1#5): the dispatcher-level contract is pinned by `input-pipeline-dispatch.test.ts`; this test covers the `scrollHandler` envelope path and is folded in here because a meaningful end-to-end assertion needs the same full `scrollHandler` wiring the 5-app smoke harness builds. Natural sibling of `reason-enum-coverage.test.ts`.
-- `scroll-5app.smoke.test.ts` finalized for all 5 apps × 4 directions (`workflow_dispatch`, Windows runner)
+> **Scope amendment (PR #306 Opus Round 2 P1-A)**: the Round-0 ADR listed 5 deliverables for a single Phase 5 PR. PR #306 (the Phase 5 trunk) lands 3; the remaining 2 (`reason-enum-coverage.test.ts` + `scroll-handler-envelope.test.ts` integration tests + `scroll-5app.smoke.test.ts` 4-app expansion) are explicitly re-routed to Phase 5+N follow-up PRs per `docs/adr-018-phase-5-subplan.md` §2.2. The Phase 5 sub-plan is the authoritative scope source; this ADR §4 block is kept in bit-equal sync with that.
 
-**G5 acceptance** (= AC1+AC2+AC5): All 5 apps return numeric delta + the expected `(status, channel, reason)` triple per AC1; no `page_end_inferred` survives in `src/` or `tests/`; no `getWindows` in `src/tools/`.
+**Phase 5 trunk deliverables** (PR #306):
+- `scroll-read.ts:91-127` + `scroll-capture.ts:340-380` `getWindows()` → `resolveWindowTarget` + the new shared `findPlainTopLevelWindowByTitle` helper (scope expanded vs Round-0 to cover scroll-capture symmetrically — same §1.2 root cause)
+- `_resolve-window.ts::findPlainTopLevelWindowByTitle` shared helper extraction + 9 unit cases in `tests/unit/find-plain-top-level-window.test.ts` (Phase 1b §2.2 + Phase 4 §2.2 carry-over consumed)
+- `input-pipeline-guard.yml` (negative assertions, scope narrowed): scroll-dispatcher-family nutjs `getWindows()` 0-hit. `page_end_inferred` sub-assertion deferred per Phase 4 §2.2.
 
-**Total**: 6 PRs, 12–19 days. Phase 2a and 2b parallel-OK, reducing wall-clock to ~10-15 days with background-agent parallelism (CLAUDE.md §3.4).
+**Phase 5+N follow-up PRs** (Phase 5 sub-plan §2.2 carry-overs):
+- `tests/integration/reason-enum-coverage.test.ts` (originally Round-0 Phase 5 D3) — pure integration test, no Phase 5 trunk contract dependency
+- `tests/integration/scroll-handler-envelope.test.ts` (originally Round-0 Phase 5 D4) — envelope-assembly integration test
+- `scroll-5app.smoke.test.ts` 4-app expansion: Notepad / Word / Excel / Explorer
+- `screenshot.ts` `getWindows()` migration (different concern, separate scope)
+- Word `_WwG` descendant assertion (requires `win32_enum_child_windows` napi — Phase 4 §2.2 chain)
+- `page_end_inferred` deletion + `effectiveChannel` rename (Phase 4 §2.2)
+- `bigint` tightening of `recognizeWindowByHwnd` / `canInjectAtTarget` / `postKeyComboToHwnd` signatures (Phase 5 §2.2 / Opus Round 1 P2-3)
+
+**G5 acceptance (Phase 5 trunk)**: scroll-family `getWindows()` 0-hit (AC5, scoped); symptom #6 closed via `resolveWindowTarget` migration in scroll-read + scroll-capture; predicate de-dup pinned by 9 unit cases. The Round-0 G5 wording "All 5 apps return numeric delta + (status, channel, reason) triple per AC1; no `page_end_inferred` in `src/` or `tests/`" is **Phase 5+N follow-up acceptance** — recorded in Phase 5 sub-plan §2.2 carry-over table.
+
+**Total**: 6+ PRs (Phase 5 trunk + follow-ups), 12–19 days base + Phase 5+N follow-up work. Phase 2a and 2b parallel-OK, reducing trunk wall-clock to ~10-15 days with background-agent parallelism (CLAUDE.md §3.4).
 
 ---
 
@@ -341,7 +352,7 @@ Deliverables:
 - **AC2**: `grep -rn "page_end_inferred" src/ tests/` returns 0 hits; every emitted `verifyDelivery.reason` value matches the 5-value enum in §2.6.2
 - **AC3**: `keyboard(action='type', text='日本語テスト')` succeeds with `typed:7` and Notepad's `ValuePattern.Value` reads back `'日本語テスト'`
 - **AC4**: MCP `tools/list` for all **7** flattened tools (`scroll`, `keyboard`, `excel`, `browser_eval`, `window_dock`, `terminal`, `clipboard`) returns `inputSchema` with non-empty `properties` **AND** the `action` discriminator enumerated as a flat `z.enum`. **Top-level `oneOf`/`anyOf`/`allOf` does NOT satisfy AC4** — the Anthropic API rejects it (HTTP 400), so the LLM never receives it (§2.5.1). The conformant shape is a flat `{ type:"object", properties:{ action:{enum:[...]}, ... } }`. Additionally, a server-wide assertion that no registered tool has empty `properties`, and that per-action-invalid input is rejected by the in-handler `parseActionArgsOrFail` re-parse as a typed error (§2.5.2). Asserted via `tests/integration/tools-list-schema.test.ts` + `tests/unit/flatten-union-schema.test.ts` (Phase 2a)
-- **AC5**: `grep -rn "getWindows" src/tools/` returns 0 hits; all `windowTitle` resolution in scroll path goes through `resolveWindowTarget`
+- **AC5**: `grep -rnE 'await getWindows\(\)|getWindows[[:space:]]*,.*nutjs' src/tools/scroll-read.ts src/tools/scroll-capture.ts src/tools/_input-pipeline.ts` returns 0 hits; all `windowTitle` resolution in the scroll **dispatcher family** (scroll-read / scroll-capture / mouse:scrollHandler / _input-pipeline) goes through `resolveWindowTarget` + the shared `findPlainTopLevelWindowByTitle` helper. **Scope narrowing note (PR #306 Opus Round 1 P1-2)**: the Round-0 ADR draft said `src/tools/` (whole-directory), but the symptom #1.2 root cause is specific to wheel-routing destination resolution — `screenshot.ts` window-listing (image capture) is a different concern with its own resolution semantics. `screenshot.ts` migration is recorded as a follow-up in Phase 5 sub-plan §2.2 carry-over; the AC5 grep is scoped to the scroll dispatcher family that the ADR §1.2 root cause applies to.
 
 ---
 

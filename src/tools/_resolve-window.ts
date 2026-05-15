@@ -44,6 +44,62 @@ function safeGetClassName(hwnd: bigint): string | null {
 }
 
 /**
+ * ADR-018 Phase 5 — single SSOT for "find a top-level window whose title
+ * substring-matches `title`". Phase 1b sub-plan §2.2 carry-over (re-routed
+ * Phase 4 → Phase 5). Replaces 3 copies of the same predicate that drifted
+ * across `_resolve-window.ts` Case 3 / `_input-pipeline.ts::resolveInputDestination`
+ * Case 3 recovery / `mouse.ts:scrollHandler` observation ladder.
+ *
+ * Per-call-site flag preservation (CLAUDE.md §3.2 carry-over scope shrink):
+ *
+ * | Call site | excludeMinimized | excludeDialogsAndOwned |
+ * |---|---|---|
+ * | `_resolve-window.ts` Case 3 | `false` (tolerant — legacy) | `true` (predicate ALWAYS filtered #32770 + owned) |
+ * | `_input-pipeline.ts` Case 3 recovery | `true` (minimized → unusable dispatch target) | `true` (same) |
+ * | `mouse.ts` observation ladder | `true` (minimized → unobservable) | `false` (observation tolerates dialog matches) |
+ *
+ * The minimized-window distinction is load-bearing: `_resolve-window.ts` Case 3
+ * historically tolerated minimized matches (returning null pass-through), and
+ * adopting `excludeMinimized: true` there would change `resolveWindowTarget`'s
+ * behaviour for legacy title-based callers. Default `false` preserves it.
+ *
+ * @param title — Title substring to match (case-insensitive). Empty string returns null.
+ * @param opts.excludeMinimized — When `true`, minimized windows are skipped.
+ * @param opts.excludeDialogsAndOwned — When `true`, `#32770` dialogs AND any
+ *   window with a non-null `ownerHwnd` are skipped (predicate matches a true
+ *   top-level window only).
+ * @returns The first matching `WindowZInfo` in Z-order, or null.
+ */
+export function findPlainTopLevelWindowByTitle(
+  title: string,
+  opts: {
+    excludeMinimized?: boolean;
+    excludeDialogsAndOwned?: boolean;
+  } = {},
+): ReturnType<typeof enumWindowsInZOrder>[number] | null {
+  if (!title) return null;
+  const { excludeMinimized = false, excludeDialogsAndOwned = false } = opts;
+  try {
+    const q = title.toLowerCase();
+    const wins = enumWindowsInZOrder();
+    return (
+      wins.find((w) => {
+        if (excludeMinimized && w.isMinimized) return false;
+        if (excludeDialogsAndOwned) {
+          if (DIALOG_CLASSNAMES.has(w.className ?? "")) return false;
+          if (w.ownerHwnd != null) return false;
+        }
+        return w.title.toLowerCase().includes(q);
+      }) ?? null
+    );
+  } catch {
+    // `enumWindowsInZOrder` unavailable → null (callers fall through to their
+    // own fallback / unresolved path).
+    return null;
+  }
+}
+
+/**
  * (H3 case 4) Search for a common dialog window whose title partially matches `query`.
  * Prioritises #32770-classed windows, then owned popups.
  * Only considers non-minimised windows (minimised dialogs can't be interacted with).
@@ -183,17 +239,18 @@ export async function resolveWindowTarget(params: {
   // Case 4: (H3) no top-level match → search for a common dialog via owner chain.
   if (params.windowTitle) {
     try {
-      const wins = enumWindowsInZOrder();
-      const q = params.windowTitle.toLowerCase();
       // Case 3: plain match exists — preserve existing pass-through behaviour.
-      const plainMatch = wins.find(
-        (w) => w.title.toLowerCase().includes(q) &&
-               !DIALOG_CLASSNAMES.has(w.className ?? "") &&
-               w.ownerHwnd == null
-      );
+      // ADR-018 Phase 5: delegated to the shared `findPlainTopLevelWindowByTitle`
+      // helper (Phase 1b §2.2 / Phase 4 §2.2 carry-over). `excludeMinimized: false`
+      // preserves the legacy Case 3 tolerance for minimized matches.
+      const plainMatch = findPlainTopLevelWindowByTitle(params.windowTitle, {
+        excludeMinimized: false,
+        excludeDialogsAndOwned: true,
+      });
       if (plainMatch) return null;
 
       // Case 4: no plain match — try common dialog fallback.
+      const wins = enumWindowsInZOrder();
       const dialog = findCommonDialogByTitle(wins, params.windowTitle);
       if (dialog) {
         warnings.push("dialog_resolved_via_owner_chain");

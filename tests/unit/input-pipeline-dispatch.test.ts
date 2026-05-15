@@ -63,19 +63,23 @@ vi.mock("../../src/engine/native-engine.js", () => ({
 
 // Mock window resolution dependency. `DIALOG_CLASSNAMES` is re-exported from
 // the real module so `resolveInputDestination`'s Case 3 predicate can mirror
-// `_resolve-window.ts` Case 3 (non-dialog class + no owner).
+// `_resolve-window.ts` Case 3 (non-dialog class + no owner). Phase 5:
+// `findPlainTopLevelWindowByTitle` is the shared helper that replaced the
+// inline predicate — see `docs/adr-018-phase-5-subplan.md` §2.1#2.
 const resolveWindowTargetMock = vi.fn();
+const findPlainTopLevelWindowByTitleMock = vi.fn();
 vi.mock("../../src/tools/_resolve-window.js", () => ({
   resolveWindowTarget: resolveWindowTargetMock,
+  findPlainTopLevelWindowByTitle: findPlainTopLevelWindowByTitleMock,
   DIALOG_CLASSNAMES: new Set(["#32770"]),
 }));
 
-// Mock window enumeration — `resolveInputDestination` falls back to
-// `enumWindowsInZOrder` to recover the HWND for a plain-windowTitle Case 3
-// match (resolveWindowTarget returns null in that case by design), and Phase 3
-// also consults it for the Chromium-class gate in `resolveCdpDestinationForHwnd`.
-// `getWindowRectByHwnd` is mocked because Phase 4 Tier 3 `postWheelToHwnd`
-// uses it for `MAKELPARAM(screenCx, screenCy)` encoding.
+// Mock window enumeration is no longer needed by `resolveInputDestination`
+// directly (the Phase 5 helper extraction routes through
+// `findPlainTopLevelWindowByTitle` instead). `enumWindowsInZOrderMock` is
+// retained for legacy test scaffolding compatibility. `getWindowRectByHwnd`
+// is mocked because Phase 4 Tier 3 `postWheelToHwnd` uses it for
+// `MAKELPARAM(screenCx, screenCy)` encoding.
 const enumWindowsInZOrderMock = vi.fn();
 const getWindowRectByHwndMock = vi.fn<
   [bigint],
@@ -114,6 +118,8 @@ const {
 describe("ADR-018 §2.3 — resolveInputDestination (single SSOT via resolveWindowTarget)", () => {
   beforeEach(() => {
     resolveWindowTargetMock.mockReset();
+    findPlainTopLevelWindowByTitleMock.mockReset();
+    findPlainTopLevelWindowByTitleMock.mockReturnValue(null);
     enumWindowsInZOrderMock.mockReset();
     enumWindowsInZOrderMock.mockReturnValue([]);
     listTabsLightMock.mockReset();
@@ -137,104 +143,79 @@ describe("ADR-018 §2.3 — resolveInputDestination (single SSOT via resolveWind
     expect(listTabsLightMock).not.toHaveBeenCalled();
   });
 
-  it("Case 3 recovery: resolveWindowTarget null + plain windowTitle matches a top-level window → {kind:'hwnd'} via enumWindowsInZOrder (keeps Tier 1 UIA reachable, ADR §4 G1)", async () => {
+  it("Case 3 recovery: resolveWindowTarget null + plain windowTitle matches a top-level window → {kind:'hwnd'} via findPlainTopLevelWindowByTitle (keeps Tier 1 UIA reachable, ADR §4 G1)", async () => {
     // resolveWindowTarget returns null for a plain-windowTitle top-level match
     // BY DESIGN (_resolve-window.ts Case 3 discards the HWND to keep legacy
     // title-based callers unchanged). resolveInputDestination must recover the
-    // HWND via the same top-level enumeration — otherwise G1 acceptance
-    // (scroll(windowTitle:'メモ帳') → channel:'uia') can never pass.
+    // HWND via the shared findPlainTopLevelWindowByTitle helper (Phase 5
+    // §2.1#2 extraction) — otherwise G1 acceptance can never pass.
     resolveWindowTargetMock.mockResolvedValue(null);
-    enumWindowsInZOrderMock.mockReturnValue([
-      { hwnd: 0x111n, title: "Untitled - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false },
-    ]);
+    findPlainTopLevelWindowByTitleMock.mockReturnValue({
+      hwnd: 0x111n, title: "Untitled - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false,
+    });
     const dest = await resolveInputDestination({ windowTitle: "Notepad" });
     expect(dest).toEqual({ kind: "hwnd", hwnd: 0x111n });
+    // Phase 5 contract: helper called with both flags TRUE (strict dispatcher
+    // predicate per sub-plan §2.1#2 table).
+    expect(findPlainTopLevelWindowByTitleMock).toHaveBeenCalledWith("Notepad", {
+      excludeMinimized: true,
+      excludeDialogsAndOwned: true,
+    });
   });
 
-  it("Case 3 recovery matches case-insensitively on a title substring", async () => {
+  it("Case 3 recovery matches case-insensitively on a title substring (helper-internal contract)", async () => {
     resolveWindowTargetMock.mockResolvedValue(null);
-    enumWindowsInZOrderMock.mockReturnValue([
-      { hwnd: 0x333n, title: "メモ帳", className: "Notepad", ownerHwnd: null, isMinimized: false },
-    ]);
+    findPlainTopLevelWindowByTitleMock.mockReturnValue({
+      hwnd: 0x333n, title: "メモ帳", className: "Notepad", ownerHwnd: null, isMinimized: false,
+    });
     const dest = await resolveInputDestination({ windowTitle: "メモ帳" });
     expect(dest).toEqual({ kind: "hwnd", hwnd: 0x333n });
   });
 
-  it("Case 3 recovery EXCLUDES #32770 dialogs and owned windows — recovers the true top-level even when a dialog/owned window matches the same title (Codex Round 3 P2)", async () => {
-    // The predicate applies _resolve-window.ts Case 3's constraints (`!#32770`
-    // + `ownerHwnd == null`) so dispatch targets a true top-level window, not
-    // an owned/modal dialog with a coincidentally-overlapping title substring.
+  it("Case 3 recovery EXCLUDES #32770 dialogs and owned windows — flag excludeDialogsAndOwned: true (Codex PR #288 Round 3 P2)", async () => {
+    // The dispatcher calls the helper with excludeDialogsAndOwned:true; the
+    // per-flag predicate behavior is pinned by find-plain-top-level-window.test.ts.
+    // Here we only verify the dispatcher passes the correct flag combination.
     resolveWindowTargetMock.mockResolvedValue(null);
-    enumWindowsInZOrderMock.mockReturnValue([
-      { hwnd: 0x501n, title: "Notepad — Save As", className: "#32770", ownerHwnd: 0x999n, isMinimized: false },
-      { hwnd: 0x502n, title: "Notepad helper", className: "Tooltip", ownerHwnd: 0x999n, isMinimized: false },
-      { hwnd: 0x503n, title: "Untitled - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false },
-    ]);
+    findPlainTopLevelWindowByTitleMock.mockReturnValue({
+      hwnd: 0x503n, title: "Untitled - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false,
+    });
     const dest = await resolveInputDestination({ windowTitle: "Notepad" });
     expect(dest).toEqual({ kind: "hwnd", hwnd: 0x503n });
+    expect(findPlainTopLevelWindowByTitleMock).toHaveBeenCalledWith("Notepad",
+      expect.objectContaining({ excludeDialogsAndOwned: true }));
   });
 
-  it("Case 3 recovery EXCLUDES minimized windows — recovers the non-minimized top-level match (Codex Round 4 P1)", async () => {
-    // A minimized HWND is not a usable dispatch target (UIA scroll on an
-    // off-screen window) and would pin observation to an unobservable window.
+  it("Case 3 recovery EXCLUDES minimized windows — flag excludeMinimized: true (Codex PR #288 Round 4 P1)", async () => {
     resolveWindowTargetMock.mockResolvedValue(null);
-    enumWindowsInZOrderMock.mockReturnValue([
-      { hwnd: 0x701n, title: "Untitled - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: true },
-      { hwnd: 0x702n, title: "Untitled - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false },
-    ]);
+    findPlainTopLevelWindowByTitleMock.mockReturnValue({
+      hwnd: 0x702n, title: "Untitled - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false,
+    });
     const dest = await resolveInputDestination({ windowTitle: "Notepad" });
     expect(dest).toEqual({ kind: "hwnd", hwnd: 0x702n });
+    expect(findPlainTopLevelWindowByTitleMock).toHaveBeenCalledWith("Notepad",
+      expect.objectContaining({ excludeMinimized: true }));
   });
 
-  it("returns {kind:'unresolved'} when the only title match is minimized", async () => {
+  it("returns {kind:'unresolved'} when helper returns null (no recoverable top-level)", async () => {
     resolveWindowTargetMock.mockResolvedValue(null);
-    enumWindowsInZOrderMock.mockReturnValue([
-      { hwnd: 0x711n, title: "Untitled - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: true },
-    ]);
+    findPlainTopLevelWindowByTitleMock.mockReturnValue(null);
     const dest = await resolveInputDestination({ windowTitle: "Notepad" });
     expect(dest).toEqual({ kind: "unresolved", reason: "no_target_window" });
   });
 
-  it("returns {kind:'unresolved'} when only a dialog / owned window matches the title (no true top-level)", async () => {
-    resolveWindowTargetMock.mockResolvedValue(null);
-    enumWindowsInZOrderMock.mockReturnValue([
-      { hwnd: 0x601n, title: "Notepad — Save As", className: "#32770", ownerHwnd: 0x999n },
-      { hwnd: 0x602n, title: "Notepad popup", className: "Notepad", ownerHwnd: 0x999n },
-    ]);
-    const dest = await resolveInputDestination({ windowTitle: "Notepad" });
-    expect(dest).toEqual({ kind: "unresolved", reason: "no_target_window" });
-  });
-
-  it("returns {kind:'unresolved'} when resolveWindowTarget null AND no enumeration match", async () => {
-    resolveWindowTargetMock.mockResolvedValue(null);
-    enumWindowsInZOrderMock.mockReturnValue([
-      { hwnd: 0x444n, title: "Some Other Window", className: "Window", ownerHwnd: null },
-    ]);
-    const dest = await resolveInputDestination({ windowTitle: "Notepad" });
-    expect(dest).toEqual({ kind: "unresolved", reason: "no_target_window" });
-  });
-
-  it("returns {kind:'unresolved'} when neither hwnd nor windowTitle is given (no enumeration attempted)", async () => {
+  it("returns {kind:'unresolved'} when neither hwnd nor windowTitle is given (helper not called)", async () => {
     resolveWindowTargetMock.mockResolvedValue(null);
     const dest = await resolveInputDestination({});
     expect(dest).toEqual({ kind: "unresolved", reason: "no_target_window" });
-    expect(enumWindowsInZOrderMock).not.toHaveBeenCalled();
+    expect(findPlainTopLevelWindowByTitleMock).not.toHaveBeenCalled();
   });
 
-  it("does not attempt enumeration for windowTitle '@active' (resolveWindowTarget owns @active)", async () => {
+  it("does not attempt helper lookup for windowTitle '@active' (resolveWindowTarget owns @active)", async () => {
     resolveWindowTargetMock.mockResolvedValue(null);
     const dest = await resolveInputDestination({ windowTitle: "@active" });
     expect(dest).toEqual({ kind: "unresolved", reason: "no_target_window" });
-    expect(enumWindowsInZOrderMock).not.toHaveBeenCalled();
-  });
-
-  it("returns {kind:'unresolved'} when enumWindowsInZOrder throws (graceful fall-through)", async () => {
-    resolveWindowTargetMock.mockResolvedValue(null);
-    enumWindowsInZOrderMock.mockImplementation(() => {
-      throw new Error("enumeration unavailable");
-    });
-    const dest = await resolveInputDestination({ windowTitle: "Notepad" });
-    expect(dest).toEqual({ kind: "unresolved", reason: "no_target_window" });
+    expect(findPlainTopLevelWindowByTitleMock).not.toHaveBeenCalled();
   });
 });
 
@@ -430,6 +411,8 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
 describe("ADR-018 Phase 3 — resolveInputDestination CDP promotion integration", () => {
   beforeEach(() => {
     resolveWindowTargetMock.mockReset();
+    findPlainTopLevelWindowByTitleMock.mockReset();
+    findPlainTopLevelWindowByTitleMock.mockReturnValue(null);
     enumWindowsInZOrderMock.mockReset();
     enumWindowsInZOrderMock.mockReturnValue([]);
     listTabsLightMock.mockReset();
@@ -454,9 +437,9 @@ describe("ADR-018 Phase 3 — resolveInputDestination CDP promotion integration"
 
   it("Case 3 recovery for Chromium HWND also promotes to {kind:'cdp'} (plain windowTitle on Chrome)", async () => {
     resolveWindowTargetMock.mockResolvedValue(null);
-    enumWindowsInZOrderMock.mockReturnValue([
-      { hwnd: 0xBBBn, title: "Google Chrome", className: "Chrome_WidgetWin_1", ownerHwnd: null, isMinimized: false },
-    ]);
+    findPlainTopLevelWindowByTitleMock.mockReturnValue({
+      hwnd: 0xBBBn, title: "Google Chrome", className: "Chrome_WidgetWin_1", ownerHwnd: null, isMinimized: false,
+    });
     listTabsLightMock.mockResolvedValue([
       { id: "TAB-Y", title: "X", url: "https://x.com/" },
     ]);

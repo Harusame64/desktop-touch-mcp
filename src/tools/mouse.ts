@@ -34,7 +34,7 @@ import {
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled } from "./_action-guard.js";
 import { detectTabDragRisk } from "../engine/perception/tab-drag-heuristic.js";
-import { resolveWindowTarget } from "./_resolve-window.js";
+import { resolveWindowTarget, findPlainTopLevelWindowByTitle } from "./_resolve-window.js";
 import {
   resolveInputDestination,
   dispatchScrollWheel,
@@ -1143,13 +1143,15 @@ export const scrollHandler = async ({
     let observedHwnd: bigint | null =
       dest.kind === "hwnd" ? dest.hwnd : (resolvedWin?.hwnd ?? null);
     if (observedHwnd === null && windowTitle && windowTitle !== "@active") {
-      try {
-        const wantTitle = windowTitle.toLowerCase();
-        const win = enumWindowsInZOrder().find(
-          (w) => !w.isMinimized && w.title.toLowerCase().includes(wantTitle),
-        );
-        if (win) observedHwnd = win.hwnd;
-      } catch { /* best effort */ }
+      // ADR-018 Phase 5: delegated to the shared `findPlainTopLevelWindowByTitle`
+      // helper. Observation ladder uses `excludeDialogsAndOwned: false` because
+      // observation tolerates dialog matches (it is read-only and never routes
+      // dispatch). Phase 1b/4 §2.2 carry-over closed.
+      const win = findPlainTopLevelWindowByTitle(windowTitle, {
+        excludeMinimized: true,
+        excludeDialogsAndOwned: false,
+      });
+      if (win) observedHwnd = win.hwnd;
     }
     if (observedHwnd === null && tx !== undefined && ty !== undefined) {
       const containing = findContainingWindow(tx, ty);

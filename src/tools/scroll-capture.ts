@@ -1,8 +1,12 @@
 import { z } from "zod";
 import sharp from "sharp";
-import { screen, keyboard, mouse, getWindows, Region } from "../engine/nutjs.js";
-import { getWindowTitleW } from "../engine/win32.js";
+import { screen, keyboard, mouse, Region } from "../engine/nutjs.js";
+import { restoreAndFocusWindow } from "../engine/win32.js";
 import { parseKeys } from "../utils/key-map.js";
+import {
+  resolveWindowTarget,
+  findPlainTopLevelWindowByTitle,
+} from "./_resolve-window.js";
 import type { ToolResult } from "./_types.js";
 
 // Horizontal mouse scroll units per step (matches nut-js scroll granularity)
@@ -347,21 +351,35 @@ export const scrollCaptureHandler = async ({
 }): Promise<ToolResult> => {
   try {
     // ── Phase A: Find and focus the target window ──────────────────────────
-    const windows = await getWindows();
-    const query = windowTitle.toLowerCase();
-    let targetRegion: { x: number; y: number; width: number; height: number } | null = null;
+    // ADR-018 Phase 5: resolution goes through the destination-explicit SSOT
+    // `resolveWindowTarget`, the same path every other scroll action uses.
+    // Case 3 recovery via the shared `findPlainTopLevelWindowByTitle` helper
+    // (observation-only semantics — dialog/owner tolerance ON).
+    let targetHwnd: bigint | null = null;
+    {
+      const resolved = await resolveWindowTarget({ windowTitle });
+      if (resolved !== null) {
+        targetHwnd = resolved.hwnd;
+      } else {
+        const match = findPlainTopLevelWindowByTitle(windowTitle, {
+          excludeMinimized: true,
+          excludeDialogsAndOwned: false,
+        });
+        if (match) targetHwnd = match.hwnd;
+      }
+    }
 
-    for (const win of windows) {
-      try {
-        const hwnd = (win as unknown as { windowHandle: unknown }).windowHandle;
-        const title = hwnd ? getWindowTitleW(hwnd) : await win.title;
-        if (!title.toLowerCase().includes(query)) continue;
-        const reg = await win.region;
-        if (reg.width < 100 || reg.height < 100) continue;
-        await win.focus();
-        targetRegion = { x: reg.left, y: reg.top, width: reg.width, height: reg.height };
-        break;
-      } catch { /* skip */ }
+    let targetRegion: { x: number; y: number; width: number; height: number } | null = null;
+    if (targetHwnd !== null) {
+      const focusResult = restoreAndFocusWindow(targetHwnd);
+      if (focusResult.width >= 100 && focusResult.height >= 100) {
+        targetRegion = {
+          x: focusResult.x,
+          y: focusResult.y,
+          width: focusResult.width,
+          height: focusResult.height,
+        };
+      }
     }
 
     if (!targetRegion) {
