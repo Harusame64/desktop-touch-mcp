@@ -17,6 +17,8 @@ import { createDesktopExecutor, type ExecutorDeps } from "./desktop-executor.js"
 import type { TouchAction, TouchResult } from "../engine/world-graph/guarded-touch.js";
 import { deriveViewConstraints, type ViewConstraints, type EntityCapabilities } from "./desktop-constraints.js";
 import { deriveEntityCapabilities } from "./desktop-capabilities.js";
+import { isUiaCacheStale } from "../engine/identity-tracker.js";
+import type { AttentionState } from "../engine/perception/types.js";
 
 export type { ViewConstraints, EntityCapabilities };
 
@@ -103,6 +105,19 @@ export interface DesktopSeeOutput {
    * each entity's lease remains the only correctness wall.
    */
   softExpiresAtMs: number;
+  /**
+   * Issue #295 carry-over — freshness signal for the actionable entities
+   * surface, mirroring `desktop_state.attention`. Set to `'stale'` when the
+   * UIA cache for the resolved target HWND has fully expired
+   * (`isUiaCacheStale`) so the LLM does not act on a stale snapshot. Omitted
+   * when no HWND can be resolved (no `getFocusedHwnd` wired, target spec
+   * lacks an HWND) — absent field reads as "no signal" rather than "fresh".
+   *
+   * Today this field only carries `'ok' | 'stale'`; the wider
+   * `AttentionState` union is declared so future signals (e.g. layer-buffer
+   * dirty) can be added without a breaking change.
+   */
+  attention?: AttentionState;
 }
 
 export interface DesktopTouchInput {
@@ -205,6 +220,15 @@ export interface DesktopFacadeOptions {
    * problems.
    */
   windowsProvider?: () => DesktopWindowMeta[];
+  /**
+   * Issue #295 carry-over — resolver for the foreground HWND so see() can
+   * surface `attention: 'stale'` when the UIA cache for that HWND is fully
+   * expired. Only consulted when `input.target?.hwnd` is absent. Tests omit
+   * to avoid Win32 calls; production wires this in `desktop-register.ts`
+   * via `enumWindowsInZOrder`. When omitted (or it throws/returns null)
+   * and no `target.hwnd` was supplied, `attention` is left absent.
+   */
+  getFocusedHwnd?: () => bigint | null;
 }
 
 export type { CandidateIngress };
@@ -220,6 +244,38 @@ function primaryActionFrom(entity: UiEntity): string {
 function targetTitle(target?: TargetSpec): string {
   if (!target) return "(current)";
   return target.windowTitle ?? target.hwnd ?? target.tabId ?? "(current)";
+}
+
+/**
+ * Issue #295 carry-over — resolve the HWND (as bigint) that the UIA cache
+ * stale check should consult. Returns:
+ *   - `BigInt(target.hwnd)` when the caller pinned a specific HWND;
+ *   - `getFocusedHwnd()`'s return value when no HWND was supplied and the
+ *     injectable resolver was wired (production: foreground from
+ *     `enumWindowsInZOrder`);
+ *   - `null` when neither path produces a value (test wiring without
+ *     focus, or `BigInt()` parse failure on a malformed `target.hwnd`).
+ *
+ * Never throws — every defensive branch falls through to `null` so the
+ * stale check is best-effort. The wider see() path is unaffected.
+ */
+function resolveTargetHwnd(
+  target: TargetSpec | undefined,
+  getFocusedHwnd: (() => bigint | null) | undefined,
+): bigint | null {
+  if (target?.hwnd) {
+    try {
+      return BigInt(target.hwnd);
+    } catch {
+      return null;
+    }
+  }
+  if (!getFocusedHwnd) return null;
+  try {
+    return getFocusedHwnd();
+  } catch {
+    return null;
+  }
 }
 
 // ── DesktopFacade ─────────────────────────────────────────────────────────────
@@ -375,11 +431,42 @@ export class DesktopFacade {
     // Pure derivation, no extra UIA round-trip. `constraints` is passed in
     // so a UIA-blind view (`uia: 'provider_failed'`) can bias UIA-sourced
     // entities toward mouse even when their pattern set looks fine.
+    //
+    // Issue #296 Phase 2 — also stash `unsupportedExecutors` on the resolved
+    // UiEntity so `desktop-executor.ts` can short-circuit a UIA route before
+    // paying the `InvokePatternNotSupported` round-trip. `resolved` and
+    // `session.entities` alias the same array, so the touch path picks this
+    // up automatically.
     for (let i = 0; i < entityViews.length; i++) {
       const entity = resolved[i];
       if (entity === undefined) continue;
       const cap = deriveEntityCapabilities(entity, constraints);
-      if (cap) entityViews[i]!.capabilities = cap;
+      if (cap) {
+        entityViews[i]!.capabilities = cap;
+        if (cap.unsupportedExecutors && cap.unsupportedExecutors.length > 0) {
+          entity.unsupportedExecutors = [...cap.unsupportedExecutors];
+        }
+      }
+    }
+
+    // Issue #295 carry-over — surface attention='stale' when the UIA cache
+    // for the resolved target HWND is fully expired. Mirrors `desktop_state`
+    // behaviour so the LLM gets the same freshness signal regardless of
+    // which observation tool it chose. We only set the field when we can
+    // resolve an HWND (explicit target.hwnd or injected getFocusedHwnd);
+    // when neither is available we leave the field absent rather than
+    // synthesising a false 'ok'.
+    const resolvedHwnd = resolveTargetHwnd(input.target, this.opts.getFocusedHwnd);
+    if (resolvedHwnd !== null) {
+      try {
+        if (isUiaCacheStale(resolvedHwnd)) {
+          output.attention = "stale";
+        } else {
+          output.attention = "ok";
+        }
+      } catch {
+        // best-effort — never block see() on a cache lookup
+      }
     }
 
     // Codex PR #55 P2: refresh lastAccessMs at the END of see() too, in case

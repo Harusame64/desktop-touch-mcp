@@ -127,8 +127,20 @@ export function createDesktopExecutor(
   return async (entity, action, text) => {
     const winTitle = resolveWindowTitle(target);
 
+    // Issue #296 Phase 2 — `desktop_discover` derives `unsupportedExecutors`
+    // from UIA `controlType` + `patterns` (e.g. `ListItem`/`TabItem` without
+    // `InvokePattern`, `TogglePattern`-only checkboxes, visual-only entities)
+    // and stashes the array on `UiEntity` so we can skip a route that the
+    // capability derivation already predicted would fail. The mouse fallback
+    // at the end of this function stays unconditional — `mouse` is the route
+    // that those entities are biased toward.
+    const blocked = entity.unsupportedExecutors ?? [];
+    const uiaBlocked      = blocked.includes("uia");
+    const cdpBlocked      = blocked.includes("cdp");
+    const terminalBlocked = blocked.includes("terminal");
+
     // ── UIA route ────────────────────────────────────────────────────────────
-    if (entity.sources.includes("uia")) {
+    if (entity.sources.includes("uia") && !uiaBlocked) {
       // Prefer typed locator; fall back to sourceId (legacy bridge — remove in P3).
       const automationId = entity.locator?.uia?.automationId ?? entity.sourceId;
       const name         = entity.locator?.uia?.name ?? entity.label;
@@ -158,7 +170,7 @@ export function createDesktopExecutor(
     // ── CDP route ────────────────────────────────────────────────────────────
     // Prefer locator.cdp.selector; fall back to sourceId (legacy bridge).
     const cdpSelector = entity.locator?.cdp?.selector ?? (entity.sources.includes("cdp") ? entity.sourceId : undefined);
-    if (cdpSelector) {
+    if (cdpSelector && !cdpBlocked) {
       const cdpTabId = entity.locator?.cdp?.tabId ?? target?.tabId;
       // Phase 4: 'setValue' on a CDP entity uses cdpFill — equivalent to
       // browser_fill for controlled inputs (React/Vue/Svelte).
@@ -176,7 +188,7 @@ export function createDesktopExecutor(
     // text (action='type'/'setValue', or action='auto' with text). Otherwise
     // fall through to the mouse fallback so click/invoke on a terminal entity
     // doesn't silently send an empty string.
-    if (entity.sources.includes("terminal") && text !== undefined) {
+    if (entity.sources.includes("terminal") && !terminalBlocked && text !== undefined) {
       const termWin = entity.locator?.terminal?.windowTitle ?? winTitle;
       await d.terminalSend(termWin, text);
       return "terminal";

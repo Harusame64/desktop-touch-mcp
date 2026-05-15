@@ -105,6 +105,24 @@ function productionGetFocusedEntityId(): string | undefined {
 }
 
 /**
+ * Issue #295 carry-over — foreground HWND resolver for the UIA-cache-stale
+ * check in `DesktopFacade.see()`. Returns the active window's HWND as a
+ * bigint, or null on enumeration failure / no active window. Reuses the
+ * same `enumWindowsInZOrder` source as `productionGetFocusedEntityId` so
+ * the two stay consistent across calls.
+ */
+function productionGetFocusedHwnd(): bigint | null {
+  try {
+    const wins = enumWindowsInZOrder();
+    const fg = wins.find((w) => w.isActive);
+    if (!fg) return null;
+    return typeof fg.hwnd === "bigint" ? fg.hwnd : BigInt(fg.hwnd);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Production windowsProvider with a short-lived (default 100ms) result cache.
  *
  * Audit P1-1 (docs/v1-release-readiness-review.md §8.2): every desktop_discover
@@ -323,6 +341,9 @@ export function getDesktopFacade(): DesktopFacade {
       isInViewport: productionIsInViewport,
       // G1-C: window-level focus fingerprint for focus_shifted diff.
       getFocusedEntityId: productionGetFocusedEntityId,
+      // Issue #295 carry-over — foreground HWND for the see() UIA-cache-stale
+      // check. Same enumWindowsInZOrder source as getFocusedEntityId above.
+      getFocusedHwnd: productionGetFocusedHwnd,
       // G1-A: modal guard — session-aware default in session-registry.ts (UIA unknown-role).
       // No override needed here; the session-registry default is already production-grade.
       // Phase 4 (Codex PR #41 round 5 P1): production windows enumerator —

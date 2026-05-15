@@ -342,3 +342,120 @@ describe("terminalBgExecute — G2 background terminal send", () => {
     expect(err).toContain("V1 terminal(action='send')");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #296 Phase 2 — `unsupportedExecutors` short-circuit
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `desktop_discover` derives `EntityCapabilities` from UIA controlType + patterns
+// and stashes `unsupportedExecutors` on the resolved UiEntity. The executor must
+// honour it BEFORE attempting the route — skipping UIA entirely when 'uia' is in
+// the list, rather than trying UIA, catching `InvokePatternNotSupported`, and
+// falling back to mouse (which is what Phase 1 still cost the LLM in latency).
+
+describe("createDesktopExecutor — unsupportedExecutors short-circuit (#296 Phase 2)", () => {
+  it("UIA-sourced entity with unsupportedExecutors:['uia'] → skip UIA, use mouse fallback", async () => {
+    // Mirrors the ListItem / TabItem / TreeItem case from issue #296: the
+    // entity is UIA-sourced (sources includes 'uia') but the capability
+    // derivation has flagged UIA as unsupported because the element does not
+    // expose InvokePattern. Before this short-circuit the executor would
+    // call uiaClick, eat InvokePatternNotSupported, then fall to mouse — one
+    // wasted UIA round-trip per touch.
+    const deps = mockDeps();
+    const exec = createDesktopExecutor({ windowTitle: "Settings" }, deps);
+    const e = entity({
+      sources: ["uia"],
+      unsupportedExecutors: ["uia"],
+      rect: { x: 50, y: 60, width: 120, height: 24 },
+    });
+    const result = await exec(e, "click");
+    expect(result).toBe("mouse");
+    expect(deps.uiaClick).not.toHaveBeenCalled();
+    expect(deps.mouseClick).toHaveBeenCalledOnce();
+    // Mouse click lands at entity rect center.
+    expect(deps.mouseClick).toHaveBeenCalledWith(110, 72);
+  });
+
+  it("UIA-sourced + setValue with unsupportedExecutors:['uia'] → skip uiaSetValue, mouse fallback", async () => {
+    // setValue normally routes to uiaSetValue when sources includes 'uia';
+    // the short-circuit must apply to that branch too, not just the click path.
+    const deps = mockDeps();
+    const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
+    const e = entity({
+      sources: ["uia"],
+      unsupportedExecutors: ["uia"],
+      rect: { x: 100, y: 200, width: 80, height: 30 },
+    });
+    const result = await exec(e, "setValue", "text");
+    expect(result).toBe("mouse");
+    expect(deps.uiaSetValue).not.toHaveBeenCalled();
+    expect(deps.mouseClick).toHaveBeenCalledOnce();
+  });
+
+  it("CDP-sourced entity with unsupportedExecutors:['cdp'] → skip CDP, mouse fallback", async () => {
+    const deps = mockDeps();
+    const exec = createDesktopExecutor({ tabId: "tab-1" }, deps);
+    const e = entity({
+      sources: ["cdp"],
+      sourceId: "#btn",
+      unsupportedExecutors: ["cdp"],
+      rect: { x: 10, y: 20, width: 60, height: 40 },
+    });
+    const result = await exec(e, "click");
+    expect(result).toBe("mouse");
+    expect(deps.cdpClick).not.toHaveBeenCalled();
+    expect(deps.mouseClick).toHaveBeenCalledOnce();
+  });
+
+  it("terminal-sourced entity with unsupportedExecutors:['terminal'] → skip terminal, mouse fallback", async () => {
+    const deps = mockDeps();
+    const exec = createDesktopExecutor({ windowTitle: "PowerShell" }, deps);
+    const e = entity({
+      sources: ["terminal"],
+      unsupportedExecutors: ["terminal"],
+      rect: { x: 5, y: 5, width: 200, height: 20 },
+    });
+    const result = await exec(e, "type", "ls");
+    expect(result).toBe("mouse");
+    expect(deps.terminalSend).not.toHaveBeenCalled();
+    expect(deps.mouseClick).toHaveBeenCalledOnce();
+  });
+
+  it("empty / absent unsupportedExecutors → default dispatch order (regression guard)", async () => {
+    // Phase 2 must not regress the happy path: no blocked routes means UIA
+    // wins for a UIA-sourced entity, exactly as Phase 1 behaved.
+    const deps = mockDeps();
+    const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
+
+    // Absent field
+    expect(await exec(entity({ sources: ["uia"] }), "click")).toBe("uia");
+
+    // Explicit empty array — same semantics as absent.
+    expect(await exec(entity({ sources: ["uia"], unsupportedExecutors: [] }), "click")).toBe("uia");
+
+    // Blocking a route that does not apply to this entity is a no-op.
+    expect(
+      await exec(entity({ sources: ["uia"], unsupportedExecutors: ["cdp"] }), "click")
+    ).toBe("uia");
+
+    expect(deps.uiaClick).toHaveBeenCalledTimes(3);
+    expect(deps.mouseClick).not.toHaveBeenCalled();
+  });
+
+  it("multi-source entity blocks only the named route, other sources still attempted", async () => {
+    // Defensive: a future provider may produce an entity with both 'uia' and
+    // 'cdp' sources. Blocking 'uia' should leave CDP routing intact.
+    const deps = mockDeps();
+    const exec = createDesktopExecutor({ tabId: "tab-1" }, deps);
+    const e = entity({
+      sources: ["uia", "cdp"],
+      sourceId: "#submit",
+      unsupportedExecutors: ["uia"],
+    });
+    const result = await exec(e, "click");
+    expect(result).toBe("cdp");
+    expect(deps.uiaClick).not.toHaveBeenCalled();
+    expect(deps.cdpClick).toHaveBeenCalledOnce();
+    expect(deps.mouseClick).not.toHaveBeenCalled();
+  });
+});

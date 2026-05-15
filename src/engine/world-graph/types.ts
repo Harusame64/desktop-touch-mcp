@@ -82,6 +82,21 @@ export interface UiEntity {
    * `deriveEntityCapabilities` sees the full set.
    */
   patterns?: string[];
+  /**
+   * Issue #296 Phase 2 — executor kinds observed/predicted to fail for this
+   * entity, surfaced so `desktop-executor.ts` can short-circuit before
+   * paying e.g. `InvokePatternNotSupported`'s round-trip. Populated by
+   * `DesktopFacade.see()` from `deriveEntityCapabilities(...)` so the
+   * value is always in sync with the LLM-facing `EntityView.capabilities`
+   * block (same derivation, single source of truth). Absent when no
+   * executor is blocked — fall back to default dispatch order.
+   *
+   * Inline string-union shape (rather than importing `EntityCapabilities`
+   * from `src/tools/desktop-constraints.ts`) keeps the engine layer free
+   * of cross-boundary deps; structural compatibility lets `see()` assign
+   * the field from a full `EntityCapabilities` value without a cast.
+   */
+  unsupportedExecutors?: Array<"uia" | "cdp" | "terminal" | "mouse">;
 }
 
 export interface EntityLease {
