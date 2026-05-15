@@ -1115,7 +1115,11 @@ describe("ADR-018 Phase 5+N — postWheelToHwnd scroll-leaf walker (Excel / Word
       .mockResolvedValueOnce(10.0) // pre
       .mockResolvedValueOnce(15.0); // post (post - pre = 5.0 ≥ epsilon)
     const result = await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
-    expect(result).toEqual({
+    // totalElapsedMs is `performance.now()` delta — non-deterministic;
+    // match the rest of the shape exactly and assert the field is a
+    // finite non-negative number separately (Opus PR #309 Round 1 P2-2:
+    // emit real wallclock instead of the misleading `0` placeholder).
+    expect(result).toMatchObject({
       scrolled: true,
       channel: "postmessage",
       reason: "delivered_via_postmessage",
@@ -1123,9 +1127,11 @@ describe("ADR-018 Phase 5+N — postWheelToHwnd scroll-leaf walker (Excel / Word
         motion: "translation",
         source: "uia_scroll_percent",
         framesSampled: 2,
-        totalElapsedMs: 0,
+        totalElapsedMs: expect.any(Number),
       },
     });
+    expect(result?.observation?.totalElapsedMs).toBeGreaterThanOrEqual(0);
+    expect(Number.isFinite(result?.observation?.totalElapsedMs ?? NaN)).toBe(true);
     expect(uiaReadScrollPercentAtHwndMock).toHaveBeenCalledTimes(2);
   });
 
@@ -1148,7 +1154,9 @@ describe("ADR-018 Phase 5+N — postWheelToHwnd scroll-leaf walker (Excel / Word
       .mockResolvedValueOnce(0.0)
       .mockResolvedValueOnce(0.0);
     const result = await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
-    expect(result).toEqual({
+    // totalElapsedMs is `performance.now()` delta — non-deterministic;
+    // see the translation test above for the rationale (Opus P2-2).
+    expect(result).toMatchObject({
       scrolled: true,
       channel: "postmessage",
       reason: "delivered_via_postmessage",
@@ -1156,9 +1164,10 @@ describe("ADR-018 Phase 5+N — postWheelToHwnd scroll-leaf walker (Excel / Word
         motion: "no_change",
         source: "uia_scroll_percent",
         framesSampled: 2,
-        totalElapsedMs: 0,
+        totalElapsedMs: expect.any(Number),
       },
     });
+    expect(result?.observation?.totalElapsedMs).toBeGreaterThanOrEqual(0);
   });
 
   it("NOT retargeted AND getScrollInfo returns null (input HWND is not in the chain table) → return null (Case 2b — caller emits target_unreachable)", async () => {

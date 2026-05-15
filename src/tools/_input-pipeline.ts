@@ -453,8 +453,9 @@ export function assertTier4Reachable(dest: InputDestination): void {
  */
 async function observeViaUiaOrChainTrust(
   effectiveHwnd: bigint,
-  axisName: string,
+  axis: "vertical" | "horizontal",
   preUiaPercent: number | null,
+  preElapsedMs: number,
   readUiaPercent:
     | ((opts: {
         hwnd: string;
@@ -463,11 +464,19 @@ async function observeViaUiaOrChainTrust(
     | undefined,
 ): Promise<VisualMotionObservation> {
   if (preUiaPercent !== null && typeof readUiaPercent === "function") {
+    const tPostStart = performance.now();
     try {
       const postUiaPercent = await readUiaPercent({
         hwnd: effectiveHwnd.toString(),
-        axis: axisName as "vertical" | "horizontal",
+        axis,
       });
+      const postElapsedMs = performance.now() - tPostStart;
+      // ADR-019 §2.1: `framesSampled` is documented to be the number of
+      // pre/post observation samples this primitive captured. For Stage 1
+      // UIA percent reads, that is exactly 2 (pre + post). `totalElapsedMs`
+      // is the actual wallclock spent on the pre and post reads — feeds the
+      // AC6 fast-path budget bench (Opus Round 1 P2-2).
+      const totalElapsedMs = preElapsedMs + postElapsedMs;
       if (postUiaPercent !== null) {
         const delta = postUiaPercent - preUiaPercent;
         if (Math.abs(delta) >= SCROLL_PERCENT_EPSILON_OBSERVATION) {
@@ -475,7 +484,7 @@ async function observeViaUiaOrChainTrust(
             motion: "translation",
             source: "uia_scroll_percent",
             framesSampled: 2,
-            totalElapsedMs: 0,
+            totalElapsedMs,
           };
         }
         // pre and post both readable, but no meaningful delta. Honest "no
@@ -485,7 +494,7 @@ async function observeViaUiaOrChainTrust(
           motion: "no_change",
           source: "uia_scroll_percent",
           framesSampled: 2,
-          totalElapsedMs: 0,
+          totalElapsedMs,
         };
       }
     } catch {
@@ -631,7 +640,14 @@ export async function postWheelToHwnd(
 
     const axisIsVertical =
       params.direction === "up" || params.direction === "down";
-    const axisName = axisIsVertical ? "vertical" : "horizontal";
+    // `axisName` is narrowed to `"vertical" | "horizontal"` by the ternary;
+    // both `getScrollInfo` and `uiaReadScrollPercentAtHwnd` accept that union
+    // directly so no `as` cast is needed downstream (Opus PR #309 Round 1 P2-1
+    // / P2-3 — eliminate the duplicate axis-cast that previously existed at
+    // the two call sites).
+    const axisName: "vertical" | "horizontal" = axisIsVertical
+      ? "vertical"
+      : "horizontal";
 
     // Pre-snapshot is best-effort. Two distinct "no observation" cases must
     // be kept apart (Codex PR #305 review P2-A):
@@ -663,15 +679,18 @@ export async function postWheelToHwnd(
     // is true; for non-MDI apps the Win32 SB_VERT pre-snapshot is the path.
     const readUiaPercent = nativeUia?.uiaReadScrollPercentAtHwnd;
     let preUiaPercent: number | null = null;
+    let preUiaElapsedMs = 0;
     if (retargetedByLeafWalker && typeof readUiaPercent === "function") {
+      const tPreStart = performance.now();
       try {
         preUiaPercent = await readUiaPercent({
           hwnd: effectiveHwnd.toString(),
-          axis: axisName as "vertical" | "horizontal",
+          axis: axisName,
         });
       } catch {
         preUiaPercent = null;
       }
+      preUiaElapsedMs = performance.now() - tPreStart;
     }
 
     // Chunk the wheel delta into ≤ 16-bit signed messages so the receiver's
@@ -768,6 +787,7 @@ export async function postWheelToHwnd(
           effectiveHwnd,
           axisName,
           preUiaPercent,
+          preUiaElapsedMs,
           readUiaPercent,
         );
         return {

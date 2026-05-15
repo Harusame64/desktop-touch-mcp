@@ -8,7 +8,7 @@
   hint** when the dispatcher's chain-trust path runs (Excel cell grid /
   Word document body / similar MDI receivers). The new hint tells the
   LLM caller whether the delivery was independently observed or trusted
-  by the dispatcher without observation. Two values ship in this
+  by the dispatcher without observation. Three values ship in this
   release:
   - `observation.source: "uia_scroll_percent"` with `motion: "translation"`
     — the dispatcher read the receiver's scroll-percent via the
@@ -28,14 +28,18 @@
     "indeterminate"` — the receiver does not expose a `ScrollPattern`
     for reads (the common case for Excel `NUIScrollbar` / Word MFC
     custom-paint surfaces), so the dispatcher trusts the documented
-    receiver contract (PR #308 chain-table) without independent
-    observation. This is the same delivery contract as before, now
-    with an explicit "unverified at the observation layer" hint
-    instead of a silent assumption.
+    receiver contract for custom-painted scroll surfaces without
+    independent observation. This is the same delivery contract as
+    before, now with an explicit "unverified at the observation layer"
+    hint instead of a silent assumption.
 
   Existing callers that ignore the hint are unaffected. The field is
   optional and only attached when a chain-trust observation actually
   ran.
+
+### Fixed
+
+- **`scroll(action:'raw', windowTitle:'Book1 - Excel')` now actually scrolls
   the Excel cell grid.** Previously the call returned `ok:false code:'ScrollNotDelivered'`
   with `verifyDelivery.reason:'target_unreachable'` because `WM_MOUSEWHEEL`
   is delivered upward from a window to its parent, never downward to a
