@@ -54,7 +54,8 @@ This sub-plan supersedes the original carry-over #6 framing and lands a **smalle
    - Mock to return `null`; assert behaviour identical to pre-PR (top-level HWND used everywhere).
    - Mock to return `undefined` (binding missing); assert graceful fall-through (no throw, top-level HWND used).
    - Mock leaf with a different rect from top; assert lParam high/low words match the leaf's centre.
-   - Total: 4 new cases.
+   - Mock the walker to throw a native error (R4 — `GetClassNameW` on stale HWND, etc.); assert the throw is caught locally and the top-level POST proceeds.
+   - Total: 5 new cases.
 
 5. **Docs update**:
    - `docs/adr-018-input-pipeline-3tier.md`:
@@ -154,6 +155,13 @@ This sub-plan supersedes the original carry-over #6 framing and lands a **smalle
 ## 7. Implementation notes (concrete shape)
 
 ### 7.1 Rust napi
+
+> **Note**: the snippet below is illustrative. The landed code in
+> `src/win32/window.rs` uses the windows-rs **0.62** `FindWindowExW`
+> signature: both `hwndparent` and `hwndchildafter` are `Option<HWND>`
+> (so `Some(parent)` / `None` rather than raw `parent` / `HWND(null)`),
+> and `get_class_name` returns `String` (empty on failure) rather than
+> `Option<String>`. The semantic flow is identical.
 
 ```rust
 // src/win32/window.rs (additive)
