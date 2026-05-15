@@ -151,7 +151,24 @@ export function resolveCandidates(
     const verbSet = new Set<string>();
     for (const c of group) c.actionability.forEach((v) => verbSet.add(v));
 
-    entities.push({
+    // Issue #296: carry the UIA-side controlType and union of pattern names
+    // through to the entity. UIA is the authoritative source for pattern data
+    // (CDP / visual lanes don't speak UIA patterns), so we look up the first
+    // UIA candidate in the group rather than using `primary` (which could be
+    // a non-UIA candidate that happened to be observed more recently).
+    const uiaCandidate = group.find((c) => c.source === "uia");
+    const controlType = uiaCandidate?.controlType;
+    let patterns: string[] | undefined;
+    if (uiaCandidate !== undefined) {
+      const set = new Set<string>();
+      for (const c of group) {
+        if (c.source !== "uia") continue;
+        for (const p of c.patterns ?? []) set.add(p);
+      }
+      patterns = [...set];
+    }
+
+    const entity: UiEntity = {
       entityId: stableEntityId(key),
       role: normalizeRole(primary.role),
       label: primary.label,
@@ -164,7 +181,10 @@ export function resolveCandidates(
       sourceId: primary.sourceId,
       generation,
       evidenceDigest: key,
-    });
+    };
+    if (controlType !== undefined) entity.controlType = controlType;
+    if (patterns !== undefined) entity.patterns = patterns;
+    entities.push(entity);
   }
   return entities;
 }

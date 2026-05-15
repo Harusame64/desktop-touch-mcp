@@ -664,6 +664,7 @@ export function registerDesktopTools(server: McpServer): void {
       "dialog_resolved_via_owner_chain → common dialog (Save As/Open) found via owner chain; targeting is now hwnd-based;",
       "parent_disabled_prefer_popup → parent window blocked by a modal; switched to targeting the active popup dialog.",
       "response.softExpiresAtMs is an advisory timestamp at ~60% of the lease TTL window — past it the LLM should consider re-calling desktop_discover even though leases are still technically valid; lease.expiresAtMs remains the only correctness wall.",
+      "Issue #296: entities[].capabilities (when present) advises executor selection. preferredExecutors[0] is the executor most likely to succeed; if unsupportedExecutors contains 'uia', go straight to mouse_click instead of click_element (saves a InvokePatternNotSupported round-trip on ListItem / TabItem / custom-drawn controls).",
     ].join(" "),
     desktopDiscoverRegistrationSchema,
     desktopDiscoverRegistrationHandler as (input: unknown) => Promise<ToolResult>,

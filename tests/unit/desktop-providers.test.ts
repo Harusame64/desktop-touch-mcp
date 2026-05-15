@@ -4,7 +4,7 @@ import {
   isBrowserTarget,
   isTerminalTarget,
 } from "../../src/tools/desktop-providers/compose-providers.js";
-import { fetchUiaCandidates }      from "../../src/tools/desktop-providers/uia-provider.js";
+import { fetchUiaCandidates, normalizeUiaPatternNames } from "../../src/tools/desktop-providers/uia-provider.js";
 import { fetchBrowserCandidates }  from "../../src/tools/desktop-providers/browser-provider.js";
 import { fetchTerminalCandidates } from "../../src/tools/desktop-providers/terminal-provider.js";
 import { fetchVisualCandidates }   from "../../src/tools/desktop-providers/visual-provider.js";
@@ -189,6 +189,120 @@ describe("Provider locator contracts — shape invariants (P2-B)", () => {
 });
 
 // ── Warnings (P2-C) ───────────────────────────────────────────────────────────
+
+// ── Issue #296 / Opus R1 P1: UIA pattern-name wire-form normalisation ───────
+
+describe("normalizeUiaPatternNames — Issue #296 / Opus R1 P1", () => {
+  it("strips no suffix on already-suffixed PowerShell-form input", () => {
+    expect(normalizeUiaPatternNames(["InvokePattern", "ValuePattern"])).toEqual([
+      "InvokePattern",
+      "ValuePattern",
+    ]);
+  });
+
+  it("appends `Pattern` to Rust-native-form short names", () => {
+    // Rust native path emits the short form (src/uia/tree.rs); these must
+    // canonicalise to the suffixed form so the rule table in
+    // desktop-capabilities.ts can match by exact string equality.
+    expect(normalizeUiaPatternNames(["Invoke", "Value", "Toggle"])).toEqual([
+      "InvokePattern",
+      "ValuePattern",
+      "TogglePattern",
+    ]);
+  });
+
+  it("handles mixed input (some suffixed, some not)", () => {
+    expect(normalizeUiaPatternNames(["Invoke", "ValuePattern", "Toggle"])).toEqual([
+      "InvokePattern",
+      "ValuePattern",
+      "TogglePattern",
+    ]);
+  });
+
+  it("undefined input returns empty array", () => {
+    expect(normalizeUiaPatternNames(undefined)).toEqual([]);
+  });
+
+  it("empty array passes through unchanged", () => {
+    expect(normalizeUiaPatternNames([])).toEqual([]);
+  });
+
+  it("SelectionItem / ExpandCollapse / Scroll Rust-form names all suffix correctly", () => {
+    expect(
+      normalizeUiaPatternNames(["SelectionItem", "ExpandCollapse", "Scroll"]),
+    ).toEqual(["SelectionItemPattern", "ExpandCollapsePattern", "ScrollPattern"]);
+  });
+});
+
+describe("fetchUiaCandidates — patterns canonicalisation end-to-end (Issue #296)", () => {
+  beforeEach(() => {
+    uiaBridgeMocks.getUiElements.mockReset();
+    uiaBridgeMocks.detectUiaBlind.mockReturnValue({ blind: false });
+  });
+
+  it("Rust-form patterns from getUiElements are canonicalised to *Pattern on the candidate", async () => {
+    uiaBridgeMocks.getUiElements.mockResolvedValue({
+      elements: [
+        {
+          name: "OK",
+          controlType: "Button",
+          automationId: "btn-ok",
+          isEnabled: true,
+          patterns: ["Invoke"], // Rust native path wire form
+          boundingRect: { x: 0, y: 0, width: 80, height: 24 },
+          depth: 1,
+        },
+      ],
+      elementCount: 1,
+      windowRect: null,
+    });
+    const { candidates } = await fetchUiaCandidates({ windowTitle: "Dialog" });
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.patterns).toEqual(["InvokePattern"]);
+    expect(candidates[0]?.controlType).toBe("Button");
+  });
+
+  it("PowerShell-form patterns pass through unchanged", async () => {
+    uiaBridgeMocks.getUiElements.mockResolvedValue({
+      elements: [
+        {
+          name: "Field",
+          controlType: "Edit",
+          automationId: "edt",
+          isEnabled: true,
+          patterns: ["ValuePattern"],
+          boundingRect: { x: 0, y: 0, width: 200, height: 24 },
+          depth: 1,
+        },
+      ],
+      elementCount: 1,
+      windowRect: null,
+    });
+    const { candidates } = await fetchUiaCandidates({ windowTitle: "Dialog" });
+    expect(candidates[0]?.patterns).toEqual(["ValuePattern"]);
+  });
+
+  it("element with no patterns yields empty array on the candidate (not undefined)", async () => {
+    uiaBridgeMocks.getUiElements.mockResolvedValue({
+      elements: [
+        {
+          name: "Label",
+          controlType: "Text",
+          automationId: "",
+          isEnabled: true,
+          // patterns intentionally absent (older Rust builds without
+          // GetSupportedPatterns) — normalizer must return [].
+          boundingRect: { x: 0, y: 0, width: 100, height: 20 },
+          depth: 1,
+        },
+      ],
+      elementCount: 1,
+      windowRect: null,
+    });
+    const { candidates } = await fetchUiaCandidates({ windowTitle: "Dialog" });
+    expect(candidates[0]?.patterns).toEqual([]);
+  });
+});
 
 describe("composeCandidates — warnings surface (P2-C)", () => {
   it("visual_provider_unavailable always present (Phase 2 stub)", async () => {
