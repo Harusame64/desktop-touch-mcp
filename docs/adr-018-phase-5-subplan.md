@@ -1,4 +1,4 @@
-# ADR-018 Phase 5 — Sub-plan: Finalize (scroll-read migration + CI guard + integration tests + 5-app smoke + `findPlainTopLevelWindowByTitle` extraction)
+# ADR-018 Phase 5 — Sub-plan: Finalize trunk (scroll-read/-capture migration + `findPlainTopLevelWindowByTitle` extraction + CI guard)
 
 - Status: **Draft (in PR feat/adr-018-phase-5-finalize)**
 - Date: 2026-05-15
@@ -79,15 +79,15 @@ Phase 5 also picks up the Phase 4 §2.2 commitment to extract `findPlainTopLevel
     - `src/tools/scroll-read.ts:91-127` — migration to `resolveWindowTarget`
     - `.github/workflows/input-pipeline-guard.yml` — new CI guard
     - `tests/unit/find-plain-top-level-window.test.ts` — helper contract pin
-    - `tests/integration/reason-enum-coverage.test.ts` — `not_delivered` reason emission coverage
-    - `tests/integration/scroll-handler-envelope.test.ts` — envelope assembly contract
-    - `tests/integration/scroll-5app.smoke.test.ts` — 4 new app cases
-    - `docs/adr-018-input-pipeline-3tier.md` §4 Phase 5 — no edits (Phase 5 is implementation of existing ADR §4 contract)
+    - `docs/adr-018-input-pipeline-3tier.md` §4 Phase 5 — block rewritten to declare PR #306 trunk scope (3 deliverables) + Phase 5+N follow-up list, in bit-equal sync with §2.2 of this sub-plan (Round 2 P1-A propagation)
+    - `docs/adr-018-input-pipeline-3tier.md` §3 SSOT table — added `scroll-capture.ts` + `_resolve-window.ts` rows; CI guard description narrowed to scroll-family (Round 2 P1-A)
+    - `docs/adr-018-input-pipeline-3tier.md` §6 AC5 — already narrowed in Round 1 P1-2
+    - `docs/adr-018-phase-4-subplan.md` §2.2 — updated to reflect that `findPlainTopLevelWindowByTitle` landed in Phase 5 trunk PR #306; Word EnumChildWindows + 4-app smoke now extend the chain to Phase 5+N follow-up (Round 2 P1-C)
 - **§3.2 carry-over scope shrink sweep**: helper extraction MUST preserve each call site's behaviour bit-equal. Pinned by:
   - `_resolve-window.ts` Case 3 uses `findPlainTopLevelWindowByTitle(title, { excludeMinimized: false, excludeDialogsAndOwned: true })` — keeps legacy behaviour where minimized windows match (Case 3 was always tolerant)
   - `_input-pipeline.ts::resolveInputDestination` uses `{ excludeMinimized: true, excludeDialogsAndOwned: true }` — matches its existing stricter predicate
   - `mouse.ts:scrollHandler` observation ladder uses `{ excludeMinimized: true, excludeDialogsAndOwned: false }` — matches its existing observation-only predicate (no dialog filter)
-- **Lesson 1-4 sweep**: numeric counts pinned in §2.1 deliverable enumeration; helper extraction does not change `dispatcher` causal ordering; CI guard is a positive assertion (not a negative one whose absence is silent).
+- **Lesson 1-4 sweep**: numeric counts pinned in §2.1 deliverable enumeration; helper extraction does not change `dispatcher` causal ordering; CI guard is a **negative assertion** (`grep returns 0 hits`) that fails the build on regression — explicit and observable rather than silently absent (Round 2 P2-A correction: "negative" matches ADR §4 line 317 terminology).
 
 ---
 

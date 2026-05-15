@@ -36,14 +36,37 @@ jobs:
 
       - name: Assert no `getWindows()` call in scroll-family tools
         run: |
-          # Only flag actual call sites (`getWindows()` or import from nutjs),
-          # not the `getWindowsHandler` public tool surface in macro.ts /
-          # desktop.ts (different identifier).
-          if grep -rnE 'await getWindows\(\)|getWindows[[:space:]]*,.*nutjs' src/tools/scroll-read.ts src/tools/scroll-capture.ts src/tools/_input-pipeline.ts; then
+          # Only flag actual call sites + nutjs imports (any position in the
+          # import list), not the `getWindowsHandler` / `getWindowsSchema`
+          # public tool surface in macro.ts / desktop.ts (different identifier
+          # — `getWindows\b` word boundary excludes those).
+          # 3 detection shapes (Opus PR #306 Round 2 P1-B):
+          #   1. `await   getWindows(`           — call site, any whitespace
+          #   2. `getWindows()`                  — call site, no await
+          #   3. `import { ..., getWindows, ... } from "../engine/nutjs.js"`
+          #      — import at any position in any import list naming nutjs
+          if grep -rnE 'await[[:space:]]+getWindows\b|\bgetWindows\(\)' src/tools/scroll-read.ts src/tools/scroll-capture.ts src/tools/_input-pipeline.ts; then
             echo ""
-            echo "::error::ADR-018 Phase 5 violation: scroll-family tool re-introduced nutjs getWindows()."
+            echo "::error::ADR-018 Phase 5 violation: scroll-family tool re-introduced nutjs getWindows() call site."
             echo "Use resolveWindowTarget + findPlainTopLevelWindowByTitle from _resolve-window.ts instead."
             echo "See docs/adr-018-input-pipeline-3tier.md §2.3 D3."
             exit 1
           fi
+          # Import-level guard: scan each scroll-family file for a multi-line
+          # nutjs import that includes `getWindows`. We split per-file because
+          # imports may span lines; `awk` keeps it shell-safe.
+          for f in src/tools/scroll-read.ts src/tools/scroll-capture.ts src/tools/_input-pipeline.ts; do
+            if awk '/import[[:space:]]*\{/,/\}[[:space:]]*from/' "$f" | grep -E 'nutjs' >/dev/null 2>&1; then
+              # Found a nutjs import block; check if getWindows appears anywhere inside
+              if awk '/import[[:space:]]*\{/,/\}[[:space:]]*from/' "$f" | awk '/from[[:space:]]*"[^"]*nutjs/{flag=1} flag{print} /^[[:space:]]*$/{flag=0}' | head -50 | grep -E '\bgetWindows\b' >/dev/null 2>&1; then
+                echo "::error::ADR-018 Phase 5 violation: $f imports getWindows from nutjs."
+                exit 1
+              fi
+            fi
+            # Simpler defensive single-line check (handles same-line imports too)
+            if grep -nE 'import[[:space:]]*\{[^}]*\bgetWindows\b[^}]*\}[[:space:]]*from[[:space:]]*"[^"]*nutjs' "$f"; then
+              echo "::error::ADR-018 Phase 5 violation: $f imports getWindows from nutjs (single-line form)."
+              exit 1
+            fi
+          done
           echo "scroll-family getWindows guard passed"
