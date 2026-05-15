@@ -7,13 +7,15 @@
  */
 
 import { recognizeWindowByHwnd, ocrWordsToLines } from "../engine/ocr-bridge.js";
-import { keyboard, getWindows } from "../engine/nutjs.js";
-import { getWindowTitleW } from "../engine/win32.js";
+import { keyboard } from "../engine/nutjs.js";
+import { restoreAndFocusWindow } from "../engine/win32.js";
 import { canInjectAtTarget, postKeyComboToHwnd } from "../engine/bg-input.js";
 import { parseKeys } from "../utils/key-map.js";
+import {
+  resolveWindowTarget,
+  findPlainTopLevelWindowByTitle,
+} from "./_resolve-window.js";
 import type { ToolResult } from "./_types.js";
-
-type FocusableWin = { focus: () => Promise<void> };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -88,32 +90,45 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
   // would risk drifting to a different window with the same title fragment, or
   // to a new foreground when the user changes z-order mid-read; binding to hwnd
   // keeps PageDown and OCR consistently aimed at one window.
-  let focusedHwnd: unknown = null;
+  //
+  // ADR-018 Phase 5 (closes symptom #6): resolution now goes through the
+  // destination-explicit SSOT `resolveWindowTarget`, the same path every other
+  // scroll action uses. Case 3 (plain windowTitle that matches a top-level
+  // window) makes `resolveWindowTarget` return null by design, so we recover
+  // the HWND via the shared `findPlainTopLevelWindowByTitle` helper — same
+  // helper `_input-pipeline.ts::resolveInputDestination` uses for Tier 1 UIA
+  // routing. With observation-only semantics here, the dialog/owner filter is
+  // OFF (the OCR target can legitimately be a dialog).
+  let focusedHwnd: bigint | null = null;
   let focusedRegion: { x: number; y: number; width: number; height: number } | null = null;
-  let focusedWin: FocusableWin | null = null;
 
   {
-    const wins = await getWindows();
-    const query = args.windowTitle.toLowerCase();
-    for (const win of wins) {
-      try {
-        const hwnd = (win as unknown as { windowHandle: unknown }).windowHandle;
-        // OCR drives PrintWindow capture against the hwnd, so an entry without
-        // a usable handle cannot be a valid target — skip rather than letting
-        // a falsy hwnd reach recognizeWindowByHwnd and crash the Win32 layer.
-        if (!hwnd) continue;
-        const title = getWindowTitleW(hwnd);
-        if (!title.toLowerCase().includes(query)) continue;
-        const reg = await win.region;
-        if (reg.width < 10 || reg.height < 10) continue;
-        await win.focus();
-        focusedHwnd = hwnd;
-        focusedRegion = { x: reg.left, y: reg.top, width: reg.width, height: reg.height };
-        focusedWin = win as unknown as FocusableWin;
-        break;
-      } catch { /* skip */ }
+    const resolved = await resolveWindowTarget({ windowTitle: args.windowTitle });
+    if (resolved !== null) {
+      focusedHwnd = resolved.hwnd;
+    } else {
+      // Case 3 recovery: title matches a plain top-level window.
+      const match = findPlainTopLevelWindowByTitle(args.windowTitle, {
+        excludeMinimized: true,
+        excludeDialogsAndOwned: false,
+      });
+      if (match) focusedHwnd = match.hwnd;
     }
-    if (!focusedHwnd || !focusedRegion || !focusedWin) {
+    if (focusedHwnd !== null) {
+      // restoreAndFocusWindow restores from minimized + sets foreground + returns
+      // the post-focus rect, replacing the previous `Window.focus()` + `Window.region`
+      // pair from the nutjs flat enumeration.
+      const focusResult = restoreAndFocusWindow(focusedHwnd);
+      if (focusResult.width >= 10 && focusResult.height >= 10) {
+        focusedRegion = {
+          x: focusResult.x,
+          y: focusResult.y,
+          width: focusResult.width,
+          height: focusResult.height,
+        };
+      }
+    }
+    if (focusedHwnd === null || focusedRegion === null) {
       return {
         content: [{
           type: "text" as const,
@@ -198,7 +213,11 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
       const canBg = canInjectAtTarget(focusedHwnd);
       const bgOk = canBg.supported && postKeyComboToHwnd(focusedHwnd, combo);
       if (!bgOk) {
-        await focusedWin.focus();
+        // ADR-018 Phase 5: re-focus via `restoreAndFocusWindow(hwnd)` (Win32
+        // SetForegroundWindow) instead of the legacy `Window.focus()` nutjs
+        // method that came with the `getWindows()` enumeration. Same observable
+        // outcome (target window becomes foreground before nutjs keystroke).
+        restoreAndFocusWindow(focusedHwnd);
         await new Promise<void>((r) => setTimeout(r, 100));
         const arr = parseKeys(combo);
         await keyboard.pressKey(...arr);

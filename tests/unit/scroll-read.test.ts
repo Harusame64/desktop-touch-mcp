@@ -243,14 +243,13 @@ describe("scrollReadHandler (mocked)", () => {
         pressKey: vi.fn().mockResolvedValue(undefined),
         releaseKey: vi.fn().mockResolvedValue(undefined),
       },
-      getWindows: vi.fn().mockResolvedValue([
-        {
-          windowHandle: "fake-hwnd",
-          title: "TestWindow",
-          region: Promise.resolve({ left: 0, top: 0, width: 800, height: 600 }),
-          focus: vi.fn().mockResolvedValue(undefined),
-        },
-      ]),
+    }));
+
+    vi.doMock("../../src/tools/_resolve-window.js", () => ({
+      resolveWindowTarget: vi.fn().mockResolvedValue({
+        title: "TestWindow", hwnd: 0xCAFEn, warnings: [],
+      }),
+      findPlainTopLevelWindowByTitle: vi.fn().mockReturnValue(null),
     }));
 
     vi.doMock("../../src/engine/bg-input.js", () => ({
@@ -259,7 +258,9 @@ describe("scrollReadHandler (mocked)", () => {
     }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
-      getWindowTitleW: vi.fn().mockReturnValue("TestWindow"),
+      restoreAndFocusWindow: vi.fn().mockReturnValue({
+        x: 0, y: 0, width: 800, height: 600,
+      }),
     }));
 
     const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
@@ -296,14 +297,13 @@ describe("scrollReadHandler (mocked)", () => {
         pressKey: vi.fn().mockResolvedValue(undefined),
         releaseKey: vi.fn().mockResolvedValue(undefined),
       },
-      getWindows: vi.fn().mockResolvedValue([
-        {
-          windowHandle: "fake-hwnd",
-          title: "TestWindow",
-          region: Promise.resolve({ left: 0, top: 0, width: 800, height: 600 }),
-          focus: vi.fn().mockResolvedValue(undefined),
-        },
-      ]),
+    }));
+
+    vi.doMock("../../src/tools/_resolve-window.js", () => ({
+      resolveWindowTarget: vi.fn().mockResolvedValue({
+        title: "TestWindow", hwnd: 0xCAFEn, warnings: [],
+      }),
+      findPlainTopLevelWindowByTitle: vi.fn().mockReturnValue(null),
     }));
 
     vi.doMock("../../src/engine/bg-input.js", () => ({
@@ -312,7 +312,9 @@ describe("scrollReadHandler (mocked)", () => {
     }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
-      getWindowTitleW: vi.fn().mockReturnValue("TestWindow"),
+      restoreAndFocusWindow: vi.fn().mockReturnValue({
+        x: 0, y: 0, width: 800, height: 600,
+      }),
     }));
 
     const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
@@ -350,14 +352,13 @@ describe("scrollReadHandler (mocked)", () => {
         pressKey: vi.fn().mockResolvedValue(undefined),
         releaseKey: vi.fn().mockResolvedValue(undefined),
       },
-      getWindows: vi.fn().mockResolvedValue([
-        {
-          windowHandle: "fake-hwnd",
-          title: "TestWindow",
-          region: Promise.resolve({ left: 0, top: 0, width: 800, height: 600 }),
-          focus: vi.fn().mockResolvedValue(undefined),
-        },
-      ]),
+    }));
+
+    vi.doMock("../../src/tools/_resolve-window.js", () => ({
+      resolveWindowTarget: vi.fn().mockResolvedValue({
+        title: "TestWindow", hwnd: 0xCAFEn, warnings: [],
+      }),
+      findPlainTopLevelWindowByTitle: vi.fn().mockReturnValue(null),
     }));
 
     vi.doMock("../../src/engine/bg-input.js", () => ({
@@ -366,7 +367,9 @@ describe("scrollReadHandler (mocked)", () => {
     }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
-      getWindowTitleW: vi.fn().mockReturnValue("TestWindow"),
+      restoreAndFocusWindow: vi.fn().mockReturnValue({
+        x: 0, y: 0, width: 800, height: 600,
+      }),
     }));
 
     const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
@@ -397,14 +400,13 @@ describe("scrollReadHandler (mocked)", () => {
         pressKey: vi.fn().mockResolvedValue(undefined),
         releaseKey: vi.fn().mockResolvedValue(undefined),
       },
-      getWindows: vi.fn().mockResolvedValue([
-        {
-          windowHandle: "fake-hwnd",
-          title: "TestWindow",
-          region: Promise.resolve({ left: 0, top: 0, width: 800, height: 600 }),
-          focus: vi.fn().mockResolvedValue(undefined),
-        },
-      ]),
+    }));
+
+    vi.doMock("../../src/tools/_resolve-window.js", () => ({
+      resolveWindowTarget: vi.fn().mockResolvedValue({
+        title: "TestWindow", hwnd: 0xCAFEn, warnings: [],
+      }),
+      findPlainTopLevelWindowByTitle: vi.fn().mockReturnValue(null),
     }));
 
     vi.doMock("../../src/engine/bg-input.js", () => ({
@@ -413,7 +415,9 @@ describe("scrollReadHandler (mocked)", () => {
     }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
-      getWindowTitleW: vi.fn().mockReturnValue("TestWindow"),
+      restoreAndFocusWindow: vi.fn().mockReturnValue({
+        x: 0, y: 0, width: 800, height: 600,
+      }),
     }));
 
     const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
@@ -434,9 +438,9 @@ describe("scrollReadHandler (mocked)", () => {
     expect(data.text).toBe("");
   });
 
-  it("returns ok:false when no candidate window exposes a usable hwnd (regression for round-3 P2)", async () => {
-    // recognizeWindowByHwnd must NOT be reached — the focus guard rejects
-    // hwnd-less entries before any OCR is attempted.
+  it("returns ok:false when neither resolveWindowTarget nor findPlainTopLevelWindowByTitle yields a target (Phase 5 — replaces round-3 P2 'no usable hwnd' guard)", async () => {
+    // recognizeWindowByHwnd must NOT be reached — both window-resolution paths
+    // must return null/no-match before any OCR is attempted.
     vi.doMock("../../src/engine/ocr-bridge.js", () => ({
       recognizeWindowByHwnd: vi.fn().mockRejectedValue(new Error("must not be called")),
       ocrWordsToLines: () => "",
@@ -447,20 +451,12 @@ describe("scrollReadHandler (mocked)", () => {
         pressKey: vi.fn().mockResolvedValue(undefined),
         releaseKey: vi.fn().mockResolvedValue(undefined),
       },
-      getWindows: vi.fn().mockResolvedValue([
-        {
-          windowHandle: null,
-          title: "TestWindow",
-          region: Promise.resolve({ left: 0, top: 0, width: 800, height: 600 }),
-          focus: vi.fn().mockResolvedValue(undefined),
-        },
-        {
-          windowHandle: undefined,
-          title: "TestWindow",
-          region: Promise.resolve({ left: 0, top: 0, width: 800, height: 600 }),
-          focus: vi.fn().mockResolvedValue(undefined),
-        },
-      ]),
+    }));
+
+    // Phase 5: both resolution paths return null → "Window not found".
+    vi.doMock("../../src/tools/_resolve-window.js", () => ({
+      resolveWindowTarget: vi.fn().mockResolvedValue(null),
+      findPlainTopLevelWindowByTitle: vi.fn().mockReturnValue(null),
     }));
 
     vi.doMock("../../src/engine/bg-input.js", () => ({
@@ -469,7 +465,9 @@ describe("scrollReadHandler (mocked)", () => {
     }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
-      getWindowTitleW: vi.fn().mockReturnValue("TestWindow"),
+      restoreAndFocusWindow: vi.fn().mockReturnValue({
+        x: 0, y: 0, width: 800, height: 600,
+      }),
     }));
 
     const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
@@ -505,14 +503,13 @@ describe("scrollReadHandler (mocked)", () => {
     const pressKeyMock = vi.fn().mockResolvedValue(undefined);
     vi.doMock("../../src/engine/nutjs.js", () => ({
       keyboard: { pressKey: pressKeyMock, releaseKey: vi.fn().mockResolvedValue(undefined) },
-      getWindows: vi.fn().mockResolvedValue([
-        {
-          windowHandle: "fake-hwnd",
-          title: "TestWindow",
-          region: Promise.resolve({ left: 0, top: 0, width: 800, height: 600 }),
-          focus: vi.fn().mockResolvedValue(undefined),
-        },
-      ]),
+    }));
+
+    vi.doMock("../../src/tools/_resolve-window.js", () => ({
+      resolveWindowTarget: vi.fn().mockResolvedValue({
+        title: "TestWindow", hwnd: 0xCAFEn, warnings: [],
+      }),
+      findPlainTopLevelWindowByTitle: vi.fn().mockReturnValue(null),
     }));
 
     vi.doMock("../../src/engine/bg-input.js", () => ({
@@ -521,7 +518,9 @@ describe("scrollReadHandler (mocked)", () => {
     }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
-      getWindowTitleW: vi.fn().mockReturnValue("TestWindow"),
+      restoreAndFocusWindow: vi.fn().mockReturnValue({
+        x: 0, y: 0, width: 800, height: 600,
+      }),
     }));
 
     const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
@@ -535,8 +534,8 @@ describe("scrollReadHandler (mocked)", () => {
       stopWhenNoChange: true,
     });
 
-    // BG input fired with the focused hwnd and the configured combo string.
-    expect(postKeyMock).toHaveBeenCalledWith("fake-hwnd", "pagedown");
+    // BG input fired with the focused hwnd (bigint, Phase 5 migration) and combo.
+    expect(postKeyMock).toHaveBeenCalledWith(0xCAFEn, "pagedown");
     // global keyboard NOT used when BG path succeeds — no foreground drift.
     expect(pressKeyMock).not.toHaveBeenCalled();
   });
@@ -545,7 +544,11 @@ describe("scrollReadHandler (mocked)", () => {
     const page1 = makeWords(["A"]);
     const page2 = makeWords(["B"]);
 
-    const focusMock = vi.fn().mockResolvedValue(undefined);
+    // Phase 5 migration: re-focus mechanism is `restoreAndFocusWindow(hwnd)`
+    // from `src/engine/win32.ts`, not the legacy `Window.focus()` method.
+    const restoreAndFocusMock = vi.fn().mockReturnValue({
+      x: 0, y: 0, width: 800, height: 600,
+    });
     const pressKeyMock = vi.fn().mockResolvedValue(undefined);
     const releaseKeyMock = vi.fn().mockResolvedValue(undefined);
 
@@ -559,14 +562,13 @@ describe("scrollReadHandler (mocked)", () => {
 
     vi.doMock("../../src/engine/nutjs.js", () => ({
       keyboard: { pressKey: pressKeyMock, releaseKey: releaseKeyMock },
-      getWindows: vi.fn().mockResolvedValue([
-        {
-          windowHandle: "fake-hwnd",
-          title: "TestWindow",
-          region: Promise.resolve({ left: 0, top: 0, width: 800, height: 600 }),
-          focus: focusMock,
-        },
-      ]),
+    }));
+
+    vi.doMock("../../src/tools/_resolve-window.js", () => ({
+      resolveWindowTarget: vi.fn().mockResolvedValue({
+        title: "TestWindow", hwnd: 0xCAFEn, warnings: [],
+      }),
+      findPlainTopLevelWindowByTitle: vi.fn().mockReturnValue(null),
     }));
 
     // BG path attempted but PostMessage returns false — exercise fallback
@@ -577,7 +579,7 @@ describe("scrollReadHandler (mocked)", () => {
     }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
-      getWindowTitleW: vi.fn().mockReturnValue("TestWindow"),
+      restoreAndFocusWindow: restoreAndFocusMock,
     }));
 
     const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
@@ -592,7 +594,7 @@ describe("scrollReadHandler (mocked)", () => {
     });
 
     // Initial focus + 1 re-focus before the only scroll keystroke (page 1 → page 2).
-    expect(focusMock).toHaveBeenCalledTimes(2);
+    expect(restoreAndFocusMock).toHaveBeenCalledTimes(2);
     expect(pressKeyMock).toHaveBeenCalled();
     expect(releaseKeyMock).toHaveBeenCalled();
   });
@@ -604,7 +606,9 @@ describe("scrollReadHandler (mocked)", () => {
     const page1 = makeWords(["A"]);
     const page2 = makeWords(["B"]);
 
-    const focusMock = vi.fn().mockResolvedValue(undefined);
+    const restoreAndFocusMock = vi.fn().mockReturnValue({
+      x: 0, y: 0, width: 800, height: 600,
+    });
     const pressKeyMock = vi.fn().mockResolvedValue(undefined);
     const postKeyMock = vi.fn(); // must NOT be called
 
@@ -618,14 +622,13 @@ describe("scrollReadHandler (mocked)", () => {
 
     vi.doMock("../../src/engine/nutjs.js", () => ({
       keyboard: { pressKey: pressKeyMock, releaseKey: vi.fn().mockResolvedValue(undefined) },
-      getWindows: vi.fn().mockResolvedValue([
-        {
-          windowHandle: "fake-hwnd",
-          title: "TestWindow",
-          region: Promise.resolve({ left: 0, top: 0, width: 800, height: 600 }),
-          focus: focusMock,
-        },
-      ]),
+    }));
+
+    vi.doMock("../../src/tools/_resolve-window.js", () => ({
+      resolveWindowTarget: vi.fn().mockResolvedValue({
+        title: "TestWindow", hwnd: 0xCAFEn, warnings: [],
+      }),
+      findPlainTopLevelWindowByTitle: vi.fn().mockReturnValue(null),
     }));
 
     vi.doMock("../../src/engine/bg-input.js", () => ({
@@ -634,7 +637,7 @@ describe("scrollReadHandler (mocked)", () => {
     }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
-      getWindowTitleW: vi.fn().mockReturnValue("TestWindow"),
+      restoreAndFocusWindow: restoreAndFocusMock,
     }));
 
     const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
@@ -650,8 +653,9 @@ describe("scrollReadHandler (mocked)", () => {
 
     // postKeyComboToHwnd MUST NOT be invoked when canInject reports unsupported.
     expect(postKeyMock).not.toHaveBeenCalled();
-    // Fallback engaged: re-focus before the single scroll keystroke.
-    expect(focusMock).toHaveBeenCalledTimes(2);
+    // Fallback engaged: re-focus before the single scroll keystroke (Phase 5
+    // — restoreAndFocusWindow replaces the legacy Window.focus() method).
+    expect(restoreAndFocusMock).toHaveBeenCalledTimes(2);
     expect(pressKeyMock).toHaveBeenCalled();
   });
 
@@ -681,14 +685,13 @@ describe("scrollReadHandler (mocked)", () => {
         pressKey: vi.fn().mockResolvedValue(undefined),
         releaseKey: vi.fn().mockResolvedValue(undefined),
       },
-      getWindows: vi.fn().mockResolvedValue([
-        {
-          windowHandle: "fake-hwnd",
-          title: "TestWindow",
-          region: Promise.resolve({ left: 0, top: 0, width: 800, height: 600 }),
-          focus: vi.fn().mockResolvedValue(undefined),
-        },
-      ]),
+    }));
+
+    vi.doMock("../../src/tools/_resolve-window.js", () => ({
+      resolveWindowTarget: vi.fn().mockResolvedValue({
+        title: "TestWindow", hwnd: 0xCAFEn, warnings: [],
+      }),
+      findPlainTopLevelWindowByTitle: vi.fn().mockReturnValue(null),
     }));
 
     vi.doMock("../../src/engine/bg-input.js", () => ({
@@ -697,7 +700,9 @@ describe("scrollReadHandler (mocked)", () => {
     }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
-      getWindowTitleW: vi.fn().mockReturnValue("TestWindow"),
+      restoreAndFocusWindow: vi.fn().mockReturnValue({
+        x: 0, y: 0, width: 800, height: 600,
+      }),
     }));
 
     const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
@@ -736,14 +741,13 @@ describe("scrollReadHandler (mocked)", () => {
         pressKey: vi.fn().mockResolvedValue(undefined),
         releaseKey: vi.fn().mockResolvedValue(undefined),
       },
-      getWindows: vi.fn().mockResolvedValue([
-        {
-          windowHandle: "fake-hwnd",
-          title: "TestWindow",
-          region: Promise.resolve({ left: 0, top: 0, width: 800, height: 600 }),
-          focus: vi.fn().mockResolvedValue(undefined),
-        },
-      ]),
+    }));
+
+    vi.doMock("../../src/tools/_resolve-window.js", () => ({
+      resolveWindowTarget: vi.fn().mockResolvedValue({
+        title: "TestWindow", hwnd: 0xCAFEn, warnings: [],
+      }),
+      findPlainTopLevelWindowByTitle: vi.fn().mockReturnValue(null),
     }));
 
     vi.doMock("../../src/engine/bg-input.js", () => ({
@@ -752,7 +756,9 @@ describe("scrollReadHandler (mocked)", () => {
     }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
-      getWindowTitleW: vi.fn().mockReturnValue("TestWindow"),
+      restoreAndFocusWindow: vi.fn().mockReturnValue({
+        x: 0, y: 0, width: 800, height: 600,
+      }),
     }));
 
     const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
@@ -792,14 +798,13 @@ describe("scrollReadHandler (mocked)", () => {
         pressKey: vi.fn().mockResolvedValue(undefined),
         releaseKey: vi.fn().mockResolvedValue(undefined),
       },
-      getWindows: vi.fn().mockResolvedValue([
-        {
-          windowHandle: "fake-hwnd",
-          title: "TestWindow",
-          region: Promise.resolve({ left: 0, top: 0, width: 800, height: 600 }),
-          focus: vi.fn().mockResolvedValue(undefined),
-        },
-      ]),
+    }));
+
+    vi.doMock("../../src/tools/_resolve-window.js", () => ({
+      resolveWindowTarget: vi.fn().mockResolvedValue({
+        title: "TestWindow", hwnd: 0xCAFEn, warnings: [],
+      }),
+      findPlainTopLevelWindowByTitle: vi.fn().mockReturnValue(null),
     }));
 
     vi.doMock("../../src/engine/bg-input.js", () => ({
@@ -808,7 +813,9 @@ describe("scrollReadHandler (mocked)", () => {
     }));
 
     vi.doMock("../../src/engine/win32.js", () => ({
-      getWindowTitleW: vi.fn().mockReturnValue("TestWindow"),
+      restoreAndFocusWindow: vi.fn().mockReturnValue({
+        x: 0, y: 0, width: 800, height: 600,
+      }),
     }));
 
     const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");

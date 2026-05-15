@@ -27,10 +27,10 @@
 
 import {
   resolveWindowTarget,
-  DIALOG_CLASSNAMES,
+  findPlainTopLevelWindowByTitle,
   type ResolvedWindow,
 } from "./_resolve-window.js";
-import { enumWindowsInZOrder, getWindowRectByHwnd } from "../engine/win32.js";
+import { getWindowRectByHwnd } from "../engine/win32.js";
 import { nativeUia, nativeWin32, nativeL1 } from "../engine/native-engine.js";
 import {
   listTabsLight,
@@ -259,43 +259,31 @@ export async function resolveInputDestination(params: {
   }
   // Case 3 recovery (see docstring): `resolveWindowTarget` returns null for a
   // plain `windowTitle` that matches a top-level window — recover that HWND so
-  // Tier 1 UIA stays reachable. The predicate below applies `_resolve-window.ts`
-  // Case 3's `plainMatch` constraints — non-dialog class (`#32770` excluded)
-  // AND no owner window — so we recover a true top-level window, never an
-  // owned/modal dialog with a coincidentally-overlapping title substring
-  // (Codex PR #288 Round 3 P2). It additionally excludes MINIMIZED windows:
-  // a minimized HWND is not a usable dispatch target (UIA scroll on an
-  // off-screen window) and — because `mouse.ts:scrollHandler` seeds
-  // `observedHwnd` from `dest.hwnd` — would pin observation to a window that
-  // cannot be observed, producing false `not_delivered` / `unverifiable`
-  // results (Codex PR #288 Round 4 P1). The `mouse.ts` observation ladder
-  // filters minimized for the same reason.
-  // `@active` is excluded: `resolveWindowTarget` owns that shorthand and a
-  // null return there means foreground resolution genuinely failed.
-  // Phase 4 carry-over: extract a shared `findPlainTopLevelWindowByTitle`
-  // helper so the dialog/owner predicate cannot drift from Case 3 — sub-plan §2.2.
+  // Tier 1 UIA stays reachable. ADR-018 Phase 5: delegated to the shared
+  // `findPlainTopLevelWindowByTitle` helper. Flags:
+  //   - excludeMinimized: true — minimized HWND is not a usable dispatch target
+  //     (UIA scroll on off-screen window) and would pin observation to an
+  //     unobservable window (Codex PR #288 Round 4 P1).
+  //   - excludeDialogsAndOwned: true — non-dialog class (`#32770` excluded)
+  //     AND no owner window, so we recover a true top-level window, never an
+  //     owned/modal dialog with a coincidentally-overlapping title substring
+  //     (Codex PR #288 Round 3 P2).
+  // `@active` is excluded here: `resolveWindowTarget` owns that shorthand and
+  // a null return there means foreground resolution genuinely failed.
   if (params.windowTitle && params.windowTitle !== "@active") {
-    try {
-      const want = params.windowTitle.toLowerCase();
-      const match = enumWindowsInZOrder().find(
-        (w) =>
-          !w.isMinimized &&
-          w.title.toLowerCase().includes(want) &&
-          !DIALOG_CLASSNAMES.has(w.className ?? "") &&
-          w.ownerHwnd == null,
-      );
-      if (match) {
-        // Case 3 recovery also gets the CDP Tier 2 promotion — otherwise a
-        // plain-windowTitle scroll on Chrome (where resolveWindowTarget returns
-        // null by Case 3 design) would never see channel='cdp'. The class name
-        // is already on the `match` record (`enumWindowsInZOrder` returns it),
-        // so the gate inside `resolveCdpDestinationForHwnd` does not re-enumerate.
-        const cdp = await resolveCdpDestinationForHwnd(match.hwnd, match.className ?? null);
-        if (cdp !== null) return cdp;
-        return { kind: "hwnd", hwnd: match.hwnd };
-      }
-    } catch {
-      /* enumWindowsInZOrder unavailable → fall through to unresolved */
+    const match = findPlainTopLevelWindowByTitle(params.windowTitle, {
+      excludeMinimized: true,
+      excludeDialogsAndOwned: true,
+    });
+    if (match) {
+      // Case 3 recovery also gets the CDP Tier 2 promotion — otherwise a
+      // plain-windowTitle scroll on Chrome (where resolveWindowTarget returns
+      // null by Case 3 design) would never see channel='cdp'. The class name
+      // is already on the `match` record (`enumWindowsInZOrder` returns it),
+      // so the gate inside `resolveCdpDestinationForHwnd` does not re-enumerate.
+      const cdp = await resolveCdpDestinationForHwnd(match.hwnd, match.className ?? null);
+      if (cdp !== null) return cdp;
+      return { kind: "hwnd", hwnd: match.hwnd };
     }
   }
   return { kind: "unresolved", reason: "no_target_window" };
