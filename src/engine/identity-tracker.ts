@@ -56,7 +56,21 @@ export interface CacheStateHints {
     invalidatedBy?: InvalidationReason | null;
     previousTarget?: { pid: number; processName: string };
   };
-  uiaCache?: { exists: boolean; ageMs?: number; expiresInMs?: number };
+  uiaCache?: {
+    exists: boolean;
+    ageMs?: number;
+    expiresInMs?: number;
+    /**
+     * Issue #295 — `true` when the UIA cache exists but has fully expired
+     * (`expiresInMs === 0`). The `hints.caches.uiaCache.expiresInMs` field
+     * already carries the same information, but `stale: true` is the
+     * dedicated flag callers (and the LLM) read to decide whether to upgrade
+     * `attention` to `'stale'`. Omitted (rather than set to `false`) when the
+     * cache is fresh — symmetric with how the rest of this block surfaces
+     * optional state.
+     */
+    stale?: boolean;
+  };
   windowLayout?: { ageMs: number; expiresInMs: number };
 }
 
@@ -175,6 +189,20 @@ export function dropHwnd(hwnd: bigint): void {
   lastByHwnd.delete(String(hwnd));
 }
 
+/**
+ * Issue #295 — returns `true` when the UIA cache for `hwnd` exists but has
+ * fully expired (`age >= UIA_CACHE_TTL`). Callers building tool responses
+ * should upgrade their `attention` to `'stale'` when this returns `true`, so
+ * the LLM does not act on `actionable[]` derived from a stale cache snapshot.
+ * Returns `false` when the cache does not exist for the HWND (no false
+ * positive — caller's existing fresh-fetch path is the correct one).
+ */
+export function isUiaCacheStale(hwnd: bigint): boolean {
+  const ts = getUiaCacheTimestamp(hwnd);
+  if (ts === null) return false;
+  return Date.now() - ts >= UIA_CACHE_TTL_EXPORTED_MS;
+}
+
 /** Reset all identity tracking (test helper / explicit clear). */
 export function clearIdentities(): void {
   lastByKey.clear();
@@ -209,10 +237,15 @@ export function buildCacheStateHints(
     const uiaTs = getUiaCacheTimestamp(hwnd);
     if (uiaTs !== null) {
       const ageMs = now - uiaTs;
+      const expiresInMs = Math.max(0, UIA_CACHE_TTL_EXPORTED_MS - ageMs);
       out.uiaCache = {
         exists: true,
         ageMs,
-        expiresInMs: Math.max(0, UIA_CACHE_TTL_EXPORTED_MS - ageMs),
+        expiresInMs,
+        // Issue #295 — explicit stale flag so callers don't have to
+        // re-derive it from `expiresInMs === 0`. Single-source contract:
+        // `stale === true` iff the cache is fully expired.
+        ...(expiresInMs === 0 ? { stale: true as const } : {}),
       };
     } else {
       out.uiaCache = { exists: false };
