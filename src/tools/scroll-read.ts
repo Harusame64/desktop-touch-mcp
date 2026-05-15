@@ -215,7 +215,7 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
       if (!bgOk) {
         // ADR-018 Phase 5: re-focus via `restoreAndFocusWindow(hwnd)` (Win32
         // SetForegroundWindow) instead of the legacy `Window.focus()` nutjs
-        // method that came with the `getWindows()` enumeration. Same observable
+        // method that came with the flat-window enumeration. Same observable
         // outcome (target window becomes foreground before nutjs keystroke).
         restoreAndFocusWindow(focusedHwnd);
         await new Promise<void>((r) => setTimeout(r, 100));
