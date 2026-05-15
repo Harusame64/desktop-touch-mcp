@@ -61,6 +61,12 @@ export async function fetchUiaCandidates(
         value: el.value,
         rect: el.boundingRect ?? undefined,
         actionability: uiaActionability(el.controlType),
+        // Issue #296: carry the UIA-side `controlType` and `patterns` through
+        // so `deriveEntityCapabilities` can advertise executor preferences
+        // at discover time (no extra UIA round-trip — `getUiElements` already
+        // collected both via `GetSupportedPatterns()`).
+        controlType: el.controlType,
+        patterns: el.patterns,
         confidence: 1.0,
         observedAtMs: Date.now(),
         provisional: false,

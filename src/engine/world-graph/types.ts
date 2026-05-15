@@ -67,6 +67,21 @@ export interface UiEntity {
    * Required — always set by resolveCandidates(). Used as EntityLease.evidenceDigest.
    */
   evidenceDigest: string;
+  /**
+   * UIA control type carried through from the candidate (Issue #296). Absent
+   * when no UIA candidate contributed to this entity (CDP-only / visual-only).
+   * Advisory: capability derivation reads this to map e.g. `ListItem` →
+   * `unsupportedExecutors:['uia']`. Not exposed in the entity view directly —
+   * the LLM sees the derived `capabilities` block instead.
+   */
+  controlType?: string;
+  /**
+   * UIA pattern names supported by the underlying element (Issue #296).
+   * Same advisory semantics as `controlType`. When multiple UIA candidates
+   * merged into one entity, the resolver unions their pattern arrays so
+   * `deriveEntityCapabilities` sees the full set.
+   */
+  patterns?: string[];
 }
 
 export interface EntityLease {
