@@ -44,12 +44,18 @@ const win32GetScrollInfoMock = vi.fn<
   [bigint, string],
   { nMin: number; nMax: number; nPage: number; nPos: number; pageRatio: number } | null
 >();
+// ADR-018 Phase 5+N: scroll-leaf walker mock. Default impl returns `null`
+// (no retarget) so existing Phase 4 tests stay bit-equal; the dedicated
+// leaf-walker describe block below overrides per-test.
+const win32FindScrollLeafForTopLevelMock = vi.fn<[bigint], bigint | null>(() => null);
 const nativeWin32Mock: {
   win32PostMessage?: unknown;
   win32GetScrollInfo?: unknown;
+  win32FindScrollLeafForTopLevel?: unknown;
 } = {
   win32PostMessage: win32PostMessageMock,
   win32GetScrollInfo: win32GetScrollInfoMock,
+  win32FindScrollLeafForTopLevel: win32FindScrollLeafForTopLevelMock,
 };
 vi.mock("../../src/engine/native-engine.js", () => ({
   nativeUia: nativeUiaMock,
@@ -869,6 +875,191 @@ describe("ADR-018 Phase 4 — postWheelToHwnd (Tier 3 PostMessage path)", () => 
     const result = await postWheelToHwnd(0xCn, { direction: "down", notch: 0 });
     expect(result).toBeNull();
     expect(win32PostMessageMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("ADR-018 Phase 5+N — postWheelToHwnd scroll-leaf walker (Excel / Word MDI retarget)", () => {
+  // `WM_MOUSEWHEEL` propagates upward only (Microsoft Learn / DefWindowProc),
+  // so MDI apps whose scroll surface is a deep child (Excel:
+  // XLMAIN→XLDESK→EXCEL7; Word: OpusApp→_WwF→_WwG) need the POST retargeted
+  // to the leaf. The leaf walker (`win32FindScrollLeafForTopLevel`) returns
+  // the leaf HWND when the top-level class is in the chain table, or `null`
+  // for non-MDI apps. These tests pin the four contract points:
+  //   1. Leaf returned → postMessage / getScrollInfo / L1 push all use the leaf
+  //   2. Leaf null → bit-equal to pre-PR behaviour (top-level HWND used)
+  //   3. Native binding undefined (mixed-version `.node`) → graceful fall-through
+  //   4. Leaf's window rect differs from top → lParam centres on the leaf,
+  //      NOT the top-level (some Excel versions reject lParam outside the
+  //      recipient's client area — web research 2026-05-15)
+
+  beforeEach(() => {
+    win32PostMessageMock.mockReset();
+    win32GetScrollInfoMock.mockReset();
+    getWindowRectByHwndMock.mockReset();
+    win32FindScrollLeafForTopLevelMock.mockReset();
+    nativeWin32Mock.win32PostMessage = win32PostMessageMock;
+    nativeWin32Mock.win32GetScrollInfo = win32GetScrollInfoMock;
+    nativeWin32Mock.win32FindScrollLeafForTopLevel =
+      win32FindScrollLeafForTopLevelMock;
+    win32PostMessageMock.mockReturnValue(true);
+  });
+
+  const scrollInfo = (nPos: number) => ({
+    nMin: 0,
+    nMax: 1000,
+    nPage: 100,
+    nPos,
+    pageRatio: nPos / 1000,
+  });
+
+  it("leaf returned → postMessage + getScrollInfo + L1 push all target the leaf HWND, NOT the input top-level", async () => {
+    const TOP = 0xACE5n; // fake "XLMAIN" top-level
+    const LEAF = 0xCE117n; // fake "EXCEL7" cell grid leaf (cell≈CE11 mnemonic)
+    win32FindScrollLeafForTopLevelMock.mockReturnValue(LEAF);
+    // Leaf has a different rect from top-level — used to verify lParam.
+    getWindowRectByHwndMock.mockImplementation((h: bigint) =>
+      h === LEAF
+        ? { x: 0, y: 100, width: 400, height: 300 } // leaf center (200, 250)
+        : { x: 1000, y: 1000, width: 800, height: 600 }, // top-level center elsewhere
+    );
+    win32GetScrollInfoMock
+      .mockReturnValueOnce(scrollInfo(50))
+      .mockReturnValueOnce(scrollInfo(80));
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
+    expect(result).toEqual({
+      scrolled: true,
+      channel: "postmessage",
+      reason: "delivered_via_postmessage",
+    });
+    // All native calls target the leaf, not the top-level.
+    expect(win32FindScrollLeafForTopLevelMock).toHaveBeenCalledWith(TOP);
+    expect(win32PostMessageMock).toHaveBeenCalledWith(
+      LEAF,
+      expect.any(Number),
+      expect.any(BigInt),
+      expect.any(BigInt),
+    );
+    expect(win32PostMessageMock).not.toHaveBeenCalledWith(
+      TOP,
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(win32GetScrollInfoMock).toHaveBeenCalledWith(LEAF, "vertical");
+    expect(win32GetScrollInfoMock).not.toHaveBeenCalledWith(TOP, "vertical");
+  });
+
+  it("leaf null (non-MDI app) → bit-equal pre-PR behaviour (top-level HWND used everywhere)", async () => {
+    const TOP = 0xDEF0n; // fake non-MDI top-level
+    win32FindScrollLeafForTopLevelMock.mockReturnValue(null);
+    getWindowRectByHwndMock.mockReturnValue({
+      x: 100,
+      y: 200,
+      width: 800,
+      height: 600,
+    });
+    win32GetScrollInfoMock
+      .mockReturnValueOnce(scrollInfo(50))
+      .mockReturnValueOnce(scrollInfo(80));
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
+    expect(result).toEqual({
+      scrolled: true,
+      channel: "postmessage",
+      reason: "delivered_via_postmessage",
+    });
+    // Walker consulted exactly once, then bypassed (null).
+    expect(win32FindScrollLeafForTopLevelMock).toHaveBeenCalledWith(TOP);
+    // postMessage targets the input top-level HWND.
+    expect(win32PostMessageMock).toHaveBeenCalledWith(
+      TOP,
+      expect.any(Number),
+      expect.any(BigInt),
+      expect.any(BigInt),
+    );
+    expect(win32GetScrollInfoMock).toHaveBeenCalledWith(TOP, "vertical");
+  });
+
+  it("native binding undefined (mixed-version older `.node`) → graceful fall-through, top-level HWND used", async () => {
+    const TOP = 0xABCDn;
+    // Simulate the older binary that lacks the walker export entirely.
+    nativeWin32Mock.win32FindScrollLeafForTopLevel = undefined;
+    getWindowRectByHwndMock.mockReturnValue({
+      x: 100,
+      y: 200,
+      width: 800,
+      height: 600,
+    });
+    win32GetScrollInfoMock
+      .mockReturnValueOnce(scrollInfo(50))
+      .mockReturnValueOnce(scrollInfo(80));
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
+    expect(result).toEqual({
+      scrolled: true,
+      channel: "postmessage",
+      reason: "delivered_via_postmessage",
+    });
+    expect(win32FindScrollLeafForTopLevelMock).not.toHaveBeenCalled();
+    expect(win32PostMessageMock).toHaveBeenCalledWith(
+      TOP,
+      expect.any(Number),
+      expect.any(BigInt),
+      expect.any(BigInt),
+    );
+  });
+
+  it("leaf with different rect → lParam centres on LEAF's rect, not top-level's (some Excel versions reject lParam outside recipient's client area)", async () => {
+    const TOP = 0xFFEEn;
+    const LEAF = 0x7777n;
+    win32FindScrollLeafForTopLevelMock.mockReturnValue(LEAF);
+    // Leaf rect: (10, 20, 200, 100) → screen center (110, 70). Top-level rect
+    // is intentionally placed far away — if the impl regressed to using the
+    // top-level rect, lParam would carry a centre of (1500, 1500).
+    getWindowRectByHwndMock.mockImplementation((h: bigint) =>
+      h === LEAF
+        ? { x: 10, y: 20, width: 200, height: 100 }
+        : { x: 1000, y: 1000, width: 1000, height: 1000 },
+    );
+    win32GetScrollInfoMock
+      .mockReturnValueOnce(scrollInfo(0))
+      .mockReturnValueOnce(scrollInfo(5));
+    await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
+    // Expected lParam = MAKELPARAM(110, 70) = (70 << 16) | 110 = 0x0046006En
+    const expectedLeafLParam = BigInt((70 << 16) | 110);
+    expect(win32PostMessageMock).toHaveBeenCalledWith(
+      LEAF,
+      expect.any(Number),
+      expect.any(BigInt),
+      expectedLeafLParam,
+    );
+  });
+
+  it("leaf walker throws → graceful fall-through, top-level HWND used", async () => {
+    const TOP = 0xDEAD_BEEFn;
+    win32FindScrollLeafForTopLevelMock.mockImplementation(() => {
+      throw new Error("native crash");
+    });
+    getWindowRectByHwndMock.mockReturnValue({
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 600,
+    });
+    win32GetScrollInfoMock
+      .mockReturnValueOnce(scrollInfo(0))
+      .mockReturnValueOnce(scrollInfo(50));
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
+    // Throw must NOT propagate; top-level POST proceeds.
+    expect(result).toEqual({
+      scrolled: true,
+      channel: "postmessage",
+      reason: "delivered_via_postmessage",
+    });
+    expect(win32PostMessageMock).toHaveBeenCalledWith(
+      TOP,
+      expect.any(Number),
+      expect.any(BigInt),
+      expect.any(BigInt),
+    );
   });
 });
 

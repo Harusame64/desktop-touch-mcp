@@ -76,6 +76,8 @@ export const win32IsWindowVisible           = nativeBinding.win32IsWindowVisible
 export const win32IsIconic                  = nativeBinding.win32IsIconic;
 export const win32IsZoomed                  = nativeBinding.win32IsZoomed;
 export const win32GetClassName              = nativeBinding.win32GetClassName;
+// ADR-018 Phase 5+N: WM_MOUSEWHEEL leaf-walker for MDI / OLE apps
+export const win32FindScrollLeafForTopLevel = nativeBinding.win32FindScrollLeafForTopLevel;
 export const win32GetWindowThreadProcessId  = nativeBinding.win32GetWindowThreadProcessId;
 export const win32GetWindowLongPtrW         = nativeBinding.win32GetWindowLongPtrW;
 

@@ -223,6 +223,7 @@ CLAUDE.md §3.1 multi-table fact sweep applies across these 5 surfaces. ADR-010 
 | `src/tools/macro.ts` | `TOOL_REGISTRY` entries for the 7 tools | Set `TOOL_REGISTRY[*].schema` to the flat wire schema (consistency with `registerTool`, PR #112 shared-instance pattern); strict validation is the in-handler `parseActionArgsOrFail`, identical for both paths (Phase 2a) |
 | `src/uia/scroll.rs` | adjacent to 142-224 | New napi export `uia_scroll_by_wheel_at_hwnd` calling existing `scroll_by_percent_impl` (Phase 1) |
 | `src/engine/cdp-bridge.ts` | adjacent to 284 | New `dispatchMouseEvent({type:'mouseWheel'})` wrapper (Phase 3) |
+| `src/win32/window.rs` | adjacent to 232 | New napi export `win32_find_scroll_leaf_for_top_level` + `SCROLL_LEAF_CHAINS` table (XLMAIN→XLDESK→EXCEL7, OpusApp→_WwF→_WwG). `postWheelToHwnd` retargets POST/observation/L1 capture to the leaf when the top-level class is in the table — fixes Excel cell-grid scroll regression discovered in dogfood on `26d920b` (2026-05-15). Phase 5+N follow-up; supersedes the original `win32_enum_child_windows` carry-over with a smaller (~70 line) shape that preserves the destination-explicit principle. See `docs/adr-018-phase-5-followup-leaf-walker-subplan.md`. |
 | `src/tools/mouse.ts` | 971-982 (`ScrollVerifyOutcome.reason` union) + `scrollHandler` `verifyDelivery` emission | Replace 4-value reason union with 5-value enum per §2.6.2; add `channel: "uia" \| "cdp" \| "postmessage" \| "send_input"` field per §2.6.1 (Phase 1, single source of truth) |
 | `tests/unit/scroll-raw-verify.test.ts` | 114-130 | Rewrite the `page_end_inferred` test case to assert the new mapping per §2.6.3 (Phase 1) |
 | `src/tools/_errors.ts` | 256-262 (`ScrollNotDelivered` suggest list) | Update suggest copy to reference new reason names (`wheel_overlay_intercepted`, `target_unreachable`); typed-error code unchanged (Phase 1) |
@@ -324,7 +325,7 @@ Deliverables:
 - `tests/integration/scroll-handler-envelope.test.ts` (originally Round-0 Phase 5 D4) — envelope-assembly integration test
 - `scroll-5app.smoke.test.ts` 4-app expansion: Notepad / Word / Excel / Explorer
 - `screenshot.ts` `getWindows()` migration (different concern, separate scope)
-- Word `_WwG` descendant assertion (requires `win32_enum_child_windows` napi — Phase 4 §2.2 chain)
+- ~~Word `_WwG` descendant assertion (requires `win32_enum_child_windows` napi — Phase 4 §2.2 chain)~~ **Superseded 2026-05-15 by `win32_find_scroll_leaf_for_top_level` (PR fix/adr-018-excel-scroll-leaf-walker)**: a smaller (~70 line) class-chain table walker covers the Excel `XLMAIN→XLDESK→EXCEL7` and Word `OpusApp→_WwF→_WwG` cases without a generic `EnumChildWindows` enumerator. The Word `_WwG` descendant assertion (test-only artefact) can land separately when the smoke harness expansion lands, against the new helper rather than a future `win32_enum_child_windows`.
 - `page_end_inferred` deletion + `effectiveChannel` rename (Phase 4 §2.2)
 - `bigint` tightening of `recognizeWindowByHwnd` / `canInjectAtTarget` / `postKeyComboToHwnd` signatures (Phase 5 §2.2 / Opus Round 1 P2-3)
 

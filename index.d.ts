@@ -250,6 +250,14 @@ export declare function win32IsWindowVisible(hwnd: bigint): boolean
 export declare function win32IsIconic(hwnd: bigint): boolean
 export declare function win32IsZoomed(hwnd: bigint): boolean
 export declare function win32GetClassName(hwnd: bigint): string
+/**
+ * ADR-018 Phase 5+N: resolve a top-level HWND to the descendant HWND that
+ * actually receives WM_MOUSEWHEEL for MDI / OLE apps (Excel: XLMAIN →
+ * XLDESK → EXCEL7; Word: OpusApp → _WwF → _WwG). Returns null when the
+ * top-level class is not in the chain table OR when any chain segment
+ * fails — caller falls back to top-level POST in either case.
+ */
+export declare function win32FindScrollLeafForTopLevel(top: bigint): bigint | null
 export declare function win32GetWindowThreadProcessId(hwnd: bigint): NativeThreadProcessId
 export declare function win32GetWindowLongPtrW(hwnd: bigint, nIndex: number): number
 

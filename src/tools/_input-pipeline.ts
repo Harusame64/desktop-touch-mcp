@@ -449,8 +449,36 @@ export async function postWheelToHwnd(
   const getScrollInfo = nativeWin32?.win32GetScrollInfo;
   if (typeof postMessage !== "function") return null;
   try {
+    // ADR-018 Phase 5+N — WM_MOUSEWHEEL propagation is upward-only (Microsoft
+    // Learn / DefWindowProc). For MDI / OLE apps that host the scrollable
+    // surface as a deep child (Excel: XLMAIN → XLDESK → EXCEL7; Word:
+    // OpusApp → _WwF → _WwG), POST to the top-level HWND never reaches the
+    // leaf that owns the scrollbar — the regression dogfooded on main 2026-05-15.
+    // The leaf walker consults a small class-name chain table and returns the
+    // resolved leaf, or null when the top-level class is not in the table.
+    // On null we keep the input HWND (bit-equal to pre-PR behaviour for
+    // non-MDI apps). The resolved `effectiveHwnd` is used for **every**
+    // subsequent observation, post, and L1 capture call so that observation
+    // and dispatch share the same destination (ADR §2.2 invariant).
+    const findLeaf = nativeWin32?.win32FindScrollLeafForTopLevel;
+    let effectiveHwnd: bigint = hwnd;
+    if (typeof findLeaf === "function") {
+      try {
+        const leaf = findLeaf(hwnd);
+        if (leaf !== null && leaf !== undefined) {
+          effectiveHwnd = leaf;
+        }
+      } catch {
+        // Defensive: any native throw → keep input HWND (top-level POST).
+      }
+    }
+
     const { message, signedDelta } = win32WheelEncoding(params);
-    const rect = getWindowRectByHwnd(hwnd);
+    // lParam centres on the **leaf** rect so MFC / OLE hit-tests via
+    // `ChildWindowFromPoint(lParam)` land inside the recipient. Some Excel
+    // versions reject wheels whose lParam falls outside the recipient's
+    // client area (web research, 2026-05-15).
+    const rect = getWindowRectByHwnd(effectiveHwnd);
     const lParam = rect !== null
       ? makeScreenLParam(
           Math.round(rect.x + rect.width / 2),
@@ -473,7 +501,9 @@ export async function postWheelToHwnd(
     //      `_WwG`, modern UWP custom-paint, no Win32 scrollbar) — that IS
     //      the `target_unreachable` signal.
     const getScrollInfoAvailable = typeof getScrollInfo === "function";
-    const pre = getScrollInfoAvailable ? getScrollInfo(hwnd, axisName) : null;
+    const pre = getScrollInfoAvailable
+      ? getScrollInfo(effectiveHwnd, axisName)
+      : null;
 
     // Chunk the wheel delta into ≤ 16-bit signed messages so the receiver's
     // `GET_WHEEL_DELTA_WPARAM` (signed short) does not wrap. For typical
@@ -487,7 +517,7 @@ export async function postWheelToHwnd(
       const chunkMagnitude = Math.min(remaining, WHEEL_DELTA_MAX_PER_MSG);
       const chunkSigned = sign * chunkMagnitude;
       const wParam = makeWheelWParam(0, chunkSigned);
-      const posted = postMessage(hwnd, message, wParam, lParam);
+      const posted = postMessage(effectiveHwnd, message, wParam, lParam);
       if (!posted) {
         // Receiver rejected this chunk. If at least one earlier chunk
         // delivered, fall through to observation; if NOTHING posted, return
@@ -501,7 +531,14 @@ export async function postWheelToHwnd(
       // in `src/engine/win32.ts:602` does this for the WM_CHAR/WM_KEY
       // paths; Tier 3 wheel posts must follow the same contract or the L1
       // stream loses an entire input class. (Opus PR #305 Round 1 P2-1.)
-      nativeL1?.l1PushHwInputPostMessage?.(hwnd, message >>> 0, wParam, lParam);
+      // ADR-018 Phase 5+N: records the **leaf** HWND (effectiveHwnd) — the
+      // destination-explicit record per ADR-007 P5a contract.
+      nativeL1?.l1PushHwInputPostMessage?.(
+        effectiveHwnd,
+        message >>> 0,
+        wParam,
+        lParam,
+      );
       remaining -= chunkMagnitude;
     }
 
@@ -524,7 +561,7 @@ export async function postWheelToHwnd(
     // Case 2 — pre-snapshot null: this HWND has no Win32 scrollbar at all
     // (Word `_WwG` etc.). Caller emits target_unreachable.
     if (pre === null) return null;
-    const post = getScrollInfo!(hwnd, axisName);
+    const post = getScrollInfo!(effectiveHwnd, axisName);
     if (post === null) return null;
 
     const delta = Math.abs(post.nPos - pre.nPos);
