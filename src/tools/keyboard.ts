@@ -7,8 +7,12 @@ import { promisify } from "node:util";
 import { keyboard, withKeyboardLock, rawKeyboard } from "../engine/nutjs.js";
 import { parseKeys } from "../utils/key-map.js";
 import { assertKeyComboSafe } from "../utils/key-safety.js";
-import { enumWindowsInZOrder, getWindowClassName, restoreAndFocusWindow } from "../engine/win32.js";
+import { enumWindowsInZOrder, getWindowClassName, restoreAndFocusWindow, getWindowRectByHwnd } from "../engine/win32.js";
 import { nativeWin32 } from "../engine/native-engine.js";
+// ADR-019 Stage 4 — SSIM `local_repaint` fallback when BG verify reaches
+// terminal `unverifiable + read_back_unsupported`. See sub-plan §2.4.2.
+import { captureFrame, type RawFrame } from "../engine/layer-buffer.js";
+import { verifyLocalRepaint } from "../engine/local-repaint.js";
 import {
   canInjectViaPostMessage,
   postCharsToHwnd,
@@ -226,6 +230,13 @@ interface VerifyDeliveryHint {
   channel?: "wm_char" | "wm_keydown" | "sendinput";
   /** Suggested next path the caller can try. */
   fallback?: string;
+  /**
+   * ADR-019 Stage 4 — `local_repaint` primitive observation. Attached
+   * when Stage 4 SSIM cascade ran on the BG verify terminal `unverifiable
+   * + read_back_unsupported` sink (sub-plan §2.4.2). Existing callers
+   * that don't read `observation` are unaffected.
+   */
+  observation?: import("./_input-pipeline.js").VisualMotionObservation;
 }
 
 /**
@@ -1026,12 +1037,29 @@ export const keyboardTypeHandler = async ({
           //     close the gap.
           const shouldReadBaselines =
             verificationNeeded && checkText.length > 0 && !hasEmbeddedNewline;
-          const [baselineRaw, valueBaselineRaw] = shouldReadBaselines
+          // ADR-019 Stage 4 — capture pre-action reference frame BEFORE the
+          // WM_CHAR loop (sub-plan §2.4.2 + OQ #5 option (a)). Gated on
+          // verification being needed AND env opt-in
+          // (`DESKTOP_TOUCH_STAGE4_SSIM_KEYBOARD=0` disables) so the
+          // capture cost only lands on callers asking for verification.
+          // Resolved via `getWindowRectByHwnd(target.hwnd)`; null means
+          // Stage 4 cannot fire (resolver still returns indeterminate later).
+          const stage4KeyboardEnabled =
+            verificationNeeded &&
+            process.env.DESKTOP_TOUCH_STAGE4_SSIM_KEYBOARD !== "0";
+          const stage4WindowRect =
+            stage4KeyboardEnabled ? getWindowRectByHwnd(target.hwnd) : null;
+          const stage4PreFramePromise: Promise<RawFrame | null> =
+            stage4KeyboardEnabled && stage4WindowRect !== null
+              ? captureFrame(target.hwnd, stage4WindowRect)
+              : Promise.resolve(null);
+          const [baselineRaw, valueBaselineRaw, stage4PreFrame] = shouldReadBaselines
             ? await Promise.all([
                 getTextViaTextPattern(target.title),
                 getTextViaValuePattern(target.title),
+                stage4PreFramePromise,
               ])
-            : [null, null];
+            : [null, null, await stage4PreFramePromise];
           const baselineMarker =
             baselineRaw !== null ? makeKeyboardBaselineMarker(stripAnsi(baselineRaw)) : null;
           // F4-bis fix (PR #234 follow-up): always retain `valueBaselineRaw`,
@@ -1186,6 +1214,36 @@ export const keyboardTypeHandler = async ({
             }
           }
 
+          // ADR-019 Stage 4 — local_repaint SSIM fallback when BG verify reached
+          // the terminal `unverifiable + read_back_unsupported` sink (sub-plan
+          // §2.4.2 gate 1). Stage 4 only upgrades — on `motion: "local_repaint"`
+          // we promote `verifiedDelivery` to `true`, on `no_change` /
+          // `indeterminate` we keep `unverifiable` (§2.4.2 + §9 invariant
+          // "Stage 4 never demotes heuristics that were honest about being silent").
+          let stage4Observation:
+            | import("./_input-pipeline.js").VisualMotionObservation
+            | undefined;
+          if (
+            stage4KeyboardEnabled &&
+            verifiedDelivery === "unverifiable" &&
+            verifyReason === "read_back_unsupported" &&
+            stage4WindowRect !== null
+          ) {
+            stage4Observation = await verifyLocalRepaint({
+              hwnd: target.hwnd,
+              hint: {
+                // Keyboard has no click point — resolver falls through to
+                // window_fallback (P16 decision lock default (b)).
+                windowRect: stage4WindowRect,
+              },
+              preFrame: stage4PreFrame,
+            });
+            if (stage4Observation.motion === "local_repaint") {
+              verifiedDelivery = true;
+              verifyReason = undefined;
+            }
+          }
+
           if (verifiedDelivery === false) {
             // suggest[] is provided by classify() via SUGGESTS.BackgroundInputNotDelivered
             // — keep this call site free of duplicated copy so the dictionary stays SSOT.
@@ -1209,12 +1267,17 @@ export const keyboardTypeHandler = async ({
           // against in issue #173.
           const verifyDelivery: VerifyDeliveryHint | null = verificationNeeded
             ? verifiedDelivery === true
-              ? { status: "delivered", channel: "wm_char" }
+              ? {
+                  status: "delivered",
+                  channel: "wm_char",
+                  ...(stage4Observation && { observation: stage4Observation }),
+                }
               : {
                   status: "unverifiable",
                   ...(verifyReason && { reason: verifyReason }),
                   channel: "wm_char",
                   fallback: "method:'foreground'",
+                  ...(stage4Observation && { observation: stage4Observation }),
                 }
             : null;
 

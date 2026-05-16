@@ -297,8 +297,8 @@ The sub-plan PR closes here; below is the checklist the **impl PR** flips `[ ]` 
 - [x] **P6** — `src/tools/_mouse-verify.ts` adds `classifyDeliveryWithLocalRepaint` wrapper + `observation` field on `VerifyDeliveryHint`. Existing `classifyDelivery` signature preserved (additive only).
 - [x] **P7** — `src/tools/mouse.ts` `mouseClickHandler` wiring: pre-frame capture parallel to pre-snapshot, post-path invokes `classifyDeliveryWithLocalRepaint`, observation threaded into envelope hint.
 - [x] **P8** — `tests/unit/mouse-click-verify-stage4.test.ts` (7 cases).
-- [ ] **P9** — `src/tools/keyboard.ts` `typeHandler` wiring at the BG verify `verifiedDelivery === "unverifiable"` site. Pre-frame capture timing per §2.4.2 + OQ #5.
-- [ ] **P10** — `tests/unit/keyboard-type-stage4.test.ts` (≥ 4 cases).
+- [x] **P9** — `src/tools/keyboard.ts` `typeHandler` wiring at the BG verify `verifiedDelivery === "unverifiable"` site. Pre-frame capture timing per §2.4.2 + OQ #5 (option (a) — capture in parallel with TextPattern/ValuePattern baselines, gated on `verificationNeeded` AND env opt-in).
+- [x] **P10** — `tests/unit/keyboard-type-stage4.test.ts` (7 cases). Tests the §2.4.2 gate semantics via a deliberately-extracted contract function (rather than booting the full `typeHandler` BG verify block), so they remain stable across refactors of the wiring while keeping the gate behavior pinned bit-equal.
 - [ ] **P11** — `benches/ssim_residual.mjs` AC6 unit bench.
 - [ ] **P12** — Optimisation pass: AVX2 + SSE2 runtime dispatch in `src/ssim.rs` (the §4.5 SIMD strategy). Defer to ONLY if scalar P1 misses the 15ms p99 unit budget; otherwise carry-over to Stage 4 follow-up.
 - [ ] **P13** — ADR-019 main + ADR-018 §2.6 docs sync (the rows listed in §3 table above).
