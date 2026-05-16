@@ -92,6 +92,11 @@ describe("scroll(action:'raw') delivery verification", () => {
       // typed envelope (matrix doc §3.1 silent-drop case).
       expect(p.code).toBe("ScrollNotDelivered");
       expect(p.context?.direction).toBe("down");
+      // Pin the flat-context contract structurally: `failWith()` splits
+      // its 3rd argument so non-hoisted keys land on `context.X`, NOT
+      // `context.context.X` (regression guard for the double-wrap bug
+      // fixed in this PR — see `src/tools/_errors.ts:685-693`).
+      expect((p.context as Record<string, unknown>)?.context).toBeUndefined();
       return;
     }
     expect(p.scrolled).toBe("down");
@@ -99,7 +104,16 @@ describe("scroll(action:'raw') delivery verification", () => {
     // Always present per matrix doc §3.1 / §4.2: scrollObserved + verifyDelivery.
     expect(p.hints!.scrollObserved).toBeDefined();
     expect(p.hints!.verifyDelivery).toBeDefined();
-    expect(p.hints!.verifyDelivery!.channel).toBe("wheel_send_input");
+    // ADR-018 Phase 4 (Tier 1/2/3 destination-explicit) defines 4 transport
+    // channels: {uia, cdp, postmessage, send_input}. `wheel_send_input` is a
+    // legacy alias for `send_input` retained for Phase 5+N migration
+    // deferral (ADR-018 §2.6.3 migration table). Notepad on Win11 routes
+    // through Tier 3 PostMessage because Modern Notepad has no Win32
+    // scrollbar; legacy hosts route through Tier 4 SendInput. Accept any of
+    // the 4 ADR-018 channels plus the legacy alias.
+    expect(["uia", "cdp", "postmessage", "send_input", "wheel_send_input"]).toContain(
+      p.hints!.verifyDelivery!.channel,
+    );
     expect(["delivered", "unverifiable"]).toContain(p.hints!.verifyDelivery!.status);
     // delta is either "unverifiable" or {x, y} with possibly-null fields.
     const delta = p.hints!.scrollObserved!.delta;
@@ -164,7 +178,10 @@ describe("scroll(action:'raw') delivery verification", () => {
     const vd = p.hints!.verifyDelivery!;
     // Required: status, channel.
     expect(typeof vd.status).toBe("string");
-    expect(vd.channel).toBe("wheel_send_input");
+    // Channel is one of the 4 ADR-018 transport tiers (+ legacy alias
+    // `wheel_send_input`) — exact value depends on which tier handled the
+    // resolved destination (see test #1 comment).
+    expect(["uia", "cdp", "postmessage", "send_input", "wheel_send_input"]).toContain(vd.channel);
     if (vd.status === "unverifiable") {
       // reason is required when status=unverifiable (matrix doc §4.4).
       expect(typeof vd.reason).toBe("string");
