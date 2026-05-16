@@ -111,7 +111,11 @@ async function main() {
   const baseClickX = rect.x + (args.clickOffsetX ?? Math.floor(rect.width / 2));
   const baseClickY = rect.y + (args.clickOffsetY ?? Math.floor(rect.height / 2));
   console.log(`# hwnd=${win.hwnd} class=${win.className} region=${rect.width}x${rect.height} baseClickPoint=(${baseClickX},${baseClickY}) jitter=${args.jitter}`);
-  if (baseClickX < rect.x || baseClickX > rect.x + rect.width || baseClickY < rect.y || baseClickY > rect.y + rect.height) {
+  // Valid pixel range: rect.x ≤ px ≤ rect.x + rect.width - 1 (and likewise Y).
+  // Strict `>=` on the upper bound rejects coords one past the right/bottom
+  // edge (Codex Round 1 P2 — `baseClickX === rect.x + rect.width` would land
+  // outside the window when used at the edge with `--offset-x`).
+  if (baseClickX < rect.x || baseClickX >= rect.x + rect.width || baseClickY < rect.y || baseClickY >= rect.y + rect.height) {
     console.error(`# ERROR: clickPoint outside windowRect`);
     process.exit(2);
   }
