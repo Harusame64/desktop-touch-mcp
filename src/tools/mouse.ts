@@ -1237,18 +1237,18 @@ export const scrollHandler = async ({
       // we surface the typed envelope explicitly so callers see the proper
       // status / channel / reason rather than catching a thrown guard.
       if (dest.kind === "cdp") {
+        // Flat context (see keyboard.ts:775-776) — `failWith` auto-wraps
+        // non-hoisted keys; LLM-facing shape is `r.context.direction`.
         return failWith(
           new Error("ScrollNotDelivered"),
           "scroll",
           {
-            context: {
-              hint: "CDP wheel dispatch or scroll observation returned no delta — Tier 4 SendInput suppressed for resolved CDP destinations",
-              direction,
-              verifyDelivery: {
-                status: "not_delivered" as const,
-                channel: "cdp" as const,
-                reason: "target_unreachable" as const,
-              },
+            hint: "CDP wheel dispatch or scroll observation returned no delta — Tier 4 SendInput suppressed for resolved CDP destinations",
+            direction,
+            verifyDelivery: {
+              status: "not_delivered" as const,
+              channel: "cdp" as const,
+              reason: "target_unreachable" as const,
             },
           },
         );
@@ -1261,18 +1261,85 @@ export const scrollHandler = async ({
       // branch surfaces the typed envelope explicitly with `channel:'postmessage'`
       // (the last attempted tier) so callers see the proper transport identifier.
       if (dest.kind === "hwnd" || dest.kind === "uia") {
+        // Page-end disambiguation: when the pre-snapshot shows the scrollbar
+        // is already AT the directional boundary (top/bottom/left/right),
+        // a no-observable-delta result is a legitimate no-op, NOT a silent
+        // drop. Mirror the boundary logic in `evaluateScrollDelivery` below
+        // (the post-Tier-4 path) so HWND targets get the same page-end
+        // treatment regardless of which tier was last attempted.
+        // E2E pin: `tests/e2e/scroll-raw-verify.test.ts` "page-end" test.
+        const preOnAxis =
+          direction === "up" || direction === "down" ? pre.vertical : pre.horizontal;
+        if (preOnAxis !== null) {
+          const atUpperBoundary = preOnAxis >= 1 - SCROLL_PERCENT_BOUNDARY_TOL;
+          const atLowerBoundary = preOnAxis <= SCROLL_PERCENT_BOUNDARY_TOL;
+          const atDirectionalBoundary =
+            (direction === "up" && atLowerBoundary) ||
+            (direction === "down" && atUpperBoundary) ||
+            (direction === "left" && atLowerBoundary) ||
+            (direction === "right" && atUpperBoundary);
+          if (atDirectionalBoundary) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: JSON.stringify({
+                  ok: true,
+                  scrolled: direction,
+                  hints: {
+                    scrollObserved: { delta: { x: null, y: null } },
+                    verifyDelivery: {
+                      status: "delivered" as const,
+                      channel: "postmessage" as const,
+                      reason: "page_end_inferred" as const,
+                      axis: direction === "up" || direction === "down" ? "vertical" : "horizontal",
+                    },
+                  },
+                }),
+              }],
+            };
+          }
+        }
+        // No observation channel exposed at all (no Win32 scrollbar on either
+        // axis): we cannot distinguish "scroll-at-boundary no-op" from
+        // "silent drop". Matrix doc §3.1 + `evaluateScrollDelivery`
+        // line 1086-1095 explicitly require a boundary signal — without it
+        // we degrade to `unverifiable` (ok:true with diagnostic hint), NOT
+        // `target_unreachable` failure. Win11 Notepad / WinUI hosts land
+        // here. E2E pin: `tests/e2e/scroll-raw-verify.test.ts` "page-end"
+        // test (Notepad at top of buffer, no Win32 scrollbar exposed).
+        if (pre.vertical === null && pre.horizontal === null) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                ok: true,
+                scrolled: direction,
+                hints: {
+                  scrollObserved: { delta: "unverifiable" as const },
+                  verifyDelivery: {
+                    status: "unverifiable" as const,
+                    channel: "postmessage" as const,
+                    reason: "read_back_unsupported" as const,
+                  },
+                },
+              }),
+            }],
+          };
+        }
+        // `failWith` itself nests non-hoisted keys under `context` (see
+        // keyboard.ts:775-776 comment); pass them flat so the LLM-facing
+        // shape is `r.context.direction` (not `r.context.context.direction`).
+        // E2E pin: `tests/e2e/scroll-raw-verify.test.ts` test #1.
         return failWith(
           new Error("ScrollNotDelivered"),
           "scroll",
           {
-            context: {
-              hint: "Tier 1 UIA + Tier 3 PostMessage both exhausted on the resolved destination (no ScrollPattern AND no observable scrollbar diff after WM_MOUSEWHEEL) — Tier 4 SendInput suppressed per ADR-018 §2.6.2 path-(b)",
-              direction,
-              verifyDelivery: {
-                status: "not_delivered" as const,
-                channel: "postmessage" as const,
-                reason: "target_unreachable" as const,
-              },
+            hint: "Tier 1 UIA + Tier 3 PostMessage both exhausted on the resolved destination (no ScrollPattern AND no observable scrollbar diff after WM_MOUSEWHEEL) — Tier 4 SendInput suppressed per ADR-018 §2.6.2 path-(b)",
+            direction,
+            verifyDelivery: {
+              status: "not_delivered" as const,
+              channel: "postmessage" as const,
+              reason: "target_unreachable" as const,
             },
           },
         );
@@ -1310,19 +1377,19 @@ export const scrollHandler = async ({
     ) {
       const tmolObservation: VisualMotionObservation | undefined =
         tier1.observation;
+      // Flat context (see keyboard.ts:775-776) — `failWith` auto-wraps
+      // non-hoisted keys; LLM-facing shape is `r.context.direction`.
       return failWith(
         new Error("ScrollNotDelivered"),
         "scroll",
         {
-          context: {
-            hint: "Stage 2b TMOL gate observed motion='no_change' on the chain-trust path (PostMessage queued but pixels did not change) — emitting target_unreachable per ADR-018 §2.6.2 path-(b) Stage 2b row",
-            direction,
-            verifyDelivery: {
-              status: "not_delivered" as const,
-              channel: "postmessage" as const,
-              reason: "target_unreachable" as const,
-              ...(tmolObservation ? { observation: tmolObservation } : {}),
-            },
+          hint: "Stage 2b TMOL gate observed motion='no_change' on the chain-trust path (PostMessage queued but pixels did not change) — emitting target_unreachable per ADR-018 §2.6.2 path-(b) Stage 2b row",
+          direction,
+          verifyDelivery: {
+            status: "not_delivered" as const,
+            channel: "postmessage" as const,
+            reason: "target_unreachable" as const,
+            ...(tmolObservation ? { observation: tmolObservation } : {}),
           },
         },
       );
@@ -1393,23 +1460,23 @@ export const scrollHandler = async ({
       // requires channel to survive in the failure envelope — thread it
       // through context.verifyDelivery so callers reading the error envelope
       // (issue #179) see the consistent shape with success envelopes.
+      // Flat context (see keyboard.ts:775-776) — `failWith` auto-wraps
+      // non-hoisted keys; LLM-facing shape is `r.context.direction`.
       return failWith(
         new Error("ScrollNotDelivered"),
         "scroll",
         {
-          context: {
-            hint: "post-state observation found no scroll movement on the requested axis (pre was off-boundary)",
-            axis: outcome.axis,
-            preVerticalPercent: pre.vertical,
-            preHorizontalPercent: pre.horizontal,
-            postVerticalPercent: post.vertical,
-            postHorizontalPercent: post.horizontal,
-            direction,
-            verifyDelivery: {
-              status: "not_delivered" as const,
-              channel: effectiveChannel,
-              ...(outcome.axis ? { axis: outcome.axis } : {}),
-            },
+          hint: "post-state observation found no scroll movement on the requested axis (pre was off-boundary)",
+          axis: outcome.axis,
+          preVerticalPercent: pre.vertical,
+          preHorizontalPercent: pre.horizontal,
+          postVerticalPercent: post.vertical,
+          postHorizontalPercent: post.horizontal,
+          direction,
+          verifyDelivery: {
+            status: "not_delivered" as const,
+            channel: effectiveChannel,
+            ...(outcome.axis ? { axis: outcome.axis } : {}),
           },
         },
       );

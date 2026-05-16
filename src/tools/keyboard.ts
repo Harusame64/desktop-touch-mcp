@@ -924,15 +924,18 @@ export const keyboardTypeHandler = async ({
         { pressEnter: false }, // keyboard:type は Enter 自動押下しない
       );
       if (!flashResult.ok) {
+        // `failWith` itself nests non-hoisted keys under `context` (see
+        // line 775-776 comment); pass them flat so the LLM-facing shape is
+        // `r.context.reason` (not `r.context.context.reason`). E2E tests
+        // `tests/e2e/foreground-flash-verification.test.ts` pin
+        // `r.context.reason` directly.
         return failWith(
           new Error(flashResult.reason ?? "ForegroundFlashFailed"),
           "keyboard:type",
           {
-            context: {
-              reason: flashResult.reason,
-              rawError: flashResult.rawError,
-              windowTitle: effectiveWindowTitle,
-            },
+            reason: flashResult.reason,
+            rawError: flashResult.rawError,
+            windowTitle: effectiveWindowTitle,
             ...(ffPerception && { _perceptionForPost: ffPerception }),
           }
         );

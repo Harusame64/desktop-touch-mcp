@@ -62,6 +62,29 @@ const _defaultPort = getCdpPort();
  */
 export const MODAL_RE = /\b(?:dialog|confirm|alert|error|warning|save as)\b|警告|エラー|確認|通知|ダイアログ|名前を付けて/i;
 
+/**
+ * Window class names for browser top-level windows. The `hasModal` heuristic
+ * skips these because browsers render their own modals (alert / confirm /
+ * print preview / file picker) INSIDE the tab via CDP / a child dialog
+ * window; the top-level window is page content. Without this exclusion,
+ * any browser tab whose title matches MODAL_RE (e.g. a Japanese-language
+ * "通知" page, a Stack Overflow "Save As" QA, a GitHub "Errors" issue
+ * tracker) falsely sets `hasModal: true`. Exported so a unit test can pin
+ * the contract.
+ *
+ * Chrome / Edge / Brave / Opera / Vivaldi / Arc / Thorium all share
+ * `Chrome_WidgetWin_1` (Chromium's widget class). Firefox-derived browsers
+ * use `MozillaWindowClass`.
+ */
+const BROWSER_TOP_LEVEL_CLASSES = new Set<string>([
+  "Chrome_WidgetWin_1",
+  "MozillaWindowClass",
+]);
+
+export function isBrowserTopLevelClass(className: string | undefined): boolean {
+  return className !== undefined && BROWSER_TOP_LEVEL_CLASSES.has(className);
+}
+
 // ─── Focused-element builders (D2-B-2) ───────────────────────────────────────
 // Three pure functions that project the engine's three focus sources
 // (perception view / UIA / CDP) into the same `ElementInfo` shape so
@@ -559,8 +582,21 @@ export const desktopStateHandler = async (args: {
     }
 
     // Modal heuristic — title-substring detection.
+    //
+    // Browser top-level windows (Chrome/Edge `Chrome_WidgetWin_1`, Firefox
+    // `MozillaWindowClass`) are excluded because browsers never present a
+    // modal dialog as a separate top-level window — their alert/confirm
+    // dialogs render inside the tab via CDP. A browser tab whose page title
+    // happens to contain "通知" / "Save As" / "Error" / "警告" etc. is page
+    // content, NOT a modal. Without this gate, any Japanese-language page
+    // mentioning notifications (Twitter 通知 timeline, Gmail 通知設定 page,
+    // a Stack Overflow "Save As" QA thread, etc.) falsely sets
+    // `hasModal: true` on every desktop_state call, breaking e2e tests like
+    // `context-consistency.test.ts` that rely on a clean modal baseline.
+    // Tested by `tests/unit/modal-detection-browser-exclusion.test.ts`.
     let hasModal = false;
     for (const w of wins) {
+      if (isBrowserTopLevelClass(w.className)) continue;
       if (MODAL_RE.test(w.title)) { hasModal = true; break; }
     }
 
