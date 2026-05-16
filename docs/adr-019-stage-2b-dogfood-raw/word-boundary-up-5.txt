@@ -1,0 +1,20 @@
+[native-engine] Rust image-diff engine loaded (SSE2 SIMD)
+[native-engine] Rust UIA engine loaded
+[native-engine] Rust vision-gpu backend loaded (ADR-005)
+[native-engine] Rust win32 hot-path bindings loaded (ADR-007 P1)
+[native-engine] Rust L1 capture loaded (ADR-007 P5a)
+[native-engine] Rust VBA bridge loaded (ADR-015 Phase 3)
+# ADR-019 Stage 2b — dogfood harness
+# target: "文書 1 - Word", mode: boundary-up, cycles: 5
+# env: DESKTOP_TOUCH_STAGE2A_RING=(default on), DESKTOP_TOUCH_STAGE2B_GATE=(default on)
+# hwnd=6554242 class=OpusApp region=1440x753
+
+=== Summary (n=5 ok, 0 errors) ===
+
+DispatchOutcome.scrolled  : {"(null)":5}
+DispatchOutcome.reason    : {"(null)":5}
+observation.motion        : {"(none)":5}
+observation.source        : {"(none)":5}
+wallclock p50/p90/p99 ms : 17 / 40 / 40
+
+JSON_RESULTS={"target":"文書 1 - Word","mode":"boundary-up","cycles":5,"env":{"stage2aOff":false,"stage2bOff":false},"summary":{"scrolledCounts":{"(null)":5},"reasonCounts":{"(null)":5},"motionCounts":{"(none)":5},"sourceCounts":{"(none)":5}},"rows":[{"cycle":0,"dispatchOutcome":{"kind":"null-fallthrough","scrolled":null,"channel":null,"reason":null},"observation":null,"dispatchElapsedMs":40},{"cycle":1,"dispatchOutcome":{"kind":"null-fallthrough","scrolled":null,"channel":null,"reason":null},"observation":null,"dispatchElapsedMs":30},{"cycle":2,"dispatchOutcome":{"kind":"null-fallthrough","scrolled":null,"channel":null,"reason":null},"observation":null,"dispatchElapsedMs":17},{"cycle":3,"dispatchOutcome":{"kind":"null-fallthrough","scrolled":null,"channel":null,"reason":null},"observation":null,"dispatchElapsedMs":16},{"cycle":4,"dispatchOutcome":{"kind":"null-fallthrough","scrolled":null,"channel":null,"reason":null},"observation":null,"dispatchElapsedMs":16}]}
