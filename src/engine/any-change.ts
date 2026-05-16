@@ -29,7 +29,6 @@
 
 import type { VisualMotionObservation } from "../tools/_input-pipeline.js";
 import { nativeDuplication } from "./native-engine.js";
-import type { NativeDirtyRectSubscription } from "./native-types.js";
 import { enumMonitors } from "./win32.js";
 
 // ─── Constants (Stage 5 sub-plan §2.4) ───────────────────────────────────────
