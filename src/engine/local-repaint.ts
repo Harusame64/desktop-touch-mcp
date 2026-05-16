@@ -327,6 +327,19 @@ export async function verifyLocalRepaint(opts: {
     return observationDegrade(1 + postResult.frames.length);
   }
 
+  // Opus Round 2 P2-1 mitigation: also assert pre/post buffer dims match the
+  // declared `windowRect` (in logical coords). On per-monitor HiDPI hosts the
+  // capture backend may return **device pixels** for a logical-coord region —
+  // pre and post would still match each other but `localRect` (computed in
+  // logical coords below) would target a device-coord buffer wrongly. Degrade
+  // to `indeterminate` rather than produce incorrectly-cropped pixels.
+  if (
+    opts.preFrame.width !== opts.hint.windowRect.width ||
+    opts.preFrame.height !== opts.hint.windowRect.height
+  ) {
+    return observationDegrade(1 + postResult.frames.length);
+  }
+
   // R6 mitigation: when stable was never reached (background animation,
   // ongoing video), SSIM did not run — no `residual` data exists. Use the
   // same `observationDegrade` helper as the upstream degraded paths so
