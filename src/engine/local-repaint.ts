@@ -65,6 +65,59 @@ const LOCAL_REPAINT_POINT_PAD_HALF = 96;
  *  receives `motion: "indeterminate"`. Roughly 1000 × 1000 pixels. */
 const MAX_RECT_AREA_PX = 1_000_000;
 
+// ─── Sub-rect crop helper ────────────────────────────────────────────────────
+
+/**
+ * Extract a sub-rect of a `RawFrame` into a new `RawFrame`. Both source frame
+ * and `localRect` are in **buffer-local** coordinates (i.e. relative to the
+ * captured frame's origin, NOT screen coords). Returns `null` if the localRect
+ * falls outside the source buffer.
+ *
+ * Codex Round 2 P1 fix: pre and post frames are both captured at `windowRect`
+ * geometry (so the shape check at the orchestrator level passes regardless of
+ * whether the capture backend was PrintWindow or BitBlt fallback). To run
+ * `computeChangeFraction` and `compute_ssim_residual` on just the local
+ * repaint area, we crop both frames to `localRect` first. This keeps both
+ * downstream functions geometry-agnostic and avoids relying on the SSIM
+ * native binding's optional `region` argument (which `computeChangeFraction`
+ * does not have a counterpart for).
+ */
+function cropRawFrame(
+  frame: RawFrame,
+  localRect: { x: number; y: number; width: number; height: number },
+): RawFrame | null {
+  const { x, y, width, height } = localRect;
+  if (
+    x < 0 ||
+    y < 0 ||
+    width <= 0 ||
+    height <= 0 ||
+    x + width > frame.width ||
+    y + height > frame.height
+  ) {
+    return null;
+  }
+  if (width === frame.width && height === frame.height && x === 0 && y === 0) {
+    // No-op crop (rect == buffer) — return original.
+    return frame;
+  }
+  const ch = frame.channels;
+  const out = Buffer.alloc(width * height * ch);
+  const srcStride = frame.width * ch;
+  const dstStride = width * ch;
+  for (let row = 0; row < height; row++) {
+    const srcOffset = (y + row) * srcStride + x * ch;
+    const dstOffset = row * dstStride;
+    frame.rawPixels.copy(out, dstOffset, srcOffset, srcOffset + dstStride);
+  }
+  return {
+    rawPixels: out,
+    width,
+    height,
+    channels: ch,
+  };
+}
+
 // ─── Resolver ────────────────────────────────────────────────────────────────
 
 /**
@@ -233,9 +286,20 @@ export async function verifyLocalRepaint(opts: {
   }
 
   // Step 2: poll post-frames until stable or budget exhausts.
+  //
+  // Codex Round 2 P1 fix: capture post with **`opts.hint.windowRect`** (same
+  // geometry mouse.ts / keyboard.ts used for the pre-frame). Passing a sub-
+  // rect here is unreliable — `captureWindowRawWithFallback` documents that
+  // the PrintWindow path returns full-window pixels regardless of the region
+  // argument while the BitBlt fallback respects it, so pre/post would have
+  // mismatched dimensions on the fallback path (forced `indeterminate`) and
+  // SSIM would run on unrelated full-window pixels on the PrintWindow path
+  // (false positive `local_repaint`). Capturing both pre and post at
+  // `windowRect` plus cropping to `localRect` here gives consistent semantics
+  // regardless of which backend served the capture.
   let postResult: Awaited<ReturnType<typeof capturePostFrameUntilStable>>;
   try {
-    postResult = await capturePostFrameUntilStable(opts.hwnd, rect, {
+    postResult = await capturePostFrameUntilStable(opts.hwnd, opts.hint.windowRect, {
       pollIntervalMs: POLL_INTERVAL_MS,
       minWaitMs: MIN_WAIT_MS,
       stableThreshold: STABLE_THRESHOLD,
@@ -254,6 +318,7 @@ export async function verifyLocalRepaint(opts: {
   }
 
   // Pre / post shape must match for both `computeChangeFraction` and SSIM.
+  // Both should be windowRect-sized now (Codex Round 2 P1 fix above).
   if (
     finalStable.width !== opts.preFrame.width ||
     finalStable.height !== opts.preFrame.height ||
@@ -274,15 +339,34 @@ export async function verifyLocalRepaint(opts: {
 
   const framesSampled = 1 + postResult.frames.length;
 
-  // Step 3: cheap-reject via `computeChangeFraction` before the SSIM kernel.
-  // Acts as a short-circuit for the common "click landed but rect is
-  // unchanged" / "key fell on a focus thief" case.
+  // Step 2.5: crop pre and post to `localRect` (the sub-region of the
+  // captured window we actually care about). `localRect` translates `rect`
+  // (screen coords) to buffer-local coords by subtracting the windowRect
+  // origin. Codex Round 2 P1 fix.
+  const localRect = {
+    x: rect.x - opts.hint.windowRect.x,
+    y: rect.y - opts.hint.windowRect.y,
+    width: rect.width,
+    height: rect.height,
+  };
+  const preCrop = cropRawFrame(opts.preFrame, localRect);
+  const postCrop = cropRawFrame(finalStable, localRect);
+  if (preCrop === null || postCrop === null) {
+    // localRect falls outside the captured buffer — typically a window-rect
+    // mismatch (window moved / resized between mouse.ts capture and our
+    // post capture). Honest indeterminate.
+    return observationDegrade(framesSampled);
+  }
+
+  // Step 3: cheap-reject via `computeChangeFraction` on the cropped rect
+  // before the SSIM kernel. Short-circuit when the local rect is unchanged
+  // (idle click, focus thief landed elsewhere).
   const wholeChangeFraction = computeChangeFraction(
-    opts.preFrame.rawPixels,
-    finalStable.rawPixels,
-    finalStable.width,
-    finalStable.height,
-    finalStable.channels,
+    preCrop.rawPixels,
+    postCrop.rawPixels,
+    preCrop.width,
+    preCrop.height,
+    preCrop.channels,
   );
   if (wholeChangeFraction < NO_CHANGE_FLOOR) {
     return {
@@ -293,18 +377,18 @@ export async function verifyLocalRepaint(opts: {
     };
   }
 
-  // Step 5: SSIM kernel over the captured rect (no sub-region — the rect was
-  // already constrained at capture time).
+  // Step 5: SSIM kernel over the cropped rect. No sub-region needed — the
+  // crop already constrained the buffer to `localRect`.
   let ssim: NonNullable<
     ReturnType<NonNullable<typeof nativeEngine.computeSsimResidual>>
   >;
   try {
     ssim = nativeEngine.computeSsimResidual(
-      opts.preFrame.rawPixels,
-      finalStable.rawPixels,
-      finalStable.width,
-      finalStable.height,
-      finalStable.channels,
+      preCrop.rawPixels,
+      postCrop.rawPixels,
+      preCrop.width,
+      preCrop.height,
+      preCrop.channels,
       null,
     );
   } catch {

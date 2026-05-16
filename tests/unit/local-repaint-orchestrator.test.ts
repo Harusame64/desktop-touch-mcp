@@ -148,7 +148,7 @@ describe("verifyLocalRepaint (§2.3 orchestrator)", () => {
         hwnd: HWND,
         hint: {
           point: { x: 100, y: 100 },
-          windowRect: { x: 0, y: 0, width: 800, height: 600 },
+          windowRect: { x: 0, y: 0, width: 192, height: 192 },
         },
         preFrame: pre,
       });
@@ -164,7 +164,7 @@ describe("verifyLocalRepaint (§2.3 orchestrator)", () => {
       hwnd: HWND,
       hint: {
         point: { x: 100, y: 100 },
-        windowRect: { x: 0, y: 0, width: 800, height: 600 },
+        windowRect: { x: 0, y: 0, width: 192, height: 192 },
       },
       preFrame: null,
     });
@@ -201,7 +201,7 @@ describe("verifyLocalRepaint (§2.3 orchestrator)", () => {
       hwnd: HWND,
       hint: {
         point: { x: 100, y: 100 },
-        windowRect: { x: 0, y: 0, width: 800, height: 600 },
+        windowRect: { x: 0, y: 0, width: 192, height: 192 },
       },
       preFrame: pre,
     });
@@ -227,7 +227,7 @@ describe("verifyLocalRepaint (§2.3 orchestrator)", () => {
       hwnd: HWND,
       hint: {
         point: { x: 100, y: 100 },
-        windowRect: { x: 0, y: 0, width: 800, height: 600 },
+        windowRect: { x: 0, y: 0, width: 192, height: 192 },
       },
       preFrame: pre,
     });
@@ -257,7 +257,7 @@ describe("verifyLocalRepaint (§2.3 orchestrator)", () => {
       hwnd: HWND,
       hint: {
         point: { x: 100, y: 100 },
-        windowRect: { x: 0, y: 0, width: 800, height: 600 },
+        windowRect: { x: 0, y: 0, width: 192, height: 192 },
       },
       preFrame: pre,
     });
@@ -287,7 +287,7 @@ describe("verifyLocalRepaint (§2.3 orchestrator)", () => {
       hwnd: HWND,
       hint: {
         point: { x: 100, y: 100 },
-        windowRect: { x: 0, y: 0, width: 800, height: 600 },
+        windowRect: { x: 0, y: 0, width: 192, height: 192 },
       },
       preFrame: pre,
     });
@@ -315,7 +315,7 @@ describe("verifyLocalRepaint (§2.3 orchestrator)", () => {
       hwnd: HWND,
       hint: {
         point: { x: 100, y: 100 },
-        windowRect: { x: 0, y: 0, width: 800, height: 600 },
+        windowRect: { x: 0, y: 0, width: 192, height: 192 },
       },
       preFrame: pre,
     });
@@ -338,7 +338,7 @@ describe("verifyLocalRepaint (§2.3 orchestrator)", () => {
       hwnd: HWND,
       hint: {
         point: { x: 100, y: 100 },
-        windowRect: { x: 0, y: 0, width: 800, height: 600 },
+        windowRect: { x: 0, y: 0, width: 192, height: 192 },
       },
       preFrame: pre,
     });
@@ -361,7 +361,7 @@ describe("verifyLocalRepaint (§2.3 orchestrator)", () => {
       hwnd: HWND,
       hint: {
         point: { x: 100, y: 100 },
-        windowRect: { x: 0, y: 0, width: 800, height: 600 },
+        windowRect: { x: 0, y: 0, width: 192, height: 192 },
       },
       preFrame: pre,
     });
