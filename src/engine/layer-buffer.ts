@@ -75,8 +75,13 @@ const NOISE_THRESHOLD = 16;
 /**
  * Compare two raw pixel buffers at block resolution.
  * Returns fraction of changed blocks (0.0 – 1.0).
+ *
+ * Exported so ADR-019 Stage 2a temporal-ring telemetry in
+ * `src/tools/_input-pipeline.ts` can reuse the same block-SAD primitive
+ * (SSE2 SIMD when nativeEngine is present, TS fallback otherwise) without
+ * duplicating the noise-threshold tuning.
  */
-function computeChangeFraction(
+export function computeChangeFraction(
   prev: Buffer, curr: Buffer,
   width: number, height: number, channels: number
 ): number {
@@ -438,4 +443,242 @@ export async function captureWindowRawAndHash(
     layer.lastDHashAt = Date.now();
   }
   return { ...raw, dHash };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR-019 Stage 2a — stop-detection + causal strip filter (observation-only)
+//
+// PoC-validated algorithm (`docs/adr-019-stage-2a-poc-results.md` 2026-05-16):
+// instead of fixed `[30, 60, 120, 240] ms` sampling, poll until visual
+// stability is detected (CONSECUTIVE_STABLE consecutive frames with inter-
+// frame `changedFraction < STABLE_THRESHOLD`), then compute strip-wise diff
+// of `preFrame` vs the final stable frame oriented along the dispatch motion
+// axis. This filters caret/spinner noise semantically — caret blink touches
+// 1 strip, real scroll touches multiple strips.
+//
+// Two exported functions:
+//   - `captureFrame`                  is the dispatch-pre reference (T_pre)
+//   - `capturePostFrameUntilStable`   polls until stable or budget exhausts
+//   - `computeStripChangedFractions`  per-strip diff for the final stable frame
+//
+// All helpers measure `performance.now()` from their own call instant — the
+// caller's choice to invoke at `T_settle` makes the time-bases coincide.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Raw RGBA/RGB frame returned by Stage 2a capture helpers.
+ *
+ * Shape matches `captureWindowRawWithFallback`'s payload; exported so callers
+ * in `src/tools/_input-pipeline.ts` (Stage 2a wiring) and tests can pass the
+ * frame around without re-deriving the field set.
+ */
+export type RawFrame = {
+  rawPixels: Buffer;
+  width: number;
+  height: number;
+  channels: 3 | 4;
+};
+
+/**
+ * ADR-019 Stage 2a — single synchronous capture used for the dispatch-pre
+ * reference frame (`T_pre`).
+ *
+ * Returns `null` on any capture failure (DWM warm-up, minimised window,
+ * permission boundary) — the caller decides whether to skip Stage 2a ring
+ * activation when pre-frame is unavailable. Never throws.
+ */
+export async function captureFrame(
+  hwnd: bigint,
+  region: { x: number; y: number; width: number; height: number },
+): Promise<RawFrame | null> {
+  return captureWindowRaw(hwnd, region);
+}
+
+/**
+ * ADR-019 Stage 2a — poll post-frames until visual stability is reached or
+ * the wall-clock budget is exhausted.
+ *
+ * Algorithm (PoC-validated, see `docs/adr-019-stage-2a-poc-results.md`):
+ *   1. `await sleep(minWaitMs)` to absorb GPU staleness (PrintWindow can
+ *      return a pre-paint cached frame for ~16-50 ms; without minWait the
+ *      first two captures might be byte-identical pre-paint = false stable).
+ *   2. Capture first reference frame (`prev`). Push onto `frames`.
+ *   3. Loop until budget exhausted OR `consecutiveStable >= consecutiveStableTarget`:
+ *      - `await sleep(pollIntervalMs)`
+ *      - capture `now`
+ *      - `delta = changedFraction(prev, now)` (or 1.0 on size mismatch)
+ *      - push `now` + `delta`
+ *      - `consecutiveStable++` if `delta < stableThreshold`, else reset to 0
+ *      - `prev = now`
+ *
+ * Returns `frames[]` (the captured ring) + per-frame `deltas[]` (inter-frame
+ * stability metric) + `stableReached` + `framesToStability` + `totalElapsedMs`.
+ * The caller computes the pre-vs-final diff (strip-wise + full-window) from
+ * `preFrame` and `frames[frames.length - 1]`.
+ */
+export async function capturePostFrameUntilStable(
+  hwnd: bigint,
+  region: { x: number; y: number; width: number; height: number },
+  opts: {
+    pollIntervalMs: number;
+    minWaitMs: number;
+    stableThreshold: number;
+    consecutiveStableTarget: number;
+    budgetMs: number;
+  },
+): Promise<{
+  frames: RawFrame[];
+  deltas: number[];
+  stableReached: boolean;
+  framesToStability: number | null;
+  totalElapsedMs: number;
+}> {
+  const { pollIntervalMs, minWaitMs, stableThreshold, consecutiveStableTarget, budgetMs } = opts;
+  const start = performance.now();
+
+  await sleep(minWaitMs);
+
+  const frames: RawFrame[] = [];
+  const deltas: number[] = [];
+  let prev = await captureWindowRaw(hwnd, region);
+  if (prev === null) {
+    return {
+      frames,
+      deltas,
+      stableReached: false,
+      framesToStability: null,
+      totalElapsedMs: performance.now() - start,
+    };
+  }
+  frames.push(prev);
+
+  let consecutiveStable = 0;
+  let stableReached = false;
+  let framesToStability: number | null = null;
+
+  while (performance.now() - start < budgetMs) {
+    await sleep(pollIntervalMs);
+    const now = await captureWindowRaw(hwnd, region);
+    if (now === null) continue; // transient capture failure — try next poll
+    const delta =
+      now.width === prev.width && now.height === prev.height && now.channels === prev.channels
+        ? computeChangeFraction(prev.rawPixels, now.rawPixels, now.width, now.height, now.channels)
+        : 1.0;
+    frames.push(now);
+    deltas.push(delta);
+    if (delta < stableThreshold) {
+      consecutiveStable++;
+      if (consecutiveStable >= consecutiveStableTarget) {
+        stableReached = true;
+        framesToStability = frames.length;
+        break;
+      }
+    } else {
+      consecutiveStable = 0;
+    }
+    prev = now;
+  }
+
+  return {
+    frames,
+    deltas,
+    stableReached,
+    framesToStability,
+    totalElapsedMs: performance.now() - start,
+  };
+}
+
+/**
+ * ADR-019 Stage 2a — strip-wise `changedFraction` between two frames, with
+ * strips oriented along the expected motion axis.
+ *
+ *   axis = "vertical"   → horizontal strips (rows partitioned top→bottom),
+ *                         for scroll-up / scroll-down dispatches
+ *   axis = "horizontal" → vertical strips (columns partitioned left→right),
+ *                         for scroll-left / scroll-right dispatches
+ *
+ * The "causal" interpretation: a real scroll along the axis shifts content
+ * across multiple strips → multiple strips show non-zero changedFraction. A
+ * caret blink / local UI animation touches one region → only 1 strip shows
+ * change. Stage 2b uses `stripsAboveNoise` count to discriminate.
+ *
+ * Returns `fractions: number[]` (length = stripCount, all 1.0 on size mismatch)
+ * + `sizeMismatch: boolean`. On axis="vertical" the strip boundaries are
+ * row indices; on axis="horizontal" they are column indices. The last strip
+ * absorbs leftover pixels when (height|width) is not divisible by stripCount.
+ */
+export function computeStripChangedFractions(
+  pre: RawFrame,
+  post: RawFrame,
+  axis: "vertical" | "horizontal",
+  stripCount: number,
+): { fractions: number[]; sizeMismatch: boolean } {
+  if (
+    pre.width !== post.width ||
+    pre.height !== post.height ||
+    pre.channels !== post.channels
+  ) {
+    return { fractions: new Array(stripCount).fill(1.0), sizeMismatch: true };
+  }
+  if (stripCount <= 0) {
+    return { fractions: [], sizeMismatch: false };
+  }
+  const { width, height, channels } = pre;
+  const fractions: number[] = [];
+
+  if (axis === "vertical") {
+    // Horizontal strips — row-major slicing, zero-copy via subarray.
+    const bytesPerRow = width * channels;
+    const stripHeight = Math.floor(height / stripCount);
+    if (stripHeight <= 0) {
+      // Window too small to partition; fall back to single full-window diff
+      // replicated across strips so callers see consistent array length.
+      const f = computeChangeFraction(pre.rawPixels, post.rawPixels, width, height, channels);
+      return { fractions: new Array(stripCount).fill(f), sizeMismatch: false };
+    }
+    for (let i = 0; i < stripCount; i++) {
+      const rowStart = i * stripHeight;
+      const rowEnd = i === stripCount - 1 ? height : (i + 1) * stripHeight;
+      const sliceH = rowEnd - rowStart;
+      const byteStart = rowStart * bytesPerRow;
+      const byteEnd = rowEnd * bytesPerRow;
+      const preSlice = pre.rawPixels.subarray(byteStart, byteEnd);
+      const postSlice = post.rawPixels.subarray(byteStart, byteEnd);
+      fractions.push(
+        computeChangeFraction(preSlice, postSlice, width, sliceH, channels),
+      );
+    }
+  } else {
+    // Vertical strips — column slicing requires a per-strip copy (rows are
+    // contiguous in memory but columns are interleaved). Acceptable for
+    // Stage 2a's small strip count (4); Stage 2b can refine to per-strip
+    // SIMD inside Rust if telemetry shows hot-path pressure.
+    const stripWidth = Math.floor(width / stripCount);
+    if (stripWidth <= 0) {
+      const f = computeChangeFraction(pre.rawPixels, post.rawPixels, width, height, channels);
+      return { fractions: new Array(stripCount).fill(f), sizeMismatch: false };
+    }
+    for (let i = 0; i < stripCount; i++) {
+      const colStart = i * stripWidth;
+      const colEnd = i === stripCount - 1 ? width : (i + 1) * stripWidth;
+      const sliceW = colEnd - colStart;
+      const sliceBytes = sliceW * channels * height;
+      const preStrip = Buffer.alloc(sliceBytes);
+      const postStrip = Buffer.alloc(sliceBytes);
+      for (let y = 0; y < height; y++) {
+        const srcOff = (y * width + colStart) * channels;
+        const dstOff = y * sliceW * channels;
+        pre.rawPixels.copy(preStrip, dstOff, srcOff, srcOff + sliceW * channels);
+        post.rawPixels.copy(postStrip, dstOff, srcOff, srcOff + sliceW * channels);
+      }
+      fractions.push(
+        computeChangeFraction(preStrip, postStrip, sliceW, height, channels),
+      );
+    }
+  }
+  return { fractions, sizeMismatch: false };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
