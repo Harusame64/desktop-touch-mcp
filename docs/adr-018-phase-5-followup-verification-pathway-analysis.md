@@ -154,9 +154,16 @@ verifyVisualMotion(
 ```ts
 {
   motion: "translation" | "local_repaint" | "no_change" | "indeterminate";
-  // present iff motion === "translation"
-  shift?: { dx: number; dy: number; confidence: number };  // sub-pixel possible
-  // present iff motion === "local_repaint"
+  // Present when the algorithm produced a numeric shift (e.g. UIA percent for
+  // source: "uia_scroll_percent"); may be absent for sources that produce
+  // only a binary motion verdict (e.g. source: "temporal_ring_observation_only").
+  // Sub-pixel possible. ADR-019 Stage 2b sub-plan §2.4 Option A — `shift` is
+  // present when measurable; `motion` is present always.
+  shift?: { dx: number; dy: number; confidence: number };
+  // Present when the algorithm measured a local repaint signature (e.g.
+  // SSIM residual fraction for source: "ssim_residual"); may be absent for
+  // sources that produce only a binary motion verdict (sub-plan §2.4 Option A
+  // relaxation, same rationale as `shift?` above).
   residual?: { fractionChanged: number; centroid?: { x: number; y: number } };
   // metadata
   source: "uia_scroll_percent" | "block_motion_vectors" | "tiled_phase_correlation"

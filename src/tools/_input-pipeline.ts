@@ -388,9 +388,25 @@ export interface DispatchOutcome {
  */
 export interface VisualMotionObservation {
   motion: "translation" | "local_repaint" | "no_change" | "indeterminate";
-  /** present iff motion === "translation" */
+  /**
+   * Present when the algorithm produced a numeric shift (e.g. UIA percent
+   * delta for `source: "uia_scroll_percent"`); may be absent for sources
+   * that produce only a binary motion verdict (e.g.
+   * `source: "temporal_ring_observation_only"` whose `finalChangedFraction`
+   * is a scalar gate input, not a pixel-level shift). ADR-019 Stage 2b
+   * sub-plan §2.4 Option A: an honest contract relaxation — `shift` is
+   * present when measurable; `motion` is always present. CLAUDE.md §3.1
+   * sweep targets: ADR-019 §2.1, this docstring, and
+   * `docs/adr-018-phase-5-followup-verification-pathway-analysis.md`
+   * lines 157/159.
+   */
   shift?: { dx: number; dy: number; confidence: number };
-  /** present iff motion === "local_repaint" */
+  /**
+   * Present when the algorithm measured a local repaint signature (e.g.
+   * SSIM residual fraction for `source: "ssim_residual"`). May be absent
+   * for sources that produce only a binary motion verdict (Option A
+   * relaxation, sub-plan §2.4 — same rationale as `shift?` above).
+   */
   residual?: {
     fractionChanged: number;
     centroid?: { x: number; y: number };

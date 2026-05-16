@@ -76,9 +76,16 @@ type VisualMotionObservation = {
     | "local_repaint"
     | "no_change"
     | "indeterminate";
-  /** present iff motion === "translation" */
+  /** Present when the algorithm produced a numeric shift (e.g. UIA percent for
+   *  `source: "uia_scroll_percent"`); may be absent for sources that produce
+   *  only a binary motion verdict (e.g. `source: "temporal_ring_observation_only"`).
+   *  Stage 2b sub-plan §2.4 Option A — `shift` is present when measurable;
+   *  `motion` is present always. */
   shift?: { dx: number; dy: number; confidence: number };
-  /** present iff motion === "local_repaint" */
+  /** Present when the algorithm measured a local repaint signature (e.g.
+   *  SSIM residual fraction for `source: "ssim_residual"`); may be absent
+   *  for sources that produce only a binary motion verdict (sub-plan §2.4
+   *  Option A relaxation, same rationale as `shift?` above). */
   residual?: { fractionChanged: number; centroid?: { x: number; y: number } };
   /** algorithm that produced this observation. **Canonical 8-value enum** — single
    *  source of truth for the surface; ADR-018 §2.6 envelope reference and
