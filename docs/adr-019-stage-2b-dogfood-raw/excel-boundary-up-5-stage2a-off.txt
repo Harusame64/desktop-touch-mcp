@@ -1,0 +1,20 @@
+[native-engine] Rust image-diff engine loaded (SSE2 SIMD)
+[native-engine] Rust UIA engine loaded
+[native-engine] Rust vision-gpu backend loaded (ADR-005)
+[native-engine] Rust win32 hot-path bindings loaded (ADR-007 P1)
+[native-engine] Rust L1 capture loaded (ADR-007 P5a)
+[native-engine] Rust VBA bridge loaded (ADR-015 Phase 3)
+# ADR-019 Stage 2b — dogfood harness
+# target: "Book1 - Excel", mode: boundary-up, cycles: 5
+# env: DESKTOP_TOUCH_STAGE2A_RING=0, DESKTOP_TOUCH_STAGE2B_GATE=(default on)
+# hwnd=854772 class=XLMAIN region=905x555
+
+=== Summary (n=5 ok, 0 errors) ===
+
+DispatchOutcome.scrolled  : {"true":5}
+DispatchOutcome.reason    : {"delivered_via_postmessage":5}
+observation.motion        : {"indeterminate":5}
+observation.source        : {"chain_trust_unverified":5}
+wallclock p50/p90/p99 ms : 139 / 146 / 146
+
+JSON_RESULTS={"target":"Book1 - Excel","mode":"boundary-up","cycles":5,"env":{"stage2aOff":true,"stage2bOff":false},"summary":{"scrolledCounts":{"true":5},"reasonCounts":{"delivered_via_postmessage":5},"motionCounts":{"indeterminate":5},"sourceCounts":{"chain_trust_unverified":5}},"rows":[{"cycle":0,"dispatchOutcome":{"kind":"non-null","scrolled":true,"channel":"postmessage","reason":"delivered_via_postmessage"},"observation":{"motion":"indeterminate","source":"chain_trust_unverified","framesSampled":0,"totalElapsedMs":0,"finalChangedFraction":null,"stableReached":null,"stripsAboveNoise":null},"dispatchElapsedMs":146},{"cycle":1,"dispatchOutcome":{"kind":"non-null","scrolled":true,"channel":"postmessage","reason":"delivered_via_postmessage"},"observation":{"motion":"indeterminate","source":"chain_trust_unverified","framesSampled":0,"totalElapsedMs":0,"finalChangedFraction":null,"stableReached":null,"stripsAboveNoise":null},"dispatchElapsedMs":139},{"cycle":2,"dispatchOutcome":{"kind":"non-null","scrolled":true,"channel":"postmessage","reason":"delivered_via_postmessage"},"observation":{"motion":"indeterminate","source":"chain_trust_unverified","framesSampled":0,"totalElapsedMs":0,"finalChangedFraction":null,"stableReached":null,"stripsAboveNoise":null},"dispatchElapsedMs":143},{"cycle":3,"dispatchOutcome":{"kind":"non-null","scrolled":true,"channel":"postmessage","reason":"delivered_via_postmessage"},"observation":{"motion":"indeterminate","source":"chain_trust_unverified","framesSampled":0,"totalElapsedMs":0,"finalChangedFraction":null,"stableReached":null,"stripsAboveNoise":null},"dispatchElapsedMs":128},{"cycle":4,"dispatchOutcome":{"kind":"non-null","scrolled":true,"channel":"postmessage","reason":"delivered_via_postmessage"},"observation":{"motion":"indeterminate","source":"chain_trust_unverified","framesSampled":0,"totalElapsedMs":0,"finalChangedFraction":null,"stableReached":null,"stripsAboveNoise":null},"dispatchElapsedMs":124}]}

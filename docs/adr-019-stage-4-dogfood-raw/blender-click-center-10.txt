@@ -1,0 +1,18 @@
+[native-engine] Rust image-diff engine loaded (SSE2 SIMD)
+[native-engine] Rust UIA engine loaded
+[native-engine] Rust vision-gpu backend loaded (ADR-005)
+[native-engine] Rust win32 hot-path bindings loaded (ADR-007 P1)
+[native-engine] Rust L1 capture loaded (ADR-007 P5a)
+[native-engine] Rust VBA bridge loaded (ADR-015 Phase 3)
+# ADR-019 Stage 4 — dogfood harness (local_repaint primitive)
+# target: "Blender 5.1.1", mode: click, cycles: 10
+# hwnd=40373326 class=GHOST_WindowClass region=1936x1048 clickPoint=(960,516)
+
+=== Summary (n=10 ok, 0 errors) ===
+
+observation.motion         : {"indeterminate":1,"no_change":9}
+observation.source         : {"ssim_residual":10}
+rectSource (resolver)      : {"point_padded":10}
+verifyElapsedMs p50/p90/p99: 210 / 1445 / 1445
+
+JSON_RESULTS={"target":"Blender 5.1.1","mode":"click","cycles":10,"summary":{"motionCounts":{"indeterminate":1,"no_change":9},"sourceCounts":{"ssim_residual":10},"rectSourceCounts":{"point_padded":10}},"rows":[{"cycle":0,"mode":"click","rectSource":"point_padded","resolvedRect":{"x":864,"y":420,"width":192,"height":192},"observation":{"motion":"indeterminate","source":"ssim_residual","framesSampled":2,"totalElapsedMs":1444,"residual":null},"dispatchElapsedMs":17,"verifyElapsedMs":1445},{"cycle":1,"mode":"click","rectSource":"point_padded","resolvedRect":{"x":864,"y":420,"width":192,"height":192},"observation":{"motion":"no_change","source":"ssim_residual","framesSampled":4,"totalElapsedMs":212,"residual":null},"dispatchElapsedMs":14,"verifyElapsedMs":212},{"cycle":2,"mode":"click","rectSource":"point_padded","resolvedRect":{"x":864,"y":420,"width":192,"height":192},"observation":{"motion":"no_change","source":"ssim_residual","framesSampled":4,"totalElapsedMs":211,"residual":null},"dispatchElapsedMs":11,"verifyElapsedMs":211},{"cycle":3,"mode":"click","rectSource":"point_padded","resolvedRect":{"x":864,"y":420,"width":192,"height":192},"observation":{"motion":"no_change","source":"ssim_residual","framesSampled":4,"totalElapsedMs":213,"residual":null},"dispatchElapsedMs":14,"verifyElapsedMs":213},{"cycle":4,"mode":"click","rectSource":"point_padded","resolvedRect":{"x":864,"y":420,"width":192,"height":192},"observation":{"motion":"no_change","source":"ssim_residual","framesSampled":4,"totalElapsedMs":210,"residual":null},"dispatchElapsedMs":2,"verifyElapsedMs":210},{"cycle":5,"mode":"click","rectSource":"point_padded","resolvedRect":{"x":864,"y":420,"width":192,"height":192},"observation":{"motion":"no_change","source":"ssim_residual","framesSampled":4,"totalElapsedMs":207,"residual":null},"dispatchElapsedMs":9,"verifyElapsedMs":207},{"cycle":6,"mode":"click","rectSource":"point_padded","resolvedRect":{"x":864,"y":420,"width":192,"height":192},"observation":{"motion":"no_change","source":"ssim_residual","framesSampled":4,"totalElapsedMs":206,"residual":null},"dispatchElapsedMs":12,"verifyElapsedMs":206},{"cycle":7,"mode":"click","rectSource":"point_padded","resolvedRect":{"x":864,"y":420,"width":192,"height":192},"observation":{"motion":"no_change","source":"ssim_residual","framesSampled":4,"totalElapsedMs":207,"residual":null},"dispatchElapsedMs":11,"verifyElapsedMs":207},{"cycle":8,"mode":"click","rectSource":"point_padded","resolvedRect":{"x":864,"y":420,"width":192,"height":192},"observation":{"motion":"no_change","source":"ssim_residual","framesSampled":4,"totalElapsedMs":207,"residual":null},"dispatchElapsedMs":12,"verifyElapsedMs":207},{"cycle":9,"mode":"click","rectSource":"point_padded","resolvedRect":{"x":864,"y":420,"width":192,"height":192},"observation":{"motion":"no_change","source":"ssim_residual","framesSampled":4,"totalElapsedMs":206,"residual":null},"dispatchElapsedMs":2,"verifyElapsedMs":206}]}
