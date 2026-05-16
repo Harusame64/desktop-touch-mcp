@@ -260,6 +260,18 @@ export interface NativeUia {
     wheelDeltaY: number;
     wheelDeltaX: number;
   }): Promise<NativeScrollResult>;
+  /**
+   * ADR-019 MVP-1 (Stage 1) — read-only `ScrollPercent` observation. Walks
+   * UIA ancestors then DFS subtree to find a ScrollPattern whose requested
+   * axis is scrollable, returns `CurrentVertical/HorizontalScrollPercent`
+   * (0.0..=100.0). Returns `null` when no pattern is exposed (custom-paint
+   * receivers like Excel `NUIScrollbar`, Word MFC). Pure observation;
+   * never writes.
+   */
+  uiaReadScrollPercentAtHwnd?(opts: {
+    hwnd: string;
+    axis: "vertical" | "horizontal";
+  }): Promise<number | null>;
   uiaGetVirtualDesktopStatus?(
     hwndIntegers: string[],
   ): Promise<Record<string, boolean>>;
