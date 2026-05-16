@@ -1,8 +1,42 @@
 # Changelog
 
-## [Unreleased]
+## [1.6.0] - 2026-05-16 — Excel scroll fix + verifyDelivery.observation hint with chain-trust telemetry
 
 ### Added
+
+- **`scroll(action:'raw', …)` now reports a richer `verifyDelivery.observation`
+  hint** with multi-frame ring-buffer telemetry when the dispatcher's
+  chain-trust path runs (Excel cell grid is the confirmed target; other
+  MDI receivers fall through to Tier 1 UIA). When `observation.source`
+  is `"temporal_ring_observation_only"`, the hint now also carries
+  `ringTelemetry` with:
+  - `finalChangedFraction` — block-level diff between the pre-dispatch
+    frame and the first visually-stable post-dispatch frame. Values
+    above `0` indicate the wheel produced a visible change; on Excel
+    the idle baseline is `0.000` and a real 3-notch scroll measures
+    `0.003–0.015`. The LLM caller can treat any non-zero value as
+    "the action moved something on screen" without per-app threshold
+    tuning.
+  - `axis` + `stripCount` + `finalStripChangedFractions[]` +
+    `stripsAboveNoise` — per-strip diff partitioned along the
+    dispatch motion axis (horizontal strips for vertical scroll). A
+    real scroll touches multiple strips; a caret blink or local UI
+    animation touches one. The LLM caller can distinguish translation
+    from local repaint from the strip-count shape rather than tuning
+    a global threshold.
+  - `stableReached` + `framesToStability` + `changedFractions[]` +
+    `maxChangedFraction` — the polling diagnostics that tell the
+    LLM caller whether visual stability was reached within the
+    700 ms wall-clock budget, how many frames it took to stabilise,
+    and the inter-frame deltas along the way. `stableReached: false`
+    means the budget exhausted without reaching stability (e.g. a
+    persistent UI animation in the captured region); the dispatcher
+    still emits `delivered_via_postmessage` honestly with this
+    diagnostic visible.
+
+  All new fields are additive on the existing `verifyDelivery.observation`
+  surface introduced earlier in this release. Existing callers that
+  ignore the hint are unaffected.
 
 - **`scroll(action:'raw', …)` now reports a `verifyDelivery.observation`
   hint** when the dispatcher's chain-trust path runs (Excel cell grid /
