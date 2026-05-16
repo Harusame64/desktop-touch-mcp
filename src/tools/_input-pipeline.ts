@@ -86,6 +86,62 @@ const CDP_SCROLL_DELIVERY_EPSILON_PX = 1;
 const POSTMESSAGE_SETTLE_MS = 16;
 
 /**
+ * ADR-019 MVP-1 (Stage 1) — UIA `ScrollPercent` pre/post delta threshold for
+ * `observation.source: "uia_scroll_percent"`. Aligned with `mouse.ts`
+ * `SCROLL_PERCENT_EPSILON = 1e-6` baseline; the chain-trust observation
+ * needs a slightly larger floor because UIA percent reads on custom-paint
+ * receivers may exhibit sub-percent jitter on idle frames. 1e-3 (0.001 %)
+ * is empirically a safe gate.
+ */
+const SCROLL_PERCENT_EPSILON_OBSERVATION = 1e-3;
+
+/**
+ * ADR-019 MVP-1 (Stage 1) — `Promise.race` budget for the pre-snapshot UIA
+ * `ScrollPercent` read in `postWheelToHwnd`'s chain-trust path. The wheel
+ * dispatch must NOT block for seconds on a slow UIA provider (Codex PR #309
+ * Round 1 P2), but the pre-snapshot ALSO MUST be a genuine pre-dispatch
+ * sample (Codex PR #309 Round 2 P2 — a fire-and-forget Promise that
+ * resolves after the chunk loop would carry a post-scroll value). 100 ms
+ * is the compromise: UIA reads typically return in 1-5 ms (well under
+ * budget) while the worst-case dispatch delay is bounded at an
+ * interactive-acceptable ceiling. Timeout → `preUiaPercent = null` →
+ * observation falls back to `chain_trust_unverified` honestly.
+ */
+const UIA_PRE_READ_TIMEOUT_MS = 100;
+
+/**
+ * ADR-019 MVP-1 (Stage 1) — same budget for the post-snapshot UIA read
+ * inside `observeViaUiaOrChainTrust`. Without this bound, the post-read
+ * could block the dispatcher's return for the full 8 s Rust thread
+ * timeout when the UIA provider hangs (Codex PR #309 Round 3 P2 — same
+ * blocking concern as the pre-read, applied symmetrically to post).
+ * Timeout → observation falls back to `chain_trust_unverified`.
+ */
+const UIA_POST_READ_TIMEOUT_MS = 100;
+
+/**
+ * ADR-019 MVP-1 (Stage 1) — known limitation, Codex PR #309 Round 3 P2:
+ *
+ * `Promise.race` against `UIA_PRE_READ_TIMEOUT_MS` / `UIA_POST_READ_TIMEOUT_MS`
+ * lets the JS path return quickly when the UIA read is slow, BUT the
+ * losing `readUiaPercent` Promise is never cancelled — the underlying
+ * Rust napi task (`thread::execute_with_timeout` in `src/uia/scroll.rs`)
+ * continues running until its own 8 s timeout. Under repeated scrolls
+ * against a slow / hung provider, each call enqueues another long-running
+ * UIA read into the native worker queue, causing backlog and sustained
+ * degraded behaviour even though the JS path returns fast with
+ * `chain_trust_unverified`.
+ *
+ * Mitigation deferred to Stage 2a (multi-frame ring buffer) where the
+ * temporal observation surface naturally batches / coalesces per-HWND
+ * in-flight reads; a per-HWND in-flight gate or an AbortSignal wired
+ * through the napi task lifecycle is the proper structural fix and is
+ * out of scope for MVP-1. For Stage 1, the JS-side timeout is a
+ * meaningful improvement over the pre-PR-309-Round-2 8 s wallclock-stall
+ * even without native cancellation.
+ */
+
+/**
  * ADR-018 Phase 4 — Tier 3 PostMessage minimum observable `nPos` delta to
  * classify the scroll as `delivered_via_postmessage`. Scrollbar position is
  * reported in app-defined units (often pixels for a custom scrollbar, line
@@ -198,6 +254,62 @@ export interface DispatchOutcome {
     | "delivered_via_cdp"
     | "delivered_via_postmessage"
     | null;
+  /**
+   * ADR-019 MVP-1 (Stage 1) — additive observation telemetry. Populated
+   * when a TMOL primitive (UIA `ScrollPercent` for Stage 1; block motion /
+   * tiled phase correlation / SSIM / DXGI for Stages 2-5) produces a
+   * concrete observation; absent on legacy Tier 1 / 2 / 3 paths that have
+   * not yet been wired through TMOL. The `source` enum is canonically
+   * defined in `docs/adr-019-anti-fukuwarai-v3-temporal-motion-observation.md`
+   * §2.1; keep all surfaces (this type, `ScrollVerifyOutcome.observation`,
+   * the envelope hint, ADR-018 §2.6 reference, ADR-019 §2.1) bit-equal.
+   */
+  observation?: VisualMotionObservation;
+}
+
+/**
+ * ADR-019 §2.1 — `VisualMotionObservation`. Carried additively in
+ * `DispatchOutcome.observation` / `ScrollVerifyOutcome.observation` /
+ * `verifyDelivery.observation` envelope hint. Existing callers that ignore
+ * the field are unaffected (CLAUDE.md §3.2 carry-over scope shrink).
+ */
+export interface VisualMotionObservation {
+  motion: "translation" | "local_repaint" | "no_change" | "indeterminate";
+  /** present iff motion === "translation" */
+  shift?: { dx: number; dy: number; confidence: number };
+  /** present iff motion === "local_repaint" */
+  residual?: {
+    fractionChanged: number;
+    centroid?: { x: number; y: number };
+  };
+  /**
+   * Algorithm that produced this observation. Stage 1 emits
+   * `"uia_scroll_percent"` (success) or `"chain_trust_unverified"`
+   * (UIA pattern not exposed, chain-trust fall-through). Stages 2-5+
+   * add the remaining values.
+   */
+  source:
+    | "uia_scroll_percent"
+    | "block_motion_vectors"
+    | "tiled_phase_correlation"
+    | "ssim_residual"
+    | "dxgi_dirty_rect"
+    | "optical_flow"
+    | "temporal_ring_observation_only"
+    | "chain_trust_unverified";
+  /**
+   * Stage 2a multi-frame ring buffer telemetry (Stage 1 leaves undefined).
+   * Populated when the temporal observation layer captured a ring; carries
+   * the per-frame `computeChangeFraction` series for empirical calibration.
+   */
+  ringTelemetry?: {
+    framesSampled: number;
+    elapsedMsPerFrame: number[];
+    changedFractions: number[];
+    maxChangedFraction: number;
+  };
+  framesSampled: number;
+  totalElapsedMs: number;
 }
 
 // ─── Resolver ────────────────────────────────────────────────────────────────
@@ -363,6 +475,103 @@ export function assertTier4Reachable(dest: InputDestination): void {
   }
 }
 
+/**
+ * ADR-019 MVP-1 (Stage 1) — chain-trust observation gate. Called inside the
+ * `postWheelToHwnd` Case 2a branch (leaf walker retargeted + `GetScrollInfo`
+ * returns null) AFTER the PostMessage chunking loop has posted at least one
+ * chunk. Reads UIA `ScrollPercent` post-snapshot, compares with the supplied
+ * pre-snapshot, and returns the corresponding `VisualMotionObservation`.
+ *
+ *   - pre + post both non-null AND |delta| ≥ epsilon → translation observed
+ *     via UIA percent. Stage 1 doesn't convert the percent to a pixel shift
+ *     (different observers carry different units — block motion vectors will
+ *     carry pixels in Stage 2b); just record `source: "uia_scroll_percent"`
+ *     and let the caller trust the result.
+ *   - pre non-null + post non-null AND |delta| < epsilon → no_change. The
+ *     wheel reached the receiver but the receiver did not advance (boundary
+ *     case Codex PR #308 P1 honest signal).
+ *   - any failure (UIA pattern not exposed on either snapshot, post read
+ *     throws) → fall through to chain-trust assertion: `source:
+ *     "chain_trust_unverified"`.
+ *
+ * Stages 2-5 add additional observers (block motion vectors / phase
+ * correlation / SSIM / DXGI dirty-rect); this helper is the first one wired.
+ */
+async function observeViaUiaOrChainTrust(
+  effectiveHwnd: bigint,
+  axis: "vertical" | "horizontal",
+  preUiaPercent: number | null,
+  preElapsedMs: number,
+  readUiaPercent:
+    | ((opts: {
+        hwnd: string;
+        axis: "vertical" | "horizontal";
+      }) => Promise<number | null>)
+    | undefined,
+): Promise<VisualMotionObservation> {
+  if (preUiaPercent !== null && typeof readUiaPercent === "function") {
+    const tPostStart = performance.now();
+    try {
+      // Same bounded-await pattern as the pre-read site (Codex PR #309
+      // Round 3 P2 — post must also not block the dispatcher's return
+      // for seconds on a slow / hung UIA provider). 100 ms cap; timeout
+      // → observation falls back to `chain_trust_unverified`. See
+      // `UIA_POST_READ_TIMEOUT_MS` docstring for the rationale and the
+      // known native-cancellation limitation.
+      const postReadPromise = readUiaPercent({
+        hwnd: effectiveHwnd.toString(),
+        axis,
+      }).catch(() => null);
+      const postTimeoutPromise = new Promise<null>((resolve) =>
+        setTimeout(() => resolve(null), UIA_POST_READ_TIMEOUT_MS),
+      );
+      const postUiaPercent = await Promise.race([
+        postReadPromise,
+        postTimeoutPromise,
+      ]);
+      const postElapsedMs = performance.now() - tPostStart;
+      // ADR-019 §2.1: `framesSampled` is documented to be the number of
+      // pre/post observation samples this primitive captured. For Stage 1
+      // UIA percent reads, that is exactly 2 (pre + post). `totalElapsedMs`
+      // is the actual wallclock spent on the pre and post reads — feeds the
+      // AC6 fast-path budget bench (Opus Round 1 P2-2).
+      const totalElapsedMs = preElapsedMs + postElapsedMs;
+      if (postUiaPercent !== null) {
+        const delta = postUiaPercent - preUiaPercent;
+        if (Math.abs(delta) >= SCROLL_PERCENT_EPSILON_OBSERVATION) {
+          return {
+            motion: "translation",
+            source: "uia_scroll_percent",
+            framesSampled: 2,
+            totalElapsedMs,
+          };
+        }
+        // pre and post both readable, but no meaningful delta. Honest "no
+        // movement" signal — the UIA observer says the receiver did not
+        // scroll (boundary / non-scrollable / receiver chose not to act).
+        return {
+          motion: "no_change",
+          source: "uia_scroll_percent",
+          framesSampled: 2,
+          totalElapsedMs,
+        };
+      }
+    } catch {
+      // Any throw during post-snapshot falls through to chain-trust.
+    }
+  }
+  // Chain-trust fall-through: UIA pattern wasn't exposed on the leaf OR the
+  // post-snapshot failed. The dispatcher still emits delivered_via_postmessage
+  // (PR #308 chain-table trust), but the observation field signals that the
+  // delivery is unverified at the observation layer (LLM honest signal).
+  return {
+    motion: "indeterminate",
+    source: "chain_trust_unverified",
+    framesSampled: 0,
+    totalElapsedMs: 0,
+  };
+}
+
 // ─── Tier 3 PostMessage helpers (ADR-018 §4 Phase 4) ─────────────────────────
 
 /**
@@ -490,7 +699,14 @@ export async function postWheelToHwnd(
 
     const axisIsVertical =
       params.direction === "up" || params.direction === "down";
-    const axisName = axisIsVertical ? "vertical" : "horizontal";
+    // `axisName` is narrowed to `"vertical" | "horizontal"` by the ternary;
+    // both `getScrollInfo` and `uiaReadScrollPercentAtHwnd` accept that union
+    // directly so no `as` cast is needed downstream (Opus PR #309 Round 1 P2-1
+    // / P2-3 — eliminate the duplicate axis-cast that previously existed at
+    // the two call sites).
+    const axisName: "vertical" | "horizontal" = axisIsVertical
+      ? "vertical"
+      : "horizontal";
 
     // Pre-snapshot is best-effort. Two distinct "no observation" cases must
     // be kept apart (Codex PR #305 review P2-A):
@@ -512,6 +728,55 @@ export async function postWheelToHwnd(
     const pre = getScrollInfoAvailable
       ? getScrollInfo(effectiveHwnd, axisName)
       : null;
+
+    // ADR-019 MVP-1 (Stage 1) — read-only UIA `ScrollPercent` pre-snapshot.
+    // The dispatcher's chain-trust branch (Case 2a below) prefers UIA percent
+    // when available because it's the OS-canonical observation (TMOL
+    // `scroll_translation` fast path). Best-effort: null preUiaPercent or any
+    // throw falls back to the bare chain-trust assertion (observation.source:
+    // "chain_trust_unverified"). Only meaningful when retargetedByLeafWalker
+    // is true; for non-MDI apps the Win32 SB_VERT pre-snapshot is the path.
+    // ADR-019 MVP-1 (Stage 1) — bounded-await pre-snapshot UIA read. The
+    // value MUST be a real pre-dispatch sample (Codex PR #309 Round 2 P2 —
+    // a fire-and-forget Promise that resolves AFTER the chunk loop would
+    // carry a *post-scroll* value, breaking the chain-trust observation
+    // contract). The value MUST NOT block dispatch for seconds (Codex PR
+    // #309 Round 1 P2 — a slow/hung UIA provider should not delay sending
+    // wheel messages). Resolution: `Promise.race` the pre-read against a
+    // tight wallclock budget (`UIA_PRE_READ_TIMEOUT_MS = 100ms`), then
+    // proceed with chunking. UIA reads typically return in ~1-5 ms, well
+    // under the budget; the 100 ms ceiling caps the worst-case dispatch
+    // delay at a level acceptable for an interactive scroll. Timeout →
+    // observation falls back to `chain_trust_unverified` honestly.
+    //
+    // **Gate** (Codex PR #309 Round 4 P2): the UIA pre-read is only useful
+    // when `pre === null` (Case 2a chain-trust branch). For Case 1
+    // (`getScrollInfoAvailable === false`) and Case 3 (`pre !== null`,
+    // standard Tier 3 path) the value is never consumed, so issuing the
+    // RPC would only pay up-to-100 ms latency for no benefit (and load
+    // the native UIA worker queue unnecessarily). Skip the read in those
+    // paths.
+    const readUiaPercent = nativeUia?.uiaReadScrollPercentAtHwnd;
+    let preUiaPercent: number | null = null;
+    let preUiaElapsedMs = 0;
+    if (
+      retargetedByLeafWalker &&
+      pre === null &&
+      getScrollInfoAvailable &&
+      typeof readUiaPercent === "function"
+    ) {
+      const tPreStart = performance.now();
+      const preReadPromise = readUiaPercent({
+        hwnd: effectiveHwnd.toString(),
+        axis: axisName,
+      }).catch(() => null);
+      const timeoutPromise = new Promise<null>((resolve) =>
+        setTimeout(() => resolve(null), UIA_PRE_READ_TIMEOUT_MS),
+      );
+      const result = await Promise.race([preReadPromise, timeoutPromise]);
+      preUiaPercent = result;
+      preUiaElapsedMs = performance.now() - tPreStart;
+    }
 
     // Chunk the wheel delta into ≤ 16-bit signed messages so the receiver's
     // `GET_WHEEL_DELTA_WPARAM` (signed short) does not wrap. For typical
@@ -595,10 +860,31 @@ export async function postWheelToHwnd(
     //       caller emits `target_unreachable` per ADR §2.6.2 path-(b).
     if (pre === null) {
       if (retargetedByLeafWalker) {
+        // ADR-019 MVP-1 Case 2a: try UIA `ScrollPercent` observation BEFORE
+        // emitting the bare chain-trust assertion. When the leaf (or one of
+        // its UIA ancestors / descendants) exposes a ScrollPattern whose
+        // pre/post percent differ by ≥ SCROLL_PERCENT_EPSILON_OBSERVATION,
+        // attach an `observation.source: "uia_scroll_percent"` with the
+        // numeric percent delta. Otherwise attach `observation.source:
+        // "chain_trust_unverified"` so the caller knows the delivery is
+        // unverified (Stage 1 honest signal; Stages 2-5 upgrade this).
+        // `preUiaPercent` and `preUiaElapsedMs` were captured ABOVE the
+        // chunking loop via `Promise.race` against `UIA_PRE_READ_TIMEOUT_MS`
+        // (Codex PR #309 Round 2 P2 — pre value must be a real pre-dispatch
+        // sample; Round 1 P2 — bounded so a slow provider does not stall
+        // dispatch for seconds).
+        const observation = await observeViaUiaOrChainTrust(
+          effectiveHwnd,
+          axisName,
+          preUiaPercent,
+          preUiaElapsedMs,
+          readUiaPercent,
+        );
         return {
           scrolled: true,
           channel: "postmessage",
           reason: "delivered_via_postmessage",
+          observation,
         };
       }
       return null;

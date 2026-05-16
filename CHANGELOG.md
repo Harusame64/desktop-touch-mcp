@@ -2,6 +2,41 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`scroll(action:'raw', …)` now reports a `verifyDelivery.observation`
+  hint** when the dispatcher's chain-trust path runs (Excel cell grid /
+  Word document body / similar MDI receivers). The new hint tells the
+  LLM caller whether the delivery was independently observed or trusted
+  by the dispatcher without observation. Three values ship in this
+  release:
+  - `observation.source: "uia_scroll_percent"` with `motion: "translation"`
+    — the dispatcher read the receiver's scroll-percent via the
+    accessibility API before and after the wheel message, and the
+    percent changed. This is the most confident "delivered" signal
+    available for custom-painted receivers and applies when the
+    target exposes a UI Automation `ScrollPattern`.
+  - `observation.source: "uia_scroll_percent"` with `motion: "no_change"`
+    — same observation channel, but the percent did NOT change (boundary
+    case: the receiver got the wheel and decided not to scroll, for
+    example because the document is already at the top). The dispatcher
+    still reports `verifyDelivery.status: "delivered"` (matches Tier 1
+    boundary semantics), but the `motion: "no_change"` hint lets the
+    LLM caller distinguish "actually moved" from "reached the receiver
+    but no-op."
+  - `observation.source: "chain_trust_unverified"` with `motion:
+    "indeterminate"` — the receiver does not expose a `ScrollPattern`
+    for reads (the common case for Excel `NUIScrollbar` / Word MFC
+    custom-paint surfaces), so the dispatcher trusts the documented
+    receiver contract for custom-painted scroll surfaces without
+    independent observation. This is the same delivery contract as
+    before, now with an explicit "unverified at the observation layer"
+    hint instead of a silent assumption.
+
+  Existing callers that ignore the hint are unaffected. The field is
+  optional and only attached when a chain-trust observation actually
+  ran.
+
 ### Fixed
 
 - **`scroll(action:'raw', windowTitle:'Book1 - Excel')` now actually scrolls

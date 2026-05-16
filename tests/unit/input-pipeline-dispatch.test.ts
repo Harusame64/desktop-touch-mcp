@@ -36,8 +36,21 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // `uiaScrollByWheelAtHwnd` property. `nativeWin32Mock` is the Phase 4 Tier 3
 // PostMessage surface (`win32PostMessage` + `win32GetScrollInfo`).
 const uiaScrollByWheelAtHwndMock = vi.fn();
-const nativeUiaMock: { uiaScrollByWheelAtHwnd?: unknown } = {
+// ADR-019 MVP-1 (Stage 1) — read-only ScrollPercent observation mock.
+// Default impl returns `null` (no UIA pattern exposed) so existing tests
+// stay bit-equal with the chain-trust fall-through path (observation.source:
+// "chain_trust_unverified"). Stage 1 tests override to return numeric
+// pre/post percents and exercise the `uia_scroll_percent` observation path.
+const uiaReadScrollPercentAtHwndMock = vi.fn<
+  [{ hwnd: string; axis: "vertical" | "horizontal" }],
+  Promise<number | null>
+>(async () => null);
+const nativeUiaMock: {
+  uiaScrollByWheelAtHwnd?: unknown;
+  uiaReadScrollPercentAtHwnd?: unknown;
+} = {
   uiaScrollByWheelAtHwnd: uiaScrollByWheelAtHwndMock,
+  uiaReadScrollPercentAtHwnd: uiaReadScrollPercentAtHwndMock,
 };
 const win32PostMessageMock = vi.fn<[bigint, number, bigint, bigint], boolean>();
 const win32GetScrollInfoMock = vi.fn<
@@ -897,10 +910,17 @@ describe("ADR-018 Phase 5+N — postWheelToHwnd scroll-leaf walker (Excel / Word
     win32GetScrollInfoMock.mockReset();
     getWindowRectByHwndMock.mockReset();
     win32FindScrollLeafForTopLevelMock.mockReset();
+    // ADR-019 MVP-1 (Stage 1) — reset UIA percent mock; default impl returns
+    // null (no pattern exposed) so the chain-trust fall-through is the
+    // baseline observation. Tests that exercise the UIA observation path
+    // override per-call (`mockResolvedValueOnce`).
+    uiaReadScrollPercentAtHwndMock.mockReset();
+    uiaReadScrollPercentAtHwndMock.mockImplementation(async () => null);
     nativeWin32Mock.win32PostMessage = win32PostMessageMock;
     nativeWin32Mock.win32GetScrollInfo = win32GetScrollInfoMock;
     nativeWin32Mock.win32FindScrollLeafForTopLevel =
       win32FindScrollLeafForTopLevelMock;
+    nativeUiaMock.uiaReadScrollPercentAtHwnd = uiaReadScrollPercentAtHwndMock;
     win32PostMessageMock.mockReturnValue(true);
   });
 
@@ -1033,12 +1053,19 @@ describe("ADR-018 Phase 5+N — postWheelToHwnd scroll-leaf walker (Excel / Word
     );
   });
 
-  it("leaf retargeted AND getScrollInfo(leaf, axis) returns null (Excel NUIScrollbar / Word MFC custom paint) → trust the chain table and emit delivered_via_postmessage (Case 2a, dogfood 2026-05-16)", async () => {
+  it("leaf retargeted AND getScrollInfo(leaf, axis) returns null AND UIA pattern not exposed → trust the chain table, emit delivered_via_postmessage with observation.source 'chain_trust_unverified' (Case 2a, dogfood 2026-05-16; ADR-019 MVP-1)", async () => {
     // Excel EXCEL7 (and similar MDI scroll-leaves) use custom-painted
     // scrollbars (`NUIScrollbar` etc.) that GetScrollInfo(SB_VERT) cannot
     // observe — `pre === null` here is the "no SB_VERT" signal, NOT the
     // "wheel was rejected" signal. The chain-table assertion (leaf is a
     // documented scroll receiver) means we trust PostMessage success.
+    // **ADR-019 MVP-1 (Stage 1) addendum**: the dispatcher now also tries
+    // `uiaReadScrollPercentAtHwnd` for pre/post percent observation. When
+    // that returns null (UIA pattern not exposed on the leaf — the test
+    // here doesn't mock the napi), the chain-trust assertion fall-through
+    // emits `observation.source: "chain_trust_unverified"`, signalling to
+    // the LLM caller that the delivery is unverified at the observation
+    // layer (honest signal — Codex PR #308 P1 trade-off).
     const TOP = 0xACE5n; // fake XLMAIN
     const LEAF = 0xCE117n; // fake EXCEL7
     win32FindScrollLeafForTopLevelMock.mockReturnValue(LEAF);
@@ -1057,6 +1084,12 @@ describe("ADR-018 Phase 5+N — postWheelToHwnd scroll-leaf walker (Excel / Word
       scrolled: true,
       channel: "postmessage",
       reason: "delivered_via_postmessage",
+      observation: {
+        motion: "indeterminate",
+        source: "chain_trust_unverified",
+        framesSampled: 0,
+        totalElapsedMs: 0,
+      },
     });
     expect(win32PostMessageMock).toHaveBeenCalledWith(
       LEAF,
@@ -1064,6 +1097,228 @@ describe("ADR-018 Phase 5+N — postWheelToHwnd scroll-leaf walker (Excel / Word
       expect.any(BigInt),
       expect.any(BigInt),
     );
+  });
+
+  it("ADR-019 MVP-1 (Stage 1) — leaf retargeted AND UIA pattern exposed AND percent moved → observation.source 'uia_scroll_percent', motion 'translation'", async () => {
+    const TOP = 0xACE5n;
+    const LEAF = 0xCE117n;
+    win32FindScrollLeafForTopLevelMock.mockReturnValue(LEAF);
+    getWindowRectByHwndMock.mockReturnValue({
+      x: 53,
+      y: 240,
+      width: 1424,
+      height: 598,
+    });
+    win32GetScrollInfoMock.mockReturnValue(null);
+    // UIA pre/post percent differ — observation upgrade fires.
+    uiaReadScrollPercentAtHwndMock
+      .mockResolvedValueOnce(10.0) // pre
+      .mockResolvedValueOnce(15.0); // post (post - pre = 5.0 ≥ epsilon)
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
+    // totalElapsedMs is `performance.now()` delta — non-deterministic;
+    // match the rest of the shape exactly and assert the field is a
+    // finite non-negative number separately (Opus PR #309 Round 1 P2-2:
+    // emit real wallclock instead of the misleading `0` placeholder).
+    expect(result).toMatchObject({
+      scrolled: true,
+      channel: "postmessage",
+      reason: "delivered_via_postmessage",
+      observation: {
+        motion: "translation",
+        source: "uia_scroll_percent",
+        framesSampled: 2,
+        totalElapsedMs: expect.any(Number),
+      },
+    });
+    expect(result?.observation?.totalElapsedMs).toBeGreaterThanOrEqual(0);
+    expect(Number.isFinite(result?.observation?.totalElapsedMs ?? NaN)).toBe(true);
+    expect(uiaReadScrollPercentAtHwndMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("ADR-019 MVP-1 (Stage 1) — leaf retargeted AND UIA pattern exposed AND percent unchanged (boundary / no-op) → observation.source 'uia_scroll_percent', motion 'no_change' (honest signal, Codex PR #308 P1 trade-off)", async () => {
+    const TOP = 0xACE5n;
+    const LEAF = 0xCE117n;
+    win32FindScrollLeafForTopLevelMock.mockReturnValue(LEAF);
+    getWindowRectByHwndMock.mockReturnValue({
+      x: 53,
+      y: 240,
+      width: 1424,
+      height: 598,
+    });
+    win32GetScrollInfoMock.mockReturnValue(null);
+    // UIA pre/post percent IDENTICAL — receiver at boundary or non-scrollable.
+    // The dispatcher still emits delivered_via_postmessage (chain-trust trusts
+    // the queue), but the observation field carries motion='no_change' so the
+    // LLM caller can disambiguate "actually moved" vs "reached but no-op."
+    uiaReadScrollPercentAtHwndMock
+      .mockResolvedValueOnce(0.0)
+      .mockResolvedValueOnce(0.0);
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
+    // totalElapsedMs is `performance.now()` delta — non-deterministic;
+    // see the translation test above for the rationale (Opus P2-2).
+    expect(result).toMatchObject({
+      scrolled: true,
+      channel: "postmessage",
+      reason: "delivered_via_postmessage",
+      observation: {
+        motion: "no_change",
+        source: "uia_scroll_percent",
+        framesSampled: 2,
+        totalElapsedMs: expect.any(Number),
+      },
+    });
+    expect(result?.observation?.totalElapsedMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("ADR-019 MVP-1 (Stage 1) — pre-snapshot UIA read EXCEEDS UIA_PRE_READ_TIMEOUT_MS (slow / hung provider) → chain_trust_unverified (Codex Round 1 P2 + Round 2 P2 — bounded await, dispatch not stalled, pre value not stale)", async () => {
+    // The pre-snapshot UIA read is raced against UIA_PRE_READ_TIMEOUT_MS
+    // (100 ms). When the read hangs longer than that, the dispatcher
+    // treats it as a null pre-sample and falls back to chain-trust. This
+    // test simulates a provider that never resolves; the Promise.race
+    // timeout wins, dispatch proceeds, and observation lands as
+    // chain_trust_unverified.
+    const TOP = 0xACE5n;
+    const LEAF = 0xCE117n;
+    win32FindScrollLeafForTopLevelMock.mockReturnValue(LEAF);
+    getWindowRectByHwndMock.mockReturnValue({
+      x: 53,
+      y: 240,
+      width: 1424,
+      height: 598,
+    });
+    win32GetScrollInfoMock.mockReturnValue(null);
+    // Pre-read hangs (never resolves) — the race timer fires at 100 ms.
+    uiaReadScrollPercentAtHwndMock.mockImplementationOnce(
+      () => new Promise(() => {}),
+    );
+    const tStart = performance.now();
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
+    const elapsed = performance.now() - tStart;
+    expect(result).toMatchObject({
+      scrolled: true,
+      channel: "postmessage",
+      reason: "delivered_via_postmessage",
+      observation: {
+        motion: "indeterminate",
+        source: "chain_trust_unverified",
+        framesSampled: 0,
+        totalElapsedMs: 0,
+      },
+    });
+    // Wall-clock bound: <= UIA_PRE_READ_TIMEOUT_MS (100 ms) + chunking +
+    // settle + observer ms + scheduling jitter. 500 ms is a generous
+    // upper bound that still catches a regression where the timeout
+    // wasn't wired (which would block until the 8 s Rust thread timeout).
+    expect(elapsed).toBeLessThan(500);
+  });
+
+  it("ADR-019 MVP-1 (Stage 1) — Case 3 (getScrollInfo returns non-null Win32 scrollbar info) → UIA pre-read is NOT issued (Codex Round 4 P2 — skip UIA when Win32 scroll info is available, avoid up-to-100ms latency for unused value)", async () => {
+    // When `getScrollInfo` returns a valid pre-snapshot, the dispatcher
+    // takes the standard Tier 3 path (Case 3) and never consumes a UIA
+    // percent value. Issuing the UIA RPC anyway would only pay the
+    // 100 ms timeout ceiling for nothing AND load the native UIA worker
+    // queue unnecessarily. The gate at the pre-read site
+    // (`pre === null && retargetedByLeafWalker && getScrollInfoAvailable`)
+    // skips the RPC for Case 1 / Case 3 — this test pins that gate.
+    const TOP = 0xACE5n;
+    const LEAF = 0xCE117n;
+    win32FindScrollLeafForTopLevelMock.mockReturnValue(LEAF);
+    getWindowRectByHwndMock.mockReturnValue({
+      x: 53,
+      y: 240,
+      width: 1424,
+      height: 598,
+    });
+    // Case 3: Win32 scrollbar present, pre/post differ → standard Tier 3.
+    win32GetScrollInfoMock
+      .mockReturnValueOnce(scrollInfo(50))
+      .mockReturnValueOnce(scrollInfo(80));
+    // Mock UIA so we can assert it was NOT called.
+    uiaReadScrollPercentAtHwndMock.mockResolvedValue(42.0);
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
+    expect(result).toMatchObject({
+      scrolled: true,
+      channel: "postmessage",
+      reason: "delivered_via_postmessage",
+    });
+    // Case 3 path: NO observation field attached (TMOL chain-trust
+    // observation is Case 2a only).
+    expect((result as { observation?: unknown }).observation).toBeUndefined();
+    // The UIA pre-read MUST NOT have been issued.
+    expect(uiaReadScrollPercentAtHwndMock).not.toHaveBeenCalled();
+  });
+
+  it("ADR-019 MVP-1 (Stage 1) — post-snapshot UIA read EXCEEDS UIA_POST_READ_TIMEOUT_MS (slow / hung provider after dispatch) → chain_trust_unverified (Codex Round 3 P2 — post-read symmetrical bounded await)", async () => {
+    // Mirrors the pre-read timeout test, applied to the post-snapshot
+    // path inside `observeViaUiaOrChainTrust`. Pre-read resolves cleanly
+    // (so the dispatcher enters the chain-trust branch with a valid
+    // pre-percent), but the post-read hangs indefinitely. The internal
+    // 100 ms Promise.race fires; the helper treats post as null and
+    // returns chain_trust_unverified. Wall-clock < 500 ms regression
+    // guard against the timeout being silently un-wired.
+    const TOP = 0xACE5n;
+    const LEAF = 0xCE117n;
+    win32FindScrollLeafForTopLevelMock.mockReturnValue(LEAF);
+    getWindowRectByHwndMock.mockReturnValue({
+      x: 53,
+      y: 240,
+      width: 1424,
+      height: 598,
+    });
+    win32GetScrollInfoMock.mockReturnValue(null);
+    uiaReadScrollPercentAtHwndMock
+      // pre resolves immediately
+      .mockResolvedValueOnce(10.0)
+      // post hangs forever
+      .mockImplementationOnce(() => new Promise(() => {}));
+    const tStart = performance.now();
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
+    const elapsed = performance.now() - tStart;
+    expect(result).toMatchObject({
+      scrolled: true,
+      channel: "postmessage",
+      reason: "delivered_via_postmessage",
+      observation: {
+        motion: "indeterminate",
+        source: "chain_trust_unverified",
+      },
+    });
+    expect(elapsed).toBeLessThan(500);
+  });
+
+  it("ADR-019 MVP-1 (Stage 1) — pre-snapshot UIA read REJECTS (slow / hung provider, native crash) → chain_trust_unverified (Codex Round 1 P2 `.catch` shim regression guard)", async () => {
+    // The fire-and-forget `preUiaPromise` in `postWheelToHwnd` wraps the
+    // pre-read in `.catch(() => null)` so a rejection does not propagate
+    // through the dispatch path. Without this, a slow / hung UIA provider
+    // would unhandled-reject inside the chain-trust branch and break the
+    // delivered_via_postmessage contract silently. This test locks the
+    // shim in place — a future refactor that drops the `.catch` will fail
+    // this assertion before the contract regresses.
+    const TOP = 0xACE5n;
+    const LEAF = 0xCE117n;
+    win32FindScrollLeafForTopLevelMock.mockReturnValue(LEAF);
+    getWindowRectByHwndMock.mockReturnValue({
+      x: 53,
+      y: 240,
+      width: 1424,
+      height: 598,
+    });
+    win32GetScrollInfoMock.mockReturnValue(null);
+    uiaReadScrollPercentAtHwndMock.mockRejectedValueOnce(
+      new Error("simulated UIA provider crash"),
+    );
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
+    expect(result).toMatchObject({
+      scrolled: true,
+      channel: "postmessage",
+      reason: "delivered_via_postmessage",
+      observation: {
+        motion: "indeterminate",
+        source: "chain_trust_unverified",
+        framesSampled: 0,
+        totalElapsedMs: 0,
+      },
+    });
   });
 
   it("NOT retargeted AND getScrollInfo returns null (input HWND is not in the chain table) → return null (Case 2b — caller emits target_unreachable)", async () => {

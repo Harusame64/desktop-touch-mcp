@@ -236,6 +236,14 @@ export declare function uiaScrollIntoView(opts: { windowTitle: string; name?: st
 export declare function uiaGetScrollAncestors(opts: { windowTitle: string; elementName: string }): Promise<Array<NativeScrollAncestor>>
 export declare function uiaScrollByPercent(opts: { windowTitle: string; elementName: string; verticalPercent: number; horizontalPercent: number }): Promise<NativeScrollResult>
 export declare function uiaScrollByWheelAtHwnd(opts: { hwnd: string; wheelDeltaY: number; wheelDeltaX: number }): Promise<NativeScrollResult>
+/**
+ * ADR-019 MVP-1 (Stage 1) — read-only ScrollPercent companion to
+ * `uiaScrollByWheelAtHwnd`. Returns the percent (0.0..=100.0) on the requested
+ * axis when a ScrollPattern ancestor / descendant exposes it; `null` when no
+ * pattern is exposed (custom-paint receivers like Excel `NUIScrollbar`, Word
+ * MFC document body). Pure observation; no SetScrollPercent side effect.
+ */
+export declare function uiaReadScrollPercentAtHwnd(opts: { hwnd: string; axis: "vertical" | "horizontal" }): Promise<number | null>
 export declare function uiaGetVirtualDesktopStatus(hwndIntegers: Array<string>): Promise<Record<string, boolean>>
 
 export declare function preprocessImage(opts: NativePreprocessOptions): Promise<NativeImageProcessingResult>
