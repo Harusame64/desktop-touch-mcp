@@ -99,7 +99,7 @@ Adopt the **`finalChangedFraction > 0` primary gate** as the Stage 2b decision r
 1. Stage 2a captures the ring + computes telemetry (no change to Stage 2a's existing wiring).
 2. Stage 2b consumes `ringTelemetry.finalChangedFraction` and decides:
    - `> 0` → `motion = "translation"`, dispatch outcome unchanged (`scrolled: true`, `channel: "postmessage"`, `reason: "delivered_via_postmessage"`).
-   - `=== 0` → `motion = "no_change"`, dispatch outcome **flipped** to `scrolled: false`, dispatcher returns `null` so the caller (`postWheelToHwnd` → `dispatchScrollWheel` cascade or `mouse.ts:scrollHandler`) emits `verifyDelivery.status = "not_delivered"` with `reason: "target_unreachable"`.
+   - `=== 0` → `motion = "no_change"`, dispatch outcome **flipped** to **non-null `DispatchOutcome` with `scrolled: false`** (Option I per §5 R3, locked Round 1 P2-2) carrying the observation. Caller (`dispatchScrollWheel` / `mouse.ts:scrollHandler`) emits `verifyDelivery.status = "not_delivered"` with `reason: "target_unreachable"` AND `observation` preserved.
 3. Stage 2a env opt-out (`DESKTOP_TOUCH_STAGE2A_RING=0`) suppresses the entire ring → Stage 2b has no telemetry to gate on → falls back to bare `chain_trust_unverified` (Stage 1 behaviour). The new env var `DESKTOP_TOUCH_STAGE2B_GATE=0` keeps the ring (telemetry retained) but suppresses just the gate (Stage 2a behaviour: always `delivered`).
 
 ### 2.1 Activation rule
@@ -125,7 +125,10 @@ if (finalChangedFraction > 0) {
 } else {
   observation.motion = "no_change";
   // observation.source unchanged: "temporal_ring_observation_only"
-  // dispatch outcome flipped: dispatcher returns null
+  // dispatch outcome flipped: non-null DispatchOutcome with scrolled=false
+  //   carrying the observation (Option I per §5 R3 locked Round 1 P2-2 — NOT
+  //   bare `null` return; `null` is reserved for "fall through to next tier"
+  //   semantic which the chain-trust branch doesn't use)
   //   → caller emits status="not_delivered", reason="target_unreachable" per ADR-018 §2.6.2 path-(b)
 }
 ```
@@ -153,13 +156,13 @@ This is a contract relaxation: the original ADR-019 §2.1 docstring "present iff
 
 | File | Change | Stage |
 |---|---|---|
-| `src/tools/_input-pipeline.ts` | (a) `observeViaUiaOrChainTrust`: populate `motion` from `finalChangedFraction > 0` predicate (currently hardcoded `"indeterminate"`). (b) New `DESKTOP_TOUCH_STAGE2B_GATE` env check guarding the populate-or-keep-indeterminate branch. (c) Dispatcher caller (`postWheelToHwnd` chain-trust branch, lines 1136-1163): when `observation.motion === "no_change"`, return `null` from `postWheelToHwnd` so caller emits `target_unreachable`. Helper extraction recommended for clarity. | Stage 2b impl |
+| `src/tools/_input-pipeline.ts` | (a) `observeViaUiaOrChainTrust`: populate `motion` from `finalChangedFraction > 0` predicate (currently hardcoded `"indeterminate"`). (b) New `DESKTOP_TOUCH_STAGE2B_GATE` env check guarding the populate-or-keep-indeterminate branch. (c) Dispatcher caller (`postWheelToHwnd` chain-trust branch, lines 1136-1163): when `observation.motion === "no_change"`, return **non-null `DispatchOutcome` with `scrolled: false`, `reason: "target_unreachable"`, and `observation` field set** (Option I per §5 R3 locked Round 1 P2-2). Caller (`dispatchScrollWheel` / `mouse.ts:scrollHandler`) detects this shape and emits `not_delivered` envelope. Helper extraction (`evaluateStage2bGate`) recommended for testability. | Stage 2b impl |
 | `src/tools/_input-pipeline.ts:VisualMotionObservation` (TSDoc) | Relax `shift?` "present iff" wording per §2.4 Option A. | Stage 2b impl |
 | `docs/adr-019-anti-fukuwarai-v3-temporal-motion-observation.md` §2.1 | Relax `shift?` "present iff" wording (matches `_input-pipeline.ts`). | Stage 2b impl |
 | `docs/adr-019-anti-fukuwarai-v3-temporal-motion-observation.md` §10 OQ | Mark Stage 2b decision recorded; reference this sub-plan. **NOTE**: Stage 4 (Click verify SSIM) may concurrently edit ADR-019 main doc — Stage 2b impl PR should rebase carefully and surgical-edit only §2.1 docstring + §10 OQ entry. If conflict arises, Stage 2b impl defers main doc edit to a sweep PR. | Stage 2b impl (deferred-OK) |
 | `docs/adr-018-phase-5-followup-verification-pathway-analysis.md` lines 157, 159 | Mirror the `shift?` / `residual?` "present iff" wording relaxation (Round 1 Opus P2-1 — this doc contains an early `VisualMotionObservation` shape sketch with the original "present iff" comments; SSOT sweep must reach this surface too, or §3 P7 grep would miss it). | Stage 2b impl |
 | `docs/adr-018-input-pipeline-3tier.md` §2.6.2 | Add `target_unreachable (Stage 2b TMOL gate)` row note: clarifies that the existing 5-value reason taxonomy is unchanged but `target_unreachable` now has a new emission path on the chain-trust branch (additive; existing paths preserved). | Stage 2b impl |
-| `tests/unit/temporal-ring-buffer.test.ts` or new `tests/unit/stage-2b-gate.test.ts` | Add cases pinning the gate: (a) `finalChangedFraction = 0.005` → `motion: "translation"`, dispatcher outcome `delivered_via_postmessage`. (b) `finalChangedFraction = 0.000` → `motion: "no_change"`, dispatcher returns `null`. (c) `DESKTOP_TOUCH_STAGE2B_GATE=0` → motion stays `"indeterminate"`, dispatcher outcome `delivered_via_postmessage` regardless of `finalChangedFraction`. (d) `DESKTOP_TOUCH_STAGE2A_RING=0` → no ring captured → no gate (regressively safe). | Stage 2b impl |
+| `tests/unit/temporal-ring-buffer.test.ts` or new `tests/unit/stage-2b-gate.test.ts` | Add cases pinning the gate: (a) `finalChangedFraction = 0.005` → `motion: "translation"`, dispatcher outcome `delivered_via_postmessage`. (b) `finalChangedFraction = 0.000` → `motion: "no_change"`, dispatcher returns **non-null `DispatchOutcome` with `scrolled: false`, `reason: "target_unreachable"`, observation populated** (Option I per §5 R3). (c) `DESKTOP_TOUCH_STAGE2B_GATE=0` → motion stays `"indeterminate"`, dispatcher outcome `delivered_via_postmessage` regardless of `finalChangedFraction`. (d) `DESKTOP_TOUCH_STAGE2A_RING=0` → no ring captured → no gate (regressively safe). | Stage 2b impl |
 | `tests/integration/scroll-chain-trust.test.ts` (if exists) | Update to expect new `motion` values; otherwise no change. Verify with grep before assuming. | Stage 2b impl |
 | `benches/poc_stage_2a_causal_strip.mjs` | No code change. The bench script's `finalChangedFraction` column already drives the gate's empirical case; Stage 2b impl PR may add a `--check-gate` flag that asserts the `>0` predicate against captured cycles for regression-bench purposes. **Carry-over to impl PR** (not Stage 2c). | Stage 2b impl (optional) |
 | `docs/adr-019-stage-2b-dogfood-results.md` (NEW) | Post-impl dogfood report (separate post-merge PR). Captures Excel real-scroll → `motion: "translation"` 30/30, Excel silent-drop scenario (synthetic — modal block? receiver kill?) → `motion: "no_change"`. Populated by impl PR's author. | Stage 2b dogfood |
@@ -169,8 +172,10 @@ Stage 2b does **NOT** touch:
 - `src/pixel_diff.rs` (no new Rust SAD variant)
 - `src/win32/window.rs:SCROLL_LEAF_CHAINS` (table unchanged)
 - `src/engine/layer-buffer.ts` (Stage 2a helpers unchanged)
-- `src/tools/mouse.ts` (`ScrollVerifyOutcome` already carries `observation` from Stage 1; `scrollHandler` emits `target_unreachable` from existing `null` dispatch outcome — no new code path in this file)
 - `index.d.ts` / `index.js` (no new napi)
+
+Stage 2b **DOES** touch (Round 2 Opus P2-1 correction of Round 1 wording):
+- `src/tools/mouse.ts:scrollHandler` (line 1254 ternary + 1303 failWith block): under Option I (§5 R3 locked Round 1 P2-2), the dispatcher's `tier1.scrolled === false && tier1.reason === "target_unreachable"` shape is a **new code path** in `scrollHandler`. Current 1254 ternary falls through to `evaluateScrollDelivery(pre, post, direction)` which re-evaluates Win32 scroll info **independently of the TMOL gate**, silently overriding the TMOL signal. Impl PR adds a branch: when `tier1 !== null && tier1.scrolled === false && tier1.reason === "target_unreachable" && tier1.observation !== undefined`, route to the `outcome.status === "not_delivered"` branch (line 1303) with the `observation` propagated into the failWith `context.verifyDelivery` envelope. The `ScrollVerifyOutcome.observation` field already exists from Stage 1 (mouse.ts:994); only the routing / propagation is new.
 
 ---
 
