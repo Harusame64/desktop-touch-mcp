@@ -93,13 +93,27 @@ type VisualMotionObservation = {
     | "temporal_ring_observation_only" // Stage 2a telemetry-only emission (no decision)
     | "chain_trust_unverified";
   /** Stage 2a telemetry — populated when source === "temporal_ring_observation_only"
-   *  or as a sibling diagnostic field on other sources. Carries the per-frame
-   *  `computeChangeFraction` series captured by the multi-frame ring buffer. */
+   *  or as a sibling diagnostic field on other sources. Original PR #309 schema
+   *  carries the inter-frame `changedFraction` series (stop-detection metric);
+   *  **post-2026-05-16 Stage 2a pivot** (`docs/adr-019-stage-2a-plan.md`) adds
+   *  the causal strip filter fields (`axis` / `stripCount` /
+   *  `finalStripChangedFractions` / `stripsAboveNoise` / `finalChangedFraction`
+   *  / `stableReached` / `framesToStability`). New fields are additive on the
+   *  PR #309 forward-declared shape. */
   ringTelemetry?: {
     framesSampled: number;
     elapsedMsPerFrame: number[];
-    changedFractions: number[];
+    changedFractions: number[];      // inter-frame stop-detection metric
     maxChangedFraction: number;
+    // Causal strip filter (Stage 2a impl PR, 2026-05-16 PoC-locked)
+    axis: "vertical" | "horizontal";
+    stripCount: number;
+    finalStripChangedFractions: number[];
+    stripsAboveNoise: number;
+    finalChangedFraction: number;
+    // Stop-detection diagnostics
+    stableReached: boolean;
+    framesToStability: number | null;
   };
   framesSampled: number;
   totalElapsedMs: number;
@@ -111,13 +125,15 @@ interface TmolObserver {
     region?: { x: number; y: number; width: number; height: number };
     axisHint?: "vertical" | "horizontal";
     capability: "scroll_translation" | "local_repaint" | "any_change";
-    /** Multi-frame ring buffer settle schedule in milliseconds. The default
-     *  [30, 60, 120, 240] is the **Stage 2a contract** (§4.5.6 bench gate);
-     *  Stage 2a explicitly wires the parameter through (not just declared
-     *  here). Per OQ3, the default may evolve to an adaptive schedule
-     *  (`capture until last-stable holds, cap at 500 ms total`) in a
-     *  Stage 2a follow-up. The fixed-schedule default ships first; the
-     *  adaptive form is deferred. */
+    /** **Stage 2a pivot 2026-05-16 (PoC-driven, see `docs/adr-019-stage-2a-plan.md`)**: the
+     *  originally-planned fixed-schedule (`[30, 60, 120, 240] ms`) was replaced
+     *  by stop-detection polling — polls at `POLL_INTERVAL_MS = 30 ms` until
+     *  `CONSECUTIVE_STABLE_TARGET = 2` consecutive inter-frame deltas drop
+     *  below `STABLE_THRESHOLD = 0.002`, with wallclock cap
+     *  `RING_WALLCLOCK_BUDGET_MS = 700 ms`. The `settleSchedule?: number[]`
+     *  parameter is preserved for forward compatibility with custom callers
+     *  (e.g. Stage 4 click-verify) but Stage 2a's production wiring uses the
+     *  stop-detection constants directly rather than a schedule. */
     settleSchedule?: number[];
   }): Promise<VisualMotionObservation>;
 }
@@ -132,7 +148,7 @@ Single pre/post is structurally fragile against:
 - **Animation transients** — caret blink, marching-ants selection, hover effects, loading spinners all introduce motion between pre and post that isn't related to our action.
 - **Receiver settle time** — Excel's row-label strip repaint happens incrementally; capturing at t=30 ms might catch only a partial repaint that doesn't resemble the final state.
 
-The ring buffer captures `pre` + `post[k]` for k post-frames at the requested schedule. Decision rule:
+The ring buffer captures `pre` + `post[...]` and applies the **dual-condition rule**:
 
 ```
 motion_observed = ∃ k such that motion(pre, post[k]) ≥ threshold
@@ -142,10 +158,12 @@ final_differs  = motion(pre, post[k_last]) ≥ threshold
 deliver(translation | local_repaint) iff motion_observed AND last_stable AND final_differs
 ```
 
+**Stage 2a sub-plan algorithm refinement (2026-05-16 PoC pivot, see `docs/adr-019-stage-2a-plan.md`)**: the production Stage 2a implementation realises `last_stable` as a **stop-detection polling termination criterion** rather than a fixed-schedule sample. Poll at `POLL_INTERVAL_MS = 30 ms` (= 2 DWM frames @ 60 Hz) until `CONSECUTIVE_STABLE_TARGET = 2` consecutive inter-frame deltas drop below `STABLE_THRESHOLD = 0.002`. Then return `final_differs = motion(pre, last_stable_frame)`. This adaptively bounds the wallclock at `RING_WALLCLOCK_BUDGET_MS = 700 ms` (covers caret blink cycle) — fast apps return in ~60 ms, slow apps wait for genuine settle, caret-active windows budget-timeout with honest `stableReached: false`. Per-strip diff oriented along the dispatch motion axis adds `motion_observed` discriminability without per-app threshold tuning (caret blink touches 1 strip; real scroll touches multiple).
+
 This catches:
 - **Real scrolls** → motion in some k AND final frame stable AND final differs from pre → accept.
-- **Transient animations** (caret) → motion in middle frames AND final matches pre → reject (no_change).
-- **GPU staleness** → motion observed at later k → accept.
+- **Transient animations** (caret) → motion in middle frames AND final matches pre → reject (no_change). Strip filter also rejects via single-strip signature.
+- **GPU staleness** → `MIN_WAIT_MS = 50` (3 DWM frames) before first poll absorbs the cache.
 - **Boundary cases (Codex PR #308 P1)** → no motion at any k → reject (no_change, downgrades chain-trust to honest `unverifiable` / `target_unreachable` depending on caller policy).
 
 ### 2.3 Primitive split + candidate implementations
@@ -449,7 +467,7 @@ Each SIMD stage lands with a `benches/tmol_<stage>.mjs` (criterion or vitest ben
 - Stage 3 tiled phase correlation (256×256 downsample): p99 ≤ 20 ms
 - Stage 4 SSIM (400×400 focused-element rect): p99 ≤ 15 ms
 
-The temporal fallback wall-clock budget (≤ 300 ms end-to-end, AC6) is the bench gate for the *integration* path (capture + ring + compute combined); the per-algorithm budgets above are the *unit* gates that feed it.
+The temporal fallback wall-clock budget (≤ **700 ms** end-to-end, AC6 — **amended 2026-05-16** by Stage 2a sub-plan Round 4 pivot; see §6 AC6 for the full justification, was 300 ms pre-pivot) is the bench gate for the *integration* path (capture + ring + compute combined); the per-algorithm budgets above are the *unit* gates that feed it.
 
 If any stage misses its compute budget, the SIMD path is the first place to look (compare AVX2 vs SSE2 via the runtime dispatch; the bench can force-disable AVX2 via `RUSTFLAGS=-C target-feature=-avx2` to measure the floor). The GPU path (§4.6 Stage 8) is the second place to look when SIMD-CPU still misses budget on large windows.
 
@@ -550,7 +568,7 @@ GPU path is **opportunistic, not required**. Stages 2-4 ship on CPU SIMD; GPU di
 - **AC5** — System-wide: 3 of 4 primitives (`scroll_translation`, `local_repaint`, `structured_state`) wired into at least one tool each. `any_change` deferred to Stage 5.
 - **AC6** — Performance: split latency budgets by tier of `verifyVisualMotion` for `scroll_translation`. The dispatcher selects **at most one primary algorithm per call** (cascade short-circuits on the first confident answer); the compute-only umbrella below is per-call, not per-algorithm. (Round 1 P2-1 fix.)
   - **Fast path** (Stage 1 UIA `ScrollPercent` read-only when pattern exposed): p99 ≤ **50 ms** wall-clock (no capture, just 2× UIA RPC). Bench-asserted.
-  - **Temporal fallback** (Stages 2a/2b: ring buffer + per-frame diff) wall-clock: p99 ≤ **300 ms** end-to-end. This includes the ring buffer's settle schedule (`[30, 60, 120, 240 ms]` → max 240 ms) + capture + compute. The wall-clock budget is intentionally larger than the fast path because the temporal observation thesis (§2.2) requires actual time to pass for "last frame stable" to be observable; this is not optimisation slack, it is the algorithm's defined cost. Bench-asserted.
+  - **Temporal fallback** (Stages 2a/2b: stop-detection polling + per-frame diff) wall-clock: p99 ≤ **700 ms** end-to-end. **Amended 2026-05-16 by Stage 2a sub-plan Round 4 pivot** (PoC-driven, `docs/adr-019-stage-2a-poc-results.md`): the original 300 ms ceiling was set for the fixed `[30, 60, 120, 240] ms` ring (max 240 ms settle); the post-pivot stop-detection polls until 2 consecutive sub-`STABLE_THRESHOLD` inter-frame deltas detected, with a wallclock cap of 700 ms that covers a full Win32 caret blink cycle (`GetCaretBlinkTime` default 530 ms) + safety margin. PoC measured Excel chain-trust p99 = 204 ms (29 % of budget); the wider ceiling is intentional headroom for slower MFC repaint paths and caret-active idle windows that need a full caret cycle to budget-timeout honestly with `stableReached: false`. Bench-asserted via dogfood ≥ 30 cycles per app.
   - **Compute-only umbrella per call** (excluding settle waits, sum of algorithm time per pre/post pair across the cascade-short-circuit path): p99 ≤ **70 ms**. Raised from the original 50 ms to accommodate the worst-case cascade Stage 2b → Stage 3 → Stage 4 (30+20+15=65 ms). In the common case the cascade short-circuits on Stage 1 or Stage 2b, well under the umbrella. Bench-asserted.
   - Per-algorithm compute-only sub-budgets (these are the unit gates that feed the umbrella):
     - Stage 2b block motion (1080p, single pre/post pair): p99 ≤ **30 ms**.
@@ -563,7 +581,7 @@ GPU path is **opportunistic, not required**. Stages 2-4 ship on CPU SIMD; GPU di
 
 ## 7. Open questions
 
-1. **Does EXCEL7 expose `IUIAutomationScrollPattern` for reads** (separately from dispatch failure)? Resolved in Stage 1 empirical probe.
+1. **Does EXCEL7 expose `IUIAutomationScrollPattern` for reads** (separately from dispatch failure)? **Resolved 2026-05-16: NO**. G1 probe (`uia_read_scroll_percent_at_hwnd({hwnd: '<excel-top>', axis: 'vertical' | 'horizontal'})`) returned `null` for Excel `Book1 - Excel` foreground state, scroll-induced state, and post-scroll state. Phase A (ancestor walk) + Phase B (subtree DFS) both miss. Stage 1 produces `observation.source: "chain_trust_unverified"` on Excel. Stage 2a sub-plan (`docs/adr-019-stage-2a-plan.md`) extends the chain-trust path with stop-detection polling + causal strip filter telemetry. Stage 2a impl PR (branch `feature/adr-019-stage-2a-impl`, in-progress).
 2. **Block motion vector search radius** — line scroll heights vary per app (Excel ~20 px row, Word ~24 px line, Notepad varies). Default `±row_height` is app-specific. Initial default 32 px; per-app tuning carry-over.
 3. **Ring buffer schedule** — `[30, 60, 120, 240 ms]` is a starting point. Excel may need `+500 ms` for full settle on slow systems. Adaptive schedule (capture until last-stable holds, cap at 500 ms total) is the right design; **initial impl ships the fixed-schedule default AND wires `settleSchedule?: number[]` through the §2.1 contract** (Round 1 P2-3 fix — earlier draft contradicted itself by declaring the parameter in the contract while OQ3 said fixed schedule). The adaptive form is deferred to a Stage 2a follow-up.
 4. **DXGI Desktop Duplication per-window** — IDXGIOutputDuplication is a *display output* surface, not per-window. Mapping back to a single window's region requires the window rect + clip. Defer to Stage 5 sub-ADR.
