@@ -6,20 +6,20 @@ import {
 } from "../../src/engine/world-graph/lease-ttl-policy.js";
 
 describe("computeLeaseTtlMs — view dimension", () => {
-  it("action view has no bonus (base 5000ms)", () => {
-    expect(computeLeaseTtlMs({ view: "action", entityCount: 5 })).toBe(5_000);
+  it("action view has no bonus (base 15000ms)", () => {
+    expect(computeLeaseTtlMs({ view: "action", entityCount: 5 })).toBe(15_000);
   });
 
   it("undefined view defaults to action", () => {
-    expect(computeLeaseTtlMs({ view: undefined, entityCount: 5 })).toBe(5_000);
+    expect(computeLeaseTtlMs({ view: undefined, entityCount: 5 })).toBe(15_000);
   });
 
   it("explore view adds 5000ms bonus", () => {
-    expect(computeLeaseTtlMs({ view: "explore", entityCount: 5 })).toBe(10_000);
+    expect(computeLeaseTtlMs({ view: "explore", entityCount: 5 })).toBe(20_000);
   });
 
   it("debug view adds 10000ms bonus", () => {
-    expect(computeLeaseTtlMs({ view: "debug", entityCount: 5 })).toBe(15_000);
+    expect(computeLeaseTtlMs({ view: "debug", entityCount: 5 })).toBe(25_000);
   });
 
   it("explore TTL is strictly greater than action TTL for same entityCount", () => {
@@ -31,15 +31,15 @@ describe("computeLeaseTtlMs — view dimension", () => {
 
 describe("computeLeaseTtlMs — entity count dimension", () => {
   it("entityCount <= 20 yields no bonus", () => {
-    expect(computeLeaseTtlMs({ view: "action", entityCount: 0  })).toBe(5_000);
-    expect(computeLeaseTtlMs({ view: "action", entityCount: 20 })).toBe(5_000);
+    expect(computeLeaseTtlMs({ view: "action", entityCount: 0  })).toBe(15_000);
+    expect(computeLeaseTtlMs({ view: "action", entityCount: 20 })).toBe(15_000);
   });
 
   it("each entity above 20 adds 100ms", () => {
-    // action(base 5000) + (40 - 20) * 100 = 7000
-    expect(computeLeaseTtlMs({ view: "action",  entityCount: 40 })).toBe(7_000);
-    // explore(base 10000) + (50 - 20) * 100 = 13000
-    expect(computeLeaseTtlMs({ view: "explore", entityCount: 50 })).toBe(13_000);
+    // action(base 15000) + (40 - 20) * 100 = 17000
+    expect(computeLeaseTtlMs({ view: "action",  entityCount: 40 })).toBe(17_000);
+    // explore(base 20000) + (50 - 20) * 100 = 23000
+    expect(computeLeaseTtlMs({ view: "explore", entityCount: 50 })).toBe(23_000);
   });
 
   it("bonus is monotonically non-decreasing in entityCount (same view)", () => {
@@ -84,34 +84,34 @@ describe("computeLeaseTtlMs — payload-size dimension", () => {
   it("payloadBytes <= baseline yields no payload bonus", () => {
     // Baseline = 2000 bytes. Inputs at or below baseline behave like the
     // no-payload path.
-    expect(computeLeaseTtlMs({ view: "action", entityCount: 5, payloadBytes: 0    })).toBe(5_000);
-    expect(computeLeaseTtlMs({ view: "action", entityCount: 5, payloadBytes: 2000 })).toBe(5_000);
+    expect(computeLeaseTtlMs({ view: "action", entityCount: 5, payloadBytes: 0    })).toBe(15_000);
+    expect(computeLeaseTtlMs({ view: "action", entityCount: 5, payloadBytes: 2000 })).toBe(15_000);
   });
 
   it("each byte over baseline adds 0.5ms", () => {
-    // 5_000 base + (10_000 - 2_000) * 0.5 = 5_000 + 4_000 = 9_000
-    expect(computeLeaseTtlMs({ view: "action", entityCount: 5, payloadBytes: 10_000 })).toBe(9_000);
+    // 15_000 base + (10_000 - 2_000) * 0.5 = 15_000 + 4_000 = 19_000
+    expect(computeLeaseTtlMs({ view: "action", entityCount: 5, payloadBytes: 10_000 })).toBe(19_000);
   });
 
   it("payload bonus is itself capped at 10000ms", () => {
     // Even an absurd 1 MB payload can only contribute 10s on top of the
     // other dimensions.
     const ttl = computeLeaseTtlMs({ view: "action", entityCount: 5, payloadBytes: 1_000_000 });
-    // base(5000) + payloadCap(10000) = 15000
-    expect(ttl).toBe(15_000);
+    // base(15000) + payloadCap(10000) = 25000
+    expect(ttl).toBe(25_000);
   });
 
   it("payloadBytes undefined / NaN / negative is silently treated as zero (defensive)", () => {
-    expect(computeLeaseTtlMs({ view: "action", entityCount: 5 })).toBe(5_000);
-    expect(computeLeaseTtlMs({ view: "action", entityCount: 5, payloadBytes: NaN  })).toBe(5_000);
-    expect(computeLeaseTtlMs({ view: "action", entityCount: 5, payloadBytes: -100 })).toBe(5_000);
+    expect(computeLeaseTtlMs({ view: "action", entityCount: 5 })).toBe(15_000);
+    expect(computeLeaseTtlMs({ view: "action", entityCount: 5, payloadBytes: NaN  })).toBe(15_000);
+    expect(computeLeaseTtlMs({ view: "action", entityCount: 5, payloadBytes: -100 })).toBe(15_000);
   });
 
   it("all bonuses stack and respect the cap", () => {
     // explore(+5000) + entityBonus((50-20)*100=3000) + payloadCap(10000)
-    // base(5000) + 5000 + 3000 + 10000 = 23000  (well under cap 60000)
+    // base(15000) + 5000 + 3000 + 10000 = 33000  (still under cap 60000)
     const ttl = computeLeaseTtlMs({ view: "explore", entityCount: 50, payloadBytes: 100_000 });
-    expect(ttl).toBe(23_000);
+    expect(ttl).toBe(33_000);
   });
 });
 
