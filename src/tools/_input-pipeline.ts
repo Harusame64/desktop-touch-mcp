@@ -33,6 +33,13 @@ import {
 import { getWindowRectByHwnd } from "../engine/win32.js";
 import { nativeUia, nativeWin32, nativeL1 } from "../engine/native-engine.js";
 import {
+  captureFrame,
+  capturePostFrameUntilStable,
+  computeChangeFraction,
+  computeStripChangedFractions,
+  type RawFrame,
+} from "../engine/layer-buffer.js";
+import {
   listTabsLight,
   dispatchWheelInTab,
   readScrollPositionInTab,
@@ -149,6 +156,50 @@ const UIA_POST_READ_TIMEOUT_MS = 100;
  * observable change.
  */
 const POSTMESSAGE_SCROLL_DELIVERY_EPSILON_NPOS = 1;
+
+/**
+ * ADR-019 Stage 2a — stop-detection + causal strip filter parameters.
+ *
+ * Locked by PoC results 2026-05-16 (`docs/adr-019-stage-2a-poc-results.md`).
+ * The algorithm polls until visual stability is detected (CONSECUTIVE_STABLE
+ * consecutive frames with inter-frame `changedFraction < STABLE_THRESHOLD`),
+ * then computes strip-wise diff between preFrame and the final stable frame
+ * oriented along the dispatch motion axis. Activates ONLY on the chain-trust
+ * fallback path (Stage 1 UIA percent unavailable). Observation-only telemetry
+ * — does NOT change `verifyDelivery.status` / `.reason` / `.channel`.
+ */
+/** Polling interval between successive frame captures (~2 DWM frames @ 60 Hz). */
+const POLL_INTERVAL_MS = 30;
+/**
+ * Initial wait after the helper is invoked before the first frame is captured.
+ * Absorbs GPU staleness: `PrintWindow` can return a pre-paint cache for
+ * ~16-50 ms after WM_MOUSEWHEEL is processed; without this wait two
+ * consecutive cached frames could declare a false-stable (= a frame still
+ * showing the pre-dispatch state). PoC: 50 ms perfectly separates
+ * Excel real-scroll (`firstPostDelta > 0`) from idle (= 0).
+ */
+const MIN_WAIT_MS = 50;
+/** Inter-frame `changedFraction` threshold below which a frame counts as stable. */
+const STABLE_THRESHOLD = 0.002;
+/**
+ * Per-strip `changedFraction` threshold above which a strip counts as
+ * "above noise". Calibrated to Excel's chain-trust block-SAD signal range
+ * (0.003-0.015 per PoC) — well above the empirically-observed idle floor
+ * (0.000 on 15/15 cycles). Stage 2b refines per-app.
+ */
+const STRIP_NOISE_THRESHOLD = 0.003;
+/** Consecutive stable frames required before ring termination (Playwright pattern). */
+const CONSECUTIVE_STABLE_TARGET = 2;
+/**
+ * Wall-clock budget for the entire stop-detection ring. Covers a full Win32
+ * caret cycle (530 ms default) + safety margin so caret-active idle windows
+ * eventually budget-timeout with `stableReached: false` instead of looping
+ * indefinitely. PoC empirical p99 = 204 ms (29 % of budget); the wider
+ * budget is intentional headroom for slower MFC repaint paths.
+ */
+export const RING_WALLCLOCK_BUDGET_MS = 700;
+/** Strip partitioning of the window for the causal filter (top→bottom for vertical motion). */
+const STRIP_COUNT = 4;
 
 /**
  * Win32 wheel message constants. Verified against Microsoft Learn:
@@ -300,13 +351,65 @@ export interface VisualMotionObservation {
   /**
    * Stage 2a multi-frame ring buffer telemetry (Stage 1 leaves undefined).
    * Populated when the temporal observation layer captured a ring; carries
-   * the per-frame `computeChangeFraction` series for empirical calibration.
+   * both the inter-frame stability series (`changedFractions`) and the
+   * causal strip-filter signature (`finalStripChangedFractions` +
+   * `stripsAboveNoise`) for Stage 2b decision input.
+   *
+   * Schema decided in `docs/adr-019-stage-2a-poc-results.md` (PoC, 2026-05-16):
+   * the original PR #309 forward-declared shape (`framesSampled` /
+   * `elapsedMsPerFrame` / `changedFractions` / `maxChangedFraction`) is
+   * preserved bit-equal; the new strip-filter fields are additive.
    */
   ringTelemetry?: {
+    /** Total frames in the ring = 1 pre + N polled post frames. */
     framesSampled: number;
+    /** Wallclock ms per frame (index 0 = pre at t=0, then post frames). */
     elapsedMsPerFrame: number[];
+    /**
+     * Inter-frame `changedFraction` series (stop-detection stability metric).
+     * `changedFractions[k] = changedFraction(frames[k], frames[k+1])`. Length
+     * = `framesSampled - 1`. A value `< STABLE_THRESHOLD` (0.002) signals
+     * frame-to-frame stability; two consecutive sub-threshold values
+     * (`CONSECUTIVE_STABLE_TARGET = 2`) trigger ring termination.
+     */
     changedFractions: number[];
+    /** Max of `changedFractions` — proxy for peak motion during the ring. */
     maxChangedFraction: number;
+    /**
+     * ADR-019 Stage 2a causal strip filter — motion axis derived from the
+     * dispatch direction: `"vertical"` for up/down scrolls, `"horizontal"`
+     * for left/right scrolls. Strip orientation follows the axis (horizontal
+     * strips for vertical motion, vice versa).
+     */
+    axis: "vertical" | "horizontal";
+    /** Number of strips the window was partitioned into (default 4). */
+    stripCount: number;
+    /**
+     * Per-strip `changedFraction(preFrame, finalStableFrame)` — length =
+     * `stripCount`. The causal expectation is that a real scroll touches
+     * multiple strips (translation across the axis), while caret / local UI
+     * animation touches one strip; Stage 2b gates on `stripsAboveNoise`.
+     */
+    finalStripChangedFractions: number[];
+    /**
+     * Count of strips with `finalStripChangedFractions[i] > STRIP_NOISE_THRESHOLD`
+     * (0.003 per PoC calibration). Stage 2b decision input.
+     */
+    stripsAboveNoise: number;
+    /**
+     * Whole-window `changedFraction(preFrame, finalStableFrame)`. Useful when
+     * the dispatch axis is unknown or strip filter is uninformative; idle
+     * baseline = 0.000, real scroll ≥ 0.003 (Excel chain-trust empirically).
+     */
+    finalChangedFraction: number;
+    /** True iff `CONSECUTIVE_STABLE_TARGET` consecutive stable frames detected before budget. */
+    stableReached: boolean;
+    /**
+     * Index in `frames[]` at which stability was confirmed, or `null` when
+     * the wall-clock budget exhausted before stability. Diagnostic for
+     * Stage 2b's per-app budget tuning.
+     */
+    framesToStability: number | null;
   };
   framesSampled: number;
   totalElapsedMs: number;
@@ -508,6 +611,19 @@ async function observeViaUiaOrChainTrust(
         axis: "vertical" | "horizontal";
       }) => Promise<number | null>)
     | undefined,
+  stage2a:
+    | {
+        preFrame: RawFrame;
+        region: { x: number; y: number; width: number; height: number };
+        /**
+         * Motion axis derived from dispatch direction — "vertical" for
+         * up/down scrolls (horizontal strips), "horizontal" for left/right
+         * (vertical strips). Used by `computeStripChangedFractions` to
+         * partition the window orthogonally to the expected motion.
+         */
+        axis: "vertical" | "horizontal";
+      }
+    | null,
 ): Promise<VisualMotionObservation> {
   if (preUiaPercent !== null && typeof readUiaPercent === "function") {
     const tPostStart = performance.now();
@@ -560,6 +676,115 @@ async function observeViaUiaOrChainTrust(
       // Any throw during post-snapshot falls through to chain-trust.
     }
   }
+  // ADR-019 Stage 2a — chain-trust fall-through with stop-detection +
+  // causal strip filter. Activates only when the caller supplied a Stage 2a
+  // payload (preFrame + region + axis, gated on `retargetedByLeafWalker` +
+  // env toggle in `postWheelToHwnd`).
+  //
+  // Algorithm (PoC-locked, `docs/adr-019-stage-2a-poc-results.md`):
+  //   1. Poll until 2 consecutive inter-frame deltas < STABLE_THRESHOLD
+  //      (= visual stability reached), or budget exhausted.
+  //   2. Compute strip-wise diff of preFrame vs final stable frame oriented
+  //      along the dispatch motion axis (horizontal strips for vertical
+  //      scroll). Caret blink touches 1 strip; real scroll touches multiple.
+  //   3. Emit raw telemetry. Stage 2a does NOT decide motion — Stage 2b uses
+  //      `stripsAboveNoise` + `finalChangedFraction` to gate.
+  //
+  // No behaviour change in `verifyDelivery.status` / `.reason` / `.channel` —
+  // the caller (`postWheelToHwnd`) still emits `delivered_via_postmessage`
+  // when the chain-trust branch fires; we only enrich the `observation`
+  // envelope hint.
+  if (stage2a !== null) {
+    try {
+      const tRingStart = performance.now();
+      const ring = await capturePostFrameUntilStable(
+        effectiveHwnd,
+        stage2a.region,
+        {
+          pollIntervalMs: POLL_INTERVAL_MS,
+          minWaitMs: MIN_WAIT_MS,
+          stableThreshold: STABLE_THRESHOLD,
+          consecutiveStableTarget: CONSECUTIVE_STABLE_TARGET,
+          budgetMs: RING_WALLCLOCK_BUDGET_MS,
+        },
+      );
+      const ringElapsedMs = performance.now() - tRingStart;
+
+      // The helper returns at least the first capture frame if it
+      // succeeded; we need a non-empty `frames[]` to compute the
+      // pre-vs-final diff. Empty `frames[]` → first capture failed →
+      // fall through to chain_trust_unverified honestly.
+      if (ring.frames.length === 0) {
+        // fall through outside the `if (stage2a)` block
+      } else {
+        const finalFrame = ring.frames[ring.frames.length - 1]!;
+        const framesSampled = 1 + ring.frames.length;  // 1 preFrame + N polled
+        const maxChangedFraction =
+          ring.deltas.length > 0 ? Math.max(...ring.deltas) : 0;
+
+        // Strip-wise pre-vs-final diff along the motion axis.
+        const stripResult = computeStripChangedFractions(
+          stage2a.preFrame,
+          finalFrame,
+          stage2a.axis,
+          STRIP_COUNT,
+        );
+        const stripsAboveNoise = stripResult.fractions.filter(
+          (f) => f > STRIP_NOISE_THRESHOLD,
+        ).length;
+
+        // Full-window pre-vs-final diff (also useful when strip filter is
+        // uninformative, e.g. window resized mid-ring → sizeMismatch).
+        const finalChangedFraction = stripResult.sizeMismatch
+          ? 1.0
+          : computeChangeFraction(
+              stage2a.preFrame.rawPixels,
+              finalFrame.rawPixels,
+              finalFrame.width,
+              finalFrame.height,
+              finalFrame.channels,
+            );
+
+        // Elapsed timestamps per frame from `tRingStart`. Pre is at t=0
+        // (captured upstream); polled frames at their measured offsets.
+        // We don't have per-frame timestamps from the helper (only the
+        // total elapsed), so approximate evenly across the ring. Stage 2b
+        // can refine if granular timing matters.
+        const perFrameApprox = ring.frames.length > 0
+          ? Array.from(
+              { length: ring.frames.length },
+              (_, i) =>
+                Math.round(
+                  MIN_WAIT_MS + (i * (ringElapsedMs - MIN_WAIT_MS)) / Math.max(1, ring.frames.length - 1),
+                ),
+            )
+          : [];
+
+        return {
+          motion: "indeterminate",
+          source: "temporal_ring_observation_only",
+          framesSampled,
+          totalElapsedMs: ringElapsedMs,
+          ringTelemetry: {
+            framesSampled,
+            elapsedMsPerFrame: [0, ...perFrameApprox],
+            changedFractions: ring.deltas,
+            maxChangedFraction,
+            axis: stage2a.axis,
+            stripCount: STRIP_COUNT,
+            finalStripChangedFractions: stripResult.fractions,
+            stripsAboveNoise,
+            finalChangedFraction,
+            stableReached: ring.stableReached,
+            framesToStability: ring.framesToStability,
+          },
+        };
+      }
+    } catch {
+      // Ring capture threw entirely → fall through to chain_trust_unverified.
+    }
+  }
+
   // Chain-trust fall-through: UIA pattern wasn't exposed on the leaf OR the
   // post-snapshot failed. The dispatcher still emits delivered_via_postmessage
   // (PR #308 chain-table trust), but the observation field signals that the
@@ -729,6 +954,28 @@ export async function postWheelToHwnd(
       ? getScrollInfo(effectiveHwnd, axisName)
       : null;
 
+    // ADR-019 Stage 2a — capture the dispatch-pre reference frame (T_pre)
+    // *before* the chunking loop runs. Gated on:
+    //   - `DESKTOP_TOUCH_STAGE2A_RING !== "0"` (default ON; user opt-out)
+    //   - `retargetedByLeafWalker` (chain-trust fallback can only fire when
+    //     the leaf walker retargeted — the only path that consumes the
+    //     ring telemetry — so we don't waste a capture on standard Tier 3
+    //     paths that observe via GetScrollInfo)
+    //   - `rect !== null` (we need a region to capture)
+    // Capture failure → `preFrame = null` → `observeViaUiaOrChainTrust`
+    // sees no Stage 2a payload and emits plain `chain_trust_unverified`.
+    // Sub-plan §3 Phase 2 P2-2.
+    const stage2aEnvDisabled = process.env.DESKTOP_TOUCH_STAGE2A_RING === "0";
+    let preFrame: RawFrame | null = null;
+    if (!stage2aEnvDisabled && retargetedByLeafWalker && rect !== null) {
+      preFrame = await captureFrame(effectiveHwnd, {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+      });
+    }
+
     // ADR-019 MVP-1 (Stage 1) — read-only UIA `ScrollPercent` pre-snapshot.
     // The dispatcher's chain-trust branch (Case 2a below) prefers UIA percent
     // when available because it's the OS-canonical observation (TMOL
@@ -879,6 +1126,21 @@ export async function postWheelToHwnd(
           preUiaPercent,
           preUiaElapsedMs,
           readUiaPercent,
+          // ADR-019 Stage 2a: pass T_pre frame + region + motion axis so the
+          // chain-trust fall-through can run stop-detection polling and
+          // attach causal-strip telemetry. `preFrame === null` or
+          // `rect === null` → no Stage 2a payload → bare
+          // `chain_trust_unverified`. The motion axis derives from the
+          // dispatch direction (vertical for up/down, horizontal for
+          // left/right) so the strip filter partitions orthogonally to the
+          // expected motion (sub-plan §2.1.1, PoC results §8).
+          preFrame !== null && rect !== null
+            ? {
+                preFrame,
+                region: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+                axis: axisName,
+              }
+            : null,
         );
         return {
           scrolled: true,
