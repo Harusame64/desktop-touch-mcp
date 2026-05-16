@@ -384,6 +384,19 @@ export async function verifyAnyChange(
     return degradeUnavailable();
   }
 
+  // Codex PR #325 Round 1 P2 — `resolution.crossMonitor === true` signals
+  // the window straddles two monitors. Stage 5 v1 intentionally observes
+  // only the center-containing monitor (sub-plan §7 carry-over "Stage 5c:
+  // cross-monitor straddle simultaneous subscription"). The off-monitor
+  // portion may have repaint activity that this observation misses; the
+  // result remains an honest lower bound on motion (we never claim
+  // `no_change` if motion is detected on the observed monitor). Stage 5c
+  // will add simultaneous-output subscription. Until then we do NOT
+  // attach a `hints.warnings` entry from this module because the
+  // observation shape (`VisualMotionObservation`) has no `warnings`
+  // channel — sub-plan §6 R3 routes warnings through the caller's
+  // envelope, which can inspect `crossMonitor` separately if it adopts
+  // the v2 resolver shape.
   const cache =
     opts.cache !== undefined ? opts.cache : getSharedSubscriptionCache();
   if (cache === null) {
