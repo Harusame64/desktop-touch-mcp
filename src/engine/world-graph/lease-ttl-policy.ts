@@ -6,9 +6,16 @@
  *   LLM read + reason + next-tool-call latency commonly exceeds 5s. Dogfood
  *   scenarios S1 (browser-form) and S3 (terminal) hit `lease_expired` there.
  *
+ * 2026-05-17 update (issue #327 item F): base bumped 5_000 → 15_000.
+ *   Real Claude Code round-trip (user utterance + reasoning + next tool call)
+ *   is typically 10-30s, so the 5s baseline often tripped `lease_expired`
+ *   on `action` and short-`explore` cycles during dogfood. 15s base brings
+ *   the `action` view into the lower edge of typical round-trip; explore and
+ *   debug stack on top as before. The hard cap (60_000) remains unchanged.
+ *
  * Policy:
  *   ttlMs = clamp(base + viewBonus + entityBonus + payloadBonus, floor, cap)
- *     base         = 5_000
+ *     base         = 15_000
  *     viewBonus    = action:0 / explore:+5_000 / debug:+10_000
  *     entityBonus  = max(0, entityCount - 20) * 100        [all views]
  *     payloadBonus = max(0, payloadBytes - 2_000) * 0.5    [capped at +10_000]
@@ -31,7 +38,7 @@
  */
 
 export const LEASE_TTL_POLICY = {
-  baseMs:             5_000,
+  baseMs:             15_000,
   floor:              2_000,
   cap:                60_000,
   viewBonus: {
