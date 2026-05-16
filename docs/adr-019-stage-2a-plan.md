@@ -205,16 +205,17 @@ This is one PR that lands all six phases together; dependency order is the **com
   export async function capturePostFrameRing(
     hwnd: bigint,
     region: { x: number; y: number; width: number; height: number },
-    scheduleMs: number[], // monotonically increasing offsets from the call start
+    scheduleMs: number[], // monotonically increasing offsets, measured from the helper call start (= T_settle when called from the chain-trust path; the helper does not embed timing knowledge about the dispatcher's settle wait)
   ): Promise<{
     post: Array<{ frame: RawFrame; offsetMs: number } | null>;
     totalElapsedMs: number;
   }>;
   ```
+  **Note (Round 2 P2-A clarification)**: the `scheduleMs` comment uses "helper call start" because the helper itself measures `performance.now()` from its own call instant. The caller's choice to invoke this helper at `T_settle` (chain-trust path) is what makes the helper's call-start coincide with `T_settle`. The helper has no other knowledge of the dispatch timeline — keeping the contract caller-agnostic so future callers (e.g. Stage 4 click-verify) can use it at any reference point.
 - [ ] **P1-3** — Internal behaviour for `capturePostFrameRing`:
   - For each `offset` in `scheduleMs`: schedule the capture using **absolute deadlines** (`const start = performance.now(); for each offset → await sleepUntil(start + offset)`) to avoid cumulative `await setTimeout` drift. (Round 1 P1-3: deadline-based scheduling keeps `T_post[k]` accurate even when individual captures stretch into the next slot.)
   - On individual capture failure, push `null` to `post[]` (do not throw — caller decides whether telemetry is partial-acceptable).
-  - Wall-clock guard: if `performance.now() - start` exceeds `RING_WALLCLOCK_BUDGET_MS = max(scheduleMs) + 50 ms`, stop scheduling further frames and return what was captured. (Round 1 P3-2: this expression IS the constant — no two competing numbers; the constant in §2.3 SSOT table is defined as `max(RING_SCHEDULE_MS) + 50`.)
+  - Wall-clock guard: if `performance.now() - start` exceeds `Math.max(...scheduleMs) + 50 ms` (computed from the caller-supplied schedule at runtime), stop scheduling further frames and return what was captured. **Round 2 P2-B contract clarification**: the helper computes the budget from the actual `scheduleMs` it received; the `RING_WALLCLOCK_BUDGET_MS = 290` constant in `_input-pipeline.ts` is the caller's pre-computed value for the default `RING_SCHEDULE_MS = [30, 60, 120, 240]`. When a future caller passes a different `scheduleMs`, the helper's runtime guard stays correct without depending on the caller's constant.
 - [ ] **P1-4** — Export both functions and `RawFrame` from `layer-buffer.ts`; confirm zero TypeScript build break with `npm run build`.
 
 ### Phase 2 — Wire into `postWheelToHwnd` + `observeViaUiaOrChainTrust`
@@ -231,10 +232,11 @@ This is one PR that lands all six phases together; dependency order is the **com
   - compute `changedFractions[k] = computeChangeFraction(preFrame.rawPixels, post[k].frame.rawPixels, ...)` for each successful post-frame
   - skip null post-frames (filter them out before computing `maxChangedFraction`)
   - if the filtered array is empty, set `maxChangedFraction = 0` (§2.2 fallthrough rule)
+  - **Round 2 P2-C aggregate responsibility**: the caller (this function, `observeViaUiaOrChainTrust`) is responsible for assembling the `framesSampled` count as `1 + post.filter((p) => p !== null).length` — the `+1` accounts for the pre-frame captured upstream at `T_pre` (not in the helper's return shape). The helper's `post` array length is the post-capture attempt count, which may be less than `scheduleMs.length` if the wall-clock guard tripped; the caller therefore counts successful entries explicitly.
   - attach `ringTelemetry` to the observation and switch `source` to `temporal_ring_observation_only` (keeps `motion: "indeterminate"` because Stage 2a does not decide)
 - [ ] **P2-5** — If `capturePostFrameRing` itself throws / returns zero post-frames AND every post is null, fall back to `chain_trust_unverified` (no `ringTelemetry`, additive zero-loss).
 - [ ] **P2-6** — Stage 1 success path (`uia_scroll_percent`) — **do not** capture ring; Stage 2a's scope is fallback-only.
-- [ ] **P2-7** — Feature toggle: `DESKTOP_TOUCH_STAGE2A_RING=0` disables both the `T_pre` and `T_settle` capture sites (default ON). Reuse the boolean parser used by other `DESKTOP_TOUCH_*` envvars (or inline `!== "0"` if no helper exists today).
+- [ ] **P2-7** — Feature toggle: `DESKTOP_TOUCH_STAGE2A_RING=0` disables both the `T_pre` and `T_settle` capture sites (default ON). Before adding inline `!== "0"`, **grep first** for an existing boolean parser: `Grep "parseBool\|parseBoolean\|parseEnvBool" src/` — if a helper exists (memory references `DESKTOP_TOUCH_AUTO_GUARD=0` and similar in `feedback_pre_v0_12_e2e_autoguard.md`), reuse it; otherwise inline `process.env.DESKTOP_TOUCH_STAGE2A_RING !== "0"` (default ON) is acceptable. Round 2 P3-A note.
 
 ### Phase 3 — Unit tests
 
@@ -270,7 +272,7 @@ This is one PR that lands all six phases together; dependency order is the **com
 
 ### Phase 6 — Dogfood + Stage 2b gate decision
 
-- [ ] **P6-1** — Run the bench harness on the dogfood machine. Record telemetry distributions in `docs/adr-019-stage-2a-dogfood-results.md` (new file, persistent per CLAUDE.md §9: residual / pending observations belong in `docs/`, not memory).
+- [ ] **P6-1** — Run the bench harness on the dogfood machine. Record telemetry distributions in `docs/adr-019-stage-2a-dogfood-results.md` (new file, persistent per CLAUDE.md §9: residual / pending observations belong in `docs/`, not memory). **Round 2 P3-B reminder**: also re-capture the current `npm test` baseline pass count at this point (instead of relying on the 2548 figure from `memory/project_adr010_p1_s5_impl_done.md` 2026-05-01 which may have drifted); record both pre-Stage-2a and post-Stage-2a baselines in the dogfood report.
 - [ ] **P6-2** — Apply Stage 2b gate (§3 Phase 4 P4-5). Update ADR-019 §4 Stage 2b acceptance with the data-calibrated decision.
 - [ ] **P6-3** — Open Stage 2b sub-plan PR if gate passes either way (just with different algorithm scope).
 
