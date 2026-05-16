@@ -217,7 +217,7 @@ export async function verifyLocalRepaint(opts: {
     return observationDegrade(0);
   }
 
-  const { rect, rectSource } = resolveLocalRepaintRect(opts.hint);
+  const { rect } = resolveLocalRepaintRect(opts.hint);
 
   // R3 mitigation: refuse whole-window SSIM on large rects to keep the AC6
   // 15 ms compute budget honest. Caller treats `indeterminate` as
@@ -362,10 +362,9 @@ export async function verifyLocalRepaint(opts: {
     totalElapsedMs,
   };
 
-  // Lint hint: `rectSource` is observed for diagnostic logging only; the
-  // current orchestrator does not branch on it. Stage 4 follow-up (per §6 R3
-  // mitigation chain) may add per-source telemetry to the envelope.
-  void rectSource;
+  // Note: `rectSource` is intentionally NOT destructured here; the
+  // orchestrator does not branch on it today. Stage 4 follow-up (per §6 R3
+  // mitigation chain) may re-introduce per-source telemetry on the envelope.
 }
 
 // ─── Constants re-export (for unit tests + bench harness) ───────────────────
