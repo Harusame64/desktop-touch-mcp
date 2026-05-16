@@ -201,6 +201,52 @@ const RING_WALLCLOCK_BUDGET_MS = 700;
 /** Strip partitioning of the window for the causal filter (top→bottom for vertical motion). */
 const STRIP_COUNT = 4;
 
+// ─── ADR-019 Stage 2b decision gate ──────────────────────────────────────────
+
+/**
+ * ADR-019 Stage 2b — gate evaluation result.
+ *
+ * Inputs: Stage 2a `ringTelemetry` (`finalChangedFraction`) + env var read.
+ * Output: the `motion` value to populate on the emitted
+ * `VisualMotionObservation`. `"indeterminate"` is returned when the env opt-out
+ * is set OR when telemetry is structurally missing (Stage 2a env off) — both
+ * cases preserve pre-Stage-2b behaviour. The caller then uses `motion` to
+ * decide whether `postWheelToHwnd`'s chain-trust branch should emit a
+ * `delivered_via_postmessage` success outcome (`"translation"`) or a non-null
+ * `target_unreachable` outcome carrying the observation (`"no_change"`).
+ *
+ * Sub-plan §2.2 / §2.5 SSOT table / §3 P1.
+ */
+export type Stage2bGateMotion = "translation" | "no_change" | "indeterminate";
+
+/**
+ * Resolve the Stage 2b gate's `motion` decision from Stage 2a's ring
+ * telemetry. Extracted as a pure helper for testability per sub-plan §3 P1.
+ *
+ * @param finalChangedFraction Stage 2a's whole-window pre-vs-final
+ *   `changedFraction` (block-SAD with `NOISE_THRESHOLD = 16`). Strict `> 0`
+ *   gate per sub-plan §2.2 — block-SAD already filters thin-line noise so an
+ *   epsilon would risk demoting genuine micro-scrolls (Excel 1 px line shift
+ *   ≈ 0.0018 changedFraction on a 555-row window, just above the
+ *   `STABLE_THRESHOLD = 0.002` floor).
+ * @param env opt-out flag (read by caller from `process.env`). `true` keeps
+ *   `motion: "indeterminate"` so callers preserve Stage 2a wire-level output
+ *   even when the ring fired.
+ * @returns one of `"translation"` (real motion observed, dispatcher emits
+ *   `delivered_via_postmessage`), `"no_change"` (gate-fail — Stage 2b's load-
+ *   bearing decision: TMOL observed silent drop, dispatcher emits
+ *   `target_unreachable` per §2.5 SSOT row), or `"indeterminate"` (opt-out).
+ */
+export function evaluateStage2bGate(
+  finalChangedFraction: number,
+  env: { stage2bGateDisabled: boolean },
+): Stage2bGateMotion {
+  if (env.stage2bGateDisabled) {
+    return "indeterminate";
+  }
+  return finalChangedFraction > 0 ? "translation" : "no_change";
+}
+
 /**
  * Win32 wheel message constants. Verified against Microsoft Learn:
  * - WM_MOUSEWHEEL  = 0x020A — vertical wheel, HIWORD positive = forward (scroll up)
@@ -773,8 +819,23 @@ async function observeViaUiaOrChainTrust(
             )
           : [];
 
+        // ADR-019 Stage 2b — promote `finalChangedFraction > 0` to a
+        // decision gate per sub-plan §2.2. Env opt-out
+        // (`DESKTOP_TOUCH_STAGE2B_GATE=0`) suppresses just the decision and
+        // preserves Stage 2a's `motion: "indeterminate"` wire-level output;
+        // ring telemetry is unchanged either way. The caller
+        // (`postWheelToHwnd` chain-trust branch) inspects `motion` to choose
+        // between `delivered_via_postmessage` and the new TMOL gate-fail
+        // outcome `{ scrolled: false, reason: "target_unreachable", observation }`
+        // (Option I per sub-plan §5 R3, locked Round 1 P2-2).
+        const stage2bGateDisabled =
+          process.env.DESKTOP_TOUCH_STAGE2B_GATE === "0";
+        const motion = evaluateStage2bGate(finalChangedFraction, {
+          stage2bGateDisabled,
+        });
+
         return {
-          motion: "indeterminate",
+          motion,
           source: "temporal_ring_observation_only",
           framesSampled,
           totalElapsedMs: ringElapsedMs,
