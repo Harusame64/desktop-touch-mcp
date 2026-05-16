@@ -631,6 +631,11 @@ export const desktopStateHandler = async (args: {
     for (const w of wins) {
       if (!MODAL_RE.test(w.title)) continue;
       if (isBrowserTopLevelClass(w.className)) {
+        // `getWindowIdentity` is an OpenProcess + QueryFullProcessImageName
+        // pair (≈ tens of µs per call). The double gate above keeps this
+        // out of the hot path — only runs for windows that BOTH match
+        // MODAL_RE AND carry the Chromium widget class, typically 0-1
+        // per desktop_state call.
         const identity = getWindowIdentity(w.hwnd);
         if (isBrowserProcessName(identity.processName)) continue;
       }

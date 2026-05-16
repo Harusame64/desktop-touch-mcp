@@ -18,6 +18,7 @@ import {
 import { getElementBounds } from "../engine/uia-bridge.js";
 import { captureWindowRawAndHash } from "../engine/layer-buffer.js";
 import { hammingDistance } from "../engine/image.js";
+import { nativeWin32 } from "../engine/native-engine.js";
 import { coercedBoolean } from "./_coerce.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
@@ -1285,6 +1286,14 @@ export const scrollHandler = async ({
             (direction === "left" && atLowerBoundary) ||
             (direction === "right" && atUpperBoundary);
           if (atDirectionalBoundary) {
+            // `scrollObserved.delta: "unverifiable"` (vs canonical
+            // `{x:0, y:0}` at L1124) is intentional. Canonical takes a
+            // post-snapshot in evaluateScrollDelivery so it has measured
+            // numbers; this Tier 1+3 exhausted path skips the post-snapshot
+            // entirely (we already know the dispatcher returned without
+            // observable delta), so "unverifiable" is the honest signal.
+            // Both shapes satisfy the public `{x,y}|"unverifiable"` union
+            // (Opus PR #324 Round 2 P3-NEW-1).
             return {
               content: [{
                 type: "text" as const,
@@ -1316,25 +1325,36 @@ export const scrollHandler = async ({
         // "page-end" test (Notepad at top of buffer, no Win32 scrollbar
         // exposed).
         if (pre.vertical === null && pre.horizontal === null) {
-          return {
-            content: [{
-              type: "text" as const,
-              text: JSON.stringify({
-                ok: true,
-                scrolled: direction,
-                steps: amount,
-                hints: {
-                  scrollObserved: { delta: "unverifiable" as const },
-                  verifyDelivery: {
-                    status: "unverifiable" as const,
-                    channel: "postmessage" as const,
-                    reason: "scrollbar_unavailable" as const,
-                    axis: direction === "up" || direction === "down" ? "vertical" : "horizontal",
+          // Codex PR #324 Round 2 P1 — `unverifiable` is only honest if we
+          // can presume PostMessage dispatch was actually attempted. In a
+          // mixed-version `.node` build where `win32PostMessage` itself is
+          // unavailable, `postWheelToHwnd` returns null at
+          // `_input-pipeline.ts:1028` immediately — NO dispatch happened.
+          // Without this gate we'd silently report `ok:true unverifiable`
+          // and mask a guaranteed delivery failure, preventing callers from
+          // retrying / falling back. Fall through to `ScrollNotDelivered`
+          // when the API is missing.
+          if (typeof nativeWin32?.win32PostMessage === "function") {
+            return {
+              content: [{
+                type: "text" as const,
+                text: JSON.stringify({
+                  ok: true,
+                  scrolled: direction,
+                  steps: amount,
+                  hints: {
+                    scrollObserved: { delta: "unverifiable" as const },
+                    verifyDelivery: {
+                      status: "unverifiable" as const,
+                      channel: "postmessage" as const,
+                      reason: "scrollbar_unavailable" as const,
+                      axis: direction === "up" || direction === "down" ? "vertical" : "horizontal",
+                    },
                   },
-                },
-              }),
-            }],
-          };
+                }),
+              }],
+            };
+          }
         }
         // Flat context (`failWith` auto-wraps non-hoisted keys into
         // `context` — see `ROOT_HOISTED_KEYS` + the splitter at
