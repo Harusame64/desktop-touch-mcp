@@ -1264,6 +1264,19 @@ export const scrollHandler = async ({
       // branch surfaces the typed envelope explicitly with `channel:'postmessage'`
       // (the last attempted tier) so callers see the proper transport identifier.
       if (dest.kind === "hwnd" || dest.kind === "uia") {
+        // Codex PR #324 Round 2 P1 + Round 3 P1 — both the page-end fast
+        // path and the null-null `unverifiable` path can only honestly
+        // claim that PostMessage was attempted when the native API itself
+        // exists. In a mixed-version `.node` build where
+        // `win32PostMessage` is missing, `postWheelToHwnd` returns null at
+        // `_input-pipeline.ts:1028` immediately — NO dispatch happened.
+        // Without this gate, BOTH paths would silently mask a guaranteed
+        // delivery failure (page-end would claim `delivered`, null-null
+        // would claim `unverifiable`). Fall through to
+        // `ScrollNotDelivered` for both paths when the API is missing.
+        const postMessageAvailable =
+          typeof nativeWin32?.win32PostMessage === "function";
+
         // Page-end disambiguation: when the pre-snapshot shows the scrollbar
         // is already AT the directional boundary (top/bottom/left/right),
         // a no-observable-delta result is a legitimate no-op, NOT a silent
@@ -1277,7 +1290,7 @@ export const scrollHandler = async ({
         // E2E pin: `tests/e2e/scroll-raw-verify.test.ts` "page-end" test.
         const preOnAxis =
           direction === "up" || direction === "down" ? pre.vertical : pre.horizontal;
-        if (preOnAxis !== null) {
+        if (preOnAxis !== null && postMessageAvailable) {
           const atUpperBoundary = preOnAxis >= 1 - SCROLL_PERCENT_BOUNDARY_TOL;
           const atLowerBoundary = preOnAxis <= SCROLL_PERCENT_BOUNDARY_TOL;
           const atDirectionalBoundary =
@@ -1324,37 +1337,30 @@ export const scrollHandler = async ({
         // WinUI hosts land here. E2E pin: `tests/e2e/scroll-raw-verify.test.ts`
         // "page-end" test (Notepad at top of buffer, no Win32 scrollbar
         // exposed).
-        if (pre.vertical === null && pre.horizontal === null) {
-          // Codex PR #324 Round 2 P1 — `unverifiable` is only honest if we
-          // can presume PostMessage dispatch was actually attempted. In a
-          // mixed-version `.node` build where `win32PostMessage` itself is
-          // unavailable, `postWheelToHwnd` returns null at
-          // `_input-pipeline.ts:1028` immediately — NO dispatch happened.
-          // Without this gate we'd silently report `ok:true unverifiable`
-          // and mask a guaranteed delivery failure, preventing callers from
-          // retrying / falling back. Fall through to `ScrollNotDelivered`
-          // when the API is missing.
-          if (typeof nativeWin32?.win32PostMessage === "function") {
-            return {
-              content: [{
-                type: "text" as const,
-                text: JSON.stringify({
-                  ok: true,
-                  scrolled: direction,
-                  steps: amount,
-                  hints: {
-                    scrollObserved: { delta: "unverifiable" as const },
-                    verifyDelivery: {
-                      status: "unverifiable" as const,
-                      channel: "postmessage" as const,
-                      reason: "scrollbar_unavailable" as const,
-                      axis: direction === "up" || direction === "down" ? "vertical" : "horizontal",
-                    },
+        if (
+          pre.vertical === null &&
+          pre.horizontal === null &&
+          postMessageAvailable
+        ) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                ok: true,
+                scrolled: direction,
+                steps: amount,
+                hints: {
+                  scrollObserved: { delta: "unverifiable" as const },
+                  verifyDelivery: {
+                    status: "unverifiable" as const,
+                    channel: "postmessage" as const,
+                    reason: "scrollbar_unavailable" as const,
+                    axis: direction === "up" || direction === "down" ? "vertical" : "horizontal",
                   },
-                }),
-              }],
-            };
-          }
+                },
+              }),
+            }],
+          };
         }
         // Flat context (`failWith` auto-wraps non-hoisted keys into
         // `context` — see `ROOT_HOISTED_KEYS` + the splitter at
