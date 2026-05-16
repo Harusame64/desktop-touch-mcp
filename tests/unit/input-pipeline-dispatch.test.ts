@@ -1212,6 +1212,44 @@ describe("ADR-018 Phase 5+N — postWheelToHwnd scroll-leaf walker (Excel / Word
     expect(elapsed).toBeLessThan(500);
   });
 
+  it("ADR-019 MVP-1 (Stage 1) — post-snapshot UIA read EXCEEDS UIA_POST_READ_TIMEOUT_MS (slow / hung provider after dispatch) → chain_trust_unverified (Codex Round 3 P2 — post-read symmetrical bounded await)", async () => {
+    // Mirrors the pre-read timeout test, applied to the post-snapshot
+    // path inside `observeViaUiaOrChainTrust`. Pre-read resolves cleanly
+    // (so the dispatcher enters the chain-trust branch with a valid
+    // pre-percent), but the post-read hangs indefinitely. The internal
+    // 100 ms Promise.race fires; the helper treats post as null and
+    // returns chain_trust_unverified. Wall-clock < 500 ms regression
+    // guard against the timeout being silently un-wired.
+    const TOP = 0xACE5n;
+    const LEAF = 0xCE117n;
+    win32FindScrollLeafForTopLevelMock.mockReturnValue(LEAF);
+    getWindowRectByHwndMock.mockReturnValue({
+      x: 53,
+      y: 240,
+      width: 1424,
+      height: 598,
+    });
+    win32GetScrollInfoMock.mockReturnValue(null);
+    uiaReadScrollPercentAtHwndMock
+      // pre resolves immediately
+      .mockResolvedValueOnce(10.0)
+      // post hangs forever
+      .mockImplementationOnce(() => new Promise(() => {}));
+    const tStart = performance.now();
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
+    const elapsed = performance.now() - tStart;
+    expect(result).toMatchObject({
+      scrolled: true,
+      channel: "postmessage",
+      reason: "delivered_via_postmessage",
+      observation: {
+        motion: "indeterminate",
+        source: "chain_trust_unverified",
+      },
+    });
+    expect(elapsed).toBeLessThan(500);
+  });
+
   it("ADR-019 MVP-1 (Stage 1) — pre-snapshot UIA read REJECTS (slow / hung provider, native crash) → chain_trust_unverified (Codex Round 1 P2 `.catch` shim regression guard)", async () => {
     // The fire-and-forget `preUiaPromise` in `postWheelToHwnd` wraps the
     // pre-read in `.catch(() => null)` so a rejection does not propagate

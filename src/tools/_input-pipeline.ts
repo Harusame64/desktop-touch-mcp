@@ -110,6 +110,38 @@ const SCROLL_PERCENT_EPSILON_OBSERVATION = 1e-3;
 const UIA_PRE_READ_TIMEOUT_MS = 100;
 
 /**
+ * ADR-019 MVP-1 (Stage 1) — same budget for the post-snapshot UIA read
+ * inside `observeViaUiaOrChainTrust`. Without this bound, the post-read
+ * could block the dispatcher's return for the full 8 s Rust thread
+ * timeout when the UIA provider hangs (Codex PR #309 Round 3 P2 — same
+ * blocking concern as the pre-read, applied symmetrically to post).
+ * Timeout → observation falls back to `chain_trust_unverified`.
+ */
+const UIA_POST_READ_TIMEOUT_MS = 100;
+
+/**
+ * ADR-019 MVP-1 (Stage 1) — known limitation, Codex PR #309 Round 3 P2:
+ *
+ * `Promise.race` against `UIA_PRE_READ_TIMEOUT_MS` / `UIA_POST_READ_TIMEOUT_MS`
+ * lets the JS path return quickly when the UIA read is slow, BUT the
+ * losing `readUiaPercent` Promise is never cancelled — the underlying
+ * Rust napi task (`thread::execute_with_timeout` in `src/uia/scroll.rs`)
+ * continues running until its own 8 s timeout. Under repeated scrolls
+ * against a slow / hung provider, each call enqueues another long-running
+ * UIA read into the native worker queue, causing backlog and sustained
+ * degraded behaviour even though the JS path returns fast with
+ * `chain_trust_unverified`.
+ *
+ * Mitigation deferred to Stage 2a (multi-frame ring buffer) where the
+ * temporal observation surface naturally batches / coalesces per-HWND
+ * in-flight reads; a per-HWND in-flight gate or an AbortSignal wired
+ * through the napi task lifecycle is the proper structural fix and is
+ * out of scope for MVP-1. For Stage 1, the JS-side timeout is a
+ * meaningful improvement over the pre-PR-309-Round-2 8 s wallclock-stall
+ * even without native cancellation.
+ */
+
+/**
  * ADR-018 Phase 4 — Tier 3 PostMessage minimum observable `nPos` delta to
  * classify the scroll as `delivered_via_postmessage`. Scrollbar position is
  * reported in app-defined units (often pixels for a custom scrollbar, line
@@ -480,10 +512,23 @@ async function observeViaUiaOrChainTrust(
   if (preUiaPercent !== null && typeof readUiaPercent === "function") {
     const tPostStart = performance.now();
     try {
-      const postUiaPercent = await readUiaPercent({
+      // Same bounded-await pattern as the pre-read site (Codex PR #309
+      // Round 3 P2 — post must also not block the dispatcher's return
+      // for seconds on a slow / hung UIA provider). 100 ms cap; timeout
+      // → observation falls back to `chain_trust_unverified`. See
+      // `UIA_POST_READ_TIMEOUT_MS` docstring for the rationale and the
+      // known native-cancellation limitation.
+      const postReadPromise = readUiaPercent({
         hwnd: effectiveHwnd.toString(),
         axis,
-      });
+      }).catch(() => null);
+      const postTimeoutPromise = new Promise<null>((resolve) =>
+        setTimeout(() => resolve(null), UIA_POST_READ_TIMEOUT_MS),
+      );
+      const postUiaPercent = await Promise.race([
+        postReadPromise,
+        postTimeoutPromise,
+      ]);
       const postElapsedMs = performance.now() - tPostStart;
       // ADR-019 §2.1: `framesSampled` is documented to be the number of
       // pre/post observation samples this primitive captured. For Stage 1
