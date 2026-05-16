@@ -20,8 +20,11 @@ use super::types::{DuplicationError, OutputBounds};
 
 pub struct DuplicationContext {
     pub duplication: IDXGIOutputDuplication,
-    // bounds.x/y are added to dirty-rect coordinates (output→desktop offset).
-    // Phase 3: single primary monitor, offset = 0.
+    // bounds.x/y are added to dirty-rect coordinates by `thread.rs:271-272`
+    // (output-local → desktop coord translation). For the primary monitor
+    // (output 0) DesktopCoordinates is typically (0, 0, primaryW, primaryH)
+    // so the offset is a no-op; for secondary monitors with positive or
+    // negative desktop placement, this offset is load-bearing.
     pub bounds: OutputBounds,
     // Keep device alive — IDXGIOutputDuplication holds an implicit ref,
     // but we pin it here to ensure drop order is predictable.
@@ -71,10 +74,24 @@ pub fn create_context(output_index: u32) -> Result<DuplicationContext, Duplicati
                 DuplicationError::InitFailed(format!("output {output_index} not found"))
             })?;
 
-        // Phase 3: use (0, 0) offset. Dirty rects from Desktop Duplication are in
-        // desktop coordinates for the primary monitor. Multi-monitor offset support
-        // is deferred to Phase 4.
-        let bounds = OutputBounds { x: 0, y: 0, width: 0, height: 0 };
+        // ADR-019 Stage 5 multi-monitor prerequisite — query the output's actual
+        // DesktopCoordinates so `thread.rs` can translate output-local dirty rects
+        // into desktop coords for cross-monitor windows. windows 0.62 returns the
+        // descriptor by value (same pattern as `vision_backend/capability.rs:128`
+        // for IDXGIAdapter1::GetDesc1). For primary monitor this typically gives
+        // `(0, 0, primaryW, primaryH)` so the addition is a no-op; for secondary
+        // monitors positioned to the right `(1920, 0, ...)` or left `(-1920, 0, ...)`
+        // the offset is load-bearing.
+        let desc = output
+            .GetDesc()
+            .map_err(|e| DuplicationError::InitFailed(format!("IDXGIOutput::GetDesc: {e}")))?;
+        let r = desc.DesktopCoordinates;
+        let bounds = OutputBounds {
+            x: r.left,
+            y: r.top,
+            width: r.right - r.left,
+            height: r.bottom - r.top,
+        };
 
         // 5. Cast to IDXGIOutput1 for DuplicateOutput.
         let output1: IDXGIOutput1 = output
