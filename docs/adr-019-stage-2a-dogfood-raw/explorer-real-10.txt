@@ -1,0 +1,26 @@
+[native-engine] Rust image-diff engine loaded (SSE2 SIMD)
+[native-engine] Rust UIA engine loaded
+[native-engine] Rust vision-gpu backend loaded (ADR-005)
+[native-engine] Rust win32 hot-path bindings loaded (ADR-007 P1)
+[native-engine] Rust L1 capture loaded (ADR-007 P5a)
+[native-engine] Rust VBA bridge loaded (ADR-015 Phase 3)
+# ADR-019 Stage 2a PoC — causal strip filter + stop-detection
+# target: "src - エクスプローラー", cycles: 10, baseline: real-scroll, direction: down
+# config: poll=30ms, minWait=50ms, stable<0.002, stripNoise>0.01, budget=700ms, strips=4
+# resolved hwnd: 3149134, class: CabinetWClass, region: 976x570
+
+=== Summary (n=10 successful cycles, 0 errors) ===
+stable reached: 10/10 (100.0%)
+wallclock ms: p50=205 p90=214 p99=214 max=214
+stripsAboveNoise histogram:
+  0:  10 ##########
+  1:   0 
+  2:   0 
+  3:   0 
+  4:   0 
+stripsAboveNoise: p50=0 p90=0
+fullChangedFraction: p50=0 p90=0 p99=0
+H4 first-post-delta < 0.001 count: 10/10 — for real-scroll: BAD (real scroll should show motion)
+postWheelToHwnd: 0 ok, 10 returned null; channels: {"null":10}
+
+JSON_RESULTS={"target":"src - エクスプローラー","cycles":10,"baseline":null,"direction":"down","config":{"pollIntervalMs":30,"minWaitMs":50,"stableThreshold":0.002,"stripNoiseThreshold":0.01,"consecutiveStable":2,"budgetMs":700,"stripCount":4},"summary":{"n":10,"errors":0,"stableCount":10,"wallclockP50":205,"wallclockP90":214,"wallclockP99":214,"stripsAboveNoiseHistogram":[10,0,0,0,0],"stripsAboveNoiseP50":0,"stripsAboveNoiseP90":0,"fullChangedFractionP50":0,"fullChangedFractionP90":0,"fullChangedFractionP99":0},"rows":[{"cycle":0,"dispatchOk":false,"dispatchChannel":null,"stableReached":true,"framesToStability":3,"totalElapsedMs":206,"stripFractions":[0,0,0,0],"stripsAboveNoise":0,"fullChangedFraction":0,"firstPostDelta":0,"sizeMismatch":false},{"cycle":1,"dispatchOk":false,"dispatchChannel":null,"stableReached":true,"framesToStability":3,"totalElapsedMs":211,"stripFractions":[0,0,0,0],"stripsAboveNoise":0,"fullChangedFraction":0,"firstPostDelta":0,"sizeMismatch":false},{"cycle":2,"dispatchOk":false,"dispatchChannel":null,"stableReached":true,"framesToStability":3,"totalElapsedMs":214,"stripFractions":[0,0,0,0],"stripsAboveNoise":0,"fullChangedFraction":0,"firstPostDelta":0,"sizeMismatch":false},{"cycle":3,"dispatchOk":false,"dispatchChannel":null,"stableReached":true,"framesToStability":3,"totalElapsedMs":205,"stripFractions":[0,0,0,0],"stripsAboveNoise":0,"fullChangedFraction":0,"firstPostDelta":0,"sizeMismatch":false},{"cycle":4,"dispatchOk":false,"dispatchChannel":null,"stableReached":true,"framesToStability":3,"totalElapsedMs":203,"stripFractions":[0,0,0,0],"stripsAboveNoise":0,"fullChangedFraction":0,"firstPostDelta":0,"sizeMismatch":false},{"cycle":5,"dispatchOk":false,"dispatchChannel":null,"stableReached":true,"framesToStability":3,"totalElapsedMs":205,"stripFractions":[0,0,0,0],"stripsAboveNoise":0,"fullChangedFraction":0,"firstPostDelta":0,"sizeMismatch":false},{"cycle":6,"dispatchOk":false,"dispatchChannel":null,"stableReached":true,"framesToStability":3,"totalElapsedMs":205,"stripFractions":[0,0,0,0],"stripsAboveNoise":0,"fullChangedFraction":0,"firstPostDelta":0,"sizeMismatch":false},{"cycle":7,"dispatchOk":false,"dispatchChannel":null,"stableReached":true,"framesToStability":3,"totalElapsedMs":203,"stripFractions":[0,0,0,0],"stripsAboveNoise":0,"fullChangedFraction":0,"firstPostDelta":0,"sizeMismatch":false},{"cycle":8,"dispatchOk":false,"dispatchChannel":null,"stableReached":true,"framesToStability":3,"totalElapsedMs":206,"stripFractions":[0,0,0,0],"stripsAboveNoise":0,"fullChangedFraction":0,"firstPostDelta":0,"sizeMismatch":false},{"cycle":9,"dispatchOk":false,"dispatchChannel":null,"stableReached":true,"framesToStability":3,"totalElapsedMs":190,"stripFractions":[0,0,0,0],"stripsAboveNoise":0,"fullChangedFraction":0,"firstPostDelta":0,"sizeMismatch":false}]}
