@@ -84,9 +84,18 @@ type VisualMotionObservation = {
   shift?: { dx: number; dy: number; confidence: number };
   /** Present when the algorithm measured a local repaint signature (e.g.
    *  SSIM residual fraction for `source: "ssim_residual"`); may be absent
-   *  for sources that produce only a binary motion verdict (sub-plan §2.4
-   *  Option A relaxation, same rationale as `shift?` above). */
-  residual?: { fractionChanged: number; centroid?: { x: number; y: number } };
+   *  for sources that produce only a binary motion verdict (Stage 2b
+   *  sub-plan §2.4 Option A relaxation, same rationale as `shift?` above).
+   *  Stage 4 `ssim_residual` pipeline (impl PR) emits `residual` even on
+   *  `no_change` / `indeterminate` outputs so that callers can audit the
+   *  Wang "perceptually identical" (`meanSsim ≥ 0.99`) vs `indeterminate`
+   *  (`meanSsim < 0.99`) boundary — Stage 4 sub-plan §4 P15 decision lock
+   *  default (a). */
+  residual?: {
+    fractionChanged: number;
+    centroid?: { x: number; y: number };
+    meanSsim?: number;
+  };
   /** algorithm that produced this observation. **Canonical 8-value enum** — single
    *  source of truth for the surface; ADR-018 §2.6 envelope reference and
    *  TS / Rust type definitions MUST bit-equal-mirror this list. */
