@@ -294,9 +294,9 @@ The sub-plan PR closes here; below is the checklist the **impl PR** flips `[ ]` 
 - [x] **P3** — `src/engine/native-types.ts` adds `NativeSsim*` interfaces; `src/engine/native-engine.ts` adds `computeSsimResidual?` extension; `index.d.ts` / `index.js` hand-maintained re-export (ESM `createRequire`, per `memory/feedback_esm_napi_loader.md`).
 - [x] **P4** — `src/engine/local-repaint.ts` new file with `resolveLocalRepaintRect` + `verifyLocalRepaint` + Stage 4 constants + `RawFrame` re-export from `layer-buffer.ts`.
 - [x] **P5** — `tests/unit/ssim-residual.test.ts` (8 cases) + `tests/unit/local-repaint-orchestrator.test.ts` (14 cases: 4 resolver + 10 orchestrator). Use deterministic Buffer-construction so tests are independent of the host GPU / monitor.
-- [ ] **P6** — `src/tools/_mouse-verify.ts` adds `classifyDeliveryWithLocalRepaint` wrapper + `observation` field on `VerifyDeliveryHint`. Existing `classifyDelivery` signature preserved (additive only).
-- [ ] **P7** — `src/tools/mouse.ts` `mouseClickHandler` wiring: pre-frame capture parallel to pre-snapshot, post-path invokes `classifyDeliveryWithLocalRepaint`, observation threaded into envelope hint.
-- [ ] **P8** — `tests/unit/mouse-click-verify-stage4.test.ts` (≥ 4 cases).
+- [x] **P6** — `src/tools/_mouse-verify.ts` adds `classifyDeliveryWithLocalRepaint` wrapper + `observation` field on `VerifyDeliveryHint`. Existing `classifyDelivery` signature preserved (additive only).
+- [x] **P7** — `src/tools/mouse.ts` `mouseClickHandler` wiring: pre-frame capture parallel to pre-snapshot, post-path invokes `classifyDeliveryWithLocalRepaint`, observation threaded into envelope hint.
+- [x] **P8** — `tests/unit/mouse-click-verify-stage4.test.ts` (7 cases).
 - [ ] **P9** — `src/tools/keyboard.ts` `typeHandler` wiring at the BG verify `verifiedDelivery === "unverifiable"` site. Pre-frame capture timing per §2.4.2 + OQ #5.
 - [ ] **P10** — `tests/unit/keyboard-type-stage4.test.ts` (≥ 4 cases).
 - [ ] **P11** — `benches/ssim_residual.mjs` AC6 unit bench.
