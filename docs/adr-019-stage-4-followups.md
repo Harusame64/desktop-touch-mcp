@@ -157,7 +157,143 @@ R6 (background animation / unstable) explicitly seen and handled in §2.3 cycle 
 
 ---
 
-## 7. References
+## 7. Deferred P2 sweep (post-impl PR #318)
+
+Four P2 findings from the post-merge external Opus review of PR #318 were
+deemed defer-eligible and are persisted here for v1.7.x patch follow-up
+(CLAUDE.md §9 — residuals in docs/, not memory). None of these are P1 / load-
+bearing; the Stage 4 algorithm + production wiring are correct as shipped.
+
+### 7.1 (Opus Round 1 P2-1) `keyboard.ts` Stage 4 integration test gap
+
+**Site**: `tests/unit/keyboard-type-stage4.test.ts` (4 cases, all passing).
+
+**Gap**: The test file's docstring (lines 18-22) explicitly notes that the
+full `typeHandler` BG verify block is **not exercised**:
+
+> "we test the gate semantics by directly exercising the §2.4.2 decision
+> tree against the contracts that the orchestrator returns. ... the Stage 4
+> surface is fully pinned without booting `typeHandler`'s 200+ line BG
+> verify block."
+
+The function `evaluateKeyboardStage4Gate` defined in the test is a
+**replication of the production gate contract**, not the production wiring
+itself. If `src/tools/keyboard.ts:keyboardTypeHandler` (exported at line 701)
+BG verify failover path drifts (e.g. the gate site moves, or the
+`verifyReason === "read_back_unsupported"` condition gets refactored), the
+test would keep passing while production breaks silently. (The quoted
+docstring uses the informal shortname `typeHandler`; the actual exported
+symbol is `keyboardTypeHandler` — grep accordingly.)
+
+**Suggested fix**: add **one** integration case that exercises the actual
+`keyboardTypeHandler` codepath end-to-end with mocked
+`backgroundChannelResolver` + mocked `verifyTextDelivery` returning
+`unverifiable + read_back_unsupported`, and asserts that
+`verifyLocalRepaint` is called with the resolved target's `windowRect`.
+Scope: ~50-80 lines, additive only (existing 4 cases unchanged).
+
+**Effort**: 0.5 day. **Priority**: medium — keyboard wiring stability is
+load-bearing for v1.7.x dogfood when the MCP server starts shipping Stage 4.
+
+### 7.2 (Opus Round 1 P2-2) Pre-frame `captureFrame` overhead bench (R4 commitment)
+
+**Site**: `src/tools/mouse.ts:608` — `await captureFrame(stage4Hwnd, stage4WindowRect)`
+runs on every `mouse_click(verifyDelivery=true)` call when Stage 4 prerequisites
+are met (default-on), adding ~30-50 ms estimated to every mouse click.
+
+**Gap**: sub-plan §6 R4 ("`mouse_click` pre-frame capture timing") explicitly
+commits to a bench gate: "Bench gate enforces overall `mouse_click` p99 ≤
+existing baseline + 50ms". No such bench file exists (`benches/` has
+`ssim_residual.mjs` for kernel-only, no end-to-end mouse_click overhead bench).
+
+**Suggested fix**: extend an existing mouse benchmark or add
+`benches/mouse_click_stage4_overhead.mjs` that drives N cycles of
+`mouseClickHandler` with `verifyDelivery=true` × {`DESKTOP_TOUCH_STAGE4_SSIM=0`,
+default (Stage 4 on)} and asserts the delta is ≤ 50 ms p99. **Isolation
+note**: pre-frame capture is gated on the env var + windowRect resolution
+ONLY — NOT on `classifyDelivery`'s outcome (the wrapper at
+`src/tools/_mouse-verify.ts:257-270` runs `verifyLocalRepaint` whenever the
+baseline returns non-`delivered`, but the pre-frame capture at
+`src/tools/mouse.ts:608` runs BEFORE classification). So the env opt-out
+cleanly suppresses pre-capture and any low-noise click target (Notepad,
+Calculator, etc.) works; the **isolation comes from the env flag, not
+from picking a UIA-rich target**. (Codex PR #320 Round 2 P2 corrected an
+earlier draft that incorrectly implied Notepad bypasses Stage 4 via UIA tier.)
+
+**Effort**: 0.5 day. **Priority**: medium — production callers absorbing the
+~30-50ms hit deserve a regression gate.
+
+### 7.3 (Opus Round 1 P2-3) `moveTo` ↔ pre-capture hover-render race
+
+**Site**: `src/tools/mouse.ts:580-608` — `moveTo(tx, ty)` runs BEFORE
+`captureFrame(...)` (~28 lines / ~5-30 ms gap depending on `mouse.config.mouseSpeed`).
+
+**Risk**: when the cursor moves to a new element with a hover affordance
+(button highlight, tooltip, link underline), the hover state begins
+rendering immediately. If the pre-frame is captured before the hover
+render completes, the post-frame will contain the hover state that the
+pre-frame doesn't → fractionChanged carries hover-only repaint, not click
+repaint → potential false-positive `local_repaint`. Conversely, if the
+previous cursor position had a hover state still un-hovering, the
+pre-frame may carry that transient. Net effect: noisy fractionChanged
+distributions on hover-rich UIs.
+
+**Suggested fix**: measurement bench that, for a stable target with known
+hover affordance (e.g. a single Win11 Calculator button), runs:
+1. `moveTo → sleep(0) → captureFrame → captureFrame` (back-to-back pre captures)
+2. `moveTo → sleep(50) → captureFrame → captureFrame`
+3. `moveTo → sleep(150) → captureFrame → captureFrame`
+
+Compare back-to-back `computeChangeFraction` to bound the hover-settling
+budget. If ≥ NO_CHANGE_FLOOR within 50 ms, add `POST_MOVETO_SETTLE_MS = 50`
+constant before pre-capture; if not, the current zero settle is honest.
+
+**Effort**: 0.5 day. **Priority**: low — the existing dogfood (§2.1 Paint.NET
+fractionChanged p99 = 0.306) shows good signal-to-noise on a static-hover
+target; the failure mode would only surface on hover-rich apps not yet dogfooded.
+
+### 7.4 (Opus Round 2 P2-2) `cropRawFrame === null` branch unit test
+
+**Site**: `src/engine/local-repaint.ts:367-372` — branch where `cropRawFrame`
+returns null for either pre or post (window moved/resized between mouse.ts
+capture and Stage 4 post capture, so `localRect` falls outside the captured
+buffer); the orchestrator degrades to `observationDegrade(framesSampled)`.
+
+**Gap**: `tests/unit/local-repaint-orchestrator.test.ts` (14 cases) does NOT
+exercise the cropRawFrame null branch — grep returns zero matches for
+"cropRawFrame" or "crop" in the test file. The branch is unreachable in
+the test mocks because the pre/post frames always match `windowRect`
+dimensions.
+
+**Suggested fix**: add one unit case where the orchestrator is invoked with
+a `hint.windowRect` that's smaller than the captured pre-frame's actual
+dimensions OR a localRect that escapes the buffer (simulating window
+resize-during-action). Assert `motion: "indeterminate"` with `source:
+"ssim_residual"` and no `residual` field. ~30 lines.
+
+**Effort**: ~0.25 day (extending existing test file, ~30 lines). **Priority**:
+low — the branch is defensive against a rare race condition; honest degrade
+behaviour is more important than the unit test, which the branch already
+implements.
+
+### 7.5 Total scope estimate
+
+| Item | Effort | Priority |
+|---|---|---|
+| §7.1 keyboardTypeHandler integration test | 0.5 day | medium |
+| §7.2 mouse_click pre-capture overhead bench | 0.5 day | medium |
+| §7.3 moveTo → captureFrame hover-render race bench | 0.5 day | low |
+| §7.4 cropRawFrame === null unit test | 0.25 day | low |
+| **Total bundled (single v1.7.x PR)** | **~1.75 days** | — |
+
+None block v1.7.0 release. Recommended bundling with the first v1.7.x patch
+that touches Stage 4 production code (each item is independent enough that
+partial landings are also fine; medium-priority items should land first if
+the patch is split).
+
+---
+
+## 8. References
 
 - Sub-plan + decisions: `docs/adr-019-stage-4-plan.md`
 - Sub-plan follow-up (P15 mean_ssim plumbing + P16 rectSource resolver decision): PR #316 (`b475af3`)
@@ -168,6 +304,6 @@ R6 (background animation / unstable) explicitly seen and handled in §2.3 cycle 
 - Raw outputs: `docs/adr-019-stage-4-dogfood-raw/`
 - Production wiring sites (for future MCP-restart dogfood):
   - `src/tools/mouse.ts:mouseClickHandler` — Stage 4 mouse activation
-  - `src/tools/keyboard.ts:typeHandler` BG-verify block — Stage 4 keyboard activation
+  - `src/tools/keyboard.ts:keyboardTypeHandler` BG-verify block — Stage 4 keyboard activation
   - `src/engine/local-repaint.ts:verifyLocalRepaint` — orchestrator (exercised directly by this dogfood)
   - `src/ssim.rs` + `index.d.ts:computeSsimResidual` — Rust SSIM napi binding
