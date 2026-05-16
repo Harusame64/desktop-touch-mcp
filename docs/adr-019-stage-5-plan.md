@@ -253,7 +253,7 @@ The sub-plan PR closes here; below is the checklist the **impl PR** flips `[ ]` 
 - [x] **P0 (prerequisite — DONE by PR #322 `3d1ab2a`)** — `src/duplication/device.rs:77` placeholder replaced with `IDXGIOutput::GetDesc()` + `DesktopCoordinates`. Multi-monitor `DirtyRect` coordinate translation now correct for all outputs. Stage 5 impl ships with full multi-monitor scope (no v1 / v2 split).
 - [ ] **P1** — `src/engine/any-change.ts` new module: `resolveOutputIndexForHwnd` (walks `enumDisplayMonitors` + per-output `OutputBounds` via the new typed `DirtyRectSubscription` SSOT — see P4; returns the output index containing the window's center) + `DirtyRectSubscriptionCache` (20-sec idle timeout + Unsupported-failure caching per §2.6 fail-soft, keyed by output_index to support multi-monitor) + `verifyAnyChange` orchestrator + Stage 5 constants. Scalar implementation; no SIMD work (DXGI is already GPU).
 - [ ] **P2** — `src/tools/_input-pipeline.ts`: extend `VisualMotionObservation.residual` with optional Stage 5 fields (`dirtyRectCount?`, `totalIntersectedAreaPx?`, `ratioOfTargetArea?`); add `"dxgi_dirty_rect_unavailable"` to the source enum.
-- [ ] **P3** — `tests/unit/{any-change-orchestrator,dirty-rect-subscription-cache,resolve-output-index}.test.ts` (≥ 17 cases total: 8-12 orchestrator + 6 cache + 3 resolver).
+- [ ] **P3** — `tests/unit/{any-change-orchestrator,dirty-rect-subscription-cache,resolve-output-index}.test.ts` (≥ 19 cases total: 8-12 orchestrator + 6 cache + 5 resolver — resolver bumped from 3 to 5 after PR #322 multi-monitor scope restore, see §3 SSOT row).
 - [ ] **P4** — `index.d.ts` + `index.js` + `src/engine/native-{types,engine}.ts`: add `DirtyRectSubscription` napi class declaration + `NativeDirtyRect` / `NativeOutputBounds` interfaces + ESM `createRequire` re-export. This formalises the SSOT that `src/engine/vision-gpu/dirty-rect-source.ts` currently bypasses (Opus Round 1 P1-2). Vision-gpu's escape hatch can migrate in a follow-up cleanup.
 - [ ] **P5** — `src/engine/world-graph/guarded-touch.ts`: extend `TouchResult.ok: true` variant with `observation?: VisualMotionObservation` (§2.5 lock). Grep all `TouchResult` consumers (~3-5 sites) and verify additive-only — destructures of `{ok, executor, diff, next}` continue to work without the new field.
 - [ ] **P6** — `src/tools/desktop-executor.ts` + `src/tools/desktop-register.ts`: wire `verifyAnyChange` into post-execution path. Resolve target hwnd from lease/spec; populate `TouchResult.observation` on success; surface in MCP envelope `hints.verifyDelivery.observation`. Gate on `DESKTOP_TOUCH_STAGE5_DXGI !== "0"`.
@@ -327,7 +327,7 @@ The sub-plan PR closes here; below is the checklist the **impl PR** flips `[ ]` 
 
 - **Move rect parsing (DXGI `GetFrameMoveRects`)** — Stage 5b carry-over for `scroll_translation` priority-1 source.
 - **Per-rect motion vector extraction** — Stage 6 (optical flow) or Stage 5b (DXGI move rects).
-- **Cross-monitor window correctness** — v1 falls back to primary-of-center; full multi-monitor subscription is a follow-up.
+- **Multi-output simultaneous subscription for materially-straddling cross-monitor windows** — v1 falls back to primary-of-center with `hints.warnings` (basic multi-monitor IS in scope per G5-11 + R3 after PR #322). Multi-output simultaneous subscription = Stage 5c carry-over (§7 OQ #6).
 - **RDP / virtual-display alternative implementation** — Stage 5 only surfaces `dxgi_dirty_rect_unavailable`; no software fallback. Future RDP support sub-plan.
 - **GPU dispatch** — Stage 5 is already a GPU path (OS compositor); Stage 8's CPU→GPU migration is unrelated.
 - **`mouse_drag` Stage 5 wiring** — drag has different post-state semantics (motion is during the drag, not after); out of Stage 5 v1 scope.
@@ -458,7 +458,7 @@ The **impl PR** (separate) is classified **production code 改修 PR** — Codex
   - §2.1 step 3 + §2.4 `STAGE5_MAX_OUTPUT_INDEX` row: notes that DirtyRect translation is correct for all monitors; the constant is now actively used in v1 (not "forward-looking for Stage 5b").
   - §3 SSOT test row: `resolve-output-index.test.ts` 3 cases → **5 cases** (primary / secondary / boundary-straddle / off-screen / MAX cap).
   - §3 SSOT test row for `dirty-rect-subscription-cache.test.ts`: multi-output independence is "actively exercised in v1" (not "forward-looking for Stage 5b").
-  - §4 P0 marked **DONE** (was prerequisite confirmation; PR #322 satisfies); P1 + P4 wording updated to reflect multi-monitor scope.
+  - §4 P0 marked **DONE** (was prerequisite confirmation; PR #322 satisfies); P1 phrasing tightened to name `enumDisplayMonitors` + per-output `OutputBounds` walk explicitly (P4's wording was already multi-monitor-supportive in prior rounds — no edit needed). P3 case count `≥ 17 → ≥ 19` (5 resolver vs prior 3, synced post-Opus Round 1 P1-1 finding on this amendment PR).
   - §5 G5-11 **reinstated** as a real acceptance criterion (was "v1 N/A"). G5-12 dogfood now requires both primary AND secondary monitor coverage (dual-monitor host).
   - §6 R3 mitigation rewritten: cross-monitor windows now properly return primary-of-center with `hints.warnings`; multi-output simultaneous subscription is the new Stage 5c carry-over (vs the prior R3 was "Stage 5b carries multi-monitor entirely").
   - §6 R10 marked **RESOLVED by PR #322** with historical provenance note.
