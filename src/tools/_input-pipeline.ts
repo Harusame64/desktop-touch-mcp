@@ -404,12 +404,22 @@ export interface VisualMotionObservation {
   /**
    * Present when the algorithm measured a local repaint signature (e.g.
    * SSIM residual fraction for `source: "ssim_residual"`). May be absent
-   * for sources that produce only a binary motion verdict (Option A
-   * relaxation, sub-plan §2.4 — same rationale as `shift?` above).
+   * for sources that produce only a binary motion verdict (Stage 2b
+   * Option A relaxation — same rationale as `shift?` above).
+   *
+   * Stage 4 `ssim_residual` pipeline (impl PR) emits `residual` even on
+   * `no_change` / `indeterminate` outputs so that callers can audit the
+   * `no_change` (meanSsim ≥ 0.99) vs `indeterminate` (meanSsim < 0.99)
+   * boundary. `fractionChanged` is `0` when no windows crossed the
+   * per-window residual threshold; `centroid` is omitted in that same
+   * case (no above-threshold windows to mean); `meanSsim` is the Wang
+   * "perceptually identical" floor exposed by `compute_ssim_residual`
+   * (Stage 4 sub-plan §4 P15 decision lock default (a)).
    */
   residual?: {
     fractionChanged: number;
     centroid?: { x: number; y: number };
+    meanSsim?: number;
   };
   /**
    * Algorithm that produced this observation. Stage 1 emits

@@ -28,9 +28,14 @@ import { detectFocusLoss } from "./_focus.js";
 import {
   snapshotForVerify,
   classifyDelivery,
+  classifyDeliveryWithLocalRepaint,
   type VerifyDeliveryHint,
   type MouseVerifySnapshot,
 } from "./_mouse-verify.js";
+// ADR-019 Stage 4 — captureFrame for the pre-action reference frame.
+// `getWindowRectByHwnd` + `findContainingWindow` are already imported above
+// (lines 10, 14) so we only add the new ones here.
+import { captureFrame, type RawFrame } from "../engine/layer-buffer.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled } from "./_action-guard.js";
 import { detectTabDragRisk } from "../engine/perception/tab-drag-heuristic.js";
@@ -581,6 +586,29 @@ export const mouseClickHandler = async ({
     // diff. Skipping the snapshot when `verifyDelivery` is off keeps the
     // ~50-150 ms UIA cost off the hot path for callers that opt out.
     let preSnapshot: MouseVerifySnapshot | null = null;
+    // ADR-019 Stage 4 — pre-action reference frame for the SSIM cascade.
+    // Captured only when verifyDelivery is on AND the Stage 4 mouse gate is
+    // not opted out (sub-plan §2.4.1 gate 3 — `DESKTOP_TOUCH_STAGE4_SSIM=0`
+    // skips even the capture cost). Containing window comes from the click
+    // coordinate when `hwnd` is unresolved, matching the snapshot helper's
+    // pattern (`_mouse-verify.ts:115`).
+    let stage4PreFrame: RawFrame | null = null;
+    let stage4Hwnd: bigint | null = null;
+    let stage4WindowRect:
+      | { x: number; y: number; width: number; height: number }
+      | null = null;
+    const stage4Enabled =
+      verifyDelivery && process.env.DESKTOP_TOUCH_STAGE4_SSIM !== "0";
+    if (stage4Enabled) {
+      const containing = findContainingWindow(tx, ty);
+      stage4Hwnd = containing?.hwnd ?? null;
+      if (stage4Hwnd !== null) {
+        stage4WindowRect = getWindowRectByHwnd(stage4Hwnd);
+        if (stage4WindowRect !== null) {
+          stage4PreFrame = await captureFrame(stage4Hwnd, stage4WindowRect);
+        }
+      }
+    }
     if (verifyDelivery) {
       preSnapshot = await snapshotForVerify(tx, ty);
     }
@@ -632,7 +660,29 @@ export const mouseClickHandler = async ({
         await new Promise<void>((r) => setTimeout(r, 150));
       }
       const postSnapshot = await snapshotForVerify(tx, ty);
-      verifyDeliveryHint = classifyDelivery(preSnapshot, postSnapshot, "send_input");
+      // ADR-019 Stage 4 wiring — when Stage 4 prerequisites are met
+      // (`stage4Enabled` AND hwnd + windowRect resolved) call the wrapper
+      // that runs `classifyDelivery` first and then layers SSIM on top of
+      // `focus_only` / `unverifiable` outcomes (sub-plan §2.4.1). When
+      // prerequisites are not met we call the plain `classifyDelivery`
+      // (matches pre-Stage-4 behaviour exactly — G4-3 regression gate).
+      if (stage4Enabled && stage4Hwnd !== null && stage4WindowRect !== null) {
+        verifyDeliveryHint = await classifyDeliveryWithLocalRepaint(
+          preSnapshot,
+          postSnapshot,
+          "send_input",
+          {
+            hwnd: stage4Hwnd,
+            hint: {
+              point: { x: tx, y: ty },
+              windowRect: stage4WindowRect,
+            },
+            preFrame: stage4PreFrame,
+          },
+        );
+      } else {
+        verifyDeliveryHint = classifyDelivery(preSnapshot, postSnapshot, "send_input");
+      }
     }
 
     return ok({

@@ -84,9 +84,18 @@ type VisualMotionObservation = {
   shift?: { dx: number; dy: number; confidence: number };
   /** Present when the algorithm measured a local repaint signature (e.g.
    *  SSIM residual fraction for `source: "ssim_residual"`); may be absent
-   *  for sources that produce only a binary motion verdict (sub-plan §2.4
-   *  Option A relaxation, same rationale as `shift?` above). */
-  residual?: { fractionChanged: number; centroid?: { x: number; y: number } };
+   *  for sources that produce only a binary motion verdict (Stage 2b
+   *  sub-plan §2.4 Option A relaxation, same rationale as `shift?` above).
+   *  Stage 4 `ssim_residual` pipeline (impl PR) emits `residual` even on
+   *  `no_change` / `indeterminate` outputs so that callers can audit the
+   *  Wang "perceptually identical" (`meanSsim ≥ 0.99`) vs `indeterminate`
+   *  (`meanSsim < 0.99`) boundary — Stage 4 sub-plan §4 P15 decision lock
+   *  default (a). */
+  residual?: {
+    fractionChanged: number;
+    centroid?: { x: number; y: number };
+    meanSsim?: number;
+  };
   /** algorithm that produced this observation. **Canonical 8-value enum** — single
    *  source of truth for the surface; ADR-018 §2.6 envelope reference and
    *  TS / Rust type definitions MUST bit-equal-mirror this list. */
@@ -309,7 +318,7 @@ pub fn compute_block_motion_vectors(
 | `src/engine/image.ts` | `compute_block_motion_vectors` TS wrapper | Stage 2 |
 | `src/image/phase_correlation.rs` | **new module**, `rustfft` SIMD FFT + gating (§2.4) | Stage 3 |
 | `Cargo.toml` | add `rustfft` dep | Stage 3 |
-| `src/image/ssim.rs` | **new module**, SSIM residual map (Wang et al. 2004) | Stage 4 |
+| `src/ssim.rs` | **new module**, SSIM residual map (Wang et al. 2004 reference, scalar). Path corrected from `src/image/ssim.rs` to `src/ssim.rs` — the repo has no `src/image/` directory; image-adjacent Rust modules live at the root (sibling of `src/dhash.rs` / `src/pixel_diff.rs` / `src/image_processing.rs`). Stage 4 follow-up will add AVX2 + SSE2 dispatch if dogfood shows regressions on lower-spec hosts (initial bench: scalar p99 = 4.2 ms ≤ 15 ms G4-6 budget). | Stage 4 |
 | `src/tools/mouse.ts` (`mouse_click.verifyDelivery`) | wire SSIM into focused-element-rect path | Stage 4 |
 | `src/tools/keyboard.ts` (BG `BackgroundInputNotDelivered`) | wire SSIM into TextPattern-unavailable fallback | Stage 4 |
 | `src/image/dxgi_duplication.rs` | **new module**, IDXGIOutputDuplication session lifecycle + dirty-rect parsing | Stage 5 |
@@ -365,10 +374,19 @@ Deliverables (matches §3 SSOT rows for Stage 1):
 
 ### Stage 4 — SSIM residual for click / keyboard verify (1 PR, 2-3 days)
 
-- New `src/image/ssim.rs` (Wang et al. 2004 reference impl).
-- Wire into `mouse_click.verifyDelivery` (focused-element-rect SSIM) and `keyboard` BG verify (TextPattern-unavailable fallback rect SSIM).
-- Different code path from scroll; this is the `local_repaint` primitive.
-- **G4 acceptance**: synthetic test fixture with click → focus rectangle drawn at known rect returns `motion: "local_repaint"` with `residual.fractionChanged > 0.05` inside that rect.
+Sub-plan: `docs/adr-019-stage-4-plan.md` (lands the full §4 P-task checklist).
+
+Deliverables (matches sub-plan §3 SSOT table):
+
+- New `src/ssim.rs` — Wang et al. 2004 reference impl, scalar path (AVX2 + SSE2 dispatch deferred to follow-up per sub-plan §4 P12; scalar p99 = 4.2 ms on 400×400 RGBA, within the 15 ms G4-6 budget).
+- New `src/engine/local-repaint.ts` — `resolveLocalRepaintRect` (two-strategy: `point_padded` + `window_fallback`, per sub-plan P16 decision lock default (b)) + `verifyLocalRepaint` orchestrator + Stage 4 constants.
+- `src/engine/native-engine.ts` + `src/engine/native-types.ts` — `computeSsimResidual?` extension + `NativeSsim*` types; hand-maintained re-export in `index.d.ts` / `index.js`.
+- `src/tools/_mouse-verify.ts` — `classifyDeliveryWithLocalRepaint` wrapper + `VerifyDeliveryHint.observation?` additive field.
+- `src/tools/mouse.ts` — `mouseClickHandler` pre-frame capture + post-path Stage 4 invocation.
+- `src/tools/keyboard.ts` — BG verify `unverifiable + read_back_unsupported` sink Stage 4 invocation (pre-frame captured in parallel with TextPattern / ValuePattern baselines, sub-plan §2.4.2 OQ #5 option (a)).
+- Unit tests: `tests/unit/ssim-residual.test.ts` + `tests/unit/local-repaint-orchestrator.test.ts` + `tests/unit/mouse-click-verify-stage4.test.ts` + `tests/unit/keyboard-type-stage4.test.ts`.
+- Bench: `benches/ssim_residual.mjs` (AC6 unit gate).
+- **G4 acceptance**: synthetic test fixture with click → focus rectangle drawn at known rect returns `motion: "local_repaint"` with `residual.fractionChanged > 0.05` inside that rect. **Stage 4 only upgrades — never demotes** (sub-plan §9 invariant).
 
 ### Stage 5 — DXGI Desktop Duplication (exploratory, 5-7 days)
 
@@ -594,7 +612,7 @@ GPU path is **opportunistic, not required**. Stages 2-4 ship on CPU SIMD; GPU di
 3. **Ring buffer schedule** — `[30, 60, 120, 240 ms]` is a starting point. Excel may need `+500 ms` for full settle on slow systems. Adaptive schedule (capture until last-stable holds, cap at 500 ms total) is the right design; **initial impl ships the fixed-schedule default AND wires `settleSchedule?: number[]` through the §2.1 contract** (Round 1 P2-3 fix — earlier draft contradicted itself by declaring the parameter in the contract while OQ3 said fixed schedule). The adaptive form is deferred to a Stage 2a follow-up.
 4. **DXGI Desktop Duplication per-window** — IDXGIOutputDuplication is a *display output* surface, not per-window. Mapping back to a single window's region requires the window rect + clip. Defer to Stage 5 sub-ADR.
 5. **Phase correlation gating thresholds** — `peak/secondPeak ≥ 3`, `texture floor`, `tile_agreement ≥ 0.5` are rule-of-thumb; per-app empirical calibration carry-over.
-6. **SSIM threshold for `local_repaint`** — Wang et al. recommend 0.95 as "perceptually identical" cutoff; for click feedback that's likely too coarse. Initial impl uses 0.98; per-app calibration carry-over.
+6. **SSIM threshold for `local_repaint`** — Wang et al. recommend 0.95 as "perceptually identical" cutoff; for click feedback that's likely too coarse. **Resolved 2026-05-16 by Stage 4 sub-plan**: locked `RESIDUAL_DELIVERED_FRACTION = 0.05` as the **primary metric** (per-window-fraction gate, sub-plan §2.5 + §5 G4) and `MEAN_SSIM_NO_CHANGE_FLOOR = 0.99` (stricter than the originally proposed 0.98) as the disambiguator for the `no_change` vs `indeterminate` boundary. `meanSsim` is exposed via `VisualMotionObservation.residual.meanSsim` (sub-plan §4 P15 decision lock default (a)) so callers can audit the boundary. Per-app calibration carries over to post-merge dogfood (sub-plan §4 P14).
 7. **Anti-fukuwarai v4** — is there one? Likely: combining v2 RPG's reactive graph with v3 TMOL's temporal observation to produce a continuous "what changed since last action" stream for the LLM. Out of scope for v3.
 8. **Stage 2b gate decision** — should the chain-trust branch promote Stage 2a's `finalChangedFraction` to a `verifyDelivery.status` decision gate? **Resolved 2026-05-16: YES, simple `finalChangedFraction > 0` predicate** (sub-plan `docs/adr-019-stage-2b-plan.md`). The Stage 2a dogfood (`docs/adr-019-stage-2a-dogfood-results.md`) showed perfect separation between Excel real-scroll (30/30 with `finalChangedFraction p99 = 0.015`) and idle (30/30 with `finalChangedFraction p99 = 0.000`); a strict `> 0` predicate yields 100 % sensitivity / 100 % specificity with no threshold tuning. Stage 2b ships gate-on by default. `DESKTOP_TOUCH_STAGE2B_GATE=0` env opt-out preserves Stage 2a wire-level output. Strip-shape gate (`stripsAboveNoise`) + block motion vectors deferred to Stage 2c (conditional on future dense-content / canvas-app target showing `finalChangedFraction` saturation). See sub-plan §6 OQ #1-#6 for the per-question decisions.
 

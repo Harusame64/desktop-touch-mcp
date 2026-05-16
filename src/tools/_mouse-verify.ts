@@ -28,6 +28,12 @@
 import { getFocusedAndPointInfo, type UiaFocusInfo } from "../engine/uia-bridge.js";
 import { getForegroundHwnd, readScrollInfo } from "../engine/win32.js";
 import { findContainingWindow } from "../engine/window-cache.js";
+import type { VisualMotionObservation } from "./_input-pipeline.js";
+import {
+  verifyLocalRepaint,
+  type LocalRepaintRectHint,
+  type RawFrame,
+} from "../engine/local-repaint.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -63,6 +69,15 @@ export interface VerifyDeliveryHint {
   reason?: VerifyDeliveryReason;
   /** Free-form human-readable note; useful for LLM debug paths. */
   detail?: string;
+  /**
+   * ADR-019 Stage 4 — `local_repaint` primitive observation. Attached
+   * when the Stage 4 SSIM cascade ran (mouse_click hit `focus_only` /
+   * `unverifiable` and verifyLocalRepaint produced any of
+   * `local_repaint` / `no_change` / `indeterminate`). Existing callers
+   * that don't read `observation` are unaffected (additive, CLAUDE.md
+   * §3.2 carry-over scope shrink).
+   */
+  observation?: VisualMotionObservation;
 }
 
 /** Compact pre-state used by both pre/post snapshots. */
@@ -199,5 +214,72 @@ export function classifyDelivery(
     channel,
     reason: "no_observable_change",
     detail: "foreground stable, element-under-cursor / focused-element / scrollPos all unchanged after click",
+  };
+}
+
+// ─── ADR-019 Stage 4 wrapper ─────────────────────────────────────────────────
+
+/**
+ * ADR-019 Stage 4 wrapper around `classifyDelivery`. Behaviour:
+ *
+ * 1. Run the existing `classifyDelivery(pre, post, channel)` first — that
+ *    output is preserved bit-equal for `delivered` outcomes (Stage 4 never
+ *    re-classifies a positive heuristic).
+ * 2. When `delivered` → return as-is. Stage 4 only fires on `focus_only` /
+ *    `unverifiable` (matrix doc §4.4).
+ * 3. When `focus_only` / `unverifiable` AND Stage 4 prerequisites are met
+ *    (`hwnd` known, `windowRect` resolvable, env opt-in default-ON), call
+ *    `verifyLocalRepaint(opts)`. Outcomes:
+ *    - `motion: "local_repaint"` → **upgrade** `status` to `"delivered"`,
+ *      attach `observation` field.
+ *    - `motion: "no_change"` → **preserve** original status (Stage 4 can
+ *      only upgrade — sub-plan §9 invariant "Stage 4 only upgrades, never
+ *      demotes"); attach `observation` for audit.
+ *    - `motion: "indeterminate"` → preserve, attach `observation`.
+ * 4. When Stage 4 prerequisites are NOT met (env opt-out, no hwnd, etc.)
+ *    → return original `classifyDelivery` result unchanged.
+ *
+ * Caller-side gating (env / verifyDelivery flag / preFrame availability)
+ * happens BEFORE this wrapper is called (per sub-plan §2.4.1).
+ */
+export async function classifyDeliveryWithLocalRepaint(
+  pre: MouseVerifySnapshot,
+  post: MouseVerifySnapshot,
+  channel: string,
+  stage4: {
+    hwnd: bigint;
+    hint: LocalRepaintRectHint;
+    preFrame: RawFrame | null;
+  } | null,
+): Promise<VerifyDeliveryHint> {
+  const base = classifyDelivery(pre, post, channel);
+
+  // Stage 4 only fires on focus_only / unverifiable per §2.4.1 gate 2.
+  if (base.status === "delivered") return base;
+
+  // Caller opted out, no hwnd, or no rect-hint → return baseline unchanged.
+  if (stage4 === null) return base;
+
+  // Sub-plan §2.4.1 gate 3 — env opt-out for the mouse path.
+  if (process.env.DESKTOP_TOUCH_STAGE4_SSIM === "0") return base;
+
+  const observation = await verifyLocalRepaint({
+    hwnd: stage4.hwnd,
+    hint: stage4.hint,
+    preFrame: stage4.preFrame,
+  });
+
+  if (observation.motion === "local_repaint") {
+    return {
+      status: "delivered",
+      channel,
+      observation,
+    };
+  }
+  // §9 invariant — Stage 4 never demotes. Preserve original status; attach
+  // observation so callers can audit the cascade.
+  return {
+    ...base,
+    observation,
   };
 }
