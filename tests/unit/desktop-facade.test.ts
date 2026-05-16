@@ -627,11 +627,11 @@ describe("DesktopFacade — response-size aware lease TTL (H1)", () => {
     expect(expiryExplore).toBeGreaterThan(expiryAction);
   });
 
-  it("action view with few entities keeps TTL at base 5s", async () => {
+  it("action view with few entities keeps TTL at base 15s", async () => {
     const facade = new DesktopFacade(gameProvider, { nowFn: () => 0 });
     const view = await facade.see({ view: "action" });
-    // base 5000 + no view bonus + no entity bonus (2 entities)
-    expect(view.entities[0].lease.expiresAtMs).toBe(5_000);
+    // base 15000 + no view bonus + no entity bonus (2 entities)
+    expect(view.entities[0].lease.expiresAtMs).toBe(15_000);
   });
 
   it("explore view with 50 entities adds meaningful TTL bonus", async () => {
@@ -639,12 +639,12 @@ describe("DesktopFacade — response-size aware lease TTL (H1)", () => {
       Array.from({ length: 60 }, (_, i) => cand(`Item ${i}`, "uia", { digest: `d${i}` }));
     const facade = new DesktopFacade(manyProvider, { nowFn: () => 0 });
     const view = await facade.see({ view: "explore" }); // 50 entities after maxEntities slice
-    // 5000 base + 5000 explore + (50-20)*100 entityBonus + payloadBonus
+    // 15000 base + 5000 explore + (50-20)*100 entityBonus + payloadBonus
     // (no-compromise A: payload-size aware). Estimate:
     //   estimatedPayloadBytes = 500 + 50*250 + 0*180 + 0 warnings = 13_000
     //   payloadBonus = (13_000 - 2_000) * 0.5 = 5_500
-    // total = 5000 + 5000 + 3000 + 5500 = 18_500
-    expect(view.entities[0].lease.expiresAtMs).toBe(18_500);
+    // total = 15000 + 5000 + 3000 + 5500 = 28_500
+    expect(view.entities[0].lease.expiresAtMs).toBe(28_500);
   });
 
   it("stale lease safety: TTL extension does NOT bypass generation eviction", async () => {
