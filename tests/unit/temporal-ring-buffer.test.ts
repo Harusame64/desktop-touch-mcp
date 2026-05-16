@@ -171,6 +171,10 @@ describe("ADR-019 Stage 2a — ringTelemetry schema", () => {
   });
 
   it("framesToStability may be null when stop-detection budget exhausts", () => {
+    // changedFractions length follows the post-pivot contract:
+    // length === framesSampled - 2 (1 pre + K post → K - 1 inter-frame deltas).
+    // framesSampled = 23 → length = 21. (Opus PR #311 Round 2 P1-NEW fix —
+    // was 22 under the old `framesSampled - 1` formula.)
     const sample: VisualMotionObservation = {
       motion: "indeterminate",
       source: "temporal_ring_observation_only",
@@ -179,7 +183,7 @@ describe("ADR-019 Stage 2a — ringTelemetry schema", () => {
       ringTelemetry: {
         framesSampled: 23,
         elapsedMsPerFrame: Array.from({ length: 23 }, (_, i) => 50 + i * 30),
-        changedFractions: Array.from({ length: 22 }, () => 0.01),
+        changedFractions: Array.from({ length: 21 }, () => 0.01),
         maxChangedFraction: 0.01,
         axis: "horizontal",
         stripCount: 4,
@@ -192,5 +196,39 @@ describe("ADR-019 Stage 2a — ringTelemetry schema", () => {
     };
     expect(sample.ringTelemetry?.framesToStability).toBeNull();
     expect(sample.ringTelemetry?.stableReached).toBe(false);
+    // Bit-equal SSOT invariant: length === framesSampled - 2 (TSDoc on
+    // `changedFractions` in `_input-pipeline.ts`). This pin catches the
+    // §3.1 fact-integrity drift that Opus Round 2 P1-NEW flagged.
+    expect(sample.ringTelemetry!.changedFractions).toHaveLength(
+      sample.ringTelemetry!.framesSampled - 2,
+    );
+  });
+
+  it("happy-path fixture also satisfies `changedFractions.length === framesSampled - 2` invariant", () => {
+    // Pin the same invariant on the first fixture (length 3 = 5 - 2).
+    // (Opus PR #311 Round 2 P1-NEW: add invariant assertion so future
+    // §3.1 drift fails the unit suite, not just code review.)
+    const sample: VisualMotionObservation = {
+      motion: "indeterminate",
+      source: "temporal_ring_observation_only",
+      framesSampled: 5,
+      totalElapsedMs: 204,
+      ringTelemetry: {
+        framesSampled: 5,
+        elapsedMsPerFrame: [0, 50, 80, 110, 140],
+        changedFractions: [0.05, 0.001, 0.001],
+        maxChangedFraction: 0.05,
+        axis: "vertical",
+        stripCount: 4,
+        finalStripChangedFractions: [0, 0.034, 0.017, 0.012],
+        stripsAboveNoise: 3,
+        finalChangedFraction: 0.015,
+        stableReached: true,
+        framesToStability: 4,
+      },
+    };
+    expect(sample.ringTelemetry!.changedFractions).toHaveLength(
+      sample.ringTelemetry!.framesSampled - 2,
+    );
   });
 });

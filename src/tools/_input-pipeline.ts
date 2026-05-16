@@ -721,8 +721,8 @@ async function observeViaUiaOrChainTrust(
       // succeeded; we need a non-empty `frames[]` to compute the
       // pre-vs-final diff. Empty `frames[]` → first capture failed →
       // fall through to chain_trust_unverified (terminal return below).
-      // Opus PR #311 Round 1 P3-1 — refactored from empty-if + else to
-      // positive-guard + early return for clarity.
+      // Opus PR #311 Round 1 P3-1 → Round 2 P3-NEW — refactored from
+      // empty-if + else to positive-guard + return-on-success.
       if (ring.frames.length > 0) {
         const finalFrame = ring.frames[ring.frames.length - 1]!;
         const framesSampled = 1 + ring.frames.length;  // 1 preFrame + N polled
