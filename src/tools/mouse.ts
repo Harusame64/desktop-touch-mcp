@@ -1237,8 +1237,10 @@ export const scrollHandler = async ({
       // we surface the typed envelope explicitly so callers see the proper
       // status / channel / reason rather than catching a thrown guard.
       if (dest.kind === "cdp") {
-        // Flat context (see keyboard.ts:775-776) — `failWith` auto-wraps
-        // non-hoisted keys; LLM-facing shape is `r.context.direction`.
+        // Flat context (`failWith` auto-wraps non-hoisted keys into
+        // `context` — see `ROOT_HOISTED_KEYS` + the splitter at
+        // `src/tools/_errors.ts:685-693`). LLM-facing shape is
+        // `r.context.direction`.
         return failWith(
           new Error("ScrollNotDelivered"),
           "scroll",
@@ -1264,9 +1266,13 @@ export const scrollHandler = async ({
         // Page-end disambiguation: when the pre-snapshot shows the scrollbar
         // is already AT the directional boundary (top/bottom/left/right),
         // a no-observable-delta result is a legitimate no-op, NOT a silent
-        // drop. Mirror the boundary logic in `evaluateScrollDelivery` below
-        // (the post-Tier-4 path) so HWND targets get the same page-end
-        // treatment regardless of which tier was last attempted.
+        // drop. Mirror the boundary logic in `evaluateScrollDelivery`
+        // (post-Tier-4 path, line 1116-1124) so HWND targets get the same
+        // page-end treatment regardless of which tier was last attempted.
+        // The verifyDelivery shape mirrors canonical exactly: `delivered` +
+        // channel, no `reason`/`axis` (Opus PR #324 P1-A: canonical does NOT
+        // attach `reason:"page_end_inferred"` here — that reason is bound to
+        // `unverifiable` status only at line 1091-1096).
         // E2E pin: `tests/e2e/scroll-raw-verify.test.ts` "page-end" test.
         const preOnAxis =
           direction === "up" || direction === "down" ? pre.vertical : pre.horizontal;
@@ -1285,13 +1291,12 @@ export const scrollHandler = async ({
                 text: JSON.stringify({
                   ok: true,
                   scrolled: direction,
+                  steps: amount,
                   hints: {
-                    scrollObserved: { delta: { x: null, y: null } },
+                    scrollObserved: { delta: "unverifiable" as const },
                     verifyDelivery: {
                       status: "delivered" as const,
                       channel: "postmessage" as const,
-                      reason: "page_end_inferred" as const,
-                      axis: direction === "up" || direction === "down" ? "vertical" : "horizontal",
                     },
                   },
                 }),
@@ -1302,11 +1307,14 @@ export const scrollHandler = async ({
         // No observation channel exposed at all (no Win32 scrollbar on either
         // axis): we cannot distinguish "scroll-at-boundary no-op" from
         // "silent drop". Matrix doc §3.1 + `evaluateScrollDelivery`
-        // line 1086-1095 explicitly require a boundary signal — without it
-        // we degrade to `unverifiable` (ok:true with diagnostic hint), NOT
-        // `target_unreachable` failure. Win11 Notepad / WinUI hosts land
-        // here. E2E pin: `tests/e2e/scroll-raw-verify.test.ts` "page-end"
-        // test (Notepad at top of buffer, no Win32 scrollbar exposed).
+        // line 1099-1104 explicitly require a boundary signal — without it
+        // we degrade to `unverifiable` with `scrollbar_unavailable`
+        // (canonical mirror; Opus PR #324 P1-B: `read_back_unsupported` is
+        // bound to the Win32 GetScrollInfo unsupported context per
+        // ADR-018 §2.6.3, not "no observation channel"). Win11 Notepad /
+        // WinUI hosts land here. E2E pin: `tests/e2e/scroll-raw-verify.test.ts`
+        // "page-end" test (Notepad at top of buffer, no Win32 scrollbar
+        // exposed).
         if (pre.vertical === null && pre.horizontal === null) {
           return {
             content: [{
@@ -1314,21 +1322,24 @@ export const scrollHandler = async ({
               text: JSON.stringify({
                 ok: true,
                 scrolled: direction,
+                steps: amount,
                 hints: {
                   scrollObserved: { delta: "unverifiable" as const },
                   verifyDelivery: {
                     status: "unverifiable" as const,
                     channel: "postmessage" as const,
-                    reason: "read_back_unsupported" as const,
+                    reason: "scrollbar_unavailable" as const,
+                    axis: direction === "up" || direction === "down" ? "vertical" : "horizontal",
                   },
                 },
               }),
             }],
           };
         }
-        // `failWith` itself nests non-hoisted keys under `context` (see
-        // keyboard.ts:775-776 comment); pass them flat so the LLM-facing
-        // shape is `r.context.direction` (not `r.context.context.direction`).
+        // Flat context (`failWith` auto-wraps non-hoisted keys into
+        // `context` — see `ROOT_HOISTED_KEYS` + the splitter at
+        // `src/tools/_errors.ts:685-693`). LLM-facing shape is
+        // `r.context.direction`, not `r.context.context.direction`.
         // E2E pin: `tests/e2e/scroll-raw-verify.test.ts` test #1.
         return failWith(
           new Error("ScrollNotDelivered"),
@@ -1377,8 +1388,10 @@ export const scrollHandler = async ({
     ) {
       const tmolObservation: VisualMotionObservation | undefined =
         tier1.observation;
-      // Flat context (see keyboard.ts:775-776) — `failWith` auto-wraps
-      // non-hoisted keys; LLM-facing shape is `r.context.direction`.
+      // Flat context (`failWith` auto-wraps non-hoisted keys into `context`
+      // — see `ROOT_HOISTED_KEYS` + the splitter at
+      // `src/tools/_errors.ts:685-693`). LLM-facing shape is
+      // `r.context.direction`.
       return failWith(
         new Error("ScrollNotDelivered"),
         "scroll",
@@ -1460,8 +1473,10 @@ export const scrollHandler = async ({
       // requires channel to survive in the failure envelope — thread it
       // through context.verifyDelivery so callers reading the error envelope
       // (issue #179) see the consistent shape with success envelopes.
-      // Flat context (see keyboard.ts:775-776) — `failWith` auto-wraps
-      // non-hoisted keys; LLM-facing shape is `r.context.direction`.
+      // Flat context (`failWith` auto-wraps non-hoisted keys into `context`
+      // — see `ROOT_HOISTED_KEYS` + the splitter at
+      // `src/tools/_errors.ts:685-693`). LLM-facing shape is
+      // `r.context.direction`.
       return failWith(
         new Error("ScrollNotDelivered"),
         "scroll",

@@ -11,6 +11,7 @@ import {
   getVirtualScreen,
   getWindowProcessId,
   getProcessIdentityByPid,
+  getWindowIdentity,
 } from "../engine/win32.js";
 import { getHistorySnapshot } from "./_post.js";
 import { listRecentTargetKeys } from "../engine/perception/target-timeline.js";
@@ -63,18 +64,18 @@ const _defaultPort = getCdpPort();
 export const MODAL_RE = /\b(?:dialog|confirm|alert|error|warning|save as)\b|警告|エラー|確認|通知|ダイアログ|名前を付けて/i;
 
 /**
- * Window class names for browser top-level windows. The `hasModal` heuristic
- * skips these because browsers render their own modals (alert / confirm /
- * print preview / file picker) INSIDE the tab via CDP / a child dialog
- * window; the top-level window is page content. Without this exclusion,
- * any browser tab whose title matches MODAL_RE (e.g. a Japanese-language
- * "通知" page, a Stack Overflow "Save As" QA, a GitHub "Errors" issue
- * tracker) falsely sets `hasModal: true`. Exported so a unit test can pin
+ * Window class names that REAL browsers (Chrome / Edge / Firefox / Brave /
+ * etc.) AND Electron / CEF embedded apps (VS Code / Discord / Slack /
+ * Cursor / Claude Desktop / Obsidian / …) share. Used together with
+ * `isBrowserProcessName(processName)` below to gate the `hasModal`
+ * heuristic — class match alone is NOT sufficient because most Electron
+ * apps also report `Chrome_WidgetWin_1`. Exported so a unit test can pin
  * the contract.
  *
- * Chrome / Edge / Brave / Opera / Vivaldi / Arc / Thorium all share
- * `Chrome_WidgetWin_1` (Chromium's widget class). Firefox-derived browsers
- * use `MozillaWindowClass`.
+ * - `Chrome_WidgetWin_1` — Chromium's widget class (Chrome / Edge / Brave /
+ *   Opera / Vivaldi / Arc / Thorium + every Electron / CEF app).
+ * - `MozillaWindowClass` — Firefox-derived browsers (Firefox / Waterfox /
+ *   LibreWolf / Tor Browser).
  */
 const BROWSER_TOP_LEVEL_CLASSES = new Set<string>([
   "Chrome_WidgetWin_1",
@@ -83,6 +84,35 @@ const BROWSER_TOP_LEVEL_CLASSES = new Set<string>([
 
 export function isBrowserTopLevelClass(className: string | undefined): boolean {
   return className !== undefined && BROWSER_TOP_LEVEL_CLASSES.has(className);
+}
+
+/**
+ * Process names of REAL browser executables (case-insensitive, no `.exe`).
+ * Matches `getProcessIdentityByPid().processName` shape (which strips the
+ * extension per its TSDoc, e.g. `chrome.exe` → `chrome`). Together with
+ * `isBrowserTopLevelClass` this isolates the "browser tab title accidentally
+ * matches MODAL_RE" false positive from genuine Electron / CEF app modals
+ * (Codex P1 review on PR #324: VS Code etc. would otherwise be unable to
+ * raise `hasModal:true`).
+ *
+ * Lowercase only; compare via `processName.toLowerCase()`.
+ */
+const BROWSER_PROCESS_NAMES = new Set<string>([
+  "chrome",
+  "msedge",
+  "firefox",
+  "brave",
+  "opera",
+  "vivaldi",
+  "arc",
+  "thorium",
+  "iexplore",
+  "waterfox",
+  "librewolf",
+]);
+
+export function isBrowserProcessName(processName: string | undefined): boolean {
+  return processName !== undefined && BROWSER_PROCESS_NAMES.has(processName.toLowerCase());
 }
 
 // ─── Focused-element builders (D2-B-2) ───────────────────────────────────────
@@ -581,23 +611,31 @@ export const desktopStateHandler = async (args: {
       }
     }
 
-    // Modal heuristic — title-substring detection.
+    // Modal heuristic — title-substring detection with browser-tab exclusion.
     //
-    // Browser top-level windows (Chrome/Edge `Chrome_WidgetWin_1`, Firefox
-    // `MozillaWindowClass`) are excluded because browsers never present a
-    // modal dialog as a separate top-level window — their alert/confirm
-    // dialogs render inside the tab via CDP. A browser tab whose page title
+    // Title is checked first (cheap regex); the process-identity lookup runs
+    // only for the rare windows that BOTH match `MODAL_RE` AND carry a
+    // Chromium widget class. The exclusion fires only when the owning process
+    // is a real browser executable (chrome / msedge / firefox / …) — Electron
+    // / CEF apps (VS Code / Discord / Slack / …) share `Chrome_WidgetWin_1`
+    // but their MODAL_RE-matching titles ARE modals and must keep raising
+    // `hasModal: true` (Codex P1 review on PR #324).
+    //
+    // The false-positive being suppressed: a browser tab whose page title
     // happens to contain "通知" / "Save As" / "Error" / "警告" etc. is page
-    // content, NOT a modal. Without this gate, any Japanese-language page
-    // mentioning notifications (Twitter 通知 timeline, Gmail 通知設定 page,
-    // a Stack Overflow "Save As" QA thread, etc.) falsely sets
-    // `hasModal: true` on every desktop_state call, breaking e2e tests like
-    // `context-consistency.test.ts` that rely on a clean modal baseline.
+    // content, not a modal. Browsers render their own alert/confirm modals
+    // inside the tab via CDP, never as a separate top-level window.
+    //
     // Tested by `tests/unit/modal-detection-browser-exclusion.test.ts`.
     let hasModal = false;
     for (const w of wins) {
-      if (isBrowserTopLevelClass(w.className)) continue;
-      if (MODAL_RE.test(w.title)) { hasModal = true; break; }
+      if (!MODAL_RE.test(w.title)) continue;
+      if (isBrowserTopLevelClass(w.className)) {
+        const identity = getWindowIdentity(w.hwnd);
+        if (isBrowserProcessName(identity.processName)) continue;
+      }
+      hasModal = true;
+      break;
     }
 
     // ── Semantic level: focusedElement + cursorOverElement ─────────────────
