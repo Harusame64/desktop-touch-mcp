@@ -263,14 +263,13 @@ export async function verifyLocalRepaint(opts: {
   }
 
   // R6 mitigation: when stable was never reached (background animation,
-  // ongoing video), SSIM result is unreliable. Caller keeps `focus_only`.
+  // ongoing video), SSIM did not run — no `residual` data exists. Use the
+  // same `observationDegrade` helper as the upstream degraded paths so
+  // every "SSIM-skipped indeterminate" emission is bit-equal (Opus Round 1
+  // P2-4: consistency between pre-SSIM degraded paths and post-SSIM
+  // indeterminate at line ~355). Caller keeps `focus_only`.
   if (!postResult.stableReached) {
-    return {
-      motion: "indeterminate",
-      source: "ssim_residual",
-      framesSampled: 1 + postResult.frames.length,
-      totalElapsedMs: performance.now() - startMs,
-    };
+    return observationDegrade(1 + postResult.frames.length);
   }
 
   const framesSampled = 1 + postResult.frames.length;
