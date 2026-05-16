@@ -658,14 +658,14 @@ describe("DesktopFacade — response-size aware lease TTL (H1)", () => {
     if (!result.ok) expect(result.reason).toBe("entity_not_found");
   });
 
-  it("stale lease safety: expired lease rejected even at high TTL (past 30s)", async () => {
+  it("stale lease safety: expired lease rejected even at high TTL (past 40s clock)", async () => {
     let now = 0;
     const manyProvider: CandidateProvider = () =>
       Array.from({ length: 80 }, (_, i) => cand(`Item ${i}`, "uia", { digest: `d${i}` }));
     const facade = new DesktopFacade(manyProvider, { nowFn: () => now });
     const view = await facade.see({ view: "explore" });
     const lease = view.entities[0].lease;
-    // Push clock well past the maximum possible TTL (cap: 30s)
+    // Push clock past the lease expiry (high-TTL explore lease still well under the 60s cap)
     now = 40_000;
     const result = await facade.touch({ lease });
     expect(result.ok).toBe(false);
@@ -678,7 +678,7 @@ describe("DesktopFacade — response-size aware lease TTL (H1)", () => {
       defaultTtlMs: 1_000,
       nowFn: () => now,
     });
-    const view = await facade.see({ view: "explore" }); // policy would give 10s, but override wins
+    const view = await facade.see({ view: "explore" }); // policy would give 20s, but override wins
     expect(view.entities[0].lease.expiresAtMs).toBe(1_000);
     now = 2_000; // past the 1s override TTL
     const result = await facade.touch({ lease: view.entities[0].lease });

@@ -8,8 +8,8 @@
  *
  * 2026-05-17 update (issue #327 item F): base bumped 5_000 → 15_000.
  *   Real Claude Code round-trip (user utterance + reasoning + next tool call)
- *   is typically 10-30s, so the 5s baseline tripped `lease_expired` on every
- *   `desktop_discover → desktop_act` cycle during dogfood. 15s base brings
+ *   is typically 10-30s, so the 5s baseline often tripped `lease_expired`
+ *   on `action` and short-`explore` cycles during dogfood. 15s base brings
  *   the `action` view into the lower edge of typical round-trip; explore and
  *   debug stack on top as before. The hard cap (60_000) remains unchanged.
  *

@@ -542,3 +542,24 @@ debug view は rect 情報を含む → operator が手で検証する。10 秒 
 - `docs/Anti-Fukuwarai-V2.md` § 9 関連ドキュメント末尾に `anti-fukuwarai-v2-h1-lease-ttl-plan.md` の参照を足す（任意）
 
 これらは implementation commit とは別 commit で行って良い。
+
+---
+
+## 9. Amendments (post-H1)
+
+本 plan は 2026-04-23 起草の H1 batch 起源 SSOT。policy 本体はその後 2 度更新されているため、**本ドキュメント §2.x / §4.1 / §5.1 / §7 の具体数値は historical 記述**であり、**live SSOT は `src/engine/world-graph/lease-ttl-policy.ts` (`LEASE_TTL_POLICY` const + JSDoc header)**。本 §9 は forward-pointing amendment 集約点として運用する (option (a) per CLAUDE.md §3.1 fact 整合 sweep)。
+
+### 9.1 2026-04-XX — no-compromise A: payload-size aware TTL + cap 60s
+
+- `payloadBonus` 軸を追加 (`max(0, payloadBytes - 2_000) * 0.5`、cap `+10_000`)。`action` / `explore` / `debug` 全 view で stack。
+- `cap` を `30_000` → `60_000` に拡張 (大 payload が cap 早期到達して LLM の読了時間を吸収しきれない事案への対処)。
+- `softExpiryFraction = 0.6` 追加 (LLM 向け advisory、hard `expiresAtMs` は correctness wall として独立)。
+- 本 doc §2.1 上限 30s / §2.2 算定式 / §7 acceptance "cap 30s で頭打ち" は **stale**。
+
+### 9.2 2026-05-17 — issue #327 item F: base 5_000 → 15_000
+
+- `baseMs` を `5_000` → `15_000` に引き上げ。
+- 動機: Stage 5 dogfood (issue #327 item F) で `desktop_discover → desktop_act` の Claude Code round-trip (10-30s) が `view=action` の 5-8s 実効 TTL を超え、`lease_expired` が日常使用で頻発したため。
+- 影響: `action` view base が round-trip 下端に到達。explore / debug bonus + entityBonus + payloadBonus は不変、hard cap 60_000 も不変。
+- 本 doc §2.1 基準 TTL 5,000 ms / §2.2 算定式 base (5000) / §7 acceptance "view=action は 5s 維持" / "view=explore 50 entities で 13s" は **stale**。
+- live SSOT は `src/engine/world-graph/lease-ttl-policy.ts:33-49`、関連テストは `tests/unit/lease-ttl-policy.test.ts` + `tests/unit/desktop-facade.test.ts` H1 describe。
