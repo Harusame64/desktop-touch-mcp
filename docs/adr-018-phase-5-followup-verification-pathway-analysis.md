@@ -162,9 +162,12 @@ verifyVisualMotion(
   shift?: { dx: number; dy: number; confidence: number };
   // Present when the algorithm measured a local repaint signature (e.g.
   // SSIM residual fraction for source: "ssim_residual"); may be absent for
-  // sources that produce only a binary motion verdict (sub-plan §2.4 Option A
-  // relaxation, same rationale as `shift?` above).
-  residual?: { fractionChanged: number; centroid?: { x: number; y: number } };
+  // sources that produce only a binary motion verdict (Stage 2b sub-plan §2.4
+  // Option A relaxation, same rationale as `shift?` above). Stage 4 emits
+  // `residual` even on no_change / indeterminate outputs so the
+  // `meanSsim?: number` audit field is reachable for the Wang
+  // perceptually-identical boundary (Stage 4 sub-plan §4 P15 default (a)).
+  residual?: { fractionChanged: number; centroid?: { x: number; y: number }; meanSsim?: number };
   // metadata
   source: "uia_scroll_percent" | "block_motion_vectors" | "tiled_phase_correlation"
          | "ssim_residual" | "dxgi_dirty_rect" | "optical_flow"
@@ -267,7 +270,9 @@ verifyDelivery: {
            | "ssim_residual" | "dxgi_dirty_rect" | "optical_flow"
            | "temporal_ring_observation_only" | "chain_trust_unverified";
     shift?: { dx: number; dy: number; confidence: number };
-    residual?: { fractionChanged: number };
+    // Stage 4 sub-plan §4 P15 decision lock default (a): `meanSsim?` is the
+    // Wang "perceptually identical" floor for the `ssim_residual` pipeline.
+    residual?: { fractionChanged: number; centroid?: { x: number; y: number }; meanSsim?: number };
     framesSampled?: number;
   };
 }

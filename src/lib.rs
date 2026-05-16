@@ -9,6 +9,8 @@ use napi_derive::napi;
 mod pixel_diff;
 mod dhash;
 mod image_processing;
+// ADR-019 Stage 4 — SSIM `local_repaint` primitive (Wang et al. 2004).
+mod ssim;
 #[cfg(windows)]
 mod uia;
 #[cfg(windows)]
@@ -54,6 +56,31 @@ pub fn compute_change_fraction(
 ) -> Result<f64> {
     win32::safety::napi_safe_call("compute_change_fraction", || {
         pixel_diff::compute_change_fraction(&prev, &curr, width, height, channels)
+    })
+}
+
+/// ADR-019 Stage 4 — SSIM residual between two same-size pre/post frames.
+///
+/// Returns the fraction of 8×8 sliding windows whose `1 - SSIM` exceeded
+/// the per-window residual threshold (Wang et al. 2004 standard with L=255,
+/// K1=0.01, K2=0.03, stride 4), the centroid of above-threshold windows
+/// (omitted when fraction is 0), and the mean SSIM across all windows for
+/// the `no_change` vs `indeterminate` disambiguator (Wang "perceptually
+/// identical" cutoff, exposed via `VisualMotionObservation.residual.meanSsim`).
+///
+/// `region` selects an inner sub-rect (in pre / post coordinates); pass
+/// `null` / `undefined` for whole-frame.
+#[napi]
+pub fn compute_ssim_residual(
+    pre: Buffer,
+    post: Buffer,
+    width: u32,
+    height: u32,
+    channels: u32,
+    region: Option<ssim::SsimRegion>,
+) -> Result<ssim::SsimResidualResult> {
+    win32::safety::napi_safe_call("compute_ssim_residual", || {
+        ssim::compute_ssim_residual(&pre, &post, width, height, channels, region)
     })
 }
 

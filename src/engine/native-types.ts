@@ -193,6 +193,51 @@ export interface NativeDrawSomLabelsResult {
   channels: number
 }
 
+// ─── SSIM residual (ADR-019 Stage 4) ─────────────────────────────────────────
+//
+// Native shapes for `compute_ssim_residual` (Wang et al. 2004 implementation,
+// see `src/ssim.rs`). Used by the Stage 4 `local_repaint` orchestrator
+// (`src/engine/local-repaint.ts`) under the `ssim_residual` source label
+// in `VisualMotionObservation`. Bit-equal mirror of the napi-rs Rust shapes;
+// keep in sync with the hand-maintained re-export in `index.d.ts` and the
+// runtime export in `index.js`.
+
+/** Optional sub-region selector (pre / post coordinates). Omitted /
+ *  `null` selects the whole frame. */
+export interface NativeSsimRegion {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/** Centroid of above-threshold sliding windows. Coordinates are in absolute
+ *  frame pixels (NOT region-relative); callers that supply a sub-region
+ *  receive the centroid in the same frame coordinate space. **Omitted**
+ *  (NOT `null`) by napi-rs when `fractionChanged === 0` — same
+ *  `Option::None` omission semantic as `NativeDirtyRectsResult.latest`. */
+export interface NativeSsimCentroid {
+  x: number
+  y: number
+}
+
+/** Aggregated SSIM residual over the requested region. `fractionChanged`
+ *  is the fraction of 8×8 sliding windows (stride 4) whose `1 - SSIM`
+ *  exceeded the per-window residual threshold (0.05 default in
+ *  `src/ssim.rs`). `meanSsim` is the Wang "perceptually identical" cutoff
+ *  used by Stage 4 to discriminate `no_change` (≥ 0.99) from
+ *  `indeterminate` (< 0.99) — also exposed via
+ *  `VisualMotionObservation.residual.meanSsim` per Stage 4 sub-plan §4 P15
+ *  decision lock default (a). */
+export interface NativeSsimResidualResult {
+  fractionChanged: number
+  /** Omitted (not `null`) when `fractionChanged === 0`. Use `result.centroid != null`
+   *  to handle both `undefined` (napi-rs omission) and a hypothetical
+   *  future explicit `null`. */
+  centroid?: NativeSsimCentroid
+  meanSsim: number
+}
+
 // ── Win32 hot-path bindings (ADR-007 P1) ─────────────────────────────────────
 
 /** Rust `RECT` mirror — left/top/right/bottom in screen pixels. The TS wrapper

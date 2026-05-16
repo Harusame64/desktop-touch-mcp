@@ -47,6 +47,9 @@ export const computeChangeFraction = nativeBinding.computeChangeFraction;
 export const dhashFromRaw = nativeBinding.dhashFromRaw;
 export const hammingDistance = nativeBinding.hammingDistance;
 
+// ─── SSIM residual (ADR-019 Stage 4) ─────────────────────────────────────────
+export const computeSsimResidual = nativeBinding.computeSsimResidual;
+
 // ─── UIA (Windows-only; properties may be undefined on non-Windows builds) ───
 export const uiaGetElements = nativeBinding.uiaGetElements;
 export const uiaGetFocusedAndPoint = nativeBinding.uiaGetFocusedAndPoint;
