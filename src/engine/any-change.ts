@@ -8,8 +8,11 @@
  *
  *   1. Caches subscriptions per `output_index` so chained `desktop_act` calls
  *      amortise the ~50-100 ms DXGI session init cost.
- *   2. Resolves a target window's primary monitor (output index) via
- *      `enumMonitors` + window-center containment.
+ *   2. Resolves a target window's output index via `enumMonitors` +
+ *      window-center containment. Works for every monitor (primary AND
+ *      secondary) — PR #322 populated `outputBounds` from
+ *      `DXGI_OUTPUT_DESC.DesktopCoordinates`, and PR #323 lifted the v1
+ *      primary-monitor-only constraint.
  *   3. Polls dirty rects for a bounded window, intersects against the target
  *      window rect (or a sub-region), and decides `motion: any_change | no_change | indeterminate`.
  *
@@ -42,7 +45,13 @@ const STAGE5_POLL_BUDGET_MS = 100;
 const STAGE5_CACHE_IDLE_TIMEOUT_MS = 20_000;
 
 /** Stage 5 sub-plan §2.4 — hard cap on `outputIndex` to guard against runaway
- *  enumeration. Resolver clamps; out-of-range emits `dxgi_dirty_rect_unavailable`. */
+ *  enumeration on hypothetical many-monitor setups. The check
+ *  `index > STAGE5_MAX_OUTPUT_INDEX` accepts indices `0..=8` (up to 9
+ *  monitors total); index `>= 9` emits `dxgi_dirty_rect_unavailable` via
+ *  `reason: "out_of_range"`. Opus PR #325 Round 1 P3-1: kept the
+ *  `_INDEX` suffix + strict-inequality check to avoid cascading the
+ *  rename through `STAGE5_CONSTANTS` consumers + unit tests; the docstring
+ *  pins the inclusive-max semantic. */
 const STAGE5_MAX_OUTPUT_INDEX = 8;
 
 /** Stage 5 sub-plan §2.4 — relative-area gate. 0.5 % of the target rect

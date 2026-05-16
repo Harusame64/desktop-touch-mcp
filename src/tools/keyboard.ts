@@ -1263,6 +1263,20 @@ export const keyboardTypeHandler = async ({
               // Replaces the empty Stage 4 observation with the Stage 5 one;
               // never upgrades `verifiedDelivery` (§2.3.2 forbids the safety
               // net from claiming `delivered`).
+              //
+              // Region: Opus PR #325 Round 1 P2-3 — unlike the mouse path
+              // (`_mouse-verify.ts:301-308`, which pads a 192×192 region
+              // around the click point), the keyboard path INTENTIONALLY
+              // passes only `windowRect` (no `region` sub-rect). Keyboard
+              // input has no equivalent screen-space "point" — the caret
+              // position is a UIA query away and we do not always have an
+              // input-field rect handy. The wider gate is acceptable here
+              // because the Stage 5 observation is **observation-only**:
+              // it cannot upgrade `verifiedDelivery` (still `false` /
+              // `unverifiable`), only attach evidence. A small caret blink
+              // alone will not satisfy the 0.5 % gate on a 1920×1080
+              // window, but a full-line repaint will — exactly the signal
+              // we want.
               stage4Observation.motion === "indeterminate" &&
               stage4Observation.source === "ssim_residual" &&
               stage4Observation.residual === undefined &&

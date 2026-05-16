@@ -573,7 +573,14 @@ async function tryVerifyAnyChange(
   let hwnd: bigint;
   try {
     hwnd = BigInt(target.hwnd);
-  } catch {
+  } catch (err) {
+    // Opus PR #325 Round 1 P3-2 — surface the silent disable in stderr so
+    // a production race where `lastTarget.hwnd` becomes malformed (CDP
+    // tab path emitting non-numeric, a stale lease, etc.) is auditable
+    // rather than silently dropping the Stage 5 observation.
+    console.error(
+      `[desktop-register] Stage 5 disabled — BigInt(target.hwnd) failed for viewId=${viewId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return null;
   }
   const windowRect = getWindowRectByHwnd(hwnd);
