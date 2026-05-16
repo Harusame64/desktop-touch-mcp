@@ -1049,17 +1049,12 @@ export const keyboardTypeHandler = async ({
             process.env.DESKTOP_TOUCH_STAGE4_SSIM_KEYBOARD !== "0";
           const stage4WindowRect =
             stage4KeyboardEnabled ? getWindowRectByHwnd(target.hwnd) : null;
-          const stage4PreFramePromise: Promise<RawFrame | null> =
-            stage4KeyboardEnabled && stage4WindowRect !== null
-              ? captureFrame(target.hwnd, stage4WindowRect)
-              : Promise.resolve(null);
-          const [baselineRaw, valueBaselineRaw, stage4PreFrame] = shouldReadBaselines
+          const [baselineRaw, valueBaselineRaw] = shouldReadBaselines
             ? await Promise.all([
                 getTextViaTextPattern(target.title),
                 getTextViaValuePattern(target.title),
-                stage4PreFramePromise,
               ])
-            : [null, null, await stage4PreFramePromise];
+            : [null, null];
           const baselineMarker =
             baselineRaw !== null ? makeKeyboardBaselineMarker(stripAnsi(baselineRaw)) : null;
           // F4-bis fix (PR #234 follow-up): always retain `valueBaselineRaw`,
@@ -1075,6 +1070,20 @@ export const keyboardTypeHandler = async ({
           const valueBaseline = valueBaselineRaw;
 
           if (replaceAll) postKeyComboToHwnd(target.hwnd, "ctrl+a");
+
+          // Stage 4 pre-frame: capture AFTER the optional Ctrl+A replace-all
+          // so the SSIM residual measures **only** the typed-text repaint, not
+          // the selection-highlight transition that Ctrl+A introduces (Codex
+          // Round 3 P1). When `replaceAll === false` this is equivalent to the
+          // pre-WM_CHAR capture point. The capture is now serial with the
+          // baseline reads above (loses ~30-50ms parallelism vs the prior
+          // Promise.all design) — accepted as the correctness/speed tradeoff
+          // for the load-bearing Stage 4 verifyDelivery contract.
+          const stage4PreFrame: RawFrame | null =
+            stage4KeyboardEnabled && stage4WindowRect !== null
+              ? await captureFrame(target.hwnd, stage4WindowRect)
+              : null;
+
           const result = postCharsToHwnd(target.hwnd, effectiveText);
           if (!result.full) {
             // Partial fail: do NOT fall through to foreground (would cause double input).
