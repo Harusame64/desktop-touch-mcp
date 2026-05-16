@@ -467,7 +467,7 @@ Each SIMD stage lands with a `benches/tmol_<stage>.mjs` (criterion or vitest ben
 - Stage 3 tiled phase correlation (256×256 downsample): p99 ≤ 20 ms
 - Stage 4 SSIM (400×400 focused-element rect): p99 ≤ 15 ms
 
-The temporal fallback wall-clock budget (≤ 300 ms end-to-end, AC6) is the bench gate for the *integration* path (capture + ring + compute combined); the per-algorithm budgets above are the *unit* gates that feed it.
+The temporal fallback wall-clock budget (≤ **700 ms** end-to-end, AC6 — **amended 2026-05-16** by Stage 2a sub-plan Round 4 pivot; see §6 AC6 for the full justification, was 300 ms pre-pivot) is the bench gate for the *integration* path (capture + ring + compute combined); the per-algorithm budgets above are the *unit* gates that feed it.
 
 If any stage misses its compute budget, the SIMD path is the first place to look (compare AVX2 vs SSE2 via the runtime dispatch; the bench can force-disable AVX2 via `RUSTFLAGS=-C target-feature=-avx2` to measure the floor). The GPU path (§4.6 Stage 8) is the second place to look when SIMD-CPU still misses budget on large windows.
 

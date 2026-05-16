@@ -197,7 +197,7 @@ const CONSECUTIVE_STABLE_TARGET = 2;
  * indefinitely. PoC empirical p99 = 204 ms (29 % of budget); the wider
  * budget is intentional headroom for slower MFC repaint paths.
  */
-export const RING_WALLCLOCK_BUDGET_MS = 700;
+const RING_WALLCLOCK_BUDGET_MS = 700;
 /** Strip partitioning of the window for the causal filter (top→bottom for vertical motion). */
 const STRIP_COUNT = 4;
 
@@ -367,10 +367,17 @@ export interface VisualMotionObservation {
     elapsedMsPerFrame: number[];
     /**
      * Inter-frame `changedFraction` series (stop-detection stability metric).
-     * `changedFractions[k] = changedFraction(frames[k], frames[k+1])`. Length
-     * = `framesSampled - 1`. A value `< STABLE_THRESHOLD` (0.002) signals
-     * frame-to-frame stability; two consecutive sub-threshold values
-     * (`CONSECUTIVE_STABLE_TARGET = 2`) trigger ring termination.
+     * `changedFractions[k] = changedFraction(post[k], post[k+1])` where
+     * `post[*]` is the helper's polled frame ring (does NOT include the
+     * `preFrame` captured upstream at `T_pre`). With `K` polled frames in
+     * the ring, the helper emits `K - 1` deltas; the caller then sets
+     * `framesSampled = 1 + K`, so **length = `framesSampled - 2`** (one
+     * subtract for `preFrame` not being in `post[*]`, one for delta-count
+     * being one less than frame-count). A value `< STABLE_THRESHOLD`
+     * (0.002) signals frame-to-frame stability; two consecutive sub-
+     * threshold values (`CONSECUTIVE_STABLE_TARGET = 2`) trigger ring
+     * termination. (Opus PR #311 Round 1 P2-1 — corrected from `- 1`
+     * which contradicted the runtime + unit test fixture.)
      */
     changedFractions: number[];
     /** Max of `changedFractions` — proxy for peak motion during the ring. */
@@ -713,14 +720,20 @@ async function observeViaUiaOrChainTrust(
       // The helper returns at least the first capture frame if it
       // succeeded; we need a non-empty `frames[]` to compute the
       // pre-vs-final diff. Empty `frames[]` → first capture failed →
-      // fall through to chain_trust_unverified honestly.
-      if (ring.frames.length === 0) {
-        // fall through outside the `if (stage2a)` block
-      } else {
+      // fall through to chain_trust_unverified (terminal return below).
+      // Opus PR #311 Round 1 P3-1 — refactored from empty-if + else to
+      // positive-guard + early return for clarity.
+      if (ring.frames.length > 0) {
         const finalFrame = ring.frames[ring.frames.length - 1]!;
         const framesSampled = 1 + ring.frames.length;  // 1 preFrame + N polled
-        const maxChangedFraction =
-          ring.deltas.length > 0 ? Math.max(...ring.deltas) : 0;
+        // Use reduce instead of spread to avoid V8 argument-count limits
+        // when a future budget raise pushes ring length high (Opus PR #311
+        // Round 1 P2-4 defensive — currently safe at ~22 entries but
+        // future-proofs the idiom).
+        const maxChangedFraction = ring.deltas.reduce(
+          (acc, d) => (d > acc ? d : acc),
+          0,
+        );
 
         // Strip-wise pre-vs-final diff along the motion axis.
         const stripResult = computeStripChangedFractions(
