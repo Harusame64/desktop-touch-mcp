@@ -215,6 +215,12 @@ async function main() {
     rectSourceCounts[r.rectSource] = (rectSourceCounts[r.rectSource] ?? 0) + 1;
     if (r.observation.residual?.fractionChanged != null) fractionChangedValues.push(r.observation.residual.fractionChanged);
     if (r.observation.residual?.meanSsim != null) meanSsimValues.push(r.observation.residual.meanSsim);
+    // Mirror of `dogfood_stage_2b.mjs` no-double-count pin: wallclock metric is
+    // `verifyElapsedMs` ONLY (the bench measures `tVerify` separately around
+    // `verifyLocalRepaint`). `dispatchElapsedMs` brackets the nutjs click and
+    // is captured for diagnostics but is NEVER summed into the verify wallclock
+    // (the production gate runs verifyLocalRepaint after the action has already
+    // landed, so dispatch + verify are sequential not nested).
     verifyTimes.push(r.verifyElapsedMs);
   }
 

@@ -30,7 +30,7 @@ End-to-end `verifyLocalRepaint` wallclock p99 = 258 ms across all positive cases
 | **Paint.NET V5.1.12** (same canvas) | Idle (no click) | 10 | idle | n/a | true-negative baseline → expect `no_change` |
 | **VS Code 1.x** (release-process.md open) | LMB click in editor | 10 | click | 100 | caret reposition + minimap/line highlight repaint → expect mixed |
 
-70 click cycles + 10 idle baseline cycles = 80 total. All ran against the post-PR #318 build (TS dist + Rust napi `compute_ssim_residual`).
+60 click cycles + 10 idle baseline cycles = **70 total** (matches the per-motion split in TL;DR: 29 `local_repaint` + 40 `no_change` + 1 `indeterminate` = 70). All ran against the post-PR #318 build (TS dist + Rust napi `compute_ssim_residual`). Per-app click counts: MSPaint 20 + Blender 10 + Paint.NET click 20 + VS Code 10 = 60; Paint.NET idle 10.
 
 ---
 
@@ -75,10 +75,10 @@ This is informative for production wiring: in the Stage 4 production gate (`mous
 
 | Cycle | Motion | Notes |
 |---|---|---|
-| 0 | `indeterminate` | `totalElapsedMs = 1444` (= 700 ms budget + capture overhead) — `stableReached: false` triggered R6 mitigation. Blender's GPU viewport had ongoing animation (compositor preview / object hint render) that didn't settle within budget. |
+| 0 | `indeterminate` | `totalElapsedMs = 1444` (≈ 700 ms `RING_WALLCLOCK_BUDGET_MS` + ~700 ms post-frame polling/capture overhead before the degraded return; raw `framesSampled: 2` confirms only 1 pre + 1 post frame reached the orchestrator's R6 branch). `stableReached: false` triggered R6 mitigation. Blender's GPU viewport had ongoing animation (compositor preview / object hint render) that didn't settle within budget. |
 | 1-9 | `no_change` | Centre click on the same already-selected cube produced no visible state change → cheap-reject path. |
 
-This is the **R6 mitigation in action**: when the post-frame ring fails to reach stability within `RING_WALLCLOCK_BUDGET_MS = 700`, Stage 4 emits `motion: "indeterminate"` rather than running SSIM on transient frames. Caller (would-be mouse_click handler) keeps `focus_only` / `unverifiable` — Stage 4 doesn't pretend to know.
+This is the **R6 mitigation in action** (orchestrator branch at `src/engine/local-repaint.ts:349`): when the post-frame ring fails to reach stability within `RING_WALLCLOCK_BUDGET_MS = 700`, Stage 4 emits `motion: "indeterminate"` via `observationDegrade(1 + postResult.frames.length)` rather than running SSIM on transient frames. Caller (would-be mouse_click handler) keeps `focus_only` / `unverifiable` — Stage 4 doesn't pretend to know.
 
 The Blender-specific dogfood pattern (selection state stable after first click) is not a Stage 4 limitation; it's the reality of click semantics. A more elaborate dogfood (drag, alt-click, viewport navigation) would exercise other Blender click outcomes; out of scope for this report (carry-over to a future dogfood pass alongside `mouse_drag` Stage 4 wiring, sub-plan §7 OQ #6).
 
@@ -126,7 +126,7 @@ The `window_fallback` (whole 1000×800 window) is a 800,000 px rect — under `M
 | **G4-3** (no regression, mouse_click env opt-out) | `DESKTOP_TOUCH_STAGE4_SSIM=0` keeps PR #309 + Stage 2a baseline output bit-identical | not measurable in this dogfood (production-gate wiring is in mouseClickHandler which the connected MCP server doesn't yet expose; unit tests `mouse-click-verify-stage4.test.ts` pin this contract synthetically) |
 | **G4-4** (no regression, keyboard:type env opt-out) | `DESKTOP_TOUCH_STAGE4_SSIM_KEYBOARD=0` keeps BG `false` behaviour | covered by `tests/unit/keyboard-type-stage4.test.ts` (impl PR #318); dogfood-not-applicable for the same reason as G4-3 |
 | **G4-5** (no-change correctness) | Idle / focus-thief click returns `no_change` 30/30 | **✓** §3.1 (MSPaint 20/20) + §3.2 (Paint.NET idle 10/10) = 30/30 across 2 apps |
-| **G4-6** (latency, unit) | `compute_ssim_residual` p99 ≤ 15 ms on a 400×400 frame pair | pinned by `benches/ssim_residual.mjs` (impl PR #318 bench); this report's end-to-end p99 = 258 ms includes capture + ring + SSIM; the SSIM kernel itself is a small fraction of that |
+| **G4-6** (latency, unit) | `compute_ssim_residual` p99 ≤ 15 ms on a 400×400 frame pair | pinned by `benches/ssim_residual.mjs` (impl PR #318 bench); this report's end-to-end `verifyElapsedMs` p99 = 258 ms includes **post-frame ring polling + SSIM crop + SSIM kernel** (the pre-`captureFrame` is measured separately by the harness, see `benches/dogfood_stage_4.mjs:153-160` — `tVerify` brackets only the `verifyLocalRepaint` call); the SSIM kernel itself is a small fraction of the 258 ms |
 | **G4-7** (latency, integration) | `verifyLocalRepaint` end-to-end p99 ≤ 700 ms | **✓** §2 (Paint.NET p99 = 249 ms, VS Code p99 = 258 ms) — both well under budget |
 | **G4-8** (CLAUDE.md §3.1 multi-table sweep) | `observation.source` 8-value enum bit-equal across SoTs | covered by sub-plan PR #314 + follow-up PR #316 + impl PR #318; this dogfood does not re-verify docs SSOT sweep |
 | **G4-9** (CLAUDE.md §3.2 carry-over scope shrink) | No exhaustive `switch (observation.source)` | confirmed structurally during impl PR review |
