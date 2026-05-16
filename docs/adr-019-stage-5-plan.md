@@ -136,8 +136,8 @@ class DirtyRectSubscriptionCache {
 Lifecycle:
 
 - First `acquire(0)` creates subscription, takes ~50-100 ms (DXGI session init).
-- Subsequent `acquire(0)` within 10 sec returns cached subscription, takes < 1 ms.
-- 10 sec idle → background timer calls `subscription.dispose()` + removes from cache.
+- Subsequent `acquire(0)` within 20 sec (`STAGE5_CACHE_IDLE_TIMEOUT_MS`) returns cached subscription, takes < 1 ms.
+- 20 sec idle → background timer calls `subscription.dispose()` + removes from cache.
 - Server shutdown → `disposeAll()` releases all subscriptions cleanly.
 
 This matches the **session-lifecycle** pattern from ADR-008 D2-0 (`ensure_perception_pipeline` / `shutdown_perception_pipeline_for_test`) so Stage 5 inherits the same shutdown-safety guarantees.
@@ -286,7 +286,7 @@ The sub-plan PR closes here; below is the checklist the **impl PR** flips `[ ]` 
 
 ## 6. Risks
 
-- **R1 — New enum value `"dxgi_dirty_rect_unavailable"` requires §3.1 sweep across 3 SoTs** — Stage 4 sub-plan was careful to NOT add new enum values (sub-plan §0.1 #2 explicitly locked "no new enum values"). Stage 5 reintroduces one. **Mitigation**: P7 + P10 explicitly do the sweep. The new value's semantics are precise (RDP / virtual-display where DXGI is unavailable at the OS level — distinct from `dxgi_dirty_rect` which means DXGI is available but observed no relevant change). Alternative considered: reuse `"chain_trust_unverified"` as a generic "observation unavailable" label, rejected because that source has scroll-specific semantics that would confuse desktop_act consumers.
+- **R1 — New enum value `"dxgi_dirty_rect_unavailable"` requires §3.1 sweep across 3 SoTs** — Stage 4 sub-plan was careful to NOT add new enum values (sub-plan §0.1 #2 explicitly locked "no new enum values"). Stage 5 reintroduces one. **Mitigation**: P2 adds the enum value to `_input-pipeline.ts`; P12 explicitly does the §3.1 sweep across all 3 SoTs (ADR-019 §2.1 + `_input-pipeline.ts` + ADR-018 §2.6 reference). The new value's semantics are precise (RDP / virtual-display where DXGI is unavailable at the OS level — distinct from `dxgi_dirty_rect` which means DXGI is available but observed no relevant change). Alternative considered: reuse `"chain_trust_unverified"` as a generic "observation unavailable" label, rejected because that source has scroll-specific semantics that would confuse desktop_act consumers.
 
 - **R2 — DXGI subscription cache leak on server shutdown** — if the cache's background idle-timer fires while shutdown is in flight, OR if shutdown happens before `disposeAll()` is wired, the DXGI session leaks (Windows will reclaim on process exit, but interim correctness suffers). **Mitigation**: wire `DirtyRectSubscriptionCache.disposeAll()` into the MCP server shutdown hook (same surface as ADR-008 D2-0 `shutdown_perception_pipeline_for_test`). Unit test the shutdown path.
 
@@ -296,7 +296,7 @@ The sub-plan PR closes here; below is the checklist the **impl PR** flips `[ ]` 
 
 - **R5 — False positive on background animation overlapping the target rect** — a video playing inside the target window OR a chat notification popup overlapping OR clock-tick repaint OR animated cursor blink → dirty rects intersect the target rect even when the user's action didn't cause them. The 100 ms `STAGE5_POLL_BUDGET_MS` window can easily catch a notification toast that intersects the target rect for a few ms. **Mitigations**: (a) Stage 5 is **observational not adjudicative** on the safety-net path (§2.3.2: never upgrades verify status). (b) On the desktop_act path, the `STAGE5_MIN_INTERSECTED_AREA_RATIO = 0.005` (0.5 % of target rect) gate (§2.4 constants) discriminates real action-caused repaint from sliver-grazing animation — Opus Round 1 P2-5 specifically called this out: a 4-pixel absolute threshold was far too low. (c) Document explicitly that desktop_act observation is heuristic; LLM should consult other signals (`ok` + `executor.kind` + `diff`) when high confidence is needed. (d) Stage 5b OQ: empirical per-app calibration of the threshold ratio.
 
-- **R6 — `desktop_act` envelope schema impact** — Stage 5 adds `hints.verifyDelivery.observation` to `desktop_act`'s envelope. Currently `desktop_act` may NOT have a `verifyDelivery` hint at all (Stage 4 covers `mouse_click` / `keyboard:type` only). **Mitigation**: P4 must check whether `desktop_act` already has a `verifyDelivery` shape; if not, introduce it additively (`{ status: "delivered", channel: <kind>, observation: ... }`). The shape is already shared via `_mouse-verify.ts` types, so reuse is straightforward.
+- **R6 — `desktop_act` envelope schema impact** — Stage 5 adds `hints.verifyDelivery.observation` to `desktop_act`'s envelope. Currently `desktop_act` does NOT have a `verifyDelivery` hint at all (verified via grep — Stage 4 covers `mouse_click` / `keyboard:type` only). The `TouchResult` discriminated union also has NO `hints` field today (`src/engine/world-graph/guarded-touch.ts:46`). **Mitigation**: P5 extends `TouchResult.ok: true` with `observation?:` (§2.5 lock); P6 (desktop_act wiring at `desktop-executor.ts` + `desktop-register.ts`) populates that field post-execution AND surfaces it through the MCP envelope as `hints.verifyDelivery.observation` for callers' downstream parity with Stage 4. The observation shape is already shared via `_mouse-verify.ts` types, so reuse is straightforward.
 
 - **R7 — CLAUDE.md §3.1 multi-table fact integrity (Stage 4-style sweep needed)** — `observation.residual` shape lives in 3 SoT surfaces today (`{ fractionChanged, centroid?, meanSsim? }`). Stage 5 adds 3 fields (`dirtyRectCount?`, `totalIntersectedAreaPx?`, `ratioOfTargetArea?`). **Mitigation**: same P15-style decision pattern as Stage 4 — extend the shape across all 3 SoTs in the same impl PR (no follow-up retro-review needed if done atomically).
 
@@ -435,3 +435,12 @@ The **impl PR** (separate) is classified **production code 改修 PR** — Codex
   - **P3-1**: §2.5 cross-reference (line 66) said "§2.5 OQ #5 resolution" but OQ #5 is in §7. Updated to "§2.6 (which resolves §7 OQ #5)".
 
   No production code change in Round 2; all edits to `docs/adr-019-stage-5-plan.md` only.
+
+- **Round 3 (this PR, 2026-05-16)** — third Opus phase-boundary review found 3 P1 + 0 P2 + 0 P3 = 3 stale-reference fixes that Round 2's renumber-only sweep missed. All applied:
+  - **P1-1**: §2.2 Lifecycle bullets (lines 139-140) still said "within 10 sec" / "10 sec idle" while Round 2's §2.4 constants table / line 90 §2 intro / §7 OQ #1 / G5-7 all said "20 sec". Synced to 20 sec with explicit `STAGE5_CACHE_IDLE_TIMEOUT_MS` annotation. Round 2 P1-3 fixed adjacent stale-value sites but missed these two bullets directly under the §2.2 cache description — exact Lesson 4 (numeric/citation sync within close-by surfaces) regression Round 2 was meant to close.
+  - **P1-2**: §6 R1 mitigation referenced "P7 + P10" but the actual §3.1 sweep tasks after Round 1's P-checklist expansion are **P2** (adds the enum value) + **P12** (cross-SoT sweep). Synced.
+  - **P1-3**: §6 R6 mitigation referenced "P4 must check" but P4 is now the native SSOT addition (`index.d.ts` + `index.js`) after Round 1's expansion. The desktop_act wiring is **P6**, and the TouchResult extension is **P5**. Synced + clarified the two-step coordination (P5 type extension → P6 wiring + envelope surface).
+
+  Root cause: Round 1 expanded the P-checklist (added P0 prerequisite, P4 native SSOT, P5 TouchResult extension, shifting downstream P-numbers). The cross-references in §6 R-list and §2.2 Lifecycle bullets used the OLD P-numbers and weren't swept. Round 3 is a follow-up Lesson 4 cross-reference-staleness sweep — same class of drift as Round 2 P1-1 / P1-2 (which Round 2 fixed for §2.X and OQ-numbering but missed the §6 R-list).
+
+  No production code change in Round 3; all edits to `docs/adr-019-stage-5-plan.md` only.
