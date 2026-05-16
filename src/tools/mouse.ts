@@ -1241,6 +1241,43 @@ export const scrollHandler = async ({
       }
     }
 
+    // ADR-019 Stage 2b TMOL gate-fail (`docs/adr-019-stage-2b-plan.md` §2.2 /
+    // §5 R3 Option I, locked Round 1 P2-2): when the dispatcher returns a
+    // non-null `DispatchOutcome` with `scrolled: false` AND
+    // `reason: "target_unreachable"`, Stage 2a's ring observed zero pixel
+    // motion despite the PostMessage being queued (silent drop on the
+    // chain-trust path). Route directly to the `not_delivered` envelope with
+    // the observation propagated; do NOT run `evaluateScrollDelivery` below
+    // because Win32 GetScrollInfo cannot observe custom-paint scrollbars on
+    // chain-trust leaves (Excel `NUIScrollbar`, Word MFC) and would silently
+    // override the TMOL signal. The Tier 1 UIA / Tier 2 CDP success paths
+    // (`tier1.scrolled === true`) are unaffected — they retain the existing
+    // `evaluateScrollDelivery`-driven `outcome.status` flow below.
+    if (
+      tier1 !== null &&
+      tier1.scrolled === false &&
+      tier1.reason === "target_unreachable"
+    ) {
+      const tmolObservation: VisualMotionObservation | undefined =
+        tier1.observation;
+      return failWith(
+        new Error("ScrollNotDelivered"),
+        "scroll",
+        {
+          context: {
+            hint: "Stage 2b TMOL gate observed motion='no_change' on the chain-trust path (PostMessage queued but pixels did not change) — emitting target_unreachable per ADR-018 §2.6.2 path-(b) Stage 2b row",
+            direction,
+            verifyDelivery: {
+              status: "not_delivered" as const,
+              channel: "postmessage" as const,
+              reason: "target_unreachable" as const,
+              ...(tmolObservation ? { observation: tmolObservation } : {}),
+            },
+          },
+        },
+      );
+    }
+
     // Phase 3: settle render.
     await new Promise<void>((r) => setTimeout(r, SCROLL_VERIFY_SETTLE_MS));
 

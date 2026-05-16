@@ -201,6 +201,52 @@ const RING_WALLCLOCK_BUDGET_MS = 700;
 /** Strip partitioning of the window for the causal filter (top→bottom for vertical motion). */
 const STRIP_COUNT = 4;
 
+// ─── ADR-019 Stage 2b decision gate ──────────────────────────────────────────
+
+/**
+ * ADR-019 Stage 2b — gate evaluation result.
+ *
+ * Inputs: Stage 2a `ringTelemetry` (`finalChangedFraction`) + env var read.
+ * Output: the `motion` value to populate on the emitted
+ * `VisualMotionObservation`. `"indeterminate"` is returned when the env opt-out
+ * is set OR when telemetry is structurally missing (Stage 2a env off) — both
+ * cases preserve pre-Stage-2b behaviour. The caller then uses `motion` to
+ * decide whether `postWheelToHwnd`'s chain-trust branch should emit a
+ * `delivered_via_postmessage` success outcome (`"translation"`) or a non-null
+ * `target_unreachable` outcome carrying the observation (`"no_change"`).
+ *
+ * Sub-plan §2.2 / §2.5 SSOT table / §3 P1.
+ */
+export type Stage2bGateMotion = "translation" | "no_change" | "indeterminate";
+
+/**
+ * Resolve the Stage 2b gate's `motion` decision from Stage 2a's ring
+ * telemetry. Extracted as a pure helper for testability per sub-plan §3 P1.
+ *
+ * @param finalChangedFraction Stage 2a's whole-window pre-vs-final
+ *   `changedFraction` (block-SAD with `NOISE_THRESHOLD = 16`). Strict `> 0`
+ *   gate per sub-plan §2.2 — block-SAD already filters thin-line noise so an
+ *   epsilon would risk demoting genuine micro-scrolls (Excel 1 px line shift
+ *   ≈ 0.0018 changedFraction on a 555-row window, just above the
+ *   `STABLE_THRESHOLD = 0.002` floor).
+ * @param env opt-out flag (read by caller from `process.env`). `true` keeps
+ *   `motion: "indeterminate"` so callers preserve Stage 2a wire-level output
+ *   even when the ring fired.
+ * @returns one of `"translation"` (real motion observed, dispatcher emits
+ *   `delivered_via_postmessage`), `"no_change"` (gate-fail — Stage 2b's load-
+ *   bearing decision: TMOL observed silent drop, dispatcher emits
+ *   `target_unreachable` per §2.5 SSOT row), or `"indeterminate"` (opt-out).
+ */
+export function evaluateStage2bGate(
+  finalChangedFraction: number,
+  env: { stage2bGateDisabled: boolean },
+): Stage2bGateMotion {
+  if (env.stage2bGateDisabled) {
+    return "indeterminate";
+  }
+  return finalChangedFraction > 0 ? "translation" : "no_change";
+}
+
 /**
  * Win32 wheel message constants. Verified against Microsoft Learn:
  * - WM_MOUSEWHEEL  = 0x020A — vertical wheel, HIWORD positive = forward (scroll up)
@@ -288,6 +334,16 @@ export interface WheelParams {
  * Outcome of one tier dispatch attempt. `null` return from `dispatchScrollWheel`
  * means "this tier did not handle the dispatch — caller should fall through
  * to the next tier (or to Tier 4 SendInput in Phase 1b)".
+ *
+ * **ADR-019 Stage 2b extension (sub-plan §5 R3 Option I, locked Round 1
+ * P2-2)**: a non-null `DispatchOutcome` with `scrolled: false` AND
+ * `reason: "target_unreachable"` is the TMOL gate-fail signal. The chain-
+ * trust branch of `postWheelToHwnd` returns this when Stage 2a's
+ * `finalChangedFraction === 0` (no pixel motion observed despite the
+ * PostMessage being queued). Caller (`mouse.ts:scrollHandler`) inspects
+ * `outcome.scrolled === false && outcome.reason === "target_unreachable"`
+ * and routes to the `not_delivered` envelope, propagating `observation`.
+ * Existing `null` returns are preserved for "fall through to next tier".
  */
 export interface DispatchOutcome {
   scrolled: boolean;
@@ -295,15 +351,21 @@ export interface DispatchOutcome {
   /**
    * ADR §2.6.2 reason value. Phase 1b emits `'delivered_via_uia'`, Phase 3
    * adds `'delivered_via_cdp'`, Phase 4 adds `'delivered_via_postmessage'`;
-   * `'wheel_overlay_intercepted'` / `'target_unreachable'` are surfaced by
-   * the caller via the typed envelope (see `mouse.ts:scrollHandler`). `null`
-   * indicates no ADR-018 reason applies (caller picks the legacy
-   * `evaluateScrollDelivery` reason from `mouse.ts`).
+   * `'wheel_overlay_intercepted'` is surfaced by the caller via the typed
+   * envelope (see `mouse.ts:scrollHandler`). `null` indicates no ADR-018
+   * reason applies (caller picks the legacy `evaluateScrollDelivery` reason
+   * from `mouse.ts`).
+   *
+   * **ADR-019 Stage 2b additive value**: `'target_unreachable'` paired with
+   * `scrolled: false` is the TMOL gate-fail signal emitted by the chain-
+   * trust branch when `observation.motion === "no_change"`. See type-level
+   * comment above for the routing contract.
    */
   reason:
     | "delivered_via_uia"
     | "delivered_via_cdp"
     | "delivered_via_postmessage"
+    | "target_unreachable"
     | null;
   /**
    * ADR-019 MVP-1 (Stage 1) — additive observation telemetry. Populated
@@ -326,9 +388,25 @@ export interface DispatchOutcome {
  */
 export interface VisualMotionObservation {
   motion: "translation" | "local_repaint" | "no_change" | "indeterminate";
-  /** present iff motion === "translation" */
+  /**
+   * Present when the algorithm produced a numeric shift (e.g. UIA percent
+   * delta for `source: "uia_scroll_percent"`); may be absent for sources
+   * that produce only a binary motion verdict (e.g.
+   * `source: "temporal_ring_observation_only"` whose `finalChangedFraction`
+   * is a scalar gate input, not a pixel-level shift). ADR-019 Stage 2b
+   * sub-plan §2.4 Option A: an honest contract relaxation — `shift` is
+   * present when measurable; `motion` is always present. CLAUDE.md §3.1
+   * sweep targets: ADR-019 §2.1, this docstring, and
+   * `docs/adr-018-phase-5-followup-verification-pathway-analysis.md`
+   * lines 157/159.
+   */
   shift?: { dx: number; dy: number; confidence: number };
-  /** present iff motion === "local_repaint" */
+  /**
+   * Present when the algorithm measured a local repaint signature (e.g.
+   * SSIM residual fraction for `source: "ssim_residual"`). May be absent
+   * for sources that produce only a binary motion verdict (Option A
+   * relaxation, sub-plan §2.4 — same rationale as `shift?` above).
+   */
   residual?: {
     fractionChanged: number;
     centroid?: { x: number; y: number };
@@ -773,8 +851,23 @@ async function observeViaUiaOrChainTrust(
             )
           : [];
 
+        // ADR-019 Stage 2b — promote `finalChangedFraction > 0` to a
+        // decision gate per sub-plan §2.2. Env opt-out
+        // (`DESKTOP_TOUCH_STAGE2B_GATE=0`) suppresses just the decision and
+        // preserves Stage 2a's `motion: "indeterminate"` wire-level output;
+        // ring telemetry is unchanged either way. The caller
+        // (`postWheelToHwnd` chain-trust branch) inspects `motion` to choose
+        // between `delivered_via_postmessage` and the new TMOL gate-fail
+        // outcome `{ scrolled: false, reason: "target_unreachable", observation }`
+        // (Option I per sub-plan §5 R3, locked Round 1 P2-2).
+        const stage2bGateDisabled =
+          process.env.DESKTOP_TOUCH_STAGE2B_GATE === "0";
+        const motion = evaluateStage2bGate(finalChangedFraction, {
+          stage2bGateDisabled,
+        });
+
         return {
-          motion: "indeterminate",
+          motion,
           source: "temporal_ring_observation_only",
           framesSampled,
           totalElapsedMs: ringElapsedMs,
@@ -1155,6 +1248,36 @@ export async function postWheelToHwnd(
               }
             : null,
         );
+        // ADR-019 Stage 2b sub-plan §2.2 / §5 R3 Option I: when the Stage 2a
+        // temporal-ring gate observed `motion: "no_change"` (ring captured
+        // AND `finalChangedFraction === 0` AND env opt-out not set), return a
+        // **non-null** `DispatchOutcome` with `scrolled: false` AND
+        // `reason: "target_unreachable"` carrying the observation. Caller
+        // (`mouse.ts:scrollHandler`) detects this shape and routes to the
+        // `not_delivered` envelope. `null` is reserved for "fall through to
+        // next tier" semantics which the chain-trust branch doesn't use.
+        //
+        // **Gated on `source: "temporal_ring_observation_only"`**: the UIA
+        // observer's existing `motion: "no_change"` signal (Codex PR #308
+        // P1 trade-off — boundary / no-op) MUST keep its prior
+        // `delivered_via_postmessage` semantics so existing
+        // `tests/unit/input-pipeline-dispatch.test.ts` UIA-boundary
+        // contracts and the in-code comment "Honest 'no movement' signal —
+        // the UIA observer says the receiver did not scroll
+        // (boundary / non-scrollable / receiver chose not to act)"
+        // continue to hold. Stage 2b only promotes the temporal-ring
+        // observation to a gate; the UIA observation path is unaffected.
+        if (
+          observation.motion === "no_change" &&
+          observation.source === "temporal_ring_observation_only"
+        ) {
+          return {
+            scrolled: false,
+            channel: "postmessage",
+            reason: "target_unreachable",
+            observation,
+          };
+        }
         return {
           scrolled: true,
           channel: "postmessage",

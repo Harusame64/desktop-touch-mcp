@@ -76,9 +76,16 @@ type VisualMotionObservation = {
     | "local_repaint"
     | "no_change"
     | "indeterminate";
-  /** present iff motion === "translation" */
+  /** Present when the algorithm produced a numeric shift (e.g. UIA percent for
+   *  `source: "uia_scroll_percent"`); may be absent for sources that produce
+   *  only a binary motion verdict (e.g. `source: "temporal_ring_observation_only"`).
+   *  Stage 2b sub-plan §2.4 Option A — `shift` is present when measurable;
+   *  `motion` is present always. */
   shift?: { dx: number; dy: number; confidence: number };
-  /** present iff motion === "local_repaint" */
+  /** Present when the algorithm measured a local repaint signature (e.g.
+   *  SSIM residual fraction for `source: "ssim_residual"`); may be absent
+   *  for sources that produce only a binary motion verdict (sub-plan §2.4
+   *  Option A relaxation, same rationale as `shift?` above). */
   residual?: { fractionChanged: number; centroid?: { x: number; y: number } };
   /** algorithm that produced this observation. **Canonical 8-value enum** — single
    *  source of truth for the surface; ADR-018 §2.6 envelope reference and
@@ -340,14 +347,15 @@ Deliverables (matches §3 SSOT rows for Stage 1):
 - Add telemetry-only `observation` field: `{ source: "temporal_ring_observation_only", framesSampled, elapsedMs, changedFractions, maxChangedFraction }`. **No behaviour change in `verifyDelivery.status` / `.reason` / `.channel`** — Stage 2a is observation telemetry only.
 - **G2a acceptance**: dogfood Excel + Word + Notepad scrolls; `verifyDelivery.observation.changedFractions` array is populated; the `maxChangedFraction` empirically discriminates real scrolls (> noise) from no-ops (≈ noise). Bench captures the actual values so Stage 2b's threshold can be data-calibrated.
 
-### Stage 2b — Block motion vectors as a decision gate (1 PR, 3-4 days)
+### Stage 2b — Promote `finalChangedFraction > 0` to a decision gate (1 PR, 1-2 days)
 
-> **MVP split 2026-05-16**: 2b lands the new algorithm + dispatcher wiring **after** Stage 2a's empirical data tells us whether the simpler `changedFractions` alone is sufficient. **Quantitative gate (Round 1 P2-2 fix)**: Stage 2a telemetry over **≥ 30 dogfood scroll attempts** (Excel + Word + Notepad + Explorer + 1 custom-paint canvas of choice) shows real-scroll `maxChangedFraction` is **≥ 5× the no-op median**. If yes → Stage 2b ships with `computeChangeFraction` reused as the gate (no new algorithm); block motion vectors are deferred to a later sub-stage. If no → Stage 2b adds `compute_block_motion_vectors` napi as the new gate.
+> **Post-pivot 2026-05-16 (sub-plan `docs/adr-019-stage-2b-plan.md`)**: Stage 2a's dogfood (`docs/adr-019-stage-2a-dogfood-results.md`) showed *perfect* separation between Excel real-scroll (`finalChangedFraction p99 = 0.015`, 30/30) and idle (`finalChangedFraction p99 = 0.000`, 30/30) on the simple full-window non-zero predicate. Stage 2b therefore ships with `computeChangeFraction` (the existing 8×8 SSE2 SAD) as the gate — no new algorithm required. The `compute_block_motion_vectors` napi originally drafted in §2.5.3 is **deferred to Stage 2c (conditional)**; it activates only when a future target's telemetry refutes the full-window predicate per §6 OQ #4 saturation trigger.
 
-- `compute_block_motion_vectors(pre, post, ...)` napi in `pixel_diff.rs` (extend existing SSE2 8×8 SAD to 16×16 coarse-to-fine with search radius — only if Stage 2a says we need it).
-- Wire into `postWheelToHwnd` chain-trust as a fall-back when Stage 1 UIA returns null AND `changedFractions` is ambiguous.
-- Decision rule per §2.2: motion observed AND last-stable AND final-differs → emit `delivered_via_postmessage` with `observation.source: "block_motion_vectors"` and `observation.shift`.
-- **G2b acceptance**: Excel cell-grid scroll (rows 1 → 30 via wheel) returns `observation.shift.dy ≈ <expected px>` with `confidence ≥ 0.7`. Word `_WwG` similarly. Caret-blink test fixture returns `motion: "no_change"`.
+- **Decision rule** (sub-plan §2.2): `motion observed AND last-stable AND final-differs → emit delivered_via_postmessage with observation.source: "temporal_ring_observation_only" and observation.motion: "translation"` (shift not populated on this path; sub-plan §2.4 Option A — `shift?` is "present when measurable", absent for sources that produce only a binary motion verdict).
+- **Silent-drop case** (the load-bearing Stage 2b decision): `ringTelemetry.finalChangedFraction === 0 → observation.motion: "no_change", verifyDelivery.status: "not_delivered", reason: "target_unreachable"` (chain-trust silent drop). `observation.source` remains `"temporal_ring_observation_only"` and discriminates from legacy `target_unreachable` path-(b-i) per ADR-018 §2.6.2.
+- **G2b acceptance** (sub-plan §4): Excel cell-grid scroll returns `observation.motion = "translation"` with `ringTelemetry.finalChangedFraction > 0` (≥ 0.005 per Stage 2a dogfood median; perfect separation vs idle floor 0.000). Synthetic silent-drop scenario returns `observation.motion = "no_change"` with `verifyDelivery.status: "not_delivered"` and `reason: "target_unreachable"`.
+- **Env opt-outs** (sub-plan §0.1 #6 + §2.1): `DESKTOP_TOUCH_STAGE2B_GATE=0` suppresses just the gate (Stage 2a behaviour preserved: `delivered_via_postmessage` regardless of `finalChangedFraction`); `DESKTOP_TOUCH_STAGE2A_RING=0` suppresses the ring entirely (Stage 1 behaviour: `chain_trust_unverified`).
+- **Stage 2c carry-over** (sub-plan §1.3 / §5 R1 / §6 OQ #4): `observation.source: "block_motion_vectors"` (and the `compute_block_motion_vectors` napi reference in §2.5.3) is reserved as a Stage 2c carry-over. Stage 2c activates only when a future dense-content / canvas-app target's dogfood telemetry shows `finalChangedFraction` saturation (real-scroll vs idle separation collapses such that the `> 0` predicate yields < 95 % sensitivity OR specificity — current Excel baseline = 100 % / 100 %) OR `stableReached: false` rate > 10 % despite real user-visible motion OR an operator report of a silent-drop Stage 2b missed.
 
 ### Stage 3 — Tiled phase correlation (1 PR, 2-3 days)
 
@@ -562,7 +570,7 @@ GPU path is **opportunistic, not required**. Stages 2-4 ship on CPU SIMD; GPU di
 ## 6. Acceptance criteria
 
 - **AC1** — Stage 1: `uia_read_scroll_percent_at_hwnd(excelLeafHwnd, 'vertical')` returns a non-null number when Excel is in foreground with a default workbook open, OR an empirical confirmation note in the ADR §10 OQ1 with the rationale for falling through to Stage 2.
-- **AC2** — Stage 2: `verifyVisualMotion({hwnd: excelHwnd, capability: 'scroll_translation'})` after a 3-notch wheel post returns `motion: "translation"` with `shift.dy > 0` and `confidence ≥ 0.7`. Same call on a caret-blinking-only Notepad with no scroll returns `motion: "no_change"`.
+- **AC2** — Stage 2 (Stage 2b shipping shape, post-pivot 2026-05-16): the chain-trust branch after a 3-notch wheel post returns `observation.motion: "translation"` with `observation.source: "temporal_ring_observation_only"` and `ringTelemetry.finalChangedFraction > 0` on Excel (real-scroll). Silent-drop case (`finalChangedFraction === 0`) returns `observation.motion: "no_change"` with `verifyDelivery.status: "not_delivered"` and `reason: "target_unreachable"`. `shift` is not populated on the temporal-ring path (§2.4 Option A — `shift?` is "present when measurable"; the ring computes a scalar fraction, not a pixel shift). **Stage 2c carry-over** (conditional): `confidence ≥ 0.7` + `shift.dy ≈ <expected px>` re-enters when block motion vectors land per §6 OQ #4 saturation trigger.
 - **AC3** — Stage 3: synthetic test fixture (periodic grid + 50 px scroll) returns `(dx, dy) = (0, 50)` via tiled phase correlation, all four gates passing.
 - **AC4** — Stage 4: `mouse_click.verifyDelivery` with `narrate: "rich"` returns `observation.source: "ssim_residual"` with `residual.fractionChanged > 0.05` on a synthetic click that draws a focus rectangle.
 - **AC5** — System-wide: 3 of 4 primitives (`scroll_translation`, `local_repaint`, `structured_state`) wired into at least one tool each. `any_change` deferred to Stage 5.
@@ -588,6 +596,7 @@ GPU path is **opportunistic, not required**. Stages 2-4 ship on CPU SIMD; GPU di
 5. **Phase correlation gating thresholds** — `peak/secondPeak ≥ 3`, `texture floor`, `tile_agreement ≥ 0.5` are rule-of-thumb; per-app empirical calibration carry-over.
 6. **SSIM threshold for `local_repaint`** — Wang et al. recommend 0.95 as "perceptually identical" cutoff; for click feedback that's likely too coarse. Initial impl uses 0.98; per-app calibration carry-over.
 7. **Anti-fukuwarai v4** — is there one? Likely: combining v2 RPG's reactive graph with v3 TMOL's temporal observation to produce a continuous "what changed since last action" stream for the LLM. Out of scope for v3.
+8. **Stage 2b gate decision** — should the chain-trust branch promote Stage 2a's `finalChangedFraction` to a `verifyDelivery.status` decision gate? **Resolved 2026-05-16: YES, simple `finalChangedFraction > 0` predicate** (sub-plan `docs/adr-019-stage-2b-plan.md`). The Stage 2a dogfood (`docs/adr-019-stage-2a-dogfood-results.md`) showed perfect separation between Excel real-scroll (30/30 with `finalChangedFraction p99 = 0.015`) and idle (30/30 with `finalChangedFraction p99 = 0.000`); a strict `> 0` predicate yields 100 % sensitivity / 100 % specificity with no threshold tuning. Stage 2b ships gate-on by default. `DESKTOP_TOUCH_STAGE2B_GATE=0` env opt-out preserves Stage 2a wire-level output. Strip-shape gate (`stripsAboveNoise`) + block motion vectors deferred to Stage 2c (conditional on future dense-content / canvas-app target showing `finalChangedFraction` saturation). See sub-plan §6 OQ #1-#6 for the per-question decisions.
 
 ---
 
