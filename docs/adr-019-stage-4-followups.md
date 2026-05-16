@@ -208,9 +208,17 @@ existing baseline + 50ms". No such bench file exists (`benches/` has
 
 **Suggested fix**: extend an existing mouse benchmark or add
 `benches/mouse_click_stage4_overhead.mjs` that drives N cycles of
-`mouseClickHandler` with `verifyDelivery=true` × {Stage 4 on, Stage 4 off}
-and asserts the delta is ≤ 50 ms p99. Use Notepad (Tier 1 UIA — Stage 4
-not invoked anyway, isolates pre-capture cost from verifyLocalRepaint cost).
+`mouseClickHandler` with `verifyDelivery=true` × {`DESKTOP_TOUCH_STAGE4_SSIM=0`,
+default (Stage 4 on)} and asserts the delta is ≤ 50 ms p99. **Isolation
+note**: pre-frame capture is gated on the env var + windowRect resolution
+ONLY — NOT on `classifyDelivery`'s outcome (the wrapper at
+`src/tools/_mouse-verify.ts:257-270` runs `verifyLocalRepaint` whenever the
+baseline returns non-`delivered`, but the pre-frame capture at
+`src/tools/mouse.ts:608` runs BEFORE classification). So the env opt-out
+cleanly suppresses pre-capture and any low-noise click target (Notepad,
+Calculator, etc.) works; the **isolation comes from the env flag, not
+from picking a UIA-rich target**. (Codex PR #320 Round 2 P2 corrected an
+earlier draft that incorrectly implied Notepad bypasses Stage 4 via UIA tier.)
 
 **Effort**: 0.5 day. **Priority**: medium — production callers absorbing the
 ~30-50ms hit deserve a regression gate.
