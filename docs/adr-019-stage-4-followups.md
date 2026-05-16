@@ -178,13 +178,15 @@ full `typeHandler` BG verify block is **not exercised**:
 
 The function `evaluateKeyboardStage4Gate` defined in the test is a
 **replication of the production gate contract**, not the production wiring
-itself. If `keyboard.ts:typeHandler` BG verify failover path drifts (e.g.
-the gate site moves, or the `verifyReason === "read_back_unsupported"`
-condition gets refactored), the test would keep passing while production
-breaks silently.
+itself. If `src/tools/keyboard.ts:keyboardTypeHandler` (exported at line 701)
+BG verify failover path drifts (e.g. the gate site moves, or the
+`verifyReason === "read_back_unsupported"` condition gets refactored), the
+test would keep passing while production breaks silently. (The quoted
+docstring uses the informal shortname `typeHandler`; the actual exported
+symbol is `keyboardTypeHandler` — grep accordingly.)
 
 **Suggested fix**: add **one** integration case that exercises the actual
-`typeHandler` codepath end-to-end with mocked
+`keyboardTypeHandler` codepath end-to-end with mocked
 `backgroundChannelResolver` + mocked `verifyTextDelivery` returning
 `unverifiable + read_back_unsupported`, and asserts that
 `verifyLocalRepaint` is called with the resolved target's `windowRect`.
@@ -261,15 +263,25 @@ dimensions OR a localRect that escapes the buffer (simulating window
 resize-during-action). Assert `motion: "indeterminate"` with `source:
 "ssim_residual"` and no `residual` field. ~30 lines.
 
-**Effort**: 0.5 day (extending existing test file). **Priority**: low — the
-branch is defensive against a rare race condition; honest degrade behaviour
-is more important than the unit test, which the branch already implements.
+**Effort**: ~0.25 day (extending existing test file, ~30 lines). **Priority**:
+low — the branch is defensive against a rare race condition; honest degrade
+behaviour is more important than the unit test, which the branch already
+implements.
 
 ### 7.5 Total scope estimate
 
-~0.5 day total if bundled (test extensions + 1 bench + 1 follow-up test) in
-a single v1.7.x docs+tests PR. None block v1.7.0 release. Recommended bundling
-with the first v1.7.x patch that touches Stage 4 production code.
+| Item | Effort | Priority |
+|---|---|---|
+| §7.1 keyboardTypeHandler integration test | 0.5 day | medium |
+| §7.2 mouse_click pre-capture overhead bench | 0.5 day | medium |
+| §7.3 moveTo → captureFrame hover-render race bench | 0.5 day | low |
+| §7.4 cropRawFrame === null unit test | 0.25 day | low |
+| **Total bundled (single v1.7.x PR)** | **~1.75 days** | — |
+
+None block v1.7.0 release. Recommended bundling with the first v1.7.x patch
+that touches Stage 4 production code (each item is independent enough that
+partial landings are also fine; medium-priority items should land first if
+the patch is split).
 
 ---
 
@@ -284,6 +296,6 @@ with the first v1.7.x patch that touches Stage 4 production code.
 - Raw outputs: `docs/adr-019-stage-4-dogfood-raw/`
 - Production wiring sites (for future MCP-restart dogfood):
   - `src/tools/mouse.ts:mouseClickHandler` — Stage 4 mouse activation
-  - `src/tools/keyboard.ts:typeHandler` BG-verify block — Stage 4 keyboard activation
+  - `src/tools/keyboard.ts:keyboardTypeHandler` BG-verify block — Stage 4 keyboard activation
   - `src/engine/local-repaint.ts:verifyLocalRepaint` — orchestrator (exercised directly by this dogfood)
   - `src/ssim.rs` + `index.d.ts:computeSsimResidual` — Rust SSIM napi binding
