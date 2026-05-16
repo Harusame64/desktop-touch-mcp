@@ -1212,6 +1212,42 @@ describe("ADR-018 Phase 5+N — postWheelToHwnd scroll-leaf walker (Excel / Word
     expect(elapsed).toBeLessThan(500);
   });
 
+  it("ADR-019 MVP-1 (Stage 1) — Case 3 (getScrollInfo returns non-null Win32 scrollbar info) → UIA pre-read is NOT issued (Codex Round 4 P2 — skip UIA when Win32 scroll info is available, avoid up-to-100ms latency for unused value)", async () => {
+    // When `getScrollInfo` returns a valid pre-snapshot, the dispatcher
+    // takes the standard Tier 3 path (Case 3) and never consumes a UIA
+    // percent value. Issuing the UIA RPC anyway would only pay the
+    // 100 ms timeout ceiling for nothing AND load the native UIA worker
+    // queue unnecessarily. The gate at the pre-read site
+    // (`pre === null && retargetedByLeafWalker && getScrollInfoAvailable`)
+    // skips the RPC for Case 1 / Case 3 — this test pins that gate.
+    const TOP = 0xACE5n;
+    const LEAF = 0xCE117n;
+    win32FindScrollLeafForTopLevelMock.mockReturnValue(LEAF);
+    getWindowRectByHwndMock.mockReturnValue({
+      x: 53,
+      y: 240,
+      width: 1424,
+      height: 598,
+    });
+    // Case 3: Win32 scrollbar present, pre/post differ → standard Tier 3.
+    win32GetScrollInfoMock
+      .mockReturnValueOnce(scrollInfo(50))
+      .mockReturnValueOnce(scrollInfo(80));
+    // Mock UIA so we can assert it was NOT called.
+    uiaReadScrollPercentAtHwndMock.mockResolvedValue(42.0);
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
+    expect(result).toMatchObject({
+      scrolled: true,
+      channel: "postmessage",
+      reason: "delivered_via_postmessage",
+    });
+    // Case 3 path: NO observation field attached (TMOL chain-trust
+    // observation is Case 2a only).
+    expect((result as { observation?: unknown }).observation).toBeUndefined();
+    // The UIA pre-read MUST NOT have been issued.
+    expect(uiaReadScrollPercentAtHwndMock).not.toHaveBeenCalled();
+  });
+
   it("ADR-019 MVP-1 (Stage 1) — post-snapshot UIA read EXCEEDS UIA_POST_READ_TIMEOUT_MS (slow / hung provider after dispatch) → chain_trust_unverified (Codex Round 3 P2 — post-read symmetrical bounded await)", async () => {
     // Mirrors the pre-read timeout test, applied to the post-snapshot
     // path inside `observeViaUiaOrChainTrust`. Pre-read resolves cleanly

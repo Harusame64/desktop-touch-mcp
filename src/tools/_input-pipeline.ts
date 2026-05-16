@@ -748,10 +748,23 @@ export async function postWheelToHwnd(
     // under the budget; the 100 ms ceiling caps the worst-case dispatch
     // delay at a level acceptable for an interactive scroll. Timeout →
     // observation falls back to `chain_trust_unverified` honestly.
+    //
+    // **Gate** (Codex PR #309 Round 4 P2): the UIA pre-read is only useful
+    // when `pre === null` (Case 2a chain-trust branch). For Case 1
+    // (`getScrollInfoAvailable === false`) and Case 3 (`pre !== null`,
+    // standard Tier 3 path) the value is never consumed, so issuing the
+    // RPC would only pay up-to-100 ms latency for no benefit (and load
+    // the native UIA worker queue unnecessarily). Skip the read in those
+    // paths.
     const readUiaPercent = nativeUia?.uiaReadScrollPercentAtHwnd;
     let preUiaPercent: number | null = null;
     let preUiaElapsedMs = 0;
-    if (retargetedByLeafWalker && typeof readUiaPercent === "function") {
+    if (
+      retargetedByLeafWalker &&
+      pre === null &&
+      getScrollInfoAvailable &&
+      typeof readUiaPercent === "function"
+    ) {
       const tPreStart = performance.now();
       const preReadPromise = readUiaPercent({
         hwnd: effectiveHwnd.toString(),
