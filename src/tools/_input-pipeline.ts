@@ -1248,15 +1248,29 @@ export async function postWheelToHwnd(
               }
             : null,
         );
-        // ADR-019 Stage 2b sub-plan §2.2 / §5 R3 Option I: when the gate
-        // observed `motion: "no_change"` (Stage 2a captured a ring AND
-        // `finalChangedFraction === 0` AND env opt-out not set), return a
+        // ADR-019 Stage 2b sub-plan §2.2 / §5 R3 Option I: when the Stage 2a
+        // temporal-ring gate observed `motion: "no_change"` (ring captured
+        // AND `finalChangedFraction === 0` AND env opt-out not set), return a
         // **non-null** `DispatchOutcome` with `scrolled: false` AND
         // `reason: "target_unreachable"` carrying the observation. Caller
         // (`mouse.ts:scrollHandler`) detects this shape and routes to the
         // `not_delivered` envelope. `null` is reserved for "fall through to
         // next tier" semantics which the chain-trust branch doesn't use.
-        if (observation.motion === "no_change") {
+        //
+        // **Gated on `source: "temporal_ring_observation_only"`**: the UIA
+        // observer's existing `motion: "no_change"` signal (Codex PR #308
+        // P1 trade-off — boundary / no-op) MUST keep its prior
+        // `delivered_via_postmessage` semantics so existing
+        // `tests/unit/input-pipeline-dispatch.test.ts` UIA-boundary
+        // contracts and the in-code comment "Honest 'no movement' signal —
+        // the UIA observer says the receiver did not scroll
+        // (boundary / non-scrollable / receiver chose not to act)"
+        // continue to hold. Stage 2b only promotes the temporal-ring
+        // observation to a gate; the UIA observation path is unaffected.
+        if (
+          observation.motion === "no_change" &&
+          observation.source === "temporal_ring_observation_only"
+        ) {
           return {
             scrolled: false,
             channel: "postmessage",
