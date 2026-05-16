@@ -6,6 +6,8 @@
 - Bench harness: `benches/poc_stage_2a_causal_strip.mjs`
 - Raw outputs: `docs/adr-019-stage-2a-dogfood-raw/{excel-real-30,excel-idle-30,word-rich-real-15,explorer-real-10}.txt`
 
+**Naming note (Opus PR #312 Round 1 P2-1)**: the bench harness output column `fullChangedFraction` corresponds to the production envelope field `ringTelemetry.finalChangedFraction` (`src/tools/_input-pipeline.ts:411`). They are the same metric (changedFraction of preFrame vs final stable frame, whole-window); the bench's `full*` naming predates the Round 4 pivot's `final*` terminology. The recommendations below use `finalChangedFraction` to match the production SoT; raw bench output references retain the literal `fullChangedFraction` column name to allow grep-reproduction against the raw `.txt` files.
+
 ## 1. Sample sizes
 
 | App | Real scroll cycles | Idle baseline cycles | dispatch channel |
@@ -28,7 +30,7 @@ Total 55 real-scroll cycles + 30 idle baseline cycles. Excel = the **only** app 
 | `fullChangedFraction` p50 / p90 / p99 | 0.005 / 0.006 / **0.015** |
 | `firstPostDelta > 0.001` count (motion captured) | **30 / 30** (= 100 %) |
 | `stripsAboveNoise` (threshold = 0.01) histogram | [24, 4, 1, 1, 0] (80 % zero, 20 % ≥ 1) |
-| `stripsAboveNoise` (threshold = 0.003) histogram (re-computed offline) | rough estimate ≥ 3 strips for ~all cycles |
+| `stripsAboveNoise` (threshold = 0.003) histogram (re-computed offline) | most cycles have ≥ 1 strip above 0.003; ~half reach ≥ 2; only the fresh-from-A1 cycle 0 reaches ≥ 3 (Opus PR #312 Round 1 P2-3 softened from earlier "≥ 3 for ~all cycles") |
 | `dispatch.channel` | `postmessage` 30 / 30 |
 
 **Cycle 0** (fresh from A1) is the strongest signal: `stripFractions: [0, 0.034, 0.017, 0.012]` (3 strips above 0.01 threshold). Subsequent cycles produce weaker signal because Excel's mostly-blank cells past the first scroll only differ by row-label digit changes — the cell content area itself shows little visual change.
@@ -60,6 +62,8 @@ Total 55 real-scroll cycles + 30 idle baseline cycles. Excel = the **only** app 
 
 15 cycles with the document filled with ~10 KB Lorem ipsum content via Ctrl+V, then Ctrl+Home reset. `postWheelToHwnd` returned `null` for all 15 cycles (no chain-trust dispatch). MCP `scroll` tool confirms `channel: "uia"` — Word uses Tier 1 UIA exclusively even with rich content.
 
+**Raw output reading**: `dispatchOk: false` + `dispatchChannel: null` in the per-cycle rows of `word-rich-real-15.txt` means `postWheelToHwnd` (the Tier 3 chain-trust helper this PoC harness invokes directly) returned `null` — i.e. **the chain-trust dispatcher was inert for Word in this state**. The production MCP `scroll` tool routes through `dispatchScrollWheel` (Tier 1 UIA → Tier 2 CDP → Tier 3 PostMessage cascade), which succeeds for Word at the Tier 1 UIA layer; the PoC harness shortcuts to Tier 3 directly to surface chain-trust inertness for our scope analysis. (Opus PR #312 Round 1 P3-1 clarification.)
+
 **Interpretation**: Word `OpusApp` top-level **does** expose `IUIAutomationScrollPattern` somewhere in its UIA tree (likely on `OpusApp` or an ancestor of `_WwG`), so Tier 1 succeeds and Stage 2a's chain-trust fallback never fires. The PR #307 leaf walker `win32FindScrollLeafForTopLevel` still retargets to `_WwG` for `WM_MOUSEWHEEL` dispatch, but the parent dispatcher prefers UIA when available.
 
 This is exactly the behaviour Stage 2a's activation gate intends — Stage 2a is **fallback only**, never paying its cost when a cheaper path works.
@@ -72,7 +76,7 @@ This is exactly the behaviour Stage 2a's activation gate intends — Stage 2a is
 
 ## 4.5 AvaloniaUI / Chrome / Edge — structural Stage 2a scope analysis
 
-User question (2026-05-16): "AvaloniaUI や Chrome はどうする？" Stage 2a activation requires **both** (a) Tier 1 UIA `ScrollPattern` unavailable AND (b) `retargetedByLeafWalker === true` (`src/tools/_input-pipeline.ts:1080`). Condition (b) is gated by the static class chain table:
+User question (2026-05-16): "AvaloniaUI や Chrome はどうする？" Stage 2a's chain-trust observation is **consumed** in the `pre === null && retargetedByLeafWalker` branch of `postWheelToHwnd` (`src/tools/_input-pipeline.ts:1136-1157`), where `pre` comes from Win32 `GetScrollInfo` SB_VERT (not from UIA). The Stage 2a **`preFrame` capture** (`_input-pipeline.ts:983`) is gated upstream on `retargetedByLeafWalker && rect !== null && !stage2aEnvDisabled` — UIA is not part of that gate; Tier 1 UIA dispatch never even reaches `postWheelToHwnd` because the higher-level dispatcher already returned. So Stage 2a's effective preconditions are: (a) Tier 1 UIA dispatcher did not fire (i.e. the app does not expose `IUIAutomationScrollPattern` on a way the dispatcher accepts), AND (b) `retargetedByLeafWalker === true`, AND (c) Win32 `GetScrollInfo` SB_VERT returns null (custom scrollbar like `NUIScrollbar`). Condition (b) is the **structural** gate — backed by the static class chain table:
 
 ```rust
 // src/win32/window.rs:271-274
