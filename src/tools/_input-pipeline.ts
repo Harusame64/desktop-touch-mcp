@@ -334,6 +334,16 @@ export interface WheelParams {
  * Outcome of one tier dispatch attempt. `null` return from `dispatchScrollWheel`
  * means "this tier did not handle the dispatch — caller should fall through
  * to the next tier (or to Tier 4 SendInput in Phase 1b)".
+ *
+ * **ADR-019 Stage 2b extension (sub-plan §5 R3 Option I, locked Round 1
+ * P2-2)**: a non-null `DispatchOutcome` with `scrolled: false` AND
+ * `reason: "target_unreachable"` is the TMOL gate-fail signal. The chain-
+ * trust branch of `postWheelToHwnd` returns this when Stage 2a's
+ * `finalChangedFraction === 0` (no pixel motion observed despite the
+ * PostMessage being queued). Caller (`mouse.ts:scrollHandler`) inspects
+ * `outcome.scrolled === false && outcome.reason === "target_unreachable"`
+ * and routes to the `not_delivered` envelope, propagating `observation`.
+ * Existing `null` returns are preserved for "fall through to next tier".
  */
 export interface DispatchOutcome {
   scrolled: boolean;
@@ -341,15 +351,21 @@ export interface DispatchOutcome {
   /**
    * ADR §2.6.2 reason value. Phase 1b emits `'delivered_via_uia'`, Phase 3
    * adds `'delivered_via_cdp'`, Phase 4 adds `'delivered_via_postmessage'`;
-   * `'wheel_overlay_intercepted'` / `'target_unreachable'` are surfaced by
-   * the caller via the typed envelope (see `mouse.ts:scrollHandler`). `null`
-   * indicates no ADR-018 reason applies (caller picks the legacy
-   * `evaluateScrollDelivery` reason from `mouse.ts`).
+   * `'wheel_overlay_intercepted'` is surfaced by the caller via the typed
+   * envelope (see `mouse.ts:scrollHandler`). `null` indicates no ADR-018
+   * reason applies (caller picks the legacy `evaluateScrollDelivery` reason
+   * from `mouse.ts`).
+   *
+   * **ADR-019 Stage 2b additive value**: `'target_unreachable'` paired with
+   * `scrolled: false` is the TMOL gate-fail signal emitted by the chain-
+   * trust branch when `observation.motion === "no_change"`. See type-level
+   * comment above for the routing contract.
    */
   reason:
     | "delivered_via_uia"
     | "delivered_via_cdp"
     | "delivered_via_postmessage"
+    | "target_unreachable"
     | null;
   /**
    * ADR-019 MVP-1 (Stage 1) — additive observation telemetry. Populated
@@ -1216,6 +1232,22 @@ export async function postWheelToHwnd(
               }
             : null,
         );
+        // ADR-019 Stage 2b sub-plan §2.2 / §5 R3 Option I: when the gate
+        // observed `motion: "no_change"` (Stage 2a captured a ring AND
+        // `finalChangedFraction === 0` AND env opt-out not set), return a
+        // **non-null** `DispatchOutcome` with `scrolled: false` AND
+        // `reason: "target_unreachable"` carrying the observation. Caller
+        // (`mouse.ts:scrollHandler`) detects this shape and routes to the
+        // `not_delivered` envelope. `null` is reserved for "fall through to
+        // next tier" semantics which the chain-trust branch doesn't use.
+        if (observation.motion === "no_change") {
+          return {
+            scrolled: false,
+            channel: "postmessage",
+            reason: "target_unreachable",
+            observation,
+          };
+        }
         return {
           scrolled: true,
           channel: "postmessage",
