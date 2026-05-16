@@ -1170,6 +1170,48 @@ describe("ADR-018 Phase 5+N — postWheelToHwnd scroll-leaf walker (Excel / Word
     expect(result?.observation?.totalElapsedMs).toBeGreaterThanOrEqual(0);
   });
 
+  it("ADR-019 MVP-1 (Stage 1) — pre-snapshot UIA read EXCEEDS UIA_PRE_READ_TIMEOUT_MS (slow / hung provider) → chain_trust_unverified (Codex Round 1 P2 + Round 2 P2 — bounded await, dispatch not stalled, pre value not stale)", async () => {
+    // The pre-snapshot UIA read is raced against UIA_PRE_READ_TIMEOUT_MS
+    // (100 ms). When the read hangs longer than that, the dispatcher
+    // treats it as a null pre-sample and falls back to chain-trust. This
+    // test simulates a provider that never resolves; the Promise.race
+    // timeout wins, dispatch proceeds, and observation lands as
+    // chain_trust_unverified.
+    const TOP = 0xACE5n;
+    const LEAF = 0xCE117n;
+    win32FindScrollLeafForTopLevelMock.mockReturnValue(LEAF);
+    getWindowRectByHwndMock.mockReturnValue({
+      x: 53,
+      y: 240,
+      width: 1424,
+      height: 598,
+    });
+    win32GetScrollInfoMock.mockReturnValue(null);
+    // Pre-read hangs (never resolves) — the race timer fires at 100 ms.
+    uiaReadScrollPercentAtHwndMock.mockImplementationOnce(
+      () => new Promise(() => {}),
+    );
+    const tStart = performance.now();
+    const result = await postWheelToHwnd(TOP, { direction: "down", notch: 1 });
+    const elapsed = performance.now() - tStart;
+    expect(result).toMatchObject({
+      scrolled: true,
+      channel: "postmessage",
+      reason: "delivered_via_postmessage",
+      observation: {
+        motion: "indeterminate",
+        source: "chain_trust_unverified",
+        framesSampled: 0,
+        totalElapsedMs: 0,
+      },
+    });
+    // Wall-clock bound: <= UIA_PRE_READ_TIMEOUT_MS (100 ms) + chunking +
+    // settle + observer ms + scheduling jitter. 500 ms is a generous
+    // upper bound that still catches a regression where the timeout
+    // wasn't wired (which would block until the 8 s Rust thread timeout).
+    expect(elapsed).toBeLessThan(500);
+  });
+
   it("ADR-019 MVP-1 (Stage 1) — pre-snapshot UIA read REJECTS (slow / hung provider, native crash) → chain_trust_unverified (Codex Round 1 P2 `.catch` shim regression guard)", async () => {
     // The fire-and-forget `preUiaPromise` in `postWheelToHwnd` wraps the
     // pre-read in `.catch(() => null)` so a rejection does not propagate

@@ -96,6 +96,20 @@ const POSTMESSAGE_SETTLE_MS = 16;
 const SCROLL_PERCENT_EPSILON_OBSERVATION = 1e-3;
 
 /**
+ * ADR-019 MVP-1 (Stage 1) — `Promise.race` budget for the pre-snapshot UIA
+ * `ScrollPercent` read in `postWheelToHwnd`'s chain-trust path. The wheel
+ * dispatch must NOT block for seconds on a slow UIA provider (Codex PR #309
+ * Round 1 P2), but the pre-snapshot ALSO MUST be a genuine pre-dispatch
+ * sample (Codex PR #309 Round 2 P2 — a fire-and-forget Promise that
+ * resolves after the chunk loop would carry a post-scroll value). 100 ms
+ * is the compromise: UIA reads typically return in 1-5 ms (well under
+ * budget) while the worst-case dispatch delay is bounded at an
+ * interactive-acceptable ceiling. Timeout → `preUiaPercent = null` →
+ * observation falls back to `chain_trust_unverified` honestly.
+ */
+const UIA_PRE_READ_TIMEOUT_MS = 100;
+
+/**
  * ADR-018 Phase 4 — Tier 3 PostMessage minimum observable `nPos` delta to
  * classify the scroll as `delivered_via_postmessage`. Scrollbar position is
  * reported in app-defined units (often pixels for a custom scrollbar, line
@@ -677,30 +691,33 @@ export async function postWheelToHwnd(
     // throw falls back to the bare chain-trust assertion (observation.source:
     // "chain_trust_unverified"). Only meaningful when retargetedByLeafWalker
     // is true; for non-MDI apps the Win32 SB_VERT pre-snapshot is the path.
-    // ADR-019 MVP-1 (Stage 1) — fire-and-forget pre-snapshot UIA read.
-    // Issued BEFORE the chunking loop, but **NOT awaited here**: the wheel
-    // dispatch must not block on the optional observation path. A slow UIA
-    // provider (e.g. an off-thread COM call that takes seconds) would
-    // otherwise delay sending wheel messages themselves (Codex PR #309
-    // Round 1 P2). The Promise is captured and `.catch`-converted to null
-    // so the later `await` in the chain-trust branch never throws.
+    // ADR-019 MVP-1 (Stage 1) — bounded-await pre-snapshot UIA read. The
+    // value MUST be a real pre-dispatch sample (Codex PR #309 Round 2 P2 —
+    // a fire-and-forget Promise that resolves AFTER the chunk loop would
+    // carry a *post-scroll* value, breaking the chain-trust observation
+    // contract). The value MUST NOT block dispatch for seconds (Codex PR
+    // #309 Round 1 P2 — a slow/hung UIA provider should not delay sending
+    // wheel messages). Resolution: `Promise.race` the pre-read against a
+    // tight wallclock budget (`UIA_PRE_READ_TIMEOUT_MS = 100ms`), then
+    // proceed with chunking. UIA reads typically return in ~1-5 ms, well
+    // under the budget; the 100 ms ceiling caps the worst-case dispatch
+    // delay at a level acceptable for an interactive scroll. Timeout →
+    // observation falls back to `chain_trust_unverified` honestly.
     const readUiaPercent = nativeUia?.uiaReadScrollPercentAtHwnd;
-    let preUiaPromise: Promise<{ percent: number | null; elapsedMs: number }> =
-      Promise.resolve({ percent: null, elapsedMs: 0 });
+    let preUiaPercent: number | null = null;
+    let preUiaElapsedMs = 0;
     if (retargetedByLeafWalker && typeof readUiaPercent === "function") {
       const tPreStart = performance.now();
-      preUiaPromise = readUiaPercent({
+      const preReadPromise = readUiaPercent({
         hwnd: effectiveHwnd.toString(),
         axis: axisName,
-      })
-        .then((percent) => ({
-          percent,
-          elapsedMs: performance.now() - tPreStart,
-        }))
-        .catch(() => ({
-          percent: null,
-          elapsedMs: performance.now() - tPreStart,
-        }));
+      }).catch(() => null);
+      const timeoutPromise = new Promise<null>((resolve) =>
+        setTimeout(() => resolve(null), UIA_PRE_READ_TIMEOUT_MS),
+      );
+      const result = await Promise.race([preReadPromise, timeoutPromise]);
+      preUiaPercent = result;
+      preUiaElapsedMs = performance.now() - tPreStart;
     }
 
     // Chunk the wheel delta into ≤ 16-bit signed messages so the receiver's
@@ -793,14 +810,11 @@ export async function postWheelToHwnd(
         // numeric percent delta. Otherwise attach `observation.source:
         // "chain_trust_unverified"` so the caller knows the delivery is
         // unverified (Stage 1 honest signal; Stages 2-5 upgrade this).
-        // Await the pre-snapshot UIA read that was issued before the
-        // chunking loop (fire-and-forget pattern — Codex PR #309 Round 1
-        // P2). By now the chunks have all been posted + we waited the
-        // settle delay, so the UIA read has had its full duration to
-        // complete in parallel; in practice the await here returns
-        // immediately.
-        const { percent: preUiaPercent, elapsedMs: preUiaElapsedMs } =
-          await preUiaPromise;
+        // `preUiaPercent` and `preUiaElapsedMs` were captured ABOVE the
+        // chunking loop via `Promise.race` against `UIA_PRE_READ_TIMEOUT_MS`
+        // (Codex PR #309 Round 2 P2 — pre value must be a real pre-dispatch
+        // sample; Round 1 P2 — bounded so a slow provider does not stall
+        // dispatch for seconds).
         const observation = await observeViaUiaOrChainTrust(
           effectiveHwnd,
           axisName,
