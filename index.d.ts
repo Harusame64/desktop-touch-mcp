@@ -221,6 +221,48 @@ export declare function computeChangeFraction(prev: Buffer, curr: Buffer, width:
 export declare function dhashFromRaw(raw: Buffer, width: number, height: number, channels: number): bigint
 export declare function hammingDistance(a: bigint, b: bigint): number
 
+// ─── SSIM residual (ADR-019 Stage 4) ─────────────────────────────────────────
+
+export interface NativeSsimRegion {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface NativeSsimCentroid {
+  x: number
+  y: number
+}
+
+export interface NativeSsimResidualResult {
+  fractionChanged: number
+  /** Omitted (NOT null) when `fractionChanged === 0`. Use `result.centroid != null`
+   *  to handle both napi-rs omission and a hypothetical future explicit null. */
+  centroid?: NativeSsimCentroid
+  /** Mean SSIM across all windows; exposed via
+   *  `VisualMotionObservation.residual.meanSsim` (Stage 4 sub-plan §4 P15). */
+  meanSsim: number
+}
+
+/**
+ * ADR-019 Stage 4 — SSIM residual between two same-size pre/post frames.
+ * Wang et al. 2004 reference (L=255, K1=0.01, K2=0.03) on the BT.601
+ * luminance channel, 8×8 sliding window with stride 4. The per-window
+ * residual threshold (default 0.05) drives `fractionChanged`; the
+ * centroid is omitted when no windows cross threshold. `region` selects
+ * a sub-rect (whole-frame when `null` / `undefined`). Throws on size
+ * mismatch / channels ∉ {3,4} / region outside frame.
+ */
+export declare function computeSsimResidual(
+  pre: Buffer,
+  post: Buffer,
+  width: number,
+  height: number,
+  channels: number,
+  region?: NativeSsimRegion | null,
+): NativeSsimResidualResult
+
 export declare function uiaGetElements(opts: { windowTitle: string; maxDepth?: number; maxElements?: number; fetchValues?: boolean }): Promise<NativeUiElementsResult>
 export declare function uiaGetFocusedAndPoint(opts: { cursorX: number; cursorY: number }): Promise<NativeFocusAndPointResult>
 export declare function uiaGetFocusedElement(): Promise<NativeUiaFocusInfo | null>

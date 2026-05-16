@@ -25,6 +25,8 @@ import type {
   NativeImageProcessingResult,
   NativeDrawSomLabelsOptions,
   NativeDrawSomLabelsResult,
+  NativeSsimRegion,
+  NativeSsimResidualResult,
   NativeRecognizeRequest,
   NativeRawCandidate,
   NativeCapabilityProfile,
@@ -69,6 +71,30 @@ export interface NativeEngine {
     channels: number,
   ): bigint;
   hammingDistance(a: bigint, b: bigint): number;
+
+  /**
+   * ADR-019 Stage 4 — SSIM residual between two same-size pre/post frames.
+   * Wang et al. 2004 reference (L=255, K1=0.01, K2=0.03) over 8×8 sliding
+   * window with stride 4. `region` selects an inner sub-rect (whole-frame
+   * when omitted). Returns the fraction of windows above the per-window
+   * residual threshold, the centroid (omitted when fraction is 0), and the
+   * mean SSIM across all windows (exposed via
+   * `VisualMotionObservation.residual.meanSsim` per Stage 4 sub-plan §4
+   * P15 decision lock default (a)).
+   *
+   * Optional — present only when the Rust addon was built with the Stage 4
+   * `compute_ssim_residual` export. Callers in `src/engine/local-repaint.ts`
+   * gate Stage 4 activation on `nativeEngine?.computeSsimResidual` being
+   * non-undefined and short-circuit `motion: "indeterminate"` otherwise.
+   */
+  computeSsimResidual?(
+    pre: Buffer,
+    post: Buffer,
+    width: number,
+    height: number,
+    channels: number,
+    region?: NativeSsimRegion | null,
+  ): NativeSsimResidualResult;
 
   // ── Hybrid Non-CDP pipeline (optional — only present after native rebuild) ──
 
