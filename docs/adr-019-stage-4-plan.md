@@ -71,7 +71,7 @@ This closes the click / BG-keyboard leg of the anti-fukuwarai v3 surface. The sc
 Adopt a **`local_repaint` primitive** built on three pillars:
 
 1. **`compute_ssim_residual` napi binding (Rust, AVX2 + SSE2 + scalar runtime dispatch)** producing `(residual.fractionChanged, centroid?)` for a pre/post pair.
-2. **`resolveFocusedElementRect(hint)` TS helper** returning the rect Stage 4 captures (focused control bounds + click-coord fallback + dynamic intersection with window region).
+2. **`resolveLocalRepaintRect(hint)` TS helper** returning the rect Stage 4 captures (focused control bounds + click-coord fallback + dynamic intersection with window region).
 3. **`verifyLocalRepaint(opts)` orchestrator** wiring `captureFrame` + `capturePostFrameUntilStable` + `computeChangeFraction` (cheap reject) + `compute_ssim_residual` into a single `Promise<VisualMotionObservation>` invocation, callable from both `mouse.ts` and `keyboard.ts`.
 
 ### 2.1 The SSIM primitive (Rust napi)
@@ -199,7 +199,7 @@ export async function verifyLocalRepaint(opts: {
 Internally (after pre-action capture has happened upstream):
 
 1. `capturePostFrameUntilStable(hwnd, rect, {...Stage 2a constants})` — reuse the post-action stop-detection helper. The default `budgetMs = 700` covers the caret-blink cycle Stage 4 also needs to reject.
-2. Cheap reject path: `computeChangeFraction(pre, finalStable)` over the whole rect. If `< NO_CHANGE_FLOOR (0.001)` → return `motion: "no_change"` with `source: "ssim_residual"` and the residual metric undefined (we never ran SSIM). This short-circuits the expensive SSIM path for the common "click landed but rect is unchanged" / "key fell on a focus thief" case.
+2. Cheap reject path: `computeChangeFraction(pre, finalStable)` over the whole rect. If `< NO_CHANGE_FLOOR (0.001)` → return `motion: "no_change"` with `source: "ssim_residual"` and `residual` field omitted (the SSIM cascade ran end-to-end and concluded no-change before reaching the SSIM kernel — the source label identifies the pipeline that decided, parallel to Stage 2a emitting `source: "temporal_ring_observation_only"` even on idle baselines where no real motion was found). This short-circuits the expensive SSIM kernel for the common "click landed but rect is unchanged" / "key fell on a focus thief" case.
 3. SSIM path: `compute_ssim_residual(pre, finalStable, region=null)` over the captured rect (the helper handles the rect at capture time — SSIM input is already clipped). Compare `fraction_changed`:
    - `≥ RESIDUAL_DELIVERED_FRACTION (0.05)` → `motion: "local_repaint"` with `residual.fractionChanged` + `residual.centroid`. **Caller treats this as a positive delivery signal.**
    - `< RESIDUAL_DELIVERED_FRACTION` AND `mean_ssim ≥ 0.99` → `motion: "no_change"` (Wang perceptually identical floor). **Caller treats this as `not_delivered`.**
@@ -215,8 +215,8 @@ Stage 4 fires iff **all** of:
 
 1. `verifyDelivery` parameter is `true` (existing opt-out preserved).
 2. `classifyDelivery(pre, post, "send_input")` returned `status === "focus_only"` OR `status === "unverifiable"`.
-3. `DESKTOP_TOUCH_STAGE4_SSIM !== "0"` env opt-out.
-4. The caller resolved an `hwnd` for the target window (so Stage 4 has a region to capture).
+3. `process.env.DESKTOP_TOUCH_STAGE4_SSIM !== "0"` (default ON; opt-out by setting to `"0"`, mirrors the `DESKTOP_TOUCH_STAGE2A_RING` convention in `_input-pipeline.ts:981`).
+4. An `hwnd` is resolvable for the target — either supplied by the caller (`windowTitle` / `hwnd` arg), OR auto-resolved via `findContainingWindow(tx, ty)` (already used by `_mouse-verify.ts:115` for the scroll-snapshot path). Cursor-position-only `mouse_click` callers therefore still benefit from Stage 4 as long as `findContainingWindow` returns a target.
 5. The pre-snapshot was taken before the click (existing behaviour — Stage 4 just adds a parallel pre-capture).
 
 When Stage 4 fires and returns `motion: "local_repaint"`, the existing `verifyDeliveryHint.status` is **upgraded** from `focus_only` / `unverifiable` to `delivered`, and `observation: VisualMotionObservation` is attached to the hint. When Stage 4 returns `motion: "no_change"` the existing status is **preserved** (Stage 4 cannot demote a `focus_only` to `not_delivered` — same caution as Stage 2a's observation-only policy). When Stage 4 returns `motion: "indeterminate"` only the `observation` field is added.
@@ -225,9 +225,9 @@ When Stage 4 fires and returns `motion: "local_repaint"`, the existing `verifyDe
 
 Stage 4 fires iff **all** of:
 
-1. The existing TextPattern / ValuePattern verify path returned `verifiedDelivery === "unverifiable"` with `verifyReason === "read_back_unsupported"` (lines `_input-pipeline.ts:1118-1140` / `keyboard.ts:1138-1187`).
-2. `DESKTOP_TOUCH_STAGE4_SSIM !== "0"`.
-3. The target window is resolved (otherwise no rect).
+1. The existing TextPattern / ValuePattern verify path returned `verifiedDelivery === "unverifiable"` with `verifyReason === "read_back_unsupported"` (lines `keyboard.ts:1118-1140` for the F4-bis VP delta layer; `keyboard.ts:1141-1187` for the early-fallback path — both terminate at the same `unverifiable` sink).
+2. `process.env.DESKTOP_TOUCH_STAGE4_SSIM_KEYBOARD !== "0"` (default ON; separate from the mouse gate per R5).
+3. The target window is resolved (otherwise no rect — `keyboard:type` always has a resolved `target.title` from the upstream `resolveWindowTarget` call, so this gate is typically satisfied).
 4. The pre-action focused control's bounding rect is known (`target` has a `boundingRect` from the existing resolution path, OR Stage 4 falls back to the click coordinate / window rect strategy in §2.2).
 
 When Stage 4 returns `motion: "local_repaint"`, the caller upgrades `verifiedDelivery` from `unverifiable` to `true` and emits the existing `ok: true` envelope with `hints.verifyDelivery.observation`. When Stage 4 returns `motion: "no_change"` the caller keeps `verifyReason = "read_back_unsupported"` (Stage 4 confirms the screen didn't move; the action still didn't reach a readable control — we don't promote to `BackgroundInputNotDelivered` because that would demote heuristics that were honest about being silent).
@@ -276,7 +276,7 @@ ADR-019 main §3 names new modules at `src/image/ssim.rs` / `src/image/phase_cor
 | **`src/tools/mouse.ts`** | `mouseClickHandler` captures a Stage 4 `preFrame` (best-effort, around line 583-586) alongside `preSnapshot`; the post-snapshot path (lines 629-636) invokes `classifyDeliveryWithLocalRepaint` instead of `classifyDelivery` and threads `verifyDeliveryHint.observation` through the existing `hints.verifyDelivery` envelope. Drag handler not in scope (`mouse_drag` has different semantics — covered as Stage 4 follow-up). |
 | **`src/tools/keyboard.ts`** | `typeHandler` (line ~1083-1187 BG verify block) — when `verifiedDelivery === "unverifiable"` AND `verifyReason === "read_back_unsupported"`, invoke `verifyLocalRepaint` with the resolved target's focused-rect + window rect. Pre-frame captured right before the actual `WM_CHAR` send (the exact wiring location is OQ #5). Promote `verifiedDelivery` to `true` only on `motion: "local_repaint"`; observation hint always attached on Stage 4 invocation. |
 | **`tests/unit/ssim-residual.test.ts`** (NEW) | 6+ unit cases — synthetic same-pre-post-frame returns `fraction_changed === 0` + `mean_ssim ≥ 0.999`; pre-post pair with 20×20 black rectangle drawn in centre of a white 200×200 frame returns `fraction_changed` in 0.04-0.10 band + centroid near `(100, 100)`; degenerate inputs (size mismatch, zero region, channels=3 vs 4) handled. |
-| **`tests/unit/local-repaint-orchestrator.test.ts`** (NEW) | 8+ cases — `verifyLocalRepaint` returns `motion: "local_repaint"` when `compute_ssim_residual` is mocked to return `fraction_changed > 0.05`; returns `no_change` when both `computeChangeFraction < NO_CHANGE_FLOOR` AND SSIM returns `fraction_changed < 0.05 + mean_ssim ≥ 0.99`; returns `indeterminate` when small residual with `mean_ssim < 0.99`. Activation gate respects `DESKTOP_TOUCH_STAGE4_SSIM=0`. |
+| **`tests/unit/local-repaint-orchestrator.test.ts`** (NEW) | 8+ cases — `verifyLocalRepaint` returns `motion: "local_repaint"` when `compute_ssim_residual` is mocked to return `fraction_changed > 0.05`; returns `no_change` when both `computeChangeFraction < NO_CHANGE_FLOOR` AND SSIM returns `fraction_changed < 0.05 + mean_ssim ≥ 0.99`; returns `indeterminate` when small residual with `mean_ssim < 0.99`. Activation gate respects `DESKTOP_TOUCH_STAGE4_SSIM=0` (mouse path) and `DESKTOP_TOUCH_STAGE4_SSIM_KEYBOARD=0` (keyboard path) independently. |
 | **`tests/unit/mouse-click-verify-stage4.test.ts`** (NEW) | 4+ cases — `classifyDeliveryWithLocalRepaint` upgrades `focus_only` to `delivered` on `motion: "local_repaint"`; preserves `focus_only` on `motion: "no_change"`; adds observation field on `motion: "indeterminate"` without status change; respects env opt-out. |
 | **`tests/unit/keyboard-type-stage4.test.ts`** (NEW) | 4+ cases — BG verify `unverifiable` + Stage 4 `local_repaint` promotes to `verifiedDelivery: true`; BG verify `unverifiable` + Stage 4 `no_change` keeps `unverifiable`; respects env opt-out. |
 | **`benches/ssim_residual.mjs`** (NEW) | Criterion-style harness measuring `compute_ssim_residual` p99 over a 400×400 synthetic frame pair (matches ADR-019 AC6 Stage 4 unit budget ≤ 15 ms). |
@@ -320,7 +320,7 @@ The sub-plan PR closes here; below is the checklist the **impl PR** flips `[ ]` 
 - **G4-7 (latency, integration)** — `verifyLocalRepaint` end-to-end p99 ≤ **700 ms** wall-clock (inherits AC6 temporal-fallback budget). Empirical median expected ~220 ms (same shape as Stage 2a Excel dogfood); slow apps (Photoshop heavy filter render) may approach 500-600 ms before stop-detection settles.
 - **G4-8 (CLAUDE.md §3.1 multi-table sweep)** — `observation.source` 8-value enum still bit-equal across ADR-019 §2.1 / `_input-pipeline.ts:VisualMotionObservation` / ADR-018 §2.6 / TS / Rust type definitions. Stage 4 adds NO new enum values (only becomes the first emitter of the existing `ssim_residual` slot).
 - **G4-9 (CLAUDE.md §3.2 carry-over scope shrink)** — No exhaustive `switch (observation.source)` exists in `src/` (grep returns 0). Stage 4 is strictly additive — no caller currently routes on `source`, so adding the first `ssim_residual` emitter does not break any existing switch.
-- **G4-10 (env opt-out)** — `DESKTOP_TOUCH_STAGE4_SSIM=0` deterministically disables Stage 4 in both `mouse_click` and `keyboard:type` paths. Verified by unit test mocking `process.env`.
+- **G4-10 (env opt-out)** — `DESKTOP_TOUCH_STAGE4_SSIM=0` deterministically disables Stage 4 in the `mouse_click` path; `DESKTOP_TOUCH_STAGE4_SSIM_KEYBOARD=0` independently disables Stage 4 in the `keyboard:type` path. The two gates are intentionally separate (R5 — keyboard wiring is more complex than mouse wiring so a regression in one path must not blanket-disable the other). Verified by unit tests mocking `process.env` for each path independently.
 - **G4-11 (focused-rect resolver correctness)** — `resolveLocalRepaintRect` returns `rectSource: "focused_element"` when `hint.focusedRect` is fully inside `windowRect`; `"point_padded"` when only `hint.point` is supplied; `"window_fallback"` when neither is usable. Padding behaviour pinned by 4 unit cases.
 
 ---
