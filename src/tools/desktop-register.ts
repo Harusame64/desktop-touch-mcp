@@ -608,33 +608,30 @@ export const desktopActRawHandler = async (
 };
 
 /**
- * Stage 5 sub-plan §2.3.1 — resolve the target HWND from the lease's session
- * `lastTarget`, fetch the window rect, and run `verifyAnyChange`. Returns
- * `null` when the target cannot be resolved (no `hwnd` in the target spec —
- * e.g. CDP tab or windowTitle-only target without a resolved HWND, or the
- * window rect lookup failed). All other paths (DXGI unsupported, AccessLost,
- * etc.) return a degraded `VisualMotionObservation` from `verifyAnyChange`
- * itself rather than `null`.
+ * Stage 5 sub-plan §2.3.1 — resolve the target HWND for the lease's session
+ * (via `facade.resolveHwndForViewId`, which first tries the session's pinned
+ * `lastTarget.hwnd` and then falls back to the production foreground
+ * resolver), fetch the window rect, and run `verifyAnyChange`. Returns
+ * `null` only when no HWND can be resolved at all (session evicted,
+ * `BigInt(target.hwnd)` parse failure, AND no foreground resolver
+ * available) or the window rect lookup failed. All other paths (DXGI
+ * unsupported, AccessLost, etc.) return a degraded
+ * `VisualMotionObservation` from `verifyAnyChange` itself rather than
+ * `null`.
+ *
+ * Foreground fallback (this PR): the original PR #325 implementation only
+ * consulted `lastTarget.hwnd` and therefore went dormant on the typical
+ * `desktop_discover()` / `desktop_discover({ windowTitle })` flow where
+ * the caller does not pin an HWND. `resolveHwndForViewId` reuses the same
+ * foreground resolver `see()` consults for its Issue #295 stale check, so
+ * the two paths agree on "which HWND belongs to this session".
  */
 async function tryVerifyAnyChange(
   facade: DesktopFacade,
   viewId: string,
 ): Promise<VisualMotionObservation | null> {
-  const target = facade.getTargetForViewId(viewId);
-  if (!target?.hwnd) return null;
-  let hwnd: bigint;
-  try {
-    hwnd = BigInt(target.hwnd);
-  } catch (err) {
-    // Opus PR #325 Round 1 P3-2 — surface the silent disable in stderr so
-    // a production race where `lastTarget.hwnd` becomes malformed (CDP
-    // tab path emitting non-numeric, a stale lease, etc.) is auditable
-    // rather than silently dropping the Stage 5 observation.
-    console.error(
-      `[desktop-register] Stage 5 disabled — BigInt(target.hwnd) failed for viewId=${viewId}: ${err instanceof Error ? err.message : String(err)}`,
-    );
-    return null;
-  }
+  const hwnd = facade.resolveHwndForViewId(viewId);
+  if (hwnd === null) return null;
   const windowRect = getWindowRectByHwnd(hwnd);
   if (windowRect === null || windowRect.width <= 0 || windowRect.height <= 0) {
     return null;

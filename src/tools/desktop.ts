@@ -546,6 +546,38 @@ export class DesktopFacade {
     return this.registry.getByViewId(viewId, this.opts.nowFn)?.lastTarget;
   }
 
+  /**
+   * ADR-019 Stage 5 helper — resolve the HWND associated with the session
+   * that issued `viewId`. Tries, in order:
+   *   1. `session.lastTarget.hwnd` (caller explicitly pinned an HWND);
+   *   2. `this.opts.getFocusedHwnd()` (foreground fallback — production
+   *      wires this to `enumWindowsInZOrder`, so the typical
+   *      `desktop_discover()` / `desktop_discover({ windowTitle })`
+   *      flow lands here and Stage 5 stays effective).
+   * Returns `null` when the session has been evicted (the lease's viewId
+   * no longer maps to a live session), no HWND can be resolved, or
+   * `BigInt(target.hwnd)` parsing fails. Never throws.
+   *
+   * Why the session-eviction guard is explicit (rather than letting the
+   * foreground resolver fire anyway): if `touch()` has just rejected the
+   * lease with `entity_not_found`, Stage 5 is not invoked in the first
+   * place. But if eviction races in between (`touch()` succeeded, then
+   * the session was swept before this call), attaching an observation
+   * from whatever happens to be in foreground would mislabel the
+   * observation as belonging to a window the LLM never asked about —
+   * a correctness regression vs. honestly omitting the field.
+   *
+   * Reuses `resolveTargetHwnd` (the same helper `see()` uses for the
+   * UIA-cache stale check), so the two paths agree on what "the HWND
+   * for this session" means — Stage 5 dormancy was that the previous
+   * implementation only consulted step 1 here.
+   */
+  resolveHwndForViewId(viewId: string): bigint | null {
+    const session = this.registry.getByViewId(viewId, this.opts.nowFn);
+    if (!session) return null;
+    return resolveTargetHwnd(session.lastTarget, this.opts.getFocusedHwnd);
+  }
+
   validateLeaseOnly(lease: EntityLease): LeaseValidationResult {
     const session = this.registry.getByViewId(lease.viewId, this.opts.nowFn);
     if (!session) {
