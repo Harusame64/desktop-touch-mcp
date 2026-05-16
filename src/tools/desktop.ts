@@ -494,6 +494,17 @@ export class DesktopFacade {
    *
    * Side-effect-free (only refreshes the session's lastAccessMs).
    */
+  /**
+   * ADR-019 Stage 5 helper — return the `lastTarget` for the session that
+   * issued `viewId`, or `undefined` when the session has been evicted /
+   * the lease never matched a live session. Used by `desktop-register.ts`
+   * to resolve the target HWND for the post-touch `verifyAnyChange` call.
+   * Read-only; does not refresh `lastAccessMs`.
+   */
+  getTargetForViewId(viewId: string): TargetSpec | undefined {
+    return this.registry.getByViewId(viewId, this.opts.nowFn)?.lastTarget;
+  }
+
   validateLeaseOnly(lease: EntityLease): LeaseValidationResult {
     const session = this.registry.getByViewId(lease.viewId, this.opts.nowFn);
     if (!session) {

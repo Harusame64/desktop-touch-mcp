@@ -114,6 +114,9 @@ export const win32IsWindowEnabled             = nativeBinding.win32IsWindowEnabl
 export const win32GetLastActivePopup          = nativeBinding.win32GetLastActivePopup;
 export const win32IsWindowCloaked             = nativeBinding.win32IsWindowCloaked;
 
+// ─── Desktop Duplication subscription (ADR-007 P5c-2, ADR-019 Stage 5) ──────
+export const DirtyRectSubscription = nativeBinding.DirtyRectSubscription;
+
 // ─── L1 capture ring buffer (ADR-007 P5a) ────────────────────────────────────
 export const l1PushToolCallStarted      = nativeBinding.l1PushToolCallStarted;
 export const l1PushToolCallCompleted    = nativeBinding.l1PushToolCallCompleted;

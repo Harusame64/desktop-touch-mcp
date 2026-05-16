@@ -49,6 +49,7 @@ import type {
   NativeFocusedElementWithWallclock,
   NativeLeaseTokenSummary,
   NativeDirtyRectsResult,
+  NativeDirtyRectSubscription,
   NativeExcelAccessVbomStatus,
   NativeWtsSessionInfo,
 } from "./native-types.js";
@@ -499,6 +500,28 @@ export interface NativeExcel {
 export const nativeExcel: NativeExcel | null =
   nativeBinding && typeof nativeBinding.excelSessionSpawn === "function"
     ? (nativeBinding as unknown as NativeExcel)
+    : null;
+
+// ─── Desktop Duplication / DirtyRectSubscription (ADR-019 Stage 5) ───────────
+//
+// PR #102 (ADR-007 P5c-2) shipped the `DirtyRectSubscription` napi class.
+// Stage 5 sub-plan §3 P4 formalises it as a typed SSOT entry. The class is
+// reached via `nativeDuplication.DirtyRectSubscription` (constructor reference),
+// matching the existing surface convention. `src/engine/any-change.ts`
+// consumes this; the untyped escape hatch in
+// `src/engine/vision-gpu/dirty-rect-source.ts` may migrate in a follow-up
+// cleanup (Stage 5b carry-over).
+
+export interface NativeDuplication {
+  /** Constructor reference for `DirtyRectSubscription`. `outputIndex` defaults
+   *  to 0 (primary monitor) when omitted. Throws (E_DUP_INIT / E_DUP_UNSUPPORTED)
+   *  on init failure — callers must catch and degrade. */
+  DirtyRectSubscription?: new (outputIndex?: number) => NativeDirtyRectSubscription;
+}
+
+export const nativeDuplication: NativeDuplication | null =
+  nativeBinding && typeof nativeBinding.DirtyRectSubscription === "function"
+    ? (nativeBinding as unknown as NativeDuplication)
     : null;
 
 if (nativeEngine) {

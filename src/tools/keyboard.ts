@@ -13,6 +13,7 @@ import { nativeWin32 } from "../engine/native-engine.js";
 // terminal `unverifiable + read_back_unsupported`. See sub-plan §2.4.2.
 import { captureFrame, type RawFrame } from "../engine/layer-buffer.js";
 import { verifyLocalRepaint } from "../engine/local-repaint.js";
+import { verifyAnyChange } from "../engine/any-change.js";
 import {
   canInjectViaPostMessage,
   postCharsToHwnd,
@@ -1254,6 +1255,27 @@ export const keyboardTypeHandler = async ({
             if (stage4Observation.motion === "local_repaint") {
               verifiedDelivery = true;
               verifyReason = undefined;
+            } else if (
+              // ADR-019 Stage 5 sub-plan §2.3.2 — optional DXGI safety-net.
+              // Same activation profile as the mouse path: Stage 4 returned
+              // `indeterminate` with no `residual` (R3 cap / R6 unstable)
+              // AND operator opted in via `DESKTOP_TOUCH_STAGE5_DXGI_FALLBACK=1`.
+              // Replaces the empty Stage 4 observation with the Stage 5 one;
+              // never upgrades `verifiedDelivery` (§2.3.2 forbids the safety
+              // net from claiming `delivered`).
+              stage4Observation.motion === "indeterminate" &&
+              stage4Observation.source === "ssim_residual" &&
+              stage4Observation.residual === undefined &&
+              process.env["DESKTOP_TOUCH_STAGE5_DXGI_FALLBACK"] === "1"
+            ) {
+              try {
+                stage4Observation = await verifyAnyChange({
+                  hwnd: target.hwnd,
+                  windowRect: stage4WindowRect,
+                });
+              } catch {
+                // Stage 5 never throws by contract; defensive only.
+              }
             }
           }
 

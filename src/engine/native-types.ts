@@ -420,6 +420,25 @@ export interface NativeOutputBounds {
   height: number
 }
 
+/**
+ * ADR-019 Stage 5 — typed declaration for the `DirtyRectSubscription` napi
+ * class (`src/duplication/mod.rs`). The class shipped with PR #102 (ADR-007
+ * P5c-2) but was previously only reachable through an untyped escape hatch
+ * (`addon["DirtyRectSubscription"]` in `src/engine/vision-gpu/dirty-rect-source.ts`).
+ * Stage 5 sub-plan §3 P4 formalises the SSOT so `src/engine/any-change.ts`
+ * (and a future vision-gpu cleanup) can consume it via a typed reference.
+ *
+ * `outputBounds` is the per-output desktop rect (now populated from
+ * `DXGI_OUTPUT_DESC.DesktopCoordinates` after PR #322, so dirty rects are
+ * translated to desktop screen coords for ALL monitors, not just primary).
+ */
+export interface NativeDirtyRectSubscription {
+  readonly isDisposed: boolean
+  readonly outputBounds: NativeOutputBounds
+  next(timeoutMs: number): Promise<NativeDirtyRect[]>
+  dispose(): void
+}
+
 // ── Visual GPU Phase 4 (ADR-005) ─────────────────────────────────────────────
 
 /** Rust src/vision_backend/types.rs::Rect */
