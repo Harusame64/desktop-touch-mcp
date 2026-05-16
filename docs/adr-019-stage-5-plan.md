@@ -199,7 +199,7 @@ The wiring in §3 row "desktop_act envelope extension" must:
 4. CLAUDE.md §3.1 sweep across **all `TouchResult` consumers** (run `Grep "TouchResult|\.ok === true.*executor" src/` to enumerate). Currently estimated at ~3-5 sites.
 5. NO existing consumer that destructures `ok: true` variants should break (the field is optional — `observation?:` — so existing destructures of `{ok, executor, diff, next}` still work).
 
-This is materially larger than the original §3 row 6 estimate (~30-50 lines). Revised estimate: ~60-100 lines additive across 3-5 files. Still bounded; still v1 doable in 2-3 days impl, but accounted for honestly.
+This is materially larger than the prior draft's "desktop_act envelope extension" row estimate (~30-50 lines). Revised estimate: ~60-100 lines additive across 3-5 files. Still bounded; still v1 doable in 2-3 days impl, but accounted for honestly. (Round 4 P2-1 dropped the brittle "§3 row 6" ordinal since row positions shifted across review rounds.)
 
 ### 2.6 DXGI subscription coexistence lock (resolves §7 OQ #5)
 
@@ -444,3 +444,11 @@ The **impl PR** (separate) is classified **production code 改修 PR** — Codex
   Root cause: Round 1 expanded the P-checklist (added P0 prerequisite, P4 native SSOT, P5 TouchResult extension, shifting downstream P-numbers). The cross-references in §6 R-list and §2.2 Lifecycle bullets used the OLD P-numbers and weren't swept. Round 3 is a follow-up Lesson 4 cross-reference-staleness sweep — same class of drift as Round 2 P1-1 / P1-2 (which Round 2 fixed for §2.X and OQ-numbering but missed the §6 R-list).
 
   No production code change in Round 3; all edits to `docs/adr-019-stage-5-plan.md` only.
+
+- **Round 4 (this PR, 2026-05-16)** — fourth Opus phase-boundary review found 1 P2 + 1 P3 (defer-acceptable). P2-1 fixed; P3-1 deferred per Round 2 P2-3 precedent. **Round 4 Approved after P2 fix.**
+  - **P2-1**: §2.5 wrap-up line 202 referenced "the original §3 row 6 estimate (~30-50 lines)" — but Round 1's §3 SSOT expansion (adding native SSOT rows + TouchResult row) shifted "desktop_act envelope extension" from row 6 to row 9. Dropped the brittle ordinal; reference the row by its name instead. Same Lesson 4 (citation-staleness across renumbered tables) pattern as Round 2/Round 3 P-checklist drift.
+  - **P3-1 (deferred)**: §1.2 "§2 enumerates exactly these 4 below" literally inaccurate (§2 numbered list has 3 entries; the 4th "Wiring" item lives in §2.3 + §2.5 + §3 rows). Round 2 P2-3 already weighed and deferred this as "high-level component count vs impl-level phase count" honesty trade-off — not re-litigated.
+
+  **Round 4 verified clean** (sweep summary, no further issues found): all P0-P12 / §2.X / §7 OQ #N / G5-N cross-references valid; all numeric values (`STAGE5_CACHE_IDLE_TIMEOUT_MS = 20`, `STAGE5_MIN_INTERSECTED_AREA_RATIO = 0.005`, enum 8→9, test counts 8-12/6/3, "2-3 days impl") consistent across surfaces; source-file line citations (device.rs:77, thread.rs:146/156/297-313, vision-gpu/dirty-rect-source.ts:124-133, guarded-touch.ts:46) verified live against current code.
+
+  No production code change in Round 4; all edits to `docs/adr-019-stage-5-plan.md` only.
