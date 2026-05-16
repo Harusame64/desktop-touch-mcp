@@ -383,6 +383,42 @@ export declare function win32GetActiveConsoleSessionId(): number
  *  empty array when the underlying API fails (best-effort diagnostic). */
 export declare function wtsEnumerateSessions(): Array<NativeWtsSessionInfo>
 
+// ─── Desktop Duplication subscription (ADR-007 P5c-2, ADR-019 Stage 5) ──────
+//
+// Per-output DXGI Desktop Duplication subscription. Background thread polls
+// `AcquireNextFrame` + `GetFrameDirtyRects` and queues dirty-rect batches
+// for `next(timeoutMs)`. Coordinates are translated to desktop screen space
+// using `outputBounds` (populated from `DXGI_OUTPUT_DESC.DesktopCoordinates`
+// after PR #322 — correct for ALL monitors, not just primary).
+
+export interface NativeDirtyRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface NativeOutputBounds {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export declare class DirtyRectSubscription {
+  constructor(outputIndex?: number)
+  readonly isDisposed: boolean
+  readonly outputBounds: NativeOutputBounds
+  /** Poll for the next batch of dirty rectangles. Resolves with `[]` on
+   *  timeout (normal when the screen is idle). Throws
+   *  `E_DUP_ACCESS_LOST` / `E_DUP_DISPOSED` / `E_DUP_UNSUPPORTED` on the
+   *  corresponding `DuplicationError` variants — callers must catch and
+   *  degrade observation honestly. */
+  next(timeoutMs: number): Promise<NativeDirtyRect[]>
+  /** Release resources and stop the background DXGI thread. Idempotent. */
+  dispose(): void
+}
+
 // ─── L1 capture ring buffer (ADR-007 P5a) ────────────────────────────────────
 
 export interface NativeEventEnvelope {

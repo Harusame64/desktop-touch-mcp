@@ -74,6 +74,7 @@ type VisualMotionObservation = {
   motion:
     | "translation"
     | "local_repaint"
+    | "any_change"          // Stage 5 (DXGI dirty rect) — sub-plan §2.1 step 5
     | "no_change"
     | "indeterminate";
   /** Present when the algorithm produced a numeric shift (e.g. UIA percent for
@@ -95,16 +96,32 @@ type VisualMotionObservation = {
     fractionChanged: number;
     centroid?: { x: number; y: number };
     meanSsim?: number;
+    /** Stage 5 (`dxgi_dirty_rect` source) — number of DXGI dirty rectangles
+     *  observed during the post-action poll window. Omitted on empty-rect
+     *  path. */
+    dirtyRectCount?: number;
+    /** Stage 5 — total intersected area (px) between observed dirty rects
+     *  and the target window rect (or `region` sub-rect). `0` when rects
+     *  exist but none overlap. */
+    totalIntersectedAreaPx?: number;
+    /** Stage 5 — `totalIntersectedAreaPx / (target.width * target.height)`.
+     *  Decision gate is `ratio >= STAGE5_MIN_INTERSECTED_AREA_RATIO` (0.005
+     *  = 0.5 % of target rect, per Stage 5 sub-plan §2.4 + §6 R5). */
+    ratioOfTargetArea?: number;
   };
-  /** algorithm that produced this observation. **Canonical 8-value enum** — single
+  /** algorithm that produced this observation. **Canonical 9-value enum** — single
    *  source of truth for the surface; ADR-018 §2.6 envelope reference and
-   *  TS / Rust type definitions MUST bit-equal-mirror this list. */
+   *  TS / Rust type definitions MUST bit-equal-mirror this list. Stage 5
+   *  (sub-plan `docs/adr-019-stage-5-plan.md`) added
+   *  `"dxgi_dirty_rect_unavailable"` for RDP / virtual-display /
+   *  `NotCurrentlyAvailable` graceful-degrade paths. */
   source:
     | "uia_scroll_percent"
     | "block_motion_vectors"
     | "tiled_phase_correlation"
     | "ssim_residual"
     | "dxgi_dirty_rect"
+    | "dxgi_dirty_rect_unavailable"
     | "optical_flow"
     | "temporal_ring_observation_only" // Stage 2a telemetry-only emission (no decision)
     | "chain_trust_unverified";
@@ -321,7 +338,12 @@ pub fn compute_block_motion_vectors(
 | `src/ssim.rs` | **new module**, SSIM residual map (Wang et al. 2004 reference, scalar). Path corrected from `src/image/ssim.rs` to `src/ssim.rs` — the repo has no `src/image/` directory; image-adjacent Rust modules live at the root (sibling of `src/dhash.rs` / `src/pixel_diff.rs` / `src/image_processing.rs`). Stage 4 follow-up will add AVX2 + SSE2 dispatch if dogfood shows regressions on lower-spec hosts (initial bench: scalar p99 = 4.2 ms ≤ 15 ms G4-6 budget). | Stage 4 |
 | `src/tools/mouse.ts` (`mouse_click.verifyDelivery`) | wire SSIM into focused-element-rect path | Stage 4 |
 | `src/tools/keyboard.ts` (BG `BackgroundInputNotDelivered`) | wire SSIM into TextPattern-unavailable fallback | Stage 4 |
-| `src/image/dxgi_duplication.rs` | **new module**, IDXGIOutputDuplication session lifecycle + dirty-rect parsing | Stage 5 |
+| `src/duplication/{device,thread,types,mod}.rs` (shipped PR #102 ADR-007 P5c-2; PR #322 `device.rs` multi-monitor fix) | IDXGIOutputDuplication session + background polling thread + AccessLost suppression — **already in place** when Stage 5 lands; sub-plan §0 + §1.1 enumerate the reused surface (the prior table row referenced a non-existent path `src/image/dxgi_duplication.rs`). | (predecessor) |
+| `src/engine/any-change.ts` | **new module**, `verifyAnyChange` orchestrator + `DirtyRectSubscriptionCache` + `resolveOutputIndexForHwnd` (Stage 5 sub-plan §2.1-§2.3). | Stage 5 |
+| `index.d.ts` / `index.js` / `src/engine/native-{types,engine}.ts` | typed SSOT for the existing `DirtyRectSubscription` napi class (Stage 5 sub-plan §3 P4 — was previously reached via untyped `addon["DirtyRectSubscription"]` escape hatch). | Stage 5 |
+| `src/engine/world-graph/guarded-touch.ts` | extend `TouchResult.ok: true` variant with optional `observation?: VisualMotionObservation` (Stage 5 sub-plan §2.5). | Stage 5 |
+| `src/tools/desktop-register.ts` | wire `verifyAnyChange` into `desktop_act` post-execute path, gated on `DESKTOP_TOUCH_STAGE5_DXGI !== "0"` (default ON). | Stage 5 |
+| `src/tools/_mouse-verify.ts` + `src/tools/keyboard.ts` | optional Stage 5 safety-net when Stage 4 returns `indeterminate` with no `residual` (R3 cap / R6 unstable), gated on `DESKTOP_TOUCH_STAGE5_DXGI_FALLBACK=1` (default OFF). | Stage 5 |
 | `src/image/optical_flow.rs` | **new module**, Lucas-Kanade sparse + Farneback dense | Stage 6 (defer) |
 | `docs/adr-018-input-pipeline-3tier.md` §2.6.2 | reference TMOL observation in `verifyDelivery.observation` envelope (additive) | Stage 1 |
 | `tests/unit/tmol-*.test.ts` | per-primitive contract pin | each stage |
@@ -388,11 +410,23 @@ Deliverables (matches sub-plan §3 SSOT table):
 - Bench: `benches/ssim_residual.mjs` (AC6 unit gate).
 - **G4 acceptance**: synthetic test fixture with click → focus rectangle drawn at known rect returns `motion: "local_repaint"` with `residual.fractionChanged > 0.05` inside that rect. **Stage 4 only upgrades — never demotes** (sub-plan §9 invariant).
 
-### Stage 5 — DXGI Desktop Duplication (exploratory, 5-7 days)
+### Stage 5 — DXGI Desktop Duplication (sub-plan `docs/adr-019-stage-5-plan.md`, 2-3 days impl)
 
-- `src/image/dxgi_duplication.rs` with session lifecycle, dirty / move rect parsing.
-- Wire as priority-1 source for `any_change` primitive when on the primary desktop.
-- Carry-over to a separate sub-ADR if the session-lifecycle complexity warrants.
+> **2026-05-16 scope right-sizing**: the original "5-7 days exploratory" estimate assumed the DXGI session lifecycle + per-output polling + AccessLost recovery had to be built. PR #102 (ADR-007 P5c-2) had already shipped that infrastructure (`src/duplication/{device,thread,types,mod}.rs`); PR #322 lifted the primary-monitor-only constraint by populating `OutputBounds` from `DXGI_OUTPUT_DESC.DesktopCoordinates`. Stage 5 ships as a thin TS orchestrator layered on the existing subscription, with full multi-monitor coverage in v1.
+
+Deliverables (matches sub-plan §3 SSOT table):
+
+- New `src/engine/any-change.ts` — `verifyAnyChange` orchestrator + `DirtyRectSubscriptionCache` (20-sec idle timeout + `Unsupported`/`NotCurrentlyAvailable` fail-soft) + `resolveOutputIndexForHwnd` (multi-monitor via `enumMonitors`).
+- `index.d.ts` / `index.js` / `src/engine/native-{types,engine}.ts` — typed SSOT for the `DirtyRectSubscription` napi class (vision-gpu's untyped escape hatch may migrate in a Stage 5b follow-up).
+- `src/engine/world-graph/guarded-touch.ts` — additive `observation?: VisualMotionObservation` field on `TouchResult.ok: true`.
+- `src/tools/desktop-register.ts` — wire `verifyAnyChange` into `desktop_act` post-execute (default ON via `DESKTOP_TOUCH_STAGE5_DXGI !== "0"`).
+- `src/tools/_mouse-verify.ts` + `src/tools/keyboard.ts` — optional safety-net when Stage 4 returns `indeterminate` with no `residual` (R3 cap / R6 unstable), gated on `DESKTOP_TOUCH_STAGE5_DXGI_FALLBACK=1` (default OFF). Never upgrades verify `status`.
+- Unit tests: `tests/unit/{any-change-orchestrator,dirty-rect-subscription-cache,resolve-output-index}.test.ts` (≥ 19 cases total: 8-12 orchestrator + 6 cache + 5 resolver).
+- Post-impl dogfood: `docs/adr-019-stage-5-followups.md` (≥ 30 cycles across ≥ 2 targets ON BOTH primary + secondary monitor).
+
+**G5 acceptance**: `desktop_act` against a known visible-change target attaches `hints.verifyDelivery.observation` with `motion: "any_change"`, `source: "dxgi_dirty_rect"`, `residual.dirtyRectCount > 0`, AND `residual.ratioOfTargetArea >= 0.005`. RDP / `NotCurrentlyAvailable` honestly degrades to `motion: "indeterminate"` + `source: "dxgi_dirty_rect_unavailable"`. (Full G5-1..G5-12 in sub-plan §5.)
+
+**Stage 5b / 5c carry-overs**: DXGI `GetFrameMoveRects` as a `scroll_translation` priority-1 source (5b); multi-output simultaneous subscription for windows materially straddling two monitors (5c). Both deferred until dogfood produces clear demand triggers.
 
 ### Stage 6 — Optical flow (deferred)
 
@@ -591,7 +625,7 @@ GPU path is **opportunistic, not required**. Stages 2-4 ship on CPU SIMD; GPU di
 - **AC2** — Stage 2 (Stage 2b shipping shape, post-pivot 2026-05-16): the chain-trust branch after a 3-notch wheel post returns `observation.motion: "translation"` with `observation.source: "temporal_ring_observation_only"` and `ringTelemetry.finalChangedFraction > 0` on Excel (real-scroll). Silent-drop case (`finalChangedFraction === 0`) returns `observation.motion: "no_change"` with `verifyDelivery.status: "not_delivered"` and `reason: "target_unreachable"`. `shift` is not populated on the temporal-ring path (§2.4 Option A — `shift?` is "present when measurable"; the ring computes a scalar fraction, not a pixel shift). **Stage 2c carry-over** (conditional): `confidence ≥ 0.7` + `shift.dy ≈ <expected px>` re-enters when block motion vectors land per §6 OQ #4 saturation trigger.
 - **AC3** — Stage 3: synthetic test fixture (periodic grid + 50 px scroll) returns `(dx, dy) = (0, 50)` via tiled phase correlation, all four gates passing.
 - **AC4** — Stage 4: `mouse_click.verifyDelivery` with `narrate: "rich"` returns `observation.source: "ssim_residual"` with `residual.fractionChanged > 0.05` on a synthetic click that draws a focus rectangle.
-- **AC5** — System-wide: 3 of 4 primitives (`scroll_translation`, `local_repaint`, `structured_state`) wired into at least one tool each. `any_change` deferred to Stage 5.
+- **AC5** — System-wide: **all 4 primitives** wired into at least one tool each. `structured_state` → Stage 1 UIA (`mouse.ts:scrollHandler`); `scroll_translation` → Stage 2a+2b (`scroll` tool); `local_repaint` → Stage 4 (`mouse_click` + `keyboard:type` BG verify); `any_change` → Stage 5 (`desktop_act` primary, `mouse_click` + `keyboard:type` env-gated safety net).
 - **AC6** — Performance: split latency budgets by tier of `verifyVisualMotion` for `scroll_translation`. The dispatcher selects **at most one primary algorithm per call** (cascade short-circuits on the first confident answer); the compute-only umbrella below is per-call, not per-algorithm. (Round 1 P2-1 fix.)
   - **Fast path** (Stage 1 UIA `ScrollPercent` read-only when pattern exposed): p99 ≤ **50 ms** wall-clock (no capture, just 2× UIA RPC). Bench-asserted.
   - **Temporal fallback** (Stages 2a/2b: stop-detection polling + per-frame diff) wall-clock: p99 ≤ **700 ms** end-to-end. **Amended 2026-05-16 by Stage 2a sub-plan Round 4 pivot** (PoC-driven, `docs/adr-019-stage-2a-poc-results.md`): the original 300 ms ceiling was set for the fixed `[30, 60, 120, 240] ms` ring (max 240 ms settle); the post-pivot stop-detection polls until 2 consecutive sub-`STABLE_THRESHOLD` inter-frame deltas detected, with a wallclock cap of 700 ms that covers a full Win32 caret blink cycle (`GetCaretBlinkTime` default 530 ms) + safety margin. PoC measured Excel chain-trust p99 = 204 ms (29 % of budget); the wider ceiling is intentional headroom for slower MFC repaint paths and caret-active idle windows that need a full caret cycle to budget-timeout honestly with `stableReached: false`. Bench-asserted via dogfood ≥ 30 cycles per app.
@@ -610,7 +644,7 @@ GPU path is **opportunistic, not required**. Stages 2-4 ship on CPU SIMD; GPU di
 1. **Does EXCEL7 expose `IUIAutomationScrollPattern` for reads** (separately from dispatch failure)? **Resolved 2026-05-16: NO**. G1 probe (`uia_read_scroll_percent_at_hwnd({hwnd: '<excel-top>', axis: 'vertical' | 'horizontal'})`) returned `null` for Excel `Book1 - Excel` foreground state, scroll-induced state, and post-scroll state. Phase A (ancestor walk) + Phase B (subtree DFS) both miss. Stage 1 produces `observation.source: "chain_trust_unverified"` on Excel. Stage 2a sub-plan (`docs/adr-019-stage-2a-plan.md`) extends the chain-trust path with stop-detection polling + causal strip filter telemetry. Stage 2a impl PR (branch `feature/adr-019-stage-2a-impl`, in-progress).
 2. **Block motion vector search radius** — line scroll heights vary per app (Excel ~20 px row, Word ~24 px line, Notepad varies). Default `±row_height` is app-specific. Initial default 32 px; per-app tuning carry-over.
 3. **Ring buffer schedule** — `[30, 60, 120, 240 ms]` is a starting point. Excel may need `+500 ms` for full settle on slow systems. Adaptive schedule (capture until last-stable holds, cap at 500 ms total) is the right design; **initial impl ships the fixed-schedule default AND wires `settleSchedule?: number[]` through the §2.1 contract** (Round 1 P2-3 fix — earlier draft contradicted itself by declaring the parameter in the contract while OQ3 said fixed schedule). The adaptive form is deferred to a Stage 2a follow-up.
-4. **DXGI Desktop Duplication per-window** — IDXGIOutputDuplication is a *display output* surface, not per-window. Mapping back to a single window's region requires the window rect + clip. Defer to Stage 5 sub-ADR.
+4. **DXGI Desktop Duplication per-window** — IDXGIOutputDuplication is a *display output* surface, not per-window. Mapping back to a single window's region requires the window rect + clip. **Resolved 2026-05-16 by Stage 5 sub-plan** (`docs/adr-019-stage-5-plan.md` §2.1 step 4): the orchestrator intersects observed dirty rects with the target window's screen rect (or an optional sub-region) and applies the `STAGE5_MIN_INTERSECTED_AREA_RATIO = 0.005` gate. Cross-monitor windows fall back to primary-of-center (§6 R3); multi-output simultaneous subscription is Stage 5c carry-over.
 5. **Phase correlation gating thresholds** — `peak/secondPeak ≥ 3`, `texture floor`, `tile_agreement ≥ 0.5` are rule-of-thumb; per-app empirical calibration carry-over.
 6. **SSIM threshold for `local_repaint`** — Wang et al. recommend 0.95 as "perceptually identical" cutoff; for click feedback that's likely too coarse. **Resolved 2026-05-16 by Stage 4 sub-plan**: locked `RESIDUAL_DELIVERED_FRACTION = 0.05` as the **primary metric** (per-window-fraction gate, sub-plan §2.5 + §5 G4) and `MEAN_SSIM_NO_CHANGE_FLOOR = 0.99` (stricter than the originally proposed 0.98) as the disambiguator for the `no_change` vs `indeterminate` boundary. `meanSsim` is exposed via `VisualMotionObservation.residual.meanSsim` (sub-plan §4 P15 decision lock default (a)) so callers can audit the boundary. Per-app calibration carries over to post-merge dogfood (sub-plan §4 P14).
 7. **Anti-fukuwarai v4** — is there one? Likely: combining v2 RPG's reactive graph with v3 TMOL's temporal observation to produce a continuous "what changed since last action" stream for the LLM. Out of scope for v3.

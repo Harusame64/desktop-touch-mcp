@@ -387,7 +387,11 @@ export interface DispatchOutcome {
  * the field are unaffected (CLAUDE.md §3.2 carry-over scope shrink).
  */
 export interface VisualMotionObservation {
-  motion: "translation" | "local_repaint" | "no_change" | "indeterminate";
+  /** ADR-019 Stage 5 added `"any_change"` for the DXGI dirty-rect primitive
+   *  (sub-plan §2.1 step 5) — emitted when observed dirty rects intersect
+   *  the target rect at ratio ≥ `STAGE5_MIN_INTERSECTED_AREA_RATIO`. The
+   *  remaining four values are bit-equal with Stages 1-4. */
+  motion: "translation" | "local_repaint" | "any_change" | "no_change" | "indeterminate";
   /**
    * Present when the algorithm produced a numeric shift (e.g. UIA percent
    * delta for `source: "uia_scroll_percent"`); may be absent for sources
@@ -420,12 +424,35 @@ export interface VisualMotionObservation {
     fractionChanged: number;
     centroid?: { x: number; y: number };
     meanSsim?: number;
+    /**
+     * ADR-019 Stage 5 — number of DXGI dirty rectangles observed during the
+     * post-action poll window. Optional and only populated for
+     * `source: "dxgi_dirty_rect"`. Omitted when no rects were observed
+     * (cheapest path; see Stage 5 sub-plan §2.1 step 5 empty-rect outcome).
+     */
+    dirtyRectCount?: number;
+    /**
+     * ADR-019 Stage 5 — total intersected area (in pixels) between observed
+     * dirty rectangles and the target window rect (or its `region` sub-rect).
+     * `0` when rects exist but none overlap the target.
+     */
+    totalIntersectedAreaPx?: number;
+    /**
+     * ADR-019 Stage 5 — `totalIntersectedAreaPx / (target.width * target.height)`.
+     * The Stage 5 motion gate is `ratio >= STAGE5_MIN_INTERSECTED_AREA_RATIO`
+     * (0.005 = 0.5 % of target rect). See Stage 5 sub-plan §2.1 step 5 +
+     * §2.4 constants table for rationale.
+     */
+    ratioOfTargetArea?: number;
   };
   /**
    * Algorithm that produced this observation. Stage 1 emits
    * `"uia_scroll_percent"` (success) or `"chain_trust_unverified"`
    * (UIA pattern not exposed, chain-trust fall-through). Stages 2-5+
-   * add the remaining values.
+   * add the remaining values. Stage 5 added
+   * `"dxgi_dirty_rect_unavailable"` for the RDP / virtual-display /
+   * `NotCurrentlyAvailable` graceful-degrade path (Stage 5 sub-plan §2.1
+   * step 2 + §6 R1 + §2.6 coexistence lock).
    */
   source:
     | "uia_scroll_percent"
@@ -433,6 +460,7 @@ export interface VisualMotionObservation {
     | "tiled_phase_correlation"
     | "ssim_residual"
     | "dxgi_dirty_rect"
+    | "dxgi_dirty_rect_unavailable"
     | "optical_flow"
     | "temporal_ring_observation_only"
     | "chain_trust_unverified";

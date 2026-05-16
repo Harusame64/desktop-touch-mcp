@@ -1,5 +1,6 @@
 import type { UiEntity, EntityLease, ExecutorKind, UiAffordance } from "./types.js";
 import type { LeaseStore } from "./lease-store.js";
+import type { VisualMotionObservation } from "../../tools/_input-pipeline.js";
 
 export type TouchAction = "auto" | "invoke" | "click" | "type" | "setValue" | "select";
 
@@ -44,7 +45,23 @@ export interface BlockingElementInfo {
 }
 
 export type TouchResult =
-  | { ok: true; executor: ExecutorKind; diff: SemanticDiff; next: "refresh_view" | "none" }
+  | {
+      ok: true;
+      executor: ExecutorKind;
+      diff: SemanticDiff;
+      next: "refresh_view" | "none";
+      /**
+       * ADR-019 Stage 5 — `any_change` primitive observation attached after a
+       * successful `desktop_act`. Populated by the registration wrapper
+       * (`desktop-register.ts`) when DXGI dirty-rect polling produced an
+       * observation; absent on the bare `GuardedTouchLoop` return (the loop
+       * itself is Stage 5-agnostic; the verify wiring happens outside the
+       * touch lifecycle so envelope-axis changes stay confined to the tool
+       * layer). Existing destructures of `{ok, executor, diff, next}` are
+       * unaffected (additive — sub-plan §2.5 + CLAUDE.md §3.2 carry-over).
+       */
+      observation?: VisualMotionObservation;
+    }
   | {
       ok: false;
       reason: TouchFailReason;

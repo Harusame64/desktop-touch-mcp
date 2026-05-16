@@ -55,8 +55,14 @@ import {
   enumWindowsInZOrder,
   getWindowProcessId,
   getProcessIdentityByPid,
+  getWindowRectByHwnd,
 } from "../engine/win32.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
+import {
+  disposeSharedSubscriptionCache,
+  verifyAnyChange,
+} from "../engine/any-change.js";
+import type { VisualMotionObservation } from "./_input-pipeline.js";
 
 // ── G1: Production guards (viewport + focus) ──────────────────────────────────
 
@@ -423,6 +429,9 @@ export function _resetFacadeForTest(): void {
   _onnxBackend = undefined;
   _dirtyRouter?.stop();
   _dirtyRouter = undefined;
+  // ADR-019 Stage 5 (§6 R2) — release any cached DXGI subscriptions so the
+  // DXGI session doesn't leak across test runs.
+  disposeSharedSubscriptionCache();
   _resetOcrAdaptersForTest();
 }
 
@@ -511,7 +520,15 @@ const desktopDiscoverRawHandler = async (input: unknown): Promise<ToolResult> =>
  *  and return shape are unchanged from before S4 (ADR-010 §1.5 spirit:
  *  individual tool implementations stay envelope-agnostic). The L5
  *  commit wrapper layers on lease pre-flight + ToolCall event emission +
- *  envelope assembly. */
+ *  envelope assembly.
+ *
+ *  ADR-019 Stage 5 wiring (sub-plan §2.3.1): after a successful touch,
+ *  resolve the target window's HWND from the issuing session's
+ *  `lastTarget`, call `verifyAnyChange`, and attach the resulting
+ *  `VisualMotionObservation` to `result.observation`. Gated on
+ *  `DESKTOP_TOUCH_STAGE5_DXGI !== "0"` (default ON; opt-out by setting
+ *  to `"0"`). Failures degrade silently — observation absence is
+ *  bit-equal to the pre-Stage-5 envelope. */
 const desktopActRawHandler = async (
   input: { lease: EntityLease; action?: TouchAction; text?: string },
 ): Promise<ToolResult> => {
@@ -521,13 +538,63 @@ const desktopActRawHandler = async (
       content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: validationError }, null, 2) }],
     };
   }
-  const result = await getDesktopFacade().touch({
+  const facade = getDesktopFacade();
+  const result = await facade.touch({
     lease: input.lease,
     action: input.action,
     text: input.text,
   });
+
+  if (result.ok && process.env["DESKTOP_TOUCH_STAGE5_DXGI"] !== "0") {
+    const observation = await tryVerifyAnyChange(facade, input.lease.viewId);
+    if (observation !== null) {
+      (result as { observation?: VisualMotionObservation }).observation = observation;
+    }
+  }
+
   return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
 };
+
+/**
+ * Stage 5 sub-plan §2.3.1 — resolve the target HWND from the lease's session
+ * `lastTarget`, fetch the window rect, and run `verifyAnyChange`. Returns
+ * `null` when the target cannot be resolved (no `hwnd` in the target spec —
+ * e.g. CDP tab or windowTitle-only target without a resolved HWND, or the
+ * window rect lookup failed). All other paths (DXGI unsupported, AccessLost,
+ * etc.) return a degraded `VisualMotionObservation` from `verifyAnyChange`
+ * itself rather than `null`.
+ */
+async function tryVerifyAnyChange(
+  facade: DesktopFacade,
+  viewId: string,
+): Promise<VisualMotionObservation | null> {
+  const target = facade.getTargetForViewId(viewId);
+  if (!target?.hwnd) return null;
+  let hwnd: bigint;
+  try {
+    hwnd = BigInt(target.hwnd);
+  } catch (err) {
+    // Opus PR #325 Round 1 P3-2 — surface the silent disable in stderr so
+    // a production race where `lastTarget.hwnd` becomes malformed (CDP
+    // tab path emitting non-numeric, a stale lease, etc.) is auditable
+    // rather than silently dropping the Stage 5 observation.
+    console.error(
+      `[desktop-register] Stage 5 disabled — BigInt(target.hwnd) failed for viewId=${viewId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  }
+  const windowRect = getWindowRectByHwnd(hwnd);
+  if (windowRect === null || windowRect.width <= 0 || windowRect.height <= 0) {
+    return null;
+  }
+  try {
+    return await verifyAnyChange({ hwnd, windowRect });
+  } catch {
+    // Defensive: orchestrator promises never to throw, but a bug there must
+    // not break the envelope.
+    return null;
+  }
+}
 
 /** Pre-flight lease validation closure used by the commit wrapper
  *  (sub-plan §3.4). Routes to the same session the lease was issued

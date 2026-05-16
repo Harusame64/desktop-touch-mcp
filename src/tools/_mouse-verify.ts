@@ -34,6 +34,7 @@ import {
   type LocalRepaintRectHint,
   type RawFrame,
 } from "../engine/local-repaint.js";
+import { verifyAnyChange } from "../engine/any-change.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -276,6 +277,46 @@ export async function classifyDeliveryWithLocalRepaint(
       observation,
     };
   }
+
+  // ADR-019 Stage 5 sub-plan §2.3.2 — optional safety-net path. When Stage 4
+  // returned `indeterminate` with no `residual` (= R3 `MAX_RECT_AREA_PX` cap
+  // OR R6 `stableReached: false` — the `observationDegrade` paths in
+  // `local-repaint.ts`) AND the operator opted into the DXGI fallback,
+  // call `verifyAnyChange` to record evidence. The Stage 5 observation
+  // REPLACES the empty Stage 4 observation on the envelope (Stage 4's empty
+  // `indeterminate` carries no usable data) but the verify `status` is
+  // NEVER upgraded — DXGI dirty rects are too coarse to confidently
+  // distinguish action-caused from background-animation repaint at the
+  // envelope contract bar.
+  if (
+    observation.motion === "indeterminate" &&
+    observation.source === "ssim_residual" &&
+    observation.residual === undefined &&
+    process.env["DESKTOP_TOUCH_STAGE5_DXGI_FALLBACK"] === "1"
+  ) {
+    try {
+      const stage5 = await verifyAnyChange({
+        hwnd: stage4.hwnd,
+        windowRect: stage4.hint.windowRect,
+        ...(stage4.hint.point !== undefined && {
+          region: {
+            x: stage4.hint.point.x - 96,
+            y: stage4.hint.point.y - 96,
+            width: 192,
+            height: 192,
+          },
+        }),
+      });
+      return {
+        ...base,
+        observation: stage5,
+      };
+    } catch {
+      // Stage 5 never throws by contract; defensive only — fall through
+      // to the Stage 4 observation.
+    }
+  }
+
   // §9 invariant — Stage 4 never demotes. Preserve original status; attach
   // observation so callers can audit the cascade.
   return {
