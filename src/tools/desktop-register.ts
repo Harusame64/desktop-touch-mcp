@@ -538,6 +538,15 @@ const desktopDiscoverRawHandler = async (input: unknown): Promise<ToolResult> =>
  * recovery hint. We attach it here so the LLM client gets the same recovery surface
  * documented in the tool description. The advisory ↔ runtime drift is tracked for the
  * path-class refactor epic per `project_path_class_refactor_pending` memory.
+ *
+ * Envelope-mode position note (Opus Round 1 P2): the attach lands at the raw payload
+ * level (alongside `ok` / `reason`), so in raw mode (`compatHoist` optIn=false) it
+ * hoists to envelope top-level as expected. In envelope mode (`include=["envelope"]`)
+ * the field surfaces at `envelope.data.if_unexpected`, **not** at `envelope.if_unexpected`
+ * where `buildFailureEnvelope`-driven paths (lease validation / handler throw / typed
+ * N-upper-bound paths) place it. This asymmetry is a known scope trade-off for this
+ * tactical PR; the path-class refactor epic normalises both paths through a single
+ * failure envelope hook.
  */
 function buildExecutorFailedIfUnexpected(): {
   most_likely_cause: "ExecutorFailed";
@@ -572,12 +581,23 @@ export const desktopActRawHandler = async (
     }
   }
 
-  const payload: Record<string, unknown> = { ...result };
+  // Opus Round 1 P3-1: keep the TouchResult discriminated-union narrowed inside
+  // the executor_failed branch by spreading the already-narrowed `result` into
+  // the JSON payload directly, instead of widening through Record<string, unknown>.
   if (!result.ok && result.reason === "executor_failed") {
-    payload["if_unexpected"] = buildExecutorFailedIfUnexpected();
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify(
+          { ...result, if_unexpected: buildExecutorFailedIfUnexpected() },
+          null,
+          2,
+        ),
+      }],
+    };
   }
 
-  return { content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }] };
+  return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
 };
 
 /**
