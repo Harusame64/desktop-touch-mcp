@@ -37,6 +37,22 @@ const NON_MODAL_CHROME_CONTROL_TYPES = new Set([
 ]);
 
 /**
+ * Issue #297 / #327 item D: shared predicate for "is this `controlType` a UI
+ * chrome bucket that the modal detectors must always exclude?". Originally
+ * inlined in `isModalCandidate` (pre-touch) only; #327 item D surfaced that
+ * the post-touch diff classifier `isModalLike` (guarded-touch.ts) was applying
+ * the same intent on a different signal set, so Notepad's TitleBar / MenuBar /
+ * StatusBar fired `modal_appeared` on every entity-ID churn. The shared helper
+ * makes the SSOT explicit — adding a new chrome bucket requires updating
+ * `NON_MODAL_CHROME_CONTROL_TYPES` here, and every caller picks it up. Entities
+ * without `controlType` (legacy / non-UIA producers) fall through to the
+ * caller's prior behaviour for back-compat.
+ */
+export function isChromeControlType(controlType: string | undefined): boolean {
+  return controlType !== undefined && NON_MODAL_CHROME_CONTROL_TYPES.has(controlType);
+}
+
+/**
  * Shared predicate used by the default `isModalBlocking` and `findBlockingModal`
  * implementations so they cannot diverge. UIA exposes system dialogs and
  * overlays as `role: "unknown"` elements; the self-exclusion (entityId !==)
@@ -78,12 +94,7 @@ export function isModalCandidate(target: UiEntity, candidate: UiEntity): boolean
   if (candidate.entityId === target.entityId) return false;
   if (!candidate.sources.includes("uia")) return false;
   if (candidate.role !== "unknown") return false;
-  if (
-    candidate.controlType !== undefined &&
-    NON_MODAL_CHROME_CONTROL_TYPES.has(candidate.controlType)
-  ) {
-    return false;
-  }
+  if (isChromeControlType(candidate.controlType)) return false;
   return true;
 }
 

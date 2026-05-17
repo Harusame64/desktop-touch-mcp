@@ -1,6 +1,7 @@
 import type { UiEntity, EntityLease, ExecutorKind, UiAffordance } from "./types.js";
 import type { LeaseStore } from "./lease-store.js";
 import type { VisualMotionObservation } from "../../tools/_input-pipeline.js";
+import { isChromeControlType } from "./session-registry.js";
 
 export type TouchAction = "auto" | "invoke" | "click" | "type" | "setValue" | "select";
 
@@ -161,9 +162,20 @@ function hasEntityMoved(pre: UiEntity, post: UiEntity): boolean {
  * Conservative — plain toolbar buttons have specific roles and are excluded.
  * A richer heuristic (ControlType=Dialog, IsModal=true) requires UIA property access
  * not yet wired.
+ *
+ * Issue #327 item D / Issue #297 closure completion: UI chrome
+ * (MenuBar / TitleBar / StatusBar / ToolBar / ScrollBar / Tab / Menu / MenuItem)
+ * also surfaces as `role: "unknown"` on UIA, so without a controlType check
+ * Notepad's TitleBar / MenuBar / StatusBar fire `modal_appeared` every time the
+ * UIA snapshot re-keys those entities. The shared `isChromeControlType` helper
+ * from `session-registry.ts` keeps this predicate bit-equal with the pre-touch
+ * `isModalCandidate` path so the two modal detectors cannot diverge again.
  */
 function isModalLike(e: UiEntity): boolean {
-  return e.sources.includes("uia") && e.role === "unknown";
+  if (!e.sources.includes("uia")) return false;
+  if (e.role !== "unknown") return false;
+  if (isChromeControlType(e.controlType)) return false;
+  return true;
 }
 
 /**
