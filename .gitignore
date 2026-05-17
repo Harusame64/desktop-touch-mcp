@@ -32,6 +32,7 @@ docs/release-process.md
 !docs/adr-020-phase-3-sr-1-capability-registry-plan.md
 !docs/adr-020-phase-3-sr-5-keyboard-promotion-plan.md
 !docs/adr-020-phase-3-sr-2-handler-result-boundary-plan.md
+!docs/adr-020-phase-3-sr-4-dxgi-broker-plan.md
 
 # Claude Code session data (auto-memory, local settings) — never distribute
 .claude/
