@@ -85,21 +85,32 @@ describe("DirtyRectSubscriptionCache", () => {
     expect(factory).toHaveBeenCalledTimes(2);
   });
 
-  it("factory throw caches the failure as Unavailable for the idle window", () => {
+  it("factory throw caches the failure as Unavailable for the unavailable-TTL window (#327 item B follow-up)", () => {
     let now = 0;
     const factory = vi.fn(() => {
       throw new Error("E_DUP_UNSUPPORTED");
     });
-    const cache = new DirtyRectSubscriptionCache(factory, () => now, 100);
+    // 4th constructor arg = unavailableTtlMs (was sharing the 3rd arg
+    // `idleTimeoutMs` before #327 item B follow-up; now distinct so the
+    // `unavailable` marker survives the 20 s subscription idle window).
+    const cache = new DirtyRectSubscriptionCache(factory, () => now, 100, 500);
 
     expect(cache.acquire(0)).toBeNull();
     expect(cache.acquire(0)).toBeNull();
-    // Factory should NOT have been re-tried within the idle window.
+    // Factory should NOT have been re-tried within the unavailable-TTL window.
     expect(factory).toHaveBeenCalledTimes(1);
 
-    // After the idle window, the Unavailable marker is swept and a retry
-    // is attempted.
+    // After the subscription-idle window (100 ms) but BEFORE the unavailable
+    // TTL (500 ms), the marker must still be honoured — this is the #327
+    // item B follow-up fix: the 20 s subscription idle no longer sweeps the
+    // unavailable marker prematurely.
     now = 200;
+    expect(cache.acquire(0)).toBeNull();
+    expect(factory).toHaveBeenCalledTimes(1);
+
+    // After the unavailable TTL (501 ms), the marker is swept and a retry
+    // is attempted.
+    now = 501;
     expect(cache.acquire(0)).toBeNull();
     expect(factory).toHaveBeenCalledTimes(2);
   });
@@ -186,5 +197,12 @@ describe("DirtyRectSubscriptionCache", () => {
     // Belt-and-braces: §2.4 constants table bump from 10→20 sec must remain
     // bit-equal across module + sub-plan + acceptance.
     expect(STAGE5_CONSTANTS.STAGE5_CACHE_IDLE_TIMEOUT_MS).toBe(20_000);
+  });
+
+  it("STAGE5_UNAVAILABLE_TTL_MS default is 60 sec (#327 item B follow-up)", () => {
+    // Bit-equal pin: 60 s covers typical 10-30 s Claude Code round-trips so
+    // the unavailable marker (vision-gpu coexistence / RDP) does not get
+    // swept between back-to-back desktop_act calls.
+    expect((STAGE5_CONSTANTS as { STAGE5_UNAVAILABLE_TTL_MS: number }).STAGE5_UNAVAILABLE_TTL_MS).toBe(60_000);
   });
 });

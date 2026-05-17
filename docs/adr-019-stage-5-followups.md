@@ -174,6 +174,14 @@ Issue #327 item B added an optional `cacheState` field (5-value union: `hit-subs
 
 Dogfood usage: after the first DXGI failure on a host (vision-gpu coexistence, RDP, virtual display, etc.), back-to-back calls must report `cacheState: "hit-negative-backoff"` — NOT `cacheState: "miss-init"`. Reporting `miss-init` repeatedly would indicate the back-off marker is failing to be set (a regression of the #327 item B fix). The unit tests at `tests/unit/dirty-rect-subscription-cache.test.ts` + `tests/unit/any-change-orchestrator.test.ts` mechanically pin the contract.
 
+### 2026-05-17 — Separate `STAGE5_UNAVAILABLE_TTL_MS` for marker persistence across Claude Code round-trips (#327 item B follow-up)
+
+Surfaced by post-PR-#333 dogfood: 2 desktop_act calls separated by ~23 s wallclock showed `cacheState: "miss-init-unavailable"` on both (instead of the expected `hit-unavailable` on the 2nd). Empirical sweep proved the cache marker WAS being set correctly — the gap simply exceeded the 20 s `STAGE5_CACHE_IDLE_TIMEOUT_MS`, so `sweepStale` cleared the marker before the 2nd call.
+
+Root cause: the 20 s timeout was originally chosen for subscription idle dispose (resource hygiene) and was being reused for the `unavailable` marker. But the marker's semantic is **permanent unavailability for this process lifetime** (vision-gpu coexistence, RDP, virtual display) — re-trying the factory every 20 s pays a ~50 ms init storm across typical 10-30 s Claude Code round-trips.
+
+Fix: separated TTLs — `STAGE5_CACHE_IDLE_TIMEOUT_MS = 20_000` (subscription idle, unchanged) + new `STAGE5_UNAVAILABLE_TTL_MS = 60_000` (unavailable marker). The `negative-backoff` 2 s path is unchanged. Empirical dogfood after the fix shows back-to-back calls within 60 s report `cacheState: "hit-unavailable"` with `totalElapsedMs < 1 ms` (vs. ~40 ms cold). Unit tests at `tests/unit/dirty-rect-subscription-cache.test.ts` pin the new 60 s TTL and the test-only constructor override.
+
 ### Deferred validations (dual-monitor environment required)
 
 The following two scenarios are deferred until a dual-monitor host is available; they must be re-attempted before Stage 5c v2 is shipped, because Stage 5c relies on multi-output subscription correctness that v1 only partially proves:
