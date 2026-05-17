@@ -147,6 +147,20 @@ export class DirtyRectSubscriptionCache {
    * Issue #327 item B instrumentation — same logic as `acquire` but also
    * reports which cache branch was hit. Used by `verifyAnyChange` to surface
    * `VisualMotionObservation.cacheState`.
+   *
+   * `state` value semantics (Opus Round 1 P2-1 — folds documented):
+   *   - `"hit-subscription"`: cached subscription returned (fast path).
+   *   - `"hit-unavailable"`: cached unavailable marker (factory previously threw).
+   *   - `"hit-negative-backoff"`: cached back-off marker set by `invalidate()`.
+   *   - `"miss-init"`: cache miss + factory succeeded. **This bucket also
+   *     absorbs the "disposed-subscription recovery" path** (entry was
+   *     `subscription` but `sub.isDisposed === true`, e.g. AccessLost
+   *     external dispose) — the disposed entry is silently dropped and a
+   *     fresh factory call paid, so both cold-start and post-dispose look
+   *     identical to dogfood logs. Do NOT add a 6th value
+   *     (`miss-after-disposed`) without a real diagnostic need; the 5-value
+   *     cardinality is intentional auditability.
+   *   - `"miss-init-unavailable"`: cache miss + factory threw; marker set.
    */
   acquireWithState(outputIndex: number): {
     sub: SubscriptionLike | null;
@@ -200,6 +214,15 @@ export class DirtyRectSubscriptionCache {
    * ~50 ms factory init on every call — the documented cache fast-path was
    * defeated. The back-off marker fixes the cache-hit contract while keeping
    * AccessLost recovery within a single user turn.
+   *
+   * Opus Round 1 P3-1: `invalidate(outputIndex)` unconditionally writes the
+   * back-off marker even when no prior entry existed (defensive — the marker
+   * self-clears in `sweepStale` after `NEGATIVE_BACKOFF_MS` regardless).
+   * Real callers only `invalidate` after a `sub.next()` failure on a
+   * previously-acquired entry, so the never-acquired case is a no-op for
+   * real workloads. Avoiding an early-return keeps the method behaviour
+   * monotone (always sets the marker on call), which simplifies callsite
+   * reasoning.
    */
   invalidate(outputIndex: number): void {
     const cached = this.entries.get(outputIndex);

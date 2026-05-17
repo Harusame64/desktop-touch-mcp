@@ -120,15 +120,21 @@ describe("DirtyRectSubscriptionCache", () => {
     const first = cache.acquire(0)!;
     cache.invalidate(0);
     expect(first.isDisposed).toBe(true);
+    // Opus Round 1 P3-3: pin the internal contract mechanically — the
+    // marker kind must be `negative-backoff`, not a delete-and-recreate.
+    expect(cache._getEntryForTest(0)?.kind).toBe("negative-backoff");
 
     // Immediate re-acquire within the back-off window returns null fast
     // (no factory re-init — counter stays at 1).
     expect(cache.acquire(0)).toBeNull();
     expect(counter).toBe(1);
 
-    // After NEGATIVE_BACKOFF_MS (2 s), the marker is swept and a fresh
-    // factory call is permitted.
-    now = 2_000;
+    // After NEGATIVE_BACKOFF_MS (2 s) elapses, the marker is swept and a
+    // fresh factory call is permitted. Opus Round 1 P3-2: use 2_001 (= one
+    // tick past the back-off window) instead of 2_000 (= boundary exactly)
+    // for unambiguous past-window semantics matching the idleTimeout test's
+    // 2x convention.
+    now = 2_001;
     const second = cache.acquire(0)!;
     expect(second).not.toBe(first);
     expect(counter).toBe(2);
