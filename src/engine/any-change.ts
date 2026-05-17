@@ -56,13 +56,13 @@ const STAGE5_CACHE_IDLE_TIMEOUT_MS = 20_000;
  * round-trip that exceeds 20 s wallclock — which is the common case after
  * issue #327 item F bumped the lease TTL base to 15 s.
  *
- * 60 s gives 4× coverage over the lease soft-expiry window (~9 s for `action`
- * view) and absorbs typical 10-30 s LLM reasoning latency, so the marker
- * persists across a normal multi-step dogfood without re-paying init. For
- * truly transient unavailability (rare race during DirtyRectRouter shutdown),
- * the longer TTL just means a slightly slower recovery — still bounded by 1
- * minute, and AccessLost recovery is the `negative-backoff` 2 s path which
- * remains the fast escape hatch.
+ * 60 s gives 4× coverage over the 15 s `action`-view lease base (and ~6.7×
+ * over the 9 s soft-expiry window), absorbing typical 10-30 s LLM reasoning
+ * latency so the marker persists across a normal multi-step dogfood without
+ * re-paying init. For truly transient unavailability (rare race during
+ * DirtyRectRouter shutdown), the longer TTL just means a slightly slower
+ * recovery — still bounded by 1 minute, and AccessLost recovery is the
+ * `negative-backoff` 2 s path which remains the fast escape hatch.
  */
 const STAGE5_UNAVAILABLE_TTL_MS = 60_000;
 
@@ -314,14 +314,20 @@ export class DirtyRectSubscriptionCache {
         if (now - entry.recordedAt >= NEGATIVE_BACKOFF_MS) {
           this.entries.delete(key);
         }
-      } else if (now - entry.recordedAt >= this.unavailableTtlMs) {
+      } else if (entry.kind === "unavailable") {
         // Issue #327 item B follow-up: `unavailable` marker reaches its own
         // TTL (1 min default), distinct from the 20 s subscription idle. The
         // marker records a permanent unavailability for this process lifetime
         // (vision-gpu coexistence, RDP, virtual display), so a longer TTL
         // prevents the 50 ms factory re-init storm across typical
         // 10-30 s Claude Code round-trips.
-        this.entries.delete(key);
+        //
+        // Opus PR #334 Round 1 P2-2: explicit `entry.kind === "unavailable"`
+        // discriminant (instead of an implicit else) so TS exhaustiveness
+        // checks fire if a 4th `CacheEntry` variant is added in the future.
+        if (now - entry.recordedAt >= this.unavailableTtlMs) {
+          this.entries.delete(key);
+        }
       }
     }
   }
