@@ -90,7 +90,7 @@ describe("deriveEntityCapabilities — Issue #296", () => {
     expect(cap?.unsupportedExecutors).toBeUndefined();
   });
 
-  it("UIA + ValuePattern (Edit) → preferredExecutors:['uia'] (UIA setValue path)", () => {
+  it("UIA + ValuePattern (Edit) → preferredExecutors:['uia','keyboard'] (ADR-020 SR-5: keyboard co-advertised as UIA setValue recovery)", () => {
     const cap = deriveEntityCapabilities(
       makeEntity({
         role: "textbox",
@@ -99,7 +99,7 @@ describe("deriveEntityCapabilities — Issue #296", () => {
         rect: { x: 0, y: 0, width: 200, height: 24 },
       }),
     );
-    expect(cap?.preferredExecutors).toEqual(["uia"]);
+    expect(cap?.preferredExecutors).toEqual(["uia", "keyboard"]);
     expect(cap?.unsupportedExecutors).toBeUndefined();
   });
 
