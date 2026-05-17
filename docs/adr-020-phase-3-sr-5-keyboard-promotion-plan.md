@@ -244,9 +244,19 @@ const ADVISORY_TEXT =
 // ... 既存 logic (line 260-264)
 
 // ── ★ 新規 keyboard block (PR-SR5-2 で追加、mouse block の直前) ─────────────
-// preferredAllows("keyboard") check で entry gate
+// 北極星 9 (1) baseline 完全同一動作維持: `entity.preferredExecutors === undefined`
+// (test 直 invoke / legacy path) の case で新 keyboard block を entry させないため、
+// `preferredAllows("keyboard")` (undefined 時 true 返却) ではなく explicit な
+// `entity.preferredExecutors !== undefined && includes("keyboard")` で gate する
+// (Round 3 実装中追加発見、preferredAllows semantic との組合せ sweep miss を修正)。
 // 注意: text 必須 (keyboard は WM_CHAR injection 専用、click action では入れない)
-if (!blocked.includes("keyboard") && preferredAllows("keyboard") && text !== undefined && (action === "type" || action === "setValue")) {
+if (
+  entity.preferredExecutors !== undefined &&
+  entity.preferredExecutors.includes("keyboard") &&
+  !blocked.includes("keyboard") &&
+  text !== undefined &&
+  (action === "type" || action === "setValue")
+) {
   // UIA route 内 fallback の keyboardTypeBg を direct invoke
   // 失敗時は throw 直伝播 (CDP/terminal と同 pattern、generic mouse rescue しない、北極星 9 (3) の延長)
   await d.keyboardTypeBg(resolveWindowTitle(target), text);
