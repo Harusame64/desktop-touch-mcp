@@ -63,7 +63,52 @@ describe("GuardedTouchLoop — happy path", () => {
     }));
     const result = await loop.touch({ lease });
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.executor).toBe("uia");
+    if (result.ok) {
+      expect(result.executor).toBe("uia");
+      expect(result.downgrade).toBeUndefined();
+    }
+  });
+
+  // Issue #327 item C: when env.execute() returns the rich ExecutorOutcome shape
+  // (downgrade signalled), GuardedTouchLoop normalises and surfaces it on the
+  // success TouchResult so the LLM can distinguish "advised executor was tried
+  // and failed" from "advised executor was not the chosen route".
+  it("surfaces downgrade on TouchResult when execute() returns ExecutorOutcome with downgrade (#327 item C)", async () => {
+    const e = entity("e1", GEN);
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(e, "v1");
+    const loop = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities: () => [e],
+      execute: async () => ({
+        kind: "mouse",
+        downgrade: { from: "uia", reason: "InvokePatternNotSupported" },
+      }),
+    }));
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.executor).toBe("mouse");
+      expect(result.downgrade).toEqual({ from: "uia", reason: "InvokePatternNotSupported" });
+    }
+  });
+
+  it("ExecutorOutcome without downgrade field omits TouchResult.downgrade (no spurious undefined)", async () => {
+    const e = entity("e1", GEN);
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(e, "v1");
+    const loop = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities: () => [e],
+      execute: async () => ({ kind: "uia" }), // rich shape but no downgrade
+    }));
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.executor).toBe("uia");
+      expect(result.downgrade).toBeUndefined();
+      // Field omitted entirely (not `downgrade: undefined`) so JSON.stringify
+      // produces the same shape as the bare-kind path.
+      expect("downgrade" in result).toBe(false);
+    }
   });
 });
 

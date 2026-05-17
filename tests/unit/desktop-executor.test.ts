@@ -163,7 +163,12 @@ describe("createDesktopExecutor — error handling and UIA fallback", () => {
       entity({ sources: ["uia"], rect: { x: 100, y: 200, width: 80, height: 30 } }),
       "click"
     );
-    expect(result).toBe("mouse");
+    // Issue #327 item C: silent UIA-to-mouse fallback now returns the rich
+    // ExecutorOutcome shape so observability of the downgrade reaches the LLM.
+    expect(result).toEqual({
+      kind: "mouse",
+      downgrade: { from: "uia", reason: "element not found" },
+    });
     expect(deps.mouseClick).toHaveBeenCalledWith(140, 215);
   });
 
@@ -180,6 +185,56 @@ describe("createDesktopExecutor — error handling and UIA fallback", () => {
     const deps = mockDeps({ cdpClick: vi.fn(async () => { throw new Error("CDP error"); }) });
     const exec = createDesktopExecutor({ tabId: "t" }, deps);
     await expect(exec(entity({ sources: ["cdp"], sourceId: "#x" }), "click")).rejects.toThrow("CDP error");
+  });
+});
+
+// ─── Issue #327 item C — UIA click silent fallback observability ──────────────
+
+describe("createDesktopExecutor — UIA click → mouse downgrade marker (#327 item C)", () => {
+  it("UIA click succeeds → returns bare 'uia' (back-compat, no downgrade marker)", async () => {
+    const deps = mockDeps();
+    const exec = createDesktopExecutor({ hwnd: "1" }, deps);
+    const result = await exec(entity({ sources: ["uia"] }), "click");
+    expect(result).toBe("uia");
+  });
+
+  it("UIA click fails + entity.rect present → returns ExecutorOutcome with downgrade.from='uia' + reason", async () => {
+    const deps = mockDeps({
+      uiaClick: vi.fn(async () => { throw new Error("InvokePatternNotSupported"); }),
+    });
+    const exec = createDesktopExecutor({ hwnd: "1" }, deps);
+    const result = await exec(
+      entity({ sources: ["uia"], rect: { x: 100, y: 200, width: 80, height: 30 } }),
+      "click",
+    );
+    expect(result).toEqual({
+      kind: "mouse",
+      downgrade: { from: "uia", reason: "InvokePatternNotSupported" },
+    });
+  });
+
+  it("UIA click fails + no rect → throws (no silent mouse fallback) — downgrade marker reserved for the success case", async () => {
+    const deps = mockDeps({
+      uiaClick: vi.fn(async () => { throw new Error("element not found"); }),
+    });
+    const exec = createDesktopExecutor({ hwnd: "1" }, deps);
+    await expect(exec(entity({ sources: ["uia"], rect: undefined }), "click"))
+      .rejects.toThrow("no rect for mouse fallback");
+  });
+
+  it("downgrade marker carries non-Error throwables as String(...) for the reason field", async () => {
+    const deps = mockDeps({
+      uiaClick: vi.fn(async () => { throw "string-only error"; }),
+    });
+    const exec = createDesktopExecutor({ hwnd: "1" }, deps);
+    const result = await exec(
+      entity({ sources: ["uia"], rect: { x: 0, y: 0, width: 10, height: 10 } }),
+      "click",
+    );
+    expect(result).toEqual({
+      kind: "mouse",
+      downgrade: { from: "uia", reason: "string-only error" },
+    });
   });
 });
 
@@ -235,7 +290,11 @@ describe("createDesktopExecutor — UIA setValue → keyboardTypeBg fallback (#3
       entity({ sources: ["uia"], rect: { x: 100, y: 200, width: 80, height: 30 } }),
       "click",
     );
-    expect(result).toBe("mouse"); // existing click → mouse fallback path unchanged
+    // Click path falls through to mouse with the #327 item C downgrade marker.
+    expect(result).toEqual({
+      kind: "mouse",
+      downgrade: { from: "uia", reason: "InvokePattern missing" },
+    });
     expect(deps.keyboardTypeBg).not.toHaveBeenCalled();
   });
 });
@@ -321,7 +380,7 @@ describe("createDesktopExecutor — locator-based routing (P2-A)", () => {
       locator: { uia: { automationId: "btn-x" }, visual: { rect: { x: 50, y: 60, width: 100, height: 40 } } },
     });
     const result = await exec(e, "click");
-    expect(result).toBe("mouse");
+    expect(result).toEqual({ kind: "mouse", downgrade: { from: "uia", reason: "not found" } });
     expect(deps.mouseClick).toHaveBeenCalledWith(100, 80); // center of locator.visual.rect
 
     // entity.rect present → entity.rect wins over locator.visual.rect
