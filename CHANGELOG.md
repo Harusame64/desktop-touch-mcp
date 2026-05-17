@@ -1,5 +1,113 @@
 # Changelog
 
+## [1.6.1] - 2026-05-17 — `desktop_act` reliability + observability sweep (Notepad type, lease TTL, modal classification, executor downgrade marker, cache marker storm)
+
+### Fixed
+
+- **`desktop_act` no longer reports a spurious `modal_appeared` after every
+  click on Notepad and similar single-window apps.** Notepad's TitleBar /
+  MenuBar / StatusBar elements all surface on UI Automation with
+  `role: "unknown"`, and the post-touch diff classifier was treating any
+  unknown-role element as a possible modal — so every click on the text
+  area emitted `diff: ["modal_appeared", "entity_appeared"]` even though
+  nothing modal had appeared. The pre-touch path already excluded these
+  chrome control types via the
+  [#297](https://github.com/Harusame64/desktop-touch-mcp/issues/297) fix,
+  but the post-touch classifier had drifted out of sync; both predicates
+  now share the same `NON_MODAL_CHROME_CONTROL_TYPES` filter via a single
+  helper, so future chrome additions cannot regress one path without the
+  other. Closes
+  [#327 item D](https://github.com/Harusame64/desktop-touch-mcp/issues/327)
+  and completes the #297 closure.
+
+- **`desktop_act` lease no longer expires before normal Claude Code
+  round-trips complete.** The `view: "action"` lease base was 5 seconds
+  with small entity / payload bonuses, giving an effective 5-8 second
+  TTL — shorter than the typical 10-30 second LLM reasoning round-trip.
+  Every `desktop_discover → desktop_act` cycle risked `ok:false reason:
+  "lease_expired"` with no recovery other than another full discover.
+  The base TTL is now 15 seconds (still capped at 60 seconds and still
+  scaled by `view` / `entityCount` / `payloadBytes`), bringing the
+  action-view lower edge into the round-trip window. Closes
+  [#327 item F](https://github.com/Harusame64/desktop-touch-mcp/issues/327).
+
+- **`desktop_act({action:"type"})` against Notepad now actually types.**
+  Notepad's main edit area exposes the UI Automation `ValuePattern`
+  required for the typed-value path, but the internal PowerShell locator
+  could not re-find the entity from the lease (the entity has no stable
+  `name`), so every call returned `ok:false reason: "executor_failed"`.
+  The type / `setValue` route now adds a background `WM_CHAR` injection
+  rung that posts directly to the focused child of the target window via
+  the same primitive `terminalSend` already uses. Notepad and
+  RichEdit-style controls now type successfully on the fallback rung.
+  Hosts that block background injection (Chromium, UWP, Windows Terminal
+  XAML) still surface `executor_failed`, and the recovery hint added
+  below points the LLM at
+  `keyboard({action:"type", text, method:"foreground"})` which uses the
+  OS input queue and bypasses the BG block. Closes
+  [#327 item E](https://github.com/Harusame64/desktop-touch-mcp/issues/327).
+
+- **`desktop_act` no longer pays a ~50 ms init cost on every back-to-back
+  call when the DXGI dirty-rect subscription is unavailable.** When the
+  Stage 5 observation cannot acquire a DXGI subscription for the target
+  monitor (because vision-gpu's dirty-rect router already holds an
+  exclusive subscription on the same output, or the host is on RDP /
+  virtual display, etc.), the cache used to delete the entry on
+  `invalidate()` so every subsequent call re-paid the ~50 ms factory
+  init. Two new markers now keep the cache fast:
+  - A 2-second `negative-backoff` marker is set on `invalidate()` after
+    a `sub.next()` failure (e.g. `E_DUP_ACCESS_LOST` /
+    `E_DUP_UNSUPPORTED`), so the immediate next call fast-paths in
+    under 1 ms instead of re-initialising.
+  - The longer-lived `unavailable` marker (for permanent-for-process
+    failures like vision-gpu coexistence) now gets its own 60-second
+    TTL, distinct from the 20-second subscription idle dispose, so the
+    marker survives typical 10-30 second Claude Code round-trips.
+  Real-world dogfood (Notepad chain-click) measured a 750× wallclock
+  speedup on the back-to-back unavailable path (45 ms cold → 0.06 ms
+  cached). Closes
+  [#327 item B](https://github.com/Harusame64/desktop-touch-mcp/issues/327).
+
+### Added
+
+- **`desktop_act` response now surfaces a `downgrade` marker when a silent
+  UIA → mouse fallback happens.** Previously a click on a UI Automation
+  entity without `InvokePattern` would silently fall through to
+  `mouseClick(entity.rect.center)` and return `executor: "mouse"` — the
+  LLM saw `capabilities.preferredExecutors: ["uia"]` advertised but
+  `executor: "mouse"` on the actual response, with no marker explaining
+  the gap. The response now also includes
+  `downgrade: { from: "uia", reason: "<underlying UIA error message>" }`
+  so the LLM can distinguish "the advised executor was tried and failed"
+  from "the advised executor was not the chosen route". Existing callers
+  that ignore the field are unaffected (additive). Closes
+  [#327 item C](https://github.com/Harusame64/desktop-touch-mcp/issues/327).
+
+- **`desktop_act` `executor_failed` envelopes now carry a typed
+  `if_unexpected` recovery hint.** The tool description has long
+  advertised an `if_unexpected` field for executor failures, but the
+  runtime envelope was missing it — the LLM had to recover from
+  `reason: "executor_failed"` based on the description alone. The
+  response now includes
+  `if_unexpected: { most_likely_cause: "ExecutorFailed", try_next: [...] }`
+  with four actionable hints derived from the fix paths the
+  `desktop_act` ladder does not internalise: foreground keyboard send
+  (bypasses BG-injection blocks like Chromium / WT-XAML), `mouse_click`
+  by rect center (when UIA InvokePattern is missing), `click_element`
+  by name / automationId (different UIA path), and re-running
+  `desktop_discover` (stale locator). Closes
+  [#327 item G](https://github.com/Harusame64/desktop-touch-mcp/issues/327).
+
+- **`desktop_act` Stage 5 observation now reports a `cacheState`
+  diagnostic.** Five values track which cache branch handled the
+  observation: `hit-subscription` / `hit-unavailable` /
+  `hit-negative-backoff` / `miss-init` / `miss-init-unavailable`. This
+  is purely instrumentation — no contract change to the envelope — and
+  lets log analysis distinguish a cold init from a fast-path marker hit
+  without guessing from `totalElapsedMs`. Useful for verifying the
+  cache markers described under "Fixed" above are engaging in
+  production traffic.
+
 ## [1.6.0] - 2026-05-16 — Excel scroll fix + verifyDelivery.observation hint with chain-trust telemetry
 
 ### Added
