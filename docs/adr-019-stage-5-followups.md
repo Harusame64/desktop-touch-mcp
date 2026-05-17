@@ -168,6 +168,12 @@ The pixel-level positive verification (`motion: any_change` with non-zero `resid
 - **Stage 5b** (DXGI move rects): no new items yet.
 - **Stage 5c** (cross-monitor straddle simultaneous subscription): no new items yet.
 
+### 2026-05-17 — `VisualMotionObservation.cacheState` instrumentation (#327 item B)
+
+Issue #327 item B added an optional `cacheState` field (5-value union: `hit-subscription` / `hit-unavailable` / `hit-negative-backoff` / `miss-init` / `miss-init-unavailable`) on `VisualMotionObservation` so dogfood logs can audit the cache hit/miss ratio directly. The field is **instrumentation-only**, optional, and adds no contract to the `desktop_act` envelope surface — Stage 5 sub-plan §2.6 documented fail-soft contract is unchanged.
+
+Dogfood usage: after the first DXGI failure on a host (vision-gpu coexistence, RDP, virtual display, etc.), back-to-back calls must report `cacheState: "hit-negative-backoff"` — NOT `cacheState: "miss-init"`. Reporting `miss-init` repeatedly would indicate the back-off marker is failing to be set (a regression of the #327 item B fix). The unit tests at `tests/unit/dirty-rect-subscription-cache.test.ts` + `tests/unit/any-change-orchestrator.test.ts` mechanically pin the contract.
+
 ### Deferred validations (dual-monitor environment required)
 
 The following two scenarios are deferred until a dual-monitor host is available; they must be re-attempted before Stage 5c v2 is shipped, because Stage 5c relies on multi-output subscription correctness that v1 only partially proves:

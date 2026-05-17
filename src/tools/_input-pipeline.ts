@@ -536,6 +536,31 @@ export interface VisualMotionObservation {
   };
   framesSampled: number;
   totalElapsedMs: number;
+  /**
+   * ADR-019 Stage 5 + issue #327 item B instrumentation — DXGI subscription
+   * cache state observed during this call. Helps audit the cache fast-path
+   * vs cold-path ratio for back-to-back `desktop_act` calls (the dogfood
+   * symptom that triggered #327: `totalElapsedMs ~50ms constant`). Only
+   * populated on Stage 5 paths that consult `DirtyRectSubscriptionCache`;
+   * absent on non-cache sources.
+   *
+   * Values:
+   * - `"hit-subscription"`: cached subscription returned, no init cost.
+   * - `"hit-unavailable"`: cached `unavailable` marker (factory previously
+   *   threw); fast-path negative.
+   * - `"hit-negative-backoff"`: cached `negative-backoff` marker (a recent
+   *   `sub.next()` failure triggered `invalidate`, which now sets a short
+   *   back-off instead of clearing — issue #327 item B fix).
+   * - `"miss-init"`: cache miss + factory succeeded (paid init cost).
+   * - `"miss-init-unavailable"`: cache miss + factory threw, marker now
+   *   set (paid init cost; subsequent calls fast-path on `hit-unavailable`).
+   */
+  cacheState?:
+    | "hit-subscription"
+    | "hit-unavailable"
+    | "hit-negative-backoff"
+    | "miss-init"
+    | "miss-init-unavailable";
 }
 
 // ─── Resolver ────────────────────────────────────────────────────────────────
