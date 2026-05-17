@@ -439,6 +439,22 @@ export interface NativeDirtyRectSubscription {
   dispose(): void
 }
 
+/**
+ * ADR-020 SR-4 PR-SR4-1 — re-export of the broker handle interface so
+ * downstream consumers (Stage 5 in PR-SR4-2, vision-gpu in PR-SR4-3) can
+ * reference the typed handle from a single SSOT (`native-types.ts`).
+ *
+ * The actual interface definition lives in `src/engine/dxgi-broker.ts`
+ * (where the broker class also lives). This file re-exports the type so
+ * sub-plan §5.2's "BrokerSubscription re-exported interface" SSOT row
+ * is satisfied without duplicating the declaration.
+ *
+ * Per Round 2 P1-3 lock: this interface has no `subscribe()` method —
+ * fan-out is exclusively a `DirtyRectBroker.subscribe()` upper-level API
+ * responsibility.
+ */
+export type { BrokerSubscription } from "./dxgi-broker.js"
+
 // ── Visual GPU Phase 4 (ADR-005) ─────────────────────────────────────────────
 
 /** Rust src/vision_backend/types.rs::Rect */
