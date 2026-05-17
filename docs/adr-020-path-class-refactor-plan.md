@@ -303,6 +303,8 @@ Phase 3 epic completion:
 - [ ] **L6 (G)**: PR #329 `desktopActRawHandler` 局所 attach + `SUGGESTS.ExecutorFailed` → SR-2 (内部 Result 寄せ + 最外周 boundary central converter) で構造除去
 - [ ] **L7 (A defer)**: `feature/adr-019-stage-5-dormancy-fix-deferred` (SHA `10982e2`) 保全 → SR-4 完了後に revive (§7)
 - [ ] **L8 (LLM E2E harness)**: 元 draft Phase 1 → **ADR-021 carry-over** (§6)、本 epic 完了 trigger で起草
+- [ ] **L9 (UiEntity engine field collapse + ADVISORY_TEXT rule-shape derive 化)** (carry-over): SR-1 sub-plan §10 L9-a/L9-b で 2 軸新規追加、ADR-020 全 SR 完了後判断 (`UiEntity.unsupportedExecutors` + SR-1/SR-5 で追加した `preferredExecutors?` / `fallbackHint?` 3 engine internal field 重複 collapse + `ADVISORY_TEXT` hand-written const から rule-shape 自動生成への migrate)
+- [ ] **L10 (`failWith` 経路 migrate 判断、OQ-SR2-4 carry-over)** (User 明示要求 2026-05-17 で永続化、忘却防止): 176 callsite の `failWith(...)` 経由 handler 内部標準 failure path (`ToolFailure` shape `{ok:false, code, error, suggest, ...rootExtras}` return、`_errors.ts:685-719` 定義) を `Result.err` + `toFailureEnvelope` 経由 envelope に migrate するかの判断。SR-2 sub-plan `docs/adr-020-phase-3-sr-2-handler-result-boundary-plan.md` §9 OQ-SR2-4 で exit condition 3 案 (keep `ToolFailure` shape as final / migrate to `Result.err` + `toFailureEnvelope` / hybrid wrapper 互換層) 明示済。`_post.ts:withPostState` post-perception hook の `ROOT_HOISTED_KEYS` wiring が `failWith` 経由 root extras hoist に依存しているため migrate には post-perception 機構の再設計も必要 (size +1500-2000 line / PR 分割 4-5、別 epic 想定)。**SR-2 全 PR land 後 / SR-4 着手前 / Phase 3 完了時の各 mile-stone で必ず参照確認**、いずれかの exit condition を明示判断して strikethrough 化 (CLAUDE.md 強制命令 9 整合)。
 
 ---
 
