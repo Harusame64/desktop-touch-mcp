@@ -288,8 +288,11 @@ export function createDesktopExecutor(
     // 防止 throw を先に評価する順序は維持しているため、text 付き action は
     // mouseBlocked と同等に上の text-drop branch で扱われる。
     if (!preferredAllows("mouse")) {
+      // Round 8 P3-2 反映: mouseBlocked 経路の error message と統一して LLM 観測時の
+      // log 差分を減らす。R-SR1-2-e (sub-plan §5.5) で「mouseBlocked と同経路で扱う」
+      // と明記済の throw、文言も bit-equal にする。
       throw new Error(
-        `No executor available for entity "${entity.label ?? entity.entityId}": mouse fallback not in preferredExecutors`
+        `No executor available for entity "${entity.label ?? entity.entityId}": mouse fallback also blocked by unsupportedExecutors`
       );
     }
     if (!entity.rect) {

@@ -124,7 +124,7 @@ describe("preferredExecutors block entry eligibility (ADR-020 SR-1 PR-SR1-2)", (
           entity({ sources: ["cdp"], sourceId: "#btn", preferredExecutors: ["uia"] }),
           "click",
         ),
-      ).rejects.toThrow(/mouse fallback not in preferredExecutors|no rect for mouse fallback/);
+      ).rejects.toThrow(/mouse fallback also blocked by unsupportedExecutors|no rect for mouse fallback/);
     });
   });
 
