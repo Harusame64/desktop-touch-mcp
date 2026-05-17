@@ -561,6 +561,23 @@ export class DirtyRectBroker {
    * removing the `lastUsedAt = nowFn()` line below causes the "Round 2
    * Codex P2: last consumer detach refreshes lastUsedAt" test to fail
    * because the subsequent `acquire()` enters the stale-sweep path.
+   *
+   * **Round 2 Opus P2-A**: this refresh is intentionally **scoped to
+   * `maybeStopFanOut` only**. The other two teardown paths — `invalidate`
+   * and `disposeAll` — do NOT need to refresh `lastUsedAt` because:
+   *
+   *   - `invalidate(outputIndex)` REPLACES the entry with a
+   *     `{ kind: "negative-backoff", recordedAt: nowFn() }` record, so
+   *     the subscription-kind sweep path (which is the only one that
+   *     reads `lastUsedAt`) is bypassed entirely. The new entry uses
+   *     `recordedAt` for its own `negativeBackoffMs` window.
+   *   - `disposeAll()` ends with `this.entries.clear()`, so no entry
+   *     remains to be swept. The next `acquire`/`subscribe` constructs
+   *     a fresh subscription-kind entry with `lastUsedAt = nowFn()`.
+   *
+   * Future readers (PR-SR4-2 SSOT shift / PR-SR4-3 vision-gpu migration)
+   * should NOT mirror this refresh to `invalidate` / `disposeAll`. The
+   * asymmetry is correct.
    */
   private maybeStopFanOut(
     _outputIndex: number,
