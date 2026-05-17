@@ -24,6 +24,19 @@ export class LeaseStore {
   private readonly leases = new Map<string, EntityLease>();
   private readonly defaultTtlMs: number;
   private readonly nowFn: () => number;
+  /**
+   * ADR-020 PR-P2-2: timestamp of the most recent act attempt in this session.
+   * Read-once via consumeObservedRoundTripMs() on the next see() — the
+   * computed `nowFn() - lastActAtMs` reflects the LLM's "act → next see"
+   * round-trip wallclock, which feeds `observedRoundTripMs` into the TTL
+   * policy so the lease window adapts to actual thinking time.
+   *
+   * Lifecycle:
+   *   - undefined initially (no act yet)
+   *   - set by recordAct() at execute attempt time (success OR failure)
+   *   - cleared by consumeObservedRoundTripMs() after read (one-shot)
+   */
+  private lastActAtMs: number | undefined = undefined;
 
   constructor(opts: LeaseStoreOptions = {}) {
     this.defaultTtlMs = opts.defaultTtlMs ?? DEFAULT_TTL_MS;
@@ -93,5 +106,40 @@ export class LeaseStore {
     for (const [id, lease] of this.leases) {
       if (now > lease.expiresAtMs) this.leases.delete(id);
     }
+  }
+
+  /**
+   * ADR-020 PR-P2-2: record the wallclock of an act attempt. Called from
+   * GuardedTouchLoop.touch() just before execute (success OR failure both
+   * captured — the LLM's thinking time ends at attempt start, independent of
+   * what the OS/app does next). The `viewId` argument is accepted for future
+   * per-viewId expansion; the timestamp is taken from the store's injected
+   * `nowFn` so test fake timers automatically apply (callers do not need to
+   * pass their own clock).
+   */
+  recordAct(_viewId: string): void {
+    this.lastActAtMs = this.nowFn();
+  }
+
+  /**
+   * ADR-020 PR-P2-2: read-once accessor for the act → next see() round-trip
+   * wallclock. Returns `nowFn() - lastActAtMs` if an act has been recorded
+   * since the last consume, otherwise undefined. Clears `lastActAtMs` after
+   * read so subsequent see() calls without an intervening act get undefined
+   * (not the stale "time since the original act" reading).
+   *
+   * Per-see cycle (see → act → see → act → see …):
+   *   - first see:                   undefined  (no act yet)
+   *   - after recordAct, next see:   nowFn() - lastActAtMs, then clear
+   *   - subsequent see without act:  undefined  (cleared)
+   *
+   * Naming convention: `consume*` (not `get*`) advertises the side-effect
+   * (clear-after-read) so callers cannot accidentally re-read stale values.
+   */
+  consumeObservedRoundTripMs(): number | undefined {
+    if (this.lastActAtMs === undefined) return undefined;
+    const elapsed = this.nowFn() - this.lastActAtMs;
+    this.lastActAtMs = undefined;
+    return elapsed;
   }
 }

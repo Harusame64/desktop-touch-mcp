@@ -387,19 +387,25 @@ export class DesktopFacade {
       windows.length * 180 +
       rawResult.warnings.length * 80;
 
-    const policyTtl = this.opts.defaultTtlMs !== undefined
-      ? this.opts.defaultTtlMs
-      : computeLeaseTtlMs({
-          view: input.view,
-          entityCount: resolved.length,
-          payloadBytes: estimatedPayloadBytes,
-        });
+    // ADR-020 PR-P2-2: both branches normalised to { ttlMs, refreshRequired }
+    // so downstream sees a single shape. observedRoundTripMs consumed read-once
+    // from LeaseStore so subsequent see() without an intervening act gets
+    // undefined (not stale "time since the original act" reading).
+    const policyTtl: { ttlMs: number; refreshRequired: boolean } =
+      this.opts.defaultTtlMs !== undefined
+        ? { ttlMs: this.opts.defaultTtlMs, refreshRequired: false }
+        : computeLeaseTtlMs({
+            view: input.view,
+            entityCount: resolved.length,
+            payloadBytes: estimatedPayloadBytes,
+            observedRoundTripMs: session.leaseStore.consumeObservedRoundTripMs(),
+          });
 
     const nowFn = this.opts.nowFn ?? Date.now;
     const issuedAtMs = nowFn();
 
     const entityViews: EntityView[] = resolved.map((e) => {
-      const lease = session.leaseStore.issue(e, newViewId, policyTtl);
+      const lease = session.leaseStore.issue(e, newViewId, policyTtl.ttlMs);
       const view: EntityView = {
         entityId: e.entityId,
         label: e.label,
@@ -418,7 +424,7 @@ export class DesktopFacade {
       target: { title: targetTitle(input.target), generation: session.generation },
       entities: entityViews,
       windows,
-      softExpiresAtMs: computeSoftExpiresAtMs(issuedAtMs, policyTtl),
+      softExpiresAtMs: computeSoftExpiresAtMs(issuedAtMs, policyTtl.ttlMs),
     };
     if (rawResult.warnings.length > 0) output.warnings = rawResult.warnings;
 

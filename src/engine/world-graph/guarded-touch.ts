@@ -325,6 +325,12 @@ export class GuardedTouchLoop {
     const preFocusId = this.env.getFocusedEntityId?.();
 
     // 5. Execute — no await between validate and execute (TOCTOU prevention).
+    // ADR-020 PR-P2-2: record act attempt timestamp before execute. Captures
+    // LLM thinking time (act attempt = end-of-thinking), independent of
+    // execute success/failure. Read by consumeObservedRoundTripMs() on the
+    // next see() call. validation early-returns above bypass this hook by
+    // construction, so failure paths never pollute the round-trip wallclock.
+    this.leaseStore.recordAct(lease.viewId);
     let outcome: ExecutorKind | ExecutorOutcome;
     try {
       outcome = await this.env.execute(entity, concreteAction, text);

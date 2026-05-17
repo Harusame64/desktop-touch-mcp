@@ -156,3 +156,52 @@ describe("LeaseStore — stale lease rejection (PoC gate)", () => {
     if (!result.ok) expect(result.reason).toBe("generation_mismatch");
   });
 });
+
+// ADR-020 PR-P2-2: recordAct / consumeObservedRoundTripMs round-trip semantics.
+describe("LeaseStore — observedRoundTripMs (ADR-020 PR-P2-2)", () => {
+  it("returns undefined before any act is recorded", () => {
+    const store = new LeaseStore({ nowFn: () => 100 });
+    expect(store.consumeObservedRoundTripMs()).toBeUndefined();
+  });
+
+  it("returns nowFn() - lastActAtMs after recordAct", () => {
+    let now = 1_000;
+    const store = new LeaseStore({ nowFn: () => now });
+    store.recordAct("view-1");        // lastActAtMs = 1_000
+    now = 17_500;                       // simulate 16.5s LLM thinking + tool call
+    expect(store.consumeObservedRoundTripMs()).toBe(16_500);
+  });
+
+  it("is read-once: subsequent consume returns undefined until next recordAct", () => {
+    let now = 0;
+    const store = new LeaseStore({ nowFn: () => now });
+    store.recordAct("view-1");
+    now = 5_000;
+    expect(store.consumeObservedRoundTripMs()).toBe(5_000);
+    // second consume without an intervening act gets undefined (not stale)
+    now = 10_000;
+    expect(store.consumeObservedRoundTripMs()).toBeUndefined();
+  });
+
+  it("a fresh recordAct after consume re-arms the next round-trip measurement", () => {
+    let now = 0;
+    const store = new LeaseStore({ nowFn: () => now });
+    store.recordAct("view-1");
+    now = 5_000;
+    expect(store.consumeObservedRoundTripMs()).toBe(5_000);   // cleared
+    now = 6_000;
+    store.recordAct("view-1");                                  // re-arm
+    now = 20_000;
+    expect(store.consumeObservedRoundTripMs()).toBe(14_000);  // 20_000 - 6_000
+  });
+
+  it("recordAct overwrites a prior unconsumed timestamp (latest act wins)", () => {
+    let now = 0;
+    const store = new LeaseStore({ nowFn: () => now });
+    store.recordAct("view-1");        // lastActAtMs = 0
+    now = 1_000;
+    store.recordAct("view-1");        // overwrite → lastActAtMs = 1_000
+    now = 4_000;
+    expect(store.consumeObservedRoundTripMs()).toBe(3_000);   // 4_000 - 1_000
+  });
+});
