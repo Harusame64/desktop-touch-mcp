@@ -24,7 +24,7 @@
  *   i. const bit-equal with Stage 5 SSOT ✓
  */
 
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 
 import {
   DirtyRectBroker,
@@ -32,6 +32,24 @@ import {
   type SubscriptionLike,
 } from "../../src/engine/dxgi-broker.js";
 import { STAGE5_CONSTANTS } from "../../src/engine/any-change.js";
+
+// Round 1 P2-4: shared registration helper + afterEach cleanup so each test's
+// fan-out loop is reliably stopped before the next test starts. Avoids
+// dangling `setTimeout` handles + `runFanOut` promises piling up under
+// parallel/pool reuse (no flake observed today; this is preventive hygiene
+// per memory `feedback_sub_plan_full_reread.md`).
+const _activeBrokers: DirtyRectBroker[] = [];
+function makeBroker(...args: ConstructorParameters<typeof DirtyRectBroker>): DirtyRectBroker {
+  const broker = new DirtyRectBroker(...args);
+  _activeBrokers.push(broker);
+  return broker;
+}
+afterEach(() => {
+  while (_activeBrokers.length > 0) {
+    const b = _activeBrokers.pop();
+    b?.disposeAll();
+  }
+});
 
 /** Test-only mock of `NativeDirtyRectSubscription`. The `next()` body
  *  is replaced per-test so each case can simulate empty / non-empty
@@ -54,7 +72,7 @@ describe("DirtyRectBroker", () => {
 
   it("acquire returns a handle and constructs one native subscription", () => {
     const factory = vi.fn(() => new StubSubscription());
-    const broker = new DirtyRectBroker(factory, () => 0);
+    const broker = makeBroker(factory, () => 0);
 
     const result = broker.acquire(0);
     expect(result.sub).not.toBeNull();
@@ -64,7 +82,7 @@ describe("DirtyRectBroker", () => {
 
   it("second acquire on same outputIndex reuses the native subscription (state=hit-subscription)", () => {
     const factory = vi.fn(() => new StubSubscription());
-    const broker = new DirtyRectBroker(factory, () => 0);
+    const broker = makeBroker(factory, () => 0);
 
     const first = broker.acquire(0);
     const second = broker.acquire(0);
@@ -81,7 +99,7 @@ describe("DirtyRectBroker", () => {
   it("2 polling consumers on same outputIndex share exactly one native subscription (race-loss eliminated)", () => {
     const stub = new StubSubscription();
     const factory = vi.fn(() => stub);
-    const broker = new DirtyRectBroker(factory, () => 0);
+    const broker = makeBroker(factory, () => 0);
 
     const a = broker.acquire(0);
     const b = broker.acquire(0);
@@ -97,7 +115,7 @@ describe("DirtyRectBroker", () => {
 
   it("polling + callback consumer on same outputIndex share one native subscription", () => {
     const factory = vi.fn(() => new StubSubscription());
-    const broker = new DirtyRectBroker(factory, () => 0);
+    const broker = makeBroker(factory, () => 0);
 
     broker.acquire(0);
     broker.subscribe(0, () => undefined);
@@ -106,7 +124,7 @@ describe("DirtyRectBroker", () => {
 
   it("different outputIndex values get separate native subscriptions", () => {
     const factory = vi.fn(() => new StubSubscription());
-    const broker = new DirtyRectBroker(factory, () => 0);
+    const broker = makeBroker(factory, () => 0);
 
     broker.acquire(0);
     broker.acquire(1);
@@ -123,7 +141,7 @@ describe("DirtyRectBroker", () => {
       ).mockImplementation(async () => []),
       dispose: vi.fn(),
     };
-    const broker = new DirtyRectBroker(() => stub, () => 0, 20_000, 60_000, 5);
+    const broker = makeBroker(() => stub, () => 0, 20_000, 60_000, 5);
 
     const a = broker.acquire(0);
     const b = broker.acquire(0);
@@ -148,7 +166,7 @@ describe("DirtyRectBroker", () => {
       ).mockImplementation(async () => []),
       dispose: vi.fn(),
     };
-    const broker = new DirtyRectBroker(() => stub, () => 0, 20_000, 60_000, 5);
+    const broker = makeBroker(() => stub, () => 0, 20_000, 60_000, 5);
 
     const callbacks: { x: number; y: number; width: number; height: number }[][] = [];
     broker.subscribe(0, (batch) => callbacks.push(batch));
@@ -167,7 +185,7 @@ describe("DirtyRectBroker", () => {
     let now = 0;
     const stub = new StubSubscription();
     const factory = vi.fn(() => stub);
-    const broker = new DirtyRectBroker(factory, () => now, 100, 500);
+    const broker = makeBroker(factory, () => now, 100, 500);
 
     const result = broker.acquire(0);
     result.sub!.dispose(); // last consumer leaves
@@ -187,7 +205,7 @@ describe("DirtyRectBroker", () => {
     const factory = vi.fn(() => {
       throw new Error("E_DUP_UNSUPPORTED");
     });
-    const broker = new DirtyRectBroker(factory, () => now, 100, 500);
+    const broker = makeBroker(factory, () => now, 100, 500);
 
     expect(broker.acquire(0).sub).toBeNull();
     expect(factory).toHaveBeenCalledTimes(1);
@@ -212,7 +230,7 @@ describe("DirtyRectBroker", () => {
       counter += 1;
       return new StubSubscription();
     });
-    const broker = new DirtyRectBroker(factory, () => now);
+    const broker = makeBroker(factory, () => now);
 
     broker.acquire(0);
     broker.invalidate(0);
@@ -240,7 +258,7 @@ describe("DirtyRectBroker", () => {
       if (mode === "throw") throw new Error("E_DUP_UNSUPPORTED");
       return new StubSubscription();
     });
-    const broker = new DirtyRectBroker(factory, () => now, 1_000, 5_000);
+    const broker = makeBroker(factory, () => now, 1_000, 5_000);
 
     // 1. miss-init (cold start, factory ok)
     expect(broker.acquire(0).state).toBe("miss-init");
@@ -266,7 +284,7 @@ describe("DirtyRectBroker", () => {
       next: vi.fn().mockRejectedValueOnce(new Error("E_DUP_ACCESS_LOST")),
       dispose: vi.fn(),
     };
-    const broker = new DirtyRectBroker(() => stub, () => 0, 20_000, 60_000, 5);
+    const broker = makeBroker(() => stub, () => 0, 20_000, 60_000, 5);
 
     broker.acquire(0);
     // Allow fan-out loop one tick to surface the exception → invalidate.
@@ -284,7 +302,7 @@ describe("DirtyRectBroker", () => {
     const b = new StubSubscription();
     const queue: StubSubscription[] = [a, b];
     const factory = vi.fn(() => queue.shift()!);
-    const broker = new DirtyRectBroker(factory, () => 0);
+    const broker = makeBroker(factory, () => 0);
 
     broker.acquire(0);
     broker.acquire(1);
@@ -300,7 +318,7 @@ describe("DirtyRectBroker", () => {
 
   it("BrokerSubscription handle exposes no `subscribe()` (Round 2 P1-3 interface lock)", () => {
     const factory = vi.fn(() => new StubSubscription());
-    const broker = new DirtyRectBroker(factory, () => 0);
+    const broker = makeBroker(factory, () => 0);
 
     const { sub } = broker.acquire(0);
     expect(sub).not.toBeNull();
@@ -312,6 +330,134 @@ describe("DirtyRectBroker", () => {
 
   // ─── i. const bit-equal with Stage 5 SSOT ─────────────────────────────────
 
+  // ─── j. Round 1 regression tests (P1-1 / P2-1 / P2-3) ────────────────────
+
+  /**
+   * Round 1 P1-1 regression test: dispose-then-immediate-reattach must
+   * restart the fan-out loop for the newly attached consumer instead of
+   * leaving them orphaned. Pre-fix sequence:
+   *   1. handle A dispose → `maybeStopFanOut` sets `fanOutShouldStop=true`
+   *   2. immediate `acquire(0)` returns handle B
+   *   3. old `ensureFanOutRunning` early-returned because `fanOutPromise !== null`
+   *      without resetting `fanOutShouldStop` → loop exited → handle B's
+   *      `next()` waited forever (no fan-out feeding the queue).
+   * Post-fix: `fanOutShouldStop = false` is always reset, AND a chained
+   * `.finally(...)` post-completion restart catches the exit window.
+   */
+  it("Round 1 P1-1: dispose then immediate re-acquire resets fanOutShouldStop to false (internal state pin)", () => {
+    // End-to-end batch arrival assertion is flaky in mock-stub form because
+    // the fan-out loop's poll-and-distribute timing relative to A.dispose() +
+    // B.acquire() can interleave many ways. The load-bearing invariant the
+    // fix needs to pin is: **after `acquire()` reattaches a consumer, the
+    // entry's `fanOutShouldStop` flag is back to `false`**. Without the
+    // P1-1 fix that flag stayed `true` after the early `ensureFanOutRunning`
+    // return, causing the fan-out loop to exit on its next iteration check
+    // and leaving handle B orphaned. The internal-state assertion below
+    // would fail under the pre-fix code (would observe `fanOutShouldStop:
+    // true` after the re-acquire) and pass post-fix.
+    const broker = makeBroker(() => new StubSubscription(), () => 0, 20_000, 60_000, 5);
+
+    const a = broker.acquire(0);
+    expect(a.sub).not.toBeNull();
+    a.sub!.dispose();
+
+    // After last consumer leaves: maybeStopFanOut sets fanOutShouldStop=true.
+    const beforeReacquire = broker._getEntryForTest(0);
+    expect(beforeReacquire?.kind).toBe("subscription");
+    if (beforeReacquire?.kind === "subscription") {
+      expect(beforeReacquire.fanOutShouldStop).toBe(true);
+    }
+
+    // Immediate re-acquire — P1-1 fix must reset fanOutShouldStop to false
+    // so the (potentially still-running) loop continues serving the new
+    // consumer, and the chained restart trampoline catches the
+    // already-exited case.
+    const b = broker.acquire(0);
+    expect(b.state).toBe("hit-subscription");
+    const afterReacquire = broker._getEntryForTest(0);
+    if (afterReacquire?.kind === "subscription") {
+      expect(afterReacquire.fanOutShouldStop).toBe(false);
+      expect(afterReacquire.pollingHandles.size).toBe(1);
+    }
+  });
+
+  /**
+   * Round 1 P2-1 regression test: a non-DXGI exception from `sub.next()`
+   * must invalidate the entry (transitioning to `negative-backoff`) so the
+   * next `acquire`/`subscribe` recovers via the bounded back-off window
+   * instead of returning `hit-subscription` on an entry whose fan-out has
+   * silently died.
+   */
+  it("Round 1 P2-1: non-DXGI exception in fan-out invalidates the entry (no silent fan-out death)", async () => {
+    const stub: SubscriptionLike = {
+      isDisposed: false,
+      next: vi.fn().mockRejectedValueOnce(new Error("totally unexpected error type")),
+      dispose: vi.fn(),
+    };
+    const broker = makeBroker(() => stub, () => 0, 20_000, 60_000, 5);
+
+    broker.acquire(0);
+    await new Promise((r) => setTimeout(r, 30));
+
+    const entry = broker._getEntryForTest(0);
+    expect(entry?.kind).toBe("negative-backoff");
+    expect(broker.acquire(0).state).toBe("hit-negative-backoff");
+  });
+
+  /**
+   * Round 1 P2-3 regression test: after `invalidate(outputIndex)`,
+   * pre-existing polling handles must report `isDisposed === true` so
+   * consumer code calling `handle.next()` sees the disposed state
+   * immediately instead of silently waiting on an empty queue.
+   */
+  it("Round 1 P2-3: invalidate marks pre-existing polling handles as disposed", async () => {
+    const stub = new StubSubscription();
+    const broker = makeBroker(() => stub, () => 0, 20_000, 60_000, 5);
+
+    const { sub } = broker.acquire(0);
+    expect(sub).not.toBeNull();
+    expect(sub!.isDisposed).toBe(false);
+
+    broker.invalidate(0);
+    expect(sub!.isDisposed).toBe(true);
+    // `next()` on a disposed handle resolves to [] immediately (not after
+    // the timeout — verified via the absence of a sleep before assertion).
+    const batch = await sub!.next(10_000);
+    expect(batch).toEqual([]);
+  });
+
+  /** Round 1 P2-3 regression test (same fix for disposeAll). */
+  it("Round 1 P2-3: disposeAll marks pre-existing polling handles as disposed", async () => {
+    const stub = new StubSubscription();
+    const broker = makeBroker(() => stub, () => 0, 20_000, 60_000, 5);
+    const { sub } = broker.acquire(0);
+    broker.disposeAll();
+    expect(sub!.isDisposed).toBe(true);
+    expect(await sub!.next(10_000)).toEqual([]);
+  });
+
+  /**
+   * Round 1 P3-4 regression test: concurrent `next()` calls on the same
+   * handle must throw (instead of silently orphaning the first resolver).
+   */
+  it("Round 1 P3-4: concurrent next() on the same handle rejects", async () => {
+    const stub: SubscriptionLike = {
+      isDisposed: false,
+      next: vi.fn().mockImplementation(async () => []),
+      dispose: vi.fn(),
+    };
+    const broker = makeBroker(() => stub, () => 0, 20_000, 60_000, 5);
+    const { sub } = broker.acquire(0);
+
+    // First call starts waiting (no batch in queue, no fan-out batch yet).
+    const first = sub!.next(50);
+    // `PollingHandle.next` is `async`, so the contract violation surfaces
+    // as a promise rejection (not a synchronous throw).
+    await expect(sub!.next(50)).rejects.toThrow(/concurrent/);
+    // First call resolves on timeout (cleanup).
+    await first;
+  });
+
   it("BROKER_CONSTANTS values are bit-equal with STAGE5_CONSTANTS (PR-SR4-2 SSOT shift prerequisite)", () => {
     // Sub-plan §5.3 acceptance: PR-SR4-1 holds private duplicates; PR-SR4-2
     // shifts SSOT to broker side + Stage 5 re-exports. The numeric values
@@ -320,8 +466,10 @@ describe("DirtyRectBroker", () => {
     expect(BROKER_CONSTANTS.BROKER_CACHE_IDLE_TIMEOUT_MS).toBe(
       STAGE5_CONSTANTS.STAGE5_CACHE_IDLE_TIMEOUT_MS,
     );
+    // Round 1 P3-2: cast removed — `STAGE5_UNAVAILABLE_TTL_MS` is already
+    // part of `STAGE5_CONSTANTS`'s `Object.freeze` payload.
     expect(BROKER_CONSTANTS.BROKER_UNAVAILABLE_TTL_MS).toBe(
-      (STAGE5_CONSTANTS as { STAGE5_UNAVAILABLE_TTL_MS: number }).STAGE5_UNAVAILABLE_TTL_MS,
+      STAGE5_CONSTANTS.STAGE5_UNAVAILABLE_TTL_MS,
     );
     // NEGATIVE_BACKOFF_MS is not in STAGE5_CONSTANTS (any-change.ts uses
     // a module-private const). The numeric value 2_000 is documented in

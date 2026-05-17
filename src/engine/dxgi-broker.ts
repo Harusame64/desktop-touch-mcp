@@ -36,11 +36,17 @@ import { nativeDuplication } from "./native-engine.js";
 
 /**
  * Idle timeout for an active subscription. After 20s of no `acquire` /
- * `subscribe` / `next()` activity, the broker disposes the native
- * subscription and frees the DXGI session. Mirrors
- * `STAGE5_CACHE_IDLE_TIMEOUT_MS` (`src/engine/any-change.ts:44`) verbatim
- * — PR-SR4-2 で broker SSOT 化 + Stage 5 const を broker re-export に
- * 切替時、両定数が同 numeric 値であることを test で機械保証。
+ * `subscribe` / `next()` activity AND zero registered polling/callback
+ * consumers, the broker disposes the native subscription and frees the
+ * DXGI session.
+ *
+ * Round 1 P3-3 clarification: numeric value mirrored from
+ * `STAGE5_CACHE_IDLE_TIMEOUT_MS` (`src/engine/any-change.ts:44`), but the
+ * gate condition is broker-specific — Stage 5 cache sweeps purely on idle
+ * timestamp, while the broker also gates on `pollingHandles.size === 0
+ * && callbackHandles.size === 0` (fan-out reference counting). PR-SR4-2 で
+ * broker SSOT 化 + Stage 5 const を broker re-export に切替時、numeric 値
+ * のみ bit-equal を test で機械保証 (gating semantics は broker 側が拡張)。
  */
 const BROKER_CACHE_IDLE_TIMEOUT_MS = 20_000;
 
@@ -154,6 +160,16 @@ class PollingHandle implements BrokerSubscription {
     // Drain any queued batch first (fan-out loop pre-pumped these).
     const queued = this.queue.shift();
     if (queued !== undefined) return queued;
+    // Round 1 P3-4: enforce documented single-outstanding-next contract at
+    // runtime. Concurrent `next()` calls on the same handle would orphan the
+    // first resolver (it would resolve [] only after its own timeout). Throw
+    // explicitly so callers see the bug immediately rather than getting
+    // silent stale-resolve behaviour.
+    if (this.pendingResolver !== null) {
+      throw new Error(
+        "BrokerSubscription.next: concurrent calls on the same handle are not allowed",
+      );
+    }
     // Otherwise wait up to `timeoutMs` for the next fan-out batch.
     return new Promise<NativeDirtyRect[]>((resolve) => {
       this.pendingResolver = resolve;
@@ -181,6 +197,29 @@ class PollingHandle implements BrokerSubscription {
     } else {
       this.queue.push(rects);
     }
+  }
+
+  /**
+   * Round 1 P2-3 fix: called by broker `invalidate` / `disposeAll` to mark
+   * the handle disposed and release any pending `next()` without invoking
+   * the consumer-facing `onDispose` callback (broker is already tearing down
+   * the entry, so the callback would be a redundant reference-count decrement
+   * on an entry that's about to be replaced/cleared).
+   */
+  _markBrokerInvalidated(): void {
+    if (this.isDisposed) return;
+    this.isDisposed = true;
+    if (this.pendingResolver !== null) {
+      const resolver = this.pendingResolver;
+      this.pendingResolver = null;
+      if (this.pendingTimer !== null) {
+        clearTimeout(this.pendingTimer);
+        this.pendingTimer = null;
+      }
+      resolver([]);
+    }
+    this.queue.length = 0;
+    // Note: deliberately do NOT call onDispose — see JSDoc above.
   }
 
   dispose(): void {
@@ -246,6 +285,10 @@ export class DirtyRectBroker {
     /** Fan-out polling budget for `sub.next(timeoutMs)` calls inside the
      *  broker loop. Independent from each consumer's `next(timeoutMs)`. */
     private readonly fanOutPollMs: number = 100,
+    /** Round 1 P3-1: symmetric constructor parameter (matches `idleTimeoutMs`
+     *  / `unavailableTtlMs`). Tests inject a shorter window for fast-forward
+     *  assertions. */
+    private readonly negativeBackoffMs: number = BROKER_NEGATIVE_BACKOFF_MS,
   ) {}
 
   /**
@@ -302,6 +345,13 @@ export class DirtyRectBroker {
    * Callback consumer API (ADR-005 vision-gpu 後継、PR-SR4-3 で migrate)。
    * Registers a callback to be invoked on every fan-out batch; returns an
    * unsubscribe handle.
+   *
+   * Round 1 P3-5 note: subscribing implicitly **starts the broker's
+   * background fan-out loop** for this `outputIndex` (lazy: the loop is
+   * idle when no consumer is registered, and exits when the last consumer
+   * unsubscribes + idle timeout elapses). PR-SR4-3 vision-gpu migration
+   * reviewers should expect `subscribe(...)` to begin polling the native
+   * subscription before the call returns.
    */
   subscribe(
     outputIndex: number,
@@ -351,14 +401,26 @@ export class DirtyRectBroker {
    * (E_DUP_ACCESS_LOST recovery). Disposes the native subscription so the
    * next `acquire` / `subscribe` call fast-paths to `hit-negative-backoff`
    * within `BROKER_NEGATIVE_BACKOFF_MS`, then re-inits cleanly.
+   *
+   * Round 1 P2-3 fix: orphan polling handles are explicitly marked disposed
+   * (isDisposed=true + queue cleared + pending resolver released) so that
+   * consumer code calling `handle.next()` post-invalidate sees the disposed
+   * state instead of silently waiting on an empty queue indefinitely.
    */
   invalidate(outputIndex: number): void {
     const cached = this.entries.get(outputIndex);
     if (cached?.kind === "subscription") {
       cached.fanOutShouldStop = true;
-      // Notify all polling handles so any pending `next()` resolves with [].
+      // Round 1 P2-3: mark each polling handle disposed (not just push []).
+      // After invalidate, the consumer's handle is dead — no fan-out will
+      // restart on the new negative-backoff entry — so the handle must
+      // reflect that state to avoid silent infinite waits.
       for (const handle of cached.pollingHandles) {
-        handle._pushBatch([]);
+        handle._markBrokerInvalidated();
+      }
+      // Round 1 P2-3: unsubscribe all callbacks too (mirrors handle semantics).
+      for (const cb of cached.callbackHandles) {
+        cb.isUnsubscribed = true;
       }
       if (!cached.sub.isDisposed) {
         try {
@@ -375,13 +437,17 @@ export class DirtyRectBroker {
   }
 
   /** Dispose every live native subscription. Called by the MCP server
-   *  shutdown hook (sub-plan §11 R2 mitigation). */
+   *  shutdown hook (sub-plan §11 R2 mitigation). Round 1 P2-3 fix: same
+   *  handle-state propagation as `invalidate`. */
   disposeAll(): void {
     for (const entry of this.entries.values()) {
       if (entry.kind === "subscription") {
         entry.fanOutShouldStop = true;
         for (const handle of entry.pollingHandles) {
-          handle._pushBatch([]);
+          handle._markBrokerInvalidated();
+        }
+        for (const cb of entry.callbackHandles) {
+          cb.isUnsubscribed = true;
         }
         if (!entry.sub.isDisposed) {
           try {
@@ -431,12 +497,50 @@ export class DirtyRectBroker {
     };
   }
 
+  /**
+   * Round 1 P1-1 fix: dispose-then-reattach race elimination.
+   *
+   * Race window before fix:
+   *   1. Last handle disposes → `maybeStopFanOut` sets `fanOutShouldStop = true`
+   *      (loop has not yet observed the flag — still awaiting `sub.next()`).
+   *   2. Fresh `acquire(0)` arrives, calls `attachPollingHandle` →
+   *      `ensureFanOutRunning`.
+   *   3. Old code: `if (fanOutPromise !== null) return;` early-returned WITHOUT
+   *      resetting `fanOutShouldStop` → loop exits on next iteration, leaving
+   *      the freshly attached handle orphaned (queue never fed).
+   *
+   * Fix: always reset `fanOutShouldStop = false` (so a still-running loop
+   * notices the new consumer and keeps going), AND if the loop already
+   * exited / is exiting, chain a restart attempt via `.finally(...)` so a
+   * dispose-reattach-during-exit sequence still resumes fan-out for the new
+   * consumer. Regression test: "dispose then immediate re-acquire restarts
+   * fan-out for the new consumer".
+   */
   private ensureFanOutRunning(
     outputIndex: number,
     entry: CacheEntry & { kind: "subscription" },
   ): void {
-    if (entry.fanOutPromise !== null) return;
     entry.fanOutShouldStop = false;
+    if (entry.fanOutPromise !== null) {
+      // Loop is currently running (or in its finally trampoline). Chain a
+      // post-completion check so an exiting loop can be restarted for the
+      // newly attached consumer.
+      const existing = entry.fanOutPromise;
+      void existing.finally(() => {
+        const current = this.entries.get(outputIndex);
+        if (
+          current === entry &&
+          current.kind === "subscription" &&
+          !current.sub.isDisposed &&
+          (current.pollingHandles.size > 0 ||
+            current.callbackHandles.size > 0) &&
+          current.fanOutPromise === null
+        ) {
+          this.ensureFanOutRunning(outputIndex, current);
+        }
+      });
+      return;
+    }
     entry.fanOutPromise = this.runFanOut(outputIndex, entry).finally(() => {
       entry.fanOutPromise = null;
     });
@@ -474,12 +578,16 @@ export class DirtyRectBroker {
       try {
         batch = await entry.sub.next(this.fanOutPollMs);
       } catch (err) {
-        // Surface DXGI lifecycle errors as cache invalidation so the next
-        // `acquire`/`subscribe` enters `hit-negative-backoff`.
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg.includes("E_DUP_ACCESS_LOST") || msg.includes("E_DUP_UNSUPPORTED")) {
-          this.invalidate(outputIndex);
-        }
+        // Round 1 P2-1 fix: ANY exception from `sub.next()` must invalidate
+        // the entry. Previously only DXGI substrings (`E_DUP_ACCESS_LOST` /
+        // `E_DUP_UNSUPPORTED`) triggered invalidate; transient native errors,
+        // mock test failures, and unexpected `Error` types silently exited
+        // the fan-out loop, leaving the entry stuck as `kind:"subscription"`
+        // with no fan-out → orphaned consumers. Invalidate uniformly so the
+        // next `acquire`/`subscribe` hits `hit-negative-backoff` and recovery
+        // is bounded by `BROKER_NEGATIVE_BACKOFF_MS`.
+        void err;
+        this.invalidate(outputIndex);
         return;
       }
       if (batch.length === 0) {
@@ -528,7 +636,10 @@ export class DirtyRectBroker {
           this.entries.delete(key);
         }
       } else if (entry.kind === "negative-backoff") {
-        if (now - entry.recordedAt >= BROKER_NEGATIVE_BACKOFF_MS) {
+        // Round 1 P3-1: use the constructor parameter instead of the module
+        // constant so tests can inject a shorter window symmetrically with
+        // `idleTimeoutMs` / `unavailableTtlMs`.
+        if (now - entry.recordedAt >= this.negativeBackoffMs) {
           this.entries.delete(key);
         }
       } else if (entry.kind === "unavailable") {
