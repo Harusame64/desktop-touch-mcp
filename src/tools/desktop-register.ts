@@ -34,6 +34,7 @@ import {
 import { nativeViewFocus } from "../engine/native-engine.js";
 import type { NativeLeaseTokenSummary } from "../engine/native-types.js";
 import type { ToolResult } from "./_types.js";
+import { getSuggestsForCode } from "./_errors.js";
 import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
 import {
   SnapshotIngress,
@@ -529,7 +530,26 @@ const desktopDiscoverRawHandler = async (input: unknown): Promise<ToolResult> =>
  *  `DESKTOP_TOUCH_STAGE5_DXGI !== "0"` (default ON; opt-out by setting
  *  to `"0"`). Failures degrade silently — observation absence is
  *  bit-equal to the pre-Stage-5 envelope. */
-const desktopActRawHandler = async (
+/**
+ * Issue #327 item G: `GuardedTouchLoop.touch` returns `{ok:false, reason:"executor_failed"}`
+ * on executor exception (`guarded-touch.ts:315-319`). The handler-return path bypasses
+ * the L5 wrapper's `buildFailureEnvelope` typed-injection (which only fires on lease
+ * validation failure or handler throw), so the envelope ships with no `if_unexpected`
+ * recovery hint. We attach it here so the LLM client gets the same recovery surface
+ * documented in the tool description. The advisory ↔ runtime drift is tracked for the
+ * path-class refactor epic per `project_path_class_refactor_pending` memory.
+ */
+function buildExecutorFailedIfUnexpected(): {
+  most_likely_cause: "ExecutorFailed";
+  try_next: Array<{ action: string }>;
+} {
+  return {
+    most_likely_cause: "ExecutorFailed",
+    try_next: getSuggestsForCode("ExecutorFailed").map((action) => ({ action })),
+  };
+}
+
+export const desktopActRawHandler = async (
   input: { lease: EntityLease; action?: TouchAction; text?: string },
 ): Promise<ToolResult> => {
   const validationError = validateDesktopTouchTextRequirement(input.action, input.text);
@@ -552,7 +572,12 @@ const desktopActRawHandler = async (
     }
   }
 
-  return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  const payload: Record<string, unknown> = { ...result };
+  if (!result.ok && result.reason === "executor_failed") {
+    payload["if_unexpected"] = buildExecutorFailedIfUnexpected();
+  }
+
+  return { content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }] };
 };
 
 /**
