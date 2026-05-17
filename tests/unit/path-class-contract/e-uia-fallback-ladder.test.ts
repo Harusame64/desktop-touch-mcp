@@ -80,9 +80,11 @@ describe("E contract (a) — uiaSetValue.advertised entity → preferredExecutor
     const entity = makeUiaEntity({ patterns: ["ValuePattern"] });
     const cap = deriveEntityCapabilities(entity)!;
     expect(cap.preferredExecutors[0]).toBe("uia");
-    // Codex R2 P2 fix: dropped `as ExecutorKind` cast — if a future change
-    // removes "keyboard" from ExecutorKind, tsc fails here directly (compile-
-    // time signal), instead of silently passing through the includes branch.
+    // Codex R3 P2 fix: tests/ is outside tsc include (tsconfig.json
+    // `include: ["src/**/*"]`), so this is a pure runtime assertion — not a
+    // compile-time signal. ExecutorKind union shape is enforced by production
+    // code consumers (src/) that DO go through tsc; this test only pins the
+    // runtime ordering invariant (uia precedes keyboard when both present).
     if (cap.preferredExecutors.includes("keyboard")) {
       const uiaIdx = cap.preferredExecutors.indexOf("uia");
       const keyboardIdx = cap.preferredExecutors.indexOf("keyboard");
