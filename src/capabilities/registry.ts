@@ -26,27 +26,30 @@ import type {
 /**
  * Advertised executor kinds — the narrow union of executors that the
  * capability registry surfaces to the LLM and that `createDesktopExecutor`
- * consumes as a route order. Distinct from `ExecutorKind` (in
- * `src/engine/world-graph/types.ts:36`) which additionally includes
- * `"keyboard"` as an internal fallback executor used only inside the UIA
- * `setValue` ladder (`keyboardTypeBg`).
+ * consumes for block entry eligibility. Aligned with `ExecutorKind` (in
+ * `src/engine/world-graph/types.ts:36`).
  *
- * SR-5 (`"keyboard"` first-class promotion) extends this alias to include
- * `"keyboard"` when the registry begins advertising that executor; the
- * single change to this type propagates the narrow widening to every
- * consumer via the TypeScript compiler.
+ * ADR-020 SR-5 promoted `"keyboard"` to an advertised executor (was
+ * internal-only PR #330 fallback inside the UIA `setValue` ladder). With
+ * the promotion, `entity.preferredExecutors` may now include `"keyboard"`
+ * (e.g. `["uia", "keyboard"]` for ValuePattern text inputs), and the
+ * executor exposes a dedicated `keyboard` block for entities that opt
+ * out of UIA entirely (`preferredExecutors: ["keyboard"]`).
  */
-export type AdvertisedExecutorKind = "uia" | "cdp" | "terminal" | "mouse";
+export type AdvertisedExecutorKind = "uia" | "cdp" | "terminal" | "mouse" | "keyboard";
 
 /** Runtime defense-in-depth — every emitted `preferredExecutor` must belong
  *  to this set. Catches rule-table edits that accidentally introduce
- *  `"keyboard"` or other non-advertised values that the TS narrow type would
- *  otherwise miss in dynamic / unsoundly-cast contexts. */
+ *  non-advertised values (e.g. typos like `"keybord"` or future executor
+ *  kinds added to `ExecutorKind` but not yet promoted to the advertised
+ *  set) that the TS narrow type would otherwise miss in dynamic / unsoundly
+ *  cast contexts. */
 const ALLOWED_EXECUTORS: ReadonlySet<AdvertisedExecutorKind> = new Set<AdvertisedExecutorKind>([
   "uia",
   "cdp",
   "terminal",
   "mouse",
+  "keyboard",
 ]);
 
 export interface CapabilityRegistry {
@@ -157,7 +160,12 @@ function lookupDefault(
           "use mouse_click — UIA executor does not yet implement TogglePattern",
       };
     } else if (hasValue) {
-      cap = { preferredExecutors: ["uia"] };
+      // ADR-020 SR-5 PR-SR5-1: ValuePattern entity に "keyboard" を共起 advertise。
+      // UIA setValue が optimistic 1st、失敗時の keyboard recovery 経路 (UIA route 内
+      // keyboardTypeBg fallback、bare "keyboard" return = PR #330 contract) を LLM に
+      // 明示する。`hasInvoke` ブランチ (line 144-145) は SR-5 で touch しない
+      // (Phase 2 E contract test bit-equal 維持、sub-plan §1.4 P1-2 確定)。
+      cap = { preferredExecutors: ["uia", "keyboard"] };
     } else if (hasRect) {
       cap = {
         preferredExecutors: ["mouse"],
@@ -248,7 +256,10 @@ const ADVISORY_TEXT =
   "Issue #296: entities[].capabilities (when present) advises executor selection. " +
   "preferredExecutors[0] is the executor most likely to succeed; " +
   "if unsupportedExecutors contains 'uia', go straight to mouse_click instead of click_element " +
-  "(saves a InvokePatternNotSupported round-trip on ListItem / TabItem / custom-drawn controls).";
+  "(saves a InvokePatternNotSupported round-trip on ListItem / TabItem / custom-drawn controls). " +
+  "When preferredExecutors contains 'keyboard' (e.g. ['uia','keyboard'] on text inputs), " +
+  "the 'keyboard' executor injects WM_CHAR directly to the focused control without focus-steal, " +
+  "useful when UIA setValue fails on RichEdit/Document controls with unstable locators.";
 
 function toolDescriptionAdvisoryDefault(): string {
   return ADVISORY_TEXT;

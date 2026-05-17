@@ -206,10 +206,11 @@ const ADVISORY_TEXT =
 - **既存 test 意図的更新 (新 contract land、CLAUDE.md `feedback_sonnet_test_executor.md` 例外、sub-plan SSOT 明示)**:
   - `desktop-capabilities.test.ts` 14 case 中: `ValuePattern (Edit)` 行 1 case (`line 93-104` 周辺) を `preferredExecutors: ["uia"]` → `["uia", "keyboard"]` に更新
   - `capabilities-registry-invariant.test.ts` 17 case 中: keyboard smuggle 1 case (`line 113-122` 周辺) を逆転 (smuggle pass → 別の不正 executor 注入 reject 軸に置換、e.g. `"unknown_executor"` 注入で throw)
-  - その他 13 + 16 = 29 既存 case は **無変更** (baseline 完全同一動作 pin)
+  - **Phase 2 C contract test (`c-executor-downgrade.test.ts:69-72`) table case 2** (Round 3 実装中追加発見、Opus Round 1/2 review で見落とし): `ValuePattern only` 行で `expectedPreferred: ["uia"]` → `["uia","keyboard"]` (registry rule table 改修に追随、Phase 2 C contract が registry 出力を wire-level pin する設計のため、SR-5 で registry rule table 改修すると 1 case の expectedPreferred 更新が論理的必須)
+  - その他 13 + 16 + 6 = 35 既存 case は **無変更** (baseline 完全同一動作 pin)
 - snapshot test (`desktop-register-tool-description.test.ts`) **5 assertion 全件更新** (Round 2 P1-1 反映、§4.3 で明示):
   - snapshot file regen + EXPECTED_ADVISORY const + immutable 2 assertions + startsWith + endsWith
-- Phase 2 contract test 5 件全 green 維持 (`c-executor-downgrade.test.ts` / `e-uia-fallback-ladder.test.ts` 等、本 PR で touch しない)
+- Phase 2 contract test 5 件中 4 件 (D/F/B/E) 全 green 維持 (`d-modal-classifier.test.ts` / `f-lease-ttl.test.ts` / `b-dxgi-cache-state.test.ts` / `e-uia-fallback-ladder.test.ts` は本 PR で touch しない)、C 軸 (`c-executor-downgrade.test.ts`) は table case 2 を意図的更新で同期
 - `npm run build` (tsc clean) + `npm test` (vitest pass)
 - Opus phase-boundary review + Codex 1+ round (production code 改修、§3.3 Step 0)
 

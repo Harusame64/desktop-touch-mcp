@@ -129,7 +129,7 @@ export interface UiEntity {
    * of cross-boundary deps; structural compatibility lets `see()` assign
    * the field from a full `EntityCapabilities` value without a cast.
    */
-  unsupportedExecutors?: Array<"uia" | "cdp" | "terminal" | "mouse">;
+  unsupportedExecutors?: Array<"uia" | "cdp" | "terminal" | "mouse" | "keyboard">;
   /**
    * ADR-020 SR-1 PR-SR1-1 (北極星 8, case β entity bake): executor route
    * order baked from the registry-derived `EntityCapabilities` during
@@ -144,8 +144,16 @@ export interface UiEntity {
    * advisory-free engine-layer convention). Absent when no registry lookup
    * was performed (test direct invoke / legacy path) — `createDesktopExecutor`
    * falls back to the hardcoded `["uia","cdp","terminal","mouse"]` ladder.
+   *
+   * ADR-020 SR-5 PR-SR5-1: `"keyboard"` added to the inline shape because
+   * `AdvertisedExecutorKind` (in `src/capabilities/registry.ts`) was
+   * promoted to include `"keyboard"`, and `bakeEntityCapabilities` now
+   * writes arrays such as `["uia","keyboard"]` for ValuePattern text
+   * inputs. The inline shape does not automatically follow
+   * `AdvertisedExecutorKind` because the engine layer intentionally avoids
+   * importing types from the advisory layer (`src/tools/desktop-constraints.ts`).
    */
-  preferredExecutors?: Array<"uia" | "cdp" | "terminal" | "mouse">;
+  preferredExecutors?: Array<"uia" | "cdp" | "terminal" | "mouse" | "keyboard">;
   /**
    * ADR-020 SR-1 PR-SR1-1 (case β entity bake): human-readable recovery
    * hint baked from the registry-derived `EntityCapabilities.fallbackHint`

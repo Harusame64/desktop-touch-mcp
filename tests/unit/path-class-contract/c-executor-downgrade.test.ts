@@ -66,9 +66,11 @@ describe("C contract — preferredExecutors ⇔ observed executor (silent fallba
       expectedPreferred: ["uia", "mouse"],
     },
     {
-      name: "UIA + ValuePattern (no Invoke) → preferredExecutors=['uia']",
+      // ADR-020 SR-5 PR-SR5-1: ValuePattern entity に "keyboard" 共起 advertise
+      // (UIA setValue 優先、失敗時の keyboard recovery 経路を LLM に明示)。
+      name: "UIA + ValuePattern (no Invoke) → preferredExecutors=['uia','keyboard']",
       entity: makeEntity({ patterns: ["ValuePattern"], role: "textbox" }),
-      expectedPreferred: ["uia"],
+      expectedPreferred: ["uia", "keyboard"],
     },
     {
       name: "UIA + SelectionOnly controlType (ListItem) → preferredExecutors=['mouse']",
