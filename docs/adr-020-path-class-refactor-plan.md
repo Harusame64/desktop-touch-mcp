@@ -1,6 +1,6 @@
 # ADR-020 — Path-class refactor epic (advisory ↔ execution boundary 整理)
 
-- Status: **Drafted (2026-05-17、Round 5 Codex Round 2 P2×3 + P3×1 反映)**
+- Status: **Drafted (2026-05-17、Round 6 Opus Round 3 P2×1 + Codex Round 3 反映)**
 - Trigger: v1.6.1 release 完了 (issue #327 全 7 件 closure、memory `project_v170_blockers_resolved.md`) + user 観察「path-class regression 増加、責任分界点を整理したい」(memory `project_path_class_refactor_pending.md`)
 - 親 epic: なし (本 epic が path-class regression の構造改修 root plan)
 - 関連 ADR: ADR-007 (L1 capture / Rust migration)、ADR-010 (presentation envelope)、ADR-011 (cognitive memory)、ADR-018 (input pipeline 3tier)、ADR-019 (Stage 5 visual motion)
@@ -248,7 +248,7 @@ Phase 3 epic completion:
 | R# | risk | 対策 |
 |----|------|------|
 | R1 | Phase 2 fast-check 導入で test 実行時間が膨らむ | 100 runs / per-property に上限、CI で並列実行、純粋関数 contract (F) と table (C/G/E) は fast-check 不使用で実行時間軽い |
-| R2 | Phase 3 SR-2 (Result 寄せ + central converter) が handler 多数で merge conflict 多発 | sub-plan で SR-2 を更に 3-4 PR 分割 (handler 群ごと) |
+| R2 | Phase 3 SR-2 (Result 寄せ + central converter) が handler 多数で merge conflict 多発 | sub-plan で SR-2 を更に **2-3 PR 分割** (handler 群ごと、Round 6 で §5.1 SR-2 ~600-900 line 規模に sync、(c) 既達成判明により Round 5 で size 下方修正済) |
 | R3 | Phase 3 SR-4 (DXGI broker) で vision-gpu user が dormant 中の挙動を broker 経由で破壊 | broker 完成後 dormancy fix revive で実機検証、`docs/adr-019-stage-5-plan.md` §2.6 fail-soft contract 維持 |
 | R4 | Phase 2 contract test が **production runtime path の expression** に偏り、internal helper 実装変更で easily 壊れる brittle test 化 | helper export を **minimum** に絞る、contract test は **observable behavior** を assert (internal helper signature 直接 assert 禁止、ただし classifyModal は production API として切り出すので例外、§4.4) |
 | R5 | Phase 3 refactor 中に v1.6.1 fix が後退 (regression) | Phase 2 contract test を **safety net** として merge ブロッカー化、§4.6 acceptance criteria 厳格遵守 |
@@ -356,4 +356,8 @@ Phase 3 epic completion:
   - Codex P2 #3 + P3 (line 256): R7 が「SR-3 / SR-1〜SR-5」stale 表記 → 「SR-3 は Phase 2 統合済、Phase 3 4 SR (SR-1/5/2/4)」に sync、SR-1 sub-plan で `classifyModal` API shape bit-equal sync 必須化を明記
   - **教訓 (memory `feedback_ai_multi_reviewer.md` 「wrapper 中央化 drift」3 軸再実証)**: Opus Round 2 Approved 後に Codex が API contract surface (caller inventory) で P2 検出 = Codex 強み「runtime path / contract regression / nested call semantics 軸」が再び機能。「Opus Approved = merge OK」判定を Codex 並走で必ず補強する CLAUDE.md §3.3 Step 0 規範を再強化
 - Round 5 OQ 確定: 新規 OQ 起草なし、残存 OQ #7/#8 は SR-2 sub-plan / 後続 epic 起草時諮問
-- 次のステップ: Round 5 改訂を 1 commit でまとめ push → Opus Round 3 + Codex Round 3 並列 → P1 ゼロ達成で auto-mode merge (memory `feedback_auto_mode_merge_opus_judgment.md` 準拠)
+- Round 6 反映点 (Opus Round 3 P2×1 + Codex Round 3):
+  - Opus P2 (§8 R2): SR-2 PR 分割数の §5.1 (~600-900 line → 2-3 PR) と §8 R2 (3-4 PR、Round 5 size 下方修正で未 sync) fact 不整合 → §8 R2 を `2-3 PR 分割` に sync (案 a 採用)。**自己反省**: Opus が事前 prompt の懸念を自ら実証検出 (caller inventory 誤認の同型 = numeric count sync 一方表のみ修正)、Lesson 4 (numeric count sync) を Round 5 commit 時に Grep "PR 分割" を実行していれば即検出可能だった
+  - Codex Round 3: **Approved (指摘ゼロ、+1 reaction only)** — Round 5 で反映済 Codex Round 2 findings 4 件が全て解消されたことを Codex 側も確認、新規 P2/P3 検出なし
+- Round 6 OQ 確定: なし
+- **判定**: Opus Round 3 P2×1 反映 (本 Round 6) + Codex Round 3 Approved → **auto-mode merge 適格** (memory `feedback_auto_mode_merge_opus_judgment.md` 準拠: docs only + git 削除なし + release 工程外、AI merge 可)。Opus P2 軽微 (numeric sync 単発、§5.1 既存値と R2 一致化) で Round 4 review trigger は overkill 判断、Round 6 commit で merge へ進行
