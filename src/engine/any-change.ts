@@ -43,6 +43,29 @@ const STAGE5_POLL_BUDGET_MS = 100;
  *  chain ≈ 10 sec sat right at the prior boundary; 2× headroom now). */
 const STAGE5_CACHE_IDLE_TIMEOUT_MS = 20_000;
 
+/**
+ * Issue #327 item B follow-up (2026-05-17 dogfood): separate TTL for the
+ * `unavailable` marker (was sharing `STAGE5_CACHE_IDLE_TIMEOUT_MS` = 20 s).
+ *
+ * The 20 s subscription idle timeout was chosen for resource hygiene (dispose
+ * idle DXGI subscriptions so the GPU session does not leak). But the
+ * `unavailable` marker has a different semantic: it records a **permanent**
+ * unavailability for this process lifetime (e.g. vision-gpu DirtyRectRouter
+ * holds `outputIndex 0` exclusively, RDP host with no DXGI, etc.). Re-trying
+ * the factory every 20 s pays the ~50 ms init cost on every Claude Code
+ * round-trip that exceeds 20 s wallclock — which is the common case after
+ * issue #327 item F bumped the lease TTL base to 15 s.
+ *
+ * 60 s gives 4× coverage over the 15 s `action`-view lease base (and ~6.7×
+ * over the 9 s soft-expiry window), absorbing typical 10-30 s LLM reasoning
+ * latency so the marker persists across a normal multi-step dogfood without
+ * re-paying init. For truly transient unavailability (rare race during
+ * DirtyRectRouter shutdown), the longer TTL just means a slightly slower
+ * recovery — still bounded by 1 minute, and AccessLost recovery is the
+ * `negative-backoff` 2 s path which remains the fast escape hatch.
+ */
+const STAGE5_UNAVAILABLE_TTL_MS = 60_000;
+
 /** Stage 5 sub-plan §2.4 — hard cap on `outputIndex` to guard against runaway
  *  enumeration on hypothetical many-monitor setups. The check
  *  `index > STAGE5_MAX_OUTPUT_INDEX` accepts indices `0..=8` (up to 9
@@ -69,8 +92,9 @@ export interface SubscriptionLike {
 }
 
 /** Sentinel marker recording an `Unsupported` / `NotCurrentlyAvailable` failure.
- *  Cached for `STAGE5_CACHE_IDLE_TIMEOUT_MS` to avoid the init-cost storm on
- *  RDP / virtual-display hosts (Stage 5 sub-plan §6 R4). */
+ *  Cached for `STAGE5_UNAVAILABLE_TTL_MS` (= 60 s, separate from subscription
+ *  idle) to avoid the init-cost storm on RDP / virtual-display hosts and
+ *  vision-gpu coexistence (Stage 5 sub-plan §6 R4 + issue #327 item B). */
 type CacheEntry =
   | { kind: "subscription"; sub: SubscriptionLike; lastUsedAt: number }
   | { kind: "unavailable"; recordedAt: number }
@@ -80,9 +104,9 @@ type CacheEntry =
    * an immediate 50 ms `factory` re-init on the next call. Holds `null` for
    * `NEGATIVE_BACKOFF_MS` (= 2 seconds), after which the entry self-clears
    * via `sweepStale()` and a fresh factory call is permitted. Distinct from
-   * `unavailable` (which has the full `idleTimeoutMs` TTL) so AccessLost
-   * recovery still occurs within a few seconds rather than the 20 s idle
-   * window.
+   * `unavailable` (which has the 60 s `STAGE5_UNAVAILABLE_TTL_MS`) so
+   * AccessLost recovery still occurs within a few seconds rather than
+   * waiting the full unavailability window.
    */
   | { kind: "negative-backoff"; recordedAt: number };
 
@@ -128,6 +152,12 @@ export class DirtyRectSubscriptionCache {
     private readonly factory: (outputIndex: number) => SubscriptionLike,
     private readonly nowFn: () => number = () => Date.now(),
     private readonly idleTimeoutMs: number = STAGE5_CACHE_IDLE_TIMEOUT_MS,
+    /**
+     * Issue #327 item B follow-up: separate TTL for the `unavailable` marker
+     * (default 60 s) — see `STAGE5_UNAVAILABLE_TTL_MS` JSDoc for the design
+     * rationale. Tests inject a shorter value for fast-forward assertions.
+     */
+    private readonly unavailableTtlMs: number = STAGE5_UNAVAILABLE_TTL_MS,
   ) {}
 
   /**
@@ -264,6 +294,8 @@ export class DirtyRectSubscriptionCache {
     const now = this.nowFn();
     for (const [key, entry] of this.entries) {
       if (entry.kind === "subscription") {
+        // Subscription idle dispose — short TTL (20 s) to release the DXGI
+        // session when not actively in use.
         if (now - entry.lastUsedAt >= this.idleTimeoutMs) {
           if (!entry.sub.isDisposed) {
             try {
@@ -275,15 +307,27 @@ export class DirtyRectSubscriptionCache {
           this.entries.delete(key);
         }
       } else if (entry.kind === "negative-backoff") {
-        // Short-lived back-off TTL (separate from `idleTimeoutMs`) so
-        // AccessLost recovery still resolves within `NEGATIVE_BACKOFF_MS`
-        // rather than waiting the full 20-second idle window.
+        // Short-lived back-off TTL (2 s) for `sub.next()` failure recovery.
+        // Distinct from both subscription-idle and unavailable so AccessLost
+        // resolves within a single user turn rather than waiting on the
+        // longer unavailability window.
         if (now - entry.recordedAt >= NEGATIVE_BACKOFF_MS) {
           this.entries.delete(key);
         }
-      } else if (now - entry.recordedAt >= this.idleTimeoutMs) {
-        // `unavailable` marker reaches the full `idleTimeoutMs` TTL.
-        this.entries.delete(key);
+      } else if (entry.kind === "unavailable") {
+        // Issue #327 item B follow-up: `unavailable` marker reaches its own
+        // TTL (1 min default), distinct from the 20 s subscription idle. The
+        // marker records a permanent unavailability for this process lifetime
+        // (vision-gpu coexistence, RDP, virtual display), so a longer TTL
+        // prevents the 50 ms factory re-init storm across typical
+        // 10-30 s Claude Code round-trips.
+        //
+        // Opus PR #334 Round 1 P2-2: explicit `entry.kind === "unavailable"`
+        // discriminant (instead of an implicit else) so TS exhaustiveness
+        // checks fire if a 4th `CacheEntry` variant is added in the future.
+        if (now - entry.recordedAt >= this.unavailableTtlMs) {
+          this.entries.delete(key);
+        }
       }
     }
   }
@@ -609,6 +653,7 @@ export async function verifyAnyChange(
 export const STAGE5_CONSTANTS = Object.freeze({
   STAGE5_POLL_BUDGET_MS,
   STAGE5_CACHE_IDLE_TIMEOUT_MS,
+  STAGE5_UNAVAILABLE_TTL_MS,
   STAGE5_MAX_OUTPUT_INDEX,
   STAGE5_MIN_INTERSECTED_AREA_RATIO,
 });
