@@ -15,7 +15,7 @@
  *     gets ok:false reason:"executor_failed" and can fall back to V1 terminal({action:'send'}).
  */
 
-import type { UiEntity, ExecutorKind } from "../engine/world-graph/types.js";
+import type { UiEntity, ExecutorKind, ExecutorOutcome } from "../engine/world-graph/types.js";
 import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
 import type { TargetSpec } from "../engine/world-graph/session-registry.js";
 
@@ -138,7 +138,7 @@ function rectCenter(rect: { x: number; y: number; width: number; height: number 
 export function createDesktopExecutor(
   target: TargetSpec | undefined,
   deps?: ExecutorDeps
-): (entity: UiEntity, action: TouchAction, text?: string) => Promise<ExecutorKind> {
+): (entity: UiEntity, action: TouchAction, text?: string) => Promise<ExecutorKind | ExecutorOutcome> {
   const d = deps ?? getSharedRealDeps();
 
   return async (entity, action, text) => {
@@ -198,17 +198,23 @@ export function createDesktopExecutor(
       try {
         await d.uiaClick(winTitle, name, automationId);
         return "uia";
-      } catch {
+      } catch (uiaErr) {
         // UIA click failed (element not found, stale tree, etc.).
         // Prefer entity.rect (freshest, from most-recent candidate) over locator.visual.rect
         // which may be stale (captured at recognition time, before the element moved).
         const rect = entity.rect ?? entity.locator?.visual?.rect;
         if (!rect) throw new Error(
-          `UIA click failed for "${entity.label ?? entity.entityId}" and no rect for mouse fallback`
+          `UIA click failed for "${entity.label ?? entity.entityId}" and no rect for mouse fallback`,
+          { cause: uiaErr },
         );
         const { x, y } = rectCenter(rect);
         await d.mouseClick(x, y);
-        return "mouse";
+        // Issue #327 item C: signal the silent downgrade so the LLM sees
+        // `executor: "mouse"` AND `downgrade: { from: "uia", reason: ... }`
+        // — without the marker the dogfood envelope cannot distinguish
+        // "UIA was tried and failed" from "UIA was not the chosen route".
+        const reason = uiaErr instanceof Error ? uiaErr.message : String(uiaErr);
+        return { kind: "mouse", downgrade: { from: "uia", reason } };
       }
     }
 

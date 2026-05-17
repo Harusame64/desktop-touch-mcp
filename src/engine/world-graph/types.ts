@@ -35,6 +35,28 @@ export type EntitySourceKind = "uia" | "cdp" | "win32" | "ocr" | "som" | "visual
  */
 export type ExecutorKind = "uia" | "cdp" | "terminal" | "mouse" | "keyboard";
 
+/**
+ * Issue #327 item C: rich return shape for `ExecutorFn` / `TouchEnvironment.execute`
+ * that lets the executor signal a silent fallback (e.g. UIA InvokePattern threw, mouse
+ * rect-center succeeded) without losing observability. The dogfood symptom was
+ * `capabilities.preferredExecutors: ["uia"]` ↔ `executor: "mouse"` with no marker
+ * explaining the gap.
+ *
+ * Convention: an executor that succeeded without downgrading returns a bare
+ * `ExecutorKind` (back-compat); only the downgrade path returns the rich
+ * `ExecutorOutcome`. `GuardedTouchLoop` normalises both and surfaces
+ * `TouchResult.downgrade` on the success variant.
+ */
+export interface ExecutorOutcome {
+  kind: ExecutorKind;
+  downgrade?: {
+    /** The originally selected executor that threw / was infeasible. */
+    from: ExecutorKind;
+    /** Short human-readable reason — the underlying error message is the canonical source. */
+    reason: string;
+  };
+}
+
 export interface UiAffordance {
   verb: AffordanceVerb;
   executors: ExecutorKind[];
