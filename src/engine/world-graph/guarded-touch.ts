@@ -1,4 +1,4 @@
-import type { UiEntity, EntityLease, ExecutorKind, UiAffordance } from "./types.js";
+import type { UiEntity, EntityLease, ExecutorKind, ExecutorOutcome, UiAffordance } from "./types.js";
 import type { LeaseStore } from "./lease-store.js";
 import type { VisualMotionObservation } from "../../tools/_input-pipeline.js";
 import { isChromeControlType } from "./session-registry.js";
@@ -62,6 +62,17 @@ export type TouchResult =
        * unaffected (additive — sub-plan §2.5 + CLAUDE.md §3.2 carry-over).
        */
       observation?: VisualMotionObservation;
+      /**
+       * Issue #327 item C: surfaced when the executor silently fell back from a
+       * higher-priority executor (e.g. UIA InvokePattern threw and the mouse
+       * rect-center fallback succeeded). Without this marker the LLM sees
+       * `capabilities.preferredExecutors: ["uia"]` ↔ `executor: "mouse"` and
+       * cannot distinguish "UIA was tried and failed" from "UIA was not the
+       * chosen route". The `from` field names the executor that was originally
+       * selected; `reason` is the underlying error message. Absent (= field
+       * undefined) when no fallback happened.
+       */
+      downgrade?: ExecutorOutcome["downgrade"];
     }
   | {
       ok: false;
@@ -94,8 +105,17 @@ export interface TouchEnvironment {
   findBlockingModal?(entity: UiEntity): UiEntity | null;
   /** True if the entity rect is fully or partially within the active viewport. */
   isInViewport(entity: UiEntity): boolean;
-  /** Perform the action and return which executor was used. Throw on failure. */
-  execute(entity: UiEntity, action: TouchAction, text?: string): Promise<ExecutorKind>;
+  /**
+   * Perform the action and return which executor was used. Throw on failure.
+   *
+   * Issue #327 item C: returning the rich `ExecutorOutcome` shape lets the
+   * executor signal a silent fallback (e.g. UIA InvokePattern threw, mouse
+   * rect-center succeeded). Returning a bare `ExecutorKind` means "no
+   * downgrade happened" and stays back-compat with pre-#327 callers.
+   * `GuardedTouchLoop` normalises both shapes and surfaces `TouchResult.downgrade`
+   * on the success variant.
+   */
+  execute(entity: UiEntity, action: TouchAction, text?: string): Promise<ExecutorKind | ExecutorOutcome>;
   /** Return entities after the touch for diff computation. May wait for UI to settle. */
   resolvePostTouchEntities(): Promise<UiEntity[]>;
   /**
@@ -323,12 +343,17 @@ export class GuardedTouchLoop {
     const preFocusId = this.env.getFocusedEntityId?.();
 
     // 5. Execute — no await between validate and execute (TOCTOU prevention).
-    let executor: ExecutorKind;
+    let outcome: ExecutorKind | ExecutorOutcome;
     try {
-      executor = await this.env.execute(entity, concreteAction, text);
+      outcome = await this.env.execute(entity, concreteAction, text);
     } catch {
       return { ok: false, reason: "executor_failed", diff: [] };
     }
+    // Issue #327 item C: normalise bare-kind / rich-outcome return shapes so
+    // downstream stays single-shape.
+    const executor: ExecutorKind = typeof outcome === "string" ? outcome : outcome.kind;
+    const downgrade: ExecutorOutcome["downgrade"] | undefined =
+      typeof outcome === "string" ? undefined : outcome.downgrade;
 
     // 6. Compute semantic diff against the pre-touch snapshot.
     const post        = await this.env.resolvePostTouchEntities();
@@ -336,6 +361,12 @@ export class GuardedTouchLoop {
 
     const diff = computeDiff({ touched: entity, preEntities: live, postEntities: post, preFocusId, postFocusId });
 
-    return { ok: true, executor, diff, next: diff.length > 0 ? "refresh_view" : "none" };
+    return {
+      ok: true,
+      executor,
+      diff,
+      next: diff.length > 0 ? "refresh_view" : "none",
+      ...(downgrade ? { downgrade } : {}),
+    };
   }
 }

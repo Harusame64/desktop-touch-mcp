@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { UiEntityCandidate } from "../vision-gpu/types.js";
-import type { UiEntity, ExecutorKind } from "./types.js";
+import type { UiEntity, ExecutorKind, ExecutorOutcome } from "./types.js";
 import { LeaseStore } from "./lease-store.js";
 import {
   GuardedTouchLoop,
@@ -105,11 +105,17 @@ export type TargetSessionKey =
 
 // ── Executor type ─────────────────────────────────────────────────────────────
 
+/**
+ * Issue #327 item C: returning the rich `ExecutorOutcome` shape lets the executor
+ * signal a silent fallback (e.g. UIA InvokePattern threw, mouse rect-center
+ * succeeded). Bare `ExecutorKind` return remains the back-compat shape for
+ * executors that never downgrade.
+ */
 export type ExecutorFn = (
   entity: UiEntity,
   action: TouchAction,
   text?: string
-) => Promise<ExecutorKind>;
+) => Promise<ExecutorKind | ExecutorOutcome>;
 
 // ── Session state ─────────────────────────────────────────────────────────────
 
