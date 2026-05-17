@@ -1,7 +1,7 @@
 import type { UiEntity, EntityLease, ExecutorKind, ExecutorOutcome, UiAffordance } from "./types.js";
 import type { LeaseStore } from "./lease-store.js";
 import type { VisualMotionObservation } from "../../tools/_input-pipeline.js";
-import { isChromeControlType } from "./session-registry.js";
+import { classifyModal } from "./session-registry.js";
 
 export type TouchAction = "auto" | "invoke" | "click" | "type" | "setValue" | "select";
 
@@ -177,26 +177,6 @@ function hasEntityMoved(pre: UiEntity, post: UiEntity): boolean {
   );
 }
 
-/**
- * Modal heuristic: UIA-sourced entity with role "unknown" is likely an overlay/dialog.
- * Conservative — plain toolbar buttons have specific roles and are excluded.
- * A richer heuristic (ControlType=Dialog, IsModal=true) requires UIA property access
- * not yet wired.
- *
- * Issue #327 item D / Issue #297 closure completion: UI chrome
- * (MenuBar / TitleBar / StatusBar / ToolBar / ScrollBar / Tab / Menu / MenuItem)
- * also surfaces as `role: "unknown"` on UIA, so without a controlType check
- * Notepad's TitleBar / MenuBar / StatusBar fire `modal_appeared` every time the
- * UIA snapshot re-keys those entities. The shared `isChromeControlType` helper
- * from `session-registry.ts` keeps this predicate bit-equal with the pre-touch
- * `isModalCandidate` path so the two modal detectors cannot diverge again.
- */
-function isModalLike(e: UiEntity): boolean {
-  if (!e.sources.includes("uia")) return false;
-  if (e.role !== "unknown") return false;
-  if (isChromeControlType(e.controlType)) return false;
-  return true;
-}
 
 /**
  * Value fingerprint for an entity — what counts as "the value" varies by source:
@@ -257,14 +237,16 @@ function computeDiff(ctx: DiffContext): SemanticDiff {
   const removed  = preEntities.filter((e) => !postIds.has(e.entityId));
 
   // modal_appeared / modal_dismissed take priority for modal entities.
-  const modalAppeared   = appeared.filter(isModalLike);
-  const modalDismissed  = removed.filter(isModalLike);
+  // ADR-020 PR-P2-1: unified classifier (post-touch-diff context, no self-exclusion;
+  // the `touched` entity is handled separately above).
+  const modalAppeared   = appeared.filter((e) => classifyModal(e, "post-touch-diff"));
+  const modalDismissed  = removed.filter((e) => classifyModal(e, "post-touch-diff"));
   if (modalAppeared.length   > 0) diff.push("modal_appeared");
   if (modalDismissed.length  > 0) diff.push("modal_dismissed");
 
   // entity_appeared: non-modal entities that are new in the post snapshot.
   // Suppressed for entities already covered by modal_appeared.
-  const nonModalAppeared = appeared.filter((e) => !isModalLike(e));
+  const nonModalAppeared = appeared.filter((e) => !classifyModal(e, "post-touch-diff"));
   if (nonModalAppeared.length > 0) diff.push("entity_appeared");
 
   // ── Focus shift ───────────────────────────────────────────────────────────
