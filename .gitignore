@@ -81,3 +81,4 @@ libnode.a
 libnode.dll.a
 node.def
 node.lib
+.pr*.diff

@@ -62,6 +62,31 @@ export interface LeaseTtlInput {
   entityCount: number;
   /** Optional payload size in bytes — used to extend TTL when the LLM has more text to read. */
   payloadBytes?: number;
+  /**
+   * ADR-020 PR-P2-2: observed wallclock from the previous act attempt to this
+   * see() call, if available (LeaseStore.peekObservedRoundTripMs() in the
+   * production CAS-guarded path, or consumeObservedRoundTripMs() for one-shot
+   * BC callers). Used to ensure ttlMs covers the LLM's actual round-trip
+   * thinking time when that exceeds the policy-derived value. Undefined on
+   * the first see() of a session (no act recorded yet).
+   */
+  observedRoundTripMs?: number;
+}
+
+/**
+ * ADR-020 PR-P2-2: return shape of `computeLeaseTtlMs`.
+ *
+ *   - `ttlMs`            — the lease TTL the caller should issue.
+ *   - `refreshRequired`  — true iff `observedRoundTripMs > cap` (the lease
+ *                          window cannot stretch past the cap, so the LLM
+ *                          MUST see() again before its TTL window closes).
+ *                          Internal-only marker; not surfaced on
+ *                          `DesktopSeeOutput` envelope in this epic. Future
+ *                          work (ADR-021 LLM E2E harness) may consume it.
+ */
+export interface LeaseTtlResult {
+  ttlMs: number;
+  refreshRequired: boolean;
 }
 
 function viewBonus(view: LeaseTtlInput["view"]): number {
@@ -93,13 +118,34 @@ function clamp(v: number, lo: number, hi: number): number {
  * Compute the lease TTL (ms) for a given see() response shape.
  *
  * Deterministic and side-effect free — safe to call from any layer.
+ *
+ * ADR-020 PR-P2-2 (F refactor): two-branch contract on observedRoundTripMs:
+ *   (a) observedRoundTripMs ≤ cap:
+ *       ttlMs ≥ observedRoundTripMs (policy raw OR observed, whichever larger,
+ *       then clamped to [floor, cap]); refreshRequired = false.
+ *   (b) observedRoundTripMs > cap:
+ *       ttlMs = cap (cannot stretch past the safety cap);
+ *       refreshRequired = true (the LLM must see() again before this window
+ *       closes — internal marker only, not surfaced to envelope in this epic).
+ *
+ * The cap (60_000ms) is unchanged from H1 hardening — leases that span longer
+ * than that risk acting on stale state, so the policy refuses to extend even
+ * when the LLM clearly needs more time. The refreshRequired marker is the
+ * structural alternative to silently letting the lease expire mid-thinking.
  */
-export function computeLeaseTtlMs(input: LeaseTtlInput): number {
+export function computeLeaseTtlMs(input: LeaseTtlInput): LeaseTtlResult {
   const raw = LEASE_TTL_POLICY.baseMs
     + viewBonus(input.view)
     + entityBonus(input.entityCount)
     + payloadBonus(input.payloadBytes);
-  return clamp(raw, LEASE_TTL_POLICY.floor, LEASE_TTL_POLICY.cap);
+  const observed = input.observedRoundTripMs;
+  if (observed !== undefined && Number.isFinite(observed) && observed > LEASE_TTL_POLICY.cap) {
+    return { ttlMs: LEASE_TTL_POLICY.cap, refreshRequired: true };
+  }
+  const target = observed !== undefined && Number.isFinite(observed) && observed > 0
+    ? Math.max(raw, observed)
+    : raw;
+  return { ttlMs: clamp(target, LEASE_TTL_POLICY.floor, LEASE_TTL_POLICY.cap), refreshRequired: false };
 }
 
 /**
