@@ -205,3 +205,67 @@ describe("LeaseStore — observedRoundTripMs (ADR-020 PR-P2-2)", () => {
     expect(store.consumeObservedRoundTripMs()).toBe(3_000);   // 4_000 - 1_000
   });
 });
+
+// ADR-020 PR-P2-2 Codex Round 2 fix: peek + commit pattern preserves the
+// round-trip sample across transient see() failures.
+describe("LeaseStore — peek + commit pattern (ADR-020 PR-P2-2 Codex R2)", () => {
+  it("peek returns the value without clearing the sample (repeated reads return same value)", () => {
+    let now = 0;
+    const store = new LeaseStore({ nowFn: () => now });
+    store.recordAct("view-1");
+    now = 5_000;
+    expect(store.peekObservedRoundTripMs()).toBe(5_000);
+    expect(store.peekObservedRoundTripMs()).toBe(5_000);   // unchanged — peek does NOT clear
+    expect(store.peekObservedRoundTripMs()).toBe(5_000);
+  });
+
+  it("peek returns undefined when no act has been recorded", () => {
+    const store = new LeaseStore({ nowFn: () => 100 });
+    expect(store.peekObservedRoundTripMs()).toBeUndefined();
+  });
+
+  it("commit clears the staged sample (subsequent peek returns undefined)", () => {
+    let now = 0;
+    const store = new LeaseStore({ nowFn: () => now });
+    store.recordAct("view-1");
+    now = 3_000;
+    expect(store.peekObservedRoundTripMs()).toBe(3_000);
+    store.commitObservedRoundTripMs();
+    expect(store.peekObservedRoundTripMs()).toBeUndefined();
+  });
+
+  it("commit without a staged sample is a no-op (does not throw)", () => {
+    const store = new LeaseStore({ nowFn: () => 0 });
+    expect(() => store.commitObservedRoundTripMs()).not.toThrow();
+    expect(store.peekObservedRoundTripMs()).toBeUndefined();
+  });
+
+  it("peek-without-commit preserves the sample across a simulated see() failure", () => {
+    // Scenario: act → see() peeks → snapshot throws (no commit) → next see() retries
+    let now = 0;
+    const store = new LeaseStore({ nowFn: () => now });
+    store.recordAct("view-1");
+
+    // First see() attempt: peek, then "throws" (no commit)
+    now = 4_000;
+    expect(store.peekObservedRoundTripMs()).toBe(4_000);
+    // simulate throw — no commit happens
+
+    // Second see() attempt picks up the wallclock from the original act
+    now = 9_000;
+    const peeked = store.peekObservedRoundTripMs();
+    expect(peeked).toBe(9_000);
+    store.commitObservedRoundTripMs();           // successful TTL apply this time
+    expect(store.peekObservedRoundTripMs()).toBeUndefined();
+  });
+
+  it("consumeObservedRoundTripMs is exactly peek + commit composite (BC)", () => {
+    let now = 0;
+    const store = new LeaseStore({ nowFn: () => now });
+    store.recordAct("view-1");
+    now = 7_000;
+    expect(store.consumeObservedRoundTripMs()).toBe(7_000);
+    // sample cleared (commit semantics)
+    expect(store.peekObservedRoundTripMs()).toBeUndefined();
+  });
+});

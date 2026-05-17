@@ -126,24 +126,44 @@ export class LeaseStore {
   }
 
   /**
-   * ADR-020 PR-P2-2: read-once accessor for the act → next see() round-trip
-   * wallclock. Returns `nowFn() - lastActAtMs` if an act has been recorded
-   * since the last consume, otherwise undefined. Clears `lastActAtMs` after
-   * read so subsequent see() calls without an intervening act get undefined
-   * (not the stale "time since the original act" reading).
+   * ADR-020 PR-P2-2: peek the act → next see() round-trip wallclock without
+   * clearing the sample. Returns `nowFn() - lastActAtMs` if an act has been
+   * recorded since the last commit, otherwise undefined.
    *
-   * Per-see cycle (see → act → see → act → see …):
-   *   - first see:                   undefined  (no act yet)
-   *   - after recordAct, next see:   nowFn() - lastActAtMs, then clear
-   *   - subsequent see without act:  undefined  (cleared)
+   * Use this when the caller may not actually apply the value (e.g. see() may
+   * throw before reaching TTL computation). The two-step `peek` →
+   * `commitObservedRoundTripMs` pattern keeps the sample intact across
+   * failure paths so a later successful see() can still see the round-trip.
    *
-   * Naming convention: `consume*` (not `get*`) advertises the side-effect
-   * (clear-after-read) so callers cannot accidentally re-read stale values.
+   * Codex Round 2 fix on PR #337 — a single-call `consume` cleared the
+   * sample even when snapshot collection threw after the read, losing the
+   * round-trip permanently. Split into peek + commit so only successful TTL
+   * application advances the sample state.
+   */
+  peekObservedRoundTripMs(): number | undefined {
+    if (this.lastActAtMs === undefined) return undefined;
+    return this.nowFn() - this.lastActAtMs;
+  }
+
+  /**
+   * ADR-020 PR-P2-2: commit (clear) the round-trip sample after a successful
+   * see() has applied the peeked value to TTL computation. No-op when no
+   * sample is staged. Paired with `peekObservedRoundTripMs()` to keep failure
+   * paths from silently dropping the round-trip wallclock.
+   */
+  commitObservedRoundTripMs(): void {
+    this.lastActAtMs = undefined;
+  }
+
+  /**
+   * ADR-020 PR-P2-2: read-and-clear shorthand for `peek + commit`. Retained
+   * for tests + callers that genuinely want one-shot semantics (no possibility
+   * of consume-then-fail). The production see() path uses `peek` + `commit`
+   * separately so transient snapshot failures preserve the sample.
    */
   consumeObservedRoundTripMs(): number | undefined {
-    if (this.lastActAtMs === undefined) return undefined;
-    const elapsed = this.nowFn() - this.lastActAtMs;
-    this.lastActAtMs = undefined;
-    return elapsed;
+    const value = this.peekObservedRoundTripMs();
+    this.commitObservedRoundTripMs();
+    return value;
   }
 }
