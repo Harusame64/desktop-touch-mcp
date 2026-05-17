@@ -321,6 +321,23 @@ export class DesktopFacade {
     const key = this.registry.resolveKey(input.target);
     const session = this.registry.getOrCreate(key, this._sessionOpts());
 
+    // ADR-020 PR-P2-2 (Codex Round 1 P2: location fix / Round 2 P2: peek-not-consume
+    // / Round 3 P2: CAS-guarded commit):
+    //   - read the round-trip wallclock at see() entry, BEFORE any async snapshot
+    //     /window collection (R1: avoids backend latency contaminating the value)
+    //   - use peek (no clear) so a transient snapshot failure that throws below does
+    //     NOT silently discard the sample (R2: clearing one-shot before TTL is
+    //     actually computed loses the round-trip permanently)
+    //   - peek returns { elapsedMs, sampleSeq }; we hold the CAS token (sampleSeq,
+    //     a monotonic counter) and pass it to commit. HTTP-mode facade is
+    //     process-global, so a concurrent desktop_act between peek and commit could
+    //     otherwise stomp the new sample when we clear. CAS commit with the
+    //     monotonic seq keeps the newer sample for the next see() (R3) and is
+    //     immune to same-millisecond collisions that a timestamp token would suffer
+    //     under concurrent requests (R4).
+    const peekedRoundTrip = session.leaseStore.peekObservedRoundTripMs();
+    const observedRoundTripMs = peekedRoundTrip?.elapsedMs;
+
     session.lastTarget = input.target;
     const prevViewId = session.viewId;
     const newViewId = randomUUID();
@@ -387,19 +404,25 @@ export class DesktopFacade {
       windows.length * 180 +
       rawResult.warnings.length * 80;
 
-    const policyTtl = this.opts.defaultTtlMs !== undefined
-      ? this.opts.defaultTtlMs
-      : computeLeaseTtlMs({
-          view: input.view,
-          entityCount: resolved.length,
-          payloadBytes: estimatedPayloadBytes,
-        });
+    // ADR-020 PR-P2-2: both branches normalised to { ttlMs, refreshRequired }
+    // so downstream sees a single shape. observedRoundTripMs was consumed at
+    // see() entry (Codex Round 1 P2 fix) so it reflects "act → next see()
+    // start" wallclock, not "act → end-of-snapshot-collection".
+    const policyTtl: { ttlMs: number; refreshRequired: boolean } =
+      this.opts.defaultTtlMs !== undefined
+        ? { ttlMs: this.opts.defaultTtlMs, refreshRequired: false }
+        : computeLeaseTtlMs({
+            view: input.view,
+            entityCount: resolved.length,
+            payloadBytes: estimatedPayloadBytes,
+            observedRoundTripMs,
+          });
 
     const nowFn = this.opts.nowFn ?? Date.now;
     const issuedAtMs = nowFn();
 
     const entityViews: EntityView[] = resolved.map((e) => {
-      const lease = session.leaseStore.issue(e, newViewId, policyTtl);
+      const lease = session.leaseStore.issue(e, newViewId, policyTtl.ttlMs);
       const view: EntityView = {
         entityId: e.entityId,
         label: e.label,
@@ -418,7 +441,7 @@ export class DesktopFacade {
       target: { title: targetTitle(input.target), generation: session.generation },
       entities: entityViews,
       windows,
-      softExpiresAtMs: computeSoftExpiresAtMs(issuedAtMs, policyTtl),
+      softExpiresAtMs: computeSoftExpiresAtMs(issuedAtMs, policyTtl.ttlMs),
     };
     if (rawResult.warnings.length > 0) output.warnings = rawResult.warnings;
 
@@ -474,6 +497,17 @@ export class DesktopFacade {
     // complete. getOrCreate stamps the start time; without this completion
     // refresh, a multi-minute see() could be evicted mid-call.
     session.lastAccessMs = (this.opts.nowFn ?? Date.now)();
+
+    // ADR-020 PR-P2-2 (Codex Round 2 P2 fix + Round 3/4 P2 CAS guard): commit
+    // the peeked round-trip sample only after the successful see() has applied
+    // it to TTL computation. If snapshot/window collection above threw, the
+    // function exited without reaching this line and the sample stays staged
+    // for the next see() call. CAS token (sampleSeq monotonic counter)
+    // protects against a concurrent recordAct() between peek and commit —
+    // newer sample wins, even when same-millisecond timestamps would collide.
+    if (peekedRoundTrip !== undefined) {
+      session.leaseStore.commitObservedRoundTripMs(peekedRoundTrip.sampleSeq);
+    }
 
     return output;
   }
