@@ -47,6 +47,11 @@ export class ExecutorFailedError extends HandlerError {
  * `SUGGESTS` dict lookup (`getSuggestsForCode(code)`) inside `toFailureEnvelope`
  * resolves `try_next` for the named code identically to the pre-migration
  * direct call shape — envelope JSON.stringify-level bit-equal.
+ *
+ * When `message` is omitted (the common 4 memory-upper-bound callsite shape),
+ * `Error.message` falls back to `code` for stack-trace / cause-chain
+ * observation. The envelope output is unaffected because `Error.message` is
+ * not emitted in `EnvelopeMinimalShape<null>`. Round 4 P3-2 doc.
  */
 export class CodedHandlerError extends HandlerError {
   constructor(code: string, message?: string, options?: ErrorOptions) {
