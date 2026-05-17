@@ -127,43 +127,58 @@ export class LeaseStore {
 
   /**
    * ADR-020 PR-P2-2: peek the act → next see() round-trip wallclock without
-   * clearing the sample. Returns `nowFn() - lastActAtMs` if an act has been
-   * recorded since the last commit, otherwise undefined.
+   * clearing the sample. Returns `{ elapsedMs, sampleAtMs }` where:
+   *   - `elapsedMs`  = nowFn() - lastActAtMs (the round-trip wallclock)
+   *   - `sampleAtMs` = lastActAtMs (the CAS token; pass to commit so a newer
+   *                   sample recorded by a concurrent act is not stomped)
+   * Returns undefined when no sample has been recorded since the last commit.
    *
    * Use this when the caller may not actually apply the value (e.g. see() may
    * throw before reaching TTL computation). The two-step `peek` →
-   * `commitObservedRoundTripMs` pattern keeps the sample intact across
-   * failure paths so a later successful see() can still see the round-trip.
+   * `commitObservedRoundTripMs(sampleAtMs)` pattern keeps the sample intact
+   * across failure paths so a later successful see() can still see the
+   * round-trip.
    *
-   * Codex Round 2 fix on PR #337 — a single-call `consume` cleared the
-   * sample even when snapshot collection threw after the read, losing the
-   * round-trip permanently. Split into peek + commit so only successful TTL
-   * application advances the sample state.
+   * Codex Round 2 fix on PR #337 — split single-call `consume` into peek +
+   * commit so failure paths don't silently drop the sample.
+   * Codex Round 3 fix on PR #337 — peek now returns a CAS token (sampleAtMs)
+   * because HTTP-mode facade is process-global; concurrent
+   * `desktop_act` between peek and commit could otherwise stomp the new
+   * sample. Commit-with-token only clears when the stored sample is still
+   * the one we peeked.
    */
-  peekObservedRoundTripMs(): number | undefined {
+  peekObservedRoundTripMs(): { elapsedMs: number; sampleAtMs: number } | undefined {
     if (this.lastActAtMs === undefined) return undefined;
-    return this.nowFn() - this.lastActAtMs;
+    return { elapsedMs: this.nowFn() - this.lastActAtMs, sampleAtMs: this.lastActAtMs };
   }
 
   /**
    * ADR-020 PR-P2-2: commit (clear) the round-trip sample after a successful
-   * see() has applied the peeked value to TTL computation. No-op when no
-   * sample is staged. Paired with `peekObservedRoundTripMs()` to keep failure
-   * paths from silently dropping the round-trip wallclock.
+   * see() has applied the peeked value to TTL computation. CAS-guarded:
+   * clears only when the stored `lastActAtMs` still equals the token from
+   * peek. If a concurrent `recordAct()` ran between peek and commit, the
+   * stored value will differ and commit becomes a no-op, preserving the
+   * newer sample for the next see().
+   *
+   * Codex Round 3 fix on PR #337 — see peekObservedRoundTripMs JSDoc.
    */
-  commitObservedRoundTripMs(): void {
-    this.lastActAtMs = undefined;
+  commitObservedRoundTripMs(sampleAtMs: number): void {
+    if (this.lastActAtMs === sampleAtMs) {
+      this.lastActAtMs = undefined;
+    }
+    // else: a newer recordAct() landed during see() — keep the new sample
   }
 
   /**
-   * ADR-020 PR-P2-2: read-and-clear shorthand for `peek + commit`. Retained
-   * for tests + callers that genuinely want one-shot semantics (no possibility
-   * of consume-then-fail). The production see() path uses `peek` + `commit`
-   * separately so transient snapshot failures preserve the sample.
+   * ADR-020 PR-P2-2: read-and-clear shorthand for tests + simple callers
+   * that have no possibility of concurrent recordAct between read and clear.
+   * Returns the elapsedMs only (token-less) and unconditionally clears.
+   * The production see() path uses peek + commit-with-token instead.
    */
   consumeObservedRoundTripMs(): number | undefined {
-    const value = this.peekObservedRoundTripMs();
-    this.commitObservedRoundTripMs();
-    return value;
+    if (this.lastActAtMs === undefined) return undefined;
+    const elapsed = this.nowFn() - this.lastActAtMs;
+    this.lastActAtMs = undefined;
+    return elapsed;
   }
 }

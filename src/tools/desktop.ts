@@ -321,14 +321,19 @@ export class DesktopFacade {
     const key = this.registry.resolveKey(input.target);
     const session = this.registry.getOrCreate(key, this._sessionOpts());
 
-    // ADR-020 PR-P2-2 (Codex Round 1 P2: location fix + Round 2 P2: peek-not-consume):
-    //   - read the round-trip wallclock at see() entry, BEFORE any async snapshot/
-    //     window collection (Round 1: avoids backend latency contaminating the value)
+    // ADR-020 PR-P2-2 (Codex Round 1 P2: location fix / Round 2 P2: peek-not-consume
+    // / Round 3 P2: CAS-guarded commit):
+    //   - read the round-trip wallclock at see() entry, BEFORE any async snapshot
+    //     /window collection (R1: avoids backend latency contaminating the value)
     //   - use peek (no clear) so a transient snapshot failure that throws below does
-    //     NOT silently discard the sample (Round 2: clearing one-shot before TTL is
-    //     actually computed loses the round-trip permanently). The matching commit
-    //     fires just before the successful return, so failure paths preserve it.
-    const observedRoundTripMs = session.leaseStore.peekObservedRoundTripMs();
+    //     NOT silently discard the sample (R2: clearing one-shot before TTL is
+    //     actually computed loses the round-trip permanently)
+    //   - peek returns { elapsedMs, sampleAtMs }; we hold the CAS token (sampleAtMs)
+    //     and pass it to commit. HTTP-mode facade is process-global, so a concurrent
+    //     desktop_act between peek and commit could otherwise stomp the new sample
+    //     when we clear. CAS commit keeps the newer sample for the next see() (R3).
+    const peekedRoundTrip = session.leaseStore.peekObservedRoundTripMs();
+    const observedRoundTripMs = peekedRoundTrip?.elapsedMs;
 
     session.lastTarget = input.target;
     const prevViewId = session.viewId;
@@ -490,11 +495,15 @@ export class DesktopFacade {
     // refresh, a multi-minute see() could be evicted mid-call.
     session.lastAccessMs = (this.opts.nowFn ?? Date.now)();
 
-    // ADR-020 PR-P2-2 (Codex Round 2 P2 fix): commit the peeked round-trip
-    // sample only after the successful see() has applied it to TTL computation.
-    // If snapshot / window collection above threw, the function exited without
-    // reaching this line and the sample stays staged for the next see() call.
-    session.leaseStore.commitObservedRoundTripMs();
+    // ADR-020 PR-P2-2 (Codex Round 2 P2 fix + Round 3 P2 CAS guard): commit
+    // the peeked round-trip sample only after the successful see() has applied
+    // it to TTL computation. If snapshot/window collection above threw, the
+    // function exited without reaching this line and the sample stays staged
+    // for the next see() call. CAS token (sampleAtMs) protects against a
+    // concurrent recordAct() between peek and commit — the newer sample wins.
+    if (peekedRoundTrip !== undefined) {
+      session.leaseStore.commitObservedRoundTripMs(peekedRoundTrip.sampleAtMs);
+    }
 
     return output;
   }

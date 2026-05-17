@@ -64,10 +64,11 @@ export interface LeaseTtlInput {
   payloadBytes?: number;
   /**
    * ADR-020 PR-P2-2: observed wallclock from the previous act attempt to this
-   * see() call, if available (LeaseStore.consumeObservedRoundTripMs()). Used
-   * to ensure ttlMs covers the LLM's actual round-trip thinking time when
-   * that exceeds the policy-derived value. Undefined on the first see() of
-   * a session (no act recorded yet).
+   * see() call, if available (LeaseStore.peekObservedRoundTripMs() in the
+   * production CAS-guarded path, or consumeObservedRoundTripMs() for one-shot
+   * BC callers). Used to ensure ttlMs covers the LLM's actual round-trip
+   * thinking time when that exceeds the policy-derived value. Undefined on
+   * the first see() of a session (no act recorded yet).
    */
   observedRoundTripMs?: number;
 }

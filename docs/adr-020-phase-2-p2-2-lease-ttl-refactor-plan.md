@@ -1,6 +1,6 @@
 # ADR-020 Phase 2 PR-P2-2 — F refactor: computeLeaseTtlMs input 拡張 sub-plan
 
-- Status: **Drafted (2026-05-17、Round 4 = PR Opus Round 2 P2 + P3 + Codex Round 2 P2 反映)**
+- Status: **Drafted (2026-05-17、Round 5 = PR Opus Round 3 P2 + P3×2 + Codex Round 3 P2 CAS guard 反映)**
 - 親 ADR: `docs/adr-020-path-class-refactor-plan.md` (epic plan、merged PR #335)
 - 該当 Phase / 軸: Phase 2 PR-P2-2 (F refactor、scope §4.4 F bullet)
 - 関連 issue: #327 item F (closed by PR #328、本 sub-plan で構造除去完了)
@@ -31,7 +31,7 @@
 
 A. **`LeaseStore` に `recordAct(viewId)` method 追加** (Round 3 P2-1 反映で signature 訂正、no-arg + 内部 nowFn 使用):
    - per-session で「最後に act が実行された wallclock」を保持する field 追加 (`private lastActAtMs?: number`)
-   - act 実行 hook (`src/engine/world-graph/guarded-touch.ts` の `touch()` 完了直後) で `session.leaseStore.recordAct(lease.viewId)` を呼ぶ (timestamp は LeaseStore 内部 `nowFn()` 経由 = fake timer 自動対応)
+   - act 実行 hook (`src/engine/world-graph/guarded-touch.ts` の `touch()` 内 execute 直前 pre-record path) で `session.leaseStore.recordAct(lease.viewId)` を呼ぶ (timestamp は LeaseStore 内部 `nowFn()` 経由 = fake timer 自動対応)
    - viewId は per-session で 1 つ (`SessionState.viewId` は see() のたびに新 UUID 発行、`leaseStore` は session-bound) なので **viewId 別に保持する意味は薄い**: 単一 field `private lastActAtMs?: number` で十分 (YAGNI)
    - **判断**: 単一 field + signature `recordAct(viewId)` (viewId 引数は将来 per-viewId Map 拡張余地として受け取り、timestamp は内部 nowFn 経由でテスト時 fake 自動適用)
 
@@ -258,3 +258,15 @@ production callsite は **1 件のみ** (確認済)、test は同 file 内多数
 - Round 4 教訓:
   - **同型 §3.1 sweep 漏れの二重発生** (Round 2 で「§3.1 sweep 運用化」と書きながら同 round で line 92 を見逃した) → CLAUDE.md §3.3 Step 1 で「修正対象 fact のキーワード全 docs grep」を **rename 系の全リスト** (旧 method 名 / 旧 signature の全 occurrence) で網羅、Round 内で再度 grep を運用化
   - **Codex 補完軸の二段波** (Round 1 = location contamination / Round 2 = one-shot loss in failure path): 「fix がさらなる副作用を生む」pattern。Round n+1 fix の前に **「この fix で何が壊れるか」を Codex 視点で sweep** する preventive pattern が望ましい (memory `feedback_ai_multi_reviewer.md` 追記候補)
+- Round 5 反映点 (PR #337 Opus Round 3 P2 + P3×2 + Codex Round 3 P2):
+  - **Opus R3 P2**: sub-plan §1.1 A line 34 で「`touch()` 完了直後」が Round 2 P3 確定の「execute 直前 pre-record path」と矛盾 (= **§3.1 sweep 漏れの三重再発**、Round 3 changelog 自体が「全 5 箇所統一」と claim していたのに drift 残存) → §1.1 A line 34 を「`touch()` 内 execute 直前 pre-record path」に sync
+  - **Opus R3 P3 (×2)**: `guarded-touch.ts:330` JSDoc + `lease-ttl-policy.ts:67` JSDoc が旧 `consumeObservedRoundTripMs` 用語のみ参照、production path は peek + commit が正 → 両 file JSDoc を「peek + commit (CAS-guarded production path) または consume (BC composite for one-shot/test)」に統一
+  - **Codex R3 P2 (Opus 見逃しの runtime semantics 第 3 波)**: HTTP mode で facade が process-global、`see()` の peek↔commit の間 (await 複数あり) に concurrent `recordAct()` が走ると、新 sample が `commitObservedRoundTripMs()` で **無条件 clear** され失われる race → **CAS pattern** に拡張:
+    - `peekObservedRoundTripMs()` の return type 変更: `number | undefined` → `{ elapsedMs: number, sampleAtMs: number } | undefined` (`sampleAtMs` = CAS token)
+    - `commitObservedRoundTripMs(sampleAtMs: number): void` で token guard 追加 (`lastActAtMs === sampleAtMs` の場合のみ clear、stale token は no-op で newer sample 保持)
+    - `consumeObservedRoundTripMs()` は token-less composite として独立化 (test 用 BC、production は CAS path 使用)
+    - production `see()` callsite: `peekedRoundTrip = peek(); ... commit(peekedRoundTrip.sampleAtMs)` 形に変更
+  - 新規 test 1 case (`lease-store.test.ts` peek+CAS commit describe): "CAS commit with a stale token is a no-op (does not clear newer sample)" で concurrent recordAct シミュレーション pin
+- Round 5 教訓:
+  - **§3.1 sweep 漏れの三重再発** (Round 1 → 2 → 3 連続) → CLAUDE.md §3.3 Step 1 改訂候補: 「changelog で `claim` した修正リストを実体 grep で fact-check する」=「修正したと書いたら必ず grep で 0 件確認」を運用化、claim と impl の bit-equal sync 強制
+  - **Codex 補完軸の三段波** (Round 1 location / Round 2 failure loss / Round 3 concurrent race) — 3 round 連続で「fix が新副作用」: production code 改修 PR は **Codex review を merge ブロッカー化する preventive sweep** が必須 (single Opus Approved は危険、Codex 並走で副作用波を都度検出)、memory `feedback_ai_multi_reviewer.md` 「wrapper 中央化 drift 3 軸」を **「fix の副作用波 3 round pattern」軸として更新**推奨
