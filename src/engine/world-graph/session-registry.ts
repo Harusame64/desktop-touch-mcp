@@ -53,49 +53,63 @@ export function isChromeControlType(controlType: string | undefined): boolean {
 }
 
 /**
- * Shared predicate used by the default `isModalBlocking` and `findBlockingModal`
- * implementations so they cannot diverge. UIA exposes system dialogs and
- * overlays as `role: "unknown"` elements; the self-exclusion (entityId !==)
- * keeps a dialog from blocking actions on its own children. Issue #63.
+ * ADR-020 Phase 2 PR-P2-1 — unified modal classifier (issue #327 item D
+ * structural fix). Replaces the historical 2-function split (`isModalCandidate`
+ * pre-touch UIA-tree path / `isModalLike` post-touch diff path) that drifted
+ * silently when the chrome-exclusion clause was added to one side only
+ * (#297 closure was incomplete until PR #331). Single source of truth so the
+ * two paths cannot diverge again.
  *
- * Issue #297: UI chrome (MenuBar / TitleBar / StatusBar / ToolBar) is also
- * `role:"unknown"` in the UIA tree but is never a modal blocker. The
- * `controlType` field carried through by Issue #296 lets the predicate
- * distinguish dialog overlays (no `controlType` or `Pane` / `Window`) from
- * UI chrome (`MenuBar` etc.). Entities lacking `controlType` (legacy /
- * non-UIA-fronted producers) fall through to the prior behaviour for
- * back-compat.
+ * Core predicate (both contexts): UIA-sourced + `role:"unknown"` + non-chrome
+ * controlType. Entities lacking `controlType` fall through to the prior
+ * "trust the role:'unknown' signal" behaviour for back-compat with pre-#296
+ * producers.
  *
- * Exported for direct unit testing of the truth table (the per-clause
- * negation order is load-bearing — Codex / Opus reviewers historically
- * read this code line-by-line).
+ * Context-specific clauses:
+ *   - `"pre-touch"` with `options.excludeSelf` set: excludes the focus target
+ *     from its own blocking-modal search (a dialog cannot block actions on
+ *     its own children, Issue #63).
+ *   - `"post-touch-diff"`: no self-exclusion; the post snapshot's `touched`
+ *     entity is handled by a separate layer (see `guarded-touch.ts`
+ *     `computeDiff`).
  *
- * Cross-signal consistency note (Issue #297): the three modal-detection
- * APIs in this codebase serve different layers and intentionally use
- * different signals:
+ * Cross-signal consistency note (Issue #297): the three modal-detection APIs
+ * in this codebase serve different layers and intentionally use different
+ * signals:
  *
  *   - `desktop-state.ts::MODAL_RE` — window-title regex; surface-level
  *     "is there a window with 'dialog' / 'confirm' / '警告' in its title".
- *     Cheap, top-of-window flag for orientation.
- *   - `isModalCandidate` (this function) — UIA-tree based; resolves
- *     `blockingElement` for `desktop_act` so the LLM can dismiss the
- *     specific element. Requires Issue #296's `controlType` to exclude
- *     UI chrome.
+ *   - `classifyModal` (this function) — UIA-tree based; both pre-touch
+ *     `blockingElement` resolution and post-touch `modal_appeared` /
+ *     `modal_dismissed` diff detection. Requires Issue #296's `controlType`
+ *     to exclude UI chrome.
  *   - `evaluateModalAbove` (`sensors-win32.ts`) — Win32-Z-order based
- *     confidence score (owner chain + className `#32770` + target
- *     disabled). Used for perception-layer attention scoring.
+ *     confidence score (owner chain + className `#32770` + target disabled).
  *
  * The three are NOT expected to converge on every state — they answer
- * different questions and target different layers. The chrome exclusion
- * here is the minimum change needed so they no longer **disagree** in
- * the common false-positive case (MenuBar on a non-modal main window).
+ * different questions and target different layers. The chrome exclusion here
+ * is the minimum change needed so they no longer **disagree** in the common
+ * false-positive case (MenuBar on a non-modal main window).
+ */
+export function classifyModal(
+  entity: UiEntity,
+  context: "pre-touch" | "post-touch-diff",
+  options?: { excludeSelf?: UiEntity },
+): boolean {
+  if (context === "pre-touch" && options?.excludeSelf?.entityId === entity.entityId) return false;
+  if (!entity.sources.includes("uia")) return false;
+  if (entity.role !== "unknown") return false;
+  if (isChromeControlType(entity.controlType)) return false;
+  return true;
+}
+
+/**
+ * @deprecated ADR-020 Phase 2 PR-P2-1 — call `classifyModal(candidate, "pre-touch", { excludeSelf: target })` directly.
+ * Retained as a thin wrapper for backward compatibility (existing tests +
+ * external callers). Internal callsites in this file already migrated.
  */
 export function isModalCandidate(target: UiEntity, candidate: UiEntity): boolean {
-  if (candidate.entityId === target.entityId) return false;
-  if (!candidate.sources.includes("uia")) return false;
-  if (candidate.role !== "unknown") return false;
-  if (isChromeControlType(candidate.controlType)) return false;
-  return true;
+  return classifyModal(candidate, "pre-touch", { excludeSelf: target });
 }
 
 export type TargetSessionKey =
@@ -301,7 +315,7 @@ export class SessionRegistry {
       // Issue #63 (Codex P1): when the user overrides exactly one of the pair, we derive
       // the other to keep predicate ↔ blockingElement consistent — never surface a default
       // UIA-unknown blocker alongside an unrelated custom predicate.
-      //   both default      → shared isModalCandidate predicate (consistent)
+      //   both default      → shared classifyModal predicate (consistent, ADR-020 PR-P2-1)
       //   both overridden   → caller's responsibility (no derivation)
       //   only isModalBlocking overridden → findBlockingModal returns null (blockingElement omitted,
       //                                     so the LLM is never told to dismiss the wrong element)
@@ -310,12 +324,12 @@ export class SessionRegistry {
         opts.isModalBlocking ??
         (opts.findBlockingModal
           ? (entity: UiEntity) => opts.findBlockingModal!(entity) !== null
-          : (entity: UiEntity) => s.entities.some((e) => isModalCandidate(entity, e))),
+          : (entity: UiEntity) => s.entities.some((e) => classifyModal(e, "pre-touch", { excludeSelf: entity }))),
       findBlockingModal:
         opts.findBlockingModal ??
         (opts.isModalBlocking
           ? () => null
-          : (entity: UiEntity) => s.entities.find((e) => isModalCandidate(entity, e)) ?? null),
+          : (entity: UiEntity) => s.entities.find((e) => classifyModal(e, "pre-touch", { excludeSelf: entity })) ?? null),
       isInViewport: opts.isInViewport ?? (() => true),
       // G1-C: Focus fingerprint for focus_shifted detection.
       // Only wired when opts.getFocusedEntityId is provided (e.g. production desktop-register.ts).
