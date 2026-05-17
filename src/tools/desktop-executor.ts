@@ -18,6 +18,7 @@
 import type { UiEntity, ExecutorKind, ExecutorOutcome } from "../engine/world-graph/types.js";
 import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
 import type { TargetSpec } from "../engine/world-graph/session-registry.js";
+import type { AdvertisedExecutorKind } from "../capabilities/registry.js";
 
 // ── Injectable backend interface ──────────────────────────────────────────────
 
@@ -161,8 +162,25 @@ export function createDesktopExecutor(
     const terminalBlocked = blocked.includes("terminal");
     const mouseBlocked    = blocked.includes("mouse");
 
+    // ADR-020 SR-1 PR-SR1-2 (北極星 9, Round 7 confirmed): preferredExecutors の
+    // 責務は **各 executor block の entry eligibility** に限定する。registry が
+    // bake した `entity.preferredExecutors` に含まれない executor の block は
+    // skip し、block 内部の fallback / error message / return shape は baseline
+    // と bit-equal 維持 (北極星 9 (2)/(4)/(5))。
+    //
+    // 設計境界 (sub-plan §5.2 + §5.5):
+    //   - `entity.preferredExecutors === undefined` → 全 executor で true を返す
+    //     (baseline と完全同一動作、北極星 9 (1))。
+    //   - generic outer loop / 失敗集約 / 任意 [from → to] downgrade marker は
+    //     導入しない (現 executor の fallback は単純 routing ladder ではなく
+    //     recovery fallback + 公開 contract を含むため; sub-plan §5.2 末尾参照)。
+    //   - 内部 keyboard fallback (UIA setValue → keyboardTypeBg) は引き続き
+    //     bare `"keyboard"` return (PR #330 contract、OQ-SR5-1 で SR-5 再判断)。
+    const preferredAllows = (executor: AdvertisedExecutorKind): boolean =>
+      entity.preferredExecutors === undefined || entity.preferredExecutors.includes(executor);
+
     // ── UIA route ────────────────────────────────────────────────────────────
-    if (entity.sources.includes("uia") && !uiaBlocked) {
+    if (entity.sources.includes("uia") && !uiaBlocked && preferredAllows("uia")) {
       // Prefer typed locator; fall back to sourceId (legacy bridge — remove in P3).
       const automationId = entity.locator?.uia?.automationId ?? entity.sourceId;
       const name         = entity.locator?.uia?.name ?? entity.label;
@@ -221,7 +239,7 @@ export function createDesktopExecutor(
     // ── CDP route ────────────────────────────────────────────────────────────
     // Prefer locator.cdp.selector; fall back to sourceId (legacy bridge).
     const cdpSelector = entity.locator?.cdp?.selector ?? (entity.sources.includes("cdp") ? entity.sourceId : undefined);
-    if (cdpSelector && !cdpBlocked) {
+    if (cdpSelector && !cdpBlocked && preferredAllows("cdp")) {
       const cdpTabId = entity.locator?.cdp?.tabId ?? target?.tabId;
       // Phase 4: 'setValue' on a CDP entity uses cdpFill — equivalent to
       // browser_fill for controlled inputs (React/Vue/Svelte).
@@ -239,7 +257,7 @@ export function createDesktopExecutor(
     // text (action='type'/'setValue', or action='auto' with text). Otherwise
     // fall through to the mouse fallback so click/invoke on a terminal entity
     // doesn't silently send an empty string.
-    if (entity.sources.includes("terminal") && !terminalBlocked && text !== undefined) {
+    if (entity.sources.includes("terminal") && !terminalBlocked && text !== undefined && preferredAllows("terminal")) {
       const termWin = entity.locator?.terminal?.windowTitle ?? winTitle;
       await d.terminalSend(termWin, text);
       return "terminal";
@@ -261,6 +279,18 @@ export function createDesktopExecutor(
       );
     }
     if (mouseBlocked) {
+      throw new Error(
+        `No executor available for entity "${entity.label ?? entity.entityId}": mouse fallback also blocked by unsupportedExecutors`
+      );
+    }
+    // ADR-020 SR-1 PR-SR1-2 (北極星 9 + R-SR1-2-e): preferredExecutors が
+    // mouse を含まない場合の throw を mouseBlocked と同経路で扱う。text drop
+    // 防止 throw を先に評価する順序は維持しているため、text 付き action は
+    // mouseBlocked と同等に上の text-drop branch で扱われる。
+    if (!preferredAllows("mouse")) {
+      // Round 8 P3-2 反映: mouseBlocked 経路の error message と統一して LLM 観測時の
+      // log 差分を減らす。R-SR1-2-e (sub-plan §5.5) で「mouseBlocked と同経路で扱う」
+      // と明記済の throw、文言も bit-equal にする。
       throw new Error(
         `No executor available for entity "${entity.label ?? entity.entityId}": mouse fallback also blocked by unsupportedExecutors`
       );
