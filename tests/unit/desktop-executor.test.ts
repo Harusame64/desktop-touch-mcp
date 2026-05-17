@@ -26,12 +26,13 @@ function entity(overrides: Partial<UiEntity> = {}): UiEntity {
 
 function mockDeps(overrides: Partial<ExecutorDeps> = {}): ExecutorDeps {
   return {
-    uiaClick:     vi.fn(async () => {}),
-    uiaSetValue:  vi.fn(async () => {}),
-    cdpClick:     vi.fn(async () => {}),
-    cdpFill:      vi.fn(async () => {}),
-    terminalSend: vi.fn(async () => {}),
-    mouseClick:   vi.fn(async () => {}),
+    uiaClick:       vi.fn(async () => {}),
+    uiaSetValue:    vi.fn(async () => {}),
+    cdpClick:       vi.fn(async () => {}),
+    cdpFill:        vi.fn(async () => {}),
+    terminalSend:   vi.fn(async () => {}),
+    keyboardTypeBg: vi.fn(async () => {}),
+    mouseClick:     vi.fn(async () => {}),
     ...overrides,
   };
 }
@@ -179,6 +180,63 @@ describe("createDesktopExecutor — error handling and UIA fallback", () => {
     const deps = mockDeps({ cdpClick: vi.fn(async () => { throw new Error("CDP error"); }) });
     const exec = createDesktopExecutor({ tabId: "t" }, deps);
     await expect(exec(entity({ sources: ["cdp"], sourceId: "#x" }), "click")).rejects.toThrow("CDP error");
+  });
+});
+
+// ─── Issue #327 item E — UIA setValue → keyboardTypeBg fallback ladder ────────
+
+describe("createDesktopExecutor — UIA setValue → keyboardTypeBg fallback (#327 item E)", () => {
+  it("uiaSetValue success path: no keyboardTypeBg call, returns 'uia' (regression pin)", async () => {
+    const deps = mockDeps();
+    const exec = createDesktopExecutor({ windowTitle: "Notepad" }, deps);
+    const result = await exec(entity({ sources: ["uia"] }), "type", "hello");
+    expect(result).toBe("uia");
+    expect(deps.uiaSetValue).toHaveBeenCalledOnce();
+    expect(deps.keyboardTypeBg).not.toHaveBeenCalled();
+  });
+
+  it("uiaSetValue throws + keyboardTypeBg succeeds → returns 'keyboard' (the E1 fix)", async () => {
+    const deps = mockDeps({
+      uiaSetValue: vi.fn(async () => { throw new Error("Element not found"); }),
+    });
+    const exec = createDesktopExecutor({ windowTitle: "Notepad" }, deps);
+    const result = await exec(entity({ sources: ["uia"] }), "type", "hello");
+    expect(result).toBe("keyboard");
+    expect(deps.uiaSetValue).toHaveBeenCalledOnce();
+    expect(deps.keyboardTypeBg).toHaveBeenCalledWith("Notepad", "hello");
+  });
+
+  it("setValue action also falls through to keyboardTypeBg on uiaSetValue failure", async () => {
+    const deps = mockDeps({
+      uiaSetValue: vi.fn(async () => { throw new Error("PowerShell locator filter mismatch"); }),
+    });
+    const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
+    const result = await exec(entity({ sources: ["uia"] }), "setValue", "x");
+    expect(result).toBe("keyboard");
+    expect(deps.keyboardTypeBg).toHaveBeenCalledWith("App", "x");
+  });
+
+  it("both uiaSetValue AND keyboardTypeBg throw → combined error surfaces both diagnostics", async () => {
+    const deps = mockDeps({
+      uiaSetValue:    vi.fn(async () => { throw new Error("UIA name mismatch"); }),
+      keyboardTypeBg: vi.fn(async () => { throw new Error("WT-XAML host blocked"); }),
+    });
+    const exec = createDesktopExecutor({ windowTitle: "Terminal" }, deps);
+    await expect(exec(entity({ sources: ["uia"] }), "type", "x"))
+      .rejects.toThrow(/Type fallback ladder exhausted.*uia=UIA name mismatch.*keyboard=WT-XAML host blocked/);
+  });
+
+  it("text=undefined (no type/setValue): no keyboardTypeBg call (scope pin — click/invoke unchanged)", async () => {
+    const deps = mockDeps({
+      uiaClick: vi.fn(async () => { throw new Error("InvokePattern missing"); }),
+    });
+    const exec = createDesktopExecutor({ hwnd: "1" }, deps);
+    const result = await exec(
+      entity({ sources: ["uia"], rect: { x: 100, y: 200, width: 80, height: 30 } }),
+      "click",
+    );
+    expect(result).toBe("mouse"); // existing click → mouse fallback path unchanged
+    expect(deps.keyboardTypeBg).not.toHaveBeenCalled();
   });
 });
 
