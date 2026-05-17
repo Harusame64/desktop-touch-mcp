@@ -40,7 +40,7 @@ function uiaActionability(ct: string): Array<"click" | "invoke" | "type" | "read
  * `"ExpandCollapse"` / `"Scroll"`) while the PowerShell fallback
  * (`makeGetElementsScript` in `uia-bridge.ts`) emits the suffixed form
  * (`"InvokePattern"` / `"ValuePattern"` / …). Without this normalisation,
- * `deriveEntityCapabilities` would silently inverse-classify every Rust-path
+ * `CapabilityRegistry.lookup` would silently inverse-classify every Rust-path
  * entity (matching `"InvokePattern"` against `"Invoke"` always misses).
  *
  * Canonicalisation target: the `*Pattern`-suffixed form, which matches the
@@ -84,14 +84,14 @@ export async function fetchUiaCandidates(
         rect: el.boundingRect ?? undefined,
         actionability: uiaActionability(el.controlType),
         // Issue #296: carry the UIA-side `controlType` and `patterns` through
-        // so `deriveEntityCapabilities` can advertise executor preferences
+        // so `CapabilityRegistry.lookup` can advertise executor preferences
         // at discover time (no extra UIA round-trip — `getUiElements` already
         // collected both via `GetSupportedPatterns()`). Patterns are normalised
         // here because the Rust native path (`src/uia/tree.rs`) emits the
         // short form (`"Invoke"`, `"Value"`, `"Toggle"`, …) while the
         // PowerShell fallback (`makeGetElementsScript`) emits the suffixed
         // form (`"InvokePattern"`, …). Downstream consumers (most importantly
-        // `deriveEntityCapabilities`) see a single canonical shape.
+        // `CapabilityRegistry.lookup`) see a single canonical shape.
         controlType: el.controlType,
         patterns: normalizeUiaPatternNames(el.patterns),
         confidence: 1.0,
