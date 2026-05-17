@@ -80,9 +80,12 @@ describe("E contract (a) — uiaSetValue.advertised entity → preferredExecutor
     const entity = makeUiaEntity({ patterns: ["ValuePattern"] });
     const cap = deriveEntityCapabilities(entity)!;
     expect(cap.preferredExecutors[0]).toBe("uia");
-    if (cap.preferredExecutors.includes("keyboard" as ExecutorKind)) {
+    // Codex R2 P2 fix: dropped `as ExecutorKind` cast — if a future change
+    // removes "keyboard" from ExecutorKind, tsc fails here directly (compile-
+    // time signal), instead of silently passing through the includes branch.
+    if (cap.preferredExecutors.includes("keyboard")) {
       const uiaIdx = cap.preferredExecutors.indexOf("uia");
-      const keyboardIdx = cap.preferredExecutors.indexOf("keyboard" as ExecutorKind);
+      const keyboardIdx = cap.preferredExecutors.indexOf("keyboard");
       expect(uiaIdx).toBeLessThan(keyboardIdx);
     }
   });
