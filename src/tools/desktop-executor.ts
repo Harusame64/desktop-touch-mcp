@@ -263,6 +263,40 @@ export function createDesktopExecutor(
       return "terminal";
     }
 
+    // ── Keyboard route (ADR-020 SR-5 PR-SR5-2、北極星 9 (4) + 5 block sequential) ──
+    // `preferredExecutors` に `"keyboard"` が含まれ、UIA / CDP / terminal の
+    // どれも entry しなかった場合に到達する direct keyboard 経路。`keyboardTypeBg`
+    // (UIA route 内 recovery と同 primitive、`bg-input.ts::postCharsToHwnd` 経由
+    // WM_CHAR injection) を呼び出し、bare `"keyboard"` return (PR #330 contract 維持、
+    // OQ-SR5-1 exit condition (1))。失敗時は throw 直伝播 (CDP/terminal と同 pattern、
+    // mouse rescue しない、北極星 9 (3) 整合)。
+    //
+    // 到達条件 (sub-plan §5.2 末尾):
+    //   - `preferredExecutors=["keyboard"]` 単独 set で UIA-排除 + (a) `sources` に
+    //     "uia" 含まない or (b) `unsupportedExecutors.includes("uia")` で uiaBlocked、
+    //     かつ CDP / terminal eligibility なし
+    //   - text 必須 + (action === "type" | "setValue") のみ entry (click は keyboard で意味なし)
+    // 典型 ValuePattern entity (`preferredExecutors=["uia","keyboard"]`) は UIA block
+    // で entry → UIA setValue → keyboardTypeBg 内部 ladder で bare "keyboard" return
+    // (新 block は到達せず、北極星 2 = PR #330 contract bit-equal 維持)。
+    // 北極星 9 (1) baseline 完全同一動作維持: entity.preferredExecutors が undefined
+    // (registry lookup 不在 = test 直 invoke / legacy path) の case で新 keyboard block
+    // を entry させないため、`preferredAllows("keyboard")` (undefined 時 true 返却) では
+    // なく、explicit な `entity.preferredExecutors !== undefined && includes("keyboard")`
+    // で gate する。これで preferredExecutors を明示 advertise していない baseline 経路
+    // (e.g. unsupportedExecutors:["uia"] 単独 + text な test case) で text drop 防止 throw
+    // への到達経路が baseline と bit-equal 維持される。
+    if (
+      entity.preferredExecutors !== undefined &&
+      entity.preferredExecutors.includes("keyboard") &&
+      !blocked.includes("keyboard") &&
+      text !== undefined &&
+      (action === "type" || action === "setValue")
+    ) {
+      await d.keyboardTypeBg(winTitle, text);
+      return "keyboard";
+    }
+
     // ── Mouse fallback ───────────────────────────────────────────────────────
     // Opus PR #302 P2 #2 — when the caller supplied `text` (action='type'/
     // 'setValue', or action='auto' with text) and every text-capable executor
@@ -273,9 +307,12 @@ export function createDesktopExecutor(
     // wrapper surfaces `ok:false reason:'executor_failed'` and the caller can
     // diagnose the dropped payload rather than chasing a phantom-typed bug.
     if (text !== undefined && (action === "type" || action === "setValue")) {
+      // ADR-020 SR-5 PR-SR5-2: keyboard executor が advertised に昇格したので
+      // diagnostic string にも keyboard 経路の skip 理由を含める。
+      const keyboardBlocked = blocked.includes("keyboard");
       throw new Error(
         `setValue/type requested for "${entity.label ?? entity.entityId}" but no text-capable executor available ` +
-        `(uia${uiaBlocked ? "=blocked" : "=no-source"}, cdp${cdpBlocked ? "=blocked" : "=no-selector"}, terminal${terminalBlocked ? "=blocked" : "=no-source-or-text"}) — mouse fallback would drop the text payload`
+        `(uia${uiaBlocked ? "=blocked" : "=no-source"}, cdp${cdpBlocked ? "=blocked" : "=no-selector"}, terminal${terminalBlocked ? "=blocked" : "=no-source-or-text"}, keyboard${keyboardBlocked ? "=blocked" : "=not-in-preferred"}) — mouse fallback would drop the text payload`
       );
     }
     if (mouseBlocked) {

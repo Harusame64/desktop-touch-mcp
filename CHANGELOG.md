@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`keyboard` executor as a first-class advertised executor option.**
+  When a text input exposes UIA `ValuePattern`, `entities[].capabilities.preferredExecutors` now lists `["uia", "keyboard"]` instead of `["uia"]`, so the LLM can opt to bypass UIA's name-filter requery and inject WM_CHAR directly via `keyboardTypeBg`. Useful for RichEdit / Document controls (e.g. Notepad's RichEditD2DPT) where UIA `setValue` fails because the entity's name/automationId cannot be re-found.
+
+  The `keyboard` executor:
+  - Sends WM_CHAR to the focused child of the target window (no focus-steal, same primitive as `terminal({action:'send'})`)
+  - Returns `executor: "keyboard"` (bare string, no downgrade marker — internal UIA→keyboard recovery uses the same return shape, preserving the existing bare-string contract for the `desktop_act` text fallback)
+  - **Fail-soft on unsupported windows**: Chromium / WT-XAML / UWP hosts surface `ok:false reason:"executor_failed"`, and the existing `desktop_act` `if_unexpected.try_next` recovery hint applies (typically suggesting `keyboard({action:'type', text, method:'foreground'})` which uses FG SendInput instead of background WM_CHAR injection)
+
+  How to use: include `"keyboard"` in your tool call's intended executor preference, or rely on the `desktop_discover` advisory (`capabilities.preferredExecutors[1]` is now often `"keyboard"` for text inputs).
+
 ## [1.6.1] - 2026-05-17 — `desktop_act` reliability + observability sweep (Notepad type, lease TTL, modal classification, executor downgrade marker, cache marker storm)
 
 ### Fixed
