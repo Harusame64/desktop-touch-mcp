@@ -110,11 +110,14 @@ describe("CapabilityRegistry invariant — sub-plan §4.5 acceptance", () => {
       expect(() => assertCapabilitiesInvariant(bad)).toThrow(/overlap "uia"/);
     });
 
-    it('rejects "keyboard" smuggled into preferredExecutors via unsound cast (c)', () => {
-      // The TS narrow type would normally prevent this; the cast simulates
-      // a rule-table edit that bypasses the compile-time guard.
+    it('rejects an unknown executor smuggled into preferredExecutors via unsound cast (c) (ADR-020 SR-5: "keyboard" now allowed, switched smuggle target to a fictional executor)', () => {
+      // ADR-020 SR-5 PR-SR5-1: `"keyboard"` was promoted to an advertised
+      // executor and is now valid in `preferredExecutors`. To keep the
+      // narrow-type runtime defense-in-depth assertion exercised, switch
+      // the smuggle target to a value that is definitely outside
+      // `AdvertisedExecutorKind` (e.g. a typo / future-only kind).
       const bad = {
-        preferredExecutors: ["keyboard" as unknown as AdvertisedExecutorKind],
+        preferredExecutors: ["unknown_executor" as unknown as AdvertisedExecutorKind],
       } as EntityCapabilities;
       expect(() => assertCapabilitiesInvariant(bad)).toThrow(
         /ALLOWED_EXECUTORS|narrow type breach/,

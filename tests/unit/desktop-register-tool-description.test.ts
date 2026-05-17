@@ -1,5 +1,5 @@
 /**
- * desktop-register-tool-description.test.ts — ADR-020 SR-1 PR-SR1-3.
+ * desktop-register-tool-description.test.ts — ADR-020 SR-1 PR-SR1-3 (extended by SR-5 PR-SR5-1).
  *
  * Pins the `toolDescriptionAdvisory()` output to guarantee:
  *   1. bit-equal wire shape before and after the static-string → registry
@@ -7,11 +7,13 @@
  *   2. immutable / pure lookup invariant — two consecutive calls return the
  *      same string (北極星 1, registry SSOT);
  *   3. structural prefix/suffix pin — text begins with "Issue #296:" and ends
- *      with "round-trip on ListItem / TabItem / custom-drawn controls)."
+ *      with the SR-5-extended sentence about UIA setValue / RichEdit / Document.
  *
- * The snapshot value must be bit-equal to the hand-written constant formerly
- * at `src/tools/desktop-register.ts:800` (and still present as `ADVISORY_TEXT`
- * in `src/capabilities/registry.ts` for carry-over clarity).
+ * SR-5 PR-SR5-1 extension: `ADVISORY_TEXT` now appends a sentence describing
+ * the newly-advertised `"keyboard"` executor (`["uia", "keyboard"]` on text
+ * inputs). The EXPECTED_ADVISORY constant and the `endsWith` assertion are
+ * updated to follow; the `startsWith` and `immutable` assertions remain
+ * unchanged.
  */
 
 import { describe, it, expect } from "vitest";
@@ -21,16 +23,19 @@ const EXPECTED_ADVISORY =
   "Issue #296: entities[].capabilities (when present) advises executor selection. " +
   "preferredExecutors[0] is the executor most likely to succeed; " +
   "if unsupportedExecutors contains 'uia', go straight to mouse_click instead of click_element " +
-  "(saves a InvokePatternNotSupported round-trip on ListItem / TabItem / custom-drawn controls).";
+  "(saves a InvokePatternNotSupported round-trip on ListItem / TabItem / custom-drawn controls). " +
+  "When preferredExecutors contains 'keyboard' (e.g. ['uia','keyboard'] on text inputs), " +
+  "the 'keyboard' executor injects WM_CHAR directly to the focused control without focus-steal, " +
+  "useful when UIA setValue fails on RichEdit/Document controls with unstable locators.";
 
-describe("CapabilityRegistry.toolDescriptionAdvisory — PR-SR1-3 snapshot pin", () => {
+describe("CapabilityRegistry.toolDescriptionAdvisory — PR-SR1-3 + SR-5 PR-SR5-1 snapshot pin", () => {
   const registry = createDefaultCapabilityRegistry();
 
   it("returns the bit-equal advisory text (snapshot pin)", () => {
     expect(JSON.stringify(registry.toolDescriptionAdvisory())).toMatchSnapshot();
   });
 
-  it("is bit-equal to the former hand-written static string", () => {
+  it("is bit-equal to the EXPECTED_ADVISORY constant", () => {
     expect(registry.toolDescriptionAdvisory()).toBe(EXPECTED_ADVISORY);
   });
 
@@ -44,10 +49,10 @@ describe("CapabilityRegistry.toolDescriptionAdvisory — PR-SR1-3 snapshot pin",
     expect(registry.toolDescriptionAdvisory().startsWith("Issue #296:")).toBe(true);
   });
 
-  it("text ends with 'round-trip on ListItem / TabItem / custom-drawn controls).'", () => {
+  it("text ends with the SR-5 keyboard-executor sentence", () => {
     expect(
       registry.toolDescriptionAdvisory().endsWith(
-        "round-trip on ListItem / TabItem / custom-drawn controls).",
+        "useful when UIA setValue fails on RichEdit/Document controls with unstable locators.",
       ),
     ).toBe(true);
   });
