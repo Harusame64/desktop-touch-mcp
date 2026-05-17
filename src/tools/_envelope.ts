@@ -117,6 +117,8 @@ import {
   _resetSingleSessionPinForTest,
 } from "./_session-context.js";
 import { getSuggestsForCode, failArgs } from "./_errors.js";
+import type { Result } from "../types/result.js";
+import { HandlerError } from "../errors/typed-errors.js";
 import type { ToolResult } from "./_types.js";
 import {
   uiPatternStore,
@@ -1209,6 +1211,72 @@ export function buildFailureEnvelope(
     confidence: "stale",
     if_unexpected: { most_likely_cause: mostLikelyCause, try_next: tryNext },
   };
+}
+
+// ─── ADR-020 SR-2 PR-SR2-1: handler boundary central converter ───────────────
+
+/**
+ * `toFailureEnvelope` — handler 最外周共通 pattern で使用する converter
+ * (ADR-020 SR-2 PR-SR2-1、sub-plan §2 北極星 1 + §4.4).
+ *
+ * Signature 拡張 (sub-plan Round 2 P1-3): caller 側で
+ * `optIn ? failure : compatFailureRaw(failure)` を重複しないよう helper 内に
+ * raw-mode projection 統合 + `envelopeOptions` pass-through で `as_of.wallclock_ms`
+ * (L1 event wallclock) 等を伝播。
+ *
+ * Input:
+ *   - `result: Result<Ok, Err>` — Err は HandlerError 派生 typed error
+ *   - `options.optIn: boolean` — envelope full shape or raw-compat shape
+ *   - `options.envelopeOptions?: EnvelopeOptions` — `buildFailureEnvelope` pass-through
+ * Output:
+ *   - success → handler return value (Ok 型)
+ *   - failure → typed error name で SUGGESTS dict lookup → `mostLikelyCause` + `tryNext`
+ *     自動生成 → optIn による envelope full shape / raw-compat shape を return
+ *
+ * 注意: handler 内部 throw 経路は `toResultErr(e)` で `Result.err(HandlerError)`
+ * に変換してから本 helper に渡す (handler 最外周共通 pattern、PR-SR2-2/-3 で
+ * 29 handler に展開予定)。`failWith` 経路 (176 callsite) は本 SR-2 scope 外
+ * (sub-plan §9 OQ-SR2-4 + 親 ADR §11 L10 carry-over)。
+ */
+export function toFailureEnvelope<Ok, Err extends HandlerError>(
+  result: Result<Ok, Err>,
+  options: {
+    /** `optIn === true` → envelope full shape、`false` → raw-compat shape (caller 側で
+     *  `optIn ? failure : compatFailureRaw(failure)` 重複しないため helper 内統合)。 */
+    optIn: boolean;
+    /** `buildFailureEnvelope` の `EnvelopeOptions` を pass-through
+     *  (`asOfWallclockMs` 等の L1 event wallclock 経路、将来 root extras hoist 伝播)。 */
+    envelopeOptions?: EnvelopeOptions;
+  },
+): Ok | EnvelopeMinimalShape<null> | CompatRawFailureShape {
+  if (result.ok) return result.value;
+  // `result.error.name` は typed error class が constructor body で設定する
+  // `SUGGESTS` dict key (e.g. `"ExecutorFailed"`)。`getSuggestsForCode` (in
+  // `_errors.ts`) は本 dict の正しい lookup API で、unknown code には汎用
+  // fallback 配列を返す。empty fallback の場合は本 helper 側で再 fallback。
+  const errorName = result.error.name;
+  const tryNextStrings = getSuggestsForCode(errorName);
+  const tryNext: TryNextAction[] = tryNextStrings.length > 0
+    ? tryNextStrings.map((action) => ({ action }))
+    : [{ action: "Inspect the underlying error and retry with adjusted args" }];
+  const failure = buildFailureEnvelope(errorName, tryNext, options.envelopeOptions);
+  return options.optIn ? failure : compatFailureRaw(failure);
+}
+
+/**
+ * `toResultErr` — wrap a caught `unknown` throw into `Result.err(HandlerError)`.
+ *
+ * Use in handler 最外周 catch:
+ * ```
+ * try { ... return ok } catch (e) { return toFailureEnvelope(toResultErr(e), {optIn}) }
+ * ```
+ */
+export function toResultErr(e: unknown): Result<never, HandlerError> {
+  if (e instanceof HandlerError) return { ok: false, error: e };
+  if (e instanceof Error) {
+    return { ok: false, error: new HandlerError(e.message, { cause: e }) };
+  }
+  return { ok: false, error: new HandlerError(String(e)) };
 }
 
 // ─── tool_call_id session-local monotone counter ─────────────────────────────
