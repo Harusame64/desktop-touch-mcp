@@ -458,6 +458,40 @@ describe("DirtyRectBroker", () => {
     await first;
   });
 
+  /**
+   * Round 2 Codex P2 regression test: detaching the last consumer must
+   * reset the idle window so a quick re-subscribe doesn't trigger an
+   * immediate native subscription dispose + re-init.
+   *
+   * Pre-fix: lastUsedAt stays at attach-time → sweepStale on the
+   * resubscribe sees `now - lastUsedAt >= idleTimeoutMs` → entry deleted
+   * → factory called again.
+   * Post-fix: lastUsedAt refreshed at detach → sweepStale on the
+   * resubscribe sees `now - lastUsedAt < idleTimeoutMs` → entry retained
+   * → `hit-subscription` state, no factory re-init.
+   */
+  it("Round 2 Codex P2: last consumer detach refreshes lastUsedAt (idle window restart)", () => {
+    let now = 0;
+    const factory = vi.fn(() => new StubSubscription());
+    // idleTimeoutMs = 100, unavailableTtlMs = 500.
+    const broker = makeBroker(factory, () => now, 100, 500);
+
+    // T=0: acquire — lastUsedAt = 0.
+    const a = broker.acquire(0);
+    expect(factory).toHaveBeenCalledTimes(1);
+
+    // T=99: handle disposed (last consumer) — lastUsedAt MUST refresh to 99.
+    now = 99;
+    a.sub!.dispose();
+
+    // T=150: re-acquire. Pre-fix: now - lastUsedAt (=0) = 150 > 100 → swept.
+    // Post-fix: now - lastUsedAt (=99) = 51 < 100 → entry retained.
+    now = 150;
+    const b = broker.acquire(0);
+    expect(b.state).toBe("hit-subscription");
+    expect(factory).toHaveBeenCalledTimes(1);
+  });
+
   it("BROKER_CONSTANTS values are bit-equal with STAGE5_CONSTANTS (PR-SR4-2 SSOT shift prerequisite)", () => {
     // Sub-plan §5.3 acceptance: PR-SR4-1 holds private duplicates; PR-SR4-2
     // shifts SSOT to broker side + Stage 5 re-exports. The numeric values

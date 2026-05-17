@@ -546,12 +546,29 @@ export class DirtyRectBroker {
     });
   }
 
+  /**
+   * Round 2 Codex P2 fix: refresh `lastUsedAt` when the LAST consumer
+   * detaches so the idle window starts from "last consumer was active"
+   * instead of "last consumer initially attached". Without this, a
+   * long-lived subscription whose only consumer detaches near the end of
+   * the idle window (e.g. 25 s after attach with idleTimeoutMs=20 s) would
+   * be **swept on the very next `sweepStale()` call** even though the
+   * detach happened just moments ago — forcing a 50ms DXGI factory
+   * re-init storm on any quick re-subscribe (the exact pattern Stage 5 +
+   * vision-gpu activation/deactivation cycles produce).
+   *
+   * Mental simulation revert (memory `feedback_opus_contract_truth_sweep.md`):
+   * removing the `lastUsedAt = nowFn()` line below causes the "Round 2
+   * Codex P2: last consumer detach refreshes lastUsedAt" test to fail
+   * because the subsequent `acquire()` enters the stale-sweep path.
+   */
   private maybeStopFanOut(
     _outputIndex: number,
     entry: CacheEntry & { kind: "subscription" },
   ): void {
     if (entry.pollingHandles.size === 0 && entry.callbackHandles.size === 0) {
       entry.fanOutShouldStop = true;
+      entry.lastUsedAt = this.nowFn();
     }
   }
 
