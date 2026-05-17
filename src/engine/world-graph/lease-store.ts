@@ -116,6 +116,10 @@ export class LeaseStore {
    * per-viewId expansion; the timestamp is taken from the store's injected
    * `nowFn` so test fake timers automatically apply (callers do not need to
    * pass their own clock).
+   *
+   * @param _viewId currently unused (single per-session field is sufficient,
+   *                YAGNI); accepted to keep the signature stable when a
+   *                future per-viewId Map expansion lands.
    */
   recordAct(_viewId: string): void {
     this.lastActAtMs = this.nowFn();

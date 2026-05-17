@@ -321,6 +321,13 @@ export class DesktopFacade {
     const key = this.registry.resolveKey(input.target);
     const session = this.registry.getOrCreate(key, this._sessionOpts());
 
+    // ADR-020 PR-P2-2 (Codex Round 1 P2 fix): consume the round-trip wallclock
+    // at see() entry, BEFORE any async snapshot/window collection. Reading it
+    // later (e.g. just before computeLeaseTtlMs) would include this see()'s
+    // own backend latency in the measurement and inflate observedRoundTripMs
+    // beyond the actual "act → next see() start" interval.
+    const observedRoundTripMs = session.leaseStore.consumeObservedRoundTripMs();
+
     session.lastTarget = input.target;
     const prevViewId = session.viewId;
     const newViewId = randomUUID();
@@ -388,9 +395,9 @@ export class DesktopFacade {
       rawResult.warnings.length * 80;
 
     // ADR-020 PR-P2-2: both branches normalised to { ttlMs, refreshRequired }
-    // so downstream sees a single shape. observedRoundTripMs consumed read-once
-    // from LeaseStore so subsequent see() without an intervening act gets
-    // undefined (not stale "time since the original act" reading).
+    // so downstream sees a single shape. observedRoundTripMs was consumed at
+    // see() entry (Codex Round 1 P2 fix) so it reflects "act → next see()
+    // start" wallclock, not "act → end-of-snapshot-collection".
     const policyTtl: { ttlMs: number; refreshRequired: boolean } =
       this.opts.defaultTtlMs !== undefined
         ? { ttlMs: this.opts.defaultTtlMs, refreshRequired: false }
@@ -398,7 +405,7 @@ export class DesktopFacade {
             view: input.view,
             entityCount: resolved.length,
             payloadBytes: estimatedPayloadBytes,
-            observedRoundTripMs: session.leaseStore.consumeObservedRoundTripMs(),
+            observedRoundTripMs,
           });
 
     const nowFn = this.opts.nowFn ?? Date.now;
