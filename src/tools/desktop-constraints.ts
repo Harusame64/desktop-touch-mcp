@@ -6,6 +6,8 @@
  * Returns undefined when no constraint-relevant warnings are present (field stays absent from JSON).
  */
 
+import type { AdvertisedExecutorKind } from "../capabilities/registry.js";
+
 /**
  * View-level negative capability hints.
  * Derived deterministically from warnings[]. Absent field = no constraint known for that provider.
@@ -77,10 +79,16 @@ export interface EntityCapabilities {
    */
   canType?: false;
   canClick?: false;
-  /** Executor kinds expected to succeed (derived from entity sources + provider constraints). */
-  preferredExecutors?: Array<"uia" | "cdp" | "terminal" | "mouse">;
-  /** Executor kinds observed/predicted to fail for this target class. */
-  unsupportedExecutors?: Array<"uia" | "cdp" | "terminal" | "mouse">;
+  /** Executor kinds expected to succeed (derived from entity sources + provider constraints).
+   *  ADR-020 SR-1: type narrowed to `AdvertisedExecutorKind[]` (single SSOT in
+   *  `src/capabilities/registry.ts`). The previous inline string-union
+   *  (`Array<"uia"|"cdp"|"terminal"|"mouse">`) was structurally identical;
+   *  the alias makes the compile-time guard explicit. */
+  preferredExecutors?: AdvertisedExecutorKind[];
+  /** Executor kinds observed/predicted to fail for this target class.
+   *  ADR-020 SR-1: narrowed to `AdvertisedExecutorKind[]` for the same
+   *  reason as `preferredExecutors`. */
+  unsupportedExecutors?: AdvertisedExecutorKind[];
   /** Human-readable recovery hint, e.g. "use terminal(action='send') V1 tool". */
   fallbackHint?: string;
 }
