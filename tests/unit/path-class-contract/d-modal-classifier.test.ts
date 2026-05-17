@@ -27,10 +27,13 @@ import type { UiEntity } from "../../../src/engine/world-graph/types.js";
 // Arbitrary: a UiEntity with plausible shape variation across the dimensions
 // the classifier reads (sources / role / controlType). Other fields are kept
 // constant (test focuses on the classifier's branching, not entity identity).
+// UiEntityRole union (src/engine/world-graph/types.ts:5):
+//   "button" | "textbox" | "link" | "menuitem" | "label" | "unknown"
+// Round 2 P2-1 fix: removed "checkbox"/"list" (not in UiEntityRole), added "label".
 const entityArbitrary: fc.Arbitrary<UiEntity> = fc.record({
   entityId: fc.string({ minLength: 1, maxLength: 12 }),
   role: fc.constantFrom(
-    "unknown", "button", "textbox", "checkbox", "link", "menuitem", "list",
+    "unknown", "button", "textbox", "link", "menuitem", "label",
   ),
   confidence: fc.float({ min: 0, max: 1, noNaN: true }),
   sources: fc.subarray(["uia", "visual_gpu", "cdp", "terminal"] as const, { minLength: 1, maxLength: 4 }),

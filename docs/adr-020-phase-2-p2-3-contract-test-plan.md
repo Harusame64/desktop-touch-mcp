@@ -1,6 +1,6 @@
 # ADR-020 Phase 2 PR-P2-3 — contract test 6 件 land + fast-check 導入 sub-plan
 
-- Status: **Drafted (2026-05-17、Round 3 = user 提供 Opus 第 2 round High×1+Medium×3+Low×1 反映)**
+- Status: **Drafted (2026-05-17、Round 4 = PR Opus Round 1 P1×2 + P2×3 + P3×2 反映、C/E test を production-invoke (createDesktopExecutor + ExecutorDeps mock) で revert/diff 検出力成立)**
 - 親 ADR: `docs/adr-020-path-class-refactor-plan.md` (epic plan、merged PR #335) — 本 sub-plan は親 ADR §4.5 「PR-P2-3 = `fast-check` dev dep 導入 + 6 contract test 全件 land」に対応 (命名は contract-test 性質を反映、refactor 接尾辞なし)
 - 該当 Phase / 軸: Phase 2 PR-P2-3 (contract test land、scope §4.2 + §4.5 + §4.6)
 - 関連 sub-plan: `docs/adr-020-phase-2-p2-1-modal-refactor-plan.md` (merged PR #336、classifyModal 既出) + `docs/adr-020-phase-2-p2-2-lease-ttl-refactor-plan.md` (merged PR #337、computeLeaseTtlMs 既出)
@@ -38,10 +38,10 @@ C. **6 不変条件 contract test land** (5 file 新設 + F は PR-P2-2 既 land
    - `path-class-contract/c-executor-downgrade.test.ts` (C 軸、table + generated variants)
    - `path-class-contract/g-suggests-dict.test.ts` (G 軸、table + generated variants)
    - `path-class-contract/e-uia-fallback-ladder.test.ts` (E 軸、table + generated variants)
-   - **F は本 PR では新規 file 不作成** (Round 2 Opus P2-3 反映): PR-P2-2 で `tests/unit/lease-ttl-policy.test.ts` に既 land 済の 2-branch contract test 16 case が F 軸の `computeLeaseTtlMs` 純粋関数 contract を pin 済 (重複防止)。代表 3 件 (D + F + C) revert/diff 実証で F は **既 land file を対象**として扱う
+   - **F は本 PR では新規 file 不作成** (Round 2 Opus P2-3 反映): PR-P2-2 で `tests/unit/lease-ttl-policy.test.ts` に既 land 済の 2-branch contract test 10 case が F 軸の `computeLeaseTtlMs` 純粋関数 contract を pin 済 (重複防止)。代表 3 件 (D + F + C) revert/diff 実証で F は **既 land file を対象**として扱う
 D. **代表 3 件 (D + F + C) で revert/diff 検出力実証** (C は recommended、PR-P2-3 review で user 最終確定):
    - D revert = PR #331 `isChromeControlType` 共有抽出 + `isModalLike` 同期 を意図的に巻き戻し → `d-modal-classifier.test.ts` が fail することを手元 diff で確認、commit hash + 期待 fail を PR-P2-3 説明に明記
-   - F revert = PR #328 `LEASE_TTL_POLICY.baseMs` 5_000 戻し + `observedRoundTripMs` 引数削除を意図的に revert → **`tests/unit/lease-ttl-policy.test.ts:120` 以降 `observedRoundTripMs 2-branch contract (F)` describe block** (PR-P2-2 既 land 16 case) の branch (a)/(b)/defensive case が fail (Round 3 High 反映、削除した `f-lease-ttl-2branch.test.ts` 参照を訂正)
+   - F revert = PR #328 `LEASE_TTL_POLICY.baseMs` 5_000 戻し + `observedRoundTripMs` 引数削除を意図的に revert → **`tests/unit/lease-ttl-policy.test.ts:120` 以降 `observedRoundTripMs 2-branch contract (F)` describe block** (PR-P2-2 既 land 10 case) の branch (a)/(b)/defensive case が fail (Round 3 High 反映、削除した `f-lease-ttl-2branch.test.ts` 参照を訂正)
    - C revert = PR #332 `TouchResult.downgrade` marker 削除を意図的に revert → `c-executor-downgrade.test.ts` の silent fallback 禁止 case が fail
 E. **helper export 整理** (minimum):
    - D: `classifyModal` 既出 (`session-registry.ts`)、追加 export なし
@@ -103,7 +103,7 @@ ADR-020 §2 全 4 項目を継承 + 本 PR 固有:
 | `tests/unit/path-class-contract/c-executor-downgrade.test.ts` | C 軸 table + generated variants (advertise preferredExecutors entity / mouse fallback 経路で `response.downgrade` marker 必須) | +60-80 |
 | `tests/unit/path-class-contract/g-suggests-dict.test.ts` | G 軸 table + generated variants (`SUGGESTS` dict が tool description `if_unexpected` の全 entry を cover) | +60-80 |
 | `tests/unit/path-class-contract/e-uia-fallback-ladder.test.ts` | E 軸 table + generated variants (advertised entity の executionPlan.executors[0]==="uia" 固定保証 + fallback ladder marker 必須) | +60-80 |
-| ~~`tests/unit/path-class-contract/f-lease-ttl-2branch.test.ts`~~ | **本 PR では新規作成しない** (Round 2 P2-3 反映: PR-P2-2 で `tests/unit/lease-ttl-policy.test.ts` に 16 case 既 land 済、本 PR で重複防止)。F 軸代表 revert 実証は既 land file が対象 | — |
+| ~~`tests/unit/path-class-contract/f-lease-ttl-2branch.test.ts`~~ | **本 PR では新規作成しない** (Round 2 P2-3 反映: PR-P2-2 で `tests/unit/lease-ttl-policy.test.ts` に 10 case 既 land 済、本 PR で重複防止)。F 軸代表 revert 実証は既 land file が対象 | — |
 | `tests/unit/path-class-contract/_helpers.ts` (新規 if needed) | 共通 arbitrary generator (entity arbitrary / failure-code arbitrary 等) | +50-80 |
 
 ### 4.2 既存改修 (minimum、test 用 export 拡張)
@@ -115,7 +115,7 @@ ADR-020 §2 全 4 項目を継承 + 本 PR 固有:
 
 ## 5. acceptance criteria
 
-- `fast-check` dev dep 追加 + **6 軸 contract test 全件 green** (新規 5 file = `path-class-contract/` 配下の D/B/C/G/E + 既存 F test = `tests/unit/lease-ttl-policy.test.ts:120` 以降 16 case、Round 3 Medium 反映で「6 test 全件」表現を実 scope に sync)
+- `fast-check` dev dep 追加 + **6 軸 contract test 全件 green** (新規 5 file = `path-class-contract/` 配下の D/B/C/G/E + 既存 F test = `tests/unit/lease-ttl-policy.test.ts:120` 以降 10 case、Round 3 Medium 反映で「6 test 全件」表現を実 scope に sync)
 - property-based test (D / B) が 100 random runs / shrinking 有効で安定 pass (CI で 2-3 run 連続 verify)
 - 代表 3 件 (D + F + **C recommended、PR-P2-3 review で user 最終確定**) で v1.6.1 fix revert/diff し対応 test fail を手元 diff で確認、PR-P2-3 説明に commit hash + 期待 fail 一覧 pin (Round 2 P2-2 反映で確定/未確定揺れ解消)
 - ADR-020 carry-over ledger L1-L6 (B/C/D/E/F/G) 全件 **strikethrough 候補化** (formal close は Phase 3 完了時、本 PR で contract test pin により構造除去完了 trigger)
@@ -158,13 +158,13 @@ ADR-020 §2 全 4 項目を継承 + 本 PR 固有:
   - **P1-2 (§3.2 C 関数名誤り)**: 元 draft `executePreferred + line 158-172` (関数不存在) → `createDesktopExecutor` factory closure :212-217 (downgrade marker emit) に訂正
   - **P2-1 (sub-plan 命名規約 mismatch)**: §0 冒頭で「親 ADR §4.5 PR-P2-3 = 本 sub-plan、命名は contract-test 性質を反映」を 1 行明示
   - **P2-2 (C 確定/未確定 揺れ)**: §1.1 D + §5 acceptance + §7 OQ #3 で「C recommended、PR-P2-3 review で user 最終確定」と弱化済表記に sync (元 §1.1 D / §5 が確定形と §7 OQ #3 未確定形が drift)
-  - **P2-3 (F contract test 重複)**: `f-lease-ttl-2branch.test.ts` を本 PR scope から **削除** (5 file 構成に縮約)、PR-P2-2 で `tests/unit/lease-ttl-policy.test.ts` に 16 case 既 land 済を pin 利用 (F 軸 revert 実証は既 land file 対象)
+  - **P2-3 (F contract test 重複)**: `f-lease-ttl-2branch.test.ts` を本 PR scope から **削除** (5 file 構成に縮約)、PR-P2-2 で `tests/unit/lease-ttl-policy.test.ts` に 10 case 既 land 済を pin 利用 (F 軸 revert 実証は既 land file 対象)
   - **P3-1 (grep 表現具体化)**: §1.1 A で `grep "fast-check" .` → `grep "fast-check" package.json + package-lock.json で 0 件` と表現具体化
 - Round 2 教訓:
   - **§3.1 fact 整合 sweep 漏れ起草直後再発 risk**: 親 ADR から carry-over した stale file path / 関数名 (`src/perception/visual-motion-cache.ts` / `executePreferred`) が sub-plan 起草直後 Opus review (Round 1) で検出 = `feedback_sub_plan_opus_review_first.md` 運用が功を奏した (= PR-P2-1/P2-2 同型 user 救済を回避)。ただし起草直後 grep fact-check で更に preventive 検出可能 → 教訓追記候補 (memory `feedback_sub_plan_full_reread.md`「起草時 grep fact-check」を sub-plan 起草の標準 step に組込み)
   - **親 ADR §1.1 C 行も同型 drift の可能性** (`executePreferred` 表記): Opus 自身が「本 PR では out-of-scope だが指摘として残す」と発言、別 PR (例: 後続 epic sweep or 軽量 docs PR) で親 ADR 全 file path / 関数名 grep 実施推奨
 - Round 3 反映点 (user 提供 Opus 第 2 round review: High×1 + Medium×3 + Low×1):
-  - **High (F file 参照訂正)**: §1.1 D F revert 行で削除済 `f-lease-ttl-2branch.test.ts` 参照を `tests/unit/lease-ttl-policy.test.ts:120` 以降 `observedRoundTripMs 2-branch contract (F)` describe block に訂正 (PR-P2-2 既 land 16 case)
+  - **High (F file 参照訂正)**: §1.1 D F revert 行で削除済 `f-lease-ttl-2branch.test.ts` 参照を `tests/unit/lease-ttl-policy.test.ts:120` 以降 `observedRoundTripMs 2-branch contract (F)` describe block に訂正 (PR-P2-2 既 land 10 case)
   - **Medium (acceptance 表現)**: §5 で「6 test 全件 green」を「6 軸 contract test 全件 green (新規 5 file + 既存 F test)」に sync、実 scope と表現の bit-equal 維持
   - **Medium (E 軸 scope creep 防止)**: §1.1 E + §3.2 で `executionPlan / plan trail` 新 API 言及を **既存 `deriveEntityCapabilities()` + `createDesktopExecutor()` surface 直接呼び** に書き換え (新 API 不作成、runtime 不変原則維持)
   - **Medium (B 軸 scope creep 防止)**: §1.1 E + §3.2 で「純粋判定 helper 切り出し」言及を **既存 `DirtyRectSubscriptionCache.acquireWithState() + invalidate()` (`any-change.ts:195`) 観測** に書き換え、純粋 helper 切り出しは **SR-4 (DXGI broker) carry-over** に明示

@@ -127,4 +127,60 @@ describe("B contract — DXGI cacheState 5-value state machine", () => {
       { numRuns: 100 },
     );
   });
+
+  // Round 2 P2-3 fix: semantic mapping property — pins the (state, factory,
+  // elapsed, invalidated) tuple to expected cacheState, not just cardinality.
+  // Catches a regression where the state machine returns a valid-but-wrong
+  // value (e.g. miss-init when hit-subscription was expected).
+  it("semantic mapping: (factorySucceeds, !invalidated, elapsed < 20s) → 'hit-subscription'", () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 0, max: 19_999 }),    // < 20s STAGE5_CACHE_IDLE_TIMEOUT_MS
+        (elapsedMs) => {
+          let now = 0;
+          const cache = new DirtyRectSubscriptionCache(fakeFactory, () => now);
+          cache.acquireWithState(0);                // miss-init → subscription cached
+          now = elapsedMs;
+          const r = cache.acquireWithState(0);
+          expect(r.state).toBe("hit-subscription");
+        },
+      ),
+      { numRuns: 50 },
+    );
+  });
+
+  it("semantic mapping: (factory throws, elapsed ≤ 60s) → 'hit-unavailable'", () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 0, max: 59_999 }),    // ≤ 60s STAGE5_UNAVAILABLE_TTL_MS
+        (elapsedMs) => {
+          let now = 0;
+          const cache = new DirtyRectSubscriptionCache(throwingFactory("dxgi fail"), () => now);
+          cache.acquireWithState(0);                // miss-init-unavailable → marker cached
+          now = elapsedMs;
+          const r = cache.acquireWithState(0);
+          expect(r.state).toBe("hit-unavailable");
+        },
+      ),
+      { numRuns: 50 },
+    );
+  });
+
+  it("semantic mapping: (invalidated, elapsed < 2s) → 'hit-negative-backoff'", () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 0, max: 1_999 }),     // < 2s NEGATIVE_BACKOFF_MS
+        (elapsedMs) => {
+          let now = 0;
+          const cache = new DirtyRectSubscriptionCache(fakeFactory, () => now);
+          cache.acquireWithState(0);                // miss-init → subscription cached
+          cache.invalidate(0);                       // negative-backoff marker set
+          now = elapsedMs;
+          const r = cache.acquireWithState(0);
+          expect(r.state).toBe("hit-negative-backoff");
+        },
+      ),
+      { numRuns: 50 },
+    );
+  });
 });
