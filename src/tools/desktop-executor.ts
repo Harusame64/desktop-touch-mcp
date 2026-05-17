@@ -44,7 +44,14 @@ export interface ExecutorDeps {
    * locator name/automationId cannot be re-found by `makeSetElementValueScript`).
    * Throws on unsupported windows (Chromium / WT-XAML) — caller surfaces
    * executor_failed and the LLM's `if_unexpected.try_next` from PR #329 points
-   * at `mouse_click({clickAt})` as the next rung.
+   * at `keyboard({action:'type', text, method:'foreground'})` as the next rung
+   * (FG SendInput bypasses BG injection restrictions).
+   *
+   * Success returns the `"keyboard"` ExecutorKind. Note that `"keyboard"` is an
+   * internal-fallback-only executor — it is NOT advertised in
+   * `UiAffordance.executors` / `UiEntity.unsupportedExecutors` (both remain the
+   * 4-executor union). See `types.ts::ExecutorKind` JSDoc for the
+   * advertised-surface rationale.
    */
   keyboardTypeBg(windowTitle: string, text: string): Promise<void>;
   /** Mouse: click at absolute screen coordinates. */
@@ -183,6 +190,7 @@ export function createDesktopExecutor(
               `Type fallback ladder exhausted for "${entity.label ?? entity.entityId}": ` +
               `uia=${uiaErr instanceof Error ? uiaErr.message : String(uiaErr)} / ` +
               `keyboard=${kbErr instanceof Error ? kbErr.message : String(kbErr)}`,
+              { cause: kbErr },
             );
           }
         }
@@ -337,6 +345,15 @@ function getSharedRealDeps(): ExecutorDeps {
       // RichEditD2DPT child rather than the "Notepad" top-level). Chromium / WT-XAML
       // hosts surface "Background keyboard type not supported" so the joint error
       // message above (`Type fallback ladder exhausted: ...`) carries the diagnostic.
+      //
+      // Opus Round 1 P2-2 note (PR #330): the LLM-visible BG path at
+      // `keyboard.ts:973` gates on `canInjectViaPostMessage(top-level hwnd)` and
+      // delegates to `postCharsToHwnd` which internally resolves the child via
+      // `resolveTarget`. The asymmetry is deliberate here — the child-class check
+      // is the right semantic for "send keys to the active edit control" and the
+      // Notepad RichEditD2DPT case is exactly where the parent-class check is too
+      // coarse. The path-class refactor epic should reconcile both BG paths under
+      // a single semantic (tracked in memory `project_path_class_refactor_pending`).
       const { enumWindowsInZOrder } = await import("../engine/win32.js");
       const { canInjectAtTarget, postCharsToHwnd } = await import("../engine/bg-input.js");
       const wins = enumWindowsInZOrder();
