@@ -26,17 +26,31 @@ export class LeaseStore {
   private readonly nowFn: () => number;
   /**
    * ADR-020 PR-P2-2: timestamp of the most recent act attempt in this session.
-   * Read-once via consumeObservedRoundTripMs() on the next see() — the
-   * computed `nowFn() - lastActAtMs` reflects the LLM's "act → next see"
-   * round-trip wallclock, which feeds `observedRoundTripMs` into the TTL
-   * policy so the lease window adapts to actual thinking time.
+   * Read via peek/commit (CAS-guarded, production) or consume (one-shot BC)
+   * on the next see() — the computed `nowFn() - lastActAtMs` reflects the
+   * LLM's "act → next see" round-trip wallclock, which feeds
+   * `observedRoundTripMs` into the TTL policy so the lease window adapts to
+   * actual thinking time.
    *
    * Lifecycle:
    *   - undefined initially (no act yet)
    *   - set by recordAct() at execute attempt time (success OR failure)
-   *   - cleared by consumeObservedRoundTripMs() after read (one-shot)
+   *   - cleared by commit-with-token or consume after read
    */
   private lastActAtMs: number | undefined = undefined;
+  /**
+   * ADR-020 PR-P2-2 Codex Round 4 fix: monotonic counter that uniquely
+   * identifies each recordAct() call. Used as the CAS token for
+   * peek/commit so concurrent recordAct() calls in the same millisecond
+   * cannot satisfy the guard (the previous timestamp-based token could
+   * collide when `Date.now()` ticked only once for two acts).
+   *
+   * Incremented on every recordAct(). `peek` snapshots the current value;
+   * `commit(token)` clears only when the stored seq still equals the
+   * peeked token. The seq itself is monotonic — never decremented or reset.
+   */
+  private lastActSeq: number = 0;
+  private nextActSeq: number = 1;
 
   constructor(opts: LeaseStoreOptions = {}) {
     this.defaultTtlMs = opts.defaultTtlMs ?? DEFAULT_TTL_MS;
@@ -117,54 +131,65 @@ export class LeaseStore {
    * `nowFn` so test fake timers automatically apply (callers do not need to
    * pass their own clock).
    *
+   * Also bumps `lastActSeq` (monotonic counter) so each act gets a unique
+   * CAS token — protecting against concurrent acts that land in the same
+   * `nowFn()` millisecond from stomping each other on commit (Codex R4 fix).
+   *
    * @param _viewId currently unused (single per-session field is sufficient,
    *                YAGNI); accepted to keep the signature stable when a
    *                future per-viewId Map expansion lands.
    */
   recordAct(_viewId: string): void {
     this.lastActAtMs = this.nowFn();
+    this.lastActSeq = this.nextActSeq++;
   }
 
   /**
    * ADR-020 PR-P2-2: peek the act → next see() round-trip wallclock without
-   * clearing the sample. Returns `{ elapsedMs, sampleAtMs }` where:
+   * clearing the sample. Returns `{ elapsedMs, sampleSeq }` where:
    *   - `elapsedMs`  = nowFn() - lastActAtMs (the round-trip wallclock)
-   *   - `sampleAtMs` = lastActAtMs (the CAS token; pass to commit so a newer
-   *                   sample recorded by a concurrent act is not stomped)
+   *   - `sampleSeq`  = lastActSeq (monotonic CAS token; pass to commit so a
+   *                   newer sample recorded by a concurrent act is not stomped)
    * Returns undefined when no sample has been recorded since the last commit.
    *
    * Use this when the caller may not actually apply the value (e.g. see() may
    * throw before reaching TTL computation). The two-step `peek` →
-   * `commitObservedRoundTripMs(sampleAtMs)` pattern keeps the sample intact
+   * `commitObservedRoundTripMs(sampleSeq)` pattern keeps the sample intact
    * across failure paths so a later successful see() can still see the
    * round-trip.
    *
    * Codex Round 2 fix on PR #337 — split single-call `consume` into peek +
    * commit so failure paths don't silently drop the sample.
-   * Codex Round 3 fix on PR #337 — peek now returns a CAS token (sampleAtMs)
-   * because HTTP-mode facade is process-global; concurrent
-   * `desktop_act` between peek and commit could otherwise stomp the new
-   * sample. Commit-with-token only clears when the stored sample is still
-   * the one we peeked.
+   * Codex Round 3 fix on PR #337 — peek now returns a CAS token because
+   * HTTP-mode facade is process-global; concurrent `desktop_act` between
+   * peek and commit could otherwise stomp the new sample.
+   * Codex Round 4 fix on PR #337 — CAS token is now `sampleSeq` (monotonic
+   * counter) instead of `sampleAtMs` (ms timestamp). Two recordAct() calls
+   * in the same millisecond produced identical timestamp tokens, letting
+   * a stale commit clear a newer sample on numeric equality. The monotonic
+   * counter cannot collide.
    */
-  peekObservedRoundTripMs(): { elapsedMs: number; sampleAtMs: number } | undefined {
+  peekObservedRoundTripMs(): { elapsedMs: number; sampleSeq: number } | undefined {
     if (this.lastActAtMs === undefined) return undefined;
-    return { elapsedMs: this.nowFn() - this.lastActAtMs, sampleAtMs: this.lastActAtMs };
+    return { elapsedMs: this.nowFn() - this.lastActAtMs, sampleSeq: this.lastActSeq };
   }
 
   /**
    * ADR-020 PR-P2-2: commit (clear) the round-trip sample after a successful
    * see() has applied the peeked value to TTL computation. CAS-guarded:
-   * clears only when the stored `lastActAtMs` still equals the token from
+   * clears only when the stored `lastActSeq` still equals the token from
    * peek. If a concurrent `recordAct()` ran between peek and commit, the
-   * stored value will differ and commit becomes a no-op, preserving the
+   * stored seq will differ and commit becomes a no-op, preserving the
    * newer sample for the next see().
    *
    * Codex Round 3 fix on PR #337 — see peekObservedRoundTripMs JSDoc.
+   * Codex Round 4 fix on PR #337 — token is `sampleSeq` not `sampleAtMs`
+   * to avoid same-millisecond collision.
    */
-  commitObservedRoundTripMs(sampleAtMs: number): void {
-    if (this.lastActAtMs === sampleAtMs) {
+  commitObservedRoundTripMs(sampleSeq: number): void {
+    if (this.lastActSeq === sampleSeq && this.lastActAtMs !== undefined) {
       this.lastActAtMs = undefined;
+      // lastActSeq retained — next recordAct() will bump it past any in-flight peek
     }
     // else: a newer recordAct() landed during see() — keep the new sample
   }

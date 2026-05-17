@@ -206,19 +206,20 @@ describe("LeaseStore — observedRoundTripMs (ADR-020 PR-P2-2)", () => {
   });
 });
 
-// ADR-020 PR-P2-2 Codex Round 2 + Round 3 fix: peek + CAS-guarded commit
-// preserves the round-trip sample across transient see() failures AND
-// against concurrent recordAct() between peek and commit.
-describe("LeaseStore — peek + CAS commit pattern (ADR-020 PR-P2-2 Codex R2/R3)", () => {
-  it("peek returns { elapsedMs, sampleAtMs } without clearing the sample", () => {
+// ADR-020 PR-P2-2 Codex Round 2/3/4 fix: peek + CAS-guarded commit
+// (sampleSeq monotonic token) preserves the round-trip sample across
+// transient see() failures, against concurrent recordAct(), AND against
+// same-millisecond timestamp collisions.
+describe("LeaseStore — peek + CAS commit pattern (ADR-020 PR-P2-2 Codex R2/R3/R4)", () => {
+  it("peek returns { elapsedMs, sampleSeq } without clearing the sample", () => {
     let now = 0;
     const store = new LeaseStore({ nowFn: () => now });
-    store.recordAct("view-1");           // lastActAtMs = 0
+    store.recordAct("view-1");           // lastActAtMs = 0, lastActSeq = 1
     now = 5_000;
     const first = store.peekObservedRoundTripMs();
-    expect(first).toEqual({ elapsedMs: 5_000, sampleAtMs: 0 });
+    expect(first).toEqual({ elapsedMs: 5_000, sampleSeq: 1 });
     // repeated peek returns same value (peek does NOT clear)
-    expect(store.peekObservedRoundTripMs()).toEqual({ elapsedMs: 5_000, sampleAtMs: 0 });
+    expect(store.peekObservedRoundTripMs()).toEqual({ elapsedMs: 5_000, sampleSeq: 1 });
   });
 
   it("peek returns undefined when no act has been recorded", () => {
@@ -232,30 +233,50 @@ describe("LeaseStore — peek + CAS commit pattern (ADR-020 PR-P2-2 Codex R2/R3)
     store.recordAct("view-1");
     now = 3_000;
     const peeked = store.peekObservedRoundTripMs();
-    expect(peeked).toEqual({ elapsedMs: 3_000, sampleAtMs: 0 });
-    store.commitObservedRoundTripMs(peeked!.sampleAtMs);
+    expect(peeked).toEqual({ elapsedMs: 3_000, sampleSeq: 1 });
+    store.commitObservedRoundTripMs(peeked!.sampleSeq);
     expect(store.peekObservedRoundTripMs()).toBeUndefined();
   });
 
   it("CAS commit with a stale token is a no-op (does not clear newer sample)", () => {
-    // Simulate the concurrent-act race that motivated Round 3:
-    //   1. see()-A peeks (token=t0)
+    // Concurrent-act race (Round 3):
+    //   1. see()-A peeks (seq=1)
     //   2. ... see()-A awaits snapshot ...
-    //   3. another desktop_act runs and records a NEWER sample (token=t1)
-    //   4. see()-A reaches commit, must NOT stomp the newer sample
+    //   3. another desktop_act recordAct() (seq=2, newer)
+    //   4. see()-A's commit(seq=1) must NOT stomp the newer sample
     let now = 0;
     const store = new LeaseStore({ nowFn: () => now });
-    store.recordAct("view-1");                    // t0 = 0
-    const peeked = store.peekObservedRoundTripMs(); // sampleAtMs=0
-    expect(peeked?.sampleAtMs).toBe(0);
+    store.recordAct("view-1");                                // seq=1
+    const peeked = store.peekObservedRoundTripMs();
+    expect(peeked?.sampleSeq).toBe(1);
     // concurrent recordAct between peek and commit
     now = 2_000;
-    store.recordAct("view-1");                    // t1 = 2_000 (newer)
+    store.recordAct("view-1");                                // seq=2 (newer)
     // see()-A's stale-token commit must be a no-op
-    store.commitObservedRoundTripMs(peeked!.sampleAtMs);
+    store.commitObservedRoundTripMs(peeked!.sampleSeq);       // commit(1) → no-op
     now = 5_000;
     // newer sample preserved for the next see()
-    expect(store.peekObservedRoundTripMs()).toEqual({ elapsedMs: 3_000, sampleAtMs: 2_000 });
+    expect(store.peekObservedRoundTripMs()).toEqual({ elapsedMs: 3_000, sampleSeq: 2 });
+  });
+
+  it("CAS commit is immune to same-millisecond timestamp collisions (Codex R4)", () => {
+    // Round 4 race: two recordAct() in the same nowFn() ms tick.
+    // With timestamp-based tokens, both would share token=t and a stale
+    // commit could clear the newer sample on numeric equality. The
+    // monotonic seq token never collides.
+    let now = 1_000;
+    const store = new LeaseStore({ nowFn: () => now });
+    store.recordAct("view-1");                                // seq=1, sampleAtMs=1_000
+    const peeked = store.peekObservedRoundTripMs();           // seq=1
+    expect(peeked?.sampleSeq).toBe(1);
+
+    // Second recordAct in the SAME millisecond (now still 1_000)
+    store.recordAct("view-1");                                // seq=2, sampleAtMs=1_000 (same ms!)
+    // peek-A's stale commit must not stomp the newer sample
+    store.commitObservedRoundTripMs(peeked!.sampleSeq);       // commit(1) → no-op
+    // newer sample (seq=2) preserved
+    now = 6_000;
+    expect(store.peekObservedRoundTripMs()).toEqual({ elapsedMs: 5_000, sampleSeq: 2 });
   });
 
   it("commit without a staged sample is a no-op (does not throw)", () => {
@@ -265,21 +286,18 @@ describe("LeaseStore — peek + CAS commit pattern (ADR-020 PR-P2-2 Codex R2/R3)
   });
 
   it("peek-without-commit preserves the sample across a simulated see() failure", () => {
-    // Scenario: act → see() peeks → snapshot throws (no commit) → next see() retries
     let now = 0;
     const store = new LeaseStore({ nowFn: () => now });
     store.recordAct("view-1");
 
-    // First see() attempt: peek, then "throws" (no commit)
     now = 4_000;
-    expect(store.peekObservedRoundTripMs()).toEqual({ elapsedMs: 4_000, sampleAtMs: 0 });
+    expect(store.peekObservedRoundTripMs()).toEqual({ elapsedMs: 4_000, sampleSeq: 1 });
     // simulate throw — no commit happens
 
-    // Second see() attempt picks up the wallclock from the original act
     now = 9_000;
     const peeked = store.peekObservedRoundTripMs();
-    expect(peeked).toEqual({ elapsedMs: 9_000, sampleAtMs: 0 });
-    store.commitObservedRoundTripMs(peeked!.sampleAtMs);   // successful TTL apply
+    expect(peeked).toEqual({ elapsedMs: 9_000, sampleSeq: 1 });
+    store.commitObservedRoundTripMs(peeked!.sampleSeq);
     expect(store.peekObservedRoundTripMs()).toBeUndefined();
   });
 
@@ -289,7 +307,6 @@ describe("LeaseStore — peek + CAS commit pattern (ADR-020 PR-P2-2 Codex R2/R3)
     store.recordAct("view-1");
     now = 7_000;
     expect(store.consumeObservedRoundTripMs()).toBe(7_000);
-    // sample cleared
     expect(store.peekObservedRoundTripMs()).toBeUndefined();
   });
 });

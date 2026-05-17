@@ -328,10 +328,13 @@ export class DesktopFacade {
     //   - use peek (no clear) so a transient snapshot failure that throws below does
     //     NOT silently discard the sample (R2: clearing one-shot before TTL is
     //     actually computed loses the round-trip permanently)
-    //   - peek returns { elapsedMs, sampleAtMs }; we hold the CAS token (sampleAtMs)
-    //     and pass it to commit. HTTP-mode facade is process-global, so a concurrent
-    //     desktop_act between peek and commit could otherwise stomp the new sample
-    //     when we clear. CAS commit keeps the newer sample for the next see() (R3).
+    //   - peek returns { elapsedMs, sampleSeq }; we hold the CAS token (sampleSeq,
+    //     a monotonic counter) and pass it to commit. HTTP-mode facade is
+    //     process-global, so a concurrent desktop_act between peek and commit could
+    //     otherwise stomp the new sample when we clear. CAS commit with the
+    //     monotonic seq keeps the newer sample for the next see() (R3) and is
+    //     immune to same-millisecond collisions that a timestamp token would suffer
+    //     under concurrent requests (R4).
     const peekedRoundTrip = session.leaseStore.peekObservedRoundTripMs();
     const observedRoundTripMs = peekedRoundTrip?.elapsedMs;
 
@@ -495,14 +498,15 @@ export class DesktopFacade {
     // refresh, a multi-minute see() could be evicted mid-call.
     session.lastAccessMs = (this.opts.nowFn ?? Date.now)();
 
-    // ADR-020 PR-P2-2 (Codex Round 2 P2 fix + Round 3 P2 CAS guard): commit
+    // ADR-020 PR-P2-2 (Codex Round 2 P2 fix + Round 3/4 P2 CAS guard): commit
     // the peeked round-trip sample only after the successful see() has applied
     // it to TTL computation. If snapshot/window collection above threw, the
     // function exited without reaching this line and the sample stays staged
-    // for the next see() call. CAS token (sampleAtMs) protects against a
-    // concurrent recordAct() between peek and commit — the newer sample wins.
+    // for the next see() call. CAS token (sampleSeq monotonic counter)
+    // protects against a concurrent recordAct() between peek and commit —
+    // newer sample wins, even when same-millisecond timestamps would collide.
     if (peekedRoundTrip !== undefined) {
-      session.leaseStore.commitObservedRoundTripMs(peekedRoundTrip.sampleAtMs);
+      session.leaseStore.commitObservedRoundTripMs(peekedRoundTrip.sampleSeq);
     }
 
     return output;
