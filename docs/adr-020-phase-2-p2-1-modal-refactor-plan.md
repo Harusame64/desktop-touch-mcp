@@ -114,12 +114,14 @@ export function classifyModal(
   context: "pre-touch" | "post-touch-diff",
   options?: { excludeSelf?: UiEntity }
 ): boolean {
+  // Pre-touch self-exclusion FIRST (load-bearing per-clause order — preserves
+  // legacy isModalCandidate ordering where `entityId === target.entityId` is
+  // the first early-return). Keep this clause at line 1 of the body.
+  if (context === "pre-touch" && options?.excludeSelf?.entityId === entity.entityId) return false;
   // Core: UIA-sourced + unknown role + non-chrome
   if (!entity.sources.includes("uia")) return false;
   if (entity.role !== "unknown") return false;
   if (isChromeControlType(entity.controlType)) return false;
-  // Pre-touch context only: exclude self (target entity itself)
-  if (context === "pre-touch" && options?.excludeSelf?.entityId === entity.entityId) return false;
   return true;
 }
 ```
