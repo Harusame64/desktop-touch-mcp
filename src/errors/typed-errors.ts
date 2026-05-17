@@ -36,6 +36,30 @@ export class ExecutorFailedError extends HandlerError {
   }
 }
 
+/**
+ * Generic typed error whose `name` is set from a code passed at construction
+ * time. Used by wrapper-internal callsites (`makeQueryWrapper`'s N upper
+ * bound checks, `makeCommitWrapper`'s lease validation / handler-throw
+ * fallback) so the existing `buildFailureEnvelope(code, ...)` direct calls
+ * can be migrated to `toFailureEnvelope(Err(new CodedHandlerError(code)), ...)`
+ * without inventing a dedicated subclass per code (ADR-020 SR-2 PR-SR2-3).
+ *
+ * `SUGGESTS` dict lookup (`getSuggestsForCode(code)`) inside `toFailureEnvelope`
+ * resolves `try_next` for the named code identically to the pre-migration
+ * direct call shape — envelope JSON.stringify-level bit-equal.
+ *
+ * When `message` is omitted (the common 4 memory-upper-bound callsite shape),
+ * `Error.message` falls back to `code` for stack-trace / cause-chain
+ * observation. The envelope output is unaffected because `Error.message` is
+ * not emitted in `EnvelopeMinimalShape<null>`. Round 4 P3-2 doc.
+ */
+export class CodedHandlerError extends HandlerError {
+  constructor(code: string, message?: string, options?: ErrorOptions) {
+    super(message ?? code, options);
+    this.name = code;
+  }
+}
+
 // Future expansion (sub-plan §9 OQ-SR2-2): ModalBlockingError, LeaseExpiredError,
 // etc., each with a `name` matching a SUGGESTS key. Hierarchy stays shallow —
 // SUGGESTS lookup is the SSOT, not a type-system inheritance tree.

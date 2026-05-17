@@ -117,8 +117,8 @@ import {
   _resetSingleSessionPinForTest,
 } from "./_session-context.js";
 import { getSuggestsForCode, failArgs } from "./_errors.js";
-import type { Result } from "../types/result.js";
-import { HandlerError } from "../errors/typed-errors.js";
+import { Err, type Result } from "../types/result.js";
+import { HandlerError, CodedHandlerError } from "../errors/typed-errors.js";
 import type { ToolResult } from "./_types.js";
 import {
   uiPatternStore,
@@ -3313,64 +3313,43 @@ export function makeQueryWrapper<TArgs extends Record<string, unknown>>(
     // SUGGESTS 文字列 → `{action: string}` minimal wiring、ADR-010 P2 acceptance
     // の本格 typed action 設計は別 phase の責務だが本 PR で string content は
     // LLM に届ける)。
+    // ADR-020 SR-2 PR-SR2-3 (北極星 1 converter 1 関数集約): 4 つの N/K upper
+    // bound checks (Working/Episodic/Semantic/Procedural) を `toFailureEnvelope`
+    // 経由に統一。`CodedHandlerError(code)` で SUGGESTS dict key (= name field)
+    // を渡し、helper 内で `getSuggestsForCode(name)` → `try_next` 構築 →
+    // `buildFailureEnvelope` wrap → `optIn` 分岐 → envelope/raw-compat shape
+    // を return。pre-migration の direct call と JSON.stringify level で bit-equal。
+    const envelopeOptsForBoundCheck = { viewPoisoned: false, asOfWallclockMs: null };
     if (includeWorkingOptIn && includeWorkingN! > WORKING_MEMORY_N_MAX) {
-      const tryNext: TryNextAction[] = getSuggestsForCode(
-        "WorkingMemoryNUpperBoundExceeded",
-      ).map((suggest) => ({ action: suggest }));
-      const failure = buildFailureEnvelope(
-        "WorkingMemoryNUpperBoundExceeded",
-        tryNext,
-        { viewPoisoned: false, asOfWallclockMs: null },
+      const finalShape = toFailureEnvelope(
+        Err(new CodedHandlerError("WorkingMemoryNUpperBoundExceeded")),
+        { optIn, envelopeOptions: envelopeOptsForBoundCheck },
       );
-      const finalShape = optIn ? failure : compatFailureRaw(failure);
-      return {
-        content: [{ type: "text", text: JSON.stringify(finalShape) }],
-      };
+      return { content: [{ type: "text", text: JSON.stringify(finalShape) }] };
     }
     // ADR-011 Phase B B-2: Episodic memory N upper bound check (B-1 同型)。
     if (includeEpisodicOptIn && includeEpisodicN! > EPISODIC_MEMORY_N_MAX) {
-      const tryNext: TryNextAction[] = getSuggestsForCode(
-        "EpisodicMemoryNUpperBoundExceeded",
-      ).map((suggest) => ({ action: suggest }));
-      const failure = buildFailureEnvelope(
-        "EpisodicMemoryNUpperBoundExceeded",
-        tryNext,
-        { viewPoisoned: false, asOfWallclockMs: null },
+      const finalShape = toFailureEnvelope(
+        Err(new CodedHandlerError("EpisodicMemoryNUpperBoundExceeded")),
+        { optIn, envelopeOptions: envelopeOptsForBoundCheck },
       );
-      const finalShape = optIn ? failure : compatFailureRaw(failure);
-      return {
-        content: [{ type: "text", text: JSON.stringify(finalShape) }],
-      };
+      return { content: [{ type: "text", text: JSON.stringify(finalShape) }] };
     }
     // ADR-011 Phase B B-3: Semantic memory K upper bound check (B-1/B-2 同型)。
     if (includeSemanticOptIn && includeSemanticK! > SEMANTIC_MEMORY_K_MAX) {
-      const tryNext: TryNextAction[] = getSuggestsForCode(
-        "SemanticMemoryKUpperBoundExceeded",
-      ).map((suggest) => ({ action: suggest }));
-      const failure = buildFailureEnvelope(
-        "SemanticMemoryKUpperBoundExceeded",
-        tryNext,
-        { viewPoisoned: false, asOfWallclockMs: null },
+      const finalShape = toFailureEnvelope(
+        Err(new CodedHandlerError("SemanticMemoryKUpperBoundExceeded")),
+        { optIn, envelopeOptions: envelopeOptsForBoundCheck },
       );
-      const finalShape = optIn ? failure : compatFailureRaw(failure);
-      return {
-        content: [{ type: "text", text: JSON.stringify(finalShape) }],
-      };
+      return { content: [{ type: "text", text: JSON.stringify(finalShape) }] };
     }
     // ADR-011 Phase B B-4: Procedural memory K upper bound check (B-3 同型)。
     if (includeProceduralOptIn && includeProceduralK! > PROCEDURAL_MEMORY_K_MAX) {
-      const tryNext: TryNextAction[] = getSuggestsForCode(
-        "ProceduralMemoryKUpperBoundExceeded",
-      ).map((suggest) => ({ action: suggest }));
-      const failure = buildFailureEnvelope(
-        "ProceduralMemoryKUpperBoundExceeded",
-        tryNext,
-        { viewPoisoned: false, asOfWallclockMs: null },
+      const finalShape = toFailureEnvelope(
+        Err(new CodedHandlerError("ProceduralMemoryKUpperBoundExceeded")),
+        { optIn, envelopeOptions: envelopeOptsForBoundCheck },
       );
-      const finalShape = optIn ? failure : compatFailureRaw(failure);
-      return {
-        content: [{ type: "text", text: JSON.stringify(finalShape) }],
-      };
+      return { content: [{ type: "text", text: JSON.stringify(finalShape) }] };
     }
 
     const meta = await fetchMeta();
