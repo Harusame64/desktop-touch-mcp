@@ -118,9 +118,9 @@ PR-SR2-3 (handler 群 boundary 共通 pattern 統一 - Part 2 + executor_failed 
 | 3282 | `makeQueryWrapper` 内 `SemanticMemoryNUpperBoundExceeded` check (同上) | PR-SR2-1 |
 | 3297 | `makeQueryWrapper` 内 `ProceduralMemoryNUpperBoundExceeded` check (同上) | PR-SR2-1 |
 
-= **PR-SR2-1 で 5 callsite (line 2910 + 3252/3267/3282/3297) を `toFailureEnvelope` 経由置換** (wrapper internal direct call、scope 内に追加)、**PR-SR2-3 で 1 callsite (line 2990) を置換** (handler throw fallback path、PR #329 独立 return 経路統一と同 wrapper)。**PR-SR2-2 は handler boundary 共通 pattern のみ、`_envelope.ts` 内 callsite 置換は 0 件**。
+= **PR-SR2-1 で wrapper internal callsite 置換 scope creep 回避**: 5 callsite (line 2910 + 3252/3267/3282/3297) はそれぞれ `mapLeaseValidationToTypedReason` + memory N upper bound `WorkingMemoryNUpperBoundExceeded` 等の独自 typed code + tryNext を direct 構築しており、`toFailureEnvelope` 経由置換には typed error class 5 種追加 + SUGGESTS dict sync 確認が必要 (PR-SR2-1 ~200-300 line scope を超過 risk)。本 SR-2 Round 3 実装中判断 (2026-05-17) で **PR-SR2-1 は基盤 (Result + ExecutorFailedError + toFailureEnvelope + toResultErr helper) のみに scope shrink**、wrapper internal 6 callsite 全件置換は PR-SR2-3 で executor_failed return path 統一と同経路で一括処理。
 
-= **PR-SR2-2 / PR-SR2-3 並走可** (`_envelope.ts` 内 callsite 置換 scope disjoint、PR-SR2-1 で 5 件 + PR-SR2-3 で 1 件、PR-SR2-2 は 0 件)。
+= **PR-SR2-2 / PR-SR2-3 並走条件再修正**: PR-SR2-2 = handler 19 件 boundary 統一 (`_envelope.ts` 内 callsite 置換 0 件)、PR-SR2-3 = handler 10 件 boundary 統一 + executor_failed return path 統一 + `_envelope.ts` 内 6 callsite 全件置換 + L6 closure (scope 拡大、~300-400 line に調整)。両 PR は scope disjoint (handler file 分担 + PR-SR2-3 が `_envelope.ts` 専有)、worktree 並走可。
 
 ---
 
