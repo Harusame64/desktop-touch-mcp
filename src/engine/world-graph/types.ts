@@ -22,7 +22,18 @@ export interface EntityLocator {
 }
 export type AffordanceVerb = "invoke" | "click" | "type" | "select" | "scrollTo" | "read";
 export type EntitySourceKind = "uia" | "cdp" | "win32" | "ocr" | "som" | "visual_gpu" | "terminal" | "inferred";
-export type ExecutorKind = "uia" | "cdp" | "terminal" | "mouse";
+/**
+ * `"keyboard"` is a sub-executor used as a fallback from the UIA `setValue` route
+ * when `uiaSetValue` throws (e.g. Notepad's RichEditD2DPT exposes `ValuePattern` but
+ * `makeSetElementValueScript`'s `name -like '*…*'` locator filter cannot reach the
+ * entity — issue #327 item E). The fallback posts WM_CHAR to the focused child via
+ * `bg-input.ts::postCharsToHwnd` (same primitive `terminalSend` uses). It is NOT
+ * a primary executor advertised in `UiAffordance.executors` or `unsupportedExecutors`
+ * — those remain the 4-executor union (`uia | cdp | terminal | mouse`). The
+ * path-class refactor epic may promote it to a first-class executor once the
+ * capability registry consolidates the ladder.
+ */
+export type ExecutorKind = "uia" | "cdp" | "terminal" | "mouse" | "keyboard";
 
 export interface UiAffordance {
   verb: AffordanceVerb;

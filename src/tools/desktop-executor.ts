@@ -37,6 +37,16 @@ export interface ExecutorDeps {
    * On failure, caller sees ok:false reason:"executor_failed" and can fall back to V1 terminal({action:'send'}).
    */
   terminalSend(windowTitle: string, text: string): Promise<void>;
+  /**
+   * Issue #327 item E: UIA `setValue` fallback. Posts WM_CHAR to the focused child
+   * of the target window via `bg-input.ts::postCharsToHwnd`. Used when the primary
+   * UIA `ValuePattern` route throws (e.g. Notepad's RichEditD2DPT entity whose
+   * locator name/automationId cannot be re-found by `makeSetElementValueScript`).
+   * Throws on unsupported windows (Chromium / WT-XAML) — caller surfaces
+   * executor_failed and the LLM's `if_unexpected.try_next` from PR #329 points
+   * at `mouse_click({clickAt})` as the next rung.
+   */
+  keyboardTypeBg(windowTitle: string, text: string): Promise<void>;
   /** Mouse: click at absolute screen coordinates. */
   mouseClick(x: number, y: number): Promise<void>;
 }
@@ -151,9 +161,31 @@ export function createDesktopExecutor(
       const name         = entity.locator?.uia?.name ?? entity.label;
       // Phase 4: 'setValue' absorbs former set_element_value tool — same UIA
       // ValuePattern path as 'type'. Both actions land here for any UIA entity.
+      //
+      // Issue #327 item E: when `uiaSetValue` throws (most commonly because the
+      // PowerShell `name -like '*…*'` locator filter in `makeSetElementValueScript`
+      // cannot re-find the entity — Notepad's RichEditD2DPT with empty/unstable name
+      // is the canonical dogfood case), fall back to background WM_CHAR injection
+      // via `keyboardTypeBg`. The fallback uses the same primitive as `terminalSend`
+      // and respects `canInjectAtTarget` so Chromium / UWP / WT-XAML hosts still
+      // surface executor_failed cleanly. On combined failure we surface a joint
+      // error message so the LLM sees both rungs' diagnostics in one envelope.
       if ((action === "type" || action === "setValue") && text !== undefined) {
-        await d.uiaSetValue(winTitle, text, name, automationId);
-        return "uia";
+        try {
+          await d.uiaSetValue(winTitle, text, name, automationId);
+          return "uia";
+        } catch (uiaErr) {
+          try {
+            await d.keyboardTypeBg(winTitle, text);
+            return "keyboard";
+          } catch (kbErr) {
+            throw new Error(
+              `Type fallback ladder exhausted for "${entity.label ?? entity.entityId}": ` +
+              `uia=${uiaErr instanceof Error ? uiaErr.message : String(uiaErr)} / ` +
+              `keyboard=${kbErr instanceof Error ? kbErr.message : String(kbErr)}`,
+            );
+          }
+        }
       }
       try {
         await d.uiaClick(winTitle, name, automationId);
@@ -296,6 +328,35 @@ function getSharedRealDeps(): ExecutorDeps {
         canBgSend:  (hwnd) => canInjectViaPostMessage(hwnd),
         bgSend:     (hwnd, t) => postCharsToHwnd(hwnd, t),
       });
+    },
+
+    async keyboardTypeBg(windowTitle, text) {
+      // Issue #327 item E: UIA setValue fallback. Uses the same WM_CHAR primitive
+      // as terminalSend but resolves to the focused child via `canInjectAtTarget`
+      // so the BG class check classifies the actual key-receiving HWND (Notepad's
+      // RichEditD2DPT child rather than the "Notepad" top-level). Chromium / WT-XAML
+      // hosts surface "Background keyboard type not supported" so the joint error
+      // message above (`Type fallback ladder exhausted: ...`) carries the diagnostic.
+      const { enumWindowsInZOrder } = await import("../engine/win32.js");
+      const { canInjectAtTarget, postCharsToHwnd } = await import("../engine/bg-input.js");
+      const wins = enumWindowsInZOrder();
+      const win = wins.find((w) => w.title.toLowerCase().includes(windowTitle.toLowerCase()));
+      if (!win) {
+        throw new Error(`Window not found for keyboardTypeBg: "${windowTitle}"`);
+      }
+      const check = canInjectAtTarget(win.hwnd);
+      if (!check.supported) {
+        throw new Error(
+          `Background keyboard type not supported for "${windowTitle}" ` +
+          `(${check.reason ?? "unknown"}, class: ${check.className ?? "?"}).`,
+        );
+      }
+      const r = postCharsToHwnd(win.hwnd, text);
+      if (!r.full) {
+        throw new Error(
+          `Background keyboard type incomplete: sent ${r.sent}/${text.length} chars to "${windowTitle}"`,
+        );
+      }
     },
 
     async mouseClick(x, y) {
