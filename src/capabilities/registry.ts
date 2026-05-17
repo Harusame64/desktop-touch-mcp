@@ -61,7 +61,9 @@ export interface CapabilityRegistry {
    * Invariant on a defined return value (北極星 7):
    *   (a) `preferredExecutors.length >= 1`
    *   (b) `preferredExecutors ∩ unsupportedExecutors = ∅`
-   *   (c) `preferredExecutors ⊆ Array<AdvertisedExecutorKind>` (no `"keyboard"`)
+   *   (c) `preferredExecutors ⊆ Array<AdvertisedExecutorKind>` (SR-5 promoted
+   *       `"keyboard"` to first-class advertised — the narrow now accepts all
+   *       5 executors; any value outside the union is a violation)
    *
    * Bit-equal output guarantee with the pre-SR-1 `deriveEntityCapabilities`
    * implementation — pinned by the existing
@@ -202,7 +204,7 @@ export function assertCapabilitiesInvariant(cap: EntityCapabilities): void {
   for (const e of preferred) {
     if (!ALLOWED_EXECUTORS.has(e as AdvertisedExecutorKind)) {
       throw new Error(
-        `CapabilityRegistry invariant violation: "${e}" ∉ ALLOWED_EXECUTORS (narrow type breach, e.g. "keyboard" misplaced into advertised set)`,
+        `CapabilityRegistry invariant violation: "${e}" ∉ ALLOWED_EXECUTORS (narrow type breach, e.g. typo like "keybord" or an unknown executor kind smuggled past the AdvertisedExecutorKind compile-time guard)`,
       );
     }
     if (unsupported.includes(e)) {
