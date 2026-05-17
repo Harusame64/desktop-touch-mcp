@@ -1,6 +1,6 @@
 # ADR-020 Phase 3 SR-2 — handler internal Result + envelope central converter + handler boundary 共通 pattern sub-plan
 
-- Status: **Drafted (2026-05-17、Round 2 = Opus R1 P1×3 + P2×6 + P3×3 + scope shrink user 確定で 12 件 + scope 再定義 1 件 = 13 件 closure)**
+- Status: **Drafted (2026-05-17、Round 4 = PR-SR2-1 land 後 grep verify で 29 handler 全件 `failWith` 経路使用判明 → PR-SR2-2 削除 + SR-2 を PR-SR2-0/1/3 の 3 PR 構成に縮小、User 確定で scope shrink、累積 18 件 closure)**
 - 親 ADR: `docs/adr-020-path-class-refactor-plan.md` §5.1 SR-2 (Round 4 P1-3 確定: (c)+(b) ハイブリッド)
 - 着手 trigger: ADR-020 SR-5 全 PR land 完了 (PR #343-#345 merged、main HEAD `b2ab47a`)
 - baseline commit: `b2ab47a` (main HEAD、PR-SR5-2 merge 後)
@@ -118,9 +118,9 @@ PR-SR2-3 (handler 群 boundary 共通 pattern 統一 - Part 2 + executor_failed 
 | 3282 | `makeQueryWrapper` 内 `SemanticMemoryNUpperBoundExceeded` check (同上) | PR-SR2-1 |
 | 3297 | `makeQueryWrapper` 内 `ProceduralMemoryNUpperBoundExceeded` check (同上) | PR-SR2-1 |
 
-= **PR-SR2-1 で wrapper internal callsite 置換 scope creep 回避**: 5 callsite (line 2910 + 3252/3267/3282/3297) はそれぞれ `mapLeaseValidationToTypedReason` + memory N upper bound `WorkingMemoryNUpperBoundExceeded` 等の独自 typed code + tryNext を direct 構築しており、`toFailureEnvelope` 経由置換には typed error class 5 種追加 + SUGGESTS dict sync 確認が必要 (PR-SR2-1 ~200-300 line scope を超過 risk)。本 SR-2 Round 3 実装中判断 (2026-05-17) で **PR-SR2-1 は基盤 (Result + ExecutorFailedError + toFailureEnvelope + toResultErr helper) のみに scope shrink**、wrapper internal 6 callsite 全件置換は PR-SR2-3 で executor_failed return path 統一と同経路で一括処理。
+= **PR-SR2-1 で wrapper internal callsite 置換 scope creep 回避** (Round 3 判断、Round 4 で再構成): 5 callsite (line 2910 + 3252/3267/3282/3297) はそれぞれ `mapLeaseValidationToTypedReason` + memory N upper bound `WorkingMemoryNUpperBoundExceeded` 等の独自 typed code + tryNext を direct 構築しており、`toFailureEnvelope` 経由置換には typed error class 5 種追加 + SUGGESTS dict sync 確認が必要 (PR-SR2-1 ~200-300 line scope を超過 risk)。Round 3 実装中判断で **PR-SR2-1 は基盤 (Result + ExecutorFailedError + toFailureEnvelope + toResultErr helper) のみに scope shrink**。
 
-= **PR-SR2-2 / PR-SR2-3 並走条件再修正**: PR-SR2-2 = handler 19 件 boundary 統一 (`_envelope.ts` 内 callsite 置換 0 件)、PR-SR2-3 = handler 10 件 boundary 統一 + executor_failed return path 統一 + `_envelope.ts` 内 6 callsite 全件置換 + L6 closure (scope 拡大、~300-400 line に調整)。両 PR は scope disjoint (handler file 分担 + PR-SR2-3 が `_envelope.ts` 専有)、worktree 並走可。
+= **Round 4 SR-2 scope 大幅縮小 (PR-SR2-2 削除)** (User 確定 2026-05-17): PR-SR2-1 land 後 dogfood grep verify で **29 handler 全件の最外周 try/catch が `return failWith(err, "tool_name")` で `ToolFailure` shape return = sub-plan §1.1 (3) `failWith` 経路 = SR-2 scope 外 (北極星 8)** と判明。20 file 170+ callsite が `failWith` 経路を最外周 catch で使用、PR-SR2-2 (handler 19 件 boundary 統一) の実質改修対象が **ほぼゼロ** → **PR-SR2-2 削除**、SR-2 を **PR-SR2-0/1/3 の 3 PR 構成** に縮小。PR-SR2-3 が SR-2 最終 PR (Round 4 minimum viable scope: **wrapper internal 4/6 callsite (memory upper bound) 置換 + `CodedHandlerError` 追加 + L6 部分 closure**、~75 insertions / 50 deletions)。残 2 callsite (line 2978 lease validation / line 3058 handler throw fallback) + `desktopActRawHandler` executor_failed return path 統一 = **OQ-SR2-5 carry-over** (shape bit-equal 機械保証 risk、§6.3 + §9 OQ-SR2-5 参照)。
 
 ---
 
@@ -305,50 +305,47 @@ export function toResultErr(e: unknown): Result<never, HandlerError> {
 
 ---
 
-## 6. PR-SR2-3 詳細 (handler 群 boundary 共通 pattern 統一 - Part 2 + executor_failed return path 統一 + L6 closure)
+## 6. PR-SR2-3 詳細 (Round 4 minimum viable scope: wrapper internal 4 memory callsite 置換 + L6 部分 closure)
 
-### 6.1 目的
+**⚠️ Round 4 で全面 scope shrink** (User 確定 2026-05-17 + Round 4 grep verify + PR-SR2-3 実装中 shape bit-equal sweep): 元 Round 1-3 で書いた「残 10 handler boundary 統一 + executor_failed return path 統一 + L6 closure pin」設計は **実装中の事実発見**で minimum viable scope に縮小:
+- **29 handler 全件 `failWith` 経路使用** (PR-SR2-2 削除根拠) → handler boundary は既存 `failWith` で実質達成済
+- **残 2 callsite (line 2978 lease validation + line 3058 handler throw fallback) shape bit-equal 機械保証 risk** → OQ-SR2-5 carry-over
+- **`desktopActRawHandler:596-606` executor_failed return path 統一**: `{...result, if_unexpected}` spread で TouchResult extra field 損失 risk → OQ-SR2-5 carry-over
+- **L6 完全 closure は OQ-SR2-5 解消後**、本 PR-SR2-3 では **L6 部分 closure (4/6 callsite + handler 29 件 failWith 既存達成)**
 
-残 10 handler (desktop-register 3 + macro 1 + notification 1 + server-status 1 + ui-elements 1 + window 1 + workspace 2) の最外周 try/catch を共通 pattern 統一 + `desktopActRawHandler` 等の `return { ok: false, reason: "executor_failed" }` 経路を `Result.err(new ExecutorFailedError(...))` に書換 + handler 最外周共通 pattern で envelope 化 (北極星 3)。**ADR-020 §11 L6 (G 軸) closure pin**。
+### 6.1 目的 (Round 4 minimum viable scope)
 
-### 6.2 改修対象 file + executor_failed 統一
+`_envelope.ts` 内 4 memory upper bound callsite (`makeQueryWrapper` 内 `WorkingMemoryNUpperBoundExceeded` / `EpisodicMemoryNUpperBoundExceeded` / `SemanticMemoryKUpperBoundExceeded` / `ProceduralMemoryKUpperBoundExceeded`) を `toFailureEnvelope(Err(new CodedHandlerError(code)), {optIn, envelopeOptions})` 経由置換、converter 1 関数集約を **4/6 部分達成** (北極星 1)。`CodedHandlerError` 汎用 class 新規追加 + JSON.stringify level bit-equal 保証 (helper 内部 `getSuggestsForCode + buildFailureEnvelope + compatFailureRaw` projection が pre-migration direct call と完全 1:1)。
 
-| file | handler 数 | PR-SR2-3 scope |
-|------|----------|---------------|
-| `src/tools/desktop-register.ts` | 3 | 全件 + `desktopActRawHandler` の executor_failed return path 統一 |
-| `src/tools/macro.ts` | 1 | 全件 |
-| `src/tools/notification.ts` | 1 | 全件 |
-| `src/tools/server-status.ts` | 1 | 全件 |
-| `src/tools/ui-elements.ts` | 1 | 全件 |
-| `src/tools/window.ts` | 1 | 全件 |
-| `src/tools/workspace.ts` | 2 | 全件 |
+### 6.2 改修対象 (Round 4 minimum viable scope)
 
-= 合計 **10 handler 改修** + **executor_failed return path 統一** + **_envelope.ts 内残 callsite (~2-4 件) を toFailureEnvelope 経由に置換**
+| file | scope |
+|------|------|
+| `src/errors/typed-errors.ts` | `CodedHandlerError(code, message?, options?)` 汎用 class 追加 (constructor body 内 `this.name = code` 明示設定で TS class field 初期化順問題回避) |
+| `src/tools/_envelope.ts` | 4 memory upper bound callsite (`_envelope.ts` 内 `makeQueryWrapper` 内、Working ~ Procedural Memory) を `toFailureEnvelope` 経由置換、JSON.stringify level bit-equal 保証 |
+| `docs/adr-020-phase-3-sr-2-handler-result-boundary-plan.md` | Round 4 反映 (PR-SR2-2 削除 + §6 全面書換 + OQ-SR2-5 新設 + L6 部分 closure 整理) |
 
-### 6.3 ADR-020 §11 L6 (G 軸) closure
+### 6.3 ADR-020 §11 L6 (G 軸) 部分 closure (Round 4 確定)
 
-PR #329 で導入された `desktopActRawHandler` 局所 attach + `SUGGESTS.ExecutorFailed` は **本 PR で構造除去達成**:
-- `desktopActRawHandler` の `return { ok: false, reason: "executor_failed" }` を `Result.err(new ExecutorFailedError(...))` に書換
-- handler 最外周共通 pattern (`toFailureEnvelope(toResultErr(e))`) で envelope 化
-- `ExecutorFailedError.name === "ExecutorFailed"` → `SUGGESTS.ExecutorFailed` lookup → `most_likely_cause` + `try_next` 自動生成
-- 結果として LLM-facing envelope shape は PR #329 と bit-equal、ただし **構造的に「全 typed error は SUGGESTS lookup 経由 envelope 化」** で hook 漏れ不能化
+PR #329 で導入された `desktopActRawHandler` 局所 attach + `SUGGESTS.ExecutorFailed` の **structure 完全除去は OQ-SR2-5 解消後**。本 PR-SR2-3 では:
+- **4/6 callsite (memory upper bound) converter 経由統一** = converter 1 関数集約 4/6 達成 (北極星 1 部分達成)
+- **handler 29 件全件が既に `failWith` 経路で envelope 化済** = sub-plan §2 北極星 2 (handler boundary 共通 pattern) は既存 `failWith` で実質達成済 (Round 4 grep verify で判明)
+- L6 entry を **部分 closure (4/6 + handler boundary 実質達成)** とし、残 2 callsite + executor_failed return path = OQ-SR2-5 carry-over
 
-### 6.4 acceptance (PR-SR2-3)
+### 6.4 acceptance (PR-SR2-3、Round 4 minimum viable)
 
-- 10 handler 最外周 try/catch 共通 pattern 統一
-- `desktopActRawHandler` の `executor_failed` return path 統一 (`Result.err(new ExecutorFailedError(...))` 経由 envelope 化)
-- `_envelope.ts` 内残 callsite を `toFailureEnvelope` 経由に置換 (全 6 callsite が PR-SR2-2/-3 land 後に統一達成)
-- 既存 envelope shape bit-equal (JSON.stringify level)
-- 既存 test 全 green 維持 (CLAUDE.md `feedback_sonnet_test_executor.md` 遵守)
-- ADR-020 §11 ledger **L6 (G 軸)** strikethrough 化 (構造除去達成 pin)
-- `npm run build` (tsc clean) + `npm test` (vitest pass)
-- **dogfood 実機 smoke 必須** (R-SR2-3-a 対策、PR-SR2-3 merge 前に user 確認、`desktop_act` で executor_failed envelope が PR #329 と bit-equal 確認)
+- `src/errors/typed-errors.ts` に `CodedHandlerError` 追加 (~10 line)
+- `src/tools/_envelope.ts` の 4 memory upper bound callsite を `toFailureEnvelope` 経由置換 (各 ~10 line 縮約、合計 ~40 line 縮約)
+- pre-migration `buildFailureEnvelope(code, tryNext, envelopeOpts)` と post-migration `toFailureEnvelope(Err(new CodedHandlerError(code)), {optIn, envelopeOptions})` の **JSON.stringify level bit-equal 保証** (helper 内部実装が pre-migration direct call と完全 1:1)
+- 既存 134 memory test (`working-memory-b1.test.ts` 他) + Phase 2 contract test 54/54 全 green 維持 (CLAUDE.md `feedback_sonnet_test_executor.md` 遵守、test 書換禁止)
+- 全 vitest pass + tsc clean
+- ADR-020 §11 ledger **L6 (G 軸) 部分 closure** (4/6 callsite + handler 29 件 failWith 既存達成、完全 strikethrough は OQ-SR2-5 解消後)
 - Opus phase-boundary review + Codex 1+ round
 
 ### 6.5 risk
 
-- **R-SR2-3-a**: `executor_failed` envelope shape が PR #329 と微妙に drift。**対策**: dogfood 実機 smoke で確認 (Notepad RichEdit + `desktop_act(type)` → `executor_failed` envelope の `most_likely_cause` / `try_next` が PR #329 と bit-equal、SR-5 dogfood で実機実証済の経路を再利用)
-- **R-SR2-3-b**: `_envelope.ts` 内残 callsite 置換で PR-SR2-2 と merge conflict (§3.5 callsite 分担表で予防、両 PR が `_envelope.ts` 触るため worktree 並走時注意)
+- **R-SR2-3-a** (Round 4 で modified): 4 callsite 置換 JSON.stringify level bit-equal が `getSuggestsForCode + buildFailureEnvelope + compatFailureRaw` projection の helper 内部実装と pre-migration direct call で **完全 1:1** な機械保証。pre-migration の `envelopeOpts = {viewPoisoned:false, asOfWallclockMs:null}` も post-migration `envelopeOptions: envelopeOptsForBoundCheck` で同 literal、`buildFailureEnvelope` は `viewPoisoned` 未読 + `asOfWallclockMs:null` で `Date.now()` fallback で両 path 同じ → 既存 134 memory test 書き換えなしで全 pass = 観測 shape 完全互換、機械保証達成
+- **R-SR2-3-b** ~~ (Round 4 で削除、PR-SR2-2 削除 + 残 2 callsite OQ-SR2-5 carry-over で merge conflict risk 消滅)~~
 
 ### 6.6 Codex review prompt 雛形 (PR-SR2-3 用、§3.1 + §3.2 sweep explicit 化)
 
@@ -419,6 +416,27 @@ P1/P2/P3 分類 + file:line citation 必須、報告 < 600 words。
 - **OQ-SR2-2** (Round 1 新規): `HandlerError` base class の type hierarchy 拡張方針 (ModalBlockingError / LeaseExpiredError 等を SUGGESTS dict と 1:1 対応で追加するか、現状 `ExecutorFailedError` 1 種のみで継続するか)。SR-2 完了後の dogfood 観察 → 必要性判断
 - **OQ-SR2-3** (Round 1 新規): `buildFailureEnvelope` の export を internal 化 (`_buildFailureEnvelope` rename / non-export 化) するタイミング。SR-2 全 PR land 後の cleanup PR or 別 epic で判断
 
+### OQ-SR2-5: L6 完全 closure (残 wrapper internal 2 callsite + executor_failed return path 統一) carry-over (Round 4 PR-SR2-3 実装中判断で新設)
+
+PR-SR2-3 で **4/6 callsite (memory upper bound) を `toFailureEnvelope` 経由置換達成**、残 2 callsite + `desktopActRawHandler:596-606` 統一は shape bit-equal 機械保証 risk で post-SR-2 carry-over:
+
+**Current state (PR-SR2-3 land 後)**:
+- 4 callsite (~3323/3331/3339/3347 周辺 (Round 2 P2-N1 後の line 数、helper 追加で +70 行 shift 後の actual line)) = converter 経由統一達成
+- 2 callsite (line 2978 lease validation + line 3058 handler throw fallback) = `mapLeaseValidationToTypedReason` 等の独自 tryNext 構築のため `getSuggestsForCode` lookup と一致確証なし、`buildFailureEnvelope` 直 call 維持
+- `desktopActRawHandler:596-606` = `{...result, if_unexpected}` spread で TouchResult extra field 損失 risk あり、現状の hand-wired hook 維持
+
+**Why post-SR-2 carry-over**:
+- shape bit-equal の機械保証には JSON.stringify level の snapshot test or `mapLeaseValidationToTypedReason` の return tryNext が SUGGESTS dict と一致する確証が必要
+- `toFailureEnvelope` signature に「caller-provided tryNext override」option 追加で部分対応可、または各 callsite を Result 経路に統一する別 refactor が必要
+- TouchResult extra field の `compatFailureRaw` への伝播は `compatFailureRaw` 自体の拡張 or `toFailureEnvelope` signature 拡張が必要、scope creep
+
+**Exit condition** (SR-4 着手前 or Phase 3 完了時 mile-stone で判断):
+1. **keep partial closure (4/6 callsite + hand-wired desktopActRawHandler)**: 現状の部分 closure で L6 終結とみなす、残 2 callsite + executor_failed 経路は永続的に `buildFailureEnvelope` / `buildExecutorFailedIfUnexpected` 直 call 維持
+2. **`toFailureEnvelope` signature 拡張で残 2 callsite + executor_failed 統一**: caller-provided tryNext override option + result extra field passthrough を helper signature に追加、shape bit-equal を機械保証して残 callsite を統一、L6 完全 closure 達成
+3. **小規模 PR (PR-SR2-4 想定) で個別対応**: shape bit-equal snapshot test を先 land、確認後に残 callsite 個別置換 (segment approach)
+
+**Acceptance prerequisite** (Round 4 P3-1 反映): exit condition 2 / 3 のいずれかを採用する場合、**事前に JSON.stringify level snapshot test を path-class-contract/ 配下に land** することを必須化。pre-migration `buildFailureEnvelope(code, tryNext, opts)` と post-migration `toFailureEnvelope(...)` の output JSON を runtime で比較 + snapshot pin することで、shape bit-equal を機械保証する safety net を OQ-SR2-5 解消前提に確立。本 PR-SR2-3 では既存 134 memory test 全 pass で観測 shape 互換性は確認済だが、`mapLeaseValidationToTypedReason` / `desktopActRawHandler` 経路の bit-equal 保証は test 観測のみで shape level 機械保証なし、OQ-SR2-5 着手時に補強必要。
+
 ### OQ-SR2-4: `failWith` 経路 (176 callsite) の migrate 判断 (Round 2 User 確定で新設、忘却防止のため強調明記)
 
 **⚠️ 本 SR-2 で touch しない、別 epic で必ず migrate 判断する carry-over** (User 明示指示 2026-05-17、忘却防止のため本 sub-plan §9 + §10 + 親 ADR §11 に新 entry 追加して永続化、CLAUDE.md 強制命令 9 「残件は docs/ に書く」整合)。
@@ -450,7 +468,15 @@ SR-2 完了時 strikethrough:
 
 - ADR-020 §11 **L6 (G)**: PR #329 `desktopActRawHandler` 局所 attach + `SUGGESTS.ExecutorFailed` → **SR-2 で構造除去** (`toFailureEnvelope` converter 1 関数集約 + handler boundary 共通 pattern + `executor_failed` return path 統一で structural 「全 typed error は SUGGESTS lookup 経由 envelope 化」達成、hook 漏れ不能化)
 
-SR-2 は L6 のみ closure 対象 (L1 = B 軸 = SR-4 が残)。
+**Round 4 SR-2 scope 縮小後の L6 closure 状態** (2026-05-17 User 確定): 当初 sub-plan §6.3 で「`desktopActRawHandler:596-601` の executor_failed return path 統一 + `_envelope.ts` 6 callsite 全件 `toFailureEnvelope` 経由統一」で L6 closure 達成と書いたが、PR-SR2-3 実装中の shape bit-equal sweep で以下判明:
+
+- **4 memory upper bound callsite (~3323/3331/3339/3347 周辺 (Round 2 P2-N1 後の line 数、helper 追加で +70 行 shift 後の actual line))**: `getSuggestsForCode` direct lookup + `compatFailureRaw` projection が `toFailureEnvelope` 内部実装と **完全 1:1** で JSON.stringify level bit-equal 保証可 → PR-SR2-3 で converter 経由置換達成
+- **2 callsite (line 2978 lease validation + line 3058 handler throw fallback)**: `mapLeaseValidationToTypedReason` 等の独自 tryNext 構築が `getSuggestsForCode` lookup と一致する確証なし、shape drift risk
+- **`desktopActRawHandler:596-606` executor_failed return path**: `{...result, if_unexpected}` spread で `result` の extra field を含み、`compatFailureRaw` output と shape diverge risk (TouchResult shape の extra field 損失 risk)
+
+**判断**: L6 closure は **「converter 1 関数集約の 4/6 部分達成」+ executor_failed return path 統一 carry-over (OQ-SR2-5 新設)** とする。残 2 callsite + `desktopActRawHandler` 統一は post-SR-2 carry-over (OQ-SR2-5)、shape bit-equal 機械保証実装後に着手。SR-2 は L6 **部分 closure** で終結、Phase 3 の SR-2 完了として progress 進める (L6 完全 strikethrough は OQ-SR2-5 解消後)。
+
+SR-2 は L6 部分 closure 対象 (L1 = B 軸 = SR-4 が残)。
 
 **親 ADR §11 への新 entry 追加** (Round 2 User 明示要求で `failWith` 経路 carry-over を永続化、忘却防止):
 
