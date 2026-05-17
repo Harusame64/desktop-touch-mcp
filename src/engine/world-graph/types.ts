@@ -130,6 +130,31 @@ export interface UiEntity {
    * the field from a full `EntityCapabilities` value without a cast.
    */
   unsupportedExecutors?: Array<"uia" | "cdp" | "terminal" | "mouse">;
+  /**
+   * ADR-020 SR-1 PR-SR1-1 (北極星 8, case β entity bake): executor route
+   * order baked from the registry-derived `EntityCapabilities` during
+   * `DesktopFacade.see()` via `bakeEntityCapabilities`. The executor
+   * (`createDesktopExecutor`) consumes this array directly instead of
+   * re-invoking the registry, keeping `createDesktopExecutor`'s signature
+   * unchanged and avoiding the `_sessionOpts()` executorFactory lifetime
+   * mismatch that a `viewConstraints` runtime parameter would otherwise
+   * impose.
+   *
+   * Inline string-union shape mirrors `unsupportedExecutors` above (same
+   * advisory-free engine-layer convention). Absent when no registry lookup
+   * was performed (test direct invoke / legacy path) — `createDesktopExecutor`
+   * falls back to the hardcoded `["uia","cdp","terminal","mouse"]` ladder.
+   */
+  preferredExecutors?: Array<"uia" | "cdp" | "terminal" | "mouse">;
+  /**
+   * ADR-020 SR-1 PR-SR1-1 (case β entity bake): human-readable recovery
+   * hint baked from the registry-derived `EntityCapabilities.fallbackHint`
+   * during `DesktopFacade.see()`. Currently unused by the engine layer
+   * (the LLM consumes it via `EntityView.capabilities.fallbackHint`); held
+   * here so the bake remains a single batch and so the field is available
+   * to executor-side diagnostics in future PRs.
+   */
+  fallbackHint?: string;
 }
 
 export interface EntityLease {
