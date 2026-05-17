@@ -73,7 +73,39 @@ export interface SubscriptionLike {
  *  RDP / virtual-display hosts (Stage 5 sub-plan §6 R4). */
 type CacheEntry =
   | { kind: "subscription"; sub: SubscriptionLike; lastUsedAt: number }
-  | { kind: "unavailable"; recordedAt: number };
+  | { kind: "unavailable"; recordedAt: number }
+  /**
+   * Issue #327 item B: short-lived back-off marker set by `invalidate()` so a
+   * `sub.next()` failure does not delete the cache entry outright and trigger
+   * an immediate 50 ms `factory` re-init on the next call. Holds `null` for
+   * `NEGATIVE_BACKOFF_MS` (= 2 seconds), after which the entry self-clears
+   * via `sweepStale()` and a fresh factory call is permitted. Distinct from
+   * `unavailable` (which has the full `idleTimeoutMs` TTL) so AccessLost
+   * recovery still occurs within a few seconds rather than the 20 s idle
+   * window.
+   */
+  | { kind: "negative-backoff"; recordedAt: number };
+
+/**
+ * Issue #327 item B: short-lived back-off after `sub.next()` failure to
+ * prevent a 50 ms `factory` re-init storm. 2 seconds is long enough to absorb
+ * a chained `desktop_act` x 5 sequence and short enough that AccessLost
+ * recovery still surfaces within a single user turn.
+ */
+const NEGATIVE_BACKOFF_MS = 2_000;
+
+/**
+ * Issue #327 item B instrumentation — surfaces which `acquireWithState`
+ * branch was hit so `verifyAnyChange` can populate
+ * `VisualMotionObservation.cacheState`. Kept narrow (5 values) so the
+ * cardinality stays auditable.
+ */
+export type CacheAcquireState =
+  | "hit-subscription"
+  | "hit-unavailable"
+  | "hit-negative-backoff"
+  | "miss-init"
+  | "miss-init-unavailable";
 
 /**
  * Singleton cache keyed by `outputIndex`. Lifecycle:
@@ -103,19 +135,39 @@ export class DirtyRectSubscriptionCache {
    * unsupported / unavailable for this output. Caches the failure for the
    * idle timeout window so RDP / coexistence-locked hosts don't pay the
    * init cost on every call.
+   *
+   * Back-compat wrapper around `acquireWithState` — drops the state. Used
+   * by callers that don't need the cache-state telemetry (existing tests).
    */
   acquire(outputIndex: number): SubscriptionLike | null {
+    return this.acquireWithState(outputIndex).sub;
+  }
+
+  /**
+   * Issue #327 item B instrumentation — same logic as `acquire` but also
+   * reports which cache branch was hit. Used by `verifyAnyChange` to surface
+   * `VisualMotionObservation.cacheState`.
+   */
+  acquireWithState(outputIndex: number): {
+    sub: SubscriptionLike | null;
+    state: CacheAcquireState;
+  } {
     this.sweepStale();
     const cached = this.entries.get(outputIndex);
     if (cached?.kind === "subscription") {
       if (!cached.sub.isDisposed) {
         cached.lastUsedAt = this.nowFn();
-        return cached.sub;
+        return { sub: cached.sub, state: "hit-subscription" };
       }
       // Disposed externally (AccessLost recovery) — drop and re-init.
       this.entries.delete(outputIndex);
     } else if (cached?.kind === "unavailable") {
-      return null;
+      return { sub: null, state: "hit-unavailable" };
+    } else if (cached?.kind === "negative-backoff") {
+      // Issue #327 item B: short-lived back-off after `sub.next()` failure
+      // suppresses the immediate 50 ms factory re-init. `sweepStale` clears
+      // the entry once `NEGATIVE_BACKOFF_MS` has elapsed.
+      return { sub: null, state: "hit-negative-backoff" };
     }
     try {
       const sub = this.factory(outputIndex);
@@ -124,19 +176,31 @@ export class DirtyRectSubscriptionCache {
         sub,
         lastUsedAt: this.nowFn(),
       });
-      return sub;
+      return { sub, state: "miss-init" };
     } catch {
       this.entries.set(outputIndex, {
         kind: "unavailable",
         recordedAt: this.nowFn(),
       });
-      return null;
+      return { sub: null, state: "miss-init-unavailable" };
     }
   }
 
-  /** Mark `outputIndex` as `unavailable` and dispose any live subscription
-   *  for it. Used by the orchestrator on `AccessLost` so the next call
-   *  re-initialises after the idle window. */
+  /**
+   * Mark `outputIndex` for back-off after a `sub.next()` failure and dispose
+   * any live subscription for it. The next `acquire` call within
+   * `NEGATIVE_BACKOFF_MS` returns `null` fast (state =
+   * `hit-negative-backoff`) instead of paying another factory init cost.
+   * After the back-off window expires, `sweepStale` clears the entry and a
+   * fresh factory call is permitted.
+   *
+   * Issue #327 item B: prior to this change `invalidate` deleted the entry
+   * outright, so back-to-back `desktop_act` calls hit by the same DXGI
+   * failure mode (`E_DUP_ACCESS_LOST` / `E_DUP_UNSUPPORTED`) re-paid the
+   * ~50 ms factory init on every call — the documented cache fast-path was
+   * defeated. The back-off marker fixes the cache-hit contract while keeping
+   * AccessLost recovery within a single user turn.
+   */
   invalidate(outputIndex: number): void {
     const cached = this.entries.get(outputIndex);
     if (cached?.kind === "subscription" && !cached.sub.isDisposed) {
@@ -146,7 +210,10 @@ export class DirtyRectSubscriptionCache {
         /* best-effort */
       }
     }
-    this.entries.delete(outputIndex);
+    this.entries.set(outputIndex, {
+      kind: "negative-backoff",
+      recordedAt: this.nowFn(),
+    });
   }
 
   /** Dispose every live subscription. Called by the MCP server shutdown
@@ -184,7 +251,15 @@ export class DirtyRectSubscriptionCache {
           }
           this.entries.delete(key);
         }
+      } else if (entry.kind === "negative-backoff") {
+        // Short-lived back-off TTL (separate from `idleTimeoutMs`) so
+        // AccessLost recovery still resolves within `NEGATIVE_BACKOFF_MS`
+        // rather than waiting the full 20-second idle window.
+        if (now - entry.recordedAt >= NEGATIVE_BACKOFF_MS) {
+          this.entries.delete(key);
+        }
       } else if (now - entry.recordedAt >= this.idleTimeoutMs) {
+        // `unavailable` marker reaches the full `idleTimeoutMs` TTL.
         this.entries.delete(key);
       }
     }
@@ -360,18 +435,27 @@ export async function verifyAnyChange(
 ): Promise<VisualMotionObservation> {
   const startMs = performance.now();
 
-  const degradeUnavailable = (): VisualMotionObservation => ({
+  // Issue #327 item B: `cacheState` is passed in by post-cache callers; pre-
+  // cache callers (resolver failure, cache=null) pass `undefined` so the
+  // optional field is omitted from the observation entirely.
+  const degradeUnavailable = (
+    cacheState?: CacheAcquireState,
+  ): VisualMotionObservation => ({
     motion: "indeterminate",
     source: "dxgi_dirty_rect_unavailable",
     framesSampled: 0,
     totalElapsedMs: performance.now() - startMs,
+    ...(cacheState !== undefined ? { cacheState } : {}),
   });
 
-  const degradeAccessLost = (): VisualMotionObservation => ({
+  const degradeAccessLost = (
+    cacheState?: CacheAcquireState,
+  ): VisualMotionObservation => ({
     motion: "indeterminate",
     source: "dxgi_dirty_rect",
     framesSampled: 0,
     totalElapsedMs: performance.now() - startMs,
+    ...(cacheState !== undefined ? { cacheState } : {}),
   });
 
   // Resolve target monitor first — cheaper than touching the DXGI cache when
@@ -402,10 +486,12 @@ export async function verifyAnyChange(
     return degradeUnavailable();
   }
 
-  const sub = cache.acquire(resolution.outputIndex);
-  if (sub === null) {
-    return degradeUnavailable();
+  const acquired = cache.acquireWithState(resolution.outputIndex);
+  const acquireState: CacheAcquireState = acquired.state;
+  if (acquired.sub === null) {
+    return degradeUnavailable(acquireState);
   }
+  const sub = acquired.sub;
 
   let rects: Array<{ x: number; y: number; width: number; height: number }>;
   try {
@@ -414,17 +500,18 @@ export async function verifyAnyChange(
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes("E_DUP_ACCESS_LOST")) {
       // Thread re-creates context, but the current subscription is stale —
-      // invalidate so the next call re-acquires.
+      // invalidate (now sets negative-backoff marker per #327 item B) so the
+      // next call fast-paths instead of paying another 50 ms factory init.
       cache.invalidate(resolution.outputIndex);
-      return degradeAccessLost();
+      return degradeAccessLost(acquireState);
     }
     if (msg.includes("E_DUP_UNSUPPORTED")) {
       cache.invalidate(resolution.outputIndex);
-      return degradeUnavailable();
+      return degradeUnavailable(acquireState);
     }
     // Disposed / Other — degrade honestly without invalidating (Disposed
     // means our consumer has already torn down).
-    return degradeAccessLost();
+    return degradeAccessLost(acquireState);
   }
 
   const target = opts.region ?? opts.windowRect;
@@ -450,6 +537,7 @@ export async function verifyAnyChange(
       source: "dxgi_dirty_rect",
       framesSampled,
       totalElapsedMs,
+      cacheState: acquireState,
     };
   }
 
@@ -465,6 +553,7 @@ export async function verifyAnyChange(
       },
       framesSampled,
       totalElapsedMs,
+      cacheState: acquireState,
     };
   }
 
@@ -481,6 +570,7 @@ export async function verifyAnyChange(
     },
     framesSampled,
     totalElapsedMs,
+    cacheState: acquireState,
   };
 }
 

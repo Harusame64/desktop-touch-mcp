@@ -175,6 +175,81 @@ describe("verifyAnyChange orchestrator", () => {
     expect(invalidateSpy).toHaveBeenCalled();
   });
 
+  // Issue #327 item B instrumentation: cacheState should be populated on all
+  // observation paths that consulted the DXGI subscription cache, so back-to-
+  // back desktop_act calls can be audited for hit/miss ratio in dogfood logs.
+  it("cacheState='miss-init' on cold acquire, 'hit-subscription' on warm acquire (#327 item B)", async () => {
+    const sub = buildSub(async () => []);
+    const cache = cacheReturning(sub);
+
+    const first = await verifyAnyChange({
+      hwnd: 1n,
+      windowRect: WINDOW_RECT,
+      cache,
+      enumerate: () => [PRIMARY_MONITOR],
+    });
+    expect(first.cacheState).toBe("miss-init");
+
+    const second = await verifyAnyChange({
+      hwnd: 1n,
+      windowRect: WINDOW_RECT,
+      cache,
+      enumerate: () => [PRIMARY_MONITOR],
+    });
+    expect(second.cacheState).toBe("hit-subscription");
+  });
+
+  it("cacheState='hit-unavailable' after the factory has thrown once (#327 item B)", async () => {
+    const cache = cacheReturning(null); // factory throws E_DUP_UNSUPPORTED
+
+    const first = await verifyAnyChange({
+      hwnd: 1n,
+      windowRect: WINDOW_RECT,
+      cache,
+      enumerate: () => [PRIMARY_MONITOR],
+    });
+    expect(first.cacheState).toBe("miss-init-unavailable");
+
+    const second = await verifyAnyChange({
+      hwnd: 1n,
+      windowRect: WINDOW_RECT,
+      cache,
+      enumerate: () => [PRIMARY_MONITOR],
+    });
+    // Back-to-back call must NOT re-pay the 50 ms factory init —
+    // the unavailable marker fast-paths it.
+    expect(second.cacheState).toBe("hit-unavailable");
+  });
+
+  it("cacheState='hit-negative-backoff' after sub.next() E_DUP_* failure prevents 50ms re-init (#327 item B)", async () => {
+    const sub = buildSub(async () => {
+      throw new Error("E_DUP_UNSUPPORTED: vision-gpu coexistence");
+    });
+    const cache = cacheReturning(sub);
+
+    // First call: paid the factory init (miss-init), sub.next threw, invalidate
+    // set the negative-backoff marker.
+    const first = await verifyAnyChange({
+      hwnd: 1n,
+      windowRect: WINDOW_RECT,
+      cache,
+      enumerate: () => [PRIMARY_MONITOR],
+    });
+    expect(first.cacheState).toBe("miss-init");
+
+    // Second call: the negative-backoff marker fast-paths the acquire so no
+    // factory re-init is paid. THIS is the #327 item B fix — the dogfood
+    // "50ms constant" symptom is closed.
+    const second = await verifyAnyChange({
+      hwnd: 1n,
+      windowRect: WINDOW_RECT,
+      cache,
+      enumerate: () => [PRIMARY_MONITOR],
+    });
+    expect(second.cacheState).toBe("hit-negative-backoff");
+    expect(second.source).toBe("dxgi_dirty_rect_unavailable");
+  });
+
   it("off-screen window → motion: indeterminate, source: dxgi_dirty_rect_unavailable", async () => {
     const sub = buildSub(async () => []);
     const obs = await verifyAnyChange({

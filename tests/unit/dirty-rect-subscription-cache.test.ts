@@ -104,21 +104,76 @@ describe("DirtyRectSubscriptionCache", () => {
     expect(factory).toHaveBeenCalledTimes(2);
   });
 
-  it("invalidate disposes the live subscription so the next acquire re-inits", () => {
+  // Issue #327 item B: `invalidate` now sets a 2 s `negative-backoff` marker
+  // instead of deleting the entry outright. This prevents the 50 ms factory
+  // re-init storm observed in the dogfood (back-to-back desktop_act calls
+  // hitting the same DXGI failure mode were paying init cost every call).
+  it("invalidate disposes the live subscription AND sets a negative-backoff marker (#327 item B)", () => {
     let counter = 0;
+    let now = 0;
     const factory = vi.fn(() => {
       counter += 1;
       return new StubSubscription();
     });
-    const cache = new DirtyRectSubscriptionCache(factory, () => 0);
+    const cache = new DirtyRectSubscriptionCache(factory, () => now);
 
     const first = cache.acquire(0)!;
     cache.invalidate(0);
     expect(first.isDisposed).toBe(true);
 
+    // Immediate re-acquire within the back-off window returns null fast
+    // (no factory re-init — counter stays at 1).
+    expect(cache.acquire(0)).toBeNull();
+    expect(counter).toBe(1);
+
+    // After NEGATIVE_BACKOFF_MS (2 s), the marker is swept and a fresh
+    // factory call is permitted.
+    now = 2_000;
     const second = cache.acquire(0)!;
     expect(second).not.toBe(first);
     expect(counter).toBe(2);
+  });
+
+  it("acquireWithState reports 'hit-subscription' on second acquire (cache fast-path)", () => {
+    const factory = vi.fn(() => new StubSubscription());
+    const cache = new DirtyRectSubscriptionCache(factory, () => 0);
+
+    const first = cache.acquireWithState(0);
+    expect(first.state).toBe("miss-init");
+
+    const second = cache.acquireWithState(0);
+    expect(second.state).toBe("hit-subscription");
+    expect(second.sub).toBe(first.sub);
+  });
+
+  it("acquireWithState reports 'miss-init-unavailable' then 'hit-unavailable' (factory throw path)", () => {
+    const factory = vi.fn(() => { throw new Error("factory cannot init"); });
+    const cache = new DirtyRectSubscriptionCache(factory, () => 0);
+
+    const first = cache.acquireWithState(0);
+    expect(first.sub).toBeNull();
+    expect(first.state).toBe("miss-init-unavailable");
+
+    // Second acquire fast-paths on the cached unavailable marker.
+    const second = cache.acquireWithState(0);
+    expect(second.sub).toBeNull();
+    expect(second.state).toBe("hit-unavailable");
+    expect(factory).toHaveBeenCalledTimes(1);
+  });
+
+  it("acquireWithState reports 'hit-negative-backoff' immediately after invalidate (#327 item B fast-path)", () => {
+    const factory = vi.fn(() => new StubSubscription());
+    const cache = new DirtyRectSubscriptionCache(factory, () => 0);
+
+    cache.acquire(0);
+    cache.invalidate(0);
+
+    const result = cache.acquireWithState(0);
+    expect(result.sub).toBeNull();
+    expect(result.state).toBe("hit-negative-backoff");
+    // Critical contract: invalidate must NOT trigger a 50 ms factory re-init
+    // on the immediate next call. (Pre-#327B behaviour was counter === 2.)
+    expect(factory).toHaveBeenCalledTimes(1);
   });
 
   it("STAGE5_CACHE_IDLE_TIMEOUT_MS default is 20 sec", () => {
