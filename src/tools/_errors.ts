@@ -273,6 +273,20 @@ const SUGGESTS: Record<string, string[]> = {
     "Try click_element + keyboard({action:'type'}) manually",
     "Check context.attempts for per-channel error codes",
   ],
+  // Issue #327 item G: `desktop_act` returned `reason: "executor_failed"` —
+  // the GuardedTouchLoop selected an executor and the executor threw
+  // (`guarded-touch.ts:315-319`). Most common dogfood causes (issue #327):
+  // (C) UIA Edit/Document control without InvokePattern, so click fell
+  // through then mouse-fallback was also skipped, and (E) UIA Edit without
+  // a usable name/automationId for the `setValue` PowerShell locator filter.
+  // The hints below point to the alternate channels for each action,
+  // matching the wiring the dogfood confirmed actually works.
+  ExecutorFailed: [
+    "For action='click', fall back to mouse_click({clickAt}) using the entity rect center from desktop_discover — common when UIA InvokePattern is missing on the control",
+    "For action='type' or action='setValue', fall back to keyboard({action:'type', text}) after focusing the target — common when UIA ValuePattern is missing or the locator filter cannot re-find the entity",
+    "If the entity has a stable name or automationId, try click_element({name|automationId}) — uses a different UIA path than desktop_act and may succeed where this executor threw",
+    "Re-run desktop_discover — the entity may have moved or been re-keyed between discover and act, in which case the executor saw a stale locator",
+  ],
   // Phase 2a F4 / Phase 5 I1: keyboard({action:'type'}) Focus Leash Phase B
   // mid-stream focus theft. matrix §3.1 line 141 規範:
   // foreground-stealing protection が caller の send 中に他 window へ focus

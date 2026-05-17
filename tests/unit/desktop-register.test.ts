@@ -5,8 +5,10 @@ import {
   getDesktopFacade,
   _resetFacadeForTest,
   createCachedProductionWindowsProvider,
+  desktopActRawHandler,
 } from "../../src/tools/desktop-register.js";
 import { DesktopFacade } from "../../src/tools/desktop.js";
+import type { EntityLease } from "../../src/engine/world-graph/types.js";
 
 afterEach(() => {
   _resetFacadeForTest();
@@ -294,5 +296,86 @@ describe("createCachedProductionWindowsProvider — TTL cache", () => {
 
     expect(second[0]!.title).toBe("Second");
     expect(enumerate).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ─── Issue #327 item G — executor_failed envelope carries if_unexpected ───────
+
+describe("desktopActRawHandler — executor_failed if_unexpected attach (#327 item G)", () => {
+  const fakeLease: EntityLease = {
+    entityId: "e1",
+    viewId: "v1",
+    targetGeneration: "g1",
+    expiresAtMs: Number.MAX_SAFE_INTEGER,
+    evidenceDigest: "d1",
+  };
+
+  function parseHandlerResult(content: ReadonlyArray<{ type: string; text?: string }>): Record<string, unknown> {
+    const block = content[0];
+    if (!block || block.type !== "text" || typeof block.text !== "string") {
+      throw new Error("expected text content");
+    }
+    return JSON.parse(block.text) as Record<string, unknown>;
+  }
+
+  it("attaches if_unexpected.most_likely_cause='ExecutorFailed' + try_next when touch returns executor_failed", async () => {
+    const facade = getDesktopFacade();
+    vi.spyOn(facade, "touch").mockResolvedValue({
+      ok: false,
+      reason: "executor_failed",
+      diff: [],
+    });
+    const result = await desktopActRawHandler({ lease: fakeLease, action: "click" });
+    const parsed = parseHandlerResult(result.content);
+
+    expect(parsed["ok"]).toBe(false);
+    expect(parsed["reason"]).toBe("executor_failed");
+
+    const ifUnexpected = parsed["if_unexpected"] as { most_likely_cause?: unknown; try_next?: unknown } | undefined;
+    expect(ifUnexpected).toBeDefined();
+    expect(ifUnexpected?.most_likely_cause).toBe("ExecutorFailed");
+    expect(Array.isArray(ifUnexpected?.try_next)).toBe(true);
+    const tryNext = ifUnexpected?.try_next as Array<{ action?: unknown }>;
+    expect(tryNext.length).toBeGreaterThan(0);
+    expect(typeof tryNext[0]!.action).toBe("string");
+  });
+
+  it("does NOT attach if_unexpected when touch fails with a different reason (e.g. modal_blocking) — scope pin", async () => {
+    const facade = getDesktopFacade();
+    vi.spyOn(facade, "touch").mockResolvedValue({
+      ok: false,
+      reason: "modal_blocking",
+      diff: [],
+    });
+    const result = await desktopActRawHandler({ lease: fakeLease, action: "click" });
+    const parsed = parseHandlerResult(result.content);
+
+    expect(parsed["ok"]).toBe(false);
+    expect(parsed["reason"]).toBe("modal_blocking");
+    expect(parsed["if_unexpected"]).toBeUndefined();
+  });
+
+  it("does NOT attach if_unexpected when touch succeeds", async () => {
+    const facade = getDesktopFacade();
+    vi.spyOn(facade, "touch").mockResolvedValue({
+      ok: true,
+      executor: "uia",
+      diff: [],
+      next: "none",
+    });
+    const previousStage5 = process.env["DESKTOP_TOUCH_STAGE5_DXGI"];
+    process.env["DESKTOP_TOUCH_STAGE5_DXGI"] = "0";
+    try {
+      const result = await desktopActRawHandler({ lease: fakeLease, action: "click" });
+      const parsed = parseHandlerResult(result.content);
+      expect(parsed["ok"]).toBe(true);
+      expect(parsed["if_unexpected"]).toBeUndefined();
+    } finally {
+      if (previousStage5 === undefined) {
+        delete process.env["DESKTOP_TOUCH_STAGE5_DXGI"];
+      } else {
+        process.env["DESKTOP_TOUCH_STAGE5_DXGI"] = previousStage5;
+      }
+    }
   });
 });
