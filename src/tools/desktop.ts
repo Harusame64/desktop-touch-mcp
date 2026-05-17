@@ -17,6 +17,7 @@ import { createDesktopExecutor, type ExecutorDeps } from "./desktop-executor.js"
 import type { TouchAction, TouchResult } from "../engine/world-graph/guarded-touch.js";
 import { deriveViewConstraints, type ViewConstraints, type EntityCapabilities } from "./desktop-constraints.js";
 import { deriveEntityCapabilities } from "./desktop-capabilities.js";
+import { bakeEntityCapabilities } from "../capabilities/registry.js";
 import { isUiaCacheStale } from "../engine/identity-tracker.js";
 import type { AttentionState } from "../engine/perception/types.js";
 
@@ -460,15 +461,21 @@ export class DesktopFacade {
     // paying the `InvokePatternNotSupported` round-trip. `resolved` and
     // `session.entities` alias the same array, so the touch path picks this
     // up automatically.
+    // ADR-020 SR-1 PR-SR1-1 (case β entity bake、北極星 8): the registry
+    // lookup result is baked onto the engine `UiEntity` in a single batch
+    // (`preferredExecutors / unsupportedExecutors / fallbackHint`) via
+    // `bakeEntityCapabilities`. The previous inline writeback handled only
+    // `unsupportedExecutors`; SR-1 extends this to all three advisory fields
+    // so `createDesktopExecutor` can consume them via `entity.*` without
+    // re-invoking the registry (which would conflict with the session-bound
+    // `executorFactory` lifetime).
     for (let i = 0; i < entityViews.length; i++) {
       const entity = resolved[i];
       if (entity === undefined) continue;
       const cap = deriveEntityCapabilities(entity, constraints);
       if (cap) {
         entityViews[i]!.capabilities = cap;
-        if (cap.unsupportedExecutors && cap.unsupportedExecutors.length > 0) {
-          entity.unsupportedExecutors = [...cap.unsupportedExecutors];
-        }
+        bakeEntityCapabilities(entity, cap);
       }
     }
 
