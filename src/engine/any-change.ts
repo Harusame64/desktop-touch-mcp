@@ -55,33 +55,16 @@ export type { CacheAcquireState };
 const STAGE5_POLL_BUDGET_MS = 100;
 
 /**
- * ADR-020 SR-4 PR-SR4-2: idle timeout for the underlying DXGI subscription.
- * **The broker (`dxgi-broker.ts`) is now the SSOT** for this numeric value;
- * Stage 5 re-exports it through `STAGE5_CONSTANTS` for bench harness +
- * orchestrator unit tests so `BROKER_CACHE_IDLE_TIMEOUT_MS` and
- * `STAGE5_CACHE_IDLE_TIMEOUT_MS` are bit-equal by construction (no
- * independent definition to drift).
- *
- * Tuning rationale (carried from PR #333): 20 s gives 2× headroom over the
- * Stage 4 Paint.NET 20-cycle ≈ 10 s chain so a typical dogfood sequence
- * stays inside one broker-owned subscription lifetime; broker `acquire()`
- * the second call returns `hit-subscription` without paying ~50-100 ms DXGI
- * re-init.
+ * ADR-020 SR-4 PR-SR4-2 — re-exports `BROKER_CACHE_IDLE_TIMEOUT_MS` (broker
+ * is SSOT). Tuning rationale + gating semantics live in
+ * `src/engine/dxgi-broker.ts:BROKER_CACHE_IDLE_TIMEOUT_MS` JSDoc.
  */
 const STAGE5_CACHE_IDLE_TIMEOUT_MS = BROKER_CONSTANTS.BROKER_CACHE_IDLE_TIMEOUT_MS;
 
 /**
- * ADR-020 SR-4 PR-SR4-2: separate TTL for the `unavailable` marker. SSOT is
- * the broker; Stage 5 re-exports.
- *
- * Tuning rationale (carried from issue #327 item B follow-up, 2026-05-17
- * dogfood): the `unavailable` marker records a **process-lifetime**
- * unavailability (RDP host, virtual display, vision-gpu permanently holding
- * the output). The 20 s subscription-idle was tuned for resource hygiene;
- * the 60 s unavailable TTL is tuned to absorb typical 10-30 s LLM
- * reasoning latency between chained `desktop_act` calls so the marker
- * persists across multi-step dogfood without re-paying ~50 ms DXGI init on
- * every turn that exceeds 20 s wallclock.
+ * ADR-020 SR-4 PR-SR4-2 — re-exports `BROKER_UNAVAILABLE_TTL_MS` (broker is
+ * SSOT). Tuning rationale lives in
+ * `src/engine/dxgi-broker.ts:BROKER_UNAVAILABLE_TTL_MS` JSDoc.
  */
 const STAGE5_UNAVAILABLE_TTL_MS = BROKER_CONSTANTS.BROKER_UNAVAILABLE_TTL_MS;
 

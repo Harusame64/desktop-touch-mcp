@@ -24,6 +24,7 @@ import {
   verifyAnyChange,
 } from "../../src/engine/any-change.js";
 import {
+  BROKER_CONSTANTS,
   DirtyRectBroker,
   type SubscriptionLike,
 } from "../../src/engine/dxgi-broker.js";
@@ -63,11 +64,11 @@ function brokerReturning(sub: SubscriptionLike | null): DirtyRectBroker {
   });
   return new DirtyRectBroker(
     factory,
-    () => 0,             // nowFn
-    20_000,              // idleTimeoutMs (matches Stage 5 SSOT)
-    60_000,              // unavailableTtlMs (matches Stage 5 SSOT)
-    FAST_FANOUT_POLL_MS, // fanOutPollMs — fast for tests
-    2_000,               // negativeBackoffMs (matches Stage 5 SSOT)
+    () => 0,                                          // nowFn
+    BROKER_CONSTANTS.BROKER_CACHE_IDLE_TIMEOUT_MS,    // idleTimeoutMs (broker SSOT)
+    BROKER_CONSTANTS.BROKER_UNAVAILABLE_TTL_MS,       // unavailableTtlMs (broker SSOT)
+    FAST_FANOUT_POLL_MS,                              // fanOutPollMs — fast for tests
+    BROKER_CONSTANTS.BROKER_NEGATIVE_BACKOFF_MS,      // negativeBackoffMs (broker SSOT)
   );
 }
 
