@@ -115,7 +115,7 @@ function createMcpServer(): McpServer {
         "## Observation — priority order",
         "1. desktop_state — cheapest; focused element, modal, attention",
         "2. desktop_discover — actionable entities + lease (when action target needed)",
-        "3. terminal(action='read', windowTitle=...) — terminal/console output text (PowerShell/cmd/WT); ALWAYS prefer over screenshot for reading terminal content",
+        "3. terminal(action='read', windowTitle='PowerShell') — terminal output text; prefer over screenshot",
         "4. screenshot(detail='text') — actionable elements with coords (visual fallback)",
         "5. screenshot(dotByDot=true) — pixel-accurate image when text mode returns 0 elements",
         "6. screenshot(detail='image', confirmImage=true) — visual inspection only",
