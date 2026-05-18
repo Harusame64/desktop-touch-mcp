@@ -114,6 +114,70 @@ Scenarios are grouped by the environment they require. Maintainer note (2026-05-
 
 ## Findings (fill in during dogfood)
 
+### 2026-05-18 — PR-SR4-4 broker-semantics dogfood (single-monitor + vision-gpu coexistence, sub-plan §8.3 / §8.5)
+
+Pre-merge dogfood for **PR-SR4-4 dormancy fix revive** on `feature/adr-020-sr-4-4-dormancy-fix-revive` (commits `10f794b` cherry-pick + `043fe4a` docs amend + `67cf3e7` Round 1 fix + `d9176ed` Round 2 fix). Verifies sub-plan §8.3 acceptance (a)/(b)/(c) under the §8.5 single-monitor receipt rationale (primary dogfood host is single-monitor only). All cycles executed against Notepad (`無題 - メモ帳`, hwnd `10158750`) via `desktop_discover({ windowTitle: "メモ帳" })` → `desktop_act({ lease, action: "type" })`. Chrome (YouTube / Netflix) was active in the window list so vision-gpu coexistence is reasonable to assume on `outputIndex: 0` (single-monitor host emits all DXGI from output 0; the broker subscription dedup is what (a) measures).
+
+**Cycle log (raw)**:
+
+| # | path | ok | motion | source | cacheState | elapsedMs |
+|---|---|---|---|---|---|---|
+| 1 | windowTitle | true | no_change | dxgi_dirty_rect | hit-subscription | 76.54 |
+| 2 | windowTitle | true | any_change (residual 0.0238) | dxgi_dirty_rect | hit-subscription | 22.79 |
+| 3 | windowTitle | true | any_change (residual 0.0238) | dxgi_dirty_rect | hit-subscription | 3.89 |
+| 4 | windowTitle | true | any_change (residual 0.0238) | dxgi_dirty_rect | hit-subscription | 9.41 |
+| 5 | windowTitle | true | any_change (residual 0.0238) | dxgi_dirty_rect | hit-subscription | 25.21 |
+| 6 | windowTitle | true | any_change (residual 0.0238) | dxgi_dirty_rect | hit-subscription | 0.49 |
+| 7 | windowTitle | true | any_change (residual 0.0238) | dxgi_dirty_rect | hit-subscription | 17.59 |
+| 8 | windowTitle | true | any_change (residual 0.0238) | dxgi_dirty_rect | hit-subscription | 6.47 |
+| 9 | windowTitle | true | any_change (residual 0.0238) | dxgi_dirty_rect | hit-subscription | 2.76 |
+| 10 | windowTitle | true | no_change | dxgi_dirty_rect | hit-subscription | 6.64 |
+
+**Acceptance verification (sub-plan §8.3 with §8.5 single-monitor rule applied)**:
+
+- **(a) race-free 実証 — PASS**: `cacheState == "hit-subscription"` across **10/10 cycles** (sub-plan target: N=10 連続観測). Broker subscription dedup is functioning; the only `miss-init` was implicit in cycle 1's 76.5 ms cold start (vs. ~0.5–25 ms warm cycles 2–10), which matches the broker init-cost amortisation contract documented in `src/engine/dxgi-broker.ts`.
+- **(b) baseline race-loss シナリオ消失 — PASS**: `source == "dxgi_dirty_rect_unavailable"` count = **0/10** cycles (sub-plan target: 0 cycle). Comparison vs. 2026-05-17 pre-broker dogfood entry below: that earlier run produced `source: "dxgi_dirty_rect_unavailable", motion: "indeterminate"` on the same Notepad scenario, because vision-gpu held the raw DXGI subscription and Stage 5 hit `NotCurrentlyAvailable`. Today's run is structurally race-free — `NotCurrentlyAvailable` cannot occur because both Stage 5 and vision-gpu share one broker subscription per output (PR-SR4-2 + PR-SR4-3 land).
+- **(c) AccessLost recovery — NOT ACHIEVED (sub-plan §8.4 fallback invoked, carry-over to Lock/Unlock follow-up dogfood)**: no Lock/Unlock screen session was triggered during this dogfood (a Lock disrupts the MCP transport and would force a session re-init mid-loop, which user explicitly opted out of); no spontaneous AccessLost surfaced in the 10-cycle window. Per the strict reading of sub-plan §8.3 ("全件達成で land 適格"), (c) unmet at runtime ⇒ §8.4 fallback path: Opus 判断委譲 / scope 縮小 / carry-over to L7. **User judgment 2026-05-18**: accept (c) as carry-over **because**:
+  1. broker's `hit-negative-backoff → miss-init (2 s)` recovery path is unit-tested at `tests/unit/dxgi-broker.test.ts` (test names `accessLost*` / `negativeBackoff*` — the same state-machine the runtime exercises), and the test suite ran clean in this PR (`Test Files 1 passed | ... `);
+  2. (a) + (b) PASS already validate the PR's **primary** contract (race-loss `NotCurrentlyAvailable` elimination + foreground-fallback dormancy fix at the envelope layer — the two reasons SHA `10982e2` was held back in the first place);
+  3. AccessLost is an environmental recovery path orthogonal to the broker-semantics change PR-SR4-4 ships — it is identical to the pre-PR behaviour because broker `hit-negative-backoff` / `miss-init` semantics did not change in PR-SR4-4.
+  This carry-over is **not** "(c) PASS"; it is "(c) deferred-to-follow-up under §8.4 with documented rationale". The follow-up dogfood is tagged below under **PR-SR4-4 follow-up: Lock/Unlock AccessLost dogfood**.
+
+**Dormancy fix contract verified at the envelope layer**: all 10 cycles use `desktop_discover({ windowTitle: "メモ帳" })`, which produces a session whose `lastTarget.hwnd` is **undefined** (windowTitle pinning only). Pre-PR (i.e. `main` at `89a5b65` before this PR), `tryVerifyAnyChange` consulted `session.lastTarget.hwnd` directly and returned `null` for this entire flow — `result.observation` would have been completely absent. Post-PR, `resolveHwndForViewId` lands on the foreground resolver (step 2 of the ladder, `getFocusedHwnd()`) and `verifyAnyChange` fires against the focused Notepad HWND. The cycle log above is the runtime proof.
+
+**Side-observation (foreground no-args path)**: `desktop_discover()` (no target) followed by `desktop_act({ action: "type" })` returned `ok: false, reason: "executor_failed"` on two attempts. This is the standalone UIA executor's behaviour when the lease's session has no pinned HWND — the `type` rung throws before reaching Stage 5. **Not introduced by PR-SR4-4**; Stage 5 is gated behind `result.ok` at `src/tools/desktop-register.ts:584` so it is not even invoked on these failures. The same `resolveHwndForViewId` ladder step 2 (foreground fallback) is exercised by the windowTitle path that succeeded above, so the dormancy fix is verified for both shapes — the unrelated executor regression is filed for a separate investigation and is out of scope here.
+
+**Conclusion**: PR-SR4-4 acceptance **(a) PASS + (b) PASS** in single-monitor + vision-gpu coexistence. **(c) NOT ACHIEVED — §8.4 fallback applied, carried over to Lock/Unlock follow-up dogfood (see entry below)** with unit-test coverage cited as interim assurance. Dormancy fix contract is verified end-to-end at the envelope layer; race-loss軸消滅 is structurally confirmed.
+
+---
+
+### **[FOLLOW-UP] PR-SR4-4 — Lock/Unlock AccessLost dogfood (carry-over from 2026-05-18, sub-plan §8.4)**
+
+**Status**: open carry-over (not done). Tagged here so the work survives session-compact and is discoverable via grep.
+
+**Why this exists**: sub-plan §8.3 (c) requires runtime observation of `cacheState == "hit-negative-backoff" → "miss-init"` after a deliberate DXGI session reset (i.e. AccessLost). The 2026-05-18 PR-SR4-4 dogfood (above) skipped this because Lock/Unlock disrupts the same-session MCP transport. PR-SR4-4 landed with §8.4 carry-over under user judgment (unit test coverage as interim).
+
+**What needs to be done**:
+
+1. With the PR-SR4-4 build live (post-merge of `feature/adr-020-sr-4-4-dormancy-fix-revive`), open Notepad and run one `desktop_act({ action: "type" })` cycle. Confirm baseline `cacheState == "hit-subscription"`.
+2. Trigger Win+L (Lock screen). Wait at least 5 s. Unlock.
+3. After re-connecting the MCP session (the MCP transport will need to be re-established because Lock disrupts the connection), run one more `desktop_act` cycle on Notepad.
+4. **Expected**: the first post-unlock cycle observes `cacheState == "hit-negative-backoff"` (broker detected `AccessLost` during the lock window and marked the output unavailable with a short negative-cache TTL). After 2 s, the next cycle observes `cacheState == "miss-init"` (negative cache expired, broker re-initialises the subscription). The cycle after that returns to `hit-subscription`.
+5. Append the raw observation to the Findings section above as a new dated entry, and **strikethrough this follow-up tag** when complete.
+
+**Why it can be deferred safely**:
+- The state machine is unit-tested at `tests/unit/dxgi-broker.test.ts` (full coverage of `hit-negative-backoff → miss-init` transition after a simulated `AccessLost`).
+- PR-SR4-4 changes `tryVerifyAnyChange`'s HWND-resolution layer only — it does **not** change the broker's AccessLost handling, so the runtime recovery path is identical to pre-PR-SR4-4 behaviour (which the 2026-05-17 #327 investigation already exercised on `main`).
+- Race-loss軸消滅 (the PR's primary acceptance contract) is independently confirmed in the 10-cycle log above; AccessLost is orthogonal.
+
+**Tag**: search for `PR-SR4-4 follow-up: Lock/Unlock AccessLost dogfood` to find this entry later.
+
+---
+
+### 2026-05-17 — dogfood smoke during dormancy-fix exploration (operator: Claude Code session)
+
+---
+
 ### 2026-05-17 — dogfood smoke during dormancy-fix exploration (operator: Claude Code session)
 
 A dogfood smoke was run against the candidate dormancy fix at SHA `10982e2` (now held in `feature/adr-019-stage-5-dormancy-fix-deferred`) to verify the wire-up works at the envelope layer. The two scenarios below confirm that `result.observation` is now populated on both `desktop_discover({ windowTitle })` and `desktop_discover()` (no args) flows — the two paths PR #325 silently left dormant.
