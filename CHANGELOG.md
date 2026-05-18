@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+### Improved
+
+- **`desktop_act` visual-change verification is now race-free when other
+  visual tools are active in the same session.** Previously, calling
+  `desktop_act` while a browser tool (`browser_overview`, `browser_click`,
+  etc.) or other visual / screenshot tool was running on the same monitor
+  could cause Windows to refuse the second concurrent screen-capture
+  subscription. When that happened, the `result.observation` field on
+  `desktop_act` responses degraded to
+  `source: "dxgi_dirty_rect_unavailable", motion: "indeterminate"` — the
+  envelope still succeeded but no useful "did the pixels actually change"
+  signal was attached. desktop-touch-mcp now mediates all screen-capture
+  subscriptions through a single shared owner per monitor, so
+  `desktop_act`'s post-touch verifier and the browser / visual tools
+  transparently share one subscription instead of racing for it.
+  Concurrent `desktop_act` + `browser_overview` (or any combination of
+  visual tools) reliably produces `source: "dxgi_dirty_rect"` with a
+  populated `residual` in `result.observation`. Existing degraded-source
+  values (RDP / virtual-display environments still emit
+  `dxgi_dirty_rect_unavailable` honestly) are unchanged.
+
+- **`desktop_act` after `desktop_discover()` / `desktop_discover({
+  windowTitle })` now populates `result.observation` on the typical
+  discover flow.** Earlier, the post-touch visual verification only ran
+  when the caller explicitly pinned the target HWND. The common discover
+  flows — no-argument foreground discover, or a `windowTitle`-only hint
+  — left `result.observation` absent on every `desktop_act` response, so
+  callers could not tell from the envelope alone whether the click /
+  type actually repainted the target window. The post-touch verifier now
+  falls back to the focused-window HWND when the lease's session has no
+  pinned HWND, matching what the rest of the touch pipeline already
+  does. No behaviour change for callers that already pinned an HWND.
+  Edge cases where `result.observation` is still honestly omitted: the
+  lease's session was evicted between `touch()` succeeding and the
+  verifier running (rare race), or no focused HWND can be resolved.
+
 ### Added
 
 - **`keyboard` executor as a first-class advertised executor option.**
