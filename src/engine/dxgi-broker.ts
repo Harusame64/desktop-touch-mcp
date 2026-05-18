@@ -35,35 +35,52 @@ import { nativeDuplication } from "./native-engine.js";
 // ─── Constants (sub-plan §5.3、broker 側私的複製、PR-SR4-2 で SSOT shift) ───
 
 /**
- * Idle timeout for an active subscription. After 20s of no `acquire` /
- * `subscribe` / `next()` activity AND zero registered polling/callback
- * consumers, the broker disposes the native subscription and frees the
- * DXGI session.
+ * **SSOT** (ADR-020 SR-4 PR-SR4-2): idle timeout for an active subscription.
+ * After 20 s of no `acquire` / `subscribe` / `next()` activity AND zero
+ * registered polling + callback consumers, the broker disposes the native
+ * subscription and frees the DXGI session. `STAGE5_CACHE_IDLE_TIMEOUT_MS`
+ * (`src/engine/any-change.ts`) re-exports this numeric value via
+ * `STAGE5_CONSTANTS`; the orchestrator test machine-asserts bit-equality so
+ * the two surfaces cannot drift.
  *
- * Round 1 P3-3 clarification: numeric value mirrored from
- * `STAGE5_CACHE_IDLE_TIMEOUT_MS` (`src/engine/any-change.ts:44`), but the
- * gate condition is broker-specific — Stage 5 cache sweeps purely on idle
- * timestamp, while the broker also gates on `pollingHandles.size === 0
- * && callbackHandles.size === 0` (fan-out reference counting). PR-SR4-2 で
- * broker SSOT 化 + Stage 5 const を broker re-export に切替時、numeric 値
- * のみ bit-equal を test で機械保証 (gating semantics は broker 側が拡張)。
+ * Gating semantics: Stage 5's pre-SR-4 cache swept purely on idle
+ * timestamp; the broker additionally gates on
+ * `pollingHandles.size === 0 && callbackHandles.size === 0` (fan-out
+ * reference counting) so a live consumer keeps the entry alive past the
+ * 20 s window. Tuning rationale (carried from PR #322 / Stage 4 dogfood):
+ * Paint.NET 20-cycle chains ≈ 10 s, so 20 s gives 2× headroom for the
+ * typical chained `desktop_act` sequence.
  */
 const BROKER_CACHE_IDLE_TIMEOUT_MS = 20_000;
 
 /**
- * TTL for the cached `unavailable` marker (factory throw / DXGI unsupported).
- * Mirrors `STAGE5_UNAVAILABLE_TTL_MS` (`any-change.ts:67`) — see that JSDoc
- * for the 60s tuning rationale (covers 15s lease TTL × 4 + 10-30s LLM
- * reasoning latency, avoids 50ms factory re-init storm on RDP / vision-gpu
- * permanent unavailability).
+ * **SSOT** (ADR-020 SR-4 PR-SR4-2): TTL for the cached `unavailable` marker
+ * (factory throw / DXGI unsupported). `STAGE5_UNAVAILABLE_TTL_MS`
+ * (`src/engine/any-change.ts`) re-exports via `STAGE5_CONSTANTS`.
+ *
+ * Tuning rationale (carried from issue #327 item B follow-up, 2026-05-17
+ * dogfood): the `unavailable` marker records a process-lifetime
+ * unavailability (RDP host, virtual display, vision-gpu permanently
+ * holding the output). 60 s covers the 15 s `action`-view lease base × 4
+ * and absorbs typical 10-30 s LLM reasoning latency between chained
+ * `desktop_act` calls so the marker persists across multi-step dogfood
+ * without paying ~50 ms DXGI factory re-init on every turn. AccessLost
+ * recovery uses the shorter `BROKER_NEGATIVE_BACKOFF_MS` 2 s escape hatch
+ * so transient AccessLost does NOT pay the full 60 s penalty.
  */
 const BROKER_UNAVAILABLE_TTL_MS = 60_000;
 
 /**
- * Short-lived back-off after a `sub.next()` failure (E_DUP_ACCESS_LOST
- * recovery). Mirrors `NEGATIVE_BACKOFF_MS` (`any-change.ts:119`) — 2s is
- * long enough to absorb a chained `desktop_act` × 5 sequence and short
- * enough that AccessLost recovery surfaces within a single user turn.
+ * **SSOT** (ADR-020 SR-4 PR-SR4-2): short-lived back-off after a
+ * `sub.next()` failure inside the fan-out loop (E_DUP_ACCESS_LOST
+ * recovery). Stage 5 has no direct re-export — this constant is broker-
+ * private (the orchestrator only observes its effect through `cacheState =
+ * "hit-negative-backoff"` on the call after a mid-flight failure).
+ *
+ * Tuning rationale: 2 s is long enough to absorb a chained `desktop_act`
+ * × 5 sequence (the 50 ms factory re-init storm fixed in issue #327 item
+ * B) and short enough that AccessLost recovery surfaces within a single
+ * user turn.
  */
 const BROKER_NEGATIVE_BACKOFF_MS = 2_000;
 

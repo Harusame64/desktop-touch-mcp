@@ -36,7 +36,7 @@ import { registerPerceptionResources } from "./tools/perception-resources.js";
 import { registerServerStatusTool } from "./tools/server-status.js";
 import { logAutoGuardStartup } from "./tools/_action-guard.js";
 import { stopNativeRuntime } from "./engine/perception/registry.js";
-import { disposeSharedSubscriptionCache } from "./engine/any-change.js";
+import { disposeSharedDirtyRectBroker } from "./engine/dxgi-broker.js";
 import { startTray, stopTray, type TrayOptions } from "./utils/tray.js";
 import { checkFailsafe, FailsafeError } from "./utils/failsafe.js";
 import { wrapHandlerArg } from "./utils/failsafe-wrap.js";
@@ -292,11 +292,11 @@ function shutdown(): void {
   }
   console.error("[desktop-touch] Shutting down...");
   stopNativeRuntime();
-  // ADR-019 Stage 5 sub-plan §6 R2 — release shared DXGI duplication
-  // subscriptions so the GPU session does not leak past process exit.
-  // Matches the test-only path in `desktop-register.ts:_resetFacadeForTest`
-  // (Opus PR #325 Round 1 P2-1).
-  disposeSharedSubscriptionCache();
+  // ADR-019 Stage 5 sub-plan §6 R2 + ADR-020 SR-4 PR-SR4-2 — release the
+  // shared DXGI duplication broker so the GPU session does not leak past
+  // process exit. Matches the test-only path in
+  // `desktop-register.ts:_resetFacadeForTest`.
+  disposeSharedDirtyRectBroker();
   stopTray();
   httpServerRef?.close();
   // ADR-011 Phase B B-3/B-4 follow-up: pending memory store flush を確実に
