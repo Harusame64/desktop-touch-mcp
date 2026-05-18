@@ -6,8 +6,11 @@
  * provides per-output `DirtyRectSubscription` napi with a background polling
  * thread; this module:
  *
- *   1. Caches subscriptions per `output_index` so chained `desktop_act` calls
- *      amortise the ~50-100 ms DXGI session init cost.
+ *   1. Acquires a polling handle from the **shared DXGI broker**
+ *      (`src/engine/dxgi-broker.ts`, ADR-020 SR-4) so the ~50-100 ms DXGI
+ *      session init cost is amortised across chained `desktop_act` calls AND
+ *      shared with the vision-gpu consumer (PR-SR4-3) — race-loss
+ *      `NotCurrentlyAvailable` is structurally eliminated.
  *   2. Resolves a target window's output index via `enumMonitors` +
  *      window-center containment. Works for every monitor (primary AND
  *      secondary) — PR #322 populated `outputBounds` from
@@ -16,20 +19,33 @@
  *   3. Polls dirty rects for a bounded window, intersects against the target
  *      window rect (or a sub-region), and decides `motion: any_change | no_change | indeterminate`.
  *
- * Sub-plan: `docs/adr-019-stage-5-plan.md`. Activation gates and envelope
- * wiring live at the call sites (`src/tools/desktop-register.ts` for
- * `desktop_act`; optional safety net in `src/tools/_mouse-verify.ts` +
- * `src/tools/keyboard.ts` gated on `DESKTOP_TOUCH_STAGE5_DXGI_FALLBACK=1`).
+ * Sub-plan: `docs/adr-019-stage-5-plan.md` (PR-SR4-2 §2.6 sync).
+ * Broker sub-plan: `docs/adr-020-phase-3-sr-4-dxgi-broker-plan.md`.
+ * Activation gates and envelope wiring live at the call sites
+ * (`src/tools/desktop-register.ts` for `desktop_act`; optional safety net in
+ * `src/tools/_mouse-verify.ts` + `src/tools/keyboard.ts` gated on
+ * `DESKTOP_TOUCH_STAGE5_DXGI_FALLBACK=1`).
  *
  * Invariant: this module **must never throw** — every error path (DXGI
- * `Unsupported` / `NotCurrentlyAvailable` / `AccessLost`, resolver failure,
- * native binding absence) degrades to `motion: "indeterminate"` so the caller's
- * envelope is unaffected.
+ * `Unsupported` / `AccessLost` mid-flight, resolver failure, native binding
+ * absence) degrades to `motion: "indeterminate"` so the caller's envelope is
+ * unaffected. Race-loss `NotCurrentlyAvailable` was the third pre-SR-4 error
+ * mode and is now structurally impossible (broker owner-1-固定).
  */
 
 import type { VisualMotionObservation } from "../tools/_input-pipeline.js";
-import { nativeDuplication } from "./native-engine.js";
+import {
+  BROKER_CONSTANTS,
+  type CacheAcquireState,
+  type DirtyRectBroker,
+  getSharedDirtyRectBroker,
+} from "./dxgi-broker.js";
 import { enumMonitors } from "./win32.js";
+
+// Re-export so downstream consumers (`_input-pipeline.ts:VisualMotionObservation.cacheState`)
+// can keep importing the 5-value state enum from the orchestrator's public
+// surface — the SSOT is now the broker but the public re-export is preserved.
+export type { CacheAcquireState };
 
 // ─── Constants (Stage 5 sub-plan §2.4) ───────────────────────────────────────
 
@@ -38,33 +54,36 @@ import { enumMonitors } from "./win32.js";
  *  overhead. */
 const STAGE5_POLL_BUDGET_MS = 100;
 
-/** Stage 5 sub-plan §2.4 — idle timeout before the cache disposes a subscription.
- *  Bumped from 10→20 sec in Round 1 P2-1 (Stage 4 Paint.NET dogfood 20-cycle
- *  chain ≈ 10 sec sat right at the prior boundary; 2× headroom now). */
-const STAGE5_CACHE_IDLE_TIMEOUT_MS = 20_000;
+/**
+ * ADR-020 SR-4 PR-SR4-2: idle timeout for the underlying DXGI subscription.
+ * **The broker (`dxgi-broker.ts`) is now the SSOT** for this numeric value;
+ * Stage 5 re-exports it through `STAGE5_CONSTANTS` for bench harness +
+ * orchestrator unit tests so `BROKER_CACHE_IDLE_TIMEOUT_MS` and
+ * `STAGE5_CACHE_IDLE_TIMEOUT_MS` are bit-equal by construction (no
+ * independent definition to drift).
+ *
+ * Tuning rationale (carried from PR #333): 20 s gives 2× headroom over the
+ * Stage 4 Paint.NET 20-cycle ≈ 10 s chain so a typical dogfood sequence
+ * stays inside one broker-owned subscription lifetime; broker `acquire()`
+ * the second call returns `hit-subscription` without paying ~50-100 ms DXGI
+ * re-init.
+ */
+const STAGE5_CACHE_IDLE_TIMEOUT_MS = BROKER_CONSTANTS.BROKER_CACHE_IDLE_TIMEOUT_MS;
 
 /**
- * Issue #327 item B follow-up (2026-05-17 dogfood): separate TTL for the
- * `unavailable` marker (was sharing `STAGE5_CACHE_IDLE_TIMEOUT_MS` = 20 s).
+ * ADR-020 SR-4 PR-SR4-2: separate TTL for the `unavailable` marker. SSOT is
+ * the broker; Stage 5 re-exports.
  *
- * The 20 s subscription idle timeout was chosen for resource hygiene (dispose
- * idle DXGI subscriptions so the GPU session does not leak). But the
- * `unavailable` marker has a different semantic: it records a **permanent**
- * unavailability for this process lifetime (e.g. vision-gpu DirtyRectRouter
- * holds `outputIndex 0` exclusively, RDP host with no DXGI, etc.). Re-trying
- * the factory every 20 s pays the ~50 ms init cost on every Claude Code
- * round-trip that exceeds 20 s wallclock — which is the common case after
- * issue #327 item F bumped the lease TTL base to 15 s.
- *
- * 60 s gives 4× coverage over the 15 s `action`-view lease base (and ~6.7×
- * over the 9 s soft-expiry window), absorbing typical 10-30 s LLM reasoning
- * latency so the marker persists across a normal multi-step dogfood without
- * re-paying init. For truly transient unavailability (rare race during
- * DirtyRectRouter shutdown), the longer TTL just means a slightly slower
- * recovery — still bounded by 1 minute, and AccessLost recovery is the
- * `negative-backoff` 2 s path which remains the fast escape hatch.
+ * Tuning rationale (carried from issue #327 item B follow-up, 2026-05-17
+ * dogfood): the `unavailable` marker records a **process-lifetime**
+ * unavailability (RDP host, virtual display, vision-gpu permanently holding
+ * the output). The 20 s subscription-idle was tuned for resource hygiene;
+ * the 60 s unavailable TTL is tuned to absorb typical 10-30 s LLM
+ * reasoning latency between chained `desktop_act` calls so the marker
+ * persists across multi-step dogfood without re-paying ~50 ms DXGI init on
+ * every turn that exceeds 20 s wallclock.
  */
-const STAGE5_UNAVAILABLE_TTL_MS = 60_000;
+const STAGE5_UNAVAILABLE_TTL_MS = BROKER_CONSTANTS.BROKER_UNAVAILABLE_TTL_MS;
 
 /** Stage 5 sub-plan §2.4 — hard cap on `outputIndex` to guard against runaway
  *  enumeration on hypothetical many-monitor setups. The check
@@ -80,293 +99,6 @@ const STAGE5_MAX_OUTPUT_INDEX = 8;
  *  (Round 1 P2-5: replaces an absolute 4-px count which falsely qualified
  *  background animation grazing the target rect). */
 const STAGE5_MIN_INTERSECTED_AREA_RATIO = 0.005;
-
-// ─── Subscription cache ──────────────────────────────────────────────────────
-
-/** Minimal interface so tests can inject mock subscriptions without the
- *  native addon. Mirrors `NativeDirtyRectSubscription`. */
-export interface SubscriptionLike {
-  readonly isDisposed: boolean;
-  next(timeoutMs: number): Promise<Array<{ x: number; y: number; width: number; height: number }>>;
-  dispose(): void;
-}
-
-/** Sentinel marker recording an `Unsupported` / `NotCurrentlyAvailable` failure.
- *  Cached for `STAGE5_UNAVAILABLE_TTL_MS` (= 60 s, separate from subscription
- *  idle) to avoid the init-cost storm on RDP / virtual-display hosts and
- *  vision-gpu coexistence (Stage 5 sub-plan §6 R4 + issue #327 item B). */
-type CacheEntry =
-  | { kind: "subscription"; sub: SubscriptionLike; lastUsedAt: number }
-  | { kind: "unavailable"; recordedAt: number }
-  /**
-   * Issue #327 item B: short-lived back-off marker set by `invalidate()` so a
-   * `sub.next()` failure does not delete the cache entry outright and trigger
-   * an immediate 50 ms `factory` re-init on the next call. Holds `null` for
-   * `NEGATIVE_BACKOFF_MS` (= 2 seconds), after which the entry self-clears
-   * via `sweepStale()` and a fresh factory call is permitted. Distinct from
-   * `unavailable` (which has the 60 s `STAGE5_UNAVAILABLE_TTL_MS`) so
-   * AccessLost recovery still occurs within a few seconds rather than
-   * waiting the full unavailability window.
-   */
-  | { kind: "negative-backoff"; recordedAt: number };
-
-/**
- * Issue #327 item B: short-lived back-off after `sub.next()` failure to
- * prevent a 50 ms `factory` re-init storm. 2 seconds is long enough to absorb
- * a chained `desktop_act` x 5 sequence and short enough that AccessLost
- * recovery still surfaces within a single user turn.
- */
-const NEGATIVE_BACKOFF_MS = 2_000;
-
-/**
- * Issue #327 item B instrumentation — surfaces which `acquireWithState`
- * branch was hit so `verifyAnyChange` can populate
- * `VisualMotionObservation.cacheState`. Kept narrow (5 values) so the
- * cardinality stays auditable.
- */
-export type CacheAcquireState =
-  | "hit-subscription"
-  | "hit-unavailable"
-  | "hit-negative-backoff"
-  | "miss-init"
-  | "miss-init-unavailable";
-
-/**
- * Singleton cache keyed by `outputIndex`. Lifecycle:
- *
- * - First `acquire(0)` constructs a subscription (~50-100 ms DXGI init).
- * - Subsequent `acquire(0)` within 20 sec returns the cached entry (~< 1 ms).
- * - 20 sec idle → background sweep disposes the entry on next `acquire` / `disposeAll`.
- * - Server shutdown calls `disposeAll` for clean exit.
- *
- * Coexistence with `src/engine/vision-gpu/dirty-rect-source.ts`: DXGI returns
- * `NotCurrentlyAvailable` for a second concurrent subscription on the same
- * output. Stage 5 fail-soft per §2.6 — the failure is cached as
- * `unavailable` for the idle timeout and the caller's observation degrades
- * to `dxgi_dirty_rect_unavailable`.
- */
-export class DirtyRectSubscriptionCache {
-  private readonly entries = new Map<number, CacheEntry>();
-
-  constructor(
-    private readonly factory: (outputIndex: number) => SubscriptionLike,
-    private readonly nowFn: () => number = () => Date.now(),
-    private readonly idleTimeoutMs: number = STAGE5_CACHE_IDLE_TIMEOUT_MS,
-    /**
-     * Issue #327 item B follow-up: separate TTL for the `unavailable` marker
-     * (default 60 s) — see `STAGE5_UNAVAILABLE_TTL_MS` JSDoc for the design
-     * rationale. Tests inject a shorter value for fast-forward assertions.
-     */
-    private readonly unavailableTtlMs: number = STAGE5_UNAVAILABLE_TTL_MS,
-  ) {}
-
-  /**
-   * Return a subscription for `outputIndex`, or `null` when DXGI is
-   * unsupported / unavailable for this output. Caches the failure for the
-   * idle timeout window so RDP / coexistence-locked hosts don't pay the
-   * init cost on every call.
-   *
-   * Back-compat wrapper around `acquireWithState` — drops the state. Used
-   * by callers that don't need the cache-state telemetry (existing tests).
-   */
-  acquire(outputIndex: number): SubscriptionLike | null {
-    return this.acquireWithState(outputIndex).sub;
-  }
-
-  /**
-   * Issue #327 item B instrumentation — same logic as `acquire` but also
-   * reports which cache branch was hit. Used by `verifyAnyChange` to surface
-   * `VisualMotionObservation.cacheState`.
-   *
-   * `state` value semantics (Opus Round 1 P2-1 — folds documented):
-   *   - `"hit-subscription"`: cached subscription returned (fast path).
-   *   - `"hit-unavailable"`: cached unavailable marker (factory previously threw).
-   *   - `"hit-negative-backoff"`: cached back-off marker set by `invalidate()`.
-   *   - `"miss-init"`: cache miss + factory succeeded. **This bucket also
-   *     absorbs the "disposed-subscription recovery" path** (entry was
-   *     `subscription` but `sub.isDisposed === true`, e.g. AccessLost
-   *     external dispose) — the disposed entry is silently dropped and a
-   *     fresh factory call paid, so both cold-start and post-dispose look
-   *     identical to dogfood logs. Do NOT add a 6th value
-   *     (`miss-after-disposed`) without a real diagnostic need; the 5-value
-   *     cardinality is intentional auditability.
-   *   - `"miss-init-unavailable"`: cache miss + factory threw; marker set.
-   */
-  acquireWithState(outputIndex: number): {
-    sub: SubscriptionLike | null;
-    state: CacheAcquireState;
-  } {
-    this.sweepStale();
-    const cached = this.entries.get(outputIndex);
-    if (cached?.kind === "subscription") {
-      if (!cached.sub.isDisposed) {
-        cached.lastUsedAt = this.nowFn();
-        return { sub: cached.sub, state: "hit-subscription" };
-      }
-      // Disposed externally (AccessLost recovery) — drop and re-init.
-      this.entries.delete(outputIndex);
-    } else if (cached?.kind === "unavailable") {
-      return { sub: null, state: "hit-unavailable" };
-    } else if (cached?.kind === "negative-backoff") {
-      // Issue #327 item B: short-lived back-off after `sub.next()` failure
-      // suppresses the immediate 50 ms factory re-init. `sweepStale` clears
-      // the entry once `NEGATIVE_BACKOFF_MS` has elapsed.
-      return { sub: null, state: "hit-negative-backoff" };
-    }
-    try {
-      const sub = this.factory(outputIndex);
-      this.entries.set(outputIndex, {
-        kind: "subscription",
-        sub,
-        lastUsedAt: this.nowFn(),
-      });
-      return { sub, state: "miss-init" };
-    } catch {
-      this.entries.set(outputIndex, {
-        kind: "unavailable",
-        recordedAt: this.nowFn(),
-      });
-      return { sub: null, state: "miss-init-unavailable" };
-    }
-  }
-
-  /**
-   * Mark `outputIndex` for back-off after a `sub.next()` failure and dispose
-   * any live subscription for it. The next `acquire` call within
-   * `NEGATIVE_BACKOFF_MS` returns `null` fast (state =
-   * `hit-negative-backoff`) instead of paying another factory init cost.
-   * After the back-off window expires, `sweepStale` clears the entry and a
-   * fresh factory call is permitted.
-   *
-   * Issue #327 item B: prior to this change `invalidate` deleted the entry
-   * outright, so back-to-back `desktop_act` calls hit by the same DXGI
-   * failure mode (`E_DUP_ACCESS_LOST` / `E_DUP_UNSUPPORTED`) re-paid the
-   * ~50 ms factory init on every call — the documented cache fast-path was
-   * defeated. The back-off marker fixes the cache-hit contract while keeping
-   * AccessLost recovery within a single user turn.
-   *
-   * Opus Round 1 P3-1: `invalidate(outputIndex)` unconditionally writes the
-   * back-off marker even when no prior entry existed (defensive — the marker
-   * self-clears in `sweepStale` after `NEGATIVE_BACKOFF_MS` regardless).
-   * Real callers only `invalidate` after a `sub.next()` failure on a
-   * previously-acquired entry, so the never-acquired case is a no-op for
-   * real workloads. Avoiding an early-return keeps the method behaviour
-   * monotone (always sets the marker on call), which simplifies callsite
-   * reasoning.
-   */
-  invalidate(outputIndex: number): void {
-    const cached = this.entries.get(outputIndex);
-    if (cached?.kind === "subscription" && !cached.sub.isDisposed) {
-      try {
-        cached.sub.dispose();
-      } catch {
-        /* best-effort */
-      }
-    }
-    this.entries.set(outputIndex, {
-      kind: "negative-backoff",
-      recordedAt: this.nowFn(),
-    });
-  }
-
-  /** Dispose every live subscription. Called by the MCP server shutdown
-   *  hook (§6 R2). */
-  disposeAll(): void {
-    for (const entry of this.entries.values()) {
-      if (entry.kind === "subscription" && !entry.sub.isDisposed) {
-        try {
-          entry.sub.dispose();
-        } catch {
-          /* best-effort */
-        }
-      }
-    }
-    this.entries.clear();
-  }
-
-  /** @internal — exposed for unit tests so they can assert lifecycle without
-   *  faking `Date.now`. */
-  _getEntryForTest(outputIndex: number): CacheEntry | undefined {
-    return this.entries.get(outputIndex);
-  }
-
-  private sweepStale(): void {
-    const now = this.nowFn();
-    for (const [key, entry] of this.entries) {
-      if (entry.kind === "subscription") {
-        // Subscription idle dispose — short TTL (20 s) to release the DXGI
-        // session when not actively in use.
-        if (now - entry.lastUsedAt >= this.idleTimeoutMs) {
-          if (!entry.sub.isDisposed) {
-            try {
-              entry.sub.dispose();
-            } catch {
-              /* best-effort */
-            }
-          }
-          this.entries.delete(key);
-        }
-      } else if (entry.kind === "negative-backoff") {
-        // Short-lived back-off TTL (2 s) for `sub.next()` failure recovery.
-        // Distinct from both subscription-idle and unavailable so AccessLost
-        // resolves within a single user turn rather than waiting on the
-        // longer unavailability window.
-        if (now - entry.recordedAt >= NEGATIVE_BACKOFF_MS) {
-          this.entries.delete(key);
-        }
-      } else if (entry.kind === "unavailable") {
-        // Issue #327 item B follow-up: `unavailable` marker reaches its own
-        // TTL (1 min default), distinct from the 20 s subscription idle. The
-        // marker records a permanent unavailability for this process lifetime
-        // (vision-gpu coexistence, RDP, virtual display), so a longer TTL
-        // prevents the 50 ms factory re-init storm across typical
-        // 10-30 s Claude Code round-trips.
-        //
-        // Opus PR #334 Round 1 P2-2: explicit `entry.kind === "unavailable"`
-        // discriminant (instead of an implicit else) so TS exhaustiveness
-        // checks fire if a 4th `CacheEntry` variant is added in the future.
-        if (now - entry.recordedAt >= this.unavailableTtlMs) {
-          this.entries.delete(key);
-        }
-      }
-    }
-  }
-}
-
-// Process-singleton cache. Constructed lazily on first orchestrator call.
-let _sharedCache: DirtyRectSubscriptionCache | null = null;
-
-function defaultFactory(outputIndex: number): SubscriptionLike {
-  const Ctor = nativeDuplication?.DirtyRectSubscription;
-  if (typeof Ctor !== "function") {
-    throw new Error("DirtyRectSubscription not available in native addon");
-  }
-  return new Ctor(outputIndex) as unknown as SubscriptionLike;
-}
-
-/** Lazily construct (and reuse) the process-wide cache. */
-export function getSharedSubscriptionCache(): DirtyRectSubscriptionCache | null {
-  if (_sharedCache !== null) return _sharedCache;
-  if (typeof nativeDuplication?.DirtyRectSubscription !== "function") return null;
-  _sharedCache = new DirtyRectSubscriptionCache(defaultFactory);
-  return _sharedCache;
-}
-
-/**
- * Dispose the shared cache. Called by the MCP server shutdown hook so the
- * DXGI session is released cleanly (§6 R2 mitigation).
- */
-export function disposeSharedSubscriptionCache(): void {
-  _sharedCache?.disposeAll();
-  _sharedCache = null;
-}
-
-/** @internal — test-only hook to swap the shared cache (or clear it). */
-export function _setSharedSubscriptionCacheForTest(
-  cache: DirtyRectSubscriptionCache | null,
-): void {
-  _sharedCache = cache;
-}
 
 // ─── Output-index resolver ───────────────────────────────────────────────────
 
@@ -450,8 +182,10 @@ export interface VerifyAnyChangeOpts {
   region?: { x: number; y: number; width: number; height: number };
   /** Wallclock budget for dirty-rect polling. Default `STAGE5_POLL_BUDGET_MS`. */
   budgetMs?: number;
-  /** @internal — test-only override for the shared cache. */
-  cache?: DirtyRectSubscriptionCache | null;
+  /** @internal — test-only override for the shared DXGI broker.
+   *  ADR-020 SR-4 PR-SR4-2: replaces the prior `cache?` option (one-to-one
+   *  injection swap; orchestrator semantics preserved). */
+  broker?: DirtyRectBroker | null;
   /** @internal — test-only override for `enumMonitors`. */
   enumerate?: () => Array<{ bounds: { x: number; y: number; width: number; height: number } }>;
 }
@@ -474,11 +208,12 @@ function intersectRect(
 }
 
 /**
- * Stage 5 sub-plan §2.1 — `any_change` primitive orchestrator. Subscribes to
- * the appropriate DXGI output, polls dirty rects for a bounded window,
- * intersects with the target rect, and returns a `VisualMotionObservation`.
+ * Stage 5 sub-plan §2.1 — `any_change` primitive orchestrator. Acquires a
+ * polling handle from the shared DXGI broker (ADR-020 SR-4 PR-SR4-2),
+ * drains dirty rects for a bounded window, intersects with the target
+ * rect, and returns a `VisualMotionObservation`.
  *
- * Decision matrix (§2.1 step 5):
+ * Decision matrix (§2.1 step 5, post-SR-4):
  *
  *   intersected area ratio ≥ STAGE5_MIN_INTERSECTED_AREA_RATIO
  *     → motion: "any_change", source: "dxgi_dirty_rect", residual populated
@@ -488,12 +223,25 @@ function intersectRect(
  *     → motion: "no_change", source: "dxgi_dirty_rect", residual populated
  *   empty rects
  *     → motion: "no_change", source: "dxgi_dirty_rect", residual omitted
- *   DXGI Unsupported / NotCurrentlyAvailable
+ *   broker factory failure (Unsupported / Other — acquire returns sub=null)
  *     → motion: "indeterminate", source: "dxgi_dirty_rect_unavailable"
- *   AccessLost mid-flight
- *     → motion: "indeterminate", source: "dxgi_dirty_rect" + cache invalidated
+ *   broker invalidates mid-flight (handle disposed during `next()`)
+ *     → motion: "indeterminate", source: "dxgi_dirty_rect" (recoverable
+ *       within `BROKER_NEGATIVE_BACKOFF_MS`; the next acquire surfaces
+ *       `hit-negative-backoff` via cacheState which the consumer can use
+ *       to distinguish from a normal empty-rects observation)
  *   resolver failure (no monitors / off-screen / out of range)
  *     → motion: "indeterminate", source: "dxgi_dirty_rect_unavailable"
+ *
+ * ADR-020 SR-4 PR-SR4-2 semantics shift (vs pre-broker `verifyAnyChange`):
+ *   - Race-loss `NotCurrentlyAvailable` is **structurally impossible** —
+ *     the broker holds the single subscription per output, no concurrent
+ *     `DuplicateOutput` calls can race.
+ *   - Mid-flight `sub.next()` errors (AccessLost / Unsupported / Other) are
+ *     caught inside the broker's fan-out loop and folded into a uniform
+ *     `invalidate()` → negative-backoff transition. The orchestrator no
+ *     longer string-matches on `E_DUP_*` markers — `sub.isDisposed` after
+ *     `await next()` is the canonical mid-flight failure signal.
  *
  * Invariant (§9): never throws — degraded observations are returned instead.
  */
@@ -502,9 +250,9 @@ export async function verifyAnyChange(
 ): Promise<VisualMotionObservation> {
   const startMs = performance.now();
 
-  // Issue #327 item B: `cacheState` is passed in by post-cache callers; pre-
-  // cache callers (resolver failure, cache=null) pass `undefined` so the
-  // optional field is omitted from the observation entirely.
+  // Issue #327 item B: `cacheState` is passed in by post-broker callers;
+  // pre-broker callers (resolver failure, broker=null) pass `undefined` so
+  // the optional field is omitted from the observation entirely.
   const degradeUnavailable = (
     cacheState?: CacheAcquireState,
   ): VisualMotionObservation => ({
@@ -525,7 +273,7 @@ export async function verifyAnyChange(
     ...(cacheState !== undefined ? { cacheState } : {}),
   });
 
-  // Resolve target monitor first — cheaper than touching the DXGI cache when
+  // Resolve target monitor first — cheaper than touching the DXGI broker when
   // the window is off-screen.
   const resolution = resolveOutputIndexForHwnd(opts.hwnd, opts.windowRect, {
     enumerate: opts.enumerate,
@@ -537,80 +285,92 @@ export async function verifyAnyChange(
   // Codex PR #325 Round 1 P2 — `resolution.crossMonitor === true` signals
   // the window straddles two monitors. Stage 5 v1 intentionally observes
   // only the center-containing monitor (sub-plan §7 carry-over "Stage 5c:
-  // cross-monitor straddle simultaneous subscription"). The off-monitor
-  // portion may have repaint activity that this observation misses; the
-  // result remains an honest lower bound on motion (we never claim
-  // `no_change` if motion is detected on the observed monitor). Stage 5c
-  // will add simultaneous-output subscription. Until then we do NOT
-  // attach a `hints.warnings` entry from this module because the
-  // observation shape (`VisualMotionObservation`) has no `warnings`
-  // channel — sub-plan §6 R3 routes warnings through the caller's
-  // envelope, which can inspect `crossMonitor` separately if it adopts
-  // the v2 resolver shape.
-  const cache =
-    opts.cache !== undefined ? opts.cache : getSharedSubscriptionCache();
-  if (cache === null) {
+  // cross-monitor straddle simultaneous subscription"). Pre-SR-4 the
+  // off-monitor portion could leak via vision-gpu's parallel subscription
+  // racing on output 0; post-SR-4 the broker holds a single owner so the
+  // observation is a more honest lower bound (we never claim `no_change`
+  // if motion is detected on the observed monitor). Stage 5c will add
+  // simultaneous-output subscription. Until then we do NOT attach a
+  // `hints.warnings` entry from this module because the observation shape
+  // (`VisualMotionObservation`) has no `warnings` channel — sub-plan §6 R3
+  // routes warnings through the caller's envelope, which can inspect
+  // `crossMonitor` separately if it adopts the v2 resolver shape.
+  const broker =
+    opts.broker !== undefined ? opts.broker : getSharedDirtyRectBroker();
+  if (broker === null) {
     return degradeUnavailable();
   }
 
-  const acquired = cache.acquireWithState(resolution.outputIndex);
+  const acquired = broker.acquire(resolution.outputIndex);
   const acquireState: CacheAcquireState = acquired.state;
   if (acquired.sub === null) {
     return degradeUnavailable(acquireState);
   }
   const sub = acquired.sub;
 
-  let rects: Array<{ x: number; y: number; width: number; height: number }>;
   try {
-    rects = await sub.next(opts.budgetMs ?? STAGE5_POLL_BUDGET_MS);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes("E_DUP_ACCESS_LOST")) {
-      // Thread re-creates context, but the current subscription is stale —
-      // invalidate (now sets negative-backoff marker per #327 item B) so the
-      // next call fast-paths instead of paying another 50 ms factory init.
-      cache.invalidate(resolution.outputIndex);
+    const rects = await sub.next(opts.budgetMs ?? STAGE5_POLL_BUDGET_MS);
+
+    // ADR-020 SR-4 PR-SR4-2: broker fan-out catches every `sub.next()` error
+    // uniformly and calls `invalidate(outputIndex)`, which marks our handle
+    // disposed and releases the pending resolver with `[]`. Distinguish
+    // "broker invalidated mid-flight" from "normal empty-rects observation"
+    // via `sub.isDisposed`. The cacheState propagated from the acquire call
+    // (recorded BEFORE the failure) lets dogfood reproduce the cache path
+    // the consumer was on; the NEXT acquire within `BROKER_NEGATIVE_BACKOFF_MS`
+    // (2 s) will surface `hit-negative-backoff` distinguishing recoverable
+    // mid-flight failure from permanent factory unavailability.
+    if (sub.isDisposed) {
       return degradeAccessLost(acquireState);
     }
-    if (msg.includes("E_DUP_UNSUPPORTED")) {
-      cache.invalidate(resolution.outputIndex);
-      return degradeUnavailable(acquireState);
+
+    const target = opts.region ?? opts.windowRect;
+    const targetArea = Math.max(1, target.width * target.height);
+
+    let totalIntersectedAreaPx = 0;
+    for (const r of rects) {
+      const hit = intersectRect(r, target);
+      if (hit !== null) {
+        totalIntersectedAreaPx += hit.width * hit.height;
+      }
     }
-    // Disposed / Other — degrade honestly without invalidating (Disposed
-    // means our consumer has already torn down).
-    return degradeAccessLost(acquireState);
-  }
+    const ratioOfTargetArea = totalIntersectedAreaPx / targetArea;
 
-  const target = opts.region ?? opts.windowRect;
-  const targetArea = Math.max(1, target.width * target.height);
+    const totalElapsedMs = performance.now() - startMs;
+    const framesSampled = rects.length;
 
-  let totalIntersectedAreaPx = 0;
-  for (const r of rects) {
-    const hit = intersectRect(r, target);
-    if (hit !== null) {
-      totalIntersectedAreaPx += hit.width * hit.height;
+    // Empty rect case — observation cleanest with `residual` omitted
+    // (§2.1 step 5 last bullet, G5-2 outcome (a)).
+    if (rects.length === 0) {
+      return {
+        motion: "no_change",
+        source: "dxgi_dirty_rect",
+        framesSampled,
+        totalElapsedMs,
+        cacheState: acquireState,
+      };
     }
-  }
-  const ratioOfTargetArea = totalIntersectedAreaPx / targetArea;
 
-  const totalElapsedMs = performance.now() - startMs;
-  const framesSampled = rects.length;
+    if (ratioOfTargetArea >= STAGE5_MIN_INTERSECTED_AREA_RATIO) {
+      return {
+        motion: "any_change",
+        source: "dxgi_dirty_rect",
+        residual: {
+          fractionChanged: ratioOfTargetArea,
+          dirtyRectCount: rects.length,
+          totalIntersectedAreaPx,
+          ratioOfTargetArea,
+        },
+        framesSampled,
+        totalElapsedMs,
+        cacheState: acquireState,
+      };
+    }
 
-  // Empty rect case — observation cleanest with `residual` omitted (§2.1 step 5
-  // last bullet, G5-2 outcome (a)).
-  if (rects.length === 0) {
+    // Rects observed but sub-threshold (grazing / off-target) → no_change
+    // with residual populated for audit (G5-2 outcomes (b) + (c)).
     return {
       motion: "no_change",
-      source: "dxgi_dirty_rect",
-      framesSampled,
-      totalElapsedMs,
-      cacheState: acquireState,
-    };
-  }
-
-  if (ratioOfTargetArea >= STAGE5_MIN_INTERSECTED_AREA_RATIO) {
-    return {
-      motion: "any_change",
       source: "dxgi_dirty_rect",
       residual: {
         fractionChanged: ratioOfTargetArea,
@@ -622,33 +382,30 @@ export async function verifyAnyChange(
       totalElapsedMs,
       cacheState: acquireState,
     };
+  } finally {
+    // ADR-020 SR-4 PR-SR4-2 — release the per-call polling handle. The
+    // broker entry's native subscription stays cached (idle-timeout-managed),
+    // but this handle's queue cursor + its registration in
+    // `entry.pollingHandles` are explicitly released here so chained
+    // `verifyAnyChange` calls do not leak per-call cursors. The dispose is
+    // idempotent: a no-op when the broker already invalidated the handle.
+    if (!sub.isDisposed) {
+      sub.dispose();
+    }
   }
-
-  // Rects observed but sub-threshold (grazing / off-target) → no_change with
-  // residual populated for audit (G5-2 outcomes (b) + (c)).
-  return {
-    motion: "no_change",
-    source: "dxgi_dirty_rect",
-    residual: {
-      fractionChanged: ratioOfTargetArea,
-      dirtyRectCount: rects.length,
-      totalIntersectedAreaPx,
-      ratioOfTargetArea,
-    },
-    framesSampled,
-    totalElapsedMs,
-    cacheState: acquireState,
-  };
 }
 
 // ─── Constants re-export (for unit tests + bench harness) ────────────────────
 
 /**
  * Exported for the unit tests under `tests/unit/{any-change-orchestrator,
- * dirty-rect-subscription-cache,resolve-output-index}.test.ts` and the
- * post-impl bench harness `benches/dogfood_stage_5.mjs`. Production callers
- * MUST NOT branch on these values — they are tuning parameters, not API
- * contract.
+ * dxgi-broker,resolve-output-index}.test.ts` and the post-impl bench harness
+ * `benches/dogfood_stage_5.mjs`. Production callers MUST NOT branch on these
+ * values — they are tuning parameters, not API contract.
+ *
+ * ADR-020 SR-4 PR-SR4-2: `STAGE5_CACHE_IDLE_TIMEOUT_MS` and
+ * `STAGE5_UNAVAILABLE_TTL_MS` re-export `BROKER_CONSTANTS` (broker is SSOT).
+ * The numeric values stay bit-equal by construction.
  */
 export const STAGE5_CONSTANTS = Object.freeze({
   STAGE5_POLL_BUDGET_MS,

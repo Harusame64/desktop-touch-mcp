@@ -541,8 +541,8 @@ export interface VisualMotionObservation {
    * cache state observed during this call. Helps audit the cache fast-path
    * vs cold-path ratio for back-to-back `desktop_act` calls (the dogfood
    * symptom that triggered #327: `totalElapsedMs ~50ms constant`). Only
-   * populated on Stage 5 paths that consult `DirtyRectSubscriptionCache`;
-   * absent on non-cache sources.
+   * populated on Stage 5 paths that consult the shared `DirtyRectBroker`
+   * (ADR-020 SR-4); absent on non-broker sources.
    *
    * Values:
    * - `"hit-subscription"`: cached subscription returned, no init cost.
