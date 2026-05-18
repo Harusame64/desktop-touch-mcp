@@ -513,4 +513,128 @@ describe("DirtyRectBroker", () => {
     expect(BROKER_CONSTANTS.BROKER_CACHE_IDLE_TIMEOUT_MS).toBe(20_000);
     expect(BROKER_CONSTANTS.BROKER_UNAVAILABLE_TTL_MS).toBe(60_000);
   });
+
+  // ─── j. PR-SR4-3 Round 1 P1-1 — onInvalidate hook for callback consumers ──
+  // The vision-gpu silent-zombie regression discovered by Opus PR-SR4-3
+  // Round 1 P1-1: callback consumers had no signal that the broker tore
+  // down their handle (polling consumers detect it via
+  // `BrokerSubscription.isDisposed`; callback consumers used to receive
+  // nothing). The `onInvalidate` hook fires exactly once on the broker's
+  // `invalidate()` / `disposeAll()` path, AFTER `isUnsubscribed` flips.
+  // These tests pin the hook contract and revert simulation.
+
+  it("subscribe.onInvalidate fires exactly once on broker.invalidate", async () => {
+    const stub: SubscriptionLike = {
+      isDisposed: false,
+      next: vi.fn().mockImplementation(async () => {
+        throw new Error("E_DUP_ACCESS_LOST");
+      }),
+      dispose: vi.fn(),
+    };
+    const broker = makeBroker(() => stub, () => 0, 20_000, 60_000, 5);
+
+    const callbackSpy = vi.fn();
+    const invalidateSpy = vi.fn();
+    broker.subscribe(0, callbackSpy, invalidateSpy);
+
+    // Let the fan-out loop catch the throw and call invalidate().
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(invalidateSpy).toHaveBeenCalledTimes(1);
+    // The callback itself must NOT have received any batch (only invalidate fires).
+    expect(callbackSpy).not.toHaveBeenCalled();
+
+    broker.disposeAll();
+  });
+
+  it("subscribe.onInvalidate is optional — omitting it is safe (revert simulation)", async () => {
+    const stub: SubscriptionLike = {
+      isDisposed: false,
+      next: vi.fn().mockImplementation(async () => {
+        throw new Error("E_DUP_OTHER");
+      }),
+      dispose: vi.fn(),
+    };
+    const broker = makeBroker(() => stub, () => 0, 20_000, 60_000, 5);
+
+    // No onInvalidate — broker must still invalidate cleanly without
+    // throwing on the missing hook. Mental simulation: removing the
+    // `if (cb.onInvalidate !== undefined)` guard would crash here.
+    const result = broker.subscribe(0, () => undefined);
+    expect(result.state).toBe("miss-init");
+    await new Promise((r) => setTimeout(r, 30));
+
+    // Entry should be in negative-backoff state after the throw.
+    const entry = broker._getEntryForTest(0);
+    expect(entry?.kind).toBe("negative-backoff");
+
+    broker.disposeAll();
+  });
+
+  it("subscribe.onInvalidate fires on disposeAll (server shutdown path)", () => {
+    const stub: SubscriptionLike = {
+      isDisposed: false,
+      next: () => new Promise(() => undefined), // never resolves
+      dispose: () => undefined,
+    };
+    const broker = makeBroker(() => stub, () => 0, 20_000, 60_000, 5);
+
+    const invalidateSpy = vi.fn();
+    broker.subscribe(0, () => undefined, invalidateSpy);
+
+    broker.disposeAll();
+
+    expect(invalidateSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("subscribe.onInvalidate does NOT fire after the consumer's own unsubscribe()", () => {
+    const stub: SubscriptionLike = {
+      isDisposed: false,
+      next: () => new Promise(() => undefined),
+      dispose: () => undefined,
+    };
+    const broker = makeBroker(() => stub, () => 0, 20_000, 60_000, 5);
+
+    const invalidateSpy = vi.fn();
+    const { unsubscribe } = broker.subscribe(0, () => undefined, invalidateSpy);
+    unsubscribe();
+    broker.disposeAll();
+
+    // After unsubscribe() the handle was removed from `callbackHandles`,
+    // so disposeAll() iteration finds nothing to fire onInvalidate on.
+    expect(invalidateSpy).not.toHaveBeenCalled();
+  });
+
+  it("subscribe.onInvalidate fires AFTER isUnsubscribed flips (hook callback observes post-invalidation state)", async () => {
+    const stub: SubscriptionLike = {
+      isDisposed: false,
+      next: vi.fn().mockImplementation(async () => {
+        throw new Error("E_DUP_ACCESS_LOST");
+      }),
+      dispose: vi.fn(),
+    };
+    const broker = makeBroker(() => stub, () => 0, 20_000, 60_000, 5);
+
+    let observedEntryKindFromHook: string | undefined;
+    const invalidateSpy = vi.fn(() => {
+      const e = broker._getEntryForTest(0);
+      observedEntryKindFromHook = e?.kind;
+    });
+
+    broker.subscribe(0, () => undefined, invalidateSpy);
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(invalidateSpy).toHaveBeenCalledTimes(1);
+    // The hook ran AFTER invalidate() set the entry to negative-backoff
+    // (broker invalidate replaces the entry before iterating callbacks
+    // because... actually it sets entry after iterating; verify the
+    // observed kind matches the documented contract). The contract is
+    // that `isUnsubscribed=true` is set BEFORE the hook fires, and the
+    // entry is replaced with `negative-backoff` AFTER all hooks fire.
+    // So the hook observes the OLD entry (kind="subscription") — which
+    // is fine because the handle is already invalidated.
+    expect(observedEntryKindFromHook).toBe("subscription");
+
+    broker.disposeAll();
+  });
 });

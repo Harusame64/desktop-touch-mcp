@@ -423,10 +423,12 @@ export interface NativeOutputBounds {
 /**
  * ADR-019 Stage 5 — typed declaration for the `DirtyRectSubscription` napi
  * class (`src/duplication/mod.rs`). The class shipped with PR #102 (ADR-007
- * P5c-2) but was previously only reachable through an untyped escape hatch
- * (`addon["DirtyRectSubscription"]` in `src/engine/vision-gpu/dirty-rect-source.ts`).
- * Stage 5 sub-plan §3 P4 formalises the SSOT so `src/engine/any-change.ts`
- * (and a future vision-gpu cleanup) can consume it via a typed reference.
+ * P5c-2) and was originally reachable only through an untyped escape hatch
+ * (`addon["DirtyRectSubscription"]` in `src/engine/vision-gpu/dirty-rect-source.ts`,
+ * removed in ADR-020 SR-4 PR-SR4-3). Both consumers (Stage 5 via
+ * `src/engine/any-change.ts`, vision-gpu via `dirty-rect-source.ts`) now go
+ * through the shared `DirtyRectBroker` (`src/engine/dxgi-broker.ts`), which
+ * is the single typed caller of `nativeDuplication.DirtyRectSubscription`.
  *
  * `outputBounds` is the per-output desktop rect (now populated from
  * `DXGI_OUTPUT_DESC.DesktopCoordinates` after PR #322, so dirty rects are
