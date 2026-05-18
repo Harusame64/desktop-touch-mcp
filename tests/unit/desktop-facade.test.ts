@@ -1084,3 +1084,128 @@ describe("DesktopFacade — UIA-cache-stale → attention (#295 carry-over)", ()
     expect(out.attention).toBeUndefined();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR-019 Stage 5 — DesktopFacade.resolveHwndForViewId foreground fallback
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// PR #325 wired `desktop_act` to attach a `VisualMotionObservation` after a
+// successful touch, but `tryVerifyAnyChange` only consulted
+// `session.lastTarget.hwnd` and silently returned null for the typical
+// `desktop_discover()` / `desktop_discover({ windowTitle })` flow that does
+// not pin an HWND. These tests pin the foreground-fallback contract added in
+// this PR: `resolveHwndForViewId` reuses the same precedence ladder
+// (`target.hwnd` → `getFocusedHwnd()` → null) that `see()` consults for its
+// Issue #295 stale check, so Stage 5 no longer goes dormant on the common
+// flows.
+describe("DesktopFacade — resolveHwndForViewId (Stage 5 foreground fallback)", () => {
+  it("returns session.lastTarget.hwnd when explicitly pinned (foreground irrelevant)", async () => {
+    const TARGET_HWND = 0xC0DE01n;
+    const FOCUSED_HWND = 0xC0DE02n;
+    const facade = new DesktopFacade(gameProvider, {
+      getFocusedHwnd: () => FOCUSED_HWND,
+    });
+    const out = await facade.see({ target: { hwnd: String(TARGET_HWND) } });
+    expect(facade.resolveHwndForViewId(out.viewId)).toBe(TARGET_HWND);
+  });
+
+  it("falls back to getFocusedHwnd when lastTarget is windowTitle-only (no hwnd)", async () => {
+    // This is the path PR #325 left dormant — the LLM passed a windowTitle
+    // hint, lastTarget.hwnd is undefined, and Stage 5 silently produced no
+    // observation. The foreground resolver now bridges that gap.
+    const FOCUSED_HWND = 0xC0DE03n;
+    const facade = new DesktopFacade(gameProvider, {
+      getFocusedHwnd: () => FOCUSED_HWND,
+    });
+    const out = await facade.see({ target: { windowTitle: "GameWindow" } });
+    expect(facade.resolveHwndForViewId(out.viewId)).toBe(FOCUSED_HWND);
+  });
+
+  it("falls back to getFocusedHwnd when lastTarget is undefined (foreground see())", async () => {
+    // The other dormant path — `desktop_discover()` with no arg. session.lastTarget
+    // is undefined; without the fallback, Stage 5 never fired for this flow.
+    const FOCUSED_HWND = 0xC0DE04n;
+    const facade = new DesktopFacade(gameProvider, {
+      getFocusedHwnd: () => FOCUSED_HWND,
+    });
+    const out = await facade.see();
+    expect(facade.resolveHwndForViewId(out.viewId)).toBe(FOCUSED_HWND);
+  });
+
+  it("returns null when neither lastTarget.hwnd nor getFocusedHwnd is available", async () => {
+    // Same shape as `see()` returning attention: undefined — there is genuinely
+    // no signal, so the Stage 5 wiring degrades silently to no observation.
+    const facade = new DesktopFacade(gameProvider);
+    const out = await facade.see({ target: { windowTitle: "GameWindow" } });
+    expect(facade.resolveHwndForViewId(out.viewId)).toBeNull();
+  });
+
+  it("returns null when getFocusedHwnd returns null (no foreground)", async () => {
+    const facade = new DesktopFacade(gameProvider, { getFocusedHwnd: () => null });
+    const out = await facade.see();
+    expect(facade.resolveHwndForViewId(out.viewId)).toBeNull();
+  });
+
+  it("returns null defensively when getFocusedHwnd throws", async () => {
+    // Production wiring calls into Win32; any throw must degrade to null
+    // (Stage 5 skips the verify) rather than crash desktop_act.
+    const facade = new DesktopFacade(gameProvider, {
+      getFocusedHwnd: () => {
+        throw new Error("Win32 boom");
+      },
+    });
+    const out = await facade.see();
+    expect(facade.resolveHwndForViewId(out.viewId)).toBeNull();
+  });
+
+  it("returns null for an unknown viewId (session evicted)", async () => {
+    const facade = new DesktopFacade(gameProvider, { getFocusedHwnd: () => 0xC0DE05n });
+    expect(facade.resolveHwndForViewId("nonexistent-view-id")).toBeNull();
+  });
+
+  it("malformed target.hwnd falls back to getFocusedHwnd and logs audit trail", async () => {
+    // PR-SR4-4 Round 1 P2 — parse failure on a stale pinned hwnd must NOT
+    // silently disable Stage 5 when a usable focused HWND is available
+    // (that's exactly the dormancy class this PR claims to eliminate).
+    // `resolveHwndForViewId` open-codes the (target.hwnd → focused) ladder
+    // for this reason: `resolveTargetHwnd` short-circuits to null on parse
+    // failure, which is the right behaviour for `see()`'s UIA-cache stale
+    // check (it wants null so a malformed pinned hwnd does not silently
+    // re-purpose the foreground window as a stale-check target) but the
+    // wrong behaviour for Stage 5 dormancy avoidance.
+    const FOCUSED_HWND = 0xC0DE06n;
+    const facade = new DesktopFacade(gameProvider, {
+      getFocusedHwnd: () => FOCUSED_HWND,
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const out = await facade.see({ target: { hwnd: "not-a-bigint" } });
+      expect(facade.resolveHwndForViewId(out.viewId)).toBe(FOCUSED_HWND);
+      // Audit trail: PR #325 Round 1 P3-2 (preserved through PR-SR4-4
+      // Round 1 P2 even after the ladder open-coding) — a production race
+      // where `lastTarget.hwnd` becomes malformed must still emit an
+      // observable stderr line rather than silently degrading.
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      const message = String(errorSpy.mock.calls[0]?.[0] ?? "");
+      expect(message).toMatch(/Stage 5/);
+      expect(message).toMatch(/falling back to foreground resolver/);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("malformed target.hwnd returns null when no foreground resolver is wired", async () => {
+    // Mirror of the above: without `getFocusedHwnd` wired, the fall-through
+    // has nowhere to land and Stage 5 honestly returns null. The audit log
+    // still fires so the malformed-vs-absent distinction remains observable.
+    const facade = new DesktopFacade(gameProvider);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const out = await facade.see({ target: { hwnd: "not-a-bigint" } });
+      expect(facade.resolveHwndForViewId(out.viewId)).toBeNull();
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+});
