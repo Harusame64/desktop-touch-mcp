@@ -2,22 +2,44 @@
  * ADR-019 Stage 5 — `verifyAnyChange` orchestrator unit tests.
  *
  * Sub-plan: `docs/adr-019-stage-5-plan.md` §3 SSOT row
- * `any-change-orchestrator.test.ts` (8-12 cases). Drives every §2.1 decision
- * branch via mocked `SubscriptionLike` instances + an injected cache and
+ * `any-change-orchestrator.test.ts`. Drives every §2.1 decision branch via
+ * mocked `SubscriptionLike` instances + an injected `DirtyRectBroker`
+ * (ADR-020 SR-4 PR-SR4-2; previously `DirtyRectSubscriptionCache`) and
  * `enumerate` provider so no native binding is touched.
+ *
+ * Mid-flight failure semantics shift (PR-SR4-2): the broker's fan-out loop
+ * catches every `sub.next()` exception uniformly and calls `invalidate()`,
+ * so the orchestrator no longer string-matches `E_DUP_*` markers. A
+ * `sub.next()` throw (any cause) surfaces to the orchestrator as
+ * `handle.isDisposed === true` after `await sub.next()` resolves with `[]`
+ * — emitting `motion: indeterminate` + `source: dxgi_dirty_rect` on the
+ * current call, then `source: dxgi_dirty_rect_unavailable` +
+ * `cacheState: hit-negative-backoff` on the next call within 2 s.
  */
 
 import { describe, it, expect, vi } from "vitest";
 
 import {
-  DirtyRectSubscriptionCache,
   STAGE5_CONSTANTS,
   verifyAnyChange,
-  type SubscriptionLike,
 } from "../../src/engine/any-change.js";
+import {
+  BROKER_CONSTANTS,
+  DirtyRectBroker,
+  type SubscriptionLike,
+} from "../../src/engine/dxgi-broker.js";
 
 const WINDOW_RECT = { x: 0, y: 0, width: 800, height: 600 };
 const PRIMARY_MONITOR = { bounds: { x: 0, y: 0, width: 1920, height: 1080 } };
+
+/** Short broker budget so the orchestrator's `handle.next(timeoutMs)` resolves
+ *  fast in tests (the fan-out loop still polls the mock sub at this cadence). */
+const FAST_FANOUT_POLL_MS = 5;
+
+/** Short orchestrator budget so the empty-rects path returns within a single
+ *  vitest tick. The mock sub.next() resolves synchronously, so the only wait
+ *  is the handle's timeout drain. */
+const FAST_BUDGET_MS = 30;
 
 function buildSub(
   next: (timeoutMs: number) => Promise<Array<{ x: number; y: number; width: number; height: number }>>,
@@ -29,14 +51,25 @@ function buildSub(
   };
 }
 
-function cacheReturning(sub: SubscriptionLike | null): DirtyRectSubscriptionCache {
-  // Factory is unused when `sub` is non-null — we hand the cache a
-  // pre-built subscription via the standard factory contract.
+/**
+ * Construct a broker whose factory always returns `sub` (or throws when
+ * `sub` is null) — the exact analogue of the pre-SR-4 `cacheReturning`
+ * helper. The fan-out cadence is shrunk so tests run quickly without
+ * scheduling real DXGI polling.
+ */
+function brokerReturning(sub: SubscriptionLike | null): DirtyRectBroker {
   const factory = vi.fn(() => {
     if (sub === null) throw new Error("E_DUP_UNSUPPORTED");
     return sub;
   });
-  return new DirtyRectSubscriptionCache(factory, () => 0);
+  return new DirtyRectBroker(
+    factory,
+    () => 0,                                          // nowFn
+    BROKER_CONSTANTS.BROKER_CACHE_IDLE_TIMEOUT_MS,    // idleTimeoutMs (broker SSOT)
+    BROKER_CONSTANTS.BROKER_UNAVAILABLE_TTL_MS,       // unavailableTtlMs (broker SSOT)
+    FAST_FANOUT_POLL_MS,                              // fanOutPollMs — fast for tests
+    BROKER_CONSTANTS.BROKER_NEGATIVE_BACKOFF_MS,      // negativeBackoffMs (broker SSOT)
+  );
 }
 
 describe("verifyAnyChange orchestrator", () => {
@@ -45,8 +78,9 @@ describe("verifyAnyChange orchestrator", () => {
     const obs = await verifyAnyChange({
       hwnd: 1n,
       windowRect: WINDOW_RECT,
-      cache: cacheReturning(sub),
+      broker: brokerReturning(sub),
       enumerate: () => [PRIMARY_MONITOR],
+      budgetMs: FAST_BUDGET_MS,
     });
     expect(obs.motion).toBe("no_change");
     expect(obs.source).toBe("dxgi_dirty_rect");
@@ -60,8 +94,9 @@ describe("verifyAnyChange orchestrator", () => {
     const obs = await verifyAnyChange({
       hwnd: 1n,
       windowRect: WINDOW_RECT,
-      cache: cacheReturning(sub),
+      broker: brokerReturning(sub),
       enumerate: () => [PRIMARY_MONITOR],
+      budgetMs: FAST_BUDGET_MS,
     });
     expect(obs.motion).toBe("no_change");
     expect(obs.source).toBe("dxgi_dirty_rect");
@@ -78,8 +113,9 @@ describe("verifyAnyChange orchestrator", () => {
     const obs = await verifyAnyChange({
       hwnd: 1n,
       windowRect: WINDOW_RECT,
-      cache: cacheReturning(sub),
+      broker: brokerReturning(sub),
       enumerate: () => [PRIMARY_MONITOR],
+      budgetMs: FAST_BUDGET_MS,
     });
     expect(obs.motion).toBe("any_change");
     expect(obs.source).toBe("dxgi_dirty_rect");
@@ -99,8 +135,9 @@ describe("verifyAnyChange orchestrator", () => {
     const obs = await verifyAnyChange({
       hwnd: 1n,
       windowRect: WINDOW_RECT,
-      cache: cacheReturning(sub),
+      broker: brokerReturning(sub),
       enumerate: () => [PRIMARY_MONITOR],
+      budgetMs: FAST_BUDGET_MS,
     });
     expect(obs.motion).toBe("no_change");
     expect(obs.source).toBe("dxgi_dirty_rect");
@@ -120,131 +157,156 @@ describe("verifyAnyChange orchestrator", () => {
       hwnd: 1n,
       windowRect: WINDOW_RECT,
       region: { x: 200, y: 200, width: 100, height: 100 },
-      cache: cacheReturning(sub),
+      broker: brokerReturning(sub),
       enumerate: () => [PRIMARY_MONITOR],
+      budgetMs: FAST_BUDGET_MS,
     });
     expect(obs.motion).toBe("any_change");
     expect(obs.residual?.totalIntersectedAreaPx).toBe(2500);
   });
 
-  it("DXGI Unsupported error → motion: indeterminate, source: dxgi_dirty_rect_unavailable", async () => {
+  it("DXGI Unsupported at acquire → motion: indeterminate, source: dxgi_dirty_rect_unavailable", async () => {
     const obs = await verifyAnyChange({
       hwnd: 1n,
       windowRect: WINDOW_RECT,
-      cache: cacheReturning(null), // factory throws E_DUP_UNSUPPORTED
+      broker: brokerReturning(null), // factory throws E_DUP_UNSUPPORTED
       enumerate: () => [PRIMARY_MONITOR],
+      budgetMs: FAST_BUDGET_MS,
     });
     expect(obs.motion).toBe("indeterminate");
     expect(obs.source).toBe("dxgi_dirty_rect_unavailable");
     expect(obs.residual).toBeUndefined();
   });
 
-  it("AccessLost mid-flight → motion: indeterminate with source dxgi_dirty_rect + cache invalidated", async () => {
+  // ADR-020 SR-4 PR-SR4-2 semantics: any mid-flight `sub.next()` exception
+  // (AccessLost OR Unsupported OR Other) is folded by the broker's fan-out
+  // loop into a uniform `invalidate()` transition. The orchestrator emits
+  // `source: dxgi_dirty_rect` on THIS call (handle.isDisposed signal) and
+  // `source: dxgi_dirty_rect_unavailable` + `cacheState: hit-negative-backoff`
+  // on the next call within 2 s. Tests below pin both calls.
+  it("AccessLost mid-flight → motion: indeterminate, source: dxgi_dirty_rect, broker.invalidate fires", async () => {
     const sub = buildSub(async () => {
       throw new Error("E_DUP_ACCESS_LOST: session lost, resubscribe");
     });
-    const cache = cacheReturning(sub);
-    const invalidateSpy = vi.spyOn(cache, "invalidate");
+    const broker = brokerReturning(sub);
+    const invalidateSpy = vi.spyOn(broker, "invalidate");
 
     const obs = await verifyAnyChange({
       hwnd: 1n,
       windowRect: WINDOW_RECT,
-      cache,
+      broker,
       enumerate: () => [PRIMARY_MONITOR],
+      budgetMs: FAST_BUDGET_MS,
     });
     expect(obs.motion).toBe("indeterminate");
     expect(obs.source).toBe("dxgi_dirty_rect");
-    expect(invalidateSpy).toHaveBeenCalled();
+    expect(invalidateSpy).toHaveBeenCalledWith(0);
   });
 
-  it("subscription.next throws E_DUP_UNSUPPORTED → degrade to unavailable + invalidate", async () => {
+  it("subscription.next throws E_DUP_UNSUPPORTED → broker.invalidate fires, source: dxgi_dirty_rect (PR-SR4-2 semantics shift)", async () => {
+    // PR-SR4-2 semantics shift: previously the orchestrator string-matched
+    // `E_DUP_UNSUPPORTED` to emit `dxgi_dirty_rect_unavailable` directly.
+    // Now the broker folds both AccessLost and Unsupported mid-flight errors
+    // into a uniform invalidate(), so the FIRST call surfaces
+    // `dxgi_dirty_rect` (handle disposed) and the NEXT call within 2 s
+    // surfaces `dxgi_dirty_rect_unavailable` + `cacheState=hit-negative-backoff`
+    // (covered by the dedicated negative-backoff test below).
     const sub = buildSub(async () => {
       throw new Error("E_DUP_UNSUPPORTED: RDP or unsupported driver");
     });
-    const cache = cacheReturning(sub);
-    const invalidateSpy = vi.spyOn(cache, "invalidate");
+    const broker = brokerReturning(sub);
+    const invalidateSpy = vi.spyOn(broker, "invalidate");
 
     const obs = await verifyAnyChange({
       hwnd: 1n,
       windowRect: WINDOW_RECT,
-      cache,
+      broker,
       enumerate: () => [PRIMARY_MONITOR],
+      budgetMs: FAST_BUDGET_MS,
     });
     expect(obs.motion).toBe("indeterminate");
-    expect(obs.source).toBe("dxgi_dirty_rect_unavailable");
-    expect(invalidateSpy).toHaveBeenCalled();
+    expect(obs.source).toBe("dxgi_dirty_rect");
+    expect(invalidateSpy).toHaveBeenCalledWith(0);
   });
 
   // Issue #327 item B instrumentation: cacheState should be populated on all
-  // observation paths that consulted the DXGI subscription cache, so back-to-
-  // back desktop_act calls can be audited for hit/miss ratio in dogfood logs.
+  // observation paths that consulted the DXGI broker, so back-to-back
+  // desktop_act calls can be audited for hit/miss ratio in dogfood logs.
   it("cacheState='miss-init' on cold acquire, 'hit-subscription' on warm acquire (#327 item B)", async () => {
     const sub = buildSub(async () => []);
-    const cache = cacheReturning(sub);
+    const broker = brokerReturning(sub);
 
     const first = await verifyAnyChange({
       hwnd: 1n,
       windowRect: WINDOW_RECT,
-      cache,
+      broker,
       enumerate: () => [PRIMARY_MONITOR],
+      budgetMs: FAST_BUDGET_MS,
     });
     expect(first.cacheState).toBe("miss-init");
 
     const second = await verifyAnyChange({
       hwnd: 1n,
       windowRect: WINDOW_RECT,
-      cache,
+      broker,
       enumerate: () => [PRIMARY_MONITOR],
+      budgetMs: FAST_BUDGET_MS,
     });
     expect(second.cacheState).toBe("hit-subscription");
   });
 
   it("cacheState='hit-unavailable' after the factory has thrown once (#327 item B)", async () => {
-    const cache = cacheReturning(null); // factory throws E_DUP_UNSUPPORTED
+    const broker = brokerReturning(null); // factory throws E_DUP_UNSUPPORTED
 
     const first = await verifyAnyChange({
       hwnd: 1n,
       windowRect: WINDOW_RECT,
-      cache,
+      broker,
       enumerate: () => [PRIMARY_MONITOR],
+      budgetMs: FAST_BUDGET_MS,
     });
     expect(first.cacheState).toBe("miss-init-unavailable");
 
     const second = await verifyAnyChange({
       hwnd: 1n,
       windowRect: WINDOW_RECT,
-      cache,
+      broker,
       enumerate: () => [PRIMARY_MONITOR],
+      budgetMs: FAST_BUDGET_MS,
     });
     // Back-to-back call must NOT re-pay the 50 ms factory init —
     // the unavailable marker fast-paths it.
     expect(second.cacheState).toBe("hit-unavailable");
   });
 
-  it("cacheState='hit-negative-backoff' after sub.next() E_DUP_* failure prevents 50ms re-init (#327 item B)", async () => {
+  it("cacheState='hit-negative-backoff' after sub.next() failure prevents 50ms re-init (#327 item B)", async () => {
     const sub = buildSub(async () => {
       throw new Error("E_DUP_UNSUPPORTED: vision-gpu coexistence");
     });
-    const cache = cacheReturning(sub);
+    const broker = brokerReturning(sub);
 
-    // First call: paid the factory init (miss-init), sub.next threw, invalidate
-    // set the negative-backoff marker.
+    // First call: paid the factory init (miss-init), sub.next threw inside
+    // the broker fan-out loop, broker.invalidate set the negative-backoff
+    // marker.
     const first = await verifyAnyChange({
       hwnd: 1n,
       windowRect: WINDOW_RECT,
-      cache,
+      broker,
       enumerate: () => [PRIMARY_MONITOR],
+      budgetMs: FAST_BUDGET_MS,
     });
     expect(first.cacheState).toBe("miss-init");
 
     // Second call: the negative-backoff marker fast-paths the acquire so no
     // factory re-init is paid. THIS is the #327 item B fix — the dogfood
-    // "50ms constant" symptom is closed.
+    // "50ms constant" symptom is closed. PR-SR4-2 preserves this contract
+    // through the broker.
     const second = await verifyAnyChange({
       hwnd: 1n,
       windowRect: WINDOW_RECT,
-      cache,
+      broker,
       enumerate: () => [PRIMARY_MONITOR],
+      budgetMs: FAST_BUDGET_MS,
     });
     expect(second.cacheState).toBe("hit-negative-backoff");
     expect(second.source).toBe("dxgi_dirty_rect_unavailable");
@@ -256,19 +318,21 @@ describe("verifyAnyChange orchestrator", () => {
       hwnd: 1n,
       // Window centred at (-3200, -1200) — outside the primary monitor.
       windowRect: { x: -3600, y: -1600, width: 800, height: 800 },
-      cache: cacheReturning(sub),
+      broker: brokerReturning(sub),
       enumerate: () => [PRIMARY_MONITOR],
+      budgetMs: FAST_BUDGET_MS,
     });
     expect(obs.motion).toBe("indeterminate");
     expect(obs.source).toBe("dxgi_dirty_rect_unavailable");
   });
 
-  it("null cache (native addon absent) → motion: indeterminate, source: dxgi_dirty_rect_unavailable", async () => {
+  it("null broker (native addon absent) → motion: indeterminate, source: dxgi_dirty_rect_unavailable", async () => {
     const obs = await verifyAnyChange({
       hwnd: 1n,
       windowRect: WINDOW_RECT,
-      cache: null,
+      broker: null,
       enumerate: () => [PRIMARY_MONITOR],
+      budgetMs: FAST_BUDGET_MS,
     });
     expect(obs.motion).toBe("indeterminate");
     expect(obs.source).toBe("dxgi_dirty_rect_unavailable");
@@ -276,5 +340,51 @@ describe("verifyAnyChange orchestrator", () => {
 
   it("STAGE5_MIN_INTERSECTED_AREA_RATIO default is 0.005 (Round 1 P2-5 lock)", () => {
     expect(STAGE5_CONSTANTS.STAGE5_MIN_INTERSECTED_AREA_RATIO).toBe(0.005);
+  });
+
+  // ADR-020 SR-4 PR-SR4-2 — broker SSOT pin. The Stage 5 numeric values must
+  // re-export from the broker so the two consumers (Stage 5 + future
+  // vision-gpu in PR-SR4-3) stay bit-equal by construction.
+  it("STAGE5_CACHE_IDLE_TIMEOUT_MS / STAGE5_UNAVAILABLE_TTL_MS re-export from BROKER_CONSTANTS", async () => {
+    const { BROKER_CONSTANTS } = await import("../../src/engine/dxgi-broker.js");
+    expect(STAGE5_CONSTANTS.STAGE5_CACHE_IDLE_TIMEOUT_MS).toBe(
+      BROKER_CONSTANTS.BROKER_CACHE_IDLE_TIMEOUT_MS,
+    );
+    expect(STAGE5_CONSTANTS.STAGE5_UNAVAILABLE_TTL_MS).toBe(
+      BROKER_CONSTANTS.BROKER_UNAVAILABLE_TTL_MS,
+    );
+  });
+
+  it("verifyAnyChange disposes the broker polling handle after each call (no per-call cursor leak)", async () => {
+    // Two sequential verify calls on the same broker. After both calls the
+    // broker entry's `pollingHandles` set should be empty — the orchestrator
+    // disposes its per-call handle in the `try/finally` block. Without this
+    // dispose the handles would accumulate across chained `desktop_act` calls
+    // and the fan-out loop would push to every leaked cursor's queue.
+    const sub = buildSub(async () => []);
+    const broker = brokerReturning(sub);
+
+    await verifyAnyChange({
+      hwnd: 1n,
+      windowRect: WINDOW_RECT,
+      broker,
+      enumerate: () => [PRIMARY_MONITOR],
+      budgetMs: FAST_BUDGET_MS,
+    });
+    await verifyAnyChange({
+      hwnd: 1n,
+      windowRect: WINDOW_RECT,
+      broker,
+      enumerate: () => [PRIMARY_MONITOR],
+      budgetMs: FAST_BUDGET_MS,
+    });
+
+    const entry = broker._getEntryForTest(0);
+    expect(entry?.kind).toBe("subscription");
+    if (entry?.kind === "subscription") {
+      expect(entry.pollingHandles.size).toBe(0);
+      expect(entry.callbackHandles.size).toBe(0);
+    }
+    broker.disposeAll();
   });
 });

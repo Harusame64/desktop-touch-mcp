@@ -59,10 +59,8 @@ import {
   getWindowRectByHwnd,
 } from "../engine/win32.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
-import {
-  disposeSharedSubscriptionCache,
-  verifyAnyChange,
-} from "../engine/any-change.js";
+import { verifyAnyChange } from "../engine/any-change.js";
+import { disposeSharedDirtyRectBroker } from "../engine/dxgi-broker.js";
 import type { VisualMotionObservation } from "./_input-pipeline.js";
 import { createDefaultCapabilityRegistry } from "../capabilities/registry.js";
 
@@ -439,9 +437,9 @@ export function _resetFacadeForTest(): void {
   _onnxBackend = undefined;
   _dirtyRouter?.stop();
   _dirtyRouter = undefined;
-  // ADR-019 Stage 5 (§6 R2) — release any cached DXGI subscriptions so the
-  // DXGI session doesn't leak across test runs.
-  disposeSharedSubscriptionCache();
+  // ADR-019 Stage 5 (§6 R2) + ADR-020 SR-4 PR-SR4-2 — release the shared
+  // DXGI broker so the DXGI session doesn't leak across test runs.
+  disposeSharedDirtyRectBroker();
   _resetOcrAdaptersForTest();
 }
 
