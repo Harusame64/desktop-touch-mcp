@@ -24,18 +24,19 @@
   `dxgi_dirty_rect_unavailable` honestly) are unchanged.
 
 - **`desktop_act` after `desktop_discover()` / `desktop_discover({
-  windowTitle })` now reliably populates `result.observation`.** Earlier,
-  the post-touch visual verification only ran when the caller explicitly
-  pinned the target HWND. The common discover flows — no-argument
-  foreground discover, or a `windowTitle`-only hint — left
-  `result.observation` absent on every `desktop_act` response, so callers
-  could not tell from the envelope alone whether the click / type
-  actually repainted the target window. The post-touch verifier now falls
-  back to the focused-window HWND when the lease's session has no pinned
-  HWND, matching what the rest of the touch pipeline already does. No
-  behaviour change for callers that already pinned an HWND, and no
-  behaviour change at the public schema layer — only `result.observation`
-  appears where it previously would have been silently omitted.
+  windowTitle })` now populates `result.observation` on the typical
+  discover flow.** Earlier, the post-touch visual verification only ran
+  when the caller explicitly pinned the target HWND. The common discover
+  flows — no-argument foreground discover, or a `windowTitle`-only hint
+  — left `result.observation` absent on every `desktop_act` response, so
+  callers could not tell from the envelope alone whether the click /
+  type actually repainted the target window. The post-touch verifier now
+  falls back to the focused-window HWND when the lease's session has no
+  pinned HWND, matching what the rest of the touch pipeline already
+  does. No behaviour change for callers that already pinned an HWND.
+  Edge cases where `result.observation` is still honestly omitted: the
+  lease's session was evicted between `touch()` succeeding and the
+  verifier running (rare race), or no focused HWND can be resolved.
 
 ### Added
 
