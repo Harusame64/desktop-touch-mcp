@@ -1163,25 +1163,49 @@ describe("DesktopFacade — resolveHwndForViewId (Stage 5 foreground fallback)",
     expect(facade.resolveHwndForViewId("nonexistent-view-id")).toBeNull();
   });
 
-  it("malformed target.hwnd falls back to getFocusedHwnd (not null)", async () => {
-    // Companion to the existing "malformed target.hwnd → attention omitted" case:
-    // when a foreground resolver IS wired, BigInt parse failure should not block
-    // the fallback — Stage 5 stays effective. (resolveTargetHwnd's parse-failure
-    // branch returns null, which we explicitly want to NOT happen here because
-    // there is a usable focused HWND.)
-    //
-    // Note: the current `resolveTargetHwnd` returns null on parse failure even
-    // when getFocusedHwnd is available. This test pins the user-visible behaviour:
-    // we expect the foreground HWND to be returned, OR null when even foreground
-    // would have failed. Either way, no exception escapes.
+  it("malformed target.hwnd falls back to getFocusedHwnd and logs audit trail", async () => {
+    // PR-SR4-4 Round 1 P2 — parse failure on a stale pinned hwnd must NOT
+    // silently disable Stage 5 when a usable focused HWND is available
+    // (that's exactly the dormancy class this PR claims to eliminate).
+    // `resolveHwndForViewId` open-codes the (target.hwnd → focused) ladder
+    // for this reason: `resolveTargetHwnd` short-circuits to null on parse
+    // failure, which is the right behaviour for `see()`'s UIA-cache stale
+    // check (it wants null so a malformed pinned hwnd does not silently
+    // re-purpose the foreground window as a stale-check target) but the
+    // wrong behaviour for Stage 5 dormancy avoidance.
     const FOCUSED_HWND = 0xC0DE06n;
     const facade = new DesktopFacade(gameProvider, {
       getFocusedHwnd: () => FOCUSED_HWND,
     });
-    const out = await facade.see({ target: { hwnd: "not-a-bigint" } });
-    // Current behaviour: parse failure returns null without consulting
-    // getFocusedHwnd. This is the same shape as desktop_state.attention being
-    // omitted on malformed hwnd — we pin the documented contract.
-    expect(facade.resolveHwndForViewId(out.viewId)).toBeNull();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const out = await facade.see({ target: { hwnd: "not-a-bigint" } });
+      expect(facade.resolveHwndForViewId(out.viewId)).toBe(FOCUSED_HWND);
+      // Audit trail: PR #325 Round 1 P3-2 (preserved through PR-SR4-4
+      // Round 1 P2 even after the ladder open-coding) — a production race
+      // where `lastTarget.hwnd` becomes malformed must still emit an
+      // observable stderr line rather than silently degrading.
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      const message = String(errorSpy.mock.calls[0]?.[0] ?? "");
+      expect(message).toMatch(/Stage 5/);
+      expect(message).toMatch(/falling back to foreground resolver/);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("malformed target.hwnd returns null when no foreground resolver is wired", async () => {
+    // Mirror of the above: without `getFocusedHwnd` wired, the fall-through
+    // has nowhere to land and Stage 5 honestly returns null. The audit log
+    // still fires so the malformed-vs-absent distinction remains observable.
+    const facade = new DesktopFacade(gameProvider);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const out = await facade.see({ target: { hwnd: "not-a-bigint" } });
+      expect(facade.resolveHwndForViewId(out.viewId)).toBeNull();
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

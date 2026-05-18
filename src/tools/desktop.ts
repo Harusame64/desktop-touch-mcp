@@ -536,17 +536,6 @@ export class DesktopFacade {
    * Side-effect-free (only refreshes the session's lastAccessMs).
    */
   /**
-   * ADR-019 Stage 5 helper — return the `lastTarget` for the session that
-   * issued `viewId`, or `undefined` when the session has been evicted /
-   * the lease never matched a live session. Used by `desktop-register.ts`
-   * to resolve the target HWND for the post-touch `verifyAnyChange` call.
-   * Read-only; does not refresh `lastAccessMs`.
-   */
-  getTargetForViewId(viewId: string): TargetSpec | undefined {
-    return this.registry.getByViewId(viewId, this.opts.nowFn)?.lastTarget;
-  }
-
-  /**
    * ADR-019 Stage 5 helper — resolve the HWND associated with the session
    * that issued `viewId`. Tries, in order:
    *   1. `session.lastTarget.hwnd` (caller explicitly pinned an HWND);
@@ -555,8 +544,19 @@ export class DesktopFacade {
    *      `desktop_discover()` / `desktop_discover({ windowTitle })`
    *      flow lands here and Stage 5 stays effective).
    * Returns `null` when the session has been evicted (the lease's viewId
-   * no longer maps to a live session), no HWND can be resolved, or
-   * `BigInt(target.hwnd)` parsing fails. Never throws.
+   * no longer maps to a live session) or no HWND can be resolved by
+   * either step. Never throws.
+   *
+   * PR-SR4-4 Round 1 P2 — `BigInt(target.hwnd)` parse failure no longer
+   * short-circuits to `null`: instead it logs the audit trail (preserving
+   * the PR #325 Round 1 P3-2 stderr surface) and falls through to the
+   * foreground resolver. This keeps Stage 5 effective when a stale lease
+   * has a malformed pinned hwnd but a usable focused HWND is available —
+   * the same dormancy class this PR claims to eliminate. The previous
+   * implementation pinned that as a separate dormancy bug (parse failure
+   * → silent skip even when foreground would have worked); pinned in
+   * `tests/unit/desktop-facade.test.ts` "malformed target.hwnd falls back
+   * to getFocusedHwnd".
    *
    * Why the session-eviction guard is explicit (rather than letting the
    * foreground resolver fire anyway): if `touch()` has just rejected the
@@ -567,15 +567,37 @@ export class DesktopFacade {
    * observation as belonging to a window the LLM never asked about —
    * a correctness regression vs. honestly omitting the field.
    *
-   * Reuses `resolveTargetHwnd` (the same helper `see()` uses for the
-   * UIA-cache stale check), so the two paths agree on what "the HWND
-   * for this session" means — Stage 5 dormancy was that the previous
-   * implementation only consulted step 1 here.
+   * Implementation note: open-codes the (target.hwnd → focused) ladder
+   * rather than reusing `resolveTargetHwnd` because the parse-failure
+   * fall-through semantics here are intentionally **different from
+   * `see()`'s UIA-cache stale check** (which wants null on parse failure
+   * so a malformed pinned hwnd does not silently use the foreground
+   * window as a stale-check target).
    */
   resolveHwndForViewId(viewId: string): bigint | null {
     const session = this.registry.getByViewId(viewId, this.opts.nowFn);
     if (!session) return null;
-    return resolveTargetHwnd(session.lastTarget, this.opts.getFocusedHwnd);
+    const target = session.lastTarget;
+    if (target?.hwnd) {
+      try {
+        return BigInt(target.hwnd);
+      } catch (err) {
+        // Audit trail (PR #325 Round 1 P3-2 — preserves the original
+        // stderr surface so a production race where `lastTarget.hwnd`
+        // becomes malformed (CDP tab path, stale lease, etc.) is still
+        // observable rather than silently disabled.
+        console.error(
+          `[desktop] Stage 5 — BigInt(target.hwnd) failed for viewId=${viewId}: ${err instanceof Error ? err.message : String(err)}; falling back to foreground resolver`,
+        );
+        // Intentionally fall through to the foreground resolver below.
+      }
+    }
+    if (!this.opts.getFocusedHwnd) return null;
+    try {
+      return this.opts.getFocusedHwnd();
+    } catch {
+      return null;
+    }
   }
 
   validateLeaseOnly(lease: EntityLease): LeaseValidationResult {
