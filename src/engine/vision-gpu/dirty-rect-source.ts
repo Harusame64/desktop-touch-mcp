@@ -85,13 +85,18 @@ export class DirtyRectRouter {
     }
 
     try {
-      const result = broker.subscribe(index, (rects) => this._onBatch(rects));
+      const result = broker.subscribe(
+        index,
+        (rects) => this._onBatch(rects),
+        () => this._handleInvalidate(),
+      );
       // Broker factory threw (RDP / Unsupported / Other) or unavailable marker
       // is still live. Surface the state via `onFallback` and exit; no
       // callback will fire and there is no live `unsubscribe` to keep.
       if (
         result.state === "miss-init-unavailable" ||
-        result.state === "hit-unavailable"
+        result.state === "hit-unavailable" ||
+        result.state === "hit-negative-backoff"
       ) {
         this.running = false;
         this.opts.onFallback?.(`broker unavailable (state=${result.state})`);
@@ -121,10 +126,12 @@ export class DirtyRectRouter {
    * Fan-out callback handler. Called by the broker's fan-out loop with
    * each non-empty batch. Mid-flight DXGI errors (AccessLost / Unsupported
    * / Other) are folded by the broker into a uniform `invalidate()`
-   * transition that disposes the callback handle — vision-gpu does not see
-   * the error directly, the callback simply stops firing. Recovery is
-   * bounded by `BROKER_NEGATIVE_BACKOFF_MS` (2 s) on the broker's next
-   * `subscribe()` from any consumer.
+   * transition — `_handleInvalidate` below receives the dedicated hook
+   * fired by the broker so the router does not silently zombie on the
+   * stale `unsubscribe` handle (PR-SR4-3 Round 1 P1-1 fix). Recovery is
+   * bounded by `BROKER_NEGATIVE_BACKOFF_MS` (2 s); the caller chain
+   * (`desktop-register.ts`) decides whether to rebuild the router on
+   * `onFallback`.
    */
   private _onBatch(rects: DirtyRect[]): void {
     if (!this.running) return;
@@ -138,5 +145,26 @@ export class DirtyRectRouter {
       this.lastScheduledMs = nowMs;
       this.opts.onRois(out.rois, nowMs);
     }
+  }
+
+  /**
+   * PR-SR4-3 Round 1 P1-1: broker invalidation hook. Fired exactly once
+   * by the broker when this handle is torn down mid-flight (uniform
+   * `sub.next()` failure fold via `invalidate()` OR server-wide
+   * `disposeAll()`). The router cannot recover on its own — the broker
+   * entry transitions to `negative-backoff` (2 s) and re-attach is not
+   * symmetric for callback handles (broker.subscribe needs a fresh call
+   * from the caller). Surface via `onFallback` so the caller chain can
+   * decide whether to rebuild the router; flip `running=false` and clear
+   * the stale `unsubscribe` so `stop()` becomes a no-op.
+   */
+  private _handleInvalidate(): void {
+    if (!this.running) return;
+    this.running = false;
+    // The broker has already removed this handle from `callbackHandles` and
+    // flipped `isUnsubscribed=true`, so calling our local unsubscribe is a
+    // no-op; clearing the reference avoids a redundant call from `stop()`.
+    this.unsubscribe = null;
+    this.opts.onFallback?.("broker invalidated subscription mid-flight");
   }
 }

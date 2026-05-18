@@ -142,9 +142,9 @@ describe("Case 2: empty dirty rect frame does not trigger onRois", () => {
   });
 });
 
-// ── Case 3: broker invalidates mid-flight → callback silently stops ──────────
-describe("Case 3: broker invalidates after sub.next() throws (no error propagation to router)", () => {
-  it("does not call onFallback when AccessLost folds via broker.invalidate", async () => {
+// ── Case 3: broker invalidates mid-flight → router receives onInvalidate hook
+describe("Case 3: broker invalidates after sub.next() throws — onInvalidate hook fires onFallback", () => {
+  it("invokes onFallback when AccessLost folds via broker.invalidate (no silent zombie)", async () => {
     const onRois = vi.fn();
     const onFallback = vi.fn();
     const sub = makeMockSub([
@@ -160,19 +160,23 @@ describe("Case 3: broker invalidates after sub.next() throws (no error propagati
     router.start();
     await drain(40);
 
-    // PR-SR4-3 semantics: the broker's fan-out catches the throw and
-    // calls invalidate() — the router's callback never fires for the
-    // failed batch, and onFallback is NOT called because the initial
-    // subscribe succeeded (the failure happened mid-flight, after start).
-    // Recovery is owned by the broker (negative-backoff 2 s); a fresh
-    // broker.subscribe within that window returns hit-negative-backoff.
+    // PR-SR4-3 Round 1 P1-1 fix: the broker's fan-out catches the throw,
+    // calls `invalidate()`, and fires the registered `onInvalidate` hook.
+    // The router surfaces this via `onFallback` so the caller chain
+    // (`desktop-register.ts`) can decide whether to rebuild the router —
+    // pre-fix the router would silently zombie with `running=true` and
+    // a stale `unsubscribe` handle, with no signal that the broker had
+    // torn down its callback registration.
     expect(onRois).not.toHaveBeenCalled();
-    expect(onFallback).not.toHaveBeenCalled();
+    expect(onFallback).toHaveBeenCalledTimes(1);
+    expect(onFallback).toHaveBeenCalledWith(
+      expect.stringContaining("broker invalidated"),
+    );
     router.stop();
     broker.disposeAll();
   });
 
-  it("any sub.next() throw (Unsupported / Other) folds uniformly — no error inspection in router", async () => {
+  it("any sub.next() throw (Unsupported / Other) folds uniformly through onInvalidate", async () => {
     const onRois = vi.fn();
     const onFallback = vi.fn();
     const sub = makeMockSub([new Error("E_DUP_OTHER: GPU crash")]);
@@ -186,14 +190,68 @@ describe("Case 3: broker invalidates after sub.next() throws (no error propagati
     router.start();
     await drain(40);
 
-    // PR-SR4-3 semantics shift: pre-SR-4 the router string-matched
-    // E_DUP_OTHER → onFallback; post-SR-4 broker folds all mid-flight
-    // errors uniformly via invalidate(), so onFallback only fires on
-    // initial subscribe failure (Case 4 / Case 5).
+    // PR-SR4-3 Round 1 P1-1: pre-SR-4 the router string-matched E_DUP_OTHER
+    // → onFallback. Post-SR-4 broker folds every mid-flight error uniformly
+    // via invalidate() + onInvalidate hook → router surfaces onFallback
+    // with a uniform "broker invalidated" message (no error-type leak).
     expect(onRois).not.toHaveBeenCalled();
-    expect(onFallback).not.toHaveBeenCalled();
+    expect(onFallback).toHaveBeenCalledTimes(1);
+    expect(onFallback).toHaveBeenCalledWith(
+      expect.stringContaining("broker invalidated"),
+    );
     router.stop();
     broker.disposeAll();
+  });
+
+  it("broker.disposeAll() also fires onInvalidate (server shutdown path)", () => {
+    const onFallback = vi.fn();
+    // Long-running sub so the fan-out keeps the entry alive until we
+    // explicitly tear down via disposeAll.
+    const sub: SubscriptionLike = {
+      isDisposed: false,
+      next: () => new Promise(() => undefined),
+      dispose: () => undefined,
+    };
+    const broker = brokerFromFactory(() => sub);
+
+    const router = new DirtyRectRouter({
+      onRois: vi.fn(),
+      onFallback,
+      broker,
+    });
+    router.start();
+    broker.disposeAll();
+
+    // Server shutdown path: disposeAll() must fire the onInvalidate hook
+    // for every live callback handle so consumers can release their state.
+    expect(onFallback).toHaveBeenCalledTimes(1);
+    expect(onFallback).toHaveBeenCalledWith(
+      expect.stringContaining("broker invalidated"),
+    );
+    router.stop();
+  });
+
+  it("onInvalidate after stop() is a no-op (no double onFallback)", () => {
+    const onFallback = vi.fn();
+    const sub: SubscriptionLike = {
+      isDisposed: false,
+      next: () => new Promise(() => undefined),
+      dispose: () => undefined,
+    };
+    const broker = brokerFromFactory(() => sub);
+
+    const router = new DirtyRectRouter({
+      onRois: vi.fn(),
+      onFallback,
+      broker,
+    });
+    router.start();
+    router.stop(); // local teardown — sets running=false, broker still alive
+    broker.disposeAll(); // would fire onInvalidate, but only on the live handle
+    // After unsubscribe() (called by stop()), the handle is removed from
+    // the broker's `callbackHandles` Set, so disposeAll() iteration finds
+    // no live handle to fire onInvalidate on.
+    expect(onFallback).not.toHaveBeenCalled();
   });
 });
 

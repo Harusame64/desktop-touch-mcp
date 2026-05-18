@@ -260,14 +260,34 @@ class PollingHandle implements BrokerSubscription {
 class CallbackHandle {
   readonly outputIndex: number;
   readonly callback: (rects: NativeDirtyRect[]) => void;
+  /**
+   * Optional invalidation hook fired exactly once when the broker disposes
+   * this handle mid-flight (uniform `sub.next()` failure fold via
+   * `invalidate()` OR server-wide `disposeAll()`). PR-SR4-3 added this hook
+   * to fix the vision-gpu silent-zombie regression — without it, callback
+   * consumers receive no signal that the broker tore down their handle and
+   * would keep their state machine (`running=true`, stale unsubscribe
+   * handle) believing the subscription is still live (Opus PR-SR4-3 Round
+   * 1 P1-1, cross-checked against the Stage 5 polling consumer which
+   * already detects invalidation via `BrokerSubscription.isDisposed`
+   * after `await handle.next()` returns `[]`).
+   *
+   * Contract: fired exactly once per handle; never fired again after the
+   * caller's own `unsubscribe()`. `isUnsubscribed` flips to `true` BEFORE
+   * the hook fires so the hook callback observes the post-invalidation
+   * state if it re-enters the broker.
+   */
+  readonly onInvalidate?: () => void;
   isUnsubscribed = false;
 
   constructor(
     outputIndex: number,
     callback: (rects: NativeDirtyRect[]) => void,
+    onInvalidate?: () => void,
   ) {
     this.outputIndex = outputIndex;
     this.callback = callback;
+    this.onInvalidate = onInvalidate;
   }
 }
 
@@ -363,6 +383,18 @@ export class DirtyRectBroker {
    * Registers a callback to be invoked on every fan-out batch; returns an
    * unsubscribe handle.
    *
+   * `onInvalidate` (PR-SR4-3 Round 1 P1-1 fix): optional hook fired exactly
+   * once when the broker disposes the consumer's handle mid-flight
+   * (uniform `sub.next()` failure fold via `invalidate()` OR server-wide
+   * `disposeAll()`). The polling consumer (Stage 5 `acquire()`) detects
+   * the same condition via `BrokerSubscription.isDisposed` after
+   * `await handle.next()` returns `[]`; callback consumers need this hook
+   * because the fan-out loop simply stops calling them with no other
+   * signal. Without the hook, vision-gpu would observe a silent zombie
+   * (running=true + stale unsubscribe handle, no reattach across broker
+   * lifecycle). Hook is OPTIONAL — `acquire` consumers and tests that
+   * don't need the signal pass nothing.
+   *
    * Round 1 P3-5 note: subscribing implicitly **starts the broker's
    * background fan-out loop** for this `outputIndex` (lazy: the loop is
    * idle when no consumer is registered, and exits when the last consumer
@@ -373,6 +405,7 @@ export class DirtyRectBroker {
   subscribe(
     outputIndex: number,
     callback: (rects: NativeDirtyRect[]) => void,
+    onInvalidate?: () => void,
   ): { unsubscribe: () => void; state: CacheAcquireState } {
     this.sweepStale();
     const cached = this.entries.get(outputIndex);
@@ -380,7 +413,12 @@ export class DirtyRectBroker {
     if (cached?.kind === "subscription") {
       if (!cached.sub.isDisposed) {
         cached.lastUsedAt = this.nowFn();
-        const unsubscribe = this.attachCallbackHandle(outputIndex, cached, callback);
+        const unsubscribe = this.attachCallbackHandle(
+          outputIndex,
+          cached,
+          callback,
+          onInvalidate,
+        );
         return { unsubscribe, state: "hit-subscription" };
       }
       this.entries.delete(outputIndex);
@@ -402,7 +440,12 @@ export class DirtyRectBroker {
         fanOutShouldStop: false,
       };
       this.entries.set(outputIndex, entry);
-      const unsubscribe = this.attachCallbackHandle(outputIndex, entry, callback);
+      const unsubscribe = this.attachCallbackHandle(
+        outputIndex,
+        entry,
+        callback,
+        onInvalidate,
+      );
       return { unsubscribe, state: "miss-init" };
     } catch {
       this.entries.set(outputIndex, {
@@ -436,8 +479,20 @@ export class DirtyRectBroker {
         handle._markBrokerInvalidated();
       }
       // Round 1 P2-3: unsubscribe all callbacks too (mirrors handle semantics).
+      // PR-SR4-3 Round 1 P1-1: fire the optional onInvalidate hook so callback
+      // consumers (vision-gpu) can surface the mid-flight failure to their
+      // own caller chain instead of silently zombieing on a stale handle.
+      // Flip `isUnsubscribed` BEFORE the hook so the hook callback observes
+      // the post-invalidation state if it re-enters the broker.
       for (const cb of cached.callbackHandles) {
         cb.isUnsubscribed = true;
+        if (cb.onInvalidate !== undefined) {
+          try {
+            cb.onInvalidate();
+          } catch {
+            /* hook must not crash the broker invalidate path */
+          }
+        }
       }
       if (!cached.sub.isDisposed) {
         try {
@@ -455,7 +510,9 @@ export class DirtyRectBroker {
 
   /** Dispose every live native subscription. Called by the MCP server
    *  shutdown hook (sub-plan §11 R2 mitigation). Round 1 P2-3 fix: same
-   *  handle-state propagation as `invalidate`. */
+   *  handle-state propagation as `invalidate`. PR-SR4-3 Round 1 P1-1:
+   *  fires the callback `onInvalidate` hook so callback consumers
+   *  receive the same termination signal as the `invalidate` path. */
   disposeAll(): void {
     for (const entry of this.entries.values()) {
       if (entry.kind === "subscription") {
@@ -465,6 +522,13 @@ export class DirtyRectBroker {
         }
         for (const cb of entry.callbackHandles) {
           cb.isUnsubscribed = true;
+          if (cb.onInvalidate !== undefined) {
+            try {
+              cb.onInvalidate();
+            } catch {
+              /* hook must not crash the broker disposeAll path */
+            }
+          }
         }
         if (!entry.sub.isDisposed) {
           try {
@@ -502,8 +566,9 @@ export class DirtyRectBroker {
     outputIndex: number,
     entry: CacheEntry & { kind: "subscription" },
     callback: (rects: NativeDirtyRect[]) => void,
+    onInvalidate?: () => void,
   ): () => void {
-    const handle = new CallbackHandle(outputIndex, callback);
+    const handle = new CallbackHandle(outputIndex, callback, onInvalidate);
     entry.callbackHandles.add(handle);
     this.ensureFanOutRunning(outputIndex, entry);
     return () => {
