@@ -252,7 +252,7 @@ describe("DirtyRectBroker", () => {
   // ─── e. 5-value CacheAcquireState all branches ─────────────────────────────
 
   it("all 5 CacheAcquireState branches are reachable through the public API", () => {
-    let now = 0;
+    const now = 0;
     let mode: "ok" | "throw" = "ok";
     const factory = vi.fn(() => {
       if (mode === "throw") throw new Error("E_DUP_UNSUPPORTED");
