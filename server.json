@@ -6,12 +6,12 @@
     "url": "https://github.com/Harusame64/desktop-touch-mcp",
     "source": "github"
   },
-  "version": "1.7.0",
+  "version": "1.7.1",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@harusame64/desktop-touch-mcp",
-      "version": "1.7.0",
+      "version": "1.7.1",
       "transport": {
         "type": "stdio"
       },
@@ -25,7 +25,35 @@
         },
         {
           "name": "DESKTOP_TOUCH_PERCEPTION_RESOURCES",
-          "description": "Set to '1' to enable MCP perception resources (perception://target/.../timeline etc.).",
+          "description": "Set to '1' to enable MCP perception resources.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "DESKTOP_TOUCH_PERCEPTION_IDLE_MS",
+          "description": "Idle ms before the WinEvent sidecar enters dormancy (default 60000).",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "DESKTOP_TOUCH_PERCEPTION_DORMANCY_DISABLE",
+          "description": "Set to '1' to keep the WinEvent sidecar always running (no auto-dormancy).",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE",
+          "description": "Set to '1' to disable the JSONL diagnostic event log (issue #365 Phase 2).",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "DESKTOP_TOUCH_DIAGNOSTIC_LOG_PATH",
+          "description": "Override path for the diagnostic event log.",
           "isRequired": false,
           "format": "string",
           "isSecret": false

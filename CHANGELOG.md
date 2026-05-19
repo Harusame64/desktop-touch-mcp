@@ -2,6 +2,80 @@
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-05-19 — Idle-aware CPU dormancy + diagnostic event log (sudden-death + fan-noise observability)
+
+### Improved
+
+- **PC fan no longer spins from desktop-touch when the LLM is silent.**
+  Previously, the WinEvent sidecar process and the 50 ms perception event
+  drain stayed active for the entire lifetime of the MCP server, even
+  during long stretches when no tool call was happening. Background event
+  volume from normal desktop use (focus changes, window movements, scrolls)
+  kept the sidecar busy and visible as a sustained 30 % single-core CPU
+  load — enough to spin up the fan on quiet laptops. desktop-touch-mcp now
+  watches the time since the last incoming JSON-RPC request and, after
+  60 seconds of silence with no in-flight tool calls, automatically stops
+  the sidecar and the drain loop. The next tool call wakes them again on
+  the spot. Net effect: tool latency unchanged when actively driving the
+  PC, fan stays quiet during the long idle periods that dominate normal
+  LLM sessions. Tune the idle threshold with
+  `DESKTOP_TOUCH_PERCEPTION_IDLE_MS` (default `60000`) or disable the
+  feature entirely with `DESKTOP_TOUCH_PERCEPTION_DORMANCY_DISABLE=1`.
+
+- **`server_status` now returns a per-process health snapshot**
+  (`health.uptimeSec`, `health.memory.{rssBytes,heapUsedBytes,heapTotalBytes}`,
+  `health.cpu.{userUs,systemUs}` cumulative since startup,
+  `health.shutdown.{pending,graceMs,inflightCount}`,
+  `health.lastRpc.{receivedAt,method}`). Use this to confirm whether a
+  desktop-touch process is healthy, when it last received an RPC, or
+  whether stdin EOF has put it into the deferred-shutdown grace window
+  (resolves issue #68 deferred-shutdown visibility). `engine.*` fields
+  are unchanged.
+
+### Added
+
+- **Diagnostic event log at `%USERPROFILE%\.desktop-touch-mcp\logs\diagnostic.log`**
+  (one JSON object per line). When something unexpected happens, you can
+  now `grep` this file post-hoc instead of trying to catch the symptom
+  live:
+  - `exit` events at every shutdown path (`SIGINT` / `SIGTERM` /
+    `disconnect` / stdin closed / EPIPE / grace expired / inflight
+    drained / failsafe / `uncaughtException` / `unhandledRejection`) so
+    "the MCP server disappeared without warning" is no longer a black
+    box.
+  - `uncaught` events for Node-level uncaught exceptions and unhandled
+    Promise rejections that previously silently terminated the process.
+    `throw null` / `throw undefined` / circular-object throws are
+    normalized before logging so the handler itself is crash-safe.
+  - `slow_tool` events for tool calls that exceed 1000 ms.
+  - `cpu_spike` events when this process's CPU consumption exceeds the
+    threshold during a sampling window. Tunable via
+    `DESKTOP_TOUCH_CPU_WATCHDOG_THRESHOLD_PCT` (default `30`) and
+    `DESKTOP_TOUCH_CPU_WATCHDOG_WINDOW_MS` (default `10000`).
+  - `drain_oversize` events when the perception event drain backlog
+    exceeds the threshold per cycle. Tunable via
+    `DESKTOP_TOUCH_DRAIN_OVERSIZE_THRESHOLD` (default `100`).
+  - `dormancy_transition` events when the perception runtime enters or
+    exits its idle dormancy state (see Improved above).
+
+  Disable the log entirely with `DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE=1`,
+  or redirect it with `DESKTOP_TOUCH_DIAGNOSTIC_LOG_PATH=<path>`. Disable
+  just the CPU watchdog (passive sampler, but `setInterval`-based) with
+  `DESKTOP_TOUCH_CPU_WATCHDOG_DISABLE=1`.
+
+### Fixed
+
+- **Running the E2E suite no longer kills the host desktop-touch MCP
+  server via the emergency-stop guard.** Three test cases were clicking
+  at `(x: 1, y: 1)`, which is inside the 10 px failsafe radius — every
+  poll of the running server's 500 ms failsafe interval observed the
+  cursor at that position and exited the server with code `1`, leaving
+  the user's Claude Code session disconnected mid-test. Coordinates
+  moved to `(50, 50)` (still in the desktop top-left "no actionable
+  target" zone, well outside the failsafe radius). The diagnostic event
+  log added in this release is what made this symptom diagnosable in
+  the first place (issue #365).
+
 ## [1.7.0] - 2026-05-19 — `desktop_act` race-free verification + first-class `keyboard` executor + ADR-020 SR-4 DXGI broker
 
 ### Improved
