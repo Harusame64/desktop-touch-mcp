@@ -3,6 +3,7 @@ import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
 import { getEngineStatus } from "../engine/status.js";
+import { getProcessHealth } from "../engine/process-health.js";
 import { makeQueryWrapper, withEnvelopeIncludeSchema, genericQueryCausedByProjector, defaultQuerySessionId } from "./_envelope.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -18,7 +19,8 @@ export const serverStatusSchema = {};
 export const serverStatusHandler = async (): Promise<ToolResult> => {
   try {
     const status = getEngineStatus();
-    return ok({ engine: status });
+    const health = getProcessHealth();
+    return ok({ engine: status, health });
   } catch (err) {
     return failWith(err, "server_status");
   }
@@ -50,7 +52,7 @@ export const serverStatusRegistrationHandler = makeQueryWrapper(
 export function registerServerStatusTool(server: McpServer): void {
   server.tool(
     "server_status",
-    "Return MCP server status: version / native engine availability / Auto Perception state / v2 activation. uia: 'native' = Rust UIA addon (fast, ~2 ms focus / ~100 ms tree); 'powershell' = PS fallback (~366 ms focus). imageDiff: 'native' = Rust SSE2 SIMD (0.26 ms @ 1080p); 'typescript' = TS fallback (~3.8 ms). Diagnostic metadata — do not surface these values to the user unless they ask about performance or troubleshooting. Call once per session if you need to know which path is active; the result is stable for the lifetime of the server process.",
+    "Return MCP server status. engine: native engine availability — uia: 'native' = Rust UIA addon (~2 ms focus / ~100 ms tree); 'powershell' = PS fallback (~366 ms focus). imageDiff: 'native' = Rust SSE2 SIMD (0.26 ms @ 1080p); 'typescript' = TS fallback (~3.8 ms). health: process diagnostic snapshot (issue #365) — uptimeSec, memory.{rssBytes,heapUsedBytes,heapTotalBytes}, cpu.{userUs,systemUs} (cumulative since startup), shutdown.{pending,graceMs,inflightCount} (pending=true means stdin EOF received and grace timer is running), lastRpc.{receivedAt(ISO),method} (last JSON-RPC request observed on stdio transport; HTTP transport is not tracked). Diagnostic metadata — do not surface unless the user asks about performance/troubleshooting. engine values are stable for the process lifetime; health values change per call.",
     serverStatusRegistrationSchema,
     serverStatusRegistrationHandler as typeof serverStatusHandler
   );
