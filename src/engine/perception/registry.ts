@@ -425,7 +425,8 @@ function checkDormancy(
   const lastRpc = getLastRpcMs();
   if (lastRpc === null) return;
   // Active work in flight — never sleep underneath an in-flight tool.
-  if (getInflight() > 0) return;
+  const inflight = getInflight();
+  if (inflight > 0) return;
   const elapsed = Date.now() - lastRpc;
   if (elapsed < idleMs) return;
 
@@ -434,11 +435,13 @@ function checkDormancy(
   );
   _dormant = true;
   stopNativeRuntime();
+  // Review R1 P3-2: read inflight via getter rather than hardcoding 0, so the
+  // log remains accurate if a future refactor changes the early-return ordering.
   logDiagnostic({
     kind: "dormancy_transition",
     state: "enter",
     idle_ms: elapsed,
-    inflight: 0,
+    inflight,
   });
 }
 
@@ -480,6 +483,20 @@ export function startPerceptionDormancyWatcher(
  *
  * No-op when not dormant or when no window lens exists (ensureNativeEventRuntime
  * guards that case already). Idempotent.
+ *
+ * **Stale view caveat (Phase 3 plan §3.1 Risks / Review R1 P2-3)**: between
+ * `enterDormancy()` (sidecar stopped) and the first tool call that triggers
+ * `wakePerceptionRuntime()` here, any cached perception view —
+ * `current_focused_element`, `latest_focus`, dirty rect aggregates — keeps the
+ * value from the last received event before sleep. The first tool call
+ * post-wake will observe **values up to `DESKTOP_TOUCH_PERCEPTION_IDLE_MS` old**.
+ * Subsequent calls see fresh data once the sidecar republishes events.
+ *
+ * Tools sensitive to that staleness (focus-dependent guards) currently mask the
+ * issue because they re-query UIA directly on the synchronous path; the view
+ * stays as a fast hint, not the source of truth. If a future tool starts
+ * relying solely on view freshness, it needs an explicit "post-wake refresh"
+ * step or this function needs to invalidate the cache before returning.
  */
 export function wakePerceptionRuntime(): void {
   if (!_dormant) return;
@@ -490,6 +507,13 @@ export function wakePerceptionRuntime(): void {
     kind: "dormancy_transition",
     state: "exit",
     elapsed_ms: Date.now() - start,
+    // inflight at this point is typically ≥ 1 (the wake is triggered by an
+    // incoming request whose id has not yet been added to inflightIds in
+    // server-windows.ts — that happens immediately after this call). We
+    // record 0 deliberately because `setInflightCount` has not run yet; the
+    // accurate "current in-flight at wake time" value is best read from the
+    // subsequent `slow_tool` / `exit` events that share the same uptime_ms
+    // window.
     inflight: 0,
   });
 }

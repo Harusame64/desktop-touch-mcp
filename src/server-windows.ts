@@ -582,6 +582,14 @@ if (useHttp) {
     }
 
     if (req.url?.startsWith("/mcp")) {
+      // Review R1 P2-1: HTTP path also needs to update lastRpc + wake the
+      // perception runtime, otherwise dormancy will keep the sidecar asleep
+      // forever for HTTP clients (lastRpc never advances). Stamp the activity
+      // before handleRequest dispatches to the MCP server. Method is unknown
+      // at this layer (handleRequest parses the body), so we use a generic
+      // label.
+      recordRpcReceived("http");
+      wakePerceptionRuntime();
       const reqServer = createMcpServer();
       // Stateless mode (`sessionIdGenerator: undefined`):
       // per-request McpServer 構造 (上の comment 参照) と SDK の stateful 設計
