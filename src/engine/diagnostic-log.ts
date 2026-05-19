@@ -110,6 +110,15 @@ export type DiagnosticEvent =
       kind: "drain_oversize";
       batch_size: number;
       overflow: boolean;
+    }
+  | {
+      kind: "dormancy_transition";
+      state: "enter" | "exit";
+      // For "enter": idle_ms = elapsed since lastRpc that triggered the stop.
+      // For "exit": elapsed_ms = wall-clock cost of the wake (sidecar spawn etc).
+      idle_ms?: number;
+      elapsed_ms?: number;
+      inflight: number;
     };
 
 /**

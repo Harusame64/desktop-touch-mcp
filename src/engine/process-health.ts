@@ -24,6 +24,22 @@ export function recordRpcReceived(method: string): void {
   _lastRpcMethod = method;
 }
 
+/**
+ * Read the last RPC receipt time in milliseconds since the Unix epoch, or
+ * `null` if no JSON-RPC request has ever arrived. Used by the perception
+ * dormancy watcher (registry.ts) to decide when to put the WinEvent sidecar
+ * to sleep — surfaced as a separate getter rather than re-parsing the ISO
+ * string in `getProcessHealth()`.
+ */
+export function getLastRpcReceivedAtMs(): number | null {
+  return _lastRpcReceivedAt;
+}
+
+/** Companion getter to `getLastRpcReceivedAtMs` — current in-flight count. */
+export function getInflightCount(): number {
+  return _inflightCount;
+}
+
 export function setInflightCount(n: number): void {
   _inflightCount = n;
 }

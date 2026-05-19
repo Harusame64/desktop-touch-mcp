@@ -35,7 +35,15 @@ import { registerPerceptionTools } from "./tools/perception.js";
 import { registerPerceptionResources } from "./tools/perception-resources.js";
 import { registerServerStatusTool } from "./tools/server-status.js";
 import { logAutoGuardStartup } from "./tools/_action-guard.js";
-import { stopNativeRuntime } from "./engine/perception/registry.js";
+import {
+  stopNativeRuntime,
+  startPerceptionDormancyWatcher,
+  wakePerceptionRuntime,
+} from "./engine/perception/registry.js";
+import {
+  getLastRpcReceivedAtMs,
+  getInflightCount,
+} from "./engine/process-health.js";
 import { disposeSharedDirtyRectBroker } from "./engine/dxgi-broker.js";
 import {
   recordRpcReceived,
@@ -474,11 +482,21 @@ process.on("unhandledRejection", (reason: unknown) => {
 // keep the event loop alive.
 // Review R1 P2-4: skip when --help is requested so the help path doesn't
 // allocate a setInterval / create the logs directory for a one-shot CLI use.
-const _cpuWatchdog =
-  process.argv.includes("--help") || process.argv.includes("-h")
-    ? null
-    : startCpuWatchdog();
+const _helpRequested =
+  process.argv.includes("--help") || process.argv.includes("-h");
+const _cpuWatchdog = _helpRequested ? null : startCpuWatchdog();
 void _cpuWatchdog;
+
+// Issue #365 Phase 3: start the perception idle-dormancy watcher. Once started,
+// it checks every 10s whether `lastRpc` has aged past
+// DESKTOP_TOUCH_PERCEPTION_IDLE_MS (default 60_000) with no in-flight work; if
+// so, the WinEvent sidecar + 50ms drain timer + reconciler are stopped to free
+// CPU while the LLM is silent. The wake path in `transport.onmessage` above
+// calls `wakePerceptionRuntime()` on the next incoming RPC.
+const _dormancyWatcher = _helpRequested
+  ? null
+  : startPerceptionDormancyWatcher(getLastRpcReceivedAtMs, getInflightCount);
+void _dormancyWatcher;
 
 // ─── Parse CLI flags ──────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
@@ -638,7 +656,13 @@ if (useHttp) {
     const m = msg as { id?: string | number; method?: string };
     const isRequest = !!m && m.id !== undefined && typeof m.method === "string";
     const id = isRequest ? (m.id as string | number) : undefined;
-    if (isRequest) recordRpcReceived(m.method as string);
+    if (isRequest) {
+      recordRpcReceived(m.method as string);
+      // Issue #365 Phase 3: wake the perception runtime if it is sleeping
+      // due to idle dormancy. No-op when already awake; cheap (one boolean
+      // check) on the hot path of every RPC.
+      wakePerceptionRuntime();
+    }
     if (id !== undefined) {
       inflightIds.add(id);
       setInflightCount(inflightIds.size);
