@@ -25,6 +25,20 @@ import { performance } from "node:perf_hooks";
 const DEFAULT_FILENAME = "diagnostic.log";
 const DEFAULT_DIR = ".desktop-touch-mcp/logs";
 
+// Review R1 P2-3: cap stack trace size so a runaway stack doesn't write MB-
+// scale records and slow down a synchronous appendFileSync just before exit.
+const STACK_TRUNCATE_BYTES = 4096;
+
+/**
+ * `_disabled`, `_resolvedPath`, and `_dirEnsured` are memoized on first read.
+ *
+ * **Runtime mutation contract**: the `DESKTOP_TOUCH_DIAGNOSTIC_LOG_*` env vars
+ * are read once at first log site and cached for the process lifetime. Changing
+ * them mid-process has no effect. This matches how the rest of the server
+ * resolves env (process-health.ts / nativeEventsEnabled) and avoids a per-write
+ * env lookup hit on the hot path. Tests use `_resetDiagnosticLogForTest()` to
+ * force a re-read.
+ */
 let _resolvedPath: string | null = null;
 let _disabled: boolean | null = null;
 let _dirEnsured = false;
@@ -96,16 +110,25 @@ export type DiagnosticEvent =
 /**
  * Append one diagnostic event as a JSONL line. Best-effort: never throws.
  * Synchronous so events written just before `process.exit` reach disk.
+ *
+ * Review R1 P2-3: large `stack` fields are truncated to keep each line
+ * bounded; an unbounded stack on a hot uncaught path would extend the
+ * synchronous write past the OS pipe drain window and risk losing the
+ * preceding log entries on `process.exit`.
  */
 export function logDiagnostic(event: DiagnosticEvent): void {
   if (isDisabled()) return;
   const path = getDiagnosticLogPath();
   ensureDir(path);
+  const safeEvent =
+    "stack" in event && typeof event.stack === "string" && event.stack.length > STACK_TRUNCATE_BYTES
+      ? { ...event, stack: event.stack.slice(0, STACK_TRUNCATE_BYTES) + "…[truncated]" }
+      : event;
   const record = {
     ts: new Date().toISOString(),
     pid: process.pid,
     uptime_ms: Math.round(process.uptime() * 1000),
-    ...event,
+    ...safeEvent,
   };
   try {
     appendFileSync(path, JSON.stringify(record) + "\n");
@@ -134,13 +157,19 @@ export function estimateArgsSize(args: unknown[]): number {
  * Wrap tool handler args (s.tool / s.registerTool signature) so that calls
  * exceeding `thresholdMs` are logged via `slow_tool` events. Mirrors
  * `wrapHandlerArg` in `utils/failsafe-wrap.ts` — both wrappers can be chained.
+ *
+ * Review R1 P3-3: only wrap when `toolArgs[0]` is a string (the conventional
+ * tool name). For any other shape we skip the wrap so the log doesn't get
+ * filled with literal `"undefined"` / `"[object Object]"` from upstream
+ * misuse — keeping the failure-mode equivalent to `wrapHandlerArg`.
  */
 export function wrapHandlerArgWithTiming(
   toolArgs: unknown[],
   thresholdMs = 1000,
 ): unknown[] {
   if (toolArgs.length === 0) return toolArgs;
-  const toolName = String(toolArgs[0]);
+  const toolName = toolArgs[0];
+  if (typeof toolName !== "string") return toolArgs;
   const lastIdx = toolArgs.length - 1;
   const originalHandler = toolArgs[lastIdx];
   if (typeof originalHandler !== "function") return toolArgs;

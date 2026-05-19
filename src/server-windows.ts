@@ -306,7 +306,7 @@ let shutdownPending = false;
 let shutdownTimer: NodeJS.Timeout | null = null;
 const SHUTDOWN_GRACE_MS = 60_000;
 
-function shutdown(): void {
+function shutdown(exitCode = 0): void {
   if (shuttingDown) return;
   shuttingDown = true;
   clearShutdownPending();
@@ -328,6 +328,8 @@ function shutdown(): void {
   // pending あれば disk write 完了後 exit (data loss 防止)。
   // best-effort: error も resolve、即時 exit を遅延させない。
   // 並列 flush で B-3 / B-4 両 store を 1 度に flush。
+  // Issue #365 review R1 P1-1: exitCode は uncaught 経路から 1 を渡す。
+  // Promise.all 経由で flush を待つため、uncaught でも store data loss しない。
   Promise.all([
     uiPatternStore.flushImmediateForShutdown(),
     macroOutcomeStore.flushImmediateForShutdown(),
@@ -335,7 +337,7 @@ function shutdown(): void {
     .catch(() => {})
     .finally(() => {
       // In-flight requests clean up their own server/transport instances via res.on("close").
-      process.exit(0);
+      process.exit(exitCode);
     });
 }
 
@@ -419,51 +421,70 @@ process.on("disconnect", () => shutdownFromSignal("disconnect"));
 // Issue #365: uncaught exceptions and unhandled promise rejections terminate
 // the Node process with no Application Event Log crash entry (treated as a
 // normal exit). Without these handlers the only signal was a stderr warning
-// nobody captured. Log + exit(1) so post-hoc grep can identify the trigger.
-process.on("uncaughtException", (err: Error) => {
+// nobody captured. Log + shutdown(1) so post-hoc grep can identify the trigger
+// AND so Phase B B-3/B-4 store flush (uiPatternStore / macroOutcomeStore) is
+// not skipped — calling shutdown() routes through the existing Promise.all
+// flush gate before process.exit. (Review R1 P1-1.)
+function safeStringify(value: unknown): string {
+  // Review R1 P1-2: `reason` from `unhandledRejection` can be a circular
+  // object whose `JSON.stringify` throws — that re-entered the uncaught
+  // handler and risked stack overflow. Defensive try/catch + fallback.
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    try {
+      return String(value);
+    } catch {
+      return "<unstringifiable>";
+    }
+  }
+}
+
+function handleUncaught(
+  type: "uncaughtException" | "unhandledRejection",
+  err: Error,
+): void {
+  // If shutdown is already in progress, don't reschedule it — just log and
+  // let the existing flush finish. This handles the case where shutdown()
+  // itself surfaces an async error.
   logDiagnostic({
     kind: "uncaught",
-    type: "uncaughtException",
+    type,
     name: err.name,
     msg: err.message,
     stack: err.stack,
   });
   logDiagnostic({
     kind: "exit",
-    trigger: "uncaughtException",
+    trigger: type,
     exitCode: 1,
     inflight: inflightIds.size,
     shutdownPending,
   });
-  process.exit(1);
+  shutdown(1);
+}
+
+process.on("uncaughtException", (err: Error) => {
+  handleUncaught("uncaughtException", err);
 });
 process.on("unhandledRejection", (reason: unknown) => {
   const err =
     reason instanceof Error
       ? reason
-      : new Error(typeof reason === "string" ? reason : JSON.stringify(reason));
-  logDiagnostic({
-    kind: "uncaught",
-    type: "unhandledRejection",
-    name: err.name,
-    msg: err.message,
-    stack: err.stack,
-  });
-  logDiagnostic({
-    kind: "exit",
-    trigger: "unhandledRejection",
-    exitCode: 1,
-    inflight: inflightIds.size,
-    shutdownPending,
-  });
-  process.exit(1);
+      : new Error(typeof reason === "string" ? reason : safeStringify(reason));
+  handleUncaught("unhandledRejection", err);
 });
 
 // Start the passive self-CPU watchdog. Returns null when disabled via env;
 // the assignment keeps the handle so test harnesses can stop it. Handle is
 // otherwise unused — the watchdog's setInterval is unref'd so it does not
 // keep the event loop alive.
-const _cpuWatchdog = startCpuWatchdog();
+// Review R1 P2-4: skip when --help is requested so the help path doesn't
+// allocate a setInterval / create the logs directory for a one-shot CLI use.
+const _cpuWatchdog =
+  process.argv.includes("--help") || process.argv.includes("-h")
+    ? null
+    : startCpuWatchdog();
 void _cpuWatchdog;
 
 // ─── Parse CLI flags ──────────────────────────────────────────────────────────

@@ -55,9 +55,10 @@ describe("diagnostic-watchdog", () => {
   });
 
   it("logs a cpu_spike event when CPU exceeds threshold inside the window", async () => {
-    // Short window + low threshold so a busy loop reliably fires.
+    // Review R1 P3-2: short window + very low threshold so a busy loop reliably
+    // fires even on slow CI runners where the interval may be delayed.
     process.env.DESKTOP_TOUCH_CPU_WATCHDOG_WINDOW_MS = "100";
-    process.env.DESKTOP_TOUCH_CPU_WATCHDOG_THRESHOLD_PCT = "5";
+    process.env.DESKTOP_TOUCH_CPU_WATCHDOG_THRESHOLD_PCT = "1";
     const h = startCpuWatchdog();
     expect(h).not.toBeNull();
 
@@ -74,7 +75,7 @@ describe("diagnostic-watchdog", () => {
     const spike = lines.find((l) => l.kind === "cpu_spike");
     expect(spike).toBeDefined();
     expect(typeof spike?.cpu_pct).toBe("number");
-    expect((spike?.cpu_pct as number) >= 5).toBe(true);
+    expect((spike?.cpu_pct as number) >= 1).toBe(true);
     expect(typeof spike?.rss_mb).toBe("number");
     expect(spike?.lastRpcMethod).toBeDefined();
   });

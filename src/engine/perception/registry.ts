@@ -375,7 +375,14 @@ export function stopNativeRuntime(): void {
 // Issue #365: log drains that exceed this threshold so we can correlate the
 // "fan kicked in" symptom with native event volume. 100 events / 50ms cycle =
 // 2000 events/s sustained — well above quiescent baseline.
-const DRAIN_OVERSIZE_THRESHOLD = 100;
+// Review R1 P3-1: env override so a noisy desktop environment with a higher
+// baseline can raise the threshold without recompiling.
+const DRAIN_OVERSIZE_THRESHOLD: number = (() => {
+  const raw = process.env.DESKTOP_TOUCH_DRAIN_OVERSIZE_THRESHOLD;
+  if (raw === undefined) return 100;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 100;
+})();
 
 function drainNativeEventQueue(): void {
   if (!_rawQueue || !_nativeBridge) return;

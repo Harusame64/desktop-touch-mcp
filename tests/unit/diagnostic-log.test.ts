@@ -134,6 +134,31 @@ describe("diagnostic-log", () => {
   it("estimateArgsSize returns positive length on normal payload", () => {
     expect(estimateArgsSize([{ a: 1, b: "x" }])).toBeGreaterThan(0);
   });
+
+  it("truncates large stack traces to keep records bounded (R1 P2-3)", () => {
+    const bigStack = "x".repeat(8000);
+    logDiagnostic({
+      kind: "uncaught",
+      type: "uncaughtException",
+      msg: "boom",
+      stack: bigStack,
+    });
+    const [rec] = readLines() as Array<Record<string, unknown>>;
+    expect((rec.stack as string).length).toBeLessThanOrEqual(4096 + 20);
+    expect(rec.stack as string).toContain("…[truncated]");
+  });
+
+  it("does not truncate a normal-sized stack", () => {
+    const normalStack = "Error: x\n    at foo (file.ts:1:1)";
+    logDiagnostic({
+      kind: "uncaught",
+      type: "uncaughtException",
+      msg: "boom",
+      stack: normalStack,
+    });
+    const [rec] = readLines() as Array<Record<string, unknown>>;
+    expect(rec.stack).toBe(normalStack);
+  });
 });
 
 describe("wrapHandlerArgWithTiming", () => {
@@ -211,6 +236,17 @@ describe("wrapHandlerArgWithTiming", () => {
   it("returns empty args unchanged", () => {
     const args: unknown[] = [];
     expect(wrapHandlerArgWithTiming(args)).toBe(args);
+  });
+
+  it("returns args unchanged when toolArgs[0] is not a string (R1 P3-3)", async () => {
+    // Upstream misuse: if the first arg is not a string tool name we skip wrap
+    // to avoid emitting literal "[object Object]" / "undefined" in slow_tool logs.
+    const handler = async () => ({ ok: true });
+    const argsBad: unknown[] = [{ not: "a name" }, handler];
+    const wrappedBad = wrapHandlerArgWithTiming(argsBad, 1);
+    expect(wrappedBad).toBe(argsBad);
+    // The handler at the last index should still be the original, untouched.
+    expect(wrappedBad[1]).toBe(handler);
   });
 });
 
