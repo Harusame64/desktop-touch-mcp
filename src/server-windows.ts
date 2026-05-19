@@ -46,6 +46,8 @@ import {
 import { startTray, stopTray, type TrayOptions } from "./utils/tray.js";
 import { checkFailsafe, FailsafeError } from "./utils/failsafe.js";
 import { wrapHandlerArg } from "./utils/failsafe-wrap.js";
+import { logDiagnostic, wrapHandlerArgWithTiming } from "./engine/diagnostic-log.js";
+import { startCpuWatchdog } from "./engine/diagnostic-watchdog.js";
 import { SERVER_VERSION } from "./version.js";
 import { resolveV2Activation } from "./tools/desktop-activation.js";
 import { uiPatternStore } from "./store/ui-pattern-store.js";
@@ -177,18 +179,26 @@ function createMcpServer(): McpServer {
   // dispatchers (keyboard / clipboard / window_dock / scroll / terminal /
   // browser_eval) registered via registerTool — the same emergency-stop gate
   // as the legacy s.tool() registrations. (Codex PR #40 P1)
+  // Wrap order: failsafe pre-check first, then slow-tool timing. Outer wrappers
+  // run first, so wrapping with timing after failsafe means timing observes
+  // total elapsed time including the failsafe check (negligible for normal
+  // operation; informative when failsafe itself stalls).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const _originalTool = s.tool.bind(s) as (...args: any[]) => any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (s as any).tool = function (...toolArgs: any[]) {
-    return _originalTool(...wrapHandlerArg(toolArgs, checkFailsafe));
+    return _originalTool(
+      ...wrapHandlerArgWithTiming(wrapHandlerArg(toolArgs, checkFailsafe)),
+    );
   };
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const _originalRegisterTool = s.registerTool.bind(s) as (...args: any[]) => any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (s as any).registerTool = function (...toolArgs: any[]) {
-    return _originalRegisterTool(...wrapHandlerArg(toolArgs, checkFailsafe));
+    return _originalRegisterTool(
+      ...wrapHandlerArgWithTiming(wrapHandlerArg(toolArgs, checkFailsafe)),
+    );
   };
 
   registerScreenshotTools(s);
@@ -266,6 +276,13 @@ const failsafeTimer = setInterval(async () => {
   } catch (err) {
     if (err instanceof FailsafeError) {
       console.error("[desktop-touch] FAILSAFE triggered: mouse at top-left corner. Exiting.");
+      logDiagnostic({
+        kind: "exit",
+        trigger: "failsafe",
+        exitCode: 1,
+        inflight: inflightIds.size,
+        shutdownPending,
+      });
       stopTray();
       process.exit(1);
     }
@@ -328,6 +345,13 @@ function requestShutdown(reason: string): void {
   if (shuttingDown || shutdownPending) return;
   if (inflightIds.size === 0) {
     console.error(`[desktop-touch] ${reason} — shutting down.`);
+    logDiagnostic({
+      kind: "exit",
+      trigger: reason,
+      exitCode: 0,
+      inflight: 0,
+      shutdownPending: false,
+    });
     shutdown();
     return;
   }
@@ -344,6 +368,13 @@ function requestShutdown(reason: string): void {
     console.error(
       `[desktop-touch] in-flight requests still pending after ${SHUTDOWN_GRACE_MS}ms — forcing shutdown.`
     );
+    logDiagnostic({
+      kind: "exit",
+      trigger: `${reason} (grace expired)`,
+      exitCode: 0,
+      inflight: inflightIds.size,
+      shutdownPending: true,
+    });
     shutdown();
   }, SHUTDOWN_GRACE_MS);
 }
@@ -356,14 +387,84 @@ function maybeFinishShutdown(): void {
     setImmediate(() => {
       if (shuttingDown) return;
       console.error("[desktop-touch] in-flight requests drained — shutting down.");
+      logDiagnostic({
+        kind: "exit",
+        trigger: "inflight drained after grace",
+        exitCode: 0,
+        inflight: 0,
+        shutdownPending: true,
+      });
       shutdown();
     });
   }
 }
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
-process.on("disconnect", shutdown);
+function shutdownFromSignal(trigger: string): void {
+  if (!shuttingDown) {
+    logDiagnostic({
+      kind: "exit",
+      trigger,
+      exitCode: 0,
+      inflight: inflightIds.size,
+      shutdownPending,
+    });
+  }
+  shutdown();
+}
+
+process.on("SIGINT", () => shutdownFromSignal("SIGINT"));
+process.on("SIGTERM", () => shutdownFromSignal("SIGTERM"));
+process.on("disconnect", () => shutdownFromSignal("disconnect"));
+
+// Issue #365: uncaught exceptions and unhandled promise rejections terminate
+// the Node process with no Application Event Log crash entry (treated as a
+// normal exit). Without these handlers the only signal was a stderr warning
+// nobody captured. Log + exit(1) so post-hoc grep can identify the trigger.
+process.on("uncaughtException", (err: Error) => {
+  logDiagnostic({
+    kind: "uncaught",
+    type: "uncaughtException",
+    name: err.name,
+    msg: err.message,
+    stack: err.stack,
+  });
+  logDiagnostic({
+    kind: "exit",
+    trigger: "uncaughtException",
+    exitCode: 1,
+    inflight: inflightIds.size,
+    shutdownPending,
+  });
+  process.exit(1);
+});
+process.on("unhandledRejection", (reason: unknown) => {
+  const err =
+    reason instanceof Error
+      ? reason
+      : new Error(typeof reason === "string" ? reason : JSON.stringify(reason));
+  logDiagnostic({
+    kind: "uncaught",
+    type: "unhandledRejection",
+    name: err.name,
+    msg: err.message,
+    stack: err.stack,
+  });
+  logDiagnostic({
+    kind: "exit",
+    trigger: "unhandledRejection",
+    exitCode: 1,
+    inflight: inflightIds.size,
+    shutdownPending,
+  });
+  process.exit(1);
+});
+
+// Start the passive self-CPU watchdog. Returns null when disabled via env;
+// the assignment keeps the handle so test harnesses can stop it. Handle is
+// otherwise unused — the watchdog's setInterval is unref'd so it does not
+// keep the event loop alive.
+const _cpuWatchdog = startCpuWatchdog();
+void _cpuWatchdog;
 
 // ─── Parse CLI flags ──────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
