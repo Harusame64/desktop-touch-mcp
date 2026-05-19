@@ -46,7 +46,11 @@ import {
 import { startTray, stopTray, type TrayOptions } from "./utils/tray.js";
 import { checkFailsafe, FailsafeError } from "./utils/failsafe.js";
 import { wrapHandlerArg } from "./utils/failsafe-wrap.js";
-import { logDiagnostic, wrapHandlerArgWithTiming } from "./engine/diagnostic-log.js";
+import {
+  logDiagnostic,
+  normalizeThrown,
+  wrapHandlerArgWithTiming,
+} from "./engine/diagnostic-log.js";
 import { startCpuWatchdog } from "./engine/diagnostic-watchdog.js";
 import { SERVER_VERSION } from "./version.js";
 import { resolveV2Activation } from "./tools/desktop-activation.js";
@@ -425,28 +429,21 @@ process.on("disconnect", () => shutdownFromSignal("disconnect"));
 // AND so Phase B B-3/B-4 store flush (uiPatternStore / macroOutcomeStore) is
 // not skipped — calling shutdown() routes through the existing Promise.all
 // flush gate before process.exit. (Review R1 P1-1.)
-function safeStringify(value: unknown): string {
-  // Review R1 P1-2: `reason` from `unhandledRejection` can be a circular
-  // object whose `JSON.stringify` throws — that re-entered the uncaught
-  // handler and risked stack overflow. Defensive try/catch + fallback.
-  try {
-    return JSON.stringify(value) ?? String(value);
-  } catch {
-    try {
-      return String(value);
-    } catch {
-      return "<unstringifiable>";
-    }
-  }
-}
-
 function handleUncaught(
   type: "uncaughtException" | "unhandledRejection",
   err: Error,
 ): void {
-  // If shutdown is already in progress, don't reschedule it — just log and
-  // let the existing flush finish. This handles the case where shutdown()
-  // itself surfaces an async error.
+  // Codex R1 P2-1: preserve Node's default crash visibility on stderr in case
+  // the diagnostic log is disabled / unwritable / the user only has stderr
+  // capture configured. Best-effort; a stderr write that fails must not
+  // re-enter the handler.
+  try {
+    console.error(`[desktop-touch] ${type}:`, err.stack ?? err.message ?? String(err));
+  } catch {
+    // ignore
+  }
+  // shutdown() guards re-entry internally via the `shuttingDown` flag, so we
+  // can safely call it from here even if a previous handler already invoked it.
   logDiagnostic({
     kind: "uncaught",
     type,
@@ -464,15 +461,11 @@ function handleUncaught(
   shutdown(1);
 }
 
-process.on("uncaughtException", (err: Error) => {
-  handleUncaught("uncaughtException", err);
+process.on("uncaughtException", (value: unknown) => {
+  handleUncaught("uncaughtException", normalizeThrown(value));
 });
 process.on("unhandledRejection", (reason: unknown) => {
-  const err =
-    reason instanceof Error
-      ? reason
-      : new Error(typeof reason === "string" ? reason : safeStringify(reason));
-  handleUncaught("unhandledRejection", err);
+  handleUncaught("unhandledRejection", normalizeThrown(reason));
 });
 
 // Start the passive self-CPU watchdog. Returns null when disabled via env;

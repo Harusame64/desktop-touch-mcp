@@ -12,6 +12,8 @@ import {
   logDiagnostic,
   getDiagnosticLogPath,
   estimateArgsSize,
+  safeStringify,
+  normalizeThrown,
   wrapHandlerArgWithTiming,
   _resetDiagnosticLogForTest,
   type DiagnosticEvent,
@@ -247,6 +249,60 @@ describe("wrapHandlerArgWithTiming", () => {
     expect(wrappedBad).toBe(argsBad);
     // The handler at the last index should still be the original, untouched.
     expect(wrappedBad[1]).toBe(handler);
+  });
+});
+
+describe("safeStringify (R1 P1-2 / R2 extract)", () => {
+  it("returns JSON for plain object", () => {
+    expect(safeStringify({ a: 1 })).toBe('{"a":1}');
+  });
+  it("returns String() fallback for circular object", () => {
+    const obj: Record<string, unknown> = {};
+    obj.self = obj;
+    expect(safeStringify(obj)).toBe("[object Object]");
+  });
+  it("handles undefined → null per JSON.stringify, then falls back via ??", () => {
+    // JSON.stringify(undefined) === undefined → ?? falls back to String(undefined) === "undefined"
+    expect(safeStringify(undefined)).toBe("undefined");
+  });
+  it("handles symbol → String() fallback", () => {
+    // JSON.stringify(symbol) returns undefined → falls back
+    const sym = Symbol("x");
+    expect(safeStringify(sym)).toBe(String(sym));
+  });
+});
+
+describe("normalizeThrown (Codex R1 P2-2 / R2 symmetric fix)", () => {
+  it("returns Error instance unchanged", () => {
+    const orig = new Error("boom");
+    expect(normalizeThrown(orig)).toBe(orig);
+  });
+  it("wraps string in Error", () => {
+    const e = normalizeThrown("plain string");
+    expect(e).toBeInstanceOf(Error);
+    expect(e.message).toBe("plain string");
+  });
+  it("wraps null in Error (no property dereference)", () => {
+    // The critical case: `throw null` previously crashed handlers that read err.name.
+    const e = normalizeThrown(null);
+    expect(e).toBeInstanceOf(Error);
+    expect(typeof e.message).toBe("string");
+  });
+  it("wraps undefined in Error", () => {
+    const e = normalizeThrown(undefined);
+    expect(e).toBeInstanceOf(Error);
+    expect(typeof e.message).toBe("string");
+  });
+  it("wraps numeric throw", () => {
+    const e = normalizeThrown(42);
+    expect(e.message).toBe("42");
+  });
+  it("wraps circular object without throwing", () => {
+    const obj: Record<string, unknown> = {};
+    obj.self = obj;
+    expect(() => normalizeThrown(obj)).not.toThrow();
+    const e = normalizeThrown(obj);
+    expect(e).toBeInstanceOf(Error);
   });
 });
 

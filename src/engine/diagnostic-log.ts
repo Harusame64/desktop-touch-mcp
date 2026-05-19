@@ -27,7 +27,12 @@ const DEFAULT_DIR = ".desktop-touch-mcp/logs";
 
 // Review R1 P2-3: cap stack trace size so a runaway stack doesn't write MB-
 // scale records and slow down a synchronous appendFileSync just before exit.
-const STACK_TRUNCATE_BYTES = 4096;
+// Review R2 P3 (Opus): named CHARS not BYTES — `slice` / `.length` are UTF-16
+// code-unit operations, not byte counts. For ASCII stacks this is bit-equal;
+// stack frames with multi-byte path chars (Japanese / emoji) will be capped
+// by char count not byte count. Acceptable for the diagnostic goal (we only
+// need bounded record size, not exact byte truncation).
+const STACK_TRUNCATE_CHARS = 4096;
 
 /**
  * `_disabled`, `_resolvedPath`, and `_dirEnsured` are memoized on first read.
@@ -121,8 +126,8 @@ export function logDiagnostic(event: DiagnosticEvent): void {
   const path = getDiagnosticLogPath();
   ensureDir(path);
   const safeEvent =
-    "stack" in event && typeof event.stack === "string" && event.stack.length > STACK_TRUNCATE_BYTES
-      ? { ...event, stack: event.stack.slice(0, STACK_TRUNCATE_BYTES) + "…[truncated]" }
+    "stack" in event && typeof event.stack === "string" && event.stack.length > STACK_TRUNCATE_CHARS
+      ? { ...event, stack: event.stack.slice(0, STACK_TRUNCATE_CHARS) + "…[truncated]" }
       : event;
   const record = {
     ts: new Date().toISOString(),
@@ -151,6 +156,43 @@ export function estimateArgsSize(args: unknown[]): number {
   } catch {
     return -1;
   }
+}
+
+/**
+ * Best-effort JSON serialization that never throws. Falls back through
+ * `JSON.stringify` → `String(value)` → literal `"<unstringifiable>"`. Used by
+ * the uncaught handlers in `server-windows.ts` to normalize circular /
+ * exotic thrown values before constructing an `Error` for logging.
+ *
+ * (Review R1 P1-2 — extracted to this module in R2 for testability.)
+ */
+export function safeStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    try {
+      return String(value);
+    } catch {
+      return "<unstringifiable>";
+    }
+  }
+}
+
+/**
+ * Normalize an arbitrary thrown value into an `Error` instance so the
+ * `uncaughtException` / `unhandledRejection` handlers can safely read
+ * `.name` / `.message` / `.stack`. Node passes the *exact* value that was
+ * thrown to listeners — including `null`, `undefined`, numbers, or circular
+ * objects — and dereferencing properties on those would re-enter the
+ * handler.
+ *
+ * (Codex Review R1 P2-2 for `unhandledRejection`; Codex R2 follow-up for the
+ * symmetric `uncaughtException` path.)
+ */
+export function normalizeThrown(value: unknown): Error {
+  if (value instanceof Error) return value;
+  if (typeof value === "string") return new Error(value);
+  return new Error(safeStringify(value));
 }
 
 /**
