@@ -2,6 +2,41 @@
 
 ## [Unreleased]
 
+## [1.7.2] - 2026-05-19 — Emergency-stop now requires a deliberate dwell (no more drive-by failsafe kills)
+
+### Fixed
+
+- **Moving the mouse cursor through the top-left corner no longer
+  immediately kills the desktop-touch process.** The emergency-stop
+  guard previously exited the server the instant `mouse.getPosition`
+  returned a point within 10 px of `(0, 0)` — so any drive-by cursor
+  movement during normal work (window drags ending at the screen edge,
+  dock gestures, automated E2E tests that intentionally click at
+  `(1, 1)` to test silent-fail behaviour, accidental mouse flicks)
+  could exit the server with code `1` and disconnect the LLM session.
+  Starting in this release the cursor must remain inside the 10 px
+  corner radius **continuously** for `DESKTOP_TOUCH_FAILSAFE_HOLD_MS`
+  milliseconds (default `500`) before the emergency stop fires.
+  Drive-by movements reset the dwell timer; only a deliberate "park
+  the cursor in the corner and wait" gesture still triggers the stop.
+
+  This issue was diagnosed using the JSONL diagnostic log added in
+  1.7.1 — `kind: "exit", trigger: "failsafe"` entries showed the
+  pattern across dogfood sessions (issue #365).
+
+  Tune the dwell threshold with `DESKTOP_TOUCH_FAILSAFE_HOLD_MS`:
+  - `500` (default) — deliberate 500 ms hold required before stop
+  - `0` — restores the original immediate-trigger semantics (escape
+    hatch for callers who depended on it)
+  - `2000` — longer hold, less prone to misfire on slow machines
+
+  Sampling caveat: detection is poll-based (500 ms watcher + per-tool
+  pre-checks). When two consecutive in-zone samples are separated by
+  more than 1500 ms (3× the watcher tick), the dwell timer restarts
+  on the assumption that the cursor may have left the zone during the
+  unsampled gap. Cursor wiggles entirely within a sub-tick window
+  remain undetectable without an OS-level mouse hook (out of scope).
+
 ## [1.7.1] - 2026-05-19 — Idle-aware CPU dormancy + diagnostic event log (sudden-death + fan-noise observability)
 
 ### Improved
