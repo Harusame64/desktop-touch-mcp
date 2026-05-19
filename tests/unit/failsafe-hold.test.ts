@@ -125,6 +125,58 @@ describe("checkFailsafe — dwell-based trigger", () => {
     await expect(checkFailsafe()).resolves.toBeUndefined();
   });
 
+  it("blank env value falls back to default 500 ms (Codex R1 P2-1)", async () => {
+    // `DESKTOP_TOUCH_FAILSAFE_HOLD_MS=` (empty) used to coerce to 0 via
+    // Number(""), silently restoring the immediate-trigger behaviour.
+    process.env.DESKTOP_TOUCH_FAILSAFE_HOLD_MS = "";
+    setCursor(5, 5);
+    await expect(checkFailsafe()).resolves.toBeUndefined();
+    vi.setSystemTime(new Date(Date.now() + 600));
+    await expect(checkFailsafe()).rejects.toBeInstanceOf(FailsafeError);
+  });
+
+  it("whitespace-only env value falls back to default 500 ms (Codex R1 P2-1)", async () => {
+    process.env.DESKTOP_TOUCH_FAILSAFE_HOLD_MS = "   ";
+    setCursor(5, 5);
+    await expect(checkFailsafe()).resolves.toBeUndefined();
+    vi.setSystemTime(new Date(Date.now() + 600));
+    await expect(checkFailsafe()).rejects.toBeInstanceOf(FailsafeError);
+  });
+
+  it("env value with surrounding whitespace is trimmed (e.g., ' 100 ' → 100)", async () => {
+    process.env.DESKTOP_TOUCH_FAILSAFE_HOLD_MS = "  100  ";
+    setCursor(5, 5);
+    await checkFailsafe(); // arm
+    vi.setSystemTime(new Date(Date.now() + 80));
+    await expect(checkFailsafe()).resolves.toBeUndefined();
+    vi.setSystemTime(new Date(Date.now() + 30));
+    await expect(checkFailsafe()).rejects.toBeInstanceOf(FailsafeError);
+  });
+
+  it("dwell timer restarts when consecutive in-zone samples are >1500 ms apart (Codex R1 P2-2)", async () => {
+    // Sampling caveat: if two in-zone samples are separated by a long
+    // unsampled gap, the cursor may have left and returned within that
+    // window. We restart the dwell to avoid a drive-by trigger.
+    setCursor(5, 5);
+    await checkFailsafe(); // arm at t=0
+    vi.setSystemTime(new Date(Date.now() + 2000)); // large gap (cursor may have left)
+    await checkFailsafe(); // dwell restarts (now t=2000 as the new entered_at)
+    // Even though wallclock elapsed = 2000 ms total, we restarted the
+    // dwell at t=2000, so we need another 500 ms to trigger.
+    vi.setSystemTime(new Date(Date.now() + 100));
+    await expect(checkFailsafe()).resolves.toBeUndefined();
+    vi.setSystemTime(new Date(Date.now() + 500));
+    await expect(checkFailsafe()).rejects.toBeInstanceOf(FailsafeError);
+  });
+
+  it("normal-cadence in-zone samples (well under 1500 ms gap) accumulate dwell", async () => {
+    // Watcher-tick scenario: 500 ms gap < 1500 ms threshold, dwell continues.
+    setCursor(5, 5);
+    await checkFailsafe(); // t=0
+    vi.setSystemTime(new Date(Date.now() + 500));
+    await expect(checkFailsafe()).rejects.toBeInstanceOf(FailsafeError);
+  });
+
   it("transient mouse.getPosition error does not throw or reset state", async () => {
     setCursor(1, 1);
     await checkFailsafe(); // arm
