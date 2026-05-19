@@ -37,6 +37,12 @@ import { registerServerStatusTool } from "./tools/server-status.js";
 import { logAutoGuardStartup } from "./tools/_action-guard.js";
 import { stopNativeRuntime } from "./engine/perception/registry.js";
 import { disposeSharedDirtyRectBroker } from "./engine/dxgi-broker.js";
+import {
+  recordRpcReceived,
+  setInflightCount,
+  setShutdownPending,
+  clearShutdownPending,
+} from "./engine/process-health.js";
 import { startTray, stopTray, type TrayOptions } from "./utils/tray.js";
 import { checkFailsafe, FailsafeError } from "./utils/failsafe.js";
 import { wrapHandlerArg } from "./utils/failsafe-wrap.js";
@@ -286,6 +292,7 @@ const SHUTDOWN_GRACE_MS = 60_000;
 function shutdown(): void {
   if (shuttingDown) return;
   shuttingDown = true;
+  clearShutdownPending();
   if (shutdownTimer) {
     clearTimeout(shutdownTimer);
     shutdownTimer = null;
@@ -325,6 +332,7 @@ function requestShutdown(reason: string): void {
     return;
   }
   shutdownPending = true;
+  setShutdownPending(SHUTDOWN_GRACE_MS);
   console.error(
     `[desktop-touch] ${reason} — deferring shutdown for ${inflightIds.size} in-flight request(s) (grace ${SHUTDOWN_GRACE_MS}ms).`
   );
@@ -515,12 +523,17 @@ if (useHttp) {
     const m = msg as { id?: string | number; method?: string };
     const isRequest = !!m && m.id !== undefined && typeof m.method === "string";
     const id = isRequest ? (m.id as string | number) : undefined;
-    if (id !== undefined) inflightIds.add(id);
+    if (isRequest) recordRpcReceived(m.method as string);
+    if (id !== undefined) {
+      inflightIds.add(id);
+      setInflightCount(inflightIds.size);
+    }
     try {
       origOnmessage?.(msg, ...rest);
     } catch (err) {
       if (id !== undefined) {
         inflightIds.delete(id);
+        setInflightCount(inflightIds.size);
         maybeFinishShutdown();
       }
       throw err;
@@ -534,6 +547,7 @@ if (useHttp) {
       const m = msg as { id?: string | number; method?: string };
       if (m && m.id !== undefined && m.method === undefined) {
         inflightIds.delete(m.id);
+        setInflightCount(inflightIds.size);
         maybeFinishShutdown();
       }
     }
