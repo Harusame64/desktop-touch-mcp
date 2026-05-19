@@ -16,24 +16,20 @@ docs/release-process.md
 !docs/空間と時間の仮想化-plan.md
 !docs/ocr-quality-improvement-plan.md
 !docs/visual-gpu-dataplane-plan.md
-!docs/adr-008-d1-plan.md
-!docs/adr-007-p5c-plan.md
-!docs/adr-007-p5c-1-plan.md
-!docs/adr-007-p5c-2-plan.md
-!docs/adr-008-d1-2-plan.md
-!docs/adr-008-d2-plan.md
-!docs/adr-008-d2-c-plan.md
-!docs/adr-008-d2-b-5-plan.md
-!docs/adr-011-phase-b-coala-plan.md
-!docs/adr-019-stage-2a-plan.md
-!docs/adr-019-stage-2b-plan.md
-!docs/adr-019-stage-4-plan.md
-!docs/adr-019-stage-5-plan.md
-!docs/adr-020-phase-3-sr-1-capability-registry-plan.md
-!docs/adr-020-phase-3-sr-5-keyboard-promotion-plan.md
-!docs/adr-020-phase-3-sr-2-handler-result-boundary-plan.md
-!docs/adr-020-phase-3-sr-4-dxgi-broker-plan.md
-!docs/adr-021-result-migration-drift-prevention-plan.md
+
+# Internal ADR / plan / design docs — moved to private companion repo
+# `Harusame64/desktop-touch-mcp-internal` (see CLAUDE.md "ADR workflow" section).
+# Public repo keeps: Anti-Fukuwarai docs + Pages-linked reactive-perception-graph.md.
+docs/adr-*.md
+docs/adr-*/
+docs/phase4b-*.md
+docs/preprint-draft-*.md
+docs/llm-audit/
+docs/archive/
+docs/dogfood-incident-report.md
+# Exception: the single Anti-Fukuwarai ADR stays in the public repo because the
+# Anti-Fukuwarai concept is documented publicly via Pages articles.
+!docs/adr-019-anti-fukuwarai-v3-temporal-motion-observation.md
 
 # Claude Code session data (auto-memory, local settings) — never distribute
 .claude/
