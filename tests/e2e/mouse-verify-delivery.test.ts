@@ -38,8 +38,13 @@ describe("mouse_click verifyDelivery hint (issue #178)", () => {
 
   it("returns hints.verifyDelivery when verifyDelivery=true (default)", async () => {
     const result = await mouseClickHandler({
-      x: 1,
-      y: 1,
+      // Outside the failsafe radius (10px from top-left), but still on the
+      // desktop / extreme top-left so there's typically no actionable target.
+      // Using (1, 1) triggered the running MCP server's failsafe (issue #365
+      // Phase 2 caught this) and killed it mid-test — false-positive sudden
+      // death symptom in dogfood logs.
+      x: 50,
+      y: 50,
       button: "left",
       doubleClick: false,
       tripleClick: false,
@@ -63,8 +68,13 @@ describe("mouse_click verifyDelivery hint (issue #178)", () => {
 
   it("does NOT include verifyDelivery hint when verifyDelivery=false", async () => {
     const result = await mouseClickHandler({
-      x: 1,
-      y: 1,
+      // Outside the failsafe radius (10px from top-left), but still on the
+      // desktop / extreme top-left so there's typically no actionable target.
+      // Using (1, 1) triggered the running MCP server's failsafe (issue #365
+      // Phase 2 caught this) and killed it mid-test — false-positive sudden
+      // death symptom in dogfood logs.
+      x: 50,
+      y: 50,
       button: "left",
       doubleClick: false,
       tripleClick: false,
@@ -81,18 +91,27 @@ describe("mouse_click verifyDelivery hint (issue #178)", () => {
   }, 10_000);
 
   it("blank-area click returns 'focus_only' or 'unverifiable' (silent fail pin)", async () => {
-    // Click at (1,1) which is the desktop / extreme top-left — there's
-    // typically no actionable target there. Pre/post UIA observations
-    // should be identical (stable desktop element), giving 'focus_only'
-    // when UIA is available. On hosts without UIA the snapshot returns
-    // null and we expect 'unverifiable'.
+    // Click in the extreme top-left desktop area — there's typically no
+    // actionable target there. Pre/post UIA observations should be identical
+    // (stable desktop element), giving 'focus_only' when UIA is available.
+    // On hosts without UIA the snapshot returns null and we expect
+    // 'unverifiable'.
     //
     // This is the "intentional silent fail" pin from the issue
     // acceptance criteria: a click that doesn't hit anything must NOT
     // return verifyDelivery:'delivered'.
+    //
+    // (Avoid coordinates inside the 10px failsafe radius — that triggers
+    // the host MCP server's emergency-stop on real Windows hardware and
+    // kills it mid-test. See issue #365.)
     const result = await mouseClickHandler({
-      x: 1,
-      y: 1,
+      // Outside the failsafe radius (10px from top-left), but still on the
+      // desktop / extreme top-left so there's typically no actionable target.
+      // Using (1, 1) triggered the running MCP server's failsafe (issue #365
+      // Phase 2 caught this) and killed it mid-test — false-positive sudden
+      // death symptom in dogfood logs.
+      x: 50,
+      y: 50,
       button: "left",
       doubleClick: false,
       tripleClick: false,
