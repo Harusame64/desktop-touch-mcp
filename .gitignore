@@ -83,3 +83,15 @@ libnode.dll.a
 node.def
 node.lib
 .pr*.diff
+
+# napi-rs scaffolding tests — never wired into vitest; not run in CI.
+# Kept locally for the upstream sync script (scripts/sync-rust-from-engine-rs.sh)
+# but excluded from the public repo to reduce surface.
+__test__/
+
+# One-off repro scripts (per-issue investigations; the actual fix lives elsewhere).
+tests/repros/
+
+# Per-ADR PowerShell investigation spikes (Windows Terminal, RDP, etc.).
+# Findings live in the private companion repo's ADR docs.
+scripts/spikes/
