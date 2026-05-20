@@ -1,4 +1,5 @@
 import { fail, type ToolFailure, type ToolResult } from "./_types.js";
+import { ToolFailureError } from "../errors/typed-errors.js";
 
 // Context keys that must be hoisted to the root of the failure JSON so that
 // _post.ts (withPostState) can find them. `_post.ts` reads obj._perceptionForPost /
@@ -676,6 +677,100 @@ function classify(message: string): { code: string; suggest: string[] } {
 // ─────────────────────────────────────────────────────────────────────────────
 // Public API
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * `errorFromMessage` — factory that turns a thrown value into the canonical
+ * {@link ToolFailureError} model (ADR-021 Phase 2 PR-P2-0, OQ-7(c)).
+ *
+ * The first arg is `unknown` (a true superset of `failWith`'s first arg) and is
+ * normalized to a message string with the SAME rule `failWith` uses today —
+ * production callsites throw / pass non-Error values (bare strings, `??`-
+ * coalesced strings, raw caught values), so the factory, not the callsite, owns
+ * that normalization. This is what lets the PR-P2-2 flip stay bit-equal for any
+ * input (pinned by the equivalence test's non-Error cases).
+ *
+ * This is the ONE place that runs `classify(message)` for the flat-failure
+ * family, and the ONE place that splits a caller's `context` into the two
+ * halves the flat shape needs:
+ *   - root-hoisted keys (`_perceptionForPost` / `_richForPost` / `hints`) →
+ *     `rootExtras`, spread onto the failure root so `_post.ts` can find them;
+ *   - everything else → nested `context` (the LLM-facing detail).
+ *
+ * The returned error is a pure value; rendering it to the flat wire shape is
+ * `toToolFailure`'s job (separation of concerns — the model is the SSOT, the
+ * presenter is replaceable). `failWith` becomes a thin wrapper over
+ * `fail(toToolFailure(errorFromMessage(...)))` in PR-P2-2 — kept untouched here
+ * so PR-P2-0 only ADDS the model + factory + presenter and proves bit-equality
+ * (tests/unit/path-class-contract/to-tool-failure-payload.test.ts) before the
+ * flip, mirroring the snapshot-first discipline that de-risked Phase 1.
+ */
+export function errorFromMessage(
+  err: unknown,
+  toolName: string,
+  context?: Record<string, unknown>,
+): ToolFailureError {
+  const message = err instanceof Error ? err.message : String(err);
+  const { code, suggest } = classify(message);
+
+  // Same split `failWith` performs today: hoisted keys go to the failure root
+  // (so `_post.ts` can attach post-perception), the rest stays nested under
+  // `context`. Both halves preserve `Object.entries(context)` iteration order
+  // so the rendered JSON is byte-for-byte identical to `failWith`'s.
+  let rootExtras: Record<string, unknown> | undefined;
+  let nestedContext: Record<string, unknown> | undefined;
+  if (context) {
+    for (const [k, v] of Object.entries(context)) {
+      if (ROOT_HOISTED_KEYS.has(k)) {
+        (rootExtras ??= {})[k] = v;
+      } else {
+        (nestedContext ??= {})[k] = v;
+      }
+    }
+  }
+
+  return new ToolFailureError(code, {
+    toolName,
+    displayMessage: message,
+    suggest,
+    context: nestedContext,
+    rootExtras,
+  });
+}
+
+/**
+ * `toToolFailure` — presenter that renders a {@link ToolFailureError} into the
+ * flat `ToolFailure` wire shape (ADR-021 Phase 2 PR-P2-0, B′ presenter family).
+ *
+ * Sibling of `toFailureEnvelope` (the envelope-family presenter in
+ * `_envelope.ts`): both consume a typed error, neither re-classifies, and each
+ * has a single narrow return type — one error model, two render targets. The
+ * key order / omission rules match today's `failWith` output byte-for-byte so
+ * PR-P2-2 can route `failWith` through this presenter with zero shape change
+ * (codemod fixtures + the equivalence test pin it):
+ *
+ *   { ok:false, code, error, [suggest], [context], ...rootExtras }
+ *
+ * `error` is total over the payload: with both `toolName` and `displayMessage`
+ * it is `"${toolName} failed: ${displayMessage}"` (the canonical failWith
+ * string); the partial-payload fallbacks are pinned in the matrix test. An
+ * empty `displayMessage` (`""`) is preserved (not coalesced to `code`) so an
+ * empty thrown message stays bit-equal with `failWith`.
+ */
+export function toToolFailure(err: ToolFailureError): ToolFailure & Record<string, unknown> {
+  const code = err.name;
+  const displayMessage = err.displayMessage ?? code;
+  const error =
+    err.toolName !== undefined ? `${err.toolName} failed: ${displayMessage}` : displayMessage;
+
+  return {
+    ok: false,
+    code,
+    error,
+    ...(err.suggest && err.suggest.length > 0 && { suggest: err.suggest }),
+    ...(err.context && { context: err.context }),
+    ...(err.rootExtras ?? {}),
+  };
+}
 
 /**
  * Normalize any thrown value into a structured ToolFailure and return it
