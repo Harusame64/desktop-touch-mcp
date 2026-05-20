@@ -10,17 +10,18 @@
  * perform that migration, this snapshot makes every output change explicit and
  * reviewable instead of silent — the whole point of the snapshot-first order.
  *
- * The 7 sites and their current construction:
- *   1-4. memory N/K bound checks — already via `toFailureEnvelope`
- *        (`src/tools/_envelope.ts:3324/3332/3340/3348`).
- *   5a.  lease validation `expired`  — `buildFailureEnvelope` direct
- *        (`src/tools/_envelope.ts:2978`, code/tryNext from
- *        `mapLeaseValidationToTypedReason`).
- *   5b.  lease validation residual reasons (collapse to `Unknown`).
- *   6.   handler throw fallback — `buildFailureEnvelope("Unknown", [], ...)`
- *        (`src/tools/_envelope.ts:3058`).
+ * The 7 sites (cited by enclosing symbol, NOT line number — line numbers drift
+ * across PRs; the @see footer lists the symbols):
+ *   1-4. memory N/K bound checks — via `toFailureEnvelope` (the 4 Working/
+ *        Episodic/Semantic/Procedural upper-bound checks in the query wrapper).
+ *   5a.  lease validation `expired` — via `toFailureEnvelope` with a verbatim
+ *        rich `tryNext` (migrated in PR-P1-2; code/tryNext from
+ *        `mapLeaseValidationToTypedReason`, lease path in `makeCommitWrapper`).
+ *   5b.  lease validation residual reasons (collapse to `Unknown`, empty tryNext).
+ *   6.   handler throw fallback — via `toFailureEnvelope` with empty `tryNext`
+ *        (migrated in PR-P1-2; handler-throw path in `makeCommitWrapper`).
  *   7.   executor_failed — DATA-level `if_unexpected` attach, pretty-printed
- *        (`src/tools/desktop-register.ts:594-604`).
+ *        (`desktopActRawHandler` in `desktop-register.ts`; NOT yet migrated, PR-P1-3).
  *
  * ── MIGRATION HAZARDS this snapshot will surface in PR-P1-2/P1-3 ──
  * (a naive swap to the CURRENT `toFailureEnvelope` is NOT bit-equal here — the
@@ -39,6 +40,12 @@
  *       (`JSON.stringify(..., null, 2)`); converter-driven paths place it at
  *       the ENVELOPE level. Normalising this asymmetry is the explicit L6
  *       goal — the diff must be deliberate.
+ *
+ * P1-2 resolution: sites 5a/5b/6 are now migrated to `toFailureEnvelope` via the
+ * verbatim `tryNext` override — hazard C avoided (rich hint preserved bit-equal),
+ * hazard B deferred (empty tryNext preserved, zero behaviour change). This
+ * snapshot stayed green through P1-2, proving the migration was shape-preserving.
+ * Site 7 (hazard A) is NOT yet migrated — that is PR-P1-3.
  *
  * Wallclock note: `as_of.wallclock_ms` is genuinely runtime-variable
  * (production passes `asOfWallclockMs: null` → `Date.now()` at these sites),
@@ -139,7 +146,7 @@ afterEach(() => {
 // Baseline for the converter's current output. These are NOT migrated in
 // Phase 1 — PR-P2-0 keeps them bit-equal (plan §3.3.2). Construction is exactly
 // `toFailureEnvelope(Err(new CodedHandlerError(code)), { optIn, envelopeOptions:
-// { viewPoisoned:false, asOfWallclockMs:null } })` (_envelope.ts:3322-3352).
+// { viewPoisoned:false, asOfWallclockMs:null } })`.
 
 describe("PR-P1-1 sites 1-4: memory bound-check converter callsites", () => {
   const MEMORY_CODES = [
@@ -187,11 +194,11 @@ describe("PR-P1-1 sites 1-4: memory bound-check converter callsites", () => {
   }
 });
 
-// ── Sites 5a/5b: lease validation failure (buildFailureEnvelope direct) ────────
+// ── Sites 5a/5b: lease validation failure (via toFailureEnvelope, migrated P1-2) ─
 //
-// makeCommitWrapper Step 2 short-circuits BEFORE the handler runs
-// (_envelope.ts:2972-2990). `getEnvValue: () => undefined` keeps the default
-// raw mode; `include:["envelope"]` opts into the full envelope.
+// makeCommitWrapper Step 2 (lease validation) short-circuits BEFORE the handler
+// runs. `getEnvValue: () => undefined` keeps the default raw mode;
+// `include:["envelope"]` opts into the full envelope.
 
 describe("PR-P1-1 site 5a: lease validation 'expired' (RICH try_next — hazard C)", () => {
   // try_next here is the rich {action, args, confidence} entry that a naive
