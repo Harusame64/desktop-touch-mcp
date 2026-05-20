@@ -60,7 +60,6 @@ import {
 } from "../../../src/tools/_envelope.js";
 import { Err } from "../../../src/types/result.js";
 import { CodedHandlerError } from "../../../src/errors/typed-errors.js";
-import { getSuggestsForCode } from "../../../src/tools/_errors.js";
 import {
   desktopActRawHandler,
   getDesktopFacade,
@@ -85,6 +84,45 @@ const ANY_WALLCLOCK = { wallclock_ms: expect.any(Number) };
 const NOOP_L1: CommitL1Emitter = {
   pushStarted: () => {},
   pushCompleted: () => {},
+};
+
+/**
+ * FROZEN pre-migration `try_next` content (captured 2026-05-20 from
+ * `src/tools/_errors.ts` SUGGESTS). These are HARDCODED literals — NOT computed
+ * via `getSuggestsForCode(...)` — so a SUGGESTS edit changes the `actual` output
+ * but NOT this expectation, which surfaces the change instead of letting both
+ * move together (PR #373 Codex P2: a migration safety-net expectation must be
+ * decoupled from the production source it guards). If SUGGESTS legitimately
+ * changes, update these literals deliberately (and note any user-facing hint
+ * change in the CHANGELOG).
+ */
+const FROZEN_TRY_NEXT: Record<string, ReadonlyArray<{ action: string }>> = {
+  WorkingMemoryNUpperBoundExceeded: [
+    { action: "Reduce working:N — upper bound is WORKING_MEMORY_N_MAX (= 50, layer-constraints §5)" },
+    { action: "If you need more recent events, use include=[\"episodic:N\"] for richer rich-shape projection (B-2 land 後に有効)" },
+    { action: "Working memory is a compact summary of recent commits — N typically ≤ 10 is sufficient for context" },
+  ],
+  EpisodicMemoryNUpperBoundExceeded: [
+    { action: "Reduce episodic:N — upper bound is EPISODIC_MEMORY_N_MAX (= 100, layer-constraints §5)" },
+    { action: "Use include=[\"working:N\"] (compact summary) when the rich shape (lease_token / event_id / elapsed_ms) is unnecessary" },
+    { action: "Episodic memory exposes the full ToolCallEvent shape — N typically ≤ 5 is sufficient for causal context recovery" },
+  ],
+  SemanticMemoryKUpperBoundExceeded: [
+    { action: "Reduce semantic:K — upper bound is SEMANTIC_MEMORY_K_MAX (= 10)" },
+    { action: "Semantic memory surfaces top-K learned UI patterns (rule-based: same windowTitle + 3+ successful commits)" },
+    { action: "If you want recent commits instead of patterns, use include=[\"episodic:N\"] (rich shape) or [\"working:N\"] (compact)" },
+  ],
+  ProceduralMemoryKUpperBoundExceeded: [
+    { action: "Reduce procedural:K — upper bound is PROCEDURAL_MEMORY_K_MAX (= 10)" },
+    { action: "Procedural memory surfaces top-K successful repeated workflows (success>=3 + 0 failures + no destructive tools)" },
+    { action: "Suggest candidates are limited by design — destructive macro suggest is non-goal in Phase B (consider Phase B follow-up for explicit consent UX)" },
+  ],
+  ExecutorFailed: [
+    { action: "For action='click', fall back to mouse_click({clickAt}) using the entity rect center from desktop_discover — common when UIA InvokePattern is missing on the control" },
+    { action: "For action='type' or action='setValue': desktop_act has already tried UIA setValue and background WM_CHAR (post-#327 E ladder) before reporting executor_failed. The remaining rung is keyboard({action:'type', text, method:'foreground'}) — foreground SendInput uses the OS input queue and bypasses BG injection blocks that stopped the internal ladder (Chromium hosts, WT-XAML, etc.). Focus the target window first with focus_window or mouse_click" },
+    { action: "If the entity has a stable name or automationId, try click_element({name|automationId}) — uses a different UIA path than desktop_act and may succeed where this executor threw" },
+    { action: "Re-run desktop_discover — the entity may have moved or been re-keyed between discover and act, in which case the executor saw a stale locator" },
+  ],
 };
 
 beforeEach(() => {
@@ -126,7 +164,7 @@ describe("PR-P1-1 sites 1-4: memory bound-check converter callsites", () => {
         confidence: "stale",
         if_unexpected: {
           most_likely_cause: code,
-          try_next: getSuggestsForCode(code).map((action) => ({ action })),
+          try_next: FROZEN_TRY_NEXT[code],
         },
       });
     });
@@ -142,7 +180,7 @@ describe("PR-P1-1 sites 1-4: memory bound-check converter callsites", () => {
         diff: [],
         if_unexpected: {
           most_likely_cause: code,
-          try_next: getSuggestsForCode(code).map((action) => ({ action })),
+          try_next: FROZEN_TRY_NEXT[code],
         },
       });
     });
@@ -287,7 +325,7 @@ describe("PR-P1-1 site 7: desktopActRawHandler executor_failed (DATA-level — h
       diff: [],
       if_unexpected: {
         most_likely_cause: "ExecutorFailed",
-        try_next: getSuggestsForCode("ExecutorFailed").map((action) => ({ action })),
+        try_next: FROZEN_TRY_NEXT.ExecutorFailed,
       },
     });
   });
