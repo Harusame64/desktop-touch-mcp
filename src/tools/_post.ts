@@ -140,9 +140,10 @@ async function snapshotFocusedElement(): Promise<PostElementInfo | null> {
  *          `toToolFailure` / `failWith` (failure). Consumed + `delete`d on BOTH
  *          branches → a second move is impossible.
  *        · `_richForPost` — written by browser handlers (success only today).
- *          Consumed + `delete`d on the SUCCESS branch ONLY; the failure branch
- *          leaves it untouched (latent, currently unreachable — browser handlers
- *          attach it on `ok:true` alone).
+ *          Consumed + `delete`d on the SUCCESS branch ONLY, and only when it has
+ *          an array `appeared` field (the RichBlock shape guard); the failure
+ *          branch leaves it untouched (latent, currently unreachable — browser
+ *          handlers attach the array-shaped block on `ok:true` alone).
  *        · `hints` (the third ROOT_HOISTED_KEY) — hoisted to root by the failure
  *          producers but intentionally NOT consumed/moved here; it stays at the
  *          response root on both branches (issue #181 success/failure symmetry).
