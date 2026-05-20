@@ -20,8 +20,9 @@
  *   5b.  lease validation residual reasons (collapse to `Unknown`, empty tryNext).
  *   6.   handler throw fallback — via `toFailureEnvelope` with empty `tryNext`
  *        (migrated in PR-P1-2; handler-throw path in `makeCommitWrapper`).
- *   7.   executor_failed — DATA-level `if_unexpected` attach, pretty-printed
- *        (`desktopActRawHandler` in `desktop-register.ts`; NOT yet migrated, PR-P1-3).
+ *   7.   executor_failed — via `toFailureEnvelope` raw projection (migrated in
+ *        PR-P1-3, bit-equal; `desktopActRawHandler` in `desktop-register.ts`).
+ *        `if_unexpected` still serialises at the DATA level (see hazard A).
  *
  * ── MIGRATION HAZARDS this snapshot will surface in PR-P1-2/P1-3 ──
  * (a naive swap to the CURRENT `toFailureEnvelope` is NOT bit-equal here — the
@@ -36,16 +37,21 @@
  *   (B) Sites 5b/6 `try_next` is `[]` today; `toFailureEnvelope` substitutes
  *       the generic fallback `[{action:"Inspect..."}]` when SUGGESTS is empty
  *       → `[]` becomes 1 entry (an improvement, but a deliberate change).
- *   (A) Site 7 attaches `if_unexpected` at the DATA level + pretty-prints
- *       (`JSON.stringify(..., null, 2)`); converter-driven paths place it at
- *       the ENVELOPE level. Normalising this asymmetry is the explicit L6
- *       goal — the diff must be deliberate.
+ *   (A) Site 7's `if_unexpected` serialises at the DATA level (sibling of
+ *       ok/reason/diff), so in `include=["envelope"]` mode it surfaces at
+ *       `envelope.data.if_unexpected`, not `envelope.if_unexpected` like the
+ *       wrapper-driven failure paths. P1-3 unified the *construction* through
+ *       `toFailureEnvelope` (bit-equal), but the data→envelope *placement*
+ *       requires the wrapper to treat a handler-returned `ok:false` as a
+ *       failure — that is the Phase 5 TOOL_REGISTRY Result change (§2.2
+ *       deferred), NOT done here.
  *
- * P1-2 resolution: sites 5a/5b/6 are now migrated to `toFailureEnvelope` via the
- * verbatim `tryNext` override — hazard C avoided (rich hint preserved bit-equal),
- * hazard B deferred (empty tryNext preserved, zero behaviour change). This
- * snapshot stayed green through P1-2, proving the migration was shape-preserving.
- * Site 7 (hazard A) is NOT yet migrated — that is PR-P1-3.
+ * P1-2/P1-3 resolution: all 3 hand-built sites (5a/5b/6 in P1-2, 7 in P1-3) now
+ * route their failure construction through `toFailureEnvelope` — bit-equal, so
+ * this snapshot stayed green throughout (proving each migration was shape-
+ * preserving). Hazard C avoided (rich `tryNext` passed verbatim), hazard B
+ * deferred (empty `tryNext` preserved, zero behaviour change), hazard A's
+ * envelope-mode placement deferred to Phase 5 (see above).
  *
  * Wallclock note: `as_of.wallclock_ms` is genuinely runtime-variable
  * (production passes `asOfWallclockMs: null` → `Date.now()` at these sites),
