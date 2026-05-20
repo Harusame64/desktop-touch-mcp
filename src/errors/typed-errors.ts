@@ -23,11 +23,11 @@ export class HandlerError extends Error {
  * Typed error for the `executor_failed` envelope path (PR #329 carry-over,
  * ADR-020 §11 L6 closure target).
  *
- * `name === "ExecutorFailed"` matches `SUGGESTS.ExecutorFailed` key
- * (`_errors.ts:284`). `toFailureEnvelope` resolves the SUGGESTS entry at
- * runtime to produce a `most_likely_cause` + `try_next` envelope identical
- * to the one PR #329 emitted via the hand-wired
- * `buildExecutorFailedIfUnexpected()` helper in `desktop-register.ts:560-566`.
+ * `name === "ExecutorFailed"` matches the `SUGGESTS.ExecutorFailed` key, so
+ * `toFailureEnvelope` resolves the entry at runtime to produce the
+ * `most_likely_cause` + `try_next` envelope. Used by `desktopActRawHandler`
+ * via `toFailureEnvelope(Err(new ExecutorFailedError(...)))` (ADR-021 P1-3),
+ * replacing the hand-wired helper PR #329 originally emitted.
  */
 export class ExecutorFailedError extends HandlerError {
   constructor(message: string, options?: ErrorOptions) {

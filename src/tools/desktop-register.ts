@@ -29,12 +29,14 @@ import {
   withEnvelopeIncludeSchema,
   genericQueryCausedByProjector,
   defaultQuerySessionId,
+  toFailureEnvelope,
   type CommitWrapperOptions,
 } from "./_envelope.js";
 import { nativeViewFocus } from "../engine/native-engine.js";
 import type { NativeLeaseTokenSummary } from "../engine/native-types.js";
 import type { ToolResult } from "./_types.js";
-import { getSuggestsForCode } from "./_errors.js";
+import { Err } from "../types/result.js";
+import { ExecutorFailedError } from "../errors/typed-errors.js";
 import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
 import {
   SnapshotIngress,
@@ -537,34 +539,6 @@ const desktopDiscoverRawHandler = async (input: unknown): Promise<ToolResult> =>
  *  `DESKTOP_TOUCH_STAGE5_DXGI !== "0"` (default ON; opt-out by setting
  *  to `"0"`). Failures degrade silently — observation absence is
  *  bit-equal to the pre-Stage-5 envelope. */
-/**
- * Issue #327 item G: `GuardedTouchLoop.touch` returns `{ok:false, reason:"executor_failed"}`
- * on executor exception (`guarded-touch.ts:315-319`). The handler-return path bypasses
- * the L5 wrapper's `buildFailureEnvelope` typed-injection (which only fires on lease
- * validation failure or handler throw), so the envelope ships with no `if_unexpected`
- * recovery hint. We attach it here so the LLM client gets the same recovery surface
- * documented in the tool description. The advisory ↔ runtime drift is tracked for the
- * path-class refactor epic per `project_path_class_refactor_pending` memory.
- *
- * Envelope-mode position note (Opus Round 1 P2): the attach lands at the raw payload
- * level (alongside `ok` / `reason`), so in raw mode (`compatHoist` optIn=false) it
- * hoists to envelope top-level as expected. In envelope mode (`include=["envelope"]`)
- * the field surfaces at `envelope.data.if_unexpected`, **not** at `envelope.if_unexpected`
- * where `buildFailureEnvelope`-driven paths (lease validation / handler throw / typed
- * N-upper-bound paths) place it. This asymmetry is a known scope trade-off for this
- * tactical PR; the path-class refactor epic normalises both paths through a single
- * failure envelope hook.
- */
-function buildExecutorFailedIfUnexpected(): {
-  most_likely_cause: "ExecutorFailed";
-  try_next: Array<{ action: string }>;
-} {
-  return {
-    most_likely_cause: "ExecutorFailed",
-    try_next: getSuggestsForCode("ExecutorFailed").map((action) => ({ action })),
-  };
-}
-
 export const desktopActRawHandler = async (
   input: { lease: EntityLease; action?: TouchAction; text?: string },
 ): Promise<ToolResult> => {
@@ -588,19 +562,32 @@ export const desktopActRawHandler = async (
     }
   }
 
-  // Opus Round 1 P3-1: keep the TouchResult discriminated-union narrowed inside
-  // the executor_failed branch by spreading the already-narrowed `result` into
-  // the JSON payload directly, instead of widening through Record<string, unknown>.
+  // Issue #327 item G: GuardedTouchLoop.touch returns {ok:false,
+  // reason:"executor_failed", diff:[]} on executor exception. Because the handler
+  // RETURNS this (does not throw), the L5 makeCommitWrapper treats it as a normal
+  // result and would ship no if_unexpected recovery hint. We build the hint here.
+  //
+  // ADR-021 P1-3: build it through the central toFailureEnvelope converter (north
+  // star 1: one failure path) instead of the old hand-spread + local
+  // buildExecutorFailedIfUnexpected helper. This handler always returns the RAW
+  // shape (the L5 wrapper above applies envelope/optIn), so optIn:false →
+  // compatFailureRaw → {ok:false, reason:"executor_failed", diff:[], if_unexpected}.
+  // Bit-equal to the pre-migration shape (reason via pascalToSnake("ExecutorFailed"),
+  // diff:[] from compatFailureRaw, try_next via SUGGESTS) — pinned by
+  // to-failure-envelope-shape-snapshot.test.ts site 7.
+  //
+  // Scope note: the envelope-mode data->envelope asymmetry (in include=["envelope"]
+  // mode the hint surfaces at envelope.data.if_unexpected, not envelope.if_unexpected)
+  // is NOT addressed here — normalising it requires the wrapper to treat a
+  // handler-returned ok:false as a failure, which is the Phase 5 TOOL_REGISTRY
+  // Result-returning change (ADR-021 §2.2 deferred).
   if (!result.ok && result.reason === "executor_failed") {
+    const failure = toFailureEnvelope(
+      Err(new ExecutorFailedError("desktop_act executor failed")),
+      { optIn: false },
+    );
     return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify(
-          { ...result, if_unexpected: buildExecutorFailedIfUnexpected() },
-          null,
-          2,
-        ),
-      }],
+      content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
     };
   }
 
