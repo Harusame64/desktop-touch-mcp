@@ -679,8 +679,15 @@ function classify(message: string): { code: string; suggest: string[] } {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * `errorFromMessage` — factory that turns a raw failure `message` into the
- * canonical {@link ToolFailureError} model (ADR-021 Phase 2 PR-P2-0, OQ-7(c)).
+ * `errorFromMessage` — factory that turns a thrown value into the canonical
+ * {@link ToolFailureError} model (ADR-021 Phase 2 PR-P2-0, OQ-7(c)).
+ *
+ * The first arg is `unknown` (a true superset of `failWith`'s first arg) and is
+ * normalized to a message string with the SAME rule `failWith` uses today —
+ * production callsites throw / pass non-Error values (bare strings, `??`-
+ * coalesced strings, raw caught values), so the factory, not the callsite, owns
+ * that normalization. This is what lets the PR-P2-2 flip stay bit-equal for any
+ * input (pinned by the equivalence test's non-Error cases).
  *
  * This is the ONE place that runs `classify(message)` for the flat-failure
  * family, and the ONE place that splits a caller's `context` into the two
@@ -698,10 +705,11 @@ function classify(message: string): { code: string; suggest: string[] } {
  * flip, mirroring the snapshot-first discipline that de-risked Phase 1.
  */
 export function errorFromMessage(
-  message: string,
+  err: unknown,
   toolName: string,
   context?: Record<string, unknown>,
 ): ToolFailureError {
+  const message = err instanceof Error ? err.message : String(err);
   const { code, suggest } = classify(message);
 
   // Same split `failWith` performs today: hoisted keys go to the failure root

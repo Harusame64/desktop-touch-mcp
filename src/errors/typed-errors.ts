@@ -118,6 +118,10 @@ export class ToolFailureError extends HandlerError {
   readonly rootExtras?: Record<string, unknown>;
 
   constructor(code: string, payload?: ToolFailurePayload, options?: ErrorOptions) {
+    // `??` (not `||`) is load-bearing: an empty `displayMessage` ("") must be
+    // preserved, not coalesced to `code`, so a thrown empty message stays
+    // bit-equal with `failWith`. The presenter's `err.displayMessage ?? code`
+    // relies on the same `??` semantics.
     super(payload?.displayMessage ?? code, options);
     this.name = code;
     this.toolName = payload?.toolName;

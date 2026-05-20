@@ -55,7 +55,7 @@ function parseContent(content: ReadonlyArray<{ type: string; text?: string }>): 
 // so nothing here depends on classify()/SUGGESTS — the matrix pins ONLY the
 // presenter's field-presence + key-order behaviour.
 
-describe("PR-P2-0 layer 1: toToolFailure shape matrix (4 payload axes)", () => {
+describe("PR-P2-0 layer 1: toToolFailure shape matrix (8 combos over 4 payload axes + edge pins)", () => {
   it("1. code only (no toolName / displayMessage) → error falls back to code", () => {
     expect(toToolFailure(new ToolFailureError("ToolError"))).toEqual({
       ok: false,
@@ -174,13 +174,22 @@ describe("PR-P2-0 layer 1: toToolFailure shape matrix (4 payload axes)", () => {
 
 describe("PR-P2-0 layer 2: errorFromMessage factory", () => {
   it("classifies the message into the typed code (name)", () => {
-    const err = errorFromMessage("window not found", "focus_window");
+    const err = errorFromMessage(new Error("window not found"), "focus_window");
     expect(err).toBeInstanceOf(ToolFailureError);
     expect(err.name).toBe("WindowNotFound");
     expect(err.displayMessage).toBe("window not found");
     expect(err.toolName).toBe("focus_window");
     expect(err.suggest).toBeInstanceOf(Array);
     expect(err.suggest!.length).toBeGreaterThan(0); // WindowNotFound has SUGGESTS entries
+  });
+
+  it("normalizes the thrown value exactly as failWith (Error.message vs String(err))", () => {
+    expect(errorFromMessage(new Error("boom"), "keyboard").displayMessage).toBe("boom");
+    expect(errorFromMessage("bare string", "keyboard").displayMessage).toBe("bare string");
+    expect(errorFromMessage({ weird: true }, "desktop_act").displayMessage).toBe("[object Object]");
+    expect(errorFromMessage(undefined, "keyboard").displayMessage).toBe("undefined");
+    expect(errorFromMessage(null, "keyboard").displayMessage).toBe("null");
+    expect(errorFromMessage(42, "scroll").displayMessage).toBe("42");
   });
 
   it("falls back to ToolError + empty suggest for an unclassifiable message", () => {
@@ -224,23 +233,30 @@ describe("PR-P2-0 layer 2: errorFromMessage factory", () => {
 // failWith as a thin wrapper.
 
 describe("PR-P2-0 layer 3: failWith ⇔ toToolFailure∘errorFromMessage equivalence", () => {
-  const CASES: Array<{ name: string; message: string; tool: string; context?: Record<string, unknown> }> = [
-    { name: "classified code, no context", message: "window not found", tool: "focus_window" },
+  // The SAME raw thrown value feeds both paths. This is what pins P1-1: the
+  // factory must normalize non-Error inputs (bare strings / objects / undefined /
+  // null / numbers) exactly as failWith's `instanceof Error ? .message :
+  // String(err)` does — not just `new Error(...)`. Production callsites pass all
+  // of these (e.g. failWith("Element not found", ...),
+  // failWith(focusResult.error ?? "...", ...), failWith(caughtUnknown, ...)).
+  const CASES: Array<{ name: string; thrown: unknown; tool: string; context?: Record<string, unknown> }> = [
+    { name: "Error instance, no context", thrown: new Error("window not found"), tool: "focus_window" },
+    { name: "bare string (non-Error) — common failWith callsite shape", thrown: "Element not found", tool: "browser_form" },
     {
-      name: "classified code, nested context only",
-      message: "element not found",
+      name: "Error instance, nested context only",
+      thrown: new Error("element not found"),
       tool: "click_element",
       context: { selector: "#x", attempt: 2 },
     },
     {
       name: "unclassifiable (ToolError + empty suggest), root-hoisted + nested mix",
-      message: "unexpected internal state xyzzy",
+      thrown: new Error("unexpected internal state xyzzy"),
       tool: "keyboard",
       context: { _richForPost: { a: 1 }, detail: "d" },
     },
     {
       name: "classified code with suggest, all three root-hoisted keys + nested",
-      message: "guard failed: zone",
+      thrown: new Error("guard failed: zone"),
       tool: "mouse_click",
       context: {
         hints: { verifyDelivery: true },
@@ -249,13 +265,17 @@ describe("PR-P2-0 layer 3: failWith ⇔ toToolFailure∘errorFromMessage equival
         note: "n",
       },
     },
-    { name: "empty thrown message", message: "", tool: "scroll" },
+    { name: "empty thrown message", thrown: new Error(""), tool: "scroll" },
+    { name: "non-Error object value (String() coercion)", thrown: { weird: true }, tool: "desktop_act" },
+    { name: "undefined caught value", thrown: undefined, tool: "keyboard" },
+    { name: "null caught value", thrown: null, tool: "keyboard" },
+    { name: "numeric caught value", thrown: 42, tool: "scroll" },
   ];
 
   for (const c of CASES) {
     it(`${c.name}`, () => {
-      const legacy = failWith(new Error(c.message), c.tool, c.context);
-      const viaModel = toToolFailure(errorFromMessage(c.message, c.tool, c.context));
+      const legacy = failWith(c.thrown, c.tool, c.context);
+      const viaModel = toToolFailure(errorFromMessage(c.thrown, c.tool, c.context));
 
       // Structural equality.
       expect(viaModel).toEqual(parseContent(legacy.content));
