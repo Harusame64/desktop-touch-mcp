@@ -60,6 +60,74 @@ export class CodedHandlerError extends HandlerError {
   }
 }
 
+/**
+ * Optional payload carried by {@link ToolFailureError} — the fields the flat
+ * `ToolFailure` presenter (`toToolFailure` in `src/tools/_errors.ts`) renders.
+ *
+ * ADR-021 Phase 2 PR-P2-0 (B′: error-model-as-SSOT + presenter family). The
+ * typed error is the single source of truth for a handler failure (≒ RFC 9457
+ * problem-detail object / Effect `Data.TaggedError` / a Rust error enum);
+ * rendering it into the flat `{ok:false, code, error, ...}` wire shape is a
+ * separate concern done by a narrow presenter, NOT by hand-built object
+ * literals (Phase 4 ESLint `no-tool-failure-shape-direct-construct` enforces
+ * this). This is why the envelope family converter (`toFailureEnvelope`) stays
+ * untouched: the two shapes are different render targets of one error model.
+ *
+ * Field → rendered output (`toToolFailure`, bit-equal with today's `failWith`):
+ *   - `toolName` + `displayMessage` → `error: "${toolName} failed: ${displayMessage}"`
+ *   - `suggest`    → `suggest` (omitted when empty — matches `failWith`)
+ *   - `context`    → nested `context` (the non-hoisted half of `failWith`'s context arg)
+ *   - `rootExtras` → spread onto the failure root (the ROOT_HOISTED_KEYS half:
+ *     `_perceptionForPost` / `_richForPost` / `hints`, read by `_post.ts`)
+ *
+ * The plan §3.3.2 listed the suggest field as `suggestOverride`; under B′ the
+ * model carries an already-resolved `suggest` array — the `errorFromMessage`
+ * factory fills it from `classify(message)`, and an explicit caller may override
+ * by constructing with a different `suggest`. Either way the presenter only
+ * renders; it never re-classifies.
+ */
+export interface ToolFailurePayload {
+  toolName?: string;
+  displayMessage?: string;
+  suggest?: string[];
+  context?: Record<string, unknown>;
+  rootExtras?: Record<string, unknown>;
+}
+
+/**
+ * Canonical typed model for a handler failure that renders to the flat
+ * `ToolFailure` shape — the `failWith` family (175 callsites, migrated to
+ * `Result.err` + presenter across PR-P2-2 … P2-4, OQ-1(a) full removal).
+ *
+ * `name === code` (same convention as {@link CodedHandlerError}) so the SUGGESTS
+ * dict / envelope family can resolve it too if ever rendered that way — both
+ * failure families consume `HandlerError` descendants, keeping a single typed
+ * boundary. Constructed via the `errorFromMessage(message, toolName, context)`
+ * factory (`src/tools/_errors.ts`, OQ-7(c)), which centralises `classify`
+ * so this class stays thin (no message dispatch in the constructor).
+ *
+ * Extra payload fields are assigned in the constructor BODY (after `super`),
+ * the same defensive ordering the module header documents for `name` under
+ * ES2022 class-field semantics.
+ */
+export class ToolFailureError extends HandlerError {
+  readonly toolName?: string;
+  readonly displayMessage?: string;
+  readonly suggest?: string[];
+  readonly context?: Record<string, unknown>;
+  readonly rootExtras?: Record<string, unknown>;
+
+  constructor(code: string, payload?: ToolFailurePayload, options?: ErrorOptions) {
+    super(payload?.displayMessage ?? code, options);
+    this.name = code;
+    this.toolName = payload?.toolName;
+    this.displayMessage = payload?.displayMessage;
+    this.suggest = payload?.suggest;
+    this.context = payload?.context;
+    this.rootExtras = payload?.rootExtras;
+  }
+}
+
 // Future expansion (sub-plan §9 OQ-SR2-2): ModalBlockingError, LeaseExpiredError,
 // etc., each with a `name` matching a SUGGESTS key. Hierarchy stays shallow —
 // SUGGESTS lookup is the SSOT, not a type-system inheritance tree.
