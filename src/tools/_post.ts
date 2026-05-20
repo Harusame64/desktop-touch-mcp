@@ -112,6 +112,33 @@ async function snapshotFocusedElement(): Promise<PostElementInfo | null> {
  *
  * windowChanged compares the foreground BEFORE the handler ran with AFTER —
  * so it reflects whether the action itself moved focus, not background drift.
+ *
+ * ── Field-level writer ownership (ADR-021 PR-P2-1, OQ-2(a)) ──────────────────
+ * Exactly one writer per field, so the PR-P2-3 `failWith` → presenter codemod
+ * cannot silently create a double-attach or sever post-perception recovery (R1).
+ * Machine-pinned in `tests/unit/path-class-contract/post-writer-ownership.test.ts`:
+ *
+ *   - `obj.post` (container)                                     → withPostState ONLY
+ *   - `obj.post.{focusedWindow, focusedElement, windowChanged,
+ *      elapsedMs}`                                               → withPostState ONLY
+ *        (built from this wrapper's before/after focus snapshot; a handler or a
+ *         failure presenter has no such snapshot, so it structurally cannot
+ *         write these.)
+ *   - `obj.post.perception`                                      → withPostState ONLY
+ *        (moved here from the root `_perceptionForPost` temp marker, then the
+ *         marker is `delete`d.)
+ *   - `obj.post.rich`                                            → withPostState ONLY
+ *        (moved from the root `_richForPost` temp marker, then deleted; success
+ *         path only — failures keep their pristine shape unless they carry a
+ *         perception marker.)
+ *   - `obj._perceptionForPost` / `obj._richForPost` (root temp markers) → written
+ *        by the HANDLER (success path) or the flat-failure producer
+ *        `toToolFailure` / `failWith` (failure path) — always at the response
+ *        ROOT via `ROOT_HOISTED_KEYS`, NOT nested under `context`. That root
+ *        placement is the load-bearing contract: this wrapper only looks at the
+ *        root, so a codemod that moved the marker under `context` would silently
+ *        drop post.perception. Consumed and `delete`d here → a second move is
+ *        impossible.
  */
 export function withPostState<T extends Record<string, unknown>>(
   toolName: string,
