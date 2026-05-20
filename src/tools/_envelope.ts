@@ -1247,6 +1247,14 @@ export function toFailureEnvelope<Ok, Err extends HandlerError>(
     /** `buildFailureEnvelope` の `EnvelopeOptions` を pass-through
      *  (`asOfWallclockMs` 等の L1 event wallclock 経路、将来 root extras hoist 伝播)。 */
     envelopeOptions?: EnvelopeOptions;
+    /** Explicit `try_next` override (ADR-021 P1-2). When provided it is used
+     *  verbatim — **including an empty `[]`** — instead of deriving from
+     *  `getSuggestsForCode(errorName)`. Lets hand-built failure callsites that
+     *  already hold a typed/rich `try_next` (e.g. lease validation's
+     *  `{action, args, confidence}`, or a deliberately-empty list) migrate to
+     *  this single converter without changing their envelope shape (north star
+     *  1: one failure path). Absent → derive from SUGGESTS as before. */
+    tryNext?: TryNextAction[];
   },
 ): Ok | EnvelopeMinimalShape<null> | CompatRawFailureShape {
   if (result.ok) return result.value;
@@ -1255,10 +1263,17 @@ export function toFailureEnvelope<Ok, Err extends HandlerError>(
   // `_errors.ts`) は本 dict の正しい lookup API で、unknown code には汎用
   // fallback 配列を返す。empty fallback の場合は本 helper 側で再 fallback。
   const errorName = result.error.name;
-  const tryNextStrings = getSuggestsForCode(errorName);
-  const tryNext: TryNextAction[] = tryNextStrings.length > 0
-    ? tryNextStrings.map((action) => ({ action }))
-    : [{ action: "Inspect the underlying error and retry with adjusted args" }];
+  // Caller-supplied `tryNext` wins verbatim (incl. empty []); otherwise derive
+  // from SUGGESTS, falling back to a generic hint when the dict has no entry.
+  let tryNext: TryNextAction[];
+  if (options.tryNext !== undefined) {
+    tryNext = options.tryNext;
+  } else {
+    const tryNextStrings = getSuggestsForCode(errorName);
+    tryNext = tryNextStrings.length > 0
+      ? tryNextStrings.map((action) => ({ action }))
+      : [{ action: "Inspect the underlying error and retry with adjusted args" }];
+  }
   const failure = buildFailureEnvelope(errorName, tryNext, options.envelopeOptions);
   return options.optIn ? failure : compatFailureRaw(failure);
 }
@@ -2975,15 +2990,18 @@ export function makeCommitWrapper<TArgs extends Record<string, unknown>>(
       validation = await options.leaseValidator(handlerArgs);
       if (!validation.ok) {
         const { code, tryNext } = mapLeaseValidationToTypedReason(validation.reason);
-        const failure = buildFailureEnvelope(code, tryNext, envelopeOptions);
-        // Round 1 P1 (Codex + user PR review): raw-mode failures must
-        // preserve the pre-S4 `{ok:false, reason, ...}` shape; literal
-        // `null` from `compatHoist(failure, false)` would silently drop
-        // the reason + retry signal for existing positional callers.
-        // `compatFailureRaw` flattens envelope.data:null into the
-        // legacy-compatible shape AND carries `if_unexpected` so newer
-        // clients can read the typed cause without opting into envelope.
-        const finalShape = optIn ? failure : compatFailureRaw(failure);
+        // ADR-021 P1-2: unify this hand-built failure path through the central
+        // `toFailureEnvelope` converter (north star 1: one failure path). The
+        // typed/rich `tryNext` (lease-expired's {action, args, confidence}) is
+        // passed verbatim so the envelope stays bit-equal — pinned in
+        // tests/unit/path-class-contract/to-failure-envelope-shape-snapshot.test.ts
+        // (sites 5a/5b). The `optIn ? failure : compatFailureRaw` raw-mode
+        // projection (preserving the pre-S4 `{ok:false, reason, ...}` shape for
+        // positional callers) now lives inside the converter.
+        const finalShape = toFailureEnvelope(
+          Err(new CodedHandlerError(code)),
+          { optIn, envelopeOptions, tryNext },
+        );
         return {
           content: [{ type: "text", text: JSON.stringify(finalShape) }],
         };
@@ -3055,16 +3073,16 @@ export function makeCommitWrapper<TArgs extends Record<string, unknown>>(
           toolCallId,
         });
       }
-      const failure = buildFailureEnvelope(
-        "Unknown",
-        [],
-        envelopeOptions,
+      // ADR-021 P1-2: unify through `toFailureEnvelope` (north star 1). An
+      // explicit empty `tryNext` preserves the pre-migration shape bit-equal —
+      // the handler-throw fallback emits no recovery hint today (most_likely_cause
+      // "Unknown", try_next []). Adding a generic hint is the deferred hazard-B
+      // improvement (plan §3.2.1); doing it here would change the snapshot.
+      // The same legacy-compat raw projection now lives inside the converter.
+      const finalShape = toFailureEnvelope(
+        Err(new CodedHandlerError("Unknown")),
+        { optIn, envelopeOptions, tryNext: [] },
       );
-      // Round 1 P1 (Codex + user PR review): same legacy-compat raw
-      // projection as the lease-validation failure path — preserve
-      // `{ok:false, reason:"unknown", if_unexpected:{...}}` for raw
-      // clients instead of literal `null`.
-      const finalShape = optIn ? failure : compatFailureRaw(failure);
       return {
         content: [{ type: "text", text: JSON.stringify(finalShape) }],
       };
