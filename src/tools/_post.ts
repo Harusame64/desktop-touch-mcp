@@ -114,31 +114,38 @@ async function snapshotFocusedElement(): Promise<PostElementInfo | null> {
  * so it reflects whether the action itself moved focus, not background drift.
  *
  * ── Field-level writer ownership (ADR-021 PR-P2-1, OQ-2(a)) ──────────────────
- * Exactly one writer per field, so the PR-P2-3 `failWith` → presenter codemod
- * cannot silently create a double-attach or sever post-perception recovery (R1).
- * Machine-pinned in `tests/unit/path-class-contract/post-writer-ownership.test.ts`:
+ * Pinned in `tests/unit/path-class-contract/post-writer-ownership.test.ts` so the
+ * PR-P2-3 `failWith` → presenter codemod cannot silently sever post-perception
+ * recovery (§5 R1).
  *
- *   - `obj.post` (container)                                     → withPostState ONLY
- *   - `obj.post.{focusedWindow, focusedElement, windowChanged,
- *      elapsedMs}`                                               → withPostState ONLY
- *        (built from this wrapper's before/after focus snapshot; a handler or a
- *         failure presenter has no such snapshot, so it structurally cannot
- *         write these.)
- *   - `obj.post.perception`                                      → withPostState ONLY
- *        (moved here from the root `_perceptionForPost` temp marker, then the
- *         marker is `delete`d.)
- *   - `obj.post.rich`                                            → withPostState ONLY
- *        (moved from the root `_richForPost` temp marker, then deleted; success
- *         path only — failures keep their pristine shape unless they carry a
- *         perception marker.)
- *   - `obj._perceptionForPost` / `obj._richForPost` (root temp markers) → written
- *        by the HANDLER (success path) or the flat-failure producer
- *        `toToolFailure` / `failWith` (failure path) — always at the response
- *        ROOT via `ROOT_HOISTED_KEYS`, NOT nested under `context`. That root
- *        placement is the load-bearing contract: this wrapper only looks at the
- *        root, so a codemod that moved the marker under `context` would silently
- *        drop post.perception. Consumed and `delete`d here → a second move is
- *        impossible.
+ *   - `obj.post` (container) + `obj.post.{focusedWindow, focusedElement,
+ *      windowChanged, elapsedMs}`        → withPostState ONLY (built from this
+ *        wrapper's before/after focus snapshot; a handler or failure presenter
+ *        has no such snapshot, so it structurally cannot write these).
+ *   - `obj.post.perception`              → withPostState ONLY (moved from the
+ *        root `_perceptionForPost` marker, then the marker is `delete`d — on
+ *        BOTH the success and failure branches).
+ *   - `obj.post.rich`                    → COORDINATED two writers, NOT
+ *        single-writer: withPostState moves it from the root `_richForPost`
+ *        marker (browser CDP, success path, takes precedence); `spliceRich`
+ *        (`_narration.ts`, via `withRichNarration` which wraps THIS fn) fills it
+ *        from the UIA diff, but only on success AND only when `post.rich` is
+ *        still unset (its `post.rich !== undefined` no-overwrite guard). So
+ *        `_richForPost` wins and the UIA diff is the fallback.
+ *   - root temp markers (all hoisted to the response ROOT via ROOT_HOISTED_KEYS,
+ *     NEVER under `context` — that root placement is the load-bearing contract
+ *     this wrapper depends on; a codemod that nested a marker under `context`
+ *     would silently drop post.perception):
+ *        · `_perceptionForPost` — written by the HANDLER (success) or
+ *          `toToolFailure` / `failWith` (failure). Consumed + `delete`d on BOTH
+ *          branches → a second move is impossible.
+ *        · `_richForPost` — written by browser handlers (success only today).
+ *          Consumed + `delete`d on the SUCCESS branch ONLY; the failure branch
+ *          leaves it untouched (latent, currently unreachable — browser handlers
+ *          attach it on `ok:true` alone).
+ *        · `hints` (the third ROOT_HOISTED_KEY) — hoisted to root by the failure
+ *          producers but intentionally NOT consumed/moved here; it stays at the
+ *          response root on both branches (issue #181 success/failure symmetry).
  */
 export function withPostState<T extends Record<string, unknown>>(
   toolName: string,

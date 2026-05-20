@@ -8,17 +8,22 @@
  * `tests/unit/post-failure-perception.test.ts`, which pins the perception-attach
  * BEHAVIOUR; this file pins the OWNERSHIP contract + the B′ presenter routing.
  *
- * Contract (one writer per field):
+ * Contract:
  *   - obj.post (container) + obj.post.{focusedWindow, focusedElement,
  *     windowChanged, elapsedMs}  → withPostState ONLY (wrapper before/after
  *     focus snapshot; a handler / failure presenter has no such snapshot).
  *   - obj.post.perception          → withPostState ONLY (moved from the root
- *     `_perceptionForPost` marker, then the marker is deleted).
- *   - obj.post.rich                → withPostState ONLY (moved from the root
- *     `_richForPost` marker, then deleted; success path only).
- *   - obj._perceptionForPost / obj._richForPost (root temp markers) → written by
- *     the HANDLER (success) or `toToolFailure` / `failWith` (failure), always at
- *     the response ROOT (ROOT_HOISTED_KEYS) — never under `context`.
+ *     `_perceptionForPost` marker, then deleted — both success & failure).
+ *   - obj.post.rich                → COORDINATED two writers (NOT single-writer):
+ *     withPostState (from the `_richForPost` marker, success, takes precedence) +
+ *     spliceRich (`_narration.ts` via withRichNarration, UIA diff, success-only,
+ *     guarded by `post.rich !== undefined`). spliceRich coordination is pinned in
+ *     rich-narration-edge / uia-diff tests; here we only pin the withPostState
+ *     half. This file therefore does NOT claim single-writer for post.rich.
+ *   - root temp markers (hoisted to ROOT via ROOT_HOISTED_KEYS, never `context`):
+ *     `_perceptionForPost` consumed+deleted on both branches; `_richForPost`
+ *     consumed+deleted on SUCCESS only (failure branch leaves it — latent,
+ *     currently unreachable); `hints` hoisted but NOT consumed (stays at root).
  *
  * @see src/tools/_post.ts withPostState
  * @see src/tools/_errors.ts errorFromMessage / toToolFailure / failWith / ROOT_HOISTED_KEYS
@@ -98,7 +103,11 @@ describe("PR-P2-1: root temp markers moved to post.* then deleted", () => {
     expect((parsed.post as Record<string, unknown>).perception).toEqual(env);
   });
 
-  it("_richForPost → post.rich + marker deleted (success)", async () => {
+  // withPostState owns the `_richForPost` marker → post.rich move (success). It is
+  // NOT the only writer of post.rich — spliceRich (_narration.ts) is the other,
+  // guarded writer; that coordination is pinned in rich-narration-edge/uia-diff
+  // tests. Here we pin only the marker-move half.
+  it("_richForPost → post.rich via withPostState + marker deleted (success)", async () => {
     const rich = { appeared: [{ name: "btn" }] };
     const parsed = parse(
       await withPostState("browser_click", async () => ok({ ok: true, _richForPost: rich }))({}),
@@ -107,7 +116,7 @@ describe("PR-P2-1: root temp markers moved to post.* then deleted", () => {
     expect((parsed.post as Record<string, unknown>).rich).toEqual(rich);
   });
 
-  it("_perceptionForPost → post.perception + marker deleted (failure)", async () => {
+  it("_perceptionForPost → post.perception + marker deleted (failure), no stray fields", async () => {
     const env = { kind: "auto", status: "unsafe_coordinates", next: "x" };
     const parsed = parse(
       await withPostState(
@@ -117,7 +126,44 @@ describe("PR-P2-1: root temp markers moved to post.* then deleted", () => {
       )({}),
     );
     expect("_perceptionForPost" in parsed).toBe(false);
-    expect((parsed.post as Record<string, unknown>).perception).toEqual(env);
+    const post = parsed.post as Record<string, unknown>;
+    expect(post.perception).toEqual(env);
+    // Complement: exactly the 4 snapshot fields + perception, and NO rich leaked in.
+    expect(Object.keys(post).sort()).toEqual([
+      "elapsedMs",
+      "focusedElement",
+      "focusedWindow",
+      "perception",
+      "windowChanged",
+    ]);
+    expect("rich" in post).toBe(false);
+  });
+});
+
+// ── ROOT_HOISTED_KEYS asymmetries (Round 1 Opus P2): hints + _richForPost ──────
+
+describe("PR-P2-1: ROOT_HOISTED_KEYS asymmetries", () => {
+  it("hints is hoisted to root but NOT consumed/moved into post (failure)", async () => {
+    const handler = async () =>
+      failWith(new Error("AutoGuardBlocked"), "keyboard", {
+        hints: { verifyDelivery: true },
+        _perceptionForPost: { kind: "auto", status: "ok", next: "x" },
+      });
+    const parsed = parse(await withPostState("keyboard", handler)({}));
+    // hints stays at the response root (issue #181 symmetry), not folded into post.
+    expect(parsed.hints).toEqual({ verifyDelivery: true });
+    expect((parsed.post as Record<string, unknown>).hints).toBeUndefined();
+  });
+
+  it("failure carrying only _richForPost leaves the marker at root (failure branch does not consume it)", async () => {
+    // Current-behavior pin: the failure branch is gated on _perceptionForPost, so a
+    // failure with only _richForPost gets neither a post block nor marker cleanup.
+    // Latent / currently unreachable — browser handlers attach _richForPost on ok:true only.
+    const rich = { appeared: [{ name: "btn" }] };
+    const handler = async () => fail({ ok: false, code: "ToolError", error: "e", _richForPost: rich } as never);
+    const parsed = parse(await withPostState("browser_click", handler)({}));
+    expect("post" in parsed).toBe(false);
+    expect(parsed._richForPost).toEqual(rich); // not consumed on the failure branch
   });
 });
 
