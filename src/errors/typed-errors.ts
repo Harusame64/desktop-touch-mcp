@@ -126,7 +126,16 @@ export class ToolFailureError extends HandlerError {
     this.name = code;
     this.toolName = payload?.toolName;
     this.displayMessage = payload?.displayMessage;
-    this.suggest = payload?.suggest;
+    // Clone `suggest`: `errorFromMessage` forwards the array straight from the
+    // shared `SUGGESTS` dictionary (`classify`'s return). The model is a
+    // long-lived value (carried through `Result.err`), so holding the shared
+    // reference would let any downstream mutation (sort/push while enriching or
+    // logging) corrupt global suggestion state across requests. `failWith` was
+    // safe only because it serialised the array immediately; the typed model is
+    // not, so it owns an independent copy (Round 1 Codex P2). `context` /
+    // `rootExtras` are caller-owned fresh containers (same as failWith) — no
+    // shared global state, so no clone needed.
+    this.suggest = payload?.suggest ? [...payload.suggest] : undefined;
     this.context = payload?.context;
     this.rootExtras = payload?.rootExtras;
   }

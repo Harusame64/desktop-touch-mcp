@@ -37,6 +37,7 @@ import {
   errorFromMessage,
   toToolFailure,
   failWith,
+  getSuggestsForCode,
 } from "../../../src/tools/_errors.js";
 import { ToolFailureError } from "../../../src/errors/typed-errors.js";
 
@@ -212,6 +213,18 @@ describe("PR-P2-0 layer 2: errorFromMessage factory", () => {
       hints: { verifyDelivery: true },
     });
     expect(err.context).toEqual({ selector: "#x", attempt: 2 });
+  });
+
+  it("does not alias the shared SUGGESTS dictionary — mutating model.suggest is isolated (Codex P2)", () => {
+    const before = [...getSuggestsForCode("WindowNotFound")];
+    expect(before.length).toBeGreaterThan(0);
+
+    const err = errorFromMessage(new Error("window not found"), "focus_window");
+    (err.suggest as string[]).push("MUTATED"); // would corrupt the global dict without the clone
+
+    expect(getSuggestsForCode("WindowNotFound")).toEqual(before); // dict untouched
+    const err2 = errorFromMessage(new Error("window not found"), "focus_window");
+    expect(err2.suggest).toEqual(before); // a later failure for the same code is unaffected
   });
 
   it("leaves rootExtras / context undefined when no such keys are present", () => {
