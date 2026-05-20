@@ -36,7 +36,7 @@ import { nativeViewFocus } from "../engine/native-engine.js";
 import type { NativeLeaseTokenSummary } from "../engine/native-types.js";
 import type { ToolResult } from "./_types.js";
 import { Err } from "../types/result.js";
-import { CodedHandlerError } from "../errors/typed-errors.js";
+import { ExecutorFailedError } from "../errors/typed-errors.js";
 import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
 import {
   SnapshotIngress,
@@ -583,7 +583,7 @@ export const desktopActRawHandler = async (
   // Result-returning change (ADR-021 §2.2 deferred).
   if (!result.ok && result.reason === "executor_failed") {
     const failure = toFailureEnvelope(
-      Err(new CodedHandlerError("ExecutorFailed")),
+      Err(new ExecutorFailedError("desktop_act executor failed")),
       { optIn: false },
     );
     return {

@@ -59,8 +59,8 @@
  *
  * @see src/tools/_envelope.ts toFailureEnvelope / buildFailureEnvelope /
  *   compatFailureRaw / makeCommitWrapper / mapLeaseValidationToTypedReason
- * @see src/tools/desktop-register.ts desktopActRawHandler /
- *   buildExecutorFailedIfUnexpected
+ * @see src/tools/desktop-register.ts desktopActRawHandler (executor_failed via
+ *   toFailureEnvelope, ADR-021 P1-3)
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
