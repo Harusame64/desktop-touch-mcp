@@ -20,7 +20,6 @@ import {
 } from "../engine/cdp-bridge.js";
 import { resolveWellKnownPath, spawnDetached, killProcessesByName } from "../utils/launch.js";
 import { getCdpPort } from "../utils/desktop-config.js";
-import { fail } from "./_types.js";
 import { setBrowserSearchHook } from "./wait-until.js";
 import { narrateParam, withRichNarration } from "./_narration.js";
 import { makeCommitWrapper, makeQueryWrapper, withEnvelopeIncludeSchema, withEnvelopeIncludeForUnion, flattenUnionToObjectSchema, parseActionArgsOrFail, genericQueryCausedByProjector, defaultQuerySessionId } from "./_envelope.js";

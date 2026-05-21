@@ -100,7 +100,7 @@ describe("PR-P2-3 layer B: failCode reproduces the (C) literals byte-for-byte", 
     );
   });
 
-  it("terminal:read TerminalTextPatternUnavailable (NO context) — terminal.ts:318", () => {
+  it("TerminalTextPatternUnavailable shape (no-context variant of the contract) — cf. terminal.ts:318", () => {
     expect(
       wireText(
         failCode("TerminalTextPatternUnavailable", "TextPattern not available and no OCR fallback usable", {

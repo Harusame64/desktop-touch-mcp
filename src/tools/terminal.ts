@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { createHash } from "node:crypto";
-import { ok, fail, buildDesc } from "./_types.js";
+import { ok, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith, failCode } from "./_errors.js";
 import { coercedBoolean } from "./_coerce.js";
@@ -1267,11 +1267,11 @@ export const terminalRunHandler = async ({
   // Reject invalid sendOptions/readOptions BEFORE doing any I/O so unbounded
   // values (e.g. chunkSize:0 hanging the background loop, source:'uia' on a
   // non-TextPattern terminal) cannot bypass the public schema bounds.
-  // Use fail() directly (not failWith) so we get code:"InvalidArgs" and the
-  // suggest[] array stays at the top level. failWith would classify "Invalid
-  // sendOptions" as the generic "ToolError" code and bury our custom suggest
-  // strings under context.suggest, which mis-classifies argument errors as
-  // internal errors and hides actionable remediation guidance from callers.
+  // Use failCode("InvalidArgs", ...) (the explicit-code presenter) so we get
+  // code:"InvalidArgs" and the suggest[] array stays at the top level. failWith
+  // would classify "Invalid sendOptions" as the generic "ToolError" code and
+  // bury our custom suggest strings under context.suggest, which mis-classifies
+  // argument errors as internal errors and hides actionable remediation guidance.
   let validatedSendOptions: Partial<z.infer<typeof TERMINAL_RUN_SEND_OPTIONS_SCHEMA>> = {};
   if (sendOptions !== undefined) {
     const parsed = TERMINAL_RUN_SEND_OPTIONS_SCHEMA.safeParse(sendOptions);

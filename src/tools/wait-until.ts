@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { ok, fail, buildDesc } from "./_types.js";
+import { ok, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith, failCode } from "./_errors.js";
 import { coercedBoolean, coercedJsonObject } from "./_coerce.js";
