@@ -3,6 +3,7 @@ import { z } from "zod";
 import { buildDesc } from "./_types.js";
 import type { ToolHandler, ToolResult } from "./_types.js";
 import { failCode } from "./_errors.js";
+import { type Result, Ok, Err } from "../types/result.js";
 import { checkFailsafe } from "../utils/failsafe.js";
 import { assertKeyComboSafe } from "../utils/key-safety.js";
 import {
@@ -184,6 +185,72 @@ interface ToolEntry {
   schema: z.ZodTypeAny;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   handler: ToolHandler<any>;
+}
+
+/**
+ * The text / image content extracted from an inner step's `ToolResult`, plus the
+ * inner envelope's `code` / `error` when it reported a failure. Carried by BOTH
+ * the Ok and Err sides of {@link runInnerToolAsResult} so the orchestrator can
+ * build the step entry either way; the {@link Result} discriminant is the
+ * authoritative success/failure signal.
+ */
+export interface InnerToolOutcome {
+  textLines: string[];
+  images: Array<{ data: string; mimeType: string }>;
+  /** Inner envelope `code` — present only on failure when the handler emitted one. */
+  code?: string;
+  /** Inner envelope `error` string — present only on failure. */
+  error?: string;
+}
+
+/**
+ * ADR-021 Phase 3a — run a TOOL_REGISTRY inner step and adapt its `ToolResult`
+ * to a typed {@link Result}. This is the typed adapter boundary for the
+ * `run_macro` F1/F2 silent-success drift surface (§1.3 row B): the handler call,
+ * content extraction, and the ok:false envelope JSON-parse all happen HERE — the
+ * ONE place that re-parses an inner envelope — so `run_macro` consumes the
+ * `Result` discriminant (`.ok`) instead of re-deriving step success from a
+ * hand-parsed flag.
+ *
+ * Tools normalize their response to a JSON `{ ok: boolean, ... }` first text
+ * block (`_types.ts` ToolFailure / ToolSuccess); an ok:false first block is a
+ * failure even when the handler did not throw (Phase 6 dogfood F1, matrix §3.1
+ * line 157). A non-JSON first block (e.g. screenshot detail='text') is treated
+ * as success. Compile-time closure (making `ToolHandler` itself return a
+ * `Result`) stays a Phase 5 carry-over; here the boundary is one helper and the
+ * runtime contract is pinned by tests.
+ */
+export async function runInnerToolAsResult(
+  entry: ToolEntry,
+  validated: unknown,
+): Promise<Result<InnerToolOutcome, InnerToolOutcome>> {
+  const result = await entry.handler(validated);
+
+  const textLines: string[] = [];
+  const images: Array<{ data: string; mimeType: string }> = [];
+  for (const block of result.content) {
+    if (block.type === "text") textLines.push(block.text);
+    else if (block.type === "image") images.push({ data: block.data, mimeType: block.mimeType });
+  }
+
+  let code: string | undefined;
+  let error: string | undefined;
+  let failed = false;
+  if (textLines.length > 0) {
+    try {
+      const parsed = JSON.parse(textLines[0]!);
+      if (parsed && typeof parsed === "object" && parsed.ok === false) {
+        failed = true;
+        code = typeof parsed.code === "string" ? parsed.code : undefined;
+        error = typeof parsed.error === "string" ? parsed.error : undefined;
+      }
+    } catch {
+      // Non-JSON text block — treat as success (failure paths always emit JSON).
+    }
+  }
+
+  const outcome: InnerToolOutcome = { textLines, images, code, error };
+  return failed ? Err(outcome) : Ok(outcome);
 }
 
 const TOOL_REGISTRY: Record<string, ToolEntry> = {
@@ -467,69 +534,44 @@ export const runMacroHandler = async ({
       }
 
       const validated = entry.schema.parse(params);
-      const result = await entry.handler(validated);
 
-      const textLines: string[] = [];
-      const images: Array<{ data: string; mimeType: string }> = [];
-      for (const block of result.content) {
-        if (block.type === "text") textLines.push(block.text);
-        else if (block.type === "image") images.push({ data: block.data, mimeType: block.mimeType });
+      // ADR-021 Phase 3a: the inner step's ToolResult → Result adapter owns the
+      // handler call, content extraction, and ok:false envelope parse. The macro
+      // consumes the typed Result discriminant (`outcome.ok`) instead of
+      // re-deriving step success from a hand-parsed flag — the F1/F2
+      // silent-success contract (matrix §3.1 line 157: an inner ok:false envelope
+      // halts `stop_on_error: true` like a throw does) now lives at the typed
+      // boundary. See `runInnerToolAsResult` for the relocated parse logic.
+      const outcome = await runInnerToolAsResult(entry, validated);
+      const { textLines, images } = outcome.ok ? outcome.value : outcome.error;
+
+      if (outcome.ok) {
+        results.push({
+          step: i,
+          tool,
+          ok: true,
+          text: textLines,
+          ...(images.length > 0 ? { _images: images } : {}),
+        });
+      } else {
+        const { code: innerCode, error: innerError } = outcome.error;
+        // When the inner envelope lacks both `error` and `code` (regulation-
+        // violating tool, defensive only), point the caller at `text[0]` rather
+        // than surfacing a hollow "inner ok:false" (Phase 7 Round 1 P2-2).
+        const fallbackError =
+          innerError ?? innerCode ?? "inner ok:false (no error/code fields, see step.text[0])";
+        results.push({
+          step: i,
+          tool,
+          ok: false,
+          text: textLines,
+          error: fallbackError,
+          ...(innerCode ? { code: innerCode } : {}),
+          ...(images.length > 0 ? { _images: images } : {}),
+        });
+
+        if (stop_on_error) break;
       }
-
-      // Phase 7 F1 fix (matrix §3.1 line 157 規範整合): parse the first text
-      // block (= the immediately preceding `entry.handler` call's first
-      // content block) to detect inner failure envelopes. Tools normalize
-      // their response to JSON `{ok: boolean, ...}` (see `_types.ts`
-      // ToolFailure / ToolSuccess shapes). When a step's handler returns an
-      // ok:false envelope without throwing, the macro must surface that
-      // failure at the step level so `stop_on_error: true` can halt as
-      // documented. Without this, `run_macro({stop_on_error:true})` would
-      // silently continue past a failed tool — silent-success regression
-      // caught by Phase 6 dogfood (`docs/llm-audit/phase6-dogfood-findings.md`
-      // F1, `dogfood-scenarios/launcher-macro.md` §2.1).
-      let stepOk = true;
-      let innerCode: string | undefined;
-      let innerError: string | undefined;
-      if (textLines.length > 0) {
-        try {
-          const parsed = JSON.parse(textLines[0]!);
-          if (parsed && typeof parsed === "object" && parsed.ok === false) {
-            stepOk = false;
-            innerCode = typeof parsed.code === "string" ? parsed.code : undefined;
-            innerError = typeof parsed.error === "string" ? parsed.error : undefined;
-          }
-        } catch {
-          // Non-JSON text block (e.g. screenshot detail='text' raw output) —
-          // treat as success. Failure paths always emit JSON envelopes per
-          // _types.ts contract.
-        }
-      }
-
-      // Round 1 P2-2 fix: when inner envelope lacks both `error` and `code`
-      // string fields (regulation-violating tool, defensive only), point the
-      // caller at `text[0]` so they can recover useful info rather than
-      // surfacing a hollow `"inner ok:false"`.
-      const fallbackError = (() => {
-        if (innerError) return innerError;
-        if (innerCode) return innerCode;
-        return "inner ok:false (no error/code fields, see step.text[0])";
-      })();
-
-      results.push({
-        step: i,
-        tool,
-        ok: stepOk,
-        text: textLines,
-        ...(stepOk
-          ? {}
-          : {
-              error: fallbackError,
-              ...(innerCode ? { code: innerCode } : {}),
-            }),
-        ...(images.length > 0 ? { _images: images } : {}),
-      });
-
-      if (!stepOk && stop_on_error) break;
     } catch (err) {
       results.push({ step: i, tool, ok: false, error: String(err) });
       if (stop_on_error) break;
