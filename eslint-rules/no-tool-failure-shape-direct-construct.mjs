@@ -47,12 +47,45 @@ export default {
   },
 
   create(context) {
-    /** Does an ObjectExpression look like the flat failure wire shape? */
-    function isFailureShape(node) {
-      if (!node || node.type !== "ObjectExpression") return false;
+    /**
+     * Peel TS-only wrappers so `fail({ ... } as ToolFailure)` /
+     * `... satisfies T` / `...!` reach the underlying ObjectExpression (the rule
+     * runs under the TS parser, so these are the common bypass — Codex PR #381 P1).
+     */
+    function unwrap(node) {
+      let n = node;
+      while (
+        n &&
+        (n.type === "TSAsExpression" ||
+          n.type === "TSSatisfiesExpression" ||
+          n.type === "TSNonNullExpression" ||
+          n.type === "TSTypeAssertion")
+      ) {
+        n = n.expression;
+      }
+      return n;
+    }
+
+    /**
+     * Scan an ObjectExpression (recursing into object-literal spreads) for the
+     * failure-shape markers. `{ hasOkFalse, hasError }`. Spread of a variable /
+     * call contributes nothing statically (that laundering stays out of scope,
+     * like `fail(variable)`); spread of a literal object is inspected so
+     * `fail({ ...{ ok:false, error } })` is still caught (Codex PR #381 P2).
+     */
+    function scan(objNode) {
       let hasOkFalse = false;
       let hasError = false;
-      for (const p of node.properties) {
+      for (const p of objNode.properties) {
+        if (p.type === "SpreadElement") {
+          const inner = unwrap(p.argument);
+          if (inner && inner.type === "ObjectExpression") {
+            const r = scan(inner);
+            hasOkFalse ||= r.hasOkFalse;
+            hasError ||= r.hasError;
+          }
+          continue;
+        }
         if (p.type !== "Property" || p.computed) continue;
         const key =
           p.key.type === "Identifier"
@@ -65,11 +98,23 @@ export default {
         }
         if (key === "error") hasError = true;
       }
-      return hasOkFalse && hasError;
+      return { hasOkFalse, hasError };
     }
 
-    function report(arg, where) {
-      if (isFailureShape(arg)) {
+    /**
+     * `requireError` is the false-positive guard. For `JSON.stringify(...)`
+     * (general-purpose) we require BOTH `ok:false` and `error` so unrelated
+     * `{ ok:false }` shapes are not flagged. For `fail(...)` we require only
+     * `ok:false`: `fail()` must only ever receive a presenter's output
+     * (`toToolFailure(...)`), never a literal — any `{ ok:false, ... }` literal
+     * there is hand-building by definition, so this also catches
+     * `fail({ ok:false, ...spread })`.
+     */
+    function report(arg, where, requireError) {
+      const obj = unwrap(arg);
+      if (!obj || obj.type !== "ObjectExpression") return;
+      const { hasOkFalse, hasError } = scan(obj);
+      if (hasOkFalse && (hasError || !requireError)) {
         context.report({ node: arg, messageId: "directConstruct", data: { where } });
       }
     }
@@ -77,11 +122,11 @@ export default {
     return {
       CallExpression(node) {
         const callee = node.callee;
-        // fail({ ok:false, error, ... })
+        // fail({ ok:false, ... }) — ok:false literal alone is the signature.
         if (callee.type === "Identifier" && callee.name === "fail") {
-          report(node.arguments[0], "fail(...) argument");
+          report(node.arguments[0], "fail(...) argument", false);
         }
-        // JSON.stringify({ ok:false, error, ... })  (hand-built content-block body)
+        // JSON.stringify({ ok:false, error, ... }) — hand-built content-block body.
         if (
           callee.type === "MemberExpression" &&
           !callee.computed &&
@@ -90,7 +135,7 @@ export default {
           callee.property.type === "Identifier" &&
           callee.property.name === "stringify"
         ) {
-          report(node.arguments[0], "JSON.stringify(...) argument");
+          report(node.arguments[0], "JSON.stringify(...) argument", true);
         }
       },
     };
