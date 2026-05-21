@@ -803,6 +803,44 @@ export function failWith(
 }
 
 /**
+ * `failCode` — flat failure for handlers that already KNOW the typed `code`
+ * (no message classification needed). The explicit-code sibling of `failWith`
+ * (code derived via `classify`) and `failArgs` (fixed `InvalidArgs`).
+ *
+ * Routes through the B′ presenter (`toToolFailure(new ToolFailureError(...))`) so
+ * the wire shape stays bit-equal with a hand-built literal — use this instead of
+ * `fail({ ok:false, code, ... })` (ADR-021 PR-P2-3; Phase 4 ESLint
+ * `no-tool-failure-shape-direct-construct` bans the literal). Emitted shape:
+ *
+ *   { ok:false, code, error, [suggest], [context], ...rootExtras }
+ *
+ * `error` is emitted VERBATIM — no `${toolName} failed:` prefix (the caller owns
+ * the full string, unlike `failWith`), matching the bespoke error strings the
+ * replaced literals carry. `suggest` is omitted when empty / absent (same guard
+ * as `failWith`). `rootExtras` (e.g. `_perceptionForPost`) spread onto the root.
+ */
+export function failCode(
+  code: string,
+  error: string,
+  extra?: {
+    suggest?: string[];
+    context?: Record<string, unknown>;
+    rootExtras?: Record<string, unknown>;
+  }
+): ToolResult {
+  return fail(
+    toToolFailure(
+      new ToolFailureError(code, {
+        displayMessage: error,
+        suggest: extra?.suggest,
+        context: extra?.context,
+        rootExtras: extra?.rootExtras,
+      })
+    )
+  );
+}
+
+/**
  * Return a structured ToolFailure for invalid / missing input arguments.
  * Use this instead of failWith() for validation errors so they get the
  * dedicated InvalidArgs code rather than the generic ToolError fallback.

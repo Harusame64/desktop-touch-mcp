@@ -238,6 +238,12 @@ function findFirstProducer(branch: ClassifyBranch, srcFiles: string[]): string |
   const codeReDirects = [
     new RegExp(`new Error\\("${escCode}["\\s:]`, "i"),
     new RegExp(`code:\\s*"${escCode}"`),
+    // ADR-021 PR-P2-3: `failCode("<typedCode>", ...)` is the explicit-code
+    // sanctioned emit helper that replaced the hand-built `fail({code:"X",...})`
+    // literals (TerminalTextPatternUnavailable, WaitTimeout, etc.). Same
+    // producer role as a `code: "X"` literal — recognise it so the §1.3 row C
+    // sweep doesn't make these classify branches look dead.
+    new RegExp(`failCode\\(\\s*"${escCode}"`),
     // browser.ts:1960 internal `__error: "ScopeNotFound"` shape and the
     // mapping at browser.ts:2150 `__error === "ScopeNotFound" ? "..."`.
     new RegExp(`__error:\\s*"${escCode}"`),

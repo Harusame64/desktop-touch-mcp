@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { ok, fail, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
-import { failWith } from "./_errors.js";
+import { failWith, failCode } from "./_errors.js";
 import { coercedBoolean, coercedJsonObject } from "./_coerce.js";
 import { pollUntil } from "../engine/poll.js";
 import { makeQueryWrapper, withEnvelopeIncludeSchema, genericQueryCausedByProjector, defaultQuerySessionId } from "./_envelope.js";
@@ -364,17 +364,18 @@ export const waitUntilHandler = async ({ condition, target, timeoutMs, intervalM
       return ok({ ok: true, condition, elapsedMs: r.elapsedMs, observed: r.value });
     }
 
-    return fail({
-      ok: false,
-      code: "WaitTimeout",
-      error: `wait_until(${condition}) timed out after ${r.elapsedMs}ms`,
-      suggest: [
-        "Increase timeoutMs",
-        "Verify the target is correct",
-        "Inspect intermediate state with screenshot(detail='meta')",
-      ],
-      context: { condition, target, timeoutMs },
-    });
+    return failCode(
+      "WaitTimeout",
+      `wait_until(${condition}) timed out after ${r.elapsedMs}ms`,
+      {
+        suggest: [
+          "Increase timeoutMs",
+          "Verify the target is correct",
+          "Inspect intermediate state with screenshot(detail='meta')",
+        ],
+        context: { condition, target, timeoutMs },
+      },
+    );
   } catch (err) {
     return failWith(err, "wait_until", { condition, target });
   }
