@@ -558,8 +558,14 @@ export const runMacroHandler = async ({
         // When the inner envelope lacks both `error` and `code` (regulation-
         // violating tool, defensive only), point the caller at `text[0]` rather
         // than surfacing a hollow "inner ok:false" (Phase 7 Round 1 P2-2).
-        const fallbackError =
-          innerError ?? innerCode ?? "inner ok:false (no error/code fields, see step.text[0])";
+        // Truthiness (not `??`) to stay byte-equal with the pre-refactor IIFE: an
+        // empty-string `error` falls through to `code` / the fallback (Opus #382
+        // Round 1 P3-1; unreachable via sanctioned presenters, but kept exact).
+        const fallbackError = innerError
+          ? innerError
+          : innerCode
+            ? innerCode
+            : "inner ok:false (no error/code fields, see step.text[0])";
         results.push({
           step: i,
           tool,
