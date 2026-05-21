@@ -34,6 +34,13 @@ ruleTester.run("no-tool-failure-shape-direct-construct", rule, {
     'fail(toToolFailure(errorFromMessage(e, "tool", ctx)));',
     // `fail(variable)` — not a literal at the emission point.
     "fail(failureObject);",
+    // Scope boundary (Opus Round 1 P2-2): the rule targets the LITERAL `ok:false`
+    // + `error` form at the emission point. These laundering shapes intentionally
+    // escape PR-P4-1 (contrived, not used in practice; tightening them is future
+    // work / OQ-10 territory). Pinned as valid so the boundary is explicit and a
+    // future strictening is a deliberate test change.
+    "fail({ ...failureBase });", // ok:false comes from the spread, no literal property
+    'fail({ ["ok"]: false, error: "y" });', // computed key — not statically `ok: false`
     // Internal discriminated-union returns have no `error` key → not the wire shape.
     'const r = { ok: false, reason: "entity_not_found" };',
     'fail({ ok: false, reason: "x" });',
