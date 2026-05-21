@@ -907,7 +907,11 @@ describe("Phase 4 — run_macro honours DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2 at ru
       const summary = summaryOf(out);
       // F1 fix: kill-switch envelope is ok:false → step-level ok:false.
       expect(summary.results[0]!.ok).toBe(false);
-      expect(summary.results[0]!.text!.join("\n")).toContain("DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1");
+      const payload = summary.results[0]!.text!.join("\n");
+      expect(payload).toContain("DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1");
+      // ADR-021 P2-3b (OQ-9 c): symmetric with the desktop_discover case — verify
+      // the typed code, not just the message (Opus Round 1 P3-1).
+      expect((JSON.parse(payload) as { code?: string }).code).toBe("FukuwaraiV2Disabled");
     });
   });
 
