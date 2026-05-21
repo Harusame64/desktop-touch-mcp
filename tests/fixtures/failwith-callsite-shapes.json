@@ -128,63 +128,63 @@
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1029,
+      "line": 1030,
       "tool": "browser_click",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1303,
+      "line": 1305,
       "tool": "browser_eval",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1386,
+      "line": 1388,
       "tool": "browser_eval",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1413,
+      "line": 1415,
       "tool": "browser_navigate",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1430,
+      "line": 1432,
       "tool": "browser_navigate",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1721,
+      "line": 1724,
       "tool": "browser_overview",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1873,
+      "line": 1876,
       "tool": "browser_open",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2186,
+      "line": 2189,
       "tool": "browser_search",
       "errKind": "identifier",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2334,
+      "line": 2337,
       "tool": "browser_disconnect",
       "errKind": "identifier",
       "contextShape": "none"
@@ -506,14 +506,14 @@
     },
     {
       "file": "src/tools/terminal.ts",
-      "line": 466,
+      "line": 467,
       "tool": "terminal:send",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/terminal.ts",
-      "line": 833,
+      "line": 834,
       "tool": "terminal:send",
       "errKind": "new-error",
       "contextShape": "object-plain"
