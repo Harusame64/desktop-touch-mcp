@@ -141,6 +141,57 @@ function readString(src, i) {
   return { text: out, end: j };
 }
 
+/**
+ * Return a copy of `src` with comment and string/template-literal CONTENT
+ * blanked to spaces (newlines preserved, so length and line numbers are
+ * unchanged). The `failWith(` call-detection regex runs over this so a
+ * `failWith(` written inside a comment (e.g. a JSDoc example) or a string
+ * literal is NOT mis-counted as a callsite — which would otherwise perturb the
+ * fixture and fail `check:failwith-fixtures` on a non-functional doc edit
+ * (Codex PR #378 P2). `readArgs` still parses the ORIGINAL source at the matched
+ * offset, so real argument text is preserved.
+ *
+ * Limitation (matches `readArgs`): regex literals are not distinguished from
+ * division, so a `/failWith\(/` regex literal would be masked-through; no such
+ * literal exists under src/tools/**, and the symmetric blind spot already
+ * applies to argument parsing.
+ */
+function maskCodeOnly(src) {
+  let out = "";
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    const c2 = src[i + 1];
+    if (c === "/" && c2 === "/") {
+      while (i < src.length && src[i] !== "\n") {
+        out += " ";
+        i++;
+      }
+      continue; // newline (if any) handled by the next iteration
+    }
+    if (c === "/" && c2 === "*") {
+      out += "  ";
+      i += 2;
+      while (i < src.length && !(src[i] === "*" && src[i + 1] === "/")) {
+        out += src[i] === "\n" ? "\n" : " ";
+        i++;
+      }
+      out += i < src.length ? "  " : "";
+      i += 2; // past the closing */
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") {
+      const { text, end } = readString(src, i);
+      for (const ch of text) out += ch === "\n" ? "\n" : " ";
+      i = end + 1;
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
 /** Top-level keys of an object-literal source `{ ... }` (string/comment aware). */
 function topLevelKeys(objSrc) {
   const inner = objSrc.slice(objSrc.indexOf("{") + 1, objSrc.lastIndexOf("}"));
@@ -256,9 +307,12 @@ for (const file of tsFiles(TOOLS_DIR).sort()) {
   // `_errors.ts` DEFINES failWith (+ its own doc/test references); skip the module.
   if (file.endsWith(`${sep}_errors.ts`)) continue;
   const src = readFileSync(file, "utf8");
+  // Detect calls on a comment/string-masked copy (so `failWith(` in a comment or
+  // string is not mis-counted), but parse arguments from the ORIGINAL source.
+  const masked = maskCodeOnly(src);
   reCall.lastIndex = 0;
   let m;
-  while ((m = reCall.exec(src))) {
+  while ((m = reCall.exec(masked))) {
     const open = m.index + m[0].length - 1;
     const { args, end } = readArgs(src, open);
     if (!args) continue;
