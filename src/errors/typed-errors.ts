@@ -96,11 +96,14 @@ export interface ToolFailurePayload {
 
 /**
  * Canonical typed model for a handler failure that renders to the flat
- * `ToolFailure` shape — the `failWith` family (171 migratable callsites under
- * `src/tools/**`; 176 grep hits minus the 5 self-references in `_errors.ts`,
- * machine-counted by scripts/extract-failwith-shape-fixtures.mjs). PR-P2-2 made
- * `failWith` a thin wrapper over this model; PR-P2-3 migrates the callsites and
- * PR-P2-4 removes the wrapper (OQ-1(a) full removal).
+ * `ToolFailure` shape. PR-P2-2 made `failWith` a thin wrapper over this model
+ * (`failWith = fail(toToolFailure(errorFromMessage(...)))`), so `failWith` is the
+ * canonical single window for flat failures and this class is its SSOT error
+ * value. ADR-021 OQ-1 RE-DECISION (Round 6): `failWith` is KEPT (not deleted) —
+ * once the wrapper unified the path, removing it would only churn the ~171
+ * already-sanctioned callsites. PR-P2-3 instead routes the remaining hand-built
+ * `{ ok:false, ... }` literals through `failWith`, and Phase 4 ESLint bans new
+ * ones (`no-tool-failure-shape-direct-construct`).
  *
  * `name === code` (same convention as {@link CodedHandlerError}) so the SUGGESTS
  * dict / envelope family can resolve it too if ever rendered that way — both
