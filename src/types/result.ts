@@ -7,8 +7,9 @@
  * 主 scope のため、handler 内部の throw → Result.err 全件 migrate は scope 外
  * (sub-plan §2 北極星 6 = gradual migration 採用)。
  *
- * `failWith` 経路 (176 callsite、`_errors.ts:685-719`、`ToolFailure` shape) は
- * 本 SR-2 scope 外、別 epic carry-over (sub-plan §9 OQ-SR2-4、親 ADR §11 L10)。
+ * `failWith` 経路 (171 migratable callsite、`_errors.ts`、`ToolFailure` shape) は
+ * 本 SR-2 scope 外、ADR-021 Phase 2 で migrate (canonical count は
+ * `errors/typed-errors.ts` ToolFailureError doc 参照)。
  */
 export type Result<Ok, Err> =
   | { readonly ok: true; readonly value: Ok }

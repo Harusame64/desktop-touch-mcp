@@ -46,6 +46,14 @@ jobs:
       - name: Check generated Linux stub catalog
         run: npm run check:stub-catalog
 
+      - name: Check failWith callsite-shape fixtures (ADR-021 PR-P2-2 — codemod shape gate)
+        # Regenerates the failWith callsite-shape catalogue and fails if it drifts
+        # from source. Pairs with the frozen-golden bit-equality test
+        # (tests/unit/path-class-contract/failwith-thin-wrapper.test.ts): a
+        # callsite added/removed/reshaped without regenerating fails here, and a
+        # novel context shape fails the test's Layer B coverage assertion.
+        run: npm run check:failwith-fixtures
+
       - name: Check napi panic safety (ADR-007 §3.4 — sync #[napi] must use napi_safe_call)
         run: npm run check:napi-safe
 
