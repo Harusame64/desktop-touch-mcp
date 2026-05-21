@@ -7,6 +7,7 @@
  */
 
 import { recognizeWindowByHwnd, ocrWordsToLines } from "../engine/ocr-bridge.js";
+import { failWith, failCode } from "./_errors.js";
 import { keyboard } from "../engine/nutjs.js";
 import { restoreAndFocusWindow } from "../engine/win32.js";
 import { canInjectAtTarget, postKeyComboToHwnd } from "../engine/bg-input.js";
@@ -129,15 +130,7 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
       }
     }
     if (focusedHwnd === null || focusedRegion === null) {
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            ok: false,
-            error: `Window not found matching: "${args.windowTitle}"`,
-          }),
-        }],
-      };
+      return failWith(new Error(`Window not found matching: "${args.windowTitle}"`), "scroll");
     }
   }
 
@@ -229,15 +222,7 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
       // No pages captured yet — return a clean structured failure rather
       // than an empty ok:true payload that would mask the underlying error.
       if (perPage.length === 0) {
-        return {
-          content: [{
-            type: "text" as const,
-            text: JSON.stringify({
-              ok: false,
-              error: `scroll(action='read') failed before any page was captured: ${msg}`,
-            }),
-          }],
-        };
+        return failCode("ToolError", `scroll(action='read') failed before any page was captured: ${msg}`);
       }
       // At least one page already in `allLines` — preserve partial output and
       // surface the error alongside the stitched text so the caller can decide

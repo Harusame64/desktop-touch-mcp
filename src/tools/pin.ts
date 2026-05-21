@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { enumWindowsInZOrder, setWindowTopmost, clearWindowTopmost } from "../engine/win32.js";
 import type { ToolResult } from "./_types.js";
+import { failWith } from "./_errors.js";
 
 function findWindowHwnd(titleQuery: string): { hwnd: unknown; title: string } | null {
   const query = titleQuery.toLowerCase();
@@ -42,12 +43,7 @@ export const pinWindowHandler = async ({
   try {
     const found = findWindowHwnd(title);
     if (!found) {
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({ ok: false, error: `No window found matching: "${title}"` }),
-        }],
-      };
+      return failWith(new Error(`No window found matching: "${title}"`), "window_dock");
     }
 
     setWindowTopmost(found.hwnd);
@@ -78,12 +74,7 @@ export const unpinWindowHandler = async ({ title }: { title: string }): Promise<
   try {
     const found = findWindowHwnd(title);
     if (!found) {
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({ ok: false, error: `No window found matching: "${title}"` }),
-        }],
-      };
+      return failWith(new Error(`No window found matching: "${title}"`), "window_dock");
     }
 
     clearWindowTopmost(found.hwnd);

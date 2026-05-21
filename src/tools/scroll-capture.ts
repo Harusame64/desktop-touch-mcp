@@ -2,6 +2,7 @@ import { z } from "zod";
 import sharp from "sharp";
 import { screen, keyboard, mouse, Region } from "../engine/nutjs.js";
 import { restoreAndFocusWindow } from "../engine/win32.js";
+import { failWith, failCode } from "./_errors.js";
 import { parseKeys } from "../utils/key-map.js";
 import {
   resolveWindowTarget,
@@ -383,12 +384,7 @@ export const scrollCaptureHandler = async ({
     }
 
     if (!targetRegion) {
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({ ok: false, error: `No window found matching: "${windowTitle}"` }),
-        }],
-      };
+      return failWith(new Error(`No window found matching: "${windowTitle}"`), "scroll");
     }
 
     // Scroll to start position (Ctrl+Home → top-left in most apps)
@@ -433,9 +429,7 @@ export const scrollCaptureHandler = async ({
     }
 
     if (frames.length === 0) {
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: "No frames captured" }) }],
-      };
+      return failCode("ToolError", "No frames captured");
     }
 
     // ── Phase C & D: Overlap detection + stitching ─────────────────────────

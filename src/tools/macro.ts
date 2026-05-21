@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { buildDesc } from "./_types.js";
 import type { ToolHandler, ToolResult } from "./_types.js";
+import { failCode } from "./_errors.js";
 import { checkFailsafe } from "../utils/failsafe.js";
 import { assertKeyComboSafe } from "../utils/key-safety.js";
 import {
@@ -146,10 +147,17 @@ function v2KillSwitchActive(): boolean {
   return !resolveV2Activation(process.env).enabled;
 }
 
-const V2_DISABLED_ERROR = {
-  ok: false,
-  error: "DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1 is set; v2 World-Graph tools (desktop_discover / desktop_act) are disabled and may not be invoked through run_macro either.",
-} as const;
+function v2DisabledError(): ToolResult {
+  return failCode(
+    "FukuwaraiV2Disabled",
+    "DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1 is set; v2 World-Graph tools (desktop_discover / desktop_act) are disabled and may not be invoked through run_macro either.",
+    {
+      suggest: [
+        "Unset DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2 (or set it to 0) and restart the MCP server to use desktop_discover / desktop_act.",
+      ],
+    }
+  );
+}
 
 /**
  * Phase 4 (Codex PR #41 round 6 P1×2): the v1 fallback tools registered
@@ -158,15 +166,11 @@ const V2_DISABLED_ERROR = {
  * set; otherwise they return a v2-mode replacement hint.
  */
 function v1FallbackOnlyError(tool: string, replacement: string): ToolResult {
-  return {
-    content: [{
-      type: "text" as const,
-      text: JSON.stringify({
-        ok: false,
-        error: `${tool} is a V1 fallback only available when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1 is set. In v2 mode use ${replacement}.`,
-      }, null, 2),
-    }],
-  };
+  return failCode(
+    "V1FallbackUnavailable",
+    `${tool} is a V1 fallback only available when DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1 is set. In v2 mode use ${replacement}.`,
+    { suggest: [`Use the v2 tool instead: ${replacement}`] }
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -308,7 +312,7 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
     schema: z.object(desktopDiscoverRegistrationSchema),
     handler: (async (input: Record<string, unknown>): Promise<ToolResult> => {
       if (v2KillSwitchActive()) {
-        return { content: [{ type: "text" as const, text: JSON.stringify(V2_DISABLED_ERROR, null, 2) }] };
+        return v2DisabledError();
       }
       // The wrapped handler returns the looser `McpToolResult` shape
       // (`_envelope.ts`); the runtime content blocks are bit-equal with
@@ -322,7 +326,7 @@ const TOOL_REGISTRY: Record<string, ToolEntry> = {
     schema: z.object(desktopActRegistrationSchema),
     handler: (async (input: Record<string, unknown>): Promise<ToolResult> => {
       if (v2KillSwitchActive()) {
-        return { content: [{ type: "text" as const, text: JSON.stringify(V2_DISABLED_ERROR, null, 2) }] };
+        return v2DisabledError();
       }
       return (await desktopActRegistrationHandler(input)) as ToolResult;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -17,6 +17,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { coercedBoolean } from "./_coerce.js";
+import { failCode, getSuggestsForCode } from "./_errors.js";
 import { DesktopFacade, type CandidateProvider, type DesktopSeeInput, type DesktopWindowMeta } from "./desktop.js";
 import type {
   EntityLease,
@@ -544,9 +545,11 @@ export const desktopActRawHandler = async (
 ): Promise<ToolResult> => {
   const validationError = validateDesktopTouchTextRequirement(input.action, input.text);
   if (validationError) {
-    return {
-      content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: validationError }, null, 2) }],
-    };
+    // validationError is already fully-qualified ("desktop_act(action='...') requires
+    // text — ..."), so emit it verbatim via failCode (NOT failArgs, which would
+    // re-prefix "desktop_act: " and double the tool name — Codex PR #380 P2). Adds
+    // the InvalidArgs code + its recovery suggest (OQ-9 c) without touching the message.
+    return failCode("InvalidArgs", validationError, { suggest: getSuggestsForCode("InvalidArgs") });
   }
   const facade = getDesktopFacade();
   const result = await facade.touch({

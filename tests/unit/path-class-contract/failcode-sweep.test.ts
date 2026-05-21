@@ -19,7 +19,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { failCode } from "../../../src/tools/_errors.js";
+import { failCode, failWith } from "../../../src/tools/_errors.js";
 
 /** Extract the single JSON text block `failCode` (via `fail`) emits. */
 function wireText(result: { content: ReadonlyArray<{ type: string; text?: string }> }): string {
@@ -130,5 +130,44 @@ describe("PR-P2-3 layer B: failCode reproduces the (C) literals byte-for-byte", 
         '"suggest":["Verify the scope CSS selector matches at least one element","Omit scope to search the full document"],' +
         '"context":{"by":"text","pattern":"x","scope":"#s"}}',
     );
+  });
+});
+
+// ── Layer D: (D) code-less literals → per-site typed code (OQ-9 (c)) ───────────
+//
+// These pin the INTENTIONAL shape change (OQ-9 (c)): the code-less hand-built
+// `{ ok:false, error }` literals in scroll-read / pin / scroll-capture /
+// desktop-register / macro now carry a typed `code` (+ recovery suggest), so an
+// LLM can branch on the failure instead of regex-ing the message. Each asserts
+// the per-site code the migration chose resolves for the ACTUAL message used.
+
+describe("PR-P2-3b layer D: (D) code-less literals gain a per-site typed code (OQ-9 c)", () => {
+  it("window-not-found messages → WindowNotFound (scroll-read / scroll-capture)", () => {
+    // scroll-read:135 message form
+    const a = JSON.parse(wireText(failWith(new Error('Window not found matching: "Foo"'), "scroll"))) as { code: string; suggest?: string[] };
+    expect(a.code).toBe("WindowNotFound");
+    expect(a.suggest && a.suggest.length).toBeGreaterThan(0); // recovery hint now present
+    // pin.ts / scroll-capture message form ("No window found matching")
+    const b = JSON.parse(wireText(failWith(new Error('No window found matching: "Foo"'), "window_dock"))) as { code: string };
+    expect(b.code).toBe("WindowNotFound");
+  });
+
+  it("desktop_act text-requirement validation → InvalidArgs, message verbatim (desktop-register:548)", () => {
+    // The validator message is already fully-qualified, so the site uses failCode
+    // (verbatim) — NOT failArgs (which would re-prefix "desktop_act: " and double the
+    // tool name, Codex PR #380 P2). Emit InvalidArgs + the message unchanged.
+    const msg = "desktop_act(action='type') requires text — pass text explicitly.";
+    const v = JSON.parse(wireText(failCode("InvalidArgs", msg, { suggest: ["check args"] }))) as { code: string; error: string };
+    expect(v.code).toBe("InvalidArgs");
+    expect(v.error).toBe(msg); // verbatim — no second "desktop_act:" prefix
+  });
+
+  it("macro mode guards → dedicated explicit codes (macro.ts)", () => {
+    const v2 = JSON.parse(
+      wireText(failCode("FukuwaraiV2Disabled", "DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1 is set; ...", { suggest: ["unset it"] })),
+    ) as { ok: boolean; code: string };
+    expect(v2).toMatchObject({ ok: false, code: "FukuwaraiV2Disabled" });
+    const v1 = JSON.parse(wireText(failCode("V1FallbackUnavailable", "x is a V1 fallback ...", { suggest: ["use v2"] }))) as { code: string };
+    expect(v1.code).toBe("V1FallbackUnavailable");
   });
 });
