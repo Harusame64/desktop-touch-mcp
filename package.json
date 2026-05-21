@@ -89,6 +89,7 @@
     "test:watch": "vitest",
     "generate:stub-catalog": "node scripts/generate-stub-tool-catalog.mjs",
     "check:stub-catalog": "node scripts/generate-stub-tool-catalog.mjs && git diff --exit-code src/stub-tool-catalog.ts",
+    "check:failwith-fixtures": "node scripts/extract-failwith-shape-fixtures.mjs && git diff --exit-code tests/fixtures/failwith-callsite-shapes.json",
     "check:napi-safe": "node scripts/check-napi-safe.mjs",
     "check:native-types": "node scripts/check-native-types.mjs",
     "check:no-koffi": "node scripts/check-no-koffi.mjs",

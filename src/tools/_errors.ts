@@ -773,44 +773,29 @@ export function toToolFailure(err: ToolFailureError): ToolFailure & Record<strin
 }
 
 /**
- * Normalize any thrown value into a structured ToolFailure and return it
- * as a ToolResult. Automatically adds recovery suggestions based on error
- * message patterns.
+ * Normalize any thrown value into a structured ToolFailure and return it as a
+ * ToolResult, with recovery suggestions derived from the message.
+ *
+ * @deprecated ADR-021 Phase 2 — `failWith` is now a thin wrapper over the B′
+ * presenter family and is being removed callsite-by-callsite (PR-P2-3) ahead of
+ * full deletion (PR-P2-4, OQ-1(a)). Do NOT add new callers. Construct the typed
+ * error model directly instead:
+ *
+ *   return fail(toToolFailure(errorFromMessage(err, toolName, context)));
+ *
+ * `errorFromMessage` owns the `unknown` → message normalization and `classify`;
+ * `toToolFailure` renders the flat wire shape — one error model (SSOT), one
+ * presenter. The wrapper below delegates to exactly that, so its output stays
+ * byte-for-byte identical to the historical hand-built object (pinned by
+ * tests/unit/path-class-contract/failwith-thin-wrapper.test.ts layer A — a
+ * revert of this delegation fails those frozen goldens).
  */
 export function failWith(
   err: unknown,
   toolName: string,
   context?: Record<string, unknown>
 ): ToolResult {
-  const message = err instanceof Error ? err.message : String(err);
-  const { code, suggest } = classify(message);
-
-  // Split incoming context into (a) keys that belong on the root of the failure
-  // JSON so downstream middleware (_post.ts) can find them, and (b) the actual
-  // LLM-facing context that stays nested under `context`.
-  const rootExtras: Record<string, unknown> = {};
-  let nestedContext: Record<string, unknown> | undefined;
-  if (context) {
-    for (const [k, v] of Object.entries(context)) {
-      if (ROOT_HOISTED_KEYS.has(k)) {
-        rootExtras[k] = v;
-      } else {
-        if (!nestedContext) nestedContext = {};
-        nestedContext[k] = v;
-      }
-    }
-  }
-
-  const failure: ToolFailure & Record<string, unknown> = {
-    ok: false,
-    code,
-    error: `${toolName} failed: ${message}`,
-    ...(suggest.length > 0 && { suggest }),
-    ...(nestedContext && { context: nestedContext }),
-    ...rootExtras,
-  };
-
-  return fail(failure);
+  return fail(toToolFailure(errorFromMessage(err, toolName, context)));
 }
 
 /**
