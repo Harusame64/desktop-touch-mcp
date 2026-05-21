@@ -773,22 +773,26 @@ export function toToolFailure(err: ToolFailureError): ToolFailure & Record<strin
 }
 
 /**
- * Normalize any thrown value into a structured ToolFailure and return it as a
- * ToolResult, with recovery suggestions derived from the message.
+ * `failWith` — the canonical entry point for a flat handler failure
+ * (`{ ok:false, code, error, suggest?, context?, ...rootExtras }`). Normalizes
+ * any thrown value, classifies it to a typed `code` with recovery `suggest`,
+ * and renders the flat wire shape, returning it as a `ToolResult`.
  *
- * @deprecated ADR-021 Phase 2 — `failWith` is now a thin wrapper over the B′
- * presenter family and is being removed callsite-by-callsite (PR-P2-3) ahead of
- * full deletion (PR-P2-4, OQ-1(a)). Do NOT add new callers. Construct the typed
- * error model directly instead:
+ * Implemented as a thin wrapper over the B′ presenter family (ADR-021 Phase 2):
+ * `errorFromMessage` owns the `unknown` → message normalization + `classify`
+ * (the typed error model is the SSOT); `toToolFailure` renders the flat shape
+ * (the presenter). `failWith` composes them so handlers have ONE concise,
+ * lint-enforceable failure path. Do NOT hand-build `{ ok:false, ... }` literals
+ * (or wire failures through `ok()`) — route them here instead; Phase 4 ESLint
+ * (`no-tool-failure-shape-direct-construct`) bans the former.
  *
- *   return fail(toToolFailure(errorFromMessage(err, toolName, context)));
+ * Output is byte-for-byte stable (pinned by
+ * tests/unit/path-class-contract/failwith-thin-wrapper.test.ts layer A).
  *
- * `errorFromMessage` owns the `unknown` → message normalization and `classify`;
- * `toToolFailure` renders the flat wire shape — one error model (SSOT), one
- * presenter. The wrapper below delegates to exactly that, so its output stays
- * byte-for-byte identical to the historical hand-built object (pinned by
- * tests/unit/path-class-contract/failwith-thin-wrapper.test.ts layer A — a
- * revert of this delegation fails those frozen goldens).
+ * ADR-021 OQ-1 RE-DECISION (Round 6, 2026-05-21): kept as the canonical window —
+ * full removal (old OQ-1(a)) was superseded once B′ + PR-P2-2 collapsed the dual
+ * failure system (failWith now delegates to the presenter; the typed error model
+ * is the SSOT). Deleting it would only churn the 171 already-sanctioned callsites.
  */
 export function failWith(
   err: unknown,
@@ -796,6 +800,44 @@ export function failWith(
   context?: Record<string, unknown>
 ): ToolResult {
   return fail(toToolFailure(errorFromMessage(err, toolName, context)));
+}
+
+/**
+ * `failCode` — flat failure for handlers that already KNOW the typed `code`
+ * (no message classification needed). The explicit-code sibling of `failWith`
+ * (code derived via `classify`) and `failArgs` (fixed `InvalidArgs`).
+ *
+ * Routes through the B′ presenter (`toToolFailure(new ToolFailureError(...))`) so
+ * the wire shape stays bit-equal with a hand-built literal — use this instead of
+ * `fail({ ok:false, code, ... })` (ADR-021 PR-P2-3; Phase 4 ESLint
+ * `no-tool-failure-shape-direct-construct` bans the literal). Emitted shape:
+ *
+ *   { ok:false, code, error, [suggest], [context], ...rootExtras }
+ *
+ * `error` is emitted VERBATIM — no `${toolName} failed:` prefix (the caller owns
+ * the full string, unlike `failWith`), matching the bespoke error strings the
+ * replaced literals carry. `suggest` is omitted when empty / absent (same guard
+ * as `failWith`). `rootExtras` (e.g. `_perceptionForPost`) spread onto the root.
+ */
+export function failCode(
+  code: string,
+  error: string,
+  extra?: {
+    suggest?: string[];
+    context?: Record<string, unknown>;
+    rootExtras?: Record<string, unknown>;
+  }
+): ToolResult {
+  return fail(
+    toToolFailure(
+      new ToolFailureError(code, {
+        displayMessage: error,
+        suggest: extra?.suggest,
+        context: extra?.context,
+        rootExtras: extra?.rootExtras,
+      })
+    )
+  );
 }
 
 /**

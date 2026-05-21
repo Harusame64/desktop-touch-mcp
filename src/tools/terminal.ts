@@ -1,9 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { createHash } from "node:crypto";
-import { ok, fail, buildDesc } from "./_types.js";
+import { ok, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
-import { failWith } from "./_errors.js";
+import { failWith, failCode } from "./_errors.js";
 import { coercedBoolean } from "./_coerce.js";
 import {
   enumWindowsInZOrder,
@@ -315,16 +315,17 @@ export const terminalReadHandler = async ({
       }
     }
     if (raw === null) {
-      return fail({
-        ok: false,
-        code: "TerminalTextPatternUnavailable",
-        error: "TextPattern not available and no OCR fallback usable",
-        suggest: [
-          "Retry with source:'ocr' to force OCR",
-          "Verify the window is actually a terminal (Windows Terminal, conhost, PowerShell)",
-        ],
-        context: { windowTitle: win.title },
-      });
+      return failCode(
+        "TerminalTextPatternUnavailable",
+        "TextPattern not available and no OCR fallback usable",
+        {
+          suggest: [
+            "Retry with source:'ocr' to force OCR",
+            "Verify the window is actually a terminal (Windows Terminal, conhost, PowerShell)",
+          ],
+          context: { windowTitle: win.title },
+        },
+      );
     }
 
     const cleaned = doStripAnsi ? stripAnsi(raw) : raw;
@@ -1266,25 +1267,26 @@ export const terminalRunHandler = async ({
   // Reject invalid sendOptions/readOptions BEFORE doing any I/O so unbounded
   // values (e.g. chunkSize:0 hanging the background loop, source:'uia' on a
   // non-TextPattern terminal) cannot bypass the public schema bounds.
-  // Use fail() directly (not failWith) so we get code:"InvalidArgs" and the
-  // suggest[] array stays at the top level. failWith would classify "Invalid
-  // sendOptions" as the generic "ToolError" code and bury our custom suggest
-  // strings under context.suggest, which mis-classifies argument errors as
-  // internal errors and hides actionable remediation guidance from callers.
+  // Use failCode("InvalidArgs", ...) (the explicit-code presenter) so we get
+  // code:"InvalidArgs" and the suggest[] array stays at the top level. failWith
+  // would classify "Invalid sendOptions" as the generic "ToolError" code and
+  // bury our custom suggest strings under context.suggest, which mis-classifies
+  // argument errors as internal errors and hides actionable remediation guidance.
   let validatedSendOptions: Partial<z.infer<typeof TERMINAL_RUN_SEND_OPTIONS_SCHEMA>> = {};
   if (sendOptions !== undefined) {
     const parsed = TERMINAL_RUN_SEND_OPTIONS_SCHEMA.safeParse(sendOptions);
     if (!parsed.success) {
-      return fail({
-        ok: false,
-        code: "InvalidArgs",
-        error: `terminal:run: Invalid sendOptions: ${describeZodIssues(parsed.error)}`,
-        suggest: [
-          "Refer to terminal(action='send') schema for valid keys/types",
-          "windowTitle, input, and sinceMarker cannot be overridden via sendOptions",
-        ],
-        context: { windowTitle },
-      });
+      return failCode(
+        "InvalidArgs",
+        `terminal:run: Invalid sendOptions: ${describeZodIssues(parsed.error)}`,
+        {
+          suggest: [
+            "Refer to terminal(action='send') schema for valid keys/types",
+            "windowTitle, input, and sinceMarker cannot be overridden via sendOptions",
+          ],
+          context: { windowTitle },
+        },
+      );
     }
     validatedSendOptions = keepOnlyProvidedKeys(parsed.data, sendOptions);
   }
@@ -1292,16 +1294,17 @@ export const terminalRunHandler = async ({
   if (readOptions !== undefined) {
     const parsed = TERMINAL_RUN_READ_OPTIONS_SCHEMA.safeParse(readOptions);
     if (!parsed.success) {
-      return fail({
-        ok: false,
-        code: "InvalidArgs",
-        error: `terminal:run: Invalid readOptions: ${describeZodIssues(parsed.error)}`,
-        suggest: [
-          "Refer to terminal(action='read') schema for valid keys/types",
-          "windowTitle and sinceMarker cannot be overridden via readOptions",
-        ],
-        context: { windowTitle },
-      });
+      return failCode(
+        "InvalidArgs",
+        `terminal:run: Invalid readOptions: ${describeZodIssues(parsed.error)}`,
+        {
+          suggest: [
+            "Refer to terminal(action='read') schema for valid keys/types",
+            "windowTitle and sinceMarker cannot be overridden via readOptions",
+          ],
+          context: { windowTitle },
+        },
+      );
     }
     validatedReadOptions = keepOnlyProvidedKeys(parsed.data, readOptions);
   }

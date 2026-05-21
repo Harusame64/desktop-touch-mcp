@@ -5,7 +5,7 @@ import { enumWindowsInZOrder, restoreAndFocusWindow } from "../engine/win32.js";
 import { updateWindowCache } from "../engine/window-cache.js";
 import { ok, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
-import { failWith } from "./_errors.js";
+import { failWith, failCode } from "./_errors.js";
 import { coercedBoolean } from "./_coerce.js";
 import { pollUntil } from "../engine/poll.js";
 import {
@@ -20,7 +20,6 @@ import {
 } from "../engine/cdp-bridge.js";
 import { resolveWellKnownPath, spawnDetached, killProcessesByName } from "../utils/launch.js";
 import { getCdpPort } from "../utils/desktop-config.js";
-import { fail } from "./_types.js";
 import { setBrowserSearchHook } from "./wait-until.js";
 import { narrateParam, withRichNarration } from "./_narration.js";
 import { makeCommitWrapper, makeQueryWrapper, withEnvelopeIncludeSchema, withEnvelopeIncludeForUnion, flattenUnionToObjectSchema, parseActionArgsOrFail, genericQueryCausedByProjector, defaultQuerySessionId } from "./_envelope.js";
@@ -1007,13 +1006,14 @@ export const browserClickElementHandler = async ({
       const coordsForGuard = await getElementScreenCoords(effectiveSelector, effectiveTabId ?? null, port);
       if (!coordsForGuard.inViewport) {
         // Element not in viewport — fail before running guard
-        return fail({
-          ok: false,
-          code: "ElementNotInViewport",
-          error: `browser_click: element "${effectiveSelector}" is outside the visible viewport.`,
-          suggest: ["Element is outside the visible viewport. Scroll it into view first using browser_eval with element.scrollIntoView(), then retry browser_click."],
-          context: { selector: effectiveSelector },
-        });
+        return failCode(
+          "ElementNotInViewport",
+          `browser_click: element "${effectiveSelector}" is outside the visible viewport.`,
+          {
+            suggest: ["Element is outside the visible viewport. Scroll it into view first using browser_eval with element.scrollIntoView(), then retry browser_click."],
+            context: { selector: effectiveSelector },
+          },
+        );
       }
       const descriptor: import("./_action-guard.js").ActionTargetDescriptor = {
         kind: "browserTab", port, tabId: effectiveTabId, urlIncludes: undefined,
@@ -1045,13 +1045,14 @@ export const browserClickElementHandler = async ({
       port
     );
     if (!coords.inViewport) {
-      return fail({
-        ok: false,
-        code: "ElementNotInViewport",
-        error: `browser_click: element "${effectiveSelector}" is outside the visible viewport.`,
-        suggest: ["Element is outside the visible viewport. Scroll it into view first using browser_eval with element.scrollIntoView(), then retry browser_click."],
-        context: { selector: effectiveSelector },
-      });
+      return failCode(
+        "ElementNotInViewport",
+        `browser_click: element "${effectiveSelector}" is outside the visible viewport.`,
+        {
+          suggest: ["Element is outside the visible viewport. Scroll it into view first using browser_eval with element.scrollIntoView(), then retry browser_click."],
+          context: { selector: effectiveSelector },
+        },
+      );
     }
     // Ensure browser window is focused so click events reach the page
     await ensureBrowserFocused(port);
@@ -1444,16 +1445,17 @@ export const browserNavigateHandler = async ({
 
     // Surface CDP navigation errors (DNS failure etc.)
     if (navResult.errorText) {
-      return fail({
-        ok: false,
-        code: "NavigateFailed",
-        error: `browser_navigate failed: ${navResult.errorText}`,
-        suggest: [
-          "Check the URL is correct and reachable",
-          "Verify network connectivity",
-        ],
-        context: { url, errorText: navResult.errorText },
-      });
+      return failCode(
+        "NavigateFailed",
+        `browser_navigate failed: ${navResult.errorText}`,
+        {
+          suggest: [
+            "Check the URL is correct and reachable",
+            "Verify network connectivity",
+          ],
+          context: { url, errorText: navResult.errorText },
+        },
+      );
     }
 
     if (!waitForLoad) {
@@ -2156,29 +2158,29 @@ export const browserSearchHandler = async ({
         : code === "BrowserSearchTimeout"
         ? ["Reduce maxResults", "Narrow scope via CSS selector", "Try by:'selector' if you know the element"]
         : ["Verify your regex syntax", "Try a literal pattern with by:'text'"];
-      return fail({
-        ok: false, code,
-        error: `browser_search: ${r.__error}${r.message ? " — " + r.message : ""}`,
-        suggest,
-        context: { by, pattern, scope },
-      });
+      return failCode(
+        code,
+        `browser_search: ${r.__error}${r.message ? " — " + r.message : ""}`,
+        { suggest, context: { by, pattern, scope } },
+      );
     }
     const payload = result as {
       total: number; returned: number; truncated: boolean;
       results: Array<{ confidence: number; selector: string; text: string }>;
     };
     if (payload.total === 0) {
-      return fail({
-        ok: false,
-        code: "BrowserSearchNoResults",
-        error: `browser_search(${by}, ${JSON.stringify(pattern)}) returned 0 results`,
-        suggest: [
-          "Try a different 'by' axis",
-          "Remove scope or set visibleOnly:false",
-          "Toggle caseSensitive:false",
-        ],
-        context: { by, pattern, scope, visibleOnly, inViewportOnly },
-      });
+      return failCode(
+        "BrowserSearchNoResults",
+        `browser_search(${by}, ${JSON.stringify(pattern)}) returned 0 results`,
+        {
+          suggest: [
+            "Try a different 'by' axis",
+            "Remove scope or set visibleOnly:false",
+            "Toggle caseSensitive:false",
+          ],
+          context: { by, pattern, scope, visibleOnly, inViewportOnly },
+        },
+      );
     }
     const tabCtx = await getTabContext(tabId ?? null, port);
     return ok({ ...payload, activeTab: { id: tabCtx.id, title: tabCtx.title, url: tabCtx.url }, readyState: tabCtx.readyState });
