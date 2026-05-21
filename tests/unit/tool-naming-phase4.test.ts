@@ -875,7 +875,13 @@ describe("Phase 4 — run_macro honours DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2 at ru
       expect(step.ok).toBe(false);
       const payload = step.text!.join("\n");
       expect(payload).toContain("DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1");
-      expect(payload).toContain("\"ok\": false");
+      // ADR-021 P2-3b (OQ-9 c): the kill-switch guard now flows through failCode,
+      // so the inner envelope is compact JSON carrying a typed code + recovery
+      // suggest (was a code-less pretty-printed {ok:false,error}). Parse rather
+      // than match raw bytes so whitespace/format is not load-bearing.
+      const inner = JSON.parse(payload) as { ok: boolean; code?: string };
+      expect(inner.ok).toBe(false);
+      expect(inner.code).toBe("FukuwaraiV2Disabled");
     });
   });
 

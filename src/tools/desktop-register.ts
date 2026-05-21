@@ -17,6 +17,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { coercedBoolean } from "./_coerce.js";
+import { failArgs } from "./_errors.js";
 import { DesktopFacade, type CandidateProvider, type DesktopSeeInput, type DesktopWindowMeta } from "./desktop.js";
 import type {
   EntityLease,
@@ -544,9 +545,7 @@ export const desktopActRawHandler = async (
 ): Promise<ToolResult> => {
   const validationError = validateDesktopTouchTextRequirement(input.action, input.text);
   if (validationError) {
-    return {
-      content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: validationError }, null, 2) }],
-    };
+    return failArgs(validationError, "desktop_act");
   }
   const facade = getDesktopFacade();
   const result = await facade.touch({
