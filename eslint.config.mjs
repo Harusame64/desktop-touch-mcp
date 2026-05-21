@@ -8,6 +8,7 @@
 import js from "@eslint/js";
 import globals from "globals";
 import tseslint from "typescript-eslint";
+import noToolFailureShapeDirectConstruct from "./eslint-rules/no-tool-failure-shape-direct-construct.mjs";
 
 export default [
   {
@@ -45,6 +46,23 @@ export default [
     files: ["src/**/*.ts"],
     rules: {
       "no-console": ["error", { allow: ["error", "warn"] }],
+    },
+  },
+
+  // src/tools/ — ADR-021 Option B North Star enforcement. Hand-built failure
+  // wire literals ({ ok:false, ..., error } as a fail() / JSON.stringify()
+  // argument) are banned; failures must go through failWith / failCode / failArgs
+  // / toFailureEnvelope. PR-P2-2/P2-3 swept every existing one, so this lands as
+  // `error` (0 violations). The converters themselves are exempt: _errors.ts
+  // defines the fail* helpers, _envelope.ts defines toFailureEnvelope.
+  {
+    files: ["src/tools/**/*.ts"],
+    ignores: ["src/tools/_errors.ts", "src/tools/_envelope.ts"],
+    plugins: {
+      adr021: { rules: { "no-tool-failure-shape-direct-construct": noToolFailureShapeDirectConstruct } },
+    },
+    rules: {
+      "adr021/no-tool-failure-shape-direct-construct": "error",
     },
   },
 
