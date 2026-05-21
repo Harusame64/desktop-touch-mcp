@@ -1235,8 +1235,9 @@ export function buildFailureEnvelope(
  *
  * 注意: handler 内部 throw 経路は `toResultErr(e)` で `Result.err(HandlerError)`
  * に変換してから本 helper に渡す (handler 最外周共通 pattern、PR-SR2-2/-3 で
- * 29 handler に展開予定)。`failWith` 経路 (176 callsite) は本 SR-2 scope 外
- * (sub-plan §9 OQ-SR2-4 + 親 ADR §11 L10 carry-over)。
+ * 29 handler に展開予定)。`failWith` 経路 (171 migratable callsite) は本 SR-2
+ * scope 外、ADR-021 Phase 2 で migrate (canonical count は
+ * `errors/typed-errors.ts` ToolFailureError doc 参照)。
  */
 export function toFailureEnvelope<Ok, Err extends HandlerError>(
   result: Result<Ok, Err>,

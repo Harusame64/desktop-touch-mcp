@@ -96,8 +96,11 @@ export interface ToolFailurePayload {
 
 /**
  * Canonical typed model for a handler failure that renders to the flat
- * `ToolFailure` shape — the `failWith` family (175 callsites, migrated to
- * `Result.err` + presenter across PR-P2-2 … P2-4, OQ-1(a) full removal).
+ * `ToolFailure` shape — the `failWith` family (171 migratable callsites under
+ * `src/tools/**`; 176 grep hits minus the 5 self-references in `_errors.ts`,
+ * machine-counted by scripts/extract-failwith-shape-fixtures.mjs). PR-P2-2 made
+ * `failWith` a thin wrapper over this model; PR-P2-3 migrates the callsites and
+ * PR-P2-4 removes the wrapper (OQ-1(a) full removal).
  *
  * `name === code` (same convention as {@link CodedHandlerError}) so the SUGGESTS
  * dict / envelope family can resolve it too if ever rendered that way — both
