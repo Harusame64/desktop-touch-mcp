@@ -19,7 +19,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { failCode, failWith, failArgs } from "../../../src/tools/_errors.js";
+import { failCode, failWith } from "../../../src/tools/_errors.js";
 
 /** Extract the single JSON text block `failCode` (via `fail`) emits. */
 function wireText(result: { content: ReadonlyArray<{ type: string; text?: string }> }): string {
@@ -152,10 +152,14 @@ describe("PR-P2-3b layer D: (D) code-less literals gain a per-site typed code (O
     expect(b.code).toBe("WindowNotFound");
   });
 
-  it("desktop_act text-requirement validation → InvalidArgs (desktop-register:548)", () => {
-    const v = JSON.parse(wireText(failArgs("action 'type' requires text", "desktop_act"))) as { code: string; error: string };
+  it("desktop_act text-requirement validation → InvalidArgs, message verbatim (desktop-register:548)", () => {
+    // The validator message is already fully-qualified, so the site uses failCode
+    // (verbatim) — NOT failArgs (which would re-prefix "desktop_act: " and double the
+    // tool name, Codex PR #380 P2). Emit InvalidArgs + the message unchanged.
+    const msg = "desktop_act(action='type') requires text — pass text explicitly.";
+    const v = JSON.parse(wireText(failCode("InvalidArgs", msg, { suggest: ["check args"] }))) as { code: string; error: string };
     expect(v.code).toBe("InvalidArgs");
-    expect(v.error).toBe("desktop_act: action 'type' requires text");
+    expect(v.error).toBe(msg); // verbatim — no second "desktop_act:" prefix
   });
 
   it("macro mode guards → dedicated explicit codes (macro.ts)", () => {
