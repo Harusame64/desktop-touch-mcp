@@ -22,7 +22,7 @@
  *     literally, so a SUGGESTS dictionary edit moves the dict and this test
  *     together rather than silently (PR #373 Codex P2 discipline).
  *   Layer B — SHAPE COVERAGE: asserts the context-shape space discovered across
- *     all 176 real callsites by the codemod-fixture extractor
+ *     all 171 migratable callsites by the codemod-fixture extractor
  *     (tests/fixtures/failwith-callsite-shapes.json) is a subset of the shapes
  *     Layer A pins, so the representative matrix genuinely covers production and
  *     a future callsite introducing a NEW shape fails until a golden is added.
@@ -136,7 +136,7 @@ describe("PR-P2-2 layer A: failWith frozen golden (revert-proof, non-tautologica
 
 // ── Layer B: the frozen matrix covers every real-callsite context shape ────────
 //
-// The extractor classifies each of the 176 callsites' context argument into one
+// The extractor classifies each of the 171 callsites' context argument into one
 // of a small set of shapes. Layer A pins one golden per shape; this asserts the
 // extractor found nothing OUTSIDE that set, so the sampling is exhaustive over
 // shapes (a new callsite with a novel shape fails here until a golden is added).
@@ -149,7 +149,7 @@ const KNOWN_CONTEXT_SHAPES = new Set([
 ]);
 
 describe("PR-P2-2 layer B: codemod-fixture shape coverage", () => {
-  it("every context shape across all 176 callsites is one Layer A pins", () => {
+  it("every context shape across all 171 callsites is one Layer A pins", () => {
     const fixturePath = fileURLToPath(
       new URL("../../fixtures/failwith-callsite-shapes.json", import.meta.url),
     );

@@ -12,8 +12,10 @@
 //   2. The PR-P2-2 unit test asserts the set of context-SHAPES discovered here is
 //      a subset of the shapes its frozen-golden matrix pins, making the sampling
 //      exhaustive-over-shapes (a novel shape fails the test until a golden is
-//      added). This is how "176 callsites bit-equal" is replaced by
-//      "representative matrix + codemod-driven sampling" (plan §2.2 / §2.1.1).
+//      added). This is how the plan's "all callsites bit-equal" goal — here 171
+//      migratable callsites (176 grep hits minus the 5 self-references inside
+//      _errors.ts, which the scan skips) — is replaced by "representative matrix
+//      + codemod-driven sampling" (plan §2.2 / §2.1.1).
 //
 // The extractor does NOT evaluate callsite arguments (they reference locals);
 // it captures the static shape. Bit-equality of the runtime output is pinned by
