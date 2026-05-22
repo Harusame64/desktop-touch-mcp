@@ -301,11 +301,23 @@ function applySinceMarker(text: string, marker: string): { text: string; matched
  * hash window. Both `postBaseline` (via applySinceMarker) and `input` are run
  * through `normalizeForMarker` so CRLF/LF and trailing-whitespace rendering
  * differences do not break the match.
+ *
+ * `inputEchoes=false` — for hidden-input prompts (password / passphrase /
+ * secret / sudo, detected via isHiddenInputPrompt on the pre-send baseline) the
+ * input is never echoed into the buffer, so there is no echo to skip and no
+ * echoed command for a sentinel to self-match. The anchor is bypassed and the
+ * full slice is returned, otherwise the indexOf below would never find the
+ * needle and we would defer forever → until:{mode:'pattern'} would time out on
+ * a perfectly valid hidden-input flow (Codex P1 on #383).
  */
 export function scanRegionAfterEcho(
   postBaseline: string,
   input: string,
+  inputEchoes = true,
 ): string | undefined {
+  // Hidden-input prompt: nothing was echoed → scan the whole slice so the real
+  // post-prompt output can still match.
+  if (!inputEchoes) return postBaseline;
   const needle = normalizeForMarker(input);
   // Empty/blank input has no echo to skip — scan the whole slice.
   if (needle.length === 0) return postBaseline;
@@ -1372,6 +1384,13 @@ export const terminalRunHandler = async ({
   // the final sinceMarker diff.
   const baselineRead = await readTerminalRaw(windowTitle);
   const sinceMarker = baselineRead?.marker;
+  // Codex P1 (#383): if the pre-send prompt suppresses echo (password /
+  // passphrase / secret / sudo), the sent `input` is not echoed into the
+  // buffer, so the echo-anchor (scanRegionAfterEcho) could never locate it and
+  // would defer forever → until:{mode:'pattern'} would time out on a valid
+  // hidden-input flow. Detect that from the pre-send baseline (same heuristic
+  // terminal_send uses) and bypass the anchor in that case.
+  const inputEchoes = !isHiddenInputPrompt(baselineRead?.text ?? null);
 
   const sendArgs = {
     windowTitle,
@@ -1478,12 +1497,14 @@ export const terminalRunHandler = async ({
   //           re-introduce prior-history false positives.
   //       (b) echo not yet located (#383 defer) — the real output cannot exist
   //           before the full echo renders, so any match would be inside the
-  //           still-rendering echo; defer and retry on the next tick.
+  //           still-rendering echo; defer and retry on the next tick. Hidden-input
+  //           prompts (password/secret) suppress the echo entirely, so the anchor
+  //           is bypassed there (inputEchoes=false) rather than deferring forever.
   const newContentSinceBaseline = (text: string): string | undefined => {
     if (!sinceMarker) return undefined;
     const sliced = applySinceMarker(text, sinceMarker);
     if (!sliced.matched) return undefined;
-    return scanRegionAfterEcho(sliced.text, input);
+    return scanRegionAfterEcho(sliced.text, input, inputEchoes);
   };
 
   // Immediate post-send pattern check — runs once before the first POLL_INTERVAL_MS

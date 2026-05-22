@@ -144,4 +144,21 @@ describe("scanRegionAfterEcho — issue #383 echo anchoring", () => {
       expect(scanRegionAfterEcho(`whatever output`, `   `)).toBe(`whatever output`);
     });
   });
+
+  describe("hidden-input prompts (inputEchoes=false): bypass the anchor (Codex P1)", () => {
+    it("scans the full slice when the input is not echoed (e.g. a password)", () => {
+      // Password/secret sent to a prompt that suppresses echo: the input never
+      // appears in the buffer, but the post-auth output does. The matcher must
+      // see that output, not defer forever.
+      const post = `Login succeeded\nDONE`;
+      expect(scanRegionAfterEcho(post, `hunter2`, false)).toBe(post);
+    });
+
+    it("does NOT defer when the hidden input is absent (the regression Codex caught)", () => {
+      // Same args: inputEchoes=false scans the full slice; the default (true)
+      // would defer (undefined) and time out — the #383 fix's regression.
+      expect(scanRegionAfterEcho(`some output`, `secretpw`, false)).toBe(`some output`);
+      expect(scanRegionAfterEcho(`some output`, `secretpw`, true)).toBeUndefined();
+    });
+  });
 });
