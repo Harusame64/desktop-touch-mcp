@@ -1772,9 +1772,13 @@ export const terminalRunHandler = async ({
 
   // ── exit-mode shell resolution (issue #386) ─────────────────────────────────
   // Needs the window's process name (for shell:'auto' detection), so it runs
-  // after findTerminalWindow. cmd → ExitModeShellUnsupported, auto-low-confidence
-  // (WindowsTerminal / conhost / SSH host) → ExitModeShellAmbiguous: both loud
-  // pre-send rejects (no command sent). On success we lock the shell + a
+  // after findTerminalWindow. cmd → ExitModeShellUnsupported (loud pre-send
+  // reject). auto low-confidence (window process is an unknown host, e.g.
+  // WindowsTerminal) → ExitModeShellAmbiguous (loud reject). NOTE (P3 measured):
+  // a conhost-hosted PowerShell window reports 'powershell' → high → resolves;
+  // an SSH/WSL-nested session also reports the OUTER process, so auto silently
+  // resolves the outer shell (handled by the advisory warning below, degrades to
+  // a loud timeout if wrong — not ambiguous). On success we lock the shell + a
   // per-invocation nonce for buildExitCommand / parseExitSentinel.
   let exitShell: ExitShell | null = null;
   let exitNonce = "";
@@ -2282,9 +2286,11 @@ export const terminalSchema = z.discriminatedUnion("action", [
           "Shell the terminal runs, used to build the completion epilogue. " +
           "'bash' and 'powershell' are first-class. 'cmd' is not supported yet " +
           "(returns ExitModeShellUnsupported). 'auto' (default) detects from the " +
-          "window process but fails loudly (ExitModeShellAmbiguous) for hosts that " +
-          "hide the real shell (Windows Terminal / conhost / SSH) — pass the shell " +
-          "explicitly there. Inputs ending in an open construct (here-doc, " +
+          "window process: a conhost-hosted shell resolves, but a nested/remote " +
+          "shell is invisible (an SSH/WSL session reports its OUTER process, so " +
+          "auto picks the outer shell and warns — pass shell explicitly for " +
+          "remote sessions); auto fails loudly (ExitModeShellAmbiguous) only for " +
+          "unknown hosts such as Windows Terminal. Inputs ending in an open construct (here-doc, " +
           "unbalanced quote, unterminated $(…), here-string, trailing \\/backtick) " +
           "are rejected with ExitModeUnsafeInput."
         ),
