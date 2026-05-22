@@ -649,13 +649,18 @@ export function resolveExitShell(
  *      contiguous `__DTMCP_EXIT_<nonce>` only assembles in the command's runtime
  *      OUTPUT — the echo carries the SPLIT form — so this never over-cuts real
  *      output (echo-immune, same property parseExitSentinel relies on).
- *   2. Head: drop everything up to and including the echoed epilogue line. The
- *      epilogue carries a distinctive injected signature (`printf '%s%s|%d|` for
- *      bash, `$dtmcp_c=$LASTEXITCODE` for PowerShell) that the user's command
- *      echo and real output do not. Cutting to the FIRST occurrence also removes
- *      the PowerShell prologue + the user's command echo that precede it.
+ *   2. Head: drop everything up to and including the echoed epilogue line,
+ *      located by the NONCE-BEARING SPLIT-token signature the epilogue prints the
+ *      token with (`'__DTMCP' "_EXIT_<nonce>"` for bash,
+ *      `('__DTMCP'+"_EXIT_<nonce>")` for PowerShell). That signature appears ONLY
+ *      in the driver-injected epilogue echo: the user's command echo would have
+ *      to contain the crypto-random nonce in the exact split form to collide
+ *      (the same negligible assumption parseExitSentinel relies on), and the
+ *      command's real OUTPUT carries the CONTIGUOUS token, not the split form.
+ *      Cutting to the FIRST occurrence also removes the PowerShell prologue + the
+ *      user's command echo that precede it.
  *
- * Best-effort, NOT a correctness boundary: if a marker is not located (wrapped
+ * Best-effort, NOT a correctness boundary: if a signature is not located (wrapped
  * echo, OCR fallback, or the head scrolled out of a tailed read), the
  * corresponding cut is skipped and the slice degrades to including a little
  * injected text — never to losing real output. Completion + exitCode come from
@@ -669,10 +674,16 @@ export function stripExitArtifacts(slice: string, nonce: string, shell: ExitShel
     const lineStart = body.lastIndexOf("\n", tokIdx);
     body = lineStart >= 0 ? body.slice(0, lineStart) : "";
   }
-  // 2. Head cut past the echoed epilogue (first occurrence = the echo, which is
-  //    emitted before the command can produce output that mentions it).
-  const epilogueMark = shell === "bash" ? "printf '%s%s|%d|" : "$dtmcp_c=$LASTEXITCODE";
-  const mIdx = body.indexOf(epilogueMark);
+  // 2. Head cut past the echoed epilogue, anchored on the nonce-bearing split
+  //    signature (matches buildExitCommand's epilogue verbatim). Nonce-unique →
+  //    cannot collide with the user's command echo or real output, so this never
+  //    over-cuts real content.
+  const tail = EXIT_TOKEN_TAIL_PREFIX + nonce;
+  const splitSig =
+    shell === "bash"
+      ? `'${EXIT_TOKEN_HEAD}' "${tail}"`
+      : `('${EXIT_TOKEN_HEAD}'+"${tail}")`;
+  const mIdx = body.indexOf(splitSig);
   if (mIdx >= 0) {
     const nl = body.indexOf("\n", mIdx);
     body = nl >= 0 ? body.slice(nl + 1) : "";
@@ -2093,15 +2104,22 @@ export const terminalRunHandler = async ({
           ...(parsed.suggest && parsed.suggest.length > 0 ? { suggest: parsed.suggest } : {}),
         };
         warnings.push("Final read failed — output may be unavailable. See readError for details.");
-      } else if (until.mode === "exit" && exitShell) {
-        // issue #386: exit mode does not use the baseline_lost suppression. The
-        // sentinel nonce is per-invocation, so stripExitArtifacts can locate the
-        // current run's epilogue + sentinel and return only the real output even
-        // when the baseline marker scrolled out of range — the integrity concern
-        // (pre-baseline scrollback) is structurally removed by cutting at the
-        // injected markers. Strip the injected prologue/epilogue echo + sentinel
-        // line so the caller sees only their command's output (exitCode carries
-        // the status separately).
+      } else if (until.mode === "exit" && exitShell && completionReason === "exited") {
+        // issue #386: on a CLEAN exit the sentinel rendered, so the buffer is
+        // anchored by the per-invocation nonce — stripExitArtifacts locates this
+        // run's epilogue + sentinel and returns only the real output even when
+        // the baseline marker scrolled out of range (the pre-baseline-scrollback
+        // integrity concern is structurally removed by cutting at the injected
+        // markers, so baseline_lost suppression is not needed here). Strip the
+        // injected prologue/epilogue echo + sentinel line so the caller sees only
+        // their command's output (exitCode carries the status separately).
+        //
+        // NOTE: gated on completionReason==='exited'. An exit-mode run that ended
+        // in timeout / window_closed has NO sentinel, so it falls through to the
+        // standard integrity gate below — claiming outputIntegrity:'ok' on an
+        // un-anchored, possibly-truncated buffer would lie about a run that did
+        // not complete (Opus #388 round 1 P2-2). reason:'timeout' stays loud and
+        // the integrity gate honestly reports baseline_lost when applicable.
         output = stripExitArtifacts(parsed.text ?? "", exitNonce, exitShell);
         finalMarker = parsed.marker;
         outputIntegrity = "ok";
@@ -2336,7 +2354,7 @@ export function registerTerminalTools(server: McpServer): void {
         purpose: "Interact with a terminal window: read output, send input, or run+wait+read in one call. action='read' / action='send' absorb the formerly-standalone read/send tools (Phase 4).",
         details: "action='run' is the recommended high-level workflow: send command → wait until quiet/pattern/timeout → read output. The command text is passed as `input` (the legacy parameter name `command` is also accepted as a deprecated alias — see issue #245). Returns completion={reason, elapsedMs} first-class plus outputIntegrity:'ok'|'baseline_lost' so callers can detect when scrollback could not be anchored to the pre-send buffer. action='read' reads current text via UIA TextPattern (falls back to OCR); use sinceMarker for incremental diff. action='send' sends a command with focus management.",
         prefer: "action='run' for command execution + result. For long-running commands (test runners, builds, deploys) use until:{mode:'pattern', pattern:'<final marker>'} — the default quiet mode is tuned for short interactive commands and may complete prematurely on multi-second silent gaps mid-run. Use action='read'/'send' for fine-grained control or when you need to interleave other actions.",
-        caveats: "Do not screenshot the terminal — action='read' is cheaper and structured. action='run' supports completion reasons: quiet | pattern_matched | exited | timeout | window_closed | window_not_found | send_failed (send rejected on a live window — see warnings for the underlying error code). until:{mode:'exit', shell:'bash'|'powershell'} (issue #386) returns completion.exitCode + reason:'exited' via an echo-immune sentinel that works for multiline input pattern mode cannot anchor; pass shell explicitly (auto fails as ExitModeShellAmbiguous on WT/conhost/SSH), cmd is unsupported (ExitModeShellUnsupported), open-construct input is rejected (ExitModeUnsafeInput). When outputIntegrity:'baseline_lost' is returned, output is forced to '' and readError.code='BaselineMarkerLost' is set: rerun with until:{mode:'pattern',...} or longer timeoutMs. action='run' may also emit warnings prefixed FileLockCollision: when output reveals an EBUSY/Windows-lock/EAGAIN-EDEADLK file collision (e.g. shell '>' redirect colliding with the script's own writer — issue #236). Default quietMs=1500 (issue #196); long silences require pattern mode. preferClipboard=true (send default) overwrites clipboard. Hidden-input prompts emit verifyDelivery.unverifiable (reason:'hidden_input_prompt') — use method:'foreground'. action='read' typed errors: TerminalWindowNotFound, TerminalTextPatternUnavailable (force source:'ocr'); stale sinceMarker → hints.terminalMarker.previousMatched:false on ok:true (omit sinceMarker). FG-path Win11 foreground refusal returns code:'ForegroundRestricted' — switch to method:'background' or DTM_BG_AUTO=1. BG path auto-engages only when (a) the target window class is `ConsoleWindowClass` (conhost: cmd / PowerShell / pwsh classic hosts) OR (b) env DTM_BG_AUTO=1 is set globally. Windows Terminal (`CASCADIA_HOSTING_WINDOW_CLASS`) is intentionally EXCLUDED from auto-engage (issue #173): WT runs on WinUI/XAML and silently drops WM_CHAR posted to its HWND, so the FG path is used by default — pass sendOptions:{method:'background'} only if you have verified your WT build accepts BG input.",
+        caveats: "Do not screenshot the terminal — action='read' is cheaper and structured. action='run' supports completion reasons: quiet | pattern_matched | exited | timeout | window_closed | window_not_found | send_failed (send rejected on a live window — see warnings for the underlying error code). until:{mode:'exit', shell:'bash'|'powershell'} (issue #386) returns completion.exitCode + reason:'exited' via an echo-immune sentinel that works for multiline input that pattern mode cannot anchor; pass shell explicitly (auto fails as ExitModeShellAmbiguous on WT/conhost/SSH), cmd is unsupported (ExitModeShellUnsupported), open-construct input is rejected (ExitModeUnsafeInput). When outputIntegrity:'baseline_lost' is returned, output is forced to '' and readError.code='BaselineMarkerLost' is set: rerun with until:{mode:'pattern',...} or longer timeoutMs. action='run' may also emit warnings prefixed FileLockCollision: when output reveals an EBUSY/Windows-lock/EAGAIN-EDEADLK file collision (e.g. shell '>' redirect colliding with the script's own writer — issue #236). Default quietMs=1500 (issue #196); long silences require pattern mode. preferClipboard=true (send default) overwrites clipboard. Hidden-input prompts emit verifyDelivery.unverifiable (reason:'hidden_input_prompt') — use method:'foreground'. action='read' typed errors: TerminalWindowNotFound, TerminalTextPatternUnavailable (force source:'ocr'); stale sinceMarker → hints.terminalMarker.previousMatched:false on ok:true (omit sinceMarker). FG-path Win11 foreground refusal returns code:'ForegroundRestricted' — switch to method:'background' or DTM_BG_AUTO=1. BG path auto-engages only when (a) the target window class is `ConsoleWindowClass` (conhost: cmd / PowerShell / pwsh classic hosts) OR (b) env DTM_BG_AUTO=1 is set globally. Windows Terminal (`CASCADIA_HOSTING_WINDOW_CLASS`) is intentionally EXCLUDED from auto-engage (issue #173): WT runs on WinUI/XAML and silently drops WM_CHAR posted to its HWND, so the FG path is used by default — pass sendOptions:{method:'background'} only if you have verified your WT build accepts BG input.",
         examples: [
           "terminal({action:'run', windowTitle:'PowerShell', input:'npm test', until:{mode:'pattern', pattern:'Test Files'}}) → recommended for test runners; matches when vitest summary appears",
           "terminal({action:'run', windowTitle:'pwsh', input:'ls'}) → quiet 1500ms wait, returns output (short interactive)",
