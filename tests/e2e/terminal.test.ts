@@ -17,7 +17,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execSync } from "node:child_process";
-import { terminalReadHandler, terminalSendHandler } from "../../src/tools/terminal.js";
+import { terminalReadHandler, terminalSendHandler, terminalRunHandler } from "../../src/tools/terminal.js";
 import { launchPowerShell, type PsInstance, type TerminalHost } from "./helpers/powershell-launcher.js";
 import { sleep, parsePayload } from "./helpers/wait.js";
 
@@ -405,5 +405,41 @@ describe.each(SCENARIOS)("[$label] terminal", ({ host, label, expectedClassPatte
         expect(readRes.text).toContain(tag);
       }, 15_000);
     }
+  });
+
+  // Issue #383: terminal_run with until:{mode:'pattern'} must match the
+  // command's REAL output, not the echoed command line. The sentinel `tag`
+  // appears inside the command (Write-Output "tag"), so its echo line contains
+  // `tag`. Pre-fix the matcher fired on that echo (~1.5s) and returned before
+  // the sleep elapsed; the fix anchors scanning past the echoed input.
+  describe(`terminal_run [${label}] — issue #383 echo anchoring`, () => {
+    it("until:pattern waits for the real output, not the echoed sentinel", async ({ skip }) => {
+      const tag = `run383-${host}-${Date.now().toString(36)}`;
+      const res = parsePayload(await terminalRunHandler({
+        windowTitle: ps.title,
+        input: `Start-Sleep -Seconds 4; Write-Output "${tag}"`,
+        until: { mode: "pattern", pattern: tag, regex: false },
+        timeoutMs: 20_000,
+      }));
+
+      // Env conditions (same skip policy as terminal_send): a refused
+      // foreground transfer prevents the send, or focus loss loses the
+      // baseline — neither lets us assert echo anchoring.
+      if (res.completion?.reason === "send_failed") {
+        skip(`terminal_run send_failed — foreground transfer refused (env). ${JSON.stringify(res.completion)}`);
+      }
+      if (res.outputIntegrity === "baseline_lost") {
+        skip(`terminal_run baseline_lost — focus did not transfer (env).`);
+      }
+
+      expect(res.completion.reason, JSON.stringify(res)).toBe("pattern_matched");
+      expect(res.completion.matchedPattern).toBe(tag);
+      // #383 core assertion: the echo (containing `tag`) renders within ~1.5s,
+      // but the real output appears only after the 4s sleep. A lower bound well
+      // above the echo render proves the matcher waited for the real output
+      // rather than self-matching the echoed command line.
+      expect(res.completion.elapsedMs).toBeGreaterThanOrEqual(3000);
+      expect(res.output).toContain(tag);
+    }, 30_000);
   });
 });

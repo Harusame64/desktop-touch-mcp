@@ -179,7 +179,8 @@ function makeMarker(text: string): string {
 // match for sudo) so partial mentions in earlier output do not trigger.
 // Future expansion (e.g. ssh-keygen "Enter passphrase (empty for no
 // passphrase):") should follow the same anchored-strict rule.
-const HIDDEN_INPUT_PROMPT_PATTERNS: readonly RegExp[] = [
+// UNAMBIGUOUS secret prompts: the input is genuinely NOT echoed back.
+const SECRET_INPUT_PROMPT_PATTERNS: readonly RegExp[] = [
   /(password|passphrase|secret|sudo)[\s:]*$/i,
   // Codex P1+P2: original `/Password for /` was case-sensitive AND unanchored.
   // - Case-sensitive: missed `[sudo] password for alice:` (lowercase "password")
@@ -193,35 +194,59 @@ const HIDDEN_INPUT_PROMPT_PATTERNS: readonly RegExp[] = [
   //   normal verification path. Future expansion should keep the trailing-anchor
   //   discipline.
   /password for \S+:\s*$/i,
+];
+
+// HIDDEN = SECRET + the bare-`>` PowerShell `Read-Host` continuation prompt.
+// CAUTION (Codex #385 P2): a bare `>` is ALSO Bash's default PS2 continuation
+// prompt, where input IS echoed. This broader set is only safe for the
+// terminal_send verification skip (a false-positive there merely skips
+// read-back — conservative). The terminal_run echo-anchor MUST instead use
+// isSecretInputPrompt (excludes `>`): treating a Bash PS2 baseline as
+// hidden-input would bypass the anchor, full-scan, and re-introduce #383.
+const HIDDEN_INPUT_PROMPT_PATTERNS: readonly RegExp[] = [
+  ...SECRET_INPUT_PROMPT_PATTERNS,
   /^>\s*$/,
 ];
 
 /**
- * Return true when the baseline text's cursor row matches a known
- * hidden-input prompt pattern. `baselineRaw` is the raw UIA TextPattern
- * snapshot taken just before send (ANSI strip is performed here so callers
- * can pass either ANSI-laden or pre-cleaned text).
- *
- * Returns false on null / empty input — verification continues normally
- * for unreadable buffers.
+ * Return the last non-empty (trailing-whitespace-stripped) line of a UIA
+ * TextPattern snapshot — the cursor row. ANSI is stripped here so callers can
+ * pass either ANSI-laden or pre-cleaned text. Returns null for null/blank input.
  */
-export function isHiddenInputPrompt(baselineRaw: string | null): boolean {
-  if (!baselineRaw) return false;
+function lastNonEmptyPromptLine(baselineRaw: string | null): string | null {
+  if (!baselineRaw) return null;
   const cleaned = stripAnsi(baselineRaw).replace(/\r\n/g, "\n");
-  // Take the last non-empty line — the cursor row. Trailing blank lines are
-  // padding from Windows Terminal's row-padding behaviour (see
-  // normalizeForMarker docstring).
   const lines = cleaned.split("\n");
-  let lastNonEmpty = "";
   for (let i = lines.length - 1; i >= 0; i--) {
     const trimmed = lines[i]!.replace(/[ \t]+$/, "");
-    if (trimmed.length > 0) {
-      lastNonEmpty = trimmed;
-      break;
-    }
+    if (trimmed.length > 0) return trimmed;
   }
-  if (lastNonEmpty.length === 0) return false;
-  return HIDDEN_INPUT_PROMPT_PATTERNS.some((re) => re.test(lastNonEmpty));
+  return null;
+}
+
+/**
+ * Return true when the baseline cursor row matches a known hidden-input prompt
+ * (credential prompts OR the bare-`>` Read-Host continuation). Used by
+ * terminal_send to skip post-send read-back verification (a false-positive is
+ * conservative there). Returns false on null / empty input.
+ */
+export function isHiddenInputPrompt(baselineRaw: string | null): boolean {
+  const line = lastNonEmptyPromptLine(baselineRaw);
+  if (line === null) return false;
+  return HIDDEN_INPUT_PROMPT_PATTERNS.some((re) => re.test(line));
+}
+
+/**
+ * Stricter sibling of isHiddenInputPrompt for the terminal_run echo-anchor:
+ * matches ONLY unambiguous secret prompts (password / passphrase / secret /
+ * sudo), excluding the bare-`>` pattern that doubles as Bash's PS2 continuation
+ * prompt (where input IS echoed). Deciding `inputEchoes` from this avoids
+ * full-scanning a Bash PS2 baseline and re-introducing #383 (Codex #385 P2).
+ */
+export function isSecretInputPrompt(baselineRaw: string | null): boolean {
+  const line = lastNonEmptyPromptLine(baselineRaw);
+  if (line === null) return false;
+  return SECRET_INPUT_PROMPT_PATTERNS.some((re) => re.test(line));
 }
 
 function applySinceMarker(text: string, marker: string): { text: string; matched: boolean } {
@@ -269,6 +294,80 @@ function applySinceMarker(text: string, marker: string): { text: string; matched
   }
 
   return { text, matched: false };
+}
+
+/**
+ * Issue #383: anchor pattern scanning PAST the echoed command line.
+ *
+ * `terminal(action='run')` captures the baseline marker BEFORE sending, so the
+ * post-baseline slice from `applySinceMarker` begins at (or just after) the
+ * echoed command — the terminal echoes the sent `input` before running it.
+ * Matching a pattern against that echo self-matches any sentinel embedded in
+ * the command (e.g. `…; echo "DONE"` + pattern "DONE"), firing before the
+ * command produces any output. This locates the (normalised) `input` inside the
+ * already-normalised `postBaseline` slice and returns only what FOLLOWS it, so
+ * matching considers the command's real output rather than its echo.
+ *
+ * Returns:
+ *   - string: the scan region after the echoed input (may be "" when the echo
+ *     has rendered but no output has followed yet — "" is a valid target for
+ *     patterns like /^$/).
+ *   - undefined: the echo is not yet located → DEFER. Because the shell renders
+ *     the full command echo before the command emits output, the real output
+ *     cannot exist before the full echo is present; any match at this point
+ *     would be inside the still-rendering echo. Callers MUST skip matching and
+ *     retry. Returning the full slice instead would re-introduce #383 (e.g. an
+ *     SSH-chunked echo where the sentinel arrived but the closing quote had
+ *     not). On terminals where the echo never renders verbatim this defers
+ *     until timeout — a loud failure preferable to a silent echo self-match.
+ *
+ * Single-line input is located with `indexOf` (not `startsWith`), tolerating a
+ * prompt-prefix remnant before the echo (when the prompt line is shorter than
+ * makeMarker's 256-char hash window). Anchoring is applied to SINGLE-LINE input
+ * only: multiline input is echoed shell/terminal-dependently (continuation
+ * prompts AND interleaved line-by-line output) with no reliable echo-boundary
+ * discriminator in the buffer, so it is NOT anchored and falls back to the
+ * pre-#383 full scan (residual multiline echo self-match tracked in #386). Both
+ * `postBaseline` (via applySinceMarker) and `input` are run through
+ * `normalizeForMarker` so CRLF/LF and trailing-whitespace rendering differences
+ * do not break the single-line match.
+ *
+ * `inputEchoes=false` — for hidden-input prompts (password / passphrase /
+ * secret / sudo, detected via isHiddenInputPrompt on the pre-send baseline) the
+ * input is never echoed into the buffer, so there is no echo to skip and no
+ * echoed command for a sentinel to self-match. The anchor is bypassed and the
+ * full slice is returned, otherwise the indexOf below would never find the
+ * needle and we would defer forever → until:{mode:'pattern'} would time out on
+ * a perfectly valid hidden-input flow (Codex P1 on #383).
+ */
+export function scanRegionAfterEcho(
+  postBaseline: string,
+  input: string,
+  inputEchoes = true,
+): string | undefined {
+  // Hidden-input prompt: nothing was echoed → scan the whole slice so the real
+  // post-prompt output can still match.
+  if (!inputEchoes) return postBaseline;
+  const needle = normalizeForMarker(input);
+  // Empty/blank input has no echo to skip — scan the whole slice.
+  if (needle.length === 0) return postBaseline;
+  // Multiline input: do NOT anchor — fall back to the pre-#383 full scan. A
+  // multiline command is echoed shell/terminal-dependently: continuation
+  // prompts (Bash PS2 `> `, PowerShell `>>`) AND interleaved line-by-line output
+  // (conhost/pwsh run embedded newlines line-by-line, inserting each line's
+  // output before the next line's echo) mean the buffer carries no reliable
+  // discriminator for the echo boundary — locating it either matches prematurely
+  // or defers forever (the #385 review history proved this is structural, not a
+  // tunable parameter). Anchoring is therefore scoped to single-line input — the
+  // case the #383 idiom (`cmd; echo "SENTINEL"`) and the issue cover. Multiline
+  // keeps the prior behaviour (no regression); residual multiline echo
+  // self-match is a pre-existing niche tracked in #386.
+  if (needle.includes("\n")) return postBaseline;
+  // Single-line: locate the echoed command and scan past it. indexOf (not
+  // startsWith) tolerates a prompt-prefix remnant before the echo.
+  const idx = postBaseline.indexOf(needle);
+  if (idx < 0) return undefined; // defer: echo not yet located
+  return postBaseline.slice(idx + needle.length);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1329,6 +1428,20 @@ export const terminalRunHandler = async ({
   // the final sinceMarker diff.
   const baselineRead = await readTerminalRaw(windowTitle);
   const sinceMarker = baselineRead?.marker;
+  // Codex P1 (#383): if the pre-send prompt suppresses echo (password /
+  // passphrase / secret / sudo), the sent `input` is not echoed into the
+  // buffer, so the echo-anchor (scanRegionAfterEcho) could never locate it and
+  // would defer forever → until:{mode:'pattern'} would time out on a valid
+  // hidden-input flow. Detect that from the pre-send baseline and bypass the
+  // anchor in that case.
+  // Use isSecretInputPrompt (NOT isHiddenInputPrompt): the latter also matches a
+  // bare `>`, which is Bash's PS2 continuation prompt where input IS echoed —
+  // bypassing the anchor there would full-scan and re-introduce #383 (Codex
+  // #385 P2). A false-positive here harms in the #383 direction (vs send, where
+  // it merely skips read-back), so the stricter end-anchored secret-only set is
+  // required. The narrow PowerShell Read-Host (`>`) hidden-input case is not
+  // bypassed and degrades to a loud timeout — safer than a silent echo match.
+  const inputEchoes = !isSecretInputPrompt(baselineRead?.text ?? null);
 
   const sendArgs = {
     windowTitle,
@@ -1419,21 +1532,30 @@ export const terminalRunHandler = async ({
     }
   }
 
-  // Pattern matching must only consider content that appeared AFTER the
-  // baseline marker. Otherwise prompt-shaped patterns (e.g. "PS>", "$ ") that
-  // already exist in scrollback would fire pattern_matched immediately.
+  // Pattern matching must only consider content that appeared AFTER the echoed
+  // command line. The baseline marker is captured before sending, so the slice
+  // from applySinceMarker begins at the echoed `input`; matching there would
+  // self-match a sentinel embedded in the command (issue #383). We therefore
+  // (1) slice to content after the baseline marker (applySinceMarker), then
+  // (2) anchor PAST the echoed input (scanRegionAfterEcho).
   // Returns:
-  //   - string: the new content since the baseline marker (may be "" when no
-  //     diff has accumulated yet — empty is a valid pattern target).
-  //   - undefined: the baseline boundary has been lost (no marker, or
-  //     applySinceMarker scanned past its 32k window without finding it).
-  //     Callers MUST skip pattern matching in this case — falling back to the
-  //     full buffer would re-introduce prior-history false positives because
-  //     scrollback past the scan window can still hold pre-baseline text.
+  //   - string: content after the echoed input (may be "" — a valid target for
+  //     patterns like /^$/).
+  //   - undefined: skip matching this tick. Two distinct causes, both honoured
+  //     by the same caller guard (newContent !== undefined):
+  //       (a) baseline boundary lost (no marker, or applySinceMarker scanned
+  //           past its 32k window) — falling back to the full buffer would
+  //           re-introduce prior-history false positives.
+  //       (b) echo not yet located (#383 defer) — the real output cannot exist
+  //           before the full echo renders, so any match would be inside the
+  //           still-rendering echo; defer and retry on the next tick. Hidden-input
+  //           prompts (password/secret) suppress the echo entirely, so the anchor
+  //           is bypassed there (inputEchoes=false) rather than deferring forever.
   const newContentSinceBaseline = (text: string): string | undefined => {
     if (!sinceMarker) return undefined;
     const sliced = applySinceMarker(text, sinceMarker);
-    return sliced.matched ? sliced.text : undefined;
+    if (!sliced.matched) return undefined;
+    return scanRegionAfterEcho(sliced.text, input, inputEchoes);
   };
 
   // Immediate post-send pattern check — runs once before the first POLL_INTERVAL_MS
