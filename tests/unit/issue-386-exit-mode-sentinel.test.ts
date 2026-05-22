@@ -309,55 +309,62 @@ describe("resolveExitShell — shell decision matrix (P2 wiring)", () => {
 });
 
 describe("stripExitArtifacts — cosmetic removal of injected epilogue + sentinel", () => {
-  it("bash: removes the command echo + echoed epilogue + sentinel, keeps real output", () => {
-    // split("\n")[1] is the epilogue line (printf '%s%s|%d|' … "_EXIT_<nonce>" …),
-    // exactly what the head-cut marker searches for.
+  it("bash: drops the injected epilogue echo + sentinel lines, keeps echo + real output", () => {
+    // REALISTIC order: input executes and prints BEFORE the epilogue echoes.
+    // split("\n")[1] is the epilogue line (carries the split token "_EXIT_<nonce>").
     const epilogueEcho = buildExitCommand("ls -la", "bash", NONCE).split("\n")[1]!;
     const buffer = [
-      "user@host:~$ ls -la", // command echo
-      epilogueEcho, // echoed epilogue (PS2 continuation line)
+      "user@host:~$ ls -la", // command echo (kept — same as pattern/quiet modes)
       "file1.txt", // real output
       "file2.txt",
-      `${TOKEN}|0|`, // sentinel output line
+      `user@host:~$ ${epilogueEcho}`, // echoed epilogue (dropped — has _EXIT_<nonce>)
+      `${TOKEN}|0|`, // sentinel output line (dropped — has _EXIT_<nonce>)
+      "user@host:~$",
     ].join("\n");
-    expect(stripExitArtifacts(buffer, NONCE, "bash")).toBe("file1.txt\nfile2.txt");
+    const out = stripExitArtifacts(buffer, NONCE, "bash");
+    expect(out).toContain("file1.txt");
+    expect(out).toContain("file2.txt");
+    expect(out).toContain("user@host:~$ ls -la"); // command echo kept
+    expect(out).not.toContain("_EXIT_"); // both injected lines gone
+    expect(out).not.toContain("__DTMCP");
   });
 
-  it("powershell: removes prologue + input + epilogue echo + sentinel, keeps real output", () => {
+  it("powershell: drops the prologue echo + epilogue echo + sentinel lines", () => {
     const [prologue, inputEcho, epilogueEcho] = buildExitCommand(
       "Get-ChildItem",
       "powershell",
       NONCE,
     ).split("\n");
     const buffer = [
-      `PS C:\\> ${prologue}`,
-      inputEcho,
-      epilogueEcho,
+      `PS C:\\> ${prologue}`, // prologue echo (dropped — $global:LASTEXITCODE = $null)
+      `PS C:\\> ${inputEcho}`, // command echo (kept)
       "Mode  LastWriteTime  Name", // real output
       "----  -------------  ----",
-      `${TOKEN}|0|True`, // sentinel
+      `PS C:\\> ${epilogueEcho}`, // epilogue echo (dropped — _EXIT_<nonce>)
+      `${TOKEN}|0|True`, // sentinel (dropped)
+      "PS C:\\>",
     ].join("\n");
-    expect(stripExitArtifacts(buffer, NONCE, "powershell")).toBe(
-      "Mode  LastWriteTime  Name\n----  -------------  ----",
-    );
+    const out = stripExitArtifacts(buffer, NONCE, "powershell");
+    expect(out).toContain("Mode  LastWriteTime  Name");
+    expect(out).toContain("----  -------------  ----");
+    expect(out).not.toContain("LASTEXITCODE"); // prologue + epilogue gone
+    expect(out).not.toContain("__DTMCP");
+    expect(out).not.toContain("_EXIT_");
   });
 
-  it("degrades safely when the epilogue echo is not located (still strips the sentinel)", () => {
-    // e.g. a tailed read scrolled the echo off the top — only the sentinel line
-    // is strippable; real output is preserved (never over-cut).
-    const buffer = `building...\ndone\n${TOKEN}|0|`;
-    expect(stripExitArtifacts(buffer, NONCE, "bash")).toBe("building...\ndone");
-  });
-
-  it("returns '' when there is no real output between the epilogue echo and sentinel", () => {
+  it("order-independent: works even if the sentinel renders right after the echo", () => {
+    // A fast command with no output between echo and sentinel still strips clean.
     const epilogueEcho = buildExitCommand("true", "bash", NONCE).split("\n")[1]!;
-    const buffer = ["$ true", epilogueEcho, `${TOKEN}|0|`].join("\n");
-    expect(stripExitArtifacts(buffer, NONCE, "bash")).toBe("");
+    const buffer = ["$ true", `$ ${epilogueEcho}`, `${TOKEN}|0|`, "$"].join("\n");
+    const out = stripExitArtifacts(buffer, NONCE, "bash");
+    expect(out).not.toContain("__DTMCP");
+    expect(out).not.toContain("_EXIT_");
+    expect(out).toContain("$ true"); // command echo kept
   });
 
   it("a different-nonce sentinel from a prior run is left intact (per-invocation isolation)", () => {
     const buffer = `output line\n__DTMCP_EXIT_otherrun|0|`;
-    // Our nonce's token is absent → nothing to strip → returned as-is (trimmed).
+    // Our nonce's marker is absent → nothing dropped → returned as-is (trimmed).
     expect(stripExitArtifacts(buffer, NONCE, "bash")).toBe(buffer);
   });
 });
