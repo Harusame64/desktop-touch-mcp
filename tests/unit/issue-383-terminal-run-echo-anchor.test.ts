@@ -98,52 +98,32 @@ describe("scanRegionAfterEcho — issue #383 echo anchoring", () => {
     });
   });
 
-  describe("multiline input", () => {
-    it("anchors after the LAST echoed line (output follows the full echo)", () => {
+  describe("multiline input is NOT anchored — full-scan fallback (Option X / #386)", () => {
+    // The buffer carries no reliable echo-boundary discriminator for multiline
+    // input (continuation prompts + interleaved line-by-line output), so #383
+    // anchoring is scoped to single-line input. Multiline keeps the pre-#383
+    // behaviour: scanRegionAfterEcho returns the whole slice unchanged. This
+    // means a sentinel in a multiline command can still self-match (#386), but
+    // there is no defer→timeout regression and no premature anchoring.
+    it("returns the full slice for multiline input (no anchoring)", () => {
       const post = `echo A\nsleep 1; echo DONE\nA\nDONE`;
       const input = `echo A\nsleep 1; echo DONE`;
-      const region = scanRegionAfterEcho(post, input);
-      expect(region).toBe(`\nA\nDONE`);
-      expect(/DONE/.test(region!)).toBe(true);
+      expect(scanRegionAfterEcho(post, input)).toBe(post);
     });
-  });
 
-  describe("continuation prompts on multiline input (Codex P2)", () => {
-    it("locates input across a Bash PS2 ('> ') continuation prompt", () => {
-      // The shell injected "> " before the continuation line, so the echo is
-      // not the raw input verbatim; line-by-line indexOf skips the prefix.
+    it("returns the full slice even with continuation prompts in the echo", () => {
       const post = `echo A\n> sleep 1; echo DONE\nA\nDONE`;
       const input = `echo A\nsleep 1; echo DONE`;
-      expect(scanRegionAfterEcho(post, input)).toBe(`\nA\nDONE`);
+      expect(scanRegionAfterEcho(post, input)).toBe(post);
     });
 
-    it("locates input across a PowerShell ('>>') continuation prompt", () => {
-      const post = `Get-Process |\n>> Select-Object Name\nRESULT`;
-      const input = `Get-Process |\nSelect-Object Name`;
-      expect(scanRegionAfterEcho(post, input)).toBe(`\nRESULT`);
-    });
-
-    it("still defers when a later continuation line has not rendered yet", () => {
-      const post = `echo A\n> `; // first line echoed, continuation not yet
-      const input = `echo A\nsleep 1; echo DONE`;
-      expect(scanRegionAfterEcho(post, input)).toBeUndefined();
-    });
-
-    it("does NOT match prematurely when an earlier line's output contains a later line (Codex Round 4 P2)", () => {
-      // line1 `cat f` has not finished echoing line2 yet, but its OUTPUT already
-      // contains line2's text. A per-line indexOf with arbitrary gaps would
-      // anchor inside that output; contiguous matching must defer instead.
-      const input = `cat f\necho DONE`;
+    it("never defers on multiline — no defer→timeout regression (Codex Round 5 P1)", () => {
+      // Line-by-line execution inserts output between echoes; the earlier
+      // contiguous approach returned undefined (→ timeout) here. Full-scan must
+      // not defer.
       const post = `cat f\nsome echo DONE inside file output`;
-      expect(scanRegionAfterEcho(post, input)).toBeUndefined();
-    });
-
-    it("requires contiguity: rejects arbitrary text between echoed lines", () => {
-      // Only continuation-prompt prefixes (>/. + space) are allowed between
-      // lines — not arbitrary words.
-      const input = `line one\nline two`;
-      expect(scanRegionAfterEcho(`line one\nXX line two\nOUT`, input)).toBeUndefined();
-      expect(scanRegionAfterEcho(`line one\n>> line two\nOUT`, input)).toBe(`\nOUT`);
+      const input = `cat f\necho DONE`;
+      expect(scanRegionAfterEcho(post, input)).toBe(post);
     });
   });
 
@@ -154,23 +134,17 @@ describe("scanRegionAfterEcho — issue #383 echo anchoring", () => {
     });
   });
 
-  describe("needle normalisation (P2-2)", () => {
+  describe("needle normalisation (P2-2, single-line)", () => {
     it("strips trailing whitespace from the input before matching", () => {
       const post = `sleep 1; echo DONE\nDONE`;
       const input = `sleep 1; echo DONE   `; // trailing spaces
       expect(scanRegionAfterEcho(post, input)).toBe(`\nDONE`);
     });
 
-    it("normalises CRLF in the input to match the LF post-baseline slice", () => {
-      const post = `echo A\nsleep 1; echo DONE\nA\nDONE`;
-      const input = `echo A\r\nsleep 1; echo DONE`; // CRLF
-      expect(scanRegionAfterEcho(post, input)).toBe(`\nA\nDONE`);
-    });
-
-    it("preserves inner blank lines in the needle", () => {
-      const post = `echo A\n\necho DONE\nA\n\nDONE`;
-      const input = `echo A\n\necho DONE`; // inner blank line is significant
-      expect(scanRegionAfterEcho(post, input)).toBe(`\nA\n\nDONE`);
+    it("strips a trailing CRLF from the input before matching", () => {
+      const post = `sleep 1; echo DONE\nDONE`;
+      const input = `sleep 1; echo DONE\r\n`; // trailing CRLF
+      expect(scanRegionAfterEcho(post, input)).toBe(`\nDONE`);
     });
   });
 

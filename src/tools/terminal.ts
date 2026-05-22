@@ -323,12 +323,14 @@ function applySinceMarker(text: string, marker: string): { text: string; matched
  *
  * Single-line input is located with `indexOf` (not `startsWith`), tolerating a
  * prompt-prefix remnant before the echo (when the prompt line is shorter than
- * makeMarker's 256-char hash window). Multiline input is matched CONTIGUOUSLY,
- * tolerating only a continuation-prompt prefix between lines (Bash PS2 `> `,
- * PowerShell `>>`) — never arbitrary text, which could anchor inside an earlier
- * line's output and match before the echo boundary. Both `postBaseline` (via
- * applySinceMarker) and `input` are run through `normalizeForMarker` so CRLF/LF
- * and trailing-whitespace rendering differences do not break the match.
+ * makeMarker's 256-char hash window). Anchoring is applied to SINGLE-LINE input
+ * only: multiline input is echoed shell/terminal-dependently (continuation
+ * prompts AND interleaved line-by-line output) with no reliable echo-boundary
+ * discriminator in the buffer, so it is NOT anchored and falls back to the
+ * pre-#383 full scan (residual multiline echo self-match tracked in #386). Both
+ * `postBaseline` (via applySinceMarker) and `input` are run through
+ * `normalizeForMarker` so CRLF/LF and trailing-whitespace rendering differences
+ * do not break the single-line match.
  *
  * `inputEchoes=false` — for hidden-input prompts (password / passphrase /
  * secret / sudo, detected via isHiddenInputPrompt on the pre-send baseline) the
@@ -349,28 +351,23 @@ export function scanRegionAfterEcho(
   const needle = normalizeForMarker(input);
   // Empty/blank input has no echo to skip — scan the whole slice.
   if (needle.length === 0) return postBaseline;
-  const lines = needle.split("\n");
-  if (lines.length === 1) {
-    // Single-line: locate the echoed command and scan past it. indexOf (not
-    // startsWith) tolerates a prompt-prefix remnant before the echo.
-    const idx = postBaseline.indexOf(needle);
-    if (idx < 0) return undefined; // defer: echo not yet located
-    return postBaseline.slice(idx + needle.length);
-  }
-  // Multiline: match the echoed lines CONTIGUOUSLY, tolerating ONLY a
-  // continuation-prompt prefix between lines (Bash PS2 `> `, PowerShell `>>`),
-  // never arbitrary intervening text. Allowing arbitrary gaps (a per-line
-  // indexOf) could match a later line inside an earlier line's OUTPUT before
-  // that line was echoed, anchoring before the real echo boundary and
-  // re-opening premature pattern_matched (Codex #385 P2). The separator is a
-  // newline + an optional short run of `>`/`.` continuation chars + optional
-  // space. The first contiguous occurrence is the echo (echo precedes output);
-  // anchoring past it keeps a sentinel in the final command out of scope.
-  const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const re = new RegExp(lines.map(escapeRe).join("\\n[>.]{0,4} ?"));
-  const m = re.exec(postBaseline);
-  if (m === null) return undefined; // defer: contiguous echo not located yet
-  return postBaseline.slice(m.index + m[0].length);
+  // Multiline input: do NOT anchor — fall back to the pre-#383 full scan. A
+  // multiline command is echoed shell/terminal-dependently: continuation
+  // prompts (Bash PS2 `> `, PowerShell `>>`) AND interleaved line-by-line output
+  // (conhost/pwsh run embedded newlines line-by-line, inserting each line's
+  // output before the next line's echo) mean the buffer carries no reliable
+  // discriminator for the echo boundary — locating it either matches prematurely
+  // or defers forever (the #385 review history proved this is structural, not a
+  // tunable parameter). Anchoring is therefore scoped to single-line input — the
+  // case the #383 idiom (`cmd; echo "SENTINEL"`) and the issue cover. Multiline
+  // keeps the prior behaviour (no regression); residual multiline echo
+  // self-match is a pre-existing niche tracked in #386.
+  if (needle.includes("\n")) return postBaseline;
+  // Single-line: locate the echoed command and scan past it. indexOf (not
+  // startsWith) tolerates a prompt-prefix remnant before the echo.
+  const idx = postBaseline.indexOf(needle);
+  if (idx < 0) return undefined; // defer: echo not yet located
+  return postBaseline.slice(idx + needle.length);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

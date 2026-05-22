@@ -15,7 +15,8 @@
   call). The matcher now anchors past the echoed command, so a sentinel is
   matched only when the command genuinely prints it. Patterns that appear only
   in the output, and fast commands whose echo and output arrive together, are
-  unaffected. (issue #383)
+  unaffected. This covers single-command idioms (`cmd; echo "DONE"`); multi-line
+  commands retain the prior scanning behaviour and are unchanged. (issue #383)
 
 ## [1.7.2] - 2026-05-19 — Emergency-stop now requires a deliberate dwell (no more drive-by failsafe kills)
 
