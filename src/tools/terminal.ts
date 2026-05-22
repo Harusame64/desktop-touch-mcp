@@ -589,6 +589,109 @@ function unterminatedShellConstruct(input: string): string | null {
   return null;
 }
 
+/** Loud-fail codes for exit-mode pre-flight rejection (see resolveExitShell). */
+export type ExitModeRejectCode = "ExitModeShellUnsupported" | "ExitModeShellAmbiguous";
+
+export type ExitShellResolution =
+  | { ok: true; shell: ExitShell }
+  | { ok: false; code: ExitModeRejectCode; processName: string | null };
+
+/**
+ * Resolve which first-class shell to build the exit-mode epilogue for, honouring
+ * an explicit `shell` arg and falling back to `detectShell` on the window's
+ * process name for `'auto'`.
+ *
+ * Pure (process name passed in, not read here) so the decision matrix is
+ * unit-testable without a real window. The handler reads the process name via
+ * getProcessIdentityByPid(getWindowProcessId(hwnd)) and passes it in.
+ *
+ * Outcomes:
+ *   - explicit 'bash'/'powershell' → use it (no detection needed).
+ *   - explicit 'cmd' → reject ExitModeShellUnsupported (cmd is deferred — it
+ *     needs `cmd /v:on` delayed expansion, a separate path).
+ *   - 'auto' → detectShell(processName):
+ *       high + bash/powershell → use it;
+ *       high + cmd            → reject ExitModeShellUnsupported;
+ *       low                   → reject ExitModeShellAmbiguous (the SSH/WSL wall
+ *                               — ask the caller to pass `shell` explicitly).
+ */
+export function resolveExitShell(
+  shellArg: "bash" | "powershell" | "cmd" | "auto",
+  processName: string | null | undefined,
+): ExitShellResolution {
+  if (shellArg === "bash" || shellArg === "powershell") return { ok: true, shell: shellArg };
+  const pn = processName ?? null;
+  if (shellArg === "cmd") return { ok: false, code: "ExitModeShellUnsupported", processName: pn };
+  // 'auto' — detect from the host process name.
+  const det = detectShell(processName);
+  if (det.shell === "cmd") return { ok: false, code: "ExitModeShellUnsupported", processName: pn };
+  // Low confidence (host hides the shell) OR an unrecognised process → ambiguous.
+  // (detectShell only returns shell:'unknown' with confidence:'low', so the
+  // `=== "unknown"` arm both handles that case and narrows det.shell to ExitShell
+  // for the final return.)
+  if (det.confidence === "low" || det.shell === "unknown") {
+    return { ok: false, code: "ExitModeShellAmbiguous", processName: pn };
+  }
+  // high confidence + first-class shell (bash | powershell).
+  return { ok: true, shell: det.shell };
+}
+
+/**
+ * Cosmetically strip the DRIVER-injected exit-mode artifacts from the final
+ * `output`, so the caller sees only their command's real output (the exit status
+ * is returned separately in `completion.exitCode`).
+ *
+ * The post-baseline slice for an exit-mode run looks like:
+ *   [echoed prologue (PowerShell)] [echoed input] [echoed epilogue] [real output] [sentinel line]
+ *
+ * Two cuts, both keyed off markers that appear ONLY in injected text:
+ *   1. Tail: drop everything from the CONTIGUOUS sentinel token onwards. The
+ *      contiguous `__DTMCP_EXIT_<nonce>` only assembles in the command's runtime
+ *      OUTPUT — the echo carries the SPLIT form — so this never over-cuts real
+ *      output (echo-immune, same property parseExitSentinel relies on).
+ *   2. Head: drop everything up to and including the echoed epilogue line,
+ *      located by the NONCE-BEARING SPLIT-token signature the epilogue prints the
+ *      token with (`'__DTMCP' "_EXIT_<nonce>"` for bash,
+ *      `('__DTMCP'+"_EXIT_<nonce>")` for PowerShell). That signature appears ONLY
+ *      in the driver-injected epilogue echo: the user's command echo would have
+ *      to contain the crypto-random nonce in the exact split form to collide
+ *      (the same negligible assumption parseExitSentinel relies on), and the
+ *      command's real OUTPUT carries the CONTIGUOUS token, not the split form.
+ *      Cutting to the FIRST occurrence also removes the PowerShell prologue + the
+ *      user's command echo that precede it.
+ *
+ * Best-effort, NOT a correctness boundary: if a signature is not located (wrapped
+ * echo, OCR fallback, or the head scrolled out of a tailed read), the
+ * corresponding cut is skipped and the slice degrades to including a little
+ * injected text — never to losing real output. Completion + exitCode come from
+ * parseExitSentinel and are unaffected by this cosmetic pass.
+ */
+export function stripExitArtifacts(slice: string, nonce: string, shell: ExitShell): string {
+  let body = slice;
+  // 1. Tail cut at the contiguous sentinel token (output-only by construction).
+  const tokIdx = body.indexOf(exitToken(nonce));
+  if (tokIdx >= 0) {
+    const lineStart = body.lastIndexOf("\n", tokIdx);
+    body = lineStart >= 0 ? body.slice(0, lineStart) : "";
+  }
+  // 2. Head cut past the echoed epilogue, anchored on the nonce-bearing split
+  //    signature (matches buildExitCommand's epilogue verbatim). Nonce-unique →
+  //    cannot collide with the user's command echo or real output, so this never
+  //    over-cuts real content.
+  const tail = EXIT_TOKEN_TAIL_PREFIX + nonce;
+  const splitSig =
+    shell === "bash"
+      ? `'${EXIT_TOKEN_HEAD}' "${tail}"`
+      : `('${EXIT_TOKEN_HEAD}'+"${tail}")`;
+  const mIdx = body.indexOf(splitSig);
+  if (mIdx >= 0) {
+    const nl = body.indexOf("\n", mIdx);
+    body = nl >= 0 ? body.slice(nl + 1) : "";
+  }
+  // Trim the blank edges the cuts can leave behind.
+  return body.replace(/^\n+/, "").replace(/\n+$/, "");
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // terminal_read
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1579,7 +1682,10 @@ export const terminalRunHandler = async ({
 }: {
   windowTitle: string;
   input: string;
-  until: { mode: "quiet"; quietMs: number } | { mode: "pattern"; pattern: string; regex: boolean };
+  until:
+    | { mode: "quiet"; quietMs: number }
+    | { mode: "pattern"; pattern: string; regex: boolean }
+    | { mode: "exit"; shell: "bash" | "powershell" | "cmd" | "auto" };
   timeoutMs: number;
   sendOptions?: Record<string, unknown>;
   readOptions?: Record<string, unknown>;
@@ -1633,6 +1739,23 @@ export const terminalRunHandler = async ({
     validatedReadOptions = keepOnlyProvidedKeys(parsed.data, readOptions);
   }
 
+  // ── Phase 0.5: exit-mode input pre-flight (issue #386) ──────────────────────
+  // until:{mode:'exit'} appends an echo-immune completion epilogue after the
+  // command (buildExitCommand). Input that ends in an OPEN construct (here-doc,
+  // unbalanced quote, unterminated $(…), PowerShell here-string, trailing line
+  // continuation) would swallow the epilogue → the sentinel never prints → the
+  // run would time out. Reject loudly BEFORE sending so the caller fixes the
+  // input or picks pattern/quiet. This check is input-only (no window needed),
+  // so it runs before findTerminalWindow.
+  if (until.mode === "exit") {
+    const unsafe = isUnsafeForExitMode(input);
+    if (unsafe) {
+      return failWith(new Error("ExitModeUnsafeInput"), "terminal:run", {
+        context: { reason: unsafe, windowTitle },
+      });
+    }
+  }
+
   // ── Phase 1: Send ──────────────────────────────────────────────────────────
   const win = findTerminalWindow(windowTitle);
   if (!win) {
@@ -1646,6 +1769,40 @@ export const terminalRunHandler = async ({
   }
 
   const hwnd = win.hwnd;
+
+  // ── exit-mode shell resolution (issue #386) ─────────────────────────────────
+  // Needs the window's process name (for shell:'auto' detection), so it runs
+  // after findTerminalWindow. cmd → ExitModeShellUnsupported, auto-low-confidence
+  // (WindowsTerminal / conhost / SSH host) → ExitModeShellAmbiguous: both loud
+  // pre-send rejects (no command sent). On success we lock the shell + a
+  // per-invocation nonce for buildExitCommand / parseExitSentinel.
+  let exitShell: ExitShell | null = null;
+  let exitNonce = "";
+  if (until.mode === "exit") {
+    const processName = (() => {
+      try {
+        return getProcessIdentityByPid(getWindowProcessId(hwnd)).processName;
+      } catch {
+        return null;
+      }
+    })();
+    const resolved = resolveExitShell(until.shell, processName);
+    if (!resolved.ok) {
+      return failWith(new Error(resolved.code), "terminal:run", {
+        context: {
+          windowTitle,
+          ...(resolved.processName ? { processName: resolved.processName } : {}),
+        },
+      });
+    }
+    exitShell = resolved.shell;
+    exitNonce = generateExitNonce();
+  }
+
+  // exit mode sends the command WRAPPED with the completion epilogue; all other
+  // modes send the raw input. (exitShell is non-null here whenever mode==='exit'.)
+  const sendInput =
+    until.mode === "exit" && exitShell ? buildExitCommand(input, exitShell, exitNonce) : input;
 
   // Capture the baseline marker BEFORE sending. If we wait until after the send
   // returns, fast-completing commands (e.g. `echo`) may already have written
@@ -1670,7 +1827,7 @@ export const terminalRunHandler = async ({
 
   const sendArgs = {
     windowTitle,
-    input,
+    input: sendInput,
     method: "auto" as const,
     chunkSize: 100,
     pressEnter: true,
@@ -1735,6 +1892,7 @@ export const terminalRunHandler = async ({
   const POLL_INTERVAL_MS = 200;
   let completionReason: CompletionReason | null = null;
   let matchedPattern: string | undefined;
+  let exitCode: number | undefined; // issue #386: set only on reason:'exited'
   let lastText = baselineRead?.text ?? "";
   let lastTextTime = Date.now();
   let firstChangeTime: number | null = null;
@@ -1783,12 +1941,35 @@ export const terminalRunHandler = async ({
     return scanRegionAfterEcho(sliced.text, input, inputEchoes);
   };
 
-  // Immediate post-send pattern check — runs once before the first POLL_INTERVAL_MS
-  // sleep so transient lines (e.g. CR-updated progress indicators that overwrite
-  // themselves rapidly) are not missed by waiting for the first poll tick. The
-  // truthiness gate on newContent is intentionally absent: empty content is a
-  // valid input for patterns like "" or /^$/ that match emptiness.
-  if (patternRe) {
+  // Exit-mode completion slice (issue #386). Unlike the pattern path this needs
+  // NO echo anchor — the contiguous `__DTMCP_EXIT_<nonce>` token assembles only
+  // in the command's runtime OUTPUT, never the split-form echo, so
+  // parseExitSentinel is self-match-proof. The nonce is per-invocation, so even
+  // when the baseline marker has scrolled out of the 32k window a full-buffer
+  // scan cannot match a PRIOR run's sentinel — we therefore fall back to the
+  // full text instead of deferring (more robust than the pattern path).
+  const exitSliceSinceBaseline = (text: string): string => {
+    if (!sinceMarker) return text;
+    const sliced = applySinceMarker(text, sinceMarker);
+    return sliced.matched ? sliced.text : text;
+  };
+
+  // Immediate post-send completion check — runs once before the first
+  // POLL_INTERVAL_MS sleep so transient lines (e.g. CR-updated progress
+  // indicators that overwrite themselves rapidly) and fast commands are not
+  // missed by waiting for the first poll tick. The truthiness gate on newContent
+  // is intentionally absent: empty content is a valid input for patterns like ""
+  // or /^$/ that match emptiness.
+  if (until.mode === "exit" && exitShell) {
+    const initialPostSend = await readTerminalRaw(windowTitle);
+    if (initialPostSend) {
+      const r = parseExitSentinel(exitSliceSinceBaseline(initialPostSend.text), exitNonce, exitShell);
+      if (r.matched) {
+        completionReason = "exited";
+        exitCode = r.exitCode;
+      }
+    }
+  } else if (patternRe) {
     const initialPostSend = await readTerminalRaw(windowTitle);
     if (initialPostSend) {
       const newContent = newContentSinceBaseline(initialPostSend.text);
@@ -1828,7 +2009,17 @@ export const terminalRunHandler = async ({
 
     const currentText = current.text;
 
-    if (until.mode === "pattern" && patternRe) {
+    if (until.mode === "exit" && exitShell) {
+      // issue #386: echo-immune sentinel match. parseExitSentinel defers (no
+      // match) until the FULL sentinel line has rendered, so a partially-painted
+      // line never completes early.
+      const r = parseExitSentinel(exitSliceSinceBaseline(currentText), exitNonce, exitShell);
+      if (r.matched) {
+        completionReason = "exited";
+        exitCode = r.exitCode;
+        break;
+      }
+    } else if (until.mode === "pattern" && patternRe) {
       const newContent = newContentSinceBaseline(currentText);
       // newContent === undefined → baseline lost, skip to avoid prior-history match.
       // newContent === "" is still valid input for patterns like /^$/.
@@ -1913,6 +2104,25 @@ export const terminalRunHandler = async ({
           ...(parsed.suggest && parsed.suggest.length > 0 ? { suggest: parsed.suggest } : {}),
         };
         warnings.push("Final read failed — output may be unavailable. See readError for details.");
+      } else if (until.mode === "exit" && exitShell && completionReason === "exited") {
+        // issue #386: on a CLEAN exit the sentinel rendered, so the buffer is
+        // anchored by the per-invocation nonce — stripExitArtifacts locates this
+        // run's epilogue + sentinel and returns only the real output even when
+        // the baseline marker scrolled out of range (the pre-baseline-scrollback
+        // integrity concern is structurally removed by cutting at the injected
+        // markers, so baseline_lost suppression is not needed here). Strip the
+        // injected prologue/epilogue echo + sentinel line so the caller sees only
+        // their command's output (exitCode carries the status separately).
+        //
+        // NOTE: gated on completionReason==='exited'. An exit-mode run that ended
+        // in timeout / window_closed has NO sentinel, so it falls through to the
+        // standard integrity gate below — claiming outputIntegrity:'ok' on an
+        // un-anchored, possibly-truncated buffer would lie about a run that did
+        // not complete (Opus #388 round 1 P2-2). reason:'timeout' stays loud and
+        // the integrity gate honestly reports baseline_lost when applicable.
+        output = stripExitArtifacts(parsed.text ?? "", exitNonce, exitShell);
+        finalMarker = parsed.marker;
+        outputIntegrity = "ok";
       } else {
         // Issue #196 (c): when baselineRead succeeded (sinceMarker present)
         // but the read handler could not match the marker in the post-run
@@ -1971,6 +2181,7 @@ export const terminalRunHandler = async ({
       reason: completionReason!,
       elapsedMs: Date.now() - startedAt,
       ...(matchedPattern !== undefined ? { matchedPattern } : {}),
+      ...(exitCode !== undefined ? { exitCode } : {}),
     },
     ...(outputIntegrity !== undefined ? { outputIntegrity } : {}),
     ...(finalMarker ? { marker: finalMarker } : {}),
@@ -2021,6 +2232,23 @@ export const terminalSchema = z.discriminatedUnion("action", [
         mode: z.literal("pattern"),
         pattern: z.string().describe("Stop when output matches this string (or regex if regex:true)"),
         regex: coercedBoolean().default(false).describe("If true, treat pattern as a regex"),
+      }),
+      // issue #386: echo-immune completion. Appends a driver-controlled sentinel
+      // after the command whose ECHO form differs from its OUTPUT form, so it
+      // never self-matches the echoed command (works for single-line AND
+      // multiline). Returns completion.reason:'exited' + completion.exitCode.
+      z.object({
+        mode: z.literal("exit"),
+        shell: z.enum(["bash", "powershell", "cmd", "auto"]).default("auto").describe(
+          "Shell the terminal runs, used to build the completion epilogue. " +
+          "'bash' and 'powershell' are first-class. 'cmd' is not supported yet " +
+          "(returns ExitModeShellUnsupported). 'auto' (default) detects from the " +
+          "window process but fails loudly (ExitModeShellAmbiguous) for hosts that " +
+          "hide the real shell (Windows Terminal / conhost / SSH) — pass the shell " +
+          "explicitly there. Inputs ending in an open construct (here-doc, " +
+          "unbalanced quote, unterminated $(…), here-string, trailing \\/backtick) " +
+          "are rejected with ExitModeUnsafeInput."
+        ),
       }),
     ])).default({ mode: "quiet", quietMs: 1500 }),
     timeoutMs: z.coerce.number().int().min(500).max(600_000).default(30_000).describe("Hard timeout in ms (default 30s)"),
@@ -2126,7 +2354,7 @@ export function registerTerminalTools(server: McpServer): void {
         purpose: "Interact with a terminal window: read output, send input, or run+wait+read in one call. action='read' / action='send' absorb the formerly-standalone read/send tools (Phase 4).",
         details: "action='run' is the recommended high-level workflow: send command → wait until quiet/pattern/timeout → read output. The command text is passed as `input` (the legacy parameter name `command` is also accepted as a deprecated alias — see issue #245). Returns completion={reason, elapsedMs} first-class plus outputIntegrity:'ok'|'baseline_lost' so callers can detect when scrollback could not be anchored to the pre-send buffer. action='read' reads current text via UIA TextPattern (falls back to OCR); use sinceMarker for incremental diff. action='send' sends a command with focus management.",
         prefer: "action='run' for command execution + result. For long-running commands (test runners, builds, deploys) use until:{mode:'pattern', pattern:'<final marker>'} — the default quiet mode is tuned for short interactive commands and may complete prematurely on multi-second silent gaps mid-run. Use action='read'/'send' for fine-grained control or when you need to interleave other actions.",
-        caveats: "Do not screenshot the terminal — action='read' is cheaper and structured. action='run' supports completion reasons: quiet | pattern_matched | timeout | window_closed | window_not_found | send_failed (send rejected on a live window — see warnings for the underlying error code). When outputIntegrity:'baseline_lost' is returned, output is forced to '' and readError.code='BaselineMarkerLost' is set: rerun with until:{mode:'pattern',...} or longer timeoutMs. action='run' may also emit warnings prefixed FileLockCollision: when output reveals an EBUSY/Windows-lock/EAGAIN-EDEADLK file collision (e.g. shell '>' redirect colliding with the script's own writer — issue #236). Default quietMs=1500 (issue #196); long silences require pattern mode. preferClipboard=true (send default) overwrites clipboard. Hidden-input prompts emit verifyDelivery.unverifiable (reason:'hidden_input_prompt') — use method:'foreground'. action='read' typed errors: TerminalWindowNotFound, TerminalTextPatternUnavailable (force source:'ocr'); stale sinceMarker → hints.terminalMarker.previousMatched:false on ok:true (omit sinceMarker). FG-path Win11 foreground refusal returns code:'ForegroundRestricted' — switch to method:'background' or DTM_BG_AUTO=1. BG path auto-engages only when (a) the target window class is `ConsoleWindowClass` (conhost: cmd / PowerShell / pwsh classic hosts) OR (b) env DTM_BG_AUTO=1 is set globally. Windows Terminal (`CASCADIA_HOSTING_WINDOW_CLASS`) is intentionally EXCLUDED from auto-engage (issue #173): WT runs on WinUI/XAML and silently drops WM_CHAR posted to its HWND, so the FG path is used by default — pass sendOptions:{method:'background'} only if you have verified your WT build accepts BG input.",
+        caveats: "Do not screenshot the terminal — action='read' is cheaper and structured. action='run' supports completion reasons: quiet | pattern_matched | exited | timeout | window_closed | window_not_found | send_failed (send rejected on a live window — see warnings for the underlying error code). until:{mode:'exit', shell:'bash'|'powershell'} (issue #386) returns completion.exitCode + reason:'exited' via an echo-immune sentinel that works for multiline input that pattern mode cannot anchor; pass shell explicitly (auto fails as ExitModeShellAmbiguous on WT/conhost/SSH), cmd is unsupported (ExitModeShellUnsupported), open-construct input is rejected (ExitModeUnsafeInput). When outputIntegrity:'baseline_lost' is returned, output is forced to '' and readError.code='BaselineMarkerLost' is set: rerun with until:{mode:'pattern',...} or longer timeoutMs. action='run' may also emit warnings prefixed FileLockCollision: when output reveals an EBUSY/Windows-lock/EAGAIN-EDEADLK file collision (e.g. shell '>' redirect colliding with the script's own writer — issue #236). Default quietMs=1500 (issue #196); long silences require pattern mode. preferClipboard=true (send default) overwrites clipboard. Hidden-input prompts emit verifyDelivery.unverifiable (reason:'hidden_input_prompt') — use method:'foreground'. action='read' typed errors: TerminalWindowNotFound, TerminalTextPatternUnavailable (force source:'ocr'); stale sinceMarker → hints.terminalMarker.previousMatched:false on ok:true (omit sinceMarker). FG-path Win11 foreground refusal returns code:'ForegroundRestricted' — switch to method:'background' or DTM_BG_AUTO=1. BG path auto-engages only when (a) the target window class is `ConsoleWindowClass` (conhost: cmd / PowerShell / pwsh classic hosts) OR (b) env DTM_BG_AUTO=1 is set globally. Windows Terminal (`CASCADIA_HOSTING_WINDOW_CLASS`) is intentionally EXCLUDED from auto-engage (issue #173): WT runs on WinUI/XAML and silently drops WM_CHAR posted to its HWND, so the FG path is used by default — pass sendOptions:{method:'background'} only if you have verified your WT build accepts BG input.",
         examples: [
           "terminal({action:'run', windowTitle:'PowerShell', input:'npm test', until:{mode:'pattern', pattern:'Test Files'}}) → recommended for test runners; matches when vitest summary appears",
           "terminal({action:'run', windowTitle:'pwsh', input:'ls'}) → quiet 1500ms wait, returns output (short interactive)",

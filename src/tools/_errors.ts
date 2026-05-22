@@ -69,6 +69,37 @@ const SUGGESTS: Record<string, string[]> = {
     "Or source:'auto' to auto-fallback when TextPattern is missing",
     "Some terminal apps (e.g. WSL inside vt100) do not implement TextPattern",
   ],
+  // issue #386: terminal(action='run', until:{mode:'exit'}) appends a completion
+  // epilogue after your command. If the command ends in an OPEN construct, the
+  // shell keeps parsing into the epilogue instead of running it, so the
+  // completion sentinel never prints and the run would time out. Rejected
+  // up front (no command sent) so the caller can fix the input or pick a mode
+  // that does not inject an epilogue. context.reason names the detected
+  // construct.
+  ExitModeUnsafeInput: [
+    "until:{mode:'exit'} cannot append its completion epilogue after an input that ends in an open construct — close it first.",
+    "context.reason names what was detected: heredoc (<<EOF), unbalanced_quotes, unterminated_command_substitution ($(…), powershell_herestring (@\"…\"@), or trailing_line_continuation (\\ or backtick).",
+    "Or switch to until:{mode:'pattern', pattern:'<final output>'} / {mode:'quiet'} — those do not inject an epilogue and accept any input.",
+  ],
+  // issue #386: until:{mode:'exit'} resolved (or was told) to cmd.exe. cmd's
+  // exit code needs delayed expansion (`cmd /v:on` + !ERRORLEVEL!), a separate
+  // invocation path not wired in the first release. bash and PowerShell are
+  // first-class.
+  ExitModeShellUnsupported: [
+    "until:{mode:'exit'} supports shell:'bash' and shell:'powershell'. cmd.exe is not supported yet (its exit code needs a separate `cmd /v:on` delayed-expansion path).",
+    "If the terminal runs bash or PowerShell, pass that shell explicitly (shell:'bash' / shell:'powershell').",
+    "For cmd.exe, use until:{mode:'pattern', pattern:'<final output>'} instead.",
+  ],
+  // issue #386: until:{mode:'exit', shell:'auto'} could not identify the shell
+  // from the window's process. Hosts like Windows Terminal / conhost / OpenSSH
+  // hide the real shell (classic PowerShell often surfaces as conhost; an
+  // SSH/WSL session hides the remote shell entirely). Guessing wrong would send
+  // a broken epilogue, so this fails loudly and asks for an explicit shell.
+  ExitModeShellAmbiguous: [
+    "until:{mode:'exit', shell:'auto'} could not tell which shell the terminal runs — the host process hides it (Windows Terminal / conhost / OpenSSH, or an SSH/WSL session).",
+    "Pass shell:'bash' or shell:'powershell' explicitly to match the shell actually running in that window.",
+    "context.processName shows the host process that was detected, for reference.",
+  ],
   BrowserSearchNoResults: [
     "Try a different 'by' axis (text → ariaLabel, regex → role)",
     "Remove the scope parameter to search the full document",
@@ -493,6 +524,20 @@ function classify(message: string): { code: string; suggest: string[] } {
   }
   if (m.includes("textpattern") || m.includes("text pattern")) {
     return { code: "TerminalTextPatternUnavailable", suggest: SUGGESTS.TerminalTextPatternUnavailable };
+  }
+  // issue #386: terminal(action='run', until:{mode:'exit'}) pre-flight rejects.
+  // Emitted via `failWith(new Error("ExitMode…"))` from terminal.ts so callers
+  // get the typed code + recovery suggest from SUGGESTS. The three suffixes are
+  // mutually exclusive (no substring poaching) and none contains a generic
+  // keyword ("timeout"/"window"/"shell"-phrase), so placement is order-safe.
+  if (m.includes("exitmodeunsafeinput")) {
+    return { code: "ExitModeUnsafeInput", suggest: SUGGESTS.ExitModeUnsafeInput };
+  }
+  if (m.includes("exitmodeshellunsupported")) {
+    return { code: "ExitModeShellUnsupported", suggest: SUGGESTS.ExitModeShellUnsupported };
+  }
+  if (m.includes("exitmodeshellambiguous")) {
+    return { code: "ExitModeShellAmbiguous", suggest: SUGGESTS.ExitModeShellAmbiguous };
   }
   if (m.includes("scope not found") || m.includes("scopenotfound")) {
     return { code: "ScopeNotFound", suggest: SUGGESTS.ScopeNotFound };
