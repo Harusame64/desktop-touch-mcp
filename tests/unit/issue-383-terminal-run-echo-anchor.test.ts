@@ -108,6 +108,28 @@ describe("scanRegionAfterEcho — issue #383 echo anchoring", () => {
     });
   });
 
+  describe("continuation prompts on multiline input (Codex P2)", () => {
+    it("locates input across a Bash PS2 ('> ') continuation prompt", () => {
+      // The shell injected "> " before the continuation line, so the echo is
+      // not the raw input verbatim; line-by-line indexOf skips the prefix.
+      const post = `echo A\n> sleep 1; echo DONE\nA\nDONE`;
+      const input = `echo A\nsleep 1; echo DONE`;
+      expect(scanRegionAfterEcho(post, input)).toBe(`\nA\nDONE`);
+    });
+
+    it("locates input across a PowerShell ('>>') continuation prompt", () => {
+      const post = `Get-Process |\n>> Select-Object Name\nRESULT`;
+      const input = `Get-Process |\nSelect-Object Name`;
+      expect(scanRegionAfterEcho(post, input)).toBe(`\nRESULT`);
+    });
+
+    it("still defers when a later continuation line has not rendered yet", () => {
+      const post = `echo A\n> `; // first line echoed, continuation not yet
+      const input = `echo A\nsleep 1; echo DONE`;
+      expect(scanRegionAfterEcho(post, input)).toBeUndefined();
+    });
+  });
+
   describe("non-ASCII (CJK) input", () => {
     it("locates a CJK echo verbatim (clipboard send keeps it intact)", () => {
       const region = scanRegionAfterEcho(`echo "完了"\n完了`, `echo "完了"`);

@@ -296,10 +296,12 @@ function applySinceMarker(text: string, marker: string): { text: string; matched
  *     not). On terminals where the echo never renders verbatim this defers
  *     until timeout — a loud failure preferable to a silent echo self-match.
  *
- * `indexOf` (not `startsWith`) tolerates a prompt-prefix remnant that can
- * precede the echo when the prompt line is shorter than makeMarker's 256-char
- * hash window. Both `postBaseline` (via applySinceMarker) and `input` are run
- * through `normalizeForMarker` so CRLF/LF and trailing-whitespace rendering
+ * Matching is line-by-line via `indexOf` (not `startsWith`): this tolerates a
+ * prompt-prefix remnant that can precede the echo (when the prompt line is
+ * shorter than makeMarker's 256-char hash window) AND the continuation-prompt
+ * text a shell injects between the lines of a multiline command (Bash PS2,
+ * PowerShell `>>`). Both `postBaseline` (via applySinceMarker) and `input` are
+ * run through `normalizeForMarker` so CRLF/LF and trailing-whitespace rendering
  * differences do not break the match.
  *
  * `inputEchoes=false` — for hidden-input prompts (password / passphrase /
@@ -321,9 +323,22 @@ export function scanRegionAfterEcho(
   const needle = normalizeForMarker(input);
   // Empty/blank input has no echo to skip — scan the whole slice.
   if (needle.length === 0) return postBaseline;
-  const idx = postBaseline.indexOf(needle);
-  if (idx < 0) return undefined; // defer: echo not yet located
-  return postBaseline.slice(idx + needle.length);
+  // Locate each echoed input LINE in order, allowing arbitrary text between
+  // lines. Interactive shells inject continuation-prompt text (Bash PS2 `> `,
+  // PowerShell `>>`) before the continuation lines of a multiline command, so
+  // the echo is not the raw input verbatim and a single full-input indexOf
+  // would miss it and defer forever (Codex P2 on #383). Searching line-by-line
+  // from the previous match skips those prefixes. Anchoring past the LAST line
+  // keeps a sentinel in the final command out of the scan region. For
+  // single-line input this is exactly one indexOf — identical to matching the
+  // whole input.
+  let pos = 0;
+  for (const line of needle.split("\n")) {
+    const at = postBaseline.indexOf(line, pos);
+    if (at < 0) return undefined; // defer: this echoed line not located yet
+    pos = at + line.length;
+  }
+  return postBaseline.slice(pos);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1390,6 +1405,11 @@ export const terminalRunHandler = async ({
   // would defer forever → until:{mode:'pattern'} would time out on a valid
   // hidden-input flow. Detect that from the pre-send baseline (same heuristic
   // terminal_send uses) and bypass the anchor in that case.
+  // Note (Opus R2 P3-1): a false-positive here bypasses the anchor (full scan),
+  // which in the run context could re-introduce #383 — the opposite direction
+  // of harm from terminal_send, where a false-positive only skips delivery
+  // verification. HIDDEN_INPUT_PROMPT_PATTERNS are end-anchored and strict, so
+  // normal bash ($ /# ) and PowerShell (>) prompts do not match (low risk).
   const inputEchoes = !isHiddenInputPrompt(baselineRead?.text ?? null);
 
   const sendArgs = {
