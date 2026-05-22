@@ -420,7 +420,7 @@ export function generateExitNonce(): string {
  * `__DTMCP_EXIT_<nonce>`. Only the runtime OUTPUT assembles the contiguous token.
  *
  * Exit code (captured BEFORE the print to avoid masking, §4):
- *   - bash: `$?` → `<token>|<rc>`.
+ *   - bash: `$?` → `<token>|<rc>|` (trailing `|` terminates the code field).
  *   - PowerShell: a `$global:LASTEXITCODE = $null` PROLOGUE clears any stale
  *     value from a previous native command, then the epilogue emits BOTH
  *     `$LASTEXITCODE` (native exe; empty when no native ran) and `$?` (cmdlet
@@ -435,8 +435,10 @@ export function buildExitCommand(input: string, shell: ExitShell, nonce: string)
   const head = EXIT_TOKEN_HEAD;
   const tail = EXIT_TOKEN_TAIL_PREFIX + nonce;
   if (shell === "bash") {
-    // printf args: '%s%s|%d\n' then '__DTMCP', "_EXIT_<nonce>", "$rc" (three).
-    return `${input}\n__dtmcp_rc=$?; printf '%s%s|%d\\n' '${head}' "${tail}" "$__dtmcp_rc"`;
+    // printf args: '%s%s|%d|\n' then '__DTMCP', "_EXIT_<nonce>", "$rc" (three).
+    // The TRAILING `|` is a terminator: parseExitSentinel requires it so a
+    // multi-digit code (e.g. 127) cannot match mid-render as `1` (Codex P2).
+    return `${input}\n__dtmcp_rc=$?; printf '%s%s|%d|\\n' '${head}' "${tail}" "$__dtmcp_rc"`;
   }
   // powershell
   return (
@@ -451,8 +453,12 @@ export function buildExitCommand(input: string, shell: ExitShell, nonce: string)
  * exit-code field) has rendered — partial renders never match, and the echo
  * never contains the contiguous `<token>|<code>` form, so this is echo-immune.
  *
+ * Both shells use a TRAILING terminator after the exit-code field so a partially
+ * rendered multi-digit code never matches early (Codex P2): bash closes with a
+ * second `|`, PowerShell with the `|<True|False>` field.
+ *
  * Exit-code normalisation:
- *   - bash: `<token>|<digits>` → that integer.
+ *   - bash: `<token>|<digits>|` → that integer.
  *   - PowerShell: `<token>|<code-or-empty>|<True|False>` → the numeric code when
  *     a native exe ran (non-empty), else `$?` mapped True→0 / False→1 (OQ-7).
  */
@@ -463,7 +469,8 @@ export function parseExitSentinel(
 ): { matched: boolean; exitCode?: number } {
   const tk = exitToken(nonce).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   if (shell === "bash") {
-    const m = new RegExp(tk + "\\|(\\d+)").exec(slice);
+    // Require the closing `|` so `127` cannot match as `1` before fully painted.
+    const m = new RegExp(tk + "\\|(\\d+)\\|").exec(slice);
     if (!m) return { matched: false };
     return { matched: true, exitCode: parseInt(m[1], 10) };
   }
@@ -509,9 +516,11 @@ export function detectShell(
  * a short reason slug or null when the input is safe to wrap.
  */
 export function isUnsafeForExitMode(input: string): string | null {
-  // Trailing line continuation (`\` at end) — the epilogue would be read as a
-  // continuation of the user command.
-  if (/\\[ \t]*$/.test(input)) return "trailing_line_continuation";
+  // Trailing line continuation — the epilogue would be read as a continuation of
+  // the user command. Both markers count: bash uses `\`, PowerShell uses a
+  // trailing backtick (Codex P1); a trailing backtick is also an unterminated
+  // bash command substitution. Either way the appended epilogue is swallowed.
+  if (/[\\`][ \t]*$/.test(input)) return "trailing_line_continuation";
   // Bash here-doc (`<<EOF` / `<<-EOF` / `<<~EOF` / `<<'EOF'`), excluding `<<<`
   // (here-string, single-line and safe).
   if (/<<[-~]?[ \t]*(['"]?)[A-Za-z_]/.test(input) && !/<<</.test(input)) return "heredoc";

@@ -50,8 +50,9 @@ describe("buildExitCommand — echo-immunity (the #386 core invariant)", () => {
     const cmd = buildExitCommand("make build", "bash", NONCE);
     expect(cmd).toContain("make build");
     expect(cmd).toContain("__dtmcp_rc=$?");
-    // printf gets three args matching '%s%s|%d': '__DTMCP', "_EXIT_…", "$rc".
-    expect(cmd).toContain("printf '%s%s|%d\\n' '__DTMCP'");
+    // printf gets three args matching '%s%s|%d|': '__DTMCP', "_EXIT_…", "$rc".
+    // The trailing `|` terminates the code field (Codex P2).
+    expect(cmd).toContain("printf '%s%s|%d|\\n' '__DTMCP'");
   });
 
   it("powershell: prologue clears stale $LASTEXITCODE, emits code AND $?", () => {
@@ -74,16 +75,28 @@ describe("buildExitCommand — echo-immunity (the #386 core invariant)", () => {
 describe("parseExitSentinel — defer until the full sentinel line renders", () => {
   it("bash: defers on the bare token (exit-code field not yet rendered)", () => {
     expect(parseExitSentinel(`output\n${TOKEN}`, NONCE, "bash").matched).toBe(false);
+    expect(parseExitSentinel(`output\n${TOKEN}|`, NONCE, "bash").matched).toBe(false);
   });
 
   it("bash: matches and parses the exit code once the line completes", () => {
-    expect(parseExitSentinel(`file1\nfile2\n${TOKEN}|0`, NONCE, "bash")).toEqual({
+    expect(parseExitSentinel(`file1\nfile2\n${TOKEN}|0|`, NONCE, "bash")).toEqual({
       matched: true,
       exitCode: 0,
     });
-    expect(parseExitSentinel(`oops\n${TOKEN}|3`, NONCE, "bash")).toEqual({
+    expect(parseExitSentinel(`oops\n${TOKEN}|3|`, NONCE, "bash")).toEqual({
       matched: true,
       exitCode: 3,
+    });
+  });
+
+  it("bash: requires the trailing `|` so a multi-digit code can't match early (Codex P2)", () => {
+    // `127` mid-render as `1` (no closing `|` yet) must NOT match.
+    expect(parseExitSentinel(`${TOKEN}|1`, NONCE, "bash").matched).toBe(false);
+    expect(parseExitSentinel(`${TOKEN}|12`, NONCE, "bash").matched).toBe(false);
+    // Fully rendered → the full code, not a prefix.
+    expect(parseExitSentinel(`${TOKEN}|127|`, NONCE, "bash")).toEqual({
+      matched: true,
+      exitCode: 127,
     });
   });
 
@@ -124,7 +137,7 @@ describe("buildExitCommand → parseExitSentinel round-trip (simulated buffer)",
   it("bash: echo alone defers; appending the output line matches", () => {
     const cmd = buildExitCommand("make", "bash", NONCE);
     expect(parseExitSentinel(cmd, NONCE, "bash").matched).toBe(false);
-    const buffer = `${cmd}\nbuilding...\n${TOKEN}|0`; // runtime output appended
+    const buffer = `${cmd}\nbuilding...\n${TOKEN}|0|`; // runtime output appended
     expect(parseExitSentinel(buffer, NONCE, "bash")).toEqual({ matched: true, exitCode: 0 });
   });
 
@@ -162,8 +175,10 @@ describe("isUnsafeForExitMode — reject input an epilogue can't safely follow",
     expect(isUnsafeForExitMode("echo 'a' 'b'")).toBeNull(); // balanced singles
   });
 
-  it("rejects trailing line continuation", () => {
+  it("rejects trailing line continuation (bash `\\` AND PowerShell backtick, Codex P1)", () => {
     expect(isUnsafeForExitMode("echo a \\")).toBe("trailing_line_continuation");
+    expect(isUnsafeForExitMode("Get-Item x `")).toBe("trailing_line_continuation");
+    expect(isUnsafeForExitMode("Get-ChildItem `\n  -Path .")).toBeNull(); // backtick mid-input is fine
   });
 
   it("rejects bash here-docs (but not here-strings)", () => {
