@@ -338,6 +338,10 @@ export async function pasteIntoConsoleNoFocus(
 
   const saved = await getClipboardB64(); // null = read failed; "" = empty clipboard
   if (!(await setClipboardVerified(crlf))) {
+    // Set-Clipboard may have landed before the read-back mismatch (another app
+    // raced, or newline tolerance missed) — restore so we never leave the user's
+    // clipboard clobbered on a failed paste (Opus #389 round 1 P2-1).
+    await restoreClipboard(saved);
     return { ok: false, reason: "clipboard_set_failed" };
   }
 
