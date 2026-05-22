@@ -271,6 +271,49 @@ function applySinceMarker(text: string, marker: string): { text: string; matched
   return { text, matched: false };
 }
 
+/**
+ * Issue #383: anchor pattern scanning PAST the echoed command line.
+ *
+ * `terminal(action='run')` captures the baseline marker BEFORE sending, so the
+ * post-baseline slice from `applySinceMarker` begins at (or just after) the
+ * echoed command — the terminal echoes the sent `input` before running it.
+ * Matching a pattern against that echo self-matches any sentinel embedded in
+ * the command (e.g. `…; echo "DONE"` + pattern "DONE"), firing before the
+ * command produces any output. This locates the (normalised) `input` inside the
+ * already-normalised `postBaseline` slice and returns only what FOLLOWS it, so
+ * matching considers the command's real output rather than its echo.
+ *
+ * Returns:
+ *   - string: the scan region after the echoed input (may be "" when the echo
+ *     has rendered but no output has followed yet — "" is a valid target for
+ *     patterns like /^$/).
+ *   - undefined: the echo is not yet located → DEFER. Because the shell renders
+ *     the full command echo before the command emits output, the real output
+ *     cannot exist before the full echo is present; any match at this point
+ *     would be inside the still-rendering echo. Callers MUST skip matching and
+ *     retry. Returning the full slice instead would re-introduce #383 (e.g. an
+ *     SSH-chunked echo where the sentinel arrived but the closing quote had
+ *     not). On terminals where the echo never renders verbatim this defers
+ *     until timeout — a loud failure preferable to a silent echo self-match.
+ *
+ * `indexOf` (not `startsWith`) tolerates a prompt-prefix remnant that can
+ * precede the echo when the prompt line is shorter than makeMarker's 256-char
+ * hash window. Both `postBaseline` (via applySinceMarker) and `input` are run
+ * through `normalizeForMarker` so CRLF/LF and trailing-whitespace rendering
+ * differences do not break the match.
+ */
+export function scanRegionAfterEcho(
+  postBaseline: string,
+  input: string,
+): string | undefined {
+  const needle = normalizeForMarker(input);
+  // Empty/blank input has no echo to skip — scan the whole slice.
+  if (needle.length === 0) return postBaseline;
+  const idx = postBaseline.indexOf(needle);
+  if (idx < 0) return undefined; // defer: echo not yet located
+  return postBaseline.slice(idx + needle.length);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // terminal_read
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1419,21 +1462,28 @@ export const terminalRunHandler = async ({
     }
   }
 
-  // Pattern matching must only consider content that appeared AFTER the
-  // baseline marker. Otherwise prompt-shaped patterns (e.g. "PS>", "$ ") that
-  // already exist in scrollback would fire pattern_matched immediately.
+  // Pattern matching must only consider content that appeared AFTER the echoed
+  // command line. The baseline marker is captured before sending, so the slice
+  // from applySinceMarker begins at the echoed `input`; matching there would
+  // self-match a sentinel embedded in the command (issue #383). We therefore
+  // (1) slice to content after the baseline marker (applySinceMarker), then
+  // (2) anchor PAST the echoed input (scanRegionAfterEcho).
   // Returns:
-  //   - string: the new content since the baseline marker (may be "" when no
-  //     diff has accumulated yet — empty is a valid pattern target).
-  //   - undefined: the baseline boundary has been lost (no marker, or
-  //     applySinceMarker scanned past its 32k window without finding it).
-  //     Callers MUST skip pattern matching in this case — falling back to the
-  //     full buffer would re-introduce prior-history false positives because
-  //     scrollback past the scan window can still hold pre-baseline text.
+  //   - string: content after the echoed input (may be "" — a valid target for
+  //     patterns like /^$/).
+  //   - undefined: skip matching this tick. Two distinct causes, both honoured
+  //     by the same caller guard (newContent !== undefined):
+  //       (a) baseline boundary lost (no marker, or applySinceMarker scanned
+  //           past its 32k window) — falling back to the full buffer would
+  //           re-introduce prior-history false positives.
+  //       (b) echo not yet located (#383 defer) — the real output cannot exist
+  //           before the full echo renders, so any match would be inside the
+  //           still-rendering echo; defer and retry on the next tick.
   const newContentSinceBaseline = (text: string): string | undefined => {
     if (!sinceMarker) return undefined;
     const sliced = applySinceMarker(text, sinceMarker);
-    return sliced.matched ? sliced.text : undefined;
+    if (!sliced.matched) return undefined;
+    return scanRegionAfterEcho(sliced.text, input);
   };
 
   // Immediate post-send pattern check — runs once before the first POLL_INTERVAL_MS

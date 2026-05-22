@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`terminal(action='run')` with `until:{mode:'pattern'}` now matches the
+  command's actual output, not the echoed command line.** Previously, when the
+  wait pattern also appeared in the command you sent — which is exactly the
+  completion idiom the tool documents, e.g. `some-long-task; echo "DONE"` with
+  `pattern:"DONE"` — the matcher matched the *echoed command line itself* and
+  returned `completion.reason:"pattern_matched"` before the command had produced
+  any output. Callers then had to follow every `run` with a separate
+  `action:"read"`, defeating the purpose of `run` (send → wait → read in one
+  call). The matcher now anchors past the echoed command, so a sentinel is
+  matched only when the command genuinely prints it. Patterns that appear only
+  in the output, and fast commands whose echo and output arrive together, are
+  unaffected. (issue #383)
+
 ## [1.7.2] - 2026-05-19 — Emergency-stop now requires a deliberate dwell (no more drive-by failsafe kills)
 
 ### Fixed
