@@ -22,7 +22,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { scanRegionAfterEcho } from "../../src/tools/terminal.js";
+import { scanRegionAfterEcho, isSecretInputPrompt, isHiddenInputPrompt } from "../../src/tools/terminal.js";
 
 describe("scanRegionAfterEcho — issue #383 echo anchoring", () => {
   describe("core fix: scan region excludes the echoed command", () => {
@@ -164,6 +164,32 @@ describe("scanRegionAfterEcho — issue #383 echo anchoring", () => {
 
     it("returns the full slice for whitespace-only input", () => {
       expect(scanRegionAfterEcho(`whatever output`, `   `)).toBe(`whatever output`);
+    });
+  });
+
+  describe("isSecretInputPrompt vs isHiddenInputPrompt — bare '>' is Bash PS2 (Codex P2)", () => {
+    it("treats credential prompts as secret (input not echoed)", () => {
+      expect(isSecretInputPrompt("$ sudo apt update\n[sudo] password for alice:")).toBe(true);
+      expect(isSecretInputPrompt("Enter passphrase:")).toBe(true);
+      expect(isSecretInputPrompt("Password:")).toBe(true);
+    });
+
+    it("does NOT treat a bare '>' (Bash PS2 continuation) as secret", () => {
+      // Codex P2: bypassing the echo anchor for a Bash PS2 baseline would
+      // full-scan and re-introduce #383 — so the run echo-anchor must not treat
+      // '>' as hidden input.
+      expect(isSecretInputPrompt(">")).toBe(false);
+      expect(isSecretInputPrompt("> ")).toBe(false);
+    });
+
+    it("does NOT treat normal prompts as secret (low false-positive)", () => {
+      expect(isSecretInputPrompt("user@host:~/secret$ ")).toBe(false); // dir named 'secret'
+      expect(isSecretInputPrompt("PS C:\\Users\\me>")).toBe(false);
+    });
+
+    it("isHiddenInputPrompt still matches '>' (unchanged — used by terminal_send)", () => {
+      expect(isHiddenInputPrompt(">")).toBe(true);
+      expect(isHiddenInputPrompt("Password:")).toBe(true);
     });
   });
 

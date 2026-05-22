@@ -179,7 +179,8 @@ function makeMarker(text: string): string {
 // match for sudo) so partial mentions in earlier output do not trigger.
 // Future expansion (e.g. ssh-keygen "Enter passphrase (empty for no
 // passphrase):") should follow the same anchored-strict rule.
-const HIDDEN_INPUT_PROMPT_PATTERNS: readonly RegExp[] = [
+// UNAMBIGUOUS secret prompts: the input is genuinely NOT echoed back.
+const SECRET_INPUT_PROMPT_PATTERNS: readonly RegExp[] = [
   /(password|passphrase|secret|sudo)[\s:]*$/i,
   // Codex P1+P2: original `/Password for /` was case-sensitive AND unanchored.
   // - Case-sensitive: missed `[sudo] password for alice:` (lowercase "password")
@@ -193,35 +194,59 @@ const HIDDEN_INPUT_PROMPT_PATTERNS: readonly RegExp[] = [
   //   normal verification path. Future expansion should keep the trailing-anchor
   //   discipline.
   /password for \S+:\s*$/i,
+];
+
+// HIDDEN = SECRET + the bare-`>` PowerShell `Read-Host` continuation prompt.
+// CAUTION (Codex #385 P2): a bare `>` is ALSO Bash's default PS2 continuation
+// prompt, where input IS echoed. This broader set is only safe for the
+// terminal_send verification skip (a false-positive there merely skips
+// read-back — conservative). The terminal_run echo-anchor MUST instead use
+// isSecretInputPrompt (excludes `>`): treating a Bash PS2 baseline as
+// hidden-input would bypass the anchor, full-scan, and re-introduce #383.
+const HIDDEN_INPUT_PROMPT_PATTERNS: readonly RegExp[] = [
+  ...SECRET_INPUT_PROMPT_PATTERNS,
   /^>\s*$/,
 ];
 
 /**
- * Return true when the baseline text's cursor row matches a known
- * hidden-input prompt pattern. `baselineRaw` is the raw UIA TextPattern
- * snapshot taken just before send (ANSI strip is performed here so callers
- * can pass either ANSI-laden or pre-cleaned text).
- *
- * Returns false on null / empty input — verification continues normally
- * for unreadable buffers.
+ * Return the last non-empty (trailing-whitespace-stripped) line of a UIA
+ * TextPattern snapshot — the cursor row. ANSI is stripped here so callers can
+ * pass either ANSI-laden or pre-cleaned text. Returns null for null/blank input.
  */
-export function isHiddenInputPrompt(baselineRaw: string | null): boolean {
-  if (!baselineRaw) return false;
+function lastNonEmptyPromptLine(baselineRaw: string | null): string | null {
+  if (!baselineRaw) return null;
   const cleaned = stripAnsi(baselineRaw).replace(/\r\n/g, "\n");
-  // Take the last non-empty line — the cursor row. Trailing blank lines are
-  // padding from Windows Terminal's row-padding behaviour (see
-  // normalizeForMarker docstring).
   const lines = cleaned.split("\n");
-  let lastNonEmpty = "";
   for (let i = lines.length - 1; i >= 0; i--) {
     const trimmed = lines[i]!.replace(/[ \t]+$/, "");
-    if (trimmed.length > 0) {
-      lastNonEmpty = trimmed;
-      break;
-    }
+    if (trimmed.length > 0) return trimmed;
   }
-  if (lastNonEmpty.length === 0) return false;
-  return HIDDEN_INPUT_PROMPT_PATTERNS.some((re) => re.test(lastNonEmpty));
+  return null;
+}
+
+/**
+ * Return true when the baseline cursor row matches a known hidden-input prompt
+ * (credential prompts OR the bare-`>` Read-Host continuation). Used by
+ * terminal_send to skip post-send read-back verification (a false-positive is
+ * conservative there). Returns false on null / empty input.
+ */
+export function isHiddenInputPrompt(baselineRaw: string | null): boolean {
+  const line = lastNonEmptyPromptLine(baselineRaw);
+  if (line === null) return false;
+  return HIDDEN_INPUT_PROMPT_PATTERNS.some((re) => re.test(line));
+}
+
+/**
+ * Stricter sibling of isHiddenInputPrompt for the terminal_run echo-anchor:
+ * matches ONLY unambiguous secret prompts (password / passphrase / secret /
+ * sudo), excluding the bare-`>` pattern that doubles as Bash's PS2 continuation
+ * prompt (where input IS echoed). Deciding `inputEchoes` from this avoids
+ * full-scanning a Bash PS2 baseline and re-introducing #383 (Codex #385 P2).
+ */
+export function isSecretInputPrompt(baselineRaw: string | null): boolean {
+  const line = lastNonEmptyPromptLine(baselineRaw);
+  if (line === null) return false;
+  return SECRET_INPUT_PROMPT_PATTERNS.some((re) => re.test(line));
 }
 
 function applySinceMarker(text: string, marker: string): { text: string; matched: boolean } {
@@ -1403,14 +1428,16 @@ export const terminalRunHandler = async ({
   // passphrase / secret / sudo), the sent `input` is not echoed into the
   // buffer, so the echo-anchor (scanRegionAfterEcho) could never locate it and
   // would defer forever → until:{mode:'pattern'} would time out on a valid
-  // hidden-input flow. Detect that from the pre-send baseline (same heuristic
-  // terminal_send uses) and bypass the anchor in that case.
-  // Note (Opus R2 P3-1): a false-positive here bypasses the anchor (full scan),
-  // which in the run context could re-introduce #383 — the opposite direction
-  // of harm from terminal_send, where a false-positive only skips delivery
-  // verification. HIDDEN_INPUT_PROMPT_PATTERNS are end-anchored and strict, so
-  // normal bash ($ /# ) and PowerShell (>) prompts do not match (low risk).
-  const inputEchoes = !isHiddenInputPrompt(baselineRead?.text ?? null);
+  // hidden-input flow. Detect that from the pre-send baseline and bypass the
+  // anchor in that case.
+  // Use isSecretInputPrompt (NOT isHiddenInputPrompt): the latter also matches a
+  // bare `>`, which is Bash's PS2 continuation prompt where input IS echoed —
+  // bypassing the anchor there would full-scan and re-introduce #383 (Codex
+  // #385 P2). A false-positive here harms in the #383 direction (vs send, where
+  // it merely skips read-back), so the stricter end-anchored secret-only set is
+  // required. The narrow PowerShell Read-Host (`>`) hidden-input case is not
+  // bypassed and degrades to a loud timeout — safer than a silent echo match.
+  const inputEchoes = !isSecretInputPrompt(baselineRead?.text ?? null);
 
   const sendArgs = {
     windowTitle,
