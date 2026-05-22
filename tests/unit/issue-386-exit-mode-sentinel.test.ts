@@ -122,6 +122,18 @@ describe("parseExitSentinel — defer until the full sentinel line renders", () 
     });
   });
 
+  it("powershell: parses a negative Int32 exit code (Codex round 3)", () => {
+    // Windows status codes use the high bit, e.g. -1073741819 (0xC0000005).
+    expect(parseExitSentinel(`${TOKEN}|-1073741819|False`, NONCE, "powershell")).toEqual({
+      matched: true,
+      exitCode: -1073741819,
+    });
+    expect(parseExitSentinel(`${TOKEN}|-1|False`, NONCE, "powershell")).toEqual({
+      matched: true,
+      exitCode: -1,
+    });
+  });
+
   it("powershell: defers until BOTH fields render", () => {
     expect(parseExitSentinel(`${TOKEN}|0`, NONCE, "powershell").matched).toBe(false);
     expect(parseExitSentinel(`${TOKEN}`, NONCE, "powershell").matched).toBe(false);
@@ -204,6 +216,15 @@ describe("isUnsafeForExitMode — reject input an epilogue can't safely follow",
     expect(isUnsafeForExitMode("echo $(uname)")).toBeNull();
     expect(isUnsafeForExitMode('echo "$(date)"')).toBeNull();
     expect(isUnsafeForExitMode("echo '$(literal'")).toBeNull(); // $( inside '…' is literal
+  });
+
+  it("honours quote nesting: `)` inside a string doesn't close $(...) (Codex round 3)", () => {
+    // The `)` lives only inside "…", so the $( is still open → unterminated.
+    expect(isUnsafeForExitMode('echo $(")"')).toBe("unterminated_command_substitution");
+    // …but with the real closing `)` after the string, it's balanced.
+    expect(isUnsafeForExitMode('echo $(echo ")")')).toBeNull();
+    // A substitution nested inside a string is fine.
+    expect(isUnsafeForExitMode('echo "outer $(inner) tail"')).toBeNull();
   });
 
   it("rejects PowerShell here-strings", () => {

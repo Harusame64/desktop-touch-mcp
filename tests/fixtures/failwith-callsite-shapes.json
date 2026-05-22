@@ -492,21 +492,21 @@
     },
     {
       "file": "src/tools/terminal.ts",
-      "line": 686,
+      "line": 700,
       "tool": "terminal:read",
       "errKind": "identifier",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/terminal.ts",
-      "line": 771,
+      "line": 785,
       "tool": "terminal:send",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/terminal.ts",
-      "line": 1138,
+      "line": 1152,
       "tool": "terminal:send",
       "errKind": "new-error",
       "contextShape": "object-plain"

@@ -458,9 +458,11 @@ export function buildExitCommand(input: string, shell: ExitShell, nonce: string)
  * second `|`, PowerShell with the `|<True|False>` field.
  *
  * Exit-code normalisation:
- *   - bash: `<token>|<digits>|` → that integer.
+ *   - bash: `<token>|<digits>|` → that integer (`$?` is 0-255, unsigned).
  *   - PowerShell: `<token>|<code-or-empty>|<True|False>` → the numeric code when
- *     a native exe ran (non-empty), else `$?` mapped True→0 / False→1 (OQ-7).
+ *     a native exe ran (non-empty; MAY be negative — `$LASTEXITCODE` is an Int32
+ *     and Windows status codes use the high bit, Codex round 3), else `$?` mapped
+ *     True→0 / False→1 (OQ-7).
  */
 export function parseExitSentinel(
   slice: string,
@@ -474,8 +476,8 @@ export function parseExitSentinel(
     if (!m) return { matched: false };
     return { matched: true, exitCode: parseInt(m[1], 10) };
   }
-  // powershell
-  const m = new RegExp(tk + "\\|(\\d*)\\|(True|False)").exec(slice);
+  // powershell — code field may be empty (cmdlet path) or a SIGNED Int32.
+  const m = new RegExp(tk + "\\|((?:-?\\d+)?)\\|(True|False)").exec(slice);
   if (!m) return { matched: false };
   if (m[1].length > 0) return { matched: true, exitCode: parseInt(m[1], 10) };
   return { matched: true, exitCode: m[2] === "True" ? 0 : 1 };
@@ -543,20 +545,25 @@ export function isUnsafeForExitMode(input: string): string | null {
 }
 
 /**
- * Bash-semantics scanner for constructs left OPEN at the end of `input` —
+ * Stack-based bash scanner for constructs left OPEN at the end of `input` —
  * appending an epilogue inside any of them makes the shell keep parsing into it
- * instead of running the sentinel (→ silent exit-mode timeout). Tracks single /
- * double quotes and `$( … )` command-substitution depth, honouring quote context
- * (a `$(` inside single quotes is literal). Backslash escapes the next char
- * outside single quotes. Backtick command substitution is covered by the
- * trailing-backtick check above (mid-string backtick balance is intentionally
- * NOT tracked here — PowerShell uses backtick as a string escape, e.g. "`n", so
- * counting it would false-reject valid PowerShell input).
+ * instead of running the sentinel (→ exit-mode timeout). A STACK (not flat
+ * counters) is required because double-quoted strings and `$( … )` command
+ * substitutions nest recursively: a string can hold a substitution and a
+ * substitution can hold a string. With a stack, a `)` that appears only inside a
+ * `"…"` string (e.g. `echo $(")"`) does NOT wrongly close an outer `$(` (Codex
+ * round 3) — it is literal until the string's matching context is on top.
+ *
+ * Single quotes are literal spans (nothing nests inside). Backslash escapes the
+ * next char outside single quotes. Backtick command substitution is intentionally
+ * NOT tracked (PowerShell uses backtick as a string escape, e.g. "`n", so
+ * counting it would false-reject valid PowerShell); a TRAILING backtick is still
+ * caught by the continuation check above.
  */
 function unterminatedShellConstruct(input: string): string | null {
   let inSingle = false;
-  let inDouble = false;
-  let cmdDepth = 0; // $( … ) nesting
+  const stack: ("dquote" | "cmdsubst")[] = [];
+  const top = () => stack[stack.length - 1];
   for (let i = 0; i < input.length; i++) {
     const c = input[i];
     if (inSingle) {
@@ -564,14 +571,21 @@ function unterminatedShellConstruct(input: string): string | null {
       continue;
     }
     if (c === "\\") { i++; continue; } // escape next char (outside single quotes)
-    if (c === "'" && !inDouble) { inSingle = true; continue; }
-    if (c === '"') { inDouble = !inDouble; continue; }
-    // $( … ) is active both unquoted and inside double quotes.
-    if (c === "$" && input[i + 1] === "(") { cmdDepth++; i++; continue; }
-    if (c === ")" && cmdDepth > 0) { cmdDepth--; continue; }
+    if (c === "'" && top() !== "dquote") { inSingle = true; continue; }
+    if (c === '"') {
+      if (top() === "dquote") stack.pop(); // close the string
+      else stack.push("dquote");           // open a string (valid inside $( … ) too)
+      continue;
+    }
+    // $( … ) opens a substitution both unquoted and inside a double-quoted string.
+    if (c === "$" && input[i + 1] === "(") { stack.push("cmdsubst"); i++; continue; }
+    // `)` closes a substitution ONLY when one is the innermost open context — a
+    // `)` inside a "…" string (top === "dquote") is literal.
+    if (c === ")" && top() === "cmdsubst") { stack.pop(); continue; }
   }
-  if (inSingle || inDouble) return "unbalanced_quotes";
-  if (cmdDepth > 0) return "unterminated_command_substitution";
+  if (inSingle) return "unbalanced_quotes";
+  if (stack.includes("cmdsubst")) return "unterminated_command_substitution";
+  if (stack.length > 0) return "unbalanced_quotes"; // an open "…" string
   return null;
 }
 
