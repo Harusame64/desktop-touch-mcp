@@ -671,6 +671,10 @@ export function resolveExitShell(
  *     relies on), so dropping every line containing it removes both injected
  *     lines without touching real output.
  *   - PowerShell only: the fixed prologue line `$global:LASTEXITCODE = $null`.
+ *     This literal is NOT nonce-scoped, so to avoid deleting a user command that
+ *     legitimately prints it (Codex #389 P2), only the FIRST occurrence is
+ *     dropped — the injected prologue echo is the first executed line, so it
+ *     precedes any real output that could repeat the literal.
  *
  * Best-effort cosmetic pass, NOT a correctness boundary: completion + exitCode
  * come from parseExitSentinel and are unaffected. If a wrapped/OCR'd render
@@ -679,9 +683,17 @@ export function resolveExitShell(
  */
 export function stripExitArtifacts(slice: string, nonce: string, shell: ExitShell): string {
   const nonceMark = EXIT_TOKEN_TAIL_PREFIX + nonce; // "_EXIT_<nonce>"
+  let prologueDropped = false;
   const kept = slice.split("\n").filter((line) => {
     if (line.includes(nonceMark)) return false; // epilogue echo + sentinel output
-    if (shell === "powershell" && line.includes("$global:LASTEXITCODE = $null")) return false;
+    if (
+      shell === "powershell" &&
+      !prologueDropped &&
+      line.includes("$global:LASTEXITCODE = $null")
+    ) {
+      prologueDropped = true; // drop ONLY the first match (the injected echo)
+      return false;
+    }
     return true;
   });
   // Trim the blank edges the dropped lines can leave behind.

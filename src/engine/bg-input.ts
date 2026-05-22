@@ -360,17 +360,37 @@ export async function pasteIntoConsoleNoFocus(
   return { ok: true };
 }
 
-/** Best-effort restore of a clipboard snapshot captured by getClipboardB64(). */
+/**
+ * Best-effort restore of a clipboard snapshot captured by getClipboardB64().
+ *
+ * Codex #389 P2: when the original clipboard was EMPTY (`""`) or could not be
+ * read (`null`), we must still CLEAR it rather than skip — otherwise the command
+ * we just pasted (possibly sensitive input) lingers in the user's clipboard
+ * after the run. Set-Clipboard rejects an empty value, so clearing uses the
+ * Forms clipboard API.
+ */
 async function restoreClipboard(savedB64: string | null): Promise<void> {
-  if (savedB64 === null || savedB64 === "") return;
   try {
-    const script =
-      `$b=[System.Convert]::FromBase64String('${savedB64}');` +
-      `$t=[System.Text.Encoding]::Unicode.GetString($b);` +
-      `Set-Clipboard -Value $t`;
-    await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
-      timeout: 3000,
-    });
+    if (savedB64 && savedB64.length > 0) {
+      const script =
+        `$b=[System.Convert]::FromBase64String('${savedB64}');` +
+        `$t=[System.Text.Encoding]::Unicode.GetString($b);` +
+        `Set-Clipboard -Value $t`;
+      await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+        timeout: 3000,
+      });
+    } else {
+      // Originally empty / unreadable — clear so the injected command does not
+      // linger. Clearing an unreadable clipboard is harmless (best-effort).
+      await execFileAsync(
+        "powershell.exe",
+        [
+          "-NoProfile", "-NonInteractive", "-Command",
+          "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::Clear()",
+        ],
+        { timeout: 3000 },
+      );
+    }
   } catch {
     /* best-effort */
   }

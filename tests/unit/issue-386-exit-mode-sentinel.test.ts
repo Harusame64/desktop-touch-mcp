@@ -352,6 +352,32 @@ describe("stripExitArtifacts — cosmetic removal of injected epilogue + sentine
     expect(out).not.toContain("_EXIT_");
   });
 
+  it("powershell: keeps real output that legitimately prints the prologue literal (Codex #389 P2)", () => {
+    // Only the FIRST `$global:LASTEXITCODE = $null` (the injected prologue echo)
+    // is dropped; a later user-output line repeating the literal is kept.
+    const [prologue, inputEcho, epilogueEcho] = buildExitCommand(
+      "Get-Content script.ps1",
+      "powershell",
+      NONCE,
+    ).split("\n");
+    const buffer = [
+      `PS C:\\> ${prologue}`, // injected prologue echo (dropped — first match)
+      `PS C:\\> ${inputEcho}`, // command echo (kept)
+      "Write-Host 'resetting'", // real output line 1
+      "$global:LASTEXITCODE = $null", // real output that PRINTS the literal (kept)
+      `PS C:\\> ${epilogueEcho}`, // epilogue echo (dropped — _EXIT_<nonce>)
+      `${TOKEN}|0|True`, // sentinel (dropped)
+    ].join("\n");
+    const out = stripExitArtifacts(buffer, NONCE, "powershell");
+    expect(out).toContain("Write-Host 'resetting'");
+    // The user's printed literal survives (real output not corrupted).
+    expect(out).toContain("$global:LASTEXITCODE = $null");
+    expect(out).not.toContain("__DTMCP");
+    expect(out).not.toContain("_EXIT_");
+    // …but exactly one prologue line (the injected echo) was removed.
+    expect(out.split("$global:LASTEXITCODE = $null").length - 1).toBe(1);
+  });
+
   it("order-independent: works even if the sentinel renders right after the echo", () => {
     // A fast command with no output between echo and sentinel still strips clean.
     const epilogueEcho = buildExitCommand("true", "bash", NONCE).split("\n")[1]!;
