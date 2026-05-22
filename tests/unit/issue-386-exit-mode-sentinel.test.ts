@@ -22,7 +22,12 @@ import {
   detectShell,
   isUnsafeForExitMode,
   generateExitNonce,
+  resolveExitShell,
+  stripExitArtifacts,
+  terminalSchema,
+  terminalRegistrationSchema,
 } from "../../src/tools/terminal.js";
+import { failWith, getSuggestsForCode } from "../../src/tools/_errors.js";
 
 const NONCE = "deadbeefcafe0123"; // fixed for deterministic assertions
 const TOKEN = `__DTMCP_EXIT_${NONCE}`;
@@ -245,5 +250,208 @@ describe("generateExitNonce", () => {
     expect(a).toMatch(/^[0-9a-f]{24}$/);
     expect(b).toMatch(/^[0-9a-f]{24}$/);
     expect(a).not.toBe(b);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P2 handler wiring — pure decision helpers + schema + typed-code routing
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("resolveExitShell — shell decision matrix (P2 wiring)", () => {
+  it("explicit bash/powershell are used as-is (no detection needed)", () => {
+    expect(resolveExitShell("bash", "WindowsTerminal")).toEqual({ ok: true, shell: "bash" });
+    expect(resolveExitShell("powershell", null)).toEqual({ ok: true, shell: "powershell" });
+  });
+
+  it("explicit cmd → ExitModeShellUnsupported (cmd is deferred)", () => {
+    expect(resolveExitShell("cmd", "cmd")).toEqual({
+      ok: false,
+      code: "ExitModeShellUnsupported",
+      processName: "cmd",
+    });
+  });
+
+  it("auto + high-confidence shell process → that shell", () => {
+    expect(resolveExitShell("auto", "pwsh")).toEqual({ ok: true, shell: "powershell" });
+    expect(resolveExitShell("auto", "powershell.exe")).toEqual({ ok: true, shell: "powershell" });
+    expect(resolveExitShell("auto", "bash.exe")).toEqual({ ok: true, shell: "bash" });
+    expect(resolveExitShell("auto", "wsl")).toEqual({ ok: true, shell: "bash" });
+  });
+
+  it("auto + cmd host → ExitModeShellUnsupported (detection vs support are separate)", () => {
+    expect(resolveExitShell("auto", "cmd.exe")).toEqual({
+      ok: false,
+      code: "ExitModeShellUnsupported",
+      processName: "cmd.exe",
+    });
+  });
+
+  it("auto + low-confidence host → ExitModeShellAmbiguous (the SSH/WSL wall)", () => {
+    for (const host of ["WindowsTerminal", "conhost", "OpenSSH", "ssh", "alacritty"]) {
+      expect(resolveExitShell("auto", host)).toEqual({
+        ok: false,
+        code: "ExitModeShellAmbiguous",
+        processName: host,
+      });
+    }
+    // null/undefined process name (lookup failed) → ambiguous, processName:null.
+    expect(resolveExitShell("auto", null)).toEqual({
+      ok: false,
+      code: "ExitModeShellAmbiguous",
+      processName: null,
+    });
+    expect(resolveExitShell("auto", undefined)).toEqual({
+      ok: false,
+      code: "ExitModeShellAmbiguous",
+      processName: null,
+    });
+  });
+});
+
+describe("stripExitArtifacts — cosmetic removal of injected epilogue + sentinel", () => {
+  it("bash: removes the command echo + echoed epilogue + sentinel, keeps real output", () => {
+    // split("\n")[1] is the epilogue line (printf '%s%s|%d|' … "_EXIT_<nonce>" …),
+    // exactly what the head-cut marker searches for.
+    const epilogueEcho = buildExitCommand("ls -la", "bash", NONCE).split("\n")[1]!;
+    const buffer = [
+      "user@host:~$ ls -la", // command echo
+      epilogueEcho, // echoed epilogue (PS2 continuation line)
+      "file1.txt", // real output
+      "file2.txt",
+      `${TOKEN}|0|`, // sentinel output line
+    ].join("\n");
+    expect(stripExitArtifacts(buffer, NONCE, "bash")).toBe("file1.txt\nfile2.txt");
+  });
+
+  it("powershell: removes prologue + input + epilogue echo + sentinel, keeps real output", () => {
+    const [prologue, inputEcho, epilogueEcho] = buildExitCommand(
+      "Get-ChildItem",
+      "powershell",
+      NONCE,
+    ).split("\n");
+    const buffer = [
+      `PS C:\\> ${prologue}`,
+      inputEcho,
+      epilogueEcho,
+      "Mode  LastWriteTime  Name", // real output
+      "----  -------------  ----",
+      `${TOKEN}|0|True`, // sentinel
+    ].join("\n");
+    expect(stripExitArtifacts(buffer, NONCE, "powershell")).toBe(
+      "Mode  LastWriteTime  Name\n----  -------------  ----",
+    );
+  });
+
+  it("degrades safely when the epilogue echo is not located (still strips the sentinel)", () => {
+    // e.g. a tailed read scrolled the echo off the top — only the sentinel line
+    // is strippable; real output is preserved (never over-cut).
+    const buffer = `building...\ndone\n${TOKEN}|0|`;
+    expect(stripExitArtifacts(buffer, NONCE, "bash")).toBe("building...\ndone");
+  });
+
+  it("returns '' when there is no real output between the epilogue echo and sentinel", () => {
+    const epilogueEcho = buildExitCommand("true", "bash", NONCE).split("\n")[1]!;
+    const buffer = ["$ true", epilogueEcho, `${TOKEN}|0|`].join("\n");
+    expect(stripExitArtifacts(buffer, NONCE, "bash")).toBe("");
+  });
+
+  it("a different-nonce sentinel from a prior run is left intact (per-invocation isolation)", () => {
+    const buffer = `output line\n__DTMCP_EXIT_otherrun|0|`;
+    // Our nonce's token is absent → nothing to strip → returned as-is (trimmed).
+    expect(stripExitArtifacts(buffer, NONCE, "bash")).toBe(buffer);
+  });
+});
+
+describe("exit-mode typed codes route through classify() + SUGGESTS", () => {
+  for (const code of [
+    "ExitModeUnsafeInput",
+    "ExitModeShellUnsupported",
+    "ExitModeShellAmbiguous",
+  ] as const) {
+    it(`${code} classifies to its code and carries a non-empty suggest`, () => {
+      const result = failWith(new Error(code), "terminal:run");
+      const body = JSON.parse(result.content[0]!.text);
+      expect(body.ok).toBe(false);
+      expect(body.code).toBe(code);
+      expect(Array.isArray(body.suggest)).toBe(true);
+      expect(body.suggest.length).toBeGreaterThan(0);
+      expect(getSuggestsForCode(code).length).toBeGreaterThan(0);
+    });
+  }
+
+  it("a prose-suffixed message still routes (defensive substring match)", () => {
+    const result = failWith(
+      new Error("ExitModeUnsafeInput: unterminated_command_substitution"),
+      "terminal:run",
+    );
+    const body = JSON.parse(result.content[0]!.text);
+    expect(body.code).toBe("ExitModeUnsafeInput");
+  });
+});
+
+describe("until:{mode:'exit'} schema variant (P2 public surface)", () => {
+  it("accepts exit mode with an explicit shell", () => {
+    const r = terminalSchema.safeParse({
+      action: "run",
+      windowTitle: "pwsh",
+      input: "ls",
+      until: { mode: "exit", shell: "bash" },
+    });
+    expect(r.success, r.success ? "" : JSON.stringify(r.error.issues)).toBe(true);
+    if (r.success && r.data.action === "run") {
+      expect(r.data.until).toEqual({ mode: "exit", shell: "bash" });
+    }
+  });
+
+  it("defaults shell to 'auto' when omitted", () => {
+    const r = terminalSchema.safeParse({
+      action: "run",
+      windowTitle: "pwsh",
+      input: "ls",
+      until: { mode: "exit" },
+    });
+    expect(r.success).toBe(true);
+    if (r.success && r.data.action === "run") {
+      expect(r.data.until).toEqual({ mode: "exit", shell: "auto" });
+    }
+  });
+
+  it("rejects an unknown shell value", () => {
+    const r = terminalSchema.safeParse({
+      action: "run",
+      windowTitle: "pwsh",
+      input: "ls",
+      until: { mode: "exit", shell: "fish" },
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it("registration schema (post include-injection wrap) also accepts exit mode", () => {
+    const r = terminalRegistrationSchema.safeParse({
+      action: "run",
+      windowTitle: "pwsh",
+      input: "ls",
+      until: { mode: "exit", shell: "powershell" },
+    });
+    expect(r.success, r.success ? "" : JSON.stringify(r.error.issues)).toBe(true);
+  });
+
+  it("existing quiet / pattern variants still parse (no regression)", () => {
+    expect(
+      terminalSchema.safeParse({
+        action: "run",
+        windowTitle: "pwsh",
+        input: "ls",
+        until: { mode: "quiet", quietMs: 1500 },
+      }).success,
+    ).toBe(true);
+    expect(
+      terminalSchema.safeParse({
+        action: "run",
+        windowTitle: "pwsh",
+        input: "npm test",
+        until: { mode: "pattern", pattern: "Test Files" },
+      }).success,
+    ).toBe(true);
   });
 });
