@@ -185,6 +185,25 @@ describe("isUnsafeForExitMode — reject input an epilogue can't safely follow",
     expect(isUnsafeForExitMode("cat <<EOF\nx\nEOF")).toBe("heredoc");
     expect(isUnsafeForExitMode("cat <<-EOF")).toBe("heredoc");
     expect(isUnsafeForExitMode("cat <<'END'")).toBe("heredoc");
+    expect(isUnsafeForExitMode("grep foo <<< word")).toBeNull(); // here-STRING safe
+    expect(isUnsafeForExitMode("a <<< b <<< c")).toBeNull(); // multiple here-strings
+  });
+
+  it("rejects here-docs with non-letter delimiters (Codex round 2 P1)", () => {
+    expect(isUnsafeForExitMode("cat <<1\nx\n1")).toBe("heredoc");
+    expect(isUnsafeForExitMode("cat <<-9")).toBe("heredoc");
+    expect(isUnsafeForExitMode("cat <<\\EOF")).toBe("heredoc");
+    expect(isUnsafeForExitMode("cat << EOF")).toBe("heredoc"); // space before delimiter
+  });
+
+  it("rejects unterminated command substitution $(...) (Codex round 2 P1)", () => {
+    expect(isUnsafeForExitMode("echo $(uname")).toBe("unterminated_command_substitution");
+    expect(isUnsafeForExitMode("echo $(date) $(uname")).toBe("unterminated_command_substitution");
+    expect(isUnsafeForExitMode('echo "$(date"')).toBe("unterminated_command_substitution");
+    // Balanced / literal forms stay safe.
+    expect(isUnsafeForExitMode("echo $(uname)")).toBeNull();
+    expect(isUnsafeForExitMode('echo "$(date)"')).toBeNull();
+    expect(isUnsafeForExitMode("echo '$(literal'")).toBeNull(); // $( inside '…' is literal
   });
 
   it("rejects PowerShell here-strings", () => {

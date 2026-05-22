@@ -507,13 +507,18 @@ export function detectShell(
 }
 
 /**
- * Detect input that an appended epilogue would NOT safely follow. Exit mode
- * rejects these LOUDLY (ExitModeUnsafeInput) rather than sending an epilogue
- * that an open construct would swallow → silent forever-timeout.
+ * Detect input that an appended epilogue would NOT safely follow (an OPEN
+ * construct keeps parsing into the epilogue instead of running it). Exit mode
+ * rejects these fast with a clear reason (ExitModeUnsafeInput) instead of letting
+ * the run sit until timeout.
  *
- * Conservative (bash-leaning) by design: a false positive only pushes the caller
- * to pattern/quiet mode, while a false negative would be a silent hang. Returns
- * a short reason slug or null when the input is safe to wrap.
+ * Best-effort fast-fail, NOT a correctness boundary: shell syntax is unbounded,
+ * so an exotic missed construct does not corrupt data — it degrades to a loud
+ * `completion.reason:"timeout"` (the open construct swallows the epilogue, the
+ * sentinel never renders, the run times out and reports it). This guard turns the
+ * common cases (heredoc / `$(…)` / quotes / continuation) into an instant,
+ * actionable reject. Conservative (bash-leaning): a false positive only routes
+ * the caller to pattern/quiet. Returns a short reason slug, or null when safe.
  */
 export function isUnsafeForExitMode(input: string): string | null {
   // Trailing line continuation — the epilogue would be read as a continuation of
@@ -521,30 +526,53 @@ export function isUnsafeForExitMode(input: string): string | null {
   // trailing backtick (Codex P1); a trailing backtick is also an unterminated
   // bash command substitution. Either way the appended epilogue is swallowed.
   if (/[\\`][ \t]*$/.test(input)) return "trailing_line_continuation";
-  // Bash here-doc (`<<EOF` / `<<-EOF` / `<<~EOF` / `<<'EOF'`), excluding `<<<`
-  // (here-string, single-line and safe).
-  if (/<<[-~]?[ \t]*(['"]?)[A-Za-z_]/.test(input) && !/<<</.test(input)) return "heredoc";
-  if (/<<[-~]?[ \t]*(['"])[A-Za-z_]/.test(input)) return "heredoc";
+  // Bash here-doc, excluding `<<<` (here-string, single-line and safe). The
+  // delimiter can start with ANY token char, not just letters: `<<EOF`, `<<1`,
+  // `<<-9`, `<<\EOF`, `<<'END'`, `<< EOF` (Codex P1 — a non-letter delimiter
+  // would otherwise pass as safe and the heredoc swallows the epilogue). The
+  // lookbehind/lookahead exclude `<<<` precisely; a `<<` followed by a delimiter
+  // token is treated as a heredoc (arithmetic `<<` is conservatively flagged too
+  // — a false positive only routes to pattern/quiet).
+  if (/(?<!<)<<(?!<)[-~]?[ \t]*[A-Za-z0-9_'"\\]/.test(input)) return "heredoc";
   // PowerShell here-string openers `@"` / `@'` (multi-line literal).
   if (/@["']/.test(input)) return "powershell_herestring";
-  // Unbalanced quotes — track context so an apostrophe inside "double quotes"
-  // (e.g. `echo "it's fine"`) does NOT false-trip.
-  if (hasUnbalancedQuotes(input)) return "unbalanced_quotes";
-  return null;
+  // Unbalanced quotes / unterminated `$(…)` — track context so an apostrophe
+  // inside "double quotes" (e.g. `echo "it's fine"`) does NOT false-trip, and a
+  // `$(`/quote inside single quotes is literal.
+  return unterminatedShellConstruct(input);
 }
 
-/** Bash-semantics quote-balance scanner: backslash escapes the next char only
- *  outside single quotes; single quotes are literal (no escaping inside). */
-function hasUnbalancedQuotes(input: string): boolean {
+/**
+ * Bash-semantics scanner for constructs left OPEN at the end of `input` —
+ * appending an epilogue inside any of them makes the shell keep parsing into it
+ * instead of running the sentinel (→ silent exit-mode timeout). Tracks single /
+ * double quotes and `$( … )` command-substitution depth, honouring quote context
+ * (a `$(` inside single quotes is literal). Backslash escapes the next char
+ * outside single quotes. Backtick command substitution is covered by the
+ * trailing-backtick check above (mid-string backtick balance is intentionally
+ * NOT tracked here — PowerShell uses backtick as a string escape, e.g. "`n", so
+ * counting it would false-reject valid PowerShell input).
+ */
+function unterminatedShellConstruct(input: string): string | null {
   let inSingle = false;
   let inDouble = false;
+  let cmdDepth = 0; // $( … ) nesting
   for (let i = 0; i < input.length; i++) {
     const c = input[i];
-    if (c === "\\" && !inSingle) { i++; continue; } // escape next char (not in '…')
-    if (c === "'" && !inDouble) inSingle = !inSingle;
-    else if (c === '"' && !inSingle) inDouble = !inDouble;
+    if (inSingle) {
+      if (c === "'") inSingle = false; // only `'` ends a single-quoted span
+      continue;
+    }
+    if (c === "\\") { i++; continue; } // escape next char (outside single quotes)
+    if (c === "'" && !inDouble) { inSingle = true; continue; }
+    if (c === '"') { inDouble = !inDouble; continue; }
+    // $( … ) is active both unquoted and inside double quotes.
+    if (c === "$" && input[i + 1] === "(") { cmdDepth++; i++; continue; }
+    if (c === ")" && cmdDepth > 0) { cmdDepth--; continue; }
   }
-  return inSingle || inDouble;
+  if (inSingle || inDouble) return "unbalanced_quotes";
+  if (cmdDepth > 0) return "unterminated_command_substitution";
+  return null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
