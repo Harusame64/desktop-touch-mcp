@@ -128,6 +128,23 @@ describe("scanRegionAfterEcho — issue #383 echo anchoring", () => {
       const input = `echo A\nsleep 1; echo DONE`;
       expect(scanRegionAfterEcho(post, input)).toBeUndefined();
     });
+
+    it("does NOT match prematurely when an earlier line's output contains a later line (Codex Round 4 P2)", () => {
+      // line1 `cat f` has not finished echoing line2 yet, but its OUTPUT already
+      // contains line2's text. A per-line indexOf with arbitrary gaps would
+      // anchor inside that output; contiguous matching must defer instead.
+      const input = `cat f\necho DONE`;
+      const post = `cat f\nsome echo DONE inside file output`;
+      expect(scanRegionAfterEcho(post, input)).toBeUndefined();
+    });
+
+    it("requires contiguity: rejects arbitrary text between echoed lines", () => {
+      // Only continuation-prompt prefixes (>/. + space) are allowed between
+      // lines — not arbitrary words.
+      const input = `line one\nline two`;
+      expect(scanRegionAfterEcho(`line one\nXX line two\nOUT`, input)).toBeUndefined();
+      expect(scanRegionAfterEcho(`line one\n>> line two\nOUT`, input)).toBe(`\nOUT`);
+    });
   });
 
   describe("non-ASCII (CJK) input", () => {
