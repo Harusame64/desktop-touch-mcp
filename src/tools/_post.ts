@@ -93,8 +93,13 @@ function snapshotFocus(): { title: string | null; hwnd: string | null; processNa
 async function snapshotFocusedElement(): Promise<PostElementInfo | null> {
   try {
     const { focused } = await getFocusedAndPointInfo(0, 0, false, 800);
-    if (!focused?.name) return null;
-    const info: PostElementInfo = { name: focused.name, type: focused.controlType };
+    // Gate on controlType, not name (Codex PR #395 P2): many real Edit/Document
+    // fields expose ValuePattern with an EMPTY Name. The old `!focused?.name`
+    // guard dropped them, so post.focusedElement (and the #352 advisory that reads
+    // it) systematically missed unlabeled text inputs. controlType is the true
+    // "is there a real focused element" signal; junk / no-element has none.
+    if (!focused?.controlType) return null;
+    const info: PostElementInfo = { name: focused.name ?? "", type: focused.controlType };
     if (focused.automationId) info.automationId = focused.automationId;
     if (focused.value != null) info.value = focused.value;
     return info;

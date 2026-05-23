@@ -102,7 +102,9 @@ function truncate(text: string): string {
   return text.length > EXAMPLE_TEXT_MAX ? `${text.slice(0, EXAMPLE_TEXT_MAX)}…` : text;
 }
 
-/** Make a string safe to embed inside the single-quoted example literal. */
+/** Make a string safe to embed inside the single-quoted example literal.
+ *  Escape backslash FIRST (else a later `'`→`\'` would be mis-paired), then the
+ *  quote, then collapse newlines (CodeQL: incomplete string escaping). */
 function sanitize(s: string): string {
-  return s.replace(/[\r\n]+/g, " ").replace(/'/g, "\\'");
+  return s.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/[\r\n]+/g, " ");
 }
