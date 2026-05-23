@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-05-23 — Terminal `run` can wait for a command to finish (exit code) + a `desktop_act` hint after typing into native fields
+
 ### Added
 
 - **`terminal(action='run')` can now wait for a command to *finish* and report
@@ -36,6 +38,28 @@
   Prefer `mode:'exit'` whenever you care about completion or exit status; keep
   `mode:'pattern'` for matching output that appears mid-run, and `mode:'quiet'`
   for short interactive commands.
+
+- **`keyboard(action='type')` now points you to the lease-based `desktop_act`
+  flow when the text went into a native UI field.** On a successful
+  `keyboard:type` into a native UIA text input (an editable `Edit`/`Document`
+  field), the response now carries an additive `advisory` with
+  `preferredPath:'desktop_act'` and a ready-to-run example
+  (`desktop_discover(...) → desktop_act(...)`). `desktop_act` adds the lease flow
+  — lease verification, modal-blocking detection, attention diff — that a bare
+  `keyboard:type` skips. The hint is suppressed for browser/web content and for
+  UIA-blind targets (PWA / Electron / Canvas), where `keyboard` / `browser_*` is
+  the right tool, so it only appears when `desktop_act` is genuinely the better
+  path. Purely additive: responses are unchanged when no hint applies, and
+  `server_status.counters.advisoryEmitted` reports how often it fires. (issue #352)
+
+### Improved
+
+- **Terminal `run` on classic console (conhost) windows delivers input faster
+  and no longer disturbs your clipboard.** Sending a command in `exit` mode to a
+  conhost-hosted shell now uses a native console paste instead of routing the
+  text through the Windows clipboard. This removes clipboard contention (your
+  copied content is left intact) and fixes characters being dropped from
+  multi-line commands on conhost. (issue #386)
 
 ### Fixed
 
