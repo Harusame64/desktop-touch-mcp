@@ -1962,11 +1962,18 @@ export const terminalRunHandler = async ({
   let lastText = baselineRead?.text ?? "";
   let lastTextTime = Date.now();
   let firstChangeTime: number | null = null;
-  // Pattern-mode fallback (when patternRe compile fails — see warnings) uses
-  // the same updated default. Issue #196 (b) raised 800 → 1500 on the schema
-  // side; this immediate value must stay in sync so the fallback path is not
-  // a hidden short-default outlier.
-  const quietMs = until.mode === "quiet" ? until.quietMs : 1500;
+  // Quiet timer for (a) quiet mode and (b) the pattern-mode INVALID-REGEX
+  // fallback (patternRe compile failed → this run degrades to the quiet branch).
+  // For pattern mode, honour the caller's until.quietMs when provided — Codex
+  // #391 P2: an invalid-regex fallback must NOT ignore e.g. quietMs:10000 and
+  // complete after the 1500 default. When unset, 1500 (issue #196 (b) raised the
+  // schema default 800 → 1500; this immediate value stays in sync).
+  const quietMs =
+    until.mode === "quiet"
+      ? until.quietMs
+      : until.mode === "pattern"
+        ? until.quietMs ?? 1500
+        : 1500;
   // issue #384: opt-in settle fallback for pattern mode. When the caller sets
   // until.quietMs on a pattern-mode run, the run also completes (reason:'quiet',
   // no matchedPattern) once output has been stable for that long WITHOUT the
