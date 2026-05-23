@@ -74,6 +74,15 @@ pub struct ConsolePasteResult {
     pub restore_skipped_race: bool,
 }
 
+/// Normalise every newline to CRLF (collapse CRLF→LF then LF→CRLF, so isolated
+/// `\r` is handled and existing CRLF is not doubled). conhost strips lone LF and
+/// treats CR as a line break, so each statement must be CRLF-terminated to run
+/// after the atomic paste. Equivalent to the previous TS `/\r?\n/g → \r\n`.
+/// Pure — shared by the paste body and its unit test (PR #393 R2 P3-new).
+fn normalise_crlf(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\n', "\r\n")
+}
+
 fn build_skipped(snapshot: &ClipboardSnapshot) -> Vec<ConsolePasteSkippedFormat> {
     snapshot
         .skipped_summary()
@@ -139,10 +148,7 @@ pub fn win32_console_paste_no_focus(
 ) -> napi::Result<ConsolePasteResult> {
     napi_safe_call("win32_console_paste_no_focus", || {
         let target = hwnd_from_bigint(hwnd);
-        // conhost strips lone LF and treats CR as a line break — normalise every
-        // newline to CRLF so each statement runs after the atomic paste (matches
-        // the previous TS path).
-        let crlf = text.replace("\r\n", "\n").replace('\n', "\r\n");
+        let crlf = normalise_crlf(&text);
 
         // The whole clipboard transaction runs under one hidden owner window
         // (per-call lifecycle) on this (V8) thread.
@@ -221,11 +227,11 @@ mod tests {
 
     #[test]
     fn crlf_normalisation_collapses_then_expands() {
-        let normalise = |s: &str| s.replace("\r\n", "\n").replace('\n', "\r\n");
-        assert_eq!(normalise("a\nb"), "a\r\nb");
-        assert_eq!(normalise("a\r\nb"), "a\r\nb"); // already CRLF stays CRLF (no doubling)
-        assert_eq!(normalise("a\nb\nc"), "a\r\nb\r\nc");
-        assert_eq!(normalise("plain"), "plain");
+        // invoke the production helper (not a copy) so the test tracks the body
+        assert_eq!(normalise_crlf("a\nb"), "a\r\nb");
+        assert_eq!(normalise_crlf("a\r\nb"), "a\r\nb"); // already CRLF stays CRLF (no doubling)
+        assert_eq!(normalise_crlf("a\nb\nc"), "a\r\nb\r\nc");
+        assert_eq!(normalise_crlf("plain"), "plain");
     }
 
     fn one_skip() -> Vec<ConsolePasteSkippedFormat> {
