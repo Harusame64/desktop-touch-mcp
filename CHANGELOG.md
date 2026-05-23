@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`browser_click` can scroll an off-screen target into view for you.** Pass
+  `scrollIntoView:true` and, when the element is outside the visible viewport,
+  the click first scrolls it to the centre of the view and then clicks — instead
+  of failing with `ElementNotInViewport` and asking you to scroll it in yourself
+  with a separate `browser_eval`. The default stays `false`, so existing calls
+  behave exactly as before.
+  - `browser_click({selector:'#row-42 .open', scrollIntoView:true})`
+
+### Changed
+
+- **`browser_eval` now points you to `wait_until` when an eval times out.** A
+  single `browser_eval` runs under the browser's per-command timeout (~15s), so a
+  polling loop written *inside* an eval will always exhaust it. Two changes make
+  that failure recoverable instead of confusing: the tool description now warns
+  against in-page polling, and a timed-out eval returns a typed
+  `BrowserEvalTimeout` whose hints point at the right waiting tool —
+  `wait_until({condition:'element_matches'})` for a DOM element/text,
+  `'url_matches'` for an SPA route change, or `'ready_state'` for page load —
+  rather than a generic timeout error.
+
 ## [1.8.0] - 2026-05-23 — Terminal `run` can wait for a command to finish (exit code) + a `desktop_act` hint after typing into native fields
 
 ### Added

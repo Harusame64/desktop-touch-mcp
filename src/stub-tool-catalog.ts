@@ -61,6 +61,11 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "description": "Approve a pending suggestedFix (one-shot, 15s TTL).",
           "type": "string"
         },
+        "scrollIntoView": {
+          "description": "When true, if the target is outside the viewport, scroll it into view (centered) before clicking, instead of failing with ElementNotInViewport. Default false preserves the explicit scrollIntoView-then-retry workflow.",
+          "type": "boolean",
+          "default": false
+        },
         "include": {
           "type": "array",
           "items": {
@@ -91,7 +96,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "description": "Action selector — one of: js, dom, appState. Per-action required fields are enforced at call time (see the tool description); this flat schema lists every action's fields as optional."
         },
         "expression": {
-          "description": "JavaScript expression to evaluate. The server automatically wraps snippets in an async IIFE to avoid repeated const/let collisions. For multi-statement snippets, use an explicit final return value. Declarations (const/let/var) are scoped per snippet — use window.* / globalThis.* for persistence.",
+          "description": "JavaScript expression to evaluate. The server automatically wraps snippets in an async IIFE to avoid repeated const/let collisions. For multi-statement snippets, use an explicit final return value. Declarations (const/let/var) are scoped per snippet — use window.* / globalThis.* for persistence. A single eval is bounded by the CDP per-command timeout (~15s): do NOT write in-page polling loops here — use wait_until (element_matches / url_matches / ready_state) to wait for conditions instead.",
           "type": "string"
         },
         "withPerception": {

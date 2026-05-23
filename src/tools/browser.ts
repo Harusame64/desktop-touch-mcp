@@ -121,6 +121,11 @@ export const browserClickElementSchema = {
     "and a perception envelope is attached to post.perception on success."
   ),
   fixId: z.string().optional().describe("Approve a pending suggestedFix (one-shot, 15s TTL)."),
+  scrollIntoView: coercedBoolean().default(false).describe(
+    "When true, if the target is outside the viewport, scroll it into view (centered) before clicking, " +
+    "instead of failing with ElementNotInViewport. Default false preserves the explicit " +
+    "scrollIntoView-then-retry workflow."
+  ),
 };
 
 // Phase 3: kept as a ZodRawShape for internal documentation / type derivation;
@@ -962,6 +967,39 @@ export const browserFindElementHandler = async ({
   }
 };
 
+/**
+ * Phase 0 (ADR-023 FR-5): opt-in scroll-into-view for browser_click. One eval
+ * measures the element and, if its center is outside the viewport, calls
+ * scrollIntoView({block:'center'}); the caller then waits briefly for the scroll
+ * to settle so the subsequent coord fetch sees it on-screen. The in-viewport
+ * test mirrors getElementScreenCoords' center-based definition (cdp-bridge.ts).
+ * Best-effort: a missing element / eval failure is swallowed here and surfaced
+ * by the existing viewport / coord checks downstream.
+ */
+async function scrollSelectorIntoViewIfNeeded(
+  selector: string,
+  tabId: string | null,
+  port: number,
+): Promise<void> {
+  try {
+    const expr = `(function(){
+      var el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return 'missing';
+      var r = el.getBoundingClientRect();
+      var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      if (cx >= 0 && cx < window.innerWidth && cy >= 0 && cy < window.innerHeight) return 'inViewport';
+      el.scrollIntoView({ block: 'center', inline: 'nearest' });
+      return 'scrolled';
+    })()`;
+    const res = await evaluateInTab(expr, tabId, port);
+    if (res === "scrolled") {
+      await new Promise<void>((r) => setTimeout(r, 250));
+    }
+  } catch {
+    /* best-effort — the real failure is reported by the viewport check below */
+  }
+}
+
 export const browserClickElementHandler = async ({
   selector,
   narrate,
@@ -969,6 +1007,7 @@ export const browserClickElementHandler = async ({
   port,
   lensId,
   fixId,
+  scrollIntoView,
 }: {
   selector: string;
   narrate?: string;
@@ -976,6 +1015,7 @@ export const browserClickElementHandler = async ({
   port: number;
   lensId?: string;
   fixId?: string;
+  scrollIntoView?: boolean;
 }): Promise<ToolResult> => {
   try {
     // Phase G: fixId approval prologue
@@ -987,6 +1027,14 @@ export const browserClickElementHandler = async ({
       if (typeof vr.fix.args.selector === "string") effectiveSelector = vr.fix.args.selector;
       if (typeof vr.fix.args.tabId === "string") effectiveTabId = vr.fix.args.tabId;
       consumeFix(fixId);
+    }
+
+    // Phase 0 (ADR-023 FR-5): opt-in auto-scroll. Bring the target into view
+    // before the viewport gates (auto-guard pre-check + main coord fetch) so an
+    // off-screen element is scrolled in rather than hard-failing. No-op when
+    // already in view or when scrollIntoView is not requested.
+    if (scrollIntoView) {
+      await scrollSelectorIntoViewIfNeeded(effectiveSelector, effectiveTabId ?? null, port);
     }
 
     let perceptionEnvBrowser: import("../engine/perception/types.js").PostPerception | undefined;
@@ -1301,6 +1349,25 @@ export const browserEvalJsHandler = async ({
       content: [{ type: "text" as const, text: lines.join("\n") }],
     };
   } catch (err) {
+    // Phase 0 (ADR-023 FR-8): a long in-page poll inside a single eval always
+    // hits the CDP per-command timeout. Surface a typed hint pointing at
+    // wait_until rather than the generic UiaTimeout the raw message classifies as.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("CDP timeout")) {
+      return failCode(
+        "BrowserEvalTimeout",
+        "browser_eval hit the CDP per-command timeout (~15s). A single eval cannot run longer than that, so in-page polling loops will always time out here.",
+        {
+          suggest: [
+            "Do not poll inside browser_eval — one eval is bounded by the CDP per-command timeout.",
+            "To wait for a DOM element or text, use wait_until({condition:'element_matches', target:{by, pattern, scope}}).",
+            "To wait for an SPA route change, use wait_until({condition:'url_matches', target:{pattern}}).",
+            "To wait for page load, use wait_until({condition:'ready_state'}).",
+          ],
+          context: { tabId, port },
+        },
+      );
+    }
     return failWith(err, "browser_eval");
   }
 };
@@ -2348,7 +2415,9 @@ export const browserEvalSchema = z.discriminatedUnion("action", [
       "JavaScript expression to evaluate. " +
       "The server automatically wraps snippets in an async IIFE to avoid repeated const/let collisions. " +
       "For multi-statement snippets, use an explicit final return value. " +
-      "Declarations (const/let/var) are scoped per snippet — use window.* / globalThis.* for persistence."
+      "Declarations (const/let/var) are scoped per snippet — use window.* / globalThis.* for persistence. " +
+      "A single eval is bounded by the CDP per-command timeout (~15s): do NOT write in-page polling loops here — " +
+      "use wait_until (element_matches / url_matches / ready_state) to wait for conditions instead."
     ),
     withPerception: coercedBoolean().optional().default(false).describe(
       "When true, return structured JSON {ok, result, post} with post.perception attached. Default false preserves raw-text return."
