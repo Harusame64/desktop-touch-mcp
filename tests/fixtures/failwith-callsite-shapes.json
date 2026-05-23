@@ -471,7 +471,7 @@
     },
     {
       "file": "src/tools/server-status.ts",
-      "line": 25,
+      "line": 30,
       "tool": "server_status",
       "errKind": "identifier",
       "contextShape": "none"
