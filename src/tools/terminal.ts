@@ -19,6 +19,7 @@ import {
   postEnterToHwnd,
   isBgAutoEnabled,
   injectViaForegroundFlash,
+  pasteIntoConsoleNoFocus,
   TERMINAL_WINDOW_CLASSES,
 } from "../engine/bg-input.js";
 import { resolveBackgroundInputChannel } from "../engine/background-channel-resolver.js";
@@ -440,9 +441,12 @@ export function buildExitCommand(input: string, shell: ExitShell, nonce: string)
     // multi-digit code (e.g. 127) cannot match mid-render as `1` (Codex P2).
     return `${input}\n__dtmcp_rc=$?; printf '%s%s|%d|\\n' '${head}' "${tail}" "$__dtmcp_rc"`;
   }
-  // powershell
+  // powershell — the prologue carries a trailing `# <nonce>` comment (harmless;
+  // PowerShell comments run to end-of-line, the assignment completes first) so
+  // its ECHO line is nonce-scoped and stripExitArtifacts can drop it without a
+  // fixed-string match that could delete real output (Codex #389 P2).
   return (
-    `$global:LASTEXITCODE = $null\n${input}\n` +
+    `$global:LASTEXITCODE = $null # ${nonce}\n${input}\n` +
     `$dtmcp_ok=$?; $dtmcp_c=$LASTEXITCODE; ('${head}'+"${tail}")+'|'+([string]$dtmcp_c)+'|'+$dtmcp_ok`
   );
 }
@@ -487,10 +491,21 @@ export function parseExitSentinel(
  * Map a window process name to an exit-mode shell with a CONFIDENCE level.
  *
  * high  — the process IS the shell (`pwsh`/`powershell`/`bash`/`wsl`, or `cmd`).
- * low   — a host that can run ANY shell and hides the real one: WindowsTerminal,
- *         conhost (classic PowerShell often surfaces as conhost too — auto is
- *         frequently low even for a local PowerShell), OpenSSH/ssh (the remote
- *         shell is invisible from the local process — the SSH/WSL-nesting wall).
+ * low   — an unrecognised host process: WindowsTerminal (XAML host), or anything
+ *         else not in the table above.
+ *
+ * MEASURED CAVEAT (issue #386 P3, 2026-05-23): on Windows, a conhost-hosted
+ * PowerShell window's process name is "powershell"/"pwsh" (the hosted shell),
+ * NOT "conhost" — so `detectShell` returns HIGH confidence for it (auto works
+ * for a direct local PowerShell). The important corollary is the SSH/WSL-nesting
+ * wall: a conhost+PowerShell window running `ssh … bash` ALSO reports
+ * "powershell", so `auto` confidently resolves to powershell and would build the
+ * WRONG epilogue for the remote bash. detectShell only sees the WINDOW (outer)
+ * process; it cannot see a nested remote shell. The run handler therefore (a)
+ * resolves `auto` from this outer process and (b) emits an advisory warning on
+ * every auto-resolved exit run telling callers to pass `shell` explicitly for
+ * nested/remote sessions. A wrong epilogue degrades to a loud `reason:'timeout'`
+ * (the sentinel never renders), not to data corruption.
  *
  * The run handler treats low confidence as a loud failure (ExitModeShellAmbiguous)
  * and asks the caller to pass `shell` explicitly, rather than guessing wrong and
@@ -638,58 +653,39 @@ export function resolveExitShell(
 
 /**
  * Cosmetically strip the DRIVER-injected exit-mode artifacts from the final
- * `output`, so the caller sees only their command's real output (the exit status
- * is returned separately in `completion.exitCode`).
+ * `output`, so the caller does not see the prologue / epilogue / sentinel noise
+ * (the exit status is returned separately in `completion.exitCode`).
  *
- * The post-baseline slice for an exit-mode run looks like:
- *   [echoed prologue (PowerShell)] [echoed input] [echoed epilogue] [real output] [sentinel line]
+ * The injected lines do NOT bracket the real output — the input executes and
+ * prints BEFORE the epilogue line is echoed, so the buffer order is:
+ *   [prologue echo] [input echo] [real output…] [epilogue echo] [sentinel line]
+ * A region cut (head/tail) would therefore eat the real output. We instead drop
+ * the injected LINES by signature, order-independently, and keep everything else
+ * (the user's command echo + real output — same as pattern/quiet modes, which
+ * also return the echoed command; reliably stripping the echo too is the
+ * undeterminable echo-boundary problem #386 is about, so it is intentionally
+ * out of scope here).
  *
- * Two cuts, both keyed off markers that appear ONLY in injected text:
- *   1. Tail: drop everything from the CONTIGUOUS sentinel token onwards. The
- *      contiguous `__DTMCP_EXIT_<nonce>` only assembles in the command's runtime
- *      OUTPUT — the echo carries the SPLIT form — so this never over-cuts real
- *      output (echo-immune, same property parseExitSentinel relies on).
- *   2. Head: drop everything up to and including the echoed epilogue line,
- *      located by the NONCE-BEARING SPLIT-token signature the epilogue prints the
- *      token with (`'__DTMCP' "_EXIT_<nonce>"` for bash,
- *      `('__DTMCP'+"_EXIT_<nonce>")` for PowerShell). That signature appears ONLY
- *      in the driver-injected epilogue echo: the user's command echo would have
- *      to contain the crypto-random nonce in the exact split form to collide
- *      (the same negligible assumption parseExitSentinel relies on), and the
- *      command's real OUTPUT carries the CONTIGUOUS token, not the split form.
- *      Cutting to the FIRST occurrence also removes the PowerShell prologue + the
- *      user's command echo that precede it.
+ * Every injected line is NONCE-SCOPED, so the strip is a single uniform rule:
+ * drop any line containing the crypto-random `<nonce>`. The nonce appears in
+ *   - the PowerShell prologue echo (`… = $null # <nonce>`),
+ *   - the epilogue echo (the split-token expression `"_EXIT_<nonce>"`), and
+ *   - the sentinel OUTPUT line (`__DTMCP_EXIT_<nonce>|…`),
+ * and nowhere in the user's real output (a collision would require the command
+ * to print the random nonce — the same negligible assumption parseExitSentinel
+ * relies on). This replaces the earlier fixed-string prologue match, which could
+ * delete a real-output line that legitimately printed `$global:LASTEXITCODE =
+ * $null` when the injected prologue had scrolled off a tailed read (Codex #389 P2).
  *
- * Best-effort, NOT a correctness boundary: if a signature is not located (wrapped
- * echo, OCR fallback, or the head scrolled out of a tailed read), the
- * corresponding cut is skipped and the slice degrades to including a little
- * injected text — never to losing real output. Completion + exitCode come from
- * parseExitSentinel and are unaffected by this cosmetic pass.
+ * Best-effort cosmetic pass, NOT a correctness boundary: completion + exitCode
+ * come from parseExitSentinel and are unaffected. If a wrapped/OCR'd render
+ * splits the nonce across lines, a fragment may survive — never a correctness
+ * issue.
  */
-export function stripExitArtifacts(slice: string, nonce: string, shell: ExitShell): string {
-  let body = slice;
-  // 1. Tail cut at the contiguous sentinel token (output-only by construction).
-  const tokIdx = body.indexOf(exitToken(nonce));
-  if (tokIdx >= 0) {
-    const lineStart = body.lastIndexOf("\n", tokIdx);
-    body = lineStart >= 0 ? body.slice(0, lineStart) : "";
-  }
-  // 2. Head cut past the echoed epilogue, anchored on the nonce-bearing split
-  //    signature (matches buildExitCommand's epilogue verbatim). Nonce-unique →
-  //    cannot collide with the user's command echo or real output, so this never
-  //    over-cuts real content.
-  const tail = EXIT_TOKEN_TAIL_PREFIX + nonce;
-  const splitSig =
-    shell === "bash"
-      ? `'${EXIT_TOKEN_HEAD}' "${tail}"`
-      : `('${EXIT_TOKEN_HEAD}'+"${tail}")`;
-  const mIdx = body.indexOf(splitSig);
-  if (mIdx >= 0) {
-    const nl = body.indexOf("\n", mIdx);
-    body = nl >= 0 ? body.slice(nl + 1) : "";
-  }
-  // Trim the blank edges the cuts can leave behind.
-  return body.replace(/^\n+/, "").replace(/\n+$/, "");
+export function stripExitArtifacts(slice: string, nonce: string): string {
+  const kept = slice.split("\n").filter((line) => !line.includes(nonce));
+  // Trim the blank edges the dropped lines can leave behind.
+  return kept.join("\n").replace(/^\n+/, "").replace(/\n+$/, "");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1748,10 +1744,37 @@ export const terminalRunHandler = async ({
   // input or picks pattern/quiet. This check is input-only (no window needed),
   // so it runs before findTerminalWindow.
   if (until.mode === "exit") {
+    // exit mode OWNS command delivery — it requires atomic delivery (whole
+    // command in one shot) + a trailing Enter, or the completion sentinel never
+    // assembles. Delivery-shaping sendOptions therefore cannot be honored; reject
+    // them loudly at this single gate (BEFORE host routing) so conhost and WT
+    // behave identically rather than the conhost path silently ignoring them
+    // (Codex #389 P1). Focus-management options stay allowed — they are no-ops on
+    // the no-steal conhost paste path, not silently wrong.
+    const EXIT_CONFLICTING_SEND_OPTS = ["method", "preferClipboard", "pressEnter", "chunkSize", "pasteKey"];
+    const offending = EXIT_CONFLICTING_SEND_OPTS.filter((k) => k in validatedSendOptions);
+    if (offending.length > 0) {
+      return failCode(
+        "InvalidArgs",
+        `terminal:run: until:{mode:'exit'} controls command delivery — sendOptions ${offending.join(", ")} are not supported in exit mode.`,
+        {
+          suggest: [
+            "Drop these sendOptions for exit mode — it always delivers the command atomically (clipboard/console-paste) and presses Enter so the completion sentinel can render.",
+            "Focus options (focusFirst / restoreFocus / settleMs / forceFocus / trackFocus) are still accepted.",
+            "If you need custom delivery, use until:{mode:'pattern'} or {mode:'quiet'} instead.",
+          ],
+          context: { windowTitle, offending },
+        },
+      );
+    }
     const unsafe = isUnsafeForExitMode(input);
     if (unsafe) {
+      // failWith's 3rd arg is the FLAT context (non-hoisted keys nest under
+      // `context` automatically — see feedback_failwith_third_arg_flat). Passing
+      // `{ context: {...} }` would double-nest and hide `reason`.
       return failWith(new Error("ExitModeUnsafeInput"), "terminal:run", {
-        context: { reason: unsafe, windowTitle },
+        reason: unsafe,
+        windowTitle,
       });
     }
   }
@@ -1772,9 +1795,13 @@ export const terminalRunHandler = async ({
 
   // ── exit-mode shell resolution (issue #386) ─────────────────────────────────
   // Needs the window's process name (for shell:'auto' detection), so it runs
-  // after findTerminalWindow. cmd → ExitModeShellUnsupported, auto-low-confidence
-  // (WindowsTerminal / conhost / SSH host) → ExitModeShellAmbiguous: both loud
-  // pre-send rejects (no command sent). On success we lock the shell + a
+  // after findTerminalWindow. cmd → ExitModeShellUnsupported (loud pre-send
+  // reject). auto low-confidence (window process is an unknown host, e.g.
+  // WindowsTerminal) → ExitModeShellAmbiguous (loud reject). NOTE (P3 measured):
+  // a conhost-hosted PowerShell window reports 'powershell' → high → resolves;
+  // an SSH/WSL-nested session also reports the OUTER process, so auto silently
+  // resolves the outer shell (handled by the advisory warning below, degrades to
+  // a loud timeout if wrong — not ambiguous). On success we lock the shell + a
   // per-invocation nonce for buildExitCommand / parseExitSentinel.
   let exitShell: ExitShell | null = null;
   let exitNonce = "";
@@ -1788,15 +1815,28 @@ export const terminalRunHandler = async ({
     })();
     const resolved = resolveExitShell(until.shell, processName);
     if (!resolved.ok) {
+      // Flat context (see note above): keys nest under `context` automatically.
       return failWith(new Error(resolved.code), "terminal:run", {
-        context: {
-          windowTitle,
-          ...(resolved.processName ? { processName: resolved.processName } : {}),
-        },
+        windowTitle,
+        ...(resolved.processName ? { processName: resolved.processName } : {}),
       });
     }
     exitShell = resolved.shell;
     exitNonce = generateExitNonce();
+    // Q2 (issue #386 P3): auto-detection only sees the WINDOW process, which is
+    // the OUTER/host shell. A nested remote shell (SSH-into-WSL: a conhost+
+    // PowerShell window running `ssh … bash`) reports the host process, so 'auto'
+    // would confidently pick the wrong shell and the wrong-epilogue run degrades
+    // to a loud timeout. Warn so callers know to pass shell explicitly for any
+    // nested/remote session. (No behaviour change — the resolution already
+    // happened; this is advisory.)
+    if (until.shell === "auto") {
+      warnings.push(
+        `shell auto-detected as '${exitShell}' from the terminal's window process; ` +
+          "nested SSH/WSL/remote shells are not detectable this way — pass shell:'bash'|'powershell' " +
+          "explicitly if this terminal is running a different shell than its host.",
+      );
+    }
   }
 
   // exit mode sends the command WRAPPED with the completion epilogue; all other
@@ -1840,17 +1880,43 @@ export const terminalRunHandler = async ({
     ...validatedSendOptions,
   };
 
-  const sendResult = await terminalSendHandler(sendArgs);
-  // Check send result — if send failed, classify by code + window state.
-  const sendPayload = (() => {
+  const parseSendResult = (r: ToolResult): { ok?: boolean; code?: string } | null => {
     try {
-      const block = sendResult.content[0];
+      const block = r.content[0];
       if (block?.type === "text") {
         return JSON.parse(block.text) as { ok?: boolean; code?: string };
       }
     } catch { /* fall through */ }
     return null;
-  })();
+  };
+
+  // issue #386 Q3: exit mode needs ATOMIC delivery. The default BG WM_CHAR path
+  // drops characters on the multiline epilogue (conhost executes each embedded
+  // newline mid-send and chars posted during execution saturate/drop), which
+  // corrupts the byte-exact completion sentinel → the run would time out. Deliver
+  // the whole command at once instead:
+  //   - conhost (ConsoleWindowClass): clipboard + console Paste — atomic AND no
+  //     focus steal (pasteIntoConsoleNoFocus). This is the common local case
+  //     (and the host behind SSH-into-WSL bash sessions).
+  //   - WT / other terminals: force the foreground clipboard-paste path
+  //     (method:'foreground'), which pastes the command in one shot (atomic) at
+  //     the cost of a brief focus steal — WT cannot take WM_CHAR anyway, and a
+  //     non-conhost terminal has no no-steal console-paste equivalent.
+  // Non-exit modes are unchanged (method:'auto').
+  let sendPayload: { ok?: boolean; code?: string } | null;
+  if (until.mode === "exit") {
+    const targetClass = (() => {
+      try { return getWindowClassName(hwnd); } catch { return ""; }
+    })();
+    if (targetClass === "ConsoleWindowClass") {
+      const paste = await pasteIntoConsoleNoFocus(hwnd, sendInput);
+      sendPayload = paste.ok ? { ok: true } : { ok: false, code: paste.reason };
+    } else {
+      sendPayload = parseSendResult(await terminalSendHandler({ ...sendArgs, method: "foreground" }));
+    }
+  } else {
+    sendPayload = parseSendResult(await terminalSendHandler(sendArgs));
+  }
 
   if (sendPayload && sendPayload.ok === false) {
     // Issue #173 P2-2: when the window is still alive but send failed, the
@@ -2120,7 +2186,7 @@ export const terminalRunHandler = async ({
         // un-anchored, possibly-truncated buffer would lie about a run that did
         // not complete (Opus #388 round 1 P2-2). reason:'timeout' stays loud and
         // the integrity gate honestly reports baseline_lost when applicable.
-        output = stripExitArtifacts(parsed.text ?? "", exitNonce, exitShell);
+        output = stripExitArtifacts(parsed.text ?? "", exitNonce);
         finalMarker = parsed.marker;
         outputIntegrity = "ok";
       } else {
@@ -2243,9 +2309,11 @@ export const terminalSchema = z.discriminatedUnion("action", [
           "Shell the terminal runs, used to build the completion epilogue. " +
           "'bash' and 'powershell' are first-class. 'cmd' is not supported yet " +
           "(returns ExitModeShellUnsupported). 'auto' (default) detects from the " +
-          "window process but fails loudly (ExitModeShellAmbiguous) for hosts that " +
-          "hide the real shell (Windows Terminal / conhost / SSH) — pass the shell " +
-          "explicitly there. Inputs ending in an open construct (here-doc, " +
+          "window process: a conhost-hosted shell resolves, but a nested/remote " +
+          "shell is invisible (an SSH/WSL session reports its OUTER process, so " +
+          "auto picks the outer shell and warns — pass shell explicitly for " +
+          "remote sessions); auto fails loudly (ExitModeShellAmbiguous) only for " +
+          "unknown hosts such as Windows Terminal. Inputs ending in an open construct (here-doc, " +
           "unbalanced quote, unterminated $(…), here-string, trailing \\/backtick) " +
           "are rejected with ExitModeUnsafeInput."
         ),

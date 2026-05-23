@@ -15,6 +15,8 @@
  * 経由。
  */
 
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import {
   getWindowClassName,
   getWindowProcessId,
@@ -229,6 +231,169 @@ export function postKeyToHwnd(hwnd: unknown, vk: number): boolean {
 export function postEnterToHwnd(hwnd: unknown): boolean {
   const target = resolveTarget(hwnd);
   return postMessageToHwnd(target, WM_CHAR, VK_RETURN, 0);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Atomic no-focus-steal console paste (issue #386 Q3)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The per-char WM_CHAR path (postCharsToHwnd) is unreliable for MULTILINE input
+// on conhost: an embedded newline makes conhost execute that line immediately,
+// and the chars posted while conhost is busy executing saturate its input queue
+// and DROP (observed: a `__DTMCP` token came back as `_DTMCP`). until:{mode:'exit'}
+// needs the completion sentinel to render byte-exact, so a dropped char breaks
+// completion detection entirely.
+//
+// conhost (ConsoleWindowClass) exposes the legacy console "Paste" command
+// (WM_COMMAND wParam=0xFFF1), which injects the ENTIRE clipboard into the input
+// buffer atomically — all chars land before any line executes, so nothing drops,
+// and it needs NO foreground change (PostMessage to the specific HWND).
+//
+// Spike finding (2026-05-23): conhost paste STRIPS lone LF (0x0A) and treats CR
+// (0x0D) as a line break, so the command must use CRLF separators; with `\n`
+// alone the lines concatenate and the shell sees one mangled line.
+
+const WM_COMMAND = 0x0111;
+/** Legacy console context-menu "Paste" command id (conhost). */
+const ID_CONSOLE_PASTE = 0xfff1;
+
+const execFileAsync = promisify(execFile);
+
+/** Read the current clipboard as a UTF-16LE base64 blob (empty string if none). */
+async function getClipboardB64(): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      "powershell.exe",
+      [
+        "-NoProfile", "-NonInteractive", "-Command",
+        "$t=Get-Clipboard -Raw;if($t -eq $null){''}else{" +
+          "[Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($t))}",
+      ],
+      { timeout: 4000 },
+    );
+    return stdout.trim();
+  } catch {
+    return null;
+  }
+}
+
+/** Set the clipboard to `text` (UTF-16LE) and verify the read-back byte-equals. */
+async function setClipboardVerified(text: string): Promise<boolean> {
+  const b64 = Buffer.from(text, "utf16le").toString("base64");
+  const script =
+    `$b=[System.Convert]::FromBase64String('${b64}');` +
+    `$t=[System.Text.Encoding]::Unicode.GetString($b);` +
+    `Set-Clipboard -Value $t;` +
+    `$r=Get-Clipboard -Raw;` +
+    `if($r -eq $null){''}else{[Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($r))}`;
+  try {
+    const { stdout } = await execFileAsync(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      { timeout: 5000 },
+    );
+    const readBack = stdout.trim();
+    const actual = readBack ? Buffer.from(readBack, "base64") : Buffer.alloc(0);
+    // Get-Clipboard -Raw can append a trailing newline; accept an exact match OR
+    // the text followed by a single CRLF/CR/LF so multiline payloads still pass.
+    const want = Buffer.from(text, "utf16le");
+    if (want.equals(actual)) return true;
+    for (const suffix of ["\r\n", "\r", "\n"]) {
+      if (Buffer.from(text + suffix, "utf16le").equals(actual)) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+export interface ConsolePasteOutcome {
+  ok: boolean;
+  reason?: "clipboard_set_failed" | "console_paste_post_failed";
+}
+
+/**
+ * Paste `text` into a conhost (ConsoleWindowClass) window atomically WITHOUT
+ * stealing foreground, via clipboard + the console Paste command. Multiline-safe.
+ *
+ * Caller MUST have verified the target is conhost (ConsoleWindowClass) — the
+ * 0xFFF1 command is a no-op on Windows Terminal (XAML) and non-console windows.
+ *
+ * Flow: save clipboard → set clipboard to the CRLF-normalised text (verified) →
+ * post the console Paste command → settle so conhost drains the clipboard into
+ * its input buffer → send a trailing Enter to run the final line → restore the
+ * previous clipboard (best-effort).
+ *
+ * The trailing Enter is posted AFTER a settle delay (not appended to the
+ * clipboard) so it cannot race ahead of the still-draining paste.
+ */
+export async function pasteIntoConsoleNoFocus(
+  hwnd: unknown,
+  text: string,
+): Promise<ConsolePasteOutcome> {
+  const target = resolveTarget(hwnd);
+  // conhost strips lone LF and treats CR as a line break — use CRLF so each
+  // statement runs after the atomic paste.
+  const crlf = text.replace(/\r?\n/g, "\r\n");
+
+  const saved = await getClipboardB64(); // null = read failed; "" = empty clipboard
+  if (!(await setClipboardVerified(crlf))) {
+    // Set-Clipboard may have landed before the read-back mismatch (another app
+    // raced, or newline tolerance missed) — restore so we never leave the user's
+    // clipboard clobbered on a failed paste (Opus #389 round 1 P2-1).
+    await restoreClipboard(saved);
+    return { ok: false, reason: "clipboard_set_failed" };
+  }
+
+  const posted = postMessageToHwnd(target, WM_COMMAND, ID_CONSOLE_PASTE, 0);
+  if (!posted) {
+    await restoreClipboard(saved);
+    return { ok: false, reason: "console_paste_post_failed" };
+  }
+
+  // Let conhost drain the clipboard into its input buffer before the Enter and
+  // before we overwrite the clipboard on restore.
+  await new Promise<void>((r) => setTimeout(r, 200));
+  postEnterToHwnd(target);
+  await new Promise<void>((r) => setTimeout(r, 60));
+  await restoreClipboard(saved);
+  return { ok: true };
+}
+
+/**
+ * Best-effort restore of a clipboard snapshot captured by getClipboardB64().
+ *
+ * Codex #389 P2: when the original clipboard was EMPTY (`""`) or could not be
+ * read (`null`), we must still CLEAR it rather than skip — otherwise the command
+ * we just pasted (possibly sensitive input) lingers in the user's clipboard
+ * after the run. Set-Clipboard rejects an empty value, so clearing uses the
+ * Forms clipboard API.
+ */
+async function restoreClipboard(savedB64: string | null): Promise<void> {
+  try {
+    if (savedB64 && savedB64.length > 0) {
+      const script =
+        `$b=[System.Convert]::FromBase64String('${savedB64}');` +
+        `$t=[System.Text.Encoding]::Unicode.GetString($b);` +
+        `Set-Clipboard -Value $t`;
+      await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+        timeout: 3000,
+      });
+    } else {
+      // Originally empty / unreadable — clear so the injected command does not
+      // linger. Clearing an unreadable clipboard is harmless (best-effort).
+      await execFileAsync(
+        "powershell.exe",
+        [
+          "-NoProfile", "-NonInteractive", "-Command",
+          "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::Clear()",
+        ],
+        { timeout: 3000 },
+      );
+    }
+  } catch {
+    /* best-effort */
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

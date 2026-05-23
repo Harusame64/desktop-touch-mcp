@@ -156,11 +156,22 @@ export async function launchPowerShell(opts?: {
    *    WM_CHAR is silently swallowed by the WinUI/XAML pipeline (issue #173).
    */
   host?: TerminalHost;
+  /**
+   * Optional extra PowerShell statement appended AFTER the title / pid / banner
+   * statements. Used by the SSH-into-WSL launcher (issue #386 P3) to drop the
+   * window into a remote bash session via `& ssh.exe …` once the window is
+   * already titled + findable. The window title is set by [Console]::Title
+   * BEFORE this runs, so findByTag still works while the foreground process is
+   * the SSH/bash session. Kept generic so the launcher's kill/isolation
+   * guarantees are reused unchanged.
+   */
+  postScript?: string;
 }): Promise<PsInstance> {
   const tag = `ps-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
   const banner = opts?.banner ?? "";
   const exe = opts?.exe ?? "powershell.exe";
   const host: TerminalHost = opts?.host ?? "default";
+  const postScript = opts?.postScript ?? "";
 
   // Temp file the PS script writes its own PID into — lets kill() target the
   // exact PowerShell process rather than using WINDOWTITLE (which on Windows
@@ -188,6 +199,7 @@ export async function launchPowerShell(opts?: {
     `[Console]::Title = '${tag}'`,
     `[string]$PID | Set-Content -Path '${psafePidFile}'`,
     banner ? `Write-Host '${banner.replace(/'/g, "''")}'` : "",
+    postScript || "",
   ].filter(Boolean).join("; ");
   const encodedScript = Buffer.from(psScript, "utf16le").toString("base64");
 
