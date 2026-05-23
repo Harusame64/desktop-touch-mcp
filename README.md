@@ -159,7 +159,7 @@ For a local checkout, register the built server directly:
 ### 🛠️ Utilities & Workflow
 | Tool | Description |
 |---|---|
-| `terminal` | Unified command execution: `run` (send + wait + read), `read` (OCR/UIA), and `send`. |
+| `terminal` | Unified command execution: `run` (send + wait + read), `read` (OCR/UIA), and `send`. `run` completion modes: `quiet`, `pattern`, and `exit` (waits for the command to finish + returns its exit code — see [Terminal command completion](#terminal-command-completion-until)). |
 | `wait_until` | Efficient server-side polling for window, focus, text, or URL state changes. |
 | `window_dock` / `focus_window` | Window management: `pin` (always-on-top), `unpin`, `dock` (corner snap), and `focus`. |
 | `workspace_launch` | Launch apps and auto-detect new HWNDs (supports localized titles). |
@@ -200,6 +200,55 @@ Lease lifecycle:
 - Each `desktop_discover` response carries `softExpiresAtMs` (≈ 60 % of the TTL window). Past that timestamp the LLM should consider re-calling `desktop_discover` even though the lease is still technically valid — `lease.expiresAtMs` is the only correctness wall.
 - TTL adapts to `view` mode (`action`/`explore`/`debug`), entity count, and response payload size. Cap is 60 s.
 - Set `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1` to fall back to the v1 tool surface (`get_windows` / `get_ui_elements` / `set_element_value`) for troubleshooting only — V2 is the recommended default.
+
+---
+
+## Terminal command completion (`until`)
+
+`terminal(action='run')` sends a command, waits for it to complete, and reads the
+output in one call. How it decides "complete" is controlled by `until`:
+
+| Mode | Waits for | Best for |
+|---|---|---|
+| `quiet` (default) | output to fall silent for `quietMs` | short interactive commands |
+| `pattern` | a string/regex you expect in the output | long commands with a known final marker |
+| `exit` | the command to actually **finish** | when you need completion or the exit code |
+
+### `until:{mode:'exit'}` — real completion + exit code
+
+The heuristic modes can misfire on the common "append a sentinel" idiom
+(`some-task; echo DONE` matched by `DONE`): the sentinel also shows up in the
+**echoed command line**, and for multi-line commands there is no reliable way to
+tell that echo apart from real output. `mode:'exit'` removes the guesswork — the
+server appends its own completion marker whose *printed* form differs from its
+*typed* form, so it never matches the echoed command (even for multi-line input),
+and it returns the real process exit code:
+
+```js
+terminal({
+  action: 'run',
+  windowTitle: 'pwsh',
+  input: 'npm run build',
+  until: { mode: 'exit', shell: 'powershell' },
+})
+// → completion: { reason: 'exited', exitCode: 0, elapsedMs: … }
+//   output: just the command's real output (the injected marker is stripped)
+```
+
+- **Pass `shell` explicitly** (`'bash'` or `'powershell'`). `shell:'auto'` detects
+  the shell from the terminal window, but it cannot see a shell running *inside*
+  SSH or WSL — the window still looks like its local host — so for remote/nested
+  sessions pass the remote side's shell (`auto` otherwise warns and may pick the
+  outer shell). A window whose process is genuinely unidentifiable (e.g. Windows
+  Terminal) returns `ExitModeShellAmbiguous`.
+- **First-class shells:** `bash` and `powershell`. `cmd.exe` is not supported yet
+  (`ExitModeShellUnsupported`).
+- **Unsafe input is rejected up front** (`ExitModeUnsafeInput`) rather than
+  hanging: a command ending mid-construct (unterminated quote, here-doc, `$(…)`,
+  trailing `\`).
+- Exit mode controls its own delivery, so delivery-shaping `sendOptions`
+  (`method` / `preferClipboard` / `pressEnter` / `chunkSize` / `pasteKey`) are
+  rejected with `InvalidArgs`; focus options remain accepted.
 
 ---
 
