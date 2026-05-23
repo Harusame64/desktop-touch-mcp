@@ -4,6 +4,7 @@ import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
 import { getEngineStatus } from "../engine/status.js";
 import { getProcessHealth } from "../engine/process-health.js";
+import { getAdvisoryEmitCount } from "./_advisory.js";
 import { makeQueryWrapper, withEnvelopeIncludeSchema, genericQueryCausedByProjector, defaultQuerySessionId } from "./_envelope.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -20,7 +21,11 @@ export const serverStatusHandler = async (): Promise<ToolResult> => {
   try {
     const status = getEngineStatus();
     const health = getProcessHealth();
-    return ok({ engine: status, health });
+    // ADR-022 / issue #352: cumulative count of success-path advisories emitted
+    // (process lifetime). The only objective fire-rate signal — surfaced so
+    // dogfood can see whether advisories fire at all (under-fire risk).
+    const counters = { advisoryEmitted: getAdvisoryEmitCount() };
+    return ok({ engine: status, health, counters });
   } catch (err) {
     return failWith(err, "server_status");
   }

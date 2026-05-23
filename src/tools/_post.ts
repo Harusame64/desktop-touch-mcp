@@ -18,6 +18,7 @@ import type { ToolResult } from "./_types.js";
 import type { RichBlock } from "../engine/uia-diff.js";
 import type { PerceptionEnvelope, PostPerception } from "../engine/perception/types.js";
 import { appendEvent } from "../engine/perception/target-timeline.js";
+import { maybeAdvisory } from "./_advisory.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -125,6 +126,11 @@ async function snapshotFocusedElement(): Promise<PostElementInfo | null> {
  *   - `obj.post.perception`              → withPostState ONLY (moved from the
  *        root `_perceptionForPost` marker, then the marker is `delete`d — on
  *        BOTH the success and failure branches).
+ *   - `obj.advisory` (root, success ONLY) → withPostState ONLY (ADR-022 / #352).
+ *        Built by `maybeAdvisory(toolName, args, post.focusedElement)` from the
+ *        already-captured focused-element snapshot (no handler input, no marker,
+ *        no UIA call). Absent when no better path applies; never written on the
+ *        failure branch.
  *   - `obj.post.rich`                    → COORDINATED two writers, NOT
  *        single-writer: withPostState moves it from the root `_richForPost`
  *        marker (browser CDP, success path, takes precedence); `spliceRich`
@@ -196,6 +202,13 @@ export function withPostState<T extends Record<string, unknown>>(
             }
           } else {
             obj.post = post;
+            // ADR-022 / issue #352: success-path advisory. Reuses the
+            // focused-element snapshot already taken above (post.focusedElement) —
+            // zero extra UIA cost. `_advisory.ts` owns the per-tool logic; this
+            // wrapper stays generic. Additive root field `advisory` (sibling of
+            // `hints`); absent when no better path applies.
+            const advisory = maybeAdvisory(toolName, args as Record<string, unknown>, post.focusedElement);
+            if (advisory) obj.advisory = advisory;
             // If the handler injected a CDP-sourced rich block via _richForPost,
             // move it into post.rich and remove the temporary key.
             // Convention: browser handlers set result._richForPost = RichBlock before returning.
