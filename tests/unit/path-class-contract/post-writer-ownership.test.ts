@@ -46,6 +46,8 @@ vi.mock("../../../src/engine/uia-bridge.js", () => ({
 import { withPostState } from "../../../src/tools/_post.js";
 import { ok, fail } from "../../../src/tools/_types.js";
 import { errorFromMessage, toToolFailure, failWith } from "../../../src/tools/_errors.js";
+import { getFocusedAndPointInfo } from "../../../src/engine/uia-bridge.js";
+import { enumWindowsInZOrder, getWindowProcessId, getProcessIdentityByPid } from "../../../src/engine/win32.js";
 
 function parse(result: { content: ReadonlyArray<{ type: string; text?: string }> }): Record<string, unknown> {
   const block = result.content[0];
@@ -173,6 +175,66 @@ describe("PR-P2-1: ROOT_HOISTED_KEYS asymmetries", () => {
 // That route MUST keep placing `_perceptionForPost` at the ROOT (via
 // ROOT_HOISTED_KEYS), because withPostState only looks at the root. If a future
 // change pushed it under `context`, post.perception would silently vanish.
+
+// ── ADR-022 / #352: obj.advisory is a withPostState success-only writer ───────
+
+describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
+  const editFocus = { focused: { name: "Editor", controlType: "Edit", value: "old" } };
+
+  it("sets root obj.advisory for keyboard(type) when the focused element is a UIA text input", async () => {
+    vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce(editFocus as never);
+    const parsed = parse(
+      await withPostState("keyboard", async () => ok({ ok: true, method: "background" }))(
+        { action: "type", windowTitle: "メモ帳", text: "hi" },
+      ),
+    );
+    const advisory = parsed.advisory as Record<string, unknown> | undefined;
+    expect(advisory).toBeDefined();
+    expect(advisory!.preferredPath).toBe("desktop_act");
+    expect(String(advisory!.example)).toContain("windowTitle:'メモ帳'");
+    // advisory is a ROOT sibling of post — not nested inside post
+    expect((parsed.post as Record<string, unknown>).advisory).toBeUndefined();
+  });
+
+  it("does NOT set advisory when the focused element is not a text input", async () => {
+    vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce({ focused: { name: "Canvas", controlType: "Pane" } } as never);
+    const parsed = parse(
+      await withPostState("keyboard", async () => ok({ ok: true }))({ action: "type", text: "hi" }),
+    );
+    expect("advisory" in parsed).toBe(false);
+  });
+
+  it("never sets advisory on the failure branch (even with a qualifying focused element)", async () => {
+    vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce(editFocus as never);
+    const parsed = parse(
+      await withPostState("keyboard", async () => fail({ ok: false, code: "ToolError", error: "e" }))(
+        { action: "type", text: "hi" },
+      ),
+    );
+    expect(parsed.ok).toBe(false);
+    expect("advisory" in parsed).toBe(false);
+  });
+
+  it("does NOT set advisory when the focused window is a browser (after.processName wiring)", async () => {
+    // Pin the processName wiring (_post.ts → maybeAdvisory): an active browser
+    // window suppresses the advisory even with a qualifying focused Edit. Without
+    // the `after.processName` arg this would (wrongly) fire — guards the wiring.
+    vi.mocked(enumWindowsInZOrder).mockReturnValue([{ hwnd: 1, title: "X", isActive: true } as never]);
+    vi.mocked(getWindowProcessId).mockReturnValue(123 as never);
+    vi.mocked(getProcessIdentityByPid).mockReturnValue({ processName: "chrome" } as never);
+    vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce(editFocus as never);
+    try {
+      const parsed = parse(
+        await withPostState("keyboard", async () => ok({ ok: true }))({ action: "type", text: "hi" }),
+      );
+      expect("advisory" in parsed).toBe(false);
+    } finally {
+      vi.mocked(enumWindowsInZOrder).mockReturnValue([]);
+      vi.mocked(getWindowProcessId).mockReturnValue(null as never);
+      vi.mocked(getProcessIdentityByPid).mockReturnValue(null as never);
+    }
+  });
+});
 
 describe("PR-P2-1: B′ presenter routes _perceptionForPost to ROOT (R1 codemod safety)", () => {
   const env = { kind: "auto", status: "needs_escalation", next: "re-focus and retry" };

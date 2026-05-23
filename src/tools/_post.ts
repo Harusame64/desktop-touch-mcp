@@ -18,6 +18,7 @@ import type { ToolResult } from "./_types.js";
 import type { RichBlock } from "../engine/uia-diff.js";
 import type { PerceptionEnvelope, PostPerception } from "../engine/perception/types.js";
 import { appendEvent } from "../engine/perception/target-timeline.js";
+import { maybeAdvisory } from "./_advisory.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -92,6 +93,12 @@ function snapshotFocus(): { title: string | null; hwnd: string | null; processNa
 async function snapshotFocusedElement(): Promise<PostElementInfo | null> {
   try {
     const { focused } = await getFocusedAndPointInfo(0, 0, false, 800);
+    // NOTE (#352): `getFocusedAndPointInfo`'s `toInfo` already returns null for
+    // name-empty elements (`uia-bridge.ts` `if (!obj || !obj.name) return null`),
+    // so an unnamed UIA text input never reaches here. The #352 advisory therefore
+    // fires only for NAMED text inputs in Round 1; widening to unlabeled inputs is
+    // an upstream change to that guard (shared with desktop_state / mouse-verify),
+    // tracked in remaining-work.md (Opus PR #395 R2 P2).
     if (!focused?.name) return null;
     const info: PostElementInfo = { name: focused.name, type: focused.controlType };
     if (focused.automationId) info.automationId = focused.automationId;
@@ -125,6 +132,11 @@ async function snapshotFocusedElement(): Promise<PostElementInfo | null> {
  *   - `obj.post.perception`              → withPostState ONLY (moved from the
  *        root `_perceptionForPost` marker, then the marker is `delete`d — on
  *        BOTH the success and failure branches).
+ *   - `obj.advisory` (root, success ONLY) → withPostState ONLY (ADR-022 / #352).
+ *        Built by `maybeAdvisory(toolName, args, post.focusedElement)` from the
+ *        already-captured focused-element snapshot (no handler input, no marker,
+ *        no UIA call). Absent when no better path applies; never written on the
+ *        failure branch.
  *   - `obj.post.rich`                    → COORDINATED two writers, NOT
  *        single-writer: withPostState moves it from the root `_richForPost`
  *        marker (browser CDP, success path, takes precedence); `spliceRich`
@@ -196,6 +208,13 @@ export function withPostState<T extends Record<string, unknown>>(
             }
           } else {
             obj.post = post;
+            // ADR-022 / issue #352: success-path advisory. Reuses the
+            // focused-element snapshot already taken above (post.focusedElement) —
+            // zero extra UIA cost. `_advisory.ts` owns the per-tool logic; this
+            // wrapper stays generic. Additive root field `advisory` (sibling of
+            // `hints`); absent when no better path applies.
+            const advisory = maybeAdvisory(toolName, args as Record<string, unknown>, post.focusedElement, after.processName);
+            if (advisory) obj.advisory = advisory;
             // If the handler injected a CDP-sourced rich block via _richForPost,
             // move it into post.rich and remove the temporary key.
             // Convention: browser handlers set result._richForPost = RichBlock before returning.
