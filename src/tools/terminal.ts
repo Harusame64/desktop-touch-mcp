@@ -1911,6 +1911,25 @@ export const terminalRunHandler = async ({
     if (targetClass === "ConsoleWindowClass") {
       const paste = await pasteIntoConsoleNoFocus(hwnd, sendInput);
       sendPayload = paste.ok ? { ok: true } : { ok: false, code: paste.reason };
+      // issue #386: surface native-clipboard hints — ONLY on success. They are
+      // success-context ("the paste worked, but a format was not preserved" /
+      // "restore was skipped"); emitting them alongside a send failure would
+      // read as a contradiction ("couldn't paste, but your image wasn't saved").
+      // On failure the reason code is the message (Opus PR #393 R1 P2-1).
+      if (paste.ok) {
+        if (paste.skippedFormats && paste.skippedFormats.length > 0) {
+          warnings.push(
+            `clipboard formats not preserved across paste: ${paste.skippedFormats
+              .map((f) => `${f.formatId}(${f.reason})`)
+              .join(", ")}`,
+          );
+        }
+        if (paste.restoreSkippedRace) {
+          warnings.push(
+            "clipboard restore skipped — another app changed the clipboard during the paste",
+          );
+        }
+      }
     } else {
       sendPayload = parseSendResult(await terminalSendHandler({ ...sendArgs, method: "foreground" }));
     }
@@ -1938,6 +1957,7 @@ export const terminalRunHandler = async ({
       },
       hwnd: String(hwnd),
       warnings: [
+        ...warnings,
         sendCode
           ? `terminal(action='send') failed: ${sendCode}`
           : `terminal(action='send') failed`,
