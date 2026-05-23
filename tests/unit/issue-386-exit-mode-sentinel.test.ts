@@ -26,6 +26,7 @@ import {
   stripExitArtifacts,
   terminalSchema,
   terminalRegistrationSchema,
+  terminalRunHandler,
 } from "../../src/tools/terminal.js";
 import { failWith, getSuggestsForCode } from "../../src/tools/_errors.js";
 
@@ -321,7 +322,7 @@ describe("stripExitArtifacts — cosmetic removal of injected epilogue + sentine
       `${TOKEN}|0|`, // sentinel output line (dropped — has _EXIT_<nonce>)
       "user@host:~$",
     ].join("\n");
-    const out = stripExitArtifacts(buffer, NONCE, "bash");
+    const out = stripExitArtifacts(buffer, NONCE);
     expect(out).toContain("file1.txt");
     expect(out).toContain("file2.txt");
     expect(out).toContain("user@host:~$ ls -la"); // command echo kept
@@ -344,7 +345,7 @@ describe("stripExitArtifacts — cosmetic removal of injected epilogue + sentine
       `${TOKEN}|0|True`, // sentinel (dropped)
       "PS C:\\>",
     ].join("\n");
-    const out = stripExitArtifacts(buffer, NONCE, "powershell");
+    const out = stripExitArtifacts(buffer, NONCE);
     expect(out).toContain("Mode  LastWriteTime  Name");
     expect(out).toContain("----  -------------  ----");
     expect(out).not.toContain("LASTEXITCODE"); // prologue + epilogue gone
@@ -368,7 +369,7 @@ describe("stripExitArtifacts — cosmetic removal of injected epilogue + sentine
       `PS C:\\> ${epilogueEcho}`, // epilogue echo (dropped — _EXIT_<nonce>)
       `${TOKEN}|0|True`, // sentinel (dropped)
     ].join("\n");
-    const out = stripExitArtifacts(buffer, NONCE, "powershell");
+    const out = stripExitArtifacts(buffer, NONCE);
     expect(out).toContain("Write-Host 'resetting'");
     // The user's printed literal survives (real output not corrupted).
     expect(out).toContain("$global:LASTEXITCODE = $null");
@@ -382,7 +383,7 @@ describe("stripExitArtifacts — cosmetic removal of injected epilogue + sentine
     // A fast command with no output between echo and sentinel still strips clean.
     const epilogueEcho = buildExitCommand("true", "bash", NONCE).split("\n")[1]!;
     const buffer = ["$ true", `$ ${epilogueEcho}`, `${TOKEN}|0|`, "$"].join("\n");
-    const out = stripExitArtifacts(buffer, NONCE, "bash");
+    const out = stripExitArtifacts(buffer, NONCE);
     expect(out).not.toContain("__DTMCP");
     expect(out).not.toContain("_EXIT_");
     expect(out).toContain("$ true"); // command echo kept
@@ -391,7 +392,7 @@ describe("stripExitArtifacts — cosmetic removal of injected epilogue + sentine
   it("a different-nonce sentinel from a prior run is left intact (per-invocation isolation)", () => {
     const buffer = `output line\n__DTMCP_EXIT_otherrun|0|`;
     // Our nonce's marker is absent → nothing dropped → returned as-is (trimmed).
-    expect(stripExitArtifacts(buffer, NONCE, "bash")).toBe(buffer);
+    expect(stripExitArtifacts(buffer, NONCE)).toBe(buffer);
   });
 });
 
@@ -419,6 +420,44 @@ describe("exit-mode typed codes route through classify() + SUGGESTS", () => {
     );
     const body = JSON.parse(result.content[0]!.text);
     expect(body.code).toBe("ExitModeUnsafeInput");
+  });
+});
+
+describe("exit mode rejects delivery-shaping sendOptions (Codex #389 P1)", () => {
+  // These rejects happen in the exit pre-flight BEFORE findTerminalWindow, so the
+  // handler returns without any terminal I/O — safe to assert in a unit test.
+  for (const key of ["pressEnter", "preferClipboard", "method", "chunkSize", "pasteKey"] as const) {
+    it(`rejects sendOptions.${key} with InvalidArgs (uniform, pre-routing)`, async () => {
+      const result = await terminalRunHandler({
+        windowTitle: "irrelevant",
+        input: "echo hi",
+        until: { mode: "exit", shell: "powershell" },
+        timeoutMs: 10_000,
+        sendOptions: { [key]: key === "method" ? "background" : key === "chunkSize" ? 50 : key === "pasteKey" ? "ctrl+v" : false },
+      });
+      const body = JSON.parse(result.content[0]!.text);
+      expect(body.ok).toBe(false);
+      expect(body.code).toBe("InvalidArgs");
+      expect(body.error).toMatch(/controls command delivery/i);
+      expect(body.context.offending).toContain(key);
+    });
+  }
+
+  it("does NOT reject focus-management sendOptions (focusFirst) at the conflict gate", async () => {
+    // focusFirst is allowed; the conflict gate passes, so we do NOT get the
+    // delivery-conflict InvalidArgs. (It proceeds to window lookup afterwards.)
+    const result = await terminalRunHandler({
+      windowTitle: "__no_such_window_for_386_unit__",
+      input: "echo hi",
+      until: { mode: "exit", shell: "powershell" },
+      timeoutMs: 10_000,
+      sendOptions: { focusFirst: false },
+    });
+    const body = JSON.parse(result.content[0]!.text);
+    // Not the delivery-conflict reject. (Window lookup then fails → window_not_found.)
+    const isConflictReject =
+      body.code === "InvalidArgs" && /controls command delivery/i.test(body.error ?? "");
+    expect(isConflictReject).toBe(false);
   });
 });
 

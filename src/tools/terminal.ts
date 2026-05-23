@@ -441,9 +441,12 @@ export function buildExitCommand(input: string, shell: ExitShell, nonce: string)
     // multi-digit code (e.g. 127) cannot match mid-render as `1` (Codex P2).
     return `${input}\n__dtmcp_rc=$?; printf '%s%s|%d|\\n' '${head}' "${tail}" "$__dtmcp_rc"`;
   }
-  // powershell
+  // powershell — the prologue carries a trailing `# <nonce>` comment (harmless;
+  // PowerShell comments run to end-of-line, the assignment completes first) so
+  // its ECHO line is nonce-scoped and stripExitArtifacts can drop it without a
+  // fixed-string match that could delete real output (Codex #389 P2).
   return (
-    `$global:LASTEXITCODE = $null\n${input}\n` +
+    `$global:LASTEXITCODE = $null # ${nonce}\n${input}\n` +
     `$dtmcp_ok=$?; $dtmcp_c=$LASTEXITCODE; ('${head}'+"${tail}")+'|'+([string]$dtmcp_c)+'|'+$dtmcp_ok`
   );
 }
@@ -663,39 +666,24 @@ export function resolveExitShell(
  * undeterminable echo-boundary problem #386 is about, so it is intentionally
  * out of scope here).
  *
- * Signatures (all nonce-scoped except the fixed PowerShell prologue):
- *   - `_EXIT_<nonce>` — appears in BOTH the epilogue echo (the split-token
- *     expression `"_EXIT_<nonce>"`) AND the sentinel OUTPUT line
- *     (`__DTMCP_EXIT_<nonce>|…`). The crypto-random nonce makes a collision with
- *     the user's real output negligible (the same assumption parseExitSentinel
- *     relies on), so dropping every line containing it removes both injected
- *     lines without touching real output.
- *   - PowerShell only: the fixed prologue line `$global:LASTEXITCODE = $null`.
- *     This literal is NOT nonce-scoped, so to avoid deleting a user command that
- *     legitimately prints it (Codex #389 P2), only the FIRST occurrence is
- *     dropped — the injected prologue echo is the first executed line, so it
- *     precedes any real output that could repeat the literal.
+ * Every injected line is NONCE-SCOPED, so the strip is a single uniform rule:
+ * drop any line containing the crypto-random `<nonce>`. The nonce appears in
+ *   - the PowerShell prologue echo (`… = $null # <nonce>`),
+ *   - the epilogue echo (the split-token expression `"_EXIT_<nonce>"`), and
+ *   - the sentinel OUTPUT line (`__DTMCP_EXIT_<nonce>|…`),
+ * and nowhere in the user's real output (a collision would require the command
+ * to print the random nonce — the same negligible assumption parseExitSentinel
+ * relies on). This replaces the earlier fixed-string prologue match, which could
+ * delete a real-output line that legitimately printed `$global:LASTEXITCODE =
+ * $null` when the injected prologue had scrolled off a tailed read (Codex #389 P2).
  *
  * Best-effort cosmetic pass, NOT a correctness boundary: completion + exitCode
  * come from parseExitSentinel and are unaffected. If a wrapped/OCR'd render
- * splits a signature across lines, a fragment may survive — never a correctness
+ * splits the nonce across lines, a fragment may survive — never a correctness
  * issue.
  */
-export function stripExitArtifacts(slice: string, nonce: string, shell: ExitShell): string {
-  const nonceMark = EXIT_TOKEN_TAIL_PREFIX + nonce; // "_EXIT_<nonce>"
-  let prologueDropped = false;
-  const kept = slice.split("\n").filter((line) => {
-    if (line.includes(nonceMark)) return false; // epilogue echo + sentinel output
-    if (
-      shell === "powershell" &&
-      !prologueDropped &&
-      line.includes("$global:LASTEXITCODE = $null")
-    ) {
-      prologueDropped = true; // drop ONLY the first match (the injected echo)
-      return false;
-    }
-    return true;
-  });
+export function stripExitArtifacts(slice: string, nonce: string): string {
+  const kept = slice.split("\n").filter((line) => !line.includes(nonce));
   // Trim the blank edges the dropped lines can leave behind.
   return kept.join("\n").replace(/^\n+/, "").replace(/\n+$/, "");
 }
@@ -1756,6 +1744,29 @@ export const terminalRunHandler = async ({
   // input or picks pattern/quiet. This check is input-only (no window needed),
   // so it runs before findTerminalWindow.
   if (until.mode === "exit") {
+    // exit mode OWNS command delivery — it requires atomic delivery (whole
+    // command in one shot) + a trailing Enter, or the completion sentinel never
+    // assembles. Delivery-shaping sendOptions therefore cannot be honored; reject
+    // them loudly at this single gate (BEFORE host routing) so conhost and WT
+    // behave identically rather than the conhost path silently ignoring them
+    // (Codex #389 P1). Focus-management options stay allowed — they are no-ops on
+    // the no-steal conhost paste path, not silently wrong.
+    const EXIT_CONFLICTING_SEND_OPTS = ["method", "preferClipboard", "pressEnter", "chunkSize", "pasteKey"];
+    const offending = EXIT_CONFLICTING_SEND_OPTS.filter((k) => k in validatedSendOptions);
+    if (offending.length > 0) {
+      return failCode(
+        "InvalidArgs",
+        `terminal:run: until:{mode:'exit'} controls command delivery — sendOptions ${offending.join(", ")} are not supported in exit mode.`,
+        {
+          suggest: [
+            "Drop these sendOptions for exit mode — it always delivers the command atomically (clipboard/console-paste) and presses Enter so the completion sentinel can render.",
+            "Focus options (focusFirst / restoreFocus / settleMs / forceFocus / trackFocus) are still accepted.",
+            "If you need custom delivery, use until:{mode:'pattern'} or {mode:'quiet'} instead.",
+          ],
+          context: { windowTitle, offending },
+        },
+      );
+    }
     const unsafe = isUnsafeForExitMode(input);
     if (unsafe) {
       // failWith's 3rd arg is the FLAT context (non-hoisted keys nest under
@@ -2175,7 +2186,7 @@ export const terminalRunHandler = async ({
         // un-anchored, possibly-truncated buffer would lie about a run that did
         // not complete (Opus #388 round 1 P2-2). reason:'timeout' stays loud and
         // the integrity gate honestly reports baseline_lost when applicable.
-        output = stripExitArtifacts(parsed.text ?? "", exitNonce, exitShell);
+        output = stripExitArtifacts(parsed.text ?? "", exitNonce);
         finalMarker = parsed.marker;
         outputIntegrity = "ok";
       } else {
