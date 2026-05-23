@@ -93,13 +93,14 @@ function snapshotFocus(): { title: string | null; hwnd: string | null; processNa
 async function snapshotFocusedElement(): Promise<PostElementInfo | null> {
   try {
     const { focused } = await getFocusedAndPointInfo(0, 0, false, 800);
-    // Gate on controlType, not name (Codex PR #395 P2): many real Edit/Document
-    // fields expose ValuePattern with an EMPTY Name. The old `!focused?.name`
-    // guard dropped them, so post.focusedElement (and the #352 advisory that reads
-    // it) systematically missed unlabeled text inputs. controlType is the true
-    // "is there a real focused element" signal; junk / no-element has none.
-    if (!focused?.controlType) return null;
-    const info: PostElementInfo = { name: focused.name ?? "", type: focused.controlType };
+    // NOTE (#352): `getFocusedAndPointInfo`'s `toInfo` already returns null for
+    // name-empty elements (`uia-bridge.ts` `if (!obj || !obj.name) return null`),
+    // so an unnamed UIA text input never reaches here. The #352 advisory therefore
+    // fires only for NAMED text inputs in Round 1; widening to unlabeled inputs is
+    // an upstream change to that guard (shared with desktop_state / mouse-verify),
+    // tracked in remaining-work.md (Opus PR #395 R2 P2).
+    if (!focused?.name) return null;
+    const info: PostElementInfo = { name: focused.name, type: focused.controlType };
     if (focused.automationId) info.automationId = focused.automationId;
     if (focused.value != null) info.value = focused.value;
     return info;
