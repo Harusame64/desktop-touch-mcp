@@ -245,7 +245,7 @@ terminal({
   (`ExitModeShellUnsupported`).
 - **Unsafe input is rejected up front** (`ExitModeUnsafeInput`) rather than
   hanging: a command ending mid-construct (unterminated quote, here-doc, `$(…)`,
-  trailing `\`).
+  a trailing `\` or PowerShell backtick).
 - Exit mode controls its own delivery, so delivery-shaping `sendOptions`
   (`method` / `preferClipboard` / `pressEnter` / `chunkSize` / `pasteKey`) are
   rejected with `InvalidArgs`; focus options remain accepted.

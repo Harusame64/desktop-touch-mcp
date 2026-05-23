@@ -292,7 +292,7 @@ terminal({
 
 - **`shell` は明示指定推奨**（`'bash'` / `'powershell'`）。`shell:'auto'` はターミナル窓のプロセスから判定しますが、SSH / WSL の**中で**動く shell は見えません（窓はローカルホストのまま）。リモート/ネストしたセッションではリモート側の shell を渡してください（`auto` は警告を出し外側の shell を選ぶ場合があります）。プロセスを真に特定できない窓（Windows Terminal 等）は `ExitModeShellAmbiguous` を返します。
 - **first-class shell:** `bash` と `powershell`。`cmd.exe` は未対応（`ExitModeShellUnsupported`）。
-- **未完の構文で終わる入力は即座に reject**（`ExitModeUnsafeInput`）。閉じていない引用符 / here-doc / `$(…)` / 末尾の `\` などはハングせず弾きます。
+- **未完の構文で終わる入力は即座に reject**（`ExitModeUnsafeInput`）。閉じていない引用符 / here-doc / `$(…)` / 末尾の `\` または PowerShell バッククォートなどはハングせず弾きます。
 - exit mode は配送を自前制御するため、配送系の `sendOptions`（`method` / `preferClipboard` / `pressEnter` / `chunkSize` / `pasteKey`）は `InvalidArgs` で reject します（focus 系オプションは利用可）。
 
 ---

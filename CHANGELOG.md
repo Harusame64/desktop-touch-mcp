@@ -25,11 +25,13 @@
     the shell from the terminal window, but it cannot see a shell running *inside*
     SSH or WSL (the window still looks like its local host), so for remote/nested
     sessions pass the shell of the remote side — `auto` will otherwise warn and
-    may pick the outer shell.
+    may pick the outer shell. A window whose process can't be identified at all
+    (e.g. Windows Terminal) returns `ExitModeShellAmbiguous` so you pass `shell`
+    explicitly.
   - `bash` and `powershell` are first-class; `cmd.exe` is not supported yet and
     returns `ExitModeShellUnsupported`. A command that ends mid-construct
-    (unterminated quote, here-doc, `$(…)`, trailing `\`) is rejected up front
-    with `ExitModeUnsafeInput` instead of hanging.
+    (unterminated quote, here-doc, `$(…)`, a trailing `\` or PowerShell backtick)
+    is rejected up front with `ExitModeUnsafeInput` instead of hanging.
 
   Prefer `mode:'exit'` whenever you care about completion or exit status; keep
   `mode:'pattern'` for matching output that appears mid-run, and `mode:'quiet'`
