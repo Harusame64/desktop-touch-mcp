@@ -37,6 +37,7 @@ import {
   isBgAutoEnabled,
   clipboardSetBackoffMs,
   setClipboardWithRetry,
+  prepareClipboardForPaste,
   CLIPBOARD_SET_MAX_ATTEMPTS,
 } from "../../src/engine/bg-input.js";
 import { postMessageToHwnd, getWindowClassName, getProcessIdentityByPid } from "../../src/engine/win32.js";
@@ -255,6 +256,55 @@ describe("setClipboardWithRetry", () => {
     expect(res).toEqual({ ok: false, attempts: 1 });
     expect(setFn).toHaveBeenCalledTimes(1);
     expect(sleepFn).not.toHaveBeenCalled(); // single attempt → no backoff
+  });
+});
+
+describe("prepareClipboardForPaste — restore-exactly-once invariant", () => {
+  // Guards the most important invariant of pasteIntoConsoleNoFocus: a failed set
+  // restores the snapshot exactly once (never leaving the user's clipboard
+  // clobbered), and the success path does NOT restore here (the post-paste
+  // restore in pasteIntoConsoleNoFocus owns that). A future regression that
+  // moved restore inside the retry loop would fail these.
+  const SAVED = "AAA="; // opaque snapshot token
+
+  it("returns true and does NOT restore when the set succeeds first try", async () => {
+    const setFn = vi.fn().mockResolvedValue(true);
+    const restoreFn = vi.fn().mockResolvedValue(undefined);
+    const sleepFn = vi.fn().mockResolvedValue(undefined);
+    const ok = await prepareClipboardForPaste("x", SAVED, { setFn, restoreFn, sleepFn });
+    expect(ok).toBe(true);
+    expect(restoreFn).not.toHaveBeenCalled();
+    expect(setFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns true and does NOT restore when the set succeeds after a retry", async () => {
+    const setFn = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const restoreFn = vi.fn().mockResolvedValue(undefined);
+    const sleepFn = vi.fn().mockResolvedValue(undefined);
+    const ok = await prepareClipboardForPaste("x", SAVED, { setFn, restoreFn, sleepFn });
+    expect(ok).toBe(true);
+    expect(restoreFn).not.toHaveBeenCalled();
+  });
+
+  it("returns false and restores EXACTLY ONCE (with the snapshot) when every set fails", async () => {
+    const setFn = vi.fn().mockResolvedValue(false);
+    const restoreFn = vi.fn().mockResolvedValue(undefined);
+    const sleepFn = vi.fn().mockResolvedValue(undefined);
+    const ok = await prepareClipboardForPaste("x", SAVED, { setFn, restoreFn, sleepFn });
+    expect(ok).toBe(false);
+    expect(setFn).toHaveBeenCalledTimes(CLIPBOARD_SET_MAX_ATTEMPTS);
+    expect(restoreFn).toHaveBeenCalledTimes(1);
+    expect(restoreFn).toHaveBeenCalledWith(SAVED);
+  });
+
+  it("restores once even when the snapshot was unreadable (null)", async () => {
+    const setFn = vi.fn().mockResolvedValue(false);
+    const restoreFn = vi.fn().mockResolvedValue(undefined);
+    const sleepFn = vi.fn().mockResolvedValue(undefined);
+    const ok = await prepareClipboardForPaste("x", null, { setFn, restoreFn, sleepFn });
+    expect(ok).toBe(false);
+    expect(restoreFn).toHaveBeenCalledTimes(1);
+    expect(restoreFn).toHaveBeenCalledWith(null);
   });
 });
 
