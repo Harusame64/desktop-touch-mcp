@@ -197,6 +197,7 @@ DOM を触る `browser_*` ツールは `includeContext:false` で末尾の `acti
 ### ターミナル (2)
 | ツール | 概要 |
 |---|---|
+| `terminal(action='run')` | コマンド送信 → 完了待ち → 出力取得を 1 コールで実行。完了判定は `until`: `quiet` / `pattern` / `exit`（コマンドの**終了**を待ち exit code を返す → [ターミナルの完了判定](#ターミナルの完了判定-until)） |
 | `terminal(action='read')` | Windows Terminal / PowerShell / cmd / WSL のテキストをUIA/OCRで取得。`sinceMarker`差分対応 |
 | `terminal(action='send')` | ターミナルへコマンド送信。clipboard paste既定でIME安全 |
 
@@ -262,6 +263,37 @@ Lease ライフサイクル:
 | `perception_list` | 登録中 lens を一覧し、再利用やクリーンアップに使う |
 
 Reactive Perception Graph は desktop-touch の低コストな状況把握レイヤーです。対象の同一性・フォーカス・矩形・準備状態・guard 結果を操作間で維持し、Claude が小さな操作のたびにスクリーンショットで確認し直さなくて済むようにします。
+
+---
+## ターミナルの完了判定 (`until`)
+
+`terminal(action='run')` はコマンド送信 → 完了待ち → 出力取得を 1 コールで行います。「完了」の判定方法は `until` で選びます:
+
+| モード | 待つ対象 | 用途 |
+|---|---|---|
+| `quiet`（既定） | 出力が `quietMs` 静かになるまで | 短い対話コマンド |
+| `pattern` | 出力に現れる文字列/正規表現 | 最終マーカーが分かる長時間コマンド |
+| `exit` | コマンドの**終了そのもの** | 完了や exit code が必要なとき |
+
+### `until:{mode:'exit'}` — 本当の完了 + exit code
+
+ヒューリスティックなモードは「センチネルを末尾に付ける」定番（`some-task; echo DONE` を `DONE` で待つ）で誤判定しがちです。センチネルは**エコーされたコマンド行**にも現れ、複数行コマンドではそのエコーと実出力をバッファだけから区別できません。`mode:'exit'` はこれを構造的に解決します — サーバが**表示形と入力形が異なる**完了マーカーをコマンド末尾に注入するため、エコーには決して一致せず（複数行入力でも）、実際のプロセス exit code を返します:
+
+```js
+terminal({
+  action: 'run',
+  windowTitle: 'pwsh',
+  input: 'npm run build',
+  until: { mode: 'exit', shell: 'powershell' },
+})
+// → completion: { reason: 'exited', exitCode: 0, elapsedMs: … }
+//   output: 注入マーカーは除去され、コマンドの実出力のみ
+```
+
+- **`shell` は明示指定推奨**（`'bash'` / `'powershell'`）。`shell:'auto'` はターミナル窓のプロセスから判定しますが、SSH / WSL の**中で**動く shell は見えません（窓はローカルホストのまま）。リモート/ネストしたセッションではリモート側の shell を渡してください（`auto` は警告を出し外側の shell を選ぶ場合があります）。プロセスを真に特定できない窓（Windows Terminal 等）は `ExitModeShellAmbiguous` を返します。
+- **first-class shell:** `bash` と `powershell`。`cmd.exe` は未対応（`ExitModeShellUnsupported`）。
+- **未完の構文で終わる入力は即座に reject**（`ExitModeUnsafeInput`）。閉じていない引用符 / here-doc / `$(…)` / 末尾の `\` または PowerShell バッククォートなどはハングせず弾きます。
+- exit mode は配送を自前制御するため、配送系の `sendOptions`（`method` / `preferClipboard` / `pressEnter` / `chunkSize` / `pasteKey`）は `InvalidArgs` で reject します（focus 系オプションは利用可）。
 
 ---
 ## ブラウザ CDP 自動化

@@ -2,6 +2,41 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`terminal(action='run')` can now wait for a command to *finish* and report
+  its exit code, via `until:{mode:'exit', shell:'bash'|'powershell'}`.** The
+  other completion modes infer "done" heuristically — `quiet` waits for output
+  to fall silent, `pattern` waits for a marker you embed in the command. Both
+  struggle with the usual completion idiom (`some-task; echo DONE` + matching
+  `DONE`): the marker also appears in the *echoed command line*, and for
+  multi-line commands there is no reliable way to tell that echo apart from real
+  output. `mode:'exit'` removes the guesswork — the server appends its own
+  completion marker whose printed form differs from its typed form, so it can
+  never match the echoed command (even for multi-line input) — and it returns
+  the real process exit code in `completion.exitCode` with
+  `completion.reason:'exited'`.
+
+  How to use it:
+  - `terminal({action:'run', windowTitle:'pwsh', input:'npm run build', until:{mode:'exit', shell:'powershell'}})`
+    waits until the build finishes and returns `completion.exitCode` (0 on
+    success, the process code otherwise).
+  - Pass `shell` explicitly (`'bash'` or `'powershell'`). `shell:'auto'` detects
+    the shell from the terminal window, but it cannot see a shell running *inside*
+    SSH or WSL (the window still looks like its local host), so for remote/nested
+    sessions pass the shell of the remote side — `auto` will otherwise warn and
+    may pick the outer shell. A window whose process can't be identified at all
+    (e.g. Windows Terminal) returns `ExitModeShellAmbiguous` so you pass `shell`
+    explicitly.
+  - `bash` and `powershell` are first-class; `cmd.exe` is not supported yet and
+    returns `ExitModeShellUnsupported`. A command that ends mid-construct
+    (unterminated quote, here-doc, `$(…)`, a trailing `\` or PowerShell backtick)
+    is rejected up front with `ExitModeUnsafeInput` instead of hanging.
+
+  Prefer `mode:'exit'` whenever you care about completion or exit status; keep
+  `mode:'pattern'` for matching output that appears mid-run, and `mode:'quiet'`
+  for short interactive commands.
+
 ### Fixed
 
 - **`terminal(action='run')` with `until:{mode:'pattern'}` now matches the
