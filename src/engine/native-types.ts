@@ -357,6 +357,31 @@ export interface NativeForegroundFlashResult {
   pasteWarningDetected: boolean
 }
 
+// ── issue #386 — native no-steal console-paste (conhost exit-mode path) ───────
+
+/** One clipboard format NOT preserved across the paste, with the reason
+ *  (`"non_hglobal"` / `"deferred_render"` / `"get_data_failed"`). */
+export interface NativeConsolePasteSkippedFormat {
+  formatId: number
+  reason: string
+}
+
+/** Result of `win32ConsolePasteNoFocus`. Never throws on a Win32 failure —
+ *  the failure is reported via `ok=false` + `reason`. `reason` is one of
+ *  `ClipboardError::as_reason()` (`clipboard_lock_contention` /
+ *  `clipboard_empty_failed` / `clipboard_alloc_failed` /
+ *  `clipboard_set_data_failed` / `hidden_owner_create_failed`) or the
+ *  console-paste-specific `post_paste_failed`. */
+export interface NativeConsolePasteResult {
+  ok: boolean
+  reason?: string
+  /** Formats not restored (e.g. an image: `non_hglobal`) — caller hints. */
+  skippedFormats: Array<NativeConsolePasteSkippedFormat>
+  /** Restore intentionally skipped: another writer changed the clipboard after
+   *  our inject (race). Still a success — the paste worked. */
+  restoreSkippedRace: boolean
+}
+
 /** One Toolhelp32 row. The TS wrapper builds a Map<number, number>. */
 export interface NativeProcessParentEntry {
   pid: number

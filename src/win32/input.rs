@@ -152,6 +152,16 @@ pub fn win32_get_focused_child_hwnd(
 
 // ── primitives ──────────────────────────────────────────────────────────────
 
+/// Internal `PostMessageW` wrapper shared by the napi export below and other
+/// native callers (issue #386 `console_paste` posts `WM_COMMAND 0xFFF1` + Enter
+/// through this). The napi *export* `win32_post_message` must not be called from
+/// Rust — it is an N-API boundary wrapper — so the shared logic lives here.
+/// Returns whether `PostMessageW` succeeded.
+pub(crate) fn post_message(hwnd: HWND, msg: u32, w_param: WPARAM, l_param: LPARAM) -> bool {
+    let result = unsafe { PostMessageW(Some(hwnd), msg, w_param, l_param) };
+    result.is_ok()
+}
+
 #[napi]
 pub fn win32_post_message(
     hwnd: BigInt,
@@ -170,15 +180,12 @@ pub fn win32_post_message(
         // (Codex review on PR #77.)
         let (w_val, _w_lossless) = w_param.get_i64();
         let (l_val, _l_lossless) = l_param.get_i64();
-        let result = unsafe {
-            PostMessageW(
-                Some(h),
-                msg,
-                WPARAM(w_val as usize),
-                LPARAM(l_val as isize),
-            )
-        };
-        Ok(result.is_ok())
+        Ok(post_message(
+            h,
+            msg,
+            WPARAM(w_val as usize),
+            LPARAM(l_val as isize),
+        ))
     })
 }
 

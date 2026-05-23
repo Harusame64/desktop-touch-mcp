@@ -156,6 +156,19 @@ export interface NativeForegroundFlashResult {
   pasteWarningDetected: boolean
 }
 
+// issue #386 — native no-steal console-paste (conhost exit-mode path).
+export interface NativeConsolePasteSkippedFormat {
+  formatId: number
+  reason: string
+}
+
+export interface NativeConsolePasteResult {
+  ok: boolean
+  reason?: string
+  skippedFormats: Array<NativeConsolePasteSkippedFormat>
+  restoreSkippedRace: boolean
+}
+
 export interface NativeProcessParentEntry {
   pid: number
   parentPid: number
@@ -330,6 +343,7 @@ export declare function win32BuildProcessParentMap(): NativeProcessParentEntry[]
 export declare function win32GetProcessIdentity(pid: number): NativeProcessIdentity
 export declare function win32GetScrollInfo(hwnd: bigint, axis: string): NativeScrollInfo | null
 export declare function win32PostMessage(hwnd: bigint, msg: number, wParam: bigint, lParam: bigint): boolean
+export declare function win32ConsolePasteNoFocus(hwnd: bigint, text: string): NativeConsolePasteResult
 export declare function win32GetFocus(): bigint | null
 export declare function win32VkToScanCode(vk: number): number
 

@@ -40,6 +40,12 @@ pub(crate) mod foreground_flash;
 // `src/win32/clipboard_snapshot.rs`。
 #[cfg(windows)]
 pub(crate) mod clipboard_snapshot;
+// issue #386 — native no-steal console-paste for the conhost exit-mode path
+// (reuses clipboard_snapshot). Replaces the powershell-spawning TS clipboard
+// handling in `bg-input.ts::pasteIntoConsoleNoFocus`. 詳細は
+// `desktop-touch-mcp-internal/docs/issue-386-native-clipboard-plan.md`。
+#[cfg(windows)]
+pub(crate) mod console_paste;
 // LowLevel keyboard hook (option, default OFF) for `foreground_flash` channel
 // typing-leak mitigation (§3.4)。
 #[cfg(windows)]

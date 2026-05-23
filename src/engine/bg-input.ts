@@ -15,8 +15,6 @@
  * 経由。
  */
 
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import {
   getWindowClassName,
   getWindowProcessId,
@@ -253,232 +251,84 @@ export function postEnterToHwnd(hwnd: unknown): boolean {
 // (0x0D) as a line break, so the command must use CRLF separators; with `\n`
 // alone the lines concatenate and the shell sees one mangled line.
 
-const WM_COMMAND = 0x0111;
-/** Legacy console context-menu "Paste" command id (conhost). */
-const ID_CONSOLE_PASTE = 0xfff1;
-
-const execFileAsync = promisify(execFile);
-
-/** Read the current clipboard as a UTF-16LE base64 blob (empty string if none). */
-async function getClipboardB64(): Promise<string | null> {
-  try {
-    const { stdout } = await execFileAsync(
-      "powershell.exe",
-      [
-        "-NoProfile", "-NonInteractive", "-Command",
-        "$t=Get-Clipboard -Raw;if($t -eq $null){''}else{" +
-          "[Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($t))}",
-      ],
-      { timeout: 4000 },
-    );
-    return stdout.trim();
-  } catch {
-    return null;
-  }
-}
-
-/** Set the clipboard to `text` (UTF-16LE) and verify the read-back byte-equals. */
-async function setClipboardVerified(text: string): Promise<boolean> {
-  const b64 = Buffer.from(text, "utf16le").toString("base64");
-  const script =
-    `$b=[System.Convert]::FromBase64String('${b64}');` +
-    `$t=[System.Text.Encoding]::Unicode.GetString($b);` +
-    `Set-Clipboard -Value $t;` +
-    `$r=Get-Clipboard -Raw;` +
-    `if($r -eq $null){''}else{[Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($r))}`;
-  try {
-    const { stdout } = await execFileAsync(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", script],
-      { timeout: 5000 },
-    );
-    const readBack = stdout.trim();
-    const actual = readBack ? Buffer.from(readBack, "base64") : Buffer.alloc(0);
-    // Get-Clipboard -Raw can append a trailing newline; accept an exact match OR
-    // the text followed by a single CRLF/CR/LF so multiline payloads still pass.
-    const want = Buffer.from(text, "utf16le");
-    if (want.equals(actual)) return true;
-    for (const suffix of ["\r\n", "\r", "\n"]) {
-      if (Buffer.from(text + suffix, "utf16le").equals(actual)) return true;
-    }
-    return false;
-  } catch {
-    return false;
-  }
-}
+/**
+ * Failure reasons for {@link pasteIntoConsoleNoFocus}. All but the last come
+ * straight from the native engine's `ClipboardError::as_reason()` /
+ * console-paste path; `native_engine_unavailable` is added TS-side when the
+ * addon is missing.
+ */
+export type ConsolePasteReason =
+  | "clipboard_lock_contention"
+  | "clipboard_empty_failed"
+  | "clipboard_alloc_failed"
+  | "clipboard_set_data_failed"
+  | "hidden_owner_create_failed"
+  | "post_paste_failed"
+  | "native_engine_unavailable";
 
 export interface ConsolePasteOutcome {
   ok: boolean;
-  reason?: "clipboard_set_failed" | "console_paste_post_failed";
-}
-
-/** Max attempts to set+verify the clipboard before giving up (1 try + 2 retries). */
-export const CLIPBOARD_SET_MAX_ATTEMPTS = 3;
-
-/**
- * Backoff (ms) before the retry that FOLLOWS failed attempt `attempt` (0-based):
- * 120 ms after attempt 0, 240 ms after attempt 1, … Pure — unit-testable. Grows
- * linearly with no cap; with CLIPBOARD_SET_MAX_ATTEMPTS=3 production only ever
- * uses attempts 0 and 1 (120 / 240 ms) — there is no sleep after the final
- * attempt — so raise the cap deliberately if you bump the attempt count.
- */
-export function clipboardSetBackoffMs(attempt: number): number {
-  return 120 * (attempt + 1);
-}
-
-/**
- * Set the clipboard with bounded retry + backoff, returning whether any attempt
- * succeeded and how many were made.
- *
- * The global clipboard is a single OS resource; when another process holds it
- * open (a busy desktop, a clipboard manager, our own back-to-back PowerShell
- * spawns) the set-and-verify misses on the first try — a transient that clears
- * in well under a second. Retrying turns that recoverable race into a success
- * instead of a hard send failure.
- *
- * This helper owns NEITHER the save NOR the restore: the caller captures the
- * clipboard snapshot once and restores at most once, so the restore invariant
- * (never leave the user's clipboard clobbered) is preserved by construction.
- * `setFn` / `sleepFn` are injectable so the retry policy can be unit-tested with
- * no real clipboard and no real timers.
- */
-export async function setClipboardWithRetry(
-  text: string,
-  deps: {
-    setFn: (text: string) => Promise<boolean>;
-    sleepFn?: (ms: number) => Promise<void>;
-    maxAttempts?: number;
-  },
-): Promise<{ ok: boolean; attempts: number }> {
-  const maxAttempts = deps.maxAttempts ?? CLIPBOARD_SET_MAX_ATTEMPTS;
-  const sleepFn = deps.sleepFn ?? ((ms) => new Promise<void>((r) => setTimeout(r, ms)));
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    if (await deps.setFn(text)) return { ok: true, attempts: attempt + 1 };
-    if (attempt < maxAttempts - 1) await sleepFn(clipboardSetBackoffMs(attempt));
-  }
-  return { ok: false, attempts: maxAttempts };
-}
-
-/**
- * Front half of the console-paste flow: set the clipboard with retry and, ONLY
- * on total failure, restore the snapshot exactly once. Returns true when the
- * clipboard now holds `text` (caller posts the paste) or false when the set
- * failed after retries (caller returns clipboard_set_failed — this already
- * restored, so the caller must NOT restore again).
- *
- * Split out so the restore-exactly-once invariant — never restored on the
- * success path here, restored exactly once on total failure, never inside the
- * retry loop — is unit-testable with injected setFn / restoreFn. The full
- * `pasteIntoConsoleNoFocus` is otherwise wrapped around native PostMessage calls
- * that a unit test cannot drive, which is where a future regression (e.g.
- * restore moved inside the loop) would slip past review unnoticed.
- */
-export async function prepareClipboardForPaste(
-  text: string,
-  saved: string | null,
-  deps: {
-    setFn: (text: string) => Promise<boolean>;
-    restoreFn: (saved: string | null) => Promise<void>;
-    sleepFn?: (ms: number) => Promise<void>;
-    maxAttempts?: number;
-  },
-): Promise<boolean> {
-  const setResult = await setClipboardWithRetry(text, deps);
-  if (!setResult.ok) {
-    await deps.restoreFn(saved);
-    return false;
-  }
-  return true;
+  reason?: ConsolePasteReason;
+  /**
+   * Clipboard formats that could NOT be preserved across the paste (e.g. an
+   * image: `non_hglobal`), with the reason. Surfaced so callers can warn the
+   * user that part of their clipboard was lost. Present only when non-empty.
+   */
+  skippedFormats?: Array<{ formatId: number; reason: string }>;
+  /**
+   * The user's clipboard was intentionally NOT restored because another writer
+   * changed it after our inject (race detection). Still a success — the paste
+   * worked; we just did not clobber the other writer.
+   */
+  restoreSkippedRace?: boolean;
 }
 
 /**
  * Paste `text` into a conhost (ConsoleWindowClass) window atomically WITHOUT
- * stealing foreground, via clipboard + the console Paste command. Multiline-safe.
+ * stealing foreground. Delegates the whole save → set → console-Paste → Enter →
+ * restore clipboard transaction to the native engine
+ * (`win32_console_paste_no_focus`, issue #386), which talks to the Win32
+ * clipboard directly (no `powershell.exe` spawn): contention is absorbed by the
+ * native `OpenClipboard` retry, the user's clipboard is saved/restored with
+ * 3-point sequence race detection, and formats that cannot be preserved (e.g. an
+ * image) are reported back in `skippedFormats`.
  *
  * Caller MUST have verified the target is conhost (ConsoleWindowClass) — the
- * 0xFFF1 command is a no-op on Windows Terminal (XAML) and non-console windows.
+ * console Paste command is a no-op on Windows Terminal (XAML) / non-console
+ * windows.
  *
- * Flow: save clipboard → set clipboard to the CRLF-normalised text (verified) →
- * post the console Paste command → settle so conhost drains the clipboard into
- * its input buffer → send a trailing Enter to run the final line → restore the
- * previous clipboard (best-effort).
+ * Never throws on a Win32 failure: returns `{ ok: false, reason }`. When the
+ * native addon is unavailable (an older `.node`), returns
+ * `reason: "native_engine_unavailable"` — the conhost class check already
+ * requires the native engine, so this is effectively unreachable in practice.
  *
- * The trailing Enter is posted AFTER a settle delay (not appended to the
- * clipboard) so it cannot race ahead of the still-draining paste.
+ * `async` is kept for signature stability (callers `await` it); the native call
+ * itself is synchronous (it blocks ~260 ms on the settle delays — acceptable for
+ * the exit-mode path, which already waits seconds-to-minutes for completion).
  */
 export async function pasteIntoConsoleNoFocus(
   hwnd: unknown,
   text: string,
 ): Promise<ConsolePasteOutcome> {
+  if (!nativeWin32 || typeof nativeWin32.win32ConsolePasteNoFocus !== "function") {
+    return { ok: false, reason: "native_engine_unavailable" };
+  }
+  // Resolve the focused child (the same target the legacy WM_COMMAND path used)
+  // and hand the whole transaction to the native engine.
   const target = resolveTarget(hwnd);
-  // conhost strips lone LF and treats CR as a line break — use CRLF so each
-  // statement runs after the atomic paste.
-  const crlf = text.replace(/\r?\n/g, "\r\n");
-
-  const saved = await getClipboardB64(); // null = read failed; "" = empty clipboard
-  // Set-and-verify with retry: a momentary clipboard lock by another process
-  // makes the first try miss (dogfood #386 P3 follow-up — surfaced as a one-off
-  // clipboard_set_failed during a busy window-launch storm). `saved` is captured
-  // ONCE above; prepareClipboardForPaste restores it exactly once on total
-  // failure, and the success path restores once after the paste (below), so a
-  // failed set never leaves the user's clipboard clobbered (#389 r1 P2-1).
-  const ready = await prepareClipboardForPaste(crlf, saved, {
-    setFn: setClipboardVerified,
-    restoreFn: restoreClipboard,
-  });
-  if (!ready) {
-    return { ok: false, reason: "clipboard_set_failed" };
+  const targetBig =
+    typeof target === "bigint" ? target : BigInt(target as number | string);
+  const r = nativeWin32.win32ConsolePasteNoFocus(targetBig, text);
+  const outcome: ConsolePasteOutcome = { ok: r.ok };
+  if (r.reason) outcome.reason = r.reason as ConsolePasteReason;
+  if (r.skippedFormats && r.skippedFormats.length > 0) {
+    outcome.skippedFormats = r.skippedFormats.map((f) => ({
+      formatId: f.formatId,
+      reason: f.reason,
+    }));
   }
-
-  const posted = postMessageToHwnd(target, WM_COMMAND, ID_CONSOLE_PASTE, 0);
-  if (!posted) {
-    await restoreClipboard(saved);
-    return { ok: false, reason: "console_paste_post_failed" };
-  }
-
-  // Let conhost drain the clipboard into its input buffer before the Enter and
-  // before we overwrite the clipboard on restore.
-  await new Promise<void>((r) => setTimeout(r, 200));
-  postEnterToHwnd(target);
-  await new Promise<void>((r) => setTimeout(r, 60));
-  await restoreClipboard(saved);
-  return { ok: true };
-}
-
-/**
- * Best-effort restore of a clipboard snapshot captured by getClipboardB64().
- *
- * Codex #389 P2: when the original clipboard was EMPTY (`""`) or could not be
- * read (`null`), we must still CLEAR it rather than skip — otherwise the command
- * we just pasted (possibly sensitive input) lingers in the user's clipboard
- * after the run. Set-Clipboard rejects an empty value, so clearing uses the
- * Forms clipboard API.
- */
-async function restoreClipboard(savedB64: string | null): Promise<void> {
-  try {
-    if (savedB64 && savedB64.length > 0) {
-      const script =
-        `$b=[System.Convert]::FromBase64String('${savedB64}');` +
-        `$t=[System.Text.Encoding]::Unicode.GetString($b);` +
-        `Set-Clipboard -Value $t`;
-      await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
-        timeout: 3000,
-      });
-    } else {
-      // Originally empty / unreadable — clear so the injected command does not
-      // linger. Clearing an unreadable clipboard is harmless (best-effort).
-      await execFileAsync(
-        "powershell.exe",
-        [
-          "-NoProfile", "-NonInteractive", "-Command",
-          "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::Clear()",
-        ],
-        { timeout: 3000 },
-      );
-    }
-  } catch {
-    /* best-effort */
-  }
+  if (r.restoreSkippedRace) outcome.restoreSkippedRace = true;
+  return outcome;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

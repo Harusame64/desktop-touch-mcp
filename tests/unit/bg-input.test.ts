@@ -28,6 +28,14 @@ vi.mock("../../src/engine/win32.js", async () => {
   };
 });
 
+// Mock the native engine so pasteIntoConsoleNoFocus can be driven without a real
+// `.node` build (issue #386: the conhost console-paste is delegated to native).
+vi.mock("../../src/engine/native-engine.js", () => ({
+  nativeWin32: {
+    win32ConsolePasteNoFocus: vi.fn(),
+  },
+}));
+
 import {
   canInjectViaPostMessage,
   postCharsToHwnd,
@@ -35,12 +43,10 @@ import {
   postEnterToHwnd,
   postKeyComboToHwnd,
   isBgAutoEnabled,
-  clipboardSetBackoffMs,
-  setClipboardWithRetry,
-  prepareClipboardForPaste,
-  CLIPBOARD_SET_MAX_ATTEMPTS,
+  pasteIntoConsoleNoFocus,
 } from "../../src/engine/bg-input.js";
 import { postMessageToHwnd, getWindowClassName, getProcessIdentityByPid } from "../../src/engine/win32.js";
+import { nativeWin32 } from "../../src/engine/native-engine.js";
 
 const HWND = 0x1234n;
 
@@ -206,108 +212,51 @@ describe("canInjectViaPostMessage — terminal classification", () => {
   });
 });
 
-describe("clipboardSetBackoffMs", () => {
-  it("grows linearly: 120ms after attempt 0, 240ms after attempt 1, 360ms after attempt 2", () => {
-    expect(clipboardSetBackoffMs(0)).toBe(120);
-    expect(clipboardSetBackoffMs(1)).toBe(240);
-    expect(clipboardSetBackoffMs(2)).toBe(360);
-  });
-});
+describe("pasteIntoConsoleNoFocus — native delegation + outcome mapping", () => {
+  // issue #386: the conhost console-paste is delegated to the native engine
+  // (win32ConsolePasteNoFocus). These tests drive the TS mapping layer with the
+  // native call mocked — the real Win32 transaction is exercised by dogfood.
+  const nativeFn = vi.mocked(nativeWin32!.win32ConsolePasteNoFocus!);
+  beforeEach(() => nativeFn.mockReset());
 
-describe("setClipboardWithRetry", () => {
-  // No real clipboard / timers: setFn and sleepFn are injected so the retry
-  // policy (and the latency / restore-safety invariants) is tested deterministically.
-  it("succeeds on the first attempt without sleeping", async () => {
-    const setFn = vi.fn().mockResolvedValue(true);
-    const sleepFn = vi.fn().mockResolvedValue(undefined);
-    const res = await setClipboardWithRetry("x", { setFn, sleepFn });
-    expect(res).toEqual({ ok: true, attempts: 1 });
-    expect(setFn).toHaveBeenCalledTimes(1);
-    expect(sleepFn).not.toHaveBeenCalled();
+  it("maps a native success to ok:true with no reason/hints, passing the resolved bigint hwnd", async () => {
+    nativeFn.mockReturnValue({ ok: true, skippedFormats: [], restoreSkippedRace: false });
+    const r = await pasteIntoConsoleNoFocus(HWND, "echo hi");
+    expect(r).toEqual({ ok: true });
+    // getFocusedChildHwnd mock returns null → resolveTarget(HWND) === HWND (bigint)
+    expect(nativeFn).toHaveBeenCalledWith(HWND, "echo hi");
   });
 
-  it("retries the transient and succeeds: fail, fail, then succeed", async () => {
-    const setFn = vi.fn()
-      .mockResolvedValueOnce(false)
-      .mockResolvedValueOnce(false)
-      .mockResolvedValueOnce(true);
-    const sleepFn = vi.fn().mockResolvedValue(undefined);
-    const res = await setClipboardWithRetry("x", { setFn, sleepFn });
-    expect(res).toEqual({ ok: true, attempts: 3 });
-    expect(setFn).toHaveBeenCalledTimes(3);
-    // backoff between attempts only (2 sleeps for 3 attempts): 120ms then 240ms
-    expect(sleepFn.mock.calls).toEqual([[120], [240]]);
+  it("passes a native failure reason through unchanged", async () => {
+    nativeFn.mockReturnValue({ ok: false, reason: "clipboard_lock_contention", skippedFormats: [], restoreSkippedRace: false });
+    const r = await pasteIntoConsoleNoFocus(HWND, "x");
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe("clipboard_lock_contention");
   });
 
-  it("gives up after the max attempts when every try fails", async () => {
-    const setFn = vi.fn().mockResolvedValue(false);
-    const sleepFn = vi.fn().mockResolvedValue(undefined);
-    const res = await setClipboardWithRetry("x", { setFn, sleepFn });
-    expect(res).toEqual({ ok: false, attempts: CLIPBOARD_SET_MAX_ATTEMPTS });
-    expect(setFn).toHaveBeenCalledTimes(CLIPBOARD_SET_MAX_ATTEMPTS);
-    // never sleeps after the final attempt — latency bounded to (N-1) backoffs
-    expect(sleepFn).toHaveBeenCalledTimes(CLIPBOARD_SET_MAX_ATTEMPTS - 1);
+  it("surfaces skippedFormats (non-text formats not preserved)", async () => {
+    nativeFn.mockReturnValue({ ok: true, skippedFormats: [{ formatId: 2, reason: "non_hglobal" }], restoreSkippedRace: false });
+    const r = await pasteIntoConsoleNoFocus(HWND, "x");
+    expect(r.ok).toBe(true);
+    expect(r.skippedFormats).toEqual([{ formatId: 2, reason: "non_hglobal" }]);
   });
 
-  it("honours a custom maxAttempts", async () => {
-    const setFn = vi.fn().mockResolvedValue(false);
-    const sleepFn = vi.fn().mockResolvedValue(undefined);
-    const res = await setClipboardWithRetry("x", { setFn, sleepFn, maxAttempts: 1 });
-    expect(res).toEqual({ ok: false, attempts: 1 });
-    expect(setFn).toHaveBeenCalledTimes(1);
-    expect(sleepFn).not.toHaveBeenCalled(); // single attempt → no backoff
-  });
-});
-
-describe("prepareClipboardForPaste — restore-exactly-once invariant", () => {
-  // Guards the most important invariant of pasteIntoConsoleNoFocus: a failed set
-  // restores the snapshot exactly once (never leaving the user's clipboard
-  // clobbered), and the success path does NOT restore here (the post-paste
-  // restore in pasteIntoConsoleNoFocus owns that). A future regression that
-  // moved restore inside the retry loop would fail these.
-  const SAVED = "AAA="; // opaque snapshot token
-
-  it("returns true and does NOT restore when the set succeeds first try", async () => {
-    const setFn = vi.fn().mockResolvedValue(true);
-    const restoreFn = vi.fn().mockResolvedValue(undefined);
-    const sleepFn = vi.fn().mockResolvedValue(undefined);
-    const ok = await prepareClipboardForPaste("x", SAVED, { setFn, restoreFn, sleepFn });
-    expect(ok).toBe(true);
-    expect(restoreFn).not.toHaveBeenCalled();
-    expect(setFn).toHaveBeenCalledTimes(1);
+  it("surfaces restoreSkippedRace as a success-compatible flag", async () => {
+    nativeFn.mockReturnValue({ ok: true, skippedFormats: [], restoreSkippedRace: true });
+    const r = await pasteIntoConsoleNoFocus(HWND, "x");
+    expect(r.ok).toBe(true);
+    expect(r.restoreSkippedRace).toBe(true);
   });
 
-  it("returns true and does NOT restore when the set succeeds after a retry", async () => {
-    const setFn = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
-    const restoreFn = vi.fn().mockResolvedValue(undefined);
-    const sleepFn = vi.fn().mockResolvedValue(undefined);
-    const ok = await prepareClipboardForPaste("x", SAVED, { setFn, restoreFn, sleepFn });
-    expect(ok).toBe(true);
-    expect(restoreFn).not.toHaveBeenCalled();
-    // the injected sleepFn propagates through to the retry backoff (one 120ms
-    // wait between the failed first attempt and the successful second)
-    expect(sleepFn.mock.calls).toEqual([[120]]);
-  });
-
-  it("returns false and restores EXACTLY ONCE (with the snapshot) when every set fails", async () => {
-    const setFn = vi.fn().mockResolvedValue(false);
-    const restoreFn = vi.fn().mockResolvedValue(undefined);
-    const sleepFn = vi.fn().mockResolvedValue(undefined);
-    const ok = await prepareClipboardForPaste("x", SAVED, { setFn, restoreFn, sleepFn });
-    expect(ok).toBe(false);
-    expect(setFn).toHaveBeenCalledTimes(CLIPBOARD_SET_MAX_ATTEMPTS);
-    expect(restoreFn).toHaveBeenCalledTimes(1);
-    expect(restoreFn).toHaveBeenCalledWith(SAVED);
-  });
-
-  it("restores once even when the snapshot was unreadable (null)", async () => {
-    const setFn = vi.fn().mockResolvedValue(false);
-    const restoreFn = vi.fn().mockResolvedValue(undefined);
-    const sleepFn = vi.fn().mockResolvedValue(undefined);
-    const ok = await prepareClipboardForPaste("x", null, { setFn, restoreFn, sleepFn });
-    expect(ok).toBe(false);
-    expect(restoreFn).toHaveBeenCalledTimes(1);
-    expect(restoreFn).toHaveBeenCalledWith(null);
+  it("returns native_engine_unavailable when the addon lacks the function", async () => {
+    const orig = nativeWin32!.win32ConsolePasteNoFocus;
+    try {
+      (nativeWin32 as { win32ConsolePasteNoFocus?: unknown }).win32ConsolePasteNoFocus = undefined;
+      const r = await pasteIntoConsoleNoFocus(HWND, "x");
+      expect(r).toEqual({ ok: false, reason: "native_engine_unavailable" });
+    } finally {
+      (nativeWin32 as { win32ConsolePasteNoFocus?: unknown }).win32ConsolePasteNoFocus = orig;
+    }
   });
 });
 

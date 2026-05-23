@@ -39,6 +39,7 @@ import type {
   NativeForceFocusResult,
   NativeForegroundFlashOptions,
   NativeForegroundFlashResult,
+  NativeConsolePasteResult,
   NativeProcessParentEntry,
   NativeProcessIdentity,
   NativeScrollInfo,
@@ -179,6 +180,13 @@ export interface NativeWin32 {
     text: string,
     options: NativeForegroundFlashOptions,
   ): NativeForegroundFlashResult;
+
+  // issue #386 — native no-steal console-paste for the conhost exit-mode path.
+  // Sync; runs the whole save → set → console-Paste → Enter → restore clipboard
+  // transaction natively (reuses clipboard_snapshot). Never throws on a Win32
+  // failure — reports it via `ok=false` + `reason`. Optional so an older `.node`
+  // build (pre-#386) cleanly falls back (TS wrapper surfaces native_engine_unavailable).
+  win32ConsolePasteNoFocus?(hwnd: bigint, text: string): NativeConsolePasteResult;
 
   // Issue #245 系統②: IME open-status query / control via Imm32.dll +
   // WM_IME_CONTROL. Returns `false` when the target HWND has no associated
