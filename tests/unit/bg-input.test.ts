@@ -234,6 +234,13 @@ describe("pasteIntoConsoleNoFocus — native delegation + outcome mapping", () =
     expect(r.reason).toBe("clipboard_lock_contention");
   });
 
+  it("passes the console-paste-specific post_paste_failed reason through", async () => {
+    nativeFn.mockReturnValue({ ok: false, reason: "post_paste_failed", skippedFormats: [], restoreSkippedRace: false });
+    const r = await pasteIntoConsoleNoFocus(HWND, "x");
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe("post_paste_failed");
+  });
+
   it("surfaces skippedFormats (non-text formats not preserved)", async () => {
     nativeFn.mockReturnValue({ ok: true, skippedFormats: [{ formatId: 2, reason: "non_hglobal" }], restoreSkippedRace: false });
     const r = await pasteIntoConsoleNoFocus(HWND, "x");

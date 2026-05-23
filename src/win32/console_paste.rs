@@ -22,14 +22,14 @@ use std::time::Duration;
 
 use napi::bindgen_prelude::BigInt;
 use napi_derive::napi;
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::{LPARAM, WPARAM};
 
 use super::clipboard_snapshot::{
     get_clipboard_sequence_number, restore_clipboard_supported_formats,
     save_clipboard_supported_formats, set_clipboard_unicode_text, with_hidden_owner,
     ClipboardSnapshot, RestoreOutcome,
 };
-use super::input::post_message;
+use super::input::{hwnd_from_bigint, post_message};
 use super::safety::napi_safe_call;
 
 // ── Constants ───────────────────────────────────────────────────────────────
@@ -74,11 +74,6 @@ pub struct ConsolePasteResult {
     pub restore_skipped_race: bool,
 }
 
-fn hwnd_from_bigint(b: BigInt) -> HWND {
-    let (_sign, val, _lossless) = b.get_u64();
-    HWND(val as isize as *mut std::ffi::c_void)
-}
-
 fn build_skipped(snapshot: &ClipboardSnapshot) -> Vec<ConsolePasteSkippedFormat> {
     snapshot
         .skipped_summary()
@@ -94,6 +89,37 @@ fn fail(reason: &str, skipped: Vec<ConsolePasteSkippedFormat>, restore_skipped_r
     ConsolePasteResult {
         ok: false,
         reason: Some(reason.to_string()),
+        skipped_formats: skipped,
+        restore_skipped_race,
+    }
+}
+
+/// Pure mapping from the executed step outcomes (after restore has already run)
+/// to the final result. Extracted so every reason branch — set failure, post
+/// failure, success — plus the `skipped_formats` / `restore_skipped_race`
+/// carry-through is unit-tested without touching Win32 (PR #393 R1 P3-2). The
+/// surrounding imperative flow (save → set → paste → restore-exactly-once) is
+/// verified by review + the `clipboard_snapshot` round-trip/race tests + dogfood.
+fn map_paste_outcome(
+    set_ok: bool,
+    set_reason: Option<&str>,
+    post_paste_failed: bool,
+    skipped: Vec<ConsolePasteSkippedFormat>,
+    restore_skipped_race: bool,
+) -> ConsolePasteResult {
+    if !set_ok {
+        return fail(
+            set_reason.unwrap_or("clipboard_set_data_failed"),
+            skipped,
+            restore_skipped_race,
+        );
+    }
+    if post_paste_failed {
+        return fail("post_paste_failed", skipped, restore_skipped_race);
+    }
+    ConsolePasteResult {
+        ok: true,
+        reason: None,
         skipped_formats: skipped,
         restore_skipped_race,
     }
@@ -159,19 +185,8 @@ pub fn win32_console_paste_no_focus(
             let restore = restore_clipboard_supported_formats(&snapshot, owner, seq_after);
             let restore_skipped_race = matches!(restore, RestoreOutcome::SkippedDueToRace { .. });
 
-            // 5. Map outcome.
-            if !set_ok {
-                return fail(set_reason.unwrap_or("clipboard_set_data_failed"), skipped, restore_skipped_race);
-            }
-            if post_paste_failed {
-                return fail("post_paste_failed", skipped, restore_skipped_race);
-            }
-            ConsolePasteResult {
-                ok: true,
-                reason: None,
-                skipped_formats: skipped,
-                restore_skipped_race,
-            }
+            // 5. Map outcome (pure — see map_paste_outcome).
+            map_paste_outcome(set_ok, set_reason, post_paste_failed, skipped, restore_skipped_race)
         });
 
         // `with_hidden_owner` only errors when the hidden owner window could not
@@ -211,5 +226,48 @@ mod tests {
         assert_eq!(normalise("a\r\nb"), "a\r\nb"); // already CRLF stays CRLF (no doubling)
         assert_eq!(normalise("a\nb\nc"), "a\r\nb\r\nc");
         assert_eq!(normalise("plain"), "plain");
+    }
+
+    fn one_skip() -> Vec<ConsolePasteSkippedFormat> {
+        vec![ConsolePasteSkippedFormat { format_id: 2, reason: "non_hglobal".to_string() }]
+    }
+
+    #[test]
+    fn map_outcome_success_carries_hints() {
+        let r = map_paste_outcome(true, None, false, one_skip(), true);
+        assert!(r.ok);
+        assert!(r.reason.is_none());
+        assert_eq!(r.skipped_formats.len(), 1); // skipped formats ride along on success
+        assert!(r.restore_skipped_race);
+    }
+
+    #[test]
+    fn map_outcome_set_failure_uses_set_reason() {
+        // each ClipboardError::as_reason value flows through unchanged
+        for reason in [
+            "clipboard_lock_contention",
+            "clipboard_empty_failed",
+            "clipboard_alloc_failed",
+            "clipboard_set_data_failed",
+        ] {
+            let r = map_paste_outcome(false, Some(reason), false, Vec::new(), false);
+            assert!(!r.ok);
+            assert_eq!(r.reason.as_deref(), Some(reason));
+        }
+    }
+
+    #[test]
+    fn map_outcome_set_failure_falls_back_when_reason_absent() {
+        let r = map_paste_outcome(false, None, false, Vec::new(), false);
+        assert_eq!(r.reason.as_deref(), Some("clipboard_set_data_failed"));
+    }
+
+    #[test]
+    fn map_outcome_post_paste_failure() {
+        // post failure only reachable when set succeeded; reason is console-paste-specific
+        let r = map_paste_outcome(true, None, true, one_skip(), false);
+        assert!(!r.ok);
+        assert_eq!(r.reason.as_deref(), Some("post_paste_failed"));
+        assert_eq!(r.skipped_formats.len(), 1);
     }
 }

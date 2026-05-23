@@ -21,7 +21,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use super::safety::napi_safe_call;
 use super::types::NativeForceFocusResult;
 
-fn hwnd_from_bigint(b: BigInt) -> HWND {
+/// Reinterpret a JS BigInt as an HWND. `get_u64` (magnitude) is correct for an
+/// HWND handle value; the signed `get_i64` is only needed for WPARAM/LPARAM
+/// payloads (see `win32_post_message`). Shared with `console_paste` so the HWND
+/// conversion lives in one place (PR #393 R1 P3-1).
+pub(crate) fn hwnd_from_bigint(b: BigInt) -> HWND {
     let (_sign, val, _lossless) = b.get_u64();
     HWND(val as isize as *mut std::ffi::c_void)
 }
