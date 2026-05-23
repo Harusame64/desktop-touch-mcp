@@ -214,6 +214,17 @@ output in one call. How it decides "complete" is controlled by `until`:
 | `pattern` | a string/regex you expect in the output | long commands with a known final marker |
 | `exit` | the command to actually **finish** | when you need completion or the exit code |
 
+> **Anchoring caveat (#384):** a command whose final line has no trailing newline
+> glues the marker to the next prompt with no line boundary (`printf X` →
+> `Xuser@host:~$`), so an end-anchored `pattern` (`X\s*\n` / `X$`) can never bind.
+> For *completion* use `mode:'exit'`; for *content* matching use a bare marker
+> (no `\n`/`$`). `mode:'pattern'` also accepts an optional `quietMs` settle
+> fallback: `until:{mode:'pattern', pattern, quietMs:1000}` completes with
+> `reason:'quiet'` (no `matchedPattern`) once output is stable for that long
+> without a match — instead of hanging until `timeoutMs`. It is opt-in (omit
+> `quietMs` to keep waiting for the pattern; long commands with mid-run silent
+> gaps are unaffected).
+
 ### `until:{mode:'exit'}` — real completion + exit code
 
 The heuristic modes can misfire on the common "append a sentinel" idiom

@@ -53,6 +53,21 @@
   unaffected. This covers single-command idioms (`cmd; echo "DONE"`); multi-line
   commands retain the prior scanning behaviour and are unchanged. (issue #383)
 
+- **`terminal(action='run')` with `until:{mode:'pattern'}` no longer has to hang
+  until the hard timeout when a command finishes without ever printing the
+  pattern.** A command whose final line has no trailing newline glues the marker
+  to the next shell prompt with no line boundary (e.g. `printf X` →
+  `Xuser@host:~$`), so an end-anchored pattern (`X\s*\n` or `X$`) can never match
+  and the run waited the full `timeoutMs`. You can now pass an optional `quietMs`
+  on the pattern spec — `until:{mode:'pattern', pattern, quietMs:1000}` — and the
+  run completes with `completion.reason:'quiet'` (and no
+  `completion.matchedPattern`; check its presence to tell a match from a settle)
+  once output has been stable for that long without a match, instead of hanging.
+  This is opt-in: omit `quietMs` to keep the default behaviour (wait for the
+  pattern until `timeoutMs`, so long-running commands with mid-run silent gaps are
+  unaffected). To detect genuine command completion — and get the exit code —
+  prefer `until:{mode:'exit'}`. (issue #384)
+
 ## [1.7.2] - 2026-05-19 — Emergency-stop now requires a deliberate dwell (no more drive-by failsafe kills)
 
 ### Fixed

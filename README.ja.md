@@ -275,6 +275,8 @@ Reactive Perception Graph は desktop-touch の低コストな状況把握レイ
 | `pattern` | 出力に現れる文字列/正規表現 | 最終マーカーが分かる長時間コマンド |
 | `exit` | コマンドの**終了そのもの** | 完了や exit code が必要なとき |
 
+> **アンカーの注意 (#384):** 最終行が改行で終わらない出力は、マーカーが次プロンプトに密着して行境界が無くなります（`printf X` → `Xuser@host:~$`）。よって行末アンカー付き `pattern`（`X\s*\n` / `X$`）は**バインド不能**です。**完了検出は `mode:'exit'`**、content マッチは**裸マーカー**（`\n`/`$` を付けない）を使ってください。`mode:'pattern'` には opt-in の `quietMs` settle fallback もあります: `until:{mode:'pattern', pattern, quietMs:1000}` は、pattern 未一致でも出力が指定 ms 安定したら `reason:'quiet'`（`matchedPattern` なし）で完了し、`timeoutMs` までのハングを防ぎます。opt-in（未指定なら pattern を待ち続ける＝silent gap のある長時間コマンドは無影響）。
+
 ### `until:{mode:'exit'}` — 本当の完了 + exit code
 
 ヒューリスティックなモードは「センチネルを末尾に付ける」定番（`some-task; echo DONE` を `DONE` で待つ）で誤判定しがちです。センチネルは**エコーされたコマンド行**にも現れ、複数行コマンドではそのエコーと実出力をバッファだけから区別できません。`mode:'exit'` はこれを構造的に解決します — サーバが**表示形と入力形が異なる**完了マーカーをコマンド末尾に注入するため、エコーには決して一致せず（複数行入力でも）、実際のプロセス exit code を返します:

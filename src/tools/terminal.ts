@@ -1680,7 +1680,7 @@ export const terminalRunHandler = async ({
   input: string;
   until:
     | { mode: "quiet"; quietMs: number }
-    | { mode: "pattern"; pattern: string; regex: boolean }
+    | { mode: "pattern"; pattern: string; regex: boolean; quietMs?: number }
     | { mode: "exit"; shell: "bash" | "powershell" | "cmd" | "auto" };
   timeoutMs: number;
   sendOptions?: Record<string, unknown>;
@@ -1967,6 +1967,15 @@ export const terminalRunHandler = async ({
   // side; this immediate value must stay in sync so the fallback path is not
   // a hidden short-default outlier.
   const quietMs = until.mode === "quiet" ? until.quietMs : 1500;
+  // issue #384: opt-in settle fallback for pattern mode. When the caller sets
+  // until.quietMs on a pattern-mode run, the run also completes (reason:'quiet',
+  // no matchedPattern) once output has been stable for that long WITHOUT the
+  // pattern matching — instead of hanging until the hard timeout. This handles
+  // commands that finish without ever printing the pattern (e.g. output with no
+  // trailing newline that an end-anchored pattern can't bind — issue #384). It is
+  // OPT-IN so the default pattern-mode contract (wait through silent gaps until
+  // the pattern appears — issue #196) is unchanged. undefined = no fallback.
+  const patternFallbackQuietMs = until.mode === "pattern" ? until.quietMs : undefined;
 
   // Compile pattern if pattern mode
   let patternRe: RegExp | null = null;
@@ -2044,6 +2053,13 @@ export const terminalRunHandler = async ({
       if (newContent !== undefined && patternRe.test(newContent)) {
         completionReason = "pattern_matched";
         matchedPattern = until.mode === "pattern" ? until.pattern : undefined;
+      } else if (patternFallbackQuietMs !== undefined && initialPostSend.text !== lastText) {
+        // issue #384: seed settle-tracking off the RAW buffer (like quiet mode)
+        // so the opt-in fallback's quiet window starts from the first observed
+        // change rather than missing this first tick.
+        lastText = initialPostSend.text;
+        lastTextTime = Date.now();
+        firstChangeTime ??= lastTextTime;
       }
     }
   }
@@ -2089,10 +2105,35 @@ export const terminalRunHandler = async ({
       const newContent = newContentSinceBaseline(currentText);
       // newContent === undefined → baseline lost, skip to avoid prior-history match.
       // newContent === "" is still valid input for patterns like /^$/.
+      // Match takes priority over the settle fallback on the same tick.
       if (newContent !== undefined && patternRe.test(newContent)) {
         completionReason = "pattern_matched";
         matchedPattern = until.mode === "pattern" ? until.pattern : undefined;
         break;
+      }
+      // issue #384: opt-in settle fallback. When until.quietMs is set, complete
+      // with reason:'quiet' (matchedPattern stays undefined) once output has been
+      // stable for quietMs WITHOUT a match — so a command that finishes without
+      // ever printing the pattern (e.g. a no-trailing-newline final line an
+      // end-anchored pattern can't bind) ends gracefully instead of hard-timing
+      // out. Track changes off the RAW buffer (like quiet mode) so baseline-lost
+      // runs still settle. No-op when until.quietMs is unset (default contract).
+      if (patternFallbackQuietMs !== undefined) {
+        if (currentText !== lastText) {
+          lastText = currentText;
+          lastTextTime = Date.now();
+          firstChangeTime ??= lastTextTime;
+        } else if (
+          evaluateQuietState({
+            now: Date.now(),
+            lastTextChangedAt: lastTextTime,
+            firstChangeAt: firstChangeTime,
+            quietMs: patternFallbackQuietMs,
+          }) === "quiet"
+        ) {
+          completionReason = "quiet";
+          break;
+        }
       }
     } else {
       // quiet mode: track changes and consult the pure helper. The helper
@@ -2298,6 +2339,15 @@ export const terminalSchema = z.discriminatedUnion("action", [
         mode: z.literal("pattern"),
         pattern: z.string().describe("Stop when output matches this string (or regex if regex:true)"),
         regex: coercedBoolean().default(false).describe("If true, treat pattern as a regex"),
+        // issue #384: opt-in settle fallback.
+        quietMs: z.coerce.number().int().min(50).max(30000).optional().describe(
+          "Optional settle fallback. When set, also completes with completion.reason:'quiet' " +
+          "(completion.matchedPattern stays absent — check it to tell a match from a settle) " +
+          "if output stays stable for this many ms WITHOUT the pattern matching, instead of " +
+          "waiting for the hard timeout. Use for commands that may finish without ever printing " +
+          "the pattern — e.g. a final line with no trailing newline that an end-anchored pattern " +
+          "(\\n / $) can't bind (issue #384). Omit to keep waiting for the pattern until timeoutMs."
+        ),
       }),
       // issue #386: echo-immune completion. Appends a driver-controlled sentinel
       // after the command whose ECHO form differs from its OUTPUT form, so it

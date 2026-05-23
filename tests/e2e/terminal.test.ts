@@ -442,4 +442,39 @@ describe.each(SCENARIOS)("[$label] terminal", ({ host, label, expectedClassPatte
       expect(res.output).toContain(tag);
     }, 30_000);
   });
+
+  // Issue #384: when a command finishes WITHOUT ever producing the pattern (the
+  // #384 class: an end-anchored pattern that can't bind because the final line
+  // has no trailing newline / is glued to the next prompt), the opt-in `quietMs`
+  // settle fallback completes with reason:'quiet' (matchedPattern absent) once
+  // output settles — instead of hanging until the hard timeout. Tested here with
+  // a guaranteed-absent pattern so the fallback is exercised on any host (in
+  // PowerShell, PSReadline inserts a newline before the prompt, so the literal
+  // no-newline glue is bash-specific — see the SSH-WSL bash repro in
+  // terminal-exit-mode.test.ts).
+  describe(`terminal_run [${label}] — issue #384 quietMs settle fallback`, () => {
+    it("a never-matching pattern settles to reason:'quiet' instead of hard-timeout", async ({ skip }) => {
+      const tag = `run384-${host}-${Date.now().toString(36)}`;
+      const res = parsePayload(await terminalRunHandler({
+        windowTitle: ps.title,
+        input: `Start-Sleep -Seconds 1; Write-Output '${tag}'`,
+        until: { mode: "pattern", pattern: `__never_appears_${tag}__`, regex: false, quietMs: 1000 },
+        timeoutMs: 15_000,
+      }));
+
+      if (res.completion?.reason === "send_failed") {
+        skip(`terminal_run send_failed — foreground transfer refused (env). ${JSON.stringify(res.completion)}`);
+      }
+      if (res.outputIntegrity === "baseline_lost") {
+        skip(`terminal_run baseline_lost — focus did not transfer (env).`);
+      }
+
+      // Settled, not matched, not hard-timeout: the whole point of #384.
+      expect(res.completion.reason, JSON.stringify(res)).toBe("quiet");
+      expect(res.completion.matchedPattern).toBeUndefined();
+      // Completed well before the 15s hard timeout (≈ 1s sleep + 1s settle + slack).
+      expect(res.completion.elapsedMs).toBeLessThan(12_000);
+      expect(res.output).toContain(tag);
+    }, 25_000);
+  });
 });

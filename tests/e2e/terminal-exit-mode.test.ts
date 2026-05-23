@@ -237,6 +237,37 @@ describe("[bash@wsl-ssh] terminal exit mode (#386 core)", () => {
     expect(res.completion.exitCode).toBe(3);
   }, 45_000);
 
+  // issue #384 (the actual repro): bash `printf 'X'` emits NO trailing newline,
+  // so the marker is glued to the next prompt (`Xroot@host:~#`) with no line
+  // boundary — an end-anchored pattern (`X\s*\n`) can never bind and pattern mode
+  // would hard-time-out. The opt-in quietMs settle fallback completes with
+  // reason:'quiet' (NOT pattern_matched) once output settles. (PowerShell can't
+  // reproduce this — PSReadline inserts a newline before the prompt.)
+  it("#384: a no-trailing-newline pattern that can't bind settles to 'quiet', not timeout", async ({ skip }) => {
+    if (!available || !sh) skip("SSH-into-WSL bash harness unavailable (env)");
+    const tag = `nl384_${Date.now().toString(36)}`;
+    const res = parsePayload(
+      await terminalRunHandler({
+        windowTitle: sh!.title,
+        input: `sleep 1; printf '${tag}'`, // no trailing newline → glued to the prompt
+        until: { mode: "pattern", pattern: `${tag}\\s*\\n`, regex: true, quietMs: 1000 },
+        timeoutMs: 15_000,
+      }),
+    );
+    // Only a refused send is an env skip. baseline_lost is NOT skipped here: it
+    // affects output-content trust (asserted conditionally below), not the
+    // completion-detection behavior #384 is about. (SSH-bash reads often can't
+    // re-anchor the pre-send marker — orthogonal to the settle fallback.)
+    if (res.completion?.reason === "send_failed") skip(`env: ${JSON.stringify(res.completion)}`);
+    // The end-anchored pattern cannot bind (no newline); the fallback settles.
+    expect(res.completion.reason, JSON.stringify(res)).toBe("quiet");
+    expect(res.completion.matchedPattern).toBeUndefined();
+    expect(res.completion.elapsedMs).toBeLessThan(12_000); // well before the 15s timeout
+    if (res.outputIntegrity === "ok") {
+      expect(res.output).toContain(tag); // the no-newline marker is captured when anchored
+    }
+  }, 25_000);
+
   // NOTE on the SSH/WSL wall (P3 measured): the SSH-bash window is conhost-hosted
   // (window process 'powershell'), so shell:'auto' here resolves to powershell —
   // a SILENTLY WRONG shell for the remote bash, which degrades to a loud
