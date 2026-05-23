@@ -10,10 +10,11 @@
 npx -y @harusame64/desktop-touch-mcp
 ```
 
-28 tools, native Rust engine (UIA in 2 ms), zero-config PowerShell fallback, full CJK support, MIT licensed. Add the snippet above to your Claude / Cursor / VS Code Copilot config and Claude can drive Notepad, Excel, Chrome, Windows Terminal, and any other app on your machine.
+29 tools, native Rust engine (UIA in 2 ms), zero-config PowerShell fallback, full CJK support, MIT licensed. Add the snippet above to your Claude / Cursor / VS Code Copilot config and Claude can drive Notepad, Excel, Chrome, Windows Terminal, and any other app on your machine.
 
-> *v0.15: **82× average speedup** via Rust native engine — UIA focus queries in 2 ms, SSE2-accelerated image diffing at 13–15× native speed. Zero-config: the engine auto-loads when present, with transparent PowerShell fallback.*
-> *v0.15.5: **Pinned release verification** — the npm launcher now fetches only the matching GitHub Release tag and verifies the Windows runtime zip before extraction.*
+> **Why this over pixel-clicking?** Two ideas run through every tool: **discover-then-act** — `desktop_discover` returns interactive entities with short-lived leases instead of raw coordinates, so `desktop_act` operates on *what* you mean, not *where* it was — and **per-action perception guards** that verify the target window's identity and bounds before input lands, catching wrong-window typing and stale-coordinate clicks before they happen.
+>
+> Under the hood: an **82× average speedup** from the Rust native engine (UIA focus queries in 2 ms, SSE2-accelerated image diffing at 13–15×), with a transparent PowerShell fallback when the engine is absent. The npm launcher fetches only the GitHub Release tag matching the installed version and verifies the Windows runtime zip before extraction.
 
 ---
 
@@ -122,7 +123,7 @@ For a local checkout, register the built server directly:
 
 ---
 
-## Tools (28 Optimized Tools)
+## Tools (29 Optimized Tools)
 
 > 📖 **Full Reference**: [`docs/system-overview.md`](docs/system-overview.md) — Exhaustive guide on parameters, return schemas, and coordinate math.
 
@@ -165,6 +166,11 @@ For a local checkout, register the built server directly:
 | `workspace_launch` | Launch apps and auto-detect new HWNDs (supports localized titles). |
 | `run_macro` | Batch up to 50 operations into a single round-trip for maximum efficiency. |
 | `clipboard` / `notification_show` | System-level text exchange and user alerts. |
+
+### 📊 Office (Excel)
+| Tool | Description |
+|---|---|
+| `excel` | Author and run Excel VBA macros via COM. `action='run_vba'` writes a macro into a managed Trusted Location and runs it; `action='check_access_vbom'` is a read-only preflight. Runs VBA where formula-only tools cannot. One-time setup: `node scripts/enable-access-vbom.mjs`. |
 
 ---
 
@@ -558,7 +564,7 @@ Setting `DESKTOP_TOUCH_FORCE_FOCUS=1` makes `forceFocus: true` the default for a
 
 ---
 
-## Auto Guard (v0.12+)
+## Auto Guard
 
 Action tools (`mouse_click`, `mouse_drag`, `keyboard(action='type'/'press')`, `click_element`, `desktop_act`, `browser_click`, `browser_navigate`) automatically guard each action when you pass `windowTitle` / `tabId`:
 
@@ -608,32 +614,7 @@ The fix is one-shot and expires in 15 seconds. The server revalidates the target
 
 ---
 
-## v0.13 Additions
-
-### Target-Identity Timeline
-
-The server tracks a semantic timeline of what happened to each target window/tab. Recent events are included in:
-
-- `get_history` → `recentTargetKeys`: array of 3 most recently active target keys (compact, no event bodies)
-- `perception_read(lensId)` → `recentEvents`: up to 10 events for that lens's target, each with `tsMs`, `semantic`, `summary`
-
-Enable the MCP resources below to browse timelines:
-
-```json
-{ "env": { "DESKTOP_TOUCH_PERCEPTION_RESOURCES": "1" } }
-```
-
-MCP resources available when enabled:
-
-| URI | Content |
-|---|---|
-| `perception://target/{targetKey}/timeline` | Semantic event timeline for a target |
-| `perception://targets/recent` | Most recently active target keys |
-| `perception://lens/{lensId}/summary` | Lens attention/guard state |
-
-### Manual Lens Eviction: FIFO → LRU
-
-Manual lenses (created via `perception_register`) are now evicted by **least-recently-used** instead of insertion order. Using `perception_read`, `evaluatePreToolGuards`, or `buildEnvelopeFor` on a lens promotes it. The hard limit of 16 active lenses is unchanged.
+## Advanced response options
 
 ### browser_eval Structured Mode
 
@@ -748,7 +729,7 @@ Flag semantics (exact-match: only the literal string `"1"` counts):
 
 ### Deprecated: `DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2`
 
-This was the opt-in switch in v0.16.x. From v0.17 it is accepted for compatibility but no longer required — the server prints a deprecation warning on startup when it is set. It will be removed in v0.18. Remove it from your config when you upgrade.
+This was the opt-in switch in v0.16.x. It is still accepted for backward compatibility but no longer required — the server prints a deprecation warning on startup when it is set. Remove it from your config; V2 is on by default.
 
 ### Recovery when V2 fails
 
@@ -759,7 +740,7 @@ If `desktop_act` returns `ok: false`, read `reason` and follow the built-in reco
 - `entity_outside_viewport` → `scroll` / `scroll(action='to_element')`, then re-call `desktop_discover`
 - `executor_failed` → fall back to `click_element` / `mouse_click` / `browser_click`
 
-For `desktop_discover` warnings (`visual_provider_unavailable`, `visual_provider_warming`, `cdp_provider_failed`, …), V1 tools (`screenshot`, `click_element`, `get_ui_elements`, `terminal(action='send')`, …) remain available as an escape hatch.
+For `desktop_discover` warnings (`visual_provider_unavailable`, `visual_provider_warming`, `cdp_provider_failed`, …), the coordinate-based tools (`screenshot(detail='text')`, `click_element`, `mouse_click`, `terminal`, …) remain available as an escape hatch.
 
 ---
 

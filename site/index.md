@@ -98,6 +98,10 @@ It is trying to document an active line of engineering and research.
 
 As the project evolves, we document major architectural shifts and milestones here.
 
+### v1.8: From Delivery to Completion, and Reaching Deeper Into Apps
+The v1.5–v1.8 series extend trustworthy *delivery* into trustworthy *completion*. `terminal(action='run')` can now wait for a command to actually finish and report its real exit code (`until:{mode:'exit'}`), the new `excel` tool runs VBA macros over COM where formula-only tools can't, and the act-and-observe loop is hardened with race-free visual verification, idle-aware CPU dormancy, a diagnostic event log, and a deliberate-dwell emergency stop.
+- [Read the v1.8 Milestone Article](./articles/v1.8-milestone.html)
+
 ### v1.4: From Observation to Memory and Trustworthy Delivery
 The v1.3 and v1.4 series add two things on top of v1.2's per-response context: four cognitive memory layers the agent can re-query (`working`, `episodic`, `semantic`, `procedural`), and delivery verification that closes the silent-failure paths in browser, terminal, and keyboard sends. Plus typed error codes for refusals and a new opt-in `foreground_flash` channel for Windows Terminal.
 - [Read the v1.4 Milestone Article](./articles/v1.4-milestone.html)
