@@ -47,6 +47,7 @@ import { withPostState } from "../../../src/tools/_post.js";
 import { ok, fail } from "../../../src/tools/_types.js";
 import { errorFromMessage, toToolFailure, failWith } from "../../../src/tools/_errors.js";
 import { getFocusedAndPointInfo } from "../../../src/engine/uia-bridge.js";
+import { enumWindowsInZOrder, getWindowProcessId, getProcessIdentityByPid } from "../../../src/engine/win32.js";
 
 function parse(result: { content: ReadonlyArray<{ type: string; text?: string }> }): Record<string, unknown> {
   const block = result.content[0];
@@ -212,6 +213,26 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     );
     expect(parsed.ok).toBe(false);
     expect("advisory" in parsed).toBe(false);
+  });
+
+  it("does NOT set advisory when the focused window is a browser (after.processName wiring)", async () => {
+    // Pin the processName wiring (_post.ts → maybeAdvisory): an active browser
+    // window suppresses the advisory even with a qualifying focused Edit. Without
+    // the `after.processName` arg this would (wrongly) fire — guards the wiring.
+    vi.mocked(enumWindowsInZOrder).mockReturnValue([{ hwnd: 1, title: "X", isActive: true } as never]);
+    vi.mocked(getWindowProcessId).mockReturnValue(123 as never);
+    vi.mocked(getProcessIdentityByPid).mockReturnValue({ processName: "chrome" } as never);
+    vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce(editFocus as never);
+    try {
+      const parsed = parse(
+        await withPostState("keyboard", async () => ok({ ok: true }))({ action: "type", text: "hi" }),
+      );
+      expect("advisory" in parsed).toBe(false);
+    } finally {
+      vi.mocked(enumWindowsInZOrder).mockReturnValue([]);
+      vi.mocked(getWindowProcessId).mockReturnValue(null as never);
+      vi.mocked(getProcessIdentityByPid).mockReturnValue(null as never);
+    }
   });
 });
 
