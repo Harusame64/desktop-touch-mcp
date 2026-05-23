@@ -284,6 +284,9 @@ describe("prepareClipboardForPaste — restore-exactly-once invariant", () => {
     const ok = await prepareClipboardForPaste("x", SAVED, { setFn, restoreFn, sleepFn });
     expect(ok).toBe(true);
     expect(restoreFn).not.toHaveBeenCalled();
+    // the injected sleepFn propagates through to the retry backoff (one 120ms
+    // wait between the failed first attempt and the successful second)
+    expect(sleepFn.mock.calls).toEqual([[120]]);
   });
 
   it("returns false and restores EXACTLY ONCE (with the snapshot) when every set fails", async () => {
