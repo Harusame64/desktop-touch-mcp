@@ -18,9 +18,15 @@
  *      into another output's cached subscription.
  *
  * Detection power vs b-dxgi: reverting SR-4 to per-consumer caches makes #1 fail
- * (factory called per consumer) while b-dxgi (single consumer) stays green. #2/#3
- * pin the per-`outputIndex` Map isolation that a single-output test never
- * exercises.
+ * (factory called per consumer); b-dxgi stays green precisely because it never
+ * asserts the factory call count (it only checks one consumer's state
+ * transitions, which a per-consumer cache reproduces). #2/#3 pin the
+ * per-`outputIndex` Map isolation that a single-output test never exercises.
+ *
+ * Out of scope (the other half of SR-4's "SSOT but independent cursor"): that
+ * each consumer's polling handle drains its OWN queue cursor over the shared
+ * native subscription. That is a separate axis (cursor non-interleaving, not a
+ * past *drift* regression) — tracked in remaining-work.md, not pinned here.
  *
  * NOTE on the mock: ADR-021 §3.5.2 named ReplayBackend, but post-SR-4 the broker
  * consumes `factory: (outputIndex) => SubscriptionLike`, whereas ReplayBackend
@@ -132,8 +138,8 @@ describe("DXGI broker SSOT coexistence (ADR-021 Phase 4 PR-P4-3)", () => {
     broker.invalidate(0); // invalidate output 0 ONLY
     now = 500; // < 2s negativeBackoffMs
 
-    const r0 = broker.acquire(0); // output 0 is in negative-backoff
-    const r1 = broker.acquire(1); // output 1 is untouched
+    const r0 = broker.acquire(0); // output 0: negative-backoff fast-path → sub:null
+    const r1 = broker.acquire(1); // output 1 is untouched → still hit-subscription
 
     expect(r0.state).toBe("hit-negative-backoff");
     expect(r0.sub).toBeNull();
