@@ -68,6 +68,36 @@ describe("maybeAdvisory — keyboard(type) → desktop_act", () => {
   });
 });
 
+describe("maybeAdvisory — unnamed text input (#352 follow-up, ADR-022 §5.5)", () => {
+  // The gate is NAME-AGNOSTIC (it checks type / value / automationId / process,
+  // never name). The Round-1 under-fire was upstream — the bridge dropped
+  // name-empty rows before they reached this gate. This pins that an unnamed Edit
+  // that DOES reach the gate fires, so the upstream relax (includeUnnamed) is the
+  // only thing needed to widen coverage to unlabeled inputs.
+  it("fires for an unnamed Edit with value:'' (empty string = ValuePattern PRESENT)", () => {
+    const hint = maybeAdvisory(
+      "keyboard",
+      { action: "type", windowTitle: "App", text: "x" },
+      { name: "", type: "Edit", value: "" }, // name-empty editable, ValuePattern exposed
+      NATIVE,
+    );
+    expect(hint).not.toBeNull();
+    expect(hint!.preferredPath).toBe("desktop_act");
+  });
+
+  it("does NOT fire for an unnamed Edit with value ABSENT (undefined = no ValuePattern)", () => {
+    // Guard against conflating value:'' (fires) with value missing (drops). The
+    // gate is `value === undefined` (_advisory.ts) — empty string passes, absent drops.
+    const hint = maybeAdvisory(
+      "keyboard",
+      { action: "type", text: "x" },
+      { name: "", type: "Edit" }, // no `value` field at all
+      NATIVE,
+    );
+    expect(hint).toBeNull();
+  });
+});
+
 describe("maybeAdvisory — suppression (no hint)", () => {
   it("returns null when the focused element is not a text input (UIA-blind / wrong control)", () => {
     expect(
