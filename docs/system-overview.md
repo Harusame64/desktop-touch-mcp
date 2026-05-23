@@ -2,9 +2,9 @@
 
 MCP (Model Context Protocol) server that lets Claude CLI drive any Windows desktop application.
 
-> 現行の設計判断・残タスク・方針転換は、まず [README.md](D:/git/desktop-touch-mcp/docs/README.md) と
-> [todo-index.md](D:/git/desktop-touch-mcp/docs/todo-index.md) を参照してください。
-> この文書は **現行実装の概観** を説明する正本であり、tool surface 再編の将来案までは確定事項として扱いません。
+> This document is the canonical overview of the **current implementation**. For the
+> user-facing quick start and per-tool tables, see the top-level [README.md](../README.md);
+> for design notes and remaining work, see the files under [`docs/`](./).
 
 ---
 
@@ -70,7 +70,7 @@ desktop-touch-mcp (Node.js / TypeScript)
 
 ### Surface status
 
-- **Current public surface (v1.5.0)**: 29 tools — 27 stub catalog + 2 dynamic v2 (`desktop_discover` / `desktop_act`)
+- **Current public surface (v1.8.0)**: 29 tools — 27 stub catalog + 2 dynamic v2 (`desktop_discover` / `desktop_act`)
 - **Tool surface reduction (Phase 1–4) — shipped**: naming redesign, family merge dispatchers, browser rearrangement, privatize/absorb. Pre-Phase-1 surface was 65 tools.
 - Phase design references (all Implemented):
   - [tool-surface-phase1-naming-design.md](D:/git/desktop-touch-mcp/docs/tool-surface-phase1-naming-design.md)
@@ -180,6 +180,46 @@ For `keyboard(action='press')`, rich mode only fires for state-transitioning key
 
 ## Tool catalogue
 
+The 29 public tools group into six families. The **World-Graph V2** pair is the
+recommended dispatch path; the coordinate / UIA / browser tools remain for
+fallback and specialised work.
+
+### 🌐 World-Graph V2 — discover-then-act (primary path)
+
+The recommended way to operate any window, browser tab, or terminal. Instead of
+guessing screen coordinates, you *discover* interactive entities (each carrying a
+short-lived lease) and then *act* on an entity by its lease.
+
+#### `desktop_discover`
+Observe a target and return interactive entities with leases — no raw screen
+coordinates. One surface spans four lanes: UIA (native windows / dialogs), CDP
+(Chrome / Edge tabs), terminal, and a visual GPU lane (Set-of-Marks) for windows
+UIA cannot see. Each entity carries a lease (`expiresAtMs` is the correctness
+wall; `softExpiresAtMs` ≈ 60 % of TTL is the soft re-discover hint). TTL adapts
+to `view` mode (`action` / `explore` / `debug`), entity count, and payload size,
+capped at 60 s. Warnings (`visual_provider_unavailable`, `visual_provider_warming`,
+`cdp_provider_failed`, …) tell the caller when a lane is degraded.
+
+#### `desktop_act`
+Act on an entity returned by `desktop_discover` (`click` / `type` / `drag` /
+`select`, …). The lease is validated before execution, and the response carries a
+semantic diff (`entity_disappeared`, `modal_appeared`, `focus_shifted`, …) plus
+the `attention` signal — so the caller can decide the next step without another
+screenshot. On `ok:false` read `reason` and follow the recovery path:
+
+| `reason` | Recovery |
+|---|---|
+| `lease_expired` / `lease_generation_mismatch` / `lease_digest_mismatch` / `entity_not_found` | re-call `desktop_discover` |
+| `modal_blocking` | `response.blockingElement` names the blocker → `click_element(name=…)` then retry |
+| `entity_outside_viewport` | `scroll(action='to_element' | 'raw')` then re-call `desktop_discover` |
+| `executor_failed` | fall back to `click_element` / `mouse_click` / `browser_click` |
+
+> **Kill switch:** `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1` hides `desktop_discover` /
+> `desktop_act` from the catalogue and re-registers three V1 fallback tools
+> (`get_windows` / `get_ui_elements` / `set_element_value`) for troubleshooting.
+> The deprecated opt-in `DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2` is still accepted but
+> no longer required (V2 is default-on).
+
 ### 📸 Screenshot family
 
 #### `screenshot`
@@ -235,10 +275,13 @@ Explicit Win32 PrintWindow capture, retained for back-compat and explicit select
 - `dotByDot=true` emits 1:1 WebP.
 - `PW_RENDERFULLCONTENT` is the default flag (set `fullContent=false` for the legacy flag-0 mode when a GPU game / video window hangs PrintWindow).
 
-#### `screenshot_ocr`
-Word-level text with on-screen coords via Windows OCR (`Windows.Media.Ocr`). Fallback for apps where UIA is sparse.
+> Word-level Windows OCR (`Windows.Media.Ocr`) is reached through `screenshot`
+> itself — `detail="text"` with `ocrFallback="auto"` (default) fires OCR when UIA
+> is sparse/empty or the foreground is Chromium; `ocrFallback="always"` forces it.
+> The standalone `screenshot_ocr` / `get_screen_info` tools were absorbed during
+> the Phase 1–4 surface consolidation.
 
-#### `screenshot(detail="text")` — SoM fallback (v0.15.4)
+#### `screenshot(detail="text")` — SoM fallback
 When `detectUiaBlind()` fires (fewer than 5 UIA elements, or a single Pane covering ≥ 90% of the window with fewer than 5 other actionable elements), `screenshot(detail="text")` automatically activates the Hybrid Non-CDP pipeline instead of returning an empty element list:
 
 1. Capture window via PrintWindow → RGBA buffer
@@ -250,22 +293,14 @@ When `detectUiaBlind()` fires (fewer than 5 UIA elements, or a single Pane cover
 
 Sharp library is the transparent fallback for `preprocessImage` if the native `.node` engine is unavailable (no feature loss, only performance difference). When `drawSomLabels` is unavailable (Rust engine not built), `somImage` is `null` — the `elements[]` list with `clickAt` coords is still returned, but without the visual annotation PNG. If the SoM pipeline fails at any stage, `screenshot(detail="text")` transparently falls back to the regular OCR word-list path.
 
-#### `get_screen_info`
-Monitor list: resolution, position, DPI, cursor position.
-
 ---
 
 ### 🖥️ Window management
 
-#### `get_windows`
-All windows in Z-order.
-```json
-{ "zOrder": 0, "title": "Notepad", "region": {"x":78,"y":78,"width":976,"height":618},
-  "isActive": true, "isMinimized": false, "isOnCurrentDesktop": true }
-```
-
-#### `get_active_window`
-Information about the currently-focused window.
+> The Z-order window list and active-window info that `get_windows` /
+> `get_active_window` used to return are now part of `desktop_state.windows`
+> (and `desktop_discover`). The two standalone getters were privatized in the
+> Phase 1–4 consolidation.
 
 #### `focus_window`
 Bring a window to the foreground by partial title match.
@@ -275,7 +310,7 @@ focus_window(title="Chrome", chromeTabUrlContains="github.com")  # activate a sp
 ```
 `chromeTabUrlContains` activates the matching Chrome/Edge tab by URL substring before focusing the HWND. If CDP is unavailable, the parameter is silently skipped and `hints.warnings` surfaces `"cdpUnavailable"`.
 
-#### `window_dock(action='pin')` / `unwindow_dock(action='pin')`
+#### `window_dock(action='pin')` / `window_dock(action='unpin')`
 Toggle always-on-top; `duration_ms` for an auto-release timer.
 
 #### `window_dock(action='dock')`
@@ -302,9 +337,6 @@ Parameters: `corner` (top-left / top-right / bottom-left / bottom-right), `width
 
 All mouse tools take `speed` plus `homing` / `windowTitle` / `elementName` / `elementId`. Success responses carry the `post` block (`narrate:"rich"` adds a UIA diff).
 
-#### `mouse_move`
-Move the cursor.
-
 #### `mouse_click`
 Click (`left` / `right` / `middle`). `doubleClick=true` for a double-click; `tripleClick=true` for a triple-click (selects a full line of text). If both are set, `tripleClick` wins.
 
@@ -321,16 +353,13 @@ mouse_click(x, y, windowTitle="Notepad")    # Tier 1 + 2
 mouse_click(x, y, homing=false)             # correction off
 ```
 
-The cache is refreshed automatically by `screenshot` / `get_windows` / `focus_window` / `workspace_snapshot`. A 60-second TTL keeps HWND reuse from steering the wrong window.
+The cache is refreshed automatically by `screenshot` / `desktop_discover` / `focus_window` / `workspace_snapshot`. A 60-second TTL keeps HWND reuse from steering the wrong window.
 
 #### `mouse_drag`
-Drag (startX,startY) → (endX,endY). When homing is active, the end-point gets the same delta as the start.
+Drag (startX,startY) → (endX,endY). When homing is active, the end-point gets the same delta as the start. Both endpoints are guarded; cross-window / desktop drags are blocked unless `allowCrossWindowDrag:true`.
 
 #### `scroll`
-`direction`: `up` / `down` / `left` / `right`; `amount` is the step count. Internally multiplied by 3 because nut-js's single step is tiny.
-
-#### `get_cursor_position`
-Current cursor coords.
+The unified scroll dispatcher. `scroll(action='raw')` takes `direction` (`up` / `down` / `left` / `right`) and `amount` (step count, internally multiplied by 3 because nut-js's single step is tiny). The richer `action='to_element'` / `'smart'` / `'capture'` modes are documented under **Macro / scroll** and **SmartScroll** below.
 
 ---
 
@@ -362,7 +391,7 @@ keyboard(action='press')(keys="ctrl+shift+s")
 
 > **v0.15:** All UIA operations route through the Rust native engine by default (direct COM calls, 2–100 ms). PowerShell fallback activates automatically if the native engine is unavailable.
 
-Action tools (`click_element` / `set_element_value`) return the `post` block; `narrate:"rich"` adds a UIA diff.
+`click_element` returns the `post` block; `narrate:"rich"` adds a UIA diff.
 
 #### `screenshot(detail="text")` ← recommended
 Action-oriented element extraction. Every entry carries `clickAt` coords.
@@ -382,23 +411,19 @@ Action-oriented element extraction. Every entry carries `clickAt` coords.
 }
 ```
 
-#### `get_ui_elements`
-The raw UIA tree. Use this when you need an `automationId`. Each element includes `viewportPosition` (`'in-view'|'above'|'below'|'left'|'right'`) relative to the window client region — use it to decide whether `scroll(action='to_element')` is needed before clicking. Results are capped at `maxElements` (default 80, max 200).
-
 #### `click_element`
 Click by name / ID via UIA `InvokePattern` — no coords needed.
 ```
 click_element(windowTitle="Notepad", name="Settings", controlType="Button")
 ```
 
-#### `set_element_value`
-Set a text field directly via UIA `ValuePattern`.
-```
-set_element_value(windowTitle="Notepad", name="Text editor", value="Hello!")
-```
-
-#### `scope_element`
-Zoomed (1280 px) capture of one element + its child tree.
+> The raw UIA tree (`get_ui_elements`), direct field setter (`set_element_value`),
+> and single-element zoom (`scope_element`) were privatized in the Phase 1–4
+> consolidation. `get_ui_elements` / `set_element_value` are re-registered as V1
+> fallback tools only when `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1` is set. For
+> normal automation, `desktop_discover` (entity tree with leases) and
+> `screenshot(detail="text")` (`actionable[]` with `clickAt` + `automationId`)
+> cover the same ground.
 
 ---
 
@@ -450,34 +475,16 @@ Lightweight OS + app context. See the current state without a screenshot.
 |---|---|
 | `focusedElement` | UIA `GetFocusedElement` — the element with keyboard focus (name / type / value) |
 | `cursorOverElement` | UIA `ElementFromPoint` — the UIA element directly under the cursor |
-| `windows` | Z-ordered window list (same shape as `get_windows`) |
+| `windows` | Z-ordered window list (the same `{title, region, isActive, …}` shape `desktop_discover` reports) |
 
 On Chromium windows UIA is sparse, so `focusedElement` / `cursorOverElement` can be `null` — reach for the CDP tools there.
 
-#### `get_history`
-Summaries of the most recent actions (default 5, max 20).
-
-```json
-[
-  { "tool": "mouse_click", "ok": true,
-    "post": { "focusedWindow": "Notepad", "windowChanged": false, "elapsedMs": 35 },
-    "tsMs": 1744600000000 }
-]
-```
-
-Useful inside loops / repeated operations to check what the previous step actually did. `post.rich` is not stored in the ring buffer (keeps it small).
-
-#### `get_document_state`
-CDP state for the active tab (Chrome / Edge).
-
-```json
-{
-  "title": "Google",
-  "url": "https://www.google.com/",
-  "readyState": "complete",
-  "activeTab": { "id": "abc123", "port": 9222 }
-}
-```
+> The standalone `get_history` (recent-action ring buffer) and
+> `get_document_state` (active CDP tab state) tools were privatized in the
+> Phase 1–4 consolidation. The same data is now opt-in on any response via the
+> `include` argument (`your_last_action` / `events` / the `working` /
+> `episodic` memory layers, since v1.2/v1.3), and active-tab state comes back
+> from `browser_open` / `browser_eval`.
 
 ---
 
@@ -508,6 +515,30 @@ wait_until(condition="element_matches",         target={windowTitle:"Notepad", s
 
 ### 🖥️ Terminal
 
+`terminal` is a unified dispatcher over `run` / `read` / `send`.
+
+#### `terminal(action='run')`
+Sends a command, waits for it to complete, and reads the output in one call. How
+"complete" is decided is controlled by `until`:
+
+| Mode | Waits for | Best for |
+|---|---|---|
+| `quiet` (default) | output to fall silent for `quietMs` | short interactive commands |
+| `pattern` | a string/regex you expect in the output (optional `quietMs` settle fallback) | long commands with a known final marker |
+| `exit` | the command to actually **finish** — returns the real process exit code | when you need completion or the exit code |
+
+`mode:'exit'` appends a completion marker whose *printed* form differs from its
+*typed* form, so it never matches the echoed command line (even for multi-line
+input). Pass `shell` explicitly (`'bash'` / `'powershell'`); `cmd.exe` is not yet
+supported. Unsafe input (unterminated quote / here-doc / `$(…)` / trailing `\` or
+backtick) is rejected up front rather than hanging.
+
+```js
+terminal({ action:'run', windowTitle:'pwsh', input:'npm run build',
+           until:{ mode:'exit', shell:'powershell' } })
+// → completion: { reason:'exited', exitCode:0, elapsedMs:… }, output: real output only
+```
+
 #### `terminal(action='read')`
 Reads the current buffer of PowerShell / cmd / Windows Terminal via UIA `TextPattern`, falling back to OCR.
 
@@ -516,25 +547,42 @@ Reads the current buffer of PowerShell / cmd / Windows Terminal via UIA `TextPat
 ```
 
 #### `terminal(action='send')`
-Sends input to a terminal (SendKeys). `waitForPrompt` blocks until the next prompt reappears.
+Sends raw input to a terminal. `waitForPrompt` blocks until the next prompt reappears.
 
 ---
 
-### 📡 Async events
+### 📊 Office (Excel)
 
-#### `events_subscribe`
-Subscribe to window / focus / browser-navigation changes. Returns a `subscriptionId`.
+#### `excel`
+Author and run Excel VBA macros over COM late binding — the headline differentiator
+against formula-only assistants that cannot execute VBA.
 
-#### `events_poll`
-Drain the queue for a subscription (up to `maxEvents`). Long-poll style.
+- `action='run_vba'` writes a `Sub` into a managed Trusted Location
+  (`%LOCALAPPDATA%\desktop-touch-mcp\trusted-vba`), opens it, and `Application.Run`s
+  the macro. `macroName` must appear as `Sub <name>(…)` in `code` (else
+  `VbaMacroNotFound`).
+- `action='check_access_vbom'` is a read-only preflight returning
+  `{ trusted, lockedByPolicy, scope }` — run it first so the remediation hint
+  pre-empts an opaque COM failure inside `run_vba`.
+- One-time setup: `node scripts/enable-access-vbom.mjs` registers the Trusted
+  Location and the required HKCU trust keys; Excel must be restarted afterwards.
+  Excel COM is single-threaded, so calls serialise through the bridge's worker
+  thread.
 
-#### `events_unsubscribe`
-Drop a subscription.
+```js
+excel({ action:'check_access_vbom' })                       // → { trusted:true, scope:'hkcu' }
+excel({ action:'run_vba',
+        code:'Sub Demo()\n  Range("A1").Value = "Hello"\nEnd Sub' })
+```
 
-#### `events_list`
-List active subscriptions.
+---
 
-**Event kinds:** `window_appeared` / `window_disappeared` / `window_moved` / `focus_changed` / `browser_navigated`
+### 🩺 Diagnostics
+
+#### `server_status`
+Reports native-engine health and feature activation — whether the Rust UIA / image
+engine loaded, which fallbacks are active, and version / capability flags. Use it to
+confirm the native path is live (vs the PowerShell fallback) when latency looks off.
 
 ---
 
@@ -576,7 +624,10 @@ Also **ARIA-aware**: surfaces `role=switch` / `checkbox` / `radio` / `tab` / `me
 **Form-state verification (preferred over screenshot for button/toggle state):** Call this after form submission to check button, checkbox, and ARIA toggle states — structured JSON, no image tokens. For inputs, `text` reflects the empty-field hint text when set (takes priority over any typed value); to read the actual typed content use `browser_eval('document.querySelector(sel).value')`.
 
 #### `browser_fill`
-Fill a React/Vue/Svelte controlled input via CDP without breaking framework state. Uses native prototype setter + `InputEvent` dispatch (not `execCommand`). Obtain `selector` from `browser_overview` or `browser_locate` first. `actual` in the response reflects what the element's `value` property reads after fill — verify it matches. Does not work on `contenteditable` rich-text editors.
+Fill a React/Vue/Svelte controlled input via CDP without breaking framework state. Uses native prototype setter + `InputEvent` dispatch (not `execCommand`). Obtain `selector` from `browser_form` / `browser_overview` / `browser_locate` first. `actual` in the response reflects what the element's `value` property reads after fill — verify it matches. Does not work on `contenteditable` rich-text editors.
+
+#### `browser_form`
+Inspect every form field (`input` / `select` / `textarea` / `button`) inside a CSS-selector container and return each field's name, type, id, current value, hint text, disabled / readOnly state, and resolved label (via `for[id]` → ancestor `<label>` → `aria-labelledby` → `aria-label`). Call this *before* `browser_fill` to discover exact selectors and avoid targeting the wrong input (e.g. a global search bar). `type=hidden` fields are excluded unless `includeHidden:true`.
 
 #### `browser_eval(action:'appState')`
 One CDP call that scans the well-known places SPAs stash their hydration payloads:
@@ -719,53 +770,29 @@ scroll(action='smart')({target: '#footer-nav'})  # detects and compensates autom
 
 ---
 
-### 👁️ Reactive Perception Graph (v0.11)
+### 👁️ Auto-Perception — attention signal & guards
 
-Low-cost situational awareness for repeated desktop actions. Register a perception lens on a target window or browser tab, then pass `lensId` to action tools. The server verifies target identity, focus, readiness, modal obstruction, and click safety before the action, then attaches a compact `post.perception` envelope after the action — without forcing another `screenshot` or `desktop_state` round trip.
+Low-cost situational awareness for repeated desktop actions. This is an **always-on
+internal layer**, not a tool family: every `desktop_state` and `desktop_act`
+response carries an `attention` signal, and action tools auto-guard whenever you
+pass a `windowTitle` / `tabId`. The server verifies target identity, focus,
+readiness, modal obstruction, and click safety *before* the action, then attaches
+a compact `post.perception` envelope *after* it — without forcing another
+`screenshot` or `desktop_state` round trip.
 
-The unit of tracking is a `PerceptionLens`: a live state tracker for one task-relevant target. It is not a screenshot cache and not a raw event stream. It maintains only the structured state needed to decide whether the next action is still safe.
+The internal unit of tracking is a `PerceptionLens`: a live state tracker for one
+task-relevant target. It is not a screenshot cache and not a raw event stream — it
+maintains only the structured state needed to decide whether the next action is
+still safe.
 
-#### `perception_register`
+> **Retired tools:** the explicit `perception_register` / `perception_read` /
+> `perception_forget` / `perception_list` tools were privatized in the Phase 1–4
+> consolidation — manual lens registration is no longer needed. The registry, hot
+> target cache, and sensor loop are unchanged; they are now driven automatically.
+> The `perception://lens/{id}/{summary|guards|debug|events}` MCP resources remain
+> available behind `DESKTOP_TOUCH_PERCEPTION_RESOURCES=1` for inspection.
 
-Register a live perception lens on a target window or browser tab. Returns a `lensId`.
-
-```
-perception_register({
-  name: "editor",
-  target: { kind: "window", match: { titleIncludes: "Notepad" } },
-  guards: ["target.identityStable", "safe.keyboardTarget"],
-  guardPolicy: "block",   // "warn" | "block" (default: "block")
-  maxEnvelopeTokens: 120,
-})
-→ { lensId: "perc-1", seq: 1, digest: "..." }
-```
-
-The server resolves the target (foreground-preferred for duplicate window titles), populates structured fluents, and keeps them fresh through Win32/CDP/UIA sensors. Subsequent action tool calls with `lensId` will:
-1. **Guard check** — refresh relevant state and evaluate guards before the action. If `guardPolicy:"block"` and a guard fails, the action fails closed with `{ok:false, code:"GuardFailed", suggest:[...]}`.
-2. **Envelope** — attach `post.perception` to the success response with attention, guard states, changed fields, and the latest known target state.
-
-#### `perception_read`
-
-Force-refresh a lens and return its current perception envelope. Use when `post.perception.attention` is `dirty`, `stale`, `settling`, `guard_failed`, or `identity_changed`, or when you want fresh structured state without performing an action.
-
-```
-perception_read({ lensId: "perc-1" })
-→ PerceptionEnvelope
-```
-
-#### `perception_forget`
-
-Deregister a lens. When all lenses are deregistered the sensor loop stops automatically.
-
-```
-perception_forget({ lensId: "perc-1" }) → { ok: true }
-```
-
-#### `perception_list`
-
-List all active lenses with their binding, seq, and attention state.
-
-#### Fluents maintained per lens
+#### Fluents tracked per target
 
 | Fluent | What it tracks |
 |---|---|
@@ -816,41 +843,38 @@ List all active lenses with their binding, seq, and attention state.
 #### Usage example
 
 ```
-# Register once
-perception_register({name:"editor", target:{kind:"window", match:{titleIncludes:"Notepad"}}})
-→ {lensId:"perc-1"}
-
-# Pass lensId to any action tool. Guards + envelope are automatic.
-keyboard(action='type')({text:"hello", windowTitle:"Notepad", lensId:"perc-1"})
+# Auto guard: just pass windowTitle. Guards + envelope are automatic.
+keyboard(action='type')({text:"hello", windowTitle:"Notepad"})
 → post.perception: {attention:"ok", guards:{...}, latest:{target:{title, rect, foreground}}}
 
-# When the app restarts (different pid), identity guard fires:
-keyboard(action='type')({text:"x", lensId:"perc-1"})
-→ {ok:false, code:"GuardFailed", suggest:["Re-register lens for the new process instance"]}
+# When the app restarts (different pid), the identity guard fires closed:
+keyboard(action='type')({text:"x", windowTitle:"Notepad"})
+→ {ok:false, code:"GuardFailed", suggest:[...]}
 ```
 
-`lensId` is opt-in on: `keyboard(action='type')`, `keyboard(action='press')`, `mouse_click`, `mouse_drag`, `click_element`, `set_element_value`, `browser_click`, `browser_navigate`, `browser_eval`. Omitting `lensId` preserves existing behavior exactly.
+For advanced pinned-target workflows the `lensId` parameter is still opt-in on:
+`keyboard(action='type')`, `keyboard(action='press')`, `mouse_click`, `mouse_drag`,
+`click_element`, `browser_click`, `browser_navigate`, `browser_eval`, `desktop_act`.
+Omitting `lensId` uses the normal Auto-Perception path.
 
-**Limits:** max 16 active lenses (LRU eviction — see below). Sensor work is staged by cost: cheap Win32/CDP state is refreshed first; UIA focus, OCR, and screenshots remain escalation paths rather than baseline perception. `safe.clickCoordinates` validates window bounds, not pixel-level occlusion.
+**Limits:** max 16 active lenses (LRU eviction). Sensor work is staged by cost:
+cheap Win32/CDP state is refreshed first; UIA focus, OCR, and screenshots remain
+escalation paths rather than baseline perception. `safe.clickCoordinates` validates
+window bounds, not pixel-level occlusion.
 
-#### v0.13 — Auto Perception (v3 closure)
+#### Capabilities surfaced through Auto-Perception
 
-**Auto guard (v0.12+)**: Action tools guard automatically when `windowTitle`/`tabId` is passed — no `perception_register` needed. The `lensId` path remains for advanced pinned-lens workflows.
+**Auto guard**: Action tools guard automatically when `windowTitle` / `tabId` is passed — no manual registration needed. The `lensId` path remains for advanced pinned-target workflows.
 
-**Manual Lens LRU (v0.13)**: Lens eviction is now LRU (least-recently-used). Using a lens via `perception_read`, evaluatePreToolGuards, or buildEnvelopeFor promotes it to MRU. Idle lenses are evicted first. Max 16 unchanged.
+**SuggestedFix**: When a guard blocks with `unsafe_coordinates` / `identity_changed`, the response may carry a one-shot `suggestedFix.fixId` (expires in 15 s). Pass it back to `mouse_click`, `keyboard(action='type')`, `click_element`, or `browser_click` to approve the recovery; the server revalidates the stored target fingerprint (process pid + start-time for windows; a fresh guard for browser tabs) before executing.
 
-**SuggestedFix — all 4 tools (v0.13)**: `fixId` approval is now supported by `mouse_click`, `keyboard(action='type')`, `click_element`, and `browser_click`. The server revalidates the stored target fingerprint (process pid + start-time for windows; subsequent guard for browser tabs) before executing.
+**Target-identity timeline**: The server maintains a per-target semantic event timeline (event kinds such as `target_bound`, `action_succeeded`, `action_blocked`, `title_changed`, `rect_changed`, `foreground_changed`, `navigation`, `modal_appeared`, `identity_changed`, `target_closed`). Storage is a per-target ring (32) plus a global cap (256); sensor events are 200 ms leading-edge debounced. It surfaces via the opt-in `include` envelope (`your_last_action` / `events` / the `episodic` memory layer) and the `perception://lens/{id}/events` resource (flag `DESKTOP_TOUCH_PERCEPTION_RESOURCES=1`).
 
-**Target-Identity Timeline (v0.13)**: The server maintains a per-target semantic event timeline. 13 event kinds (`target_bound`, `action_attempted`, `action_succeeded`, `action_blocked`, `title_changed`, `rect_changed`, `foreground_changed`, `navigation`, `modal_appeared`, `modal_dismissed`, `identity_changed`, `target_closed`, `compacted`). Storage: per-target ring (32), global FIFO cap (256). Sensor events are 200ms leading-edge debounced; action/post events are not. Exposed via:
-- `get_history` → `recentTargetKeys` (3 keys, no event bodies)
-- `perception_read(lensId)` → `recentEvents` (up to 10 per target)
-- `perception://target/{targetKey}/timeline` + `perception://targets/recent` (flag: `DESKTOP_TOUCH_PERCEPTION_RESOURCES=1`)
+**Browser readiness policies**: `browser_click` passes with a warn-note when `readyState !== "complete"` but the selector is already in-viewport (policy: `selectorInViewport`). `browser_navigate` accepts `interactive` (policy: `navigationGate`). `browser_eval` remains strict.
 
-**Browser readiness policies (v0.13)**: `browser_click` passes with a warn-note when `readyState !== "complete"` but the selector is already in-viewport (policy: `selectorInViewport`). `browser_navigate` accepts `interactive` (policy: `navigationGate`). `browser_eval` remains strict.
+**mouse_drag endpoint guard**: Both start and end coordinates are guarded. Cross-window / desktop drags are blocked by default; opt in with `allowCrossWindowDrag:true`.
 
-**mouse_drag endpoint guard (v0.13)**: Both start and end coordinates are guarded. Cross-window / desktop drags blocked by default; opt in with `allowCrossWindowDrag:true`.
-
-**browser_eval structured mode (v0.13)**: Pass `withPerception:true` to receive `{ok, result, post}` JSON instead of raw text. Circular references, functions, and BigInt in eval results are safely serialized via WeakSet-based replacer.
+**browser_eval structured mode**: Pass `withPerception:true` to receive `{ok, result, post}` JSON instead of raw text. Circular references, functions, and BigInt in eval results are safely serialized via a WeakSet-based replacer.
 
 ---
 
