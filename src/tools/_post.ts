@@ -213,7 +213,7 @@ export function withPostState<T extends Record<string, unknown>>(
             // zero extra UIA cost. `_advisory.ts` owns the per-tool logic; this
             // wrapper stays generic. Additive root field `advisory` (sibling of
             // `hints`); absent when no better path applies.
-            const advisory = maybeAdvisory(toolName, args as Record<string, unknown>, post.focusedElement);
+            const advisory = maybeAdvisory(toolName, args as Record<string, unknown>, post.focusedElement, after.processName);
             if (advisory) obj.advisory = advisory;
             // If the handler injected a CDP-sourced rich block via _richForPost,
             // move it into post.rich and remove the temporary key.

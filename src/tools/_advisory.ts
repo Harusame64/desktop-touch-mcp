@@ -28,8 +28,30 @@ export interface AdvisoryHint {
   example: string;
 }
 
-/** UIA control types that represent an editable text input. */
+/** UIA control types that represent an editable text input. NOTE: ComboBox is
+ *  deliberately EXCLUDED — dogfood (ADR-022) showed Chromium exposes web text
+ *  inputs (e.g. Google search) as ComboBox, so admitting it would mis-fire on
+ *  browser content where browser_* / keyboard is the right path, not desktop_act. */
 const TEXT_INPUT_CONTROL_TYPES = new Set(["Edit", "Document"]);
+
+/** UIA automationId of a Chromium web-area root. dogfood (ADR-022) showed a
+ *  browser's focused element resolves to this Document with value=URL — a wrong
+ *  desktop_act nudge (web content uses browser_* / keyboard, not desktop_act). */
+const WEB_AREA_AUTOMATION_ID = "RootWebArea";
+
+/** Browser executables — when the focused window is one of these, the target is
+ *  web content (UIA-blind / RootWebArea / web ComboBox/Edit) where browser_* is
+ *  the right path, so the keyboard→desktop_act advisory is suppressed entirely
+ *  (belt-and-suspenders beyond the RootWebArea check; ADR-022 dogfood). */
+const BROWSER_PROCESS_NAMES = new Set([
+  "chrome", "msedge", "brave", "opera", "vivaldi", "chromium",
+]);
+
+function isBrowserProcess(processName: string): boolean {
+  // processName may carry a ".exe" suffix or different case depending on source.
+  const base = processName.toLowerCase().replace(/\.exe$/, "");
+  return BROWSER_PROCESS_NAMES.has(base);
+}
 
 /** Max length of the `text` echoed into the example before truncation. */
 const EXAMPLE_TEXT_MAX = 40;
@@ -50,13 +72,15 @@ export function getAdvisoryEmitCount(): number {
  * @param toolName  the wrapping tool name (e.g. "keyboard")
  * @param args      the tool call args (read-only; e.g. {action,windowTitle,text})
  * @param focusedElement  the snapshot `withPostState` already captured (may be null)
+ * @param processName  the focused window's process (for browser suppression)
  */
 export function maybeAdvisory(
   toolName: string,
   args: Record<string, unknown>,
   focusedElement: PostElementInfo | null,
+  processName: string,
 ): AdvisoryHint | null {
-  const hint = buildHint(toolName, args, focusedElement);
+  const hint = buildHint(toolName, args, focusedElement, processName);
   if (hint) advisoryEmitCount++;
   return hint;
 }
@@ -65,18 +89,26 @@ function buildHint(
   toolName: string,
   args: Record<string, unknown>,
   focusedElement: PostElementInfo | null,
+  processName: string,
 ): AdvisoryHint | null {
   // Round 1: keyboard(action='type') → desktop_act.
   if (toolName !== "keyboard" || args["action"] !== "type") return null;
+  // Browser suppression (ADR-022 dogfood): web content uses browser_* / keyboard,
+  // not desktop_act — never advise desktop_act when the focused window is a browser.
+  if (isBrowserProcess(processName)) return null;
   // Gate on the already-paid focused-element observation (built by
   // `_post.ts::snapshotFocusedElement`). UIA-blind targets and non-text controls
   // fail here (suppression is definitional, ADR-022 §5.3):
   //  - `type` is the UIA controlType (PostElementInfo.type)
   //  - `value !== undefined` ⇒ UIA exposed ValuePattern on it (set only when the
   //    focused element's UIA `value` is non-null)
+  //  - automationId !== RootWebArea ⇒ not an embedded web-area root (a Chromium
+  //    page root reports Document + value=URL; that is a wrong desktop_act nudge —
+  //    belt with the browser-process check above for Electron/embedded Chromium).
   if (!focusedElement) return null;
   if (!TEXT_INPUT_CONTROL_TYPES.has(focusedElement.type)) return null;
   if (focusedElement.value === undefined) return null;
+  if (focusedElement.automationId === WEB_AREA_AUTOMATION_ID) return null;
 
   const windowTitle = typeof args["windowTitle"] === "string" ? (args["windowTitle"] as string) : undefined;
   const text = typeof args["text"] === "string" ? (args["text"] as string) : undefined;
