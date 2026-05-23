@@ -312,6 +312,50 @@ export interface ConsolePasteOutcome {
   reason?: "clipboard_set_failed" | "console_paste_post_failed";
 }
 
+/** Max attempts to set+verify the clipboard before giving up (1 try + 2 retries). */
+export const CLIPBOARD_SET_MAX_ATTEMPTS = 3;
+
+/**
+ * Backoff (ms) before the retry that FOLLOWS failed attempt `attempt` (0-based):
+ * 120 ms after attempt 0, 240 ms after attempt 1, … Pure — unit-testable.
+ */
+export function clipboardSetBackoffMs(attempt: number): number {
+  return 120 * (attempt + 1);
+}
+
+/**
+ * Set the clipboard with bounded retry + backoff, returning whether any attempt
+ * succeeded and how many were made.
+ *
+ * The global clipboard is a single OS resource; when another process holds it
+ * open (a busy desktop, a clipboard manager, our own back-to-back PowerShell
+ * spawns) the set-and-verify misses on the first try — a transient that clears
+ * in well under a second. Retrying turns that recoverable race into a success
+ * instead of a hard send failure.
+ *
+ * This helper owns NEITHER the save NOR the restore: the caller captures the
+ * clipboard snapshot once and restores at most once, so the restore invariant
+ * (never leave the user's clipboard clobbered) is preserved by construction.
+ * `setFn` / `sleepFn` are injectable so the retry policy can be unit-tested with
+ * no real clipboard and no real timers.
+ */
+export async function setClipboardWithRetry(
+  text: string,
+  deps: {
+    setFn: (text: string) => Promise<boolean>;
+    sleepFn?: (ms: number) => Promise<void>;
+    maxAttempts?: number;
+  },
+): Promise<{ ok: boolean; attempts: number }> {
+  const maxAttempts = deps.maxAttempts ?? CLIPBOARD_SET_MAX_ATTEMPTS;
+  const sleepFn = deps.sleepFn ?? ((ms) => new Promise<void>((r) => setTimeout(r, ms)));
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (await deps.setFn(text)) return { ok: true, attempts: attempt + 1 };
+    if (attempt < maxAttempts - 1) await sleepFn(clipboardSetBackoffMs(attempt));
+  }
+  return { ok: false, attempts: maxAttempts };
+}
+
 /**
  * Paste `text` into a conhost (ConsoleWindowClass) window atomically WITHOUT
  * stealing foreground, via clipboard + the console Paste command. Multiline-safe.
@@ -337,10 +381,14 @@ export async function pasteIntoConsoleNoFocus(
   const crlf = text.replace(/\r?\n/g, "\r\n");
 
   const saved = await getClipboardB64(); // null = read failed; "" = empty clipboard
-  if (!(await setClipboardVerified(crlf))) {
-    // Set-Clipboard may have landed before the read-back mismatch (another app
-    // raced, or newline tolerance missed) — restore so we never leave the user's
-    // clipboard clobbered on a failed paste (Opus #389 round 1 P2-1).
+  // Retry the set-and-verify a few times: a momentary clipboard lock by another
+  // process makes the first try miss (dogfood #386 P3 follow-up — surfaced as a
+  // one-off clipboard_set_failed during a busy window-launch storm). `saved` is
+  // captured ONCE above and restoreClipboard runs at most once (here on total
+  // failure, or after the paste on success), so a failed set never leaves the
+  // user's clipboard clobbered (Opus #389 round 1 P2-1 invariant preserved).
+  const setResult = await setClipboardWithRetry(crlf, { setFn: setClipboardVerified });
+  if (!setResult.ok) {
     await restoreClipboard(saved);
     return { ok: false, reason: "clipboard_set_failed" };
   }
