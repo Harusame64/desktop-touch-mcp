@@ -92,14 +92,16 @@ function snapshotFocus(): { title: string | null; hwnd: string | null; processNa
  */
 async function snapshotFocusedElement(): Promise<PostElementInfo | null> {
   try {
-    const { focused } = await getFocusedAndPointInfo(0, 0, false, 800);
-    // NOTE (#352): `getFocusedAndPointInfo`'s `toInfo` already returns null for
-    // name-empty elements (`uia-bridge.ts` `if (!obj || !obj.name) return null`),
-    // so an unnamed UIA text input never reaches here. The #352 advisory therefore
-    // fires only for NAMED text inputs in Round 1; widening to unlabeled inputs is
-    // an upstream change to that guard (shared with desktop_state / mouse-verify),
-    // tracked in remaining-work.md (Opus PR #395 R2 P2).
-    if (!focused?.name) return null;
+    // #352 follow-up (ADR-022 §5.5): pass includeUnnamed=true so an UNNAMED UIA
+    // text input (Edit/Document with ValuePattern but an empty Name) survives the
+    // bridge's name-empty guard and can reach the success-path advisory gate. This
+    // opt-in is scoped to the post/advisory path only — `desktop_state` /
+    // `_mouse-verify` / perception do NOT pass the flag, so they stay byte-equal.
+    const { focused } = await getFocusedAndPointInfo(0, 0, false, 800, true);
+    // Drop only when there is no focused element at all (the bridge already dropped
+    // degenerate no-name-no-controlType rows under includeUnnamed). A name-empty
+    // editable element flows through with name:"" so the #352 advisory can fire.
+    if (!focused) return null;
     const info: PostElementInfo = { name: focused.name, type: focused.controlType };
     if (focused.automationId) info.automationId = focused.automationId;
     if (focused.value != null) info.value = focused.value;

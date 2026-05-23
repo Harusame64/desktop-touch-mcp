@@ -410,6 +410,25 @@ export interface UiaFocusInfo {
 }
 
 /**
+ * Should a focused / at-point row be dropped? (#352 follow-up, ADR-022 §5.5)
+ *
+ * A `name`-empty row is dropped by DEFAULT — this is the historical behavior and
+ * keeps `_mouse-verify` / `desktop_state` / perception byte-equal (none of them
+ * pass `includeUnnamed`). The advisory/post path (`_post.ts snapshotFocusedElement`)
+ * opts in with `includeUnnamed:true` so an UNNAMED text input (many real
+ * Edit/Document fields expose ValuePattern with an empty Name) can reach the #352
+ * advisory gate. Even when opted in, a degenerate row (no name AND no controlType)
+ * is still dropped. Single predicate so the native + PS guards cannot drift.
+ */
+function dropFocusRow(
+  name: string | undefined,
+  controlType: string | undefined,
+  includeUnnamed: boolean
+): boolean {
+  return includeUnnamed ? (!name && !controlType) : !name;
+}
+
+/**
  * Run a single PowerShell script that returns both:
  *   focused — the element that currently has keyboard focus (FocusedElement)
  *   atPoint — the element under screen coordinates (x, y)  [skipped when includePoint=false]
@@ -419,12 +438,16 @@ export interface UiaFocusInfo {
  *
  * Timeout is intentionally short (default 2 s) — these are non-essential fields;
  * null is acceptable when UIA is unavailable or slow.
+ *
+ * `includeUnnamed` (default false): see {@link dropFocusRow}. Only the advisory/post
+ * path opts in; all other callers keep the name-empty drop (byte-equal).
  */
 export async function getFocusedAndPointInfo(
   x = 0,
   y = 0,
   includePoint = true,
-  timeoutMs = 2000
+  timeoutMs = 2000,
+  includeUnnamed = false
 ): Promise<{ focused: UiaFocusInfo | null; atPoint: UiaFocusInfo | null }> {
   // ★ Rust native path
   if (nativeUia?.uiaGetFocusedAndPoint) {
@@ -436,7 +459,7 @@ export async function getFocusedAndPointInfo(
         cursorY: safeY,
       });
       const toInfo = (obj: { name: string; controlType: string; automationId?: string; value?: string } | null | undefined): UiaFocusInfo | null => {
-        if (!obj || !obj.name) return null;
+        if (!obj || dropFocusRow(obj.name, obj.controlType, includeUnnamed)) return null;
         const info: UiaFocusInfo = { name: obj.name, controlType: obj.controlType ?? "" };
         if (obj.automationId) info.automationId = obj.automationId;
         if (obj.value != null) info.value = obj.value;
@@ -505,8 +528,8 @@ $result | ConvertTo-Json -Compress
       atPoint?: Record<string, string | undefined> | null;
     };
     const toInfo = (obj: Record<string, string | undefined> | null | undefined): UiaFocusInfo | null => {
-      if (!obj || !obj.name) return null;
-      const info: UiaFocusInfo = { name: obj.name, controlType: obj.controlType ?? "" };
+      if (!obj || dropFocusRow(obj.name, obj.controlType, includeUnnamed)) return null;
+      const info: UiaFocusInfo = { name: obj.name ?? "", controlType: obj.controlType ?? "" };
       if (obj.automationId) info.automationId = obj.automationId;
       if (obj.value != null) info.value = obj.value;
       return info;

@@ -196,6 +196,30 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     expect((parsed.post as Record<string, unknown>).advisory).toBeUndefined();
   });
 
+  it("G4-survival (#352 follow-up): an UNNAMED Edit reaches post.focusedElement and fires advisory", async () => {
+    // The bridge is mocked, so this pins the _post.ts G4 belt relax specifically:
+    // a name-empty editable element (name:"") must survive snapshotFocusedElement
+    // (was dropped by `if (!focused?.name) return null`) into post.focusedElement
+    // with name:"", AND the name-agnostic advisory gate then fires.
+    vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce(
+      { focused: { name: "", controlType: "Edit", value: "" } } as never,
+    );
+    const parsed = parse(
+      await withPostState("keyboard", async () => ok({ ok: true, method: "background" }))(
+        { action: "type", windowTitle: "App", text: "hi" },
+      ),
+    );
+    const post = parsed.post as Record<string, unknown>;
+    const fe = post.focusedElement as Record<string, unknown> | null;
+    expect(fe).not.toBeNull();
+    expect(fe!.name).toBe(""); // survived G4 relax with empty name (was → null before)
+    expect(fe!.type).toBe("Edit");
+    expect(fe!.value).toBe("");
+    const advisory = parsed.advisory as Record<string, unknown> | undefined;
+    expect(advisory).toBeDefined();
+    expect(advisory!.preferredPath).toBe("desktop_act");
+  });
+
   it("does NOT set advisory when the focused element is not a text input", async () => {
     vi.mocked(getFocusedAndPointInfo).mockResolvedValueOnce({ focused: { name: "Canvas", controlType: "Pane" } } as never);
     const parsed = parse(
