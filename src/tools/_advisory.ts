@@ -68,10 +68,12 @@ function buildHint(
 ): AdvisoryHint | null {
   // Round 1: keyboard(action='type') → desktop_act.
   if (toolName !== "keyboard" || args["action"] !== "type") return null;
-  // Gate on the already-paid focused-element observation. UIA-blind targets and
-  // non-text controls fail here (suppression is definitional, ADR-022 §5.3):
-  //  - `type` is the UIA controlType (PostElementInfo.type, _post.ts:96)
-  //  - `value !== undefined` ⇒ UIA exposed ValuePattern on it (_post.ts:98)
+  // Gate on the already-paid focused-element observation (built by
+  // `_post.ts::snapshotFocusedElement`). UIA-blind targets and non-text controls
+  // fail here (suppression is definitional, ADR-022 §5.3):
+  //  - `type` is the UIA controlType (PostElementInfo.type)
+  //  - `value !== undefined` ⇒ UIA exposed ValuePattern on it (set only when the
+  //    focused element's UIA `value` is non-null)
   if (!focusedElement) return null;
   if (!TEXT_INPUT_CONTROL_TYPES.has(focusedElement.type)) return null;
   if (focusedElement.value === undefined) return null;
