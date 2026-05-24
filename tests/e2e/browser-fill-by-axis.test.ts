@@ -16,6 +16,7 @@ import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chro
 import { sleep } from "./helpers/wait.js";
 import { evaluateInTab, disconnectAll } from "../../src/engine/cdp-bridge.js";
 import { browserFillInputHandler } from "../../src/tools/browser.js";
+import { buildFillActJs } from "../../src/tools/browser-resolver.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_PATH = join(__dirname, "fixtures", "resolver-gsc-like.html");
@@ -110,5 +111,38 @@ describe.skipIf(!CHROME_AVAILABLE)("browser_fill by-axis — stops (headless)", 
     const r = await fill({ by: "ariaLabel", pattern: "Accept terms", value: "x" });
     expect(r.ok, JSON.stringify(r)).toBe(false);
     expect(r.code).toBe("BrowserNoActionableTarget");
+  });
+});
+
+describe.skipIf(!CHROME_AVAILABLE)("browser_fill by-axis — identity gate reject path (Codex P1)", () => {
+  // Drive the act eval directly with a STALE `expect` to prove the identity gate
+  // fires against a real DOM and never writes (the handler runs the two evals
+  // back-to-back, so a real mutation between them cannot be staged end-to-end).
+  it("rejects a stale pool-count expectation (identity_changed/candidate_count, no write)", async () => {
+    await evaluateInTab("document.querySelector('#email-input').value = 'keep'", null, TEST_PORT);
+    const js = buildFillActJs(
+      { by: "ariaLabel", pattern: "Email address", caseSensitive: false }, 0, 0, "MUST-NOT-WRITE",
+      { name: "Email address", role: null, ariaLabel: "Email address", tag: "input", total: 999 },
+    );
+    const r = await evaluateInTab(js, null, TEST_PORT) as { ok: boolean; error?: string; detail?: string };
+    expect(r.ok, JSON.stringify(r)).toBe(false);
+    expect(r.error).toBe("identity_changed");
+    expect(r.detail).toBe("candidate_count");
+    const domVal = await evaluateInTab("document.querySelector('#email-input').value", null, TEST_PORT);
+    expect(domVal).toBe("keep"); // gate prevented the write
+  });
+
+  it("rejects a signature mismatch (identity_changed/signature, no write)", async () => {
+    await evaluateInTab("document.querySelector('#email-input').value = 'keep'", null, TEST_PORT);
+    const js = buildFillActJs(
+      { by: "ariaLabel", pattern: "Email address", caseSensitive: false }, 0, 0, "MUST-NOT-WRITE",
+      { name: "WRONG NAME", role: null, ariaLabel: "Email address", tag: "input", total: 1 },
+    );
+    const r = await evaluateInTab(js, null, TEST_PORT) as { ok: boolean; error?: string; detail?: string };
+    expect(r.ok, JSON.stringify(r)).toBe(false);
+    expect(r.error).toBe("identity_changed");
+    expect(r.detail).toBe("signature");
+    const domVal = await evaluateInTab("document.querySelector('#email-input').value", null, TEST_PORT);
+    expect(domVal).toBe("keep"); // gate prevented the write
   });
 });
