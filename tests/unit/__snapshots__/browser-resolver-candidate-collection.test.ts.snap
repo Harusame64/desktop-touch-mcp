@@ -402,7 +402,11 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
     const cs2 = window.getComputedStyle(el);
     const r = el.getBoundingClientRect();
     const vis = cs2.display !== 'none' && cs2.visibility !== 'hidden' && cs2.opacity !== '0' && r.width > 0 && r.height > 0;
-    const enabled = !el.disabled && el.getAttribute('aria-disabled') !== 'true';
+    // :disabled is ancestor-aware — a control inside <fieldset disabled> has
+    // el.disabled === false but is functionally disabled (Codex Round 2 P2).
+    let disabled;
+    try { disabled = el.matches(':disabled'); } catch (e) { disabled = !!el.disabled; }
+    const enabled = !disabled && el.getAttribute('aria-disabled') !== 'true';
     let receivesEvents = false;
     const cx = r.left + r.width / 2;
     const cy = r.top + r.height / 2;

@@ -328,7 +328,11 @@ export function buildActionCandidateFactsJs(args: ActionFactsArgs): string {
     const cs2 = window.getComputedStyle(el);
     const r = el.getBoundingClientRect();
     const vis = cs2.display !== 'none' && cs2.visibility !== 'hidden' && cs2.opacity !== '0' && r.width > 0 && r.height > 0;
-    const enabled = !el.disabled && el.getAttribute('aria-disabled') !== 'true';
+    // :disabled is ancestor-aware — a control inside <fieldset disabled> has
+    // el.disabled === false but is functionally disabled (Codex Round 2 P2).
+    let disabled;
+    try { disabled = el.matches(':disabled'); } catch (e) { disabled = !!el.disabled; }
+    const enabled = !disabled && el.getAttribute('aria-disabled') !== 'true';
     let receivesEvents = false;
     const cx = r.left + r.width / 2;
     const cy = r.top + r.height / 2;
@@ -474,7 +478,7 @@ export interface ClickableNode {
   cursorPointer: boolean;
   /** display/visibility/opacity not hiding it AND size > 0 */
   visible: boolean;
-  /** not `disabled` and `aria-disabled !== "true"` */
+  /** not `:disabled` (ancestor-aware — includes `<fieldset disabled>` descendants) and `aria-disabled !== "true"` */
   enabled: boolean;
   /** `document.elementFromPoint(center)` hit is this node or a descendant (not occluded) */
   receivesEvents: boolean;
@@ -727,7 +731,7 @@ export function decideActionTarget(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// resolveActionTarget — the impure wrapper (gather eval → pure decide).
+// resolveBrowserActionTarget — the impure wrapper (gather eval → pure decide).
 //
 // browser_click({by}) / browser_fill({by}) call this. It runs the fact-gather
 // IIFE in the tab (the ONLY DOM access), then hands the facts to the pure

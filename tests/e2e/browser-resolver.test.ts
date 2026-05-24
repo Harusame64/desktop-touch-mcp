@@ -110,6 +110,18 @@ describe.skipIf(!CHROME_AVAILABLE)("resolveBrowserActionTarget — ambiguity & s
     const r = await resolve({ by: "text", pattern: "Covered Action", action: "click" });
     expect(r.kind, JSON.stringify(r)).toBe("noActionable");
   });
+
+  it("button disabled via an ancestor <fieldset disabled> → noActionable (Codex R2 P2)", async () => {
+    // el.disabled is false on the button itself; only :disabled (ancestor-aware)
+    // catches the inherited disabled state. Must not auto-resolve.
+    const r = await resolve({ by: "text", pattern: "Fieldset Action", action: "click" });
+    expect(r.kind, JSON.stringify(r)).toBe("noActionable");
+  });
+
+  it("fill path also rejects an inherited-disabled control", async () => {
+    const r = await resolve({ by: "text", pattern: "Fieldset Action", action: "fill" });
+    expect(r.kind, JSON.stringify(r)).toBe("noActionable");
+  });
 });
 
 describe.skipIf(!CHROME_AVAILABLE)("resolveBrowserActionTarget — role filter (plan §S4)", () => {

@@ -1,0 +1,16 @@
+fix(browser): ADR-023 PR2 Round 2 review findings apply
+
+Codex Round 2 P2 (inherited disabled state): the gatherer now computes a control
+enabled via el.matches(':disabled') instead of el.disabled, so a control inside
+<fieldset disabled> (own .disabled === false but functionally disabled) is
+correctly non-actionable and never auto-resolves. Falls back to el.disabled if
+:disabled is unsupported. ClickableNode.enabled doc updated to note the
+ancestor-aware semantics. New e2e: a <fieldset disabled> button is noActionable
+for both click and fill paths.
+
+Opus delta P3: fix the section-banner comment to the renamed
+resolveBrowserActionTarget.
+
+Round 2: Codex P2=1 (inherited disabled), Opus delta P1=0 P2=0 P3=1 (banner).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

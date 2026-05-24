@@ -47,6 +47,12 @@
       <div class="overlay"></div>
     </div>
 
+    <!-- Inherited-disabled: button is :disabled via the fieldset, though its own
+         .disabled property is false → must be non-actionable. -->
+    <fieldset disabled>
+      <button id="fieldset-btn">Fieldset Action</button>
+    </fieldset>
+
     <!-- Fill target: an input identified by aria-label. -->
     <input id="email-input" type="text" aria-label="Email address" />
   </main>
