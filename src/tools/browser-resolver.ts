@@ -1005,3 +1005,291 @@ export async function resolveBrowserActionTarget(args: ResolveActionArgs): Promi
   }
   return decision;
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// ADR-023 Phase 2 (modal detection) — PR-2a observe route.
+// Plan: desktop-touch-mcp-internal:docs/adr-023-phase-2-modal-plan.md §2.1-2.4.
+//
+// Same gather/decide split as Phase 1 (§2.bis): a self-contained injected-JS
+// gatherer (`buildPageLevelModalFactsJs`) collects page-level structural modal
+// signals (NO DOM access in TS), and a pure `detectModal(facts)` classifies them
+// (node-unit testable). Signals are structural (ARIA / <dialog> / inert /
+// scroll-lock / geometry / focus) — never class-name heuristics (plan §5.1).
+// PR-2b adds the by-axis/selector preflight (occluder linkage, blockerDialogIndex
+// matching); PR-2a wires only the `browser_overview` observe section.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** One dialog/overlay candidate's structural modal signals (gathered by injected JS). */
+export interface DialogFacts {
+  /** explicit `role` attribute, lowercased; null when absent */
+  role: string | null;
+  /** lowercased tagName */
+  tag: string;
+  /** `aria-modal="true"` */
+  ariaModal: boolean;
+  /** native `<dialog>` in MODAL state (open && `:modal` = showModal, not `.show()`) */
+  nativeDialogOpen: boolean;
+  /** accessible name (aria-label / aria-labelledby / inner heading); capped to 80 */
+  name: string;
+  /** display/visibility/opacity not hiding it AND size > 0 */
+  visible: boolean;
+  /** viewport rect (CSS px), rounded */
+  rect: RectXYWH;
+  /** (rect ∩ viewport) / viewport area, 0-1 */
+  viewportCoverage: number;
+  /** has a CSS transform AND is fully outside the viewport (parked/animating drawer) */
+  offscreenTransform: boolean;
+  /** computed z-index, numeric (auto → 0) */
+  zIndex: number;
+  /** self/nearest-ancestor landmark role (navigation|complementary|main|...); null when none */
+  landmarkRole: string | null;
+  /** a viewport-covering fixed/absolute backdrop layer is associated, OR native `:modal` */
+  hasBackdrop: boolean;
+  /** a body-level sibling subtree (not containing this dialog) is `inert` / `aria-hidden` */
+  siblingsInert: boolean;
+}
+
+/** Page-level modal signals (gathered once per page by `buildPageLevelModalFactsJs`). */
+export interface ModalFacts {
+  viewport: { innerWidth: number; innerHeight: number };
+  /** `overflow`/`overflowY` of html or body is hidden/clip (modal scroll-lock) */
+  bodyScrollLock: boolean;
+  /** focused element + whether it sits inside any dialog candidate (focus-trap approximation) */
+  activeElement: { tag: string; role: string | null; inDialogCandidate: boolean } | null;
+  /** dialog/overlay candidates (small set: [role=dialog|alertdialog], [aria-modal], <dialog>) */
+  dialogCandidates: DialogFacts[];
+}
+
+/** `detectModal` verdict — observe field (`{isModal, blocker?, signals}`) + internal preflight handle. */
+export interface ModalVerdict {
+  isModal: boolean;
+  /** present only when isModal — native `BlockingElementInfo`-aligned shape (public) */
+  blocker?: {
+    /** dialog accessible name; "modal" when empty (always non-empty, native parity) */
+    name: string;
+    /** 'dialog' | 'alertdialog' (concrete for browser; native is often 'unknown') */
+    role: string;
+  };
+  /**
+   * INTERNAL (not serialized to the public observe section): index into
+   * `ModalFacts.dialogCandidates` of the chosen blocker. PR-2b's by-axis preflight
+   * matches `occludedTopByDialogIndex === blockerDialogIndex` (index identity beats
+   * name/role when several / same-named dialogs exist — Codex P1-1).
+   */
+  blockerDialogIndex?: number;
+  /** why — machine-readable, for testability + threshold tuning (plan §2.3) */
+  signals: {
+    ariaModal: boolean;
+    alertdialog: boolean;
+    nativeDialogOpen: boolean;
+    backdrop: boolean;
+    scrollLock: boolean;
+    siblingsInert: boolean;
+    focusInside: boolean;
+    viewportCoverage: number;
+    /** drawer-exclusion suppressed a candidate from being modal (AC-7 evidence) */
+    drawerExcluded: boolean;
+  };
+}
+
+/**
+ * Minimum viewport coverage for the no-strong-signal CSS-modal rescue (rule 4).
+ * Tiebreaker/gate only — NOT a counted auxiliary signal (Round 2 P2-R2-2: backdrop
+ * + high coverage alone is a cookie-wall / loading-splash, not a modal). Calibrated
+ * against the fixture corpus then frozen (OQ-P2-c).
+ */
+export const MODAL_COVERAGE_THRESHOLD = 0.5;
+/** K — minimum modal-BEHAVIOR signals (scroll-lock / inert / focus-inside) for rule 4 rescue. */
+export const MODAL_RESCUE_MIN_BEHAVIOR_SIGNALS = 1;
+
+/**
+ * Self-contained injected-JS IIFE (no outer-helper dependency — embeds verbatim
+ * into both `browser_overview`'s eval and, in PR-2b, the resolver gather; plan
+ * §2.2 P1-R2-1). Returns `ModalFacts`. Structural signals only.
+ */
+export function buildPageLevelModalFactsJs(): string {
+  return `(function() {
+  const VW = window.innerWidth, VH = window.innerHeight;
+  const vpArea = Math.max(1, VW * VH);
+  function num(z) { const n = parseInt(z, 10); return isNaN(n) ? 0 : n; }
+  function rectOf(el) { const r = el.getBoundingClientRect(); return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) }; }
+  function coverage(r) {
+    const ix = Math.max(0, Math.min(r.x + r.w, VW) - Math.max(r.x, 0));
+    const iy = Math.max(0, Math.min(r.y + r.h, VH) - Math.max(r.y, 0));
+    return Math.round((ix * iy) / vpArea * 100) / 100;
+  }
+  function nameOf(el) {
+    let n = (el.getAttribute('aria-label') || '').trim();
+    if (!n) {
+      const lb = el.getAttribute('aria-labelledby');
+      if (lb) { const ref = document.getElementById(lb.split(/\\s+/)[0]); if (ref) n = (ref.textContent || '').trim(); }
+    }
+    if (!n) { const h = el.querySelector('h1,h2,h3,h4,h5,h6,[role="heading"]'); if (h) n = (h.textContent || '').trim(); }
+    return n.replace(/\\s+/g, ' ').slice(0, 80);
+  }
+  const LANDMARK_RE = /^(navigation|complementary|main|banner|contentinfo|search|form|region)$/;
+  function landmarkOf(el) {
+    let node = el, guard = 0;
+    while (node && node !== document.body && guard < 6) {
+      const rr = ((node.getAttribute && node.getAttribute('role')) || '').toLowerCase();
+      if (LANDMARK_RE.test(rr)) return rr;
+      const tg = node.tagName ? node.tagName.toLowerCase() : '';
+      if (tg === 'nav') return 'navigation';
+      if (tg === 'aside') return 'complementary';
+      node = node.parentElement; guard++;
+    }
+    return null;
+  }
+  function isBackdropLike(el) {
+    if (!el || el.nodeType !== 1) return false;
+    const cs = window.getComputedStyle(el);
+    if (cs.position !== 'fixed' && cs.position !== 'absolute') return false;
+    if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+    const r = el.getBoundingClientRect();
+    return (r.width * r.height) >= vpArea * 0.8;
+  }
+  function hasBackdropFor(el) {
+    try { if (el.matches(':modal')) return true; } catch (e) {}
+    // A viewport-covering fixed/absolute sibling layer (of the dialog or an ancestor
+    // up to 4 levels) that does NOT contain the dialog = a backdrop/scrim.
+    let node = el, guard = 0;
+    while (node && node !== document.body && guard < 4) {
+      const parent = node.parentElement;
+      if (parent) {
+        for (const s of parent.children) {
+          if (s === node || s.contains(el)) continue;
+          if (isBackdropLike(s)) return true;
+        }
+      }
+      node = parent; guard++;
+    }
+    return false;
+  }
+  function siblingsInertFor(el) {
+    for (const c of document.body.children) {
+      if (c.contains(el)) continue;
+      if (c.hasAttribute('inert') || c.getAttribute('aria-hidden') === 'true') {
+        const r = c.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) return true;
+      }
+    }
+    return false;
+  }
+  const ae = document.activeElement;
+  let activeInDialog = false;
+  const cands = [];
+  const nodes = document.querySelectorAll('[role="dialog"],[role="alertdialog"],[aria-modal="true"],dialog');
+  for (const el of nodes) {
+    const cs = window.getComputedStyle(el);
+    const br = el.getBoundingClientRect();
+    const rect = rectOf(el);
+    const visible = cs.display !== 'none' && cs.visibility !== 'hidden' && cs.opacity !== '0' && br.width > 0 && br.height > 0;
+    const tag = el.tagName.toLowerCase();
+    let nativeModal = false;
+    if (tag === 'dialog' && el.open === true) { try { nativeModal = el.matches(':modal'); } catch (e) { nativeModal = true; } }
+    const tr = cs.transform && cs.transform !== 'none';
+    const offscreen = !!tr && (rect.x + rect.w <= 0 || rect.x >= VW || rect.y + rect.h <= 0 || rect.y >= VH);
+    if (ae && el.contains(ae)) activeInDialog = true;
+    cands.push({
+      role: (el.getAttribute('role') || '').toLowerCase() || null,
+      tag: tag,
+      ariaModal: el.getAttribute('aria-modal') === 'true',
+      nativeDialogOpen: nativeModal,
+      name: nameOf(el),
+      visible: visible,
+      rect: rect,
+      viewportCoverage: coverage(rect),
+      offscreenTransform: offscreen,
+      zIndex: num(cs.zIndex),
+      landmarkRole: landmarkOf(el),
+      hasBackdrop: hasBackdropFor(el),
+      siblingsInert: siblingsInertFor(el),
+    });
+  }
+  const htmlCs = window.getComputedStyle(document.documentElement);
+  const bodyCs = window.getComputedStyle(document.body);
+  function lock(v) { return v === 'hidden' || v === 'clip'; }
+  const bodyScrollLock = lock(bodyCs.overflow) || lock(bodyCs.overflowY) || lock(htmlCs.overflow) || lock(htmlCs.overflowY);
+  return {
+    viewport: { innerWidth: VW, innerHeight: VH },
+    bodyScrollLock: bodyScrollLock,
+    activeElement: ae ? { tag: ae.tagName ? ae.tagName.toLowerCase() : '', role: ((ae.getAttribute && ae.getAttribute('role')) || '').toLowerCase() || null, inDialogCandidate: activeInDialog } : null,
+    dialogCandidates: cands,
+  };
+})()`;
+}
+
+/**
+ * Pure decision: classify page-level `ModalFacts` into a `ModalVerdict`. No DOM.
+ * Evaluation order (plan §2.3, Round 2 P2-R2-3/P2-R2-2):
+ *  1. keep visible candidates with non-zero rect.
+ *  2. STRONG signal (aria-modal / alertdialog / native modal dialog) → modal,
+ *     even for a drawer (an aria-modal drawer IS functionally modal).
+ *  3. no strong → positive drawer evidence (navigation/complementary landmark or
+ *     offscreen transform) is excluded (drawerExcluded), NOT modal.
+ *  4. no strong, non-drawer → backdrop-mandatory rescue: backdrop AND ≥K behavior
+ *     signals (scroll-lock / inert / focus-inside) AND coverage ≥ threshold.
+ *  5. else not modal (fail-safe).
+ * blocker = topmost (z-index → coverage); role defaults to "dialog".
+ */
+export function detectModal(facts: ModalFacts): ModalVerdict {
+  const cands = facts.dialogCandidates.filter((c) => c.visible && c.rect.w > 0 && c.rect.h > 0);
+  const focusInside = facts.activeElement?.inDialogCandidate ?? false;
+  const scrollLock = facts.bodyScrollLock;
+
+  const isStrong = (c: DialogFacts): boolean => c.ariaModal || c.role === "alertdialog" || c.nativeDialogOpen;
+  const isDrawer = (c: DialogFacts): boolean =>
+    c.landmarkRole === "navigation" || c.landmarkRole === "complementary" || c.offscreenTransform;
+  const behaviorCount = (c: DialogFacts): number =>
+    (scrollLock ? 1 : 0) + (c.siblingsInert ? 1 : 0) + (focusInside ? 1 : 0);
+
+  const topmost = (list: DialogFacts[]): DialogFacts | null =>
+    list.reduce<DialogFacts | null>((best, c) => {
+      if (!best) return c;
+      if (c.zIndex !== best.zIndex) return c.zIndex > best.zIndex ? c : best;
+      return c.viewportCoverage > best.viewportCoverage ? c : best;
+    }, null);
+
+  const idxOf = (c: DialogFacts): number => facts.dialogCandidates.indexOf(c);
+
+  const verdict = (blocker: DialogFacts | null, drawerExcluded: boolean): ModalVerdict => {
+    const s = blocker ?? topmost(cands);
+    const base = {
+      ariaModal: s?.ariaModal ?? false,
+      alertdialog: s?.role === "alertdialog",
+      nativeDialogOpen: s?.nativeDialogOpen ?? false,
+      backdrop: s?.hasBackdrop ?? false,
+      scrollLock,
+      siblingsInert: s?.siblingsInert ?? false,
+      focusInside,
+      viewportCoverage: s?.viewportCoverage ?? 0,
+      drawerExcluded,
+    };
+    if (blocker) {
+      return {
+        isModal: true,
+        blocker: { name: blocker.name || "modal", role: blocker.role || "dialog" },
+        blockerDialogIndex: idxOf(blocker),
+        signals: { ...base, drawerExcluded: false },
+      };
+    }
+    return { isModal: false, signals: base };
+  };
+
+  // Rule 2: strong signal wins (drawer exclusion does not override).
+  const strong = cands.filter(isStrong);
+  if (strong.length > 0) return verdict(topmost(strong), false);
+
+  // Rules 3+4: no strong signal — drawer-exclude, then backdrop-mandatory rescue.
+  const rescue = cands.filter(
+    (c) =>
+      !isDrawer(c) &&
+      c.hasBackdrop &&
+      behaviorCount(c) >= MODAL_RESCUE_MIN_BEHAVIOR_SIGNALS &&
+      c.viewportCoverage >= MODAL_COVERAGE_THRESHOLD,
+  );
+  if (rescue.length > 0) return verdict(topmost(rescue), false);
+
+  // Rule 5: not modal (fail-safe). drawerExcluded records that we declined a drawer.
+  return verdict(null, cands.some(isDrawer));
+}

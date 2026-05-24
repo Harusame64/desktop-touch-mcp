@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>ADR-023 Phase 2 modal fixture</title>
+  <style>
+    body { margin: 0; font-family: sans-serif; }
+    main { padding: 24px; }
+    /* A role=dialog that is actually a NON-modal navigation drawer (side panel):
+       a navigation landmark, no aria-modal, no backdrop. detectModal must NOT
+       call this modal (dogfood 課題③). */
+    nav#drawer {
+      position: fixed; top: 0; left: 0; width: 280px; height: 100%;
+      background: #eef; z-index: 30; padding: 16px; box-sizing: border-box;
+    }
+    /* A real native modal dialog (opened via showModal → :modal + ::backdrop). */
+    dialog#dlg { width: 520px; height: 360px; padding: 24px; }
+    dialog#dlg::backdrop { background: rgba(0, 0, 0, 0.5); }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>ADR-023 Phase 2 modal fixture</h1>
+    <button id="open">Open dialog</button>
+    <p>Body content for layout.</p>
+  </main>
+
+  <!-- role=dialog BUT a <nav> navigation landmark with no aria-modal/backdrop. -->
+  <nav id="drawer" role="dialog" aria-label="Main navigation">
+    <a href="#home">Home</a>
+    <a href="#settings">Settings</a>
+  </nav>
+
+  <!-- native dialog; closed by default (display:none), opened modally on click. -->
+  <dialog id="dlg" aria-label="Confirm changes">
+    <h2>Confirm changes</h2>
+    <button id="ok">OK</button>
+  </dialog>
+
+  <script>
+    document.getElementById('open').addEventListener('click', function () {
+      document.getElementById('dlg').showModal();
+    });
+  </script>
+</body>
+</html>

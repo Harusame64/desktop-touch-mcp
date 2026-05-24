@@ -29,7 +29,7 @@ import type { RichBlock } from "../engine/uia-diff.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
 import { prepareBrowserEvalExpression } from "./browser-eval-helpers.js";
-import { buildCandidateCollectionJs, resolveBrowserActionTarget, buildFillActJs, type ResolveActionOutcome } from "./browser-resolver.js";
+import { buildCandidateCollectionJs, resolveBrowserActionTarget, buildFillActJs, buildPageLevelModalFactsJs, detectModal, type ResolveActionOutcome, type ModalFacts, type ModalVerdict } from "./browser-resolver.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -2141,16 +2141,31 @@ export const browserGetInteractiveHandler = async ({
     out.push(item);
     if (out.length >= maxN) break;
   }
-  return out;
+  // ADR-023 Phase 2 (PR-2a): page-level modal facts run independently of the
+  // per-element maxN early-break above (a separate small querySelectorAll), so the
+  // modal section is unaffected by the interactive-list cap.
+  return { items: out, modalFacts: ${buildPageLevelModalFactsJs()} };
 })()
 `;
 
     const result = await evaluateInTab(expression, tabId ?? null, port);
-    const items = Array.isArray(result) ? result : [];
+    const resultObj = (result && typeof result === "object" ? result : {}) as {
+      items?: unknown;
+      modalFacts?: ModalFacts;
+    };
+    const items = Array.isArray(resultObj.items) ? resultObj.items : [];
+    // ADR-023 Phase 2 (PR-2a): pure detectModal runs in node on the gathered facts.
+    // The modal section is ALWAYS emitted (isModal:false when none) so AC-7's
+    // machine-readable field exists; blockerDialogIndex stays internal (PR-2b).
     const lines = [
       `Found ${items.length} interactive element(s)${scope ? ` within "${scope}"` : ""}:`,
       JSON.stringify(items, null, 2),
     ];
+    if (resultObj.modalFacts) {
+      const verdict: ModalVerdict = detectModal(resultObj.modalFacts);
+      const modalPublic = { isModal: verdict.isModal, blocker: verdict.blocker, signals: verdict.signals };
+      lines.push("", `modal: ${JSON.stringify(modalPublic)}`);
+    }
     if (includeContext) {
       const tabCtx = await getCachedTabContext(tabId ?? null, port);
       lines.push(
@@ -2943,7 +2958,7 @@ export function registerBrowserTools(server: McpServer): void {
 
   server.tool(
     "browser_overview",
-    "List all interactive elements (links, buttons, inputs, ARIA controls) on the current page with CSS selectors, visible text or value for inputs, and viewport status — use before browser_click to discover stable selectors, and prefer this over screenshot when verifying button/toggle state after submission (no image tokens, structured output). scope limits to a CSS subsection (e.g. '.sidebar'). Returns state (checked/pressed/selected/expanded) for ARIA custom controls. Caveats: Selectors are CDP-generated snapshots — re-call after page navigates or re-renders. Input text reflects the empty-field hint text when defined (takes priority over typed value) — use browser_eval('document.querySelector(sel).value') to read actual typed content. Typed errors: code:'BrowserNotConnected' (CDP not attached — call browser_open or browser_open({launch:{}})). Note: a non-matching scope CSS selector silently falls back to the full document (does not raise an error) — verify the selector via browser_eval if scoped enumeration is required.",
+    "List all interactive elements (links, buttons, inputs, ARIA controls) on the current page with CSS selectors, visible text or value for inputs, and viewport status — use before browser_click to discover stable selectors, and prefer this over screenshot when verifying button/toggle state after submission (no image tokens, structured output). scope limits to a CSS subsection (e.g. '.sidebar'). Returns state (checked/pressed/selected/expanded) for ARIA custom controls. Also returns a modal: section — whether a true modal dialog is blocking the page (isModal + blocker {name, role} + the signals it was judged on); it is ALWAYS present (isModal:false when no modal), and a navigation drawer is NOT reported as a modal (only aria-modal / alertdialog / native showModal dialogs, or a backdrop-backed dialog that locks the page, count). Caveats: Selectors are CDP-generated snapshots — re-call after page navigates or re-renders. Input text reflects the empty-field hint text when defined (takes priority over typed value) — use browser_eval('document.querySelector(sel).value') to read actual typed content. Typed errors: code:'BrowserNotConnected' (CDP not attached — call browser_open or browser_open({launch:{}})). Note: a non-matching scope CSS selector silently falls back to the full document (does not raise an error) — verify the selector via browser_eval if scoped enumeration is required.",
     browserOverviewRegistrationSchema,
     browserOverviewRegistrationHandler as typeof browserGetInteractiveHandler
   );
