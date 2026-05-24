@@ -12,7 +12,7 @@ import { keyboardTypeHandler } from "../../src/tools/keyboard.js";
 import { withRichNarration } from "../../src/tools/_narration.js";
 import { launchNotepad, type NpInstance } from "./helpers/notepad-launcher.js";
 import { parsePayload, sleep } from "./helpers/wait.js";
-import { focusWindow } from "../../src/engine/win32.js";
+import { restoreAndFocusWindow } from "../../src/engine/win32.js";
 
 // Wrap keyboard_press the same way the MCP server does
 const richKeyboardPress = withRichNarration("keyboard_press", keyboardPressHandler, {
@@ -189,7 +189,7 @@ describe("B4: consecutive narrate:rich calls have independent post.rich (no cach
 
   beforeAll(async () => {
     np = await launchNotepad();
-    try { focusWindow(np.hwnd); } catch { /* non-fatal */ }
+    try { restoreAndFocusWindow(np.hwnd); } catch { /* non-fatal */ }
     await sleep(400);
   }, 10_000);
 

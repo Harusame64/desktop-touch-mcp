@@ -19,7 +19,7 @@ import { mouseClickHandler } from "../../src/tools/mouse.js";
 import { withPostState } from "../../src/tools/_post.js";
 import { launchNotepad, type NpInstance } from "./helpers/notepad-launcher.js";
 import { parsePayload, sleep } from "./helpers/wait.js";
-import { focusWindow } from "../../src/engine/win32.js";
+import { restoreAndFocusWindow } from "../../src/engine/win32.js";
 import { screenshotHandler } from "../../src/tools/screenshot.js";
 import { spawnBlankWindow } from "./helpers/blank-window.js";
 
@@ -36,7 +36,7 @@ const trackedKeyboardPress = withPostState("keyboard_press", keyboardPressHandle
 
 beforeAll(async () => {
   np = await launchNotepad();
-  try { focusWindow(np.hwnd); } catch { /* non-fatal */ }
+  try { restoreAndFocusWindow(np.hwnd); } catch { /* non-fatal */ }
   await sleep(400);
 }, 10_000);
 
@@ -165,7 +165,7 @@ describe("H3: mouse_click → get_context focus propagates within 300ms", () => 
 
   beforeAll(async () => {
     np3 = await launchNotepad();
-    try { focusWindow(np3.hwnd); } catch { /* non-fatal */ }
+    try { restoreAndFocusWindow(np3.hwnd); } catch { /* non-fatal */ }
     await sleep(400);
   }, 10_000);
 

@@ -27,13 +27,13 @@ import { terminalSendHandler } from "../../src/tools/terminal.js";
 import { launchNotepad, type NpInstance } from "./helpers/notepad-launcher.js";
 import { launchPowerShell, type PsInstance } from "./helpers/powershell-launcher.js";
 import { parsePayload, sleep } from "./helpers/wait.js";
-import { focusWindow } from "../../src/engine/win32.js";
+import { restoreAndFocusWindow } from "../../src/engine/win32.js";
 
 let np: NpInstance;
 
 beforeAll(async () => {
   np = await launchNotepad();
-  try { focusWindow(np.hwnd); } catch { /* non-fatal */ }
+  try { restoreAndFocusWindow(np.hwnd); } catch { /* non-fatal */ }
   await sleep(400);
 }, 10_000);
 
@@ -45,7 +45,7 @@ afterAll(() => np?.kill());
 
 describe("A1-armed: keyboard_type with windowTitle arms focusLost detection", () => {
   it("returns ok:true and no focusLost when Notepad keeps focus", async () => {
-    try { focusWindow(np.hwnd); } catch { /* non-fatal */ }
+    try { restoreAndFocusWindow(np.hwnd); } catch { /* non-fatal */ }
     await sleep(200);
 
     const result = await keyboardTypeHandler({
@@ -221,7 +221,7 @@ describe("A2: terminal_send(restoreFocus:true) restores caller's focus", () => {
 
   it("focusRestored:true when Notepad was active before terminal_send", async ({ skip }) => {
     // Focus Notepad first (the window we want focus to return to)
-    try { focusWindow(np.hwnd); } catch { /* non-fatal */ }
+    try { restoreAndFocusWindow(np.hwnd); } catch { /* non-fatal */ }
     await sleep(300);
 
     // Verify Notepad is active
@@ -260,7 +260,7 @@ describe("A2: terminal_send(restoreFocus:true) restores caller's focus", () => {
 
   it("focusRestored:false when restoreFocus is disabled", async ({ skip }) => {
     // Focus Notepad first
-    try { focusWindow(np.hwnd); } catch { /* non-fatal */ }
+    try { restoreAndFocusWindow(np.hwnd); } catch { /* non-fatal */ }
     await sleep(300);
 
     const { enumWindowsInZOrder } = await import("../../src/engine/win32.js");
