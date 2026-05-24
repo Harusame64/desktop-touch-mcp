@@ -1056,6 +1056,11 @@ export async function resolveBrowserActionTarget(args: ResolveActionArgs): Promi
   // is a ResolveDecision, which has no modal fields) — ResolveDecision stays
   // unchanged; only ResolveActionOutcome.noActionable carries these (Round 4 P1).
   if (decision.kind === "noActionable" && gathered.modalFacts) {
+    // Use the TOP candidate (score order) as the representative occluded target
+    // (plan §2.4). If the top candidate is not modal-occluded but a lower-ranked
+    // one is, the handler degrades to the plain BrowserNoActionableTarget (a
+    // fail-safe direction — never a false modal stop). The common case (the
+    // intended target is the top match and a modal covers it) escalates correctly.
     return {
       ...decision,
       modalFacts: gathered.modalFacts,

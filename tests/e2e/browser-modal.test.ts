@@ -26,10 +26,10 @@ import {
 import { evaluateInTab, disconnectAll, getElementScreenCoords } from "../../src/engine/cdp-bridge.js";
 
 async function openDialog(): Promise<void> {
-  await evaluateInTab(`(function(){ const d=document.getElementById('dlg'); if (!d.open) d.showModal(); return true; })()`, null, 9233);
+  await evaluateInTab(`(function(){ const d=document.getElementById('dlg'); if (!d.open) d.showModal(); return true; })()`, null, TEST_PORT);
 }
 async function closeDialog(): Promise<void> {
-  await evaluateInTab(`(function(){ const d=document.getElementById('dlg'); if (d.open) d.close(); return true; })()`, null, 9233);
+  await evaluateInTab(`(function(){ const d=document.getElementById('dlg'); if (d.open) d.close(); return true; })()`, null, TEST_PORT);
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
