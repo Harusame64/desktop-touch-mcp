@@ -41,6 +41,21 @@
     <!-- Climb test: matched text lives in a child span; resolves to the button (depth 1). -->
     <button id="composed-btn"><span class="inner">Compose Email</span></button>
 
+    <!-- GSC-faithful: a div[role=button] whose label is wrapped in a child span
+         (mirrors GSC's `<div role="button"><span><span>送信</span></span></div>`).
+         by:'text'+role:'button' must resolve here even though the matched leaf is
+         the role-less span — the role filter climbs to the role=button ancestor
+         (ADR-023 role-filter climb-fix; before the fix this returned total:0). -->
+    <div role="button" id="composed-div-btn"><span class="inner">Submit Order</span></div>
+
+    <!-- Nested-mixed-role: a real <a href> (strong link) nested inside a
+         div[role=button]. by:'text'+role:'button' admits this candidate (a
+         role=button ancestor is within climb depth), but the climb resolves to the
+         NEAREST strong clickable = the <a> (a link, NOT a button). The role gate
+         must reject it → noActionable, never a silent wrong-role click. With
+         role:'link' it resolves (the link is the requested role). -->
+    <div role="button" id="linky-btn"><a href="#linky"><span class="inner">Linky Action</span></a></div>
+
     <!-- Occluded: a higher z-index overlay covers the button center. -->
     <div class="overlay-host">
       <button id="covered-btn">Covered Action</button>

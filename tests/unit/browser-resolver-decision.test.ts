@@ -199,3 +199,47 @@ describe("decideActionTarget (ADR §1.2 D3 uniqueness contract)", () => {
     }
   });
 });
+
+describe("decideActionTarget — role gate (Codex P1: never resolve to a wrong-role ancestor)", () => {
+  it("undefined roleMatch (no role filter) does not gate → resolved", () => {
+    const d = decideActionTarget([facts({ index: 0, chain: [node({ tag: "button" })] })], 1);
+    expect(d.kind).toBe("resolved");
+  });
+
+  it("roleMatch:true on the climbed strong clickable → resolved", () => {
+    const d = decideActionTarget(
+      [facts({ index: 0, chain: [node({ tag: "span" }), node({ tag: "div", role: "button", roleMatch: true })] })],
+      1,
+    );
+    expect(d.kind).toBe("resolved");
+    if (d.kind === "resolved") expect(d.target.climbDepth).toBe(1);
+  });
+
+  it("roleMatch:false on the climbed strong clickable → noActionable (not a wrong-role resolve)", () => {
+    const d = decideActionTarget(
+      [facts({ index: 0, chain: [node({ tag: "span" }), node({ tag: "div", role: "button", roleMatch: false })] })],
+      1,
+    );
+    expect(d.kind).toBe("noActionable");
+  });
+
+  it("nested-mixed-role: climb resolves to the nearest strong link (roleMatch:false for button) → noActionable", () => {
+    // role:'button' admits this candidate via the farther div[role=button] ancestor
+    // (chain-aware pool filter), but the climb stops at the nearer <a href> link,
+    // whose roleMatch is false for a button filter → must NOT resolve to the link.
+    const d = decideActionTarget(
+      [
+        facts({
+          index: 0,
+          chain: [
+            node({ tag: "span" }),
+            node({ tag: "a", hasHref: true, roleMatch: false }), // nearest strong = link, wrong role
+            node({ tag: "div", role: "button", roleMatch: true }), // farther, matches — but not the climb target
+          ],
+        }),
+      ],
+      1,
+    );
+    expect(d.kind).toBe("noActionable");
+  });
+});

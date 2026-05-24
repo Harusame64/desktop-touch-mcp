@@ -121,7 +121,10 @@ describe("ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snap
     expect(noRole).toContain("const roleFilter = null;");
     const withRole = buildActionCandidateFactsJs({ by: "text", pattern: "Save", role: "Button", caseSensitive: false });
     expect(withRole).toContain('const roleFilter = "button";'); // lowercased
-    expect(withRole).toContain("filtered.filter(function(e) { return roleMatches(e.el); })");
+    // climb-fix: the role filter matches the leaf OR an ancestor within D, so a
+    // button whose label is wrapped in a child element still matches (GSC dogfood).
+    expect(withRole).toContain("function roleMatchesChain(el)");
+    expect(withRole).toContain("filtered.filter(function(e) { return roleMatchesChain(e.el); })");
   });
 
   it("shares the collection error returns (ScopeNotFound / Timeout) via the body", () => {
