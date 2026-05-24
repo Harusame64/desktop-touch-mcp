@@ -1077,7 +1077,12 @@ export interface ModalVerdict {
    * name/role when several / same-named dialogs exist — Codex P1-1).
    */
   blockerDialogIndex?: number;
-  /** why — machine-readable, for testability + threshold tuning (plan §2.3) */
+  /**
+   * why — machine-readable, for testability + threshold tuning (plan §2.3).
+   * Provenance: signals are read from the chosen blocker (when isModal), else
+   * from the topmost visible candidate (a "why not modal" snapshot); when no
+   * candidate exists every per-candidate signal is false.
+   */
   signals: {
     ariaModal: boolean;
     alertdialog: boolean;
@@ -1234,6 +1239,10 @@ export function buildPageLevelModalFactsJs(): string {
  */
 export function detectModal(facts: ModalFacts): ModalVerdict {
   const cands = facts.dialogCandidates.filter((c) => c.visible && c.rect.w > 0 && c.rect.h > 0);
+  // focusInside is a PAGE-LEVEL approximation (focus is inside SOME dialog
+  // candidate), shared across candidates in behaviorCount — not strict per-
+  // candidate focus-trap (plan §2.4 "focus-trap 近似"). Harmless for the dominant
+  // single-modal case; a stricter per-candidate trap check is a Phase 3+ option.
   const focusInside = facts.activeElement?.inDialogCandidate ?? false;
   const scrollLock = facts.bodyScrollLock;
 

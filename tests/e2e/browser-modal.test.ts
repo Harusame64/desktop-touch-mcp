@@ -70,9 +70,10 @@ describe.skipIf(!CHROME_AVAILABLE)("ADR-023 Phase 2 (PR-2a): page-level modal fa
     const verdict = detectModal(facts);
     expect(verdict.isModal, JSON.stringify(verdict)).toBe(false);
     expect(verdict.signals.drawerExcluded).toBe(true);
-    // gather correctly read the nav landmark on the role=dialog drawer.
-    const drawer = facts.dialogCandidates.find((c) => c.role === "dialog" && c.tag === "nav");
-    expect(drawer?.landmarkRole).toBe("navigation");
+    // gather correctly read the nav landmark on the role=dialog drawer — find by
+    // the landmark contract (what detectModal excludes on), not the tag.
+    const drawer = facts.dialogCandidates.find((c) => c.role === "dialog" && c.landmarkRole === "navigation");
+    expect(drawer, JSON.stringify(facts.dialogCandidates)).toBeDefined();
     expect(drawer?.ariaModal).toBe(false);
     expect(drawer?.hasBackdrop).toBe(false);
   });
