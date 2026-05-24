@@ -163,28 +163,28 @@
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2166,
+      "line": 2181,
       "tool": "browser_overview",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2318,
+      "line": 2333,
       "tool": "browser_open",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2449,
+      "line": 2464,
       "tool": "browser_search",
       "errKind": "identifier",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2597,
+      "line": 2612,
       "tool": "browser_disconnect",
       "errKind": "identifier",
       "contextShape": "none"

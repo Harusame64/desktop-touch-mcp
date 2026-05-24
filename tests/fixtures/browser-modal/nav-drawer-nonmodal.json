@@ -1,0 +1,26 @@
+{
+  "_note": "ADR-023 Phase 2: a NON-modal navigation drawer (side/push mode) — role=dialog matched by a naive selector but it is a nav landmark with no aria-modal/backdrop. Must NOT be modal (dogfood 課題③). isModal:false + drawerExcluded:true.",
+  "facts": {
+    "viewport": { "innerWidth": 1280, "innerHeight": 720 },
+    "bodyScrollLock": false,
+    "activeElement": { "tag": "a", "role": null, "inDialogCandidate": false },
+    "dialogCandidates": [
+      {
+        "role": "dialog",
+        "tag": "nav",
+        "ariaModal": false,
+        "nativeDialogOpen": false,
+        "name": "Main navigation",
+        "visible": true,
+        "rect": { "x": 0, "y": 0, "w": 280, "h": 720 },
+        "viewportCoverage": 0.22,
+        "offscreenTransform": false,
+        "zIndex": 30,
+        "landmarkRole": "navigation",
+        "hasBackdrop": false,
+        "siblingsInert": false
+      }
+    ]
+  },
+  "expect": { "isModal": false, "drawerExcluded": true }
+}

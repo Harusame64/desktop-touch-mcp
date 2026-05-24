@@ -1,0 +1,26 @@
+{
+  "_note": "ADR-023 Phase 2: a CSS-only modal (no aria-modal) but with a real backdrop + scroll-lock + focus trapped. Rule-4 rescue → isModal:true.",
+  "facts": {
+    "viewport": { "innerWidth": 1280, "innerHeight": 720 },
+    "bodyScrollLock": true,
+    "activeElement": { "tag": "input", "role": null, "inDialogCandidate": true },
+    "dialogCandidates": [
+      {
+        "role": "dialog",
+        "tag": "div",
+        "ariaModal": false,
+        "nativeDialogOpen": false,
+        "name": "Sign in",
+        "visible": true,
+        "rect": { "x": 380, "y": 140, "w": 520, "h": 440 },
+        "viewportCoverage": 0.55,
+        "offscreenTransform": false,
+        "zIndex": 900,
+        "landmarkRole": null,
+        "hasBackdrop": true,
+        "siblingsInert": false
+      }
+    ]
+  },
+  "expect": { "isModal": true, "drawerExcluded": false, "blockerRole": "dialog" }
+}

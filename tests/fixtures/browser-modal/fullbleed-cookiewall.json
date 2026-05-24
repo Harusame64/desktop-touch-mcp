@@ -1,0 +1,26 @@
+{
+  "_note": "ADR-023 Phase 2: a full-bleed cookie/consent wall — backdrop + high viewport coverage but NO modal-behavior signal (no scroll-lock / inert / focus-trap). Must NOT be classified modal (Round 2 P2-R2-2). isModal:false.",
+  "facts": {
+    "viewport": { "innerWidth": 1280, "innerHeight": 720 },
+    "bodyScrollLock": false,
+    "activeElement": { "tag": "body", "role": null, "inDialogCandidate": false },
+    "dialogCandidates": [
+      {
+        "role": "dialog",
+        "tag": "div",
+        "ariaModal": false,
+        "nativeDialogOpen": false,
+        "name": "We value your privacy",
+        "visible": true,
+        "rect": { "x": 0, "y": 520, "w": 1280, "h": 200 },
+        "viewportCoverage": 0.9,
+        "offscreenTransform": false,
+        "zIndex": 2000,
+        "landmarkRole": null,
+        "hasBackdrop": true,
+        "siblingsInert": false
+      }
+    ]
+  },
+  "expect": { "isModal": false, "drawerExcluded": false }
+}

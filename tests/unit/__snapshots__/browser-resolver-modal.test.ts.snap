@@ -1,0 +1,120 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`ADR-023 Phase 2 (PR-2a): buildPageLevelModalFactsJs — gather JS > emits the self-contained page-level modal facts IIFE (snapshot) 1`] = `
+"(function() {
+  try {
+  const VW = window.innerWidth, VH = window.innerHeight;
+  const vpArea = Math.max(1, VW * VH);
+  function num(z) { const n = parseInt(z, 10); return isNaN(n) ? 0 : n; }
+  function rectOf(el) { const r = el.getBoundingClientRect(); return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) }; }
+  function coverage(r) {
+    const ix = Math.max(0, Math.min(r.x + r.w, VW) - Math.max(r.x, 0));
+    const iy = Math.max(0, Math.min(r.y + r.h, VH) - Math.max(r.y, 0));
+    return Math.round((ix * iy) / vpArea * 100) / 100;
+  }
+  function nameOf(el) {
+    let n = (el.getAttribute('aria-label') || '').trim();
+    if (!n) {
+      const lb = el.getAttribute('aria-labelledby');
+      if (lb) { const ref = document.getElementById(lb.split(/\\s+/)[0]); if (ref) n = (ref.textContent || '').trim(); }
+    }
+    if (!n) { const h = el.querySelector('h1,h2,h3,h4,h5,h6,[role="heading"]'); if (h) n = (h.textContent || '').trim(); }
+    return n.replace(/\\s+/g, ' ').slice(0, 80);
+  }
+  const LANDMARK_RE = /^(navigation|complementary|main|banner|contentinfo|search|form|region)$/;
+  function landmarkOf(el) {
+    let node = el, guard = 0;
+    while (node && node !== document.body && guard < 6) {
+      const rr = ((node.getAttribute && node.getAttribute('role')) || '').toLowerCase();
+      if (LANDMARK_RE.test(rr)) return rr;
+      const tg = node.tagName ? node.tagName.toLowerCase() : '';
+      if (tg === 'nav') return 'navigation';
+      if (tg === 'aside') return 'complementary';
+      node = node.parentElement; guard++;
+    }
+    return null;
+  }
+  function isBackdropLike(el) {
+    if (!el || el.nodeType !== 1) return false;
+    const cs = window.getComputedStyle(el);
+    if (cs.position !== 'fixed' && cs.position !== 'absolute') return false;
+    if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+    const r = el.getBoundingClientRect();
+    return (r.width * r.height) >= vpArea * 0.8;
+  }
+  function hasBackdropFor(el) {
+    try { if (el.matches(':modal')) return true; } catch (e) {}
+    // A viewport-covering fixed/absolute sibling layer (of the dialog or an ancestor
+    // up to 4 levels) that does NOT contain the dialog = a backdrop/scrim.
+    let node = el, guard = 0;
+    while (node && node !== document.body && guard < 4) {
+      const parent = node.parentElement;
+      if (parent) {
+        for (const s of parent.children) {
+          if (s === node || s.contains(el)) continue;
+          if (isBackdropLike(s)) return true;
+        }
+      }
+      node = parent; guard++;
+    }
+    return false;
+  }
+  function siblingsInertFor(el) {
+    if (!document.body) return false;
+    for (const c of document.body.children) {
+      if (c.contains(el)) continue;
+      if (c.hasAttribute('inert') || c.getAttribute('aria-hidden') === 'true') {
+        const r = c.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) return true;
+      }
+    }
+    return false;
+  }
+  const ae = document.activeElement;
+  let activeInDialog = false;
+  const cands = [];
+  const nodes = document.querySelectorAll('[role="dialog"],[role="alertdialog"],[aria-modal="true"],dialog');
+  for (const el of nodes) {
+    const cs = window.getComputedStyle(el);
+    const br = el.getBoundingClientRect();
+    const rect = rectOf(el);
+    const visible = cs.display !== 'none' && cs.visibility !== 'hidden' && cs.opacity !== '0' && br.width > 0 && br.height > 0;
+    const tag = el.tagName.toLowerCase();
+    let nativeModal = false;
+    if (tag === 'dialog' && el.open === true) { try { nativeModal = el.matches(':modal'); } catch (e) { nativeModal = true; } }
+    const tr = cs.transform && cs.transform !== 'none';
+    const offscreen = !!tr && (rect.x + rect.w <= 0 || rect.x >= VW || rect.y + rect.h <= 0 || rect.y >= VH);
+    if (ae && el.contains(ae)) activeInDialog = true;
+    cands.push({
+      role: (el.getAttribute('role') || '').toLowerCase() || null,
+      tag: tag,
+      ariaModal: el.getAttribute('aria-modal') === 'true',
+      nativeDialogOpen: nativeModal,
+      name: nameOf(el),
+      visible: visible,
+      rect: rect,
+      viewportCoverage: coverage(rect),
+      offscreenTransform: offscreen,
+      zIndex: num(cs.zIndex),
+      landmarkRole: landmarkOf(el),
+      hasBackdrop: hasBackdropFor(el),
+      siblingsInert: siblingsInertFor(el),
+    });
+  }
+  function lock(v) { return v === 'hidden' || v === 'clip'; }
+  const htmlCs = document.documentElement ? window.getComputedStyle(document.documentElement) : null;
+  const bodyCs = document.body ? window.getComputedStyle(document.body) : null;
+  const bodyScrollLock = !!((bodyCs && (lock(bodyCs.overflow) || lock(bodyCs.overflowY))) || (htmlCs && (lock(htmlCs.overflow) || lock(htmlCs.overflowY))));
+  return {
+    viewport: { innerWidth: VW, innerHeight: VH },
+    bodyScrollLock: bodyScrollLock,
+    activeElement: ae ? { tag: ae.tagName ? ae.tagName.toLowerCase() : '', role: ((ae.getAttribute && ae.getAttribute('role')) || '').toLowerCase() || null, inDialogCandidate: activeInDialog } : null,
+    dialogCandidates: cands,
+  };
+  } catch (e) {
+    // Modal detection must never break browser_overview (Codex P1): degrade to a
+    // safe default (isModal:false) on any unexpected DOM error (e.g. no document.body).
+    return { viewport: { innerWidth: window.innerWidth || 0, innerHeight: window.innerHeight || 0 }, bodyScrollLock: false, activeElement: null, dialogCandidates: [] };
+  }
+})()"
+`;

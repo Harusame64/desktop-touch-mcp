@@ -4,6 +4,17 @@
 
 ### Added
 
+- **`browser_overview` now tells you when a real modal dialog is blocking the
+  page.** Its output includes a `modal:` section: `isModal`, the blocking dialog's
+  `blocker` (`name` + `role`) when there is one, and the `signals` it was judged
+  on. It distinguishes a true modal (an `aria-modal` / `alertdialog` / native
+  `showModal()` dialog, or a dialog backed by a page-locking backdrop) from a
+  plain side **navigation drawer**, which is no longer mis-reported as a modal —
+  the long-standing trap where a `[role="dialog"]` selector matches an open
+  nav drawer. The section is always present (`isModal:false` when nothing is
+  blocking), so it is a reliable signal to check before deciding a click was
+  swallowed by an overlay.
+
 - **`browser_fill` can target inputs by meaning, not just CSS selectors.** Like
   `browser_click`, you can now pass `by` + `pattern` instead of a `selector` to
   fill a field by what identifies it — most useful with `by:'ariaLabel'`

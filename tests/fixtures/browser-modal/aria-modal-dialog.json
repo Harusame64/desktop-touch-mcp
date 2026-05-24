@@ -1,0 +1,26 @@
+{
+  "_note": "ADR-023 Phase 2: a real ARIA modal dialog (aria-modal=true + backdrop + scroll-lock). Strong signal → isModal:true.",
+  "facts": {
+    "viewport": { "innerWidth": 1280, "innerHeight": 720 },
+    "bodyScrollLock": true,
+    "activeElement": { "tag": "button", "role": null, "inDialogCandidate": true },
+    "dialogCandidates": [
+      {
+        "role": "dialog",
+        "tag": "div",
+        "ariaModal": true,
+        "nativeDialogOpen": false,
+        "name": "Confirm changes",
+        "visible": true,
+        "rect": { "x": 340, "y": 160, "w": 600, "h": 400 },
+        "viewportCoverage": 0.52,
+        "offscreenTransform": false,
+        "zIndex": 1050,
+        "landmarkRole": null,
+        "hasBackdrop": true,
+        "siblingsInert": true
+      }
+    ]
+  },
+  "expect": { "isModal": true, "drawerExcluded": false, "blockerRole": "dialog" }
+}
