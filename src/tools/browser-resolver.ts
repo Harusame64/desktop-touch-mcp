@@ -1114,6 +1114,7 @@ export const MODAL_RESCUE_MIN_BEHAVIOR_SIGNALS = 1;
  */
 export function buildPageLevelModalFactsJs(): string {
   return `(function() {
+  try {
   const VW = window.innerWidth, VH = window.innerHeight;
   const vpArea = Math.max(1, VW * VH);
   function num(z) { const n = parseInt(z, 10); return isNaN(n) ? 0 : n; }
@@ -1171,6 +1172,7 @@ export function buildPageLevelModalFactsJs(): string {
     return false;
   }
   function siblingsInertFor(el) {
+    if (!document.body) return false;
     for (const c of document.body.children) {
       if (c.contains(el)) continue;
       if (c.hasAttribute('inert') || c.getAttribute('aria-hidden') === 'true') {
@@ -1211,16 +1213,21 @@ export function buildPageLevelModalFactsJs(): string {
       siblingsInert: siblingsInertFor(el),
     });
   }
-  const htmlCs = window.getComputedStyle(document.documentElement);
-  const bodyCs = window.getComputedStyle(document.body);
   function lock(v) { return v === 'hidden' || v === 'clip'; }
-  const bodyScrollLock = lock(bodyCs.overflow) || lock(bodyCs.overflowY) || lock(htmlCs.overflow) || lock(htmlCs.overflowY);
+  const htmlCs = document.documentElement ? window.getComputedStyle(document.documentElement) : null;
+  const bodyCs = document.body ? window.getComputedStyle(document.body) : null;
+  const bodyScrollLock = !!((bodyCs && (lock(bodyCs.overflow) || lock(bodyCs.overflowY))) || (htmlCs && (lock(htmlCs.overflow) || lock(htmlCs.overflowY))));
   return {
     viewport: { innerWidth: VW, innerHeight: VH },
     bodyScrollLock: bodyScrollLock,
     activeElement: ae ? { tag: ae.tagName ? ae.tagName.toLowerCase() : '', role: ((ae.getAttribute && ae.getAttribute('role')) || '').toLowerCase() || null, inDialogCandidate: activeInDialog } : null,
     dialogCandidates: cands,
   };
+  } catch (e) {
+    // Modal detection must never break browser_overview (Codex P1): degrade to a
+    // safe default (isModal:false) on any unexpected DOM error (e.g. no document.body).
+    return { viewport: { innerWidth: window.innerWidth || 0, innerHeight: window.innerHeight || 0 }, bodyScrollLock: false, activeElement: null, dialogCandidates: [] };
+  }
 })()`;
 }
 

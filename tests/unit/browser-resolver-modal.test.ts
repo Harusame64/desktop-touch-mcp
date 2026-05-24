@@ -206,4 +206,15 @@ describe("ADR-023 Phase 2 (PR-2a): buildPageLevelModalFactsJs — gather JS", ()
     expect(js).not.toContain("overlay");
     expect(js).not.toContain("backdrop'"); // no class*=backdrop matching
   });
+
+  it("degrades safely when document.body is absent (Codex P1: never break browser_overview)", () => {
+    const js = buildPageLevelModalFactsJs();
+    // top-level safe-default catch + body null-guards so a missing document.body
+    // (non-HTML doc / early parse) returns isModal:false facts, not a thrown eval.
+    expect(js).toContain("try {");
+    expect(js).toContain("} catch (e) {");
+    expect(js).toContain("dialogCandidates: []"); // safe-default fallback
+    expect(js).toContain("document.body ? window.getComputedStyle(document.body) : null");
+    expect(js).toContain("if (!document.body) return false;"); // siblingsInertFor guard
+  });
 });
