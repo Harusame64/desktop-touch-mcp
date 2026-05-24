@@ -1221,6 +1221,10 @@ async function handleBrowserClickByAxis(args: {
     const ag = await runActionGuard({
       toolName: "browser_click", actionKind: "browserCdp", descriptor,
       browserReadinessPolicy: "strict",
+      // by-axis re-calls are idempotent (fresh gather each time) and do NOT
+      // consume fixId, so suppress the on-block fixId hint (Opus PR3 R1 P2 —
+      // would otherwise be a dead promise). The agent simply retries by+pattern.
+      suppressSuggestedFix: true,
     });
     if (ag.block) {
       return failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "browser_click", { _perceptionForPost: ag.summary });

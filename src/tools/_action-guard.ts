@@ -61,6 +61,14 @@ export interface RunActionGuardParams {
    * Merged into fix.args so the LLM can re-approve with the original intent.
    */
   fixCarryingArgs?: Record<string, unknown>;
+  /**
+   * ADR-023 Phase 1: suppress the on-block SuggestedFix + `fixId=…` hint. Set by
+   * callers whose re-invocation path does NOT consume `fixId` and is idempotent,
+   * so a fixId promise would be dead. browser_click({by,pattern}) is such a
+   * caller — the resolver re-gathers fresh on every call, so the agent simply
+   * retries the same semantic request (no fixId re-approval needed).
+   */
+  suppressSuggestedFix?: boolean;
 }
 
 export interface ActionGuardResult {
@@ -375,7 +383,7 @@ function mapGuardResult(
 export async function runActionGuard(
   params: RunActionGuardParams
 ): Promise<ActionGuardResult> {
-  const { toolName, actionKind, descriptor, clickCoordinates, foregroundVerified, browserReadinessPolicy, browserSelectorInViewport, fixCarryingArgs } = params;
+  const { toolName, actionKind, descriptor, clickCoordinates, foregroundVerified, browserReadinessPolicy, browserSelectorInViewport, fixCarryingArgs, suppressSuggestedFix } = params;
 
   // Env flag OFF → unguarded pass-through
   if (!isAutoGuardEnabled()) {
@@ -531,8 +539,11 @@ export async function runActionGuard(
     result.summary.changed = resolved.changed;
   }
 
-  // Phase C/G: emit SuggestedFix when a recoverable drift is detected
-  if (result.block) {
+  // Phase C/G: emit SuggestedFix when a recoverable drift is detected.
+  // ADR-023 Phase 1: callers with an idempotent, fixId-less re-invocation path
+  // (browser_click by-axis) suppress this — a fixId hint they cannot honor would
+  // be a dead promise (Opus PR3 Round 1 P2).
+  if (result.block && !suppressSuggestedFix) {
     const fix = tryBuildSuggestedFix(
       gr,
       descriptor,
