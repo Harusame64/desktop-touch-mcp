@@ -1170,6 +1170,19 @@ export interface ModalVerdict {
 export const MODAL_COVERAGE_THRESHOLD = 0.5;
 /** K — minimum modal-BEHAVIOR signals (scroll-lock / inert / focus-inside) for rule 4 rescue. */
 export const MODAL_RESCUE_MIN_BEHAVIOR_SIGNALS = 1;
+/**
+ * A backdrop-backed `role=dialog` candidate whose viewport coverage is below this
+ * is treated as a drawer/side-panel (drawer-exclusion), not a modal — so
+ * `drawerExcluded` correctly reflects the exclusion. Real GSC dogfood (2026-05-24):
+ * its `role="dialog"` "navigational drawer" has `hasBackdrop:true` but only ~0.18
+ * coverage, `aria-modal:false`, `landmark:null` — it slipped past the landmark
+ * drawer signals and was only declined by the rescue coverage gate, so
+ * `drawerExcluded` read false. A non-strong, backdrop-backed, low-coverage dialog
+ * is a side panel (a real modal with a backdrop covers far more). Strong-signal
+ * modals (aria-modal / alertdialog / native showModal) are unaffected — rule 2
+ * classifies them before drawer exclusion. Below the rescue threshold (0.5).
+ */
+export const MODAL_DRAWER_MAX_COVERAGE = 0.35;
 
 /**
  * Self-contained injected-JS IIFE (no outer-helper dependency — embeds verbatim
@@ -1318,8 +1331,17 @@ export function detectModal(facts: ModalFacts): ModalVerdict {
   const scrollLock = facts.bodyScrollLock;
 
   const isStrong = (c: DialogFacts): boolean => c.ariaModal || c.role === "alertdialog" || c.nativeDialogOpen;
+  // Drawer / side-panel evidence (only consulted in the no-strong-signal branch):
+  // a navigation/complementary landmark, an offscreen-parked transform, OR a
+  // backdrop-backed dialog whose coverage is too small to be a real modal (real
+  // GSC dogfood — its role=dialog "navigational drawer" has a backdrop but ~0.18
+  // coverage, no aria-modal, no landmark). A strong-signal modal never reaches
+  // here (rule 2), so this never suppresses a real modal.
   const isDrawer = (c: DialogFacts): boolean =>
-    c.landmarkRole === "navigation" || c.landmarkRole === "complementary" || c.offscreenTransform;
+    c.landmarkRole === "navigation" ||
+    c.landmarkRole === "complementary" ||
+    c.offscreenTransform ||
+    (c.hasBackdrop && c.viewportCoverage < MODAL_DRAWER_MAX_COVERAGE);
   const behaviorCount = (c: DialogFacts): number =>
     (scrollLock ? 1 : 0) + (c.siblingsInert ? 1 : 0) + (focusInside ? 1 : 0);
 

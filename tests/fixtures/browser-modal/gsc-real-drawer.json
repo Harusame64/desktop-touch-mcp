@@ -1,0 +1,26 @@
+{
+  "_note": "ADR-023 Phase 2: REAL Google Search Console 'navigational drawer' captured via dogfood (2026-05-24). role=dialog with a backdrop but only ~0.18 viewport coverage, no aria-modal, no landmark — the exact 課題③ shape. Must be isModal:false AND drawerExcluded:true (the low-coverage backdrop drawer signal). Resolves OQ-P2-d.",
+  "facts": {
+    "viewport": { "innerWidth": 1536, "innerHeight": 730 },
+    "bodyScrollLock": false,
+    "activeElement": { "tag": "body", "role": null, "inDialogCandidate": false },
+    "dialogCandidates": [
+      {
+        "role": "dialog",
+        "tag": "div",
+        "ariaModal": false,
+        "nativeDialogOpen": false,
+        "name": "navigational drawer",
+        "visible": true,
+        "rect": { "x": 0, "y": 0, "w": 320, "h": 730 },
+        "viewportCoverage": 0.18,
+        "offscreenTransform": false,
+        "zIndex": 100,
+        "landmarkRole": null,
+        "hasBackdrop": true,
+        "siblingsInert": false
+      }
+    ]
+  },
+  "expect": { "isModal": false, "drawerExcluded": true }
+}

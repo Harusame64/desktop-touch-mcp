@@ -112,6 +112,23 @@ describe("ADR-023 Phase 2 (PR-2a): detectModal — rule branches", () => {
     expect(v.signals.drawerExcluded).toBe(true);
   });
 
+  it("rule 3 drawer exclusion: low-coverage backdrop dialog (real GSC drawer shape) → not modal, drawerExcluded", () => {
+    // GSC's role=dialog "navigational drawer": backdrop but only ~0.18 coverage,
+    // no aria-modal, no landmark. Must be excluded as a drawer (dogfood 2026-05-24).
+    const v = detectModal(
+      mkFacts([mkDialog({ role: "dialog", ariaModal: false, hasBackdrop: true, viewportCoverage: 0.18, landmarkRole: null })]),
+    );
+    expect(v.isModal).toBe(false);
+    expect(v.signals.drawerExcluded).toBe(true);
+  });
+
+  it("low-coverage WITHOUT backdrop is NOT a drawer (avoids over-firing drawerExcluded)", () => {
+    // a small non-modal popover with no backdrop → not modal, but not attributed to a drawer.
+    const v = detectModal(mkFacts([mkDialog({ hasBackdrop: false, viewportCoverage: 0.1, landmarkRole: null })]));
+    expect(v.isModal).toBe(false);
+    expect(v.signals.drawerExcluded).toBe(false);
+  });
+
   it("rule 4 rescue: no strong + backdrop + scroll-lock + coverage → isModal", () => {
     const v = detectModal(
       mkFacts([mkDialog({ hasBackdrop: true, viewportCoverage: 0.6 })], { bodyScrollLock: true }),
