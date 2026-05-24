@@ -81,6 +81,7 @@
     "test:capture": "node scripts/test-capture.mjs",
     "test:unit": "vitest run --project=unit",
     "test:e2e": "vitest run --project=e2e",
+    "e2e:stop": "node scripts/e2e-stop.mjs",
     "test:headed": "HEADED=1 vitest run --project=e2e",
     "test:e2e:browser": "vitest run --project=e2e \"tests/e2e/browser-*.test.ts\"",
     "test:e2e:window": "vitest run --project=e2e tests/e2e/dock-window.test.ts tests/e2e/dock-auto.test.ts tests/e2e/focus-integrity.test.ts tests/e2e/force-focus.test.ts tests/e2e/screenshot-electron.test.ts tests/e2e/ui-elements-cache.test.ts",

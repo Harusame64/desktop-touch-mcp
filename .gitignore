@@ -95,3 +95,6 @@ tests/repros/
 # Per-ADR PowerShell investigation spikes (Windows Terminal, RDP, etc.).
 # Findings live in the private companion repo's ADR docs.
 scripts/spikes/
+
+# e2e emergency-stop sentinel (runtime, never commit)
+.e2e-stop

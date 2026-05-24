@@ -42,6 +42,11 @@ export default defineConfig({
         test: {
           name: "e2e",
           include: ["tests/e2e/**/*.test.ts"],
+          // Emergency stop: globalSetup clears a stale `.e2e-stop` sentinel;
+          // abort-check.ts skips remaining tests once the sentinel is dropped by
+          // `npm run e2e:stop` from any terminal. See tests/e2e/helpers/stop-sentinel.ts.
+          globalSetup: ["./tests/e2e/global-setup.ts"],
+          setupFiles: ["./tests/e2e/abort-check.ts"],
           // E2E tests share OS-level resources (windows, focus, clipboard)
           // and must run serially.
           fileParallelism: false,
