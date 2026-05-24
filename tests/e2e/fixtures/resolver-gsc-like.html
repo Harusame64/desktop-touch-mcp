@@ -53,6 +53,11 @@
       <button id="fieldset-btn">Fieldset Action</button>
     </fieldset>
 
+    <!-- Bound button with an observable DOM effect (for the HEADED by-axis
+         click delivery test: a real OS click flips #bound-out → 'clicked'). -->
+    <button id="bound-btn" onclick="document.getElementById('bound-out').textContent = 'clicked';">Bound Action</button>
+    <div id="bound-out"></div>
+
     <!-- Fill target: an input identified by aria-label. -->
     <input id="email-input" type="text" aria-label="Email address" />
   </main>

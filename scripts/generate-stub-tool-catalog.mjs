@@ -351,6 +351,12 @@ const commonParams = {
   hwndParam: { type: 'string', description: 'Direct window handle ID (takes precedence over windowTitle). Obtain from get_windows response (hwnd field). String type to avoid 64-bit precision issues.', __optional: true },
   hwndFocusParam: { type: 'string', description: 'Direct window handle ID (takes precedence over windowTitle). Obtain from get_windows response (hwnd field). String type to avoid 64-bit precision issues.', __optional: true },
   methodParam: { type: 'string', enum: ['auto', 'background', 'foreground'], default: 'auto', description: 'Input method. background = WM_CHAR PostMessage (no focus change); foreground = SendInput (current default); auto = pick automatically.', __optional: true },
+  // ADR-023 Phase 1: by-axis (semantic) targeting params shared by browser_click / browser_fill.
+  byAxisParam: { type: 'string', enum: ['text', 'regex', 'role', 'ariaLabel'], description: "Semantic axis to target by INSTEAD of a CSS selector: 'text' (visible text), 'regex', 'role' (ARIA/implicit role), 'ariaLabel'. Pair with pattern. Resolves to a SINGLE actionable element and STOPS with candidates when ambiguous.", __optional: true },
+  byPatternParam: { type: 'string', description: 'Value matched against the chosen by axis (required when by is set).', __optional: true },
+  byRoleParam: { type: 'string', description: "Optional ARIA/implicit-role filter AND-combined with by (e.g. by:'text', pattern:'Save', role:'button').", __optional: true },
+  byScopeParam: { type: 'string', description: 'Optional CSS selector to limit the by-axis search scope (disambiguation).', __optional: true },
+  byCaseSensitiveParam: { type: 'boolean', description: "Case-sensitive matching for by:'text'/'regex' (default false).", __optional: true },
 };
 
 function extractDescribe(valueExpr) {
@@ -888,6 +894,21 @@ function parseSchema(src, schemaName) {
       }
     }
     return { type: 'object', properties: {}, additionalProperties: true };
+  }
+
+  // ADR-023 Phase 1: browser_click / browser_fill register a REFINED wire schema
+  // `z.object(withEnvelopeIncludeSchema(<id>)).refine(<exactly-one-of>)` so the
+  // SDK rejects an invalid selector|by+pattern combo at parse time. The
+  // `.refine()` predicate is a runtime-only cross-field check with NO JSON-Schema
+  // representation, so normalise the expression down to the inner
+  // `withEnvelopeIncludeSchema(<id>)` and let the envelope-wrapper branch below
+  // resolve the raw shape (the stub/wire `properties` are identical with or
+  // without the refine).
+  const refinedEnvMatch = expr.trim().match(
+    /^z\s*\.\s*object\s*\(\s*(withEnvelopeIncludeSchema\s*\(\s*[A-Za-z_$][\w$]*\s*\))\s*\)\s*\.\s*refine\s*\(/,
+  );
+  if (refinedEnvMatch) {
+    expr = refinedEnvMatch[1];
   }
 
   // PR #112 Round 1 P1 follow-up: when a schema is wrapped via the

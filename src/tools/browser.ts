@@ -28,7 +28,7 @@ import type { RichBlock } from "../engine/uia-diff.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
 import { prepareBrowserEvalExpression } from "./browser-eval-helpers.js";
-import { buildCandidateCollectionJs } from "./browser-resolver.js";
+import { buildCandidateCollectionJs, resolveBrowserActionTarget, type ResolveActionOutcome } from "./browser-resolver.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -113,8 +113,47 @@ export const browserFindElementSchema = {
   includeContext: includeContextParam,
 };
 
+// ADR-023 Phase 1: by-axis (semantic) targeting params shared by browser_click /
+// browser_fill. Provide EITHER `selector` (CSS, existing path, bit-equal) OR
+// `by`+`pattern` (resolver path). `by` deliberately excludes 'selector' — CSS
+// goes through the dedicated `selector` param. Exactly-one-of is enforced by a
+// `.refine()` on the registration schema (see browserClickRegistrationSchema).
+const byAxisParam = z
+  .enum(["text", "regex", "role", "ariaLabel"])
+  .optional()
+  .describe(
+    "Semantic axis to target by INSTEAD of a CSS selector: 'text' (visible text), 'regex', " +
+    "'role' (ARIA/implicit role), 'ariaLabel'. Pair with `pattern`. The server resolves to a " +
+    "SINGLE actionable element — climbing to a clickable ancestor up to 3 levels — and STOPS " +
+    "with a candidate list (code:'BrowserAmbiguousTarget') if the match is ambiguous; it never guesses."
+  );
+const byPatternParam = z
+  .string()
+  .min(1)
+  .optional()
+  .describe("Value matched against the chosen `by` axis (required when `by` is set).");
+const byRoleParam = z
+  .string()
+  .optional()
+  .describe("Optional ARIA/implicit-role filter AND-combined with `by` (e.g. by:'text', pattern:'Save', role:'button').");
+const byScopeParam = z
+  .string()
+  .optional()
+  .describe("Optional CSS selector to limit the `by`-axis search scope (disambiguation).");
+const byCaseSensitiveParam = coercedBoolean()
+  .optional()
+  .describe("Case-sensitive matching for by:'text'/'regex' (default false).");
+
 export const browserClickElementSchema = {
-  selector: selectorParam,
+  selector: z
+    .string()
+    .optional()
+    .describe("CSS selector for the target element (e.g. '#submit', '.btn'). Provide EITHER selector OR by+pattern."),
+  by: byAxisParam,
+  pattern: byPatternParam,
+  role: byRoleParam,
+  scope: byScopeParam,
+  caseSensitive: byCaseSensitiveParam,
   narrate: narrateParam,
   tabId: tabIdParam,
   port: portParam,
@@ -122,11 +161,11 @@ export const browserClickElementSchema = {
     "Optional perception lens ID. Guards (target.identityStable) are evaluated before clicking, " +
     "and a perception envelope is attached to post.perception on success."
   ),
-  fixId: z.string().optional().describe("Approve a pending suggestedFix (one-shot, 15s TTL)."),
+  fixId: z.string().optional().describe("Approve a pending suggestedFix (one-shot, 15s TTL). Selector mode only."),
   scrollIntoView: coercedBoolean().default(false).describe(
     "When true, if the target is outside the viewport, scroll it into view (centered) before clicking, " +
     "instead of failing with ElementNotInViewport. Default false preserves the explicit " +
-    "scrollIntoView-then-retry workflow."
+    "scrollIntoView-then-retry workflow. Selector mode only (by-axis resolves only in-viewport actionable targets)."
   ),
 };
 
@@ -433,14 +472,17 @@ type ClickProbeReading = {
  * matches on text-content tickers (clocks, live regions) that fire
  * independently of the click and would mask silent-fail.
  */
-function buildInstallClickProbeExpr(selector: string): string {
+function buildInstallClickProbeExpr(selector: string | null): string {
   return `
 (function() {
   try {
-    var sel = ${JSON.stringify(selector)};
-    var el = document.querySelector(sel);
+    var sel = ${selector === null ? "null" : JSON.stringify(selector)};
+    // by-axis (null selector): the resolver already located the element by
+    // physical coords, so there is no CSS selector to look up — skip the
+    // querySelector/iframe probe (always top-frame) and just observe the DOM.
+    var el = sel === null ? null : document.querySelector(sel);
     var inIframe = false;
-    if (!el) {
+    if (sel !== null && !el) {
       // Selector might resolve inside an iframe — best-effort probe so we can
       // surface the frame mismatch as 'unverifiable' rather than asserting
       // delivered=false on a click we can't observe.
@@ -521,7 +563,7 @@ function buildReadClickProbeExpr(): string {
  * verification error.
  */
 async function installClickProbe(
-  selector: string,
+  selector: string | null,
   tabId: string | null,
   port: number,
 ): Promise<{ installed: boolean; selectorFound?: boolean; inIframe?: boolean; reason?: string }> {
@@ -572,6 +614,74 @@ type VerifyDeliveryHint = {
     activeElementChanged: boolean;
   };
 };
+
+/**
+ * Shared OS-click + CDP delivery verification (Issue #181 matrix doc §3.1), used
+ * by both the selector path and the by-axis path of browser_click. Focuses the
+ * browser, moves the cursor FIRST (so hover mutations on the path are baselined,
+ * not counted as click-delivery — Codex P1), installs a document.body
+ * MutationObserver, left-clicks, settles 500ms, reads the probe, and returns the
+ * verifyDelivery hint. `probeSelector` is null for by-axis clicks (no CSS
+ * selector to look up — the probe still observes the whole document; top-frame
+ * only). Never throws on a verification-setup error: install/read failures
+ * degrade to an `unverifiable` hint. `activeElementChanged` is reported but is
+ * intentionally NOT a delivery signal (a plain click on a focusable control
+ * always moves focus; treating that as delivered would mask silent-fail).
+ */
+async function osClickAndVerify(
+  x: number,
+  y: number,
+  probeSelector: string | null,
+  tabId: string | null,
+  port: number,
+): Promise<VerifyDeliveryHint> {
+  await ensureBrowserFocused(port);
+
+  const speed = DEFAULT_MOUSE_SPEED;
+  if (speed === 0) {
+    await mouse.setPosition(new Point(x, y));
+  } else {
+    const prev = mouse.config.mouseSpeed;
+    mouse.config.mouseSpeed = speed;
+    try {
+      await mouse.move(straightTo(new Point(x, y)));
+    } finally {
+      mouse.config.mouseSpeed = prev;
+    }
+  }
+
+  // Probe installed AFTER the cursor move (Codex P1). Best-effort: install/read
+  // failures never fail the click — they degrade to `unverifiable`.
+  const probe = await installClickProbe(probeSelector, tabId, port);
+
+  await mouse.click(Button.LEFT);
+
+  let verifyDelivery: VerifyDeliveryHint = {
+    status: "unverifiable",
+    channel: "cdp",
+    reason: "probe_install_failed",
+  };
+  if (probe.installed) {
+    await new Promise<void>((r) => setTimeout(r, 500));
+    const reading = await readClickProbe(tabId, port);
+    if (reading && reading.ok) {
+      const mutationCount = reading.mutationCount ?? 0;
+      const urlChanged = !!reading.urlChanged;
+      const activeElementChanged = !!reading.activeElementChanged;
+      const anySignal = mutationCount > 0 || urlChanged;
+      if (reading.inIframe) {
+        verifyDelivery = { status: "unverifiable", channel: "cdp", reason: "iframe_context_mismatch", observedSignals: { mutationCount, urlChanged, activeElementChanged } };
+      } else if (anySignal) {
+        verifyDelivery = { status: "delivered", channel: "cdp", observedSignals: { mutationCount, urlChanged, activeElementChanged } };
+      } else {
+        verifyDelivery = { status: "unverifiable", channel: "cdp", reason: "no_dom_mutation", observedSignals: { mutationCount, urlChanged, activeElementChanged } };
+      }
+    } else {
+      verifyDelivery = { status: "unverifiable", channel: "cdp", reason: "probe_read_failed" };
+    }
+  }
+  return verifyDelivery;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Handlers
@@ -1004,8 +1114,124 @@ async function scrollSelectorIntoViewIfNeeded(
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR-023 Phase 1: by-axis (semantic) resolution → action, shared by
+// browser_click (PR3) and browser_fill (PR4).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Map a resolver `error` outcome (gather-time failure) to a typed tool failure. */
+function browserResolveErrorToFailure(
+  outcome: Extract<ResolveActionOutcome, { kind: "error" }>,
+  tool: string,
+  ctx: Record<string, unknown>,
+): ToolResult {
+  const detail = outcome.message ? ` — ${outcome.message}` : "";
+  switch (outcome.code) {
+    case "ScopeNotFound":
+      return failCode("ScopeNotFound", `${tool}: scope selector matched no element${detail}`, {
+        suggest: ["Verify the scope CSS selector matches at least one element", "Omit scope to search the full document"],
+        context: ctx,
+      });
+    case "InvalidRegex":
+      return failCode("InvalidArgs", `${tool}: invalid regex pattern${detail}`, {
+        suggest: ["Verify the regex syntax", "Use by:'text' for a literal substring"],
+        context: ctx,
+      });
+    case "Timeout":
+      return failCode("BrowserSearchTimeout", `${tool}: resolver scan budget exceeded${detail}`, {
+        suggest: ["Narrow the search with a scope (CSS selector)", "Use a more specific pattern"],
+        context: ctx,
+      });
+    default:
+      return failCode("ToolError", `${tool}: resolver evaluation failed${detail}`, { context: ctx });
+  }
+}
+
+/**
+ * Map a resolver ambiguous / noActionable stop to a typed tool failure. The
+ * candidate fingerprints + fixed next-hints are surfaced so the agent can
+ * disambiguate (by index / refined pattern) and retry — the resolver never
+ * guesses (ADR §1.2 D3). `BrowserAmbiguousTarget` / `BrowserNoActionableTarget`
+ * use inline failCode (ElementNotInViewport precedent → no SUGGESTS/catalog drift).
+ */
+function browserResolveStopToFailure(
+  outcome: Extract<ResolveActionOutcome, { kind: "ambiguous" | "noActionable" }>,
+  tool: string,
+  ctx: Record<string, unknown>,
+): ToolResult {
+  const code = outcome.kind === "ambiguous" ? "BrowserAmbiguousTarget" : "BrowserNoActionableTarget";
+  const message =
+    outcome.kind === "ambiguous"
+      ? `${tool}: ${outcome.total} elements match — ambiguous, not auto-acting. Disambiguate and retry.`
+      : `${tool}: ${outcome.total} match(es) found but none is an auto-actionable target.`;
+  return failCode(code, message, {
+    suggest: [...outcome.next],
+    context: { ...ctx, total: outcome.total, returned: outcome.returned, truncated: outcome.truncated, candidates: outcome.candidates },
+  });
+}
+
+/**
+ * by-axis browser_click: resolve a single actionable target semantically, then
+ * OS-click at its resolved physical coords (no second querySelector — coords come
+ * from the same gather eval, ADR §1.2 D1). Ambiguous / non-actionable / error
+ * stop with a typed failure. Selector mode stays on the bit-equal path.
+ */
+async function handleBrowserClickByAxis(args: {
+  by: "text" | "regex" | "role" | "ariaLabel";
+  pattern: string;
+  role?: string;
+  scope?: string;
+  caseSensitive?: boolean;
+  tabId?: string;
+  port: number;
+  lensId?: string;
+}): Promise<ToolResult> {
+  const { by, pattern, role, scope, caseSensitive, tabId, port, lensId } = args;
+
+  let perceptionEnvBrowser: import("../engine/perception/types.js").PostPerception | undefined;
+  if (lensId) {
+    const guardResult = await evaluatePreToolGuards(lensId, "browser_click", {});
+    if (!guardResult.ok && guardResult.policy === "block") {
+      const env = buildEnvelopeFor(lensId, { toolName: "browser_click" });
+      return failWith(
+        new Error(`GuardFailed: ${guardResult.failedGuard?.reason ?? "guard evaluation failed"}`),
+        "browser_click",
+        { lensId, guard: guardResult.failedGuard, _perceptionForPost: env },
+      );
+    }
+    perceptionEnvBrowser = buildEnvelopeFor(lensId, { toolName: "browser_click" }) ?? undefined;
+  }
+
+  const outcome = await resolveBrowserActionTarget({
+    by, pattern, role, scope, caseSensitive, action: "click", tabId: tabId ?? null, port,
+  });
+  const ctx = { by, pattern, ...(role ? { role } : {}), ...(scope ? { scope } : {}) };
+  if (outcome.kind === "error") return browserResolveErrorToFailure(outcome, "browser_click", ctx);
+  if (outcome.kind !== "resolved") return browserResolveStopToFailure(outcome, "browser_click", ctx);
+
+  // Resolved: OS-click at the physical point (probe with null selector — the
+  // resolver located the element by coords; document-level mutation probe).
+  const verifyDelivery = await osClickAndVerify(outcome.physical.x, outcome.physical.y, null, tabId ?? null, port);
+  const tabCtx = await getTabContext(tabId ?? null, port);
+  return ok({
+    ok: true,
+    clicked: { by, pattern, ...(role ? { role } : {}) },
+    at: outcome.physical,
+    resolved: { rect: outcome.rect, climbDepth: outcome.climbDepth },
+    activeTab: { id: tabCtx.id, title: tabCtx.title, url: tabCtx.url },
+    readyState: tabCtx.readyState,
+    hints: { verifyDelivery },
+    ...(perceptionEnvBrowser && { _perceptionForPost: perceptionEnvBrowser }),
+  });
+}
+
 export const browserClickElementHandler = async ({
   selector,
+  by,
+  pattern,
+  role,
+  scope,
+  caseSensitive,
   narrate,
   tabId,
   port,
@@ -1013,7 +1239,12 @@ export const browserClickElementHandler = async ({
   fixId,
   scrollIntoView,
 }: {
-  selector: string;
+  selector?: string;
+  by?: "text" | "regex" | "role" | "ariaLabel";
+  pattern?: string;
+  role?: string;
+  scope?: string;
+  caseSensitive?: boolean;
   narrate?: string;
   tabId?: string;
   port: number;
@@ -1022,6 +1253,19 @@ export const browserClickElementHandler = async ({
   scrollIntoView?: boolean;
 }): Promise<ToolResult> => {
   try {
+    // ADR-023 Phase 1: by-axis (semantic) targeting path. The registration
+    // schema's .refine() guarantees exactly-one-of(selector | by+pattern), so a
+    // present `by` means selector is absent → resolver path. The selector path
+    // below is unchanged (bit-equal, NFR-1 / AC-9).
+    if (by && pattern) {
+      return await handleBrowserClickByAxis({ by, pattern, role, scope, caseSensitive, tabId, port, lensId });
+    }
+    if (!selector) {
+      return failCode("InvalidArgs", "browser_click: provide either selector or by+pattern.", {
+        suggest: ["Pass a CSS selector, or by+pattern (e.g. by:'text', pattern:'Save')."],
+      });
+    }
+
     // Phase G: fixId approval prologue
     let effectiveSelector = selector;
     let effectiveTabId = tabId;
@@ -1109,109 +1353,9 @@ export const browserClickElementHandler = async ({
         },
       );
     }
-    // Ensure browser window is focused so click events reach the page
-    await ensureBrowserFocused(port);
-
-    // Perform the cursor move FIRST (hover effects on the path between the
-    // current cursor position and the target can fire mutations / focus
-    // changes — these must NOT count as click-delivery signals). Codex P1.
-    const speed = DEFAULT_MOUSE_SPEED;
-    if (speed === 0) {
-      await mouse.setPosition(new Point(coords.x, coords.y));
-    } else {
-      const prev = mouse.config.mouseSpeed;
-      mouse.config.mouseSpeed = speed;
-      try {
-        await mouse.move(straightTo(new Point(coords.x, coords.y)));
-      } finally {
-        mouse.config.mouseSpeed = prev;
-      }
-    }
-
-    // ── Issue #181: pre-click MutationObserver probe (matrix doc §3.1) ──
-    // Installed AFTER the cursor move so any hover-driven DOM updates land in
-    // the baseline rather than being counted as post-click signals (Codex P1).
-    // Best-effort install: if install fails (page navigated mid-call, CDP
-    // detached, etc.) we still attempt the click and emit an `unverifiable`
-    // hint downstream — never fail the click on a verification setup error.
-    const probe = await installClickProbe(effectiveSelector, effectiveTabId ?? null, port);
-
-    await mouse.click(Button.LEFT);
-
-    // ── Issue #181: settle window then read the probe ──
-    // matrix doc §3.1 規範: 500ms timeout. We use a flat sleep rather than a
-    // poll loop because most legitimate DOM mutations land within the first
-    // microtask after click; the 500ms is the *upper bound* for SPA effects
-    // (re-render after async state update) and we are happy to wait the
-    // full window before deciding `unverifiable`.
-    //
-    // Initialise with the install-failed unverifiable hint so the value is
-    // always defined (CodeQL: avoids the useless `verifyDelivery && …`
-    // narrowing at the response site). The branches below override.
-    let verifyDelivery: VerifyDeliveryHint = {
-      status: "unverifiable",
-      channel: "cdp",
-      reason: "probe_install_failed",
-    };
-    if (probe.installed) {
-      await new Promise<void>((r) => setTimeout(r, 500));
-      const reading = await readClickProbe(effectiveTabId ?? null, port);
-      if (reading && reading.ok) {
-        const mutationCount = reading.mutationCount ?? 0;
-        const urlChanged = !!reading.urlChanged;
-        const activeElementChanged = !!reading.activeElementChanged;
-        // `activeElementChanged` is reported in observedSignals for caller
-        // diagnosis but is intentionally NOT part of `anySignal`: a plain
-        // click on a focusable control (button, input) updates focus even
-        // when no app handler ran or no state changed. Treating focus-only
-        // changes as "delivered" would mask the silent-fail regression the
-        // PR is built to catch (Codex P1). Require at least one of:
-        // mutation event, URL navigation.
-        const anySignal = mutationCount > 0 || urlChanged;
-        if (reading.inIframe) {
-          // Selector resolved inside an iframe — Runtime.evaluate runs in the
-          // top frame, so our MutationObserver could not observe events
-          // dispatched on iframe-internal nodes. Surface as unverifiable
-          // rather than declaring not-delivered.
-          verifyDelivery = {
-            status: "unverifiable",
-            channel: "cdp",
-            reason: "iframe_context_mismatch",
-            observedSignals: { mutationCount, urlChanged, activeElementChanged },
-          };
-        } else if (anySignal) {
-          verifyDelivery = {
-            status: "delivered",
-            channel: "cdp",
-            observedSignals: { mutationCount, urlChanged, activeElementChanged },
-          };
-        } else {
-          // No mutation, no URL change, no activeElement change in 500ms.
-          // Most likely the SPA button has no listener attached — the click
-          // hit empty markup. Surface as `unverifiable` per matrix doc §3.1
-          // (we don't escalate to BrowserClickNotDelivered fail because the
-          // click *did* dispatch at the OS level — only the page response is
-          // missing, which is ambiguous between "no handler" and "handler
-          // ran but produced no observable side effect").
-          verifyDelivery = {
-            status: "unverifiable",
-            channel: "cdp",
-            reason: "no_dom_mutation",
-            observedSignals: { mutationCount, urlChanged, activeElementChanged },
-          };
-        }
-      } else {
-        // Probe installed but read failed — likely a navigation between
-        // install and read.
-        verifyDelivery = {
-          status: "unverifiable",
-          channel: "cdp",
-          reason: "probe_read_failed",
-        };
-      }
-    }
-    // No `else` for !probe.installed: the default initial value of
-    // verifyDelivery already carries reason: "probe_install_failed".
+    // OS click + CDP delivery verification (Issue #181, shared with the by-axis
+    // path). Focus → move → probe → click → settle → read → verifyDelivery.
+    const verifyDelivery = await osClickAndVerify(coords.x, coords.y, effectiveSelector, effectiveTabId ?? null, port);
 
     const tabCtx = await getTabContext(effectiveTabId ?? null, port);
 
@@ -2403,7 +2547,21 @@ export const browserNavigateRegistrationHandler = makeCommitWrapper(
  * variant). Replaces the pre-expansion `withPostState("browser_click", ...)`
  * direct wrap. PR #134 browser_open / PR #135 browser_navigate 同型 pattern.
  */
-export const browserClickRegistrationSchema = withEnvelopeIncludeSchema(browserClickElementSchema);
+// ADR-023 Phase 1: exactly-one-of(selector | by+pattern) enforced by .refine().
+// The refined ZodObject keeps `_def.type === 'object'` + shape in zod 4 so the
+// MCP SDK still emits `tools/list` properties AND runs the refine at parse time
+// (verified). Registered via server.registerTool — server.tool's 3-arg form
+// throws on a ZodObject (raw-shape only); the browser_eval pattern.
+export const browserClickRegistrationSchema = z
+  .object(withEnvelopeIncludeSchema(browserClickElementSchema))
+  .refine(
+    (a) => {
+      const hasSelector = typeof a.selector === "string" && a.selector.length > 0;
+      const hasBy = typeof a.by === "string" && typeof a.pattern === "string" && a.pattern.length > 0;
+      return hasSelector !== hasBy; // exactly one (XOR)
+    },
+    { message: "browser_click: provide EITHER selector OR (by + pattern), not both or neither." },
+  );
 
 export const browserClickRegistrationHandler = makeCommitWrapper(
   withRichNarration(
@@ -2605,10 +2763,13 @@ export function registerBrowserTools(server: McpServer): void {
     browserLocateRegistrationHandler as typeof browserFindElementHandler
   );
 
-  server.tool(
+  server.registerTool(
     "browser_click",
-    "Find a DOM element by CSS selector and click it (combines browser_locate + mouse_click in one step). Prefer over mouse_click for Chrome — selector-based clicking is stable across repaints. Pass tabId+port so the server auto-guards (verifies tab readyState and identity) and returns post.perception.status. lensId is optional for advanced pinned-tab workflows. Caveats: Fails if the element is outside the visible viewport — scroll it into view with browser_eval(\"document.querySelector('sel').scrollIntoView()\") first. hints.verifyDelivery:{status:'delivered'|'unverifiable', reason, observedSignals:{mutationCount,urlChanged,activeElementChanged}} reports the post-click observation in 2 values: 'delivered' fires only when mutationCount>0 OR urlChanged (activeElementChanged is recorded in observedSignals but intentionally NOT a delivery signal — plain clicks on focusable controls always update focus, treating that as 'delivered' would mask silent-fail regressions); 'unverifiable' reason ∈ {'iframe_context_mismatch','no_dom_mutation','probe_install_failed','probe_read_failed'}. CDP emits 2 values only (focus_only is a UIA-path concept, N/A here). BrowserClickNotDelivered is reserved-only (false-positive risk too high to emit) — degradation reads from 'unverifiable' status.",
-    browserClickRegistrationSchema,
+    {
+      description:
+        "Click a DOM element in Chrome/Edge. Two ways to target: (1) selector — a CSS selector (combines browser_locate + mouse_click; stable across repaints); or (2) by-axis (semantic) — by:'text'|'regex'|'role'|'ariaLabel' + pattern, so you do not have to build a CSS selector for dynamic-class SPAs. by-axis resolves to a SINGLE actionable element (climbing to a clickable ancestor up to 3 levels, hit-testing for occlusion) and STOPS with code:'BrowserAmbiguousTarget' (candidates[] + next[] hints) when 2+ actionable elements match, or code:'BrowserNoActionableTarget' when matches exist but none is clickable — it never guesses. Optionally add role to filter (by:'text',pattern:'Save',role:'button') and scope to narrow the search. Provide EITHER selector OR by+pattern (not both). Pass tabId+port so the server auto-guards (verifies tab readyState and identity) and returns post.perception.status. lensId is optional for advanced pinned-tab workflows. Caveats: selector mode fails if the element is outside the visible viewport — scroll it into view with browser_eval(\"document.querySelector('sel').scrollIntoView()\") first (by-axis only resolves in-viewport actionable targets). hints.verifyDelivery:{status:'delivered'|'unverifiable', reason, observedSignals:{mutationCount,urlChanged,activeElementChanged}} reports the post-click observation in 2 values: 'delivered' fires only when mutationCount>0 OR urlChanged (activeElementChanged is recorded in observedSignals but intentionally NOT a delivery signal — plain clicks on focusable controls always update focus, treating that as 'delivered' would mask silent-fail regressions); 'unverifiable' reason ∈ {'iframe_context_mismatch','no_dom_mutation','probe_install_failed','probe_read_failed'}. CDP emits 2 values only (focus_only is a UIA-path concept, N/A here). BrowserClickNotDelivered is reserved-only (false-positive risk too high to emit) — degradation reads from 'unverifiable' status.",
+      inputSchema: browserClickRegistrationSchema,
+    },
     browserClickRegistrationHandler as typeof browserClickElementHandler
   );
 

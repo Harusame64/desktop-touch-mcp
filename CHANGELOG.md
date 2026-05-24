@@ -4,6 +4,29 @@
 
 ### Added
 
+- **`browser_click` can target elements by meaning, not just CSS selectors.**
+  Instead of a `selector`, you can now pass `by` + `pattern` to click an element
+  by what it *is* — handy for dynamic-class single-page apps where stable CSS
+  selectors are hard to write:
+  - `by:'text'` — visible text (`browser_click({by:'text', pattern:'Save'})`)
+  - `by:'role'` — ARIA/implicit role (e.g. `pattern:'button'`)
+  - `by:'ariaLabel'` — the accessible label
+  - `by:'regex'` — a regular expression over the text
+
+  The server resolves your description to a **single** clickable element. If the
+  text you name sits inside a label or icon, it automatically clicks the real
+  button around it (up to 3 levels up). It only clicks when the target is
+  unambiguous and actually reachable — an element hidden behind an overlay,
+  off-screen, or disabled (including via a disabled `<fieldset>`) is never
+  clicked. When several elements match, it **stops** and returns
+  `code:'BrowserAmbiguousTarget'` with a short candidate list and hints for
+  narrowing down; when matches exist but none is clickable it returns
+  `code:'BrowserNoActionableTarget'`. It never guesses between look-alikes.
+  - Narrow further with `role` (`by:'text', pattern:'Save', role:'button'`) or a
+    `scope` CSS container.
+  - The existing `selector` mode is unchanged — pass either `selector` **or**
+    `by`+`pattern`, not both.
+
 - **`browser_click` can scroll an off-screen target into view for you.** Pass
   `scrollIntoView:true` and, when the element is outside the visible viewport,
   the click first scrolls it to the centre of the view and then clicks — instead

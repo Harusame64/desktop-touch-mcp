@@ -25,13 +25,39 @@ export interface StubToolCatalogEntry {
 export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   {
     "name": "browser_click",
-    "description": "Find a DOM element by CSS selector and click it (combines browser_locate + mouse_click in one step). Prefer over mouse_click for Chrome — selector-based clicking is stable across repaints. Pass tabId+port so the server auto-guards (verifies tab readyState and identity) and returns post.perception.status. lensId is optional for advanced pinned-tab workflows. Caveats: Fails if the element is outside the visible viewport — scroll it into view with browser_eval(\"document.querySelector('sel').scrollIntoView()\") first. hints.verifyDelivery:{status:'delivered'|'unverifiable', reason, observedSignals:{mutationCount,urlChanged,activeElementChanged}} reports the post-click observation in 2 values: 'delivered' fires only when mutationCount>0 OR urlChanged (activeElementChanged is recorded in observedSignals but intentionally NOT a delivery signal — plain clicks on focusable controls always update focus, treating that as 'delivered' would mask silent-fail regressions); 'unverifiable' reason ∈ {'iframe_context_mismatch','no_dom_mutation','probe_install_failed','probe_read_failed'}. CDP emits 2 values only (focus_only is a UIA-path concept, N/A here). BrowserClickNotDelivered is reserved-only (false-positive risk too high to emit) — degradation reads from 'unverifiable' status.",
+    "description": "Click a DOM element in Chrome/Edge. Two ways to target: (1) selector — a CSS selector (combines browser_locate + mouse_click; stable across repaints); or (2) by-axis (semantic) — by:'text'|'regex'|'role'|'ariaLabel' + pattern, so you do not have to build a CSS selector for dynamic-class SPAs. by-axis resolves to a SINGLE actionable element (climbing to a clickable ancestor up to 3 levels, hit-testing for occlusion) and STOPS with code:'BrowserAmbiguousTarget' (candidates[] + next[] hints) when 2+ actionable elements match, or code:'BrowserNoActionableTarget' when matches exist but none is clickable — it never guesses. Optionally add role to filter (by:'text',pattern:'Save',role:'button') and scope to narrow the search. Provide EITHER selector OR by+pattern (not both). Pass tabId+port so the server auto-guards (verifies tab readyState and identity) and returns post.perception.status. lensId is optional for advanced pinned-tab workflows. Caveats: selector mode fails if the element is outside the visible viewport — scroll it into view with browser_eval(\"document.querySelector('sel').scrollIntoView()\") first (by-axis only resolves in-viewport actionable targets). hints.verifyDelivery:{status:'delivered'|'unverifiable', reason, observedSignals:{mutationCount,urlChanged,activeElementChanged}} reports the post-click observation in 2 values: 'delivered' fires only when mutationCount>0 OR urlChanged (activeElementChanged is recorded in observedSignals but intentionally NOT a delivery signal — plain clicks on focusable controls always update focus, treating that as 'delivered' would mask silent-fail regressions); 'unverifiable' reason ∈ {'iframe_context_mismatch','no_dom_mutation','probe_install_failed','probe_read_failed'}. CDP emits 2 values only (focus_only is a UIA-path concept, N/A here). BrowserClickNotDelivered is reserved-only (false-positive risk too high to emit) — degradation reads from 'unverifiable' status.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "selector": {
+          "description": "CSS selector for the target element (e.g. '#submit', '.btn'). Provide EITHER selector OR by+pattern.",
+          "type": "string"
+        },
+        "by": {
           "type": "string",
-          "description": "CSS selector for the target element (e.g. '#submit', '.btn', 'button[type=submit]')."
+          "enum": [
+            "text",
+            "regex",
+            "role",
+            "ariaLabel"
+          ],
+          "description": "Semantic axis to target by INSTEAD of a CSS selector: 'text' (visible text), 'regex', 'role' (ARIA/implicit role), 'ariaLabel'. Pair with pattern. Resolves to a SINGLE actionable element and STOPS with candidates when ambiguous."
+        },
+        "pattern": {
+          "type": "string",
+          "description": "Value matched against the chosen by axis (required when by is set)."
+        },
+        "role": {
+          "type": "string",
+          "description": "Optional ARIA/implicit-role filter AND-combined with by (e.g. by:'text', pattern:'Save', role:'button')."
+        },
+        "scope": {
+          "type": "string",
+          "description": "Optional CSS selector to limit the by-axis search scope (disambiguation)."
+        },
+        "caseSensitive": {
+          "type": "boolean",
+          "description": "Case-sensitive matching for by:'text'/'regex' (default false)."
         },
         "narrate": {
           "type": "string",
@@ -58,11 +84,11 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "type": "string"
         },
         "fixId": {
-          "description": "Approve a pending suggestedFix (one-shot, 15s TTL).",
+          "description": "Approve a pending suggestedFix (one-shot, 15s TTL). Selector mode only.",
           "type": "string"
         },
         "scrollIntoView": {
-          "description": "When true, if the target is outside the viewport, scroll it into view (centered) before clicking, instead of failing with ElementNotInViewport. Default false preserves the explicit scrollIntoView-then-retry workflow.",
+          "description": "When true, if the target is outside the viewport, scroll it into view (centered) before clicking, instead of failing with ElementNotInViewport. Default false preserves the explicit scrollIntoView-then-retry workflow. Selector mode only (by-axis resolves only in-viewport actionable targets).",
           "type": "boolean",
           "default": false
         },
@@ -74,10 +100,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
         }
       },
-      "additionalProperties": false,
-      "required": [
-        "selector"
-      ]
+      "additionalProperties": false
     }
   },
   {
