@@ -102,6 +102,10 @@
             <h2>Project Milestones</h2>
             <p>As the project evolves, we document major architectural shifts and milestones here.</p>
             <div class="three-up">
+              <a class="mini-card" href="https://github.com/Harusame64/desktop-touch-mcp/releases/tag/v1.9.0">
+                <h3>v1.9: Semantic Targeting Reaches the Browser</h3>
+                <p><code>browser_click</code> and <code>browser_fill</code> can target an element by what it <em>means</em> (<code>by:'text'|'role'|'ariaLabel'</code> + a <code>pattern</code>), resolving to a single actionable target and stopping — not guessing — when the match is ambiguous. The browser also learns to tell a real modal dialog from a navigation drawer: <code>browser_overview</code> reports a machine-readable <code>modal</code> state and <code>browser_click</code> refuses to click <em>through</em> a blocking dialog onto its backdrop. "See entities, not coordinates," applied to the web.</p>
+              </a>
               <a class="mini-card" href="./articles/v1.8-milestone.html">
                 <h3>v1.8: From Delivery to Completion, and Reaching Deeper Into Apps</h3>
                 <p>Trustworthy delivery extends into trustworthy completion: <code>terminal(action='run')</code> can wait for a command to finish and report its real exit code, the new <code>excel</code> tool runs VBA over COM, and the act-and-observe loop gains race-free visual verification, idle-aware CPU dormancy, a diagnostic log, and a deliberate-dwell emergency stop.</p>
