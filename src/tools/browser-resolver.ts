@@ -771,6 +771,12 @@ export type ResolveActionOutcome =
  * eval's window metrics — the getElementScreenCoords formula (cdp-bridge.ts),
  * computed once at gather time. Center-based so it matches the actionability
  * hit-test (`receivesEvents` = elementFromPoint(center)).
+ *
+ * NOTE (intentional, do not "fix" toward edge-rounding): we average the CSS-px
+ * center first, then convert+round once. getElementScreenCoords instead rounds
+ * each physical edge then averages — a ≤1px sub-pixel difference at the center,
+ * harmless for an OS click and kept center-first to stay aligned with the
+ * elementFromPoint hit-test that gated this target.
  */
 export function physicalPoint(rect: RectXYWH, vp: ViewportMetrics): { x: number; y: number } {
   const cx = rect.x + rect.w / 2;
@@ -784,8 +790,11 @@ export function physicalPoint(rect: RectXYWH, vp: ViewportMetrics): { x: number;
 /**
  * Resolve a semantic (by-axis) target to a single actionable element, or an
  * ambiguity / no-actionable / error outcome. One gather eval + a pure decision.
+ *
+ * Named distinctly from the native perception `resolveActionTarget`
+ * (`src/engine/perception/action-target.ts`) — different layer, different shape.
  */
-export async function resolveActionTarget(args: ResolveActionArgs): Promise<ResolveActionOutcome> {
+export async function resolveBrowserActionTarget(args: ResolveActionArgs): Promise<ResolveActionOutcome> {
   const expr = buildActionCandidateFactsJs({
     by: args.by,
     pattern: args.pattern,
@@ -793,7 +802,18 @@ export async function resolveActionTarget(args: ResolveActionArgs): Promise<Reso
     caseSensitive: args.caseSensitive ?? false,
     role: args.role,
   });
-  const raw = await evaluateInTab(expr, args.tabId ?? null, args.port);
+  let raw: unknown;
+  try {
+    raw = await evaluateInTab(expr, args.tabId ?? null, args.port);
+  } catch (err) {
+    // The injected JS can throw synchronously OUT of the IIFE for inputs the
+    // shared body does not guard — an invalid CSS `scope`/`by:'selector'` makes
+    // querySelector(All) throw a SyntaxError (DOMException), and CDP itself can
+    // throw (timeout / detached). The shared body is byte-equal-pinned (can't add
+    // a try there without breaking browser_search), so we normalise here into the
+    // documented error union instead of rejecting (parity with browserSearchHandler).
+    return { kind: "error", code: "EvalError", message: err instanceof Error ? err.message : String(err) };
+  }
   if (raw && typeof raw === "object" && "__error" in (raw as object)) {
     const e = raw as GatherError;
     return { kind: "error", code: e.__error, message: e.message };
