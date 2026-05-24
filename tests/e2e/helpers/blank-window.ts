@@ -15,9 +15,19 @@
  * focus_only" verify-delivery pin holds — an empty form has no UIA children to
  * mutate, so a click yields focus_only, never 'delivered'.
  *
- * The window is a control-less, TopMost WinForms form driven by a detached
- * PowerShell message loop; killing the process closes it. The returned point is
- * the centre of the client area (well clear of the title-bar buttons).
+ * The window is a control-less, TopMost WinForms form driven by a PowerShell
+ * message loop (Application.Run); killing the process closes it. The returned
+ * point is the centre of the window rect — it falls below the title bar (in the
+ * empty client area) and clear of the title-bar buttons (top-right), so a click
+ * lands only on empty surface.
+ *
+ * TopMost is deliberate: this host can carry a TopMost full-screen overlay (a
+ * screen-capture / agent HUD); a non-topmost form would sit UNDER it and the
+ * click would land on the overlay instead of our form. TopMost keeps the form
+ * above such overlays so the click reliably hits OUR window. (It can momentarily
+ * cover another test window — e.g. tool-chain's Notepad — but that file's
+ * Notepad screenshot uses PrintWindow, which is overlay-immune, and its
+ * Notepad-click test skips on a fresh, element-less Notepad.)
  */
 import { spawn } from "child_process";
 import { enumWindowsInZOrder } from "../../../src/engine/win32.js";
@@ -40,8 +50,8 @@ const H = 360;
  * a blind click). Always pair with `close()` in afterAll.
  */
 export async function spawnBlankWindow(): Promise<BlankWindow | null> {
-  // Unique title so the rect lookup picks OUR window even if several test files
-  // spawn one concurrently (vitest pools).
+  // Unique title so the rect lookup unambiguously picks OUR window (defensive —
+  // the e2e project runs files serially, so concurrent spawns shouldn't occur).
   const title = `dt-blank-click-target-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
   // Spawn-config caveats (verified empirically — do not "simplify"):
   //   - NO detached:true — a detached GUI process exits immediately (no desktop).
@@ -84,8 +94,9 @@ export async function spawnBlankWindow(): Promise<BlankWindow | null> {
     const w = enumWindowsInZOrder().find((x) => x.title === title && !x.isMinimized);
     if (w && w.region.width > 0 && w.region.height > 0) {
       const r = w.region;
-      // Centre of the client area — below the ~30px title bar and clear of the
-      // title-bar buttons (top-right), so the click hits only empty surface.
+      // Centre of the window rect (GetWindowRect, incl. title bar) — for a
+      // 480x360 form this lands well below the title bar in the empty client
+      // area and clear of the title-bar buttons (top-right): only empty surface.
       return { point: { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }, close };
     }
     await new Promise((res) => setTimeout(res, 200));

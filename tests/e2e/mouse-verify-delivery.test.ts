@@ -103,6 +103,11 @@ describe.skipIf(blank === null)("mouse_click verifyDelivery hint (issue #178)", 
     // criteria: an action that doesn't hit anything must NOT return
     // verifyDelivery:'delivered'. The dedicated window also keeps this off the
     // desktop entirely (no Recycle Bin focus, no host-MCP failsafe corner).
+    //
+    // Note: this is the 3rd click in the describe, so the blank window is already
+    // foreground by now — the click causes no foreground change, so the status
+    // settles on 'focus_only' (a 1st click could report 'delivered' via fgChange;
+    // that earlier test does not assert a specific status).
     const result = await mouseClickHandler({
       // Blank window's empty client area — this click hits nothing actionable.
       x: blank!.point.x,
