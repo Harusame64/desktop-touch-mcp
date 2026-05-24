@@ -35,7 +35,9 @@
   `code:'BrowserAmbiguousTarget'` with a short candidate list and hints for
   narrowing down; when matches exist but none is clickable it returns
   `code:'BrowserNoActionableTarget'`. It never guesses between look-alikes.
-  - Narrow further with `role` (`by:'text', pattern:'Save', role:'button'`) or a
+  - Narrow further with `role` (`by:'text', pattern:'Save', role:'button'`) — the
+    `role` is matched against the real clickable target, so it still works when the
+    visible text sits inside a child element of the button (common in SPAs) — or a
     `scope` CSS container.
   - The existing `selector` mode is unchanged — pass either `selector` **or**
     `by`+`pattern`, not both.

@@ -386,7 +386,25 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
     if (roleFilter === 'heading') return /^h[1-6]$/.test(tg);
     return false;
   }
-  const pool = roleFilter ? filtered.filter(function(e) { return roleMatches(e.el); }) : filtered;
+  // The role filter targets the ACTIONABLE element (the climb resolves to a
+  // clickable ancestor up to D), NOT the matched leaf. by:'text'/'regex' record
+  // the element whose DIRECT text node matches — for a SPA button that wraps its
+  // label in a child (<div role="button"><span>Save</span></div>) that leaf is a
+  // role-less span, so a leaf-only role check drops every such button (real GSC
+  // dogfood: by:'text'+role:'button' returned total:0). Match the role against the
+  // leaf OR any ancestor within the SAME CLIMB_MAX_DEPTH the decision climbs, so
+  // the role filter and the climb agree. The decision/climb logic is unchanged —
+  // this only widens the pre-top-N pool (decideActionTarget still resolves /
+  // dedupes by the climbed clickable's rect).
+  function roleMatchesChain(el) {
+    let node = el;
+    for (let d = 0; node && d <= D; d++) {
+      if (roleMatches(node)) return true;
+      node = node.parentElement;
+    }
+    return false;
+  }
+  const pool = roleFilter ? filtered.filter(function(e) { return roleMatchesChain(e.el); }) : filtered;
   const top = pool.slice(0, N);
 
   // Physical-coord conversion constants (getElementScreenCoords formula,
@@ -702,7 +720,25 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
     if (roleFilter === 'heading') return /^h[1-6]$/.test(tg);
     return false;
   }
-  const pool = roleFilter ? filtered.filter(function(e) { return roleMatches(e.el); }) : filtered;
+  // The role filter targets the ACTIONABLE element (the climb resolves to a
+  // clickable ancestor up to D), NOT the matched leaf. by:'text'/'regex' record
+  // the element whose DIRECT text node matches — for a SPA button that wraps its
+  // label in a child (<div role="button"><span>Save</span></div>) that leaf is a
+  // role-less span, so a leaf-only role check drops every such button (real GSC
+  // dogfood: by:'text'+role:'button' returned total:0). Match the role against the
+  // leaf OR any ancestor within the SAME CLIMB_MAX_DEPTH the decision climbs, so
+  // the role filter and the climb agree. The decision/climb logic is unchanged —
+  // this only widens the pre-top-N pool (decideActionTarget still resolves /
+  // dedupes by the climbed clickable's rect).
+  function roleMatchesChain(el) {
+    let node = el;
+    for (let d = 0; node && d <= D; d++) {
+      if (roleMatches(node)) return true;
+      node = node.parentElement;
+    }
+    return false;
+  }
+  const pool = roleFilter ? filtered.filter(function(e) { return roleMatchesChain(e.el); }) : filtered;
   const top = pool.slice(0, N);
   // ── ADR-023 Phase 1 PR4: by-axis fill ACT (deterministic re-gather + index). ──
   // IDENTITY GATE (Codex P1): the re-gather assumes the DOM is unchanged since the

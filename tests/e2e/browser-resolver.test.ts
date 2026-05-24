@@ -124,15 +124,50 @@ describe.skipIf(!CHROME_AVAILABLE)("resolveBrowserActionTarget — ambiguity & s
   });
 });
 
-describe.skipIf(!CHROME_AVAILABLE)("resolveBrowserActionTarget — role filter (plan §S4)", () => {
+describe.skipIf(!CHROME_AVAILABLE)("resolveBrowserActionTarget — role filter (plan §S4 + climb-fix)", () => {
   it("role:'button' keeps the in-viewport button → resolved", async () => {
     const r = await resolve({ by: "text", pattern: "Open Settings", role: "button", action: "click" });
     expect(r.kind, JSON.stringify(r)).toBe("resolved");
   });
 
-  it("role:'link' keeps only the off-viewport drawer link → noActionable", async () => {
+  it("role:'link' keeps only the off-viewport drawer link → noActionable (axis unchanged)", async () => {
+    // The drawer <a href> is the matched leaf and self-matches role:'link', so it
+    // stays in the (chain-aware) pool; it is non-actionable (off-viewport) → the
+    // outcome is unchanged by the climb-fix. Guards the ariaLabel/role-axis path.
     const r = await resolve({ by: "text", pattern: "Open Settings", role: "link", action: "click" });
     expect(r.kind, JSON.stringify(r)).toBe("noActionable");
+  });
+
+  // ── ADR-023 role-filter climb-fix (real GSC dogfood P1) ──
+  // The role filter must match the climb's actionable target, not the matched
+  // leaf. A button whose visible label is wrapped in a child span used to return
+  // total:0 for by:'text'+role:'button' (GSC's `<div role=button><span>送信`).
+  it("role:'button' resolves a <button> whose label is a child span (regression)", async () => {
+    const r = await resolve({ by: "text", pattern: "Compose Email", role: "button", action: "click" });
+    expect(r.kind, JSON.stringify(r)).toBe("resolved");
+    if (r.kind === "resolved") expect(r.climbDepth).toBe(1);
+  });
+
+  it("role:'button' resolves a div[role=button] with a nested-span label (GSC-faithful; doubles as dedup sanity)", async () => {
+    // Resolved (not ambiguous) confirms the single leaf span climbs to one
+    // distinct role=button rect — the chain-aware filter does not inflate the pool
+    // into a false ambiguity.
+    const r = await resolve({ by: "text", pattern: "Submit Order", role: "button", action: "click" });
+    expect(r.kind, JSON.stringify(r)).toBe("resolved");
+    if (r.kind === "resolved") expect(r.climbDepth).toBe(1);
+  });
+
+  it("role:'button' + by:'regex' resolves the nested-span button (same root bug)", async () => {
+    const r = await resolve({ by: "regex", pattern: "Compose", role: "button", action: "click" });
+    expect(r.kind, JSON.stringify(r)).toBe("resolved");
+  });
+
+  it("by:'ariaLabel' + role:'textbox' still resolves the input (textbox not broken by the fix)", async () => {
+    // role:'textbox' is NOT in STRONG_ROLES; it resolves via the existing tag
+    // predicate. The chain-aware filter must not regress this (Layer-2 would have).
+    const r = await resolve({ by: "ariaLabel", pattern: "Email address", role: "textbox", action: "fill" });
+    expect(r.kind, JSON.stringify(r)).toBe("resolved");
+    if (r.kind === "resolved") expect(r.climbDepth).toBe(0);
   });
 });
 
