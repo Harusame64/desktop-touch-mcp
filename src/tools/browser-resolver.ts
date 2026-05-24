@@ -226,3 +226,246 @@ export function buildCandidateCollectionJs(args: CandidateCollectionArgs): strin
 })()
 `;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR-023 Phase 1 PR 2 — action-target resolution (gather / decide split, §2.bis)
+//
+// The injected JS gathers raw DOM facts (rects / visibility / elementFromPoint
+// hit-testing / ancestor clickable signals — all layout-dependent). THESE pure
+// functions make the actionability / ancestor-climb / uniqueness / ambiguity
+// DECISION in node, so the core logic is unit-testable without a DOM. The
+// injected fact-gatherer + the end-to-end pipeline are covered by real headless
+// Chrome e2e (tests/e2e). See adr-023-phase-1-resolver-plan.md §2.bis.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** ADR §1.2 D4: max ancestor-climb depth. */
+export const CLIMB_MAX_DEPTH = 3;
+/** ADR §1.2 D3: ambiguity candidate cap (top-N by score). */
+export const AMBIGUITY_CANDIDATE_CAP = 8;
+
+export interface RectXYWH {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * Clickable + actionability signals for one DOM node (a candidate's matched
+ * element or an ancestor in its climb chain). Every field is layout-derived and
+ * gathered by the injected JS — the decision functions below never touch the DOM.
+ */
+export interface ClickableNode {
+  /** lowercased tagName */
+  tag: string;
+  /** explicit `role` attribute, lowercased; null when absent */
+  role: string | null;
+  /** `<a href>` — an anchor without href is not interactive */
+  hasHref: boolean;
+  /** parsed tabindex; null when the attribute is absent/non-numeric */
+  tabindex: number | null;
+  /** an `onclick` attribute is present */
+  hasOnclick: boolean;
+  /** computed `cursor: pointer` */
+  cursorPointer: boolean;
+  /** display/visibility/opacity not hiding it AND size > 0 */
+  visible: boolean;
+  /** not `disabled` and `aria-disabled !== "true"` */
+  enabled: boolean;
+  /** `document.elementFromPoint(center)` hit is this node or a descendant (not occluded) */
+  receivesEvents: boolean;
+  /** viewport rect (CSS px), rounded */
+  rect: RectXYWH;
+}
+
+/** Raw facts the injected JS gathers for one matched candidate (top-N only). */
+export interface CandidateFacts {
+  /** 0-based, score-descending order; stable within one resolve call */
+  index: number;
+  /** [self, parent, ...] — self at [0], up to CLIMB_MAX_DEPTH ancestors */
+  chain: ClickableNode[];
+  /** classify(): link / button / input / heading / text / other */
+  type: string;
+  /** accessible-ish name (text / aria-label / placeholder); gatherer caps to 80 */
+  name: string;
+  role: string | null;
+  ariaLabel: string | null;
+  /** whyMatched — reuses browser_search's `matchedBy` */
+  matchedBy: string;
+  /** confidence score from collection */
+  score: number;
+  /** neighbouring label words; gatherer caps to 3 entries x 40 chars */
+  nearestLabels: string[];
+  /** nearest landmark role + accessible name; gatherer caps to 40 chars */
+  containerHint: string | null;
+}
+
+export interface Actionability {
+  visible: boolean;
+  enabled: boolean;
+  receivesEvents: boolean;
+}
+
+export interface ResolvedActionTarget {
+  /** candidate index that resolved */
+  index: number;
+  /** the resolved clickable's viewport rect (the click target) */
+  rect: RectXYWH;
+  /** 0 = matched element itself, 1..D = ancestor distance climbed */
+  climbDepth: number;
+}
+
+export interface AmbiguityCandidate {
+  index: number;
+  role: string | null;
+  name: string;
+  actionability: Actionability;
+  rect: RectXYWH;
+  nearestLabels: string[];
+  containerHint: string | null;
+  score: number;
+  whyMatched: string;
+}
+
+export type ResolveDecision =
+  | { kind: "resolved"; target: ResolvedActionTarget }
+  | {
+      kind: "ambiguous";
+      total: number;
+      returned: number;
+      truncated: boolean;
+      candidates: AmbiguityCandidate[];
+      next: string[];
+    }
+  | {
+      kind: "noActionable";
+      total: number;
+      returned: number;
+      truncated: boolean;
+      candidates: AmbiguityCandidate[];
+      next: string[];
+    };
+
+export type ClickableStrength = "strong" | "medium" | "weak" | "none";
+
+const STRONG_TAGS = new Set(["button", "input", "select", "textarea"]);
+const STRONG_ROLES = new Set([
+  "button",
+  "link",
+  "menuitem",
+  "menuitemcheckbox",
+  "menuitemradio",
+  "tab",
+  "option",
+  "checkbox",
+  "radio",
+  "switch",
+]);
+
+/** ADR §1.2 D4 clickable signal strength (strong stops the climb / auto-acts). */
+export function clickableStrength(n: ClickableNode): ClickableStrength {
+  if (
+    STRONG_TAGS.has(n.tag) ||
+    (n.tag === "a" && n.hasHref) ||
+    (n.role !== null && STRONG_ROLES.has(n.role))
+  ) {
+    return "strong";
+  }
+  if ((n.tabindex !== null && n.tabindex >= 0) || n.hasOnclick) return "medium";
+  if (n.cursorPointer) return "weak";
+  return "none";
+}
+
+/** ADR §1.2 D4 actionability gate. */
+export function isActionable(n: ClickableNode): boolean {
+  return n.visible && n.enabled && n.receivesEvents;
+}
+
+/**
+ * Climb the chain (matched element → ancestors, nearest first) to the nearest
+ * STRONG clickable within CLIMB_MAX_DEPTH. Returns null when none is strong —
+ * weak/medium signals alone never auto-resolve (FR-4 safety, ADR §1.2 D4); such
+ * candidates surface in the ambiguity/no-actionable response for explicit choice.
+ */
+export function climbToClickable(facts: CandidateFacts): { node: ClickableNode; depth: number } | null {
+  const max = Math.min(facts.chain.length, CLIMB_MAX_DEPTH + 1); // index 0 = self
+  for (let depth = 0; depth < max; depth++) {
+    if (clickableStrength(facts.chain[depth]) === "strong") {
+      return { node: facts.chain[depth], depth };
+    }
+  }
+  return null;
+}
+
+function rectKey(r: RectXYWH): string {
+  return `${r.x},${r.y},${r.w},${r.h}`;
+}
+
+function toFingerprint(f: CandidateFacts, clickable: ClickableNode | null): AmbiguityCandidate {
+  const n = clickable ?? f.chain[0];
+  return {
+    index: f.index,
+    role: f.role,
+    name: f.name,
+    actionability: { visible: n.visible, enabled: n.enabled, receivesEvents: n.receivesEvents },
+    rect: n.rect,
+    nearestLabels: f.nearestLabels,
+    containerHint: f.containerHint,
+    score: f.score,
+    whyMatched: f.matchedBy,
+  };
+}
+
+/** Fixed next-step hints (CodeQL CWE-94 — no interpolation, feedback_codeql_suggest_strings). */
+export const AMBIGUITY_NEXT_HINTS: readonly string[] = [
+  "Narrow the search with a scope (CSS selector or landmark container).",
+  "Add distinguishing words from nearestLabels to the pattern.",
+  "Combine with role to filter (e.g. role:'button').",
+];
+
+export const NO_ACTIONABLE_NEXT_HINTS: readonly string[] = [
+  "Matches were found but none is an auto-clickable target (no strong interactive element within climb depth 3).",
+  "Target a parent button/link, or use browser_click with a precise CSS selector.",
+  "Verify the element is on-screen and not covered by an overlay (receivesEvents=false means it is occluded or off-viewport).",
+];
+
+/**
+ * ADR §1.2 D3 uniqueness contract: auto-act ONLY when exactly one actionable
+ * candidate resolves (after climb + actionability gate + dedup by resolved rect).
+ * Two-or-more distinct → `ambiguous` (stop, return fingerprints). Zero strong-
+ * actionable → `noActionable` (still returns the matched candidates so the agent
+ * can pick by index / refine). Score margin is NEVER used to auto-act — same-name
+ * buttons score equally, so a margin heuristic would silently mis-click.
+ *
+ * Pure: `facts` are the top-N (score-desc) candidate facts the injected JS
+ * gathered; `totalMatches` is the full collection count (may exceed facts.length).
+ */
+export function decideActionTarget(facts: CandidateFacts[], totalMatches: number): ResolveDecision {
+  const resolved = facts.map((f) => {
+    const c = climbToClickable(f);
+    return { f, clickable: c?.node ?? null, depth: c?.depth ?? -1, actionable: c ? isActionable(c.node) : false };
+  });
+
+  // Dedup: several matched candidates (e.g. a button's label span AND the button)
+  // can climb to the SAME clickable rect → one distinct target, not ambiguity.
+  const distinct = new Map<string, (typeof resolved)[number]>();
+  for (const r of resolved) {
+    if (r.actionable && r.clickable) {
+      const key = rectKey(r.clickable.rect);
+      if (!distinct.has(key)) distinct.set(key, r);
+    }
+  }
+
+  if (distinct.size === 1) {
+    const r = [...distinct.values()][0];
+    return { kind: "resolved", target: { index: r.f.index, rect: r.clickable!.rect, climbDepth: r.depth } };
+  }
+
+  const candidates = resolved.map((r) => toFingerprint(r.f, r.clickable));
+  const returned = facts.length;
+  const truncated = totalMatches > returned;
+  if (distinct.size === 0) {
+    return { kind: "noActionable", total: totalMatches, returned, truncated, candidates, next: [...NO_ACTIONABLE_NEXT_HINTS] };
+  }
+  return { kind: "ambiguous", total: totalMatches, returned, truncated, candidates, next: [...AMBIGUITY_NEXT_HINTS] };
+}
