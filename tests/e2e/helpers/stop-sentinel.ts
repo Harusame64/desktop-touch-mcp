@@ -16,7 +16,7 @@
  * after the worker starts, and the test worker is a separate process from the
  * terminal you'd type the stop into. The filesystem is the one channel both share.
  */
-import { existsSync, writeFileSync, rmSync } from "fs";
+import { existsSync, writeFileSync, rmSync, statSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 
@@ -33,16 +33,34 @@ export function isStopRequested(path: string = STOP_SENTINEL_PATH): boolean {
   return existsSync(path);
 }
 
-/** Request an emergency stop (drop the sentinel). Used by `npm run e2e:stop` + the STOP window. */
+/** Request an emergency stop by dropping the sentinel — the importable equivalent of `npm run e2e:stop` (which writes the same file directly). Exercised by the unit test. */
 export function requestStop(path: string = STOP_SENTINEL_PATH): void {
   writeFileSync(path, `stop ${new Date().toISOString()}\n`, "utf8");
 }
 
-/** Remove the sentinel (stale-cleanup at run start + teardown). Never throws. */
+/** Remove the sentinel (teardown cleanup). Never throws. */
 export function clearStop(path: string = STOP_SENTINEL_PATH): void {
   try {
     rmSync(path, { force: true });
   } catch {
     /* ignore — best effort */
+  }
+}
+
+/**
+ * Clear the sentinel at run start ONLY if it is STALE — left over from a previous,
+ * crashed run (its mtime predates `launchedAtMs`, this run's process launch). A
+ * sentinel written at/after launch — a `npm run e2e:stop` fired during this run's
+ * boot window, before any worker's beforeEach runs — is PRESERVED so the run still
+ * halts (Codex PR #408 P1: an unconditional startup clear would erase a stop
+ * issued in the exact "abort immediately after launch" case). Never throws.
+ */
+export function clearStaleStop(launchedAtMs: number, path: string = STOP_SENTINEL_PATH): void {
+  try {
+    if (statSync(path).mtimeMs < launchedAtMs) {
+      rmSync(path, { force: true });
+    }
+  } catch {
+    /* absent / stat failed → nothing to clear */
   }
 }
