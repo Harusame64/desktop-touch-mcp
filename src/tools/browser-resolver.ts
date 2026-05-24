@@ -46,6 +46,14 @@ export interface ActionFactsArgs {
    * actionable target, not the matched leaf.
    */
   role?: string;
+  /**
+   * ADR-023 Phase 2b: when true, the gather ALSO embeds page-level `ModalFacts`
+   * (for `detectModal`) + a per-candidate `occludedByDialogIndex` (which modal
+   * dialog/backdrop, if any, occludes the candidate). Set only for `action:'click'`
+   * (the modal-blocking preflight); `action:'fill'` leaves it off so the fill
+   * gather stays bit-equal with the Phase 1 snapshot.
+   */
+  includeModal?: boolean;
 }
 
 /**
@@ -350,7 +358,19 @@ function candidatePoolJs(args: ActionFactsArgs): string {
 }
 
 export function buildActionCandidateFactsJs(args: ActionFactsArgs): string {
-  return `${candidatePoolJs(args)}
+  // ADR-023 Phase 2b: click-only modal block (kept off for fill so its gather +
+  // the Phase 1 snapshot stay bit-equal). __modal = page-level ModalFacts;
+  // __occludedDialogIndexForEl maps a candidate to the modal/backdrop occluding it.
+  const modalSetup = args.includeModal
+    ? `
+  const __modal = ${buildPageLevelModalFactsJs()};
+${occluderIndexHelperJs()}`
+    : "";
+  const occFact = args.includeModal ? `,
+      occludedByDialogIndex: __occludedDialogIndexForEl(el)` : "";
+  const modalReturn = args.includeModal ? `
+    modalFacts: __modal,` : "";
+  return `${candidatePoolJs(args)}${modalSetup}
 
   // Physical-coord conversion constants (getElementScreenCoords formula,
   // cdp-bridge.ts) — computed once so browser_click({by}) converts the resolved
@@ -466,7 +486,7 @@ export function buildActionCandidateFactsJs(args: ActionFactsArgs): string {
       matchedBy: matchedByMap.get(el),
       score: score(matchScore.get(el) || 0, entry.visible),
       nearestLabels: labelsOf(el),
-      containerHint: hintOf(el),
+      containerHint: hintOf(el)${occFact},
     };
   });
 
@@ -474,7 +494,7 @@ export function buildActionCandidateFactsJs(args: ActionFactsArgs): string {
     total: pool.length,
     returned: factsList.length,
     viewport: { screenX: sx, screenY: sy, dpr: dpr, chromeH: chromeH, chromeW: chromeW, innerWidth: window.innerWidth, innerHeight: window.innerHeight },
-    candidates: factsList,
+    candidates: factsList,${modalReturn}
   };
 })()
 `;
@@ -646,6 +666,12 @@ export interface CandidateFacts {
   nearestLabels: string[];
   /** nearest landmark role + accessible name; gatherer caps to 40 chars */
   containerHint: string | null;
+  /**
+   * ADR-023 Phase 2b (click gather only, `includeModal`): index into
+   * `ModalFacts.dialogCandidates` of the modal dialog/backdrop occluding this
+   * candidate's center, or null. Absent on the fill gather.
+   */
+  occludedByDialogIndex?: number | null;
 }
 
 /**
@@ -673,6 +699,8 @@ export interface GatheredFacts {
   returned: number;
   viewport: ViewportMetrics;
   candidates: CandidateFacts[];
+  /** ADR-023 Phase 2b: page-level modal facts (present only on the click gather, `includeModal`). */
+  modalFacts?: ModalFacts;
 }
 
 /** Error shape the shared body returns (ScopeNotFound / InvalidRegex / Timeout). */
@@ -921,7 +949,23 @@ export type ResolveActionOutcome =
       matched: { name: string; role: string | null; ariaLabel: string | null; tag: string; total: number };
     }
   | { kind: "ambiguous"; total: number; returned: number; truncated: boolean; candidates: AmbiguityCandidate[]; next: string[] }
-  | { kind: "noActionable"; total: number; returned: number; truncated: boolean; candidates: AmbiguityCandidate[]; next: string[] }
+  | {
+      kind: "noActionable";
+      total: number;
+      returned: number;
+      truncated: boolean;
+      candidates: AmbiguityCandidate[];
+      next: string[];
+      /**
+       * ADR-023 Phase 2b (click only): page-level modal facts + the top
+       * candidate's occluding dialog index, propagated from the gather so the
+       * handler can upgrade a modal-occluded noActionable to BrowserModalBlocking
+       * (Round 3 P1-R3-1 plumbing). Added ONLY on this outcome (`ResolveDecision`
+       * is unchanged); absent for fill / non-modal gathers.
+       */
+      modalFacts?: ModalFacts;
+      occludedTopByDialogIndex?: number | null;
+    }
   /** gather-time failure surfaced by the shared body (ScopeNotFound / InvalidRegex / Timeout) */
   | { kind: "error"; code: string; message?: string };
 
@@ -960,6 +1004,9 @@ export async function resolveBrowserActionTarget(args: ResolveActionArgs): Promi
     scope: args.scope,
     caseSensitive: args.caseSensitive ?? false,
     role: args.role,
+    // ADR-023 Phase 2b: only the click path needs the modal-blocking preflight;
+    // fill leaves it off so its gather stays bit-equal with the Phase 1 snapshot.
+    includeModal: args.action === "click",
   });
   let raw: unknown;
   try {
@@ -1001,6 +1048,18 @@ export async function resolveBrowserActionTarget(args: ResolveActionArgs): Promi
         tag: f?.chain?.[0]?.tag ?? "",
         total: gathered.total,
       },
+    };
+  }
+  // ADR-023 Phase 2b: propagate modal facts onto the noActionable outcome so the
+  // handler can run detectModal + match the top candidate's occluding dialog
+  // against the modal blocker (Round 3 P1-R3-1). Reconstruct the outcome (decision
+  // is a ResolveDecision, which has no modal fields) — ResolveDecision stays
+  // unchanged; only ResolveActionOutcome.noActionable carries these (Round 4 P1).
+  if (decision.kind === "noActionable" && gathered.modalFacts) {
+    return {
+      ...decision,
+      modalFacts: gathered.modalFacts,
+      occludedTopByDialogIndex: gathered.candidates[0]?.occludedByDialogIndex ?? null,
     };
   }
   return decision;
@@ -1308,4 +1367,107 @@ export function detectModal(facts: ModalFacts): ModalVerdict {
 
   // Rule 5: not modal (fail-safe). drawerExcluded records that we declined a drawer.
   return verdict(null, cands.some(isDrawer));
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// ADR-023 Phase 2 (modal detection) — PR-2b preflight occluder linkage.
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Self-contained injected-JS fragment defining `__occludedDialogIndexForEl(el)`:
+ * given an element, return the index of the modal dialog/backdrop occluding its
+ * center (or null). `__mNodes` uses the SAME selector + DOM order as
+ * `buildPageLevelModalFactsJs`'s dialogCandidates, so the returned index aligns
+ * with `ModalFacts.dialogCandidates` (and `detectModal`'s `blockerDialogIndex`).
+ * Backdrop-aware: a target behind a modal is typically occluded by the backdrop/
+ * scrim (library modals put it in a sibling element, outside the dialog subtree).
+ */
+function occluderIndexHelperJs(): string {
+  return `  const __mNodes = Array.prototype.slice.call(document.querySelectorAll('[role="dialog"],[role="alertdialog"],[aria-modal="true"],dialog'));
+  function __mBackdrops(d) {
+    const out = [];
+    let node = d, guard = 0;
+    while (node && node !== document.body && guard < 4) {
+      const parent = node.parentElement;
+      if (parent) {
+        for (const s of parent.children) {
+          if (s === node || s.contains(d)) continue;
+          try {
+            const cs = window.getComputedStyle(s);
+            if ((cs.position === 'fixed' || cs.position === 'absolute') && cs.display !== 'none' && cs.visibility !== 'hidden') {
+              const r = s.getBoundingClientRect();
+              if (r.width * r.height >= window.innerWidth * window.innerHeight * 0.8) out.push(s);
+            }
+          } catch (e) {}
+        }
+      }
+      node = parent; guard++;
+    }
+    return out;
+  }
+  const __mBd = __mNodes.map(__mBackdrops);
+  function __occluderDialogIndex(hit) {
+    if (!hit) return null;
+    for (let i = 0; i < __mNodes.length; i++) {
+      const d = __mNodes[i];
+      if (d === hit || d.contains(hit)) return i;
+      const bds = __mBd[i];
+      for (let j = 0; j < bds.length; j++) { if (bds[j] === hit || bds[j].contains(hit)) return i; }
+    }
+    return null;
+  }
+  function __occludedDialogIndexForEl(el) {
+    const r = el.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    if (cx < 0 || cx >= window.innerWidth || cy < 0 || cy >= window.innerHeight) return null;
+    const hit = document.elementFromPoint(cx, cy);
+    if (!hit || hit === el || el.contains(hit)) return null;
+    return __occluderDialogIndex(hit);
+  }`;
+}
+
+/**
+ * Selector-path modal probe (ADR-023 Phase 2b): for a single CSS selector,
+ * gather page-level `ModalFacts` + the dialog index occluding the element's
+ * center. Run by the selector click handler ONLY when `getElementScreenCoords`
+ * already flagged the target occluded (so this extra eval is the rare path) —
+ * `detectModal` (pure TS) then decides whether the occluder is a modal blocker.
+ * Reuses the same modal fragments as the by-axis gather (single source of truth).
+ */
+export function buildModalOccluderProbeJs(selector: string): string {
+  return `(function() {
+  try {
+  const el = document.querySelector(${JSON.stringify(selector)});
+  if (!el) return { found: false };
+  const __modal = ${buildPageLevelModalFactsJs()};
+${occluderIndexHelperJs()}
+  return { found: true, occludedByDialogIndex: __occludedDialogIndexForEl(el), modalFacts: __modal };
+  } catch (e) { return { found: false }; }
+})()`;
+}
+
+export interface SelectorModalProbe {
+  modalFacts: ModalFacts;
+  occludedByDialogIndex: number | null;
+}
+
+/**
+ * TS wrapper for `buildModalOccluderProbeJs` — returns null on any failure (CDP
+ * error / element gone / unexpected shape) so the caller degrades to its normal
+ * non-modal path instead of throwing (a probe failure must never break a click).
+ */
+export async function probeSelectorModalOcclusion(
+  selector: string,
+  tabId: string | null,
+  port: number,
+): Promise<SelectorModalProbe | null> {
+  let raw: unknown;
+  try {
+    raw = await evaluateInTab(buildModalOccluderProbeJs(selector), tabId, port);
+  } catch {
+    return null;
+  }
+  const r = raw as { found?: boolean; occludedByDialogIndex?: number | null; modalFacts?: ModalFacts } | null;
+  if (!r || r.found !== true || !r.modalFacts) return null;
+  return { modalFacts: r.modalFacts, occludedByDialogIndex: r.occludedByDialogIndex ?? null };
 }

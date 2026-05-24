@@ -29,7 +29,7 @@ import type { RichBlock } from "../engine/uia-diff.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
 import { prepareBrowserEvalExpression } from "./browser-eval-helpers.js";
-import { buildCandidateCollectionJs, resolveBrowserActionTarget, buildFillActJs, buildPageLevelModalFactsJs, detectModal, type ResolveActionOutcome, type ModalFacts, type ModalVerdict } from "./browser-resolver.js";
+import { buildCandidateCollectionJs, resolveBrowserActionTarget, buildFillActJs, buildPageLevelModalFactsJs, detectModal, probeSelectorModalOcclusion, type ResolveActionOutcome, type ModalFacts, type ModalVerdict } from "./browser-resolver.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -1293,6 +1293,35 @@ function browserMinimizedFailure(ctx: Record<string, unknown>): ToolResult {
 }
 
 /**
+ * Typed failure for a click whose target is occluded by a modal dialog blocking
+ * the page (ADR-023 Phase 2b). Returned by BOTH click paths BEFORE the OS click /
+ * generic stop so the click never lands on the backdrop (selector path) and the
+ * agent gets the WHY + a recovery path. `blockingElement` mirrors the native
+ * modal_blocking shape ({name, role}); the recovery is browser-specific (a browser
+ * modal is dismissed by its close button / Escape, NOT by clicking the dialog
+ * name — so we do NOT reuse native's click_element hint). Inline failCode (the
+ * BrowserTargetMinimized / BrowserAmbiguousTarget precedent) — no SUGGESTS entry,
+ * no catalog-drift cascade. suggest[] are fixed strings (CodeQL CWE-94).
+ */
+function browserModalBlockingFailure(
+  blocker: { name: string; role: string },
+  signals: ModalVerdict["signals"],
+  ctx: Record<string, unknown>,
+): ToolResult {
+  return failCode(
+    "BrowserModalBlocking",
+    "browser_click: the target is behind a modal dialog blocking the page — not clicking through it. See context.blockingElement for the dialog.",
+    {
+      suggest: [
+        "Dismiss the modal first: click its close/cancel button (e.g. browser_click({by:'role', pattern:'button', scope:'<dialog selector>'})) or send Escape via keyboard(action:'press'), then retry.",
+        "If the modal is expected, act on its contents directly — its own buttons/inputs are inside the dialog and are not blocked.",
+      ],
+      context: { ...ctx, blockingElement: { name: blocker.name, role: blocker.role }, signals },
+    },
+  );
+}
+
+/**
  * by-axis browser_click: resolve a single actionable target semantically, then
  * OS-click at its resolved physical coords (no second querySelector — coords come
  * from the same gather eval, ADR §1.2 D1). Ambiguous / non-actionable / error
@@ -1362,6 +1391,23 @@ async function handleBrowserClickByAxis(args: {
   });
   const ctx = { by, pattern, ...(role ? { role } : {}), ...(scope ? { scope } : {}) };
   if (outcome.kind === "error") return browserResolveErrorToFailure(outcome, "browser_click", ctx);
+  // ADR-023 Phase 2b: upgrade a modal-occluded noActionable to BrowserModalBlocking.
+  // The target's center is covered by a modal dialog/backdrop (occludedTopByDialogIndex)
+  // that detectModal confirms is the modal blocker (index identity, not name/role —
+  // robust to multiple/same-named dialogs). by-axis never blind-clicks an occluded
+  // target (receivesEvents already gated it to noActionable); this only makes the
+  // stop explain WHY + how to recover. Non-modal occluders stay noActionable.
+  if (outcome.kind === "noActionable" && outcome.modalFacts) {
+    const verdict = detectModal(outcome.modalFacts);
+    if (
+      verdict.isModal &&
+      verdict.blocker &&
+      verdict.blockerDialogIndex !== undefined &&
+      outcome.occludedTopByDialogIndex === verdict.blockerDialogIndex
+    ) {
+      return browserModalBlockingFailure(verdict.blocker, verdict.signals, ctx);
+    }
+  }
   if (outcome.kind !== "resolved") return browserResolveStopToFailure(outcome, "browser_click", ctx);
 
   // Minimized-window guard: the gather eval's viewport origin is the Windows
@@ -1534,6 +1580,26 @@ export const browserClickElementHandler = async ({
     // layout is intact) — so without this it falls through to the OS click.
     if (isOffscreenMinimized(coords.screenX, coords.screenY)) {
       return browserMinimizedFailure({ selector: effectiveSelector });
+    }
+    // ADR-023 Phase 2b: modal-blocking preflight (between minimized and inViewport,
+    // per the #407 chokepoint order). Only when the target is occluded (cheap
+    // hit-test in getElementScreenCoords) do we run the modal probe — so the common
+    // unoccluded click pays no extra eval. If the occluder is the modal blocker,
+    // stop before the OS click (it would otherwise click through to the backdrop).
+    // A non-modal occluder preserves existing behavior (proceed to the click).
+    if (coords.occluded) {
+      const probe = await probeSelectorModalOcclusion(effectiveSelector, effectiveTabId ?? null, port);
+      if (probe) {
+        const verdict = detectModal(probe.modalFacts);
+        if (
+          verdict.isModal &&
+          verdict.blocker &&
+          verdict.blockerDialogIndex !== undefined &&
+          probe.occludedByDialogIndex === verdict.blockerDialogIndex
+        ) {
+          return browserModalBlockingFailure(verdict.blocker, verdict.signals, { selector: effectiveSelector });
+        }
+      }
     }
     if (!coords.inViewport) {
       return failCode(
@@ -2986,7 +3052,7 @@ export function registerBrowserTools(server: McpServer): void {
     "browser_click",
     {
       description:
-        "Click a DOM element in Chrome/Edge. Two ways to target: (1) selector — a CSS selector (combines browser_locate + mouse_click; stable across repaints); or (2) by-axis (semantic) — by:'text'|'regex'|'role'|'ariaLabel' + pattern, so you do not have to build a CSS selector for dynamic-class SPAs. by-axis resolves to a SINGLE actionable element (climbing to a clickable ancestor up to 3 levels, hit-testing for occlusion) and STOPS with code:'BrowserAmbiguousTarget' (candidates[] + next[] hints) when 2+ actionable elements match, or code:'BrowserNoActionableTarget' when matches exist but none is clickable — it never guesses. Optionally add role to filter (by:'text',pattern:'Save',role:'button') and scope to narrow the search. Provide EITHER selector OR by+pattern (not both). Pass tabId+port so the server auto-guards (verifies tab readyState and identity) and returns post.perception.status. lensId is optional for advanced pinned-tab workflows. Caveats: selector mode fails if the element is outside the visible viewport — scroll it into view with browser_eval(\"document.querySelector('sel').scrollIntoView()\") first (by-axis only resolves in-viewport actionable targets). hints.verifyDelivery:{status:'delivered'|'unverifiable', reason, observedSignals:{mutationCount,urlChanged,activeElementChanged}} reports the post-click observation in 2 values: 'delivered' fires only when mutationCount>0 OR urlChanged (activeElementChanged is recorded in observedSignals but intentionally NOT a delivery signal — plain clicks on focusable controls always update focus, treating that as 'delivered' would mask silent-fail regressions); 'unverifiable' reason ∈ {'iframe_context_mismatch','no_dom_mutation','probe_install_failed','probe_read_failed'}. CDP emits 2 values only (focus_only is a UIA-path concept, N/A here). BrowserClickNotDelivered is reserved-only (false-positive risk too high to emit) — degradation reads from 'unverifiable' status.",
+        "Click a DOM element in Chrome/Edge. Two ways to target: (1) selector — a CSS selector (combines browser_locate + mouse_click; stable across repaints); or (2) by-axis (semantic) — by:'text'|'regex'|'role'|'ariaLabel' + pattern, so you do not have to build a CSS selector for dynamic-class SPAs. by-axis resolves to a SINGLE actionable element (climbing to a clickable ancestor up to 3 levels, hit-testing for occlusion) and STOPS with code:'BrowserAmbiguousTarget' (candidates[] + next[] hints) when 2+ actionable elements match, or code:'BrowserNoActionableTarget' when matches exist but none is clickable — it never guesses. If the target is behind a modal dialog blocking the page, BOTH targeting modes STOP with code:'BrowserModalBlocking' (context.blockingElement {name, role}) instead of clicking through to the backdrop — dismiss the dialog (its close button or Escape) and retry; a plain navigation drawer does not count as blocking. Optionally add role to filter (by:'text',pattern:'Save',role:'button') and scope to narrow the search. Provide EITHER selector OR by+pattern (not both). Pass tabId+port so the server auto-guards (verifies tab readyState and identity) and returns post.perception.status. lensId is optional for advanced pinned-tab workflows. Caveats: selector mode fails if the element is outside the visible viewport — scroll it into view with browser_eval(\"document.querySelector('sel').scrollIntoView()\") first (by-axis only resolves in-viewport actionable targets). hints.verifyDelivery:{status:'delivered'|'unverifiable', reason, observedSignals:{mutationCount,urlChanged,activeElementChanged}} reports the post-click observation in 2 values: 'delivered' fires only when mutationCount>0 OR urlChanged (activeElementChanged is recorded in observedSignals but intentionally NOT a delivery signal — plain clicks on focusable controls always update focus, treating that as 'delivered' would mask silent-fail regressions); 'unverifiable' reason ∈ {'iframe_context_mismatch','no_dom_mutation','probe_install_failed','probe_read_failed'}. CDP emits 2 values only (focus_only is a UIA-path concept, N/A here). BrowserClickNotDelivered is reserved-only (false-positive risk too high to emit) — degradation reads from 'unverifiable' status.",
       inputSchema: browserClickRegistrationSchema,
     },
     browserClickRegistrationHandler as typeof browserClickElementHandler

@@ -20,6 +20,8 @@ import { dirname, join } from "node:path";
 import {
   detectModal,
   buildPageLevelModalFactsJs,
+  buildActionCandidateFactsJs,
+  buildModalOccluderProbeJs,
   type DialogFacts,
   type ModalFacts,
 } from "../../src/tools/browser-resolver.js";
@@ -216,5 +218,34 @@ describe("ADR-023 Phase 2 (PR-2a): buildPageLevelModalFactsJs — gather JS", ()
     expect(js).toContain("dialogCandidates: []"); // safe-default fallback
     expect(js).toContain("document.body ? window.getComputedStyle(document.body) : null");
     expect(js).toContain("if (!document.body) return false;"); // siblingsInertFor guard
+  });
+});
+
+describe("ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe", () => {
+  it("includeModal:false (fill / default) leaves the gather modal-free (bit-equal with Phase 1)", () => {
+    const js = buildActionCandidateFactsJs({ by: "text", pattern: "Save", caseSensitive: false });
+    expect(js).not.toContain("modalFacts:");
+    expect(js).not.toContain("occludedByDialogIndex:");
+    expect(js).not.toContain("__occludedDialogIndexForEl");
+  });
+
+  it("includeModal:true (click) embeds modal facts + per-candidate occluder index (snapshot)", () => {
+    const js = buildActionCandidateFactsJs({ by: "text", pattern: "Save", caseSensitive: false, includeModal: true });
+    expect(js).toContain("const __modal = (function() {"); // embedded page-level facts IIFE
+    expect(js).toContain("occludedByDialogIndex: __occludedDialogIndexForEl(el)");
+    expect(js).toContain("modalFacts: __modal,");
+    expect(js).toContain("function __occluderDialogIndex(hit)");
+    expect(js).toContain("function __mBackdrops(d)"); // backdrop-aware linkage
+    expect(js).toMatchSnapshot();
+  });
+
+  it("buildModalOccluderProbeJs: JSON-encodes selector + returns found/index/modalFacts (snapshot)", () => {
+    const js = buildModalOccluderProbeJs("#save");
+    expect(js).toContain('document.querySelector("#save")');
+    expect(js).toContain("if (!el) return { found: false };");
+    expect(js).toContain("occludedByDialogIndex: __occludedDialogIndexForEl(el)");
+    expect(js).toContain("modalFacts: __modal");
+    expect(js).toContain("} catch (e) { return { found: false }; }"); // never throws
+    expect(js).toMatchSnapshot();
   });
 });

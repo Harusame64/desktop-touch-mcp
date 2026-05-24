@@ -70,6 +70,12 @@ export interface ElementCoords {
   screenX: number;
   /** Window origin Y (window.screenY, CSS px). See screenX. */
   screenY: number;
+  /**
+   * ADR-023 Phase 2b: the click point's `elementFromPoint` hit is NOT the target
+   * (nor a descendant) — something covers it. Generic occlusion (no modal rules);
+   * the click handler runs a modal probe to decide if it is a modal blocker.
+   */
+  occluded: boolean;
 }
 
 // ─── CDP Session ──────────────────────────────────────────────────────────────
@@ -471,6 +477,18 @@ export async function getElementScreenCoords(
       var cx = rect.left + rect.width / 2;
       var cy = rect.top  + rect.height / 2;
       return cx >= 0 && cx < window.innerWidth && cy >= 0 && cy < window.innerHeight;
+    })(),
+    // Generic occlusion hit-test (ADR-023 Phase 2b): is the click point actually
+    // the target (or a descendant), or does something cover it? Modal-RULE
+    // classification stays out of this engine eval — when occluded, the click
+    // handler runs a separate modal probe (detectModal, pure TS). null when the
+    // center is off-screen (the inViewport gate handles that case).
+    occluded: (function() {
+      var cx = rect.left + rect.width / 2;
+      var cy = rect.top  + rect.height / 2;
+      if (cx < 0 || cx >= window.innerWidth || cy < 0 || cy >= window.innerHeight) return false;
+      var hit = document.elementFromPoint(cx, cy);
+      return !!(hit && hit !== el && !el.contains(hit));
     })(),
   });
 })()`;

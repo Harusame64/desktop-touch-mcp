@@ -118,3 +118,671 @@ exports[`ADR-023 Phase 2 (PR-2a): buildPageLevelModalFactsJs — gather JS > emi
   }
 })()"
 `;
+
+exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe > buildModalOccluderProbeJs: JSON-encodes selector + returns found/index/modalFacts (snapshot) 1`] = `
+"(function() {
+  try {
+  const el = document.querySelector("#save");
+  if (!el) return { found: false };
+  const __modal = (function() {
+  try {
+  const VW = window.innerWidth, VH = window.innerHeight;
+  const vpArea = Math.max(1, VW * VH);
+  function num(z) { const n = parseInt(z, 10); return isNaN(n) ? 0 : n; }
+  function rectOf(el) { const r = el.getBoundingClientRect(); return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) }; }
+  function coverage(r) {
+    const ix = Math.max(0, Math.min(r.x + r.w, VW) - Math.max(r.x, 0));
+    const iy = Math.max(0, Math.min(r.y + r.h, VH) - Math.max(r.y, 0));
+    return Math.round((ix * iy) / vpArea * 100) / 100;
+  }
+  function nameOf(el) {
+    let n = (el.getAttribute('aria-label') || '').trim();
+    if (!n) {
+      const lb = el.getAttribute('aria-labelledby');
+      if (lb) { const ref = document.getElementById(lb.split(/\\s+/)[0]); if (ref) n = (ref.textContent || '').trim(); }
+    }
+    if (!n) { const h = el.querySelector('h1,h2,h3,h4,h5,h6,[role="heading"]'); if (h) n = (h.textContent || '').trim(); }
+    return n.replace(/\\s+/g, ' ').slice(0, 80);
+  }
+  const LANDMARK_RE = /^(navigation|complementary|main|banner|contentinfo|search|form|region)$/;
+  function landmarkOf(el) {
+    let node = el, guard = 0;
+    while (node && node !== document.body && guard < 6) {
+      const rr = ((node.getAttribute && node.getAttribute('role')) || '').toLowerCase();
+      if (LANDMARK_RE.test(rr)) return rr;
+      const tg = node.tagName ? node.tagName.toLowerCase() : '';
+      if (tg === 'nav') return 'navigation';
+      if (tg === 'aside') return 'complementary';
+      node = node.parentElement; guard++;
+    }
+    return null;
+  }
+  function isBackdropLike(el) {
+    if (!el || el.nodeType !== 1) return false;
+    const cs = window.getComputedStyle(el);
+    if (cs.position !== 'fixed' && cs.position !== 'absolute') return false;
+    if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+    const r = el.getBoundingClientRect();
+    return (r.width * r.height) >= vpArea * 0.8;
+  }
+  function hasBackdropFor(el) {
+    try { if (el.matches(':modal')) return true; } catch (e) {}
+    // A viewport-covering fixed/absolute sibling layer (of the dialog or an ancestor
+    // up to 4 levels) that does NOT contain the dialog = a backdrop/scrim.
+    let node = el, guard = 0;
+    while (node && node !== document.body && guard < 4) {
+      const parent = node.parentElement;
+      if (parent) {
+        for (const s of parent.children) {
+          if (s === node || s.contains(el)) continue;
+          if (isBackdropLike(s)) return true;
+        }
+      }
+      node = parent; guard++;
+    }
+    return false;
+  }
+  function siblingsInertFor(el) {
+    if (!document.body) return false;
+    for (const c of document.body.children) {
+      if (c.contains(el)) continue;
+      if (c.hasAttribute('inert') || c.getAttribute('aria-hidden') === 'true') {
+        const r = c.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) return true;
+      }
+    }
+    return false;
+  }
+  const ae = document.activeElement;
+  let activeInDialog = false;
+  const cands = [];
+  const nodes = document.querySelectorAll('[role="dialog"],[role="alertdialog"],[aria-modal="true"],dialog');
+  for (const el of nodes) {
+    const cs = window.getComputedStyle(el);
+    const br = el.getBoundingClientRect();
+    const rect = rectOf(el);
+    const visible = cs.display !== 'none' && cs.visibility !== 'hidden' && cs.opacity !== '0' && br.width > 0 && br.height > 0;
+    const tag = el.tagName.toLowerCase();
+    let nativeModal = false;
+    if (tag === 'dialog' && el.open === true) { try { nativeModal = el.matches(':modal'); } catch (e) { nativeModal = true; } }
+    const tr = cs.transform && cs.transform !== 'none';
+    const offscreen = !!tr && (rect.x + rect.w <= 0 || rect.x >= VW || rect.y + rect.h <= 0 || rect.y >= VH);
+    if (ae && el.contains(ae)) activeInDialog = true;
+    cands.push({
+      role: (el.getAttribute('role') || '').toLowerCase() || null,
+      tag: tag,
+      ariaModal: el.getAttribute('aria-modal') === 'true',
+      nativeDialogOpen: nativeModal,
+      name: nameOf(el),
+      visible: visible,
+      rect: rect,
+      viewportCoverage: coverage(rect),
+      offscreenTransform: offscreen,
+      zIndex: num(cs.zIndex),
+      landmarkRole: landmarkOf(el),
+      hasBackdrop: hasBackdropFor(el),
+      siblingsInert: siblingsInertFor(el),
+    });
+  }
+  function lock(v) { return v === 'hidden' || v === 'clip'; }
+  const htmlCs = document.documentElement ? window.getComputedStyle(document.documentElement) : null;
+  const bodyCs = document.body ? window.getComputedStyle(document.body) : null;
+  const bodyScrollLock = !!((bodyCs && (lock(bodyCs.overflow) || lock(bodyCs.overflowY))) || (htmlCs && (lock(htmlCs.overflow) || lock(htmlCs.overflowY))));
+  return {
+    viewport: { innerWidth: VW, innerHeight: VH },
+    bodyScrollLock: bodyScrollLock,
+    activeElement: ae ? { tag: ae.tagName ? ae.tagName.toLowerCase() : '', role: ((ae.getAttribute && ae.getAttribute('role')) || '').toLowerCase() || null, inDialogCandidate: activeInDialog } : null,
+    dialogCandidates: cands,
+  };
+  } catch (e) {
+    // Modal detection must never break browser_overview (Codex P1): degrade to a
+    // safe default (isModal:false) on any unexpected DOM error (e.g. no document.body).
+    return { viewport: { innerWidth: window.innerWidth || 0, innerHeight: window.innerHeight || 0 }, bodyScrollLock: false, activeElement: null, dialogCandidates: [] };
+  }
+})();
+  const __mNodes = Array.prototype.slice.call(document.querySelectorAll('[role="dialog"],[role="alertdialog"],[aria-modal="true"],dialog'));
+  function __mBackdrops(d) {
+    const out = [];
+    let node = d, guard = 0;
+    while (node && node !== document.body && guard < 4) {
+      const parent = node.parentElement;
+      if (parent) {
+        for (const s of parent.children) {
+          if (s === node || s.contains(d)) continue;
+          try {
+            const cs = window.getComputedStyle(s);
+            if ((cs.position === 'fixed' || cs.position === 'absolute') && cs.display !== 'none' && cs.visibility !== 'hidden') {
+              const r = s.getBoundingClientRect();
+              if (r.width * r.height >= window.innerWidth * window.innerHeight * 0.8) out.push(s);
+            }
+          } catch (e) {}
+        }
+      }
+      node = parent; guard++;
+    }
+    return out;
+  }
+  const __mBd = __mNodes.map(__mBackdrops);
+  function __occluderDialogIndex(hit) {
+    if (!hit) return null;
+    for (let i = 0; i < __mNodes.length; i++) {
+      const d = __mNodes[i];
+      if (d === hit || d.contains(hit)) return i;
+      const bds = __mBd[i];
+      for (let j = 0; j < bds.length; j++) { if (bds[j] === hit || bds[j].contains(hit)) return i; }
+    }
+    return null;
+  }
+  function __occludedDialogIndexForEl(el) {
+    const r = el.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    if (cx < 0 || cx >= window.innerWidth || cy < 0 || cy >= window.innerHeight) return null;
+    const hit = document.elementFromPoint(cx, cy);
+    if (!hit || hit === el || el.contains(hit)) return null;
+    return __occluderDialogIndex(hit);
+  }
+  return { found: true, occludedByDialogIndex: __occludedDialogIndexForEl(el), modalFacts: __modal };
+  } catch (e) { return { found: false }; }
+})()"
+`;
+
+exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe > includeModal:true (click) embeds modal facts + per-candidate occluder index (snapshot) 1`] = `
+"
+(function() {
+  const root = document;
+  if (!root) return { __error: "ScopeNotFound" };
+
+  const by = "text";
+  const pat = "Save";
+  const cs  = false;
+  const visibleOnly = true;
+  const viewportOnly = false;
+  const maxN = 200;
+  const offN = 0;
+
+  function isVisible(el) {
+    const s = window.getComputedStyle(el);
+    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }
+  function inViewportRect(rect) {
+    return rect.top < window.innerHeight && rect.bottom > 0 &&
+           rect.left < window.innerWidth && rect.right > 0;
+  }
+  function bestSelector(el) {
+    if (el.id) return '#' + CSS.escape(el.id);
+    const name = el.getAttribute('name');
+    if (name) return el.tagName.toLowerCase() + '[name=' + JSON.stringify(name) + ']';
+    const aria = el.getAttribute('aria-label');
+    if (aria && aria.length < 80)
+      return el.tagName.toLowerCase() + '[aria-label=' + JSON.stringify(aria) + ']';
+    for (const attr of ['data-testid', 'data-asin']) {
+      const v = el.getAttribute(attr);
+      if (v && v.length < 60) return el.tagName.toLowerCase() + '[' + attr + '=' + JSON.stringify(v) + ']';
+    }
+    let node = el; let path = '';
+    for (let depth = 0; depth < 2 && node.parentElement; depth++) {
+      const p = node.parentElement;
+      const idx = Array.from(p.children).indexOf(node) + 1;
+      const seg = node.tagName.toLowerCase() + ':nth-child(' + idx + ')';
+      path = path ? seg + ' > ' + path : seg;
+      if (p.id) { path = '#' + CSS.escape(p.id) + ' > ' + path; break; }
+      node = p;
+    }
+    return path || el.tagName.toLowerCase();
+  }
+  function classify(el) {
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'a') return 'link';
+    if (tag === 'button' || el.getAttribute('role') === 'button') return 'button';
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') return 'input';
+    if (/^h[1-6]$/.test(tag)) return 'heading';
+    if (tag === 'p' || tag === 'span' || tag === 'div') return 'text';
+    return 'other';
+  }
+  function elText(el) {
+    const t = (el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 80);
+    if (!t && el.tagName === 'INPUT')
+      return (el.placeholder || el.value || el.getAttribute('aria-label') || '').slice(0, 80);
+    return t;
+  }
+  function score(matched, visible) {
+    let s = matched;
+    if (!visible) s = Math.max(0, s - 0.3);
+    return Math.round(s * 100) / 100;
+  }
+
+  // Bound the scan — pages can have 10k+ nodes and CDP timeout is 15s.
+  const SCAN_BUDGET_MS = 3000;
+  const nowFn = (typeof performance !== 'undefined' ? () => performance.now() : () => Date.now());
+  const startTs = nowFn();
+  const deadline = startTs + SCAN_BUDGET_MS;
+  let aborted = false;
+  // Sample the clock every 1024 iterations — cheap but keeps latency bounded.
+  function overBudget(i) { return (i & 0x3FF) === 0 && nowFn() > deadline; }
+
+  // IIFE-local match-state stores. WeakMap is essential: DOM elements persist
+  // across Runtime.evaluate calls, so any expando we set (e.g. el.__matchScore)
+  // would leak into the next search and contaminate scores / matchedBy / dedupe.
+  // WeakMap is GC'd at IIFE end so each call starts clean.
+  const matchScore = new WeakMap();
+  const matchedByMap = new WeakMap();
+  const pushed = new Set();
+  function record(el, score, by) {
+    const prev = matchScore.get(el) || 0;
+    if (score > prev) { matchScore.set(el, score); matchedByMap.set(el, by); }
+    if (!pushed.has(el)) { candidates.push(el); pushed.add(el); }
+  }
+
+  const all = root.querySelectorAll('*');
+  let candidates = [];
+
+  if (by === 'selector') {
+    const selectorMatches = Array.from(root.querySelectorAll(pat));
+    for (let i = 0; i < selectorMatches.length; i++) {
+      if (overBudget(i)) { aborted = true; break; }
+      record(selectorMatches[i], 1.0, 'selector');
+    }
+  } else if (by === 'text') {
+    const needle = cs ? pat : pat.toLowerCase();
+    let i = 0;
+    for (const el of all) {
+      if (overBudget(i++)) { aborted = true; break; }
+      // Direct child text only (avoid double-counting parent matches via descendants)
+      const direct = Array.from(el.childNodes)
+        .filter(n => n.nodeType === 3)
+        .map(n => n.textContent || '')
+        .join('').trim();
+      if (!direct) continue;
+      const hay = cs ? direct : direct.toLowerCase();
+      if (hay === needle) record(el, 1.0, 'text');
+      else if (hay.includes(needle)) record(el, 0.8, 'text');
+    }
+  } else if (by === 'regex') {
+    let re;
+    try { re = new RegExp(pat, (cs ? '' : 'i') + 'u'); }
+    catch (e) { return { __error: "InvalidRegex", message: String(e) }; }
+    let i = 0;
+    for (const el of all) {
+      if (overBudget(i++)) { aborted = true; break; }
+      const direct = Array.from(el.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent || '').join('').trim();
+      if (!direct) continue;
+      if (re.test(direct)) record(el, 0.9, 'regex');
+    }
+  } else if (by === 'role') {
+    const needle = cs ? pat : pat.toLowerCase();
+    let i = 0;
+    for (const el of all) {
+      if (overBudget(i++)) { aborted = true; break; }
+      const role = el.getAttribute('role') || '';
+      const cmp = cs ? role : role.toLowerCase();
+      if (cmp === needle) record(el, 0.75, 'role');
+    }
+    // Implicit roles — score slightly higher because they're guaranteed by tag.
+    if (!aborted && needle === 'button')  for (const el of root.querySelectorAll('button')) record(el, 0.85, 'roleImplicit');
+    if (!aborted && needle === 'link')    for (const el of root.querySelectorAll('a[href]')) record(el, 0.85, 'roleImplicit');
+    if (!aborted && needle === 'heading') for (const el of root.querySelectorAll('h1,h2,h3,h4,h5,h6')) record(el, 0.85, 'roleImplicit');
+  } else if (by === 'ariaLabel') {
+    const needle = cs ? pat : pat.toLowerCase();
+    let i = 0;
+    for (const el of all) {
+      if (overBudget(i++)) { aborted = true; break; }
+      const aria = el.getAttribute('aria-label') || '';
+      if (!aria) continue;
+      const cmp = cs ? aria : aria.toLowerCase();
+      if (cmp === needle) record(el, 0.95, 'ariaLabel');
+      else if (cmp.includes(needle)) record(el, 0.7, 'ariaLabel');
+    }
+  }
+
+  // candidates already de-duplicated via the pushed Set in record()
+
+  if (aborted && candidates.length === 0) {
+    return { __error: "Timeout", message: "Scan budget exceeded with no matches; narrow scope or maxResults." };
+  }
+
+  const filtered = [];
+  for (const el of candidates) {
+    const visible = isVisible(el);
+    if (visibleOnly && !visible) continue;
+    const rect = el.getBoundingClientRect();
+    const inVp = inViewportRect(rect);
+    if (viewportOnly && !inVp) continue;
+    filtered.push({ el, visible, rect, inVp });
+  }
+
+  // Score and sort by confidence desc
+  filtered.sort((a, b) => {
+    const sa = score(matchScore.get(a.el) || 0, a.visible);
+    const sb = score(matchScore.get(b.el) || 0, b.visible);
+    return sb - sa;
+  });
+
+  // ── ADR-023 Phase 1: action-target candidate pool (top-N, role-filtered). ──
+  const N = 8;
+  const D = 3;
+
+  // Optional role filter (AND with the by-axis match) applied BEFORE the top-N
+  // cap so total/candidates reflect the role-filtered pool (plan §S4 role combine).
+  const roleFilter = null;
+  function roleMatches(el) {
+    const explicit = (el.getAttribute('role') || '').toLowerCase();
+    if (explicit === roleFilter) return true;
+    const tg = el.tagName.toLowerCase();
+    const ty = (el.getAttribute('type') || '').toLowerCase();
+    if (roleFilter === 'button') return tg === 'button' || (tg === 'input' && /^(button|submit|reset)$/.test(ty));
+    if (roleFilter === 'link') return tg === 'a' && el.hasAttribute('href');
+    if (roleFilter === 'textbox') return tg === 'textarea' || (tg === 'input' && !/^(button|submit|reset|checkbox|radio|range|color|file|image|hidden)$/.test(ty));
+    if (roleFilter === 'checkbox') return tg === 'input' && ty === 'checkbox';
+    if (roleFilter === 'radio') return tg === 'input' && ty === 'radio';
+    if (roleFilter === 'heading') return /^h[1-6]$/.test(tg);
+    return false;
+  }
+  // The role filter targets the ACTIONABLE element (the climb resolves to a
+  // clickable ancestor up to D), NOT the matched leaf. by:'text'/'regex' record
+  // the element whose DIRECT text node matches — for a SPA button that wraps its
+  // label in a child (<div role="button"><span>Save</span></div>) that leaf is a
+  // role-less span, so a leaf-only role check drops every such button (real GSC
+  // dogfood: by:'text'+role:'button' returned total:0). Match the role against the
+  // leaf OR any ancestor within the SAME CLIMB_MAX_DEPTH the decision climbs, so
+  // the role filter and the climb agree. The decision/climb logic is unchanged —
+  // this only widens the pre-top-N pool (decideActionTarget still resolves /
+  // dedupes by the climbed clickable's rect).
+  function roleMatchesChain(el) {
+    let node = el;
+    for (let d = 0; node && d <= D; d++) {
+      if (roleMatches(node)) return true;
+      node = node.parentElement;
+    }
+    return false;
+  }
+  const pool = roleFilter ? filtered.filter(function(e) { return roleMatchesChain(e.el); }) : filtered;
+  const top = pool.slice(0, N);
+  const __modal = (function() {
+  try {
+  const VW = window.innerWidth, VH = window.innerHeight;
+  const vpArea = Math.max(1, VW * VH);
+  function num(z) { const n = parseInt(z, 10); return isNaN(n) ? 0 : n; }
+  function rectOf(el) { const r = el.getBoundingClientRect(); return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) }; }
+  function coverage(r) {
+    const ix = Math.max(0, Math.min(r.x + r.w, VW) - Math.max(r.x, 0));
+    const iy = Math.max(0, Math.min(r.y + r.h, VH) - Math.max(r.y, 0));
+    return Math.round((ix * iy) / vpArea * 100) / 100;
+  }
+  function nameOf(el) {
+    let n = (el.getAttribute('aria-label') || '').trim();
+    if (!n) {
+      const lb = el.getAttribute('aria-labelledby');
+      if (lb) { const ref = document.getElementById(lb.split(/\\s+/)[0]); if (ref) n = (ref.textContent || '').trim(); }
+    }
+    if (!n) { const h = el.querySelector('h1,h2,h3,h4,h5,h6,[role="heading"]'); if (h) n = (h.textContent || '').trim(); }
+    return n.replace(/\\s+/g, ' ').slice(0, 80);
+  }
+  const LANDMARK_RE = /^(navigation|complementary|main|banner|contentinfo|search|form|region)$/;
+  function landmarkOf(el) {
+    let node = el, guard = 0;
+    while (node && node !== document.body && guard < 6) {
+      const rr = ((node.getAttribute && node.getAttribute('role')) || '').toLowerCase();
+      if (LANDMARK_RE.test(rr)) return rr;
+      const tg = node.tagName ? node.tagName.toLowerCase() : '';
+      if (tg === 'nav') return 'navigation';
+      if (tg === 'aside') return 'complementary';
+      node = node.parentElement; guard++;
+    }
+    return null;
+  }
+  function isBackdropLike(el) {
+    if (!el || el.nodeType !== 1) return false;
+    const cs = window.getComputedStyle(el);
+    if (cs.position !== 'fixed' && cs.position !== 'absolute') return false;
+    if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+    const r = el.getBoundingClientRect();
+    return (r.width * r.height) >= vpArea * 0.8;
+  }
+  function hasBackdropFor(el) {
+    try { if (el.matches(':modal')) return true; } catch (e) {}
+    // A viewport-covering fixed/absolute sibling layer (of the dialog or an ancestor
+    // up to 4 levels) that does NOT contain the dialog = a backdrop/scrim.
+    let node = el, guard = 0;
+    while (node && node !== document.body && guard < 4) {
+      const parent = node.parentElement;
+      if (parent) {
+        for (const s of parent.children) {
+          if (s === node || s.contains(el)) continue;
+          if (isBackdropLike(s)) return true;
+        }
+      }
+      node = parent; guard++;
+    }
+    return false;
+  }
+  function siblingsInertFor(el) {
+    if (!document.body) return false;
+    for (const c of document.body.children) {
+      if (c.contains(el)) continue;
+      if (c.hasAttribute('inert') || c.getAttribute('aria-hidden') === 'true') {
+        const r = c.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) return true;
+      }
+    }
+    return false;
+  }
+  const ae = document.activeElement;
+  let activeInDialog = false;
+  const cands = [];
+  const nodes = document.querySelectorAll('[role="dialog"],[role="alertdialog"],[aria-modal="true"],dialog');
+  for (const el of nodes) {
+    const cs = window.getComputedStyle(el);
+    const br = el.getBoundingClientRect();
+    const rect = rectOf(el);
+    const visible = cs.display !== 'none' && cs.visibility !== 'hidden' && cs.opacity !== '0' && br.width > 0 && br.height > 0;
+    const tag = el.tagName.toLowerCase();
+    let nativeModal = false;
+    if (tag === 'dialog' && el.open === true) { try { nativeModal = el.matches(':modal'); } catch (e) { nativeModal = true; } }
+    const tr = cs.transform && cs.transform !== 'none';
+    const offscreen = !!tr && (rect.x + rect.w <= 0 || rect.x >= VW || rect.y + rect.h <= 0 || rect.y >= VH);
+    if (ae && el.contains(ae)) activeInDialog = true;
+    cands.push({
+      role: (el.getAttribute('role') || '').toLowerCase() || null,
+      tag: tag,
+      ariaModal: el.getAttribute('aria-modal') === 'true',
+      nativeDialogOpen: nativeModal,
+      name: nameOf(el),
+      visible: visible,
+      rect: rect,
+      viewportCoverage: coverage(rect),
+      offscreenTransform: offscreen,
+      zIndex: num(cs.zIndex),
+      landmarkRole: landmarkOf(el),
+      hasBackdrop: hasBackdropFor(el),
+      siblingsInert: siblingsInertFor(el),
+    });
+  }
+  function lock(v) { return v === 'hidden' || v === 'clip'; }
+  const htmlCs = document.documentElement ? window.getComputedStyle(document.documentElement) : null;
+  const bodyCs = document.body ? window.getComputedStyle(document.body) : null;
+  const bodyScrollLock = !!((bodyCs && (lock(bodyCs.overflow) || lock(bodyCs.overflowY))) || (htmlCs && (lock(htmlCs.overflow) || lock(htmlCs.overflowY))));
+  return {
+    viewport: { innerWidth: VW, innerHeight: VH },
+    bodyScrollLock: bodyScrollLock,
+    activeElement: ae ? { tag: ae.tagName ? ae.tagName.toLowerCase() : '', role: ((ae.getAttribute && ae.getAttribute('role')) || '').toLowerCase() || null, inDialogCandidate: activeInDialog } : null,
+    dialogCandidates: cands,
+  };
+  } catch (e) {
+    // Modal detection must never break browser_overview (Codex P1): degrade to a
+    // safe default (isModal:false) on any unexpected DOM error (e.g. no document.body).
+    return { viewport: { innerWidth: window.innerWidth || 0, innerHeight: window.innerHeight || 0 }, bodyScrollLock: false, activeElement: null, dialogCandidates: [] };
+  }
+})();
+  const __mNodes = Array.prototype.slice.call(document.querySelectorAll('[role="dialog"],[role="alertdialog"],[aria-modal="true"],dialog'));
+  function __mBackdrops(d) {
+    const out = [];
+    let node = d, guard = 0;
+    while (node && node !== document.body && guard < 4) {
+      const parent = node.parentElement;
+      if (parent) {
+        for (const s of parent.children) {
+          if (s === node || s.contains(d)) continue;
+          try {
+            const cs = window.getComputedStyle(s);
+            if ((cs.position === 'fixed' || cs.position === 'absolute') && cs.display !== 'none' && cs.visibility !== 'hidden') {
+              const r = s.getBoundingClientRect();
+              if (r.width * r.height >= window.innerWidth * window.innerHeight * 0.8) out.push(s);
+            }
+          } catch (e) {}
+        }
+      }
+      node = parent; guard++;
+    }
+    return out;
+  }
+  const __mBd = __mNodes.map(__mBackdrops);
+  function __occluderDialogIndex(hit) {
+    if (!hit) return null;
+    for (let i = 0; i < __mNodes.length; i++) {
+      const d = __mNodes[i];
+      if (d === hit || d.contains(hit)) return i;
+      const bds = __mBd[i];
+      for (let j = 0; j < bds.length; j++) { if (bds[j] === hit || bds[j].contains(hit)) return i; }
+    }
+    return null;
+  }
+  function __occludedDialogIndexForEl(el) {
+    const r = el.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    if (cx < 0 || cx >= window.innerWidth || cy < 0 || cy >= window.innerHeight) return null;
+    const hit = document.elementFromPoint(cx, cy);
+    if (!hit || hit === el || el.contains(hit)) return null;
+    return __occluderDialogIndex(hit);
+  }
+
+  // Physical-coord conversion constants (getElementScreenCoords formula,
+  // cdp-bridge.ts) — computed once so browser_click({by}) converts the resolved
+  // viewport rect to screen px WITHOUT a second querySelector (ADR §1.2 D1).
+  const dpr = window.devicePixelRatio || 1;
+  const sx = window.screenX;
+  const sy = window.screenY;
+  const chromeH = window.outerHeight - window.innerHeight;
+  const chromeW = Math.round((window.outerWidth - window.innerWidth) / 2);
+
+  function actNode(el) {
+    const cs2 = window.getComputedStyle(el);
+    const r = el.getBoundingClientRect();
+    const vis = cs2.display !== 'none' && cs2.visibility !== 'hidden' && cs2.opacity !== '0' && r.width > 0 && r.height > 0;
+    // :disabled is ancestor-aware — a control inside <fieldset disabled> has
+    // el.disabled === false but is functionally disabled (Codex Round 2 P2).
+    let disabled;
+    try { disabled = el.matches(':disabled'); } catch (e) { disabled = !!el.disabled; }
+    const enabled = !disabled && el.getAttribute('aria-disabled') !== 'true';
+    let receivesEvents = false;
+    const cx = r.left + r.width / 2;
+    const cy = r.top + r.height / 2;
+    if (cx >= 0 && cx < window.innerWidth && cy >= 0 && cy < window.innerHeight) {
+      const hit = document.elementFromPoint(cx, cy);
+      receivesEvents = !!hit && (hit === el || el.contains(hit));
+    }
+    const tiRaw = el.getAttribute('tabindex');
+    const ti = (tiRaw !== null && tiRaw.trim() !== '' && !isNaN(Number(tiRaw))) ? Number(tiRaw) : null;
+    const roleAttr = el.getAttribute('role');
+    return {
+      tag: el.tagName.toLowerCase(),
+      role: roleAttr ? roleAttr.toLowerCase() : null,
+      hasHref: el.tagName === 'A' && el.hasAttribute('href'),
+      tabindex: ti,
+      hasOnclick: el.hasAttribute('onclick'),
+      cursorPointer: cs2.cursor === 'pointer',
+      visible: vis,
+      enabled: enabled,
+      receivesEvents: receivesEvents,
+      // Role-filter match for THIS node (uses the same roleMatches predicate that
+      // builds the pool, so input type is available). true when no role filter is
+      // set. decideActionTarget gates the climb-resolved clickable on this so a
+      // role-constrained action never resolves to a wrong-role ancestor (the climb
+      // picks the NEAREST strong clickable, which the chain-aware pool filter may
+      // have admitted via a FARTHER role-matching ancestor — e.g. role:'button'
+      // with an <a> nested in a div[role=button]).
+      roleMatch: roleFilter ? roleMatches(el) : true,
+      rect: { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) },
+    };
+  }
+
+  function chainOf(el) {
+    const chain = [];
+    let node = el;
+    for (let d = 0; d <= D && node; d++) {
+      chain.push(actNode(node));
+      node = node.parentElement;
+    }
+    return chain;
+  }
+
+  function labelsOf(el) {
+    const out = [];
+    const seen = new Set();
+    function add(t) {
+      if (!t) return;
+      const s = t.trim().replace(/\\s+/g, ' ').slice(0, 40);
+      if (s && !seen.has(s)) { seen.add(s); out.push(s); }
+    }
+    const lb = el.getAttribute('aria-labelledby');
+    if (lb) for (const id of lb.split(/\\s+/)) { const n = document.getElementById(id); if (n) add(n.textContent); }
+    if (el.id) { try { for (const lab of document.querySelectorAll('label[for=' + JSON.stringify(el.id) + ']')) add(lab.textContent); } catch (e) {} }
+    const wrapLabel = el.closest && el.closest('label');
+    if (wrapLabel) add(wrapLabel.textContent);
+    let prev = el.previousElementSibling;
+    let hops = 0;
+    while (prev && hops < 3 && out.length < 3) {
+      const tg = prev.tagName.toLowerCase();
+      if (tg === 'label' || /^h[1-6]$/.test(tg) || tg === 'legend') add(prev.textContent);
+      prev = prev.previousElementSibling; hops++;
+    }
+    return out.slice(0, 3);
+  }
+
+  function hintOf(el) {
+    let node = el.parentElement;
+    let guard = 0;
+    while (node && node !== document.body && guard < 40) {
+      const r = node.getAttribute('role');
+      const tg = node.tagName.toLowerCase();
+      let lm = null;
+      if (r && /^(navigation|dialog|alertdialog|main|banner|complementary|contentinfo|search|form|region)$/.test(r)) lm = r;
+      else if (/^(nav|main|header|footer|aside|form|section)$/.test(tg)) lm = tg;
+      if (lm) {
+        const an = node.getAttribute('aria-label');
+        return (lm + (an ? ' "' + an + '"' : '')).slice(0, 40);
+      }
+      node = node.parentElement; guard++;
+    }
+    return null;
+  }
+
+  const factsList = top.map(function(entry, i) {
+    const el = entry.el;
+    const roleAttr = el.getAttribute('role');
+    return {
+      index: i,
+      chain: chainOf(el),
+      type: classify(el),
+      name: elText(el),
+      role: roleAttr || null,
+      ariaLabel: el.getAttribute('aria-label') || null,
+      matchedBy: matchedByMap.get(el),
+      score: score(matchScore.get(el) || 0, entry.visible),
+      nearestLabels: labelsOf(el),
+      containerHint: hintOf(el),
+      occludedByDialogIndex: __occludedDialogIndexForEl(el),
+    };
+  });
+
+  return {
+    total: pool.length,
+    returned: factsList.length,
+    viewport: { screenX: sx, screenY: sy, dpr: dpr, chromeH: chromeH, chromeW: chromeW, innerWidth: window.innerWidth, innerHeight: window.innerHeight },
+    candidates: factsList,
+    modalFacts: __modal,
+  };
+})()
+"
+`;

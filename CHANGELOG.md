@@ -4,6 +4,18 @@
 
 ### Added
 
+- **`browser_click` now stops instead of clicking through a modal dialog.** When
+  the element you target is covered by a real modal dialog blocking the page,
+  `browser_click` (both `selector` and `by`/`pattern` modes) returns
+  `code:'BrowserModalBlocking'` with `context.blockingElement` (`{name, role}`)
+  rather than landing the click on the dialog's backdrop. The recovery is in the
+  hint: dismiss the dialog (its close/cancel button, or send Escape via
+  `keyboard`) and retry — or act on the dialog's own contents, which are not
+  blocked. A plain navigation drawer is not treated as blocking (same detection
+  as the `browser_overview` `modal:` section). Semantic (`by`/`pattern`) clicks
+  already return the post-click `hints.verifyDelivery` observation, same as
+  `selector` mode.
+
 - **`browser_overview` now tells you when a real modal dialog is blocking the
   page.** Its output includes a `modal:` section: `isModal`, the blocking dialog's
   `blocker` (`name` + `role`) when there is one, and the `signals` it was judged

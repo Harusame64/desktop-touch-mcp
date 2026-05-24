@@ -5,7 +5,9 @@
   <title>ADR-023 Phase 2 modal fixture</title>
   <style>
     body { margin: 0; font-family: sans-serif; }
-    main { padding: 24px; }
+    /* padding-left clears the 280px fixed drawer so #open is not occluded by it
+       (only by the modal backdrop when the dialog is open). */
+    main { padding: 24px 24px 24px 320px; }
     /* A role=dialog that is actually a NON-modal navigation drawer (side panel):
        a navigation landmark, no aria-modal, no backdrop. detectModal must NOT
        call this modal (dogfood 課題③). */

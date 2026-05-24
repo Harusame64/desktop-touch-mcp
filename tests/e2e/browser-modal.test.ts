@@ -19,9 +19,18 @@ import { sleep } from "./helpers/wait.js";
 import {
   buildPageLevelModalFactsJs,
   detectModal,
+  resolveBrowserActionTarget,
+  probeSelectorModalOcclusion,
   type ModalFacts,
 } from "../../src/tools/browser-resolver.js";
-import { evaluateInTab, disconnectAll } from "../../src/engine/cdp-bridge.js";
+import { evaluateInTab, disconnectAll, getElementScreenCoords } from "../../src/engine/cdp-bridge.js";
+
+async function openDialog(): Promise<void> {
+  await evaluateInTab(`(function(){ const d=document.getElementById('dlg'); if (!d.open) d.showModal(); return true; })()`, null, 9233);
+}
+async function closeDialog(): Promise<void> {
+  await evaluateInTab(`(function(){ const d=document.getElementById('dlg'); if (d.open) d.close(); return true; })()`, null, 9233);
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_PATH = join(__dirname, "fixtures", "modal-cases.html");
@@ -101,5 +110,56 @@ describe.skipIf(!CHROME_AVAILABLE)("ADR-023 Phase 2 (PR-2a): page-level modal fa
     const blocker = facts.dialogCandidates[verdict.blockerDialogIndex!];
     expect(blocker.nativeDialogOpen).toBe(true);
     await evaluateInTab(`(function(){ const d=document.getElementById('dlg'); if (d.open) d.close(); return true; })()`, null, TEST_PORT);
+  });
+});
+
+describe.skipIf(!CHROME_AVAILABLE)("ADR-023 Phase 2b: modal-blocking preflight (real Chrome, no OS click)", () => {
+  // When the native dialog is open, the #open button (in <main>) sits behind the
+  // dialog's ::backdrop → occluded by the modal. These exercise the gather→decide
+  // plumbing end to end; the actual STOP (BrowserModalBlocking) returns before any
+  // OS click, so this is headless-safe.
+
+  it("by-axis: a button behind the modal → noActionable with modalFacts + matching occludedTopByDialogIndex", async () => {
+    await openDialog();
+    const r = await resolveBrowserActionTarget({ by: "text", pattern: "Open dialog", action: "click", port: TEST_PORT });
+    expect(r.kind, JSON.stringify(r)).toBe("noActionable");
+    if (r.kind === "noActionable") {
+      expect(r.modalFacts).toBeDefined();
+      const verdict = detectModal(r.modalFacts!);
+      expect(verdict.isModal).toBe(true);
+      // the handler upgrades to BrowserModalBlocking exactly on this index match.
+      expect(r.occludedTopByDialogIndex).toBe(verdict.blockerDialogIndex);
+      expect(r.occludedTopByDialogIndex).not.toBeNull();
+    }
+    await closeDialog();
+  });
+
+  it("by-axis: includeModal off for fill (resolve action='fill' carries no modalFacts)", async () => {
+    await openDialog();
+    const r = await resolveBrowserActionTarget({ by: "text", pattern: "Open dialog", action: "fill", port: TEST_PORT });
+    // fill gather is modal-free (bit-equal with Phase 1) — no modalFacts even when a modal is open.
+    if (r.kind === "noActionable") expect(r.modalFacts).toBeUndefined();
+    await closeDialog();
+  });
+
+  it("selector probe: #open is occluded by the modal; probe maps it to the blocker dialog", async () => {
+    await openDialog();
+    const coords = await getElementScreenCoords("#open", null, TEST_PORT);
+    expect(coords.occluded).toBe(true); // generic hit-test flag from getElementScreenCoords
+    const probe = await probeSelectorModalOcclusion("#open", null, TEST_PORT);
+    expect(probe, "probe should find the element").not.toBeNull();
+    const verdict = detectModal(probe!.modalFacts);
+    expect(verdict.isModal).toBe(true);
+    expect(probe!.occludedByDialogIndex).toBe(verdict.blockerDialogIndex);
+    await closeDialog();
+  });
+
+  it("no modal open: #open is not occluded (no false preflight stop)", async () => {
+    await closeDialog();
+    const coords = await getElementScreenCoords("#open", null, TEST_PORT);
+    expect(coords.occluded).toBe(false);
+    const r = await resolveBrowserActionTarget({ by: "text", pattern: "Open dialog", action: "click", port: TEST_PORT });
+    // unoccluded, actionable → resolves normally (no modal escalation).
+    expect(r.kind, JSON.stringify(r)).toBe("resolved");
   });
 });
