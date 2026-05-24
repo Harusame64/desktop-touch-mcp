@@ -1142,6 +1142,14 @@ function browserResolveErrorToFailure(
         suggest: ["Narrow the search with a scope (CSS selector)", "Use a more specific pattern"],
         context: ctx,
       });
+    case "EvalError":
+      // The injected JS threw — most often an invalid CSS `scope` (querySelector
+      // SyntaxError); also a transient CDP failure (detach/timeout). Surface as
+      // InvalidArgs with a scope-validity hint rather than a generic ToolError.
+      return failCode("InvalidArgs", `${tool}: resolver evaluation failed${detail}`, {
+        suggest: ["Verify the scope CSS selector is valid", "Retry — the page may have navigated mid-call"],
+        context: ctx,
+      });
     default:
       return failCode("ToolError", `${tool}: resolver evaluation failed${detail}`, { context: ctx });
   }
@@ -1200,6 +1208,24 @@ async function handleBrowserClickByAxis(args: {
       );
     }
     perceptionEnvBrowser = buildEnvelopeFor(lensId, { toolName: "browser_click" }) ?? undefined;
+  } else if (isAutoGuardEnabled() && (tabId || port)) {
+    // Parity with the selector path's auto-guard (Opus PR3 P2): verify tab
+    // readyState + identity before resolving, and attach the perception envelope
+    // on success. Uses the "strict" readiness policy (block on readyState !==
+    // "complete") — the by-axis resolver has no pre-resolution selector, and the
+    // selector-in-viewport check is unnecessary because the gather eval's
+    // receivesEvents hit-test already gates in-viewport actionability.
+    const descriptor: import("./_action-guard.js").ActionTargetDescriptor = {
+      kind: "browserTab", port, tabId, urlIncludes: undefined,
+    };
+    const ag = await runActionGuard({
+      toolName: "browser_click", actionKind: "browserCdp", descriptor,
+      browserReadinessPolicy: "strict",
+    });
+    if (ag.block) {
+      return failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "browser_click", { _perceptionForPost: ag.summary });
+    }
+    perceptionEnvBrowser = ag.summary;
   }
 
   const outcome = await resolveBrowserActionTarget({

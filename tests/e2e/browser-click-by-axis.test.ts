@@ -88,10 +88,16 @@ describe.skipIf(!CHROME_AVAILABLE)("browser_click by-axis — ambiguity & safety
     expect(r.code).toBe("BrowserNoActionableTarget");
   });
 
-  it("an invalid scope surfaces ScopeNotFound", async () => {
+  it("a valid scope that matches nothing surfaces ScopeNotFound", async () => {
     const r = await click({ by: "text", pattern: "Save", scope: "#no-such-scope" });
     expect(r.ok, JSON.stringify(r)).toBe(false);
     expect(r.code).toBe("ScopeNotFound");
+  });
+
+  it("an INVALID CSS scope (querySelector throws) maps to InvalidArgs", async () => {
+    const r = await click({ by: "text", pattern: "Save", scope: "div::::bad((" });
+    expect(r.ok, JSON.stringify(r)).toBe(false);
+    expect(r.code).toBe("InvalidArgs");
   });
 });
 
