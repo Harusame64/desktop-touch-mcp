@@ -455,12 +455,13 @@ rm -rf "$USERPROFILE/.desktop-touch-mcp/releases/vX.Y.Z"
 npm cache clean --force
 
 # 2. Download via npx and verify --help
-#    ⚠️ Run this from a cwd OUTSIDE the project source dir (e.g. `cd $env:TEMP` first).
+#    ⚠️ Run this from a cwd OUTSIDE the project source dir first
+#    (PowerShell: `cd $env:TEMP`  |  bash: `cd /tmp`).
 #    The project's own package.json has name=@harusame64/desktop-touch-mcp; once its
 #    version equals the just-published X.Y.Z, running npx from the project root makes
 #    npx resolve the LOCAL (uninstalled) package instead of the registry one and fail
 #    with "'desktop-touch-mcp' is not recognized as an internal or external command".
-#    That is a false negative (wrong cwd), NOT a release bug — re-run from $env:TEMP.
+#    That is a false negative (wrong cwd), NOT a release bug — re-run from a temp dir.
 #    (`npx @...@<older-version>` works from the project root because the local version
 #    no longer satisfies the spec, which is why a 1.7.2 cross-check can mislead.)
 npx -y @harusame64/desktop-touch-mcp@X.Y.Z --help
