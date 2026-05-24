@@ -17,7 +17,7 @@ import { clickElementHandler, getUiElementsHandler } from "../../src/tools/ui-el
 import { keyboardPressHandler } from "../../src/tools/keyboard.js";
 import { launchNotepad, type NpInstance } from "./helpers/notepad-launcher.js";
 import { parsePayload, sleep } from "./helpers/wait.js";
-import { focusWindow } from "../../src/engine/win32.js";
+import { restoreAndFocusWindow } from "../../src/engine/win32.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // F1-base: ElementNotFound + suggest for a completely bogus automationId
@@ -87,7 +87,7 @@ describe("F1-dialog: stale automationId after dialog closes → ElementNotFound"
     np = await launchNotepad();
 
     try {
-      focusWindow(np.hwnd);
+      restoreAndFocusWindow(np.hwnd);
     } catch { /* non-fatal */ }
     await sleep(300);
 
