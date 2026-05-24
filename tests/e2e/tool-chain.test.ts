@@ -21,6 +21,11 @@ import { launchNotepad, type NpInstance } from "./helpers/notepad-launcher.js";
 import { parsePayload, sleep } from "./helpers/wait.js";
 import { focusWindow } from "../../src/engine/win32.js";
 import { screenshotHandler } from "../../src/tools/screenshot.js";
+import { findBlankDesktopPoint } from "./helpers/blank-point.js";
+
+// For the "any click produces a post state" check, click a SCANNED blank desktop
+// spot rather than a hardcoded (100,100) that could land on an arbitrary window.
+const BLANK = findBlankDesktopPoint();
 
 let np: NpInstance;
 
@@ -229,14 +234,15 @@ describe("H3: mouse_click → get_context focus propagates within 300ms", () => 
     }
   }, 15_000);
 
-  it("get_context.post.windowChanged is a boolean after mouse_click", async () => {
+  it.skipIf(BLANK === null)("get_context.post.windowChanged is a boolean after mouse_click", async () => {
     // Any mouse click produces a post state — we just want the structure to be correct.
     // This guards against withPostState dropping post.windowChanged after mouse actions.
+    // Click the scanned blank desktop spot (not a hardcoded coordinate).
     const trackedMouseClick = withPostState("mouse_click", mouseClickHandler);
 
     const result = await trackedMouseClick({
-      x: 100,
-      y: 100,
+      x: BLANK!.x,
+      y: BLANK!.y,
       button: "left" as const,
       doubleClick: false,
       homing: false,

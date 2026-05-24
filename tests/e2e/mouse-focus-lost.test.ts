@@ -9,8 +9,14 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mouseClickHandler } from "../../src/tools/mouse.js";
+import { findBlankDesktopPoint } from "./helpers/blank-point.js";
 
-describe("mouse_click focusLost", () => {
+// Click a scanned blank desktop spot, never a hardcoded coordinate — (960,540)
+// (screen centre) almost always lands on a real window. Skip if the screen is
+// fully covered (no safe blank spot to click).
+const BLANK = findBlankDesktopPoint();
+
+describe.skipIf(BLANK === null)("mouse_click focusLost", () => {
   // These tests pre-date v0.12 Auto Perception. They exercise focusLost
   // detection, not the auto-guard path — disable auto-guard so it doesn't
   // block clicks based on live desktop modal/window state.
@@ -25,10 +31,10 @@ describe("mouse_click focusLost", () => {
   });
 
   it("succeeds and contains ok:true", async () => {
-    // Click at screen center — may or may not hit a real window
+    // Click a scanned blank desktop spot (over the wallpaper, no window there)
     const result = await mouseClickHandler({
-      x: 960,
-      y: 540,
+      x: BLANK!.x,
+      y: BLANK!.y,
       button: "left",
       doubleClick: false,
       homing: false,
@@ -42,8 +48,8 @@ describe("mouse_click focusLost", () => {
 
   it("does not include focusLost when trackFocus=false", async () => {
     const result = await mouseClickHandler({
-      x: 960,
-      y: 540,
+      x: BLANK!.x,
+      y: BLANK!.y,
       button: "left",
       doubleClick: false,
       homing: false,
@@ -57,8 +63,8 @@ describe("mouse_click focusLost", () => {
   it("runs without error when trackFocus=true and no windowTitle (no-op path)", async () => {
     // No windowTitle, no homing notes → detectFocusLoss returns null immediately
     const result = await mouseClickHandler({
-      x: 960,
-      y: 540,
+      x: BLANK!.x,
+      y: BLANK!.y,
       button: "left",
       doubleClick: false,
       homing: false,
@@ -71,10 +77,14 @@ describe("mouse_click focusLost", () => {
   });
 
   it("includes conversion info when origin is provided", async () => {
+    // Verify the origin+scale conversion (screen = origin + local/scale) while
+    // still landing the real click on the scanned blank spot: with x=100,scale=2
+    // the local offset is +50, so origin = BLANK - 50 makes screen === BLANK.
+    const origin = { x: BLANK!.x - 50, y: BLANK!.y - 50 };
     const result = await mouseClickHandler({
       x: 100,
       y: 100,
-      origin: { x: 800, y: 400 },
+      origin,
       scale: 2,
       button: "left",
       doubleClick: false,
@@ -85,16 +95,16 @@ describe("mouse_click focusLost", () => {
     const payload = JSON.parse((result.content[0] as { text: string }).text);
     expect(payload.ok).toBe(true);
     expect(typeof payload.conversion).toBe("string");
-    // screen = origin.x + x/scale = 800 + 100/2 = 850
-    expect(payload.at.x).toBe(850);
-    expect(payload.at.y).toBe(450);
+    // screen = origin.x + x/scale = (BLANK.x - 50) + 100/2 = BLANK.x
+    expect(payload.at.x).toBe(BLANK!.x);
+    expect(payload.at.y).toBe(BLANK!.y);
   });
 
   it("skips settle wait and focusLost when trackFocus=false (faster execution)", async () => {
     const before = Date.now();
     await mouseClickHandler({
-      x: 960,
-      y: 540,
+      x: BLANK!.x,
+      y: BLANK!.y,
       button: "left",
       doubleClick: false,
       tripleClick: false,
@@ -114,8 +124,8 @@ describe("mouse_click focusLost", () => {
 
   it("skips non-existent window title gracefully (no focusLost when fg matches target)", async () => {
     const result = await mouseClickHandler({
-      x: 960,
-      y: 540,
+      x: BLANK!.x,
+      y: BLANK!.y,
       button: "left",
       doubleClick: false,
       homing: false,

@@ -21,8 +21,16 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mouseClickHandler, mouseDragHandler } from "../../src/tools/mouse.js";
+import { findBlankDesktopPoint } from "./helpers/blank-point.js";
 
-describe("mouse_click verifyDelivery hint (issue #178)", () => {
+// Target a SCANNED blank desktop spot (over the wallpaper, no window there)
+// instead of guessing a "probably empty" coordinate like (50,50) or (960,540).
+// This is exactly the "click that hits nothing" the silent-fail pin needs, and
+// it avoids carelessly clicking/dragging on whatever real window happens to sit
+// at a hardcoded coordinate. Skip when the screen is fully covered.
+const BLANK = findBlankDesktopPoint();
+
+describe.skipIf(BLANK === null)("mouse_click verifyDelivery hint (issue #178)", () => {
   let prevAutoGuard: string | undefined;
   beforeAll(() => {
     // Disable auto-guard so blank-area clicks don't get filtered by
@@ -38,13 +46,9 @@ describe("mouse_click verifyDelivery hint (issue #178)", () => {
 
   it("returns hints.verifyDelivery when verifyDelivery=true (default)", async () => {
     const result = await mouseClickHandler({
-      // Outside the failsafe radius (10px from top-left), but still on the
-      // desktop / extreme top-left so there's typically no actionable target.
-      // Using (1, 1) triggered the running MCP server's failsafe (issue #365
-      // Phase 2 caught this) and killed it mid-test — false-positive sudden
-      // death symptom in dogfood logs.
-      x: 50,
-      y: 50,
+      // Scanned blank desktop spot — no window there, so this click hits nothing.
+      x: BLANK!.x,
+      y: BLANK!.y,
       button: "left",
       doubleClick: false,
       tripleClick: false,
@@ -68,13 +72,9 @@ describe("mouse_click verifyDelivery hint (issue #178)", () => {
 
   it("does NOT include verifyDelivery hint when verifyDelivery=false", async () => {
     const result = await mouseClickHandler({
-      // Outside the failsafe radius (10px from top-left), but still on the
-      // desktop / extreme top-left so there's typically no actionable target.
-      // Using (1, 1) triggered the running MCP server's failsafe (issue #365
-      // Phase 2 caught this) and killed it mid-test — false-positive sudden
-      // death symptom in dogfood logs.
-      x: 50,
-      y: 50,
+      // Scanned blank desktop spot — no window there, so this click hits nothing.
+      x: BLANK!.x,
+      y: BLANK!.y,
       button: "left",
       doubleClick: false,
       tripleClick: false,
@@ -105,13 +105,9 @@ describe("mouse_click verifyDelivery hint (issue #178)", () => {
     // the host MCP server's emergency-stop on real Windows hardware and
     // kills it mid-test. See issue #365.)
     const result = await mouseClickHandler({
-      // Outside the failsafe radius (10px from top-left), but still on the
-      // desktop / extreme top-left so there's typically no actionable target.
-      // Using (1, 1) triggered the running MCP server's failsafe (issue #365
-      // Phase 2 caught this) and killed it mid-test — false-positive sudden
-      // death symptom in dogfood logs.
-      x: 50,
-      y: 50,
+      // Scanned blank desktop spot — no window there, so this click hits nothing.
+      x: BLANK!.x,
+      y: BLANK!.y,
       button: "left",
       doubleClick: false,
       tripleClick: false,
@@ -130,11 +126,11 @@ describe("mouse_click verifyDelivery hint (issue #178)", () => {
   }, 15_000);
 
   it("3-value enum: status is one of {delivered, focus_only, unverifiable}", async () => {
-    // Cover the canonical matrix doc §4.4 enum on every branch the
-    // handler can take. Click somewhere mid-screen.
+    // Cover the canonical matrix doc §4.4 enum. Click the scanned blank spot —
+    // any of the 3 statuses is acceptable here (no branch requires 'delivered').
     const result = await mouseClickHandler({
-      x: 960,
-      y: 540,
+      x: BLANK!.x,
+      y: BLANK!.y,
       button: "left",
       doubleClick: false,
       tripleClick: false,
@@ -150,7 +146,7 @@ describe("mouse_click verifyDelivery hint (issue #178)", () => {
   }, 15_000);
 });
 
-describe("mouse_drag verifyDelivery hint (issue #178)", () => {
+describe.skipIf(BLANK === null)("mouse_drag verifyDelivery hint (issue #178)", () => {
   let prevAutoGuard: string | undefined;
   beforeAll(() => {
     prevAutoGuard = process.env.DESKTOP_TOUCH_AUTO_GUARD;
@@ -162,13 +158,13 @@ describe("mouse_drag verifyDelivery hint (issue #178)", () => {
   });
 
   it("returns hints.verifyDelivery for drags when default", async () => {
-    // Short drag in the desktop area. allowCrossWindowDrag:true bypasses
-    // the cross-window guard since both endpoints are on the desktop.
+    // Short drag over the scanned blank desktop spot. allowCrossWindowDrag:true
+    // bypasses the cross-window guard since both endpoints are on the wallpaper.
     const result = await mouseDragHandler({
-      startX: 200,
-      startY: 200,
-      endX: 220,
-      endY: 220,
+      startX: BLANK!.x,
+      startY: BLANK!.y,
+      endX: BLANK!.x + 20,
+      endY: BLANK!.y + 20,
       homing: false,
       allowCrossWindowDrag: true,
       allowTabDrag: true,
@@ -183,10 +179,10 @@ describe("mouse_drag verifyDelivery hint (issue #178)", () => {
 
   it("respects verifyDelivery=false opt-out for drag", async () => {
     const result = await mouseDragHandler({
-      startX: 200,
-      startY: 200,
-      endX: 220,
-      endY: 220,
+      startX: BLANK!.x,
+      startY: BLANK!.y,
+      endX: BLANK!.x + 20,
+      endY: BLANK!.y + 20,
       homing: false,
       allowCrossWindowDrag: true,
       allowTabDrag: true,

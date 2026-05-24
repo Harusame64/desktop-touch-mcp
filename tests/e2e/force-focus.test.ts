@@ -10,6 +10,12 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mouseClickHandler } from "../../src/tools/mouse.js";
 import { keyboardPressHandler } from "../../src/tools/keyboard.js";
+import { findBlankDesktopPoint } from "./helpers/blank-point.js";
+
+// mouse_click tests target a SCANNED blank desktop spot, never (960,540) /
+// screen centre (which almost always lands on a real window). Only the mouse
+// tests need it (keyboard tests do not click), so guard those with it.skipIf.
+const BLANK = findBlankDesktopPoint();
 
 describe("forceFocus param — structural tests", () => {
   // These tests pre-date v0.12 Auto Perception. They exercise the forceFocus
@@ -25,12 +31,12 @@ describe("forceFocus param — structural tests", () => {
     else process.env.DESKTOP_TOUCH_AUTO_GUARD = prevAutoGuard;
   });
 
-  it("mouse_click succeeds with forceFocus=true (no target window)", async () => {
+  it.skipIf(BLANK === null)("mouse_click succeeds with forceFocus=true (no target window)", async () => {
     // When no windowTitle is given, force path is not triggered in applyHoming
     // (homing=false skips applyHoming entirely). Should succeed normally.
     const result = await mouseClickHandler({
-      x: 960,
-      y: 540,
+      x: BLANK!.x,
+      y: BLANK!.y,
       button: "left",
       doubleClick: false,
       homing: false,
@@ -85,10 +91,10 @@ describe("forceFocus param — structural tests", () => {
     }
   });
 
-  it("forceFocus=false explicitly disables the path", async () => {
+  it.skipIf(BLANK === null)("forceFocus=false explicitly disables the path", async () => {
     const result = await mouseClickHandler({
-      x: 960,
-      y: 540,
+      x: BLANK!.x,
+      y: BLANK!.y,
       button: "left",
       doubleClick: false,
       homing: false,
