@@ -71,7 +71,6 @@ const mockEnum = vi.mocked(win32.enumWindowsInZOrder);
 const mockClass = vi.mocked(win32.getWindowClassName);
 const mockPaste = vi.mocked(bgInput.pasteIntoConsoleNoFocus);
 const mockChars = vi.mocked(bgInput.postCharsToHwnd);
-const mockEnter = vi.mocked(bgInput.postEnterToHwnd);
 const mockBaseline = vi.mocked(uia.getTextViaTextPattern);
 
 function fakeWindow(title: string, hwnd = 100n) {
@@ -160,10 +159,25 @@ describe("terminalSendHandler — conhost console-paste routing", () => {
     expect(mockChars).toHaveBeenCalled();
   });
 
-  it("(d) trailing newline stripped before console-paste (native adds the Enter)", async () => {
+  it("(d) ONE trailing newline stripped before console-paste (native adds the Enter)", async () => {
     await terminalSendHandler({ ...baseArgs, input: "ls -la\n" });
     expect(mockPaste).toHaveBeenCalledTimes(1);
     expect(mockPaste).toHaveBeenCalledWith(expect.anything(), "ls -la");
+  });
+
+  it("(d2) only ONE trailing newline stripped — N>=2 preserved (REPL blank-line terminator)", async () => {
+    // Native console-paste always appends exactly one Enter, so to deliver N
+    // trailing Enters (e.g. a Python def whose blank line terminates the block)
+    // we strip exactly one and let the native Enter re-add it: N-1 survive in the
+    // pasted text + 1 native Enter = N. Stripping all (the previous bug) would
+    // collapse this to a single Enter and leave the REPL mid-block.
+    await terminalSendHandler({ ...baseArgs, input: "def f():\n  return 1\n\n" });
+    expect(mockPaste).toHaveBeenCalledWith(expect.anything(), "def f():\n  return 1\n");
+  });
+
+  it("(d3) trailing CRLF treated as one line break (stripped whole, not half)", async () => {
+    await terminalSendHandler({ ...baseArgs, input: "whoami\r\n" });
+    expect(mockPaste).toHaveBeenCalledWith(expect.anything(), "whoami");
   });
 
   it("(e) secret prompt baseline → carve-out skips console-paste, uses WM_CHAR (no clipboard)", async () => {

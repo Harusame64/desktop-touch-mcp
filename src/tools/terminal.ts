@@ -1005,9 +1005,17 @@ export const terminalSendHandler = async ({
           secretPrompt = baseline === null ? true : isSecretInputPrompt(baseline);
         } catch { /* unreadable baseline → keep WM_CHAR (safe) */ }
         if (!secretPrompt) {
-          // Native always appends one Enter, so strip any trailing newline (the
-          // native Enter then runs the last line exactly once — no double Enter).
-          const paste = await pasteIntoConsoleNoFocus(win.hwnd, input.replace(/[\r\n]+$/, ""));
+          // Native console-paste appends EXACTLY ONE Enter unconditionally, so
+          // strip exactly ONE trailing line break (the one the native Enter
+          // re-adds) — NOT all of them. Stripping all (`/[\r\n]+$/`) would
+          // collapse an input that intentionally ends in multiple newlines
+          // (e.g. a REPL / function-definition block whose trailing blank line
+          // terminates it) from N trailing Enters down to 1, diverging from the
+          // WM_CHAR path which preserves the input's newline count. With a
+          // single strip the delivered trailing-Enter count is (N-1)+1 = N for
+          // N>=1 and 0+1 = 1 for N=0 — matching the WM_CHAR path's max(N,1).
+          const pasteText = input.replace(/(?:\r\n|\r|\n)$/, "");
+          const paste = await pasteIntoConsoleNoFocus(win.hwnd, pasteText);
           if (paste.ok) {
             const cpWarnings: string[] = [];
             if (paste.skippedFormats && paste.skippedFormats.length > 0) {
