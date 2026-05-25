@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.9.2] - 2026-05-25 — Terminal send now runs commands in conhost PowerShell
+
+### Fixed
+
+- **`terminal` action=send into a conhost PowerShell window now actually runs the
+  command.** Previously, sending to a classic console host (conhost — not Windows
+  Terminal) running PowerShell would TYPE the command onto the prompt but never
+  press Enter, leaving the line unexecuted with a stray `m` appended (the Enter
+  was delivered as a character that the PowerShell line editor renders literally
+  instead of accepting the line). The Enter is now sent as a real key press, so
+  the command runs. bash and cmd were unaffected and keep working. This also fixes
+  the related case where `terminal` action=run with `until:{mode:'exit'}` could
+  time out against a local conhost PowerShell. Completes the conhost reliability
+  work started in 1.9.1.
+
 ## [1.9.1] - 2026-05-25 — Reliable terminal send into classic console (conhost) windows
 
 ### Fixed
