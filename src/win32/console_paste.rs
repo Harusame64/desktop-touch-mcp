@@ -38,10 +38,19 @@ const WM_COMMAND: u32 = 0x0111;
 /// Legacy console context-menu "Paste" command id (conhost). Mirrors
 /// `ID_CONSOLE_PASTE` in `bg-input.ts`.
 const ID_CONSOLE_PASTE: usize = 0xFFF1;
-const WM_CHAR: u32 = 0x0102;
-/// VK_RETURN. Enter is sent as WM_CHAR only (bit-equal with the TS
-/// `postEnterToHwnd`, not WM_KEYDOWN/KEYUP).
+const WM_KEYDOWN: u32 = 0x0100;
+const WM_KEYUP: u32 = 0x0101;
+/// VK_RETURN. Enter is sent as a real KEY EVENT (WM_KEYDOWN + WM_KEYUP), NOT
+/// WM_CHAR 0x0D — kept bit-equal with the TS `postEnterToHwnd`. conhost
+/// PowerShell's PSReadLine treats WM_CHAR 0x0D (= Ctrl+M) as a LITERAL 'm' and
+/// never accepts the line (the command is typed but not run); a VK_RETURN key
+/// event IS recognized as accept-line. bash / cmd accept the key-event Enter as
+/// CR just as they did the WM_CHAR form, so the original conhost-bash fix is
+/// preserved (verified by the SSH-WSL load gate + cross-shell dogfood).
 const VK_RETURN: usize = 0x0D;
+/// Enter key scan code (scan-code set 1). Carried in the WM_KEYDOWN/UP lParam so
+/// conhost builds a faithful key record (matches a physically pressed Enter).
+const ENTER_SCANCODE: isize = 0x1C;
 /// Let conhost drain the pasted clipboard into its input buffer before Enter.
 const PASTE_DRAIN_DELAY_MS: u64 = 200;
 /// Gap after Enter before restoring the clipboard.
@@ -181,8 +190,16 @@ pub fn win32_console_paste_no_focus(
                     post_paste_failed = true;
                 } else {
                     std::thread::sleep(Duration::from_millis(PASTE_DRAIN_DELAY_MS));
-                    // Enter — WM_CHAR VK_RETURN only (bit-equal with TS postEnterToHwnd).
-                    let _ = post_message(target, WM_CHAR, WPARAM(VK_RETURN), LPARAM(0));
+                    // Enter — real KEY EVENT (WM_KEYDOWN + WM_KEYUP VK_RETURN),
+                    // NOT WM_CHAR 0x0D. PSReadLine (conhost PowerShell) renders a
+                    // WM_CHAR 0x0D (Ctrl+M) as a literal 'm' and never accepts the
+                    // line; a VK_RETURN key event is accept-line in PowerShell and
+                    // CR in bash/cmd. lParam carries the Enter scan code; keyup sets
+                    // the previous-state (bit 30) + transition (bit 31) bits.
+                    let down = (ENTER_SCANCODE & 0xFF) << 16;
+                    let up = down | (1isize << 30) | (1isize << 31);
+                    let _ = post_message(target, WM_KEYDOWN, WPARAM(VK_RETURN), LPARAM(down));
+                    let _ = post_message(target, WM_KEYUP, WPARAM(VK_RETURN), LPARAM(up));
                     std::thread::sleep(Duration::from_millis(ENTER_GAP_DELAY_MS));
                 }
             }
