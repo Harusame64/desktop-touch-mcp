@@ -250,6 +250,38 @@ export function isSecretInputPrompt(baselineRaw: string | null): boolean {
   return SECRET_INPUT_PROMPT_PATTERNS.some((re) => re.test(line));
 }
 
+/**
+ * Static gate for routing a conhost `action=send` through the atomic native
+ * console-paste (`pasteIntoConsoleNoFocus`, WM_COMMAND 0xFFF1) instead of the
+ * chunked WM_CHAR loop.
+ *
+ * WM_CHAR drops characters on multiline / saturated conhost input
+ * (`bg-input.ts:238-243`), and the foreground Ctrl+V path is a silent no-op when
+ * the console is in raw/VT-input mode (interactive `ssh -tt` / vim / REPL —
+ * conhost forwards ^V to the app instead of pasting). The native console Paste
+ * injects the whole buffer atomically, works in raw mode, and steals no
+ * foreground — the same primitive `action=run` exit-mode already uses.
+ *
+ * Scope is `method:'auto'` ONLY. `background` deliberately stays on WM_CHAR so the
+ * #183 hidden-input verifyDelivery contract and the existing `channel:"wm_char"`
+ * envelope are preserved (and `background` is the never-clipboarded path for
+ * secret entry). `foreground` is unchanged (Ctrl+V/typing).
+ *
+ * Gated to `pressEnter:true` because the native console paste ALWAYS appends one
+ * Enter (`console_paste.rs:184-185`) — it is a paste-AND-run primitive.
+ *
+ * Pure (no Win32) so the static decision is unit-testable. The runtime secret
+ * carve-out (`isSecretInputPrompt` on the pre-send baseline) and the
+ * native-availability / paste-failure fall-through are applied at the call site.
+ */
+export function shouldUseConsolePasteForSend(
+  method: "auto" | "background" | "foreground" | "foreground_flash",
+  targetClass: string,
+  pressEnter: boolean,
+): boolean {
+  return method === "auto" && targetClass === "ConsoleWindowClass" && pressEnter;
+}
+
 function applySinceMarker(text: string, marker: string): { text: string; matched: boolean } {
   // Search for any tail window whose hash matches `marker`. Walk from the tail
   // backward — a recent terminal will hit within a few chars. Capped at 32k
@@ -951,6 +983,73 @@ export const terminalSendHandler = async ({
         && canInjectViaPostMessage(win.hwnd).supported);
 
     if (useBg) {
+      // ── conhost + method:'auto': atomic native console-paste ────────────
+      // Fixes two conhost send failures: WM_CHAR drops chars on multiline /
+      // saturated input (bg-input.ts:238-243), and the foreground Ctrl+V path is
+      // a no-op in raw/VT console mode (interactive ssh -tt / vim / REPL). The
+      // native console Paste (WM_COMMAND 0xFFF1) injects the whole buffer
+      // atomically, works in raw mode, and steals no foreground — the same
+      // primitive action=run exit-mode uses. Scope = method:'auto' only (see
+      // shouldUseConsolePasteForSend); 'background' keeps WM_CHAR for #183.
+      if (shouldUseConsolePasteForSend(inputMethod, targetClass, pressEnter)) {
+        // Secret carve-out: console-paste puts text on the system clipboard for
+        // ~260ms (restored after), so a credential prompt must NOT use it. Read
+        // the pre-send baseline; skip to WM_CHAR for a secret prompt. Use
+        // isSecretInputPrompt (NOT isHiddenInputPrompt) — the latter also matches
+        // bash's bare-'>' PS2 continuation, which is echoed/non-secret and would
+        // wrongly route legitimate multiline input to the lossy WM_CHAR path.
+        // An unreadable (null/throw) baseline keeps the safe default = skip.
+        let secretPrompt = true;
+        try {
+          const baseline = await getTextViaTextPattern(win.title);
+          secretPrompt = baseline === null ? true : isSecretInputPrompt(baseline);
+        } catch { /* unreadable baseline → keep WM_CHAR (safe) */ }
+        if (!secretPrompt) {
+          // Native always appends one Enter, so strip any trailing newline (the
+          // native Enter then runs the last line exactly once — no double Enter).
+          const paste = await pasteIntoConsoleNoFocus(win.hwnd, input.replace(/[\r\n]+$/, ""));
+          if (paste.ok) {
+            const cpWarnings: string[] = [];
+            if (paste.skippedFormats && paste.skippedFormats.length > 0) {
+              cpWarnings.push(
+                `clipboard formats not preserved across paste: ${paste.skippedFormats
+                  .map((f) => `${f.formatId}(${f.reason})`)
+                  .join(", ")}`,
+              );
+            }
+            if (paste.restoreSkippedRace) {
+              cpWarnings.push(
+                "clipboard restore skipped — another app changed the clipboard during the paste",
+              );
+            }
+            return ok({
+              ok: true,
+              // `sent` = input submitted; console-paste has no per-char count
+              // (unlike the WM_CHAR path's `input.slice(0, totalSent)`).
+              sent: input,
+              pressedEnter: true,
+              focusRestored: false,
+              method: "background",
+              channel: "console_paste",
+              foregroundChanged: false,
+              post: {
+                focusedWindow: null,
+                focusedElement: null,
+                windowChanged: false,
+                elapsedMs: Date.now() - startedAt,
+              },
+              hints: {
+                target: {},
+                ...(cpWarnings.length > 0 && { warnings: cpWarnings }),
+              },
+            });
+          }
+          // paste.ok === false (native unavailable / UIPI block / post-paste
+          // failure) → fall through to the WM_CHAR path below (no regression).
+        }
+        // secretPrompt OR paste failed → fall through to WM_CHAR.
+      }
+
       // ── Issue #195: WT explicit BG early reject ─────────────────────────
       // The `useBg` gate above only consults `canInjectViaPostMessage` for
       // the `auto` branch; explicit `method:'background'` reaches BG path
