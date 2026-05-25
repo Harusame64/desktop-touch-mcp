@@ -108,11 +108,13 @@ describe.each(SCENARIOS)("[$label] terminal hidden-input detection (#183)", ({ h
       restoreFocus: false,
       preferClipboard: true,
       pasteKey: "auto",
-      // method:'auto' picks BG on terminal-class targets. That fires the
-      // verifier (verificationNeeded? auto + isTerminalTarget → false for
-      // conhost — only `method:'background'` or `DTM_BG_AUTO=1+non-terminal`
-      // verifies). So no hidden-input check fires for the arm command — the
-      // baseline at that moment is a normal `PS C:\> ` prompt anyway.
+      // method:'auto' on a conhost target routes through the native console
+      // paste (channel:"console_paste") — the baseline at this moment is a
+      // normal `PS C:\> ` prompt, so the secret carve-out does not fire and the
+      // Read-Host command is pasted + run. No post-send verifyDelivery runs on
+      // the auto path (only `method:'background'` or `DTM_BG_AUTO=1+non-terminal`
+      // verifies), so the arm command never triggers a hidden-input check; the
+      // password send below (forced method:'background') is where #183 fires.
       trackFocus: false,
       settleMs: 100,
     }));

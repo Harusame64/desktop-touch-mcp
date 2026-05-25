@@ -267,6 +267,52 @@ describe.each(SCENARIOS)("[$label] terminal", ({ host, label, expectedClassPatte
         expect(r2.text).toContain(tag);
       }
     }, 20_000);
+
+    // Console-paste regression guard: conhost auto-send of a MULTILINE command
+    // must deliver every line byte-intact via the native console paste
+    // (channel:"console_paste"). This is the headline fix — the legacy chunked
+    // WM_CHAR path drops characters when conhost executes at each embedded
+    // newline (bg-input.ts char-drop). conhost-only: the WT host swallows
+    // WM_CHAR and never routes through console-paste. Native-gated: an older
+    // .node build falls through to wm_char (skip — env condition, not a bug).
+    it("delivers a MULTILINE command byte-intact via console-paste [conhost]", async ({ skip }) => {
+      if (host !== "conhost") skip("console-paste routing is conhost-only");
+      const a = `mlA-${Date.now().toString(36)}`;
+      const b = `mlB-${Date.now().toString(36)}`;
+      const sendRes = parsePayload(await terminalSendHandler({
+        windowTitle: ps.title,
+        // Two distinct echo lines on one logical send. The native paste
+        // CRLF-normalises the embedded \n so conhost runs both lines; the
+        // legacy WM_CHAR path would drop chars across the line boundary.
+        input: `echo ${a}\necho ${b}`,
+        method: "auto",
+        pressEnter: true,
+        focusFirst: true,
+        restoreFocus: true,
+        preferClipboard: true,
+        pasteKey: "auto",
+      }));
+      // console-paste steals no foreground, so the only legitimate env skip is
+      // an older .node falling through to wm_char (channel asserted below).
+      if (!sendRes.ok && hasForegroundNotTransferred(sendRes)) {
+        skip(`foreground transfer refused — env condition. payload=${JSON.stringify(sendRes)}`);
+      }
+      expect(sendRes.ok, JSON.stringify(sendRes)).toBe(true);
+      if (sendRes.channel !== "console_paste") {
+        skip(`console-paste not active (channel=${sendRes.channel}) — native engine absent / fell through`);
+      }
+      expect(sendRes.channel).toBe("console_paste");
+      expect(sendRes.method).toBe("background");
+
+      await sleep(1500);
+      const readRes = parsePayload(await terminalReadHandler({
+        windowTitle: ps.title, lines: 200, stripAnsi: true, source: "auto", ocrLanguage: "ja",
+      }));
+      expect(readRes.ok, JSON.stringify(readRes)).toBe(true);
+      // BOTH lines must have run byte-intact — the multiline drop this PR fixes.
+      expect(readRes.text).toContain(a);
+      expect(readRes.text).toContain(b);
+    }, 20_000);
   });
 
   describe(`D1: sinceMarker after new command output [${label}]`, () => {
