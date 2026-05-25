@@ -229,8 +229,8 @@ export function postKeyToHwnd(hwnd: unknown, vk: number): boolean {
  * (the command is typed but not run), whereas a VK_RETURN key event is
  * recognized as accept-line. bash / cmd accept the key-event Enter as CR exactly
  * as they did the WM_CHAR form, so terminal command execution is preserved.
- * Functionally equivalent to the native console-paste Enter (`console_paste.rs`)
- * — identical low-32 keystroke lParam (Win32 reads a keystroke lParam as 32-bit).
+ * Bit-identical lParam with the native console-paste Enter (`console_paste.rs`),
+ * which sign-extends its keyup lParam to match this path.
  */
 export function postEnterToHwnd(hwnd: unknown): boolean {
   return postKeyToHwnd(hwnd, VK_RETURN);

@@ -41,10 +41,9 @@ const ID_CONSOLE_PASTE: usize = 0xFFF1;
 const WM_KEYDOWN: u32 = 0x0100;
 const WM_KEYUP: u32 = 0x0101;
 /// VK_RETURN. Enter is sent as a real KEY EVENT (WM_KEYDOWN + WM_KEYUP), NOT
-/// WM_CHAR 0x0D — functionally equivalent to the TS `postEnterToHwnd`: the LOW
-/// 32 bits of the keystroke lParam are identical (Win32 reads a keystroke lParam
-/// as 32-bit, so the keyup high bits — which differ from the TS path's
-/// sign-extended JS-32-bit value — are ignored). conhost
+/// WM_CHAR 0x0D — the lParam is built to be BIT-IDENTICAL to the TS
+/// `postEnterToHwnd`/`postKeyToHwnd` path (keyup sign-extended; see the send
+/// site). conhost
 /// PowerShell's PSReadLine treats WM_CHAR 0x0D (= Ctrl+M) as a LITERAL 'm' and
 /// never accepts the line (the command is typed but not run); a VK_RETURN key
 /// event IS recognized as accept-line. bash / cmd accept the key-event Enter as
@@ -199,8 +198,16 @@ pub fn win32_console_paste_no_focus(
                     // line; a VK_RETURN key event is accept-line in PowerShell and
                     // CR in bash/cmd. lParam carries the Enter scan code; keyup sets
                     // the previous-state (bit 30) + transition (bit 31) bits.
-                    let down = (ENTER_SCANCODE & 0xFF) << 16;
-                    let up = down | (1isize << 30) | (1isize << 31);
+                    //
+                    // Build the lParam as i32 then widen to isize so it is
+                    // BIT-IDENTICAL to the TS postKeyToHwnd path: the keyup flags
+                    // set bit 31, making the low-32 value negative, which the TS
+                    // path sign-extends (JS 32-bit bitwise -> i64 in
+                    // win32_post_message). Win32 reads only the low 32 bits, but
+                    // matching keeps TS/native parity exact (Codex P2).
+                    let scan = (ENTER_SCANCODE & 0xFF) as u32;
+                    let down = ((scan << 16) as i32) as isize;
+                    let up = (((scan << 16) | (1u32 << 30) | (1u32 << 31)) as i32) as isize;
                     let _ = post_message(target, WM_KEYDOWN, WPARAM(VK_RETURN), LPARAM(down));
                     let _ = post_message(target, WM_KEYUP, WPARAM(VK_RETURN), LPARAM(up));
                     std::thread::sleep(Duration::from_millis(ENTER_GAP_DELAY_MS));
