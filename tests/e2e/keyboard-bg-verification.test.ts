@@ -222,11 +222,12 @@ describe("keyboard({action:'press', method:'background'}) — issue #177 verific
       expect(r.hints?.verifyDelivery).toBeDefined();
       // We accept "delivered" (read-back saw the new line) or "unverifiable"
       // (TextPattern not available on this build) — bare ok:true is the
-      // regression. enter is dispatched as WM_CHAR '\r' (postEnterToHwnd),
-      // so channel reflects that on the unverifiable branch; on the
-      // delivered branch the press handler classifies the channel as
-      // wm_keydown by default. Don't pin the channel on this case to keep
-      // the assertion focused on the matrix-doc invariant.
+      // regression. enter is now dispatched as a real key event (WM_KEYDOWN/UP
+      // VK_RETURN via postEnterToHwnd; it used to be WM_CHAR '\r' but that is
+      // Ctrl+M, which PowerShell's PSReadLine renders as a literal 'm' instead
+      // of accepting the line), so the channel classification varies. Don't pin
+      // the channel on this case to keep the assertion focused on the matrix-doc
+      // invariant.
       expect(["delivered", "unverifiable"]).toContain(r.hints.verifyDelivery.status);
     }, 10_000);
   });
