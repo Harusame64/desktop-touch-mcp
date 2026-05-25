@@ -269,21 +269,31 @@ describe.each(SCENARIOS)("[$label] terminal", ({ host, label, expectedClassPatte
     }, 20_000);
 
     // Console-paste regression guard: conhost auto-send of a MULTILINE command
-    // must deliver every line byte-intact via the native console paste
-    // (channel:"console_paste"). This is the headline fix — the legacy chunked
-    // WM_CHAR path drops characters when conhost executes at each embedded
-    // newline (bg-input.ts char-drop). conhost-only: the WT host swallows
-    // WM_CHAR and never routes through console-paste. Native-gated: an older
-    // .node build falls through to wm_char (skip — env condition, not a bug).
-    it("delivers a MULTILINE command byte-intact via console-paste [conhost]", async ({ skip }) => {
+    // must EXECUTE every line via the native console paste (channel:
+    // "console_paste"), not merely type it. This is the headline fix — the
+    // legacy chunked WM_CHAR path drops characters when conhost executes at each
+    // embedded newline (bg-input.ts char-drop). conhost-only: the WT host
+    // swallows WM_CHAR and never routes through console-paste. Native-gated: an
+    // older .node build falls through to wm_char (skip — env condition).
+    //
+    // CRITICAL (dogfood 2026-05-25): assert EXECUTION, not delivery. The first
+    // revision only checked `toContain(marker)`, which matches the *typed but
+    // un-executed* command echo (`PS> echo <marker>`) just as well as the run
+    // output — so it passed even though the final Enter (WM_CHAR 0x0D = Ctrl+M)
+    // was rendered as a literal 'm' by PowerShell's PSReadLine and never accepted
+    // the line. A run marker therefore appears TWICE (the `echo <marker>` line +
+    // the `<marker>` output line); a typed-but-not-run marker appears ONCE. We
+    // require >=2 for the LAST line specifically, which is the one that depends
+    // on the synthetic final Enter (intermediate lines run via the pasted CRLFs).
+    it("EXECUTES every line of a MULTILINE command via console-paste [conhost]", async ({ skip }) => {
       if (host !== "conhost") skip("console-paste routing is conhost-only");
-      const a = `mlA-${Date.now().toString(36)}`;
-      const b = `mlB-${Date.now().toString(36)}`;
+      const a = `mlA${Date.now().toString(36)}`;
+      const b = `mlB${Date.now().toString(36)}`;
       const sendRes = parsePayload(await terminalSendHandler({
         windowTitle: ps.title,
         // Two distinct echo lines on one logical send. The native paste
-        // CRLF-normalises the embedded \n so conhost runs both lines; the
-        // legacy WM_CHAR path would drop chars across the line boundary.
+        // CRLF-normalises the embedded \n so conhost runs the first line, and the
+        // synthetic final Enter must run the LAST line (the regression target).
         input: `echo ${a}\necho ${b}`,
         method: "auto",
         pressEnter: true,
@@ -309,9 +319,11 @@ describe.each(SCENARIOS)("[$label] terminal", ({ host, label, expectedClassPatte
         windowTitle: ps.title, lines: 200, stripAnsi: true, source: "auto", ocrLanguage: "ja",
       }));
       expect(readRes.ok, JSON.stringify(readRes)).toBe(true);
-      // BOTH lines must have run byte-intact — the multiline drop this PR fixes.
-      expect(readRes.text).toContain(a);
-      expect(readRes.text).toContain(b);
+      const occurrences = (s: string) => readRes.text.split(s).length - 1;
+      // Each marker must appear at least twice: the `echo <marker>` command line
+      // AND the `<marker>` execution output. >=2 proves the line actually RAN.
+      expect(occurrences(a), `first line not executed; buffer tail: ${readRes.text.slice(-300)}`).toBeGreaterThanOrEqual(2);
+      expect(occurrences(b), `LAST line not executed (synthetic Enter regression); buffer tail: ${readRes.text.slice(-300)}`).toBeGreaterThanOrEqual(2);
     }, 20_000);
   });
 

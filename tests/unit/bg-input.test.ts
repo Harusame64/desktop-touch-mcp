@@ -148,10 +148,19 @@ describe("postKeyToHwnd", () => {
 describe("postEnterToHwnd", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("sends WM_CHAR with CR (0x0D)", () => {
+  it("sends VK_RETURN as a real key event (KEYDOWN then KEYUP), NOT WM_CHAR", () => {
     vi.mocked(postMessageToHwnd).mockReturnValue(true);
     postEnterToHwnd(HWND);
-    expect(postMessageToHwnd).toHaveBeenCalledWith(expect.anything(), 0x0102, 0x0D, 0);
+    // A WM_CHAR 0x0D is the Ctrl+M control code: conhost PowerShell's PSReadLine
+    // renders it as a literal 'm' and never accepts the line. A real VK_RETURN
+    // key event IS accept-line (and CR in bash/cmd), so postEnterToHwnd now
+    // delegates to postKeyToHwnd → KEYDOWN + KEYUP VK_RETURN with a scan-code
+    // lParam (matching the native console-paste Enter).
+    expect(postMessageToHwnd).toHaveBeenCalledTimes(2);
+    expect(postMessageToHwnd).toHaveBeenNthCalledWith(1, expect.anything(), 0x0100, 0x0D, expect.any(Number));
+    expect(postMessageToHwnd).toHaveBeenNthCalledWith(2, expect.anything(), 0x0101, 0x0D, expect.any(Number));
+    // Regression guard: Enter must NEVER go back to WM_CHAR 0x0D (the PSReadLine 'm' bug).
+    expect(postMessageToHwnd).not.toHaveBeenCalledWith(expect.anything(), 0x0102, 0x0D, expect.anything());
   });
 });
 

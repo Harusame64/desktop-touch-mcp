@@ -223,12 +223,17 @@ export function postKeyToHwnd(hwnd: unknown, vk: number): boolean {
 }
 
 /**
- * Send Enter to `hwnd` via WM_CHAR '\r'.
- * Preferred over postKeyToHwnd(VK_RETURN) for terminals (WT/conhost normalise '\r').
+ * Send Enter to `hwnd` as a real KEY EVENT (WM_KEYDOWN + WM_KEYUP VK_RETURN),
+ * NOT WM_CHAR '\r'. A WM_CHAR 0x0D is the Ctrl+M control code: conhost
+ * PowerShell's PSReadLine renders it as a LITERAL 'm' and never accepts the line
+ * (the command is typed but not run), whereas a VK_RETURN key event is
+ * recognized as accept-line. bash / cmd accept the key-event Enter as CR exactly
+ * as they did the WM_CHAR form, so terminal command execution is preserved.
+ * Bit-identical lParam with the native console-paste Enter (`console_paste.rs`),
+ * which sign-extends its keyup lParam to match this path.
  */
 export function postEnterToHwnd(hwnd: unknown): boolean {
-  const target = resolveTarget(hwnd);
-  return postMessageToHwnd(target, WM_CHAR, VK_RETURN, 0);
+  return postKeyToHwnd(hwnd, VK_RETURN);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
