@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.9.1] - 2026-05-25 — Reliable terminal send into classic console (conhost) windows
+
+### Fixed
+
+- **`terminal` action=send now delivers multi-line and long commands into conhost
+  windows reliably.** When sending to a classic Windows console host (conhost —
+  e.g. PowerShell, cmd, or an SSH session in the legacy console, not Windows
+  Terminal) with the default `method:"auto"`, the text is now pasted in a single
+  atomic operation instead of being typed character-by-character. This fixes two
+  failures that hit interactive raw-mode sessions (`ssh -tt`, `vim`, a language
+  REPL): characters were dropped from long or multi-line commands, and
+  `method:"foreground"` (Ctrl+V) was silently ignored while the console was in
+  raw/VT input mode. Credential prompts (password / passphrase / sudo) keep using
+  the keystroke path so a secret is never placed on the clipboard, and an input
+  ending in multiple blank lines (e.g. a REPL block terminator) keeps every
+  trailing newline. If the native paste is unavailable the previous keystroke
+  behaviour is used automatically — no configuration change required.
+
 ## [1.9.0] - 2026-05-24 — Browser tools can target by meaning (not just CSS selectors) and detect modal dialogs
 
 ### Added
