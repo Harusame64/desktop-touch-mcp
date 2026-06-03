@@ -1,6 +1,7 @@
 import type { UiEntity, EntityLease, ExecutorKind, ExecutorOutcome, UiAffordance } from "./types.js";
 import type { LeaseStore } from "./lease-store.js";
 import type { VisualMotionObservation } from "../../tools/_input-pipeline.js";
+import type { Rect } from "../vision-gpu/types.js";
 import { classifyModal } from "./session-registry.js";
 
 export type TouchAction = "auto" | "invoke" | "click" | "type" | "setValue" | "select";
@@ -45,6 +46,49 @@ export interface BlockingElementInfo {
   automationId?: string;
 }
 
+/**
+ * ADR-024 Seed-2 (S1 contract lock) — a lease-less entity preview carried inside
+ * a post-action `roiCapture`. Distinct from a discovered `UiEntity`: it has NO
+ * lease and therefore cannot be passed to `desktop_act` (MVP = ADR-024 OQ-8
+ * option (b)); re-run `desktop_discover` to obtain an actionable lease.
+ */
+export interface RoiPreviewEntity {
+  /** Best-effort label from OCR / visual recognition (may be "" for icon-only). */
+  label: string;
+  /** Coarse role hint (e.g. "label", "button"); "unknown" when unclassified. */
+  role: string;
+  /** Screen-absolute bounding rect of the entity. */
+  rect: Rect;
+  /** Affordances the entity is believed to support (e.g. ["click"]). */
+  actionability: string[];
+}
+
+/**
+ * ADR-024 Seed-2 (S1 contract lock) — post-action ROI capture attached to a
+ * successful `desktop_act` in the *visual-only regime* (UIA-blind / RDP / canvas
+ * targets where structured observation is unavailable). Folds "confirm the act
+ * result" and "rediscover the next target" into a single round-trip: instead of
+ * `act → desktop_state → screenshot`, the act response itself carries a
+ * diff-region crop plus a lease-less entity preview.
+ *
+ * Populated by the registration wrapper (`desktop-register.ts`), NOT the bare
+ * `GuardedTouchLoop` — same layering as `observation?` (the loop stays
+ * capture-agnostic). Absent on every non-visual-only / no-change path, so
+ * existing `{ok, executor, diff, next}` destructures are unaffected (additive,
+ * CLAUDE.md §3.2 carry-over). S1 locks the shape; the value stays `undefined`
+ * until the ROI source (S3) and ROI-aware OCR (S4) phases wire population.
+ */
+export interface RoiCapture {
+  /** Window-relative crop rect the `somImage` covers (the diff region, not the full window). */
+  roi: Rect;
+  /** Base64 PNG of the cropped diff region. */
+  somImage: string;
+  /** Lease-less observation preview (re-run `desktop_discover` for actionable leases). */
+  entities: RoiPreviewEntity[];
+  /** ROI source: DXGI dirty-rect (local UIA-blind) or software frame-diff (RDP). */
+  source: "dxgi" | "frame_diff";
+}
+
 export type TouchResult =
   | {
       ok: true;
@@ -73,6 +117,14 @@ export type TouchResult =
        * undefined) when no fallback happened.
        */
       downgrade?: ExecutorOutcome["downgrade"];
+      /**
+       * ADR-024 Seed-2 — post-action ROI capture (diff-region crop + lease-less
+       * entity preview) attached by the registration wrapper when the target is
+       * visual-only and the act produced a visible change. Absent otherwise
+       * (additive — existing destructures unaffected). See {@link RoiCapture}.
+       * S1 locks the shape; population lands in S3/S4.
+       */
+      roiCapture?: RoiCapture;
     }
   | {
       ok: false;

@@ -65,6 +65,7 @@ import { computeViewportPosition } from "../utils/viewport-position.js";
 import { verifyAnyChange } from "../engine/any-change.js";
 import { disposeSharedDirtyRectBroker } from "../engine/dxgi-broker.js";
 import type { VisualMotionObservation } from "./_input-pipeline.js";
+import type { ReturnCaptureMode } from "./_roi-capture-gate.js";
 import { createDefaultCapabilityRegistry } from "../capabilities/registry.js";
 
 // ── Advisory registry singleton (PR-SR1-3) ────────────────────────────────────
@@ -480,6 +481,16 @@ export const desktopTouchSchema = {
     "'setValue' (Phase 4: absorbs former set_element_value) sets a UIA ValuePattern value or fills a CDP controlled input — pass the new value via text."
   ),
   text:   z.string().optional().describe("Text to type or set (required when action='type' or action='setValue')."),
+  returnCapture: z.enum(["on-change", "always", "never"]).optional().describe(
+    "[EXPERIMENTAL] ADR-024 Seed-2 — control post-action ROI capture on visual-only targets " +
+    "(UIA-blind / RDP / canvas). When the act succeeds on such a target, the response may carry " +
+    "a 'roiCapture' { roi, somImage, entities } (diff-region crop + lease-less entity preview) so " +
+    "you can confirm the result and find the next target without a separate desktop_state / screenshot. " +
+    "'on-change' (default behaviour) attaches it only when the act produced a visible change; 'always' " +
+    "attaches it on any successful visual-only act; 'never' suppresses it. Has no effect on structured " +
+    "targets (browser/CDP, UIA-rich native) — use desktop_state there. Preview entities have no lease; " +
+    "re-call desktop_discover to act on them."
+  ),
 };
 
 /**
@@ -541,7 +552,11 @@ const desktopDiscoverRawHandler = async (input: unknown): Promise<ToolResult> =>
  *  to `"0"`). Failures degrade silently — observation absence is
  *  bit-equal to the pre-Stage-5 envelope. */
 export const desktopActRawHandler = async (
-  input: { lease: EntityLease; action?: TouchAction; text?: string },
+  // ADR-024 Seed-2 S1: `returnCapture` is accepted (and advertised in the schema)
+  // so callers can start opting in; population of `result.roiCapture` is wired in
+  // S2+ (gate plumbing). In S1 the field is always absent — existing responses are
+  // bit-equal.
+  input: { lease: EntityLease; action?: TouchAction; text?: string; returnCapture?: ReturnCaptureMode },
 ): Promise<ToolResult> => {
   const validationError = validateDesktopTouchTextRequirement(input.action, input.text);
   if (validationError) {
@@ -810,6 +825,10 @@ export function registerDesktopTools(server: McpServer): void {
       "  executor_failed → fall back to V1 tools (click_element / mouse_click / browser_click);",
       "  executor_failed on terminal textbox (action=type) → use V1 terminal(action='send') instead.",
       "Check desktop_discover response.constraints for pre-emptive fallback hints before calling desktop_act.",
+      "[EXPERIMENTAL] On visual-only targets (UIA-blind / RDP / canvas), pass returnCapture to fold a post-action",
+      "'roiCapture' { roi, somImage, entities } (diff-region crop + lease-less entity preview) into the response —",
+      "confirm the result and find the next target without a separate desktop_state/screenshot. Preview entities",
+      "have no lease; re-call desktop_discover to act on them.",
     ].join(" "),
     desktopActRegistrationSchema,
     desktopActRegistrationHandler as (input: unknown) => Promise<ToolResult>,
