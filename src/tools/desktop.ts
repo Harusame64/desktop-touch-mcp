@@ -16,6 +16,7 @@ import type { CandidateIngress } from "../engine/world-graph/candidate-ingress.j
 import { createDesktopExecutor, type ExecutorDeps } from "./desktop-executor.js";
 import type { TouchAction, TouchResult } from "../engine/world-graph/guarded-touch.js";
 import { deriveViewConstraints, type ViewConstraints, type EntityCapabilities } from "./desktop-constraints.js";
+import { UIA_BLIND_WARNINGS } from "./desktop-providers/compose-providers.js";
 import { deriveEntityCapabilities } from "./desktop-capabilities.js";
 import { bakeEntityCapabilities } from "../capabilities/registry.js";
 import { isUiaCacheStale } from "../engine/identity-tracker.js";
@@ -377,6 +378,12 @@ export class DesktopFacade {
     resolved = resolved.slice(0, max);
 
     session.entities = resolved;
+    // ADR-024 Seed-2 — persist whether this discover saw a visual-only (UIA-blind:
+    // PWA/Electron/canvas/RDP) target, for the desktop_act wrapper to gate
+    // post-action roiCapture. Same SSOT predicate as the OCR lane's
+    // `uiaBlindForOcr` (membership in UIA_BLIND_WARNINGS over the discover
+    // warnings), so the two signals never diverge.
+    session.lastDiscoverVisualOnly = rawResult.warnings.some((w) => UIA_BLIND_WARNINGS.has(w));
     this.registry.replaceViewId(prevViewId, newViewId, key);
 
     // Phase 4 (Codex PR #41 round 5 P1): top-level windows enumeration.
@@ -598,6 +605,17 @@ export class DesktopFacade {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * ADR-024 Seed-2 — read the visual-only flag persisted at the most recent
+   * `desktop_discover` for this session's view, used by the `desktop_act` wrapper
+   * to gate post-action `roiCapture`. Returns `false` when the session is gone or
+   * no discover has run yet (safe default = no capture).
+   */
+  resolveVisualOnlyForViewId(viewId: string): boolean {
+    const session = this.registry.getByViewId(viewId, this.opts.nowFn);
+    return session?.lastDiscoverVisualOnly ?? false;
   }
 
   validateLeaseOnly(lease: EntityLease): LeaseValidationResult {

@@ -143,6 +143,14 @@ export interface SessionState {
   readonly leaseStore: LeaseStore;
   readonly loop: GuardedTouchLoop;
   lastAccessMs: number;
+  /**
+   * ADR-024 Seed-2 — was the most recent `desktop_discover` on this session a
+   * visual-only target (UIA-blind: PWA/Electron/canvas/RDP)? Written by
+   * `DesktopFacade.see()` from the discover `warnings` (UIA_BLIND_WARNINGS), read
+   * by the `desktop_act` wrapper to gate post-action `roiCapture`. Undefined until
+   * the first discover; treated as `false` (no capture) when absent.
+   */
+  lastDiscoverVisualOnly?: boolean;
 }
 
 // ── Session creation options ──────────────────────────────────────────────────
@@ -302,6 +310,7 @@ export class SessionRegistry {
       leaseStore: new LeaseStore({ defaultTtlMs: opts.defaultTtlMs, nowFn: opts.nowFn }),
       loop: null!,  // assigned immediately below
       lastAccessMs: opts.nowFn?.() ?? Date.now(),
+      lastDiscoverVisualOnly: undefined,
     };
 
     const env: TouchEnvironment = {
