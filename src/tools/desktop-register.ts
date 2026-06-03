@@ -38,7 +38,7 @@ import type { NativeLeaseTokenSummary } from "../engine/native-types.js";
 import type { ToolResult } from "./_types.js";
 import { Err } from "../types/result.js";
 import { ExecutorFailedError } from "../errors/typed-errors.js";
-import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
+import type { TouchAction, RoiCapture } from "../engine/world-graph/guarded-touch.js";
 import {
   SnapshotIngress,
   combineEventSources,
@@ -65,7 +65,7 @@ import { computeViewportPosition } from "../utils/viewport-position.js";
 import { verifyAnyChange } from "../engine/any-change.js";
 import { disposeSharedDirtyRectBroker } from "../engine/dxgi-broker.js";
 import type { VisualMotionObservation } from "./_input-pipeline.js";
-import type { ReturnCaptureMode } from "./_roi-capture-gate.js";
+import { shouldReturnRoiCapture, type ReturnCaptureMode } from "./_roi-capture-gate.js";
 import { createDefaultCapabilityRegistry } from "../capabilities/registry.js";
 
 // ── Advisory registry singleton (PR-SR1-3) ────────────────────────────────────
@@ -581,6 +581,18 @@ export const desktopActRawHandler = async (
     }
   }
 
+  // ADR-024 Seed-2 S2 — gate post-action ROI capture on the visual-only regime.
+  // Reuses the motion verdict from the observation poll above (no extra DXGI
+  // poll). `buildRoiCapture` is the S3/S4/S5 seam: in S2 it returns undefined
+  // whenever the gate passes (ROI source not yet wired), so responses stay
+  // bit-equal with the pre-Seed-2 shape.
+  if (result.ok) {
+    const roiCapture = buildRoiCapture(facade, input.lease.viewId, result.observation, input.returnCapture);
+    if (roiCapture !== undefined) {
+      (result as { roiCapture?: RoiCapture }).roiCapture = roiCapture;
+    }
+  }
+
   // Issue #327 item G: GuardedTouchLoop.touch returns {ok:false,
   // reason:"executor_failed", diff:[]} on executor exception. Because the handler
   // RETURNS this (does not throw), the L5 makeCommitWrapper treats it as a normal
@@ -649,6 +661,40 @@ async function tryVerifyAnyChange(
     // not break the envelope.
     return null;
   }
+}
+
+/**
+ * ADR-024 Seed-2 — gate + population seam for the post-action `roiCapture`.
+ *
+ * Returns the capture to attach to a successful `desktop_act`, or `undefined`
+ * when either (a) the gate declines (non-visual-only target / no change / opt-out)
+ * or (b) the ROI pipeline is not yet wired.
+ *
+ * S2 (this commit): the gate is live — it reads the session's visual-only flag
+ * (persisted at discover) and reuses the `observation` motion verdict already
+ * computed above, so it adds **no** extra DXGI poll. Population is a stub: even
+ * when the gate passes there is no ROI source yet (lands in S3), so this returns
+ * `undefined` and the act response stays bit-equal with the pre-Seed-2 shape.
+ * S3 (ROI source) → S4 (ROI-aware OCR) → S5 (fold) replace the stub tail with the
+ * real `{ roi, somImage, entities, source }`.
+ */
+function buildRoiCapture(
+  facade: DesktopFacade,
+  viewId: string,
+  observation: VisualMotionObservation | undefined,
+  returnCapture: ReturnCaptureMode | undefined,
+): RoiCapture | undefined {
+  const gatePassed = shouldReturnRoiCapture({
+    ok: true, // only called on the success path
+    visualOnly: facade.resolveVisualOnlyForViewId(viewId),
+    motion: observation?.motion,
+    returnCapture,
+  });
+  if (!gatePassed) return undefined;
+  // S3 (ROI source via single-poll dirty-rect surface) → S4 (ROI-aware OCR) →
+  // S5 (fold) populate `{ roi, somImage, entities, source }` here. Until S3
+  // lands there is no ROI source, so nothing is attached.
+  return undefined;
 }
 
 /** Pre-flight lease validation closure used by the commit wrapper

@@ -16,6 +16,7 @@ import type { CandidateIngress } from "../engine/world-graph/candidate-ingress.j
 import { createDesktopExecutor, type ExecutorDeps } from "./desktop-executor.js";
 import type { TouchAction, TouchResult } from "../engine/world-graph/guarded-touch.js";
 import { deriveViewConstraints, type ViewConstraints, type EntityCapabilities } from "./desktop-constraints.js";
+import { UIA_BLIND_WARNINGS } from "./desktop-providers/compose-providers.js";
 import { deriveEntityCapabilities } from "./desktop-capabilities.js";
 import { bakeEntityCapabilities } from "../capabilities/registry.js";
 import { isUiaCacheStale } from "../engine/identity-tracker.js";
@@ -377,6 +378,22 @@ export class DesktopFacade {
     resolved = resolved.slice(0, max);
 
     session.entities = resolved;
+    // ADR-024 Seed-2 — persist whether this discover saw a *visual-only* target
+    // for the desktop_act wrapper to gate post-action roiCapture. Visual-only =
+    // UIA-blind (PWA/Electron/canvas/RDP) AND no structured observation source.
+    // UIA-blindness ALONE is not sufficient: the terminal route runs UIA as an
+    // *additive* provider (compose-providers.ts), so a terminal whose UIA tree
+    // looks blind still surfaces uia_blind_* warnings — but the terminal buffer is
+    // a structured source, so a post-action screenshot must be suppressed there
+    // (feedback_minimize_screenshot_reliance; Codex PR #425 P2). Browser (CDP) is
+    // likewise structured. So require a blind warning AND the absence of any
+    // terminal/cdp candidate. The blind predicate stays the same SSOT set as the
+    // OCR lane's `uiaBlindForOcr` (UIA_BLIND_WARNINGS).
+    const uiaBlind = rawResult.warnings.some((w) => UIA_BLIND_WARNINGS.has(w));
+    const hasStructuredSource = rawResult.candidates.some(
+      (c) => c.source === "terminal" || c.source === "cdp",
+    );
+    session.lastDiscoverVisualOnly = uiaBlind && !hasStructuredSource;
     this.registry.replaceViewId(prevViewId, newViewId, key);
 
     // Phase 4 (Codex PR #41 round 5 P1): top-level windows enumeration.
@@ -598,6 +615,17 @@ export class DesktopFacade {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * ADR-024 Seed-2 — read the visual-only flag persisted at the most recent
+   * `desktop_discover` for this session's view, used by the `desktop_act` wrapper
+   * to gate post-action `roiCapture`. Returns `false` when the session is gone or
+   * no discover has run yet (safe default = no capture).
+   */
+  resolveVisualOnlyForViewId(viewId: string): boolean {
+    const session = this.registry.getByViewId(viewId, this.opts.nowFn);
+    return session?.lastDiscoverVisualOnly ?? false;
   }
 
   validateLeaseOnly(lease: EntityLease): LeaseValidationResult {

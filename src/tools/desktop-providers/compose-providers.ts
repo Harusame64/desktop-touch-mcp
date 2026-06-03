@@ -109,7 +109,14 @@ function addWarningIfPartial(result: ProviderResult, primaryCount: number): Prov
 // there, and uia is additive. Even if uia is blind, the terminal buffer is the
 // authoritative source — visual escalation would add noise, not signal.
 
-const UIA_BLIND_WARNINGS   = new Set(["uia_blind_single_pane", "uia_blind_too_few_elements"]);
+/**
+ * UIA-blind warning codes (PWA/Electron/canvas/RDP — UIA tree unusable). The
+ * single SSOT predicate for "is this target visual-only": both the OCR lane gate
+ * (`uiaBlindForOcr` below) and the ADR-024 Seed-2 session flag
+ * (`SessionState.lastDiscoverVisualOnly`, set in desktop.ts from the same
+ * `rawResult.warnings`) test membership in this set, so they never diverge.
+ */
+export const UIA_BLIND_WARNINGS = new Set(["uia_blind_single_pane", "uia_blind_too_few_elements"]);
 const VISUAL_UNREADY_WARNINGS = new Set(["visual_provider_unavailable", "visual_provider_warming"]);
 
 function applyVisualEscalation(
