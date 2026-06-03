@@ -76,7 +76,8 @@ export interface RoiPreviewEntity {
  * capture-agnostic). Absent on every non-visual-only / no-change path, so
  * existing `{ok, executor, diff, next}` destructures are unaffected (additive,
  * CLAUDE.md §3.2 carry-over). S1 locks the shape; the value stays `undefined`
- * until the ROI source (S3) and ROI-aware OCR (S4) phases wire population.
+ * until the ROI source (S3) and ROI-aware OCR (S4) phases are built and S5
+ * folds the result into the act response.
  */
 export interface RoiCapture {
   /** Window-relative crop rect the `somImage` covers (the diff region, not the full window). */
@@ -122,7 +123,7 @@ export type TouchResult =
        * entity preview) attached by the registration wrapper when the target is
        * visual-only and the act produced a visible change. Absent otherwise
        * (additive — existing destructures unaffected). See {@link RoiCapture}.
-       * S1 locks the shape; population lands in S3/S4.
+       * S1 locks the shape; population is built in S3/S4 and folded in S5.
        */
       roiCapture?: RoiCapture;
     }
