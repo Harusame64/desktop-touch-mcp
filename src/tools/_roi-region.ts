@@ -73,3 +73,52 @@ export function filterDirtyRectsToWindow(
 
   return out;
 }
+
+/**
+ * ADR-024 Seed-2 S5 — union bounding box of a set of rects.
+ *
+ * The S1 contract `RoiCapture.roi` is a **single** crop rect, but S3b yields a
+ * list of window-relative dirty regions. S5 reduces them to the one rect that
+ * encloses all of them (the crop the `somImage` covers + the region the
+ * ROI-aware OCR runs on).
+ *
+ * @returns The enclosing rect, or `null` for an empty input (no ROI).
+ */
+export function boundingBox(rects: readonly Rect[]): Rect | null {
+  if (rects.length === 0) return null;
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const r of rects) {
+    if (r.x < minX) minX = r.x;
+    if (r.y < minY) minY = r.y;
+    if (r.x + r.width > maxX) maxX = r.x + r.width;
+    if (r.y + r.height > maxY) maxY = r.y + r.height;
+  }
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+/**
+ * ADR-024 Seed-2 S5 — intersection-over-union of two rects.
+ *
+ * Used to dedup the post-action ROI-OCR preview against the entities the most
+ * recent `desktop_discover` already returned (OQ-10): an ROI entity whose rect
+ * substantially overlaps a discover entity is "the same entity" and is dropped
+ * from the preview so the act response highlights only what changed.
+ *
+ * @returns IoU in `[0, 1]`; `0` when the rects do not overlap.
+ */
+export function rectIoU(a: Rect, b: Rect): number {
+  const x0 = Math.max(a.x, b.x);
+  const y0 = Math.max(a.y, b.y);
+  const x1 = Math.min(a.x + a.width, b.x + b.width);
+  const y1 = Math.min(a.y + a.height, b.y + b.height);
+  const iw = x1 - x0;
+  const ih = y1 - y0;
+  if (iw <= 0 || ih <= 0) return 0;
+  const inter = iw * ih;
+  const union = a.width * a.height + b.width * b.height - inter;
+  return union > 0 ? inter / union : 0;
+}

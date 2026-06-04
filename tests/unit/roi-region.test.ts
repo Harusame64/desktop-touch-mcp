@@ -11,7 +11,11 @@
 
 import { describe, it, expect } from "vitest";
 
-import { filterDirtyRectsToWindow } from "../../src/tools/_roi-region.js";
+import {
+  filterDirtyRectsToWindow,
+  boundingBox,
+  rectIoU,
+} from "../../src/tools/_roi-region.js";
 
 // Window at a non-zero screen origin so the relative translation is observable.
 const WINDOW = { x: 100, y: 200, width: 800, height: 600 };
@@ -124,5 +128,82 @@ describe("filterDirtyRectsToWindow (S3b window-rect filter)", () => {
     const out = filterDirtyRectsToWindow([input], WINDOW);
     expect(out[0]).not.toBe(input);
     expect(input).toEqual({ x: 150, y: 260, width: 40, height: 30 });
+  });
+});
+
+describe("boundingBox (S5 ROI union)", () => {
+  it("returns null for an empty input", () => {
+    expect(boundingBox([])).toBeNull();
+  });
+
+  it("returns the same rect for a single input", () => {
+    expect(boundingBox([{ x: 10, y: 20, width: 30, height: 40 }])).toEqual({
+      x: 10,
+      y: 20,
+      width: 30,
+      height: 40,
+    });
+  });
+
+  it("encloses several disjoint rects", () => {
+    // (10,10)-(20,20) and (50,40)-(80,100) → enclosing (10,10)-(80,100).
+    const out = boundingBox([
+      { x: 10, y: 10, width: 10, height: 10 },
+      { x: 50, y: 40, width: 30, height: 60 },
+    ]);
+    expect(out).toEqual({ x: 10, y: 10, width: 70, height: 90 });
+  });
+
+  it("encloses overlapping rects (union, not intersection)", () => {
+    const out = boundingBox([
+      { x: 0, y: 0, width: 50, height: 50 },
+      { x: 30, y: 30, width: 50, height: 50 },
+    ]);
+    expect(out).toEqual({ x: 0, y: 0, width: 80, height: 80 });
+  });
+
+  it("handles negative coordinates (secondary monitor space)", () => {
+    const out = boundingBox([
+      { x: -100, y: -50, width: 20, height: 20 },
+      { x: -40, y: 10, width: 30, height: 30 },
+    ]);
+    expect(out).toEqual({ x: -100, y: -50, width: 90, height: 90 });
+  });
+});
+
+describe("rectIoU (S5 OQ-10 dedup metric)", () => {
+  it("is 1 for identical rects", () => {
+    const r = { x: 5, y: 5, width: 10, height: 10 };
+    expect(rectIoU(r, { ...r })).toBe(1);
+  });
+
+  it("is 0 for non-overlapping rects", () => {
+    expect(
+      rectIoU({ x: 0, y: 0, width: 10, height: 10 }, { x: 100, y: 100, width: 10, height: 10 }),
+    ).toBe(0);
+  });
+
+  it("is 0 for a zero-area edge touch", () => {
+    // Share only the right edge (x=10) → no area overlap.
+    expect(
+      rectIoU({ x: 0, y: 0, width: 10, height: 10 }, { x: 10, y: 0, width: 10, height: 10 }),
+    ).toBe(0);
+  });
+
+  it("computes a partial overlap ratio", () => {
+    // Two 10x10 rects offset by (5,0): intersection 5x10=50, union 200-50=150 → 1/3.
+    expect(
+      rectIoU({ x: 0, y: 0, width: 10, height: 10 }, { x: 5, y: 0, width: 10, height: 10 }),
+    ).toBeCloseTo(50 / 150, 6);
+  });
+
+  it("a half-contained quarter-overlap clears/misses the 0.5 dedup gate as expected", () => {
+    // 25% area overlap → IoU = 25/(100+100-25) = 25/175 ≈ 0.143 < 0.5 (kept).
+    const iou = rectIoU(
+      { x: 0, y: 0, width: 10, height: 10 },
+      { x: 5, y: 5, width: 10, height: 10 },
+    );
+    expect(iou).toBeCloseTo(25 / 175, 6);
+    expect(iou).toBeLessThan(0.5);
   });
 });
