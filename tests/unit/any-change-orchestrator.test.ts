@@ -72,6 +72,24 @@ function brokerReturning(sub: SubscriptionLike | null): DirtyRectBroker {
   );
 }
 
+/** Like `brokerReturning` but also hands back the factory spy so a test can
+ *  assert the DXGI subscription was acquired exactly once — substantiating the
+ *  S3a "+0 extra acquire" acceptance with a measurement, not just structure. */
+function brokerWithFactorySpy(
+  sub: SubscriptionLike,
+): { broker: DirtyRectBroker; factory: ReturnType<typeof vi.fn> } {
+  const factory = vi.fn(() => sub);
+  const broker = new DirtyRectBroker(
+    factory,
+    () => 0,
+    BROKER_CONSTANTS.BROKER_CACHE_IDLE_TIMEOUT_MS,
+    BROKER_CONSTANTS.BROKER_UNAVAILABLE_TTL_MS,
+    FAST_FANOUT_POLL_MS,
+    BROKER_CONSTANTS.BROKER_NEGATIVE_BACKOFF_MS,
+  );
+  return { broker, factory };
+}
+
 describe("verifyAnyChange orchestrator", () => {
   it("empty rects → motion: no_change, residual omitted", async () => {
     const sub = buildSub(async () => []);
@@ -163,6 +181,117 @@ describe("verifyAnyChange orchestrator", () => {
     });
     expect(obs.motion).toBe("any_change");
     expect(obs.residual?.totalIntersectedAreaPx).toBe(2500);
+  });
+
+  // ── ADR-024 Seed-2 S3a — opt-in dirty-rect surface ────────────────────────
+  // The visual-only ROI-capture path reuses the SAME poll that produces
+  // `motion` to also surface the raw dirty `Rect[]` (sub-plan §2 S3a). These
+  // tests pin: (a) opt-in → rects surfaced from a single poll; (b) default →
+  // field absent (byte-equal for existing callers); (c) the rects are the raw
+  // per-output rects, NOT yet window-rect filtered.
+
+  it("S3a: includeDirtyRects surfaces the raw rects on any_change from the same observation", async () => {
+    const sub = buildSub(async () => [{ x: 10, y: 10, width: 50, height: 60 }]);
+    const obs = await verifyAnyChange({
+      hwnd: 1n,
+      windowRect: WINDOW_RECT,
+      broker: brokerReturning(sub),
+      enumerate: () => [PRIMARY_MONITOR],
+      budgetMs: FAST_BUDGET_MS,
+      includeDirtyRects: true,
+    });
+    // A SINGLE verifyAnyChange call (= one broker acquire + drain) yields BOTH
+    // the motion verdict and the rect[]. The ROI path never makes a second
+    // verifyAnyChange call, so the rects cost zero extra DXGI acquires
+    // (sub-plan §2 S3a — "single-poll で motion + rect[] 両取り").
+    expect(obs.motion).toBe("any_change");
+    expect(obs.dirtyRects).toEqual([{ x: 10, y: 10, width: 50, height: 60 }]);
+    // The scalar residual is unchanged (additive — both populated together).
+    expect(obs.residual?.dirtyRectCount).toBe(1);
+  });
+
+  it("S3a: includeDirtyRects acquires the DXGI subscription exactly once (+0 extra acquire)", async () => {
+    // Acceptance ① "DXGI poll 回数が現状 +0" — surfacing the rects must NOT
+    // trigger a second broker acquire. The factory is invoked once per
+    // first-touch acquire of an output; reusing the drained `rects` keeps it
+    // at one even with the opt-in on.
+    const { broker, factory } = brokerWithFactorySpy(
+      buildSub(async () => [{ x: 10, y: 10, width: 50, height: 60 }]),
+    );
+    const obs = await verifyAnyChange({
+      hwnd: 1n,
+      windowRect: WINDOW_RECT,
+      broker,
+      enumerate: () => [PRIMARY_MONITOR],
+      budgetMs: FAST_BUDGET_MS,
+      includeDirtyRects: true,
+    });
+    expect(obs.dirtyRects).toEqual([{ x: 10, y: 10, width: 50, height: 60 }]);
+    expect(factory).toHaveBeenCalledTimes(1);
+  });
+
+  it("S3a: includeDirtyRects surfaces sub-threshold rects on no_change too", async () => {
+    // 30x70 = 2100 px < 2400 px gate → no_change, but the rect is still real
+    // dirty pixels the ROI path may want to crop.
+    const sub = buildSub(async () => [{ x: 5, y: 5, width: 30, height: 70 }]);
+    const obs = await verifyAnyChange({
+      hwnd: 1n,
+      windowRect: WINDOW_RECT,
+      broker: brokerReturning(sub),
+      enumerate: () => [PRIMARY_MONITOR],
+      budgetMs: FAST_BUDGET_MS,
+      includeDirtyRects: true,
+    });
+    expect(obs.motion).toBe("no_change");
+    expect(obs.dirtyRects).toEqual([{ x: 5, y: 5, width: 30, height: 70 }]);
+  });
+
+  it("S3a: includeDirtyRects surfaces RAW per-output rects (not window-rect filtered)", async () => {
+    // One rect inside the window, one entirely outside it. S3a is the surface
+    // phase — BOTH must come through verbatim; the window-rect intersection
+    // filter is S3b, not here.
+    const inside = { x: 10, y: 10, width: 50, height: 60 };
+    const outside = { x: 2000, y: 100, width: 100, height: 100 };
+    const sub = buildSub(async () => [inside, outside]);
+    const obs = await verifyAnyChange({
+      hwnd: 1n,
+      windowRect: WINDOW_RECT,
+      broker: brokerReturning(sub),
+      enumerate: () => [PRIMARY_MONITOR],
+      budgetMs: FAST_BUDGET_MS,
+      includeDirtyRects: true,
+    });
+    expect(obs.dirtyRects).toEqual([inside, outside]);
+    // The returned array is a fresh copy, not the native poll array reference.
+    expect(obs.dirtyRects?.[0]).not.toBe(inside);
+  });
+
+  it("S3a: default (no includeDirtyRects) omits dirtyRects → byte-equal for existing callers", async () => {
+    const sub = buildSub(async () => [{ x: 10, y: 10, width: 50, height: 60 }]);
+    const obs = await verifyAnyChange({
+      hwnd: 1n,
+      windowRect: WINDOW_RECT,
+      broker: brokerReturning(sub),
+      enumerate: () => [PRIMARY_MONITOR],
+      budgetMs: FAST_BUDGET_MS,
+    });
+    expect(obs.motion).toBe("any_change");
+    expect(obs.dirtyRects).toBeUndefined();
+    expect("dirtyRects" in obs).toBe(false);
+  });
+
+  it("S3a: empty rects omit dirtyRects even when opted in (nothing to surface)", async () => {
+    const sub = buildSub(async () => []);
+    const obs = await verifyAnyChange({
+      hwnd: 1n,
+      windowRect: WINDOW_RECT,
+      broker: brokerReturning(sub),
+      enumerate: () => [PRIMARY_MONITOR],
+      budgetMs: FAST_BUDGET_MS,
+      includeDirtyRects: true,
+    });
+    expect(obs.motion).toBe("no_change");
+    expect(obs.dirtyRects).toBeUndefined();
   });
 
   it("DXGI Unsupported at acquire → motion: indeterminate, source: dxgi_dirty_rect_unavailable", async () => {

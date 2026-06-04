@@ -34,6 +34,7 @@
  */
 
 import type { VisualMotionObservation } from "../tools/_input-pipeline.js";
+import type { Rect } from "./vision-gpu/types.js";
 import {
   BROKER_CONSTANTS,
   type CacheAcquireState,
@@ -171,6 +172,15 @@ export interface VerifyAnyChangeOpts {
   broker?: DirtyRectBroker | null;
   /** @internal — test-only override for `enumMonitors`. */
   enumerate?: () => Array<{ bounds: { x: number; y: number; width: number; height: number } }>;
+  /**
+   * ADR-024 Seed-2 S3a — opt-in to surface the raw DXGI dirty `Rect[]` on the
+   * returned `VisualMotionObservation.dirtyRects` (screen-absolute, per-output,
+   * NOT yet window-rect filtered). Reuses the same poll that produces `motion`,
+   * so it adds **zero** extra DXGI acquires. Default `false` (omitted) — every
+   * existing caller (keyboard / mouse-verify Stage-5 fallback) keeps a
+   * byte-equal observation. Only the `desktop_act` visual-only ROI path opts in.
+   */
+  includeDirtyRects?: boolean;
 }
 
 /**
@@ -334,6 +344,23 @@ export async function verifyAnyChange(
       };
     }
 
+    // ADR-024 Seed-2 S3a — surface the raw per-output dirty rects (screen-abs,
+    // NOT window-rect filtered — that lands in S3b) only when the caller opts
+    // in. Mapped to plain `Rect` objects so we never hand back a reference to
+    // the native poll array. Reuses the `rects` drained above → zero extra
+    // DXGI polls. Omitted (spread of `{}`) on the default path so existing
+    // callers' observations stay byte-equal.
+    const dirtyRectsField: { dirtyRects?: Rect[] } = opts.includeDirtyRects
+      ? {
+          dirtyRects: rects.map((r) => ({
+            x: r.x,
+            y: r.y,
+            width: r.width,
+            height: r.height,
+          })),
+        }
+      : {};
+
     if (ratioOfTargetArea >= STAGE5_MIN_INTERSECTED_AREA_RATIO) {
       return {
         motion: "any_change",
@@ -344,6 +371,7 @@ export async function verifyAnyChange(
           totalIntersectedAreaPx,
           ratioOfTargetArea,
         },
+        ...dirtyRectsField,
         framesSampled,
         totalElapsedMs,
         cacheState: acquireState,
@@ -361,6 +389,7 @@ export async function verifyAnyChange(
         totalIntersectedAreaPx,
         ratioOfTargetArea,
       },
+      ...dirtyRectsField,
       framesSampled,
       totalElapsedMs,
       cacheState: acquireState,
