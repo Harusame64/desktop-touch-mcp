@@ -72,6 +72,24 @@ function brokerReturning(sub: SubscriptionLike | null): DirtyRectBroker {
   );
 }
 
+/** Like `brokerReturning` but also hands back the factory spy so a test can
+ *  assert the DXGI subscription was acquired exactly once — substantiating the
+ *  S3a "+0 extra acquire" acceptance with a measurement, not just structure. */
+function brokerWithFactorySpy(
+  sub: SubscriptionLike,
+): { broker: DirtyRectBroker; factory: ReturnType<typeof vi.fn> } {
+  const factory = vi.fn(() => sub);
+  const broker = new DirtyRectBroker(
+    factory,
+    () => 0,
+    BROKER_CONSTANTS.BROKER_CACHE_IDLE_TIMEOUT_MS,
+    BROKER_CONSTANTS.BROKER_UNAVAILABLE_TTL_MS,
+    FAST_FANOUT_POLL_MS,
+    BROKER_CONSTANTS.BROKER_NEGATIVE_BACKOFF_MS,
+  );
+  return { broker, factory };
+}
+
 describe("verifyAnyChange orchestrator", () => {
   it("empty rects → motion: no_change, residual omitted", async () => {
     const sub = buildSub(async () => []);
@@ -190,6 +208,26 @@ describe("verifyAnyChange orchestrator", () => {
     expect(obs.dirtyRects).toEqual([{ x: 10, y: 10, width: 50, height: 60 }]);
     // The scalar residual is unchanged (additive — both populated together).
     expect(obs.residual?.dirtyRectCount).toBe(1);
+  });
+
+  it("S3a: includeDirtyRects acquires the DXGI subscription exactly once (+0 extra acquire)", async () => {
+    // Acceptance ① "DXGI poll 回数が現状 +0" — surfacing the rects must NOT
+    // trigger a second broker acquire. The factory is invoked once per
+    // first-touch acquire of an output; reusing the drained `rects` keeps it
+    // at one even with the opt-in on.
+    const { broker, factory } = brokerWithFactorySpy(
+      buildSub(async () => [{ x: 10, y: 10, width: 50, height: 60 }]),
+    );
+    const obs = await verifyAnyChange({
+      hwnd: 1n,
+      windowRect: WINDOW_RECT,
+      broker,
+      enumerate: () => [PRIMARY_MONITOR],
+      budgetMs: FAST_BUDGET_MS,
+      includeDirtyRects: true,
+    });
+    expect(obs.dirtyRects).toEqual([{ x: 10, y: 10, width: 50, height: 60 }]);
+    expect(factory).toHaveBeenCalledTimes(1);
   });
 
   it("S3a: includeDirtyRects surfaces sub-threshold rects on no_change too", async () => {
