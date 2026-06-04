@@ -38,7 +38,7 @@ import type { NativeLeaseTokenSummary } from "../engine/native-types.js";
 import type { ToolResult } from "./_types.js";
 import { Err } from "../types/result.js";
 import { ExecutorFailedError } from "../errors/typed-errors.js";
-import type { TouchAction, RoiCapture, RoiPreviewEntity } from "../engine/world-graph/guarded-touch.js";
+import type { TouchAction, RoiCapture } from "../engine/world-graph/guarded-touch.js";
 import {
   SnapshotIngress,
   combineEventSources,
@@ -66,7 +66,8 @@ import { verifyAnyChange } from "../engine/any-change.js";
 import { disposeSharedDirtyRectBroker } from "../engine/dxgi-broker.js";
 import type { VisualMotionObservation } from "./_input-pipeline.js";
 import { shouldReturnRoiCapture, type ReturnCaptureMode } from "./_roi-capture-gate.js";
-import { filterDirtyRectsToWindow, boundingBox, rectIoU } from "./_roi-region.js";
+import { filterDirtyRectsToWindow, boundingBox } from "./_roi-region.js";
+import { buildRoiPreviewEntities } from "./_roi-preview.js";
 import { runSomPipeline } from "../engine/ocr-bridge.js";
 import type { Rect } from "../engine/vision-gpu/types.js";
 import { createDefaultCapabilityRegistry } from "../capabilities/registry.js";
@@ -684,11 +685,6 @@ async function tryVerifyAnyChange(
   }
 }
 
-/** ADR-024 Seed-2 S5 — minimum IoU at which an ROI-OCR preview entity is
- *  considered "the same" as a discover entity and dropped from the preview
- *  (OQ-10 dedup). 0.5 = the two rects share more than half their union. */
-const ROI_DEDUP_IOU = 0.5;
-
 /**
  * ADR-024 Seed-2 S5 — gate + fold for the post-action `roiCapture`.
  *
@@ -724,7 +720,6 @@ async function buildRoiCapture(
     returnCapture,
   });
   if (!gatePassed) return undefined;
-  if (dirtyRects.length === 0) return undefined;
 
   const hwnd = facade.resolveHwndForViewId(viewId);
   if (hwnd === null) return undefined;
@@ -735,8 +730,13 @@ async function buildRoiCapture(
 
   // S3b — per-output dirty rects → window-relative; S5 — reduce to one ROI.
   const windowRel = filterDirtyRectsToWindow(dirtyRects, windowRect);
-  const roi = boundingBox(windowRel);
-  if (roi === null) return undefined; // no dirty region overlaps the window
+  // Fall back to the whole window (window-relative full rect) when no dirty
+  // region intersects it. The gate already passed, so we owe a capture — this
+  // happens for `returnCapture: "always"` on a no-change act, or when motion
+  // was reported by a non-DXGI source (SSIM translation/local_repaint) that
+  // leaves `dirtyRects` empty (Codex PR #429 P2: honor `always`).
+  const roi =
+    boundingBox(windowRel) ?? { x: 0, y: 0, width: windowRect.width, height: windowRect.height };
 
   try {
     // S4 — OCR only the ROI crop. hwnd is provided so the empty windowTitle is
@@ -744,24 +744,13 @@ async function buildRoiCapture(
     const som = await runSomPipeline("", hwnd, "ja", 2, "auto", false, [], roi);
     if (som.somImage === null) return undefined; // SoM render unavailable
 
-    // OQ-10 — dedup the preview against the discover snapshot (screen-abs rects).
-    const discoverRects = facade.getDiscoverEntityRectsForViewId(viewId);
-    // `role: "label"` + `actionability: ["click"]` mirror how the SAME OCR
-    // source is represented in the discover lane (`ocr-provider.ts` maps every
-    // SomElement to role "label" / actionability ["click"], since the executor
-    // routes source:"ocr" entities to a mouse click). Keeping the preview's
-    // representation identical to discover's avoids a confusing role/affordance
-    // mismatch between what desktop_discover and roiCapture report for the same
-    // on-screen text. The preview is lease-less regardless, so this is a hint —
-    // the caller must re-run desktop_discover to obtain an actionable lease.
-    const entities: RoiPreviewEntity[] = som.elements
-      .filter((el) => !discoverRects.some((d) => rectIoU(el.region, d) >= ROI_DEDUP_IOU))
-      .map((el) => ({
-        label: el.text,
-        role: "label",
-        rect: el.region, // screen-absolute (SomElement.region)
-        actionability: ["click"],
-      }));
+    // OQ-10 — map ROI-OCR elements to the lease-less preview, deduped against
+    // the discover snapshot by geometry AND label (so an in-place text change is
+    // preserved). Pure logic in `_roi-preview.ts` (`buildRoiPreviewEntities`).
+    const entities = buildRoiPreviewEntities(
+      som.elements,
+      facade.getDiscoverEntitiesForViewId(viewId),
+    );
 
     return { roi, somImage: som.somImage.base64, entities, source: "dxgi" };
   } catch (err) {

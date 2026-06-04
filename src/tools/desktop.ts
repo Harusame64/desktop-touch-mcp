@@ -629,18 +629,20 @@ export class DesktopFacade {
   }
 
   /**
-   * ADR-024 Seed-2 S5 — screen-absolute rects of the entities the most recent
-   * `desktop_discover` returned for this session's view. The post-action ROI
-   * capture dedups its OCR preview against these (OQ-10) so the act response
-   * surfaces only entities that changed, not ones the caller already saw.
-   * Returns `[]` when the session is gone or no discover has run.
+   * ADR-024 Seed-2 S5 — screen-absolute rect + label of the entities the most
+   * recent `desktop_discover` returned for this session's view. The post-action
+   * ROI capture dedups its OCR preview against these (OQ-10): an ROI entity is a
+   * duplicate only when it overlaps a discover entity **and** carries the same
+   * label, so an in-place text change (toggle "Off"→"On" at the same rect) is
+   * preserved rather than dropped (Codex PR #429 P2). Returns `[]` when the
+   * session is gone or no discover has run.
    */
-  getDiscoverEntityRectsForViewId(viewId: string): Rect[] {
+  getDiscoverEntitiesForViewId(viewId: string): Array<{ rect: Rect; label: string }> {
     const session = this.registry.getByViewId(viewId, this.opts.nowFn);
     if (!session) return [];
     return session.entities
-      .map((e) => e.rect)
-      .filter((r): r is Rect => r !== undefined);
+      .filter((e): e is typeof e & { rect: Rect } => e.rect !== undefined)
+      .map((e) => ({ rect: e.rect, label: e.label ?? "" }));
   }
 
   validateLeaseOnly(lease: EntityLease): LeaseValidationResult {
