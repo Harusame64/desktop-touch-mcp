@@ -16,7 +16,7 @@
  *   ocr_attempted_empty  — pipeline ran successfully but returned 0 candidates
  */
 
-import type { UiEntityCandidate } from "../../engine/vision-gpu/types.js";
+import type { Rect, UiEntityCandidate } from "../../engine/vision-gpu/types.js";
 import type { TargetSpec } from "../../engine/world-graph/session-registry.js";
 import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.js";
 import type { OcrDictionaryEntry } from "../../engine/ocr-bridge.js";
@@ -25,6 +25,10 @@ import { getOcrVisualAdapter } from "../../engine/vision-gpu/ocr-adapter-registr
 export async function fetchOcrCandidates(
   target: TargetSpec | undefined,
   dictionary: OcrDictionaryEntry[] = [],
+  // ADR-024 Seed-2 S4 — optional image-local ROI forwarded to `runSomPipeline`
+  // so the visual-only post-action path OCRs only the changed region. Omitted
+  // by the existing discover lane caller → full-window OCR unchanged.
+  roi?: Rect,
 ): Promise<ProviderResult> {
   if (!target || (!target.hwnd && !target.windowTitle)) {
     return { candidates: [], warnings: [] };
@@ -36,7 +40,7 @@ export async function fetchOcrCandidates(
 
   try {
     const { runSomPipeline } = await import("../../engine/ocr-bridge.js");
-    const somResult = await runSomPipeline(windowTitle, hwnd, "ja", 2, "auto", false, dictionary);
+    const somResult = await runSomPipeline(windowTitle, hwnd, "ja", 2, "auto", false, dictionary, roi);
 
     if (somResult.elements.length === 0) {
       return { candidates: [], warnings: ["ocr_attempted_empty"] };

@@ -8,6 +8,8 @@ import sharp from "sharp";
 import { captureWindowBackground } from "./image.js";
 import { enumWindowsInZOrder, getWindowDpi, printWindowToBuffer } from "./win32.js";
 import { nativeEngine } from "./native-engine.js";
+import { cropRgbaToRoi } from "./roi-crop.js";
+import type { Rect } from "./vision-gpu/types.js";
 import type { ActionableElement } from "./uia-bridge.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -672,6 +674,12 @@ export async function runSomPipeline(
   preprocessPolicy: "auto" | "aggressive" | "minimal" = "auto",
   adaptive = false,
   dictionary: OcrDictionaryEntry[] = [],
+  // ADR-024 Seed-2 S4 — optional image-local ROI to OCR a sub-region of the
+  // captured window instead of the whole window (visual-only post-action ROI
+  // crop). MUST be the LAST positional param: existing callers pass `dictionary`
+  // positionally, so inserting `roi` earlier would shift their args and break
+  // byte-equality. Omitted by every existing caller → full-window OCR unchanged.
+  roi?: Rect,
 ): Promise<SomPipelineResult> {
   // ── Locate window & capture raw RGBA ───────────────────────────────────────
   let targetHwnd: unknown = hwnd ?? null;
@@ -701,8 +709,30 @@ export async function runSomPipeline(
     }
   }
 
-  const { data: rawData, width, height } = printWindowToBuffer(targetHwnd);
+  // `let` (not `const`) so the optional ROI crop below can reassign these +
+  // the `origin` offset, after which the ENTIRE downstream pipeline (scale,
+  // preprocess, OCR, image-local→screen conversion, SoM label placement)
+  // operates on the cropped buffer transparently — no other change needed.
+  let { data: rawData, width, height } = printWindowToBuffer(targetHwnd);
   // printWindowToBuffer returns RGBA (4 channels)
+
+  // ── ADR-024 Seed-2 S4 — optional ROI crop ──────────────────────────────────
+  // When a ROI is supplied (image-local, = window-relative from S3b), crop the
+  // captured buffer to it and shift `origin` by the clamped crop offset so the
+  // `origin + bbox` screen-absolute conversion still lands entities at their
+  // true screen coordinates (acceptance ②: a ROI-crop entity has the same
+  // screen-abs rect a full-window OCR would have produced).
+  if (roi) {
+    const cropped = cropRgbaToRoi(rawData, width, height, roi);
+    if (cropped === null) {
+      // ROI does not overlap the captured buffer → nothing to OCR.
+      return { somImage: null, elements: [], preprocessScale: scale, resolvedWindowTitle };
+    }
+    rawData = cropped.data;
+    width = cropped.width;
+    height = cropped.height;
+    origin = { x: origin.x + cropped.x, y: origin.y + cropped.y };
+  }
 
   const _somT0 = performance.now();
 
