@@ -45,6 +45,7 @@ import {
   readScrollPositionInTab,
 } from "../engine/cdp-bridge.js";
 import { getCdpPort } from "../utils/desktop-config.js";
+import type { Rect } from "../engine/vision-gpu/types.js";
 
 /**
  * Win32 class name of a Chrome / Edge **top-level** window. Used as the gate
@@ -445,6 +446,29 @@ export interface VisualMotionObservation {
      */
     ratioOfTargetArea?: number;
   };
+  /**
+   * ADR-024 Seed-2 Stage 5 (S3a) — the raw DXGI dirty rectangles observed
+   * during the post-action poll, in **desktop screen-absolute coordinates**
+   * (per-output, translated via `DXGI_OUTPUT_DESC.DesktopCoordinates` — PR
+   * #322). Surfaced from the **same** `sub.next()` poll that produced
+   * `motion`, so the visual-only ROI-capture path (ADR-024 Seed-2) reuses
+   * the gate's poll with **no second DXGI acquire** (sub-plan §2 S3a, OQ-11).
+   *
+   * **Opt-in**: only populated when the caller passes
+   * `VerifyAnyChangeOpts.includeDirtyRects === true` (the `desktop_act` ROI
+   * path). Every other `verifyAnyChange` caller (keyboard / mouse-verify
+   * Stage-5 fallback) leaves it `undefined`, so their serialized observation
+   * stays byte-equal (additive optional field — CLAUDE.md §3.2 carry-over).
+   * Only populated for `source: "dxgi_dirty_rect"` and only when ≥1 rect was
+   * observed; omitted on the empty-rect / `indeterminate` / non-DXGI paths.
+   *
+   * **NOT yet window-rect filtered**: these are per-output rects that may
+   * include dirty regions outside the target window (other windows, the
+   * cursor, notifications). The window-rect intersection filter that turns
+   * them into a window-relative ROI lands in S3b; the ROI-aware OCR + fold
+   * into `roiCapture` land in S4/S5. Until then no consumer reads this field.
+   */
+  dirtyRects?: Rect[];
   /**
    * Algorithm that produced this observation. Stage 1 emits
    * `"uia_scroll_percent"` (success) or `"chain_trust_unverified"`
