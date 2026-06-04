@@ -97,6 +97,28 @@ describe("filterDirtyRectsToWindow (S3b window-rect filter)", () => {
     expect(out).toEqual([{ x: 0, y: 0, width: 800, height: 600 }]);
   });
 
+  it("secondary monitor (negative window origin) → sign-safe window-relative output", () => {
+    // Monitor to the left of the primary: window at screen-abs x=-1920. A
+    // dirty rect on that monitor at screen-abs (-1900, 50) must map to
+    // window-relative (-1900 - -1920, 50 - 0) = (20, 50). Pins the PR #102 /
+    // §3.2 secondary-monitor axis (subtraction must stay sign-safe).
+    const secondary = { x: -1920, y: 0, width: 800, height: 600 };
+    const onSecondary = { x: -1900, y: 50, width: 40, height: 30 };
+    const onPrimary = { x: 200, y: 300, width: 40, height: 30 }; // other monitor → excluded
+    const out = filterDirtyRectsToWindow([onSecondary, onPrimary], secondary);
+    expect(out).toEqual([{ x: 20, y: 50, width: 40, height: 30 }]);
+  });
+
+  it("dirty rect fully containing the window → clipped down to the full window", () => {
+    // A monitor-wide repaint (rect strictly larger than the window on every
+    // side) clips to exactly the window → full-window relative ROI.
+    const out = filterDirtyRectsToWindow(
+      [{ x: -50, y: -50, width: 5000, height: 5000 }],
+      WINDOW,
+    );
+    expect(out).toEqual([{ x: 0, y: 0, width: 800, height: 600 }]);
+  });
+
   it("does not mutate or alias the input rects", () => {
     const input = { x: 150, y: 260, width: 40, height: 30 };
     const out = filterDirtyRectsToWindow([input], WINDOW);
