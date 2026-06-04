@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { UiEntityCandidate } from "../engine/vision-gpu/types.js";
+import type { Rect, UiEntityCandidate } from "../engine/vision-gpu/types.js";
 import type {
   UiEntity,
   EntityLease,
@@ -626,6 +626,23 @@ export class DesktopFacade {
   resolveVisualOnlyForViewId(viewId: string): boolean {
     const session = this.registry.getByViewId(viewId, this.opts.nowFn);
     return session?.lastDiscoverVisualOnly ?? false;
+  }
+
+  /**
+   * ADR-024 Seed-2 S5 — screen-absolute rect + label of the entities the most
+   * recent `desktop_discover` returned for this session's view. The post-action
+   * ROI capture dedups its OCR preview against these (OQ-10): an ROI entity is a
+   * duplicate only when it overlaps a discover entity **and** carries the same
+   * label, so an in-place text change (toggle "Off"→"On" at the same rect) is
+   * preserved rather than dropped (Codex PR #429 P2). Returns `[]` when the
+   * session is gone or no discover has run.
+   */
+  getDiscoverEntitiesForViewId(viewId: string): Array<{ rect: Rect; label: string }> {
+    const session = this.registry.getByViewId(viewId, this.opts.nowFn);
+    if (!session) return [];
+    return session.entities
+      .filter((e): e is typeof e & { rect: Rect } => e.rect !== undefined)
+      .map((e) => ({ rect: e.rect, label: e.label ?? "" }));
   }
 
   validateLeaseOnly(lease: EntityLease): LeaseValidationResult {

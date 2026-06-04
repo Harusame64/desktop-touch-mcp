@@ -66,6 +66,10 @@ import { verifyAnyChange } from "../engine/any-change.js";
 import { disposeSharedDirtyRectBroker } from "../engine/dxgi-broker.js";
 import type { VisualMotionObservation } from "./_input-pipeline.js";
 import { shouldReturnRoiCapture, type ReturnCaptureMode } from "./_roi-capture-gate.js";
+import { filterDirtyRectsToWindow, boundingBox } from "./_roi-region.js";
+import { buildRoiPreviewEntities } from "./_roi-preview.js";
+import { runSomPipeline } from "../engine/ocr-bridge.js";
+import type { Rect } from "../engine/vision-gpu/types.js";
 import { createDefaultCapabilityRegistry } from "../capabilities/registry.js";
 
 // ── Advisory registry singleton (PR-SR1-3) ────────────────────────────────────
@@ -482,15 +486,14 @@ export const desktopTouchSchema = {
   ),
   text:   z.string().optional().describe("Text to type or set (required when action='type' or action='setValue')."),
   returnCapture: z.enum(["on-change", "always", "never"]).optional().describe(
-    "[EXPERIMENTAL — RESERVED, NOT YET ACTIVE] ADR-024 Seed-2 — will control post-action ROI capture on " +
-    "visual-only targets (UIA-blind / RDP / canvas). Accepted now so clients can adopt the option, but " +
-    "the capture is still being rolled out: this version NEVER attaches 'roiCapture', for any value. Do " +
-    "not depend on a capture yet. When active, a successful act on a visual-only target will carry a " +
-    "'roiCapture' { roi, somImage, entities } (diff-region crop + lease-less entity preview) so you can " +
-    "confirm the result and find the next target without a separate desktop_state / screenshot. Planned " +
-    "semantics: 'on-change' (default) attaches only on a visible change; 'always' on any successful " +
-    "visual-only act; 'never' suppresses it. No effect on structured targets (browser/CDP, UIA-rich " +
-    "native) — use desktop_state there."
+    "[EXPERIMENTAL] ADR-024 Seed-2 — controls the post-action ROI capture on visual-only targets " +
+    "(UIA-blind / RDP / canvas). When it attaches, a successful act carries a 'roiCapture' " +
+    "{ roi, somImage, entities }: a base64 PNG crop of the changed region plus a lease-less entity " +
+    "preview, so you can confirm the result and find the next target without a separate desktop_state / " +
+    "screenshot. The entities are previews only (no lease) — re-run desktop_discover to act on them. " +
+    "Semantics: 'on-change' (default for visual-only targets) attaches only on a visible change; 'always' " +
+    "on any successful visual-only act; 'never' suppresses it. No effect on structured targets " +
+    "(browser/CDP, UIA-rich native) — 'roiCapture' is never attached there; use desktop_state."
   ),
 };
 
@@ -574,20 +577,32 @@ export const desktopActRawHandler = async (
     text: input.text,
   });
 
+  let postVerify: { observation: VisualMotionObservation; dirtyRects: Rect[] } | null = null;
   if (result.ok && process.env["DESKTOP_TOUCH_STAGE5_DXGI"] !== "0") {
-    const observation = await tryVerifyAnyChange(facade, input.lease.viewId);
-    if (observation !== null) {
-      (result as { observation?: VisualMotionObservation }).observation = observation;
+    postVerify = await tryVerifyAnyChange(facade, input.lease.viewId);
+    if (postVerify !== null) {
+      // Attach the motion verdict to the serialized response. `dirtyRects` is an
+      // internal ROI-source channel for buildRoiCapture (S3a) — it is NOT part
+      // of the public observation telemetry, so the split in tryVerifyAnyChange
+      // keeps it off `result.observation`.
+      (result as { observation?: VisualMotionObservation }).observation = postVerify.observation;
     }
   }
 
-  // ADR-024 Seed-2 S2 — gate post-action ROI capture on the visual-only regime.
-  // Reuses the motion verdict from the observation poll above (no extra DXGI
-  // poll). `buildRoiCapture` is the S3/S4/S5 seam: in S2 it returns undefined
-  // whenever the gate passes (ROI source not yet wired), so responses stay
-  // bit-equal with the pre-Seed-2 shape.
+  // ADR-024 Seed-2 S5 — fold the post-action ROI capture into the act response
+  // for visual-only targets. `buildRoiCapture` gates on the visual-only regime +
+  // motion verdict, then turns the S3a dirty rects into a window-relative ROI
+  // (S3b), OCRs only that region (S4), and assembles `{roi, somImage, entities}`.
+  // Absent (gate declines / no change / no ROI) → response stays bit-equal with
+  // the pre-Seed-2 shape (additive — existing destructures unaffected).
   if (result.ok) {
-    const roiCapture = buildRoiCapture(facade, input.lease.viewId, result.observation, input.returnCapture);
+    const roiCapture = await buildRoiCapture(
+      facade,
+      input.lease.viewId,
+      postVerify?.observation,
+      postVerify?.dirtyRects ?? [],
+      input.returnCapture,
+    );
     if (roiCapture !== undefined) {
       (result as { roiCapture?: RoiCapture }).roiCapture = roiCapture;
     }
@@ -647,7 +662,7 @@ export const desktopActRawHandler = async (
 async function tryVerifyAnyChange(
   facade: DesktopFacade,
   viewId: string,
-): Promise<VisualMotionObservation | null> {
+): Promise<{ observation: VisualMotionObservation; dirtyRects: Rect[] } | null> {
   const hwnd = facade.resolveHwndForViewId(viewId);
   if (hwnd === null) return null;
   const windowRect = getWindowRectByHwnd(hwnd);
@@ -655,7 +670,14 @@ async function tryVerifyAnyChange(
     return null;
   }
   try {
-    return await verifyAnyChange({ hwnd, windowRect });
+    // ADR-024 Seed-2 S3a/S5 — opt into the dirty-rect surface so the SAME poll
+    // that produces `motion` also yields the ROI rects (no second DXGI acquire).
+    // Split `dirtyRects` off the observation here: it is an internal ROI-source
+    // channel for buildRoiCapture, not public observation telemetry, so it never
+    // reaches the serialized `result.observation`.
+    const obs = await verifyAnyChange({ hwnd, windowRect, includeDirtyRects: true });
+    const { dirtyRects, ...observation } = obs;
+    return { observation, dirtyRects: dirtyRects ?? [] };
   } catch {
     // Defensive: orchestrator promises never to throw, but a bug there must
     // not break the envelope.
@@ -664,26 +686,33 @@ async function tryVerifyAnyChange(
 }
 
 /**
- * ADR-024 Seed-2 — gate + population seam for the post-action `roiCapture`.
+ * ADR-024 Seed-2 S5 — gate + fold for the post-action `roiCapture`.
  *
  * Returns the capture to attach to a successful `desktop_act`, or `undefined`
- * when either (a) the gate declines (non-visual-only target / no change / opt-out)
- * or (b) the ROI pipeline is not yet wired.
+ * when the gate declines (non-visual-only target / no change / opt-out) or no
+ * ROI is available.
  *
- * S2 (this commit): the gate is live — it reads the session's visual-only flag
- * (persisted at discover) and reuses the `observation` motion verdict already
- * computed above, so it adds **no** extra DXGI poll. Population is a stub: even
- * when the gate passes there is no ROI source yet (lands in S3), so this returns
- * `undefined` and the act response stays bit-equal with the pre-Seed-2 shape.
- * S3 (ROI source) → S4 (ROI-aware OCR) → S5 (fold) replace the stub tail with the
- * real `{ roi, somImage, entities, source }`.
+ * Fold (S5, walking-skeleton Option A — additive; the order-trap compute
+ * optimization that avoids the post-touch full-window OCR is deferred to S5b):
+ *   1. gate on visual-only regime + motion verdict (`shouldReturnRoiCapture`);
+ *   2. turn the S3a per-output dirty rects into window-relative rects
+ *      (S3b `filterDirtyRectsToWindow`) and reduce them to one ROI (bounding box);
+ *   3. OCR only that ROI (S4 `runSomPipeline(..., roi)`) → `somImage` crop +
+ *      `SomElement[]`;
+ *   4. map the elements to lease-less `RoiPreviewEntity[]` (OQ-8 (b) MVP),
+ *      deduped against the most recent discover snapshot (OQ-10) so the preview
+ *      highlights only what changed.
+ *
+ * Degrades to `undefined` on every miss (no hwnd / no window rect / ROI misses
+ * the window / OCR threw or rendered no image) so the act envelope is unaffected.
  */
-function buildRoiCapture(
+async function buildRoiCapture(
   facade: DesktopFacade,
   viewId: string,
   observation: VisualMotionObservation | undefined,
+  dirtyRects: Rect[],
   returnCapture: ReturnCaptureMode | undefined,
-): RoiCapture | undefined {
+): Promise<RoiCapture | undefined> {
   const gatePassed = shouldReturnRoiCapture({
     ok: true, // only called on the success path
     visualOnly: facade.resolveVisualOnlyForViewId(viewId),
@@ -691,10 +720,46 @@ function buildRoiCapture(
     returnCapture,
   });
   if (!gatePassed) return undefined;
-  // S3 (ROI source via single-poll dirty-rect surface) → S4 (ROI-aware OCR) →
-  // S5 (fold) populate `{ roi, somImage, entities, source }` here. Until S3
-  // lands there is no ROI source, so nothing is attached.
-  return undefined;
+
+  const hwnd = facade.resolveHwndForViewId(viewId);
+  if (hwnd === null) return undefined;
+  const windowRect = getWindowRectByHwnd(hwnd);
+  if (windowRect === null || windowRect.width <= 0 || windowRect.height <= 0) {
+    return undefined;
+  }
+
+  // S3b — per-output dirty rects → window-relative; S5 — reduce to one ROI.
+  const windowRel = filterDirtyRectsToWindow(dirtyRects, windowRect);
+  // Fall back to the whole window (window-relative full rect) when no dirty
+  // region intersects it. The gate already passed, so we owe a capture — this
+  // happens for `returnCapture: "always"` on a no-change act, or when motion
+  // was reported by a non-DXGI source (SSIM translation/local_repaint) that
+  // leaves `dirtyRects` empty (Codex PR #429 P2: honor `always`).
+  const roi =
+    boundingBox(windowRel) ?? { x: 0, y: 0, width: windowRect.width, height: windowRect.height };
+
+  try {
+    // S4 — OCR only the ROI crop. hwnd is provided so the empty windowTitle is
+    // unused; no UIA dictionary (visual-only target has no UIA candidates).
+    const som = await runSomPipeline("", hwnd, "ja", 2, "auto", false, [], roi);
+    if (som.somImage === null) return undefined; // SoM render unavailable
+
+    // OQ-10 — map ROI-OCR elements to the lease-less preview, deduped against
+    // the discover snapshot by geometry AND label (so an in-place text change is
+    // preserved). Pure logic in `_roi-preview.ts` (`buildRoiPreviewEntities`).
+    const entities = buildRoiPreviewEntities(
+      som.elements,
+      facade.getDiscoverEntitiesForViewId(viewId),
+    );
+
+    return { roi, somImage: som.somImage.base64, entities, source: "dxgi" };
+  } catch (err) {
+    // OCR is best-effort; never break the act envelope on a pipeline failure.
+    console.error(
+      `[desktop_act] ROI capture OCR failed for viewId=${viewId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return undefined;
+  }
 }
 
 /** Pre-flight lease validation closure used by the commit wrapper
@@ -872,9 +937,11 @@ export function registerDesktopTools(server: McpServer): void {
       "  executor_failed → fall back to V1 tools (click_element / mouse_click / browser_click);",
       "  executor_failed on terminal textbox (action=type) → use V1 terminal(action='send') instead.",
       "Check desktop_discover response.constraints for pre-emptive fallback hints before calling desktop_act.",
-      "[EXPERIMENTAL — RESERVED] returnCapture is accepted but NOT YET ACTIVE: this version never attaches a",
-      "'roiCapture' for any value. When rolled out it will fold a post-action diff-region crop + lease-less",
-      "entity preview into the response on visual-only targets (UIA-blind / RDP / canvas). Do not depend on it yet.",
+      "[EXPERIMENTAL] On visual-only targets (UIA-blind / RDP / canvas), a successful act may attach a",
+      "'roiCapture' { roi, somImage, entities }: a base64 PNG crop of the changed region + a lease-less entity",
+      "preview, so you can confirm the result + find the next target in one call (no separate desktop_state /",
+      "screenshot). entities are previews (no lease) — re-run desktop_discover to act. Control via returnCapture",
+      "('on-change' default / 'always' / 'never'). Never attached on structured targets (browser/CDP, UIA-rich).",
     ].join(" "),
     desktopActRegistrationSchema,
     desktopActRegistrationHandler as (input: unknown) => Promise<ToolResult>,

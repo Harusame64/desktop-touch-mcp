@@ -75,9 +75,10 @@ export interface RoiPreviewEntity {
  * `GuardedTouchLoop` — same layering as `observation?` (the loop stays
  * capture-agnostic). Absent on every non-visual-only / no-change path, so
  * existing `{ok, executor, diff, next}` destructures are unaffected (additive,
- * CLAUDE.md §3.2 carry-over). S1 locks the shape; the value stays `undefined`
- * until the ROI source (S3) and ROI-aware OCR (S4) phases are built and S5
- * folds the result into the act response.
+ * CLAUDE.md §3.2 carry-over). Live since S5: a successful act on a visual-only
+ * target with a visible change (and the gate's `returnCapture` mode) carries
+ * this; the registration wrapper builds it from the post-action dirty-rect ROI
+ * (S3a/S3b) + ROI-aware OCR (S4).
  */
 export interface RoiCapture {
   /** Window-relative crop rect the `somImage` covers (the diff region, not the full window). */
@@ -123,7 +124,7 @@ export type TouchResult =
        * entity preview) attached by the registration wrapper when the target is
        * visual-only and the act produced a visible change. Absent otherwise
        * (additive — existing destructures unaffected). See {@link RoiCapture}.
-       * S1 locks the shape; population is built in S3/S4 and folded in S5.
+       * Live since S5 (the fold).
        */
       roiCapture?: RoiCapture;
     }

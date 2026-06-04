@@ -1,0 +1,71 @@
+/**
+ * ADR-024 Seed-2 S5 — `buildRoiPreviewEntities` unit tests.
+ *
+ * Pins the OQ-10 dedup contract: an ROI-OCR element is dropped only when it
+ * BOTH overlaps a discover entity AND carries the same label — so an in-place
+ * text change (same bounds, different text) is preserved (Codex PR #429 P2).
+ */
+
+import { describe, it, expect } from "vitest";
+
+import {
+  buildRoiPreviewEntities,
+  type RoiOcrElement,
+  type DiscoverEntityRef,
+} from "../../src/tools/_roi-preview.js";
+
+const RECT_A = { x: 100, y: 100, width: 40, height: 20 };
+
+describe("buildRoiPreviewEntities (S5 OQ-10 dedup + mapping)", () => {
+  it("maps an OCR element to a lease-less preview entity", () => {
+    const els: RoiOcrElement[] = [{ text: "Save", region: RECT_A }];
+    const out = buildRoiPreviewEntities(els, []);
+    expect(out).toEqual([
+      { label: "Save", role: "label", rect: RECT_A, actionability: ["click"] },
+    ]);
+  });
+
+  it("drops an element that overlaps a discover entity with the SAME label", () => {
+    const els: RoiOcrElement[] = [{ text: "Save", region: RECT_A }];
+    const discover: DiscoverEntityRef[] = [{ rect: { ...RECT_A }, label: "Save" }];
+    expect(buildRoiPreviewEntities(els, discover)).toEqual([]);
+  });
+
+  it("KEEPS an in-place text change (same rect, different label)", () => {
+    // The act flipped a status label "Off" → "On" at the same bounds. This is
+    // exactly the change roiCapture exists to surface — it must NOT be deduped.
+    const els: RoiOcrElement[] = [{ text: "On", region: RECT_A }];
+    const discover: DiscoverEntityRef[] = [{ rect: { ...RECT_A }, label: "Off" }];
+    const out = buildRoiPreviewEntities(els, discover);
+    expect(out).toEqual([
+      { label: "On", role: "label", rect: RECT_A, actionability: ["click"] },
+    ]);
+  });
+
+  it("normalizes labels (trim + case) when matching for dedup", () => {
+    const els: RoiOcrElement[] = [{ text: "  SAVE ", region: RECT_A }];
+    const discover: DiscoverEntityRef[] = [{ rect: { ...RECT_A }, label: "save" }];
+    expect(buildRoiPreviewEntities(els, discover)).toEqual([]);
+  });
+
+  it("keeps an element with the same label but non-overlapping geometry", () => {
+    const els: RoiOcrElement[] = [{ text: "Save", region: RECT_A }];
+    const discover: DiscoverEntityRef[] = [
+      { rect: { x: 500, y: 500, width: 40, height: 20 }, label: "Save" },
+    ];
+    expect(buildRoiPreviewEntities(els, discover)).toHaveLength(1);
+  });
+
+  it("keeps a partial overlap below the 0.5 IoU threshold even with same label", () => {
+    // 25% area overlap → IoU ≈ 0.143 < 0.5 → not the same entity → kept.
+    const els: RoiOcrElement[] = [{ text: "Save", region: { x: 0, y: 0, width: 10, height: 10 } }];
+    const discover: DiscoverEntityRef[] = [
+      { rect: { x: 5, y: 5, width: 10, height: 10 }, label: "Save" },
+    ];
+    expect(buildRoiPreviewEntities(els, discover)).toHaveLength(1);
+  });
+
+  it("returns [] for no OCR elements", () => {
+    expect(buildRoiPreviewEntities([], [{ rect: RECT_A, label: "x" }])).toEqual([]);
+  });
+});
