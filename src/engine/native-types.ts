@@ -221,6 +221,19 @@ export interface NativeSsimCentroid {
   y: number
 }
 
+/** ADR-024 Seed-2 S5c-1b — bounding box of the above-threshold sliding
+ *  windows, same coordinate basis as `NativeSsimCentroid` (region-absolute
+ *  frame pixels; **crop-local** when the caller passes `region = null` over an
+ *  already-cropped buffer, as the visual-only ROI path does). **Omitted**
+ *  (NOT `null`) by napi-rs when no window crossed the threshold — same
+ *  `Option::None` omission semantic as `centroid`. */
+export interface NativeSsimBbox {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 /** Aggregated SSIM residual over the requested region. `fractionChanged`
  *  is the fraction of 8×8 sliding windows (stride 4) whose `1 - SSIM`
  *  exceeded the per-window residual threshold (0.05 default in
@@ -235,6 +248,10 @@ export interface NativeSsimResidualResult {
    *  to handle both `undefined` (napi-rs omission) and a hypothetical
    *  future explicit `null`. */
   centroid?: NativeSsimCentroid
+  /** ADR-024 Seed-2 S5c-1b — bounding box of above-threshold windows. Omitted
+   *  (NOT `null`) when no window crossed the threshold and on the graceful-
+   *  degrade single-window / zero-grid paths. Use `result.bbox != null`. */
+  bbox?: NativeSsimBbox
   meanSsim: number
 }
 

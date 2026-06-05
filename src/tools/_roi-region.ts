@@ -101,6 +101,34 @@ export function boundingBox(rects: readonly Rect[]): Rect | null {
 }
 
 /**
+ * ADR-024 Seed-2 S5c-1b — clamp a window-relative rect to the window bounds.
+ *
+ * The frame-diff ROI bbox (`VisualMotionObservation.roiBbox`) is already
+ * window-relative and, by construction, lies inside the captured window (it is
+ * derived from a crop that was itself clipped to the window rect). This is a
+ * defence-in-depth clamp for the rare case where the window resized between the
+ * pre-frame capture and the post-action `getWindowRectByHwnd` read, so the crop
+ * never reads outside the buffer downstream.
+ *
+ * @param roi        Window-relative candidate ROI (origin = window top-left).
+ * @param windowRect Screen-absolute window rect — only its `width`/`height`
+ *                   bound the clamp (the ROI is already window-relative).
+ * @returns The clamped window-relative rect, or `null` when the clamp leaves no
+ *          positive area (ROI fully outside the current window) — the caller
+ *          then falls back to the DXGI bbox / full window.
+ */
+export function clampRectToWindow(roi: Rect, windowRect: Rect): Rect | null {
+  const left = Math.max(0, roi.x);
+  const top = Math.max(0, roi.y);
+  const right = Math.min(roi.x + roi.width, windowRect.width);
+  const bottom = Math.min(roi.y + roi.height, windowRect.height);
+  const width = right - left;
+  const height = bottom - top;
+  if (width <= 0 || height <= 0) return null;
+  return { x: left, y: top, width, height };
+}
+
+/**
  * ADR-024 Seed-2 S5 — intersection-over-union of two rects.
  *
  * Used to dedup the post-action ROI-OCR preview against the entities the most

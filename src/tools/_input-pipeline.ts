@@ -470,6 +470,24 @@ export interface VisualMotionObservation {
    */
   dirtyRects?: Rect[];
   /**
+   * ADR-024 Seed-2 S5c-1b — the **window-relative** bounding box of the
+   * changed region, derived from the pre/post true-PrintWindow frame-diff
+   * (native SSIM above-threshold-window aggregation). A sibling internal
+   * ROI-source channel to `dirtyRects`: it is **opt-in** (only populated when
+   * `verifyLocalRepaint` is called with `includeRoiBbox === true`, i.e. the
+   * visual-only `desktop_act` ROI path) and the act handler **splits it off
+   * before assigning `result.observation`**, so it never reaches the public
+   * Stage 5 telemetry envelope (ADR-019 contract; byte-equal for every other
+   * caller — additive optional field, CLAUDE.md §3.2 carry-over).
+   *
+   * Only emitted on the positive `motion: "local_repaint"` path AND only when
+   * the capture was occlusion-immune (both pre and post frames came from
+   * PrintWindow, not the BitBlt fallback). Absent on `no_change` /
+   * `indeterminate` / non-occlusion-immune captures → the consumer
+   * (`buildRoiCapture`) falls back to the full-window ROI (P1-1).
+   */
+  roiBbox?: Rect;
+  /**
    * Algorithm that produced this observation. Stage 1 emits
    * `"uia_scroll_percent"` (success) or `"chain_trust_unverified"`
    * (UIA pattern not exposed, chain-trust fall-through). Stages 2-5+

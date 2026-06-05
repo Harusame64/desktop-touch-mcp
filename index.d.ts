@@ -248,11 +248,25 @@ export interface NativeSsimCentroid {
   y: number
 }
 
+/** ADR-024 Seed-2 S5c-1b — bbox of above-threshold windows (same basis as
+ *  centroid; crop-local when called with region=null). Omitted (NOT null)
+ *  when no window crossed the threshold. */
+export interface NativeSsimBbox {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 export interface NativeSsimResidualResult {
   fractionChanged: number
   /** Omitted (NOT null) when `fractionChanged === 0`. Use `result.centroid != null`
    *  to handle both napi-rs omission and a hypothetical future explicit null. */
   centroid?: NativeSsimCentroid
+  /** ADR-024 Seed-2 S5c-1b — bbox of above-threshold windows. Omitted (NOT
+   *  null) when no window crossed the threshold / graceful-degrade paths.
+   *  Use `result.bbox != null`. */
+  bbox?: NativeSsimBbox
   /** Mean SSIM across all windows; exposed via
    *  `VisualMotionObservation.residual.meanSsim` (Stage 4 sub-plan §4 P15). */
   meanSsim: number

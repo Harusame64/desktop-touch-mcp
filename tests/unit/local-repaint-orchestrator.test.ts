@@ -368,3 +368,120 @@ describe("verifyLocalRepaint (§2.3 orchestrator)", () => {
     expect(r.motion).toBe("indeterminate");
   });
 });
+
+// ─── ADR-024 Seed-2 S5c-1b — roiBbox surface (opt-in, occlusion-gated) ───────
+describe("verifyLocalRepaint roiBbox (S5c-1b)", () => {
+  beforeEach(() => {
+    mockComputeSsim.mockReset();
+    mockCapturePostFrame.mockReset();
+  });
+
+  // Tag a frame with its capture provenance (P1-1 occlusion-immunity gate).
+  const withSource = (
+    f: RawFrame,
+    source: "printwindow" | "bitblt-fallback",
+  ): RawFrame => ({ ...f, source });
+
+  // window 300×300, click at centre (150,150) → resolveLocalRepaintRect yields a
+  // 192×192 padded square at (54,54) clipped inside the window → localRect
+  // origin (54,54). A native bbox at crop-local (10,20) therefore lifts to
+  // window-relative (64,74).
+  const WINDOW = { x: 0, y: 0, width: 300, height: 300 };
+  const POINT = { x: 150, y: 150 };
+
+  function driveLocalRepaint(opts: {
+    preSource?: "printwindow" | "bitblt-fallback";
+    postSource?: "printwindow" | "bitblt-fallback";
+    bbox?: { x: number; y: number; width: number; height: number };
+    includeRoiBbox?: boolean;
+  }) {
+    const preBase = makeFrame(300, 300, 4, 0);
+    const postBase = makeFrame(300, 300, 4, 200); // differs → SSIM runs
+    const pre = opts.preSource ? withSource(preBase, opts.preSource) : preBase;
+    const post = opts.postSource ? withSource(postBase, opts.postSource) : postBase;
+    mockCapturePostFrame.mockResolvedValueOnce({
+      frames: [post],
+      deltas: [0],
+      stableReached: true,
+      framesToStability: 1,
+      totalElapsedMs: 80,
+    });
+    mockComputeSsim.mockReturnValueOnce({
+      fractionChanged: 0.12,
+      centroid: { x: 30, y: 40 },
+      meanSsim: 0.85,
+      ...(opts.bbox !== undefined && { bbox: opts.bbox }),
+    });
+    return verifyLocalRepaint({
+      hwnd: HWND,
+      hint: { point: POINT, windowRect: WINDOW },
+      preFrame: pre,
+      ...(opts.includeRoiBbox !== undefined && { includeRoiBbox: opts.includeRoiBbox }),
+    });
+  }
+
+  it("occlusion-immune (pre+post PrintWindow) + bbox present → roiBbox lifted to window-relative", async () => {
+    const r = await driveLocalRepaint({
+      preSource: "printwindow",
+      postSource: "printwindow",
+      bbox: { x: 10, y: 20, width: 30, height: 40 },
+      includeRoiBbox: true,
+    });
+    expect(r.motion).toBe("local_repaint");
+    // localRect origin (54,54) + crop-local bbox (10,20) → window-relative (64,74).
+    expect(r.roiBbox).toEqual({ x: 64, y: 74, width: 30, height: 40 });
+  });
+
+  it("pre frame is BitBlt-fallback → roiBbox absent (occlusion not immune, P1-1)", async () => {
+    const r = await driveLocalRepaint({
+      preSource: "bitblt-fallback",
+      postSource: "printwindow",
+      bbox: { x: 10, y: 20, width: 30, height: 40 },
+      includeRoiBbox: true,
+    });
+    expect(r.motion).toBe("local_repaint");
+    expect(r.roiBbox).toBeUndefined();
+  });
+
+  it("post frame is BitBlt-fallback → roiBbox absent (occlusion not immune, P1-1)", async () => {
+    const r = await driveLocalRepaint({
+      preSource: "printwindow",
+      postSource: "bitblt-fallback",
+      bbox: { x: 10, y: 20, width: 30, height: 40 },
+      includeRoiBbox: true,
+    });
+    expect(r.roiBbox).toBeUndefined();
+  });
+
+  it("capture source undefined → roiBbox absent (conservative demote)", async () => {
+    const r = await driveLocalRepaint({
+      // no preSource / postSource → frames carry no `source` field
+      bbox: { x: 10, y: 20, width: 30, height: 40 },
+      includeRoiBbox: true,
+    });
+    expect(r.roiBbox).toBeUndefined();
+  });
+
+  it("native bbox absent (omitted) → roiBbox absent (full-window fallback downstream)", async () => {
+    const r = await driveLocalRepaint({
+      preSource: "printwindow",
+      postSource: "printwindow",
+      // bbox omitted from the SSIM result
+      includeRoiBbox: true,
+    });
+    expect(r.motion).toBe("local_repaint");
+    expect(r.roiBbox).toBeUndefined();
+  });
+
+  it("includeRoiBbox not set (default) → roiBbox absent even when immune + bbox present (byte-equal for Stage 4 callers)", async () => {
+    const r = await driveLocalRepaint({
+      preSource: "printwindow",
+      postSource: "printwindow",
+      bbox: { x: 10, y: 20, width: 30, height: 40 },
+      // includeRoiBbox omitted → default false
+    });
+    expect(r.motion).toBe("local_repaint");
+    expect(r.roiBbox).toBeUndefined();
+    expect("roiBbox" in r).toBe(false);
+  });
+});

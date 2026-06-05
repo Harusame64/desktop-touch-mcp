@@ -15,6 +15,7 @@ import {
   filterDirtyRectsToWindow,
   boundingBox,
   rectIoU,
+  clampRectToWindow,
 } from "../../src/tools/_roi-region.js";
 
 // Window at a non-zero screen origin so the relative translation is observable.
@@ -218,5 +219,44 @@ describe("rectIoU (S5 OQ-10 dedup metric)", () => {
     );
     expect(iou).toBeCloseTo(25 / 175, 6);
     expect(iou).toBeLessThan(0.5);
+  });
+});
+
+describe("clampRectToWindow (S5c-1b frame-diff ROI bounds guard)", () => {
+  // Window dimensions only (the ROI is already window-relative, so the
+  // window origin is irrelevant to the clamp).
+  const WIN = { x: 0, y: 0, width: 200, height: 150 };
+
+  it("returns an in-bounds rect unchanged", () => {
+    const roi = { x: 10, y: 20, width: 50, height: 40 };
+    expect(clampRectToWindow(roi, WIN)).toEqual(roi);
+  });
+
+  it("clamps a rect overflowing the right/bottom edges", () => {
+    // Extends past the 200×150 window → clamped to the window's far edges.
+    const out = clampRectToWindow({ x: 180, y: 130, width: 100, height: 100 }, WIN);
+    expect(out).toEqual({ x: 180, y: 130, width: 20, height: 20 });
+  });
+
+  it("clamps negative origin to 0 and shrinks the size accordingly", () => {
+    // x:-10 → left=0, far edge stays at 40 → width 40.
+    const out = clampRectToWindow({ x: -10, y: -5, width: 50, height: 30 }, WIN);
+    expect(out).toEqual({ x: 0, y: 0, width: 40, height: 25 });
+  });
+
+  it("returns null when the rect is fully outside the window", () => {
+    // Origin at/after the far edge → no positive area remains.
+    expect(clampRectToWindow({ x: 200, y: 0, width: 50, height: 50 }, WIN)).toBeNull();
+    expect(clampRectToWindow({ x: 0, y: 150, width: 50, height: 50 }, WIN)).toBeNull();
+  });
+
+  it("returns null for a zero-area rect", () => {
+    expect(clampRectToWindow({ x: 10, y: 10, width: 0, height: 20 }, WIN)).toBeNull();
+  });
+
+  it("does not mutate the input rect", () => {
+    const roi = { x: 180, y: 130, width: 100, height: 100 };
+    clampRectToWindow(roi, WIN);
+    expect(roi).toEqual({ x: 180, y: 130, width: 100, height: 100 });
   });
 });

@@ -57,6 +57,23 @@ pub struct SsimCentroid {
     pub y: f64,
 }
 
+/// ADR-024 Seed-2 S5c-1b — bounding box of the above-threshold sliding
+/// windows, in the same coordinate basis as the centroid (region coordinates
+/// when a `region` is supplied, else absolute frame coordinates). The
+/// visual-only ROI-capture path calls `compute_ssim_residual` with
+/// `region = None` over an already-cropped pre/post buffer, so the bbox is
+/// **crop-local** there (the caller adds the crop origin to lift it to
+/// window-relative coordinates). Omitted (napi-rs `Option::None` → field
+/// absent, NOT `null`) when no window crossed the residual threshold, mirroring
+/// the `centroid` omission semantic.
+#[napi(object)]
+pub struct SsimBbox {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
 #[napi(object)]
 pub struct SsimResidualResult {
     /// Fraction of 8×8 sliding windows whose `1 - SSIM` exceeded
@@ -68,6 +85,13 @@ pub struct SsimResidualResult {
     /// coordinates). Omitted when `fraction_changed === 0` (no changed
     /// windows to mean).
     pub centroid: Option<SsimCentroid>,
+    /// ADR-024 Seed-2 S5c-1b — outer bounding box (min/max corners) of the
+    /// above-threshold windows, same coordinate basis as `centroid`. Omitted
+    /// when no window crossed the threshold (and on the graceful-degrade
+    /// single-window / zero-grid paths, which have no sliding-window grid to
+    /// aggregate). Used to localize the post-action ROI crop to the changed
+    /// region (P1-2) instead of falling back to the whole window.
+    pub bbox: Option<SsimBbox>,
     /// Mean SSIM across all windows in the region. Useful for the Wang
     /// "perceptually identical" cutoff (≥ 0.99) as a `no_change` disambiguator.
     pub mean_ssim: f64,
@@ -121,6 +145,7 @@ pub fn compute_ssim_residual(
         return Ok(SsimResidualResult {
             fraction_changed: 0.0,
             centroid: None,
+            bbox: None,
             mean_ssim: 1.0,
         });
     }
@@ -139,10 +164,12 @@ pub fn compute_ssim_residual(
             pre, post, width, channels, rx, ry, rw, rh,
         );
         // No sliding window grid — caller sees mean_ssim only, with no
-        // residual fraction (region too small for the 8×8 analysis).
+        // residual fraction (region too small for the 8×8 analysis). No grid
+        // means no above-threshold windows to aggregate → bbox omitted.
         return Ok(SsimResidualResult {
             fraction_changed: 0.0,
             centroid: None,
+            bbox: None,
             mean_ssim: ssim_full.clamp(-1.0, 1.0),
         });
     }
@@ -175,6 +202,7 @@ fn compute_ssim_scalar(
         return Ok(SsimResidualResult {
             fraction_changed: 0.0,
             centroid: None,
+            bbox: None,
             mean_ssim: 1.0,
         });
     }
@@ -183,6 +211,15 @@ fn compute_ssim_scalar(
     let mut sum_ssim: f64 = 0.0;
     let mut centroid_sum_x: f64 = 0.0;
     let mut centroid_sum_y: f64 = 0.0;
+    // ADR-024 Seed-2 S5c-1b — outer corners of above-threshold windows. Each
+    // window spans `[x0, x0 + WINDOW_SIZE) × [y0, y0 + WINDOW_SIZE)`, so the
+    // bbox tracks `min(x0) / min(y0)` and `max(x0 + WINDOW_SIZE) /
+    // max(y0 + WINDOW_SIZE)`. Aggregated in the SAME scan as the centroid (no
+    // extra pass) per the sub-plan "min/max in the existing SIMD scan" mandate.
+    let mut min_x0: u32 = u32::MAX;
+    let mut min_y0: u32 = u32::MAX;
+    let mut max_x1: u32 = 0;
+    let mut max_y1: u32 = 0;
 
     for wy in 0..y_steps {
         let y0 = ry + wy * WINDOW_STRIDE;
@@ -209,24 +246,51 @@ fn compute_ssim_scalar(
                 let cy = y0 as f64 + (WINDOW_SIZE as f64) / 2.0;
                 centroid_sum_x += cx;
                 centroid_sum_y += cy;
+                // Bbox corners (same coordinate basis as the centroid).
+                let x1 = x0 + WINDOW_SIZE;
+                let y1 = y0 + WINDOW_SIZE;
+                if x0 < min_x0 {
+                    min_x0 = x0;
+                }
+                if y0 < min_y0 {
+                    min_y0 = y0;
+                }
+                if x1 > max_x1 {
+                    max_x1 = x1;
+                }
+                if y1 > max_y1 {
+                    max_y1 = y1;
+                }
             }
         }
     }
 
     let fraction_changed = above_count as f64 / total_windows as f64;
     let mean_ssim = sum_ssim / total_windows as f64;
-    let centroid = if above_count > 0 {
-        Some(SsimCentroid {
-            x: centroid_sum_x / above_count as f64,
-            y: centroid_sum_y / above_count as f64,
-        })
+    let (centroid, bbox) = if above_count > 0 {
+        (
+            Some(SsimCentroid {
+                x: centroid_sum_x / above_count as f64,
+                y: centroid_sum_y / above_count as f64,
+            }),
+            // `max_x1 >= min_x0` and `max_y1 >= min_y0` hold whenever
+            // `above_count > 0` (every above-threshold window contributes both a
+            // min and a max corner), so the subtractions never underflow.
+            Some(SsimBbox {
+                x: min_x0,
+                y: min_y0,
+                width: max_x1 - min_x0,
+                height: max_y1 - min_y0,
+            }),
+        )
     } else {
-        None
+        (None, None)
     };
 
     Ok(SsimResidualResult {
         fraction_changed,
         centroid,
+        bbox,
         mean_ssim,
     })
 }
@@ -316,6 +380,7 @@ mod tests {
         let r = compute_ssim_residual(&buf, &buf, 64, 64, 4, None).unwrap();
         assert!(r.fraction_changed.abs() < 1e-9, "fraction_changed should be 0");
         assert!(r.centroid.is_none(), "no centroid for identical frames");
+        assert!(r.bbox.is_none(), "no bbox for identical frames");
         assert!(
             r.mean_ssim >= 0.999,
             "mean_ssim should be ≥ 0.999 for identical frames, got {}",
@@ -376,6 +441,23 @@ mod tests {
             "centroid ({}, {}) should be within 16 px of (100, 100)",
             c.x,
             c.y
+        );
+        // ADR-024 Seed-2 S5c-1b — bbox must enclose the 20×20 black rect
+        // ([90,110) × [90,110)) and be far smaller than the full 200×200 frame.
+        let b = r.bbox.expect("bbox present when fraction > 0");
+        assert!(
+            b.x <= 90 && b.y <= 90 && b.x + b.width >= 110 && b.y + b.height >= 110,
+            "bbox ({}, {}, {}, {}) should enclose the [90,110)×[90,110) rect",
+            b.x,
+            b.y,
+            b.width,
+            b.height
+        );
+        assert!(
+            b.width < 200 && b.height < 200,
+            "bbox ({}×{}) should be smaller than the full 200×200 frame",
+            b.width,
+            b.height
         );
         // mean_ssim should be high (most windows untouched) but < 1.0.
         assert!(
@@ -440,7 +522,97 @@ mod tests {
         let r = compute_ssim_residual(&buf, &buf, 16, 16, 4, Some(region)).unwrap();
         // Identical → mean_ssim ≈ 1.0, no above-threshold windows.
         assert!(r.fraction_changed.abs() < 1e-9);
+        // Graceful-degrade single-window path has no sliding-window grid → no bbox.
+        assert!(r.bbox.is_none(), "single-window degrade must omit bbox");
         assert!(r.mean_ssim >= 0.999);
+    }
+
+    #[test]
+    fn bbox_unions_two_disjoint_patches() {
+        // ADR-024 Seed-2 S5c-1b — two separated changed patches must yield a
+        // single bbox that is the OUTER bounding box of both (min/max corners).
+        let w = 200u32;
+        let h = 200u32;
+        let ch = 4u32;
+        let pre = buf_filled(w, h, ch, 255);
+        let mut post = pre.clone();
+        let stride = (w * ch) as usize;
+        let chan = ch as usize;
+        // Patch A near top-left: [20,40) × [20,40). Patch B near bottom-right:
+        // [150,170) × [150,170).
+        for (rx0, ry0) in [(20usize, 20usize), (150usize, 150usize)] {
+            for y in ry0..ry0 + 20 {
+                for x in rx0..rx0 + 20 {
+                    let i = y * stride + x * chan;
+                    post[i] = 0;
+                    post[i + 1] = 0;
+                    post[i + 2] = 0;
+                }
+            }
+        }
+        let r = compute_ssim_residual(&pre, &post, w, h, ch, None).unwrap();
+        let b = r.bbox.expect("bbox present for two changed patches");
+        // Outer bbox must contain both patches: top-left corner ≤ (20,20),
+        // bottom-right corner ≥ (170,170).
+        assert!(
+            b.x <= 20 && b.y <= 20,
+            "bbox origin ({}, {}) should be ≤ (20, 20)",
+            b.x,
+            b.y
+        );
+        assert!(
+            b.x + b.width >= 170 && b.y + b.height >= 170,
+            "bbox far corner ({}, {}) should be ≥ (170, 170)",
+            b.x + b.width,
+            b.y + b.height
+        );
+    }
+
+    #[test]
+    fn bbox_with_region_is_region_absolute() {
+        // ADR-024 Seed-2 S5c-1b P1-2 — when a `region` IS supplied, the bbox is
+        // in region-absolute (frame) coordinates (x0 = rx + window offset). The
+        // visual-only ROI path relies on the COMPLEMENT of this: it passes
+        // `region = None` over an already-cropped buffer, so the bbox it sees is
+        // crop-local (rx = 0). This test pins the basis so the TS-side origin
+        // translation (`localRect + bbox`) stays correct.
+        let w = 200u32;
+        let h = 200u32;
+        let ch = 4u32;
+        let pre = buf_filled(w, h, ch, 255);
+        let mut post = pre.clone();
+        let stride = (w * ch) as usize;
+        let chan = ch as usize;
+        // Change a patch at [110,130) × [110,130) (frame coords).
+        for y in 110..130usize {
+            for x in 110..130usize {
+                let i = y * stride + x * chan;
+                post[i] = 0;
+                post[i + 1] = 0;
+                post[i + 2] = 0;
+            }
+        }
+        // Region starts at (100, 100): the patch is at region-local (10..30).
+        let region = SsimRegion {
+            x: 100,
+            y: 100,
+            width: 64,
+            height: 64,
+        };
+        let r = compute_ssim_residual(&pre, &post, w, h, ch, Some(region)).unwrap();
+        let b = r.bbox.expect("bbox present");
+        // bbox is region-ABSOLUTE (includes rx=100), NOT region-local — so it
+        // encloses the patch at frame coords [110,130).
+        assert!(
+            b.x >= 100 && b.x <= 110,
+            "bbox.x ({}) should be region-absolute (≈110, ≥ rx=100)",
+            b.x
+        );
+        assert!(
+            b.x + b.width >= 130,
+            "bbox far x ({}) should reach the patch end at 130",
+            b.x + b.width
+        );
     }
 
     #[test]
