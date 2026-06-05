@@ -592,7 +592,10 @@ export const desktopActRawHandler = async (
   let frameDiffWindowRect: { x: number; y: number; width: number; height: number } | null = null;
   let frameDiffPoint: { x: number; y: number } | null = null;
   if (postVerifyEnabled && visualOnly) {
-    frameDiffHwnd = facade.resolveHwndForViewId(input.lease.viewId);
+    // Resolve the TARGET window (not foreground): the pre-frame is captured
+    // before the click, so a not-yet-foreground windowTitle target must still
+    // diff the right window (Codex PR #431 P2).
+    frameDiffHwnd = await facade.resolveTargetHwndForFrameDiff(input.lease.viewId);
     if (frameDiffHwnd !== null) {
       const wr = getWindowRectByHwnd(frameDiffHwnd);
       if (wr !== null && wr.width > 0 && wr.height > 0) {

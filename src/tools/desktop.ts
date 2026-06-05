@@ -14,6 +14,7 @@ import {
 } from "../engine/world-graph/session-registry.js";
 import type { CandidateIngress } from "../engine/world-graph/candidate-ingress.js";
 import { createDesktopExecutor, type ExecutorDeps } from "./desktop-executor.js";
+import { resolveWindowTarget } from "./_resolve-window.js";
 import type { TouchAction, TouchResult } from "../engine/world-graph/guarded-touch.js";
 import { deriveViewConstraints, type ViewConstraints, type EntityCapabilities } from "./desktop-constraints.js";
 import { UIA_BLIND_WARNINGS } from "./desktop-providers/compose-providers.js";
@@ -609,6 +610,52 @@ export class DesktopFacade {
         // Intentionally fall through to the foreground resolver below.
       }
     }
+    if (!this.opts.getFocusedHwnd) return null;
+    try {
+      return this.opts.getFocusedHwnd();
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * ADR-024 Seed-2 S5c-1a — resolve the HWND of the window the lease's session
+   * actually targets, for the visual-only frame-diff pre/post capture.
+   *
+   * This deliberately does NOT reuse `resolveHwndForViewId` (the ADR-019 Stage 5
+   * resolver, which foreground-falls-back for `windowTitle` targets). That
+   * fallback is sound for Stage 5 because its DXGI poll runs *after* the action,
+   * by which point clicking the target has usually brought it to the foreground.
+   * The frame-diff captures its PRE frame *before* the click, so a `windowTitle`
+   * target that is not yet foreground would otherwise diff the wrong (foreground)
+   * window and report `no_change` (Codex PR #431 P2). Resolve `windowTitle → hwnd`
+   * via the same `resolveWindowTarget` the discover providers use
+   * (`compose-providers.ts`), so we capture the exact window discover enumerated.
+   * A pinned `hwnd` is used directly; a target with neither (the bare
+   * `desktop_discover()` foreground flow) falls back to the foreground HWND, which
+   * is the honest target there. Returns `null` when the session is gone or no
+   * window resolves. Never throws.
+   */
+  async resolveTargetHwndForFrameDiff(viewId: string): Promise<bigint | null> {
+    const session = this.registry.getByViewId(viewId, this.opts.nowFn);
+    if (!session) return null;
+    const target = session.lastTarget;
+    if (target?.hwnd) {
+      try {
+        return BigInt(target.hwnd);
+      } catch {
+        // Malformed pinned hwnd — fall through to title / foreground resolution.
+      }
+    }
+    if (target?.windowTitle) {
+      try {
+        const resolved = await resolveWindowTarget({ windowTitle: target.windowTitle });
+        if (resolved) return resolved.hwnd;
+      } catch {
+        // Resolution failure — fall through to foreground.
+      }
+    }
+    // Bare `desktop_discover()` (no hwnd / no title) → foreground is the target.
     if (!this.opts.getFocusedHwnd) return null;
     try {
       return this.opts.getFocusedHwnd();
