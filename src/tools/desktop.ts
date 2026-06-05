@@ -14,7 +14,7 @@ import {
 } from "../engine/world-graph/session-registry.js";
 import type { CandidateIngress } from "../engine/world-graph/candidate-ingress.js";
 import { createDesktopExecutor, type ExecutorDeps } from "./desktop-executor.js";
-import { resolveWindowTarget } from "./_resolve-window.js";
+import { resolveWindowTarget, findPlainTopLevelWindowByTitle } from "./_resolve-window.js";
 import type { TouchAction, TouchResult } from "../engine/world-graph/guarded-touch.js";
 import { deriveViewConstraints, type ViewConstraints, type EntityCapabilities } from "./desktop-constraints.js";
 import { UIA_BLIND_WARNINGS } from "./desktop-providers/compose-providers.js";
@@ -648,6 +648,19 @@ export class DesktopFacade {
       }
     }
     if (target?.windowTitle) {
+      // `resolveWindowTarget` deliberately returns null for a plain top-level
+      // window (it only special-cases `@active` + dialogs, _resolve-window.ts
+      // Case 3), so a plain title would otherwise fall through to foreground —
+      // defeating the fix (Codex PR #431 round 2 P2). Resolve plain titles via
+      // the top-level-by-title SSOT first (the same predicate discover's title
+      // flow relies on), then fall back to `resolveWindowTarget` for the
+      // `@active` / dialog cases.
+      try {
+        const win = findPlainTopLevelWindowByTitle(target.windowTitle, { excludeMinimized: true });
+        if (win) return typeof win.hwnd === "bigint" ? win.hwnd : BigInt(win.hwnd);
+      } catch {
+        // enum failure — fall through.
+      }
       try {
         const resolved = await resolveWindowTarget({ windowTitle: target.windowTitle });
         if (resolved) return resolved.hwnd;

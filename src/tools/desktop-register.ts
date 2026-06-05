@@ -622,26 +622,35 @@ export const desktopActRawHandler = async (
   let postVerify: { observation: VisualMotionObservation; dirtyRects: Rect[] } | null = null;
   let frameDiffObservation: VisualMotionObservation | undefined;
   if (result.ok && postVerifyEnabled) {
-    if (visualOnly && preFrame !== null && frameDiffHwnd !== null && frameDiffWindowRect !== null) {
-      // Visual-only — frame-diff motion via the existing Stage 4 orchestrator
-      // (caller pre-frame + capturePostFrameUntilStable settle + native SIMD
-      // computeChangeFraction/SSIM). Its background-animation guard degrades to
-      // `indeterminate`, which the gate excludes (so a noisy desktop yields no
-      // spurious roiCapture = F1). `observation.source` becomes `ssim_residual`
-      // (frame-diff family) on this path only; non-visual stays `dxgi_dirty_rect`.
-      frameDiffObservation = await verifyLocalRepaint({
-        hwnd: frameDiffHwnd,
-        hint: {
-          windowRect: frameDiffWindowRect,
-          ...(frameDiffPoint !== null && { point: frameDiffPoint }),
-        },
-        preFrame,
-      });
-      (result as { observation?: VisualMotionObservation }).observation = frameDiffObservation;
+    if (visualOnly) {
+      // Visual-only — frame-diff ONLY. Never fall back to the DXGI verifier:
+      // DXGI is exactly the occlusion-blind / drain-race path this phase replaces,
+      // so a visual-only frame-diff *miss* (capture/hwnd/rect unavailable) must
+      // degrade to no observation — NOT reintroduce F1/F2 via DXGI (Codex PR #431
+      // round 2 P2). With no observation the gate sees `motion=undefined` and
+      // declines (except `returnCapture:"always"`, whose full-window fallback in
+      // buildRoiCapture still applies — a best-effort capture, never DXGI motion).
+      if (preFrame !== null && frameDiffHwnd !== null && frameDiffWindowRect !== null) {
+        // Stage 4 orchestrator: caller pre-frame + capturePostFrameUntilStable
+        // settle + native SIMD computeChangeFraction/SSIM. Its background-animation
+        // guard degrades to `indeterminate`, which the gate excludes (so a noisy
+        // desktop yields no spurious roiCapture = F1). `observation.source` becomes
+        // `ssim_residual` (frame-diff family) on this path only.
+        frameDiffObservation = await verifyLocalRepaint({
+          hwnd: frameDiffHwnd,
+          hint: {
+            windowRect: frameDiffWindowRect,
+            ...(frameDiffPoint !== null && { point: frameDiffPoint }),
+          },
+          preFrame,
+        });
+        (result as { observation?: VisualMotionObservation }).observation = frameDiffObservation;
+      }
+      // else: frame-diff setup missed → degrade silently (no observation, no DXGI).
     } else {
-      // Non-visual-only — existing DXGI Stage 5 path. `dirtyRects` is an internal
-      // ROI-source channel for buildRoiCapture (S3a), kept off the public
-      // `result.observation` telemetry by the split in tryVerifyAnyChange.
+      // Non-visual-only — existing DXGI Stage 5 path (byte-equal). `dirtyRects` is
+      // an internal ROI-source channel for buildRoiCapture (S3a), kept off the
+      // public `result.observation` telemetry by the split in tryVerifyAnyChange.
       postVerify = await tryVerifyAnyChange(facade, input.lease.viewId);
       if (postVerify !== null) {
         (result as { observation?: VisualMotionObservation }).observation = postVerify.observation;
@@ -663,7 +672,11 @@ export const desktopActRawHandler = async (
       frameDiffObservation ?? postVerify?.observation,
       postVerify?.dirtyRects ?? [],
       input.returnCapture,
-      frameDiffObservation !== undefined ? "frame_diff" : "dxgi",
+      // Source is regime-determined: buildRoiCapture's gate only passes for
+      // visual-only targets (the frame-diff regime), so a visual-only capture
+      // is always `frame_diff` — including the `returnCapture:"always"` full-
+      // window fallback when the frame-diff observation was a miss.
+      visualOnly ? "frame_diff" : "dxgi",
     );
     if (roiCapture !== undefined) {
       (result as { roiCapture?: RoiCapture }).roiCapture = roiCapture;
@@ -787,7 +800,11 @@ async function buildRoiCapture(
   });
   if (!gatePassed) return undefined;
 
-  const hwnd = facade.resolveHwndForViewId(viewId);
+  // buildRoiCapture only runs for visual-only targets (the gate above), so the
+  // SoM crop must come from the SAME window the frame-diff motion used — resolve
+  // the target window by title, not foreground, for consistency with
+  // verifyLocalRepaint (Codex PR #431 round 2 P2, same axis as the motion path).
+  const hwnd = await facade.resolveTargetHwndForFrameDiff(viewId);
   if (hwnd === null) return undefined;
   const windowRect = getWindowRectByHwnd(hwnd);
   if (windowRect === null || windowRect.width <= 0 || windowRect.height <= 0) {
