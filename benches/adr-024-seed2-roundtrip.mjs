@@ -275,14 +275,27 @@ console.log(`entities      : ${entC ? entC.mean.toFixed(1) : "—"} preview avg`
 console.log("");
 
 // ─── Acceptance gate ─────────────────────────────────────────────────────────
-// Headed (canvas found): the folded act MUST attach roiCapture, else exit 1.
+// We only reach here in headed mode (the canvas was found; otherwise we degraded
+// to exit 0 above). The fold MUST be exercised AND every folded act MUST attach
+// roiCapture — a partial pass (some iters missing it) is a flaky regression, and
+// zero folded samples means the fold was never validated (Codex PR #434 P2).
 let exitCode = 0;
-if (folded.total.length > 0 && folded.present === 0) {
-  console.log("# ACCEPTANCE FAIL: folded act produced NO roiCapture on any iteration.");
-  console.log("#   Expected the visual-only frame-diff to fire and bundle the SoM crop.");
+if (folded.total.length === 0) {
+  console.log("# ACCEPTANCE FAIL: no folded samples collected — the fold was never exercised.");
+  console.log("#   Pass >= 2 iterations (folded runs on odd iters) on a real GUI session.");
+  exitCode = 1;
+} else if (folded.present !== folded.total.length) {
+  console.log(
+    `# ACCEPTANCE FAIL: only ${folded.present}/${folded.total.length} folded acts attached roiCapture.`,
+  );
+  console.log("#   On this fixture EVERY folded act must bundle roiCapture (each click toggles a");
+  console.log("#   localized bar → a visible change). A miss means the frame-diff fold is flaky.");
   exitCode = 1;
 } else {
-  console.log("# ACCEPTANCE: folded act bundles roiCapture (state+screenshot round-trips eliminated).");
+  console.log(
+    `# ACCEPTANCE: all ${folded.present}/${folded.total.length} folded acts bundled roiCapture ` +
+    "(state+screenshot round-trips eliminated).",
+  );
 }
 
 await cleanupAndExit(exitCode);
