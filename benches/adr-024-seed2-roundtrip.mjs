@@ -181,10 +181,15 @@ const folded = { total: [], act: [], bytes: [], somBytes: [], entityCounts: [], 
 async function leaseFor(label) {
   const d = await discoverCanvas();
   if (!d) return null;
-  const ent =
-    d.entities.find((e) => e.label === label && e.sources?.includes("ocr") && e.primaryAction === "click") ??
-    d.entities.find((e) => e.sources?.includes("ocr") && e.primaryAction === "click");
-  return ent ?? null;
+  // Match the requested anchor by label ONLY. Do NOT fall back to "the first OCR
+  // entity" — the window title bar is also OCR'd, and clicking it produces no
+  // content change (no_change → no roiCapture), which would spuriously fail the
+  // acceptance gate. A transient discover miss → skip the iter instead.
+  return (
+    d.entities.find(
+      (e) => e.label === label && e.sources?.includes("ocr") && e.primaryAction === "click",
+    ) ?? null
+  );
 }
 
 for (let i = 0; i < iterations; i++) {
