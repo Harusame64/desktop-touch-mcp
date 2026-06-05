@@ -6,7 +6,12 @@
  * Only changed layers are re-sent on subsequent captures (MPEG P-frame style).
  */
 
-import { encodeToWebPFromRaw, dHashFromRaw, captureWindowRawWithFallback } from "./image.js";
+import {
+  encodeToWebPFromRaw,
+  dHashFromRaw,
+  captureWindowRawWithFallback,
+  type CaptureSource,
+} from "./image.js";
 import { nativeEngine } from "./native-engine.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -132,7 +137,7 @@ async function captureWindowRaw(
   hwnd: bigint,
   region: { x: number; y: number; width: number; height: number },
 ): Promise<{
-  rawPixels: Buffer; channels: 3 | 4; width: number; height: number;
+  rawPixels: Buffer; channels: 3 | 4; width: number; height: number; source: CaptureSource;
 } | null> {
   try {
     // PrintWindow primary + BitBlt fallback. Each captured layer is now sourced
@@ -144,6 +149,11 @@ async function captureWindowRaw(
       channels: raw.channels,
       width: raw.width,
       height: raw.height,
+      // ADR-024 Seed-2 S5c-1b — surface the capture provenance so the frame-diff
+      // ROI path can tell a true-PrintWindow (occlusion-immune) frame from a
+      // BitBlt fallback (occlusion-inclusive screen grab) and demote the ROI to
+      // full-window when immunity is unavailable (P1-1).
+      source: raw.source,
     };
   } catch {
     return null;
@@ -477,6 +487,17 @@ export type RawFrame = {
   width: number;
   height: number;
   channels: 3 | 4;
+  /**
+   * ADR-024 Seed-2 S5c-1b — which capture backend produced this frame.
+   * `"printwindow"` = the window's own pixels (occlusion-immune); a
+   * `"bitblt-fallback"` is a screen-rect grab (occlusion-inclusive) that
+   * PrintWindow degraded to on an all-black frame. Optional + additive:
+   * existing Stage 2a/4 consumers (`_mouse-verify.ts`, `keyboard.ts`,
+   * `capturePostFrameUntilStable`, the scroll smart-diff path) ignore it and
+   * stay byte-equal. Only the visual-only frame-diff ROI path reads it, to
+   * demote the ROI to full-window when immunity is unavailable (P1-1).
+   */
+  source?: CaptureSource;
 };
 
 /**

@@ -24,6 +24,7 @@
  */
 
 import type { VisualMotionObservation } from "../tools/_input-pipeline.js";
+import type { Rect } from "./vision-gpu/types.js";
 import { nativeEngine } from "./native-engine.js";
 import {
   capturePostFrameUntilStable,
@@ -248,6 +249,20 @@ export async function verifyLocalRepaint(opts: {
    *  / `unverifiable` and `keyboard.ts` BG verify reaching its terminal
    *  `unverifiable + read_back_unsupported` sink). */
   preFrame: RawFrame | null;
+  /**
+   * ADR-024 Seed-2 S5c-1b — opt-in: when `true`, attach the **window-relative**
+   * changed-region bounding box to the returned observation as `roiBbox` on the
+   * positive `local_repaint` path. Default `false` — every existing caller
+   * (`_mouse-verify.ts`, `keyboard.ts`, bench, tests) leaves it off and their
+   * observation stays byte-equal (additive optional field). Only the
+   * visual-only `desktop_act` ROI path passes `true`; the act handler then
+   * splits `roiBbox` off before serializing `result.observation` so it never
+   * reaches the public Stage 5 telemetry envelope. The bbox is emitted ONLY
+   * when the capture was occlusion-immune (pre AND post both PrintWindow, not
+   * the BitBlt fallback) — otherwise the consumer falls back to full-window
+   * (P1-1).
+   */
+  includeRoiBbox?: boolean;
 }): Promise<VisualMotionObservation> {
   const startMs = performance.now();
 
@@ -416,6 +431,44 @@ export async function verifyLocalRepaint(opts: {
   if (fractionChanged >= RESIDUAL_DELIVERED_FRACTION) {
     // Positive delivery — local_repaint observed.
     // P15 decision lock default (a): expose meanSsim on the envelope.
+    //
+    // ADR-024 Seed-2 S5c-1b — when the caller opted in (`includeRoiBbox`),
+    // attach the window-relative changed-region bbox so the visual-only ROI
+    // path can crop to the change instead of the whole window. Two guards:
+    //
+    //  1. **Occlusion immunity (P1-1)**: emit the bbox ONLY when BOTH the pre
+    //     and the final post frame came from PrintWindow (the window's own
+    //     pixels). A BitBlt fallback grabs the screen rect (occlusion-
+    //     inclusive), so its bbox could lock onto background motion — demote to
+    //     full-window by leaving `roiBbox` absent. `source === undefined`
+    //     (capture provenance unavailable) is treated conservatively as
+    //     non-immune. NB: a BitBlt frame also changes the buffer dimensions
+    //     (device vs logical px), so a pre/post source mismatch is already
+    //     caught by the parity guards above (→ `indeterminate`, never reaching
+    //     here) — this check is the explicit, defence-in-depth statement of the
+    //     same invariant, so "occlusion-immune yet roiBbox absent" via the
+    //     parity path is expected, not a bug.
+    //  2. **bbox present**: `ssim.bbox` is omitted when no window crossed the
+    //     residual threshold (cannot happen on this `>= 0.05` branch) or on the
+    //     graceful-degrade single-window path.
+    //
+    // Coordinate basis: `compute_ssim_residual` ran with `region = null` over
+    // the **already-cropped** `localRect` buffer, so `ssim.bbox` is crop-local
+    // (origin = localRect top-left). `localRect` is itself window-relative
+    // (rect minus windowRect origin, see Step 2.5), so adding `localRect.{x,y}`
+    // lifts the bbox to window-relative coordinates — exactly the basis
+    // `RoiCapture.roi` expects.
+    const occlusionImmune =
+      opts.preFrame.source === "printwindow" && finalStable.source === "printwindow";
+    const roiBbox: Rect | undefined =
+      opts.includeRoiBbox === true && occlusionImmune && ssim.bbox != null
+        ? {
+            x: localRect.x + ssim.bbox.x,
+            y: localRect.y + ssim.bbox.y,
+            width: ssim.bbox.width,
+            height: ssim.bbox.height,
+          }
+        : undefined;
     return {
       motion: "local_repaint",
       source: "ssim_residual",
@@ -426,6 +479,7 @@ export async function verifyLocalRepaint(opts: {
         }),
         meanSsim,
       },
+      ...(roiBbox !== undefined && { roiBbox }),
       framesSampled,
       totalElapsedMs,
     };

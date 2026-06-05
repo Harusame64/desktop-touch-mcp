@@ -68,7 +68,7 @@ import { verifyLocalRepaint } from "../engine/local-repaint.js";
 import { disposeSharedDirtyRectBroker } from "../engine/dxgi-broker.js";
 import type { VisualMotionObservation } from "./_input-pipeline.js";
 import { shouldReturnRoiCapture, type ReturnCaptureMode } from "./_roi-capture-gate.js";
-import { filterDirtyRectsToWindow, boundingBox } from "./_roi-region.js";
+import { filterDirtyRectsToWindow, boundingBox, clampRectToWindow } from "./_roi-region.js";
 import { buildRoiPreviewEntities } from "./_roi-preview.js";
 import { runSomPipeline } from "../engine/ocr-bridge.js";
 import type { Rect } from "../engine/vision-gpu/types.js";
@@ -621,6 +621,11 @@ export const desktopActRawHandler = async (
 
   let postVerify: { observation: VisualMotionObservation; dirtyRects: Rect[] } | null = null;
   let frameDiffObservation: VisualMotionObservation | undefined;
+  // ADR-024 Seed-2 S5c-1b — the window-relative changed-region bbox from the
+  // frame-diff, split off the observation here so it never reaches the public
+  // `result.observation` telemetry (R2-P1) and is instead threaded into
+  // buildRoiCapture as the localized ROI.
+  let frameDiffRoi: Rect | undefined;
   if (result.ok && postVerifyEnabled) {
     if (visualOnly) {
       // Visual-only — frame-diff ONLY. Never fall back to the DXGI verifier:
@@ -636,15 +641,26 @@ export const desktopActRawHandler = async (
         // guard degrades to `indeterminate`, which the gate excludes (so a noisy
         // desktop yields no spurious roiCapture = F1). `observation.source` becomes
         // `ssim_residual` (frame-diff family) on this path only.
-        frameDiffObservation = await verifyLocalRepaint({
+        // S5c-1b — opt into the ROI bbox surface so the SAME frame-diff that
+        // produces `motion` also yields the localized changed-region rect.
+        const frameDiffObs = await verifyLocalRepaint({
           hwnd: frameDiffHwnd,
           hint: {
             windowRect: frameDiffWindowRect,
             ...(frameDiffPoint !== null && { point: frameDiffPoint }),
           },
           preFrame,
+          includeRoiBbox: true,
         });
-        (result as { observation?: VisualMotionObservation }).observation = frameDiffObservation;
+        // Split `roiBbox` off BEFORE assigning `result.observation` (P2-2):
+        // `roiBbox` is an internal ROI-source channel, not public Stage 5
+        // telemetry — the same split pattern as `tryVerifyAnyChange`'s
+        // `dirtyRects`. The destructured `observation` has no `roiBbox` key, so
+        // the serialized envelope stays byte-equal with the pre-S5c-1b shape.
+        const { roiBbox, ...observation } = frameDiffObs;
+        frameDiffObservation = observation;
+        frameDiffRoi = roiBbox;
+        (result as { observation?: VisualMotionObservation }).observation = observation;
       }
       // else: frame-diff setup missed → degrade silently (no observation, no DXGI).
     } else {
@@ -677,6 +693,10 @@ export const desktopActRawHandler = async (
       // is always `frame_diff` — including the `returnCapture:"always"` full-
       // window fallback when the frame-diff observation was a miss.
       visualOnly ? "frame_diff" : "dxgi",
+      // S5c-1b — the localized changed-region ROI from the frame-diff (when the
+      // capture was occlusion-immune). `undefined` → buildRoiCapture falls back
+      // to the DXGI dirty-rect bbox (legacy path) or the full window.
+      frameDiffRoi,
     );
     if (roiCapture !== undefined) {
       (result as { roiCapture?: RoiCapture }).roiCapture = roiCapture;
@@ -788,9 +808,13 @@ async function buildRoiCapture(
   dirtyRects: Rect[],
   returnCapture: ReturnCaptureMode | undefined,
   // S5c-1a — ROI provenance label for the assembled capture. `frame_diff` on the
-  // visual-only PrintWindow path (dirtyRects empty → full-window ROI until the
-  // S5c-1b bbox lands); `dxgi` on the legacy dirty-rect path.
+  // visual-only PrintWindow path; `dxgi` on the legacy dirty-rect path.
   source: RoiCapture["source"],
+  // S5c-1b — the localized changed-region ROI from the frame-diff (window-
+  // relative), present only when the visual-only capture was occlusion-immune.
+  // When present it takes precedence over the DXGI dirty-rect bbox and the
+  // full-window fallback (P1-2). `undefined` → legacy dirty-rect / full-window.
+  frameDiffRoi?: Rect,
 ): Promise<RoiCapture | undefined> {
   const gatePassed = shouldReturnRoiCapture({
     ok: true, // only called on the success path
@@ -811,15 +835,23 @@ async function buildRoiCapture(
     return undefined;
   }
 
-  // S3b — per-output dirty rects → window-relative; S5 — reduce to one ROI.
+  // ROI resolution priority (S5c-1b P1-2):
+  //   1. `frameDiffRoi` — the localized changed-region bbox from an occlusion-
+  //      immune frame-diff (visual-only PrintWindow path). Already window-
+  //      relative; clamped to the window rect below to stay in bounds.
+  //   2. DXGI dirty-rect bbox — `filterDirtyRectsToWindow` → bounding box
+  //      (legacy dxgi-source path; `dirtyRects` is empty on the frame-diff
+  //      path, so this only fires for the dxgi regime).
+  //   3. Full window — the gate already passed, so we owe a capture even when
+  //      no localized region is available: `returnCapture: "always"` on a
+  //      no-change act, or a frame-diff that was not occlusion-immune
+  //      (BitBlt-fallback demotion, P1-1), or a no-change/indeterminate motion.
   const windowRel = filterDirtyRectsToWindow(dirtyRects, windowRect);
-  // Fall back to the whole window (window-relative full rect) when no dirty
-  // region intersects it. The gate already passed, so we owe a capture — this
-  // happens for `returnCapture: "always"` on a no-change act, or when motion
-  // was reported by a non-DXGI source (SSIM translation/local_repaint) that
-  // leaves `dirtyRects` empty (Codex PR #429 P2: honor `always`).
+  const fullWindow = { x: 0, y: 0, width: windowRect.width, height: windowRect.height };
   const roi =
-    boundingBox(windowRel) ?? { x: 0, y: 0, width: windowRect.width, height: windowRect.height };
+    (frameDiffRoi !== undefined ? clampRectToWindow(frameDiffRoi, windowRect) : undefined) ??
+    boundingBox(windowRel) ??
+    fullWindow;
 
   try {
     // S4 — OCR only the ROI crop. hwnd is provided so the empty windowTitle is
