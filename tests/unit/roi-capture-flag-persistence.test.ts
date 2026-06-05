@@ -97,3 +97,36 @@ describe("ADR-024 Seed-2 — visual-only flag persistence (discover → act)", (
     expect(facade.resolveVisualOnlyForViewId(v2)).toBe(false);
   });
 });
+
+// ADR-024 Seed-2 S5c-1a — the visual-only frame-diff motion verdict
+// (verifyLocalRepaint) needs a focal `hint.point` so a small localized repaint
+// is not diluted across the whole window (→ false `indeterminate`). The act
+// wrapper uses the clicked entity's screen-absolute centre, resolved from the
+// discover snapshot by lease (viewId + entityId).
+describe("ADR-024 Seed-2 S5c-1a — resolveEntityCenterForViewId (frame-diff focal point)", () => {
+  const discoverEntity = async (facade: DesktopFacade) => {
+    const out = await facade.see({ target: { windowTitle: "Canvas" } });
+    return out.entities[0];
+  };
+
+  it("returns the screen-absolute centre of the clicked entity's rect", async () => {
+    // cand("Foo") rect = { x: 10, y: 20, width: 80, height: 30 } → centre (50, 35).
+    const facade = facadeWith(["uia_blind_single_pane"]);
+    const ent = await discoverEntity(facade);
+    expect(facade.resolveEntityCenterForViewId(ent.lease.viewId, ent.entityId)).toEqual({
+      x: 50,
+      y: 35,
+    });
+  });
+
+  it("returns null for an unknown viewId (no session)", () => {
+    const facade = new DesktopFacade(() => []);
+    expect(facade.resolveEntityCenterForViewId("never-issued-view-id", "ent-x")).toBeNull();
+  });
+
+  it("returns null for an unknown entityId within a known view", async () => {
+    const facade = facadeWith(["uia_blind_single_pane"]);
+    const ent = await discoverEntity(facade);
+    expect(facade.resolveEntityCenterForViewId(ent.lease.viewId, "ent-does-not-exist")).toBeNull();
+  });
+});

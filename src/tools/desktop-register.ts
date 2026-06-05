@@ -63,6 +63,8 @@ import {
 } from "../engine/win32.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 import { verifyAnyChange } from "../engine/any-change.js";
+import { captureFrame, type RawFrame } from "../engine/layer-buffer.js";
+import { verifyLocalRepaint } from "../engine/local-repaint.js";
 import { disposeSharedDirtyRectBroker } from "../engine/dxgi-broker.js";
 import type { VisualMotionObservation } from "./_input-pipeline.js";
 import { shouldReturnRoiCapture, type ReturnCaptureMode } from "./_roi-capture-gate.js";
@@ -571,6 +573,43 @@ export const desktopActRawHandler = async (
     return failCode("InvalidArgs", validationError, { suggest: getSuggestsForCode("InvalidArgs") });
   }
   const facade = getDesktopFacade();
+
+  // ADR-024 Seed-2 S5c-1a — for visual-only targets, derive the post-action
+  // motion verdict (and, via buildRoiCapture, the ROI) from a true window
+  // frame-diff rather than DXGI dirty rects. A PrintWindow pre/post diff captures
+  // only the target window's own pixels (occlusion-immune) and never touches the
+  // DXGI dirty-rect broker, so it sidesteps both dogfood defects: F1 (occlusion-
+  // blind geometry filter) and F2 (the same-process DirtyRectRouter draining the
+  // frame before the act polls). See adr-024-seed2-dogfood-findings. The pre-
+  // action frame MUST be captured BEFORE the touch, so resolve the visual-only
+  // flag + window geometry up front. Non-visual-only targets are untouched: they
+  // keep the DXGI tryVerifyAnyChange path and their `result.observation` stays
+  // byte-equal (ADR-019 Stage 5 telemetry contract; S5c review R2-P1).
+  const postVerifyEnabled = process.env["DESKTOP_TOUCH_STAGE5_DXGI"] !== "0";
+  const visualOnly = facade.resolveVisualOnlyForViewId(input.lease.viewId);
+  let preFrame: RawFrame | null = null;
+  let frameDiffHwnd: bigint | null = null;
+  let frameDiffWindowRect: { x: number; y: number; width: number; height: number } | null = null;
+  let frameDiffPoint: { x: number; y: number } | null = null;
+  if (postVerifyEnabled && visualOnly) {
+    frameDiffHwnd = facade.resolveHwndForViewId(input.lease.viewId);
+    if (frameDiffHwnd !== null) {
+      const wr = getWindowRectByHwnd(frameDiffHwnd);
+      if (wr !== null && wr.width > 0 && wr.height > 0) {
+        frameDiffWindowRect = wr;
+        // Focal point for the frame-diff = the clicked entity's centre, so the
+        // diff clips to a padded region around the expected change rather than
+        // diluting a small localized repaint across the whole window (→ false
+        // `indeterminate`). Resolved before the touch from the discover snapshot.
+        frameDiffPoint = facade.resolveEntityCenterForViewId(
+          input.lease.viewId,
+          input.lease.entityId,
+        );
+        preFrame = await captureFrame(frameDiffHwnd, wr);
+      }
+    }
+  }
+
   const result = await facade.touch({
     lease: input.lease,
     action: input.action,
@@ -578,30 +617,50 @@ export const desktopActRawHandler = async (
   });
 
   let postVerify: { observation: VisualMotionObservation; dirtyRects: Rect[] } | null = null;
-  if (result.ok && process.env["DESKTOP_TOUCH_STAGE5_DXGI"] !== "0") {
-    postVerify = await tryVerifyAnyChange(facade, input.lease.viewId);
-    if (postVerify !== null) {
-      // Attach the motion verdict to the serialized response. `dirtyRects` is an
-      // internal ROI-source channel for buildRoiCapture (S3a) — it is NOT part
-      // of the public observation telemetry, so the split in tryVerifyAnyChange
-      // keeps it off `result.observation`.
-      (result as { observation?: VisualMotionObservation }).observation = postVerify.observation;
+  let frameDiffObservation: VisualMotionObservation | undefined;
+  if (result.ok && postVerifyEnabled) {
+    if (visualOnly && preFrame !== null && frameDiffHwnd !== null && frameDiffWindowRect !== null) {
+      // Visual-only — frame-diff motion via the existing Stage 4 orchestrator
+      // (caller pre-frame + capturePostFrameUntilStable settle + native SIMD
+      // computeChangeFraction/SSIM). Its background-animation guard degrades to
+      // `indeterminate`, which the gate excludes (so a noisy desktop yields no
+      // spurious roiCapture = F1). `observation.source` becomes `ssim_residual`
+      // (frame-diff family) on this path only; non-visual stays `dxgi_dirty_rect`.
+      frameDiffObservation = await verifyLocalRepaint({
+        hwnd: frameDiffHwnd,
+        hint: {
+          windowRect: frameDiffWindowRect,
+          ...(frameDiffPoint !== null && { point: frameDiffPoint }),
+        },
+        preFrame,
+      });
+      (result as { observation?: VisualMotionObservation }).observation = frameDiffObservation;
+    } else {
+      // Non-visual-only — existing DXGI Stage 5 path. `dirtyRects` is an internal
+      // ROI-source channel for buildRoiCapture (S3a), kept off the public
+      // `result.observation` telemetry by the split in tryVerifyAnyChange.
+      postVerify = await tryVerifyAnyChange(facade, input.lease.viewId);
+      if (postVerify !== null) {
+        (result as { observation?: VisualMotionObservation }).observation = postVerify.observation;
+      }
     }
   }
 
   // ADR-024 Seed-2 S5 — fold the post-action ROI capture into the act response
   // for visual-only targets. `buildRoiCapture` gates on the visual-only regime +
-  // motion verdict, then turns the S3a dirty rects into a window-relative ROI
-  // (S3b), OCRs only that region (S4), and assembles `{roi, somImage, entities}`.
+  // motion verdict, then assembles `{roi, somImage, entities, source}`. S5c-1a:
+  // on the frame-diff path the ROI is provisionally the whole window (empty
+  // dirtyRects → full-window fallback); the localized bbox lands in S5c-1b.
   // Absent (gate declines / no change / no ROI) → response stays bit-equal with
   // the pre-Seed-2 shape (additive — existing destructures unaffected).
   if (result.ok) {
     const roiCapture = await buildRoiCapture(
       facade,
       input.lease.viewId,
-      postVerify?.observation,
+      frameDiffObservation ?? postVerify?.observation,
       postVerify?.dirtyRects ?? [],
       input.returnCapture,
+      frameDiffObservation !== undefined ? "frame_diff" : "dxgi",
     );
     if (roiCapture !== undefined) {
       (result as { roiCapture?: RoiCapture }).roiCapture = roiCapture;
@@ -712,6 +771,10 @@ async function buildRoiCapture(
   observation: VisualMotionObservation | undefined,
   dirtyRects: Rect[],
   returnCapture: ReturnCaptureMode | undefined,
+  // S5c-1a — ROI provenance label for the assembled capture. `frame_diff` on the
+  // visual-only PrintWindow path (dirtyRects empty → full-window ROI until the
+  // S5c-1b bbox lands); `dxgi` on the legacy dirty-rect path.
+  source: RoiCapture["source"],
 ): Promise<RoiCapture | undefined> {
   const gatePassed = shouldReturnRoiCapture({
     ok: true, // only called on the success path
@@ -752,7 +815,7 @@ async function buildRoiCapture(
       facade.getDiscoverEntitiesForViewId(viewId),
     );
 
-    return { roi, somImage: som.somImage.base64, entities, source: "dxgi" };
+    return { roi, somImage: som.somImage.base64, entities, source };
   } catch (err) {
     // OCR is best-effort; never break the act envelope on a pipeline failure.
     console.error(

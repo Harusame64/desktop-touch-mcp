@@ -645,6 +645,27 @@ export class DesktopFacade {
       .map((e) => ({ rect: e.rect, label: e.label ?? "" }));
   }
 
+  /**
+   * ADR-024 Seed-2 S5c-1a — screen-absolute centre of the entity a lease points
+   * at, used as the focal `hint.point` for the visual-only frame-diff motion
+   * verdict (`verifyLocalRepaint`). Without a focal point the diff runs over the
+   * whole window, so a small localized change (a click that repaints ~few % of
+   * the window) is diluted below the SSIM delivery threshold and degrades to
+   * `indeterminate`. The clicked entity's centre is where the change is expected,
+   * so a padded region around it captures the repaint. Returns `null` when the
+   * session/entity is gone or the entity carries no rect.
+   */
+  resolveEntityCenterForViewId(viewId: string, entityId: string): { x: number; y: number } | null {
+    const session = this.registry.getByViewId(viewId, this.opts.nowFn);
+    if (!session) return null;
+    const entity = session.entities.find((e) => e.entityId === entityId);
+    if (!entity?.rect) return null;
+    return {
+      x: Math.round(entity.rect.x + entity.rect.width / 2),
+      y: Math.round(entity.rect.y + entity.rect.height / 2),
+    };
+  }
+
   validateLeaseOnly(lease: EntityLease): LeaseValidationResult {
     const session = this.registry.getByViewId(lease.viewId, this.opts.nowFn);
     if (!session) {
