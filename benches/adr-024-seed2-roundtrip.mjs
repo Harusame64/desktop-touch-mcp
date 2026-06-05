@@ -105,13 +105,22 @@ const closeFixture = () => {
     fixtureChild = null;
   }
 };
+// Definitive leak guard (Codex PR #434 P2): kill the GUI fixture on ANY process
+// exit — including paths that bypass cleanupAndExit, e.g. an uncaught rejection
+// from `client.connect` / a `callTool` (which terminates Node with a non-zero
+// exit → this handler still fires). Without it a failed run could leave a
+// TopMost WinForms window on screen. `child.kill` is synchronous, safe in 'exit'.
+process.on("exit", () => { try { fixtureChild?.kill(); } catch { /* gone */ } });
 
 // ─── MCP stdio client ────────────────────────────────────────────────────────
 const transport = new StdioClientTransport({
   command: process.execPath,
   args: [serverPath],
   env: { ...process.env, DESKTOP_TOUCH_AUTO_GUARD: "0" },
-  stderr: "pipe",
+  // "ignore" (not "pipe"): the bench never reads the server's stderr, and an
+  // unread "pipe" can fill during headed runs (native/UIA/OCR diagnostics) and
+  // block the MCP child mid-call → bench hang (Codex PR #434 P2).
+  stderr: "ignore",
 });
 const client = new Client({ name: "s6-roundtrip-bench", version: "0.0.0" }, { capabilities: {} });
 await client.connect(transport);
