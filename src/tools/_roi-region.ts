@@ -129,6 +129,42 @@ export function clampRectToWindow(roi: Rect, windowRect: Rect): Rect | null {
 }
 
 /**
+ * ADR-024 Seed-2 S5b — symmetric inflate of a rect by `margin` on every side.
+ * Used to pad the fold's roiCapture OCR crop (see {@link resolveFoldOcrRoi}).
+ */
+export function inflateRect(rect: Rect, margin: number): Rect {
+  return {
+    x: rect.x - margin,
+    y: rect.y - margin,
+    width: rect.width + margin * 2,
+    height: rect.height + margin * 2,
+  };
+}
+
+/**
+ * ADR-024 Seed-2 S5b — the window-relative crop the fold's roiCapture OCR runs
+ * on. The crop is **padded** around the frame-diff change bbox: Windows OCR's
+ * line segmentation fails on a crop ≈ the text-line height (no vertical
+ * context), returning 0 elements where a full-window OCR finds the same text
+ * (verified end-to-end — Opus S5b-2 root-cause). The margin gives that context:
+ * `max(24px, ceil(height * 0.5))` per side, then clamp to the window.
+ *
+ * Note: this ROI feeds ONLY the visual roiCapture crop, NOT the semantic diff.
+ * The diff baseline carries the discover full-window entities forward (so the
+ * touched entity keeps its entityId — R1), because ROI-crop OCR is not a
+ * reliable substitute for full-window OCR.
+ *
+ * `roiBbox` is window-relative (from `verifyLocalRepaint`); `undefined` (miss /
+ * BitBlt demotion / no_change) → the whole window.
+ */
+export function resolveFoldOcrRoi(roiBbox: Rect | undefined, windowRect: Rect): Rect {
+  const fullWindow: Rect = { x: 0, y: 0, width: windowRect.width, height: windowRect.height };
+  if (roiBbox === undefined) return fullWindow;
+  const margin = Math.max(24, Math.ceil(roiBbox.height * 0.5));
+  return clampRectToWindow(inflateRect(roiBbox, margin), windowRect) ?? fullWindow;
+}
+
+/**
  * ADR-024 Seed-2 S5 — intersection-over-union of two rects.
  *
  * Used to dedup the post-action ROI-OCR preview against the entities the most

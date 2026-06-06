@@ -16,6 +16,8 @@ import {
   boundingBox,
   rectIoU,
   clampRectToWindow,
+  resolveFoldOcrRoi,
+  inflateRect,
 } from "../../src/tools/_roi-region.js";
 
 // Window at a non-zero screen origin so the relative translation is observable.
@@ -258,5 +260,44 @@ describe("clampRectToWindow (S5c-1b frame-diff ROI bounds guard)", () => {
     const roi = { x: 180, y: 130, width: 100, height: 100 };
     clampRectToWindow(roi, WIN);
     expect(roi).toEqual({ x: 180, y: 130, width: 100, height: 100 });
+  });
+});
+
+describe("inflateRect (S5b — symmetric pad)", () => {
+  it("grows the rect by `margin` on every side", () => {
+    expect(inflateRect({ x: 50, y: 60, width: 100, height: 80 }, 40)).toEqual({
+      x: 10, y: 20, width: 180, height: 160,
+    });
+  });
+});
+
+describe("resolveFoldOcrRoi (S5b — padded roiCapture OCR crop)", () => {
+  const WIN = { x: 100, y: 200, width: 800, height: 600 };
+
+  it("no bbox (miss / no_change / demote) → the whole window", () => {
+    expect(resolveFoldOcrRoi(undefined, WIN)).toEqual({ x: 0, y: 0, width: 800, height: 600 });
+  });
+
+  it("pads the change bbox by max(24, ceil(height*0.5)) so WinRT OCR has line context", () => {
+    // height 80 → margin = max(24, 40) = 40. {50,60,100,80} inflate 40 → {10,20,180,160}.
+    expect(resolveFoldOcrRoi({ x: 50, y: 60, width: 100, height: 80 }, WIN)).toEqual({
+      x: 10, y: 20, width: 180, height: 160,
+    });
+  });
+
+  it("uses the 24px floor for short text (height*0.5 < 24)", () => {
+    // height 20 → margin = max(24, 10) = 24. {50,60,100,20} inflate 24 → {26,36,148,68}.
+    expect(resolveFoldOcrRoi({ x: 50, y: 60, width: 100, height: 20 }, WIN)).toEqual({
+      x: 26, y: 36, width: 148, height: 68,
+    });
+  });
+
+  it("clamps the padded crop to the window bounds", () => {
+    // bbox flush against the right/bottom edge → padding spills → clamp.
+    const roi = resolveFoldOcrRoi({ x: 760, y: 560, width: 40, height: 40 }, WIN);
+    expect(roi.x).toBeGreaterThanOrEqual(0);
+    expect(roi.y).toBeGreaterThanOrEqual(0);
+    expect(roi.x + roi.width).toBeLessThanOrEqual(800);
+    expect(roi.y + roi.height).toBeLessThanOrEqual(600);
   });
 });

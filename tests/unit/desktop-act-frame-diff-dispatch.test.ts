@@ -105,8 +105,44 @@ function spyFacadeVisualOnly(opts: {
   return facade;
 }
 
-describe("desktop_act frame-diff dispatch (S5c-2 handler-level)", () => {
+/**
+ * Configure the facade for the S5b-2 FOLD path. The `touch` spy SIMULATES the
+ * loop: when a `postSnapshot` closure is supplied it invokes it (so the fold's
+ * single ROI-OCR actually runs through the mocked `runSomPipeline` /
+ * `verifyLocalRepaint`) and surfaces the returned `roiMaterial`, exactly as
+ * `GuardedTouchLoop.touch` does. Returns the facade so callers can read the
+ * `touch` spy's call args (to assert whether a closure was passed = fold on/off).
+ */
+function spyFacadeFold(opts: { hasVisualGpu?: boolean }) {
+  const facade = getDesktopFacade();
+  vi.spyOn(facade, "touch").mockImplementation(
+    async (input: { postSnapshot?: () => Promise<{ candidates: unknown[]; roiMaterial?: unknown }> }) => {
+      const base = { ok: true as const, executor: "mouse" as const, diff: [], next: "none" as const };
+      if (input.postSnapshot) {
+        const snap = await input.postSnapshot();
+        return { ...base, ...(snap.roiMaterial ? { roiMaterial: snap.roiMaterial } : {}) } as Awaited<ReturnType<typeof facade.touch>>;
+      }
+      return base as Awaited<ReturnType<typeof facade.touch>>;
+    },
+  );
+  vi.spyOn(facade, "resolveVisualOnlyForViewId").mockReturnValue(true);
+  vi.spyOn(facade, "resolveTargetHwndForFrameDiff").mockResolvedValue(123n);
+  vi.spyOn(facade, "resolveEntityCenterForViewId").mockReturnValue({ x: 100, y: 100 });
+  vi.spyOn(facade, "getDiscoverEntitiesForViewId").mockReturnValue([]);
+  vi.spyOn(facade, "resolveHwndForViewId").mockReturnValue(123n);
+  vi.spyOn(facade, "discoverHasVisualGpuForViewId").mockReturnValue(opts.hasVisualGpu ?? false);
+  vi.spyOn(facade, "resolveOcrTargetIdForViewId").mockReturnValue("123");
+  return facade;
+}
+
+// These pin the LEGACY S5 dispatch (handler-direct verifyLocalRepaint +
+// buildRoiCapture). With the S5b-2 fold ON (default) that work moves into the
+// postSnapshot closure invoked by the loop, so these run with the fold OFF —
+// the legacy path is still reachable (flag off / D6 gate fail / fold miss) and
+// must stay byte-equal. The fold dispatch is pinned in the separate describe below.
+describe("desktop_act frame-diff dispatch — legacy S5 path (S5b fold off)", () => {
   let savedStage5: string | undefined;
+  let savedFold: string | undefined;
 
   beforeEach(() => {
     _resetFacadeForTest();
@@ -114,6 +150,9 @@ describe("desktop_act frame-diff dispatch (S5c-2 handler-level)", () => {
     // Post-action verification (frame-diff + DXGI) is gated ON by default.
     savedStage5 = process.env["DESKTOP_TOUCH_STAGE5_DXGI"];
     delete process.env["DESKTOP_TOUCH_STAGE5_DXGI"];
+    // Force the legacy (fold-off) path so the handler-direct dispatch is exercised.
+    savedFold = process.env["DESKTOP_TOUCH_STAGE5B_FOLD_OCR"];
+    process.env["DESKTOP_TOUCH_STAGE5B_FOLD_OCR"] = "0";
     mockGetWindowRect.mockReturnValue(WINDOW_RECT);
     mockRunSomPipeline.mockResolvedValue({ somImage: { base64: "iVBORw0KGgo=" }, elements: [] });
   });
@@ -121,6 +160,8 @@ describe("desktop_act frame-diff dispatch (S5c-2 handler-level)", () => {
   afterEach(() => {
     if (savedStage5 === undefined) delete process.env["DESKTOP_TOUCH_STAGE5_DXGI"];
     else process.env["DESKTOP_TOUCH_STAGE5_DXGI"] = savedStage5;
+    if (savedFold === undefined) delete process.env["DESKTOP_TOUCH_STAGE5B_FOLD_OCR"];
+    else process.env["DESKTOP_TOUCH_STAGE5B_FOLD_OCR"] = savedFold;
     _resetFacadeForTest();
     vi.restoreAllMocks();
   });
@@ -260,4 +301,122 @@ describe("S5c-2 acceptance ③ — no TS per-pixel loop in the ROI path", () => 
       expect(src).not.toMatch(channelIndex);
     });
   }
+});
+
+// ── ADR-024 Seed-2 S5b-2 — the order-trap fold dispatch (default on) ──
+describe("desktop_act frame-diff dispatch — S5b-2 fold (default on)", () => {
+  let savedStage5: string | undefined;
+  let savedFold: string | undefined;
+
+  beforeEach(() => {
+    _resetFacadeForTest();
+    vi.clearAllMocks();
+    savedStage5 = process.env["DESKTOP_TOUCH_STAGE5_DXGI"];
+    delete process.env["DESKTOP_TOUCH_STAGE5_DXGI"];
+    savedFold = process.env["DESKTOP_TOUCH_STAGE5B_FOLD_OCR"];
+    delete process.env["DESKTOP_TOUCH_STAGE5B_FOLD_OCR"]; // fold ON (default)
+    mockGetWindowRect.mockReturnValue(WINDOW_RECT);
+    mockRunSomPipeline.mockResolvedValue({ somImage: { base64: "iVBORw0KGgo=" }, elements: [] });
+    mockCaptureFrame.mockResolvedValue({
+      rawPixels: Buffer.alloc(800 * 600 * 4),
+      width: 800,
+      height: 600,
+      channels: 4,
+      source: "printwindow",
+    });
+  });
+
+  afterEach(() => {
+    if (savedStage5 === undefined) delete process.env["DESKTOP_TOUCH_STAGE5_DXGI"];
+    else process.env["DESKTOP_TOUCH_STAGE5_DXGI"] = savedStage5;
+    if (savedFold === undefined) delete process.env["DESKTOP_TOUCH_STAGE5B_FOLD_OCR"];
+    else process.env["DESKTOP_TOUCH_STAGE5B_FOLD_OCR"] = savedFold;
+    _resetFacadeForTest();
+    vi.restoreAllMocks();
+  });
+
+  it("order-trap eliminated → ONE OCR (for roiCapture, on the PADDED change region); no DXGI, no second OCR", async () => {
+    spyFacadeFold({});
+    mockVerifyLocalRepaint.mockResolvedValue({
+      motion: "local_repaint",
+      source: "ssim_residual",
+      roiBbox: { x: 50, y: 60, width: 100, height: 80 },
+      framesSampled: 2,
+      totalElapsedMs: 80,
+    });
+
+    const result = await desktopActRawHandler({ lease: FAKE_LEASE, action: "click", returnCapture: "on-change" });
+    const parsed = parse(result.content);
+
+    // Exactly ONE OCR — the roiCapture's. The diff baseline carries the discover
+    // entities forward (no OCR), so there is no second / full-window post OCR.
+    expect(mockRunSomPipeline).toHaveBeenCalledTimes(1);
+    // roiBbox {50,60,100,80} padded by max(24, ceil(80*0.5)=40)=40 → {10,20,180,160}.
+    expect(mockRunSomPipeline.mock.calls[0]![7]).toEqual({ x: 10, y: 20, width: 180, height: 160 });
+    expect(mockVerifyLocalRepaint).toHaveBeenCalledTimes(1);
+    expect(mockVerifyAnyChange).not.toHaveBeenCalled();
+
+    // roiCapture is on the padded ROI; observation lifted, roiBbox stripped.
+    const cap = parsed["roiCapture"] as { roi?: unknown; source?: unknown };
+    expect(cap.roi).toEqual({ x: 10, y: 20, width: 180, height: 160 });
+    expect(cap.source).toBe("frame_diff");
+    const obs = parsed["observation"] as Record<string, unknown>;
+    expect(obs["motion"]).toBe("local_repaint");
+    expect("roiBbox" in obs).toBe(false);
+  });
+
+  it("D6 gate — discover has visual_gpu → fold disabled, touch called WITHOUT a postSnapshot closure (S5 legacy path)", async () => {
+    const facade = spyFacadeFold({ hasVisualGpu: true });
+    mockVerifyLocalRepaint.mockResolvedValue({
+      motion: "local_repaint",
+      source: "ssim_residual",
+      roiBbox: { x: 50, y: 60, width: 100, height: 80 },
+      framesSampled: 2,
+      totalElapsedMs: 80,
+    });
+
+    await desktopActRawHandler({ lease: FAKE_LEASE, action: "click", returnCapture: "on-change" });
+
+    // Fold NOT taken: the loop received no closure → the post OCR runs via the
+    // legacy handler path (every composeCandidates lane preserved).
+    const calls = (facade.touch as unknown as { mock: { calls: Array<[{ postSnapshot?: unknown }]> } }).mock.calls;
+    expect(calls[0]![0].postSnapshot).toBeUndefined();
+  });
+
+  it("returnCapture:'always' on no_change → still folds a FULL-WINDOW roiCapture (single OCR; Codex P2-1)", async () => {
+    spyFacadeFold({});
+    mockVerifyLocalRepaint.mockResolvedValue({
+      motion: "no_change",
+      source: "ssim_residual",
+      framesSampled: 2,
+      totalElapsedMs: 40,
+    }); // no roiBbox
+
+    const result = await desktopActRawHandler({ lease: FAKE_LEASE, action: "click", returnCapture: "always" });
+    const parsed = parse(result.content);
+
+    expect(mockRunSomPipeline).toHaveBeenCalledTimes(1);
+    expect(mockRunSomPipeline.mock.calls[0]![7]).toEqual({ x: 0, y: 0, width: 800, height: 600 }); // full window
+    const cap = parsed["roiCapture"] as { roi?: unknown; source?: unknown };
+    expect(cap.roi).toEqual({ x: 0, y: 0, width: 800, height: 600 });
+    expect(cap.source).toBe("frame_diff");
+  });
+
+  it("returnCapture:'on-change' on no_change → NO OCR at all (diff is carry-forward; gate declines roiCapture)", async () => {
+    spyFacadeFold({});
+    mockVerifyLocalRepaint.mockResolvedValue({
+      motion: "no_change",
+      source: "ssim_residual",
+      framesSampled: 2,
+      totalElapsedMs: 40,
+    });
+
+    const result = await desktopActRawHandler({ lease: FAKE_LEASE, action: "click", returnCapture: "on-change" });
+    const parsed = parse(result.content);
+
+    // The diff baseline is carry-forward (no OCR), and the gate declines the
+    // roiCapture (no change, not "always") → the fold runs ZERO OCRs here.
+    expect(mockRunSomPipeline).not.toHaveBeenCalled();
+    expect(parsed["roiCapture"]).toBeUndefined();
+  });
 });

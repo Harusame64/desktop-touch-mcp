@@ -83,6 +83,14 @@ describe.runIf(IS_HEADED && canvas !== null)("desktop_act roiCapture (S6 headed 
     const parsed = parseHandler(result.content);
     expect(parsed["ok"]).toBe(true);
 
+    // ADR-024 S5b R1 (entityId stability, end-to-end) — the fold re-OCRs the ROI
+    // and feeds those candidates to the diff. The clicked OCR anchor's text is
+    // stable (only the bar below it toggles), so the touched entity must survive
+    // with the SAME entityId the full-window discover OCR minted — i.e. it must
+    // NOT read as `entity_disappeared`. A target-id / snap mismatch in
+    // somElementsToCandidates would surface here as a spurious disappearance.
+    expect(parsed["diff"] as string[]).not.toContain("entity_disappeared");
+
     const cap = parsed["roiCapture"] as
       | { roi?: { width: number; height: number }; somImage?: string; entities?: unknown[]; source?: string }
       | undefined;

@@ -38,7 +38,7 @@ import type { NativeLeaseTokenSummary } from "../engine/native-types.js";
 import type { ToolResult } from "./_types.js";
 import { Err } from "../types/result.js";
 import { ExecutorFailedError } from "../errors/typed-errors.js";
-import type { TouchAction, RoiCapture } from "../engine/world-graph/guarded-touch.js";
+import type { TouchAction, RoiCapture, RoiCaptureMaterial } from "../engine/world-graph/guarded-touch.js";
 import {
   SnapshotIngress,
   combineEventSources,
@@ -68,10 +68,10 @@ import { verifyLocalRepaint } from "../engine/local-repaint.js";
 import { disposeSharedDirtyRectBroker } from "../engine/dxgi-broker.js";
 import type { VisualMotionObservation } from "./_input-pipeline.js";
 import { shouldReturnRoiCapture, type ReturnCaptureMode } from "./_roi-capture-gate.js";
-import { filterDirtyRectsToWindow, boundingBox, clampRectToWindow } from "./_roi-region.js";
-import { buildRoiPreviewEntities } from "./_roi-preview.js";
+import { filterDirtyRectsToWindow, boundingBox, clampRectToWindow, resolveFoldOcrRoi } from "./_roi-region.js";
+import { buildRoiPreviewEntities, somElementsToCandidates } from "./_roi-preview.js";
 import { runSomPipeline } from "../engine/ocr-bridge.js";
-import type { Rect } from "../engine/vision-gpu/types.js";
+import type { Rect, UiEntityCandidate } from "../engine/vision-gpu/types.js";
 import { createDefaultCapabilityRegistry } from "../capabilities/registry.js";
 
 // ── Advisory registry singleton (PR-SR1-3) ────────────────────────────────────
@@ -586,6 +586,11 @@ export const desktopActRawHandler = async (
   // keep the DXGI tryVerifyAnyChange path and their `result.observation` stays
   // byte-equal (ADR-019 Stage 5 telemetry contract; S5c review R2-P1).
   const postVerifyEnabled = process.env["DESKTOP_TOUCH_STAGE5_DXGI"] !== "0";
+  // ADR-024 Seed-2 S5b — the order-trap fold. When ON (default) a visual-only
+  // act folds its post-touch confirmation into a SINGLE ROI-OCR feeding BOTH the
+  // diff and the roiCapture (one OCR vs S5's two). `=0` falls back to the S5
+  // 2-OCR path (every composeCandidates lane preserved).
+  const foldEnabled = process.env["DESKTOP_TOUCH_STAGE5B_FOLD_OCR"] !== "0";
   const visualOnly = facade.resolveVisualOnlyForViewId(input.lease.viewId);
   let preFrame: RawFrame | null = null;
   let frameDiffHwnd: bigint | null = null;
@@ -613,93 +618,139 @@ export const desktopActRawHandler = async (
     }
   }
 
+  // ADR-024 Seed-2 S5b — fold gate. Fold only when: enabled; visual-only;
+  // pre-frame + window geometry in hand; AND the discover snapshot is OCR-only
+  // (D6 — no visual_gpu lane the OCR-only post could silently drop). Otherwise
+  // keep the S5 path (legacy 2-OCR) below, which preserves every lane.
+  const fold =
+    foldEnabled &&
+    postVerifyEnabled &&
+    visualOnly &&
+    preFrame !== null &&
+    frameDiffHwnd !== null &&
+    frameDiffWindowRect !== null &&
+    !facade.discoverHasVisualGpuForViewId(input.lease.viewId);
+
   const result = await facade.touch({
     lease: input.lease,
     action: input.action,
     text: input.text,
+    // Fold path: the loop invokes this closure (post-execute) in place of
+    // env.resolvePostTouchEntities — its single ROI-OCR feeds the diff and the
+    // roiCapture. Non-fold: no closure → loop uses the env path (S5, byte-equal).
+    ...(fold
+      ? {
+          postSnapshot: buildFoldPostSnapshot(
+            facade,
+            input.lease,
+            preFrame as RawFrame,
+            frameDiffHwnd as bigint,
+            frameDiffWindowRect as { x: number; y: number; width: number; height: number },
+            frameDiffPoint,
+            input.returnCapture,
+          ),
+        }
+      : {}),
   });
 
-  let postVerify: { observation: VisualMotionObservation; dirtyRects: Rect[] } | null = null;
-  let frameDiffObservation: VisualMotionObservation | undefined;
-  // ADR-024 Seed-2 S5c-1b — the window-relative changed-region bbox from the
-  // frame-diff, split off the observation here so it never reaches the public
-  // `result.observation` telemetry (R2-P1) and is instead threaded into
-  // buildRoiCapture as the localized ROI.
-  let frameDiffRoi: Rect | undefined;
-  if (result.ok && postVerifyEnabled) {
-    if (visualOnly) {
-      // Visual-only — frame-diff ONLY. Never fall back to the DXGI verifier:
-      // DXGI is exactly the occlusion-blind / drain-race path this phase replaces,
-      // so a visual-only frame-diff *miss* (capture/hwnd/rect unavailable) must
-      // degrade to no observation — NOT reintroduce F1/F2 via DXGI (Codex PR #431
-      // round 2 P2). With no observation the gate sees `motion=undefined` and
-      // declines (except `returnCapture:"always"`, whose full-window fallback in
-      // buildRoiCapture still applies — a best-effort capture, never DXGI motion).
-      if (preFrame !== null && frameDiffHwnd !== null && frameDiffWindowRect !== null) {
-        // Stage 4 orchestrator: caller pre-frame + capturePostFrameUntilStable
-        // settle + native SIMD computeChangeFraction/SSIM. Its background-animation
-        // guard degrades to `indeterminate`, which the gate excludes (so a noisy
-        // desktop yields no spurious roiCapture = F1). `observation.source` becomes
-        // `ssim_residual` (frame-diff family) on this path only.
-        // S5c-1b — opt into the ROI bbox surface so the SAME frame-diff that
-        // produces `motion` also yields the localized changed-region rect.
-        const frameDiffObs = await verifyLocalRepaint({
-          hwnd: frameDiffHwnd,
-          hint: {
-            windowRect: frameDiffWindowRect,
-            ...(frameDiffPoint !== null && { point: frameDiffPoint }),
-          },
-          preFrame,
-          includeRoiBbox: true,
-        });
-        // Split `roiBbox` off BEFORE assigning `result.observation` (P2-2):
-        // `roiBbox` is an internal ROI-source channel, not public Stage 5
-        // telemetry — the same split pattern as `tryVerifyAnyChange`'s
-        // `dirtyRects`. The destructured `observation` has no `roiBbox` key, so
-        // the serialized envelope stays byte-equal with the pre-S5c-1b shape.
-        const { roiBbox, ...observation } = frameDiffObs;
-        frameDiffObservation = observation;
-        frameDiffRoi = roiBbox;
-        (result as { observation?: VisualMotionObservation }).observation = observation;
+  if (fold) {
+    // Fold path — the closure already ran the single ROI-OCR and assembled the
+    // roiCapture. Lift its internal `roiMaterial` onto the public fields and
+    // strip it before serialization (same split discipline as the Stage 5
+    // observation/roiBbox plumbing). No second OCR (buildRoiCapture) here.
+    if (result.ok) {
+      const rm = (result as { roiMaterial?: RoiCaptureMaterial }).roiMaterial;
+      delete (result as { roiMaterial?: RoiCaptureMaterial }).roiMaterial;
+      if (rm?.observation) {
+        (result as { observation?: VisualMotionObservation }).observation = rm.observation;
       }
-      // else: frame-diff setup missed → degrade silently (no observation, no DXGI).
-    } else {
-      // Non-visual-only — existing DXGI Stage 5 path (byte-equal). `dirtyRects` is
-      // an internal ROI-source channel for buildRoiCapture (S3a), kept off the
-      // public `result.observation` telemetry by the split in tryVerifyAnyChange.
-      postVerify = await tryVerifyAnyChange(facade, input.lease.viewId);
-      if (postVerify !== null) {
-        (result as { observation?: VisualMotionObservation }).observation = postVerify.observation;
+      if (rm?.roiCapture) {
+        (result as { roiCapture?: RoiCapture }).roiCapture = rm.roiCapture;
       }
     }
-  }
+  } else {
+    // ── Legacy S5 path (non-visual / fold-off / visual_gpu present / frame-diff
+    // setup missed) — post-verify, then build the roiCapture in a SECOND OCR. ──
+    let postVerify: { observation: VisualMotionObservation; dirtyRects: Rect[] } | null = null;
+    let frameDiffObservation: VisualMotionObservation | undefined;
+    // ADR-024 Seed-2 S5c-1b — the window-relative changed-region bbox from the
+    // frame-diff, split off the observation here so it never reaches the public
+    // `result.observation` telemetry (R2-P1) and is instead threaded into
+    // buildRoiCapture as the localized ROI.
+    let frameDiffRoi: Rect | undefined;
+    if (result.ok && postVerifyEnabled) {
+      if (visualOnly) {
+        // Visual-only — frame-diff ONLY. Never fall back to the DXGI verifier:
+        // DXGI is exactly the occlusion-blind / drain-race path this phase replaces,
+        // so a visual-only frame-diff *miss* (capture/hwnd/rect unavailable) must
+        // degrade to no observation — NOT reintroduce F1/F2 via DXGI (Codex PR #431
+        // round 2 P2). With no observation the gate sees `motion=undefined` and
+        // declines (except `returnCapture:"always"`, whose full-window fallback in
+        // buildRoiCapture still applies — a best-effort capture, never DXGI motion).
+        if (preFrame !== null && frameDiffHwnd !== null && frameDiffWindowRect !== null) {
+          // Stage 4 orchestrator: caller pre-frame + capturePostFrameUntilStable
+          // settle + native SIMD computeChangeFraction/SSIM. Its background-animation
+          // guard degrades to `indeterminate`, which the gate excludes (so a noisy
+          // desktop yields no spurious roiCapture = F1). `observation.source` becomes
+          // `ssim_residual` (frame-diff family) on this path only.
+          // S5c-1b — opt into the ROI bbox surface so the SAME frame-diff that
+          // produces `motion` also yields the localized changed-region rect.
+          const frameDiffObs = await verifyLocalRepaint({
+            hwnd: frameDiffHwnd,
+            hint: {
+              windowRect: frameDiffWindowRect,
+              ...(frameDiffPoint !== null && { point: frameDiffPoint }),
+            },
+            preFrame,
+            includeRoiBbox: true,
+          });
+          // Split `roiBbox` off BEFORE assigning `result.observation` (P2-2):
+          // `roiBbox` is an internal ROI-source channel, not public Stage 5
+          // telemetry — the same split pattern as `tryVerifyAnyChange`'s
+          // `dirtyRects`. The destructured `observation` has no `roiBbox` key, so
+          // the serialized envelope stays byte-equal with the pre-S5c-1b shape.
+          const { roiBbox, ...observation } = frameDiffObs;
+          frameDiffObservation = observation;
+          frameDiffRoi = roiBbox;
+          (result as { observation?: VisualMotionObservation }).observation = observation;
+        }
+        // else: frame-diff setup missed → degrade silently (no observation, no DXGI).
+      } else {
+        // Non-visual-only — existing DXGI Stage 5 path (byte-equal). `dirtyRects` is
+        // an internal ROI-source channel for buildRoiCapture (S3a), kept off the
+        // public `result.observation` telemetry by the split in tryVerifyAnyChange.
+        postVerify = await tryVerifyAnyChange(facade, input.lease.viewId);
+        if (postVerify !== null) {
+          (result as { observation?: VisualMotionObservation }).observation = postVerify.observation;
+        }
+      }
+    }
 
-  // ADR-024 Seed-2 S5 — fold the post-action ROI capture into the act response
-  // for visual-only targets. `buildRoiCapture` gates on the visual-only regime +
-  // motion verdict, then assembles `{roi, somImage, entities, source}`. S5c-1a:
-  // on the frame-diff path the ROI is provisionally the whole window (empty
-  // dirtyRects → full-window fallback); the localized bbox lands in S5c-1b.
-  // Absent (gate declines / no change / no ROI) → response stays bit-equal with
-  // the pre-Seed-2 shape (additive — existing destructures unaffected).
-  if (result.ok) {
-    const roiCapture = await buildRoiCapture(
-      facade,
-      input.lease.viewId,
-      frameDiffObservation ?? postVerify?.observation,
-      postVerify?.dirtyRects ?? [],
-      input.returnCapture,
-      // Source is regime-determined: buildRoiCapture's gate only passes for
-      // visual-only targets (the frame-diff regime), so a visual-only capture
-      // is always `frame_diff` — including the `returnCapture:"always"` full-
-      // window fallback when the frame-diff observation was a miss.
-      visualOnly ? "frame_diff" : "dxgi",
-      // S5c-1b — the localized changed-region ROI from the frame-diff (when the
-      // capture was occlusion-immune). `undefined` → buildRoiCapture falls back
-      // to the DXGI dirty-rect bbox (legacy path) or the full window.
-      frameDiffRoi,
-    );
-    if (roiCapture !== undefined) {
-      (result as { roiCapture?: RoiCapture }).roiCapture = roiCapture;
+    // ADR-024 Seed-2 S5 — fold the post-action ROI capture into the act response
+    // for visual-only targets. `buildRoiCapture` gates on the visual-only regime +
+    // motion verdict, then assembles `{roi, somImage, entities, source}`. Absent
+    // (gate declines / no change / no ROI) → response stays bit-equal with the
+    // pre-Seed-2 shape (additive — existing destructures unaffected).
+    if (result.ok) {
+      const roiCapture = await buildRoiCapture(
+        facade,
+        input.lease.viewId,
+        frameDiffObservation ?? postVerify?.observation,
+        postVerify?.dirtyRects ?? [],
+        input.returnCapture,
+        // Source is regime-determined: buildRoiCapture's gate only passes for
+        // visual-only targets (the frame-diff regime), so a visual-only capture
+        // is always `frame_diff` — including the `returnCapture:"always"` full-
+        // window fallback when the frame-diff observation was a miss.
+        visualOnly ? "frame_diff" : "dxgi",
+        // S5c-1b — the localized changed-region ROI from the frame-diff (when the
+        // capture was occlusion-immune). `undefined` → buildRoiCapture falls back
+        // to the DXGI dirty-rect bbox (legacy path) or the full window.
+        frameDiffRoi,
+      );
+      if (roiCapture !== undefined) {
+        (result as { roiCapture?: RoiCapture }).roiCapture = roiCapture;
+      }
     }
   }
 
@@ -893,6 +944,94 @@ function assembleRoiCaptureFromSom(
   );
 
   return { roi, somImage: som.somImage.base64, entities, source };
+}
+
+/**
+ * ADR-024 Seed-2 S5b — build the visual-only fold's post-snapshot closure.
+ * Captured BEFORE the touch (holds the pre-frame + target identity); invoked by
+ * `GuardedTouchLoop.touch()` AFTER execute.
+ *
+ * **Diff baseline = carry-forward (b).** The post snapshot rebuilds the discover
+ * full-window entities as candidates with the SAME `target.id`, so they resolve
+ * to the SAME entityIds → post == pre → the touched entity keeps its identity and
+ * never reads as a false `entity_disappeared`. This is deliberate: ROI-crop OCR
+ * is NOT a reliable substitute for full-window OCR — a crop ≈ the text-line
+ * height defeats Windows OCR's line segmentation (Opus S5b-2 root-cause), so the
+ * diff must not depend on re-OCRing the ROI. The visual change is surfaced via
+ * `roiCapture`, not the structural diff.
+ *
+ * **roiCapture = padded single OCR (a).** The fold's ONE OCR runs on the PADDED
+ * change region (`resolveFoldOcrRoi` gives WinRT OCR the line context a tight
+ * crop lacks), and only when the gate passes (`returnCapture:"always"` keeps a
+ * full-window capture on no_change/miss — Codex P2-1; other modes omit it).
+ * `observation` is always surfaced for telemetry.
+ */
+function buildFoldPostSnapshot(
+  facade: DesktopFacade,
+  lease: { viewId: string; entityId: string },
+  preFrame: RawFrame,
+  hwnd: bigint,
+  windowRect: { x: number; y: number; width: number; height: number },
+  point: { x: number; y: number } | null,
+  returnCapture: ReturnCaptureMode | undefined,
+): () => Promise<{ candidates: UiEntityCandidate[]; roiMaterial?: RoiCaptureMaterial }> {
+  const viewId = lease.viewId;
+  // The SAME target.id the discover OCR lane used → carry-forward entityId parity (R1).
+  const targetId = facade.resolveOcrTargetIdForViewId(viewId);
+
+  return async () => {
+    // verifyLocalRepaint never throws — it degrades to `indeterminate` (no
+    // roiBbox) on any capture/SSIM failure; the gate then declines roiCapture.
+    const obs = await verifyLocalRepaint({
+      hwnd,
+      hint: { windowRect, ...(point !== null && { point }) },
+      preFrame,
+      includeRoiBbox: true,
+    });
+    const { roiBbox, ...observation } = obs;
+
+    // Diff baseline (b): carry forward the discover entities, rebuilt as
+    // candidates (same target+label+rect → same entityId on resolve → post==pre).
+    const discover = facade.getDiscoverEntitiesForViewId(viewId);
+    const candidates =
+      targetId !== null
+        ? somElementsToCandidates(
+            discover.map((e) => ({ text: e.label, region: e.rect })),
+            { kind: "window", id: targetId },
+            Date.now(),
+          )
+        : [];
+
+    // roiCapture (a): the fold's SINGLE OCR, on the PADDED change region, only
+    // when the gate passes. The diff above never depends on this OCR.
+    let roiCapture: RoiCapture | undefined;
+    const gatePassed = shouldReturnRoiCapture({
+      ok: true,
+      visualOnly: true, // fold only runs for visual-only targets (handler gate)
+      motion: observation.motion,
+      returnCapture,
+    });
+    if (gatePassed) {
+      const ocrRoi = resolveFoldOcrRoi(roiBbox, windowRect);
+      try {
+        const som = await runSomPipeline("", hwnd, "ja", 2, "auto", false, [], ocrRoi);
+        roiCapture = assembleRoiCaptureFromSom(som, ocrRoi, "frame_diff", facade, viewId);
+      } catch (err) {
+        // roiCapture OCR is best-effort; never break the act on a pipeline failure.
+        console.error(
+          `[desktop_act] S5b fold roiCapture OCR failed for viewId=${viewId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    return {
+      candidates,
+      roiMaterial: {
+        ...(roiCapture !== undefined && { roiCapture }),
+        observation,
+      },
+    };
+  };
 }
 
 /** Pre-flight lease validation closure used by the commit wrapper
