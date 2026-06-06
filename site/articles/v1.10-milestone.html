@@ -116,8 +116,8 @@ browser_fill({ by: "ariaLabel", pattern: "Search", value: "mcp" })</code></pre>
 
             <section class="article-card">
               <span class="label warm">Compatibility</span>
-              <h2>Additive, and paid for only on request.</h2>
-              <p>The browser <code>by</code>/<code>pattern</code> targeting is new input on existing tools; the selector path is unchanged. <code>roiCapture</code> is additive and opt-in via <code>returnCapture</code>, never attached on structured targets, so existing callers see identical responses. The new capabilities are paid for only by callers who ask for them.</p>
+              <h2>Additive, and scoped to where it pays.</h2>
+              <p>The browser <code>by</code>/<code>pattern</code> targeting is new input on existing tools; the selector path is unchanged. <code>roiCapture</code> is <strong>additive</strong> — it only adds a field, never alters an existing one. On a visual-only target it is <strong>on by default</strong> for a visible change (<code>returnCapture:"on-change"</code>); pass <code>returnCapture:"never"</code> to suppress it and keep the prior payload, or <code>"always"</code> to force it. On structured targets it never appears, so those responses are unchanged — the heavier capture is computed only in the regime that has no cheaper truth.</p>
               <div class="hero-actions">
                 <a class="button primary" href="https://github.com/Harusame64/desktop-touch-mcp/blob/main/CHANGELOG.md">View Full Changelog</a>
                 <a class="button secondary" href="./v1.8-milestone.html">Read the v1.8 Milestone</a>

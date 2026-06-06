@@ -104,7 +104,7 @@
             <div class="three-up">
               <a class="mini-card" href="./articles/v1.10-milestone.html">
                 <h3>v1.10: A Visual-Only Act That Confirms Itself</h3>
-                <p>On a target the accessibility tree can't describe — Electron, PWA, game, custom canvas, Remote Desktop — a successful <code>desktop_act</code> can bundle a <code>roiCapture</code>: a PNG crop of <em>just the region that changed</em> plus a lease-less preview of the controls now visible there. It folds "act → <code>desktop_state</code> → <code>screenshot</code>" into a single call. Opt-in via <code>returnCapture</code>; never attached on structured targets, where <code>desktop_state</code> is cheaper and exact.</p>
+                <p>On a target the accessibility tree can't describe — Electron, PWA, game, custom canvas, Remote Desktop — a successful <code>desktop_act</code> can bundle a <code>roiCapture</code>: a PNG crop of <em>just the region that changed</em> plus a lease-less preview of the controls now visible there. It folds "act → <code>desktop_state</code> → <code>screenshot</code>" into a single call. On by default for a visible change; <code>returnCapture:"never"</code> suppresses it. Never attached on structured targets, where <code>desktop_state</code> is cheaper and exact.</p>
               </a>
               <a class="mini-card" href="https://github.com/Harusame64/desktop-touch-mcp/releases/tag/v1.9.0">
                 <h3>v1.9: Semantic Targeting Reaches the Browser</h3>
