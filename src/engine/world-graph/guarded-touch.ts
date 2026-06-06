@@ -1,8 +1,9 @@
 import type { UiEntity, EntityLease, ExecutorKind, ExecutorOutcome, UiAffordance } from "./types.js";
 import type { LeaseStore } from "./lease-store.js";
 import type { VisualMotionObservation } from "../../tools/_input-pipeline.js";
-import type { Rect } from "../vision-gpu/types.js";
+import type { Rect, UiEntityCandidate } from "../vision-gpu/types.js";
 import { classifyModal } from "./session-registry.js";
+import { resolveCandidates } from "./resolver.js";
 
 export type TouchAction = "auto" | "invoke" | "click" | "type" | "setValue" | "select";
 
@@ -10,6 +11,24 @@ export interface TouchInput {
   lease: EntityLease;
   action?: TouchAction;
   text?: string;
+  /**
+   * ADR-024 Seed-2 S5b — optional per-call post-action snapshot closure. When
+   * present, `touch()` invokes it (AFTER execute) IN PLACE OF
+   * `env.resolvePostTouchEntities()` to obtain the post-touch candidates for the
+   * semantic diff, and surfaces its `roiMaterial` on the result. Built by the
+   * registration wrapper (`desktop-register.ts`) for visual-only acts so the ONE
+   * ROI-OCR it runs feeds both the diff baseline and the folded `roiCapture`
+   * (order-trap elimination). The loop stays capture-agnostic: this is an opaque
+   * callback — it does not know the closure does a frame-diff / OCR. Absent on
+   * every non-visual / flag-off path → `env.resolvePostTouchEntities()` is used
+   * exactly as before (byte-equal). Returns lease-LESS `UiEntityCandidate[]`;
+   * `touch()` runs `resolveCandidates(generation)` to mint `UiEntity[]` (same
+   * conversion as `resolvePostTouchEntities`), so the closure must NOT pre-resolve.
+   */
+  postSnapshot?: () => Promise<{
+    candidates: UiEntityCandidate[];
+    roiMaterial?: RoiCaptureMaterial;
+  }>;
 }
 
 export type SemanticDiff = Array<
@@ -91,6 +110,28 @@ export interface RoiCapture {
   source: "dxgi" | "frame_diff";
 }
 
+/**
+ * ADR-024 Seed-2 S5b — internal channel carried from a `postSnapshot` closure
+ * through `touch()` back to the registration wrapper. NEVER serialized: the
+ * wrapper strips it off the result (same split pattern as the Stage 5
+ * `observation` / `roiBbox` plumbing) and attaches its parts to the public
+ * fields. Lets the single ROI-OCR the closure runs feed the diff (via the
+ * returned `candidates`) AND the folded outputs here, without a second OCR.
+ */
+export interface RoiCaptureMaterial {
+  /**
+   * Screen-absolute region the post snapshot actually re-observed (the
+   * frame-diff change bbox ∪ touched rect). Threaded into the diff as
+   * `DiffContext.observedRect` so entities OUTSIDE it are treated as
+   * non-observed (not removed). Absent → the diff is unscoped (full-window).
+   */
+  observedRect?: Rect;
+  /** The assembled fold capture; the wrapper sets `result.roiCapture` to it. */
+  roiCapture?: RoiCapture;
+  /** The frame-diff motion observation; the wrapper sets `result.observation`. */
+  observation?: VisualMotionObservation;
+}
+
 export type TouchResult =
   | {
       ok: true;
@@ -127,6 +168,14 @@ export type TouchResult =
        * Live since S5 (the fold).
        */
       roiCapture?: RoiCapture;
+      /**
+       * ADR-024 Seed-2 S5b — INTERNAL channel from a `postSnapshot` closure;
+       * the registration wrapper strips this before serialization and copies
+       * its `roiCapture` / `observation` onto the public fields. Never present
+       * on the bare loop return when no `postSnapshot` was supplied (additive —
+       * existing destructures unaffected). See {@link RoiCaptureMaterial}.
+       */
+      roiMaterial?: RoiCaptureMaterial;
     }
   | {
       ok: false;
@@ -231,6 +280,19 @@ function hasEntityMoved(pre: UiEntity, post: UiEntity): boolean {
   );
 }
 
+/**
+ * Axis-aligned rect overlap test (ADR-024 S5b observed-scope diff). Touching
+ * edges count as non-overlapping (strict `<`). Both rects screen-absolute.
+ */
+function rectsIntersect(a: Rect, b: Rect): boolean {
+  return (
+    a.x < b.x + b.width &&
+    b.x < a.x + a.width &&
+    a.y < b.y + b.height &&
+    b.y < a.y + a.height
+  );
+}
+
 
 /**
  * Value fingerprint for an entity — what counts as "the value" varies by source:
@@ -257,38 +319,65 @@ interface DiffContext {
   postEntities: UiEntity[];
   preFocusId: string | undefined;
   postFocusId: string | undefined;
+  /**
+   * ADR-024 Seed-2 S5b (D2) — screen-absolute region the POST snapshot actually
+   * re-observed. When set (visual-only fold path), the diff is scoped to it:
+   * pre-entities OUTSIDE it were not re-observed, so they must NOT be counted as
+   * removed/dismissed, and the touched-entity fate is only asserted when the
+   * touched entity lies inside it. Absent (the default / non-fold path) → the
+   * diff is unscoped, identical to pre-S5b behaviour (byte-equal).
+   */
+  observedRect?: Rect;
 }
 
 function computeDiff(ctx: DiffContext): SemanticDiff {
-  const { touched, preEntities, postEntities, preFocusId, postFocusId } = ctx;
+  const { touched, preEntities, postEntities, preFocusId, postFocusId, observedRect } = ctx;
   const diff: SemanticDiff = [];
 
   const preIds  = new Set(preEntities.map((e) => e.entityId));
   const postIds = new Set(postEntities.map((e) => e.entityId));
 
+  // ADR-024 Seed-2 S5b (D2) — observed-scope predicate. When `observedRect` is
+  // set, the post snapshot only re-observed that region; an entity outside it
+  // was NOT looked at, so it must not be judged removed/dismissed and the
+  // touched fate is only asserted for an in-region touched entity. When unset
+  // (default / non-fold), every entity is in scope → identical to pre-S5b
+  // behaviour (byte-equal). An entity with no rect is in scope only when
+  // unscoped (we cannot prove overlap), so the unscoped path stays unchanged.
+  const inScope = (e: UiEntity): boolean =>
+    observedRect === undefined ||
+    (e.rect !== undefined && rectsIntersect(e.rect, observedRect));
+
   // ── Touched entity fate ───────────────────────────────────────────────────
 
   // entityId stability is the identity contract.
   // id-preserving move → entity_moved; id-changing replace → entity_disappeared.
-  const postTouched = postEntities.find((e) => e.entityId === touched.entityId);
-  if (!postTouched) {
-    diff.push("entity_disappeared");
-  } else {
-    if (hasEntityMoved(touched, postTouched)) diff.push("entity_moved");
+  // Scoped: only assert fate when the touched entity was in the re-observed
+  // region (always true on the unscoped path).
+  if (inScope(touched)) {
+    const postTouched = postEntities.find((e) => e.entityId === touched.entityId);
+    if (!postTouched) {
+      diff.push("entity_disappeared");
+    } else {
+      if (hasEntityMoved(touched, postTouched)) diff.push("entity_moved");
 
-    // value_changed: compare entity.value (or label for terminal) pre vs post.
-    // Only emitted when both sides expose a value — absence of value means not comparable.
-    const preVal  = extractValueFingerprint(touched);
-    const postVal = extractValueFingerprint(postTouched);
-    if (preVal !== undefined && postVal !== undefined && preVal !== postVal) {
-      diff.push("value_changed");
+      // value_changed: compare entity.value (or label for terminal) pre vs post.
+      // Only emitted when both sides expose a value — absence of value means not comparable.
+      const preVal  = extractValueFingerprint(touched);
+      const postVal = extractValueFingerprint(postTouched);
+      if (preVal !== undefined && postVal !== undefined && preVal !== postVal) {
+        diff.push("value_changed");
+      }
     }
   }
 
   // ── Appeared / disappeared entities ───────────────────────────────────────
 
+  // `appeared` is drawn from the post snapshot (already region-bound on the
+  // fold path); `removed` is scoped so out-of-region pre-entities (never
+  // re-observed) are not falsely counted as gone.
   const appeared = postEntities.filter((e) => !preIds.has(e.entityId));
-  const removed  = preEntities.filter((e) => !postIds.has(e.entityId));
+  const removed  = preEntities.filter((e) => !postIds.has(e.entityId) && inScope(e));
 
   // modal_appeared / modal_dismissed take priority for modal entities.
   // ADR-020 PR-P2-1: unified classifier (post-touch-diff context, no self-exclusion;
@@ -401,10 +490,33 @@ export class GuardedTouchLoop {
       typeof outcome === "string" ? undefined : outcome.downgrade;
 
     // 6. Compute semantic diff against the pre-touch snapshot.
-    const post        = await this.env.resolvePostTouchEntities();
+    //
+    // ADR-024 Seed-2 S5b — when the caller supplied a `postSnapshot` closure
+    // (visual-only fold path), use it for the post-touch candidates INSTEAD of
+    // `env.resolvePostTouchEntities()`, and carry its `roiMaterial` back out.
+    // The closure returns lease-less candidates; convert with the SAME
+    // `resolveCandidates(gen)` (gen captured at step 1) the env path uses, so
+    // entityIds match the pre snapshot. Absent (every non-fold path) → the
+    // existing env path runs and `roiMaterial` stays undefined (byte-equal).
+    let post: UiEntity[];
+    let roiMaterial: RoiCaptureMaterial | undefined;
+    if (input.postSnapshot) {
+      const snapshot = await input.postSnapshot();
+      post = resolveCandidates(snapshot.candidates, gen);
+      roiMaterial = snapshot.roiMaterial;
+    } else {
+      post = await this.env.resolvePostTouchEntities();
+    }
     const postFocusId = this.env.getFocusedEntityId?.();
 
-    const diff = computeDiff({ touched: entity, preEntities: live, postEntities: post, preFocusId, postFocusId });
+    const diff = computeDiff({
+      touched: entity,
+      preEntities: live,
+      postEntities: post,
+      preFocusId,
+      postFocusId,
+      observedRect: roiMaterial?.observedRect,
+    });
 
     return {
       ok: true,
@@ -412,6 +524,7 @@ export class GuardedTouchLoop {
       diff,
       next: diff.length > 0 ? "refresh_view" : "none",
       ...(downgrade ? { downgrade } : {}),
+      ...(roiMaterial ? { roiMaterial } : {}),
     };
   }
 }

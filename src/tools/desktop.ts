@@ -15,7 +15,7 @@ import {
 import type { CandidateIngress } from "../engine/world-graph/candidate-ingress.js";
 import { createDesktopExecutor, type ExecutorDeps } from "./desktop-executor.js";
 import { resolveWindowTarget, findPlainTopLevelWindowByTitle } from "./_resolve-window.js";
-import type { TouchAction, TouchResult } from "../engine/world-graph/guarded-touch.js";
+import type { TouchAction, TouchInput, TouchResult } from "../engine/world-graph/guarded-touch.js";
 import { deriveViewConstraints, type ViewConstraints, type EntityCapabilities } from "./desktop-constraints.js";
 import { UIA_BLIND_WARNINGS } from "./desktop-providers/compose-providers.js";
 import { deriveEntityCapabilities } from "./desktop-capabilities.js";
@@ -127,6 +127,13 @@ export interface DesktopTouchInput {
   lease: EntityLease;
   action?: TouchAction;
   text?: string;
+  /**
+   * ADR-024 Seed-2 S5b — per-call post-action snapshot closure, forwarded
+   * verbatim to `GuardedTouchLoop.touch`. See {@link TouchInput.postSnapshot}.
+   * Built by `desktop-register.ts` for the visual-only fold; undefined on every
+   * other path (passthrough — `facade.touch` hands `input` straight to the loop).
+   */
+  postSnapshot?: TouchInput["postSnapshot"];
 }
 
 export type DesktopTouchOutput = TouchResult;

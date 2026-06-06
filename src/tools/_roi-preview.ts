@@ -14,7 +14,7 @@
  * Side-effect-free; native OCR + facade access stay in `desktop-register.ts`.
  */
 
-import type { Rect } from "../engine/vision-gpu/types.js";
+import type { Rect, UiEntityCandidate } from "../engine/vision-gpu/types.js";
 import type { RoiPreviewEntity } from "../engine/world-graph/guarded-touch.js";
 import { rectIoU } from "./_roi-region.js";
 
@@ -69,4 +69,39 @@ export function buildRoiPreviewEntities(
       rect: el.region,
       actionability: ["click"],
     }));
+}
+
+/**
+ * ADR-024 Seed-2 S5b — map ROI-aware SoM/OCR elements to lease-less
+ * `UiEntityCandidate[]` for the post-touch DIFF baseline (distinct from
+ * `buildRoiPreviewEntities`, which builds the lease-less *preview*).
+ *
+ * MUST mirror the discover OCR lane (`ocr-provider.ts` `fetchOcrCandidates`)
+ * field-for-field — same `source:"ocr"`, `target`, `role:"label"`, `label`,
+ * `rect`, `actionability:["click"]` — so that an UNCHANGED on-screen element
+ * yields the SAME `entityId` whether it was first seen via the full-window
+ * discover OCR or this ROI-crop OCR. `computeDiff`'s touched-entity fate (and
+ * removed/appeared) depend on that identity; a mismatch would read the touched
+ * entity as `entity_disappeared` (R1). `target` is the SAME `{kind,id}` the
+ * discover lane used for the window; `observedAtMs` is injected (not
+ * `Date.now()`) to keep the mapper pure / deterministic for tests.
+ */
+export function somElementsToCandidates(
+  elements: readonly { text: string; region: Rect; confidence?: number }[],
+  target: { kind: "window" | "browserTab"; id: string },
+  observedAtMs: number,
+): UiEntityCandidate[] {
+  return elements.map((el): UiEntityCandidate => ({
+    source: "ocr",
+    target,
+    // locator omitted — EntityLocator has no .ocr slot; executor routes to mouse
+    // click (identical to fetchOcrCandidates).
+    role: "label",
+    label: el.text,
+    rect: el.region,
+    actionability: ["click"],
+    confidence: el.confidence ?? 0.7,
+    observedAtMs,
+    provisional: false,
+  }));
 }

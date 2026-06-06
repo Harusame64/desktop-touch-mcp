@@ -10,9 +10,12 @@ import { describe, it, expect } from "vitest";
 
 import {
   buildRoiPreviewEntities,
+  somElementsToCandidates,
   type RoiOcrElement,
   type DiscoverEntityRef,
 } from "../../src/tools/_roi-preview.js";
+import { resolveCandidates } from "../../src/engine/world-graph/resolver.js";
+import type { UiEntityCandidate } from "../../src/engine/vision-gpu/types.js";
 
 const RECT_A = { x: 100, y: 100, width: 40, height: 20 };
 
@@ -67,5 +70,66 @@ describe("buildRoiPreviewEntities (S5 OQ-10 dedup + mapping)", () => {
 
   it("returns [] for no OCR elements", () => {
     expect(buildRoiPreviewEntities([], [{ rect: RECT_A, label: "x" }])).toEqual([]);
+  });
+});
+
+describe("somElementsToCandidates (S5b diff baseline mapping)", () => {
+  const target = { kind: "window" as const, id: "hwnd-42" };
+
+  it("mirrors the discover OCR candidate shape field-for-field", () => {
+    const out = somElementsToCandidates(
+      [{ text: "Save", region: RECT_A, confidence: 0.9 }],
+      target,
+      123,
+    );
+    expect(out).toEqual([
+      {
+        source: "ocr",
+        target,
+        role: "label",
+        label: "Save",
+        rect: RECT_A,
+        actionability: ["click"],
+        confidence: 0.9,
+        observedAtMs: 123,
+        provisional: false,
+      },
+    ]);
+  });
+
+  it("defaults confidence to 0.7 when the element omits it (matches fetchOcrCandidates)", () => {
+    const out = somElementsToCandidates([{ text: "X", region: RECT_A }], target, 0);
+    expect(out[0]?.confidence).toBe(0.7);
+  });
+
+  it("produces the SAME entityId as the discover OCR lane for the same label+rect+target (R1 structural half)", () => {
+    // The discover OCR lane builds candidates exactly like ocr-provider's
+    // fetchOcrCandidates. entityId = sha1(window:id | label | snapRect) — NOT
+    // observedAtMs — so the ROI-crop candidate and the full-window discover
+    // candidate for the same on-screen text must resolve to the same entityId.
+    // (The real-OCR end-to-end half is the S5b-2 headed test.)
+    const discoverOcr: UiEntityCandidate = {
+      source: "ocr",
+      target,
+      role: "label",
+      label: "TARGET ALPHA",
+      rect: RECT_A,
+      actionability: ["click"],
+      confidence: 0.7,
+      observedAtMs: 999, // different time — must NOT affect entityId
+      provisional: false,
+    };
+    const roiOcr = somElementsToCandidates(
+      [{ text: "TARGET ALPHA", region: { ...RECT_A } }],
+      target,
+      1,
+    );
+    const [discoverEntity] = resolveCandidates([discoverOcr], "gen-1");
+    const [roiEntity] = resolveCandidates(roiOcr, "gen-1");
+    expect(roiEntity?.entityId).toBe(discoverEntity?.entityId);
+  });
+
+  it("returns [] for no elements", () => {
+    expect(somElementsToCandidates([], target, 0)).toEqual([]);
   });
 });
