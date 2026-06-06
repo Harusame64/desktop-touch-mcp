@@ -20,8 +20,15 @@
 # centre so it lands inside the local-repaint SSIM crop (a localized ROI, never
 # full-window).
 #
-# Usage: powershell -NoProfile -ExecutionPolicy Bypass -File visual-only-canvas.ps1 -Title <name>
-param([string]$Title)
+# Usage: powershell -NoProfile -ExecutionPolicy Bypass -File visual-only-canvas.ps1 -Title <name> [-FontSize 34]
+#
+# -FontSize (default 34): anchor text point size. The default (34pt) is the
+# bench/e2e canvas. A SMALL size (e.g. 11) is the ADR-024 S5b-3 R1 carry-forward
+# regression canvas: small text is the regime where ROI-crop OCR is least
+# reliable (the S5b-2 root-cause), so it stresses that the diff (carry-forward of
+# the full-window discover OCR) stays correct independent of the ROI-OCR. Leaving
+# it unset preserves the existing fixture byte-for-byte.
+param([string]$Title, [int]$FontSize = 34)
 
 # Hide the PowerShell host console so only the form is visible (same trick as
 # tests/e2e/helpers/blank-window.ts — do NOT use -WindowStyle Hidden, that hides
@@ -57,7 +64,7 @@ $form.TopMost = $true
 
 # Backing bitmap (client-sized) — the single source of pixels for the panel.
 $bmp = New-Object System.Drawing.Bitmap($W, $H)
-$bigFont = New-Object System.Drawing.Font('Segoe UI', 34, [System.Drawing.FontStyle]::Bold)
+$bigFont = New-Object System.Drawing.Font('Segoe UI', $FontSize, [System.Drawing.FontStyle]::Bold)
 
 # Two anchors: text (always black-on-white, always OCR-readable) + a toggle bar
 # just below it. Bar toggles crimson<->white on each click of that anchor.
