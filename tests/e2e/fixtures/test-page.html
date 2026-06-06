@@ -111,6 +111,37 @@
     </div>
 
     <!-- ──────────────────────────────────────────────────────────────── -->
+    <!-- Issue #441 fixtures — hidden/zero-size duplicate of a visible btn  -->
+    <!-- GSC/Material-UI shape: a hidden div and a visible button share the -->
+    <!-- same aria-label. document.querySelector picks the hidden one first -->
+    <!-- (it precedes the button in DOM order) → zero-size; the rescue must -->
+    <!-- click the visible button instead.                                  -->
+    <!-- ──────────────────────────────────────────────────────────────── -->
+    <!-- Hidden zero-size duplicate FIRST (querySelector default match), then the
+         visible button. Positioned well inside an 800x600 headless viewport with
+         no overlapping fixtures so the visible button's center hit-tests to itself. -->
+    <div aria-label="Request Indexing" style="display:none">Request Indexing</div>
+    <button type="button" aria-label="Request Indexing" id="dup441-visible-btn"
+            style="position:absolute;left:300px;top:250px;"
+            onclick="window._clickLog.push({ id: 'dup441-visible-btn', time: Date.now() });">Request Indexing</button>
+
+    <!-- Off-viewport variant (scrollIntoView two-pass): hidden duplicate +
+         a visible button parked far below the fold. Same aria-label. -->
+    <div aria-label="Submit Far" style="display:none">Submit Far</div>
+    <button type="button" aria-label="Submit Far" id="dup441-offviewport-btn"
+            style="position:absolute;left:100px;top:4000px;"
+            onclick="window._clickLog.push({ id: 'dup441-offviewport-btn', time: Date.now() });">Submit Far</button>
+
+    <!-- Ambiguous variant: hidden zero-size duplicate FIRST, then TWO visible
+         actionable buttons sharing the aria-label → the rescue must stop with
+         BrowserAmbiguousTarget + candidates (never auto-click). Both in-viewport. -->
+    <div aria-label="Ambiguous Dup" style="display:none">Ambiguous Dup</div>
+    <button type="button" aria-label="Ambiguous Dup" id="dup441-amb-a"
+            style="position:absolute;left:300px;top:320px;">Ambiguous Dup A</button>
+    <button type="button" aria-label="Ambiguous Dup" id="dup441-amb-b"
+            style="position:absolute;left:300px;top:380px;">Ambiguous Dup B</button>
+
+    <!-- ──────────────────────────────────────────────────────────────── -->
     <!-- Issue #181 fixtures — CDP click/fill delivery verification        -->
     <!-- ──────────────────────────────────────────────────────────────── -->
     <div id="verify-fixtures" style="position:absolute;left:100px;top:780px;width:600px;">

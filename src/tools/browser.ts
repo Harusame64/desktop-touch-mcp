@@ -12,6 +12,8 @@ import {
   listTabs,
   evaluateInTab,
   getElementScreenCoords,
+  ElementZeroSizeError,
+  type ElementCoords,
   navigateTo,
   getDomHtml,
   disconnectAll,
@@ -29,7 +31,7 @@ import type { RichBlock } from "../engine/uia-diff.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
 import { prepareBrowserEvalExpression } from "./browser-eval-helpers.js";
-import { buildCandidateCollectionJs, resolveBrowserActionTarget, buildFillActJs, buildPageLevelModalFactsJs, detectModal, probeSelectorModalOcclusion, type ResolveActionOutcome, type ModalFacts, type ModalVerdict } from "./browser-resolver.js";
+import { buildCandidateCollectionJs, resolveBrowserActionTarget, scrollResolvedCandidateIntoView, buildFillActJs, buildPageLevelModalFactsJs, detectModal, probeSelectorModalOcclusion, type ResolveActionOutcome, type ModalFacts, type ModalVerdict } from "./browser-resolver.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -1455,6 +1457,154 @@ async function handleBrowserClickByAxis(args: {
   });
 }
 
+/**
+ * Issue #441 — selector actionability rescue. Invoked ONLY when the selector
+ * click path's `getElementScreenCoords` throws `ElementZeroSizeError` (the first
+ * `querySelector` match is a hidden/zero-size duplicate). Routes the SAME CSS
+ * selector through the existing by-axis resolver's `by:'selector'` branch, which
+ * collects ALL matches, filters to visible, and resolves to the unique actionable
+ * one (or stops with candidates). This rescues the common SPA case (a hidden
+ * `aria-label` duplicate next to the real visible button) without the agent
+ * falling back to browser_eval.
+ *
+ * Strictly a superset of the legacy path: it runs only on the zero-size FAILURE
+ * case, so first-match-visible success stays bit-equal (NFR-1). The response
+ * keeps the selector-mode wire shape (`clicked: string`) plus additive
+ * `resolved` / `resolvedVia`.
+ *
+ * - `guardAlreadyRun`: the P2 (main coords) catch path has already passed the
+ *   auto-guard / lens guard, so it skips re-running. The P1 (auto-guard precheck)
+ *   catch path has NOT, so it passes false → this helper runs the same strict
+ *   readiness guard the by-axis path uses (the resolver gathers actionability but
+ *   does NOT enforce readyState, so skipping it would let a loading tab receive an
+ *   OS click — AC-5).
+ * - `scrollIntoView`: two-pass. A 1st resolve with `requireReceivesEvents:false`
+ *   identifies the unique visible candidate even if it is off-viewport; scroll it
+ *   in by candidate index; the 2nd resolve (default gate) confirms receivesEvents.
+ */
+async function attemptSelectorActionabilityRescue(args: {
+  selector: string;
+  tabId?: string;
+  port: number;
+  scrollIntoView?: boolean;
+  guardAlreadyRun?: boolean;
+  narrate?: string;
+  perceptionEnv?: import("../engine/perception/types.js").PostPerception;
+}): Promise<ToolResult> {
+  const { selector, tabId, port, scrollIntoView, guardAlreadyRun, narrate } = args;
+  const ctx = { selector };
+  let perceptionEnv = args.perceptionEnv;
+
+  // Readiness guard (AC-5): the P1 precheck catch reaches here BEFORE runActionGuard.
+  // The resolver gather does not enforce browserReadinessPolicy, so run the same
+  // strict guard the by-axis path uses before resolving/clicking.
+  if (!guardAlreadyRun && isAutoGuardEnabled() && (tabId || port)) {
+    const descriptor: import("./_action-guard.js").ActionTargetDescriptor = {
+      kind: "browserTab", port, tabId, urlIncludes: undefined,
+    };
+    const ag = await runActionGuard({
+      toolName: "browser_click", actionKind: "browserCdp", descriptor,
+      browserReadinessPolicy: "strict",
+      suppressSuggestedFix: true,
+    });
+    if (ag.block) {
+      return failWith(new Error(`AutoGuardBlocked: ${ag.summary.next}`), "browser_click", { _perceptionForPost: ag.summary });
+    }
+    perceptionEnv = ag.summary;
+  }
+
+  // CDP snapshot before the click for narrate:"rich" (parity with the selector
+  // and by-axis paths — a rescued click must not silently drop the requested rich
+  // navigation diff, Codex impl P2). Captured here so BOTH the P1 and P2 rescue
+  // entry points get it (the P1 precheck catch reaches the rescue before the
+  // handler's own beforeUrl capture).
+  let beforeUrl: string | null = null;
+  if (narrate === "rich") {
+    try {
+      const ctx0 = await getTabContext(tabId ?? null, port);
+      beforeUrl = ctx0.url ?? null;
+    } catch { /* ignore */ }
+  }
+
+  // scrollIntoView two-pass: identify the unique visible candidate (even
+  // off-viewport) without the receivesEvents gate, scroll it in by index, then
+  // fall through to the gated resolve below.
+  if (scrollIntoView) {
+    const probe = await resolveBrowserActionTarget({
+      by: "selector", pattern: selector, action: "click",
+      requireReceivesEvents: false,
+      tabId: tabId ?? null, port,
+    });
+    if (probe.kind === "resolved") {
+      await scrollResolvedCandidateIntoView({ by: "selector", pattern: selector }, probe.index, tabId ?? null, port);
+    } else if (probe.kind === "error") {
+      return browserResolveErrorToFailure(probe, "browser_click", ctx);
+    } else {
+      // Not a single visible candidate — scrolling will not disambiguate.
+      return browserResolveStopToFailure(probe, "browser_click", ctx);
+    }
+  }
+
+  const outcome = await resolveBrowserActionTarget({
+    by: "selector", pattern: selector, action: "click",
+    tabId: tabId ?? null, port,
+  });
+  if (outcome.kind === "error") return browserResolveErrorToFailure(outcome, "browser_click", ctx);
+  // Modal-blocking upgrade (parity with handleBrowserClickByAxis).
+  if (outcome.kind === "noActionable" && outcome.modalFacts) {
+    const verdict = detectModal(outcome.modalFacts);
+    if (
+      verdict.isModal &&
+      verdict.blocker &&
+      verdict.blockerDialogIndex !== undefined &&
+      outcome.occludedTopByDialogIndex === verdict.blockerDialogIndex
+    ) {
+      return browserModalBlockingFailure(verdict.blocker, verdict.signals, ctx);
+    }
+  }
+  if (outcome.kind !== "resolved") return browserResolveStopToFailure(outcome, "browser_click", ctx);
+
+  if (isOffscreenMinimized(outcome.viewport.screenX, outcome.viewport.screenY)) {
+    return browserMinimizedFailure(ctx);
+  }
+
+  const verifyDelivery = await osClickAndVerify(outcome.physical.x, outcome.physical.y, null, tabId ?? null, port);
+  const tabCtx = await getTabContext(tabId ?? null, port);
+
+  // Rich block (narrate:"rich") — same CDP navigation-diff shape as the selector
+  // and by-axis paths (Codex impl P2).
+  let richBlock: RichBlock | undefined;
+  if (narrate === "rich" && beforeUrl !== null) {
+    try {
+      const afterUrl = tabCtx.url ?? null;
+      richBlock = {
+        appeared: [],
+        disappeared: [],
+        valueDeltas: [],
+        diffSource: "cdp",
+        ...(beforeUrl !== afterUrl && afterUrl
+          ? { navigation: { fromUrl: beforeUrl, toUrl: afterUrl } }
+          : {}),
+      };
+    } catch {
+      richBlock = { appeared: [], disappeared: [], valueDeltas: [], diffSource: "none", diffDegraded: "timeout" };
+    }
+  }
+
+  return ok({
+    ok: true,
+    clicked: selector,
+    at: outcome.physical,
+    resolved: { rect: outcome.rect, climbDepth: outcome.climbDepth },
+    resolvedVia: "actionability-rescue",
+    activeTab: { id: tabCtx.id, title: tabCtx.title, url: tabCtx.url },
+    readyState: tabCtx.readyState,
+    hints: { verifyDelivery },
+    ...(richBlock ? { _richForPost: richBlock } : {}),
+    ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
+  });
+}
+
 export const browserClickElementHandler = async ({
   selector,
   by,
@@ -1521,7 +1671,23 @@ export const browserClickElementHandler = async ({
       perceptionEnvBrowser = buildEnvelopeFor(lensId, { toolName: "browser_click" }) ?? undefined;
     } else if (isAutoGuardEnabled() && (tabId || port)) {
       // Phase F: get coords first so we know inViewport for selectorInViewport policy
-      const coordsForGuard = await getElementScreenCoords(effectiveSelector, effectiveTabId ?? null, port);
+      let coordsForGuard: ElementCoords;
+      try {
+        coordsForGuard = await getElementScreenCoords(effectiveSelector, effectiveTabId ?? null, port);
+      } catch (e) {
+        // Issue #441: the first selector match is a hidden/zero-size duplicate.
+        // The precheck (and its selectorInViewport policy) is meaningless for a
+        // zero-size element — route straight to the actionability rescue. The
+        // auto-guard has NOT run yet, so guardAlreadyRun:false makes the rescue
+        // run the strict readiness guard before clicking (AC-5).
+        if (e instanceof ElementZeroSizeError) {
+          return await attemptSelectorActionabilityRescue({
+            selector: effectiveSelector, tabId: effectiveTabId, port,
+            scrollIntoView, guardAlreadyRun: false, narrate,
+          });
+        }
+        throw e;
+      }
       // Phase 0 (ADR-023 FR-5): when scrollIntoView is requested, do NOT hard-fail
       // here — the post-guard scroll (after the block decision) brings it into view
       // and the main viewport check below still gates clickability. readyState!=
@@ -1568,11 +1734,27 @@ export const browserClickElementHandler = async ({
       await scrollSelectorIntoViewIfNeeded(effectiveSelector, effectiveTabId ?? null, port);
     }
 
-    const coords = await getElementScreenCoords(
-      effectiveSelector,
-      effectiveTabId ?? null,
-      port
-    );
+    let coords: ElementCoords;
+    try {
+      coords = await getElementScreenCoords(
+        effectiveSelector,
+        effectiveTabId ?? null,
+        port
+      );
+    } catch (e) {
+      // Issue #441: the first selector match is a hidden/zero-size duplicate, but
+      // a visible actionable element may share the selector. Route to the rescue
+      // (resolver by:'selector' branch picks the visible one or returns candidates)
+      // instead of failing. guardAlreadyRun:true — every guard (lens / auto-guard)
+      // ran above on this path; perceptionEnvBrowser carries that envelope.
+      if (e instanceof ElementZeroSizeError) {
+        return await attemptSelectorActionabilityRescue({
+          selector: effectiveSelector, tabId: effectiveTabId, port,
+          scrollIntoView, guardAlreadyRun: true, narrate, perceptionEnv: perceptionEnvBrowser,
+        });
+      }
+      throw e;
+    }
     // Minimized-window guard (same as the by-axis path): when the window origin
     // is the Windows -32000 marker, coords.{x,y} are off-screen negatives the OS
     // would clamp to (0,0). Checked before the inViewport gate because a

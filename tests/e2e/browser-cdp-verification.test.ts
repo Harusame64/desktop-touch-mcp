@@ -319,3 +319,58 @@ describe.skipIf(!CHROME_AVAILABLE)("issue #181 — browser_fill verification", (
     expect((body.suggest ?? []).join(" ")).toMatch(/controlled_input_transform|controlled input/i);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #441 — browser_click handler rescue (hidden/zero-size selector duplicate)
+//
+// The STOP branches (ambiguous / no-actionable) return before any OS click, so
+// they exercise the full handler → ElementZeroSizeError catch → rescue → typed
+// failure pipeline HEADLESS. The success branch issues a real nut-js click and is
+// HEADED-gated (parity with the #181 handler test above).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe.skipIf(!CHROME_AVAILABLE)("issue #441 — browser_click rescue stop branches (headless)", () => {
+  it("zero-size first match + TWO visible duplicates → BrowserAmbiguousTarget + candidates (no auto-click)", async () => {
+    // querySelector('[aria-label="Ambiguous Dup"]') matches the hidden div first
+    // → ElementZeroSizeError → rescue → 2 visible actionable → ambiguous stop.
+    const result = await browserClickElementHandler({
+      selector: '[aria-label="Ambiguous Dup"]',
+      port: TEST_PORT,
+    });
+    const body = parseFirstLine(result) as {
+      ok: false;
+      code: string;
+      context?: { candidates?: Array<{ index: number; name: string }>; total?: number };
+    };
+    expect(body.ok).toBe(false);
+    expect(body.code).toBe("BrowserAmbiguousTarget");
+    // The rescue surfaces the visible candidates so the agent can disambiguate.
+    expect((body.context?.candidates ?? []).length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe.runIf(IS_HEADED && CHROME_AVAILABLE)("issue #441 — browser_click rescue success (headed)", () => {
+  it("zero-size first match + ONE visible duplicate → clicks the visible button (resolvedVia rescue)", async () => {
+    await evaluateInTab("window._clickLog = []", null, TEST_PORT);
+    const result = await browserClickElementHandler({
+      selector: '[aria-label="Request Indexing"]',
+      port: TEST_PORT,
+    });
+    const body = parseFirstLine(result) as {
+      ok: boolean;
+      clicked?: unknown;
+      resolvedVia?: string;
+    };
+    expect(body.ok).toBe(true);
+    // selector-mode wire shape preserved: clicked is the selector string.
+    expect(body.clicked).toBe('[aria-label="Request Indexing"]');
+    expect(body.resolvedVia).toBe("actionability-rescue");
+    // The OS click landed on the VISIBLE button, not the hidden duplicate.
+    const log = (await evaluateInTab(
+      "JSON.stringify((window._clickLog || []).map(e => e.id))",
+      null,
+      TEST_PORT,
+    )) as string;
+    expect(JSON.parse(log)).toContain("dup441-visible-btn");
+  });
+});
