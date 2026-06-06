@@ -70,7 +70,7 @@ desktop-touch-mcp (Node.js / TypeScript)
 
 ### Surface status
 
-- **Current public surface (v1.8.0)**: 29 tools — 27 stub catalog + 2 dynamic v2 (`desktop_discover` / `desktop_act`)
+- **Current public surface (v1.10.0)**: 29 tools — 27 stub catalog + 2 dynamic v2 (`desktop_discover` / `desktop_act`)
 - **Tool surface reduction (Phase 1–4) — shipped**: naming redesign, family merge dispatchers, browser rearrangement, privatize/absorb. Pre-Phase-1 surface was 65 tools.
 - Phase design references (all Implemented):
   - [tool-surface-phase1-naming-design.md](./tool-surface-phase1-naming-design.md)
@@ -206,6 +206,19 @@ Act on an entity returned by `desktop_discover` (`click` / `type` / `drag` /
 semantic diff (`entity_disappeared`, `modal_appeared`, `focus_shifted`, …) plus
 the `attention` signal — so the caller can decide the next step without another
 screenshot. On `ok:false` read `reason` and follow the recovery path:
+
+> **`roiCapture` (visual-only targets).** On a UIA-blind target (Electron / PWA /
+> game / custom canvas / RDP), a successful act can additionally bundle a
+> `roiCapture: { roi, somImage, entities, source }` — a base64 PNG crop of *just
+> the region that changed* plus a lease-less preview of the entities now visible
+> there — so the caller confirms the result and finds the next target in one call
+> instead of a follow-up `desktop_state` + `screenshot`. The preview `entities`
+> carry no lease (re-run `desktop_discover` to act on one). Controlled by the
+> `returnCapture` input: `on-change` (default for visual-only targets — attaches
+> only on a visible change), `always`, or `never`. Never attached on structured
+> targets (browser/CDP, UIA-rich native), where `desktop_state` / `desktop_discover`
+> are cheaper and exact. The semantic `diff` stays correct independently: it carries
+> the discovered entities forward rather than re-reading text from the crop.
 
 | `reason` | Recovery |
 |---|---|
