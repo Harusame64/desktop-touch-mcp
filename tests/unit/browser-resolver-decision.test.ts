@@ -243,3 +243,61 @@ describe("decideActionTarget — role gate (Codex P1: never resolve to a wrong-r
     expect(d.kind).toBe("noActionable");
   });
 });
+
+describe("decideActionTarget — requireReceivesEvents opt (issue #441 selector-rescue scrollIntoView 1st pass)", () => {
+  it("default (true): a visible+enabled but off-viewport strong target (receivesEvents=false) → noActionable", () => {
+    // The off-viewport visible candidate that the rescue must scroll into view.
+    const d = decideActionTarget(
+      [facts({ index: 0, chain: [node({ tag: "button", receivesEvents: false })] })],
+      1,
+    );
+    expect(d.kind).toBe("noActionable");
+  });
+
+  it("requireReceivesEvents:false: the SAME off-viewport candidate resolves (used to identify it before scrolling)", () => {
+    const d = decideActionTarget(
+      [facts({ index: 0, chain: [node({ tag: "button", receivesEvents: false, rect: { x: 3, y: 4, w: 5, h: 6 } })] })],
+      1,
+      { requireReceivesEvents: false },
+    );
+    expect(d.kind).toBe("resolved");
+    if (d.kind === "resolved") {
+      expect(d.target).toEqual({ index: 0, rect: { x: 3, y: 4, w: 5, h: 6 }, climbDepth: 0 });
+    }
+  });
+
+  it("requireReceivesEvents:false still requires visible + enabled (hidden duplicate never resolves)", () => {
+    // The hidden zero-size duplicate is filtered out by the gatherer before
+    // decide, but even if it reached here, visible:false must keep it out.
+    const d = decideActionTarget(
+      [facts({ index: 0, chain: [node({ tag: "button", visible: false, receivesEvents: false })] })],
+      1,
+      { requireReceivesEvents: false },
+    );
+    expect(d.kind).toBe("noActionable");
+  });
+
+  it("requireReceivesEvents:false: two off-viewport visible candidates → ambiguous (scroll won't disambiguate)", () => {
+    const d = decideActionTarget(
+      [
+        facts({ index: 0, name: "A", chain: [node({ tag: "button", receivesEvents: false, rect: { x: 0, y: 0, w: 5, h: 5 } })] }),
+        facts({ index: 1, name: "B", chain: [node({ tag: "button", receivesEvents: false, rect: { x: 9, y: 9, w: 5, h: 5 } })] }),
+      ],
+      2,
+      { requireReceivesEvents: false },
+    );
+    expect(d.kind).toBe("ambiguous");
+  });
+});
+
+describe("ElementZeroSizeError (issue #441 — cdp-bridge typed zero-size error)", () => {
+  it("is an Error subclass with name 'ElementZeroSizeError' and preserves the message", async () => {
+    const { ElementZeroSizeError } = await import("../../src/engine/cdp-bridge.js");
+    const e = new ElementZeroSizeError("Element has zero size (hidden or not rendered): div[aria-label=\"x\"]");
+    expect(e).toBeInstanceOf(Error);
+    expect(e).toBeInstanceOf(ElementZeroSizeError);
+    expect(e.name).toBe("ElementZeroSizeError");
+    // message still matches the legacy /zero size|hidden/i contract (e2e + callers)
+    expect(e.message).toMatch(/zero size|hidden/i);
+  });
+});

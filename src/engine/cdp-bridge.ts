@@ -78,6 +78,22 @@ export interface ElementCoords {
   occluded: boolean;
 }
 
+/**
+ * Thrown by `getElementScreenCoords` when the first `querySelector` match has a
+ * zero-size bounding box (hidden or not rendered). Distinct from a generic
+ * "not found" error so the `browser_click` selector path can intercept JUST this
+ * case and route to the actionability rescue (issue #441): a CSS selector that
+ * matches a hidden/zero-size duplicate AND a visible actionable element should
+ * click the visible one rather than fail. The message still contains "zero size"
+ * so existing string-matching callers/tests (`/zero size|hidden/i`) stay green.
+ */
+export class ElementZeroSizeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ElementZeroSizeError";
+  }
+}
+
 // ─── CDP Session ──────────────────────────────────────────────────────────────
 
 interface PendingCommand {
@@ -448,7 +464,9 @@ export async function getElementScreenCoords(
   if (!el) return JSON.stringify({ error: "Element not found: " + sel });
   var rect = el.getBoundingClientRect();
   if (rect.width === 0 && rect.height === 0) {
-    return JSON.stringify({ error: "Element has zero size (hidden or not rendered): " + sel });
+    // zeroSize discriminant (issue #441): lets getElementScreenCoords throw a
+    // typed ElementZeroSizeError so the click handler can route to the rescue.
+    return JSON.stringify({ error: "Element has zero size (hidden or not rendered): " + sel, zeroSize: true });
   }
   var dpr     = window.devicePixelRatio || 1;
   var sx      = window.screenX;
@@ -494,13 +512,16 @@ export async function getElementScreenCoords(
 })()`;
 
   const raw = (await evaluateInTab(expression, tabId, port)) as string;
-  let parsed: ({ error: string } | (ElementCoords & { error?: undefined }));
+  let parsed: ({ error: string; zeroSize?: boolean } | (ElementCoords & { error?: undefined }));
   try {
     parsed = JSON.parse(raw) as typeof parsed;
   } catch {
     throw new Error(`Unexpected response from CDP: ${String(raw)}`);
   }
   if (parsed.error) {
+    // Typed zero-size error (issue #441) so the click handler can intercept just
+    // this case for the actionability rescue; "not found" stays a generic Error.
+    if (parsed.zeroSize) throw new ElementZeroSizeError(parsed.error);
     throw new Error(parsed.error);
   }
   return parsed as ElementCoords;

@@ -18,10 +18,12 @@ import {
   listTabs,
   evaluateInTab,
   getElementScreenCoords,
+  ElementZeroSizeError,
   navigateTo,
   getDomHtml,
   disconnectAll,
 } from "../../src/engine/cdp-bridge.js";
+import { resolveBrowserActionTarget } from "../../src/tools/browser-resolver.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_PATH = join(__dirname, "fixtures", "test-page.html");
@@ -253,11 +255,62 @@ describe.skipIf(!CHROME_AVAILABLE)("getElementScreenCoords", () => {
     ).rejects.toThrow(/zero size|hidden/i);
   });
 
+  it("throws a typed ElementZeroSizeError for zero-size elements (issue #441 rescue trigger)", async () => {
+    // The first match of [aria-label="Request Indexing"] is the hidden display:none
+    // duplicate (precedes the visible button in DOM order) → typed error so the
+    // click handler can route to the actionability rescue.
+    await expect(
+      getElementScreenCoords('[aria-label="Request Indexing"]', null, TEST_PORT)
+    ).rejects.toBeInstanceOf(ElementZeroSizeError);
+  });
+
   it("two different elements have different coords", async () => {
     const btn = await getElementScreenCoords("#btn-submit", null, TEST_PORT);
     const input = await getElementScreenCoords("#input-name", null, TEST_PORT);
     expect(btn.x).not.toBe(input.x);
     expect(btn.y).not.toBe(input.y);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #441 — selector actionability rescue core (resolveBrowserActionTarget
+// by:'selector'). The rescue routes a CSS selector matching a hidden/zero-size
+// duplicate AND a visible button to this resolver, which must resolve to the
+// VISIBLE one. Headless-safe (elementFromPoint hit-test works headless).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe.skipIf(!CHROME_AVAILABLE)("selector actionability rescue (#441)", () => {
+  it("resolves [aria-label] selector to the VISIBLE duplicate, not the hidden zero-size one", async () => {
+    const outcome = await resolveBrowserActionTarget({
+      by: "selector",
+      pattern: '[aria-label="Request Indexing"]',
+      action: "click",
+      tabId: null,
+      port: TEST_PORT,
+    });
+    expect(outcome.kind).toBe("resolved");
+    if (outcome.kind === "resolved") {
+      // The resolved rect must be the visible button's (non-zero size).
+      expect(outcome.rect.w).toBeGreaterThan(0);
+      expect(outcome.rect.h).toBeGreaterThan(0);
+    }
+  });
+
+  it("requireReceivesEvents:false resolves an off-viewport visible duplicate (scrollIntoView 1st pass)", async () => {
+    // The visible button is parked at top:4000 (off-viewport) → receivesEvents is
+    // false, so the default click gate would noActionable. The rescue's 1st pass
+    // (requireReceivesEvents:false) must still resolve it so it can be scrolled in.
+    const gated = await resolveBrowserActionTarget({
+      by: "selector", pattern: '[aria-label="Submit Far"]', action: "click",
+      tabId: null, port: TEST_PORT,
+    });
+    expect(gated.kind).toBe("noActionable");
+
+    const ungated = await resolveBrowserActionTarget({
+      by: "selector", pattern: '[aria-label="Submit Far"]', action: "click",
+      requireReceivesEvents: false, tabId: null, port: TEST_PORT,
+    });
+    expect(ungated.kind).toBe("resolved");
   });
 });
 

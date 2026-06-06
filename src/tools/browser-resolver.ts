@@ -924,6 +924,15 @@ export interface ResolveActionArgs {
   caseSensitive?: boolean;
   /** click gates on receivesEvents; fill does not (acts via CDP eval, §S5) */
   action: "click" | "fill";
+  /**
+   * Override the receivesEvents (occlusion / in-viewport hit-test) gate. Default
+   * derives from `action` (`action !== "fill"`). The selector actionability
+   * rescue's scrollIntoView two-pass (issue #441) passes `false` on its 1st pass
+   * to identify the unique visible candidate even when it is off-viewport, then
+   * scrolls it in and re-resolves with the default gate. Applied via
+   * nullish-coalescing so the fill default (false) is preserved when unset.
+   */
+  requireReceivesEvents?: boolean;
   tabId?: string | null;
   port: number;
 }
@@ -1026,7 +1035,10 @@ export async function resolveBrowserActionTarget(args: ResolveActionArgs): Promi
   }
   const gathered = raw as GatheredFacts;
   const decision = decideActionTarget(gathered.candidates, gathered.total, {
-    requireReceivesEvents: args.action !== "fill",
+    // nullish-coalescing: an explicit requireReceivesEvents wins; otherwise the
+    // per-action default (fill = false, click = true). Issue #441 rescue 1st pass
+    // passes false to resolve an off-viewport candidate before scrolling it in.
+    requireReceivesEvents: args.requireReceivesEvents ?? (args.action !== "fill"),
   });
   if (decision.kind === "resolved") {
     // Identity of the matched element (chain[0] = top[index] before climb) so a
@@ -1068,6 +1080,72 @@ export async function resolveBrowserActionTarget(args: ResolveActionArgs): Promi
     };
   }
   return decision;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #441 — selector actionability rescue: scroll a resolved candidate into
+// view BY ITS POOL INDEX (the scrollIntoView two-pass). A viewport rect alone
+// cannot be scrolled: `.scrollIntoView()` needs the live DOM node, and an
+// off-viewport element is not reachable via elementFromPoint. So we re-run the
+// SAME deterministic candidate pool as the resolve gather (identical
+// querySelectorAll order + scoring via candidatePoolJs), re-select `top[index]`,
+// and scroll the live node — which honours nested scroll containers, unlike a
+// window-only scroll. Same re-gather+index determinism as buildFillActJs.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Build the injected-JS IIFE that scrolls the resolved candidate `top[index]`
+ * into view (`scrollIntoView({block:'center', inline:'nearest', behavior:'instant'})`,
+ * parity with `scrollSelectorIntoViewIfNeeded`). Returns `{ ok }` or
+ * `{ ok:false, error }`. Snapshot-exempt (not a browser_search builder).
+ */
+export function buildScrollToCandidateJs(args: ActionFactsArgs, index: number): string {
+  return `${candidatePoolJs(args)}
+  // ── Issue #441: scroll resolved candidate top[index] into view by re-gather+index. ──
+  if (top.length <= ${index}) return { ok: false, error: 'index_out_of_range' };
+  const el = top[${index}].el;
+  if (!el || !el.isConnected) return { ok: false, error: 'candidate_lost' };
+  el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+  return { ok: true };
+})()
+`;
+}
+
+/** Args subset the candidate pool needs to re-gather deterministically (no action/port). */
+export interface ScrollCandidateArgs {
+  by: "text" | "regex" | "role" | "ariaLabel" | "selector";
+  pattern: string;
+  scope?: string;
+  caseSensitive?: boolean;
+  role?: string;
+}
+
+/**
+ * Scroll a resolved selector-rescue candidate into view by its pool index, then
+ * settle ~250ms so the layout stabilises before the caller's 2nd resolve pass
+ * re-runs the receivesEvents hit-test. Best-effort: a failed scroll just means
+ * the 2nd pass may still report `noActionable` (the caller surfaces that with
+ * candidates). Mirrors `scrollSelectorIntoViewIfNeeded`'s settle.
+ */
+export async function scrollResolvedCandidateIntoView(
+  args: ScrollCandidateArgs,
+  index: number,
+  tabId: string | null,
+  port: number,
+): Promise<void> {
+  try {
+    await evaluateInTab(
+      buildScrollToCandidateJs(
+        { by: args.by, pattern: args.pattern, scope: args.scope, caseSensitive: args.caseSensitive ?? false, role: args.role },
+        index,
+      ),
+      tabId,
+      port,
+    );
+    await new Promise<void>((r) => setTimeout(r, 250));
+  } catch {
+    /* best-effort scroll — the 2nd resolve pass gates actionability */
+  }
 }
 
 // ───────────────────────────────────────────────────────────────────────────
