@@ -857,17 +857,7 @@ async function buildRoiCapture(
     // S4 — OCR only the ROI crop. hwnd is provided so the empty windowTitle is
     // unused; no UIA dictionary (visual-only target has no UIA candidates).
     const som = await runSomPipeline("", hwnd, "ja", 2, "auto", false, [], roi);
-    if (som.somImage === null) return undefined; // SoM render unavailable
-
-    // OQ-10 — map ROI-OCR elements to the lease-less preview, deduped against
-    // the discover snapshot by geometry AND label (so an in-place text change is
-    // preserved). Pure logic in `_roi-preview.ts` (`buildRoiPreviewEntities`).
-    const entities = buildRoiPreviewEntities(
-      som.elements,
-      facade.getDiscoverEntitiesForViewId(viewId),
-    );
-
-    return { roi, somImage: som.somImage.base64, entities, source };
+    return assembleRoiCaptureFromSom(som, roi, source, facade, viewId);
   } catch (err) {
     // OCR is best-effort; never break the act envelope on a pipeline failure.
     console.error(
@@ -875,6 +865,34 @@ async function buildRoiCapture(
     );
     return undefined;
   }
+}
+
+/**
+ * ADR-024 Seed-2 S5b — OCR-free assembly of a {@link RoiCapture} from an
+ * already-computed SoM pipeline result. Extracted from {@link buildRoiCapture}
+ * so the S5b fold can reuse the SAME assembly on the single ROI-OCR it already
+ * ran (instead of a second `runSomPipeline`), keeping the `roiCapture` output
+ * byte-equal between the legacy 2-OCR path and the folded 1-OCR path (S5b
+ * acceptance ③). Gate-less: the caller is responsible for the visual-only gate.
+ */
+function assembleRoiCaptureFromSom(
+  som: Awaited<ReturnType<typeof runSomPipeline>>,
+  roi: Rect,
+  source: RoiCapture["source"],
+  facade: DesktopFacade,
+  viewId: string,
+): RoiCapture | undefined {
+  if (som.somImage === null) return undefined; // SoM render unavailable
+
+  // OQ-10 — map ROI-OCR elements to the lease-less preview, deduped against
+  // the discover snapshot by geometry AND label (so an in-place text change is
+  // preserved). Pure logic in `_roi-preview.ts` (`buildRoiPreviewEntities`).
+  const entities = buildRoiPreviewEntities(
+    som.elements,
+    facade.getDiscoverEntitiesForViewId(viewId),
+  );
+
+  return { roi, somImage: som.somImage.base64, entities, source };
 }
 
 /** Pre-flight lease validation closure used by the commit wrapper

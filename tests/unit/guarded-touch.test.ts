@@ -1,7 +1,8 @@
-import { describe, it, expect } from "vitest";
-import { GuardedTouchLoop, type TouchEnvironment } from "../../src/engine/world-graph/guarded-touch.js";
+import { describe, it, expect, vi } from "vitest";
+import { GuardedTouchLoop, type TouchEnvironment, type RoiCaptureMaterial } from "../../src/engine/world-graph/guarded-touch.js";
 import { LeaseStore } from "../../src/engine/world-graph/lease-store.js";
 import type { UiEntity } from "../../src/engine/world-graph/types.js";
+import type { Rect, UiEntityCandidate } from "../../src/engine/vision-gpu/types.js";
 
 function entity(id: string, gen: string, opts: Partial<UiEntity> = {}): UiEntity {
   return {
@@ -659,5 +660,138 @@ describe("GuardedTouchLoop — H3 dialog-own session modal guard", () => {
     }));
     const result = await loop.touch({ lease });
     expect(result.ok).toBe(true);
+  });
+});
+
+// ── ADR-024 Seed-2 S5b — postSnapshot seam (未配線 in prod; wired in the loop) ──
+//
+// The loop consumes an optional per-call `postSnapshot` closure (W2): when
+// present it supplies the post-touch candidates IN PLACE OF
+// `env.resolvePostTouchEntities()`, surfaces `roiMaterial`, and scopes the diff
+// to `roiMaterial.observedRect`. Absent → the env path runs and no `roiMaterial`
+// is attached (byte-equal). Production does not pass a closure yet (S5b-2), so
+// these tests exercise the seam with a fake closure.
+describe("GuardedTouchLoop — ADR-024 S5b postSnapshot seam", () => {
+  function ocrCandidate(label: string, rect: Rect): UiEntityCandidate {
+    return {
+      source: "ocr",
+      target: { kind: "window", id: "w1" },
+      role: "label",
+      label,
+      rect,
+      actionability: ["click"],
+      confidence: 0.7,
+      observedAtMs: 0,
+      provisional: false,
+    };
+  }
+
+  it("postSnapshot present → used instead of resolvePostTouchEntities; candidates feed the diff; roiMaterial surfaces", async () => {
+    const e = entity("e1", GEN); // touched, rect 100,200,80,30
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(e, "v1");
+    const resolvePost = vi.fn(async () => [] as UiEntity[]);
+    const loop = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities: () => [e],
+      resolvePostTouchEntities: resolvePost,
+    }));
+    const roiMaterial: RoiCaptureMaterial = { observedRect: { x: 0, y: 0, width: 50, height: 50 } };
+    const postSnapshot = vi.fn(async () => ({
+      // A fresh OCR candidate inside the observed region; e (touched) sits OUTSIDE
+      // it (100,200) so its fate is not asserted — isolating "candidate → diff".
+      candidates: [ocrCandidate("Hello", { x: 10, y: 10, width: 20, height: 10 })],
+      roiMaterial,
+    }));
+
+    const result = await loop.touch({ lease, postSnapshot });
+
+    expect(postSnapshot).toHaveBeenCalledOnce();
+    expect(resolvePost).not.toHaveBeenCalled(); // env path bypassed
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // The closure's candidate was resolved into the post snapshot → appeared.
+      expect(result.diff).toContain("entity_appeared");
+      // The touched entity (outside observedRect) was not re-observed → not disappeared.
+      expect(result.diff).not.toContain("entity_disappeared");
+      // roiMaterial threaded straight through for the wrapper to strip.
+      expect(result.roiMaterial).toBe(roiMaterial);
+    }
+  });
+
+  it("postSnapshot absent → resolvePostTouchEntities used and no roiMaterial key (byte-equal)", async () => {
+    const e = entity("e1", GEN);
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(e, "v1");
+    const resolvePost = vi.fn(async () => [e]);
+    const loop = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities: () => [e],
+      resolvePostTouchEntities: resolvePost,
+    }));
+
+    const result = await loop.touch({ lease });
+
+    expect(resolvePost).toHaveBeenCalledOnce();
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.diff).toHaveLength(0);
+      // Field omitted entirely (not `roiMaterial: undefined`) so JSON.stringify
+      // matches the pre-S5b shape.
+      expect("roiMaterial" in result).toBe(false);
+    }
+  });
+
+  it("observedRect scopes the touched fate — out-of-region touched is NOT entity_disappeared", async () => {
+    const e = entity("e1", GEN); // rect 100,200,80,30
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(e, "v1");
+    const loop = new GuardedTouchLoop(store, makeEnv({ resolveLiveEntities: () => [e] }));
+
+    // post empty (e absent), observedRect far from e → e was not re-observed.
+    const result = await loop.touch({
+      lease,
+      postSnapshot: async () => ({ candidates: [], roiMaterial: { observedRect: { x: 0, y: 0, width: 10, height: 10 } } }),
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.diff).not.toContain("entity_disappeared");
+  });
+
+  it("observedRect covering the touched entity DOES report entity_disappeared when it vanishes", async () => {
+    const e = entity("e1", GEN); // rect 100,200,80,30
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(e, "v1");
+    const loop = new GuardedTouchLoop(store, makeEnv({ resolveLiveEntities: () => [e] }));
+
+    const result = await loop.touch({
+      lease,
+      postSnapshot: async () => ({ candidates: [], roiMaterial: { observedRect: { x: 100, y: 200, width: 80, height: 30 } } }),
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.diff).toContain("entity_disappeared");
+  });
+
+  it("observedRect scopes the removed set — an out-of-region dismissed modal is NOT modal_dismissed", async () => {
+    const touched = entity("t1", GEN, { rect: { x: 500, y: 500, width: 10, height: 10 } });
+    const modal   = entity("m1", GEN, { role: "unknown", sources: ["uia"], rect: { x: 0, y: 0, width: 10, height: 10 } });
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(touched, "v1");
+    const loop = new GuardedTouchLoop(store, makeEnv({ resolveLiveEntities: () => [touched, modal] }));
+
+    // observedRect covers the touched (500,500) only; the modal (0,0) is outside.
+    // post=[] → unscoped this would emit modal_dismissed (modal in removed); scoped
+    // the out-of-region modal is excluded from removed.
+    const result = await loop.touch({
+      lease,
+      postSnapshot: async () => ({ candidates: [], roiMaterial: { observedRect: { x: 495, y: 495, width: 20, height: 20 } } }),
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.diff).not.toContain("modal_dismissed");
+      // The touched IS in the observed region and vanished → entity_disappeared,
+      // proving the diff actually ran (not vacuously empty).
+      expect(result.diff).toContain("entity_disappeared");
+    }
   });
 });
