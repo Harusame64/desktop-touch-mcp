@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.10.0] - 2026-06-06 — `desktop_act` can bundle a result preview on visual-only targets
+
+### Added
+
+- **`desktop_act` can now return a post-action `roiCapture` on visual-only
+  targets** (experimental). When you act on a target the accessibility tree
+  cannot describe — an Electron or PWA app, a game or other custom-drawn canvas,
+  or a Remote Desktop window — a successful act can bundle a `roiCapture`:
+
+  - `somImage` — a base64 PNG crop of just the region that changed (not the whole
+    window), so you can *see* the result of your action;
+  - `entities` — a lightweight, read-only preview of the labels/controls now
+    visible in that region;
+  - `roi` / `source` — where the crop came from.
+
+  This lets an automation **confirm the result and find its next target in a
+  single call**, instead of following every act with a separate `desktop_state`
+  and `screenshot`. Control it with the new `returnCapture` option:
+  `"on-change"` (the default for visual-only targets — attaches only when the
+  screen actually changed), `"always"`, or `"never"`. The preview `entities`
+  carry no lease — re-run `desktop_discover` to act on one. Structured targets
+  (Chrome/Edge via the DevTools Protocol, accessibility-rich native windows)
+  never receive a `roiCapture`; there, keep using `desktop_state` and
+  `desktop_discover`, which are cheaper and exact.
+
 ## [1.9.2] - 2026-05-25 — Terminal send now runs commands in conhost PowerShell
 
 ### Fixed
