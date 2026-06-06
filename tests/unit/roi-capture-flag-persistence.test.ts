@@ -130,3 +130,64 @@ describe("ADR-024 Seed-2 S5c-1a — resolveEntityCenterForViewId (frame-diff foc
     expect(facade.resolveEntityCenterForViewId(ent.lease.viewId, "ent-does-not-exist")).toBeNull();
   });
 });
+
+// ADR-024 Seed-2 S5b — facade fold accessors (read at act time on the discover
+// session). `resolveOcrTargetIdForViewId` MUST mirror the discover OCR lane's id
+// formula (`src/tools/desktop-providers/ocr-provider.ts:38`:
+// `target.hwnd ?? target.windowTitle ?? "@active"`)
+// so the fold's carry-forward candidates key to the SAME entityId (R1). This is
+// the facade half of the @active parity pin (the resolver half is in
+// roi-preview.test.ts). `discoverHasVisualGpuForViewId` is the D6 fold gate.
+describe("ADR-024 Seed-2 S5b — resolveOcrTargetIdForViewId (@active parity)", () => {
+  /** see() with an explicit target → its viewId. Each unique target keys its own
+   *  session; the facade stores `lastTarget = input.target` verbatim. */
+  const seeWith = async (facade: DesktopFacade, target: Record<string, string>): Promise<string> => {
+    const out = await facade.see({ target });
+    return out.entities[0].lease.viewId;
+  };
+
+  it("returns target.hwnd when the discover target pinned an HWND", async () => {
+    const facade = facadeWith([]);
+    expect(facade.resolveOcrTargetIdForViewId(await seeWith(facade, { hwnd: "0xABC" }))).toBe("0xABC");
+  });
+
+  it("returns target.windowTitle when only a title was given", async () => {
+    const facade = facadeWith([]);
+    expect(facade.resolveOcrTargetIdForViewId(await seeWith(facade, { windowTitle: "Canvas" }))).toBe("Canvas");
+  });
+
+  it("returns the '@active' literal when the target pinned neither hwnd nor title", async () => {
+    // The exact fallback the discover OCR lane keys on — both sides read the same
+    // un-normalized lastTarget, so an @active discover and its fold agree (Codex
+    // PR #438 P2 refute, pinned).
+    const facade = facadeWith([]);
+    expect(facade.resolveOcrTargetIdForViewId(await seeWith(facade, {}))).toBe("@active");
+  });
+
+  it("prefers hwnd over windowTitle when both are present (matches the `??` chain)", async () => {
+    const facade = facadeWith([]);
+    expect(
+      facade.resolveOcrTargetIdForViewId(await seeWith(facade, { hwnd: "0xDEAD", windowTitle: "Canvas" })),
+    ).toBe("0xDEAD");
+  });
+
+  it("returns null for an unknown viewId (no session → handler skips the fold)", () => {
+    expect(new DesktopFacade(() => []).resolveOcrTargetIdForViewId("never-issued-view-id")).toBeNull();
+  });
+});
+
+describe("ADR-024 Seed-2 S5b — discoverHasVisualGpuForViewId (D6 fold gate)", () => {
+  it("is true when the discover snapshot produced a visual_gpu entity (fold disabled → S5 2-OCR)", async () => {
+    const facade = facadeWith(["uia_blind_single_pane"], [cand("Icon", "visual_gpu")]);
+    expect(facade.discoverHasVisualGpuForViewId(await discover(facade))).toBe(true);
+  });
+
+  it("is false for an OCR-only discover (the fold-eligible visual-only target)", async () => {
+    const facade = facadeWith(["uia_blind_single_pane"], [cand("TARGET ALPHA", "ocr")]);
+    expect(facade.discoverHasVisualGpuForViewId(await discover(facade))).toBe(false);
+  });
+
+  it("returns false (safe default) for an unknown viewId", () => {
+    expect(new DesktopFacade(() => []).discoverHasVisualGpuForViewId("never-issued-view-id")).toBe(false);
+  });
+});

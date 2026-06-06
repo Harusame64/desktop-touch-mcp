@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { GuardedTouchLoop, type TouchEnvironment, type RoiCaptureMaterial } from "../../src/engine/world-graph/guarded-touch.js";
 import { LeaseStore } from "../../src/engine/world-graph/lease-store.js";
+import { resolveCandidates } from "../../src/engine/world-graph/resolver.js";
+import { somElementsToCandidates } from "../../src/tools/_roi-preview.js";
 import type { UiEntity } from "../../src/engine/world-graph/types.js";
 import type { Rect, UiEntityCandidate } from "../../src/engine/vision-gpu/types.js";
 
@@ -793,5 +795,113 @@ describe("GuardedTouchLoop — ADR-024 S5b postSnapshot seam", () => {
       // proving the diff actually ran (not vacuously empty).
       expect(result.diff).toContain("entity_disappeared");
     }
+  });
+});
+
+// ── ADR-024 Seed-2 S5b-3 — R1 carry-forward decouples the diff from ROI-OCR ──
+//
+// The S5b-2 PIVOT: the fold does NOT re-OCR the ROI to build the diff baseline.
+// ROI-crop OCR is unreliable (a crop ≈ a text line defeats Windows OCR's line
+// segmentation — Opus S5b-2 root-cause), so the diff baseline carries the
+// discover entities FORWARD: the closure rebuilds them as candidates with the
+// SAME target+label+rect, which `resolveCandidates` mints to the SAME entityId
+// → post == pre → the touched entity never reads as a false `entity_disappeared`.
+//
+// This is the DETERMINISTIC half of the R1 pin (the live small-text canvas is the
+// headed e2e half — `desktop-act-roi-carry-forward.test.ts`). It builds the
+// touched entity from a REAL OCR candidate, runs the REAL loop + REAL
+// `somElementsToCandidates` + REAL `resolveCandidates`, and proves the touched
+// entity survives EVEN WHEN the fold's roiCapture preview is EMPTY (the exact
+// signature of a ROI-OCR that found nothing on small text). The diff's
+// correctness does not depend on the ROI-OCR succeeding.
+describe("GuardedTouchLoop — ADR-024 S5b-3 R1 carry-forward (diff ⟂ ROI-OCR)", () => {
+  const TARGET = { kind: "window" as const, id: "win-1" };
+  const ANCHOR = { text: "TARGET ALPHA", region: { x: 100, y: 200, width: 220, height: 40 } };
+
+  /** Mint the touched UiEntity exactly as the discover OCR lane would: an OCR
+   *  candidate → `resolveCandidates(gen)`. Its entityId is the real
+   *  sha1(window:id | label | snapRect) the carry-forward must reproduce. */
+  function discoverTouched(): UiEntity {
+    const [e] = resolveCandidates(
+      somElementsToCandidates([ANCHOR], TARGET, /* observedAtMs */ 0),
+      GEN,
+    );
+    if (!e) throw new Error("resolveCandidates yielded no entity");
+    return e;
+  }
+
+  /** The carry-forward closure result: discover entities rebuilt as candidates
+   *  (same target+label+rect, a DIFFERENT observedAtMs to prove time-invariance),
+   *  plus a roiCapture whose `entities` preview is EMPTY — i.e. the ROI-OCR found
+   *  nothing (the small-text failure mode). `observedAtMs` differs from the
+   *  discover mint to prove entityId is time-invariant (matches roi-preview.test). */
+  function carryForwardSnapshot(): { candidates: UiEntityCandidate[]; roiMaterial: RoiCaptureMaterial } {
+    return {
+      candidates: somElementsToCandidates([ANCHOR], TARGET, /* observedAtMs */ 999_999),
+      roiMaterial: {
+        roiCapture: {
+          roi: { x: 100, y: 240, width: 220, height: 60 },
+          somImage: "iVBORw0KGgo=",
+          entities: [], // ROI-OCR found nothing — diff must NOT depend on this
+          source: "frame_diff",
+        },
+        observation: {
+          motion: "local_repaint",
+          source: "ssim_residual",
+          framesSampled: 2,
+          totalElapsedMs: 80,
+        },
+      },
+    };
+  }
+
+  it("touched survives with NO entity_disappeared even when the ROI-OCR preview is empty", async () => {
+    const touched = discoverTouched();
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(touched, "v1");
+    // env.resolvePostTouchEntities must NOT be consulted on the fold path — if it
+    // were, the empty default would (wrongly) drop the touched entity. Spy to prove
+    // the closure replaced it.
+    const resolvePost = vi.fn(async () => [] as UiEntity[]);
+    const loop = new GuardedTouchLoop(
+      store,
+      makeEnv({ resolveLiveEntities: () => [touched], resolvePostTouchEntities: resolvePost }),
+    );
+
+    const result = await loop.touch({ lease, postSnapshot: async () => carryForwardSnapshot() });
+
+    expect(resolvePost).not.toHaveBeenCalled();
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // The whole point: the touched OCR anchor keeps its identity via carry-forward,
+      // so it is NOT reported as disappeared despite the empty ROI-OCR preview.
+      expect(result.diff).not.toContain("entity_disappeared");
+      // No churn at all — post == pre by construction (carry-forward).
+      expect(result.diff).toHaveLength(0);
+      expect(result.next).toBe("none");
+      // The roiCapture rode through on roiMaterial for the wrapper to lift, and it
+      // is genuinely empty-previewed — decoupled from the (clean) diff above.
+      expect(result.roiMaterial?.roiCapture?.entities).toEqual([]);
+      expect(result.roiMaterial?.roiCapture?.source).toBe("frame_diff");
+    }
+  });
+
+  it("NEGATIVE control — WITHOUT carry-forward (no candidates) the same touched DOES disappear", async () => {
+    // Proves the assertion above is load-bearing: it is the carry-forward, not the
+    // test setup, that keeps the touched entity alive. Drop the candidates (as a
+    // ROI-OCR-only post would when it reads nothing) and the touched vanishes.
+    const touched = discoverTouched();
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(touched, "v1");
+    const loop = new GuardedTouchLoop(store, makeEnv({ resolveLiveEntities: () => [touched] }));
+
+    const result = await loop.touch({
+      lease,
+      // No carry-forward and no observedRect scoping → unscoped diff, post empty.
+      postSnapshot: async () => ({ candidates: [], roiMaterial: {} }),
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.diff).toContain("entity_disappeared");
   });
 });

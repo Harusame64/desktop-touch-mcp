@@ -132,4 +132,43 @@ describe("somElementsToCandidates (S5b diff baseline mapping)", () => {
   it("returns [] for no elements", () => {
     expect(somElementsToCandidates([], target, 0)).toEqual([]);
   });
+
+  // ADR-024 Seed-2 S5b-3 — @active parity (Codex PR #438 P2 defensive pin). The
+  // fold's carry-forward keys candidates by the SAME `target.id` the discover OCR
+  // lane used: `target.hwnd ?? target.windowTitle ?? "@active"`
+  // (src/tools/desktop-providers/ocr-provider.ts:38).
+  // Codex flagged a possible `@active`-vs-normalized-HWND divergence; it was
+  // refuted in code (both sides read the same un-normalized lastTarget). This pins
+  // the structural half across ALL THREE id forms: for each, the ROI-crop
+  // candidate and the discover candidate for the same label+rect resolve to the
+  // SAME entityId — so a `windowTitle` or `@active`-keyed target is as stable as
+  // an HWND-keyed one (no id form silently breaks carry-forward identity).
+  it.each(["hwnd-42", "Some Window Title", "@active"])(
+    "entityId parity holds for target.id = %s (hwnd / windowTitle / @active)",
+    (id) => {
+      const t = { kind: "window" as const, id };
+      const discoverOcr: UiEntityCandidate = {
+        source: "ocr",
+        target: t,
+        role: "label",
+        label: "TARGET ALPHA",
+        rect: RECT_A,
+        actionability: ["click"],
+        confidence: 0.7,
+        observedAtMs: 5,
+        provisional: false,
+      };
+      const roiOcr = somElementsToCandidates([{ text: "TARGET ALPHA", region: { ...RECT_A } }], t, 777);
+      const [discoverEntity] = resolveCandidates([discoverOcr], "gen-1");
+      const [roiEntity] = resolveCandidates(roiOcr, "gen-1");
+      expect(roiEntity?.entityId).toBe(discoverEntity?.entityId);
+      // And different id forms key to DIFFERENT entityIds (the id is part of the
+      // hash), so this is not vacuously true for some collapsed key.
+      const [other] = resolveCandidates(
+        somElementsToCandidates([{ text: "TARGET ALPHA", region: { ...RECT_A } }], { kind: "window", id: `${id}-x` }, 0),
+        "gen-1",
+      );
+      expect(roiEntity?.entityId).not.toBe(other?.entityId);
+    },
+  );
 });

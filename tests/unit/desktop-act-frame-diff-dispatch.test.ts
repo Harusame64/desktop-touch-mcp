@@ -420,3 +420,91 @@ describe("desktop_act frame-diff dispatch — S5b-2 fold (default on)", () => {
     expect(parsed["roiCapture"]).toBeUndefined();
   });
 });
+
+// ── ADR-024 Seed-2 S5b-3 — flag parity: DESKTOP_TOUCH_STAGE5B_FOLD_OCR=0 ⇒ S5 ──
+//
+// The fold is guarded by a single env safety valve. `=0` must fall fully back to
+// the S5 2-OCR path: the loop receives NO postSnapshot closure, the post OCR runs
+// via the legacy handler-direct path (full composeCandidates diff baseline +
+// buildRoiCapture's SECOND OCR), and the roiCapture carries the RAW frame-diff
+// bbox (un-padded — S5c-1b shape) rather than the fold's PADDED OCR region. The
+// PUBLIC envelope `{ok, executor, diff, next}` is identical either way — the flag
+// only swaps the internal post-snapshot mechanism, never the act's contract.
+describe("desktop_act S5b flag parity — STAGE5B_FOLD_OCR=0 falls back to the S5 path", () => {
+  let savedStage5: string | undefined;
+  let savedFold: string | undefined;
+
+  beforeEach(() => {
+    savedStage5 = process.env["DESKTOP_TOUCH_STAGE5_DXGI"];
+    savedFold = process.env["DESKTOP_TOUCH_STAGE5B_FOLD_OCR"];
+  });
+  afterEach(() => {
+    if (savedStage5 === undefined) delete process.env["DESKTOP_TOUCH_STAGE5_DXGI"];
+    else process.env["DESKTOP_TOUCH_STAGE5_DXGI"] = savedStage5;
+    if (savedFold === undefined) delete process.env["DESKTOP_TOUCH_STAGE5B_FOLD_OCR"];
+    else process.env["DESKTOP_TOUCH_STAGE5B_FOLD_OCR"] = savedFold;
+    _resetFacadeForTest();
+    vi.restoreAllMocks();
+  });
+
+  // Drive ONE identical act under a given fold state. Returns the parsed envelope
+  // plus whether the loop received a postSnapshot closure (= fold taken).
+  async function runOnce(foldOff: boolean): Promise<{ parsed: Record<string, unknown>; closurePassed: boolean }> {
+    _resetFacadeForTest();
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+    delete process.env["DESKTOP_TOUCH_STAGE5_DXGI"]; // Stage 5 on
+    if (foldOff) process.env["DESKTOP_TOUCH_STAGE5B_FOLD_OCR"] = "0";
+    else delete process.env["DESKTOP_TOUCH_STAGE5B_FOLD_OCR"]; // fold on (default)
+
+    const facade = spyFacadeFold({});
+    mockGetWindowRect.mockReturnValue(WINDOW_RECT);
+    mockRunSomPipeline.mockResolvedValue({ somImage: { base64: "iVBORw0KGgo=" }, elements: [] });
+    mockCaptureFrame.mockResolvedValue({
+      rawPixels: Buffer.alloc(800 * 600 * 4),
+      width: 800,
+      height: 600,
+      channels: 4,
+      source: "printwindow",
+    });
+    mockVerifyLocalRepaint.mockResolvedValue({
+      motion: "local_repaint",
+      source: "ssim_residual",
+      roiBbox: { x: 50, y: 60, width: 100, height: 80 },
+      framesSampled: 2,
+      totalElapsedMs: 80,
+    });
+
+    const result = await desktopActRawHandler({ lease: FAKE_LEASE, action: "click", returnCapture: "on-change" });
+    const calls = (facade.touch as unknown as { mock: { calls: Array<[{ postSnapshot?: unknown }]> } }).mock.calls;
+    return { parsed: parse(result.content), closurePassed: calls[0]![0].postSnapshot !== undefined };
+  }
+
+  it("=0 → no closure + RAW bbox roi (S5 shape); default → closure + PADDED roi; envelope identical", async () => {
+    const off = await runOnce(true);
+    const on = await runOnce(false);
+
+    // The flag selects the mechanism: legacy (no closure) vs fold (closure).
+    expect(off.closurePassed).toBe(false);
+    expect(on.closurePassed).toBe(true);
+
+    // roiCapture.roi differs by the flag ONLY: legacy emits the raw frame-diff
+    // bbox; the fold pads it for the WinRT OCR line context (resolveFoldOcrRoi).
+    const offCap = off.parsed["roiCapture"] as { roi?: unknown; source?: unknown };
+    const onCap = on.parsed["roiCapture"] as { roi?: unknown; source?: unknown };
+    expect(offCap.roi).toEqual({ x: 50, y: 60, width: 100, height: 80 }); // raw (S5c-1b)
+    expect(onCap.roi).toEqual({ x: 10, y: 20, width: 180, height: 160 }); // padded (fold)
+    expect(offCap.source).toBe("frame_diff");
+    expect(onCap.source).toBe("frame_diff");
+
+    // The PUBLIC contract envelope is byte-equal regardless of the flag — the
+    // safety valve never changes ok/executor/diff/next.
+    const envelope = (p: Record<string, unknown>) => ({
+      ok: p["ok"], executor: p["executor"], diff: p["diff"], next: p["next"],
+    });
+    expect(envelope(off.parsed)).toEqual(envelope(on.parsed));
+    // And the internal roiMaterial channel never leaks to the wire on either path.
+    expect("roiMaterial" in off.parsed).toBe(false);
+    expect("roiMaterial" in on.parsed).toBe(false);
+  });
+});

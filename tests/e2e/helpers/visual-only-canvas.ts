@@ -31,14 +31,16 @@ export interface VisualOnlyCanvas {
  * Spawn the visual-only canvas and resolve once it is on screen. Returns null if
  * the window does not appear within 12s (callers should skip rather than fall
  * back). Always pair with `close()` in afterAll.
+ *
+ * @param opts.fontSize anchor text point size (default = the fixture's 34pt). A
+ *   small size (e.g. 11) is the ADR-024 S5b-3 R1 carry-forward regression canvas
+ *   (small text = the regime where ROI-crop OCR is least reliable).
  */
-export async function spawnVisualOnlyCanvas(): Promise<VisualOnlyCanvas | null> {
+export async function spawnVisualOnlyCanvas(opts: { fontSize?: number } = {}): Promise<VisualOnlyCanvas | null> {
   const title = `dt-visualonly-e2e-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
-  const child = spawn(
-    "powershell",
-    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", FIXTURE, "-Title", title],
-    { stdio: "ignore" },
-  );
+  const args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", FIXTURE, "-Title", title];
+  if (opts.fontSize !== undefined) args.push("-FontSize", String(opts.fontSize));
+  const child = spawn("powershell", args, { stdio: "ignore" });
   let closed = false;
   const close = () => {
     if (closed) return;
