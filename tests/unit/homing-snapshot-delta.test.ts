@@ -170,6 +170,23 @@ describe("issue #443: homing delta uses screenshot-time position", () => {
     expect(mockSetPosition).toHaveBeenCalledWith({ x: 330, y: 460 });
   });
 
+  it("skips the snapshot delta when the cached HWND entry is stale (recycle guard)", async () => {
+    // Snapshot region is fresh, but the main-cache HWND entry used to read the
+    // live rect is older than the 60s cache TTL → the HWND may have been
+    // recycled, so the snapshot delta path must NOT trust GetWindowRect on it.
+    mockGetSnapshot.mockReturnValue({ x: 100, y: 100, width: 800, height: 600 });
+    mockGetCachedByTitle.mockReturnValue(cachedEntry({ x: 100, y: 100, width: 800, height: 600 }, Date.now() - 120_000));
+    // If the recycle guard were missing, the snapshot path would apply
+    // live(130,160) - snapshot(100,100) = (+30,+60). The guard skips it; the
+    // fallback computeWindowDelta() (mocked → no movement) governs instead.
+    mockGetRect.mockReturnValue({ x: 130, y: 160, width: 800, height: 600 });
+    mockComputeDelta.mockReturnValue({ dx: 0, dy: 0, sizeChanged: false });
+
+    await mouseClickHandler({ ...BASE_ARGS, x: 300, y: 400 });
+
+    expect(mockSetPosition).toHaveBeenCalledWith({ x: 300, y: 400 });
+  });
+
   it("ignores a stale main-cache entry (TTL guard) instead of applying a bogus offset", async () => {
     mockGetSnapshot.mockReturnValue(null);
     // Stale entry (older than the 60s cache TTL) — must NOT seed screenshotRegion.

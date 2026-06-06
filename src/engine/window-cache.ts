@@ -68,6 +68,13 @@ export function saveSnapshot(title: string, region: { x: number; y: number; widt
 /**
  * Read a saved screenshot-time position for a given window title.
  * Returns null if never saved or expired (TTL > 90s).
+ *
+ * Matching is an exact (case-insensitive) key lookup, NOT the substring match
+ * used by getCachedWindowByTitle. A snapshot is keyed by the screenshot's
+ * effectiveTitle and read back by the mouse_click windowTitle; these coincide
+ * for the normal workflow (same title string passed to both), so a caller that
+ * uses different title strings for the screenshot and the click simply misses
+ * here and degrades to the main-cache path — no incorrect correction results.
  */
 export function getSnapshot(title: string): { x: number; y: number; width: number; height: number } | null {
   const key = title.toLowerCase();

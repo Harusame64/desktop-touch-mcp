@@ -204,9 +204,14 @@ async function applyHoming(
   let delta: { dx: number; dy: number; sizeChanged: boolean } | null = null;
 
   if (screenshotRegion && windowTitle) {
-    // Use saved screenshot-time position for delta computation
+    // Use saved screenshot-time position for delta computation. The live rect
+    // is read from the cached HWND, so honour the same 60s stale guard
+    // computeWindowDelta() applies: a cache entry older than CACHE_TTL_MS may
+    // point at a recycled HWND (the snapshot region can be up to its own 90s
+    // TTL old), and reading GetWindowRect on a recycled handle would yield a
+    // bogus delta. When stale, skip and let the fallback path decide.
     const cachedAfter = getCachedWindowByTitle(windowTitle);
-    if (cachedAfter) {
+    if (cachedAfter && Date.now() - cachedAfter.timestamp <= WINDOW_CACHE_TTL_EXPORTED_MS) {
       const live = getWindowRectByHwnd(cachedAfter.hwnd);
       if (live) {
         const dx = live.x - screenshotRegion.x;
