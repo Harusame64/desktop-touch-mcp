@@ -14,6 +14,8 @@ import {
   findContainingWindow,
   getCachedWindowByTitle,
   computeWindowDelta,
+  saveSnapshot,
+  getSnapshot,
 } from "../engine/window-cache.js";
 import { getElementBounds } from "../engine/uia-bridge.js";
 import { captureWindowRawAndHash } from "../engine/layer-buffer.js";
@@ -110,9 +112,28 @@ async function applyHoming(
   const notes: string[] = [];
 
   // ── Tier 2: focus the target window if it went behind another ─────────────
+  //
+  // IMPORTANT: before any cache mutation in Tier 2, capture the screenshot-time
+  // window position. If we call updateWindowCache() before computeWindowDelta(),
+  // the cache is overwritten with the CURRENT position and the delta is always
+  // zero — homing correction is silently disabled.
+  //
+  // Prefer the snapshot cache (set by screenshot tools, survives external focus/
+  // dock calls) over the regular cache (mutated by updateWindowCache in Tier 2
+  // and by other tools like focus_window / window_dock).
+  let screenshotRegion: { x: number; y: number; width: number; height: number } | null = null;
+  if (windowTitle) {
+    screenshotRegion = getSnapshot(windowTitle);
+    if (!screenshotRegion) {
+      const cachedBefore = getCachedWindowByTitle(windowTitle);
+      if (cachedBefore) {
+        screenshotRegion = { ...cachedBefore.region };
+      }
+    }
+  }
+
   if (windowTitle) {
     const windows = enumWindowsInZOrder();
-    updateWindowCache(windows); // keep cache fresh before delta check below
     const active = windows.find((w) => w.isActive);
     if (!active || !active.title.toLowerCase().includes(windowTitle.toLowerCase())) {
       const target = windows.find((w) =>
@@ -170,16 +191,49 @@ async function applyHoming(
   }
 
   // ── Tier 1: window-delta correction ──────────────────────────────────────
-  const cached = windowTitle
-    ? getCachedWindowByTitle(windowTitle)
-    : findContainingWindow(x, y);
+  //
+  // Compute delta from the SCREENSHOT-TIME position (saved before Tier 2
+  // mutated the cache), not from the post-focus position. Without this,
+  // updateWindowCache in Tier 2 silently nullifies the delta and homing
+  // correction becomes a no-op whenever a focus attempt was made.
+  let delta: { dx: number; dy: number; sizeChanged: boolean } | null = null;
 
-  if (!cached) {
-    // No cache entry — nothing to correct
-    return { x, y, notes };
+  if (screenshotRegion && windowTitle) {
+    // Use saved screenshot-time position for delta computation
+    const cachedAfter = getCachedWindowByTitle(windowTitle);
+    if (cachedAfter) {
+      const live = getWindowRectByHwnd(cachedAfter.hwnd);
+      if (live) {
+        const dx = live.x - screenshotRegion.x;
+        const dy = live.y - screenshotRegion.y;
+        const sizeChanged =
+          live.width !== screenshotRegion.width || live.height !== screenshotRegion.height;
+        delta = { dx, dy, sizeChanged };
+        notes.push(`homing delta computed from saved snapshot: (${dx > 0 ? "+" : ""}${dx},${dy > 0 ? "+" : ""}${dy})`);
+      }
+    }
   }
 
-  const delta = computeWindowDelta(cached.hwnd);
+  if (!delta) {
+    // Fallback: standard path — read from cache (only reliable when Tier 2 didn't mutate it)
+    const cached = windowTitle
+      ? getCachedWindowByTitle(windowTitle)
+      : findContainingWindow(x, y);
+
+    if (!cached) {
+      // If windowTitle was provided but cache missed, do a fresh enumeration
+      // so future calls have the window in cache. We still return unmodified
+      // coords (no delta to apply), but at least populate the cache.
+      if (windowTitle) {
+        const fresh = enumWindowsInZOrder();
+        updateWindowCache(fresh);
+        notes.push(`no cached position for "${windowTitle}", cache refreshed for next call`);
+      }
+      return { x, y, notes };
+    }
+
+    delta = computeWindowDelta(cached.hwnd);
+  }
   if (!delta) {
     // Window no longer exists — leave coords as-is
     return { x, y, notes };

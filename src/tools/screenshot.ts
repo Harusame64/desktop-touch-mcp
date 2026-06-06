@@ -10,7 +10,7 @@ import { getUiElements, extractActionableElements, WINUI3_CLASS_RE, detectUiaBli
 import type { UiElementsResult } from "../engine/uia-bridge.js";
 import { recognizeWindow, ocrWordsToActionable, runOcr, mergeNearbyWords, runSomPipeline, snapToDictionary } from "../engine/ocr-bridge.js";
 import type { OcrDictionaryEntry } from "../engine/ocr-bridge.js";
-import { updateWindowCache } from "../engine/window-cache.js";
+import { updateWindowCache, saveSnapshot } from "../engine/window-cache.js";
 import { CHROMIUM_TITLE_RE } from "./workspace.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 import { ok, buildDesc } from "./_types.js";
@@ -600,6 +600,11 @@ export const screenshotHandler = async (args: {
         const wins = enumWindowsInZOrder();
         updateWindowCache(wins);
 
+        // Save screenshot-time snapshot for homing — survives external cache
+        // mutations from focus_window / window_dock between screenshot and click.
+        const snapWin = wins.find((w) => w.title.toLowerCase().includes(effectiveTitle.toLowerCase()));
+        if (snapWin) saveSnapshot(effectiveTitle, snapWin.region);
+
         // Resolve the full window title from the partial match, then test the
         // Chromium regex against the resolved title — not the user-supplied
         // substring (which typically won't contain the "- Google Chrome" suffix).
@@ -1092,6 +1097,10 @@ export const screenshotOcrHandler = async ({
     const ocrWarnings: string[] = [...(resolvedWin?.warnings ?? [])];
     const wins = enumWindowsInZOrder();
     const win = wins.find((w) => w.title.toLowerCase().includes(effectiveTitle.toLowerCase()));
+    if (win) {
+      updateWindowCache(wins);
+      saveSnapshot(effectiveTitle, win.region);
+    }
     if (!win) {
       // Phase 4: surfaced to LLM via screenshot(detail='ocr') dispatcher.
       return failWith(`Window not found: "${effectiveTitle}"`, "screenshot", { windowTitle: effectiveTitle });

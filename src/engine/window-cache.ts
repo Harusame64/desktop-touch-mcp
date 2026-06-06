@@ -34,11 +34,50 @@ const cache = new Map<string, CachedWindow>();
 
 /** Cache entries older than this are treated as stale — HWND may have been recycled. */
 const CACHE_TTL_MS = 60_000;
+
+/**
+ * Snapshot cache: persists screenshot-time window positions by title.
+ * Separate from the main cache — NOT mutated by updateWindowCache(),
+ * focus_window(), or window_dock(). Only screenshot tools write to it,
+ * and only applyHoming reads from it.
+ *
+ * This guarantees that mouse_click's homing correction always compares
+ * against the position the LLM saw in the screenshot, even when other
+ * tools have overwritten the main cache between screenshot and click.
+ */
+const snapshotCache = new Map<string, { region: { x: number; y: number; width: number; height: number }; timestamp: number }>();
+const SNAPSHOT_TTL_MS = 90_000;
+
 export const WINDOW_CACHE_TTL_EXPORTED_MS = CACHE_TTL_MS;
 
 /** Get the timestamp this hwnd was last cached, or null if not cached. */
 export function getWindowCacheTimestamp(hwnd: bigint): number | null {
   return cache.get(String(hwnd))?.timestamp ?? null;
+}
+
+/**
+ * Save a screenshot-time window position to the snapshot cache.
+ * Call from screenshot tools after capturing a single-window screenshot.
+ * The snapshot survives mutations to the main cache from focus/dock tools.
+ */
+export function saveSnapshot(title: string, region: { x: number; y: number; width: number; height: number }): void {
+  const key = title.toLowerCase();
+  snapshotCache.set(key, { region: { ...region }, timestamp: Date.now() });
+}
+
+/**
+ * Read a saved screenshot-time position for a given window title.
+ * Returns null if never saved or expired (TTL > 90s).
+ */
+export function getSnapshot(title: string): { x: number; y: number; width: number; height: number } | null {
+  const key = title.toLowerCase();
+  const entry = snapshotCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.timestamp > SNAPSHOT_TTL_MS) {
+    snapshotCache.delete(key);
+    return null;
+  }
+  return entry.region;
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
