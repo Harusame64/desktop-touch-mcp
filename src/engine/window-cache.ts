@@ -46,6 +46,13 @@ const CACHE_TTL_MS = 60_000;
  * tools have overwritten the main cache between screenshot and click.
  */
 const snapshotCache = new Map<string, { region: { x: number; y: number; width: number; height: number }; timestamp: number }>();
+// Intentionally LONGER than CACHE_TTL_MS (90s vs 60s). The two TTLs bound
+// different things: CACHE_TTL_MS bounds HWND-recycle safety on the *live*
+// lookup (applyHoming guards the cached HWND read with it), while
+// SNAPSHOT_TTL_MS bounds how old a screenshot *position* we still trust as the
+// homing reference. The snapshot stays useful in the 60-90s window precisely
+// when the main-cache HWND entry was refreshed within 60s (e.g. by an
+// intervening focus_window / window_dock) but the screenshot itself is older.
 const SNAPSHOT_TTL_MS = 90_000;
 
 export const WINDOW_CACHE_TTL_EXPORTED_MS = CACHE_TTL_MS;
