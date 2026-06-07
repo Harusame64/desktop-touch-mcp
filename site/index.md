@@ -1,6 +1,6 @@
 # desktop-touch-mcp
 
-An experimental project for giving LLM agents a safer contract with the outside world.
+An experimental Windows computer-use MCP server for giving LLM agents a safer contract with the outside world.
 
 ---
 
@@ -12,7 +12,7 @@ An experimental project for giving LLM agents a safer contract with the outside 
 
 ### Subheadline
 
-`desktop-touch-mcp` is an experimental MCP server for giving LLM agents eyes, hands, and a better safety contract with dynamic interfaces.
+`desktop-touch-mcp` is an experimental Windows computer-use MCP server for giving LLM agents eyes, hands, and a better safety contract with dynamic interfaces.
 
 ### Short lead
 
