@@ -8,7 +8,7 @@ import { getWindows } from "../engine/nutjs.js";
 import { enumMonitors, getVirtualScreen, getWindowTitleW, enumWindowsInZOrder } from "../engine/win32.js";
 import { getUiElements, extractActionableElements, WINUI3_CLASS_RE, detectUiaBlind } from "../engine/uia-bridge.js";
 import type { UiElementsResult } from "../engine/uia-bridge.js";
-import { recognizeWindow, ocrWordsToActionable, runOcr, mergeNearbyWords, runSomPipeline, snapToDictionary } from "../engine/ocr-bridge.js";
+import { recognizeWindow, ocrWordsToActionable, runOcr, mergeNearbyWords, runSomPipeline, snapToDictionary, detectOcrLanguage } from "../engine/ocr-bridge.js";
 import type { OcrDictionaryEntry } from "../engine/ocr-bridge.js";
 import { updateWindowCache, saveSnapshot } from "../engine/window-cache.js";
 import { CHROMIUM_TITLE_RE } from "./workspace.js";
@@ -162,8 +162,8 @@ export const screenshotSchema = {
     ),
   ocrLanguage: z
     .string()
-    .default("ja")
-    .describe("BCP-47 language tag for the OCR engine (e.g. 'ja', 'en-US'). Used when detail='text' (OCR fallback) or detail='ocr' (direct OCR)."),
+    .optional()
+    .describe("BCP-47 language tag for the OCR engine (e.g. 'ja', 'en-US'). Auto-detects from system locale when omitted. Used when detail='text' (OCR fallback) or detail='ocr' (direct OCR)."),
   preprocessPolicy: z
     .enum(["auto", "aggressive", "minimal"])
     .default("auto")
@@ -186,7 +186,7 @@ export const screenshotSchema = {
 export const screenshotOcrSchema = {
   windowTitle: z.string().describe("Title (partial match) of the window to OCR. Use '@active' for the current foreground window."),
   hwnd: z.string().optional().describe("Direct window handle ID (takes precedence over windowTitle). String to avoid 64-bit precision issues."),
-  language: z.string().default("ja").describe("BCP-47 language tag (e.g. 'ja', 'en-US')"),
+  language: z.string().optional().describe("BCP-47 language tag (e.g. 'ja', 'en-US'). Auto-detects from system locale when omitted."),
   region: z
     .object({
       x: z.coerce.number(),
@@ -351,7 +351,7 @@ export const screenshotHandler = async (args: {
   fullContent?: boolean;
   confirmImage: boolean;
   ocrFallback: "auto" | "always" | "never";
-  ocrLanguage: string;
+  ocrLanguage?: string;
   preprocessPolicy: "auto" | "aggressive" | "minimal";
   preprocessAdaptive: boolean;
 }): Promise<ToolResult> => {
@@ -383,7 +383,7 @@ export const screenshotHandler = async (args: {
     return screenshotOcrHandler({
       windowTitle: args.windowTitle ?? "@active",
       hwnd: args.hwnd,
-      language: args.ocrLanguage,
+      language: args.ocrLanguage ?? detectOcrLanguage(),
       region: args.region,
     });
   }
@@ -430,7 +430,7 @@ export const screenshotHandler = async (args: {
     detail,
     confirmImage,
     ocrFallback,
-    ocrLanguage,
+    ocrLanguage = detectOcrLanguage(),
     preprocessPolicy = "auto",
     preprocessAdaptive = false,
   } = args;

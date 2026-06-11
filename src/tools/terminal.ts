@@ -25,7 +25,7 @@ import {
 import { resolveBackgroundInputChannel } from "../engine/background-channel-resolver.js";
 import { detectFocusLoss } from "./_focus.js";
 import { getTextViaTextPattern } from "../engine/uia-bridge.js";
-import { recognizeWindow, ocrWordsToLines } from "../engine/ocr-bridge.js";
+import { recognizeWindow, ocrWordsToLines, detectOcrLanguage } from "../engine/ocr-bridge.js";
 import { stripAnsi, tailLines } from "../engine/ansi.js";
 import {
   observeTarget,
@@ -55,7 +55,7 @@ export const terminalReadSchema = {
   sinceMarker: z.string().max(64).optional().describe("Marker returned from a previous call. If found in current text, only the diff is returned."),
   stripAnsi: coercedBoolean().default(true).describe("Strip ANSI escape sequences (default true)."),
   source: z.enum(["auto", "uia", "ocr"]).default("auto").describe("'auto' = UIA TextPattern then OCR fallback; 'uia' = TextPattern only (fail on miss); 'ocr' = OCR only."),
-  ocrLanguage: z.string().max(20).default("ja").describe("BCP-47 language tag for OCR fallback (default 'ja')."),
+  ocrLanguage: z.string().max(20).optional().describe("BCP-47 language tag for OCR fallback. Auto-detects from system locale when omitted."),
 };
 
 export const terminalSendSchema = {
@@ -725,14 +725,14 @@ export function stripExitArtifacts(slice: string, nonce: string): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const terminalReadHandler = async ({
-  windowTitle, lines, sinceMarker, stripAnsi: doStripAnsi, source, ocrLanguage,
+  windowTitle, lines, sinceMarker, stripAnsi: doStripAnsi, source, ocrLanguage = detectOcrLanguage(),
 }: {
   windowTitle: string;
   lines: number;
   sinceMarker?: string;
   stripAnsi: boolean;
   source: "auto" | "uia" | "ocr";
-  ocrLanguage: string;
+  ocrLanguage?: string;
 }): Promise<ToolResult> => {
   try {
     const win = findTerminalWindow(windowTitle);
@@ -2301,7 +2301,7 @@ export const terminalRunHandler = async ({
     sinceMarker,
     stripAnsi: true,
     source: "auto" as const,
-    ocrLanguage: "ja",
+    ocrLanguage: detectOcrLanguage(),
     ...validatedReadOptions,
   };
 
