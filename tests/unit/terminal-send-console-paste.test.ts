@@ -42,6 +42,7 @@ vi.mock("../../src/engine/uia-bridge.js", () => ({
 vi.mock("../../src/engine/ocr-bridge.js", () => ({
   recognizeWindow: vi.fn(),
   ocrWordsToLines: vi.fn(),
+  detectOcrLanguage: () => "en",
 }));
 
 vi.mock("../../src/engine/identity-tracker.js", () => ({

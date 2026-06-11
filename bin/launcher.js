@@ -48,6 +48,16 @@ function fail(message) {
 }
 
 /**
+ * Opt-in escape hatch for running the launcher from a source tree whose
+ * RELEASE_MANIFEST.sha256 is still the "PENDING" placeholder (i.e. the
+ * release workflow has not finalized the manifest). Published npm packages
+ * always ship a real SHA256, so end users never need this.
+ */
+function allowUnverifiedRelease() {
+  return process.env.DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED === "1";
+}
+
+/**
  * Reads the GitHub token from the environment.
  * Supports both GITHUB_TOKEN (GitHub Actions standard) and GH_TOKEN (gh CLI).
  */
@@ -158,11 +168,21 @@ function expectedReleaseSpec() {
   if (!RELEASE_MANIFEST.sha256 || RELEASE_MANIFEST.assetName !== ASSET_NAME) {
     throw new Error(`Missing release manifest for ${RELEASE_TAG}`);
   }
-  // "PENDING" is the pre-release placeholder set in source.
-  // It means the npm publish CI did not finalize the manifest (e.g.
-  // update-sha.mjs was not run).  In that case we skip SHA256
-  // verification so the launcher is still usable.
+  // "PENDING" is the pre-release placeholder set in source. The release
+  // workflow (scripts/update-sha.mjs) replaces it with the real zip SHA256
+  // before npm publish, so a PENDING manifest at runtime means this launcher
+  // was not finalized — fail closed by default so an accidentally published
+  // launcher can never silently run an unverified runtime zip. Developers
+  // running straight from source can opt in to skipping verification with
+  // DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED=1.
   const isPending = RELEASE_MANIFEST.sha256 === "PENDING";
+  if (isPending && !allowUnverifiedRelease()) {
+    throw new Error(
+      `Release SHA256 manifest for ${RELEASE_TAG} is PENDING — this launcher was not finalized by the release workflow. ` +
+      `Published npm packages always ship a real SHA256. If you are intentionally running the launcher from source, ` +
+      `set DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED=1 to skip integrity verification (development only).`
+    );
+  }
   if (!isPending && !/^[a-f0-9]{64}$/i.test(RELEASE_MANIFEST.sha256)) {
     throw new Error(`Invalid release SHA256 manifest for ${RELEASE_TAG}`);
   }
@@ -349,8 +369,8 @@ async function installRelease(release, expected) {
     if (expected.sha256 !== null) {
       await verifySha256(zipPath, expected.sha256);
     } else {
-      warn("SHA256 is PENDING — skipping integrity verification. " +
-           "Set the GITHUB_TOKEN environment variable and re-run to ensure download integrity.");
+      warn("SHA256 manifest is PENDING and DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED=1 is set — " +
+           "skipping integrity verification of the downloaded zip. Development use only.");
     }
     await mkdir(extractDir, { recursive: true });
     await expandZip(zipPath, extractDir);

@@ -163,7 +163,9 @@ describe("terminal(action='run') — Zod default leak guard (PR #37 Codex P1)", 
     const parsed = TERMINAL_RUN_READ_OPTIONS_SCHEMA.parse(input);
     expect(parsed.stripAnsi).toBe(true);
     expect(parsed.source).toBe("auto");
-    expect(parsed.ocrLanguage).toBe("ja");
+    // ocrLanguage lost its .default("ja") in PR #450 (now optional; the handler
+    // auto-detects from the system locale) — it must NOT materialise here.
+    expect(parsed.ocrLanguage).toBeUndefined();
     expect(parsed.lines).toBe(10);
   });
 

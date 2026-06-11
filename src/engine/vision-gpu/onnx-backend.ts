@@ -40,6 +40,7 @@ import { spawn } from "node:child_process";
 import sharp from "sharp";
 
 import { nativeVision, type NativeRawCandidate } from "../native-engine.js";
+import { detectOcrLanguage } from "../ocr-bridge.js";
 import type { VisualBackend } from "./backend.js";
 import { ModelRegistry, type ModelVariant } from "./model-registry.js";
 import { runStagePipeline, type StageSessionKeys, type StagePipelineInput } from "./stage-pipeline.js";
@@ -91,9 +92,7 @@ const winOcrTierInfinity: WinOcrFallbackFn = async (
       .toBuffer();
 
     // Spawn win-ocr.exe and feed PNG bytes (mirrors ocr-bridge.ts::runOcrExe pattern).
-    // Use system locale for OCR language instead of hardcoded "ja".
-    // Detects e.g. "zh" for Chinese Windows, "ja" for Japanese, "en" for English.
-    const ocrLang = Intl.DateTimeFormat().resolvedOptions().locale.split("-")[0]?.toLowerCase() || "ja";
+    const ocrLang = detectOcrLanguage();
     const stdout = await new Promise<string>((resolve, reject) => {
       const child = spawn(WIN_OCR_EXE_PATH, [ocrLang], { windowsHide: true });
       const timer = setTimeout(() => {
