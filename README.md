@@ -60,6 +60,23 @@ The npm launcher resolves runtime strictly by npm package version. For package `
 
 Set `DESKTOP_TOUCH_MCP_HOME` to override the cache root directory.
 
+> **On a shared or CI network?** The first run reads the GitHub Releases API to
+> locate the runtime zip. The anonymous limit is 60 requests/hour per IP, which a
+> shared public address (CI runners, office NAT) can exhaust before your download
+> even starts. Set `GITHUB_TOKEN` (or `GH_TOKEN`) in the environment and the
+> launcher authenticates the request, raising the limit to 5,000 requests/hour.
+> No token is needed on an ordinary home connection.
+
+> **Running the launcher from a source checkout?** A source build's
+> `bin/launcher.js` carries a placeholder integrity hash (`sha256: "PENDING"`)
+> instead of a finalized one. Rather than download and run an unverified runtime,
+> the launcher fails closed — this guard stops an accidentally published or
+> unfinalized launcher from silently starting unverified code. Published npm
+> releases always ship a real SHA256, so end users never see this. If you are
+> intentionally running the launcher from source, set
+> `DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED=1` to skip integrity verification
+> (development only).
+
 ### Register with Claude CLI
 
 Add to `~/.claude.json` under `mcpServers`:

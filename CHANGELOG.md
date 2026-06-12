@@ -1,5 +1,46 @@
 # Changelog
 
+## [1.10.3] - 2026-06-12 — OCR follows your system language, and first-run downloads are more reliable
+
+### Fixed
+
+- **The text recognition (OCR) used by `screenshot`, `terminal`, and `scroll`
+  now follows your Windows display language instead of always assuming
+  Japanese.** Previously these tools handed a hardcoded `ja` to the Windows OCR
+  engine, so on an English — or any non-Japanese — system, reading on-screen or
+  terminal text could mis-recognize characters or fail to find words that were
+  clearly visible. The language is now detected from your OS preferred language
+  on each call (for example `en`, `zh`, or `ja`), so OCR matches your actual
+  desktop out of the box. You can still pin a specific language per call with the
+  existing `ocrLanguage` (screenshot/terminal) or `language` (scroll) option, and
+  it falls back to English only when the system locale can't be read.
+
+- **First-run downloads are more reliable on shared or rate-limited networks.**
+  The very first `npx -y @harusame64/desktop-touch-mcp` calls the GitHub Releases
+  API to locate the Windows runtime zip. On a shared public IP — CI runners,
+  office NAT, a busy network — the anonymous GitHub limit of 60 requests/hour
+  could already be used up by other traffic, and the download would fail before
+  it started. The launcher now sends a GitHub token when `GITHUB_TOKEN` or
+  `GH_TOKEN` is present in your environment, raising the limit to 5,000
+  requests/hour. No token is needed for ordinary use on a home connection.
+
+### Added
+
+- **New environment variable `DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED` (development
+  only).** The published npm launcher always ships a real SHA256 and verifies the
+  runtime zip before running it, so end users never need this. If you run the
+  launcher straight from a source checkout — where the integrity hash is still a
+  placeholder — set `DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED=1` to skip that
+  verification. Without it, an unfinalized launcher now refuses to run an
+  unverified runtime rather than starting one silently.
+
+### Thanks
+
+- Huge thanks to [@licat2023](https://github.com/licat2023) for contributing both
+  the OCR system-language detection and the `GITHUB_TOKEN` / `GH_TOKEN` support
+  for first-run downloads, and for suggesting the CI hardening that shipped
+  alongside them. 🙏
+
 ## [1.10.2] - 2026-06-07 — `mouse_click` homing correction now works after a window moves
 
 ### Fixed
