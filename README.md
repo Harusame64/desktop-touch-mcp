@@ -790,6 +790,15 @@ For `desktop_discover` warnings (`visual_provider_unavailable`, `visual_provider
 
 ---
 
+## Thank you 🙏
+
+This project just passed **2,000+ downloads**. Huge thanks to everyone who
+tried an experimental desktop-automation MCP server, filed issues, opened PRs,
+and shared what broke. Every bug report made the next release better.
+Thank you for building with me!
+
+---
+
 ## License
 
 MIT
