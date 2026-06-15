@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.10.4] - 2026-06-15 — Updated bundled image library
+
+### Changed
+
+- **Updated the bundled image library (sharp) to 0.35.x.** `screenshot` and the
+  other tools that return or process images use sharp to encode and resize the
+  pictures they hand back. This release ships the newer sharp, which brings the
+  latest upstream image-codec and security fixes for that step. There are no
+  changes to any tool's options or behavior — screenshots look and work exactly
+  as before. Routine maintenance updates to build-time tooling are included as
+  well and have no effect on how the server runs.
+
 ## [1.10.3] - 2026-06-12 — OCR follows your system language, and first-run downloads are more reliable
 
 ### Fixed
