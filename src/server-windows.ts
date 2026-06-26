@@ -75,21 +75,13 @@ const icoOk = existsSync(join(icoDir, "tray_ok.ico")) ? join(icoDir, "tray_ok.ic
 // Priority: DISABLE=1 > ENABLE=1 > default(ON).
 // Exact-match semantics: only the literal string "1" counts; "true"/"yes"/"0"/" " are unset.
 // See docs/anti-fukuwarai-v2-activation-policy.md for the full env matrix.
-const { enabled: _v2Enabled, disabledByFlag: _v2Disabled, legacyEnableSet: _v2LegacySet } =
+const { enabled: _v2Enabled, disabledByFlag: _v2Disabled } =
   resolveV2Activation(process.env);
 
 if (_v2Enabled) {
   console.error("[desktop-touch] v2 tools: enabled (default-on)");
 } else {
   console.error("[desktop-touch] v2 tools: disabled (DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1)");
-}
-
-// ENABLE=1 is deprecated since v0.17. Warn regardless of whether v2 ends up ON or OFF.
-if (_v2LegacySet) {
-  console.error(
-    "[desktop-touch] DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2 is deprecated in v0.17; " +
-    "remove it from your MCP env. Use DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1 to opt out."
-  );
 }
 
 // Pre-load the v2 module at startup so registerDesktopTools() is synchronous inside
