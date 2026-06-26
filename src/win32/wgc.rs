@@ -12,6 +12,7 @@
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
+use super::safety::napi_safe_call;
 use windows::Win32::Foundation::HWND;
 
 fn hwnd_from_bigint(b: BigInt) -> HWND {
@@ -40,57 +41,59 @@ pub struct WgcCaptureResult {
 pub fn capture_window_wgc(hwnd: BigInt) -> Result<WgcCaptureResult> {
     use wgc::WgcSettings;
 
-    // WGC WinRT API requires COM on the calling thread. napi-rs worker threads
-    // may not have it — initialise STA (preferred for WinRT). If already in
-    // MTA (e.g. from UIA), CoInitializeEx returns RPC_E_CHANGED_MODE which is
-    // harmless — WGC works in MTA on modern Windows.
-    let _com = init_com();
+    napi_safe_call("capture_window_wgc", || {
+        // WGC WinRT API requires COM on the calling thread. napi-rs worker threads
+        // may not have it — initialise STA (preferred for WinRT). If already in
+        // MTA (e.g. from UIA), CoInitializeEx returns RPC_E_CHANGED_MODE which is
+        // harmless — WGC works in MTA on modern Windows.
+        let _com = init_com();
 
-    let hwnd = hwnd_from_bigint(hwnd);
+        let hwnd = hwnd_from_bigint(hwnd);
 
-    // Step 1: Create GraphicsCaptureItem from HWND (bypasses picker)
-    let item = wgc::new_item_from_hwnd(hwnd).map_err(|e| {
-        napi::Error::from_reason(format!("WGC: CreateForWindow failed: {e}"))
-    })?;
-    let size = item.Size().map_err(|e| {
-        napi::Error::from_reason(format!("WGC: Size() failed: {e}"))
-    })?;
-    let frame_width = size.Width.max(0) as u32;
-    let frame_height = size.Height.max(0) as u32;
+        // Step 1: Create GraphicsCaptureItem from HWND (bypasses picker)
+        let item = wgc::new_item_from_hwnd(hwnd).map_err(|e| {
+            napi::Error::from_reason(format!("WGC: CreateForWindow failed: {e}"))
+        })?;
+        let size = item.Size().map_err(|e| {
+            napi::Error::from_reason(format!("WGC: Size() failed: {e}"))
+        })?;
+        let frame_width = size.Width.max(0) as u32;
+        let frame_height = size.Height.max(0) as u32;
 
-    if frame_width == 0 || frame_height == 0 {
-        return Err(napi::Error::from_reason(
-            "WGC: zero-size capture item (window may be minimized or cloaked)",
-        ));
-    }
+        if frame_width == 0 || frame_height == 0 {
+            return Err(napi::Error::from_reason(
+                "WGC: zero-size capture item (window may be minimized or cloaked)",
+            ));
+        }
 
-    // Step 2: WGC settings — border OFF, cursor OFF
-    let settings = WgcSettings {
-        frame_queue_length: 2,
-        display_border: Some(false),
-        capture_cursor: Some(false),
-        ..Default::default()
-    };
+        // Step 2: WGC settings — border OFF, cursor OFF
+        let settings = WgcSettings {
+            frame_queue_length: 2,
+            display_border: Some(false),
+            capture_cursor: Some(false),
+            ..Default::default()
+        };
 
-    // Step 3: Create capture session & grab one frame
-    let capture = wgc::Wgc::new(item, settings).map_err(|e| {
-        napi::Error::from_reason(format!("WGC: session creation failed: {e}"))
-    })?;
+        // Step 3: Create capture session & grab one frame
+        let capture = wgc::Wgc::new(item, settings).map_err(|e| {
+            napi::Error::from_reason(format!("WGC: session creation failed: {e}"))
+        })?;
 
-    let frame = capture
-        .take(1)
-        .next()
-        .ok_or_else(|| napi::Error::from_reason("WGC: no frame captured (empty iterator)"))?
-        .map_err(|e| napi::Error::from_reason(format!("WGC: frame error: {e}")))?;
+        let frame = capture
+            .take(1)
+            .next()
+            .ok_or_else(|| napi::Error::from_reason("WGC: no frame captured (empty iterator)"))?
+            .map_err(|e| napi::Error::from_reason(format!("WGC: frame error: {e}")))?;
 
-    let pixels = frame.read_pixels(None).map_err(|e| {
-        napi::Error::from_reason(format!("WGC: read_pixels failed: {e}"))
-    })?;
+        let pixels = frame.read_pixels(None).map_err(|e| {
+            napi::Error::from_reason(format!("WGC: read_pixels failed: {e}"))
+        })?;
 
-    Ok(WgcCaptureResult {
-        data: pixels.into(),
-        width: frame_width as i32,
-        height: frame_height as i32,
+        Ok(WgcCaptureResult {
+            data: pixels.into(),
+            width: frame_width as i32,
+            height: frame_height as i32,
+        })
     })
 }
 
