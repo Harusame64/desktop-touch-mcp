@@ -107,6 +107,12 @@ export interface NativePrintWindowResult {
   height: number
 }
 
+export interface NativeWgcCaptureResult {
+  data: Buffer
+  width: number
+  height: number
+}
+
 export interface NativeMonitorInfo {
   handle: bigint
   primary: boolean
@@ -315,6 +321,7 @@ export declare function win32GetWindowThreadProcessId(hwnd: bigint): NativeThrea
 export declare function win32GetWindowLongPtrW(hwnd: bigint, nIndex: number): number
 
 // ─── Win32 GDI / monitor / DPI (ADR-007 P2) ──────────────────────────────────
+export declare function captureWindowWgc(hwnd: bigint): NativeWgcCaptureResult
 export declare function win32PrintWindowToBuffer(hwnd: bigint, flags: number): NativePrintWindowResult
 export declare function win32EnumMonitors(): NativeMonitorInfo[]
 export declare function win32GetWindowDpi(hwnd: bigint): number
