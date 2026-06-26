@@ -60,19 +60,17 @@ describe("runInnerToolAsResult (ADR-021 Phase 3a adapter)", () => {
     expect(r.ok).toBe(true);
   });
 
-  it("image blocks are carried in the outcome", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  it("image blocks are not carried in outcome (disk-path model)", async () => {
     const entry: any = {
       schema: { parse: (x: unknown) => x },
       handler: async () => ({ content: [{ type: "image", data: "abc", mimeType: "image/png" }] }),
     };
     const r = await runInnerToolAsResult(entry, {});
-    expect(r.ok).toBe(true); // no text block → not a failure
-    if (r.ok) expect(r.value.images[0]).toEqual({ data: "abc", mimeType: "image/png" });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.images).toHaveLength(0);
   });
 
-  it("ok:true with a trailing image block → success + both carried", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  it("ok:true with trailing image block → text block only", async () => {
     const entry: any = {
       schema: { parse: (x: unknown) => x },
       handler: async () => ({
@@ -86,7 +84,7 @@ describe("runInnerToolAsResult (ADR-021 Phase 3a adapter)", () => {
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.value.textLines).toHaveLength(1);
-      expect(r.value.images).toHaveLength(1);
+      expect(r.value.images).toHaveLength(0);
     }
   });
 });

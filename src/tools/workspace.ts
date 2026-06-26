@@ -3,7 +3,7 @@ import { z } from "zod";
 import { mouse } from "../engine/nutjs.js";
 import { validateLaunchCommand, resolveLaunchExecutable, spawnDetached } from "../utils/launch.js";
 import { enumMonitors, getVirtualScreen, enumWindowsInZOrder, type WindowZInfo } from "../engine/win32.js";
-import { captureScreen } from "../engine/image.js";
+import { captureScreen, saveCapture } from "../engine/image.js";
 import { clearLayers } from "../engine/layer-buffer.js";
 import { noteInvalidation } from "../engine/identity-tracker.js";
 import { getUiElements, extractActionableElements, WINUI3_CLASS_RE } from "../engine/uia-bridge.js";
@@ -14,6 +14,8 @@ import { failWith } from "./_errors.js";
 import { coercedBoolean } from "./_coerce.js";
 import { pollUntil } from "../engine/poll.js";
 import { withRichNarration } from "./_narration.js";
+import * as path from "path";
+import * as fs from "fs";
 import { makeCommitWrapper, makeQueryWrapper, withEnvelopeIncludeSchema, genericQueryCausedByProjector, defaultQuerySessionId } from "./_envelope.js";
 
 /** Chromium-based browser windows — UIA traversal is prohibitively slow on these */
@@ -47,7 +49,14 @@ async function buildWindowSnapshot(
     let thumbnailSize: { width: number; height: number } | null = null;
     try {
       const captured = await captureScreen(region, thumbnailMaxDim);
-      thumbnail = captured.base64;
+      const buf = Buffer.from(captured.base64, "base64");
+      const saved = await saveCapture(buf, { width: captured.width, height: captured.height, mimeType: "image/png" }, {
+        screenshotsDir: process.env.DESKTOP_TOUCH_SCREENSHOTS_DIR ?? path.join(process.cwd(), ".screenshots"),
+        processName: "WorkspaceSnapshot",
+        windowTitle: wz.title,
+        windowUuid: "thumbnails",
+      });
+      thumbnail = saved.ref;
       thumbnailSize = { width: captured.width, height: captured.height };
     } catch { /* screen grab can fail for some windows */ }
 
@@ -167,8 +176,7 @@ export const workspaceSnapshotHandler = async ({
     content.push({ type: "text", text: JSON.stringify(result, null, 2) });
     for (const snap of snapshots) {
       if (snap.thumbnail) {
-        content.push({ type: "image", data: snap.thumbnail, mimeType: "image/png" });
-        content.push({ type: "text", text: `↑ "${snap.title}" ${snap.region.width}x${snap.region.height} at (${snap.region.x},${snap.region.y})` });
+        content.push({ type: "text", text: `↑ "${snap.title}" ref: ${snap.thumbnail} (${snap.region.width}x${snap.region.height})` });
       }
     }
 

@@ -170,29 +170,6 @@ export interface NativeImageProcessingResult {
   channels: number
 }
 
-export interface NativeSomLabel {
-  id: number
-  x: number
-  y: number
-  width: number
-  height: number
-}
-
-export interface NativeDrawSomLabelsOptions {
-  data: Buffer
-  width: number
-  height: number
-  channels: number
-  labels: Array<NativeSomLabel>
-}
-
-export interface NativeDrawSomLabelsResult {
-  data: Buffer
-  width: number
-  height: number
-  channels: number
-}
-
 // ─── SSIM residual (ADR-019 Stage 4) ─────────────────────────────────────────
 //
 // Native shapes for `compute_ssim_residual` (Wang et al. 2004 implementation,

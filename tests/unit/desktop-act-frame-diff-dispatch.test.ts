@@ -154,7 +154,7 @@ describe("desktop_act frame-diff dispatch — legacy S5 path (S5b fold off)", ()
     savedFold = process.env["DESKTOP_TOUCH_STAGE5B_FOLD_OCR"];
     process.env["DESKTOP_TOUCH_STAGE5B_FOLD_OCR"] = "0";
     mockGetWindowRect.mockReturnValue(WINDOW_RECT);
-    mockRunSomPipeline.mockResolvedValue({ somImage: { base64: "iVBORw0KGgo=" }, elements: [] });
+    mockRunSomPipeline.mockResolvedValue({ elements: [], preprocessScale: 1, resolvedWindowTitle: "" });
   });
 
   afterEach(() => {
@@ -316,7 +316,7 @@ describe("desktop_act frame-diff dispatch — S5b-2 fold (default on)", () => {
     savedFold = process.env["DESKTOP_TOUCH_STAGE5B_FOLD_OCR"];
     delete process.env["DESKTOP_TOUCH_STAGE5B_FOLD_OCR"]; // fold ON (default)
     mockGetWindowRect.mockReturnValue(WINDOW_RECT);
-    mockRunSomPipeline.mockResolvedValue({ somImage: { base64: "iVBORw0KGgo=" }, elements: [] });
+    mockRunSomPipeline.mockResolvedValue({ elements: [], preprocessScale: 1, resolvedWindowTitle: "" });
     mockCaptureFrame.mockResolvedValue({
       rawPixels: Buffer.alloc(800 * 600 * 4),
       width: 800,
@@ -459,7 +459,7 @@ describe("desktop_act S5b flag parity — STAGE5B_FOLD_OCR=0 falls back to the S
 
     const facade = spyFacadeFold({});
     mockGetWindowRect.mockReturnValue(WINDOW_RECT);
-    mockRunSomPipeline.mockResolvedValue({ somImage: { base64: "iVBORw0KGgo=" }, elements: [] });
+    mockRunSomPipeline.mockResolvedValue({ elements: [], preprocessScale: 1, resolvedWindowTitle: "" });
     mockCaptureFrame.mockResolvedValue({
       rawPixels: Buffer.alloc(800 * 600 * 4),
       width: 800,

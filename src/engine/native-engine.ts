@@ -23,8 +23,7 @@ import type {
   NativeScrollAncestor,
   NativePreprocessOptions,
   NativeImageProcessingResult,
-  NativeDrawSomLabelsOptions,
-  NativeDrawSomLabelsResult,
+
   NativeSsimRegion,
   NativeSsimResidualResult,
   NativeRecognizeRequest,
@@ -107,12 +106,6 @@ export interface NativeEngine {
    */
   preprocessImage?(opts: NativePreprocessOptions): Promise<NativeImageProcessingResult>;
 
-  /**
-   * Render Set-of-Mark annotations on a raw RGB/RGBA buffer (Step 4).
-   * Draws a 2px red bounding box + white/black ID badge for each label.
-   * Returns a buffer with the same dimensions and channel count as input.
-   */
-  drawSomLabels?(opts: NativeDrawSomLabelsOptions): Promise<NativeDrawSomLabelsResult>;
 }
 
 // ─── Win32 hot-path surface (ADR-007 P1, used by src/engine/win32.ts) ────────

@@ -68,9 +68,8 @@ export const uiaGetElementBounds = nativeBinding.uiaGetElementBounds;
 export const uiaGetElementChildren = nativeBinding.uiaGetElementChildren;
 export const uiaGetTextViaTextPattern = nativeBinding.uiaGetTextViaTextPattern;
 
-// ─── Hybrid Non-CDP pipeline (Step 2 + Step 4) ───────────────────────────────
+// ─── Hybrid Non-CDP pipeline (Step 2) ────────────────────────────────────────
 export const preprocessImage  = nativeBinding.preprocessImage;
-export const drawSomLabels    = nativeBinding.drawSomLabels;
 
 // ─── Win32 hot-path APIs (ADR-007 P1) ────────────────────────────────────────
 export const win32EnumTopLevelWindows       = nativeBinding.win32EnumTopLevelWindows;

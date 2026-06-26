@@ -9,6 +9,9 @@ import {
   findPlainTopLevelWindowByTitle,
 } from "./_resolve-window.js";
 import type { ToolResult } from "./_types.js";
+import * as path from "path";
+import * as fs from "fs";
+import { saveCapture } from "../engine/image.js";
 
 // Horizontal mouse scroll units per step (matches nut-js scroll granularity)
 const H_SCROLL_STEPS = 25;
@@ -502,90 +505,8 @@ export const scrollCaptureHandler = async ({
       raw: { width: stitchedWidth, height: stitchedHeight, channels },
     });
 
-    // Cap the short edge to maxWidth so the image remains readable
-    if (direction === "down" && stitchedWidth > maxWidth) {
-      pipeline = pipeline.resize({ width: maxWidth, withoutEnlargement: true });
-    } else if (direction === "right" && stitchedHeight > maxWidth) {
-      pipeline = pipeline.resize({ height: maxWidth, withoutEnlargement: true });
-    }
-
-    // ── 1MB guard ─────────────────────────────────────────────────────────────
-    // MCP base64 encodes binary: 1 raw byte → ~1.33 base64 chars.
-    // 700KB raw  → ~933KB base64, safely within the 1MB message envelope limit.
-    const MCP_RAW_LIMIT = 700_000;
-
-    let imageBuffer: Buffer;
-    let mimeType: "image/png" | "image/webp" = "image/png";
-    let sizeReduced: string | undefined;
-
-    const pngBuffer = await pipeline.png({ compressionLevel: 6 }).toBuffer();
-
-    if (pngBuffer.length <= MCP_RAW_LIMIT) {
-      imageBuffer = pngBuffer;
-    } else {
-      // Helper: rebuild the resize pipeline from the raw stitched buffer.
-      const rawPipeline = () => {
-        let p = sharp(stitchedBuffer, {
-          raw: { width: stitchedWidth, height: stitchedHeight, channels },
-        });
-        if (direction === "down" && stitchedWidth > maxWidth) {
-          p = p.resize({ width: maxWidth, withoutEnlargement: true });
-        } else if (direction === "right" && stitchedHeight > maxWidth) {
-          p = p.resize({ height: maxWidth, withoutEnlargement: true });
-        }
-        return p;
-      };
-
-      // Try WebP at decreasing quality levels first.
-      let resolved = false;
-      for (const q of [70, 55, 40] as const) {
-        const buf = await rawPipeline().webp({ quality: q }).toBuffer();
-        if (buf.length <= MCP_RAW_LIMIT) {
-          imageBuffer = buf;
-          mimeType = "image/webp";
-          sizeReduced = `webp_q${q}`;
-          resolved = true;
-          break;
-        }
-      }
-
-      // If still too large, iteratively downscale (×0.75 per pass, up to 3 passes).
-      if (!resolved) {
-        const pngLen = pngBuffer.length;
-        let scale = Math.sqrt(MCP_RAW_LIMIT / pngLen) * 0.85;
-        for (let attempt = 0; attempt < 3; attempt++) {
-          const targetW = Math.max(1, Math.round(stitchedWidth * scale));
-          const buf = await rawPipeline()
-            .resize({ width: targetW, withoutEnlargement: false })
-            .webp({ quality: 40 })
-            .toBuffer();
-          if (buf.length <= MCP_RAW_LIMIT) {
-            imageBuffer = buf;
-            mimeType = "image/webp";
-            const meta = await sharp(buf).metadata();
-            sizeReduced = `auto_downscaled_${meta.width ?? targetW}px`;
-            resolved = true;
-            break;
-          }
-          scale *= 0.75;
-        }
-
-        // Final fallback: extreme downscale + lowest quality — always fits.
-        if (!resolved) {
-          const targetW = Math.max(1, Math.round(stitchedWidth * 0.25));
-          const buf = await rawPipeline()
-            .resize({ width: targetW, withoutEnlargement: false })
-            .webp({ quality: 30 })
-            .toBuffer();
-          imageBuffer = buf;
-          mimeType = "image/webp";
-          const meta = await sharp(buf).metadata();
-          sizeReduced = `forced_fallback_${meta.width ?? targetW}px`;
-        }
-      }
-    }
-
-    const outMeta = await sharp(imageBuffer!).metadata();
+    const webpBuffer = await pipeline.webp({ quality: 80 }).toBuffer();
+    const outMeta = await sharp(webpBuffer).metadata();
     const outW = outMeta.width ?? stitchedWidth;
     const outH = outMeta.height ?? stitchedHeight;
 
@@ -596,11 +517,21 @@ export const scrollCaptureHandler = async ({
       exactMatchCount === 0 && estimatedCount > 0 ? "estimated" :
       estimatedCount === 0 ? "exact" :
       "mixed";
+
+    const saved = await saveCapture(webpBuffer, { width: outW, height: outH, mimeType: "image/webp" }, {
+      screenshotsDir: process.env.DESKTOP_TOUCH_SCREENSHOTS_DIR ?? path.join(process.cwd(), ".screenshots"),
+      processName: "ScrollCapture",
+      windowTitle: `scroll_${direction}`,
+      windowUuid: direction,
+    });
+    const ref = saved.ref;
+
     const summary = {
       ok: true,
       frames: frames.length,
       stitchedSize: `${outW}x${outH}`,
       direction,
+      ref,
       overlapMode,
       overlapStats: {
         exact: exactMatchCount,
@@ -610,12 +541,10 @@ export const scrollCaptureHandler = async ({
       },
       ...(truncated ? { warning: "maxScrolls reached, image may be truncated" } : {}),
       ...(failedCount > 0 ? { overlapWarnings: warnings.filter(w => w.includes("failed")) } : {}),
-      ...(sizeReduced ? { sizeReduced, tip: "Reduce maxScrolls or add grayscale=true for smaller output." } : {}),
     };
 
     return {
       content: [
-        { type: "image" as const, data: imageBuffer!.toString("base64"), mimeType: mimeType as "image/png" | "image/webp" },
         { type: "text" as const, text: JSON.stringify(summary, null, 2) },
       ],
     };

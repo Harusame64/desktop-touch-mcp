@@ -30,8 +30,8 @@ const mockRunSom = vi.mocked(runSomPipeline);
 // Helper: build a minimal SomPipelineResult with N elements.
 function makeSomResult(n: number) {
   return {
-    somImage: null,
     preprocessScale: 1,
+    resolvedWindowTitle: "",
     elements: Array.from({ length: n }, (_, i) => ({
       id: i + 1,
       text: `Label${i + 1}`,

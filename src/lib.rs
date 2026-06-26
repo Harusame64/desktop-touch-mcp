@@ -576,47 +576,6 @@ pub fn preprocess_image(
     AsyncTask::new(PreprocessImageTask(opts))
 }
 
-// ─── Set-of-Mark label rendering (Hybrid Non-CDP pipeline — Step 4) ─────────
-
-pub struct DrawSomLabelsTask(image_processing::DrawSomLabelsOptions);
-
-impl Task for DrawSomLabelsTask {
-    type Output = image_processing::DrawSomLabelsResult;
-    type JsValue = image_processing::DrawSomLabelsResult;
-
-    fn compute(&mut self) -> Result<Self::Output> {
-        // `DrawSomLabelsOptions` contains a Buffer and a Vec — swap to move out.
-        let dummy = image_processing::DrawSomLabelsOptions {
-            data: Buffer::from(vec![]),
-            width: 0,
-            height: 0,
-            channels: 3,
-            labels: vec![],
-        };
-        let opts = std::mem::replace(&mut self.0, dummy);
-        image_processing::draw_som_labels_impl(opts)
-    }
-
-    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
-        Ok(output)
-    }
-}
-
-/// Render Set-of-Mark bounding boxes and ID badges onto a raw RGB/RGBA buffer.
-///
-/// For each label `{ id, x, y, width, height }`, draws a 2px red rectangle
-/// outline and a white badge with a black digit ID at the top-left corner.
-/// Uses a hardcoded 5×7 bitmap font — no external image crates required.
-///
-/// Returns a Promise resolving to `{ data: Buffer, width, height, channels }`.
-/// Runs on a libuv worker thread — does not block the event loop.
-#[napi]
-pub fn draw_som_labels(
-    opts: image_processing::DrawSomLabelsOptions,
-) -> AsyncTask<DrawSomLabelsTask> {
-    AsyncTask::new(DrawSomLabelsTask(opts))
-}
-
 // ─── Visual GPU backend (ADR-005 Phase 4a) ─────────────────────────────────
 //
 // `recognize_rois` runs the ROI → candidate inference path in a libuv worker

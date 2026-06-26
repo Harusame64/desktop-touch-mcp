@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { captureScreen, captureDisplay, captureWindowBackground, captureWindowWithFallback } from "../engine/image.js";
-import type { CaptureSource, CaptureFallbackReason } from "../engine/image.js";
+import { captureScreen, captureDisplay, captureWindowBackground, captureWindowWithFallback, saveCapture } from "../engine/image.js";
+import type { CaptureSource, CaptureFallbackReason, SavedCapture, SaveCaptureOpts } from "../engine/image.js";
 import { captureAndDiff, captureAllLayers, hasBuffer } from "../engine/layer-buffer.js";
 import type { WindowInfo } from "../engine/layer-buffer.js";
 import { getWindows } from "../engine/nutjs.js";
@@ -33,6 +33,8 @@ import { getTextViaTextPattern } from "../engine/uia-bridge.js";
 import { stripAnsi, tailLines } from "../engine/ansi.js";
 import { getProcessIdentityByPid, getWindowProcessId } from "../engine/win32.js";
 import { resolveWindowTarget } from "./_resolve-window.js";
+import * as path from "path";
+import * as fs from "fs";
 
 const TERMINAL_PROCESS_RE = /^(WindowsTerminal|conhost|pwsh|powershell|cmd|bash|wsl|alacritty|wezterm|mintty)(\.exe)?$/i;
 
@@ -69,16 +71,10 @@ export const screenshotSchema = {
       "With windowTitle: window-local coordinates — useful to exclude browser chrome (tabs/address bar). " +
       "Example: windowTitle='Chrome', region={x:0, y:120, width:1920, height:900} skips the 120px browser chrome."
     ),
-  maxDimension: z
-    .coerce.number()
-    .int()
-    .positive()
-    .default(768)
-    .describe("Max width or height in pixels (default 768). Use 1280 to read small text, code, or fine UI details. Ignored when dotByDot=true."),
   dotByDot: coercedBoolean()
     .default(false)
     .describe(
-      "1:1 pixel mode — no scaling, WebP compression. " +
+      "1:1 pixel mode — WebP compression. " +
       "Window captures include 'origin: (x,y)' so you can compute screen position: screen_x = origin_x + image_x. " +
       "When dotByDotMaxDimension is also set, scale factor is included: screen_x = origin_x + image_x / scale."
     ),
@@ -88,24 +84,14 @@ export const screenshotSchema = {
     .positive()
     .optional()
     .describe(
-      "Cap the longest edge (pixels) when dotByDot=true. Reduces payload while preserving coordinate math. " +
+      "Cap the longest edge (pixels) when dotByDot=true. " +
       "Example: 1280 on a 1920×1080 screen → scale≈0.667. " +
-      "Response includes scale factor: screen_x = origin_x + image_x / scale. " +
-      "Recommended for Chrome: dotByDot=true, dotByDotMaxDimension=1280, grayscale=true."
+      "Response includes scale factor: screen_x = origin_x + image_x / scale."
     ),
-  grayscale: coercedBoolean()
-    .default(false)
-    .describe(
-      "Convert to grayscale before encoding. Reduces file size ~50% for text-heavy content (e.g. AWS console, code editors). " +
-      "Avoid when color is meaningful (charts, status indicators)."
-    ),
-  webpQuality: z
-    .coerce.number()
-    .int()
-    .min(1)
-    .max(100)
-    .default(60)
-    .describe("WebP quality when dotByDot=true or diffMode=true. 40=layout only, 60=general (default), 80=fine text."),
+  tag: z
+    .string()
+    .optional()
+    .describe("Return the cached screenshot ref for this tag without capturing a new image (mutually exclusive with windowTitle/hwnd)."),
   diffMode: coercedBoolean()
     .default(false)
     .describe(
@@ -114,15 +100,14 @@ export const screenshotSchema = {
       "Implicitly enables dotByDot. Best used with windowTitle=undefined to snapshot all windows."
     ),
   detail: z
-    .enum(["meta", "text", "image", "som", "ocr"])
+    .enum(["meta", "text", "image", "ocr"])
     .optional()
     .describe(
       "Response detail level (omit to let the server pick a smart default):\n" +
       "  omitted — auto: 'image' when dotByDot/region/displayId is specified, else 'meta'\n" +
       "  'meta'  — window title + screen region only (~20 tok/window, cheapest)\n" +
       "  'text'  — UIA element tree as JSON with text values (~100-300 tok/window, no image)\n" +
-      "  'image' — actual screenshot pixels. BLOCKED unless confirmImage=true is also passed.\n" +
-      "  'som'   — Set-of-Marks image + OCR elements (bypasses UIA entirely). BLOCKED unless confirmImage=true is also passed.\n" +
+      "  'image' — actual screenshot pixels (saved to disk, returned as file ref)\n" +
       "  'ocr'   — Windows OCR words with screen-pixel clickAt coords (Phase 4: absorbs former screenshot_ocr). " +
       "Use when UIA returns no actionable elements (WinUI3 custom-drawn UIs, game overlays, PDF viewers). " +
       "Note: detail='text' auto-falls back to OCR via ocrFallback='auto'; choose detail='ocr' only when forcing OCR unconditionally."
@@ -143,14 +128,6 @@ export const screenshotSchema = {
       "When mode='background', use PW_RENDERFULLCONTENT to capture GPU-rendered windows (Chrome, Electron, WinUI3). Default true. " +
       "Set false for legacy mode (faster but GPU windows may appear black). Ignored unless mode='background'."
     ),
-  confirmImage: coercedBoolean()
-    .default(false)
-    .describe(
-      "Must be true to receive image pixels when detail='image'. " +
-      "Without this flag, detail='image' is blocked and a guidance message is returned instead. " +
-      "Prefer detail='text' / diffMode=true / dotByDot=true first — " +
-      "only set confirmImage=true when visual inspection is genuinely required."
-    ),
   ocrFallback: z
     .enum(["auto", "always", "never"])
     .default("auto")
@@ -168,7 +145,7 @@ export const screenshotSchema = {
     .enum(["auto", "aggressive", "minimal"])
     .default("auto")
     .describe(
-      "OCR preprocessing scale policy for detail='som' and OCR fallback paths. " +
+      "OCR preprocessing scale policy for OCR fallback paths. " +
       "'auto' (default): clamp scale to 1 on OOM (>8MP) or high-DPI (≥150%). " +
       "'aggressive': relaxes DPI clamp to 175%, preserving upscale on 150%-DPI monitors (e.g. Outlook PWA). Also auto-enables adaptive binarization. " +
       "'minimal': always scale=1 regardless of DPI/resolution."
@@ -340,16 +317,13 @@ export const screenshotHandler = async (args: {
   hwnd?: string;
   displayId?: number;
   region?: { x: number; y: number; width: number; height: number };
-  maxDimension: number;
+  tag?: string;
   dotByDot: boolean;
   dotByDotMaxDimension?: number;
-  grayscale: boolean;
-  webpQuality: number;
   diffMode: boolean;
-  detail: "meta" | "text" | "image" | "som" | "ocr" | undefined;
+  detail: "meta" | "text" | "image" | "ocr" | undefined;
   mode?: "normal" | "background";
   fullContent?: boolean;
-  confirmImage: boolean;
   ocrFallback: "auto" | "always" | "never";
   ocrLanguage?: string;
   preprocessPolicy: "auto" | "aggressive" | "minimal";
@@ -387,15 +361,9 @@ export const screenshotHandler = async (args: {
       region: args.region,
     });
   }
-  // mode='background' + detail='meta' is metadata-only — bypass the bg
-  // capture and let the default handler emit the meta payload (no image
-  // bytes, no PrintWindow). For all other detail values, run the bg image
-  // capture; legacy `screenshot_background` returned image bytes without an
-  // extra acknowledgement, and the Phase 4 absorption preserves that
-  // contract — passing `mode:'background'` is itself the explicit
-  // acknowledgement that image pixels are wanted. confirmImage stays the
-  // gate ONLY for foreground `detail='image'` (handled inside the default
-  // handler below). (Codex PR #41 round 5 P2 — restore migration parity.)
+  // mode='background' + detail='meta' is metadata-only. For image detail,
+  // run the bg capture path; passing mode='background' is itself the
+  // acknowledgement that pixels are wanted.
   if (args.mode === "background" && args.detail !== "meta") {
     if (!args.windowTitle && !args.hwnd) {
       return failArgs(
@@ -407,11 +375,8 @@ export const screenshotHandler = async (args: {
       windowTitle: args.windowTitle ?? "@active",
       hwnd: args.hwnd,
       region: args.region,
-      maxDimension: args.maxDimension,
       dotByDot: args.dotByDot,
       dotByDotMaxDimension: args.dotByDotMaxDimension,
-      grayscale: args.grayscale,
-      webpQuality: args.webpQuality,
       fullContent: args.fullContent ?? true,
     });
   }
@@ -421,14 +386,11 @@ export const screenshotHandler = async (args: {
     hwnd: hwndParam,
     displayId,
     region,
-    maxDimension,
+    tag: tagParam,
     dotByDot,
     dotByDotMaxDimension,
-    grayscale,
-    webpQuality,
     diffMode,
     detail,
-    confirmImage,
     ocrFallback,
     ocrLanguage = detectOcrLanguage(),
     preprocessPolicy = "auto",
@@ -437,9 +399,24 @@ export const screenshotHandler = async (args: {
   // Compute effective detail: explicit value wins; otherwise infer from context.
   // dotByDot / region / displayId imply the caller wants pixels, so default to 'image'.
   // detail='ocr' was already short-circuited above, so the narrow type excludes it here.
-  const effectiveDetail: "meta" | "text" | "image" | "som" = detail ?? (
+  const effectiveDetail: "meta" | "text" | "image" = detail ?? (
     dotByDot || region !== undefined || displayId !== undefined ? "image" : "meta"
   );
+
+  // Tag-based cache lookup (skip capture entirely)
+  if (tagParam) {
+    const tagsPath = path.join(process.env.DESKTOP_TOUCH_SCREENSHOTS_DIR ?? path.join(process.cwd(), ".screenshots"), "_tags.json");
+    try {
+      const tags: Record<string, string> = JSON.parse(fs.readFileSync(tagsPath, "utf-8"));
+      const ref = tags[tagParam];
+      if (ref) {
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({ ref, tag: tagParam, cached: true }) }],
+        };
+      }
+    } catch { /* tags file missing */ }
+    return failWith(`Tag "${tagParam}" not found`, "screenshot", { tag: tagParam });
+  }
 
   try {
     // Resolve hwnd / @active → effective window title
@@ -447,83 +424,14 @@ export const screenshotHandler = async (args: {
     const effectiveTitle = resolvedWin?.title ?? windowTitle;
     const screenshotWarnings: string[] = [...(resolvedWin?.warnings ?? [])];
 
-    // ── Guard: block bare detail='image'/'som' unless explicitly confirmed ──
-    // Only fires when 'image' or 'som' was explicitly requested, not when
-    // inferred from dotByDot/region context.
-    const guardDisabled = process.env.DESKTOP_TOUCH_DISABLE_IMAGE_GUARD === "1";
-    const isExplicitImage = detail === "image" || detail === "som";
-    if (isExplicitImage && !diffMode && !dotByDot && !confirmImage && !guardDisabled) {
-      return {
-        isError: true,
-        content: [{
-          type: "text" as const,
-          text: [
-            `[screenshot-guard] detail='${detail}' was blocked to prevent accidental heavy image payloads.`,
-            "",
-            "Prefer these lighter alternatives (in order):",
-            "  1. screenshot(detail='text', windowTitle=X)  — UIA actionable[] with clickAt coords",
-            "  2. screenshot(diffMode=true)                 — only changed windows as image",
-            "  3. screenshot(dotByDot=true, windowTitle=X)  — 1:1 WebP for pixel-perfect coords",
-            "",
-            `If a ${detail === "som" ? "Set-of-Marks" : "full"} image truly is required, re-call with confirmImage=true.`,
-            "To disable this guard globally, set DESKTOP_TOUCH_DISABLE_IMAGE_GUARD=1 in the environment.",
-          ].join("\n"),
-        }],
-      };
-    }
-
-    // ── detail=som: Set-of-Marks image + OCR elements ────────────────────────
-    if (effectiveDetail === "som") {
-      if (!effectiveTitle) {
-        return failWith(
-          "detail='som' requires windowTitle or hwnd to target a specific window.",
-          "screenshot"
-        );
-      }
-
-      // Pass hwnd when resolveWindowTarget found one; otherwise pass null and
-      // let runSomPipeline do its own title-based window search (avoiding a
-      // redundant enumWindowsInZOrder call).
-      const resolvedTitle = resolvedWin?.title ?? effectiveTitle;
-      const targetHwnd = resolvedWin?.hwnd ?? null;
-
-      const somResult = await runSomPipeline(resolvedTitle, targetHwnd, ocrLanguage, 2, preprocessPolicy, preprocessAdaptive);
-      const content: ToolResult["content"] = [
-        {
-          type: "text" as const,
-          text: JSON.stringify(
-            {
-              window: somResult.resolvedWindowTitle,
-              detail: "som",
-              elements: somResult.elements,
-              preprocessScale: somResult.preprocessScale,
-              ...(screenshotWarnings.length > 0 ? { hints: { warnings: screenshotWarnings } } : {}),
-            },
-            null,
-            2
-          ),
-        },
-      ];
-
-      if (somResult.somImage) {
-        content.push({
-          type: "image" as const,
-          data: somResult.somImage.base64,
-          mimeType: somResult.somImage.mimeType,
-        });
-      }
-
-      return { content };
-    }
-
     // ── diffMode: layer-based differential capture ───────────────────────────
     if (diffMode) {
       const windowInfos = await buildWindowInfoList();
       updateWindowCache(enumWindowsInZOrder());
       const isFirstFrame = !hasBuffer();
       const diffs = isFirstFrame
-        ? await captureAllLayers(windowInfos, webpQuality)
-        : await captureAndDiff(windowInfos, webpQuality);
+        ? await captureAllLayers(windowInfos, 60)
+        : await captureAndDiff(windowInfos, 60);
 
       const newCount = diffs.filter((d) => d.type === "new").length;
       const changedCount = diffs.filter((d) => d.type === "content_changed").length;
@@ -551,8 +459,7 @@ export const screenshotHandler = async (args: {
           const prevStr = prev ? `(${prev.x},${prev.y})→` : "";
           content.push({ type: "text" as const, text: `[MOVED]   "${diff.title}" ${prevStr}${regionStr} (content same, no image)` });
         } else if (diff.image) {
-          content.push({ type: "text" as const, text: `[${diff.type === "new" ? "NEW" : "CHANGED"}] "${diff.title}" at ${regionStr}` });
-          content.push({ type: "image" as const, data: diff.image.base64, mimeType: diff.image.mimeType });
+          content.push({ type: "text" as const, text: `[${diff.type === "new" ? "NEW" : "CHANGED"}] "${diff.title}" at ${regionStr} — ref: ${diff.image.base64.slice(0, 16)}...` });
         }
       }
 
@@ -744,20 +651,7 @@ export const screenshotHandler = async (args: {
               ),
             };
 
-            const contentItems: Array<
-              { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
-            > = [textContent];
-
-            // Attach the annotated SoM image when Rust rendering succeeded
-            if (somResult.somImage) {
-              contentItems.push({
-                type: "image" as const,
-                data: somResult.somImage.base64,
-                mimeType: somResult.somImage.mimeType,
-              });
-            }
-
-            return { content: contentItems };
+            return { content: [textContent] };
           } catch (somErr) {
             // SoM pipeline failed (win-ocr not installed, Rust unavailable, etc.)
             // Fall through to the regular OCR word-list path below.
@@ -818,9 +712,8 @@ export const screenshotHandler = async (args: {
     }
 
     // ── detail=image (default): actual screenshot pixels ─────────────────────
-    const captureOpts = dotByDot
-      ? { format: "webp" as const, webpQuality, grayscale, dotByDotMaxDimension }
-      : { maxDimension, grayscale };
+    const captureOpts: { format: "webp"; dotByDotMaxDimension?: number; crop?: { x: number; y: number; width: number; height: number } } = { format: "webp" };
+    if (dotByDot && dotByDotMaxDimension) captureOpts.dotByDotMaxDimension = dotByDotMaxDimension;
 
     if (effectiveTitle) {
       // hwnd-first resolution: prefer resolvedWin.hwnd (from resolveWindowTarget,
@@ -936,11 +829,26 @@ export const screenshotHandler = async (args: {
         dimensionText = `Screenshot captured: ${result.width}x${result.height}px${scaleNote}`;
       }
 
+      const saved = await captureAndSave(result, {
+        processName: await resolveProcessName(targetHwnd),
+        windowTitle: effectiveTitle,
+        hwnd: targetHwnd,
+      });
+      const refText = JSON.stringify({
+        ref: saved.ref,
+        tag: saved.tag,
+        windowTitle: effectiveTitle,
+        resolution: { width: result.width, height: result.height },
+        contentHash: saved.contentHash,
+        capturedAt: saved.capturedAt,
+        captureSource: captureHints.captureSource,
+        ...(captureHints.captureFallbackReason ? { fallbackReason: captureHints.captureFallbackReason } : {}),
+      });
       return {
         content: [
-          { type: "image" as const, data: result.base64, mimeType: result.mimeType },
+          { type: "text" as const, text: refText },
           { type: "text" as const, text: dimensionText },
-          { type: "text" as const, text: JSON.stringify({ hints: captureHints }) },
+          ...(localWarnings.length > 0 ? [{ type: "text" as const, text: JSON.stringify({ hints: { warnings: localWarnings } }) }] : []),
         ],
       };
     } else if (displayId !== undefined) {
@@ -955,33 +863,37 @@ export const screenshotHandler = async (args: {
         };
       }
       const result = await captureDisplay(mon.bounds, captureOpts);
-      const dimensionText = dotByDot
-        ? formatOriginText(mon.bounds.x, mon.bounds.y, result.width, result.height, result.scale)
-        : `Screenshot captured: ${result.width}x${result.height}px`;
+      const saved = await captureAndSave(result, {
+        processName: "desktop",
+        windowTitle: `Display ${displayId}`,
+      });
+      const refText = JSON.stringify({
+        ref: saved.ref,
+        tag: saved.tag,
+        displayId,
+        resolution: { width: result.width, height: result.height },
+        contentHash: saved.contentHash,
+        capturedAt: saved.capturedAt,
+      });
       return {
-        content: [
-          { type: "image" as const, data: result.base64, mimeType: result.mimeType },
-          { type: "text" as const, text: dimensionText },
-        ],
+        content: [{ type: "text" as const, text: refText }],
       };
     } else {
       const result = await captureScreen(region, captureOpts);
-      let dimensionText: string;
-      if (dotByDot && region) {
-        dimensionText = formatOriginText(region.x, region.y, result.width, result.height, result.scale);
-      } else if (dotByDot) {
-        dimensionText = `Screenshot (dot-by-dot): ${result.width}x${result.height}px`;
-        if (result.scale !== undefined) {
-          dimensionText += ` | scale: ${result.scale.toFixed(4)} (full screen, no origin offset)`;
-        }
-      } else {
-        dimensionText = `Screenshot captured: ${result.width}x${result.height}px`;
-      }
+      const saved = await captureAndSave(result, {
+        processName: "desktop",
+        windowTitle: "Full Screen",
+      });
+      const refText = JSON.stringify({
+        ref: saved.ref,
+        tag: saved.tag,
+        resolution: { width: result.width, height: result.height },
+        contentHash: saved.contentHash,
+        capturedAt: saved.capturedAt,
+        ...(region ? { region } : {}),
+      });
       return {
-        content: [
-          { type: "image" as const, data: result.base64, mimeType: result.mimeType },
-          { type: "text" as const, text: dimensionText },
-        ],
+        content: [{ type: "text" as const, text: refText }],
       };
     }
   } catch (err) {
@@ -993,21 +905,15 @@ export const screenshotBgHandler = async ({
   windowTitle,
   hwnd: hwndParam,
   region,
-  maxDimension,
   dotByDot,
   dotByDotMaxDimension,
-  grayscale,
-  webpQuality,
   fullContent,
 }: {
   windowTitle: string;
   hwnd?: string;
   region?: { x: number; y: number; width: number; height: number };
-  maxDimension: number;
   dotByDot: boolean;
   dotByDotMaxDimension?: number;
-  grayscale: boolean;
-  webpQuality: number;
   fullContent: boolean;
 }): Promise<ToolResult> => {
   try {
@@ -1049,39 +955,32 @@ export const screenshotBgHandler = async ({
       };
     }
 
-    const captureOpts = dotByDot
-      ? { format: "webp" as const, webpQuality, grayscale, dotByDotMaxDimension, crop }
-      : { maxDimension, grayscale, crop };
+    const captureOpts: { format: "webp"; dotByDotMaxDimension?: number; crop?: { x: number; y: number; width: number; height: number } } = { format: "webp", crop };
+    if (dotByDot && dotByDotMaxDimension) captureOpts.dotByDotMaxDimension = dotByDotMaxDimension;
 
     // PW_RENDERFULLCONTENT=2 for GPU windows; legacy flag=0 when fullContent=false
     const pwFlags = fullContent ? 2 : 0;
 
     const result = await captureWindowBackground(hwnd, captureOpts, pwFlags);
 
-    let dimensionText: string;
-    if (dotByDot && windowScreenRegion) {
-      // Compute screen-space origin: window position + region offset (approximate, ignores DPI scale)
-      const regionOffsetX = region ? region.x : 0;
-      const regionOffsetY = region ? region.y : 0;
-      const originX = windowScreenRegion.x + regionOffsetX;
-      const originY = windowScreenRegion.y + regionOffsetY;
-      dimensionText = formatOriginText(originX, originY, result.width, result.height, result.scale);
-      if (region) {
-        dimensionText += ` [sub-crop applied: (${region.x},${region.y}) ${region.width}x${region.height} image-local]`;
-      }
-    } else if (dotByDot) {
-      dimensionText = `Background capture (dot-by-dot) of "${foundTitle}": ${result.width}x${result.height}px`;
-      if (result.scale !== undefined) {
-        dimensionText += ` | scale: ${result.scale.toFixed(4)} | screen_x = window.x + image_x / ${result.scale.toFixed(4)}`;
-      }
-    } else {
-      dimensionText = `Background capture of "${foundTitle}": ${result.width}x${result.height}px`;
-    }
+    const saved = await captureAndSave(result, {
+      processName: await resolveProcessName(hwnd as unknown as bigint | null),
+      windowTitle: foundTitle,
+      hwnd: hwnd as unknown as bigint | null,
+    });
+
+    const refText = JSON.stringify({
+      ref: saved.ref,
+      tag: saved.tag,
+      windowTitle: foundTitle,
+      resolution: { width: result.width, height: result.height },
+      contentHash: saved.contentHash,
+      capturedAt: saved.capturedAt,
+    });
 
     return {
       content: [
-        { type: "image" as const, data: result.base64, mimeType: result.mimeType },
-        { type: "text" as const, text: dimensionText },
+        { type: "text" as const, text: refText },
         ...(bgWarnings.length > 0 ? [{ type: "text" as const, text: JSON.stringify({ hints: { warnings: bgWarnings } }) }] : []),
       ],
     };
@@ -1192,6 +1091,287 @@ export const screenshotOcrHandler = async ({
   }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 2: screenshot_query / screenshot_gc (disk-path model tools)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SCREENSHOTS_DIR = () => process.env.DESKTOP_TOUCH_SCREENSHOTS_DIR ?? path.join(process.cwd(), ".screenshots");
+const DEFAULT_SCREENSHOTS_DIR = path.join(process.cwd(), ".screenshots");
+
+async function captureAndSave(
+  result: { base64: string; width: number; height: number; mimeType: string },
+  meta: { processName: string; windowTitle: string; hwnd?: bigint | null },
+): Promise<SavedCapture> {
+  const dir = SCREENSHOTS_DIR();
+  const windowUuid = meta.hwnd ? "win_" + meta.hwnd.toString(16).slice(0, 8) : "unknown";
+  const buf = Buffer.from(result.base64, "base64");
+  return saveCapture(buf, { width: result.width, height: result.height, mimeType: result.mimeType }, {
+    screenshotsDir: dir,
+    processName: meta.processName,
+    windowTitle: meta.windowTitle,
+    windowUuid,
+  });
+}
+
+async function resolveProcessName(hwnd: bigint | null): Promise<string> {
+  if (!hwnd) return "desktop";
+  try {
+    const pid = getWindowProcessId(hwnd);
+    if (pid) {
+      const identity = getProcessIdentityByPid(pid);
+      if (identity?.processName) return identity.processName;
+    }
+  } catch { /* fall through */ }
+  return "unknown";
+}
+
+const screenshotFilterSchema = {
+  tag: z.string().optional().describe("Filter by process tag (e.g. 'chrome', 'code')."),
+  windowUuid: z.string().optional().describe("Filter by window UUID (e.g. 'win_a1b2c3d4')."),
+  exact: z.string().optional().describe("Exact file ref to look up."),
+  timeRange: z.object({
+    from: z.string().optional().describe("ISO 8601 start (inclusive)."),
+    to: z.string().optional().describe("ISO 8601 end (inclusive)."),
+  }).optional().describe("Time range filter."),
+  order: z.enum(["newest", "oldest"]).default("newest").describe("Sort order."),
+  limit: z.coerce.number().int().positive().default(20).describe("Max results (default 20)."),
+  offset: z.coerce.number().int().min(0).default(0).describe("Skip N results."),
+};
+
+export const screenshotQuerySchema = {
+  ...screenshotFilterSchema,
+  detail: z.enum(["summary", "list", "count", "full"]).default("list").describe("Response detail level."),
+};
+
+export const screenshotGcSchema = {
+  ...screenshotFilterSchema,
+  olderThan: z.string().optional().describe("Delete screenshots older than this duration (e.g. '24h', '7d', '30d')."),
+  maxCount: z.coerce.number().int().positive().optional().describe("Max files to delete."),
+  dryRun: coercedBoolean().default(true).describe("Preview mode — list files without deleting."),
+  confirm: coercedBoolean().default(false).describe("Set true to actually delete files (required when dryRun=false)."),
+};
+
+function readJsonSafe<T>(filePath: string): T | null {
+  try { return JSON.parse(fs.readFileSync(filePath, "utf-8")) as T; } catch { return null; }
+}
+
+export const screenshotQueryHandler = async (args: {
+  tag?: string;
+  windowUuid?: string;
+  exact?: string;
+  timeRange?: { from?: string; to?: string };
+  order: "newest" | "oldest";
+  limit: number;
+  offset: number;
+  detail: "summary" | "list" | "count" | "full";
+}): Promise<ToolResult> => {
+  try {
+    const dir = SCREENSHOTS_DIR();
+    const tags = readJsonSafe<Record<string, string>>(path.join(dir, "_tags.json"));
+    const results: Array<{ file: string; at?: string; title?: string; width?: number; height?: number; tag?: string }> = [];
+
+    if (args.exact) {
+      results.push({ file: args.exact });
+    } else if (args.tag && tags?.[args.tag]) {
+      const ref = tags[args.tag];
+      results.push({ file: ref, tag: args.tag });
+      // Also walk process index for details
+    } else if (args.tag) {
+      const processDir = path.join(dir, args.tag.charAt(0).toUpperCase() + args.tag.slice(1));
+      const procIndex = readJsonSafe<Array<{ windowUuid: string }>>(path.join(processDir, "_index.json"));
+      if (procIndex) {
+        for (const entry of procIndex) {
+          if (args.windowUuid && entry.windowUuid !== args.windowUuid) continue;
+          const winIndex = readJsonSafe<{ windowUuid: string; screenshots: Array<{ file: string; at: string; title: string; width: number; height: number; size: number }> }>(
+            path.join(processDir, entry.windowUuid, "_index.json")
+          );
+          if (winIndex) {
+            for (const s of winIndex.screenshots) {
+              const ref = path.join(processDir, entry.windowUuid, s.file);
+              if (args.timeRange) {
+                if (args.timeRange.from && s.at < args.timeRange.from) continue;
+                if (args.timeRange.to && s.at > args.timeRange.to) continue;
+              }
+              results.push({ file: ref, at: s.at, title: s.title, width: s.width, height: s.height, tag: args.tag });
+            }
+          }
+        }
+      }
+    } else {
+      // Walk all process dirs
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+          const processDir = path.join(dir, entry.name);
+          const procIndex = readJsonSafe<Array<{ windowUuid: string }>>(path.join(processDir, "_index.json"));
+          if (!procIndex) continue;
+          for (const pEntry of procIndex) {
+            if (args.windowUuid && pEntry.windowUuid !== args.windowUuid) continue;
+            const winIndex = readJsonSafe<{ windowUuid: string; screenshots: Array<{ file: string; at: string; title: string; width: number; height: number; size: number }> }>(
+              path.join(processDir, pEntry.windowUuid, "_index.json")
+            );
+            if (winIndex) {
+              for (const s of winIndex.screenshots) {
+                const ref = path.join(processDir, pEntry.windowUuid, s.file);
+                if (args.timeRange) {
+                  if (args.timeRange.from && s.at < args.timeRange.from) continue;
+                  if (args.timeRange.to && s.at > args.timeRange.to) continue;
+                }
+                results.push({ file: ref, at: s.at, title: s.title, width: s.width, height: s.height, tag: entry.name.toLowerCase() });
+              }
+            }
+          }
+        }
+      } catch { /* dir not created yet */ }
+    }
+
+    // Sort
+    results.sort((a, b) => {
+      const ta = a.at ?? "";
+      const tb = b.at ?? "";
+      return args.order === "newest" ? tb.localeCompare(ta) : ta.localeCompare(tb);
+    });
+
+    const sliced = results.slice(args.offset, args.offset + args.limit);
+    const total = results.length;
+
+    if (args.detail === "count") {
+      return ok({ total, limit: args.limit, offset: args.offset, hasMore: args.offset + args.limit < total });
+    }
+    if (args.detail === "summary") {
+      return ok({ total, shown: sliced.length, tags: tags ? Object.keys(tags) : [] });
+    }
+    return ok({
+      total,
+      shown: sliced.length,
+      screenshots: sliced.map((r) => ({
+        ref: r.file,
+        ...(r.at ? { capturedAt: r.at } : {}),
+        ...(r.title ? { title: r.title } : {}),
+        ...(r.width ? { resolution: { width: r.width, height: r.height } } : {}),
+        ...(r.tag ? { tag: r.tag } : {}),
+      })),
+    }, true);
+  } catch (err) {
+    return failWith(err, "screenshot_query");
+  }
+};
+
+export const screenshotGcHandler = async (args: {
+  tag?: string;
+  windowUuid?: string;
+  exact?: string;
+  timeRange?: { from?: string; to?: string };
+  order: "newest" | "oldest";
+  limit: number;
+  offset: number;
+  olderThan?: string;
+  maxCount?: number;
+  dryRun: boolean;
+  confirm: boolean;
+}): Promise<ToolResult> => {
+  try {
+    if (!args.dryRun && !args.confirm) {
+      return {
+        isError: true,
+        content: [{ type: "text", text: "Set confirm=true to delete files (dryRun=false requires confirmation)." }],
+      };
+    }
+
+    const dir = SCREENSHOTS_DIR();
+    const toDelete: string[] = [];
+    const expiredRefs: string[] = [];
+
+    // Parse olderThan
+    let cutoffMs: number | undefined;
+    if (args.olderThan) {
+      const match = args.olderThan.match(/^(\d+)([hd])$/);
+      if (!match) {
+        return failWith(`Invalid olderThan format: "${args.olderThan}". Use e.g. "24h", "7d", "30d".`, "screenshot_gc");
+      }
+      const n = parseInt(match[1]!, 10);
+      const unit = match[2]!;
+      cutoffMs = Date.now() - n * (unit === "h" ? 3600_000 : 86_400_000);
+    }
+
+    // Collect candidate files
+    const collectFiles = (processDir: string, wUuid: string, tagName: string) => {
+      const winIndex = readJsonSafe<{ windowUuid: string; screenshots: Array<{ file: string; at: string }> }>(
+        path.join(processDir, wUuid, "_index.json")
+      );
+      if (!winIndex) return;
+      for (const s of winIndex.screenshots) {
+        const ref = path.join(processDir, wUuid, s.file);
+        if (cutoffMs && new Date(s.at).getTime() > cutoffMs) continue;
+        toDelete.push(ref);
+        expiredRefs.push(ref);
+      }
+    };
+
+    if (args.exact) {
+      toDelete.push(args.exact);
+    } else if (args.tag) {
+      const tagName = args.tag.charAt(0).toUpperCase() + args.tag.slice(1);
+      const processDir = path.join(dir, tagName);
+      const procIndex = readJsonSafe<Array<{ windowUuid: string }>>(path.join(processDir, "_index.json"));
+      if (procIndex) {
+        for (const entry of procIndex) {
+          if (args.windowUuid && entry.windowUuid !== args.windowUuid) continue;
+          collectFiles(processDir, entry.windowUuid, args.tag);
+        }
+      }
+    } else {
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+          const processDir = path.join(dir, entry.name);
+          const procIndex = readJsonSafe<Array<{ windowUuid: string }>>(path.join(processDir, "_index.json"));
+          if (!procIndex) continue;
+          for (const pEntry of procIndex) {
+            if (args.windowUuid && pEntry.windowUuid !== args.windowUuid) continue;
+            collectFiles(processDir, pEntry.windowUuid, entry.name.toLowerCase());
+          }
+        }
+      } catch { /* empty */ }
+    }
+
+    // Apply maxCount
+    const marked = args.maxCount ? toDelete.slice(0, args.maxCount) : toDelete;
+
+    if (args.dryRun) {
+      return ok({
+        dryRun: true,
+        wouldDelete: marked.length,
+        totalCandidates: toDelete.length,
+        files: marked.map((f) => ({ ref: f })),
+      }, true);
+    }
+
+    // Actual deletion
+    let deleted = 0;
+    let failed = 0;
+    for (const ref of marked) {
+      try {
+        fs.unlinkSync(ref);
+        deleted++;
+      } catch {
+        failed++;
+      }
+    }
+
+    return ok({
+      dryRun: false,
+      deleted,
+      failed,
+      totalCandidates: toDelete.length,
+    }, true);
+  } catch (err) {
+    return failWith(err, "screenshot_gc");
+  }
+};
+
 export const getScreenInfoHandler = async (): Promise<ToolResult> => {
   try {
     const monitors = enumMonitors();
@@ -1265,31 +1445,28 @@ export function registerScreenshotTools(server: McpServer): void {
   server.tool(
     "screenshot",
     buildDesc({
-      purpose: "Capture desktop, window, or region across detail levels (meta / text / image / som / ocr) and capture modes (normal / background).",
+      purpose: "Capture desktop, window, or region across detail levels (meta / text / image / ocr) and capture modes (normal / background).",
       details:
         "detail='meta' (default) returns window titles+positions only (~20 tok/window, no image). " +
         "detail='text' returns UIA actionable elements with clickAt coords, no image (~100-300 tok). " +
-        "detail='som' returns a Set-of-Marks annotated image plus OCR-detected elements with IDs (bypasses UIA entirely). " +
-        "detail='ocr' returns Windows OCR words with screen-pixel clickAt coords (Phase 4: absorbs former screenshot_ocr — use when UIA is sparse and you want to force OCR unconditionally). " +
-        "detail='image' and detail='som' are server-blocked unless confirmImage=true is also passed. " +
-        "mode='background' captures hidden/minimised/occluded windows via PrintWindow (Phase 4: absorbs former screenshot_background) — pair with windowTitle/hwnd. " +
-        "dotByDot=true returns 1:1 pixel WebP; compute screen coords: screen_x = origin_x + image_x (or screen_x = origin_x + image_x / scale when dotByDotMaxDimension is set — scale printed in response). " +
+        "detail='image' returns screenshot pixels (saved to disk, returned as file ref). " +
+        "detail='ocr' returns Windows OCR words with screen-pixel clickAt coords (use when UIA is sparse). " +
+        "mode='background' captures hidden/minimised/occluded windows via PrintWindow — pair with windowTitle/hwnd. " +
+        "dotByDot=true returns 1:1 pixel WebP; compute screen coords: screen_x = origin_x + image_x (or screen_x = origin_x + image_x / scale when dotByDotMaxDimension is set). " +
         "diffMode=true returns only changed windows after the first call (~160 tok). " +
-        "region={x,y,width,height} captures a sub-rectangle (Phase 4: absorbs former scope_element when paired with windowTitle/hwnd — discover element bounds via desktop_discover, then pass region here). " +
-        "Data reduction: grayscale=true (−50%), dotByDotMaxDimension=1280 (caps longest edge), windowTitle+region (sub-crop to exclude browser chrome — e.g. region={x:0, y:120, width:1920, height:900}).",
+        "region={x,y,width,height} captures a sub-rectangle (discover element bounds via desktop_discover, then pass region here). " +
+        "tag=<name> returns the cached screenshot ref for a previously captured window.",
       prefer:
         "Use meta to orient, text before clicking, dotByDot only when precise pixel coords are needed. " +
-        "Use detail='som' for native apps or games that do not expose UIA elements (UIA-Blind). " +
-        "Use detail='ocr' for OCR-only (skip UIA entirely). " +
-        "Use mode='background' when the target window must stay hidden or cannot be brought to foreground. " +
+        "Use detail='ocr' when UIA returns no actionable elements. " +
+        "Use mode='background' when the target window must stay hidden. " +
         "Prefer browser_* tools for Chrome. Use diffMode after actions to confirm state changed. " +
-        "Only use image+confirmImage when text returned 0 actionable elements and visual inspection is genuinely required.",
+        "Use screenshot_query to list cached screenshots, screenshot_gc to clean up.",
       caveats:
-        "Default mode scales to maxDimension=768 — image pixels ≠ screen pixels; apply the scale formula before passing to mouse_click. " +
-        "Foreground detail='image' is always blocked without confirmImage=true. " +
-        "diffMode requires a prior full-capture baseline (non-diff call or workspace_snapshot) — calling diffMode cold returns a full frame, not a diff. " +
-        "mode='background' requires windowTitle or hwnd, and only composes with detail in {'image','meta'} — detail='text'/'som'/'ocr' run only against foreground capture (the dispatcher rejects the conflicting combination). Passing mode='background' is itself the acknowledgement that image pixels are wanted, so confirmImage is NOT required for it (matches the former screenshot_background contract). fullContent=false enables legacy mode (faster but GPU windows may be black). " +
-        "detail='ocr' requires windowTitle or hwnd; first call may take ~1s (WinRT cold-start) and the matching OCR language pack must be installed.",
+        "Images are saved to .screenshots/ directory and returned as file refs. Use the read tool to view them. " +
+        "diffMode requires a prior full-capture baseline (non-diff call or workspace_snapshot). " +
+        "mode='background' requires windowTitle or hwnd, and only composes with detail in {'image','meta'}. " +
+        "detail='ocr' requires windowTitle or hwnd; first call may take ~1s (WinRT cold-start).",
       examples: [
         "screenshot() → meta orientation of all windows",
         "screenshot({detail:'text', windowTitle:'Notepad'}) → clickable elements with coords",
@@ -1300,6 +1477,49 @@ export function registerScreenshotTools(server: McpServer): void {
     }),
     screenshotRegistrationSchema,
     screenshotRegistrationHandler as typeof screenshotHandler
+  );
+
+  // ── Phase 2: screenshot_query (read-only index query) ──────────────────────
+  server.tool(
+    "screenshot_query",
+    "Query the screenshot disk cache by tag, window, or time range (read-only, no capture).",
+    screenshotQuerySchema,
+    screenshotQueryHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
+  );
+
+  // ── Phase 3: MCP Resource URI for screenshot refs ─────────────────────────
+  server.resource(
+    "screenshot-by-ref",
+    "screenshot://by-ref/{path}",
+    async (uri) => {
+      const ref = decodeURIComponent(uri.pathname.replace(/^\//, ""));
+      const data = fs.readFileSync(ref);
+      const ext = ref.endsWith(".png") ? "image/png" : "image/webp";
+      return { contents: [{ uri: uri.href, mimeType: ext, blob: data.toString("base64") }] };
+    },
+  );
+
+  server.resource(
+    "screenshot-latest-by-tag",
+    "screenshot://latest/{tag}",
+    async (uri) => {
+      const tag = decodeURIComponent(uri.pathname.replace(/^\//, ""));
+      const dir = SCREENSHOTS_DIR();
+      const tags = readJsonSafe<Record<string, string>>(path.join(dir, "_tags.json"));
+      const ref = tags?.[tag];
+      if (!ref) throw new Error(`Tag "${tag}" not found`);
+      const data = fs.readFileSync(ref);
+      const ext = ref.endsWith(".png") ? "image/png" : "image/webp";
+      return { contents: [{ uri: uri.href, mimeType: ext, blob: data.toString("base64") }] };
+    },
+  );
+
+  // ── Phase 2: screenshot_gc (disk cache garbage collection) ──────────────────
+  server.tool(
+    "screenshot_gc",
+    "Preview or delete old/unused screenshots from the disk cache. dryRun=true (default) to preview; set confirm=true with dryRun=false to actually delete.",
+    screenshotGcSchema,
+    screenshotGcHandler as (args: Record<string, unknown>) => Promise<ToolResult>,
   );
 
   // Phase 4: screenshot_background / screenshot_ocr / scope_element privatized

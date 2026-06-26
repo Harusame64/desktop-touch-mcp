@@ -490,7 +490,7 @@ export const desktopTouchSchema = {
   returnCapture: z.enum(["on-change", "always", "never"]).optional().describe(
     "[EXPERIMENTAL] ADR-024 Seed-2 — controls the post-action ROI capture on visual-only targets " +
     "(UIA-blind / RDP / canvas). When it attaches, a successful act carries a 'roiCapture' " +
-    "{ roi, somImage, entities }: a base64 PNG crop of the changed region plus a lease-less entity " +
+    "{ roi, entities }: a crop of the changed region plus a lease-less entity " +
     "preview, so you can confirm the result and find the next target without a separate desktop_state / " +
     "screenshot. The entities are previews only (no lease) — re-run desktop_discover to act on them. " +
     "Semantics: 'on-change' (default for visual-only targets) attaches only on a visible change; 'always' " +
@@ -728,7 +728,7 @@ export const desktopActRawHandler = async (
 
     // ADR-024 Seed-2 S5 — fold the post-action ROI capture into the act response
     // for visual-only targets. `buildRoiCapture` gates on the visual-only regime +
-    // motion verdict, then assembles `{roi, somImage, entities, source}`. Absent
+    // motion verdict, then assembles `{roi, entities, source}`. Absent
     // (gate declines / no change / no ROI) → response stays bit-equal with the
     // pre-Seed-2 shape (additive — existing destructures unaffected).
     if (result.ok) {
@@ -843,8 +843,7 @@ async function tryVerifyAnyChange(
  *   1. gate on visual-only regime + motion verdict (`shouldReturnRoiCapture`);
  *   2. turn the S3a per-output dirty rects into window-relative rects
  *      (S3b `filterDirtyRectsToWindow`) and reduce them to one ROI (bounding box);
- *   3. OCR only that ROI (S4 `runSomPipeline(..., roi)`) → `somImage` crop +
- *      `SomElement[]`;
+ *   3. OCR only that ROI (S4 `runSomPipeline(..., roi)`) → `SomElement[]`;
  *   4. map the elements to lease-less `RoiPreviewEntity[]` (OQ-8 (b) MVP),
  *      deduped against the most recent discover snapshot (OQ-10) so the preview
  *      highlights only what changed.
@@ -933,17 +932,13 @@ function assembleRoiCaptureFromSom(
   facade: DesktopFacade,
   viewId: string,
 ): RoiCapture | undefined {
-  if (som.somImage === null) return undefined; // SoM render unavailable
+  // SoM image rendering was removed in the disk-path model.
+  // Preview entities are still available for coordinate inspection.
+  const entities = som.elements.length > 0
+    ? buildRoiPreviewEntities(som.elements, facade.getDiscoverEntitiesForViewId(viewId))
+    : [];
 
-  // OQ-10 — map ROI-OCR elements to the lease-less preview, deduped against
-  // the discover snapshot by geometry AND label (so an in-place text change is
-  // preserved). Pure logic in `_roi-preview.ts` (`buildRoiPreviewEntities`).
-  const entities = buildRoiPreviewEntities(
-    som.elements,
-    facade.getDiscoverEntitiesForViewId(viewId),
-  );
-
-  return { roi, somImage: som.somImage.base64, entities, source };
+  return { roi, somImage: "", entities, source };
 }
 
 /**
@@ -1210,7 +1205,7 @@ export function registerDesktopTools(server: McpServer): void {
       "  executor_failed on terminal textbox (action=type) → use V1 terminal(action='send') instead.",
       "Check desktop_discover response.constraints for pre-emptive fallback hints before calling desktop_act.",
       "[EXPERIMENTAL] On visual-only targets (UIA-blind / RDP / canvas), a successful act may attach a",
-      "'roiCapture' { roi, somImage, entities }: a base64 PNG crop of the changed region + a lease-less entity",
+      "'roiCapture' { roi, entities }: a crop of the changed region + a lease-less entity",
       "preview, so you can confirm the result + find the next target in one call (no separate desktop_state /",
       "screenshot). entities are previews (no lease) — re-run desktop_discover to act. Control via returnCapture",
       "('on-change' default / 'always' / 'never'). Never attached on structured targets (browser/CDP, UIA-rich).",

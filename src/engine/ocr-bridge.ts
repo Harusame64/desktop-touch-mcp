@@ -573,8 +573,6 @@ export interface SomElement {
 }
 
 export interface SomPipelineResult {
-  /** Annotated SoM image (PNG base64). null when Rust draw_som_labels unavailable. */
-  somImage: { base64: string; mimeType: "image/png" } | null;
   /** Structured element list with ID-to-coordinate mapping. */
   elements: SomElement[];
   /** Upscale factor used during OCR preprocessing (for debugging). */
@@ -663,8 +661,8 @@ export function clusterOcrWords(words: OcrWord[], elementGapThreshold = 35): Som
  *  4. Scale OCR bbox coords back to original image space (÷ scale).
  *  5. Convert image-local coords → absolute screen coords (+ origin).
  *  6. `mergeNearbyWords` → `clusterOcrWords` → `SomElement[]`.
- *  7. Render SoM image via Rust `drawSomLabels` (or skip if unavailable).
- *  8. Return `{ somImage, elements, preprocessScale, resolvedWindowTitle }`.
+ *  (Step 4 — SoM image rendering was removed in the disk-path model)
+ *  8. Return `{ elements, preprocessScale, resolvedWindowTitle }`.
  *
  * @param windowTitle      Partial window title (same matching convention as UIA calls).
  * @param hwnd             Optional HWND (bigint) — uses enumWindowsInZOrder when null.
@@ -741,7 +739,7 @@ export async function runSomPipeline(
     const cropped = cropRgbaToRoi(rawData, width, height, roi);
     if (cropped === null) {
       // ROI does not overlap the captured buffer → nothing to OCR.
-      return { somImage: null, elements: [], preprocessScale: scale, resolvedWindowTitle };
+      return { elements: [], preprocessScale: scale, resolvedWindowTitle };
     }
     rawData = cropped.data;
     width = cropped.width;
@@ -847,39 +845,7 @@ export async function runSomPipeline(
   const elements = clusterOcrWords(snapped);
   console.error(`[SoM] clustering: ${(performance.now() - _tClsStart).toFixed(1)}ms  (${merged.length} words → ${elements.length} elements)`);
 
-  // ── Step 4: Render SoM image via Rust ───────────────────────────────────────
-  let somImage: SomPipelineResult["somImage"] = null;
-
-  if (nativeEngine?.drawSomLabels) {
-    // Labels are in image-local coordinates (subtract origin)
-    const labels = elements.map((el) => ({
-      id:     el.id,
-      x:      Math.max(0, el.region.x - origin.x),
-      y:      Math.max(0, el.region.y - origin.y),
-      width:  el.region.width,
-      height: el.region.height,
-    }));
-
-    const _tDrawStart = performance.now();
-    const drawn = await nativeEngine.drawSomLabels({
-      data:     rawData,
-      width,
-      height,
-      channels: 4,
-      labels,
-    });
-    console.error(`[SoM] drawSomLabels (Rust): ${(performance.now() - _tDrawStart).toFixed(1)}ms  (${labels.length} labels)`);
-
-    const pngOut = await sharp(drawn.data as Buffer, {
-      raw: { width: drawn.width, height: drawn.height, channels: drawn.channels as 1 | 2 | 3 | 4 },
-    })
-      .png({ compressionLevel: 6 })
-      .toBuffer();
-
-    somImage = { base64: pngOut.toString("base64"), mimeType: "image/png" };
-  }
-
   console.error(`[SoM] total pipeline: ${(performance.now() - _somT0).toFixed(1)}ms`);
 
-  return { somImage, elements, preprocessScale: effectiveScale, resolvedWindowTitle };
+  return { elements, preprocessScale: effectiveScale, resolvedWindowTitle };
 }

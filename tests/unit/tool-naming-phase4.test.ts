@@ -293,9 +293,9 @@ describe("Phase 4 — desktop_state include* flags + 5 get_* tools privatized", 
 describe("Phase 4 — stub-tool-catalog drops 20 tools, retains 26 + 1 (excel) = 27 entries", () => {
   const catalogNames = new Set(STUB_TOOL_CATALOG.map((e) => e.name));
 
-  it("catalog has exactly 27 entries", () => {
+  it("catalog has exactly 29 entries", () => {
     // 26 from Phase 4 reduction + 1 from ADR-015 v1.5.0 (`excel`).
-    expect(STUB_TOOL_CATALOG.length).toBe(27);
+    expect(STUB_TOOL_CATALOG.length).toBe(29);
   });
 
   const REMOVED = [
@@ -528,10 +528,10 @@ describe("Phase 4 — Codex PR #41 P2: screenshot rejects incompatible mode/deta
     expect(src).not.toMatch(/mode='background'\) returns image pixels — pass confirmImage:true/);
   });
 
-  it("screenshot description says confirmImage is NOT required for mode='background'", () => {
+  it("screenshot description says mode='background' only composes with image/meta details", () => {
     const entry = STUB_TOOL_CATALOG.find((e) => e.name === "screenshot");
     expect(entry).toBeDefined();
-    expect(entry!.description).toMatch(/confirmImage is NOT required/);
+    expect(entry!.description).toMatch(/mode='background' requires windowTitle/);
   });
 });
 

@@ -230,8 +230,8 @@ describe("tool descriptions — contract", () => {
   //              + 6 desktop_state/desktop_discover absorbed:
   //                get_active_window/get_cursor_position/get_document_state/
   //                get_screen_info/get_ui_elements/get_windows) → 46-20 = 26
-  it("finds exactly 26 registered tools", () => {
-    expect(allTools.length).toBe(26);
+  it("finds exactly 28 registered tools", () => {
+    expect(allTools.length).toBe(28);
   });
 
   for (const tool of allTools) {

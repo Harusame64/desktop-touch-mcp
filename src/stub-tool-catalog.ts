@@ -1243,7 +1243,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "screenshot",
-    "description": "Purpose: Capture desktop, window, or region across detail levels (meta / text / image / som / ocr) and capture modes (normal / background).\nDetails: detail='meta' (default) returns window titles+positions only (~20 tok/window, no image). detail='text' returns UIA actionable elements with clickAt coords, no image (~100-300 tok). detail='som' returns a Set-of-Marks annotated image plus OCR-detected elements with IDs (bypasses UIA entirely). detail='ocr' returns Windows OCR words with screen-pixel clickAt coords (Phase 4: absorbs former screenshot_ocr — use when UIA is sparse and you want to force OCR unconditionally). detail='image' and detail='som' are server-blocked unless confirmImage=true is also passed. mode='background' captures hidden/minimised/occluded windows via PrintWindow (Phase 4: absorbs former screenshot_background) — pair with windowTitle/hwnd. dotByDot=true returns 1:1 pixel WebP; compute screen coords: screen_x = origin_x + image_x (or screen_x = origin_x + image_x / scale when dotByDotMaxDimension is set — scale printed in response). diffMode=true returns only changed windows after the first call (~160 tok). region={x,y,width,height} captures a sub-rectangle (Phase 4: absorbs former scope_element when paired with windowTitle/hwnd — discover element bounds via desktop_discover, then pass region here). Data reduction: grayscale=true (−50%), dotByDotMaxDimension=1280 (caps longest edge), windowTitle+region (sub-crop to exclude browser chrome — e.g. region={x:0, y:120, width:1920, height:900}).\nPrefer: Use meta to orient, text before clicking, dotByDot only when precise pixel coords are needed. Use detail='som' for native apps or games that do not expose UIA elements (UIA-Blind). Use detail='ocr' for OCR-only (skip UIA entirely). Use mode='background' when the target window must stay hidden or cannot be brought to foreground. Prefer browser_* tools for Chrome. Use diffMode after actions to confirm state changed. Only use image+confirmImage when text returned 0 actionable elements and visual inspection is genuinely required.\nCaveats: Default mode scales to maxDimension=768 — image pixels ≠ screen pixels; apply the scale formula before passing to mouse_click. Foreground detail='image' is always blocked without confirmImage=true. diffMode requires a prior full-capture baseline (non-diff call or workspace_snapshot) — calling diffMode cold returns a full frame, not a diff. mode='background' requires windowTitle or hwnd, and only composes with detail in {'image','meta'} — detail='text'/'som'/'ocr' run only against foreground capture (the dispatcher rejects the conflicting combination). Passing mode='background' is itself the acknowledgement that image pixels are wanted, so confirmImage is NOT required for it (matches the former screenshot_background contract). fullContent=false enables legacy mode (faster but GPU windows may be black). detail='ocr' requires windowTitle or hwnd; first call may take ~1s (WinRT cold-start) and the matching OCR language pack must be installed.\nExamples:\n  screenshot() → meta orientation of all windows\n  screenshot({detail:'text', windowTitle:'Notepad'}) → clickable elements with coords\n  screenshot({detail:'ocr', windowTitle:'PDF', ocrLanguage:'ja'}) → OCR words with screen-pixel coords\n  screenshot({mode:'background', windowTitle:'Chrome', dotByDot:true, dotByDotMaxDimension:1280, grayscale:true}) → background-capture pixel-accurate Chrome\n  screenshot({windowTitle:'Notepad', region:{x:0,y:120,width:600,height:400}}) → cropped sub-region (zoom into element after desktop_discover)",
+    "description": "Purpose: Capture desktop, window, or region across detail levels (meta / text / image / ocr) and capture modes (normal / background).\nDetails: detail='meta' (default) returns window titles+positions only (~20 tok/window, no image). detail='text' returns UIA actionable elements with clickAt coords, no image (~100-300 tok). detail='image' returns screenshot pixels (saved to disk, returned as file ref). detail='ocr' returns Windows OCR words with screen-pixel clickAt coords (use when UIA is sparse). mode='background' captures hidden/minimised/occluded windows via PrintWindow — pair with windowTitle/hwnd. dotByDot=true returns 1:1 pixel WebP; compute screen coords: screen_x = origin_x + image_x (or screen_x = origin_x + image_x / scale when dotByDotMaxDimension is set). diffMode=true returns only changed windows after the first call (~160 tok). region={x,y,width,height} captures a sub-rectangle (discover element bounds via desktop_discover, then pass region here). tag=<name> returns the cached screenshot ref for a previously captured window.\nPrefer: Use meta to orient, text before clicking, dotByDot only when precise pixel coords are needed. Use detail='ocr' when UIA returns no actionable elements. Use mode='background' when the target window must stay hidden. Prefer browser_* tools for Chrome. Use diffMode after actions to confirm state changed. Use screenshot_query to list cached screenshots, screenshot_gc to clean up.\nCaveats: Images are saved to .screenshots/ directory and returned as file refs. Use the read tool to view them. diffMode requires a prior full-capture baseline (non-diff call or workspace_snapshot). mode='background' requires windowTitle or hwnd, and only composes with detail in {'image','meta'}. detail='ocr' requires windowTitle or hwnd; first call may take ~1s (WinRT cold-start).\nExamples:\n  screenshot() → meta orientation of all windows\n  screenshot({detail:'text', windowTitle:'Notepad'}) → clickable elements with coords\n  screenshot({detail:'ocr', windowTitle:'PDF', ocrLanguage:'ja'}) → OCR words with screen-pixel coords\n  screenshot({mode:'background', windowTitle:'Chrome', dotByDot:true, dotByDotMaxDimension:1280, grayscale:true}) → background-capture pixel-accurate Chrome\n  screenshot({windowTitle:'Notepad', region:{x:0,y:120,width:600,height:400}}) → cropped sub-region (zoom into element after desktop_discover)",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1287,31 +1287,18 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
             "height"
           ]
         },
-        "maxDimension": {
-          "description": "Max width or height in pixels (default 768). Use 1280 to read small text, code, or fine UI details. Ignored when dotByDot=true.",
-          "type": "integer",
-          "default": 768
-        },
         "dotByDot": {
-          "description": "1:1 pixel mode — no scaling, WebP compression. Window captures include 'origin: (x,y)' so you can compute screen position: screen_x = origin_x + image_x. When dotByDotMaxDimension is also set, scale factor is included: screen_x = origin_x + image_x / scale.",
+          "description": "1:1 pixel mode — WebP compression. Window captures include 'origin: (x,y)' so you can compute screen position: screen_x = origin_x + image_x. When dotByDotMaxDimension is also set, scale factor is included: screen_x = origin_x + image_x / scale.",
           "type": "boolean",
           "default": false
         },
         "dotByDotMaxDimension": {
-          "description": "Cap the longest edge (pixels) when dotByDot=true. Reduces payload while preserving coordinate math. Example: 1280 on a 1920×1080 screen → scale≈0.667. Response includes scale factor: screen_x = origin_x + image_x / scale. Recommended for Chrome: dotByDot=true, dotByDotMaxDimension=1280, grayscale=true.",
+          "description": "Cap the longest edge (pixels) when dotByDot=true. Example: 1280 on a 1920×1080 screen → scale≈0.667. Response includes scale factor: screen_x = origin_x + image_x / scale.",
           "type": "integer"
         },
-        "grayscale": {
-          "description": "Convert to grayscale before encoding. Reduces file size ~50% for text-heavy content (e.g. AWS console, code editors). Avoid when color is meaningful (charts, status indicators).",
-          "type": "boolean",
-          "default": false
-        },
-        "webpQuality": {
-          "description": "WebP quality when dotByDot=true or diffMode=true. 40=layout only, 60=general (default), 80=fine text.",
-          "type": "integer",
-          "default": 60,
-          "minimum": 1,
-          "maximum": 100
+        "tag": {
+          "description": "Return the cached screenshot ref for this tag without capturing a new image (mutually exclusive with windowTitle/hwnd).",
+          "type": "string"
         },
         "diffMode": {
           "description": "Layer diff mode — compares each window against the buffered previous frame. First call = full I-frame (all windows). Subsequent calls = only changed windows (P-frame). Implicitly enables dotByDot. Best used with windowTitle=undefined to snapshot all windows.",
@@ -1319,13 +1306,12 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "default": false
         },
         "detail": {
-          "description": "Response detail level (omit to let the server pick a smart default):\n  omitted — auto: 'image' when dotByDot/region/displayId is specified, else 'meta'\n  'meta'  — window title + screen region only (~20 tok/window, cheapest)\n  'text'  — UIA element tree as JSON with text values (~100-300 tok/window, no image)\n  'image' — actual screenshot pixels. BLOCKED unless confirmImage=true is also passed.\n  'som'   — Set-of-Marks image + OCR elements (bypasses UIA entirely). BLOCKED unless confirmImage=true is also passed.\n  'ocr'   — Windows OCR words with screen-pixel clickAt coords (Phase 4: absorbs former screenshot_ocr). Use when UIA returns no actionable elements (WinUI3 custom-drawn UIs, game overlays, PDF viewers). Note: detail='text' auto-falls back to OCR via ocrFallback='auto'; choose detail='ocr' only when forcing OCR unconditionally.",
+          "description": "Response detail level (omit to let the server pick a smart default):\n  omitted — auto: 'image' when dotByDot/region/displayId is specified, else 'meta'\n  'meta'  — window title + screen region only (~20 tok/window, cheapest)\n  'text'  — UIA element tree as JSON with text values (~100-300 tok/window, no image)\n  'image' — actual screenshot pixels (saved to disk, returned as file ref)\n  'ocr'   — Windows OCR words with screen-pixel clickAt coords (Phase 4: absorbs former screenshot_ocr). Use when UIA returns no actionable elements (WinUI3 custom-drawn UIs, game overlays, PDF viewers). Note: detail='text' auto-falls back to OCR via ocrFallback='auto'; choose detail='ocr' only when forcing OCR unconditionally.",
           "type": "string",
           "enum": [
             "meta",
             "text",
             "image",
-            "som",
             "ocr"
           ]
         },
@@ -1343,11 +1329,6 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "type": "boolean",
           "default": true
         },
-        "confirmImage": {
-          "description": "Must be true to receive image pixels when detail='image'. Without this flag, detail='image' is blocked and a guidance message is returned instead. Prefer detail='text' / diffMode=true / dotByDot=true first — only set confirmImage=true when visual inspection is genuinely required.",
-          "type": "boolean",
-          "default": false
-        },
         "ocrFallback": {
           "description": "OCR fallback behaviour when detail='text'. 'auto' (default): fire Windows OCR if UIA returns 0 actionable elements OR hints.uiaSparse=true (UIA returned <5 elements, typical for Chrome). 'always': always augment actionable[] with OCR words. 'never': disable OCR entirely.",
           "type": "string",
@@ -1363,7 +1344,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "type": "string"
         },
         "preprocessPolicy": {
-          "description": "OCR preprocessing scale policy for detail='som' and OCR fallback paths. 'auto' (default): clamp scale to 1 on OOM (>8MP) or high-DPI (≥150%). 'aggressive': relaxes DPI clamp to 175%, preserving upscale on 150%-DPI monitors (e.g. Outlook PWA). Also auto-enables adaptive binarization. 'minimal': always scale=1 regardless of DPI/resolution.",
+          "description": "OCR preprocessing scale policy for OCR fallback paths. 'auto' (default): clamp scale to 1 on OOM (>8MP) or high-DPI (≥150%). 'aggressive': relaxes DPI clamp to 175%, preserving upscale on 150%-DPI monitors (e.g. Outlook PWA). Also auto-enables adaptive binarization. 'minimal': always scale=1 regardless of DPI/resolution.",
           "type": "string",
           "enum": [
             "auto",
@@ -1389,8 +1370,57 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
     }
   },
   {
+    "name": "screenshot_gc",
+    "description": "Preview or delete old/unused screenshots from the disk cache. dryRun=true (default) to preview; set confirm=true with dryRun=false to actually delete.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "olderThan": {
+          "description": "Delete screenshots older than this duration (e.g. '24h', '7d', '30d').",
+          "type": "string"
+        },
+        "maxCount": {
+          "description": "Max files to delete.",
+          "type": "integer"
+        },
+        "dryRun": {
+          "description": "Preview mode — list files without deleting.",
+          "type": "boolean",
+          "default": true
+        },
+        "confirm": {
+          "description": "Set true to actually delete files (required when dryRun=false).",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "screenshot_query",
+    "description": "Query the screenshot disk cache by tag, window, or time range (read-only, no capture).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "detail": {
+          "description": "Response detail level.",
+          "type": "string",
+          "enum": [
+            "summary",
+            "list",
+            "count",
+            "full"
+          ],
+          "default": "list"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
     "name": "scroll",
-    "description": "Purpose: Scroll a window or page. 5 strategies via action: 'raw' (wheel notches), 'to_element' (UIA name/automationId or CSS selector), 'smart' (auto-detect target with multi-strategy fallback), 'capture' (full-page stitched image), 'read' (scroll+OCR+dedupe → stitched text).\nDetails: action='raw': send raw mouse-wheel notches at (x,y) or current cursor, optional window focus. Scroll scale — UIA Tier 1 (ScrollPattern apps): empirically ≈1 text line per notch; amount:3 (default) ≈ 3 lines (small nudge), amount:10 ≈ 10 lines (~½ visible area). Legacy SendInput: each amount unit = 3 wheel ticks; ≈9 text lines per unit at Windows default (app/OS-setting dependent). action='to_element': scroll a named element into viewport (UIA or CDP). action='smart': handles nested scroll layers, virtualised lists, sticky-header occlusion. action='capture': stitches full-page images (caps at ~700KB raw); sizeReduced=true means downscaled. action='read': scrolls page-by-page, OCRs each viewport, deduplicates overlapping lines, returns stitched text; language auto-detected from OS locale if omitted.\nPrefer: Use action='to_element' or action='smart' for click target out-of-viewport recovery (entity_outside_viewport). Use action='capture' for reading long pages as images. Use action='read' for extracting text from long native-app documents (PDF readers, text editors, terminals) where copy-paste is unavailable. For simple scroll without target, use action='raw'.\nCaveats: action='capture' returns stitched image — pixels do NOT match screen coords when sizeReduced=true, use for reading only, not mouse_click. action='smart' CDP path requires browser_open. action='to_element' native path requires element to implement UIA ScrollItemPattern. action='read' uses OCR (imperfect accuracy) and requires the window to be visible; for browser pages prefer browser_eval or browser_overview for accurate DOM text. action='raw' typed errors: code:'ScrollNotDelivered' on silent drop (overlay / non-scrollable / UIPI low-IL); already-at-boundary is success via pre/post-percent disambiguation. hints.verifyDelivery.{channel,reason} per ADR-018 §2.6 (Phase 1b: Tier 1 UIA dispatch for HWNDs exposing ScrollPattern; other apps use legacy SendInput). action='smart' typed errors: code:'OverflowHiddenAncestor' (retry with expandHidden:true), code:'VirtualScrollExhausted' (provide virtualIndex).\nExamples:\n  scroll({action:'raw', direction:'down', amount:5, windowTitle:'Chrome'})\n  scroll({action:'to_element', name:'OK', windowTitle:'Dialog'})\n  scroll({action:'smart', target:'#create-release-btn'})\n  scroll({action:'capture', windowTitle:'Chrome', maxScrolls:10})\n  scroll({action:'read', windowTitle:'Acrobat', maxPages:15}) // OCR + dedupe long PDF",
+    "description": "Purpose: Scroll a window or page. 5 strategies via action: 'raw' (wheel notches), 'to_element' (UIA name/automationId or CSS selector), 'smart' (auto-detect target with multi-strategy fallback), 'capture' (full-page stitched image), 'read' (scroll+OCR+dedupe → stitched text).\nDetails: action='raw': send raw mouse-wheel notches at (x,y) or current cursor, optional window focus. Scroll scale — UIA Tier 1 (ScrollPattern apps): empirically ≈1 text line per notch; amount:3 (default) ≈ 3 lines (small nudge), amount:10 ≈ 10 lines (~½ visible area). Legacy SendInput: each amount unit = 3 wheel ticks; ≈9 text lines per unit at Windows default (app/OS-setting dependent). action='to_element': scroll a named element into viewport (UIA or CDP). action='smart': handles nested scroll layers, virtualised lists, sticky-header occlusion. action='capture': stitches full-page images saved to disk (returned as file ref). action='read': scrolls page-by-page, OCRs each viewport, deduplicates overlapping lines, returns stitched text; language auto-detected from OS locale if omitted.\nPrefer: Use action='to_element' or action='smart' for click target out-of-viewport recovery (entity_outside_viewport). Use action='capture' for reading long pages as images. Use action='read' for extracting text from long native-app documents (PDF readers, text editors, terminals) where copy-paste is unavailable. For simple scroll without target, use action='raw'.\nCaveats: action='capture' returns stitched image saved to disk as file ref. action='smart' CDP path requires browser_open. action='to_element' native path requires element to implement UIA ScrollItemPattern. action='read' uses OCR (imperfect accuracy) and requires the window to be visible; for browser pages prefer browser_eval or browser_overview for accurate DOM text. action='raw' typed errors: code:'ScrollNotDelivered' on silent drop (overlay / non-scrollable / UIPI low-IL); already-at-boundary is success via pre/post-percent disambiguation. hints.verifyDelivery.{channel,reason} per ADR-018 §2.6 (Phase 1b: Tier 1 UIA dispatch for HWNDs exposing ScrollPattern; other apps use legacy SendInput). action='smart' typed errors: code:'OverflowHiddenAncestor' (retry with expandHidden:true), code:'VirtualScrollExhausted' (provide virtualIndex).\nExamples:\n  scroll({action:'raw', direction:'down', amount:5, windowTitle:'Chrome'})\n  scroll({action:'to_element', name:'OK', windowTitle:'Dialog'})\n  scroll({action:'smart', target:'#create-release-btn'})\n  scroll({action:'capture', windowTitle:'Chrome', maxScrolls:10})\n  scroll({action:'read', windowTitle:'Acrobat', maxPages:15}) // OCR + dedupe long PDF",
     "inputSchema": {
       "type": "object",
       "properties": {

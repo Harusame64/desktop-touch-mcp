@@ -205,29 +205,6 @@ export interface NativeImageProcessingResult {
   channels: number
 }
 
-export interface NativeSomLabel {
-  id: number
-  x: number
-  y: number
-  width: number
-  height: number
-}
-
-export interface NativeDrawSomLabelsOptions {
-  data: Buffer
-  width: number
-  height: number
-  channels: number
-  labels: Array<NativeSomLabel>
-}
-
-export interface NativeDrawSomLabelsResult {
-  data: Buffer
-  width: number
-  height: number
-  channels: number
-}
-
 // ─── Exported functions ──────────────────────────────────────────────────────
 
 export declare function computeChangeFraction(prev: Buffer, curr: Buffer, width: number, height: number, channels: number): number
@@ -316,7 +293,6 @@ export declare function uiaReadScrollPercentAtHwnd(opts: { hwnd: string; axis: "
 export declare function uiaGetVirtualDesktopStatus(hwndIntegers: Array<string>): Promise<Record<string, boolean>>
 
 export declare function preprocessImage(opts: NativePreprocessOptions): Promise<NativeImageProcessingResult>
-export declare function drawSomLabels(opts: NativeDrawSomLabelsOptions): Promise<NativeDrawSomLabelsResult>
 
 // ─── Win32 hot-path APIs (ADR-007 P1, sync, panic-safe via napi_safe_call) ───
 export declare function win32EnumTopLevelWindows(): bigint[]

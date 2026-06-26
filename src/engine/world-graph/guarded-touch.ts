@@ -102,7 +102,7 @@ export interface RoiPreviewEntity {
 export interface RoiCapture {
   /** Window-relative crop rect the `somImage` covers (the diff region, not the full window). */
   roi: Rect;
-  /** Base64 PNG of the cropped diff region. */
+  /** Base64 PNG of the cropped diff region (empty string when image rendering unavailable). */
   somImage: string;
   /** Lease-less observation preview (re-run `desktop_discover` for actionable leases). */
   entities: RoiPreviewEntity[];

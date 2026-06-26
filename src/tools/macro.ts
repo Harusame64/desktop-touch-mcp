@@ -196,7 +196,7 @@ interface ToolEntry {
  */
 export interface InnerToolOutcome {
   textLines: string[];
-  images: Array<{ data: string; mimeType: string }>;
+  images: Array<{ ref: string }>;
   /** Inner envelope `code` — present only on failure when the handler emitted one. */
   code?: string;
   /** Inner envelope `error` string — present only on failure. */
@@ -227,10 +227,9 @@ export async function runInnerToolAsResult(
   const result = await entry.handler(validated);
 
   const textLines: string[] = [];
-  const images: Array<{ data: string; mimeType: string }> = [];
+  const images: Array<{ ref: string }> = [];
   for (const block of result.content) {
     if (block.type === "text") textLines.push(block.text);
-    else if (block.type === "image") images.push({ data: block.data, mimeType: block.mimeType });
   }
 
   let code: string | undefined;
@@ -471,7 +470,7 @@ export const runMacroHandler = async ({
     text?: string[];
     error?: string;
     code?: string;
-    _images?: Array<{ data: string; mimeType: string }>;
+    _images?: Array<{ ref: string }>;
   };
 
   const results: StepResult[] = [];
@@ -645,12 +644,11 @@ export const runMacroHandler = async ({
   };
   content.push({ type: "text", text: JSON.stringify(summary, null, 2) });
 
-  // Append image blocks from screenshot steps
+  // Append ref blocks from screenshot steps
   for (const r of results) {
     if (r._images) {
       for (const img of r._images) {
-        content.push({ type: "image", data: img.data, mimeType: img.mimeType });
-        content.push({ type: "text", text: `[step ${r.step}: ${r.tool}]` });
+        content.push({ type: "text", text: `[step ${r.step}: ${r.tool}] ref: ${img.ref}` });
       }
     }
   }

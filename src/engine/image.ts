@@ -2,6 +2,9 @@ import sharp from "sharp";
 import { screen, Region } from "./nutjs.js";
 import { printWindowToBuffer } from "./win32.js";
 import { nativeEngine } from "./native-engine.js";
+import * as fs from "fs";
+import * as path from "path";
+import { createHash } from "crypto";
 
 export interface CaptureOptions {
   /** Scale longest edge to this value (PNG mode). Default 1280. Ignored when format="webp". */
@@ -570,4 +573,144 @@ export async function encodeToWebPFromRaw(
     .webp({ quality })
     .toBuffer();
   return { base64: webpBuffer.toString("base64"), mimeType: "image/webp", width: srcWidth, height: srcHeight };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Screenshot disk persistence (Phase 1 — disk-path model)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface SaveCaptureOpts {
+  screenshotsDir: string;
+  processName: string;
+  windowTitle: string;
+  windowUuid: string;
+}
+
+export interface SavedCapture {
+  ref: string;
+  tag: string;
+  contentHash: string;
+  capturedAt: string;
+}
+
+interface WindowIndexScreenshot {
+  file: string;
+  title: string;
+  hash: string;
+  at: string;
+  width: number;
+  height: number;
+  size: number;
+}
+
+function sanitizeTitle(title: string): string {
+  return title.replace(/[\\:*?"<>|]/g, " ").replace(/\s+/g, " ").trim().slice(0, 30) || "untitled";
+}
+
+function contentHashFromBuffer(buf: Buffer): string {
+  return createHash("sha256").update(buf).digest("hex").slice(0, 8);
+}
+
+function atomicWriteJson(filePath: string, data: unknown): void {
+  const tmp = filePath + ".tmp." + process.pid;
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), "utf-8");
+  fs.renameSync(tmp, filePath);
+}
+
+function updateTagsFile(tagsPath: string, tag: string, ref: string): void {
+  let tags: Record<string, string> = {};
+  try { tags = JSON.parse(fs.readFileSync(tagsPath, "utf-8")); } catch { /* empty */ }
+  tags[tag] = ref;
+  tags["latest"] = ref;
+  atomicWriteJson(tagsPath, tags);
+}
+
+function writeGitignoreOnFirstUse(screenshotsDir: string): void {
+  const p = path.join(screenshotsDir, ".gitignore");
+  if (!fs.existsSync(p)) {
+    fs.mkdirSync(screenshotsDir, { recursive: true });
+    fs.writeFileSync(p, "*\n");
+  }
+}
+
+export async function saveCapture(
+  encodedBuffer: Buffer,
+  meta: { width: number; height: number; mimeType: string },
+  opts: SaveCaptureOpts,
+): Promise<SavedCapture> {
+  const tag = path.basename(opts.processName, ".exe").toLowerCase();
+  const capturedAt = new Date().toISOString();
+  const timestamp = capturedAt.replace(/[-:T.]/g, "").slice(0, 15);
+  const sanitized = sanitizeTitle(opts.windowTitle);
+  const contentHash = contentHashFromBuffer(encodedBuffer);
+  const windowDir = path.join(opts.screenshotsDir, opts.processName, opts.windowUuid);
+
+  // Dedup: scan for existing file with same contentHash
+  let ref: string;
+  let existingMatch: string | undefined;
+  try {
+    const files = fs.readdirSync(windowDir);
+    existingMatch = files.find((f) => f.endsWith("_" + contentHash + ".webp"));
+  } catch {
+    // windowDir doesn't exist yet — first capture for this window
+  }
+
+  if (existingMatch) {
+    ref = path.join(windowDir, existingMatch);
+  } else {
+    fs.mkdirSync(windowDir, { recursive: true });
+    const filename = `${timestamp}_${sanitized}_${contentHash}.webp`;
+    ref = path.join(windowDir, filename);
+    fs.writeFileSync(ref, encodedBuffer);
+  }
+
+  // Write .gitignore on first directory creation
+  writeGitignoreOnFirstUse(opts.screenshotsDir);
+
+  // Update window-level _index.json
+  const windowIndexPath = path.join(windowDir, "_index.json");
+  let windowIndex: { windowUuid: string; screenshots: WindowIndexScreenshot[] };
+  try { windowIndex = JSON.parse(fs.readFileSync(windowIndexPath, "utf-8")); } catch {
+    windowIndex = { windowUuid: opts.windowUuid, screenshots: [] };
+  }
+  windowIndex.screenshots.push({
+    file: path.basename(ref),
+    title: opts.windowTitle,
+    hash: contentHash,
+    at: capturedAt,
+    width: meta.width,
+    height: meta.height,
+    size: encodedBuffer.length,
+  });
+  atomicWriteJson(windowIndexPath, windowIndex);
+
+  // Update process-level _index.json
+  const processDir = path.join(opts.screenshotsDir, opts.processName);
+  const processIndexPath = path.join(processDir, "_index.json");
+  let processIndex: Array<{ windowUuid: string; firstSeen: string; lastSeen: string; processName: string; titleHistory: Array<{ title: string; at: string }>; screenshotCount: number }>;
+  try { processIndex = JSON.parse(fs.readFileSync(processIndexPath, "utf-8")); } catch {
+    processIndex = [];
+  }
+  const now = capturedAt;
+  let pEntry = processIndex.find((e) => e.windowUuid === opts.windowUuid);
+  if (pEntry) {
+    pEntry.lastSeen = now;
+    pEntry.screenshotCount++;
+    pEntry.titleHistory.push({ title: opts.windowTitle, at: now });
+  } else {
+    processIndex.push({
+      windowUuid: opts.windowUuid,
+      firstSeen: now,
+      lastSeen: now,
+      processName: opts.processName,
+      titleHistory: [{ title: opts.windowTitle, at: now }],
+      screenshotCount: 1,
+    });
+  }
+  atomicWriteJson(processIndexPath, processIndex);
+
+  // Update global _tags.json
+  updateTagsFile(path.join(opts.screenshotsDir, "_tags.json"), tag, ref);
+
+  return { ref, tag, contentHash, capturedAt };
 }
