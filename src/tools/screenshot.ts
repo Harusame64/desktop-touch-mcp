@@ -248,12 +248,6 @@ async function buildUiaData(title: string, hwnd?: bigint, cached?: boolean): Pro
   }
 }
 
-/** @deprecated Use buildUiaData for full detail=text handling */
-async function buildUiaText(title: string): Promise<string> {
-  const { result } = await buildUiaData(title);
-  return JSON.stringify(result, null, 2);
-}
-
 /** Convert enumWindowsInZOrder result to WindowInfo array for layer-buffer. */
 async function buildWindowInfoList(): Promise<WindowInfo[]> {
   const wins = enumWindowsInZOrder();
@@ -654,7 +648,7 @@ export const screenshotHandler = async (args: {
         .slice(0, 10);
       const results = await Promise.all(
         filteredWins.map(async (w) => {
-          try { return JSON.parse(await buildUiaText(w.title)); } catch { return { window: w.title, elements: [] }; }
+          try { const { result } = await buildUiaData(w.title); return result; } catch { return { window: w.title, elements: [] }; }
         })
       );
       return {
