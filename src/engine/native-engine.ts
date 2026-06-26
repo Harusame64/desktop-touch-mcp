@@ -307,18 +307,18 @@ export interface NativeUia {
   ): Promise<Record<string, boolean>>;
 }
 
-// ─── Visual GPU surface (ADR-005 Phase 4a/4b-1) ──────────────────────────────
+// ─── Visual GPU surface (ADR-005) ────────────────────────────────────────────
 //
 // `visionRecognizeRois` is the AsyncTask exported from src/lib.rs.
 // `detectCapability` is exported from src/vision_backend/capability.rs.
-// `visionInitSession` is the Phase 4b-1 EP cascade session init (AsyncTask).
+// `visionInitSession` is the EP cascade session init (AsyncTask).
 // All methods are optional so a build without the `vision-gpu` cargo feature
 // (or a missing native addon) cleanly falls back to PocVisualBackend.
 export interface NativeVision {
   visionRecognizeRois?(req: NativeRecognizeRequest): Promise<NativeRawCandidate[]>;
   detectCapability?(): NativeCapabilityProfile;
   /**
-   * Phase 4b-1: initialise an ORT session using the EP cascade determined
+   * Initialise an ORT session using the EP cascade determined
    * by `init.profile`. The Promise **never rejects** — errors are surfaced
    * via `result.ok === false`.
    */

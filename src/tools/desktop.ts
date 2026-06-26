@@ -54,10 +54,9 @@ export interface EntityView {
 }
 
 /**
- * Phase 4 (Codex PR #41 round 5 P1): a top-level windows enumeration so the
+ * A top-level windows enumeration providing a public replacement for the
  * legacy `get_windows` workflow — title-collision disambiguation, hwnd-targeted
- * screenshot / mouse / window_dock — has a public replacement after
- * privatization. CHANGELOG / README advertise this as `desktop_discover.windows[]`.
+ * screenshot / mouse / window_dock.
  *
  * Synchronous-only fields by design: virtual-desktop membership (was
  * `isOnCurrentDesktop` on the legacy `get_windows`) requires an async PowerShell

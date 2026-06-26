@@ -296,8 +296,7 @@ export function shouldAcceptViewFocus(
 // false-positive would mislead it into deferring input. We err on
 // false-negative.
 
-/** ADR-017 §2.1.2 on-wire shape. Discriminated-union from day one so
- *  ADR-016 Phase 3 can extend variants additively. */
+/** ADR-017 §2.1.2 on-wire shape. Discriminated-union. */
 export type SessionContextOrigin = { kind: "local"; sessionId: number };
 
 export interface SessionContext {

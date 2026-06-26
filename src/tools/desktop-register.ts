@@ -2,7 +2,6 @@
  * desktop-register.ts — MCP tool registration for desktop_discover / desktop_act.
  *
  * Guarded by env flag DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2=1.
- * Only imported when the flag is set — OFF path has zero side-effects.
  *
  * Facade lifecycle:
  *   - Process-local singleton (shared across all createMcpServer() calls).
@@ -149,7 +148,7 @@ function productionGetFocusedHwnd(): bigint | null {
 /**
  * Production windowsProvider with a short-lived (default 100ms) result cache.
  *
- * Audit P1-1 (docs/v1-release-readiness-review.md §8.2): every desktop_discover
+ * Every desktop_discover
  * call previously re-ran enumWindowsInZOrder + getWindowProcessId +
  * getProcessIdentityByPid for every visible window — on a desktop with 40+
  * windows this is tens of ms per call and shows up in chained workflows

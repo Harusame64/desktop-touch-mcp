@@ -5,22 +5,20 @@
 //! synchronously dispatches a closure onto the worker thread that
 //! walks the COM object graph and runs the operation.
 //!
-//! ## Phase 2d / 2e scope
-//!
 //! - [`set_visible`] — toggles `Application.Visible`
 //! - [`set_display_alerts`] — toggles `Application.DisplayAlerts` for
-//!   callers who want manual control. The Phase 2e demo path does NOT
+//!   callers who want manual control. The demo path does NOT
 //!   call this directly; [`workbook_save_as`] manages DisplayAlerts
 //!   internally via a save-restore guard (see Call sequence below)
 //! - [`workbook_add_new`] — creates a fresh Workbook on the active session
 //! - [`vba_module_add`] — adds a VBA module via `VBProject.VBComponents.Add`
 //!   and writes source via `CodeModule.AddFromString`
-//! - [`workbook_save_as`] — Phase 2e: saves the active workbook via
+//! - [`workbook_save_as`] — saves the active workbook via
 //!   `ActiveWorkbook.SaveAs(Filename, FileFormat)`. The demo path saves
 //!   into a managed Trusted Location so `macro_run` is no longer
 //!   policy-gated by Excel Trust Center (see [`XlFileFormat`])
 //! - [`macro_run`] — calls `Application.Run` against a previously-added macro
-//! - [`workbook_close`] — Phase 2e: closes the active workbook via
+//! - [`workbook_close`] — closes the active workbook via
 //!   `ActiveWorkbook.Close(SaveChanges)` so cleanup does not leak the
 //!   workbook into the next bridge invocation
 //!

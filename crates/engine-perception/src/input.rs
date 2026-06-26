@@ -412,13 +412,13 @@ impl PerceptionWorker {
     /// until the deadline. **The `JoinHandle` is retained on timeout**
     /// so a later `shutdown_with_timeout(longer)` can resume — this
     /// is the L1-worker-equivalent retain semantics
-    /// (`src/l1_capture/worker.rs:174-194`, Codex review v6 P1).
+    /// (`src/l1_capture/worker.rs:174-194`).
     ///
     /// ## Two-phase shape
     ///
     /// **Phase 1 — deliver `Cmd::Shutdown`**: The cmd channel is
     /// `bounded(8192)`, so a blocking `send` would suspend this
-    /// method **before the deadline is even computed** (Codex v7 P2).
+    /// method **before the deadline is even computed**.
     /// We use `try_send` instead, but a single `try_send` that hits
     /// `Full` would silently drop the signal — the worker would then
     /// keep waiting on the channel and `shutdown_with_timeout`

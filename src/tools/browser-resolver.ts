@@ -1,11 +1,11 @@
 /**
- * browser-resolver.ts — ADR-023 Phase 1 resolver core.
+ * browser-resolver.ts — ADR-023 resolver core.
  *
- * The shared injected-JS builder for semantic element resolution. Phase 1 trunk
- * (S1/S7) extracts the candidate-collection IIFE VERBATIM from browser_search so
- * `browser_search` stays bit-equal (snapshot-pinned by
- * tests/unit/browser-resolver-candidate-collection.test.ts) while later phases
- * layer actionability / ancestor climb / physical-coord resolution on top for
+ * The shared injected-JS builder for semantic element resolution. Extracts the
+ * candidate-collection IIFE from browser_search so `browser_search` stays
+ * bit-equal (snapshot-pinned by
+ * tests/unit/browser-resolver-candidate-collection.test.ts) while actionability /
+ * ancestor climb / physical-coord resolution are layered on top for
  * browser_click({by}) / browser_fill({by}).
  *
  * The IIFE returns `{ total, returned, truncated, results[] }` (each result:

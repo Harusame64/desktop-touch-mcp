@@ -1,12 +1,12 @@
 /**
- * CapabilityRegistry — capability rule SSOT for ADR-020 SR-1 (PR-SR1-1).
+ * CapabilityRegistry — capability rule SSOT for ADR-020 SR-1.
  *
  * Three consumers (`deriveEntityCapabilities` advisory wrapper,
  * `createDesktopExecutor` execution route order, `desktop-register.ts` tool
- * description) all derive capability semantics from this registry exclusively
- * (北極星 1, registry SSOT 1 箇所). Rule table re-implementation or
- * re-declaration in consumer modules is forbidden — `deriveEntityCapabilities`
- * is a thin wrapper around `registry.lookup` for backward compatibility only.
+ * description) all derive capability semantics from this registry exclusively.
+ * Rule table re-implementation or re-declaration in consumer modules is
+ * forbidden — `deriveEntityCapabilities` is a thin wrapper around
+ * `registry.lookup` for backward compatibility only.
  *
  * Pure lookup invariant (北極星 1 + sub-plan §4.2): the registry has no
  * internal state. The `defaultRegistry` module-level singleton is safe for

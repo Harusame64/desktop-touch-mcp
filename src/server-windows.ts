@@ -244,17 +244,15 @@ function createMcpServer(): McpServer {
   if (_desktopV2) {
     _desktopV2.registerDesktopTools(s);
   } else {
-    // Phase 4 kill-switch V1 fallback (Codex PR #41 round 6 P1×2):
-    // when v2 is disabled, re-publish the V1 tools whose capability is
-    // ONLY available through the dispatcher path so the operator does not
-    // lose function coverage by flipping the kill switch.
+    // Kill-switch V1 fallback: when v2 is disabled, re-publish V1 tools whose
+    // capability is ONLY available through the dispatcher path.
     //   - get_windows: enumerate visible HWNDs (no other tool exposes hwnd
     //     listing for title-collision / hwnd-targeted workflows)
     //   - get_ui_elements: raw UIA tree (screenshot(detail='text') is the
     //     screenshot-time alternative but does not return the unfiltered tree)
     //   - set_element_value: UIA ValuePattern (keyboard(action='type') is
     //     keyboard-driven and does not work for programmatic value set)
-    // The other Phase 4 privatizations have non-v2 replacements (desktop_state
+    // Other privatized tools have non-v2 replacements (desktop_state
     // include* flags / screenshot dispatcher / wait_until) and stay private.
     s.tool(
       "get_windows",

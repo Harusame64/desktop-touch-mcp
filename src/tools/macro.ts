@@ -15,12 +15,9 @@ import { isToolDestructive } from "./_tool-flags.js";
 import { macroOutcomeStore } from "../store/macro-outcome-store.js";
 import { coercedBoolean } from "./_coerce.js";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Phase 4: TOOL_REGISTRY mirrors the v1.0.0 public surface — privatized tools
+// TOOL_REGISTRY mirrors the v1.0.0 public surface — privatized tools
 // (events_*, perception_*, mouse_move, get_history, get_*) are intentionally
-// absent. Family dispatchers (keyboard / clipboard / window_dock / scroll /
-// terminal / browser_eval) replace their pre-Phase-2 sub-tool entries.
-// ─────────────────────────────────────────────────────────────────────────────
+// absent.
 
 // Screenshot
 import {

@@ -1,13 +1,10 @@
 /**
- * dxgi-broker.ts — ADR-020 SR-4 (Phase 3) DXGI subscription multiplex broker.
+ * dxgi-broker.ts — ADR-020 SR-4 DXGI subscription multiplex broker.
  *
  * 1 native `DirtyRectSubscription` per `outputIndex` is held by the broker;
- * consumer 2 件 (ADR-019 Stage 5 `any-change.ts` polling + ADR-005 vision-gpu
- * `dirty-rect-source.ts` callback、本 PR では未 migrate、PR-SR4-2 / PR-SR4-3 で
- * 順次 migrate) は broker subscribe API 経由でぶら下がる。これで race-loss
- * (`NotCurrentlyAvailable` 軸) を構造的に消滅させる。
- *
- * Sub-plan: `docs/adr-020-phase-3-sr-4-dxgi-broker-plan.md`
+ * consumers (ADR-019 Stage 5 `any-change.ts` polling + ADR-005 vision-gpu
+ * `dirty-rect-source.ts` callback) hang off the broker subscribe API.
+ * This structurally eliminates race-loss (`NotCurrentlyAvailable`).
  *
  * Design lock (sub-plan §5.2, Round 2 P1-3):
  * - `BrokerSubscription` interface は `next(timeoutMs)` / `dispose()` /

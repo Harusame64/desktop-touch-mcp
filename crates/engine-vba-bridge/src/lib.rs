@@ -2,7 +2,7 @@
 //!
 //! Late-binding `IDispatch` wrapper around `Excel.Application` that
 //! lets Rust callers author and run VBA macros without touching the
-//! VBA Editor UI. Implements ADR-015 Phase 1 primitives:
+//! VBA Editor UI. Primitives:
 //!
 //! - [`variant`]: `serde_json::Value` ↔ `VARIANT` round-trip with the
 //!   `null → VT_NULL` semantic (NOT `VT_EMPTY`; see ADR-015 §3.5)
