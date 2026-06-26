@@ -43,11 +43,7 @@
     "perception_read": 1,
     "perception_register": 1,
     "scope_element": 2,
-<<<<<<< HEAD
-    "screenshot": 7,
-=======
     "screenshot": 5,
->>>>>>> ebcae77 (﻿fix: resolve ESLint unused-vars and prefer-const violations)
     "screenshot_gc": 2,
     "screenshot_query": 1,
     "scroll": 7,
@@ -85,112 +81,112 @@
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 721,
+      "line": 723,
       "tool": "browser_fill",
       "errKind": "member",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 728,
+      "line": 730,
       "tool": "browser_fill",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1050,
+      "line": 1052,
       "tool": "browser_form",
       "errKind": "string-literal",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1064,
+      "line": 1066,
       "tool": "browser_form",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1116,
+      "line": 1118,
       "tool": "browser_open",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1168,
+      "line": 1170,
       "tool": "browser_locate",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1665,
+      "line": 1667,
       "tool": "browser_click",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1717,
+      "line": 1719,
       "tool": "browser_click",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1926,
+      "line": 1928,
       "tool": "browser_eval",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2075,
+      "line": 2077,
       "tool": "browser_eval",
       "errKind": "identifier",
       "contextShape": "dynamic"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2122,
+      "line": 2124,
       "tool": "browser_navigate",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2213,
+      "line": 2215,
       "tool": "browser_navigate",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2429,
+      "line": 2431,
       "tool": "browser_overview",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2581,
+      "line": 2583,
       "tool": "browser_open",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2712,
+      "line": 2714,
       "tool": "browser_search",
       "errKind": "identifier",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2860,
+      "line": 2862,
       "tool": "browser_disconnect",
       "errKind": "identifier",
       "contextShape": "none"
@@ -218,21 +214,21 @@
     },
     {
       "file": "src/tools/desktop-state.ts",
-      "line": 869,
+      "line": 868,
       "tool": "desktop_state",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/desktop-state.ts",
-      "line": 884,
+      "line": 883,
       "tool": "get_history",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/desktop-state.ts",
-      "line": 909,
+      "line": 908,
       "tool": "get_document_state",
       "errKind": "identifier",
       "contextShape": "none"
@@ -386,19 +382,13 @@
     },
     {
       "file": "src/tools/mouse.ts",
-<<<<<<< HEAD
-      "line": 1570,
-=======
       "line": 1434,
->>>>>>> ebcae77 (﻿fix: resolve ESLint unused-vars and prefer-const violations)
       "tool": "scroll",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/mouse.ts",
-<<<<<<< HEAD
-=======
       "line": 1485,
       "tool": "scroll",
       "errKind": "new-error",
@@ -406,7 +396,6 @@
     },
     {
       "file": "src/tools/mouse.ts",
->>>>>>> ebcae77 (﻿fix: resolve ESLint unused-vars and prefer-const violations)
       "line": 1636,
       "tool": "get_cursor_position",
       "errKind": "identifier",
@@ -448,103 +437,57 @@
       "contextShape": "none"
     },
     {
-<<<<<<< HEAD
-      "file": "src/tools/pin.ts",
-      "line": 77,
-      "tool": "window_dock",
-      "errKind": "new-error",
-      "contextShape": "none"
-    },
-    {
       "file": "src/tools/screenshot.ts",
-      "line": 745,
-=======
-      "file": "src/tools/screenshot.ts",
-      "line": 696,
->>>>>>> ebcae77 (﻿fix: resolve ESLint unused-vars and prefer-const violations)
+      "line": 690,
       "tool": "screenshot",
       "errKind": "string-literal",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/screenshot.ts",
-<<<<<<< HEAD
-      "line": 985,
-=======
-      "line": 878,
->>>>>>> ebcae77 (﻿fix: resolve ESLint unused-vars and prefer-const violations)
+      "line": 873,
       "tool": "screenshot",
       "errKind": "string-literal",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/screenshot.ts",
-      "line": 1119,
+      "line": 1114,
       "tool": "screenshot_query",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/screenshot.ts",
-<<<<<<< HEAD
-      "line": 1253,
-      "tool": "screenshot_query",
-      "errKind": "identifier",
-      "contextShape": "none"
-    },
-    {
-      "file": "src/tools/screenshot.ts",
-      "line": 1287,
-=======
-      "line": 1153,
->>>>>>> ebcae77 (﻿fix: resolve ESLint unused-vars and prefer-const violations)
+      "line": 1148,
       "tool": "screenshot_gc",
       "errKind": "string-literal",
       "contextShape": "none"
     },
     {
       "file": "src/tools/screenshot.ts",
-<<<<<<< HEAD
-      "line": 1367,
-=======
-      "line": 1233,
->>>>>>> ebcae77 (﻿fix: resolve ESLint unused-vars and prefer-const violations)
+      "line": 1228,
       "tool": "screenshot_gc",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/screenshot.ts",
-<<<<<<< HEAD
-      "line": 1389,
-=======
-      "line": 1255,
->>>>>>> ebcae77 (﻿fix: resolve ESLint unused-vars and prefer-const violations)
+      "line": 1250,
       "tool": "get_screen_info",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
-      "file": "src/tools/scroll-capture.ts",
-      "line": 389,
-      "tool": "scroll",
-      "errKind": "new-error",
-      "contextShape": "none"
-    },
-    {
       "file": "src/tools/scroll-to-element.ts",
-<<<<<<< HEAD
-      "line": 74,
-=======
       "line": 88,
->>>>>>> ebcae77 (﻿fix: resolve ESLint unused-vars and prefer-const violations)
       "tool": "scroll(action='to_element')",
       "errKind": "expression",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/scroll-to-element.ts",
-      "line": 79,
+      "line": 92,
       "tool": "scroll(action='to_element')",
       "errKind": "identifier",
       "contextShape": "object-plain"
@@ -565,15 +508,8 @@
     },
     {
       "file": "src/tools/smart-scroll.ts",
-      "line": 195,
+      "line": 363,
       "tool": "scroll(action='smart')",
-      "errKind": "member",
-      "contextShape": "object-plain"
-    },
-    {
-      "file": "src/tools/terminal.ts",
-      "line": 740,
-      "tool": "terminal:read",
       "errKind": "string-literal",
       "contextShape": "object-plain"
     },
@@ -593,15 +529,9 @@
     },
     {
       "file": "src/tools/terminal.ts",
-<<<<<<< HEAD
-      "line": 935,
-      "tool": "terminal:send",
-      "errKind": "new-error",
-=======
       "line": 862,
       "tool": "terminal:send",
       "errKind": "string-literal",
->>>>>>> ebcae77 (﻿fix: resolve ESLint unused-vars and prefer-const violations)
       "contextShape": "object-plain"
     },
     {
@@ -641,15 +571,9 @@
     },
     {
       "file": "src/tools/ui-elements.ts",
-<<<<<<< HEAD
-      "line": 278,
-      "tool": "set_element_value",
-      "errKind": "identifier",
-=======
       "line": 268,
       "tool": "set_element_value",
       "errKind": "new-error",
->>>>>>> ebcae77 (﻿fix: resolve ESLint unused-vars and prefer-const violations)
       "contextShape": "object-plain"
     },
     {
@@ -668,11 +592,7 @@
     },
     {
       "file": "src/tools/wait-until.ts",
-<<<<<<< HEAD
-      "line": 349,
-=======
       "line": 289,
->>>>>>> ebcae77 (﻿fix: resolve ESLint unused-vars and prefer-const violations)
       "tool": "wait_until",
       "errKind": "string-literal",
       "contextShape": "none"
