@@ -68,7 +68,7 @@ describe("preferredExecutors block entry eligibility (ADR-020 SR-1 PR-SR1-2)", (
       const deps = mockDeps();
       const exec = createDesktopExecutor({ tabId: "t" }, deps);
       const result = await exec(
-        entity({ sources: ["cdp"], sourceId: "#btn" }),
+        entity({ sources: ["cdp"], locator: { cdp: { selector: "#btn", tabId: "t" } } }),
         "click",
       );
       expect(result).toBe("cdp");
