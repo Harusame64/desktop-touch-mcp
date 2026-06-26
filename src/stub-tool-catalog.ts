@@ -420,7 +420,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "description": "Chrome/Edge CDP remote debugging port."
         },
         "launch": {
-          "description": "If set, spawn a debug-mode browser when no CDP endpoint is live on the target port (idempotent: an already-running endpoint is preferred and the spawn step is skipped). Pass {} to use defaults (chrome, C:\\tmp\\cdp, no initial URL). Omit to perform pure connect.",
+          "description": "If set, spawn a debug-mode browser when no CDP endpoint is live on the target port (idempotent: an already-running endpoint is preferred and the spawn step is skipped). Pass {} to use defaults (chrome, os.tmpdir()/desktop-touch-cdp, no initial URL). Omit to perform pure connect.",
           "type": "object",
           "additionalProperties": false,
           "properties": {
@@ -437,8 +437,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
             },
             "userDataDir": {
               "description": "Path for --user-data-dir. A dedicated profile avoids conflicts with the main browser session.",
-              "type": "string",
-              "default": "C:\\tmp\\cdp"
+              "type": "string"
             },
             "url": {
               "description": "Optional URL to open in the new browser.",
