@@ -105,7 +105,6 @@ describe("preferredExecutors block entry eligibility (ADR-020 SR-1 PR-SR1-2)", (
       const result = await exec(
         entity({
           sources: ["uia", "cdp"],
-          sourceId: "#btn",
           locator: { cdp: { selector: "#btn", tabId: "t" } },
           preferredExecutors: ["cdp"],
         }),
@@ -121,7 +120,7 @@ describe("preferredExecutors block entry eligibility (ADR-020 SR-1 PR-SR1-2)", (
       const exec = createDesktopExecutor({ tabId: "t" }, deps);
       await expect(
         exec(
-          entity({ sources: ["cdp"], sourceId: "#btn", preferredExecutors: ["uia"] }),
+          entity({ sources: ["cdp"], locator: { cdp: { selector: "#btn", tabId: "t" } }, preferredExecutors: ["uia"] }),
           "click",
         ),
       ).rejects.toThrow(/mouse fallback also blocked by unsupportedExecutors|no rect for mouse fallback/);
@@ -216,7 +215,7 @@ describe("preferredExecutors block entry eligibility (ADR-020 SR-1 PR-SR1-2)", (
         exec(
           entity({
             sources: ["cdp"],
-            sourceId: "#btn",
+            locator: { cdp: { selector: "#btn", tabId: "t" } },
             preferredExecutors: ["cdp", "mouse"],
           }),
           "click",

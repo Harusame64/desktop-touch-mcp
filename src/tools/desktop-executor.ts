@@ -131,8 +131,7 @@ function rectCenter(rect: { x: number; y: number; width: number; height: number 
  * Pass `deps` to inject mock backends in tests; omit for production native bindings.
  *
  * Routing priority: uia → cdp → terminal → mouse (visual fallback)
- * Locator fields (P2-A) are used when present; sourceId is used as a fallback
- * for candidates that pre-date the locator migration.
+ * Locator fields are used for routing.
  *
  * UIA click failure gracefully falls through to mouse when entity has a rect.
  */
