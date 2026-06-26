@@ -27,7 +27,9 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { deriveEntityCapabilities } from "../../../src/tools/desktop-capabilities.js";
+import { createDefaultCapabilityRegistry } from "../../../src/capabilities/registry.js";
+
+const deriveEntityCapabilities = createDefaultCapabilityRegistry().lookup;
 import { createDesktopExecutor, type ExecutorDeps } from "../../../src/tools/desktop-executor.js";
 import type { UiEntity, ExecutorKind } from "../../../src/engine/world-graph/types.js";
 
