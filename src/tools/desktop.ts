@@ -18,12 +18,13 @@ import { resolveWindowTarget, findPlainTopLevelWindowByTitle } from "./_resolve-
 import type { TouchAction, TouchInput, TouchResult } from "../engine/world-graph/guarded-touch.js";
 import { deriveViewConstraints, type ViewConstraints, type EntityCapabilities } from "./desktop-constraints.js";
 import { UIA_BLIND_WARNINGS } from "./desktop-providers/compose-providers.js";
-import { deriveEntityCapabilities } from "./desktop-capabilities.js";
-import { bakeEntityCapabilities } from "../capabilities/registry.js";
+import { createDefaultCapabilityRegistry, bakeEntityCapabilities } from "../capabilities/registry.js";
 import { isUiaCacheStale } from "../engine/identity-tracker.js";
 import type { AttentionState } from "../engine/perception/types.js";
 
 export type { ViewConstraints, EntityCapabilities };
+
+const _capabilityRegistry = createDefaultCapabilityRegistry();
 
 // ── Input / Output types ──────────────────────────────────────────────────────
 
@@ -496,7 +497,7 @@ export class DesktopFacade {
     for (let i = 0; i < entityViews.length; i++) {
       const entity = resolved[i];
       if (entity === undefined) continue;
-      const cap = deriveEntityCapabilities(entity, constraints);
+      const cap = _capabilityRegistry.lookup(entity, constraints);
       if (cap) {
         entityViews[i]!.capabilities = cap;
         bakeEntityCapabilities(entity, cap);

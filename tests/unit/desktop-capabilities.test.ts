@@ -8,8 +8,10 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { deriveEntityCapabilities } from "../../src/tools/desktop-capabilities.js";
+import { createDefaultCapabilityRegistry } from "../../src/capabilities/registry.js";
 import type { UiEntity } from "../../src/engine/world-graph/types.js";
+
+const registry = createDefaultCapabilityRegistry();
 
 function makeEntity(overrides: Partial<UiEntity> = {}): UiEntity {
   return {
@@ -26,7 +28,7 @@ function makeEntity(overrides: Partial<UiEntity> = {}): UiEntity {
 
 describe("deriveEntityCapabilities — Issue #296", () => {
   it("UIA + InvokePattern → preferredExecutors:['uia','mouse'] (standard happy path)", () => {
-    const cap = deriveEntityCapabilities(
+    const cap = registry.lookup(
       makeEntity({
         controlType: "Button",
         patterns: ["InvokePattern"],
@@ -39,7 +41,7 @@ describe("deriveEntityCapabilities — Issue #296", () => {
   });
 
   it("UIA + ListItem + no InvokePattern → unsupportedExecutors:['uia'] (user report)", () => {
-    const cap = deriveEntityCapabilities(
+    const cap = registry.lookup(
       makeEntity({
         controlType: "ListItem",
         patterns: ["SelectionItemPattern"],
@@ -53,7 +55,7 @@ describe("deriveEntityCapabilities — Issue #296", () => {
   });
 
   it("UIA + TabItem + no InvokePattern → unsupportedExecutors:['uia'] with TabItem hint", () => {
-    const cap = deriveEntityCapabilities(
+    const cap = registry.lookup(
       makeEntity({
         controlType: "TabItem",
         patterns: ["SelectionItemPattern"],
@@ -66,7 +68,7 @@ describe("deriveEntityCapabilities — Issue #296", () => {
   });
 
   it("UIA + TogglePattern-only (no Invoke) → preferredExecutors:['mouse'] (executor doesn't speak Toggle yet)", () => {
-    const cap = deriveEntityCapabilities(
+    const cap = registry.lookup(
       makeEntity({
         controlType: "CheckBox",
         patterns: ["TogglePattern"],
@@ -79,7 +81,7 @@ describe("deriveEntityCapabilities — Issue #296", () => {
   });
 
   it("UIA + InvokePattern + Toggle → Invoke wins (happy path takes precedence)", () => {
-    const cap = deriveEntityCapabilities(
+    const cap = registry.lookup(
       makeEntity({
         controlType: "CheckBox",
         patterns: ["InvokePattern", "TogglePattern"],
@@ -91,7 +93,7 @@ describe("deriveEntityCapabilities — Issue #296", () => {
   });
 
   it("UIA + ValuePattern (Edit) → preferredExecutors:['uia','keyboard'] (ADR-020 SR-5: keyboard co-advertised as UIA setValue recovery)", () => {
-    const cap = deriveEntityCapabilities(
+    const cap = registry.lookup(
       makeEntity({
         role: "textbox",
         controlType: "Edit",
@@ -104,7 +106,7 @@ describe("deriveEntityCapabilities — Issue #296", () => {
   });
 
   it("UIA + no actionable pattern + has rect → mouse fallback", () => {
-    const cap = deriveEntityCapabilities(
+    const cap = registry.lookup(
       makeEntity({
         controlType: "Text",
         patterns: [],
@@ -116,7 +118,7 @@ describe("deriveEntityCapabilities — Issue #296", () => {
   });
 
   it("UIA + no patterns + no rect → undefined (no actionable signal)", () => {
-    const cap = deriveEntityCapabilities(
+    const cap = registry.lookup(
       makeEntity({
         controlType: "Text",
         patterns: [],
@@ -126,7 +128,7 @@ describe("deriveEntityCapabilities — Issue #296", () => {
   });
 
   it("visual-only entity (no UIA source) with rect → mouse, uia unsupported", () => {
-    const cap = deriveEntityCapabilities(
+    const cap = registry.lookup(
       makeEntity({
         sources: ["visual_gpu"],
         rect: { x: 0, y: 0, width: 80, height: 80 },
@@ -137,7 +139,7 @@ describe("deriveEntityCapabilities — Issue #296", () => {
   });
 
   it("non-UIA source + no rect → undefined", () => {
-    const cap = deriveEntityCapabilities(
+    const cap = registry.lookup(
       makeEntity({
         sources: ["visual_gpu"],
       }),
@@ -146,7 +148,7 @@ describe("deriveEntityCapabilities — Issue #296", () => {
   });
 
   it("multi-source (uia + visual_gpu) with InvokePattern → uia path wins", () => {
-    const cap = deriveEntityCapabilities(
+    const cap = registry.lookup(
       makeEntity({
         sources: ["uia", "visual_gpu"],
         controlType: "Button",
@@ -161,7 +163,7 @@ describe("deriveEntityCapabilities — Issue #296", () => {
     // Defensive: the provider already reported it failed for this view, so
     // believing the per-element pattern data would lead the LLM into the same
     // failure mode again. The capability hint reflects the system-level signal.
-    const cap = deriveEntityCapabilities(
+    const cap = registry.lookup(
       makeEntity({
         controlType: "Button",
         patterns: ["InvokePattern"],
@@ -175,7 +177,7 @@ describe("deriveEntityCapabilities — Issue #296", () => {
   });
 
   it("viewConstraints.uia='provider_failed' with no rect → undefined (nothing actionable)", () => {
-    const cap = deriveEntityCapabilities(
+    const cap = registry.lookup(
       makeEntity({
         controlType: "Button",
         patterns: ["InvokePattern"],
@@ -189,7 +191,7 @@ describe("deriveEntityCapabilities — Issue #296", () => {
     // UIA-sourced entity should always have a `patterns` field from the
     // resolver (empty array when UIA found no patterns) — but defensively,
     // a UIA-sourced entity with patterns:undefined acts like patterns:[].
-    const cap = deriveEntityCapabilities(
+    const cap = registry.lookup(
       makeEntity({
         controlType: "Custom",
         rect: { x: 0, y: 0, width: 40, height: 40 },
