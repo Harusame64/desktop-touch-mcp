@@ -4,8 +4,8 @@ import { captureScreen, captureDisplay, captureWindowWithFallback, saveCapture }
 import type { CaptureSource, CaptureFallbackReason, SavedCapture } from "../engine/image.js";
 import { captureAndDiff, captureAllLayers, hasBuffer } from "../engine/layer-buffer.js";
 import type { WindowInfo } from "../engine/layer-buffer.js";
-import { getWindows } from "../engine/nutjs.js";
-import { enumMonitors, getVirtualScreen, getWindowTitleW, enumWindowsInZOrder } from "../engine/win32.js";
+
+import { enumMonitors, getVirtualScreen, enumWindowsInZOrder } from "../engine/win32.js";
 import { getUiElements, extractActionableElements, WINUI3_CLASS_RE, detectUiaBlind } from "../engine/uia-bridge.js";
 import type { UiElementsResult } from "../engine/uia-bridge.js";
 import { recognizeWindow, ocrWordsToActionable, runOcr, mergeNearbyWords, runSomPipeline, snapToDictionary, detectOcrLanguage } from "../engine/ocr-bridge.js";

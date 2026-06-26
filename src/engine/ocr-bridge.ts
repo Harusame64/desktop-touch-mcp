@@ -275,7 +275,7 @@ export async function recognizeWindowByHwnd(
   // Use PrintWindow (PW_RENDERFULLCONTENT) so the window is captured correctly
   // even when it is behind other windows (e.g. Claude Code covering Paint).
   const maxDim = 1280;
-  const hwndBig = typeof hwnd === "number" || typeof hwnd === "bigint" ? BigInt(hwnd as any) : hwnd;
+  const hwndBig = typeof hwnd === "number" || typeof hwnd === "bigint" ? BigInt(hwnd) : hwnd;
   const captured = await captureWindowWithFallback(hwndBig, region, maxDim);
 
   // Scale factors: image may be downscaled, OCR bboxes are in image coords
