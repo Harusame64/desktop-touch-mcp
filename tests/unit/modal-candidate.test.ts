@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { isModalCandidate } from "../../src/engine/world-graph/session-registry.js";
+import { classifyModal } from "../../src/engine/world-graph/session-registry.js";
 import type { UiEntity } from "../../src/engine/world-graph/types.js";
 
 function makeEntity(overrides: Partial<UiEntity> = {}): UiEntity {
@@ -25,8 +25,12 @@ function makeEntity(overrides: Partial<UiEntity> = {}): UiEntity {
   };
 }
 
-describe("isModalCandidate — Issue #297 truth table", () => {
+describe("classifyModal (pre-touch) — Issue #297 truth table", () => {
   const target = makeEntity({ entityId: "target", role: "button" });
+
+  function isModalCandidate(t: UiEntity, c: UiEntity): boolean {
+    return classifyModal(c, "pre-touch", { excludeSelf: t });
+  }
 
   it("returns true for a UIA unknown-role overlay (the canonical dialog pattern)", () => {
     const overlay = makeEntity({ entityId: "overlay", role: "unknown" });

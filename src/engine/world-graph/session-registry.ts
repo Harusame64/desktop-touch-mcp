@@ -103,15 +103,6 @@ export function classifyModal(
   return true;
 }
 
-/**
- * @deprecated ADR-020 Phase 2 PR-P2-1 — call `classifyModal(candidate, "pre-touch", { excludeSelf: target })` directly.
- * Retained as a thin wrapper for backward compatibility (existing tests +
- * external callers). Internal callsites in this file already migrated.
- */
-export function isModalCandidate(target: UiEntity, candidate: UiEntity): boolean {
-  return classifyModal(candidate, "pre-touch", { excludeSelf: target });
-}
-
 export type TargetSessionKey =
   | `window:${string}`
   | `tab:${string}`
