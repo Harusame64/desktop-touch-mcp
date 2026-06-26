@@ -410,7 +410,12 @@ export const screenshotHandler = async (args: {
           const prevStr = prev ? `(${prev.x},${prev.y})→` : "";
           content.push({ type: "text" as const, text: `[MOVED]   "${diff.title}" ${prevStr}${regionStr} (content same, no image)` });
         } else if (diff.image) {
-          content.push({ type: "text" as const, text: `[${diff.type === "new" ? "NEW" : "CHANGED"}] "${diff.title}" at ${regionStr} — ref: ${diff.image.base64.slice(0, 16)}...` });
+          // Save diff image to disk and return a proper file ref
+          const saved = await captureAndSave(
+            { base64: diff.image.base64, width: diff.image.width, height: diff.image.height, mimeType: diff.image.mimeType },
+            { processName: "diff", windowTitle: diff.title, hwnd: diff.hwnd },
+          );
+          content.push({ type: "text" as const, text: `[${diff.type === "new" ? "NEW" : "CHANGED"}] "${diff.title}" at ${regionStr} — ref: ${saved.ref}, tag: ${saved.tag}` });
         }
       }
 
@@ -1018,6 +1023,12 @@ function readJsonSafe<T>(filePath: string): T | null {
   try { return JSON.parse(fs.readFileSync(filePath, "utf-8")) as T; } catch { return null; }
 }
 
+function resolveRefInsideCache(ref: string, cacheDir: string): string | null {
+  const resolved = path.resolve(ref);
+  if (!resolved.startsWith(path.resolve(cacheDir))) return null;
+  return resolved;
+}
+
 export const screenshotQueryHandler = async (args: {
   tag?: string;
   windowUuid?: string;
@@ -1034,13 +1045,15 @@ export const screenshotQueryHandler = async (args: {
     const results: Array<{ file: string; at?: string; title?: string; width?: number; height?: number; tag?: string }> = [];
 
     if (args.exact) {
-      results.push({ file: args.exact });
-    } else if (args.tag && tags?.[args.tag]) {
-      const ref = tags[args.tag];
-      results.push({ file: ref, tag: args.tag });
-      // Also walk process index for details
+      const safe = resolveRefInsideCache(args.exact, dir);
+      if (!safe) {
+        return failWith(`Exact ref "${args.exact}" is outside the screenshot cache directory`, "screenshot_query");
+      }
+      results.push({ file: safe });
     } else if (args.tag) {
-      const processDir = path.join(dir, args.tag.charAt(0).toUpperCase() + args.tag.slice(1));
+      // Tag lookup: walk the process index for full filter support (limit/offset/timeRange/windowUuid)
+      const tagName = args.tag.charAt(0).toUpperCase() + args.tag.slice(1);
+      const processDir = path.join(dir, tagName);
       const procIndex = readJsonSafe<Array<{ windowUuid: string }>>(path.join(processDir, "_index.json"));
       if (procIndex) {
         for (const entry of procIndex) {
@@ -1173,7 +1186,11 @@ export const screenshotGcHandler = async (args: {
     };
 
     if (args.exact) {
-      toDelete.push(args.exact);
+      const safe = resolveRefInsideCache(args.exact, dir);
+      if (!safe) {
+        return failWith(`Exact ref "${args.exact}" is outside the screenshot cache directory`, "screenshot_gc");
+      }
+      toDelete.push(safe);
     } else if (args.tag) {
       const tagName = args.tag.charAt(0).toUpperCase() + args.tag.slice(1);
       const processDir = path.join(dir, tagName);
@@ -1353,7 +1370,10 @@ export function registerScreenshotTools(server: McpServer): void {
     "screenshot-by-ref",
     "screenshot://by-ref/{path}",
     async (uri) => {
-      const ref = decodeURIComponent(uri.pathname.replace(/^\//, ""));
+      const raw = decodeURIComponent(uri.pathname.replace(/^\//, ""));
+      const dir = SCREENSHOTS_DIR();
+      const ref = resolveRefInsideCache(raw, dir);
+      if (!ref) throw new Error(`Ref "${raw}" is outside the screenshot cache`);
       const data = fs.readFileSync(ref);
       const ext = ref.endsWith(".png") ? "image/png" : "image/webp";
       return { contents: [{ uri: uri.href, mimeType: ext, blob: data.toString("base64") }] };
@@ -1367,8 +1387,10 @@ export function registerScreenshotTools(server: McpServer): void {
       const tag = decodeURIComponent(uri.pathname.replace(/^\//, ""));
       const dir = SCREENSHOTS_DIR();
       const tags = readJsonSafe<Record<string, string>>(path.join(dir, "_tags.json"));
-      const ref = tags?.[tag];
-      if (!ref) throw new Error(`Tag "${tag}" not found`);
+      const raw = tags?.[tag];
+      if (!raw) throw new Error(`Tag "${tag}" not found`);
+      const ref = resolveRefInsideCache(raw, dir);
+      if (!ref) throw new Error(`Ref for tag "${tag}" is outside the screenshot cache`);
       const data = fs.readFileSync(ref);
       const ext = ref.endsWith(".png") ? "image/png" : "image/webp";
       return { contents: [{ uri: uri.href, mimeType: ext, blob: data.toString("base64") }] };
