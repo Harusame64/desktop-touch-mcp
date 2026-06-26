@@ -692,7 +692,7 @@ export async function saveCapture(
     processIndex = [];
   }
   const now = capturedAt;
-  let pEntry = processIndex.find((e) => e.windowUuid === opts.windowUuid);
+  const pEntry = processIndex.find((e) => e.windowUuid === opts.windowUuid);
   if (pEntry) {
     pEntry.lastSeen = now;
     pEntry.screenshotCount++;

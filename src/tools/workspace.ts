@@ -15,7 +15,6 @@ import { coercedBoolean } from "./_coerce.js";
 import { pollUntil } from "../engine/poll.js";
 import { withRichNarration } from "./_narration.js";
 import * as path from "path";
-import * as fs from "fs";
 import { makeCommitWrapper, makeQueryWrapper, withEnvelopeIncludeSchema, genericQueryCausedByProjector, defaultQuerySessionId } from "./_envelope.js";
 
 /** Chromium-based browser windows — UIA traversal is prohibitively slow on these */

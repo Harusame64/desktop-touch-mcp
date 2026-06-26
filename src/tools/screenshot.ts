@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { captureScreen, captureDisplay, captureWindowBackground, captureWindowWithFallback, saveCapture } from "../engine/image.js";
-import type { CaptureSource, CaptureFallbackReason, SavedCapture, SaveCaptureOpts } from "../engine/image.js";
+import type { CaptureSource, CaptureFallbackReason, SavedCapture } from "../engine/image.js";
 import { captureAndDiff, captureAllLayers, hasBuffer } from "../engine/layer-buffer.js";
 import type { WindowInfo } from "../engine/layer-buffer.js";
 import { getWindows } from "../engine/nutjs.js";
@@ -924,17 +924,13 @@ export const screenshotBgHandler = async ({
     const windows = await getWindows();
     let hwnd: unknown = null;
     let foundTitle = "";
-    let windowScreenRegion: { x: number; y: number; width: number; height: number } | null = null;
-
     for (const win of windows) {
-      const h = (win as unknown as { windowHandle: unknown }).windowHandle;
-      const title = h ? getWindowTitleW(h) : await win.title;
-      if (title.toLowerCase().includes(effectiveTitle.toLowerCase())) {
-        hwnd = h;
-        foundTitle = title;
-        const reg = await win.region;
-        windowScreenRegion = { x: reg.left, y: reg.top, width: reg.width, height: reg.height };
-        break;
+        const h = (win as unknown as { windowHandle: unknown }).windowHandle;
+        const title = h ? getWindowTitleW(h) : await win.title;
+        if (title.toLowerCase().includes(effectiveTitle.toLowerCase())) {
+          hwnd = h;
+          foundTitle = title;
+          break;
       }
     }
 
@@ -1096,7 +1092,7 @@ export const screenshotOcrHandler = async ({
 // ─────────────────────────────────────────────────────────────────────────────
 
 const SCREENSHOTS_DIR = () => process.env.DESKTOP_TOUCH_SCREENSHOTS_DIR ?? path.join(process.cwd(), ".screenshots");
-const DEFAULT_SCREENSHOTS_DIR = path.join(process.cwd(), ".screenshots");
+
 
 async function captureAndSave(
   result: { base64: string; width: number; height: number; mimeType: string },
@@ -1296,7 +1292,7 @@ export const screenshotGcHandler = async (args: {
     }
 
     // Collect candidate files
-    const collectFiles = (processDir: string, wUuid: string, tagName: string) => {
+    const collectFiles = (processDir: string, wUuid: string, _tagName: string) => {
       const winIndex = readJsonSafe<{ windowUuid: string; screenshots: Array<{ file: string; at: string }> }>(
         path.join(processDir, wUuid, "_index.json")
       );

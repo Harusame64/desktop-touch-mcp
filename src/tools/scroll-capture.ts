@@ -10,7 +10,6 @@ import {
 } from "./_resolve-window.js";
 import type { ToolResult } from "./_types.js";
 import * as path from "path";
-import * as fs from "fs";
 import { saveCapture } from "../engine/image.js";
 
 // Horizontal mouse scroll units per step (matches nut-js scroll granularity)
@@ -345,7 +344,7 @@ export const scrollCaptureHandler = async ({
   direction,
   maxScrolls,
   scrollDelayMs,
-  maxWidth,
+  maxWidth: _maxWidth,
 }: {
   windowTitle: string;
   direction: "down" | "right";
@@ -501,7 +500,7 @@ export const scrollCaptureHandler = async ({
     }
 
     // ── Phase E: Encode ─────────────────────────────────────────────────────
-    let pipeline = sharp(stitchedBuffer, {
+    const pipeline = sharp(stitchedBuffer, {
       raw: { width: stitchedWidth, height: stitchedHeight, channels },
     });
 
