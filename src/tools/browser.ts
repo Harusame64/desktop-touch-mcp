@@ -1,5 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import path from "node:path";
+import os from "node:os";
 import { mouse, Button, Point, straightTo, DEFAULT_MOUSE_SPEED } from "../engine/nutjs.js";
 import { enumWindowsInZOrder, restoreAndFocusWindow } from "../engine/win32.js";
 import { updateWindowCache } from "../engine/window-cache.js";
@@ -75,7 +77,7 @@ export const browserOpenSchema = {
         .describe("Which browser to spawn. 'auto' tries chrome → edge → brave. Ignored when a CDP endpoint is already live."),
       userDataDir: z
         .string()
-        .default("C:\\tmp\\cdp")
+        .default(path.join(os.tmpdir(), "desktop-touch-cdp"))
         .describe("Path for --user-data-dir. A dedicated profile avoids conflicts with the main browser session."),
       url: z
         .string()
@@ -98,7 +100,7 @@ export const browserOpenSchema = {
     .describe(
       "If set, spawn a debug-mode browser when no CDP endpoint is live on the target port (idempotent: " +
       "an already-running endpoint is preferred and the spawn step is skipped). " +
-      "Pass {} to use defaults (chrome, C:\\tmp\\cdp, no initial URL). Omit to perform pure connect."
+      "Pass {} to use defaults (chrome, os.tmpdir()/desktop-touch-cdp, no initial URL). Omit to perform pure connect."
     ),
 };
 
