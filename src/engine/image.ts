@@ -603,6 +603,19 @@ interface WindowIndexScreenshot {
   size: number;
 }
 
+const MIME_TO_EXT: Record<string, string> = {
+  "image/webp": ".webp",
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/gif": ".gif",
+  "image/bmp": ".bmp",
+  "image/tiff": ".tiff",
+};
+
+function mimeExtension(mimeType: string): string {
+  return MIME_TO_EXT[mimeType] ?? ".webp";
+}
+
 function sanitizeTitle(title: string): string {
   return title.replace(/[\\:*?"<>|]/g, " ").replace(/\s+/g, " ").trim().slice(0, 30) || "untitled";
 }
@@ -646,11 +659,12 @@ export async function saveCapture(
   const windowDir = path.join(opts.screenshotsDir, opts.processName, opts.windowUuid);
 
   // Dedup: scan for existing file with same contentHash
+  const ext = mimeExtension(meta.mimeType);
   let ref: string;
   let existingMatch: string | undefined;
   try {
     const files = fs.readdirSync(windowDir);
-    existingMatch = files.find((f) => f.endsWith("_" + contentHash + ".webp"));
+    existingMatch = files.find((f) => f.endsWith("_" + contentHash + ext));
   } catch {
     // windowDir doesn't exist yet — first capture for this window
   }
@@ -659,7 +673,7 @@ export async function saveCapture(
     ref = path.join(windowDir, existingMatch);
   } else {
     fs.mkdirSync(windowDir, { recursive: true });
-    const filename = `${timestamp}_${sanitized}_${contentHash}.webp`;
+    const filename = `${timestamp}_${sanitized}_${contentHash}${ext}`;
     ref = path.join(windowDir, filename);
     fs.writeFileSync(ref, encodedBuffer);
   }

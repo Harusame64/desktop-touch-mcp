@@ -64,6 +64,8 @@ import {
 import { computeViewportPosition } from "../utils/viewport-position.js";
 import { verifyAnyChange } from "../engine/any-change.js";
 import { captureFrame, type RawFrame } from "../engine/layer-buffer.js";
+import { captureWindowWithFallback, saveCapture } from "../engine/image.js";
+import * as path from "node:path";
 import { verifyLocalRepaint } from "../engine/local-repaint.js";
 import { disposeSharedDirtyRectBroker } from "../engine/dxgi-broker.js";
 import type { VisualMotionObservation } from "./_input-pipeline.js";
@@ -907,7 +909,27 @@ async function buildRoiCapture(
     // S4 — OCR only the ROI crop. hwnd is provided so the empty windowTitle is
     // unused; no UIA dictionary (visual-only target has no UIA candidates).
     const som = await runSomPipeline("", hwnd, "ja", 2, "auto", false, [], roi);
-    return assembleRoiCaptureFromSom(som, roi, source, facade, viewId);
+
+    // Save the ROI crop image to disk and return a ref instead of inline base64
+    let somImageRef: string | undefined;
+    try {
+      const encoded = await captureWindowWithFallback(hwnd, windowRect, { format: "webp", crop: roi });
+      const saved = await saveCapture(
+        Buffer.from(encoded.base64, "base64"),
+        { width: encoded.width, height: encoded.height, mimeType: encoded.mimeType },
+        {
+          screenshotsDir: process.env.DESKTOP_TOUCH_SCREENSHOTS_DIR ?? path.join(process.cwd(), ".screenshots"),
+          processName: "desktop_act",
+          windowTitle: "roi",
+          windowUuid: "roi_" + hwnd.toString(16).slice(0, 8),
+        },
+      );
+      somImageRef = saved.ref;
+    } catch (capErr) {
+      console.error(`[desktop_act] ROI image capture failed: ${capErr instanceof Error ? capErr.message : String(capErr)}`);
+    }
+
+    return assembleRoiCaptureFromSom(som, roi, source, facade, viewId, somImageRef);
   } catch (err) {
     // OCR is best-effort; never break the act envelope on a pipeline failure.
     console.error(
@@ -931,14 +953,15 @@ function assembleRoiCaptureFromSom(
   source: RoiCapture["source"],
   facade: DesktopFacade,
   viewId: string,
+  somImageRef?: string,
 ): RoiCapture | undefined {
-  // SoM image rendering was removed in the disk-path model.
   // Preview entities are still available for coordinate inspection.
+  // somImage is a disk-path ref (saved by buildRoiCapture) instead of inline base64.
   const entities = som.elements.length > 0
     ? buildRoiPreviewEntities(som.elements, facade.getDiscoverEntitiesForViewId(viewId))
     : [];
 
-  return { roi, somImage: "", entities, source };
+  return { roi, somImage: somImageRef ?? "", entities, source };
 }
 
 /**
