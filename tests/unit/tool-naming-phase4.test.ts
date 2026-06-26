@@ -132,7 +132,6 @@ describe("Phase 4 — privatized handlers retained as internal exports", () => {
 
   it("screenshot variant handlers remain importable", async () => {
     const mod = await import("../../src/tools/screenshot.js");
-    expect(typeof mod.screenshotBgHandler).toBe("function");
     expect(typeof mod.screenshotOcrHandler).toBe("function");
     expect(typeof mod.getScreenInfoHandler).toBe("function");
   });
@@ -163,14 +162,6 @@ describe("Phase 4 — screenshot absorbs 3 variants via mode/detail/region", () 
     expect(names).not.toContain("screenshot_ocr");
     expect(names).not.toContain("scope_element");
     expect(names).toContain("screenshot");
-  });
-
-  it("screenshot schema accepts mode='background'", async () => {
-    const { screenshotSchema } = await import("../../src/tools/screenshot.js");
-    const { z } = await import("zod");
-    const schema = z.object(screenshotSchema);
-    const r = schema.safeParse({ windowTitle: "Notepad", mode: "background" });
-    expect(r.success).toBe(true);
   });
 
   it("screenshot schema accepts detail='ocr' with ocrLanguage", async () => {
@@ -493,45 +484,6 @@ describe("Phase 4 — Codex PR #41 P2: stub catalog desktop_state schema is comp
     expect(props!.includeDocument).toBeDefined();
     expect(props!.port).toBeDefined();
     expect(props!.tabId).toBeDefined();
-  });
-});
-
-describe("Phase 4 — Codex PR #41 P2: screenshot rejects incompatible mode/detail combos", () => {
-  it("screenshot dispatcher contains the mode='background' + detail incompatibility guard", () => {
-    const src = readFileSync(join(ROOT, "src", "tools", "screenshot.ts"), "utf-8");
-    expect(src).toMatch(/mode === "background" && args\.detail/);
-    expect(src).toMatch(/only supports detail in \{'image','meta'\}/);
-  });
-
-  it("screenshot description documents the mode/detail composition limit", () => {
-    const entry = STUB_TOOL_CATALOG.find((e) => e.name === "screenshot");
-    expect(entry).toBeDefined();
-    expect(entry!.description).toMatch(
-      /mode='background'.*detail in \{'image','meta'\}/i,
-    );
-  });
-
-  // Codex PR #41 P2 round 2: bg branch must honour detail='meta' (no image
-  // bytes, no PrintWindow). The earlier round-3 confirmImage gate for bg
-  // mode was reverted in round 5 to restore migration parity with the
-  // former screenshot_background tool — passing mode='background' is itself
-  // the acknowledgement that image pixels are wanted.
-  it("screenshot dispatcher bypasses bg capture when detail='meta'", () => {
-    const src = readFileSync(join(ROOT, "src", "tools", "screenshot.ts"), "utf-8");
-    expect(src).toMatch(/mode === "background" && args\.detail !== "meta"/);
-  });
-
-  it("screenshot dispatcher does NOT gate bg image capture with confirmImage (migration parity with former screenshot_background)", () => {
-    const src = readFileSync(join(ROOT, "src", "tools", "screenshot.ts"), "utf-8");
-    // The former gate string must be absent — passing mode='background' is
-    // itself the explicit image acknowledgement.
-    expect(src).not.toMatch(/mode='background'\) returns image pixels — pass confirmImage:true/);
-  });
-
-  it("screenshot description says mode='background' only composes with image/meta details", () => {
-    const entry = STUB_TOOL_CATALOG.find((e) => e.name === "screenshot");
-    expect(entry).toBeDefined();
-    expect(entry!.description).toMatch(/mode='background' requires windowTitle/);
   });
 });
 

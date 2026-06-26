@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { captureScreen, captureDisplay, captureWindowBackground, captureWindowWithFallback, saveCapture } from "../engine/image.js";
+import { captureScreen, captureDisplay, captureWindowWithFallback, saveCapture } from "../engine/image.js";
 import type { CaptureSource, CaptureFallbackReason, SavedCapture } from "../engine/image.js";
 import { captureAndDiff, captureAllLayers, hasBuffer } from "../engine/layer-buffer.js";
 import type { WindowInfo } from "../engine/layer-buffer.js";
@@ -111,22 +111,6 @@ export const screenshotSchema = {
       "  'ocr'   — Windows OCR words with screen-pixel clickAt coords (Phase 4: absorbs former screenshot_ocr). " +
       "Use when UIA returns no actionable elements (WinUI3 custom-drawn UIs, game overlays, PDF viewers). " +
       "Note: detail='text' auto-falls back to OCR via ocrFallback='auto'; choose detail='ocr' only when forcing OCR unconditionally."
-    ),
-  mode: z
-    .enum(["normal", "background"])
-    .default("normal")
-    .optional()
-    .describe(
-      "Capture mode.\n" +
-      "  'normal'     — default. Window-targeted captures (windowTitle / hwnd) use Win32 PrintWindow with automatic BitBlt fallback when PrintWindow returns no data or an all-black frame; the route used is reported in hints.captureSource. Fullscreen / displayId captures use BitBlt.\n" +
-      "  'background' — explicit Win32 PrintWindow capture, retained for back-compat and explicit selection. Requires windowTitle (or hwnd). Pair with fullContent for GPU-rendered apps."
-    ),
-  fullContent: coercedBoolean()
-    .default(true)
-    .optional()
-    .describe(
-      "When mode='background', use PW_RENDERFULLCONTENT to capture GPU-rendered windows (Chrome, Electron, WinUI3). Default true. " +
-      "Set false for legacy mode (faster but GPU windows may appear black). Ignored unless mode='background'."
     ),
   ocrFallback: z
     .enum(["auto", "always", "never"])
@@ -329,24 +313,10 @@ export const screenshotHandler = async (args: {
   preprocessPolicy: "auto" | "aggressive" | "minimal";
   preprocessAdaptive: boolean;
 }): Promise<ToolResult> => {
-  // Phase 4: Dispatch detail='ocr' / mode='background' to the absorbed
+  // Phase 4: Dispatch detail='ocr' to the absorbed
   // internal handlers (former screenshot_ocr / screenshot_background).
   //
-  // detail and mode are NOT freely composable today:
-  //   - detail='ocr' returns OCR words and ignores mode (uses foreground capture
-  //     internally; not adapted to PrintWindow).
-  //   - mode='background' returns image pixels via PrintWindow and does NOT run
-  //     the UIA / SoM / OCR pipelines — so detail in {'text','som','ocr'} cannot
-  //     coexist with it.
-  // Reject incompatible combinations early instead of silently dropping one
-  // dimension. Compatible: mode='background' + detail in {undefined,'image','meta'}.
-  // (Codex PR #41 P2.)
-  if (args.mode === "background" && args.detail && args.detail !== "image" && args.detail !== "meta") {
-    return failArgs(
-      `screenshot(mode='background') only supports detail in {'image','meta'}; got detail='${args.detail}'. Use detail='ocr'/'text'/'som' with the default foreground mode, or drop mode='background' to combine.`,
-      "screenshot",
-    );
-  }
+  // detail='ocr' is dispatched to the dedicated OCR handler.
   if (args.detail === "ocr") {
     if (!args.windowTitle && !args.hwnd) {
       return failArgs(
@@ -359,25 +329,6 @@ export const screenshotHandler = async (args: {
       hwnd: args.hwnd,
       language: args.ocrLanguage ?? detectOcrLanguage(),
       region: args.region,
-    });
-  }
-  // mode='background' + detail='meta' is metadata-only. For image detail,
-  // run the bg capture path; passing mode='background' is itself the
-  // acknowledgement that pixels are wanted.
-  if (args.mode === "background" && args.detail !== "meta") {
-    if (!args.windowTitle && !args.hwnd) {
-      return failArgs(
-        "screenshot(mode='background') requires windowTitle or hwnd",
-        "screenshot",
-      );
-    }
-    return screenshotBgHandler({
-      windowTitle: args.windowTitle ?? "@active",
-      hwnd: args.hwnd,
-      region: args.region,
-      dotByDot: args.dotByDot,
-      dotByDotMaxDimension: args.dotByDotMaxDimension,
-      fullContent: args.fullContent ?? true,
     });
   }
 
@@ -813,7 +764,7 @@ export const screenshotHandler = async (args: {
           );
         } else if (result.fallbackReason === "printwindow-all-black") {
           localWarnings.push(
-            "PrintWindow returned an all-black frame; capture fell back to a BitBlt of the on-screen region. If the target window is legitimately black (terminal, dark editor, video), pass mode='background' to force the PrintWindow result."
+            "PrintWindow returned an all-black frame; capture fell back to a BitBlt of the on-screen region. The fallback chain uses WGC (DWM composition surface) first, then falls through to PrintWindow, then BitBlt."
           );
         }
       }
@@ -901,90 +852,6 @@ export const screenshotHandler = async (args: {
   }
 };
 
-export const screenshotBgHandler = async ({
-  windowTitle,
-  hwnd: hwndParam,
-  region,
-  dotByDot,
-  dotByDotMaxDimension,
-  fullContent,
-}: {
-  windowTitle: string;
-  hwnd?: string;
-  region?: { x: number; y: number; width: number; height: number };
-  dotByDot: boolean;
-  dotByDotMaxDimension?: number;
-  fullContent: boolean;
-}): Promise<ToolResult> => {
-  try {
-    const resolvedWin = await resolveWindowTarget({ hwnd: hwndParam, windowTitle });
-    const effectiveTitle = resolvedWin?.title ?? windowTitle;
-    const bgWarnings: string[] = [...(resolvedWin?.warnings ?? [])];
-
-    const windows = await getWindows();
-    let hwnd: unknown = null;
-    let foundTitle = "";
-    for (const win of windows) {
-        const h = (win as unknown as { windowHandle: unknown }).windowHandle;
-        const title = h ? getWindowTitleW(h) : await win.title;
-        if (title.toLowerCase().includes(effectiveTitle.toLowerCase())) {
-          hwnd = h;
-          foundTitle = title;
-          break;
-      }
-    }
-
-    if (!hwnd) {
-      // Phase 4: surfaced to LLM via screenshot(mode='background') dispatcher.
-      return failWith(`Window not found: "${effectiveTitle}"`, "screenshot", { windowTitle: effectiveTitle });
-    }
-
-    // Build capture options with optional sub-crop (image-local coordinates).
-    // For screenshot_background, region is in image pixel space (PrintWindow output).
-    let crop: { x: number; y: number; width: number; height: number } | undefined;
-    if (region) {
-      crop = {
-        x: Math.max(0, region.x),
-        y: Math.max(0, region.y),
-        width: region.width,
-        height: region.height,
-      };
-    }
-
-    const captureOpts: { format: "webp"; dotByDotMaxDimension?: number; crop?: { x: number; y: number; width: number; height: number } } = { format: "webp", crop };
-    if (dotByDot && dotByDotMaxDimension) captureOpts.dotByDotMaxDimension = dotByDotMaxDimension;
-
-    // PW_RENDERFULLCONTENT=2 for GPU windows; legacy flag=0 when fullContent=false
-    const pwFlags = fullContent ? 2 : 0;
-
-    const result = await captureWindowBackground(hwnd, captureOpts, pwFlags);
-
-    const saved = await captureAndSave(result, {
-      processName: await resolveProcessName(hwnd as unknown as bigint | null),
-      windowTitle: foundTitle,
-      hwnd: hwnd as unknown as bigint | null,
-    });
-
-    const refText = JSON.stringify({
-      ref: saved.ref,
-      tag: saved.tag,
-      windowTitle: foundTitle,
-      resolution: { width: result.width, height: result.height },
-      contentHash: saved.contentHash,
-      capturedAt: saved.capturedAt,
-    });
-
-    return {
-      content: [
-        { type: "text" as const, text: refText },
-        ...(bgWarnings.length > 0 ? [{ type: "text" as const, text: JSON.stringify({ hints: { warnings: bgWarnings } }) }] : []),
-      ],
-    };
-  } catch (err) {
-    // Phase 4: surfaced to LLM via screenshot(mode='background') dispatcher.
-    return failWith(err, "screenshot");
-  }
-};
 
 export const screenshotOcrHandler = async ({
   windowTitle,
@@ -1019,7 +886,7 @@ export const screenshotOcrHandler = async ({
     // even when covered by other windows (e.g. Claude Code on top of Paint).
     // For sub-region: still use PrintWindow for the full window, then crop in
     // scale math by adjusting the origin and using only the sub-region slice.
-    const captured = await captureWindowBackground(win.hwnd, maxDim);
+    const captured = await captureWindowWithFallback(BigInt(win.hwnd), win.region, maxDim);
     const scaleX = win.region.width / captured.width;
     const scaleY = win.region.height / captured.height;
 
@@ -1441,13 +1308,13 @@ export function registerScreenshotTools(server: McpServer): void {
   server.tool(
     "screenshot",
     buildDesc({
-      purpose: "Capture desktop, window, or region across detail levels (meta / text / image / ocr) and capture modes (normal / background).",
+      purpose: "Capture desktop, window, or region across detail levels (meta / text / image / ocr).",
       details:
         "detail='meta' (default) returns window titles+positions only (~20 tok/window, no image). " +
         "detail='text' returns UIA actionable elements with clickAt coords, no image (~100-300 tok). " +
         "detail='image' returns screenshot pixels (saved to disk, returned as file ref). " +
         "detail='ocr' returns Windows OCR words with screen-pixel clickAt coords (use when UIA is sparse). " +
-        "mode='background' captures hidden/minimised/occluded windows via PrintWindow — pair with windowTitle/hwnd. " +
+        "The capture fallback chain is WGC (DWM composition surface) → PrintWindow → BitBlt, automatically choosing the best available method. " +
         "dotByDot=true returns 1:1 pixel WebP; compute screen coords: screen_x = origin_x + image_x (or screen_x = origin_x + image_x / scale when dotByDotMaxDimension is set). " +
         "diffMode=true returns only changed windows after the first call (~160 tok). " +
         "region={x,y,width,height} captures a sub-rectangle (discover element bounds via desktop_discover, then pass region here). " +
@@ -1455,19 +1322,17 @@ export function registerScreenshotTools(server: McpServer): void {
       prefer:
         "Use meta to orient, text before clicking, dotByDot only when precise pixel coords are needed. " +
         "Use detail='ocr' when UIA returns no actionable elements. " +
-        "Use mode='background' when the target window must stay hidden. " +
         "Prefer browser_* tools for Chrome. Use diffMode after actions to confirm state changed. " +
         "Use screenshot_query to list cached screenshots, screenshot_gc to clean up.",
       caveats:
         "Images are saved to .screenshots/ directory and returned as file refs. Use the read tool to view them. " +
         "diffMode requires a prior full-capture baseline (non-diff call or workspace_snapshot). " +
-        "mode='background' requires windowTitle or hwnd, and only composes with detail in {'image','meta'}. " +
         "detail='ocr' requires windowTitle or hwnd; first call may take ~1s (WinRT cold-start).",
       examples: [
         "screenshot() → meta orientation of all windows",
         "screenshot({detail:'text', windowTitle:'Notepad'}) → clickable elements with coords",
         "screenshot({detail:'ocr', windowTitle:'PDF', ocrLanguage:'ja'}) → OCR words with screen-pixel coords",
-        "screenshot({mode:'background', windowTitle:'Chrome', dotByDot:true, dotByDotMaxDimension:1280, grayscale:true}) → background-capture pixel-accurate Chrome",
+        "screenshot({detail:'image', windowTitle:'Chrome', dotByDot:true, dotByDotMaxDimension:1280}) → pixel-accurate Chrome",
         "screenshot({windowTitle:'Notepad', region:{x:0,y:120,width:600,height:400}}) → cropped sub-region (zoom into element after desktop_discover)",
       ],
     }),
@@ -1520,7 +1385,7 @@ export function registerScreenshotTools(server: McpServer): void {
 
   // Phase 4: screenshot_background / screenshot_ocr / scope_element privatized
   // — entry-points removed, handlers retained as internal exports (the
-  // dispatcher above routes via mode='background' / detail='ocr' / region).
+  // dispatcher above routes via detail='ocr' / region).
   // get_screen_info is privatized in batch 4d; use desktop_state({includeScreen:true}).
   // (memory: feedback_disable_via_entry_block.md)
 }

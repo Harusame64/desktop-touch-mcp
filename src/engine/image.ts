@@ -1,6 +1,6 @@
 import sharp from "sharp";
 import { screen, Region } from "./nutjs.js";
-import { printWindowToBuffer } from "./win32.js";
+import { printWindowToBuffer, captureWindowWgc } from "./win32.js";
 import { nativeEngine } from "./native-engine.js";
 import * as fs from "fs";
 import * as path from "path";
@@ -197,25 +197,15 @@ export async function captureDisplay(
  *   0           = legacy mode, fast but GPU windows may appear black
  *   3           = PW_CLIENTONLY | PW_RENDERFULLCONTENT — client area only
  */
-export async function captureWindowBackground(
-  hwnd: unknown,
-  optsOrMaxDim: CaptureOptions | number = 1280,
-  printWindowFlags = 2
-): Promise<CaptureResult> {
-  const opts: CaptureOptions =
-    typeof optsOrMaxDim === "number" ? { maxDimension: optsOrMaxDim } : optsOrMaxDim;
-  // Call printWindowToBuffer directly so the original native error (driver
-  // failure, DRM-protected surface, etc.) propagates to OCR / SoM callers
-  // verbatim. The raw helper that backs the fallback path deliberately
-  // converts exceptions into a `null` signal — that shape is wrong for the
-  // back-compat entry, which should fail loudly when PrintWindow can't run.
-  const { data, width, height } = printWindowToBuffer(hwnd, printWindowFlags);
-  // data is already RGBA (converted in win32.ts)
-  return encode(data, width, height, 4, opts);
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// Raw capture helpers (WGC → PrintWindow → BitBlt fallback)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Raw PrintWindow capture.
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Raw capture helpers (PrintWindow + BitBlt fallback)
+// Raw capture helpers (WGC → PrintWindow → BitBlt fallback)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -298,8 +288,8 @@ export function isLikelyBlankCapture(
   return { isBlank: false, reason: null };
 }
 
-export type CaptureSource = "printwindow" | "bitblt-fallback";
-export type CaptureFallbackReason = "printwindow-failed" | "printwindow-all-black" | null;
+export type CaptureSource = "wgc" | "printwindow" | "bitblt-fallback";
+export type CaptureFallbackReason = "wgc-failed" | "printwindow-failed" | "printwindow-all-black" | null;
 
 export interface CaptureWindowRawResult {
   rawPixels: Buffer;
@@ -311,33 +301,50 @@ export interface CaptureWindowRawResult {
 }
 
 /**
- * Window-targeted raw capture with PrintWindow as the primary route and
- * BitBlt-of-window-rect as the fallback. The fallback fires only when:
- *   1. PrintWindow returns no data at all (null / exception / zero-size), or
- *   2. PrintWindow returned an all-black + zero-variance frame.
+ * Window-targeted raw capture with WGC (DWM composition surface) as the
+ * primary route, then PrintWindow, then BitBlt-of-window-rect as the final
+ * fallback. The fallback chain fires when:
+ *   1. WGC is unavailable (no D3D11, RDP/headless, pre-1809), or
+ *   2. WGC returns no data at all (null / exception / zero-size)
+ *   3. PrintWindow returns no data or an all-black + zero-variance frame.
  *
  * **`windowRect` MUST be the window's full screen rect, not a sub-region.**
- * Both branches return a buffer dimensioned to the window's drawn surface so
+ * All branches return a buffer dimensioned to the window's drawn surface so
  * downstream `opts.crop` (window-local coords) applies uniformly to either
  * source. Passing a sub-region here would silently shift the crop origin on
  * the BitBlt branch and crash sharp's `extract()` when offsets are non-zero.
  *
- * Note on dimension parity: on high-DPI monitors PrintWindow returns the
- * window's drawn surface in device pixels, and `screen.grabRegion` of the
- * same screen rect returns logical pixels — the two branches may therefore
+ * Note on dimension parity: on high-DPI monitors WGC returns device pixels,
+ * PrintWindow returns device pixels, and `screen.grabRegion` of the same
+ * screen rect returns logical pixels — the three branches may therefore
  * differ in dimensions. Callers (e.g. `captureAndDiff`) that compare frames
  * across captures must tolerate a one-time `sizeChanged` when the source
- * alternates between PrintWindow and BitBlt for the same window.
+ * alternates backends for the same window.
  */
 export async function captureWindowRawWithFallback(
   hwnd: unknown,
   windowRect: { x: number; y: number; width: number; height: number },
   flags = 2,
 ): Promise<CaptureWindowRawResult> {
+  // Layer 0: WGC (DWM composition surface, no foreground / WM_PRINT dependency)
+  let wgcFailed = false;
+  if (typeof hwnd === "bigint") {
+    const wgcRaw = captureWindowWgc(hwnd);
+    if (wgcRaw) {
+      return {
+        rawPixels: wgcRaw.data,
+        width: wgcRaw.width,
+        height: wgcRaw.height,
+        channels: 4,
+        source: "wgc",
+        fallbackReason: null,
+      };
+    }
+    wgcFailed = true;
+  }
+
+  // Layer 1: PrintWindow (WM_PRINT)
   const raw = captureWindowRawPrintWindow(hwnd, flags);
-  // Definite-assignment analysis: every path through this block either
-  // assigns fallbackReason or returns, so no initializer is needed (and an
-  // initial `null` would be dead code per eslint no-useless-assignment).
   let fallbackReason: CaptureFallbackReason;
   if (!raw) {
     fallbackReason = "printwindow-failed";
@@ -355,9 +362,7 @@ export async function captureWindowRawWithFallback(
     }
     fallbackReason = blank.reason;
   }
-  // BitBlt fallback grabs the full window rect, NOT a sub-region. Sub-region
-  // crops are applied uniformly at encode time via opts.crop (window-local
-  // coordinates) so both source branches share the same crop semantics.
+  // Layer 2: BitBlt screen grab (always works, but captures whatever is on top)
   const grabRegion = new Region(windowRect.x, windowRect.y, windowRect.width, windowRect.height);
   const image = await screen.grabRegion(grabRegion);
   const rgbImage = await image.toRGB();
@@ -368,7 +373,7 @@ export async function captureWindowRawWithFallback(
     height: rgbImage.height,
     channels,
     source: "bitblt-fallback",
-    fallbackReason,
+    fallbackReason: wgcFailed ? "wgc-failed" : fallbackReason,
   };
 }
 

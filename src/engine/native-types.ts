@@ -260,6 +260,13 @@ export interface NativePrintWindowResult {
   height: number
 }
 
+/** Result of `captureWindowWgc`: identical shape for interchangeable handling. */
+export interface NativeWgcCaptureResult {
+  data: Buffer
+  width: number
+  height: number
+}
+
 /** One monitor as returned by `win32EnumMonitors`. The TS wrapper rebuilds
  *  the nested `{ bounds, workArea }` shape that callers (`MonitorInfo`)
  *  expect — this flat record matches the napi marshal layout. */

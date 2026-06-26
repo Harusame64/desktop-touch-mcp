@@ -462,6 +462,7 @@ dependencies = [
  "serde",
  "tokenizers",
  "tracing",
+ "wgc",
  "windows",
  "windows-core",
 ]
@@ -1347,6 +1348,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "smart-default"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0eb01866308440fc64d6c44d9e86c5cc17adfe33c4d6eed55da9145044d0ffc1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "socks"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1727,6 +1739,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "22cfaf3c063993ff62e73cb4311efde4db1efb31ab78a3e5c457939ad5cc0bed"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "wgc"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1f6b994f5959294383f4e82a24f6c3e22d4681e12c5438d8dfb0b591e8495c7"
+dependencies = [
+ "smart-default",
+ "thiserror",
+ "windows",
+ "windows-future",
 ]
 
 [[package]]

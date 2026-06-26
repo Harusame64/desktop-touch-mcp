@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, dirname } from "node:path";
 import sharp from "sharp";
-import { captureWindowBackground } from "./image.js";
+import { captureWindowWithFallback } from "./image.js";
 import { enumWindowsInZOrder, getWindowDpi, printWindowToBuffer } from "./win32.js";
 import { nativeEngine } from "./native-engine.js";
 import { cropRgbaToRoi } from "./roi-crop.js";
@@ -275,7 +275,8 @@ export async function recognizeWindowByHwnd(
   // Use PrintWindow (PW_RENDERFULLCONTENT) so the window is captured correctly
   // even when it is behind other windows (e.g. Claude Code covering Paint).
   const maxDim = 1280;
-  const captured = await captureWindowBackground(hwnd, maxDim);
+  const hwndBig = typeof hwnd === "number" || typeof hwnd === "bigint" ? BigInt(hwnd as any) : hwnd;
+  const captured = await captureWindowWithFallback(hwndBig, region, maxDim);
 
   // Scale factors: image may be downscaled, OCR bboxes are in image coords
   const scaleX = region.width / captured.width;

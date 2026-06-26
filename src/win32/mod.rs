@@ -66,3 +66,7 @@ pub(crate) mod imm;
 // cross-session control surface (out of scope per ADR-017 v1 §2.2).
 #[cfg(windows)]
 pub(crate) mod session;
+// WGC (Windows.Graphics.Capture) — HWND-based window capture from DWM
+// composition surface. Fallback for PrintWindow on WM_PRINT-noncompliant windows.
+#[cfg(windows)]
+pub(crate) mod wgc;

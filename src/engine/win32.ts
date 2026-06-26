@@ -432,6 +432,26 @@ export function printWindowToBuffer(hwnd: unknown, flags = 2): {
   return { data: r.data, width: r.width, height: r.height };
 }
 
+/**
+ * Capture a window using Windows.Graphics.Capture (DWM composition surface).
+ * Returns null when WGC is unavailable (no D3D11, RDP/headless, pre-1809).
+ * Uses `IGraphicsCaptureItemInterop::CreateForWindow` to bypass the picker.
+ */
+export function captureWindowWgc(hwnd: unknown): {
+  data: Buffer;
+  width: number;
+  height: number;
+} | null {
+  if (typeof hwnd !== "bigint") return null;
+  try {
+    const r = requireNativeWin32().captureWindowWgc!(hwnd);
+    if (!r.data || r.width <= 0 || r.height <= 0) return null;
+    return { data: r.data, width: r.width, height: r.height };
+  } catch {
+    return null;
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Scrollbar info
 // ─────────────────────────────────────────────────────────────────────────────

@@ -37,6 +37,12 @@ engine-perception = { path = "crates/engine-perception" }
 # dragging the napi compile graph.
 engine-vba-bridge = { path = "crates/engine-vba-bridge" }
 
+# ── WGC (Windows.Graphics.Capture) for silent window capture ───────────────
+# wgc crate wraps Direct3D11CaptureFramePool + IGraphicsCaptureItemInterop,
+# providing HWND-based window capture from the DWM composition surface.
+# Replaces PrintWindow for windows that don't respond to WM_PRINT (taskmgr).
+wgc = "1.0"
+
 # ── Visual GPU Phase 4 (ADR-005) ────────────────────────────────────────────
 # ORT 2.0.0-rc.12 (2026-03), pykeio/ort. directml feature で AMD/NVIDIA/Intel 全 DX12 GPU 対応。
 # WinML, ROCm/MIGraphX, CUDA, TensorRT, WebGPU, CoreML は build feature で opt-in。

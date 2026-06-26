@@ -97,6 +97,8 @@
     "check:rs-workspace": "cargo check --workspace --locked",
     "check:rs-test-compile": "cargo test --workspace --locked --no-run",
     "check:expansion-disjoint": "node scripts/check-expansion-disjoint.mjs",
+    "build:all": "node scripts/build-all.mjs",
+    "build:all:debug": "node scripts/build-all.mjs --debug",
     "build:rs": "node scripts/build-rs.mjs --release",
     "build:rs:debug": "node scripts/build-rs.mjs --debug",
     "artifacts:rs": "napi artifacts",

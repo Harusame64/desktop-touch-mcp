@@ -52,6 +52,7 @@ import type {
   NativeDirtyRectSubscription,
   NativeExcelAccessVbomStatus,
   NativeWtsSessionInfo,
+  NativeWgcCaptureResult,
 } from "./native-types.js";
 
 export type * from "./native-types.js";
@@ -137,6 +138,7 @@ export interface NativeWin32 {
 
   // ADR-007 P2 GDI / monitor / DPI
   win32PrintWindowToBuffer?(hwnd: bigint, flags: number): NativePrintWindowResult;
+  captureWindowWgc?(hwnd: bigint): NativeWgcCaptureResult;
   win32EnumMonitors?(): NativeMonitorInfo[];
   win32GetWindowDpi?(hwnd: bigint): number;
   win32SetProcessDpiAwareness?(level: number): boolean;
