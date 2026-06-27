@@ -209,8 +209,11 @@ screenshot. On `ok:false` read `reason` and follow the recovery path:
 
 > **`roiCapture` (visual-only targets).** On a UIA-blind target (Electron / PWA /
 > game / custom canvas / RDP), a successful act can additionally bundle a
-> `roiCapture: { roi, somImage, entities, source }` — a base64 PNG crop of *just
-> the region that changed* plus a lease-less preview of the entities now visible
+> `roiCapture: { roi, somImageRef, entities, source }` — the PNG crop of *just the
+> region that changed* delivered **by-ref** (`somImageRef` is a `screenshot://by-ref/`
+> resource the act also attaches as a `resource_link`; the inline `somImage` is
+> `null` by default — open the ref only when you need the pixels) plus a lease-less
+> preview of the entities now visible
 > there — so the caller confirms the result and finds the next target in one call
 > instead of a follow-up `desktop_state` + `screenshot`. The preview `entities`
 > carry no lease (re-run `desktop_discover` to act on one). Controlled by the
