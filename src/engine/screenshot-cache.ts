@@ -91,6 +91,18 @@ function indexPath(root: string): string {
 // lockfile serializes ALL index mutations cross-process so every rewrite reads a
 // stable index and no append is lost. Single-process (the common case) takes the
 // lock with zero contention — one create+unlink syscall pair, no sleep.
+//
+// KNOWN RESIDUAL (Codex R3 P2, accepted — ADR-026 OQ8): an mtime-based lockfile
+// cannot distinguish a crashed holder from one merely slow inside `fn`, so the
+// stale-steal could in theory unlink a still-live holder's lock after LOCK_STALE_MS
+// and let a concurrent mutation race the holder's rename. This is a non-issue here:
+// every locked `fn` is a SYNCHRONOUS sub-millisecond op (one append, or a
+// readIndex+write+rename over a count-bounded index), so reaching the 10 s window
+// implies a frozen/dead process whose lock SHOULD be stolen; and any resulting loss
+// is self-healing (the orphaned file is reclaimed by a later orphan sweep, never a
+// wrong-file delete). Closing it fully would need OS advisory locks or an async
+// heartbeat (impossible mid-sync-fn) — disproportionate for a local single-user
+// cache. Deferred as a documented limitation, not a Phase-3 blocker.
 const INDEX_LOCK_FILE = "_index.lock";
 const LOCK_STALE_MS = 10_000;
 const LOCK_RETRY_MS = 20;
@@ -730,8 +742,9 @@ export function gcCache(
     }
   }
 
-  // Orphan sweep — aggregate only (P2-2).
-  const orphanFiles: { file: string; bytes: number }[] = [];
+  // Orphan sweep — aggregate only (P2-2). Carries the scanned dev/ino so the
+  // unlink can verify it is still the same inode (identity gate, Codex P2-788).
+  const orphanFiles: { file: string; bytes: number; dev: number; ino: number }[] = [];
   if (includeOrphans) {
     const referenced = new Set(all.map((e) => e.file));
     const orphanGraceMs = Math.max(maxAgeMs ?? 0, ORPHAN_GRACE_MS_DEFAULT);
@@ -755,7 +768,7 @@ export function gcCache(
       }
       if (st.isSymbolicLink() || !st.isFile()) continue;
       if (now - st.mtimeMs < orphanGraceMs) continue; // too fresh — index-append may be imminent
-      orphanFiles.push({ file: name, bytes: st.size });
+      orphanFiles.push({ file: name, bytes: st.size, dev: st.dev, ino: st.ino });
     }
   }
   const orphanBytes = orphanFiles.reduce((s, o) => s + o.bytes, 0);
@@ -784,7 +797,13 @@ export function gcCache(
     removeIndexEntries(root, removedIds, env);
     for (const o of orphanFiles) {
       try {
-        const { real } = validateCacheFileForDelete(root, o.file);
+        const { real, st } = validateCacheFileForDelete(root, o.file);
+        // Identity gate (mirrors the index-backed delete): the orphan basename could
+        // have been swapped for a symlink to another in-cache capture between the
+        // sweep's lstat and now — validateCacheFileForDelete would then resolve
+        // `real` to that OTHER (index-tracked) file. Require the resolved target to
+        // be the SAME inode the sweep saw before unlinking it (Codex P2-788).
+        if (st.dev !== o.dev || st.ino !== o.ino) continue;
         fs.unlinkSync(real);
         deleted++;
         reclaimedBytes += o.bytes;
