@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 
-import { buildImageResponse } from "../../src/tools/screenshot.js";
+import { buildImageResponse } from "../../src/tools/screenshot-response.js";
 import { readCaptureBytes, REF_URI_PREFIX } from "../../src/engine/screenshot-cache.js";
 
 let cacheDir: string;
