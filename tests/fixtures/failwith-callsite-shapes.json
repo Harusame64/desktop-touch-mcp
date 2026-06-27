@@ -438,7 +438,7 @@
     },
     {
       "file": "src/tools/screenshot-gc.ts",
-      "line": 91,
+      "line": 96,
       "tool": "screenshot_gc",
       "errKind": "identifier",
       "contextShape": "none"

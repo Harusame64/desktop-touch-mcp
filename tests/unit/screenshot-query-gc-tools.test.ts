@@ -100,6 +100,16 @@ describe("screenshot_gc handler — dryRun double gate", () => {
     expect(parse(await screenshotQueryHandler({})).total).toBe(5);
   });
 
+  it("confirm:true alone (dryRun omitted = default true) is forced to a dry run (no delete)", async () => {
+    // Pins the 4th corner of the gate (Opus P2): a regression to
+    // `effectiveDryRun = !confirm` would delete here — the dryRun term must remain.
+    seedCaptures(5);
+    const r = parse(await screenshotGcHandler({ confirm: true, maxCount: 1 }));
+    expect(r.dryRun).toBe(true); // dryRun defaults true → not (false && true) → dry run
+    expect(r.deleted).toBe(0);
+    expect(parse(await screenshotQueryHandler({})).total).toBe(5);
+  });
+
   it("dryRun:false AND confirm:true actually deletes", async () => {
     seedCaptures(5);
     const r = parse(await screenshotGcHandler({ dryRun: false, confirm: true, maxCount: 1 }));
@@ -114,6 +124,17 @@ describe("screenshot_gc handler — dryRun double gate", () => {
     const r = parse(await screenshotGcHandler({ dryRun: false, confirm: true }));
     expect(r.deleted).toBe(3); // keep newest 2
     expect(parse(await screenshotQueryHandler({})).total).toBe(2);
+  });
+
+  it("an EXPLICIT cap does NOT also pull in the env default caps (Codex P2)", async () => {
+    // env default would keep only 2, but an explicit maxAgeMs that matches nothing
+    // must NOT be silently widened by the default count cap — only the explicit cap
+    // applies, so all 5 recent captures survive.
+    process.env.DESKTOP_TOUCH_SCREENSHOT_MAX_COUNT = "2";
+    seedCaptures(5);
+    const r = parse(await screenshotGcHandler({ dryRun: false, confirm: true, maxAgeMs: 365 * 24 * 3600 * 1000 }));
+    expect(r.deleted).toBe(0); // nothing old enough; default maxCount:2 must NOT apply
+    expect(parse(await screenshotQueryHandler({})).total).toBe(5);
   });
 });
 

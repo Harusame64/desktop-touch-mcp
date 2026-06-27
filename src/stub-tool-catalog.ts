@@ -1396,11 +1396,13 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       "properties": {
         "dryRun": {
           "description": "Default true: only LIST what would be deleted, delete nothing. Set false (with confirm:true) to actually delete.",
-          "type": "boolean"
+          "type": "boolean",
+          "default": true
         },
         "confirm": {
           "description": "Safety gate: deletion happens ONLY when dryRun:false AND confirm:true. Otherwise the call is forced to a dry run.",
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "maxAgeMs": {
           "description": "Delete captures older than this many milliseconds (opt-in; can clear even the newest).",
@@ -1422,8 +1424,9 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "type": "string"
         },
         "includeOrphans": {
-          "description": "Default true: also reclaim leftover on-disk image files that have no index entry (crash/fold residue).",
-          "type": "boolean"
+          "description": "Default true: also reclaim leftover on-disk image files that are not tracked in the cache index (e.g. files left behind by a crash).",
+          "type": "boolean",
+          "default": true
         },
         "include": {
           "type": "array",
