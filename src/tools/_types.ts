@@ -1,7 +1,10 @@
 /** Standard MCP tool result content block */
 export type ContentBlock =
   | { type: "text"; text: string }
-  | { type: "image"; data: string; mimeType: string };
+  | { type: "image"; data: string; mimeType: string }
+  // ADR-026: a by-ref link to disk-cached capture bytes (screenshot://by-ref/{id}).
+  // Cheap to return; the client reads it via resources/read only when pixels are needed.
+  | { type: "resource_link"; uri: string; name: string; mimeType?: string; description?: string };
 
 /** Standard MCP tool result (index signature required by MCP SDK) */
 export interface ToolResult {

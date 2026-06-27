@@ -15,6 +15,8 @@ import { CHROMIUM_TITLE_RE } from "./workspace.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 import { ok, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
+import { persistCapture } from "../engine/screenshot-cache.js";
+import type { CaptureMeta } from "../engine/screenshot-cache.js";
 import { failWith, failArgs } from "./_errors.js";
 import { coercedBoolean } from "./_coerce.js";
 import {
@@ -331,6 +333,86 @@ function formatOriginText(
   );
 }
 
+/**
+ * ADR-026 §2.1 — persist captured pixels to the per-user disk-cache and build
+ * the MCP content blocks for an image response.
+ *
+ * Default (`wantInline=false`): a cheap `resource_link`
+ * (`screenshot://by-ref/{captureId}`) plus the structured `text` blocks only —
+ * NO inline base64. The agent reads the ref (resources/read) ONLY when it
+ * actually needs to look at pixels; auto-reading every ref re-expands base64 and
+ * defeats the token saving (§2.2 read-policy).
+ *
+ * `wantInline=true` (confirmImage / dotByDot coordinate use / mode='background'):
+ * additionally embeds the inline `image` block so vision is immediate, AND still
+ * returns the ref so re-viewing later is cheap.
+ *
+ * The structured `text` blocks (dimensions, dotByDot origin/scale, hints) are
+ * ALWAYS emitted, so the coordinate contract survives even when pixels are
+ * deferred to the ref (§3: pixels may move to the ref, coords must not).
+ *
+ * R6 degrade: if `persistCapture` throws (disk full / EACCES) we fall back to an
+ * inline base64 image + a warning rather than erroring — capability preserved,
+ * only the token saving is lost.
+ */
+export function buildImageResponse(opts: {
+  base64: string;
+  mimeType: string;
+  width: number;
+  height: number;
+  wantInline: boolean;
+  textBlocks: string[];
+  meta?: Partial<CaptureMeta>;
+  env?: NodeJS.ProcessEnv;
+}): ToolResult {
+  const { base64, mimeType, width, height, wantInline, textBlocks, meta, env } = opts;
+  const inlineBlock = { type: "image" as const, data: base64, mimeType };
+  const texts = textBlocks.map((t) => ({ type: "text" as const, text: t }));
+
+  let persisted;
+  try {
+    persisted = persistCapture(
+      Buffer.from(base64, "base64"),
+      { mimeType, width, height, ...meta },
+      env,
+    );
+  } catch {
+    // R6: degrade to inline + warning, never error on a cache-write failure.
+    return {
+      content: [
+        inlineBlock,
+        ...texts,
+        {
+          type: "text" as const,
+          text: JSON.stringify({
+            hints: {
+              warnings: [
+                "Screenshot disk-cache write failed; returning inline pixels (no by-ref link). " +
+                  "Point DESKTOP_TOUCH_SCREENSHOTS_DIR or DESKTOP_TOUCH_MCP_HOME at a writable path to restore by-ref output.",
+              ],
+            },
+          }),
+        },
+      ],
+    };
+  }
+
+  const link = {
+    type: "resource_link" as const,
+    uri: persisted.uri,
+    name: `screenshot-${persisted.captureId}`,
+    mimeType,
+    description:
+      `Screenshot ${width}×${height} (${mimeType}, ${persisted.bytes} bytes). ` +
+      `Open this resource only if you need to inspect the pixels — the text above ` +
+      `already carries dimensions and click coordinates.`,
+  };
+
+  return wantInline
+    ? { content: [inlineBlock, link, ...texts] }
+    : { content: [link, ...texts] };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Handlers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -447,25 +529,29 @@ export const screenshotHandler = async (args: {
     const effectiveTitle = resolvedWin?.title ?? windowTitle;
     const screenshotWarnings: string[] = [...(resolvedWin?.warnings ?? [])];
 
-    // ── Guard: block bare detail='image'/'som' unless explicitly confirmed ──
-    // Only fires when 'image' or 'som' was explicitly requested, not when
-    // inferred from dotByDot/region context.
+    // ── Guard: block bare detail='som' unless explicitly confirmed ──
+    // ADR-026 Phase 1: detail='image' is NO LONGER blocked here — it now flows
+    // to the by-ref path below (a cheap resource_link by default, inline pixels
+    // only with confirmImage). detail='som' still carries its annotated SoM
+    // bitmap inline and is migrated to the ref model in Phase 2, so it keeps the
+    // confirmImage gate for now. Only fires when 'som' was explicitly requested,
+    // not when image is inferred from dotByDot/region context.
     const guardDisabled = process.env.DESKTOP_TOUCH_DISABLE_IMAGE_GUARD === "1";
-    const isExplicitImage = detail === "image" || detail === "som";
-    if (isExplicitImage && !diffMode && !dotByDot && !confirmImage && !guardDisabled) {
+    const isExplicitSom = detail === "som";
+    if (isExplicitSom && !diffMode && !dotByDot && !confirmImage && !guardDisabled) {
       return {
         isError: true,
         content: [{
           type: "text" as const,
           text: [
-            `[screenshot-guard] detail='${detail}' was blocked to prevent accidental heavy image payloads.`,
+            `[screenshot-guard] detail='som' was blocked to prevent accidental heavy image payloads.`,
             "",
             "Prefer these lighter alternatives (in order):",
             "  1. screenshot(detail='text', windowTitle=X)  — UIA actionable[] with clickAt coords",
-            "  2. screenshot(diffMode=true)                 — only changed windows as image",
+            "  2. screenshot(detail='image', windowTitle=X)  — by-ref resource_link, no inline base64",
             "  3. screenshot(dotByDot=true, windowTitle=X)  — 1:1 WebP for pixel-perfect coords",
             "",
-            `If a ${detail === "som" ? "Set-of-Marks" : "full"} image truly is required, re-call with confirmImage=true.`,
+            "If a Set-of-Marks image truly is required, re-call with confirmImage=true.",
             "To disable this guard globally, set DESKTOP_TOUCH_DISABLE_IMAGE_GUARD=1 in the environment.",
           ].join("\n"),
         }],
@@ -936,13 +1022,18 @@ export const screenshotHandler = async (args: {
         dimensionText = `Screenshot captured: ${result.width}x${result.height}px${scaleNote}`;
       }
 
-      return {
-        content: [
-          { type: "image" as const, data: result.base64, mimeType: result.mimeType },
-          { type: "text" as const, text: dimensionText },
-          { type: "text" as const, text: JSON.stringify({ hints: captureHints }) },
-        ],
-      };
+      // ADR-026 §2.1/§3: persist + by-ref. Default returns a resource_link only;
+      // confirmImage (explicit pixels) and dotByDot (pixel-coordinate use) also
+      // embed the inline image. The dimension/coords text is always kept.
+      return buildImageResponse({
+        base64: result.base64,
+        mimeType: result.mimeType,
+        width: result.width,
+        height: result.height,
+        wantInline: confirmImage || dotByDot,
+        textBlocks: [dimensionText, JSON.stringify({ hints: captureHints })],
+        meta: { tag: effectiveTitle },
+      });
     } else if (displayId !== undefined) {
       const monitors = enumMonitors();
       const mon = monitors.find((m) => m.id === displayId);
@@ -958,12 +1049,15 @@ export const screenshotHandler = async (args: {
       const dimensionText = dotByDot
         ? formatOriginText(mon.bounds.x, mon.bounds.y, result.width, result.height, result.scale)
         : `Screenshot captured: ${result.width}x${result.height}px`;
-      return {
-        content: [
-          { type: "image" as const, data: result.base64, mimeType: result.mimeType },
-          { type: "text" as const, text: dimensionText },
-        ],
-      };
+      return buildImageResponse({
+        base64: result.base64,
+        mimeType: result.mimeType,
+        width: result.width,
+        height: result.height,
+        wantInline: confirmImage || dotByDot,
+        textBlocks: [dimensionText],
+        meta: { tag: `display-${displayId}` },
+      });
     } else {
       const result = await captureScreen(region, captureOpts);
       let dimensionText: string;
@@ -977,12 +1071,15 @@ export const screenshotHandler = async (args: {
       } else {
         dimensionText = `Screenshot captured: ${result.width}x${result.height}px`;
       }
-      return {
-        content: [
-          { type: "image" as const, data: result.base64, mimeType: result.mimeType },
-          { type: "text" as const, text: dimensionText },
-        ],
-      };
+      return buildImageResponse({
+        base64: result.base64,
+        mimeType: result.mimeType,
+        width: result.width,
+        height: result.height,
+        wantInline: confirmImage || dotByDot,
+        textBlocks: [dimensionText],
+        meta: { tag: "fullscreen" },
+      });
     }
   } catch (err) {
     return failWith(err, "screenshot");
