@@ -362,6 +362,17 @@ describe("gcCache — orphan sweep (R11)", () => {
     expect(fs.existsSync(path.join(root, `${id}.json`))).toBe(false);
   });
 
+  it("reclaims a stale partial sidecar write ({id}.json.<hex>.tmp) older than grace", () => {
+    const root = getScreenshotCacheRoot(env);
+    const tmp = path.join(root, "abcd1234-0000000000000001.json.deadbeef.tmp");
+    fs.writeFileSync(tmp, "{partial", { flag: "wx" });
+    const old = (NOW - 60 * 60 * 1000) / 1000;
+    fs.utimesSync(tmp, old, old);
+    const r = gcCache({ dryRun: false, policy: {}, includeOrphans: true, now: NOW }, env);
+    expect(r.orphans.count).toBe(1);
+    expect(fs.existsSync(tmp)).toBe(false);
+  });
+
   it("NEVER reclaims foreign files in a shared cache dir (settings.json / other.tmp / non-id image) — Codex P2", () => {
     const root = getScreenshotCacheRoot(env);
     fs.writeFileSync(path.join(root, "settings.json"), JSON.stringify({ theme: "dark" }), { flag: "wx" });
