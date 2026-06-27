@@ -11,7 +11,6 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import crypto from "node:crypto";
 
 import {
   persistCapture,
@@ -32,7 +31,9 @@ let cacheDir: string;
 let env: NodeJS.ProcessEnv;
 
 beforeEach(() => {
-  cacheDir = path.join(os.tmpdir(), `dt-qg-test-${crypto.randomBytes(6).toString("hex")}`);
+  // mkdtempSync (not path.join + random) so the cache dir is a securely-created
+  // temp dir — CodeQL js/insecure-temporary-file is satisfied for writes into it.
+  cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "dt-qg-test-"));
   // Auto-prune OFF by default so seeded counts are deterministic.
   env = { DESKTOP_TOUCH_SCREENSHOTS_DIR: cacheDir, DESKTOP_TOUCH_SCREENSHOT_AUTOPRUNE: "0" };
   _resetAutoPruneCounterForTest();
@@ -220,6 +221,26 @@ describe("deleteCapture — secure delete (AC3)", () => {
     const r = deleteCapture("x", env);
     expect(r).toEqual({ bytes: 42, deleted: true });
     expect(fs.existsSync(path.join(root, "x.png"))).toBe(false);
+  });
+
+  it("removes the index entry too, so query stops listing it (Codex P2)", () => {
+    const root = getScreenshotCacheRoot(env);
+    seed(root, { captureId: "g1", ts: NOW, bytes: 5 });
+    seed(root, { captureId: "g2", ts: NOW - 1, bytes: 5 });
+    expect(deleteCapture("g1", env).deleted).toBe(true);
+    expect(readIndex(root).has("g1")).toBe(false);
+    expect(queryCaptures({}, env).captures.map((c) => c.captureId)).toEqual(["g2"]);
+  });
+
+  it("cleans a dangling index entry (file already gone) so query stops listing it", () => {
+    const root = getScreenshotCacheRoot(env);
+    fs.appendFileSync(
+      path.join(root, "_index.ndjson"),
+      JSON.stringify({ captureId: "dang", ts: 1, bytes: 1, file: "dang.png", mimeType: "image/png", width: 1, height: 1 }) + "\n",
+    );
+    expect(readIndex(root).has("dang")).toBe(true);
+    expect(deleteCapture("dang", env)).toEqual({ bytes: 0, deleted: false });
+    expect(readIndex(root).has("dang")).toBe(false); // stale entry cleaned (R2 P2)
   });
 
   it("a dangling captureId (file already gone) → {deleted:false}, never throws", () => {

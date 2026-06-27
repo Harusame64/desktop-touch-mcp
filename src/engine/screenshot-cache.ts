@@ -82,6 +82,68 @@ function indexPath(root: string): string {
   return path.join(root, INDEX_FILE);
 }
 
+// ── Index mutation lock (ADR-026 Phase 3, Codex P1) ──────────────────────────
+// The index is mutated by three paths — persistCapture (append), deleteCapture
+// (remove one), gcCache (batch remove). A bare read-modify-rename rewrite loses a
+// concurrent append from ANOTHER desktop-touch process sharing the same cache dir
+// (the appended line isn't in the rewrite's snapshot and the rename drops it,
+// orphaning a just-returned ref past the protectCaptureId invariant). An exclusive
+// lockfile serializes ALL index mutations cross-process so every rewrite reads a
+// stable index and no append is lost. Single-process (the common case) takes the
+// lock with zero contention — one create+unlink syscall pair, no sleep.
+const INDEX_LOCK_FILE = "_index.lock";
+const LOCK_STALE_MS = 10_000;
+const LOCK_RETRY_MS = 20;
+const LOCK_MAX_WAIT_MS = 2_000;
+
+/** Synchronous sleep (consistent with this module's sync-fs design). Only reached
+ *  on cross-process lock contention — never in the single-process common path. */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Run `fn` while holding an exclusive index lock (an `_index.lock` file created
+ * with the `wx` flag). Best-effort: a stale lock (holder crashed) is stolen after
+ * {@link LOCK_STALE_MS}, and if the lock can't be acquired within
+ * {@link LOCK_MAX_WAIT_MS} it proceeds anyway to avoid a deadlock — the worst case
+ * degrades to the pre-lock behavior, never worse. **NOT reentrant**: call sites
+ * must not nest withIndexLock (they don't — persistCapture releases before
+ * maybeAutoPrune; gcCache unlinks lock-free then takes one lock for the rewrite).
+ */
+function withIndexLock<T>(root: string, fn: () => T): T {
+  const lockPath = path.join(root, INDEX_LOCK_FILE);
+  const start = Date.now();
+  let fd: number | null = null;
+  for (;;) {
+    try {
+      fd = fs.openSync(lockPath, "wx");
+      break;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") break; // unlockable → best-effort
+      try {
+        const st = fs.statSync(lockPath);
+        if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
+          try { fs.unlinkSync(lockPath); } catch { /* raced another stealer */ }
+          continue;
+        }
+      } catch {
+        continue; // lock vanished between open and stat → retry immediately
+      }
+      if (Date.now() - start > LOCK_MAX_WAIT_MS) break; // give up → proceed best-effort
+      sleepSync(LOCK_RETRY_MS);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch { /* ignore */ }
+      try { fs.unlinkSync(lockPath); } catch { /* ignore */ }
+    }
+  }
+}
+
 /** Persist capture bytes + append an index entry; returns the ref descriptor. */
 export function persistCapture(
   data: Buffer,
@@ -108,7 +170,10 @@ export function persistCapture(
     ...(meta.processName !== undefined ? { processName: meta.processName } : {}),
     ...(meta.tag !== undefined ? { tag: meta.tag } : {}),
   };
-  fs.appendFileSync(indexPath(root), JSON.stringify(entry) + "\n");
+  // Under the index lock so this atomic append cannot interleave with a gcCache /
+  // deleteCapture rewrite that re-reads then renames (which would otherwise drop
+  // this line). Released before maybeAutoPrune so the prune can take its own lock.
+  withIndexLock(root, () => fs.appendFileSync(indexPath(root), JSON.stringify(entry) + "\n"));
 
   // Bound cache growth (R2) without the agent ever calling screenshot_gc. Throttled
   // + best-effort + protects this very captureId — a prune failure must NEVER fail a
@@ -452,16 +517,18 @@ function validateCacheFileForDelete(root: string, file: string): { real: string;
 }
 
 /**
- * Securely delete one cached capture by opaque captureId (ADR-026 §4 delete note).
+ * Securely unlink one cached capture's FILE by opaque captureId (does NOT touch
+ * the index — see {@link deleteCapture} / {@link gcCache} for the index update).
  *
  * Runs the full {@link openValidatedCapture} gauntlet to pin the file's dev/ino
  * identity, releases the handle, then — immediately before unlink — re-validates
  * (re-lstat symlink reject + re-containment + identity re-check) to minimize the
  * realpath→unlink TOCTOU window Windows cannot close via fd. Never unlinks
  * anything outside the canonical cache root. Returns `{deleted:false}` when the
- * file is already gone (dangling ref).
+ * file is already gone (dangling ref). Kept index-free so a batch GC can rewrite
+ * the index once instead of once per file.
  */
-export function deleteCapture(
+function unlinkValidatedCapture(
   captureId: string,
   env: NodeJS.ProcessEnv = process.env
 ): { bytes: number; deleted: boolean } {
@@ -513,6 +580,24 @@ export function deleteCapture(
   return { bytes, deleted: true };
 }
 
+/**
+ * Securely delete one cached capture — both its FILE and its index entry — by
+ * opaque captureId. Unlinks via {@link unlinkValidatedCapture}, then drops the
+ * index entry under the index lock so `screenshot_query` no longer lists a ref
+ * that reads `not_found` (Codex P2) — whether the file was unlinked here or was
+ * already gone. Returns `{deleted:false}` (with the index entry still cleaned)
+ * for a dangling ref.
+ */
+export function deleteCapture(
+  captureId: string,
+  env: NodeJS.ProcessEnv = process.env
+): { bytes: number; deleted: boolean } {
+  const root = getScreenshotCacheRoot(env);
+  const result = unlinkValidatedCapture(captureId, env);
+  removeIndexEntries(root, new Set([captureId]), env);
+  return result;
+}
+
 export interface GcPolicy {
   /** delete entries older than this (ms). */
   maxAgeMs?: number;
@@ -559,6 +644,20 @@ function writeIndexAtomic(root: string, entries: IndexEntry[]): void {
   const body = entries.map((e) => JSON.stringify(e)).join("\n") + (entries.length ? "\n" : "");
   fs.writeFileSync(tmp, body, { mode: 0o600 });
   fs.renameSync(tmp, indexPath(root));
+}
+
+/**
+ * Drop the given captureIds from the index, under the index lock so the fresh
+ * read + rewrite cannot lose a concurrent cross-process append (Codex P1). A
+ * no-op when none of the ids are currently present (avoids a pointless rewrite).
+ */
+function removeIndexEntries(root: string, ids: Set<string>, _env: NodeJS.ProcessEnv): void {
+  if (ids.size === 0) return;
+  withIndexLock(root, () => {
+    const all = [...readIndex(root).values()];
+    if (!all.some((e) => ids.has(e.captureId))) return;
+    writeIndexAtomic(root, all.filter((e) => !ids.has(e.captureId)));
+  });
 }
 
 /**
@@ -651,31 +750,23 @@ export function gcCache(
   const removedIds = new Set<string>();
 
   if (!dryRun) {
+    // Unlink the FILES first (lock-free), collecting the ids to drop from the
+    // index, then rewrite the index ONCE under the lock (removeIndexEntries) — so
+    // the O(N) candidate deletes cost a single locked rewrite, not N.
     for (const c of candidates) {
       try {
-        const r = deleteCapture(c.captureId, env);
-        if (r.deleted) reclaimedBytes += r.bytes;
-        // whether deleted now or already gone, drop the index entry.
+        const r = unlinkValidatedCapture(c.captureId, env);
+        if (r.deleted) { reclaimedBytes += r.bytes; deleted++; }
+        // whether unlinked now or already gone, drop the (dead) index entry.
         removedIds.add(c.captureId);
-        if (r.deleted) deleted++;
       } catch {
         // a single failed delete must not abort the whole gc; leave its entry.
       }
     }
-    if (removedIds.size > 0) {
-      // Re-read the index immediately before the atomic rewrite and merge: a
-      // capture another process persisted AFTER our initial `all` snapshot is in
-      // the fresh read, so the rename preserves it instead of dropping its line —
-      // which would orphan a just-returned ref (and a later orphan sweep could
-      // then delete it past the protectCaptureId invariant, Codex P1). The
-      // residual fresh-read→rename gap is a single-process synchronous window.
-      const rewriteSurvivors = [...readIndex(root).values()].filter((e) => !removedIds.has(e.captureId));
-      try {
-        writeIndexAtomic(root, rewriteSurvivors);
-      } catch {
-        // best-effort; a failed rewrite leaves stale entries → read surfaces not_found (AC3)
-      }
-    }
+    // Remove the deleted entries from the index under the lock — the fresh read
+    // happens INSIDE the lock, and persist appends also hold the lock, so no
+    // concurrent cross-process append can be lost by the rewrite (Codex P1).
+    removeIndexEntries(root, removedIds, env);
     for (const o of orphanFiles) {
       try {
         const { real } = validateCacheFileForDelete(root, o.file);
