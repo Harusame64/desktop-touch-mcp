@@ -123,7 +123,7 @@ export const screenshotSchema = {
       "  omitted — auto: 'image' when dotByDot/region/displayId is specified, else 'meta'\n" +
       "  'meta'  — window title + screen region only (~20 tok/window, cheapest)\n" +
       "  'text'  — UIA element tree as JSON with text values (~100-300 tok/window, no image)\n" +
-      "  'image' — actual screenshot pixels. BLOCKED unless confirmImage=true is also passed.\n" +
+      "  'image' — actual screenshot pixels. Returns a cheap by-ref resource_link by default (no inline base64); pass confirmImage=true to ALSO embed the inline image.\n" +
       "  'som'   — Set-of-Marks image + OCR elements (bypasses UIA entirely). BLOCKED unless confirmImage=true is also passed.\n" +
       "  'ocr'   — Windows OCR words with screen-pixel clickAt coords (Phase 4: absorbs former screenshot_ocr). " +
       "Use when UIA returns no actionable elements (WinUI3 custom-drawn UIs, game overlays, PDF viewers). " +
@@ -148,10 +148,12 @@ export const screenshotSchema = {
   confirmImage: coercedBoolean()
     .default(false)
     .describe(
-      "Must be true to receive image pixels when detail='image'. " +
-      "Without this flag, detail='image' is blocked and a guidance message is returned instead. " +
+      "Embed inline image pixels in the response. " +
+      "detail='image' now returns a cheap by-ref resource_link WITHOUT this flag (it is no longer blocked); " +
+      "confirmImage=true ADDITIONALLY embeds the inline image for immediate vision. " +
+      "detail='som' still requires confirmImage=true to return its annotated bitmap. " +
       "Prefer detail='text' / diffMode=true / dotByDot=true first — " +
-      "only set confirmImage=true when visual inspection is genuinely required."
+      "set confirmImage=true only when inline visual inspection is genuinely required."
     ),
   ocrFallback: z
     .enum(["auto", "always", "never"])
@@ -1369,7 +1371,7 @@ export function registerScreenshotTools(server: McpServer): void {
         "detail='text' returns UIA actionable elements with clickAt coords, no image (~100-300 tok). " +
         "detail='som' returns a Set-of-Marks annotated image plus OCR-detected elements with IDs (bypasses UIA entirely). " +
         "detail='ocr' returns Windows OCR words with screen-pixel clickAt coords (Phase 4: absorbs former screenshot_ocr — use when UIA is sparse and you want to force OCR unconditionally). " +
-        "detail='image' and detail='som' are server-blocked unless confirmImage=true is also passed. " +
+        "detail='image' returns a cheap by-ref resource_link by default (no inline base64); pass confirmImage=true to also embed the inline image. detail='som' is server-blocked unless confirmImage=true is passed. " +
         "mode='background' captures hidden/minimised/occluded windows via PrintWindow (Phase 4: absorbs former screenshot_background) — pair with windowTitle/hwnd. " +
         "dotByDot=true returns 1:1 pixel WebP; compute screen coords: screen_x = origin_x + image_x (or screen_x = origin_x + image_x / scale when dotByDotMaxDimension is set — scale printed in response). " +
         "diffMode=true returns only changed windows after the first call (~160 tok). " +
@@ -1384,7 +1386,7 @@ export function registerScreenshotTools(server: McpServer): void {
         "Only use image+confirmImage when text returned 0 actionable elements and visual inspection is genuinely required.",
       caveats:
         "Default mode scales to maxDimension=768 — image pixels ≠ screen pixels; apply the scale formula before passing to mouse_click. " +
-        "Foreground detail='image' is always blocked without confirmImage=true. " +
+        "Foreground detail='image' returns a by-ref resource_link by default; pass confirmImage=true to also receive inline pixels. " +
         "diffMode requires a prior full-capture baseline (non-diff call or workspace_snapshot) — calling diffMode cold returns a full frame, not a diff. " +
         "mode='background' requires windowTitle or hwnd, and only composes with detail in {'image','meta'} — detail='text'/'som'/'ocr' run only against foreground capture (the dispatcher rejects the conflicting combination). Passing mode='background' is itself the acknowledgement that image pixels are wanted, so confirmImage is NOT required for it (matches the former screenshot_background contract). fullContent=false enables legacy mode (faster but GPU windows may be black). " +
         "detail='ocr' requires windowTitle or hwnd; first call may take ~1s (WinRT cold-start) and the matching OCR language pack must be installed.",

@@ -85,6 +85,14 @@ describe("screenshot-cache — security (ADR-026 §4 / AC3 path traversal)", () 
     expectRefCode(() => resolveCaptureFile("does-not-exist", env), "not_found");
   });
 
+  it("index entry whose capture file was deleted (dangling ref) → not_found, not raw ENOENT", () => {
+    // R7/AC3 (Codex P2): the index outlives a GC'd/deleted file. The raw ENOENT
+    // from lstat must surface as the opaque not_found, never leak the abs path.
+    const root = getScreenshotCacheRoot(env);
+    appendRawIndex(root, { captureId: "gone1", ts: 1, bytes: 1, file: "gone1.png", mimeType: "image/png", width: 1, height: 1 });
+    expectRefCode(() => resolveCaptureFile("gone1", env), "not_found");
+  });
+
   it("relative-traversal file name in index → outside_cache (basename rejection)", () => {
     const root = getScreenshotCacheRoot(env);
     appendRawIndex(root, { captureId: "evil1", ts: 1, bytes: 1, file: "../evil.png", mimeType: "image/png", width: 1, height: 1 });
@@ -128,20 +136,21 @@ describe("screenshot-cache — security (ADR-026 §4 / AC3 path traversal)", () 
 
   it("symlink inside the cache → symlink rejected (skipped where symlinks need privilege)", () => {
     const root = getScreenshotCacheRoot(env);
-    const outside = path.join(os.tmpdir(), `dt-sc-outside-${crypto.randomBytes(6).toString("hex")}.png`);
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "dt-sc-outside-"));
+    const outside = path.join(outsideDir, "target.png");
     fs.writeFileSync(outside, PNG);
     const linkName = "linked.png";
     try {
       fs.symlinkSync(outside, path.join(root, linkName));
     } catch {
-      fs.rmSync(outside, { force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
       return; // no symlink privilege (e.g. Windows without Developer Mode) — skip
     }
     appendRawIndex(root, { captureId: "evil3", ts: 1, bytes: 1, file: linkName, mimeType: "image/png", width: 1, height: 1 });
     try {
       expectRefCode(() => resolveCaptureFile("evil3", env), "symlink");
     } finally {
-      fs.rmSync(outside, { force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
     }
   });
 });

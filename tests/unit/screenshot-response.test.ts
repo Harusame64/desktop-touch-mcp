@@ -77,7 +77,8 @@ describe("buildImageResponse — ADR-026 default ref / confirmImage inline", () 
 
   it("R6: a cache-write failure degrades to inline pixels + a warning, never an error", () => {
     // Point the cache dir *under an existing file* so mkdirSync throws ENOTDIR.
-    const blocker = path.join(os.tmpdir(), `dt-blocker-${crypto.randomBytes(6).toString("hex")}`);
+    const blockerDir = fs.mkdtempSync(path.join(os.tmpdir(), "dt-blocker-"));
+    const blocker = path.join(blockerDir, "file");
     fs.writeFileSync(blocker, "x");
     try {
       const r = buildImageResponse({
@@ -91,7 +92,7 @@ describe("buildImageResponse — ADR-026 default ref / confirmImage inline", () 
       expect(texts.some((t) => /disk-cache write failed/i.test((t as { text: string }).text))).toBe(true);
       expect(r.isError).toBeUndefined();                            // R6: not an error
     } finally {
-      fs.rmSync(blocker, { force: true });
+      fs.rmSync(blockerDir, { recursive: true, force: true });
     }
   });
 });

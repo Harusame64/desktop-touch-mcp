@@ -19,8 +19,6 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   readCaptureBytes,
-  readIndex,
-  getScreenshotCacheRoot,
   CaptureRefError,
 } from "../engine/screenshot-cache.js";
 
@@ -30,16 +28,13 @@ export function registerScreenshotResources(server: McpServer): void {
     // Not enumerable via resources/list — refs are handed out by the screenshot
     // tool, not discovered. (Resource links are explicitly allowed to be absent
     // from resources/list per the MCP spec.)
+    //
+    // No `complete` callback by design: a captureId is the bearer token for
+    // cached pixels, so completing/enumerating recent IDs would let a client
+    // (in a multi-client / delegated-tool context) discover and read captures it
+    // was never handed — defeating the opaque-ref model (Codex P1). The exact ref
+    // must come from a screenshot tool response.
     list: undefined,
-    complete: {
-      captureId: async () => {
-        try {
-          return [...readIndex(getScreenshotCacheRoot()).keys()].slice(-20);
-        } catch {
-          return [];
-        }
-      },
-    },
   });
 
   server.registerResource(

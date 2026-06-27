@@ -91,7 +91,10 @@ export function persistCapture(
   const root = getScreenshotCacheRoot(env);
   const captureId = newCaptureId();
   const file = `${captureId}.${extForMime(meta.mimeType)}`;
-  fs.writeFileSync(path.join(root, file), data, { mode: 0o600 });
+  // Exclusive create ("wx"): fail rather than follow a pre-planted symlink/file at
+  // this path. The captureId carries 8 random bytes so a real collision is
+  // astronomically unlikely; the flag is pure defense-in-depth on the write side.
+  fs.writeFileSync(path.join(root, file), data, { mode: 0o600, flag: "wx" });
 
   const entry: IndexEntry = {
     captureId,
@@ -176,6 +179,20 @@ export class CaptureRefError extends Error {
  * Caller MUST close `fd`. Throws {@link CaptureRefError} on any failure; never
  * yields a handle to a file outside the canonical cache root.
  */
+/**
+ * Map a filesystem ENOENT to the documented opaque `not_found` ref error.
+ * Used wherever a capture file can vanish (GC'd / deleted, R7) between index
+ * lookup and the actual syscall — so a dangling ref surfaces
+ * `CaptureRefError("not_found")` instead of a raw ENOENT that would leak the
+ * absolute cache path through the resource handler (Codex P2).
+ */
+function asNotFound(e: unknown, captureId: string): never {
+  if ((e as NodeJS.ErrnoException)?.code === "ENOENT") {
+    throw new CaptureRefError("not_found", `capture file missing: ${captureId}`);
+  }
+  throw e;
+}
+
 function openValidatedCapture(
   captureId: string,
   env: NodeJS.ProcessEnv
@@ -193,7 +210,13 @@ function openValidatedCapture(
 
   // 1) Symlink rejection BEFORE realpath (order is load-bearing — realpath would follow
   //    the link and validate the *target*). lstat is no-follow; pin dev+ino as identity.
-  const lst = fs.lstatSync(candidate);
+  //    A missing file here is a dangling ref (R7) → not_found, not a raw ENOENT.
+  let lst: fs.Stats;
+  try {
+    lst = fs.lstatSync(candidate);
+  } catch (e) {
+    asNotFound(e, captureId);
+  }
   if (lst.isSymbolicLink()) throw new CaptureRefError("symlink", `symlink rejected: ${file}`);
   if (!lst.isFile()) throw new CaptureRefError("not_regular_file", `not a regular file: ${file}`);
   const pinnedDev = lst.dev;
@@ -201,7 +224,12 @@ function openValidatedCapture(
 
   // 2) Canonicalize + separator-aware containment (NOT `startsWith`, which lets a
   //    sibling like `screenshots_evil` slip through the `screenshots` prefix).
-  const real = fs.realpathSync(candidate);
+  let real: string;
+  try {
+    real = fs.realpathSync(candidate);
+  } catch (e) {
+    asNotFound(e, captureId);
+  }
   if (!isWithinRoot(root, real)) {
     throw new CaptureRefError("outside_cache", `resolved path escapes cache: ${real}`);
   }
@@ -215,7 +243,12 @@ function openValidatedCapture(
   //    (NTFS) where dev/ino are meaningful, and step 1's symlink rejection +
   //    step 2's containment still hold regardless.
   const noFollow = (fs.constants as { O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0;
-  const fd = fs.openSync(real, fs.constants.O_RDONLY | noFollow);
+  let fd: number;
+  try {
+    fd = fs.openSync(real, fs.constants.O_RDONLY | noFollow);
+  } catch (e) {
+    asNotFound(e, captureId);
+  }
   try {
     const st = fs.fstatSync(fd);
     if (st.dev !== pinnedDev || st.ino !== pinnedIno) {
