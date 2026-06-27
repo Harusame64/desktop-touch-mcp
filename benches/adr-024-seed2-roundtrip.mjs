@@ -7,8 +7,8 @@
 //   desktop_act -> desktop_state -> screenshot   (3 calls; 2 post-act confirms)
 // and S5c makes it
 //   desktop_act(returnCapture:"on-change")        (1 call; 0 post-act confirms)
-// because the act response carries roiCapture { somImage (≈ the screenshot crop),
-// entities (≈ the discover/state preview) }.
+// because the act response carries roiCapture { somImageRef (≈ a by-ref link to
+// the screenshot crop, ADR-026), entities (≈ the discover/state preview) }.
 //
 // This bench QUANTIFIES that reduction live. It is **headed-gated** (needs a real
 // GUI + the full native engine: DXGI / PrintWindow / OCR) and therefore is NOT a
@@ -30,8 +30,8 @@
 //                                  whole window). Payload scales with the ROI size; a
 //                                  full-window roiCapture fallback would approach the
 //                                  baseline screenshot's bytes.
-//   - roiCapture content         : somImage bytes, entities count, roi localized
-//                                  (not full-window)
+//   - roiCapture content         : somImageRef (by-ref URI) bytes, entities count,
+//                                  roi localized (not full-window)
 //
 // ## Usage
 //   npm run build && npm run build:rs   # dist/index.js + native addon present
@@ -230,7 +230,9 @@ for (let i = 0; i < iterations; i++) {
     const cap = act.parsed?.roiCapture;
     if (cap) {
       folded.present++;
-      const somB = cap.somImage ? Buffer.byteLength(String(cap.somImage), "utf8") : 0;
+      // ADR-026: the crop is delivered by-ref now (somImage is null); the inline
+      // cost is just the short somImageRef URI, not the base64 bytes.
+      const somB = cap.somImageRef ? Buffer.byteLength(String(cap.somImageRef), "utf8") : 0;
       folded.somBytes.push(somB);
       folded.entityCounts.push(Array.isArray(cap.entities) ? cap.entities.length : 0);
       const roi = cap.roi;

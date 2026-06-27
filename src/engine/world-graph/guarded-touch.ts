@@ -100,10 +100,33 @@ export interface RoiPreviewEntity {
  * (S3a/S3b) + ROI-aware OCR (S4).
  */
 export interface RoiCapture {
-  /** Window-relative crop rect the `somImage` covers (the diff region, not the full window). */
+  /** Window-relative crop rect the crop covers (the diff region, not the full window). */
   roi: Rect;
-  /** Base64 PNG of the cropped diff region. */
-  somImage: string;
+  /**
+   * ADR-026 §3.6: the cropped diff region's PNG is delivered **by-ref** via
+   * `somImageRef` (a `screenshot://by-ref/{id}` resource the act response also
+   * attaches as a `resource_link` content block). This inline base64 is `null` by
+   * default — the pixels are deferred so the act envelope stays cheap. Open the
+   * ref only when you actually need to look at the crop.
+   *
+   * (Widened `string → string | null` in ADR-026: nullability only — the meaning
+   * "base64 PNG of the crop" is unchanged, additive-safe for existing readers.)
+   */
+  somImage: string | null;
+  /**
+   * ADR-026 §3.6: `screenshot://by-ref/{id}` URI for the cropped diff region's
+   * PNG. Present whenever a crop was rendered AND persisted; absent only on a
+   * disk-cache write failure (see `somImageWarning`).
+   */
+  somImageRef?: string;
+  /**
+   * ADR-026 §3.6 R6: set only when persisting the crop failed (disk full /
+   * EACCES). The crop pixels are unavailable this turn (no `somImageRef`), but the
+   * act still succeeded and the structural `roi` / `entities` / `source` are
+   * intact. Never falls back to inline base64 (that would resurrect the token cost
+   * with no ref).
+   */
+  somImageWarning?: string;
   /** Lease-less observation preview (re-run `desktop_discover` for actionable leases). */
   entities: RoiPreviewEntity[];
   /** ROI source: DXGI dirty-rect (local UIA-blind) or software frame-diff (RDP). */

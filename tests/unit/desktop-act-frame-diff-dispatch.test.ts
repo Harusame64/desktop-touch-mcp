@@ -32,6 +32,10 @@
 
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import crypto from "node:crypto";
 import type { EntityLease } from "../../src/engine/world-graph/types.js";
 
 // ── Module-dep mocks (partial — preserve everything else via importOriginal) ──
@@ -76,6 +80,20 @@ const FAKE_LEASE: EntityLease = {
 };
 
 const WINDOW_RECT = { x: 0, y: 0, width: 800, height: 600 };
+
+// ADR-026 §3.6: roiCapture now persists its crop to the disk-cache. Point that at
+// a throwaway temp dir for every test so the handler does not write the real
+// per-user runtime dir. (Top-level hooks run outer→inner around each describe's
+// own beforeEach/afterEach.)
+let roiCacheDir: string;
+beforeEach(() => {
+  roiCacheDir = path.join(os.tmpdir(), `dt-act-roi-${crypto.randomBytes(6).toString("hex")}`);
+  process.env.DESKTOP_TOUCH_SCREENSHOTS_DIR = roiCacheDir;
+});
+afterEach(() => {
+  delete process.env.DESKTOP_TOUCH_SCREENSHOTS_DIR;
+  try { fs.rmSync(roiCacheDir, { recursive: true, force: true }); } catch { /* ignore */ }
+});
 
 function parse(content: ReadonlyArray<{ type: string; text?: string }>): Record<string, unknown> {
   const block = content[0];
@@ -206,6 +224,50 @@ describe("desktop_act frame-diff dispatch — legacy S5 path (S5b fold off)", ()
     expect(cap).toBeDefined();
     expect(cap.roi).toEqual({ x: 50, y: 60, width: 100, height: 80 });
     expect(cap.source).toBe("frame_diff");
+  });
+
+  it("ADR-026: roiCapture crop is delivered by-ref — somImage null, somImageRef set, resource_link attached", async () => {
+    spyFacadeVisualOnly({ visualOnly: true });
+    mockCaptureFrame.mockResolvedValue({ rawPixels: Buffer.alloc(800 * 600 * 4), width: 800, height: 600, channels: 4, source: "printwindow" });
+    mockVerifyLocalRepaint.mockResolvedValue({ motion: "local_repaint", source: "ssim_residual", roiBbox: { x: 50, y: 60, width: 100, height: 80 }, framesSampled: 2, totalElapsedMs: 80 });
+
+    const result = await desktopActRawHandler({ lease: FAKE_LEASE, action: "click" });
+    const parsed = parse(result.content);
+    const cap = parsed["roiCapture"] as { somImage?: unknown; somImageRef?: string; roi?: unknown };
+
+    // The base64 crop is NOT inlined in the JSON envelope…
+    expect(cap.somImage).toBeNull();
+    // …it is delivered by-ref instead.
+    expect(typeof cap.somImageRef).toBe("string");
+    expect((cap.somImageRef as string).startsWith("screenshot://by-ref/")).toBe(true);
+    // …and the SAME ref is attached as a resource_link content block (which the
+    // L5 commit wrapper preserves via content.slice(1)).
+    const link = result.content.find((c) => c.type === "resource_link") as { uri?: string } | undefined;
+    expect(link).toBeDefined();
+    expect(link!.uri).toBe(cap.somImageRef);
+  });
+
+  it("ADR-026 R6: a disk-cache write failure → somImage null + warning, no ref/link, act still ok", async () => {
+    spyFacadeVisualOnly({ visualOnly: true });
+    mockCaptureFrame.mockResolvedValue({ rawPixels: Buffer.alloc(800 * 600 * 4), width: 800, height: 600, channels: 4, source: "printwindow" });
+    mockVerifyLocalRepaint.mockResolvedValue({ motion: "local_repaint", source: "ssim_residual", roiBbox: { x: 50, y: 60, width: 100, height: 80 }, framesSampled: 2, totalElapsedMs: 80 });
+    // Point the cache under an existing file so the per-user dir create throws.
+    const blockerDir = fs.mkdtempSync(path.join(os.tmpdir(), "dt-act-blocker-"));
+    const blocker = path.join(blockerDir, "file");
+    fs.writeFileSync(blocker, "x");
+    process.env.DESKTOP_TOUCH_SCREENSHOTS_DIR = path.join(blocker, "sub");
+    try {
+      const result = await desktopActRawHandler({ lease: FAKE_LEASE, action: "click" });
+      const parsed = parse(result.content);
+      const cap = parsed["roiCapture"] as { somImage?: unknown; somImageRef?: unknown; somImageWarning?: unknown };
+      expect(cap.somImage).toBeNull();                                   // never inline base64 on R6
+      expect(cap.somImageRef).toBeUndefined();                          // no ref when persist failed
+      expect(typeof cap.somImageWarning).toBe("string");                // a warning instead
+      expect(result.content.some((c) => c.type === "resource_link")).toBe(false);
+      expect(parsed["ok"]).toBe(true);                                   // the act still succeeded
+    } finally {
+      fs.rmSync(blockerDir, { recursive: true, force: true });
+    }
   });
 
   it("visual-only frame-diff miss (pre-frame capture fails) → degrade, NO DXGI fallback, no roiCapture", async () => {
