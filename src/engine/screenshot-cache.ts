@@ -662,7 +662,10 @@ const ORPHAN_GRACE_MS_DEFAULT = 5 * 60 * 1000;
 function writeIndexAtomic(root: string, entries: IndexEntry[]): void {
   const tmp = path.join(root, `${INDEX_FILE}.${crypto.randomBytes(6).toString("hex")}.tmp`);
   const body = entries.map((e) => JSON.stringify(e)).join("\n") + (entries.length ? "\n" : "");
-  fs.writeFileSync(tmp, body, { mode: 0o600 });
+  // Exclusive create ("wx"): refuse to follow a pre-planted file/symlink at the
+  // temp path (CodeQL js/insecure-temporary-file). The 6 random bytes make a real
+  // collision astronomically unlikely; mirrors persistCapture's write-side flag.
+  fs.writeFileSync(tmp, body, { mode: 0o600, flag: "wx" });
   fs.renameSync(tmp, indexPath(root));
 }
 
