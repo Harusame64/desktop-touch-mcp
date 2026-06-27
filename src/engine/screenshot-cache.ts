@@ -110,6 +110,16 @@ export function persistCapture(
   };
   fs.appendFileSync(indexPath(root), JSON.stringify(entry) + "\n");
 
+  // Bound cache growth (R2) without the agent ever calling screenshot_gc. Throttled
+  // + best-effort + protects this very captureId — a prune failure must NEVER fail a
+  // capture, and auto-prune must never delete the ref this call is about to return
+  // (ADR-026 Phase 3 §3.4, keep-newest invariant).
+  try {
+    maybeAutoPrune(captureId, env);
+  } catch {
+    /* never fail a capture because a background prune errored */
+  }
+
   return {
     captureId,
     uri: REF_URI_PREFIX + captureId,
@@ -165,7 +175,11 @@ export type CaptureRefCode =
   | "outside_cache"
   | "symlink"
   | "identity_mismatch"
-  | "not_regular_file";
+  | "not_regular_file"
+  // Any non-ENOENT filesystem error (EACCES/EPERM/EBUSY/…) coerced to an opaque
+  // ref error so the raw fs message — which can contain the absolute cache path
+  // — never reaches the resource handler (ADR-026 §8 R9, Phase 3 hardening).
+  | "unreadable";
 
 export class CaptureRefError extends Error {
   constructor(public readonly code: CaptureRefCode, message: string) {
@@ -180,15 +194,23 @@ export class CaptureRefError extends Error {
  * yields a handle to a file outside the canonical cache root.
  */
 /**
- * Map a filesystem ENOENT to the documented opaque `not_found` ref error.
- * Used wherever a capture file can vanish (GC'd / deleted, R7) between index
- * lookup and the actual syscall — so a dangling ref surfaces
- * `CaptureRefError("not_found")` instead of a raw ENOENT that would leak the
- * absolute cache path through the resource handler (Codex P2).
+ * Coerce a filesystem error into an opaque {@link CaptureRefError}.
+ *
+ * - ENOENT → `not_found`: a capture file can vanish (GC'd / deleted, R7) between
+ *   index lookup and the actual syscall, so a dangling ref surfaces a documented
+ *   `not_found` rather than a raw ENOENT.
+ * - any other fs error with a `.code` (EACCES/EPERM/EBUSY/…) → `unreadable`:
+ *   coerced WITHOUT echoing `e.message`, which can carry the absolute cache path,
+ *   so the resource handler never leaks it (ADR-026 §8 R9, Phase 3 hardening).
+ * - a non-fs error (no `.code`, e.g. a programming bug) is rethrown as-is.
  */
-function asNotFound(e: unknown, captureId: string): never {
-  if ((e as NodeJS.ErrnoException)?.code === "ENOENT") {
+function asRefError(e: unknown, captureId: string): never {
+  const code = (e as NodeJS.ErrnoException)?.code;
+  if (code === "ENOENT") {
     throw new CaptureRefError("not_found", `capture file missing: ${captureId}`);
+  }
+  if (typeof code === "string") {
+    throw new CaptureRefError("unreadable", `capture unreadable (${code}): ${captureId}`);
   }
   throw e;
 }
@@ -215,7 +237,7 @@ function openValidatedCapture(
   try {
     lst = fs.lstatSync(candidate);
   } catch (e) {
-    asNotFound(e, captureId);
+    asRefError(e, captureId);
   }
   if (lst.isSymbolicLink()) throw new CaptureRefError("symlink", `symlink rejected: ${file}`);
   if (!lst.isFile()) throw new CaptureRefError("not_regular_file", `not a regular file: ${file}`);
@@ -228,7 +250,7 @@ function openValidatedCapture(
   try {
     real = fs.realpathSync(candidate);
   } catch (e) {
-    asNotFound(e, captureId);
+    asRefError(e, captureId);
   }
   if (!isWithinRoot(root, real)) {
     throw new CaptureRefError("outside_cache", `resolved path escapes cache: ${real}`);
@@ -247,7 +269,7 @@ function openValidatedCapture(
   try {
     fd = fs.openSync(real, fs.constants.O_RDONLY | noFollow);
   } catch (e) {
-    asNotFound(e, captureId);
+    asRefError(e, captureId);
   }
   try {
     const st = fs.fstatSync(fd);
@@ -288,4 +310,446 @@ export function readCaptureBytes(
   } finally {
     fs.closeSync(fd);
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR-026 Phase 3 — query / gc / index walk / retention (GC policy)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Case/space-fold a tag or processName so `screenshot_query` and `screenshot_gc`
+ * filters agree on what "the same tag" means regardless of the casing it was
+ * stored with (seed defect #9). The index keeps values verbatim (for display);
+ * this is applied ONLY at compare time — the single source of truth for tag
+ * equality across both tools.
+ */
+export function normalizeCacheTag(tag: string): string {
+  return tag.trim().toLowerCase();
+}
+
+export interface QueryFilter {
+  tag?: string;
+  windowUuid?: string;
+  /** epoch ms, inclusive lower bound. */
+  since?: number;
+  /** epoch ms, inclusive upper bound. */
+  until?: number;
+  /** clamped to [1, 500], default 50. */
+  limit?: number;
+  /** clamped to >= 0, default 0. */
+  offset?: number;
+}
+
+/**
+ * A pixels-free listing row. Carries ONLY the opaque captureId + its ref uri and
+ * metadata — never the on-disk `file` basename or an absolute path, so navigating
+ * the cache cannot widen the path-traversal surface (opaque-ref model, R9).
+ */
+export interface QuerySummaryEntry {
+  captureId: string;
+  uri: string;
+  ts: number;
+  mimeType: string;
+  width: number;
+  height: number;
+  bytes: number;
+  tag?: string;
+  windowUuid?: string;
+  processName?: string;
+}
+
+export interface QueryResult {
+  /** matching count BEFORE limit/offset. */
+  total: number;
+  /** returned count. */
+  count: number;
+  /** newest-first. */
+  captures: QuerySummaryEntry[];
+  /** whole-cache stats so a caller can decide whether to gc (no path leaked). */
+  cache: { totalCaptures: number; totalBytes: number };
+}
+
+/**
+ * Read-only listing of cached captures (ADR-026 §5 / AC4). Always walks the full
+ * index — a `tag` filter does NOT bypass the walk (seed defect #8). Returns
+ * pixels-free metadata only; resolve a `uri` (resources/read) to get the bytes.
+ */
+export function queryCaptures(
+  filter: QueryFilter = {},
+  env: NodeJS.ProcessEnv = process.env
+): QueryResult {
+  const root = getScreenshotCacheRoot(env);
+  const all = [...readIndex(root).values()];
+  const totalCaptures = all.length;
+  const totalBytes = all.reduce((s, e) => s + (e.bytes || 0), 0);
+
+  const nTag = filter.tag !== undefined ? normalizeCacheTag(filter.tag) : undefined;
+  const matched = all
+    .filter((e) => {
+      if (nTag !== undefined && normalizeCacheTag(e.tag ?? "") !== nTag) return false;
+      if (filter.windowUuid !== undefined && e.windowUuid !== filter.windowUuid) return false;
+      if (filter.since !== undefined && e.ts < filter.since) return false;
+      if (filter.until !== undefined && e.ts > filter.until) return false;
+      return true;
+    })
+    .sort((a, b) => b.ts - a.ts);
+
+  const total = matched.length;
+  const offset = Math.max(0, Math.floor(filter.offset ?? 0));
+  const limit = Math.min(500, Math.max(1, Math.floor(filter.limit ?? 50)));
+  const page = matched.slice(offset, offset + limit);
+
+  return {
+    total,
+    count: page.length,
+    captures: page.map((e) => ({
+      captureId: e.captureId,
+      uri: REF_URI_PREFIX + e.captureId,
+      ts: e.ts,
+      mimeType: e.mimeType,
+      width: e.width,
+      height: e.height,
+      bytes: e.bytes,
+      ...(e.tag !== undefined ? { tag: e.tag } : {}),
+      ...(e.windowUuid !== undefined ? { windowUuid: e.windowUuid } : {}),
+      ...(e.processName !== undefined ? { processName: e.processName } : {}),
+    })),
+    cache: { totalCaptures, totalBytes },
+  };
+}
+
+/**
+ * Validate that `file` (a basename, never a path) names a contained, non-symlink
+ * regular file inside `root`, and return its canonical absolute path + lstat.
+ * Shared by index-backed delete and the orphan sweep so the containment / symlink
+ * rules are byte-identical on every delete path (ADR-026 §4). Mirrors
+ * {@link openValidatedCapture}'s ordering: basename assert → lstat-before-realpath
+ * symlink reject → realpath → exported {@link isWithinRoot} (never `startsWith`).
+ * A missing file surfaces as ENOENT for the caller to treat as already-gone.
+ */
+function validateCacheFileForDelete(root: string, file: string): { real: string; st: fs.Stats } {
+  if (file !== path.basename(file) || file.includes("..") || path.isAbsolute(file)) {
+    throw new CaptureRefError("outside_cache", `index file name is not a basename: ${file}`);
+  }
+  const candidate = path.join(root, file);
+  const st = fs.lstatSync(candidate); // ENOENT bubbles up → caller treats as already-gone
+  if (st.isSymbolicLink()) throw new CaptureRefError("symlink", `symlink rejected: ${file}`);
+  if (!st.isFile()) throw new CaptureRefError("not_regular_file", `not a regular file: ${file}`);
+  const real = fs.realpathSync(candidate);
+  if (!isWithinRoot(root, real)) {
+    throw new CaptureRefError("outside_cache", `resolved path escapes cache: ${file}`);
+  }
+  return { real, st };
+}
+
+/**
+ * Securely delete one cached capture by opaque captureId (ADR-026 §4 delete note).
+ *
+ * Runs the full {@link openValidatedCapture} gauntlet to pin the file's dev/ino
+ * identity, releases the handle, then — immediately before unlink — re-validates
+ * (re-lstat symlink reject + re-containment + identity re-check) to minimize the
+ * realpath→unlink TOCTOU window Windows cannot close via fd. Never unlinks
+ * anything outside the canonical cache root. Returns `{deleted:false}` when the
+ * file is already gone (dangling ref).
+ */
+export function deleteCapture(
+  captureId: string,
+  env: NodeJS.ProcessEnv = process.env
+): { bytes: number; deleted: boolean } {
+  const root = getScreenshotCacheRoot(env);
+
+  // 1) Read-grade validation → pin dev/ino, then release the handle.
+  let entry: IndexEntry;
+  let pinnedDev: number;
+  let pinnedIno: number;
+  try {
+    const opened = openValidatedCapture(captureId, env);
+    try {
+      const st = fs.fstatSync(opened.fd);
+      pinnedDev = st.dev;
+      pinnedIno = st.ino;
+    } finally {
+      fs.closeSync(opened.fd);
+    }
+    entry = opened.entry;
+  } catch (e) {
+    if (e instanceof CaptureRefError && e.code === "not_found") return { bytes: 0, deleted: false };
+    throw e;
+  }
+
+  // 2) Re-validate the basename immediately before unlink (symlink/containment).
+  let real: string;
+  let st: fs.Stats;
+  try {
+    ({ real, st } = validateCacheFileForDelete(root, entry.file));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code === "ENOENT") return { bytes: 0, deleted: false };
+    throw e;
+  }
+
+  // 3) Identity must still match the pinned regular file (defeats a lstat→unlink swap).
+  if (st.dev !== pinnedDev || st.ino !== pinnedIno) {
+    throw new CaptureRefError("identity_mismatch", `file identity changed before unlink: ${captureId}`);
+  }
+
+  const bytes = st.size;
+  try {
+    fs.unlinkSync(real);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code === "ENOENT") return { bytes: 0, deleted: false };
+    throw e;
+  }
+  return { bytes, deleted: true };
+}
+
+export interface GcPolicy {
+  /** delete entries older than this (ms). */
+  maxAgeMs?: number;
+  /** keep the newest N, delete the rest. */
+  maxCount?: number;
+  /** keep the newest captures under this byte cap. */
+  maxTotalBytes?: number;
+  /** scope deletion to this tag only (normalized compare). */
+  tag?: string;
+}
+
+export interface GcCandidate {
+  /** index-backed only — same id `screenshot_query` surfaces, so exposing it leaks nothing. */
+  captureId: string;
+  bytes: number;
+  ageMs: number;
+  reason: "max_age" | "max_count" | "max_total_bytes";
+}
+
+export interface GcResult {
+  dryRun: boolean;
+  policy: { maxAgeMs: number | null; maxCount: number | null; maxTotalBytes: number | null; tag: string | null };
+  /** index-backed candidates (captureId). */
+  candidates: GcCandidate[];
+  /** orphan on-disk files (no index entry) — aggregate ONLY; basenames are
+   *  `{captureId}.ext`, i.e. ids `screenshot_query` deliberately hides, so they
+   *  are never returned individually (ADR-026 Phase 3 P2-2). */
+  orphans: { count: number; bytes: number };
+  deleted: number;
+  reclaimedBytes: number;
+  remaining: { count: number; bytes: number };
+}
+
+/** Image extensions the orphan sweep considers (mirrors MIME_EXT). The index
+ *  rewrite temp file (`_index.ndjson.<rand>.tmp`) is NOT an image ext, so it is
+ *  never mistaken for an orphan (P3-3). */
+const ORPHAN_IMAGE_EXTS = new Set(["png", "webp", "jpg", "bin"]);
+const ORPHAN_GRACE_MS_DEFAULT = 5 * 60 * 1000;
+
+/** Atomically replace the index with `entries` (temp→rename). Temp name is
+ *  `_index.ndjson.<rand>.tmp` — excluded from the orphan sweep's ext filter. */
+function writeIndexAtomic(root: string, entries: IndexEntry[]): void {
+  const tmp = path.join(root, `${INDEX_FILE}.${crypto.randomBytes(6).toString("hex")}.tmp`);
+  const body = entries.map((e) => JSON.stringify(e)).join("\n") + (entries.length ? "\n" : "");
+  fs.writeFileSync(tmp, body, { mode: 0o600 });
+  fs.renameSync(tmp, indexPath(root));
+}
+
+/**
+ * Reclaim cached captures by retention policy (ADR-026 §5 / R2 / R11).
+ *
+ * Caps are a **union** — an entry is a candidate if it violates ANY active cap.
+ * The newest entry (rank 0) is structurally kept by the byte cap, and
+ * `protectCaptureId` (auto-prune passes the just-written id) excludes a specific
+ * id from ALL caps — together guaranteeing a fresh `persistCapture` ref is never
+ * pruned out from under its caller (keep-newest invariant).
+ *
+ * `includeOrphans` also reclaims on-disk image files that have no index entry
+ * (crash residue, or the Phase-2c fold-path orphan, R11) once older than a grace
+ * window. Orphans are reported as an aggregate count/bytes only — never by
+ * basename (which would leak ids `screenshot_query` hides, P2-2).
+ *
+ * `dryRun:true` computes candidates without deleting or rewriting the index.
+ */
+export function gcCache(
+  opts: { dryRun: boolean; policy: GcPolicy; includeOrphans: boolean; now: number; protectCaptureId?: string },
+  env: NodeJS.ProcessEnv = process.env
+): GcResult {
+  const { dryRun, policy, includeOrphans, now, protectCaptureId } = opts;
+  const root = getScreenshotCacheRoot(env);
+  const indexMap = readIndex(root);
+  const all = [...indexMap.values()];
+
+  const maxAgeMs = policy.maxAgeMs ?? null;
+  const maxCount = policy.maxCount ?? null;
+  const maxBytes = policy.maxTotalBytes ?? null;
+  const nTag = policy.tag !== undefined ? normalizeCacheTag(policy.tag) : undefined;
+
+  // universe = tag subset (if scoped) else everything, newest → oldest.
+  const universe = all
+    .filter((e) => (nTag === undefined ? true : normalizeCacheTag(e.tag ?? "") === nTag))
+    .sort((a, b) => b.ts - a.ts);
+
+  const candidates: GcCandidate[] = [];
+  let running = 0;
+  for (let i = 0; i < universe.length; i++) {
+    const e = universe[i];
+    running += e.bytes || 0; // count the byte even when protected — it occupies space
+    if (protectCaptureId !== undefined && e.captureId === protectCaptureId) continue;
+
+    let reason: GcCandidate["reason"] | null = null;
+    if (maxAgeMs !== null && now - e.ts > maxAgeMs) {
+      reason = "max_age"; // age cap can hit any rank (explicit "clear stale cache")
+    } else if (maxCount !== null && i >= Math.max(1, maxCount)) {
+      reason = "max_count"; // keep newest max(1,maxCount) → rank 0 survives
+    } else if (maxBytes !== null && i >= 1 && running > maxBytes) {
+      reason = "max_total_bytes"; // rank 0 always kept; cap reduces older entries
+    }
+    if (reason) {
+      candidates.push({ captureId: e.captureId, bytes: e.bytes || 0, ageMs: now - e.ts, reason });
+    }
+  }
+
+  // Orphan sweep — aggregate only (P2-2).
+  const orphanFiles: { file: string; bytes: number }[] = [];
+  if (includeOrphans) {
+    const referenced = new Set(all.map((e) => e.file));
+    const orphanGraceMs = Math.max(maxAgeMs ?? 0, ORPHAN_GRACE_MS_DEFAULT);
+    let names: string[];
+    try {
+      names = fs.readdirSync(root);
+    } catch {
+      names = [];
+    }
+    for (const name of names) {
+      if (name === INDEX_FILE) continue;
+      const dot = name.lastIndexOf(".");
+      const ext = dot >= 0 ? name.slice(dot + 1).toLowerCase() : "";
+      if (!ORPHAN_IMAGE_EXTS.has(ext)) continue; // skips _index.ndjson.<rand>.tmp + non-image
+      if (referenced.has(name)) continue; // has an index entry → handled above
+      let st: fs.Stats;
+      try {
+        st = fs.lstatSync(path.join(root, name));
+      } catch {
+        continue;
+      }
+      if (st.isSymbolicLink() || !st.isFile()) continue;
+      if (now - st.mtimeMs < orphanGraceMs) continue; // too fresh — index-append may be imminent
+      orphanFiles.push({ file: name, bytes: st.size });
+    }
+  }
+  const orphanBytes = orphanFiles.reduce((s, o) => s + o.bytes, 0);
+
+  let deleted = 0;
+  let reclaimedBytes = 0;
+  const removedIds = new Set<string>();
+
+  if (!dryRun) {
+    for (const c of candidates) {
+      try {
+        const r = deleteCapture(c.captureId, env);
+        if (r.deleted) reclaimedBytes += r.bytes;
+        // whether deleted now or already gone, drop the index entry.
+        removedIds.add(c.captureId);
+        if (r.deleted) deleted++;
+      } catch {
+        // a single failed delete must not abort the whole gc; leave its entry.
+      }
+    }
+    if (removedIds.size > 0) {
+      const survivors = all.filter((e) => !removedIds.has(e.captureId));
+      try {
+        writeIndexAtomic(root, survivors);
+      } catch {
+        // best-effort; a failed rewrite leaves stale entries → read surfaces not_found (AC3)
+      }
+    }
+    for (const o of orphanFiles) {
+      try {
+        const { real } = validateCacheFileForDelete(root, o.file);
+        fs.unlinkSync(real);
+        deleted++;
+        reclaimedBytes += o.bytes;
+      } catch {
+        // skip — already gone / validation failed
+      }
+    }
+  } else {
+    for (const c of candidates) removedIds.add(c.captureId);
+    reclaimedBytes = candidates.reduce((s, c) => s + c.bytes, 0) + orphanBytes;
+  }
+
+  const survivors = all.filter((e) => !removedIds.has(e.captureId));
+  return {
+    dryRun,
+    policy: { maxAgeMs, maxCount, maxTotalBytes: maxBytes, tag: nTag ?? null },
+    candidates,
+    orphans: { count: orphanFiles.length, bytes: orphanBytes },
+    deleted,
+    reclaimedBytes,
+    remaining: {
+      count: survivors.length,
+      bytes: survivors.reduce((s, e) => s + (e.bytes || 0), 0),
+    },
+  };
+}
+
+// ── Retention defaults + auto-prune (ADR-026 §3.4 / §3.6, R2) ────────────────
+
+const MAX_COUNT_DEFAULT = 200;
+const MAX_BYTES_DEFAULT = 256 * 1024 * 1024;
+const AUTO_PRUNE_EVERY = 32;
+
+/** Parse a non-negative integer env value; undefined/blank/invalid → undefined. */
+function parseNonNegIntEnv(v: string | undefined): number | undefined {
+  if (v === undefined || v.trim() === "") return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : undefined;
+}
+
+/**
+ * Retention caps from env (pure parser; ADR-026 §3.6 / OQ2). Count + bytes caps
+ * are active by default so the cache stays bounded regardless of time; the age
+ * cap is opt-in (env only) to avoid silently expiring recent captures.
+ */
+export function envDefaultPolicy(env: NodeJS.ProcessEnv = process.env): GcPolicy {
+  const maxCount = parseNonNegIntEnv(env["DESKTOP_TOUCH_SCREENSHOT_MAX_COUNT"]) ?? MAX_COUNT_DEFAULT;
+  const maxTotalBytes = parseNonNegIntEnv(env["DESKTOP_TOUCH_SCREENSHOT_MAX_BYTES"]) ?? MAX_BYTES_DEFAULT;
+  const maxAgeMs = parseNonNegIntEnv(env["DESKTOP_TOUCH_SCREENSHOT_MAX_AGE_MS"]);
+  return {
+    maxCount,
+    maxTotalBytes,
+    ...(maxAgeMs !== undefined ? { maxAgeMs } : {}),
+  };
+}
+
+function autoPruneEnabled(env: NodeJS.ProcessEnv): boolean {
+  return env["DESKTOP_TOUCH_SCREENSHOT_AUTOPRUNE"] !== "0";
+}
+
+let persistsSincePrune = 0;
+
+/** Reset the auto-prune throttle counter (tests only). */
+export function _resetAutoPruneCounterForTest(): void {
+  persistsSincePrune = 0;
+}
+
+/**
+ * Best-effort, throttled cache prune invoked from {@link persistCapture}. Bounds
+ * cache growth (R2) without the agent ever calling `screenshot_gc`. Fires on the
+ * first persist of each process (0-origin counter) so short-lived sessions still
+ * sweep prior-session cruft, then every `AUTO_PRUNE_EVERY` persists. Index-based
+ * only (orphan sweep is the explicit gc's job) and protects the just-written
+ * captureId so it can never delete the ref the caller is about to return.
+ */
+function maybeAutoPrune(justWrittenId: string, env: NodeJS.ProcessEnv): void {
+  if (!autoPruneEnabled(env)) return;
+  const due = persistsSincePrune % AUTO_PRUNE_EVERY === 0;
+  persistsSincePrune++;
+  if (!due) return;
+  gcCache(
+    {
+      dryRun: false,
+      policy: envDefaultPolicy(env),
+      includeOrphans: false,
+      now: Date.now(),
+      protectCaptureId: justWrittenId,
+    },
+    env
+  );
 }
