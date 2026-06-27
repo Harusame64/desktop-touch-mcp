@@ -66,7 +66,7 @@ export function registerScreenshotResources(server: McpServer): void {
         // AC3 / R7: a dangling (GC'd) or out-of-cache ref is surfaced as an
         // explicit error, never a silent empty read.
         if (err instanceof CaptureRefError) {
-          throw new Error(`screenshot ref unavailable (${err.code}): ${id}`);
+          throw new Error(`screenshot ref unavailable (${err.code}): ${id}`, { cause: err });
         }
         throw err;
       }
