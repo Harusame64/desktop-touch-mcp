@@ -342,6 +342,22 @@ describe("gcCache — orphan sweep (R11)", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+describe("index lock — stale steal (Codex P1/P2)", () => {
+  it("steals a stale lock past the stale window instead of waiting/hanging", () => {
+    const root = getScreenshotCacheRoot(env);
+    // Plant a stale lock file (mtime well past the 10s stale window).
+    const lockPath = path.join(root, "_index.lock");
+    fs.writeFileSync(lockPath, "", { flag: "wx" });
+    const old = (Date.now() - 60_000) / 1000;
+    fs.utimesSync(lockPath, old, old);
+    // A persist takes the index lock for its append — it must steal the stale lock
+    // and complete promptly (not spin on the wedged-lock path), and the entry must
+    // be indexed (the append ran under the stolen lock).
+    const r = persistCapture(Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]), { mimeType: "image/png", width: 4, height: 4 }, env);
+    expect(readIndex(root).has(r.captureId)).toBe(true);
+  });
+});
+
 describe("envDefaultPolicy + auto-prune (R2 / §3.6)", () => {
   it("defaults: count + bytes caps active, age cap opt-in (absent)", () => {
     expect(envDefaultPolicy({})).toEqual({ maxCount: 200, maxTotalBytes: 256 * 1024 * 1024 });

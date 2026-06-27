@@ -141,15 +141,20 @@ function withIndexLock<T>(root: string, fn: () => T): T {
       break;
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") break; // unlockable → best-effort
+      // Lock is held — steal it ONLY if it is stale AND we actually removed it.
+      let cleared = false;
       try {
         const st = fs.statSync(lockPath);
         if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
-          try { fs.unlinkSync(lockPath); } catch { /* raced another stealer */ }
-          continue;
+          try { fs.unlinkSync(lockPath); cleared = true; } catch { /* can't remove → fall through */ }
         }
       } catch {
-        continue; // lock vanished between open and stat → retry immediately
+        cleared = true; // lock vanished between open and stat → retry acquire immediately
       }
+      if (cleared) continue; // lock removed/gone → retry openSync now
+      // Held-and-fresh OR stale-but-unremovable (e.g. a directory named _index.lock):
+      // wait, then hit the backstop — never `continue` past it, or a wedged lock
+      // would spin forever instead of proceeding best-effort (Codex P2).
       if (Date.now() - start > LOCK_MAX_WAIT_MS) break; // give up → proceed best-effort
       sleepSync(LOCK_RETRY_MS);
     }
