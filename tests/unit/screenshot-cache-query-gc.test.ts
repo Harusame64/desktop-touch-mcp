@@ -50,7 +50,9 @@ function seed(
   const mimeType = e.mimeType ?? "image/png";
   const ext = mimeType === "image/webp" ? "webp" : mimeType === "image/jpeg" ? "jpg" : "png";
   const file = `${e.captureId}.${ext}`;
-  fs.writeFileSync(path.join(root, file), Buffer.alloc(e.bytes), { mode: 0o600 });
+  // flag:"wx" = exclusive create — refuse to follow a pre-planted file/symlink
+  // in the shared temp dir (CodeQL js/insecure-temporary-file, Phase 1 pattern).
+  fs.writeFileSync(path.join(root, file), Buffer.alloc(e.bytes), { mode: 0o600, flag: "wx" });
   const entry: IndexEntry = {
     captureId: e.captureId, ts: e.ts, bytes: e.bytes, file, mimeType, width: 4, height: 4,
     ...(e.tag !== undefined ? { tag: e.tag } : {}),
@@ -233,7 +235,7 @@ describe("deleteCapture — secure delete (AC3)", () => {
     const root = getScreenshotCacheRoot(env);
     const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "dt-qg-outside-"));
     const victim = path.join(outsideDir, "victim.png");
-    fs.writeFileSync(victim, Buffer.alloc(3));
+    fs.writeFileSync(victim, Buffer.alloc(3), { flag: "wx" });
     const rel = path.relative(root, victim); // ..\..\<tmp>\victim.png
     fs.appendFileSync(
       path.join(root, "_index.ndjson"),
@@ -260,6 +262,25 @@ describe("deleteCapture — secure delete (AC3)", () => {
     try { deleteCapture("t", env); } catch (e) { msg = (e as Error).message; }
     expect(msg).not.toContain(cacheDir);
   });
+
+  // POSIX-only: chmod 0o000 denies the owner read on Linux/macOS (non-root) →
+  // openSync(O_RDONLY) → EACCES. Windows ignores 000 for the owner, so skip there.
+  it.skipIf(process.platform === "win32")(
+    "a non-ENOENT read failure (EACCES) coerces to opaque `unreadable`, no path leaked (R9)",
+    () => {
+      const root = getScreenshotCacheRoot(env);
+      const e = seed(root, { captureId: "noperm", ts: NOW, bytes: 8 });
+      const file = path.join(root, e.file);
+      fs.chmodSync(file, 0o000); // owner loses read → openSync(O_RDONLY) → EACCES
+      let err: unknown;
+      try { readCaptureBytes("noperm", env); } catch (x) { err = x; }
+      try { fs.chmodSync(file, 0o600); } catch { /* restore so afterEach rm works */ }
+      if (err === undefined) return; // running as root → EACCES unenforceable, skip the assertion
+      expect(err).toBeInstanceOf(CaptureRefError);
+      expect((err as CaptureRefError).code).toBe("unreadable");
+      expect((err as Error).message).not.toContain(cacheDir);
+    },
+  );
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -268,7 +289,7 @@ describe("gcCache — orphan sweep (R11)", () => {
     const root = getScreenshotCacheRoot(env);
     // a true orphan: file on disk, NOT in the index (crash residue / fold orphan).
     const orphan = path.join(root, "orphan123.png");
-    fs.writeFileSync(orphan, Buffer.alloc(64));
+    fs.writeFileSync(orphan, Buffer.alloc(64), { flag: "wx" });
     const old = (NOW - 60 * 60 * 1000) / 1000; // 1h old (> 5min grace)
     fs.utimesSync(orphan, old, old);
 
@@ -283,7 +304,7 @@ describe("gcCache — orphan sweep (R11)", () => {
   it("does NOT reclaim a fresh orphan (within the grace window — index-append may be imminent)", () => {
     const root = getScreenshotCacheRoot(env);
     const fresh = path.join(root, "fresh999.png");
-    fs.writeFileSync(fresh, Buffer.alloc(10));
+    fs.writeFileSync(fresh, Buffer.alloc(10), { flag: "wx" });
     fs.utimesSync(fresh, NOW / 1000, NOW / 1000); // mtime == now
     const r = gcCache({ dryRun: false, policy: {}, includeOrphans: true, now: NOW }, env);
     expect(r.orphans.count).toBe(0);

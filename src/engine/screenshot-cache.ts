@@ -317,11 +317,10 @@ export function readCaptureBytes(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Case/space-fold a tag or processName so `screenshot_query` and `screenshot_gc`
- * filters agree on what "the same tag" means regardless of the casing it was
- * stored with (seed defect #9). The index keeps values verbatim (for display);
- * this is applied ONLY at compare time — the single source of truth for tag
- * equality across both tools.
+ * Case/space-fold a `tag` so `screenshot_query` and `screenshot_gc` filters agree
+ * on what "the same tag" means regardless of the casing it was stored with (seed
+ * defect #9). The index keeps values verbatim (for display); this is applied ONLY
+ * at compare time — the single source of truth for tag equality across both tools.
  */
 export function normalizeCacheTag(tag: string): string {
   return tag.trim().toLowerCase();
@@ -420,9 +419,10 @@ export function queryCaptures(
 
 /**
  * Validate that `file` (a basename, never a path) names a contained, non-symlink
- * regular file inside `root`, and return its canonical absolute path + lstat.
- * Shared by index-backed delete and the orphan sweep so the containment / symlink
- * rules are byte-identical on every delete path (ADR-026 §4). Mirrors
+ * regular file inside `root`, and return its canonical absolute path + the lstat
+ * of THAT canonical path (the unlink target's own identity, not the pre-realpath
+ * leaf). Shared by index-backed delete and the orphan sweep so the containment /
+ * symlink rules are byte-identical on every delete path (ADR-026 §4). Mirrors
  * {@link openValidatedCapture}'s ordering: basename assert → lstat-before-realpath
  * symlink reject → realpath → exported {@link isWithinRoot} (never `startsWith`).
  * A missing file surfaces as ENOENT for the caller to treat as already-gone.
@@ -432,12 +432,21 @@ function validateCacheFileForDelete(root: string, file: string): { real: string;
     throw new CaptureRefError("outside_cache", `index file name is not a basename: ${file}`);
   }
   const candidate = path.join(root, file);
-  const st = fs.lstatSync(candidate); // ENOENT bubbles up → caller treats as already-gone
-  if (st.isSymbolicLink()) throw new CaptureRefError("symlink", `symlink rejected: ${file}`);
-  if (!st.isFile()) throw new CaptureRefError("not_regular_file", `not a regular file: ${file}`);
+  const lst = fs.lstatSync(candidate); // ENOENT bubbles up → caller treats as already-gone
+  if (lst.isSymbolicLink()) throw new CaptureRefError("symlink", `symlink rejected: ${file}`);
+  if (!lst.isFile()) throw new CaptureRefError("not_regular_file", `not a regular file: ${file}`);
   const real = fs.realpathSync(candidate);
   if (!isWithinRoot(root, real)) {
     throw new CaptureRefError("outside_cache", `resolved path escapes cache: ${file}`);
+  }
+  // Re-lstat the RESOLVED target and return ITS identity, not the pre-realpath
+  // leaf's: a candidate→symlink swap between the lstat above and realpath would
+  // make `real` resolve to a *different* in-cache file. The caller compares THIS
+  // identity to its pinned dev/ino, so a mismatch (resolved elsewhere) is caught;
+  // `real` is what gets unlinked, so identity and unlink target now agree (Codex).
+  const st = fs.lstatSync(real);
+  if (st.isSymbolicLink() || !st.isFile()) {
+    throw new CaptureRefError("not_regular_file", `resolved target is not a regular file: ${file}`);
   }
   return { real, st };
 }
@@ -497,7 +506,9 @@ export function deleteCapture(
     fs.unlinkSync(real);
   } catch (e) {
     if ((e as NodeJS.ErrnoException)?.code === "ENOENT") return { bytes: 0, deleted: false };
-    throw e;
+    // Non-ENOENT (EPERM/EBUSY/EACCES): coerce to an opaque ref error so the raw fs
+    // message — which contains the absolute `real` cache path — never leaks (R9).
+    asRefError(e, captureId);
   }
   return { bytes, deleted: true };
 }
@@ -652,9 +663,15 @@ export function gcCache(
       }
     }
     if (removedIds.size > 0) {
-      const survivors = all.filter((e) => !removedIds.has(e.captureId));
+      // Re-read the index immediately before the atomic rewrite and merge: a
+      // capture another process persisted AFTER our initial `all` snapshot is in
+      // the fresh read, so the rename preserves it instead of dropping its line —
+      // which would orphan a just-returned ref (and a later orphan sweep could
+      // then delete it past the protectCaptureId invariant, Codex P1). The
+      // residual fresh-read→rename gap is a single-process synchronous window.
+      const rewriteSurvivors = [...readIndex(root).values()].filter((e) => !removedIds.has(e.captureId));
       try {
-        writeIndexAtomic(root, survivors);
+        writeIndexAtomic(root, rewriteSurvivors);
       } catch {
         // best-effort; a failed rewrite leaves stale entries → read surfaces not_found (AC3)
       }
