@@ -10,6 +10,7 @@ import {
   resolveCaptureFile,
   readIndex,
   getScreenshotCacheRoot,
+  isWithinRoot,
   CaptureRefError,
   type CaptureRefCode,
   REF_URI_PREFIX,
@@ -101,6 +102,28 @@ describe("screenshot-cache — security (ADR-026 §4 / AC3 path traversal)", () 
     const root = getScreenshotCacheRoot(env);
     appendRawIndex(root, { captureId: "evil4", ts: 1, bytes: 1, file: "sub/evil.png", mimeType: "image/png", width: 1, height: 1 });
     expectRefCode(() => resolveCaptureFile("evil4", env), "outside_cache");
+  });
+
+  it("isWithinRoot rejects the `screenshots_evil` sibling-prefix escape (path.relative, not startsWith)", () => {
+    // ADR-026 §4 headline Codex-P1: a revert to `real.startsWith(root)` would let
+    // a sibling slip through. Pin the containment predicate directly so that
+    // regression fails a test instead of silently passing.
+    const base = process.platform === "win32" ? "C:\\u\\.dt" : "/u/.dt";
+    const root = path.join(base, "screenshots");
+    expect(isWithinRoot(root, path.join(root, "a.png"))).toBe(true);
+    expect(isWithinRoot(root, path.join(root, "sub", "b.png"))).toBe(true);
+    // sibling whose name shares the `screenshots` prefix — the classic escape
+    expect(isWithinRoot(root, path.join(base, "screenshots_evil", "x.png"))).toBe(false);
+    // parent / unrelated / root-itself
+    expect(isWithinRoot(root, path.join(base, "other"))).toBe(false);
+    expect(isWithinRoot(root, root)).toBe(false);
+  });
+
+  it("a directory whose basename is in the index → not_regular_file (not silently opened)", () => {
+    const root = getScreenshotCacheRoot(env);
+    fs.mkdirSync(path.join(root, "iamadir"));
+    appendRawIndex(root, { captureId: "dir1", ts: 1, bytes: 1, file: "iamadir", mimeType: "image/png", width: 1, height: 1 });
+    expectRefCode(() => resolveCaptureFile("dir1", env), "not_regular_file");
   });
 
   it("symlink inside the cache → symlink rejected (skipped where symlinks need privilege)", () => {

@@ -343,9 +343,10 @@ function formatOriginText(
  * actually needs to look at pixels; auto-reading every ref re-expands base64 and
  * defeats the token saving (§2.2 read-policy).
  *
- * `wantInline=true` (confirmImage / dotByDot coordinate use / mode='background'):
- * additionally embeds the inline `image` block so vision is immediate, AND still
- * returns the ref so re-viewing later is cheap.
+ * `wantInline=true` (confirmImage, or dotByDot coordinate use): additionally
+ * embeds the inline `image` block so vision is immediate, AND still returns the
+ * ref so re-viewing later is cheap. (mode='background' will join this set in
+ * Phase 2 — `screenshotBgHandler` is not yet routed through this helper.)
  *
  * The structured `text` blocks (dimensions, dotByDot origin/scale, hints) are
  * ALWAYS emitted, so the coordinate contract survives even when pixels are

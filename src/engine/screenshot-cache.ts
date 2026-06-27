@@ -139,6 +139,24 @@ export function readIndex(root: string): Map<string, IndexEntry> {
   return map;
 }
 
+/**
+ * Separator-aware containment: is `real` a strict descendant of `root`?
+ *
+ * Uses `path.relative` — NOT `real.startsWith(root)`, which would let a sibling
+ * like `…/screenshots_evil/x` slip through the `…/screenshots` prefix (ADR-026
+ * §4 / seed Codex-P1 cache-escape). Exported so the invariant is regression-
+ * pinned directly: a revert to `startsWith` must fail a test, not silently pass.
+ */
+export function isWithinRoot(root: string, real: string): boolean {
+  const rel = path.relative(root, real);
+  return (
+    rel !== "" &&
+    rel !== ".." &&
+    !rel.startsWith(".." + path.sep) &&
+    !path.isAbsolute(rel)
+  );
+}
+
 export type CaptureRefCode =
   | "not_found"
   | "outside_cache"
@@ -184,8 +202,7 @@ function openValidatedCapture(
   // 2) Canonicalize + separator-aware containment (NOT `startsWith`, which lets a
   //    sibling like `screenshots_evil` slip through the `screenshots` prefix).
   const real = fs.realpathSync(candidate);
-  const rel = path.relative(root, real);
-  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
+  if (!isWithinRoot(root, real)) {
     throw new CaptureRefError("outside_cache", `resolved path escapes cache: ${real}`);
   }
 
@@ -193,6 +210,10 @@ function openValidatedCapture(
   //    was swapped for a symlink between lstat and open, the opened handle's identity
   //    will not match the pinned dev/ino — reject. Bytes are read from THIS fd, so no
   //    by-path re-open reintroduces a window.
+  //    Caveat: on a filesystem that reports dev/ino as 0 (some non-NTFS Windows
+  //    volumes) this gate degrades to a no-op; the cache lives under %USERPROFILE%
+  //    (NTFS) where dev/ino are meaningful, and step 1's symlink rejection +
+  //    step 2's containment still hold regardless.
   const noFollow = (fs.constants as { O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0;
   const fd = fs.openSync(real, fs.constants.O_RDONLY | noFollow);
   try {
@@ -208,7 +229,15 @@ function openValidatedCapture(
   return { fd, real, entry };
 }
 
-/** Securely resolve a captureId to a validated absolute path inside the cache. */
+/**
+ * Securely resolve a captureId to a validated absolute path inside the cache.
+ *
+ * WARNING: this returns a *path*, not a live handle. A caller that re-opens it
+ * by path (e.g. a Phase-3 `screenshot_gc` `unlink`) reintroduces the very
+ * lstat→open TOCTOU window the dev/ino identity gate closes. Such a caller must
+ * either delete via the fd from {@link openValidatedCapture} or re-run the full
+ * validation immediately before the mutation (ADR-026 §4 delete note).
+ */
 export function resolveCaptureFile(captureId: string, env: NodeJS.ProcessEnv = process.env): string {
   const { fd, real } = openValidatedCapture(captureId, env);
   fs.closeSync(fd);
