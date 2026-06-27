@@ -38,6 +38,7 @@ const KEYS = [
   "DESKTOP_TOUCH_SCREENSHOT_MAX_COUNT",
   "DESKTOP_TOUCH_SCREENSHOT_MAX_BYTES",
   "DESKTOP_TOUCH_SCREENSHOT_MAX_AGE_MS",
+  "DESKTOP_TOUCH_SCREENSHOT_MIN_EVICT_AGE_MS",
 ];
 
 beforeEach(() => {
@@ -46,6 +47,9 @@ beforeEach(() => {
   for (const k of KEYS) delete process.env[k];
   process.env.DESKTOP_TOUCH_SCREENSHOTS_DIR = cacheDir;
   process.env.DESKTOP_TOUCH_SCREENSHOT_AUTOPRUNE = "0"; // deterministic seeded counts
+  // Eviction floor OFF so just-seeded (recent) captures are gc-eligible in these
+  // handler tests; the floor itself is exercised in the engine suite.
+  process.env.DESKTOP_TOUCH_SCREENSHOT_MIN_EVICT_AGE_MS = "0";
   _resetAutoPruneCounterForTest();
 });
 afterEach(() => {
