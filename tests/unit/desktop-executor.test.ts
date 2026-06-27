@@ -63,10 +63,10 @@ describe("createDesktopExecutor — route selection", () => {
     expect(deps.uiaSetValue).toHaveBeenCalledWith("App", "hello", "Start", undefined);
   });
 
-  it("CDP source + click → cdpClick with sourceId and tabId", async () => {
+  it("CDP source + click → cdpClick with selector and tabId", async () => {
     const deps = mockDeps();
     const exec = createDesktopExecutor({ tabId: "tab-1" }, deps);
-    const e = entity({ sources: ["cdp"], sourceId: "#submit-btn" });
+    const e = entity({ sources: ["cdp"], locator: { cdp: { selector: "#submit-btn" } } });
     const result = await exec(e, "click");
     expect(result).toBe("cdp");
     expect(deps.cdpClick).toHaveBeenCalledWith("#submit-btn", "tab-1");
@@ -75,7 +75,7 @@ describe("createDesktopExecutor — route selection", () => {
   it("CDP source + type → cdpFill with value and tabId", async () => {
     const deps = mockDeps();
     const exec = createDesktopExecutor({ tabId: "tab-1" }, deps);
-    const e = entity({ sources: ["cdp"], sourceId: "#search-box" });
+    const e = entity({ sources: ["cdp"], locator: { cdp: { selector: "#search-box" } } });
     const result = await exec(e, "type", "query text");
     expect(result).toBe("cdp");
     expect(deps.cdpFill).toHaveBeenCalledWith("#search-box", "query text", "tab-1");
@@ -132,7 +132,7 @@ describe("createDesktopExecutor — route priority", () => {
   it("uia takes priority over cdp when entity has both sources", async () => {
     const deps = mockDeps();
     const exec = createDesktopExecutor({ hwnd: "1" }, deps);
-    await exec(entity({ sources: ["uia", "cdp"], sourceId: "#btn" }), "click");
+    await exec(entity({ sources: ["uia", "cdp"] }), "click");
     expect(deps.uiaClick).toHaveBeenCalled();
     expect(deps.cdpClick).not.toHaveBeenCalled();
   });
@@ -140,7 +140,7 @@ describe("createDesktopExecutor — route priority", () => {
   it("cdp takes priority over mouse when entity has cdp + visual_gpu", async () => {
     const deps = mockDeps();
     const exec = createDesktopExecutor({ tabId: "t" }, deps);
-    await exec(entity({ sources: ["cdp", "visual_gpu"], sourceId: "#x" }), "click");
+    await exec(entity({ sources: ["cdp", "visual_gpu"], locator: { cdp: { selector: "#x" } } }), "click");
     expect(deps.cdpClick).toHaveBeenCalled();
     expect(deps.mouseClick).not.toHaveBeenCalled();
   });
@@ -184,7 +184,7 @@ describe("createDesktopExecutor — error handling and UIA fallback", () => {
   it("non-UIA errors are propagated directly", async () => {
     const deps = mockDeps({ cdpClick: vi.fn(async () => { throw new Error("CDP error"); }) });
     const exec = createDesktopExecutor({ tabId: "t" }, deps);
-    await expect(exec(entity({ sources: ["cdp"], sourceId: "#x" }), "click")).rejects.toThrow("CDP error");
+    await expect(exec(entity({ sources: ["cdp"], locator: { cdp: { selector: "#x" } } }), "click")).rejects.toThrow("CDP error");
   });
 });
 
@@ -323,12 +323,11 @@ describe("createDesktopExecutor — target spec to windowTitle", () => {
 });
 
 describe("createDesktopExecutor — locator-based routing (P2-A)", () => {
-  it("UIA locator: uses locator.uia.automationId over sourceId", async () => {
+  it("UIA locator: routes via locator.uia.automationId and name", async () => {
     const deps = mockDeps();
     const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
     const e = entity({
       sources: ["uia"],
-      sourceId: "stale-legacy-id", // should be ignored when locator is present
       locator: { uia: { automationId: "btn-submit", name: "Submit" } },
     });
     await exec(e, "invoke");
@@ -535,7 +534,7 @@ describe("createDesktopExecutor — unsupportedExecutors short-circuit (#296 Pha
     const exec = createDesktopExecutor({ tabId: "tab-1" }, deps);
     const e = entity({
       sources: ["cdp"],
-      sourceId: "#btn",
+      locator: { cdp: { selector: "#btn" } },
       unsupportedExecutors: ["cdp"],
       rect: { x: 10, y: 20, width: 60, height: 40 },
     });
@@ -609,7 +608,7 @@ describe("createDesktopExecutor — unsupportedExecutors short-circuit (#296 Pha
     const exec = createDesktopExecutor({ tabId: "tab-1" }, deps);
     const e = entity({
       sources: ["uia", "cdp"],
-      sourceId: "#submit",
+      locator: { cdp: { selector: "#submit" } },
       unsupportedExecutors: ["uia"],
     });
     const result = await exec(e, "click");

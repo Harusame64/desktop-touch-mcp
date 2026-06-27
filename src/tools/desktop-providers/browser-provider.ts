@@ -103,7 +103,6 @@ export async function fetchBrowserCandidates(
       .map((el): UiEntityCandidate => ({
         source: "cdp",
         target: { kind: "browserTab", id: tabId },
-        sourceId: el.selector,
         locator: { cdp: { selector: el.selector, tabId } },
         role: cdpRoleFromType(el.type),
         label: el.text || el.href || el.selector,

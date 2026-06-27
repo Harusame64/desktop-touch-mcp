@@ -52,7 +52,7 @@ describe("CandidateProducer — basic production", () => {
     const [c] = producer.ingest([{ trackId, result: REC("Play", 0.9, 2100) }]);
     expect(c.source).toBe("visual_gpu");
     expect(c.target).toEqual(TARGET);
-    expect(c.sourceId).toBe(trackId);
+    expect(c.locator?.visual?.trackId).toBe(trackId);
   });
 
   it("produced candidate includes rect from the stable track", () => {

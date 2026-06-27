@@ -76,7 +76,6 @@ export async function fetchUiaCandidates(
       .map((el): UiEntityCandidate => ({
         source: "uia",
         target: { kind: "window", id: targetId },
-        sourceId: el.automationId || undefined,
         locator: { uia: { automationId: el.automationId || undefined, name: el.name } },
         role: uiaRoleFromControlType(el.controlType),
         label: el.name,

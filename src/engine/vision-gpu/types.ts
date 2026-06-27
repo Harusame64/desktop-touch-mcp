@@ -40,8 +40,8 @@ export interface RecognizedText {
  *
  * One per stable track from TrackStore. The backend uses the rect to crop the
  * captured frame and run inference; trackId flows back unchanged on the
- * matching `UiEntityCandidate.sourceId` so the temporal fusion pipeline can
- * correlate observations.
+ * matching `UiEntityCandidate.locator.visual.trackId` so the temporal fusion
+ * pipeline can correlate observations.
  */
 export interface RoiInput {
   trackId: string;
@@ -51,18 +51,13 @@ export interface RoiInput {
 }
 
 /**
- * target.kind "terminal" maps to kind:"window" with sourceId carrying the session id.
- * The resolver narrows this into a terminal-typed entity at the World Graph layer.
+ * target.kind "terminal" maps to kind:"window"; the terminal provider populates
+ * locator.terminal.windowTitle. The resolver narrows this into a terminal-typed
+ * entity at the World Graph layer.
  */
 export interface UiEntityCandidate {
   source: "uia" | "cdp" | "win32" | "ocr" | "som" | "visual_gpu" | "terminal";
   target: { kind: "window" | "browserTab"; id: string };
-  /**
-   * @deprecated Use `locator` for source-aware routing.
-   * Legacy single-field ID: carries UIA automationId OR CDP selector OR visual trackId
-   * depending on source — ambiguous by design. Preserved for backward compatibility.
-   */
-  sourceId?: string;
   /**
    * Source-specific locators. Populated by source-specific providers.
    * The resolver merges these into UiEntity.locator.
