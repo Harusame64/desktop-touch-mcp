@@ -7,7 +7,6 @@
  * Design notes (from Opus review, commit 2-5):
  *   - EntityLocator.ocr does NOT exist; locator is omitted for OCR candidates.
  *     The executor routes all source:"ocr" entities to mouse click.
- *   - sourceId is omitted to avoid resolver deprecation warnings.
  *   - confidence comes from SomElement.confidence (calibrateOcrConfidence minimum).
  *   - UIA candidates are passed as a dictionary for snap-correction inside runSomPipeline.
  *

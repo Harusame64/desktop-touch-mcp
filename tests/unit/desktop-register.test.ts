@@ -159,18 +159,11 @@ describe("Activation policy — v0.17 server-windows env expressions", () => {
 
   it("default environment (nothing set) → v2 enabled", () => {
     vi.stubEnv("DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2", "");
-    vi.stubEnv("DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2",  "");
     expect(process.env["DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2"] === "1").toBe(false);
   });
 
   it("DISABLE=1 → v2 disabled (kill switch active)", () => {
     vi.stubEnv("DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2", "1");
-    expect(process.env["DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2"] === "1").toBe(true);
-  });
-
-  it("DISABLE=1 + ENABLE=1 → DISABLE wins", () => {
-    vi.stubEnv("DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2", "1");
-    vi.stubEnv("DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2",  "1");
     expect(process.env["DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2"] === "1").toBe(true);
   });
 });

@@ -180,15 +180,7 @@ describe("resolveCandidates — fallback key (no digest)", () => {
   });
 });
 
-describe("resolveCandidates — EntityLocator population (P2-A)", () => {
-  it("UIA candidate with sourceId populates locator.uia via legacy bridge", () => {
-    const [e] = resolveCandidates([
-      candidate("Submit", { source: "uia", sourceId: "btn-submit" }),
-    ], GEN);
-    expect(e.locator?.uia?.automationId).toBe("btn-submit");
-    expect(e.locator?.uia?.name).toBe("Submit");
-  });
-
+describe("resolveCandidates — EntityLocator population", () => {
   it("UIA candidate with explicit locator uses it directly", () => {
     const [e] = resolveCandidates([
       candidate("Submit", {
@@ -205,7 +197,7 @@ describe("resolveCandidates — EntityLocator population (P2-A)", () => {
       candidate("Sign In", {
         source: "cdp",
         target: { kind: "browserTab", id: "tab-99" },
-        sourceId: "#sign-in-btn",
+        locator: { cdp: { selector: "#sign-in-btn", tabId: "tab-99" } },
       }),
     ], GEN);
     expect(e.locator?.cdp?.selector).toBe("#sign-in-btn");
@@ -216,7 +208,7 @@ describe("resolveCandidates — EntityLocator population (P2-A)", () => {
     const [e] = resolveCandidates([
       candidate("Start", {
         source: "visual_gpu",
-        sourceId: "track-uuid",
+        locator: { visual: { trackId: "track-uuid", rect: { x: 10, y: 20, width: 80, height: 30 } } },
         rect: { x: 10, y: 20, width: 80, height: 30 },
       }),
     ], GEN);
@@ -226,8 +218,8 @@ describe("resolveCandidates — EntityLocator population (P2-A)", () => {
 
   it("merged UIA + visual_gpu entity has both locators", () => {
     const [e] = resolveCandidates([
-      candidate("Start", { source: "uia",        digest: "d-s", sourceId: "uia-id" }),
-      candidate("Start", { source: "visual_gpu", digest: "d-s", sourceId: "gpu-track" }),
+      candidate("Start", { source: "uia",        digest: "d-s", locator: { uia: { automationId: "uia-id", name: "Start" } } }),
+      candidate("Start", { source: "visual_gpu", digest: "d-s", locator: { visual: { trackId: "gpu-track" } } }),
     ], GEN);
     expect(e.locator?.uia?.automationId).toBe("uia-id");
     expect(e.locator?.visual?.trackId).toBe("gpu-track");

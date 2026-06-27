@@ -12,6 +12,8 @@
 
 これは P4-E Batch A での Opus レビューを経た決定。理由は §3 参照。
 
+> **現在の挙動（最新リリース）**: `ENABLE=1` の処理は撤去済み。セットしても**完全に無視され、deprecation warning も出ない**。有効な制御は kill switch `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1` のみで、実効優先順位は `DISABLE=1 > default`。以下 §3〜§5 は v0.16→v0.17 の移行期を記録した歴史的経緯であり、当時 `ENABLE=1` は互換受理 + startup deprecation warning を出していた（その warning は後のリリースで撤去済み）。
+
 ---
 
 ## 2. バージョン別 Env Matrix
@@ -28,8 +30,10 @@
 
 ## 3. v0.17 における env 優先順位（明文化）
 
+> ※ **歴史的記録（v0.17 移行期）。** 現在のリリースでは `ENABLE=1` は無視され、実効優先順位は `DISABLE=1 > default`（§1 の注記参照）。
+
 ```
-優先順位: DISABLE=1 > ENABLE=1 > default
+優先順位（v0.17 移行期）: DISABLE=1 > ENABLE=1 > default
 ```
 
 | DISABLE | ENABLE | v2 状態 | 備考 |

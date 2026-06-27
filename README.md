@@ -739,15 +739,14 @@ All V1 tools continue to work without interruption — no reinstall required. Re
 
 Flag semantics (exact-match: only the literal string `"1"` counts):
 
-| `DISABLE_FUKUWARAI_V2` | `ENABLE_FUKUWARAI_V2` | V2 state |
-|---|---|---|
-| unset / not `"1"` | unset / not `"1"` | **ON** (default) |
-| unset / not `"1"` | `"1"` | ON (legacy flag — see below) |
-| `"1"` | any | **OFF** — DISABLE wins |
+| `DISABLE_FUKUWARAI_V2` | V2 state |
+|---|---|
+| unset / not `"1"` | **ON** (default) |
+| `"1"` | **OFF** (kill switch) |
 
-### Deprecated: `DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2`
+### Removed: `DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2`
 
-This was the opt-in switch in v0.16.x. It is still accepted for backward compatibility but no longer required — the server prints a deprecation warning on startup when it is set. Remove it from your config; V2 is on by default.
+This was the opt-in switch in v0.16.x. V2 is on by default since v0.17, so the flag no longer has any effect and is safe to delete from your config. To turn V2 off, set `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1`.
 
 ### Recovery when V2 fails
 

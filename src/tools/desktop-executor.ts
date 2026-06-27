@@ -131,8 +131,7 @@ function rectCenter(rect: { x: number; y: number; width: number; height: number 
  * Pass `deps` to inject mock backends in tests; omit for production native bindings.
  *
  * Routing priority: uia → cdp → terminal → mouse (visual fallback)
- * Locator fields (P2-A) are used when present; sourceId is used as a fallback
- * for candidates that pre-date the locator migration.
+ * Routing uses the entity's source-specific `locator` fields.
  *
  * UIA click failure gracefully falls through to mouse when entity has a rect.
  */
@@ -181,8 +180,7 @@ export function createDesktopExecutor(
 
     // ── UIA route ────────────────────────────────────────────────────────────
     if (entity.sources.includes("uia") && !uiaBlocked && preferredAllows("uia")) {
-      // Prefer typed locator; fall back to sourceId (legacy bridge — remove in P3).
-      const automationId = entity.locator?.uia?.automationId ?? entity.sourceId;
+      const automationId = entity.locator?.uia?.automationId;
       const name         = entity.locator?.uia?.name ?? entity.label;
       // Phase 4: 'setValue' absorbs former set_element_value tool — same UIA
       // ValuePattern path as 'type'. Both actions land here for any UIA entity.
@@ -237,8 +235,7 @@ export function createDesktopExecutor(
     }
 
     // ── CDP route ────────────────────────────────────────────────────────────
-    // Prefer locator.cdp.selector; fall back to sourceId (legacy bridge).
-    const cdpSelector = entity.locator?.cdp?.selector ?? (entity.sources.includes("cdp") ? entity.sourceId : undefined);
+    const cdpSelector = entity.locator?.cdp?.selector;
     if (cdpSelector && !cdpBlocked && preferredAllows("cdp")) {
       const cdpTabId = entity.locator?.cdp?.tabId ?? target?.tabId;
       // Phase 4: 'setValue' on a CDP entity uses cdpFill — equivalent to

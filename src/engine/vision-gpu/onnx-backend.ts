@@ -383,7 +383,7 @@ function mapRawToCandidate(raw: NativeRawCandidate, targetKey: string): UiEntity
   return {
     source: "visual_gpu",
     target,
-    sourceId: raw.trackId,
+    locator: { visual: { trackId: raw.trackId, rect: { ...raw.rect } } },
     role,
     label: raw.label || undefined,
     rect: { ...raw.rect },

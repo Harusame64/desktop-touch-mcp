@@ -8,7 +8,7 @@ export type UiEntityRole = "button" | "textbox" | "link" | "menuitem" | "label" 
  * Source-specific locators for an entity.
  * Each field is populated only when that source has evidence for this entity.
  * Desktop-executor routes to the right backend using the highest-priority
- * non-null locator rather than the ambiguous single `sourceId` field.
+ * non-null locator field.
  */
 export interface EntityLocator {
   /** UIA: element identified by AutomationId and/or accessible name. */
@@ -81,14 +81,9 @@ export interface UiEntity {
   affordances: UiAffordance[];
   /**
    * Source-specific locators used by desktop-executor for routing.
-   * Prefer these over `sourceId` — each field is unambiguous for its backend.
+   * Each field is unambiguous for its backend.
    */
   locator?: EntityLocator;
-  /**
-   * @deprecated Legacy single-field ID retained for backward-compatible executor fallback.
-   * Prefer locator.* for new code.
-   */
-  sourceId?: string;
   /**
    * Opaque string that identifies the world-state snapshot this entity was resolved from.
    * Production source: `"${viewId}:${monotonicSeq}"` incremented on each WinEvent /

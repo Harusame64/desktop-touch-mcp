@@ -80,42 +80,15 @@ function mergeLocators(candidates: UiEntityCandidate[]): EntityLocator | undefin
   let any = false;
 
   for (const c of candidates) {
-    // Prefer explicit locator from the candidate; fall back to sourceId inference.
-    if (c.locator) {
-      // group is sorted newest-first; spread so the CURRENT (older) entry fills only
-      // missing fields — existing (newer) values win.
-      if (c.locator.uia)      { loc.uia      = { ...c.locator.uia,      ...loc.uia      }; any = true; }
-      if (c.locator.cdp)      { loc.cdp      = { ...c.locator.cdp,      ...loc.cdp      }; any = true; }
-      if (c.locator.terminal) { loc.terminal = { ...c.locator.terminal, ...loc.terminal }; any = true; }
-      if (c.locator.visual)   { loc.visual   = { ...c.locator.visual,   ...loc.visual   }; any = true; }
-      continue;
-    }
-
-    // Legacy sourceId inference (P2-A backward compat bridge — remove in P3).
-    // Log a warning so providers that haven't migrated to locator are visible.
-    if (c.sourceId && process.env["NODE_ENV"] !== "test") {
-      console.warn(`[resolver] entity "${c.label}" from source "${c.source}" uses deprecated sourceId — add locator in P3`);
-    }
-    if (c.source === "uia" && c.sourceId) {
-      if (!loc.uia) { loc.uia = { automationId: c.sourceId, name: c.label }; any = true; }
-    } else if (c.source === "cdp" && c.sourceId) {
-      if (!loc.cdp) {
-        loc.cdp = {
-          selector: c.sourceId,
-          tabId: c.target.kind === "browserTab" ? c.target.id : undefined,
-        };
-        any = true;
-      }
-    } else if (c.source === "visual_gpu" && c.sourceId) {
-      if (!loc.visual) { loc.visual = { trackId: c.sourceId, rect: c.rect }; any = true; }
-    } else if (c.source === "terminal") {
-      // c.target.id for terminal is hwnd/session — use c.label as windowTitle proxy.
-      // TODO: add dedicated terminalWindowTitle field on UiEntityCandidate in P3.
-      if (!loc.terminal) {
-        loc.terminal = { windowTitle: c.label ?? c.target.id };
-        any = true;
-      }
-    }
+    // Every provider populates `locator` with the source-specific fields it knows.
+    // group is sorted newest-first; spread so the CURRENT (older) entry fills only
+    // missing fields — existing (newer) values win. Candidates without a locator
+    // (e.g. OCR) contribute no routing fields and are routed to mouse by source.
+    if (!c.locator) continue;
+    if (c.locator.uia)      { loc.uia      = { ...c.locator.uia,      ...loc.uia      }; any = true; }
+    if (c.locator.cdp)      { loc.cdp      = { ...c.locator.cdp,      ...loc.cdp      }; any = true; }
+    if (c.locator.terminal) { loc.terminal = { ...c.locator.terminal, ...loc.terminal }; any = true; }
+    if (c.locator.visual)   { loc.visual   = { ...c.locator.visual,   ...loc.visual   }; any = true; }
   }
 
   return any ? loc : undefined;
@@ -178,7 +151,6 @@ export function resolveCandidates(
       sources,
       affordances: synthesizeAffordances([...verbSet]),
       locator: mergeLocators(group),
-      sourceId: primary.sourceId,
       generation,
       evidenceDigest: key,
     };
