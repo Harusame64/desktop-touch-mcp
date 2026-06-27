@@ -678,21 +678,25 @@ function writeIndexAtomic(root: string, entries: IndexEntry[]): void {
  * Drop the given captureIds from the index, under the index lock so the fresh
  * read + rewrite cannot lose a concurrent cross-process append (Codex P1). A
  * no-op when none of the ids are currently present (avoids a pointless rewrite).
+ *
+ * NEVER throws (plan §3.3 best-effort): the entire lock+read+rewrite is wrapped, so
+ * a failed rewrite (or any fs error) leaves stale entries that read as `not_found`
+ * (AC3) and self-heal on the next gc. This is what lets the unguarded call sites
+ * (`deleteCapture`, `gcCache`) stay correct — `deleteCapture` must not throw after a
+ * successful unlink, and `gcCache` must still return its reclaimed-bytes summary
+ * (Opus R3 P2-1).
  */
 function removeIndexEntries(root: string, ids: Set<string>, _env: NodeJS.ProcessEnv): void {
   if (ids.size === 0) return;
-  withIndexLock(root, () => {
-    const all = [...readIndex(root).values()];
-    if (!all.some((e) => ids.has(e.captureId))) return;
-    try {
+  try {
+    withIndexLock(root, () => {
+      const all = [...readIndex(root).values()];
+      if (!all.some((e) => ids.has(e.captureId))) return;
       writeIndexAtomic(root, all.filter((e) => !ids.has(e.captureId)));
-    } catch {
-      // Best-effort (plan §3.3): a failed rewrite leaves stale entries → read
-      // surfaces not_found (AC3) and the next gc self-heals. Never propagate —
-      // deleteCapture must not throw after a successful unlink, and gcCache must
-      // still return its reclaimed-bytes summary.
-    }
-  });
+    });
+  } catch {
+    // Best-effort — see the doc comment above. Index cleanup never propagates.
+  }
 }
 
 /**
