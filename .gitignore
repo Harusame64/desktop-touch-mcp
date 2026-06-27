@@ -43,6 +43,9 @@ GEMINI.md
 # Project instructions for Codex / OpenAI agents (local only)
 AGENTS.md
 
+# JetBrains IDE project files (local only — never distribute)
+.idea/
+
 # Native tool build artifacts (only the compiled .exe in bin/ is shipped)
 bin/*.pdb
 tools/win-ocr/bin/
