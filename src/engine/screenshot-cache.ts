@@ -46,7 +46,17 @@ export interface IndexEntry extends CaptureMeta {
 }
 
 export const REF_URI_PREFIX = "screenshot://by-ref/";
-const INDEX_FILE = "_index.ndjson";
+/** Metadata sidecar extension. Each capture is `{captureId}.{imgExt}` (pixels) +
+ *  `{captureId}.json` (this sidecar) — there is NO shared index file, so nothing is
+ *  ever rewritten and concurrent multi-process access cannot race (ADR-026 Phase 3). */
+const SIDECAR_EXT = "json";
+
+/** Our captureId shape: base36 millis + "-" + 16 hex (see {@link newCaptureId}). Used
+ *  to positively identify cache-OWNED image files / temp writes so the orphan sweep
+ *  NEVER reclaims an unrelated file when the cache dir is shared (Codex P2). */
+const CAPTURE_ID_RE = /^[0-9a-z]+-[0-9a-f]{16}$/;
+/** Our sidecar temp-write shape: `{captureId}.json.{hex}.tmp`. */
+const SIDECAR_TMP_RE = /^[0-9a-z]+-[0-9a-f]{16}\.json\.[0-9a-f]+\.tmp$/;
 
 /** mimeType → file extension. Derived from mimeType (no hardcoded `.webp`; seed defect #5). */
 const MIME_EXT: Record<string, string> = {
@@ -78,99 +88,64 @@ function newCaptureId(): string {
   return `${Date.now().toString(36)}-${crypto.randomBytes(8).toString("hex")}`;
 }
 
-function indexPath(root: string): string {
-  return path.join(root, INDEX_FILE);
-}
+// ── Per-capture sidecar storage (ADR-026 Phase 3) ───────────────────────────
+// There is NO shared index file. Each capture is two independent files written /
+// removed atomically: the image `{captureId}.{imgExt}` and its metadata sidecar
+// `{captureId}.json`. Liveness = both files exist. Because no two processes ever
+// write the same file and nothing is ever rewritten in place, concurrent access
+// from multiple desktop-touch processes on one PC is correct WITHOUT a lock — the
+// read-modify-rewrite race that lock/tombstone designs had to guard simply cannot
+// exist. The directory IS the index; `readIndex` folds the sidecars.
 
-// ── Index mutation lock (ADR-026 Phase 3, Codex P1) ──────────────────────────
-// The index is mutated by three paths — persistCapture (append), deleteCapture
-// (remove one), gcCache (batch remove). A bare read-modify-rename rewrite loses a
-// concurrent append from ANOTHER desktop-touch process sharing the same cache dir
-// (the appended line isn't in the rewrite's snapshot and the rename drops it,
-// orphaning a just-returned ref past the protectCaptureId invariant). An exclusive
-// lockfile serializes ALL index mutations cross-process so every rewrite reads a
-// stable index and no append is lost. Single-process (the common case) takes the
-// lock with zero contention — one create+unlink syscall pair, no sleep.
-//
-// KNOWN RESIDUAL (Codex R3 P2, accepted — ADR-026 OQ8): an mtime-based lockfile
-// cannot distinguish a crashed holder from one merely slow inside `fn`, so the
-// stale-steal could in theory unlink a still-live holder's lock after LOCK_STALE_MS
-// and let a concurrent mutation race the holder's rename. This is a non-issue here:
-// every locked `fn` is a SYNCHRONOUS sub-millisecond op (one append, or a
-// readIndex+write+rename over a count-bounded index), so reaching the 10 s window
-// implies a frozen/dead process whose lock SHOULD be stolen; and any resulting loss
-// is self-healing (the orphaned file is reclaimed by a later orphan sweep, never a
-// wrong-file delete). Closing it fully would need OS advisory locks or an async
-// heartbeat (impossible mid-sync-fn) — disproportionate for a local single-user
-// cache. Deferred as a documented limitation, not a Phase-3 blocker.
-const INDEX_LOCK_FILE = "_index.lock";
-const LOCK_STALE_MS = 10_000;
-const LOCK_RETRY_MS = 20;
-// Give-up is LONGER than the stale window on purpose (Codex R3 P2): a legitimately
-// held lock is always resolved first — either the holder releases (waiter acquires)
-// or, if the holder crashed, the lock goes stale at LOCK_STALE_MS and the waiter
-// steals it. So the unlocked-proceed backstop below is unreachable while a real
-// holder exists; it only fires if stealing itself keeps failing (pathological),
-// never as a premature give-up that would reintroduce the append-loss race.
-const LOCK_MAX_WAIT_MS = 15_000;
-
-/** Synchronous sleep (consistent with this module's sync-fs design). Only reached
- *  on cross-process lock contention — never in the single-process common path. */
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+/** Per-capture metadata sidecar path: `{captureId}.json`. */
+function sidecarPath(root: string, captureId: string): string {
+  return path.join(root, `${captureId}.${SIDECAR_EXT}`);
 }
 
 /**
- * Run `fn` while holding an exclusive index lock (an `_index.lock` file created
- * with the `wx` flag). A stale lock (holder crashed) is stolen after
- * {@link LOCK_STALE_MS}. The unlocked-proceed backstop at {@link LOCK_MAX_WAIT_MS}
- * is deliberately LONGER than the stale window, so a legitimately held lock is
- * always resolved first (release → acquire, or stale → steal) — the backstop only
- * fires if stealing itself keeps failing, never as a premature give-up that would
- * let a concurrent append slip past the rewrite (Codex R3 P2). **NOT reentrant**:
- * call sites must not nest withIndexLock (they don't — persistCapture releases
- * before maybeAutoPrune; gcCache unlinks lock-free then takes one lock for the rewrite).
+ * The captureId is caller-supplied on read/delete and gets joined to a path, so it
+ * MUST be exactly one of OUR generated ids — {@link CAPTURE_ID_RE} (`base36-16hex`).
+ * This both blocks path escape (`..`, separators, NUL) AND prevents a caller from
+ * naming an unrelated `{x}.json` / `{x}.png` in a shared cache dir (e.g. a crafted
+ * `settings.json` whose JSON mimics a sidecar): only our id shape is ever accepted,
+ * so a foreign file can never be addressed (Codex P2). A legitimate caller always
+ * passes an id it got verbatim from a screenshot response, which is this shape.
  */
-function withIndexLock<T>(root: string, fn: () => T): T {
-  const lockPath = path.join(root, INDEX_LOCK_FILE);
-  const start = Date.now();
-  let held = false;
-  for (;;) {
-    try {
-      // Acquire = exclusive create ("wx"): the lock is the lockfile's existence,
-      // released by unlink in `finally`. writeFileSync+wx (not openSync+"wx") is the
-      // same secure-create pattern persistCapture/writeIndexAtomic use, which CodeQL
-      // recognizes (js/insecure-temporary-file does not model openSync's "wx").
-      fs.writeFileSync(lockPath, "", { mode: 0o600, flag: "wx" });
-      held = true;
-      break;
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EEXIST") break; // unlockable → best-effort
-      // Lock is held — steal it ONLY if it is stale AND we actually removed it.
-      let cleared = false;
-      try {
-        const st = fs.statSync(lockPath);
-        if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
-          try { fs.unlinkSync(lockPath); cleared = true; } catch { /* can't remove → fall through */ }
-        }
-      } catch {
-        cleared = true; // lock vanished between create and stat → retry acquire immediately
-      }
-      if (cleared) continue; // lock removed/gone → retry acquire now
-      // Held-and-fresh OR stale-but-unremovable (e.g. a directory named _index.lock):
-      // wait, then hit the backstop — never `continue` past it, or a wedged lock
-      // would spin forever instead of proceeding best-effort (Codex P2).
-      if (Date.now() - start > LOCK_MAX_WAIT_MS) break; // give up → proceed best-effort
-      sleepSync(LOCK_RETRY_MS);
-    }
+function assertSafeCaptureId(captureId: string): void {
+  if (!CAPTURE_ID_RE.test(captureId)) {
+    throw new CaptureRefError("outside_cache", `invalid captureId: ${captureId}`);
+  }
+}
+
+/**
+ * Publish a capture's metadata sidecar atomically (temp→rename): a concurrent reader
+ * never observes a partial sidecar, and the capture goes "live" the instant the
+ * rename lands `{id}.json`. The temp name is per-capture (unique id) → no cross-capture
+ * race, no shared mutable file. `wx` on the temp satisfies CodeQL insecure-temp-file.
+ */
+function writeSidecarAtomic(root: string, captureId: string, entry: IndexEntry): void {
+  const tmp = path.join(root, `${captureId}.${SIDECAR_EXT}.${crypto.randomBytes(6).toString("hex")}.tmp`);
+  fs.writeFileSync(tmp, JSON.stringify(entry), { mode: 0o600, flag: "wx" });
+  fs.renameSync(tmp, sidecarPath(root, captureId));
+}
+
+/** Read + parse one capture's sidecar; null if missing/corrupt/mismatched. The
+ *  sidecar's own captureId must match (a planted `{x}.json` claiming a different id
+ *  is rejected). The referenced image is validated separately by the caller. */
+function readSidecar(root: string, captureId: string): IndexEntry | null {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(sidecarPath(root, captureId), "utf8");
+  } catch {
+    return null;
   }
   try {
-    return fn();
-  } finally {
-    if (held) {
-      try { fs.unlinkSync(lockPath); } catch { /* ignore */ }
-    }
+    const e = JSON.parse(raw) as IndexEntry;
+    if (e && e.captureId === captureId && typeof e.file === "string") return e;
+  } catch {
+    /* corrupt / partial */
   }
+  return null;
 }
 
 /** Persist capture bytes + append an index entry; returns the ref descriptor. */
@@ -199,10 +174,10 @@ export function persistCapture(
     ...(meta.processName !== undefined ? { processName: meta.processName } : {}),
     ...(meta.tag !== undefined ? { tag: meta.tag } : {}),
   };
-  // Under the index lock so this atomic append cannot interleave with a gcCache /
-  // deleteCapture rewrite that re-reads then renames (which would otherwise drop
-  // this line). Released before maybeAutoPrune so the prune can take its own lock.
-  withIndexLock(root, () => fs.appendFileSync(indexPath(root), JSON.stringify(entry) + "\n"));
+  // Publish the metadata sidecar atomically — the image is written first (above), so
+  // the capture goes live only once both files exist. No shared index → this can
+  // never race a concurrent delete/persist from another process on the same PC.
+  writeSidecarAtomic(root, captureId, entry);
 
   // Bound cache growth (R2) without the agent ever calling screenshot_gc. Throttled
   // + best-effort + protects this very captureId — a prune failure must NEVER fail a
@@ -224,24 +199,50 @@ export function persistCapture(
   };
 }
 
-/** Parse the append-only index (latest line per captureId wins). Corrupt lines are skipped (R5). */
+/**
+ * Build the current live set by folding the per-capture sidecars (the directory IS
+ * the index). A capture is live iff BOTH its `{id}.json` sidecar and its image exist;
+ * a sidecar whose image was deleted (or crashed away) is an orphan — skipped here and
+ * reclaimed by gc, never listed. Corrupt/partial sidecars and `*.tmp` writes are
+ * skipped. Stat cost is one read + one stat per live capture, bounded by auto-prune.
+ */
 export function readIndex(root: string): Map<string, IndexEntry> {
   const map = new Map<string, IndexEntry>();
-  let raw: string;
+  let names: string[];
   try {
-    raw = fs.readFileSync(indexPath(root), "utf8");
+    names = fs.readdirSync(root);
   } catch {
-    return map; // no index yet
+    return map; // no cache dir yet
   }
-  for (const line of raw.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
+  const suffix = `.${SIDECAR_EXT}`;
+  for (const name of names) {
+    if (!name.endsWith(suffix)) continue; // sidecars only (skips images + `*.tmp`)
+    // Ownership gate: the basename must be one of OUR generated captureIds, so a
+    // shared/overridden cache dir never surfaces a foreign `*.json` as a capture or
+    // feeds an invalid id into retention (Codex P2). Same gate as the orphan sweep.
+    const idFromName = name.slice(0, -suffix.length);
+    if (!CAPTURE_ID_RE.test(idFromName)) continue;
+    let raw: string;
     try {
-      const e = JSON.parse(trimmed) as IndexEntry;
-      if (e && typeof e.captureId === "string" && typeof e.file === "string") map.set(e.captureId, e);
+      raw = fs.readFileSync(path.join(root, name), "utf8");
     } catch {
-      // skip corrupt line
+      continue;
     }
+    let e: IndexEntry;
+    try {
+      e = JSON.parse(raw) as IndexEntry;
+    } catch {
+      continue; // partial / corrupt sidecar
+    }
+    if (!e || e.captureId !== idFromName || typeof e.file !== "string") continue;
+    if (e.file !== path.basename(e.file)) continue; // image must be a plain basename
+    // Liveness gate: the referenced image must exist (skip image-less orphan sidecars).
+    try {
+      if (!fs.statSync(path.join(root, e.file)).isFile()) continue;
+    } catch {
+      continue;
+    }
+    map.set(e.captureId, e);
   }
   return map;
 }
@@ -313,11 +314,12 @@ function openValidatedCapture(
   captureId: string,
   env: NodeJS.ProcessEnv
 ): { fd: number; real: string; entry: IndexEntry } {
+  assertSafeCaptureId(captureId); // caller-supplied id → safe path component before any join
   const root = getScreenshotCacheRoot(env);
-  const entry = readIndex(root).get(captureId);
+  const entry = readSidecar(root, captureId); // one sidecar read, not a whole-dir walk
   if (!entry) throw new CaptureRefError("not_found", `unknown captureId: ${captureId}`);
 
-  // The index stores a basename only; reject anything that is not a plain file name.
+  // The sidecar stores a basename only; reject anything that is not a plain file name.
   const file = entry.file;
   if (file !== path.basename(file) || file.includes("..") || path.isAbsolute(file)) {
     throw new CaptureRefError("outside_cache", `index file name is not a basename: ${file}`);
@@ -610,20 +612,26 @@ function unlinkValidatedCapture(
 }
 
 /**
- * Securely delete one cached capture — both its FILE and its index entry — by
- * opaque captureId. Unlinks via {@link unlinkValidatedCapture}, then drops the
- * index entry under the index lock so `screenshot_query` no longer lists a ref
- * that reads `not_found` (Codex P2) — whether the file was unlinked here or was
- * already gone. Returns `{deleted:false}` (with the index entry still cleaned)
- * for a dangling ref.
+ * Securely delete one cached capture — both its image and its metadata sidecar — by
+ * opaque captureId. Securely unlinks the image via {@link unlinkValidatedCapture},
+ * then removes the `{id}.json` sidecar so `screenshot_query` no longer lists it
+ * (Codex P2) — whether the image was unlinked here or was already gone (dangling).
+ * Both are independent files (no shared index), so this is cross-process safe.
+ * Returns `{deleted:false}` (sidecar still removed) for a dangling ref.
  */
 export function deleteCapture(
   captureId: string,
   env: NodeJS.ProcessEnv = process.env
 ): { bytes: number; deleted: boolean } {
+  assertSafeCaptureId(captureId);
   const root = getScreenshotCacheRoot(env);
+  // Is there a sidecar that is genuinely OURS (parses with this captureId)? Only then
+  // may we unlink it — never a foreign `{id}.json` a caller named by accident (Codex P2).
+  const ownSidecar = readSidecar(root, captureId) !== null;
   const result = unlinkValidatedCapture(captureId, env);
-  removeIndexEntries(root, new Set([captureId]), env);
+  if (ownSidecar) {
+    try { fs.unlinkSync(sidecarPath(root, captureId)); } catch { /* already gone */ }
+  }
   return result;
 }
 
@@ -660,48 +668,11 @@ export interface GcResult {
   remaining: { count: number; bytes: number };
 }
 
-/** Image extensions the orphan sweep considers (mirrors MIME_EXT). The index
- *  rewrite temp file (`_index.ndjson.<rand>.tmp`) is NOT an image ext, so it is
- *  never mistaken for an orphan (P3-3). */
+/** Image extensions the orphan sweep recognizes (mirrors MIME_EXT). Sidecars
+ *  (`.json`) and partial sidecar writes (`.json.<rand>.tmp`) are NOT image exts —
+ *  the sweep classifies those separately. */
 const ORPHAN_IMAGE_EXTS = new Set(["png", "webp", "jpg", "bin"]);
 const ORPHAN_GRACE_MS_DEFAULT = 5 * 60 * 1000;
-
-/** Atomically replace the index with `entries` (temp→rename). Temp name is
- *  `_index.ndjson.<rand>.tmp` — excluded from the orphan sweep's ext filter. */
-function writeIndexAtomic(root: string, entries: IndexEntry[]): void {
-  const tmp = path.join(root, `${INDEX_FILE}.${crypto.randomBytes(6).toString("hex")}.tmp`);
-  const body = entries.map((e) => JSON.stringify(e)).join("\n") + (entries.length ? "\n" : "");
-  // Exclusive create ("wx"): refuse to follow a pre-planted file/symlink at the
-  // temp path (CodeQL js/insecure-temporary-file). The 6 random bytes make a real
-  // collision astronomically unlikely; mirrors persistCapture's write-side flag.
-  fs.writeFileSync(tmp, body, { mode: 0o600, flag: "wx" });
-  fs.renameSync(tmp, indexPath(root));
-}
-
-/**
- * Drop the given captureIds from the index, under the index lock so the fresh
- * read + rewrite cannot lose a concurrent cross-process append (Codex P1). A
- * no-op when none of the ids are currently present (avoids a pointless rewrite).
- *
- * NEVER throws (plan §3.3 best-effort): the entire lock+read+rewrite is wrapped, so
- * a failed rewrite (or any fs error) leaves stale entries that read as `not_found`
- * (AC3) and self-heal on the next gc. This is what lets the unguarded call sites
- * (`deleteCapture`, `gcCache`) stay correct — `deleteCapture` must not throw after a
- * successful unlink, and `gcCache` must still return its reclaimed-bytes summary
- * (Opus R3 P2-1).
- */
-function removeIndexEntries(root: string, ids: Set<string>, _env: NodeJS.ProcessEnv): void {
-  if (ids.size === 0) return;
-  try {
-    withIndexLock(root, () => {
-      const all = [...readIndex(root).values()];
-      if (!all.some((e) => ids.has(e.captureId))) return;
-      writeIndexAtomic(root, all.filter((e) => !ids.has(e.captureId)));
-    });
-  } catch {
-    // Best-effort — see the doc comment above. Index cleanup never propagates.
-  }
-}
 
 /**
  * Reclaim cached captures by retention policy (ADR-026 §5 / R2 / R11).
@@ -758,18 +729,19 @@ export function gcCache(
     }
   }
 
-  // Orphan sweep — aggregate only (P2-2). Carries the scanned dev/ino so the
-  // unlink can verify it is still the same inode (identity gate, Codex P2-788).
+  // Orphan sweep — aggregate only (P2-2). Reclaims dead-weight files: an image with
+  // no live sidecar pairing (crash between image-write and sidecar-publish, or a
+  // half-deleted capture, R11), a sidecar whose image is gone, and stale `*.tmp`
+  // partial sidecar writes. Each carries the scanned dev/ino so the unlink verifies
+  // it is still the same inode (identity gate, Codex P2-788). The grace is a FIXED
+  // short window (a file written moments ago whose sibling write is imminent), NOT
+  // scaled by the retention maxAgeMs — these files are unreadable dead weight.
   const orphanFiles: { file: string; bytes: number; dev: number; ino: number }[] = [];
   if (includeOrphans) {
-    const referenced = new Set(all.map((e) => e.file));
-    // Orphans have NO index entry and are therefore unreadable (a ref read returns
-    // not_found), so they are pure dead weight to reclaim ASAP. The grace is ONLY
-    // the short append-race window (a file written moments ago whose index append
-    // is imminent) — a FIXED constant, NOT scaled by the capture-retention maxAgeMs.
-    // `Math.max(maxAgeMs, …)` would let a multi-day retention policy keep unreadable
-    // residue on disk for days, defeating the sweep's purpose (Codex P2).
+    const liveIds = new Set(all.map((e) => e.captureId));
+    const liveImages = new Set(all.map((e) => e.file));
     const orphanGraceMs = ORPHAN_GRACE_MS_DEFAULT;
+    const suffix = `.${SIDECAR_EXT}`;
     let names: string[];
     try {
       names = fs.readdirSync(root);
@@ -777,11 +749,24 @@ export function gcCache(
       names = [];
     }
     for (const name of names) {
-      if (name === INDEX_FILE) continue;
+      // Only reclaim files we can POSITIVELY identify as cache-owned, so a shared /
+      // overridden cache dir never loses unrelated files like `settings.json` (Codex P2).
       const dot = name.lastIndexOf(".");
       const ext = dot >= 0 ? name.slice(dot + 1).toLowerCase() : "";
-      if (!ORPHAN_IMAGE_EXTS.has(ext)) continue; // skips _index.ndjson.<rand>.tmp + non-image
-      if (referenced.has(name)) continue; // has an index entry → handled above
+      let isOrphan = false;
+      if (ORPHAN_IMAGE_EXTS.has(ext) && CAPTURE_ID_RE.test(name.slice(0, name.length - ext.length - 1))) {
+        // An image named like a captureId, with no live sidecar pairing.
+        isOrphan = !liveImages.has(name);
+      } else if (name.endsWith(suffix) && CAPTURE_ID_RE.test(name.slice(0, -suffix.length))) {
+        // A sidecar NAMED like our captureId (ownership gate, same as the image/temp
+        // branches) whose image is gone AND which still parses as our sidecar — so a
+        // foreign `*.json` (even a crafted one) in a shared cache dir is left alone.
+        const id = name.slice(0, -suffix.length);
+        if (!liveIds.has(id) && readSidecar(root, id) !== null) isOrphan = true;
+      } else if (SIDECAR_TMP_RE.test(name)) {
+        isOrphan = true; // OUR stale partial sidecar write
+      }
+      if (!isOrphan) continue;
       let st: fs.Stats;
       try {
         st = fs.lstatSync(path.join(root, name));
@@ -789,7 +774,7 @@ export function gcCache(
         continue;
       }
       if (st.isSymbolicLink() || !st.isFile()) continue;
-      if (now - st.mtimeMs < orphanGraceMs) continue; // too fresh — index-append may be imminent
+      if (now - st.mtimeMs < orphanGraceMs) continue; // too fresh — a sibling write may be in flight
       orphanFiles.push({ file: name, bytes: st.size, dev: st.dev, ino: st.ino });
     }
   }
@@ -800,23 +785,18 @@ export function gcCache(
   const removedIds = new Set<string>();
 
   if (!dryRun) {
-    // Unlink the FILES first (lock-free), collecting the ids to drop from the
-    // index, then rewrite the index ONCE under the lock (removeIndexEntries) — so
-    // the O(N) candidate deletes cost a single locked rewrite, not N.
+    // Securely unlink the candidate IMAGE, then remove its sidecar (de-list). Both
+    // are independent files — no shared index to rewrite, no append to lose.
     for (const c of candidates) {
       try {
         const r = unlinkValidatedCapture(c.captureId, env);
         if (r.deleted) { reclaimedBytes += r.bytes; deleted++; }
-        // whether unlinked now or already gone, drop the (dead) index entry.
         removedIds.add(c.captureId);
+        try { fs.unlinkSync(sidecarPath(root, c.captureId)); } catch { /* already gone */ }
       } catch {
         // a single failed delete must not abort the whole gc; leave its entry.
       }
     }
-    // Remove the deleted entries from the index under the lock — the fresh read
-    // happens INSIDE the lock, and persist appends also hold the lock, so no
-    // concurrent cross-process append can be lost by the rewrite (Codex P1).
-    removeIndexEntries(root, removedIds, env);
     for (const o of orphanFiles) {
       try {
         const { real, st } = validateCacheFileForDelete(root, o.file);

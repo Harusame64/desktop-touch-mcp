@@ -16,6 +16,9 @@ import {
   REF_URI_PREFIX,
 } from "../../src/engine/screenshot-cache.js";
 
+/** 短いラベル → strict captureId (base36 + 16 hex)。CAPTURE_ID_RE 準拠。 */
+const cid = (label: string): string => `${label}-0000000000000000`;
+
 let cacheDir: string;
 let env: NodeJS.ProcessEnv;
 
@@ -29,8 +32,9 @@ afterEach(() => {
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
 
-function appendRawIndex(root: string, entry: object): void {
-  fs.appendFileSync(path.join(root, "_index.ndjson"), JSON.stringify(entry) + "\n");
+/** Write a raw metadata sidecar `{captureId}.json` directly (controlled/hostile entry). */
+function appendRawIndex(root: string, entry: { captureId: string; [k: string]: unknown }): void {
+  fs.writeFileSync(path.join(root, `${entry.captureId}.json`), JSON.stringify(entry), { mode: 0o600, flag: "wx" });
 }
 
 function expectRefCode(fn: () => unknown, code: CaptureRefCode): void {
@@ -82,34 +86,34 @@ describe("screenshot-cache — persist + read round-trip", () => {
 describe("screenshot-cache — security (ADR-026 §4 / AC3 path traversal)", () => {
   it("unknown captureId → not_found", () => {
     getScreenshotCacheRoot(env);
-    expectRefCode(() => resolveCaptureFile("does-not-exist", env), "not_found");
+    expectRefCode(() => resolveCaptureFile(cid("doesnotexist"), env), "not_found");
   });
 
   it("index entry whose capture file was deleted (dangling ref) → not_found, not raw ENOENT", () => {
     // R7/AC3 (Codex P2): the index outlives a GC'd/deleted file. The raw ENOENT
     // from lstat must surface as the opaque not_found, never leak the abs path.
     const root = getScreenshotCacheRoot(env);
-    appendRawIndex(root, { captureId: "gone1", ts: 1, bytes: 1, file: "gone1.png", mimeType: "image/png", width: 1, height: 1 });
-    expectRefCode(() => resolveCaptureFile("gone1", env), "not_found");
+    appendRawIndex(root, { captureId: cid("gone1"), ts: 1, bytes: 1, file: `${cid("gone1")}.png`, mimeType: "image/png", width: 1, height: 1 });
+    expectRefCode(() => resolveCaptureFile(cid("gone1"), env), "not_found");
   });
 
   it("relative-traversal file name in index → outside_cache (basename rejection)", () => {
     const root = getScreenshotCacheRoot(env);
-    appendRawIndex(root, { captureId: "evil1", ts: 1, bytes: 1, file: "../evil.png", mimeType: "image/png", width: 1, height: 1 });
-    expectRefCode(() => resolveCaptureFile("evil1", env), "outside_cache");
+    appendRawIndex(root, { captureId: cid("evil1"), ts: 1, bytes: 1, file: "../evil.png", mimeType: "image/png", width: 1, height: 1 });
+    expectRefCode(() => resolveCaptureFile(cid("evil1"), env), "outside_cache");
   });
 
   it("absolute file name in index → outside_cache", () => {
     const root = getScreenshotCacheRoot(env);
     const abs = process.platform === "win32" ? "C:\\Windows\\System32\\drivers\\etc\\hosts" : "/etc/passwd";
-    appendRawIndex(root, { captureId: "evil2", ts: 1, bytes: 1, file: abs, mimeType: "image/png", width: 1, height: 1 });
-    expectRefCode(() => resolveCaptureFile("evil2", env), "outside_cache");
+    appendRawIndex(root, { captureId: cid("evil2"), ts: 1, bytes: 1, file: abs, mimeType: "image/png", width: 1, height: 1 });
+    expectRefCode(() => resolveCaptureFile(cid("evil2"), env), "outside_cache");
   });
 
   it("nested-separator file name in index → outside_cache", () => {
     const root = getScreenshotCacheRoot(env);
-    appendRawIndex(root, { captureId: "evil4", ts: 1, bytes: 1, file: "sub/evil.png", mimeType: "image/png", width: 1, height: 1 });
-    expectRefCode(() => resolveCaptureFile("evil4", env), "outside_cache");
+    appendRawIndex(root, { captureId: cid("evil4"), ts: 1, bytes: 1, file: "sub/evil.png", mimeType: "image/png", width: 1, height: 1 });
+    expectRefCode(() => resolveCaptureFile(cid("evil4"), env), "outside_cache");
   });
 
   it("isWithinRoot rejects the `screenshots_evil` sibling-prefix escape (path.relative, not startsWith)", () => {
@@ -130,8 +134,8 @@ describe("screenshot-cache — security (ADR-026 §4 / AC3 path traversal)", () 
   it("a directory whose basename is in the index → not_regular_file (not silently opened)", () => {
     const root = getScreenshotCacheRoot(env);
     fs.mkdirSync(path.join(root, "iamadir"));
-    appendRawIndex(root, { captureId: "dir1", ts: 1, bytes: 1, file: "iamadir", mimeType: "image/png", width: 1, height: 1 });
-    expectRefCode(() => resolveCaptureFile("dir1", env), "not_regular_file");
+    appendRawIndex(root, { captureId: cid("dir1"), ts: 1, bytes: 1, file: "iamadir", mimeType: "image/png", width: 1, height: 1 });
+    expectRefCode(() => resolveCaptureFile(cid("dir1"), env), "not_regular_file");
   });
 
   it("symlink inside the cache → symlink rejected (skipped where symlinks need privilege)", () => {
@@ -146,9 +150,9 @@ describe("screenshot-cache — security (ADR-026 §4 / AC3 path traversal)", () 
       fs.rmSync(outsideDir, { recursive: true, force: true });
       return; // no symlink privilege (e.g. Windows without Developer Mode) — skip
     }
-    appendRawIndex(root, { captureId: "evil3", ts: 1, bytes: 1, file: linkName, mimeType: "image/png", width: 1, height: 1 });
+    appendRawIndex(root, { captureId: cid("evil3"), ts: 1, bytes: 1, file: linkName, mimeType: "image/png", width: 1, height: 1 });
     try {
-      expectRefCode(() => resolveCaptureFile("evil3", env), "symlink");
+      expectRefCode(() => resolveCaptureFile(cid("evil3"), env), "symlink");
     } finally {
       fs.rmSync(outsideDir, { recursive: true, force: true });
     }

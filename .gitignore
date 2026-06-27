@@ -55,6 +55,8 @@ tools/win-ocr/obj/
 .vitest-out*.txt
 .vitest-out*.json
 .vitest-verbose.txt
+# vitest run sentinel (machine-local PID, e2e:stop mechanism)
+.vitest-running
 
 # cargo check / build output (captured for diagnostics)
 .cargo-check-out.txt
