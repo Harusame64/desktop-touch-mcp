@@ -134,10 +134,15 @@ function sleepSync(ms: number): void {
 function withIndexLock<T>(root: string, fn: () => T): T {
   const lockPath = path.join(root, INDEX_LOCK_FILE);
   const start = Date.now();
-  let fd: number | null = null;
+  let held = false;
   for (;;) {
     try {
-      fd = fs.openSync(lockPath, "wx");
+      // Acquire = exclusive create ("wx"): the lock is the lockfile's existence,
+      // released by unlink in `finally`. writeFileSync+wx (not openSync+"wx") is the
+      // same secure-create pattern persistCapture/writeIndexAtomic use, which CodeQL
+      // recognizes (js/insecure-temporary-file does not model openSync's "wx").
+      fs.writeFileSync(lockPath, "", { mode: 0o600, flag: "wx" });
+      held = true;
       break;
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") break; // unlockable → best-effort
@@ -149,9 +154,9 @@ function withIndexLock<T>(root: string, fn: () => T): T {
           try { fs.unlinkSync(lockPath); cleared = true; } catch { /* can't remove → fall through */ }
         }
       } catch {
-        cleared = true; // lock vanished between open and stat → retry acquire immediately
+        cleared = true; // lock vanished between create and stat → retry acquire immediately
       }
-      if (cleared) continue; // lock removed/gone → retry openSync now
+      if (cleared) continue; // lock removed/gone → retry acquire now
       // Held-and-fresh OR stale-but-unremovable (e.g. a directory named _index.lock):
       // wait, then hit the backstop — never `continue` past it, or a wedged lock
       // would spin forever instead of proceeding best-effort (Codex P2).
@@ -162,8 +167,7 @@ function withIndexLock<T>(root: string, fn: () => T): T {
   try {
     return fn();
   } finally {
-    if (fd !== null) {
-      try { fs.closeSync(fd); } catch { /* ignore */ }
+    if (held) {
       try { fs.unlinkSync(lockPath); } catch { /* ignore */ }
     }
   }
@@ -759,7 +763,13 @@ export function gcCache(
   const orphanFiles: { file: string; bytes: number; dev: number; ino: number }[] = [];
   if (includeOrphans) {
     const referenced = new Set(all.map((e) => e.file));
-    const orphanGraceMs = Math.max(maxAgeMs ?? 0, ORPHAN_GRACE_MS_DEFAULT);
+    // Orphans have NO index entry and are therefore unreadable (a ref read returns
+    // not_found), so they are pure dead weight to reclaim ASAP. The grace is ONLY
+    // the short append-race window (a file written moments ago whose index append
+    // is imminent) — a FIXED constant, NOT scaled by the capture-retention maxAgeMs.
+    // `Math.max(maxAgeMs, …)` would let a multi-day retention policy keep unreadable
+    // residue on disk for days, defeating the sweep's purpose (Codex P2).
+    const orphanGraceMs = ORPHAN_GRACE_MS_DEFAULT;
     let names: string[];
     try {
       names = fs.readdirSync(root);

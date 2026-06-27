@@ -339,6 +339,22 @@ describe("gcCache — orphan sweep (R11)", () => {
     expect(r.orphans.count).toBe(0);
     expect(fs.existsSync(path.join(root, "_index.ndjson"))).toBe(true);
   });
+
+  it("orphan grace is FIXED, not raised by maxAgeMs (Codex P2)", () => {
+    // A multi-day capture-retention policy must NOT keep unreadable orphan residue
+    // on disk for days — the orphan grace is only the short append-race window.
+    const root = getScreenshotCacheRoot(env);
+    const orphan = path.join(root, "orphanX.png");
+    fs.writeFileSync(orphan, Buffer.alloc(32), { flag: "wx" });
+    const old = (NOW - 60 * 60 * 1000) / 1000; // 1h old: > 5min grace, << maxAgeMs(7d)
+    fs.utimesSync(orphan, old, old);
+    const r = gcCache(
+      { dryRun: false, policy: { maxAgeMs: 7 * 24 * 3600 * 1000 }, includeOrphans: true, now: NOW },
+      env,
+    );
+    expect(r.orphans.count).toBe(1); // reclaimed despite the 7-day retention policy
+    expect(fs.existsSync(orphan)).toBe(false);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
