@@ -34,6 +34,8 @@ import { registerExcelTools } from "./tools/excel.js";
 import { registerPerceptionTools } from "./tools/perception.js";
 import { registerPerceptionResources } from "./tools/perception-resources.js";
 import { registerScreenshotResources } from "./tools/screenshot-resources.js";
+import { registerScreenshotQueryTool } from "./tools/screenshot-query.js";
+import { registerScreenshotGcTool } from "./tools/screenshot-gc.js";
 import { registerServerStatusTool } from "./tools/server-status.js";
 import { logAutoGuardStartup } from "./tools/_action-guard.js";
 import {
@@ -225,6 +227,9 @@ function createMcpServer(): McpServer {
   registerExcelTools(s);
   registerPerceptionTools(s);
   registerServerStatusTool(s);
+  // ADR-026 Phase 3 — screenshot disk-cache observe (query) + reclaim (gc).
+  registerScreenshotQueryTool(s);
+  registerScreenshotGcTool(s);
 
   // Screenshot by-ref resource (always-on: the screenshot tool returns
   // resource_link refs by default, so this read handler must be available).

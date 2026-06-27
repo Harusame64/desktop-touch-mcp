@@ -1389,6 +1389,98 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
     }
   },
   {
+    "name": "screenshot_gc",
+    "description": "Reclaim disk space from cached screenshots by retention policy. By DEFAULT this is a dry run: it returns the captures that WOULD be deleted (candidates) plus a count/size of leftover orphan files, and deletes nothing. To actually delete, pass BOTH dryRun:false AND confirm:true. Retention caps (all optional): maxCount (keep newest N), maxTotalBytes (keep newest under a byte budget), maxAgeMs (delete older than). When you pass none, the cache's env defaults apply (newest 200 / 256 MiB). Scope to a single tag with tag (other tags are never touched); includeOrphans (default true) also reclaims leftover on-disk files with no index entry. The newest capture is always kept by the count/byte caps. Only ever touches files inside the screenshot cache — never any other path.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "dryRun": {
+          "description": "Default true: only LIST what would be deleted, delete nothing. Set false (with confirm:true) to actually delete.",
+          "type": "boolean"
+        },
+        "confirm": {
+          "description": "Safety gate: deletion happens ONLY when dryRun:false AND confirm:true. Otherwise the call is forced to a dry run.",
+          "type": "boolean"
+        },
+        "maxAgeMs": {
+          "description": "Delete captures older than this many milliseconds (opt-in; can clear even the newest).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxCount": {
+          "description": "Keep only the newest N captures; delete the rest. The single newest is always kept.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxTotalBytes": {
+          "description": "Keep the newest captures under this total byte budget; delete older ones beyond it. The newest is always kept.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "tag": {
+          "description": "Limit deletion to captures under this tag (case-insensitive). Other tags are never touched.",
+          "type": "string"
+        },
+        "includeOrphans": {
+          "description": "Default true: also reclaim leftover on-disk image files that have no index entry (crash/fold residue).",
+          "type": "boolean"
+        },
+        "include": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "screenshot_query",
+    "description": "List screenshots already saved in the disk-cache WITHOUT re-reading any pixels. The screenshot tools return each capture as a cheap by-ref link (screenshot://by-ref/{captureId}); this lists what is in the cache — captureId + by-ref uri, dimensions, size in bytes, timestamp, and tag/window — so you can find and re-open a specific earlier capture, or check how much the cache holds before reclaiming space with screenshot_gc. The response also carries whole-cache totals (totalCaptures / totalBytes). Reading a capture's bytes still costs tokens, so open a by-ref link only when you actually need to inspect the pixels. Filter by tag (case-insensitive) / windowUuid / since / until; page with limit (default 50) and offset. Results are newest-first and never include a filesystem path.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "tag": {
+          "description": "Filter to captures stored under this tag (case-insensitive). Omit to list all.",
+          "type": "string"
+        },
+        "windowUuid": {
+          "description": "Filter to captures of a specific window (the window's stable id).",
+          "type": "string"
+        },
+        "since": {
+          "description": "Only captures taken at/after this time (epoch milliseconds, inclusive).",
+          "type": "integer"
+        },
+        "until": {
+          "description": "Only captures taken at/before this time (epoch milliseconds, inclusive).",
+          "type": "integer"
+        },
+        "limit": {
+          "description": "Maximum rows to return, newest first (default 50, max 500).",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500
+        },
+        "offset": {
+          "description": "Rows to skip from the newest end, for paging (default 0).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "include": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients)."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
     "name": "scroll",
     "description": "Purpose: Scroll a window or page. 5 strategies via action: 'raw' (wheel notches), 'to_element' (UIA name/automationId or CSS selector), 'smart' (auto-detect target with multi-strategy fallback), 'capture' (full-page stitched image), 'read' (scroll+OCR+dedupe → stitched text).\nDetails: action='raw': send raw mouse-wheel notches at (x,y) or current cursor, optional window focus. Scroll scale — UIA Tier 1 (ScrollPattern apps): empirically ≈1 text line per notch; amount:3 (default) ≈ 3 lines (small nudge), amount:10 ≈ 10 lines (~½ visible area). Legacy SendInput: each amount unit = 3 wheel ticks; ≈9 text lines per unit at Windows default (app/OS-setting dependent). action='to_element': scroll a named element into viewport (UIA or CDP). action='smart': handles nested scroll layers, virtualised lists, sticky-header occlusion. action='capture': stitches full-page images (caps at ~700KB raw); sizeReduced=true means downscaled. action='read': scrolls page-by-page, OCRs each viewport, deduplicates overlapping lines, returns stitched text; language auto-detected from OS locale if omitted.\nPrefer: Use action='to_element' or action='smart' for click target out-of-viewport recovery (entity_outside_viewport). Use action='capture' for reading long pages as images. Use action='read' for extracting text from long native-app documents (PDF readers, text editors, terminals) where copy-paste is unavailable. For simple scroll without target, use action='raw'.\nCaveats: action='capture' returns stitched image — pixels do NOT match screen coords when sizeReduced=true, use for reading only, not mouse_click. action='smart' CDP path requires browser_open. action='to_element' native path requires element to implement UIA ScrollItemPattern. action='read' uses OCR (imperfect accuracy) and requires the window to be visible; for browser pages prefer browser_eval or browser_overview for accurate DOM text. action='raw' typed errors: code:'ScrollNotDelivered' on silent drop (overlay / non-scrollable / UIPI low-IL); already-at-boundary is success via pre/post-percent disambiguation. hints.verifyDelivery.{channel,reason} per ADR-018 §2.6 (Phase 1b: Tier 1 UIA dispatch for HWNDs exposing ScrollPattern; other apps use legacy SendInput). action='smart' typed errors: code:'OverflowHiddenAncestor' (retry with expandHidden:true), code:'VirtualScrollExhausted' (provide virtualIndex).\nExamples:\n  scroll({action:'raw', direction:'down', amount:5, windowTitle:'Chrome'})\n  scroll({action:'to_element', name:'OK', windowTitle:'Dialog'})\n  scroll({action:'smart', target:'#create-release-btn'})\n  scroll({action:'capture', windowTitle:'Chrome', maxScrolls:10})\n  scroll({action:'read', windowTitle:'Acrobat', maxPages:15}) // OCR + dedupe long PDF",
     "inputSchema": {

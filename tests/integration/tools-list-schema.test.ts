@@ -75,6 +75,8 @@ describe.skipIf(process.platform !== "win32")(
         ["../../src/tools/excel.js", "registerExcelTools"],
         ["../../src/tools/perception.js", "registerPerceptionTools"],
         ["../../src/tools/server-status.js", "registerServerStatusTool"],
+        ["../../src/tools/screenshot-query.js", "registerScreenshotQueryTool"],
+        ["../../src/tools/screenshot-gc.js", "registerScreenshotGcTool"],
       ];
       for (const [path, fn] of regs) {
         const mod = await import(path);
@@ -98,10 +100,19 @@ describe.skipIf(process.platform !== "win32")(
     });
 
     it("registers the full public tool surface", () => {
-      // The server registers ~29 tools (26 stub catalog + 2 v2 + V1 fallbacks
-      // vary by env). 28 is a tight lower bound that still catches a
-      // registration regression dropping a tool family.
-      expect(tools.length).toBeGreaterThanOrEqual(28);
+      // The server registers ~31 tools (29 stub catalog incl. ADR-026 Phase 3
+      // screenshot_query/screenshot_gc + 2 v2; V1 fallbacks vary by env). 30 is a
+      // tight lower bound that still catches a registration regression dropping a
+      // tool family.
+      expect(tools.length).toBeGreaterThanOrEqual(30);
+    });
+
+    it("registers the ADR-026 Phase 3 disk-cache tools by name (catches a registration drop a >= bound would miss)", () => {
+      // A loose `>=` count can't tell which tool went missing; assert the two new
+      // maintenance tools explicitly (ADR-026 AC6).
+      const names = new Set(tools.map((t) => t.name));
+      expect(names.has("screenshot_query"), "screenshot_query registered").toBe(true);
+      expect(names.has("screenshot_gc"), "screenshot_gc registered").toBe(true);
     });
 
     it("NO registered tool has empty `properties` (server-wide top-level-union regression guard)", () => {
