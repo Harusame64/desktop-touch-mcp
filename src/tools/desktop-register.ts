@@ -1,8 +1,8 @@
 /**
  * desktop-register.ts — MCP tool registration for desktop_discover / desktop_act.
  *
- * Guarded by env flag DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2=1.
- * Only imported when the flag is set — OFF path has zero side-effects.
+ * Registered by default on v0.17+; suppressed only when the kill switch
+ * DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1 is set.
  *
  * Facade lifecycle:
  *   - Process-local singleton (shared across all createMcpServer() calls).

@@ -230,8 +230,8 @@ screenshot. On `ok:false` read `reason` and follow the recovery path:
 > **Kill switch:** `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1` hides `desktop_discover` /
 > `desktop_act` from the catalogue and re-registers three V1 fallback tools
 > (`get_windows` / `get_ui_elements` / `set_element_value`) for troubleshooting.
-> The deprecated opt-in `DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2` is still accepted but
-> no longer required (V2 is default-on).
+> The legacy `DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2` opt-in is now ignored (V2 is
+> default-on) and can be removed from your config.
 
 ### 📸 Screenshot family
 
