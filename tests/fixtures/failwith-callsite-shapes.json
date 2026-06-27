@@ -597,14 +597,14 @@
     },
     {
       "file": "src/tools/workspace.ts",
-      "line": 177,
+      "line": 196,
       "tool": "workspace_snapshot",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/workspace.ts",
-      "line": 262,
+      "line": 281,
       "tool": "workspace_launch",
       "errKind": "identifier",
       "contextShape": "none"
