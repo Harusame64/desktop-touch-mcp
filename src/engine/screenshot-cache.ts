@@ -94,7 +94,13 @@ function indexPath(root: string): string {
 const INDEX_LOCK_FILE = "_index.lock";
 const LOCK_STALE_MS = 10_000;
 const LOCK_RETRY_MS = 20;
-const LOCK_MAX_WAIT_MS = 2_000;
+// Give-up is LONGER than the stale window on purpose (Codex R3 P2): a legitimately
+// held lock is always resolved first — either the holder releases (waiter acquires)
+// or, if the holder crashed, the lock goes stale at LOCK_STALE_MS and the waiter
+// steals it. So the unlocked-proceed backstop below is unreachable while a real
+// holder exists; it only fires if stealing itself keeps failing (pathological),
+// never as a premature give-up that would reintroduce the append-loss race.
+const LOCK_MAX_WAIT_MS = 15_000;
 
 /** Synchronous sleep (consistent with this module's sync-fs design). Only reached
  *  on cross-process lock contention — never in the single-process common path. */
@@ -104,12 +110,14 @@ function sleepSync(ms: number): void {
 
 /**
  * Run `fn` while holding an exclusive index lock (an `_index.lock` file created
- * with the `wx` flag). Best-effort: a stale lock (holder crashed) is stolen after
- * {@link LOCK_STALE_MS}, and if the lock can't be acquired within
- * {@link LOCK_MAX_WAIT_MS} it proceeds anyway to avoid a deadlock — the worst case
- * degrades to the pre-lock behavior, never worse. **NOT reentrant**: call sites
- * must not nest withIndexLock (they don't — persistCapture releases before
- * maybeAutoPrune; gcCache unlinks lock-free then takes one lock for the rewrite).
+ * with the `wx` flag). A stale lock (holder crashed) is stolen after
+ * {@link LOCK_STALE_MS}. The unlocked-proceed backstop at {@link LOCK_MAX_WAIT_MS}
+ * is deliberately LONGER than the stale window, so a legitimately held lock is
+ * always resolved first (release → acquire, or stale → steal) — the backstop only
+ * fires if stealing itself keeps failing, never as a premature give-up that would
+ * let a concurrent append slip past the rewrite (Codex R3 P2). **NOT reentrant**:
+ * call sites must not nest withIndexLock (they don't — persistCapture releases
+ * before maybeAutoPrune; gcCache unlinks lock-free then takes one lock for the rewrite).
  */
 function withIndexLock<T>(root: string, fn: () => T): T {
   const lockPath = path.join(root, INDEX_LOCK_FILE);
