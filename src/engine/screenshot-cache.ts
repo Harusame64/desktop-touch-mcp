@@ -656,7 +656,14 @@ function removeIndexEntries(root: string, ids: Set<string>, _env: NodeJS.Process
   withIndexLock(root, () => {
     const all = [...readIndex(root).values()];
     if (!all.some((e) => ids.has(e.captureId))) return;
-    writeIndexAtomic(root, all.filter((e) => !ids.has(e.captureId)));
+    try {
+      writeIndexAtomic(root, all.filter((e) => !ids.has(e.captureId)));
+    } catch {
+      // Best-effort (plan §3.3): a failed rewrite leaves stale entries → read
+      // surfaces not_found (AC3) and the next gc self-heals. Never propagate —
+      // deleteCapture must not throw after a successful unlink, and gcCache must
+      // still return its reclaimed-bytes summary.
+    }
   });
 }
 
