@@ -703,6 +703,13 @@ export function gcCache(
   const maxCount = policy.maxCount ?? null;
   const maxBytes = policy.maxTotalBytes ?? null;
   const nTag = policy.tag !== undefined ? normalizeCacheTag(policy.tag) : undefined;
+  // Eviction floor (multi-LLM safety): NEVER evict a capture younger than this, so a
+  // ref another process just handed its caller survives long enough to be read even
+  // if a DIFFERENT desktop-touch process floods the shared cache. The retention budget
+  // is per-cache-dir global, so without this floor LLM-B's persists could auto-prune a
+  // ref LLM-A was just given (graceful not_found, but avoidable). Env-tunable; 0 disables.
+  const minEvictAgeMs =
+    parseNonNegIntEnv(env["DESKTOP_TOUCH_SCREENSHOT_MIN_EVICT_AGE_MS"]) ?? MIN_EVICT_AGE_MS_DEFAULT;
 
   // universe = tag subset (if scoped) else everything, newest → oldest.
   const universe = all
@@ -715,6 +722,7 @@ export function gcCache(
     const e = universe[i];
     running += e.bytes || 0; // count the byte even when protected — it occupies space
     if (protectCaptureId !== undefined && e.captureId === protectCaptureId) continue;
+    if (now - e.ts < minEvictAgeMs) continue; // eviction floor — protect just-handed refs
 
     let reason: GcCandidate["reason"] | null = null;
     if (maxAgeMs !== null && now - e.ts > maxAgeMs) {
@@ -838,6 +846,10 @@ export function gcCache(
 const MAX_COUNT_DEFAULT = 200;
 const MAX_BYTES_DEFAULT = 256 * 1024 * 1024;
 const AUTO_PRUNE_EVERY = 32;
+/** Eviction floor (multi-LLM safety, Opus P2): retention NEVER evicts a capture
+ *  younger than this, so a just-handed ref survives long enough to be read even when
+ *  another process is flooding the shared cache. 60 s ≫ the read-within-a-turn window. */
+const MIN_EVICT_AGE_MS_DEFAULT = 60_000;
 
 /** Parse a non-negative integer env value; undefined/blank/invalid → undefined. */
 function parseNonNegIntEnv(v: string | undefined): number | undefined {

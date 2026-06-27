@@ -37,8 +37,13 @@ beforeEach(() => {
   // mkdtempSync (not path.join + random) so the cache dir is a securely-created
   // temp dir — CodeQL js/insecure-temporary-file is satisfied for writes into it.
   cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "dt-qg-test-"));
-  // Auto-prune OFF by default so seeded counts are deterministic.
-  env = { DESKTOP_TOUCH_SCREENSHOTS_DIR: cacheDir, DESKTOP_TOUCH_SCREENSHOT_AUTOPRUNE: "0" };
+  // Auto-prune OFF + eviction floor OFF by default so seeded counts/policies are
+  // deterministic (a dedicated test exercises the floor with it enabled).
+  env = {
+    DESKTOP_TOUCH_SCREENSHOTS_DIR: cacheDir,
+    DESKTOP_TOUCH_SCREENSHOT_AUTOPRUNE: "0",
+    DESKTOP_TOUCH_SCREENSHOT_MIN_EVICT_AGE_MS: "0",
+  };
   _resetAutoPruneCounterForTest();
 });
 afterEach(() => {
@@ -228,6 +233,18 @@ describe("gcCache — keep-newest invariant (P1-1)", () => {
       env,
     );
     expect(r.candidates.map((c) => c.captureId)).toEqual([cid("mid")]); // old protected
+  });
+
+  it("eviction floor spares a recent capture retention would otherwise evict (Opus P2, multi-LLM)", () => {
+    const root = getScreenshotCacheRoot(env);
+    const floorEnv = { ...env, DESKTOP_TOUCH_SCREENSHOT_MIN_EVICT_AGE_MS: "60000" };
+    seed(root, { captureId: cid("newest"), ts: NOW - 500, bytes: 1 });   // rank 0
+    seed(root, { captureId: cid("recent"), ts: NOW - 2_000, bytes: 1 }); // rank 1, < 60s floor
+    seed(root, { captureId: cid("old"), ts: NOW - 200_000, bytes: 1 });  // rank 2, > floor
+    // maxCount:1 would evict ranks 1 AND 2; the floor protects the recent rank-1 one,
+    // so a ref another LLM was just handed cannot be auto-pruned before it is read.
+    const r = gcCache({ dryRun: true, policy: { maxCount: 1 }, includeOrphans: false, now: NOW }, floorEnv);
+    expect(r.candidates.map((c) => c.captureId)).toEqual([cid("old")]);
   });
 });
 
