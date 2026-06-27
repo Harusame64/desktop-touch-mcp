@@ -33,6 +33,7 @@ import { registerNotificationTools } from "./tools/notification.js";
 import { registerExcelTools } from "./tools/excel.js";
 import { registerPerceptionTools } from "./tools/perception.js";
 import { registerPerceptionResources } from "./tools/perception-resources.js";
+import { registerScreenshotResources } from "./tools/screenshot-resources.js";
 import { registerServerStatusTool } from "./tools/server-status.js";
 import { logAutoGuardStartup } from "./tools/_action-guard.js";
 import {
@@ -224,6 +225,10 @@ function createMcpServer(): McpServer {
   registerExcelTools(s);
   registerPerceptionTools(s);
   registerServerStatusTool(s);
+
+  // Screenshot by-ref resource (always-on: the screenshot tool returns
+  // resource_link refs by default, so this read handler must be available).
+  registerScreenshotResources(s);
 
   // Perception resources (opt-in: DESKTOP_TOUCH_PERCEPTION_RESOURCES=1)
   if (process.env.DESKTOP_TOUCH_PERCEPTION_RESOURCES === "1") {

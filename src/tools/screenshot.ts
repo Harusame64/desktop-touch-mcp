@@ -15,6 +15,7 @@ import { CHROMIUM_TITLE_RE } from "./workspace.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 import { ok, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
+import { buildImageResponse } from "./screenshot-response.js";
 import { failWith, failArgs } from "./_errors.js";
 import { coercedBoolean } from "./_coerce.js";
 import {
@@ -121,7 +122,7 @@ export const screenshotSchema = {
       "  omitted — auto: 'image' when dotByDot/region/displayId is specified, else 'meta'\n" +
       "  'meta'  — window title + screen region only (~20 tok/window, cheapest)\n" +
       "  'text'  — UIA element tree as JSON with text values (~100-300 tok/window, no image)\n" +
-      "  'image' — actual screenshot pixels. BLOCKED unless confirmImage=true is also passed.\n" +
+      "  'image' — actual screenshot pixels. Returns a cheap by-ref resource_link by default (no inline base64); pass confirmImage=true to ALSO embed the inline image.\n" +
       "  'som'   — Set-of-Marks image + OCR elements (bypasses UIA entirely). BLOCKED unless confirmImage=true is also passed.\n" +
       "  'ocr'   — Windows OCR words with screen-pixel clickAt coords (Phase 4: absorbs former screenshot_ocr). " +
       "Use when UIA returns no actionable elements (WinUI3 custom-drawn UIs, game overlays, PDF viewers). " +
@@ -146,10 +147,12 @@ export const screenshotSchema = {
   confirmImage: coercedBoolean()
     .default(false)
     .describe(
-      "Must be true to receive image pixels when detail='image'. " +
-      "Without this flag, detail='image' is blocked and a guidance message is returned instead. " +
+      "Embed inline image pixels in the response. " +
+      "detail='image' now returns a cheap by-ref resource_link WITHOUT this flag (it is no longer blocked); " +
+      "confirmImage=true ADDITIONALLY embeds the inline image for immediate vision. " +
+      "detail='som' still requires confirmImage=true to return its annotated bitmap. " +
       "Prefer detail='text' / diffMode=true / dotByDot=true first — " +
-      "only set confirmImage=true when visual inspection is genuinely required."
+      "set confirmImage=true only when inline visual inspection is genuinely required."
     ),
   ocrFallback: z
     .enum(["auto", "always", "never"])
@@ -447,25 +450,29 @@ export const screenshotHandler = async (args: {
     const effectiveTitle = resolvedWin?.title ?? windowTitle;
     const screenshotWarnings: string[] = [...(resolvedWin?.warnings ?? [])];
 
-    // ── Guard: block bare detail='image'/'som' unless explicitly confirmed ──
-    // Only fires when 'image' or 'som' was explicitly requested, not when
-    // inferred from dotByDot/region context.
+    // ── Guard: block bare detail='som' unless explicitly confirmed ──
+    // ADR-026 Phase 1: detail='image' is NO LONGER blocked here — it now flows
+    // to the by-ref path below (a cheap resource_link by default, inline pixels
+    // only with confirmImage). detail='som' still carries its annotated SoM
+    // bitmap inline and is migrated to the ref model in Phase 2, so it keeps the
+    // confirmImage gate for now. Only fires when 'som' was explicitly requested,
+    // not when image is inferred from dotByDot/region context.
     const guardDisabled = process.env.DESKTOP_TOUCH_DISABLE_IMAGE_GUARD === "1";
-    const isExplicitImage = detail === "image" || detail === "som";
-    if (isExplicitImage && !diffMode && !dotByDot && !confirmImage && !guardDisabled) {
+    const isExplicitSom = detail === "som";
+    if (isExplicitSom && !diffMode && !dotByDot && !confirmImage && !guardDisabled) {
       return {
         isError: true,
         content: [{
           type: "text" as const,
           text: [
-            `[screenshot-guard] detail='${detail}' was blocked to prevent accidental heavy image payloads.`,
+            `[screenshot-guard] detail='som' was blocked to prevent accidental heavy image payloads.`,
             "",
             "Prefer these lighter alternatives (in order):",
             "  1. screenshot(detail='text', windowTitle=X)  — UIA actionable[] with clickAt coords",
-            "  2. screenshot(diffMode=true)                 — only changed windows as image",
+            "  2. screenshot(detail='image', windowTitle=X)  — by-ref resource_link, no inline base64",
             "  3. screenshot(dotByDot=true, windowTitle=X)  — 1:1 WebP for pixel-perfect coords",
             "",
-            `If a ${detail === "som" ? "Set-of-Marks" : "full"} image truly is required, re-call with confirmImage=true.`,
+            "If a Set-of-Marks image truly is required, re-call with confirmImage=true.",
             "To disable this guard globally, set DESKTOP_TOUCH_DISABLE_IMAGE_GUARD=1 in the environment.",
           ].join("\n"),
         }],
@@ -936,13 +943,18 @@ export const screenshotHandler = async (args: {
         dimensionText = `Screenshot captured: ${result.width}x${result.height}px${scaleNote}`;
       }
 
-      return {
-        content: [
-          { type: "image" as const, data: result.base64, mimeType: result.mimeType },
-          { type: "text" as const, text: dimensionText },
-          { type: "text" as const, text: JSON.stringify({ hints: captureHints }) },
-        ],
-      };
+      // ADR-026 §2.1/§3: persist + by-ref. Default returns a resource_link only;
+      // confirmImage (explicit pixels) and dotByDot (pixel-coordinate use) also
+      // embed the inline image. The dimension/coords text is always kept.
+      return buildImageResponse({
+        base64: result.base64,
+        mimeType: result.mimeType,
+        width: result.width,
+        height: result.height,
+        wantInline: confirmImage || dotByDot,
+        textBlocks: [dimensionText, JSON.stringify({ hints: captureHints })],
+        meta: { tag: effectiveTitle },
+      });
     } else if (displayId !== undefined) {
       const monitors = enumMonitors();
       const mon = monitors.find((m) => m.id === displayId);
@@ -958,12 +970,15 @@ export const screenshotHandler = async (args: {
       const dimensionText = dotByDot
         ? formatOriginText(mon.bounds.x, mon.bounds.y, result.width, result.height, result.scale)
         : `Screenshot captured: ${result.width}x${result.height}px`;
-      return {
-        content: [
-          { type: "image" as const, data: result.base64, mimeType: result.mimeType },
-          { type: "text" as const, text: dimensionText },
-        ],
-      };
+      return buildImageResponse({
+        base64: result.base64,
+        mimeType: result.mimeType,
+        width: result.width,
+        height: result.height,
+        wantInline: confirmImage || dotByDot,
+        textBlocks: [dimensionText],
+        meta: { tag: `display-${displayId}` },
+      });
     } else {
       const result = await captureScreen(region, captureOpts);
       let dimensionText: string;
@@ -977,12 +992,15 @@ export const screenshotHandler = async (args: {
       } else {
         dimensionText = `Screenshot captured: ${result.width}x${result.height}px`;
       }
-      return {
-        content: [
-          { type: "image" as const, data: result.base64, mimeType: result.mimeType },
-          { type: "text" as const, text: dimensionText },
-        ],
-      };
+      return buildImageResponse({
+        base64: result.base64,
+        mimeType: result.mimeType,
+        width: result.width,
+        height: result.height,
+        wantInline: confirmImage || dotByDot,
+        textBlocks: [dimensionText],
+        meta: { tag: "fullscreen" },
+      });
     }
   } catch (err) {
     return failWith(err, "screenshot");
@@ -1271,7 +1289,7 @@ export function registerScreenshotTools(server: McpServer): void {
         "detail='text' returns UIA actionable elements with clickAt coords, no image (~100-300 tok). " +
         "detail='som' returns a Set-of-Marks annotated image plus OCR-detected elements with IDs (bypasses UIA entirely). " +
         "detail='ocr' returns Windows OCR words with screen-pixel clickAt coords (Phase 4: absorbs former screenshot_ocr — use when UIA is sparse and you want to force OCR unconditionally). " +
-        "detail='image' and detail='som' are server-blocked unless confirmImage=true is also passed. " +
+        "detail='image' returns a cheap by-ref resource_link by default (no inline base64); pass confirmImage=true to also embed the inline image. detail='som' is server-blocked unless confirmImage=true is passed. " +
         "mode='background' captures hidden/minimised/occluded windows via PrintWindow (Phase 4: absorbs former screenshot_background) — pair with windowTitle/hwnd. " +
         "dotByDot=true returns 1:1 pixel WebP; compute screen coords: screen_x = origin_x + image_x (or screen_x = origin_x + image_x / scale when dotByDotMaxDimension is set — scale printed in response). " +
         "diffMode=true returns only changed windows after the first call (~160 tok). " +
@@ -1286,7 +1304,7 @@ export function registerScreenshotTools(server: McpServer): void {
         "Only use image+confirmImage when text returned 0 actionable elements and visual inspection is genuinely required.",
       caveats:
         "Default mode scales to maxDimension=768 — image pixels ≠ screen pixels; apply the scale formula before passing to mouse_click. " +
-        "Foreground detail='image' is always blocked without confirmImage=true. " +
+        "Foreground detail='image' returns a by-ref resource_link by default; pass confirmImage=true to also receive inline pixels. " +
         "diffMode requires a prior full-capture baseline (non-diff call or workspace_snapshot) — calling diffMode cold returns a full frame, not a diff. " +
         "mode='background' requires windowTitle or hwnd, and only composes with detail in {'image','meta'} — detail='text'/'som'/'ocr' run only against foreground capture (the dispatcher rejects the conflicting combination). Passing mode='background' is itself the acknowledgement that image pixels are wanted, so confirmImage is NOT required for it (matches the former screenshot_background contract). fullContent=false enables legacy mode (faster but GPU windows may be black). " +
         "detail='ocr' requires windowTitle or hwnd; first call may take ~1s (WinRT cold-start) and the matching OCR language pack must be installed.",

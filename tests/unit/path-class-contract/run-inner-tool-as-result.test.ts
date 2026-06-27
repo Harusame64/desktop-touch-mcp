@@ -71,6 +71,31 @@ describe("runInnerToolAsResult (ADR-021 Phase 3a adapter)", () => {
     if (r.ok) expect(r.value.images[0]).toEqual({ data: "abc", mimeType: "image/png" });
   });
 
+  it("resource_link blocks are carried in the outcome (ADR-026 by-ref macro forwarding)", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const entry: any = {
+      schema: { parse: (x: unknown) => x },
+      handler: async () => ({
+        content: [
+          { type: "text", text: "Screenshot captured: 100x50px" },
+          { type: "resource_link", uri: "screenshot://by-ref/abc123", name: "screenshot-abc123", mimeType: "image/png", description: "open only if needed" },
+        ],
+      }),
+    };
+    const r = await runInnerToolAsResult(entry, {});
+    expect(r.ok).toBe(true); // first block is non-JSON text → not a failure
+    if (r.ok) {
+      expect(r.value.links).toHaveLength(1);
+      expect(r.value.links[0]).toEqual({
+        uri: "screenshot://by-ref/abc123",
+        name: "screenshot-abc123",
+        mimeType: "image/png",
+        description: "open only if needed",
+      });
+      expect(r.value.images).toHaveLength(0); // ref-only, no inline pixels
+    }
+  });
+
   it("ok:true with a trailing image block → success + both carried", async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const entry: any = {
