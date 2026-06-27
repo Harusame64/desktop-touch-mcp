@@ -331,12 +331,21 @@ L2 (timely + DD) と L1 capture worker は **dedicated thread**。Node.js libuv 
 
 > **Note (recognised carve-out)**: invariant 6 admits explicit ADR-level
 > exceptions. **ADR-015 (VBA Extensibility Bridge)** carves out the addition
-> of a single `excel` tool for the v1.5.0 demo path; see ADR-015 §2.3. The
-> rule text above is **literal-preserved**; only the derivative numeric
-> refs (28 → 29) in `operation-verification-matrix.md` / `architecture-3layer-integrated.md`
-> / `system-overview.md` / `tool-surface-known-issues.md` / `llm-operation-audit.md`
-> are swept. Future single-tool ADRs (Word / PowerPoint / Outlook) follow
-> the same pattern: each is a one-tool carve-out with its own ADR.
+> of a single `excel` tool for the v1.5.0 demo path; see ADR-015 §2.3.
+> **ADR-026 (screenshot token reduction) Phase 3** carves out two query-axis
+> tools — `screenshot_query` (read-only cache listing) and `screenshot_gc`
+> (disk-cache maintenance; no desktop side-effect, no lease) — taking the
+> surface 29 → 31. Both are query-axis (verification N/A, same bucket as
+> `server_status`), so the commit-axis count is unchanged and the query-axis
+> count goes 11 → 13. The rule text above is **literal-preserved**; only the
+> derivative numeric refs are swept. The user-facing refs (`system-overview.md`,
+> `tool-surface-known-issues.md`) are updated to 31 in the ADR-026 Phase 4 PR; the
+> internal verification/audit refs (`operation-verification-matrix.md`,
+> `llm-operation-audit.md`, `architecture-3layer-integrated.md`) carry the
+> interlocking commit/query-axis item-total math and are swept as a tracked
+> follow-up (ADR-026 Phase 4 follow-up F-P4-3) to avoid a rushed bit-equal break.
+> Future single-tool ADRs (Word / PowerPoint / Outlook) follow the same pattern:
+> each is a carve-out with its own ADR.
 
 ### 6.4 性能制約
 

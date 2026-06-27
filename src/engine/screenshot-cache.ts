@@ -11,12 +11,25 @@
  * separator-aware containment check (`path.relative`, not `startsWith`), and a
  * dev/ino identity gate on the opened handle that defeats a lstat→open TOCTOU swap.
  * Bytes are read from the validated descriptor itself (never re-opened by path).
+ *
+ * Cache-dir robustness (ADR-026 Phase 4 / OQ7): on a locked-down machine the usual
+ * cache dir can be uncreatable / read-only. {@link getScreenshotCacheRoot} walks an
+ * ordered write-probe ladder — explicit `DESKTOP_TOUCH_SCREENSHOTS_DIR` → per-user
+ * runtime dir → OS tmpdir — and returns the first dir it can actually create+write,
+ * so the by-ref token saving keeps working instead of silently degrading to inline.
+ * If every candidate fails it throws {@link CacheUnwritableError}, which the image
+ * emitters catch and degrade to inline pixels (R6) — a capture is never an error.
+ * The chosen dir is still `realpathSync`'d and remains the anchored trust boundary;
+ * the ladder changes only WHICH dir, never the per-file gauntlet — so a shared tmpdir
+ * is exactly as safe as the per-user dir (the {@link CAPTURE_ID_RE} ownership gates
+ * keep foreign files un-addressable / un-reclaimable).
  */
 import path from "node:path";
 import fs from "node:fs";
+import os from "node:os";
 import crypto from "node:crypto";
 
-import { getRuntimeDir, ensureDir } from "../utils/runtime-dir.js";
+import { getRuntimeDir } from "../utils/runtime-dir.js";
 
 export interface CaptureMeta {
   mimeType: string;
@@ -68,19 +81,99 @@ function extForMime(mimeType: string): string {
   return MIME_EXT[mimeType] ?? "bin";
 }
 
-/** Raw (pre-canonical) cache dir. `DESKTOP_TOUCH_SCREENSHOTS_DIR` redefines the boundary. */
-function rawCacheDir(env: NodeJS.ProcessEnv): string {
-  const override = env["DESKTOP_TOUCH_SCREENSHOTS_DIR"];
-  if (override !== undefined && override.trim() !== "") return path.resolve(override);
-  return path.join(getRuntimeDir(env), "screenshots");
+/**
+ * Raised when NO candidate cache dir (explicit override → runtime dir → tmpdir) is
+ * writable. The image emitters catch this and degrade to inline pixels (R6) — a
+ * cache-write failure NEVER turns a capture into an error. The message is path-free
+ * (only a count) so it can flow through `failWith` without leaking the cache path
+ * into the JSON-RPC channel (ADR-026 §8 R9); the offending `candidates` paths live
+ * on the field for local diagnostics only.
+ */
+export class CacheUnwritableError extends Error {
+  constructor(public readonly candidates: string[]) {
+    super(`no writable screenshot cache dir (tried ${candidates.length} candidate(s))`);
+    this.name = "CacheUnwritableError";
+  }
 }
 
 /**
- * Canonical, existing cache root. The override (if any) is canonicalized here and
- * becomes the anchored trust boundary for every subsequent read/delete.
+ * True iff we can create `dir` AND create+remove a uniquely-named probe file in it.
+ * The `.probe-*` name never matches {@link CAPTURE_ID_RE} and has no `.json` suffix,
+ * so the sidecar fold / orphan sweep ignore it even in the (sub-ms) window before
+ * the unlink — and it is created with `wx` (exclusive) so it can never clobber a
+ * pre-existing file. A pure membership test: no throw escapes.
+ */
+function probeWritableDir(dir: string): boolean {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const probe = path.join(dir, `.probe-${crypto.randomBytes(6).toString("hex")}`);
+    fs.writeFileSync(probe, "", { flag: "wx" });
+    fs.unlinkSync(probe);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** One-shot (deduped per primary→chosen pair) fallback notice. Goes to stderr, which
+ *  is NOT the stdio JSON-RPC channel (R-P4-2), so it cannot corrupt the protocol; a
+ *  busy session is not spammed. Hook point for a future tray balloon. */
+const warnedCacheDirFallbacks = new Set<string>();
+
+/** Reset the one-shot cache-dir fallback warning dedupe (tests only). */
+export function _resetCacheDirWarningForTest(): void {
+  warnedCacheDirFallbacks.clear();
+}
+
+function warnCacheDirFallback(primary: string, chosen: string): void {
+  const key = `${primary} ${chosen}`;
+  if (warnedCacheDirFallbacks.has(key)) return;
+  warnedCacheDirFallbacks.add(key);
+  console.warn(
+    `[desktop-touch] screenshot cache dir "${primary}" is not writable; ` +
+      `falling back to "${chosen}". Set DESKTOP_TOUCH_SCREENSHOTS_DIR to a writable path to silence this.`
+  );
+}
+
+/**
+ * Resolve the first WRITABLE cache dir from the ordered ladder (ADR-026 Phase 4 / OQ7):
+ *   1. `DESKTOP_TOUCH_SCREENSHOTS_DIR` (explicit override), if set & non-empty
+ *   2. `getRuntimeDir(env)/screenshots` (default; resolves MCP_HOME / %USERPROFILE%)
+ *   3. `os.tmpdir()/desktop-touch-mcp/screenshots` (final fallback — almost always writable)
+ *
+ * No privilege elevation (a security/UX anti-pattern — tmpdir makes it unnecessary).
+ * Not memoized: every caller re-probes so a dir that becomes writable mid-session is
+ * picked up and the chosen dir is always currently-writable. The probe is sub-ms and
+ * these calls are human-paced (persist / read / query / gc). Throws
+ * {@link CacheUnwritableError} only if EVERY candidate fails (system-level breakage).
+ */
+function resolveWritableCacheDir(env: NodeJS.ProcessEnv): string {
+  const explicit = env["DESKTOP_TOUCH_SCREENSHOTS_DIR"];
+  const candidates: string[] = [];
+  if (explicit !== undefined && explicit.trim() !== "") candidates.push(path.resolve(explicit));
+  candidates.push(path.join(getRuntimeDir(env), "screenshots"));
+  candidates.push(path.join(os.tmpdir(), "desktop-touch-mcp", "screenshots"));
+
+  const primary = candidates[0];
+  const seen = new Set<string>();
+  for (const dir of candidates) {
+    if (seen.has(dir)) continue;
+    seen.add(dir);
+    if (probeWritableDir(dir)) {
+      if (dir !== primary) warnCacheDirFallback(primary, dir);
+      return dir;
+    }
+  }
+  throw new CacheUnwritableError(candidates);
+}
+
+/**
+ * Canonical, existing, WRITABLE cache root. The chosen dir (override / runtime /
+ * tmpdir, first one that passes the write-probe) is canonicalized here and becomes
+ * the anchored trust boundary for every subsequent read/delete.
  */
 export function getScreenshotCacheRoot(env: NodeJS.ProcessEnv = process.env): string {
-  return fs.realpathSync(ensureDir(rawCacheDir(env)));
+  return fs.realpathSync(resolveWritableCacheDir(env));
 }
 
 /** Opaque, time-sortable id: base36 millis + random hex. */

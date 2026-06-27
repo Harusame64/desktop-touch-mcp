@@ -93,11 +93,16 @@ describe("workspace_snapshot — ADR-026 §3 ref-only thumbnails", () => {
 
   it("R6: a persist failure degrades that thumbnail to an inline image + warning", async () => {
     mockEnumWindowsInZOrder.mockReturnValue([win("Window A")]);
-    // Point the cache under an existing file so the per-user dir create throws.
+    // ADR-026 Phase 4: an unwritable cache dir now FALLS BACK (explicit → runtime →
+    // tmpdir), so to still reach the R6 degrade we block ALL THREE rungs — explicit
+    // + runtime (MCP_HOME) point under a regular file, and os.tmpdir() is spied to
+    // the same. The blocker dir is created before the spy so the temp dir is real.
     const blockerDir = fs.mkdtempSync(path.join(os.tmpdir(), "dt-ws-blocker-"));
     const blocker = path.join(blockerDir, "file");
     fs.writeFileSync(blocker, "x");
-    process.env.DESKTOP_TOUCH_SCREENSHOTS_DIR = path.join(blocker, "sub");
+    process.env.DESKTOP_TOUCH_SCREENSHOTS_DIR = path.join(blocker, "explicit");
+    process.env.DESKTOP_TOUCH_MCP_HOME = path.join(blocker, "home");
+    const tmpSpy = vi.spyOn(os, "tmpdir").mockReturnValue(path.join(blocker, "tmp"));
     try {
       const result = await workspaceSnapshotHandler({ thumbnailMaxDimension: 400, includeUiSummary: false });
       expect(result.content.some((c) => c.type === "image")).toBe(true);            // degrade keeps the pixels
@@ -105,6 +110,8 @@ describe("workspace_snapshot — ADR-026 §3 ref-only thumbnails", () => {
       expect(result.content.some((c) => c.type === "text" && /disk-cache write failed/i.test((c as { text: string }).text))).toBe(true);
       expect(result.isError).toBeUndefined();
     } finally {
+      tmpSpy.mockRestore();
+      delete process.env.DESKTOP_TOUCH_MCP_HOME;
       fs.rmSync(blockerDir, { recursive: true, force: true });
     }
   });

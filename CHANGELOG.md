@@ -1,5 +1,45 @@
 # Changelog
 
+## [1.11.0] - Unreleased — Screenshots now cost a fraction of the tokens, plus tools to manage the cache
+
+### Added
+
+- **By-ref screenshots (big token saving).** `screenshot` and the other visual
+  results — SoM element overlays, diff-mode frames, scroll captures, workspace
+  snapshots, and `desktop_act`'s changed-region crop — are now handed back as a
+  cheap link, `screenshot://by-ref/{id}`, to an image saved on disk, instead of
+  inlining the full picture into the conversation every time. The agent spends
+  tokens on the pixels only when it actually opens the link, so routine
+  "look, act, confirm" loops get much cheaper while the image stays one click
+  away. Opening a link (resources/read) still returns the exact bytes as before.
+- **Two new tools to see and tidy that on-disk cache (now 31 tools total):**
+  - `screenshot_query` — list the screenshots already saved *without* re-reading
+    any pixels: each capture's link, size, dimensions, timestamp, and tag, plus
+    whole-cache totals. Filter by tag / window / time, page through results, and
+    re-open a specific earlier shot. It never reveals a filesystem path.
+  - `screenshot_gc` — reclaim space by retention policy (newest N, a byte budget,
+    or an age). Defaults to a dry run that only lists what would go; a real delete
+    needs both `dryRun:false` and `confirm:true`.
+- **Safe to run several AIs/processes on one PC against the same cache.** Captures
+  are stored as independent files with no shared index, so concurrent use can't
+  corrupt the cache, and an "eviction floor" guarantees a link you were just
+  handed survives long enough to open even if another process is busy capturing.
+
+### Changed
+
+- **The screenshot cache bounds itself automatically:** newest 200 captures,
+  under 256 MB, trimmed oldest-first as new shots arrive. Tune or disable it with
+  `DESKTOP_TOUCH_SCREENSHOT_MAX_COUNT` / `_MAX_BYTES` / `_MAX_AGE_MS` /
+  `_AUTOPRUNE` / `_MIN_EVICT_AGE_MS`.
+
+### Fixed
+
+- **On locked-down machines** where the usual cache folder can't be created or
+  written (e.g. corporate policy blocking new folders under your profile), the
+  server now automatically falls back to a writable temporary folder instead of
+  silently giving up on the disk cache and inlining every screenshot. Pin the
+  location with `DESKTOP_TOUCH_SCREENSHOTS_DIR`.
+
 ## [1.10.4] - 2026-06-15 — Updated bundled image library
 
 ### Changed

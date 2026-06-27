@@ -201,7 +201,7 @@ LLM 非露出、Phase 4 docs polish で一括対応。
 - **measure-tools-list-tokens.ts Tier refresh**: Phase 3 §3.2 引継ぎ
 - **LLM 露出文字列 audit**: Phase 4 contract test に allowed-context 検出付きで組込 (`former X` migration breadcrumbs / `failWith` handler tags / error template literals)
 
-公開面: stub catalog 27 + dynamic v2 (`desktop_discover` / `desktop_act`) 2 = **29 public tools** (28 baseline + 1 ADR-015 v1.5.0 `excel` carve-out per `docs/layer-constraints.md` §6.3 Note)。
+公開面: stub catalog 29 + dynamic v2 (`desktop_discover` / `desktop_act`) 2 = **31 public tools** (28 baseline + 1 ADR-015 v1.5.0 `excel` carve-out per `docs/layer-constraints.md` §6.3 Note + 2 ADR-026 Phase 3 screenshot cache tools `screenshot_query` / `screenshot_gc`)。
 
 ### 4.2. Phase 5 dogfood に持ち越す確認事項
 

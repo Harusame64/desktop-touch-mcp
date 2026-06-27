@@ -10,7 +10,7 @@
 npx -y @harusame64/desktop-touch-mcp
 ```
 
-29 tools, native Rust engine (UIA in 2 ms), zero-config PowerShell fallback, full CJK support, MIT licensed. Add the snippet above to your Claude / Cursor / VS Code Copilot config and Claude can drive Notepad, Excel, Chrome, Windows Terminal, and any other app on your machine.
+31 tools, native Rust engine (UIA in 2 ms), zero-config PowerShell fallback, full CJK support, MIT licensed. Add the snippet above to your Claude / Cursor / VS Code Copilot config and Claude can drive Notepad, Excel, Chrome, Windows Terminal, and any other app on your machine.
 
 > **Why this over pixel-clicking?** Two ideas run through every tool: **discover-then-act** — `desktop_discover` returns interactive entities with short-lived leases instead of raw coordinates, so `desktop_act` operates on *what* you mean, not *where* it was — and **per-action perception guards** that verify the target window's identity and bounds before input lands, catching wrong-window typing and stale-coordinate clicks before they happen.
 >
@@ -141,7 +141,7 @@ For a local checkout, register the built server directly:
 
 ---
 
-## Tools (29 Optimized Tools)
+## Tools (31 Optimized Tools)
 
 > 📖 **Full Reference**: [`docs/system-overview.md`](docs/system-overview.md) — Exhaustive guide on parameters, return schemas, and coordinate math.
 
@@ -155,7 +155,8 @@ For a local checkout, register the built server directly:
 | Tool | Description |
 |---|---|
 | `desktop_state` | Lightweight check of focus, active window, cursor, and Auto-Perception attention signal. |
-| `screenshot` | Multi-mode capture: `detail='text'` (UIA/OCR), `diffMode` (P-frame), `dotByDot` (1:1), and `background`. |
+| `screenshot` | Multi-mode capture: `detail='text'` (UIA/OCR), `diffMode` (P-frame), `dotByDot` (1:1), and `background`. Returns a cheap `screenshot://by-ref/{id}` link to the saved image instead of inlining pixels every time. |
+| `screenshot_query` / `screenshot_gc` | Inspect and prune the on-disk screenshot cache behind the by-ref links: `screenshot_query` lists saved captures without re-reading pixels; `screenshot_gc` reclaims space by retention policy (dry-run by default). |
 | `workspace_snapshot` | Instant session orientation: all window thumbnails + UI summaries in one call. |
 | `server_status` | Diagnostic check for native engine health and feature activation. |
 
@@ -356,6 +357,19 @@ Keep Claude CLI visible while operating other apps full-screen. Set env vars in 
 | `DESKTOP_TOUCH_DOCK_TIMEOUT_MS` | `5000` | Max wait for the target window to appear |
 
 > **Input routing gotcha:** when a pinned window is active (e.g. Claude CLI), `keyboard(action='type')` / `keyboard(action='press')` send keys to it, **not** the app you wanted to type into. Always call `focus_window(title=...)` before keyboard operations, then verify `isActive=true` via `screenshot(detail='meta')`.
+
+### Screenshot cache (by-ref storage)
+
+`screenshot` and the other visual results return a cheap `screenshot://by-ref/{id}` link to an image saved on disk instead of inlining the pixels every time, so routine look-act-confirm loops cost far fewer tokens. The cache bounds itself automatically and `screenshot_query` / `screenshot_gc` let you inspect and prune it. Tune the storage with:
+
+| Env var | Default | Notes |
+|---|---|---|
+| `DESKTOP_TOUCH_SCREENSHOTS_DIR` | *(per-user cache dir)* | Pin the cache to a specific folder. If the default folder can't be created or written (e.g. corporate policy blocking new folders under your profile), the server auto-probes this → the runtime dir → an OS temp folder and uses the first writable one instead of giving up on the cache. |
+| `DESKTOP_TOUCH_SCREENSHOT_MAX_COUNT` | `200` | Keep at most this many captures in the cache. |
+| `DESKTOP_TOUCH_SCREENSHOT_MAX_BYTES` | `256 MiB` | Cap the total cache size on disk. |
+| `DESKTOP_TOUCH_SCREENSHOT_MAX_AGE_MS` | *(off)* | Drop captures older than this many milliseconds (opt-in). |
+| `DESKTOP_TOUCH_SCREENSHOT_AUTOPRUNE` | `on` | Auto-trim the cache as new captures are saved. Set `0` to disable. |
+| `DESKTOP_TOUCH_SCREENSHOT_MIN_EVICT_AGE_MS` | `60000` | Never auto-evict a capture younger than this (ms), so a by-ref link you were just handed survives long enough to open even when another AI/process on the same PC is also capturing. `0` disables. |
 
 ### Auto Perception (always-on)
 

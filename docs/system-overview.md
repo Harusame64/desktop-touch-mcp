@@ -64,13 +64,13 @@ desktop-touch-mcp (Node.js / TypeScript)
     │       ├── envelope.ts         — projectEnvelope: attention derivation + token-budget trimming
     │       ├── sensors-win32.ts    — only impure module; piggybacks event-bus 500 ms tick
     │       └── registry.ts         — central coordinator; max 16 lenses (LRU evict)
-    └── Layer 2: 29 public MCP tools (27 stub catalog + 2 dynamic v2)
+    └── Layer 2: 31 public MCP tools (29 stub catalog + 2 dynamic v2)
         See the catalogue below and [CHANGELOG.md](../CHANGELOG.md) for per-version history.
 ```
 
 ### Surface status
 
-- **Current public surface (v1.10.0)**: 29 tools — 27 stub catalog + 2 dynamic v2 (`desktop_discover` / `desktop_act`)
+- **Current public surface**: 31 tools — 29 stub catalog + 2 dynamic v2 (`desktop_discover` / `desktop_act`)
 - **Tool surface reduction (Phase 1–4) — shipped**: naming redesign, family merge dispatchers, browser rearrangement, privatize/absorb. Pre-Phase-1 surface was 65 tools.
 - Phase design references (all Implemented):
   - [tool-surface-phase1-naming-design.md](./tool-surface-phase1-naming-design.md)
@@ -180,7 +180,7 @@ For `keyboard(action='press')`, rich mode only fires for state-transitioning key
 
 ## Tool catalogue
 
-The 29 public tools group into six families. The **World-Graph V2** pair is the
+The 31 public tools group into six families. The **World-Graph V2** pair is the
 recommended dispatch path; the coordinate / UIA / browser tools remain for
 fallback and specialised work.
 
@@ -308,6 +308,24 @@ When `detectUiaBlind()` fires (fewer than 5 UIA elements, or a single Pane cover
 6. Returns `somImage` (base64 PNG) + `elements[]` with `{ id, text, clickAt, region }`
 
 Sharp library is the transparent fallback for `preprocessImage` if the native `.node` engine is unavailable (no feature loss, only performance difference). When `drawSomLabels` is unavailable (Rust engine not built), `somImage` is `null` — the `elements[]` list with `clickAt` coords is still returned, but without the visual annotation PNG. If the SoM pipeline fails at any stage, `screenshot(detail="text")` transparently falls back to the regular OCR word-list path.
+
+#### `screenshot_query`
+Read-only listing of the on-disk screenshot cache that backs the `screenshot://by-ref/{id}` links — **without re-reading any pixels**. Returns each capture's `captureId`, by-ref `uri`, dimensions, byte size, timestamp, and tag/window, plus whole-cache totals (`totalCaptures` / `totalBytes`). Filter by `tag` (case-insensitive) / `windowUuid` / `since` / `until`; page with `limit` (default 50, max 500) / `offset`; results are newest-first. Never returns a filesystem path (opaque-ref model). Opening a capture's bytes still costs tokens, so resolve a `uri` only when you actually need the pixels.
+
+#### `screenshot_gc`
+Reclaim disk space from cached screenshots by retention policy. **Dry run by default**: returns the captures that *would* be deleted plus a count/size of orphan files, and deletes nothing; a real delete needs BOTH `dryRun:false` AND `confirm:true`. Caps (all optional): `maxCount` (keep newest N), `maxTotalBytes` (keep newest under a byte budget), `maxAgeMs` (delete older than). With no caps the env defaults apply (newest 200 / 256 MiB). Scope to a single `tag`; `includeOrphans` (default true) also reclaims leftover on-disk files with no index entry. The newest capture is always kept by the count/byte caps, and only files inside the screenshot cache are ever touched.
+
+#### Screenshot cache — storage & env
+The cache lives under the per-user runtime dir by default. On a locked-down host where that dir can't be created or written, `getScreenshotCacheRoot` walks a write-probe ladder — `DESKTOP_TOUCH_SCREENSHOTS_DIR` (explicit) → runtime dir → `os.tmpdir()/desktop-touch-mcp/screenshots` — and uses the first writable dir (warned once to stderr); if every candidate fails the image emitters degrade to inline pixels rather than erroring. The chosen dir is still `realpathSync`'d and remains the anchored trust boundary, so a shared tmpdir is as safe as the per-user dir (the captureId ownership gate keeps foreign files un-addressable).
+
+| Env var | Default | Effect |
+|---|---|---|
+| `DESKTOP_TOUCH_SCREENSHOTS_DIR` | *(per-user cache dir)* | Pin the cache dir; also the first rung of the write-probe fallback ladder. |
+| `DESKTOP_TOUCH_SCREENSHOT_MAX_COUNT` | `200` | Keep at most N captures. |
+| `DESKTOP_TOUCH_SCREENSHOT_MAX_BYTES` | `256 MiB` | Cap total cache bytes. |
+| `DESKTOP_TOUCH_SCREENSHOT_MAX_AGE_MS` | *(off)* | Drop captures older than this (opt-in). |
+| `DESKTOP_TOUCH_SCREENSHOT_AUTOPRUNE` | `on` | Auto-trim on each persist; `0` disables. |
+| `DESKTOP_TOUCH_SCREENSHOT_MIN_EVICT_AGE_MS` | `60000` | Eviction floor (ms): never auto-evict a capture younger than this, protecting a just-handed by-ref link under multi-process use; `0` disables. |
 
 ---
 

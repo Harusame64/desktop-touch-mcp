@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -6,6 +6,32 @@ import crypto from "node:crypto";
 
 import { buildImageResponse, buildImageBlocks, pngDimensions } from "../../src/tools/screenshot-response.js";
 import { readCaptureBytes, REF_URI_PREFIX } from "../../src/engine/screenshot-cache.js";
+
+/**
+ * Force `persistCapture` to fail so the R6 degrade path fires. With the ADR-026
+ * Phase 4 write-probe ladder a single unwritable dir is NOT enough — an unwritable
+ * `DESKTOP_TOUCH_SCREENSHOTS_DIR` now falls back to the runtime dir and then to the
+ * OS tmpdir. To actually reach `CacheUnwritableError` we make ALL THREE rungs
+ * unwritable: explicit + runtime (`MCP_HOME`) point under a regular file, and
+ * `os.tmpdir()` is spied to the same. `os.tmpdir()` is spied AFTER the blocker dir
+ * is created (so the temp dir itself is real). node:os is a singleton, so the spy
+ * is shared with the module under test.
+ */
+function withNoWritableCacheDir<T>(fn: (env: NodeJS.ProcessEnv) => T): T {
+  const blockerDir = fs.mkdtempSync(path.join(os.tmpdir(), "dt-r6-"));
+  const blocker = path.join(blockerDir, "file");
+  fs.writeFileSync(blocker, "x");
+  const spy = vi.spyOn(os, "tmpdir").mockReturnValue(path.join(blocker, "tmp"));
+  try {
+    return fn({
+      DESKTOP_TOUCH_SCREENSHOTS_DIR: path.join(blocker, "explicit"),
+      DESKTOP_TOUCH_MCP_HOME: path.join(blocker, "home"),
+    });
+  } finally {
+    spy.mockRestore();
+    fs.rmSync(blockerDir, { recursive: true, force: true });
+  }
+}
 
 let cacheDir: string;
 let env: NodeJS.ProcessEnv;
@@ -82,15 +108,12 @@ describe("buildImageResponse — ADR-026 default ref / confirmImage inline", () 
   });
 
   it("R6: a cache-write failure degrades to inline pixels + a warning, never an error", () => {
-    // Point the cache dir *under an existing file* so mkdirSync throws ENOTDIR.
-    const blockerDir = fs.mkdtempSync(path.join(os.tmpdir(), "dt-blocker-"));
-    const blocker = path.join(blockerDir, "file");
-    fs.writeFileSync(blocker, "x");
-    try {
+    // No cache dir is writable (all three ladder rungs blocked) → persist throws.
+    withNoWritableCacheDir((env) => {
       const r = buildImageResponse({
         base64: B64, mimeType: "image/png", width: 1, height: 1,
         wantInline: false, textBlocks: ["dims"],
-        env: { DESKTOP_TOUCH_SCREENSHOTS_DIR: path.join(blocker, "sub") },
+        env,
       });
       const { image, link, texts } = blocks(r);
       expect(image).toBeDefined();                                  // degrade keeps capability
@@ -102,9 +125,7 @@ describe("buildImageResponse — ADR-026 default ref / confirmImage inline", () 
       const last = r.content[r.content.length - 1] as { type: string; text: string };
       expect(last.type).toBe("text");
       expect(last.text).toMatch(/disk-cache write failed/i);
-    } finally {
-      fs.rmSync(blockerDir, { recursive: true, force: true });
-    }
+    });
   });
 });
 
@@ -147,20 +168,15 @@ describe("buildImageBlocks — ADR-026 Phase 2 per-image core", () => {
   });
 
   it("R6: persist failure → [image] + warning (no throw), never a ref", () => {
-    const blockerDir = fs.mkdtempSync(path.join(os.tmpdir(), "dt-blocker-blocks-"));
-    const blocker = path.join(blockerDir, "file");
-    fs.writeFileSync(blocker, "x");
-    try {
+    withNoWritableCacheDir((env) => {
       const { blocks, warning } = buildImageBlocks({
         base64: B64, mimeType: "image/png", width: 1, height: 1, wantInline: false,
-        env: { DESKTOP_TOUCH_SCREENSHOTS_DIR: path.join(blocker, "sub") },
+        env,
       });
       expect(blocks).toHaveLength(1);
       expect(blocks[0].type).toBe("image");                          // capability preserved
       expect(warning).toMatch(/disk-cache write failed/i);
-    } finally {
-      fs.rmSync(blockerDir, { recursive: true, force: true });
-    }
+    });
   });
 });
 
