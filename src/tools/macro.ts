@@ -197,6 +197,8 @@ interface ToolEntry {
 export interface InnerToolOutcome {
   textLines: string[];
   images: Array<{ data: string; mimeType: string }>;
+  /** ADR-026: by-ref `resource_link` blocks (e.g. screenshot disk-cache refs) — forwarded so a macro screenshot step keeps its cache URI. */
+  links: Array<{ uri: string; name: string; mimeType?: string; description?: string }>;
   /** Inner envelope `code` — present only on failure when the handler emitted one. */
   code?: string;
   /** Inner envelope `error` string — present only on failure. */
@@ -228,9 +230,21 @@ export async function runInnerToolAsResult(
 
   const textLines: string[] = [];
   const images: Array<{ data: string; mimeType: string }> = [];
+  const links: InnerToolOutcome["links"] = [];
   for (const block of result.content) {
     if (block.type === "text") textLines.push(block.text);
     else if (block.type === "image") images.push({ data: block.data, mimeType: block.mimeType });
+    else if (block.type === "resource_link") {
+      // ADR-026: keep by-ref capture links reachable through the macro result
+      // (the adapter previously dropped non-text/image blocks, so a macro
+      // screenshot step lost both pixels AND the URI to fetch them — Codex P2).
+      links.push({
+        uri: block.uri,
+        name: block.name,
+        ...(block.mimeType ? { mimeType: block.mimeType } : {}),
+        ...(block.description ? { description: block.description } : {}),
+      });
+    }
   }
 
   let code: string | undefined;
@@ -249,7 +263,7 @@ export async function runInnerToolAsResult(
     }
   }
 
-  const outcome: InnerToolOutcome = { textLines, images, code, error };
+  const outcome: InnerToolOutcome = { textLines, images, links, code, error };
   return failed ? Err(outcome) : Ok(outcome);
 }
 
@@ -472,6 +486,7 @@ export const runMacroHandler = async ({
     error?: string;
     code?: string;
     _images?: Array<{ data: string; mimeType: string }>;
+    _links?: InnerToolOutcome["links"];
   };
 
   const results: StepResult[] = [];
@@ -543,7 +558,7 @@ export const runMacroHandler = async ({
       // halts `stop_on_error: true` like a throw does) now lives at the typed
       // boundary. See `runInnerToolAsResult` for the relocated parse logic.
       const outcome = await runInnerToolAsResult(entry, validated);
-      const { textLines, images } = outcome.ok ? outcome.value : outcome.error;
+      const { textLines, images, links } = outcome.ok ? outcome.value : outcome.error;
 
       if (outcome.ok) {
         results.push({
@@ -552,6 +567,7 @@ export const runMacroHandler = async ({
           ok: true,
           text: textLines,
           ...(images.length > 0 ? { _images: images } : {}),
+          ...(links.length > 0 ? { _links: links } : {}),
         });
       } else {
         const { code: innerCode, error: innerError } = outcome.error;
@@ -574,6 +590,7 @@ export const runMacroHandler = async ({
           error: fallbackError,
           ...(innerCode ? { code: innerCode } : {}),
           ...(images.length > 0 ? { _images: images } : {}),
+          ...(links.length > 0 ? { _links: links } : {}),
         });
 
         if (stop_on_error) break;
@@ -640,7 +657,7 @@ export const runMacroHandler = async ({
   const summary = {
     steps_total: steps.length,
     steps_completed: results.length,
-    results: results.map(({ _images: _img, ...r }) => r),
+    results: results.map(({ _images: _img, _links: _lnk, ...r }) => r),
     ...(warnings.length > 0 ? { warnings } : {}),
   };
   content.push({ type: "text", text: JSON.stringify(summary, null, 2) });
@@ -650,6 +667,24 @@ export const runMacroHandler = async ({
     if (r._images) {
       for (const img of r._images) {
         content.push({ type: "image", data: img.data, mimeType: img.mimeType });
+        content.push({ type: "text", text: `[step ${r.step}: ${r.tool}]` });
+      }
+    }
+  }
+
+  // ADR-026: append by-ref resource_link blocks so a macro screenshot step's
+  // disk-cache URI survives to the caller (default detail='image' returns a ref,
+  // not inline pixels — without this the macro result would carry neither).
+  for (const r of results) {
+    if (r._links) {
+      for (const link of r._links) {
+        content.push({
+          type: "resource_link",
+          uri: link.uri,
+          name: link.name,
+          ...(link.mimeType ? { mimeType: link.mimeType } : {}),
+          ...(link.description ? { description: link.description } : {}),
+        });
         content.push({ type: "text", text: `[step ${r.step}: ${r.tool}]` });
       }
     }
