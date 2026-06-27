@@ -6,10 +6,14 @@
  * confirmImage param). The structured `summary` (frame count / overlap stats /
  * sizeReduced) stays bit-equal.
  *
- * nut-js (libXtst) is the only native aborter on a Linux unit runner, so it is a
- * complete fake (screen.grabRegion returns uniform frames → page-end after two
- * identical reads → a single stitched frame goes through real sharp). win32 /
- * _resolve-window are importOriginal overrides.
+ * nut-js (libXtst) is the hard native aborter on a Linux unit runner. It reaches
+ * this graph two ways, so BOTH are cut off: `engine/nutjs.js` (used directly by
+ * scroll-capture) is a complete fake, and `utils/key-map.js` is mocked so its
+ * direct raw `@nut-tree-fork/nut-js` import never loads (Codex review). With those
+ * faked, screen.grabRegion returns uniform frames → page-end after two identical
+ * reads → a single stitched frame goes through REAL sharp. win32 / _resolve-window
+ * stay importOriginal: their windows-rs napi addon loads in the unit lane (run
+ * Windows-local; CI does not run the TS unit suite on Linux).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
@@ -24,7 +28,7 @@ const { mockGrabRegion, mockRestoreAndFocus, mockResolveWindowTarget, mockFindPl
   mockFindPlain: vi.fn(),
 }));
 
-// Complete fake for nut-js (the only Linux aborter). scroll-capture imports
+// Complete fake for nut-js (the Linux aborter). scroll-capture imports
 // screen / keyboard / mouse / Region from it.
 vi.mock("../../src/engine/nutjs.js", () => ({
   screen: { grabRegion: mockGrabRegion },
@@ -32,6 +36,12 @@ vi.mock("../../src/engine/nutjs.js", () => ({
   mouse: { scrollRight: vi.fn(async () => {}) },
   Region: class { constructor(public x: number, public y: number, public width: number, public height: number) {} },
 }));
+// scroll-capture's `parseKeys` comes from key-map.ts, which imports the RAW
+// @nut-tree-fork/nut-js (`Key` enum) directly — NOT via engine/nutjs.js — so the
+// real package's libXtst aborts at load on a Linux lane (Codex P1). Mock key-map
+// itself so the raw package never loads; parseKeys' result is fed to the mocked
+// keyboard (no-op), so an empty key list suffices.
+vi.mock("../../src/utils/key-map.js", () => ({ parseKeys: () => [] }));
 vi.mock("../../src/engine/win32.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/win32.js")>();
   return { ...actual, restoreAndFocusWindow: mockRestoreAndFocus };

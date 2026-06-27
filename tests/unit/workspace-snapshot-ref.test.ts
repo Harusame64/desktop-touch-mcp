@@ -7,10 +7,13 @@
  * the heaviest token accumulator). windows[].thumbnailSize + the per-thumb label
  * stay bit-equal; a persist failure degrades to inline per thumbnail (R6).
  *
- * nut-js (libXtst) is the only native dep that aborts on a Linux unit runner, so
- * nutjs + image (which imports nutjs) are complete fakes; the rest are
- * importOriginal overrides (Rust .node loads cross-platform). includeUiSummary
- * is false so the UIA lane is never exercised.
+ * nut-js (libXtst) is the hard native aborter on a Linux unit runner, so nutjs +
+ * image (which imports nutjs) are complete fakes. workspace.ts does not reach the
+ * raw @nut-tree-fork/nut-js package (no key-map import), so that path is safe
+ * here. The remaining engine mocks stay importOriginal overrides — their
+ * windows-rs napi addon loads in the unit lane (run Windows-local; CI does not
+ * run the TS unit suite on Linux). includeUiSummary is false so the UIA lane is
+ * never exercised.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";

@@ -171,13 +171,14 @@ export const workspaceSnapshotHandler = async ({
     const content: ToolResult["content"] = [];
     content.push({ type: "text", text: JSON.stringify(result, null, 2) });
     for (const snap of snapshots) {
-      if (snap.thumbnail) {
-        const dims = snap.thumbnailSize ?? { width: 0, height: 0 };
+      // thumbnail and thumbnailSize are set/cleared together in buildWindowSnapshot
+      // (same try block), so a truthy thumbnail always has a non-null size.
+      if (snap.thumbnail && snap.thumbnailSize) {
         const { blocks, warning } = buildImageBlocks({
           base64: snap.thumbnail,
           mimeType: "image/png",
-          width: dims.width,
-          height: dims.height,
+          width: snap.thumbnailSize.width,
+          height: snap.thumbnailSize.height,
           wantInline: false,
           meta: { tag: snap.title },
           describe: (i) =>
