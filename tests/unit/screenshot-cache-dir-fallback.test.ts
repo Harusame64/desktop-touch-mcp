@@ -9,7 +9,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import crypto from "node:crypto";
 
 import {
   getScreenshotCacheRoot,
@@ -18,21 +17,23 @@ import {
   gcCache,
   CacheUnwritableError,
   _resetCacheDirWarningForTest,
+  _resetCacheRootForTest,
 } from "../../src/engine/screenshot-cache.js";
 import { buildImageBlocks } from "../../src/tools/screenshot-response.js";
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
 const PNG_B64 = PNG.toString("base64");
 
-/** Make a fresh temp DIR (writable). */
+/** Make a fresh temp DIR (writable). `mkdtempSync` (not raw `os.tmpdir()` + a
+ *  guessable name) so CodeQL's insecure-temporary-file sink is sanitized. */
 function freshDir(): string {
-  const d = path.join(os.tmpdir(), `dt-fb-${crypto.randomBytes(6).toString("hex")}`);
-  fs.mkdirSync(d, { recursive: true });
-  return d;
+  return fs.mkdtempSync(path.join(os.tmpdir(), "dt-fb-"));
 }
-/** Make a fresh temp FILE, and return a path UNDER it (so mkdir of that path fails). */
+/** Make a fresh temp FILE (inside an mkdtemp dir — CodeQL-safe), and return a path
+ *  UNDER it (so mkdir of that path fails: the parent is a regular file). */
 function unwritablePath(): { file: string; under: string } {
-  const file = path.join(os.tmpdir(), `dt-fb-file-${crypto.randomBytes(6).toString("hex")}`);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dt-fb-file-"));
+  const file = path.join(dir, "blocker");
   fs.writeFileSync(file, "x");
   return { file, under: path.join(file, "screenshots") };
 }
@@ -43,6 +44,7 @@ let warnSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
   _resetCacheDirWarningForTest();
+  _resetCacheRootForTest(); // pin memo must not leak across tests (Opus R3 P2)
   cleanup = [];
   // Default: point the tmpdir tier at a controlled, writable base so no test touches
   // the real shared OS tmpdir cache. Individual tests override this spy as needed.

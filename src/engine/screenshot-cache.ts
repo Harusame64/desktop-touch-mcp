@@ -147,12 +147,45 @@ function warnCacheDirFallback(primary: string, chosen: string): void {
  * these calls are human-paced (persist / read / query / gc). Throws
  * {@link CacheUnwritableError} only if EVERY candidate fails (system-level breakage).
  */
+/**
+ * Process-lifetime memo of the chosen cache dir, keyed by the candidate-path
+ * SIGNATURE (not by writability). Once a root is selected for a given env it is
+ * PINNED for the process: a later writability flip — the explicit dir becomes
+ * writable again, or a transient `ENOTDIR`/`EACCES` clears — must NOT relocate the
+ * cache, or a `screenshot://by-ref/{id}` handed out earlier would resolve against a
+ * different root and 404 (Codex P2 / Opus P2-2; captureIds do not encode their root,
+ * so the root must be stable). Reset between tests via `_resetCacheRootForTest`.
+ */
+const cacheRootMemo = new Map<string, string>();
+
+/** Clear the resolved-cache-dir memo (tests only). */
+export function _resetCacheRootForTest(): void {
+  cacheRootMemo.clear();
+}
+
 function resolveWritableCacheDir(env: NodeJS.ProcessEnv): string {
   const explicit = env["DESKTOP_TOUCH_SCREENSHOTS_DIR"];
   const candidates: string[] = [];
   if (explicit !== undefined && explicit.trim() !== "") candidates.push(path.resolve(explicit));
   candidates.push(path.join(getRuntimeDir(env), "screenshots"));
   candidates.push(path.join(os.tmpdir(), "desktop-touch-mcp", "screenshots"));
+
+  // Pin the first successful resolution for this candidate set. `\x1f` (unit
+  // separator) joins the key without putting a control-NUL into any string.
+  const key = candidates.join("\x1f");
+  const pinned = cacheRootMemo.get(key);
+  if (pinned !== undefined) {
+    // Self-heal: recreate the pinned dir if it was deleted out from under us, but do
+    // NOT re-probe writability — honoring the pinned root is the whole point. If the
+    // pinned dir is now unwritable the subsequent write fails → R6 degrade, which is
+    // the correct outcome (we never silently move the cache mid-session).
+    try {
+      fs.mkdirSync(pinned, { recursive: true });
+    } catch {
+      /* a write against the pinned root will surface the failure as R6 */
+    }
+    return pinned;
+  }
 
   const primary = candidates[0];
   const seen = new Set<string>();
@@ -161,6 +194,7 @@ function resolveWritableCacheDir(env: NodeJS.ProcessEnv): string {
     seen.add(dir);
     if (probeWritableDir(dir)) {
       if (dir !== primary) warnCacheDirFallback(primary, dir);
+      cacheRootMemo.set(key, dir);
       return dir;
     }
   }
