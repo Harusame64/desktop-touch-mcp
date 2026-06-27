@@ -17,6 +17,12 @@ vi.mock("../../src/tools/_resolve-window.js", () => ({
   resolveWindowTarget: mockResolveWindowTarget,
 }));
 
+// nut-js loads native libXtst at import and aborts on a Linux unit runner. The
+// detail='som' path never calls getWindows, and image.js only binds screen/Region
+// inside functions, so a complete fake keeps this suite hermetic without
+// importOriginal (Codex review parity with screenshot-emitters-ref).
+vi.mock("../../src/engine/nutjs.js", () => ({ getWindows: vi.fn(), screen: {}, Region: class {} }));
+
 vi.mock("../../src/engine/ocr-bridge.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/ocr-bridge.js")>();
   return {

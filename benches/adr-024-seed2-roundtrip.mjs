@@ -211,8 +211,8 @@ for (let i = 0; i < iterations; i++) {
     // The screenshot uses detail:"som" (Set-of-Marks + OCR elements) — the SAME
     // information roiCapture bundles, but full-window. This is the fair baseline:
     // folded = localized SoM crop folded into the act; baseline = full-window SoM
-    // fetched as a separate round-trip. (detail:"image" is blocked without
-    // confirmImage and would only return a guidance stub, not real pixels.)
+    // fetched as a separate round-trip. (detail:"image" returns a by-ref
+    // resource_link by default now; confirmImage embeds inline pixels.)
     const t0 = performance.now();
     const act = await callTool("desktop_act", { lease: ent.lease, action: "click", returnCapture: "never" });
     const state = await callTool("desktop_state", {});

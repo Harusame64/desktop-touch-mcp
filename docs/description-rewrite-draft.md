@@ -52,9 +52,9 @@
 
 ```
 Purpose: Capture desktop, window, or region state across four output modes — from cheap orientation metadata to pixel-accurate images.
-Details: detail='meta' (default) returns window titles+positions only (~20 tok/window, no image). detail='text' returns UIA actionable elements with clickAt coords, no image (~100-300 tok). detail='image' is server-blocked unless confirmImage=true is also passed. dotByDot=true returns 1:1 pixel WebP; compute screen coords: screen_x = origin_x + image_x (or screen_x = origin_x + image_x / scale when dotByDotMaxDimension is set — scale printed in response). diffMode=true returns only changed windows after the first call (~160 tok). Data reduction: grayscale=true (−50%), dotByDotMaxDimension=1280 (caps longest edge), windowTitle+region (sub-crop to exclude browser chrome — e.g. region={x:0, y:120, width:1920, height:900}).
+Details: detail='meta' (default) returns window titles+positions only (~20 tok/window, no image). detail='text' returns UIA actionable elements with clickAt coords, no image (~100-300 tok). detail='image' and detail='som' return a cheap by-ref resource_link by default (no inline base64); pass confirmImage=true to also embed the inline image. dotByDot=true returns 1:1 pixel WebP; compute screen coords: screen_x = origin_x + image_x (or screen_x = origin_x + image_x / scale when dotByDotMaxDimension is set — scale printed in response). diffMode=true returns only changed windows after the first call (~160 tok). Data reduction: grayscale=true (−50%), dotByDotMaxDimension=1280 (caps longest edge), windowTitle+region (sub-crop to exclude browser chrome — e.g. region={x:0, y:120, width:1920, height:900}).
 Prefer: Use meta to orient, text before clicking, dotByDot only when precise pixel coords are needed. Prefer browser_* tools for Chrome. Use diffMode after actions to confirm state changed. Only use image+confirmImage when text returned 0 actionable elements and visual inspection is genuinely required.
-Caveats: Default mode scales to maxDimension=768 — image pixels ≠ screen pixels; apply the scale formula before passing to mouse_click. detail='image' is always blocked without confirmImage=true. diffMode requires a prior full-capture baseline (non-diff call or workspace_snapshot) — calling diffMode cold returns a full frame, not a diff.
+Caveats: Default mode scales to maxDimension=768 — image pixels ≠ screen pixels; apply the scale formula before passing to mouse_click. detail='image'/'som' return a by-ref resource_link by default; pass confirmImage=true to also receive inline pixels. diffMode requires a prior full-capture baseline (non-diff call or workspace_snapshot) — calling diffMode cold returns a full frame, not a diff.
 Examples:
   screenshot() → meta orientation of all windows
   screenshot({detail:'text', windowTitle:'Notepad'}) → clickable elements with coords
@@ -389,7 +389,7 @@ Call screenshot(detail='meta') to orient before acting. Returns all window posit
 1. get_context — cheapest; confirms focused element, value, modal state after actions
 2. screenshot(detail='text') — actionable elements with coords
 3. screenshot(dotByDot=true) — pixel-accurate image when text mode returns 0 elements
-4. screenshot(detail='image', confirmImage=true) — visual inspection only; server-blocked without confirmImage
+4. screenshot(detail='image', confirmImage=true) — inline pixels for visual inspection (a by-ref resource_link is returned by default without confirmImage)
 
 ## Terminal workflow
 terminal_send → wait_until(terminal_output_contains, pattern='$ ') → terminal_read(sinceMarker).

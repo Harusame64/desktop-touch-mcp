@@ -1315,7 +1315,7 @@ export function registerScreenshotTools(server: McpServer): void {
       details:
         "detail='meta' (default) returns window titles+positions only (~20 tok/window, no image). " +
         "detail='text' returns UIA actionable elements with clickAt coords, no image (~100-300 tok). " +
-        "detail='som' returns a Set-of-Marks annotated image plus OCR-detected elements with IDs (bypasses UIA entirely). " +
+        "detail='som' returns OCR-detected elements with IDs plus a Set-of-Marks annotated image delivered by-ref by default (bypasses UIA entirely). " +
         "detail='ocr' returns Windows OCR words with screen-pixel clickAt coords (Phase 4: absorbs former screenshot_ocr — use when UIA is sparse and you want to force OCR unconditionally). " +
         "detail='image' and detail='som' both return a cheap by-ref resource_link by default (no inline base64); pass confirmImage=true to also embed the inline image (the annotated bitmap for som). " +
         "mode='background' captures hidden/minimised/occluded windows via PrintWindow (Phase 4: absorbs former screenshot_background) — pair with windowTitle/hwnd. " +

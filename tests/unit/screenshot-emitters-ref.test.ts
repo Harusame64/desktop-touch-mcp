@@ -41,18 +41,24 @@ vi.mock("../../src/engine/window-cache.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/window-cache.js")>();
   return { ...actual, updateWindowCache: mockUpdateWindowCache, saveSnapshot: mockSaveSnapshot };
 });
-vi.mock("../../src/engine/nutjs.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../src/engine/nutjs.js")>();
-  return { ...actual, getWindows: mockGetWindows };
-});
+// Complete fake (NOT importOriginal): nut-js loads native libXtst at import and
+// aborts on a Linux unit runner (Codex review). screenshot.ts only uses
+// getWindows from nutjs and no other module in its eval graph imports nutjs, so a
+// complete fake keeps the whole suite hermetic on the normal unit lane.
+vi.mock("../../src/engine/nutjs.js", () => ({ getWindows: mockGetWindows }));
 vi.mock("../../src/tools/_resolve-window.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/tools/_resolve-window.js")>();
   return { ...actual, resolveWindowTarget: mockResolveWindowTarget };
 });
-vi.mock("../../src/engine/image.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../src/engine/image.js")>();
-  return { ...actual, captureWindowBackground: mockCaptureWindowBackground };
-});
+// image.js imports nutjs (screen, Region) → complete fake here too so the real
+// module (and its native nut-js dep) never loads. screenshot.ts imports four
+// image fns; only captureWindowBackground is exercised — the rest are stubs.
+vi.mock("../../src/engine/image.js", () => ({
+  captureWindowBackground: mockCaptureWindowBackground,
+  captureScreen: vi.fn(),
+  captureDisplay: vi.fn(),
+  captureWindowWithFallback: vi.fn(),
+}));
 
 const { screenshotHandler, screenshotBgHandler } = await import("../../src/tools/screenshot.js");
 
