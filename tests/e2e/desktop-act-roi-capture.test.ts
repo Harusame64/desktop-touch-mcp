@@ -22,6 +22,7 @@ import {
   _resetFacadeForTest,
 } from "../../src/tools/desktop-register.js";
 import { spawnVisualOnlyCanvas, type VisualOnlyCanvas } from "./helpers/visual-only-canvas.js";
+import { readCaptureBytes, REF_URI_PREFIX } from "../../src/engine/screenshot-cache.js";
 
 const IS_HEADED = Boolean(process.env.HEADED);
 
@@ -92,15 +93,22 @@ describe.runIf(IS_HEADED && canvas !== null)("desktop_act roiCapture (S6 headed 
     expect(parsed["diff"] as string[]).not.toContain("entity_disappeared");
 
     const cap = parsed["roiCapture"] as
-      | { roi?: { width: number; height: number }; somImage?: string; entities?: unknown[]; source?: string }
+      | { roi?: { width: number; height: number }; somImage?: string | null; somImageRef?: string; entities?: unknown[]; source?: string }
       | undefined;
     expect(cap, "act should bundle roiCapture on a visual-only localized change").toBeDefined();
 
-    // somImage is a real PNG crop (magic bytes 89 50 4E 47), not empty.
-    const b64 = String(cap!.somImage ?? "").replace(/^data:image\/\w+;base64,/, "");
-    expect(b64.length).toBeGreaterThan(0);
-    const magic = Buffer.from(b64, "base64").subarray(0, 4).toString("hex");
-    expect(magic).toBe("89504e47");
+    // ADR-026: the crop is delivered by-ref (somImage null by default). Resolve
+    // the ref and verify it reads back a real PNG crop (magic bytes 89 50 4E 47).
+    expect(cap!.somImage).toBeNull();
+    expect(typeof cap!.somImageRef).toBe("string");
+    expect(cap!.somImageRef!.startsWith(REF_URI_PREFIX)).toBe(true);
+    const captureId = cap!.somImageRef!.slice(REF_URI_PREFIX.length);
+    const { data } = readCaptureBytes(captureId);
+    expect(data.subarray(0, 4).toString("hex")).toBe("89504e47");
+
+    // The same ref is attached as a resource_link content block.
+    const link = result.content.find((c) => c.type === "resource_link") as { uri?: string } | undefined;
+    expect(link?.uri).toBe(cap!.somImageRef);
 
     // entities is a (lease-less) preview array.
     expect(Array.isArray(cap!.entities)).toBe(true);

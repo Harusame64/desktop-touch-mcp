@@ -36,6 +36,8 @@ import {
 import { nativeViewFocus } from "../engine/native-engine.js";
 import type { NativeLeaseTokenSummary } from "../engine/native-types.js";
 import type { ToolResult } from "./_types.js";
+import { persistCapture, REF_URI_PREFIX } from "../engine/screenshot-cache.js";
+import { pngDimensions } from "./screenshot-response.js";
 import { Err } from "../types/result.js";
 import { ExecutorFailedError } from "../errors/typed-errors.js";
 import type { TouchAction, RoiCapture, RoiCaptureMaterial } from "../engine/world-graph/guarded-touch.js";
@@ -490,7 +492,9 @@ export const desktopTouchSchema = {
   returnCapture: z.enum(["on-change", "always", "never"]).optional().describe(
     "[EXPERIMENTAL] ADR-024 Seed-2 — controls the post-action ROI capture on visual-only targets " +
     "(UIA-blind / RDP / canvas). When it attaches, a successful act carries a 'roiCapture' " +
-    "{ roi, somImage, entities }: a base64 PNG crop of the changed region plus a lease-less entity " +
+    "{ roi, somImageRef, entities }: the changed region's PNG crop delivered by-ref (somImageRef is a " +
+    "screenshot://by-ref/ resource, also attached as a resource_link; somImage is null by default — open " +
+    "the ref only when you need the pixels) plus a lease-less entity " +
     "preview, so you can confirm the result and find the next target without a separate desktop_state / " +
     "screenshot. The entities are previews only (no lease) — re-run desktop_discover to act on them. " +
     "Semantics: 'on-change' (default for visual-only targets) attaches only on a visible change; 'always' " +
@@ -728,7 +732,8 @@ export const desktopActRawHandler = async (
 
     // ADR-024 Seed-2 S5 — fold the post-action ROI capture into the act response
     // for visual-only targets. `buildRoiCapture` gates on the visual-only regime +
-    // motion verdict, then assembles `{roi, somImage, entities, source}`. Absent
+    // motion verdict, then assembles `{roi, somImageRef, entities, source}`
+    // (ADR-026: crop pixels by-ref, somImage null by default). Absent
     // (gate declines / no change / no ROI) → response stays bit-equal with the
     // pre-Seed-2 shape (additive — existing destructures unaffected).
     if (result.ok) {
@@ -783,7 +788,28 @@ export const desktopActRawHandler = async (
     };
   }
 
-  return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  // ADR-026 §3.6: when the act carried a roiCapture crop, attach its by-ref link
+  // as a resource_link content block alongside the JSON result. The crop pixels
+  // are NOT inlined in the envelope (roiCapture.somImage is null); the agent
+  // opens the ref only when it needs to see the crop. The L5 commit wrapper
+  // preserves content[1+] (`...result.content.slice(1)`), so the link survives.
+  const content: ToolResult["content"] = [
+    { type: "text" as const, text: JSON.stringify(result, null, 2) },
+  ];
+  const roiRef = (result as { roiCapture?: RoiCapture }).roiCapture?.somImageRef;
+  if (roiRef) {
+    content.push({
+      type: "resource_link" as const,
+      uri: roiRef,
+      name: `roi-${roiRef.slice(REF_URI_PREFIX.length)}`,
+      mimeType: "image/png",
+      description:
+        "ROI crop of the region that changed after this action. Open only if you " +
+        "need to inspect the pixels — roiCapture.roi / entities above already " +
+        "describe the change.",
+    });
+  }
+  return { content };
 };
 
 /**
@@ -943,7 +969,28 @@ function assembleRoiCaptureFromSom(
     facade.getDiscoverEntitiesForViewId(viewId),
   );
 
-  return { roi, somImage: som.somImage.base64, entities, source };
+  // ADR-026 §3.6: persist the ROI crop + deliver it by-ref. `somImage` stays null
+  // (pixels deferred to the `resource_link` the act handler attaches from
+  // `somImageRef`) so the act envelope stays cheap. R6: on a disk-cache write
+  // failure keep `somImage:null` with a warning — never inline base64 (that
+  // resurrects the token cost) and never throw (the act already succeeded).
+  const base64 = som.somImage.base64;
+  const dims = pngDimensions(base64) ?? { width: roi.width, height: roi.height };
+  try {
+    const persisted = persistCapture(
+      Buffer.from(base64, "base64"),
+      { mimeType: "image/png", width: dims.width, height: dims.height, tag: `roi-${viewId}` },
+    );
+    return { roi, somImage: null, somImageRef: persisted.uri, entities, source };
+  } catch {
+    return {
+      roi,
+      somImage: null,
+      somImageWarning: "ROI crop disk-cache write failed; crop pixels unavailable this turn.",
+      entities,
+      source,
+    };
+  }
 }
 
 /**
@@ -1210,7 +1257,8 @@ export function registerDesktopTools(server: McpServer): void {
       "  executor_failed on terminal textbox (action=type) → use V1 terminal(action='send') instead.",
       "Check desktop_discover response.constraints for pre-emptive fallback hints before calling desktop_act.",
       "[EXPERIMENTAL] On visual-only targets (UIA-blind / RDP / canvas), a successful act may attach a",
-      "'roiCapture' { roi, somImage, entities }: a base64 PNG crop of the changed region + a lease-less entity",
+      "'roiCapture' { roi, somImageRef, entities }: the changed region's PNG crop by-ref (somImageRef +",
+      "a resource_link; somImage null by default) + a lease-less entity",
       "preview, so you can confirm the result + find the next target in one call (no separate desktop_state /",
       "screenshot). entities are previews (no lease) — re-run desktop_discover to act. Control via returnCapture",
       "('on-change' default / 'always' / 'never'). Never attached on structured targets (browser/CDP, UIA-rich).",

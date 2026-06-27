@@ -12,7 +12,7 @@
  *      sharing the same monitor. Those must not leak into the act's ROI crop.
  *   3. Translate the survivors into window-origin-relative coordinates
  *      (subtract `windowRect.x` / `windowRect.y`) so they line up with the
- *      `roiCapture.roi` / `somImage` crop space (a window-relative rect, per
+ *      `roiCapture.roi` crop space (a window-relative rect, per
  *      the S1 contract `RoiCapture.roi`).
  *
  * Pure + side-effect-free. **No production consumer yet**: the act-response
@@ -79,7 +79,7 @@ export function filterDirtyRectsToWindow(
  *
  * The S1 contract `RoiCapture.roi` is a **single** crop rect, but S3b yields a
  * list of window-relative dirty regions. S5 reduces them to the one rect that
- * encloses all of them (the crop the `somImage` covers + the region the
+ * encloses all of them (the crop the `somImageRef` covers + the region the
  * ROI-aware OCR runs on).
  *
  * @returns The enclosing rect, or `null` for an empty input (no ROI).
