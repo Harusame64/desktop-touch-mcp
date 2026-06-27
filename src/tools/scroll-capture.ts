@@ -9,6 +9,7 @@ import {
   findPlainTopLevelWindowByTitle,
 } from "./_resolve-window.js";
 import type { ToolResult } from "./_types.js";
+import { buildImageBlocks } from "./screenshot-response.js";
 
 // Horizontal mouse scroll units per step (matches nut-js scroll granularity)
 const H_SCROLL_STEPS = 25;
@@ -613,12 +614,27 @@ export const scrollCaptureHandler = async ({
       ...(sizeReduced ? { sizeReduced, tip: "Reduce maxScrolls or add grayscale=true for smaller output." } : {}),
     };
 
-    return {
-      content: [
-        { type: "image" as const, data: imageBuffer!.toString("base64"), mimeType: mimeType as "image/png" | "image/webp" },
-        { type: "text" as const, text: JSON.stringify(summary, null, 2) },
-      ],
-    };
+    // ADR-026 §3: deliver the stitched image by-ref (ref-only — scroll-capture
+    // has no confirmImage param). The structured `summary` (incl. sizeReduced /
+    // overlap stats) stays bit-equal; the existing encode/guard pipeline above is
+    // unchanged (full-res-on-disk is OQ-1, deferred). R6 degrades to inline.
+    const { blocks, warning } = buildImageBlocks({
+      base64: imageBuffer!.toString("base64"),
+      mimeType,
+      width: outW,
+      height: outH,
+      wantInline: false,
+      meta: { tag: windowTitle },
+      describe: (i) =>
+        `Stitched scroll capture ${i.width}×${i.height} (${i.mimeType}, ${i.bytes} bytes). ` +
+        `Open only if you need the stitched pixels — the summary above carries frame count and overlap stats.`,
+    });
+    const content: ToolResult["content"] = [
+      ...blocks,
+      { type: "text" as const, text: JSON.stringify(summary, null, 2) },
+    ];
+    if (warning) content.push({ type: "text" as const, text: JSON.stringify({ hints: { warnings: [warning] } }) });
+    return { content };
   } catch (err) {
     return {
       content: [{ type: "text" as const, text: `scroll(action='capture') failed: ${String(err)}` }],

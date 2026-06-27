@@ -4,6 +4,7 @@ import { mouse } from "../engine/nutjs.js";
 import { validateLaunchCommand, resolveLaunchExecutable, spawnDetached } from "../utils/launch.js";
 import { enumMonitors, getVirtualScreen, enumWindowsInZOrder, type WindowZInfo } from "../engine/win32.js";
 import { captureScreen } from "../engine/image.js";
+import { buildImageBlocks } from "./screenshot-response.js";
 import { clearLayers } from "../engine/layer-buffer.js";
 import { noteInvalidation } from "../engine/identity-tracker.js";
 import { getUiElements, extractActionableElements, WINUI3_CLASS_RE } from "../engine/uia-bridge.js";
@@ -163,12 +164,29 @@ export const workspaceSnapshotHandler = async ({
       windowCount: snapshots.length,
     };
 
+    // ADR-026 §3: persist each thumbnail + return a by-ref link (ref-only —
+    // workspace_snapshot is an orientation call; N inline thumbnails are the
+    // heaviest token accumulator). windows[].thumbnailSize + the per-thumb label
+    // stay bit-equal. R6 degrades to inline per thumbnail independently.
     const content: ToolResult["content"] = [];
     content.push({ type: "text", text: JSON.stringify(result, null, 2) });
     for (const snap of snapshots) {
       if (snap.thumbnail) {
-        content.push({ type: "image", data: snap.thumbnail, mimeType: "image/png" });
+        const dims = snap.thumbnailSize ?? { width: 0, height: 0 };
+        const { blocks, warning } = buildImageBlocks({
+          base64: snap.thumbnail,
+          mimeType: "image/png",
+          width: dims.width,
+          height: dims.height,
+          wantInline: false,
+          meta: { tag: snap.title },
+          describe: (i) =>
+            `Thumbnail of "${snap.title}" ${i.width}×${i.height} (${i.bytes} bytes). ` +
+            `Open only if you need the pixels — the window's title/region/thumbnailSize are in the JSON above.`,
+        });
+        content.push(...blocks);
         content.push({ type: "text", text: `↑ "${snap.title}" ${snap.region.width}x${snap.region.height} at (${snap.region.x},${snap.region.y})` });
+        if (warning) content.push({ type: "text", text: JSON.stringify({ hints: { warnings: [warning] } }) });
       }
     }
 
