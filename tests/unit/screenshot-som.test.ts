@@ -1,4 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import crypto from "node:crypto";
 import { screenshotHandler } from "../../src/tools/screenshot.js";
 
 // ─── Hoisted mocks ────────────────────────────────────────────────────────────
@@ -30,12 +34,31 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
 });
 
 describe("screenshotHandler - detail='som' mode", () => {
+  // ADR-026 Phase 2: detail='som' persists its bitmap to a disk-cache and returns
+  // a by-ref link. Point the cache at a throwaway temp dir so the unit test does
+  // not write into the real per-user runtime dir.
+  let cacheDir: string;
   beforeEach(() => {
     vi.clearAllMocks();
+    cacheDir = path.join(os.tmpdir(), `dt-som-test-${crypto.randomBytes(6).toString("hex")}`);
+    process.env.DESKTOP_TOUCH_SCREENSHOTS_DIR = cacheDir;
+  });
+  afterEach(() => {
+    delete process.env.DESKTOP_TOUCH_SCREENSHOTS_DIR;
+    try { fs.rmSync(cacheDir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
-  it("should block 'som' mode unless confirmImage=true is passed", async () => {
+  it("detail='som' WITHOUT confirmImage returns elements + a by-ref link, NOT a guard error (guard removed)", async () => {
+    // ADR-026 Phase 2 (Opus R2 P2-B): the heavy-payload guard is gone — bare
+    // detail='som' now returns its structured elements[] plus a cheap
+    // resource_link by default (no inline image), never an isError block.
     mockResolveWindowTarget.mockResolvedValue({ title: "My App", hwnd: 12345n });
+    mockRunSomPipeline.mockResolvedValue({
+      elements: [{ id: 1, text: "Click Me", region: { x: 10, y: 10, width: 50, height: 20 }, clickAt: { x: 35, y: 20 } }],
+      somImage: { base64: "fake-image", mimeType: "image/png" },
+      preprocessScale: 1.0,
+      resolvedWindowTitle: "My App",
+    });
 
     const result = await screenshotHandler({
       detail: "som",
@@ -50,8 +73,13 @@ describe("screenshotHandler - detail='som' mode", () => {
       ocrLanguage: "ja",
     });
 
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("[screenshot-guard] detail='som' was blocked");
+    expect(result.isError).toBeUndefined();
+    const textContent = JSON.parse(result.content[0].text);
+    expect(textContent.detail).toBe("som");
+    expect(textContent.elements).toHaveLength(1);
+    // default (no confirmImage): a resource_link, NO inline image.
+    expect(result.content.some((c) => c.type === "resource_link")).toBe(true);
+    expect(result.content.some((c) => c.type === "image")).toBe(false);
   });
 
   it("should successfully trigger SoM pipeline when confirmImage=true is passed", async () => {
@@ -82,7 +110,9 @@ describe("screenshotHandler - detail='som' mode", () => {
     expect(textContent.window).toBe("My App");
     expect(textContent.detail).toBe("som");
     expect(textContent.elements).toHaveLength(1);
+    // confirmImage=true → inline image first, then the by-ref link (both present).
     expect(result.content[1].type).toBe("image");
+    expect(result.content.some((c) => c.type === "resource_link")).toBe(true);
   });
 
   it("should prioritize hwnd from resolveWindowTarget and use resolved title in output", async () => {

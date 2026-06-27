@@ -15,7 +15,7 @@ import { CHROMIUM_TITLE_RE } from "./workspace.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 import { ok, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
-import { buildImageResponse } from "./screenshot-response.js";
+import { buildImageResponse, buildImageBlocks, pngDimensions } from "./screenshot-response.js";
 import { failWith, failArgs } from "./_errors.js";
 import { coercedBoolean } from "./_coerce.js";
 import {
@@ -123,7 +123,7 @@ export const screenshotSchema = {
       "  'meta'  — window title + screen region only (~20 tok/window, cheapest)\n" +
       "  'text'  — UIA element tree as JSON with text values (~100-300 tok/window, no image)\n" +
       "  'image' — actual screenshot pixels. Returns a cheap by-ref resource_link by default (no inline base64); pass confirmImage=true to ALSO embed the inline image.\n" +
-      "  'som'   — Set-of-Marks image + OCR elements (bypasses UIA entirely). BLOCKED unless confirmImage=true is also passed.\n" +
+      "  'som'   — Set-of-Marks elements + annotated image (bypasses UIA entirely). Returns the OCR elements[] plus a cheap by-ref resource_link by default (no inline base64); pass confirmImage=true to ALSO embed the annotated bitmap.\n" +
       "  'ocr'   — Windows OCR words with screen-pixel clickAt coords (Phase 4: absorbs former screenshot_ocr). " +
       "Use when UIA returns no actionable elements (WinUI3 custom-drawn UIs, game overlays, PDF viewers). " +
       "Note: detail='text' auto-falls back to OCR via ocrFallback='auto'; choose detail='ocr' only when forcing OCR unconditionally."
@@ -150,7 +150,7 @@ export const screenshotSchema = {
       "Embed inline image pixels in the response. " +
       "detail='image' now returns a cheap by-ref resource_link WITHOUT this flag (it is no longer blocked); " +
       "confirmImage=true ADDITIONALLY embeds the inline image for immediate vision. " +
-      "detail='som' still requires confirmImage=true to return its annotated bitmap. " +
+      "detail='som' likewise returns its elements[] + a by-ref resource_link by default; confirmImage=true ADDITIONALLY inlines the annotated SoM bitmap. " +
       "Prefer detail='text' / diffMode=true / dotByDot=true first — " +
       "set confirmImage=true only when inline visual inspection is genuinely required."
     ),
@@ -450,34 +450,14 @@ export const screenshotHandler = async (args: {
     const effectiveTitle = resolvedWin?.title ?? windowTitle;
     const screenshotWarnings: string[] = [...(resolvedWin?.warnings ?? [])];
 
-    // ── Guard: block bare detail='som' unless explicitly confirmed ──
-    // ADR-026 Phase 1: detail='image' is NO LONGER blocked here — it now flows
-    // to the by-ref path below (a cheap resource_link by default, inline pixels
-    // only with confirmImage). detail='som' still carries its annotated SoM
-    // bitmap inline and is migrated to the ref model in Phase 2, so it keeps the
-    // confirmImage gate for now. Only fires when 'som' was explicitly requested,
-    // not when image is inferred from dotByDot/region context.
-    const guardDisabled = process.env.DESKTOP_TOUCH_DISABLE_IMAGE_GUARD === "1";
-    const isExplicitSom = detail === "som";
-    if (isExplicitSom && !diffMode && !dotByDot && !confirmImage && !guardDisabled) {
-      return {
-        isError: true,
-        content: [{
-          type: "text" as const,
-          text: [
-            `[screenshot-guard] detail='som' was blocked to prevent accidental heavy image payloads.`,
-            "",
-            "Prefer these lighter alternatives (in order):",
-            "  1. screenshot(detail='text', windowTitle=X)  — UIA actionable[] with clickAt coords",
-            "  2. screenshot(detail='image', windowTitle=X)  — by-ref resource_link, no inline base64",
-            "  3. screenshot(dotByDot=true, windowTitle=X)  — 1:1 WebP for pixel-perfect coords",
-            "",
-            "If a Set-of-Marks image truly is required, re-call with confirmImage=true.",
-            "To disable this guard globally, set DESKTOP_TOUCH_DISABLE_IMAGE_GUARD=1 in the environment.",
-          ].join("\n"),
-        }],
-      };
-    }
+    // ── ADR-026 Phase 2: the detail='image'/'som' heavy-payload guard is GONE ──
+    // The guard existed to block accidental large inline-base64 payloads. Phase 1
+    // moved detail='image' to the by-ref model (cheap resource_link by default);
+    // Phase 2 does the same for detail='som' below. With pixels deferred to a
+    // ref, there is nothing heavy to guard, so the whole mechanism — the block
+    // and the DESKTOP_TOUCH_DISABLE_IMAGE_GUARD escape hatch — is removed. som
+    // now returns its structured elements[] + a cheap ref by default, with the
+    // annotated bitmap inlined only when confirmImage=true.
 
     // ── detail=som: Set-of-Marks image + OCR elements ────────────────────────
     if (effectiveDetail === "som") {
@@ -512,12 +492,25 @@ export const screenshotHandler = async (args: {
         },
       ];
 
+      // ADR-026 §3: persist the annotated SoM bitmap + return a by-ref link by
+      // default; confirmImage additionally inlines it. elements[] above stay
+      // cheap text (AC7: SoM kept). Never silent-empty — when som rendered, a ref
+      // is always attached (R6 degrade falls back to inline + warning).
       if (somResult.somImage) {
-        content.push({
-          type: "image" as const,
-          data: somResult.somImage.base64,
+        const dims = pngDimensions(somResult.somImage.base64) ?? { width: 0, height: 0 };
+        const { blocks, warning } = buildImageBlocks({
+          base64: somResult.somImage.base64,
           mimeType: somResult.somImage.mimeType,
+          width: dims.width,
+          height: dims.height,
+          wantInline: confirmImage,
+          meta: { tag: somResult.resolvedWindowTitle },
+          describe: (i) =>
+            `Set-of-Marks annotated bitmap ${i.width}×${i.height} (${i.bytes} bytes). ` +
+            `Open only if you need to see the marks — the elements[] above already carry IDs and clickAt coords.`,
         });
+        content.push(...blocks);
+        if (warning) content.push({ type: "text" as const, text: JSON.stringify({ hints: { warnings: [warning] } }) });
       }
 
       return { content };
@@ -558,8 +551,22 @@ export const screenshotHandler = async (args: {
           const prevStr = prev ? `(${prev.x},${prev.y})→` : "";
           content.push({ type: "text" as const, text: `[MOVED]   "${diff.title}" ${prevStr}${regionStr} (content same, no image)` });
         } else if (diff.image) {
+          // ADR-026 §3: each changed/new frame → persist + by-ref link (default),
+          // inline only with confirmImage. The verdict/region label stays bit-equal.
           content.push({ type: "text" as const, text: `[${diff.type === "new" ? "NEW" : "CHANGED"}] "${diff.title}" at ${regionStr}` });
-          content.push({ type: "image" as const, data: diff.image.base64, mimeType: diff.image.mimeType });
+          const { blocks, warning } = buildImageBlocks({
+            base64: diff.image.base64,
+            mimeType: diff.image.mimeType,
+            width: diff.image.width,
+            height: diff.image.height,
+            wantInline: confirmImage,
+            meta: { tag: diff.title },
+            describe: (i) =>
+              `Changed window "${diff.title}" ${i.width}×${i.height} (${i.bytes} bytes). ` +
+              `Open only if you need to see the change — the label above already names the window and region.`,
+          });
+          content.push(...blocks);
+          if (warning) content.push({ type: "text" as const, text: JSON.stringify({ hints: { warnings: [warning] } }) });
         }
       }
 
@@ -751,17 +758,26 @@ export const screenshotHandler = async (args: {
               ),
             };
 
-            const contentItems: Array<
-              { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
-            > = [textContent];
+            const contentItems: ToolResult["content"] = [textContent];
 
-            // Attach the annotated SoM image when Rust rendering succeeded
+            // ADR-026 §3 (detail='text' SoM fallback): persist the annotated SoM
+            // bitmap + return a by-ref link by default, inline only with
+            // confirmImage. The actionable elements[] above stay cheap text.
             if (somResult.somImage) {
-              contentItems.push({
-                type: "image" as const,
-                data: somResult.somImage.base64,
+              const dims = pngDimensions(somResult.somImage.base64) ?? { width: 0, height: 0 };
+              const { blocks, warning } = buildImageBlocks({
+                base64: somResult.somImage.base64,
                 mimeType: somResult.somImage.mimeType,
+                width: dims.width,
+                height: dims.height,
+                wantInline: confirmImage,
+                meta: { tag: somResult.resolvedWindowTitle },
+                describe: (i) =>
+                  `Set-of-Marks annotated bitmap ${i.width}×${i.height} (${i.bytes} bytes). ` +
+                  `Open only if you need to see the marks — the elements[] above already carry IDs and clickAt coords.`,
               });
+              contentItems.push(...blocks);
+              if (warning) contentItems.push({ type: "text" as const, text: JSON.stringify({ hints: { warnings: [warning] } }) });
             }
 
             return { content: contentItems };
@@ -1096,11 +1112,23 @@ export const screenshotBgHandler = async ({
       dimensionText = `Background capture of "${foundTitle}": ${result.width}x${result.height}px`;
     }
 
+    // ADR-026 §3 / §2.2(c) exception: mode='background' keeps the inline image
+    // (passing mode='background' IS the pixel request → wantInline=true) AND
+    // additionally persists + attaches a by-ref link so re-viewing later is cheap.
+    const { blocks, warning } = buildImageBlocks({
+      base64: result.base64,
+      mimeType: result.mimeType,
+      width: result.width,
+      height: result.height,
+      wantInline: true,
+      meta: { tag: foundTitle || effectiveTitle },
+    });
+    const allBgWarnings = warning ? [...bgWarnings, warning] : bgWarnings;
     return {
       content: [
-        { type: "image" as const, data: result.base64, mimeType: result.mimeType },
+        ...blocks,
         { type: "text" as const, text: dimensionText },
-        ...(bgWarnings.length > 0 ? [{ type: "text" as const, text: JSON.stringify({ hints: { warnings: bgWarnings } }) }] : []),
+        ...(allBgWarnings.length > 0 ? [{ type: "text" as const, text: JSON.stringify({ hints: { warnings: allBgWarnings } }) }] : []),
       ],
     };
   } catch (err) {
@@ -1289,7 +1317,7 @@ export function registerScreenshotTools(server: McpServer): void {
         "detail='text' returns UIA actionable elements with clickAt coords, no image (~100-300 tok). " +
         "detail='som' returns a Set-of-Marks annotated image plus OCR-detected elements with IDs (bypasses UIA entirely). " +
         "detail='ocr' returns Windows OCR words with screen-pixel clickAt coords (Phase 4: absorbs former screenshot_ocr — use when UIA is sparse and you want to force OCR unconditionally). " +
-        "detail='image' returns a cheap by-ref resource_link by default (no inline base64); pass confirmImage=true to also embed the inline image. detail='som' is server-blocked unless confirmImage=true is passed. " +
+        "detail='image' and detail='som' both return a cheap by-ref resource_link by default (no inline base64); pass confirmImage=true to also embed the inline image (the annotated bitmap for som). " +
         "mode='background' captures hidden/minimised/occluded windows via PrintWindow (Phase 4: absorbs former screenshot_background) — pair with windowTitle/hwnd. " +
         "dotByDot=true returns 1:1 pixel WebP; compute screen coords: screen_x = origin_x + image_x (or screen_x = origin_x + image_x / scale when dotByDotMaxDimension is set — scale printed in response). " +
         "diffMode=true returns only changed windows after the first call (~160 tok). " +

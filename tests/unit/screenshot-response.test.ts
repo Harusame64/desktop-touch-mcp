@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 
-import { buildImageResponse } from "../../src/tools/screenshot-response.js";
+import { buildImageResponse, buildImageBlocks, pngDimensions } from "../../src/tools/screenshot-response.js";
 import { readCaptureBytes, REF_URI_PREFIX } from "../../src/engine/screenshot-cache.js";
 
 let cacheDir: string;
@@ -41,6 +41,9 @@ describe("buildImageResponse — ADR-026 default ref / confirmImage inline", () 
     expect(link).toBeDefined();
     expect((link as { uri: string }).uri.startsWith(REF_URI_PREFIX)).toBe(true);
     expect(texts.map((t) => (t as { text: string }).text)).toContain("Screenshot captured: 100x50px");
+    // Positional pin (P2-3): default ordering is [resource_link, ...texts].
+    // A type-based find() would pass even if the blocks were reordered.
+    expect(r.content[0].type).toBe("resource_link");
   });
 
   it("wantInline=true embeds the inline image AND the resource_link", () => {
@@ -52,6 +55,9 @@ describe("buildImageResponse — ADR-026 default ref / confirmImage inline", () 
     expect(image).toBeDefined();
     expect((image as { data: string }).data).toBe(B64);
     expect(link).toBeDefined();
+    // Positional pin (P2-3): inline ordering is [image, resource_link, ...texts].
+    expect(r.content[0].type).toBe("image");
+    expect(r.content[1].type).toBe("resource_link");
   });
 
   it("the persisted ref reads back the exact bytes (round-trip)", () => {
@@ -91,8 +97,85 @@ describe("buildImageResponse — ADR-026 default ref / confirmImage inline", () 
       expect(link).toBeUndefined();                                 // no ref when persist failed
       expect(texts.some((t) => /disk-cache write failed/i.test((t as { text: string }).text))).toBe(true);
       expect(r.isError).toBeUndefined();                            // R6: not an error
+      // Positional pin (P2-3): R6 ordering is [image, ...texts, warning-LAST].
+      expect(r.content[0].type).toBe("image");
+      const last = r.content[r.content.length - 1] as { type: string; text: string };
+      expect(last.type).toBe("text");
+      expect(last.text).toMatch(/disk-cache write failed/i);
     } finally {
       fs.rmSync(blockerDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("buildImageBlocks — ADR-026 Phase 2 per-image core", () => {
+  it("default (wantInline=false) → [resource_link] only, no inline image", () => {
+    const { blocks, warning } = buildImageBlocks({
+      base64: B64, mimeType: "image/png", width: 10, height: 10, wantInline: false, env,
+    });
+    expect(warning).toBeUndefined();
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].type).toBe("resource_link");
+    expect((blocks[0] as { uri: string }).uri.startsWith(REF_URI_PREFIX)).toBe(true);
+  });
+
+  it("wantInline=true → [image, resource_link] in that order", () => {
+    const { blocks } = buildImageBlocks({
+      base64: B64, mimeType: "image/png", width: 10, height: 10, wantInline: true, env,
+    });
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0].type).toBe("image");
+    expect((blocks[0] as { data: string }).data).toBe(B64);
+    expect(blocks[1].type).toBe("resource_link");
+  });
+
+  it("the persisted ref reads back the exact bytes (round-trip)", () => {
+    const { blocks } = buildImageBlocks({
+      base64: B64, mimeType: "image/png", width: 1, height: 1, wantInline: false, env,
+    });
+    const captureId = (blocks[0] as { uri: string }).uri.slice(REF_URI_PREFIX.length);
+    const { data } = readCaptureBytes(captureId, env);
+    expect(data.equals(PNG)).toBe(true);
+  });
+
+  it("describe override is reflected in the link description", () => {
+    const { blocks } = buildImageBlocks({
+      base64: B64, mimeType: "image/png", width: 7, height: 3, wantInline: false, env,
+      describe: (i) => `Set-of-Marks crop ${i.width}×${i.height}`,
+    });
+    expect((blocks[0] as { description?: string }).description).toBe("Set-of-Marks crop 7×3");
+  });
+
+  it("R6: persist failure → [image] + warning (no throw), never a ref", () => {
+    const blockerDir = fs.mkdtempSync(path.join(os.tmpdir(), "dt-blocker-blocks-"));
+    const blocker = path.join(blockerDir, "file");
+    fs.writeFileSync(blocker, "x");
+    try {
+      const { blocks, warning } = buildImageBlocks({
+        base64: B64, mimeType: "image/png", width: 1, height: 1, wantInline: false,
+        env: { DESKTOP_TOUCH_SCREENSHOTS_DIR: path.join(blocker, "sub") },
+      });
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0].type).toBe("image");                          // capability preserved
+      expect(warning).toMatch(/disk-cache write failed/i);
+    } finally {
+      fs.rmSync(blockerDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("pngDimensions — native-free IHDR reader", () => {
+  it("reads width/height from a real PNG header", () => {
+    // 1×1 PNG (smallest valid): signature + IHDR(width=1,height=1) + …
+    const onePx =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+    expect(pngDimensions(onePx)).toEqual({ width: 1, height: 1 });
+  });
+
+  it("returns null for a non-PNG / malformed buffer", () => {
+    expect(pngDimensions("not-a-png")).toBeNull();
+    expect(pngDimensions("")).toBeNull();
+    // A WebP RIFF header is not a PNG.
+    expect(pngDimensions(Buffer.from("RIFF????WEBPVP8 ").toString("base64"))).toBeNull();
   });
 });
