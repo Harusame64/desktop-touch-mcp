@@ -98,6 +98,10 @@ It is trying to document an active line of engineering and research.
 
 As the project evolves, we document major architectural shifts and milestones here.
 
+### v1.11: Screenshots That Cost Less and See More
+Screenshots stop inlining their pixels into every response. `screenshot` — and the Set-of-Mark overlays, diff frames, scroll captures, workspace snapshots, and `desktop_act`'s changed-region crop — now hand back a cheap `screenshot://by-ref/{id}` link to an image saved on disk, so routine look-act-confirm loops cost a fraction of the tokens; the agent spends them on pixels only when it actually opens the link. The same release adds a Windows.Graphics.Capture path so GPU-rendered and occluded windows return real pixels instead of black (with a `captureBlocked` signal when content genuinely can't be captured), plus two new tools — `screenshot_query` and `screenshot_gc` (31 tools total) — to inspect and prune the self-bounding on-disk cache.
+- [v1.11.0 release notes](https://github.com/Harusame64/desktop-touch-mcp/releases/tag/v1.11.0)
+
 ### v1.10: A Visual-Only Act That Confirms Itself
 On a target the accessibility tree can't describe — an Electron or PWA app, a game, a custom-drawn canvas, a Remote Desktop window — a successful `desktop_act` can now bundle a `roiCapture`: a PNG crop of *just the region that changed* plus a lease-less preview of the controls now visible there. That folds the old "act → `desktop_state` → `screenshot`" confirmation loop into a **single call** — confirm the result and find the next target in the same response. Controlled by `returnCapture` (`on-change` / `always` / `never`); never attached on structured targets, where `desktop_state` and `desktop_discover` are cheaper and exact.
 - [Read the v1.10 Milestone Article](./articles/v1.10-milestone.html)
