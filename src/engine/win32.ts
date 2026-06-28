@@ -1,4 +1,5 @@
 import { nativeL1, nativeWin32 } from "./native-engine.js";
+import type { NativeWgcCaptureOptions } from "./native-types.js";
 
 // Every Win32 binding this module used to carry has migrated to the
 // napi-rs native addon (`src/win32/*.rs`) across ADR-007 P1–P4. The
@@ -450,7 +451,7 @@ export function printWindowToBuffer(hwnd: unknown, flags = 2): {
  */
 export async function captureWindowWgc(
   hwnd: unknown,
-  opts?: { includeCursor?: boolean; removeBorder?: boolean; timeoutMs?: number },
+  opts?: NativeWgcCaptureOptions,
 ): Promise<{ data: Buffer; width: number; height: number }> {
   if (typeof hwnd !== "bigint") throw new Error("captureWindowWgc requires a bigint hwnd");
   const r = await requireNativeWin32().win32WgcCaptureWindow!(hwnd, opts);

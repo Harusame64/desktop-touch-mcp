@@ -125,6 +125,11 @@ impl Default for WgcCaptureOptions {
     }
 }
 
+/// Clamp range for the drain timeout — guards against a caller passing a value
+/// that would wedge the single worker for an unreasonable span (Opus review P3).
+const WGC_MIN_TIMEOUT_MS: u32 = 100;
+const WGC_MAX_TIMEOUT_MS: u32 = 30_000;
+
 impl From<Option<NativeWgcCaptureOptions>> for WgcCaptureOptions {
     fn from(opts: Option<NativeWgcCaptureOptions>) -> Self {
         let d = WgcCaptureOptions::default();
@@ -133,16 +138,70 @@ impl From<Option<NativeWgcCaptureOptions>> for WgcCaptureOptions {
             Some(o) => WgcCaptureOptions {
                 include_cursor: o.include_cursor.unwrap_or(d.include_cursor),
                 remove_border: o.remove_border.unwrap_or(d.remove_border),
-                timeout_ms: o.timeout_ms.unwrap_or(d.timeout_ms),
+                timeout_ms: o
+                    .timeout_ms
+                    .unwrap_or(d.timeout_ms)
+                    .clamp(WGC_MIN_TIMEOUT_MS, WGC_MAX_TIMEOUT_MS),
             },
         }
     }
 }
 
 /// Whether WGC is available on this OS at all (Win10 1903+). Must be called on
-/// a COM-initialised thread (the worker is MTA-initialised).
+/// a COM-initialised thread (the worker is MTA-initialised). The capability is
+/// fixed for the process, so cache it after the first probe (Opus review P3).
 fn is_supported() -> bool {
-    GraphicsCaptureSession::IsSupported().unwrap_or(false)
+    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+    *SUPPORTED.get_or_init(|| GraphicsCaptureSession::IsSupported().unwrap_or(false))
+}
+
+// ─── RAII close-guards (ADR-027 D6 cleanup uniformity, Opus review P2) ─────────
+// WGC objects implement WinRT `IClosable`. Dropping them already calls Release
+// (freeing per-call objects today), but the explicit `Close()` is the documented
+// dispose and matters once OQ6 (session reuse) lands. Wrapping pool/session/frame
+// in guards makes teardown uniform on EVERY exit path — including the `?`
+// early-returns between frame acquisition and the end of the function — mirroring
+// the RAII guard style in `gdi.rs` (DcGuard / BitmapGuard / SelectGuard). Drop is
+// LIFO, so declaring pool → session → frame tears down frame → session → pool,
+// the correct order.
+
+struct PoolGuard(Direct3D11CaptureFramePool);
+impl Drop for PoolGuard {
+    fn drop(&mut self) {
+        let _ = self.0.Close();
+    }
+}
+impl std::ops::Deref for PoolGuard {
+    type Target = Direct3D11CaptureFramePool;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+struct SessionGuard(GraphicsCaptureSession);
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        let _ = self.0.Close();
+    }
+}
+impl std::ops::Deref for SessionGuard {
+    type Target = GraphicsCaptureSession;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+struct FrameGuard(Direct3D11CaptureFrame);
+impl Drop for FrameGuard {
+    fn drop(&mut self) {
+        let _ = self.0.Close();
+    }
+}
+impl std::ops::Deref for FrameGuard {
+    type Target = Direct3D11CaptureFrame;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 // ─── Reusable device bundle (lives on the worker thread only) ─────────────────
@@ -206,14 +265,16 @@ fn capture_with_device(
             )));
         }
 
-        // 2. Free-threaded frame pool (no message pump needed) + session.
-        let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
+        // 2. Free-threaded frame pool (no message pump needed) + session. Both
+        //    are RAII-guarded (PoolGuard/SessionGuard) so Close() runs on every
+        //    exit path below, including the `?` early-returns (Opus review P2).
+        let pool = PoolGuard(Direct3D11CaptureFramePool::CreateFreeThreaded(
             &dev.rt_device,
             DirectXPixelFormat::B8G8R8A8UIntNormalized,
             2,
             item_size,
-        )?;
-        let session = pool.CreateCaptureSession(&item)?;
+        )?);
+        let session = SessionGuard(pool.CreateCaptureSession(&item)?);
 
         // Feature-detect knobs (ADR-027 D5): both exist in the API surface but
         // may throw on older builds — ignore failures and degrade.
@@ -230,6 +291,8 @@ fn capture_with_device(
         //    a frame appears, then wait briefly and take the freshest buffered
         //    frame. `TryGetNextFrame` returns Err when the pool is momentarily
         //    empty (null → E_POINTER), which we treat as "not ready yet".
+        //    Intermediate frames are Dropped (Release) here, recycling the
+        //    pool's 2 buffers; only the chosen frame is Close-guarded.
         let deadline = Instant::now() + Duration::from_millis(opts.timeout_ms as u64);
         let mut latest: Option<Direct3D11CaptureFrame> = None;
         loop {
@@ -248,14 +311,9 @@ fn capture_with_device(
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        let frame = match latest {
-            Some(f) => f,
-            None => {
-                let _ = session.Close();
-                let _ = pool.Close();
-                return Err(WgcError::NoFrame);
-            }
-        };
+        // Guard the chosen frame; the pool/session guards close on scope exit, so
+        // the NoFrame path needs no manual cleanup.
+        let frame = FrameGuard(latest.ok_or(WgcError::NoFrame)?);
 
         // 4. Content size (real captured pixels) — NOT item.Size(), which can
         //    be padded (ADR-027 D4).
@@ -291,9 +349,7 @@ fn capture_with_device(
         let content_h = (content.Height.max(0) as u32).min(surface_h);
         if content_w == 0 || content_h == 0 {
             dev.context.Unmap(&staging, 0);
-            let _ = frame.Close();
-            let _ = session.Close();
-            let _ = pool.Close();
+            // pool/session/frame guards close on scope exit.
             return Err(WgcError::Other("WGC content size zero".into()));
         }
         let row_pitch = mapped.RowPitch as usize;
@@ -316,11 +372,8 @@ fn capture_with_device(
         }
         dev.context.Unmap(&staging, 0);
 
-        // 8. Tear down the per-call WGC objects (device/context are reused).
-        let _ = frame.Close();
-        let _ = session.Close();
-        let _ = pool.Close();
-
+        // pool/session/frame guards close on scope exit (LIFO: frame → session
+        // → pool), so no manual Close() is needed here.
         debug_assert_eq!(out.len(), content_w as usize * content_h as usize * 4);
         Ok(WgcFrame {
             data: out,
@@ -444,8 +497,13 @@ pub fn capture_via_worker(hwnd_raw: usize, opts: WgcCaptureOptions) -> Result<Wg
         })
         .map_err(|_| "WGC worker unavailable".to_string())?;
     // Bound the wait so a wedged capture can't pin the libuv worker forever.
-    // The worker serialises captures, so allow for one in-flight capture ahead
-    // of us plus our own (2× drain budget) + a fixed slack.
+    // The single worker serialises captures, so allow for one in-flight capture
+    // ahead of us plus our own (2× drain budget) + a fixed slack. `timeout_ms`
+    // is clamped ≤30s upstream, so this wait is ≤63s. Captures are human-paced
+    // (the Phase 2 ladder fires them per screenshot, not in bursts); if many
+    // libuv threads ever issue WGC captures concurrently a valid one could be
+    // mis-reported as timed-out → harmless extra PrintWindow fallback, never a
+    // crash (Opus review P3, accepted for the human-paced caller profile).
     let wait = Duration::from_millis(opts.timeout_ms as u64 * 2 + 3000);
     match reply_rx.recv_timeout(wait) {
         Ok(r) => r,
@@ -539,5 +597,24 @@ mod tests {
         assert!(!o.include_cursor);
         assert!(!o.remove_border);
         assert_eq!(o.timeout_ms, 500);
+    }
+
+    #[test]
+    fn timeout_is_clamped_to_sane_range() {
+        let hi: WgcCaptureOptions = Some(NativeWgcCaptureOptions {
+            include_cursor: None,
+            remove_border: None,
+            timeout_ms: Some(10_000_000),
+        })
+        .into();
+        assert_eq!(hi.timeout_ms, WGC_MAX_TIMEOUT_MS);
+
+        let lo: WgcCaptureOptions = Some(NativeWgcCaptureOptions {
+            include_cursor: None,
+            remove_border: None,
+            timeout_ms: Some(1),
+        })
+        .into();
+        assert_eq!(lo.timeout_ms, WGC_MIN_TIMEOUT_MS);
     }
 }
