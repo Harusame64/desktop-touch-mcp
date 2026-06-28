@@ -206,10 +206,10 @@ export async function captureWindowBackground(
   // occluded windows that PrintWindow returns black for. Hidden / minimised /
   // cloaked windows fail the D3 gate inside the helper and fall straight to
   // PrintWindow, preserving this entry's "capture hidden/minimised via
-  // PrintWindow" contract. fullContent=false maps to printWindowFlags===0
-  // (legacy fast PrintWindow); that is an explicit opt-out of full-content
-  // capture, so honor it by skipping WGC (Codex review). flags 2/3 get WGC.
-  const wgc = printWindowFlags !== 0 ? await captureWindowRawViaWgc(hwnd) : null;
+  // PrintWindow" contract. WGC only substitutes for full-window full-content
+  // (flag 2): fullContent=false → flag 0 (legacy fast opt-out) and client-only
+  // requests (PW_CLIENTONLY) stay on PrintWindow (Codex review R1+R2).
+  const wgc = wgcMatchesFlags(printWindowFlags) ? await captureWindowRawViaWgc(hwnd) : null;
   if (wgc) {
     return encode(wgc.rawPixels, wgc.width, wgc.height, 4, opts);
   }
@@ -319,6 +319,17 @@ export function _resetWgcSupportForTest(): void {
   wgcUnsupported = false;
 }
 
+// PrintWindow flags: 0 = legacy (fast, GPU-black), 2 = PW_RENDERFULLCONTENT
+// (full window, full content), 3 = PW_CLIENTONLY(0x1) | RENDERFULLCONTENT.
+// WGC always captures the full window's composited content, so it can only
+// substitute for flag 2. Legacy (0 — the explicit fast opt-out / fullContent=
+// false) and client-only requests (PW_CLIENTONLY bit set: flags 1/3) are
+// honored by PrintWindow, not WGC (Codex review R1 = legacy, R2 = client-only).
+const PW_CLIENTONLY = 0x1;
+function wgcMatchesFlags(flags: number): boolean {
+  return flags !== 0 && (flags & PW_CLIENTONLY) === 0;
+}
+
 /**
  * ADR-027 — attempt a WGC capture of `hwnd`, returning raw RGBA (top-down,
  * channels=4) or `null` when WGC is unavailable / ineligible / produced no
@@ -414,9 +425,9 @@ export async function captureWindowRawWithFallback(
   // DWM is compositing (D3 gate inside the helper); on an unsupported OS or an
   // ineligible window it returns null and we fall to BitBlt unchanged.
   // `fallbackReason` is preserved to record WHY PrintWindow was abandoned.
-  // Skipped in explicit legacy mode (flags===0 / fullContent=false) to honor
-  // the documented fast-PrintWindow opt-out; flags 2/3 (full content) get WGC.
-  const wgc = flags !== 0 ? await captureWindowRawViaWgc(hwnd) : null;
+  // WGC only substitutes for full-window full-content (flag 2); legacy (0) and
+  // client-only (PW_CLIENTONLY) requests fall through to BitBlt unchanged.
+  const wgc = wgcMatchesFlags(flags) ? await captureWindowRawViaWgc(hwnd) : null;
   if (wgc) {
     return {
       rawPixels: wgc.rawPixels,
