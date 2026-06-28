@@ -206,8 +206,10 @@ export async function captureWindowBackground(
   // occluded windows that PrintWindow returns black for. Hidden / minimised /
   // cloaked windows fail the D3 gate inside the helper and fall straight to
   // PrintWindow, preserving this entry's "capture hidden/minimised via
-  // PrintWindow" contract.
-  const wgc = await captureWindowRawViaWgc(hwnd);
+  // PrintWindow" contract. fullContent=false maps to printWindowFlags===0
+  // (legacy fast PrintWindow); that is an explicit opt-out of full-content
+  // capture, so honor it by skipping WGC (Codex review). flags 2/3 get WGC.
+  const wgc = printWindowFlags !== 0 ? await captureWindowRawViaWgc(hwnd) : null;
   if (wgc) {
     return encode(wgc.rawPixels, wgc.width, wgc.height, 4, opts);
   }
@@ -340,8 +342,12 @@ async function captureWindowRawViaWgc(
     if (isLikelyBlankCapture(data, width, height, 4).isBlank) return null;
     return { rawPixels: data, width, height, channels: 4 };
   } catch (e) {
+    // Latch ONLY on the OS-level unsupported signal (WgcError::Unsupported →
+    // "WGC unsupported on this OS"), not on a transient per-window COM error
+    // whose message happens to contain "unsupported" (those rebuild the device
+    // engine-side and should keep retrying). Opus review P3.
     const msg = String((e as Error)?.message ?? e).toLowerCase();
-    if (msg.includes("unsupported")) wgcUnsupported = true;
+    if (msg.includes("wgc unsupported")) wgcUnsupported = true;
     return null;
   }
 }
@@ -370,9 +376,11 @@ export interface CaptureWindowRawResult {
  * Note on dimension parity: on high-DPI monitors PrintWindow returns the
  * window's drawn surface in device pixels, and `screen.grabRegion` of the
  * same screen rect returns logical pixels — the two branches may therefore
- * differ in dimensions. Callers (e.g. `captureAndDiff`) that compare frames
- * across captures must tolerate a one-time `sizeChanged` when the source
- * alternates between PrintWindow and BitBlt for the same window.
+ * differ in dimensions. WGC (ADR-027) is a third source whose `ContentSize`
+ * is device-pixel-like (close to PrintWindow) but can still differ from the
+ * BitBlt logical-pixel branch. Callers (e.g. `captureAndDiff`) that compare
+ * frames across captures must tolerate a one-time `sizeChanged` when the
+ * source switches among PrintWindow / WGC / BitBlt for the same window.
  */
 export async function captureWindowRawWithFallback(
   hwnd: unknown,
@@ -406,7 +414,9 @@ export async function captureWindowRawWithFallback(
   // DWM is compositing (D3 gate inside the helper); on an unsupported OS or an
   // ineligible window it returns null and we fall to BitBlt unchanged.
   // `fallbackReason` is preserved to record WHY PrintWindow was abandoned.
-  const wgc = await captureWindowRawViaWgc(hwnd);
+  // Skipped in explicit legacy mode (flags===0 / fullContent=false) to honor
+  // the documented fast-PrintWindow opt-out; flags 2/3 (full content) get WGC.
+  const wgc = flags !== 0 ? await captureWindowRawViaWgc(hwnd) : null;
   if (wgc) {
     return {
       rawPixels: wgc.rawPixels,

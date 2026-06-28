@@ -572,11 +572,11 @@ export function canCaptureWindowViaWgc(hwnd: unknown): boolean {
   if (typeof hwnd !== "bigint") return false;
   try {
     const w32 = requireNativeWin32();
-    return (
-      !!w32.win32IsWindowVisible?.(hwnd) &&
-      !w32.win32IsIconic?.(hwnd) &&
-      !isWindowCloaked(hwnd)
-    );
+    // Fail safe: if either binding is missing (non-Windows / partial addon),
+    // skip WGC rather than letting an absent `!IsIconic?.()` evaluate to a
+    // permissive `true` (Opus review P3 — symmetric "missing → skip" contract).
+    if (!w32.win32IsWindowVisible || !w32.win32IsIconic) return false;
+    return w32.win32IsWindowVisible(hwnd) && !w32.win32IsIconic(hwnd) && !isWindowCloaked(hwnd);
   } catch {
     return false;
   }

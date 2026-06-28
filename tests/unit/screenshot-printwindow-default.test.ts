@@ -388,6 +388,20 @@ describe("captureWindowRawWithFallback — WGC rescue (ADR-027 Phase 2)", () => 
     expect(second.source).toBe("bitblt-fallback");
     expect(mockCaptureWindowWgc).toHaveBeenCalledTimes(1); // still 1, not 2
   });
+
+  it("flags=0 (legacy / fullContent=false) → WGC rescue skipped, BitBlt used", async () => {
+    // Honors the explicit fast-PrintWindow opt-out (Codex review): even when the
+    // window is WGC-eligible and PrintWindow blanked, legacy mode must not pull
+    // in WGC.
+    mockPrintWindowToBuffer.mockReturnValue({ data: makeUniformRgba(64, 64, 0, 0, 0), width: 64, height: 64 });
+    mockCanUseWgc.mockReturnValue(true);
+    mockCaptureWindowWgc.mockResolvedValue({ data: makeGradientRgba(64, 64), width: 64, height: 64 });
+    mockGrabRegion.mockResolvedValue(makeNutjsImage(64, 64, { r: 10, g: 20, b: 30 }));
+
+    const result = await captureWindowRawWithFallback(hwnd, region, 0);
+    expect(result.source).toBe("bitblt-fallback");
+    expect(mockCaptureWindowWgc).not.toHaveBeenCalled();
+  });
 });
 
 describe("captureWindowBackground — WGC primary (ADR-027 Phase 2)", () => {
@@ -417,5 +431,26 @@ describe("captureWindowBackground — WGC primary (ADR-027 Phase 2)", () => {
     expect(result).toBeTruthy();
     expect(mockCaptureWindowWgc).not.toHaveBeenCalled();
     expect(mockPrintWindowToBuffer).toHaveBeenCalledTimes(1);
+  });
+
+  it("flags=0 (fullContent=false) → legacy PrintWindow, WGC NOT attempted", async () => {
+    mockCanUseWgc.mockReturnValue(true); // eligible, but legacy mode opts out of WGC
+    mockPrintWindowToBuffer.mockReturnValue({ data: makeGradientRgba(80, 60), width: 80, height: 60 });
+
+    const result = await captureWindowBackground(hwnd, 1280, 0);
+    expect(result).toBeTruthy();
+    expect(mockCaptureWindowWgc).not.toHaveBeenCalled();
+    expect(mockPrintWindowToBuffer).toHaveBeenCalledTimes(1);
+  });
+
+  it("WGC returns an all-black frame → PrintWindow fallback (blank-safety)", async () => {
+    mockCanUseWgc.mockReturnValue(true);
+    mockCaptureWindowWgc.mockResolvedValue({ data: makeUniformRgba(80, 60, 0, 0, 0), width: 80, height: 60 });
+    mockPrintWindowToBuffer.mockReturnValue({ data: makeGradientRgba(80, 60), width: 80, height: 60 });
+
+    const result = await captureWindowBackground(hwnd, 1280);
+    expect(result).toBeTruthy();
+    expect(mockCaptureWindowWgc).toHaveBeenCalledTimes(1);
+    expect(mockPrintWindowToBuffer).toHaveBeenCalledTimes(1); // WGC blank rejected → PrintWindow
   });
 });
