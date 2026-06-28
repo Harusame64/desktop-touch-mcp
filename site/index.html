@@ -102,6 +102,10 @@
             <h2>Project Milestones</h2>
             <p>As the project evolves, we document major architectural shifts and milestones here.</p>
             <div class="three-up">
+              <a class="mini-card" href="https://github.com/Harusame64/desktop-touch-mcp/releases/tag/v1.11.0">
+                <h3>v1.11: Screenshots That Cost Less and See More</h3>
+                <p>Screenshots stop inlining their pixels into every response: <code>screenshot</code> (and the Set-of-Mark, diff, scroll, workspace, and <code>desktop_act</code> crop results) now return a cheap <code>screenshot://by-ref/{id}</code> link to an image saved on disk, so routine look-act-confirm loops cost a fraction of the tokens — pixels are spent only when the link is opened. A Windows.Graphics.Capture path lets GPU-rendered and occluded windows return real pixels instead of black, with a <code>captureBlocked</code> signal when content genuinely can't be captured, and two new tools — <code>screenshot_query</code> and <code>screenshot_gc</code> (31 tools total) — inspect and prune the self-bounding cache.</p>
+              </a>
               <a class="mini-card" href="./articles/v1.10-milestone.html">
                 <h3>v1.10: A Visual-Only Act That Confirms Itself</h3>
                 <p>On a target the accessibility tree can't describe — Electron, PWA, game, custom canvas, Remote Desktop — a successful <code>desktop_act</code> can bundle a <code>roiCapture</code>: a PNG crop of <em>just the region that changed</em> plus a lease-less preview of the controls now visible there. It folds "act → <code>desktop_state</code> → <code>screenshot</code>" into a single call. On by default for a visible change; <code>returnCapture:"never"</code> suppresses it. Never attached on structured targets, where <code>desktop_state</code> is cheaper and exact.</p>
