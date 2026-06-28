@@ -1,6 +1,6 @@
 import sharp from "sharp";
 import { screen, Region } from "./nutjs.js";
-import { printWindowToBuffer } from "./win32.js";
+import { printWindowToBuffer, captureWindowWgc, canCaptureWindowViaWgc } from "./win32.js";
 import { nativeEngine } from "./native-engine.js";
 
 export interface CaptureOptions {
@@ -201,6 +201,18 @@ export async function captureWindowBackground(
 ): Promise<CaptureResult> {
   const opts: CaptureOptions =
     typeof optsOrMaxDim === "number" ? { maxDimension: optsOrMaxDim } : optsOrMaxDim;
+  // ADR-027 — for windows DWM is compositing (visible, non-minimised,
+  // non-cloaked) prefer WGC: it returns real pixels for GPU-composited /
+  // occluded windows that PrintWindow returns black for. Hidden / minimised /
+  // cloaked windows fail the D3 gate inside the helper and fall straight to
+  // PrintWindow, preserving this entry's "capture hidden/minimised via
+  // PrintWindow" contract. WGC only substitutes for full-window full-content
+  // (flag 2): fullContent=false → flag 0 (legacy fast opt-out) and client-only
+  // requests (PW_CLIENTONLY) stay on PrintWindow (Codex review R1+R2).
+  const wgc = wgcMatchesFlags(printWindowFlags) ? await captureWindowRawViaWgc(hwnd) : null;
+  if (wgc) {
+    return encode(wgc.rawPixels, wgc.width, wgc.height, 4, opts);
+  }
   // Call printWindowToBuffer directly so the original native error (driver
   // failure, DRM-protected surface, etc.) propagates to OCR / SoM callers
   // verbatim. The raw helper that backs the fallback path deliberately
@@ -295,8 +307,61 @@ export function isLikelyBlankCapture(
   return { isBlank: false, reason: null };
 }
 
-export type CaptureSource = "printwindow" | "bitblt-fallback";
+export type CaptureSource = "printwindow" | "bitblt-fallback" | "wgc";
 export type CaptureFallbackReason = "printwindow-failed" | "printwindow-all-black" | null;
+
+// ADR-027: once a WGC attempt reports the OS doesn't support WGC, skip it for
+// the rest of the session rather than paying a futile worker round-trip on
+// every eligible capture. Reset between tests via `_resetWgcSupportForTest`.
+let wgcUnsupported = false;
+/** Test-only: clear the cached "WGC unsupported" flag. */
+export function _resetWgcSupportForTest(): void {
+  wgcUnsupported = false;
+}
+
+// PrintWindow flags: 0 = legacy (fast, GPU-black), 2 = PW_RENDERFULLCONTENT
+// (full window, full content), 3 = PW_CLIENTONLY(0x1) | RENDERFULLCONTENT.
+// WGC always captures the full window's composited content, so it can only
+// substitute for flag 2. Legacy (0 — the explicit fast opt-out / fullContent=
+// false) and client-only requests (PW_CLIENTONLY bit set: flags 1/3) are
+// honored by PrintWindow, not WGC (Codex review R1 = legacy, R2 = client-only).
+const PW_CLIENTONLY = 0x1;
+function wgcMatchesFlags(flags: number): boolean {
+  return flags !== 0 && (flags & PW_CLIENTONLY) === 0;
+}
+
+/**
+ * ADR-027 — attempt a WGC capture of `hwnd`, returning raw RGBA (top-down,
+ * channels=4) or `null` when WGC is unavailable / ineligible / produced no
+ * trustworthy frame, so the caller falls through to the next ladder rung.
+ *
+ * Eligibility is the D3 gate (`canCaptureWindowViaWgc`: DWM is compositing the
+ * window). The WGC frame is run through the SAME blank-capture gate as
+ * PrintWindow — an all-black / zero-variance WGC frame (occlusion transition,
+ * DRM-protected surface) is rejected so we never return a black image as real
+ * (ADR-027 §5). A reject whose reason mentions "unsupported" latches
+ * `wgcUnsupported` so subsequent captures skip WGC entirely on this OS.
+ */
+async function captureWindowRawViaWgc(
+  hwnd: unknown,
+): Promise<{ rawPixels: Buffer; width: number; height: number; channels: 4 } | null> {
+  if (wgcUnsupported) return null;
+  if (typeof hwnd !== "bigint" || !canCaptureWindowViaWgc(hwnd)) return null;
+  try {
+    const { data, width, height } = await captureWindowWgc(hwnd);
+    if (!data || width <= 0 || height <= 0) return null;
+    if (isLikelyBlankCapture(data, width, height, 4).isBlank) return null;
+    return { rawPixels: data, width, height, channels: 4 };
+  } catch (e) {
+    // Latch ONLY on the OS-level unsupported signal (WgcError::Unsupported →
+    // "WGC unsupported on this OS"), not on a transient per-window COM error
+    // whose message happens to contain "unsupported" (those rebuild the device
+    // engine-side and should keep retrying). Opus review P3.
+    const msg = String((e as Error)?.message ?? e).toLowerCase();
+    if (msg.includes("wgc unsupported")) wgcUnsupported = true;
+    return null;
+  }
+}
 
 export interface CaptureWindowRawResult {
   rawPixels: Buffer;
@@ -322,9 +387,11 @@ export interface CaptureWindowRawResult {
  * Note on dimension parity: on high-DPI monitors PrintWindow returns the
  * window's drawn surface in device pixels, and `screen.grabRegion` of the
  * same screen rect returns logical pixels — the two branches may therefore
- * differ in dimensions. Callers (e.g. `captureAndDiff`) that compare frames
- * across captures must tolerate a one-time `sizeChanged` when the source
- * alternates between PrintWindow and BitBlt for the same window.
+ * differ in dimensions. WGC (ADR-027) is a third source whose `ContentSize`
+ * is device-pixel-like (close to PrintWindow) but can still differ from the
+ * BitBlt logical-pixel branch. Callers (e.g. `captureAndDiff`) that compare
+ * frames across captures must tolerate a one-time `sizeChanged` when the
+ * source switches among PrintWindow / WGC / BitBlt for the same window.
  */
 export async function captureWindowRawWithFallback(
   hwnd: unknown,
@@ -351,6 +418,25 @@ export async function captureWindowRawWithFallback(
       };
     }
     fallbackReason = blank.reason;
+  }
+  // ADR-027 WGC rescue — before BitBlt, try the DWM composition surface. This
+  // is the route for GPU-composited (Chrome/Electron/WinUI3) and occluded
+  // windows that PrintWindow blacked out or failed on. Only fires for windows
+  // DWM is compositing (D3 gate inside the helper); on an unsupported OS or an
+  // ineligible window it returns null and we fall to BitBlt unchanged.
+  // `fallbackReason` is preserved to record WHY PrintWindow was abandoned.
+  // WGC only substitutes for full-window full-content (flag 2); legacy (0) and
+  // client-only (PW_CLIENTONLY) requests fall through to BitBlt unchanged.
+  const wgc = wgcMatchesFlags(flags) ? await captureWindowRawViaWgc(hwnd) : null;
+  if (wgc) {
+    return {
+      rawPixels: wgc.rawPixels,
+      width: wgc.width,
+      height: wgc.height,
+      channels: wgc.channels,
+      source: "wgc",
+      fallbackReason,
+    };
   }
   // BitBlt fallback grabs the full window rect, NOT a sub-region. Sub-region
   // crops are applied uniformly at encode time via opts.crop (window-local

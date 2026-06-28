@@ -458,8 +458,13 @@ export async function verifyLocalRepaint(opts: {
     // (rect minus windowRect origin, see Step 2.5), so adding `localRect.{x,y}`
     // lifts the bbox to window-relative coordinates — exactly the basis
     // `RoiCapture.roi` expects.
+    // PrintWindow AND WGC (ADR-027) both read off-screen / composited content,
+    // so their bbox is occlusion-immune; the on-screen-only BitBlt fallback is
+    // excluded. (Opus review P2: WGC was previously, and incorrectly, excluded,
+    // which silently demoted every WGC-rescued frame's ROI to full-window.)
     const occlusionImmune =
-      opts.preFrame.source === "printwindow" && finalStable.source === "printwindow";
+      (opts.preFrame.source === "printwindow" || opts.preFrame.source === "wgc") &&
+      (finalStable.source === "printwindow" || finalStable.source === "wgc");
     const roiBbox: Rect | undefined =
       opts.includeRoiBbox === true && occlusionImmune && ssim.bbox != null
         ? {

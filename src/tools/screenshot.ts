@@ -935,7 +935,15 @@ export const screenshotHandler = async (args: {
       } = { captureSource: result.source };
       const localWarnings: string[] = [...screenshotWarnings];
       if (result.fallbackReason !== null) {
+        // Keep the reason as a diagnostic regardless of which rung served the
+        // frame (for source="wgc" it records why PrintWindow was abandoned).
         captureHints.captureFallbackReason = result.fallbackReason;
+      }
+      // The occlusion-risk warnings describe the BitBlt fallback ONLY. A WGC
+      // rescue (source="wgc") reads the DWM composition surface and is
+      // occlusion-immune, so it must not inherit the "may show overlapping
+      // windows" text even though it carries a fallbackReason (ADR-027 Phase 2).
+      if (result.source === "bitblt-fallback") {
         // Fixed strings only (no variable interpolation — CWE-94 guidance).
         if (result.fallbackReason === "printwindow-failed") {
           localWarnings.push(
