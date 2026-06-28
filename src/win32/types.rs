@@ -53,6 +53,29 @@ pub struct NativeMonitorInfo {
     pub dpi: u32,
 }
 
+/// ADR-027 — result of `win32_wgc_capture_window`. `data` is RGBA8 top-down,
+/// length equals `width * height * 4` (the D4 buffer invariant, asserted in
+/// the engine). Same shape as `NativePrintWindowResult` so the TS capture
+/// ladder can treat WGC and PrintWindow outputs uniformly.
+#[napi(object)]
+pub struct NativeWgcResult {
+    pub data: Buffer,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// ADR-027 — optional knobs for `win32_wgc_capture_window`. All fields are
+/// optional; the engine applies defaults (cursor off, border-suppression best
+/// effort, 1500ms drain timeout). `include_cursor` / `remove_border` are
+/// feature-detected (best-effort) in the engine and silently ignored on
+/// Windows builds that don't support them (D5).
+#[napi(object)]
+pub struct NativeWgcCaptureOptions {
+    pub include_cursor: Option<bool>,
+    pub remove_border: Option<bool>,
+    pub timeout_ms: Option<u32>,
+}
+
 // ── Win32 Process / Input (ADR-007 P3) ───────────────────────────────────────
 
 /// Outcome of `win32_force_set_foreground_window`. `fgBefore` / `fgAfter`

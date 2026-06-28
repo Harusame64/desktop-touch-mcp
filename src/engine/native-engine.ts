@@ -35,6 +35,8 @@ import type {
   NativeWin32Rect,
   NativeThreadProcessId,
   NativePrintWindowResult,
+  NativeWgcResult,
+  NativeWgcCaptureOptions,
   NativeMonitorInfo,
   NativeForceFocusResult,
   NativeForegroundFlashOptions,
@@ -144,6 +146,8 @@ export interface NativeWin32 {
 
   // ADR-007 P2 GDI / monitor / DPI
   win32PrintWindowToBuffer?(hwnd: bigint, flags: number): NativePrintWindowResult;
+  // ADR-027 WGC capture (async — runs on the dedicated desktop-wgc worker thread)
+  win32WgcCaptureWindow?(hwnd: bigint, opts?: NativeWgcCaptureOptions): Promise<NativeWgcResult>;
   win32EnumMonitors?(): NativeMonitorInfo[];
   win32GetWindowDpi?(hwnd: bigint): number;
   win32SetProcessDpiAwareness?(level: number): boolean;

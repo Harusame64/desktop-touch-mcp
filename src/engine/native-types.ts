@@ -283,6 +283,25 @@ export interface NativePrintWindowResult {
   height: number
 }
 
+/** ADR-027 — result of `win32WgcCaptureWindow`: RGBA top-down pixels from the
+ *  DWM composition surface (length = w*h*4). Same shape as
+ *  `NativePrintWindowResult` so the capture ladder treats both uniformly. */
+export interface NativeWgcResult {
+  data: Buffer
+  width: number
+  height: number
+}
+
+/** ADR-027 — optional knobs for `win32WgcCaptureWindow`. All optional; the
+ *  engine defaults to cursor off, best-effort border suppression, 1500ms drain
+ *  timeout. `includeCursor` / `removeBorder` are feature-detected and silently
+ *  ignored on Windows builds that don't support them (D5). */
+export interface NativeWgcCaptureOptions {
+  includeCursor?: boolean
+  removeBorder?: boolean
+  timeoutMs?: number
+}
+
 /** One monitor as returned by `win32EnumMonitors`. The TS wrapper rebuilds
  *  the nested `{ bounds, workArea }` shape that callers (`MonitorInfo`)
  *  expect — this flat record matches the napi marshal layout. */
