@@ -1,9 +1,31 @@
 # Changelog
 
-## [1.11.0] - Unreleased — Screenshots now cost a fraction of the tokens, plus tools to manage the cache
+## [1.11.0] - Unreleased — Screenshots cost a fraction of the tokens, capture real pixels from GPU-rendered & occluded windows, plus tools to manage the cache
 
 ### Added
 
+- **GPU-rendered and occluded windows now capture real pixels instead of black.**
+  Hardware-accelerated windows — Chrome / Edge, Electron apps (VS Code, Slack,
+  Discord), and many WinUI / game windows — often came back as a black rectangle
+  because the classic capture path can't read their GPU-composited surface, and
+  the on-screen fallback can only grab a window that isn't covered by another.
+  `screenshot` now adds a Windows.Graphics.Capture path that reads the same
+  composited surface the desktop shows, so those windows (including ones sitting
+  behind others) capture their actual contents. It's used automatically:
+  `mode='background'` captures eligible visible windows through it, and a normal
+  `screenshot` that comes back black is retried through it before any fallback —
+  no new options to set. Minimized, hidden, and off-desktop windows keep using
+  the existing path (they have no live composited surface to read). The on-disk
+  cache and by-ref links above are unchanged — this only changes *what* gets
+  captured, not how the image is returned.
+- **A clear signal when a window genuinely can't be captured.** If every capture
+  method still returns an all-black frame — typical of DRM-protected video, a
+  secure-desktop / UAC prompt, or a hardware-overlay surface — `screenshot` now
+  says so explicitly (a `captureBlocked` hint plus a warning) instead of quietly
+  handing back a black image as if it were the real window. The wording is
+  deliberately careful: an all-black result can also just be a genuinely black
+  window (a dark terminal, a letterboxed video), so it asks you to treat the
+  image as unverified rather than asserting the content is protected.
 - **By-ref screenshots (big token saving).** `screenshot` and the other visual
   results — SoM element overlays, diff-mode frames, scroll captures, workspace
   snapshots, and `desktop_act`'s changed-region crop — are now handed back as a
