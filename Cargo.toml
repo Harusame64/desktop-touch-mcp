@@ -169,6 +169,18 @@ windows = { version = "0.62", features = [
     # WTSEnumerateSessionsW / WTSFreeMemory / WTS_CONNECTSTATE_CLASS /
     # WTS_SESSION_INFOW (windows-rs groups them under RemoteDesktop).
     "Win32_System_RemoteDesktop",
+    # ── ADR-027: Windows.Graphics.Capture (WGC) capture layer ────────────
+    # GPU 合成窓 / 遮蔽窓の実ピクセル捕捉。PrintWindow が黒を返す DWM 合成窓を
+    # DWM composition surface から直接撮る。WinRT 側 (GraphicsCaptureItem /
+    # Direct3D11CaptureFramePool::CreateFreeThreaded / GraphicsCaptureSession /
+    # Direct3D11CaptureFrame) + 相互運用 (IGraphicsCaptureItemInterop /
+    # CreateDirect3D11DeviceFromDXGIDevice / IDirect3DDxgiInterfaceAccess)。
+    # D3D11 / Dxgi / Direct3D は既存 feature (上記 Duplication 用) を再利用する。
+    "Graphics_Capture",
+    "Graphics_DirectX_Direct3D11",
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics_Capture",
 ] }
 
 [build-dependencies]

@@ -107,6 +107,18 @@ export interface NativePrintWindowResult {
   height: number
 }
 
+export interface NativeWgcResult {
+  data: Buffer
+  width: number
+  height: number
+}
+
+export interface NativeWgcCaptureOptions {
+  includeCursor?: boolean
+  removeBorder?: boolean
+  timeoutMs?: number
+}
+
 export interface NativeMonitorInfo {
   handle: bigint
   primary: boolean
@@ -340,6 +352,8 @@ export declare function win32GetWindowLongPtrW(hwnd: bigint, nIndex: number): nu
 
 // ─── Win32 GDI / monitor / DPI (ADR-007 P2) ──────────────────────────────────
 export declare function win32PrintWindowToBuffer(hwnd: bigint, flags: number): NativePrintWindowResult
+// ─── ADR-027: Windows.Graphics.Capture (WGC) ─────────────────────────────────
+export declare function win32WgcCaptureWindow(hwnd: bigint, opts?: NativeWgcCaptureOptions): Promise<NativeWgcResult>
 export declare function win32EnumMonitors(): NativeMonitorInfo[]
 export declare function win32GetWindowDpi(hwnd: bigint): number
 export declare function win32SetProcessDpiAwareness(level: number): boolean

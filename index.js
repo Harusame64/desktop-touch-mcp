@@ -88,6 +88,8 @@ export const win32GetWindowLongPtrW         = nativeBinding.win32GetWindowLongPt
 
 // ─── Win32 GDI / monitor / DPI (ADR-007 P2) ──────────────────────────────────
 export const win32PrintWindowToBuffer       = nativeBinding.win32PrintWindowToBuffer;
+// ─── ADR-027: Windows.Graphics.Capture (WGC) ─────────────────────────────────
+export const win32WgcCaptureWindow          = nativeBinding.win32WgcCaptureWindow;
 export const win32EnumMonitors              = nativeBinding.win32EnumMonitors;
 export const win32GetWindowDpi              = nativeBinding.win32GetWindowDpi;
 export const win32SetProcessDpiAwareness    = nativeBinding.win32SetProcessDpiAwareness;

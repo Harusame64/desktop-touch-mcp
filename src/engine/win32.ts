@@ -1,4 +1,5 @@
 import { nativeL1, nativeWin32 } from "./native-engine.js";
+import type { NativeWgcCaptureOptions } from "./native-types.js";
 
 // Every Win32 binding this module used to carry has migrated to the
 // napi-rs native addon (`src/win32/*.rs`) across ADR-007 P1–P4. The
@@ -429,6 +430,31 @@ export function printWindowToBuffer(hwnd: unknown, flags = 2): {
 } {
   if (typeof hwnd !== "bigint") throw new Error("printWindowToBuffer requires a bigint hwnd");
   const r = requireNativeWin32().win32PrintWindowToBuffer!(hwnd, flags);
+  return { data: r.data, width: r.width, height: r.height };
+}
+
+/**
+ * ADR-027 — capture a window via Windows.Graphics.Capture (WGC).
+ *
+ * Reads the *real* pixels from the DWM composition surface, so it works for
+ * GPU-composited windows (Chrome / Electron / WinUI3) and occluded windows —
+ * the structural gap where `printWindowToBuffer` returns black and BitBlt can
+ * only read on-screen windows. Runs on a dedicated worker thread that reuses
+ * the D3D device across captures (the V8 main thread is never blocked).
+ *
+ * The returned buffer is RGBA top-down (length = w*h*4). **Rejects** when WGC
+ * cannot produce a trustworthy frame (unsupported OS, non-capturable window,
+ * no frame, device error) — the caller should fall back to
+ * `printWindowToBuffer` / BitBlt. WGC must only be used on windows that DWM is
+ * actually compositing: gate with `IsWindowVisible && !IsIconic &&
+ * !isWindowCloaked` (ADR-027 D3) before calling.
+ */
+export async function captureWindowWgc(
+  hwnd: unknown,
+  opts?: NativeWgcCaptureOptions,
+): Promise<{ data: Buffer; width: number; height: number }> {
+  if (typeof hwnd !== "bigint") throw new Error("captureWindowWgc requires a bigint hwnd");
+  const r = await requireNativeWin32().win32WgcCaptureWindow!(hwnd, opts);
   return { data: r.data, width: r.width, height: r.height };
 }
 

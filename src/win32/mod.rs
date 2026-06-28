@@ -30,6 +30,12 @@ pub(crate) mod scroll;
 // ADR-007 P4: final 5 owner/ancestor/enabled/popup/cloaked utilities.
 #[cfg(windows)]
 pub(crate) mod dwm;
+// ADR-027: Windows.Graphics.Capture (WGC) capture layer — real pixels for
+// GPU-composited / occluded windows that PrintWindow returns black for.
+// Dedicated worker thread (device reuse) + free-threaded frame pool. See
+// `src/win32/wgc.rs`.
+#[cfg(windows)]
+pub(crate) mod wgc;
 // ADR-013 Option E (foreground_flash channel) — `background` 契約とは分離した
 // 妥協 BG path (Clipboard + foreground flash + paste + restore)。詳細は
 // `docs/adr-013-option-e-impl.md` v3 + `src/win32/foreground_flash.rs`。
