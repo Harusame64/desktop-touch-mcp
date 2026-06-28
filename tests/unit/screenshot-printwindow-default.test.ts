@@ -65,6 +65,22 @@ function makeUniformRgba(width: number, height: number, r: number, g: number, b:
   return buf;
 }
 
+/** White frame with an all-black rectangle (for crop-aware blank tests). */
+function makeWhiteWithBlackRect(
+  width: number,
+  height: number,
+  rect: { x: number; y: number; width: number; height: number },
+): Buffer {
+  const buf = makeUniformRgba(width, height, 255, 255, 255);
+  for (let y = rect.y; y < rect.y + rect.height; y++) {
+    for (let x = rect.x; x < rect.x + rect.width; x++) {
+      const off = (y * width + x) * 4;
+      buf[off] = 0; buf[off + 1] = 0; buf[off + 2] = 0; buf[off + 3] = 255;
+    }
+  }
+  return buf;
+}
+
 function makeGradientRgba(width: number, height: number): Buffer {
   const buf = Buffer.alloc(width * height * 4);
   for (let y = 0; y < height; y++) {
@@ -145,6 +161,32 @@ describe("isLikelyBlankCapture", () => {
   it("zero-size buffer is NOT flagged blank (treated as no-data, caller decides)", () => {
     const result = isLikelyBlankCapture(Buffer.alloc(0), 0, 0, 4);
     expect(result.isBlank).toBe(false);
+  });
+
+  // ADR-027 Phase 3 / Codex review — crop-aware sampling.
+  it("crop into an all-black sub-region of a non-black frame → isBlank=true", () => {
+    // White window with a black rectangle (e.g. a DRM video area). The full
+    // frame is non-black, but the cropped region is all-black.
+    const buf = makeWhiteWithBlackRect(80, 80, { x: 20, y: 20, width: 30, height: 30 });
+    expect(isLikelyBlankCapture(buf, 80, 80, 4).isBlank).toBe(false); // full = non-black
+    expect(isLikelyBlankCapture(buf, 80, 80, 4, { x: 20, y: 20, width: 30, height: 30 }).isBlank).toBe(true);
+  });
+
+  it("crop into a non-black sub-region → isBlank=false", () => {
+    const buf = makeWhiteWithBlackRect(80, 80, { x: 20, y: 20, width: 30, height: 30 });
+    // A crop entirely in the white area is not blank.
+    expect(isLikelyBlankCapture(buf, 80, 80, 4, { x: 60, y: 60, width: 15, height: 15 }).isBlank).toBe(false);
+  });
+
+  it("no crop is bit-identical to the 4-arg form (full all-black still flagged)", () => {
+    const black = makeUniformRgba(64, 64, 0, 0, 0);
+    expect(isLikelyBlankCapture(black, 64, 64, 4, undefined)).toEqual(isLikelyBlankCapture(black, 64, 64, 4));
+    expect(isLikelyBlankCapture(black, 64, 64, 4, undefined).isBlank).toBe(true);
+  });
+
+  it("crop clamped out of bounds (empty) → isBlank=false", () => {
+    const black = makeUniformRgba(64, 64, 0, 0, 0);
+    expect(isLikelyBlankCapture(black, 64, 64, 4, { x: 200, y: 200, width: 10, height: 10 }).isBlank).toBe(false);
   });
 });
 
@@ -612,5 +654,61 @@ describe("captureWindowBackground — capture-blocked (ADR-027 Phase 3 / AC8)", 
 
     const result = await captureWindowBackground(hwnd, 1280);
     expect((result as { captureBlocked?: boolean }).captureBlocked).toBeFalsy();
+  });
+
+  // ADR-027 Phase 3 / Codex review — crop-aware: captureBlocked reflects the
+  // SERVED crop, not the full window (a black region inside a non-black window).
+  it("PrintWindow non-black full + crop into a BLACK region → captureBlocked=true", async () => {
+    mockCanUseWgc.mockReturnValue(false);
+    mockPrintWindowToBuffer.mockReturnValue({ data: makeWhiteWithBlackRect(80, 80, { x: 10, y: 10, width: 40, height: 40 }), width: 80, height: 80 });
+
+    const result = await captureWindowBackground(hwnd, { maxDimension: 1280, crop: { x: 10, y: 10, width: 40, height: 40 } });
+    expect((result as { captureBlocked?: boolean }).captureBlocked).toBe(true);
+  });
+
+  it("PrintWindow non-black full + crop into a NON-black region → captureBlocked=false", async () => {
+    mockCanUseWgc.mockReturnValue(false);
+    mockPrintWindowToBuffer.mockReturnValue({ data: makeWhiteWithBlackRect(80, 80, { x: 10, y: 10, width: 40, height: 40 }), width: 80, height: 80 });
+
+    const result = await captureWindowBackground(hwnd, { maxDimension: 1280, crop: { x: 60, y: 60, width: 15, height: 15 } });
+    expect((result as { captureBlocked?: boolean }).captureBlocked).toBeFalsy();
+  });
+
+  it("WGC serves a non-black full frame + crop into a BLACK region → captureBlocked=true", async () => {
+    mockCanUseWgc.mockReturnValue(true);
+    mockCaptureWindowWgc.mockResolvedValue({ data: makeWhiteWithBlackRect(80, 80, { x: 10, y: 10, width: 40, height: 40 }), width: 80, height: 80 });
+
+    const result = await captureWindowBackground(hwnd, { maxDimension: 1280, crop: { x: 10, y: 10, width: 40, height: 40 } });
+    expect(mockCaptureWindowWgc).toHaveBeenCalledTimes(1);
+    expect((result as { captureBlocked?: boolean }).captureBlocked).toBe(true);
+  });
+});
+
+describe("captureWindowWithFallback — crop-aware capture-blocked (ADR-027 Phase 3 / Codex review)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    _resetWgcSupportForTest();
+    mockCanUseWgc.mockReturnValue(false);
+  });
+
+  const fullWindow = { x: 0, y: 0, width: 80, height: 80 };
+  const hwnd = 12345n;
+
+  it("PrintWindow non-black full + crop into a BLACK region → source='printwindow', captureBlocked=true", async () => {
+    // The DRM-video-region case: PrintWindow captures the window fine, but the
+    // requested sub-region is all-black. captureBlocked reflects the sent crop.
+    mockPrintWindowToBuffer.mockReturnValue({ data: makeWhiteWithBlackRect(80, 80, { x: 10, y: 10, width: 40, height: 40 }), width: 80, height: 80 });
+
+    const result = await captureWindowWithFallback(hwnd, fullWindow, { maxDimension: 200, crop: { x: 10, y: 10, width: 40, height: 40 } });
+    expect(result.source).toBe("printwindow");
+    expect(result.captureBlocked).toBe(true);
+  });
+
+  it("PrintWindow non-black full + crop into a NON-black region → captureBlocked=false", async () => {
+    mockPrintWindowToBuffer.mockReturnValue({ data: makeWhiteWithBlackRect(80, 80, { x: 10, y: 10, width: 40, height: 40 }), width: 80, height: 80 });
+
+    const result = await captureWindowWithFallback(hwnd, fullWindow, { maxDimension: 200, crop: { x: 60, y: 60, width: 15, height: 15 } });
+    expect(result.source).toBe("printwindow");
+    expect(result.captureBlocked).toBe(false);
   });
 });

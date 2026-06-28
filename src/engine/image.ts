@@ -211,11 +211,17 @@ export async function captureWindowBackground(
   // requests (PW_CLIENTONLY) stay on PrintWindow (Codex review R1+R2).
   const wgc = wgcMatchesFlags(printWindowFlags) ? await captureWindowRawViaWgc(hwnd) : null;
   if (wgc) {
-    // WGC frames pass the blank gate inside captureWindowRawViaWgc, so a served
-    // WGC frame is real content — not capture-blocked. Set the field explicitly
-    // (symmetry with the PrintWindow branch) so callers see a consistent shape.
+    // WGC frames pass the blank gate inside captureWindowRawViaWgc (full frame),
+    // so a served WGC frame is real content. But when a sub-region is requested
+    // the served crop could still be all-black (e.g. a DRM video area inside a
+    // non-black window) — re-check the crop so captureBlocked reflects the
+    // pixels actually sent (Codex review). With no crop the validated full
+    // frame is non-black by construction → false.
+    const captureBlocked = opts.crop
+      ? isLikelyBlankCapture(wgc.rawPixels, wgc.width, wgc.height, 4, opts.crop).isBlank
+      : false;
     const encodedWgc = await encode(wgc.rawPixels, wgc.width, wgc.height, 4, opts);
-    return { ...encodedWgc, captureBlocked: false };
+    return { ...encodedWgc, captureBlocked };
   }
   // Call printWindowToBuffer directly so the original native error (driver
   // failure, DRM-protected surface, etc.) propagates to OCR / SoM callers
@@ -230,9 +236,11 @@ export async function captureWindowBackground(
   // a genuinely-black window OR uncapturable content — DRM / secure desktop /
   // hardware overlay; pixels can't tell them apart). Flag it so the handler
   // surfaces an explicit hedged warning rather than returning a silent black
-  // frame. (Only all-black AND zero-variance frames qualify — isLikelyBlankCapture
-  // never flags a dark-but-varied editor / video as blank.)
-  const captureBlocked = isLikelyBlankCapture(data, width, height, 4).isBlank;
+  // frame. The check is crop-aware (Codex review): when a sub-region is
+  // requested it reflects the served crop, not the full window. (Only all-black
+  // AND zero-variance qualifies — isLikelyBlankCapture never flags a
+  // dark-but-varied editor / video as blank.)
+  const captureBlocked = isLikelyBlankCapture(data, width, height, 4, opts.crop).isBlank;
   const encoded = await encode(data, width, height, 4, opts);
   return { ...encoded, captureBlocked };
 }
@@ -273,17 +281,32 @@ export function captureWindowRawPrintWindow(
  *
  * Sampling: walks the buffer with a fixed stride to keep this O(1) per call,
  * regardless of resolution.
+ *
+ * `crop` (optional, ADR-027 Phase 3 / Codex review): when set, the check is
+ * restricted to that sub-rectangle of the buffer — the "pixels actually sent"
+ * when the caller requested a region. This is stride-aware (it walks the
+ * sub-rect using the full-width row stride), so a black region inside a
+ * non-black window is detected. With no `crop` the full buffer is sampled and
+ * the result is bit-identical to the original 4-arg form. The crop is clamped
+ * to the buffer bounds; an empty clamped crop returns isBlank=false.
  */
 export function isLikelyBlankCapture(
   rawPixels: Buffer,
   width: number,
   height: number,
   channels: 3 | 4,
+  crop?: { x: number; y: number; width: number; height: number },
 ): { isBlank: boolean; reason: "printwindow-all-black" | null } {
   if (width <= 0 || height <= 0 || rawPixels.length < channels) {
     return { isBlank: false, reason: null };
   }
-  const pixelCount = width * height;
+  // Region to sample: the full frame, or the requested crop clamped to bounds.
+  const rx = crop ? Math.max(0, Math.min(crop.x, width)) : 0;
+  const ry = crop ? Math.max(0, Math.min(crop.y, height)) : 0;
+  const rw = crop ? Math.min(crop.width, width - rx) : width;
+  const rh = crop ? Math.min(crop.height, height - ry) : height;
+  if (rw <= 0 || rh <= 0) return { isBlank: false, reason: null };
+  const pixelCount = rw * rh;
   // Sample at most ~4096 pixels regardless of frame size (O(1) per call).
   const sampleCount = Math.min(4096, pixelCount);
   const step = Math.max(1, Math.floor(pixelCount / sampleCount));
@@ -295,7 +318,12 @@ export function isLikelyBlankCapture(
   let allSame = true;
   let sampled = 0;
   for (let p = 0; p < pixelCount; p += step) {
-    const off = p * channels;
+    // Map the linear sample index into the (cropped) region, then to the full
+    // buffer offset via the real row stride (`width`). With no crop this is
+    // exactly `p * channels` (rx=ry=0, rw=width), so behaviour is unchanged.
+    const localY = Math.floor(p / rw);
+    const localX = p - localY * rw;
+    const off = ((ry + localY) * width + (rx + localX)) * channels;
     // RGBA / RGB: take BT.601 luma (R*0.299 + G*0.587 + B*0.114), integer-ish.
     const r = rawPixels[off] ?? 0;
     const g = rawPixels[off + 1] ?? 0;
@@ -528,11 +556,19 @@ export async function captureWindowWithFallback(
     typeof optsOrMaxDim === "number" ? { maxDimension: optsOrMaxDim } : optsOrMaxDim;
   const raw = await captureWindowRawWithFallback(hwnd, windowRect, flags);
   const encoded = await encode(raw.rawPixels, raw.width, raw.height, raw.channels, opts);
+  // ADR-027 R9/AC8 (Codex review) — captureBlocked must describe the pixels
+  // actually sent. When a sub-region is requested, encode() crops to opts.crop,
+  // so re-evaluate the blank check over that crop (a black region inside a
+  // non-black window — e.g. a DRM video area — must still flag). With no crop
+  // the full-buffer result the rung already computed is used unchanged.
+  const captureBlocked = opts.crop
+    ? isLikelyBlankCapture(raw.rawPixels, raw.width, raw.height, raw.channels, opts.crop).isBlank
+    : raw.captureBlocked;
   return {
     ...encoded,
     source: raw.source,
     fallbackReason: raw.fallbackReason,
-    captureBlocked: raw.captureBlocked,
+    captureBlocked,
   };
 }
 
