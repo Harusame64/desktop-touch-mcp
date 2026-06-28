@@ -188,6 +188,9 @@ describe("capture-blocked surfacing — normal path (ADR-027 Phase 3 / AC8)", ()
     expect(warnings).toMatch(/all-black frame/i);
     expect(warnings).toMatch(/may legitimately be black/i);
     expect(warnings).toMatch(/uncapturable/i);
+    // Outcome-only wording: must NOT enumerate which specific rungs ran (some
+    // may have failed or been skipped — Codex review).
+    expect(warnings).not.toMatch(/PrintWindow, WGC, BitBlt/i);
     // SUPERSEDE: the BitBlt "overlapping windows" / "pass mode='background'"
     // hints must NOT appear — a uniform black frame is not an occluding window.
     expect(warnings).not.toMatch(/overlapping windows/i);
@@ -241,9 +244,13 @@ describe("capture-blocked surfacing — background path (ADR-027 Phase 3 / AC8)"
     const hints = readHints(result);
     expect(hints?.captureBlocked).toBe(true);
     const warnings = (hints?.warnings ?? []).join(" | ");
-    expect(warnings).toMatch(/all-black frame via both WGC and PrintWindow/i);
+    expect(warnings).toMatch(/all-black frame/i);
+    expect(warnings).toMatch(/could not be verified/i);
     expect(warnings).toMatch(/may legitimately be black/i);
     expect(warnings).toMatch(/uncapturable/i);
+    // Outcome-only: must NOT claim WGC participated (PrintWindow-only paths
+    // never attempt WGC — Codex review).
+    expect(warnings).not.toMatch(/via both WGC and PrintWindow/i);
   });
 
   it("captureBlocked absent (real pixels) → no capture-blocked warning", async () => {
