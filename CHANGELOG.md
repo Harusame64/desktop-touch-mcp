@@ -16,8 +16,8 @@
   `screenshot` that comes back black is retried through it before any fallback —
   no new options to set. Minimized, hidden, and off-desktop windows keep using
   the existing path (they have no live composited surface to read). The on-disk
-  cache and by-ref links above are unchanged — this only changes *what* gets
-  captured, not how the image is returned.
+  cache and by-ref links are unchanged — this only changes *what* gets captured,
+  not how the image is returned.
 - **A clear signal when a window genuinely can't be captured.** If every capture
   method still returns an all-black frame — typical of DRM-protected video, a
   secure-desktop / UAC prompt, or a hardware-overlay surface — `screenshot` now
