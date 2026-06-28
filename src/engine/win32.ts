@@ -555,6 +555,33 @@ export function isWindowCloaked(hwnd: unknown): boolean {
   }
 }
 
+/**
+ * ADR-027 D3 gate — whether a window may be captured via WGC (`captureWindowWgc`).
+ *
+ * WGC must only target windows DWM is *actively compositing*. Minimised
+ * (`IsIconic`), hidden (`!IsWindowVisible`), and DWM-cloaked windows (another
+ * virtual desktop / suspended UWP) either cannot be captured or return a STALE
+ * last-composed frame that the all-black/zero-variance blank gate would wave
+ * through as "real" (R10). Occluded-but-visible windows DO have a live
+ * composition surface and are the whole point of WGC, so they pass.
+ *
+ * Returns false on any error or when the native binding is unavailable, so the
+ * caller cleanly falls back to PrintWindow / BitBlt.
+ */
+export function canCaptureWindowViaWgc(hwnd: unknown): boolean {
+  if (typeof hwnd !== "bigint") return false;
+  try {
+    const w32 = requireNativeWin32();
+    return (
+      !!w32.win32IsWindowVisible?.(hwnd) &&
+      !w32.win32IsIconic?.(hwnd) &&
+      !isWindowCloaked(hwnd)
+    );
+  } catch {
+    return false;
+  }
+}
+
 export interface ScrollInfoResult {
   nMin: number;
   nMax: number;
