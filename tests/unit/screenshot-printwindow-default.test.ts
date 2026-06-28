@@ -553,6 +553,20 @@ describe("captureWindowRawWithFallback — capture-blocked (ADR-027 Phase 3 / AC
     expect(result.source).toBe("wgc");
     expect(result.captureBlocked).toBe(false);
   });
+
+  it("PrintWindow black + WGC eligible-but-ALSO-black + BitBlt black → captureBlocked=true (full rung exhaustion)", async () => {
+    // The WGC-rejected → BitBlt convergence: WGC is attempted (eligible) but
+    // returns black (rejected by blank-safety), then BitBlt is also black.
+    mockPrintWindowToBuffer.mockReturnValue({ data: makeUniformRgba(64, 64, 0, 0, 0), width: 64, height: 64 });
+    mockCanUseWgc.mockReturnValue(true);
+    mockCaptureWindowWgc.mockResolvedValue({ data: makeUniformRgba(64, 64, 0, 0, 0), width: 64, height: 64 });
+    mockGrabRegion.mockResolvedValue(makeNutjsImage(64, 64, { r: 0, g: 0, b: 0 }));
+
+    const result = await captureWindowRawWithFallback(hwnd, region);
+    expect(result.source).toBe("bitblt-fallback");
+    expect(mockCaptureWindowWgc).toHaveBeenCalledTimes(1); // WGC attempted then rejected
+    expect(result.captureBlocked).toBe(true);
+  });
 });
 
 describe("captureWindowBackground — capture-blocked (ADR-027 Phase 3 / AC8)", () => {

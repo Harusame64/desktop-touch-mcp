@@ -212,8 +212,10 @@ export async function captureWindowBackground(
   const wgc = wgcMatchesFlags(printWindowFlags) ? await captureWindowRawViaWgc(hwnd) : null;
   if (wgc) {
     // WGC frames pass the blank gate inside captureWindowRawViaWgc, so a served
-    // WGC frame is real content — not capture-blocked.
-    return encode(wgc.rawPixels, wgc.width, wgc.height, 4, opts);
+    // WGC frame is real content — not capture-blocked. Set the field explicitly
+    // (symmetry with the PrintWindow branch) so callers see a consistent shape.
+    const encodedWgc = await encode(wgc.rawPixels, wgc.width, wgc.height, 4, opts);
+    return { ...encodedWgc, captureBlocked: false };
   }
   // Call printWindowToBuffer directly so the original native error (driver
   // failure, DRM-protected surface, etc.) propagates to OCR / SoM callers
@@ -223,12 +225,13 @@ export async function captureWindowBackground(
   const { data, width, height } = printWindowToBuffer(hwnd, printWindowFlags);
   // data is already RGBA (converted in win32.ts)
   // ADR-027 R9/AC8 — background mode's rungs are WGC (when eligible) → PrintWindow.
-  // If WGC did not serve and this PrintWindow frame is all-black, every rung
-  // failed: the content is capture-blocked (DRM / secure desktop / hardware
-  // overlay). Flag it so the handler surfaces an explicit reason rather than
-  // returning a silent black frame. (Non-blank frames — including legitimately
-  // dark editors / video — are not flagged: isLikelyBlankCapture requires
-  // all-black AND zero variance.)
+  // If WGC did not serve and this PrintWindow frame is all-black, no rung
+  // produced non-black pixels: the result is an unverified black image (either
+  // a genuinely-black window OR uncapturable content — DRM / secure desktop /
+  // hardware overlay; pixels can't tell them apart). Flag it so the handler
+  // surfaces an explicit hedged warning rather than returning a silent black
+  // frame. (Only all-black AND zero-variance frames qualify — isLikelyBlankCapture
+  // never flags a dark-but-varied editor / video as blank.)
   const captureBlocked = isLikelyBlankCapture(data, width, height, 4).isBlank;
   const encoded = await encode(data, width, height, 4, opts);
   return { ...encoded, captureBlocked };
@@ -383,14 +386,17 @@ export interface CaptureWindowRawResult {
   fallbackReason: CaptureFallbackReason;
   /**
    * ADR-027 R9/AC8 — true when EVERY capture rung (PrintWindow → WGC → BitBlt)
-   * produced an all-black / zero-variance frame, i.e. the served pixels are
-   * black and are NOT the real window content. This is the terminal
-   * "capture-blocked" outcome (DRM-protected video, a secure-desktop / UAC
-   * surface, or a hardware-overlay the OS refuses to capture). The ladder is
-   * finite — it does not loop — so this flags the case where the last rung is
-   * also blank rather than silently returning a black image as if it were
-   * valid. Callers surface an explicit reason instead of the misleading
-   * "fell back to BitBlt / overlapping windows" hint.
+   * produced an all-black / zero-variance frame, so NO rung produced non-black
+   * pixels. Pixels alone cannot distinguish a genuinely-black window (a dark
+   * terminal, a black / letterboxed video frame, a freshly-launched GPU app)
+   * from uncapturable content (DRM-protected video, a secure-desktop / UAC
+   * prompt, a hardware-overlay surface) — both yield a uniform black frame.
+   * So this is NOT an assertion that the content is protected; it means "the
+   * returned image is black and unverified — treat it with low confidence."
+   * The ladder is finite (it does not loop); this flags the case where the LAST
+   * rung is also blank instead of returning a black image silently. Callers
+   * surface an explicit (hedged) warning + a `captureBlocked` hint instead of
+   * the misleading "fell back to BitBlt / overlapping windows" text.
    */
   captureBlocked: boolean;
 }
@@ -475,11 +481,13 @@ export async function captureWindowRawWithFallback(
   const channels = (rgbImage.hasAlphaChannel ? 4 : 3) as 3 | 4;
   // ADR-027 R9/AC8 — BitBlt is the LAST rung. We only reach it because
   // PrintWindow was blank/failed AND WGC did not serve, so if this final frame
-  // is ALSO all-black the whole ladder failed: the content is capture-blocked
-  // (DRM / secure desktop / hardware overlay). Flag it so the caller surfaces
-  // an explicit reason instead of returning a black image silently. An occluded
-  // (non-black) BitBlt of an overlapping window is NOT capture-blocked — it
-  // keeps the existing "may show overlapping windows" hint via fallbackReason.
+  // is ALSO all-black then NO rung produced non-black pixels: the result is an
+  // unverified black image (either a genuinely-black window OR uncapturable
+  // content — DRM / secure desktop / hardware overlay; pixels can't tell them
+  // apart). Flag it so the caller surfaces an explicit hedged warning instead
+  // of returning a black image silently. An occluded (non-black) BitBlt of an
+  // overlapping window is NOT capture-blocked — it keeps the existing "may show
+  // overlapping windows" hint via fallbackReason.
   const captureBlocked = isLikelyBlankCapture(
     rgbImage.data,
     rgbImage.width,

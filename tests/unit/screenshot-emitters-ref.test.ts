@@ -16,7 +16,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 
 // ─── Hoisted mocks ────────────────────────────────────────────────────────────
-const { mockEnumWindowsInZOrder, mockGetWindowTitleW, mockHasBuffer, mockCaptureAllLayers, mockCaptureAndDiff, mockUpdateWindowCache, mockSaveSnapshot, mockGetWindows, mockResolveWindowTarget, mockCaptureWindowBackground } = vi.hoisted(() => ({
+const { mockEnumWindowsInZOrder, mockGetWindowTitleW, mockHasBuffer, mockCaptureAllLayers, mockCaptureAndDiff, mockUpdateWindowCache, mockSaveSnapshot, mockGetWindows, mockResolveWindowTarget, mockCaptureWindowBackground, mockCaptureWindowWithFallback } = vi.hoisted(() => ({
   mockEnumWindowsInZOrder: vi.fn(),
   mockGetWindowTitleW: vi.fn(),
   mockHasBuffer: vi.fn(),
@@ -27,6 +27,7 @@ const { mockEnumWindowsInZOrder, mockGetWindowTitleW, mockHasBuffer, mockCapture
   mockGetWindows: vi.fn(),
   mockResolveWindowTarget: vi.fn(),
   mockCaptureWindowBackground: vi.fn(),
+  mockCaptureWindowWithFallback: vi.fn(),
 }));
 
 vi.mock("../../src/engine/win32.js", async (importOriginal) => {
@@ -57,7 +58,7 @@ vi.mock("../../src/engine/image.js", () => ({
   captureWindowBackground: mockCaptureWindowBackground,
   captureScreen: vi.fn(),
   captureDisplay: vi.fn(),
-  captureWindowWithFallback: vi.fn(),
+  captureWindowWithFallback: mockCaptureWindowWithFallback,
 }));
 
 const { screenshotHandler, screenshotBgHandler } = await import("../../src/tools/screenshot.js");
@@ -134,5 +135,126 @@ describe("mode='background' — ADR-026 §3 inline + ref", () => {
     // §2.2(c) exception: mode='background' is itself the pixel request — inline FIRST, then ref.
     expect(result.content[0].type).toBe("image");
     expect(result.content.some((c) => c.type === "resource_link")).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR-027 Phase 3 — capture-blocked handler surfacing (R9/AC8)
+//
+// Pins the actual AC8 deliverable to the LLM: the hints.captureBlocked flag, the
+// hedged warning text, the SUPERSEDE of the BitBlt "overlapping windows" warning
+// in the normal path, and the background-path warning. Engine-level tests pin
+// the boolean; these pin the surfacing.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Find and parse the `{ hints: ... }` JSON text block in a tool response. */
+function readHints(result: { content: Array<{ type: string; text?: string }> }): {
+  captureSource?: string;
+  captureFallbackReason?: string;
+  captureBlocked?: boolean;
+  warnings?: string[];
+} | null {
+  for (const c of result.content) {
+    if (c.type === "text" && typeof c.text === "string" && c.text.includes("\"hints\"")) {
+      try {
+        const parsed = JSON.parse(c.text) as { hints?: Record<string, unknown> };
+        if (parsed.hints) return parsed.hints as ReturnType<typeof readHints>;
+      } catch { /* not the hints block */ }
+    }
+  }
+  return null;
+}
+
+describe("capture-blocked surfacing — normal path (ADR-027 Phase 3 / AC8)", () => {
+  function wireWindow() {
+    mockResolveWindowTarget.mockResolvedValue({ title: "My App", hwnd: 999n });
+    mockEnumWindowsInZOrder.mockReturnValue([
+      { hwnd: 999n, title: "My App", region: { x: 0, y: 0, width: 800, height: 600 }, zOrder: 0, isActive: true },
+    ]);
+  }
+
+  it("captureBlocked=true → hints.captureBlocked + hedged warning, SUPERSEDES the overlapping-windows hint", async () => {
+    wireWindow();
+    mockCaptureWindowWithFallback.mockResolvedValue({
+      base64: B64, mimeType: "image/png", width: 800, height: 600,
+      source: "bitblt-fallback", fallbackReason: "printwindow-all-black", captureBlocked: true,
+    });
+
+    const result = await screenshotHandler({ ...baseArgs, windowTitle: "My App", detail: "image", confirmImage: false });
+    const hints = readHints(result);
+    expect(hints?.captureBlocked).toBe(true);
+    const warnings = (hints?.warnings ?? []).join(" | ");
+    // Hedged wording: does NOT assert the content is definitely protected.
+    expect(warnings).toMatch(/all-black frame/i);
+    expect(warnings).toMatch(/may legitimately be black/i);
+    expect(warnings).toMatch(/uncapturable/i);
+    // SUPERSEDE: the BitBlt "overlapping windows" / "pass mode='background'"
+    // hints must NOT appear — a uniform black frame is not an occluding window.
+    expect(warnings).not.toMatch(/overlapping windows/i);
+    expect(warnings).not.toMatch(/pass mode='background'/i);
+  });
+
+  it("captureBlocked=false + bitblt-fallback all-black → keeps the existing 'pass mode=background' hint, no captureBlocked", async () => {
+    wireWindow();
+    mockCaptureWindowWithFallback.mockResolvedValue({
+      base64: B64, mimeType: "image/png", width: 800, height: 600,
+      source: "bitblt-fallback", fallbackReason: "printwindow-all-black", captureBlocked: false,
+    });
+
+    const result = await screenshotHandler({ ...baseArgs, windowTitle: "My App", detail: "image", confirmImage: false });
+    const hints = readHints(result);
+    expect(hints?.captureBlocked).toBeUndefined();
+    const warnings = (hints?.warnings ?? []).join(" | ");
+    expect(warnings).toMatch(/pass mode='background'/i);
+  });
+
+  it("captureBlocked=false + printwindow source → no capture warning, no captureBlocked hint", async () => {
+    wireWindow();
+    mockCaptureWindowWithFallback.mockResolvedValue({
+      base64: B64, mimeType: "image/png", width: 800, height: 600,
+      source: "printwindow", fallbackReason: null, captureBlocked: false,
+    });
+
+    const result = await screenshotHandler({ ...baseArgs, windowTitle: "My App", detail: "image", confirmImage: false });
+    const hints = readHints(result);
+    expect(hints?.captureBlocked).toBeUndefined();
+    expect(hints?.captureSource).toBe("printwindow");
+  });
+});
+
+describe("capture-blocked surfacing — background path (ADR-027 Phase 3 / AC8)", () => {
+  function wireBgWindow() {
+    mockResolveWindowTarget.mockResolvedValue({ title: "My App", hwnd: 999n });
+    mockGetWindows.mockResolvedValue([
+      { windowHandle: 999, title: Promise.resolve("My App"), region: Promise.resolve({ left: 0, top: 0, width: 800, height: 600 }) },
+    ]);
+    mockGetWindowTitleW.mockReturnValue("My App");
+  }
+
+  it("captureBlocked=true → hints.captureBlocked + hedged warning in background response", async () => {
+    wireBgWindow();
+    mockCaptureWindowBackground.mockResolvedValue({ base64: B64, mimeType: "image/png", width: 800, height: 600, captureBlocked: true });
+
+    const result = await screenshotBgHandler({
+      windowTitle: "My App", maxDimension: 768, dotByDot: false, grayscale: false, webpQuality: 60, fullContent: true,
+    });
+    const hints = readHints(result);
+    expect(hints?.captureBlocked).toBe(true);
+    const warnings = (hints?.warnings ?? []).join(" | ");
+    expect(warnings).toMatch(/all-black frame via both WGC and PrintWindow/i);
+    expect(warnings).toMatch(/may legitimately be black/i);
+    expect(warnings).toMatch(/uncapturable/i);
+  });
+
+  it("captureBlocked absent (real pixels) → no capture-blocked warning", async () => {
+    wireBgWindow();
+    mockCaptureWindowBackground.mockResolvedValue({ base64: B64, mimeType: "image/png", width: 800, height: 600 });
+
+    const result = await screenshotBgHandler({
+      windowTitle: "My App", maxDimension: 768, dotByDot: false, grayscale: false, webpQuality: 60, fullContent: true,
+    });
+    const hints = readHints(result);
+    // No hints block at all (no warnings) OR a hints block without captureBlocked.
+    expect(hints?.captureBlocked).toBeUndefined();
   });
 });
