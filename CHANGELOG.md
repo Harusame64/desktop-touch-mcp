@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.11.0] - Unreleased — Screenshots cost a fraction of the tokens, capture real pixels from GPU-rendered & occluded windows, plus tools to manage the cache
+## [1.11.0] - 2026-06-28 — Screenshots cost a fraction of the tokens, capture real pixels from GPU-rendered & occluded windows, plus tools to manage the cache
 
 ### Added
 
@@ -27,7 +27,7 @@
   window (a dark terminal, a letterboxed video), so it asks you to treat the
   image as unverified rather than asserting the content is protected.
 - **By-ref screenshots (big token saving).** `screenshot` and the other visual
-  results — SoM element overlays, diff-mode frames, scroll captures, workspace
+  results — Set-of-Mark (SoM) element overlays, diff-mode frames, scroll captures, workspace
   snapshots, and `desktop_act`'s changed-region crop — are now handed back as a
   cheap link, `screenshot://by-ref/{id}`, to an image saved on disk, instead of
   inlining the full picture into the conversation every time. The agent spends
@@ -61,6 +61,25 @@
   server now automatically falls back to a writable temporary folder instead of
   silently giving up on the disk cache and inlining every screenshot. Pin the
   location with `DESKTOP_TOUCH_SCREENSHOTS_DIR`.
+
+### Removed
+
+- **The long-deprecated `DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2` opt-in flag is gone.**
+  It hasn't had any effect since v0.17, when the discover-then-act tools
+  (`desktop_discover` / `desktop_act`) became the default, and the server no
+  longer prints a startup warning when it sees it. If it's still in your config
+  you can safely delete it. To turn that tool surface off, the
+  `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1` kill switch is unchanged.
+
+### Thanks
+
+- Huge thanks to [@licat2023](https://github.com/licat2023) — the ideas behind
+  all three of this release's headline areas came from their proposals: returning
+  screenshots by reference to save tokens, capturing GPU-rendered and occluded
+  windows with Windows.Graphics.Capture, and the housekeeping that retired the
+  dead `DESKTOP_TOUCH_ENABLE_FUKUWARAI_V2` flag. The shipped versions were built
+  fresh for this release, but the ideas — and the push to tackle them — are
+  theirs. 🙏
 
 ## [1.10.4] - 2026-06-15 — Updated bundled image library
 
