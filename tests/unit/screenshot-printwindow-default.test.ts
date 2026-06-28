@@ -477,3 +477,126 @@ describe("captureWindowBackground — WGC primary (ADR-027 Phase 2)", () => {
     expect(mockPrintWindowToBuffer).toHaveBeenCalledTimes(1); // WGC blank rejected → PrintWindow
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR-027 Phase 3 — R9/AC8 capture-blocked (every rung returns all-black)
+//
+// The ladder is finite (PrintWindow → WGC → BitBlt). captureBlocked flags the
+// case where the LAST rung is ALSO all-black, so the served pixels are black
+// and NOT the real content (DRM video / secure desktop / hardware overlay). The
+// caller surfaces an explicit reason instead of a silent black image. An
+// occluding (non-black) BitBlt frame is NOT capture-blocked — it keeps the
+// existing "overlapping windows" hint.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("captureWindowRawWithFallback — capture-blocked (ADR-027 Phase 3 / AC8)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    _resetWgcSupportForTest();
+    mockCanUseWgc.mockReturnValue(false);
+  });
+
+  const region = { x: 100, y: 200, width: 64, height: 64 };
+  const hwnd = 12345n;
+
+  it("PrintWindow all-black + WGC ineligible + BitBlt ALSO all-black → captureBlocked=true", async () => {
+    mockPrintWindowToBuffer.mockReturnValue({ data: makeUniformRgba(64, 64, 0, 0, 0), width: 64, height: 64 });
+    mockCanUseWgc.mockReturnValue(false);
+    mockGrabRegion.mockResolvedValue(makeNutjsImage(64, 64, { r: 0, g: 0, b: 0 }));
+
+    const result = await captureWindowRawWithFallback(hwnd, region);
+    expect(result.source).toBe("bitblt-fallback");
+    expect(result.captureBlocked).toBe(true);
+    // fallbackReason is preserved as a diagnostic (records why PrintWindow was abandoned).
+    expect(result.fallbackReason).toBe("printwindow-all-black");
+  });
+
+  it("PrintWindow throws + WGC ineligible + BitBlt all-black → captureBlocked=true (printwindow-failed reason)", async () => {
+    mockPrintWindowToBuffer.mockImplementation(() => { throw new Error("PrintWindow native error"); });
+    mockCanUseWgc.mockReturnValue(false);
+    mockGrabRegion.mockResolvedValue(makeNutjsImage(64, 64, { r: 0, g: 0, b: 0 }));
+
+    const result = await captureWindowRawWithFallback(hwnd, region);
+    expect(result.source).toBe("bitblt-fallback");
+    expect(result.captureBlocked).toBe(true);
+    expect(result.fallbackReason).toBe("printwindow-failed");
+  });
+
+  it("PrintWindow all-black + BitBlt shows an OCCLUDING (non-black) window → captureBlocked=false", async () => {
+    // The headline non-capture-blocked case: an occluding window's pixels are
+    // real (just the wrong window). Keep the "overlapping windows" hint, do NOT
+    // claim capture-blocked.
+    mockPrintWindowToBuffer.mockReturnValue({ data: makeUniformRgba(64, 64, 0, 0, 0), width: 64, height: 64 });
+    mockCanUseWgc.mockReturnValue(false);
+    mockGrabRegion.mockResolvedValue(makeNutjsImage(64, 64, { r: 80, g: 90, b: 100 }));
+
+    const result = await captureWindowRawWithFallback(hwnd, region);
+    expect(result.source).toBe("bitblt-fallback");
+    expect(result.captureBlocked).toBe(false);
+    expect(result.fallbackReason).toBe("printwindow-all-black");
+  });
+
+  it("PrintWindow returns real pixels → captureBlocked=false (no rung exhaustion)", async () => {
+    mockPrintWindowToBuffer.mockReturnValue({ data: makeGradientRgba(64, 64), width: 64, height: 64 });
+
+    const result = await captureWindowRawWithFallback(hwnd, region);
+    expect(result.source).toBe("printwindow");
+    expect(result.captureBlocked).toBe(false);
+  });
+
+  it("WGC rescue serves real pixels → captureBlocked=false", async () => {
+    mockPrintWindowToBuffer.mockReturnValue({ data: makeUniformRgba(64, 64, 0, 0, 0), width: 64, height: 64 });
+    mockCanUseWgc.mockReturnValue(true);
+    mockCaptureWindowWgc.mockResolvedValue({ data: makeGradientRgba(64, 64), width: 64, height: 64 });
+
+    const result = await captureWindowRawWithFallback(hwnd, region);
+    expect(result.source).toBe("wgc");
+    expect(result.captureBlocked).toBe(false);
+  });
+});
+
+describe("captureWindowBackground — capture-blocked (ADR-027 Phase 3 / AC8)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    _resetWgcSupportForTest();
+    mockCanUseWgc.mockReturnValue(false);
+  });
+
+  const hwnd = 12345n;
+
+  it("WGC ineligible + PrintWindow all-black → captureBlocked=true", async () => {
+    mockCanUseWgc.mockReturnValue(false);
+    mockPrintWindowToBuffer.mockReturnValue({ data: makeUniformRgba(80, 60, 0, 0, 0), width: 80, height: 60 });
+
+    const result = await captureWindowBackground(hwnd, 1280);
+    expect((result as { captureBlocked?: boolean }).captureBlocked).toBe(true);
+  });
+
+  it("WGC eligible but all-black + PrintWindow ALSO all-black → captureBlocked=true (both rungs failed)", async () => {
+    mockCanUseWgc.mockReturnValue(true);
+    mockCaptureWindowWgc.mockResolvedValue({ data: makeUniformRgba(80, 60, 0, 0, 0), width: 80, height: 60 });
+    mockPrintWindowToBuffer.mockReturnValue({ data: makeUniformRgba(80, 60, 0, 0, 0), width: 80, height: 60 });
+
+    const result = await captureWindowBackground(hwnd, 1280);
+    expect(mockCaptureWindowWgc).toHaveBeenCalledTimes(1);
+    expect(mockPrintWindowToBuffer).toHaveBeenCalledTimes(1);
+    expect((result as { captureBlocked?: boolean }).captureBlocked).toBe(true);
+  });
+
+  it("WGC serves real pixels → not capture-blocked", async () => {
+    mockCanUseWgc.mockReturnValue(true);
+    mockCaptureWindowWgc.mockResolvedValue({ data: makeGradientRgba(80, 60), width: 80, height: 60 });
+
+    const result = await captureWindowBackground(hwnd, 1280);
+    expect((result as { captureBlocked?: boolean }).captureBlocked).toBeFalsy();
+    expect(mockPrintWindowToBuffer).not.toHaveBeenCalled();
+  });
+
+  it("PrintWindow serves real pixels → not capture-blocked", async () => {
+    mockCanUseWgc.mockReturnValue(false);
+    mockPrintWindowToBuffer.mockReturnValue({ data: makeGradientRgba(80, 60), width: 80, height: 60 });
+
+    const result = await captureWindowBackground(hwnd, 1280);
+    expect((result as { captureBlocked?: boolean }).captureBlocked).toBeFalsy();
+  });
+});

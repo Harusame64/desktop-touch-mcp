@@ -459,14 +459,14 @@
     },
     {
       "file": "src/tools/screenshot.ts",
-      "line": 1144,
+      "line": 1167,
       "tool": "screenshot",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/screenshot.ts",
-      "line": 1267,
+      "line": 1290,
       "tool": "get_screen_info",
       "errKind": "identifier",
       "contextShape": "none"

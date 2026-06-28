@@ -931,6 +931,7 @@ export const screenshotHandler = async (args: {
       const captureHints: {
         captureSource: CaptureSource;
         captureFallbackReason?: CaptureFallbackReason;
+        captureBlocked?: boolean;
         warnings?: string[];
       } = { captureSource: result.source };
       const localWarnings: string[] = [...screenshotWarnings];
@@ -939,11 +940,22 @@ export const screenshotHandler = async (args: {
         // frame (for source="wgc" it records why PrintWindow was abandoned).
         captureHints.captureFallbackReason = result.fallbackReason;
       }
-      // The occlusion-risk warnings describe the BitBlt fallback ONLY. A WGC
-      // rescue (source="wgc") reads the DWM composition surface and is
-      // occlusion-immune, so it must not inherit the "may show overlapping
-      // windows" text even though it carries a fallbackReason (ADR-027 Phase 2).
-      if (result.source === "bitblt-fallback") {
+      // ADR-027 R9/AC8 — every rung (PrintWindow → WGC → BitBlt) returned an
+      // all-black frame: the content is capture-blocked (DRM / secure desktop /
+      // hardware overlay). Surface that explicitly and SUPERSEDE the BitBlt
+      // "overlapping windows" hint below — a uniformly black frame is not
+      // showing an occluding window, and "pass mode='background'" would not help
+      // (background mode hits the same black). Fixed strings only (CWE-94).
+      if (result.captureBlocked) {
+        captureHints.captureBlocked = true;
+        localWarnings.push(
+          "All capture methods (PrintWindow, WGC, BitBlt) returned an all-black frame. The target window's content is likely protected (DRM-protected video, a secure-desktop / UAC prompt, or a hardware-overlay surface) and cannot be captured — the returned image is black, not the real window content."
+        );
+      } else if (result.source === "bitblt-fallback") {
+        // The occlusion-risk warnings describe the BitBlt fallback ONLY. A WGC
+        // rescue (source="wgc") reads the DWM composition surface and is
+        // occlusion-immune, so it must not inherit the "may show overlapping
+        // windows" text even though it carries a fallbackReason (ADR-027 Phase 2).
         // Fixed strings only (no variable interpolation — CWE-94 guidance).
         if (result.fallbackReason === "printwindow-failed") {
           localWarnings.push(
@@ -1131,12 +1143,23 @@ export const screenshotBgHandler = async ({
       wantInline: true,
       meta: { tag: foundTitle || effectiveTitle },
     });
-    const allBgWarnings = warning ? [...bgWarnings, warning] : bgWarnings;
+    const allBgWarnings = warning ? [...bgWarnings, warning] : [...bgWarnings];
+    // ADR-027 R9/AC8 — background mode's rungs are WGC (when eligible) →
+    // PrintWindow. captureBlocked means BOTH returned an all-black frame: the
+    // content is capture-blocked (DRM / secure desktop / hardware overlay).
+    // Surface it explicitly instead of returning a silent black image. Fixed
+    // string only (CWE-94).
+    const captureBlocked = (result as { captureBlocked?: boolean }).captureBlocked === true;
+    if (captureBlocked) {
+      allBgWarnings.push(
+        "Capture returned an all-black frame via both WGC and PrintWindow. The target window's content is likely protected (DRM-protected video, a secure-desktop / UAC prompt, or a hardware-overlay surface) and cannot be captured — the returned image is black, not the real window content."
+      );
+    }
     return {
       content: [
         ...blocks,
         { type: "text" as const, text: dimensionText },
-        ...(allBgWarnings.length > 0 ? [{ type: "text" as const, text: JSON.stringify({ hints: { warnings: allBgWarnings } }) }] : []),
+        ...(allBgWarnings.length > 0 ? [{ type: "text" as const, text: JSON.stringify({ hints: { ...(captureBlocked ? { captureBlocked: true } : {}), warnings: allBgWarnings } }) }] : []),
       ],
     };
   } catch (err) {
