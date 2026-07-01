@@ -273,8 +273,9 @@ export async function recognizeWindowByHwnd(
 ): Promise<{ words: OcrWord[]; origin: { x: number; y: number } }> {
   // R3 tool-exclusion: parity with runSomPipeline — refuse to capture+OCR a key-locker window by
   // explicit hwnd (defense-in-depth; the current caller passes a focus-derived, already-filtered
-  // hwnd, but the guard keeps this by-hwnd capture primitive from becoming a future bypass).
-  if (isExcludedWindowHandle(hwnd)) {
+  // hwnd, but the guard keeps this by-hwnd capture primitive from becoming a future bypass). Only a
+  // non-null handle (a null handle is never the locker; see the runSomPipeline null-sentinel note).
+  if (hwnd != null && isExcludedWindowHandle(hwnd)) {
     throw new WindowExcludedError(`recognizeWindowByHwnd: target window is tool-excluded (key locker)`);
   }
   const origin = { x: region.x, y: region.y };
@@ -713,7 +714,12 @@ export async function runSomPipeline(
   // in it), but an explicit hwnd bypasses that search entirely (line ~713 only reads its origin).
   // This is the definitive guard for every OCR-read caller (discover, screenshot som, roiCapture,
   // ocr-adapter) regardless of how the hwnd was obtained. Short-circuits when no locker is alive.
-  if (isExcludedWindowHandle(targetHwnd)) {
+  //
+  // Guard ONLY a non-null hwnd: for title-only calls `targetHwnd` is null and
+  // `isExcludedWindowHandle(null)` fails closed → true, which would wrongly refuse every title-only
+  // OCR while any locker is alive (Codex P2). A null handle is never the locker anyway — the
+  // filtered enumerator handles the title case.
+  if (targetHwnd != null && isExcludedWindowHandle(targetHwnd)) {
     throw new WindowExcludedError(`runSomPipeline: target window is tool-excluded (key locker)`);
   }
 

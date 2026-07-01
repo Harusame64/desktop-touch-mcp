@@ -80,8 +80,9 @@ export const getActiveWindowHandler = async (): Promise<ToolResult> => {
     const hwnd = (win as unknown as { windowHandle: unknown }).windowHandle;
     // R3: getActiveWindow() is nut-js's UNWRAPPED foreground read (bypasses resolveWindowTarget's
     // @active refusal). If the key locker's dialog is foreground, refuse rather than surfacing its
-    // title + exact rect (a by-identity observation that would feed coordinate targeting).
-    if (isExcludedWindowHandle(hwnd)) {
+    // title + exact rect (a by-identity observation that would feed coordinate targeting). Only a
+    // non-null handle — a null/absent foreground handle is never the locker (null-sentinel: Codex P2).
+    if (hwnd != null && isExcludedWindowHandle(hwnd)) {
       return failWith(
         "The active window is the desktop-touch key locker, which is excluded from automation tools.",
         "get_active_window",

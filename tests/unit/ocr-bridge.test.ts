@@ -18,6 +18,16 @@ describe("runSomPipeline — R3 tool-exclusion backstop (explicit hwnd)", () => 
       runSomPipeline("", 123_456_789n, "en", 2, "auto", false),
     ).rejects.toBeInstanceOf(WindowExcludedError);
   });
+
+  it("does NOT refuse a title-only OCR call while armed (Codex P2: null hwnd is not 'excluded')", async () => {
+    registerExcludedPid(999_999); // arm the registry
+    // No explicit hwnd → targetHwnd is null → the guard must be skipped (the FILTERED enumerator
+    // handles the title case). A bogus title resolves to nothing and fails with 'window not found',
+    // NOT WindowExcludedError — proving title-only OCR is not broken while a locker is alive.
+    await expect(
+      runSomPipeline("no-such-window-xyz-12345", null, "en", 2, "auto", false),
+    ).rejects.not.toBeInstanceOf(WindowExcludedError);
+  });
 });
 
 describe("mergeNearbyWords", () => {
