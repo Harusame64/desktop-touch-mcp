@@ -1,0 +1,4 @@
+# dotnet build outputs — the published exe is committed to the repo-root bin/
+# (bin/bridge-host.exe), same as tools/win-ocr. These local build dirs are not.
+bin/
+obj/
