@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    ADR-014 v2 S1 — cooperative terminal bridge helper.
+
+    A compiled C# console exe (NOT a shipped .ps1) that owns the CurrentUserOnly
+    named-pipe SERVER for OQ #6 option (C): the MCP (Node) connects as CLIENT.
+    Mirrors tools/win-ocr -> bin/win-ocr.exe: built with `dotnet publish` and the
+    resulting single-file exe is committed to bin/ and shipped by release.yml's
+    existing `bin\*.exe` copy step. Being a compiled exe (no `iex` over the pipe)
+    it is not an AMSI target — the same reason win-ocr.exe is C#.
+
+    Build: cd tools/bridge-host && dotnet publish -c Release -o ../../bin/
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.17763.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <Optimize>true</Optimize>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>false</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <AssemblyName>bridge-host</AssemblyName>
+    <RootNamespace>BridgeHost</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+</Project>
