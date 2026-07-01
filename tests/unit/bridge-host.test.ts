@@ -140,4 +140,30 @@ describe("BridgeHost client protocol (fake peer)", () => {
     await bridge.dispose();
     await expect(bridge.ping()).rejects.toThrow(/disposed/);
   });
+
+  it("sends a graceful shutdown frame on dispose (not just force-kill) — Codex P2", async () => {
+    const path = pipePath();
+    let gotShutdown = false;
+    const server = net.createServer((sock) => {
+      sock.write(JSON.stringify({ t: "hello", pid: 5, v: "1" }) + "\n");
+      let b = "";
+      sock.on("data", (d) => {
+        b += d.toString("utf8");
+        let nl: number;
+        while ((nl = b.indexOf("\n")) >= 0) {
+          const line = b.slice(0, nl);
+          b = b.slice(nl + 1);
+          if (!line) continue;
+          const req = JSON.parse(line) as { id: number; m: string };
+          if (req.m === "shutdown") { gotShutdown = true; sock.write(JSON.stringify({ id: req.id, ok: true, r: "bye" }) + "\n"); }
+        }
+      });
+      sock.on("error", () => { /* client drops */ });
+    });
+    await listen(server, path);
+
+    const bridge = await BridgeHost.connectForTest(path);
+    await bridge.dispose();
+    expect(gotShutdown).toBe(true);
+  });
 });

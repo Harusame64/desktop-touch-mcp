@@ -97,6 +97,7 @@ export class BridgeHost {
   private readonly pending = new Map<number, PendingRequest>();
   private buf = "";
   private disposed = false;
+  private disposing = false;
 
   private constructor(
     private readonly socket: net.Socket,
@@ -281,11 +282,16 @@ export class BridgeHost {
 
   /** Tear down the session: best-effort `shutdown`, close the socket, kill the tree. */
   async dispose(): Promise<void> {
-    if (this.disposed) return;
-    this.disposed = true;
+    if (this.disposing) return;
+    this.disposing = true; // re-entrancy guard; `disposed` is flipped AFTER shutdown is sent
+    // Send the graceful `shutdown` FIRST (while requests are still accepted), so the
+    // helper's shutdown handler actually runs — THEN flip `disposed` to reject further
+    // requests. (Flipping `disposed` first made `request` reject shutdown immediately,
+    // so teardown always fell through to force-kill — Codex P2.)
     try {
       await Promise.race([this.request("shutdown"), delay(500)]);
     } catch { /* best-effort */ }
+    this.disposed = true;
     try { this.socket.end(); this.socket.destroy(); } catch { /* ignore */ }
     this.failAllPending(new BridgeError("BridgePipeUnavailable", "bridge disposed"));
     if (this.killPid > 0) killTree(this.killPid);
