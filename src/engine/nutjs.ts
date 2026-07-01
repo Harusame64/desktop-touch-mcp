@@ -2,7 +2,7 @@ import {
   mouse,
   keyboard as _rawKeyboard,
   screen,
-  getWindows,
+  getWindows as _rawGetWindows,
   getActiveWindow,
   Key,
   Button,
@@ -15,6 +15,8 @@ import {
   left,
   right,
 } from "@nut-tree-fork/nut-js";
+import { hasExcludedPids } from "./tool-exclusion.js";
+import { isExcludedWindowHandle } from "./win32.js";
 
 // Zero-delay for maximum responsiveness
 mouse.config.autoDelayMs = 0;
@@ -110,6 +112,26 @@ export function withKeyboardLock<T>(fn: () => Promise<T>): Promise<T> {
   return withInputLock(fn);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// R3 tool-exclusion — filtered window enumeration (ADR-014 v2 R3 L0)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `getWindows()` is nut-js's own top-level-window enumerator — a SEPARATE path from win32's
+// `enumWindowsInZOrder()`, feeding screenshot(mode:'background') title-match, the window list,
+// workspace, and macro. While a Key Locker is alive its windows must be dropped here too, else a
+// caller who knows the fixed title ('desktop-touch key locker') could capture the secure dialog
+// through this enumerator despite the win32-side filter (Codex R1 P1-B). Gated on a non-empty
+// exclusion set → the raw nut-js result passes straight through when no locker is alive.
+type NutWindow = Awaited<ReturnType<typeof _rawGetWindows>>[number];
+
+export async function getWindows(): Promise<NutWindow[]> {
+  const wins = await _rawGetWindows();
+  if (!hasExcludedPids()) return wins; // zero overhead in the common (no-locker) case
+  return wins.filter(
+    (w) => !isExcludedWindowHandle((w as unknown as { windowHandle: unknown }).windowHandle),
+  );
+}
+
 /**
  * Raw libnut press / release primitives.
  *
@@ -154,7 +176,6 @@ export {
   mouse,
   keyboard,
   screen,
-  getWindows,
   getActiveWindow,
   Key,
   Button,

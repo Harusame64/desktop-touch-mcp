@@ -1,5 +1,6 @@
 import { nativeL1, nativeWin32 } from "./native-engine.js";
 import type { NativeWgcCaptureOptions } from "./native-types.js";
+import { hasExcludedPids, isExcludedPid } from "./tool-exclusion.js";
 
 // Every Win32 binding this module used to carry has migrated to the
 // napi-rs native addon (`src/win32/*.rs`) across ADR-007 P1–P4. The
@@ -136,8 +137,14 @@ export function enumWindowsInZOrder(): WindowZInfo[] {
   let zOrder = 0;
 
   const hwnds = w32.win32EnumTopLevelWindows!();
+  // R3 tool-exclusion: while a Key Locker is alive, drop its windows entirely so no
+  // screenshot / perception / discover / dialog-resolution path can address the secure
+  // dialog. `isExcludedWindowHandle` short-circuits on an empty registry → zero extra
+  // syscalls in the common (no-locker) case; when armed it costs one GetWindowThreadProcessId
+  // per window and fails CLOSED on an unreadable PID.
   for (const hwnd of hwnds) {
     try {
+      if (isExcludedWindowHandle(hwnd)) continue;
       if (!w32.win32IsWindowVisible!(hwnd)) continue;
       const title = w32.win32GetWindowText!(hwnd);
       if (!title) continue;
@@ -294,6 +301,64 @@ export function getWindowProcessId(hwnd: unknown): number {
   } catch {
     return 0;
   }
+}
+
+/**
+ * (R3 tool-exclusion) True when `hwnd` is owned by a tool-excluded (key locker) PID — the shared
+ * by-handle predicate for EVERY by-identity enumerator / reader that is NOT `resolveWindowTarget`
+ * (which throws `WindowExcludedError` instead). Used by `enumWindowsInZOrder` (win32), the
+ * `getWindows` wrapper (nut-js), and the `runSomPipeline` OCR read guard. Co-located with
+ * `getWindowProcessId` so `tool-exclusion.ts` need not import win32 (avoids an import cycle).
+ *
+ * Zero-overhead + fail-closed:
+ *   - returns `false` immediately when the registry is empty (no locker) → no syscall;
+ *   - while ARMED, fails CLOSED — a handle that is null / non-integer / whose PID cannot be read
+ *     (getWindowProcessId → 0; PID 0 = System Idle Process, never a real window owner) is treated
+ *     as excluded, so the filter never LEAKS on a read/parse failure.
+ *
+ * Accepts `unknown` so the nut-js `windowHandle` (a number) and a Win32 `bigint` HWND both work.
+ */
+export function isExcludedWindowHandle(hwnd: unknown): boolean {
+  if (!hasExcludedPids()) return false;
+  let h: bigint;
+  if (typeof hwnd === "bigint") {
+    h = hwnd;
+  } else if (typeof hwnd === "number" && Number.isInteger(hwnd)) {
+    h = BigInt(hwnd);
+  } else {
+    return true; // unparseable handle while armed → fail closed
+  }
+  const pid = getWindowProcessId(h);
+  return pid === 0 || isExcludedPid(pid);
+}
+
+/**
+ * (R3 tool-exclusion) True when `windowTitle` names (substring, case-insensitive) a top-level
+ * window owned by an excluded PID. This is the by-TITLE counterpart of `isExcludedWindowHandle`
+ * for the non-win32 readers that resolve a window from a title STRING through their own subsystem
+ * (UIA `getUiElements`, and any resolveWindowTarget by-title caller) — those bypass both the
+ * filtered `enumWindowsInZOrder` and the by-hwnd predicate, so the title itself must be refused.
+ *
+ * Enumerates the RAW (unfiltered) top-level list on purpose: the filtered enumerator HIDES the
+ * locker, so a title check against it would never see the window it must refuse. Zero-overhead
+ * when idle (empty registry short-circuits); fail-closed on an enumeration failure while armed.
+ * Fail-closed on ANY excluded match — a title that also matches a legitimate window is refused too
+ * (the locker's title is distinctive, so the over-refusal risk is negligible and on the safe side).
+ */
+export function isExcludedTitle(windowTitle: string): boolean {
+  if (!hasExcludedPids() || !windowTitle) return false;
+  const q = windowTitle.toLowerCase();
+  try {
+    const w32 = requireNativeWin32();
+    for (const hwnd of w32.win32EnumTopLevelWindows!()) {
+      const t = w32.win32GetWindowText!(hwnd);
+      if (!t || !t.toLowerCase().includes(q)) continue;
+      if (isExcludedWindowHandle(hwnd)) return true;
+    }
+  } catch {
+    return true; // enumeration failed while armed → fail closed
+  }
+  return false;
 }
 
 /** Identity record that survives across HWND reuse / process restart. */

@@ -1,10 +1,34 @@
-import { describe, it, expect } from "vitest";
-import { mergeNearbyWords, ocrWordsToLines } from "../../src/engine/ocr-bridge.js";
+import { describe, it, expect, afterEach } from "vitest";
+import { mergeNearbyWords, ocrWordsToLines, runSomPipeline } from "../../src/engine/ocr-bridge.js";
 import type { OcrWord } from "../../src/engine/ocr-bridge.js";
+import { registerExcludedPid, _resetExcludedPidsForTest, WindowExcludedError } from "../../src/engine/tool-exclusion.js";
 
 function word(text: string, x: number, y: number, w = 20, h = 16, lineWordCount?: number, lineCharCount?: number): OcrWord {
   return { text, bbox: { x, y, width: w, height: h }, ...(lineWordCount !== undefined ? { lineWordCount } : {}), ...(lineCharCount !== undefined ? { lineCharCount } : {}) };
 }
+
+describe("runSomPipeline — R3 tool-exclusion backstop (explicit hwnd)", () => {
+  afterEach(() => _resetExcludedPidsForTest());
+
+  it("refuses OCR of a tool-excluded target hwnd (fail-closed while armed)", async () => {
+    registerExcludedPid(999_999); // arm the registry (any pid)
+    // A bogus hwnd's PID cannot be read (getWindowProcessId → 0) → isExcludedWindowHandle fails
+    // CLOSED while armed → the guard throws BEFORE any window capture / OCR runs.
+    await expect(
+      runSomPipeline("", 123_456_789n, "en", 2, "auto", false),
+    ).rejects.toBeInstanceOf(WindowExcludedError);
+  });
+
+  it("does NOT refuse a title-only OCR call while armed (Codex P2: null hwnd is not 'excluded')", async () => {
+    registerExcludedPid(999_999); // arm the registry
+    // No explicit hwnd → targetHwnd is null → the guard must be skipped (the FILTERED enumerator
+    // handles the title case). A bogus title resolves to nothing and fails with 'window not found',
+    // NOT WindowExcludedError — proving title-only OCR is not broken while a locker is alive.
+    await expect(
+      runSomPipeline("no-such-window-xyz-12345", null, "en", 2, "auto", false),
+    ).rejects.not.toBeInstanceOf(WindowExcludedError);
+  });
+});
 
 describe("mergeNearbyWords", () => {
   it("merges adjacent Japanese single-char words on the same line", () => {

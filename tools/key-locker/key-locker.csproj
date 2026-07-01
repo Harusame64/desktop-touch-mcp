@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    ADR-014 v2 R3 Key Locker — L0 trunk. The compiled locker: a CurrentUserOnly named-pipe
+    SERVER (S1 bridge-host auth pattern) + a DPAPI at-rest store + a WPF PasswordBox secure
+    capture dialog (D1-spike-proven un-capturable). Framework-dependent single-file exe,
+    committed to repo-root bin/ (release.yml's `bin\*.exe` glob ships it — no workflow change).
+    Build: cd tools/key-locker && dotnet publish -c Release -o ../../bin/
+    Plan: desktop-touch-mcp-internal@main:docs/adr-014-v2-r3-slice-plan.md (L0)
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>               <!-- WPF: no console-window flash -->
+    <TargetFramework>net10.0-windows10.0.17763.0</TargetFramework>
+    <RootNamespace>KeyLocker</RootNamespace>
+    <AssemblyName>key-locker</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <Optimize>true</Optimize>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>false</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <!-- Identified-publisher metadata: an anonymous binary (no company/product/version) is
+       weighted more suspiciously by reputation/AV heuristics. Consistent identity across the
+       exe, npm (@harusame64), and GitHub also helps once Authenticode signing is added at
+       release (see docs/adr-014-v2-r3-anti-flagging.md). -->
+  <PropertyGroup>
+    <Company>Harusame64</Company>
+    <Product>desktop-touch-mcp</Product>
+    <AssemblyTitle>desktop-touch key locker</AssemblyTitle>
+    <Description>Secure credential capture/autofill helper for desktop-touch-mcp. Secrets are entered into this locker's own protected dialog and kept encrypted at rest with Windows DPAPI; the automation host never reads them.</Description>
+    <Authors>Harusame64</Authors>
+    <Copyright>Copyright (c) Harusame64</Copyright>
+    <Version>1.0.0</Version>
+    <FileVersion>1.0.0.0</FileVersion>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <NeutralLanguage>en</NeutralLanguage>
+  </PropertyGroup>
+</Project>
