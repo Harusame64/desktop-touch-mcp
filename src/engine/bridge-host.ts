@@ -155,11 +155,18 @@ export class BridgeHost {
       throw new BridgeError("BridgeHelperSpawnFailed", `helper spawn returned no pid: ${state.spawnError?.message ?? ""}`);
     }
 
-    const socket = await connectWithBackoff(pipePath, deadline, backoffMs, () => ({ ...state }));
     try {
-      return await BridgeHost.handshake(socket, killPid, deadline);
+      const socket = await connectWithBackoff(pipePath, deadline, backoffMs, () => ({ ...state }));
+      try {
+        return await BridgeHost.handshake(socket, killPid, deadline);
+      } catch (e) {
+        try { socket.destroy(); } catch { /* ignore */ }
+        throw e;
+      }
     } catch (e) {
-      try { socket.destroy(); } catch { /* ignore */ }
+      // ANY startup failure must kill the child — including the alive-but-slow
+      // timeout path (helper still running), which would otherwise orphan a
+      // bridge-host.exe holding its pipe (e.g. first-run AV scan of the exe).
       killTree(killPid);
       throw e;
     }
@@ -215,6 +222,13 @@ export class BridgeHost {
         }
         if (hello.t !== "hello" || typeof hello.pid !== "number" || typeof hello.v !== "string") {
           reject(new BridgeError("BridgeHandshakeRejected", `unexpected first frame: ${line.slice(0, 120)}`));
+          return;
+        }
+        if (hello.v !== BRIDGE_PROTOCOL_VERSION) {
+          reject(new BridgeError(
+            "BridgeHandshakeRejected",
+            `helper protocol '${hello.v}' != expected '${BRIDGE_PROTOCOL_VERSION}'`,
+          ));
           return;
         }
 

@@ -1,12 +1,13 @@
 /**
- * bridge-host.e2e.test.ts — ADR-014 v2 S1 live smoke + negative (headless).
+ * bridge-host.e2e.test.ts — ADR-014 v2 S1 live smoke + negatives (headless).
  *
  * Spawns the REAL bin/bridge-host.exe (direct, detached, headless — no window in
  * S1), so it is gated to the e2e project. Validates the launch-independent locked
  * contract end to end: direct-spawn -> C# CurrentUserOnly server -> kernel
- * client-verify (GetNamedPipeClientProcessId == our pid) -> hello -> ping/version.
- * The window + crux (a) are S2. The pure protocol is covered deterministically by
- * tests/unit/bridge-host.test.ts.
+ * client-verify (GetNamedPipeClientProcessId == our pid) -> hello -> ping/version,
+ * plus the two load-bearing negatives (rogue client rejected; FIRST_PIPE_INSTANCE
+ * fail-loud). The window + crux (a) are S2. The pure protocol is covered
+ * deterministically by tests/unit/bridge-host.test.ts.
  */
 import { describe, it, expect, afterEach } from "vitest";
 import net from "node:net";
@@ -17,6 +18,13 @@ import { existsSync } from "node:fs";
 import { BridgeHost } from "../../src/engine/bridge-host.js";
 
 const HELPER_EXE = join(process.cwd(), "bin", "bridge-host.exe");
+const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+function killTree(pid?: number): void {
+  if (pid === undefined) return;
+  try { spawn("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }); }
+  catch { /* ignore */ }
+}
 
 describe("bridge-host live smoke", () => {
   const bridges: BridgeHost[] = [];
@@ -40,35 +48,29 @@ describe("bridge-host live smoke", () => {
 
 describe("bridge-host rogue client rejection (kernel client-verify)", () => {
   let child: ChildProcess | undefined;
-  afterEach(() => {
-    if (child?.pid) {
-      try { spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }); }
-      catch { /* ignore */ }
-    }
-    child = undefined;
-  });
+  afterEach(() => { killTree(child?.pid); child = undefined; });
 
   it("rejects a client whose PID != the helper's -McpPid", async () => {
     expect(existsSync(HELPER_EXE)).toBe(true);
 
     // Launch the real helper DIRECTLY (as production does) but tell it a DIFFERENT
     // process is its MCP. Our connect (this process's pid) must be rejected by the
-    // C# kernel client-verify, so we never receive a `hello` frame. (Direct-spawn,
-    // not conhost, so the helper actually runs — a conhost launch would exit and
-    // give a false pass.)
+    // C# kernel client-verify, so we CONNECT but never receive a `hello`.
     const name = `dtm-bridge-rogue-${randomBytes(8).toString("hex")}`;
     const wrongMcpPid = process.pid + 100_000; // definitely not us
     child = spawn(HELPER_EXE, ["-PipeName", name, "-McpPid", String(wrongMcpPid)], {
       detached: true, stdio: "ignore", windowsHide: false,
     });
 
-    const gotHello = await new Promise<boolean>((resolve) => {
+    const result = await new Promise<{ connected: boolean; gotHello: boolean }>((resolve) => {
       let settled = false;
-      const done = (v: boolean) => { if (!settled) { settled = true; resolve(v); } };
+      let connected = false;
+      const done = (gotHello: boolean) => { if (!settled) { settled = true; resolve({ connected, gotHello }); } };
 
       const tryConnect = (attempt: number) => {
         const sock = net.connect(`\\\\.\\pipe\\${name}`);
         sock.once("connect", () => {
+          connected = true; // the pipe was up — the helper IS running
           sock.on("data", (d) => { if (d.toString("utf8").includes('"hello"')) { sock.destroy(); done(true); } });
           sock.on("close", () => done(false)); // helper disconnected us (rejected)
           setTimeout(() => { sock.destroy(); done(false); }, 4_000);
@@ -82,6 +84,41 @@ describe("bridge-host rogue client rejection (kernel client-verify)", () => {
       tryConnect(0);
     });
 
-    expect(gotHello).toBe(false);
+    // The assertion that makes this a REAL client-verify test (not a false pass from
+    // the helper never starting): we must have actually connected, then been rejected
+    // (closed) WITHOUT a hello.
+    expect(result.connected).toBe(true);
+    expect(result.gotHello).toBe(false);
+  }, 40_000);
+});
+
+describe("bridge-host FIRST_PIPE_INSTANCE fail-loud", () => {
+  const kids: ChildProcess[] = [];
+  afterEach(() => { for (const c of kids) killTree(c.pid); kids.length = 0; });
+
+  it("a second helper on the same pipe name fails loud and exits non-zero", async () => {
+    expect(existsSync(HELPER_EXE)).toBe(true);
+    const name = `dtm-bridge-fpi-${randomBytes(8).toString("hex")}`;
+    const mcp = String(process.pid);
+
+    // A creates the CurrentUserOnly server (holds the name) and waits for a client.
+    const a = spawn(HELPER_EXE, ["-PipeName", name, "-McpPid", mcp], {
+      detached: true, stdio: "ignore", windowsHide: false,
+    });
+    kids.push(a);
+    await delay(1_500); // let A register the pipe name (server created before WaitForConnection)
+
+    // B tries the SAME name → FILE_FLAG_FIRST_PIPE_INSTANCE (maxInstances=1) makes
+    // its create fail → the helper exits 3 (pipe-create-failed), never attaching.
+    const bExit = await new Promise<number | null>((resolve) => {
+      const b = spawn(HELPER_EXE, ["-PipeName", name, "-McpPid", mcp], {
+        detached: true, stdio: "ignore", windowsHide: false,
+      });
+      kids.push(b);
+      b.on("exit", (code) => resolve(code));
+      setTimeout(() => resolve(-999), 12_000);
+    });
+
+    expect(bExit).toBe(3);
   }, 40_000);
 });

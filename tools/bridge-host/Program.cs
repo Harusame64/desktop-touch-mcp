@@ -3,21 +3,22 @@
 // Plan: desktop-touch-mcp-internal@HEAD:docs/adr-014-v2-s1-option-c-design.md
 //
 // This compiled C# console exe owns the CurrentUserOnly named-pipe SERVER; the
-// MCP (Node, src/engine/bridge-host.ts) connects as CLIENT. It runs inside a
-// dedicated conhost window so a human can type sudo/ssh passwords directly at the
-// pane (crux (a), re-spiked in spike/adr-014-cs-crux) — S1 only stands up the
-// server + handshake + ping/version; the interactive `run`/`cancel` child path is
-// S2.
+// MCP (Node, src/engine/bridge-host.ts) connects as CLIENT. S1 is HEADLESS — it
+// only stands up the server + handshake + ping/version. The dedicated console
+// window a human types sudo/ssh passwords into (crux (a)) is S2 (a self-bootstrap
+// that re-execs under conhost with CREATE_NEW_CONSOLE); the interactive
+// `run`/`cancel` child path is also S2. See the design doc §8.
 //
-// Auth (see the design doc §1):
-//   * Client direction (the threat-model §8 defense) = KERNEL TRUTH: the server
+// Auth (see the design doc §8.3):
+//   * Client direction = KERNEL TRUTH (a load-bearing §8 defense): the server
 //     verifies the connected client's PID == -McpPid via GetNamedPipeClientProcessId
-//     (a squatter same-user client is rejected). Together with the CurrentUserOnly
-//     ACL (cross-user block) this is what §8 rests on.
-//   * Server direction is verified on the MCP side by process topology + creation
-//     time (Node has no kernel handle for net.connect); this helper simply
-//     self-reports its own PID in the `hello` frame so the MCP can match it against
-//     the conhost child it captured at spawn.
+//     (a rogue same-user client is rejected). With the CurrentUserOnly ACL
+//     (cross-user block) + the 128-bit secret pipe name + FILE_FLAG_FIRST_PIPE_INSTANCE
+//     fail-loud (below), this is what §8 rests on.
+//   * The `hello` frame self-reports this helper's PID as NON-LOAD-BEARING
+//     observability only (liveness + version) — it is NOT a security boundary. The
+//     MCP does not verify the server by process topology (that was removed; an
+//     adversarial same-user server is out of §8 scope).
 //
 // Wire framing: raw UTF-8 bytes, one JSON object per '\n' line (StreamReader/
 // StreamWriter over a NamedPipeStream deadlocked in the Phase 0 spike; raw byte
@@ -116,8 +117,8 @@ internal static class BridgeHost
                 return 4;
             }
 
-            // First frame: self-report identity so the MCP can match this PID against
-            // the conhost child it captured at spawn (server-topology verify).
+            // First frame: self-report pid + protocol version as NON-LOAD-BEARING
+            // observability (liveness/version), NOT a security claim (design §8.3).
             WriteFrame(server, $"{{\"t\":\"hello\",\"pid\":{helperPid},\"v\":\"{ProtocolVersion}\"}}");
 
             RunControlLoop(server, helperPid);
@@ -136,7 +137,16 @@ internal static class BridgeHost
     {
         for (var attempt = 0; attempt <= MaxClientRejects; attempt++)
         {
-            server.WaitForConnection();
+            try
+            {
+                server.WaitForConnection();
+            }
+            catch (Exception e)
+            {
+                // Graceful fail-loud (return 4) instead of an unhandled-exception crash.
+                Console.Error.WriteLine($"[bridge-host] WaitForConnection failed: {e.Message}");
+                return false;
+            }
             uint clientPid = 0;
             var ok = GetNamedPipeClientProcessId(server.SafePipeHandle.DangerousGetHandle(), out clientPid);
             if (ok && clientPid == mcpPid)

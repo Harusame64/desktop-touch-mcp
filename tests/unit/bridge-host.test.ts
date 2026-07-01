@@ -23,15 +23,23 @@ function pipePath(): string {
  */
 function makeFakePeer(
   path: string,
-  opts: { reportPid?: number; firstFrame?: string; protocol?: string },
+  opts: { reportPid?: number; firstFrame?: string; protocol?: string; chunkFirst?: boolean },
 ): net.Server {
   const proto = opts.protocol ?? "1";
   const reportPid = opts.reportPid ?? 4242;
   const server = net.createServer((sock) => {
     let buf = "";
     const write = (o: unknown) => sock.write(JSON.stringify(o) + "\n");
-    const first = opts.firstFrame ?? JSON.stringify({ t: "hello", pid: reportPid, v: proto });
-    sock.write(first + "\n");
+    const first = (opts.firstFrame ?? JSON.stringify({ t: "hello", pid: reportPid, v: proto })) + "\n";
+    if (opts.chunkFirst) {
+      // Exercise the client's partial-frame path: split the first frame across two
+      // TCP-ish chunks so the handshake must buffer until the '\n' arrives.
+      const mid = Math.max(1, Math.floor(first.length / 2));
+      sock.write(first.slice(0, mid));
+      setTimeout(() => { try { sock.write(first.slice(mid)); } catch { /* dropped */ } }, 20);
+    } else {
+      sock.write(first);
+    }
     sock.on("data", (d) => {
       buf += d.toString("utf8");
       let nl: number;
@@ -43,7 +51,7 @@ function makeFakePeer(
         if (req.m === "ping") write({ id: req.id, ok: true, r: "pong" });
         else if (req.m === "version") write({ id: req.id, ok: true, r: proto });
         else if (req.m === "shutdown") write({ id: req.id, ok: true, r: "bye" });
-        else write({ id: req.id, ok: false, r: "", e: "unknown" });
+        else write({ id: req.id, ok: false, r: "", e: `unknown_method:${req.m}` }); // mirror the C# helper
       }
     });
     sock.on("error", () => { /* client may drop */ });
@@ -108,6 +116,21 @@ describe("BridgeHost client protocol (fake peer)", () => {
     const path = pipePath();
     await listen(makeFakePeer(path, { firstFrame: "{not json" }), path);
     await expect(BridgeHost.connectForTest(path)).rejects.toThrow(/unparseable hello/);
+  });
+
+  it("handshakes when the hello frame arrives split across chunks", async () => {
+    const path = pipePath();
+    await listen(makeFakePeer(path, { reportPid: 777, chunkFirst: true }), path);
+    const bridge = await BridgeHost.connectForTest(path);
+    bridges.push(bridge);
+    expect(bridge.helperPid).toBe(777);
+    expect(await bridge.ping()).toBe(true);
+  });
+
+  it("rejects a helper whose protocol version does not match", async () => {
+    const path = pipePath();
+    await listen(makeFakePeer(path, { protocol: "2" }), path);
+    await expect(BridgeHost.connectForTest(path)).rejects.toThrow(/protocol '2' != expected '1'/);
   });
 
   it("fails pending requests after dispose", async () => {
