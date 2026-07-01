@@ -21,7 +21,7 @@ const {
   mockEnumWindowsInZOrder, mockGetWindowOwner, mockGetWindowClassName,
   mockIsWindowEnabled, mockGetLastActivePopup,
   // R3 tool-exclusion
-  mockIsExcludedWindowHandle,
+  mockIsExcludedWindowHandle, mockIsExcludedTitle,
 } = vi.hoisted(() => ({
   mockGetForegroundHwnd:    vi.fn<() => bigint | null>(),
   mockGetWindowTitleW:      vi.fn<(hwnd: unknown) => string>(),
@@ -32,6 +32,7 @@ const {
   mockIsWindowEnabled:      vi.fn<(hwnd: unknown) => boolean>(),
   mockGetLastActivePopup:   vi.fn<(hwnd: unknown) => bigint | null>(),
   mockIsExcludedWindowHandle: vi.fn<(hwnd: unknown) => boolean>(),
+  mockIsExcludedTitle:      vi.fn<(title: string) => boolean>(),
 }));
 
 vi.mock("../../src/engine/win32.js", () => ({
@@ -44,6 +45,7 @@ vi.mock("../../src/engine/win32.js", () => ({
   isWindowEnabled:      mockIsWindowEnabled,
   getLastActivePopup:   mockGetLastActivePopup,
   isExcludedWindowHandle: mockIsExcludedWindowHandle,
+  isExcludedTitle:      mockIsExcludedTitle,
 }));
 
 // tool-exclusion.js is NOT mocked — WindowExcludedError is the real class refuseIfExcludedTarget throws.
@@ -64,6 +66,8 @@ beforeEach(() => {
   // R3: by default no window is excluded; individual exclusion tests flip this to true.
   mockIsExcludedWindowHandle.mockReset();
   mockIsExcludedWindowHandle.mockReturnValue(false);
+  mockIsExcludedTitle.mockReset();
+  mockIsExcludedTitle.mockReturnValue(false);
   delete process.env.DESKTOP_TOUCH_DOCK_TITLE;
 });
 
@@ -295,6 +299,23 @@ describe("resolveWindowTarget — R3 key-locker exclusion", () => {
     mockGetWindowTitleW.mockReturnValue("desktop-touch key locker");
     mockIsExcludedWindowHandle.mockReturnValue(true);
     await expect(resolveWindowTarget({ hwnd: "500" })).rejects.toBeInstanceOf(WindowExcludedError);
+  });
+
+  it("refuses a plain windowTitle that names an excluded window (Case 3 front door)", async () => {
+    mockIsExcludedTitle.mockReturnValue(true);
+    await expect(resolveWindowTarget({ windowTitle: "desktop-touch key locker" }))
+      .rejects.toThrow(/WindowExcluded/);
+    expect(mockIsExcludedTitle).toHaveBeenCalledWith("desktop-touch key locker");
+  });
+
+  it("does NOT refuse a plain windowTitle that names a normal window", async () => {
+    mockIsExcludedTitle.mockReturnValue(false);
+    mockEnumWindowsInZOrder.mockReturnValue([
+      { hwnd: 400n, title: "Untitled - Notepad", className: "Notepad", ownerHwnd: null, isMinimized: false },
+    ]);
+    // Plain top-level match → existing pass-through (null), never refused.
+    const result = await resolveWindowTarget({ windowTitle: "Notepad" });
+    expect(result).toBeNull();
   });
 });
 

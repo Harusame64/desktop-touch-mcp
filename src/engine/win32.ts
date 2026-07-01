@@ -332,6 +332,35 @@ export function isExcludedWindowHandle(hwnd: unknown): boolean {
   return pid === 0 || isExcludedPid(pid);
 }
 
+/**
+ * (R3 tool-exclusion) True when `windowTitle` names (substring, case-insensitive) a top-level
+ * window owned by an excluded PID. This is the by-TITLE counterpart of `isExcludedWindowHandle`
+ * for the non-win32 readers that resolve a window from a title STRING through their own subsystem
+ * (UIA `getUiElements`, and any resolveWindowTarget by-title caller) — those bypass both the
+ * filtered `enumWindowsInZOrder` and the by-hwnd predicate, so the title itself must be refused.
+ *
+ * Enumerates the RAW (unfiltered) top-level list on purpose: the filtered enumerator HIDES the
+ * locker, so a title check against it would never see the window it must refuse. Zero-overhead
+ * when idle (empty registry short-circuits); fail-closed on an enumeration failure while armed.
+ * Fail-closed on ANY excluded match — a title that also matches a legitimate window is refused too
+ * (the locker's title is distinctive, so the over-refusal risk is negligible and on the safe side).
+ */
+export function isExcludedTitle(windowTitle: string): boolean {
+  if (!hasExcludedPids() || !windowTitle) return false;
+  const q = windowTitle.toLowerCase();
+  try {
+    const w32 = requireNativeWin32();
+    for (const hwnd of w32.win32EnumTopLevelWindows!()) {
+      const t = w32.win32GetWindowText!(hwnd);
+      if (!t || !t.toLowerCase().includes(q)) continue;
+      if (isExcludedWindowHandle(hwnd)) return true;
+    }
+  } catch {
+    return true; // enumeration failed while armed → fail closed
+  }
+  return false;
+}
+
 /** Identity record that survives across HWND reuse / process restart. */
 export interface ProcessIdentity {
   pid: number;

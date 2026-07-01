@@ -45,7 +45,7 @@ vi.mock("../../src/engine/native-engine.js", () => ({
   nativeL1: null,
 }));
 
-import { enumWindowsInZOrder } from "../../src/engine/win32.js";
+import { enumWindowsInZOrder, isExcludedTitle } from "../../src/engine/win32.js";
 import {
   registerExcludedPid, unregisterExcludedPid, hasExcludedPids,
   isExcludedPid, _resetExcludedPidsForTest,
@@ -137,5 +137,29 @@ describe("enumWindowsInZOrder — R3 tool-exclusion filter", () => {
     } finally {
       fakeWin32.win32GetWindowThreadProcessId = orig;
     }
+  });
+});
+
+describe("isExcludedTitle — by-title predicate (unfiltered enumeration)", () => {
+  beforeEach(() => _resetExcludedPidsForTest());
+
+  it("returns false (zero-overhead) when no PID is excluded", () => {
+    expect(isExcludedTitle("desktop-touch key locker")).toBe(false);
+  });
+
+  it("returns true when the title (substring) names an excluded window", () => {
+    registerExcludedPid(2222); // the fake locker window (200n) is owned by 2222
+    expect(isExcludedTitle("desktop-touch key locker")).toBe(true);
+    expect(isExcludedTitle("KEY LOCKER")).toBe(true); // case-insensitive substring
+  });
+
+  it("returns false when the title matches only a NON-excluded window", () => {
+    registerExcludedPid(2222);
+    expect(isExcludedTitle("Notepad")).toBe(false); // 100n owned by 1111 (not excluded)
+  });
+
+  it("returns false for an empty title", () => {
+    registerExcludedPid(2222);
+    expect(isExcludedTitle("")).toBe(false);
   });
 });

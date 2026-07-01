@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { getActiveWindow } from "../engine/nutjs.js";
-import { getWindowTitleW, enumWindowsInZOrder, restoreAndFocusWindow } from "../engine/win32.js";
+import { getWindowTitleW, enumWindowsInZOrder, restoreAndFocusWindow, isExcludedWindowHandle } from "../engine/win32.js";
 import { getVirtualDesktopStatus } from "../engine/uia-bridge.js";
 import { updateWindowCache } from "../engine/window-cache.js";
 import { listTabs, activateTab, DEFAULT_CDP_PORT } from "../engine/cdp-bridge.js";
@@ -78,6 +78,15 @@ export const getActiveWindowHandler = async (): Promise<ToolResult> => {
   try {
     const win = await getActiveWindow();
     const hwnd = (win as unknown as { windowHandle: unknown }).windowHandle;
+    // R3: getActiveWindow() is nut-js's UNWRAPPED foreground read (bypasses resolveWindowTarget's
+    // @active refusal). If the key locker's dialog is foreground, refuse rather than surfacing its
+    // title + exact rect (a by-identity observation that would feed coordinate targeting).
+    if (isExcludedWindowHandle(hwnd)) {
+      return failWith(
+        "The active window is the desktop-touch key locker, which is excluded from automation tools.",
+        "get_active_window",
+      );
+    }
     const title = hwnd ? getWindowTitleW(hwnd) : await win.title;
     const reg = await win.region;
     const info = {

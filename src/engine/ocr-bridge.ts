@@ -271,6 +271,12 @@ export async function recognizeWindowByHwnd(
   region: { x: number; y: number; width: number; height: number },
   language = detectOcrLanguage(),
 ): Promise<{ words: OcrWord[]; origin: { x: number; y: number } }> {
+  // R3 tool-exclusion: parity with runSomPipeline — refuse to capture+OCR a key-locker window by
+  // explicit hwnd (defense-in-depth; the current caller passes a focus-derived, already-filtered
+  // hwnd, but the guard keeps this by-hwnd capture primitive from becoming a future bypass).
+  if (isExcludedWindowHandle(hwnd)) {
+    throw new WindowExcludedError(`recognizeWindowByHwnd: target window is tool-excluded (key locker)`);
+  }
   const origin = { x: region.x, y: region.y };
 
   // Use PrintWindow (PW_RENDERFULLCONTENT) so the window is captured correctly

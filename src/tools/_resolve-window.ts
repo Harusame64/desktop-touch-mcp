@@ -15,7 +15,7 @@
  */
 
 import {
-  getForegroundHwnd, getWindowTitleW, getWindowRectByHwnd, isExcludedWindowHandle,
+  getForegroundHwnd, getWindowTitleW, getWindowRectByHwnd, isExcludedWindowHandle, isExcludedTitle,
   // H3: hierarchy-aware dialog resolution
   enumWindowsInZOrder, getWindowOwner, getWindowClassName, isWindowEnabled, getLastActivePopup,
 } from "../engine/win32.js";
@@ -262,6 +262,17 @@ export async function resolveWindowTarget(params: {
   // Case 3: a plain top-level window matches → return null so caller handles it (existing behaviour).
   // Case 4: (H3) no top-level match → search for a common dialog via owner chain.
   if (params.windowTitle) {
+    // R3: a plain windowTitle that names the key locker must be refused up front — the filtered
+    // searches below would return null (the locker is hidden from the enumerator), letting the
+    // caller fall back to the raw title and reach the dialog through a non-win32 reader. Uses the
+    // UNFILTERED title check so the (hidden) locker is visible to the refusal. (Fail-fast front
+    // door; the uia-bridge + runSomPipeline guards are the downstream backstops.)
+    if (isExcludedTitle(params.windowTitle)) {
+      throw new WindowExcludedError(
+        `WindowExcluded: windowTitle "${params.windowTitle}" names the desktop-touch key locker, ` +
+        `which is not addressable by automation tools`,
+      );
+    }
     try {
       // Case 3: plain match exists — preserve existing pass-through behaviour.
       // ADR-018 Phase 5: delegated to the shared `findPlainTopLevelWindowByTitle`

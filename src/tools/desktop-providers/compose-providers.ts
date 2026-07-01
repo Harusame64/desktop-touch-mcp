@@ -200,7 +200,12 @@ async function normalizeTarget(
           warnings: resolved.warnings,
         };
       }
-    } catch { /* fall through */ }
+    } catch (e) {
+      // R3: an excluded key-locker title must PROPAGATE (parity with the hwnd branch above);
+      // other resolution errors keep the tolerant fall-through.
+      if (e instanceof WindowExcludedError) throw e;
+      /* fall through */
+    }
     return { target, warnings: [] };
   }
 

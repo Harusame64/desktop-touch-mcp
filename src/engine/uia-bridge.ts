@@ -3,8 +3,26 @@ import { promisify } from "node:util";
 import { getCachedUia, updateUiaCache } from "./layer-buffer.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 import { nativeUia, type NativeUiElement } from "./native-engine.js";
+import { isExcludedTitle } from "./win32.js";
+import { WindowExcludedError } from "./tool-exclusion.js";
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * (R3 tool-exclusion) UIA resolves a window from a TITLE STRING through the native UIA tree — a
+ * subsystem that never consults the PID filter. So every UIA reader/driver that takes a
+ * `windowTitle` must first refuse a title that names the key-locker window, else discover /
+ * click_element / screenshot-som / workspace / macro can surface AND drive the secure dialog's
+ * buttons by title (the exact driving leak tool-exclusion exists to close). Zero-overhead when no
+ * locker is alive (`isExcludedTitle` short-circuits on an empty registry).
+ */
+function refuseUiaTitleIfExcluded(windowTitle: string): void {
+  if (isExcludedTitle(windowTitle)) {
+    throw new WindowExcludedError(
+      `UIA target window "${windowTitle}" belongs to the desktop-touch key locker and is excluded`,
+    );
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Native UIA Engine (Rust) — consumed via ./native-engine.js (single load point).
@@ -585,6 +603,7 @@ export async function getUiElements(
   timeoutMs = 10000,
   options?: { cached?: boolean; hwnd?: bigint; fetchValues?: boolean }
 ): Promise<UiElementsResult & { _cacheHit?: boolean }> {
+  refuseUiaTitleIfExcluded(windowTitle);
   // Cache hit path — only when caller provides hwnd + cached:true
   // Note: cache is never used when fetchValues:true (values may have changed)
   if (options?.cached && options.hwnd !== undefined && !options.fetchValues) {
@@ -814,6 +833,7 @@ export async function clickElement(
   /** (H3) When hwnd is provided, bypass title-based root search (fixes Save As / common dialogs). */
   options?: { hwnd?: bigint }
 ): Promise<{ ok: boolean; element?: string; error?: string }> {
+  refuseUiaTitleIfExcluded(windowTitle);
   // H3: hwnd-based lookup goes directly to PowerShell FromHandle path.
   // The Rust native path (uiaClickElement) does not accept hwnd, so we skip it
   // when hwnd is provided to ensure the hwnd-aware PS script is used.
@@ -847,6 +867,7 @@ export async function setElementValue(
   /** (H3) When hwnd is provided, bypass title-based root search (fixes Save As / common dialogs). */
   options?: { hwnd?: bigint }
 ): Promise<{ ok: boolean; error?: string }> {
+  refuseUiaTitleIfExcluded(windowTitle);
   // H3: hwnd-based lookup skips Rust native (same reason as clickElement above).
   if (options?.hwnd === undefined && nativeUia?.uiaSetValue) {
     try {
@@ -881,6 +902,7 @@ export async function insertTextViaTextPattern2(
   name?: string,
   automationId?: string
 ): Promise<{ ok: boolean; code?: string; error?: string }> {
+  refuseUiaTitleIfExcluded(windowTitle);
   // ★ Rust native path (Phase C)
   if (nativeUia?.uiaInsertText) {
     try {
@@ -1102,6 +1124,7 @@ export async function getElementChildren(
   maxElements = 30,
   timeoutMs = 5000
 ): Promise<UiElement[]> {
+  refuseUiaTitleIfExcluded(windowTitle);
   // ★ Rust native path (Phase C)
   if (nativeUia?.uiaGetElementChildren) {
     try {
@@ -1137,6 +1160,7 @@ export async function getElementChildren(
  * Returns the full visible buffer text, or null if TextPattern is unavailable.
  */
 export async function getTextViaTextPattern(windowTitle: string, timeoutMs = 6000): Promise<string | null> {
+  refuseUiaTitleIfExcluded(windowTitle);
   // ★ Rust native path (Phase C)
   if (nativeUia?.uiaGetTextViaTextPattern) {
     try {
@@ -1288,6 +1312,7 @@ try {
  * focus race produces an `unverifiable` hint rather than a false delivered.
  */
 export async function getTextViaValuePattern(windowTitle: string, timeoutMs = 6000): Promise<string | null> {
+  refuseUiaTitleIfExcluded(windowTitle);
   const safeTitle = escapeLike(windowTitle);
   const script = `
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -1369,6 +1394,7 @@ export async function getElementBounds(
   automationId?: string,
   controlType?: string
 ): Promise<ElementBounds | null> {
+  refuseUiaTitleIfExcluded(windowTitle);
   // ★ Rust native path (Phase C)
   if (nativeUia?.uiaGetElementBounds) {
     try {
@@ -1466,6 +1492,7 @@ export async function scrollElementIntoView(
   name?: string,
   automationId?: string,
 ): Promise<{ ok: boolean; scrolled: boolean; error?: string }> {
+  refuseUiaTitleIfExcluded(windowTitle);
   // ★ Rust native path
   if (nativeUia?.uiaScrollIntoView) {
     try {
@@ -1551,6 +1578,7 @@ export async function getScrollAncestors(
   windowTitle: string,
   elementName: string
 ): Promise<UiaScrollAncestor[]> {
+  refuseUiaTitleIfExcluded(windowTitle);
   // ★ Rust native path
   if (nativeUia?.uiaGetScrollAncestors) {
     try {
@@ -1646,6 +1674,7 @@ export async function scrollByPercent(
   verticalPercent: number,
   horizontalPercent: number
 ): Promise<{ ok: boolean; scrolled: boolean; error?: string }> {
+  refuseUiaTitleIfExcluded(windowTitle);
   // ★ Rust native path
   if (nativeUia?.uiaScrollByPercent) {
     try {
