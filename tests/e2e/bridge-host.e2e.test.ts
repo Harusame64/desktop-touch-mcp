@@ -18,7 +18,6 @@ import { existsSync } from "node:fs";
 import { BridgeHost } from "../../src/engine/bridge-host.js";
 
 const HELPER_EXE = join(process.cwd(), "bin", "bridge-host.exe");
-const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 function killTree(pid?: number): void {
   if (pid === undefined) return;
@@ -106,19 +105,38 @@ describe("bridge-host FIRST_PIPE_INSTANCE fail-loud", () => {
       detached: true, stdio: "ignore", windowsHide: false,
     });
     kids.push(a);
-    await delay(1_500); // let A register the pipe name (server created before WaitForConnection)
 
-    // B tries the SAME name → FILE_FLAG_FIRST_PIPE_INSTANCE (maxInstances=1) makes
-    // its create fail → the helper exits 3 (pipe-create-failed), never attaching.
-    const bExit = await new Promise<number | null>((resolve) => {
-      const b = spawn(HELPER_EXE, ["-PipeName", name, "-McpPid", mcp], {
-        detached: true, stdio: "ignore", windowsHide: false,
-      });
-      kids.push(b);
-      b.on("exit", (code) => resolve(code));
-      setTimeout(() => resolve(-999), 12_000);
+    // Poll (no fixed sleep → no AV-cold-start flake) until A's pipe accepts a
+    // connection = the name is registered; KEEP the probe open so A stays alive
+    // holding the name while B races. (We are A's McpPid, so A verifies + keeps us.)
+    const probe = await new Promise<net.Socket>((resolve, reject) => {
+      const deadline = Date.now() + 20_000;
+      const tryIt = () => {
+        const s = net.connect(`\\\\.\\pipe\\${name}`);
+        s.once("connect", () => resolve(s));
+        s.once("error", () => {
+          s.destroy();
+          if (Date.now() < deadline) setTimeout(tryIt, 150);
+          else reject(new Error("helper A never registered its pipe"));
+        });
+      };
+      tryIt();
     });
 
-    expect(bExit).toBe(3);
+    try {
+      // B tries the SAME name → FILE_FLAG_FIRST_PIPE_INSTANCE (maxInstances=1) makes
+      // its create fail → the helper exits 3 (pipe-create-failed), never attaching.
+      const bExit = await new Promise<number | null>((resolve) => {
+        const b = spawn(HELPER_EXE, ["-PipeName", name, "-McpPid", mcp], {
+          detached: true, stdio: "ignore", windowsHide: false,
+        });
+        kids.push(b);
+        b.on("exit", (code) => resolve(code));
+        setTimeout(() => resolve(-999), 12_000);
+      });
+      expect(bExit).toBe(3);
+    } finally {
+      probe.destroy();
+    }
   }, 40_000);
 });
