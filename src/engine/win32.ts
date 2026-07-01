@@ -144,7 +144,13 @@ export function enumWindowsInZOrder(): WindowZInfo[] {
   const excluding = hasExcludedPids();
   for (const hwnd of hwnds) {
     try {
-      if (excluding && isExcludedPid(getWindowProcessId(hwnd))) continue;
+      if (excluding) {
+        // Fail CLOSED while armed: drop a window whose owning PID is excluded OR cannot be read
+        // (getWindowProcessId → 0; PID 0 is the System Idle Process, never a real window owner, so
+        // a 0 here means the read failed). A security filter must not leak on read failure (P3-1).
+        const ownerPid = getWindowProcessId(hwnd);
+        if (ownerPid === 0 || isExcludedPid(ownerPid)) continue;
+      }
       if (!w32.win32IsWindowVisible!(hwnd)) continue;
       const title = w32.win32GetWindowText!(hwnd);
       if (!title) continue;

@@ -23,8 +23,11 @@
 //
 // Tool-exclusion: on spawn we register the locker's PID with the engine exclusion registry, so
 // the locker's own windows (the secure dialog) are dropped from enumWindowsInZOrder() and
-// refused by resolveWindowTarget() Cases 1/2 — the MCP's tools cannot observe or click the
-// dialog. Unregistered on dispose.
+// refused by resolveWindowTarget() Cases 1/2 — the MCP's tools cannot address the dialog BY
+// WINDOW IDENTITY (hwnd / title / @active). This is BOUNDED: a fullscreen capture or a raw
+// mouse-by-coordinate is still physically possible (the accepted structural boundary); the
+// secret's secrecy rests on D1's masked PasswordBox, not on this filter. Unregistered on the
+// pipe close AND on dispose (a crashed locker must not leave the registry armed).
 //
 // Wire framing: raw UTF-8 bytes, one JSON object per '\n' line, BUFFERED read.
 
@@ -118,8 +121,29 @@ export class KeyLockerHost {
     readonly protocolVersion: string,
   ) {
     this.socket.on("data", (d) => this.onData(d));
-    this.socket.on("close", () => this.failAllPending(new KeyLockerError("KeyLockerPipeUnavailable", "pipe closed")));
+    this.socket.on("close", () => this.onSocketClosed());
     this.socket.on("error", () => { /* surfaced via close / pending timeouts */ });
+  }
+
+  /**
+   * The pipe dropped — locker exited / crashed / graceful dispose. Release the tool-exclusion PID
+   * HERE (not only in dispose), so a locker that dies WITHOUT dispose() never leaves the registry
+   * armed: otherwise `hasExcludedPids()` stays true with no locker alive (breaking the zero-syscall
+   * gate) and, on Windows PID reuse, an unrelated process's windows would silently vanish from
+   * screenshot / desktop_discover (Opus R1 P2-1). Idempotent with dispose().
+   */
+  private onSocketClosed(): void {
+    this.disposed = true;
+    this.releaseExclusion();
+    this.failAllPending(new KeyLockerError("KeyLockerPipeUnavailable", "pipe closed"));
+  }
+
+  /** Un-exclude the locker PID exactly once (idempotent across close + dispose). */
+  private releaseExclusion(): void {
+    if (this.excludedPid > 0) {
+      unregisterExcludedPid(this.excludedPid);
+      this.excludedPid = 0;
+    }
   }
 
   /** Launch the locker, register it for tool-exclusion, connect, read `hello`, return a session. */
@@ -329,7 +353,7 @@ export class KeyLockerHost {
       await Promise.race([this.request("shutdown"), delay(500)]);
     } catch { /* best-effort */ }
     this.disposed = true;
-    if (this.excludedPid > 0) unregisterExcludedPid(this.excludedPid);
+    this.releaseExclusion();
     try { this.socket.end(); this.socket.destroy(); } catch { /* ignore */ }
     this.failAllPending(new KeyLockerError("KeyLockerPipeUnavailable", "locker disposed"));
     if (this.killPid > 0) killTree(this.killPid);

@@ -22,8 +22,18 @@ import { join } from "node:path";
 import { existsSync, mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { KeyLockerHost } from "../../src/engine/key-locker-host.js";
+import { hasExcludedPids } from "../../src/engine/tool-exclusion.js";
 
 const HELPER_EXE = join(process.cwd(), "bin", "key-locker.exe");
+
+async function pollUntil(predicate: () => boolean, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return true;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return predicate();
+}
 
 function killTree(pid?: number): void {
   if (pid === undefined) return;
@@ -88,6 +98,23 @@ describe("key-locker live smoke (pipe control plane)", () => {
     // Nothing captured yet → exists/delete on an unknown key are false (no dialog opened).
     expect(await host.exists("ssh:nobody")).toBe(false);
     expect(await host.delete("ssh:nobody")).toBe(false);
+  }, 40_000);
+
+  it("releases the tool-exclusion PID when the locker dies WITHOUT dispose() (P2-1)", async () => {
+    expect(existsSync(HELPER_EXE)).toBe(true);
+    const storeDir = freshStoreDir();
+    dirs.push(storeDir);
+
+    const host = await KeyLockerHost.start({ startupTimeoutMs: 20_000, storeDir });
+    hosts.push(host); // afterEach dispose() is a harmless no-op once it is already dead
+    expect(hasExcludedPids()).toBe(true);
+
+    // Simulate a crash: kill the locker process directly, no dispose(). The host's socket 'close'
+    // must fire and release the exclusion PID, else a dead locker leaves the registry armed
+    // (breaking the zero-syscall gate + risking PID-reuse false exclusion).
+    killTree(host.helperPid);
+    const released = await pollUntil(() => !hasExcludedPids(), 10_000);
+    expect(released).toBe(true);
   }, 40_000);
 });
 

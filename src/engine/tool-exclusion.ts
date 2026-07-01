@@ -4,10 +4,18 @@
 //
 // The Key Locker process (bin/key-locker.exe) hosts a WPF PasswordBox secure dialog whose
 // CONTENT is un-capturable by design (D1 spike: no UIA value, masked, no clipboard copy). This
-// registry closes the complementary WINDOW-TARGETING surface: while a locker is alive, its
-// windows must be invisible to — and untargetable by — the MCP's own observation/action tools,
-// so no screenshot / perception / discover / click / dialog-resolution path can even address
-// the dialog.
+// registry closes the complementary surface: the MCP's WINDOW-TARGETING paths that name a
+// specific window (by `hwnd` / title / `@active`). While a locker is alive, its windows are
+// dropped from the enumerator and refused by the by-window resolver, so screenshot-by-window /
+// perception / desktop_discover / click-by-window / dialog-resolution cannot single out the
+// dialog.
+//
+// This is BOUNDED, not structural. It does NOT (and is not meant to) block a FULLSCREEN capture
+// (captureScreen / captureDisplay grab the raw framebuffer, which contains whatever pixels are on
+// screen) or a raw mouse-by-coordinate / foreground keystroke — those are the accepted structural
+// boundary and are out of §8 scope. The load-bearing secrecy guarantee is D1 (the PasswordBox
+// masks the value), NOT this filter; this filter just keeps the honest tool path from casually
+// addressing the dialog by identity.
 //
 // The exclusion key is the locker's PID: the MCP knows it from spawn (see key-locker-host.ts),
 // which is robust across HWND reuse and does NOT depend on the locker's self-reported hello.pid

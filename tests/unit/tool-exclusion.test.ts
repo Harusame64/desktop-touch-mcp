@@ -114,4 +114,28 @@ describe("enumWindowsInZOrder — R3 tool-exclusion filter", () => {
     const wins = enumWindowsInZOrder();
     expect(wins.length).toBe(2);
   });
+
+  it("fails CLOSED while armed: a window whose PID cannot be read (0) is dropped (P3-1)", () => {
+    const orig = fakeWin32.win32GetWindowThreadProcessId;
+    // Make the locker window's PID unreadable (0) while an UNRELATED pid arms the filter.
+    fakeWin32.win32GetWindowThreadProcessId = (h: bigint) => ({ threadId: 1, processId: h === 200n ? 0 : 1111 });
+    try {
+      registerExcludedPid(4242); // arm with a pid that matches nothing on this desktop
+      const wins = enumWindowsInZOrder();
+      expect(wins.map((w) => w.hwnd)).toEqual([100n]); // 200n dropped: unreadable PID, filter armed
+    } finally {
+      fakeWin32.win32GetWindowThreadProcessId = orig;
+    }
+  });
+
+  it("does NOT drop an unreadable-PID window when the filter is NOT armed", () => {
+    const orig = fakeWin32.win32GetWindowThreadProcessId;
+    fakeWin32.win32GetWindowThreadProcessId = (h: bigint) => ({ threadId: 1, processId: h === 200n ? 0 : 1111 });
+    try {
+      const wins = enumWindowsInZOrder(); // no PID excluded → PID never read → both kept
+      expect(wins.map((w) => w.hwnd)).toEqual([100n, 200n]);
+    } finally {
+      fakeWin32.win32GetWindowThreadProcessId = orig;
+    }
+  });
 });
