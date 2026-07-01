@@ -29,6 +29,7 @@ import { fetchTerminalCandidates } from "./terminal-provider.js";
 import { fetchVisualCandidates }   from "./visual-provider.js";
 import { fetchOcrCandidates }      from "./ocr-provider.js";
 import { resolveWindowTarget }     from "../_resolve-window.js";
+import { WindowExcludedError }     from "../../engine/tool-exclusion.js";
 
 // ── G4: transient visual warnings trigger a single 200ms retry ────────────────
 // Covers the first-request race where VisualRuntime.attach() (fire-and-forget in
@@ -177,7 +178,12 @@ async function normalizeTarget(
         },
         warnings: resolved.warnings,
       };
-    } catch {
+    } catch (e) {
+      // R3 tool-exclusion: a WindowExcludedError must PROPAGATE, not be swallowed as a normal
+      // resolution miss — otherwise the original (excluded) hwnd flows on into the provider
+      // fan-out and the OCR lane reads the key-locker dialog by handle (Codex R1 P1-A). Other
+      // resolution errors keep the legacy tolerant passthrough.
+      if (e instanceof WindowExcludedError) throw e;
       return { target, warnings: [] };
     }
   }

@@ -15,24 +15,24 @@
  */
 
 import {
-  getForegroundHwnd, getWindowTitleW, getWindowRectByHwnd, getWindowProcessId,
+  getForegroundHwnd, getWindowTitleW, getWindowRectByHwnd, isExcludedWindowHandle,
   // H3: hierarchy-aware dialog resolution
   enumWindowsInZOrder, getWindowOwner, getWindowClassName, isWindowEnabled, getLastActivePopup,
 } from "../engine/win32.js";
-import { hasExcludedPids, isExcludedPid } from "../engine/tool-exclusion.js";
+import { WindowExcludedError } from "../engine/tool-exclusion.js";
 
 /**
  * (R3 tool-exclusion) Cases 1/2 resolve an HWND directly (explicit `hwnd`, `@active`), bypassing
  * `enumWindowsInZOrder`'s PID filter. Consult the exclusion registry here so a Key Locker window
- * cannot be targeted by hwnd or by happening to be the foreground window. Gated on a non-empty
- * set → zero syscalls when no locker is alive. Throws `WindowExcluded` (L0-local; L4 wires it into
- * `_errors.ts` SUGGESTS/classify) rather than masquerading as WindowNotFound — the window exists,
- * it is protected.
+ * cannot be targeted by hwnd or by happening to be the foreground window. `isExcludedWindowHandle`
+ * short-circuits on an empty registry → zero syscalls when no locker is alive, and fails CLOSED on
+ * an unreadable PID. Throws the typed `WindowExcludedError` (L0-local; L4 wires it into `_errors.ts`)
+ * rather than masquerading as WindowNotFound — the window exists, it is protected — so callers that
+ * tolerate resolution misses (e.g. `normalizeTarget`) can single it out and propagate the refusal.
  */
 function refuseIfExcludedTarget(hwnd: bigint): void {
-  if (!hasExcludedPids()) return;
-  if (isExcludedPid(getWindowProcessId(hwnd))) {
-    throw new Error(
+  if (isExcludedWindowHandle(hwnd)) {
+    throw new WindowExcludedError(
       "WindowExcluded: target window belongs to the desktop-touch key locker and is not " +
       "addressable by automation tools (the secure credential dialog is excluded by design)",
     );

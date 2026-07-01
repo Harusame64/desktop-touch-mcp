@@ -6,7 +6,8 @@ import { fileURLToPath } from "node:url";
 import { join, dirname } from "node:path";
 import sharp from "sharp";
 import { captureWindowBackground } from "./image.js";
-import { enumWindowsInZOrder, getWindowDpi, printWindowToBuffer } from "./win32.js";
+import { enumWindowsInZOrder, getWindowDpi, printWindowToBuffer, isExcludedWindowHandle } from "./win32.js";
+import { WindowExcludedError } from "./tool-exclusion.js";
 import { nativeEngine } from "./native-engine.js";
 import { cropRgbaToRoi } from "./roi-crop.js";
 import type { Rect } from "./vision-gpu/types.js";
@@ -700,6 +701,15 @@ export async function runSomPipeline(
   let targetHwnd: unknown = hwnd ?? null;
   let origin = { x: 0, y: 0 };
   let resolvedWindowTitle = windowTitle;
+
+  // R3 tool-exclusion backstop: refuse to OCR a key-locker window reached by EXPLICIT hwnd. The
+  // title-only branch below already relies on the filtered enumWindowsInZOrder (the locker is not
+  // in it), but an explicit hwnd bypasses that search entirely (line ~713 only reads its origin).
+  // This is the definitive guard for every OCR-read caller (discover, screenshot som, roiCapture,
+  // ocr-adapter) regardless of how the hwnd was obtained. Short-circuits when no locker is alive.
+  if (isExcludedWindowHandle(targetHwnd)) {
+    throw new WindowExcludedError(`runSomPipeline: target window is tool-excluded (key locker)`);
+  }
 
   if (!targetHwnd) {
     const wins = enumWindowsInZOrder();

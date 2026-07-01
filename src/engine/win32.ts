@@ -139,18 +139,12 @@ export function enumWindowsInZOrder(): WindowZInfo[] {
   const hwnds = w32.win32EnumTopLevelWindows!();
   // R3 tool-exclusion: while a Key Locker is alive, drop its windows entirely so no
   // screenshot / perception / discover / dialog-resolution path can address the secure
-  // dialog. Gated on a non-empty exclusion set → zero extra syscalls in the common
-  // (no-locker) case; when armed it costs one GetWindowThreadProcessId per window.
-  const excluding = hasExcludedPids();
+  // dialog. `isExcludedWindowHandle` short-circuits on an empty registry → zero extra
+  // syscalls in the common (no-locker) case; when armed it costs one GetWindowThreadProcessId
+  // per window and fails CLOSED on an unreadable PID.
   for (const hwnd of hwnds) {
     try {
-      if (excluding) {
-        // Fail CLOSED while armed: drop a window whose owning PID is excluded OR cannot be read
-        // (getWindowProcessId → 0; PID 0 is the System Idle Process, never a real window owner, so
-        // a 0 here means the read failed). A security filter must not leak on read failure (P3-1).
-        const ownerPid = getWindowProcessId(hwnd);
-        if (ownerPid === 0 || isExcludedPid(ownerPid)) continue;
-      }
+      if (isExcludedWindowHandle(hwnd)) continue;
       if (!w32.win32IsWindowVisible!(hwnd)) continue;
       const title = w32.win32GetWindowText!(hwnd);
       if (!title) continue;
@@ -307,6 +301,35 @@ export function getWindowProcessId(hwnd: unknown): number {
   } catch {
     return 0;
   }
+}
+
+/**
+ * (R3 tool-exclusion) True when `hwnd` is owned by a tool-excluded (key locker) PID — the shared
+ * by-handle predicate for EVERY by-identity enumerator / reader that is NOT `resolveWindowTarget`
+ * (which throws `WindowExcludedError` instead). Used by `enumWindowsInZOrder` (win32), the
+ * `getWindows` wrapper (nut-js), and the `runSomPipeline` OCR read guard. Co-located with
+ * `getWindowProcessId` so `tool-exclusion.ts` need not import win32 (avoids an import cycle).
+ *
+ * Zero-overhead + fail-closed:
+ *   - returns `false` immediately when the registry is empty (no locker) → no syscall;
+ *   - while ARMED, fails CLOSED — a handle that is null / non-integer / whose PID cannot be read
+ *     (getWindowProcessId → 0; PID 0 = System Idle Process, never a real window owner) is treated
+ *     as excluded, so the filter never LEAKS on a read/parse failure.
+ *
+ * Accepts `unknown` so the nut-js `windowHandle` (a number) and a Win32 `bigint` HWND both work.
+ */
+export function isExcludedWindowHandle(hwnd: unknown): boolean {
+  if (!hasExcludedPids()) return false;
+  let h: bigint;
+  if (typeof hwnd === "bigint") {
+    h = hwnd;
+  } else if (typeof hwnd === "number" && Number.isInteger(hwnd)) {
+    h = BigInt(hwnd);
+  } else {
+    return true; // unparseable handle while armed → fail closed
+  }
+  const pid = getWindowProcessId(h);
+  return pid === 0 || isExcludedPid(pid);
 }
 
 /** Identity record that survives across HWND reuse / process restart. */
