@@ -15,10 +15,29 @@
  */
 
 import {
-  getForegroundHwnd, getWindowTitleW, getWindowRectByHwnd,
+  getForegroundHwnd, getWindowTitleW, getWindowRectByHwnd, getWindowProcessId,
   // H3: hierarchy-aware dialog resolution
   enumWindowsInZOrder, getWindowOwner, getWindowClassName, isWindowEnabled, getLastActivePopup,
 } from "../engine/win32.js";
+import { hasExcludedPids, isExcludedPid } from "../engine/tool-exclusion.js";
+
+/**
+ * (R3 tool-exclusion) Cases 1/2 resolve an HWND directly (explicit `hwnd`, `@active`), bypassing
+ * `enumWindowsInZOrder`'s PID filter. Consult the exclusion registry here so a Key Locker window
+ * cannot be targeted by hwnd or by happening to be the foreground window. Gated on a non-empty
+ * set → zero syscalls when no locker is alive. Throws `WindowExcluded` (L0-local; L4 wires it into
+ * `_errors.ts` SUGGESTS/classify) rather than masquerading as WindowNotFound — the window exists,
+ * it is protected.
+ */
+function refuseIfExcludedTarget(hwnd: bigint): void {
+  if (!hasExcludedPids()) return;
+  if (isExcludedPid(getWindowProcessId(hwnd))) {
+    throw new Error(
+      "WindowExcluded: target window belongs to the desktop-touch key locker and is not " +
+      "addressable by automation tools (the secure credential dialog is excluded by design)",
+    );
+  }
+}
 
 // Standard Win32 dialog class. Used as primary signal for common dialog detection.
 // ownerHwnd is the secondary signal for non-#32770 common dialogs (IFileDialog, etc.)
@@ -209,6 +228,9 @@ export async function resolveWindowTarget(params: {
       }
     } catch { /* conservative: keep original hwnd on error */ }
 
+    // R3: refuse an explicit hwnd that resolves to the key locker (after any popup preferral).
+    refuseIfExcludedTarget(hwndb);
+
     const dockLiteral = getDockTitleLiteral();
     if (dockLiteral && title.toLowerCase().includes(dockLiteral.toLowerCase())) {
       warnings.push("HwndMatchesDockWindow: targeting the CLI host window — intended?");
@@ -222,6 +244,8 @@ export async function resolveWindowTarget(params: {
     if (hwndb === null) {
       throw new Error("WindowNotFound: @active — no foreground window could be determined");
     }
+    // R3: refuse when the foreground window is the key locker (e.g. its secure dialog is up).
+    refuseIfExcludedTarget(hwndb);
     const title = getWindowTitleW(hwndb);
     const dockLiteral = getDockTitleLiteral();
     if (dockLiteral && title.toLowerCase().includes(dockLiteral.toLowerCase())) {

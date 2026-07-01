@@ -1,5 +1,6 @@
 import { nativeL1, nativeWin32 } from "./native-engine.js";
 import type { NativeWgcCaptureOptions } from "./native-types.js";
+import { hasExcludedPids, isExcludedPid } from "./tool-exclusion.js";
 
 // Every Win32 binding this module used to carry has migrated to the
 // napi-rs native addon (`src/win32/*.rs`) across ADR-007 P1–P4. The
@@ -136,8 +137,14 @@ export function enumWindowsInZOrder(): WindowZInfo[] {
   let zOrder = 0;
 
   const hwnds = w32.win32EnumTopLevelWindows!();
+  // R3 tool-exclusion: while a Key Locker is alive, drop its windows entirely so no
+  // screenshot / perception / discover / dialog-resolution path can address the secure
+  // dialog. Gated on a non-empty exclusion set → zero extra syscalls in the common
+  // (no-locker) case; when armed it costs one GetWindowThreadProcessId per window.
+  const excluding = hasExcludedPids();
   for (const hwnd of hwnds) {
     try {
+      if (excluding && isExcludedPid(getWindowProcessId(hwnd))) continue;
       if (!w32.win32IsWindowVisible!(hwnd)) continue;
       const title = w32.win32GetWindowText!(hwnd);
       if (!title) continue;

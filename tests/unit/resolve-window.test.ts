@@ -20,6 +20,8 @@ const {
   // H3 additions
   mockEnumWindowsInZOrder, mockGetWindowOwner, mockGetWindowClassName,
   mockIsWindowEnabled, mockGetLastActivePopup,
+  // R3 tool-exclusion
+  mockGetWindowProcessId,
 } = vi.hoisted(() => ({
   mockGetForegroundHwnd:    vi.fn<() => bigint | null>(),
   mockGetWindowTitleW:      vi.fn<(hwnd: unknown) => string>(),
@@ -29,6 +31,7 @@ const {
   mockGetWindowClassName:   vi.fn<(hwnd: unknown) => string>(),
   mockIsWindowEnabled:      vi.fn<(hwnd: unknown) => boolean>(),
   mockGetLastActivePopup:   vi.fn<(hwnd: unknown) => bigint | null>(),
+  mockGetWindowProcessId:   vi.fn<(hwnd: unknown) => number>(),
 }));
 
 vi.mock("../../src/engine/win32.js", () => ({
@@ -40,9 +43,11 @@ vi.mock("../../src/engine/win32.js", () => ({
   getWindowClassName:   mockGetWindowClassName,
   isWindowEnabled:      mockIsWindowEnabled,
   getLastActivePopup:   mockGetLastActivePopup,
+  getWindowProcessId:   mockGetWindowProcessId,
 }));
 
 import { resolveWindowTarget } from "../../src/tools/_resolve-window.js";
+import { registerExcludedPid, _resetExcludedPidsForTest } from "../../src/engine/tool-exclusion.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -56,10 +61,16 @@ beforeEach(() => {
   mockGetWindowClassName.mockReturnValue("");
   mockIsWindowEnabled.mockReturnValue(true);
   mockGetLastActivePopup.mockReturnValue(null);
+  // R3: default PID 0; the exclusion gate short-circuits before this is called
+  // whenever the registry is empty (asserted explicitly in the zero-overhead test).
+  mockGetWindowProcessId.mockReset();
+  mockGetWindowProcessId.mockReturnValue(0);
+  _resetExcludedPidsForTest();
   delete process.env.DESKTOP_TOUCH_DOCK_TITLE;
 });
 
 afterEach(() => {
+  _resetExcludedPidsForTest();
   delete process.env.DESKTOP_TOUCH_DOCK_TITLE;
 });
 
@@ -253,6 +264,40 @@ describe("resolveWindowTarget — disabled-owner popup prefer (H3 case 5)", () =
     const result = await resolveWindowTarget({ hwnd: "100" });
     expect(result!.hwnd).toBe(100n);
     expect(result!.warnings).not.toContain("parent_disabled_prefer_popup");
+  });
+});
+
+// ─── R3 tool-exclusion refusal (Cases 1/2 bypass the enumerator) ─────────────
+
+describe("resolveWindowTarget — R3 key-locker exclusion", () => {
+  it("refuses an explicit hwnd whose PID is excluded (Case 1)", async () => {
+    mockGetWindowTitleW.mockReturnValue("desktop-touch key locker");
+    mockGetWindowProcessId.mockReturnValue(2222);
+    registerExcludedPid(2222);
+    await expect(resolveWindowTarget({ hwnd: "500" })).rejects.toThrow(/WindowExcluded/);
+  });
+
+  it("allows an explicit hwnd whose PID is NOT the excluded one", async () => {
+    mockGetWindowTitleW.mockReturnValue("Untitled - Notepad");
+    mockGetWindowProcessId.mockReturnValue(1111);
+    registerExcludedPid(2222); // a DIFFERENT pid is excluded
+    const result = await resolveWindowTarget({ hwnd: "500" });
+    expect(result).not.toBeNull();
+    expect(result!.hwnd).toBe(500n);
+  });
+
+  it("refuses @active when the foreground window's PID is excluded (Case 2)", async () => {
+    mockGetForegroundHwnd.mockReturnValue(600n);
+    mockGetWindowProcessId.mockReturnValue(2222);
+    registerExcludedPid(2222);
+    await expect(resolveWindowTarget({ windowTitle: "@active" })).rejects.toThrow(/WindowExcluded/);
+  });
+
+  it("does NOT consult getWindowProcessId when the registry is empty (zero-overhead gate)", async () => {
+    mockGetWindowTitleW.mockReturnValue("Untitled - Notepad");
+    const result = await resolveWindowTarget({ hwnd: "700" });
+    expect(result).not.toBeNull();
+    expect(mockGetWindowProcessId).not.toHaveBeenCalled();
   });
 });
 
