@@ -207,4 +207,44 @@ describe("key-locker FIRST_PIPE_INSTANCE fail-loud", () => {
       probe.destroy();
     }
   }, 40_000);
+
+  it("a pre-existing MULTI-INSTANCE squatter still makes the locker fail-loud (exit 3) — Codex P2 rebuttal", async () => {
+    expect(existsSync(HELPER_EXE)).toBe(true);
+    const name = `dtm-locker-squat-${randomBytes(8).toString("hex")}`;
+
+    // The exact race Codex P2 posits: a same-user squatter pre-creates the pipe with MULTI-INSTANCE
+    // (MaxAllowedServerInstances, which is != 1 so .NET does NOT set FILE_FLAG_FIRST_PIPE_INSTANCE
+    // on the squatter's create). The claim was that our helper (maxInstances=1) would then attach as
+    // a second instance instead of failing. It does NOT: .NET's maxInstances=1 create is refused
+    // because the name already exists (first-instance semantics + instance-count mismatch), so the
+    // helper exits 3 and the MCP aborts — never connecting to the squatter.
+    const squatScript =
+      "$o=[System.IO.Pipes.PipeOptions]::Asynchronous -bor [System.IO.Pipes.PipeOptions]::CurrentUserOnly;" +
+      `$s=New-Object System.IO.Pipes.NamedPipeServerStream('${name}',` +
+      "[System.IO.Pipes.PipeDirection]::InOut,[System.IO.Pipes.NamedPipeServerStream]::MaxAllowedServerInstances," +
+      "[System.IO.Pipes.PipeTransmissionMode]::Byte,$o);Write-Host 'READY';Start-Sleep -Seconds 30;";
+    const squatter = spawn("powershell.exe", ["-NoProfile", "-Command", squatScript], { stdio: ["ignore", "pipe", "ignore"] });
+    kids.push(squatter);
+
+    // Wait until the squatter reports it holds the name.
+    await new Promise<void>((resolve, reject) => {
+      let out = "";
+      const t = setTimeout(() => reject(new Error("squatter never signalled READY")), 15_000);
+      squatter.stdout!.on("data", (d) => {
+        out += d.toString("utf8");
+        if (out.includes("READY")) { clearTimeout(t); resolve(); }
+      });
+      squatter.on("exit", () => { clearTimeout(t); reject(new Error("squatter exited before READY")); });
+    });
+
+    const exit = await new Promise<number | null>((resolve) => {
+      const b = spawn(HELPER_EXE, ["-PipeName", name, "-McpPid", String(process.pid)], {
+        detached: true, stdio: "ignore", windowsHide: false,
+      });
+      kids.push(b);
+      b.on("exit", (code) => resolve(code));
+      setTimeout(() => resolve(-999), 12_000);
+    });
+    expect(exit).toBe(3);
+  }, 40_000);
 });

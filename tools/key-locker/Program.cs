@@ -79,10 +79,16 @@ internal static class KeyLocker
         NamedPipeServerStream server;
         try
         {
-            // CurrentUserOnly => cross-user block (OS DACL). maxInstances=1 => .NET passes
-            // FILE_FLAG_FIRST_PIPE_INSTANCE: if a squatter already created this (unguessable)
-            // name our create FAILS LOUD here instead of attaching to theirs — the MCP sees
-            // us die and aborts. (S1 §8; server-verify is demoted/infeasible for the Node client.)
+            // CurrentUserOnly => cross-user block (OS DACL). maxInstances=1 => the .NET runtime
+            // sets FILE_FLAG_FIRST_PIPE_INSTANCE (NamedPipeServerStream.Windows.cs computes
+            // `openMode |= (maxNumberOfServerInstances == 1 ? FILE_FLAG_FIRST_PIPE_INSTANCE : 0)`),
+            // so if a squatter already created this (unguessable) name our create FAILS LOUD here
+            // (ERROR_ACCESS_DENIED -> exception -> return 3) instead of attaching to theirs — the MCP
+            // sees us die and aborts. This holds even when the squatter pre-created a MULTI-INSTANCE
+            // pipe (MaxAllowedServerInstances): our maxInstances=1 create is still refused (first-
+            // instance semantics + instance-count mismatch). Verified empirically + pinned by the
+            // "MULTI-INSTANCE squatter" e2e (tests/e2e/key-locker.e2e.test.ts). (S1 §8; server-verify
+            // is demoted/infeasible for the Node client — it cannot get the pipe's OS handle.)
             server = new NamedPipeServerStream(
                 pipeName, PipeDirection.InOut, 1,
                 PipeTransmissionMode.Byte,
