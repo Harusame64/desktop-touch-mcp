@@ -235,6 +235,16 @@ describe("§8 #6 — command derivation table", () => {
       path: "example/repo.git",
     });
   });
+  it("git clone --bundle-uri <uri> <repo> derives the REPO, not the bundle host (Codex R5)", async () => {
+    expect(await derives("git clone --bundle-uri https://cache.example.com/bundle https://github.com/org/private.git")).toMatchObject({
+      scheme: "https-cred",
+      host: "github.com",
+      path: "org/private.git",
+    });
+    expect(await derives("git clone --bundle-uri=https://cache.example.com/bundle https://github.com/org/private.git")).toMatchObject({
+      host: "github.com",
+    });
+  });
   it("git push origin with a cwd whose origin is https → derive via git -C cwd", async () => {
     expect(await derives("git push origin main", { ...local, cwd: repoTracking })).toMatchObject({
       scheme: "https-cred",

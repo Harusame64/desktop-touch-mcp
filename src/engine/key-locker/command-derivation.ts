@@ -174,7 +174,7 @@ const GIT_ARG_OPTS: Record<string, Set<string>> = {
   push: new Set(["-o", "--push-option", "--receive-pack", "--exec"]), // --repo is captured as the target below
   pull: new Set(["--depth", "-j", "--jobs", "--upload-pack", "--negotiation-tip", "--server-option", "-o", "-s", "-X", "--strategy", "--strategy-option"]),
   fetch: new Set(["--depth", "-j", "--jobs", "--upload-pack", "--negotiation-tip", "--server-option", "-o", "--refmap", "--shallow-since", "--shallow-exclude"]),
-  clone: new Set(["-b", "--branch", "-o", "--origin", "--depth", "-c", "--config", "--reference", "--reference-if-able", "--separate-git-dir", "-j", "--jobs", "--filter", "-u", "--upload-pack", "--template", "--shallow-since", "--shallow-exclude"]),
+  clone: new Set(["-b", "--branch", "-o", "--origin", "--depth", "-c", "--config", "--reference", "--reference-if-able", "--separate-git-dir", "-j", "--jobs", "--filter", "-u", "--upload-pack", "--template", "--shallow-since", "--shallow-exclude", "--bundle-uri"]),
   "ls-remote": new Set(["-o", "--upload-pack", "--server-option"]),
 };
 
