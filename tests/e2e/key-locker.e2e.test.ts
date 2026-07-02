@@ -71,6 +71,30 @@ describe("key-locker DPAPI store (-SelfTest, headless)", () => {
     const storeJson = readFileSync(join(storeDir, "store.json"), "utf8");
     expect(storeJson).not.toContain("DPAPI-ROUNDTRIP-");
   }, 30_000);
+
+  // L2 §6 #4/#7/#8 (headless slice): the serving-pipe + ticket contract — valid fetch, single-use,
+  // forged ticket refused, git context_mismatch refused, context match serves. SendInput (§6 #2/#3)
+  // needs a live foreground conhost and is a separate live e2e; this proves the serving path.
+  it("serves a ticketed secret once and refuses replay / forged ticket / context mismatch (-SelfTestL2)", async () => {
+    expect(existsSync(HELPER_EXE)).toBe(true);
+    const storeDir = freshStoreDir();
+    dirs.push(storeDir);
+
+    const { code, stdout } = await new Promise<{ code: number | null; stdout: string }>((resolve) => {
+      const c = spawn(HELPER_EXE, ["-SelfTestL2", "-StoreDir", storeDir], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+      let out = "";
+      c.stdout!.on("data", (d) => { out += d.toString("utf8"); });
+      c.on("exit", (code) => resolve({ code, stdout: out }));
+      setTimeout(() => { killTree(c.pid); resolve({ code: -999, stdout: out }); }, 20_000);
+    });
+
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout.trim())).toEqual({ ok: true });
+
+    // The serving path decrypts transiently in-process; the at-rest store never holds plaintext.
+    const storeJson = readFileSync(join(storeDir, "store.json"), "utf8");
+    expect(storeJson).not.toContain("L2-SERVE-SECRET");
+  }, 30_000);
 });
 
 describe("key-locker live smoke (pipe control plane)", () => {

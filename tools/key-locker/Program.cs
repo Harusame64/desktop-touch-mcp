@@ -44,6 +44,7 @@ internal static class KeyLocker
     private static extern bool GetNamedPipeClientProcessId(IntPtr Pipe, out uint ClientProcessId);
 
     private static LockerStore _store = null!;
+    private static ServingRegistry _serving = null!;
     private static Application? _app;
 
     [System.STAThread]
@@ -53,6 +54,7 @@ internal static class KeyLocker
         uint mcpPid = 0;
         string? storeDir = null;
         var selfTest = false;
+        var selfTestL2 = false;
         for (var i = 0; i < args.Length; i++)
         {
             switch (args[i])
@@ -61,6 +63,7 @@ internal static class KeyLocker
                 case "-McpPid" when i + 1 < args.Length: _ = uint.TryParse(args[++i], out mcpPid); break;
                 case "-StoreDir" when i + 1 < args.Length: storeDir = args[++i]; break;
                 case "-SelfTest": selfTest = true; break;
+                case "-SelfTestL2": selfTestL2 = true; break;
             }
         }
 
@@ -68,10 +71,20 @@ internal static class KeyLocker
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "desktop-touch-mcp", "locker");
         _store = new LockerStore(storeDir);
+        _serving = new ServingRegistry(_store);
 
         // Headless DPAPI test seam — no pipe, no GUI. Proves L0 acceptance (round-trip +
         // corrupt-tag rejection) deterministically from a unit/e2e test.
         if (selfTest) return RunSelfTest();
+
+        // Headless L2 serving-path seam — proves the ticket + serving-pipe contract (valid fetch,
+        // single-use, forged/context_mismatch refused) without live ssh/git.
+        if (selfTestL2)
+        {
+            var ok = _serving.SelfTest();
+            Console.WriteLine(JsonSerializer.Serialize(new { ok }));
+            return ok ? 0 : 1;
+        }
 
         if (string.IsNullOrEmpty(pipeName)) { Console.Error.WriteLine("key-locker: missing -PipeName"); return 2; }
         if (mcpPid == 0) { Console.Error.WriteLine("key-locker: missing/invalid -McpPid"); return 2; }
@@ -173,6 +186,8 @@ internal static class KeyLocker
                 case "capture": HandleCapture(server, id, key); break;
                 case "exists": WriteReply(server, id, true, _store.Exists(key) ? "1" : "0", null); break;
                 case "delete": WriteReply(server, id, true, _store.Delete(key) ? "1" : "0", null); break;
+                case "inject": HandleInject(server, id, key, line); break;
+                case "mint_ticket": HandleMintTicket(server, id, key, line); break;
                 case "shutdown": WriteReply(server, id, true, "bye", null); return;
                 default: WriteReply(server, id, false, "", $"unknown_method:{method}"); break;
             }
@@ -193,6 +208,69 @@ internal static class KeyLocker
         _store.Capture(key, secret);
         var rt = _store.RoundTripOk(key, secret); // in-process verify; secret stays local
         WriteFrameReplyCaptured(server, id, true, rt);
+    }
+
+    /// SendInput the secret under `key` into the frame's dedicated-conhost target, AFTER the
+    /// injection-instant re-verify (§2.2). The secret NEVER crosses the pipe — the reply carries
+    /// only {injected, verified}; an abort carries the typed reason. The plaintext is decrypted
+    /// transiently inside the locker and zeroized (WithDecrypted).
+    private static void HandleInject(NamedPipeServerStream server, long id, string key, string line)
+    {
+        if (string.IsNullOrEmpty(key)) { WriteReply(server, id, false, "", InjectAbort.NoSecret); return; }
+        InjectTarget target;
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            if (!doc.RootElement.TryGetProperty("t", out var t) || t.ValueKind != JsonValueKind.Object)
+            { WriteReply(server, id, false, "", "bad_target"); return; }
+            target = new InjectTarget(
+                Hwnd: (nint)ParseLong(t, "hwnd"),
+                ConsolePid: (uint)ParseLong(t, "consolePid"),
+                TitleFp: t.TryGetProperty("titleFp", out var fp) && fp.ValueKind == JsonValueKind.String ? fp.GetString() ?? "" : "",
+                Submit: t.TryGetProperty("submit", out var sub) && sub.ValueKind == JsonValueKind.True);
+        }
+        catch { WriteReply(server, id, false, "", "bad_target"); return; }
+
+        string? abort = InjectAbort.NoSecret;
+        var injected = false;
+        var found = _store.WithDecrypted(key, plain =>
+        {
+            (injected, abort) = Win32Input.ReVerifyAndType(in target, plain);
+        });
+        if (!found) { WriteReply(server, id, false, "", InjectAbort.NoSecret); return; }
+        if (!injected) { WriteReply(server, id, false, "", abort ?? "executor_failed"); return; }
+        WriteFrame(server, $"{{\"id\":{id},\"ok\":true,\"r\":\"\",\"injected\":true,\"verified\":true}}");
+    }
+
+    /// Mint a single-use ticket + per-injection serving pipe for the askpass helper to fetch the
+    /// secret under `key` (§3). The ticket + pipe name are NON-secret; the secret only ever flows
+    /// locker->helper on the serving pipe. `ctx` (git credential fields) binds the ticket for
+    /// serve-time context_mismatch.
+    private static void HandleMintTicket(NamedPipeServerStream server, long id, string key, string line)
+    {
+        if (string.IsNullOrEmpty(key)) { WriteReply(server, id, false, "", InjectAbort.NoSecret); return; }
+        JsonElement ctx = default;
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            if (doc.RootElement.TryGetProperty("ctx", out var c)) ctx = c.Clone();
+        }
+        catch { /* ctx optional; treat parse failure as no ctx */ }
+
+        var minted = _serving.Mint(key, ctx);
+        if (minted == null) { WriteReply(server, id, false, "", InjectAbort.NoSecret); return; }
+        WriteFrame(server, $"{{\"id\":{id},\"ok\":true,\"r\":{JsonSerializer.Serialize(minted.Value.ticket)},\"pipe\":{JsonSerializer.Serialize(minted.Value.pipe)}}}");
+    }
+
+    private static long ParseLong(JsonElement obj, string name)
+    {
+        if (!obj.TryGetProperty(name, out var v)) return 0;
+        return v.ValueKind switch
+        {
+            JsonValueKind.Number => v.GetInt64(),
+            JsonValueKind.String => long.TryParse(v.GetString(), out var n) ? n : 0,
+            _ => 0,
+        };
     }
 
     private static int RunSelfTest()
@@ -318,6 +396,24 @@ internal sealed class LockerStore
             return CryptographicOperations.FixedTimeEquals(plain, Encoding.UTF8.GetBytes(expected));
         }
         catch { return false; } // corrupt/tampered blob -> reject
+    }
+
+    /// Transiently decrypt the stored secret and hand the plaintext BYTES to `use`, then zeroize
+    /// the buffer — the plaintext lives only for the callback and NEVER leaves the locker process
+    /// (L2 §0 invariant). Returns false if the id is absent or the blob won't decrypt. Used by the
+    /// SendInput injector and the askpass serving path.
+    public bool WithDecrypted(string id, Action<byte[]> use)
+    {
+        if (!_entries.TryGetValue(id, out var b64)) return false;
+        byte[]? plain = null;
+        try
+        {
+            plain = ProtectedData.Unprotect(Convert.FromBase64String(b64), Entropy, DataProtectionScope.CurrentUser);
+            use(plain);
+            return true;
+        }
+        catch { return false; } // corrupt/tampered blob -> reject
+        finally { if (plain != null) CryptographicOperations.ZeroMemory(plain); }
     }
 
     /// Tamper with a stored blob and confirm decrypt now fails (DPAPI integrity). Used by the

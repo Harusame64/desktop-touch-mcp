@@ -1,0 +1,2 @@
+D:\git\desktop-touch-mcp\bin\key-askpass.pdb
+D:\git\desktop-touch-mcp\bin\key-askpass.exe

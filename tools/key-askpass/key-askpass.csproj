@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    ADR-014 v2 R3 Key Locker — L2 askpass streaming helper. A tiny console exe that ssh/git spawn
+    via SSH_ASKPASS / GIT_ASKPASS / credential.helper. It connects (C#-client) to the locker's
+    per-injection SERVING pipe (name + single-use ticket passed in env), streams the secret to its
+    own stdout (askpass) or emits it as a git credential response — plaintext NEVER touches disk and
+    the MCP is not on the path. See docs/adr-014-v2-r3-l2-injection-plan.md §3.
+    Build: cd tools/key-askpass && dotnet publish -c Release -o ../../bin/
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>                  <!-- console: ssh/git read its stdout -->
+    <TargetFramework>net10.0-windows10.0.17763.0</TargetFramework>
+    <RootNamespace>KeyAskpass</RootNamespace>
+    <AssemblyName>key-askpass</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Optimize>true</Optimize>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>false</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <!-- Identified-publisher metadata (same rationale as key-locker: an anonymous binary is weighted
+       more suspiciously). Authenticode signing is applied at release (anti-flagging doc). -->
+  <PropertyGroup>
+    <Company>Harusame64</Company>
+    <Product>desktop-touch-mcp</Product>
+    <AssemblyTitle>desktop-touch key askpass</AssemblyTitle>
+    <Description>Credential-streaming helper for desktop-touch-mcp: ssh/git fetch a secret from the key locker over a single-use authorized pipe. Plaintext never touches disk.</Description>
+    <Authors>Harusame64</Authors>
+    <Copyright>Copyright (c) Harusame64</Copyright>
+    <Version>1.0.0</Version>
+    <FileVersion>1.0.0.0</FileVersion>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <NeutralLanguage>en</NeutralLanguage>
+  </PropertyGroup>
+</Project>
