@@ -258,6 +258,7 @@ describe("§8 #6 — command derivation table", () => {
   it("multi-remote fetch modes are ambiguous → null; push --all (all BRANCHES) still derives (Codex R1 P1)", async () => {
     expect(await derives("git fetch --all", { ...local, cwd: repoTracking })).toBeNull();
     expect(await derives("git fetch --multiple origin sshr", { ...local, cwd: repoTracking })).toBeNull();
+    expect(await derives("git fetch -m origin sshr", { ...local, cwd: repoTracking })).toBeNull(); // -m = --multiple (Codex R3)
     expect(await derives("git pull --all", { ...local, cwd: repoTracking })).toBeNull();
     expect(await derives("git push --all", { ...local, cwd: repoTracking })).toMatchObject({
       scheme: "https-cred",

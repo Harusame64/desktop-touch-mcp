@@ -208,6 +208,7 @@ async function deriveGit(args: string[], session: SessionContext, exec: ExecFn):
   if ((sub === "fetch" || sub === "pull") && args.slice(i).some((t) => t === "--all" || t === "--multiple")) {
     return null;
   }
+  if (sub === "fetch" && args.slice(i).includes("-m")) return null; // -m = --multiple (fetch only; pull's -m is a merge option)
 
   // First non-option token after the subcommand = the repository (a URL or a remote NAME).
   const argOpts = GIT_ARG_OPTS[sub];
