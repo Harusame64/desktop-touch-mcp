@@ -18,9 +18,9 @@ using System.Text.Json;
 // here would collide with that class name).
 
 /// The dedicated-console target of a SendInput, parsed off the `inject` frame's `t` field (§2.1).
-/// `ConsolePid` is the WINDOW-OWNING pid (`GetWindowThreadProcessId(hwnd)`) — for a modern
-/// pseudoconsole-hosted shell that is the SHELL (powershell/pwsh), not literally conhost; L3 sends
-/// `getWindowProcessId(hwnd)` and this side re-reads the same API, so it matches by construction.
+/// `ConsolePid` is the WINDOW-OWNING pid (`GetWindowThreadProcessId(hwnd)`) — L3 sends
+/// `getWindowProcessId(hwnd)` and this side re-reads the same API on the same hwnd, so it matches by
+/// construction (not asserted to be a specific conhost-vs-shell process).
 internal readonly record struct InjectTarget(nint Hwnd, uint ConsolePid, string TitleFp, bool Submit);
 
 /// The abort reasons the re-verify predicate can raise (§2.2); null = passed.

@@ -71,24 +71,29 @@ export class SessionTracker {
     const st = this.panes.get(paneId);
     if (st === undefined || st.stack === null) return; // unknown / never-anchored — stays unknown
 
+    // Scan EVERY segment for a session-changing program (Opus R1 P1-1: `cd x && ssh host` must still
+    // see the ssh — do not `return` after cd). The FIRST ssh-in wins the session change.
     for (const segment of tokenizeCommandSegments(command)) {
-      const program = programOf(segment[0]);
+      // Skip leading FOO=bar env-assignments, exactly as L1's deriveBinding does (Opus R1 P1-1:
+      // `LC_ALL=C ssh user@host` must still detect the ssh, else the remote frame is never pushed and
+      // the pane stays labeled localhost — a wrong-target on the fp-less sudo path).
+      let start = 0;
+      while (start < segment.length && ENV_ASSIGN_RE.test(segment[start])) start++;
+      const program = programOf(segment[start]);
       if (program === "ssh") {
-        const remote = interactiveSshTarget(segment.slice(1));
+        const remote = interactiveSshTarget(segment.slice(start + 1));
         if (remote !== null) st.stack.push({ execHost: remote, isRemote: true, cwd: undefined });
-        // a one-shot `ssh host cmd` or a query mode does NOT open a session — no push.
-        return; // first credential-bearing/session-changing program wins
+        return; // a one-shot `ssh host cmd` / query mode does NOT push; either way the ssh wins the scan
       }
       if (program === "cd") {
-        applyCd(st.stack[st.stack.length - 1], segment.slice(1));
-        return;
+        applyCd(st.stack[st.stack.length - 1], segment.slice(start + 1));
+        // keep scanning — a later `&& ssh …` in the same command still changes the session.
       }
-      if (program === "exit" || program === "logout") {
-        // an explicit local `exit`/`logout` ends the top frame (best-effort; the authoritative pop is
-        // the manager's process-tree watch via noteSessionEnd — §3 / SP-L3-OQ-7).
-        this.noteSessionEnd(paneId);
-        return;
-      }
+      // NOTE: `exit`/`logout` are deliberately NOT handled here (Opus R1 P1-2). The AUTHORITATIVE pop
+      // is the manager's process-tree watch → noteSessionEnd(); a typed-exit pop here would double-pop
+      // a nested ssh (recordDispatch pops, then the watch pops again → localhost while still remote),
+      // and a FAILED exit (stopped jobs / IGNOREEOF) never actually ends the session. An unconfirmable
+      // end sinks via markUnknown, never a speculative pop.
     }
   }
 
@@ -126,6 +131,9 @@ export class SessionTracker {
   }
 }
 
+/** Leading `FOO=bar` env-assignment (skipped before the program token, mirrors L1). */
+const ENV_ASSIGN_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
 /** Program identity of a token: basename-ish, lowercased, `.exe` stripped (mirrors L1). */
 function programOf(token: string | undefined): string {
   if (token === undefined) return "";
@@ -142,9 +150,11 @@ function interactiveSshTarget(args: string[]): string | null {
   const parsed = parseSshCommand(args);
   if (parsed.queryMode || parsed.destination === undefined) return null;
   // A one-shot `ssh host cmd …` has a remote-command token AFTER the destination → not an interactive
-  // login session. parseSshCommand stops optionArgs at the destination; anything trailing is the cmd.
-  const destIdx = args.indexOf(parsed.destination);
-  if (destIdx >= 0 && destIdx < args.length - 1) return null; // trailing remote command → one-shot
+  // login session. parseSshCommand consumes `optionArgs` (the options) + 1 (the destination); anything
+  // BEYOND that count is the remote command. STRUCTURAL token count, not indexOf (Opus R1 P2-1:
+  // `ssh -l host host` would make indexOf return the option-arg's index and misclassify it).
+  const consumed = parsed.optionArgs.length + 1;
+  if (args.length > consumed) return null; // trailing remote command → one-shot, no session
   const at = parsed.destination.lastIndexOf("@");
   const host = at >= 0 ? parsed.destination.slice(at + 1) : parsed.destination;
   return host.toLowerCase();

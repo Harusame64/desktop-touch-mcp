@@ -90,12 +90,49 @@ describe("SessionTracker — ssh in/out (the wrong-target crux)", () => {
     expect((t.get(P) as { execHost: string }).execHost).toBe("prod.example.com");
   });
 
-  it("an explicit local `exit` pops the top frame (best-effort)", () => {
+  it("a typed `exit`/`logout` does NOT speculatively pop (pop authority is the process-tree watch)", () => {
+    // Opus R1 P1-2: a typed-exit pop here would double-pop a nested ssh (recordDispatch + the watch),
+    // and a FAILED exit (stopped jobs) never ends the session. The frame stays until noteSessionEnd.
     const t = new SessionTracker();
     t.beginLocalSession(P);
     t.recordDispatch(P, "ssh a@host-a");
     t.recordDispatch(P, "exit");
+    expect((t.get(P) as { execHost: string }).execHost).toBe("host-a"); // still remote until the watch fires
+    t.noteSessionEnd(P);
     expect(t.get(P)).toEqual({ execHost: "localhost", isRemote: false });
+  });
+});
+
+describe("SessionTracker — wrong-target regressions (Opus R1 P1-1/P1-2/P2-1)", () => {
+  it("env-prefixed ssh still pushes: `LC_ALL=C ssh user@host` → remote (P1-1)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "LC_ALL=C ssh deploy@prod.example.com");
+    expect((t.get(P) as { execHost: string }).execHost).toBe("prod.example.com");
+  });
+
+  it("`cd x && ssh host` still sees the ssh (does not stop scanning after cd) (P1-1)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P, "C:/work");
+    t.recordDispatch(P, "cd C:/srv && ssh deploy@prod.example.com");
+    expect((t.get(P) as { execHost: string }).execHost).toBe("prod.example.com");
+  });
+
+  it("nested ssh does NOT double-pop: typed exit + one watch pop leaves the OUTER remote frame (P1-2)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh a@host-a");
+    t.recordDispatch(P, "ssh b@host-b");
+    t.recordDispatch(P, "exit");                // no speculative pop
+    t.noteSessionEnd(P);                         // the ONE authoritative pop for the exited inner ssh
+    expect((t.get(P) as { execHost: string }).execHost).toBe("host-a"); // still on host-a, NOT localhost
+  });
+
+  it("`ssh -l host host` (option-arg equals the dest) is NOT misread as a one-shot (P2-1)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh -l host host"); // -l host, destination host, NO trailing command
+    expect((t.get(P) as { execHost: string }).execHost).toBe("host");
   });
 });
 
