@@ -148,16 +148,20 @@ function deriveSudo(args: string[], session: SessionContext): BindingUri | null 
     if (tok === "--help" || tok === "-V" || tok === "--version") return null; // pure-info
     if (tok === "-h" && i === args.length - 1) return null; // bare -h = help
     if (tok === "-k" || tok === "-K") { sawKClear = true; continue; }
+    // All four sudo user-selection forms bind targetUser (Codex R2 P2 — an unrecognized form
+    // would silently fall through and mislabel the binding as sudo://…/root):
     if (tok === "-u" && i + 1 < args.length) { targetUser = args[++i]; sawOtherOption = true; continue; }
+    if (tok.startsWith("-u") && tok.length > 2) { targetUser = tok.slice(2); sawOtherOption = true; continue; } // attached: -udeploy
     if (tok.startsWith("--user=")) { targetUser = tok.slice("--user=".length); sawOtherOption = true; continue; }
+    if (tok === "--user" && i + 1 < args.length) { targetUser = args[++i]; sawOtherOption = true; continue; }
     if (SUDO_FLAGS_WITH_ARG.has(tok)) { i++; sawOtherOption = true; continue; }
     if (tok.startsWith("-")) { sawOtherOption = true; continue; } // -l / -v / -s / -i … may prompt
     hasCommand = true;
     break;
   }
-  // BARE means -k/-K and NOTHING else: that invocation clears the credential timestamp and
-  // exits — cannot prompt. `sudo -k <cmd>` runs the command and `sudo -k -v` / `-k -l` are
-  // force-reprompt validation/list modes (Codex impl-R1 P2) — all of those derive.
+  // BARE means -k/-K and nothing but clear flags: such an invocation clears the credential
+  // timestamp(s) and exits — cannot prompt. `sudo -k <cmd>` runs the command and `sudo -k -v` /
+  // `-k -l` are force-reprompt validation/list modes (Codex impl-R1 P2) — all of those derive.
   if (sawKClear && !hasCommand && !sawOtherOption) return null;
   if (targetUser.length === 0) return null; // `-u ''` — ambiguous, never guess
   return { scheme: "sudo", host: session.execHost.toLowerCase(), targetUser };
@@ -250,9 +254,15 @@ async function deriveGit(args: string[], session: SessionContext, exec: ExecFn):
       remoteName = (cur !== undefined ? await config(`branch.${cur}.remote`) : undefined) ?? "origin";
     }
   }
-  const url = await git("remote", "get-url", ...(sub === "push" ? ["--push"] : []), remoteName);
+  // For push, list ALL push URLs (`get-url --push` alone returns just the first): a remote with
+  // multiple pushurls contacts every one of them, so there is no single credential target and a
+  // later URL's prompt would be bound under the wrong host (Codex R2 P2) — ambiguity → null.
+  // Fetch uses only its first URL, so the plain single-URL form is correct there.
+  const url = await git("remote", "get-url", ...(sub === "push" ? ["--push", "--all"] : []), remoteName);
   if (url.code !== 0) return null; // no such remote / not a repo — never guess
-  return parseHttpsRemote(url.stdout.trim());
+  const urls = url.stdout.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+  if (urls.length !== 1) return null;
+  return parseHttpsRemote(urls[0]);
 }
 
 /** An https remote URL → `https-cred://…`; any other transport → null (not an https credential). */

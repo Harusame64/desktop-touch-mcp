@@ -81,6 +81,9 @@ beforeAll(async () => {
   repoTracking = await mkRepo("tracking");
   await git(repoTracking, "remote", "add", "origin", "https://github.com/example/repo.git");
   await git(repoTracking, "remote", "add", "sshr", "git@github.com:example/repo.git");
+  await git(repoTracking, "remote", "add", "multi", "https://m0.example.com/a.git");
+  await git(repoTracking, "remote", "set-url", "--push", "multi", "https://m1.example.com/a.git");
+  await git(repoTracking, "remote", "set-url", "--add", "--push", "multi", "https://m2.example.com/b.git");
   await git(repoTracking, "config", "branch.main.remote", "origin");
   await git(repoTracking, "config", "branch.main.merge", "refs/heads/main");
 
@@ -200,6 +203,11 @@ describe("§8 #6 — command derivation table", () => {
     expect(await derives("sudo -l")).toMatchObject({ scheme: "sudo" });
     expect(await derives("sudo -v")).toMatchObject({ scheme: "sudo" });
   });
+  it("all four sudo user-selection forms bind targetUser (Codex R2 P2)", async () => {
+    for (const cmd of ["sudo -u deploy id", "sudo -udeploy id", "sudo --user=deploy id", "sudo --user deploy id"]) {
+      expect(await derives(cmd), cmd).toEqual({ scheme: "sudo", host: "localhost", targetUser: "deploy" });
+    }
+  });
   it("sudo -k -v / -k -l are force-reprompt modes, NOT a bare clear → derive (Codex R1 P2)", async () => {
     expect(await derives("sudo -k -v")).toMatchObject({ scheme: "sudo" });
     expect(await derives("sudo -k -l")).toMatchObject({ scheme: "sudo" });
@@ -254,6 +262,13 @@ describe("§8 #6 — command derivation table", () => {
     expect(await derives("git push --all", { ...local, cwd: repoTracking })).toMatchObject({
       scheme: "https-cred",
       host: "github.com",
+    });
+  });
+  it("git push to a remote with MULTIPLE push URLs → null; fetch (first URL only) still derives (Codex R2 P2)", async () => {
+    expect(await derives("git push multi main", { ...local, cwd: repoTracking })).toBeNull();
+    expect(await derives("git fetch multi", { ...local, cwd: repoTracking })).toMatchObject({
+      scheme: "https-cred",
+      host: "m0.example.com",
     });
   });
   it("git push to an ssh remote → null (that's an sshkey path, not https-cred)", async () => {
