@@ -159,6 +159,22 @@ describe.skipIf(!hasOpenSsh)("§8 #2 — ssh resolution + option passthrough (re
     const r = await resolveCanonicalForSshCommand([...mainOpts(), "-J", "bastion.example.com", "bob@real.example.com"]);
     expect(r.kind).toBe("unresolvable");
   });
+
+  it("a default-port entry stored in BRACKETED [host]:22 form is still found (Codex R4)", async () => {
+    const khBracketed = fwd(join(tmp, "known_hosts_bracketed"));
+    writeFileSync(khBracketed, `[::1]:22 ${pub1}\n`, "utf8");
+    const r = await resolveCanonicalForSshCommand([
+      "-F", cfg,
+      "-o", `UserKnownHostsFile=${khBracketed}`,
+      "-o", `GlobalKnownHostsFile=${absent}`,
+      "u@::1",
+    ]);
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") {
+      expect(r.uri).toMatchObject({ host: "[::1]", port: 22 });
+      expect(r.uri.fpSet).toEqual([fp1]);
+    }
+  });
 });
 
 describe.skipIf(!hasOpenSsh)("§8 #4 — known-host-absent fallback", () => {

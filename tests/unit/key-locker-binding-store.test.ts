@@ -99,6 +99,17 @@ describe("BindingStore — file tolerance + atomic save", () => {
     expect(BindingStore.load(dir, alwaysExists).list()).toHaveLength(0);
   });
 
+  it("row-level corruption (null row / record without opaqueId) is treated as corrupt, resolve never throws (Codex R4)", async () => {
+    for (const bindings of [{ k: null }, { k: { scheme: "sudo", displayUri: "sudo://x/root" } }]) {
+      const dir = freshDir();
+      writeFileSync(join(dir, "bindings.json"), JSON.stringify({ version: 1, bindings }), "utf8");
+      const store = BindingStore.load(dir, alwaysExists);
+      expect(store.list()).toHaveLength(0);
+      expect(await store.resolve("k")).toBeUndefined();
+      expect(existsSync(join(dir, "bindings.json.corrupt"))).toBe(true);
+    }
+  });
+
   it("a stale .tmp from a simulated mid-write crash never shadows the real file", async () => {
     const dir = freshDir();
     const store = BindingStore.load(dir, alwaysExists);

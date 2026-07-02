@@ -170,21 +170,24 @@ export async function sshDashG(
 const FP_RE = /SHA256:[A-Za-z0-9+/]+/g;
 
 /**
- * Union the SHA-256 fingerprints stored for `token` across the given known_hosts files.
- * Absent files (or `ssh-keygen` failures for one file) are treated as EMPTY, never as failure —
- * `ssh -G` routinely reports paths that do not exist. Deduped + sorted (§2.2 determinism).
+ * Union the SHA-256 fingerprints stored under ANY of the candidate `tokens` across the given
+ * known_hosts files. Absent files (or `ssh-keygen` failures for one file/token) are treated as
+ * EMPTY, never as failure — `ssh -G` routinely reports paths that do not exist. Deduped + sorted
+ * (§2.2 determinism).
  */
 export async function knownHostsFingerprints(
-  token: string,
+  tokens: readonly string[],
   files: readonly string[],
   exec: ExecFn = defaultExec,
 ): Promise<string[]> {
   const found = new Set<string>();
   for (const file of new Set(files)) {
     if (!existsSync(file)) continue;
-    const { code, stdout } = await exec("ssh-keygen", ["-l", "-F", token, "-f", file]);
-    if (code !== 0) continue; // host not in this file (ssh-keygen exits 1) — skip, keep unioning
-    for (const m of stdout.match(FP_RE) ?? []) found.add(m);
+    for (const token of new Set(tokens)) {
+      const { code, stdout } = await exec("ssh-keygen", ["-l", "-F", token, "-f", file]);
+      if (code !== 0) continue; // host not in this file under this token — skip, keep unioning
+      for (const m of stdout.match(FP_RE) ?? []) found.add(m);
+    }
   }
   return canonicalFpSet([...found]);
 }
@@ -221,8 +224,18 @@ export async function resolveCanonicalForSshCommand(
   if (cfg.proxyJump !== undefined || cfg.proxyCommand !== undefined) {
     return { kind: "unresolvable", reason: "ProxyJump/ProxyCommand present — the first prompt may be the jump host's" };
   }
-  const token = cfg.hostKeyAlias ?? (cfg.port === 22 ? cfg.host : `[${cfg.host}]:${cfg.port}`);
-  const fpSet = await knownHostsFingerprints(token, cfg.knownHostsFiles, exec);
+  // Lookup-token candidates: an alias is looked up verbatim; non-default ports use the
+  // `[host]:port` form. For the DEFAULT port, also try `[host]:22` — known_hosts rows written
+  // with an explicit :22 (common for IPv6 / other tooling) don't match the bare-host lookup
+  // (`ssh-keygen -F '::1'` misses a `[::1]:22` row — Codex R4), which would fail-closed a host
+  // the user already trusts. Union across candidates only ever ADDS fps the user stored for this
+  // exact host:port, so the fail-closed direction is preserved.
+  const tokens = cfg.hostKeyAlias !== undefined
+    ? [cfg.hostKeyAlias]
+    : cfg.port === 22
+      ? [cfg.host, `[${cfg.host}]:22`]
+      : [`[${cfg.host}]:${cfg.port}`];
+  const fpSet = await knownHostsFingerprints(tokens, cfg.knownHostsFiles, exec);
   if (fpSet.length === 0) {
     return { kind: "host-not-known", user: cfg.user, host: cfg.host, port: cfg.port };
   }

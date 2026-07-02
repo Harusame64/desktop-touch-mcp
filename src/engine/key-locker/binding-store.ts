@@ -97,10 +97,17 @@ export class BindingStore {
     if (existsSync(filePath)) {
       try {
         const raw = JSON.parse(readFileSync(filePath, "utf8")) as unknown;
+        // Row-level validation, not just the top-level shape: a null row or a record without a
+        // string opaqueId would otherwise surface later as a resolve() throw instead of the
+        // promised tolerant-load (Codex R4). Any malformed row ⇒ the whole file is corrupt
+        // (preserved + start empty — bindings are re-creatable metadata, fail-safe).
         if (
           typeof raw === "object" && raw !== null &&
           (raw as BindingsFile).version === 1 &&
-          typeof (raw as BindingsFile).bindings === "object" && (raw as BindingsFile).bindings !== null
+          typeof (raw as BindingsFile).bindings === "object" && (raw as BindingsFile).bindings !== null &&
+          Object.values((raw as BindingsFile).bindings).every(
+            (row) => typeof row === "object" && row !== null && typeof row.opaqueId === "string",
+          )
         ) {
           data = { version: 1, bindings: { ...(raw as BindingsFile).bindings } };
         } else {
