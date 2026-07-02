@@ -103,6 +103,10 @@ export interface SshEffectiveConfig {
   hostKeyAlias?: string;
   /** Candidate known_hosts paths (user + global), `~` expanded, order preserved. */
   knownHostsFiles: string[];
+  /** Effective ProxyJump (from `-J` — ssh maps it to ProxyJump — or config). */
+  proxyJump?: string;
+  /** Effective ProxyCommand (may itself be an ssh that prompts first). */
+  proxyCommand?: string;
 }
 
 /** `~/…` → absolute (ssh -G may print unexpanded tildes for known_hosts paths). */
@@ -130,6 +134,8 @@ export async function sshDashG(
   let user = "";
   let port = 22;
   let hostKeyAlias: string | undefined;
+  let proxyJump: string | undefined;
+  let proxyCommand: string | undefined;
   const knownHostsFiles: string[] = [];
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -142,6 +148,8 @@ export async function sshDashG(
       case "user": user = value; break;
       case "port": { const p = Number(value); if (Number.isInteger(p) && p > 0) port = p; break; }
       case "hostkeyalias": hostKeyAlias = value; break;
+      case "proxyjump": proxyJump = value; break;
+      case "proxycommand": proxyCommand = value; break;
       case "userknownhostsfile":
       case "globalknownhostsfile": {
         // The value is a whitespace-separated file list. A path CONTAINING spaces is ambiguous in
@@ -156,7 +164,7 @@ export async function sshDashG(
   if (host === "" || user === "") {
     throw new Error(`ssh -G output missing hostname/user for '${destination}'`);
   }
-  return { host, user, port, hostKeyAlias, knownHostsFiles };
+  return { host, user, port, hostKeyAlias, knownHostsFiles, proxyJump, proxyCommand };
 }
 
 const FP_RE = /SHA256:[A-Za-z0-9+/]+/g;
@@ -203,6 +211,15 @@ export async function resolveCanonicalForSshCommand(
     cfg = await sshDashG(parsed.destination, parsed.optionArgs, exec);
   } catch (e) {
     return { kind: "unresolvable", reason: (e as Error).message };
+  }
+  // A ProxyJump (`-J` on the command line — ssh maps it to ProxyJump, so it shows up here even
+  // though we never parse it ourselves — or from config) or a ProxyCommand means the FIRST
+  // password prompt may belong to the JUMP host, not the final destination. Binding the final
+  // host would put the wrong secret into the bastion prompt (Codex impl-R1 P1). Ambiguity → no
+  // derivation; the per-hop prompts are an L3 capture-on-use concern (same cut as nested
+  // `ssh host sudo …`).
+  if (cfg.proxyJump !== undefined || cfg.proxyCommand !== undefined) {
+    return { kind: "unresolvable", reason: "ProxyJump/ProxyCommand present — the first prompt may be the jump host's" };
   }
   const token = cfg.hostKeyAlias ?? (cfg.port === 22 ? cfg.host : `[${cfg.host}]:${cfg.port}`);
   const fpSet = await knownHostsFingerprints(token, cfg.knownHostsFiles, exec);

@@ -140,6 +140,7 @@ const SUDO_FLAGS_WITH_ARG = new Set(["-u", "-g", "-p", "-U", "-C", "-D", "-R", "
 function deriveSudo(args: string[], session: SessionContext): BindingUri | null {
   let targetUser = "root";
   let sawKClear = false;
+  let sawOtherOption = false;
   let hasCommand = false;
   for (let i = 0; i < args.length; i++) {
     const tok = args[i];
@@ -147,16 +148,17 @@ function deriveSudo(args: string[], session: SessionContext): BindingUri | null 
     if (tok === "--help" || tok === "-V" || tok === "--version") return null; // pure-info
     if (tok === "-h" && i === args.length - 1) return null; // bare -h = help
     if (tok === "-k" || tok === "-K") { sawKClear = true; continue; }
-    if (tok === "-u" && i + 1 < args.length) { targetUser = args[++i]; continue; }
-    if (tok.startsWith("--user=")) { targetUser = tok.slice("--user=".length); continue; }
-    if (SUDO_FLAGS_WITH_ARG.has(tok)) { i++; continue; }
-    if (tok.startsWith("-")) continue; // other flags (incl. -l / -v / -s / -i) — they may prompt
+    if (tok === "-u" && i + 1 < args.length) { targetUser = args[++i]; sawOtherOption = true; continue; }
+    if (tok.startsWith("--user=")) { targetUser = tok.slice("--user=".length); sawOtherOption = true; continue; }
+    if (SUDO_FLAGS_WITH_ARG.has(tok)) { i++; sawOtherOption = true; continue; }
+    if (tok.startsWith("-")) { sawOtherOption = true; continue; } // -l / -v / -s / -i … may prompt
     hasCommand = true;
     break;
   }
-  // A BARE -k/-K (no command) clears the credential timestamp and exits — cannot prompt.
-  // `sudo -k <cmd>` invalidates the cache then RUNS → prompts → derive.
-  if (sawKClear && !hasCommand) return null;
+  // BARE means -k/-K and NOTHING else: that invocation clears the credential timestamp and
+  // exits — cannot prompt. `sudo -k <cmd>` runs the command and `sudo -k -v` / `-k -l` are
+  // force-reprompt validation/list modes (Codex impl-R1 P2) — all of those derive.
+  if (sawKClear && !hasCommand && !sawOtherOption) return null;
   if (targetUser.length === 0) return null; // `-u ''` — ambiguous, never guess
   return { scheme: "sudo", host: session.execHost.toLowerCase(), targetUser };
 }
@@ -194,6 +196,14 @@ async function deriveGit(args: string[], session: SessionContext, exec: ExecFn):
     break;
   }
   if (sub === undefined || !GIT_CRED_SUBCOMMANDS.has(sub)) return null;
+
+  // `git fetch --all` / `--multiple …` (and `git pull --all`, which forwards to fetch) contact
+  // MULTIPLE remotes — there is no single credential target, and deriving the branch remote could
+  // save/offer under the wrong one (Codex impl-R1 P1). Ambiguity → null. (`git push --all` pushes
+  // all BRANCHES to one remote and stays derivable.)
+  if ((sub === "fetch" || sub === "pull") && args.slice(i).some((t) => t === "--all" || t === "--multiple")) {
+    return null;
+  }
 
   // First non-option token after the subcommand = the repository (a URL or a remote NAME).
   const argOpts = GIT_ARG_OPTS[sub];

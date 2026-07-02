@@ -39,9 +39,11 @@ const fakeExec: ExecFn = async (file, args) => {
     if (at > 0) { user = dest.slice(0, at); host = dest.slice(at + 1); }
     host = host.replace(/^\[|\]$/g, ""); // real ssh -G prints IPv6 hostnames UNBRACKETED
     if (host === "resolvefail.example.com") return { code: 255, stdout: "", stderr: "boom" };
+    const ji = args.indexOf("-J"); // real ssh maps -J onto an effective ProxyJump line
+    const proxy = ji >= 0 ? `proxyjump ${args[ji + 1]}\n` : "";
     return {
       code: 0,
-      stdout: `hostname ${host}\nuser ${user}\nport ${port}\nuserknownhostsfile ${khFile}\nglobalknownhostsfile ${join(tmp, "absent")}\n`,
+      stdout: `hostname ${host}\nuser ${user}\nport ${port}\n${proxy}userknownhostsfile ${khFile}\nglobalknownhostsfile ${join(tmp, "absent")}\n`,
       stderr: "",
     };
   }
@@ -170,6 +172,9 @@ describe("§8 #6 — command derivation table", () => {
     expect(r.uri.host).toBe("[::1]");
     expect(parseBindingUri(formatBindingUri(r.uri))).toMatchObject({ scheme: "ssh", host: "[::1]", user: "u", port: 22 });
   });
+  it("ssh -J bastion target → null (the FIRST prompt may be the jump host's — Codex R1 P1)", async () => {
+    expect(await derives("ssh -J bastion.example.com h")).toBeNull();
+  });
   it("clustered arg-taking flag (-4p 2222) fails CLOSED to null, never a wrong target", async () => {
     // '-4p' is tokenized as a no-arg cluster, so '2222' is taken as the destination; the fake
     // known_hosts has no such host → host-not-known → null. Pinned so the failure DIRECTION
@@ -194,6 +199,11 @@ describe("§8 #6 — command derivation table", () => {
   it("sudo -l / sudo -v → derive (both can prompt)", async () => {
     expect(await derives("sudo -l")).toMatchObject({ scheme: "sudo" });
     expect(await derives("sudo -v")).toMatchObject({ scheme: "sudo" });
+  });
+  it("sudo -k -v / -k -l are force-reprompt modes, NOT a bare clear → derive (Codex R1 P2)", async () => {
+    expect(await derives("sudo -k -v")).toMatchObject({ scheme: "sudo" });
+    expect(await derives("sudo -k -l")).toMatchObject({ scheme: "sudo" });
+    expect(await derives("sudo -k -K")).toBeNull(); // still only clears — cannot prompt
   });
   it("pure-info sudo -V / --help / bare -h → null", async () => {
     expect(await derives("sudo -V")).toBeNull();
@@ -233,6 +243,15 @@ describe("§8 #6 — command derivation table", () => {
   });
   it("bare git fetch follows branch.<cur>.remote", async () => {
     expect(await derives("git fetch", { ...local, cwd: repoTracking })).toMatchObject({
+      scheme: "https-cred",
+      host: "github.com",
+    });
+  });
+  it("multi-remote fetch modes are ambiguous → null; push --all (all BRANCHES) still derives (Codex R1 P1)", async () => {
+    expect(await derives("git fetch --all", { ...local, cwd: repoTracking })).toBeNull();
+    expect(await derives("git fetch --multiple origin sshr", { ...local, cwd: repoTracking })).toBeNull();
+    expect(await derives("git pull --all", { ...local, cwd: repoTracking })).toBeNull();
+    expect(await derives("git push --all", { ...local, cwd: repoTracking })).toMatchObject({
       scheme: "https-cred",
       host: "github.com",
     });

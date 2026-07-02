@@ -154,6 +154,11 @@ describe.skipIf(!hasOpenSsh)("§8 #2 — ssh resolution + option passthrough (re
     const r = await resolveCanonicalForSshCommand(["-F", absent, "-o", `UserKnownHostsFile=${khMain}`, "h"]);
     expect(r.kind).toBe("unresolvable");
   });
+
+  it("-J (ProxyJump) defers: real ssh -G reports the effective proxyjump → no derivation", async () => {
+    const r = await resolveCanonicalForSshCommand([...mainOpts(), "-J", "bastion.example.com", "bob@real.example.com"]);
+    expect(r.kind).toBe("unresolvable");
+  });
 });
 
 describe.skipIf(!hasOpenSsh)("§8 #4 — known-host-absent fallback", () => {
