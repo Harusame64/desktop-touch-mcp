@@ -149,6 +149,11 @@ function programOf(token: string | undefined): string {
 function interactiveSshTarget(args: string[]): string | null {
   const parsed = parseSshCommand(args);
   if (parsed.queryMode || parsed.destination === undefined) return null;
+  // `-N` (no remote command) and `-f` (fork to background) do NOT open an interactive login shell in
+  // THIS pane: `-N` blocks the pane holding a tunnel, `-f` returns it to the LOCAL prompt. Pushing a
+  // remote frame would mislabel a later LOCAL command as remote → wrong-target on the fp-less sudo
+  // path (#495 P2). Treat them as non-session-opening — no push.
+  if (parsed.noArgFlags.has("N") || parsed.noArgFlags.has("f")) return null;
   // A one-shot `ssh host cmd …` has a remote-command token AFTER the destination → not an interactive
   // login session. parseSshCommand consumes `optionArgs` (the options) + 1 (the destination); anything
   // BEYOND that count is the remote command. STRUCTURAL token count, not indexOf (Opus R1 P2-1:

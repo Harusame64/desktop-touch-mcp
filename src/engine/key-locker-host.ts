@@ -101,13 +101,7 @@ export interface LockerReply {
 export interface InjectTarget {
   /** The console window HWND (decimal string). */
   hwnd: string;
-  /**
-   * The pid that OWNS the console window — whatever `GetWindowThreadProcessId(hwnd)` returns for the
-   * `ConsoleWindowClass` window. L3 supplies `getWindowProcessId(hwnd)` and the locker re-verifies
-   * with the SAME API on the same hwnd, so the value matches by CONSTRUCTION (L3 plan §4). The
-   * `ConsoleWindowClass` allowlist is what excludes a WT multiplexer; this is the window-owning pid,
-   * not asserted to be a specific conhost-vs-shell process (Opus R1 P3-1).
-   */
+  /** The console-HOST (conhost.exe) pid that owns the window — NOT the child pid (§2.2). */
   consolePid: number;
   /** Opaque hash of the expected pane identity (secondary anchor). */
   titleFp: string;

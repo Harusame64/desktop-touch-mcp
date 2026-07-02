@@ -18,7 +18,7 @@
 // `isRemote` is reserved for L3 (frozen-schema field; L1's own rules key only on execHost, except
 // the remote-pane git defer below).
 
-import { basename, resolve as resolvePath } from "node:path";
+import { basename, isAbsolute, resolve as resolvePath } from "node:path";
 import type { BindingUri } from "./binding.js";
 import { defaultExec, parseSshCommand, resolveCanonicalForSshCommand, type ExecFn } from "./ssh-resolve.js";
 
@@ -27,8 +27,13 @@ export interface SessionContext {
   execHost: string;
   /** Reserved for L3 (nested-prompt tracking); L1 uses it only to defer remote-pane git. */
   isRemote: boolean;
-  /** The pane's working directory — resolves a configured git remote via `git -C`. */
-  cwd: string;
+  /**
+   * The pane's working directory — resolves a configured git remote via `git -C`. OPTIONAL: L3's
+   * SessionTracker leaves it undefined when the cwd is unknown (never anchored / `cd ~` / a remote
+   * pane). `deriveGit` DECLINES rather than resolve a configured remote from the wrong directory — a
+   * cwd-free `git -C <wrong-dir>` would offer/save the secret under the wrong host (#495 P1).
+   */
+  cwd?: string;
 }
 
 export interface DeriveBindingDeps {
@@ -185,13 +190,19 @@ async function deriveGit(args: string[], session: SessionContext, exec: ExecFn):
 
   // Global options before the subcommand: honor `-C <path>` (changes the effective cwd), skip
   // `-c k=v` / `--git-dir=…`-style value options, null on version/help.
-  let cwd = session.cwd;
+  let cwd: string | undefined = session.cwd;
   let i = 0;
   let sub: string | undefined;
   for (; i < args.length; i++) {
     const tok = args[i];
     if (tok === "-v" || tok === "-V" || tok === "--version" || tok === "-h" || tok === "--help") return null;
-    if (tok === "-C" && i + 1 < args.length) { cwd = resolvePath(cwd, args[++i]); continue; }
+    if (tok === "-C" && i + 1 < args.length) {
+      const cdir = args[++i];
+      // `-C <abs>` sets the effective cwd outright; `-C <rel>` only resolves against a KNOWN cwd —
+      // otherwise it stays unknown and the configured-remote resolution below declines.
+      cwd = cwd !== undefined ? resolvePath(cwd, cdir) : (isAbsolute(cdir) ? cdir : undefined);
+      continue;
+    }
     if (tok === "-c" && i + 1 < args.length) { i++; continue; }
     if (tok.startsWith("--") && tok.includes("=")) continue; // --git-dir=… / --work-tree=…
     if (tok.startsWith("-")) continue;
@@ -237,7 +248,13 @@ async function deriveGit(args: string[], session: SessionContext, exec: ExecFn):
   // precedence chain, NEVER a hard-coded `origin` (plan §4, Codex R9/R10): resolve the NAME first,
   // then ask for that remote's URL (`remote get-url [--push]` observes pushurl).
   if (sub === "clone") return null; // clone without a URL never reaches a prompt we can attribute
-  const git = async (...gitArgs: string[]) => exec("git", ["-C", cwd, ...gitArgs]);
+  // Resolving the configured remote needs a REAL cwd; without one (L3 could not determine the pane's
+  // directory) a `git -C <wrong-dir>` would resolve some OTHER repo's remote and offer/save the secret
+  // under the wrong host. Decline instead (#495 P1 wrong-target). The explicit-URL forms above are
+  // cwd-independent and have already returned.
+  if (cwd === undefined || cwd.length === 0) return null;
+  const gitCwd = cwd; // narrowed + stable for the closure below
+  const git = async (...gitArgs: string[]) => exec("git", ["-C", gitCwd, ...gitArgs]);
   let remoteName = repoArg;
   if (remoteName === undefined) {
     const branch = await git("symbolic-ref", "--short", "HEAD");

@@ -134,6 +134,31 @@ describe("SessionTracker — wrong-target regressions (Opus R1 P1-1/P1-2/P2-1)",
     t.recordDispatch(P, "ssh -l host host"); // -l host, destination host, NO trailing command
     expect((t.get(P) as { execHost: string }).execHost).toBe("host");
   });
+
+  it("background / no-shell ssh (`-f` / `-N`) does NOT push a remote frame (#495 P2)", () => {
+    // `ssh -f -N host` backgrounds a tunnel and returns THIS pane to the local prompt; pushing a
+    // remote frame would mislabel a later local `sudo` as remote → wrong-target. No push for any of:
+    for (const cmd of [
+      "ssh -f -N deploy@prod.example.com",
+      "ssh -fN deploy@prod.example.com",
+      "ssh -N -L 8080:localhost:80 deploy@prod.example.com",
+      "ssh -f deploy@prod.example.com",
+    ]) {
+      const t = new SessionTracker();
+      t.beginLocalSession(P);
+      t.recordDispatch(P, cmd);
+      expect(t.get(P)).toEqual({ execHost: "localhost", isRemote: false });
+    }
+  });
+
+  it("a with-arg flag VALUE containing f/N does NOT false-trigger the no-push (`-F conf` still pushes)", () => {
+    // Only NO-ARG flag tokens are scanned, so `-F <file>` (config file "fN.cfg") must NOT be read as
+    // a `-f`/`-N` background form — an ordinary interactive login still opens a session.
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh -F fN.cfg deploy@prod.example.com");
+    expect((t.get(P) as { execHost: string }).execHost).toBe("prod.example.com");
+  });
 });
 
 describe("SessionTracker — cwd tracking (best-effort, fails safe to undefined)", () => {

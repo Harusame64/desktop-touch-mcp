@@ -58,6 +58,13 @@ export interface ParsedSshCommand {
   optionArgs: string[];
   /** True if the invocation is a query / no-login mode (`-G` / `-Q` / `-V`) — never prompts. */
   queryMode: boolean;
+  /**
+   * The letters of every NO-ARG flag token seen before the destination (getopt clusters expanded:
+   * `-fN` → {f, N}). Only no-arg tokens are scanned, so a with-arg flag's VALUE (`-F fname`, `-o k=v`)
+   * never contributes a letter. Lets a caller detect session-shape flags like `-f` (background) /
+   * `-N` (no remote command) without re-parsing.
+   */
+  noArgFlags: ReadonlySet<string>;
 }
 
 /**
@@ -66,6 +73,7 @@ export interface ParsedSshCommand {
  */
 export function parseSshCommand(args: readonly string[]): ParsedSshCommand {
   const optionArgs: string[] = [];
+  const noArgFlags = new Set<string>();
   let destination: string | undefined;
   let queryMode = false;
   for (let i = 0; i < args.length; i++) {
@@ -83,6 +91,7 @@ export function parseSshCommand(args: readonly string[]): ParsedSshCommand {
       } else {
         // no-arg flag, possibly a getopt cluster (-4A, -vG); -G/-V may appear mid-cluster
         if (tok.includes("G") || tok.includes("V")) queryMode = true;
+        for (const c of tok.slice(1)) noArgFlags.add(c); // surface -f / -N / clusters for callers
         optionArgs.push(tok);
       }
       continue;
@@ -93,7 +102,7 @@ export function parseSshCommand(args: readonly string[]): ParsedSshCommand {
     }
     break; // remote command begins — stop
   }
-  return { destination, optionArgs, queryMode };
+  return { destination, optionArgs, queryMode, noArgFlags };
 }
 
 export interface SshEffectiveConfig {

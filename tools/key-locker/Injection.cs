@@ -17,10 +17,7 @@ using System.Text.Json;
 // Global namespace (matches Program.cs's `internal static class KeyLocker`; a `namespace KeyLocker`
 // here would collide with that class name).
 
-/// The dedicated-console target of a SendInput, parsed off the `inject` frame's `t` field (§2.1).
-/// `ConsolePid` is the WINDOW-OWNING pid (`GetWindowThreadProcessId(hwnd)`) — L3 sends
-/// `getWindowProcessId(hwnd)` and this side re-reads the same API on the same hwnd, so it matches by
-/// construction (not asserted to be a specific conhost-vs-shell process).
+/// The dedicated-conhost target of a SendInput, parsed off the `inject` frame's `t` field (§2.1).
 internal readonly record struct InjectTarget(nint Hwnd, uint ConsolePid, string TitleFp, bool Submit);
 
 /// The abort reasons the re-verify predicate can raise (§2.2); null = passed.
@@ -62,7 +59,7 @@ internal static class Win32Input
 
     /// Re-verify the target at the injection instant (§2.2). Returns an InjectAbort code on any
     /// mismatch, or null if all predicates pass. POSITIVE allowlist: the window MUST be the classic
-    /// console class AND owned by the tracked window-owning pid — anything else is `target_multiplexed`.
+    /// console class AND owned by the tracked conhost pid — anything else is `target_multiplexed`.
     private static string? ReVerify(in InjectTarget t)
     {
         if (t.Hwnd == 0 || !IsWindow(t.Hwnd)) return InjectAbort.Gone;

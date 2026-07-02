@@ -316,6 +316,36 @@ describe("§8 #6 — command derivation table", () => {
     expect(await derives("git status", { ...local, cwd: repoTracking })).toBeNull();
   });
 
+  // --- cwd fail-safe (#495 P1): an UNKNOWN cwd must never resolve a configured remote ---
+  it("configured-remote git with UNKNOWN cwd → null (never `git -C <wrong-dir>`; #495 P1)", async () => {
+    const noCwd: SessionContext = { execHost: "localhost", isRemote: false }; // cwd omitted (L3 unknown)
+    expect(await derives("git push origin main", noCwd)).toBeNull();
+    expect(await derives("git push", noCwd)).toBeNull();
+    expect(await derives("git fetch", noCwd)).toBeNull();
+    // A wiring layer that papered the optional cwd over with "" must ALSO decline, not run in $PWD.
+    expect(await derives("git push", { ...local, cwd: "" })).toBeNull();
+  });
+  it("explicit-URL git still derives with UNKNOWN cwd (the target is cwd-independent)", async () => {
+    const noCwd: SessionContext = { execHost: "localhost", isRemote: false };
+    expect(await derives("git push https://github.com/example/repo.git main", noCwd)).toMatchObject({
+      scheme: "https-cred",
+      host: "github.com",
+    });
+    expect(await derives("git clone https://github.com/example/repo.git", noCwd)).toMatchObject({
+      scheme: "https-cred",
+      host: "github.com",
+    });
+  });
+  it("git -C <abs> push with UNKNOWN cwd resolves against the -C path (#495 P1 boundary)", async () => {
+    const noCwd: SessionContext = { execHost: "localhost", isRemote: false };
+    expect(await derives(`git -C "${repoTracking}" push origin main`, noCwd)).toMatchObject({
+      scheme: "https-cred",
+      host: "github.com",
+    });
+    // `-C <rel>` cannot resolve against an unknown cwd → still declines.
+    expect(await derives("git -C sub push origin main", noCwd)).toBeNull();
+  });
+
   // --- non-credential commands ---
   it("plain commands → null", async () => {
     expect(await derives("npm install")).toBeNull();
