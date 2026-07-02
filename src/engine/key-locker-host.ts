@@ -87,7 +87,44 @@ export interface LockerReply {
   captured?: boolean;
   /** `capture` only: whether the locker's in-process DPAPI round-trip verified. */
   rt?: boolean;
+  /** `inject` only: whether the secret was typed (after a passing re-verify). */
+  injected?: boolean;
+  /** `inject` only: whether the injection-instant re-verify passed. */
+  verified?: boolean;
+  /** `mint_ticket` only: the per-injection serving-pipe name the locker created. */
+  pipe?: string;
 }
+
+// L2 wire contracts (the locker owns these frame shapes; the injector orchestrator consumes them).
+
+/** The dedicated-conhost target of a SendInput (`inject`) — §2.1 of the L2 plan. */
+export interface InjectTarget {
+  /** The console window HWND (decimal string). */
+  hwnd: string;
+  /** The console-HOST (conhost.exe) pid that owns the window — NOT the child pid (§2.2). */
+  consolePid: number;
+  /** Opaque hash of the expected pane identity (secondary anchor). */
+  titleFp: string;
+  /** Append Enter after the secret. */
+  submit?: boolean;
+}
+
+/** Git credential-field context bound into a ticket for serve-time `context_mismatch` (§3.1). */
+export interface MintTicketContext {
+  protocol: string;
+  host: string;
+  path?: string;
+}
+
+/** `inject` result: verified+injected, or a typed abort code. */
+export type InjectClientResult =
+  | { ok: true; verified: boolean }
+  | { ok: false; code: "target_mismatch" | "target_gone" | "not_foreground" | "target_multiplexed" | "no_secret" };
+
+/** `mint_ticket` result: the non-secret ticket + serving-pipe name, or no such secret. */
+export type MintTicketResult =
+  | { ok: true; ticket: string; pipe: string }
+  | { ok: false; code: "no_secret" };
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 15_000;
 const DEFAULT_CONNECT_BACKOFF_MS = 100;
@@ -287,8 +324,17 @@ export class KeyLockerHost {
     });
   }
 
-  /** Round-trip a control request; rejects on timeout or a closed pipe. */
-  private request(method: string, key?: string, timeoutMs = REQUEST_TIMEOUT_MS): Promise<LockerReply> {
+  /**
+   * Round-trip a control request; rejects on timeout or a closed pipe. `extra` carries additive
+   * frame fields for the L2 verbs (`inject`'s `t`, `mint_ticket`'s `ctx`) — old lockers ignore
+   * unknown props (Program.cs reads only id/m/k), so this stays wire-safe.
+   */
+  private request(
+    method: string,
+    key?: string,
+    timeoutMs = REQUEST_TIMEOUT_MS,
+    extra?: Record<string, unknown>,
+  ): Promise<LockerReply> {
     if (this.disposed) return Promise.reject(new KeyLockerError("KeyLockerPipeUnavailable", "locker disposed"));
     const id = this.nextId++;
     return new Promise<LockerReply>((resolve, reject) => {
@@ -297,7 +343,7 @@ export class KeyLockerHost {
         reject(new KeyLockerError("KeyLockerPipeUnavailable", `request '${method}' timed out`));
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
-      const frame: { id: number; m: string; k?: string } = { id, m: method };
+      const frame: Record<string, unknown> = { id, m: method, ...extra };
       if (key !== undefined) frame.k = key;
       try {
         this.socket.write(`${JSON.stringify(frame)}\n`);
@@ -341,6 +387,33 @@ export class KeyLockerHost {
   async delete(key: string): Promise<boolean> {
     const reply = await this.request("delete", key);
     return reply.ok && reply.r === "1";
+  }
+
+  /**
+   * SendInput the secret stored under `key` into a dedicated conhost `target`, AFTER the locker
+   * re-verifies the target at the injection instant (§2.2: HWND/consolePid, ConsoleWindowClass,
+   * foreground, titleFp). The secret NEVER crosses the pipe — only {injected, verified} come back;
+   * an abort returns the typed reason.
+   */
+  async inject(key: string, target: InjectTarget): Promise<InjectClientResult> {
+    const reply = await this.request("inject", key, REQUEST_TIMEOUT_MS, { t: target });
+    if (reply.ok) return { ok: true, verified: reply.verified === true };
+    const code = (reply.e ?? "no_secret") as InjectClientResult extends { ok: false; code: infer C } ? C : never;
+    return { ok: false, code };
+  }
+
+  /**
+   * Mint a single-use, TTL-bounded ticket + create a per-injection serving pipe for the askpass
+   * helper to fetch the secret under `key` (the secret flows locker→helper on that pipe, never here).
+   * `ctx` binds git credential fields into the ticket for serve-time `context_mismatch` (§3.1);
+   * omit it for ssh-password askpass. The ticket + pipe name are NON-secret capability handles.
+   */
+  async mintTicket(key: string, ctx?: MintTicketContext): Promise<MintTicketResult> {
+    const reply = await this.request("mint_ticket", key, REQUEST_TIMEOUT_MS, ctx ? { ctx } : undefined);
+    if (reply.ok && typeof reply.pipe === "string" && reply.r.length > 0) {
+      return { ok: true, ticket: reply.r, pipe: reply.pipe };
+    }
+    return { ok: false, code: "no_secret" };
   }
 
   /** Tear down the session: best-effort `shutdown`, un-exclude the PID, close the socket, kill. */
