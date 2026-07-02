@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ADR-014 v2 R3 Key Locker — application manifest.
+  Presents the locker as a well-formed, identified, LEAST-PRIVILEGE desktop app so Windows
+  reputation/behavioral checks (SmartScreen, Defender heuristics) treat it as a legitimate
+  credential helper rather than an anonymous suspicious binary:
+    * requestedExecutionLevel=asInvoker  -> NO admin elevation (admin-requiring binaries draw
+      more scrutiny; DPAPI CurrentUser + the pipe/dialog need only the invoking user).
+    * uiAccess=false                     -> no accessibility-UI privilege escalation.
+    * PerMonitorV2 DPI awareness          -> crisp native rendering of the secure dialog.
+    * supportedOS Win10/11                -> declares the real target, not "unknown".
+  The load-bearing SmartScreen lever (Authenticode code-signing) is applied at release time,
+  not here — see docs/adr-014-v2-r3-anti-flagging.md.
+-->
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity version="1.0.0.0" name="desktop-touch.key-askpass" type="win32" />
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v2">
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
+    </application>
+  </compatibility>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true</dpiAware>
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+    </windowsSettings>
+  </application>
+</assembly>
