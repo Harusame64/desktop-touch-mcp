@@ -108,6 +108,19 @@ describe("inject orchestrator (§5) — never returns a secret", () => {
     expect(r.spawn.gitArgs.some((a) => a.startsWith("credential.helper="))).toBe(true);
   });
 
+  it("git-credential with a stored binding user → exposes DTM_GIT_USERNAME (§3.2 tier 2)", async () => {
+    const gitUser: BindingUri = { scheme: "https-cred", user: "alice", host: "bitbucket.org", port: 443, path: "team/repo" };
+    const r = await inject(fakeHost(), gitUser, "op-2", "git-credential", null);
+    if (!r.ok || r.injector !== "askpass") throw new Error("expected askpass");
+    expect(r.spawn.env.DTM_GIT_USERNAME).toBe("alice");
+  });
+
+  it("git-credential with NO stored user → no DTM_GIT_USERNAME (helper falls to git's own / omit)", async () => {
+    const r = await inject(fakeHost(), git, "op-2", "git-credential", null);
+    if (!r.ok || r.injector !== "askpass") throw new Error("expected askpass");
+    expect(r.spawn.env.DTM_GIT_USERNAME).toBeUndefined();
+  });
+
   it("askpass (ssh key passphrase) → SSH_ASKPASS env, no git ctx, no gitArgs", async () => {
     const mintTicket = vi.fn(async () => ({ ok: true as const, ticket: "TKT", pipe: "PIPE" }));
     const r = await inject(fakeHost({ mintTicket }), sshkey, "op-3", "askpass", null);

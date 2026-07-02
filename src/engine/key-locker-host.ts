@@ -116,15 +116,32 @@ export interface MintTicketContext {
   path?: string;
 }
 
+/** Every abort reason the `inject` verb can return (§2.1 reply contract). */
+export type InjectAbortCode =
+  | "target_mismatch" | "target_gone" | "not_foreground" | "target_multiplexed"
+  | "no_secret" | "bad_target" | "executor_failed";
+
 /** `inject` result: verified+injected, or a typed abort code. */
 export type InjectClientResult =
   | { ok: true; verified: boolean }
-  | { ok: false; code: "target_mismatch" | "target_gone" | "not_foreground" | "target_multiplexed" | "no_secret" };
+  | { ok: false; code: InjectAbortCode };
 
 /** `mint_ticket` result: the non-secret ticket + serving-pipe name, or no such secret. */
 export type MintTicketResult =
   | { ok: true; ticket: string; pipe: string }
   | { ok: false; code: "no_secret" };
+
+const INJECT_ABORT_CODES: readonly InjectAbortCode[] = [
+  "target_mismatch", "target_gone", "not_foreground", "target_multiplexed",
+  "no_secret", "bad_target", "executor_failed",
+];
+
+/** Map a wire `e` string onto a known abort code so `InjectClientResult.code` never lies. */
+function normalizeAbort(e: string | undefined): InjectAbortCode {
+  return e !== undefined && (INJECT_ABORT_CODES as readonly string[]).includes(e)
+    ? (e as InjectAbortCode)
+    : "executor_failed";
+}
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 15_000;
 const DEFAULT_CONNECT_BACKOFF_MS = 100;
@@ -398,8 +415,7 @@ export class KeyLockerHost {
   async inject(key: string, target: InjectTarget): Promise<InjectClientResult> {
     const reply = await this.request("inject", key, REQUEST_TIMEOUT_MS, { t: target });
     if (reply.ok) return { ok: true, verified: reply.verified === true };
-    const code = (reply.e ?? "no_secret") as InjectClientResult extends { ok: false; code: infer C } ? C : never;
-    return { ok: false, code };
+    return { ok: false, code: normalizeAbort(reply.e) };
   }
 
   /**

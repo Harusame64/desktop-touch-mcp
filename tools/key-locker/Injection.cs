@@ -90,24 +90,35 @@ internal static class Win32Input
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString()))).ToLowerInvariant();
     }
 
-    /// Re-verify, then type the secret (from the transient plaintext) into the target, + Enter if
-    /// `submit`. Returns (injected, abortCode). The plaintext char[] is zeroized before returning.
+    /// Build the keystrokes, re-verify the target at the LAST moment, then type the secret + Enter
+    /// if `submit`. Returns (injected, abortCode). BOTH plaintext-bearing buffers — the decoded
+    /// char[] AND the INPUT[] (the secret lives in each `KEYBDINPUT.wScan`) — are zeroized in the
+    /// finally, upholding §2.2 step 5's zeroize discipline (Opus R1 P2-1). Building into a sized
+    /// INPUT[] (not a List) avoids a hidden backing-array copy that would survive uncleared.
     public static (bool injected, string? abort) ReVerifyAndType(in InjectTarget t, byte[] secret)
     {
-        var abort = ReVerify(in t);
-        if (abort != null) return (false, abort);
-
         char[] chars = Encoding.UTF8.GetChars(secret);
+        var n = chars.Length * 2 + (t.Submit ? 2 : 0);
+        var arr = new INPUT[n];
         try
         {
-            var inputs = new List<INPUT>(chars.Length * 2 + 2);
-            foreach (var ch in chars) { inputs.Add(UnicodeKey(ch, false)); inputs.Add(UnicodeKey(ch, true)); }
-            if (t.Submit) { inputs.Add(VkKey(VK_RETURN, false)); inputs.Add(VkKey(VK_RETURN, true)); }
-            var arr = inputs.ToArray();
+            var j = 0;
+            foreach (var ch in chars) { arr[j++] = UnicodeKey(ch, false); arr[j++] = UnicodeKey(ch, true); }
+            if (t.Submit) { arr[j++] = VkKey(VK_RETURN, false); arr[j++] = VkKey(VK_RETURN, true); }
+
+            // Re-verify IMMEDIATELY before the send — the tightest TOCTOU window (Opus R1 P3-2). An
+            // abort here types nothing; the built (secret-bearing) INPUT[] is still zeroized below.
+            var abort = ReVerify(in t);
+            if (abort != null) return (false, abort);
+
             var sent = SendInput((uint)arr.Length, arr, Marshal.SizeOf<INPUT>());
             return (sent == (uint)arr.Length, sent == (uint)arr.Length ? null : "executor_failed");
         }
-        finally { Array.Clear(chars, 0, chars.Length); }
+        finally
+        {
+            Array.Clear(chars, 0, chars.Length);
+            Array.Clear(arr, 0, arr.Length); // the INPUT[] holds the secret in each wScan
+        }
     }
 
     private static INPUT UnicodeKey(char ch, bool up) => new()

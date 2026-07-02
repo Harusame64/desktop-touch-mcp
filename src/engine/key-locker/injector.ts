@@ -17,7 +17,7 @@
 import { fileURLToPath } from "node:url";
 import { join, dirname } from "node:path";
 import type { BindingUri } from "./binding.js";
-import type { InjectTarget, KeyLockerHost } from "../key-locker-host.js";
+import type { InjectAbortCode, InjectTarget, KeyLockerHost } from "../key-locker-host.js";
 
 export type { InjectTarget };
 
@@ -87,11 +87,8 @@ export interface ConsumerSpawnConfig {
 export type InjectResult =
   | { ok: true; injector: "sendinput"; verified: boolean }
   | { ok: true; injector: "askpass"; spawn: ConsumerSpawnConfig }
+  // `InjectAbortCode` (the locker-side SendInput abort reasons, §2.1) is the SSOT in key-locker-host.
   | { ok: false; code: SelectErrorCode | "target_required" | InjectAbortCode };
-
-/** Locker-side SendInput abort reasons surfaced back to the caller (§2.1). */
-export type InjectAbortCode =
-  | "target_mismatch" | "target_gone" | "not_foreground" | "target_multiplexed" | "no_secret";
 
 /**
  * Orchestrate an injection. Returns booleans / config / typed reasons — NEVER a secret.
@@ -133,6 +130,13 @@ export async function inject(
     gitArgs.push("-c", `credential.helper=!"${ASKPASS_EXE}" credential`);
     // git omits `path` from `get` unless useHttpPath is set — a path-bound ctx would always mismatch.
     if (gitCtx?.path !== undefined) gitArgs.push("-c", "credential.useHttpPath=true");
+    // Username precedence tier (2), §3.2: when the binding carries a stored user, expose it so the
+    // helper can answer git's `get` with a username (load-bearing for Bitbucket, which — unlike
+    // GitHub/GitLab — rejects an arbitrary one). Tier (1) = git echoing its own username still wins
+    // in the helper; tier (3) = password-only when neither holds (Opus R1 P2-2).
+    if (binding.scheme === "https-cred" && binding.user !== undefined && binding.user.length > 0) {
+      env.DTM_GIT_USERNAME = binding.user;
+    }
   } else {
     // Plain SSH_ASKPASS: point ssh at the helper and force non-tty prompting.
     env.SSH_ASKPASS = ASKPASS_EXE;
