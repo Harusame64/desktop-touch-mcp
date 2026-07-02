@@ -37,6 +37,7 @@ const fakeExec: ExecFn = async (file, args) => {
     let host = dest;
     const at = dest.lastIndexOf("@");
     if (at > 0) { user = dest.slice(0, at); host = dest.slice(at + 1); }
+    host = host.replace(/^\[|\]$/g, ""); // real ssh -G prints IPv6 hostnames UNBRACKETED
     if (host === "resolvefail.example.com") return { code: 255, stdout: "", stderr: "boom" };
     return {
       code: 0,
@@ -149,6 +150,32 @@ describe("§8 #6 — command derivation table", () => {
   it("ssh -G resolution failure → null (fail closed, never guess)", async () => {
     expect(await derives("ssh resolvefail.example.com")).toBeNull();
   });
+  it("IPv6 destination: host is re-bracketed so the displayUri round-trips (Opus R1 P2-1)", async () => {
+    const uri = await derives("ssh u@[h]"); // fake ssh -G reports the bare 'h'; kh token 'h' is stored
+    expect(uri).toMatchObject({ scheme: "ssh", host: "h" });
+    // The bracket rule itself is pinned via the parser: a host ssh -G reports with ':' in it
+    // must land bracketed. (Direct unit on the resolve path, no real IPv6 endpoint needed.)
+    const { resolveCanonicalForSshCommand } = await import("../../src/engine/key-locker/ssh-resolve.js");
+    const { formatBindingUri, parseBindingUri } = await import("../../src/engine/key-locker/binding.js");
+    const v6Exec: typeof fakeExec = async (file, args) => {
+      if (file === "ssh" && args[0] === "-G") {
+        return { code: 0, stdout: `hostname ::1\nuser u\nport 22\nuserknownhostsfile ${khFile}\n`, stderr: "" };
+      }
+      if (file === "ssh-keygen") return { code: 0, stdout: "::1 ED25519 SHA256:FAKEFP1\n", stderr: "" };
+      return { code: 127, stdout: "", stderr: "unexpected" };
+    };
+    const r = await resolveCanonicalForSshCommand(["u@::1"], v6Exec);
+    expect(r.kind).toBe("ok");
+    if (r.kind !== "ok") return;
+    expect(r.uri.host).toBe("[::1]");
+    expect(parseBindingUri(formatBindingUri(r.uri))).toMatchObject({ scheme: "ssh", host: "[::1]", user: "u", port: 22 });
+  });
+  it("clustered arg-taking flag (-4p 2222) fails CLOSED to null, never a wrong target", async () => {
+    // '-4p' is tokenized as a no-arg cluster, so '2222' is taken as the destination; the fake
+    // known_hosts has no such host → host-not-known → null. Pinned so the failure DIRECTION
+    // (toward null) never regresses even though the cluster parse itself is imperfect.
+    expect(await derives("ssh -4p 2222 h")).toBeNull();
+  });
 
   // --- sudo (the CANNOT-prompt closed set nulls; everything else derives) ---
   it("sudo apt update → derive", async () => {
@@ -214,6 +241,17 @@ describe("§8 #6 — command derivation table", () => {
     expect(await derives("git push sshr main", { ...local, cwd: repoTracking })).toBeNull();
     expect(await derives("git clone git@github.com:example/repo.git")).toBeNull();
     expect(await derives("git clone ssh://git@github.com/example/repo.git")).toBeNull();
+  });
+  it("git push --repo=<url> / --repo <url> derive from the explicit target (Opus R1 P3-2)", async () => {
+    expect(await derives("git push --repo=https://forge.example.com:8443/team/proj.git", { ...local, cwd: tmp })).toMatchObject({
+      scheme: "https-cred",
+      host: "forge.example.com",
+      port: 8443,
+    });
+    expect(await derives("git push --repo https://github.com/example/repo.git", { ...local, cwd: tmp })).toMatchObject({
+      scheme: "https-cred",
+      host: "github.com",
+    });
   });
   it("git -C <repo> push origin resolves against the -C path, not session.cwd", async () => {
     expect(await derives(`git -C "${repoTracking}" push origin main`, { ...local, cwd: tmp })).toMatchObject({

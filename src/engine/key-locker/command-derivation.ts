@@ -165,7 +165,7 @@ const GIT_CRED_SUBCOMMANDS = new Set(["push", "pull", "fetch", "clone", "ls-remo
 // Per-subcommand option letters/words that consume a separate argument token (minimal set; the
 // exhaustive per-flag table is the test suite's — a miss here fails toward null or a skipped opt).
 const GIT_ARG_OPTS: Record<string, Set<string>> = {
-  push: new Set(["-o", "--push-option", "--receive-pack", "--exec", "--repo"]),
+  push: new Set(["-o", "--push-option", "--receive-pack", "--exec"]), // --repo is captured as the target below
   pull: new Set(["--depth", "-j", "--jobs", "--upload-pack", "--negotiation-tip", "--server-option", "-o", "-s", "-X", "--strategy", "--strategy-option"]),
   fetch: new Set(["--depth", "-j", "--jobs", "--upload-pack", "--negotiation-tip", "--server-option", "-o", "--refmap", "--shallow-since", "--shallow-exclude"]),
   clone: new Set(["-b", "--branch", "-o", "--origin", "--depth", "-c", "--config", "--reference", "--reference-if-able", "--separate-git-dir", "-j", "--jobs", "--filter", "-u", "--upload-pack", "--template", "--shallow-since", "--shallow-exclude"]),
@@ -201,6 +201,8 @@ async function deriveGit(args: string[], session: SessionContext, exec: ExecFn):
   for (; i < args.length; i++) {
     const tok = args[i];
     if (tok === "--") { repoArg = args[i + 1]; break; }
+    if (tok.startsWith("--repo=")) { repoArg = tok.slice("--repo=".length); break; } // push's explicit target
+    if (tok === "--repo" && i + 1 < args.length) { repoArg = args[i + 1]; break; }
     if (tok.startsWith("-")) {
       if (argOpts.has(tok)) i++;
       continue;

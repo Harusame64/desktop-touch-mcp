@@ -209,10 +209,17 @@ export async function resolveCanonicalForSshCommand(
   if (fpSet.length === 0) {
     return { kind: "host-not-known", user: cfg.user, host: cfg.host, port: cfg.port };
   }
+  // `ssh -G` prints IPv6 hostnames UNBRACKETED (`::1`); the grammar's host slot is the bracketed
+  // form (`[::1]`), so bracket here — otherwise the stored displayUri would not re-parse (the
+  // round-trip invariant every other scheme upholds). The known_hosts token above stays bare,
+  // matching how ssh itself writes IPv6 entries.
+  const host = cfg.host.includes(":") && !cfg.host.startsWith("[")
+    ? `[${cfg.host.toLowerCase()}]`
+    : cfg.host.toLowerCase();
   const uri: BindingUri & { scheme: "ssh" } = {
     scheme: "ssh",
     user: cfg.user,
-    host: cfg.host.toLowerCase(),
+    host,
     port: cfg.port,
     fpSet,
   };
