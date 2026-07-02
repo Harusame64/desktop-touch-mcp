@@ -89,8 +89,10 @@ export function parseSshCommand(args: readonly string[]): ParsedSshCommand {
           if (i + 1 < args.length) optionArgs.push(args[++i]);
         }
       } else {
-        // no-arg flag, possibly a getopt cluster (-4A, -vG); -G/-V may appear mid-cluster
-        if (tok.includes("G") || tok.includes("V")) queryMode = true;
+        // no-arg flag, possibly a getopt cluster (-4A, -vG); -G/-V/-Q may appear mid-cluster. -Q
+        // takes an arg but still exits after listing (a query), so a clustered `-vQ cipher` is a
+        // query, NOT an interactive login to host `cipher` (Codex #495 P2).
+        if (tok.includes("G") || tok.includes("V") || tok.includes("Q")) queryMode = true;
         for (const c of tok.slice(1)) noArgFlags.add(c); // surface -f / -N / clusters for callers
         optionArgs.push(tok);
       }

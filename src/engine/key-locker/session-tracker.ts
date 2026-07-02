@@ -20,8 +20,8 @@
 // This module is PURE state + command parsing — no Win32, no I/O. The process-tree watch that drives
 // noteSessionEnd() is the KeyLockerManager's job (deferred, SP-L3-OQ-7).
 
-import { isAbsolute, resolve as resolvePath } from "node:path";
-import { tokenizeCommandSegments } from "./command-derivation.js";
+import { win32 as winPath } from "node:path";
+import { tokenizeCommandSegmentsWithOps } from "./command-derivation.js";
 import { parseSshCommand } from "./ssh-resolve.js";
 
 /** One session frame: a local shell, or a shell reached by ssh'ing into `execHost`. */
@@ -72,8 +72,10 @@ export class SessionTracker {
     if (st === undefined || st.stack === null) return; // unknown / never-anchored — stays unknown
 
     // Scan EVERY segment for a session-changing program (Opus R1 P1-1: `cd x && ssh host` must still
-    // see the ssh — do not `return` after cd). The FIRST ssh-in wins the session change.
-    for (const segment of tokenizeCommandSegments(command)) {
+    // REACH the ssh — do not `return` after cd). The FIRST ssh-in wins the session change. Each
+    // segment also carries whether it is CONDITIONALLY reached (`&&` / `||`) — a branch the shell may
+    // skip, which we must not treat as a reliable session change (Codex #495 P1).
+    for (const { tokens: segment, conditional } of tokenizeCommandSegmentsWithOps(command)) {
       // Skip leading FOO=bar env-assignments, exactly as L1's deriveBinding does (Opus R1 P1-1:
       // `LC_ALL=C ssh user@host` must still detect the ssh, else the remote frame is never pushed and
       // the pane stays labeled localhost — a wrong-target on the fp-less sudo path).
@@ -82,11 +84,25 @@ export class SessionTracker {
       const program = programOf(segment[start]);
       if (program === "ssh") {
         const remote = interactiveSshTarget(segment.slice(start + 1));
-        if (remote !== null) st.stack.push({ execHost: remote, isRemote: true, cwd: undefined });
+        if (remote !== null) {
+          // A conditional (`&&` / `||`) ssh may or may not actually run — unknowable at dispatch time.
+          // Pushing a remote frame that never materializes strands the pane as remote (no ssh child
+          // for the watch to pop) → wrong-targets a later LOCAL command; staying local wrong-targets
+          // the other way if it DID run. The honest state is UNKNOWN → decline (Codex #495 P1). An
+          // unconditional ssh is a reliable prediction → push.
+          if (conditional) { this.markUnknown(paneId); return; }
+          st.stack.push({ execHost: remote, isRemote: true, cwd: undefined });
+        }
         return; // a one-shot `ssh host cmd` / query mode does NOT push; either way the ssh wins the scan
       }
       if (program === "cd") {
-        applyCd(st.stack[st.stack.length - 1], segment.slice(start + 1));
+        if (conditional) {
+          // A conditional cd's destination is unpredictable — drop cwd to unknown (git derivation then
+          // declines) rather than trust a directory the shell may not have entered (Codex #495 P1).
+          st.stack[st.stack.length - 1].cwd = undefined;
+        } else {
+          applyCd(st.stack[st.stack.length - 1], segment.slice(start + 1));
+        }
         // keep scanning — a later `&& ssh …` in the same command still changes the session.
       }
       // NOTE: `exit`/`logout` are deliberately NOT handled here (Opus R1 P1-2). The AUTHORITATIVE pop
@@ -165,18 +181,24 @@ function interactiveSshTarget(args: string[]): string | null {
   return host.toLowerCase();
 }
 
-/** Best-effort cwd update from a `cd` command (mutates the frame's cwd). */
+/**
+ * Best-effort cwd update from a `cd` command (mutates the frame's cwd). Paths are WINDOWS console
+ * paths, so use `path.win32` semantics REGARDLESS of the host OS Node runs on — `node:path` would
+ * misjudge `C:/srv` as relative on Linux (test/dev) and fabricate a bogus cwd fed to `git -C`
+ * (Codex #495 P2). Determinism across platforms; on the Windows runtime the two are identical.
+ */
 function applyCd(frame: SessionFrame, args: string[]): void {
   const target = args.find((a) => !a.startsWith("-"));
   if (target === undefined || target === "~" || target.startsWith("~")) {
     frame.cwd = undefined; // home / unresolvable — leave unknown (L1 fails safe)
     return;
   }
-  if (isAbsolute(target)) {
+  if (winPath.isAbsolute(target)) {
     frame.cwd = target;
-  } else if (frame.cwd !== undefined && !frame.isRemote) {
-    // relative cd only resolvable locally against a known cwd; remote cwd stays unknown.
-    frame.cwd = resolvePath(frame.cwd, target);
+  } else if (frame.cwd !== undefined && winPath.isAbsolute(frame.cwd) && !frame.isRemote) {
+    // relative cd only resolvable locally against a known ABSOLUTE cwd; a relative/unknown anchor
+    // stays unknown (never drag in the host's process.cwd() — Opus #495 P3).
+    frame.cwd = winPath.resolve(frame.cwd, target);
   } else {
     frame.cwd = undefined;
   }

@@ -40,17 +40,32 @@ export interface DeriveBindingDeps {
   exec?: ExecFn;
 }
 
+/** One command segment plus whether the shell reaches it CONDITIONALLY (preceded by `&&` / `||`). */
+export interface CommandSegment {
+  tokens: string[];
+  /**
+   * True iff this segment is preceded by a `&&` or `||` operator — i.e. the shell runs it only
+   * depending on the PRIOR command's exit status, so at dispatch time we cannot know whether it
+   * executes. `;` / `&` / `|` / newline and the first segment are all unconditional (`false`).
+   */
+  conditional: boolean;
+}
+
 /**
  * Shell-style tokenizer: split into command SEGMENTS at unquoted `&&` / `||` / `;` / `|` / `&` /
  * newline, respecting single/double quotes and backslash escapes (POSIX-ish; the dispatched
- * commands are the ones our own terminal tool typed). Quote characters are stripped.
+ * commands are the ones our own terminal tool typed). Quote characters are stripped. Each segment
+ * carries whether it is CONDITIONALLY reached (`&&` / `||`), which the session tracker needs to
+ * avoid predicting a session change for a branch the shell may skip.
  */
-export function tokenizeCommandSegments(cmd: string): string[][] {
-  const segments: string[][] = [];
+export function tokenizeCommandSegmentsWithOps(cmd: string): CommandSegment[] {
+  const segments: CommandSegment[] = [];
   let tokens: string[] = [];
   let cur = "";
   let started = false;
   let quote: '"' | "'" | null = null;
+  let conditional = false;      // does the segment currently being built follow a `&&` / `||`?
+  let nextConditional = false;  // set by the operator that ends the current segment
 
   const endToken = () => {
     if (started) tokens.push(cur);
@@ -59,8 +74,10 @@ export function tokenizeCommandSegments(cmd: string): string[][] {
   };
   const endSegment = () => {
     endToken();
-    if (tokens.length > 0) segments.push(tokens);
+    if (tokens.length > 0) segments.push({ tokens, conditional });
     tokens = [];
+    conditional = nextConditional;
+    nextConditional = false;
   };
 
   for (let i = 0; i < cmd.length; i++) {
@@ -79,16 +96,24 @@ export function tokenizeCommandSegments(cmd: string): string[][] {
     if (ch === "'" || ch === '"') { quote = ch as '"' | "'"; started = true; continue; }
     if (ch === "\\" && i + 1 < cmd.length) { cur += cmd[++i]; started = true; continue; }
     if (ch === "&" || ch === "|") {
+      const doubled = cmd[i + 1] === ch; // `&&` / `||` gate the NEXT segment; `&` / `|` do not
+      nextConditional = doubled;
       endSegment();
-      if (cmd[i + 1] === ch) i++; // && / ||
+      if (doubled) i++;
       continue;
     }
-    if (ch === ";" || ch === "\n") { endSegment(); continue; }
+    if (ch === ";" || ch === "\n") { nextConditional = false; endSegment(); continue; }
     if (ch === " " || ch === "\t" || ch === "\r") { endToken(); continue; }
     cur += ch; started = true;
   }
+  nextConditional = false;
   endSegment();
   return segments;
+}
+
+/** Segments as plain token arrays (separators discarded) — the prompt-triggered derivation path. */
+export function tokenizeCommandSegments(cmd: string): string[][] {
+  return tokenizeCommandSegmentsWithOps(cmd).map((s) => s.tokens);
 }
 
 /** Program identity of a token: basename, lowercased, `.exe` stripped. */

@@ -12,6 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   deriveBinding,
   tokenizeCommandSegments,
+  tokenizeCommandSegmentsWithOps,
   type SessionContext,
 } from "../../src/engine/key-locker/command-derivation.js";
 import { defaultExec, type ExecFn } from "../../src/engine/key-locker/ssh-resolve.js";
@@ -106,6 +107,17 @@ describe("tokenizer", () => {
       ["sudo", "apt", "update"],
       ["ls"],
       ["wc"],
+    ]);
+  });
+
+  it("marks segments after `&&` / `||` conditional; `;` / `&` / `|` and the first are unconditional", () => {
+    expect(tokenizeCommandSegmentsWithOps(`a && b || c ; d | e & f`)).toEqual([
+      { tokens: ["a"], conditional: false }, // first
+      { tokens: ["b"], conditional: true },  // after &&
+      { tokens: ["c"], conditional: true },  // after ||
+      { tokens: ["d"], conditional: false }, // after ;
+      { tokens: ["e"], conditional: false }, // after |
+      { tokens: ["f"], conditional: false }, // after &
     ]);
   });
 });

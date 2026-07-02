@@ -111,11 +111,13 @@ describe("SessionTracker — wrong-target regressions (Opus R1 P1-1/P1-2/P2-1)",
     expect((t.get(P) as { execHost: string }).execHost).toBe("prod.example.com");
   });
 
-  it("`cd x && ssh host` still sees the ssh (does not stop scanning after cd) (P1-1)", () => {
+  it("`cd x && ssh host` REACHES the ssh but, being conditional, sinks to UNKNOWN (Codex #495 P1)", () => {
+    // The scan still does not stop at `cd` (Opus R1 P1-1). But the ssh is `&&`-guarded: if the cd
+    // failed the ssh never runs, so a confident remote push would be a wrong-target. Fail safe.
     const t = new SessionTracker();
     t.beginLocalSession(P, "C:/work");
     t.recordDispatch(P, "cd C:/srv && ssh deploy@prod.example.com");
-    expect((t.get(P) as { execHost: string }).execHost).toBe("prod.example.com");
+    expect(t.get(P)).toEqual({ unknown: true });
   });
 
   it("nested ssh does NOT double-pop: typed exit + one watch pop leaves the OUTER remote frame (P1-2)", () => {
@@ -158,6 +160,40 @@ describe("SessionTracker — wrong-target regressions (Opus R1 P1-1/P1-2/P2-1)",
     t.beginLocalSession(P);
     t.recordDispatch(P, "ssh -F fN.cfg deploy@prod.example.com");
     expect((t.get(P) as { execHost: string }).execHost).toBe("prod.example.com");
+  });
+
+  it("a `&&` / `||`-conditional ssh sinks to UNKNOWN — the shell may skip it (Codex #495 P1)", () => {
+    for (const cmd of [
+      "false && ssh deploy@prod.example.com",       // ssh runs only if the prior succeeds
+      "cd /missing && ssh deploy@prod.example.com", // cd may fail → ssh skipped
+      "echo ok || ssh deploy@prod.example.com",     // ssh runs only if the prior fails
+    ]) {
+      const t = new SessionTracker();
+      t.beginLocalSession(P);
+      t.recordDispatch(P, cmd);
+      expect(t.get(P)).toEqual({ unknown: true });
+    }
+  });
+
+  it("a `;`-sequenced ssh is UNCONDITIONAL → still pushes the remote frame (Codex #495 P1)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "echo hi ; ssh deploy@prod.example.com"); // `;` always reaches the ssh
+    expect((t.get(P) as { execHost: string }).execHost).toBe("prod.example.com");
+  });
+
+  it("a conditional cd drops cwd to unknown rather than trusting a maybe-skipped directory (Codex #495 P1)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P, "C:/work");
+    t.recordDispatch(P, "test -d x && cd C:/srv"); // cd is conditional → cwd unknown, pane stays local
+    expect(t.get(P)).toEqual({ execHost: "localhost", isRemote: false }); // no cwd
+  });
+
+  it("clustered `-vQ cipher` is a QUERY, not an interactive login to host `cipher` (Codex #495 P2)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh -vQ cipher");
+    expect(t.get(P)).toEqual({ execHost: "localhost", isRemote: false });
   });
 });
 
