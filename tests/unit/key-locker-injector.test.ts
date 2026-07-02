@@ -97,7 +97,11 @@ describe("inject orchestrator (§5) — never returns a secret", () => {
     if (!r.ok || r.injector !== "askpass") throw new Error("expected askpass");
     expect(r.spawn.env).toEqual({ DTM_LOCKER_PIPE: "PIPE", DTM_ASKPASS_TICKET: "TKT" });
     expect(r.spawn.gitArgs).toContain("-c");
-    expect(r.spawn.gitArgs.some((a) => a.startsWith("credential.helper="))).toBe(true);
+    // An empty credential.helper= must precede ours (resets any global/repo helper — Codex R1 P2).
+    const emptyIdx = r.spawn.gitArgs.indexOf("credential.helper=");
+    const oursIdx = r.spawn.gitArgs.findIndex((a) => a.startsWith("credential.helper=!"));
+    expect(emptyIdx).toBeGreaterThanOrEqual(0);
+    expect(oursIdx).toBeGreaterThan(emptyIdx);
     expect(r.spawn.gitArgs).toContain("credential.useHttpPath=true"); // path-bound
   });
 

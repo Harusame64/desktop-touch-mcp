@@ -126,7 +126,11 @@ export async function inject(
   };
   const gitArgs: string[] = [];
   if (channel === "git-credential") {
-    // Per-invocation helper injection (never a global git-config mutation, §3.2).
+    // Per-invocation helper injection (never a global git-config mutation, §3.2). An empty
+    // `credential.helper=` FIRST RESETS the helper list (Codex R1 P2): otherwise an existing
+    // global/repo helper (e.g. Git Credential Manager) is tried first and, if it answers, git never
+    // invokes ours — bypassing the ticket + context_mismatch checks and using stale/wrong creds.
+    gitArgs.push("-c", "credential.helper=");
     gitArgs.push("-c", `credential.helper=!"${ASKPASS_EXE}" credential`);
     // git omits `path` from `get` unless useHttpPath is set — a path-bound ctx would always mismatch.
     if (gitCtx?.path !== undefined) gitArgs.push("-c", "credential.useHttpPath=true");
