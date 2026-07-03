@@ -59,12 +59,13 @@ export interface ParsedSshCommand {
   /** True if the invocation is a query / no-login mode (`-G` / `-Q` / `-V`) — never prompts. */
   queryMode: boolean;
   /**
-   * The letters of every NO-ARG flag token seen before the destination (getopt clusters expanded:
-   * `-fN` → {f, N}). Only no-arg tokens are scanned, so a with-arg flag's VALUE (`-F fname`, `-o k=v`)
-   * never contributes a letter. Lets a caller detect session-shape flags like `-f` (background) /
-   * `-N` (no remote command) without re-parsing.
+   * Every OPTION FLAG LETTER seen before the destination (getopt clusters expanded: `-fN` → {f,N};
+   * `-4p 2222` → {4,p}), EXCLUDING the VALUES of with-arg flags (`-p 2222` contributes `p`, not
+   * `2222`; `-F fname` contributes `F`, not `fname`). Lets a caller detect session-shape flags like
+   * `-f` (background) / `-N` (no remote command) / `-W` (stdio-forward, implies -N/-T) without
+   * re-parsing. Only FLAG letters, so a with-arg value that happens to contain N/f/W never false-triggers.
    */
-  noArgFlags: ReadonlySet<string>;
+  flagLetters: ReadonlySet<string>;
 }
 
 /**
@@ -73,28 +74,30 @@ export interface ParsedSshCommand {
  */
 export function parseSshCommand(args: readonly string[]): ParsedSshCommand {
   const optionArgs: string[] = [];
-  const noArgFlags = new Set<string>();
+  const flagLetters = new Set<string>();
   let destination: string | undefined;
   let queryMode = false;
   for (let i = 0; i < args.length; i++) {
     const tok = args[i];
     if (destination === undefined && tok.startsWith("-") && tok.length >= 2) {
-      const letter = tok[1];
-      if (letter === "G" || letter === "V" || letter === "Q") queryMode = true;
-      if (SSH_FLAGS_WITH_ARG.has(letter)) {
-        if (tok.length > 2) {
-          optionArgs.push(tok); // attached form: -p2222 / -Qcipher
-        } else {
-          optionArgs.push(tok);
-          if (i + 1 < args.length) optionArgs.push(args[++i]);
+      optionArgs.push(tok);
+      // Walk the getopt cluster left-to-right. No-arg letters accumulate; the FIRST with-arg letter
+      // (`p`/`F`/`o`/`W`/…) consumes its VALUE — the rest of THIS token if attached (`-p2222`,
+      // `-Qcipher`), else the NEXT token (`-p 2222`) — and ends the cluster (the remaining chars are
+      // that value, not more flags). Walking every letter (not just tok[1]) is what stops `-4p 2222`
+      // being misread as a no-arg cluster whose value `2222` is then taken as the destination
+      // (Codex #495 R5 P2). Query letters (`-G`/`-V`, and `-Q` which takes an arg but still just
+      // lists+exits) may appear anywhere in the cluster.
+      for (let c = 1; c < tok.length; c++) {
+        const L = tok[c];
+        flagLetters.add(L);
+        if (L === "G" || L === "V") queryMode = true;
+        if (SSH_FLAGS_WITH_ARG.has(L)) {
+          if (L === "Q") queryMode = true;
+          const attached = c < tok.length - 1; // the value is the rest of THIS token
+          if (!attached && i + 1 < args.length) optionArgs.push(args[++i]); // else it is the next token
+          break;
         }
-      } else {
-        // no-arg flag, possibly a getopt cluster (-4A, -vG); -G/-V/-Q may appear mid-cluster. -Q
-        // takes an arg but still exits after listing (a query), so a clustered `-vQ cipher` is a
-        // query, NOT an interactive login to host `cipher` (Codex #495 P2).
-        if (tok.includes("G") || tok.includes("V") || tok.includes("Q")) queryMode = true;
-        for (const c of tok.slice(1)) noArgFlags.add(c); // surface -f / -N / clusters for callers
-        optionArgs.push(tok);
       }
       continue;
     }
@@ -104,7 +107,7 @@ export function parseSshCommand(args: readonly string[]): ParsedSshCommand {
     }
     break; // remote command begins — stop
   }
-  return { destination, optionArgs, queryMode, noArgFlags };
+  return { destination, optionArgs, queryMode, flagLetters };
 }
 
 export interface SshEffectiveConfig {

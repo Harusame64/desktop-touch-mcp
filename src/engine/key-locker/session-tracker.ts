@@ -81,7 +81,9 @@ export class SessionTracker {
     // REACH the ssh — do not `return` after cd). The FIRST ssh-in wins the session change. Each
     // segment also carries whether it is CONDITIONALLY reached (`&&` / `||`) — a branch the shell may
     // skip, which we must not treat as a reliable session change (Codex #495 P1).
-    for (const { tokens: segment, conditional, backgrounded, pipedStdin } of tokenizeCommandSegmentsWithOps(command)) {
+    const segments = tokenizeCommandSegmentsWithOps(command);
+    for (let idx = 0; idx < segments.length; idx++) {
+      const { tokens: segment, conditional, backgrounded, pipedStdin } = segments[idx];
       // Skip leading FOO=bar env-assignments, exactly as L1's deriveBinding does (Opus R1 P1-1:
       // `LC_ALL=C ssh user@host` must still detect the ssh, else the remote frame is never pushed and
       // the pane stays labeled localhost — a wrong-target on the fp-less sudo path).
@@ -102,9 +104,18 @@ export class SessionTracker {
           // the other way if it DID run. The honest state is UNKNOWN → decline (Codex #495 P1). An
           // unconditional ssh is a reliable prediction → push.
           if (conditional) { this.markUnknown(paneId); return; }
+          // An interactive login BLOCKS the pane until it exits; only THEN do any SEQUENTIALLY-trailing
+          // segments run — locally, possibly re-entering another host or cd'ing (`ssh a ; ssh b`, `ssh
+          // a ; cd X`). A single pushed frame + the watch's later pop would land on the PRE-trailing
+          // state (localhost / old cwd) while the shell has moved on → wrong-target. That future
+          // trajectory is unmodelable from one snapshot, so sink to UNKNOWN when a sequential command
+          // follows the login (Codex #495 R5 P1). A DOWNSTREAM PIPE stage (`ssh a | tee`) is NOT
+          // sequential — it runs CONCURRENTLY with the login and shares its lifetime — so a trailing
+          // run of pipe stages (all `pipedStdin`) does not force unknown; a login whose only followers
+          // are its own pipe stages (or nothing) is the clean common case → push.
+          if (segments.slice(idx + 1).some((s) => !s.pipedStdin)) { this.markUnknown(paneId); return; }
           st.stack.push({ execHost: remote, isRemote: true, cwd: undefined });
-          return; // an interactive login opened → the session changed; a LATER segment runs only once
-                  // the process-tree watch pops this frame, so stop scanning here.
+          return; // an interactive login opened and only its pipe stages follow — the pane is now remote.
         }
         // A one-shot `ssh host cmd`, a query (`-G`/`-Q`/`-V`), or a backgrounded `ssh host &` opens NO
         // session in THIS pane. Do NOT stop the scan at the first ssh token (Codex #495 P1): a LATER
@@ -181,11 +192,12 @@ function programOf(token: string | undefined): string {
 function interactiveSshTarget(args: string[]): string | null {
   const parsed = parseSshCommand(args);
   if (parsed.queryMode || parsed.destination === undefined) return null;
-  // `-N` (no remote command) and `-f` (fork to background) do NOT open an interactive login shell in
-  // THIS pane: `-N` blocks the pane holding a tunnel, `-f` returns it to the LOCAL prompt. Pushing a
-  // remote frame would mislabel a later LOCAL command as remote → wrong-target on the fp-less sudo
-  // path (#495 P2). Treat them as non-session-opening — no push.
-  if (parsed.noArgFlags.has("N") || parsed.noArgFlags.has("f")) return null;
+  // `-N` (no remote command), `-f` (fork to background) and `-W host:port` (forward stdin/stdout,
+  // implies -N/-T) do NOT open an interactive login shell in THIS pane: `-N` holds a tunnel, `-f`
+  // returns it to the LOCAL prompt, `-W` turns the pane into a stdio conduit for a bastion and exits.
+  // Pushing a remote frame would mislabel a later LOCAL command as remote → wrong-target on the
+  // fp-less sudo path (#495 P2 / R5 P2). Treat them as non-session-opening — no push.
+  if (parsed.flagLetters.has("N") || parsed.flagLetters.has("f") || parsed.flagLetters.has("W")) return null;
   // A one-shot `ssh host cmd …` has a remote-command token AFTER the destination → not an interactive
   // login session. parseSshCommand consumes `optionArgs` (the options) + 1 (the destination); anything
   // BEYOND that count is the remote command. STRUCTURAL token count, not indexOf (Opus R1 P2-1:

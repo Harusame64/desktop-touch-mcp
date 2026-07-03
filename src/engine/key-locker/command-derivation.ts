@@ -68,6 +68,13 @@ export interface CommandSegment {
 }
 
 /**
+ * Chars a leading `\` is treated as ESCAPING (drop the `\`, keep the char literal) in unquoted text.
+ * A `\` before ANY OTHER char is kept literally as a Windows path separator (Codex #495 P1) — so
+ * `cd C:\repo` survives while `\ ` / `\&` / `\;` / `\\` / `\"` still escape.
+ */
+const SHELL_ESCAPE_SPECIAL = new Set([" ", "\t", "\n", "\r", "&", "|", ";", "<", ">", "(", ")", '"', "'", "\\", "$", "`"]);
+
+/**
  * Shell-style tokenizer: split into command SEGMENTS at unquoted `&&` / `||` / `;` / `|` / `&` /
  * newline, respecting single/double quotes and backslash escapes (POSIX-ish; the dispatched
  * commands are the ones our own terminal tool typed). Quote characters are stripped. Each segment
@@ -114,7 +121,26 @@ export function tokenizeCommandSegmentsWithOps(cmd: string): CommandSegment[] {
       continue;
     }
     if (ch === "'" || ch === '"') { quote = ch as '"' | "'"; started = true; continue; }
-    if (ch === "\\" && i + 1 < cmd.length) { cur += cmd[++i]; started = true; continue; }
+    if (ch === "\\" && i + 1 < cmd.length) {
+      // A backslash before a SHELL-SPECIAL char is a POSIX escape (drop the `\`, keep the char literal).
+      // Before anything else it is a WINDOWS PATH SEPARATOR and must be KEPT — these are Windows-shell
+      // commands, so `cd C:\repo` / `git -C C:\repo` must not have their `\` stripped to `C:repo`, which
+      // `applyCd` / `git -C` would then mis-resolve into a bogus directory (Codex #495 P1). Escaping is
+      // still honored for `\ ` / `\&` / `\"` / `\\` so quoting/operator-escaping is unaffected.
+      if (SHELL_ESCAPE_SPECIAL.has(cmd[i + 1])) { cur += cmd[++i]; started = true; continue; }
+      cur += ch; started = true; continue; // literal backslash (Windows path separator)
+    }
+    if (ch === "|" && cmd[i + 1] === "&") {
+      // bash `|&` = `2>&1 |` — a PIPE that feeds the next segment's stdin, NOT a background `&` (GNU
+      // Bash manual). Treat it exactly like a single `|` (propagate the guard, mark the downstream
+      // stdin piped) and consume BOTH chars, so a `cmd |& ssh h` does not leave `ssh h` looking
+      // unpiped and get a spurious remote-frame push (Codex #495 P2).
+      nextConditional = conditional;
+      nextPipedStdin = true;
+      endSegment(); // not backgrounded — the `&` here is part of `|&`, not a job-control `&`
+      i++; // consume the `&`
+      continue;
+    }
     if (ch === "&" || ch === "|") {
       const doubled = cmd[i + 1] === ch;
       // `&&` / `||` gate the NEXT segment on the prior's exit status. A single `|` keeps the next

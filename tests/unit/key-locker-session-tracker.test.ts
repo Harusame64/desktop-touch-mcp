@@ -256,6 +256,54 @@ describe("SessionTracker — wrong-target regressions (Opus R1 P1-1/P1-2/P2-1)",
     t.recordDispatch(P, "ssh deploy@prod.example.com | tee log");
     expect((t.get(P) as { execHost: string }).execHost).toBe("prod.example.com");
   });
+
+  it("an interactive ssh with a SEQUENTIAL trailing command sinks to UNKNOWN (post-exit trajectory unmodelable — Codex #495 R5 P1)", () => {
+    for (const cmd of [
+      "ssh a@host-a ; ssh b@host-b", // after host-a exits the shell logs into host-b, not the popped-to localhost
+      "ssh a@host-a ; cd C:/repoB",  // after host-a exits the shell cd's — a lone pop leaves the old cwd
+      "ssh a@host-a ; sudo foo",     // sudo runs locally after host-a exits — a lone pop is fine, but host-b/cd is not
+    ]) {
+      const t = new SessionTracker();
+      t.beginLocalSession(P, "C:/work");
+      t.recordDispatch(P, cmd);
+      expect(t.get(P)).toEqual({ unknown: true });
+    }
+  });
+
+  it("an interactive ssh piped then followed SEQUENTIALLY still sinks to unknown (`ssh h | tee ; sudo` — sudo is sequential)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh deploy@prod.example.com | tee log ; sudo foo");
+    expect(t.get(P)).toEqual({ unknown: true });
+  });
+
+  it("`ssh -W host:port bastion` forwards stdio (implies -N/-T) → opens no session, pane stays local (Codex #495 R5 P2)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh -W db.internal:5432 bastion.example.com");
+    expect(t.get(P)).toEqual({ execHost: "localhost", isRemote: false });
+  });
+
+  it("clustered `-4p 2222 host-x` keeps the real destination (a login to host-x, not a stray `2222`) — Codex #495 R5 P2", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh -4p 2222 host-x");
+    expect((t.get(P) as { execHost: string }).execHost).toBe("host-x");
+  });
+
+  it("a `cd C:\\srv\\app` (backslash path) is tracked, not mangled to a bogus relative path (Codex #495 R5 P1)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P, "C:/work");
+    t.recordDispatch(P, "cd C:\\srv\\app");
+    expect((t.get(P) as { cwd: string }).cwd.replace(/\\/g, "/")).toBe("C:/srv/app");
+  });
+
+  it("a `cmd |& ssh h` downstream ssh opens no session (piped stdin via `|&`) → pane stays local (Codex #495 R5 P2)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "make |& ssh deploy@prod.example.com");
+    expect(t.get(P)).toEqual({ execHost: "localhost", isRemote: false });
+  });
 });
 
 describe("SessionTracker — cwd tracking (best-effort, fails safe to undefined)", () => {

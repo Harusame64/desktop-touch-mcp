@@ -121,6 +121,22 @@ describe("tokenizer", () => {
     ]);
   });
 
+  it("keeps Windows backslash path separators, still escapes shell-special chars (Codex #495 R5 P1)", () => {
+    expect(tokenizeCommandSegments(`cd C:\\repo\\src`)).toEqual([["cd", "C:\\repo\\src"]]);
+    expect(tokenizeCommandSegments(`git -C C:\\a\\b push`)).toEqual([["git", "-C", "C:\\a\\b", "push"]]);
+    // a `\` before a shell-special char is STILL an escape (operator neutralized / space kept literal),
+    // not a path separator — so escaping semantics are preserved alongside Windows paths.
+    expect(tokenizeCommandSegments(`echo a\\&b`)).toEqual([["echo", "a&b"]]);
+    expect(tokenizeCommandSegments(`echo a\\ b`)).toEqual([["echo", "a b"]]);
+  });
+
+  it("recognizes bash `|&` as a pipe (downstream stdin piped), not a background `&` (Codex #495 R5 P2)", () => {
+    expect(tokenizeCommandSegmentsWithOps(`make |& ssh h`)).toEqual([
+      { tokens: ["make"], conditional: false, backgrounded: false, pipedStdin: false },
+      { tokens: ["ssh", "h"], conditional: false, backgrounded: false, pipedStdin: true }, // `|&` fed stdin
+    ]);
+  });
+
   it("a single `|` PROPAGATES an earlier `&&` guard AND marks the downstream stdin as piped (Codex #495 P2 / Opus R4 P2)", () => {
     // `false && echo ok | ssh prod` parses as `false && (echo ok | ssh prod)`: the whole pipeline is
     // guarded (downstream stays conditional) and `ssh prod`'s stdin is the pipe, not the tty.
@@ -200,11 +216,12 @@ describe("§8 #6 — command derivation table", () => {
   it("ssh -J bastion target → null (the FIRST prompt may be the jump host's — Codex R1 P1)", async () => {
     expect(await derives("ssh -J bastion.example.com h")).toBeNull();
   });
-  it("clustered arg-taking flag (-4p 2222) fails CLOSED to null, never a wrong target", async () => {
-    // '-4p' is tokenized as a no-arg cluster, so '2222' is taken as the destination; the fake
-    // known_hosts has no such host → host-not-known → null. Pinned so the failure DIRECTION
-    // (toward null) never regresses even though the cluster parse itself is imperfect.
-    expect(await derives("ssh -4p 2222 h")).toBeNull();
+  it("clustered arg-taking flag (-4p 2222) resolves the DESTINATION h, not the stray `2222` (Codex #495 R5 P2)", async () => {
+    // '-4p 2222' is `-4 -p 2222` — a with-arg letter (`p`) buried after a no-arg one (`4`) still
+    // consumes the next token, so the destination is `h`, NOT `2222`. The parser now walks the whole
+    // cluster (previously it read `2222` as the host and fell to null — safe but imperfect). Port is
+    // left to `ssh -G` (the fake here can't resolve the clustered `-p`, so it reports the default).
+    expect(await derives("ssh -4p 2222 h")).toMatchObject({ scheme: "ssh", host: "h", user: "u" });
   });
 
   // --- sudo (the CANNOT-prompt closed set nulls; everything else derives) ---
