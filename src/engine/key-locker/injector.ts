@@ -5,7 +5,7 @@
 //
 // Three injectors (D4(iii) has two transports — askpass stdout + git credential protocol — that share
 // machinery) behind one decision:
-//   * SendInput → pane  — the LOCKER types the secret into a dedicated conhost after an injection-
+//   * SendInput → pane  — the LOCKER types the secret into a dedicated console after an injection-
 //     instant re-verify (secret never leaves the locker).
 //   * askpass streaming — a compiled helper streams the secret locker→consumer off the MCP path,
 //     authorized by a single-use ticket; the engine only assembles the env/git-config.

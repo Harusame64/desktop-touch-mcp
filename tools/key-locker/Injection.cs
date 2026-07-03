@@ -37,7 +37,7 @@ internal static class InjectAbort
 /// target be re-checked at the SEND instant, inside the locker, immediately before the first key.
 internal static class Win32Input
 {
-    private const string ConsoleClass = "ConsoleWindowClass"; // the classic conhost window class
+    private const string ConsoleClass = "ConsoleWindowClass"; // the console window-class name (class-name origin, not a pid claim — intentionally retained through the R1 P3-1 conhost doc-fix)
 
     [StructLayout(LayoutKind.Sequential)]
     private struct INPUT { public uint type; public InputUnion U; }
