@@ -57,6 +57,14 @@ export interface CommandSegment {
    * (Codex #495 P1). `;` / `&&` / `||` / `|` / newline / end-of-input all leave it `false`.
    */
   backgrounded: boolean;
+  /**
+   * True iff this segment's STDIN is fed by a single `|` — it is a DOWNSTREAM pipeline stage, so its
+   * stdin is the pipe, not the tty. A `… | ssh host` therefore cannot become an INTERACTIVE login
+   * (ssh allocates a pty only when stdin is a tty); it runs non-interactively and the pane returns to
+   * the LOCAL prompt, so it opens no session in this pane (Opus #495 R4 P2). The first segment and any
+   * segment after `;` / `&&` / `||` / `&` / newline are `false`.
+   */
+  pipedStdin: boolean;
 }
 
 /**
@@ -74,6 +82,8 @@ export function tokenizeCommandSegmentsWithOps(cmd: string): CommandSegment[] {
   let quote: '"' | "'" | null = null;
   let conditional = false;      // does the segment currently being built follow a `&&` / `||`?
   let nextConditional = false;  // set by the operator that ends the current segment
+  let pipedStdin = false;       // is the segment currently being built the downstream side of a `|`?
+  let nextPipedStdin = false;   // set by a single `|` that ends the current segment
 
   const endToken = () => {
     if (started) tokens.push(cur);
@@ -82,10 +92,12 @@ export function tokenizeCommandSegmentsWithOps(cmd: string): CommandSegment[] {
   };
   const endSegment = (backgrounded = false) => {
     endToken();
-    if (tokens.length > 0) segments.push({ tokens, conditional, backgrounded });
+    if (tokens.length > 0) segments.push({ tokens, conditional, backgrounded, pipedStdin });
     tokens = [];
     conditional = nextConditional;
+    pipedStdin = nextPipedStdin;
     nextConditional = false;
+    nextPipedStdin = false;
   };
 
   for (let i = 0; i < cmd.length; i++) {
@@ -112,6 +124,7 @@ export function tokenizeCommandSegmentsWithOps(cmd: string): CommandSegment[] {
       if (doubled) nextConditional = true;
       else if (ch === "|") nextConditional = conditional; // pipe: propagate the guard down the pipeline
       else nextConditional = false;                       // single `&`: next is an unconditional foreground cmd
+      nextPipedStdin = ch === "|" && !doubled;            // a single `|` feeds the NEXT segment's stdin
       endSegment(ch === "&" && !doubled); // a single `&` marks the segment it terminates as backgrounded
       if (doubled) i++;
       continue;

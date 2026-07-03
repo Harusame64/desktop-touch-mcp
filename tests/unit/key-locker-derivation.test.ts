@@ -110,24 +110,24 @@ describe("tokenizer", () => {
     ]);
   });
 
-  it("marks segments after `&&` / `||` conditional; `;` / `&` reset it; a single `&` backgrounds", () => {
+  it("marks conditional (`&&`/`||`), backgrounded (single `&`), and piped-stdin (downstream `|`)", () => {
     expect(tokenizeCommandSegmentsWithOps(`a && b || c ; d | e & f`)).toEqual([
-      { tokens: ["a"], conditional: false, backgrounded: false }, // first
-      { tokens: ["b"], conditional: true, backgrounded: false },  // after &&
-      { tokens: ["c"], conditional: true, backgrounded: false },  // after ||
-      { tokens: ["d"], conditional: false, backgrounded: false }, // after ;
-      { tokens: ["e"], conditional: false, backgrounded: true },  // terminated by single `&` → backgrounded
-      { tokens: ["f"], conditional: false, backgrounded: false }, // after &
+      { tokens: ["a"], conditional: false, backgrounded: false, pipedStdin: false }, // first
+      { tokens: ["b"], conditional: true, backgrounded: false, pipedStdin: false },  // after &&
+      { tokens: ["c"], conditional: true, backgrounded: false, pipedStdin: false },  // after ||
+      { tokens: ["d"], conditional: false, backgrounded: false, pipedStdin: false }, // after ;
+      { tokens: ["e"], conditional: false, backgrounded: true, pipedStdin: true },   // downstream of `|`, ended by `&`
+      { tokens: ["f"], conditional: false, backgrounded: false, pipedStdin: false }, // after &
     ]);
   });
 
-  it("a single `|` PROPAGATES an earlier `&&` guard across the pipeline (Codex #495 P2)", () => {
+  it("a single `|` PROPAGATES an earlier `&&` guard AND marks the downstream stdin as piped (Codex #495 P2 / Opus R4 P2)", () => {
     // `false && echo ok | ssh prod` parses as `false && (echo ok | ssh prod)`: the whole pipeline is
-    // guarded, so the downstream `ssh prod` stage must stay conditional, not reset to unconditional.
+    // guarded (downstream stays conditional) and `ssh prod`'s stdin is the pipe, not the tty.
     expect(tokenizeCommandSegmentsWithOps(`false && echo ok | ssh prod`)).toEqual([
-      { tokens: ["false"], conditional: false, backgrounded: false },
-      { tokens: ["echo", "ok"], conditional: true, backgrounded: false },
-      { tokens: ["ssh", "prod"], conditional: true, backgrounded: false }, // guard propagated through `|`
+      { tokens: ["false"], conditional: false, backgrounded: false, pipedStdin: false },
+      { tokens: ["echo", "ok"], conditional: true, backgrounded: false, pipedStdin: false },
+      { tokens: ["ssh", "prod"], conditional: true, backgrounded: false, pipedStdin: true }, // guard + pipe propagated
     ]);
   });
 });

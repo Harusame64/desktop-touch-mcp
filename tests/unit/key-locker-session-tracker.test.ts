@@ -230,13 +230,31 @@ describe("SessionTracker — wrong-target regressions (Opus R1 P1-1/P1-2/P2-1)",
     expect((t.get(P) as { execHost: string }).execHost).toBe("host-b");
   });
 
-  it("a pipeline guarded by an earlier `&&` stays conditional → UNKNOWN, not a spurious push (Codex #495 P2)", () => {
-    // `false && echo ok | ssh prod` = `false && (echo ok | ssh prod)`: the whole pipeline is skipped
-    // when `false` fails, so a confident remote push would strand the pane remote. Fail safe.
+  it("a DOWNSTREAM pipe `echo hi | ssh h` opens no interactive login → pane stays local (Opus #495 R4 P2)", () => {
+    // ssh's stdin is the pipe, not the tty, so it runs non-interactively and returns the pane to the
+    // LOCAL prompt. Pushing a remote frame here would wrong-target a later local `sudo` to host h.
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "echo hi | ssh deploy@prod.example.com");
+    expect(t.get(P)).toEqual({ execHost: "localhost", isRemote: false });
+  });
+
+  it("a guarded downstream-pipe ssh also stays local (pipe stdin, whether or not the guard passes — Opus #495 R4 P2)", () => {
+    // `false && echo ok | ssh prod` = `false && (echo ok | ssh prod)`: skipped when `false` fails, and
+    // even if it ran the piped-stdin ssh is non-interactive — the pane is local either way.
     const t = new SessionTracker();
     t.beginLocalSession(P);
     t.recordDispatch(P, "false && echo ok | ssh deploy@prod.example.com");
-    expect(t.get(P)).toEqual({ unknown: true });
+    expect(t.get(P)).toEqual({ execHost: "localhost", isRemote: false });
+  });
+
+  it("an UPSTREAM pipe `ssh h | tee log` DOES push — ssh's stdin is still the tty (Opus #495 R4 P2 asymmetry)", () => {
+    // Only the DOWNSTREAM side of `|` has piped stdin; the first stage keeps the tty, so an interactive
+    // login there is real and must push. Guards against the pipe fix over-broadly killing all pipes.
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh deploy@prod.example.com | tee log");
+    expect((t.get(P) as { execHost: string }).execHost).toBe("prod.example.com");
   });
 });
 

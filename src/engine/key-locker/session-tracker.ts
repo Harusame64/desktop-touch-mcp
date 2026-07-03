@@ -81,7 +81,7 @@ export class SessionTracker {
     // REACH the ssh — do not `return` after cd). The FIRST ssh-in wins the session change. Each
     // segment also carries whether it is CONDITIONALLY reached (`&&` / `||`) — a branch the shell may
     // skip, which we must not treat as a reliable session change (Codex #495 P1).
-    for (const { tokens: segment, conditional, backgrounded } of tokenizeCommandSegmentsWithOps(command)) {
+    for (const { tokens: segment, conditional, backgrounded, pipedStdin } of tokenizeCommandSegmentsWithOps(command)) {
       // Skip leading FOO=bar env-assignments, exactly as L1's deriveBinding does (Opus R1 P1-1:
       // `LC_ALL=C ssh user@host` must still detect the ssh, else the remote frame is never pushed and
       // the pane stays labeled localhost — a wrong-target on the fp-less sudo path).
@@ -89,10 +89,12 @@ export class SessionTracker {
       while (start < segment.length && ENV_ASSIGN_RE.test(segment[start])) start++;
       const program = programOf(segment[start]);
       if (program === "ssh") {
-        // A BACKGROUNDED `ssh host &` cannot grab THIS pane's tty for an interactive login — the shell
-        // returns to the LOCAL prompt at once (Codex #495 P1). Treat it, like a one-shot / query, as
-        // non-session-opening: no push, and keep scanning.
-        const remote = backgrounded ? null : interactiveSshTarget(segment.slice(start + 1));
+        // An ssh that cannot grab THIS pane's tty opens no interactive login and returns the shell to
+        // the LOCAL prompt — treat it, like a one-shot / query, as non-session-opening (no push, keep
+        // scanning). Two such shapes: a BACKGROUNDED `ssh host &` (Codex #495 P1), and a DOWNSTREAM
+        // pipe stage `… | ssh host` whose stdin is the pipe, not the tty (Opus #495 R4 P2) — pushing a
+        // remote frame there would mislabel a later LOCAL `sudo`/git as remote → wrong-target.
+        const remote = backgrounded || pipedStdin ? null : interactiveSshTarget(segment.slice(start + 1));
         if (remote !== null) {
           // A conditional (`&&` / `||`) ssh may or may not actually run — unknowable at dispatch time.
           // Pushing a remote frame that never materializes strands the pane as remote (no ssh child
