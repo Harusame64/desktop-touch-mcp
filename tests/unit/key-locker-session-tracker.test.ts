@@ -195,6 +195,49 @@ describe("SessionTracker — wrong-target regressions (Opus R1 P1-1/P1-2/P2-1)",
     t.recordDispatch(P, "ssh -vQ cipher");
     expect(t.get(P)).toEqual({ execHost: "localhost", isRemote: false });
   });
+
+  it("a non-session ssh does NOT stop the scan — a LATER `; ssh host` still pushes (Codex #495 P1)", () => {
+    // `ssh -G prod` is a query that opens no session; the scan must continue so the following
+    // interactive `ssh host-b` is recorded. Stopping at the first ssh token left the pane LOCAL while
+    // the shell was actually at host-b's prompt → a later sudo/credential wrong-targets localhost.
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh -G prod ; ssh deploy@host-b");
+    expect((t.get(P) as { execHost: string }).execHost).toBe("host-b");
+  });
+
+  it("a one-shot ssh followed by `; cd` still applies the cd (scan continues past it — Codex #495 P1)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P, "C:/work");
+    t.recordDispatch(P, "ssh prod uptime ; cd C:/srv/app"); // one-shot returns local, then cd runs
+    expect((t.get(P) as { cwd: string }).cwd.replace(/\\/g, "/")).toBe("C:/srv/app");
+    expect((t.get(P) as { isRemote: boolean }).isRemote).toBe(false); // stayed local throughout
+  });
+
+  it("a BACKGROUNDED `ssh host &` opens no interactive login → pane stays local (Codex #495 P1)", () => {
+    // `&` returns the shell to the LOCAL prompt immediately; a backgrounded ssh cannot grab the tty
+    // for an interactive login, so pushing a remote frame would mislabel a later local command.
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh deploy@prod.example.com &");
+    expect(t.get(P)).toEqual({ execHost: "localhost", isRemote: false });
+  });
+
+  it("a backgrounded ssh does not stop the scan — `ssh a & ssh b@host-b` reaches the fg login (Codex #495 P1)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh a@host-a & ssh b@host-b"); // first backgrounded, second is a fg interactive login
+    expect((t.get(P) as { execHost: string }).execHost).toBe("host-b");
+  });
+
+  it("a pipeline guarded by an earlier `&&` stays conditional → UNKNOWN, not a spurious push (Codex #495 P2)", () => {
+    // `false && echo ok | ssh prod` = `false && (echo ok | ssh prod)`: the whole pipeline is skipped
+    // when `false` fails, so a confident remote push would strand the pane remote. Fail safe.
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "false && echo ok | ssh deploy@prod.example.com");
+    expect(t.get(P)).toEqual({ unknown: true });
+  });
 });
 
 describe("SessionTracker — cwd tracking (best-effort, fails safe to undefined)", () => {

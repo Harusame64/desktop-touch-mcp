@@ -110,14 +110,24 @@ describe("tokenizer", () => {
     ]);
   });
 
-  it("marks segments after `&&` / `||` conditional; `;` / `&` / `|` and the first are unconditional", () => {
+  it("marks segments after `&&` / `||` conditional; `;` / `&` reset it; a single `&` backgrounds", () => {
     expect(tokenizeCommandSegmentsWithOps(`a && b || c ; d | e & f`)).toEqual([
-      { tokens: ["a"], conditional: false }, // first
-      { tokens: ["b"], conditional: true },  // after &&
-      { tokens: ["c"], conditional: true },  // after ||
-      { tokens: ["d"], conditional: false }, // after ;
-      { tokens: ["e"], conditional: false }, // after |
-      { tokens: ["f"], conditional: false }, // after &
+      { tokens: ["a"], conditional: false, backgrounded: false }, // first
+      { tokens: ["b"], conditional: true, backgrounded: false },  // after &&
+      { tokens: ["c"], conditional: true, backgrounded: false },  // after ||
+      { tokens: ["d"], conditional: false, backgrounded: false }, // after ;
+      { tokens: ["e"], conditional: false, backgrounded: true },  // terminated by single `&` → backgrounded
+      { tokens: ["f"], conditional: false, backgrounded: false }, // after &
+    ]);
+  });
+
+  it("a single `|` PROPAGATES an earlier `&&` guard across the pipeline (Codex #495 P2)", () => {
+    // `false && echo ok | ssh prod` parses as `false && (echo ok | ssh prod)`: the whole pipeline is
+    // guarded, so the downstream `ssh prod` stage must stay conditional, not reset to unconditional.
+    expect(tokenizeCommandSegmentsWithOps(`false && echo ok | ssh prod`)).toEqual([
+      { tokens: ["false"], conditional: false, backgrounded: false },
+      { tokens: ["echo", "ok"], conditional: true, backgrounded: false },
+      { tokens: ["ssh", "prod"], conditional: true, backgrounded: false }, // guard propagated through `|`
     ]);
   });
 });

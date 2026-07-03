@@ -40,15 +40,23 @@ export interface DeriveBindingDeps {
   exec?: ExecFn;
 }
 
-/** One command segment plus whether the shell reaches it CONDITIONALLY (preceded by `&&` / `||`). */
+/** One command segment plus how the shell reaches it (conditional guard / background). */
 export interface CommandSegment {
   tokens: string[];
   /**
-   * True iff this segment is preceded by a `&&` or `||` operator — i.e. the shell runs it only
-   * depending on the PRIOR command's exit status, so at dispatch time we cannot know whether it
-   * executes. `;` / `&` / `|` / newline and the first segment are all unconditional (`false`).
+   * True iff the shell runs this segment only DEPENDING ON a prior command's exit status, so at
+   * dispatch time we cannot know whether it executes. Set by a preceding `&&` / `||`, and PROPAGATED
+   * across a single `|` pipe — a pipeline guarded by an earlier `&&` is skipped as a WHOLE, so its
+   * downstream `… | ssh host` stage is just as conditional as the guard (Codex #495 P2). `;` / `&` /
+   * newline and the first segment reset it to `false`.
    */
   conditional: boolean;
+  /**
+   * True iff this segment is terminated by a single `&` — the shell backgrounds it and returns to the
+   * prompt at once, so a backgrounded `ssh host &` never opens an interactive session in THIS pane
+   * (Codex #495 P1). `;` / `&&` / `||` / `|` / newline / end-of-input all leave it `false`.
+   */
+  backgrounded: boolean;
 }
 
 /**
@@ -72,9 +80,9 @@ export function tokenizeCommandSegmentsWithOps(cmd: string): CommandSegment[] {
     cur = "";
     started = false;
   };
-  const endSegment = () => {
+  const endSegment = (backgrounded = false) => {
     endToken();
-    if (tokens.length > 0) segments.push({ tokens, conditional });
+    if (tokens.length > 0) segments.push({ tokens, conditional, backgrounded });
     tokens = [];
     conditional = nextConditional;
     nextConditional = false;
@@ -96,9 +104,15 @@ export function tokenizeCommandSegmentsWithOps(cmd: string): CommandSegment[] {
     if (ch === "'" || ch === '"') { quote = ch as '"' | "'"; started = true; continue; }
     if (ch === "\\" && i + 1 < cmd.length) { cur += cmd[++i]; started = true; continue; }
     if (ch === "&" || ch === "|") {
-      const doubled = cmd[i + 1] === ch; // `&&` / `||` gate the NEXT segment; `&` / `|` do not
-      nextConditional = doubled;
-      endSegment();
+      const doubled = cmd[i + 1] === ch;
+      // `&&` / `||` gate the NEXT segment on the prior's exit status. A single `|` keeps the next
+      // segment in the SAME pipeline, so it INHERITS the current conditional (a pipeline guarded by an
+      // earlier `&&` is skipped as a whole — Codex #495 P2). A single `&` BACKGROUNDS this segment and
+      // the next one runs unconditionally in the foreground.
+      if (doubled) nextConditional = true;
+      else if (ch === "|") nextConditional = conditional; // pipe: propagate the guard down the pipeline
+      else nextConditional = false;                       // single `&`: next is an unconditional foreground cmd
+      endSegment(ch === "&" && !doubled); // a single `&` marks the segment it terminates as backgrounded
       if (doubled) i++;
       continue;
     }

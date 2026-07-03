@@ -81,7 +81,7 @@ export class SessionTracker {
     // REACH the ssh — do not `return` after cd). The FIRST ssh-in wins the session change. Each
     // segment also carries whether it is CONDITIONALLY reached (`&&` / `||`) — a branch the shell may
     // skip, which we must not treat as a reliable session change (Codex #495 P1).
-    for (const { tokens: segment, conditional } of tokenizeCommandSegmentsWithOps(command)) {
+    for (const { tokens: segment, conditional, backgrounded } of tokenizeCommandSegmentsWithOps(command)) {
       // Skip leading FOO=bar env-assignments, exactly as L1's deriveBinding does (Opus R1 P1-1:
       // `LC_ALL=C ssh user@host` must still detect the ssh, else the remote frame is never pushed and
       // the pane stays labeled localhost — a wrong-target on the fp-less sudo path).
@@ -89,7 +89,10 @@ export class SessionTracker {
       while (start < segment.length && ENV_ASSIGN_RE.test(segment[start])) start++;
       const program = programOf(segment[start]);
       if (program === "ssh") {
-        const remote = interactiveSshTarget(segment.slice(start + 1));
+        // A BACKGROUNDED `ssh host &` cannot grab THIS pane's tty for an interactive login — the shell
+        // returns to the LOCAL prompt at once (Codex #495 P1). Treat it, like a one-shot / query, as
+        // non-session-opening: no push, and keep scanning.
+        const remote = backgrounded ? null : interactiveSshTarget(segment.slice(start + 1));
         if (remote !== null) {
           // A conditional (`&&` / `||`) ssh may or may not actually run — unknowable at dispatch time.
           // Pushing a remote frame that never materializes strands the pane as remote (no ssh child
@@ -98,8 +101,13 @@ export class SessionTracker {
           // unconditional ssh is a reliable prediction → push.
           if (conditional) { this.markUnknown(paneId); return; }
           st.stack.push({ execHost: remote, isRemote: true, cwd: undefined });
+          return; // an interactive login opened → the session changed; a LATER segment runs only once
+                  // the process-tree watch pops this frame, so stop scanning here.
         }
-        return; // a one-shot `ssh host cmd` / query mode does NOT push; either way the ssh wins the scan
+        // A one-shot `ssh host cmd`, a query (`-G`/`-Q`/`-V`), or a backgrounded `ssh host &` opens NO
+        // session in THIS pane. Do NOT stop the scan at the first ssh token (Codex #495 P1): a LATER
+        // `; ssh host` / `; cd X` in the same dispatched line still changes the session — keep scanning.
+        continue;
       }
       if (program === "cd") {
         if (conditional) {
