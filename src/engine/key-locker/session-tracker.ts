@@ -62,10 +62,16 @@ export class SessionTracker {
   }
 
   /**
-   * Update the pane's session from a command L3 is about to dispatch. An interactive `ssh user@host`
-   * pushes a remote frame; a `cd <path>` updates cwd. A command in an UNKNOWN pane leaves it unknown.
-   * Call this BEFORE deriving/dispatching so `get()` reflects the command's own context correctly for
-   * the NESTED case (the outer login is derived from the pre-push frame; see §4 of the L1 plan).
+   * Apply a command's session EFFECT immediately: an interactive `ssh user@host` pushes a remote
+   * frame; a `cd <path>` updates cwd. A command in an UNKNOWN pane leaves it unknown. After this call
+   * `get()` returns the POST-effect state (the nested-ssh tests pin this).
+   *
+   * ORDERING CONTRACT for the L3 §1 manager (Opus #495 P2-1): derive a credential command's OWN
+   * binding from `get()` taken BEFORE this call — the PRE-effect frame the command actually runs from —
+   * then call `recordDispatch` to apply the effect for SUBSEQUENT commands. So a nested `ssh b@host-b`
+   * launched from a `host-a` session is derived in the `host-a` frame (its pre-push context; §4 of the
+   * L1 plan), and only afterward does the `host-b` frame become current. Derive-then-record, never
+   * record-then-derive.
    */
   recordDispatch(paneId: string, command: string): void {
     const st = this.panes.get(paneId);
