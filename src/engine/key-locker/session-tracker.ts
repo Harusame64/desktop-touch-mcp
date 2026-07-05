@@ -84,19 +84,31 @@ export class SessionTracker {
     const segments = tokenizeCommandSegmentsWithOps(command);
     for (let idx = 0; idx < segments.length; idx++) {
       const { tokens: segment, conditional, backgrounded, pipedStdin } = segments[idx];
-      // Skip leading FOO=bar env-assignments, exactly as L1's deriveBinding does (Opus R1 P1-1:
-      // `LC_ALL=C ssh user@host` must still detect the ssh, else the remote frame is never pushed and
-      // the pane stays labeled localhost — a wrong-target on the fp-less sudo path).
+      // Skip leading FOO=bar env-assignments (Opus R1 P1-1: `LC_ALL=C ssh user@host` must still detect
+      // the ssh) AND leading shell REDIRECTIONS, which the shell applies before exec and can precede the
+      // program token (`>log ssh host`, `2>err ssh host`, `< in ssh host` — Codex #495 R9 P2). A leading
+      // redirect that touches fd 0 (STDIN) takes ssh's stdin off the tty, so — like a backgrounded/piped
+      // ssh — it opens no interactive login even though the program token is `ssh`; remember that.
       let start = 0;
-      while (start < segment.length && ENV_ASSIGN_RE.test(segment[start])) start++;
+      let leadingStdinRedir = false;
+      for (;;) {
+        const tok = segment[start];
+        if (tok === undefined) break;
+        if (ENV_ASSIGN_RE.test(tok)) { start++; continue; }
+        const r = redirTokenAt(segment, start);
+        if (r === null) break; // the real program token
+        if (r.touchesStdin) leadingStdinRedir = true;
+        start += r.consumed; // skip the redirect (and its following target token if the operator is bare)
+      }
       const program = programOf(segment[start]);
       if (program === "ssh") {
         // An ssh that cannot grab THIS pane's tty opens no interactive login and returns the shell to
         // the LOCAL prompt — treat it, like a one-shot / query, as non-session-opening (no push, keep
-        // scanning). Two such shapes: a BACKGROUNDED `ssh host &` (Codex #495 P1), and a DOWNSTREAM
-        // pipe stage `… | ssh host` whose stdin is the pipe, not the tty (Opus #495 R4 P2) — pushing a
-        // remote frame there would mislabel a later LOCAL `sudo`/git as remote → wrong-target.
-        const remote = backgrounded || pipedStdin ? null : interactiveSshTarget(segment.slice(start + 1));
+        // scanning). Three such shapes: a BACKGROUNDED `ssh host &` (Codex #495 P1), a DOWNSTREAM pipe
+        // stage `… | ssh host` whose stdin is the pipe, not the tty (Opus #495 R4 P2), and a LEADING
+        // fd-0 redirect `< in ssh host` / `0>f ssh host` (Codex #495 R9) — pushing a remote frame in any
+        // of them would mislabel a later LOCAL `sudo`/git as remote → wrong-target.
+        const remote = backgrounded || pipedStdin || leadingStdinRedir ? null : interactiveSshTarget(segment.slice(start + 1));
         if (remote !== null) {
           // A conditional (`&&` / `||`) ssh may or may not actually run — unknowable at dispatch time.
           // Pushing a remote frame that never materializes strands the pane as remote (no ssh child
@@ -134,7 +146,9 @@ export class SessionTracker {
           // declines) rather than trust a directory the shell may not have entered (Codex #495 P1).
           st.stack[st.stack.length - 1].cwd = undefined;
         } else {
-          applyCd(st.stack[st.stack.length - 1], segment.slice(start + 1));
+          // Strip redirects from the cd argv (`cd > log /srv` runs `cd /srv` with stdout→log) so the
+          // path finder doesn't pick a redirect operator as the target and fabricate a bogus cwd.
+          applyCd(st.stack[st.stack.length - 1], stripRedirections(segment.slice(start + 1)));
         }
         // keep scanning — a later `&& ssh …` in the same command still changes the session.
       }
@@ -191,54 +205,86 @@ function programOf(token: string | undefined): string {
 }
 
 /**
- * An OUTPUT redirection operator at the START of a token (our tokenizer keeps `>`/`<` inside tokens, so
- * `2>&1` / `>log` / `>&` arrive whole): an optional leading fd number, then `>` `>>` `>|` `>&`, or the
- * redirect-both `&>` `&>>`. `stripOutputRedirections` removes each: a token whose operator has an
- * ATTACHED target (`>log`, `2>&1`, `>&2`) is self-contained; a BARE operator (`>`, `2>`, `&>`, `>&`)
- * takes the FOLLOWING token as its target, so that token is dropped too.
+ * A shell REDIRECTION operator at the START of a token. Our tokenizer keeps `>`/`<` glued to their fd
+ * and target, so `2>&1`, `>log`, `<&-`, `&>all`, `3<in` arrive as ONE token; a BARE operator (`>`, `2>`,
+ * `<`, `3<`, `>&`, `&>`) instead takes the FOLLOWING token as its target.
  *
- * ONLY output redirects are stripped, DELIBERATELY. They don't touch fd 0, so an ssh keeps the tty on
- * stdin and stays an interactive login (`ssh host 2>&1 | tee`, `ssh host > log` — the signal we want to
- * survive, Codex #495 P2 / Opus R6 P2). An INPUT redirect (`< file`, `<< heredoc`, `<&-`, `<>`) instead
- * feeds ssh's stdin from a NON-tty, so it is non-interactive like a piped stdin — we leave those tokens
- * in place so the trailing-token count classifies the ssh as a one-shot (no push), which is correct.
+ * We split redirects by the ONE bit that decides whether an ssh keeps the pane's tty on stdin: does the
+ * redirect touch fd 0 (STDIN)?  This single axis subsumes position (before/after the program), fd number,
+ * and direction — the whole grammar class Codex #495 R2-R9 chipped at one shape at a time.
  *
- * The leading fd is `[1-9]\d*`, NOT `\d+`: an explicit fd 0 (`0>file`, `0>|file`, `0>&2`) is an OUTPUT
- * operator that redirects fd 0 = STDIN away from the tty, so like `< file` it makes ssh non-interactive.
- * Matching it here would strip it and mis-read the surviving host as an interactive login → a later local
- * command wrong-targeted to the remote (Codex #495 P2). Excluding fd 0 leaves the token in place, so the
- * trailing-token count classifies the ssh as a one-shot (no push) — the same handling as input redirects.
+ *   TOUCHES fd 0  → ssh's stdin comes off the tty → it runs NON-interactively (like a pipe/one-shot), so
+ *     NO remote frame. An UNSPECIFIED-fd input redirect defaults to fd 0 (`<f`, `<<EOF`, `<<<s`, `<&n`,
+ *     `<>f`); an EXPLICIT fd-0 redirect (`0<…`, `0>…`, incl. `0>&2`) also targets stdin.
+ *   does NOT touch fd 0  → pure I/O plumbing: OUTPUT on fd≥1 (`>log`, `2>&1`, `&>all`, clobber `>|`) or a
+ *     NONZERO-fd INPUT redirect (`3<in`, `3<&0`) that leaves stdin alone. STRIP it so it can't skew the
+ *     destination parse or the trailing-remote-command count.
  *
- * Order matters: `>&` (fd-dup) comes BEFORE the plain `>` alternative, else JS ordered alternation
- * matches a lone `>` for `>&` and mis-reads it as an attached-target redirect (leaving `>&`'s
- * space-separated target stranded as a fake remote command — Opus R6 P2).
+ * STDIN_REDIR_RE is tried FIRST (fd-0 forms), so `0>`/`0<`/bare `<` never fall through to the non-stdin
+ * arm. Within each, longer operators precede shorter (`<<<`|`<<`|`<[&>]`|`<`, `>&` before `>`) so JS
+ * ordered alternation matches the FULL operator — the match length then tells attached-target (`>log`,
+ * `2>&1`) from bare (`>`, `<<`), the latter also consuming the following token.
  */
-const OUTPUT_REDIR_OP_RE = /^(?:(?:[1-9]\d*)?(?:>&|>>?\|?)|&>>?)/;
+const STDIN_REDIR_RE = /^(?:0(?:>&|>>?\|?|<<<|<<|<[&>]|<)|<<<|<<|<[&>]|<)/;
+const NONSTDIN_REDIR_RE = /^(?:[1-9]\d*(?:>&|>>?\|?|<<<|<<|<[&>]|<)|>&|>>?\|?|&>>?)/;
 
-function stripOutputRedirections(tokens: readonly string[]): string[] {
+/** Classify the token at `tokens[i]` as a redirection: whether it touches fd 0 and how many tokens it
+ *  consumes (2 if the operator is BARE — its target is the following token — else 1). null = not a
+ *  redirect, i.e. a real argument / program / destination / remote-command token. */
+function redirTokenAt(tokens: readonly string[], i: number): { touchesStdin: boolean; consumed: number } | null {
+  const t = tokens[i];
+  const sm = STDIN_REDIR_RE.exec(t);
+  if (sm !== null) return { touchesStdin: true, consumed: sm[0].length === t.length ? 2 : 1 };
+  const nm = NONSTDIN_REDIR_RE.exec(t);
+  if (nm !== null) return { touchesStdin: false, consumed: nm[0].length === t.length ? 2 : 1 };
+  return null;
+}
+
+/**
+ * Remove every NON-fd-0 redirection (output on any fd, nonzero-fd input) from an argv, dropping a bare
+ * operator's following target too. fd-0 redirects are also removed here (callers that care about the
+ * stdin bit use `scanRedirectionsForStdin`); this helper is for consumers that only need the clean argv
+ * (e.g. `cd`'s path finder). Returns a new array.
+ */
+function stripRedirections(tokens: readonly string[]): string[] {
   const out: string[] = [];
   for (let i = 0; i < tokens.length; i++) {
-    const m = OUTPUT_REDIR_OP_RE.exec(tokens[i]);
-    if (m === null) { out.push(tokens[i]); continue; } // not an output redirect → a real argument / command
-    if (m[0].length === tokens[i].length) i++;         // BARE operator → also drop its target token
-  }                                                    // else the target is ATTACHED — drop this token only
+    const r = redirTokenAt(tokens, i);
+    if (r === null) { out.push(tokens[i]); continue; }
+    if (r.consumed === 2) i++; // bare operator → also skip its target token
+  }
   return out;
+}
+
+/** Strip redirects from an ssh argv AND report whether any of them touched fd 0 (stdin). */
+function scanRedirectionsForStdin(tokens: readonly string[]): { touchesStdin: boolean; stripped: string[] } {
+  let touchesStdin = false;
+  const stripped: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const r = redirTokenAt(tokens, i);
+    if (r === null) { stripped.push(tokens[i]); continue; }
+    if (r.touchesStdin) touchesStdin = true;
+    if (r.consumed === 2) i++;
+  }
+  return { touchesStdin, stripped };
 }
 
 /**
  * If an `ssh` argv (without the leading `ssh`) is an INTERACTIVE LOGIN, return the resolved host
  * (bare, lowercased — the label; L1 resolves the real endpoint later). Return null for a one-shot
- * `ssh host cmd`, a query mode (`-G`/`-Q`/`-V`), or no destination — none of which open a session.
+ * `ssh host cmd`, a query mode (`-G`/`-Q`/`-V`), no destination, or a stdin-off-the-tty ssh — none of
+ * which open a session.
  */
 function interactiveSshTarget(rawArgs: string[]): string | null {
-  // OUTPUT redirections are shell I/O plumbing the shell consumes before exec, and they can appear
-  // ANYWHERE — BEFORE the destination (`ssh 2>&1 host`, `ssh >log host`), after it, or after a remote
-  // command. Strip them from the WHOLE argv up front, else parseSshCommand mis-reads a LEADING redirect
-  // token as the destination and the real host as a one-shot remote command → the pane stays local
-  // while an interactive login actually opened → a later remote `sudo` is wrong-targeted to localhost
-  // (Codex #495 P2). INPUT redirects are deliberately KEPT (see stripOutputRedirections): they make ssh
-  // non-interactive, so the trailing-token count below then correctly classifies it as a one-shot.
-  const args = stripOutputRedirections(rawArgs);
+  // Redirections are shell I/O plumbing the shell consumes before exec, and they can appear ANYWHERE —
+  // before the destination (`ssh 2>&1 host`), after it, or after a remote command. Scan the WHOLE argv:
+  // a redirect that TOUCHES fd 0 (`ssh host < in`, `ssh 0>f host`) takes stdin off the tty → the ssh is
+  // non-interactive → no session (Codex #495 R9). Otherwise strip the (non-stdin) redirects so a leading
+  // one isn't mis-read by parseSshCommand as the destination and the real host as a one-shot remote
+  // command → the pane would else stay local while an interactive login opened → later remote `sudo`
+  // wrong-targeted to localhost (Codex #495 P2).
+  const { touchesStdin, stripped: args } = scanRedirectionsForStdin(rawArgs);
+  if (touchesStdin) return null;
   const parsed = parseSshCommand(args);
   if (parsed.queryMode || parsed.destination === undefined) return null;
   // `-N` (no remote command), `-f` (fork to background) and `-W host:port` (forward stdin/stdout,

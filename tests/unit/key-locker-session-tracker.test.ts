@@ -343,6 +343,59 @@ describe("SessionTracker — wrong-target regressions (Opus R1 P1-1/P1-2/P2-1)",
     expect((t.get(P) as { execHost: string }).execHost).toBe("prod.example.com");
   });
 
+  it("a redirect BEFORE the program token (`>log ssh h`, `2>err ssh h`) still detects the interactive login → pushes (Codex #495 R9 P2)", () => {
+    // The shell applies the redirect before exec, so `ssh` still runs with tty stdin. The segment scan
+    // must skip leading redirects (not just env-assigns) to find the `ssh` program token, else it reads
+    // the redirect as the program and never pushes — leaving the pane local while a remote login opened.
+    for (const cmd of [
+      ">session.log ssh deploy@prod.example.com",
+      "2>err.log ssh deploy@prod.example.com",
+      "> session.log ssh deploy@prod.example.com", // bare op + space-separated target before the program
+    ]) {
+      const t = new SessionTracker();
+      t.beginLocalSession(P);
+      t.recordDispatch(P, cmd);
+      expect((t.get(P) as { execHost: string }).execHost).toBe("prod.example.com");
+    }
+  });
+
+  it("a LEADING fd-0 redirect before the program (`< in ssh h`, `0>f ssh h`) makes ssh non-interactive → pane stays local (Codex #495 R9)", () => {
+    // A leading redirect that touches stdin takes ssh's stdin off the tty even though the program token
+    // is `ssh`; it must NOT push.
+    for (const cmd of [
+      "< script.txt ssh deploy@prod.example.com",
+      "0>stdin.log ssh deploy@prod.example.com",
+    ]) {
+      const t = new SessionTracker();
+      t.beginLocalSession(P);
+      t.recordDispatch(P, cmd);
+      expect(t.get(P)).toEqual({ execHost: "localhost", isRemote: false });
+    }
+  });
+
+  it("a NONZERO-fd INPUT redirect (`ssh 3<in h`, `ssh h 3<&0`) leaves stdin on the tty → interactive login pushes (Codex #495 R9 P2)", () => {
+    // fd 3 (or any fd ≠ 0) input redirect does not touch stdin, so the ssh is still an interactive login.
+    // The token must be stripped, not left to inflate the trailing-token count into a false one-shot.
+    for (const cmd of [
+      "ssh 3<input.txt deploy@prod.example.com",
+      "ssh deploy@prod.example.com 3<input.txt",
+      "ssh deploy@prod.example.com 3<&0",
+      "ssh 3< input.txt deploy@prod.example.com", // bare op + space-separated target
+    ]) {
+      const t = new SessionTracker();
+      t.beginLocalSession(P);
+      t.recordDispatch(P, cmd);
+      expect((t.get(P) as { execHost: string }).execHost).toBe("prod.example.com");
+    }
+  });
+
+  it("`cd > log /srv` strips the redirect and records the real path (`/srv`), not the `>` operator (Opus #495 R8 P3)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P, "C:/work");
+    t.recordDispatch(P, "cd > log C:/srv");
+    expect((t.get(P) as { cwd: string }).cwd).toBe("C:/srv");
+  });
+
   it("an interactive ssh with a SEQUENTIAL trailing command sinks to UNKNOWN (post-exit trajectory unmodelable — Codex #495 R5 P1)", () => {
     for (const cmd of [
       "ssh a@host-a ; ssh b@host-b", // after host-a exits the shell logs into host-b, not the popped-to localhost
