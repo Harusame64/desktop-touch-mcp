@@ -37,6 +37,7 @@ import { registerScreenshotResources } from "./tools/screenshot-resources.js";
 import { registerScreenshotQueryTool } from "./tools/screenshot-query.js";
 import { registerScreenshotGcTool } from "./tools/screenshot-gc.js";
 import { registerServerStatusTool } from "./tools/server-status.js";
+import { registerKeyLockerTools } from "./tools/key-locker-tool.js";
 import { logAutoGuardStartup } from "./tools/_action-guard.js";
 import {
   stopNativeRuntime,
@@ -230,6 +231,9 @@ function createMcpServer(): McpServer {
   // ADR-026 Phase 3 — screenshot disk-cache observe (query) + reclaim (gc).
   registerScreenshotQueryTool(s);
   registerScreenshotGcTool(s);
+  // ADR-014 R3 — the key locker management tool (self-gates on the kill switch, so a disabled
+  // locker registers nothing).
+  registerKeyLockerTools(s);
 
   // Screenshot by-ref resource (always-on: the screenshot tool returns
   // resource_link refs by default, so this read handler must be available).

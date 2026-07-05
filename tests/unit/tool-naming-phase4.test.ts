@@ -288,15 +288,16 @@ describe("Phase 4 — desktop_state include* flags + 5 get_* tools privatized", 
   });
 });
 
-// ─── 6. Stub catalog integrity (29 entries — Phase 4 reduction + ADR-015 `excel` + ADR-026 Phase 3) ───
+// ─── 6. Stub catalog integrity (30 entries — Phase 4 + `excel` + ADR-026 Phase 3 + ADR-014 `key_locker`) ───
 
-describe("Phase 4 — stub-tool-catalog drops 20 tools, retains 26 + 1 (excel) + 2 (ADR-026 Phase 3) = 29 entries", () => {
+describe("Phase 4 — stub-tool-catalog drops 20 tools, retains 26 + 1 (excel) + 2 (ADR-026 Phase 3) + 1 (key_locker) = 30 entries", () => {
   const catalogNames = new Set(STUB_TOOL_CATALOG.map((e) => e.name));
 
-  it("catalog has exactly 29 entries", () => {
+  it("catalog has exactly 30 entries", () => {
     // 26 from Phase 4 reduction + 1 from ADR-015 v1.5.0 (`excel`)
-    // + 2 from ADR-026 Phase 3 (`screenshot_query` / `screenshot_gc`).
-    expect(STUB_TOOL_CATALOG.length).toBe(29);
+    // + 2 from ADR-026 Phase 3 (`screenshot_query` / `screenshot_gc`)
+    // + 1 from ADR-014 R3 (`key_locker`).
+    expect(STUB_TOOL_CATALOG.length).toBe(30);
   });
 
   const REMOVED = [
