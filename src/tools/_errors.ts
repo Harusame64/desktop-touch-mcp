@@ -481,6 +481,20 @@ const SUGGESTS: Record<string, string[]> = {
     "Upgrade to a v1.5.0+ desktop-touch-mcp build (or run on Windows where the addon is included).",
     "If the addon IS present, verify it loaded successfully: check the stderr for `[native-engine] Rust VBA bridge loaded`.",
   ],
+
+  // ── Key locker (ADR-014 R3) — the credential store + terminal autofill surface. ────────────
+  // Only the two manager-produced codes are wired here (their producers are the KeyLocker*Error
+  // constructors in key-locker-manager.ts). The host/inject codes (KeyLockerSpawnFailed / …Rejected /
+  // …PipeUnavailable / the inject-abort family / RequiresRedaction / NoInjectorForBinding) are wired
+  // WHEN their producers land (the tool + the L3 inject loop) — the classify producer-pin invariant
+  // (issue-211) forbids a branch without a producer.
+  KeyLockerConsentRequired: [
+    "The key locker is off until you enable it once. Run key_locker with action='save' to open the enable dialog, or click Enable when it appears.",
+    "Enabling is a one-time confirmation shown by the locker itself; the assistant never sees your secret.",
+  ],
+  KeyLockerDisabled: [
+    "The key locker is turned off by DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1. Remove that environment variable (and restart the MCP server) to use it.",
+  ],
 };
 
 /**
@@ -502,6 +516,19 @@ export function getSuggestsForCode(code: string): string[] {
 
 function classify(message: string): { code: string; suggest: string[] } {
   const m = message.toLowerCase();
+
+  // Key locker (ADR-014 R3) — checked FIRST: both codes carry the unique `keylocker` prefix, so a
+  // keylocker message only matches these branches, never an existing generic one (e.g. `KeyLockerDisabled`
+  // must not be swallowed by a future generic branch; and when the host codes land, `KeyLockerSpawnFailed`
+  // ⊃ `spawnfailed` / `KeyLockerTargetNotForeground` ⊃ `foreground` would be mis-routed if placed after the
+  // generic branches — Opus L4-R1 P3-7 collision check). Producers: the KeyLocker*Error constructors in
+  // key-locker-manager.ts (`super("<code>: …")`). Host/inject codes are added when their producers land.
+  if (m.includes("keylockerconsentrequired")) {
+    return { code: "KeyLockerConsentRequired", suggest: SUGGESTS.KeyLockerConsentRequired };
+  }
+  if (m.includes("keylockerdisabled")) {
+    return { code: "KeyLockerDisabled", suggest: SUGGESTS.KeyLockerDisabled };
+  }
 
   // Order matters: check more-specific patterns first, then fall back to general ones.
   // Perception guards and lens errors — check before generic "not found" patterns
