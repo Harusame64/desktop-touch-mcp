@@ -36,7 +36,7 @@ import {
   formatBindingUri,
   type BindingUri,
 } from "../engine/key-locker/binding.js";
-import { resolveCanonicalForSshCommand } from "../engine/key-locker/ssh-resolve.js";
+import { resolveCanonicalForSshCommand, type ExecFn } from "../engine/key-locker/ssh-resolve.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schema — a discriminated union over `action` (Opus R1 P2-6: the FULL 3-layer chain, mirroring excel).
@@ -66,11 +66,14 @@ const forgetSchema = z.object({
 
 const setPolicySchema = z.object({
   action: z.literal("set_policy").describe(
-    "Set the per-binding autofill confirmation policy. confirmEveryInjection=true asks you to approve " +
-      "every autofill for this binding; false restores the default. A per-binding opt-in only.",
+    "Set the per-binding autofill confirmation policy. By DEFAULT every autofill asks you to confirm " +
+      "(the safe backstop). Set confirmEveryInjection=false to OPT OUT of confirmation for this one " +
+      "binding (it will then autofill silently); true restores the confirm-every default.",
   ),
   uri: z.string().min(1).describe(URI_DESC),
-  confirmEveryInjection: z.boolean().describe("true = confirm every autofill for this binding; false = default."),
+  confirmEveryInjection: z.boolean().describe(
+    "true (default) = confirm every autofill for this binding; false = opt out (autofill without asking).",
+  ),
 });
 
 const statusSchema = z.object({
@@ -102,6 +105,16 @@ function manager(): KeyLockerManager {
 /** TEST-ONLY seam: inject a manager (e.g. a fake-host subclass) or reset (null) the singleton. */
 export function __setKeyLockerManagerForTest(mgr: KeyLockerManager | null): void {
   managerSingleton = mgr;
+}
+
+/**
+ * TEST-ONLY seam: inject the `exec` the ssh `save` path passes to `resolveCanonicalForSshCommand`
+ * (a fake `ssh -G` / `ssh-keygen`), so the ssh save→canonical parity is unit-testable without real
+ * ssh binaries / known_hosts. `undefined`/`null` = the real `defaultExec` (production).
+ */
+let sshExecForTest: ExecFn | undefined;
+export function __setSshExecForTest(exec: ExecFn | null): void {
+  sshExecForTest = exec ?? undefined;
 }
 
 /** A management-only store (list/bind/unbind/setPolicy never need the locker's existence check). */
@@ -144,7 +157,10 @@ function handleList(): ToolResult {
     ...(row.user !== undefined ? { user: row.user } : {}),
     ...(row.port !== undefined ? { port: row.port } : {}),
     createdAt: row.createdAt,
-    confirmEveryInjection: row.confirmEveryInjection ?? false,
+    // The RESOLVED policy (matches the capture-loop's `confirmPolicyFor` = `?? true`): an unset binding
+    // CONFIRMS by default (the safe backstop). Reporting `?? false` here would tell the user "won't ask"
+    // while the loop actually asks (#500 vs #502 drift — the confirm default is ON unless opted out).
+    confirmEveryInjection: row.confirmEveryInjection ?? true,
   }));
   return ok({ bindings });
 }
@@ -200,7 +216,7 @@ async function handleSave(uri: string): Promise<ToolResult> {
   if (parsed.scheme === "ssh") {
     const dest = `${parsed.user}@${parsed.host}`;
     const sshArgs = parsed.port === 22 ? [dest] : ["-p", String(parsed.port), dest];
-    const res = await resolveCanonicalForSshCommand(sshArgs);
+    const res = await resolveCanonicalForSshCommand(sshArgs, sshExecForTest);
     if (res.kind === "host-not-known") {
       return fail(
         "KeyLockerSshUnresolved",
