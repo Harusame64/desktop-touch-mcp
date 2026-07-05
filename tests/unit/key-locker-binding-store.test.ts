@@ -135,3 +135,29 @@ describe("BindingStore — file tolerance + atomic save", () => {
     );
   });
 });
+
+describe("BindingStore — set_policy (L4 §1)", () => {
+  it("setPolicy flips confirmEveryInjection, persists, and reports updated", () => {
+    const dir = freshDir();
+    const store = BindingStore.load(dir, alwaysExists);
+    store.bind("sudo://localhost/root", "aa".repeat(16), meta());
+    // Default: the field is absent (confirm-every is the implicit default).
+    expect(store.list()[0].confirmEveryInjection).toBeUndefined();
+
+    expect(store.setPolicy("sudo://localhost/root", true)).toBe(true);
+    expect(store.list()[0].confirmEveryInjection).toBe(true);
+    // Survives a reload (atomic save).
+    expect(BindingStore.load(dir, alwaysExists).list()[0].confirmEveryInjection).toBe(true);
+
+    // Can be turned back off (per-binding opt-in only).
+    expect(store.setPolicy("sudo://localhost/root", false)).toBe(true);
+    expect(store.list()[0].confirmEveryInjection).toBe(false);
+  });
+
+  it("setPolicy on an unknown binding reports false and writes nothing", () => {
+    const dir = freshDir();
+    const store = BindingStore.load(dir, alwaysExists);
+    expect(store.setPolicy("sudo://nope/root", true)).toBe(false);
+    expect(store.list()).toHaveLength(0);
+  });
+});

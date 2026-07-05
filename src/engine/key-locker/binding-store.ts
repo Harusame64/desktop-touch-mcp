@@ -39,6 +39,13 @@ export interface BindingMeta {
   fpSet?: string[];
   /** ISO-8601, stamped by the caller. */
   createdAt: string;
+  /**
+   * Per-binding injection policy (L4 §1 `set_policy`): when true, the locker asks the user to confirm
+   * EVERY autofill for this binding (a per-binding opt-in — never a global no-confirm). Absent/false =
+   * the default confirm-every behaviour. The L1 plan §5.1 RESERVED this as "an L3 field, not set in L1";
+   * it is additive-optional, so it does not break the frozen L1 row shape.
+   */
+  confirmEveryInjection?: boolean;
 }
 
 export interface BindingRecord extends BindingMeta {
@@ -150,6 +157,19 @@ export class BindingStore {
   unbind(canonicalKey: string): boolean {
     if (!(canonicalKey in this.data.bindings)) return false;
     delete this.data.bindings[canonicalKey];
+    this.save();
+    return true;
+  }
+
+  /**
+   * Set the per-binding `confirmEveryInjection` policy (L4 §1 `set_policy`). Returns whether a row was
+   * updated (false = no such binding). Additive metadata only — never touches the locker secret. A
+   * per-binding opt-in; there is no global no-confirm switch.
+   */
+  setPolicy(canonicalKey: string, confirmEveryInjection: boolean): boolean {
+    const row = this.data.bindings[canonicalKey];
+    if (row === undefined) return false;
+    row.confirmEveryInjection = confirmEveryInjection;
     this.save();
     return true;
   }
