@@ -161,3 +161,29 @@ describe("BindingStore — set_policy (L4 §1)", () => {
     expect(store.list()).toHaveLength(0);
   });
 });
+
+describe("BindingStore — getPolicy (resolved confirm policy = `?? true`)", () => {
+  it("defaults an UNSET field to TRUE (confirm — the safe backstop), not false", () => {
+    const dir = freshDir();
+    const store = BindingStore.load(dir, alwaysExists);
+    store.bind("sudo://localhost/root", "aa".repeat(16), meta());
+    // The field is absent, yet the RESOLVED policy is confirm (matches the capture-loop's `?? true`).
+    expect(store.list()[0].confirmEveryInjection).toBeUndefined();
+    expect(store.getPolicy("sudo://localhost/root")).toBe(true);
+  });
+
+  it("returns TRUE for an UNKNOWN binding (fail-safe: confirm when we don't know it)", () => {
+    const store = BindingStore.load(freshDir(), alwaysExists);
+    expect(store.getPolicy("sudo://nope/root")).toBe(true);
+  });
+
+  it("returns the explicit value once set (false = the per-binding opt-OUT)", () => {
+    const dir = freshDir();
+    const store = BindingStore.load(dir, alwaysExists);
+    store.bind("sudo://localhost/root", "aa".repeat(16), meta());
+    store.setPolicy("sudo://localhost/root", false);
+    expect(store.getPolicy("sudo://localhost/root")).toBe(false);
+    store.setPolicy("sudo://localhost/root", true);
+    expect(store.getPolicy("sudo://localhost/root")).toBe(true);
+  });
+});
