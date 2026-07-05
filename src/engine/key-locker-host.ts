@@ -40,7 +40,8 @@ import { join, dirname } from "node:path";
 import { registerExcludedPid, unregisterExcludedPid } from "./tool-exclusion.js";
 
 // dist/engine/ -> ../../bin/key-locker.exe (same resolution as bridge-host.ts / ocr-bridge.ts).
-const HELPER_EXE = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "bin", "key-locker.exe");
+// Exported so KeyLockerManager's `-Consent` spawn resolves the SAME exe (single source of truth).
+export const HELPER_EXE = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "bin", "key-locker.exe");
 
 /** Wire protocol version the MCP understands; must match the helper's `hello.v`. */
 export const KEY_LOCKER_PROTOCOL_VERSION = "1";

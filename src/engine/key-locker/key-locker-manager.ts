@@ -15,10 +15,11 @@
 // separate pieces (see the impl-handoff doc) — this module defines the Node-side contract they plug
 // into.
 
+import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { KeyLockerHost, type KeyLockerStartOptions } from "../key-locker-host.js";
+import { HELPER_EXE, KeyLockerHost, type KeyLockerStartOptions } from "../key-locker-host.js";
 
 /** Typed reject when a secret op is attempted before first-run consent is accepted (L4 §2). */
 export class KeyLockerConsentRequiredError extends Error {
@@ -84,6 +85,7 @@ export interface KeyLockerManagerOptions extends KeyLockerStartOptions {
 export class KeyLockerManager {
   private host: KeyLockerHost | null = null;
   private starting: Promise<KeyLockerHost> | null = null;
+  private consenting: Promise<void> | null = null; // in-flight `-Consent` dialog (dedupes concurrent prompts)
 
   constructor(private readonly opts: KeyLockerManagerOptions = {}) {}
 
@@ -115,6 +117,35 @@ export class KeyLockerManager {
     }
     const host = await this.ensureHost();
     return fn(host);
+  }
+
+  /**
+   * Acquire first-run consent, prompting the user if needed (the ACQUIRE path; `withHost` only GATES).
+   * The tool's `save` action calls this before capture. Idempotent: if consent is already accepted,
+   * returns true WITHOUT spawning. Otherwise spawns the locker's SECRET-FREE `-Consent` dialog (allowed
+   * pre-consent — the gate is on secret effects, not this spawn), waits for it, and RE-READS the flag as
+   * the source of truth (the C# locker is the sole writer; Node never writes consent.json). Kill-switched
+   * ⇒ throws `KeyLockerDisabledError` and never prompts. Concurrent calls share ONE dialog.
+   */
+  async ensureConsent(): Promise<boolean> {
+    if (this.isDisabled()) throw new KeyLockerDisabledError();
+    if (this.isConsentAccepted()) return true;
+    this.consenting ??= this.spawnConsentDialog().finally(() => { this.consenting = null; });
+    await this.consenting;
+    return this.isConsentAccepted();
+  }
+
+  /**
+   * Spawn `key-locker.exe -Consent` and resolve when it exits (exit code is ignored — `ensureConsent`
+   * re-reads consent.json as the source of truth). A protected seam so tests inject a controllable
+   * dialog without a real exe / GUI.
+   */
+  protected spawnConsentDialog(): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const child = spawn(HELPER_EXE, ["-Consent", "-StoreDir", this.storeDir], { windowsHide: false });
+      child.once("error", reject);            // exe missing / spawn failure
+      child.once("exit", () => resolve());     // dialog closed (accepted or declined) — re-read decides
+    });
   }
 
   /** Spawn the live locker host. A protected seam so tests can inject a controllable start. */

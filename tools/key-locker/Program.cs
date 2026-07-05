@@ -55,6 +55,7 @@ internal static class KeyLocker
         string? storeDir = null;
         var selfTest = false;
         var selfTestL2 = false;
+        var consent = false;
         for (var i = 0; i < args.Length; i++)
         {
             switch (args[i])
@@ -64,12 +65,21 @@ internal static class KeyLocker
                 case "-StoreDir" when i + 1 < args.Length: storeDir = args[++i]; break;
                 case "-SelfTest": selfTest = true; break;
                 case "-SelfTestL2": selfTestL2 = true; break;
+                case "-Consent": consent = true; break;
             }
         }
 
         storeDir ??= Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "desktop-touch-mcp", "locker");
+
+        // First-run consent dialog (L4 §2) — a SECRET-FREE spawn: it shows ONLY the consent dialog and,
+        // on [Enable], writes consent.json itself. No pipe, no store, no capture. The manager's
+        // effects-gate (capture/inject/mint) stays closed until this file exists, so spawning this to
+        // ASK is allowed pre-consent (the gate is on secret effects, not process spawn). Runs before the
+        // store is even opened.
+        if (consent) return RunConsent(storeDir);
+
         _store = new LockerStore(storeDir);
         _serving = new ServingRegistry(_store);
 
@@ -288,6 +298,40 @@ internal static class KeyLocker
         return ok ? 0 : 1;
     }
 
+    /// First-run consent (L4 §2). Shows ONLY the consent dialog; on [Enable] writes consent.json
+    /// atomically (tmp + rename, mirroring LockerStore.Save) with the EXACT shape the Node
+    /// `consentAccepted()` reader keys on — `{ "version": 1, "acceptedAt": "<ISO-8601>" }` (version is a
+    /// NUMBER, acceptedAt a STRING; keep byte-compatible with key-locker-manager.ts consentAccepted).
+    /// [Not now] / close writes nothing (fail-closed stays unaccepted). Returns 0=accepted, 1=declined,
+    /// 3=write failed. The locker is the sole writer (Node only READS), so the flag is set by the same
+    /// trusted component that owns the secrets.
+    private static int RunConsent(string storeDir)
+    {
+        if (!ConsentDialog.Prompt()) return 1; // declined — write nothing
+
+        try
+        {
+            Directory.CreateDirectory(storeDir);
+            var path = Path.Combine(storeDir, "consent.json");
+            var json = JsonSerializer.Serialize(new ConsentShape { version = 1, acceptedAt = DateTime.UtcNow.ToString("o") });
+            var tmp = path + ".tmp";
+            File.WriteAllText(tmp, json);
+            File.Move(tmp, path, overwrite: true); // atomic replace
+            return 0;
+        }
+        catch (Exception e)
+        {
+            Console.Error.WriteLine($"key-locker: consent write failed: {e.Message}");
+            return 3;
+        }
+    }
+
+    private sealed class ConsentShape
+    {
+        public int version { get; set; }
+        public string acceptedAt { get; set; } = "";
+    }
+
     private static void WriteFrameReplyCaptured(Stream s, long id, bool captured, bool rt)
         => WriteFrame(s, $"{{\"id\":{id},\"ok\":true,\"r\":\"\",\"captured\":{(captured ? "true" : "false")},\"rt\":{(rt ? "true" : "false")}}}");
 
@@ -470,5 +514,54 @@ internal static class SecureDialog
         win.Loaded += (_, _) => { win.Activate(); pwd.Focus(); };
         var dr = win.ShowDialog();
         return dr == true ? result : null;
+    }
+}
+
+/// The first-run consent dialog (L4 §2) — a plain explain-and-confirm WPF window, no secret entry.
+/// Returns true iff the user clicks [Enable]. Runs on the process's STA main thread ([STAThread] Main).
+internal static class ConsentDialog
+{
+    public static bool Prompt()
+    {
+        // A bare Window.ShowDialog needs an Application for theme/resource resolution; create one only
+        // if the process doesn't already have it (the pipe path makes its own).
+        _ = Application.Current ?? new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+
+        var accepted = false;
+        var enable = new Button { Content = "Enable", Width = 110, Margin = new Thickness(4), IsDefault = true };
+        var notNow = new Button { Content = "Not now", Width = 110, Margin = new Thickness(4), IsCancel = true };
+
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        buttons.Children.Add(enable);
+        buttons.Children.Add(notNow);
+
+        var panel = new StackPanel { Margin = new Thickness(16), MaxWidth = 460 };
+        panel.Children.Add(new Label { Content = "Enable the desktop-touch key locker?", FontWeight = FontWeights.Bold, FontSize = 15 });
+        panel.Children.Add(new TextBlock
+        {
+            Text = "The key locker stores credentials you choose (SSH key passphrases, sudo / login passwords) " +
+                   "encrypted on THIS machine (Windows DPAPI, current user) and types them for you when a " +
+                   "terminal prompts — so a secret is entered once here and is never shown to the assistant. " +
+                   "Nothing is stored or filled until you enable this, once. You can disable it any time with " +
+                   "DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1.",
+            Margin = new Thickness(4, 8, 4, 12),
+            TextWrapping = TextWrapping.Wrap,
+        });
+        panel.Children.Add(buttons);
+
+        var win = new Window
+        {
+            Title = "desktop-touch key locker",
+            Content = panel,
+            SizeToContent = SizeToContent.WidthAndHeight,
+            ResizeMode = ResizeMode.NoResize,
+            WindowStartupLocation = WindowStartupLocation.CenterScreen,
+            Topmost = true,
+            ShowInTaskbar = false,
+        };
+        enable.Click += (_, _) => { accepted = true; win.DialogResult = true; };
+        win.Loaded += (_, _) => { win.Activate(); enable.Focus(); };
+        win.ShowDialog();
+        return accepted;
     }
 }

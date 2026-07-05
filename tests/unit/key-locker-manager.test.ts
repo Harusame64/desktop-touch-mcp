@@ -13,7 +13,7 @@ import {
   keyLockerDisabled,
 } from "../../src/engine/key-locker/key-locker-manager.js";
 
-/** A manager whose host start is a controllable fake (no real key-locker.exe) for lifecycle tests. */
+/** A manager whose host start + consent dialog are controllable fakes (no real key-locker.exe / GUI). */
 class FakeHostManager extends KeyLockerManager {
   startCalls = 0;
   disposed = 0;
@@ -26,6 +26,19 @@ class FakeHostManager extends KeyLockerManager {
     return this.pendingStart;
   }
   settleStart(): void { this.resolveStart?.(this.fakeHost); }
+
+  // Consent-dialog fake: counts spawns; `onConsent` (test hook) simulates what the C# -Consent dialog
+  // would do on [Enable] (write consent.json); a deferred promise lets a test race concurrent calls.
+  consentCalls = 0;
+  onConsent: (() => void) | null = null;
+  private resolveConsent: (() => void) | null = null;
+  readonly pendingConsent = new Promise<void>((res) => { this.resolveConsent = res; });
+  protected override spawnConsentDialog(): Promise<void> {
+    this.consentCalls++;
+    return this.pendingConsent;
+  }
+  /** Simulate the dialog closing: run the [Enable] side effect (if any), then resolve the spawn. */
+  settleConsent(): void { this.onConsent?.(); this.resolveConsent?.(); }
 }
 
 const dirs: string[] = [];
@@ -133,5 +146,53 @@ describe("KeyLockerManager.withHost — the effects gate (no spawn before consen
     await Promise.all([inFlight, disposing]);
     expect(mgr.startCalls).toBe(1);
     expect(mgr.disposed).toBe(1); // the just-spawned host WAS torn down, not orphaned
+  });
+});
+
+describe("KeyLockerManager.ensureConsent — the acquire path", () => {
+  it("already accepted ⇒ returns true WITHOUT spawning the dialog", async () => {
+    const d = freshDir();
+    writeConsent(d, { version: 1, acceptedAt: new Date().toISOString() });
+    const mgr = new FakeHostManager({ storeDir: d });
+    await expect(mgr.ensureConsent()).resolves.toBe(true);
+    expect(mgr.consentCalls).toBe(0); // no dialog when consent already exists
+  });
+
+  it("unaccepted ⇒ spawns the dialog; [Enable] writes consent.json ⇒ returns true (re-read is source of truth)", async () => {
+    const d = freshDir();
+    const mgr = new FakeHostManager({ storeDir: d });
+    mgr.onConsent = () => writeConsent(d, { version: 1, acceptedAt: new Date().toISOString() }); // simulate [Enable]
+    const p = mgr.ensureConsent();
+    mgr.settleConsent();
+    await expect(p).resolves.toBe(true);
+    expect(mgr.consentCalls).toBe(1);
+  });
+
+  it("unaccepted ⇒ [Not now] writes nothing ⇒ returns false (fail-closed)", async () => {
+    const d = freshDir();
+    const mgr = new FakeHostManager({ storeDir: d });
+    // onConsent left null → the dialog wrote no consent.json (declined)
+    const p = mgr.ensureConsent();
+    mgr.settleConsent();
+    await expect(p).resolves.toBe(false);
+    expect(mgr.consentCalls).toBe(1);
+  });
+
+  it("concurrent ensureConsent calls share ONE dialog (deduped)", async () => {
+    const d = freshDir();
+    const mgr = new FakeHostManager({ storeDir: d });
+    mgr.onConsent = () => writeConsent(d, { version: 1, acceptedAt: new Date().toISOString() });
+    const p1 = mgr.ensureConsent();
+    const p2 = mgr.ensureConsent();
+    mgr.settleConsent();
+    await expect(Promise.all([p1, p2])).resolves.toEqual([true, true]);
+    expect(mgr.consentCalls).toBe(1); // a single -Consent spawn served both callers
+  });
+
+  it("kill-switched ⇒ throws KeyLockerDisabled and never prompts", async () => {
+    process.env.DESKTOP_TOUCH_DISABLE_KEY_LOCKER = "1";
+    const mgr = new FakeHostManager({ storeDir: freshDir() });
+    await expect(mgr.ensureConsent()).rejects.toBeInstanceOf(KeyLockerDisabledError);
+    expect(mgr.consentCalls).toBe(0);
   });
 });
