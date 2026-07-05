@@ -65,10 +65,11 @@ describe("NeverStore — tolerant load (fail-safe to empty)", () => {
     expect(existsSync(join(dir, "never.json.corrupt"))).toBe(true);
   });
 
-  it("a non-string entry makes the whole file corrupt (fail-safe empty)", () => {
+  it("a non-string entry makes the whole file corrupt (fail-safe empty, preserved as .corrupt)", () => {
     const dir = freshDir();
     writeFileSync(join(dir, "never.json"), JSON.stringify({ version: 1, entries: ["ok", 42] }), "utf8");
     expect(NeverStore.load(dir).has("ok")).toBe(false);
+    expect(existsSync(join(dir, "never.json.corrupt"))).toBe(true);
   });
 
   it("a missing file starts empty without creating a .corrupt", () => {
