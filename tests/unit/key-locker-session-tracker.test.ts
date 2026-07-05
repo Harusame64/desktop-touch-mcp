@@ -257,6 +257,27 @@ describe("SessionTracker — wrong-target regressions (Opus R1 P1-1/P1-2/P2-1)",
     expect((t.get(P) as { execHost: string }).execHost).toBe("prod.example.com");
   });
 
+  it("`ssh h 2>&1 | tee log` (explicit `2>&1 |`) pushes like the `|&` form — the redirect is not a one-shot cmd (Codex #495 P2)", () => {
+    // The `2>&1` is I/O plumbing, not a remote command and not a background `&`; the upstream ssh keeps
+    // the tty → an interactive login. Must behave identically to `ssh h | tee log` (push), never stay
+    // local (which would wrong-target a later local sudo to the remote host).
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh deploy@prod.example.com 2>&1 | tee log");
+    expect((t.get(P) as { execHost: string }).execHost).toBe("prod.example.com");
+  });
+
+  it("a trailing redirect alone (`ssh h > log`) is still an interactive login, but a real remote cmd is a one-shot (Codex #495 P2)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh deploy@prod.example.com > session.log"); // redirect only → interactive login
+    expect((t.get(P) as { execHost: string }).execHost).toBe("prod.example.com");
+    const u = new SessionTracker();
+    u.beginLocalSession(P);
+    u.recordDispatch(P, "ssh deploy@prod.example.com uptime 2>&1"); // real remote cmd + redirect → one-shot
+    expect(u.get(P)).toEqual({ execHost: "localhost", isRemote: false });
+  });
+
   it("an interactive ssh with a SEQUENTIAL trailing command sinks to UNKNOWN (post-exit trajectory unmodelable — Codex #495 R5 P1)", () => {
     for (const cmd of [
       "ssh a@host-a ; ssh b@host-b", // after host-a exits the shell logs into host-b, not the popped-to localhost
@@ -329,6 +350,29 @@ describe("SessionTracker — cwd tracking (best-effort, fails safe to undefined)
     t.recordDispatch(P, "ssh deploy@prod.example.com");
     t.recordDispatch(P, "cd app");
     expect((t.get(P) as { cwd?: string }).cwd).toBeUndefined();
+  });
+
+  it("a backgrounded `cd C:/other &` runs in a subshell → the pane cwd is UNCHANGED (Codex #495 P2)", () => {
+    // The backgrounded builtin's chdir dies with its subshell; the foreground prompt stays put. Applying
+    // it would let a later configured-remote `git -C C:/other` bind the wrong repo/host.
+    const t = new SessionTracker();
+    t.beginLocalSession(P, "C:/work");
+    t.recordDispatch(P, "cd C:/other &");
+    expect((t.get(P) as { cwd: string }).cwd.replace(/\\/g, "/")).toBe("C:/work"); // still the pre-cd dir
+  });
+
+  it("a downstream-pipe `echo x | cd C:/other` also runs in a subshell → cwd UNCHANGED (Codex #495 P2)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P, "C:/work");
+    t.recordDispatch(P, "echo x | cd C:/other");
+    expect((t.get(P) as { cwd: string }).cwd.replace(/\\/g, "/")).toBe("C:/work");
+  });
+
+  it("a backgrounded cd does not block a later unconditional cd in the same line (scan continues)", () => {
+    const t = new SessionTracker();
+    t.beginLocalSession(P, "C:/work");
+    t.recordDispatch(P, "cd C:/bg & cd C:/fg"); // the bg cd is a no-op; the fg cd actually moves the pane
+    expect((t.get(P) as { cwd: string }).cwd.replace(/\\/g, "/")).toBe("C:/fg");
   });
 });
 

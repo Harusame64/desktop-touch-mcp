@@ -52,9 +52,11 @@ export interface CommandSegment {
    */
   conditional: boolean;
   /**
-   * True iff this segment is terminated by a single `&` — the shell backgrounds it and returns to the
-   * prompt at once, so a backgrounded `ssh host &` never opens an interactive session in THIS pane
-   * (Codex #495 P1). `;` / `&&` / `||` / `|` / newline / end-of-input all leave it `false`.
+   * True iff this segment is terminated by a JOB-CONTROL single `&` — the shell backgrounds it and
+   * returns to the prompt at once, so a backgrounded `ssh host &` never opens an interactive session in
+   * THIS pane (Codex #495 P1). A `&` that is part of a REDIRECTION (`2>&1` / `>&2` / `&>file`) is I/O
+   * plumbing, not a terminator, and leaves this `false` (Codex #495 P2). `;` / `&&` / `||` / `|` /
+   * newline / end-of-input all leave it `false`.
    */
   backgrounded: boolean;
   /**
@@ -140,6 +142,14 @@ export function tokenizeCommandSegmentsWithOps(cmd: string): CommandSegment[] {
       endSegment(); // not backgrounded — the `&` here is part of `|&`, not a job-control `&`
       i++; // consume the `&`
       continue;
+    }
+    if (ch === "&" && (cmd[i - 1] === ">" || cmd[i - 1] === "<" || cmd[i + 1] === ">")) {
+      // A `&` that is part of a REDIRECTION — fd-dup `2>&1` / `>&2` / `<&-` (abutting a `>`/`<`) or
+      // redirect-both `&>file` / `&>>file` (followed by `>`) — is I/O plumbing, NOT a job-control
+      // background operator. Keep it as a literal token char so an UPSTREAM `ssh host 2>&1 | tee log`
+      // (the `2>&1 |` long form of the `|&` case above) is not mis-marked `backgrounded` and wrongly
+      // denied its remote-frame push (Codex #495 P2). A job-control `&` never abuts a `>`/`<`.
+      cur += ch; started = true; continue;
     }
     if (ch === "&" || ch === "|") {
       const doubled = cmd[i + 1] === ch;

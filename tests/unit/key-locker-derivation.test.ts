@@ -137,6 +137,26 @@ describe("tokenizer", () => {
     ]);
   });
 
+  it("a redirection `&` (`2>&1` / `>&2` / `&>f`) is I/O plumbing, not a background job (Codex #495 P2)", () => {
+    // The `&` abutting a `>`/`<` (fd-dup) or followed by `>` (redirect-both) must stay a literal token
+    // char, so an UPSTREAM `ssh host 2>&1 | tee log` keeps its tty and is NOT mis-marked backgrounded.
+    expect(tokenizeCommandSegmentsWithOps(`ssh host 2>&1 | tee log`)).toEqual([
+      { tokens: ["ssh", "host", "2>&1"], conditional: false, backgrounded: false, pipedStdin: false },
+      { tokens: ["tee", "log"], conditional: false, backgrounded: false, pipedStdin: true },
+    ]);
+    expect(tokenizeCommandSegmentsWithOps(`echo hi >&2`)).toEqual([
+      { tokens: ["echo", "hi", ">&2"], conditional: false, backgrounded: false, pipedStdin: false },
+    ]);
+    expect(tokenizeCommandSegmentsWithOps(`make &>build.log`)).toEqual([
+      { tokens: ["make", "&>build.log"], conditional: false, backgrounded: false, pipedStdin: false },
+    ]);
+    // a genuine job-control `&` (no abutting redirect) still backgrounds its segment.
+    expect(tokenizeCommandSegmentsWithOps(`sleep 1 & echo done`)).toEqual([
+      { tokens: ["sleep", "1"], conditional: false, backgrounded: true, pipedStdin: false },
+      { tokens: ["echo", "done"], conditional: false, backgrounded: false, pipedStdin: false },
+    ]);
+  });
+
   it("a single `|` PROPAGATES an earlier `&&` guard AND marks the downstream stdin as piped (Codex #495 P2 / Opus R4 P2)", () => {
     // `false && echo ok | ssh prod` parses as `false && (echo ok | ssh prod)`: the whole pipeline is
     // guarded (downstream stays conditional) and `ssh prod`'s stdin is the pipe, not the tty.

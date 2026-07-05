@@ -123,7 +123,13 @@ export class SessionTracker {
         continue;
       }
       if (program === "cd") {
-        if (conditional) {
+        if (backgrounded || pipedStdin) {
+          // A backgrounded `cd path &` or a downstream-pipe `… | cd path` runs the `cd` builtin in a
+          // SUBSHELL — a background job is always a subshell, and (job control being active in an
+          // interactive pane) so is a pipeline stage — so the FOREGROUND prompt stays in the current
+          // directory; the child's chdir dies with it. No effect on the pane cwd: leave it AS-IS and
+          // keep scanning. Mirrors the backgrounded/piped ssh non-session rule above (Codex #495 P2).
+        } else if (conditional) {
           // A conditional cd's destination is unpredictable — drop cwd to unknown (git derivation then
           // declines) rather than trust a directory the shell may not have entered (Codex #495 P1).
           st.stack[st.stack.length - 1].cwd = undefined;
@@ -185,6 +191,26 @@ function programOf(token: string | undefined): string {
 }
 
 /**
+ * A shell REDIRECTION as a token (our tokenizer keeps `>`/`<` inside tokens, so `2>&1` / `>log` arrive
+ * whole): an operator with an optional leading fd/`&`, either self-contained (`2>&1`, `>&2`, `<&-`,
+ * `>log`, `2>err`, `&>all`, `>>log`) or BARE (`>`, `2>`, `&>`, `>>`, `<`, `>|`) whose target is the
+ * NEXT token. `stripRedirections` drops both forms (a bare op also drops its following target) so only
+ * a REAL trailing remote command survives — the interactive-vs-one-shot signal (Codex #495 P2).
+ */
+const REDIR_START_RE = /^(?:\d+|&)?(?:>>?\|?|<<?<?|<>|[<>]&)/;
+const BARE_REDIR_RE = /^(?:\d+|&)?(?:>>?\|?|<<?<?|<>)$/;
+
+function stripRedirections(tokens: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    if (BARE_REDIR_RE.test(tokens[i])) { i++; continue; } // bare operator + its following target token
+    if (REDIR_START_RE.test(tokens[i])) continue;         // operator with an attached target / fd-dup
+    out.push(tokens[i]);
+  }
+  return out;
+}
+
+/**
  * If an `ssh` argv (without the leading `ssh`) is an INTERACTIVE LOGIN, return the resolved host
  * (bare, lowercased — the label; L1 resolves the real endpoint later). Return null for a one-shot
  * `ssh host cmd`, a query mode (`-G`/`-Q`/`-V`), or no destination — none of which open a session.
@@ -201,9 +227,12 @@ function interactiveSshTarget(args: string[]): string | null {
   // A one-shot `ssh host cmd …` has a remote-command token AFTER the destination → not an interactive
   // login session. parseSshCommand consumes `optionArgs` (the options) + 1 (the destination); anything
   // BEYOND that count is the remote command. STRUCTURAL token count, not indexOf (Opus R1 P2-1:
-  // `ssh -l host host` would make indexOf return the option-arg's index and misclassify it).
+  // `ssh -l host host` would make indexOf return the option-arg's index and misclassify it). But a
+  // trailing REDIRECTION (`ssh host 2>&1 | tee`, `ssh host > log`) is shell I/O plumbing the shell
+  // strips before exec — NOT a remote command — so it must not demote the interactive login to a
+  // one-shot (Codex #495 P2, the `|&` upstream-pipe equivalence). Strip redirects before counting.
   const consumed = parsed.optionArgs.length + 1;
-  if (args.length > consumed) return null; // trailing remote command → one-shot, no session
+  if (stripRedirections(args.slice(consumed)).length > 0) return null; // real remote command → one-shot
   const at = parsed.destination.lastIndexOf("@");
   const host = at >= 0 ? parsed.destination.slice(at + 1) : parsed.destination;
   return host.toLowerCase();
