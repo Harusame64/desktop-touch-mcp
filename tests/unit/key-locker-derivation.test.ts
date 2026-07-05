@@ -157,6 +157,19 @@ describe("tokenizer", () => {
     ]);
   });
 
+  it("a `>|` (noclobber-override) redirect stays one token, not split into a `>` + a `|` pipe (Opus R6 P3)", () => {
+    // `>|` abutting a `>` is a redirect operator, not a pipe — mis-splitting it would strand `ssh host`
+    // as one segment and `log` as a fake downstream pipe stage.
+    expect(tokenizeCommandSegmentsWithOps(`ssh host >|out.log`)).toEqual([
+      { tokens: ["ssh", "host", ">|out.log"], conditional: false, backgrounded: false, pipedStdin: false },
+    ]);
+    // a real pipe (`>` then a spaced `|`) is still a pipe, not swallowed by the guard.
+    expect(tokenizeCommandSegmentsWithOps(`echo hi | wc -l`)).toEqual([
+      { tokens: ["echo", "hi"], conditional: false, backgrounded: false, pipedStdin: false },
+      { tokens: ["wc", "-l"], conditional: false, backgrounded: false, pipedStdin: true },
+    ]);
+  });
+
   it("a single `|` PROPAGATES an earlier `&&` guard AND marks the downstream stdin as piped (Codex #495 P2 / Opus R4 P2)", () => {
     // `false && echo ok | ssh prod` parses as `false && (echo ok | ssh prod)`: the whole pipeline is
     // guarded (downstream stays conditional) and `ssh prod`'s stdin is the pipe, not the tty.
@@ -383,6 +396,15 @@ describe("§8 #6 — command derivation table", () => {
     expect(await derives("git fetch", noCwd)).toBeNull();
     // A wiring layer that papered the optional cwd over with "" must ALSO decline, not run in $PWD.
     expect(await derives("git push", { ...local, cwd: "" })).toBeNull();
+  });
+  it("a relative `git -C sub` under a \"\" (unknown) cwd declines BEFORE anchoring at the process cwd (Codex #495 P2)", async () => {
+    // "" is a caller's unknown sentinel; a relative -C must NOT be resolved against the agent's process
+    // cwd via resolvePath("", "sub"). It must decline before ever shelling out to `git -C <proccwd>/sub`.
+    let gitCalled = false;
+    const spyExec: ExecFn = async (file) => { if (file === "git") gitCalled = true; return { code: 1, stdout: "", stderr: "" }; };
+    const r = await deriveBinding("git -C sub push origin main", { execHost: "localhost", isRemote: false, cwd: "" }, { exec: spyExec });
+    expect(r).toBeNull();
+    expect(gitCalled).toBe(false); // normalized "" → unknown → relative -C stays unknown → no git run
   });
   it("explicit-URL git still derives with UNKNOWN cwd (the target is cwd-independent)", async () => {
     const noCwd: SessionContext = { execHost: "localhost", isRemote: false };

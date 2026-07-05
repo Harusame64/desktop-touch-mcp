@@ -191,22 +191,31 @@ function programOf(token: string | undefined): string {
 }
 
 /**
- * A shell REDIRECTION as a token (our tokenizer keeps `>`/`<` inside tokens, so `2>&1` / `>log` arrive
- * whole): an operator with an optional leading fd/`&`, either self-contained (`2>&1`, `>&2`, `<&-`,
- * `>log`, `2>err`, `&>all`, `>>log`) or BARE (`>`, `2>`, `&>`, `>>`, `<`, `>|`) whose target is the
- * NEXT token. `stripRedirections` drops both forms (a bare op also drops its following target) so only
- * a REAL trailing remote command survives — the interactive-vs-one-shot signal (Codex #495 P2).
+ * An OUTPUT redirection operator at the START of a token (our tokenizer keeps `>`/`<` inside tokens, so
+ * `2>&1` / `>log` / `>&` arrive whole): an optional leading fd number, then `>` `>>` `>|` `>&`, or the
+ * redirect-both `&>` `&>>`. `stripOutputRedirections` removes each: a token whose operator has an
+ * ATTACHED target (`>log`, `2>&1`, `>&2`) is self-contained; a BARE operator (`>`, `2>`, `&>`, `>&`)
+ * takes the FOLLOWING token as its target, so that token is dropped too.
+ *
+ * ONLY output redirects are stripped, DELIBERATELY. They don't touch fd 0, so an ssh keeps the tty on
+ * stdin and stays an interactive login (`ssh host 2>&1 | tee`, `ssh host > log` — the signal we want to
+ * survive, Codex #495 P2 / Opus R6 P2). An INPUT redirect (`< file`, `<< heredoc`, `<&-`, `<>`) instead
+ * feeds ssh's stdin from a NON-tty, so it is non-interactive like a piped stdin — we leave those tokens
+ * in place so the trailing-token count classifies the ssh as a one-shot (no push), which is correct.
+ *
+ * Order matters: `>&` (fd-dup) comes BEFORE the plain `>` alternative, else JS ordered alternation
+ * matches a lone `>` for `>&` and mis-reads it as an attached-target redirect (leaving `>&`'s
+ * space-separated target stranded as a fake remote command — Opus R6 P2).
  */
-const REDIR_START_RE = /^(?:\d+|&)?(?:>>?\|?|<<?<?|<>|[<>]&)/;
-const BARE_REDIR_RE = /^(?:\d+|&)?(?:>>?\|?|<<?<?|<>)$/;
+const OUTPUT_REDIR_OP_RE = /^(?:(?:\d+)?(?:>&|>>?\|?)|&>>?)/;
 
-function stripRedirections(tokens: readonly string[]): string[] {
+function stripOutputRedirections(tokens: readonly string[]): string[] {
   const out: string[] = [];
   for (let i = 0; i < tokens.length; i++) {
-    if (BARE_REDIR_RE.test(tokens[i])) { i++; continue; } // bare operator + its following target token
-    if (REDIR_START_RE.test(tokens[i])) continue;         // operator with an attached target / fd-dup
-    out.push(tokens[i]);
-  }
+    const m = OUTPUT_REDIR_OP_RE.exec(tokens[i]);
+    if (m === null) { out.push(tokens[i]); continue; } // not an output redirect → a real argument / command
+    if (m[0].length === tokens[i].length) i++;         // BARE operator → also drop its target token
+  }                                                    // else the target is ATTACHED — drop this token only
   return out;
 }
 
@@ -215,7 +224,15 @@ function stripRedirections(tokens: readonly string[]): string[] {
  * (bare, lowercased — the label; L1 resolves the real endpoint later). Return null for a one-shot
  * `ssh host cmd`, a query mode (`-G`/`-Q`/`-V`), or no destination — none of which open a session.
  */
-function interactiveSshTarget(args: string[]): string | null {
+function interactiveSshTarget(rawArgs: string[]): string | null {
+  // OUTPUT redirections are shell I/O plumbing the shell consumes before exec, and they can appear
+  // ANYWHERE — BEFORE the destination (`ssh 2>&1 host`, `ssh >log host`), after it, or after a remote
+  // command. Strip them from the WHOLE argv up front, else parseSshCommand mis-reads a LEADING redirect
+  // token as the destination and the real host as a one-shot remote command → the pane stays local
+  // while an interactive login actually opened → a later remote `sudo` is wrong-targeted to localhost
+  // (Codex #495 P2). INPUT redirects are deliberately KEPT (see stripOutputRedirections): they make ssh
+  // non-interactive, so the trailing-token count below then correctly classifies it as a one-shot.
+  const args = stripOutputRedirections(rawArgs);
   const parsed = parseSshCommand(args);
   if (parsed.queryMode || parsed.destination === undefined) return null;
   // `-N` (no remote command), `-f` (fork to background) and `-W host:port` (forward stdin/stdout,
@@ -224,15 +241,13 @@ function interactiveSshTarget(args: string[]): string | null {
   // Pushing a remote frame would mislabel a later LOCAL command as remote → wrong-target on the
   // fp-less sudo path (#495 P2 / R5 P2). Treat them as non-session-opening — no push.
   if (parsed.flagLetters.has("N") || parsed.flagLetters.has("f") || parsed.flagLetters.has("W")) return null;
-  // A one-shot `ssh host cmd …` has a remote-command token AFTER the destination → not an interactive
-  // login session. parseSshCommand consumes `optionArgs` (the options) + 1 (the destination); anything
-  // BEYOND that count is the remote command. STRUCTURAL token count, not indexOf (Opus R1 P2-1:
-  // `ssh -l host host` would make indexOf return the option-arg's index and misclassify it). But a
-  // trailing REDIRECTION (`ssh host 2>&1 | tee`, `ssh host > log`) is shell I/O plumbing the shell
-  // strips before exec — NOT a remote command — so it must not demote the interactive login to a
-  // one-shot (Codex #495 P2, the `|&` upstream-pipe equivalence). Strip redirects before counting.
+  // A one-shot `ssh host cmd …` has a REAL remote-command token AFTER the destination → not an
+  // interactive login session. parseSshCommand consumes `optionArgs` (the options) + 1 (the
+  // destination); anything BEYOND that count (redirects already stripped above) is the remote command.
+  // STRUCTURAL token count, not indexOf (Opus R1 P2-1: `ssh -l host host` would make indexOf return the
+  // option-arg's index and misclassify it).
   const consumed = parsed.optionArgs.length + 1;
-  if (stripRedirections(args.slice(consumed)).length > 0) return null; // real remote command → one-shot
+  if (args.length > consumed) return null; // trailing remote command → one-shot, no session
   const at = parsed.destination.lastIndexOf("@");
   const host = at >= 0 ? parsed.destination.slice(at + 1) : parsed.destination;
   return host.toLowerCase();

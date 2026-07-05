@@ -278,6 +278,44 @@ describe("SessionTracker — wrong-target regressions (Opus R1 P1-1/P1-2/P2-1)",
     expect(u.get(P)).toEqual({ execHost: "localhost", isRemote: false });
   });
 
+  it("a redirect BEFORE the destination (`ssh 2>&1 h`, `ssh >log h`) is still an interactive login → pushes (Codex #495 P2)", () => {
+    // parseSshCommand would otherwise read the leading `2>&1` / `>log` as the destination and the real
+    // host as a one-shot remote command, stranding the pane local while an interactive login opened.
+    for (const cmd of [
+      "ssh 2>&1 deploy@prod.example.com",
+      "ssh >session.log deploy@prod.example.com",
+      "ssh > session.log deploy@prod.example.com", // space-separated target
+    ]) {
+      const t = new SessionTracker();
+      t.beginLocalSession(P);
+      t.recordDispatch(P, cmd);
+      expect((t.get(P) as { execHost: string }).execHost).toBe("prod.example.com");
+    }
+  });
+
+  it("a space-separated fd-dup target (`ssh h >& log`) consumes its target, not stranded as a fake remote cmd (Opus R6 P2)", () => {
+    // A lone `>&` takes the FOLLOWING token as its file; leaving `log` behind would look like a
+    // one-shot remote command and wrongly keep the pane local (`sudo` then wrong-targets localhost).
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh deploy@prod.example.com >& out.log");
+    expect((t.get(P) as { execHost: string }).execHost).toBe("prod.example.com");
+  });
+
+  it("an INPUT redirect (`ssh h < file`) feeds ssh's stdin from a non-tty → non-interactive, pane stays local", () => {
+    // Only OUTPUT redirects are stripped; a stdin redirect makes ssh non-interactive (like a piped
+    // stdin), so it must NOT push — pushing would wrong-target a later local sudo to the remote host.
+    for (const cmd of [
+      "ssh deploy@prod.example.com < script.txt",
+      "ssh deploy@prod.example.com <<EOF",
+    ]) {
+      const t = new SessionTracker();
+      t.beginLocalSession(P);
+      t.recordDispatch(P, cmd);
+      expect(t.get(P)).toEqual({ execHost: "localhost", isRemote: false });
+    }
+  });
+
   it("an interactive ssh with a SEQUENTIAL trailing command sinks to UNKNOWN (post-exit trajectory unmodelable — Codex #495 R5 P1)", () => {
     for (const cmd of [
       "ssh a@host-a ; ssh b@host-b", // after host-a exits the shell logs into host-b, not the popped-to localhost

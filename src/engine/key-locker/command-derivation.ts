@@ -143,12 +143,14 @@ export function tokenizeCommandSegmentsWithOps(cmd: string): CommandSegment[] {
       i++; // consume the `&`
       continue;
     }
-    if (ch === "&" && (cmd[i - 1] === ">" || cmd[i - 1] === "<" || cmd[i + 1] === ">")) {
-      // A `&` that is part of a REDIRECTION — fd-dup `2>&1` / `>&2` / `<&-` (abutting a `>`/`<`) or
-      // redirect-both `&>file` / `&>>file` (followed by `>`) — is I/O plumbing, NOT a job-control
-      // background operator. Keep it as a literal token char so an UPSTREAM `ssh host 2>&1 | tee log`
-      // (the `2>&1 |` long form of the `|&` case above) is not mis-marked `backgrounded` and wrongly
-      // denied its remote-frame push (Codex #495 P2). A job-control `&` never abuts a `>`/`<`.
+    if ((ch === "&" && (cmd[i - 1] === ">" || cmd[i - 1] === "<" || cmd[i + 1] === ">")) ||
+        (ch === "|" && cmd[i - 1] === ">")) {
+      // A `&` or `|` that is part of a REDIRECTION operator, not a job-control / pipe separator: `&` in
+      // fd-dup `2>&1` / `>&2` / `<&-` (abutting a `>`/`<`) or redirect-both `&>file` (followed by `>`),
+      // and `|` in noclobber-override `>|file` (abutting a `>`). Keep it a literal token char so the
+      // redirect stays ONE token — the ssh segment is then neither mis-split nor mis-marked
+      // `backgrounded`, so an upstream `ssh host 2>&1 | tee log` still pushes its remote frame (Codex
+      // #495 P2, Opus R6 P3). A job-control `&` / a real pipe `|` never abuts a `>`/`<`.
       cur += ch; started = true; continue;
     }
     if (ch === "&" || ch === "|") {
@@ -277,8 +279,11 @@ async function deriveGit(args: string[], session: SessionContext, exec: ExecFn):
   if (session.isRemote) return null;
 
   // Global options before the subcommand: honor `-C <path>` (changes the effective cwd), skip
-  // `-c k=v` / `--git-dir=…`-style value options, null on version/help.
-  let cwd: string | undefined = session.cwd;
+  // `-c k=v` / `--git-dir=…`-style value options, null on version/help. An empty-string cwd is a
+  // caller's "unknown" sentinel (the guard below already declines on it) — normalize it to undefined
+  // UP FRONT so a relative `-C sub` is not anchored at the agent's process cwd via `resolvePath("", …)`
+  // before that guard is reached (Codex #495 P2 wrong-target).
+  let cwd: string | undefined = session.cwd !== undefined && session.cwd.length > 0 ? session.cwd : undefined;
   let i = 0;
   let sub: string | undefined;
   for (; i < args.length; i++) {
