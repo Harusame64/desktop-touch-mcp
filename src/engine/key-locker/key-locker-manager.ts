@@ -123,11 +123,13 @@ export class KeyLockerManager {
     if (!this.isConsentAccepted()) {
       throw new KeyLockerConsentRequiredError();
     }
-    const host = await this.ensureHost();
-    // Count the op as in-flight so idle-dispose never tears the host down mid-operation (e.g. while a
-    // capture dialog is open for minutes); stamp the activity clock on completion (dormancy timer).
+    // Count the op as in-flight BEFORE acquiring the host, so idle-dispose never tears the host down
+    // mid-operation NOR during its lazy START (Opus R1 P2-B: `inFlight++` after `ensureHost` left the
+    // start phase — and every post-idle restart — unguarded, so a racing `disposeIfIdle` could dispose
+    // the host `fn` is about to use). Stamp the activity clock on completion (dormancy timer).
     this.inFlight++;
     try {
+      const host = await this.ensureHost();
       return await fn(host);
     } finally {
       this.inFlight--;
@@ -139,12 +141,14 @@ export class KeyLockerManager {
    * Idle-dispose (dormancy): tear the live host down if no secret op has run for `idleMs`, so a locker
    * that spawned once but is no longer in use does not linger for the process lifetime (the long-lived-
    * resource discipline). The assembly calls this on a timer. Returns whether it disposed. NEVER disposes
-   * while an op is in flight (`inFlight > 0`) or when nothing is live. `dispose()` awaits any in-flight
-   * start, so this is safe to race with a lazy `withHost`.
+   * while an op is in flight (`inFlight > 0`, which now spans the lazy start too) or when nothing is
+   * live. `dispose()` awaits any in-flight start, so this is safe to race with a lazy `withHost`.
    */
   async disposeIfIdle(idleMs: number): Promise<boolean> {
-    if (this.inFlight > 0) return false;                              // an op is running — not idle
-    if (this.host === null && this.starting === null) return false;   // nothing live to dispose
+    // `inFlight` now covers the whole withHost body incl. the start, so a start-in-flight is inFlight>0;
+    // the `starting` check is belt-and-braces (no ensureHost path runs outside withHost).
+    if (this.inFlight > 0 || this.starting !== null) return false;    // an op / start is running — not idle
+    if (this.host === null) return false;                            // nothing live to dispose
     if (this.now() - this.lastActivityMs < idleMs) return false;      // used within the window
     await this.dispose();
     return true;
