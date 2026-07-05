@@ -74,6 +74,8 @@ export function keyLockerDisabled(): boolean {
 export interface KeyLockerManagerOptions extends KeyLockerStartOptions {
   /** Override the store dir (tests); production uses the locker default. */
   storeDir?: string;
+  /** Injected monotonic-ish clock for idle-dispose dormancy (default `Date.now`); overridden in tests. */
+  now?: () => number;
 }
 
 /**
@@ -86,8 +88,14 @@ export class KeyLockerManager {
   private host: KeyLockerHost | null = null;
   private starting: Promise<KeyLockerHost> | null = null;
   private consenting: Promise<void> | null = null; // in-flight `-Consent` dialog (dedupes concurrent prompts)
+  private inFlight = 0;        // secret ops currently running through withHost (idle-dispose never runs mid-op)
+  private lastActivityMs = 0;  // clock stamp of the last withHost completion (idle-dispose dormancy timer)
 
   constructor(private readonly opts: KeyLockerManagerOptions = {}) {}
+
+  private now(): number {
+    return (this.opts.now ?? Date.now)();
+  }
 
   /** The store dir this manager reads consent + bindings from. */
   get storeDir(): string {
@@ -116,7 +124,30 @@ export class KeyLockerManager {
       throw new KeyLockerConsentRequiredError();
     }
     const host = await this.ensureHost();
-    return fn(host);
+    // Count the op as in-flight so idle-dispose never tears the host down mid-operation (e.g. while a
+    // capture dialog is open for minutes); stamp the activity clock on completion (dormancy timer).
+    this.inFlight++;
+    try {
+      return await fn(host);
+    } finally {
+      this.inFlight--;
+      this.lastActivityMs = this.now();
+    }
+  }
+
+  /**
+   * Idle-dispose (dormancy): tear the live host down if no secret op has run for `idleMs`, so a locker
+   * that spawned once but is no longer in use does not linger for the process lifetime (the long-lived-
+   * resource discipline). The assembly calls this on a timer. Returns whether it disposed. NEVER disposes
+   * while an op is in flight (`inFlight > 0`) or when nothing is live. `dispose()` awaits any in-flight
+   * start, so this is safe to race with a lazy `withHost`.
+   */
+  async disposeIfIdle(idleMs: number): Promise<boolean> {
+    if (this.inFlight > 0) return false;                              // an op is running — not idle
+    if (this.host === null && this.starting === null) return false;   // nothing live to dispose
+    if (this.now() - this.lastActivityMs < idleMs) return false;      // used within the window
+    await this.dispose();
+    return true;
   }
 
   /**

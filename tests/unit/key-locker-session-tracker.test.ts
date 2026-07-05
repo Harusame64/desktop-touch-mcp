@@ -69,6 +69,21 @@ describe("SessionTracker — ssh in/out (the wrong-target crux)", () => {
     expect(t.get(P)).toEqual({ execHost: "localhost", isRemote: false });
   });
 
+  it("remoteDepth counts pushed remote frames (the ssh-watch pop-vs-markUnknown pivot, SP-L3-OQ-7)", () => {
+    const t = new SessionTracker();
+    expect(t.remoteDepth(P)).toBe(0);           // never anchored
+    t.beginLocalSession(P);
+    expect(t.remoteDepth(P)).toBe(0);           // local base only
+    t.recordDispatch(P, "ssh a@host-a");
+    expect(t.remoteDepth(P)).toBe(1);           // one remote frame → a lone pop is safe
+    t.recordDispatch(P, "ssh b@host-b");
+    expect(t.remoteDepth(P)).toBe(2);           // nested → the watch must markUnknown, not pop
+    t.noteSessionEnd(P);
+    expect(t.remoteDepth(P)).toBe(1);
+    t.markUnknown(P);
+    expect(t.remoteDepth(P)).toBe(0);           // unknown pane has no trusted remote depth
+  });
+
   it("a one-shot `ssh host cmd` does NOT open a session (no push)", () => {
     const t = new SessionTracker();
     t.beginLocalSession(P);
