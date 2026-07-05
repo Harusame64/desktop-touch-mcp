@@ -316,6 +316,33 @@ describe("SessionTracker — wrong-target regressions (Opus R1 P1-1/P1-2/P2-1)",
     }
   });
 
+  it("an explicit fd-0 OUTPUT redirect (`ssh 0>f h`) still redirects stdin → non-interactive, pane stays local (Codex #495 P2)", () => {
+    // `0>file` is an output operator but its fd is 0 = stdin, so it takes ssh's stdin off the tty just
+    // like `< file`. It must NOT be stripped as harmless output plumbing (that would leave a lone host
+    // and mis-classify an interactive login), and it must NOT push — a later local sudo would then be
+    // wrong-targeted to the remote host. Covers redirect BEFORE and AFTER the destination, and fd-dup.
+    for (const cmd of [
+      "ssh 0>stdin.log deploy@prod.example.com",
+      "ssh deploy@prod.example.com 0>stdin.log",
+      "ssh deploy@prod.example.com 0>|stdin.log",
+      "ssh deploy@prod.example.com 0>&2",
+    ]) {
+      const t = new SessionTracker();
+      t.beginLocalSession(P);
+      t.recordDispatch(P, cmd);
+      expect(t.get(P)).toEqual({ execHost: "localhost", isRemote: false });
+    }
+  });
+
+  it("a NON-zero explicit fd output redirect (`ssh h 10>f`) is still stripped → interactive login pushes (fd 10 ≠ stdin)", () => {
+    // The fd-0 carve-out must not regress ordinary numbered output redirects: fd 1/2/10 leave stdin on
+    // the tty, so the ssh stays an interactive login and the frame must push.
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh deploy@prod.example.com 10>build.log");
+    expect((t.get(P) as { execHost: string }).execHost).toBe("prod.example.com");
+  });
+
   it("an interactive ssh with a SEQUENTIAL trailing command sinks to UNKNOWN (post-exit trajectory unmodelable — Codex #495 R5 P1)", () => {
     for (const cmd of [
       "ssh a@host-a ; ssh b@host-b", // after host-a exits the shell logs into host-b, not the popped-to localhost

@@ -203,11 +203,17 @@ function programOf(token: string | undefined): string {
  * feeds ssh's stdin from a NON-tty, so it is non-interactive like a piped stdin — we leave those tokens
  * in place so the trailing-token count classifies the ssh as a one-shot (no push), which is correct.
  *
+ * The leading fd is `[1-9]\d*`, NOT `\d+`: an explicit fd 0 (`0>file`, `0>|file`, `0>&2`) is an OUTPUT
+ * operator that redirects fd 0 = STDIN away from the tty, so like `< file` it makes ssh non-interactive.
+ * Matching it here would strip it and mis-read the surviving host as an interactive login → a later local
+ * command wrong-targeted to the remote (Codex #495 P2). Excluding fd 0 leaves the token in place, so the
+ * trailing-token count classifies the ssh as a one-shot (no push) — the same handling as input redirects.
+ *
  * Order matters: `>&` (fd-dup) comes BEFORE the plain `>` alternative, else JS ordered alternation
  * matches a lone `>` for `>&` and mis-reads it as an attached-target redirect (leaving `>&`'s
  * space-separated target stranded as a fake remote command — Opus R6 P2).
  */
-const OUTPUT_REDIR_OP_RE = /^(?:(?:\d+)?(?:>&|>>?\|?)|&>>?)/;
+const OUTPUT_REDIR_OP_RE = /^(?:(?:[1-9]\d*)?(?:>&|>>?\|?)|&>>?)/;
 
 function stripOutputRedirections(tokens: readonly string[]): string[] {
   const out: string[] = [];
