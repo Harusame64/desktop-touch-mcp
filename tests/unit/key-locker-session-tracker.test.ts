@@ -396,6 +396,15 @@ describe("SessionTracker — wrong-target regressions (Opus R1 P1-1/P1-2/P2-1)",
     expect((t.get(P) as { cwd: string }).cwd).toBe("C:/srv");
   });
 
+  it("a trailing `# comment` is stripped → `ssh host # note` is an interactive login → pushes (Codex #495 R9 P2)", () => {
+    // The comment is removed before exec, so this is a bare `ssh host`, not `ssh host <remote-command>`;
+    // it must push the remote frame, else a later remote sudo wrong-targets localhost.
+    const t = new SessionTracker();
+    t.beginLocalSession(P);
+    t.recordDispatch(P, "ssh deploy@prod.example.com # open a shell");
+    expect((t.get(P) as { execHost: string }).execHost).toBe("prod.example.com");
+  });
+
   it("an interactive ssh with a SEQUENTIAL trailing command sinks to UNKNOWN (post-exit trajectory unmodelable — Codex #495 R5 P1)", () => {
     for (const cmd of [
       "ssh a@host-a ; ssh b@host-b", // after host-a exits the shell logs into host-b, not the popped-to localhost

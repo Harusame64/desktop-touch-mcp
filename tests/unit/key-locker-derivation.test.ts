@@ -179,6 +179,21 @@ describe("tokenizer", () => {
       { tokens: ["ssh", "prod"], conditional: true, backgrounded: false, pipedStdin: true }, // guard + pipe propagated
     ]);
   });
+
+  it("an unquoted word-boundary `#` starts a comment stripped to end-of-line (Codex #495 R9 P2)", () => {
+    // `ssh host # note` is an interactive login — the comment is stripped before exec, so it must not
+    // survive as a trailing remote-command token.
+    expect(tokenizeCommandSegments(`ssh host # note here`)).toEqual([["ssh", "host"]]);
+    // the comment ends at the newline: a following line still parses as its own segment.
+    expect(tokenizeCommandSegments(`ssh host # note\nsudo foo`)).toEqual([["ssh", "host"], ["sudo", "foo"]]);
+    // a MID-word `#` is literal (not a comment) — matches the shell.
+    expect(tokenizeCommandSegments(`git log --format=%h#%s`)).toEqual([["git", "log", "--format=%h#%s"]]);
+    expect(tokenizeCommandSegments(`echo a#b`)).toEqual([["echo", "a#b"]]);
+    // a `#` inside quotes is literal, not a comment.
+    expect(tokenizeCommandSegments(`echo "a # b"`)).toEqual([["echo", "a # b"]]);
+    // a whole comment-only line yields no segment.
+    expect(tokenizeCommandSegments(`# just a comment`)).toEqual([]);
+  });
 });
 
 describe("§8 #5 — sudo purpose + session host", () => {

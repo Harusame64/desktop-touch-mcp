@@ -123,6 +123,16 @@ export function tokenizeCommandSegmentsWithOps(cmd: string): CommandSegment[] {
       continue;
     }
     if (ch === "'" || ch === '"') { quote = ch as '"' | "'"; started = true; continue; }
+    if (ch === "#" && !started) {
+      // An unquoted `#` at a WORD BOUNDARY starts a comment — the shell strips it and the rest of the
+      // LINE before exec (bash interactive-comments; PowerShell). `ssh host # note` is thus an interactive
+      // login, not `ssh host <remote-command>`, so the comment must not survive into the trailing-token
+      // count (Codex #495 R9 P2). Skip to end-of-line; the `\n` is left for the separator handler so any
+      // following lines still parse. A MID-word `#` (`a#b`, `git log --format=%h#%s`) is literal — `!started`
+      // keeps it, matching the shell (a `#` only opens a comment at the start of a word).
+      while (i + 1 < cmd.length && cmd[i + 1] !== "\n") i++;
+      continue;
+    }
     if (ch === "\\" && i + 1 < cmd.length) {
       // A backslash before a SHELL-SPECIAL char is a POSIX escape (drop the `\`, keep the char literal).
       // Before anything else it is a WINDOWS PATH SEPARATOR and must be KEPT — these are Windows-shell
