@@ -13,8 +13,8 @@ use windows::core::{BOOL, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, FindWindowExW, GetAncestor, GetClassNameW, GetForegroundWindow,
-    GetWindowLongPtrW, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
-    IsWindowVisible, IsZoomed, GA_ROOT, WINDOW_LONG_PTR_INDEX,
+    GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+    IsIconic, IsWindowVisible, IsZoomed, GA_ROOT, WINDOW_LONG_PTR_INDEX,
 };
 
 use super::safety::{napi_safe_call, PANIC_COUNTER};
@@ -208,10 +208,19 @@ pub fn win32_get_window_long_ptr_w(hwnd: BigInt, n_index: i32) -> napi::Result<i
 /// Get a window's title via `GetWindowTextW`. Returns `""` on failure or
 /// when the window has no title.
 ///
-/// Buffer is 512 wchars to match the existing TS behaviour (Windows itself
-/// truncates very long titles at 256-512 chars in practice).
+/// The buffer is sized from `GetWindowTextLengthW`, NOT a fixed 512 wchars, so a
+/// long title is read in FULL. This matches the key-locker's `TitleFp`
+/// (`tools/key-locker/Injection.cs`), which sizes its buffer the same way and
+/// hashes the whole title: a truncated read here would hash differently and abort
+/// every SendInput injection with `target_mismatch` for a long-titled console
+/// (Codex #496 P2). `GetWindowTextLengthW` may over-report, so the actual count
+/// returned by `GetWindowTextW` remains authoritative for the slice.
 pub(crate) fn get_window_text(hwnd: HWND) -> String {
-    let mut buf = [0u16; 512];
+    let text_len = unsafe { GetWindowTextLengthW(hwnd) };
+    if text_len <= 0 {
+        return String::new();
+    }
+    let mut buf = vec![0u16; text_len as usize + 1]; // +1 for the NUL GetWindowTextW writes
     let len = unsafe { GetWindowTextW(hwnd, &mut buf) };
     if len <= 0 {
         String::new()
