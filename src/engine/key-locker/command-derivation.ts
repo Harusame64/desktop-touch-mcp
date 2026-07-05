@@ -18,7 +18,7 @@
 // `isRemote` is reserved for L3 (frozen-schema field; L1's own rules key only on execHost, except
 // the remote-pane git defer below).
 
-import { basename, resolve as resolvePath } from "node:path";
+import { basename, isAbsolute, resolve as resolvePath } from "node:path";
 import type { BindingUri } from "./binding.js";
 import { defaultExec, parseSshCommand, resolveCanonicalForSshCommand, type ExecFn } from "./ssh-resolve.js";
 
@@ -27,35 +27,86 @@ export interface SessionContext {
   execHost: string;
   /** Reserved for L3 (nested-prompt tracking); L1 uses it only to defer remote-pane git. */
   isRemote: boolean;
-  /** The pane's working directory — resolves a configured git remote via `git -C`. */
-  cwd: string;
+  /**
+   * The pane's working directory — resolves a configured git remote via `git -C`. OPTIONAL: L3's
+   * SessionTracker leaves it undefined when the cwd is unknown (never anchored / `cd ~` / a remote
+   * pane). `deriveGit` DECLINES rather than resolve a configured remote from the wrong directory — a
+   * cwd-free `git -C <wrong-dir>` would offer/save the secret under the wrong host (#495 P1).
+   */
+  cwd?: string;
 }
 
 export interface DeriveBindingDeps {
   exec?: ExecFn;
 }
 
+/** One command segment plus how the shell reaches it (conditional guard / background). */
+export interface CommandSegment {
+  tokens: string[];
+  /**
+   * True iff the shell runs this segment only DEPENDING ON a prior command's exit status, so at
+   * dispatch time we cannot know whether it executes. Set by a preceding `&&` / `||`, and PROPAGATED
+   * across a single `|` pipe — a pipeline guarded by an earlier `&&` is skipped as a WHOLE, so its
+   * downstream `… | ssh host` stage is just as conditional as the guard (Codex #495 P2). `;` / `&` /
+   * newline and the first segment reset it to `false`.
+   */
+  conditional: boolean;
+  /**
+   * True iff this segment is terminated by a JOB-CONTROL single `&` — the shell backgrounds it and
+   * returns to the prompt at once, so a backgrounded `ssh host &` never opens an interactive session in
+   * THIS pane (Codex #495 P1). A `&` that is part of a REDIRECTION (`2>&1` / `>&2` / `&>file`) is I/O
+   * plumbing, not a terminator, and leaves this `false` (Codex #495 P2). `;` / `&&` / `||` / `|` /
+   * newline / end-of-input all leave it `false`.
+   */
+  backgrounded: boolean;
+  /**
+   * True iff this segment's STDIN is fed by a single `|` — it is a DOWNSTREAM pipeline stage, so its
+   * stdin is the pipe, not the tty. A `… | ssh host` therefore cannot become an INTERACTIVE login
+   * (ssh allocates a pty only when stdin is a tty); it runs non-interactively and the pane returns to
+   * the LOCAL prompt, so it opens no session in this pane (Opus #495 R4 P2). The first segment and any
+   * segment after `;` / `&&` / `||` / `&` / newline are `false`.
+   */
+  pipedStdin: boolean;
+}
+
+/**
+ * Chars a leading `\` is treated as ESCAPING (drop the `\`, keep the char literal) in unquoted text.
+ * A `\` before ANY OTHER char is kept literally as a Windows path separator (Codex #495 P1) — so
+ * `cd C:\repo` survives while `\ ` / `\&` / `\;` / `\\` / `\"` still escape.
+ */
+const SHELL_ESCAPE_SPECIAL = new Set([" ", "\t", "\n", "\r", "&", "|", ";", "<", ">", "(", ")", '"', "'", "\\", "$", "`"]);
+
 /**
  * Shell-style tokenizer: split into command SEGMENTS at unquoted `&&` / `||` / `;` / `|` / `&` /
  * newline, respecting single/double quotes and backslash escapes (POSIX-ish; the dispatched
- * commands are the ones our own terminal tool typed). Quote characters are stripped.
+ * commands are the ones our own terminal tool typed). Quote characters are stripped. Each segment
+ * carries whether it is CONDITIONALLY reached (`&&` / `||`), which the session tracker needs to
+ * avoid predicting a session change for a branch the shell may skip.
  */
-export function tokenizeCommandSegments(cmd: string): string[][] {
-  const segments: string[][] = [];
+export function tokenizeCommandSegmentsWithOps(cmd: string): CommandSegment[] {
+  const segments: CommandSegment[] = [];
   let tokens: string[] = [];
   let cur = "";
   let started = false;
   let quote: '"' | "'" | null = null;
+  let conditional = false;      // does the segment currently being built follow a `&&` / `||`?
+  let nextConditional = false;  // set by the operator that ends the current segment
+  let pipedStdin = false;       // is the segment currently being built the downstream side of a `|`?
+  let nextPipedStdin = false;   // set by a single `|` that ends the current segment
 
   const endToken = () => {
     if (started) tokens.push(cur);
     cur = "";
     started = false;
   };
-  const endSegment = () => {
+  const endSegment = (backgrounded = false) => {
     endToken();
-    if (tokens.length > 0) segments.push(tokens);
+    if (tokens.length > 0) segments.push({ tokens, conditional, backgrounded, pipedStdin });
     tokens = [];
+    conditional = nextConditional;
+    pipedStdin = nextPipedStdin;
+    nextConditional = false;
+    nextPipedStdin = false;
   };
 
   for (let i = 0; i < cmd.length; i++) {
@@ -72,18 +123,72 @@ export function tokenizeCommandSegments(cmd: string): string[][] {
       continue;
     }
     if (ch === "'" || ch === '"') { quote = ch as '"' | "'"; started = true; continue; }
-    if (ch === "\\" && i + 1 < cmd.length) { cur += cmd[++i]; started = true; continue; }
-    if (ch === "&" || ch === "|") {
-      endSegment();
-      if (cmd[i + 1] === ch) i++; // && / ||
+    if (ch === "#" && !started) {
+      // An unquoted `#` at a WORD BOUNDARY starts a comment — the shell strips it and the rest of the
+      // LINE before exec (bash interactive-comments; PowerShell). `ssh host # note` is thus an interactive
+      // login, not `ssh host <remote-command>`, so the comment must not survive into the trailing-token
+      // count (Codex #495 R9 P2). Skip to end-of-line; the `\n` is left for the separator handler so any
+      // following lines still parse. A MID-word `#` (`a#b`, `git log --format=%h#%s`) is literal — `!started`
+      // keeps it, matching the shell (a `#` only opens a comment at the start of a word).
+      while (i + 1 < cmd.length && cmd[i + 1] !== "\n") i++;
       continue;
     }
-    if (ch === ";" || ch === "\n") { endSegment(); continue; }
+    if (ch === "\\" && i + 1 < cmd.length) {
+      // A backslash before a SHELL-SPECIAL char is a POSIX escape (drop the `\`, keep the char literal).
+      // Before anything else it is a WINDOWS PATH SEPARATOR and must be KEPT — these are Windows-shell
+      // commands, so `cd C:\repo` / `git -C C:\repo` must not have their `\` stripped to `C:repo`, which
+      // `applyCd` / `git -C` would then mis-resolve into a bogus directory (Codex #495 P1). Escaping is
+      // still honored for `\ ` / `\&` / `\"` / `\\` so quoting/operator-escaping is unaffected.
+      if (SHELL_ESCAPE_SPECIAL.has(cmd[i + 1])) { cur += cmd[++i]; started = true; continue; }
+      cur += ch; started = true; continue; // literal backslash (Windows path separator)
+    }
+    if (ch === "|" && cmd[i + 1] === "&") {
+      // bash `|&` = `2>&1 |` — a PIPE that feeds the next segment's stdin, NOT a background `&` (GNU
+      // Bash manual). Treat it exactly like a single `|` (propagate the guard, mark the downstream
+      // stdin piped) and consume BOTH chars, so a `cmd |& ssh h` does not leave `ssh h` looking
+      // unpiped and get a spurious remote-frame push (Codex #495 P2).
+      nextConditional = conditional;
+      nextPipedStdin = true;
+      endSegment(); // not backgrounded — the `&` here is part of `|&`, not a job-control `&`
+      i++; // consume the `&`
+      continue;
+    }
+    if ((ch === "&" && (cmd[i - 1] === ">" || cmd[i - 1] === "<" || cmd[i + 1] === ">")) ||
+        (ch === "|" && cmd[i - 1] === ">")) {
+      // A `&` or `|` that is part of a REDIRECTION operator, not a job-control / pipe separator: `&` in
+      // fd-dup `2>&1` / `>&2` / `<&-` (abutting a `>`/`<`) or redirect-both `&>file` (followed by `>`),
+      // and `|` in noclobber-override `>|file` (abutting a `>`). Keep it a literal token char so the
+      // redirect stays ONE token — the ssh segment is then neither mis-split nor mis-marked
+      // `backgrounded`, so an upstream `ssh host 2>&1 | tee log` still pushes its remote frame (Codex
+      // #495 P2, Opus R6 P3). A job-control `&` / a real pipe `|` never abuts a `>`/`<`.
+      cur += ch; started = true; continue;
+    }
+    if (ch === "&" || ch === "|") {
+      const doubled = cmd[i + 1] === ch;
+      // `&&` / `||` gate the NEXT segment on the prior's exit status. A single `|` keeps the next
+      // segment in the SAME pipeline, so it INHERITS the current conditional (a pipeline guarded by an
+      // earlier `&&` is skipped as a whole — Codex #495 P2). A single `&` BACKGROUNDS this segment and
+      // the next one runs unconditionally in the foreground.
+      if (doubled) nextConditional = true;
+      else if (ch === "|") nextConditional = conditional; // pipe: propagate the guard down the pipeline
+      else nextConditional = false;                       // single `&`: next is an unconditional foreground cmd
+      nextPipedStdin = ch === "|" && !doubled;            // a single `|` feeds the NEXT segment's stdin
+      endSegment(ch === "&" && !doubled); // a single `&` marks the segment it terminates as backgrounded
+      if (doubled) i++;
+      continue;
+    }
+    if (ch === ";" || ch === "\n") { nextConditional = false; endSegment(); continue; }
     if (ch === " " || ch === "\t" || ch === "\r") { endToken(); continue; }
     cur += ch; started = true;
   }
+  nextConditional = false;
   endSegment();
   return segments;
+}
+
+/** Segments as plain token arrays (separators discarded) — the prompt-triggered derivation path. */
+export function tokenizeCommandSegments(cmd: string): string[][] {
+  return tokenizeCommandSegmentsWithOps(cmd).map((s) => s.tokens);
 }
 
 /** Program identity of a token: basename, lowercased, `.exe` stripped. */
@@ -184,14 +289,23 @@ async function deriveGit(args: string[], session: SessionContext, exec: ExecFn):
   if (session.isRemote) return null;
 
   // Global options before the subcommand: honor `-C <path>` (changes the effective cwd), skip
-  // `-c k=v` / `--git-dir=…`-style value options, null on version/help.
-  let cwd = session.cwd;
+  // `-c k=v` / `--git-dir=…`-style value options, null on version/help. An empty-string cwd is a
+  // caller's "unknown" sentinel (the guard below already declines on it) — normalize it to undefined
+  // UP FRONT so a relative `-C sub` is not anchored at the agent's process cwd via `resolvePath("", …)`
+  // before that guard is reached (Codex #495 P2 wrong-target).
+  let cwd: string | undefined = session.cwd !== undefined && session.cwd.length > 0 ? session.cwd : undefined;
   let i = 0;
   let sub: string | undefined;
   for (; i < args.length; i++) {
     const tok = args[i];
     if (tok === "-v" || tok === "-V" || tok === "--version" || tok === "-h" || tok === "--help") return null;
-    if (tok === "-C" && i + 1 < args.length) { cwd = resolvePath(cwd, args[++i]); continue; }
+    if (tok === "-C" && i + 1 < args.length) {
+      const cdir = args[++i];
+      // `-C <abs>` sets the effective cwd outright; `-C <rel>` only resolves against a KNOWN cwd —
+      // otherwise it stays unknown and the configured-remote resolution below declines.
+      cwd = cwd !== undefined ? resolvePath(cwd, cdir) : (isAbsolute(cdir) ? cdir : undefined);
+      continue;
+    }
     if (tok === "-c" && i + 1 < args.length) { i++; continue; }
     if (tok.startsWith("--") && tok.includes("=")) continue; // --git-dir=… / --work-tree=…
     if (tok.startsWith("-")) continue;
@@ -237,7 +351,13 @@ async function deriveGit(args: string[], session: SessionContext, exec: ExecFn):
   // precedence chain, NEVER a hard-coded `origin` (plan §4, Codex R9/R10): resolve the NAME first,
   // then ask for that remote's URL (`remote get-url [--push]` observes pushurl).
   if (sub === "clone") return null; // clone without a URL never reaches a prompt we can attribute
-  const git = async (...gitArgs: string[]) => exec("git", ["-C", cwd, ...gitArgs]);
+  // Resolving the configured remote needs a REAL cwd; without one (L3 could not determine the pane's
+  // directory) a `git -C <wrong-dir>` would resolve some OTHER repo's remote and offer/save the secret
+  // under the wrong host. Decline instead (#495 P1 wrong-target). The explicit-URL forms above are
+  // cwd-independent and have already returned.
+  if (cwd === undefined || cwd.length === 0) return null;
+  const gitCwd = cwd; // narrowed + stable for the closure below
+  const git = async (...gitArgs: string[]) => exec("git", ["-C", gitCwd, ...gitArgs]);
   let remoteName = repoArg;
   if (remoteName === undefined) {
     const branch = await git("symbolic-ref", "--short", "HEAD");

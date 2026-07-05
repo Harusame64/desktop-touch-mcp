@@ -12,6 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   deriveBinding,
   tokenizeCommandSegments,
+  tokenizeCommandSegmentsWithOps,
   type SessionContext,
 } from "../../src/engine/key-locker/command-derivation.js";
 import { defaultExec, type ExecFn } from "../../src/engine/key-locker/ssh-resolve.js";
@@ -108,6 +109,91 @@ describe("tokenizer", () => {
       ["wc"],
     ]);
   });
+
+  it("marks conditional (`&&`/`||`), backgrounded (single `&`), and piped-stdin (downstream `|`)", () => {
+    expect(tokenizeCommandSegmentsWithOps(`a && b || c ; d | e & f`)).toEqual([
+      { tokens: ["a"], conditional: false, backgrounded: false, pipedStdin: false }, // first
+      { tokens: ["b"], conditional: true, backgrounded: false, pipedStdin: false },  // after &&
+      { tokens: ["c"], conditional: true, backgrounded: false, pipedStdin: false },  // after ||
+      { tokens: ["d"], conditional: false, backgrounded: false, pipedStdin: false }, // after ;
+      { tokens: ["e"], conditional: false, backgrounded: true, pipedStdin: true },   // downstream of `|`, ended by `&`
+      { tokens: ["f"], conditional: false, backgrounded: false, pipedStdin: false }, // after &
+    ]);
+  });
+
+  it("keeps Windows backslash path separators, still escapes shell-special chars (Codex #495 R5 P1)", () => {
+    expect(tokenizeCommandSegments(`cd C:\\repo\\src`)).toEqual([["cd", "C:\\repo\\src"]]);
+    expect(tokenizeCommandSegments(`git -C C:\\a\\b push`)).toEqual([["git", "-C", "C:\\a\\b", "push"]]);
+    // a `\` before a shell-special char is STILL an escape (operator neutralized / space kept literal),
+    // not a path separator — so escaping semantics are preserved alongside Windows paths.
+    expect(tokenizeCommandSegments(`echo a\\&b`)).toEqual([["echo", "a&b"]]);
+    expect(tokenizeCommandSegments(`echo a\\ b`)).toEqual([["echo", "a b"]]);
+  });
+
+  it("recognizes bash `|&` as a pipe (downstream stdin piped), not a background `&` (Codex #495 R5 P2)", () => {
+    expect(tokenizeCommandSegmentsWithOps(`make |& ssh h`)).toEqual([
+      { tokens: ["make"], conditional: false, backgrounded: false, pipedStdin: false },
+      { tokens: ["ssh", "h"], conditional: false, backgrounded: false, pipedStdin: true }, // `|&` fed stdin
+    ]);
+  });
+
+  it("a redirection `&` (`2>&1` / `>&2` / `&>f`) is I/O plumbing, not a background job (Codex #495 P2)", () => {
+    // The `&` abutting a `>`/`<` (fd-dup) or followed by `>` (redirect-both) must stay a literal token
+    // char, so an UPSTREAM `ssh host 2>&1 | tee log` keeps its tty and is NOT mis-marked backgrounded.
+    expect(tokenizeCommandSegmentsWithOps(`ssh host 2>&1 | tee log`)).toEqual([
+      { tokens: ["ssh", "host", "2>&1"], conditional: false, backgrounded: false, pipedStdin: false },
+      { tokens: ["tee", "log"], conditional: false, backgrounded: false, pipedStdin: true },
+    ]);
+    expect(tokenizeCommandSegmentsWithOps(`echo hi >&2`)).toEqual([
+      { tokens: ["echo", "hi", ">&2"], conditional: false, backgrounded: false, pipedStdin: false },
+    ]);
+    expect(tokenizeCommandSegmentsWithOps(`make &>build.log`)).toEqual([
+      { tokens: ["make", "&>build.log"], conditional: false, backgrounded: false, pipedStdin: false },
+    ]);
+    // a genuine job-control `&` (no abutting redirect) still backgrounds its segment.
+    expect(tokenizeCommandSegmentsWithOps(`sleep 1 & echo done`)).toEqual([
+      { tokens: ["sleep", "1"], conditional: false, backgrounded: true, pipedStdin: false },
+      { tokens: ["echo", "done"], conditional: false, backgrounded: false, pipedStdin: false },
+    ]);
+  });
+
+  it("a `>|` (noclobber-override) redirect stays one token, not split into a `>` + a `|` pipe (Opus R6 P3)", () => {
+    // `>|` abutting a `>` is a redirect operator, not a pipe — mis-splitting it would strand `ssh host`
+    // as one segment and `log` as a fake downstream pipe stage.
+    expect(tokenizeCommandSegmentsWithOps(`ssh host >|out.log`)).toEqual([
+      { tokens: ["ssh", "host", ">|out.log"], conditional: false, backgrounded: false, pipedStdin: false },
+    ]);
+    // a real pipe (`>` then a spaced `|`) is still a pipe, not swallowed by the guard.
+    expect(tokenizeCommandSegmentsWithOps(`echo hi | wc -l`)).toEqual([
+      { tokens: ["echo", "hi"], conditional: false, backgrounded: false, pipedStdin: false },
+      { tokens: ["wc", "-l"], conditional: false, backgrounded: false, pipedStdin: true },
+    ]);
+  });
+
+  it("a single `|` PROPAGATES an earlier `&&` guard AND marks the downstream stdin as piped (Codex #495 P2 / Opus R4 P2)", () => {
+    // `false && echo ok | ssh prod` parses as `false && (echo ok | ssh prod)`: the whole pipeline is
+    // guarded (downstream stays conditional) and `ssh prod`'s stdin is the pipe, not the tty.
+    expect(tokenizeCommandSegmentsWithOps(`false && echo ok | ssh prod`)).toEqual([
+      { tokens: ["false"], conditional: false, backgrounded: false, pipedStdin: false },
+      { tokens: ["echo", "ok"], conditional: true, backgrounded: false, pipedStdin: false },
+      { tokens: ["ssh", "prod"], conditional: true, backgrounded: false, pipedStdin: true }, // guard + pipe propagated
+    ]);
+  });
+
+  it("an unquoted word-boundary `#` starts a comment stripped to end-of-line (Codex #495 R9 P2)", () => {
+    // `ssh host # note` is an interactive login — the comment is stripped before exec, so it must not
+    // survive as a trailing remote-command token.
+    expect(tokenizeCommandSegments(`ssh host # note here`)).toEqual([["ssh", "host"]]);
+    // the comment ends at the newline: a following line still parses as its own segment.
+    expect(tokenizeCommandSegments(`ssh host # note\nsudo foo`)).toEqual([["ssh", "host"], ["sudo", "foo"]]);
+    // a MID-word `#` is literal (not a comment) — matches the shell.
+    expect(tokenizeCommandSegments(`git log --format=%h#%s`)).toEqual([["git", "log", "--format=%h#%s"]]);
+    expect(tokenizeCommandSegments(`echo a#b`)).toEqual([["echo", "a#b"]]);
+    // a `#` inside quotes is literal, not a comment.
+    expect(tokenizeCommandSegments(`echo "a # b"`)).toEqual([["echo", "a # b"]]);
+    // a whole comment-only line yields no segment.
+    expect(tokenizeCommandSegments(`# just a comment`)).toEqual([]);
+  });
 });
 
 describe("§8 #5 — sudo purpose + session host", () => {
@@ -178,11 +264,12 @@ describe("§8 #6 — command derivation table", () => {
   it("ssh -J bastion target → null (the FIRST prompt may be the jump host's — Codex R1 P1)", async () => {
     expect(await derives("ssh -J bastion.example.com h")).toBeNull();
   });
-  it("clustered arg-taking flag (-4p 2222) fails CLOSED to null, never a wrong target", async () => {
-    // '-4p' is tokenized as a no-arg cluster, so '2222' is taken as the destination; the fake
-    // known_hosts has no such host → host-not-known → null. Pinned so the failure DIRECTION
-    // (toward null) never regresses even though the cluster parse itself is imperfect.
-    expect(await derives("ssh -4p 2222 h")).toBeNull();
+  it("clustered arg-taking flag (-4p 2222) resolves the DESTINATION h, not the stray `2222` (Codex #495 R5 P2)", async () => {
+    // '-4p 2222' is `-4 -p 2222` — a with-arg letter (`p`) buried after a no-arg one (`4`) still
+    // consumes the next token, so the destination is `h`, NOT `2222`. The parser now walks the whole
+    // cluster (previously it read `2222` as the host and fell to null — safe but imperfect). Port is
+    // left to `ssh -G` (the fake here can't resolve the clustered `-p`, so it reports the default).
+    expect(await derives("ssh -4p 2222 h")).toMatchObject({ scheme: "ssh", host: "h", user: "u" });
   });
 
   // --- sudo (the CANNOT-prompt closed set nulls; everything else derives) ---
@@ -314,6 +401,45 @@ describe("§8 #6 — command derivation table", () => {
     expect(await derives("git -V")).toBeNull();
     expect(await derives("git --version")).toBeNull();
     expect(await derives("git status", { ...local, cwd: repoTracking })).toBeNull();
+  });
+
+  // --- cwd fail-safe (#495 P1): an UNKNOWN cwd must never resolve a configured remote ---
+  it("configured-remote git with UNKNOWN cwd → null (never `git -C <wrong-dir>`; #495 P1)", async () => {
+    const noCwd: SessionContext = { execHost: "localhost", isRemote: false }; // cwd omitted (L3 unknown)
+    expect(await derives("git push origin main", noCwd)).toBeNull();
+    expect(await derives("git push", noCwd)).toBeNull();
+    expect(await derives("git fetch", noCwd)).toBeNull();
+    // A wiring layer that papered the optional cwd over with "" must ALSO decline, not run in $PWD.
+    expect(await derives("git push", { ...local, cwd: "" })).toBeNull();
+  });
+  it("a relative `git -C sub` under a \"\" (unknown) cwd declines BEFORE anchoring at the process cwd (Codex #495 P2)", async () => {
+    // "" is a caller's unknown sentinel; a relative -C must NOT be resolved against the agent's process
+    // cwd via resolvePath("", "sub"). It must decline before ever shelling out to `git -C <proccwd>/sub`.
+    let gitCalled = false;
+    const spyExec: ExecFn = async (file) => { if (file === "git") gitCalled = true; return { code: 1, stdout: "", stderr: "" }; };
+    const r = await deriveBinding("git -C sub push origin main", { execHost: "localhost", isRemote: false, cwd: "" }, { exec: spyExec });
+    expect(r).toBeNull();
+    expect(gitCalled).toBe(false); // normalized "" → unknown → relative -C stays unknown → no git run
+  });
+  it("explicit-URL git still derives with UNKNOWN cwd (the target is cwd-independent)", async () => {
+    const noCwd: SessionContext = { execHost: "localhost", isRemote: false };
+    expect(await derives("git push https://github.com/example/repo.git main", noCwd)).toMatchObject({
+      scheme: "https-cred",
+      host: "github.com",
+    });
+    expect(await derives("git clone https://github.com/example/repo.git", noCwd)).toMatchObject({
+      scheme: "https-cred",
+      host: "github.com",
+    });
+  });
+  it("git -C <abs> push with UNKNOWN cwd resolves against the -C path (#495 P1 boundary)", async () => {
+    const noCwd: SessionContext = { execHost: "localhost", isRemote: false };
+    expect(await derives(`git -C "${repoTracking}" push origin main`, noCwd)).toMatchObject({
+      scheme: "https-cred",
+      host: "github.com",
+    });
+    // `-C <rel>` cannot resolve against an unknown cwd → still declines.
+    expect(await derives("git -C sub push origin main", noCwd)).toBeNull();
   });
 
   // --- non-credential commands ---
