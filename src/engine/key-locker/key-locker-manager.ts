@@ -15,10 +15,10 @@
 // separate pieces (see the impl-handoff doc) — this module defines the Node-side contract they plug
 // into.
 
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { KeyLockerError, KeyLockerHost, type KeyLockerStartOptions } from "../key-locker-host.js";
+import { KeyLockerHost, type KeyLockerStartOptions } from "../key-locker-host.js";
 
 /** Typed reject when a secret op is attempted before first-run consent is accepted (L4 §2). */
 export class KeyLockerConsentRequiredError extends Error {
@@ -26,6 +26,19 @@ export class KeyLockerConsentRequiredError extends Error {
   constructor() {
     super("KeyLockerConsentRequired: the key locker must be enabled once before it can store or fill secrets");
     this.name = "KeyLockerConsentRequiredError";
+  }
+}
+
+/**
+ * Typed reject when the whole feature is hard-disabled by the kill switch (L4 §2). A DISTINCT code from
+ * the spawn/consent errors so `_errors.ts` (L4 tool wiring) can give a "you disabled this" hint rather
+ * than a misleading "build key-locker.exe" spawn-failure hint (Opus PR#497 R1 P2).
+ */
+export class KeyLockerDisabledError extends Error {
+  readonly code = "KeyLockerDisabled";
+  constructor() {
+    super("KeyLockerDisabled: the key locker is disabled (DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1)");
+    this.name = "KeyLockerDisabledError";
   }
 }
 
@@ -40,8 +53,9 @@ const CONSENT_FILE = "consent.json";
 /** Read the persisted first-run consent flag (fail-closed: absent/corrupt/wrong-shape ⇒ false). */
 export function consentAccepted(storeDir?: string): boolean {
   const path = join(storeDir ?? defaultStoreDir(), CONSENT_FILE);
-  if (!existsSync(path)) return false;
   try {
+    // readFileSync alone is atomic + fail-closed (a missing file throws → false), so no existsSync
+    // pre-check is needed (it would only add a TOCTOU window — both directions fail closed anyway).
     const raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
     return typeof raw === "object" && raw !== null &&
       (raw as { version?: unknown }).version === 1 &&
@@ -94,7 +108,7 @@ export class KeyLockerManager {
    */
   async withHost<T>(fn: (host: KeyLockerHost) => Promise<T>): Promise<T> {
     if (this.isDisabled()) {
-      throw new KeyLockerError("KeyLockerSpawnFailed", "key locker is disabled (DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1)");
+      throw new KeyLockerDisabledError();
     }
     if (!this.isConsentAccepted()) {
       throw new KeyLockerConsentRequiredError();
@@ -103,19 +117,34 @@ export class KeyLockerManager {
     return fn(host);
   }
 
+  /** Spawn the live locker host. A protected seam so tests can inject a controllable start. */
+  protected startHost(): Promise<KeyLockerHost> {
+    return KeyLockerHost.start(this.opts);
+  }
+
   private async ensureHost(): Promise<KeyLockerHost> {
     if (this.host !== null) return this.host;
     if (this.starting !== null) return this.starting;
-    this.starting = KeyLockerHost.start(this.opts)
+    this.starting = this.startHost()
       .then((h) => { this.host = h; this.starting = null; return h; })
       .catch((e) => { this.starting = null; throw e; });
     return this.starting;
   }
 
-  /** Tear down the live host (MCP shutdown / idle dormancy). Idempotent. */
+  /**
+   * Tear down the live host (MCP shutdown / idle dormancy). Idempotent. If a start is IN FLIGHT, wait
+   * for it first and dispose the host it produces — else a shutdown racing an in-flight `withHost` would
+   * orphan the just-spawned `key-locker.exe` (the `starting` promise sets `this.host` AFTER dispose read
+   * the still-null field — Opus PR#497 R1 P2 leak).
+   */
   async dispose(): Promise<void> {
+    const pending = this.starting;
+    if (pending !== null) {
+      try { await pending; } catch { /* start rejected — no host was created, nothing to dispose */ }
+    }
     const h = this.host;
     this.host = null;
+    this.starting = null;
     if (h !== null) await h.dispose();
   }
 }
