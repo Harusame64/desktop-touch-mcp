@@ -40,6 +40,7 @@ function makeDeps(o: Partial<CaptureLoopDeps> = {}): CaptureLoopDeps {
     awaitLanded: vi.fn(async () => LANDED(true)),
     confirmInjection: vi.fn(async () => true),
     offerSave: vi.fn(async () => "save"),
+    onNever: vi.fn(),
     mintOpaqueId: vi.fn(() => "opaque-abc"),
     now: vi.fn(() => "2026-07-05T00:00:00.000Z"),
     ...o,
@@ -70,6 +71,35 @@ describe("runCaptureLoop — declines (never touch the locker)", () => {
   it("https-cred ⇒ decline (git-credential forward flow)", async () => {
     const deps = makeDeps({ deriveBinding: vi.fn(async () => HTTPS) });
     expect(await runCaptureLoop(deps, EVENT)).toEqual({ kind: "declined", reason: "not_pane_channel" });
+  });
+
+  it("ssh binding without a resolved fp-set ⇒ decline (canonicalKey throws, fail safe)", async () => {
+    const noFp: BindingUri = { scheme: "ssh", user: "deploy", host: "prod", port: 22 }; // fpSet missing
+    const deps = makeDeps({ deriveBinding: vi.fn(async () => noFp) });
+    expect(await runCaptureLoop(deps, EVENT)).toEqual({ kind: "declined", reason: "not_a_credential" });
+    expect(deps.resolveBinding).not.toHaveBeenCalled();
+    expect(deps.capture).not.toHaveBeenCalled();
+  });
+});
+
+describe("runCaptureLoop — Mode-B interactive login (mode-agnostic landed, P1-1)", () => {
+  it("interactive auth-accepted ⇒ saved (NOT gated on an exit code)", async () => {
+    const deps = makeDeps({
+      deriveBinding: vi.fn(async () => SSH),
+      awaitLanded: vi.fn(async () => ({ accepted: true, mode: "interactive", reason: "auth_accepted" })),
+    });
+    expect(await runCaptureLoop(deps, EVENT)).toEqual({ kind: "saved", verified: true });
+    expect(deps.bindBinding).toHaveBeenCalledOnce();
+    expect(deps.deleteSecret).not.toHaveBeenCalled();
+  });
+
+  it("interactive auth-rejected ⇒ discard (delete, no bind)", async () => {
+    const deps = makeDeps({
+      awaitLanded: vi.fn(async () => ({ accepted: false, mode: "interactive", reason: "auth_rejected" })),
+    });
+    expect(await runCaptureLoop(deps, EVENT)).toEqual({ kind: "discarded", reason: "not_landed", detail: "auth_rejected" });
+    expect(deps.offerSave).not.toHaveBeenCalled();
+    expect(deps.deleteSecret).toHaveBeenCalledWith("opaque-abc");
   });
 });
 
@@ -146,15 +176,23 @@ describe("runCaptureLoop — NO MATCH (capture → inject → landed → OFFER �
     expect(order).toEqual(["offer", "bind"]);
   });
 
-  it("landed + [Not now] ⇒ discard (delete, no bind)", async () => {
+  it("landed + [Not now] ⇒ discard (delete, no bind, no tombstone)", async () => {
     const deps = makeDeps({ offerSave: vi.fn(async () => "not_now") });
     expect(await runCaptureLoop(deps, EVENT)).toEqual({ kind: "discarded", reason: "not_now" });
     expect(deps.bindBinding).not.toHaveBeenCalled();
     expect(deps.deleteSecret).toHaveBeenCalledWith("opaque-abc");
+    expect(deps.onNever).not.toHaveBeenCalled();
   });
 
-  it("landed + [Never] ⇒ discard (delete, no bind)", async () => {
+  it("landed + [Never] ⇒ discard + record the setNever tombstone (plan §1)", async () => {
     const deps = makeDeps({ offerSave: vi.fn(async () => "never") });
+    expect(await runCaptureLoop(deps, EVENT)).toEqual({ kind: "discarded", reason: "never" });
+    expect(deps.deleteSecret).toHaveBeenCalledWith("opaque-abc");
+    expect(deps.onNever).toHaveBeenCalledWith("sudo://localhost/root");
+  });
+
+  it("[Never] with the onNever seam UNWIRED ⇒ still discards, never throws", async () => {
+    const deps = makeDeps({ offerSave: vi.fn(async () => "never"), onNever: undefined });
     expect(await runCaptureLoop(deps, EVENT)).toEqual({ kind: "discarded", reason: "never" });
     expect(deps.deleteSecret).toHaveBeenCalledWith("opaque-abc");
   });

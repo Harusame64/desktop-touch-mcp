@@ -108,6 +108,15 @@ export interface CaptureLoopDeps {
   confirmInjection(binding: BindingUri): Promise<boolean>;
   /** The Chrome-model save offer AFTER a landed NO-MATCH fill (P1-2 — the loop persists only on "save"). */
   offerSave(binding: BindingUri): Promise<SaveChoice>;
+  /**
+   * Record a "[Never] — don't offer to save this binding again" decision (plan §1 `policyStore.setNever`).
+   * OPTIONAL: the loop ALWAYS discards on "never" regardless; this seam lets the wiring persist a tombstone
+   * so the save is not re-offered next time. The tombstone STORE (a negative-binding store, distinct from
+   * the saved-row `confirmEveryInjection` policy) + the pre-capture suppression it enables are L4 management
+   * surface — DEFERRED (SP-L3-OQ handoff). When unwired, "never" simply behaves like "not now" (re-offered
+   * next prompt). The seam EXPRESSES the §1 contract point here rather than silently dropping it (強制命令 9).
+   */
+  onNever?(canonicalKey: string): void;
   /** Mint the opaqueId the loop will bind on save (`randomBytes(16).toString("hex")`; a fake in tests). */
   mintOpaqueId(): string;
   /** ISO-8601 timestamp for `meta.createdAt` (injected so tests are deterministic). */
@@ -191,7 +200,11 @@ export async function runCaptureLoop(deps: CaptureLoopDeps, event: CredentialEve
             committed = true; // retain the locker secret; skip the reverse-orphan delete below
             outcome = { kind: "saved", verified: injectVerified(r) };
           } else {
-            outcome = { kind: "discarded", reason: choice }; // "not_now" | "never" → discard
+            // "not_now" / "never" → discard (deleted in `finally`). A [Never] additionally records a
+            // tombstone so the save is not re-offered (plan §1 `setNever`); the persistence is deferred
+            // (L4 management), so the OPTIONAL `onNever` seam expresses the contract point here.
+            if (choice === "never") deps.onNever?.(canonical);
+            outcome = { kind: "discarded", reason: choice };
           }
         }
       }
