@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.Harusame64/desktop-touch-mcp",
-  "description": "Computer-use MCP for Windows 10/11: 31 tools — screenshot, UIA, Chrome CDP, type/click/scroll, VBA.",
+  "description": "Computer-use MCP for Windows 10/11: 32 tools — screenshot, UIA, Chrome CDP, type/click/scroll, VBA.",
   "repository": {
     "url": "https://github.com/Harusame64/desktop-touch-mcp",
     "source": "github"

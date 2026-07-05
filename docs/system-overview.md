@@ -64,13 +64,13 @@ desktop-touch-mcp (Node.js / TypeScript)
     │       ├── envelope.ts         — projectEnvelope: attention derivation + token-budget trimming
     │       ├── sensors-win32.ts    — only impure module; piggybacks event-bus 500 ms tick
     │       └── registry.ts         — central coordinator; max 16 lenses (LRU evict)
-    └── Layer 2: 31 public MCP tools (29 stub catalog + 2 dynamic v2)
+    └── Layer 2: 32 public MCP tools (30 stub catalog + 2 dynamic v2)
         See the catalogue below and [CHANGELOG.md](../CHANGELOG.md) for per-version history.
 ```
 
 ### Surface status
 
-- **Current public surface**: 31 tools — 29 stub catalog + 2 dynamic v2 (`desktop_discover` / `desktop_act`)
+- **Current public surface**: 32 tools — 30 stub catalog + 2 dynamic v2 (`desktop_discover` / `desktop_act`)
 - **Tool surface reduction (Phase 1–4) — shipped**: naming redesign, family merge dispatchers, browser rearrangement, privatize/absorb. Pre-Phase-1 surface was 65 tools.
 - Phase design references (all Implemented):
   - [tool-surface-phase1-naming-design.md](./tool-surface-phase1-naming-design.md)
@@ -180,7 +180,7 @@ For `keyboard(action='press')`, rich mode only fires for state-transitioning key
 
 ## Tool catalogue
 
-The 31 public tools group into six families. The **World-Graph V2** pair is the
+The 32 public tools group into six families. The **World-Graph V2** pair is the
 recommended dispatch path; the coordinate / UIA / browser tools remain for
 fallback and specialised work.
 
@@ -613,6 +613,33 @@ against formula-only assistants that cannot execute VBA.
 excel({ action:'check_access_vbom' })                       // → { trusted:true, scope:'hkcu' }
 excel({ action:'run_vba',
         code:'Sub Demo()\n  Range("A1").Value = "Hello"\nEnd Sub' })
+```
+
+---
+
+### 🔐 Credentials
+
+#### `key_locker`
+Manage credentials the terminal autofills for you (SSH key passphrases, sudo / login
+passwords). The secret is entered once into the locker's own secure dialog (a separate
+signed helper process) and stored encrypted on this machine (Windows DPAPI, current
+user); it is **never** shown to the assistant or sent through this tool. Autofill then
+happens automatically when a bound command triggers a credential prompt — there is no
+manual fill action.
+
+- `action='save'` enrolls a credential for a binding URI (`ssh://user@host:22`,
+  `sudo://host/root`, `https-cred://host:443`, `sshkey://SHA256:…`): it opens the secure
+  dialog and stores the secret. The first `save` also shows a one-time enable
+  confirmation (first-run consent).
+- `action='list'` shows saved bindings (metadata only). `action='forget'` deletes a
+  binding and its secret. `action='set_policy'` toggles per-binding autofill
+  confirmation. `action='status'` reports whether the locker is enabled and the binding
+  count.
+- Windows-only. Disable the whole feature with `DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1`.
+
+```js
+key_locker({ action:'status' })                             // → { consentAccepted:false, bindingCount:0 }
+key_locker({ action:'save', uri:'sudo://buildbox/root' })   // opens the secure dialog → { captured:true }
 ```
 
 ---

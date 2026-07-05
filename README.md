@@ -10,7 +10,7 @@
 npx -y @harusame64/desktop-touch-mcp
 ```
 
-31 tools, native Rust engine (UIA in 2 ms), zero-config PowerShell fallback, full CJK support, MIT licensed. Add the snippet above to your Claude / Cursor / VS Code Copilot config and Claude can drive Notepad, Excel, Chrome, Windows Terminal, and any other app on your machine.
+32 tools, native Rust engine (UIA in 2 ms), zero-config PowerShell fallback, full CJK support, MIT licensed. Add the snippet above to your Claude / Cursor / VS Code Copilot config and Claude can drive Notepad, Excel, Chrome, Windows Terminal, and any other app on your machine.
 
 > **Why this over pixel-clicking?** Two ideas run through every tool: **discover-then-act** — `desktop_discover` returns interactive entities with short-lived leases instead of raw coordinates, so `desktop_act` operates on *what* you mean, not *where* it was — and **per-action perception guards** that verify the target window's identity and bounds before input lands, catching wrong-window typing and stale-coordinate clicks before they happen.
 >
@@ -185,6 +185,7 @@ For a local checkout, register the built server directly:
 | `workspace_launch` | Launch apps and auto-detect new HWNDs (supports localized titles). |
 | `run_macro` | Batch up to 50 operations into a single round-trip for maximum efficiency. |
 | `clipboard` / `notification_show` | System-level text exchange and user alerts. |
+| `key_locker` | Manage credentials the terminal autofills for you (SSH key passphrases, sudo / login passwords). Secrets are entered once into the locker's own secure dialog and stored encrypted on this machine (Windows DPAPI); they are never shown to the assistant. Enable once, then autofill happens automatically at credential prompts. Disable with `DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1`. |
 
 ### 📊 Office (Excel)
 | Tool | Description |

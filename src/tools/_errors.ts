@@ -495,6 +495,26 @@ const SUGGESTS: Record<string, string[]> = {
   KeyLockerDisabled: [
     "The key locker is turned off by DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1. Remove that environment variable (and restart the MCP server) to use it.",
   ],
+  // Emitted EXPLICITLY by the key_locker tool via `failCode` (not classify): the host-lifecycle codes
+  // are surfaced dynamically from a caught `KeyLockerError.code`, and the two tool-specific codes below
+  // have no classify branch on purpose (SUGGESTS-only — the tool sets the code directly).
+  KeyLockerSpawnFailed: [
+    "The locker helper could not start. Ensure key-locker.exe is present (build it: cd tools/key-locker && dotnet publish -c Release -o ../../bin/).",
+    "This tool is Windows-only.",
+  ],
+  KeyLockerHandshakeRejected: [
+    "The locker helper started but its secure handshake was rejected. Restart the MCP server so a fresh locker session is created.",
+  ],
+  KeyLockerPipeUnavailable: [
+    "The connection to the locker helper was lost. Retry; if it persists, restart the MCP server.",
+  ],
+  KeyLockerSshUnresolved: [
+    "The ssh host key is not in known_hosts yet. Connect to the host once (ssh user@host) so its key is recorded, then save.",
+    "ProxyJump / ProxyCommand bindings are not supported — the first prompt may belong to the jump host.",
+  ],
+  KeyLockerNoSuchBinding: [
+    "No saved binding matches that URI. Run key_locker action='list' to see the exact display URIs, then retry with one of them.",
+  ],
 };
 
 /**

@@ -10,7 +10,7 @@
 npx -y @harusame64/desktop-touch-mcp
 ```
 
-31 ツール、Rust ネイティブエンジン (UIA 2ms)、PowerShell 透過フォールバック、日本語/CJK 完全対応、MIT。上記 1 行を Claude / Cursor / VS Code Copilot の MCP 設定に追加するだけで、Notepad、Excel、Chrome、Windows Terminal、その他あらゆるアプリを Claude が操作できるようになります。
+32 ツール、Rust ネイティブエンジン (UIA 2ms)、PowerShell 透過フォールバック、日本語/CJK 完全対応、MIT。上記 1 行を Claude / Cursor / VS Code Copilot の MCP 設定に追加するだけで、Notepad、Excel、Chrome、Windows Terminal、その他あらゆるアプリを Claude が操作できるようになります。
 
 > *v0.15: Rust ネイティブエンジンにより**平均 82 倍高速化** — UIA フォーカス取得 2ms、SSE2 SIMD 画像差分 13〜15 倍速。設定不要：エンジンは自動ロード、不在時は PowerShell に透過フォールバック。*
 > *v0.15.5: **固定リリース検証** — npm ランチャーは対応する GitHub Release tag だけを取得し、Windows runtime zip を検証してから展開します。*
@@ -137,7 +137,7 @@ npm run build
 
 ---
 
-## ツール一覧 (31 ツール — 29 stub catalog + 2 dynamic v2)
+## ツール一覧 (32 ツール — 30 stub catalog + 2 dynamic v2)
 
 > 📖 **詳細リファレンス**: [`docs/system-overview.md`](docs/system-overview.md) — 各ツールのパラメータ・応答形式・座標計算・レイヤーバッファ・技術ノートを網羅（英語）。
 
@@ -245,6 +245,11 @@ DOM を触る `browser_*` ツールは `includeContext:false` で末尾の `acti
 | ツール | 概要 |
 |---|---|
 | `excel` | Excel VBA マクロを COM 経由で記述・実行。`action='run_vba'` はマクロを管理下の Trusted Location に書き込んで実行、`action='check_access_vbom'` は読み取り専用の事前チェック。数式だけでは届かない処理を VBA で実行。初回のみ `node scripts/enable-access-vbom.mjs` |
+
+### Key Locker (1)
+| ツール | 概要 |
+|---|---|
+| `key_locker` | ターミナルが自動入力する認証情報（SSH 鍵のパスフレーズ、sudo / ログインパスワード）を管理。秘密情報はロッカー自身のセキュアダイアログに一度だけ入力し、この PC 上で暗号化保存（Windows DPAPI, current user）— アシスタントには一切見えない。一度有効化すれば、認証プロンプト時に自動入力される。`action='save'`（登録）/ `list` / `forget` / `set_policy` / `status`。`DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1` で無効化 |
 
 ---
 
