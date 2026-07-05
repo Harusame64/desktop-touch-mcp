@@ -23,7 +23,7 @@
 // run and the pane read) — no Win32, no direct terminal-tool import — so the capture-loop wires the live
 // primitives and tests drive fakes.
 
-import { tokenizeCommandSegments } from "./command-derivation.js";
+import { tokenizeCommandSegmentsWithOps } from "./command-derivation.js";
 import { ENV_ASSIGN_RE, interactiveSshTarget, programOf } from "./session-tracker.js";
 
 /** Which landed-detection mode a dispatched credential command uses. */
@@ -52,25 +52,59 @@ export interface LandedResult {
 const AUTH_DENIAL_RE =
   /permission denied|authentication failed(?:ure)?|auth(?:entication)? failure|sorry,? try again|access denied|incorrect password|login incorrect|too many authentication failures/i;
 
+/** Shells that, launched with no script argument (or only login/interactive flags), open a shell. */
+const INTERACTIVE_SHELLS = new Set(["su", "bash", "sh", "zsh", "fish", "dash", "ash", "ksh", "pwsh", "powershell"]);
+/** `sudo`/`doas` options that CONSUME the next token as their argument (so it isn't the command). */
+const PRIV_ARG_OPTS = new Set([
+  "-u", "-g", "-p", "-h", "-C", "-r", "-t", "-U", "-R", "-D",
+  "--user", "--group", "--prompt", "--host", "--close-from", "--role", "--type", "--other-user", "--chdir", "--chroot",
+]);
+
+/**
+ * Does a `sudo`/`doas` invocation open an INTERACTIVE shell (so it stays alive → Mode B)? True for the
+ * shell flags (`-i`/`-s`/`--login`/`--shell`) OR when the COMMAND it runs is itself an interactive shell
+ * — `sudo su -`, `sudo -u postgres su`, `sudo bash -l` (Opus #501 P2: the first-program-only check missed
+ * `sudo su`, the commonest root-escalation flow). Skips the privileged tool's OWN options + their args to
+ * find the command token. A bare shell WITH a script argument (`sudo bash deploy.sh`) is one-shot.
+ */
+function privLaunchesInteractiveShell(rest: readonly string[]): boolean {
+  let i = 0;
+  for (; i < rest.length; i++) {
+    const t = rest[i];
+    if (t === "-i" || t === "-s" || t === "--login" || t === "--shell") return true;
+    if (!t.startsWith("-")) break; // first non-option token = the command sudo/doas runs
+    if (PRIV_ARG_OPTS.has(t)) i++; // this option takes the next token as its value — skip it
+  }
+  const command = programOf(rest[i]);
+  if (command === "su") return true; // `su`/`su -`/`su user` always open a shell
+  if (INTERACTIVE_SHELLS.has(command)) {
+    // a login/interactive shell with no script argument stays alive
+    return rest.slice(i + 1).every((a) => a === "-l" || a === "-i" || a === "--login" || a === "--interactive");
+  }
+  return false;
+}
+
 /**
  * Classify which landed-mode a dispatched credential command uses. Interactive = an ssh INTERACTIVE
- * login (reuses the SAME `interactiveSshTarget` that pushes a session frame, so classification and
- * frame-push agree), a `sudo -i`/`-s`/`--login`/`--shell` (starts a shell), or any `su` form (`su`,
- * `su -`, `su user` all open an interactive shell). Everything else — a one-shot `ssh host cmd`, a
- * plain `sudo <cmd>`, `git push`, `ssh-keygen` — is one-shot (Mode A, exit-gated).
+ * login (reuses the SAME `interactiveSshTarget` that pushes a session frame), a `sudo`/`doas` that opens
+ * a shell (`-i`/`-s`/`sudo su`/`sudo bash -l`, see `privLaunchesInteractiveShell`), or a bare `su`.
+ * Everything else — a one-shot `ssh host cmd`, a plain `sudo <cmd>`, `git push`, `ssh-keygen` — is
+ * one-shot (Mode A, exit-gated).
  *
- * The redirect-before-program edge (`>log ssh host`) is intentionally NOT handled here: a mis-classified
- * mode is bounded-safe (a good secret is discarded and re-captured, never mis-filled), so a simple
- * env-assign skip + first-program check suffices.
+ * BACKGROUNDED / piped segments are skipped (they return to the prompt, not an interactive login — the
+ * same guard `recordDispatch` applies before pushing an ssh frame, so the two agree). The
+ * redirect-before-program edge is not handled: a mis-classified mode is bounded-safe (a good secret is
+ * discarded and re-captured, never mis-filled).
  */
 export function classifyLandedMode(command: string): LandedMode {
-  for (const segment of tokenizeCommandSegments(command)) {
+  for (const { tokens, backgrounded, pipedStdin } of tokenizeCommandSegmentsWithOps(command)) {
+    if (backgrounded || pipedStdin) continue; // a backgrounded `ssh host &` / a `… | ssh` opens no interactive login
     let start = 0;
-    while (start < segment.length && ENV_ASSIGN_RE.test(segment[start])) start++;
-    const program = programOf(segment[start]);
-    const rest = segment.slice(start + 1);
+    while (start < tokens.length && ENV_ASSIGN_RE.test(tokens[start])) start++;
+    const program = programOf(tokens[start]);
+    const rest = tokens.slice(start + 1);
     if (program === "ssh" && interactiveSshTarget(rest) !== null) return "interactive";
-    if (program === "sudo" && rest.some((a) => a === "-i" || a === "-s" || a === "--login" || a === "--shell")) return "interactive";
+    if ((program === "sudo" || program === "doas") && privLaunchesInteractiveShell(rest)) return "interactive";
     if (program === "su") return "interactive";
   }
   return "one-shot";
@@ -110,12 +144,18 @@ export interface LandedDeps {
  */
 export async function awaitLanded(deps: LandedDeps, command: string): Promise<LandedResult> {
   const mode = classifyLandedMode(command);
-  if (mode === "one-shot") {
-    const completion = await deps.runToExit();
-    const accepted = isExitAccepted(completion);
-    return { accepted, mode, reason: accepted ? "exit_0" : `not_exit_0:${completion.reason}` };
+  try {
+    if (mode === "one-shot") {
+      const completion = await deps.runToExit();
+      const accepted = isExitAccepted(completion);
+      return { accepted, mode, reason: accepted ? "exit_0" : `not_exit_0:${completion.reason}` };
+    }
+    const { tail, stillHiddenPrompt } = await deps.readPaneAfterAuth();
+    const accepted = isAuthAccepted(tail, stillHiddenPrompt);
+    return { accepted, mode, reason: accepted ? "auth_accepted" : "auth_rejected" };
+  } catch (err) {
+    // A seam failure (terminal read error, etc.) is treated as NOT-landed → the capture-loop discards
+    // the captured secret (fail safe). Never let a probe error crash the loop or trigger a save.
+    return { accepted: false, mode, reason: `probe_error:${err instanceof Error ? err.message : String(err)}` };
   }
-  const { tail, stillHiddenPrompt } = await deps.readPaneAfterAuth();
-  const accepted = isAuthAccepted(tail, stillHiddenPrompt);
-  return { accepted, mode, reason: accepted ? "auth_accepted" : "auth_rejected" };
 }

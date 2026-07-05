@@ -24,6 +24,15 @@ describe("classifyLandedMode", () => {
       "su",
       "su -",
       "su postgres",
+      // sudo whose COMMAND is itself an interactive shell (Opus #501 P2 — the commonest root flow)
+      "sudo su",
+      "sudo su -",
+      "sudo su - postgres",
+      "sudo -u postgres su",
+      "sudo bash -l",
+      "sudo bash", // bare shell, no script → interactive
+      "doas -s",
+      "doas su -",
     ]) {
       expect(classifyLandedMode(cmd)).toBe("interactive");
     }
@@ -34,7 +43,10 @@ describe("classifyLandedMode", () => {
       "ssh host uptime", // one-shot remote command
       "ssh -N -L 5432:localhost:5432 host", // port-forward, no shell
       "ssh -f user@host tunnel", // backgrounded
+      "ssh user@host &", // job-control backgrounded → not an interactive login
       "sudo apt update", // plain sudo command
+      "sudo bash deploy.sh", // shell running a SCRIPT → one-shot
+      "sudo -u deploy git pull", // sudo runs a non-shell command
       "git push",
       "ssh-keygen -y -f ~/.ssh/id_ed25519",
       "echo hi",
@@ -105,5 +117,18 @@ describe("awaitLanded", () => {
   it("Mode B (interactive): prompt cleared + no denial → accepted; denial → rejected", async () => {
     expect(await awaitLanded(modeBDeps("user@host:~$ ", false), "ssh user@host")).toMatchObject({ accepted: true, mode: "interactive", reason: "auth_accepted" });
     expect(await awaitLanded(modeBDeps("Permission denied, please try again.", true), "ssh user@host")).toMatchObject({ accepted: false, mode: "interactive", reason: "auth_rejected" });
+  });
+
+  it("a seam failure is treated as not-landed (fail safe, never crashes the loop)", async () => {
+    const throwingDeps: LandedDeps = {
+      runToExit: async () => { throw new Error("terminal read failed"); },
+      readPaneAfterAuth: async () => { throw new Error("pane read failed"); },
+    };
+    const a = await awaitLanded(throwingDeps, "git push"); // Mode A seam throws
+    expect(a.accepted).toBe(false);
+    expect(a.reason).toContain("probe_error");
+    const b = await awaitLanded(throwingDeps, "sudo su -"); // Mode B seam throws
+    expect(b.accepted).toBe(false);
+    expect(b.reason).toContain("probe_error");
   });
 });
