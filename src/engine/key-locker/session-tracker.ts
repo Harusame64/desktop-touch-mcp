@@ -194,11 +194,13 @@ export class SessionTracker {
   }
 }
 
-/** Leading `FOO=bar` env-assignment (skipped before the program token, mirrors L1). */
-const ENV_ASSIGN_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
+/** Leading `FOO=bar` env-assignment (skipped before the program token, mirrors L1). Exported for L3
+ *  landed-detection's mode classifier (same env-skip). */
+export const ENV_ASSIGN_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
-/** Program identity of a token: basename-ish, lowercased, `.exe` stripped (mirrors L1). */
-function programOf(token: string | undefined): string {
+/** Program identity of a token: basename-ish, lowercased, `.exe` stripped (mirrors L1). Exported for
+ *  L3 landed-detection. */
+export function programOf(token: string | undefined): string {
   if (token === undefined) return "";
   const base = token.replace(/\\/g, "/").split("/").pop() ?? token;
   return base.toLowerCase().replace(/\.exe$/, "");
@@ -275,7 +277,7 @@ function scanRedirectionsForStdin(tokens: readonly string[]): { touchesStdin: bo
  * `ssh host cmd`, a query mode (`-G`/`-Q`/`-V`), no destination, or a stdin-off-the-tty ssh — none of
  * which open a session.
  */
-function interactiveSshTarget(rawArgs: string[]): string | null {
+export function interactiveSshTarget(rawArgs: string[]): string | null {
   // Redirections are shell I/O plumbing the shell consumes before exec, and they can appear ANYWHERE —
   // before the destination (`ssh 2>&1 host`), after it, or after a remote command. Scan the WHOLE argv:
   // a redirect that TOUCHES fd 0 (`ssh host < in`, `ssh 0>f host`) takes stdin off the tty → the ssh is
