@@ -515,6 +515,23 @@ const SUGGESTS: Record<string, string[]> = {
   KeyLockerNoSuchBinding: [
     "No saved binding matches that URI. Run key_locker action='list' to see the exact display URIs, then retry with one of them.",
   ],
+  // Binding-URI parse failures reachable via key_locker `save`/`forget`/`set_policy` (L1 grammar).
+  // Shared grammar hint — the typed message already names the offending character/component.
+  UnknownScheme: [
+    "The URI scheme is not one of: ssh:// (user@host:port), sudo:// (host/targetUser), https-cred:// (host:port), sshkey:// (SHA256:…).",
+  ],
+  MissingComponent: [
+    "The binding URI is missing a required part. Examples: ssh://user@host:22, sudo://host/root, https-cred://github.com:443, sshkey://SHA256:abc…",
+  ],
+  MalformedUri: [
+    "The binding URI is malformed. Percent-encode any character outside the grammar and follow the scheme's shape (e.g. ssh://user@host:22).",
+  ],
+  BadPercentEscape: [
+    "A percent-escape in the URI is invalid — use %XX with two hex digits.",
+  ],
+  BadPort: [
+    "The port must be an integer between 1 and 65535.",
+  ],
 };
 
 /**

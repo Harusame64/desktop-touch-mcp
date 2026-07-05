@@ -100,10 +100,10 @@ describe.skipIf(process.platform !== "win32")(
     });
 
     it("registers the full public tool surface", () => {
-      // The server registers ~31 tools (29 stub catalog incl. ADR-026 Phase 3
-      // screenshot_query/screenshot_gc + 2 v2; V1 fallbacks vary by env). 30 is a
-      // tight lower bound that still catches a registration regression dropping a
-      // tool family.
+      // The server registers ~32 tools (30 stub catalog incl. ADR-026 Phase 3
+      // screenshot_query/screenshot_gc + ADR-014 key_locker, + 2 v2; V1 fallbacks
+      // vary by env). 30 is a tight lower bound that still catches a registration
+      // regression dropping a tool family.
       expect(tools.length).toBeGreaterThanOrEqual(30);
     });
 
