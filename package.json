@@ -116,7 +116,7 @@
     "sharp": "^0.35.2",
     "typescript": "^6.0.2",
     "typescript-eslint": "^8.62.1",
-    "vitest": "^4.1.9",
+    "vitest": "^4.1.10",
     "ws": "^8.21.0",
     "zod": "^4.3.6"
   }
