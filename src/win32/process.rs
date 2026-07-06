@@ -263,9 +263,10 @@ pub fn win32_get_process_command_line(pid: u32) -> napi::Result<Option<Vec<Strin
         // Fail-safe bounds validation (Codex PR#510 P2): before forming the wide
         // slice, prove the whole [Buffer, Buffer+Length) span lies within the
         // bytes the kernel ACTUALLY returned. `Buffer` must sit past the header
-        // and inside `buf`, and `Length` (a BYTE count) must be even for UTF-16.
-        // Any inconsistency (e.g. an OS behavior change or a capped retry) fails
-        // safe to None rather than reading outside the local query buffer.
+        // and inside `buf`, be 2-byte aligned, and `Length` (a BYTE count) must be
+        // even for UTF-16. Any inconsistency (e.g. an OS behavior change or a
+        // capped retry) fails safe to None rather than reading outside the local
+        // query buffer.
         let len_bytes = us.Length as usize;
         let returned = (ret_len as usize).min(buf.len());
         let buf_start = buf.as_ptr() as usize;
@@ -274,6 +275,10 @@ pub fn win32_get_process_command_line(pid: u32) -> napi::Result<Option<Vec<Strin
         let str_start = us.Buffer.0 as usize;
         if us.Buffer.is_null()
             || (len_bytes & 1) != 0
+            // `from_raw_parts::<u16>` below requires 2-byte alignment; `buf` is a
+            // Vec<u8> (byte-aligned only), so an odd `Buffer` would be UB — the same
+            // rationale that made the header use read_unaligned (Opus PR#510 R4 P3).
+            || (str_start & 1) != 0
             || str_start < buf_body
             || str_start > buf_limit
             || len_bytes > buf_limit - str_start
