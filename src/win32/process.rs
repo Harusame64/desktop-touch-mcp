@@ -251,14 +251,37 @@ pub fn win32_get_process_command_line(pid: u32) -> napi::Result<Option<Vec<Strin
         if (ret_len as usize) < std::mem::size_of::<UNICODE_STRING>() {
             return Ok(None);
         }
-        let us = unsafe { &*(buf.as_ptr() as *const UNICODE_STRING) };
-        // Defense-in-depth (Opus PR#510 P3): bound the wide length by the bytes the
-        // kernel ACTUALLY returned, not just the self-reported UNICODE_STRING.Length,
-        // so a corrupt Length can never drive an over-read past `buf`.
+        // Read the UNICODE_STRING header via read_unaligned: `buf` is a Vec<u8>
+        // (Rust guarantees only byte alignment), so forming `&UNICODE_STRING`
+        // directly would be UB regardless of the later checks. Copy the header
+        // fields into a properly aligned local — UNICODE_STRING is Copy — before
+        // inspecting them (Codex PR#510 P2).
         let header = std::mem::size_of::<UNICODE_STRING>();
-        let avail_wchars = (ret_len as usize).saturating_sub(header) / 2;
-        let wlen = ((us.Length as usize) / 2).min(avail_wchars); // Length is a BYTE count
-        if wlen == 0 || us.Buffer.is_null() {
+        let us: UNICODE_STRING =
+            unsafe { std::ptr::read_unaligned(buf.as_ptr() as *const UNICODE_STRING) };
+
+        // Fail-safe bounds validation (Codex PR#510 P2): before forming the wide
+        // slice, prove the whole [Buffer, Buffer+Length) span lies within the
+        // bytes the kernel ACTUALLY returned. `Buffer` must sit past the header
+        // and inside `buf`, and `Length` (a BYTE count) must be even for UTF-16.
+        // Any inconsistency (e.g. an OS behavior change or a capped retry) fails
+        // safe to None rather than reading outside the local query buffer.
+        let len_bytes = us.Length as usize;
+        let returned = (ret_len as usize).min(buf.len());
+        let buf_start = buf.as_ptr() as usize;
+        let buf_body = buf_start + header;
+        let buf_limit = buf_start + returned;
+        let str_start = us.Buffer.0 as usize;
+        if us.Buffer.is_null()
+            || (len_bytes & 1) != 0
+            || str_start < buf_body
+            || str_start > buf_limit
+            || len_bytes > buf_limit - str_start
+        {
+            return Ok(None);
+        }
+        let wlen = len_bytes / 2;
+        if wlen == 0 {
             return Ok(None);
         }
 
@@ -282,8 +305,20 @@ pub fn win32_get_process_command_line(pid: u32) -> napi::Result<Option<Vec<Strin
         let mut out: Vec<String> = Vec::with_capacity(argc as usize);
         for i in 0..argc as isize {
             let p: PWSTR = unsafe { *argv.offset(i) };
-            let s = unsafe { p.to_string() }.unwrap_or_default();
-            out.push(s);
+            match unsafe { p.to_string() } {
+                Ok(s) => out.push(s),
+                Err(_) => {
+                    // Fail-safe (Codex PR#510 P2): an argv element with invalid
+                    // UTF-16 must NOT be silently coerced to "" — that could let a
+                    // malformed ssh line be misclassified as a safe one-shot and
+                    // disclose. Free the CommandLineToArgvW allocation and decline
+                    // per the fail-safe-to-None contract.
+                    unsafe {
+                        let _ = LocalFree(Some(HLOCAL(argv as *mut core::ffi::c_void)));
+                    }
+                    return Ok(None);
+                }
+            }
         }
         // Release the single allocation CommandLineToArgvW returned.
         unsafe {
