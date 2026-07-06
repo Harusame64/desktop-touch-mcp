@@ -24,10 +24,13 @@
 // LOWERCASED into `ProcessIdentity.name`), registers the shell pid + the session ssh pid, and drives
 // `tick()` on a timer. That live wiring lands with the terminal-event subscription.
 //
-// FAIL-SAFE (§3, Opus R2 P2): any doubt sinks the pane to `markUnknown` (decline-to-derive), NEVER a
-// stale trusted `isRemote:true`. Two doubt sources: (a) an unwatchable pane (its shell pid vanished) and
-// (b) NESTED ssh — when the registered outer ssh exits while the tracker still holds ≥ 2 remote frames, a
-// single pop would strand the invisible inner frame → markUnknown instead (SP-L3-OQ-7 depth rule).
+// FAIL-SAFE (§3, Opus/Codex R2+R3 P2): any doubt sinks the pane to `markUnknown` (decline-to-derive),
+// NEVER a stale trusted `isRemote:true` and NEVER a pop-to-local on a live session. Doubt sources: (a) an
+// unwatchable pane (its shell pid vanished); (b) NESTED ssh — the registered outer ssh exits while the
+// tracker still holds ≥ 2 remote frames, so a single pop would strand the invisible inner frame (SP-L3-OQ-7
+// depth rule); (c) a registered session ssh that is PRESENT but UNREADABLE this tick (identify() reads ""
+// for a LIVE pid — R2); (d) a remote frame with NO live watch — a registration that could not confirm a
+// live `ssh`, or the non-atomic push↔register window (R3: `noteSshOpened` sink + the `tick` backstop).
 
 /** The tracker surface the watch drives (a subset of `SessionTracker`, so tests inject a fake). */
 export interface SessionTrackerSink {
@@ -109,19 +112,36 @@ export class SshSessionWatch {
   }
 
   /**
-   * Register the OUTERMOST interactive-session ssh child pid for a pane — the wiring calls this when it
-   * pushes an interactive frame, having correlated the ssh child it just spawned. The watch records that
-   * pid's identity and fires only on ITS exit (never on a sibling tunnel / one-shot ssh — P2-A). A no-op
-   * if the pane isn't watched; a pid that isn't a live `ssh` is ignored (a late/bad pid never seeds a
-   * spurious exit — it would otherwise mismatch identity next tick and fire). Nested logins re-register
-   * the same visible outer pid; the invisible inner frame is covered by the depth pivot in `tick`.
+   * Register the OUTERMOST interactive-session ssh child pid for a pane — the wiring calls this in the SAME
+   * synchronous turn it pushes the interactive frame (push FIRST, then this — no `await`/tick between, so
+   * `remoteDepth` already reflects the push here), having correlated the ssh child it just spawned. The
+   * watch records that pid's identity and fires only on ITS exit (never on a sibling tunnel / one-shot ssh
+   * — P2-A). A no-op if the pane isn't watched. Four registration cases, disambiguated by Toolhelp liveness
+   * (`parentMap.has`) since identify() reads "" for BOTH a gone pid AND a live-but-unreadable one:
+   *   (2) present + a readable `ssh` ⇒ WATCH it (record pid + startTime).
+   *   (1) pid gone/bad, (3) present but a readable NON-ssh (wrong pid), (4) present but UNREADABLE (maybe
+   *       the real elevated/other-user ssh, maybe a bad pid — indistinguishable) ⇒ cannot establish a
+   *       reliable watch: clear the slot, and if a remote frame was ALREADY pushed (`remoteDepth > 0`) sink
+   *       it to `markUnknown` so no unwatched `isRemote:true` is stranded (the stale-remote wrong-target —
+   *       a later LOCAL command would derive-remote into a REMOTE secret; Codex/Opus L3-3 PR#505 R3 P2).
+   *       A speculative call on a still-LOCAL pane (`remoteDepth 0`) just clears the slot — it must NOT
+   *       nuke the local anchor. Nested logins re-register the same visible outer pid; the invisible inner
+   *       frame is covered by the depth pivot in `tick`.
    */
   noteSshOpened(paneId: string, sshPid: number): void {
     const pane = this.panes.get(paneId);
     if (pane === undefined) return;
-    const id = this.deps.snapshot().identify(sshPid);
-    if (id.name !== SSH_PROGRAM) { pane.session = null; return; } // not a live ssh — ignore
-    pane.session = { pid: sshPid, startedAt: id.startTimeMs };
+    const snap = this.deps.snapshot();
+    // (2) Register ONLY a pid we can POSITIVELY confirm is a live `ssh` (present in the Toolhelp map AND a
+    //     readable `ssh` identity). Toolhelp liveness gates identify()'s empty-means-gone-OR-unreadable.
+    if (snap.parentMap.has(sshPid)) {
+      const id = snap.identify(sshPid);
+      if (id.name === SSH_PROGRAM) { pane.session = { pid: sshPid, startedAt: id.startTimeMs }; return; }
+    }
+    // (1)/(3)/(4) No reliable watch. Drop the slot; if a frame was already pushed, sink it rather than
+    // strand an unwatched isRemote:true. On a still-local pane this is a no-op beyond clearing the slot.
+    pane.session = null;
+    if (this.deps.tracker.remoteDepth(paneId) > 0) this.deps.tracker.markUnknown(paneId);
   }
 
   /**
@@ -142,7 +162,15 @@ export class SshSessionWatch {
         this.panes.delete(paneId);
         continue;
       }
-      if (pane.session === null) continue; // no interactive ssh registered — nothing to pop
+      // No interactive ssh registered. Normally nothing to pop — but a pane that holds a remote frame with
+      // NO live watch (a non-atomic push↔register window, or a registration that could not confirm a live
+      // ssh) is unsafe: a later LOCAL command would derive-remote against a stale isRemote:true. Sink it to
+      // markUnknown as a systemic backstop (never a stray fire in normal flow — remoteDepth tracks the
+      // stack in lockstep with session, so this is >0 only in that genuine unwatched-frame state).
+      if (pane.session === null) {
+        if (this.deps.tracker.remoteDepth(paneId) > 0) this.deps.tracker.markUnknown(paneId);
+        continue;
+      }
       // Liveness is authoritative from the Toolhelp map (a pid present as a KEY is alive); identify() is a
       // secondary per-process read that returns "" for BOTH a gone pid AND a LIVE-but-UNREADABLE one
       // (OpenProcess ACCESS_DENIED on an elevated/other-user ssh). So the session ssh has CONFIRMABLY exited
