@@ -310,8 +310,10 @@ export class SshSessionWatch {
    * `shellPid` and, for each LIVE `ssh`-named DESCENDANT (subtree, not just direct — a `sudo ssh`/wrapper/
    * tmux-reparented login is a grandchild), classify its argv with `interactiveSshTarget` (the SAME rule that
    * decides whether an ssh opens a session). Returns true (⇒ caller `markUnknown`s, decline-not-disclose) iff
-   * any descendant is an interactive in-bound login OR its argv is UNREADABLE (`commandLine` null — an
-   * elevated/cross-user ssh we cannot introspect: fail-safe to "possibly interactive"). A tunnel (`-N`/`-f`/
+   * any LIVE descendant is itself UNREADABLE (identify() name "" — an elevated/cross-user process we cannot
+   * even name, e.g. the ssh in `sudo ssh`; Codex PR#512 P1), OR is an interactive in-bound `ssh` login, OR is
+   * an `ssh` whose argv is UNREADABLE (`commandLine` null — an elevated/cross-user ssh we cannot introspect:
+   * fail-safe to "possibly interactive"). A tunnel (`-N`/`-f`/
    * `-L`), a one-shot (`ssh host cmd`), or scp/sftp/git-over-ssh (whose inner ssh carries a trailing remote
    * command) all classify null ⇒ NOT flagged, so those panes keep autofilling (OQ-W-7 = option B). Short-
    * circuits on the first interactive/unreadable ssh, so the common no-ssh subtree is one adjacency walk.
@@ -331,7 +333,19 @@ export class SshSessionWatch {
         if (seen.has(pid)) continue;
         seen.add(pid);
         frontier.push(pid);
-        if (snap.identify(pid).name !== SSH_PROGRAM) continue; // only ssh descendants can be an in-bound login
+        // Every pid reached here is a KEY in `parentMap` (it came from
+        // buildChildrenMap, which inverts parentMap) ⇒ ALIVE per the module's
+        // liveness contract. So identify()'s "" here is NOT a gone pid — it is a
+        // LIVE-but-UNREADABLE descendant (win32 OpenProcess denied on an elevated
+        // / cross-user process, e.g. `sudo ssh user@host` where the ssh itself
+        // runs as another identity). Fail CLOSED: such a descendant could be an
+        // in-bound ssh login, and the name gate must NOT pre-empt the argv
+        // fail-safe below (Codex PR#512 P1 — otherwise a `sudo ssh` leaves the
+        // depth-0 pane trusted-local and a later fill discloses to the remote).
+        // A READABLE non-ssh descendant genuinely cannot be an in-bound login ⇒ skip.
+        const descName = snap.identify(pid).name;
+        if (descName === "") return true; // unreadable LIVE descendant ⇒ possibly interactive ssh (decline)
+        if (descName !== SSH_PROGRAM) continue; // readable non-ssh ⇒ not an in-bound login
         // Fail-safe on ANY non-classifiable ssh: unreadable (null) OR an EMPTY argv — an ssh we cannot
         // classify must sink the pane, never trust-local (Opus PR#512 P2: `interactiveSshTarget([])` returns
         // null, which without this guard would fall through to "not flagged" = trust local, the opposite of

@@ -201,10 +201,14 @@ describe("SshSessionWatch — R3 P2: an unwatchable remote frame must sink, not 
     watch.noteSshOpened("pane-1", 2000); // 2000 is alive but UNREADABLE — cannot confirm a live ssh to watch
     expect(sink.unknowns).toEqual(["pane-1"]); // sink the unwatchable remote frame (stale-remote wrong-target guard)
     expect(sink.ends).toEqual([]); // NEVER a pop-to-local
-    // …no session was registered, and the frame is already sunk (depth 0), so a later tick fires nothing more.
+    // A later tick re-derives from scratch (the module is stateless per tick). No session was registered and
+    // the frame is sunk (depth 0), BUT pid 2000 is STILL a live-but-UNREADABLE descendant of the local shell,
+    // so the depth-0 W-2b scan now correctly re-declines it (Codex PR#512 P1): an unreadable live ssh candidate
+    // must keep the pane sunk, never drift back to trusted-local. markUnknown is the safe idempotent decline
+    // and re-fires each tick the doubt persists (same steady-state as R2's unreadable-session guard).
     watch.tick();
-    expect(sink.ends).toEqual([]);
-    expect(sink.unknowns).toEqual(["pane-1"]);
+    expect(sink.ends).toEqual([]); // NEVER a pop-to-local
+    expect(sink.unknowns).toEqual(["pane-1", "pane-1"]); // registration sink + tick re-decline
     expect(watch.isWatching("pane-1")).toBe(true); // shell alive ⇒ still watched
   });
 
@@ -474,6 +478,32 @@ describe("SshSessionWatch — W-2b: an UNREGISTERED interactive ssh on a LOCAL p
     // Opus PR#512 P2: interactiveSshTarget([]) returns null; without the length===0 guard that would fall
     // through to "not flagged" = trust local (fail-OPEN). Treat an empty argv as unreadable.
     const { watch, sink } = setup(localPane({ 4100: { parent: 1000, name: "ssh", start: 41, argv: [] } }));
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    watch.tick();
+    expect(sink.unknowns).toEqual(["pane-1"]);
+  });
+
+  it("a LIVE descendant whose NAME is UNREADABLE (`sudo ssh` with the ssh elevated) ⇒ markUnknown (Codex PR#512 P1)", () => {
+    // The ssh itself runs elevated/cross-user, so win32 identify() returns name "" — and it is a KEY in
+    // parentMap (= ALIVE), NOT a gone pid. The name gate must NOT skip it before the fail-safe: an unreadable
+    // LIVE descendant of a LOCAL shell could be an in-bound ssh login, so decline. Without the fix the pane
+    // stayed trusted-local and a later assistant `sudo` would disclose a LOCAL secret to the REMOTE prompt.
+    const { watch, sink } = setup(localPane({
+      2500: { parent: 1000, name: "sudo", start: 21 },
+      2600: { parent: 2500, name: "", start: 22 }, // the elevated ssh — unreadable name (and argv)
+    }));
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    watch.tick();
+    expect(sink.unknowns).toEqual(["pane-1"]);
+    expect(sink.ends).toEqual([]);
+  });
+
+  it("a LIVE DIRECT-child with an UNREADABLE name ⇒ markUnknown (any unreadable live descendant fails closed)", () => {
+    // A readable non-ssh child is skipped (see the plain-local-pane case below); only an UNREADABLE live
+    // child fails closed — we cannot rule out that it is an in-bound ssh.
+    const { watch, sink } = setup(localPane({ 2700: { parent: 1000, name: "", start: 23 } }));
     watch.watchPane("pane-1", 1000);
     sink.setDepth("pane-1", 0);
     watch.tick();
