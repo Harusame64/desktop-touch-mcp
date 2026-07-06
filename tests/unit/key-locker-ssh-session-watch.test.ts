@@ -295,6 +295,30 @@ describe("SshSessionWatch — R5: trust ONLY at exactly depth 1 (decline a re-an
   });
 });
 
+describe("SshSessionWatch — R6: re-watching a pane must not silently drop a live ssh session", () => {
+  it("re-watching a pane that holds a LIVE ssh session ⇒ markUnknown before resetting (never trust-local silently)", () => {
+    const { watch, sink } = setup(SHELL_WITH_SSH);
+    watch.watchPane("pane-1", 1000);
+    watch.noteSshOpened("pane-1", 2000); // a live ssh session is registered
+    watch.watchPane("pane-1", 1000); // re-anchor the same shell — must NOT silently reset to a trusted-local slot
+    expect(sink.unknowns).toEqual(["pane-1"]);
+    expect(watch.isWatching("pane-1")).toBe(true); // still watched (session reset to null)
+  });
+
+  it("the FIRST watchPane (no prior session) does not markUnknown", () => {
+    const { watch, sink } = setup(SHELL_WITH_SSH);
+    watch.watchPane("pane-1", 1000); // initial registration — nothing to decline
+    expect(sink.unknowns).toEqual([]);
+  });
+
+  it("re-watching a pane with NO live session (session already null) does not markUnknown", () => {
+    const { watch, sink } = setup(SHELL_WITH_SSH);
+    watch.watchPane("pane-1", 1000);
+    watch.watchPane("pane-1", 1000); // no session was registered ⇒ nothing to decline
+    expect(sink.unknowns).toEqual([]);
+  });
+});
+
 describe("SshSessionWatch — noteSshOpened hygiene", () => {
   it("noteSshOpened on an UNWATCHED pane is a no-op (no throw, no registration)", () => {
     const { watch, sink, set } = setup(SHELL_WITH_SSH);

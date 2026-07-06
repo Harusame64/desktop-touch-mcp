@@ -129,6 +129,11 @@ export class SshSessionWatch {
    * Re-registering a pane resets it (drops any tracked session).
    */
   watchPane(paneId: string, shellPid: number): void {
+    // Re-anchoring a pane that STILL holds a live ssh session: silently resetting to a trusted-local slot
+    // (`session = null`) would let the R5 `tick` guard miss it (that guard needs `session !== null` to see
+    // the live-remote-vs-local contradiction), leaving a live remote login derived as local. Decline first,
+    // then reset — a re-anchor over a live session is doubt, so sink it (Opus/Codex R6).
+    if (this.panes.get(paneId)?.session != null) this.deps.tracker.markUnknown(paneId);
     this.panes.set(paneId, { shellPid, session: null });
   }
 
@@ -242,11 +247,10 @@ export class SshSessionWatch {
         this.deps.tracker.markUnknown(paneId); pane.session = null; continue;
       }
       // (d) CONFIRMED exit: pid gone, reused by a readable non-ssh, or reused by a DIFFERENT ssh (a non-zero
-      //     creation time that does not match). `depth` is provably 1 here (the `!== 1` guard declined 0 and
-      //     ≥ 2), so this pops to local; the `else markUnknown` is a defensive assertion — now UNREACHABLE,
-      //     kept as the last line of defense if the depth guard is ever weakened (SP-L3-OQ-7 depth rule).
-      if (depth <= 1) this.deps.tracker.noteSessionEnd(paneId);
-      else this.deps.tracker.markUnknown(paneId);
+      //     creation time that does not match). `depth` is provably 1 here — the `!== 1` guard above already
+      //     declined depth 0 and depth ≥ 2 — so this is always a single-frame pop to local (SP-L3-OQ-7: the
+      //     nested case that would have needed markUnknown is handled by that guard, never reached here).
+      this.deps.tracker.noteSessionEnd(paneId);
       pane.session = null; // consumed — do not re-fire until a new session is registered
     }
   }
