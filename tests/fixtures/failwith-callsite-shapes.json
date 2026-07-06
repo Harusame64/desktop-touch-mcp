@@ -531,14 +531,14 @@
     },
     {
       "file": "src/tools/terminal.ts",
-      "line": 1181,
+      "line": 1195,
       "tool": "terminal:send",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/terminal.ts",
-      "line": 1468,
+      "line": 1484,
       "tool": "terminal:send",
       "errKind": "identifier",
       "contextShape": "object-plain"

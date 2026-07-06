@@ -15,6 +15,8 @@ import { describe, it, expect, afterEach } from "vitest";
 import {
   setTerminalDispatchHook,
   fireTerminalDispatch,
+  terminalSendHandler,
+  terminalRunHandler,
   type TerminalDispatchEvent,
 } from "../../src/tools/terminal.js";
 
@@ -90,5 +92,55 @@ describe("terminal dispatch hook seam", () => {
     expect(paneId).toBe(hwnd.toString(10));
     expect(paneId).toBe("439041101");
     expect(paneId).toMatch(/^\d+$/);
+  });
+});
+
+describe("terminal dispatch hook — no phantom fire on delivery failure (Codex PR#511 P1)", () => {
+  afterEach(() => {
+    setTerminalDispatchHook(null);
+  });
+
+  // A window title that findTerminalWindow can never resolve. Both handlers
+  // short-circuit at window resolution BEFORE any delivery path runs, so the
+  // dispatch hook must not fire — the fix moved the notification to fire only
+  // AFTER a delivery path actually mutates the pane. (Whether the native window
+  // enumeration returns "not found" or throws when the addon is absent, the
+  // outer failure path returns without delivering, so the assertion holds
+  // without faking Win32.)
+  const NO_WINDOW = "no_such_window_dispatch_hook_failpath_zzz";
+
+  it("terminalSendHandler does NOT fire the hook when the window is not found", async () => {
+    const events: TerminalDispatchEvent[] = [];
+    setTerminalDispatchHook((ev) => events.push(ev));
+
+    await terminalSendHandler({
+      windowTitle: NO_WINDOW,
+      input: "echo should-not-fire",
+      method: "auto",
+      chunkSize: 100,
+      pressEnter: true,
+      focusFirst: false,
+      restoreFocus: false,
+      preferClipboard: false,
+      pasteKey: "auto",
+      trackFocus: false,
+      settleMs: 100,
+    });
+
+    expect(events).toEqual([]); // no delivery ⇒ no dispatch record
+  });
+
+  it("terminalRunHandler does NOT fire the hook when the window is not found", async () => {
+    const events: TerminalDispatchEvent[] = [];
+    setTerminalDispatchHook((ev) => events.push(ev));
+
+    await terminalRunHandler({
+      windowTitle: NO_WINDOW,
+      input: "echo should-not-fire",
+      until: { mode: "quiet", quietMs: 100 },
+      timeoutMs: 1_000,
+    });
+
+    expect(events).toEqual([]); // window_not_found short-circuit ⇒ no dispatch record
   });
 });
