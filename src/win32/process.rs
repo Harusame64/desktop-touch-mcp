@@ -252,7 +252,12 @@ pub fn win32_get_process_command_line(pid: u32) -> napi::Result<Option<Vec<Strin
             return Ok(None);
         }
         let us = unsafe { &*(buf.as_ptr() as *const UNICODE_STRING) };
-        let wlen = (us.Length as usize) / 2; // Length is a BYTE count
+        // Defense-in-depth (Opus PR#510 P3): bound the wide length by the bytes the
+        // kernel ACTUALLY returned, not just the self-reported UNICODE_STRING.Length,
+        // so a corrupt Length can never drive an over-read past `buf`.
+        let header = std::mem::size_of::<UNICODE_STRING>();
+        let avail_wchars = (ret_len as usize).saturating_sub(header) / 2;
+        let wlen = ((us.Length as usize) / 2).min(avail_wchars); // Length is a BYTE count
         if wlen == 0 || us.Buffer.is_null() {
             return Ok(None);
         }
@@ -266,6 +271,12 @@ pub fn win32_get_process_command_line(pid: u32) -> napi::Result<Option<Vec<Strin
         let mut argc: i32 = 0;
         let argv = unsafe { CommandLineToArgvW(PCWSTR(wz.as_ptr()), &mut argc) };
         if argv.is_null() || argc <= 0 {
+            // CommandLineToArgvW success always yields argc >= 1, so a non-null argv
+            // with argc <= 0 is unreachable — but free it if it ever occurs (Opus
+            // PR#510 P3: no leak on the edge) rather than dropping the LocalAlloc block.
+            if !argv.is_null() {
+                unsafe { let _ = LocalFree(Some(HLOCAL(argv as *mut core::ffi::c_void))); }
+            }
             return Ok(None);
         }
         let mut out: Vec<String> = Vec::with_capacity(argc as usize);
