@@ -2,8 +2,9 @@
 // Pins the depth pivot (≤1 pop / ≥2 markUnknown), shell-gone markUnknown, the REGISTERED-session-pid
 // contract (a sibling tunnel/one-shot ssh exiting must NOT fire — Opus R1 P2-A), pid-reuse-is-an-exit,
 // bad/late-pid registration, the degenerate-snapshot skip (P3-A), the live-but-UNREADABLE session ssh
-// never popping-to-local (R2 P2), and an unwatchable remote frame sinking to markUnknown rather than
-// stranding isRemote:true (R3 P2). Pure reconciliation over a fake process snapshot + a fake tracker sink.
+// never popping-to-local (R2 P2), an unwatchable remote frame sinking to markUnknown rather than stranding
+// isRemote:true (R3 P2), and the R4 fold to depth-1-only trust — nested logins (depth ≥ 2) and zero-
+// creation-time partial reads decline. Pure reconciliation over a fake process snapshot + a fake tracker sink.
 import { describe, expect, it } from "vitest";
 import {
   SshSessionWatch,
@@ -73,6 +74,21 @@ function unreadableSession(): ProcessSnapshot {
   };
 }
 
+// A snapshot where the session ssh (2000) is ALIVE and its NAME reads "ssh", but its creation-time read
+// failed (startTimeMs 0) — models the win32 partial read (OpenProcess ok, GetProcessTimes failed; name and
+// time are read INDEPENDENTLY). A real running process never has creation time 0, so 0 is a doubt sentinel.
+function sshWithZeroTime(): ProcessSnapshot {
+  const parentMap = new Map<number, number>([[500, 0], [1000, 500], [2000, 1000]]); // 2000 alive
+  return {
+    parentMap,
+    identify: (pid) => {
+      if (pid === 500) return { name: "windowsterminal", startTimeMs: 1 };
+      if (pid === 1000) return { name: "powershell", startTimeMs: 10 };
+      return { name: "ssh", startTimeMs: 0 }; // 2000: live ssh, creation-time read failed
+    },
+  };
+}
+
 describe("SshSessionWatch — the depth pivot on a registered session ssh exit (SP-L3-OQ-7)", () => {
   it("depth ≤ 1: the registered session ssh exits ⇒ noteSessionEnd (pop one frame)", () => {
     const { watch, sink, set } = setup(SHELL_WITH_SSH);
@@ -91,7 +107,7 @@ describe("SshSessionWatch — the depth pivot on a registered session ssh exit (
     watch.noteSshOpened("pane-1", 2000);
     sink.setDepth("pane-1", 2); // tracker holds two remote frames (ssh a → ssh b)
     set(SHELL_ONLY);
-    watch.tick();
+    watch.tick(); // the nested guard declines at depth ≥ 2 before the exit is even evaluated (R4)
     expect(sink.unknowns).toEqual(["pane-1"]);
     expect(sink.ends).toEqual([]);
   });
@@ -202,6 +218,54 @@ describe("SshSessionWatch — R3 P2: an unwatchable remote frame must sink, not 
     sink.setDepth("pane-1", 1);
     watch.tick();
     expect(sink.unknowns).toEqual(["pane-1"]);
+    expect(sink.ends).toEqual([]);
+  });
+});
+
+describe("SshSessionWatch — R4: fold to depth-1-only trust (nested + zero creation time decline)", () => {
+  it("registration at depth ≥ 2 (nested login) ⇒ markUnknown, no session registered (even for a valid ssh)", () => {
+    const { watch, sink } = setup(SHELL_WITH_SSH);
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 2); // a second interactive frame already pushed (ssh a → ssh b)
+    watch.noteSshOpened("pane-1", 2000); // 2000 is a valid live ssh, but the pane is already nested
+    expect(sink.unknowns).toEqual(["pane-1"]); // decline — the inner login is unobservable, never poppable
+    expect(sink.ends).toEqual([]);
+    watch.tick(); // no session registered (frame sunk to depth 0) ⇒ nothing more fires
+    expect(sink.ends).toEqual([]);
+  });
+
+  it("tick at depth ≥ 2 with the outer ssh still ALIVE ⇒ markUnknown (self-enforced nested guard)", () => {
+    // The user exited only the INNER login (invisible locally) — the outer ssh is still alive. A depth ≥ 2
+    // session-bearing pane must decline rather than keep trusting the now-wrong top frame.
+    const { watch, sink } = setup(SHELL_WITH_SSH);
+    watch.watchPane("pane-1", 1000);
+    watch.noteSshOpened("pane-1", 2000); // registered at depth 0…
+    sink.setDepth("pane-1", 2); // …then the tracker deepened without a re-registration
+    watch.tick();
+    expect(sink.unknowns).toEqual(["pane-1"]);
+    expect(sink.ends).toEqual([]);
+  });
+
+  it("tick: a live registered ssh with a ZERO creation time ⇒ markUnknown, NEVER noteSessionEnd", () => {
+    const sink = new FakeSink();
+    let snap: ProcessSnapshot = snapshotOf(SHELL_WITH_SSH);
+    const watch = new SshSessionWatch({ snapshot: () => snap, tracker: sink });
+    watch.watchPane("pane-1", 1000);
+    watch.noteSshOpened("pane-1", 2000); // registers startedAt=20 from a readable snapshot
+    sink.setDepth("pane-1", 1);
+    snap = sshWithZeroTime(); // 2000 alive, name "ssh", but its creation-time read failed (startTimeMs 0)
+    watch.tick();
+    expect(sink.ends).toEqual([]); // a partial read is NOT a confirmed exit — never pop a live remote
+    expect(sink.unknowns).toEqual(["pane-1"]);
+  });
+
+  it("registration: a live ssh with a ZERO creation time is not watched; an already-pushed frame is sunk", () => {
+    const sink = new FakeSink();
+    const watch = new SshSessionWatch({ snapshot: () => sshWithZeroTime(), tracker: sink });
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 1); // frame pushed
+    watch.noteSshOpened("pane-1", 2000); // 2000 present + "ssh" but startTimeMs 0 ⇒ no reliable baseline
+    expect(sink.unknowns).toEqual(["pane-1"]); // sink the unwatchable frame rather than store a 0 baseline
     expect(sink.ends).toEqual([]);
   });
 });
