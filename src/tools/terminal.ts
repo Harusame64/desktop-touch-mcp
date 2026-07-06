@@ -46,6 +46,29 @@ import {
 } from "./_envelope.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Dispatch hook seam (ADR-014 v2 R3 L3-4 S-A)
+// Mirrors the setTerminalReadHook pattern (wait-until.js) so an external module
+// (the Key Locker wiring) can be notified of every dispatched terminal command
+// without terminal.ts taking a hard dependency on it. Fire-and-forget.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** ADR-014 v2 R3 L3-4 S-A: notified once per dispatched terminal command
+ *  (send/run) with the pane's hwnd id + the USER's command text. Fire-and-forget;
+ *  a hook throw never breaks a dispatch. Null = no observer (default). */
+export interface TerminalDispatchEvent { paneId: string; command: string }
+let terminalDispatchHook: ((ev: TerminalDispatchEvent) => void) | null = null;
+export function setTerminalDispatchHook(fn: ((ev: TerminalDispatchEvent) => void) | null): void {
+  terminalDispatchHook = fn;
+}
+/** Fire the dispatch hook (if any). Exported for unit tests to exercise the
+ *  try/catch isolation directly; production callers are the send/run handlers. */
+export function fireTerminalDispatch(paneId: string, command: string): void {
+  const hook = terminalDispatchHook;
+  if (hook === null) return;
+  try { hook({ paneId, command }); } catch { /* fire-and-forget: never break a dispatch */ }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Schemas
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -861,6 +884,12 @@ export const terminalSendHandler = async ({
     if (!win) {
       return failWith("Terminal window not found: " + windowTitle, "terminal:send", { windowTitle });
     }
+
+    // ADR-014 v2 R3 L3-4 S-A: notify the dispatch observer (if any) with the
+    // pane's hwnd id + the USER's input (never a rewritten/quoted form).
+    // Placed after the null-window guard so it never fires for an unresolved
+    // window; fire-and-forget so it can never alter send behaviour.
+    fireTerminalDispatch(String(win.hwnd), input);
 
     // ── ADR-013 Option E: foreground_flash 明示 opt-in path ─────────────────
     // method:'foreground_flash' は WT 等 WM_CHAR 不対応 terminal 用、Clipboard
@@ -1762,7 +1791,7 @@ function keepOnlyProvidedKeys<T extends Record<string, unknown>>(
  * Read raw text from a terminal window (for run polling — avoids full ToolResult overhead).
  * Returns null if window not found.
  */
-async function readTerminalRaw(windowTitle: string): Promise<{ text: string; marker: string } | null> {
+export async function readTerminalRaw(windowTitle: string): Promise<{ text: string; marker: string } | null> {
   const win = findTerminalWindow(windowTitle);
   if (!win) return null;
   const raw = (await getTextViaTextPattern(win.title)) ?? "";
@@ -1899,6 +1928,13 @@ export const terminalRunHandler = async ({
   }
 
   const hwnd = win.hwnd;
+
+  // ADR-014 v2 R3 L3-4 S-A: notify the dispatch observer (if any) with the
+  // pane's hwnd id + the USER's ORIGINAL input — fired here, after the window is
+  // resolved but BEFORE buildExitCommand rewrites it into `sendInput` (exit
+  // mode), so the observer always sees the user's command, not the epilogue-
+  // wrapped form. Fire-and-forget so it can never alter run behaviour.
+  fireTerminalDispatch(String(win.hwnd), input);
 
   // ── exit-mode shell resolution (issue #386) ─────────────────────────────────
   // Needs the window's process name (for shell:'auto' detection), so it runs
