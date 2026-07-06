@@ -3,8 +3,9 @@
 // contract (a sibling tunnel/one-shot ssh exiting must NOT fire — Opus R1 P2-A), pid-reuse-is-an-exit,
 // bad/late-pid registration, the degenerate-snapshot skip (P3-A), the live-but-UNREADABLE session ssh
 // never popping-to-local (R2 P2), an unwatchable remote frame sinking to markUnknown rather than stranding
-// isRemote:true (R3 P2), and the R4 fold to depth-1-only trust — nested logins (depth ≥ 2) and zero-
-// creation-time partial reads decline. Pure reconciliation over a fake process snapshot + a fake tracker sink.
+// isRemote:true (R3 P2), the R4 fold to depth-1-only trust — nested logins (depth ≥ 2) and zero-creation-
+// time partial reads decline — and the R5 depth-exactly-1 guard (depth 0 + live ssh ⇒ sink, depth 0 + gone
+// ⇒ drop-keep-local). Pure reconciliation over a fake process snapshot + a fake tracker sink.
 import { describe, expect, it } from "vitest";
 import {
   SshSessionWatch,
@@ -267,6 +268,30 @@ describe("SshSessionWatch — R4: fold to depth-1-only trust (nested + zero crea
     watch.noteSshOpened("pane-1", 2000); // 2000 present + "ssh" but startTimeMs 0 ⇒ no reliable baseline
     expect(sink.unknowns).toEqual(["pane-1"]); // sink the unwatchable frame rather than store a 0 baseline
     expect(sink.ends).toEqual([]);
+  });
+});
+
+describe("SshSessionWatch — R5: trust ONLY at exactly depth 1 (decline a re-anchored live remote)", () => {
+  it("depth 0 with a LIVE registered ssh ⇒ markUnknown (the tracker was re-anchored local while ssh lives)", () => {
+    const { watch, sink } = setup(SHELL_WITH_SSH);
+    watch.watchPane("pane-1", 1000);
+    watch.noteSshOpened("pane-1", 2000); // registers {2000, 20}
+    sink.setDepth("pane-1", 0); // the tracker re-anchored the pane to LOCAL without resetting the watch
+    watch.tick(); // 2000 is still ALIVE — trusting local would derive a local binding for a live remote
+    expect(sink.unknowns).toEqual(["pane-1"]);
+    expect(sink.ends).toEqual([]);
+  });
+
+  it("depth 0 with a GONE pid ⇒ drop the stale watch, do NOT markUnknown (benign re-anchor race)", () => {
+    const { watch, sink, set } = setup(SHELL_WITH_SSH);
+    watch.watchPane("pane-1", 1000);
+    watch.noteSshOpened("pane-1", 2000); // registers {2000, 20}
+    sink.setDepth("pane-1", 0); // re-anchored local…
+    set(SHELL_ONLY); // …and the ssh already exited — the local anchor is LEGITIMATE
+    watch.tick();
+    expect(sink.unknowns).toEqual([]); // must NOT nuke a correct local pane
+    expect(sink.ends).toEqual([]); // and no pop (the tracker is already local)
+    expect(watch.isWatching("pane-1")).toBe(true); // pane still watched; only the stale session slot is dropped
   });
 });
 
