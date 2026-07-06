@@ -11,8 +11,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { KeyLockerHost } from "../../src/engine/key-locker/key-locker-host.js";
 import { KeyLockerManager } from "../../src/engine/key-locker/key-locker-manager.js";
 import { BindingStore } from "../../src/engine/key-locker/binding-store.js";
-import { keyLockerHandler, __setKeyLockerManagerForTest } from "../../src/tools/key-locker-tool.js";
+import { keyLockerHandler, __setKeyLockerManagerForTest, __setSshExecForTest } from "../../src/tools/key-locker-tool.js";
 import type { KeyLockerArgs } from "../../src/tools/key-locker-tool.js";
+import type { ExecFn } from "../../src/engine/key-locker/ssh-resolve.js";
 
 /** A manager whose host capture/delete + consent dialog are fakes (no exe / GUI / ssh). */
 class FakeManager extends KeyLockerManager {
@@ -59,6 +60,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   __setKeyLockerManagerForTest(null);
+  __setSshExecForTest(null);
   if (savedDisable === undefined) delete process.env.DESKTOP_TOUCH_DISABLE_KEY_LOCKER;
   else process.env.DESKTOP_TOUCH_DISABLE_KEY_LOCKER = savedDisable;
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
@@ -96,13 +98,14 @@ describe("key_locker — the consent gate (every action except status)", () => {
 });
 
 describe("key_locker — list", () => {
-  it("returns non-secret metadata (with confirmEveryInjection default false), no opaqueId/secret", async () => {
+  it("returns non-secret metadata (confirmEveryInjection defaults TRUE = confirm), no opaqueId/secret", async () => {
     acceptConsent();
     seed("sudo://host/root", { scheme: "sudo", displayUri: "sudo://host/root", host: "host", targetUser: "root", createdAt: "2026-07-05T00:00:00.000Z" });
     const r = await call({ action: "list" });
     const bindings = r.bindings as Array<Record<string, unknown>>;
     expect(bindings).toHaveLength(1);
-    expect(bindings[0]).toEqual({ displayUri: "sudo://host/root", scheme: "sudo", host: "host", createdAt: "2026-07-05T00:00:00.000Z", confirmEveryInjection: false });
+    // Unset policy ⇒ RESOLVED confirm=true (matches the capture-loop's `?? true` backstop, not `?? false`).
+    expect(bindings[0]).toEqual({ displayUri: "sudo://host/root", scheme: "sudo", host: "host", createdAt: "2026-07-05T00:00:00.000Z", confirmEveryInjection: true });
     // No secret / opaqueId / targetUser leak in the tool output.
     expect(JSON.stringify(r)).not.toContain("aa".repeat(16));
     expect(bindings[0]).not.toHaveProperty("opaqueId");
@@ -136,6 +139,53 @@ describe("key_locker — save (non-ssh, faked capture)", () => {
     mgr.acceptOnConsent = true;
     const r = await call({ action: "save", uri: "not-a-uri" });
     expect(r.ok).toBe(false);
+  });
+});
+
+describe("key_locker — save (ssh, faked ssh -G / ssh-keygen exec) — #500 P3-3 parity lock", () => {
+  it("routes ssh through resolveCanonicalForSshCommand and binds under the RESOLVED canonical (fp tail)", async () => {
+    mgr.acceptOnConsent = true;
+    // A real known_hosts file so the resolver's existsSync() passes; its bytes are irrelevant (the
+    // faked ssh-keygen returns the fingerprint regardless — we are pinning the tool's ROUTING, not ssh).
+    const kh = join(dir, "known_hosts");
+    writeFileSync(kh, "real.example.com ssh-ed25519 AAAAdummy\n", "utf8");
+    const fp = "SHA256:ABCdef0123456789ABCdef0123456789ABCdef01234";
+    const fakeExec: ExecFn = async (file, args) => {
+      if (file === "ssh" && args[0] === "-G") {
+        return { code: 0, stdout: `hostname real.example.com\nuser bob\nport 22\nuserknownhostsfile ${kh}\n`, stderr: "" };
+      }
+      if (file === "ssh-keygen") return { code: 0, stdout: `1 ${fp} real.example.com\n`, stderr: "" };
+      return { code: 1, stdout: "", stderr: "unexpected exec" };
+    };
+    __setSshExecForTest(fakeExec);
+
+    const r = await call({ action: "save", uri: "ssh://bob@real.example.com" });
+    expect(r).toMatchObject({ captured: true });
+    expect(mgr.captureCalls).toHaveLength(1);
+    const rows = BindingStore.load(dir).list();
+    expect(rows).toHaveLength(1);
+    // Bound under the resolver's canonical (the fp-set tail the capture-loop's deriveBinding also
+    // produces — save↔derive key parity), NOT a raw URI; the secret sits under the same opaqueId.
+    expect(rows[0]).toMatchObject({ scheme: "ssh", host: "real.example.com", user: "bob", port: 22, fpSet: [fp], opaqueId: mgr.captureCalls[0] });
+    expect(rows[0].canonicalKey).toContain("|fp=");
+  });
+
+  it("host-not-known (empty fp union) → KeyLockerSshUnresolved, fails closed BEFORE capture", async () => {
+    mgr.acceptOnConsent = true;
+    const fakeExec: ExecFn = async (file, args) => {
+      if (file === "ssh" && args[0] === "-G") {
+        // A known_hosts path that does not exist ⇒ existsSync false ⇒ empty union ⇒ host-not-known.
+        return { code: 0, stdout: `hostname new.example.com\nuser bob\nport 22\nuserknownhostsfile ${join(dir, "absent_known_hosts")}\n`, stderr: "" };
+      }
+      return { code: 1, stdout: "", stderr: "" };
+    };
+    __setSshExecForTest(fakeExec);
+
+    const r = await call({ action: "save", uri: "ssh://bob@new.example.com" });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe("KeyLockerSshUnresolved");
+    expect(BindingStore.load(dir).list()).toHaveLength(0);
+    expect(mgr.captureCalls).toHaveLength(0); // no dialog opened — resolution fails closed first
   });
 });
 

@@ -40,9 +40,11 @@ export interface BindingMeta {
   /** ISO-8601, stamped by the caller. */
   createdAt: string;
   /**
-   * Per-binding injection policy (L4 §1 `set_policy`): when true, the locker asks the user to confirm
-   * EVERY autofill for this binding (a per-binding opt-in — never a global no-confirm). Absent/false =
-   * the default confirm-every behaviour. The L1 plan §5.1 RESERVED this as "an L3 field, not set in L1";
+   * Per-binding injection confirm policy (L4 §1 `set_policy`). The RESOLVED policy is
+   * `confirmEveryInjection ?? true` (see `getPolicy`): the default (ABSENT field, or `true`) CONFIRMS
+   * every autofill — the D2 safe backstop. `false` is the per-binding opt-OUT ("no-confirm is a
+   * per-binding opt-in", plan §1 — never a global no-confirm). The load-bearing consumer is the
+   * capture-loop's `confirmPolicyFor`. The L1 plan §5.1 RESERVED this as "an L3 field, not set in L1";
    * it is additive-optional, so it does not break the frozen L1 row shape.
    */
   confirmEveryInjection?: boolean;
@@ -172,6 +174,16 @@ export class BindingStore {
     row.confirmEveryInjection = confirmEveryInjection;
     this.save();
     return true;
+  }
+
+  /**
+   * The RESOLVED per-binding confirm policy (the capture-loop's `confirmPolicyFor`, D2). Returns
+   * `confirmEveryInjection ?? true`: an UNKNOWN binding or an UNSET field ⇒ TRUE = confirm (the safe
+   * backstop); only an explicit `confirmEveryInjection: false` opts out. O(1); mirrors `setPolicy`.
+   * Never touches the locker (metadata only).
+   */
+  getPolicy(canonicalKey: string): boolean {
+    return this.data.bindings[canonicalKey]?.confirmEveryInjection ?? true;
   }
 
   /** Enumerate all rows (management / L4). */

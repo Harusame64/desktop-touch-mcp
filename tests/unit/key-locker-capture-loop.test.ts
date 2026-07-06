@@ -82,6 +82,39 @@ describe("runCaptureLoop — declines (never touch the locker)", () => {
   });
 });
 
+describe("runCaptureLoop — [Never] tombstone suppression (isNever, NO-MATCH only, P3-1)", () => {
+  it("a tombstoned NO-MATCH binding ⇒ decline BEFORE capture, no dialog", async () => {
+    const deps = makeDeps({ isNever: vi.fn(() => true) });
+    expect(await runCaptureLoop(deps, EVENT)).toEqual({ kind: "declined", reason: "never_suppressed" });
+    expect(deps.isNever).toHaveBeenCalledWith("sudo://localhost/root");
+    expect(deps.capture).not.toHaveBeenCalled();
+    expect(deps.mintOpaqueId).not.toHaveBeenCalled();
+  });
+
+  it("a tombstone does NOT block a resolved MATCH (a manually re-saved binding still autofills)", async () => {
+    const deps = makeDeps({
+      isNever: vi.fn(() => true),
+      resolveBinding: vi.fn(async () => ({ opaqueId: "stored-1" })),
+    });
+    expect(await runCaptureLoop(deps, EVENT)).toEqual({ kind: "filled_from_store", verified: true });
+    // MATCH path returns before the NO-MATCH never-check is ever consulted.
+    expect(deps.isNever).not.toHaveBeenCalled();
+    expect(deps.injectPane).toHaveBeenCalledWith(SUDO, "stored-1", true);
+  });
+
+  it("isNever UNWIRED ⇒ no suppression (captures + saves as before)", async () => {
+    const deps = makeDeps({ isNever: undefined });
+    expect(await runCaptureLoop(deps, EVENT)).toEqual({ kind: "saved", verified: true });
+    expect(deps.capture).toHaveBeenCalledOnce();
+  });
+
+  it("isNever returns false ⇒ not suppressed (captures)", async () => {
+    const deps = makeDeps({ isNever: vi.fn(() => false) });
+    expect(await runCaptureLoop(deps, EVENT)).toEqual({ kind: "saved", verified: true });
+    expect(deps.capture).toHaveBeenCalledOnce();
+  });
+});
+
 describe("runCaptureLoop — Mode-B interactive login (mode-agnostic landed, P1-1)", () => {
   it("interactive auth-accepted ⇒ saved (NOT gated on an exit code)", async () => {
     const deps = makeDeps({

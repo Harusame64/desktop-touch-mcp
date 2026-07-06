@@ -65,8 +65,10 @@ export interface CredentialEvent {
  */
 export type CaptureLoopOutcome =
   /** Nothing touched the locker: the pane session is UNKNOWN (§3 fail-safe), the command carries no
-   *  credential L1 attributes, or the binding is not pane-injectable (askpass/git-credential forward flow). */
-  | { kind: "declined"; reason: "unknown_session" | "not_a_credential" | "not_pane_channel" }
+   *  credential L1 attributes, the binding is not pane-injectable (askpass/git-credential forward flow),
+   *  or the user previously chose [Never] for this binding (`never_suppressed` — the save is not
+   *  re-offered, and with no stored secret there is nothing to autofill either). */
+  | { kind: "declined"; reason: "unknown_session" | "not_a_credential" | "not_pane_channel" | "never_suppressed" }
   /** MATCH path: the per-binding confirm backstop (D2) was declined — no injection. */
   | { kind: "confirm_rejected" }
   /** MATCH path: a stored secret was autofilled. `verified` = the locker's injection-instant re-verify. */
@@ -117,6 +119,14 @@ export interface CaptureLoopDeps {
    * next prompt). The seam EXPRESSES the §1 contract point here rather than silently dropping it (強制命令 9).
    */
   onNever?(canonicalKey: string): void;
+  /**
+   * OPTIONAL negative-binding gate — the `[Never]` tombstone the `onNever` seam persists (`NeverStore`).
+   * Consulted in the NO-MATCH branch AFTER canonical is derived and BEFORE `capture` (P3-1): a tombstoned
+   * binding declines with `never_suppressed` (no re-offer, no capture dialog). A resolved MATCH BYPASSES
+   * this entirely — a manually re-saved binding still autofills; the tombstone only suppresses the
+   * capture-and-save OFFER, never a stored secret. Unwired ⇒ no suppression (behaves exactly as before).
+   */
+  isNever?(canonicalKey: string): boolean;
   /** Mint the opaqueId the loop will bind on save (`randomBytes(16).toString("hex")`; a fake in tests). */
   mintOpaqueId(): string;
   /** ISO-8601 timestamp for `meta.createdAt` (injected so tests are deterministic). */
@@ -173,6 +183,11 @@ export async function runCaptureLoop(deps: CaptureLoopDeps, event: CredentialEve
   }
 
   // ── NO MATCH: capture → inject → landed → OFFER → persist only on [Save] (P1-2). ───────────────────
+  // A binding the user tombstoned via [Never] is not re-offered — decline BEFORE opening the capture
+  // dialog (P3-1: NO-MATCH-ONLY — the MATCH path above already autofilled a stored secret regardless, so
+  // a manually re-saved binding is unaffected by a lingering tombstone). Unwired `isNever` ⇒ no change.
+  if (deps.isNever?.(canonical) === true) return { kind: "declined", reason: "never_suppressed" };
+
   const opaqueId = deps.mintOpaqueId(); // minted before capture; bound on save, deleted otherwise
   let captured = false;                 // did a secret actually get stored under opaqueId?
   let committed = false;                // did the user [Save] it? (retain the locker entry)
