@@ -41,8 +41,11 @@ export interface SessionTrackerSink {
 
 /** One process's identity in a snapshot (from win32 `getProcessIdentityByPid`). */
 export interface ProcessIdentity {
-  /** Image name, LOWERCASED, `.exe` stripped (e.g. "ssh", "powershell"). "" when unknown/gone. The live
-   *  adapter MUST lowercase win32's `processName` (it is not lowercased at source). */
+  /** Image name, LOWERCASED, `.exe` stripped (e.g. "ssh", "powershell"). "" when the pid is GONE **or**
+   *  present-but-UNREADABLE this tick: win32 `getProcessIdentityByPid` returns empty on an OpenProcess
+   *  failure — including ACCESS_DENIED on a LIVE elevated/other-user process — not only on a dead pid. So a
+   *  caller MUST NOT infer exit from "" alone; cross-check `parentMap` (the liveness authority) first. The
+   *  live adapter MUST lowercase win32's `processName` (it is not lowercased at source). */
   name: string;
   /** Creation time (ms since the Windows epoch); 0 on failure. Distinguishes a REUSED pid from the same. */
   startTimeMs: number;
@@ -54,7 +57,8 @@ export interface ProcessSnapshot {
    *  EMPTY map = a native-snapshot failure (`buildProcessParentMap` swallows errors → {}), NOT "no
    *  processes" — the watch skips such a tick rather than mis-read every shell as dead. */
   parentMap: Map<number, number>;
-  /** Identity for a pid (name + creation time). A gone pid returns `{ name: "", startTimeMs: 0 }`. */
+  /** Identity for a pid (name + creation time). A gone OR present-but-unreadable pid returns
+   *  `{ name: "", startTimeMs: 0 }` — use `parentMap` (the liveness authority) to tell the two apart. */
   identify(pid: number): ProcessIdentity;
 }
 
@@ -139,12 +143,21 @@ export class SshSessionWatch {
         continue;
       }
       if (pane.session === null) continue; // no interactive ssh registered — nothing to pop
-      // The registered session ssh has EXITED iff its pid is gone OR its creation time changed (pid reuse).
+      // Liveness is authoritative from the Toolhelp map (a pid present as a KEY is alive); identify() is a
+      // secondary per-process read that returns "" for BOTH a gone pid AND a LIVE-but-UNREADABLE one
+      // (OpenProcess ACCESS_DENIED on an elevated/other-user ssh). So the session ssh has CONFIRMABLY exited
+      // only when its pid is gone from the map, or present as a DIFFERENT readable process (pid reuse).
+      const alive = snap.parentMap.has(pane.session.pid);
       const id = snap.identify(pane.session.pid);
-      if (id.name === SSH_PROGRAM && id.startTimeMs === pane.session.startedAt) continue; // still alive
-      // (b) Depth pivot (SP-L3-OQ-7): a lone pop is safe only when the tracker holds ≤ 1 remote frame; with
-      //     NESTED frames (≥ 2) the invisible inner login means a single pop would strand a remote frame →
-      //     markUnknown rather than relabel remote-as-local (wrong-target guard).
+      if (alive && id.name === SSH_PROGRAM && id.startTimeMs === pane.session.startedAt) continue; // same ssh
+      // (b) Live but UNREADABLE this tick (present + empty identity): DOUBT, not a confirmed exit. A pop here
+      //     would relabel a still-REMOTE pane as local → a LOCAL secret autofilled into a REMOTE prompt (the
+      //     inverse wrong-target). Fail-safe to markUnknown — never a pop-to-local on a live session, never a
+      //     stale trusted isRemote:true (Codex/Opus L3-3 PR#505 R2 P2).
+      if (alive && id.name === "") { this.deps.tracker.markUnknown(paneId); pane.session = null; continue; }
+      // (c) CONFIRMED exit (pid gone, or reused by another process). Depth pivot (SP-L3-OQ-7): a lone pop is
+      //     safe only when the tracker holds ≤ 1 remote frame; with NESTED frames (≥ 2) the invisible inner
+      //     login means a single pop would strand a remote frame → markUnknown rather than relabel.
       if (this.deps.tracker.remoteDepth(paneId) <= 1) this.deps.tracker.noteSessionEnd(paneId);
       else this.deps.tracker.markUnknown(paneId);
       pane.session = null; // consumed — do not re-fire until a new session is registered

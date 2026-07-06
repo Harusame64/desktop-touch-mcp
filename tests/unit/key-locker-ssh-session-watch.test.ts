@@ -1,8 +1,8 @@
 // key-locker-ssh-session-watch.test.ts — ADR-014 R3 L3-3 PR3 (SP-L3-OQ-7, the ssh session-end watch).
 // Pins the depth pivot (≤1 pop / ≥2 markUnknown), shell-gone markUnknown, the REGISTERED-session-pid
 // contract (a sibling tunnel/one-shot ssh exiting must NOT fire — Opus R1 P2-A), pid-reuse-is-an-exit,
-// bad/late-pid registration, and the degenerate-snapshot skip (P3-A). Pure reconciliation over a fake
-// process snapshot + a fake tracker sink.
+// bad/late-pid registration, the degenerate-snapshot skip (P3-A), and the live-but-UNREADABLE session ssh
+// never popping-to-local (R2 P2). Pure reconciliation over a fake process snapshot + a fake tracker sink.
 import { describe, expect, it } from "vitest";
 import {
   SshSessionWatch,
@@ -130,6 +130,38 @@ describe("SshSessionWatch — P2-A: a NON-session ssh must never pop the frame",
     watch.tick();
     expect(sink.ends).toEqual([]);
     expect(sink.unknowns).toEqual([]);
+  });
+});
+
+describe("SshSessionWatch — R2 P2: a live-but-UNREADABLE session ssh must not pop-to-local", () => {
+  // A snapshot where the session ssh (2000) is STILL ALIVE (present as a parentMap key) but its per-process
+  // identity read fails this tick (empty name) — models win32 `getProcessIdentityByPid` returning "" on an
+  // OpenProcess ACCESS_DENIED against a LIVE elevated/other-user ssh. The generic `snapshotOf` helper can't
+  // express this (it couples parentMap presence to a readable identity), so build the snapshot by hand.
+  function unreadableSession(): ProcessSnapshot {
+    const parentMap = new Map<number, number>([[500, 0], [1000, 500], [2000, 1000]]); // 2000 alive
+    return {
+      parentMap,
+      identify: (pid) => {
+        if (pid === 500) return { name: "windowsterminal", startTimeMs: 1 };
+        if (pid === 1000) return { name: "powershell", startTimeMs: 10 };
+        return { name: "", startTimeMs: 0 }; // 2000 present but UNREADABLE (and any gone pid also reads "")
+      },
+    };
+  }
+
+  it("present in parentMap but identify() empty ⇒ markUnknown, NEVER noteSessionEnd (no pop-to-local)", () => {
+    const sink = new FakeSink();
+    let snap: ProcessSnapshot = snapshotOf(SHELL_WITH_SSH);
+    const watch = new SshSessionWatch({ snapshot: () => snap, tracker: sink });
+    watch.watchPane("pane-1", 1000);
+    watch.noteSshOpened("pane-1", 2000); // registers start=20 from the readable snapshot
+    sink.setDepth("pane-1", 1); // depth ≤ 1: the OLD code would have popped-to-local here
+    snap = unreadableSession(); // session ssh now alive-but-unreadable
+    watch.tick();
+    expect(sink.ends).toEqual([]); // NOT popped — a live remote session must never be relabelled local
+    expect(sink.unknowns).toEqual(["pane-1"]); // declined to derive instead (fail-safe)
+    expect(watch.isWatching("pane-1")).toBe(true); // shell alive ⇒ still watched (only the session is consumed)
   });
 });
 
