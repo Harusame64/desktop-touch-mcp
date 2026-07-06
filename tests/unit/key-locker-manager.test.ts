@@ -196,3 +196,65 @@ describe("KeyLockerManager.ensureConsent — the acquire path", () => {
     expect(mgr.consentCalls).toBe(0);
   });
 });
+
+describe("KeyLockerManager.disposeIfIdle — dormancy", () => {
+  const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  it("returns false when nothing is live", async () => {
+    const mgr = new FakeHostManager({ storeDir: freshDir(), now: () => 999_999 });
+    expect(await mgr.disposeIfIdle(0)).toBe(false);
+  });
+
+  it("disposes a live host only after the idle window; a later op lazily re-starts", async () => {
+    const d = freshDir();
+    writeConsent(d, { version: 1, acceptedAt: "2026-07-06T00:00:00.000Z" });
+    let clock = 1_000;
+    const mgr = new FakeHostManager({ storeDir: d, now: () => clock });
+
+    const first = mgr.withHost(async () => "x");
+    mgr.settleStart();
+    expect(await first).toBe("x");
+    expect(mgr.startCalls).toBe(1);
+
+    // Still within the window ⇒ no dispose.
+    expect(await mgr.disposeIfIdle(5_000)).toBe(false);
+    expect(mgr.disposed).toBe(0);
+
+    // Past the idle window ⇒ dispose.
+    clock += 6_000;
+    expect(await mgr.disposeIfIdle(5_000)).toBe(true);
+    expect(mgr.disposed).toBe(1);
+    // Idempotent: nothing live now.
+    expect(await mgr.disposeIfIdle(5_000)).toBe(false);
+
+    // A later secret op re-starts the host (the resolved start promise re-runs).
+    const second = mgr.withHost(async () => "y");
+    expect(await second).toBe("y");
+    expect(mgr.startCalls).toBe(2);
+  });
+
+  it("never disposes while an op is IN FLIGHT, even past the window", async () => {
+    const d = freshDir();
+    writeConsent(d, { version: 1, acceptedAt: "2026-07-06T00:00:00.000Z" });
+    let clock = 1_000;
+    const mgr = new FakeHostManager({ storeDir: d, now: () => clock });
+
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((r) => { release = r; });
+    const op = mgr.withHost(async () => { await gate; return "done"; });
+    mgr.settleStart();
+    await flush(); // let withHost pass ensureHost + enter the try (inFlight++)
+
+    clock += 100_000; // far past any window
+    expect(await mgr.disposeIfIdle(5_000)).toBe(false); // op in flight ⇒ not idle
+    expect(mgr.disposed).toBe(0);
+
+    release!();
+    expect(await op).toBe("done");
+    // The completed op just refreshed the dormancy timer, so advance past the window again before it
+    // is eligible to dispose.
+    clock += 6_000;
+    expect(await mgr.disposeIfIdle(5_000)).toBe(true);
+    expect(mgr.disposed).toBe(1);
+  });
+});

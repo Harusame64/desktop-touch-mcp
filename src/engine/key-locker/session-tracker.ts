@@ -169,6 +169,20 @@ export class SessionTracker {
   }
 
   /**
+   * How many REMOTE frames are stacked above the base local shell (0 = local / unknown / never
+   * anchored). The ssh process-tree watch (SP-L3-OQ-7) reads this to decide, when it observes the
+   * pane's outermost ssh child EXIT, between a lone `noteSessionEnd` (depth ≤ 1 — the one visible ssh
+   * maps 1:1 to the one remote frame) and `markUnknown` (depth ≥ 2 — NESTED ssh the local process tree
+   * cannot see, so a single pop would strand an inner remote frame → a later local command wrong-targets
+   * that inner host; Opus L3-3 PR#495 R4 P3). Never a stale trusted `isRemote:true` on doubt.
+   */
+  remoteDepth(paneId: string): number {
+    const st = this.panes.get(paneId);
+    if (st === undefined || st.stack === null) return 0;
+    return Math.max(0, st.stack.length - 1);
+  }
+
+  /**
    * Pop the top ssh frame — the manager calls this when it observes the pane's `ssh` child process
    * exit (the authoritative session-end signal, §3). Popping the base local frame is a no-op (you
    * can't ssh-out of the local shell). Never sinks to unknown by itself.
