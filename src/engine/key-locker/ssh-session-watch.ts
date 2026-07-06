@@ -55,6 +55,20 @@
 // (`!parentMap.has(shellPid)`) with no startTime check — a reused shell pid can mask shell death; it
 // self-heals (the dead shell's ssh child dies/reparents ⇒ the session check catches it) and is tracked in
 // the plan, not gated on.
+//
+// SCOPE / FIXED POINT (Opus PR#505 closing sweep): this pure module reconciles every STEADY (watch,tracker)
+// state to safety — any desync self-heals within one `tick`, so at rest there is no wrong-target. What a
+// pure module CANNOT close is the INTER-TICK WINDOW: a credential fill derives straight from `tracker.get()`
+// (never through this watch), so a wiring mutation that transiently puts the tracker in a wrong-target state
+// can be read before the next tick reconciles. Closing that window is therefore a WIRING obligation, not a
+// module fix. INVARIANTS THE LIVE WIRING MUST HONOR (deferred to the terminal-subscription PR, plan §Risks):
+//   (W1) Re-anchor atomicity: `tracker.beginLocalSession(paneId)` MUST run in the SAME synchronous turn as
+//        `watchPane(paneId, shellPid)` — never re-anchor the tracker to local while a live watch session
+//        lingers (Edge 3).
+//   (W2) Close atomicity: `unwatchPane(paneId)` MUST be paired same-turn with the tracker forgetting/clearing
+//        that pane's frames — never drop the watch while a remote frame stays trusted (Edge 7).
+//   (W3) Derive/mutate atomicity + tick liveness: push-then-`noteSshOpened` in one turn, NO credential derive
+//        interleaved across an un-reconciled turn, and `tick` driven on the timer (Edges 1/2/4/9).
 
 /** The tracker surface the watch drives (a subset of `SessionTracker`, so tests inject a fake). */
 export interface SessionTrackerSink {
