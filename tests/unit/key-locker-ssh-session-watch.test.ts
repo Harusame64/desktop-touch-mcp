@@ -14,7 +14,11 @@ import {
   type SshWatchDeps,
 } from "../../src/engine/key-locker/ssh-session-watch.js";
 
-interface Proc { parent: number; name: string; start: number }
+// `argv` (W-2b): the process's launch argv (as `getProcessCommandLineByPid` would return). Only the
+// W-2b unregistered-ssh scan reads it, and ONLY for `ssh`-named descendants of a LOCAL-anchored pane
+// (session===null AND remoteDepth===0). An ssh proc with no `argv` reads as UNREADABLE (null ⇒ fail-safe
+// "possibly interactive"). Non-ssh procs are never queried, so their `argv` is irrelevant.
+interface Proc { parent: number; name: string; start: number; argv?: string[] }
 
 function snapshotOf(procs: Record<number, Proc>): ProcessSnapshot {
   const parentMap = new Map<number, number>();
@@ -25,6 +29,7 @@ function snapshotOf(procs: Record<number, Proc>): ProcessSnapshot {
       const p = procs[pid];
       return p !== undefined ? { name: p.name, startTimeMs: p.start } : { name: "", startTimeMs: 0 };
     },
+    commandLine: (pid) => procs[pid]?.argv ?? null, // null = unreadable (fail-safe in the W-2b scan)
   };
 }
 
@@ -72,6 +77,7 @@ function unreadableSession(): ProcessSnapshot {
       if (pid === 1000) return { name: "powershell", startTimeMs: 10 };
       return { name: "", startTimeMs: 0 }; // 2000 present but UNREADABLE (and any gone pid also reads "")
     },
+    commandLine: () => null, // not reached: these snapshots drive REGISTERED-session tests (W-2b scan skipped)
   };
 }
 
@@ -87,6 +93,7 @@ function sshWithZeroTime(): ProcessSnapshot {
       if (pid === 1000) return { name: "powershell", startTimeMs: 10 };
       return { name: "ssh", startTimeMs: 0 }; // 2000: live ssh, creation-time read failed
     },
+    commandLine: () => null, // not reached: this snapshot drives a REGISTERED-session test (W-2b scan skipped)
   };
 }
 
@@ -331,10 +338,17 @@ describe("SshSessionWatch — noteSshOpened hygiene", () => {
   });
 
   it("registering a bad pid on a LOCAL pane (depth 0) is ignored (no exit, no spurious sink)", () => {
-    const { watch, sink } = setup(SHELL_WITH_SSH);
+    // The pane's only ssh child (2000) is a background TUNNEL, so the pane is legitimately local — the W-2b
+    // scan classifies it non-interactive and keeps the anchor (the disclosure guard fires only on an
+    // interactive in-bound login, see the W-2b describe block below).
+    const localWithTunnel: Record<number, Proc> = {
+      ...SHELL_WITH_SSH,
+      2000: { parent: 1000, name: "ssh", start: 20, argv: ["ssh", "-N", "-L", "9000:127.0.0.1:9000", "bastion"] },
+    };
+    const { watch, sink } = setup(localWithTunnel);
     watch.watchPane("pane-1", 1000);
     watch.noteSshOpened("pane-1", 9999); // 9999 doesn't exist / isn't ssh; pane still local (remoteDepth 0)
-    watch.tick(); // nothing registered, no remote frame ⇒ nothing fires
+    watch.tick(); // nothing registered, no remote frame, only a tunnel child ⇒ nothing fires
     expect(sink.ends).toEqual([]);
     expect(sink.unknowns).toEqual([]); // must NOT nuke the local anchor
   });
@@ -388,5 +402,109 @@ describe("SshSessionWatch — unwatchable / lifecycle", () => {
     watch.tick();
     expect(sink.ends).toEqual([]);
     expect(sink.unknowns).toEqual([]);
+  });
+});
+
+describe("SshSessionWatch — W-2b: an UNREGISTERED interactive ssh on a LOCAL pane sinks it (shared-terminal disclosure guard)", () => {
+  // The user hand-`ssh host`s out of the SAME local pane the assistant launched. The wiring never
+  // dispatched it (session===null, remoteDepth 0), so the tracker stays confidently local. A tick must
+  // detect the unregistered ssh via its argv and markUnknown, else a later assistant `sudo` fills a LOCAL
+  // secret into the REMOTE prompt (disclosure). Option B (OQ-W-7): decline ONLY an interactive in-bound
+  // login — a tunnel / one-shot / scp keeps the pane local.
+  const localPane = (extra: Record<number, Proc>): Record<number, Proc> => ({ ...SHELL_ONLY, ...extra });
+
+  it("interactive DIRECT-child ssh (`ssh user@host`) ⇒ markUnknown", () => {
+    const { watch, sink } = setup(localPane({ 2000: { parent: 1000, name: "ssh", start: 20, argv: ["ssh", "user@host-a"] } }));
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0); // local anchor, no session registered
+    watch.tick();
+    expect(sink.unknowns).toEqual(["pane-1"]);
+    expect(sink.ends).toEqual([]);
+  });
+
+  it("interactive GRANDCHILD ssh (`sudo ssh user@host`) ⇒ markUnknown (subtree walk, not just direct children)", () => {
+    const { watch, sink } = setup(localPane({
+      2500: { parent: 1000, name: "sudo", start: 21 },
+      2600: { parent: 2500, name: "ssh", start: 22, argv: ["ssh", "user@host-a"] },
+    }));
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    watch.tick();
+    expect(sink.unknowns).toEqual(["pane-1"]);
+  });
+
+  it("a background TUNNEL (`ssh -N -L …`) ⇒ NOT flagged (pane keeps autofilling — option B)", () => {
+    const { watch, sink } = setup(localPane({ 3000: { parent: 1000, name: "ssh", start: 30, argv: ["ssh", "-N", "-L", "9000:127.0.0.1:9000", "bastion"] } }));
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    watch.tick();
+    expect(sink.unknowns).toEqual([]);
+  });
+
+  it("a ONE-SHOT (`ssh host cmd`) ⇒ NOT flagged", () => {
+    const { watch, sink } = setup(localPane({ 3100: { parent: 1000, name: "ssh", start: 31, argv: ["ssh", "host-a", "uptime"] } }));
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    watch.tick();
+    expect(sink.unknowns).toEqual([]);
+  });
+
+  it("scp's inner ssh (one-shot with a remote command) ⇒ NOT flagged", () => {
+    const { watch, sink } = setup(localPane({
+      3200: { parent: 1000, name: "scp", start: 32 },
+      3201: { parent: 3200, name: "ssh", start: 33, argv: ["ssh", "-x", "host-a", "scp", "-t", "/tmp/f"] },
+    }));
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    watch.tick();
+    expect(sink.unknowns).toEqual([]);
+  });
+
+  it("an ssh child with an UNREADABLE argv (null) ⇒ markUnknown (fail-safe: possibly interactive)", () => {
+    // `commandLine` returns null (ACCESS_DENIED on an elevated/cross-user ssh) — the scan cannot classify it,
+    // so it fails safe to decline rather than risk trusting local.
+    const { watch, sink } = setup(localPane({ 4000: { parent: 1000, name: "ssh", start: 40 /* no argv ⇒ null */ } }));
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    watch.tick();
+    expect(sink.unknowns).toEqual(["pane-1"]);
+  });
+
+  it("only NON-ssh children ⇒ no scan effect (a plain local pane keeps its anchor)", () => {
+    const { watch, sink } = setup(localPane({
+      5000: { parent: 1000, name: "node", start: 50 },
+      5001: { parent: 5000, name: "esbuild", start: 51 },
+    }));
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    watch.tick();
+    expect(sink.unknowns).toEqual([]);
+  });
+
+  it("gating: an interactive ssh at depth>0 (a legit DISPATCHED login mid-registration) is handled by the unwatched-frame backstop, not this scan — still markUnknown once", () => {
+    // recordDispatch pushed the frame (depth 1) but the poller has not registered the pid yet (session null).
+    // The existing depth>0 backstop sinks it; the W-2b scan is depth-0-only, so it never runs here. Either
+    // way the pane declines (bounded-safe), and it does so via ONE markUnknown, not a double-fire.
+    const { watch, sink } = setup(localPane({ 2000: { parent: 1000, name: "ssh", start: 20, argv: ["ssh", "user@host-a"] } }));
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 1); // frame pushed, no session registered
+    watch.tick();
+    expect(sink.unknowns).toEqual(["pane-1"]);
+    expect(sink.ends).toEqual([]);
+  });
+
+  it("a REGISTERED session (session!==null) is NOT re-scanned even with other ssh children present", () => {
+    // Once a session ssh is registered the depth-1 trust logic owns the pane; the W-2b scan (session===null
+    // only) must not run and mistake a sibling for an unregistered login.
+    const { watch, sink } = setup(localPane({
+      2000: { parent: 1000, name: "ssh", start: 20 },                                             // the registered session
+      3000: { parent: 1000, name: "ssh", start: 30, argv: ["ssh", "user@other"] },                 // a sibling that WOULD trip the scan
+    }));
+    watch.watchPane("pane-1", 1000);
+    watch.noteSshOpened("pane-1", 2000);
+    sink.setDepth("pane-1", 1);
+    watch.tick();
+    expect(sink.unknowns).toEqual([]); // trusted depth-1 session; the sibling never triggers the scan
+    expect(sink.ends).toEqual([]);
   });
 });
