@@ -402,6 +402,29 @@ export function getWindowIdentity(hwnd: unknown): ProcessIdentity {
 }
 
 /**
+ * A process's launch command line, split into argv exactly as the OS launched it
+ * (`CommandLineToArgvW` parity). Returns `null` on ANY failure — a non-number /
+ * zero pid, a dead process, ACCESS_DENIED on an elevated / cross-user target, or
+ * a query/parse failure — so callers fail SAFE (ADR-014 v2 R3 L3-4 W-2b treats a
+ * null read as "possibly an interactive in-bound ssh" and declines).
+ *
+ * argv[0] is the image (ssh path); pass `argv.slice(1)` to `interactiveSshTarget`.
+ * Uses `NtQueryInformationProcess(ProcessCommandLineInformation)` under the same
+ * `PROCESS_QUERY_LIMITED_INFORMATION` right as the identity query (no cross-process
+ * memory read).
+ */
+export function getProcessCommandLineByPid(pid: number): string[] | null {
+  if (typeof pid !== "number" || pid === 0) {
+    return null;
+  }
+  try {
+    return requireNativeWin32().win32GetProcessCommandLine!(pid >>> 0) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Build a Map of pid → parentPid by snapshotting all processes via Toolhelp32.
  * Returns an empty map on failure. The native binding owns the snapshot
  * handle lifetime via RAII (no JS-side leak risk).

@@ -162,6 +162,9 @@ export interface NativeWin32 {
   win32GetFocusedChildHwnd?(targetHwnd: bigint): bigint | null;
   win32BuildProcessParentMap?(): NativeProcessParentEntry[];
   win32GetProcessIdentity?(pid: number): NativeProcessIdentity;
+  /** ADR-014 v2 R3 L3-4 W-0: a process's launch argv (CommandLineToArgvW), or
+   *  null on any failure/ACCESS_DENIED (fail-safe "unreadable" for the caller). */
+  win32GetProcessCommandLine?(pid: number): string[] | null;
   win32GetScrollInfo?(hwnd: bigint, axis: string): NativeScrollInfo | null;
   win32PostMessage?(hwnd: bigint, msg: number, wParam: bigint, lParam: bigint): boolean;
   win32GetFocus?(): bigint | null;
