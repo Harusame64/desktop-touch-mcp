@@ -470,6 +470,28 @@ describe("SshSessionWatch — W-2b: an UNREGISTERED interactive ssh on a LOCAL p
     expect(sink.unknowns).toEqual(["pane-1"]);
   });
 
+  it("an ssh child with an EMPTY argv ([]) ⇒ markUnknown (fail-safe — a non-classifiable ssh must not trust-local)", () => {
+    // Opus PR#512 P2: interactiveSshTarget([]) returns null; without the length===0 guard that would fall
+    // through to "not flagged" = trust local (fail-OPEN). Treat an empty argv as unreadable.
+    const { watch, sink } = setup(localPane({ 4100: { parent: 1000, name: "ssh", start: 41, argv: [] } }));
+    watch.watchPane("pane-1", 1000);
+    sink.setDepth("pane-1", 0);
+    watch.tick();
+    expect(sink.unknowns).toEqual(["pane-1"]);
+  });
+
+  it("option-bearing interactive logins (`ssh -p 2222 user@host`, `ssh -t user@host`) ⇒ markUnknown", () => {
+    // Lock the classifier over option-bearing interactive forms (Opus PR#512 P3 coverage) — a future
+    // regression that mis-parsed `-p`/`-t` as a one-shot would silently re-open the disclosure.
+    for (const argv of [["ssh", "-p", "2222", "user@host-a"], ["ssh", "-t", "user@host-a"]]) {
+      const { watch, sink } = setup(localPane({ 4200: { parent: 1000, name: "ssh", start: 42, argv } }));
+      watch.watchPane("pane-1", 1000);
+      sink.setDepth("pane-1", 0);
+      watch.tick();
+      expect(sink.unknowns).toEqual(["pane-1"]);
+    }
+  });
+
   it("only NON-ssh children ⇒ no scan effect (a plain local pane keeps its anchor)", () => {
     const { watch, sink } = setup(localPane({
       5000: { parent: 1000, name: "node", start: 50 },
