@@ -20,6 +20,9 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { HELPER_EXE, KeyLockerHost, type KeyLockerStartOptions } from "../key-locker-host.js";
+import { buildProcessParentMap, getProcessCommandLineByPid, getProcessIdentityByPid } from "../win32.js";
+import { SessionTracker } from "./session-tracker.js";
+import { SshSessionWatch, type ProcessSnapshot } from "./ssh-session-watch.js";
 
 /** Typed reject when a secret op is attempted before first-run consent is accepted (L4 §2). */
 export class KeyLockerConsentRequiredError extends Error {
@@ -76,6 +79,16 @@ export interface KeyLockerManagerOptions extends KeyLockerStartOptions {
   storeDir?: string;
   /** Injected monotonic-ish clock for idle-dispose dormancy (default `Date.now`); overridden in tests. */
   now?: () => number;
+  /**
+   * Win32 process-tree seams for the SshSessionWatch snapshot adapter (W-3, §2.1). Default to the real
+   * `win32.ts` bindings; tests inject a fake tree so the watch reconciliation unit-tests without native calls.
+   */
+  win32?: {
+    buildProcessParentMap: () => Map<number, number>;
+    /** Raw identity (native `processName` is NOT lowercased at source — the adapter lowercases it). */
+    getProcessIdentity: (pid: number) => { processName: string; processStartTimeMs: number };
+    getProcessCommandLine: (pid: number) => string[] | null;
+  };
 }
 
 /**
@@ -91,10 +104,58 @@ export class KeyLockerManager {
   private inFlight = 0;        // secret ops currently running through withHost (idle-dispose never runs mid-op)
   private lastActivityMs = 0;  // clock stamp of the last withHost completion (idle-dispose dormancy timer)
 
-  constructor(private readonly opts: KeyLockerManagerOptions = {}) {}
+  // W-3 (§2.1): the single live session tracker + ssh session-end watch this manager owns. The watch is
+  // built with a snapshot seam that adapts the real Win32 process-tree bindings (or a test fake) into the
+  // pure `ProcessSnapshot` shape the watch/driver reconcile against. The capture-DRIVER (W-2) is constructed
+  // with these (`{ tracker, watch, snapshot }`) + the loop seams by the wiring root (W-4); the wiring drives
+  // the DRIVER's `tickWatch()` (which owns the correlate + baseline-advance + hygiene reconcile) on a timer —
+  // this manager provides the tracker/watch/snapshot infrastructure, not the reconcile loop itself.
+  private readonly sessionTracker = new SessionTracker();
+  private readonly sshWatch: SshSessionWatch;
+
+  constructor(private readonly opts: KeyLockerManagerOptions = {}) {
+    this.sshWatch = new SshSessionWatch({ snapshot: () => this.snapshotProcessTree(), tracker: this.sessionTracker });
+  }
 
   private now(): number {
     return (this.opts.now ?? Date.now)();
+  }
+
+  /** The live per-pane session tracker (the driver anchors/records/forgets it). */
+  get tracker(): SessionTracker {
+    return this.sessionTracker;
+  }
+
+  /** The live ssh session-end watch (the driver registers/reconciles session ssh children through it). */
+  get watch(): SshSessionWatch {
+    return this.sshWatch;
+  }
+
+  /**
+   * One live process-tree snapshot for the watch/driver reconcile (W-3 §2.1 — the Win32 adapter). Wires the
+   * real (or injected) `buildProcessParentMap` + `getProcessIdentity` + `getProcessCommandLine` into the pure
+   * `ProcessSnapshot` shape. Two adaptations the watch's contract requires:
+   *   - `identify().name` is the native `processName` LOWERCASED (win32 does NOT lowercase at source; the watch
+   *     compares against the lowercase literal `"ssh"`), with `startTimeMs` from `processStartTimeMs`.
+   *   - `commandLine(pid)` passes `getProcessCommandLine` through verbatim (null on ANY read failure — the
+   *     W-2b argv scan treats null as "possibly interactive" and fails safe).
+   * A snapshot failure surfaces as an EMPTY `parentMap` (`buildProcessParentMap` swallows errors → {}) / an
+   * empty identity (`{ name: "", startTimeMs: 0 }`) — the watch tolerates both (it skips a degenerate tick and
+   * treats "" as gone-or-unreadable), so this adapter never throws.
+   */
+  private snapshotProcessTree(): ProcessSnapshot {
+    const w = this.opts.win32;
+    const parentMapOf = w?.buildProcessParentMap ?? buildProcessParentMap;
+    const identityOf = w?.getProcessIdentity ?? getProcessIdentityByPid;
+    const commandLineOf = w?.getProcessCommandLine ?? getProcessCommandLineByPid;
+    return {
+      parentMap: parentMapOf(),
+      identify: (pid) => {
+        const id = identityOf(pid);
+        return { name: id.processName.toLowerCase(), startTimeMs: id.processStartTimeMs };
+      },
+      commandLine: (pid) => commandLineOf(pid),
+    };
   }
 
   /** The store dir this manager reads consent + bindings from. */

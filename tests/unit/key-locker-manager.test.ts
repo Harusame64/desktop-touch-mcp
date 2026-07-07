@@ -258,3 +258,64 @@ describe("KeyLockerManager.disposeIfIdle — dormancy", () => {
     expect(mgr.disposed).toBe(1);
   });
 });
+
+describe("KeyLockerManager — W-3 tracker/watch ownership + Win32 snapshot adapter (§2.1)", () => {
+  // A fake process tree (pid → {parent, name, start, argv}) so the snapshot adapter + watch reconcile
+  // without native calls. `name` is given in raw win32 casing (e.g. "SSH") to prove the adapter lowercases it.
+  interface Proc { parent: number; name: string; start: number; argv?: string[] }
+  const win32Of = (procs: Record<number, Proc>) => ({
+    buildProcessParentMap: () => new Map(Object.entries(procs).map(([pid, p]) => [Number(pid), p.parent])),
+    getProcessIdentity: (pid: number) => {
+      const p = procs[pid];
+      return p !== undefined ? { processName: p.name, processStartTimeMs: p.start } : { processName: "", processStartTimeMs: 0 };
+    },
+    getProcessCommandLine: (pid: number) => procs[pid]?.argv ?? null,
+  });
+
+  it("exposes the same live tracker + watch instances (owned, not per-call)", () => {
+    const mgr = new KeyLockerManager({ storeDir: freshDir() });
+    expect(mgr.tracker).toBe(mgr.tracker); // stable identity
+    expect(mgr.watch).toBe(mgr.watch);
+    expect(mgr.watch.isWatching("pane-x")).toBe(false); // a fresh, usable watch
+  });
+
+  it("the snapshot adapter LOWERCASES processName + maps creation time (a raw-cased 'SSH' registers as 'ssh')", () => {
+    const tree = { 500: { parent: 0, name: "explorer", start: 1 }, 1000: { parent: 500, name: "PowerShell", start: 10 }, 2000: { parent: 1000, name: "SSH", start: 20, argv: ["ssh", "deploy@host-a"] } };
+    const mgr = new KeyLockerManager({ storeDir: freshDir(), win32: win32Of(tree) });
+    mgr.tracker.beginLocalSession("pane-1");
+    mgr.watch.watchPane("pane-1", 1000);
+    mgr.tracker.recordDispatch("pane-1", "ssh deploy@host-a"); // push host-a
+    mgr.watch.noteSshOpened("pane-1", 2000);                    // register — needs identify("SSH")→"ssh" + non-zero start
+    expect(mgr.tracker.get("pane-1")).toEqual({ execHost: "host-a", isRemote: true });
+    expect(mgr.tracker.remoteDepth("pane-1")).toBe(1); // proves the adapter's lowercase + creation-time mapping took
+  });
+
+  it("driving the watch tick through the adapter reconciles a session-end POP", () => {
+    let tree: Record<number, Proc> = { 500: { parent: 0, name: "explorer", start: 1 }, 1000: { parent: 500, name: "powershell", start: 10 }, 2000: { parent: 1000, name: "ssh", start: 20, argv: ["ssh", "deploy@host-a"] } };
+    const mgr = new KeyLockerManager({
+      storeDir: freshDir(),
+      win32: {
+        buildProcessParentMap: () => new Map(Object.entries(tree).map(([pid, p]) => [Number(pid), p.parent])),
+        getProcessIdentity: (pid) => { const p = tree[pid]; return p ? { processName: p.name, processStartTimeMs: p.start } : { processName: "", processStartTimeMs: 0 }; },
+        getProcessCommandLine: (pid) => tree[pid]?.argv ?? null,
+      },
+    });
+    mgr.tracker.beginLocalSession("pane-1");
+    mgr.watch.watchPane("pane-1", 1000);
+    mgr.tracker.recordDispatch("pane-1", "ssh deploy@host-a");
+    mgr.watch.noteSshOpened("pane-1", 2000);
+    expect(mgr.tracker.remoteDepth("pane-1")).toBe(1);
+
+    tree = { 500: { parent: 0, name: "explorer", start: 1 }, 1000: { parent: 500, name: "powershell", start: 10 } }; // ssh 2000 exits
+    mgr.watch.tick(); // the adapter re-snapshots the (mutated) tree → the watch pops the dead session
+    expect(mgr.tracker.get("pane-1")).toEqual({ execHost: "localhost", isRemote: false });
+  });
+
+  it("a degenerate snapshot (native failure ⇒ empty parentMap) is tolerated: the tick is a no-op, no throw", () => {
+    const mgr = new KeyLockerManager({ storeDir: freshDir(), win32: { buildProcessParentMap: () => new Map(), getProcessIdentity: () => ({ processName: "", processStartTimeMs: 0 }), getProcessCommandLine: () => null } });
+    mgr.tracker.beginLocalSession("pane-1");
+    mgr.watch.watchPane("pane-1", 1000);
+    expect(() => mgr.watch.tick()).not.toThrow(); // empty parentMap ⇒ skip, never markUnknown every pane
+    expect(mgr.tracker.get("pane-1")).toEqual({ execHost: "localhost", isRemote: false });
+  });
+});
