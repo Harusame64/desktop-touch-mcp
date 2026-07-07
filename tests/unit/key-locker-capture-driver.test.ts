@@ -346,6 +346,53 @@ describe("KeyLockerCaptureDriver — push→register window closed by correlate-
   });
 });
 
+describe("KeyLockerCaptureDriver — stale-arm cleared before deriving a newer command (Codex R4 P1)", () => {
+  it("a cached-sudo arm is cleared the instant a newer ssh dispatches, so a poll during the slow ssh derive does not fill the ssh prompt under sudo", async () => {
+    let sshBlocked = true;
+    let releaseDerive!: () => void;
+    const deriveBinding = vi.fn((command: string, session: SessionFrame): Promise<BindingUri | null> => {
+      if (command.startsWith("sudo")) return Promise.resolve({ scheme: "sudo", host: session.execHost, targetUser: "root" });
+      if (sshBlocked) return new Promise((res) => { releaseDerive = () => { sshBlocked = false; res(SSH_A_BINDING); }; });
+      return Promise.resolve(SSH_A_BINDING);
+    });
+    const h = makeHarness({ deriveBinding, readPromptTail: vi.fn(async () => PROMPT(true)) }, shellTree());
+    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    await h.driver.onDispatch("pane-1", "sudo cached"); // arm A (sudo, fast derive, no prompt of its own)
+    expect(h.driver.armedPaneIds()).toEqual(["pane-1"]);
+
+    const pB = h.driver.onDispatch("pane-1", "ssh deploy@host-a"); // newer dispatch — its derive BLOCKS
+    await new Promise((r) => setTimeout(r, 0));                     // let B reach the blocked derive
+    // the ssh password prompt is on screen now; a poll must find NOTHING to fill (A cleared, B not armed yet)
+    expect((await h.driver.poll("pane-1")).status).toBe("idle");
+    expect(h.deps.capture).not.toHaveBeenCalled(); // never filled the ssh prompt under the stale sudo binding
+
+    releaseDerive();
+    await pB; // B publishes its ssh arm
+    expect((await h.driver.poll("pane-1")).status).toBe("filled"); // now the ssh prompt fills under the ssh arm
+    expect(h.deps.capture).toHaveBeenCalledTimes(1);
+  });
+
+  it("an out-of-order older derive does not clobber the newer arm (dispatchSeq token)", async () => {
+    const derived: string[] = [];
+    let releaseA!: () => void;
+    const deriveBinding = vi.fn((command: string): Promise<BindingUri | null> => {
+      derived.push(command);
+      if (command.includes("first")) return new Promise((res) => { releaseA = () => res({ scheme: "sudo", host: "localhost", targetUser: "root" }); });
+      return Promise.resolve({ scheme: "sudo", host: "localhost", targetUser: "alice" }); // "second" resolves fast
+    });
+    const h = makeHarness({ deriveBinding, readPromptTail: vi.fn(async () => PROMPT(true)) }, shellTree());
+    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    const pA = h.driver.onDispatch("pane-1", "sudo -u root first"); // arm-derive BLOCKS (older)
+    await new Promise((r) => setTimeout(r, 0));
+    await h.driver.onDispatch("pane-1", "sudo -u alice second");     // newer, derives fast → arms "second"
+    releaseA(); await pA;                                            // older derive resolves — must be token-gated out
+
+    // fill: the loop derives the ARMED command; it must be the NEWER "second", proving the older didn't clobber it
+    await h.driver.poll("pane-1");
+    expect(derived.at(-1)).toBe("sudo -u alice second");
+  });
+});
+
 describe("KeyLockerCaptureDriver — stale-arm guard: a newer dispatch during a slow prompt read (Codex R3 P1)", () => {
   it("a poll whose arm was overwritten mid-read aborts (superseded) — never fills the newer prompt under the older binding", async () => {
     let releasePrompt!: (v: PromptVerdict) => void;

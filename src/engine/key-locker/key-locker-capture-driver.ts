@@ -155,6 +155,9 @@ interface PaneRecord {
   shellPid: number;
   /** The credential dispatch awaiting a prompt, or null. */
   armed: ArmedDispatch | null;
+  /** Monotonic per-pane dispatch counter. Each `onDispatch` bumps it + clears `armed`; the post-derive
+   *  publish is gated on the counter being unchanged, so only the LATEST dispatch arms (Codex L3-4-W2 R4). */
+  dispatchSeq: number;
   /** The pending §3.1 interactive-ssh child correlation, DECOUPLED from `armed` and published the instant
    *  `recordDispatch` pushes the frame — BEFORE the arm-derive await — so `correlateAllPending` can register
    *  the child even while `deriveBinding` (`ssh -G`) is still awaiting (Codex L3-4-W2 R3 P2). Also survives
@@ -193,7 +196,7 @@ export class KeyLockerCaptureDriver {
   onLocalPaneLaunched(paneId: string, shellPid: number, cwd?: string): void {
     this.tracker.beginLocalSession(paneId, cwd);
     this.watch.watchPane(paneId, shellPid);
-    this.panes.set(paneId, { shellPid, armed: null, pendingSsh: undefined, pollBusy: false, loopInFlight: false });
+    this.panes.set(paneId, { shellPid, armed: null, dispatchSeq: 0, pendingSsh: undefined, pollBusy: false, loopInFlight: false });
   }
 
   /**
@@ -216,7 +219,17 @@ export class KeyLockerCaptureDriver {
     const rec = this.panes.get(paneId);
     if (rec === undefined || rec.loopInFlight) return;
 
-    // (0) REGISTER any pending ssh child BEFORE reconciling. `watch.tick()` is driven ONLY from the driver
+    // (0a) SUPERSEDE the prior arm. A newer dispatch means the previous command's prompt is stale — clearing
+    //      `rec.armed` HERE, before the arm-derive await, stops a poll from filling THIS command's prompt
+    //      under the OLD binding while we derive (Codex L3-4-W2 R4 P1: a cached-sudo arm left in place while a
+    //      slow `ssh` derives → the ssh prompt appears → the poll's `rec.armed !== armed` guard sees the
+    //      unchanged sudo arm and fills the ssh prompt under sudo). A per-dispatch sequence token gates the
+    //      post-await publish so only the LATEST dispatch arms — two overlapping derives can resolve out of
+    //      order, and the older must not clobber the newer's arm.
+    const seq = ++rec.dispatchSeq;
+    rec.armed = null;
+
+    // (0b) REGISTER any pending ssh child BEFORE reconciling. `watch.tick()` is driven ONLY from the driver
     //     (here + `tickWatch`), so registering every armed pane's freshly-spawned interactive-ssh child
     //     first makes the push→register window non-observable to this tick: a just-pushed-but-unregistered
     //     remote frame (`session===null && remoteDepth>0`) would otherwise trip the watch's unwatched-frame
@@ -242,11 +255,15 @@ export class KeyLockerCaptureDriver {
 
     // (3) ARM the poller iff this is a credential command in a KNOWN session (OQ-W-3 — don't poll after
     //     `ls`). The derive is pure/idempotent; the loop re-derives from the SAME frozen frame (a benign
-    //     double-derive). An UNKNOWN pane (reconcile sank it, or a conditional/ambiguous record) disarms —
-    //     but `pendingSsh` (session tracking) is INDEPENDENT of arming, so it stays.
-    if (!isKnownSession(frozen)) { rec.armed = null; return; }
+    //     double-derive). An UNKNOWN pane (reconcile sank it, or a conditional/ambiguous record) stays
+    //     disarmed (rec.armed already null from 0a) — but `pendingSsh` (session tracking) is INDEPENDENT of
+    //     arming, so it stays. Both pre-await returns leave the null from 0a; nothing interleaved (sync).
+    if (!isKnownSession(frozen)) return;
     const binding = await this.deps.deriveBinding(command, frozen);
-    if (binding === null) { rec.armed = null; return; }
+    // Publish ONLY if this dispatch is still the latest for the pane — a newer onDispatch (which bumped
+    // `dispatchSeq` and cleared `rec.armed`) owns the arm now; an out-of-order older derive must not clobber
+    // it. `binding === null` (not a credential) leaves the pane disarmed (rec.armed is already null).
+    if (rec.dispatchSeq !== seq || binding === null) return;
     rec.armed = { command, frozen, armedAtMs: this.deps.nowMs() };
   }
 
