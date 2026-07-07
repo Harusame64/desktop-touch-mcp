@@ -413,6 +413,24 @@ describe("KeyLockerCaptureDriver — poll lifecycle + outcome pass-through", () 
     expect(h.driver.armedPaneIds()).toEqual([]);
   });
 
+  it("concurrent polls for one pane run only ONE capture loop (Codex W2-P2 serialize)", async () => {
+    let releasePrompt!: (v: PromptVerdict) => void;
+    const readPromptTail = vi.fn(() => new Promise<PromptVerdict>((res) => { releasePrompt = res; }));
+    const h = makeHarness({ readPromptTail }, shellTree());
+    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    await h.driver.onDispatch("pane-1", "sudo x");
+
+    const p1 = h.driver.poll("pane-1");             // sets pollBusy, awaits the (blocked) prompt read
+    await new Promise((r) => setTimeout(r, 0));      // let p1 reach the readPromptTail await
+    const p2 = await h.driver.poll("pane-1");        // re-entrant while p1 pends → must be dropped
+    expect(p2.status).toBe("busy");
+    expect(readPromptTail).toHaveBeenCalledTimes(1); // only p1 read the pane
+
+    releasePrompt(PROMPT(true));
+    expect((await p1).status).toBe("filled");
+    expect(h.deps.capture).toHaveBeenCalledTimes(1); // exactly ONE capture loop for the one dispatch
+  });
+
   it("poll on an idle / unarmed pane ⇒ idle", async () => {
     const h = makeHarness({}, shellTree());
     h.driver.onLocalPaneLaunched("pane-1", 1000);

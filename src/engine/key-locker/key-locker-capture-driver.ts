@@ -155,7 +155,11 @@ interface PaneRecord {
   shellPid: number;
   /** The credential dispatch awaiting a prompt, or null. */
   armed: ArmedDispatch | null;
-  /** A capture loop is running for this pane — single-flight (P2-E) also gates re-entrant onDispatch. */
+  /** A `poll()` is in progress for this pane — serializes polls (a re-entrant poll returns `busy`) so a
+   *  slow prompt read cannot let two polls run two capture loops for one dispatch (Codex L3-4-W2 P2). */
+  pollBusy: boolean;
+  /** The CAPTURE LOOP (prompt found → fill → landed → save) is running — a SUBSET of `pollBusy`. onDispatch
+   *  checks this to drop the re-entrant dispatch the Mode-A landed re-run fires (P2-E / W4-O2). */
   loopInFlight: boolean;
 }
 
@@ -183,7 +187,7 @@ export class KeyLockerCaptureDriver {
   onLocalPaneLaunched(paneId: string, shellPid: number, cwd?: string): void {
     this.tracker.beginLocalSession(paneId, cwd);
     this.watch.watchPane(paneId, shellPid);
-    this.panes.set(paneId, { shellPid, armed: null, loopInFlight: false });
+    this.panes.set(paneId, { shellPid, armed: null, pollBusy: false, loopInFlight: false });
   }
 
   /**
@@ -247,29 +251,38 @@ export class KeyLockerCaptureDriver {
   async poll(paneId: string): Promise<PollResult> {
     const rec = this.panes.get(paneId);
     if (rec === undefined || rec.armed === null) return { status: "idle" };
-    if (rec.loopInFlight) return { status: "busy" };
-    const armed = rec.armed;
-
-    // §3.1: register the newly-appeared interactive-ssh child (the wiring correlates it here, not at
-    // dispatch — the child does not exist yet in that turn). Runs every poll until it resolves.
-    if (armed.ssh !== undefined && !armed.ssh.registered) this.correlateSshChild(paneId, rec.shellPid, armed.ssh);
-
-    // Poller lifetime (OQ-W-2): a key-based ssh / cached sudo prints NO prompt — abandon (safe, no fill).
-    if (this.deps.nowMs() - armed.armedAtMs > this.pollTimeoutMs) { rec.armed = null; return { status: "timed_out" }; }
-
-    const verdict = await this.deps.readPromptTail(paneId);
-    if (verdict === null || !verdict.isCredentialPrompt) return { status: "polling" };
-
-    // A credential prompt appeared → run the loop under single-flight. `loopInFlight` is set BEFORE the loop
-    // so the Mode-A landed re-run's re-entrant onDispatch (W4-O2) is suppressed. Disarm after (one prompt
-    // per dispatch).
-    rec.loopInFlight = true;
+    // SERIALIZE polls per pane (Codex L3-4-W2 P2). `pollBusy` is set BEFORE the `readPromptTail` await, so a
+    // poll-timer re-entry while a prior poll is still awaiting the (slow, UIA) prompt read is dropped —
+    // otherwise BOTH would pass the guard, observe the same prompt, and run two capture loops for one armed
+    // dispatch (duplicate capture/inject/save). `loopInFlight` (the capture-loop window) is a SUBSET of
+    // `pollBusy`; onDispatch checks `loopInFlight` to drop the Mode-A re-run (W4-O2), so both are kept.
+    if (rec.pollBusy) return { status: "busy" };
+    rec.pollBusy = true;
     try {
-      const outcome = await this.runCaptureLoopFor(paneId, armed);
-      return { status: "filled", outcome };
+      const armed = rec.armed;
+
+      // §3.1: register the newly-appeared interactive-ssh child (the wiring correlates it here, not at
+      // dispatch — the child does not exist yet in that turn). Runs every poll until it resolves.
+      if (armed.ssh !== undefined && !armed.ssh.registered) this.correlateSshChild(paneId, rec.shellPid, armed.ssh);
+
+      // Poller lifetime (OQ-W-2): a key-based ssh / cached sudo prints NO prompt — abandon (safe, no fill).
+      if (this.deps.nowMs() - armed.armedAtMs > this.pollTimeoutMs) { rec.armed = null; return { status: "timed_out" }; }
+
+      const verdict = await this.deps.readPromptTail(paneId);
+      if (verdict === null || !verdict.isCredentialPrompt) return { status: "polling" };
+
+      // A credential prompt appeared → run the loop. `loopInFlight` is set BEFORE the loop so the Mode-A
+      // landed re-run's re-entrant onDispatch (W4-O2) is suppressed. Disarm after (one prompt per dispatch).
+      rec.loopInFlight = true;
+      try {
+        const outcome = await this.runCaptureLoopFor(paneId, armed);
+        return { status: "filled", outcome };
+      } finally {
+        rec.loopInFlight = false;
+        rec.armed = null;
+      }
     } finally {
-      rec.loopInFlight = false;
-      rec.armed = null;
+      rec.pollBusy = false;
     }
   }
 
