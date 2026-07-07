@@ -330,24 +330,45 @@ describe("KeyLockerCaptureDriver — RECONCILE-then-FREEZE (W3, P1-A)", () => {
     expect(h.deriveCalls.at(-1)).toEqual({ command: "sudo x", session: { execHost: "localhost", isRemote: false } });
   });
 
-  it("the FROZEN frame survives an interleaved tick that pops the session before the prompt loop runs", async () => {
+  it("a remote `sudo x` whose ssh session POPS to local between arm and fill DECLINES (Opus R2 P2 — no cross-host disclosure)", async () => {
     const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)) }, shellTree({ 2000: sshProc(1000, "host-a", 20) }));
     h.driver.onLocalPaneLaunched("pane-1", 1000);
     h.driver.onDispatch("pane-1", "ssh deploy@host-a"); // register host-a
     await h.driver.poll("pane-1"); // this poll's prompt fires a loop for the ssh; ignore its outcome
 
-    // dispatch a REMOTE `sudo x` (frozen = host-a)
+    // dispatch a REMOTE `sudo x` (frozen = host-a, expected = host-a)
     h.driver.onDispatch("pane-1", "sudo x");
-    // an EXTERNAL event pops the ssh: 2000 exits + a tick reconciles → tracker now local
+    // an EXTERNAL event pops the ssh: 2000 exits + a tick reconciles → tracker now LOCAL (a valid pop, still KNOWN)
     h.setTree(shellTree());
     h.driver.tickWatch();
     expect(h.tracker.get("pane-1")).toEqual({ execHost: "localhost", isRemote: false });
 
-    // the prompt loop for `sudo x` must still use the FROZEN host-a frame, not the now-local live value
+    // the arm's expected=host-a no longer matches the live localhost → filling frozen host-a's secret into the
+    // now-LOCAL pane would be a cross-host disclosure. DECLINE (isKnownSession alone would MISS this — both
+    // frames are KNOWN — which is why the guard matches execHost+isRemote against `expected`).
     h.deriveCalls.length = 0;
-    await h.driver.poll("pane-1");
+    vi.mocked(h.deps.capture).mockClear();      // the earlier ssh-login poll captured; isolate the sudo-x poll
+    vi.mocked(h.deps.injectPane).mockClear();
+    const r = await h.driver.poll("pane-1");
+    expect(r.status).toBe("declined");
+    expect(h.deps.capture).not.toHaveBeenCalled();
+    expect(h.deps.injectPane).not.toHaveBeenCalled();
+    expect(h.deriveCalls).toEqual([]); // never even derived
+  });
+
+  it("a remote `sudo x` whose session is UNCHANGED between arm and fill DOES fill from the frozen host-a frame", async () => {
+    // The legitimate remote fill: no external change, so live == expected == host-a → the loop derives the
+    // armed command from the FROZEN host-a frame (the freeze still gives a deterministic derive).
+    const h = makeHarness({ readPromptTail: vi.fn(async () => PROMPT(true)) }, shellTree({ 2000: sshProc(1000, "host-a", 20) }));
+    h.driver.onLocalPaneLaunched("pane-1", 1000);
+    h.driver.onDispatch("pane-1", "ssh deploy@host-a"); // register host-a
+    await h.driver.poll("pane-1"); // ignore the ssh login loop
+    h.driver.onDispatch("pane-1", "sudo x"); // frozen = host-a, expected = host-a (2000 still alive)
+    h.deriveCalls.length = 0;
+    const r = await h.driver.poll("pane-1");
+    expect(r.status).toBe("filled");
     const loopDerive = h.deriveCalls.find((c) => c.command === "sudo x");
-    expect(loopDerive?.session).toEqual({ execHost: "host-a", isRemote: true });
+    expect(loopDerive?.session).toEqual({ execHost: "host-a", isRemote: true }); // derived from the frozen frame
   });
 });
 

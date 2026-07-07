@@ -165,6 +165,14 @@ interface ArmedDispatch {
   command: string;
   /** The reconciled PRE-effect session the capture loop derives from (never a live tracker.get). */
   frozen: SessionFrame;
+  /** The POST-record session at arm time — the state the pane is EXPECTED to hold when the armed command's
+   *  own prompt shows (sudo/su: === frozen, non-session-changing; an ssh login: frozen + its own push). `poll`
+   *  re-checks the LIVE session against this before filling: any EXTERNAL change between arm and fill — a
+   *  session-end POP, a nested push, or a doubt markUnknown — means the pane is no longer the context the
+   *  command runs in, so the frozen binding must NOT be filled (Codex R2 P1 markUnknown + Opus R2 P2 async pop:
+   *  both are cross-host disclosures the DISPATCH-time reconcile cannot catch, the sink/pop being AFTER the
+   *  freeze). Comparing execHost + isRemote (not cwd — cwd only steers git-remote derivation, not disclosure). */
+  expected: SessionFrame;
   /** `nowMs()` when armed (poller lifetime, OQ-W-2). */
   armedAtMs: number;
 }
@@ -330,9 +338,12 @@ export class KeyLockerCaptureDriver {
     //     the pre-record `frozen` still looks local, so without the post-record check the trailing prompt
     //     would fill under a mis-derived binding (Codex L3-4-W2 R5 P1). Declining a sunk pane is fail-safe.
     //     The arm uses only the CHEAP sync pre-filter — the authoritative `deriveBinding` runs in the loop.
+    //     The POST-record frame is captured as `expected` (the state the command's own prompt shows in) so
+    //     `poll` can detect an EXTERNAL change before filling (Codex R2 P1 + Opus R2 P2).
+    const postRecord = this.tracker.get(paneId);
     rec.armed =
-      isKnownSession(frozen) && isKnownSession(this.tracker.get(paneId)) && looksLikeCredential(command)
-        ? { command, frozen, armedAtMs: this.deps.nowMs() }
+      isKnownSession(frozen) && isKnownSession(postRecord) && looksLikeCredential(command)
+        ? { command, frozen, expected: postRecord, armedAtMs: this.deps.nowMs() }
         : null;
   }
 
@@ -369,17 +380,24 @@ export class KeyLockerCaptureDriver {
       if (rec.armed !== armed) return { status: "superseded" };
       if (verdict === null || !verdict.isCredentialPrompt) return { status: "polling" };
 
-      // LIVE-SESSION RE-CHECK before the fill (Codex W-2 REDO P1 — a disclosure the dispatch-time reconcile
-      // CANNOT catch). The arm's `frozen` was reconciled at DISPATCH, but an async tick AFTER that can sink the
-      // pane to UNKNOWN — e.g. the user hand-ssh's into a launched pane and a `tickWatch` W-2b scan
-      // markUnknowns it while a prior `sudo x` arm (frozen `{localhost}`) is still live. The frozen-derive W3
-      // closure (`getSession: () => armed.frozen`) would then fill the LOCAL secret into the now-REMOTE pane's
-      // prompt. So `poll` — the SINGLE fill chokepoint — re-reads the LIVE session here and DECLINES if it is
-      // no longer known. This reads `isKnownSession`, NOT frozen-equality: a session-changing credential like
-      // `ssh deploy@host-a` legitimately has `frozen`=local but a live POST-push host-a frame (both KNOWN), so
-      // requiring live==frozen would wrongly block that login's own prompt. Only a markUnknown (doubt) — the
-      // signal that the pane's context is no longer trustworthy — voids the arm.
-      if (!isKnownSession(this.deps.tracker.get(paneId))) { rec.armed = null; return { status: "declined" }; }
+      // LIVE-SESSION RE-CHECK before the fill (Codex R2 P1 + Opus R2 P2 — disclosures the DISPATCH-time
+      // reconcile CANNOT catch, because the change happens AFTER the freeze). The arm's `frozen` was reconciled
+      // at dispatch, but an async tick between arm and fill can move the pane out from under it:
+      //   (P1) a doubt markUnknown — the user hand-ssh's into a launched pane, the W-2b scan sinks it — while a
+      //        prior `sudo x` arm (frozen `{localhost}`) is still live ⇒ a LOCAL secret into a now-REMOTE prompt;
+      //   (P2) a session-end POP — the pane's `ssh host-a` exits, a tick pops it to local — while a remote
+      //        `sudo x` arm (frozen `host-a`) is still live ⇒ a host-a secret into a now-LOCAL prompt.
+      // Both are cross-host disclosures the frozen-derive W3 closure (`getSession: () => armed.frozen`) would
+      // fill blind. So `poll` — the SINGLE fill chokepoint — re-reads the LIVE session and requires it to STILL
+      // match `armed.expected` (the POST-record frame the command's own prompt shows in), by execHost+isRemote.
+      // NOT frozen-equality: a session-changing `ssh deploy@host-a` has `frozen`=local but `expected`=host-a
+      // (its own push), so matching `expected` permits that login's own prompt while still catching an external
+      // pop/push/sink. Any mismatch (incl. UNKNOWN) ⇒ the pane is no longer the command's context ⇒ decline.
+      const live = this.deps.tracker.get(paneId);
+      if (!isKnownSession(live) || live.execHost !== armed.expected.execHost || live.isRemote !== armed.expected.isRemote) {
+        rec.armed = null;
+        return { status: "declined" };
+      }
 
       // A credential prompt appeared → run the loop. Mark `pre-landed` (§0-CORR.3) FIRST so a command
       // delivered while the shell is blocked at this prompt — including the Mode-A `runToExit` landed re-run
