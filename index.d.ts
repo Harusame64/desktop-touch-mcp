@@ -369,6 +369,7 @@ export declare function win32ForegroundFlashInject(targetHwnd: bigint, targetPid
 export declare function win32GetFocusedChildHwnd(targetHwnd: bigint): bigint | null
 export declare function win32BuildProcessParentMap(): NativeProcessParentEntry[]
 export declare function win32GetProcessIdentity(pid: number): NativeProcessIdentity
+export declare function win32GetProcessCommandLine(pid: number): string[] | null
 export declare function win32GetScrollInfo(hwnd: bigint, axis: string): NativeScrollInfo | null
 export declare function win32PostMessage(hwnd: bigint, msg: number, wParam: bigint, lParam: bigint): boolean
 export declare function win32ConsolePasteNoFocus(hwnd: bigint, text: string): NativeConsolePasteResult
