@@ -15,8 +15,8 @@ use napi_derive::napi;
 use windows::core::{PCWSTR, PWSTR};
 use windows::Wdk::System::Threading::{NtQueryInformationProcess, ProcessCommandLineInformation};
 use windows::Win32::Foundation::{
-    CloseHandle, LocalFree, FILETIME, HANDLE, HLOCAL, STATUS_INFO_LENGTH_MISMATCH, STATUS_SUCCESS,
-    UNICODE_STRING,
+    CloseHandle, LocalFree, FILETIME, HANDLE, HLOCAL, STATUS_BUFFER_OVERFLOW,
+    STATUS_BUFFER_TOO_SMALL, STATUS_INFO_LENGTH_MISMATCH, STATUS_SUCCESS, UNICODE_STRING,
 };
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
@@ -229,7 +229,18 @@ pub fn win32_get_process_command_line(pid: u32) -> napi::Result<Option<Vec<Strin
                 &mut ret_len,
             )
         };
-        if status == STATUS_INFO_LENGTH_MISMATCH && (ret_len as usize) > buf.len() {
+        // A command line that overflows the initial 4 KiB buffer is reported for
+        // this info class as STATUS_INFO_LENGTH_MISMATCH, but defensively treat the
+        // generic short-buffer codes the same way (an OS/version could report
+        // STATUS_BUFFER_OVERFLOW / STATUS_BUFFER_TOO_SMALL): grow once to the
+        // reported length (capped) and retry, so a long-but-readable ssh command
+        // line isn't misread as "unreadable" and force-declined. A still-short or
+        // otherwise non-success second status falls through to the fail-safe None
+        // below. (Codex PR#510 R6 P2.)
+        let short_buffer = status == STATUS_INFO_LENGTH_MISMATCH
+            || status == STATUS_BUFFER_OVERFLOW
+            || status == STATUS_BUFFER_TOO_SMALL;
+        if short_buffer && (ret_len as usize) > buf.len() {
             let cap = (ret_len as usize).min(128 * 1024);
             buf = vec![0u8; cap];
             status = unsafe {
