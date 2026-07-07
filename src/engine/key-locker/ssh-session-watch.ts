@@ -233,13 +233,16 @@ export class SshSessionWatch {
    * `exempt` (L3-4 §0-CORR.2 — the fire-AFTER-delivery correction): when the driver drives this tick from
    * `onDispatch` for a command that ITSELF opens an interactive ssh, that ssh child is ALREADY in the tree
    * (the S-A hook fires post-delivery), so the W-2b unregistered-ssh scan would mis-flag the assistant's OWN
-   * just-dispatched login as a lurking USER ssh and `markUnknown` the pane. `exempt = { paneId, host }`
-   * SURGICALLY removes ONLY the `host`-matching interactive descendant of `exempt.paneId` from the W-2b scan —
-   * every OTHER unregistered interactive ssh (a real user `ssh host-evil` on the same shared pane), and every
-   * other pane, is scanned in full. Omit `exempt` (a `sudo`/non-ssh dispatch, or the periodic timer) ⇒ the
-   * full scan runs everywhere. The exempt NEVER touches the wrong-target pop/markUnknown core.
+   * just-dispatched login as a lurking USER ssh and `markUnknown` the pane. `exempt = { paneId, pid }` skips
+   * EXACTLY that one process pid in the W-2b scan for `exempt.paneId` — the driver PROVED (via a before/after
+   * ssh-descendant delta) it is the child THIS dispatch spawned. Every OTHER interactive-ssh descendant — a
+   * user's ssh to the SAME host is a DIFFERENT pid — STILL flags; every other pane scans in full. A PID (not a
+   * host) is REQUIRED: a host match cannot prove the skipped process is the newly-dispatched one, so a user's
+   * pre-existing `ssh host-a` would be wrongly skipped and leak local→remote (Codex L3-4 W-0.5 P1). Omit
+   * `exempt` (a `sudo`/non-ssh dispatch, the periodic timer, or an ambiguous/unproven delta) ⇒ the full scan
+   * runs everywhere. The exempt NEVER touches the wrong-target pop/markUnknown core.
    */
-  tick(exempt?: { paneId: string; host: string }): void {
+  tick(exempt?: { paneId: string; pid: number }): void {
     if (this.panes.size === 0) return;
     const snap = this.deps.snapshot();
     // A degenerate (empty) snapshot means the native call FAILED, not that every process died — skip the
@@ -270,9 +273,9 @@ export class SshSessionWatch {
         // disclose). Gated on depth 0: a legit assistant-dispatched ssh has pushed a frame (depth>0) and is
         // handled above, so this scan never fights the normal push→register flow (Opus L3-4 R2 Q1 / R3 Q1a).
         childrenByParent ??= buildChildrenMap(snap.parentMap);
-        // §0-CORR.2: exempt the assistant's OWN just-dispatched login (host-matched) for THIS pane only.
-        const exemptHost = exempt?.paneId === paneId ? exempt.host : undefined;
-        if (this.hasUnregisteredInteractiveSsh(snap, childrenByParent, pane.shellPid, exemptHost)) this.deps.tracker.markUnknown(paneId);
+        // §0-CORR.2: exempt the assistant's OWN just-dispatched login (a proven pid) for THIS pane only.
+        const exemptPid = exempt?.paneId === paneId ? exempt.pid : undefined;
+        if (this.hasUnregisteredInteractiveSsh(snap, childrenByParent, pane.shellPid, exemptPid)) this.deps.tracker.markUnknown(paneId);
         continue;
       }
       // Liveness is authoritative from the Toolhelp map (a pid present as a KEY is alive); identify() reads
@@ -329,18 +332,18 @@ export class SshSessionWatch {
    * command) all classify null ⇒ NOT flagged, so those panes keep autofilling (OQ-W-7 = option B). Short-
    * circuits on the first interactive/unreadable ssh, so the common no-ssh subtree is one adjacency walk.
    *
-   * `exemptHost` (§0-CORR.2): when the driver dispatched an interactive `ssh <exemptHost>` for THIS pane, that
-   * login is the assistant's OWN (already in the tree post-delivery), so an interactive descendant whose argv
-   * host === `exemptHost` is NOT flagged. This is SURGICAL: any OTHER interactive ssh descendant (a real user
-   * `ssh host-evil` to a different host) STILL flags, and an UNREADABLE descendant (name "" / argv null) STILL
-   * flags regardless (can't confirm it is the exempt one — fail-safe). Omit `exemptHost` ⇒ every interactive
-   * ssh flags (the pre-correction behavior, used for a non-ssh dispatch and the periodic timer).
+   * `exemptPid` (§0-CORR.2): the ONE process pid the driver proved is the ssh child THIS dispatch spawned
+   * (via a before/after ssh-descendant delta) — it is NOT flagged (its own subtree is still scanned). This is
+   * a PID, not a host, on purpose: a user's ssh to the SAME host is a DIFFERENT pid and STILL flags, and an
+   * UNREADABLE descendant (name "" / argv null) STILL flags (can't confirm it is the exempt one — fail-safe).
+   * Omit `exemptPid` ⇒ every interactive ssh flags (the pre-correction behavior — a non-ssh dispatch, the
+   * periodic timer, or an ambiguous/unproven delta).
    */
   private hasUnregisteredInteractiveSsh(
     snap: ProcessSnapshot,
     children: Map<number, number[]>,
     shellPid: number,
-    exemptHost?: string,
+    exemptPid?: number,
   ): boolean {
     // BFS the subtree over the pre-built parent→children map (Opus PR#512 P3: built once per tick, not per
     // pane). `seen` guards against pid-reuse apparent cycles (a child listing an ancestor pid).
@@ -352,6 +355,9 @@ export class SshSessionWatch {
         if (seen.has(pid)) continue;
         seen.add(pid);
         frontier.push(pid);
+        // §0-CORR.2: the assistant's OWN just-dispatched ssh (a driver-proven pid) — do not flag it; its
+        // subtree is still walked (it was pushed to the frontier above) in case it holds a lurking child.
+        if (pid === exemptPid) continue;
         // Every pid reached here is a KEY in `parentMap` (it came from
         // buildChildrenMap, which inverts parentMap) ⇒ ALIVE per the module's
         // liveness contract. So identify()'s "" here is NOT a gone pid — it is a
@@ -371,10 +377,7 @@ export class SshSessionWatch {
         // the module's "any doubt sinks" invariant).
         const argv = snap.commandLine(pid);
         if (argv === null || argv.length === 0) return true; // unreadable / empty ⇒ fail-safe (possibly interactive)
-        const host = interactiveSshTarget(argv.slice(1));
-        // an interactive in-bound login — flagged UNLESS it is the assistant's own host-matched dispatch
-        // (§0-CORR.2 surgical exempt); a DIFFERENT host (a lurking user ssh) still flags.
-        if (host !== null && host !== exemptHost) return true;
+        if (interactiveSshTarget(argv.slice(1)) !== null) return true; // an interactive in-bound login (exempt pid already skipped)
       }
     }
     return false;
